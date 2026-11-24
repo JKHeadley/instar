@@ -7,13 +7,15 @@
  *
  * Bounds are durable and per device (`.instar/state/mobile-push-state.json`): a 2-minute fold,
  * hourly after 40 sends in any rolling 24 h, an URGENT bypass of the hourly wait (10 more per
- * 24 h), and a persisted APNs 429 backoff that wins over both. Nothing is dropped, only folded.
+ * 24 h), and a persisted APNs 429 backoff that wins over both. Reader-bound evidence lives in a
+ * separate sidecar; current visibility and mute are rechecked before every transport request.
  * The payload never carries item text; the phone fetches the title itself.
  */
 import crypto from 'node:crypto';
 import fs from 'node:fs';
 import http2 from 'node:http2';
 import path from 'node:path';
+import { MobilePushPending, TYPED_PUSH_PENDING_FILE, evaluatePushAdmission, legacyPushFingerprint, savePushJson, type BoundPushContribution, type PushAdmissionReason } from './MobilePushPending.js';
 import { admittedAtComputer, type DeviceRecord, type DeviceRegistry } from './MobileDeviceKeys.js';
 
 export const FOLD_MS = 2 * 60_000;
@@ -98,6 +100,7 @@ interface DeviceState {
   sendLog: number[];
   urgentLog: number[];
   lastSendAt: number | null;
+  /** Previous-binary aggregate slot: migration quarantines it before typed writers are enabled. */
   pending: { count: number; hasUrgent: boolean } | null;
   dueAt: number | null;
   backoffUntil: number | null;
@@ -116,7 +119,26 @@ interface PushState {
   fanout: { sent: number; received: number; deduped: number; refused: number };
 }
 
+/** Scrubbed latest policy evaluation; references only, never push tokens or message bodies. */
+export interface PushAdmissionEvidence {
+  intendedReader: string | null;
+  currentReader: string | null;
+  canonicalIdentity: string | null;
+  messageId: string | null;
+  kind: 'reply' | 'notice';
+  active: boolean;
+  standingKnown: boolean;
+  preferencesAvailable: boolean | null;
+  muted: boolean | null;
+  witnessVerdict: 'readable' | 'unreadable';
+  rule: PushAdmissionReason;
+  disposition: 'send' | 'hold' | 'discard';
+}
+
 export interface MobilePushDeps {
+  notificationReader?: (deviceId: string) => string | null;
+  canonicalReplyRef?: (conversationKey: string) => string | null;
+  mutedFor?: (reader: string, canonicalRef: string) => boolean | null;
   stateDir: string;
   registry: DeviceRegistry;
   agentId: string;
@@ -142,7 +164,7 @@ export interface MobilePushDeps {
   /**
    * People and roles §3.4: may this phone hear about a reply in this conversation? A phone that may
    * not use the conversation gets no push for it at all (not even "New reply" with its id).
-   * Absent ⇒ every phone, as before.
+   * Absent ⇒ hold reply evidence until its current visibility can be established.
    */
   mayNotify?: (deviceId: string, conversationKey: string, messageId?: string) => boolean;
   /** A `document` push goes only to the phones of the person whose comment was answered (fail closed when unset). */
@@ -160,9 +182,19 @@ export interface MobilePushDeps {
   badgeFor?: (deviceId: string, conversationKey: string, messageId: string | undefined) => number | null;
 }
 
+/** Permission-distinct notice references, without device/reader queue keys or caller text. */
+function canonicalNoticeIdentity(t: PushTrigger): string | null {
+  const identity = JSON.stringify([t.kind, t.itemId ?? null, t.commentKey ?? null, t.decide ?? null, t.subject ?? null, t.sourceMachine]);
+  return identity.length <= 512 ? identity : null;
+}
+
 const emptyDevice = (): DeviceState => ({ sendLog: [], urgentLog: [], lastSendAt: null, pending: null, dueAt: null, backoffUntil: null, lastSend: null });
 
 export class MobilePushService {
+  private readonly pending: MobilePushPending;
+  private migrationReady = false;
+  private readonly sending = new Set<string>();
+  private readonly admission = new Map<string, { lastReason: string; lastEvidence: PushAdmissionEvidence | null; counters: Record<string, number> }>();
   private readonly file: string;
   private readonly now: () => number;
   private state: PushState | null = null;
@@ -179,14 +211,15 @@ export class MobilePushService {
   private fcmParsed: { raw: string; cred: FcmCredentials | null } | null = null;
   private fcmUnreadableReported = false;
   private fcmMismatchReported = false;
-  private readonly busy: Record<PushProvider, boolean> = { apns: false, fcm: false };
 
   constructor(private readonly deps: MobilePushDeps) {
     this.file = path.join(deps.stateDir, 'state', 'mobile-push-state.json');
+    this.pending = new MobilePushPending(path.join(deps.stateDir, 'state', TYPED_PUSH_PENDING_FILE));
     this.now = deps.now ?? Date.now;
     this.transport = deps.transport ?? createHttp2Transport();
     this.fcmTransport = deps.fcmTransport ?? createFcmTransport();
     this.fcmOAuth = deps.fcmOAuth ?? createFcmOAuthExchange();
+    this.ensurePending();
   }
 
   start(intervalMs = 15_000): void {
@@ -221,11 +254,7 @@ export class MobilePushService {
   }
   private save(): void {
     if (!this.state) return;
-    fs.mkdirSync(path.dirname(this.file), { recursive: true });
-    const tmp = `${this.file}.${process.pid}.tmp`;
-    const fd = fs.openSync(tmp, 'w', 0o600);
-    try { fs.writeSync(fd, JSON.stringify(this.state)); fs.fsyncSync(fd); } finally { fs.closeSync(fd); }
-    fs.renameSync(tmp, this.file);
+    savePushJson(this.file, this.state);
   }
   private dev(st: PushState, id: string): DeviceState {
     return (st.devices[id] ??= emptyDevice());
@@ -266,153 +295,149 @@ export class MobilePushService {
   async receive(t: PushTrigger, fromPeer: boolean): Promise<'deduped' | 'accepted' | 'off'> {
     if (!this.deps.enabled()) return 'off';
     const st = this.load();
-    if (!st) return 'off';
+    if (!st || !this.ensurePending()) return 'off';
     const t0 = this.now();
     for (const [k, at] of Object.entries(st.dedupe)) if (t0 - at > DEDUPE_MS) delete st.dedupe[k];
     if (fromPeer) st.fanout.received++;
     if (st.dedupe[t.dedupeKey] !== undefined) { st.fanout.deduped++; this.save(); return 'deduped'; }
-    st.dedupe[t.dedupeKey] = t0;
-    this.save();
-    const urgent = (t.priority ?? '').toUpperCase() === 'URGENT';
-    const payload: PushPayloadInput = { kind: t.kind, itemId: t.kind === 'item' || t.kind === 'document' ? t.itemId : undefined, ...(t.kind === 'document' ? (t.decide ? { decide: true } : { commentKey: t.commentKey }) : {}), conversationKey: t.kind === 'reply' ? t.conversationKey : undefined, messageId: t.kind === 'reply' ? t.messageId : undefined, ...(t.kind === 'notice' && t.subject ? { subject: t.subject } : {}), machine: t.sourceMachine, count: 1 };
-    const apns: DeviceRecord[] = [];
-    const fcm: DeviceRecord[] = [];
+    const recipients: Array<{ deviceId: string; reader: string | null; ref: string | null }> = [];
     for (const d of this.pushDevices()) {
-      if (t.kind === 'reply' && t.conversationKey && this.deps.mayNotify) {
-        let may = false;
-        try { may = this.deps.mayNotify(d.id, t.conversationKey, t.messageId); } catch { may = false; } // @silent-fallback-ok — fail closed: an unanswerable check sends nothing to that phone
-        if (!may) continue;
-      }
-      if (t.kind === 'document' && t.decide) {
-        let may = false;
-        try { may = !!(t.itemId && this.deps.mayDecideDocument?.(d.id, t.itemId)); } catch { may = false; } // @silent-fallback-ok — fail closed: only a phone that may decide is asked to
-        if (!may) continue;
-      } else if (t.kind === 'document') {
-        let may = false;
-        try { may = !!(t.itemId && t.commentKey && this.deps.mayNotifyDocument?.(d.id, t.itemId, t.commentKey)); } catch { may = false; } // @silent-fallback-ok — fail closed: an unanswerable check sends nothing to that phone
-        if (!may) continue;
-      } else if (t.kind !== 'reply' && this.deps.receivesNotices && !this.deps.receivesNotices(d.id)) continue;
-      // Identity A4: a phone let in at the computer cannot approve yet, on either platform: never ask it to.
-      if (t.kind === 'notice' && t.subject && SUBJECT_TEXT[t.subject] && admittedAtComputer(d)) continue;
-      if ((d.pushProvider ?? 'apns') === 'fcm') {
-        // Approval notices go only to an Android phone that can approve (mobile-android-app §2.3).
-        if (t.kind === 'notice' && t.subject && SUBJECT_TEXT[t.subject]) {
-          let can = false;
-          try { can = !!this.deps.canApprove?.(d.id); } catch { can = false; } // @silent-fallback-ok — fail closed: a phone that may not approve is not asked to
-          if (!can) continue;
-        }
-        fcm.push(d);
-      } else apns.push(d);
+      let reader: string | null = null; let ref: string | null = null;
+      try { reader = this.deps.notificationReader?.(d.id) ?? null; } catch { /* @silent-fallback-ok: admission evidence exposes unavailable reader/identity and holds the typed contribution. */ }
+      if (t.kind === 'reply') try { ref = t.conversationKey ? this.deps.canonicalReplyRef?.(t.conversationKey) ?? null : null; } catch { /* @silent-fallback-ok: admission evidence exposes unavailable reader/identity and holds the typed contribution. */ }
+      recipients.push({ deviceId: d.id, reader, ref });
     }
-    // iPhones never wait for Android: the two lists go side by side, each one device after another.
-    const apnsPass = async () => {
-      for (const d of apns) {
-        const ds = this.dev(st, d.id);
-        prune(ds, t0);
-        if (!ds.pending && this.dueFor(ds, urgent) <= t0) {
-          await this.send(d.id, payload, urgent && this.throttled(ds));
-        } else {
-          ds.pending = { count: (ds.pending?.count ?? 0) + 1, hasUrgent: (ds.pending?.hasUrgent ?? false) || urgent };
-          ds.dueAt = this.dueFor(ds, ds.pending.hasUrgent);
-          this.save();
-        }
-      }
-    };
-    const fcmPass = async () => {
-      if (!fcm.length) return;
-      // A key change is noticed before any backoff is read, so a fixed key reaches mismatched phones now.
-      const cred = this.fcmCredentials();
-      if (cred) this.noteFcmKey(st, cred.hash);
-      for (const d of fcm) {
-        // Re-read at this device's turn: an earlier device's await may have let time and state move.
-        const ds = this.dev(st, d.id);
-        const now = this.now();
-        prune(ds, now);
-        if (!ds.pending && this.dueFor(ds, urgent) <= now) {
-          const out = await this.sendFcm(d.id, payload, urgent && this.throttled(ds));
-          if (out.keep) this.mergeFold(ds, { count: 1, hasUrgent: urgent });
-        } else {
-          this.mergeFold(ds, { count: 1, hasUrgent: urgent });
-        }
-      }
-    };
-    await Promise.all([apnsPass(), fcmPass()]);
+    const accepted = this.pending.enqueueBatch(recipients, t, t0, DEDUPE_MS);
+    if (accepted === 'unavailable') return 'off';
+    if (accepted === 'deduped') { st.fanout.deduped++; this.save(); return 'deduped'; }
+    // This older compatibility receipt is acknowledged only after every sidecar recipient is durable.
+    st.dedupe[t.dedupeKey] = t0; this.save();
+    const cred = this.fcmCredentials(); if (cred) this.noteFcmKey(st, cred.hash);
+    const groups = (provider: PushProvider) => this.pending.deviceIds().filter(id => (this.deps.registry.get(id)?.pushProvider ?? 'apns') === provider);
+    await Promise.all(['apns', 'fcm'].map(async provider => { for (const id of groups(provider as PushProvider)) await this.deliver(id); }));
     return 'accepted';
   }
 
-  /** Keep a fold after an await: add to whatever arrived meanwhile, OR the URGENT mark, recompute the due time. */
-  private mergeFold(ds: DeviceState, held: { count: number; hasUrgent: boolean }): void {
-    ds.pending = { count: (ds.pending?.count ?? 0) + held.count, hasUrgent: (ds.pending?.hasUrgent ?? false) || held.hasUrgent };
-    ds.dueAt = this.dueFor(ds, ds.pending.hasUrgent);
-    this.save();
+  private ensurePending(): boolean {
+    const st = this.load(); if (!st) return false;
+    try {
+      const readLegacy = () => {
+        // A durable file-version witness distinguishes identical old-code rewrites.
+        let devices = st.devices; let version = 'absent';
+        try {
+          const before = fs.statSync(this.file, { bigint: true });
+          const raw = JSON.parse(fs.readFileSync(this.file, 'utf8'));
+          const after = fs.statSync(this.file, { bigint: true });
+          const stamp = (v: typeof before) => `${v.dev}:${v.ino}:${v.mtimeNs}:${v.ctimeNs}:${v.size}`;
+          if (stamp(before) !== stamp(after)) throw new Error('legacy-push-state-changed');
+          if (!raw || !raw.devices || typeof raw.devices !== 'object' || Array.isArray(raw.devices)) throw new Error('legacy-push-state-invalid');
+          devices = raw.devices; version = stamp(after);
+        } catch (err) { if ((err as NodeJS.ErrnoException).code !== 'ENOENT') throw err; }
+        const slots = Object.fromEntries(Object.entries(devices).filter(([, ds]) => ds.pending != null).map(([id, ds]) => [id, { pending: ds.pending!, dueAt: ds.dueAt, version }]));
+        for (const [id, slot] of Object.entries(slots)) { const ds = this.dev(st, id); ds.pending = slot.pending; ds.dueAt = slot.dueAt; }
+        return slots;
+      };
+      this.migrationReady = this.pending.migrate(readLegacy,
+        captures => {
+          const current = readLegacy();
+          for (const c of captures) if (current[c.deviceId] && legacyPushFingerprint(current[c.deviceId]!) !== c.fingerprint) return false;
+          for (const c of captures) { const ds = st.devices[c.deviceId]; if (ds?.pending) { ds.pending = null; ds.dueAt = null; } }
+          this.save(); return true;
+        });
+    } catch (err) { /* @silent-fallback-ok: migration readiness becomes false and the injected degradation reporter records the failure. */ this.migrationReady = false; this.deps.reportDegradation?.('MobilePush.pendingMigration', err); }
+    return this.migrationReady;
+  }
+
+  get supportsTypedPreferences(): boolean {
+    return !!(this.deps.notificationReader && this.deps.canonicalReplyRef && this.deps.mutedFor && this.deps.mayNotify && this.migrationReady && this.pending.ready());
+  }
+  preferenceDeliveryStatus(reader: string): { legacySummaryState: 'pending' | 'none' | 'unknown' } {
+    if (reader !== 'owner') return { legacySummaryState: 'unknown' };
+    const n = this.pending.unboundCount();
+    return { legacySummaryState: n === null || !this.migrationReady ? 'unknown' : n > 0 ? 'pending' : 'none' };
+  }
+
+  private selection(deviceId: string): { items: BoundPushContribution[]; payload: PushPayloadInput; urgent: boolean } {
+    const d = this.deps.registry.get(deviceId);
+    let currentReader: string | null = null;
+    try { currentReader = this.deps.notificationReader?.(deviceId) ?? null; } catch { /* @silent-fallback-ok: admission evidence exposes unavailable reader/identity and holds the typed contribution. */ }
+    if (!this.deps.enabled()) currentReader = null;
+    const items: BoundPushContribution[] = []; const discarded: BoundPushContribution[] = [];
+    for (const c of this.pending.forDevice(deviceId)) {
+      const t = c.trigger; let readable = false; let muted: boolean | null = null;
+      try {
+        if (t.kind === 'reply') {
+          readable = !!(c.ref && t.conversationKey && this.deps.canonicalReplyRef?.(t.conversationKey) === c.ref && this.deps.mayNotify?.(deviceId, t.conversationKey, t.messageId));
+          if (c.intendedReader && c.ref) muted = this.deps.mutedFor?.(c.intendedReader, c.ref) ?? null;
+        } else {
+          if (t.kind === 'document') readable = !!(t.itemId && (t.decide ? this.deps.mayDecideDocument?.(deviceId, t.itemId) : t.commentKey && this.deps.mayNotifyDocument?.(deviceId, t.itemId, t.commentKey)));
+          else readable = (!this.deps.receivesNotices || this.deps.receivesNotices(deviceId));
+          if (t.kind === 'notice' && t.subject && SUBJECT_TEXT[t.subject]) readable = readable && !!d && !admittedAtComputer(d) && ((d.pushProvider ?? 'apns') !== 'fcm' || !!this.deps.canApprove?.(deviceId));
+        }
+      } catch { readable = false; muted = null; /* @silent-fallback-ok: bounded admission evidence exposes unavailable proof and holds delivery. */ }
+      let active = !!(d?.status === 'active' && d.pushToken); let standingKnown = true;
+      try {
+        if (this.deps.phoneStillCounts) {
+          const counts: unknown = this.deps.phoneStillCounts(deviceId);
+          if (counts === false) active = false; else if (counts !== true) standingKnown = false;
+        }
+      } catch { standingKnown = false; /* @silent-fallback-ok: unavailable standing is explicitly recorded as unknown and holds durable evidence; only affirmative inactivity permits discard. */ }
+      const verdict = evaluatePushAdmission({ intendedReader: c.intendedReader, currentReader, active, standingKnown, kind: c.kind, witnessReadable: readable, muted });
+      const stats = this.admission.get(deviceId) ?? { lastReason: '', lastEvidence: null, counters: {} };
+      const boundedReader = (reader: string | null): string | null => typeof reader === 'string' && reader.length <= 512 ? reader : null;
+      stats.lastReason = verdict.reason;
+      stats.lastEvidence = {
+        intendedReader: boundedReader(c.intendedReader), currentReader: boundedReader(currentReader),
+        canonicalIdentity: c.kind === 'reply' ? (c.ref && c.ref.length <= 512 ? c.ref : null) : canonicalNoticeIdentity(t),
+        messageId: typeof t.messageId === 'string' && /^[a-z0-9._:-]{1,128}$/.test(t.messageId) ? t.messageId : null,
+        kind: c.kind, active, standingKnown, preferencesAvailable: c.kind === 'reply' ? muted !== null : null,
+        muted: c.kind === 'reply' ? muted : null, witnessVerdict: readable ? 'readable' : 'unreadable',
+        rule: verdict.reason, disposition: verdict.disposition,
+      };
+      stats.counters[verdict.reason] = Math.min(Number.MAX_SAFE_INTEGER, (stats.counters[verdict.reason] ?? 0) + 1); this.admission.set(deviceId, stats);
+      if (verdict.disposition === 'send') items.push(c);
+      if (verdict.disposition === 'discard') discarded.push(c);
+    }
+    if (discarded.length) this.pending.acknowledge(discarded);
+    const count = items.reduce((sum, c) => sum + c.count, 0);
+    const t = items[0]?.trigger;
+    const payload: PushPayloadInput = items.length === 1 && count === 1 && t ? {
+      kind: t.kind, itemId: t.itemId, commentKey: t.commentKey, ...(t.decide === undefined ? {} : { decide: t.decide }), conversationKey: t.conversationKey,
+      messageId: t.messageId, subject: t.subject, machine: t.sourceMachine, count: 1,
+    } : { kind: 'aggregate', count };
+    return { items, payload, urgent: items.some(c => (c.trigger.priority ?? '').toUpperCase() === 'URGENT') };
+  }
+
+  private async deliver(id: string): Promise<void> {
+    if (this.sending.has(id) || !this.deps.enabled()) return;
+    this.sending.add(id);
+    try {
+      const st = this.load(); if (!st) return;
+      const ds = this.dev(st, id); prune(ds, this.now());
+      const selected = this.selection(id);
+      if (!selected.items.length) { if (ds.dueAt !== null) { ds.dueAt = null; this.save(); } return; }
+      const dueAt = this.dueFor(ds, selected.urgent); if (ds.dueAt !== dueAt) { ds.dueAt = dueAt; this.save(); }
+      if (ds.dueAt > this.now()) return;
+      if ((this.deps.registry.get(id)?.pushProvider ?? 'apns') === 'fcm') await this.sendFcm(id, selected.payload, selected.urgent && this.throttled(ds));
+      else await this.send(id, selected.payload, selected.urgent && this.throttled(ds));
+      const remaining = this.selection(id);
+      const nextDue = remaining.items.length ? this.dueFor(ds, remaining.urgent) : null; if (ds.dueAt !== nextDue) { ds.dueAt = nextDue; this.save(); }
+    } finally { this.sending.delete(id); }
   }
 
   noteRefused(): void { const st = this.load(); if (st) { st.fanout.refused++; this.save(); } }
 
-  /** Send due aggregates. */
+  /** Reevaluate bound evidence on each shared timer tick. */
   async tick(): Promise<void> {
-    const st = this.load();
-    if (!st) return;
-    await this.maybeUnpause(st);
-    this.fcmPauseTick(st);
-    const t0 = this.now();
-    const apnsIds: string[] = [];
-    const fcmIds: string[] = [];
-    for (const [id, ds] of Object.entries(st.devices)) {
-      if (!ds.pending || ds.dueAt === null || ds.dueAt > t0) continue;
-      ((this.deps.registry.get(id)?.pushProvider ?? 'apns') === 'fcm' ? fcmIds : apnsIds).push(id);
-    }
-    // One guard per provider: an unfinished FCM pass never holds back an APNs fold, and the reverse.
-    const passes: Promise<void>[] = [];
-    if (apnsIds.length && !this.busy.apns) {
-      this.busy.apns = true;
-      passes.push(this.apnsTick(st, apnsIds, t0).finally(() => { this.busy.apns = false; }));
-    }
-    if (fcmIds.length && !this.busy.fcm) {
-      this.busy.fcm = true;
-      passes.push(this.fcmTick(st, fcmIds).finally(() => { this.busy.fcm = false; }));
-    }
-    await Promise.all(passes);
+    if (!this.deps.enabled() || !this.ensurePending()) return;
+    const st = this.load(); if (!st) return;
+    await this.maybeUnpause(st); this.fcmPauseTick(st);
+    const cred = this.fcmCredentials(); if (cred) this.noteFcmKey(st, cred.hash);
+    await Promise.all(['apns', 'fcm'].map(async provider => {
+      for (const id of this.pending.deviceIds()) if ((this.deps.registry.get(id)?.pushProvider ?? 'apns') === provider) await this.deliver(id);
+    }));
   }
 
-  private async apnsTick(st: PushState, ids: string[], t0: number): Promise<void> {
-    for (const id of ids) {
-      const ds = st.devices[id];
-      if (!ds || !ds.pending || ds.dueAt === null || ds.dueAt > t0) continue;
-      if (this.deps.phoneStillCounts && !this.deps.phoneStillCounts(id)) { ds.pending = null; ds.dueAt = null; this.save(); continue; }
-      const held = ds.pending;
-      const dueAt = ds.dueAt;
-      const urgentBypass = held.hasUrgent && this.throttled(ds);
-      ds.pending = null; ds.dueAt = null;
-      this.save();
-      const out = await this.send(id, { kind: 'aggregate', count: held.count }, urgentBypass);
-      // Paused or no key: keep the fold so it goes out once sending works again.
-      if (out === 'paused' || out === 'no-key') { ds.pending = held; ds.dueAt = dueAt; this.save(); }
-    }
-  }
-
-  private async fcmTick(st: PushState, ids: string[]): Promise<void> {
-    const cred = this.fcmCredentials();
-    if (cred) this.noteFcmKey(st, cred.hash);
-    for (const id of ids) {
-      const ds = st.devices[id];
-      const now = this.now();
-      if (!ds || !ds.pending || ds.dueAt === null || ds.dueAt > now) continue;
-      if (this.deps.phoneStillCounts && !this.deps.phoneStillCounts(id)) { ds.pending = null; ds.dueAt = null; this.save(); continue; }
-      // Paused (no trial armed) or keyless: leave the fold in place, no send, no write.
-      if ((st.pausedFcm && !this.fcmTrialArmed) || !this.fcmCredentials()) continue;
-      prune(ds, now);
-      const held = ds.pending;
-      if (this.dueFor(ds, held.hasUrgent) > now) { ds.dueAt = this.dueFor(ds, held.hasUrgent); this.save(); continue; }
-      const urgentBypass = held.hasUrgent && this.throttled(ds);
-      ds.pending = null; ds.dueAt = null;
-      const out = await this.sendFcm(id, { kind: 'aggregate', count: held.count }, urgentBypass);
-      if (out.keep) this.mergeFold(ds, held);
-      else if (out.label === 'skipped' || out.label === 'state-unreadable') this.save();
-    }
-  }
-
-  // ── Scheduling ─────────────────────────────────────────────────────────────────
   private throttled(ds: DeviceState): boolean { return ds.sendLog.length >= THRESHOLD_24H; }
 
   /** The earliest time this device may be sent to (spec 2.4). */
@@ -441,18 +466,26 @@ export class MobilePushService {
     const cred = this.deps.credentials();
     if (!cred) { ds.lastSend = { at: new Date(this.now()).toISOString(), outcome: 'no-key' }; this.save(); return 'no-key'; }
     const version = d.pushVersion ?? 0;
-    // Reserve before the request goes out: failed and uncertain sends count.
+    let selected = this.selection(deviceId);
+    if (!selected.items.length) return 'held';
     const t0 = this.now();
+    const bypass = selected.urgent && this.throttled(ds);
     ds.sendLog.push(t0); ds.lastSendAt = t0;
-    if (urgentBypass) ds.urgentLog.push(t0);
+    if (bypass) ds.urgentLog.push(t0);
     this.save();
-    let badge: number | null = null;
-    if (p.kind === 'reply' && p.conversationKey && this.deps.badgeFor) {
-      try { badge = this.deps.badgeFor(deviceId, p.conversationKey, p.messageId); } catch { badge = null; } // @silent-fallback-ok — a badge that cannot be computed is left out; the push still sends
+    const bodyFor = (p: PushPayloadInput): string => {
+      let badge: number | null = null;
+      if (p.kind === 'reply' && p.conversationKey) try { badge = this.deps.badgeFor?.(deviceId, p.conversationKey, p.messageId) ?? null; } catch { /* badge unavailable */ }
+      return JSON.stringify(buildPayload(this.deps.agentName, this.deps.agentId, deviceId, badge === null ? p : { ...p, badge }));
+    };
+    let outcome = await this.attempt(cred, d.pushEnvironment, d.pushToken, bodyFor(selected.payload), false);
+    if (outcome.kind === 'jwt-retry') {
+      selected = this.selection(deviceId);
+      const current = this.deps.registry.get(deviceId);
+      if (!selected.items.length || current?.pushVersion !== d.pushVersion || current?.pushToken !== d.pushToken) return 'held';
+      outcome = await this.attempt(cred, d.pushEnvironment, d.pushToken, bodyFor(selected.payload), true);
     }
-    const body = JSON.stringify(buildPayload(this.deps.agentName, this.deps.agentId, deviceId, badge === null ? p : { ...p, badge }));
-    let outcome = await this.attempt(cred, d.pushEnvironment, d.pushToken, body, false);
-    if (outcome.kind === 'jwt-retry') outcome = await this.attempt(cred, d.pushEnvironment, d.pushToken, body, true);
+    if (outcome.kind === 'sent') this.pending.acknowledge(selected.items);
     switch (outcome.kind) {
       case 'sent': break;
       case 'clear-token': this.deps.registry.clearPushIfVersion(deviceId, version); break;
@@ -508,6 +541,7 @@ export class MobilePushService {
     const t0 = this.now();
     return {
       enabled: this.deps.enabled(),
+      supportsTypedPreferences: this.supportsTypedPreferences, typedPending: this.pending.status(),
       keyConfigured: !!this.deps.credentials(),
       pausedReason: st?.paused?.reason ?? null,
       fcmConfigured: !!this.fcmCredentials(),
@@ -520,7 +554,7 @@ export class MobilePushService {
         const provider = d.pushProvider ?? 'apns';
         return {
           id: d.id, deviceName: d.deviceName, provider, environment: provider === 'fcm' ? null : d.pushEnvironment, sent24h: ds.sendLog.length, throttled: this.throttled(ds),
-          backoffUntil: ds.backoffUntil ? new Date(ds.backoffUntil).toISOString() : null, pending: ds.pending?.count ?? 0, lastSend: ds.lastSend,
+          backoffUntil: ds.backoffUntil ? new Date(ds.backoffUntil).toISOString() : null, pending: this.pending.forDevice(d.id).reduce((n, c) => n + c.count, 0), lastSend: ds.lastSend, admission: this.admission.get(d.id) ?? null,
         };
       }),
       fanout: st?.fanout ?? null,
@@ -532,7 +566,7 @@ export class MobilePushService {
    * that provider's key, and that provider is not paused. A reading, not a promise.
    */
   readyFor(provider: PushProvider): boolean {
-    if (!this.deps.enabled()) return false;
+    if (!this.deps.enabled() || !this.supportsTypedPreferences) return false;
     const st = this.load();
     if (!st) return false;
     if (provider === 'fcm') return !!this.fcmCredentials() && !st.pausedFcm;
@@ -625,18 +659,32 @@ export class MobilePushService {
     if (trial) { this.fcmTrialArmed = false; st.pausedFcm!.nextTrialAt = null; }
     const version = d.pushVersion ?? 0;
     const token = d.pushToken;
-    // Reserve synchronously, before the first await (the token exchange included).
-    const t0 = this.now();
-    ds.sendLog.push(t0); ds.lastSendAt = t0;
-    if (urgentBypass) ds.urgentLog.push(t0);
-    this.save();
-    let badge: number | null = null;
-    if (p.kind === 'reply' && p.conversationKey && this.deps.badgeFor) {
-      try { badge = this.deps.badgeFor(deviceId, p.conversationKey, p.messageId); } catch { badge = null; } // @silent-fallback-ok — a badge that cannot be computed is left out; the push still sends
+    const t0 = this.now(); let reserved = false; let expired = false; let admissionHeld = false;
+    let selected: ReturnType<MobilePushService['selection']> | null = null;
+    const bodyForAttempt = (): string | null => {
+      if (expired) return null;
+      const current = this.deps.registry.get(deviceId);
+      selected = this.selection(deviceId);
+      if (!selected.items.length || current?.pushVersion !== d.pushVersion || current?.pushToken !== token) { admissionHeld = true; return null; }
+      if (!reserved) {
+        if (this.dueFor(ds, selected.urgent) > this.now()) return null;
+        const bypass = selected.urgent && this.throttled(ds);
+        reserved = true; ds.sendLog.push(this.now()); ds.lastSendAt = this.now();
+        if (bypass) ds.urgentLog.push(this.now()); this.save();
+      }
+      const p = selected.payload;
+      let badge: number | null = null;
+      if (p.kind === 'reply' && p.conversationKey) try { badge = this.deps.badgeFor?.(deviceId, p.conversationKey, p.messageId) ?? null; } catch { /* badge unavailable */ }
+      const parts = payloadParts(this.deps.agentId, deviceId, badge === null ? p : { ...p, badge });
+      return JSON.stringify(buildFcmMessage(token, this.deps.agentName, parts.instar, fcmBodyText(p), parts.badge ?? null));
+    };
+    const outcome = await withDeadline(this.fcmAttempt(cred, bodyForAttempt), this.deps.fcmDeadlineMs ?? FCM_DEADLINE_MS, { kind: 'failed' as const });
+    expired = true;
+    if (outcome.kind === 'sent' && selected) this.pending.acknowledge((selected as ReturnType<MobilePushService['selection']>).items);
+    if (!reserved && admissionHeld && outcome.kind === 'failed') {
+      if (trial && st.pausedFcm) { this.fcmTrialArmed = true; st.pausedFcm.nextTrialAt = this.now(); this.save(); }
+      return { label: 'held', keep: true };
     }
-    const parts = payloadParts(this.deps.agentId, deviceId, badge === null ? p : { ...p, badge });
-    const body = JSON.stringify(buildFcmMessage(token, this.deps.agentName, parts.instar, fcmBodyText(p), parts.badge ?? null));
-    const outcome = await withDeadline(this.fcmAttempt(cred, body), this.deps.fcmDeadlineMs ?? FCM_DEADLINE_MS, { kind: 'failed' as const });
     let label: string;
     let keep = false;
     let clearsTrial = false;
@@ -694,12 +742,13 @@ export class MobilePushService {
     }
   }
 
-  private async fcmAttempt(cred: FcmCredentials, body: string):
+  private async fcmAttempt(cred: FcmCredentials, bodyForAttempt: () => string | null):
     Promise<{ kind: 'sent' } | { kind: 'clear-token' } | { kind: 'backoff'; status: number; retryAfterSec?: number } | { kind: 'mismatch' } | { kind: 'pause'; reason: string } | { kind: 'bad-request'; errorCode?: string } | { kind: 'failed' }> {
     for (let attempt = 0; attempt < 2; attempt++) {
       const tok = await this.fcmAccessToken(cred, attempt > 0);
       if (tok.kind === 'refused') return { kind: 'pause', reason: tok.reason };
       if (tok.kind === 'failed') return { kind: 'failed' };
+      const body = bodyForAttempt(); if (body === null) return { kind: 'failed' };
       let ans: FcmAnswer;
       try { ans = await this.fcmTransport(cred.projectId, tok.token, body); } catch { return { kind: 'failed' }; } // @silent-fallback-ok — recorded as the device's lastSend outcome; no retry by design
       if (ans.status === 401) {

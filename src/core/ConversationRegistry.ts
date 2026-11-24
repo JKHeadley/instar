@@ -1272,6 +1272,9 @@ export class ConversationRegistry {
     };
   }
 
+  /** Read-only logical mapping version for stable personal preference identities. */
+  preferenceIdentityVersion(): string { this.load(); return `${this.seqCounter}:${this.snapshotHighWaterSeq}:${this.unappliedUnknownOps.length}:${this.workspacePin?.value ?? ''}`; }
+
   /** Read-only cache identity for hierarchy alias resolution; incidental last-use writes do not grant access. */
   creationIdentityVersion(): string {
     this.load();

@@ -122,6 +122,7 @@ describe('3. approval pushes', () => {
     const transport: ApnsTransport = async (_e, _t, _h, body) => { sentTo.push(JSON.parse(body).instar.deviceId); return { status: 200 }; };
     const { privateKey } = crypto.generateKeyPairSync('ec', { namedCurve: 'P-256' });
     const svc = new MobilePushService({
+      notificationReader: () => 'owner', canonicalReplyRef: (key: string) => `app:${key}`, mutedFor: () => false, mayNotify: () => true,
       stateDir: dir, registry: reg, agentId: 'echo', agentName: 'Echo', machineId: 'm1', enabled: () => true,
       credentials: () => ({ keyPem: privateKey.export({ format: 'pem', type: 'pkcs8' }).toString(), keyId: 'K', teamId: 'T' }),
       transport, canApprove: (id) => id !== atIphone, now: () => Date.parse('2026-11-20T10:00:00Z'),

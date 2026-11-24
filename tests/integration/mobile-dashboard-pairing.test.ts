@@ -59,6 +59,9 @@ function setup(opts: { nativeOn?: boolean; telegramOwner?: boolean; withAdapter?
   const fanned: PushTrigger[] = [];
   const sent: unknown[] = [];
   svc.push = new MobilePushService({
+    notificationReader: id => { const device = svc.devices.get(id); const person = device ? svc.personOfDevice(device) : null; return person?.ok && person.role === 'owner' ? 'owner' : null; },
+    canonicalReplyRef: key => `app:${key}`, mutedFor: () => false,
+    mayNotify: (id, key, messageId) => svc.deviceMayUseConversation(id, key) && svc.deviceMayReadMessage(id, key, messageId),
     stateDir: dir, registry: svc.devices, agentId: 'echo', agentName: 'Echo', machineId: 'm_self', enabled: () => true,
     credentials: () => null, transport: async (_e, _t, _h, body) => { sent.push(JSON.parse(body)); return { status: 200 }; },
     fanOut: (t) => fanned.push(t),

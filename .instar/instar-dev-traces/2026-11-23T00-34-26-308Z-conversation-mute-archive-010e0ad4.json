@@ -1,0 +1,111 @@
+{
+  "version": 3,
+  "slug": "conversation-mute-archive",
+  "sessionId": "f0b47883-4726-4441-84f5-2b8e78d38ce9",
+  "timestamp": "2026-11-23T00:34:26.308Z",
+  "artifactPath": "upgrades/side-effects/conversation-mute-archive.md",
+  "artifactSha256": "06cfaa3f52d764e4768286aeadcbd116d7fa8516f7e66a751ef4641f3fa670ee",
+  "specPath": "docs/specs/conversation-mute-archive.md",
+  "coveredFiles": [
+    ".instar/instar-dev-traces/2026-11-23T00-27-37-727Z-conversation-mute-archive-4b0c87f9.json",
+    "docs/audits/conversation-mute-archive.md",
+    "docs/specs/conversation-mute-archive.eli16.md",
+    "docs/specs/conversation-mute-archive.md",
+    "docs/specs/reports/conversation-mute-archive-conformance-round1.json",
+    "docs/specs/reports/conversation-mute-archive-conformance-round2.json",
+    "docs/specs/reports/conversation-mute-archive-conformance-round3.json",
+    "docs/specs/reports/conversation-mute-archive-conformance-round4.json",
+    "docs/specs/reports/conversation-mute-archive-conformance-round5.json",
+    "docs/specs/reports/conversation-mute-archive-conformance-round6.json",
+    "docs/specs/reports/conversation-mute-archive-convergence.md",
+    "docs/specs/reports/conversation-mute-archive-external-round1.json",
+    "docs/specs/reports/conversation-mute-archive-external-round2.json",
+    "docs/specs/reports/conversation-mute-archive-external-round3.json",
+    "docs/specs/reports/conversation-mute-archive-external-round4.json",
+    "docs/specs/reports/conversation-mute-archive-external-round5.json",
+    "docs/specs/reports/conversation-mute-archive-external-round6.json",
+    "docs/specs/reports/conversation-mute-archive-review-ledger.json",
+    "src/commands/server.ts",
+    "src/core/CoherenceJournal.ts",
+    "src/core/ConversationPreferences.ts",
+    "src/core/ConversationPreferencesWiring.ts",
+    "src/core/ConversationRegistry.ts",
+    "src/core/MobilePush.ts",
+    "src/core/MobilePushPending.ts",
+    "src/core/ReplicatedStoreReconciler.ts",
+    "src/core/ReplicatedStoreReconcilerWiring.ts",
+    "src/core/types.ts",
+    "src/data/awareness/conversation-mute-archive.md",
+    "src/data/state-coherence-registry.json",
+    "src/server/AgentServer.ts",
+    "src/server/conversationArchiveSelection.ts",
+    "src/server/conversationPreferenceIdentity.ts",
+    "src/server/conversationPreferenceRequests.ts",
+    "src/server/conversationPreferenceView.ts",
+    "src/server/mobileConversationRoutes.ts",
+    "src/server/mobilePairingRoutes.ts",
+    "tests/e2e/conversation-preferences-alive.test.ts",
+    "tests/e2e/mobile-telegram-free-alive.test.ts",
+    "tests/fixtures/conversation-mute-archive/previous-push-codec.json",
+    "tests/fixtures/conversation-mute-archive/previous-push-drain.json",
+    "tests/integration/conversation-preferences.test.ts",
+    "tests/integration/mobile-dashboard-pairing.test.ts",
+    "tests/integration/mobile-push-routes.test.ts",
+    "tests/integration/mobile-unread-messages.test.ts",
+    "tests/unit/conversation-archive-selection.test.ts",
+    "tests/unit/conversation-preference-identity.test.ts",
+    "tests/unit/conversation-preference-requests.test.ts",
+    "tests/unit/conversation-preferences-reconcile-retry.test.ts",
+    "tests/unit/conversation-preferences.test.ts",
+    "tests/unit/mobile-push-fcm.test.ts",
+    "tests/unit/mobile-push-pending.test.ts",
+    "tests/unit/mobile-push-preferences.test.ts",
+    "tests/unit/mobile-push.test.ts",
+    "tests/unit/no-silent-fallbacks.test.ts",
+    "tests/unit/same-network-review-2-fixes.test.ts",
+    "upgrades/next/conversation-mute-archive.md",
+    "upgrades/side-effects/conversation-mute-archive.md"
+  ],
+  "phase": "complete",
+  "secondPass": "true",
+  "reviewerConcurred": true,
+  "toolchain": {
+    "buildSkill": {
+      "name": "build",
+      "version": null,
+      "verified": false
+    },
+    "reviewSkills": [
+      {
+        "name": "security",
+        "outcome": "pass",
+        "verified": false
+      },
+      {
+        "name": "integration",
+        "outcome": "pass",
+        "verified": false
+      },
+      {
+        "name": "performance",
+        "outcome": "pass",
+        "verified": false
+      },
+      {
+        "name": "adversarial",
+        "outcome": "pass",
+        "verified": false
+      },
+      {
+        "name": "completeness",
+        "outcome": "pass",
+        "verified": false
+      }
+    ],
+    "convergence": {
+      "reportPath": "docs/audits/conversation-mute-archive.md",
+      "iterations": 6,
+      "verified": true
+    }
+  }
+}

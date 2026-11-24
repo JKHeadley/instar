@@ -3013,6 +3013,41 @@
         "keepSegments": 1,
         "note": "action-checks.jsonl rotates at 5 MB into one kept segment (.1); message-notes.jsonl rotates at 1 MB into one kept segment and is emptied at each session start; pending checks expire after 30 minutes; the cache drops entries older than ten minutes."
       }
+    },
+    {
+      "category": "conversation-preferences",
+      "description": "Personal mute/archive choices from durable reserved field events. One LWW winner per reader, stable conversation and field, including false tombstones and durable outbox status; replicated through conversation-preference when native conversations are enabled.",
+      "scope": "must-be-coherent",
+      "freshness": "eventual",
+      "conflictShape": "lww",
+      "transport": "peer-http",
+      "paths": [
+        "state/conversation-preferences.json"
+      ],
+      "grandfathered": false,
+      "retention": {
+        "class": "fixed-cardinality",
+        "access": "in-memory",
+        "note": "At most one current row for each reader x canonical conversation x closed preference field; exact operation receipts use the existing mutation request-store retention. Superseded rows compact, false tombstones retain causal state."
+      }
+    },
+    {
+      "category": "mobile-push-pending",
+      "description": "Reader-bound pending push evidence and quarantine on the physical device-token holder. A separate sidecar prevents older senders from draining bound records. Existing provider budgets remain in the legacy push state. Machine locality is physical-credential-locality; personal mute choices replicate separately. Recipient contributions and trigger dedupe receipts publish atomically; dedupe receipts retain the existing ten-minute window and prune on accepted triggers.",
+      "scope": "machine-local",
+      "freshness": "live",
+      "conflictShape": "single-writer",
+      "transport": "none",
+      "paths": [
+        "state/mobile-push-pending-v1.json"
+      ],
+      "grandfathered": false,
+      "retention": {
+        "class": "resolution",
+        "access": "in-memory",
+        "boundedByResolution": true,
+        "note": "Latest coalesced activity per device, intended reader and conversation/notice identity until delivered, explicitly muted or revoked. Anonymous quarantine retains possible critical counts per device plus the current idempotent migration checkpoint; it is not expired or reported sent without identity proof."
+      }
     }
   ]
 }

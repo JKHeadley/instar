@@ -92,6 +92,9 @@ export interface ReconcilerReader {
 }
 
 export interface ReplicatedStoreReconcilerDeps {
+  /** Retry author-owned durable outboxes on the existing maintenance cadence.
+   * Independent of the CLI snapshot scan switch; each writer retains its own admission flags. */
+  drainDurableOutboxes?: () => void;
   emitter: ReconcilerEmitter;
   reader: ReconcilerReader;
   registry: ReplicatedKindRegistry;
@@ -396,6 +399,8 @@ export class ReplicatedStoreReconciler {
     }, TICK_REPORT_MS);
     (watchdog as { unref?: () => void }).unref?.();
     try {
+      try { this.deps.drainDurableOutboxes?.(); }
+      catch (error) { this.log('outbox-retry-fault', { error: (error as Error)?.message }); }
       const cfg = this.readConfig();
       if (cfg.enabled === false) return;
       for (const seam of this.seamByStore.values()) {

@@ -2629,6 +2629,8 @@ export interface MachineCapacity {
     /** app-conversations-in-the-pool §2.6: this machine runs that part, with its durable ownership
      *  store and placement replication both active. ABSENT/false keeps every app record out of the pool. */
     appConversationsPool?: boolean;
+    /** The holder uses reader-bound typed queues and current mute checks at transport. */
+    conversationMutePush?: boolean;
     /** app-conversations-in-the-pool §2.5: memory privacy is on and its sandbox is ready here. */
     memoryPrivacyEnforced?: boolean;
     /** WS4.4 (§WS4.4 / F6): this machine can SERVE the holder side of a

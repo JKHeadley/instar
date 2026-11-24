@@ -154,6 +154,10 @@ describe('pairing and push without Telegram — production wiring', () => {
     const apns: Array<Record<string, any>> = [];
     const { privateKey } = crypto.generateKeyPairSync('ec', { namedCurve: 'P-256' });
     mp.push = new MobilePushService({
+      notificationReader: id => { const device = mp.devices.get(id); const person = device ? mp.personOfDevice(device) : null; return person?.ok && person.role === 'owner' ? 'owner' : null; },
+      canonicalReplyRef: key => server.appConversations?.liveConversation(key) ? `app:${key}` : null,
+      mutedFor: (reader, ref) => server.conversationPreferences?.get(reader, ref)?.muted ?? null,
+      mayNotify: (id, key, messageId) => mp.deviceMayUseConversation(id, key) && mp.deviceMayReadMessage(id, key, messageId),
       stateDir, registry: mp.devices, agentId: 'notg-e2e', agentName: 'Notg-e2e', machineId: 'local', enabled: () => true,
       credentials: () => ({ keyPem: privateKey.export({ format: 'pem', type: 'pkcs8' }).toString(), keyId: 'K1', teamId: 'T1' }),
       transport: async (_env, _token, _headers, body) => { apns.push(JSON.parse(body)); return { status: 200 }; },

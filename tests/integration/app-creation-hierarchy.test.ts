@@ -21,11 +21,12 @@ const HOST = 'hierarchy.example.dev';
 const cleanups: Array<() => void> = [];
 beforeAll(() => { ProcessIntegrity.reset(); ProcessIntegrity.initialize('1.3.1976', null); });
 afterAll(() => { for (const fn of cleanups.splice(0)) fn(); ProcessIntegrity.reset(); });
-function setup() {
+function setup(opts: { pool?: boolean } = {}) {
   const dir = fs.mkdtempSync(path.join(os.tmpdir(), 'creation-http-'));
   const config = { projectName: 'hierarchy', projectDir: dir, stateDir: dir, port: 0, authToken: 'token', developmentAgent: true, sessions: {}, scheduler: {}, mobilePairing: { multiRoute: { enabled: false } }, threadline: { ownerName: 'Owner' } };
   const registry = new ConversationRegistry({ stateDir: dir, machineId: () => 'm1', isRecordingEnabled: () => true });
-  const pairing = new MobilePairingService({ config: config as never, stateDir: dir, selfMachineId: 'm1', holdsLease: () => true, telegramOwnerId: () => 42, people: () => ({ getUser: (id: string) => id === 'member' ? { id, name: 'Member', telegramUserId: 99, permissions: ['user'] } : null }) } as MobilePairingDeps);
+  let memberPresent = true;
+  const pairing = new MobilePairingService({ config: config as never, stateDir: dir, selfMachineId: 'm1', holdsLease: () => true, telegramOwnerId: () => 42, people: () => ({ getUser: (id: string) => id === 'member' && memberPresent ? { id, name: 'Member', telegramUserId: 99, permissions: ['user'] } : null }) } as MobilePairingDeps);
   pairing.nativeOn = true;
   const svc = new AppConversationService({ stateDir: dir, machineId: () => 'm1', registry, requests: pairing.chatRequests()!, holdsLease: () => true, ownerName: () => 'Owner', killSession: () => true, dispatch: () => async () => 'delivered' });
   pairing.useAppConversationStore(svc.store);
@@ -44,7 +45,7 @@ function setup() {
   const app = express();
   app.use(express.json({ verify: (req, _res, buf) => { (req as unknown as { rawBody: Buffer }).rawBody = buf; } }));
   app.use(authMiddleware(() => 'token', 'hierarchy', undefined, deviceAuthenticator(pairing)));
-  app.use(createMobileConversationRouter({ config: config as never, pairing, service: svc, machineId: () => 'm1', creationHierarchySource: sourceReads, creationHierarchyProjection: projection, creationAuthorizationVersion: () => 'auth1', telegramTopics: () => [{ topicId: 7, topicName: 'Project', lastActivity: null, lastPreview: null }] }));
+  app.use(createMobileConversationRouter({ config: config as never, pairing, service: svc, machineId: () => 'm1', ...(opts.pool ? { pool: { config: config as never, resolvePeerUrls: () => [{ machineId: 'm2', url: 'http://127.0.0.1:4041', kind: 'lan' as const }] } } : {}), creationHierarchySource: sourceReads, creationHierarchyProjection: projection, creationAuthorizationVersion: () => 'auth1', telegramTopics: () => [{ topicId: 7, topicName: 'Project', lastActivity: null, lastPreview: null }] }));
   const owner = makeDevice();
   const pending = pairing.devices.createPending({ deviceName: 'Owner device', publicKey: owner.publicKey, host: HOST, label: null });
   if (!pending.ok) throw new Error('setup failed');
@@ -64,7 +65,7 @@ function setup() {
   const bearer = (route: string) => request(app).get(route).set('Authorization', 'Bearer token').set('X-Instar-AgentId', 'hierarchy');
   const scope = (key = 'bearer'): CreationHierarchyScope => ({ key, authorizationVersion: 'auth1', mayRead: (ref) => !!source.resolveRef(ref) && !unreadable.has(ref) });
   cleanups.push(() => { pairing.stop(); svc.stop(); SafeFsExecutor.safeRmSync(dir, { recursive: true, force: true, operation: 'tests/integration/app-creation-hierarchy.test.ts' }); });
-  return { app, svc, pairing, projection, sourceReads, add, owner, ownerId: pending.device.id, sign, bearer, scope, unreadable, source: () => source, setSource: (next: CreationHierarchySource) => { source = next; } };
+  return { removeMember: () => { memberPresent = false; }, app, svc, pairing, projection, sourceReads, add, owner, ownerId: pending.device.id, sign, bearer, scope, unreadable, source: () => source, setSource: (next: CreationHierarchySource) => { source = next; } };
 }
 const sessionContext = (parent: string | null): AppCreationContext => ({ v: 1, source: { kind: 'session', requestId: 'fixture-session', originMachineId: 'm1' }, parentConversationKey: parent, parentBasis: 'explicit' });
 
@@ -114,6 +115,62 @@ describe('App creation parent metadata HTTP contract', () => {
     const events = await e.sign('GET', `/mobile/chat/app/${key}/events`, undefined, device, p.device.id);
     expect(events.status).toBe(200); expect(events.body.events[0].creationContext).toBeUndefined();
     expect((await e.sign('GET', '/mobile/conversations/parent-preview', undefined, device, p.device.id)).status).toBe(403);
+  });
+  it('keeps implicit and represented owner reads compatible while hiding hierarchy from represented members', async () => {
+    const e = setup(); const key = e.add(sessionContext('telegram:7'), { machineId: 'm1', userId: 'member' });
+    await e.projection.settled(e.scope());
+    const implicit = await e.bearer('/mobile/conversations');
+    expect(implicit.status).toBe(200);
+    expect(implicit.body.conversations.find((r: { id: string }) => r.id === key).creationSource).toBeTruthy();
+    // Warm the actual request scope deterministically, including its resolved reader stamp.
+    const fields = vi.spyOn(e.projection, 'fields');
+    expect((await e.bearer('/mobile/conversations?reader=owner')).status).toBe(200);
+    const ownerScope = fields.mock.calls.find((call) => call[0] === key)?.[1];
+    expect(ownerScope).toBeDefined();
+    await e.projection.settled(ownerScope!);
+    const owner = await e.bearer('/mobile/conversations?reader=owner');
+    expect(owner.status).toBe(200);
+    expect(owner.body.conversations.find((r: { id: string }) => r.id === key).creationSource).toBeTruthy();
+    const preview = await e.bearer('/mobile/conversations/parent-preview?reader=owner');
+    expect(preview.status).toBe(200);
+    expect(preview.body).toMatchObject({ dryRun: true, canApply: false });
+    expect(preview.body.rows.some((row: { conversationRef: string }) => row.conversationRef === `app:${key}`)).toBe(true);
+    const member = await e.bearer('/mobile/conversations?reader=msp:m1:member');
+    expect(member.status).toBe(200);
+    const row = member.body.conversations.find((r: { id: string }) => r.id === key);
+    expect(row).toBeTruthy();
+    expect(row.creationSource).toBeUndefined(); expect(row.parentConversationKey).toBeUndefined(); expect(row.hierarchyState).toBeUndefined();
+    expect((await e.bearer('/mobile/conversations/parent-preview?reader=msp:m1:member')).status).toBe(403);
+  });
+  it('refuses malformed and removed represented readers instead of using implicit owner access', async () => {
+    const e = setup(); e.add(sessionContext('telegram:7'));
+    for (const reader of ['invalid', 'msp:m1:missing']) {
+      expect((await e.bearer(`/mobile/conversations?reader=${reader}`)).status).toBe(403);
+      expect((await e.bearer(`/mobile/conversations/parent-preview?reader=${reader}`)).status).toBe(403);
+    }
+    e.removeMember();
+    expect((await e.bearer('/mobile/conversations?reader=msp:m1:member')).status).toBe(403);
+    expect((await e.bearer('/mobile/conversations/parent-preview?reader=msp:m1:member')).status).toBe(403);
+  });
+  it('refuses the list if a represented member is removed while a real pool fetch is pending', async () => {
+    const e = setup({ pool: true }); e.add(sessionContext('telegram:7'), { machineId: 'm1', userId: 'member' });
+    let entered!: () => void; const waiting = new Promise<void>((resolve) => { entered = resolve; });
+    let release!: (response: Response) => void; const held = new Promise<Response>((resolve) => { release = resolve; });
+    const spy = vi.spyOn(globalThis, 'fetch').mockImplementation(async () => { entered(); return held; });
+    try {
+      const pending = e.bearer('/mobile/conversations?scope=pool&archive=all&reader=msp:m1:member').then((result) => result);
+      await waiting;
+      e.removeMember();
+      release(new Response(JSON.stringify({ conversations: [], nextCursor: null }), { status: 200 }));
+      const result = await pending;
+      expect(result.status).toBe(409); expect(result.body.error).toBe('reader-changed');
+      for (const field of ['conversations', 'pinned', 'pinnedRows', 'preferences', 'parentConversationKey', 'creationSource', 'hierarchyState']) {
+        expect(result.body[field]).toBeUndefined();
+      }
+    } finally {
+      release(new Response(JSON.stringify({ conversations: [], nextCursor: null }), { status: 200 }));
+      spy.mockRestore();
+    }
   });
   it('serves a read-only owner preview independently of graph readiness and preserves explicit placement', async () => {
     const e = setup(); const key = e.add();
