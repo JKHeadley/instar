@@ -405,9 +405,16 @@ export async function runVerify(input: VerifyRunInput, seams: OrchestratorSeams)
   const startedFirstParts = new Set<LaneName>();
   const observedFailures = new Map<string, FileFailure>();
   const failureEvidence = new FailureEvidence();
+  // Private diagnostics are observation only: capture/logging faults never alter a verdict.
+  const captureDiagnostic = (capture: () => void, event = 'failure-diagnostics-capture-failed') => {
+    try { capture(); }
+    catch {
+      try { seams.log({ event }); }
+      catch { /* @silent-fallback-ok — diagnostic logging cannot control verification. */ }
+    }
+  };
   const captureFailures = (lane: LaneName, report: ParsedLaneReport) => {
-    try { failureEvidence.capture(lane, report); }
-    catch { seams.log({ event: 'failure-evidence-capture-failed' }); }
+    captureDiagnostic(() => failureEvidence.capture(lane, report), 'failure-evidence-capture-failed');
   };
   const detail: ObservationDetail = { incomplete: true, completedLanes: [], firstPartFiles: {}, failures: [], failuresTotal: 0 };
   let evidenceIncomplete = false;
@@ -478,6 +485,7 @@ export async function runVerify(input: VerifyRunInput, seams: OrchestratorSeams)
       onPid: (pid) => { ourPids.add(pid); },
       ...(signal ? { signal } : {}),
     });
+    captureDiagnostic(() => failureEvidence.captureProcess(step, r));
     // Per-step timing (metadata only): the Acceptance measurement reads these.
     seams.log({ event: 'step', step, ms: seams.now() - t0, status: r.status ?? null, deadlineKilled: r.deadlineKilled, ...(r.aborted ? { stoppedEarly: true } : {}) });
     if (r.deadlineKilled) throw new RunError(deadline.capped ? 'deadline:total' : `deadline:${step}`, `${command} hit its deadline`);
@@ -790,7 +798,12 @@ export async function runVerify(input: VerifyRunInput, seams: OrchestratorSeams)
             own: changedForIsolation?.has(file) ?? false, result: 'failed',
           });
         });
-        const unhandled = reporter ? readUnhandledErrors(seams.fs.readFile(errorsPath)) : null;
+        const reporterText = reporter ? seams.fs.readFile(errorsPath) : null;
+        const unhandled = reporter ? readUnhandledErrors(reporterText) : null;
+        captureDiagnostic(() => {
+          failureEvidence.captureReporter(key, reporterText, unhandled, reporter !== null);
+          if (r.status !== 0 || !report || [...report.files.values()].some(file => file.failed > 0)) failureEvidence.captureReport(key, text);
+        });
         return { report, status: r.status, unhandled, aborted: false };
       };
       /** The lane's usual processes, side by side. allSettled: every process has exited before the lane settles, even when one hits its deadline (nothing is left running outside the slot or the cleanup). */
@@ -1219,6 +1232,7 @@ export async function runVerify(input: VerifyRunInput, seams: OrchestratorSeams)
           ['run', '--config', config, '--allowOnly=false', '--reporter=json', ...(reporter ? [`--reporter=${reporter}`] : []), `--outputFile=${out}`, file],
           { cwd: p.runDir, env: rEnv, deadlineMs: ms, onPid: (pid) => { ourPids.add(pid); }, ...(signal ? { signal } : {}) },
         );
+        captureDiagnostic(() => failureEvidence.captureProcess(`${namePrefix}-rerun-${k}-${n}`, r));
         if (r.aborted || r.deadlineKilled) collectEvidence(() => { interruptedReruns.add(file); });
         if (r.aborted) {
           // The run already failed in another lane: the re-run's answer no longer matters.
@@ -1233,7 +1247,13 @@ export async function runVerify(input: VerifyRunInput, seams: OrchestratorSeams)
         if (text != null) { try { again = parseVitestJson(text, p.runDir, { solo: true }); } catch { again = null; } }
         if (again) captureFailures(lane, again);
         const c = again?.files.get(file);
-        const rerunUnhandled = r.deadlineKilled ? null : readUnhandledErrors(seams.fs.readFile(errs));
+        const reporterText = r.deadlineKilled ? null : seams.fs.readFile(errs);
+        const rerunUnhandled = r.deadlineKilled ? null : readUnhandledErrors(reporterText);
+        captureDiagnostic(() => {
+          const step = `${namePrefix}-rerun-${k}-${n}`;
+          failureEvidence.captureReporter(step, reporterText, rerunUnhandled, reporter !== null);
+          if (r.status !== 0 || !again || [...again.files.values()].some(file => file.failed > 0)) failureEvidence.captureReport(step, text);
+        });
         // The pass rule every solo run has always had: nothing failed, something passed, exit 0, no unhandled error.
         const ranClean = !!c && c.failed === 0 && c.passed > 0 && r.status === 0 && rerunUnhandled === 0;
         // By name: which of the lane-failed tests this run reported `passed`. A three-pass run needs all of them.

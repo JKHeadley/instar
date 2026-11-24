@@ -1,0 +1,24 @@
+{
+  "ts": "2026-11-24T02:49:14.509Z",
+  "slug": "local-verify-failure-diagnostics",
+  "suggestedTier": 2,
+  "declaredTier": 1,
+  "riskFloor": 1,
+  "riskFloorReasons": [],
+  "belowFloor": false,
+  "files": 3,
+  "loc": 142,
+  "scope": {
+    "basis": "staged-in-scope-paths-including-deleted",
+    "files": [
+      "src/data/awareness/local-verify-failure-diagnostics.md",
+      "src/localVerify/failureEvidence.ts",
+      "src/localVerify/orchestrator.ts"
+    ],
+    "addedLines": 129,
+    "deletedLines": 13
+  },
+  "causalAutopsy": null,
+  "classClosure": null,
+  "verdict": "pass"
+}
