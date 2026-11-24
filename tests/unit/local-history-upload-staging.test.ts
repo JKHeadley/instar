@@ -160,6 +160,23 @@ it('prepares both source kinds through real children and retires raw files witho
     expect(JSON.stringify(f.stage.status(device, grant.operationId))).not.toContain(candidate.confirmation.challenge);
     expect(await f.stage.publishPreparedPreview(device, grant.operationId)).toEqual(candidate);
     expect(db.prepare('SELECT count(*) AS n FROM upload_previews').get()).toEqual({ n: 1 });
+    // Replay describes the original observation. Rereading the same prepared
+    // selection detects same-length corruption in the last normalized file.
+    const lastArtifact = artifacts.files.at(-1);
+    const artifactPath = path.join(f.stateDir, 'local-history-upload', 'blocks', lastArtifact.allocation);
+    const artifactFd = fs.openSync(artifactPath, fs.constants.O_RDWR | fs.constants.O_NOFOLLOW);
+    const firstByte = Buffer.alloc(1);
+    try {
+      expect(fs.readSync(artifactFd, firstByte, 0, 1, 0)).toBe(1);
+      const identity = fs.fstatSync(artifactFd);
+      expect(fs.writeSync(artifactFd, Buffer.from([firstByte[0] ^ 1]), 0, 1, 0)).toBe(1);
+      expect(fs.fstatSync(artifactFd)).toMatchObject({ ino: identity.ino, size: identity.size });
+      expect(await f.stage.publishPreparedPreview(device, grant.operationId)).toEqual(candidate);
+      await expect(f.stage.readPreparedPreview(device, grant.operationId)).rejects.toThrow('upload-unavailable');
+    } finally {
+      fs.writeSync(artifactFd, firstByte, 0, 1, 0);
+      fs.closeSync(artifactFd);
+    }
     const intent = { previewId: candidate.previewId, machineId: candidate.machineId, bootId: issuer.bootId,
       confirmationChallenge: candidate.confirmation.challenge, applyRequestId: 'a'.repeat(32) };
     const inspected = f.stage.inspectCopyIntent(device, grant.operationId, intent);
