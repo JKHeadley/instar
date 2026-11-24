@@ -6,7 +6,7 @@ import { assessJudgeIndependence } from './source_grounded_judge_independence.mj
 import { selectJudgeAttempt } from './source_grounded_judge_retry.mjs';
 import { bindJudgeSlots } from './source_grounded_judge_slots.mjs';
 import { summarizeJudgeConsensus } from './source_grounded_consensus.mjs';
-import { verifyScheduledJudges, verifyTrialInputs } from './source_grounded_trial_inputs.mjs';
+import { verifyTrialJudgeSchedule, verifyTrialInputs } from './source_grounded_trial_inputs.mjs';
 
 const [validatorRoot] = process.argv.slice(2);
 assert(validatorRoot, 'Pass the local validator worktree path');
@@ -47,8 +47,7 @@ const planBytes = Buffer.from(JSON.stringify(plan));
 const verifiedPlan = { planBytes, planHash: sha(planBytes), parsePlan: JSON.parse, rubricBytes };
 const aggregate = slots => summarizeJudgeConsensus(input.criteria, slots.map(slot => slot.findings));
 
-assert.equal(verifyTrialInputs({ ...verifiedPlan, capture: input }), 'bound');
-assert.equal(verifyScheduledJudges(plan, identity, receipts), 'bound');
+assert.equal(verifyTrialJudgeSchedule({ ...verifiedPlan, capture: input }, identity, receipts), 'bound');
 
 const intact = bindJudgeSlots(input, receipts, observations, validateCapture);
 assert.deepEqual(intact.map(slot => slot.state), ['bound', 'bound']);

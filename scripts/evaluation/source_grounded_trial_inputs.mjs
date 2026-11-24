@@ -5,22 +5,33 @@ const sha = value => createHash('sha256').update(value).digest('hex');
 
 // Supply the host’s structural parser and the independently held plan digest.
 // The plan hash is checked against the exact bytes, not reserialized JSON.
-export function verifyTrialInputs({ planBytes, planHash, parsePlan, rubricBytes, capture }) {
-  if (sha(planBytes) !== planHash) return 'plan-mismatch';
+function checkTrialInputs({ planBytes, planHash, parsePlan, rubricBytes, capture }) {
+  if (sha(planBytes) !== planHash) return { state: 'plan-mismatch' };
   const plan = parsePlan(planBytes);
   if (plan.caseId !== capture.caseId || plan.submissionId !== capture.submissionId) {
-    return 'trial-mismatch';
+    return { state: 'trial-mismatch' };
   }
   if (sha(rubricBytes) !== plan.rubricHash ||
       !isDeepStrictEqual(capture.criteria, plan.criteria)) {
-    return 'rubric-mismatch';
+    return { state: 'rubric-mismatch' };
   }
   const sources = capture.sources.map(({ id, text }) => ({ id, hash: sha(text) }));
   if (!isDeepStrictEqual(sources, plan.sources) ||
       !isDeepStrictEqual(capture.availableSourceIds, plan.availableSourceIds)) {
-    return 'sources-mismatch';
+    return { state: 'sources-mismatch' };
   }
-  return 'bound';
+  return { state: 'bound', plan };
+}
+
+export function verifyTrialInputs(input) {
+  return checkTrialInputs(input).state;
+}
+
+export function verifyTrialJudgeSchedule(input, expected, receipts) {
+  const result = checkTrialInputs(input);
+  return result.state === 'bound'
+    ? verifyScheduledJudges(result.plan, expected, receipts)
+    : result.state;
 }
 
 // Expected identity comes from the host's selected trial, never a judge

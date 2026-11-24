@@ -1,7 +1,7 @@
 import assert from 'node:assert/strict';
 import { createHash } from 'node:crypto';
 import { test } from 'node:test';
-import { verifyScheduledJudges, verifyTrialInputs } from './source_grounded_trial_inputs.mjs';
+import { verifyScheduledJudges, verifyTrialJudgeSchedule } from './source_grounded_trial_inputs.mjs';
 import { selectJudgeAttempt } from './source_grounded_judge_retry.mjs';
 import { bindJudgeSlots } from './source_grounded_judge_slots.mjs';
 import { assessJudgeIndependence } from './source_grounded_judge_independence.mjs';
@@ -37,14 +37,12 @@ const validate = ({ judgeRaw }) => ({
 });
 
 test('composes frozen inputs, a retry, selected bytes, and blind review evidence', () => {
-  assert.equal(verifyTrialInputs({
-    planBytes, planHash: sha(planBytes), parsePlan: JSON.parse, rubricBytes, capture,
-  }), 'bound');
   const selected = [
     selectJudgeAttempt([{ ordinal: 0, attemptId: 'timeout', state: 'timeout' }, receipts[0]], 1).selected,
     selectJudgeAttempt([receipts[1]], 1).selected,
   ];
-  assert.equal(verifyScheduledJudges(JSON.parse(planBytes), expected, selected), 'bound');
+  assert.equal(verifyTrialJudgeSchedule({ planBytes, planHash: sha(planBytes), parsePlan: JSON.parse,
+    rubricBytes, capture }, expected, selected), 'bound');
   const bound = bindJudgeSlots(capture, selected, [...observations].reverse(), validate);
   assert.deepEqual(bound.map(slot => slot.state), ['bound', 'bound']);
   const consensus = summarizeJudgeConsensus(criteria, bound.map(slot => slot.findings));
@@ -78,4 +76,14 @@ test('rejects an unscheduled slot or changed scheduled family', () => {
     assert.equal(verifyScheduledJudges(plan, expected, [{ ...receipts[0], ...changed }, receipts[1]]),
       'schedule-mismatch');
   }
+});
+
+test('schedule verification uses only the plan whose exact bytes were verified', () => {
+  const changed = JSON.parse(planBytes);
+  changed.judgeSlots[0].family = 'substituted-family';
+  const modified = Buffer.from(JSON.stringify(changed));
+  assert.equal(verifyTrialJudgeSchedule({
+    planBytes: modified, planHash: sha(planBytes), rubricBytes, capture,
+    parsePlan: () => assert.fail('modified plan reached the parser'),
+  }, expected, [{ ...receipts[0], family: 'substituted-family' }, receipts[1]]), 'plan-mismatch');
 });
