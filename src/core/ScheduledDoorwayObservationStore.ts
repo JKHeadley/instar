@@ -2,13 +2,17 @@ import { randomUUID } from 'node:crypto';
 import fs from 'node:fs';
 import path from 'node:path';
 import { PROBE_STATUS_ENUM, type ProbeStatus } from './DoorwayRegistryReader.js';
+import type { PhysicalEffectLease } from './PhysicalEffectLock.js';
 import { SafeFsExecutor } from './SafeFsExecutor.js';
 
 const RUN_ID = /^doorway-scan-[a-z0-9]{1,24}-[a-z0-9]{1,24}$/;
 const ID = /^[A-Za-z0-9._/:-]{1,80}$/;
 const MACHINE = /^[A-Za-z0-9._:-]{1,120}$/;
 const MAX_DOORS = 200;
+const MAX_DIAGNOSTIC_RUNS = 16;
+const DIGEST = /^sha256:[a-f0-9]{64}$/;
 const MAX_ARTIFACT_BYTES = 64 * 1024;
+const MAX_CURSOR_BYTES = 128 * 1024;
 
 type AttemptedProbeStatus = Exclude<ProbeStatus, `not-probed-${string}`>;
 export interface ScheduledDoorwayRun {
@@ -30,6 +34,21 @@ export interface StagedDoorwayObservation extends ScheduledDoorwayRun {
   completedAt: string;
   observations: ScheduledDoorwayObservation[];
 }
+
+export interface ScheduledDoorwayRetentionReferences {
+  observations: Array<{ doorId: string; runId: string; digest: string }>;
+  admissions: Array<{ doorId: string; runId: string }>;
+  diagnosticRunIds: string[];
+}
+
+export interface ScheduledDoorwayRetentionCursor extends ScheduledDoorwayRetentionReferences {
+  schemaVersion: 1;
+  machineId: string;
+  generation: number;
+}
+
+/** Every writer sharing this cursor path uses this scope on the same state directory's lock. */
+export const SCHEDULED_DOORWAY_RETENTION_SCOPE = 'scheduled-doorway-retention';
 
 function invalid(reason: string): never {
   throw new Error(`scheduled-doorway-observation-${reason}`);
@@ -88,7 +107,7 @@ function writeNewRecord(file: string, value: object): void {
   }
 }
 
-function readRecord(file: string): unknown {
+function readRecord(file: string, limit = MAX_ARTIFACT_BYTES): unknown {
   let fd: number;
   try {
     fd = fs.openSync(file, fs.constants.O_RDONLY | (fs.constants.O_NOFOLLOW ?? 0) | (fs.constants.O_NONBLOCK ?? 0));
@@ -100,7 +119,7 @@ function readRecord(file: string): unknown {
     const stat = fs.fstatSync(fd);
     const entry = fs.lstatSync(file);
     if (!stat.isFile() || !entry.isFile() || entry.ino !== stat.ino || entry.dev !== stat.dev
-      || stat.size > MAX_ARTIFACT_BYTES) invalid('artifact-invalid');
+      || stat.size > limit) invalid('artifact-invalid');
     const bytes = Buffer.alloc(stat.size + 1);
     let count = 0;
     while (count < bytes.length) {
@@ -132,6 +151,77 @@ export class ScheduledDoorwayObservationStore {
     if (knownDoorIds.length > MAX_DOORS || knownDoorIds.some(id => !ID.test(id))) invalid('door-list-invalid');
     this.root = path.join(stateDir, 'state', 'doorway-scan-scheduled-runs');
     this.doorIds = new Set(knownDoorIds);
+  }
+
+  /** Cursor references are advisory until revalidated against the exact ledger and artifacts. */
+  readRetentionCursor(): ScheduledDoorwayRetentionCursor | null {
+    try {
+      for (const dir of [this.stateDir, path.dirname(this.root), this.root]) {
+        if (!fs.lstatSync(dir).isDirectory()) invalid('directory-invalid');
+      }
+    } catch (error) {
+      if ((error as NodeJS.ErrnoException).code === 'ENOENT') return null;
+      throw error;
+    }
+    const raw = readRecord(path.join(this.root, 'retention-cursor.json'), MAX_CURSOR_BYTES);
+    return raw === null ? null : this.validateRetentionCursor(raw);
+  }
+
+  /** Publish a new reader generation under this state directory's exclusive writer lease. */
+  advanceRetentionCursor(
+    previousGeneration: number | null,
+    references: ScheduledDoorwayRetentionReferences,
+    lease: Pick<PhysicalEffectLease, 'scope' | 'assertHeld'>,
+  ): ScheduledDoorwayRetentionCursor {
+    if (lease.scope !== SCHEDULED_DOORWAY_RETENTION_SCOPE) invalid('retention-lease-scope');
+    lease.assertHeld();
+    const current = this.readRetentionCursor();
+    if ((current?.generation ?? null) !== previousGeneration) invalid('retention-generation-changed');
+    const next = this.validateRetentionCursor({
+      ...references, schemaVersion: 1, machineId: this.machineId, generation: (previousGeneration ?? 0) + 1,
+    });
+    const bytes = Buffer.from(JSON.stringify(next) + '\n');
+    if (bytes.length > MAX_CURSOR_BYTES) invalid('artifact-oversize');
+    ensureDirectory(path.dirname(this.root));
+    ensureDirectory(this.root);
+    lease.assertHeld();
+    SafeFsExecutor.atomicWriteFileSync(path.join(this.root, 'retention-cursor.json'), bytes, {
+      mode: 0o600, operation: 'publish scheduled doorway retention cursor',
+    });
+    syncDirectory(this.root);
+    syncDirectory(path.dirname(this.root));
+    syncDirectory(this.stateDir);
+    return next;
+  }
+
+  private validateRetentionCursor(raw: unknown): ScheduledDoorwayRetentionCursor {
+    if (!isRecord(raw) || raw.schemaVersion !== 1 || raw.machineId !== this.machineId
+      || typeof raw.generation !== 'number' || !Number.isSafeInteger(raw.generation) || raw.generation < 1
+      || !Array.isArray(raw.observations) || raw.observations.length > MAX_DOORS
+      || !Array.isArray(raw.admissions) || raw.admissions.length > MAX_DOORS
+      || !Array.isArray(raw.diagnosticRunIds) || raw.diagnosticRunIds.length > MAX_DIAGNOSTIC_RUNS) {
+      invalid('retention-cursor-invalid');
+    }
+    const references = (rows: unknown[]) => {
+      const seen = new Set<string>();
+      return rows.map(row => {
+        if (!isRecord(row) || typeof row.doorId !== 'string' || !ID.test(row.doorId) || seen.has(row.doorId)
+          || typeof row.runId !== 'string' || !RUN_ID.test(row.runId)) invalid('retention-reference-invalid');
+        seen.add(row.doorId);
+        return { doorId: row.doorId, runId: row.runId, digest: row.digest };
+      });
+    };
+    const observations = references(raw.observations).map(({ doorId, runId, digest }) => {
+      if (typeof digest !== 'string' || !DIGEST.test(digest)) invalid('retention-digest-invalid');
+      return { doorId, runId, digest };
+    });
+    const admissions = references(raw.admissions).map(({ doorId, runId }) => ({ doorId, runId }));
+    const diagnosticRunIds = raw.diagnosticRunIds.map(runId => {
+      if (typeof runId !== 'string' || !RUN_ID.test(runId)) invalid('retention-reference-invalid');
+      return runId;
+    });
+    if (new Set(diagnosticRunIds).size !== diagnosticRunIds.length) invalid('retention-reference-invalid');
+    return { schemaVersion: 1, machineId: this.machineId, generation: raw.generation, observations, admissions, diagnosticRunIds };
   }
 
   startRun(runId: string, startedAt: string): void {

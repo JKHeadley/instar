@@ -75,3 +75,9 @@ The retention boundary needs to distinguish a permanent historical receipt from 
 ## Ledger completeness checkpoint
 
 The opt-in doorway reader now treats skipped malformed records and unterminated final records as incomplete history. Legacy job history still exposes valid rows. Startup compaction leaves incomplete content on disk, a larger replacement ledger is reread from its beginning, and a local append gives a known torn line its own separator. Tests cover cached reads, append, restart, replacement, and an external writer completing a torn row. Independent review concurred with this read-only checkpoint. The cache still assumes that growth of the same file comes from append-only writers. A concurrent writer can leave a fresh torn tail before the scheduler reads it. Artifact removal still requires an authoritative writer fence and durable cursor.
+
+## Durable cursor checkpoint
+
+The observation store can publish a bounded cursor with an exact generation, per-door observation digests, admission references, and a diagnostic run window. It uses the state directory's shared writer lease, validates the expected generation, atomically replaces the cursor, and syncs its directory. Corrupt cursors and stale writers fail closed. The cursor is machine-local and grants no cleanup authority. The next caller must acquire the lease from the cursor's canonical state directory, verify references against the exact ledger and artifacts, and coordinate readers before removing any artifact. No scheduler or HTTP caller publishes or consumes the cursor in this checkpoint. Reverting the code simply leaves any fixture cursor unused.
+
+Independent review concurred with the advisory cursor after confirming all writers for the shared cursor use the same scope.

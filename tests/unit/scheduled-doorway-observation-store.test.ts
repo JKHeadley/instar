@@ -1,10 +1,11 @@
 import fs from 'node:fs';
 import os from 'node:os';
 import path from 'node:path';
-import { afterEach, beforeEach, describe, expect, it } from 'vitest';
+import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest';
 import { SafeFsExecutor } from '../../src/core/SafeFsExecutor.js';
 import {
   ScheduledDoorwayObservationStore,
+  SCHEDULED_DOORWAY_RETENTION_SCOPE,
   type ScheduledDoorwayObservation,
 } from '../../src/core/ScheduledDoorwayObservationStore.js';
 
@@ -38,6 +39,42 @@ describe('ScheduledDoorwayObservationStore', () => {
   });
   afterEach(() => {
     SafeFsExecutor.safeRmSync(dir, { recursive: true, force: true, operation: 'scheduled doorway store test cleanup' });
+  });
+
+  it('persists the exact retention references and refuses a stale generation', () => {
+    const lease = { scope: SCHEDULED_DOORWAY_RETENTION_SCOPE, assertHeld: vi.fn() };
+    const references = {
+      observations: [{ doorId: ALPHA, runId: A, digest: `sha256:${'a'.repeat(64)}` }],
+      admissions: [{ doorId: ALPHA, runId: B }],
+      diagnosticRunIds: [A, B],
+    };
+    expect(store.readRetentionCursor()).toBeNull();
+    const first = store.advanceRetentionCursor(null, references, lease);
+    expect(first).toEqual({ schemaVersion: 1, machineId: MACHINE, generation: 1, ...references });
+    expect(open().readRetentionCursor()).toEqual(first);
+    expect(() => open().advanceRetentionCursor(null, references, lease)).toThrow('retention-generation-changed');
+    expect(open().advanceRetentionCursor(1, references, lease).generation).toBe(2);
+    expect(lease.assertHeld).toHaveBeenCalled();
+    expect(() => open('wrong-machine').readRetentionCursor()).toThrow('retention-cursor-invalid');
+  });
+
+  it('refuses corrupt references and an invalid lease before changing the cursor', () => {
+    const lease = { scope: SCHEDULED_DOORWAY_RETENTION_SCOPE, assertHeld: vi.fn() };
+    const references = { observations: [], admissions: [], diagnosticRunIds: [A] };
+    const first = store.advanceRetentionCursor(null, references, lease);
+    expect(() => store.advanceRetentionCursor(1, references, { ...lease, scope: 'wrong-scope' })).toThrow('retention-lease-scope');
+    lease.assertHeld.mockImplementationOnce(() => {}).mockImplementationOnce(() => { throw new Error('lost lease'); });
+    expect(() => store.advanceRetentionCursor(1, references, lease)).toThrow('lost lease');
+    expect(() => store.advanceRetentionCursor(1, {
+      ...references, diagnosticRunIds: ['../manual-scan'],
+    }, lease)).toThrow('retention-reference-invalid');
+    expect(open().readRetentionCursor()).toEqual(first);
+
+    const cursor = path.join(dir, 'state', 'doorway-scan-scheduled-runs', 'retention-cursor.json');
+    fs.writeFileSync(cursor, '{broken');
+    expect(() => open().readRetentionCursor()).toThrow();
+    expect(() => open().advanceRetentionCursor(1, references, lease)).toThrow();
+    expect(fs.readFileSync(cursor, 'utf8')).toBe('{broken');
   });
 
   it('reads exact staged evidence after reopen without modifying the pending legacy baseline', () => {
