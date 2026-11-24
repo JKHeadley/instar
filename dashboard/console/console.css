@@ -1771,3 +1771,10 @@ a.needs-row:hover { background: var(--surface-raised); }
   .wc-tile-foot .work-actions { width: 100%; }
   .wc-tile-foot .work-actions > button { flex: 1 1 auto; }
 }
+
+/* A long approval inbox stays within the screen; all received actions remain reachable. */
+.needs-groups { max-height: min(52vh, 28rem); overflow-y: auto; overscroll-behavior: contain; border: 1px solid var(--strip-line); border-top: 0; background: var(--surface); scrollbar-gutter: stable; }
+.needs-group-heading { margin: 0; padding: 10px 14px 4px; font-size: 12px; font-weight: 650; color: var(--text-muted); }
+.needs-groups .needs-rows { border: 0; }
+.needs-group + .needs-group { border-top: 1px solid var(--hairline); }
+.needs-groups:focus-visible { outline: 2px solid var(--accent); outline-offset: -2px; }
