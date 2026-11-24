@@ -7,3 +7,5 @@ When creating a worktree, the provisioner now tries to open and close an empty i
 Before pushing, a developer also needs to know whether the affected tests ran. When the listing process times out, the push check now exits unsuccessfully and says that verification is required. An engineer can retry under a lighter load and see the result directly. The complete verification run still belongs to the shared verification coordinator.
 
 The checkout check runs in a separate Node process. It now selects ES module mode explicitly and loads SQLite from the checkout's dependency directory, including when the checkout is on an older branch.
+
+The database used for the checkout check exists only in the child process's memory. The child closes it immediately. The registry test now records who owns that handle and when it closes.
