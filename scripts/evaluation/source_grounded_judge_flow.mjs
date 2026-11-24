@@ -1,3 +1,4 @@
+import { createHash } from 'node:crypto';
 import { summarizeJudgeConsensus } from './source_grounded_consensus.mjs';
 import { assessJudgeIndependence } from './source_grounded_judge_independence.mjs';
 import { selectJudgeAttempt } from './source_grounded_judge_retry.mjs';
@@ -37,11 +38,20 @@ export function evaluateJudgeFlow(input, expected, ledgers, observations, disclo
     ? assessJudgeIndependence(schedule.slots.map(receipt => receipt.slotId), boundReceipts, disclosure.ordinal)
     : 'unknown';
 
+  const consensus = summarizeJudgeConsensus(input.capture.criteria, slots.map(slot => slot.findings));
+  const criticalSignals = consensus.criticalFailures.map(finding => {
+    const { trialId, arm, repeat, slotId, attemptId, rawHash } = schedule.slots[finding.slot];
+    const id = createHash('sha256')
+      .update(JSON.stringify([trialId, arm, repeat, slotId, attemptId, rawHash, finding.criterionId]))
+      .digest('hex');
+    return { ...finding, id };
+  });
   return {
     state: 'evaluated',
     selection,
     bindingStates: slots.map(slot => slot.state),
-    consensus: summarizeJudgeConsensus(input.capture.criteria, slots.map(slot => slot.findings)),
+    consensus,
+    criticalSignals,
     independence,
   };
 }

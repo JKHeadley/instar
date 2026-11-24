@@ -33,3 +33,5 @@ The report distinguishes an empty scheduled slot from a selected attempt whose o
 Schedule checks begin with the verified plan bytes. Callers cannot pass a separately parsed plan in place of those bytes.
 
 Matching output bytes are insufficient when the captured output belongs to a different comparison arm or repeat. The binder checks both fields before accepting a judge result.
+
+The offline flow now assigns each critical finding an identity tied to its exact bound judge attempt. Two judges who fail the same criterion still produce separate findings.

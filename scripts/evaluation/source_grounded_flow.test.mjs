@@ -1,3 +1,4 @@
+import { summarizeCriticalResolutions } from './source_grounded_adjudication.mjs';
 import { evaluateJudgeFlow } from './source_grounded_judge_flow.mjs';
 import assert from 'node:assert/strict';
 import { createHash } from 'node:crypto';
@@ -128,4 +129,23 @@ test('composed flow uses the selected retry for binding and independence evidenc
   const mixed = [{ ...ledgers[0], attempts: [{ ...timeout, trialId: 'wrong' }, receipts[0]] }, ledgers[1]];
   assert.equal(evaluateJudgeFlow(input, expected, mixed, observations, disclosure, validate).state,
     'ledger-identity-mismatch');
+});
+
+test('a resolution for one judge attempt cannot resolve the other judge’s critical finding', () => {
+  const input = { planBytes, planHash: sha(planBytes), parsePlan: JSON.parse, rubricBytes, capture };
+  const amended = { ...observations[1], raw: observations[0].raw };
+  const ledger = receipts.map((receipt, index) => ({ slotId: receipt.slotId, attempts: [{
+    ...receipt, ordinal: 0, rawHash: sha(index === 0 ? observations[0].raw : amended.raw),
+  }] }));
+  const result = evaluateJudgeFlow(input, expected, ledger, [observations[0], amended],
+    { ...expected, ordinal: 4 }, validate);
+  assert.equal(result.criticalSignals.length, 2);
+  const [first, second] = result.criticalSignals;
+  assert.notEqual(first.id, second.id);
+  assert.deepEqual(summarizeCriticalResolutions(result.criticalSignals, [
+    { id: 'resolution', signalId: first.id, resolution: 'judge-error' },
+  ]).map(item => item.resolution), ['judge-error', 'unresolved']);
+  const reordered = evaluateJudgeFlow(input, expected, [...ledger].reverse(), [amended, observations[0]],
+    { ...expected, ordinal: 4 }, validate);
+  assert.deepEqual(reordered.criticalSignals, result.criticalSignals);
 });
