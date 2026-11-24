@@ -188,6 +188,7 @@ import { activeSpawnPollers } from '../core/SpawnCapIntelligenceProvider.js';
 import { poolPollerVerdict } from '../core/pollerCount.js';
 import { writeServeProgress } from '../core/serveProgress.js';
 import { readDoorwayRegistry } from '../core/DoorwayRegistryReader.js';
+import type { VerifiedPackagedCatalogResult } from '../core/VerifiedPackagedCatalog.js';
 import {
   clampPeerFinding as clampBenchmarkPeerFinding,
   mergeFindingsByKey as mergeBenchmarkFindingsByKey,
@@ -1579,6 +1580,7 @@ export interface RouteContext {
   selfKnowledgeTree: SelfKnowledgeTree | null;
   coverageAuditor: CoverageAuditor | null;
   topicResumeMap: TopicResumeMap | null;
+  packagedDoorwayCatalog?: VerifiedPackagedCatalogResult;
   /** Topic Profile (TOPIC-PROFILE-SPEC §10.1/§12) — store + resolver + write
    *  surface + shared confirm slots behind GET/POST /topic-profile/:topicId.
    *  Null when the profile store failed to initialize; the routes then report
@@ -3531,16 +3533,35 @@ export function createRoutes(ctx: RouteContext): Router {
       } };
     } });
 
+  const scheduledDoorwayEvidence = (nowMs = Date.now()) => {
+    const catalog = ctx.packagedDoorwayCatalog;
+    if (catalog?.status !== 'verified') return undefined;
+    const doorIds = Object.keys(catalog.catalog.doors as Record<string, unknown>);
+    const evidence = ctx.scheduler?.readScheduledDoorwayHistory?.(doorIds, nowMs);
+    return evidence ?? (ctx.config.maintenance?.doorwayScan?.packagedExecution === true ? null : undefined);
+  };
+
   router.get('/capability-registry', (_req, res) => {
     const cfg = (ctx.config as InstarConfig & { capabilityRegistry?: { enabled?: boolean } }).capabilityRegistry;
     if (!resolveDevAgentGate(cfg?.enabled, ctx.config)) return res.status(503).json({ code: 'capability-registry-dark' });
     if (!ctx.capabilityRegistry) return res.status(503).json({ code: 'capability-registry-unavailable' });
     const projectionFile = path.join(ctx.config.stateDir, 'capability-registry.json');
-    let projection: CapabilityProjection | null = new CapabilityRegistryWriter(projectionFile, 'local').read();
+    const packagedCatalog = ctx.packagedDoorwayCatalog;
+    if (packagedCatalog && packagedCatalog.status !== 'verified') {
+      return res.status(503).json({ code: 'capability-registry-packaged-catalog-unavailable', reason: packagedCatalog.reason });
+    }
+    let projection: CapabilityProjection | null = packagedCatalog
+      ? null
+      : new CapabilityRegistryWriter(projectionFile, 'local').read();
     if (!projection) {
       try {
-        const local = readDoorwaySources(ctx.config.projectDir, ctx.config.stateDir, new Date().toISOString(), 'local');
-        projection = { schemaVersion: 1, machineId: 'local', machineEpoch: 0, projectionSeq: 0, ...local, truncated: false, entries: local.entries } as CapabilityProjection;
+        const nowMs = Date.now();
+        const scheduled = scheduledDoorwayEvidence(nowMs);
+        const machineId = scheduled?.machineId ?? 'local';
+        const local = readDoorwaySources(
+          ctx.config.projectDir, ctx.config.stateDir, new Date(nowMs).toISOString(), machineId, packagedCatalog, scheduled,
+        );
+        projection = { schemaVersion: 1, machineId, machineEpoch: 0, projectionSeq: 0, ...local, truncated: scheduled?.historyTruncated ?? false, entries: local.entries } as CapabilityProjection;
       } catch (error) {
         DegradationReporter.getInstance().report({
           feature: 'CapabilityRegistry.routeProjection',
@@ -20595,7 +20616,14 @@ document.getElementById('mcpForm').addEventListener('submit', async function (e)
     const result = readDoorwayRegistry({
       projectDir: ctx.config.projectDir,
       stateDir: ctx.config.stateDir,
+      packagedCatalog: ctx.packagedDoorwayCatalog,
     });
+    if (ctx.packagedDoorwayCatalog && result.status !== 'ok') {
+      return res.status(503).json({
+        code: result.status === 'corrupt' ? 'registry-packaged-catalog-invalid' : 'registry-packaged-catalog-unavailable',
+        reason: result.reason,
+      });
+    }
     if (result.status === 'no-manifest') {
       // A pure end-user (non-instar-source) install carries no canonical manifest — there is
       // no doorway knowledge registry to serve. Honest 503, NOT a fabricated empty payload.
@@ -20612,7 +20640,8 @@ document.getElementById('mcpForm').addEventListener('submit', async function (e)
       });
       return;
     }
-    res.json(result.body);
+    const scheduledEvidence = scheduledDoorwayEvidence();
+    res.json(scheduledEvidence === undefined ? result.body : { ...result.body, scheduledEvidence });
   });
 
   // ── Framework-Onboarding Mentor System: issue ledger (read-only) ──

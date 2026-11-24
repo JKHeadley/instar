@@ -2,6 +2,8 @@ import fs from 'node:fs';
 import path from 'node:path';
 import crypto from 'node:crypto';
 import { readDoorwayRegistry, scanStatePath } from './DoorwayRegistryReader.js';
+import type { ScheduledDoorwayEvidence } from './ScheduledDoorwayRead.js';
+import type { VerifiedPackagedCatalogResult } from './VerifiedPackagedCatalog.js';
 import { DegradationReporter } from '../monitoring/DegradationReporter.js';
 
 export const CAPABILITY_REGISTRY_SCHEMA_VERSION = 1;
@@ -405,9 +407,18 @@ function mapProjectionError(error: unknown): CapabilityRegistryFailureReason {
   return 'malformed';
 }
 
-export function readDoorwaySources(projectDir: string, stateDir: string, now = new Date().toISOString(), machineId = 'local'): { entries: CapabilityEntry[]; scanState: ScanState; scanStampSecs: number } {
+export function readDoorwaySources(
+  projectDir: string,
+  stateDir: string,
+  now = new Date().toISOString(),
+  machineId = 'local',
+  packagedCatalog?: VerifiedPackagedCatalogResult,
+  scheduled?: ScheduledDoorwayEvidence | null,
+): { entries: CapabilityEntry[]; scanState: ScanState; scanStampSecs: number } {
+  const result = readDoorwayRegistry({ projectDir, stateDir, packagedCatalog });
+  if (result.status !== 'ok') throw new Error(result.reason ?? `doorway-registry-${result.status}`);
   const scanPath = scanStatePath(stateDir);
-  const scanExists = fs.existsSync(scanPath);
+  const scanExists = scheduled === undefined && fs.existsSync(scanPath);
   let scanReadable = false;
   if (scanExists) {
     try { JSON.parse(fs.readFileSync(scanPath, 'utf8')); scanReadable = true; }
@@ -415,16 +426,25 @@ export function readDoorwaySources(projectDir: string, stateDir: string, now = n
       DegradationReporter.getInstance().report({ feature: 'CapabilityRegistry.scanState', primary: 'Readable doorway scan-state', fallback: 'Source-unavailable projection state', reason: `scan-state parse failed: ${error instanceof Error ? error.message : String(error)}`, impact: 'Local doorway freshness is unavailable until the next successful scan.' });
     }
   }
-  const result = readDoorwayRegistry({ projectDir, stateDir });
-  if (result.status !== 'ok') throw new Error(`doorway-registry-${result.status}`);
   const { body } = result;
-  const scanState: ScanState = !scanReadable && scanExists ? 'source-unavailable' : body.scanState === 'scanned' ? 'observed' : 'never-observed';
-  const scanStampSecs = body.lastScanAt ? Math.floor(Date.parse(body.lastScanAt) / 1000) : 0;
-  let manifestReviewedAt: string | undefined;
-  try { manifestReviewedAt = isoOrAbsent((JSON.parse(fs.readFileSync(path.join(projectDir, 'scripts/model-registry-freshness.manifest.json'), 'utf8')) as Record<string, unknown>).lastReviewedAt); } catch { /* canonical reader owns manifest failure classification */ }
+  const scheduledDoors = Object.values(scheduled?.doors ?? {});
+  const currentScheduled = scheduledDoors.flatMap(row =>
+    row.freshness === 'current' && row.lastObservation ? [row.lastObservation] : []);
+  const scanState: ScanState = scheduled !== undefined
+    ? currentScheduled.length ? 'observed'
+      : scheduled && !scheduled.latestRun && !scheduled.historyTruncated
+        && scheduledDoors.every(row => row.freshness === 'never-observed') ? 'never-observed' : 'source-unavailable'
+    : !scanReadable && scanExists ? 'source-unavailable' : body.scanState === 'scanned' ? 'observed' : 'never-observed';
+  const scanStampSecs = scheduled !== undefined
+    ? Math.max(0, ...currentScheduled.map(row => Math.floor(Date.parse(row.observedAt) / 1000)))
+    : body.lastScanAt ? Math.floor(Date.parse(body.lastScanAt) / 1000) : 0;
+  const manifestReviewedAt = isoOrAbsent(result.lastReviewedAt);
   const entries: CapabilityEntry[] = [];
   for (const door of body.doorways) {
-    const d = door.probeStatus === 'never-scanned' ? null : door;
+    const scheduledDoor = scheduled?.doors[door.doorId];
+    const observation = scheduledDoor?.freshness === 'current' ? scheduledDoor.lastObservation : null;
+    const d = scheduled === undefined ? door.probeStatus === 'never-scanned' ? null : door
+      : observation ? { probeStatus: observation.probeStatus, lastScannedAt: observation.observedAt } : null;
     for (const model of door.topModels) {
       if (!model.id) continue;
       const doorwayId = door.doorId;
@@ -472,17 +492,25 @@ export class CapabilityRegistryWriter {
   }
 }
 
-/** Canonical local definition inventory for measurement census. This reads the
- * producer's validated projection (or known doorway sources), not the receiver's
- * advisory availability/placement classification. No probe or state write. */
-export function readLocalCapabilityInventory(projectDir: string, stateDir: string, machineId: string, now = Date.now()): CapabilityProjection {
-  const retained = new CapabilityRegistryWriter(path.join(stateDir, 'capability-registry.json'), machineId).read();
-  if (retained) {
-    // The existing producer uses the literal local alias on standalone agents.
-    if (retained.machineId !== machineId && retained.machineId !== 'local') throw new Error('capability-inventory-origin-mismatch');
-    return retained;
+/** Canonical local definition inventory for measurement census. A retained
+ * projection has no package attestation, so packaged mode rebuilds from verified
+ * doorway sources. Reads do not probe or write state. */
+export function readLocalCapabilityInventory(
+  projectDir: string,
+  stateDir: string,
+  machineId: string,
+  now = Date.now(),
+  packagedCatalog?: VerifiedPackagedCatalogResult,
+): CapabilityProjection {
+  if (!packagedCatalog) {
+    const retained = new CapabilityRegistryWriter(path.join(stateDir, 'capability-registry.json'), machineId).read();
+    if (retained) {
+      // The existing producer uses the literal local alias on standalone agents.
+      if (retained.machineId !== machineId && retained.machineId !== 'local') throw new Error('capability-inventory-origin-mismatch');
+      return retained;
+    }
   }
-  const source = readDoorwaySources(projectDir, stateDir, new Date(now).toISOString(), machineId);
+  const source = readDoorwaySources(projectDir, stateDir, new Date(now).toISOString(), machineId, packagedCatalog);
   return validateProjection({ schemaVersion: CAPABILITY_REGISTRY_SCHEMA_VERSION, machineId, machineEpoch: 0,
     projectionSeq: 0, ...source, truncated: false });
 }

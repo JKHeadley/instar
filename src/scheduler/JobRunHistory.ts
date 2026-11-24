@@ -455,6 +455,23 @@ export class JobRunHistory {
     return runId;
   }
 
+  /** One bounded window of relevant local rows, excluding legacy and non-attempts. */
+  readPackagedDoorwayRuns(machineId: string, limit: number): { runs: JobRun[]; truncated: boolean } {
+    const runs = this.getDeduplicatedRuns().filter(run => run.machineId === machineId
+      && run.slug === 'doorway-scan' && run.origin === 'instar' && run.runner === 'script'
+      && run.lockTrust === 'trusted' && run.result !== 'skipped'
+      && (run.packagedDoorwayScan || run.scheduledDoorwayObservationDigest));
+    runs.sort((a, b) => b.startedAt.localeCompare(a.startedAt));
+    const boundary = runs[limit - 1]?.startedAt;
+    const splitTie = boundary !== undefined && runs[limit]?.startedAt === boundary;
+    const window = runs.slice(0, limit);
+    // An unresolved tie crossing the read boundary cannot pick a winner.
+    return {
+      runs: splitTie ? window.filter(run => run.startedAt !== boundary) : window,
+      truncated: runs.length > limit,
+    };
+  }
+
   /**
    * Query job run history with filters and pagination.
    */

@@ -3,8 +3,9 @@
  * `docs/specs/DOORWAY-MODEL-KNOWLEDGE-REGISTRY-SPEC.md`, rollout increment 3, D5).
  *
  * Composes the two layers into one merged view for `GET /doorways`:
- *   1. the git-tracked CANONICAL manifest (`scripts/model-registry-freshness.manifest.json`)
- *      — authoritative `topModels` (with pricing) per door; and
+ *   1. the CANONICAL manifest — a verified packaged snapshot when supplied,
+ *      or the checkout manifest for legacy callers. This gives the reviewed
+ *      `topModels` (with pricing) per door; and
  *   2. this machine's machine-local LIVE scan-state (`.instar/state/doorway-scan.json`,
  *      written by `scripts/doorway-scan.mjs`) — reachability per door.
  *
@@ -21,9 +22,9 @@
  * re-validated field-by-field here (door id charset/length + known-candidate cross-check,
  * `probeStatus` fixed enum, ISO timestamps) — nothing raw-passes into the `GET /doorways` body.
  * `reachable` is DERIVED from the clamped `probeStatus` (not the stored boolean), so a poisoned
- * `reachable` value is never trusted and P20 unknown≠down semantics hold. The canonical manifest
- * is git-tracked trusted source (the authoritative routing layer, §1.1) — its `topModels` are the
- * reviewed values, projected through a shape guard.
+ * `reachable` value is never trusted and P20 unknown≠down semantics hold. Reviewed catalog
+ * values are projected through a shape guard. When packaged verification is selected, the
+ * server-owned result is authoritative, including unavailability and failed verification.
  *
  * The clamp constants below MIRROR the source of truth in `scripts/doorway-scan.mjs` (§1.3). A
  * `.mjs` script can't be safely imported into the server bundle, so they are re-declared here;
@@ -31,6 +32,7 @@
  */
 import fs from 'node:fs';
 import path from 'node:path';
+import type { VerifiedPackagedCatalogResult } from './VerifiedPackagedCatalog.js';
 
 // ── Mirrored clamp constants (source of truth: scripts/doorway-scan.mjs §1.3). ──
 
@@ -153,9 +155,9 @@ export interface DoorwayRegistryBody {
 }
 
 export type DoorwayRegistryResult =
-  | { status: 'ok'; body: DoorwayRegistryBody }
-  | { status: 'no-manifest' }
-  | { status: 'corrupt' };
+  | { status: 'ok'; body: DoorwayRegistryBody; lastReviewedAt: string | null }
+  | { status: 'no-manifest'; reason?: string }
+  | { status: 'corrupt'; reason?: string };
 
 /** Absolute path to the canonical manifest for a given project (agent) dir. */
 export function manifestPath(projectDir: string): string {
@@ -172,15 +174,29 @@ export function scanStatePath(stateDir: string): string {
  * never-run — the file is machine-local + regenerable). Returns a discriminated result the route
  * maps to the D5 status contract.
  */
-export function readDoorwayRegistry(opts: { projectDir: string; stateDir: string }): DoorwayRegistryResult {
-  const mp = manifestPath(opts.projectDir);
-  if (!fs.existsSync(mp)) return { status: 'no-manifest' };
-
+export function readDoorwayRegistry(opts: {
+  projectDir: string;
+  stateDir: string;
+  /** A server-owned package verification result. A failed verification never falls back to a checkout. */
+  packagedCatalog?: VerifiedPackagedCatalogResult;
+}): DoorwayRegistryResult {
   let manifest: unknown;
-  try {
-    manifest = JSON.parse(fs.readFileSync(mp, 'utf-8'));
-  } catch {
-    return { status: 'corrupt' };
+  if (opts.packagedCatalog) {
+    if (opts.packagedCatalog.status !== 'verified') {
+      return {
+        status: opts.packagedCatalog.status === 'unavailable' ? 'no-manifest' : 'corrupt',
+        reason: opts.packagedCatalog.reason,
+      };
+    }
+    manifest = opts.packagedCatalog.catalog;
+  } else {
+    const mp = manifestPath(opts.projectDir);
+    if (!fs.existsSync(mp)) return { status: 'no-manifest' };
+    try {
+      manifest = JSON.parse(fs.readFileSync(mp, 'utf-8'));
+    } catch {
+      return { status: 'corrupt' };
+    }
   }
   if (
     !manifest ||
@@ -277,6 +293,9 @@ export function readDoorwayRegistry(opts: { projectDir: string; stateDir: string
 
   return {
     status: 'ok',
+    lastReviewedAt: opts.packagedCatalog?.status === 'verified'
+      ? opts.packagedCatalog.lastReviewedAt
+      : asStringOrNull((manifest as { lastReviewedAt?: unknown }).lastReviewedAt),
     body: {
       scanState: scanned ? 'scanned' : 'never-run',
       lastScanAt,

@@ -157,6 +157,27 @@ describe('scheduled doorway evidence reconciliation', () => {
     expect(read(Date.now(), null).doors.alpha).toMatchObject({ freshness: 'disabled', reachable: null });
   });
 
+  it('bounds local history without allowing legacy or peer rows to displace it', () => {
+    const prior = committed();
+    vi.setSystemTime(Date.parse(TIME) + 1000);
+    newer('skipped');
+    ledger.setMachineId('remote');
+    newer('failure');
+    ledger.setMachineId('local-test');
+    expect(ledger.readPackagedDoorwayRuns('local-test', 1)).toMatchObject({
+      runs: [{ runId: prior }], truncated: false,
+    });
+    newer('failure');
+    newer('failure');
+    const bounded = ledger.readPackagedDoorwayRuns('local-test', 1);
+    expect(bounded).toEqual({ runs: [], truncated: true });
+    const evidence = readScheduledDoorwayEvidence({
+      ...bounded, historyTruncated: bounded.truncated,
+      machineId: 'local-test', doorIds: ['alpha'], store, cadence, nowMs: Date.now(),
+    });
+    expect(evidence.doors.alpha.freshness).toBe('unknown');
+  });
+
   it('leaves conflicting same-time runs and future evidence unknown in either input order', () => {
     committed();
     newer('failure', undefined, true);

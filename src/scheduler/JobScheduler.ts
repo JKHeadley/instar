@@ -45,6 +45,8 @@ import { hashBody } from './AgentMdLockFile.js';
 import { JobRunHistory, isSideRun, type JobRun } from './JobRunHistory.js';
 import { getInstarVersion } from '../core/Config.js';
 import { readVerifiedInstalledDoorwayAssets } from '../core/VerifiedPackagedCatalog.js';
+import { ScheduledDoorwayObservationStore } from '../core/ScheduledDoorwayObservationStore.js';
+import { readScheduledDoorwayEvidence, type ScheduledDoorwayEvidence } from '../core/ScheduledDoorwayRead.js';
 import { executePackagedDoorwayScan, readDoorwayExecutionConfig } from './PackagedDoorwayExecution.js';
 import { JobSupervisionStore } from './JobSupervisionStore.js';
 import { projectSupervisionEvidence, SUPERVISION_EVIDENCE_POLICY } from './JobSupervisionEvidence.js';
@@ -1667,6 +1669,24 @@ export class JobScheduler {
    */
   getRunHistory(): JobRunHistory {
     return this.runHistory;
+  }
+
+  /** Shared machine-scoped history for the doorway and capability reads. */
+  readScheduledDoorwayHistory(doorIds: readonly string[], nowMs = Date.now()): ScheduledDoorwayEvidence | null {
+    if (!this.machineId) return null;
+    const machineId = this.machineId;
+    const config = readDoorwayExecutionConfig(this.stateDir);
+    const history = this.runHistory.readPackagedDoorwayRuns(machineId, 16);
+    if (!config?.packagedExecution && history.runs.length === 0 && !history.truncated) return null;
+    const job = this.jobs.find(row => row.slug === 'doorway-scan');
+    const cadence = config?.packagedExecution && config.enabled !== false && job?.enabled
+      && this.isJobScopedToThisMachine(job) && this.running && !this.paused && this.cronTasks.has(job.slug)
+      ? { schedule: job.schedule, timeoutMs: Math.max(1, job.scriptTimeoutMinutes ?? JobScheduler.DEFAULT_SCRIPT_TIMEOUT_MINUTES) * 2 * 60_000 }
+      : null;
+    const store = new ScheduledDoorwayObservationStore(path.resolve(this.stateDir), machineId, doorIds, () => nowMs);
+    return readScheduledDoorwayEvidence({
+      machineId, doorIds, runs: history.runs, store, cadence, nowMs, historyTruncated: history.truncated,
+    });
   }
 
   /**

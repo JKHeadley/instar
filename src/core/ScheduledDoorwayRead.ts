@@ -14,6 +14,13 @@ type DoorReading = {
   freshness: 'current' | 'stale' | 'disabled' | 'never-observed' | 'unknown';
 };
 
+export interface ScheduledDoorwayEvidence {
+  machineId: string;
+  historyTruncated: boolean;
+  latestRun: Evidence | null;
+  doors: Record<string, DoorReading>;
+}
+
 function instant(value: string | undefined): number {
   if (!value) return NaN;
   const time = Date.parse(value);
@@ -49,7 +56,8 @@ export function readScheduledDoorwayEvidence(options: {
   store: Pick<ScheduledDoorwayObservationStore, 'readStaged' | 'readStartedDoors'>;
   cadence: { schedule: string; timeoutMs: number } | null;
   nowMs: number;
-}): { latestRun: Evidence | null; doors: Record<string, DoorReading> } {
+  historyTruncated?: boolean;
+}): ScheduledDoorwayEvidence {
   const { machineId, doorIds, runs, store, cadence, nowMs } = options;
   const local = new Map(runs.filter(run => machineId && run.machineId === machineId
     && run.slug === 'doorway-scan' && run.origin === 'instar' && run.runner === 'script'
@@ -86,12 +94,14 @@ export function readScheduledDoorwayEvidence(options: {
       }
     } else {
       try {
-        for (const door of store.readStartedDoors(run.runId) ?? []) {
-          if (knownDoors.has(door.doorId) && door.runId === run.runId && door.machineId === machineId
-            && door.startedAt === run.startedAt && start <= instant(door.doorStartedAt)
-            && instant(door.doorStartedAt) <= (run.completedAt ? completion : nowMs)) {
-            append(attempts, door.doorId, evidence);
-          }
+        const starts = store.readStartedDoors(run.runId) ?? [];
+        if (starts.some(door => door.runId !== run.runId || door.machineId !== machineId
+          || door.startedAt !== run.startedAt || !(start <= instant(door.doorStartedAt)
+          && instant(door.doorStartedAt) <= (run.completedAt ? completion : nowMs)))) {
+          throw new Error('scheduled-doorway-admission-ledger-mismatch');
+        }
+        for (const door of starts) {
+          if (knownDoors.has(door.doorId)) append(attempts, door.doorId, evidence);
         }
       } catch {
         // A corrupt admission may belong to any doorway. Newer verified
@@ -113,7 +123,8 @@ export function readScheduledDoorwayEvidence(options: {
       || uncertainRunOrder || (runEvidence.length > 0 && !latestRun)
       || (doorAttempts.length > 0 && !latestAttempt)
       || (doorObservations.length > 0 && !lastObservation)) freshness = 'unknown';
-    else if (!lastObservation) freshness = latestAttempt || latestRun?.outcome === 'unavailable' ? 'unknown' : 'never-observed';
+    else if (!lastObservation) freshness = latestAttempt || latestRun?.outcome === 'unavailable' || options.historyTruncated
+      ? 'unknown' : 'never-observed';
     else if (latestAttempt?.runId !== lastObservation.runId
       || (latestRun?.outcome === 'unavailable' && latestRun.startedAt >= (latestAttempt?.startedAt ?? ''))) freshness = 'unknown';
     else {
@@ -126,7 +137,7 @@ export function readScheduledDoorwayEvidence(options: {
     };
     return [doorId, reading];
   }));
-  return { latestRun: uncertainRunOrder ? null : latestRun, doors };
+  return { machineId, historyTruncated: options.historyTruncated ?? false, latestRun: uncertainRunOrder ? null : latestRun, doors };
 }
 
 function append<T>(index: Map<string, T[]>, doorId: string, row: T): void {

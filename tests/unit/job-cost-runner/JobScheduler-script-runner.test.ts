@@ -150,12 +150,21 @@ describe('script runner execution', () => {
       runId: packaged.runId, startedAt: packaged.startedAt, observations: [{ doorId: 'fixture', probeStatus: 'ok' }],
     });
 
+    expect(s.readScheduledDoorwayHistory(['fixture'])).toMatchObject({
+      machineId: 'fixture-machine', historyTruncated: false,
+      latestRun: { runId: packaged.runId, outcome: 'observed' },
+      doors: { fixture: { freshness: 'current', reachable: true } },
+    });
+
     setCfg({ developmentAgent: true, jobs: { scriptRunners: { disabledSlugs: [slug] } } });
     expect(await s.triggerJob(slug, 'test')).toBe('skipped');
     expect(lastRun(s, slug).runId).toBe(packaged.runId);
     setCfg({ developmentAgent: true });
     fs.writeFileSync(config, '{}');
     expect(s.scriptRunnersActiveFor(slug)).toBe(false);
+    expect(s.readScheduledDoorwayHistory(['fixture'])?.doors.fixture).toMatchObject({
+      freshness: 'disabled', reachable: null, lastObservation: { runId: packaged.runId },
+    });
     expect(readDoorwayAssets).toHaveBeenCalledTimes(1);
     expect(sm._spawnCount).toBe(0);
   });
