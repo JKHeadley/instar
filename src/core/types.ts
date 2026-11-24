@@ -3874,6 +3874,8 @@ export interface InstarConfig {
    *  owner-tunable at the agent level; per-project values live on the binding. */
   chiefOfStaff?: {
     enabled?: boolean;
+    /** Development-only opt-in for a non-blocking public prior-work lookup. */
+    observePriorWork?: boolean;
     displayName?: string;
     tickMinutes?: number;
     defaultCadenceHours?: number;

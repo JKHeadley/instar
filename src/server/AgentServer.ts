@@ -981,6 +981,7 @@ export class AgentServer {
     autonomousThroughputFloor?: import('../monitoring/AutonomousThroughputFloor.js').AutonomousThroughputFloor | null;
     /** Chief of Staff (docs/specs/chief-of-staff-topic.md §5): the check-in loop + action protocol, null where the dev-gated feature is off. */
     chiefOfStaffLoop?: import('../core/ChiefOfStaffLoop.js').ChiefOfStaffLoop | null;
+    chiefOfStaffPrSearch?: import('../core/ChiefOfStaffPrSearch.js').ChiefOfStaffPrSearch;
     chiefOfStaffProtocol?: import('../core/ChiefOfStaffActionProtocol.js').ChiefOfStaffActionProtocol | null;
     /** Project apps (docs/specs/project-apps.md): late-bound runtime, null where the feature is off. */
     projectAppsRuntime?: () => import('./ProjectAppsRuntime.js').ProjectAppsRuntime | null;
@@ -1983,6 +1984,7 @@ export class AgentServer {
     autonomousThroughputFloor?: import('../monitoring/AutonomousThroughputFloor.js').AutonomousThroughputFloor | null;
     /** Chief of Staff (docs/specs/chief-of-staff-topic.md §5): the check-in loop + action protocol, null where the dev-gated feature is off. */
     chiefOfStaffLoop?: import('../core/ChiefOfStaffLoop.js').ChiefOfStaffLoop | null;
+    chiefOfStaffPrSearch?: import('../core/ChiefOfStaffPrSearch.js').ChiefOfStaffPrSearch;
     chiefOfStaffProtocol?: import('../core/ChiefOfStaffActionProtocol.js').ChiefOfStaffActionProtocol | null;
     /** Project apps (docs/specs/project-apps.md): late-bound runtime, null where the feature is off. */
     projectAppsRuntime?: () => import('./ProjectAppsRuntime.js').ProjectAppsRuntime | null;
@@ -7071,6 +7073,7 @@ export class AgentServer {
       resumeDrainer: options.resumeDrainer ?? null,
       autonomousLivenessReconciler: options.autonomousLivenessReconciler ?? null,
       chiefOfStaffLoop: options.chiefOfStaffLoop ?? null,
+      chiefOfStaffPrSearch: options.chiefOfStaffPrSearch,
       groupProjectConfirm: this.groupProjectConfirm,
       projectAppsRuntime: options.projectAppsRuntime,
       projectAppSandbox: options.projectAppSandbox,
@@ -7475,7 +7478,7 @@ export class AgentServer {
         });
       }
     }
-    const workDiscoveryPrSearch = new ChiefOfStaffPrSearch({
+    const workDiscoveryPrSearch = options.chiefOfStaffPrSearch ?? new ChiefOfStaffPrSearch({
       readToken: () => resolveGitHubToken({ stateDir: this.config.stateDir }),
     });
     routeCtx.chiefOfStaffPrSearch = workDiscoveryPrSearch;
