@@ -31,6 +31,8 @@
   --surface-solid: #0f1522;
   --hairline: rgb(51 65 85 / 0.55);
   --hairline-strong: rgb(71 85 105 / 0.7);
+  --field-boundary: #718198;
+  --quota-use-fill: linear-gradient(90deg, var(--teal-400), var(--teal-500));
   --text: var(--slate-200);
   --text-strong: var(--slate-100);
   --text-muted: var(--slate-400);
@@ -75,6 +77,8 @@
   --surface-solid: #ffffff;
   --hairline: rgb(203 213 225 / 0.9);
   --hairline-strong: rgb(148 163 184 / 0.8);
+  --field-boundary: var(--slate-500);
+  --quota-use-fill: var(--accent-strong);
   --text: var(--slate-700);
   --text-strong: var(--slate-900);
   --text-muted: var(--slate-600);
@@ -595,7 +599,7 @@ a.btn-quiet.btn-inline { color: var(--text); }
 .acct-pct { font-variant-numeric: tabular-nums; font-weight: 700; color: var(--text-strong); }
 .acct-pct.attn { color: var(--attn); } .acct-pct.bad { color: var(--bad); }
 .acct-bar { grid-column: 1 / -1; height: 6px; border-radius: 999px; background: var(--hairline); overflow: hidden; }
-.acct-bar > span { display: block; height: 100%; background: linear-gradient(90deg, var(--teal-400), var(--teal-500)); border-radius: 999px; }
+.acct-bar > span { display: block; height: 100%; background: var(--quota-use-fill); border-radius: 999px; }
 .acct-bar.attn > span { background: var(--attn); } .acct-bar.bad > span { background: var(--bad); }
 .acct-line { grid-column: 1 / -1; font-size: 13px; color: var(--text-muted); }
 .acct-wins { grid-column: 1 / -1; display: grid; grid-template-columns: 104px minmax(60px, 1fr) 3.2em 250px; gap: 6px 10px; align-items: center; font-size: 13px; }
@@ -947,7 +951,7 @@ button.run-mark:focus-visible { outline: 2px solid var(--accent); outline-offset
 .files-page { display: grid; gap: var(--s-4); }
 .files-page.viewing .files-browse { display: none; }
 .files-search { display: flex; flex-direction: column; gap: var(--s-2); }
-.files-find { width: 100%; min-height: 44px; padding: 0 var(--s-4); font: inherit; font-size: 16px; color: var(--text-strong); background: var(--surface-raised); border: 1px solid var(--hairline); border-radius: var(--r-md); }
+.files-find { width: 100%; min-height: 44px; padding: 0 var(--s-4); font: inherit; font-size: 16px; color: var(--text-strong); background: var(--surface-raised); border: 1px solid var(--field-boundary); border-radius: var(--r-md); }
 .files-find:focus { outline: 2px solid var(--accent); outline-offset: 1px; }
 .file-row { grid-template-columns: 18px 1fr auto; }
 .file-row .f-icon { color: var(--text-faint); font-size: 13px; line-height: 1.4; }
@@ -1167,9 +1171,9 @@ a.machine-line-link:hover { border-color: var(--accent); color: var(--text); }
 .mb-key-n { color: var(--text-muted); font-weight: 500; }
 .mb-hint { font-size: 13.5px; color: var(--text-faint); margin: var(--s-2) 0 0; }
 .mb-tools { display: flex; flex-wrap: wrap; gap: 8px; align-items: center; margin-bottom: var(--s-4); }
-.mb-search { flex: 1 1 220px; min-width: 0; padding: 10px 12px; border-radius: 10px; border: 1px solid var(--hairline); background: var(--surface); color: var(--text); font-family: inherit; font-size: 16px; line-height: 1.2; }
+.mb-search { flex: 1 1 220px; min-width: 0; padding: 10px 12px; border-radius: 10px; border: 1px solid var(--field-boundary); background: var(--surface); color: var(--text); font-family: inherit; font-size: 16px; line-height: 1.2; }
 .mb-toggle { padding: 10px 14px; border-radius: 10px; border: 1px solid var(--hairline); background: var(--surface); color: var(--text); font-family: inherit; font-size: 15px; font-weight: 600; line-height: 1.2; cursor: pointer; }
-.mb-sort { padding: 10px 12px; border-radius: 10px; border: 1px solid var(--hairline); background: var(--surface); color: var(--text); font-family: inherit; font-size: 15px; font-weight: 600; line-height: 1.2; cursor: pointer; }
+.mb-sort { padding: 10px 12px; border-radius: 10px; border: 1px solid var(--field-boundary); background: var(--surface); color: var(--text); font-family: inherit; font-size: 15px; font-weight: 600; line-height: 1.2; cursor: pointer; }
 .mb-toggle.on { border-color: #ef5b5b; color: #ef5b5b; }
 .mb-link { border: 0; background: none; color: var(--accent); font-family: inherit; font-size: 15px; font-weight: 600; line-height: 1.2; cursor: pointer; padding: 10px 4px; }
 .mb-groups { display: flex; flex-direction: column; gap: var(--s-3); }
