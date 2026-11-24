@@ -185,7 +185,7 @@ describe('instar.sh /a page and Apple link file', () => {
       const end = src.indexOf(']', src.indexOf('components:', at));
       return [...src.slice(at, end).matchAll(/'\/': '([^']+)'/g)].map((m) => m[1]);
     };
-    expect(block('AG9AE2H87X.io.sagemindai.instar')).toEqual(['/pair', '/doc', '/a', '/a/']);
+    expect(block('AG9AE2H87X.io.sagemindai.instar')).toEqual(['/pair', '/doc', '/link/computer', '/a', '/a/']);
     expect(block('AG9AE2H87X.io.sagemindai.instar.mac')).toEqual(['/a', '/a/']);
   });
 });

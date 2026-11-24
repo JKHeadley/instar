@@ -108,3 +108,7 @@ Not required. See the header.
 ## Refresh against main
 
 The merge keeps current server imports and adds the agent link routes. It preserves all current feature ladder entries and adds the existing default-off agent link entry. The independent review found no change to identity verification, bearer authentication, the signed-device requirement or the default-off setting. Focused checks passed: 53 unit, 4 HTTP and 3 production server tests.
+
+## Composition with the iPhone computer-link website
+
+The iPhone association retains pairing and document paths and includes the computer-link path from the merged website change. Both native apps retain the two permanent-link paths. The Mac association stays scoped to permanent links. The two browser fallbacks are byte-identical to their respective parent branches. This merge changes association metadata and its exact-path test. The approval and QR emission code stays with its existing rollout owners.

@@ -215,7 +215,7 @@ import { BootHealthBeacon } from '../server/BootHealthBeacon.js';
 import { resolveBootClaimSafety, resolvePlannedRestartLeaseContinuity, UNSIGNED_WINDOW_CEILING_MS } from '../core/BootClaimHold.js';
 import { instarMachineMarker } from '../core/HttpLeaseTransport.js';
 import { TelegramAdapter, TOPIC_STYLE, selectTopicEmoji } from '../messaging/TelegramAdapter.js';
-import { getTelegramInboundDir } from '../messaging/shared/telegramInboundFiles.js';
+import { getTelegramInboundDir, writePrivateInboundFile, ensurePrivateDir } from '../messaging/shared/telegramInboundFiles.js';
 import { buildColdStartFallbackReply } from '../messaging/ColdStartFallbackReply.js';
 import { sendRespawnCollisionNotice } from '../messaging/ColdStartFallbackReply.js';
 import { RelationshipManager } from '../core/RelationshipManager.js';
@@ -1874,8 +1874,8 @@ export async function spawnSessionForTopic(
   // Fix: Inline the context directly, put it BEFORE the user's message, with strong
   // continuation framing. Claude processes the context first, then responds to the
   // user's message WITH that context loaded.
-  const tmpDir = getTelegramInboundDir(_projectDir);
-  fs.mkdirSync(tmpDir, { recursive: true });
+  // SEC-138: owner-only folder (tightened if an older build left it at the default mode).
+  const tmpDir = ensurePrivateDir(getTelegramInboundDir(_projectDir));
 
   let bootstrapMessage: string | undefined;
 
@@ -4336,19 +4336,10 @@ function wireIMessageRouting(
     // (matches Telegram's BOOTSTRAP_FILE_THRESHOLD pattern)
     const BOOTSTRAP_FILE_THRESHOLD = 500;
     if (bootstrapMessage.length > BOOTSTRAP_FILE_THRESHOLD) {
-      const tmpDir = '/tmp/instar-imessage';
-      fs.mkdirSync(tmpDir, { recursive: true, mode: 0o700 });
-      // Clean up old temp files (>1 hour) to prevent unbounded accumulation
-      try {
-        const cutoff = Date.now() - 3_600_000;
-        for (const f of fs.readdirSync(tmpDir)) {
-          const fp = path.join(tmpDir, f);
-          try { if (fs.statSync(fp).mtimeMs < cutoff) SafeFsExecutor.safeUnlinkSync(fp, { operation: 'src/commands/server.ts:1257' }); } catch { /* ignore */ }
-        }
-      } catch { /* non-critical */ }
+      // SEC-138: the agent's own inbound folder (owner-only; swept after 7 days by
+      // cleanupTelegramTempFiles), never a fixed shared /tmp folder.
       const senderSlug = sender.replace(/[^a-zA-Z0-9]/g, '').slice(-8);
-      const filepath = path.join(tmpDir, `bootstrap-${senderSlug}-${Date.now()}-${Math.random().toString(36).slice(2, 8)}.txt`);
-      fs.writeFileSync(filepath, bootstrapMessage, { mode: 0o600 });
+      const filepath = writePrivateInboundFile(_projectDir, `im-bootstrap-${senderSlug}`, bootstrapMessage);
       console.log(`[imessage→session] Bootstrap too large (${bootstrapMessage.length} chars), wrote to ${filepath}`);
       bootstrapMessage = `[IMPORTANT: Read ${filepath} — it contains your full session context, conversation history, and the user's latest message. You MUST read this file before responding.]`;
     }
@@ -5482,8 +5473,11 @@ export async function startServer(options: StartOptions): Promise<void> {
       agentName: config.projectName,
     });
 
-    // Clean up stale Telegram temp files on startup
+    // Clean up stale inbound message files on startup, and daily after that (SEC-138: long
+    // WhatsApp, iMessage and Slack bodies now live in this folder too, so a long-running server
+    // must not keep them past the 7-day limit just because it has not restarted).
     cleanupTelegramTempFiles();
+    setInterval(cleanupTelegramTempFiles, 24 * 60 * 60 * 1000).unref();
 
     // Pre-flight: ensure better-sqlite3 bindings are compiled for the current Node.js version.
     // Must run before TopicMemory or SemanticMemory initialize. See ensureSqliteBindings() for rationale.
@@ -11928,8 +11922,6 @@ export async function startServer(options: StartOptions): Promise<void> {
 
           // Build context for the session — inject inline like Telegram does
           // Use async fallback to fetch from Slack API if ring buffer is empty
-          const tmpDir = '/tmp/instar-slack';
-          fs.mkdirSync(tmpDir, { recursive: true });
           const history = await slackAdapter!.getChannelMessagesWithFallback(channelId, 30);
           const unansweredCount = slackAdapter!.getUnansweredCount(channelId);
 
@@ -11999,9 +11991,9 @@ export async function startServer(options: StartOptions): Promise<void> {
 
           const contextData = contextLines.join('\n');
 
-          // Also write to file as backup reference
-          const ctxPath = path.join(tmpDir, `ctx-${channelId}-${Date.now()}.txt`);
-          fs.writeFileSync(ctxPath, contextData);
+          // Also write to file as backup reference. SEC-138: the agent's own owner-only inbound
+          // folder, never a fixed shared /tmp folder another local account could read or pre-create.
+          const ctxPath = writePrivateInboundFile(_projectDir, `slack-ctx-${channelId}`, contextData);
           sessionManager.registerMemoryInboundFile(`slack:${channelId}`, ctxPath);
 
           // Transform [image:path] and [document:path] tags into explicit read instructions
@@ -12033,9 +12025,8 @@ export async function startServer(options: StartOptions): Promise<void> {
           let bootstrapMessage: string;
           if (fullMessage.length > FILE_THRESHOLD) {
             // Write full message + inline context to the file so agent gets everything in one read
-            const msgFilePath = path.join(tmpDir, `msg-${channelId}-${Date.now()}-${Math.random().toString(36).slice(2, 10)}.txt`);
             const fullContent = `${fullMessage}\n\n${contextData}`;
-            fs.writeFileSync(msgFilePath, fullContent);
+            const msgFilePath = writePrivateInboundFile(_projectDir, `slack-msg-${channelId}`, fullContent);
             sessionManager.registerMemoryInboundFile(`slack:${channelId}`, msgFilePath);
             bootstrapMessage = `${prefix} [Long message saved to ${msgFilePath} — read it to see the full message and thread history]`;
           } else {
@@ -15505,11 +15496,9 @@ export async function startServer(options: StartOptions): Promise<void> {
               lines.push('EOF');
               lines.push(SLACK_MENTIONS_SESSION_LINE);
 
-              const tmpDir = '/tmp/instar-slack';
-              fs.mkdirSync(tmpDir, { recursive: true });
-              const ctxPath = path.join(tmpDir, `recovery-${slackApiChannel}-${Date.now()}.txt`);
+              // SEC-138: owner-only inbound folder, not a shared /tmp folder.
               const contextData = lines.join('\n');
-              fs.writeFileSync(ctxPath, contextData);
+              const ctxPath = writePrivateInboundFile(_projectDir, `slack-recovery-${slackApiChannel}`, contextData);
 
               const bootstrapMessage = `[slack:${slackApiChannel}] ${contextData}`;
 
