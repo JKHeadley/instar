@@ -28,6 +28,21 @@ export interface ConfirmBinding {
 interface StoredToken extends ConfirmBinding {
   hash: string;
   expiresAt: number;
+  /** SEC-135: minted by an owner open (a marked browser or the machine itself, with the page's header). Absent = unprotected. */
+  protected?: boolean;
+}
+
+/**
+ * SEC-135: a mint refused because every one of the service's live tokens is protected (owner pages).
+ * Nothing was written. The route answers 429 too-many-pages.
+ */
+export class ConfirmTokensFullError extends Error {
+  constructor() { super('every live confirm page for this service is protected'); this.name = 'ConfirmTokensFullError'; }
+}
+
+export interface MintOptions {
+  /** SEC-135: an owner open. Uses the owner allowance and is never evicted by another mint. */
+  protected: boolean;
 }
 
 function hashOf(token: string): string {
@@ -41,26 +56,60 @@ export function confirmTokensFile(stateDir: string): string {
 export class ConfirmTokenStore {
   private readonly file: string;
   private recentMints: number[] = [];
+  /** SEC-135: owner opens' own allowance, separate from the strangers' cap (same size). */
+  private recentOwnerMints: number[] = [];
 
   constructor(private readonly opts: { stateDir: string; now?: () => number }) {
     this.file = confirmTokensFile(opts.stateDir);
   }
 
-  /** False once pages are opening faster than a person could. Nothing is written. */
-  mayMint(): boolean {
+  /**
+   * False once pages are opening faster than a person could. Nothing is written. With
+   * `{ protected: true }` (SEC-135) it reads the owner opens' own allowance instead.
+   */
+  mayMint(opts?: MintOptions): boolean {
     const since = this.now() - 60_000;
+    if (opts?.protected) {
+      this.recentOwnerMints = this.recentOwnerMints.filter((at) => at > since);
+      return this.recentOwnerMints.length < MAX_MINTS_PER_MINUTE;
+    }
     this.recentMints = this.recentMints.filter((at) => at > since);
     return this.recentMints.length < MAX_MINTS_PER_MINUTE;
   }
 
-  /** Oldest tokens fall off past the cap, so opening a page repeatedly can't grow the file. */
-  mint(binding: ConfirmBinding): { token: string; expiresAt: number } {
-    this.recentMints.push(this.now());
+  /** Seconds until the allowance has room again (at least 1). */
+  mintRefillSeconds(opts?: MintOptions): number {
+    const list = opts?.protected ? this.recentOwnerMints : this.recentMints;
+    const oldest = list.length ? Math.min(...list) : this.now();
+    return Math.max(1, Math.ceil((oldest + 60_000 - this.now()) / 1000));
+  }
+
+  /**
+   * Oldest tokens fall off past the cap, so opening a page repeatedly can't grow the file.
+   *
+   * Without `opts` this is piece 1c's behaviour exactly (the oldest token of the service falls off).
+   * With `opts` (SEC-135 on): at the 50-token cap the oldest UNPROTECTED token is evicted, for either
+   * kind of mint; when all 50 are protected the mint is refused (ConfirmTokensFullError, no row
+   * changed), so neither a stranger flood nor a 51st owner open pushes out a live owner page.
+   */
+  mint(binding: ConfirmBinding, opts?: MintOptions): { token: string; expiresAt: number } {
     const token = crypto.randomBytes(32).toString('base64url');
     const expiresAt = this.now() + CONFIRM_TOKEN_TTL_MS;
-    const others = this.live().filter((t) => t.service !== binding.service);
-    const same = this.live().filter((t) => t.service === binding.service).slice(-(MAX_PER_SERVICE - 1));
-    this.write([...others, ...same, { ...binding, hash: hashOf(token), expiresAt }]);
+    const live = this.live();
+    const others = live.filter((t) => t.service !== binding.service);
+    let same = live.filter((t) => t.service === binding.service);
+    if (!opts) {
+      same = same.slice(-(MAX_PER_SERVICE - 1));
+    } else {
+      while (same.length >= MAX_PER_SERVICE) {
+        const victim = same.findIndex((t) => t.protected !== true);
+        if (victim < 0) throw new ConfirmTokensFullError();
+        same = [...same.slice(0, victim), ...same.slice(victim + 1)];
+      }
+    }
+    (opts?.protected ? this.recentOwnerMints : this.recentMints).push(this.now());
+    const row: StoredToken = { ...binding, hash: hashOf(token), expiresAt, ...(opts?.protected ? { protected: true } : {}) };
+    this.write([...others, ...same, row]);
     return { token, expiresAt };
   }
 
@@ -80,7 +129,7 @@ export class ConfirmTokenStore {
     const found = tokens.find((t) => t.hash === hash && t.service === service);
     if (!found) return null;
     this.write(tokens.filter((t) => t !== found));
-    const { hash: _hash, expiresAt: _expiresAt, ...binding } = found;
+    const { hash: _hash, expiresAt: _expiresAt, protected: _protected, ...binding } = found;
     return binding;
   }
 
