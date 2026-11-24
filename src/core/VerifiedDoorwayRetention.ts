@@ -1,5 +1,5 @@
 import fs from 'node:fs';
-import { createPhysicalEffectLock } from './PhysicalEffectLock.js';
+import { createPhysicalEffectLock, type PhysicalEffectLease } from './PhysicalEffectLock.js';
 import { readCommittedDoorwayObservation } from './CommittedDoorwayObservation.js';
 import {
   SCHEDULED_DOORWAY_DIAGNOSTIC_LIMIT,
@@ -134,6 +134,22 @@ export function verifyDoorwayRetentionReferences(
   return references.diagnosticRunIds.every(runId => runs.has(runId));
 }
 
+/** Run an artifact writer under the same canonical lock as cursor publication. */
+export async function withDoorwayRetentionWriter<T>(
+  stateDir: string,
+  deadlineMs: number,
+  write: (stateDir: string, lease: PhysicalEffectLease) => Promise<T>,
+): Promise<T> {
+  const canonical = fs.realpathSync(stateDir);
+  const lease = await createPhysicalEffectLock(canonical).acquire(SCHEDULED_DOORWAY_RETENTION_SCOPE, deadlineMs);
+  try {
+    lease.assertHeld();
+    return await write(canonical, lease);
+  } finally {
+    await lease.release();
+  }
+}
+
 /** Establish the first advisory cursor under the canonical state's writer lease. */
 export async function initializeDoorwayRetentionCursor(options: {
   stateDir: string;
@@ -143,10 +159,7 @@ export async function initializeDoorwayRetentionCursor(options: {
   deadlineMs: number;
 }): Promise<{ status: 'published' | 'existing'; cursor: ScheduledDoorwayRetentionCursor }
   | { status: 'unavailable'; reason: 'incomplete-evidence' | 'ledger-changed' }> {
-  const stateDir = fs.realpathSync(options.stateDir);
-  const lease = await createPhysicalEffectLock(stateDir).acquire(SCHEDULED_DOORWAY_RETENTION_SCOPE, options.deadlineMs);
-  try {
-    lease.assertHeld();
+  return withDoorwayRetentionWriter(options.stateDir, options.deadlineMs, async (stateDir, lease) => {
     const nowMs = Date.now();
     const store = new ScheduledDoorwayObservationStore(stateDir, options.machineId, options.doorIds, () => nowMs);
     const existing = store.readRetentionCursor();
@@ -167,7 +180,5 @@ export async function initializeDoorwayRetentionCursor(options: {
     }
     const cursor = store.advanceRetentionCursor(null, references, lease);
     return { status: 'published', cursor };
-  } finally {
-    await lease.release();
-  }
+  });
 }

@@ -10,6 +10,9 @@ import fs from 'node:fs';
 import path from 'node:path';
 import yaml from 'js-yaml';
 import { createTempProject, createMockSessionManager, type TempProject } from '../../helpers/setup.js';
+import os from 'node:os';
+import { createPhysicalEffectLock } from '../../../src/core/PhysicalEffectLock.js';
+import { withDoorwayRetentionWriter } from '../../../src/core/VerifiedDoorwayRetention.js';
 import { hashBody, hashFrontmatter, hashScriptBytes } from '../../../src/scheduler/AgentMdLockFile.js';
 import type { JobSchedulerConfig } from '../../../src/core/types.js';
 import type { ScriptRunContext } from '../../../src/scheduler/scriptRunObservers.js';
@@ -121,7 +124,7 @@ console.log('JOB_RESULT ok checked');
 `;
 
 describe('script runner execution', () => {
-  it('attests the exact opt-in doorway run and restores the legacy routing decision when opted out', async () => {
+  it.skipIf(!createPhysicalEffectLock(os.tmpdir()).status().available)('attests the exact opt-in doorway run and restores the legacy routing decision when opted out', async () => {
     project = createTempProject();
     const slug = 'doorway-scan';
     const wrapper = "console.log('JOB_RESULT ok legacy profile')";
@@ -139,7 +142,13 @@ describe('script runner execution', () => {
     const config = path.join(project.stateDir, 'config.json');
     fs.writeFileSync(config, JSON.stringify({ maintenance: { doorwayScan: { packagedExecution: true } } }));
     s.start();
-    expect(await s.triggerJob(slug, 'test')).toBe('triggered');
+    await withDoorwayRetentionWriter(project.stateDir, Date.now() + 2000, async () => {
+      expect(await s.triggerJob(slug, 'test')).toBe('triggered');
+      await new Promise(resolve => setTimeout(resolve, 70));
+      expect(lastRun(s, slug)?.result).toBe('pending');
+      expect(readDoorwayAssets).not.toHaveBeenCalled();
+      expect(fs.existsSync(path.join(project!.stateDir, 'state', 'doorway-scan-scheduled-runs'))).toBe(false);
+    });
     await waitFor(() => lastRun(s, slug)?.result === 'success');
     const packaged = lastRun(s, slug);
     expect(packaged).toMatchObject({

@@ -105,3 +105,7 @@ Initial cursor selection has a ledger read that includes every eligible local ru
 ## Initial cursor publication
 
 The first advisory retention cursor is now initialized under the physical writer lease rooted in the canonical state directory. Initialization rereads the complete ledger before publication and refuses a changed or incomplete snapshot. Two concurrent initializers publish one first generation. The operation performs no cleanup and has no production caller. An existing cursor is returned as stored. Production still needs every relevant writer to honor the same lease and every reader to finish or retry before cleanup. Independent review concurred with the advisory scope.
+
+## Scheduled artifact writer custody
+
+Opt-in scans now use the same canonical state directory lock as initial cursor publication. The scheduler holds the lease through admission and observation file writes and normal completion, and checks it before each write. Time waiting for the lease counts against the probe budget. An unavailable lock provider prevents the opt-in run from probing. Legacy routing is unaffected. Pending ledger creation and exceptional settlement remain outside this lease, and no caller uses the cursor for cleanup. Independent review concurred with the scoped checkpoint.

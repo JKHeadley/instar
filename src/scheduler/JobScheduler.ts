@@ -47,6 +47,7 @@ import { getInstarVersion } from '../core/Config.js';
 import { readVerifiedInstalledDoorwayAssets } from '../core/VerifiedPackagedCatalog.js';
 import { ScheduledDoorwayObservationStore } from '../core/ScheduledDoorwayObservationStore.js';
 import { readScheduledDoorwayEvidence, type ScheduledDoorwayEvidence } from '../core/ScheduledDoorwayRead.js';
+import { withDoorwayRetentionWriter } from '../core/VerifiedDoorwayRetention.js';
 import { executePackagedDoorwayScan, readDoorwayExecutionConfig } from './PackagedDoorwayExecution.js';
 import { JobSupervisionStore } from './JobSupervisionStore.js';
 import { projectSupervisionEvidence, SUPERVISION_EVIDENCE_POLICY } from './JobSupervisionEvidence.js';
@@ -2751,7 +2752,7 @@ export class JobScheduler {
       metadata: { slug, reason, mode: 'script-runner' },
     });
 
-    const run = async (): Promise<void> => {
+    const run = async (writer?: { stateDir: string; probeDeadline: number; assertHeld: () => void }): Promise<void> => {
       const trust = this.checkScriptTrust(job);
       let parsed: ParsedScriptRun;
       let scrubbed = '';
@@ -2778,7 +2779,7 @@ export class JobScheduler {
         }
       } else if (packagedDoorwayRun) {
         const pending = this.runHistory.findRun(runId);
-        if (!pending || !this.machineId || job.lockTrust !== 'trusted') {
+        if (!writer || !pending || !this.machineId || job.lockTrust !== 'trusted') {
           parsed = this.untrustedParse('packaged-run-unverified');
         } else {
           const assets = readVerifiedInstalledDoorwayAssets(getInstarVersion());
@@ -2786,11 +2787,12 @@ export class JobScheduler {
             parsed = this.untrustedParse(assets.reason);
           } else {
             scheduledDoorwayObservationDigest = await executePackagedDoorwayScan({
-              stateDir: path.resolve(this.stateDir),
+              stateDir: writer.stateDir,
               run: pending,
               machineId: this.machineId,
               assets,
-              timeoutMs: Math.max(1, job.scriptTimeoutMinutes ?? JobScheduler.DEFAULT_SCRIPT_TIMEOUT_MINUTES) * 2 * 60_000,
+              timeoutMs: writer.probeDeadline - performance.now(),
+              assertWriterHeld: writer.assertHeld,
             });
             scrubbed = 'JOB_RESULT ok verified free probes';
             parsed = parseScriptOutput(scrubbed, 0);
@@ -2802,14 +2804,22 @@ export class JobScheduler {
           : { INSTAR_JOB_RUN_ID: runId });
         ({ parsed, scrubbed } = this.parseExec(job, exec));
       }
+      writer?.assertHeld();
       this.finishScriptRun(job, runId, supervisionId, parsed, scrubbed, startedAt, supervisionActiveAtStart, scheduledDoorwayObservationDigest);
     };
 
     const offset = this.scriptStartOffsetEnabled ? JobScheduler.scriptStartOffsetMs(slug) : 0;
     const go = () => {
-      run()
-        .catch((err) => {
+      const timeoutMs = Math.max(1, job.scriptTimeoutMinutes ?? JobScheduler.DEFAULT_SCRIPT_TIMEOUT_MINUTES) * 2 * 60_000;
+      const probeDeadline = performance.now() + timeoutMs;
+      const execution = packagedDoorwayRun
+        ? withDoorwayRetentionWriter(this.stateDir, Date.now() + timeoutMs, (stateDir, lease) =>
+          run({ stateDir, probeDeadline, assertHeld: () => lease.assertHeld() }))
+        : run();
+      execution.catch((err) => {
           console.error(`[scheduler] Script runner for "${slug}" threw: ${err instanceof Error ? err.message : String(err)}`);
+          const completed = packagedDoorwayRun ? this.runHistory.findRun(runId) : null;
+          if (completed && completed.result !== 'pending') return;
           try {
             const reason = packagedDoorwayRun && err instanceof Error && err.message === 'packaged-probe-timeout'
               ? 'packaged-probe-timeout' : 'script-runner-error';

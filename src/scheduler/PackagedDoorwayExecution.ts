@@ -69,8 +69,10 @@ export async function executePackagedDoorwayScan(options: {
   machineId: string;
   assets: VerifiedPackagedDoorwayAssetsResult;
   timeoutMs: number;
+  assertWriterHeld?: () => void;
 }): Promise<string> {
-  const { stateDir, run, machineId, assets, timeoutMs } = options;
+  const { stateDir, run, machineId, assets, timeoutMs, assertWriterHeld } = options;
+  if (!(timeoutMs > 0)) throw new Error('packaged-probe-timeout');
   if (assets.status !== 'verified') throw new Error(assets.reason);
   if (run.machineId !== machineId || run.slug !== 'doorway-scan' || run.origin !== 'instar'
     || run.runner !== 'script' || run.lockTrust !== 'trusted' || run.result !== 'pending') {
@@ -88,6 +90,7 @@ export async function executePackagedDoorwayScan(options: {
 
   const config = readDoorwayExecutionConfig(stateDir);
   if (config?.packagedExecution !== true || config.enabled === false) throw new Error('packaged-execution-disabled');
+  assertWriterHeld?.();
   store.startRun(run.runId, run.startedAt);
   for (const [doorId, door] of Object.entries(catalog.doors)) {
     if (!isRecord(door) || !isRecord(door.probe)) continue;
@@ -99,6 +102,7 @@ export async function executePackagedDoorwayScan(options: {
     if (remaining <= 0) throw new Error('packaged-probe-timeout');
     const live = readDoorwayExecutionConfig(stateDir);
     if (live?.packagedExecution !== true || live.enabled === false) throw new Error('packaged-execution-disabled');
+    assertWriterHeld?.();
     store.startDoor(run.runId, doorId, new Date().toISOString());
     const probeStatus = await probe(source, { ...door, id: doorId }, env, cwd, remaining);
     if (typeof probeStatus !== 'string') throw new Error('packaged-probe-output-invalid');
@@ -106,6 +110,7 @@ export async function executePackagedDoorwayScan(options: {
     observations.push({ doorId, probeStatus: probeStatus as ScheduledDoorwayObservation['probeStatus'], observedAt: new Date().toISOString() });
   }
 
+  assertWriterHeld?.();
   store.stage(run.runId, new Date().toISOString(), observations);
   const staged = store.readStaged(run.runId);
   if (!staged || staged.runId !== run.runId || staged.machineId !== machineId || staged.startedAt !== run.startedAt) {
