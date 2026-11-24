@@ -1,11 +1,9 @@
 # Find the work Instar already did
 
-Justin asked about permanent addresses for Instar agents. A previous conversation had already settled part of the design, and a pull request contained the implementation. Instar checked a small memory index, missed the design, and started considering the same work again. It also has two ways to make a project appear on a list, so asking which projects exist can give different answers.
+Instar missed an earlier design and its open pull request when asked about permanent agent addresses. The separate project views can also disagree about which work they track. Both problems become harder to untangle after a machine goes offline or history has to be restored.
 
-This proposal changes both paths. Each kind of record has an accountable owner inside Instar. That owner is where changes go. A report can show a project's latest state and add its own check-in history, with a link back to the project record. Two screens can show different subsets and explain their inclusion rules.
+A1 gives each enrolled kind of record one accountable service for changes. Different screens can show different subsets and explain what they include. A Chief of Staff check-in can show a project's current state while keeping its own notes and history.
 
-One lookup connects earlier conversations, decisions, projects, tasks, documents, and pull requests. It shows what it found and which sources it could search. If a machine went offline or a search finished only partway, the answer can give the useful evidence and say where the gaps are. Each source keeps its own access rules.
+One read-only lookup connects earlier conversations, decisions, projects, documents and pull requests. The results say which sources were searched and where there are gaps. A prior design can still be found from its pull request when the original conversation is incomplete. The result distinguishes approved work, code in review and evidence of deployment. Each source keeps its own access rules, including when an owner asks in a shared conversation.
 
-Before a supported workflow opens durable work, it records the lookup and what it decided to do with the result. An agent can continue an existing effort, link a related one, or explain what makes a new effort distinct. Repeating the exact same request should return the same work item. Two similar ideas can still become separate projects.
-
-The first full test will replay the permanent-links question with incomplete conversation history. The answer should surface the existing pull request and distinguish what was approved, implemented, and deployed. A later specification applies the same rules to projects and scheduled jobs, including what happens if an update stops halfway through.
+The first test will replay the permanent-links question with the local transcript incomplete. The response should surface the existing pull request and explain what it proves. We will also check that a replacement machine can recover retained, authorized evidence. A separate A2 design will review how to require a lookup before starting new work and how to prevent duplicate external actions.
