@@ -6,4 +6,4 @@ We will also try losing the first computer immediately after it says the decisio
 
 This test can show that a specific project decision survived on another computer. Switching where projects are written still requires proof that every required computer has the accepted change before Instar says it was saved for the group. The existing project writers stay in place while that work continues.
 
-The first test uses two physical fixture machines and a simulated owner device with test keys. It exercises the real server checks and journal. A separate acceptance check needs someone to approve from a real phone.
+The first test uses two physical fixture machines, the Studio and the M5 Pro, and a simulated owner device with test keys. It exercises the real server checks and journal. A separate acceptance check needs someone to approve from a real phone.

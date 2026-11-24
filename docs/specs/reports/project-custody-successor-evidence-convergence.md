@@ -152,3 +152,7 @@ Disposition. Bound both negative response bodies, holder isolation sequence and 
 ## Convergence verdict
 
 Converged at the Tier 2 cap for the evidence-only procedure. Record the cutoff timing above before the physical run. A two-host witness and real-phone acceptance are both pending. Project writers and #3753 cutover remain unchanged.
+
+## Fixture update after review
+
+The Chief of Staff selected the Studio and M5 Pro as the two isolated test hosts. The Mini fixture was held because its prerequisite user session would displace another console user. The physical qualifications, simulator signatures, access checks and separate real-phone requirement are unchanged. The local native simulator tests verified challenge, journal and revoke behavior on one server only.
