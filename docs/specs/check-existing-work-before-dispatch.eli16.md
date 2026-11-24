@@ -7,3 +7,5 @@ When the same request reaches Instar twice, such as after a restart or through t
 Some outside services cannot tell Instar whether an action went through after a connection breaks. For those actions, Instar records who started the attempt before making the call. A replacement worker checks what happened before trying anything again. If it cannot establish that the earlier worker could never send the action and the effect did not happen, it keeps the result as uncertain and routes it to the authorized owner. A timeout alone cannot cause a second send.
 
 We will test the original permanent-links question, related work that really is distinct, private work alongside shared work, and a paused worker that wakes up after another machine takes over.
+
+The first implementation observes successful direct owner text in the Chief of Staff Telegram topic after it reaches the existing session. The observation uses the public pull-request inventory and records only a coarse outcome. It leaves the message and any decision about what to do with the agent.

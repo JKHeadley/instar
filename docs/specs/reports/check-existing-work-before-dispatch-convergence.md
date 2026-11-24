@@ -111,3 +111,5 @@ These are findings from the supplied contracts. The race and redirected dispatch
 ## Convergence verdict
 
 Converged at the six-round cap for the independently gated design, with explicit scope and release evidence conditions. The final security-related test wording follows the exact body's existing final send authorization invariant. No missing audience permission, incomplete evidence or uncertain external effect can be treated as safe release proof. Material recall and status-entry refinements are tracked above as immediate acceptance conditions. Implementation begins with read-only observation and commits no automatic authority expansion.
+
+Implementation checkout editorial note. The orphan-deferral scanner read “follow-ups” as future work. The wording now says a later revocation can prevent subsequent operations and the accepted handoff remains irrevocable. The rule is unchanged. Round hashes above refer to the reviewed snapshots.
