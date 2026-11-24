@@ -151,6 +151,7 @@ import { DESKTOP_CHECK_FAILED_REASON, desktopProbeUnavailableReason } from '../c
 import { mountTelegramOriginRoutes, sendOriginHoldResponse } from './telegramOriginRoutes.js';
 import { PR_LINK_REPLY_ROUTES, createSelfLoginReader, prLinkReviewMiddleware } from '../messaging/prLinkReviewRequest.js';
 import { createAuthenticatedGhExec } from '../core/githubRuntime.js';
+import { mountChiefOfStaffPrSearch } from './chiefOfStaffPrSearchRoutes.js';
 import { TelegramOriginHoldError, OriginForwardSettledLocallyError, OriginConfigUnavailableError } from '../messaging/telegram-origin/types.js';
 import { deterministicAutomationAuthor } from '../messaging/telegram-origin/OriginAutomationAuthor.js';
 import { cadenceReportProducerPayload, type WindowRunCadenceExecutor, type WindowCadenceReportReceipt } from '../core/WindowRunCadenceExecutor.js';
@@ -1370,6 +1371,7 @@ export interface RouteContext {
   telegramOrigin?: import('../messaging/telegram-origin/TelegramOriginRuntime.js').TelegramOriginRuntime | null;
   /** Test seam: the gh runner for the PR-link reviewer check (default: the authenticated gh for this agent). */
   prLinkReviewGh?: import('../core/githubRuntime.js').AuthenticatedGhExec;
+  chiefOfStaffPrSearch?: import('../core/ChiefOfStaffPrSearch.js').ChiefOfStaffPrSearch;
   /** Machine identity recovery authority/read surfaces. Absent keeps routes
    * honest (503) on single-machine or feature-dark installs. */
   identityStore?: import('../core/IdentityStore.js').IdentityStore | null;
@@ -10183,6 +10185,13 @@ export function createRoutes(ctx: RouteContext): Router {
     } catch (err) {
       res.status(500).json({ error: `context-budget metrics failed: ${(err as Error).message}` });
     }
+  });
+  mountChiefOfStaffPrSearch(router, {
+    ownerToken: () => ctx.config.authToken,
+    lookup: ctx.chiefOfStaffPrSearch,
+    enabled: () => ctx.config.developmentAgent === true && !!ctx.chiefOfStaffLoop
+      && (ctx.liveConfig?.get<boolean | undefined>('chiefOfStaff.enabled', ctx.config.chiefOfStaff?.enabled) !== false),
+    stateDir: ctx.config.stateDir,
   });
   router.get('/chief-of-staff', (_req, res) => {
     if (!ctx.chiefOfStaffLoop) {

@@ -1,0 +1,29 @@
+{
+  "ts": "2026-11-24T04:59:06.320Z",
+  "slug": "work-discovery-read",
+  "suggestedTier": 2,
+  "declaredTier": 2,
+  "riskFloor": 2,
+  "riskFloorReasons": [
+    "new capability: new route (router.<verb>() added"
+  ],
+  "belowFloor": false,
+  "files": 6,
+  "loc": 200,
+  "scope": {
+    "basis": "staged-in-scope-paths-including-deleted",
+    "files": [
+      "src/data/awareness/work-discovery-read.md",
+      "src/server/AgentServer.ts",
+      "src/server/chiefOfStaffPrSearchRoutes.ts",
+      "src/server/mobileConversationSearchRoutes.ts",
+      "src/server/routes.ts",
+      "src/server/workDiscoveryRoutes.ts"
+    ],
+    "addedLines": 195,
+    "deletedLines": 5
+  },
+  "causalAutopsy": null,
+  "classClosure": null,
+  "verdict": "pass"
+}
