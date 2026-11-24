@@ -1,0 +1,44 @@
+{
+  "version": 3,
+  "slug": "local-history-claim-write-budget",
+  "sessionId": "2d7f3894-f027-4c8b-b015-2c9311ec6ec0",
+  "timestamp": "2026-11-23T23:48:07.025Z",
+  "artifactPath": "upgrades/side-effects/local-history-claim-write-budget.md",
+  "artifactSha256": "0cb23768d0c2f116751457bb586d1da9ac1bb6424ef9dbdfb19cfb494afce658",
+  "specPath": "docs/specs/local-history-native-contract.md",
+  "coveredFiles": [
+    "docs/local-history/evidence/claim-sqlite-pager-bound.json",
+    "docs/local-history/source-claim-write-budget.md",
+    "src/data/awareness/local-history-claim-write-budget.md",
+    "src/import/ImportedHistoryStore.ts",
+    "src/import/LocalHistoryClaimBudget.ts",
+    "tests/integration/local-source-claim-budget-lifecycle.test.ts",
+    "tests/unit/local-source-claim-budget.test.ts",
+    "upgrades/next/local-history-claim-write-budget.md",
+    "upgrades/side-effects/local-history-claim-write-budget.md"
+  ],
+  "phase": "complete",
+  "tier": 2,
+  "tierReasoning": "Durable private SQLite claim writes require verified prewrite content ceilings and actual first-error/crash proof; hooks installed and complete source restaged after the explicitly recorded unchecked attempt.",
+  "secondPass": "true",
+  "reviewerConcurred": true,
+  "toolchain": {
+    "buildSkill": {
+      "name": "build",
+      "version": null,
+      "verified": false
+    },
+    "reviewSkills": [
+      {
+        "name": "instar-dev",
+        "outcome": "concurred",
+        "verified": false
+      }
+    ],
+    "convergence": {
+      "reportPath": "docs/specs/reports/local-history-native-contract-convergence.md",
+      "iterations": 6,
+      "verified": true
+    }
+  }
+}

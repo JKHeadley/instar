@@ -19,6 +19,7 @@ import type { ImportedConversation, ImportedMessage, ImportedProject, ImportSour
 import { isExportSource } from './exportParsers.js';
 import { IMPORTED_HISTORY_DIRNAME } from '../core/importedHistoryPaths.js';
 import { CHUNK_BYTES } from '../core/appMediaTypes.js';
+import { inspectLocalClaimBudgetSource, planLocalClaimBudget, enforceLocalClaimBudget, type LocalHistoryClaimBudget } from './LocalHistoryClaimBudget.js';
 import { createLocalSourceClaim, localSourceDestination, parseLocalSourceClaim, type LocalSourceClaim, type LocalSourceIdentity } from './LocalSourceIdentity.js';
 
 export interface ConversationSummary {
@@ -57,7 +58,7 @@ interface Manifest {
 
 /** Content-growth ceiling only. It is not copy consent, a disk reservation or filesystem metadata accounting. */
 export interface ImportedHistoryWritePlan {
-  readonly kind: 'conversation' | 'manifest';
+  readonly kind: 'conversation' | 'manifest' | 'source-claim';
   readonly contentBytes: number;
 }
 interface PreparedConversation {
@@ -70,7 +71,8 @@ interface PreparedConversation {
   local: boolean;
   result: { added: number; isNew: boolean };
 }
-type PreparedWrite = { kind: 'conversation'; conversation: PreparedConversation } | { kind: 'manifest'; text: string | null };
+type PreparedWrite = { kind: 'conversation'; conversation: PreparedConversation } | { kind: 'manifest'; text: string | null }
+  | { kind: 'source-claim'; claim: Readonly<LocalSourceClaim>; budget: LocalHistoryClaimBudget; existing: boolean };
 
 /** The reference imported results carry in search and links: imported:<from>:<originalId>. */
 export function importedRef(from: ImportSource, originalId: string): string {
@@ -276,11 +278,12 @@ export class ImportedHistoryStore {
 
   /** Fixed, inode-protected metadata DB. Its independent FULL commit completes
    * before conversation append while withWriter keeps the actual writer lock. */
-  private withLocalClaims<T>(write: boolean, operation: (db: Database.Database) => T): T {
+  private withLocalClaims<T>(write: boolean, operation: (db: Database.Database) => T, budget?: LocalHistoryClaimBudget): T {
     if (process.platform === 'win32' || !process.getuid) throw new Error('local-source-private-storage-unavailable');
     let db: Database.Database | undefined;
     let unregister: (() => void) | undefined;
     try {
+      if (budget) inspectLocalClaimBudgetSource(path.join(this.dir, 'source-claims.sqlite'));
       // Lookup cannot create a file or repair permissions. Recovery access lets
       // SQLite roll back a dead writer's hot journal; query_only prevents SQL
       // mutations on this logically read-only connection. SQLite owns recovery
@@ -289,13 +292,23 @@ export class ImportedHistoryStore {
       const opened = db;
       unregister = registerSqliteHandle(() => opened.close());
       if (!write) db.pragma('query_only = ON');
+      if (budget) {
+        enforceLocalClaimBudget(db, budget);
+        // One transaction; abort/close on the FIRST error. No statement retry or continuation.
+        return db.transaction(() => {
+          if (!this.hasLocalClaimsSchema(opened)) opened.exec('CREATE TABLE local_source_claims (ref TEXT PRIMARY KEY NOT NULL, payload TEXT NOT NULL)');
+          return operation(opened);
+        }).immediate();
+      }
       if (write) {
         db.pragma('synchronous = FULL');
         if (!this.hasLocalClaimsSchema(db)) db.exec('CREATE TABLE local_source_claims (ref TEXT PRIMARY KEY NOT NULL, payload TEXT NOT NULL)');
       }
       return operation(db);
     } catch (error) {
-      if (error instanceof Error && ['unknown-source-identity', 'local-source-reconciliation-required'].includes(error.message)) throw error;
+      if (error instanceof Error && ['unknown-source-identity', 'local-source-reconciliation-required',
+        'local-source-budget-policy', 'local-source-budget-recovery-required'].includes(error.message)) throw error;
+      if (budget && (error as {code?: string}).code === 'SQLITE_FULL') throw new Error('local-source-budget-capacity');
       if (['SQLITE_BUSY', 'SQLITE_LOCKED'].includes((error as { code?: string }).code ?? '')) throw new ImportWriterBusy();
       throw new Error('local-source-identity-unavailable');
     } finally { unregister?.(); if (db?.open) db.close(); }
@@ -507,6 +520,29 @@ export class ImportedHistoryStore {
     return this.publishWritePlan({ kind: 'conversation', conversation }, contentBytes, snapshots);
   }
 
+  /** The future fixed apply worker must reserve this content ceiling PLUS filesystem/lock metadata.
+   * Sidecars are preserved for separately admitted recovery, never opened by this budgeted path. */
+  planSourceClaimWrite(identity: LocalSourceIdentity, pageAllowance?: number): ImportedHistoryWritePlan {
+    if (!this.hasLocalWriter()) throw new Error('import-write-plan-writer-required');
+    const revision = this.writeRevision, lease = this.writerLease, claim = createLocalSourceClaim(identity);
+    const file = path.join(this.dir, 'source-claims.sqlite'), initialBytes = inspectLocalClaimBudgetSource(file);
+    const snapshots = this.snapshotWriteFiles([file]);
+    const rowBytes = Buffer.byteLength(JSON.stringify(claim)) + Buffer.byteLength(importedRef(claim.source, claim.destinationId));
+    let budget: LocalHistoryClaimBudget;
+    if (snapshots.get(file) === 'missing') {
+      const memory = new Database(':memory:');
+      try { budget = planLocalClaimBudget(memory, 0, rowBytes, pageAllowance); } finally { memory.close(); }
+    } else {
+      budget = this.withLocalClaims(false, db => planLocalClaimBudget(db, initialBytes, rowBytes, pageAllowance));
+    }
+    const prior = this.readLocalSourceClaim(claim);
+    if (prior && JSON.stringify(prior) !== JSON.stringify(claim)) throw new Error('local-source-reconciliation-required');
+    this.sameWriteFiles(snapshots);
+    inspectLocalClaimBudgetSource(file);
+    if (this.writeRevision !== revision || this.writerLease !== lease) throw new Error('import-write-plan-stale');
+    return this.publishWritePlan({ kind: 'source-claim', claim, budget, existing: !!prior }, prior ? 0 : budget.contentBytes, snapshots);
+  }
+
   /** The full replacement temporarily coexists with the old manifest. */
   planManifestWrite(): ImportedHistoryWritePlan {
     if (!this.hasLocalWriter()) throw new Error('import-write-plan-writer-required');
@@ -519,7 +555,7 @@ export class ImportedHistoryStore {
 
   /** A trusted fixed worker supplies its parent's already-reserved content ceiling.
    * This numeric check grants no owner authority, copy consent or disk reservation. */
-  executeWritePlan(plan: ImportedHistoryWritePlan, reservedContentBytes: number): { added: number; isNew: boolean } | void {
+  executeWritePlan(plan: ImportedHistoryWritePlan, reservedContentBytes: number): { added: number; isNew: boolean } | Readonly<LocalSourceClaim> | void {
     const pending = this.pendingWrite;
     if (!pending || pending.token !== plan || !this.hasLocalWriter() || pending.lease !== this.writerLease
       || pending.revision !== this.writeRevision) throw new Error('import-write-plan-stale');
@@ -529,6 +565,21 @@ export class ImportedHistoryStore {
     }
     this.sameWriteFiles(pending.snapshots);
     if (pending.prepared.kind === 'conversation') return this.executeConversation(pending.prepared.conversation, pending.snapshots);
+    if (pending.prepared.kind === 'source-claim') {
+      const { claim, budget, existing } = pending.prepared, file = path.join(this.dir, 'source-claims.sqlite');
+      inspectLocalClaimBudgetSource(file); // Before any SQLite open, including the no-write activation case.
+      const ref = importedRef(claim.source, claim.destinationId);
+      const admitted = existing ? this.readLocalSourceClaim(claim) : this.withLocalClaims(true, db => {
+        const prior = this.readLocalClaim(db, ref);
+        if (prior) throw new Error('local-source-reconciliation-required');
+        if (this.manifest.conversations[ref] || fs.existsSync(this.convPath(fileFor(ref)))) throw new Error('unknown-source-identity');
+        db.prepare('INSERT INTO local_source_claims (ref, payload) VALUES (?, ?)').run(ref, JSON.stringify(claim));
+        return claim;
+      }, budget);
+      if (!admitted || JSON.stringify(admitted) !== JSON.stringify(claim)) throw new Error('unknown-source-identity');
+      this.activeLocalClaims.set(ref, admitted);
+      return admitted;
+    }
     if (pending.prepared.text !== null) {
       writeAtomic(path.join(this.dir, 'manifest.json'), pending.prepared.text);
       this.dirty = false; this.localDirty = false;

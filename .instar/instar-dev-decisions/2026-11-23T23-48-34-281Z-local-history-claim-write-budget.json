@@ -1,0 +1,24 @@
+{
+  "ts": "2026-11-23T23:48:34.281Z",
+  "slug": "local-history-claim-write-budget",
+  "suggestedTier": 2,
+  "declaredTier": 2,
+  "riskFloor": 1,
+  "riskFloorReasons": [],
+  "belowFloor": false,
+  "files": 3,
+  "loc": 152,
+  "scope": {
+    "basis": "staged-in-scope-paths-including-deleted",
+    "files": [
+      "src/data/awareness/local-history-claim-write-budget.md",
+      "src/import/ImportedHistoryStore.ts",
+      "src/import/LocalHistoryClaimBudget.ts"
+    ],
+    "addedLines": 147,
+    "deletedLines": 5
+  },
+  "causalAutopsy": null,
+  "classClosure": null,
+  "verdict": "pass"
+}
