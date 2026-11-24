@@ -12,6 +12,7 @@ import { registerSqliteHandle } from '../core/SqliteRegistry.js';
 import { mediaDiskFloorBytes, UPLOAD_TTL_MS } from '../core/AppMediaStore.js';
 import { CHUNK_BYTES } from '../core/appMediaTypes.js';
 import { SafeFsExecutor } from '../core/SafeFsExecutor.js';
+import { pinLocalHistoryCopyVolume, type LocalHistoryDirectoryIdentity } from './LocalHistoryCopyVolume.js';
 import { localHistoryUploadDirectory } from './LocalHistoryExchange.js';
 import { privateImportDatabasePath, verifyPrivateImportDirectory } from './privateImportState.js';
 
@@ -34,6 +35,7 @@ export class LocalHistoryDiskLedger {
   private readonly directory: string;
   private readonly blocks: string;
   private readonly device: number;
+  private readonly directoryIdentities: ReadonlyMap<string, LocalHistoryDirectoryIdentity>;
   private readonly db: Database.Database;
   private readonly unregister: () => void;
   private readonly recordCapacity: number;
@@ -43,7 +45,8 @@ export class LocalHistoryDiskLedger {
     this.recordCapacity = options.recordCapacity ?? MAX_RECORDS;
     if (!Number.isSafeInteger(this.recordCapacity) || this.recordCapacity < 1 || this.recordCapacity > MAX_RECORDS) throw new Error('local-history-disk-policy');
     this.directory = localHistoryUploadDirectory(stateDir);
-    this.device = fs.statSync(this.directory).dev;
+    const uploadIdentity = fs.lstatSync(this.directory, { bigint: true });
+    this.device = Number(uploadIdentity.dev);
     this.disk = options.disk ?? (() => {
       const stat = fs.statfsSync(this.directory);
       return { total: stat.blocks * stat.bsize, free: stat.bavail * stat.bsize };
@@ -52,7 +55,12 @@ export class LocalHistoryDiskLedger {
     this.blocks = path.join(this.directory, 'blocks');
     fs.mkdirSync(this.blocks, { mode: 0o700, recursive: true });
     verifyPrivateImportDirectory(this.blocks);
-    if (fs.statSync(this.blocks).dev !== this.device) throw new Error('local-history-disk-volume');
+    const blockIdentity = fs.lstatSync(this.blocks, { bigint: true });
+    this.directoryIdentities = new Map([
+      [path.resolve(this.directory), uploadIdentity],
+      [path.resolve(this.blocks), blockIdentity],
+    ]);
+    if (blockIdentity.dev !== uploadIdentity.dev) throw new Error('local-history-disk-volume');
     this.db = new Database(privateImportDatabasePath(this.directory, 'disk-ledger.sqlite'), { timeout: 0 }); /* state-registry: local-history-upload-local */
     try {
       const existing = this.db.prepare("SELECT 1 FROM sqlite_master WHERE type = 'table' AND name = 'allocations'").get();
@@ -80,6 +88,13 @@ export class LocalHistoryDiskLedger {
   }
 
   close(): void { this.unregister(); if (this.db.open) this.db.close(); }
+
+  /** Keep the ledger's original directories and existing copy destinations on
+   * one device. The future admission owner holds this pin through worker exit. */
+  pinCopyVolume(destinationDirectories: readonly string[]) {
+    if (!this.db.open || !destinationDirectories.length) throw new Error('local-history-disk-volume');
+    return pinLocalHistoryCopyVolume(this.directory, [this.blocks, ...destinationDirectories], this.directoryIdentities);
+  }
 
   private measurement(): LocalHistoryDiskMeasurement {
     const disk = this.disk();

@@ -1,0 +1,24 @@
+{
+  "version": 2,
+  "slug": "local-history-copy-disk-checkpoint",
+  "sessionId": "41652017-0805-405d-bb4e-2a975fb349ce",
+  "timestamp": "2026-11-24T10:50:23.837Z",
+  "artifactPath": "upgrades/side-effects/local-history-copy-disk-checkpoint.md",
+  "artifactSha256": "bfd971e2e75b6c3d04ede32da0dbddd0cd78cf59922a047437abd232b084e713",
+  "specPath": "docs/specs/local-history-native-contract.md",
+  "coveredFiles": [
+    "src/import/LocalHistoryCopyVolume.ts",
+    "src/import/LocalHistoryDiskLedger.ts",
+    "src/import/LocalHistoryPhysicalBudget.ts",
+    "tests/unit/local-history-copy-volume.test.ts",
+    "tests/unit/local-history-disk-ledger.test.ts",
+    "tests/unit/local-history-physical-budget.test.ts",
+    "upgrades/next/local-history-copy-disk-checkpoint.md",
+    "upgrades/side-effects/local-history-copy-disk-checkpoint.md"
+  ],
+  "phase": "complete",
+  "tier": 2,
+  "tierReasoning": "This is a prerequisite for private history copy and its physical write reservation.",
+  "secondPass": "not-required",
+  "reviewerConcurred": null
+}

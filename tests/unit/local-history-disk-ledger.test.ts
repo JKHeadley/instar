@@ -249,3 +249,22 @@ it('fills positive short reads and makes sealed allocations immutable through th
   expect(() => f.ledger.reconcile(id)).toThrow('disk-allocation-unavailable');
   f.ledger.dispose(id);
 });
+
+it.each(['upload', 'blocks'] as const)('refuses copy admission when the original ledger %s directory is replaced', target => {
+  const { stateDir, ledger } = setup();
+  const destination = path.join(stateDir, 'destination');
+  fs.mkdirSync(destination);
+  const pin = ledger.pinCopyVolume([destination]);
+  try {
+    expect(pin.measure().blockBytes).toBeGreaterThan(0);
+    const upload = localHistoryUploadDirectory(stateDir);
+    const replaced = target === 'upload' ? upload : path.join(upload, 'blocks');
+    fs.renameSync(replaced, path.join(stateDir, 'original'));
+    fs.mkdirSync(replaced, { mode: 0o700 });
+    if (target === 'upload') fs.mkdirSync(path.join(replaced, 'blocks'), { mode: 0o700 });
+    expect(() => pin.revalidate()).toThrow('local-history-copy-volume');
+    expect(() => ledger.pinCopyVolume([destination])).toThrow('local-history-copy-volume');
+  } finally {
+    pin.close();
+  }
+});
