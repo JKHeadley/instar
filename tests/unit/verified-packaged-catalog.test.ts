@@ -1,4 +1,4 @@
-import { afterEach, beforeEach, describe, expect, it } from 'vitest';
+import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest';
 import crypto from 'node:crypto';
 import { execFileSync } from 'node:child_process';
 import fs from 'node:fs';
@@ -98,6 +98,50 @@ describe('readVerifiedPackagedCatalog', () => {
       observation: { runId, observations: [{ doorId: 'fixture', probeStatus: 'ok' }] },
     });
     expect(fs.readFileSync(manual, 'utf8')).toBe('original manual bytes');
+  });
+
+  it.skipIf(process.platform === 'win32')('runs the real signed prober from a separate agent directory', async () => {
+    const prober = path.join(root, 'scripts/doorway-scan.mjs');
+    fs.copyFileSync(path.join(REPO_ROOT, 'scripts/doorway-scan.mjs'), prober);
+    fs.writeFileSync(catalogPath, JSON.stringify({
+      lastReviewedAt: '2026-11-01',
+      doors: { node: { probe: { kind: 'cli-version', bin: path.basename(process.execPath) } } },
+    }));
+    sign();
+    const assets = readVerifiedPackagedDoorwayAssets(root, VERSION, trustedPin);
+    expect(assets.status).toBe('verified');
+
+    // The running agent has no source scripts or manifest in its working directory.
+    const agentDir = fs.mkdtempSync(path.join(os.tmpdir(), 'instar-agent-without-checkout-'));
+    try {
+      const stateDir = path.join(agentDir, '.instar');
+      fs.mkdirSync(stateDir);
+      fs.writeFileSync(path.join(stateDir, 'config.json'), JSON.stringify({
+        maintenance: { doorwayScan: { packagedExecution: true } },
+      }));
+      const history = new JobRunHistory(stateDir);
+      history.setMachineId('fixture-host');
+      const runId = history.recordStart({
+        slug: 'doorway-scan', sessionId: 'fixture', trigger: 'scheduled', origin: 'instar',
+        runner: 'script', lockTrust: 'trusted', packagedDoorwayScan: true,
+      });
+      vi.stubEnv('PATH', [path.dirname(process.execPath), process.env.PATH].filter(Boolean).join(path.delimiter));
+      const digest = await executePackagedDoorwayScan({
+        stateDir, run: history.findRun(runId)!, machineId: 'fixture-host', assets, timeoutMs: 3000,
+      });
+      history.recordCompletion({ runId, result: 'success', scheduledDoorwayObservationDigest: digest });
+      const reopened = new JobRunHistory(stateDir);
+      const store = new ScheduledDoorwayObservationStore(stateDir, 'fixture-host', ['node']);
+      expect(readCommittedDoorwayObservation(runId, 'fixture-host', reopened, store)).toMatchObject({
+        status: 'committed',
+        observation: { runId, observations: [{ doorId: 'node', probeStatus: 'ok' }] },
+      });
+      expect(fs.existsSync(path.join(stateDir, 'state', 'doorway-scan.json'))).toBe(false);
+      expect(fs.readdirSync(agentDir)).toEqual(['.instar']);
+    } finally {
+      vi.unstubAllEnvs();
+      SafeFsExecutor.safeRmSync(agentDir, { recursive: true, force: true, operation: 'verified doorway agent test cleanup' });
+    }
   });
 
   it('returns the review date from the same verified bytes as the catalog', () => {

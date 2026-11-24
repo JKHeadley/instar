@@ -61,3 +61,7 @@ Independent checkpoint review concurred after confirming the existing awareness 
 ## Schedule guidance checkpoint
 
 New full-layout agent instructions and the update migrator use the same schedule guidance. Migration replaces the exact previously shipped bullet. Customized or absent bullets in an existing section stay as written. This text describes the saved job schedule and the existing master switch. It does not modify configuration, schedule entries, or delivery. The update is local to each agent's generated instructions and is repeatable.
+
+## Executable fixture checkpoint
+
+An ephemeral signing key binds the actual doorway prober and a deterministic CLI-only catalog in a package-shaped fixture. A separate agent directory runs the verified prober, records the exact run's digest, and reopens the committed observation from disk. The fixture uses a local Node version probe and creates no manual scan file. This test establishes executable compatibility outside a checkout. Release-signing custody and an installed release test remain separate.
