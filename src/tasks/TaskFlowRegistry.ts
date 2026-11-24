@@ -192,6 +192,10 @@ export class TaskFlowRegistry extends EventEmitter {
       .map((r) => this.toWaitMatch(r));
   }
 
+  proveWholeDatabaseComparison(isAuthorized: () => boolean) {
+    return this.store.proveWholeDatabaseComparison(isAuthorized);
+  }
+
   /**
    * List all flows for a controllerId, optionally filtered by status.
    * Used by DivergenceChecker — read-only, not on the hot mutation path.

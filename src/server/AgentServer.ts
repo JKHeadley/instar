@@ -270,6 +270,7 @@ import { createMobileConversationRouter, appOwnerName } from './mobileConversati
 import { createMobilePinRouter, recordTelegramPin } from './mobilePinRoutes.js';
 import { createConversationSearchRouter, isMeaningSearchEnabled, type ConversationSearchRouteDeps } from './mobileConversationSearchRoutes.js';
 import { createWorkDiscoveryRouter } from './workDiscoveryRoutes.js';
+import { createProjectListComparisonRouter, type ProjectComparisonSources } from './projectListComparisonRoutes.js';
 import { ChiefOfStaffPrSearch } from '../core/ChiefOfStaffPrSearch.js';
 import { resolveGitHubToken } from '../core/githubRuntime.js';
 import { conversationIndexSources } from './conversationMeaningSearch.js';
@@ -1916,6 +1917,7 @@ export class AgentServer {
     stopNotifier?: import('../monitoring/StopNotifier.js').StopNotifier | null;
     /** Initiative tracker — persisted record of multi-phase long-running work. */
     initiativeTracker?: import('../core/InitiativeTracker.js').InitiativeTracker;
+    projectComparisonSources?: ProjectComparisonSources;
     /** Project-scope round runner (Phase 1b PR 3). */
     projectRoundRunner?: import('../core/ProjectRoundRunner.js').ProjectRoundRunner;
     /** Test/composition override for the zero-spend live codex quota reader.
@@ -2090,6 +2092,15 @@ export class AgentServer {
     // Keep the privacy header even when authentication or JSON parsing refuses the request.
     this.app.use('/work/discover', (_req, res, next) => {
       res.set('Cache-Control', 'no-store');
+      next();
+    });
+    this.app.use('/work/projects/compare', (req, res, next) => {
+      res.set('Cache-Control', 'no-store');
+      const length = req.get('Content-Length');
+      if (req.get('Transfer-Encoding') || (length !== undefined && length !== '0')) {
+        res.status(400).json({ error: 'invalid-project-comparison-request' });
+        return;
+      }
       next();
     });
     this.app.use('/work/discover', boundedBody(4 * 1024, express.json({ limit: '4kb', verify: keepRawBody })));
@@ -7480,13 +7491,26 @@ export class AgentServer {
     });
     routeCtx.chiefOfStaffPrSearch = workDiscoveryPrSearch;
     let workDiscoveryConversationSource: ConversationSearchRouteDeps | null = null;
+    const mayReadPrivateWork = (req: Request, res: Response) => {
+      if (res.locals.dashboardScopedSession !== true || this.config.security?.dashboardScopedToken?.enabled !== true) return false;
+      const bearer = req.get('Authorization');
+      return !!bearer?.startsWith('Bearer dst_') && this.dashboardSessionStore.verify(bearer.slice(7));
+    };
+    const comparisonEnabled = () => !!options.projectComparisonSources && this.config.developmentAgent === true && !!this.config.throwawayAgent
+      && (options.liveConfig?.get?.('projectListComparison.enabled', this.config.projectListComparison?.enabled)
+        ?? this.config.projectListComparison?.enabled) === true;
+    const mayReadProjectComparison = (req: Request, res: Response) => {
+      // The disposable slice has no durable graph owner-policy release proof. Refuse
+      // that mode without synchronizing or writing its owner-policy observations.
+      if (!mayReadPrivateWork(req, res) || this.usesDurableGraphOwnerPolicy() || !this.config.dashboardPin) return false;
+      return this.dashboardPinVersion === createHash('sha256').update(this.config.dashboardPin).digest('hex');
+    };
+    this.app.use(createProjectListComparisonRouter({
+      enabled: comparisonEnabled, mayReadPrivateWork: mayReadProjectComparison, sources: options.projectComparisonSources ?? {},
+    }));
     this.app.use(createWorkDiscoveryRouter({
       enabled: () => this.config.developmentAgent === true,
-      mayReadPrivateWork: (req, res) => {
-        if (res.locals.dashboardScopedSession !== true || this.config.security?.dashboardScopedToken?.enabled !== true) return false;
-        const bearer = req.get('Authorization');
-        return !!bearer?.startsWith('Bearer dst_') && this.dashboardSessionStore.verify(bearer.slice(7));
-      },
+      mayReadPrivateWork,
       conversationSource: () => workDiscoveryConversationSource,
       configuredMessaging: platform => this.config.messaging.some(adapter => adapter.enabled && adapter.type === platform),
       pullRequestSource: workDiscoveryPrSearch,

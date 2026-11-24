@@ -130,6 +130,35 @@ export class TaskFlowStore {
     }
   }
 
+  /**
+   * A local comparison may observe a raw connection generation only when
+   * the entire native database work envelope is already proven visible to its
+   * owner. This deliberately does not qualify a mixed-audience installation.
+   */
+  proveWholeDatabaseComparison(isAuthorized: () => boolean): {
+    databasePath: string;
+    isCurrent(): boolean;
+  } | null {
+    if (!this.opened || !isAuthorized()) return null;
+    const databasePath = this.opts.dbPath;
+    const db = this.db;
+    const changes = db.prepare('SELECT total_changes()').pluck();
+    const externalRevision = db.prepare('PRAGMA data_version').pluck();
+    const acceptedChanges = changes.get();
+    const acceptedRevision = externalRevision.get();
+    const originalFile = fs.lstatSync(databasePath);
+    if (!originalFile.isFile()) return null;
+    return {
+      databasePath,
+      isCurrent: () => {
+        if (!this.opened || this.db !== db || !isAuthorized()) return false;
+        const file = fs.lstatSync(databasePath);
+        return file.isFile() && file.dev === originalFile.dev && file.ino === originalFile.ino
+          && changes.get() === acceptedChanges && externalRevision.get() === acceptedRevision;
+      },
+    };
+  }
+
   rawDb(): Database {
     return this.db;
   }

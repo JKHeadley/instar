@@ -118,8 +118,13 @@ async function getOnce(path, timeoutMs, soft403 = false) {
   const ctl = new AbortController();
   const t = setTimeout(() => ctl.abort(), timeoutMs);
   try {
-    const r = await fetch(path, { headers: { Authorization: `Bearer ${token}` }, signal: ctl.signal, cache: 'no-store' });
-    if (r.status === 403 && soft403) return { ...failure('the server answered 403'), status: r.status };
+    const requestToken = token;
+    const r = await fetch(path, { headers: { Authorization: `Bearer ${requestToken}` }, signal: ctl.signal, cache: 'no-store' });
+    if (r.status === 403 && soft403) {
+      const canShowInline = typeof soft403 === 'function' ? await soft403(requestToken) : soft403;
+      if (typeof soft403 === 'function' && requestToken !== token) return failure('the console session changed');
+      if (canShowInline) return { ...failure('the server answered 403'), status: r.status };
+    }
     if (r.status === 401 || r.status === 403) { signOut(); return { ...failure('not signed in'), status: r.status }; }
     if (r.status === 503) return failure('switched off on this agent');
     if (!r.ok) return { ...failure(`the server answered ${r.status}`), status: r.status, retryable: r.status >= 500 };
@@ -128,12 +133,12 @@ async function getOnce(path, timeoutMs, soft403 = false) {
     return { ...failure(e && e.name === 'AbortError' ? `no answer within ${Math.round(timeoutMs / 1000)} seconds` : 'the server could not be reached'), retryable: true };
   } finally { clearTimeout(t); }
 }
-async function get(path, timeoutMs = TIMEOUT_MS) {
+async function get(path, timeoutMs = TIMEOUT_MS, { soft403 = false } = {}) {
   const ms = Math.max(Number(timeoutMs) || 0, MIN_TIMEOUT_MS);
-  const first = await getOnce(path, ms);
+  const first = await getOnce(path, ms, soft403);
   if (first.ok || !first.retryable) return first;
   await new Promise((resolve) => setTimeout(resolve, RETRY_DELAY_MS));
-  const second = await getOnce(path, ms);
+  const second = await getOnce(path, ms, soft403);
   if (second.ok) return second;
   const { retryable: _r, ...out } = second;
   return { ...out, reason: `${out.reason}, twice` };

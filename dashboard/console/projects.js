@@ -9,6 +9,7 @@
 import { el, askPin, operatorSession, forgetOperatorSession } from './ui.js';
 import { projectsView, appPath, appNavigation, checkAnswerWords } from './projects-model.js';
 import { requestId } from './conversation-write-continuity.js';
+import { projectListComparison } from './project-list-comparison.js';
 
 const DONE_MARK = { pass: '✓', fail: '✗', unknown: '·', waiting: '○' };
 /** The console's own dot classes (console.css .dot.attn / .bad / .unknown; plain .dot is ok; quiet is a muted ok). */
@@ -218,26 +219,37 @@ function checkNowRow(p) {
 }
 
 /** After a tap: read the projects again and redraw this section in place (the row stays open). */
-async function reloadSection(wrap) {
+async function reloadSection(wrap, comparisonSession, comparison, comparisonAvailable) {
   try {
     const r = await fetch('/work/projects', { headers: { Authorization: `Bearer ${bearer()}` }, cache: 'no-store' });
     if (!r.ok) return;
     const data = await r.json();
-    if (wrap.isConnected) wrap.replaceWith(projectsSection(data));
+    if (wrap.isConnected) {
+      comparison?.dispose();
+      wrap.replaceWith(projectsSection(data, { comparisonSession, comparisonAvailable }));
+    }
   } catch { /* the page's own refresh reads it again */ }
 }
 
 /** The project a link asked to open (`?project=<key>`, from the conversation list's "Open project"), focused once per link. */
 let focusedFor = '';
 /** The Projects section, or null when the answer cannot be read and the board is the only thing to show. */
-export function projectsSection(data, { openKey = null } = {}) {
+export function projectsSection(data, { openKey = null, comparisonSession, comparisonAvailable = false } = {}) {
   const v = projectsView(data);
   if (!openKey) focusedFor = '';
   if (openKey && v.ok && [...v.active, ...v.finished].some((p) => p.key === openKey)) openRows.add(openKey);
   const wrap = el('section', { class: 'list-section projects-section', id: 'sec-projects' },
     el('div', { class: 'list-head' }, el('h2', { class: 'eyebrow', text: 'Projects' }), v.ok ? el('span', { class: 'list-count', text: String(v.count) }) : null));
+  let comparison = null;
+  const showComparison = available => {
+    if (!available || !comparisonSession || comparisonSession.isCurrent?.() === false) return;
+    comparison = projectListComparison(comparisonSession);
+    if (comparison) wrap.insertBefore(comparison.node, wrap.children[1] ?? null);
+  };
+  if (typeof comparisonAvailable === 'boolean') showComparison(comparisonAvailable);
+  else void comparisonAvailable.then(available => { if (wrap.isConnected) showComparison(available); });
   if (!v.ok) { wrap.append(el('p', { class: 'need-sub', text: 'The projects could not be read, so this may not be everything.' })); return wrap; }
-  const ctx = { reload: () => reloadSection(wrap) };
+  const ctx = { reload: () => reloadSection(wrap, comparisonSession, comparison, comparisonAvailable) };
   const row = (p) => projectRow(p, ctx);
   if (v.line) wrap.append(el('p', { class: 'need-sub', role: 'status', text: v.line }));
   if (v.off) wrap.append(el('p', { class: 'empty-line', text: 'Project tracking (the Chief of Staff) is not switched on for this agent.' }));

@@ -1,0 +1,25 @@
+{
+  "ts": "2026-11-24T07:27:18.197Z",
+  "slug": "project-list-comparison",
+  "suggestedTier": 2,
+  "declaredTier": 2,
+  "riskFloor": 1,
+  "riskFloorReasons": [],
+  "belowFloor": false,
+  "files": 4,
+  "loc": 333,
+  "scope": {
+    "basis": "staged-in-scope-paths-including-deleted",
+    "files": [
+      "src/core/ChiefOfStaffProjectComparisonJournal.ts",
+      "src/core/ChiefOfStaffProjectComparisonJournal.worker.ts",
+      "src/core/ChiefOfStaffProjectComparisonSource.ts",
+      "src/core/CoherenceJournal.ts"
+    ],
+    "addedLines": 333,
+    "deletedLines": 0
+  },
+  "causalAutopsy": null,
+  "classClosure": null,
+  "verdict": "pass"
+}

@@ -592,6 +592,13 @@ interface RateBucket {
 
 type WriterState = 'active' | 'writer-locked-out' | 'closed';
 
+export interface ChiefOfStaffComparisonFrontier {
+  readonly file: string;
+  readonly machine: string;
+  readonly lastSeq: number;
+  readonly isCurrent: () => boolean;
+}
+
 /**
  * Sanitize a machine id for use in a file name. Mirrors MachineHeartbeat:
  * percent-encode anything outside [A-Za-z0-9_-] so a stray slash or `..`
@@ -625,6 +632,7 @@ export class CoherenceJournal {
   private replicatedRegistry?: ReplicatedKindRegistry;
 
   private state: WriterState = 'closed';
+  private writerActivation = 0;
   private incarnation = '';
   /** Next seq to assign at enqueue, per kind (in-memory counter seeded at open). */
   private nextSeq: Record<JournalKind, number> = { 'topic-placement': 1, 'session-lifecycle': 1, 'autonomous-run': 1, 'threadline-conversation': 1, 'guard-latch': 1, 'ssh-direction-proof': 1, 'pref-record': 1, 'relationship-record': 1, 'learning-record': 1, 'knowledge-record': 1, 'evolution-action-record': 1, 'user-record': 1, 'topic-operator-record': 1, 'threadline-pairing-record': 1, 'subscription-account-meta': 1, 'topic-pin-record': 1, 'topic-claim-annotation': 1, 'working-set-artifact': 1, 'class-review-record': 1, 'failure-callout-chunk': 1, 'app-conversation-event': 1, 'mobile-device-key-ledger-row': 1, 'ecosystem-idea-event': 1, 'recommended-service-record': 1, 'conversation-list-pin': 1, 'conversation-read-marker': 1, 'email-outbox-record': 1, 'chief-of-staff-record': 1 , 'work-card-record': 1, 'trust-grant-record': 1, 'trust-outcome-record': 1, 'session-transcript-checkpoint': 1 , 'context-layer-record': 1 , 'conversation-graph-event': 1, 'project-app-record': 1, 'project-app-blob': 1, 'conversation-graph-suggestion-record': 1, 'telegram-topic-name-record': 1 };
@@ -888,6 +896,7 @@ export class CoherenceJournal {
     for (const kind of JOURNAL_KINDS) {
       this.recoverKind(kind);
     }
+    this.writerActivation++;
     this.state = 'active';
     this.timer = setInterval(() => this.flush(), this.flushIntervalMs);
     if (typeof this.timer.unref === 'function') this.timer.unref();
@@ -955,6 +964,20 @@ export class CoherenceJournal {
   /** Number of entries enqueued but not yet flushed (tests / observability). */
   get pendingCount(): number {
     return this.queue.length;
+  }
+
+  /** In-memory own-stream proof only. The comparison separately proves authority and file coverage. */
+  chiefOfStaffComparisonFrontier(): ChiefOfStaffComparisonFrontier | null {
+    const kind = 'chief-of-staff-record';
+    const lastSeq = this.highWaterSeq[kind];
+    const activation = this.writerActivation;
+    const incarnation = this.incarnation;
+    const isCurrent = () => this.state === 'active' && this.lockFd !== null && !this.flushing
+      && this.writerActivation === activation && this.incarnation === incarnation
+      && this.highWaterSeq[kind] === lastSeq && this.nextSeq[kind] === lastSeq + 1;
+    return lastSeq > 0 && isCurrent()
+      ? { file: this.currentFilePath(kind), machine: this.machineId, lastSeq, isCurrent }
+      : null;
   }
 
   // ---- emit (the hot path — NON-BLOCKING) --------------------------------
