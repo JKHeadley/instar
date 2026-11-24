@@ -33,7 +33,7 @@ export default defineConfig(withTestRunnerBound('unit', {
     // that needs it, so the build runs once here, before any worker starts.
     // nativeModuleHealth is LAST in setup order, so its teardown runs FIRST —
     // teardowns run in reverse, and the banner belongs closest to the summary.
-    globalSetup: ['tests/setup/build-dist.globalSetup.ts', 'tests/setup/nativeModuleHealth.globalSetup.ts'],
+    globalSetup: ['tests/setup/build-dist.globalSetup.ts', 'tests/setup/real-embedding-model.globalSetup.ts', 'tests/setup/nativeModuleHealth.globalSetup.ts'],
     setupFiles: ['./tests/vitest-setup.ts'],
     environment: 'node',
     // Includes the bounded Supertest connect-retry window used under macOS

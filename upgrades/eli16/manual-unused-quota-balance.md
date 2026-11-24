@@ -1,0 +1,9 @@
+# Spread Approved Account Moves Toward Allowance That Would Be Left Unused
+
+Several approved Codex conversation moves chose the same account because the ordinary selector favors the earliest reset. That rule is useful for routine placement, but it does not answer a different question: where should an explicitly requested balancing move go when some accounts are already receiving plenty of work and others are likely to lose unused allowance?
+
+This change adds an optional flag to the existing authenticated manual swap request. The flag tells the server to compare each eligible local account's forecast with its reset. It considers the extra percentage-point pace needed to use that allowance, then divides by one plus the account's running sessions. That lets the next move favor an account with unused capacity after an earlier move has already placed a session elsewhere. The server chooses the target; the caller does not send a credential folder.
+
+The mode uses fresh observations tied to the same account identity and reset. Unknown, stale or invalid forecasts do not become free capacity. Busy-session and refresh-rate checks still decide whether a move can proceed. Requests are handled one at a time through settlement. If a refresh has an uncertain result, a saved intent prevents another balancing move until the expected replacement session is observed. That caution survives a server restart.
+
+This does not change automatic rescue, proactive swaps, new sessions, scheduled jobs or the ordinary manual swap request. It introduces no timer or new paid model call. Removing the flag returns future requests to the existing selector. Already moved sessions and any unresolved refresh still need honest reconciliation. The formula guides approved manual placement; it does not reserve quota or promise a particular token saving. Full verification remains with throughput before release, and this work makes no live-install claim.

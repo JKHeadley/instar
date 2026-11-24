@@ -78,6 +78,24 @@ describe('needs read: the owner', () => {
     expect(a.agent.name).toBe('Echo');
   });
 
+  it('lists an undelivered trust request as a stable owner need and keeps expiry and closed states honest', async () => {
+    const pending = { requestId: 'tr-board-policy', changeKind: 'board-policy', status: 'open', adapter: 'telegram', delivered: false, summary: ['Start internal Work Board cards.'], expiresAt: iso(60) };
+    const a = await composer({ '/trust/requests': { status: 200, body: { requests: [pending, { ...pending, requestId: 'old', expiresAt: iso(-1) }, { ...pending, requestId: 'closed', status: 'consumed' }], approvalDelivery: { state: 'accepted', message: 'Review this in Changes to approve in Instar.' } } } }).owner();
+    expect(a.items.filter(i => i.source === 'trust-requests')).toHaveLength(1);
+    expect(a.items.find(i => i.source === 'trust-requests')).toMatchObject({ id: 'need:trust:tr-board-policy',
+      title: 'Review how the agent starts work cards', action: { kind: 'href', href: '#/settings/allowed?s=approvals' } });
+    expect(a.items.find(i => i.source === 'trust-requests')!.why).toContain('unconfirmed');
+    expect(a.sources.find(i => i.id === 'trust-requests')).toMatchObject({ posture: 'replicated', state: 'ok' });
+  });
+
+  it('an unreadable trust source is named rather than silently empty', async () => {
+    for (const result of [{ status: 500, body: {} }, { status: 200, body: {} }]) {
+      const a = await composer({ '/trust/requests': result }).owner();
+      expect(a.complete).toBe(false);
+      expect(a.couldNotCheck).toContain('changes waiting for approval');
+    }
+  });
+
   it('a failed source is never a zero: the read is incomplete and names it', async () => {
     const a = await composer({
       '/attention?scope=pool&status=OPEN': attention([]), '/commitments?scope=mesh': { status: 200, body: { commitments: [] } },
