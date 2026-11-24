@@ -9,3 +9,5 @@ Some outside services cannot tell Instar whether an action went through after a 
 We will test the original permanent-links question, related work that really is distinct, private work alongside shared work, and a paused worker that wakes up after another machine takes over.
 
 The first implementation observes successful direct owner text in the Chief of Staff Telegram topic after it reaches the existing session. The observation uses the public pull-request inventory and records only a coarse outcome. It leaves the message and any decision about what to do with the agent.
+
+The first rollout entry covers observation after a verified owner message. It asks for evidence that the lookup finds useful earlier work, stays within the normal response budget, and protects private results. It gives the observer no permission to start work or send anything.

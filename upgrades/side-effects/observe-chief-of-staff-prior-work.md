@@ -29,3 +29,7 @@ The server that owns startup and shutdown also owns the one pull request reader 
 Independent source review found an enrollment check that could turn into a cold demand during a change in lock ownership. The corrected provider admits a required warm lookup inside its own lookup path and never downgrades that lookup to demand. The reviewer concurred with the corrected code.
 
 The combined focused pass covered eight server lifecycle cases, five observer unit cases and two real Telegram routing cases. After moving the warm admission check into the provider, 26 provider unit cases, the two affected server lifecycle cases, type checking and a no-Telegram throwaway boot passed. The lifecycle harness logged a delivery-sentinel database-close warning during teardown. The selected assertions completed with zero failures or unhandled test errors. Full verification and authenticated real owner-channel acceptance remain separate.
+
+## Rollout registry checkpoint
+
+The existing observer switch is registered with the shared maturation service. Recording reviewed fixture and normal owner-path evidence is separate from enabling the feature. The entry adds no message reads, automatic configuration changes or access. The observer still has no power to start work or send a reply. The public inventory's separate nominated-home, eligible-consumer and durable-budget checks still apply to warming. Review rows contain no conversation text or credentials. Removing the registry entry removes the rollout metadata.

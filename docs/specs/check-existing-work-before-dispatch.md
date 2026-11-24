@@ -82,7 +82,7 @@ The existing canonical mutation owner holds active starts, observations and the 
 - **fleet:** Enroll each type of work initiation and connector only where action authority, scope isolation, custody and normal-path proof pass. Core A1 continues on read-only paths regardless.
 - **graduation criterion:** The existing maturation owner evaluates each seam against its own proof. Answer graduation needs the original unprimed #3342 citation and approval/review/deployment distinction within the normal route budget. Worker dispatch graduation needs the single accepted assignment and observed replay proof. Other initiation seams need duplicate/legitimate differential and current authorization tests through their actual writer. The combined incident claim requires both answer and assignment proofs. No valid distinct action is suppressed. Additional recall misses must be measured against the advisory baseline and do not override access, duplicate-effect or truthful coverage floors. The actual established user path meets existing delivery SLO. No authorization leak, ambiguous re-dispatch or duplicated accepted effect under regressions. Reviewer records evidence for both eligible and ineligible seams.
 - **dark-window:** Keep mandatory work and dispatch gates off outside tested cohorts. Turning off observation does not remove any existing permission, action or custody fence.
-- **ladder:** workDiscovery.startAndDispatch
+- **ladder:** not applicable: the work-start and dispatch design has no shared runtime switch. The owner-delivery observer uses the separate `workDiscovery.chiefOfStaffPriorWorkObservation` entry. Register future independently enabled authority paths before enrollment.
 
 ## Open questions
 
