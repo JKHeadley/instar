@@ -657,7 +657,12 @@ export async function createWorktree(opts: CreateWorktreeOptions): Promise<Creat
   if (needsSqlite) {
     const sqlitePackage = path.join(worktreePath, 'node_modules', 'better-sqlite3');
     try {
-      withSyncOp(() => execFileSync(process.execPath, ['-e', "new (require(process.argv[1]))(':memory:').close()", sqlitePackage], {
+      const probe = [
+        "import { createRequire } from 'node:module';",
+        "const Database = createRequire(import.meta.url)(process.argv[1]);",
+        "new Database(':memory:').close();",
+      ].join('\n');
+      withSyncOp(() => execFileSync(process.execPath, ['--input-type=module', '-e', probe, sqlitePackage], {
         cwd: worktreePath, env: runtimeEnv, stdio: 'inherit', timeout: 15_000,
       }));
     } catch (cause) {

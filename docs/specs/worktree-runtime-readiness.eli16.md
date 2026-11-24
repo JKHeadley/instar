@@ -5,3 +5,5 @@ A worktree gives an engineer a separate copy of the source code. Some of its dep
 When creating a worktree, the provisioner now tries to open and close an empty in-memory database with its own Node executable. This exercises the installed binding without touching a project database. New hook scripts use that same executable. If the runtime goes away or the binding stops loading, the hook reports the failure. Older branches keep their own hook scripts.
 
 Before pushing, a developer also needs to know whether the affected tests ran. When the listing process times out, the push check now exits unsuccessfully and says that verification is required. An engineer can retry under a lighter load and see the result directly. The complete verification run still belongs to the shared verification coordinator.
+
+The checkout check runs in a separate Node process. It now selects ES module mode explicitly and loads SQLite from the checkout's dependency directory, including when the checkout is on an older branch.

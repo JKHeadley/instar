@@ -7,3 +7,5 @@ An indeterminate affected-test listing returns failure. This can delay a push un
 Installation adds disk and network cost when the dependency source is missing. The normal sharing path still uses its existing clone or link. No repair should install into a shared symlink. A failed provisioning attempt may leave a registered worktree for inspection.
 
 Older target branches receive the direct binding check at creation. The pin is written only when the target includes the new helper. Independent second-pass review concurred after the installation deadline, direct check and subprocess regressions were added. The reviewer inspected source only.
+
+Complete verification of the first revision flagged the CommonJS call embedded in the child script. The revised child explicitly selects ES module mode and imports Node's module loader to open the absolute checkout-local dependency. A private Node 24 probe successfully opened and closed the in-memory database.
