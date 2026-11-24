@@ -32,6 +32,8 @@ export interface PreflightEvidence {
 export const PREFLIGHT_MAX_SELECTED_FILES = 5;
 
 export interface LocalVerifyRecord {
+  /** First observed on GitHub by the coordinator, in Unix milliseconds. Historical records can omit it. */
+  firstObservedAt?: number;
   repo: string;
   pr: number;
   headSha: string;
@@ -226,6 +228,9 @@ export function validateRecord(r: unknown): { ok: true; record: LocalVerifyRecor
   const errors: string[] = [];
   if (!r || typeof r !== 'object') return { ok: false, errors: ['not-an-object'] };
   const x = r as Record<string, unknown>;
+  if (x.firstObservedAt !== undefined && !(typeof x.firstObservedAt === 'number'
+    && Number.isSafeInteger(x.firstObservedAt) && x.firstObservedAt > 0
+    && typeof x.finishedAt === 'string' && x.firstObservedAt <= Date.parse(x.finishedAt))) errors.push('firstObservedAt');
   if (typeof x.repo !== 'string' || !REPO.test(x.repo)) errors.push('repo');
   if (x.kind !== undefined && x.kind !== 'main') errors.push('kind');
   if (x.kind === 'main') {

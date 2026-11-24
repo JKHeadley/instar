@@ -50,6 +50,7 @@ export interface SavedQueueEntry {
   baseSha: string;
   baseRefName: string;
   firstQueuedAt: number;
+  firstObservedAt?: number;
   firstRefusedAt?: number;
   attempts: number;
   errorRetries: number;
@@ -227,6 +228,7 @@ export function parseSavedEntry(e: unknown): SavedQueueEntry | null {
   if (!ok) return null;
   return {
     headSha: x.headSha as string, baseSha: x.baseSha as string, baseRefName: x.baseRefName as string,
+    ...(isValidTime(x.firstObservedAt) ? { firstObservedAt: x.firstObservedAt as number } : {}),
     firstQueuedAt: x.firstQueuedAt as number, attempts: x.attempts as number, errorRetries: x.errorRetries as number, starvedRaised: x.starvedRaised as boolean,
     ...(x.firstRefusedAt !== undefined ? { firstRefusedAt: x.firstRefusedAt as number } : {}),
     ...(x.pausedMs !== undefined ? { pausedMs: x.pausedMs as number } : {}),

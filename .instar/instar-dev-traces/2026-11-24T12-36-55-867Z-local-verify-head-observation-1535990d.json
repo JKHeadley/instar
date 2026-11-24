@@ -1,0 +1,33 @@
+{
+  "version": 2,
+  "slug": "local-verify-head-observation",
+  "sessionId": "ed99de61-509a-4e0d-908f-801b299fef73",
+  "timestamp": "2026-11-24T12:36:55.867Z",
+  "artifactPath": "upgrades/side-effects/local-verify-head-observation.md",
+  "artifactSha256": "6cd2850c82ceb66ca666348b045c99d0a47889949f0c3f6cf2acad00f4dbf516",
+  "coveredFiles": [
+    "docs/specs/local-verify-head-observation.eli16.md",
+    "docs/specs/local-verify-merge-authority.md",
+    "src/commands/server.ts",
+    "src/data/awareness/local-verify-head-observation.md",
+    "src/data/state-coherence-registry.json",
+    "src/localVerify/LocalVerifyService.ts",
+    "src/localVerify/firstHeadObservation.ts",
+    "src/localVerify/operatorQueue.ts",
+    "src/localVerify/record.ts",
+    "src/monitoring/GreenPrAutoMerger.ts",
+    "tests/e2e/local-verify-lifecycle.test.ts",
+    "tests/integration/local-verify-routes.test.ts",
+    "tests/unit/green-pr-local-floor.test.ts",
+    "tests/unit/localVerify/LocalVerifyService.test.ts",
+    "upgrades/next/local-verify-head-observation.md",
+    "upgrades/side-effects/local-verify-head-observation.md"
+  ],
+  "phase": "complete",
+  "tier": 1,
+  "tierReasoning": "Adds observational timestamps to existing verification records without changing admission or merge decisions.",
+  "eli16Path": "docs/specs/local-verify-head-observation.eli16.md",
+  "sideEffectsPath": "upgrades/side-effects/local-verify-head-observation.md",
+  "secondPass": "true",
+  "reviewerConcurred": true
+}

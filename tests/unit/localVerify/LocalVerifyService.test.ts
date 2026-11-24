@@ -3149,3 +3149,43 @@ describe('the age of an unverified main survives a restart (2026-11-18: 12 boots
     s.svc.shutdown();
   });
 });
+
+describe('first observed GitHub head', () => {
+  it('survives restart, a newer head and later return to the original SHA', async () => {
+    const s = setup({ views: { 1: view(), 2: view() } });
+    const first = s.svc.observeGithubHead(1, sha('a'));
+    expect(first).toBe(Date.parse('2026-10-21T12:00:00Z'));
+    s.advance(10_000);
+    const replacement = s.svc.observeGithubHead(1, sha('c'));
+    expect(replacement).toBe(first! + 10_000);
+    const secondPr = s.svc.observeGithubHead(2, sha('a'));
+    expect(secondPr).toBe(replacement);
+    const next = setup({ stateDir: s.stateDir, views: { 1: view(), 2: view() } });
+    next.advance(20_000);
+    next.setHolders([999]);
+    await next.svc.request(1);
+    expect(next.svc.snapshot().queue[0].firstObservedAt).toBe(first);
+    next.views[1] = view({ headRefOid: sha('c') });
+    await next.svc.request(1);
+    expect(next.svc.snapshot().queue[0]).toMatchObject({ headSha: sha('c'), firstObservedAt: replacement });
+    expect(JSON.parse(fs.readFileSync(next.svc.queuePath, 'utf8')).entries[0].firstObservedAt).toBe(replacement);
+    next.views[1] = view();
+    await next.svc.request(1);
+    expect(next.svc.snapshot().queue[0].firstObservedAt).toBe(first);
+  });
+
+  it('keeps each PR’s own observation for shared execution and omits an impossible interval', async () => {
+    const s = setup({ views: { 1: view(), 2: view(), 3: view() } });
+    const first = s.svc.observeGithubHead(1, sha('a'))!;
+    await s.svc.request(1);
+    s.advance(10);
+    await s.svc.request(2);
+    const finishedAt = new Date(first + 20).toISOString();
+    await s.finish(0, ok(record({ finishedAt })));
+    expect(s.svc.getRecord(1, sha('a'), 'main')?.firstObservedAt).toBe(first);
+    expect(s.svc.getRecord(2, sha('a'), 'main')?.firstObservedAt).toBe(first + 10);
+    s.advance(30);
+    await s.svc.request(3);
+    expect(s.svc.getRecord(3, sha('a'), 'main')?.firstObservedAt).toBeUndefined();
+  });
+});

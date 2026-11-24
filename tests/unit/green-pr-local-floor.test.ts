@@ -698,3 +698,18 @@ describe('merge line hand-off (CMT-980): tick({ handoff })', () => {
     expect(h.audits.some((a) => a.class === 'code-owner-review' && a.pr === 100)).toBe(false);
   });
 });
+
+describe('first observed GitHub head', () => {
+  it('reports the listed revision on a warm-up tick even when a draft cannot enter verification', async () => {
+    const candidate = pr({ isDraft: true, headRefOid: 'a'.repeat(40) });
+    const h = harness([candidate]);
+    h.state.lastActingEpoch = -1;
+    const watcher = new GreenPrAutoMerger(h.deps, cfg);
+    const { lv, requested } = hook();
+    const observations: Array<[number, string]> = [];
+    watcher.attachLocalVerify({ ...lv, observeGithubHead: (number, head) => { observations.push([number, head]); } });
+    await watcher.tick();
+    expect(observations).toEqual([[candidate.number, candidate.headRefOid]]);
+    expect(requested).toEqual([]);
+  });
+});

@@ -27706,6 +27706,7 @@ export async function startServer(options: StartOptions): Promise<void> {
           effectiveFloor: () => (rec ? rec.effectiveFloor() : null),
           mainHealth: () => svc.mainHealth().state,
           hasRecord: (pr, head, base) => wiring.hasPassingRecord(svc, pr, head, base),
+          observeGithubHead: (pr, head) => svc.observeGithubHead(pr, head),
           requestVerify: (pr) => svc.request(pr, { explicit: false }),
           // Dry-run posting also suppresses the watcher's actions→local disarm write.
           postStatuses: () => liveConfig.get<boolean>('monitoring.localVerify.postStatuses', false) === true,

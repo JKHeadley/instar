@@ -133,6 +133,24 @@ describe('local-verify lifecycle (production wiring)', () => {
     built.service!.shutdown();
   });
 
+  it('retains the first observed GitHub head through a production service rebuild', async () => {
+    const { home, stateDir } = sourceCheckout();
+    const makeService = () => buildLocalVerifyService({
+      config: { enabled: true }, expectedGhLogin: 'EchoOfDawn', repo: 'JKHeadley/instar',
+      repoPath: home, stateDir, agentHome: home, machineId: 'm_e2e', mainEntry: DIST_ENTRY,
+    }).service!;
+    const head = 'a'.repeat(40);
+    const first = makeService();
+    await first.boot();
+    const stamp = first.observeGithubHead(7, head);
+    expect(stamp).toBeGreaterThan(0);
+    first.shutdown();
+    const restored = makeService();
+    await restored.boot();
+    expect(restored.observeGithubHead(7, head)).toBe(stamp);
+    restored.shutdown();
+  });
+
   it('a stored oldestUnverifiedAt is restored after boot (spec local-verify-main-age-survives-restart)', async () => {
     const { home, stateDir } = sourceCheckout();
     const GREEN = '9'.repeat(40);
