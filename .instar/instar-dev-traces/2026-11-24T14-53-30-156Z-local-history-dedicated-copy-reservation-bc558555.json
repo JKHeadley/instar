@@ -1,0 +1,20 @@
+{
+  "version": 2,
+  "slug": "local-history-dedicated-copy-reservation",
+  "sessionId": "41652017-0805-405d-bb4e-2a975fb349ce",
+  "timestamp": "2026-11-24T14:53:30.156Z",
+  "artifactPath": "upgrades/side-effects/local-history-dedicated-copy-reservation.md",
+  "artifactSha256": "0497a2e5d00b41e8333b7fe819bebd11187f9e4515b211aa3c19cc26a2bafe3c",
+  "specPath": "docs/specs/local-history-native-contract.md",
+  "coveredFiles": [
+    "src/import/LocalHistoryDiskLedger.ts",
+    "tests/unit/local-history-disk-ledger.test.ts",
+    "upgrades/next/local-history-dedicated-copy-reservation.md",
+    "upgrades/side-effects/local-history-dedicated-copy-reservation.md"
+  ],
+  "phase": "complete",
+  "tier": 2,
+  "tierReasoning": "Dedicated accounting is bound to private local history copy custody and a pinned destination volume.",
+  "secondPass": "true",
+  "reviewerConcurred": true
+}

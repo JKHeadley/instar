@@ -270,7 +270,7 @@ it.each(['upload', 'blocks'] as const)('refuses copy admission when the original
   }
 });
 
-it('extends one empty reservation only under exact live custody, volume and cumulative budget', () => {
+it('creates one dedicated reservation for a live operation and pins its identity and ceiling', () => {
   const { stateDir, ledger } = setup();
   const operationId = 'a'.repeat(32);
   const lease = acquireLocalHistoryStoreTemporaryAdmission(stateDir)!;
@@ -279,29 +279,66 @@ it('extends one empty reservation only under exact live custody, volume and cumu
   const pin = ledger.pinCopyVolume([destination]);
   try {
     const tag = localHistoryCopyRunTag(lease, stateDir, operationId);
-    const allocation = ledger.create(tag, 10);
-    const foreign = ledger.create('another-operation', 1);
-    ledger.growCopyRunReservation(lease, operationId, allocation, pin, 25, 60);
-    ledger.growCopyRunReservation(lease, operationId, allocation, pin, 5, 60);
-    expect(ledger.list(tag)).toMatchObject([{ id: allocation, planned: 40, written: 0, state: 'active' }]);
-    expect(() => ledger.growCopyRunReservation(lease, operationId, allocation, pin, 21, 60)).toThrow('copy-reservation');
-    expect(() => ledger.growCopyRunReservation(lease, operationId, foreign, pin, 1, 60)).toThrow('copy-reservation');
-    expect(() => ledger.growCopyRunReservation(lease, operationId, allocation, { ...pin }, 1, 60)).toThrow('copy-reservation');
-    expect(() => ledger.growCopyRunReservation({ ...lease }, operationId, allocation, pin, 1, 60)).toThrow();
-    expect(() => ledger.growCopyRunReservation(lease, operationId, allocation, pin, 60, 100)).toThrow('disk-capacity');
-    expect(ledger.inspect(allocation)).toMatchObject({ planned: 40, written: 0 });
+    const other = ledger.create(tag, 1);
+    expect(() => ledger.createCopyRunReservation(lease, operationId, { ...pin }, 10, 100)).toThrow('copy-reservation');
+    expect(() => ledger.createCopyRunReservation({ ...lease }, operationId, pin, 10, 100)).toThrow();
+    expect(() => ledger.createCopyRunReservation(lease, operationId, pin, 100, 100)).toThrow('disk-capacity');
+    const reservation = ledger.createCopyRunReservation(lease, operationId, pin, 10, 100);
+    expect(() => ledger.createCopyRunReservation(lease, operationId, pin, 1, 100)).toThrow('copy-reservation');
+    const secondLedger = new LocalHistoryDiskLedger(stateDir);
+    try {
+      const secondPin = secondLedger.pinCopyVolume([destination]);
+      try {
+        expect(() => secondLedger.createCopyRunReservation(lease, operationId, secondPin, 1, 100)).toThrow('copy-reservation');
+      } finally { secondPin.close(); }
+    } finally { secondLedger.close(); }
+    reservation.grow(25);
+    reservation.grow(5);
+    expect(ledger.inspect(other).planned).toBe(1);
+    expect(ledger.inspect(reservation.allocationId)).toMatchObject({ planned: 40, written: 0 });
+    expect(() => reservation.grow(61)).toThrow('copy-reservation');
+    expect(() => reservation.grow(60)).toThrow('disk-capacity');
 
+    const file = path.join(localHistoryUploadDirectory(stateDir), 'blocks', reservation.allocationId);
+    const fd = fs.openSync(file, 'r+');
+    try {
+      fs.writeSync(fd, Buffer.from('x'), 0, 1, 0);
+      expect(() => reservation.grow(1)).toThrow('copy-reservation');
+      fs.ftruncateSync(fd, 0);
+    } finally { fs.closeSync(fd); }
     fs.renameSync(destination, path.join(stateDir, 'moved-destination'));
     fs.mkdirSync(destination);
-    expect(() => ledger.growCopyRunReservation(lease, operationId, allocation, pin, 1, 60)).toThrow();
-    const freshPin = ledger.pinCopyVolume([destination]);
-    try {
-      const file = path.join(localHistoryUploadDirectory(stateDir), 'blocks', allocation);
-      fs.writeFileSync(file, 'unexpected content', { flag: 'r+' });
-      expect(() => ledger.growCopyRunReservation(lease, operationId, allocation, freshPin, 1, 60)).toThrow('copy-reservation');
-    } finally { freshPin.close(); }
-    expect(ledger.inspect(allocation)).toMatchObject({ planned: 40, written: 0 });
+    expect(() => reservation.grow(1)).toThrow();
+    expect(ledger.inspect(reservation.allocationId)).toMatchObject({ planned: 40, written: 0 });
   } finally {
+    pin.close();
+    lease.release();
+  }
+});
+
+it('retains an interrupted bootstrap charge and refuses a second creation in the same operation', () => {
+  const { stateDir, ledger } = setup();
+  const operationId = 'b'.repeat(32);
+  const lease = acquireLocalHistoryStoreTemporaryAdmission(stateDir)!;
+  const destination = path.join(stateDir, 'copy-destination');
+  fs.mkdirSync(destination);
+  const pin = ledger.pinCopyVolume([destination]);
+  const blocks = path.join(localHistoryUploadDirectory(stateDir), 'blocks');
+  const original = fs.openSync;
+  const opens = vi.spyOn(fs, 'openSync').mockImplementation(((file: string, flags: number, mode?: number) => {
+    if (typeof file === 'string' && path.dirname(file) === blocks && (flags & fs.constants.O_EXCL)) {
+      throw new Error('synthetic placeholder creation failure');
+    }
+    return original(file, flags, mode);
+  }) as typeof fs.openSync);
+  try {
+    expect(() => ledger.createCopyRunReservation(lease, operationId, pin, 10, 100)).toThrow('disk-create-interrupted');
+    opens.mockRestore();
+    expect(() => ledger.createCopyRunReservation(lease, operationId, pin, 10, 100)).toThrow('copy-reservation');
+    const tag = localHistoryCopyRunTag(lease, stateDir, operationId);
+    expect(ledger.list(tag)).toMatchObject([{ planned: 10, written: 0, state: 'active' }]);
+  } finally {
+    opens.mockRestore();
     pin.close();
     lease.release();
   }

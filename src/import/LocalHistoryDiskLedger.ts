@@ -20,6 +20,7 @@ import { privateImportDatabasePath, verifyPrivateImportDirectory } from './priva
 
 const METADATA_WORK_BYTES = 64 * 1024;
 const MAX_RECORDS = 1024;
+const copyReservationScopes = new WeakMap<LocalHistoryChildAdmission, Set<string>>();
 export interface LocalHistoryDiskMeasurement { total: number; free: number }
 export interface LocalHistoryDiskAllocation {
   id: string; operation: string; planned: number; written: number;
@@ -168,21 +169,29 @@ export class LocalHistoryDiskLedger {
    * Retained records, including disposed tombstones, have bounded admission.
    */
   create(operation: string, bytes: number): string {
+    return this.createAllocation(operation, bytes);
+  }
+
+  private createAllocation(operation: string, bytes: number, revalidate?: () => void): string {
     amount(bytes);
     if (typeof operation !== 'string' || !/^[A-Za-z0-9_-]{1,128}$/.test(operation)) throw new Error('local-history-disk-operation');
     const id = crypto.randomBytes(16).toString('hex');
     this.transaction(() => {
       const count = (this.db.prepare('SELECT COUNT(*) AS count FROM allocations').get() as {count: number}).count;
       if (count >= this.recordCapacity) throw new Error('local-history-disk-record-capacity');
+      revalidate?.();
       this.checkCapacity(this.outstanding(), bytes);
+      revalidate?.();
       this.db.prepare("INSERT INTO allocations(id,operation,planned,written,state) VALUES(?,?,?,0,'active')").run(id, operation, bytes);
     });
     try {
       this.transaction(() => {
         const row = this.row(id, true);
+        revalidate?.();
         const fd = fs.openSync(this.file(id), fs.constants.O_CREAT | fs.constants.O_EXCL | fs.constants.O_WRONLY | fs.constants.O_NOFOLLOW, 0o600);
         try {
           const stat = fs.fstatSync(fd); this.validate(stat, row, true);
+          revalidate?.();
           this.db.prepare('UPDATE allocations SET dev = ?, ino = ? WHERE id = ?').run(stat.dev, stat.ino, id);
         } finally { fs.closeSync(fd); }
       });
@@ -201,13 +210,46 @@ export class LocalHistoryDiskLedger {
       this.db.prepare('UPDATE allocations SET planned = ? WHERE id = ?').run(next, id);
     });
   }
-  /** Grow the parent's existing empty reservation under live admission.
-   * The operation owner retains the charge through worker exit and recovery. */
-  growCopyRunReservation(lease: LocalHistoryChildAdmission, operationId: string, allocationId: string,
-    pin: ReturnType<typeof pinLocalHistoryCopyVolume>, bytes: number, ceiling: number): void {
-    amount(bytes); amount(ceiling);
-    if (!bytes || !ceiling || !this.copyVolumePins.has(pin)) throw new Error('local-history-disk-copy-reservation');
+  /** Bind a new empty allocation to one live parent and operation.
+   * The caller owns recovery and releases the charge after actual worker exit. */
+  createCopyRunReservation(lease: LocalHistoryChildAdmission, operationId: string,
+    pin: ReturnType<typeof pinLocalHistoryCopyVolume>, bootstrapBytes: number, ceiling: number) {
+    amount(bootstrapBytes); amount(ceiling);
+    if (!bootstrapBytes || bootstrapBytes > ceiling || !this.copyVolumePins.has(pin)) {
+      throw new Error('local-history-disk-copy-reservation');
+    }
     const operation = localHistoryCopyRunTag(lease, this.stateDir, operationId);
+    const revalidate = () => {
+      pin.revalidate();
+      if (localHistoryCopyRunTag(lease, this.stateDir, operationId) !== operation) {
+        throw new Error('local-history-disk-copy-reservation');
+      }
+    };
+    revalidate();
+    let scopes = copyReservationScopes.get(lease);
+    if (!scopes) { scopes = new Set(); copyReservationScopes.set(lease, scopes); }
+    if (scopes.has(operation) || scopes.size >= MAX_RECORDS) throw new Error('local-history-disk-copy-reservation');
+    scopes.add(operation);
+    let allocationId: string;
+    try {
+      allocationId = this.createAllocation(operation, bootstrapBytes, revalidate);
+    } catch (error) {
+      // Only the explicit capacity refusals precede allocation unambiguously.
+      if (error instanceof Error && ['local-history-disk-capacity', 'local-history-disk-record-capacity'].includes(error.message)) {
+        scopes.delete(operation);
+      }
+      throw error;
+    }
+    return Object.freeze({
+      allocationId,
+      grow: (bytes: number) => this.growCopyRunReservation(operation, allocationId, revalidate, bytes, ceiling),
+    });
+  }
+
+  private growCopyRunReservation(operation: string, allocationId: string, revalidate: () => void,
+    bytes: number, ceiling: number): void {
+    amount(bytes);
+    if (!bytes) throw new Error('local-history-disk-copy-reservation');
     this.transaction(() => {
       const row = this.row(allocationId, true);
       const planned = row.planned + bytes;
@@ -216,7 +258,7 @@ export class LocalHistoryDiskLedger {
         throw new Error('local-history-disk-copy-reservation');
       }
       const checkIdentity = () => {
-        pin.revalidate();
+        revalidate();
         const stat = fs.lstatSync(this.file(allocationId));
         this.validate(stat, row);
         if (stat.size !== 0) throw new Error('local-history-disk-copy-reservation');
@@ -224,7 +266,6 @@ export class LocalHistoryDiskLedger {
       checkIdentity();
       this.checkCapacity(this.outstanding(), bytes);
       checkIdentity();
-      if (localHistoryCopyRunTag(lease, this.stateDir, operationId) !== operation) throw new Error('local-history-disk-copy-reservation');
       this.db.prepare('UPDATE allocations SET planned = ? WHERE id = ?').run(planned, allocationId);
     });
   }
