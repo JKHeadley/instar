@@ -68,6 +68,8 @@ export function statusForResult(r: RequestResult): number {
     case 'pr-unreadable':
     case 'pr-invalid-shas': return 502;
     case 'main-unhealthy':
+    case 'not-lease-holder':
+    case 'waiting-expired':
     case 'held':
     case 'pr-closed': return 409;
     case 'overflow-full': return 429;

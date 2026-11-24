@@ -100,6 +100,26 @@ function app(ctx: RouteContext): express.Express {
 const post = (a: express.Express, route: string, body: unknown) => request(a).post(`/local-verify/queue/${route}`).send(body as object);
 
 describe('local-verify queue controls (integration, the real router)', () => {
+  it('automatically refills a durable full-queue HTTP request using its current head', async () => {
+    const prs = [...Array.from({ length: LOCAL_VERIFY_LIMITS.queueCap }, (_, i) => i + 1), 50];
+    const s = setup(prs);
+    const a = app(baseCtx(s.stateDir, { localVerify: s.svc }));
+    s.setHolders([90_001]);
+    for (let pr = 1; pr <= LOCAL_VERIFY_LIMITS.queueCap; pr++) expect((await request(a).post('/local-verify').send({ pr })).status).toBe(202);
+    expect((await request(a).post('/local-verify').send({ pr: 50 })).status).toBe(429);
+    expect((await request(a).get('/local-verify')).body.waiting.map((w: { pr: number }) => w.pr)).toEqual([50]);
+    s.views[50] = view(50, { headRefOid: 'c'.repeat(40) });
+    s.open[1] = false;
+    expect((await request(a).post('/local-verify').send({ pr: 1 })).status).toBe(409);
+    await s.svc.tick();
+    const snapshot = (await request(a).get('/local-verify')).body;
+    expect(snapshot.queue).toHaveLength(LOCAL_VERIFY_LIMITS.queueCap);
+    expect(snapshot.queue.find((e: { pr: number }) => e.pr === 50)).toMatchObject({ headSha: 'c'.repeat(40) });
+    expect(snapshot.waiting).toEqual([]);
+    expect(s.children).toEqual([]); // admission does not expand execution capacity
+    s.svc.shutdown();
+  });
+
   it('hold takes a queued change out, GET /local-verify lists it, a POST for it answers 409 held, and release puts it back', async () => {
     const s = setup([1, 2, 3]);
     const a = app(baseCtx(s.stateDir, { localVerify: s.svc }));

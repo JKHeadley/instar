@@ -103,7 +103,7 @@ function setup(opts: { views: Record<number, PrView>; stateDir?: string; startAt
     const input = inputOf(i);
     await finish(i, ok(record({ pr: input.pr, headSha: input.headSha })));
   };
-  return { svc, stateDir, open, spawned, finish, finishCurrent, inputOf, audit, prQueue, advance: (ms: number) => { t += ms; }, now: () => t };
+  return { svc, stateDir, seams, open, spawned, finish, finishCurrent, inputOf, audit, prQueue, advance: (ms: number) => { t += ms; }, now: () => t };
 }
 
 /** PR 1 runs; PRs 2..CAP+1 fill the queue. */
@@ -120,6 +120,139 @@ function views(...prs: number[]): Record<number, PrView> {
 }
 
 describe('Local Verify waiting list (fb-7fde7f49-8ee)', () => {
+  it('automatically admits the oldest live waiter on a service tick after capacity opens', async () => {
+    const s = setup({ views: views(50, 60) });
+    await fill(s);
+    await s.svc.request(50);
+    s.advance(MIN);
+    await s.svc.request(60);
+    const firstRefusedAt = s.svc.snapshot().waiting.find((w) => w.pr === 50)!.firstRefusedAt;
+    await s.finishCurrent();
+    expect(s.prQueue()).toHaveLength(CAP - 1);
+    await s.svc.tick();
+    expect(s.prQueue()).toHaveLength(CAP);
+    expect(s.svc.snapshot().queue.find((e) => e.pr === 50)?.firstRefusedAt).toBe(firstRefusedAt);
+    expect(s.svc.snapshot().waiting.map((w) => w.pr)).toEqual([60]);
+  });
+
+  it('does not refill after coordinator ownership is lost during the current-head read', async () => {
+    const s = setup({ views: views(50) });
+    await fill(s);
+    await s.svc.request(50);
+    await s.finishCurrent();
+    let owns = true;
+    s.svc.setPeerWiring({ lease: { holdsLease: () => owns, leaseEpoch: () => 1, holderMachineId: () => owns ? 'm1' : 'm2' } });
+    const original = s.seams.prView;
+    s.seams.prView = async (pr) => { const v = await original(pr); if (pr === 50) owns = false; return v; };
+    await s.svc.tick();
+    expect(s.prQueue()).not.toContain(50);
+    expect(s.svc.snapshot().waiting.map((w) => w.pr)).toEqual([50]);
+    expect(s.audit().find((e) => e.event === 'waiting-auto-offer')).toMatchObject({ pr: 50, result: 'not-lease-holder' });
+  });
+
+  it('does not resurrect a waiter held while its current head is being read', async () => {
+    const s = setup({ views: views(50) });
+    await fill(s);
+    await s.svc.request(50);
+    await s.finishCurrent();
+    s.svc.setQueueControlsEnabled(() => true);
+    const original = s.seams.prView;
+    s.seams.prView = async (pr) => {
+      const v = await original(pr);
+      if (pr === 50) expect(await s.svc.operatorHold({ pr, by: 'test', reason: 'new hold during GitHub read' })).toMatchObject({ ok: true });
+      return v;
+    };
+    await s.svc.tick();
+    expect(s.prQueue()).not.toContain(50);
+    expect(s.svc.snapshot().waiting).toEqual([]);
+    expect(s.svc.operatorQueue()?.held.map((h) => h.pr)).toContain(50);
+    expect(s.audit().filter((e) => e.event === 'queued' && e.pr === 50)).toEqual([]);
+  });
+
+  it('does not admit a waiter after the service stops during the current-head read', async () => {
+    const s = setup({ views: views(50) });
+    await fill(s);
+    await s.svc.request(50);
+    await s.finishCurrent();
+    const original = s.seams.prView;
+    s.seams.prView = async (pr) => { const v = await original(pr); if (pr === 50) s.svc.shutdown(); return v; };
+    await s.svc.tick();
+    expect(s.prQueue()).not.toContain(50);
+    expect(s.svc.snapshot().waiting.map((w) => w.pr)).toEqual([50]);
+    expect(s.audit().find((e) => e.event === 'waiting-auto-offer')).toMatchObject({ result: 'stopping' });
+  });
+
+  it('does not resurrect an operator-held request or a stale waiter', async () => {
+    const s = setup({ views: views(50, 60) });
+    await fill(s);
+    await s.svc.request(50);
+    await s.svc.request(60);
+    s.svc.setQueueControlsEnabled(() => true);
+    expect(await s.svc.operatorHold({ pr: 50, by: 'test', reason: 'parent must merge first' })).toMatchObject({ ok: true, held: true });
+    await s.finishCurrent();
+    s.advance(WAITING_LIST_LIMITS.staleAfterMs + 1);
+    await s.svc.tick();
+    expect(s.prQueue()).not.toContain(50);
+    expect(s.prQueue()).not.toContain(60);
+    expect(s.svc.snapshot().waiting.map((w) => w.pr)).toEqual([60]);
+  });
+
+  it('keeps unhealthy-main waiters out of automatic admission', async () => {
+    const s = setup({ views: views(50, 60) });
+    await fill(s);
+    await s.svc.request(50);
+    await s.svc.request(60);
+    await s.finishCurrent();
+    const health = (s.svc as unknown as { health: { onVerify(head: string, outcome: 'failure'): Promise<unknown> } }).health;
+    await health.onVerify(sha('b'), 'failure');
+    await s.svc.tick();
+    expect(s.prQueue()).not.toContain(50);
+    expect(s.prQueue()).not.toContain(60);
+    expect(s.audit().filter((e) => e.event === 'waiting-auto-offer')).toEqual([]);
+  });
+
+  it('bounds automatic offers and does not turn a busy tick into an unbounded retry loop', async () => {
+    const waiting = Array.from({ length: 8 }, (_, i) => 50 + i);
+    const s = setup({ views: views(...waiting) });
+    await fill(s);
+    for (const pr of waiting) await s.svc.request(pr);
+    for (let pr = 2; pr <= 8; pr++) { s.open[pr] = false; await s.svc.request(pr); }
+    const original = s.seams.prView;
+    let offered = 0;
+    s.seams.prView = async (pr) => { if (waiting.includes(pr)) offered++; return original(pr); };
+    await Promise.all([s.svc.tick(), s.svc.tick()]);
+    expect(offered).toBe(5);
+    expect(s.svc.snapshot().waiting.map((w) => w.pr)).toEqual([55, 56, 57]);
+    await s.svc.tick();
+    expect(offered).toBe(5);
+    s.advance(30_000);
+    await s.svc.tick();
+    expect(offered).toBe(7); // only the two remaining ordinary places are filled
+    expect(s.prQueue()).toHaveLength(CAP);
+  });
+
+  it('temporarily unreadable oldest waiters do not starve later readable work', async () => {
+    const waiting = Array.from({ length: 8 }, (_, i) => 50 + i);
+    const s = setup({ views: views(...waiting) });
+    await fill(s);
+    for (const pr of waiting) await s.svc.request(pr);
+    for (let pr = 2; pr <= 8; pr++) { s.open[pr] = false; await s.svc.request(pr); }
+    const original = s.seams.prView;
+    s.seams.prView = async (pr) => pr >= 50 && pr <= 54 ? null : original(pr);
+    await s.svc.tick();
+    expect(s.svc.snapshot().waiting.map((w) => w.pr)).toEqual(waiting);
+    s.advance(30_000);
+    await s.svc.tick();
+    expect(s.prQueue()).toEqual([9, 10, 11, 55, 56, 57]);
+    expect(s.svc.snapshot().waiting.map((w) => w.pr)).toEqual([50, 51, 52, 53, 54]);
+    // They retain their original priority once a bounded retry can read them again.
+    s.seams.prView = original;
+    s.advance(90_000);
+    await s.svc.tick();
+    expect(s.prQueue()).toEqual([9, 10, 11, 55, 56, 57, 50, 51, 52, 53]);
+    expect(s.svc.snapshot().waiting.map((w) => w.pr)).toEqual([54]);
+  });
+
   it('the oldest waiter is admitted first; a newer PR does not take the freed slot', async () => {
     const s = setup({ views: views(50, 60, 70) });
     await fill(s);

@@ -1,0 +1,23 @@
+{
+  "ts": "2026-11-24T00:43:18.670Z",
+  "slug": "local-verify-automatic-waiting-refill",
+  "suggestedTier": 2,
+  "declaredTier": 1,
+  "riskFloor": 1,
+  "riskFloorReasons": [],
+  "belowFloor": false,
+  "files": 2,
+  "loc": 73,
+  "scope": {
+    "basis": "staged-in-scope-paths-including-deleted",
+    "files": [
+      "src/localVerify/LocalVerifyService.ts",
+      "src/localVerify/localVerifyRoutes.ts"
+    ],
+    "addedLines": 69,
+    "deletedLines": 4
+  },
+  "causalAutopsy": null,
+  "classClosure": null,
+  "verdict": "pass"
+}

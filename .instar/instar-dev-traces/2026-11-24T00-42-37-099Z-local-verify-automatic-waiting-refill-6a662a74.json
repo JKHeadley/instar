@@ -1,0 +1,30 @@
+{
+  "version": 2,
+  "slug": "local-verify-automatic-waiting-refill",
+  "sessionId": "b9dbb2bd-d987-47b2-a538-5de71ea42e15",
+  "timestamp": "2026-11-24T00:45:44.264404+00:00",
+  "artifactPath": "upgrades/side-effects/local-verify-automatic-waiting-refill.md",
+  "artifactSha256": "25852c879f84ce74031456e1d608d5c603d1487e6670c8fddc70b0bc3184ff7d",
+  "coveredFiles": [
+    "docs/specs/local-verify-automatic-waiting-refill.eli16.md",
+    "src/localVerify/LocalVerifyService.ts",
+    "src/localVerify/localVerifyRoutes.ts",
+    "tests/e2e/local-verify-queue-controls-lifecycle.test.ts",
+    "tests/integration/local-verify-queue-controls.test.ts",
+    "tests/unit/localVerify/waitingListService.test.ts",
+    "upgrades/next/local-verify-automatic-waiting-refill.md",
+    "upgrades/side-effects/local-verify-automatic-waiting-refill.md"
+  ],
+  "phase": "complete",
+  "tier": 1,
+  "tierReasoning": "Narrow reversible automatic re-offer of already durable requests through existing admission checks; no persisted schema, execution cap, merge authority or full gate changes. Independent runtime and final artifact review concurred; 23 unit,9 HTTP,8 lifecycle checks passed under normal enforcement.",
+  "eli16Path": "docs/specs/local-verify-automatic-waiting-refill.eli16.md",
+  "sideEffectsPath": "upgrades/side-effects/local-verify-automatic-waiting-refill.md",
+  "secondPass": "true",
+  "reviewerConcurred": true,
+  "causalAutopsy": {
+    "origin": "latent",
+    "relatedPrs": [],
+    "notes": "Existing WaitingList durably saved refusals, but service upkeep only swept closed or idle waiters; admission required another external offer. This adds bounded automatic re-offers through existing admission."
+  }
+}
