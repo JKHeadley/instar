@@ -3382,6 +3382,7 @@ export function createRoutes(ctx: RouteContext): Router {
     displayName: workBoardName,
     appendLine: async (conversationKey, lineId, text) => { ctx.workBoard?.()?.appendLine(conversationKey, lineId, text); },
     ensureConversation: async (cardId) => { ctx.workBoard?.()?.ensureConversation(cardId); },
+    conversationAvailable: (cardId) => ctx.workBoard?.()?.conversationAvailable(cardId) ?? false,
     removeConversation: async (conversationKey) => { ctx.workBoard?.()?.removeConversation(conversationKey); },
     // The behind machine's nickname rides along so the page names it instead of printing its id.
     behind: () => {
