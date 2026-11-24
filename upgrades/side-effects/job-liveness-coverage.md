@@ -63,3 +63,7 @@ TypeScript, JavaScript syntax and the diff check passed. Twelve focused tests pa
 ## Class-Closure Declaration
 
 This increment is a read-only watcher. It does not create a self-triggered action or repair controller.
+
+## Rollout registry checkpoint
+
+The existing observer or comparison switch now has an entry in the shared maturation registry. This entry defines what evidence the existing review service should read before it proposes a later rollout. It adds no source reads, runtime event or automatic config write. The operator must review positive evidence from the stated fixture and development path, and a recorded wrong outcome blocks graduation. The review evidence contains no job names, project content, or schedule data. Removing this entry withdraws the review metadata while preserving the feature's explicit runtime gate.

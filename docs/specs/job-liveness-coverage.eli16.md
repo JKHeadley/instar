@@ -11,3 +11,5 @@ The observer does not launch, retry, pause, or change jobs, and it sends no aler
 A job runs a repeated check. A finite project has a finish, such as replacing a full drive. A standing project holds an ongoing responsibility such as Machine Stewardship. Its checks can be jobs, and an accepted follow-up can be a finite project. A successful review does not mean the drive is healthy.
 
 In the first implementation, the Jobs detail shows when it checked, what it saw around the scheduled time, and when the next occurrence is expected. It keeps those observations separate from the last recorded run. The first version can establish this only for the current machine.
+
+The rollout registry records how this view earns wider use. The owner first checks the reports on a disposable agent, then checks the actual Jobs view on an authorized development agent. Test results alone do not switch it on.
