@@ -7,8 +7,8 @@ import { HybridLogicalClock } from '../../src/core/HybridLogicalClock.js';
 import { ReplicatedKindRegistry } from '../../src/core/ReplicatedRecordEnvelope.js';
 import { ReplicatedRecordEmitter } from '../../src/core/ReplicatedRecordEmitter.js';
 import { SafeFsExecutor } from '../../src/core/SafeFsExecutor.js';
-import type { WorkBoardApprovalEvent } from '../../src/core/WorkBoardApprovalWriter.js';
-import { buildRecord, WORK_BOARD_STORE_KEY, WORK_CARD_KIND_REGISTRATION, WORK_CARD_RECORD_KIND } from '../../src/core/WorkCardStore.js';
+import { approvalEventId, type WorkBoardApprovalRequest } from '../../src/core/WorkBoardApprovalWriter.js';
+import { buildRecord, toFoldRecords, WORK_BOARD_STORE_KEY, WORK_CARD_KIND_REGISTRATION, WORK_CARD_RECORD_KIND } from '../../src/core/WorkCardStore.js';
 import { readWorkBoardApprovalEvent } from '../../src/core/workBoardApprovalReadback.js';
 
 it('reads the exact approval only after the real journal advances its durable watermark', async () => {
@@ -25,26 +25,23 @@ it('reads the exact approval only after the real journal advances its durable wa
       stores: () => ({ [WORK_BOARD_STORE_KEY]: { enabled: true } }), loadWitness: () => undefined,
     });
     const cardId = 'wc_6248a51921c41ca0';
-    const event: WorkBoardApprovalEvent = {
-      eventId: `wc:${cardId}:approve:${'a'.repeat(64)}`,
-      request: {
-        proof: { epoch: 'board:2', ownerGeneration: 'owner:3', writerIncarnation: 'machine:1' },
-        version: { cardId, cardRevision: 'edit:2', policyRevision: 'policy:1', visibleTextHash: 'a'.repeat(64) },
-        source: 'slip',
-        decisionId: 'decision:1',
-      },
+    const request: WorkBoardApprovalRequest = {
+      proof: { epoch: 'board:2', ownerGeneration: 'owner:3', writerIncarnation: 'machine:1' },
+      version: { cardId, cardRevision: 'edit:2', policyRevision: 'policy:1', visibleTextHash: 'a'.repeat(64) },
+      source: 'slip',
+      decisionId: 'decision:1',
     };
+    const event = { eventId: approvalEventId(request), request };
     const { incarnation: journalIncarnation, lastSeq: baselineSequence } = journal.getOwnAdvert()[WORK_CARD_RECORD_KIND];
     let reserved = false;
     const read = () => readWorkBoardApprovalEvent(event.eventId, {
       journal, epoch: { machineId, journalIncarnation, baselineSequence }, current: () => true,
       hasReservation: () => reserved,
-      decode: (data) => data.recordKey === event.eventId && data.action === 'approve' ? event : null,
     });
     expect(read()).toEqual({ status: 'missing' });
     const result = emitter.emit(WORK_BOARD_STORE_KEY, event.eventId, buildRecord('tap', cardId, {
       action: 'approve', by: { kind: 'person', personKey: 'owner1', proof: 'presence' },
-      at: '2026-11-24T20:00:00.000Z', materialHash: 'a'.repeat(64),
+      at: '2026-11-24T20:00:00.000Z', materialHash: 'a'.repeat(64), approvalBinding: request,
     }, event.eventId));
     expect(result.outcome).toBe('emitted');
     expect(result.seq).toBeDefined();
@@ -52,6 +49,8 @@ it('reads the exact approval only after the real journal advances its durable wa
     expect(read()).toEqual({ status: 'unknown' });
     await journal.awaitDurableSeq(WORK_CARD_RECORD_KIND, result.seq!);
     expect(read()).toEqual({ status: 'durable', event });
+    const stored = journal.readKindComplete(WORK_CARD_RECORD_KIND).entries;
+    expect(toFoldRecords(stored.map(({ data, machine: origin }) => ({ data, origin })))).toEqual([]);
   } finally {
     journal.close();
     SafeFsExecutor.safeRmSync(stateDir, { recursive: true, force: true, operation: 'tests/integration/work-board-approval-readback.test.ts' });

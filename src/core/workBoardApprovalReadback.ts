@@ -1,5 +1,5 @@
 import type { CoherenceJournal } from './CoherenceJournal.js';
-import type { WorkBoardApprovalEvent, WorkBoardApprovalLookup } from './WorkBoardApprovalWriter.js';
+import { decodeWorkBoardApprovalEvent, type WorkBoardApprovalEvent, type WorkBoardApprovalLookup } from './WorkBoardApprovalWriter.js';
 import { validateReplicatedEnvelope } from './ReplicatedRecordEnvelope.js';
 import { WORK_CARD_RECORD_KIND, workCardRecordStoreSchema } from './WorkCardStore.js';
 
@@ -19,7 +19,6 @@ interface ApprovalReadbackPorts {
   epoch: WorkBoardEpochJournal;
   current: () => boolean;
   hasReservation: (eventId: string) => boolean;
-  decode: (data: Record<string, unknown>) => WorkBoardApprovalEvent | null;
 }
 
 /** A positive receipt requires the exact durable event. Absence additionally needs
@@ -48,7 +47,7 @@ export function readWorkBoardApprovalEvent(eventId: string, ports: ApprovalReadb
     if (!checked.ok || checked.envelope.origin !== machineId) return { status: 'unknown' };
     covered.add(row.seq);
     if (checked.envelope.recordKey !== eventId) continue;
-    const candidate = ports.decode(checked.data);
+    const candidate = decodeWorkBoardApprovalEvent(checked.data);
     if (winner || !candidate || candidate.eventId !== eventId) return { status: 'unknown' };
     winner = candidate;
   }

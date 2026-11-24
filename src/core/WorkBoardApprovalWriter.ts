@@ -58,11 +58,47 @@ function sameVersion(first: WorkBoardApprovalVersion, second: WorkBoardApprovalV
     && first.visibleTextHash === second.visibleTextHash;
 }
 
-function approvalEventId({ proof, version }: WorkBoardApprovalRequest): string {
+export function approvalEventId({ proof, version }: WorkBoardApprovalRequest): string {
   const input = [proof.epoch, proof.ownerGeneration, proof.writerIncarnation,
     version.cardId, version.cardRevision, version.policyRevision, version.visibleTextHash];
   const generation = createHash('sha256').update(JSON.stringify(input)).digest('hex');
   return `wc:${version.cardId}:approve:${generation}`;
+}
+
+function record(value: unknown): Record<string, unknown> | null {
+  return value !== null && typeof value === 'object' && !Array.isArray(value)
+    ? value as Record<string, unknown> : null;
+}
+
+function bindingPart(value: unknown): value is string {
+  return typeof value === 'string' && value.length > 0 && value.length <= 200
+    && !/[\u0000-\u001f\u007f]/.test(value);
+}
+
+export function decodeWorkBoardApprovalEvent(data: Record<string, unknown>): WorkBoardApprovalEvent | null {
+  if (data.recordType !== 'tap' || data.action !== 'approve' || data.op !== 'put') return null;
+  const input = record(data.approvalBinding);
+  const proof = record(input?.proof);
+  const version = record(input?.version);
+  if (!input || !proof || !version) return null;
+
+  const { epoch, ownerGeneration, writerIncarnation } = proof;
+  const { cardId, cardRevision, policyRevision, visibleTextHash } = version;
+  const { source, decisionId } = input;
+  if (!bindingPart(epoch) || !bindingPart(ownerGeneration) || !bindingPart(writerIncarnation)
+    || !bindingPart(cardRevision) || !bindingPart(policyRevision) || !bindingPart(decisionId)
+    || typeof cardId !== 'string' || !/^wc_[a-f0-9]{16}$/.test(cardId) || data.cardId !== cardId
+    || typeof visibleTextHash !== 'string' || !/^[a-f0-9]{64}$/.test(visibleTextHash)
+    || (source !== 'console' && source !== 'phone' && source !== 'bulk' && source !== 'slip')) return null;
+
+  const request: WorkBoardApprovalRequest = {
+    proof: { epoch, ownerGeneration, writerIncarnation },
+    version: { cardId, cardRevision, policyRevision, visibleTextHash },
+    source,
+    decisionId,
+  };
+  const eventId = approvalEventId(request);
+  return data.recordKey === eventId ? { eventId, request } : null;
 }
 
 export class WorkBoardApprovalWriter {

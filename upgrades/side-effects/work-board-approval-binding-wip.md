@@ -1,0 +1,54 @@
+# Side-Effects Review — Work Board approval record binding checkpoint
+
+**Version / slug:** work-board-approval-binding-wip
+**Date:** 2026-11-24
+**Author:** Echo
+**Second-pass reviewer:** independent Work Board approval reviewer
+
+## Summary of the change
+
+Tier 2 project checkpoint. Work Board approval records can preserve an exact generation binding. Durable journal readback reconstructs the event from the actual stored fields instead of depending on a caller's remembered request. The enabled production writer and slip routes are still absent.
+
+## Decision-point inventory
+
+- Work Board replicated schema — add validation of a present approval binding for an approval put whose recomputed generation matches the record ID.
+- Journal receipt evidence — use the exact validated fields to recover the approval proof, version and winning source.
+
+## 1. Over-block
+
+Existing records omit the new binding and keep the existing schema behavior. A new record with a malformed binding or mismatched stable ID fails schema validation. A malformed row cannot provide an exact winner or a proof of absence.
+
+## 2. Under-block
+
+The schema establishes shape and binding consistency, not authorized authorship. The enrolled production writer must be proved at append and projection, and its durable event must match the authoritative decision source.
+
+## 3. Level-of-abstraction fit
+
+The store schema owns record validation. The journal readback owns durable evidence. The policy and exact owner-device proof belong to the production writer and slip authority.
+
+## 4. Signal vs authority compliance
+
+[Signal vs Authority](../../docs/signal-vs-authority.md). The deterministic schema authenticates no person. It preserves exact fields for the existing owner-authorized production boundary to evaluate.
+
+## 4b. Judgment-point check
+
+No new static heuristic for a competing-signals judgment. Record type, typed version and deterministic generation are enumerable.
+
+## 5. Interactions
+
+- **Shadowing:** legacy approvals do not contain the optional field.
+- **Double-fire:** recovering a present binding returns the exact deterministic record identity and does not emit or acknowledge a new event.
+- **Races:** the enrolled writer is still responsible for the reservation and current-proof check.
+- **Feedback loops:** the codec adds no pickup or journal emission.
+
+## 6. External surfaces
+
+No client or approval route change in this checkpoint. Future receipt generation requires a production writer that emits the bound record.
+
+## Verification
+
+Focused unit tests include a mismatched-generation regression. The real Work Board journal fixture emits an approval binding and reconstructs it from durable validated journal data.
+
+## Independent second pass
+
+The reviewer concurred with checkpointing after confirming the binding survives real durable readback and that boot rebuild and live projection both exclude bound records or the reserved event namespace. The receiver must prove the enrolled writer, and the applied tap must match its exact owner proof and material version, before enabling the projection path.

@@ -1,0 +1,22 @@
+{
+  "version": 2,
+  "slug": "work-board-approval-binding-wip",
+  "sessionId": "b3d2cf8a-9b5d-468b-a50b-70ebf11e9e5c",
+  "timestamp": "2026-11-24T23:01:08.944Z",
+  "artifactPath": "upgrades/side-effects/work-board-approval-binding-wip.md",
+  "artifactSha256": "21261934baecf0880ee94e10b2bc5e38ccde42129a8fe5e2aa0bfc75dbbc8dae",
+  "specPath": "docs/specs/owner-work-board-slips-first-slice.md",
+  "coveredFiles": [
+    "src/core/WorkBoardApprovalWriter.ts",
+    "src/core/WorkCardStore.ts",
+    "src/core/workBoardApprovalReadback.ts",
+    "tests/integration/work-board-approval-readback.test.ts",
+    "tests/unit/work-board-approval-readback.test.ts",
+    "upgrades/side-effects/work-board-approval-binding-wip.md"
+  ],
+  "phase": "complete",
+  "tier": 2,
+  "tierReasoning": "Persistent exact owner approval binding with legacy fold exclusion",
+  "secondPass": "true",
+  "reviewerConcurred": true
+}

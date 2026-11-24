@@ -1,18 +1,16 @@
 import { describe, expect, it } from 'vitest';
 import type { JournalEntry, JournalKind } from '../../src/core/CoherenceJournal.js';
-import type { WorkBoardApprovalEvent } from '../../src/core/WorkBoardApprovalWriter.js';
+import { approvalEventId, type WorkBoardApprovalRequest } from '../../src/core/WorkBoardApprovalWriter.js';
 import { WORK_CARD_RECORD_KIND } from '../../src/core/WorkCardStore.js';
 import { readWorkBoardApprovalEvent } from '../../src/core/workBoardApprovalReadback.js';
 
-const event: WorkBoardApprovalEvent = {
-  eventId: 'wc:wc_6248a51921c41ca0:approve:generation',
-  request: {
-    proof: { epoch: 'board:2', ownerGeneration: 'owner:3', writerIncarnation: 'machine:1' },
-    version: { cardId: 'wc_6248a51921c41ca0', cardRevision: 'edit:2', policyRevision: 'policy:1', visibleTextHash: 'visible:2' },
-    source: 'slip',
-    decisionId: 'decision:1',
-  },
+const request: WorkBoardApprovalRequest = {
+  proof: { epoch: 'board:2', ownerGeneration: 'owner:3', writerIncarnation: 'machine:1' },
+  version: { cardId: 'wc_6248a51921c41ca0', cardRevision: 'edit:2', policyRevision: 'policy:1', visibleTextHash: 'a'.repeat(64) },
+  source: 'slip',
+  decisionId: 'decision:1',
 };
+const event = { eventId: approvalEventId(request), request };
 const machineId = 'm1';
 const journalIncarnation = 'i1';
 const kind = WORK_CARD_RECORD_KIND;
@@ -29,6 +27,7 @@ const row: JournalEntry = {
     by: { kind: 'person', personKey: 'owner1', proof: 'presence' },
     at: '2026-11-24T20:00:00.000Z',
     materialHash: 'a'.repeat(64),
+    approvalBinding: request,
   },
 };
 
@@ -42,13 +41,17 @@ function fixture(entries: JournalEntry[], { lastSeq = 3, complete = true, reserv
     epoch: { machineId, journalIncarnation, baselineSequence: 2 },
     current: () => ++proofReads === 1 || stillCurrent,
     hasReservation: () => reserved,
-    decode: (data: Record<string, unknown>) => data.recordKey === event.eventId ? event : null,
   };
 }
 
 describe('Work Board approval journal readback', () => {
   it('returns the exact winner at the durable watermark', () => {
     expect(readWorkBoardApprovalEvent(event.eventId, fixture([row]))).toEqual({ status: 'durable', event });
+  });
+
+  it('rejects a binding that does not reproduce the reserved generation key', () => {
+    const altered = { ...request, version: { ...request.version, cardRevision: 'edit:3' } };
+    expect(readWorkBoardApprovalEvent(event.eventId, fixture([{ ...row, data: { ...row.data, approvalBinding: altered } }]))).toEqual({ status: 'unknown' });
   });
 
   it('does not mistake an unflushed row for a durable winner', () => {
