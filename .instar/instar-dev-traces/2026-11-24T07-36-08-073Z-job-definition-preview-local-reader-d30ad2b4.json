@@ -1,0 +1,32 @@
+{
+  "version": 2,
+  "slug": "job-definition-preview-local-reader",
+  "sessionId": "5591f135-974d-45ff-afdb-df56f5dbd35e",
+  "timestamp": "2026-11-24T07:36:08.073Z",
+  "artifactPath": "upgrades/side-effects/job-definition-preview-local-reader.md",
+  "artifactSha256": "dd175b5dc4d472ef528917885377f733951f3ec986e54582eb17ac4291ec64e6",
+  "specPath": "docs/specs/job-definition-migration-preview.md",
+  "coveredFiles": [
+    "dashboard/console/job-definition-preview.js",
+    "dashboard/console/schedule.js",
+    "src/core/types.ts",
+    "src/data/awareness/job-definition-preview.md",
+    "src/scheduler/JobDefinitionPreview.ts",
+    "src/scheduler/JobDefinitionPreviewCursor.ts",
+    "src/scheduler/JobDefinitionPreviewWorker.ts",
+    "src/scheduler/JobDefinitionPreviewWorker.worker.ts",
+    "src/server/AgentServer.ts",
+    "src/server/jobDefinitionPreviewRoutes.ts",
+    "src/server/routes.ts",
+    "tests/e2e/job-definition-preview-alive.test.ts",
+    "tests/integration/job-definition-preview-routes.test.ts",
+    "tests/unit/console-job-definition-preview.test.ts",
+    "tests/unit/job-definition-preview-worker.test.ts",
+    "tests/unit/job-definition-preview.test.ts"
+  ],
+  "phase": "complete",
+  "tier": 2,
+  "tierReasoning": "Adds a private owner-only read of bounded native job inputs with worker isolation and session-bound continuation. No migration or scheduler authority.",
+  "secondPass": "true",
+  "reviewerConcurred": true
+}

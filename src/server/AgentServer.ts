@@ -33,6 +33,8 @@ import { computeOwnLastingEndpoints } from '../core/MeshUrlAdvertiser.js';
 import { holdAllSetups } from '../recommended/setupState.js';
 import { currentAgentDisplay } from '../messaging/messageOrigin.js';
 import { resolveSessionPlatform } from './sessionPlatform.js';
+import { createJobDefinitionPreviewRouter, isJobDefinitionPreviewRequest } from './jobDefinitionPreviewRoutes.js';
+import { JobDefinitionPreviewWorker } from '../scheduler/JobDefinitionPreviewWorker.js';
 import express, { type Express, type Request, type Response } from 'express';
 import {createConversationGraphSurface,createConversationGraphOffRouter} from './ConversationGraphSurface.js';
 import {createConversationGraphDefaultSurface} from './ConversationGraphDefaultSurface.js';
@@ -309,7 +311,7 @@ import { NativeHookEventIngest } from '../monitoring/NativeHookEvents.js';
 import { NATIVE_HOOK_EVENTS_PATH } from '../data/http-hook-templates.js';
 import { resolveKnownOrigin as resolveProjectAppOrigin, hostOf as projectAppHostOf, type OriginDeps as ProjectAppOriginDeps } from './ProjectAppSandbox.js';
 import { boundedBody, closeUnreadBodyOnError, credentialAwareJsonParser, type BodyBudgetDeps } from './bodyBudget.js';
-import { corsMiddleware, authMiddleware, requestTimeout, buildRequestTimeoutOverrides, errorHandler, dashboardSecurityHeaders, dashboardCacheControl, DASHBOARD_STATIC_OPTIONS, duplicateResponseGuard } from './middleware.js';
+import { corsMiddleware, authMiddleware, bearerMatches, requestTimeout, buildRequestTimeoutOverrides, errorHandler, dashboardSecurityHeaders, dashboardCacheControl, DASHBOARD_STATIC_OPTIONS, duplicateResponseGuard } from './middleware.js';
 import { WebSocketManager } from './WebSocketManager.js';
 import { DesktopStreamManager } from './DesktopStreamManager.js';
 import { DirectDesktopAccess } from '../core/DirectDesktopAccess.js';
@@ -1913,6 +1915,7 @@ export class AgentServer {
     stopNotifier?: import('../monitoring/StopNotifier.js').StopNotifier | null;
     /** Initiative tracker — persisted record of multi-phase long-running work. */
     initiativeTracker?: import('../core/InitiativeTracker.js').InitiativeTracker;
+    jobDefinitionPreviewWorker?: JobDefinitionPreviewWorker;
     /** Project-scope round runner (Phase 1b PR 3). */
     projectRoundRunner?: import('../core/ProjectRoundRunner.js').ProjectRoundRunner;
     /** Test/composition override for the zero-spend live codex quota reader.
@@ -2083,6 +2086,17 @@ export class AgentServer {
       selfMachineId: () => options.meshSelfId ?? options.coordinator?.identity?.machineId ?? null,
       verify: keepRawBody,
     };
+    this.app.use('/jobs/reconcile', (req, res, next) => {
+      if (isJobDefinitionPreviewRequest(req)) {
+        res.set('Cache-Control', 'no-store');
+        const length = req.get('Content-Length');
+        if (req.get('Transfer-Encoding') || (length !== undefined && length !== '0')) {
+          res.status(400).json({ error: 'invalid-job-preview-request' });
+          return;
+        }
+      }
+      next();
+    });
     this.app.use('/completion-claim/observe', boundedBody(96 * 1024, express.json({ limit: '96kb', verify: keepRawBody })));
     // Threadline MCP over local HTTP (threadline-mcp-local-http D1): its own
     // small parser, before the broad 12 MB one.
@@ -7466,6 +7480,32 @@ export class AgentServer {
         });
       }
     }
+    const previewAvailable = () => this.config.developmentAgent === true && !!this.config.throwawayAgent
+      && !this.usesDurableGraphOwnerPolicy()
+      && (options.liveConfig?.get?.('jobDefinitionPreview.enabled', this.config.jobDefinitionPreview?.enabled)
+        ?? this.config.jobDefinitionPreview?.enabled) === true;
+    const currentJobPreviewBearer = (req: Request, res: Response) => {
+      const bearer = req.get('Authorization');
+      if (!bearer?.startsWith('Bearer ')) return false;
+      if (bearer.startsWith('Bearer dst_')) {
+        return this.config.security?.dashboardScopedToken?.enabled === true
+          && res.locals.dashboardScopedSession === true && this.dashboardSessionStore.verify(bearer.slice(7));
+      }
+      return !!this.config.authToken && bearerMatches(req, this.config.authToken);
+    };
+    routeCtx.jobDefinitionPreviewAvailable = (req, res) => previewAvailable() && currentJobPreviewBearer(req, res);
+    this.app.use(createJobDefinitionPreviewRouter({
+      available: previewAvailable,
+      verifyCurrentOwner: (req, res) => {
+        if (!currentJobPreviewBearer(req, res) || this.usesDurableGraphOwnerPolicy() || !this.config.dashboardPin
+          || this.dashboardPinVersion !== createHash('sha256').update(this.config.dashboardPin).digest('hex')) return null;
+        const proof = req.get('X-Instar-Operator-Session');
+        return proof && this.dashboardOperatorSessions.verify(proof) ? proof : null;
+      },
+      jobsFile: () => this.config.scheduler.jobsFile,
+      machineId: options.meshSelfId ?? 'serving-process',
+      worker: options.jobDefinitionPreviewWorker ?? new JobDefinitionPreviewWorker(),
+    }));
     const routes = createRoutes(routeCtx);
     this.attachWorkBoardRequestGate(options);
     // sibling-machine-reach: the background holdings cache's timers stop with the server.
