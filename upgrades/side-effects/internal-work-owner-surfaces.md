@@ -60,3 +60,13 @@ Revert the code and ship a patch. No schema or persisted record is rewritten or 
 ## Conclusion
 
 The repair is reviewable as a read-projection and lazy-materialization change. Focused tests and source-preview evidence support its boundaries. Complete suites and publication go through Chief and throughput; no release or live policy claim is made. The missing trust-journey board-policy adapter is a separately recorded follow-up because its proof representation needs its own authority review.
+
+## Second-pass review
+
+**Reviewer:** /root/protected_owner_surface_second_pass
+
+**Independent read of the artifact: concur**
+
+The independent reviewer read this artifact and the protected audit at `docs/audits/internal-work-owner-surfaces.md` on `b846a18daeec12ff5dc07ff50e58a3e03ea592d3` in full. The reviewer checked the classifier and lane branches, lazy history creation, the explicit agent board view, pooled discovery and pins, and the boot and board-disabled tests. The two successor commits changed test fixtures only.
+
+The reviewer confirmed that the source preserves existing approval authority and stored history while filtering internal work from owner-facing discovery. Genuine owner requests and questions remain represented. The read-only convergence validator confirmed six audit rounds, closed findings, and a final round with zero new findings. The reviewer inspected stored focused results and did not rerun the full suites or witness prior review rounds. The concurrence covers this protected audit and its source evidence. It does not certify an installed release.
