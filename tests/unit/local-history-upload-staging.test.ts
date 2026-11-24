@@ -15,7 +15,7 @@ import { LOCAL_HISTORY_PLAINTEXT_BYTES } from '../../src/import/LocalHistoryChan
 import { SafeFsExecutor } from '../../dist/core/SafeFsExecutor.js';
 import { DegradationReporter } from '../../dist/monitoring/DegradationReporter.js';
 import { ImportedHistoryStore } from '../../dist/import/ImportedHistoryStore.js';
-import { recoverLocalHistoryStoreTemporaryRuns, registerLocalHistoryStoreTemporaryRun } from '../../dist/import/LocalHistoryStoreTemporaryRun.js';
+import { registerLocalHistoryStoreTemporaryRun } from '../../dist/import/LocalHistoryStoreTemporaryRun.js';
 
 const roots: string[] = [], stages: LocalHistoryUploadStaging[] = [];
 const parents: ChildProcess[] = [], sockets: string[] = [];
@@ -499,17 +499,44 @@ it('keeps a registered namespace charged across staging restart until verified o
     expect(ledger.inspect(reservation)).toMatchObject({ planned: 123, state: 'active' });
     expect(ledger.list(unrelatedTag).every(row => row.state === 'disposed')).toBe(true);
     const resumed = setup({ stateDir: f.stateDir, boot: 'synthetic-next-boot' });
-    expect(ledger.inspect(reservation)).toMatchObject({ planned: 123, state: 'active' });
-    expect(fs.existsSync(namespace)).toBe(true);
-    expect(recoverLocalHistoryStoreTemporaryRuns(db, resumed.stage['custody'])).toEqual({ disposed: 1, pending: 0 });
+    expect(ledger.inspect(reservation)).toMatchObject({ planned: 0, state: 'disposed' });
     expect(fs.existsSync(namespace)).toBe(false);
 
+    const charge = ledger.create(tag, 123);
     fs.mkdirSync(namespace, { mode: 0o700 });
     expect(resumed.stage['disposeTag'](tag)).toBe(false);
-    expect(ledger.inspect(reservation).planned).toBe(123);
+    expect(ledger.inspect(charge).planned).toBe(123);
     SafeFsExecutor.safeRmdirSync(namespace, { operation: 'test recreated empty namespace' });
     expect(resumed.stage['disposeTag'](tag)).toBe(true);
-    expect(ledger.inspect(reservation)).toMatchObject({ planned: 0, state: 'disposed' });
+    expect(ledger.inspect(charge)).toMatchObject({ planned: 0, state: 'disposed' });
+  } finally { db.close(); ledger.close(); }
+});
+
+it('retains a prior tag when one of its registered namespaces cannot settle', async () => {
+  const f = setup();
+  const selected = f.stage.admit(device, f.manifest([Buffer.from('synthetic selected bytes')]));
+  const other = f.stage.admit(device, f.manifest([Buffer.from('separately settled synthetic upload')]));
+  const db = new Database(path.join(f.stateDir, 'local-history-upload', 'jobs.sqlite'));
+  const ledger = new LocalHistoryDiskLedger(f.stateDir, { disk: f.disk });
+  try {
+    const { tag } = db.prepare('SELECT tag FROM upload_operations WHERE id = ?').get(selected.operationId) as { tag: string };
+    db.prepare("UPDATE upload_operations SET phase = 'prepared' WHERE id = ?").run(selected.operationId);
+    db.prepare("UPDATE upload_operations SET phase = 'prepared' WHERE id = ?").run(other.operationId);
+    const otherRun = registerLocalHistoryStoreTemporaryRun(db, f.stage['custody'], other);
+    const otherTag = (db.prepare('SELECT tag FROM upload_operations WHERE id = ?').get(other.operationId) as { tag: string }).tag;
+    const otherReservation = ledger.create(otherTag, 456);
+    const cleanRun = registerLocalHistoryStoreTemporaryRun(db, f.stage['custody'], selected);
+    const pendingRun = registerLocalHistoryStoreTemporaryRun(db, f.stage['custody'], selected);
+    const namespace = (id: string) => path.join(f.stateDir, 'imported-history', '.local-history-temporary', id);
+    fs.mkdirSync(path.join(namespace(pendingRun.runId), 'unknown-directory'), { mode: 0o700 });
+    const reservation = ledger.create(tag, 123);
+    await f.stage.stop();
+    setup({ stateDir: f.stateDir, boot: 'synthetic-next-boot' });
+    expect(fs.existsSync(namespace(cleanRun.runId))).toBe(false);
+    expect(fs.existsSync(path.join(namespace(pendingRun.runId), 'unknown-directory'))).toBe(true);
+    expect(ledger.inspect(reservation)).toMatchObject({ planned: 123, state: 'active' });
+    expect(fs.existsSync(namespace(otherRun.runId))).toBe(false);
+    expect(ledger.inspect(otherReservation)).toMatchObject({ planned: 0, state: 'disposed' });
   } finally { db.close(); ledger.close(); }
 });
 

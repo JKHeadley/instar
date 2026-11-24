@@ -9,7 +9,7 @@ import { pathToFileURL } from 'node:url';
 import {
   acquireLocalHistoryStoreTemporaryAdmission, initializeLocalHistoryStoreTemporaryRuns,
   openLocalHistoryStoreTemporaryRun, recoverLocalHistoryStoreTemporaryRuns, registerLocalHistoryStoreTemporaryRun,
-  assertLocalHistoryStoreTemporaryAllocator,
+  assertLocalHistoryStoreTemporaryAllocator, settleOldLocalHistoryTemporaryRuns,
   type LocalHistoryStoreTemporaryToken,
 } from '../../src/import/LocalHistoryStoreTemporaryRun.js';
 import { acquireLocalHistoryChild, type LocalHistoryChildAdmission } from '../../src/import/LocalHistoryChildCustody.js';
@@ -211,6 +211,20 @@ privateIt('keeps cleanup pending when syncing the removed namespace fails', asyn
   lease.release();
   const replacement = acquireLocalHistoryStoreTemporaryAdmission(root)!; leases.push(replacement);
   expect(recoverLocalHistoryStoreTemporaryRuns(db, replacement)).toEqual({ disposed: 0, pending: 1 });
+});
+
+privateIt('leaves old namespace and state untouched if metadata room is refused', () => {
+  const { root, db, lease } = admitted();
+  const run = registerLocalHistoryStoreTemporaryRun(db, lease, { operationId });
+  lease.release();
+  const replacement = acquireLocalHistoryStoreTemporaryAdmission(root)!; leases.push(replacement);
+  const checkMetadataRoom = vi.fn(() => { throw new Error('synthetic metadata capacity refusal'); });
+  expect(settleOldLocalHistoryTemporaryRuns(db, replacement, checkMetadataRoom))
+    .toEqual({ disposed: 0, pending: 1, settledTags: [] });
+  expect(checkMetadataRoom).toHaveBeenCalledTimes(1);
+  expect(db.prepare('SELECT state FROM local_history_store_temporary_runs WHERE runId = ?').get(run.runId))
+    .toEqual({ state: 'registered' });
+  expect(fs.existsSync(path.join(root, 'imported-history', '.local-history-temporary', run.runId))).toBe(true);
 });
 
 privateIt('cannot recover current-generation namespaces and retains typed rows instead of retiring them', async () => {

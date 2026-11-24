@@ -11,7 +11,7 @@ import { CLAUDE_CODE_FRAMEWORK } from '../core/frameworkFacts.js';
 import { UPLOAD_TTL_MS } from '../core/AppMediaStore.js';
 import type { LocalHistoryChildAdmission } from './LocalHistoryChildCustody.js';
 import { acquireLocalHistoryStoreTemporaryAdmission, hasUnsettledLocalHistoryTemporaryRun,
-  initializeLocalHistoryStoreTemporaryRuns, validateLocalHistoryTemporaryRunInventory } from './LocalHistoryStoreTemporaryRun.js';
+  initializeLocalHistoryStoreTemporaryRuns, settleOldLocalHistoryTemporaryRuns, validateLocalHistoryTemporaryRunInventory } from './LocalHistoryStoreTemporaryRun.js';
 import { LocalHistoryDiskLedger, type LocalHistoryDiskMeasurement } from './LocalHistoryDiskLedger.js';
 import { localHistoryUploadDirectory } from './LocalHistoryExchange.js';
 import { parseLocalHistoryManifest, type LocalHistoryManifest } from './LocalHistoryManifest.js';
@@ -133,6 +133,12 @@ export class LocalHistoryUploadStaging {
       this.metadata = metadata;
       this.metadataRoom();
       initializeLocalHistoryStoreTemporaryRuns(db);
+      const recovery = settleOldLocalHistoryTemporaryRuns(db, custody, () => this.metadataRoom());
+      for (const tag of recovery.settledTags) {
+        if (this.disposeTag(tag)) this.clearCleanup(tag);
+        else if (!this.cleanups.has(tag)) this.scheduleCleanup(tag);
+      }
+      if (recovery.pending) this.report('cleanup', 'registered-namespace-cleanup-pending');
       db.exec(`CREATE TABLE IF NOT EXISTS upload_previews (
         id TEXT PRIMARY KEY, allocation TEXT NOT NULL, sha256 TEXT NOT NULL
       ) STRICT`);
@@ -741,14 +747,17 @@ export class LocalHistoryUploadStaging {
     }
     return disposed;
   }
+  private clearCleanup(tag: string): void {
+    for (const timer of this.cleanups.get(tag) ?? []) clearTimeout(timer);
+    this.cleanups.delete(tag);
+    this.reportedCleanup.delete(tag);
+  }
   private scheduleCleanup(tag: string): void {
     const timers = [1000, 10_000, 60_000].map((delay, index) => {
       const timer = setTimeout(() => {
         if (this.stopped) return;
         if (this.disposeTag(tag)) {
-          for (const other of this.cleanups.get(tag) ?? []) clearTimeout(other);
-          this.cleanups.delete(tag);
-          this.reportedCleanup.delete(tag);
+          this.clearCleanup(tag);
         } else if (index === 2 && !this.reportedCleanup.has(tag)) {
           this.reportedCleanup.add(tag); this.report('cleanup', 'owned-temporary-cleanup-pending');
         }

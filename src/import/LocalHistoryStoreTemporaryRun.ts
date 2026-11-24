@@ -143,12 +143,20 @@ function existingTemporaryRunRegistry(db: Database.Database): boolean {
   return true;
 }
 
-export function validateLocalHistoryTemporaryRunInventory(db: Database.Database): void {
-  parentDatabase(db);
-  if (!existingTemporaryRunRegistry(db)) return;
+function temporaryRunInventory(db: Database.Database): RunRow[] {
+  if (!existingTemporaryRunRegistry(db)) return [];
   const selected = db.prepare(`SELECT runId FROM ${TABLE} LIMIT ?`).all(MAX_RUNS + 1) as Array<{ runId: string }>;
   if (selected.length > MAX_RUNS) refuse('capacity');
-  for (const entry of selected) row(db, entry.runId);
+  return selected.map(entry => {
+    const value = row(db, entry.runId);
+    operation(db, value.operationId, value.tag, false);
+    return value;
+  });
+}
+
+export function validateLocalHistoryTemporaryRunInventory(db: Database.Database): void {
+  parentDatabase(db);
+  temporaryRunInventory(db);
 }
 
 /** The ledger retains a tag while any typed namespace remains unresolved. */
@@ -336,16 +344,31 @@ function cleanup(db: Database.Database, stateDir: string, value: RunRow): void {
 /** Only a real exclusive takeover produced by the wrapper can retire old-G
  * namespaces. Current-G entries require their registered ChildProcess proof. */
 export function recoverLocalHistoryStoreTemporaryRuns(db: Database.Database, lease: LocalHistoryChildAdmission): { disposed: number; pending: number } {
-  const brand = current(lease), stateDir = parentDatabase(db, brand.stateDir);
-  const rows = db.prepare(`SELECT runId FROM ${TABLE} LIMIT ?`).all(MAX_RUNS + 1) as {runId: string}[];
-  if (rows.length > MAX_RUNS) refuse('capacity');
-  let disposed = 0, pending = 0;
-  for (const selected of rows) {
-    const value = row(db, selected.runId);
-    if (value.generation === brand.generation || value.state === 'disposed') continue;
-    try { cleanup(db, stateDir, value); disposed++; } catch { pending++; }
-  }
+  const { disposed, pending } = settleOldLocalHistoryTemporaryRuns(db, lease);
   return { disposed, pending };
+}
+
+export function settleOldLocalHistoryTemporaryRuns(db: Database.Database, lease: LocalHistoryChildAdmission,
+  checkMetadataRoom?: () => void): { disposed: number; pending: number; settledTags: readonly string[] } {
+  const brand = current(lease), stateDir = parentDatabase(db, brand.stateDir);
+  const inventory = temporaryRunInventory(db);
+  let disposed = 0, pending = 0;
+  const settled = new Set<string>(), unresolved = new Set<string>();
+  for (const value of inventory) {
+    if (value.state === 'disposed') continue;
+    if (value.generation === brand.generation) { unresolved.add(value.tag); continue; }
+    try {
+      checkMetadataRoom?.();
+      current(lease);
+      cleanup(db, stateDir, value);
+      disposed++;
+      settled.add(value.tag);
+    } catch {
+      pending++;
+      unresolved.add(value.tag);
+    }
+  }
+  return { disposed, pending, settledTags: [...settled].filter(tag => !unresolved.has(tag)) };
 }
 
 export interface LocalHistoryStoreTemporaryAllocation {
