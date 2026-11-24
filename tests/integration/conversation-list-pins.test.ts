@@ -13,12 +13,15 @@ import fs from 'node:fs';
 import os from 'node:os';
 import path from 'node:path';
 import express from 'express';
+import http from 'node:http';
 import request from 'supertest';
 import { ProcessIntegrity } from '../../src/core/ProcessIntegrity.js';
 import { createRoutes, type RouteContext } from '../../src/server/routes.js';
 import { authMiddleware } from '../../src/server/middleware.js';
 import { MobilePairingService, createMobilePairingRouter, deviceAuthenticator, type MobilePairingDeps } from '../../src/server/mobilePairingRoutes.js';
 import { createMobileConversationRouter } from '../../src/server/mobileConversationRoutes.js';
+import { ConversationReadMarkerStore } from '../../src/core/ConversationReadMarkers.js';
+import { ConversationUnreadService } from '../../src/core/ConversationUnreadService.js';
 import { AppConversationService } from '../../src/core/AppConversationService.js';
 import { ConversationRegistry } from '../../src/core/ConversationRegistry.js';
 import { ConversationListPinStore } from '../../src/core/ConversationListPins.js';
@@ -39,7 +42,7 @@ afterAll(() => {
 
 const USERS = [{ id: 'justin', name: 'Justin', channels: [], permissions: ['user'], telegramUserId: 555 }];
 
-function setup(opts: { maxPerReader?: number } = {}) {
+function setup(opts: { maxPerReader?: number; peerUrl?: string; unread?: boolean } = {}) {
   const dir = fs.mkdtempSync(path.join(os.tmpdir(), 'listpins-int-'));
   dirs.push(dir);
   fs.writeFileSync(path.join(dir, 'users.json'), JSON.stringify(USERS));
@@ -71,8 +74,16 @@ function setup(opts: { maxPerReader?: number } = {}) {
   app.use(express.json({ verify: (req, _res, buf) => { (req as unknown as { rawBody: Buffer }).rawBody = buf; } }));
   app.use(authMiddleware(() => 'tok-1', 'echo', undefined, deviceAuthenticator(pairing)));
   app.use(createRoutes(ctx));
+  const unread = opts.unread ? new ConversationUnreadService({
+    store: new ConversationReadMarkerStore({ stateDir: dir }), enabled: () => true, machineId: () => 'm1', app: svc.store,
+    ownerIdentity: () => ({ ownerName: 'Ann', telegramOwnerId: 42, slackOwnerUserId: null }),
+    personOfReaderKey: () => ({ ok: true, role: 'owner', userId: null, name: 'Ann', telegramUserId: 42 }),
+    mayUse: () => true, authToken: () => 'tok-1',
+  }) : null;
+  if (unread) cleanups.push(() => unread.stop());
   app.use(createMobileConversationRouter({
-    config: config as never, pairing, service: svc, machineId: () => 'm1', listPins: pins,
+    config: config as never, pairing, service: svc, machineId: () => 'm1', listPins: pins, unread,
+    pool: opts.peerUrl ? { config: config as never, resolvePeerUrls: () => [{ machineId: 'm2', url: opts.peerUrl!, kind: 'lan' as const }] } : null,
     telegramTopics: () => [{ topicId: TOPIC, topicName: 'Ops', lastActivity: '2020-01-01T00:00:00.000Z', lastPreview: 'old topic' }],
   }));
   app.use(createMobilePairingRouter(pairing, deps, ctx));
@@ -211,5 +222,81 @@ describe('conversation-list pins — HTTP', () => {
     expect(list.status).toBe(200);
     expect(list.body.pinnedRefs).toBeUndefined();
     expect(list.body.pinnedRows).toBeUndefined();
+  });
+});
+
+describe('internal work is not owner conversation discovery', () => {
+  it('keeps an existing empty internal chat out of local pages and old pinned refs without deleting it', async () => {
+    const e=setup(),p=phone(e);
+    const internal=await create(e,p,'Keep the model registry current');
+    const ordinary=await create(e,p,'My requested conversation');
+    e.pins.setPinned('owner','app:'+internal,true);
+    e.svc.store.hiddenConversationKeys=()=>new Set([internal]);
+    const result=await signed(e,p,'GET','/mobile/conversations?limit=1');
+    expect(result.status).toBe(200);
+    expect(result.body.ownerProjectionVersion).toBe(1);
+
+    expect(result.body.conversations.map((r:any)=>r.id)).toEqual([ordinary]);
+    expect(result.body.pinnedRefs).toEqual([]);
+    expect(result.body.pinnedRows).toEqual([]);
+    expect(e.svc.store.getConversation(internal)?.tombstoned).toBe(false);
+    expect(e.pins.isPinned('owner','app:'+internal)).toBe(true);
+  });
+  it('a real person-facing transition restores discovery and the old pin without changing history', async () => {
+    const e=setup(),p=phone(e),key=await create(e,p,'A card that now asks a real question');
+    const hidden=new Set([key]);e.svc.store.hiddenConversationKeys=()=>hidden;e.pins.setPinned('owner','app:'+key,true);
+    expect((await signed(e,p,'GET','/mobile/conversations')).body.conversations.some((r:any)=>r.id===key)).toBe(false);
+    hidden.clear();
+    const result=await signed(e,p,'GET','/mobile/conversations');
+    expect(result.body.conversations.some((r:any)=>r.id===key)).toBe(true);
+    expect(result.body.pinnedRows.map((r:any)=>r.id)).toContain(key);
+  });
+});
+
+describe('Internal work from an older peer', () => {
+  it('returns an explicit unavailable response when visibility evidence cannot be read', async () => {
+    const e = setup(); const owner = phone(e);
+    await create(e, owner, 'Existing conversation');
+    e.svc.store.hiddenConversationKeys = () => { throw Error('work-card-visibility-unavailable'); };
+    const result = await signed(e, owner, 'GET', '/mobile/conversations');
+    expect(result.status).toBe(503);
+    expect(result.body.error).toBe('work-card-visibility-unavailable');
+    expect(result.body.conversations).toBeUndefined();
+  });
+  it('does not reintroduce a hidden row and retains a cursor when the filtered page is empty', async () => {
+    let key = ''; let requestedKey = ''; let compatible = false;
+    const peer = http.createServer((req, res) => {
+      res.setHeader('Content-Type', 'application/json');
+      if (new URL(req.url!, 'http://localhost').searchParams.has('cursor')) {
+        res.end(JSON.stringify({conversations:[{platform:'app',id:requestedKey,title:'My request',lastActivity:'2020-01-01T00:00:00.000Z',lastPreview:''}],nextCursor:null})); return;
+      }
+      res.end(JSON.stringify({ conversations: [{ platform: 'app', id: key, title: 'Registry work', lastActivity: '2099-01-01T00:00:00.000Z', lastPreview: '' }], nextCursor: 'older-page', unreadBeyondPage: true, ...(compatible ? { ownerProjectionVersion: 1 } : {}) }));
+    });
+    await new Promise<void>(resolve => peer.listen(0, '127.0.0.1', resolve));
+    try {
+      const address = peer.address();
+      if (!address || typeof address === 'string') throw Error('peer address missing');
+      const e = setup({ peerUrl: 'http://127.0.0.1:' + address.port, unread: true });
+      const owner = phone(e);
+      requestedKey = await create(e, owner, 'My genuine request');
+      key = await create(e, owner, 'Internal registry work');
+      e.svc.store.hiddenConversationKeys = () => new Set([key]);
+      const result = await signed(e, owner, 'GET', '/mobile/conversations?scope=pool&limit=1');
+      expect(result.status).toBe(200);
+      expect(result.body.pool.failed).toEqual([]);
+      expect(result.body.conversations).toEqual([]);
+      expect(result.body.nextCursor).toBeTruthy();
+      expect(result.body.ownerProjectionVersion).toBe(1);
+      expect(result.body.unreadProjectionIncomplete).toBe(true);
+      expect(result.body.unreadBeyondPage).toBe(false);
+      compatible = true;
+      const modern = await signed(e, owner, 'GET', '/mobile/conversations?scope=pool&limit=1');
+      expect(modern.body.unreadBeyondPage).toBe(true);
+      expect(modern.body.unreadProjectionIncomplete).toBeUndefined();
+      const next = await signed(e, owner, 'GET', '/mobile/conversations?scope=pool&limit=1&cursor='+encodeURIComponent(result.body.nextCursor));
+      expect(next.status).toBe(200);
+      expect(next.body.conversations.map((c:{id:string})=>c.id)).toEqual([requestedKey]);
+      expect(e.svc.store.getConversation(key)).not.toBeNull();
+    } finally { await new Promise<void>((resolve, reject) => peer.close(error => error ? reject(error) : resolve())); }
   });
 });

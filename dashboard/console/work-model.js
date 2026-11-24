@@ -551,13 +551,7 @@ export function workBoardNeedRows(wb) {
     cardId: c.id,
   }));
   if (rest > 0) rows.push({ key: 'work:more', main: rest === 1 ? '1 more card is waiting on you' : `${rest} more cards are waiting on you`, sub: 'On the work board, oldest first.', href: '#/work/board' });
-  // agent-work-cards-default §1 "One aggregated row, not zero": the team's `not-started` internal cards, ONE row, deduped
-  // by team, never per card; it disappears when none is not-started. The row opens the board's not-started view, whose
-  // Approve shown / Approve and widen controls are the owner's (PIN).
-  const ns = b.notStartedCards;
-  if (ns && typeof ns.count === 'number' && ns.count > 0) {
-    rows.push({ key: 'work:not-started', main: ns.count === 1 ? '1 internal card is waiting for your approval or board setting' : `${ns.count} internal cards are waiting for your approval or board setting`, sub: 'Approve the ones shown, or let internal cards start without asking.', href: '#/work/board?s=not-started', notStarted: ns.count });
-  }
+  // Internal policy-blocked work is diagnostic data, never an owner request. Genuine asks are in the waiting lane.
   return rows;
 }
 
@@ -774,6 +768,7 @@ export function chatLines(data, max = 30) {
 
 /** Where a card's conversation is read, only ever an app conversation path on this server. */
 export function messagesPathOf(card) {
+  if (card?.conversationAvailable === false) return null;
   const c = isObj(card) ? card : {};
   const p = isObj(c.conversation) ? c.conversation.messagesPath : null;
   if (typeof p === 'string' && /^\/mobile\/chat\/app\/[A-Za-z0-9-]+\/messages$/.test(p)) return `${p}?limit=30&scope=pool`;

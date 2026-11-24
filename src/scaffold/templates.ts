@@ -1,3 +1,4 @@
+import { CONVERSATION_SEARCH_CAPABILITY_ROW, CONVERSATION_SEARCH_LOOKUP, CONVERSATION_SEARCH_PROACTIVE, CONVERSATION_SEARCH_REGISTRY_ROW, SEMANTIC_LEARNINGS_REGISTRY_ROW, conversationSearchGuide } from './conversationSearchGuidance.js';
 import { recoveryAwareness } from '../recovery/RecoveryAwareness.js';
 import { failureCalloutAwareness } from '../core/failureCalloutAwareness.js';
 /**
@@ -411,7 +412,7 @@ Server: curl http://localhost:${port}/health | Capabilities: curl -H "Authorizat
 | Multi-machine / pairing | \`instar machines --help\` |
 | Architecture / how I work | \`curl -H "Authorization: Bearer $AUTH" http://localhost:${port}/context/dispatch\` |
 | Someone I've interacted with | \`GET /relationships\` |
-| Something I wrote before | \`GET /memory/search?q=...\` |
+${CONVERSATION_SEARCH_REGISTRY_ROW}
 | Writing code / debugging | Read \`.instar/context/development.md\` if it exists |
 | Managing context / knowledge | \`instar playbook status\` or \`instar playbook doctor\` |
 | Deploying / building | Read \`.instar/context/deployment.md\` if it exists |
@@ -1078,13 +1079,7 @@ ${remoteDesktopBullet(port)}
 - **Automatic safety**: Restore is blocked while sessions are active and creates a pre-restore backup first.
 - **When to use proactively**: Before applying dispatches that modify config, before updating agent identity, before any experiment that touches state files.
 
-**Memory Search** — Full-text search over all indexed memory files using SQLite FTS5. Find anything you've ever written to MEMORY.md, handoff notes, or state files.
-- Search: \`curl -H "Authorization: Bearer $AUTH" "http://localhost:${port}/memory/search?q=QUERY&limit=10"\`
-- Stats: \`curl -H "Authorization: Bearer $AUTH" http://localhost:${port}/memory/stats\`
-- Reindex: \`curl -X POST -H "Authorization: Bearer $AUTH" http://localhost:${port}/memory/reindex\`
-- Sync (incremental): \`curl -X POST -H "Authorization: Bearer $AUTH" http://localhost:${port}/memory/sync\`
-- **Auto-sync**: Search automatically syncs before querying, so results are always current.
-- **When to use**: When looking for something you know you wrote but can't remember where. When a user asks "didn't we discuss X?" When building context for a task from past learnings.
+${conversationSearchGuide(port)}
 
 **Anthropic Subscription-Path Routing (June-15 readiness)** — Your internal background LLM calls (sentinels, gates, extractors) AND your headless job / agent-to-agent / dispatch spawns normally run as \`claude -p\` one-shots, which bill the Agent SDK credit pot after 2026-06-15. The subscription-path lever routes BOTH through interactive Claude sessions instead — the path that keeps working when the pot is empty. (Internal calls use a pooled REPL; rerouted job/A2A spawns run as normal interactive sessions with a completion marker, a concurrency cap, and quota backpressure — each session's \`launchLane\` in \`GET /sessions\` shows which billing lane it used.)
 - What's actually wired in: \`curl -H "Authorization: Bearer $AUTH" http://localhost:${port}/providers/registry\` → registered provider adapters + capability flags. Both \`anthropic-headless\` and \`anthropic-interactive-pool\` listed = the escape hatch is installed.
@@ -1449,7 +1444,7 @@ ${jobTransferGuide(port).registry.trimEnd()}
 | How full is each machine's disk? / why was an upload refused? | \`GET /disk-steward?scope=pool\` — each machine's free space, forecast and last cleanup, read live (→ Lookup details) |
 | My configuration? | \`.instar/config.json\` |
 | My identity/principles? | \`.instar/AGENT.md\` |
-| My past learnings about X? | \`GET /memory/search?q=X\` |
+${SEMANTIC_LEARNINGS_REGISTRY_ROW}
 | My context items / playbook? | \`instar playbook status\` or \`instar playbook list\` |
 | My backup history? | \`GET /backups\` |
 | My state change history? | \`GET /git/log\` |
@@ -1548,7 +1543,7 @@ When asked for something I can't do yet, I build it:
 2. **Need periodic checks?** Create a job in \`.instar/jobs.json\`. If it reports to the user, ask whether they want to see its reports; otherwise they stay quiet.
 3. **Need a new integration?** Write a script in \`.claude/scripts/\`.
 4. **Need to remember something?** Write to \`.instar/MEMORY.md\`.
-5. **Need to find something I wrote before?** Use memory search (\`GET /memory/search?q=...\`).
+${CONVERSATION_SEARCH_LOOKUP}
 6. **Need to protect state before a risky change?** Create a backup (\`POST /backups\`).
 7. **Need to notify the user?** Use the messaging API.
 8. **Need external API access?** Write a script that calls the API.
@@ -1693,7 +1688,7 @@ ${DOC_DELIVERY_ROW_PRODUCE_SHORT}
 - User says **"you keep doing X"** / asks **what I've learned to do** → check \`GET /skills/learned\` and surface any proposal still without a verdict — never claim a learned skill from memory (→ Lookup details).
 - A learned skill sits in **\`pending[]\`** → tell the operator in plain words what it does and what triggered it; the one tap that confirms or rejects it is theirs, never mine (→ Lookup details).
 - User asks me to **remember something** → Write it to MEMORY.md and explain it persists across sessions.
-- User asks **"didn't we talk about X?"** or **"where did I put that?"** → Use memory search (\`GET /memory/search?q=...\`). The full-text index covers everything I've written.
+${CONVERSATION_SEARCH_PROACTIVE}
 - Before any **risky operation** (config changes, updates, experiments) → Create a backup snapshot first (\`POST /backups\`). Mention that you did it — the user should know their state is protected.
 - User asks about **other agents on this machine** → Check the agent registry (\`GET /agents\`). Share what's running and on which ports.
 - After **major state changes** → Commit to git (\`POST /git/commit\`); the \`git-sync\` job only covers the routine hourly sync (→ Lookup details).
@@ -2628,7 +2623,7 @@ Before answering ANY question about my capabilities or architecture from memory 
 | Multi-machine / pairing | \`instar machines --help\` |
 | Architecture / how I work | \`curl -H "Authorization: Bearer $AUTH" http://localhost:${port}/context/dispatch\` |
 | Someone I've interacted with | \`GET /relationships\` |
-| Something I wrote before | \`GET /memory/search?q=...\` |
+${CONVERSATION_SEARCH_REGISTRY_ROW}
 | Writing code / debugging | Read \`.instar/context/development.md\` if it exists |
 | Managing context / knowledge | \`instar playbook status\` or \`instar playbook doctor\` |
 | Deploying / building | Read \`.instar/context/deployment.md\` if it exists |
@@ -2758,7 +2753,7 @@ One-line awareness of every capability. For full docs, query the Self-Knowledge 
 | **Event Stream (SSE)** | Real-time server events |
 | **Dashboard** | Web UI for session monitoring and file browsing |
 | **Backup System** | Snapshot and restore agent state |
-| **Memory Search** | Full-text search over all memory files (FTS5) |
+${CONVERSATION_SEARCH_CAPABILITY_ROW}
 | **Git Sync** | Automatic version-control and multi-machine sync |
 | **Agent Registry** | Discover all agents on this machine |
 | **Skills** | Reusable behavioral capabilities as slash commands |

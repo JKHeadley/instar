@@ -560,6 +560,13 @@ export const CAPABILITY_INDEX: readonly CapabilityEntry[] = [
     }),
   },
   {
+    key: 'mobileConversationTree',
+    // Under the '/mobile' prefix the mobilePairing entry already claims, so no new top-level prefix.
+    prefixes: [],
+    description: 'The phone tree of Conversations (docs/specs/work-front-doors.md stage 2; conversation-effort-hierarchy-v3 §7.4): GET /mobile/conversation-graph/tree (owner phone, device-signed) returns the owner\'s root groups with their conversations and nested groups in one read: each node has ref, routeRef (for GET /mobile/conversation-graph/nodes/:ref), title, kind, role (effort, front-door, worker), source (platform and conversation id, to open its history), frontDoor, visibleChildCount, children and childrenComplete (false when cut at 4 levels, 20 children a node or 400 nodes a response: open the node for the rest), proposed card conversations, and project {title, conversationKey} when the group holds a project the Chief of Staff tracks (projects: known|unknown says whether projects could be read). The Chief of Staff conversation comes first as root; nextCursor pages more root groups. Owner only, like the other hierarchy reads: a member or guest phone gets 403 hierarchy-owner-only and keeps the flat GET /mobile/conversations list; 503 conversation-graph-off while Conversations is off or not ready.',
+    build: () => ({ configured: true, endpoints: ['GET /mobile/conversation-graph/tree (owner phone)', 'GET /mobile/conversation-graph/roots (owner phone)', 'GET /mobile/conversation-graph/nodes/:ref (owner phone)'] }),
+  },
+  {
     key: 'mobileCapacityScreens',
     // The routes live under the '/mobile' prefix already claimed by the mobilePairing entry, so this
     // awareness entry claims no new top-level prefix (the empty-prefix precedent above).

@@ -1,7 +1,7 @@
 /** Default-off production composition. Enabling this surface is a release
  * action after increment-A acceptance; readiness is still checked per read.
  * Storage initialization alone never mounts a public graph route. */
-import {Router} from 'express';
+import {Router, type Request, type Response, type NextFunction} from 'express';
 import {SecretStore} from '../core/SecretStore.js';
 import type {MachineIdentityManager} from '../core/MachineIdentity.js';
 import type {ScopeVerifier} from '../core/ScopeVerifier.js';
@@ -17,6 +17,7 @@ import {createConversationGraphOwnerAdmission} from './ConversationGraphOwnerAdm
 import {ConversationGraphOwnerGrantStore} from './ConversationGraphOwnerGrant.js';
 import type {ConversationGraphOwnerPolicySnapshot} from '../core/ConversationGraphOwnerPolicy.js';
 import {createConversationGraphRouter} from './conversationGraphRoutes.js';
+import {treeProjects} from '../core/workFrontDoorsGraph.js';
 import {createConversationGraphChangeRouter} from './conversationGraphChangeRoutes.js';
 import {createConversationGraphHistoryRoutes,type ConversationGraphHistoryDeps} from './conversationGraphHistoryRoutes.js';
 import {createConversationGraphSuggestionRouter} from './conversationGraphSuggestionRoutes.js';
@@ -76,6 +77,7 @@ export function createConversationGraphSurface(options:{
  readEnabled?:boolean;correctionsEnabled?:boolean;identity:MachineIdentityManager;
  scope:ScopeVerifier|null;telegramChatId:string;pairing:MobilePairingService|null;
  verifyDashboardOwner(token:string|undefined):boolean;
+ mayPresent?(ref:import('../core/conversationGraph.js').NodeRef):boolean;
  /** Live operator policy; absence preserves the older admitted-only adapter. */
  dashboardPolicy?:()=>ConversationGraphOwnerPolicySnapshot|null;initializeDashboardPolicy?:()=>void;forceFileKey?:boolean;
  history?:Pick<ConversationGraphHistoryDeps,'selfMachineId'|'localBaseUrl'|'peers'|'authToken'|'agentId'|'peerHostAllowlist'|'recordRopeResult'>;
@@ -105,7 +107,9 @@ export function createConversationGraphSurface(options:{
  };
  const model=new ConversationGraphReadModel(source,{rootConversation});
  options.onReadModel?.(model);
- router.use(createConversationGraphRouter({model,resolveViewer}));
+ // The phone tree's Project label reads the same Chief of Staff projects the suggestions offer (work-front-doors §3.1).
+ const suggestedProjects=options.suggestions?.projects;
+ router.use(createConversationGraphRouter({model,resolveViewer,...(suggestedProjects?{projects:()=>treeProjects(suggestedProjects())}:{})}));
  if(options.history)router.use(createConversationGraphHistoryRoutes({...options.history,
   // The same private-serving gate as the owner's read view that showed this conversation (readView), not
   // the 60 s write-readiness proof: history is a read (conversation-graph-suggestions follow-up, 2026-11-17).
@@ -147,5 +151,9 @@ export function createConversationGraphSurface(options:{
   // Owner changes are off here: the confirm answers a lasting refusal, never "try again".
   options.groupProjects.confirmHolder.confirm=null;options.groupProjects.confirmHolder.off=true;
  }
+ router.use((error:unknown,_req:Request,res:Response,next:NextFunction)=>{
+  if(error instanceof Error&&error.message==='work-card-visibility-unavailable'){res.status(503).json({code:'work-card-visibility-unavailable'});return;}
+  next(error);
+ });
  return router;
 }
