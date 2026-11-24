@@ -127,9 +127,139 @@ it('prepares both source kinds through real children and retires raw files witho
       } finally { bytes.fill(0); }
     }
     expect(fs.existsSync(path.join(f.stateDir, 'imported-history'))).toBe(false);
+    const preview = await f.stage.readPreparedPreview(device, grant.operationId);
+    expect(preview.files.map(file => file.source)).toEqual(['codex', 'claude-code']);
+    expect(preview.messages).toBe(2); expect(preview.newMessages).toBe(2);
+    expect(JSON.stringify(preview)).not.toContain('synthetic codex text');
+    expect(JSON.stringify(preview)).not.toContain('synthetic claude text');
+    expect(f.stage.status(device, grant.operationId).expiresAt).toBe(status.expiresAt);
+    expect(db.prepare('SELECT count(*) AS n FROM upload_previews').get()).toEqual({ n: 0 });
+    const pendingCandidate = f.stage.publishPreparedPreview(device, grant.operationId);
+    const [first, concurrent] = await Promise.allSettled([
+      pendingCandidate,
+      f.stage.publishPreparedPreview(device, grant.operationId),
+    ]);
+    expect(concurrent).toMatchObject({ status: 'rejected', reason: expect.objectContaining({ message: expect.stringContaining('busy') }) });
+    if (first.status === 'rejected') throw first.reason;
+    const candidate = first.value;
+    expect(candidate.preview).toEqual(preview);
+    expect(candidate.projects).toEqual(preview.files.map(file => expect.objectContaining({
+      source: file.source, projectPath: file.projectPath, files: 1, messages: 1, newMessages: 1, existingMessages: 0,
+    })));
+    expect(JSON.stringify(candidate.projects)).not.toContain('fileId');
+    expect(candidate.expiresAt).toBe(status.expiresAt);
+    expect(candidate.confirmation.action).toBe('copy-selected-history');
+    const sealed = db.prepare('SELECT allocation,sha256 FROM upload_previews WHERE id = ?').get(grant.operationId) as {allocation: string; sha256: string};
+    expect(ledger.inspect(sealed.allocation).state).toBe('sealed');
+    const stored = ledger.read(sealed.allocation, 0, ledger.inspect(sealed.allocation).written);
+    expect(crypto.createHash('sha256').update(stored).digest('hex')).toBe(sealed.sha256);
+    expect(JSON.parse(stored.toString()).receipt).toEqual(candidate);
+    expect(JSON.stringify(f.stage.status(device, grant.operationId))).not.toContain(candidate.confirmation.challenge);
+    expect(await f.stage.publishPreparedPreview(device, grant.operationId)).toEqual(candidate);
+    expect(db.prepare('SELECT count(*) AS n FROM upload_previews').get()).toEqual({ n: 1 });
+    const intent = { previewId: candidate.previewId, machineId: candidate.machineId, bootId: issuer.bootId,
+      confirmationChallenge: candidate.confirmation.challenge, applyRequestId: 'a'.repeat(32) };
+    const inspected = f.stage.inspectCopyIntent(device, grant.operationId, intent);
+    expect(inspected.requestId).toBe(intent.applyRequestId);
+    expect(f.stage.inspectCopyIntent(device, grant.operationId, intent)).toEqual(inspected);
+    expect(f.stage.inspectCopyIntent(device, grant.operationId, { ...intent, applyRequestId: 'b'.repeat(32) }).fingerprint)
+      .not.toBe(inspected.fingerprint);
+    for (const change of [{ bootId: 'other-boot' }, { machineId: 'wrong-target' },
+      { previewId: 'b'.repeat(32) }, { confirmationChallenge: Buffer.alloc(32).toString('base64') }]) {
+      expect(() => f.stage.inspectCopyIntent(device, grant.operationId, { ...intent, ...change })).toThrow();
+    }
+    f.owner('other-owner');
+    await expect(f.stage.publishPreparedPreview(device, grant.operationId)).rejects.toThrow();
+    expect(() => f.stage.inspectCopyIntent(device, grant.operationId, intent)).toThrow();
+    f.owner('synthetic-owner');
+    db.prepare('UPDATE upload_previews SET sha256 = ? WHERE id = ?').run('0'.repeat(64), grant.operationId);
+    await expect(f.stage.publishPreparedPreview(device, grant.operationId)).rejects.toThrow('upload-unavailable');
+    expect(() => f.stage.inspectCopyIntent(device, grant.operationId, intent)).toThrow('upload-unavailable');
+    expect(fs.existsSync(path.join(f.stateDir, 'imported-history'))).toBe(false);
     expect(f.stage.complete(device, grant.operationId).phase).toBe('prepared');
   } finally { db.close(); ledger.close(); }
 });
+it('keeps explicit preview retryable while the actual destination writer is locked', async () => {
+  const f = setup();
+  const store = new ImportedHistoryStore(f.stateDir);
+  const bytes = Buffer.from([
+    { type: 'session_meta', payload: { id: 'synthetic-session-0', cwd: '/synthetic/project', source: 'cli' } },
+    { type: 'response_item', payload: { type: 'message', role: 'user', content: [{ type: 'input_text', text: 'synthetic content' }] } },
+  ].map(row => JSON.stringify(row)).join('\n'));
+  const grant = f.stage.admit(device, f.manifest([bytes]));
+  upload(f.stage, grant.operationId, 'file-0', bytes);
+  f.stage.complete(device, grant.operationId);
+  await until(() => f.stage.status(device, grant.operationId).phase === 'verified');
+  f.stage.prepare(device, grant.operationId);
+  await until(() => f.stage.status(device, grant.operationId).phase === 'prepared');
+  const db = new Database(path.join(f.stateDir, 'local-history-upload', 'jobs.sqlite'));
+  const ledger = new LocalHistoryDiskLedger(f.stateDir, { disk: f.disk });
+  try {
+    const plan = db.prepare('SELECT allocation FROM upload_preparations WHERE id = ?').get(grant.operationId) as { allocation: string };
+    const { files } = JSON.parse(ledger.read(plan.allocation, 0, 1024 * 1024).toString()) as { files: Array<{ allocation: string }> };
+    const reads = vi.spyOn(LocalHistoryDiskLedger.prototype, 'read');
+    await store.withWriter(async () => {
+      await expect(f.stage.publishPreparedPreview(device, grant.operationId)).rejects.toThrow('upload-busy');
+      expect(reads.mock.calls.some(([id]) => id === files[0].allocation)).toBe(false);
+      expect(db.prepare('SELECT count(*) AS n FROM upload_previews').get()).toEqual({ n: 0 });
+    });
+    const retry = await f.stage.publishPreparedPreview(device, grant.operationId);
+    expect(retry.expiresAt).toBe(grant.expiresAt);
+    expect(retry.preview.newMessages).toBe(1);
+  } finally {
+    vi.restoreAllMocks();
+    db.close();
+    ledger.close();
+  }
+});
+
+it.each(['cancel', 'revoke', 'expire'] as const)('keeps preview unpublished after %s during an actual worker read', async action => {
+  let now = Date.now();
+  const f = setup({ clock: () => now });
+  const bytes = Buffer.from([
+    { type: 'session_meta', payload: { id: 'synthetic-session-0', cwd: '/synthetic/project', source: 'cli' } },
+    { type: 'response_item', payload: { type: 'message', role: 'user', content: [{ type: 'input_text', text: 'synthetic content' }] } },
+  ].map(row => JSON.stringify(row)).join('\n'));
+  const grant = f.stage.admit(device, f.manifest([bytes]));
+  upload(f.stage, grant.operationId, 'file-0', bytes);
+  f.stage.complete(device, grant.operationId);
+  await until(() => f.stage.status(device, grant.operationId).phase === 'verified');
+  f.stage.prepare(device, grant.operationId);
+  await until(() => f.stage.status(device, grant.operationId).phase === 'prepared');
+  const db = new Database(path.join(f.stateDir, 'local-history-upload', 'jobs.sqlite'));
+  const ledger = new LocalHistoryDiskLedger(f.stateDir, { disk: f.disk });
+  try {
+    const plan = db.prepare('SELECT allocation FROM upload_preparations WHERE id = ?').get(grant.operationId) as { allocation: string };
+    const { files } = JSON.parse(ledger.read(plan.allocation, 0, 1024 * 1024).toString()) as { files: Array<{ allocation: string }> };
+    const artifact = files[0].allocation;
+    let pid = 0, acted = false, observedLive = false, observedSealed = false;
+    const register = f.stage['registerChild'].bind(f.stage);
+    vi.spyOn(f.stage as unknown as { registerChild(pid: number): Promise<void> }, 'registerChild')
+      .mockImplementation(async childPid => { await register(childPid); pid = childPid; });
+    const read = LocalHistoryDiskLedger.prototype.read;
+    vi.spyOn(LocalHistoryDiskLedger.prototype, 'read').mockImplementation(function (this: LocalHistoryDiskLedger, id, offset, count) {
+      const result = read.call(this, id, offset, count);
+      if (id !== artifact || acted) return result;
+      acted = true;
+      observedLive = process.kill(pid, 0);
+      if (action === 'cancel') f.stage.cancel(device, grant.operationId);
+      else if (action === 'revoke') f.owner(null);
+      else now = grant.expiresAt;
+      observedSealed = ledger.inspect(artifact).state === 'sealed';
+      return result;
+    });
+    await expect(f.stage.publishPreparedPreview(device, grant.operationId)).rejects.toThrow('upload-unavailable');
+    expect({ acted, observedLive, observedSealed }).toEqual({ acted: true, observedLive: true, observedSealed: true });
+    expect(() => process.kill(pid, 0)).toThrow();
+    expect(db.prepare('SELECT count(*) AS n FROM upload_previews').get()).toEqual({ n: 0 });
+    expect(fs.existsSync(path.join(f.stateDir, 'imported-history'))).toBe(false);
+  } finally {
+    vi.restoreAllMocks();
+    db.close();
+    ledger.close();
+  }
+});
+
 it.each(['cancel', 'revoke'] as const)('keeps parser-owned files charged until actual child exit after %s during streaming', async action => {
   const f = setup(), bytes = Buffer.from([
     { type: 'session_meta', payload: { id: 'synthetic-session-0', cwd: '/synthetic/project', source: 'cli' } },

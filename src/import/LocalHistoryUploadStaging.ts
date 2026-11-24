@@ -18,6 +18,9 @@ import { MAX_LOCAL_SESSION_BYTES } from './localSessionSnapshot.js';
 import { privateImportDatabasePath } from './privateImportState.js';
 import { DegradationReporter } from '../monitoring/DegradationReporter.js';
 import { runLocalHistoryParseJob, type LocalHistoryParseReceipt } from './LocalHistoryParseJob.js';
+import { LocalHistoryPreparedReadRefused, runLocalHistoryPreparedReadJob } from './LocalHistoryPreparedReadJob.js';
+import { summarizeLocalHistoryPreviewProjects } from './LocalHistoryPreviewProjects.js';
+import type { LocalHistoryPreparedPreview } from './LocalHistoryPreparedPreview.js';
 import { localSessionOriginalId } from './localSessionParsers.js';
 import type { LocalHistoryAuthenticatedDevice, LocalHistoryChannelIssuer, LocalHistoryChannelPrincipal } from './LocalHistoryChannelRegistry.js';
 
@@ -39,6 +42,14 @@ interface Row {
 interface Plan { manifest: LocalHistoryManifest; files: Array<{ fileId: string; allocation: string }> }
 interface PreparedFile extends LocalHistoryParseReceipt { fileId: string; allocation: string }
 interface PreparedPlan { version: 1; parserContractVersion: 1; operationId: string; fingerprint: string; files: PreparedFile[] }
+interface PreviewReceipt {
+  previewId: string;
+  machineId: string;
+  expiresAt: number;
+  confirmation: { challenge: string; action: 'copy-selected-history' };
+  preview: LocalHistoryPreparedPreview;
+  projects: ReturnType<typeof summarizeLocalHistoryPreviewProjects>;
+}
 export interface LocalHistoryUploadStatus {
   operationId: string; uploadId: string; phase: Phase; expiresAt: number;
   files: Array<{ fileId: string; plaintextOffset: number; nextExpectedChunk: number }>;
@@ -116,6 +127,10 @@ export class LocalHistoryUploadStaging {
       this.recover();
       metadata = ledger.create('r-' + custody.custody.generation + '-' + crypto.randomBytes(16).toString('hex'), METADATA_RESERVE);
       this.metadata = metadata;
+      this.metadataRoom();
+      db.exec(`CREATE TABLE IF NOT EXISTS upload_previews (
+        id TEXT PRIMARY KEY, allocation TEXT NOT NULL, sha256 TEXT NOT NULL
+      ) STRICT`);
       for (const [operation, phase] of this.invalidated) {
         this.metadataRoom(); this.db.prepare('UPDATE upload_operations SET phase = ? WHERE id = ?').run(phase, operation);
       }
@@ -128,6 +143,9 @@ export class LocalHistoryUploadStaging {
       if (db?.open) db.close(); ledger?.close(); custody.release();
       refuse('unavailable');
     }
+  }
+  private registerChild(pid: number): Promise<void> {
+    return this.custody.registerChild(pid);
   }
   private clock(): number {
     let now: number;
@@ -483,6 +501,153 @@ export class LocalHistoryUploadStaging {
       check(); this.metadataRoom();
       this.db.prepare("UPDATE upload_operations SET phase = 'prepared' WHERE id = ?").run(row.id);
     });
+  }
+  /** Internal read-only preview of the exact sealed artifacts. This neither
+   * publishes a confirmation nonce nor changes the original grant deadline.
+   * The preparation custody slot prevents cancellation/recovery from disposing
+   * artifact bytes until the actual fixed reader process has closed.
+   */
+  async readPreparedPreview(device: LocalHistoryAuthenticatedDevice, operationId: string): Promise<LocalHistoryPreparedPreview> {
+    const row = this.owned(operationId, device);
+    if (row.phase !== 'prepared') refuse('conflict');
+    if (this.verification || this.preparation) refuse('busy');
+    const deviceCopy = Object.freeze({ deviceId: device.deviceId, deviceKeyHash: device.deviceKeyHash });
+    const prepared = this.prepared(row), plan = this.plan(row), ownerUserId = this.owner(deviceCopy).ownerUserId;
+    const authorized = () => { try { return this.owned(row.id, deviceCopy).phase === 'prepared'; } catch { return false; } };
+    const check = () => { if (!authorized()) refuse('unavailable'); };
+    let result: LocalHistoryPreparedPreview | undefined, writerBusy = false, leased = false;
+    const done = Promise.resolve().then(async () => {
+      check();
+      const receipt = await runLocalHistoryPreparedReadJob({
+        input: { stateDir: this.deps.stateDir, ownerUserId, maxArtifactBytes: Math.max(...prepared.files.map(file => file.bytes)),
+          descriptors: prepared.files.map((file, index) => ({ fileId: file.fileId, source: plan.manifest.files[index].source,
+            expectedSessionId: plan.manifest.files[index].expectedSessionId, projectPath: plan.manifest.project,
+            representation: file.representation, bytes: file.bytes, sha256: file.sha256 })) },
+        heapMiB: this.parserPolicy.heapMiB, perFileDeadlineMs: this.parserPolicy.deadlineMs, rssBytes: this.parserPolicy.rssBytes,
+        authorized,
+        acquireChild: async () => {
+          check(); if (leased) return null; leased = true;
+          return { custody: this.custody.custody,
+            registerChild: async pid => { check(); await this.registerChild(pid); check(); },
+            release: () => { if (!leased) refuse('unavailable'); leased = false; } };
+        },
+        chunks: async function* (this: LocalHistoryUploadStaging, signal: AbortSignal) {
+          for (const file of prepared.files) for (let offset = 0; offset < file.bytes; offset += CHUNK_BYTES) {
+            check(); if (signal.aborted) refuse('unavailable');
+            const bytes = this.ledger.read(file.allocation, offset, Math.min(CHUNK_BYTES, file.bytes - offset));
+            try { check(); yield bytes; check(); } finally { bytes.fill(0); }
+          }
+        }.bind(this),
+      });
+      check(); result = receipt.preview;
+    }).catch(error => {
+      writerBusy = error instanceof LocalHistoryPreparedReadRefused
+        && error.message === 'local-history-preview-writer-busy' && !error.cleanupPending;
+    }).finally(() => {
+      if (this.preparation?.done === done) this.preparation = undefined;
+      try { const current = this.row(row.id); if (!live(current.phase)) this.invalidate(current, current.phase); }
+      catch { if (!this.disposeTag(row.tag) && !this.cleanups.has(row.tag) && !this.stopped) this.scheduleCleanup(row.tag); }
+    });
+    this.preparation = { id: row.id, tag: row.tag, done };
+    await done;
+    check();
+    if (writerBusy) refuse('busy');
+    if (!result) refuse('unavailable');
+    return result;
+  }
+  /** Publish one immutable candidate for explicit confirmation. Status never
+   * invokes this method. The receipt itself cannot authorize any mutation. */
+  async publishPreparedPreview(device: LocalHistoryAuthenticatedDevice, operationId: string): Promise<PreviewReceipt> {
+    const deviceCopy = Object.freeze({ deviceId: device.deviceId, deviceKeyHash: device.deviceKeyHash });
+    const row = this.owned(operationId, deviceCopy);
+    if (row.phase !== 'prepared') refuse('conflict');
+    const existing = this.readPublishedPreview(row);
+    if (existing) return existing;
+    const preview = await this.readPreparedPreview(deviceCopy, operationId);
+    const current = this.owned(operationId, deviceCopy);
+    if (current.phase !== 'prepared' || this.db.prepare('SELECT 1 FROM upload_previews WHERE id = ?').get(row.id)) refuse('conflict');
+    const prepared = this.prepared(current).files;
+    const receipt = {
+      previewId: crypto.randomBytes(16).toString('hex'), machineId: this.issuer.machineId, expiresAt: current.deadline,
+      confirmation: { challenge: crypto.randomBytes(32).toString('base64'), action: 'copy-selected-history' as const },
+      preview, projects: summarizeLocalHistoryPreviewProjects(preview.files, prepared),
+    };
+    const bytes = Buffer.from(JSON.stringify({ version: 1, operationId: row.id, issuerHash: row.issuerHash,
+      ownerHash: row.ownerHash, deviceHash: row.deviceHash, boot: row.boot, fingerprint: row.fingerprint,
+      prepared: prepared.map(({ fileId, sha256 }) => ({ fileId, sha256 })), receipt }));
+    let allocation: string | undefined;
+    try {
+      if (bytes.length > PLAN_BYTES) refuse('capacity');
+      allocation = this.ledger.create(row.tag, bytes.length);
+      for (let offset = 0; offset < bytes.length; offset += CHUNK_BYTES) {
+        this.ledger.write(allocation, bytes.subarray(offset, offset + CHUNK_BYTES));
+      }
+      this.ledger.seal(allocation);
+      this.transaction(() => {
+        if (this.owned(operationId, deviceCopy).phase !== 'prepared') refuse('conflict');
+        this.metadataRoom();
+        this.db.prepare('INSERT INTO upload_previews(id,allocation,sha256) VALUES(?,?,?)')
+          .run(row.id, allocation, crypto.createHash('sha256').update(bytes).digest('hex'));
+      });
+      return receipt;
+    } catch (error) {
+      if (allocation) {
+        try { this.ledger.dispose(allocation); } catch { this.report('cleanup', 'preview-allocation-retained'); }
+      }
+      throw error;
+    } finally { bytes.fill(0); }
+  }
+  /** Validate the signed copy intent against current staging state. The
+   * eventual permit issuer must repeat this inside its consumption transaction. */
+  inspectCopyIntent(device: LocalHistoryAuthenticatedDevice, operationId: string, value: unknown): {
+    requestId: string; fingerprint: string;
+  } {
+    const row = this.owned(operationId, device);
+    if (row.phase !== 'prepared') refuse('conflict');
+    const fields = ['previewId', 'machineId', 'bootId', 'confirmationChallenge', 'applyRequestId'];
+    if (!value || typeof value !== 'object' || Array.isArray(value)
+      || Object.keys(value).length !== fields.length
+      || fields.some(field => !Object.hasOwn(value, field))) refuse('invalid');
+    const intent = value as Record<string, unknown>;
+    if (!id(intent.previewId) || typeof intent.applyRequestId !== 'string' || !id(intent.applyRequestId)
+      || intent.machineId !== this.issuer.machineId || intent.bootId !== row.boot
+      || typeof intent.confirmationChallenge !== 'string'
+      || !/^[A-Za-z0-9+/]{43}=$/.test(intent.confirmationChallenge)) refuse('invalid');
+    const receipt = this.readPublishedPreview(row);
+    if (!receipt || receipt.previewId !== intent.previewId
+      || !crypto.timingSafeEqual(Buffer.from(receipt.confirmation.challenge), Buffer.from(intent.confirmationChallenge))) {
+      refuse('conflict');
+    }
+    return { requestId: intent.applyRequestId, fingerprint: digest(['copy-selected-history', row.id, row.issuerHash,
+      row.ownerHash, row.deviceHash, row.boot, row.fingerprint, receipt.previewId, receipt.confirmation.challenge, intent.applyRequestId]) };
+  }
+  private readPublishedPreview(row: Row): PreviewReceipt | undefined {
+    const record = this.db.prepare('SELECT allocation,sha256 FROM upload_previews WHERE id = ?').get(row.id) as
+      { allocation: string; sha256: string } | undefined;
+    if (!record) return undefined;
+    if (!id(record.allocation) || !/^[a-f0-9]{64}$/.test(record.sha256)) refuse('unavailable');
+    const stored = this.ledger.inspect(record.allocation);
+    if (stored.operation !== row.tag || stored.state !== 'sealed' || stored.written !== stored.planned
+      || stored.written <= 0 || stored.written > PLAN_BYTES) refuse('unavailable');
+    const bytes = Buffer.alloc(stored.written);
+    try {
+      for (let offset = 0; offset < bytes.length; offset += CHUNK_BYTES) {
+        const block = this.ledger.read(record.allocation, offset, Math.min(CHUNK_BYTES, bytes.length - offset));
+        try { block.copy(bytes, offset); } finally { block.fill(0); }
+      }
+      if (crypto.createHash('sha256').update(bytes).digest('hex') !== record.sha256) refuse('unavailable');
+      const value = JSON.parse(bytes.toString('utf8'));
+      const prepared = this.prepared(row).files.map(({ fileId, sha256 }) => ({ fileId, sha256 }));
+      const receipt = value.receipt as PreviewReceipt;
+      if (value.version !== 1 || value.operationId !== row.id || value.issuerHash !== row.issuerHash
+        || value.ownerHash !== row.ownerHash || value.deviceHash !== row.deviceHash || value.boot !== row.boot
+        || value.fingerprint !== row.fingerprint || JSON.stringify(value.prepared) !== JSON.stringify(prepared)
+        || !id(receipt?.previewId) || receipt.machineId !== this.issuer.machineId || receipt.expiresAt !== row.deadline
+        || receipt.confirmation?.action !== 'copy-selected-history'
+        || !/^[A-Za-z0-9+/]{43}=$/.test(receipt.confirmation.challenge)) refuse('unavailable');
+      return receipt;
+    } catch { return refuse('unavailable'); }
+    finally { bytes.fill(0); }
   }
   private prepared(row: Row): PreparedPlan {
     const record = this.db.prepare('SELECT allocation,sha256 FROM upload_preparations WHERE id = ?').get(row.id) as {allocation: string; sha256: string} | undefined;

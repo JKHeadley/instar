@@ -1,0 +1,26 @@
+{
+  "ts": "2026-11-24T11:00:34.219Z",
+  "slug": "local-history-sealed-preview-staging",
+  "suggestedTier": 2,
+  "declaredTier": 2,
+  "riskFloor": 1,
+  "riskFloorReasons": [],
+  "belowFloor": false,
+  "files": 1,
+  "loc": 165,
+  "scope": {
+    "basis": "staged-in-scope-paths-including-deleted",
+    "files": [
+      "src/import/LocalHistoryUploadStaging.ts"
+    ],
+    "addedLines": 165,
+    "deletedLines": 0
+  },
+  "causalAutopsy": null,
+  "classClosure": {
+    "defectClass": "unbounded-self-action",
+    "closure": "n/a",
+    "reason": "An explicit preview request runs one fixed reader. Replaying a sealed preview starts no worker and there is no automatic retry."
+  },
+  "verdict": "pass"
+}
