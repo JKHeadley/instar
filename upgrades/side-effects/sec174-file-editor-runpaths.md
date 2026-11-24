@@ -24,12 +24,19 @@ Not applicable as a new judgment: this extends a deterministic deny list that is
 
 It suggested a link-alias test, which was added. It also noted that the link route has no dedicated test, but it shares the same predicate.
 
+## SEC-178 folded in (backup snapshots)
+- Change: `.instar/backups/` joins NEVER_EDITABLE_PREFIXES. BackupManager keeps its snapshots at `<stateDir>/backups`, and a restore copies every manifest file back to `<stateDir>/<file>`, fenced ones such as `jobs.json` included. The manifest hash covers only the file list and total size, so editing a snapshot copy needed no manifest change.
+- Over-block: none expected. Nobody edits a snapshot from the phone; snapshots stay viewable and restorable. The nested match also fences a `.instar/backups/` inside a worktree copy, which is fine.
+- Under-block: an agent whose stateDir is not `.instar` keeps its snapshots elsewhere; the default layout is `.instar`. Not done here, and recorded on the ledger for a later pass: keying the manifest hash over file contents, and the sibling copy paths (skill rendering from `.instar/skills/`, git-sync pull, job fork). Skipping fenced destinations at restore was declined because restoring the jobs list is the point of a restore.
+- Review: an independent Sonnet reviewer CONCURRED with no blocking items. It confirmed save is the only write route and checks both the requested and resolved path, PATCH /api/files/config also consults the fence, and case, dot-segment, separator, link and nested variants are covered. Its non-blocking suggestions (derive the prefix from a non-default stateDir; key the manifest hash over contents) are recorded above as not done here.
+
 ## Rollback
 Revert the commit. No stored state changes.
 
 ## Tests
 - `tests/unit/sec174-file-editor-runpaths.test.ts` (new) through the real save and read routes, with files written without an execute bit.
 - `tests/e2e/file-viewer-e2e.test.ts`: a `package.json` inside an editable folder is refused. Not run by hand on the M5 (standing rule); Local Verify runs it.
+- `tests/unit/sec178-file-editor-backups-fence.test.ts` (new) through the real save route and the real BackupManager restore. Three of four cases fail without the fence.
 - Existing fence and editor tests pass unchanged: `sec173-file-editor-git-fence`, `file-editor-never-editable-bypasses`, `console-files`, `file-routes-never-served-key-material`.
 
 ## Class-Closure Declaration

@@ -640,6 +640,10 @@ const NEVER_EDITABLE_PREFIXES = [
   // (every extension) runs at each server start, and Windows has no execute bit to catch it.
   '.worktrees/',
   '.instar/instar-boot.',
+  // SEC-178: backup snapshots. Restoring one copies its files back over the live ones, including fenced
+  // ones such as `.instar/jobs.json`, so an edited snapshot copy would reach a fenced file at the next
+  // restore. Nobody edits a snapshot from the phone; viewing is unchanged.
+  '.instar/backups/',
 ];
 
 /**

@@ -94,6 +94,9 @@ describe('E2E: Dashboard File Viewer', () => {
     fs.writeFileSync(path.join(projectDir, '.claude', 'skills', 'reflect', 'run.sh'), '#!/bin/sh\necho ok\n', { mode: 0o755 });
     // SEC-174: a package manifest inside an editable path (no execute bit).
     fs.writeFileSync(path.join(projectDir, '.claude', 'skills', 'reflect', 'package.json'), '{"scripts":{}}');
+    // SEC-178: a backup snapshot copy of the jobs list inside an editable path.
+    fs.mkdirSync(path.join(projectDir, '.claude', 'skills', 'reflect', '.instar', 'backups', 'snap'), { recursive: true });
+    fs.writeFileSync(path.join(projectDir, '.claude', 'skills', 'reflect', '.instar', 'backups', 'snap', 'jobs.json'), '{"jobs":[]}');
 
     // docs/ directory (allowed by default)
     fs.mkdirSync(path.join(projectDir, 'docs', 'api'), { recursive: true });
@@ -558,6 +561,17 @@ describe('E2E: Dashboard File Viewer', () => {
       expect(saveRes.status).toBe(403);
       expect(saveRes.body.error).toContain('never editable');
       expect(fs.readFileSync(path.join(projectDir, '.claude', 'skills', 'reflect', 'package.json'), 'utf8')).toBe('{"scripts":{}}');
+    });
+
+    it('SEC-178: rejects saving a backup snapshot copy inside an editable path', async () => {
+      const rel = '.claude/skills/reflect/.instar/backups/snap/jobs.json';
+      const saveRes = await request(baseUrl, 'POST', '/api/files/save', {
+        path: rel,
+        content: '{"jobs":["changed"]}',
+      }, { 'x-instar-request': '1' });
+      expect(saveRes.status).toBe(403);
+      expect(saveRes.body.error).toContain('never editable');
+      expect(fs.readFileSync(path.join(projectDir, rel), 'utf8')).toBe('{"jobs":[]}');
     });
 
     it('rejects saving to node_modules/', async () => {
