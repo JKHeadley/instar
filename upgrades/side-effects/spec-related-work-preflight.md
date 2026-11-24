@@ -66,3 +66,7 @@ The independent reviewers challenged index consistency, stale review digests, mi
 See stamp writer tests, the real pre-commit fixture and the existing installed migration test.
 
 The installed-skill test also checks that a partial local reviewer edit survives the updater. The follow-up holds the related-work insertion when it finds unmatched experience-review markers.
+
+## Sandbox regression verification
+
+The existing deferral tests now supply the same related-work proof that the commit gate expects. The fence scanner distinguishes a list-contained example from the top-level section that follows it. The three full-suite failure groups were rerun together on the corrected fixtures, and all 52 tests passed.

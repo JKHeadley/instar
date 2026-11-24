@@ -57,10 +57,17 @@ export function validateRelatedWork(markdown) {
       comment = !line.includes('-->') || line.lastIndexOf('<!--') > line.lastIndexOf('-->');
       continue;
     }
-    const marker = line.match(/^ {0,3}(`{3,}|~{3,})(.*)$/);
-    if (marker) {
-      if (!fence) fence = marker[1];
-      else if (fence[0] === marker[1][0] && marker[1].length >= fence.length && !marker[2].trim()) fence = undefined;
+    if (fence?.listIndent && line.trim() && line.search(/\S/) < fence.listIndent) fence = undefined;
+    const listMarker = !fence && line.match(/^( {0,3}(?:[-+*]|[0-9]{1,9}[.)]) +)(\`{3,}|~{3,})(.*)$/);
+    if (listMarker) {
+      fence = { marker: listMarker[2], listIndent: listMarker[1].length };
+      continue;
+    }
+    const marker = line.match(/^( *)(\`{3,}|~{3,})(.*)$/);
+    if (marker && marker[1].length <= (fence?.listIndent ?? 0) + 3) {
+      if (!fence) fence = { marker: marker[2], listIndent: 0 };
+      else if (fence.marker[0] === marker[2][0] && marker[2].length >= fence.marker.length
+          && !marker[3].trim()) fence = undefined;
       continue;
     }
     if (!fence && /^ {0,3}##[ \t]+Related work[ \t]*$/i.test(line)) headings.push(index);
