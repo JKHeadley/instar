@@ -20,6 +20,8 @@ import { SafeFsExecutor } from '../../src/core/SafeFsExecutor.js';
 import { ProjectAppSandbox } from '../../src/server/ProjectAppSandbox.js';
 import { resolveWorkBoardSettings } from '../../src/core/WorkBoardService.js';
 import { makeHarness, phoneApprove, PROJECT, CONVERGED_SPEC } from '../helpers/projectAppCustomHarness.js';
+import type { SessionManager } from '../../src/core/SessionManager.js';
+import type { WorkBoardRuntime } from '../../src/core/WorkBoardRuntime.js';
 import type { InstarConfig } from '../../src/core/types.js';
 
 const servers: AgentServer[] = [];
@@ -50,15 +52,19 @@ function boot(customOn: boolean) {
   const workBoard = {
     svc: h.svc, controller: null, settings: () => resolveWorkBoardSettings({}),
     appendLine: () => {}, ensureConversation: () => {}, removeConversation: () => {},
+    conversationAvailable: () => false,
+    hiddenConversationKeys: () => h.svc.hiddenConversationKeys(),
     behind: () => null, lastWrittenOn: () => null, repliedAfterQuestion: () => false, brokenAttachments: () => [],
     when: (iso: string) => iso, notePolicyChange: async () => {}, holdsLease: () => true, saveSettingsPatch: () => false,
-  };
-  const sessionManager = createMockSessionManager() as any;
-  sessionManager.on = () => undefined;
+  } satisfies Omit<Partial<WorkBoardRuntime>, 'controller'>
+    & Pick<WorkBoardRuntime, 'svc' | 'conversationAvailable' | 'hiddenConversationKeys'>
+    & { controller: null };
+  const sessionManager = createMockSessionManager();
   const server = new AgentServer({
-    config, sessionManager, state: new StateManager(stateDir),
-    projectAppCustom: () => h.source, projectAppSandbox: () => sandbox, workBoard: () => workBoard,
-  } as any);
+    config, sessionManager: sessionManager as unknown as SessionManager, state: new StateManager(stateDir),
+    projectAppCustom: () => h.source, projectAppSandbox: () => sandbox,
+    workBoard: () => workBoard as unknown as WorkBoardRuntime,
+  });
   servers.push(server);
   return { app: server.getApp(), h };
 }
@@ -82,7 +88,7 @@ describe('custom project apps — production wiring', () => {
     expect(ids.length).toBe(1);
     const card = await agent(request(app).get(`/work-board/cards/${encodeURIComponent(ids[0])}`));
     expect(card.status, JSON.stringify(card.body)).toBe(200);
-    expect(card.body.card.phoneOnly).toBe(true);
+    expect(card.body.card).toMatchObject({ phoneOnly: true, agentInternal: false, conversationAvailable: false });
     expect(card.body.card.status).toBe('needs-approval');
 
     const pinTap = await agent(request(app).post(`/work-board/cards/${encodeURIComponent(ids[0])}/tap`)).send({ action: 'approve', materialHash: card.body.card.materialHash, titleHash: card.body.card.titleHash, pin: PIN });
