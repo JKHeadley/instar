@@ -14,7 +14,7 @@
  * bleed described in the 2026-05-28 wild-agent incident.
  */
 
-import { describe, it, expect, beforeAll, afterAll, beforeEach } from 'vitest';
+import { describe, it, expect, beforeAll, afterAll, beforeEach, afterEach, vi } from 'vitest';
 import fs from 'node:fs';
 import os from 'node:os';
 import path from 'node:path';
@@ -23,10 +23,19 @@ import { CircuitBreakingIntelligenceProvider } from '../../src/core/CircuitBreak
 import { LlmCircuitOpenError, RateLimitError, __resetLlmCircuitBreakerSingleton } from '../../src/core/LlmCircuitBreaker.js';
 import { clearClaudeForbidden } from '../../src/core/claudeForbiddenGuard.js';
 import { SafeFsExecutor } from '../../src/core/SafeFsExecutor.js';
+import { getHostSpawnSemaphore, _resetHostSpawnSemaphoreForTest } from '../../src/core/hostSpawnSemaphore.js';
 
 let tmpDir: string;
 let fakeClaude: string;
 let spawnCounter: string;
+
+// Fake CLI admission is local to this fixture. Keep the real cap and wrappers,
+// but never consult or change the live agent's host-wide holder file.
+function isolateStandInAdmission(): void {
+  vi.spyOn(os, 'homedir').mockReturnValue(tmpDir);
+  _resetHostSpawnSemaphoreForTest();
+  expect(getHostSpawnSemaphore().status().holdersPath).toBe(path.join(tmpDir, '.instar', 'host-spawn-holders.json'));
+}
 
 function spawnCount(): number {
   try {
@@ -58,11 +67,18 @@ afterAll(() => {
 });
 
 beforeEach(() => {
+  isolateStandInAdmission();
   __resetLlmCircuitBreakerSingleton();
   SafeFsExecutor.safeRmSync(spawnCounter, {
     force: true,
     operation: 'tests/integration/llm-circuit-breaker-chokepoint.test.ts:beforeEach',
   });
+});
+
+afterEach(() => {
+  _resetHostSpawnSemaphoreForTest();
+  __resetLlmCircuitBreakerSingleton();
+  vi.restoreAllMocks();
 });
 
 describe('LLM circuit breaker — construction chokepoint wiring', () => {
@@ -89,4 +105,33 @@ describe('LLM circuit breaker — construction chokepoint wiring', () => {
     }
     expect(spawnCount()).toBe(1);
   });
+  it('keeps stand-in admission independent of a saturated unrelated host ledger', async () => {
+    // Model a busy ambient host entirely in this test's own directory. Never
+    // acquire, release or rewrite the operator's actual host ledger.
+    const unrelatedHome = path.join(tmpDir, 'unrelated-home');
+    fs.mkdirSync(unrelatedHome, { recursive: true });
+    vi.spyOn(os, 'homedir').mockReturnValue(unrelatedHome);
+    _resetHostSpawnSemaphoreForTest();
+    const unrelated = getHostSpawnSemaphore();
+    const ids = Array.from({ length: unrelated.getCap() }, (_, i) => `owned-ambient-${i}`);
+    try {
+      for (const id of ids) expect(unrelated.acquire(id)).toBe(true);
+      const unrelatedPath = unrelated.status().holdersPath;
+      const untouched = fs.readFileSync(unrelatedPath);
+
+      isolateStandInAdmission();
+      const first = buildIntelligenceProvider({ framework: 'claude-code', binaryPath: fakeClaude })!;
+      const second = buildIntelligenceProvider({ framework: 'claude-code', binaryPath: fakeClaude })!;
+      await expect(first.evaluate('owned fake rate limit')).rejects.toBeInstanceOf(RateLimitError);
+      expect(spawnCount()).toBe(1);
+      await expect(second.evaluate('must not spawn')).rejects.toBeInstanceOf(LlmCircuitOpenError);
+      expect(spawnCount()).toBe(1);
+      expect(getHostSpawnSemaphore().status().holdersPath).toBe(path.join(tmpDir, '.instar', 'host-spawn-holders.json'));
+      expect(getHostSpawnSemaphore().status().liveHolders).toBe(0);
+      expect(fs.readFileSync(unrelatedPath)).toEqual(untouched);
+    } finally {
+      for (const id of ids) unrelated.release(id);
+    }
+  });
+
 });

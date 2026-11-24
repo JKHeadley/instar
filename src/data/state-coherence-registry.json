@@ -3013,6 +3013,23 @@
         "keepSegments": 1,
         "note": "action-checks.jsonl rotates at 5 MB into one kept segment (.1); message-notes.jsonl rotates at 1 MB into one kept segment and is emptied at each session start; pending checks expire after 30 minutes; the cache drops entries older than ten minutes."
       }
+    },
+    {
+      "category": "throwaway-owner-chat",
+      "description": "The stand-in owner chat of a throwaway test agent (docs/specs/throwaway-owner-chat.md): the log of owner-chat messages, taps and commands, and its state file (first build, adopted owner-record genesis, shut-off record). Exists only on a single-machine throwaway in a temporary folder with no owner; never replicated, synced or backed up, and its presence refuses machine pairing for the life of the home.",
+      "scope": "machine-local",
+      "freshness": "real-time",
+      "conflictShape": "single-writer",
+      "transport": "none",
+      "paths": [
+        "state/throwaway-owner-chat.jsonl",
+        "state/throwaway-owner-chat.json"
+      ],
+      "grandfathered": false,
+      "retention": {
+        "class": "size-bounded",
+        "note": "Append-only log under a 16 MiB byte budget that refuses new entries rather than evicting; the whole home is deleted with the throwaway."
+      }
     }
   ]
 }

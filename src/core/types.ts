@@ -4243,6 +4243,14 @@ export interface InstarConfig {
    * maturing feature. `enabled` is omitted by default so the developmentAgent gate decides.
    */
   /**
+   * Permanent agent links (docs/specs/permanent-agent-links.md): links on instar.sh that name this
+   * agent by its identity and open a page in the Instar app. Optional; absent or false = off. Read
+   * live, so turning it on needs no restart.
+   */
+  agentLinks?: {
+    enabled?: boolean;
+  };
+  /**
    * Mobile pairing links (docs/specs/mobile-pairing-link.md): one-time links that add this
    * agent to the Instar iPhone app. `enabled` is omitted by default so the developmentAgent
    * gate decides; read live by the routes.
@@ -5121,6 +5129,12 @@ export interface InstarConfig {
   users: UserProfile[];
   /** Messaging adapters to enable */
   messaging: MessagingAdapterConfig[];
+  /**
+   * Test-only fixtures (docs/specs/throwaway-owner-chat.md). `throwawayOwnerChat.enabled` asks for the
+   * stand-in owner chat; it is honoured only on a throwaway agent in a temporary folder with no owner,
+   * no messaging adapter and no other machine. Absent everywhere by default.
+   */
+  liveTest?: { throwawayOwnerChat?: { enabled?: boolean } };
   /**
    * Operator config for the outbound Messaging Tone Gate, read LIVE via the
    * gate's config getter (no restart needed). TOP-LEVEL by necessity:

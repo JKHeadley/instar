@@ -48,6 +48,7 @@ import {
 } from '../core/MobilePairing.js';
 import type { InstarConfig } from '../core/types.js';
 import { featureEvidence } from '../monitoring/FeatureEvidenceLog.js';
+import { parseNonce, proofTranscript, readLinkIdentity, signProof } from '../core/AgentLinks.js';
 import {
   ConfirmationCodes, DeviceRegistry, displayCode, type ApprovedVia, type CodeFormat, ReplayGuard, parseDevicePublicKey, verifyDeviceRequest,
   type DeviceRecord, type DeviceStatus, admittedAtComputer, deviceKeyOf, isBrowserDevice, keyHashOf,
@@ -152,6 +153,8 @@ export interface MobilePairingDeps {
    * stamps on its events (`meshSelfId ?? coordinator id ?? 'local'`). Absent ⇒ `selfMachineId`.
    */
   peopleMachineId?: () => string;
+  /** Permanent agent links (docs/specs/permanent-agent-links.md): `agentLinks.enabled`, read live per request. Absent ⇒ off. */
+  agentLinksEnabled?: () => boolean;
   /** This agent's own identity key, for vouching for its owner's phones (mobile-pairing-introducer §3.2). */
   readIdentity?: () => { publicKey: Buffer; privateKey: Buffer } | null;
   /**
@@ -1801,6 +1804,30 @@ export function createMobilePairingRouter(svc: MobilePairingService, deps: Mobil
     res.json({ machineId, version: 0, routes });
   });
 
+  // Permanent agent links (docs/specs/permanent-agent-links.md §2a; device-signed, active only, every
+  // person role). Proves this agent holds the key its link id names, bound to this device, the host the
+  // device signed for, and the app's own nonce. Never mints, repairs or rewrites an identity. Fixed
+  // check order: off → nonce → verified host → identity → sign.
+  router.get('/mobile/agent-link/identity', (req: Request, res: Response) => {
+    res.setHeader('Cache-Control', 'no-store');
+    if (!svc.enabled()) { json503(res); return; }
+    const p = principalOf(req);
+    if (p.kind !== 'device') { res.status(403).json({ error: 'device-signature-required' }); return; }
+    const evidence = (outcome: string, kind: 'fired' | 'held' | 'error'): void => {
+      featureEvidence.recordAtMostEvery('agentLinks', `identity|${outcome}|${p.deviceId}`, 60_000, { kind, reason: `agent-link identity: ${outcome}`, context: { outcome } });
+    };
+    if (!(deps.agentLinksEnabled?.() ?? false)) { evidence('off', 'held'); res.status(404).json({ error: 'agent-links-off' }); return; }
+    const nonce = parseNonce(req.query.nonce);
+    if (!nonce) { evidence('bad-nonce', 'held'); res.status(400).json({ error: 'bad-nonce' }); return; }
+    const host = String((req as unknown as { instarDeviceHost?: unknown }).instarDeviceHost ?? '');
+    if (!host) { evidence('no-verified-host', 'error'); res.status(409).json({ error: 'no-verified-host' }); return; }
+    const id = readLinkIdentity(deps.stateDir);
+    if (!id.ok) { evidence(id.error, 'error'); res.status(409).json({ error: id.error }); return; }
+    const proof = signProof(id.privateKey, proofTranscript(id.canonicalId, p.deviceId, host, nonce));
+    evidence('served', 'fired');
+    res.json({ v: 1, canonicalId: id.canonicalId, publicKey: id.publicKey.toString('base64'), proof: proof.toString('base64') });
+  });
+
   // Device's own status (device-signed; any non-revoked status).
   router.get('/mobile/device', (req: Request, res: Response) => {
     if (!svc.enabled()) { json503(res); return; }
@@ -2650,6 +2677,7 @@ const BROWSER_ROUTES: ReadonlyArray<[string, string]> = [
 const TEAM_ROUTE_TIERS: ReadonlyArray<[string, RegExp, Tier]> = [
   ['GET', /^\/health$/, 'guest'],
   ['GET', /^\/mobile\/routes$/, 'guest'],
+  ['GET', /^\/mobile\/agent-link\/identity$/, 'guest'],
   ['GET', /^\/mobile\/device$/, 'guest'],
   ['POST', /^\/mobile\/device\/confirm$/, 'guest'],
   ['POST', /^\/mobile\/device\/push$/, 'guest'],
@@ -2790,6 +2818,8 @@ export const DEVICE_ALLOWLIST: DeviceRule[] = (() => {
     { method: 'GET', re: /^\/telegram\/topics\/[^/]+\/messages$/, statuses: active },
     { method: 'GET', re: /^\/mobile\/devices$/, statuses: active },
     { method: 'GET', re: /^\/mobile\/routes$/, statuses: active },
+    // Permanent agent links §2a: the identity proof, at pairing and on each routes refresh.
+    { method: 'GET', re: /^\/mobile\/agent-link\/identity$/, statuses: active, body: 'none' },
     { method: 'GET', re: /^\/mobile\/device$/, statuses: new Set(['pending', 'active', 'declined', 'expired']), unassignedOk: true },
     { method: 'POST', re: /^\/mobile\/device\/confirm$/, statuses: new Set(['pending', 'active']), unassignedOk: true },
     // Identity A4: the waiting phone signs its own activation, carrying the hash it pinned.
