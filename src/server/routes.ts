@@ -151,6 +151,7 @@ import { DESKTOP_CHECK_FAILED_REASON, desktopProbeUnavailableReason } from '../c
 import { mountTelegramOriginRoutes, sendOriginHoldResponse } from './telegramOriginRoutes.js';
 import { PR_LINK_REPLY_ROUTES, createSelfLoginReader, prLinkReviewMiddleware } from '../messaging/prLinkReviewRequest.js';
 import { createAuthenticatedGhExec } from '../core/githubRuntime.js';
+import { mountChiefOfStaffPrSearch } from './chiefOfStaffPrSearchRoutes.js';
 import { TelegramOriginHoldError, OriginForwardSettledLocallyError, OriginConfigUnavailableError } from '../messaging/telegram-origin/types.js';
 import { deterministicAutomationAuthor } from '../messaging/telegram-origin/OriginAutomationAuthor.js';
 import { cadenceReportProducerPayload, type WindowRunCadenceExecutor, type WindowCadenceReportReceipt } from '../core/WindowRunCadenceExecutor.js';
@@ -10183,6 +10184,12 @@ export function createRoutes(ctx: RouteContext): Router {
     } catch (err) {
       res.status(500).json({ error: `context-budget metrics failed: ${(err as Error).message}` });
     }
+  });
+  mountChiefOfStaffPrSearch(router, {
+    ownerToken: () => ctx.config.authToken,
+    enabled: () => ctx.config.developmentAgent === true && !!ctx.chiefOfStaffLoop
+      && (ctx.liveConfig?.get<boolean | undefined>('chiefOfStaff.enabled', ctx.config.chiefOfStaff?.enabled) !== false),
+    stateDir: ctx.config.stateDir,
   });
   router.get('/chief-of-staff', (_req, res) => {
     if (!ctx.chiefOfStaffLoop) {
