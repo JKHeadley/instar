@@ -6,4 +6,4 @@ The new control requests `/agent-links` only after the person presses Open in In
 
 Rollback: revert this commit. No persisted state or migration is introduced. The new static console module is imported by the existing console asset delivery path. Awareness is updated through the existing awareness registry.
 
-Focused verification: shared server/site parser vectors, HTTP builder integration, actual dashboard card-detail wiring, and browser control fallback tests. Production-path test coverage is added but currently cannot collect because this checkout's dependencies lack smol-toml. Full suites, deployment, and native verification remain outside this prepared slice.
+Focused verification: 81 checks passed across shared parser vectors, HTTP builder integration, dashboard card-detail wiring, and browser fallback. Throughput ran the three production lifecycle cases in `tests/e2e/agent-links-alive.test.ts` at `701516f74e5a652f37da741006478ae935beb899` and all passed. The release note and this evidence update change documentation only. Installed browser-to-app verification remains pending.
