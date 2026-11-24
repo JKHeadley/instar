@@ -342,3 +342,9 @@ An independent read-only reviewer checked the exact merge `ac0feb5fb` against bo
 - The merged diff passes git's whitespace check. The review used read-only comparisons to preserve the production test slot.
 
 The author ran TypeScript, 1,862 focused unit tests, 16 integration tests, and two end-to-end lifecycle tests on the refreshed tree. This addendum and the trace record the review of that merge.
+
+## Second-pass review of the later November 24 merge
+
+**Reviewer:** Independent Codex reviewer, read-only subagent
+
+The reviewer checked the staged merge of `a715425d9` and `646c926a6`, committed as `f17754e50`. Verdict: **concur**. The only conflict was the server constructor. Removing the single borrowed-helper argument from the resolved constructor yields current main's constructor byte for byte, including the owned-repository dependency. The reviewer verified that each dependency reaches its route mount. The merged diff passed git's whitespace check, and the author reran TypeScript and the commit lint checks.
