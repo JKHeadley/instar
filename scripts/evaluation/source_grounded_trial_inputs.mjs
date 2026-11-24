@@ -22,3 +22,22 @@ export function verifyTrialInputs({ planBytes, planHash, parsePlan, rubricBytes,
   }
   return 'bound';
 }
+
+// Expected identity comes from the host's selected trial, never a judge
+// receipt. The parsed plan and its scheduled slots have been schema-checked.
+export function verifyScheduledJudges(plan, expected, receipts) {
+  if (plan.trialId !== expected.trialId || plan.arm !== expected.arm ||
+      plan.repeat !== expected.repeat) return 'trial-mismatch';
+
+  const slots = new Map(plan.judgeSlots.map(slot => [slot.id, slot.family]));
+  if (slots.size !== 2 || plan.judgeSlots.length !== 2 ||
+      receipts.length !== 2 || new Set(receipts.map(receipt => receipt.slotId)).size !== 2) {
+    return 'schedule-mismatch';
+  }
+  for (const receipt of receipts) {
+    if (receipt.trialId !== plan.trialId || receipt.arm !== plan.arm ||
+        receipt.repeat !== plan.repeat || !slots.has(receipt.slotId) ||
+        slots.get(receipt.slotId) !== receipt.family) return 'schedule-mismatch';
+  }
+  return 'bound';
+}

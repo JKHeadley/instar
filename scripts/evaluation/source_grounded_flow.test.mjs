@@ -1,7 +1,7 @@
 import assert from 'node:assert/strict';
 import { createHash } from 'node:crypto';
 import { test } from 'node:test';
-import { verifyTrialInputs } from './source_grounded_trial_inputs.mjs';
+import { verifyScheduledJudges, verifyTrialInputs } from './source_grounded_trial_inputs.mjs';
 import { selectJudgeAttempt } from './source_grounded_judge_retry.mjs';
 import { bindJudgeSlots } from './source_grounded_judge_slots.mjs';
 import { assessJudgeIndependence } from './source_grounded_judge_independence.mjs';
@@ -15,7 +15,9 @@ const capture = {
   availableSourceIds: ['source'],
 };
 const rubricBytes = Buffer.from('synthetic rubric');
+const expected = { trialId: 'trial', arm: 'reduced', repeat: 2 };
 const planBytes = Buffer.from(JSON.stringify({
+  ...expected, judgeSlots: [{ id: 'slot-0', family: 'family-0' }, { id: 'slot-1', family: 'family-1' }],
   caseId: capture.caseId, submissionId: capture.submissionId, criteria,
   sources: [{ id: 'source', hash: sha('evidence') }],
   availableSourceIds: capture.availableSourceIds, rubricHash: sha(rubricBytes),
@@ -26,7 +28,7 @@ const observations = ['fail', 'pass'].map((verdict, index) => ({
   raw: JSON.stringify({ submissionId: capture.submissionId, criteria: [{ criterionId: 'critical', verdict }] }),
 }));
 const receipts = observations.map(({ raw, ...identity }, index) => ({
-  ...identity, ordinal: index === 0 ? 1 : 0, state: 'valid',
+  ...expected, ...identity, ordinal: index === 0 ? 1 : 0, state: 'valid',
   completedOrdinal: index + 2, rawHash: sha(raw), answerHash: sha(capture.answerRaw),
 }));
 const validate = ({ judgeRaw }) => ({
@@ -42,6 +44,7 @@ test('composes frozen inputs, a retry, selected bytes, and blind review evidence
     selectJudgeAttempt([{ ordinal: 0, attemptId: 'timeout', state: 'timeout' }, receipts[0]], 1).selected,
     selectJudgeAttempt([receipts[1]], 1).selected,
   ];
+  assert.equal(verifyScheduledJudges(JSON.parse(planBytes), expected, selected), 'bound');
   const bound = bindJudgeSlots(capture, selected, [...observations].reverse(), validate);
   assert.deepEqual(bound.map(slot => slot.state), ['bound', 'bound']);
   const consensus = summarizeJudgeConsensus(criteria, bound.map(slot => slot.findings));
@@ -58,4 +61,21 @@ test('a wrong-slot output stays missing from consensus while the intact critical
   const consensus = summarizeJudgeConsensus(criteria, bound.map(slot => slot.findings));
   assert.equal(consensus.structurallyComplete, false);
   assert.deepEqual(consensus.criticalFailures, [{ criterionId: 'critical', slot: 0 }]);
+});
+
+test('rejects a coherent pair from another comparison arm or repeat', () => {
+  const plan = JSON.parse(planBytes);
+  for (const changed of [{ arm: 'full' }, { repeat: 3 }]) {
+    const wrong = receipts.map(receipt => ({ ...receipt, ...changed }));
+    assert.equal(verifyScheduledJudges(plan, expected, wrong), 'schedule-mismatch');
+    assert.equal(verifyScheduledJudges(plan, { ...expected, ...changed }, wrong), 'trial-mismatch');
+  }
+});
+
+test('rejects an unscheduled slot or changed scheduled family', () => {
+  const plan = JSON.parse(planBytes);
+  for (const changed of [{ slotId: 'wrong-slot' }, { family: 'wrong-family' }]) {
+    assert.equal(verifyScheduledJudges(plan, expected, [{ ...receipts[0], ...changed }, receipts[1]]),
+      'schedule-mismatch');
+  }
 });
