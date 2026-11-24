@@ -27,9 +27,9 @@ function row(number: number, title = 'Permanent agent links') {
   };
 }
 
-function githubPage(nodes: ReturnType<typeof row>[], cursor: string | null = null, errors?: unknown[]) {
+function githubPage(nodes: ReturnType<typeof row>[], cursor: string | null = null, errors?: unknown[], visibility: { isPrivate?: boolean } = { isPrivate: false }) {
   return new Response(JSON.stringify({
-    data: { repository: { pullRequests: { nodes, pageInfo: { hasNextPage: cursor !== null, endCursor: cursor } } } },
+    data: { repository: { ...visibility, pullRequests: { nodes, pageInfo: { hasNextPage: cursor !== null, endCursor: cursor } } } },
     errors,
   }));
 }
@@ -95,11 +95,18 @@ describe('Chief of Staff PR search over the agent HTTP router', () => {
       matchCount: null,
     });
   });
-  it('feeds preserved public GitHub response bytes through the HTTPS transport and provider', async () => {
+  it('uses the captured PR only when the provider also gives explicit public visibility', async () => {
     const fetch = fakeGitHub();
     const captured = loadCapturedFixture('github-pr-search', 'open-pr-3342');
+    const auth = { Authorization: `Bearer ${ownerToken}` };
+    // The earlier capture omitted the visibility field. Its bytes stay intact.
     fetch.mockResolvedValueOnce(new Response(captured));
-    const result = await request(server()).get(prSearchPath).set('Authorization', `Bearer ${ownerToken}`).expect(200);
+    const unverified = await request(server()).get(prSearchPath).set(auth).expect(503);
+    expect(unverified.body.items).toEqual([]);
+
+    const publicWire = loadCapturedFixture('github-pr-search', 'open-public-pr-3342');
+    fetch.mockResolvedValueOnce(new Response(publicWire));
+    const result = await request(server()).get(prSearchPath).set(auth).expect(200);
     expect(result.body.items[0]).toMatchObject({
       number: 3342, headRefName: 'topic/144473-permanent-agent-links',
       bodyMatchExcerpt: expect.stringMatching(/instar\.sh/i),
@@ -137,6 +144,25 @@ describe('Chief of Staff PR search over the agent HTTP router', () => {
       items: [],
     });
     expect(result.text).not.toContain('provider internal');
+  });
+
+  it.each([{ isPrivate: true }, {}])('evicts a previously public cache when visibility changes to %j', async (visibility) => {
+    const now = Date.now();
+    const time = vi.spyOn(Date, 'now').mockReturnValue(now);
+    const fetch = fakeGitHub();
+    const app = server();
+    const auth = { Authorization: `Bearer ${ownerToken}` };
+    await request(app).get(prSearchPath).set(auth).expect(200);
+    time.mockReturnValue(now + 120_000);
+    fetch.mockResolvedValueOnce(githubPage([row(3342, 'private result')], null, undefined, visibility));
+    const denied = await request(app).get(prSearchPath).set(auth).expect(503);
+    expect(denied.body).toMatchObject({
+      coverage: { open: { status: 'unavailable' }, merged: { status: 'unavailable' } },
+      knownMatchCount: null, items: [],
+    });
+    expect(denied.text).not.toContain('private result');
+    const cached = await request(app).get(prSearchPath).set(auth).expect(503);
+    expect(cached.body.items).toEqual([]);
   });
 
   it.each(['HTTP 403', 'GraphQL 200'])('retains stale evidence and honors a retry cooldown for %s throttling', async (form) => {

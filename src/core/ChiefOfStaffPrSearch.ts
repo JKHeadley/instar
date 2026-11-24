@@ -5,6 +5,7 @@ export const CHIEF_OF_STAFF_PR_REPO = 'JKHeadley/instar';
 const GITHUB_ENDPOINT_QUERY = `
 query ChiefOfStaffPullRequests($states: [PullRequestState!], $cursor: String, $order: IssueOrderField!) {
   repository(owner: "JKHeadley", name: "instar") {
+    isPrivate
     pullRequests(first: 50, after: $cursor, states: $states, orderBy: {field: $order, direction: DESC}) {
       pageInfo { hasNextPage endCursor }
       nodes { number title body state headRefName baseRefName updatedAt mergedAt }
@@ -36,6 +37,7 @@ type PrRow = {
 type IndexedPr = PrRow & { body: string };
 type PullRequestsPage = {
   repository?: {
+    isPrivate?: boolean;
     pullRequests?: {
       nodes?: IndexedPr[];
       pageInfo?: { hasNextPage?: boolean; endCursor?: string | null };
@@ -51,14 +53,20 @@ interface PrSearchDependencies {
   now?(): number;
 }
 
-function fetchPage(token: string, state: PrState, cursor: string | null, timeoutMs: number) {
-  return fetchGitHubGraphql<PullRequestsPage>({
+async function fetchPage(token: string, state: PrState, cursor: string | null, timeoutMs: number) {
+  const result = await fetchGitHubGraphql<PullRequestsPage>({
     token,
     query: GITHUB_ENDPOINT_QUERY,
     variables: { states: [state], cursor, order: state === 'OPEN' ? 'CREATED_AT' : 'UPDATED_AT' },
     timeoutMs,
     maxResponseBytes: MAX_PAGE_BYTES,
   });
+  // An authenticated token may still enumerate a repository after it becomes
+  // private. Only GitHub's explicit public visibility grants this source.
+  if (result.repository?.isPrivate !== false) {
+    throw new GitHubGraphqlResponseError('Public repository visibility was not verified', 'authorization');
+  }
+  return result;
 }
 
 function validRow(node: IndexedPr, state: PrState): boolean {

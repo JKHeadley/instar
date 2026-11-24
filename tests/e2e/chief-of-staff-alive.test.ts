@@ -129,7 +129,7 @@ describe('Chief of Staff E2E (feature is alive)', () => {
           updatedAt: '2026-11-23T00:00:00.000Z', mergedAt: null,
         }));
         return new Response(JSON.stringify({
-          data: { repository: { pullRequests: { nodes, pageInfo: { hasNextPage: nextCursor !== null, endCursor: nextCursor } } } },
+          data: { repository: { isPrivate: false, pullRequests: { nodes, pageInfo: { hasNextPage: nextCursor !== null, endCursor: nextCursor } } } },
         }));
       });
       vi.stubGlobal('fetch', github);
