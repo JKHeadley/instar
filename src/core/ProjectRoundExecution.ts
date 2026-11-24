@@ -23,9 +23,8 @@
  *     a future HTTP endpoint) is expected to preflight before calling
  *     `runRound(input)`.
  *   - Drift checking. Same — preflight handles it.
- *   - Choosing the autonomous command. The `spawnCommand` is injected,
- *     defaulting to `claude` (which invokes the local /autonomous skill).
- *     Tests pass a custom command so they don't depend on the skill.
+ *   - Resolving the project's framework profile. The server supplies it from
+ *     the linked topic or agent defaults.
  *
  * Process group safety:
  *   The child is spawned with `detached: true` so it gets its own
@@ -34,13 +33,18 @@
  *   the runner.
  */
 
-import { applyClaudeChildAuth } from './claudeChildAuth.js';
 import { spawn, execFileSync, type ChildProcess } from 'node:child_process';
 
-import type { Initiative, InitiativeTracker, RoundStatus } from './InitiativeTracker.js';
+import { OccVersionMismatchError, type Initiative, type InitiativeTracker, type ProjectRoundChildExit, type RoundStatus } from './InitiativeTracker.js';
+import { CLAUDE_CODE_FRAMEWORK } from './frameworkFacts.js';
+import { isCredentialEnvName } from './credentialEnvNames.js';
+import { scrubForStore } from './durableSecretScrub.js';
+import type { IntelligenceFramework } from './intelligenceProviderFactory.js';
+import type { ProjectRoundExecutor } from './ProjectAutoAdvancePoller.js';
+import type { ResolvedTopicProfile } from './TopicProfileResolver.js';
+import { writeProjectRoundDiagnostic } from './ProjectRoundDiagnostics.js';
 import { ProjectRoundLock } from './ProjectRoundLock.js';
 import { ProjectRoundWorktrees } from './ProjectRoundWorktrees.js';
-import { detectClaudePath } from './Config.js';
 import { SafeGitExecutor } from './SafeGitExecutor.js';
 import { withSyncOp } from './InFlightSyncOpMarker.js';
 import { hasCompleteMergedEvidence } from './ProjectRoundDerivation.js';
@@ -50,6 +54,13 @@ export const DEFAULT_POLL_INTERVAL_MS = 60_000;
 export const DEFAULT_SIGTERM_GRACE_MS = 5_000;
 /** Resume cap from spec § Phase 1.5 step 11. */
 export const DEFAULT_MAX_RESUME_ATTEMPTS = 3;
+
+export type ProjectRoundLaunchProfile =
+  Partial<Pick<ResolvedTopicProfile, 'model' | 'thinkingMode' | 'effort'>> & {
+    framework: IntelligenceFramework;
+    binaryPath?: string;
+    codexLocalProvider?: 'ollama' | 'lmstudio';
+  };
 
 export interface RunRoundInput {
   tracker: InitiativeTracker;
@@ -68,16 +79,11 @@ export interface RunRoundInput {
    */
   initialWorkdir?: string;
 
-  /**
-   * Command + args to spawn. Default is the production invocation:
-   * `claude --skill autonomous` (resolved via PATH). Tests pass a
-   * harmless command (`bash -c "exit 0"`) so the test doesn't actually
-   * invoke claude.
-   *
-   * Stop condition + project/round identifiers are passed via env:
-   *   INSTAR_PROJECT_ID, INSTAR_ROUND_INDEX, INSTAR_STOP_CONDITION
-   *   INSTAR_ROUND_ITEM_IDS (JSON-encoded array)
-   */
+  /** The resolved framework and model for the project's linked conversation. */
+  launchProfile?: ProjectRoundLaunchProfile;
+  resolveLaunchProfile?: () => ProjectRoundLaunchProfile;
+
+  /** Override the executable and arguments for a local process fixture. */
   spawnCommand?: string;
   spawnArgs?: string[];
 
@@ -151,6 +157,33 @@ export interface RunRoundResult {
  */
 export interface RunRoundDeps {
   stateDir: string;
+  prepareLaunch?: (profile: ProjectRoundLaunchProfile, workdir: string) => Promise<ProjectRoundLaunch>;
+}
+
+export interface ProjectRoundLaunch {
+  command: string;
+  args: string[];
+  env: NodeJS.ProcessEnv;
+  model?: string;
+}
+
+/** Both scheduled and manually requested rounds reach the same executor. */
+export function createProjectRoundExecutor(
+  tracker: InitiativeTracker,
+  deps: RunRoundDeps,
+  resolveProfile: (topicId: string | undefined) => ProjectRoundLaunchProfile,
+): ProjectRoundExecutor {
+  return async ({ projectId, roundIndex }) => {
+    const project = tracker.get(projectId);
+    if (!project?.targetRepoPath) return;
+    await runRound({
+      tracker,
+      projectId,
+      roundIndex,
+      targetRepoPath: project.targetRepoPath,
+      resolveLaunchProfile: () => resolveProfile(project.telegramTopicId),
+    }, deps);
+  };
 }
 
 /**
@@ -228,26 +261,7 @@ export async function runRound(input: RunRoundInput, deps: RunRoundDeps): Promis
       };
     }
     let lastItemIds = [...snapshot.itemIds];
-
-    // Step 3: lazy worktree allocation for round items. The autonomous
-    // child opens more as it reaches them; we kick off only the first
-    // here to give the child a starting cwd.
-    if (lastItemIds.length > 0) {
-      try {
-        ProjectRoundWorktrees.allocate(
-          {
-            targetRepoPath: input.targetRepoPath,
-            projectId: input.projectId,
-            roundIndex: input.roundIndex,
-            itemId: lastItemIds[0],
-          },
-          { refuseExisting: false }
-        );
-      } catch {
-        // First-item worktree may pre-exist if a previous attempt
-        // crashed mid-way. Continue.
-      }
-    }
+    const ownerAtStart = input.tracker.get(input.projectId)?.ownerMachineId;
 
     // Inner relaunch loop: steps 4-5.
     // We loop until either the child exits naturally or we detect a
@@ -256,6 +270,8 @@ export async function runRound(input: RunRoundInput, deps: RunRoundDeps): Promis
     let mergedItemIds: string[] = [];
     let unmergedItemIds: string[] = [];
     let reason: string | undefined;
+    let lastChildExit: ProjectRoundChildExit | undefined;
+    let childDiagnostic: { stderr: string; spawnError?: string } | undefined;
 
     for (;;) {
       // Per-step halt checkpoint.
@@ -299,8 +315,68 @@ export async function runRound(input: RunRoundInput, deps: RunRoundDeps): Promis
         break;
       }
 
-      // Spawn the autonomous child with stop condition + ids in env.
-      const child = spawnAutonomousChild(input, lastItemIds);
+      const pendingItemIds = lastItemIds.filter((id) => !verdict.verified.has(id));
+      const itemVersions = pendingItemIds.map((id) => input.tracker.get(id)?.version);
+      const projectVersion = input.tracker.get(input.projectId)?.version;
+      // Spawn only the unfinished items, with stop condition and ids in the environment.
+      let profile = input.launchProfile;
+      let processRun: ReturnType<typeof spawnAutonomousChild>;
+      let launch: ProjectRoundLaunch;
+      try {
+        profile ??= input.resolveLaunchProfile?.() ?? { framework: CLAUDE_CODE_FRAMEWORK };
+        try {
+          ProjectRoundWorktrees.allocate({
+            targetRepoPath: input.targetRepoPath, projectId: input.projectId,
+            roundIndex: input.roundIndex, itemId: pendingItemIds[0],
+          }, { refuseExisting: false });
+        } catch {
+          // A pre-existing worktree can still be used. An unavailable cwd is
+          // reported by the child startup path below.
+        }
+        const workdir = projectRoundWorkdir(input, pendingItemIds);
+        if (input.spawnCommand) {
+          launch = { command: input.spawnCommand, args: input.spawnArgs ?? [], env: process.env, model: profile.model };
+        } else {
+          if (!deps.prepareLaunch) throw new Error('The project round launcher is unavailable');
+          launch = await deps.prepareLaunch(profile, workdir);
+        }
+        if (await readHaltedAt(input.tracker, input.projectId, input.roundIndex)) {
+          outcome = 'halted';
+          reason = 'round halted while preparing the child';
+          unmergedItemIds = [...lastItemIds];
+          break;
+        }
+        const freshRound = await readRound(input.tracker, input.projectId, input.roundIndex);
+        if (!freshRound) {
+          reason = 'project round disappeared while preparing the child';
+          break;
+        }
+        if (!arraysEqual(freshRound.itemIds, lastItemIds)) {
+          lastItemIds = [...freshRound.itemIds];
+          continue;
+        }
+        const preparedProject = input.tracker.get(input.projectId);
+        if (!preparedProject || preparedProject.ownerMachineId !== ownerAtStart) {
+          outcome = 'unverifiable';
+          reason = 'Project disappeared or changed owner before starting the child';
+          break;
+        }
+        if (input.tracker.get(input.projectId)?.version !== projectVersion ||
+            pendingItemIds.some((id, index) => input.tracker.get(id)?.version !== itemVersions[index])) continue;
+        processRun = spawnAutonomousChild(input, launch, workdir, pendingItemIds);
+      } catch (err) {
+        outcome = 'failed';
+        const spawnError = scrubForStore(err instanceof Error ? err.message : String(err)).text;
+        reason = `could not start the autonomous child: ${spawnError}`;
+        lastChildExit = {
+          framework: profile?.framework, model: profile?.model,
+          code: null, signal: null, stderrTruncated: false, startFailed: true,
+        };
+        childDiagnostic = { stderr: '', spawnError };
+        unmergedItemIds = [...lastItemIds];
+        break;
+      }
+      const { child, readStderr } = processRun;
       const exit = await waitForExitOrPollChange(
         child,
         input.tracker,
@@ -310,6 +386,14 @@ export async function runRound(input: RunRoundInput, deps: RunRoundDeps): Promis
         pollIntervalMs,
         sigtermGraceMs
       );
+      const { stderr, stderrTruncated } = await readStderr();
+      lastChildExit = {
+        framework: profile.framework, model: launch.model,
+        code: exit.kind === 'spawn-failed' ? null : child.exitCode,
+        signal: child.signalCode, stderrTruncated,
+        ...(exit.kind === 'spawn-failed' ? { startFailed: true } : {}),
+      };
+      childDiagnostic = { stderr, spawnError: exit.spawnError ? scrubForStore(exit.spawnError).text : undefined };
 
       if (exit.kind === 'set-changed') {
         relaunchCount++;
@@ -344,7 +428,7 @@ export async function runRound(input: RunRoundInput, deps: RunRoundDeps): Promis
         // Node's spawn errors already name the binary ("spawn claude ENOENT"),
         // so the message alone is enough to diagnose without plumbing the
         // resolved path — which would risk leaking an absolute home path.
-        reason = `could not start the autonomous child: ${exit.spawnError ?? 'unknown spawn error'}`;
+        reason = `could not start the autonomous child: ${childDiagnostic.spawnError ?? 'unknown spawn error'}`;
         unmergedItemIds = [...lastItemIds];
         break;
       }
@@ -397,9 +481,17 @@ export async function runRound(input: RunRoundInput, deps: RunRoundDeps): Promis
     // Step 9-11: record round status. We DO NOT touch
     // unacknowledgedAdvanceCount here — that's the auto-advance poller's
     // job. We just record the round status.
-    if (outcome !== 'halted') {
-      await recordOutcome(input.tracker, input.projectId, input.roundIndex, outcome);
+    if (lastChildExit && childDiagnostic) {
+      try {
+        lastChildExit.diagnosticRef = writeProjectRoundDiagnostic(
+          deps.stateDir, input.projectId, input.roundIndex, childDiagnostic,
+        );
+      } catch {
+        // Keep the exit verdict when the local diagnostic cannot be written.
+        lastChildExit.stderrTruncated = true;
+      }
     }
+    await recordOutcome(input.tracker, input.projectId, input.roundIndex, outcome, lastChildExit);
 
     return { outcome, mergedItemIds, unmergedItemIds, relaunchCount, resumeAttempts, reason };
   } finally {
@@ -442,31 +534,28 @@ async function recordOutcome(
   tracker: InitiativeTracker,
   projectId: string,
   roundIndex: number,
-  outcome: RoundOutcome
+  outcome: RoundOutcome,
+  lastChildExit: ProjectRoundChildExit | undefined,
 ): Promise<void> {
-  const proj = tracker.get(projectId);
-  if (!proj) return;
-  // `unverifiable` has NO status. Every other outcome is a verdict the runner
-  // actually reached; this one is the absence of one, so the round keeps the
-  // status it had and gets asked again later. Mapping it onto `failed` or
-  // `partially-complete` would record a conclusion nothing established — the
-  // precise move that made a no-op verifier look like a healthy answer.
-  const map: Record<Exclude<RoundOutcome, 'unverifiable'>, RoundStatus> = {
-    complete: 'complete',
-    'partially-complete': 'partially-complete',
-    failed: 'failed',
-    halted: 'failed',
-  };
-  if (outcome === 'unverifiable') return;
-  const newStatus = map[outcome];
-  const completedAt = new Date().toISOString();
-  const rounds = (proj.rounds ?? []).map((r, i) =>
-    i === roundIndex ? { ...r, status: newStatus, completedAt } : r
-  );
-  try {
-    await tracker.update(projectId, { rounds, ifMatch: proj.version });
-  } catch {
-    // OCC race — caller (or next reconcile) will retry.
+  // Preserve the independent halt decision and record no verdict when merge evidence is unknown.
+  const statuses = { complete: 'complete', 'partially-complete': 'partially-complete', failed: 'failed' } as const;
+  const verdict = outcome === 'halted' || outcome === 'unverifiable' ? undefined : statuses[outcome];
+  if (!verdict && !lastChildExit) return;
+
+  for (let attempt = 0; ; attempt++) {
+    const project = tracker.get(projectId);
+    if (!project?.rounds?.[roundIndex]) return;
+    const rounds = project.rounds.map((round, index) => index === roundIndex ? {
+      ...round,
+      ...(verdict && !round.haltedAt ? { status: verdict, completedAt: new Date().toISOString() } : {}),
+      ...(lastChildExit ? { lastChildExit } : {}),
+    } : round);
+    try {
+      await tracker.update(projectId, { rounds, ifMatch: project.version });
+      return;
+    } catch (err) {
+      if (!(err instanceof OccVersionMismatchError) || attempt >= 2) throw err;
+    }
   }
 }
 
@@ -499,19 +588,10 @@ interface ExitResult {
  */
 const spawnFailures = new WeakMap<ChildProcess, Error>();
 
-function spawnAutonomousChild(input: RunRoundInput, itemIds: string[]): ChildProcess {
-  // Resolve the binary rather than trusting the server's PATH. The server runs
-  // under launchd, whose PATH routinely excludes the nvm/asdf/npm-global bin dir
-  // that actually holds `claude` — so a bare 'claude' resolves in the operator's
-  // terminal and ENOENTs in the server. `detectFrameworkBinary` already scans
-  // exactly those locations (its own comment records the 2026-05-31 session-spawn
-  // crash from this same cause); this callsite simply was not using it.
-  // Falls back to the bare name so a host where detection legitimately finds
-  // nothing behaves as before rather than failing earlier than it used to.
-  const cmd = input.spawnCommand ?? detectClaudePath() ?? 'claude';
-  const args = input.spawnArgs ?? ['--skill', 'autonomous'];
-  const workdir =
-    input.initialWorkdir ??
+const ROUND_STDERR_LIMIT = 16 * 1024;
+
+function projectRoundWorkdir(input: RunRoundInput, itemIds: string[]): string {
+  return input.initialWorkdir ??
     (itemIds.length > 0
       ? ProjectRoundWorktrees.pathFor({
           targetRepoPath: input.targetRepoPath,
@@ -520,17 +600,20 @@ function spawnAutonomousChild(input: RunRoundInput, itemIds: string[]): ChildPro
           itemId: itemIds[0],
         })
       : input.targetRepoPath);
-  const child = spawn(cmd, args, {
+}
+
+function spawnAutonomousChild(input: RunRoundInput, launch: ProjectRoundLaunch, workdir: string, itemIds: string[]) {
+  const child = spawn(launch.command, launch.args, {
     cwd: workdir,
     detached: true, // critical — makes the child its own process group leader
-    stdio: 'ignore',
-    env: applyClaudeChildAuth({
-      ...process.env,
+    stdio: ['ignore', 'ignore', 'pipe'],
+    env: {
+      ...launch.env,
       INSTAR_PROJECT_ID: input.projectId,
       INSTAR_ROUND_INDEX: String(input.roundIndex),
       INSTAR_ROUND_ITEM_IDS: JSON.stringify(itemIds),
       INSTAR_STOP_CONDITION: 'all-items-merged-on-main',
-    }),
+    },
   });
   // Attach IMMEDIATELY — see spawnFailures above. Without a listener a failure
   // to START is an unhandled 'error' event, which is a process-level uncaught
@@ -539,7 +622,39 @@ function spawnAutonomousChild(input: RunRoundInput, itemIds: string[]): ChildPro
   child.on('error', (err: Error) => {
     spawnFailures.set(child, err);
   });
-  return child;
+  const chunks: Buffer[] = [];
+  let bytes = 0;
+  let stderrTruncated = false;
+  child.stderr.on('data', (chunk: Buffer) => {
+    const prefix = chunk.subarray(0, ROUND_STDERR_LIMIT - bytes);
+    if (prefix.length > 0) chunks.push(prefix);
+    bytes += prefix.length;
+    stderrTruncated ||= prefix.length < chunk.length;
+  });
+  child.stderr.once('error', () => { stderrTruncated = true; });
+  const stderrClosed = new Promise<void>((resolve) => child.stderr.once('close', resolve));
+  return {
+    child,
+    readStderr: async () => {
+      // A grandchild may inherit stderr after the CLI exits. Give queued
+      // output time to drain without indefinitely holding the round lock.
+      const timeout = setTimeout(() => {
+        stderrTruncated = true;
+        child.stderr.destroy();
+      }, 500);
+      await stderrClosed;
+      clearTimeout(timeout);
+      const text = Buffer.concat(chunks).toString('utf8').trim();
+      const childCredentialValues = Object.entries(launch.env)
+        .filter(([name]) => isCredentialEnvName(name))
+        .flatMap(([, value]) => value && value.length >= 8 ? [value] : [])
+        .sort((a, b) => b.length - a.length);
+      const stderr = stderrTruncated
+        ? '[stderr withheld because the capture was incomplete]'
+        : scrubForStore(childCredentialValues.reduce((out, value) => out.split(value).join('[REDACTED]'), text)).text;
+      return { stderr, stderrTruncated };
+    },
+  };
 }
 
 async function waitForExitOrPollChange(
@@ -615,7 +730,7 @@ async function waitForExitOrPollChange(
 }
 
 async function killProcessGroup(child: ChildProcess, graceMs: number): Promise<void> {
-  if (!child.pid || child.exitCode !== null) return;
+  if (!child.pid || child.exitCode !== null || child.signalCode !== null) return;
   try {
     // Negative PID targets the process group. child is its own group
     // leader because we spawned with detached:true.
@@ -624,10 +739,10 @@ async function killProcessGroup(child: ChildProcess, graceMs: number): Promise<v
     return; // Already dead.
   }
   const start = Date.now();
-  while (child.exitCode === null && Date.now() - start < graceMs) {
+  while (child.exitCode === null && child.signalCode === null && Date.now() - start < graceMs) {
     await sleep(100);
   }
-  if (child.exitCode === null) {
+  if (child.exitCode === null && child.signalCode === null) {
     try {
       process.kill(-child.pid, 'SIGKILL');
     } catch { /* already dead */ }

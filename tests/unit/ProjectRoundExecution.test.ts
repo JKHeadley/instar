@@ -22,7 +22,12 @@ import { describe, it, expect, beforeEach, afterEach } from 'vitest';
 import fs from 'node:fs';
 import os from 'node:os';
 import path from 'node:path';
+import { SessionManager } from '../../src/core/SessionManager.js';
+import { StateManager } from '../../src/core/StateManager.js';
+import type { SessionManagerConfig } from '../../src/core/types.js';
+import { FileClassifier } from '../../src/core/FileClassifier.js';
 import { InitiativeTracker } from '../../src/core/InitiativeTracker.js';
+import { readProjectRoundDiagnostic } from '../../src/core/ProjectRoundDiagnostics.js';
 import { ProjectRoundLock } from '../../src/core/ProjectRoundLock.js';
 import { runRound, type MergedVerificationResult } from '../../src/core/ProjectRoundExecution.js';
 import { ProjectRoundWorktrees } from '../../src/core/ProjectRoundWorktrees.js';
@@ -104,6 +109,131 @@ describe('ProjectRoundExecution.runRound', () => {
   afterEach(() => {
     try { SafeFsExecutor.safeRmSync(stateDir, { recursive: true, force: true, operation: 'tests/unit/ProjectRoundExecution.test.ts:state' }); } catch { /* ignore */ }
     try { SafeFsExecutor.safeRmSync(targetRepo, { recursive: true, force: true, operation: 'tests/unit/ProjectRoundExecution.test.ts:repo' }); } catch { /* ignore */ }
+  });
+
+  it('classifies the child diagnostic root as excluded from sync', () => {
+    const classifier = new FileClassifier({ projectDir: targetRepo });
+    const diagnostic = path.join(targetRepo, '.instar', 'logs', 'project-round-diagnostics', 'latest.json');
+    expect(classifier.classify(diagnostic).strategy).toBe('exclude');
+  });
+
+  it('launches the selected Codex model and records the child exit and stderr', async () => {
+    await newProject(tracker, 'p-profile', ['i1'], targetRepo);
+    const binaryPath = path.join(targetRepo, 'codex-fixture');
+    fs.writeFileSync(binaryPath, [
+      '#!/bin/sh',
+      'if [ "$1" = "--version" ]; then echo "codex-cli 0.170.0"; exit 0; fi',
+      'case "$*" in *INSTAR_STOP_CONDITION*) ;; *) exit 0 ;; esac',
+      'printf "%s\\n" "$@" > argv.log',
+      'printf "%s" "$CODEX_HOME" > login.log',
+      'echo "subscription unavailable" >&2',
+      'exit 23',
+    ].join('\n'), { mode: 0o755 });
+
+    const manager = new SessionManager({
+      tmuxPath: '/usr/bin/false', claudePath: '/usr/bin/false', projectDir: targetRepo,
+      maxSessions: 1, protectedSessions: [], completionPatterns: [],
+    } as SessionManagerConfig, new StateManager(stateDir));
+    const configHome = path.join(stateDir, 'codex-login');
+    manager.setCodexSpawnAccountResolver(() => ({ accountId: 'fixture-account', configHome }));
+
+    const result = await runRound({
+      tracker,
+      projectId: 'p-profile',
+      roundIndex: 0,
+      targetRepoPath: targetRepo,
+      initialWorkdir: targetRepo,
+      launchProfile: { framework: 'codex-cli', model: 'gpt-6.2-sol', binaryPath },
+      pollIntervalMs: 25,
+      maxResumeAttempts: 1,
+      verifyMergedItems: async (ids) => notLanded(ids),
+    }, { stateDir, prepareLaunch: (profile, cwd) => manager.prepareProjectRoundLaunch(profile, cwd) });
+
+    expect(result.outcome).toBe('failed');
+    const args = fs.readFileSync(path.join(targetRepo, 'argv.log'), 'utf8').trim().split('\n');
+    expect(fs.readFileSync(path.join(targetRepo, 'login.log'), 'utf8')).toBe(configHome);
+    expect(args[0]).toBe('exec');
+    expect(args[args.indexOf('-m') + 1]).toBe('gpt-6.2-sol');
+    const exit = tracker.get('p-profile')?.rounds?.[0]?.lastChildExit;
+    expect(exit).toMatchObject({
+      framework: 'codex-cli', model: 'gpt-6.2-sol', code: 23, signal: null,
+    });
+    expect(exit).not.toHaveProperty('stderr');
+    expect(readProjectRoundDiagnostic(stateDir, 'p-profile', 0, exit?.diagnosticRef)?.stderr)
+      .toBe('subscription unavailable');
+  });
+
+  it('withholds truncated stderr and records a signal exit', async () => {
+    await newProject(tracker, 'p-signal', ['i1'], targetRepo);
+    await runRound({
+      tracker, projectId: 'p-signal', roundIndex: 0, targetRepoPath: targetRepo,
+      spawnCommand: 'bash',
+      spawnArgs: ['-c', 'printf "partial record\\n%20000s" x >&2; kill -TERM "$$"'],
+      pollIntervalMs: 25,
+      maxResumeAttempts: 1,
+      verifyMergedItems: async (ids) => notLanded(ids),
+    }, { stateDir });
+
+    const exit = tracker.get('p-signal')?.rounds?.[0]?.lastChildExit;
+    expect(exit).toMatchObject({ code: null, signal: 'SIGTERM', stderrTruncated: true });
+    expect(readProjectRoundDiagnostic(stateDir, 'p-signal', 0, exit?.diagnosticRef)?.stderr)
+      .toBe('[stderr withheld because the capture was incomplete]');
+  });
+
+  it('records the Claude billing-policy refusal without starting a child', async () => {
+    await newProject(tracker, 'p-billing', ['i1'], targetRepo);
+    const manager = new SessionManager({
+      tmuxPath: '/usr/bin/false', claudePath: '/usr/bin/false', projectDir: targetRepo,
+      maxSessions: 1, protectedSessions: [], completionPatterns: [], subscriptionPathMode: 'force',
+    } as SessionManagerConfig, new StateManager(stateDir));
+    const result = await runRound({
+      tracker, projectId: 'p-billing', roundIndex: 0, targetRepoPath: targetRepo,
+      launchProfile: { framework: 'claude-code', model: 'sonnet' },
+      verifyMergedItems: async (ids) => notLanded(ids),
+    }, { stateDir, prepareLaunch: (profile, cwd) => manager.prepareProjectRoundLaunch(profile, cwd) });
+
+    expect(result.resumeAttempts).toBe(0);
+    const exit = tracker.get('p-billing')?.rounds?.[0]?.lastChildExit;
+    expect(exit).toMatchObject({ framework: 'claude-code', code: null, startFailed: true });
+    expect(readProjectRoundDiagnostic(stateDir, 'p-billing', 0, exit?.diagnosticRef)?.spawnError)
+      .toContain('requires the interactive subscription lane');
+  });
+
+  it('gives the child only unfinished items in a mixed round', async () => {
+    await newProject(tracker, 'p-mixed', ['finished', 'unfinished'], targetRepo);
+    const result = await runRound({
+      tracker, projectId: 'p-mixed', roundIndex: 0, targetRepoPath: targetRepo,
+      initialWorkdir: targetRepo,
+      spawnCommand: 'bash',
+      spawnArgs: ['-c', 'printf "%s" "$INSTAR_ROUND_ITEM_IDS" > item-ids.json'],
+      pollIntervalMs: 25,
+      verifyMergedItems: async () => someVerified(['finished'], ['unfinished']),
+    }, { stateDir });
+
+    expect(result.outcome).toBe('partially-complete');
+    expect(JSON.parse(fs.readFileSync(path.join(targetRepo, 'item-ids.json'), 'utf8'))).toEqual(['unfinished']);
+  });
+
+  it('checks again when work completes during asynchronous launch preparation', async () => {
+    await newProject(tracker, 'p-launch-race', ['i1'], targetRepo);
+    let completed = false;
+    const result = await runRound({
+      tracker, projectId: 'p-launch-race', roundIndex: 0, targetRepoPath: targetRepo,
+      initialWorkdir: targetRepo, pollIntervalMs: 25,
+      verifyMergedItems: async (ids) => completed ? allVerified(ids) : notLanded(ids),
+    }, {
+      stateDir,
+      prepareLaunch: async () => {
+        const item = tracker.get('i1')!;
+        await tracker.update(item.id, { title: 'Completion was recorded', ifMatch: item.version });
+        completed = true;
+        return { command: 'bash', args: ['-c', 'touch launched'], env: process.env };
+      },
+    });
+
+    expect(result.outcome).toBe('complete');
+    expect(fs.existsSync(path.join(targetRepo, 'launched'))).toBe(false);
+    expect(tracker.get('p-launch-race')?.rounds?.[0]?.lastChildExit).toBeUndefined();
   });
 
   it('lock-already-held returns failed without spawning anything', async () => {
@@ -334,7 +464,7 @@ describe('ProjectRoundExecution.runRound', () => {
         spawnArgs: ['-c', 'exit 0'],
         pollIntervalMs: 50,
         sigtermGraceMs: 100,
-        verifyMergedItems: async (ids) => allVerified(ids), // instant complete
+        verifyMergedItems: async (ids) => notLanded(ids),
       },
       { stateDir }
     );
@@ -354,7 +484,7 @@ describe('ProjectRoundExecution.runRound', () => {
         spawnArgs: ['-c', 'exit 0'],
         pollIntervalMs: 50,
         sigtermGraceMs: 100,
-        verifyMergedItems: async (ids) => allVerified(ids),
+        verifyMergedItems: async (ids) => notLanded(ids),
       },
       { stateDir }
     );
@@ -416,6 +546,9 @@ describe('ProjectRoundExecution.runRound — child that cannot start', () => {
       { stateDir }
     );
     expect(r.outcome).toBe('failed');
+    expect(tracker.get('p-nospawn')?.rounds?.[0]?.lastChildExit).toMatchObject({
+      code: null, signal: null, startFailed: true,
+    });
   });
 
   it('DISCRIMINATING: the reason NAMES the start failure rather than reporting exhausted attempts', async () => {

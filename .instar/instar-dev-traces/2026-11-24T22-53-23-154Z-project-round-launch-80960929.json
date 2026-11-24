@@ -1,0 +1,24 @@
+{
+  "version": 2,
+  "slug": "project-round-launch",
+  "sessionId": "017c26ed-5596-4576-9c20-20af13e4c1f8",
+  "timestamp": "2026-11-24T22:53:23.154Z",
+  "artifactPath": "upgrades/side-effects/project-round-launch.md",
+  "artifactSha256": "32ef1ff10a04be75526686db2d30b1ca1eceae6372cc7819069e0c2e119f6ce6",
+  "coveredFiles": [
+    "src/commands/server.ts",
+    "src/core/InitiativeTracker.ts",
+    "src/core/ProjectRoundDiagnostics.ts",
+    "src/core/ProjectRoundExecution.ts",
+    "src/core/SessionManager.ts",
+    "src/data/awareness/project-round-diagnostics.md",
+    "src/server/routes.ts"
+  ],
+  "phase": "complete",
+  "tier": 1,
+  "tierReasoning": "Scoped reversible correction to the existing project launcher, using established account and billing policy and bounded local diagnostics. Merge authority remains unchanged.",
+  "eli16Path": "docs/specs/project-round-launch.eli16.md",
+  "sideEffectsPath": "upgrades/side-effects/project-round-launch.md",
+  "secondPass": "true",
+  "reviewerConcurred": true
+}

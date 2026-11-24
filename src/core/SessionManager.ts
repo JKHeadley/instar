@@ -100,6 +100,8 @@ import { toPaneTailLines, type PermissionPromptAutoResolver, RESOLVER_PREGATE_RE
 const execFileAsync = promisify(execFile);
 import type { Session, SessionManagerConfig, SessionStatus, ModelTier } from './types.js';
 import type { IntelligenceFramework } from './intelligenceProviderFactory.js';
+import { applyClaudeChildAuth } from './claudeChildAuth.js';
+import type { ProjectRoundLaunch, ProjectRoundLaunchProfile } from './ProjectRoundExecution.js';
 import {
   resolveBaselineServers,
   resolveSessionMcpServers,
@@ -141,7 +143,7 @@ import { SafeFsExecutor } from './SafeFsExecutor.js';
 import { ClaudeBinaryRetainer, resolveRetainerEnabled, type RetainerStatus } from './ClaudeBinaryRetainer.js';
 import { placeResumeTranscript } from './claudeResumeTranscript.js';
 import { placeCodexResumeRollout, type CodexRolloutPlacement } from './codexResumeRollout.js';
-import { CODEX_CLI_FRAMEWORK } from './frameworkFacts.js';
+import { CLAUDE_CODE_FRAMEWORK, CODEX_CLI_FRAMEWORK, resolveFrameworkAlias } from './frameworkFacts.js';
 import {
   InboundDeliveryStore,
   InboundDeliveryStoreUnavailableError,
@@ -4500,6 +4502,72 @@ rm()  { "${shimRunner}" rm  "$@"; }
    * Emits a transition-only log line when the resolved lane CHANGES for this
    * framework (mirrors PR1's onRoute — a line per change, not per spawn).
    */
+  /**
+   * Prepare a direct child for a project round. The round owns the process
+   * group, so the regular tmux handoff cannot provide its actual exit and stderr.
+   */
+  async prepareProjectRoundLaunch(profile: ProjectRoundLaunchProfile, cwd: string): Promise<ProjectRoundLaunch> {
+    const { framework, codexLocalProvider } = profile;
+    if (await this.shouldRerouteToInteractive(framework)) {
+      throw new Error('Claude requires the interactive subscription lane on this agent. '
+        + 'This project round needs a direct child to record the exit and stderr.');
+    }
+    if (headlessLaneIsClosed(framework) ||
+      (framework === resolveFrameworkAlias('grok') && isInstarSourceTree(cwd))) {
+      throw new Error(`The ${framework} framework cannot run a headless round in this checkout`);
+    }
+
+    const binaryPath = profile.binaryPath ?? resolveFrameworkBinaryPath({
+      framework,
+      frameworkBinaryPaths: this.config.frameworkBinaryPaths,
+      claudePath: this.config.claudePath,
+      configuredFramework: this.config.framework,
+    });
+    if (!binaryPath) throw new Error(`No binary configured for ${framework}`);
+    const selectedModel = await this.resolveCodexLaunchModel(framework, profile.model, codexLocalProvider, binaryPath);
+    const model = codexLocalProvider ? selectedModel ?? 'llama3.2:latest'
+      : resolveInteractiveLaunchModel(framework, selectedModel);
+    const skillRoot = framework === CLAUDE_CODE_FRAMEWORK ? '.claude' : '.agents';
+    const autonomousSkill = path.join(this.config.projectDir, skillRoot, 'skills', 'autonomous', 'SKILL.md');
+    const { argv, envOverrides } = buildHeadlessLaunch(framework, {
+      binaryPath, model, codexLocalProvider, effort: profile.effort, thinkingMode: profile.thinkingMode,
+      prompt: `Read the installed autonomous skill at ${JSON.stringify(autonomousSkill)} and run the project round. `
+        + 'The project and round are provided in the INSTAR_PROJECT_ID, '
+        + 'INSTAR_ROUND_INDEX and INSTAR_ROUND_ITEM_IDS environment variables. Work only on those items. '
+        + 'Use INSTAR_AGENT_HOME for agent files and INSTAR_SERVER_URL for project API calls. '
+        + 'Do the project work in the assigned item worktree. '
+        + 'The server has checked permission to start this round. Check recorded pull requests before requesting '
+        + 'any decision about an item, and recheck a linked pull request immediately before acting on that item. '
+        + 'Use INSTAR_STOP_CONDITION as the completion condition and exit when done.',
+    });
+    const account = framework === CODEX_CLI_FRAMEWORK && !codexLocalProvider ? this.codexHeadlessPlacement()
+      : framework === CLAUDE_CODE_FRAMEWORK ? this.poolAccountForSpawn({
+        model: model ?? null,
+        modelSource: profile.model ? 'explicit' : 'unknown',
+        sessionName: 'project-round',
+      }) : null;
+    if (account) {
+      const home = this.resolvePinnedSpawnHome(account);
+      if (framework === CODEX_CLI_FRAMEWORK) envOverrides.CODEX_HOME = home;
+      else envOverrides.CLAUDE_CONFIG_DIR = home;
+    }
+    assertBrowserMcpProfilesSafe(cwd, framework, this.originConfigHome(framework, envOverrides), this.config.projectDir);
+    const env = {
+      ...process.env,
+      ...envOverrides,
+      INSTAR_AGENT_HOME: this.config.projectDir,
+      INSTAR_AGENT_ID: this.config.projectName ?? process.env.INSTAR_AGENT_ID,
+      INSTAR_SERVER_URL: this.config.port ? `http://localhost:${this.config.port}` : process.env.INSTAR_SERVER_URL,
+      INSTAR_AUTH_TOKEN: this.config.authToken ?? process.env.INSTAR_AUTH_TOKEN,
+      DATABASE_URL: '', DIRECT_DATABASE_URL: '', DATABASE_URL_PROD: '',
+      DATABASE_URL_DEV: '', DATABASE_URL_TEST: '', XAI_API_KEY: '', GROK_DEPLOYMENT_KEY: '',
+    };
+    if (framework === CLAUDE_CODE_FRAMEWORK) applyClaudeChildAuth(env);
+    if (framework === CODEX_CLI_FRAMEWORK) delete (env as NodeJS.ProcessEnv).OPENAI_API_KEY;
+    const [command, ...args] = argv;
+    return { command, args, env, model };
+  }
+
   private async shouldRerouteToInteractive(
     framework: IntelligenceFramework,
   ): Promise<boolean> {
@@ -8155,6 +8223,7 @@ rm()  { "${shimRunner}" rm  "$@"; }
     framework: IntelligenceFramework,
     requestedModel: string | undefined,
     localProvider?: string,
+    binaryPath?: string,
   ): Promise<string | undefined> {
     const swapCfg = (this.config as { codex?: { rateLimitModelSwap?: CodexModelSwapConfig } })
       .codex?.rateLimitModelSwap;
@@ -8175,7 +8244,7 @@ rm()  { "${shimRunner}" rm  "$@"; }
     if (framework === 'codex-cli' && !localProvider) {
       const concrete = resolveModelForFramework(framework, selected ?? 'balanced') ?? selected;
       if (concrete && CODEX_OLDER_CLI_FALLBACKS[concrete]) {
-        const binary = resolveFrameworkBinaryPath({
+        const binary = binaryPath ?? resolveFrameworkBinaryPath({
           framework,
           frameworkBinaryPaths: this.config.frameworkBinaryPaths,
           claudePath: this.config.claudePath,

@@ -1,0 +1,33 @@
+{
+  "ts": "2026-11-24T22:52:56.995Z",
+  "slug": "project-round-launch",
+  "suggestedTier": 2,
+  "declaredTier": 1,
+  "riskFloor": 1,
+  "riskFloorReasons": [],
+  "belowFloor": false,
+  "files": 7,
+  "loc": 481,
+  "scope": {
+    "basis": "staged-in-scope-paths-including-deleted",
+    "files": [
+      "src/commands/server.ts",
+      "src/core/InitiativeTracker.ts",
+      "src/core/ProjectRoundDiagnostics.ts",
+      "src/core/ProjectRoundExecution.ts",
+      "src/core/SessionManager.ts",
+      "src/data/awareness/project-round-diagnostics.md",
+      "src/server/routes.ts"
+    ],
+    "addedLines": 377,
+    "deletedLines": 104
+  },
+  "causalAutopsy": null,
+  "classClosure": {
+    "defectClass": "unbounded-self-action",
+    "closure": "n/a",
+    "reason": "The changed preparation and diagnostics belong to one already-authorized round invocation. It emits no self-triggering event or new retry loop. Existing child retries settle at maxResumeAttempts, as verified by ProjectRoundExecution.test.ts.",
+    "component": "ProjectRoundExecution"
+  },
+  "verdict": "blocked"
+}
