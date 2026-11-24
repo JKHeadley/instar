@@ -18,6 +18,8 @@ function panel(options = {}) {
     candidates: [
       { kind: 'conversation', ref: `app:${APP}`, messageId: 'source-event', title: 'Earlier private discussion', snippet: '<img src=x onerror="boom()"> text' },
       { kind: 'pull-request', repository: 'JKHeadley/instar', number: 3342, state: 'OPEN', matchedBy: 'all-terms', title: 'Earlier review', url: 'javascript:boom()' },
+      { kind: 'published-spec', repository: 'JKHeadley/instar', commit: 'a'.repeat(40), path: 'docs/specs/TESTING-INTEGRITY-SPEC.md', url: 'javascript:boom()' },
+      { kind: 'published-spec', repository: 'JKHeadley/instar', commit: 'a'.repeat(40), path: 'docs/specs/../private.md' },
       { kind: 'pull-request', repository: 'unknown/private', number: 9, title: 'Rejected repo link' },
       { kind: 'conversation', ref: `app:${APP}`, messageId: 'javascript: alert(1)', title: 'Rejected position' },
     ],
@@ -39,10 +41,11 @@ describe('private Work search panel', () => {
     submit(child);
     expect(child.querySelector('[role="status"]').textContent).toBe('Searching for earlier work…');
     expect(child.querySelector('button').disabled).toBe(true);
-    await vi.waitFor(() => expect(child.querySelectorAll('a')).toHaveLength(2));
+    await vi.waitFor(() => expect(child.querySelectorAll('a')).toHaveLength(3));
     expect(send).toHaveBeenCalledWith('/work/discover', { query: 'prior subject' }, expect.any(AbortSignal));
     expect([...child.querySelectorAll('a')].map(a => a.getAttribute('href'))).toEqual([
       `#/work/chats?c=${encodeURIComponent('app:' + APP)}&m=source-event`, 'https://github.com/JKHeadley/instar/pull/3342',
+      `https://github.com/JKHeadley/instar/blob/${'a'.repeat(40)}/docs/specs/TESTING-INTEGRITY-SPEC.md`,
     ]);
     expect(child.textContent).toContain('<img src=x onerror="boom()"> text');
     expect(child.querySelector('img')).toBeNull();

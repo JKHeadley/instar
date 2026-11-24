@@ -1,14 +1,15 @@
 // A1's first slice: lookup on the authenticated private Work boundary.
 import { Router, type Request, type Response } from 'express';
 import type { ChiefOfStaffPrSearch } from '../core/ChiefOfStaffPrSearch.js';
+import type { readPublishedWorkSpecs } from '../core/publishedWorkSpecs.js';
 import { MAX_QUERY_CHARS, searchTerms } from '../core/conversationKeywordSearch.js';
 import { isConversationSearchEnabled, searchLocal, type ConversationSearchRouteDeps, type SearchPlatform } from './mobileConversationSearchRoutes.js';
 import { personOfReaderKey } from './mobilePairingRoutes.js';
 
 const PROVIDER_LIMIT = 20;
 const LOOKUP_BUDGET_MS = 5_000; // Same interactive budget as conversation search over the machine pool.
-const FUTURE_SOURCES = ['gitRefs', 'specs', 'decisions', 'documents', 'projects', 'cards', 'commitments', 'jobs'] as const;
-const SOURCES = ['conversations', 'pullRequests'] as const;
+const FUTURE_SOURCES = ['gitRefs', 'decisions', 'documents', 'projects', 'cards', 'commitments', 'jobs'] as const;
+const SOURCES = ['conversations', 'pullRequests', 'specs'] as const;
 type Source = typeof SOURCES[number];
 
 export interface WorkDiscoveryDependencies {
@@ -18,6 +19,7 @@ export interface WorkDiscoveryDependencies {
   conversationSource(): ConversationSearchRouteDeps | null;
   configuredMessaging(platform: 'telegram' | 'slack'): boolean;
   pullRequestSource: Pick<ChiefOfStaffPrSearch, 'searchForWork'>;
+  publishedSpecSource?: (query: string) => ReturnType<typeof readPublishedWorkSpecs>;
   budgetMs?: number;
 }
 
@@ -125,7 +127,12 @@ export function createWorkDiscoveryRouter(deps: WorkDiscoveryDependencies): Rout
       res.status(400).json({ error: 'invalid-work-discovery-query' });
       return;
     }
-    const pulls = await pullRequests(deps, input.query, input.sources.has('pullRequests'));
+    const [pulls, specs] = await Promise.all([
+      pullRequests(deps, input.query, input.sources.has('pullRequests')),
+      input.sources.has('specs') && deps.publishedSpecSource
+        ? deps.publishedSpecSource(input.query)
+        : { hits: [], coverage: { status: input.sources.has('specs') ? 'unavailable' : 'unsearched' } },
+    ]);
     if (res.headersSent || res.destroyed) return;
     if (!deps.mayReadPrivateWork(req, res)) {
       res.status(403).json({ error: 'private-work-session-required' });
@@ -138,12 +145,12 @@ export function createWorkDiscoveryRouter(deps: WorkDiscoveryDependencies): Rout
     // Capture private rows only after the asynchronous public source. Current source
     // checks, row capture, and JSON serialization share one synchronous boundary.
     const local = conversations(deps, input.query, input.sources.has('conversations'));
-    const available = [local.coverage.status, pulls.coverage.status].some(status => status !== 'unavailable' && status !== 'unsearched');
+    const available = [local.coverage.status, pulls.coverage.status, specs.coverage.status].some(status => status !== 'unavailable' && status !== 'unsearched');
     res.status(available ? 200 : 503).json({
       version: 1, status: available ? 'partial' : 'unavailable', observedAt: new Date().toISOString(),
-      candidates: [...local.hits, ...pulls.hits],
+      candidates: [...local.hits, ...pulls.hits, ...specs.hits],
       coverage: {
-        conversations: local.coverage, pullRequests: pulls.coverage,
+        conversations: local.coverage, pullRequests: pulls.coverage, specs: specs.coverage,
         ...Object.fromEntries(FUTURE_SOURCES.map(source => [source, { status: 'unsearched' }])),
       },
     });

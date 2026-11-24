@@ -271,6 +271,7 @@ import { createMobilePinRouter, recordTelegramPin } from './mobilePinRoutes.js';
 import { createConversationSearchRouter, isMeaningSearchEnabled, type ConversationSearchRouteDeps } from './mobileConversationSearchRoutes.js';
 import { createWorkDiscoveryRouter } from './workDiscoveryRoutes.js';
 import { ChiefOfStaffPrSearch } from '../core/ChiefOfStaffPrSearch.js';
+import { readPublishedWorkSpecs } from '../core/publishedWorkSpecs.js';
 import { resolveGitHubToken } from '../core/githubRuntime.js';
 import { conversationIndexSources } from './conversationMeaningSearch.js';
 import { ConversationEmbeddingFeeder, ConversationEmbeddingIndex, type Embedder } from '../memory/ConversationEmbeddingIndex.js';
@@ -7490,6 +7491,7 @@ export class AgentServer {
       conversationSource: () => workDiscoveryConversationSource,
       configuredMessaging: platform => this.config.messaging.some(adapter => adapter.enabled && adapter.type === platform),
       pullRequestSource: workDiscoveryPrSearch,
+      publishedSpecSource: query => readPublishedWorkSpecs(() => resolveGitHubToken({ stateDir: this.config.stateDir }), query),
     }));
     const routes = createRoutes(routeCtx);
     this.attachWorkBoardRequestGate(options);

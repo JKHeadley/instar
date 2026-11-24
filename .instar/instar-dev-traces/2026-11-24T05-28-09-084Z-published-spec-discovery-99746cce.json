@@ -1,0 +1,41 @@
+{
+  "version": 3,
+  "slug": "published-spec-discovery",
+  "sessionId": "5591f135-974d-45ff-afdb-df56f5dbd35e",
+  "timestamp": "2026-11-24T05:28:09.084Z",
+  "artifactPath": "upgrades/side-effects/published-spec-discovery.md",
+  "artifactSha256": "416fcca461dc750cb34da2c80fbb108a5fd920c3f3822a930a4be23615abc69d",
+  "specPath": "docs/specs/canonical-records-and-work-discovery.md",
+  "coveredFiles": [
+    "dashboard/console/work-discovery.js",
+    "src/core/publishedWorkSpecs.ts",
+    "src/data/awareness/work-discovery-read.md",
+    "src/server/AgentServer.ts",
+    "src/server/workDiscoveryRoutes.ts",
+    "tests/e2e/work-discovery-alive.test.ts",
+    "tests/unit/console-work-discovery.test.ts",
+    "tests/unit/work-discovery-query.test.ts",
+    "upgrades/next/published-spec-discovery.md",
+    "upgrades/side-effects/published-spec-discovery.md"
+  ],
+  "phase": "complete",
+  "tier": 2,
+  "tierReasoning": "Read-only metadata provider on existing private Work scope with independently verified public source and bounded response.",
+  "secondPass": "true",
+  "reviewerConcurred": true,
+  "toolchain": {
+    "reviewSkills": [
+      {
+        "name": "independent-side-effects-review",
+        "outcome": "concurred",
+        "verified": false,
+        "iterations": null
+      }
+    ],
+    "convergence": {
+      "reportPath": "docs/specs/reports/canonical-records-and-work-discovery-convergence.md",
+      "iterations": 6,
+      "verified": true
+    }
+  }
+}

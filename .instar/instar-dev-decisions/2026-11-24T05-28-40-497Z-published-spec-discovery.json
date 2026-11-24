@@ -1,0 +1,25 @@
+{
+  "ts": "2026-11-24T05:28:40.497Z",
+  "slug": "published-spec-discovery",
+  "suggestedTier": 2,
+  "declaredTier": 2,
+  "riskFloor": 1,
+  "riskFloorReasons": [],
+  "belowFloor": false,
+  "files": 4,
+  "loc": 126,
+  "scope": {
+    "basis": "staged-in-scope-paths-including-deleted",
+    "files": [
+      "src/core/publishedWorkSpecs.ts",
+      "src/data/awareness/work-discovery-read.md",
+      "src/server/AgentServer.ts",
+      "src/server/workDiscoveryRoutes.ts"
+    ],
+    "addedLines": 120,
+    "deletedLines": 6
+  },
+  "causalAutopsy": null,
+  "classClosure": null,
+  "verdict": "pass"
+}

@@ -2,9 +2,9 @@ import { describe, expect, it } from 'vitest';
 import { parseWorkDiscoveryQuery } from '../../src/server/workDiscoveryRoutes.js';
 
 describe('work discovery request shape', () => {
-  it('uses both enrolled sources, or only a requested enrolled source', () => {
+  it('uses all enrolled sources, or only a requested enrolled source', () => {
     expect(parseWorkDiscoveryQuery({ query: ' instar.sh ' })).toEqual({
-      query: 'instar.sh', sources: new Set(['conversations', 'pullRequests']),
+      query: 'instar.sh', sources: new Set(['conversations', 'pullRequests', 'specs']),
     });
     expect(parseWorkDiscoveryQuery({ query: 'SEC-123', sources: ['conversations'] })?.sources).toEqual(new Set(['conversations']));
   });

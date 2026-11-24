@@ -1,4 +1,4 @@
-// Production boot, real private Work authentication and both enrolled sources.
+// Production boot, real private Work authentication and enrolled sources.
 import crypto from 'node:crypto';
 import fs from 'node:fs';
 import os from 'node:os';
@@ -55,6 +55,9 @@ async function boot(developmentAgent: boolean, unavailableMessaging: Array<'tele
   return server;
 }
 
+const SPEC_COMMIT = 'a'.repeat(40);
+const SPEC_PATH = 'docs/specs/TESTING-INTEGRITY-SPEC.md';
+
 function installGithubFixture(held?: Promise<void>) {
   vi.stubEnv('GITHUB_TOKEN', 'e2e-fixture-github-token');
   const originalFetch = globalThis.fetch;
@@ -76,12 +79,76 @@ function installGithubFixture(held?: Promise<void>) {
       } } },
     }));
   });
+  const specs = vi.fn(async (init?: RequestInit) => {
+    return publicSpecResponse(false);
+  });
   vi.stubGlobal('fetch', (url: Parameters<typeof fetch>[0], init?: RequestInit) =>
-    url === 'https://api.github.com/graphql' ? github(init) : originalFetch(url, init));
-  return github;
+    url === 'https://api.github.com/graphql'
+      ? String(init?.body).includes('query PublishedWorkSpecs') ? specs(init) : github(init)
+      : originalFetch(url, init));
+  return Object.assign(github, { specs });
+}
+
+function publicSpecResponse(isPrivate: boolean, { mode = 0o100644, commit = SPEC_COMMIT, extraEntries = 0 } = {}) {
+  return new Response(JSON.stringify({
+    data: { repository: { nameWithOwner: 'JKHeadley/instar', visibility: isPrivate ? 'PRIVATE' : 'PUBLIC', defaultBranchRef: { target: {
+      __typename: 'Commit', oid: commit,
+      specs: { path: 'docs/specs', type: 'tree', mode: 0o040000, object: { __typename: 'Tree', entries: [
+        { name: 'TESTING-INTEGRITY-SPEC.md', type: 'blob', mode, text: 'never returned' },
+        { name: 'testing-integrity-excluded.md', type: 'blob', mode: 0o100644 },
+        ...Array.from({ length: extraEntries }, (_unused, index) => ({
+          name: `extra-${index}.md`, type: 'blob', mode: 0o100644,
+        })),
+      ] } },
+    } } } },
+  }));
 }
 
 describe('work discovery production route', () => {
+  it('verifies published spec locators through the production route and never sends caller text upstream', async () => {
+    const github = installGithubFixture();
+    const server = await boot(true);
+    const app = server.getApp();
+    await request(app).post(PATH).set('Authorization', `Bearer ${AUTH}`)
+      .send({ query: 'testing integrity', sources: ['specs'] }).expect(403);
+    expect(github.specs).not.toHaveBeenCalled();
+    const unlock = await request(app).post('/dashboard/unlock').send({ pin: PIN }).expect(200);
+    const token = unlock.body.token;
+    const read = (query: string) => request(app).post(PATH)
+      .set('Authorization', `Bearer ${token}`).send({ query, sources: ['specs'] });
+    const positive = await read('testing integrity').expect(200);
+    expect(positive.body).toMatchObject({
+      candidates: [{ kind: 'published-spec', path: SPEC_PATH, commit: SPEC_COMMIT,
+        url: `https://github.com/JKHeadley/instar/blob/${SPEC_COMMIT}/${SPEC_PATH}` }],
+      coverage: { specs: { status: 'fresh', corpus: 'allowlisted-default-branch-paths' } },
+    });
+    expect(positive.text).not.toContain('never returned');
+    expect(positive.body.candidates).toHaveLength(1);
+    expect((await read('canonical records').expect(200)).body).toMatchObject({
+      candidates: [], coverage: { specs: { status: 'fresh' } },
+    });
+    await read('unique-owner-phrase').expect(200);
+    expect(github.specs).toHaveBeenCalledTimes(3);
+    const calls = github.specs.mock.calls.map(([init]) => String(init?.body));
+    expect(new Set(calls).size).toBe(1);
+    expect(calls[0]).not.toContain('unique-owner-phrase');
+    expect(calls[0]).not.toContain('testing integrity');
+    expect(JSON.parse(calls[0]).query).toContain('file(path: "docs/specs")');
+    expect(calls[0]).not.toContain('TESTING-INTEGRITY-SPEC.md');
+    github.specs.mockImplementationOnce(async () => publicSpecResponse(true));
+    const denied = await read('testing integrity').expect(503);
+    expect(denied.body).toMatchObject({ candidates: [], coverage: { specs: { status: 'unavailable' } } });
+    github.specs.mockImplementationOnce(async () => publicSpecResponse(false, { mode: 0o120000 }));
+    const invalid = await read('testing integrity').expect(200);
+    expect(invalid.body).toMatchObject({ candidates: [], coverage: { specs: { status: 'partial' } } });
+    github.specs.mockImplementationOnce(async () => publicSpecResponse(false, { extraEntries: 4_094 }));
+    expect((await read('testing integrity').expect(503)).body)
+      .toMatchObject({ candidates: [], coverage: { specs: { status: 'unavailable' } } });
+    github.specs.mockImplementationOnce(async () => publicSpecResponse(false, { commit: 'main' }));
+    expect((await read('testing integrity').expect(503)).body)
+      .toMatchObject({ candidates: [], coverage: { specs: { status: 'unavailable' } } });
+  });
+
   it('admits only a private Work session and finds a conversation and a PR beyond the first hundred', async () => {
     const github = installGithubFixture();
     const server = await boot(true);
@@ -115,7 +182,7 @@ describe('work discovery production route', () => {
         { kind: 'conversation', ref: `app:${conversationKey}`, messageId: 'discovery-event-1', evidence: 'lead' },
         { kind: 'pull-request', number: 3342, url: 'https://github.com/JKHeadley/instar/pull/3342' },
       ],
-      coverage: { conversations: { status: 'fresh', peers: 'unsearched' }, specs: { status: 'unsearched' } },
+      coverage: { conversations: { status: 'fresh', peers: 'unsearched' }, specs: { status: 'fresh' } },
     });
     expect(found.text).not.toContain('stale approval');
     const earlierWork = await request(app).post(PATH).set(owner).send({
