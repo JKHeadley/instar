@@ -15,7 +15,8 @@ if (process.platform !== 'darwin') throw Error('This fixture requires macOS');
 const embedded = process.argv.includes('--embedded');
 const resume = process.argv.includes('--resume');
 const inject = process.argv.includes('--inject');
-const changedHookRestart = process.argv.includes('--changed-hook-restart');
+const changeAfterPreflight = process.argv.includes('--change-after-preflight');
+const changedHookRestart = changeAfterPreflight || process.argv.includes('--changed-hook-restart');
 const trustedRestart = changedHookRestart || process.argv.includes('--trusted-restart');
 if (trustedRestart && (!resume || embedded || inject)) throw Error('Trusted restart requires managed resume');
 
@@ -45,8 +46,8 @@ function fixtureHookTrust(reply, hookConfig) {
   return hooks[0].trustStatus;
 }
 
-async function readLoadedHookTrust(hookConfig, threadId, expected) {
-  if (!threadId || !relay) throw Error('The fixture has no confirmed managed thread');
+async function readBackendHookTrust(hookConfig, params, expected) {
+  if (!relay) throw Error('The fixture has no managed app-server');
   const backendSocket = join(dirname(new URL(relay.remote).pathname), 'backend.sock');
   const client = new WebSocket('ws+unix://' + backendSocket + ':/', {
     maxPayload: 128 * 1024,
@@ -77,10 +78,10 @@ async function readLoadedHookTrust(hookConfig, threadId, expected) {
         const reply = JSON.parse(payload.toString());
         if (reply.id === 1 && !reply.error) {
           send({ method: 'initialized', params: {} });
-          send({ id: 2, method: 'hooks/list', params: { threadId } });
+          send({ id: 2, method: 'hooks/list', params });
         } else if (reply.id === 2) {
           if (!reply.error) finish(null, fixtureHookTrust(reply, hookConfig));
-          else if (reply.error.code === -32600 && reply.error.message === 'thread not found: ' + threadId) {
+          else if (params.threadId && reply.error.code === -32600 && reply.error.message === 'thread not found: ' + params.threadId) {
             finish(null, 'not-loaded');
           } else {
             finish(Error('Native loaded thread hook query refused with code ' + reply.error.code));
@@ -92,7 +93,7 @@ async function readLoadedHookTrust(hookConfig, threadId, expected) {
     });
   });
   if (trust !== expected) throw Error('Expected loaded thread hook trust ' + expected + ', got ' + trust);
-  console.log('Native hooks/list reported loaded thread hook ' + trust);
+  console.log('Native hooks/list reported ' + (params.threadId ? 'loaded thread' : 'managed project') + ' hook ' + trust);
 }
 
 async function readNativeHookTrust(hookConfig, expected) {
@@ -234,7 +235,7 @@ try {
     };
   }
 
-  async function exercise(manualTrust, expectReview = false, expectedLoadedTrust) {
+  async function exercise(manualTrust, expectReview = false, expectedLoadedTrust, afterPreflight) {
     const requestBaseline = provider.models.length;
     let resolvePane;
     const panePid = new Promise(resolve => { resolvePane = resolve; });
@@ -256,6 +257,11 @@ try {
         signal: new AbortController().signal,
       });
 
+    }
+    if (afterPreflight) {
+      await readBackendHookTrust(hookConfig, { cwds: [root] }, 'trusted');
+      await afterPreflight();
+      console.log('Changed the fixture hook after the same app-server reported trusted');
     }
     const binary = (await run('which', ['codex'])).stdout.trim();
     const command = ['-S', mux, 'new-session', '-d', '-s', 'probe', '-c', root,
@@ -279,7 +285,7 @@ try {
         throw Error('Expected the TUI itself to read ' + reviewTrust + ' project hooks before review');
       }
       console.log(JSON.stringify({ reviewPrompt: true, threadsReturned, threadLoadedByTui: confirmedThread === resumedThread, observedHookReads }));
-      await readLoadedHookTrust(hookConfig, queriedThread, 'not-loaded');
+      await readBackendHookTrust(hookConfig, { threadId: queriedThread }, 'not-loaded');
       if (expectReview) {
         const hookReceipt = await stat(stopReceipt).catch(error => {
           if (error.code === 'ENOENT') return null;
@@ -325,7 +331,7 @@ try {
         throw Error('Expected the TUI itself to read trusted project hooks before load');
       }
       console.log(JSON.stringify({ reviewPrompt: false, threadLoadedByTui: confirmedThread === resumedThread, observedHookReads }));
-      await readLoadedHookTrust(hookConfig, confirmedThread, expectedLoadedTrust);
+      await readBackendHookTrust(hookConfig, { threadId: confirmedThread }, expectedLoadedTrust);
     }
     return true;
   }
@@ -350,14 +356,16 @@ try {
     if (!armedConfig.includes(priorUrl)) throw Error('Expected the original fixture URL');
     await writeFile(configPath, armedConfig.replace(priorUrl, 'http://127.0.0.1:' + provider.port + '/v1'));
     await SafeFsExecutor.safeUnlink(stopReceipt, { operation: 'codex-working-signal-fixture-reset' });
-    if (changedHookRestart) {
-      await writeFile(hookConfig, stopHook(hook + ' changed-fixture-argument'));
+    const changeHook = () => writeFile(hookConfig, stopHook(hook + ' changed-fixture-argument'));
+    if (changedHookRestart && !changeAfterPreflight) {
+      await changeHook();
       console.log('Reopening the same thread after changing the approved fixture hook command');
     } else {
       console.log('Reopening the same thread with unchanged fixture hook approval');
     }
-    await readNativeHookTrust(hookConfig, changedHookRestart ? 'modified' : 'trusted');
-    if (!await exercise(false, changedHookRestart, changedHookRestart ? undefined : 'trusted')) process.exitCode = 1;
+    await readNativeHookTrust(hookConfig, changedHookRestart && !changeAfterPreflight ? 'modified' : 'trusted');
+    if (!await exercise(false, changedHookRestart, changedHookRestart ? undefined : 'trusted',
+      changeAfterPreflight ? changeHook : undefined)) process.exitCode = 1;
   }
 
 } finally {
