@@ -17,6 +17,7 @@ type DoorReading = {
 export interface ScheduledDoorwayEvidence {
   machineId: string;
   historyTruncated: boolean;
+  ledgerUnavailable?: true;
   latestRun: Evidence | null;
   doors: Record<string, DoorReading>;
 }

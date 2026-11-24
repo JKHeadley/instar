@@ -156,6 +156,14 @@ describe('script runner execution', () => {
       doors: { fixture: { freshness: 'current', reachable: true } },
     });
 
+    const historyRead = vi.spyOn(s.getRunHistory(), 'readPackagedDoorwayRuns');
+    historyRead.mockReturnValueOnce({ status: 'unavailable' });
+    expect(s.readScheduledDoorwayHistory(['fixture'])).toMatchObject({
+      latestRun: null, ledgerUnavailable: true,
+      doors: { fixture: { freshness: 'unknown', reachable: null } },
+    });
+    historyRead.mockRestore();
+
     setCfg({ developmentAgent: true, jobs: { scriptRunners: { disabledSlugs: [slug] } } });
     expect(await s.triggerJob(slug, 'test')).toBe('skipped');
     expect(lastRun(s, slug).runId).toBe(packaged.runId);

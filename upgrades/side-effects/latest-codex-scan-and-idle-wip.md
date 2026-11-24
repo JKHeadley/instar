@@ -65,3 +65,9 @@ New full-layout agent instructions and the update migrator use the same schedule
 ## Executable fixture checkpoint
 
 An ephemeral signing key binds the actual doorway prober and a deterministic CLI-only catalog in a package-shaped fixture. A separate agent directory runs the verified prober, records the exact run's digest, and reopens the committed observation from disk. The fixture uses a local Node version probe and creates no manual scan file. This test establishes executable compatibility outside a checkout. Release-signing custody and an installed release test remain separate.
+
+## Ledger availability checkpoint
+
+A failed packaged history read now reports unknown reachability to both read surfaces when the profile is opted in. The legacy ledger API still returns an empty compatibility result on read failure. Absence of a ledger file on a fresh agent remains a valid empty history. This handles I/O failure. The ledger's existing recovery of malformed JSON lines still needs a stricter completeness signal before it can authorize cleanup.
+
+The retention boundary needs to distinguish a permanent historical receipt from a live artifact reference. A durable local cursor must retain the latest attested observation per doorway, admissions for current attempts, and the diagnostic window. It must advance only after the scheduler ledger durably records the successor. The cursor and artifact cleanup must share scheduler writer custody. A reader with an older cursor must finish or retry before cleanup removes any of its referenced artifacts. A missing or unreadable cursor or incomplete ledger blocks cleanup. A restart before cursor advancement preserves the old artifacts and reconstructs the next cursor from verified evidence. No cleanup is introduced by this checkpoint.

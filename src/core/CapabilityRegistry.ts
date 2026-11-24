@@ -432,7 +432,7 @@ export function readDoorwaySources(
     row.freshness === 'current' && row.lastObservation ? [row.lastObservation] : []);
   const scanState: ScanState = scheduled !== undefined
     ? currentScheduled.length ? 'observed'
-      : scheduled && !scheduled.latestRun && !scheduled.historyTruncated
+      : scheduled && !scheduled.latestRun && !scheduled.historyTruncated && !scheduled.ledgerUnavailable
         && scheduledDoors.every(row => row.freshness === 'never-observed') ? 'never-observed' : 'source-unavailable'
     : !scanReadable && scanExists ? 'source-unavailable' : body.scanState === 'scanned' ? 'observed' : 'never-observed';
   const scanStampSecs = scheduled !== undefined

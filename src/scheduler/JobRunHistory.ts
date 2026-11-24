@@ -456,8 +456,12 @@ export class JobRunHistory {
   }
 
   /** One bounded window of relevant local rows, excluding legacy and non-attempts. */
-  readPackagedDoorwayRuns(machineId: string, limit: number): { runs: JobRun[]; truncated: boolean } {
-    const runs = this.getDeduplicatedRuns().filter(run => run.machineId === machineId
+  readPackagedDoorwayRuns(machineId: string, limit: number):
+    | { status: 'available'; runs: JobRun[]; truncated: boolean }
+    | { status: 'unavailable' } {
+    const all = this.getDeduplicatedRuns();
+    if (!this.isReadHealthy()) return { status: 'unavailable' };
+    const runs = all.filter(run => run.machineId === machineId
       && run.slug === 'doorway-scan' && run.origin === 'instar' && run.runner === 'script'
       && run.lockTrust === 'trusted' && run.result !== 'skipped'
       && (run.packagedDoorwayScan || run.scheduledDoorwayObservationDigest));
@@ -467,6 +471,7 @@ export class JobRunHistory {
     const window = runs.slice(0, limit);
     // An unresolved tie crossing the read boundary cannot pick a winner.
     return {
+      status: 'available',
       runs: splitTie ? window.filter(run => run.startedAt !== boundary) : window,
       truncated: runs.length > limit,
     };

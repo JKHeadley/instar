@@ -170,12 +170,21 @@ describe('scheduled doorway evidence reconciliation', () => {
     newer('failure');
     newer('failure');
     const bounded = ledger.readPackagedDoorwayRuns('local-test', 1);
-    expect(bounded).toEqual({ runs: [], truncated: true });
+    expect(bounded).toEqual({ status: 'available', runs: [], truncated: true });
+    if (bounded.status !== 'available') throw new Error('expected readable ledger');
     const evidence = readScheduledDoorwayEvidence({
       ...bounded, historyTruncated: bounded.truncated,
       machineId: 'local-test', doorIds: ['alpha'], store, cadence, nowMs: Date.now(),
     });
     expect(evidence.doors.alpha.freshness).toBe('unknown');
+  });
+
+  it('distinguishes an unreadable job ledger from an empty local history', () => {
+    expect(ledger.readPackagedDoorwayRuns('local-test', 16)).toEqual({
+      status: 'available', runs: [], truncated: false,
+    });
+    fs.mkdirSync(path.join(dir, 'ledger', 'job-runs.jsonl'));
+    expect(ledger.readPackagedDoorwayRuns('local-test', 16)).toEqual({ status: 'unavailable' });
   });
 
   it('leaves conflicting same-time runs and future evidence unknown in either input order', () => {

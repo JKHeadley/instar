@@ -1677,6 +1677,15 @@ export class JobScheduler {
     const machineId = this.machineId;
     const config = readDoorwayExecutionConfig(this.stateDir);
     const history = this.runHistory.readPackagedDoorwayRuns(machineId, 16);
+    if (history.status === 'unavailable') {
+      if (!config?.packagedExecution) return null;
+      return {
+        machineId, historyTruncated: false, ledgerUnavailable: true, latestRun: null,
+        doors: Object.fromEntries(doorIds.map(id => [id, {
+          lastObservation: null, latestAttempt: null, reachable: null, freshness: 'unknown' as const,
+        }])),
+      };
+    }
     if (!config?.packagedExecution && history.runs.length === 0 && !history.truncated) return null;
     const job = this.jobs.find(row => row.slug === 'doorway-scan');
     const cadence = config?.packagedExecution && config.enabled !== false && job?.enabled
