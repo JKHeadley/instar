@@ -1,3 +1,4 @@
+import { creationPlacementSourceVersion } from '../core/CreationPlacementSnapshot.js';
 import { readPeerMessageGeneration } from '../messaging/peerMessageTarget.js';
 import { resolveStallReconfirm } from '../core/StallReconfirm.js';
 import {ConversationGraphDelegationManager} from '../server/ConversationGraphDelegationManager.js';
@@ -6,7 +7,7 @@ import { TeamConfinement } from '../users/TeamConfinement.js';
 import { ALWAYS_AVAILABLE_REFUSAL, daemonRunsAgent } from '../core/alwaysAvailable.js';
 import { boundedHead, boundedTail, BOUNDED_INPUT_MIN_CHARS } from '../core/boundedInput.js';
 import { inlineIMessageAttachments, type IMessageAttachmentRef } from '../messaging/imessage/inlineAttachments.js';
-import { messageTypeOf, toWireMedia, parseInboundMediaField, type InboundMediaLocal, type InboundMediaRef } from '../core/inboundMedia.js';
+import { messageTypeOf, toWireMedia, parseInboundMediaField, escapeTypedPathTags, type InboundMediaLocal, type InboundMediaRef } from '../core/inboundMedia.js';
 import { PlatformMediaForSession, buildTelegramSessionText, setPlatformMediaForSession } from '../core/platformMediaForSession.js';
 import { currentRecoveryStatus } from '../recovery/RecoveryRuntime.js';
 import { buildContextLayers, contextLayersEnabled, CONTEXT_LAYERS_FEATURE_ID, type LayerEmitter } from '../monitoring/contextLayers/contextLayersBoot.js';
@@ -214,7 +215,7 @@ import { BootHealthBeacon } from '../server/BootHealthBeacon.js';
 import { resolveBootClaimSafety, resolvePlannedRestartLeaseContinuity, UNSIGNED_WINDOW_CEILING_MS } from '../core/BootClaimHold.js';
 import { instarMachineMarker } from '../core/HttpLeaseTransport.js';
 import { TelegramAdapter, TOPIC_STYLE, selectTopicEmoji } from '../messaging/TelegramAdapter.js';
-import { getTelegramInboundDir } from '../messaging/shared/telegramInboundFiles.js';
+import { getTelegramInboundDir, writePrivateInboundFile, ensurePrivateDir } from '../messaging/shared/telegramInboundFiles.js';
 import { buildColdStartFallbackReply } from '../messaging/ColdStartFallbackReply.js';
 import { sendRespawnCollisionNotice } from '../messaging/ColdStartFallbackReply.js';
 import { RelationshipManager } from '../core/RelationshipManager.js';
@@ -1873,8 +1874,8 @@ export async function spawnSessionForTopic(
   // Fix: Inline the context directly, put it BEFORE the user's message, with strong
   // continuation framing. Claude processes the context first, then responds to the
   // user's message WITH that context loaded.
-  const tmpDir = getTelegramInboundDir(_projectDir);
-  fs.mkdirSync(tmpDir, { recursive: true });
+  // SEC-138: owner-only folder (tightened if an older build left it at the default mode).
+  const tmpDir = ensurePrivateDir(getTelegramInboundDir(_projectDir));
 
   let bootstrapMessage: string | undefined;
 
@@ -4201,6 +4202,24 @@ async function whatsappMemoryCheck(
 }
 
 /**
+ * SEC-149: a typed `[image:/path]` (or document, video, voice, file) from a WhatsApp sender must
+ * not reach the session as a live media tag, as on Telegram, Slack and iMessage. WhatsApp never
+ * delivers real media as a path tag here (its placeholders are `[Image]`, `[Video]` and
+ * `[Document: <sender's file name>]`), so escaping the whole text loses nothing; the document
+ * placeholder, whose file name the sender chooses, is itself made inert. The sender's profile name
+ * is also the sender's choice and goes into the session's tag, so brackets are removed (as
+ * SessionManager.injectWhatsAppMessage already does for live sessions) and a name like
+ * `[image:/path]` cannot become a live tag in a new session's first prompt either.
+ */
+function whatsAppInboundText(msg: { content: string; metadata?: Record<string, unknown> }): { text: string; senderName: string | undefined } {
+  const rawSenderName = (msg.metadata?.senderName as string) ?? undefined;
+  return {
+    text: escapeTypedPathTags(msg.content),
+    senderName: rawSenderName ? rawSenderName.replace(/[\[\]]/g, '') || undefined : undefined,
+  };
+}
+
+/**
  * Wire WhatsApp message routing: incoming messages → Claude sessions.
  *
  * Similar to wireTelegramRouting but for WhatsApp JIDs instead of Telegram topics.
@@ -4215,8 +4234,7 @@ function wireWhatsAppRouting(
     const jid = msg.channel?.identifier;
     if (!jid) return;
 
-    const text = msg.content;
-    const senderName = (msg.metadata?.senderName as string) ?? undefined;
+    const { text, senderName } = whatsAppInboundText(msg); // SEC-149
 
     const memoryPlaceKey = `whatsapp:${jid}`;
     if (!(await whatsappMemoryCheck(whatsapp, jid, msg.metadata))) return;
@@ -4335,19 +4353,10 @@ function wireIMessageRouting(
     // (matches Telegram's BOOTSTRAP_FILE_THRESHOLD pattern)
     const BOOTSTRAP_FILE_THRESHOLD = 500;
     if (bootstrapMessage.length > BOOTSTRAP_FILE_THRESHOLD) {
-      const tmpDir = '/tmp/instar-imessage';
-      fs.mkdirSync(tmpDir, { recursive: true, mode: 0o700 });
-      // Clean up old temp files (>1 hour) to prevent unbounded accumulation
-      try {
-        const cutoff = Date.now() - 3_600_000;
-        for (const f of fs.readdirSync(tmpDir)) {
-          const fp = path.join(tmpDir, f);
-          try { if (fs.statSync(fp).mtimeMs < cutoff) SafeFsExecutor.safeUnlinkSync(fp, { operation: 'src/commands/server.ts:1257' }); } catch { /* ignore */ }
-        }
-      } catch { /* non-critical */ }
+      // SEC-138: the agent's own inbound folder (owner-only; swept after 7 days by
+      // cleanupTelegramTempFiles), never a fixed shared /tmp folder.
       const senderSlug = sender.replace(/[^a-zA-Z0-9]/g, '').slice(-8);
-      const filepath = path.join(tmpDir, `bootstrap-${senderSlug}-${Date.now()}-${Math.random().toString(36).slice(2, 8)}.txt`);
-      fs.writeFileSync(filepath, bootstrapMessage, { mode: 0o600 });
+      const filepath = writePrivateInboundFile(_projectDir, `im-bootstrap-${senderSlug}`, bootstrapMessage);
       console.log(`[imessage→session] Bootstrap too large (${bootstrapMessage.length} chars), wrote to ${filepath}`);
       bootstrapMessage = `[IMPORTANT: Read ${filepath} — it contains your full session context, conversation history, and the user's latest message. You MUST read this file before responding.]`;
     }
@@ -5481,8 +5490,11 @@ export async function startServer(options: StartOptions): Promise<void> {
       agentName: config.projectName,
     });
 
-    // Clean up stale Telegram temp files on startup
+    // Clean up stale inbound message files on startup, and daily after that (SEC-138: long
+    // WhatsApp, iMessage and Slack bodies now live in this folder too, so a long-running server
+    // must not keep them past the 7-day limit just because it has not restarted).
     cleanupTelegramTempFiles();
+    setInterval(cleanupTelegramTempFiles, 24 * 60 * 60 * 1000).unref();
 
     // Pre-flight: ensure better-sqlite3 bindings are compiled for the current Node.js version.
     // Must run before TopicMemory or SemanticMemory initialize. See ensureSqliteBindings() for rationale.
@@ -11178,9 +11190,9 @@ export async function startServer(options: StartOptions): Promise<void> {
                 return n;
               },
               conversation: {
-                create: (cardId, conversationKey, title) => {
+                create: (cardId, conversationKey, title, creationContext) => {
                   // Device id `work-board`, request id = the card id: the event id is stable, so a second create is a no-op.
-                  const r = appSvc.applyCreate('work-board', cardId, conversationKey, title.slice(0, 80) || 'Work card', null);
+                  const r = appSvc.applyCreate('work-board', cardId, conversationKey, title.slice(0, 80) || 'Work card', null, creationContext);
                   if (r.status !== 200) throw new Error(String((r.body as { error?: string }).error ?? 'conversation-not-created'));
                 },
                 exists: (conversationKey) => !!appSvc.liveConversation(conversationKey),
@@ -11927,8 +11939,6 @@ export async function startServer(options: StartOptions): Promise<void> {
 
           // Build context for the session — inject inline like Telegram does
           // Use async fallback to fetch from Slack API if ring buffer is empty
-          const tmpDir = '/tmp/instar-slack';
-          fs.mkdirSync(tmpDir, { recursive: true });
           const history = await slackAdapter!.getChannelMessagesWithFallback(channelId, 30);
           const unansweredCount = slackAdapter!.getUnansweredCount(channelId);
 
@@ -11998,9 +12008,9 @@ export async function startServer(options: StartOptions): Promise<void> {
 
           const contextData = contextLines.join('\n');
 
-          // Also write to file as backup reference
-          const ctxPath = path.join(tmpDir, `ctx-${channelId}-${Date.now()}.txt`);
-          fs.writeFileSync(ctxPath, contextData);
+          // Also write to file as backup reference. SEC-138: the agent's own owner-only inbound
+          // folder, never a fixed shared /tmp folder another local account could read or pre-create.
+          const ctxPath = writePrivateInboundFile(_projectDir, `slack-ctx-${channelId}`, contextData);
           sessionManager.registerMemoryInboundFile(`slack:${channelId}`, ctxPath);
 
           // Transform [image:path] and [document:path] tags into explicit read instructions
@@ -12032,9 +12042,8 @@ export async function startServer(options: StartOptions): Promise<void> {
           let bootstrapMessage: string;
           if (fullMessage.length > FILE_THRESHOLD) {
             // Write full message + inline context to the file so agent gets everything in one read
-            const msgFilePath = path.join(tmpDir, `msg-${channelId}-${Date.now()}-${Math.random().toString(36).slice(2, 10)}.txt`);
             const fullContent = `${fullMessage}\n\n${contextData}`;
-            fs.writeFileSync(msgFilePath, fullContent);
+            const msgFilePath = writePrivateInboundFile(_projectDir, `slack-msg-${channelId}`, fullContent);
             sessionManager.registerMemoryInboundFile(`slack:${channelId}`, msgFilePath);
             bootstrapMessage = `${prefix} [Long message saved to ${msgFilePath} — read it to see the full message and thread history]`;
           } else {
@@ -15504,11 +15513,9 @@ export async function startServer(options: StartOptions): Promise<void> {
               lines.push('EOF');
               lines.push(SLACK_MENTIONS_SESSION_LINE);
 
-              const tmpDir = '/tmp/instar-slack';
-              fs.mkdirSync(tmpDir, { recursive: true });
-              const ctxPath = path.join(tmpDir, `recovery-${slackApiChannel}-${Date.now()}.txt`);
+              // SEC-138: owner-only inbound folder, not a shared /tmp folder.
               const contextData = lines.join('\n');
-              fs.writeFileSync(ctxPath, contextData);
+              const ctxPath = writePrivateInboundFile(_projectDir, `slack-recovery-${slackApiChannel}`, contextData);
 
               const bootstrapMessage = `[slack:${slackApiChannel}] ${contextData}`;
 
@@ -19310,7 +19317,7 @@ export async function startServer(options: StartOptions): Promise<void> {
         const beforeJevCorrectionCb = telegram.onMessageLogged;
         telegram.onMessageLogged = (entry) => {
           if (beforeJevCorrectionCb) beforeJevCorrectionCb(entry);
-          correctionShadow.observe(entry, telegram.getVerifiedOwner()); // synchronous, never throws; the check is detached
+          correctionShadow.observe(entry, telegram.getLearningOwner()); // synchronous, never throws; the check is detached
         };
       } catch (err) {
         console.log(pc.yellow(`  Jev correction shadow: not constructed (${(err as Error)?.message ?? 'unknown'})`));
@@ -20290,7 +20297,7 @@ export async function startServer(options: StartOptions): Promise<void> {
               // ~zero cost on the vast majority of messages.
               // A team member's words never become the owner's learned preferences.
               // So is forwarded text: someone else's words relayed by the owner (SEC-069).
-              const ownersWords = isOwnersOwnWords(entry, telegram?.getVerifiedOwner());
+              const ownersWords = isOwnersOwnWords(entry, telegram?.getLearningOwner());
               const verdict = ownersWords && entry.text
                 ? HumanAsDetectorLog.getInstance().classify(entry.text)
                 : null;
@@ -25797,6 +25804,7 @@ export async function startServer(options: StartOptions): Promise<void> {
             // I11: callerClass set ONLY server-internally — the scheduler is
             // the one caller that knows its lane (proactive funnel vs reactive).
             callerClass: o.callerClass,
+            beforeKill: o.beforeKill,
           });
           // Object form: surfaces the structured refusal code so the
           // anti-thrash observation layer can classify failures (§3.1/§3.6).
@@ -31650,6 +31658,11 @@ export async function startServer(options: StartOptions): Promise<void> {
             send: async (machineId, cmd) => { const url = peerUrl(machineId); if (!url) return { ok: false }; const r = await meshClient.send({ machineId, url }, cmd, 0); return { ok: r.ok, result: r.result }; },
             leaseHolder: () => coordinator.getSyncStatus().leaseHolder ?? null,
             splitBrain: () => coordinator.getSyncStatus().splitBrainState !== 'clear',
+            // An attention item that needs the owner, so the hub admits it (a plain mesh-alert notice is filtered out).
+            degradeFence: (summary) => DegradationReporter.getInstance().report({ feature: 'OwnerRecord.fence', primary: 'The minimum build the owner set is in force', fallback: 'The last verified minimum build, or risky actions held', reason: summary, impact: 'The owner should set a valid minimum build.' }),
+            clearNotice: () => { if (telegram) void telegram.updateAttentionStatus('agent:identity-build-fence', 'DONE', { silent: true, resolution: 'Every computer is confirmed on a new enough version.', closedBy: 'cause-cleared' }).catch(() => undefined); },
+            notify: (summary) => { if (telegram) void telegram.upsertAttentionItem({ id: 'agent:identity-build-fence', title: "A computer needs checking before it gets the owner record", summary, description: summary, category: 'mesh-alert', priority: 'NORMAL', needsUser: true }).catch(() => notify('SUMMARY', 'mesh-alert', summary)); else notify('SUMMARY', 'mesh-alert', summary); },
+            machineName: (machineId) => meshIdMgr.loadRegistry().machines?.[machineId]?.nickname ?? meshIdMgr.loadRegistry().machines?.[machineId]?.name ?? machineId,
             degrade: (summary) => DegradationReporter.getInstance().report({ feature: 'OwnerRecord.bootstrap', primary: 'The owner record starts once every machine has answered', fallback: 'Basic (today\'s behaviour) until then', reason: summary, impact: 'Nothing changes for the owner at Basic; the record starts when the named machine is heard from again.' }),
           });
           // docs/specs/backup-email-sending.md: a standby's email travels to the lease holder by the signed
@@ -31767,9 +31780,9 @@ export async function startServer(options: StartOptions): Promise<void> {
               // The Chief of Staff union from a COMPLETE read of this machine's journal (every archive and the current
               // file, in full) plus peer streams; null when the own journal could not be read completely
               // (conversation-groups-phone §3: "already a project?" must never come from a tail read).
-              const cosLoadUnionComplete = (): Array<{ data: Record<string, unknown>; origin: string }> | null => {
+              const cosLoadUnionComplete = (flush = true): Array<{ data: Record<string, unknown>; origin: string }> | null => {
                 // Write out this machine's queued records first, so a binding it made a moment ago is on disk to be seen.
-                try { cosJournal.flush(); } catch { /* @silent-fallback-ok: an unflushed queue only makes the read older; the refusal paths still hold */ }
+                try { if (flush) cosJournal.flush(); } catch { /* @silent-fallback-ok: an unflushed queue only makes the read older; the refusal paths still hold */ }
                 const all = cosJournal.readKindComplete(storeMod.CHIEF_OF_STAFF_RECORD_KIND);
                 const peersWhole = cosPeerStreams.peerStreamsReadComplete(storeMod.CHIEF_OF_STAFF_STORE_KEY);
                 if (!all.complete || !peersWhole) {
@@ -31983,7 +31996,7 @@ export async function startServer(options: StartOptions): Promise<void> {
               };
               const loop = new loopMod.ChiefOfStaffLoop({
                 now: () => Date.now(), machineId: meshSelfId, enabled: cosEnabled, holdsLease: () => cosLease.holdsLease(), config: cosCfg,
-                journal: { emit: (recordKey, build) => { const r = cosEmitter.emit(storeMod.CHIEF_OF_STAFF_STORE_KEY, recordKey, build); return { outcome: r.outcome, ...(r.seq !== undefined ? { seq: r.seq } : {}) }; }, loadUnion: () => protocol['d'].journal.loadUnion(), loadUnionComplete: cosLoadUnionComplete, awaitDurable: (seq) => protocol['d'].journal.awaitDurable(seq) },
+                journal: { emit: (recordKey, build) => { const r = cosEmitter.emit(storeMod.CHIEF_OF_STAFF_STORE_KEY, recordKey, build); return { outcome: r.outcome, ...(r.seq !== undefined ? { seq: r.seq } : {}) }; }, loadUnion: () => protocol['d'].journal.loadUnion(), loadUnionComplete: cosLoadUnionComplete, loadUnionCompleteReadOnly: () => cosLoadUnionComplete(false), creationSourceVersion: () => creationPlacementSourceVersion(config.stateDir, cosJournal.streamStatuses().filter(s => s.kind === storeMod.CHIEF_OF_STAFF_RECORD_KIND)), awaitDurable: (seq) => protocol['d'].journal.awaitDurable(seq) },
                 verifyRenewal: (r) => { const m = String(r.machine ?? ''); const pem = meshIdMgr.getSigningPublicKeyPem(m); const canonical = `cos-renewal:${r.renewedAt}:${r.renewedVia}:${r.principal}:${m}`; return pem ? idMod.verify(canonical, String(r.machineSignature ?? ''), pem) : false; },
                 gather, judge, protocol,
                 mirrorInitiativeStatus: (id, status) => { try { (initiativeTracker as unknown as { update?: (id: string, patch: Record<string, unknown>) => unknown }).update?.(id, { status }); } catch { /* @silent-fallback-ok: the binding is the authority; the mirror retries next tick (§1.2) */ } },

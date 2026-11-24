@@ -48,7 +48,7 @@ import type {
 } from './types.js';
 import { DEFAULT_TTL, VALID_TRANSITIONS, CLOCK_SKEW_TOLERANCE, THREAD_STALE_MINUTES, machineRelayBody, GENERATION_RELAY_MACHINE_PATH, RELAY_MACHINE_PATH } from './types.js';
 import { CrossMachineRelayQueue, type RelayPassOutcome } from './CrossMachineRelayQueue.js';
-import type { MessageStore } from './MessageStore.js';
+import { MessageStore } from './MessageStore.js';
 import { beginDeliveryAttempt, ownsDeliveryAttempt, type DeliveryAttemptClaim, type MessageDelivery } from './MessageDelivery.js';
 import { getAgentToken, computeDropHmac } from './AgentTokenManager.js';
 import { listAgents } from '../core/AgentRegistry.js';
@@ -491,6 +491,11 @@ export class MessageRouter implements IMessageRouter {
 
     // Auto-create thread for query and request types
     let threadId = options?.threadId;
+    // SEC-127: refuse an unsafe thread id before anything is stored, so a send never
+    // ends half-done (message saved as sent, thread write refused, never routed).
+    if (threadId !== undefined && !MessageStore.isSafeFileId(threadId)) {
+      throw new Error('unsafe thread id: a thread id must be a plain name (no folder separators)');
+    }
     if (!threadId && (type === 'query' || type === 'request')) {
       threadId = crypto.randomUUID();
     }

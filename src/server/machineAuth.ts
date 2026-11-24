@@ -10,6 +10,12 @@
  *
  * Also provides helper to sign outgoing requests.
  *
+ * SEC-147 stage 1 (docs/specs/sec147-machine-auth-binding.md): a request may also
+ * carry X-Signature-V2, which additionally binds the method, the path and the
+ * receiving machine. When present it must verify, or the request is refused as
+ * `binding-mismatch` with a rejection this machine signs. A request without it is
+ * accepted exactly as before; nothing at this stage refuses the old form.
+ *
  * Part of Phase 4 (secret sync infrastructure).
  */
 
@@ -42,7 +48,75 @@ export interface MachineAuthDeps {
   onSignatureInvalid?: (machineId: string) => void;
   /** Any fully verified request resets the consecutive-refusal run. */
   onVerified?: (machineId: string, req: Request) => void;
+  /**
+   * This machine's Ed25519 signing key, used only to sign a `binding-mismatch`
+   * rejection so the sender can tell it was refused unexecuted (SEC-147 §4).
+   * Absent: the rejection is sent unsigned, which a sender never retries on.
+   */
+  localSigningKeyPem?: string;
 }
+
+// ── SEC-147: the binding signature ─────────────────────────────────
+
+/** Header carrying the binding signature. */
+export const MACHINE_AUTH_V2_HEADER = 'X-Signature-V2';
+/** Header carrying a signed binding-mismatch rejection. */
+export const MACHINE_AUTH_REJECT_HEADER = 'X-Machine-Auth-Reject';
+
+/**
+ * The bytes a binding signature covers. The domain prefix keeps a v2 signature
+ * from ever verifying as the v1 message (`machineId|ts|nonce|seq|bodyHash`), a
+ * mesh ack or a relay answer. `path` is the request target exactly as sent
+ * (pathname plus search).
+ */
+export function machineAuthV2Message(f: {
+  machineId: string; timestamp: string; nonce: string; sequence: string; bodyHash: string;
+  method: string; path: string; recipientMachineId: string;
+}): string {
+  return `instar-machine-auth-v2|${f.machineId}|${f.timestamp}|${f.nonce}|${f.sequence}|${f.bodyHash}|${f.method.toUpperCase()}|${f.path}|${f.recipientMachineId}`;
+}
+
+/**
+ * The bytes a binding-mismatch rejection covers. It names one delivery: the
+ * nonce, the body hash and a hash of the binding signature that failed, so a
+ * rejection cannot be reused for another request that shared a nonce.
+ */
+export function machineAuthRejectMessage(receiverMachineId: string, rejectedNonce: string, bodyHash: string, v2SignatureHash: string): string {
+  return `instar-machine-auth-reject-v1|${receiverMachineId}|${rejectedNonce}|${bodyHash}|${v2SignatureHash}|binding-mismatch`;
+}
+
+/** The hash of a presented binding signature, as named in a rejection. */
+export function v2SignatureHash(v2Signature: string): string {
+  return crypto.createHash('sha256').update(v2Signature).digest('hex');
+}
+
+/** The request target to verify a binding against: Express keeps the mounted
+ *  prefix in `originalUrl`; the raw WebSocket upgrade request has only `url`. */
+export function requestTargetPath(req: { originalUrl?: string; url?: string }): string {
+  return req.originalUrl ?? req.url ?? '';
+}
+
+/** Per-sender counts of what this receiver admitted and refused (SEC-147 §2). */
+export interface MachineAuthFormCounts {
+  v2Admitted: number;
+  v1OnlyAdmitted: number;
+  bindingMismatch: number;
+  lastV2At: number | null;
+}
+const __formCounts = new Map<string, MachineAuthFormCounts>();
+function countFor(machineId: string): MachineAuthFormCounts {
+  let c = __formCounts.get(machineId);
+  if (!c) { c = { v2Admitted: 0, v1OnlyAdmitted: 0, bindingMismatch: 0, lastV2At: null }; __formCounts.set(machineId, c); }
+  return c;
+}
+/** A snapshot of the per-sender counts since this process started. */
+export function machineAuthFormCounts(): Record<string, MachineAuthFormCounts> {
+  const out: Record<string, MachineAuthFormCounts> = {};
+  for (const [k, v] of __formCounts) out[k] = { ...v };
+  return out;
+}
+/** Test-only: clear the counts. */
+export function __resetMachineAuthFormCountsForTests(): void { __formCounts.clear(); }
 
 // ── Middleware ──────────────────────────────────────────────────────
 
@@ -125,6 +199,48 @@ export function machineAuthMiddleware(deps: MachineAuthDeps) {
       return;
     }
 
+    // 4b. SEC-147: a present binding signature must verify over this method,
+    // this path and THIS machine. A failure is refused before any replay state is
+    // claimed, and it is not key evidence against the sender (a misrouted or
+    // replayed request says nothing about the sender's key), so
+    // onSignatureInvalid is NOT called.
+    const v2Signature = req.headers['x-signature-v2'] as string | undefined;
+    if (v2Signature !== undefined) {
+      const v2Message = machineAuthV2Message({
+        machineId, timestamp, nonce, sequence, bodyHash,
+        method: req.method ?? '', path: requestTargetPath(req), recipientMachineId: deps.localMachineId,
+      });
+      let bound = false;
+      try { bound = verify(v2Message, v2Signature, publicKeyPem); } catch { bound = false; }
+      if (!bound) {
+        // A rejection is signed only for a delivery that could still have been
+        // admitted: inside the window, nonce unseen, sequence ahead. An old or
+        // already-run request gets the ordinary anti-replay answer, so a signed
+        // rejection always means this delivery was refused unexecuted.
+        const fresh = deps.nonceStore.check(parseInt(timestamp, 10) * 1000, nonce, seqNum, machineId);
+        if (!fresh.valid) {
+          deps.securityLog.append({ event: 'replay_detected', machineId, reason: fresh.reason, ip: req.ip || req.socket?.remoteAddress || 'unknown' });
+          res.status(403).json({ error: `Anti-replay check failed: ${fresh.reason}` });
+          return;
+        }
+        countFor(machineId).bindingMismatch += 1;
+        deps.securityLog.append({
+          event: 'binding_mismatch',
+          machineId,
+          method: req.method,
+          path: requestTargetPath(req),
+          ip: req.ip || req.socket?.remoteAddress || 'unknown',
+        });
+        if (deps.localSigningKeyPem) {
+          try {
+            res.setHeader(MACHINE_AUTH_REJECT_HEADER, `${deps.localMachineId}.${sign(machineAuthRejectMessage(deps.localMachineId, nonce, bodyHash, v2SignatureHash(v2Signature)), deps.localSigningKeyPem)}`);
+          } catch { /* an unsigned rejection is never retried on; nothing else changes */ }
+        }
+        res.status(403).json({ error: 'binding-mismatch' });
+        return;
+      }
+    }
+
     // 5. Only an authenticated request may consume nonce/sequence state.
     const nonceResult = deps.nonceStore.validate(
       parseInt(timestamp, 10) * 1000,
@@ -142,6 +258,10 @@ export function machineAuthMiddleware(deps: MachineAuthDeps) {
       res.status(403).json({ error: `Anti-replay check failed: ${nonceResult.reason}` });
       return;
     }
+
+    const counts = countFor(machineId);
+    if (v2Signature !== undefined) { counts.v2Admitted += 1; counts.lastV2At = Date.now(); }
+    else counts.v1OnlyAdmitted += 1;
 
     // 6. All checks passed — attach auth context
     (req as any).machineAuth = {

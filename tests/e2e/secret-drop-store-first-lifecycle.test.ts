@@ -47,14 +47,15 @@ describe('Secret Drop store-first E2E lifecycle (survives a real server restart)
     } as InstarConfig;
   }
 
-  async function bootServer(): Promise<{ server: AgentServer; app: express.Express }> {
+  async function bootServer(): Promise<{ server: AgentServer; app: express.Express; config: InstarConfig }> {
+    const config = makeConfig();
     const server = new AgentServer({
-      config: makeConfig(),
+      config,
       sessionManager: createMockSessionManager() as never,
       state: new StateManager(stateDir),
     });
     await server.start();
-    return { server, app: server.getApp() };
+    return { server, app: server.getApp(), config };
   }
 
   beforeAll(() => {
@@ -123,6 +124,36 @@ describe('Secret Drop store-first E2E lifecycle (survives a real server restart)
       await second.server.stop();
     }
   }, 60_000); // two real AgentServer boots + stops
+
+  it('consume while persistence is off cannot resurrect after re-enabling and restart', async () => {
+    const first = await bootServer();
+    let token: string;
+    try {
+      const created = await request(first.app).post('/secrets/request').set(auth())
+        .send({ label: 'Toggle Regression', fields: [{ name: 'code', label: 'Code' }] });
+      expect(created.status).toBe(201);
+      token = created.body.token as string;
+      const form = await request(first.app).get(`/secrets/drop/${token}`);
+      const csrf = /name="_csrf" value="([^"]+)"/.exec(form.text)?.[1];
+      expect(csrf).toBeTruthy();
+      await request(first.app).post(`/secrets/drop/${token}`).send({ _csrf: csrf, code: 'dummy-lifecycle-code' }).expect(200);
+      first.config.secrets!.persistDrops = false;
+      const consumed = await request(first.app).post(`/secrets/retrieve/${token}?consume=true`).set(auth());
+      expect(consumed.status).toBe(200);
+      expect(consumed.body.consumed).toBe(true);
+      expect(consumed.body.values).toEqual({ code: 'dummy-lifecycle-code' });
+    } finally {
+      await first.server.stop();
+    }
+    // A fresh production runtime restores the default persistence-on policy.
+    const second = await bootServer();
+    try {
+      const retrieved = await request(second.app).post(`/secrets/retrieve/${token!}`).set(auth());
+      expect(retrieved.status).toBe(404);
+    } finally {
+      await second.server.stop();
+    }
+  }, 60_000);
 
   it('the retrieve route requires Bearer auth', async () => {
     const { server, app } = await bootServer();

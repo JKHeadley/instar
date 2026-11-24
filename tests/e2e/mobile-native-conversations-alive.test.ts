@@ -46,7 +46,7 @@ async function boot(developmentAgent: boolean) {
   // Every agent gets a machine identity at `instar init`; the receipt signer reads it.
   await new MachineIdentityManager(stateDir).generateIdentity({ name: 'e2e machine' });
   const config = {
-    projectName: 'native-e2e', projectDir: dir, stateDir, port: 0, authToken: 'e2e-token', developmentAgent,
+    projectName: 'native-e2e', projectDir: dir, stateDir, port: 0, authToken: 'e2e-token', developmentAgent, workBoard: { enabled: false },
     mobilePairing: { multiRoute: { enabled: false } }, // the single-host path; multi-route has its own e2e
     tunnel: { enabled: true, type: 'named', token: 'x', hostname: HOST },
     sessions: { claudePath: '/usr/bin/echo', maxSessions: 1, defaultMaxDurationMinutes: 30, protectedSessions: [], monitorIntervalMs: 5_000 },
@@ -62,7 +62,7 @@ async function boot(developmentAgent: boolean) {
   };
   sessionManager.injectMessage = () => true;
   const tunnel = { lifecycleState: { lastState: 'active', activeProvider: 'cloudflare-named' }, url: `https://${HOST}`, on: () => undefined } as any;
-  const server = new AgentServer({ config, sessionManager, state: new StateManager(stateDir), initiativeTracker: new InitiativeTracker(stateDir), tunnel });
+  const server = new AgentServer({ config, sessionManager, state: new StateManager(stateDir), initiativeTracker: new InitiativeTracker(stateDir), tunnel, workBoard: () => null });
   servers.push(server);
   return { server, stateDir, spawned };
 }
@@ -118,6 +118,9 @@ describe('native app conversations — production wiring', () => {
     const created = await send('POST', '/mobile/conversations', { title: 'Plans', requestId: `${Date.now()}-${crypto.randomUUID()}` });
     expect(created.status).toBe(200);
     const key = created.body.conversationKey as string;
+    const ownerList = await send('GET', '/mobile/conversations');
+    expect(ownerList.status).toBe(200);
+    expect(ownerList.body.conversations.some((c: { id: string }) => c.id === key)).toBe(true);
     const sent = await send('POST', `/mobile/chat/app/${key}`, { text: 'What is on for Saturday?', requestId: `${Date.now()}-${crypto.randomUUID()}` });
     expect(sent.status).toBe(200);
     expect(sent.body).toMatchObject({ ok: true, outcome: 'delivered' });

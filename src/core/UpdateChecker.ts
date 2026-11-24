@@ -12,6 +12,8 @@
  */
 
 import { execFile, spawn } from 'node:child_process';
+import { versionAtLeast } from './poolSignedReads.js';
+import { belowFence, lastVerifiedFenceAt } from './identityBuildFence.js';
 import os from 'node:os';
 import fs from 'node:fs';
 import path from 'node:path';
@@ -182,6 +184,16 @@ export class UpdateChecker {
     const previousVersion = localTarball
       ? this.getShadowInstalledVersion() ?? this.getInstalledVersion()
       : this.getInstalledVersion();
+    // identity-security piece 2c §4: after enrolment, never install a version below the minimum build.
+    const fencedInstall = belowFence(info.latestVersion, lastVerifiedFenceAt(this.stateDir));
+    // Only a true downgrade is refused (against the agent's own installed version, which for a local tarball is the
+    // shadow install, not this installer module): a machine already below the fence may still move forward.
+    if (fencedInstall.refused && !versionAtLeast(info.latestVersion, previousVersion)) {
+      const current = previousVersion;
+      return {
+        success: false, previousVersion: current, newVersion: current, message: `Install refused: v${info.latestVersion} is older than this agent's minimum build (${fencedInstall.needed}), which its owner set when enrolling. The owner can lower it first.`, restartNeeded: false, healthCheck: 'skipped',
+      } as UpdateResult;
+    }
 
     // Check what the registry has. Note: even if getInstalledVersion() returns
     // the latest (e.g., after a previous install updated files in place),
@@ -516,6 +528,18 @@ export class UpdateChecker {
     }
 
     const currentVersion = this.getInstalledVersion();
+    // identity-security piece 2c §4: after enrolment, never roll back below the minimum build. The caller gets
+    // one plain refusal; lowering the fence first (an owner decision) is the way back.
+    const fence = lastVerifiedFenceAt(this.stateDir);
+    const fenced = belowFence(rollbackInfo.previousVersion, fence);
+    if (fenced.refused) {
+      return {
+        success: false,
+        previousVersion: currentVersion,
+        restoredVersion: currentVersion,
+        message: `Rollback refused: v${rollbackInfo.previousVersion} is older than this agent's minimum build (${fenced.needed}), which its owner set when enrolling. The owner can lower it first.`,
+      };
+    }
     const lifecycleFloor = path.join(this.stateDir, 'state', 'codex-lifecycle-downgrade-floor.json');
     if (fs.existsSync(lifecycleFloor)) {
       return {

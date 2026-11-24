@@ -41,14 +41,32 @@ import {
 } from '../core/SameNetworkNetwork.js';
 import { featureEvidence } from '../monitoring/FeatureEvidenceLog.js';
 import { isFetchBlockedPort } from '../core/AgentRegistry.js';
+import { SameNetworkRefusalLog, reasonFromBody, type SameNetworkRefusal } from './sameNetworkRefusals.js';
 
 export const SAME_NETWORK_STATE_FILE = 'state/same-network.json';
 const FEATURE = 'mobilePairing.sameNetwork';
-/** The total bound on open connections, set before the listener opens (A4 point 9). */
-export const SAME_NETWORK_MAX_CONNECTIONS = 32;
-/** Where the agent listens directly: open connections and new connections a minute, per address. */
-export const SAME_NETWORK_PER_ADDRESS_OPEN = 6;
-export const SAME_NETWORK_PER_ADDRESS_PER_MIN = 40;
+/**
+ * The limits (A4 point 9), sized for a real phone (builder #63, after builder #62's live iPhone pairing
+ * over home Wi-Fi): an Instar phone screen opens about 8 TLS connections at once and a busy one up to
+ * ~12, and screen loads, app switches and Wi-Fi reconnects open them again in bursts. The earlier
+ * 6 open / 40 a minute per address and 32 in all refused a normal phone (iOS: TLS error -1200).
+ *
+ * The total bound on open connections, set before the listener opens: room for two busy phones at
+ * their per-address limit, and a hard ceiling on sockets however many devices call.
+ */
+export const SAME_NETWORK_MAX_CONNECTIONS = 64;
+/** Where the agent listens directly: open connections (twice a busy phone) and new connections a minute
+ * (four a second sustained; ten 12-connection screen loads in a minute is 120), per address. */
+export const SAME_NETWORK_PER_ADDRESS_OPEN = 24;
+export const SAME_NETWORK_PER_ADDRESS_PER_MIN = 240;
+/**
+ * The one address the Windows pass-through arrives from (WSL mirrored mode: loopback). Every phone
+ * reaches the agent from it, and the pass-through already limits each real caller (24 open, 240 a
+ * minute each, 64 in all), so a per-address bucket sized for one phone would make all phones share it.
+ * That address gets the whole door: the total for open connections, and four phones' rate a minute.
+ */
+export const SAME_NETWORK_FORWARDER_OPEN = SAME_NETWORK_MAX_CONNECTIONS;
+export const SAME_NETWORK_FORWARDER_PER_MIN = 4 * SAME_NETWORK_PER_ADDRESS_PER_MIN;
 const HANDSHAKE_TIMEOUT_MS = 10_000;
 
 /**
@@ -196,6 +214,10 @@ export class SameNetworkListener {
   private ownerQueue: Promise<unknown> = Promise.resolve();
   /** Whether this listener limits each caller address itself (decided with the bind). */
   private limitPerAddress = true;
+  /** The pass-through's one address, which gets the whole door's limits (decided with the bind). */
+  private forwarderAddress: string | null = null;
+  /** What the home listener refused, bounded (sameNetworkRefusals.ts). */
+  private readonly refusals: SameNetworkRefusalLog;
   /** A definite WSL mode reading: the mode cannot change while this WSL (and so this process) runs. */
   private wslModeCache: WslModeReading | null = null;
   private lastWslMode: WslModeReading | null = null;
@@ -210,7 +232,11 @@ export class SameNetworkListener {
     this.wsl = deps.wsl ?? isWsl();
     this.state = this.readState();
     this.name = this.state.name ?? sameNetworkName(deps.agentName, deps.machineName ?? os.hostname());
+    this.refusals = new SameNetworkRefusalLog({ stateDir: deps.stateDir, now: () => this.now() });
   }
+
+  /** The home listener's recent refusals, newest first (route, status, reason code, device id prefix; no secrets). */
+  recentRefusals(limit?: number): SameNetworkRefusal[] { return this.refusals.recent(limit); }
 
   private now(): number { return (this.deps.now ?? Date.now)(); }
   private file(): string { return path.join(this.deps.stateDir, SAME_NETWORK_STATE_FILE); }
@@ -444,6 +470,7 @@ export class SameNetworkListener {
     if (this.timer) { clearInterval(this.timer); this.timer = null; }
     if (this.reconciling) await this.reconciling.catch(() => { /* @silent-fallback-ok — closing below either way */ });
     await this.stopServer();
+    this.refusals.flush();
   }
 
   /** Bring the listener in line with the state file and the observed network. Serialized. */
@@ -467,7 +494,7 @@ export class SameNetworkListener {
           await this.stopServer();
           return;
         }
-        let bind: string | null; let limit: boolean;
+        let bind: string | null; let limit: boolean; let forwarder: string | null = null;
         if (this.deps.bindHost) {
           // A test override. Loopback there has one caller address (the test), so no per-address limit.
           bind = this.deps.bindHost; limit = bind !== '127.0.0.1';
@@ -481,13 +508,16 @@ export class SameNetworkListener {
             return;
           }
           bind = plan.bind; limit = plan.perAddressLimit;
+          // Mirrored: every caller reaches loopback through the Windows pass-through, as one address.
+          if (plan.mode === 'mirrored') forwarder = plan.bind;
         } else {
           bind = obs.kind === 'observed' ? obs.network.address : null; limit = true;
         }
         if (!bind) { this.held = 'network-unknown'; await this.stopServer(); return; }
-        if (this.listening() && this.boundHost === bind && this.limitPerAddress === limit && (this.state.port === null || this.boundPort === this.state.port)) { this.held = null; return; }
+        if (this.listening() && this.boundHost === bind && this.limitPerAddress === limit && this.forwarderAddress === forwarder && (this.state.port === null || this.boundPort === this.state.port)) { this.held = null; return; }
         await this.stopServer();
         this.limitPerAddress = limit;
+        this.forwarderAddress = forwarder;
         const ok = await this.startServer(bind);
         this.held = ok ? null : 'port-unavailable';
       } catch (err) {
@@ -507,19 +537,55 @@ export class SameNetworkListener {
   }
 
   /** Whether a new connection from `addr` is let through the per-address limit (where this listener applies it). */
-  perAddressOk(addr: string): boolean {
-    // Only where the bind plan says another program limits each real caller (WSL NAT: every caller
-    // arrives from the pass-through's one address), or a test's loopback override. Never in mirrored mode.
-    if (!this.limitPerAddress) return true;
+  perAddressOk(addr: string): boolean { return this.perAddressRefusal(addr) === null; }
+
+  /**
+   * Null when a new connection from `addr` is let through (one place taken); otherwise which limit
+   * refused it: 'address-open' or 'address-per-minute'.
+   */
+  perAddressRefusal(addr: string): 'address-open' | 'address-per-minute' | null {
+    // Off only where the bind plan says another program limits each real caller (WSL NAT: every caller
+    // arrives from the pass-through's one address), or for a test's loopback override. On in mirrored mode.
+    if (!this.limitPerAddress) return null;
     const t = this.now();
     // Forget addresses with nothing open and nothing in the last minute, so the map stays small.
     if (this.perAddress.size > 256) for (const [k, v] of this.perAddress) if (v.open === 0 && v.times.every((x) => t - x >= 60_000)) this.perAddress.delete(k);
     const e = this.perAddress.get(addr) ?? { open: 0, times: [] };
     e.times = e.times.filter((x) => t - x < 60_000);
-    if (e.open >= SAME_NETWORK_PER_ADDRESS_OPEN || e.times.length >= SAME_NETWORK_PER_ADDRESS_PER_MIN) { this.perAddress.set(addr, e); return false; }
+    const fwd = this.forwarderAddress !== null && (addr === this.forwarderAddress || addr === `::ffff:${this.forwarderAddress}`);
+    const maxOpen = fwd ? SAME_NETWORK_FORWARDER_OPEN : SAME_NETWORK_PER_ADDRESS_OPEN;
+    const maxPerMin = fwd ? SAME_NETWORK_FORWARDER_PER_MIN : SAME_NETWORK_PER_ADDRESS_PER_MIN;
+    if (e.open >= maxOpen) { this.perAddress.set(addr, e); return 'address-open'; }
+    if (e.times.length >= maxPerMin) { this.perAddress.set(addr, e); return 'address-per-minute'; }
     e.open += 1; e.times.push(t);
     this.perAddress.set(addr, e);
-    return true;
+    return null;
+  }
+
+  /**
+   * Records a refused request once its answer is sent (status 400 or more): the answer's own error
+   * code is read from the start of its body, which is never kept.
+   */
+  private watchRefusal(req: IncomingMessage, res: ServerResponse, from: string): void {
+    let head: string | null = null;
+    const end = res.end.bind(res) as (...a: unknown[]) => ServerResponse;
+    (res as unknown as { end: (...a: unknown[]) => ServerResponse }).end = (...a: unknown[]): ServerResponse => {
+      const chunk = a[0];
+      if (res.statusCode >= 400 && head === null && (typeof chunk === 'string' || Buffer.isBuffer(chunk))) head = String(chunk).slice(0, 512);
+      return end(...a);
+    };
+    // The connection went before an answer was sent (a request timeout, a caller that hung up).
+    res.once('close', () => {
+      if (res.writableFinished) return;
+      this.refusals.record({ kind: 'request', reason: 'closed-before-answer', method: String(req.method ?? ''), url: String(req.url ?? '/'), deviceHeader: req.headers['x-instar-device'], from });
+    });
+    res.once('finish', () => {
+      if (res.statusCode < 400) return;
+      this.refusals.record({
+        kind: 'request', reason: reasonFromBody(head) ?? `http-${res.statusCode}`, method: String(req.method ?? ''),
+        url: String(req.url ?? '/'), status: res.statusCode, deviceHeader: req.headers['x-instar-device'], from,
+      });
+    });
   }
 
   private async startServer(bind: string): Promise<boolean> {
@@ -533,7 +599,8 @@ export class SameNetworkListener {
     const handle = (req: IncomingMessage, res: ServerResponse, expectsContinue: boolean): void => {
       res.setHeader('Cache-Control', 'no-store');
       // Marked again here (idempotent), so the mark never depends on listener order.
-      markSameNetworkSocket(req.socket);
+      // The real peer address (the mark respells the socket's own) is kept for the refusal log only.
+      this.watchRefusal(req, res, markSameNetworkSocket(req.socket));
       if (!this.deps.gate(req, res)) return;
       // `Expect: 100-continue`: the interim answer is sent only after the gate let the request through.
       if (expectsContinue) res.writeContinue();
@@ -543,19 +610,30 @@ export class SameNetworkListener {
     // With this listener set, Node no longer sends `100 Continue` itself before the gate has run.
     server.on('checkContinue', (req: IncomingMessage, res: ServerResponse) => handle(req, res, true));
     server.maxConnections = SAME_NETWORK_MAX_CONNECTIONS;
+    const refusedSockets = new WeakSet<Socket>();
     server.headersTimeout = 10_000;
     server.requestTimeout = 15_000;
     server.keepAliveTimeout = 5_000;
+    // The total: Node drops the socket itself; recorded so a full door can be told from a refused phone.
+    server.on('drop', (d?: { remoteAddress?: string }) => { this.refusals.record({ kind: 'connection', reason: 'total-open', from: d?.remoteAddress }); });
     server.on('connection', (socket: Socket) => {
       const addr = String(socket.remoteAddress ?? '');
-      if (!this.perAddressOk(addr)) { socket.destroy(); return; }
+      const refused = this.perAddressRefusal(addr);
+      if (refused) { this.refusals.record({ kind: 'connection', reason: refused, from: addr }); refusedSockets.add(socket); socket.destroy(); return; }
       socket.once('close', () => { const e = this.perAddress.get(addr); if (e) e.open = Math.max(0, e.open - 1); });
     });
     // Marked when TLS completes, before the HTTP parser hands any request to the gate.
     server.on('secureConnection', (tlsSocket: TLSSocket) => { markSameNetworkSocket(tlsSocket); });
     // No live socket upgrades on this listener.
     server.on('upgrade', (_req: IncomingMessage, socket: Socket) => { socket.destroy(); });
-    server.on('tlsClientError', () => { /* @silent-fallback-ok — a failed handshake is a closed socket, nothing to report per caller */ });
+    // A failed handshake is a closed socket; its code is kept (bounded), so a phone's TLS error can be matched.
+    server.on('tlsClientError', (err: Error & { code?: unknown }, socket: TLSSocket) => {
+      // A socket this listener closed itself (a limit, recorded above) is not a second refusal.
+      const raw = (socket as unknown as { _parent?: unknown })?._parent;
+      if (refusedSockets.has(socket as unknown as Socket) || (raw && refusedSockets.has(raw as Socket))) return;
+      const code = typeof err?.code === 'string' && /^[A-Z0-9_]{1,64}$/.test(err.code) ? err.code.toLowerCase().replace(/_/g, '-') : 'handshake-failed';
+      this.refusals.record({ kind: 'tls', reason: `tls-${code}`.slice(0, 64), from: socket?.remoteAddress });
+    });
     const want = this.state.port ?? this.deps.port ?? defaultSameNetworkPort(this.deps.mainPort);
     const listenOn = (port: number): Promise<number | null> => new Promise((resolve) => {
       const onErr = (): void => { server.removeListener('listening', onOk); resolve(null); };

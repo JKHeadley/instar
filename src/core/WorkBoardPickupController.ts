@@ -117,10 +117,10 @@ export class WorkBoardPickupController {
     this.poke();
   }
 
-  status(): PickupStatus {
+  status(include: (card: CardView) => boolean = () => true): PickupStatus {
     let pending = 0; let parked = 0; let waiting = 0; let since: number | null = null;
     for (const id of this.deps.svc.cardIds()) {
-      const v = this.deps.svc.view(id); if (!v) continue;
+      const v = this.deps.svc.view(id); if (!v || !include(v)) continue;
       for (const p of this.live(v)) {
         if (p.status === 'parked') parked++;
         else if (p.status === 'pending') {

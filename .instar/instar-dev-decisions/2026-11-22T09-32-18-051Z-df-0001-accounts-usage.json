@@ -1,0 +1,23 @@
+{
+  "ts": "2026-11-22T09:32:18.051Z",
+  "slug": "df-0001-accounts-usage",
+  "suggestedTier": 2,
+  "declaredTier": 2,
+  "riskFloor": 1,
+  "riskFloorReasons": [],
+  "belowFloor": false,
+  "files": 2,
+  "loc": 81,
+  "scope": {
+    "basis": "staged-in-scope-paths-including-deleted",
+    "files": [
+      "src/data/design/usage-tone-vectors.json",
+      "src/server/mobileCapacityRoutes.ts"
+    ],
+    "addedLines": 66,
+    "deletedLines": 15
+  },
+  "causalAutopsy": null,
+  "classClosure": null,
+  "verdict": "pass"
+}
