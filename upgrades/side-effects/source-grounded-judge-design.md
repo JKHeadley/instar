@@ -1,3 +1,7 @@
 # Source-Grounded Judge Design Impact
 
 Tier 1: documentation and schema design only, with no runtime surface. Reverting these documents fully undoes the change. The design does not change blocking authority, installed files, configuration, external operations, persistent runtime state or machine behavior. Private evaluation content remains local. No migration or deployment is needed. The separate-session design review resolved four findings and a clarification; schemas parse and whitespace checks pass, but runtime and full JSON Schema validation have not run. This impact artifact was added after the design commit, as an explicit corrective record rather than a claim that the earlier commit carried it.
+
+## Installed-Tool Verification
+
+After ordinary dependency and hook provisioning, strict Ajv Draft 2020-12 compilation identified missing explicit array types in conditional branches. Those annotations now make the schema strict-tool compatible without changing its intended constraints. Both schemas compile and thirteen synthetic acceptance/rejection checks pass; exact schema hashes and tool version are recorded in `schema-validation.json`. The earlier design review receipt remains unchanged and refers to its original hashes. This new check does not validate semantic authority, host bounds, blind execution or a model comparison. No runtime files changed, so no full-suite result is claimed. This record accompanies the new ordinary gate attempt and does not retroactively certify earlier commits made before hooks existed.
