@@ -268,6 +268,25 @@ describe('a computer joins from the owner\'s team invite — feature is alive on
     expect(originCheck({ ...row, access: server.mobilePairing!.teamLog()!.vector() })).toBe('denied');
   });
 
+  it('the owner\'s phone sees a member\'s computers in People and removes one; a member\'s phone can do neither', async () => {
+    const w = await world();
+    const { comp, id } = await joinComputer(w, 'mia');
+    const people = await w.owner('GET', '/mobile/team/people');
+    expect(people.status).toBe(200);
+    const mia = people.body.people.find((p: { personKey: string }) => p.personKey === 'mia');
+    expect(mia.computers).toEqual([expect.objectContaining({ deviceId: id, via: 'team-invite', name: expect.stringMatching(/^Computer [0-9A-F]{4}-[0-9A-F]{4}$/) })]);
+    // A member's own read carries no computers list.
+    const own = await w.mia.call('GET', '/mobile/team/people');
+    expect(own.body.people[0].computers).toBeUndefined();
+    // A member's phone may not remove anyone's computer through this route.
+    expect((await w.mia.call('POST', `/mobile/team/people/mia/computers/${id}/forget`, {})).status).toBe(403);
+    const f = await w.owner('POST', `/mobile/team/people/mia/computers/${id}/forget`, {});
+    expect(f.status, JSON.stringify(f.body)).toBe(200);
+    expect(f.body).toEqual({ ok: true });
+    expect(await docpage(w.app, id, comp).open(w.docId)).toBeNull();
+    expect((await w.owner('POST', `/mobile/team/people/mia/computers/${id}/forget`, {})).status).toBe(404);
+  });
+
   it('a guest\'s joined computer reads but never writes', async () => {
     const w = await world();
     const { comp, id } = await joinComputer(w, 'gus');
@@ -277,6 +296,19 @@ describe('a computer joins from the owner\'s team invite — feature is alive on
     const data = await page.pageData(w.docId, cookie!);
     expect(data.body.me).toMatchObject({ key: 'gus', canComment: false });
     expect((await page.comment(w.docId, data.body)).status).toBe(403);
+  });
+
+  it('SEC-169: the public way-back list is empty until a computer is set up, then names only that address', async () => {
+    const w = await world();
+    const list = async () => {
+      const r = await request(w.app).get('/docs/_join/addresses').set('Host', HOST);
+      expect(r.status).toBe(200);
+      return r.body.addresses as string[];
+    };
+    // No computer set up anywhere: an anonymous caller is told no machine address.
+    expect(await list()).toEqual([]);
+    await joinComputer(w, 'mia');
+    expect(await list()).toEqual([`https://${HOST}`]);
   });
 
   it('with documents off, the join routes answer 503 and team links carry no j=1', async () => {

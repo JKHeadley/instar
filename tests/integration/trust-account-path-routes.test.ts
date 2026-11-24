@@ -185,3 +185,20 @@ describe('SEC-088: a receipt replicated from a peer machine is never the owner r
   });
 });
 
+
+
+describe('app-first trust request publication over HTTP', () => {
+  it('publishes to an accepted device even when Telegram exists without chat consent', async () => {
+    const snap = { deviceId: 'owner-mac', name: 'Owner Mac', active: true, keyFingerprint: 'ABCD-0000-0000-0000', presenceKeyHash: 'a'.repeat(64), deviceKind: 'computer' as const, localInstall: true };
+    runtime.bindDevices({ get: (id) => id === snap.deviceId ? snap : null, list: () => [snap], enabled: () => true });
+    expect((await runtime.service.recordDeviceAcceptance({ deviceId: snap.deviceId, keyFingerprint: snap.keyFingerprint, presenceKeyHash: snap.presenceKeyHash, keyPolicy: 'biometryCurrentSet', disclosureHash: 'b'.repeat(64) })).status).toBe('recorded');
+    const r = await request(app).post('/trust/requests').set('Authorization', `Bearer ${AUTH}`).send({ change });
+    expect(r.status, JSON.stringify(r.body)).toBe(202);
+    expect(r.body).toMatchObject({ status: 'sent', via: 'device' });
+    expect(r.body.code).toBeUndefined();
+    expect(sent).toEqual([]);
+    const listed = await request(app).get('/trust/requests').set('Authorization', `Bearer ${AUTH}`);
+    expect(listed.body.approvalDelivery.state).toBe('accepted');
+    expect(listed.body.requests).toContainEqual(expect.objectContaining({ requestId: r.body.requestId, adapter: 'device', delivered: true }));
+  });
+});

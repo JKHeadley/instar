@@ -6,7 +6,7 @@
  *   POST /docs/_join/redeem           (public)  take a team invite code for this browser's key → a waiting computer
  *   POST /docs/_join/confirm          (public, signed by that key, instar-join-v1) the code from the owner's phone → joined
  *   POST /docs/_link/forget-self      (public, signed by the computer's key) Forget this computer
- *   GET  /docs/_join/addresses        (public)  the agent's own document addresses, display only (§3.6)
+ *   GET  /docs/_join/addresses        (public)  the addresses where a computer is set up, display only (§3.6, SEC-169)
  *   GET  /team/computers              (bearer)  each person's computers, both kinds, and the limits in force
  *   POST /team/computer-limits        (bearer)  set the allowance and lifetimes, agent-wide or for one person (§3.5)
  *   POST /team/people/:personKey/computers/:deviceId/forget (bearer) remove one computer: taking access away only
@@ -24,10 +24,10 @@ import { Router, type Request, type Response } from 'express';
 import { deviceKeyHashOf } from '../core/AppRecordSignatures.js';
 import { normalizeRequestHost } from '../core/MobileOwnNames.js';
 import { DEVICE_TIME_WINDOW_MS, isStrictLowSDer, parseDevicePublicKey, type DeviceRecord } from '../core/MobileDeviceKeys.js';
-import { COMPUTER_LIMIT_DEFAULTS, computerLimitsFor } from '../core/TeamComputers.js';
+import { COMPUTER_LIMIT_DEFAULTS, computerHomeHosts, computerLimitsFor } from '../core/TeamComputers.js';
 import { COMPUTER_MAX_DAYS, validateMachineEvent } from '../core/TeamAccessEvents.js';
 import type { MobilePairingService } from './mobilePairingRoutes.js';
-import { principalOf, redeemArrival, takePairingCode } from './mobilePairingRoutes.js';
+import { devicePersonOf, principalOf, redeemArrival, takePairingCode } from './mobilePairingRoutes.js';
 import { isDocumentsEnabled } from './documentRoutes.js';
 import { DOC_PAGE_CSP } from './documentPageRoutes.js';
 import { callerAddress, computerAllowance, describeBrowser, forgetLinkedBrowser, joinedComputerStanding, linkFingerprint } from './documentLinkRoutes.js';
@@ -162,11 +162,23 @@ export function createDocumentJoinRoutes(deps: DocumentJoinDeps): Router {
     res.type('html').send(JOIN_SHELL);
   });
 
-  // Display only (§3.6): the agent's own document addresses, the same for any caller and any document.
+  // Display only (§3.6): the way back for a computer set up on another of the agent's addresses, the
+  // same for any caller and any document. SEC-169: only the addresses where a computer is set up and
+  // still counts, never every machine in the pool. A computer's key lives only on its own address, so
+  // no other address is ever a way back, and a public list of every machine would let a stranger find
+  // each one and spend each machine's own PIN guess budget. No readable team log: an empty list.
   router.get('/docs/_join/addresses', (_req, res) => {
     if (off(res)) return;
     res.setHeader('Cache-Control', 'no-store');
-    res.json({ addresses: deps.addresses().slice(0, 16) });
+    let homes: Set<string> = new Set();
+    try {
+      const state = deps.pairing()?.teamLog()?.state();
+      if (state) homes = computerHomeHosts(state, now());
+    } catch { /* @silent-fallback-ok — display only: no readable log lists nothing */ }
+    const addresses = deps.addresses().filter((a) => {
+      try { return homes.has(new URL(a).host.toLowerCase()); } catch { return false; }
+    });
+    res.json({ addresses: addresses.slice(0, 16) });
   });
 
   router.post('/docs/_join/redeem', (req: Request, res: Response) => {
@@ -332,13 +344,7 @@ export function createDocumentJoinRoutes(deps: DocumentJoinDeps): Router {
     if (!svc) return;
     const state = svc.teamLog()!.state();
     const t = now();
-    const people = [...state.people.values()].map((p) => {
-      const linked = [...state.browserLinks.values()].filter((l) => l.boundTo === p.personKey && !l.unbound && Date.parse(l.expiresAt) > t && !svc.keyLedger?.keyRevoked(l.keyHash))
-        .map((l) => ({ deviceId: l.deviceId, via: 'person-phone' as const, linkedAt: l.linkedAt, expiresAt: l.expiresAt }));
-      const joined = [...state.computerLinks.values()].filter((l) => l.boundTo === p.personKey)
-        .flatMap((l) => { const st = joinedComputerStanding(svc, l.keyHash, t); return st ? [{ deviceId: l.deviceId, via: 'team-invite' as const, name: `Computer ${checkLetters(l.browserPublicKey)}`, host: l.host, linkedAt: l.linkedAt, expiresAt: new Date(st.expiresAt).toISOString() }] : []; });
-      return { personKey: p.personKey, name: p.name, computers: [...linked, ...joined], limits: computerLimitsFor(state, p.personKey) };
-    });
+    const people = [...state.people.values()].map((p) => ({ personKey: p.personKey, name: p.name, computers: computersOfPerson(svc, p.personKey, t), limits: computerLimitsFor(state, p.personKey) }));
     res.json({ people, defaults: COMPUTER_LIMIT_DEFAULTS, limits: computerLimitsFor(state, null) });
   });
 
@@ -359,25 +365,53 @@ export function createDocumentJoinRoutes(deps: DocumentJoinDeps): Router {
   router.post('/team/people/:personKey/computers/:deviceId/forget', (req, res) => {
     const svc = agentOnly(req, res);
     if (!svc) return;
-    const state = svc.teamLog()!.state();
-    const personKey = String(req.params.personKey);
-    const id = String(req.params.deviceId);
-    const joined = [...state.computerLinks.values()].find((l) => l.boundTo === personKey && l.deviceId === id && !l.unbound);
-    const linked = joined ? null : [...state.browserLinks.values()].find((l) => l.boundTo === personKey && l.deviceId === id && !l.unbound);
-    let key: string | null = joined?.browserPublicKey ?? null;
-    if (!key && linked) {
-      try { const body = JSON.parse(Buffer.from(linked.signed.bodyB64, 'base64url').toString('utf8')) as { browserPublicKey?: unknown }; key = typeof body.browserPublicKey === 'string' ? body.browserPublicKey : null; } catch { key = null; } // @silent-fallback-ok — unreadable names nothing
-    }
-    if (!key) { res.status(404).json({ error: 'unknown-computer' }); return; }
-    try { forgetLinkedBrowser(svc, { id, browserPublicKey: key }, new Date(now()).toISOString()); } catch (err) { // @silent-fallback-ok — not silent: reported, and the caller is answered 503
-      svc.reportTeamFault('Documents.forgetByAgent', err);
-      res.status(503).json({ error: 'forget-not-recorded', detail: 'Try again in a minute.' });
-      return;
-    }
-    res.json({ ok: true });
+    forgetPersonComputerRoute(svc, String(req.params.personKey), String(req.params.deviceId), 'Documents.forgetByAgent', now(), res);
+  });
+
+  // The owner's phone removes a member's computer from People (taking access away; owner phones only,
+  // checked again here after the device allowlist's ownerOnly rule).
+  router.post('/mobile/team/people/:personKey/computers/:deviceId/forget', (req, res) => {
+    res.setHeader('Cache-Control', 'no-store');
+    if (off(res)) return;
+    const svc = deps.pairing();
+    if (!svc || !svc.teamLog()) { res.status(503).json({ error: 'team-access-unavailable' }); return; }
+    if (principalOf(req).kind !== 'device' || devicePersonOf(req)?.role !== 'owner') { res.status(403).json({ error: 'owner-phone-required' }); return; }
+    forgetPersonComputerRoute(svc, String(req.params.personKey), String(req.params.deviceId), 'Documents.forgetByOwnerPhone', now(), res);
   });
 
   return router;
+}
+
+/**
+ * A person's computers of both kinds that still count (member-browser-any-computer §3.3.6): phone-linked
+ * ones by their link, joined ones by their replicated standing. Shared by the agent's and the owner's reads.
+ */
+export function computersOfPerson(svc: MobilePairingService, personKey: string, now: number): Array<{ deviceId: string; via: 'person-phone' | 'team-invite'; name: string; host: string | null; linkedAt: string; expiresAt: string }> {
+  const state = svc.teamLog()?.state();
+  if (!state) return [];
+  const linked = [...state.browserLinks.values()].filter((l) => l.boundTo === personKey && !l.unbound && Date.parse(l.expiresAt) > now && !svc.keyLedger?.keyRevoked(l.keyHash))
+    .map((l) => ({ deviceId: l.deviceId, via: 'person-phone' as const, name: 'A computer their phone linked', host: null, linkedAt: l.linkedAt, expiresAt: l.expiresAt }));
+  const joined = [...(state.computerLinks?.values() ?? [])].filter((l) => l.boundTo === personKey)
+    .flatMap((l) => { const st = joinedComputerStanding(svc, l.keyHash, now); return st ? [{ deviceId: l.deviceId, via: 'team-invite' as const, name: `Computer ${checkLetters(l.browserPublicKey)}`, host: l.host, linkedAt: l.linkedAt, expiresAt: new Date(st.expiresAt).toISOString() }] : []; });
+  return [...linked, ...joined];
+}
+
+/** Forget one of a person's computers (either kind) everywhere, answering the route. Taking access away only. */
+function forgetPersonComputerRoute(svc: MobilePairingService, personKey: string, id: string, feature: string, now: number, res: Response): void {
+  const state = svc.teamLog()!.state();
+  const joined = [...(state.computerLinks?.values() ?? [])].find((l) => l.boundTo === personKey && l.deviceId === id && !l.unbound);
+  const linked = joined ? null : [...state.browserLinks.values()].find((l) => l.boundTo === personKey && l.deviceId === id && !l.unbound);
+  let key: string | null = joined?.browserPublicKey ?? null;
+  if (!key && linked) {
+    try { const body = JSON.parse(Buffer.from(linked.signed.bodyB64, 'base64url').toString('utf8')) as { browserPublicKey?: unknown }; key = typeof body.browserPublicKey === 'string' ? body.browserPublicKey : null; } catch { key = null; } // @silent-fallback-ok — unreadable names nothing
+  }
+  if (!key) { res.status(404).json({ error: 'unknown-computer' }); return; }
+  try { forgetLinkedBrowser(svc, { id, browserPublicKey: key }, new Date(now).toISOString()); } catch (err) { // @silent-fallback-ok — not silent: reported, and the caller is answered 503
+    svc.reportTeamFault(feature, err);
+    res.status(503).json({ error: 'forget-not-recorded', detail: 'Try again in a minute.' });
+    return;
+  }
+  res.json({ ok: true });
 }
 
 /** Is this joined computer still in force here (used by the page's end-date line and the renew hook)? */

@@ -629,7 +629,23 @@ const NEVER_EDITABLE_PREFIXES = [
   '.codex/',
   '.gemini/',
   '.husky/',
+  // SEC-173: the repository's own git folder. What it holds decides what git runs, and the agent runs
+  // git all the time (the hourly sync, session commits). The entry also covers a worktree's `.git`
+  // pointer file and a nested copy's `.git/` through the nested match below. `.gitmodules` names
+  // submodule sources git fetches. Viewing them is unchanged.
+  '.git/',
+  '.gitmodules',
 ];
+
+/**
+ * SEC-173: a file with an execute bit is a script something may run, so the editor never saves one,
+ * wherever it sits. This closes the open-ended rest of the list above (a script outside the fenced
+ * folders, such as a worktree helper sessions call) without naming every place one can live.
+ * Windows has no execute bit, so the check applies only where the mode carries one.
+ */
+export function isExecutableFile(mode: number, platform: NodeJS.Platform = process.platform): boolean {
+  return platform !== 'win32' && (mode & 0o111) !== 0;
+}
 
 /**
  * Exported for the round-14 bypass tests: the case-folding and resolved-path
@@ -944,6 +960,7 @@ export function createFileRoutes(options: { config: InstarConfig; liveConfig?: {
       // in the listing and refused on write.
       const editable =
         isEditable(requestedPath, config) &&
+        !isExecutableFile(stat.mode) &&
         !isNeverEditable(requestedPath) &&
         !(validation.relativeAfterResolve && isNeverEditable(validation.relativeAfterResolve));
 
@@ -1035,6 +1052,12 @@ export function createFileRoutes(options: { config: InstarConfig; liveConfig?: {
 
       if (stat.isDirectory()) {
         res.status(400).json({ error: 'Cannot write to a directory' });
+        return;
+      }
+
+      // SEC-173: never rewrite a script (the stat follows a symlink to its target).
+      if (isExecutableFile(stat.mode)) {
+        res.status(403).json({ error: 'Scripts cannot be edited from the file editor' });
         return;
       }
 

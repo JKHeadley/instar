@@ -174,7 +174,9 @@ const docsRead = (machineId) => docsTx('readonly', (s, set) => { const r = s.get
 const docsWrite = (rec) => docsTx('readwrite', (s) => { s.put(rec); });
 
 const keyOf = (rec) => (rec ? ((rec.keyPair && rec.keyPair.privateKey) || rec.privateKey || null) : null);
-const activeFor = (recs, host) => (recs || []).find((r) => r && r.deviceId && String(r.host || '').toLowerCase() === host && r.status === 'active' && keyOf(r));
+// The newest active record for this address: a key linked or joined later replaces an older one that may have been removed.
+const activeFor = (recs, host) => (recs || []).filter((r) => r && r.deviceId && String(r.host || '').toLowerCase() === host && r.status === 'active' && keyOf(r))
+  .sort((a, b) => String(b.linkedAt || b.createdAt || '').localeCompare(String(a.linkedAt || a.createdAt || '')))[0];
 
 /**
  * The key this page signs with: an active console record for this address first, else an active
@@ -230,6 +232,8 @@ async function browserOpen() {
     break;
   }
   if (r.ok) { state.computerEndsAt = (r.data && r.data.computerEndsAt) || null; return true; }
+  // A refused key stays stored (it may be refused for a passing reason, e.g. the browser switch off);
+  // a key linked or joined afterwards takes its machine's slot and is the newest, so it is the one used.
   if (r.status === 401) { state.device = null; showNoKey(); return false; }
   showMessage(M.errorWords(r.status, r.data, errCtx()), { tone: 'bad' });
   return false;
