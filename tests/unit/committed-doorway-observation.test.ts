@@ -1,0 +1,169 @@
+import fs from 'node:fs';
+import os from 'node:os';
+import path from 'node:path';
+import { beforeEach, afterEach, describe, expect, it, vi } from 'vitest';
+import { JobRunHistory } from '../../src/scheduler/JobRunHistory.js';
+import { SafeFsExecutor } from '../../src/core/SafeFsExecutor.js';
+import { ScheduledDoorwayObservationStore } from '../../src/core/ScheduledDoorwayObservationStore.js';
+import { readCommittedDoorwayObservation, scheduledDoorwayObservationDigest } from '../../src/core/CommittedDoorwayObservation.js';
+
+import { readScheduledDoorwayEvidence } from '../../src/core/ScheduledDoorwayRead.js';
+
+const TIME = '2026-11-24T17:00:00.000Z';
+let dir: string;
+let ledger: JobRunHistory;
+let store: ScheduledDoorwayObservationStore;
+
+function stage(lockTrust = 'trusted') {
+  const id = ledger.recordStart({
+    slug: 'doorway-scan', sessionId: '', trigger: 'scheduled', origin: 'instar', runner: 'script', lockTrust,
+  });
+  store.startRun(id, ledger.findRun(id)!.startedAt);
+  store.startDoor(id, 'alpha', TIME);
+  store.stage(id, TIME, [{ doorId: 'alpha', probeStatus: 'ok', observedAt: TIME }]);
+  return id;
+}
+
+beforeEach(() => {
+  vi.useFakeTimers({ toFake: ['Date'] });
+  vi.setSystemTime(new Date(TIME));
+  dir = fs.mkdtempSync(path.join(os.tmpdir(), 'committed-doorway-'));
+  ledger = new JobRunHistory(dir);
+  ledger.setMachineId('local-test');
+  store = new ScheduledDoorwayObservationStore(dir, 'local-test', ['alpha']);
+});
+
+afterEach(() => {
+  vi.useRealTimers();
+  SafeFsExecutor.safeRmSync(dir, { recursive: true, force: true, operation: 'committed doorway test cleanup' });
+});
+
+describe('committed scheduled doorway observation', () => {
+  it('keeps a staged run unavailable until the exact attestation is durably recorded', () => {
+    const id = stage();
+    expect(readCommittedDoorwayObservation(id, 'local-test', ledger, store)).toEqual({
+      status: 'unavailable', reason: 'run-unverified',
+    });
+    const observation = store.readStaged(id)!;
+    ledger.recordCompletion({ runId: id, result: 'success', scheduledDoorwayObservationDigest: scheduledDoorwayObservationDigest(observation) });
+    const reopened = new JobRunHistory(dir);
+    expect(readCommittedDoorwayObservation(id, 'local-test', reopened, store)).toEqual({ status: 'committed', observation });
+    expect(readCommittedDoorwayObservation(id, 'other-machine', reopened, store).status).toBe('unavailable');
+  });
+
+  it('does not give a legacy success or failed run authority over staged observations', () => {
+    const legacy = stage();
+    ledger.recordCompletion({ runId: legacy, result: 'success' });
+    const failed = stage();
+    ledger.recordCompletion({ runId: failed, result: 'timeout' });
+    expect(readCommittedDoorwayObservation(legacy, 'local-test', ledger, store).status).toBe('unavailable');
+    expect(readCommittedDoorwayObservation(failed, 'local-test', ledger, store).status).toBe('unavailable');
+  });
+
+  it('refuses attestation attached to an untrusted script', () => {
+    const id = stage('untrusted-no-lockfile');
+    expect(() => ledger.recordCompletion({
+      runId: id, result: 'success', scheduledDoorwayObservationDigest: scheduledDoorwayObservationDigest(store.readStaged(id)!),
+    })).toThrow('Invalid scheduled doorway observation attestation');
+    expect(ledger.findRun(id)?.result).toBe('pending');
+  });
+
+  it('rejects changed evidence even when the exact run remains successful', () => {
+    const id = stage();
+    const observation = store.readStaged(id)!;
+    ledger.recordCompletion({ runId: id, result: 'success', scheduledDoorwayObservationDigest: scheduledDoorwayObservationDigest(observation) });
+    const changed = { ...observation, observations: [{ ...observation.observations[0], probeStatus: 'not-installed' as const }] };
+    expect(readCommittedDoorwayObservation(id, 'local-test', ledger, { readStaged: () => changed })).toEqual({
+      status: 'unavailable', reason: 'stage-mismatch',
+    });
+  });
+});
+
+describe('scheduled doorway evidence reconciliation', () => {
+  function committed() {
+    const runId = stage();
+    ledger.recordCompletion({
+      runId, result: 'success', scheduledDoorwayObservationDigest: scheduledDoorwayObservationDigest(store.readStaged(runId)!),
+    });
+    return runId;
+  }
+
+  function newer(result?: 'failure' | 'skipped', error?: string, startedDoor = false) {
+    const runId = ledger.recordStart({
+      slug: 'doorway-scan', sessionId: '', trigger: 'scheduled', origin: 'instar', runner: 'script',
+      lockTrust: 'trusted', packagedDoorwayScan: true,
+    });
+    if (startedDoor) {
+      const startedAt = ledger.findRun(runId)!.startedAt;
+      store.startRun(runId, startedAt);
+      store.startDoor(runId, 'alpha', startedAt);
+    }
+    if (result) ledger.recordCompletion({ runId, result, error });
+    return runId;
+  }
+
+  const cadence = { schedule: '* * * * *', timeoutMs: 5000 };
+  const read = (nowMs = Date.now(), schedule: typeof cadence | null = cadence, reverse = false) => {
+    const runs = new JobRunHistory(dir).query({ slug: 'doorway-scan' }).runs;
+    return readScheduledDoorwayEvidence({
+      machineId: 'local-test', doorIds: ['alpha'], runs: reverse ? runs.reverse() : runs, store,
+      cadence: schedule, nowMs,
+    });
+  };
+
+  it('retains a past observation and exposes a newer interrupted admission after restart', () => {
+    const prior = committed();
+    vi.setSystemTime(Date.parse(TIME) + 1000);
+    const failed = newer('failure', 'interrupted: the server stopped before this script finished', true);
+    expect(read()).toMatchObject({
+      latestRun: { runId: failed, outcome: 'interrupted' },
+      doors: { alpha: {
+        lastObservation: { runId: prior, observedAt: TIME },
+        latestAttempt: { runId: failed, outcome: 'interrupted' },
+        freshness: 'unknown', reachable: null,
+      } },
+    });
+  });
+
+  it('keeps pre-admission failure job-scoped and ignores later skips', () => {
+    const prior = committed();
+    vi.setSystemTime(Date.parse(TIME) + 1000);
+    const failed = newer('failure', 'packaged-probe-timeout');
+    vi.setSystemTime(Date.parse(TIME) + 2000);
+    newer('skipped');
+    expect(read()).toMatchObject({
+      latestRun: { runId: failed, outcome: 'timeout' },
+      doors: { alpha: { latestAttempt: { runId: prior }, freshness: 'current', reachable: true } },
+    });
+  });
+
+  it('withholds current evidence when a newer admission is corrupt', () => {
+    const prior = committed();
+    vi.setSystemTime(Date.parse(TIME) + 1000);
+    const failed = newer('failure', undefined, true);
+    const admission = path.join(dir, 'state', 'doorway-scan-scheduled-runs', failed, 'run.json');
+    fs.writeFileSync(admission, '{bad');
+    expect(read()).toMatchObject({
+      latestRun: { runId: failed, outcome: 'failed' },
+      doors: { alpha: { lastObservation: { runId: prior }, freshness: 'unknown', reachable: null } },
+    });
+  });
+
+  it('uses the next occurrence plus timeout and recalculates after cadence changes', () => {
+    committed();
+    expect(read(Date.parse(TIME) + 64999).doors.alpha.freshness).toBe('current');
+    expect(read(Date.parse(TIME) + 65000).doors.alpha).toMatchObject({ freshness: 'stale', reachable: null });
+    expect(read(Date.parse(TIME) + 65000, { ...cadence, schedule: '*/5 * * * *' }).doors.alpha.freshness).toBe('current');
+    expect(read(Date.now(), null).doors.alpha).toMatchObject({ freshness: 'disabled', reachable: null });
+  });
+
+  it('leaves conflicting same-time runs and future evidence unknown in either input order', () => {
+    committed();
+    newer('failure', undefined, true);
+    expect(read().doors.alpha).toMatchObject({ freshness: 'unknown', reachable: null });
+    expect(read(Date.now(), cadence, true)).toEqual(read());
+    expect(read(Date.now() - 1)).toMatchObject({
+      latestRun: null, doors: { alpha: { freshness: 'unknown', reachable: null } },
+    });
+  });
+});

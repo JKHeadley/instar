@@ -20,6 +20,11 @@ vi.mock('../../../src/scheduler/AgentMdLockFile.js', async (importOriginal) => {
   const orig = await importOriginal<typeof import('../../../src/scheduler/AgentMdLockFile.js')>();
   return { ...orig, readLockFile: () => lockState.value };
 });
+const readDoorwayAssets = vi.hoisted(() => vi.fn());
+vi.mock('../../../src/core/VerifiedPackagedCatalog.js', async (importOriginal) => ({
+  ...await importOriginal<typeof import('../../../src/core/VerifiedPackagedCatalog.js')>(),
+  readVerifiedInstalledDoorwayAssets: readDoorwayAssets,
+}));
 const { JobScheduler } = await import('../../../src/scheduler/JobScheduler.js');
 type Scheduler = InstanceType<typeof JobScheduler>;
 
@@ -116,6 +121,45 @@ console.log('JOB_RESULT ok checked');
 `;
 
 describe('script runner execution', () => {
+  it('attests the exact opt-in doorway run and restores the legacy routing decision when opted out', async () => {
+    project = createTempProject();
+    const slug = 'doorway-scan';
+    const wrapper = "console.log('JOB_RESULT ok legacy profile')";
+    addScriptJob(project.stateDir, slug, wrapper);
+    lockState.value = trustedLockFor([{ slug, script: wrapper }]);
+    const { s, sm, setCfg } = mkScheduler(project);
+    scheduler = s;
+    s.setMachineIdentity('fixture-machine', 'Fixture Machine');
+    const catalog = { doors: { fixture: { probe: { kind: 'cli-version' } } } };
+    readDoorwayAssets.mockReturnValue({
+      status: 'verified',
+      catalogBytes: Buffer.from(JSON.stringify(catalog)),
+      proberBytes: Buffer.from('export function probeDoorFree() { return { probeStatus: "ok" }; }'),
+    });
+    const config = path.join(project.stateDir, 'config.json');
+    fs.writeFileSync(config, JSON.stringify({ maintenance: { doorwayScan: { packagedExecution: true } } }));
+    s.start();
+    expect(await s.triggerJob(slug, 'test')).toBe('triggered');
+    await waitFor(() => lastRun(s, slug)?.result === 'success');
+    const packaged = lastRun(s, slug);
+    expect(packaged).toMatchObject({
+      tokens: 0, machineId: 'fixture-machine', scheduledDoorwayObservationDigest: expect.stringMatching(/^sha256:/),
+    });
+    const stage = path.join(project.stateDir, 'state', 'doorway-scan-scheduled-runs', packaged.runId, 'staged.json');
+    expect(JSON.parse(fs.readFileSync(stage, 'utf8'))).toMatchObject({
+      runId: packaged.runId, startedAt: packaged.startedAt, observations: [{ doorId: 'fixture', probeStatus: 'ok' }],
+    });
+
+    setCfg({ developmentAgent: true, jobs: { scriptRunners: { disabledSlugs: [slug] } } });
+    expect(await s.triggerJob(slug, 'test')).toBe('skipped');
+    expect(lastRun(s, slug).runId).toBe(packaged.runId);
+    setCfg({ developmentAgent: true });
+    fs.writeFileSync(config, '{}');
+    expect(s.scriptRunnersActiveFor(slug)).toBe(false);
+    expect(readDoorwayAssets).toHaveBeenCalledTimes(1);
+    expect(sm._spawnCount).toBe(0);
+  });
+
   it('does not open the supervision journal on a read-only standby', () => {
     project = createTempProject();
     addScriptJob(project.stateDir, 'probe', "console.log('JOB_RESULT ok done');");

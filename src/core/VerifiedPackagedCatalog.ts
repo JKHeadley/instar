@@ -71,6 +71,11 @@ export function readVerifiedInstalledCatalog(expectedVersion: string): VerifiedP
   return readVerifiedPackagedCatalog(installedPackageRoot(), expectedVersion, RELEASE_KEY_SHA256);
 }
 
+/** Read the exact executable and catalog bytes from the running release. */
+export function readVerifiedInstalledDoorwayAssets(expectedVersion: string): VerifiedPackagedDoorwayAssetsResult {
+  return readVerifiedPackagedDoorwayAssets(installedPackageRoot(), expectedVersion, RELEASE_KEY_SHA256);
+}
+
 /** Exact-asset verifier. The pinned SPKI hash must come from the trusted caller, never the package. */
 export function readVerifiedPackagedCatalog(
   packageRoot: string,

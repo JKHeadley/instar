@@ -1,4 +1,5 @@
 import { isQuietReceipt, verifiedJobEnvelope } from '../messaging/NotificationSelectivityGate.js';
+import { fileURLToPath } from 'node:url';
 import { notificationStamper, withNotificationEnvelope } from '../messaging/notificationStampers.js';
 const stampNotification = notificationStamper('src/scheduler/JobScheduler.ts');
 import { verifyImportedPortableJob, recordImportedPortableIntegrityFailure } from '../core/JobPortableIntegrity.js';
@@ -42,6 +43,9 @@ import { SCRIPT_RUNNER_FIRST_WAVE_DISABLED_SLUGS } from '../config/ConfigDefault
 import { AUDIT_READY_SCRIPT_SLUGS, JOB_COST_AUDIT_READY, JOB_MODEL_ROUTING_AUDIT_READY } from './JobCostAuditReadiness.js';
 import { hashBody } from './AgentMdLockFile.js';
 import { JobRunHistory, isSideRun, type JobRun } from './JobRunHistory.js';
+import { getInstarVersion } from '../core/Config.js';
+import { readVerifiedInstalledDoorwayAssets } from '../core/VerifiedPackagedCatalog.js';
+import { executePackagedDoorwayScan, readDoorwayExecutionConfig } from './PackagedDoorwayExecution.js';
 import { JobSupervisionStore } from './JobSupervisionStore.js';
 import { projectSupervisionEvidence, SUPERVISION_EVIDENCE_POLICY } from './JobSupervisionEvidence.js';
 import { jobSupervisionRolloutState } from './JobSupervisionRollout.js';
@@ -1020,7 +1024,17 @@ export class JobScheduler {
     // job's body runs as an agentmd session exactly as before the change,
     // through the normal quota / capacity / claim path below.
     const isScriptRunner = this.isScriptRunnerJob(job);
+    const doorwayConfig = slug === 'doorway-scan' ? readDoorwayExecutionConfig(this.stateDir) : undefined;
+    const packagedDoorwayRun = doorwayConfig?.packagedExecution === true;
+    if (doorwayConfig === null || (packagedDoorwayRun && !isScriptRunner)) {
+      this.skipLedger.recordSkip(slug, 'disabled');
+      return 'skipped';
+    }
     if (isScriptRunner && !this.scriptRunnersActiveFor(job.slug)) {
+      if (packagedDoorwayRun) {
+        this.skipLedger.recordSkip(slug, 'disabled');
+        return 'skipped';
+      }
       // This job was introduced with script runners, so it has no historical
       // session behavior to restore when the rollout is dark.
       if (job.slug === 'script-job-supervisor') {
@@ -1282,6 +1296,11 @@ export class JobScheduler {
     // The gate above can wait for seconds. A safety hold recorded during that
     // wait must take effect on this fire, before the script claim or launch.
     if (runsAsScript && !this.scriptRunnersActiveFor(slug)) {
+      if (packagedDoorwayRun || (slug === 'doorway-scan'
+        && readDoorwayExecutionConfig(this.stateDir)?.packagedExecution === true)) {
+        this.skipLedger.recordSkip(slug, 'disabled');
+        return 'skipped';
+      }
       if (slug === 'script-job-supervisor') {
         this.skipLedger.recordSkip(slug, 'disabled');
         this.state.appendEvent({
@@ -1342,7 +1361,7 @@ export class JobScheduler {
       if (!this.takeClaim(job, reason, claimPath, scriptBoundMs + JobScheduler.MAX_SCRIPT_START_OFFSET_MS)) return 'skipped';
       if (!reason.startsWith('retry:')) this.clearRetryState(slug);
       this.scriptInFlight.add(slug);
-      this.runScriptRunnerJob(job, reason);
+      this.runScriptRunnerJob(job, reason, packagedDoorwayRun);
       return 'triggered';
     }
 
@@ -1367,6 +1386,14 @@ export class JobScheduler {
     if (jobSessions.length + this.activeSessionSpawns.size >= this.config.maxParallelJobs) {
       this.enqueue(slug, reason);
       return 'queued';
+    }
+
+    if (slug === 'doorway-scan') {
+      const live = readDoorwayExecutionConfig(this.stateDir);
+      if (!live || live.packagedExecution === true) {
+        this.skipLedger.recordSkip(slug, 'disabled');
+        return 'skipped';
+      }
     }
 
     const timeoutMs = (job.expectedDurationMinutes ?? 30) * 2 * 60_000;
@@ -2253,7 +2280,10 @@ export class JobScheduler {
       this.supervisionWriteFailed(slug, error);
       return false;
     }
-    if (!JOB_COST_AUDIT_READY.laterScriptJobs && !AUDIT_READY_SCRIPT_SLUGS.has(slug)
+    // This explicit profile performs only signed free probes and makes no model call.
+    const packagedDoorway = slug === 'doorway-scan'
+      && readDoorwayExecutionConfig(this.stateDir)?.packagedExecution === true;
+    if (!packagedDoorway && !JOB_COST_AUDIT_READY.laterScriptJobs && !AUDIT_READY_SCRIPT_SLUGS.has(slug)
       && (SCRIPT_RUNNER_FIRST_WAVE_DISABLED_SLUGS as readonly string[]).includes(slug)) return false;
     if (!JOB_COST_AUDIT_READY.dailySupervision && slug === 'script-job-supervisor') return false;
     const cfg = this.readAgentConfig() ?? {};
@@ -2262,7 +2292,7 @@ export class JobScheduler {
     const explicit = typeof sr.enabled === 'boolean' ? sr.enabled : undefined;
     if (!resolveDevAgentGate(explicit, cfg as { developmentAgent?: boolean })) return false;
     const disabledSlugs: readonly string[] = Array.isArray(sr.disabledSlugs)
-      ? sr.disabledSlugs : SCRIPT_RUNNER_FIRST_WAVE_DISABLED_SLUGS;
+      ? sr.disabledSlugs : packagedDoorway ? [] : SCRIPT_RUNNER_FIRST_WAVE_DISABLED_SLUGS;
     if (disabledSlugs.includes(slug)) return false;
     return true;
   }
@@ -2480,7 +2510,10 @@ export class JobScheduler {
   private completeScriptHistory(runId: string, slug: string, input: Parameters<JobRunHistory['recordCompletion']>[0]): boolean {
     try {
       this.runHistory.recordCompletion(input);
-      if (this.runHistory.findRun(runId)?.result !== input.result) {
+      const completed = this.runHistory.findRun(runId);
+      if (completed?.result !== input.result
+        || (input.scheduledDoorwayObservationDigest !== undefined
+          && completed.scheduledDoorwayObservationDigest !== input.scheduledDoorwayObservationDigest)) {
         throw new Error(`script run history did not persist completion for ${runId}`);
       }
       return true;
@@ -2510,6 +2543,10 @@ export class JobScheduler {
     if (this.config.projectName) env.INSTAR_AGENT_ID = this.config.projectName;
     const port = this.resolveAgentPort();
     if (port !== undefined) env.INSTAR_PORT = String(port);
+    if (job.slug === 'doorway-scan') {
+      env.INSTAR_DOORWAY_PROBER = fileURLToPath(new URL('../../scripts/doorway-scan.mjs', import.meta.url));
+      env.INSTAR_STATE_DIR = path.resolve(this.stateDir);
+    }
     env.INSTAR_JOB_SLUG = job.slug;
     env.INSTAR_MESSAGE_KIND = 'automated';
     env.INSTAR_SENDER_CLASS = 'script';
@@ -2609,7 +2646,7 @@ export class JobScheduler {
    * Execute an instar `runner: script` job (§5.1). The caller already holds
    * the claim and has added the slug to `scriptInFlight`.
    */
-  private runScriptRunnerJob(job: JobDefinition, reason: string): void {
+  private runScriptRunnerJob(job: JobDefinition, reason: string, packagedDoorwayRun: boolean): void {
     const slug = job.slug;
     const sessionName = `script-${slug}-${Date.now().toString(36)}`;
     const projected = this.projectAsAgentmd(job);
@@ -2623,6 +2660,7 @@ export class JobScheduler {
         trigger: reason,
         origin: 'instar',
         runner: 'script',
+        ...(packagedDoorwayRun ? { packagedDoorwayScan: true } : {}),
         lockTrust: job.lockTrust ?? 'unknown',
         tokens: 0,
         resolvedPath: observability.resolvedPath,
@@ -2688,7 +2726,15 @@ export class JobScheduler {
       const trust = this.checkScriptTrust(job);
       let parsed: ParsedScriptRun;
       let scrubbed = '';
-      if (!trust.ok) {
+      let scheduledDoorwayObservationDigest: string | undefined;
+      const doorwayConfig = slug === 'doorway-scan' ? readDoorwayExecutionConfig(this.stateDir) : undefined;
+      if (doorwayConfig === null) {
+        parsed = parseScriptOutput('JOB_RESULT failed doorway-config-unavailable', 1);
+      } else if (slug === 'doorway-scan' && packagedDoorwayRun !== (doorwayConfig?.packagedExecution === true)) {
+        parsed = parseScriptOutput('JOB_RESULT skipped doorway-profile-changed', 0);
+      } else if (packagedDoorwayRun && doorwayConfig?.enabled === false) {
+        parsed = parseScriptOutput('JOB_RESULT skipped scan-disabled', 0);
+      } else if (!trust.ok) {
         parsed = this.untrustedParse(trust.reason);
         const key = `${slug}|${trust.reason}`;
         if (!this.untrustedReported.has(key)) {
@@ -2701,13 +2747,33 @@ export class JobScheduler {
             impact: `"${slug}" does no work until the shipped script verifies again (reinstall or update instar)`,
           });
         }
+      } else if (packagedDoorwayRun) {
+        const pending = this.runHistory.findRun(runId);
+        if (!pending || !this.machineId || job.lockTrust !== 'trusted') {
+          parsed = this.untrustedParse('packaged-run-unverified');
+        } else {
+          const assets = readVerifiedInstalledDoorwayAssets(getInstarVersion());
+          if (assets.status !== 'verified') {
+            parsed = this.untrustedParse(assets.reason);
+          } else {
+            scheduledDoorwayObservationDigest = await executePackagedDoorwayScan({
+              stateDir: path.resolve(this.stateDir),
+              run: pending,
+              machineId: this.machineId,
+              assets,
+              timeoutMs: Math.max(1, job.scriptTimeoutMinutes ?? JobScheduler.DEFAULT_SCRIPT_TIMEOUT_MINUTES) * 2 * 60_000,
+            });
+            scrubbed = 'JOB_RESULT ok verified free probes';
+            parsed = parseScriptOutput(scrubbed, 0);
+          }
+        }
       } else {
         const exec = await this.executeScript(job, [], receiptToken
           ? { INSTAR_JOB_RUN_ID: runId, INSTAR_JOB_RECEIPT_TOKEN: receiptToken }
           : { INSTAR_JOB_RUN_ID: runId });
         ({ parsed, scrubbed } = this.parseExec(job, exec));
       }
-      this.finishScriptRun(job, runId, supervisionId, parsed, scrubbed, startedAt, supervisionActiveAtStart);
+      this.finishScriptRun(job, runId, supervisionId, parsed, scrubbed, startedAt, supervisionActiveAtStart, scheduledDoorwayObservationDigest);
     };
 
     const offset = this.scriptStartOffsetEnabled ? JobScheduler.scriptStartOffsetMs(slug) : 0;
@@ -2716,7 +2782,9 @@ export class JobScheduler {
         .catch((err) => {
           console.error(`[scheduler] Script runner for "${slug}" threw: ${err instanceof Error ? err.message : String(err)}`);
           try {
-            this.finishScriptRun(job, runId, supervisionId, { ...this.untrustedParse(''), reason: 'script-runner-error', reasonCode: 'script-runner-error' }, '', startedAt, supervisionActiveAtStart);
+            const reason = packagedDoorwayRun && err instanceof Error && err.message === 'packaged-probe-timeout'
+              ? 'packaged-probe-timeout' : 'script-runner-error';
+            this.finishScriptRun(job, runId, supervisionId, { ...this.untrustedParse(''), reason, reasonCode: reason }, '', startedAt, supervisionActiveAtStart);
           } catch { /* @silent-fallback-ok — bookkeeping best-effort on an internal throw */ }
         })
         .finally(() => { this.scriptInFlight.delete(slug); this.activeScriptRunIds.delete(runId); });
@@ -2738,6 +2806,7 @@ export class JobScheduler {
     scrubbed: string,
     startedAt: string,
     supervisionActiveAtStart: boolean,
+    scheduledDoorwayObservationDigest?: string,
   ): void {
     const slug = job.slug;
     const finishedAt = new Date().toISOString();
@@ -2787,7 +2856,7 @@ export class JobScheduler {
         slug, lastRun: finishedAt, lastResult: 'success', lastError: undefined, lastAssessment,
         consecutiveFailures: 0, nextScheduled: this.getNextRun(slug),
       });
-      historyRecorded = this.completeScriptHistory(runId, slug, { runId, result: 'success', outputSummary });
+      historyRecorded = this.completeScriptHistory(runId, slug, { runId, result: 'success', outputSummary, scheduledDoorwayObservationDigest });
       if (historyRecorded) {
         captureJev('success');
         this.clearRetryState(slug);

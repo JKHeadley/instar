@@ -91,6 +91,10 @@ export interface JobRun {
   reason?: string;
   /** Machine ID that ran this job (multi-machine) */
   machineId?: string;
+  /** This trigger selected the opt-in packaged scan profile. */
+  packagedDoorwayScan?: true;
+  /** Digest of exact staged scan evidence validated before trusted script completion. */
+  scheduledDoorwayObservationDigest?: string;
   /** Condensed output from the session (last ~1000 chars) */
   outputSummary?: string;
   /** LLM reflection on what happened and what was learned */
@@ -274,6 +278,7 @@ export class JobRunHistory {
     // Phase 1b observability extensions (jobs-as-agentmd spec)
     origin?: 'instar' | 'user' | 'legacy' | 'triage';
     runner?: 'script';
+    packagedDoorwayScan?: true;
     lockTrust?: string;
     tokens?: number;
     resolvedPath?: string | null;
@@ -302,6 +307,7 @@ export class JobRunHistory {
       machineId: this.machineId ?? undefined,
       origin: opts.origin,
       ...(opts.runner !== undefined ? { runner: opts.runner } : {}),
+      ...(opts.packagedDoorwayScan ? { packagedDoorwayScan: true } : {}),
       ...(opts.lockTrust !== undefined ? { lockTrust: opts.lockTrust } : {}),
       ...(opts.tokens !== undefined ? { tokens: opts.tokens } : {}),
       resolvedPath: opts.resolvedPath ?? null,
@@ -351,6 +357,7 @@ export class JobRunHistory {
     error?: string;
     outputSummary?: string;
     emailOutboxId?: string;
+    scheduledDoorwayObservationDigest?: string;
   }): void {
     // Find the pending entry to get start time
     const pending = this.findRun(opts.runId);
@@ -362,6 +369,13 @@ export class JobRunHistory {
       // Already completed — first writer wins.
       console.debug(`[JobRunHistory] recordCompletion no-op for ${opts.runId}: already ${pending.result}`);
       return;
+    }
+
+    const digest = opts.scheduledDoorwayObservationDigest;
+    if (digest !== undefined && (opts.result !== 'success' || pending.slug !== 'doorway-scan'
+      || pending.runner !== 'script' || pending.origin !== 'instar' || pending.lockTrust !== 'trusted'
+      || !pending.machineId || !/^sha256:[0-9a-f]{64}$/.test(digest))) {
+      throw new Error('Invalid scheduled doorway observation attestation');
     }
 
     const completedAt = new Date().toISOString();
@@ -376,6 +390,7 @@ export class JobRunHistory {
       result: opts.result,
       error: opts.error,
       outputSummary: opts.outputSummary,
+      ...(digest ? { scheduledDoorwayObservationDigest: digest } : {}),
       ...(opts.emailOutboxId ? { emailOutboxId: opts.emailOutboxId } : {}),
     };
     this.appendLine(completed);
