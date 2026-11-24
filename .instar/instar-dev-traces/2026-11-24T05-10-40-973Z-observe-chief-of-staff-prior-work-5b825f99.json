@@ -1,0 +1,42 @@
+{
+  "version": 3,
+  "slug": "observe-chief-of-staff-prior-work",
+  "sessionId": "5591f135-974d-45ff-afdb-df56f5dbd35e",
+  "timestamp": "2026-11-24T05:10:40.973Z",
+  "artifactPath": "upgrades/side-effects/observe-chief-of-staff-prior-work.md",
+  "artifactSha256": "bda2f322e72ade10836aee54dc850ce1e98c47f57bd8f16c37933786e2c1987a",
+  "specPath": "docs/specs/check-existing-work-before-dispatch.md",
+  "coveredFiles": [
+    "src/commands/server.ts",
+    "src/core/ChiefOfStaffPriorWorkObservation.ts",
+    "src/core/types.ts",
+    "src/data/awareness/chief-of-staff-prior-work-observation.md",
+    "src/messaging/TelegramAdapter.ts",
+    "src/server/AgentServer.ts",
+    "tests/e2e/chief-of-staff-alive.test.ts",
+    "tests/integration/chief-of-staff-prior-work-ingress.test.ts",
+    "tests/unit/chief-of-staff-prior-work-observation.test.ts",
+    "upgrades/next/observe-chief-of-staff-prior-work.md",
+    "upgrades/side-effects/observe-chief-of-staff-prior-work.md"
+  ],
+  "phase": "complete",
+  "tier": 2,
+  "tierReasoning": "Read-only dev-gated observation on existing owner poller ingress. Delivery and action authority are independent of this bounded lookup.",
+  "secondPass": "true",
+  "reviewerConcurred": true,
+  "toolchain": {
+    "reviewSkills": [
+      {
+        "name": "independent-side-effects-review",
+        "outcome": "concurred",
+        "verified": false,
+        "iterations": null
+      }
+    ],
+    "convergence": {
+      "reportPath": "docs/specs/reports/check-existing-work-before-dispatch-convergence.md",
+      "iterations": 6,
+      "verified": true
+    }
+  }
+}

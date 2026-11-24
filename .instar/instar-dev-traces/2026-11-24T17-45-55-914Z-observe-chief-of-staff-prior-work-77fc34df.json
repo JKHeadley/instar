@@ -1,0 +1,18 @@
+{
+  "version": 2,
+  "slug": "observe-chief-of-staff-prior-work",
+  "sessionId": "5591f135-974d-45ff-afdb-df56f5dbd35e",
+  "timestamp": "2026-11-24T17:45:55.914Z",
+  "artifactPath": "upgrades/side-effects/observe-chief-of-staff-prior-work.md",
+  "artifactSha256": "082165d14e2b9d7e90772172393599cacdb297c86c97d099c01d8b4cccbc865b",
+  "coveredFiles": [
+    "src/data/feature-ladders.json"
+  ],
+  "phase": "complete",
+  "tier": 1,
+  "tierReasoning": "One registry entry covers the existing observer switch. It does not enable observation, warming, or any dispatch action.",
+  "eli16Path": "docs/specs/check-existing-work-before-dispatch.eli16.md",
+  "sideEffectsPath": "upgrades/side-effects/observe-chief-of-staff-prior-work.md",
+  "secondPass": "not-required",
+  "reviewerConcurred": null
+}

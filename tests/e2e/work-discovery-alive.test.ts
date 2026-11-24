@@ -6,6 +6,7 @@ import path from 'node:path';
 import request from 'supertest';
 import { JSDOM } from 'jsdom';
 import { afterEach, describe, expect, it, vi } from 'vitest';
+import { ChiefOfStaffPriorWorkObservation } from '../../src/core/ChiefOfStaffPriorWorkObservation.js';
 import { InitiativeTracker } from '../../src/core/InitiativeTracker.js';
 import { MachineIdentityManager } from '../../src/core/MachineIdentity.js';
 import { SafeFsExecutor } from '../../src/core/SafeFsExecutor.js';
@@ -277,13 +278,23 @@ describe('work discovery production route', () => {
     }
   }, 30_000);
 
-  it('joins the server-started cold scan even when GitHub takes more than five seconds', async () => {
+  it('shares a slow server-started scan with Work and an observation after owner delivery', async () => {
     let release!: () => void;
     const held = new Promise<void>(resolve => { release = resolve; });
     const github = installGithubFixture(held);
     try {
-      const app = (await boot(true)).getApp();
+      const server = await boot(true);
+      const app = server.getApp();
       expect(github).toHaveBeenCalledTimes(2); // No lookup was sent.
+      const report = vi.fn();
+      const observer = new ChiefOfStaffPriorWorkObservation({
+        enabled: () => true,
+        chiefOfStaffTopic: () => 20,
+        owner: () => 31,
+        lookup: { search: query => server.searchPublicPrsAfterOwnerDelivery(query) },
+        report,
+      });
+      observer.observe({ topicId: 20, senderId: 31, text: 'Do we already have instar.sh addresses?', replay: false, agentAuthored: false });
       const unlock = await request(app).post('/dashboard/unlock').send({ pin: PIN }).expect(200);
       const owner = { Authorization: `Bearer ${unlock.body.token}` };
       let completed = false;
@@ -292,6 +303,7 @@ describe('work discovery production route', () => {
         .then(response => { completed = true; return response; });
       await new Promise(resolve => setTimeout(resolve, 5_200));
       expect(completed).toBe(false);
+      expect(report).not.toHaveBeenCalled();
       expect(github).toHaveBeenCalledTimes(2);
       release();
       const result = await cold;
@@ -300,6 +312,7 @@ describe('work discovery production route', () => {
         candidates: [{ kind: 'pull-request', number: 3342 }],
         coverage: { pullRequests: { status: 'fresh' } },
       });
+      await vi.waitFor(() => expect(report.mock.calls).toEqual([['matched']]));
       expect(github).toHaveBeenCalledTimes(4);
       const warm = await request(app).post(PATH).set(owner).send({ query: 'instar.sh' }).expect(200);
       expect(warm.body.candidates).toEqual(expect.arrayContaining([expect.objectContaining({ number: 3342 })]));
@@ -332,6 +345,7 @@ describe('work discovery production route', () => {
     const github = installGithubFixture(new Promise<void>(resolve => { release = resolve; }));
     try {
       const dark = await boot(true, [], true, false);
+      await expect(dark.searchPublicPrsAfterOwnerDelivery('instar.sh')).rejects.toThrow('not ready');
       expect(github).not.toHaveBeenCalled();
       const active = await boot(true);
       expect(github).toHaveBeenCalledTimes(2);
@@ -343,6 +357,7 @@ describe('work discovery production route', () => {
       const liveConfig = liveConfigs.get(active)!;
       liveConfig.forceRefresh();
       expect(signals.every(signal => signal?.aborted)).toBe(true);
+      await expect(active.searchPublicPrsAfterOwnerDelivery('instar.sh')).rejects.toThrow('not ready');
       expect(github).toHaveBeenCalledTimes(2);
       expect((await request(dark.getApp()).get('/health')).status).toBe(200);
     } finally {

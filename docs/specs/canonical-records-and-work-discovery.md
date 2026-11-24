@@ -101,7 +101,7 @@ Authority is scoped by record and owner, with the owner's approved lease/witness
 - **fleet:** Roll out the registry census and read-only providers as proof-bearing slices. Per-kind write cutover uses the Jobs and Projects spec and authority proof.
 - **graduation criterion:** Every seeded authorized case is findable through the proper provider or a verified linked artifact. Require stable continuation, zero unauthorized exposure or restoration loss, and positive live owner-channel proof. Direct Work and explicit Chief of Staff discovery must return #3342 for the known-case query. For the intended original-incident outcome, the unprompted ordinary Chief of Staff replay must independently cite #3342 and distinguish approval, code review, and deployment to claim that outcome. Record actual advisory invocation versus result correctness. An ordinary missed invocation holds that user-facing outcome even if the read-only API itself proves available; A2 owns mandatory assistance. Ordinary delivery meets its existing service budget.
 - **dark-window:** New discovery providers stay disabled until scope, access and lifecycle proof. Rollback removes an affected read provider and preserves source history and canonical ownership.
-- **ladder:** workDiscovery.canonicalRecords
+- **ladder:** not applicable: this foundation has no shared runtime flag. Each independently enabled provider registers its own ladder before enrollment.
 
 ## Acceptance evidence
 
