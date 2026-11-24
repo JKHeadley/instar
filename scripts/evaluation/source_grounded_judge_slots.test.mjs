@@ -36,7 +36,7 @@ test('rejects swapped otherwise valid outputs without calling validation', () =>
 
 test('keeps missing, duplicate and structurally invalid outputs distinct', () => {
   const slots = bindJudgeSlots(capture, receipts, [inputs[0], inputs[0]], validate);
-  assert.deepEqual(slots.map(slot => slot.state), ['ambiguous', 'missing']);
+  assert.deepEqual(slots.map(slot => slot.state), ['ambiguous', 'output-missing']);
   const rejected = bindJudgeSlots(capture, receipts, inputs, () => ({
     answer: { state: 'structurally-valid' }, judge: { state: 'judge-error' },
   }));

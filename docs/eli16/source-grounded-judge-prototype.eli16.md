@@ -27,3 +27,5 @@ The offline composition selects each retry once and uses that same selection to 
 Each judge slot’s retry limit now comes from the verified plan. A more permissive limit supplied with attempt records has no effect. The repeatable check also calls the composed flow with the real validator.
 
 A rerun also has to match the original case, submission, comparison arm and repeat. Reusing an affected run ID does not make an unrelated benchmark result count.
+
+The report distinguishes an empty scheduled slot from a selected attempt whose output is missing. A rejected or missing output does not erase the other judge’s critical finding.

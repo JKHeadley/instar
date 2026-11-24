@@ -15,10 +15,10 @@ export function bindJudgeSlots(capture, receipts, inputs, validateCapture) {
   }
 
   return receipts.map(receipt => {
-    if (receipt === null) return { state: 'missing', findings: null };
+    if (receipt === null) return { state: 'slot-empty', findings: null };
     const matches = inputs.filter(input =>
       input.slotId === receipt.slotId && input.attemptId === receipt.attemptId);
-    if (matches.length === 0) return { state: 'missing', findings: null };
+    if (matches.length === 0) return { state: 'output-missing', findings: null };
     if (matches.length !== 1) return { state: 'ambiguous', findings: null };
     const input = matches[0];
     if (input.trialId !== receipt.trialId || input.family !== receipt.family ||

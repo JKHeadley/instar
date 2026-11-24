@@ -94,7 +94,7 @@ test('a missing selected receipt preserves its scheduled slot and the surviving 
   const schedule = resolveTrialJudgeSchedule(input, expected, [receipts[0]]);
   assert.deepEqual(schedule, { state: 'bound', slots: [receipts[0], null] });
   const slots = bindJudgeSlots(capture, schedule.slots, observations, validate);
-  assert.deepEqual(slots.map(slot => slot.state), ['bound', 'missing']);
+  assert.deepEqual(slots.map(slot => slot.state), ['bound', 'slot-empty']);
   const result = summarizeJudgeConsensus(criteria, slots.map(slot => slot.findings));
   assert.equal(result.structurallyComplete, false);
   assert.deepEqual(result.criticalFailures, [{ criterionId: 'critical', slot: 0 }]);
@@ -115,13 +115,13 @@ test('composed flow uses the selected retry for binding and independence evidenc
   const blocked = evaluateJudgeFlow({ ...input, planBytes: lockedBytes, planHash: sha(lockedBytes) },
     expected, ledgers, observations, disclosure, validate);
   assert.equal(blocked.selection[0].state, 'policy-violation');
-  assert.deepEqual(blocked.bindingStates, ['missing', 'bound']);
+  assert.deepEqual(blocked.bindingStates, ['slot-empty', 'bound']);
   const aged = { ...observations[0], attemptId: timeout.attemptId };
   const good = evaluateJudgeFlow(input, expected, ledgers, [aged, ...observations], disclosure, validate);
   assert.deepEqual(good.bindingStates, ['bound', 'bound']);
   assert.equal(good.independence, 'supported');
   const missing = evaluateJudgeFlow(input, expected, ledgers, [aged, observations[1]], disclosure, validate);
-  assert.deepEqual(missing.bindingStates, ['missing', 'bound']);
+  assert.deepEqual(missing.bindingStates, ['output-missing', 'bound']);
   assert.equal(missing.independence, 'unknown');
   assert.equal(evaluateJudgeFlow(input, expected, ledgers, observations,
     { ...disclosure, repeat: 999 }, validate).independence, 'unknown');

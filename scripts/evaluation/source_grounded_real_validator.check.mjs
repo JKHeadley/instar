@@ -69,7 +69,7 @@ assert.deepEqual(aggregate(incomplete).criticalFailures, [{ criterionId: 'criter
 const partial = resolveTrialJudgeSchedule({ ...verifiedPlan, capture: input }, identity, [receipts[0]]);
 assert.equal(partial.state, 'bound');
 const partialSlots = bindJudgeSlots(input, partial.slots, observations, validateCapture);
-assert.deepEqual(partialSlots.map(slot => slot.state), ['bound', 'missing']);
+assert.deepEqual(partialSlots.map(slot => slot.state), ['bound', 'slot-empty']);
 assert.deepEqual(aggregate(partialSlots).criticalFailures, [{ criterionId: 'criterion', slot: 0 }]);
 
 const ledgers = [
@@ -89,7 +89,13 @@ const rejected = evaluateJudgeFlow({ ...verifiedPlan, capture: input }, identity
 assert.deepEqual(rejected.bindingStates, ['bound', 'binding-mismatch']);
 assert.equal(rejected.independence, 'unknown');
 
+const lostOutput = evaluateJudgeFlow({ ...verifiedPlan, capture: input }, identity, ledgers,
+  [observations[0]], disclosure, validateCapture);
+assert.deepEqual(lostOutput.bindingStates, ['bound', 'output-missing']);
+assert.equal(lostOutput.independence, 'unknown');
+assert.deepEqual(lostOutput.consensus.criticalFailures, [{ criterionId: 'criterion', slot: 0 }]);
+
 const slotIds = receipts.map(receipt => receipt.slotId);
 assert.equal(assessJudgeIndependence(slotIds, receipts, 4), 'supported');
 assert.equal(assessJudgeIndependence(slotIds, receipts, 1), 'breach');
-console.log('Real validator check passed: retry, intact results, withheld source, wrong-slot output, and early disclosure.');
+console.log('Real validator check passed: retry, intact results, withheld source, wrong-slot output, missing output, and early disclosure.');
