@@ -46,7 +46,7 @@ Secondary changes:
 
 ## What ships when
 
-First comes the project list in watch-only mode, because it would have saved the lost app code. Next, copying work off the machine. Then the critical list and its check, which shows today what a rebuilt computer would be missing. After that, sharing those settings, and then passing on a dead computer's records. Then the folder backup with its weekly restore test, which replaces today's manual Studio-to-Mini copy. Then the "lives only here" report, the disk fixes (the disk-warning fix is small and can ship early), and browser sign-in coverage. The monthly drill comes last: practice rebuilds first, then real wipes.
+First comes the project list in watch-only mode, because it would have saved the lost app code. Next, copying work off the machine. Then the critical list and its check, which shows today what a rebuilt computer would be missing. After that, sharing those settings, and then passing on a dead computer's records. Then the folder backup with its weekly restore test, which replaces today's manual Studio-to-Mini copy. Then the "lives only here" report, the disk fixes (the disk-warning fix is small and can ship early), and browser sign-in coverage. The monthly drill comes last: practice rebuilds first, then real wipes. The first step, the watch-only project list, ships with the disk-warning fix in the same change; it also adds a Repositories page and a row on the Needs-you list for any project whose work exists on only one computer.
 
 ## What you actually need to decide
 

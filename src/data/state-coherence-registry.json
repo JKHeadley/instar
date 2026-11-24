@@ -3202,6 +3202,25 @@
         "class": "size-bounded",
         "note": "Append-only log under a 16 MiB byte budget that refuses new entries rather than evicting; the whole home is deleted with the throwaway."
       }
+    },
+    {
+      "category": "owned-repo-registry",
+      "description": "The owned-repository registry (docs/specs/no-data-loss-on-machine-death.md §1, increment 1): every repository this agent works in on this machine, with its remotes, single-copy work and age, plus the scan's resume cursor, the candidate queue from session evidence and the births recorded by SafeGitExecutor. One file per machine. Its replicated half is the `owned-repo` WS2 kind; this file is the machine's own index of its own disk. machine-local-justification: hardware-bound-resource — the scan cursor and candidate queue index one disk's paths.",
+      "scope": "machine-local",
+      "freshness": "real-time",
+      "conflictShape": "last-writer-wins",
+      "transport": "none",
+      "paths": [
+        "state/owned-repos/*",
+        "logs/no-data-loss.jsonl"
+      ],
+      "grandfathered": false,
+      "retention": {
+        "class": "B",
+        "access": "whole-file",
+        "maxBytes": 16777216,
+        "note": "Bounded by caps in OwnedRepoRegistry: 2000 repositories, 500 births, 500 queued candidates, a 50,000-item scan queue and 20,000 known paths; a removed repository's tombstone is dropped after 90 days. The audit log logs/no-data-loss.jsonl (metadata only) rotates at 16 MB with 4 kept segments."
+      }
     }
   ]
 }

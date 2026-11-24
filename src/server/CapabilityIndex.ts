@@ -463,6 +463,15 @@ export const CAPABILITY_INDEX: readonly CapabilityEntry[] = [
     }),
   },
   {
+    key: 'ownedRepos',
+    prefixes: ['/repos'],
+    description: 'Owned-repository registry (docs/specs/no-data-loss-on-machine-death.md increment 1), READ-ONLY: every repository this agent creates or works in on this machine (its home, repositories registered at birth through SafeGitExecutor init/clone, repositories sessions worked in, and a budgeted scan of the home, project-map roots and declared roots that asks git for untracked and ignored folders instead of walking the disk), with class (owned / candidate), remotes (host and account only, never a URL), single-copy work (commits and branches no off-machine remote has, with the oldest age) and uncommitted work. GET /repos is this machine; GET /repos?scope=pool reads every machine live (5 s), else from its replicated owned-repo records, else names it unknown. `defects` are the loud items: a repository with no remote, or unpushed work, older than the 24 h grace window (1 h when the disk is below its warn line), one per machine per kind; they reach the Needs-you list and the Repositories page (#/capacity/repos). Nothing here fetches, pushes or creates a remote (homing is increment 2). 503 when off (noDataLoss.repos.enabled, development-agent gated). When asked "is anything on this machine only here?", "do all my repositories have a remote?" or "what unpushed work is there?" read this, never guess.',
+    build: () => ({
+      configured: true,
+      endpoints: ['GET /repos', 'GET /repos?scope=pool'],
+    }),
+  },
+  {
     key: 'workAdmission',
     prefixes: ['/work-admission'],
     description: 'Overload admission (docs/specs/trustworthy-machine-load-and-mesh-floor.md Part C) — each machine protects its own resources: when its own multi-signal load verdict is saturated/impaired it CLOSES to new automatic work (scheduled jobs, helper sessions, placement of new conversations; the work waits and retries, nothing is dropped, running conversations keep going), reopens after 5 consecutive good samples, and keeps ONE host-wide recovery slot free so an operator session can always start. GET /work-admission reports enabled/dryRun/enforced, acceptingWork, lastVerdict, the recovery slot (cap/inUse) and counters (closes, reopens, refused, wouldRefuse, recoverySlotGrants). Dev-gated + dry-run first (monitoring.workAdmission): in dry-run it logs would-refuse and refuses nothing; 503 when dark. When asked "why didn\'t a job run / is this machine taking work?" → read this, don\'t guess.',
