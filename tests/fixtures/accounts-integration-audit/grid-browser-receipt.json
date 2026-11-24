@@ -1,0 +1,149 @@
+{
+  "bases": {
+    "accounts": "999d624854a784efc594b3755c2edecdbfdfde29",
+    "grids": "3fedcfd22c3740f900b32c6757bb39bb243f71c1"
+  },
+  "sourceSha256": {
+    "dashboard/console/accounts.js": "2f9ac634e476518cd0b8b08b5f449cf0d0ca4f50b1c2896e35aa7189d097f68e",
+    "dashboard/console/console.css": "3432febec7814459a4e8bf8b093ad8265e69c5aeb3aa1bf6cfb8185022794fbd"
+  },
+  "tool": "Chromium with a disposable fixture and synthetic accounts",
+  "cases": [
+    {
+      "viewportWidth": 390,
+      "theme": "light",
+      "largeText": false,
+      "sections": 1,
+      "rowFont": "15px",
+      "resetLabelFont": "13px",
+      "rowWidths": [
+        340,
+        340,
+        340,
+        340
+      ],
+      "verticallyStacked": true,
+      "documentOverflow": false,
+      "applicationWrites": 0
+    },
+    {
+      "viewportWidth": 390,
+      "theme": "dark",
+      "largeText": false,
+      "sections": 1,
+      "rowFont": "15px",
+      "resetLabelFont": "13px",
+      "rowWidths": [
+        340,
+        340,
+        340,
+        340
+      ],
+      "verticallyStacked": true,
+      "documentOverflow": false,
+      "applicationWrites": 0
+    },
+    {
+      "viewportWidth": 1280,
+      "theme": "light",
+      "largeText": false,
+      "sections": 1,
+      "rowFont": "15px",
+      "resetLabelFont": "13px",
+      "rowWidths": [
+        934,
+        934,
+        934,
+        934
+      ],
+      "verticallyStacked": true,
+      "documentOverflow": false,
+      "applicationWrites": 0
+    },
+    {
+      "viewportWidth": 1280,
+      "theme": "dark",
+      "largeText": false,
+      "sections": 1,
+      "rowFont": "15px",
+      "resetLabelFont": "13px",
+      "rowWidths": [
+        934,
+        934,
+        934,
+        934
+      ],
+      "verticallyStacked": true,
+      "documentOverflow": false,
+      "applicationWrites": 0
+    },
+    {
+      "viewportWidth": 1600,
+      "theme": "light",
+      "largeText": false,
+      "sections": 1,
+      "rowFont": "15px",
+      "resetLabelFont": "13px",
+      "rowWidths": [
+        1254,
+        1254,
+        1254,
+        1254
+      ],
+      "verticallyStacked": true,
+      "documentOverflow": false,
+      "applicationWrites": 0
+    },
+    {
+      "viewportWidth": 1600,
+      "theme": "dark",
+      "largeText": false,
+      "sections": 1,
+      "rowFont": "15px",
+      "resetLabelFont": "13px",
+      "rowWidths": [
+        1254,
+        1254,
+        1254,
+        1254
+      ],
+      "verticallyStacked": true,
+      "documentOverflow": false,
+      "applicationWrites": 0
+    },
+    {
+      "viewportWidth": 1280,
+      "theme": "light",
+      "largeText": true,
+      "sections": 1,
+      "rowFont": "18.75px",
+      "resetLabelFont": "16.25px",
+      "rowWidths": [
+        934,
+        934,
+        934,
+        934
+      ],
+      "verticallyStacked": true,
+      "documentOverflow": false,
+      "applicationWrites": 0
+    },
+    {
+      "viewportWidth": 1280,
+      "theme": "dark",
+      "largeText": true,
+      "sections": 1,
+      "rowFont": "18.75px",
+      "resetLabelFont": "16.25px",
+      "rowWidths": [
+        934,
+        934,
+        934,
+        934
+      ],
+      "verticallyStacked": true,
+      "documentOverflow": false,
+      "applicationWrites": 0
+    }
+  ]
+}

@@ -35,3 +35,5 @@ node tests/fixtures/accounts-integration-audit/run-local-pin-browser.mjs /path/t
 ```
 
 The optional third argument writes a JSON receipt. The two late-response cases preserve the replacement dialog, leave no local operator session and issue no Accounts mutation. The current visit sends one repair configuration request. Every case independently verifies the signed browser proof. Server acceptance, state persistence, full verification and release remain outside this fixture. `local-pin-browser-receipt.json` records the earlier exact source replay.
+
+The grid composition also passed eight disposable Chromium checks at 390, 1280 and 1600 pixels in both themes, including enlarged text at laptop width. It kept a single vertical list with no horizontal page overflow and issued no application writes. The [geometry receipt](grid-browser-receipt.json) binds the measurements to the exact merged renderer and stylesheet.
