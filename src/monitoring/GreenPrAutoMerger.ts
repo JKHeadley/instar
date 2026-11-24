@@ -57,6 +57,7 @@ export interface LocalVerifyHook {
   effectiveFloor(): 'local' | 'actions' | null;
   mainHealth(): 'healthy' | 'main-suspect' | 'main-red' | null;
   hasRecord(pr: number, headSha: string, baseRefName: string): boolean;
+  observeGithubHead?(pr: number, head: string): void;
   requestVerify(pr: number): Promise<unknown>;
   /**
    * `monitoring.localVerify.postStatuses`, read live. When it reads false the
@@ -723,6 +724,8 @@ export class GreenPrAutoMerger extends EventEmitter {
       this.deps.saveState(state);
       return { acted: false, reason: opts.handoff && this.deps.refetchHandoffPr ? 'handoff-read-failed' : 'list-failed' };
     }
+
+    for (const pr of candidates) this.localVerify?.observeGithubHead?.(pr.number, pr.headRefOid);
 
     // Build the candidate set (cheap fields) + the Layer-2 snapshot.
     const { eligible, snapshotEntries } = await this.gather(candidates, state, floor);

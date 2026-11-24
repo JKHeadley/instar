@@ -2109,6 +2109,24 @@
       }
     },
     {
+      "category": "local-verify-head-observations",
+      "description": "First coordinator observations of GitHub heads, partitioned by repository and PR. Queue and verdict records copy these times for latency measurement.",
+      "scope": "machine-local",
+      "freshness": "live",
+      "conflictShape": "single-writer",
+      "transport": "none",
+      "paths": [
+        "state/local-verify/head-observations/*/*.json"
+      ],
+      "grandfathered": false,
+      "retention": {
+        "class": "C",
+        "access": "indexed",
+        "complianceHold": true,
+        "note": "Preserve one timestamp per distinct head for the life of its PR history, including later reoffers of that same head. Each lookup loads one PR and atomically replaces its file only when a new SHA is observed. The process cache is bounded."
+      }
+    },
+    {
       "category": "local-verify-queue",
       "description": "local-verify durable PR verify queue (pr, head, base, base branch, first-queued time, attempts, error retries; the in-flight PR entry first), rewritten atomically on every queue change and restored at boot so a server restart (an auto-update) resumes queued and interrupted verifies instead of losing them. Entries whose PR closed or whose head moved are dropped at restore. `main` verifies are not persisted (the reconcile loop re-derives them). Machine-local: it names this machine's pending runs.",
       "scope": "machine-local",

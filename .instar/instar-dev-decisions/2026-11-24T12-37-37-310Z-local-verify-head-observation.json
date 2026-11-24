@@ -1,0 +1,31 @@
+{
+  "ts": "2026-11-24T12:37:37.310Z",
+  "slug": "local-verify-head-observation",
+  "suggestedTier": 2,
+  "declaredTier": 1,
+  "riskFloor": 2,
+  "riskFloorReasons": [
+    "new capability: new exported class / subsystem added"
+  ],
+  "belowFloor": true,
+  "files": 8,
+  "loc": 137,
+  "scope": {
+    "basis": "staged-in-scope-paths-including-deleted",
+    "files": [
+      "src/commands/server.ts",
+      "src/data/awareness/local-verify-head-observation.md",
+      "src/data/state-coherence-registry.json",
+      "src/localVerify/LocalVerifyService.ts",
+      "src/localVerify/firstHeadObservation.ts",
+      "src/localVerify/operatorQueue.ts",
+      "src/localVerify/record.ts",
+      "src/monitoring/GreenPrAutoMerger.ts"
+    ],
+    "addedLines": 115,
+    "deletedLines": 22
+  },
+  "causalAutopsy": null,
+  "classClosure": null,
+  "verdict": "pass"
+}

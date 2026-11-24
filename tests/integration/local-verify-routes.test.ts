@@ -241,6 +241,21 @@ describe('local-verify routes (integration)', () => {
     expect(r.body).toEqual({ ok: false, code: 'untrusted-head' });
   });
 
+  it('serves the first observed GitHub head timestamp from the persisted verdict', async () => {
+    const s = setup({ 7: view() });
+    const a = app(baseCtx(s.stateDir, { localVerify: s.svc }));
+    const first = s.svc.observeGithubHead(7, sha('a'));
+    expect(first).toBeGreaterThan(0);
+    expect((await request(a).post('/local-verify').send({ pr: 7 })).status).toBe(202);
+    const receipt = { ...record(), finishedAt: new Date().toISOString() };
+    fs.writeFileSync(s.children[0].resultPath, JSON.stringify({ kind: 'record', record: receipt, reasons: [], overlaps: [], keptWorktree: null }));
+    s.children[0].resolve({ status: 0, signal: null });
+    await s.svc.whenIdle();
+    const got = await request(a).get(`/local-verify/record?pr=7&head=${sha('a')}&base=main`);
+    expect(got.body.record.firstObservedAt).toBe(first);
+    expect(JSON.parse(fs.readFileSync(path.join(s.stateDir, 'state/local-verify/journal.jsonl'), 'utf8')).record.firstObservedAt).toBe(first);
+  });
+
   it('queues a trusted PR (202), shows it in flight, then serves the finished record', async () => {
     const s = setup({ 7: view() });
     const a = app(baseCtx(s.stateDir, { localVerify: s.svc }));

@@ -49,6 +49,7 @@ import fs from 'node:fs';
 import path from 'node:path';
 import { SafeFsExecutor } from '../core/SafeFsExecutor.js';
 import { exitSeenPath, MERGE_HANDOFF_RESTART_HOLD_MS, mergeHoldPath, PEER_RESTART_HOLD_MS, peerHoldPath, plannedRestartBypassesHolds, readPlannedRestartVerifyState, VERIFY_RESTART_HOLD_MS } from '../core/PlannedRestartVerifyGuard.js';
+import { FirstHeadObservations } from './firstHeadObservation.js';
 import { executionKey, recordKey, validateRecord, isValidPr, isValidSha, MAIN_VERIFY_PR, type FlakyRetry, type LocalVerifyRecord } from './record.js';
 import { PreflightReplayStore, replayKey, type PreflightReplay } from './preflightReplay.js';
 import { FailedFileDiagnosisCoordinator } from './FailedFileDiagnosisCoordinator.js';
@@ -398,6 +399,8 @@ export interface QueueEntry {
   preflightBypassRetry?: true;
   /** First time this (pr, head) was queued; capacity waits never reset it. */
   firstQueuedAt: number;
+  /** First coordinator observation of this exact PR head on GitHub (Unix milliseconds). */
+  firstObservedAt?: number;
   /** When the PR was first refused for a full queue before this entry was admitted (fb-7fde7f49-8ee). Absent = never refused. */
   firstRefusedAt?: number;
   attempts: number;
@@ -778,6 +781,8 @@ export interface PersistedQueueEntry {
   baseSha: string;
   baseRefName: string;
   firstQueuedAt: number;
+  /** First coordinator observation of this exact PR head on GitHub (Unix milliseconds). */
+  firstObservedAt?: number;
   /** When the PR was first refused for a full queue before admission (fb-7fde7f49-8ee). */
   firstRefusedAt?: number;
   attempts: number;
@@ -1042,6 +1047,7 @@ export class LocalVerifyService {
   private suitePriorityClaimed = false;
   /** PRs refused for a full queue, oldest first refusal first (fb-7fde7f49-8ee). Lease holder only. */
   private readonly waiting: WaitingList;
+  private readonly headObservations: FirstHeadObservations;
   // ---- operator queue controls (spec local-verify-queue-controls.md) ----
   /** `monitoring.localVerify.queueControls`, read live at each decision. Absent ⇒ off. */
   private queueControlsEnabled: (() => boolean) | null = null;
@@ -1060,6 +1066,7 @@ export class LocalVerifyService {
   constructor(cfg: LocalVerifyServiceConfig, seams: LocalVerifyServiceSeams) {
     this.cfg = cfg;
     this.seams = seams;
+    this.headObservations = new FirstHeadObservations(path.join(this.lvStateDir, 'head-observations', encodeURIComponent(cfg.repo)), e => this.audit(e));
     this.now = seams.now ?? (() => Date.now());
     this.policyHash = cfg.policyHash ?? computePolicyHash();
     try { this.preflightReplays = new PreflightReplayStore(path.join(cfg.stateDir, 'state')); }
@@ -1120,7 +1127,7 @@ export class LocalVerifyService {
       now: this.now, mode, holdsLease: () => this.leaseState().holds,
       leaseEpoch: () => this.leaseState().epoch,
       peers: () => this.peersSetting?.() ?? [], fullVerifyWaiting: () => this.isDiagnosisCapacityBusy(),
-      prView: (pr) => this.seams.prView(pr), baseHead: (ref) => this.seams.baseHead?.(ref) ?? Promise.resolve(null),
+      prView: (pr) => this.readCoordinatorPr(pr), baseHead: (ref) => this.seams.baseHead?.(ref) ?? Promise.resolve(null),
       isPrOpen: (pr) => this.seams.isPrOpen(pr), client, audit: (event) => this.audit(event),
     });
   }
@@ -1471,7 +1478,7 @@ export class LocalVerifyService {
         continue;
       }
       const open = await this.seams.isPrOpen(e.pr).catch(() => null);
-      const view = open === false ? null : await this.seams.prView(e.pr).catch(() => null);
+      const view = open === false ? null : await this.readCoordinatorPr(e.pr).catch(() => null);
       const why = open === false ? 'closed'
         : view && (view.headRefOid !== e.headSha || view.baseRefName !== e.baseRefName) ? 'head-or-base-moved'
           : this.getRecord(e.pr, e.headSha, e.baseRefName)?.outcome === 'success' ? 'already-recorded' : null;
@@ -1497,7 +1504,7 @@ export class LocalVerifyService {
         // service resolved, and the pre-start refresh below re-reads today's head before any run.
         // A reserved entry keeps the base it was dispatched with (the marker's snapshot decides import).
         baseSha: e.baseSha,
-        baseRefName: e.baseRefName, firstQueuedAt: e.firstQueuedAt, attempts: e.attempts,
+        baseRefName: e.baseRefName, firstQueuedAt: e.firstQueuedAt, firstObservedAt: e.firstObservedAt, attempts: e.attempts,
         errorRetries: e.errorRetries, starvedRaised: e.starvedRaised,
         ...(e.firstRefusedAt !== undefined ? { firstRefusedAt: e.firstRefusedAt } : {}),
         // An unreadable view keeps the saved label level (never more than the throughput level).
@@ -1528,7 +1535,7 @@ export class LocalVerifyService {
           // dying under still raises its alarm (otherwise the drop hides the second kill).
           this.raiseStarvedIfDue(entry);
           drops['server-restarted']++;
-          this.complete(this.syntheticError(entry, 'server-restarted'), 'run');
+          this.complete(this.syntheticError(entry, 'server-restarted'), 'run', entry.firstObservedAt);
           this.audit({ event: 'queue-restore-stopped', pr: e.pr, headSha: e.headSha, reason: 'server-restarted' });
           continue;
         }
@@ -1758,7 +1765,7 @@ export class LocalVerifyService {
     }
     for (const marker of store.list()) {
       if (marker.policyHash !== this.policyHash) { store.cancel(marker.key); continue; }
-      const [view, open] = await Promise.all([this.seams.prView(marker.pr).catch(() => null), this.seams.isPrOpen(marker.pr).catch(() => null)]);
+      const [view, open] = await Promise.all([this.readCoordinatorPr(marker.pr).catch(() => null), this.seams.isPrOpen(marker.pr).catch(() => null)]);
       if (open === false || view && (view.headRefOid !== marker.headSha || view.baseRefName !== marker.baseRefName)) {
         store.cancel(marker.key);
         continue;
@@ -1786,11 +1793,22 @@ export class LocalVerifyService {
       if (store.get(key)) continue;
       const latest = this.index.get(recordKey(red.repo, red.pr, red.headSha, red.baseRefName));
       if (latest && latest.preflight?.reason !== 'preflight-red') continue;
-      const [view, open] = await Promise.all([this.seams.prView(red.pr).catch(() => null), this.seams.isPrOpen(red.pr).catch(() => null)]);
+      const [view, open] = await Promise.all([this.readCoordinatorPr(red.pr).catch(() => null), this.seams.isPrOpen(red.pr).catch(() => null)]);
       if (open !== true || !view || view.headRefOid !== red.headSha || view.baseRefName !== red.baseRefName) continue;
       store.ensureRed(red, this.now());
       this.audit({ event: 'preflight-replay-repaired-from-red', pr: red.pr, headSha: red.headSha });
     }
+  }
+
+  /** Accepted only from the in-process GitHub reader, before it filters or requests admission. */
+  observeGithubHead(pr: number, head: string): number | undefined {
+    return this.headObservations.observe(pr, head, this.now());
+  }
+
+  private async readCoordinatorPr(pr: number): Promise<PrView | null> {
+    const view = await this.seams.prView(pr);
+    if (view) this.observeGithubHead(pr, view.headRefOid);
+    return view;
   }
 
   // ---- the POST path ----
@@ -1822,6 +1840,7 @@ export class LocalVerifyService {
     if (!explicit && !this.health.isHealthy()) return { ok: false, code: 'main-unhealthy' };
     const view = await this.seams.prView(pr).catch(() => null);
     if (!view) return { ok: false, code: 'pr-unreadable' };
+    const firstObservedAt = this.observeGithubHead(pr, view.headRefOid);
     // A merged or closed PR has nothing to verify (an unknown answer queues it: the pre-start check asks again).
     if ((await this.seams.isPrOpen(pr).catch(() => null)) === false) {
       for (const marker of this.preflightReplays?.list().filter((r) => r.pr === pr) ?? []) this.preflightReplays?.cancel(marker.key);
@@ -1923,7 +1942,7 @@ export class LocalVerifyService {
     // Execution dedupe: identical merge inputs already verified under this policy.
     const exec = this.execIndex.get(executionKey(headSha, baseSha));
     if (exec && exec.preflight?.reason !== 'preflight-red' && !(opts.force && exec.outcome === 'failure') && !(existing && existing.outcome === 'failure' && exec === existing)) {
-      const derived = this.complete({ ...exec, pr, baseRefName }, 'derived');
+      const derived = this.complete({ ...exec, pr, baseRefName }, 'derived', firstObservedAt);
       if (derived) return this.recordedAnswer(pr, derived);
     }
 
@@ -1990,6 +2009,7 @@ export class LocalVerifyService {
     if (waited && !keptPlace) this.waiting.remove(pr, 'admitted');
     const entry: QueueEntry = {
       id: crypto.randomBytes(6).toString('hex'), pr, headSha, baseSha, baseRefName,
+      firstObservedAt,
       ...(!explicit ? { preflightRediscoverable: true } : {}),
       firstQueuedAt: keptPlace?.firstQueuedAt ?? this.now(), attempts: 0, errorRetries: 0,
       starvedRaised: keptPlace?.starvedRaised ?? false, priority: requestedPriority, baseResolvedAt: this.now(),
@@ -2007,7 +2027,7 @@ export class LocalVerifyService {
       this.operator.persist();
       this.audit({ event: `${operatorAdmit}-admitted-over-cap`, pr, headSha, used: this.operatorOverflowUsed(), max: OPERATOR_QUEUE_LIMITS.overflow });
     }
-    this.audit({ event: 'queued', pr, headSha, baseSha, explicit, ...(keptPlace ? { keptPlace: true, firstQueuedAt: entry.firstQueuedAt } : {}),
+    this.audit({ event: 'queued', pr, headSha, baseSha, explicit, firstObservedAt, ...(keptPlace ? { keptPlace: true, firstQueuedAt: entry.firstQueuedAt } : {}),
       ...(firstRefusedAt !== undefined ? { firstRefusedAt, refusedWaitMs: entry.firstQueuedAt - firstRefusedAt } : {}) });
     const position = this.queue.indexOf(entry);
     this.pump();
@@ -3188,7 +3208,7 @@ export class LocalVerifyService {
           this.completeMain(res.record, entry, res.run, m.sentAt, 'peer');
         } else {
           // SEC-113 D2.1: a peer record is imported, but its flaky list is not taken into flaky history.
-          this.complete(res.record, 'peer');
+          this.complete(res.record, 'peer', entry.firstObservedAt);
         }
         this.persistQueue();
         this.writePeerHold(); // the restart this attempt held need not wait for the next tick
@@ -3605,7 +3625,7 @@ export class LocalVerifyService {
       if (this.stopped || !this.leaseState().holds) return;
       const marker = completed[(start + n) % completed.length];
       const [view, open] = await Promise.all([
-        this.seams.prView(marker.pr).catch(() => null),
+        this.readCoordinatorPr(marker.pr).catch(() => null),
         this.seams.isPrOpen(marker.pr).catch(() => null),
       ]);
       if (open === false || view && (view.headRefOid !== marker.headSha || view.baseRefName !== marker.baseRefName)) {
@@ -3894,7 +3914,7 @@ export class LocalVerifyService {
       const same = (e: QueueEntry) => e.pr === marker.pr && e.headSha === marker.headSha && e.baseRefName === marker.baseRefName;
       if (this.queue.some(same) || this.inFlight && same(this.inFlight.entry)) continue;
       if (this.now() < marker.nextAdmissionAt) { this.wakeReplayAt(marker.nextAdmissionAt); continue; }
-      const [view, open] = await Promise.all([this.seams.prView(marker.pr).catch(() => null), this.seams.isPrOpen(marker.pr).catch(() => null)]);
+      const [view, open] = await Promise.all([this.readCoordinatorPr(marker.pr).catch(() => null), this.seams.isPrOpen(marker.pr).catch(() => null)]);
       if (open === false || view && (view.headRefOid !== marker.headSha || view.baseRefName !== marker.baseRefName)) {
         store.cancel(marker.key);
         this.audit({ event: 'preflight-replay-cancelled', pr: marker.pr, reason: open === false ? 'closed' : 'head-or-target-moved' });
@@ -4113,7 +4133,7 @@ export class LocalVerifyService {
       if (exec && exec.outcome === 'success') {
         this.queue.splice(this.queue.indexOf(entry), 1);
         this.audit({ event: 'derived-at-start', pr: entry.pr, headSha: entry.headSha, baseSha: entry.baseSha });
-        this.complete({ ...exec, pr: entry.pr, baseRefName: entry.baseRefName }, 'derived');
+        this.complete({ ...exec, pr: entry.pr, baseRefName: entry.baseRefName }, 'derived', entry.firstObservedAt);
       }
     }
     this.pump();
@@ -4248,7 +4268,7 @@ export class LocalVerifyService {
       }
       const failed = this.syntheticError(entry, 'spawn');
       if (input.firstPartEvidence) failed.firstPart = input.firstPartEvidence;
-      this.complete(failed, 'run');
+      this.complete(failed, 'run', entry.firstObservedAt);
       this.noteFirstPart({ runInput: input, token }, { kind: 'record', record: failed });
       this.audit({ event: 'spawn-failed', pr: entry.pr, detail: e instanceof Error ? e.message : String(e) });
       if (!entry.preflightReplay) this.handleErrorRetry(entry);
@@ -4394,7 +4414,7 @@ export class LocalVerifyService {
       this.audit({ event: 'run-error', pr: f.entry.pr, step, exit, detail: result && 'detail' in result ? result.detail : undefined });
       const synthetic = this.syntheticError(f.entry, step);
       if (f.runInput?.firstPartEvidence) synthetic.firstPart = f.runInput.firstPartEvidence;
-      this.complete(synthetic, 'run');
+      this.complete(synthetic, 'run', f.entry.firstObservedAt);
       this.noteFirstPart(f, { kind: 'record', record: synthetic });
       if (!f.entry.preflightReplay) this.handleErrorRetry(f.entry);
     } else if (result.kind === 'requeue') {
@@ -4408,7 +4428,7 @@ export class LocalVerifyService {
       this.retry(f.entry);
     } else {
       for (const o of result.overlaps) this.audit({ event: 'overlap', where: `before-${o.beforeLane}`, holders: o.holders });
-      const rec = this.complete(result.record, 'run');
+      const rec = this.complete(result.record, 'run', f.entry.firstObservedAt);
       if (rec && (rec.outcome !== 'success' || rec.flakyRetried)) {
         // Why it went red (or what was flaky), bounded: reasons, each failed file's first error, the flaky re-runs.
         this.audit({ event: 'run-detail', ...runDetail(rec, { ...result, runLog: `${f.token}.log` }) });
@@ -4530,7 +4550,7 @@ export class LocalVerifyService {
     if (record.outcome === 'success' && this.preflightReplays) {
       const work = (async () => {
         for (const marker of this.preflightReplays!.list().filter((r) => r.state === 'blocked')) {
-          const [view, open] = await Promise.all([this.seams.prView(marker.pr).catch(() => null), this.seams.isPrOpen(marker.pr).catch(() => null)]);
+          const [view, open] = await Promise.all([this.readCoordinatorPr(marker.pr).catch(() => null), this.seams.isPrOpen(marker.pr).catch(() => null)]);
           if (open === false || view && (view.headRefOid !== marker.headSha || view.baseRefName !== marker.baseRefName)) {
             this.preflightReplays!.cancel(marker.key);
             continue;
@@ -4748,7 +4768,9 @@ export class LocalVerifyService {
    * Validates, appends, indexes, then derives records for queued PRs that share
    * the execution key (dedupe by merge-tree inputs).
    */
-  private complete(record: LocalVerifyRecord, source: 'run' | 'derived' | 'peer'): LocalVerifyRecord | null {
+  private complete(record: LocalVerifyRecord, source: 'run' | 'derived' | 'peer', firstObservedAt: number | undefined): LocalVerifyRecord | null {
+    // Derived results and peer replies get only the coordinator’s evidence for this PR and SHA.
+    record = { ...record, firstObservedAt: firstObservedAt !== undefined && firstObservedAt <= Date.parse(record.finishedAt) ? firstObservedAt : undefined };
     const v = validateRecord(record);
     if (!v.ok || record.repo !== this.cfg.repo) {
       this.audit({ event: 'record-rejected', pr: record.pr, errors: v.ok ? ['repo'] : v.errors });
@@ -4805,7 +4827,7 @@ export class LocalVerifyService {
         const e = this.queue[i];
         if (!e.remote && e.headSha === record.headSha && e.baseSha === record.baseSha && !(e.pr === record.pr && e.baseRefName === record.baseRefName)) {
           this.queue.splice(i, 1);
-          this.complete({ ...record, pr: e.pr, baseRefName: e.baseRefName }, 'derived');
+          this.complete({ ...record, pr: e.pr, baseRefName: e.baseRefName }, 'derived', e.firstObservedAt);
         }
       }
       this.persistQueue();
@@ -4896,7 +4918,7 @@ export class LocalVerifyService {
 
   private savedEntryOf(e: QueueEntry): SavedQueueEntry {
     return {
-      headSha: e.headSha, baseSha: e.baseSha, baseRefName: e.baseRefName, firstQueuedAt: e.firstQueuedAt,
+      headSha: e.headSha, baseSha: e.baseSha, baseRefName: e.baseRefName, firstQueuedAt: e.firstQueuedAt, firstObservedAt: e.firstObservedAt,
       attempts: e.attempts, errorRetries: e.errorRetries, starvedRaised: e.starvedRaised,
       ...(e.firstRefusedAt !== undefined ? { firstRefusedAt: e.firstRefusedAt } : {}),
       ...(e.pausedMs ? { pausedMs: e.pausedMs } : {}),
@@ -4915,7 +4937,7 @@ export class LocalVerifyService {
     const pausedMs = (s.pausedMs ?? 0) + Math.max(0, heldMs);
     return {
       id: crypto.randomBytes(6).toString('hex'), pr, headSha: s.headSha, baseSha: s.baseSha, baseRefName: s.baseRefName,
-      firstQueuedAt: s.firstQueuedAt, attempts: s.attempts, errorRetries: s.errorRetries, starvedRaised: s.starvedRaised,
+      firstQueuedAt: s.firstQueuedAt, firstObservedAt: s.firstObservedAt, attempts: s.attempts, errorRetries: s.errorRetries, starvedRaised: s.starvedRaised,
       priority: s.priority === QUEUE_PRIORITY.mergeThroughput ? QUEUE_PRIORITY.mergeThroughput : QUEUE_PRIORITY.ordinary,
       // In memory only on a live entry: the next request for the change re-reads its files and text.
       files: null, text: '',
@@ -5012,7 +5034,7 @@ export class LocalVerifyService {
     const order = this.operator.frontOrder(pr);
     if (order === 0) return;
     const work: Promise<void> = (async () => {
-      const view = await this.seams.prView(pr).catch(() => null);
+      const view = await this.readCoordinatorPr(pr).catch(() => null);
       const current = view ? { headSha: view.headRefOid, baseRefName: view.baseRefName } : (this.operatorSeen.get(pr) ?? null);
       if (current && (current.headSha !== record.headSha || current.baseRefName !== record.baseRefName)) return;
       // An error that is being re-run has given no result yet.
@@ -5605,7 +5627,7 @@ export class LocalVerifyService {
       const out: PersistedQueueEntry[] = entries.map((e) => ({
         ...(e.kind === 'main' ? { kind: 'main' as const } : {}),
         pr: e.pr, headSha: e.headSha, baseSha: e.baseSha, baseRefName: e.baseRefName,
-        firstQueuedAt: e.firstQueuedAt, attempts: e.attempts, errorRetries: e.errorRetries, starvedRaised: e.starvedRaised,
+        firstQueuedAt: e.firstQueuedAt, firstObservedAt: e.firstObservedAt, attempts: e.attempts, errorRetries: e.errorRetries, starvedRaised: e.starvedRaised,
         ...(e.firstRefusedAt !== undefined ? { firstRefusedAt: e.firstRefusedAt } : {}),
         ...(e.pausedMs ? { pausedMs: e.pausedMs } : {}),
         ...(e.baseResolvedAt ? { baseResolvedAt: e.baseResolvedAt } : {}),
@@ -5658,6 +5680,7 @@ export class LocalVerifyService {
         && Number.isFinite(x.firstQueuedAt) && Number.isFinite(x.attempts) && Number.isFinite(x.errorRetries);
     }).map((x) => ({
       ...x, starvedRaised: x.starvedRaised === true,
+      firstObservedAt: Number.isSafeInteger(x.firstObservedAt) && x.firstObservedAt! > 0 ? x.firstObservedAt : undefined,
       firstRefusedAt: Number.isFinite(x.firstRefusedAt) && (x.firstRefusedAt as number) > 0 ? x.firstRefusedAt : undefined,
       pausedMs: Number.isFinite(x.pausedMs) && (x.pausedMs as number) > 0 ? x.pausedMs : undefined,
       baseResolvedAt: Number.isFinite(x.baseResolvedAt) && (x.baseResolvedAt as number) > 0 ? x.baseResolvedAt : undefined,

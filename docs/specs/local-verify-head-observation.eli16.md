@@ -1,0 +1,5 @@
+# How long did a revision wait for verification?
+
+When somebody publishes an update to a pull request, the local coordinator learns about it the next time it reads GitHub. That first sighting gives us a clock we can use. It tells us when the coordinator had the chance to start handling the revision. GitHub may have received the update earlier, especially while the coordinator was asleep or busy. This measurement therefore covers the wait that the coordinator could observe.
+
+Each revision gets a separate clock. If the queue is full when a revision appears, a later retry still uses its original observation. If a newer revision replaces it, the new revision gets its own start time. A server restart preserves known observations. A worker that reuses an existing test result uses the observation for the pull request receiving the result. When there is no trustworthy start time, the result leaves the field empty. This lets an operator distinguish a genuinely short wait from an interval we could never measure. None of these timestamps authorizes a merge or changes verification priority.
