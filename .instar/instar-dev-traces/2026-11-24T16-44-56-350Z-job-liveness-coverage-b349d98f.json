@@ -1,0 +1,18 @@
+{
+  "version": 2,
+  "slug": "job-liveness-coverage",
+  "sessionId": "5591f135-974d-45ff-afdb-df56f5dbd35e",
+  "timestamp": "2026-11-24T16:44:56.350Z",
+  "artifactPath": "upgrades/side-effects/job-liveness-coverage.md",
+  "artifactSha256": "2738fd6ad9d322767fe9b935c4db2ac5f71bc934157762cb3df6258cc73eaea6",
+  "coveredFiles": [
+    "src/data/feature-ladders.json"
+  ],
+  "phase": "complete",
+  "tier": 1,
+  "tierReasoning": "One registry entry describes evidence for an existing rollout switch. It changes no observer, source or runtime access.",
+  "eli16Path": "docs/specs/job-liveness-coverage.eli16.md",
+  "sideEffectsPath": "upgrades/side-effects/job-liveness-coverage.md",
+  "secondPass": "not-required",
+  "reviewerConcurred": null
+}
