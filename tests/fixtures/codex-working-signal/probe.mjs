@@ -2,7 +2,7 @@
 import { execFile } from 'node:child_process';
 import { promisify } from 'node:util';
 import { createInterface } from 'node:readline';
-import { mkdtemp, stat, realpath, writeFile, readFile, mkdir } from 'node:fs/promises';
+import { mkdtemp, stat, realpath, writeFile, readFile, mkdir, readdir } from 'node:fs/promises';
 import { dirname, join } from 'node:path';
 import WebSocket from 'ws';
 import { tmpdir } from 'node:os';
@@ -15,7 +15,8 @@ if (process.platform !== 'darwin') throw Error('This fixture requires macOS');
 const embedded = process.argv.includes('--embedded');
 const resume = process.argv.includes('--resume');
 const inject = process.argv.includes('--inject');
-const changeAfterPreflight = process.argv.includes('--change-after-preflight');
+const proveFallback = process.argv.includes('--fallback-before-input');
+const changeAfterPreflight = proveFallback || process.argv.includes('--change-after-preflight');
 const changedHookRestart = changeAfterPreflight || process.argv.includes('--changed-hook-restart');
 const trustedRestart = changedHookRestart || process.argv.includes('--trusted-restart');
 if (trustedRestart && (!resume || embedded || inject)) throw Error('Trusted restart requires managed resume');
@@ -38,6 +39,28 @@ const threadsReturned = [];
 const positiveThreads = [];
 const stopReceipt = join(root, 'stop-count');
 const fixturePrompt = 'Return CANARY_OK without tools.';
+let heldCandidate;
+const fallbackPrompt = 'Return CANARY_OK without tools. FALLBACK_CANARY_EXACT_ONCE';
+
+async function processTable() {
+  const { stdout } = await run('ps', ['-ax', '-o', 'pid=,ppid=,command='], { timeout: 3000, maxBuffer: 2 * 1024 * 1024 });
+  return stdout.split('\n').map(line => line.match(/^\s*(\d+)\s+(\d+)\s+(.*)$/))
+    .filter(Boolean).map(([, pid, parent, command]) => ({ pid: Number(pid), parent: Number(parent), command }));
+}
+
+async function assertFallbackInput() {
+  const sessions = join(root, 'sessions');
+  const candidates = (await readdir(sessions, { recursive: true })).filter(name => name.endsWith(resumedThread + '.jsonl'));
+  if (candidates.length !== 1) throw Error('Expected one disposable rollout for the original thread');
+  const file = join(sessions, candidates[0]);
+  if ((await stat(file)).size > 1024 * 1024) throw Error('Disposable rollout exceeded inspection budget');
+  const count = (await readFile(file, 'utf8')).split('\n').filter(Boolean).map(line => JSON.parse(line))
+    .filter(row => row.type === 'response_item' && row.payload?.role === 'user'
+      && row.payload.content?.some(part => part.text === fallbackPrompt)).length;
+  if (count !== 1) throw Error('Expected exactly one original fallback input in the original thread, got ' + count);
+  console.log('Original fixture input appeared exactly once in the original native thread');
+}
+
 function fixtureHookTrust(reply, hookConfig) {
   const entries = reply.result?.data;
   if (!Array.isArray(entries) || entries.length !== 1 || entries[0].errors?.length !== 0) return undefined;
@@ -235,7 +258,8 @@ try {
     };
   }
 
-  async function exercise(manualTrust, expectReview = false, expectedLoadedTrust, afterPreflight) {
+  async function exercise(manualTrust, expectReview = false, expectedLoadedTrust, afterPreflight, fallback = false) {
+    const useEmbedded = embedded || fallback;
     const requestBaseline = provider.models.length;
     let resolvePane;
     const panePid = new Promise(resolve => { resolvePane = resolve; });
@@ -248,7 +272,7 @@ try {
     observedHookReads.length = 0;
     threadsReturned.length = 0;
     positiveThreads.length = 0;
-    if (!embedded) {
+    if (!useEmbedded) {
       relay = await startCodexWorkingLaunch({
         codexBinary: (await run('which', ['codex'])).stdout.trim(),
         peerVerifierBinary: verifier,
@@ -265,11 +289,12 @@ try {
     }
     const binary = (await run('which', ['codex'])).stdout.trim();
     const command = ['-S', mux, 'new-session', '-d', '-s', 'probe', '-c', root,
-      binary, '--dangerously-bypass-hook-trust', ...(resume ? ['resume', resumedThread] : []), '--model', CODEX_CANARY_MODELS[0], ...(embedded ? [] : ['--remote', relay.remote]),
-      ...(inject ? [] : ['Return CANARY_OK without tools.'])];
+      binary, '--dangerously-bypass-hook-trust', ...(resume ? ['resume', resumedThread] : []), '--model', CODEX_CANARY_MODELS[0], ...(useEmbedded ? [] : ['--remote', relay.remote]),
+      ...(inject || (proveFallback && expectReview) ? [] : [fallback ? fallbackPrompt : fixturePrompt])];
     await run('tmux', command, { env, timeout: 3000 });
     const pane = await run('tmux', ['-S', mux, 'display-message', '-p', '-t', '=probe:', '#{pane_pid}'], { env, timeout: 3000 });
-    resolvePane(Number(pane.stdout.trim()));
+    const tuiPid = Number(pane.stdout.trim());
+    resolvePane(tuiPid);
     if (manualTrust || expectReview) {
       let sawPrompt = false;
       for (let attempt = 0; attempt < 40 && !sawPrompt; attempt++) {
@@ -294,10 +319,28 @@ try {
         if (provider.models.length !== requestBaseline || hookReceipt) {
           throw Error('A changed hook ran or the fixture prompt reached the model before review');
         }
+        if (proveFallback) {
+          const socket = new URL(relay.remote).pathname;
+          const alias = join(dirname(socket), 'backend.sock');
+          const children = (await processTable()).filter(row => row.parent === process.pid
+            && row.command.endsWith(' app-server --listen unix://' + alias));
+          if (!Number.isSafeInteger(tuiPid) || tuiPid <= 0 || children.length !== 1) {
+            throw Error('Could not identify the exact disposable candidate processes');
+          }
+          heldCandidate = { socket, tuiPid, backendPid: children[0].pid };
+        }
         console.log('Changed fixture hook required review before any Stop or model call');
         return true;
       }
-      await run('tmux', ['-S', mux, 'send-keys', '-t', '=probe:', 'Down', 'Enter'], {env,timeout:3000});
+      await run('tmux', ['-S', mux, 'send-keys', '-t', '=probe:', 'Down'], {env,timeout:3000});
+      let selectedApproval = false;
+      for (let attempt = 0; attempt < 20 && !selectedApproval; attempt++) {
+        const pane = await run('tmux', ['-S', mux, 'capture-pane', '-p', '-t', '=probe:'], { env, timeout: 3000 });
+        selectedApproval = /›\s*2\. Trust all and continue/.test(pane.stdout);
+        if (!selectedApproval) await new Promise(resolve => setTimeout(resolve, 50));
+      }
+      if (!selectedApproval) throw Error('Disposable approval option was not selected');
+      await run('tmux', ['-S', mux, 'send-keys', '-t', '=probe:', 'Enter'], {env,timeout:3000});
       console.log('Explicitly selected Trust all and continue for this disposable fixture');
     }
     if (inject) {
@@ -315,13 +358,13 @@ try {
     let stops = [];
     for (let attempt = 0; attempt < 160; attempt++) {
       stops = (await readFile(stopReceipt, 'utf8').catch(() => '')).trim().split('\n').filter(Boolean);
-      if (stops.length >= 2 && (embedded || completed)) break;
+      if (stops.length >= 2 && (useEmbedded || completed)) break;
       await new Promise(resolve => setTimeout(resolve, 100));
     }
     const fixtureRequests = provider.models.length - requestBaseline;
-    const resumeMatched = !resume || embedded || resumedThread === confirmedThread;
-    console.log(JSON.stringify({embedded, resume, resumeMatched, stops, fixtureRequests, refused:provider.failed(), positive, completed, threadsReturned, positiveThreads}));
-    if (stops.join(',') !== 'blocked,allowed' || fixtureRequests < 2 || provider.failed() || !resumeMatched || (!embedded && (!positive || !completed || !positiveThreads.includes('selected') || positiveThreads.includes('other')))) {
+    const resumeMatched = !resume || useEmbedded || resumedThread === confirmedThread;
+    console.log(JSON.stringify({embedded: useEmbedded, resume, resumeMatched, stops, fixtureRequests, refused:provider.failed(), positive, completed, threadsReturned, positiveThreads}));
+    if (stops.join(',') !== 'blocked,allowed' || fixtureRequests < 2 || provider.failed() || !resumeMatched || (!useEmbedded && (!positive || !completed || !positiveThreads.includes('selected') || positiveThreads.includes('other')))) {
       const pane = await run('tmux', ['-S', mux, 'capture-pane', '-p', '-t', '=probe:'], {env,timeout:3000}).catch(() => null);
       console.log('Disposable pane:', pane?.stdout?.trim().slice(-1700));
       return false;
@@ -364,8 +407,31 @@ try {
       console.log('Reopening the same thread with unchanged fixture hook approval');
     }
     await readNativeHookTrust(hookConfig, changedHookRestart && !changeAfterPreflight ? 'modified' : 'trusted');
-    if (!await exercise(false, changedHookRestart, changedHookRestart ? undefined : 'trusted',
-      changeAfterPreflight ? changeHook : undefined)) process.exitCode = 1;
+    const second = await exercise(false, changedHookRestart, changedHookRestart ? undefined : 'trusted',
+      changeAfterPreflight ? changeHook : undefined);
+    if (!second) {
+      process.exitCode = 1;
+    } else if (proveFallback) {
+      if (!heldCandidate) throw Error('Expected the private managed candidate to fail before input ownership');
+      await run('tmux', ['-S', mux, 'kill-server'], { env, timeout: 3000 });
+      await relay.close();
+      relay = undefined;
+      const goneBy = performance.now() + 2000;
+      for (;;) {
+        const rows = await processTable();
+        const live = rows.some(row => row.pid === heldCandidate.tuiPid || row.pid === heldCandidate.backendPid);
+        if (!live) break;
+        if (performance.now() >= goneBy) throw Error('Disposable candidate processes survived teardown');
+        await new Promise(resolve => setTimeout(resolve, 50));
+      }
+      if (await stat(heldCandidate.socket).catch(error => {
+        if (error.code === 'ENOENT') return null;
+        throw error;
+      })) throw Error('Disposable candidate relay survived teardown');
+      console.log('Managed TUI, app-server and relay gone before ordinary resume');
+      if (!await exercise(false, false, undefined, undefined, true)) process.exitCode = 1;
+      else await assertFallbackInput();
+    }
   }
 
 } finally {
