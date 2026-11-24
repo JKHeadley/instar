@@ -1,0 +1,32 @@
+{
+  "version": 3,
+  "slug": "conversations-window-refresh",
+  "sessionId": "b5892410-5874-4620-9f7b-5e54791d9a9e",
+  "timestamp": "2026-11-24T07:38:38.936Z",
+  "artifactPath": "upgrades/side-effects/conversations-window-refresh.md",
+  "artifactSha256": "33876619fb7f8630f710249dbfc90ee4fb2ea0edad718d144e69ed27f51b5bdd",
+  "coveredFiles": [
+    "dashboard/console/chats.js",
+    "src/server/mobileConversationRoutes.ts",
+    "tests/e2e/conversation-pins-alive.test.ts",
+    "tests/integration/conversation-list-pins.test.ts",
+    "tests/unit/console-chat-list-states.test.ts",
+    "upgrades/next/conversations-window-refresh.md",
+    "upgrades/side-effects/conversations-window-refresh.eli16.md",
+    "upgrades/side-effects/conversations-window-refresh.md"
+  ],
+  "phase": "complete",
+  "tier": 1,
+  "tierReasoning": "Reversible list refresh of existing signed reads. No persisted data or permission changes.",
+  "eli16Path": "upgrades/side-effects/conversations-window-refresh.eli16.md",
+  "sideEffectsPath": "upgrades/side-effects/conversations-window-refresh.md",
+  "secondPass": "not-required",
+  "reviewerConcurred": null,
+  "toolchain": {
+    "buildSkill": {
+      "name": "build",
+      "version": null,
+      "verified": false
+    }
+  }
+}

@@ -191,3 +191,94 @@ describe('Interactive Conversations list read states',()=>{
  });
 
 });
+
+const previous = {...row,id:'22222222-2222-4222-8222-222222222222',title:'Answered agent question'};
+const keep = {...row,id:'33333333-3333-4333-8333-333333333333',title:'An older conversation'};
+const snapshot = (rows, cursor, failed=[]) => ({...ok(rows,cursor),data:{...ok(rows,cursor).data,listCoverageComplete:failed.length===0,pool:{failed}}});
+async function openOlder(main) {
+  main.querySelector('.chat-more').click();
+  await vi.advanceTimersByTimeAsync(1);
+  expect(main.textContent).toContain(previous.title);
+}
+it('refreshes the loaded window and uses its new continuation',async()=>{
+  const {main,page}=await boot(path=>{
+    if(path.includes('cursor=older')) return snapshot([previous,keep],'old-tail');
+    if(path.includes('limit=100')) return snapshot([row,keep],'new-tail');
+    if(path.includes('cursor=new-tail')) return snapshot([]);
+    return snapshot([row],'older');
+  });
+  await openOlder(main);
+  await page.loadList(false);
+  expect(main.textContent).not.toContain(previous.title);
+  expect(main.textContent).toContain(keep.title);
+  await page.loadList(true);
+  expect(calls.at(-1).path).toContain('cursor=new-tail');
+  expect(main.querySelector('.chat-more').hidden).toBe(true);
+});
+it('keeps rows and the cursor when the wider response is partial',async()=>{
+  const {main,page}=await boot(path=>{
+    if(path.includes('cursor=older')) return snapshot([previous,keep],'old-tail');
+    if(path.includes('limit=100')) return snapshot([row],null,[{machineId:'Fixture Mac'}]);
+    return snapshot([row],'older');
+  });
+  await openOlder(main);
+  await page.loadList(false);
+  expect(main.textContent).toContain(previous.title);
+  expect(main.textContent).toContain(keep.title);
+  expect(main.textContent).toContain('Fixture Mac');
+  expect(page.meta.nextCursor).toBe('old-tail');
+});
+it('refreshes at its own depth when another tab used a different limit',async()=>{
+  const {main,page}=await boot(path=>path.includes('limit=100')?snapshot([row,keep]):path.includes('cursor=older')?snapshot([previous,keep]):snapshot([row],'older'));
+  await openOlder(main);
+  page.applyResult({mode:'list',listLimit:50,data:snapshot([row],'older').data});
+  await vi.advanceTimersByTimeAsync(1);
+  expect(main.textContent).not.toContain(previous.title);
+  expect(main.textContent).toContain(keep.title);
+  expect(calls.filter(c=>c.path.includes('limit=100'))).toHaveLength(1);
+});
+it('uses a matching broadcast without another signed list read', async()=>{
+  const {main,page}=await boot(path=>path.includes('cursor=older')?snapshot([previous,keep]):snapshot([row],'older'));
+  await openOlder(main);
+  const count=calls.filter(c=>c.path.startsWith('/mobile/conversations?')).length;
+  page.applyResult({mode:'list-window',listLimit:100,data:snapshot([row,keep]).data});
+  expect(main.textContent).not.toContain(previous.title);
+  expect(main.textContent).toContain(keep.title);
+  expect(calls.filter(c=>c.path.startsWith('/mobile/conversations?'))).toHaveLength(count);
+});
+it('does not put widened rows into a tab that never opened them',async()=>{
+  const {main,page}=await boot(()=>snapshot([row],'older'));
+  page.applyResult({mode:'list-window',listLimit:100,data:snapshot([row,keep]).data});
+  await vi.advanceTimersByTimeAsync(1);
+  expect(main.textContent).not.toContain(keep.title);
+  expect(page.meta.nextCursor).toBe('older');
+  expect(calls.filter(c=>c.path.includes('limit=100'))).toHaveLength(0);
+});
+it('keeps the matching broadcast when the earlier read finishes',async()=>{
+  const pending=deferred();
+  const {main,page}=await boot(path=>path.includes('limit=100')?pending.promise:path.includes('cursor=older')?snapshot([previous,keep]):snapshot([row],'older'));
+  await openOlder(main);
+  const refresh=page.loadList(false);
+  page.applyResult({mode:'list-window',listLimit:100,data:snapshot([row,keep]).data});
+  expect(main.textContent).toContain(keep.title);
+  pending.resolve(snapshot([row,previous]));
+  await refresh;
+  expect(main.textContent).not.toContain(previous.title);
+});
+it('retains a loaded window when a widened response lacks coverage metadata',async()=>{
+  const {main,page}=await boot(path=>path.includes('limit=100')?ok([row],null):path.includes('cursor=older')?snapshot([previous,keep]):snapshot([row],'older'));
+  await openOlder(main);
+  await page.loadList(false);
+  expect(main.textContent).toContain(previous.title);
+  expect(main.textContent).toContain('Your last loaded list is still shown');
+});
+it('sends widened results using a mode that older dashboard tabs ignore', async () => {
+  const {main,page}=await boot(path=>path.includes('limit=100')?snapshot([row,keep]):path.includes('cursor=older')?snapshot([previous,keep]):snapshot([row],'older'));
+  await openOlder(main);
+  const send = vi.spyOn(page, 'post');
+  page.scheduler.setConversations([], Date.now());
+  const task = page.scheduler.tasks().find(task => task.mode === 'list');
+  await page.runTask(task);
+  expect(send).toHaveBeenCalledWith(expect.objectContaining({mode:'list-window',listLimit:100}));
+  expect(send).not.toHaveBeenCalledWith(expect.objectContaining({mode:'list'}));
+});

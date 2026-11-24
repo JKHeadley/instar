@@ -39,7 +39,7 @@ afterAll(() => {
 
 const USERS = [{ id: 'justin', name: 'Justin', channels: [], permissions: ['user'], telegramUserId: 555 }];
 
-function setup(opts: { maxPerReader?: number } = {}) {
+function setup(opts: { maxPerReader?: number; telegramUnavailable?: boolean; unreachableComputer?: boolean } = {}) {
   const dir = fs.mkdtempSync(path.join(os.tmpdir(), 'listpins-int-'));
   dirs.push(dir);
   fs.writeFileSync(path.join(dir, 'users.json'), JSON.stringify(USERS));
@@ -73,7 +73,15 @@ function setup(opts: { maxPerReader?: number } = {}) {
   app.use(createRoutes(ctx));
   app.use(createMobileConversationRouter({
     config: config as never, pairing, service: svc, machineId: () => 'm1', listPins: pins,
-    telegramTopics: () => [{ topicId: TOPIC, topicName: 'Ops', lastActivity: '2020-01-01T00:00:00.000Z', lastPreview: 'old topic' }],
+    pool: {
+      config: config as never,
+      resolvePeerUrls: () => [],
+      listPoolMachines: () => [{ machineId: 'm1' }, ...(opts.unreachableComputer ? [{ machineId: 'm2' }] : [])],
+    },
+    telegramTopics: () => {
+      if (opts.telegramUnavailable) throw new Error('Telegram inventory unavailable');
+      return [{ topicId: TOPIC, topicName: 'Ops', lastActivity: '2020-01-01T00:00:00.000Z', lastPreview: 'old topic' }];
+    },
   }));
   app.use(createMobilePairingRouter(pairing, deps, ctx));
   return { app, pairing, svc, pins, config };
@@ -105,6 +113,23 @@ async function create(e: Env, p: ReturnType<typeof phone>, title: string) {
 }
 
 describe('conversation-list pins — HTTP', () => {
+  it('reports whether the signed pooled list had complete inventory coverage', async () => {
+    for (const telegramUnavailable of [false, true]) {
+      const e = setup({ telegramUnavailable });
+      const response = await signed(e, phone(e), 'GET', '/mobile/conversations?scope=pool&limit=100');
+      expect(response.status).toBe(200);
+      expect(response.body.pool.failed).toEqual([]);
+      expect(response.body.listCoverageComplete).toBe(!telegramUnavailable);
+      expect(response.body.conversations.some((row: { id: number }) => row.id === TOPIC)).toBe(!telegramUnavailable);
+    }
+  });
+  it('treats a registered computer with no usable endpoint as incomplete', async () => {
+    const e = setup({ unreachableComputer: true });
+    const response = await signed(e, phone(e), 'GET', '/mobile/conversations?scope=pool&limit=100');
+    expect(response.status).toBe(200);
+    expect(response.body.pool.failed).toEqual([]);
+    expect(response.body.listCoverageComplete).toBe(false);
+  });
   it('a phone pins; the first page carries pinnedRefs and pinnedRows, even for a conversation older than the page', async () => {
     const e = setup();
     const owner = phone(e);

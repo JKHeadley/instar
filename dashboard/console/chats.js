@@ -46,6 +46,9 @@ import { detectCredentialShape, CREDENTIAL_QUESTION } from './credential-shape.j
 const TOKEN_KEY = 'instar_token';
 const POLL_LOCK = 'instar-chat-poll';
 const CHANNEL = 'instar-chat';
+const LIST_PAGE_SIZE = 50;
+const LIST_WINDOW_LIMIT = 200;
+const FOLLOWER_LIST_REFRESH_MS = 60000;
 const OWN_KEY = 'instar_chat_own:';
 const OFF_TEXT = 'Conversations in the dashboard are switched off on this agent.';
 // The hierarchy is read again at most this often (the list itself refreshes every 30 s).
@@ -93,6 +96,8 @@ class ChatsPage {
     this.listHasLoaded = false;
     this.listError = null;
     this.listRevision = 0;
+    this.listDepth = LIST_PAGE_SIZE;
+    this.followerListRefreshAt = -Infinity;
     this.listFeatureOff = false;
     this.view = null;           // the open conversation
     this.tabId = (globalThis.crypto && globalThis.crypto.randomUUID) ? globalThis.crypto.randomUUID() : String(Math.random());
@@ -439,13 +444,19 @@ class ChatsPage {
     return Array.isArray(data?.conversations) && listRows(data).length === data.conversations.length
       && (data.nextCursor == null || typeof data.nextCursor === 'string' && data.nextCursor.length > 0);
   }
+  listLimit() {
+    return this.listDepth > LIST_WINDOW_LIMIT ? LIST_PAGE_SIZE : this.listDepth;
+  }
+  listPath(more = false, limit = more ? LIST_PAGE_SIZE : this.listLimit()) {
+    return `/mobile/conversations?scope=pool&limit=${limit}${more ? `&cursor=${encodeURIComponent(this.meta.nextCursor)}` : ''}`;
+  }
   paintListReadState() {
     if (!this.listStatusEl) return;
     const request = this.listRequest;
     const error = this.listError;
     const hasRows = this.rows.length > 0 || (this.listPins?.length || 0) > 0;
     let text = '';
-    if (error) text = error.off ? OFF_TEXT + (hasRows ? ' The last loaded list is still shown.' : '') : error.unreadable ? 'The conversation list could not be read. Try again.'
+    if (error) text = error.partial ? 'The list could only be checked in part. Your last loaded list is still shown.' : error.off ? OFF_TEXT + (hasRows ? ' The last loaded list is still shown.' : '') : error.unreadable ? 'The conversation list could not be read. Try again.'
       : error.more ? 'More conversations could not be loaded. Try again.'
         : hasRows ? 'The list could not be refreshed. Your conversations are still shown.' : 'Conversations could not be loaded. Try again.';
     else if (request) text = this.listFeatureOff ? 'Checking whether conversations are available…' : request.waiting ? 'Taking longer than usual to load conversations. The agent may be busy.'
@@ -463,9 +474,10 @@ class ChatsPage {
   }
   loadList(more, background = false) {
     if (!this.live || !this.listEl?.isConnected) return Promise.resolve({ gone: true });
-    more = Boolean(more && this.meta.nextCursor);
+    if (more && !this.meta.nextCursor) return Promise.resolve({ gone: true });
     const owner = this.listEl;
-    const path = `/mobile/conversations?scope=pool&limit=50${more ? `&cursor=${encodeURIComponent(this.meta.nextCursor)}` : ''}`;
+    const limit = more ? LIST_PAGE_SIZE : this.listLimit();
+    const path = this.listPath(more, limit);
     // Initial open, retry and scheduled refresh share one signed read. Different pages wait their turn.
     if (this.listRequest) return this.listRequest.path === path ? this.listRequest.promise
       : this.listRequest.promise.then(() => this.listEl === owner && owner.isConnected ? this.loadList(more, background) : { gone: true });
@@ -490,8 +502,10 @@ class ChatsPage {
         if (!this.live || result.gone || this.listEl !== request.owner || !request.owner.isConnected) return { ...result, gone: true };
         if (this.listRevision !== request.revision) { result = { ...result, stale: true }; return result; }
         if (result.ok && !this.listReadable(result.data)) result = { ...result, ok: false, status: 0, unreadable: true };
-        if (result.ok) this.applyList(result.data, more);
-        else if (this.listRevision === request.revision) {
+        if (result.ok) {
+          result = { ...result, listLimit: limit };
+          this.applyList(result.data, more, limit);
+        } else if (this.listRevision === request.revision) {
           this.listError = { more, unreadable: result.unreadable, off: result.status === 503 && result.data?.error === 'native-conversations-off' };
           if (this.listError.off) { this.listFeatureOff = true; this.paintList(); }
         }
@@ -504,25 +518,33 @@ class ChatsPage {
           if (this.live && request.owner.isConnected) {
             const restoreFocus = request.retryFocused && (document.activeElement === this.listRetryEl || document.activeElement === document.body);
             this.paintListReadState();
-            if (restoreFocus && result?.ok && !result.stale) (this.listEl.querySelector('.chat-row') || this.listEl).focus();
+            if (restoreFocus && result?.ok && !result.stale && !this.listError) (this.listEl.querySelector('.chat-row') || this.listEl).focus();
           }
         }
       }
     })();
     return request.promise;
   }
-  applyList(data, more) {
+  applyList(data, more, limit = LIST_PAGE_SIZE) {
     if (!this.listReadable(data)) { this.listError = { more, unreadable: true }; this.paintListReadState(); return; }
+    const meta = listMeta(data);
+    if (limit > LIST_PAGE_SIZE && (data.listCoverageComplete !== true || meta.failed.length)) {
+      this.listError = { more, partial: true };
+      this.meta = { ...this.meta, failed: meta.failed };
+      this.paintList();
+      this.paintListReadState();
+      return;
+    }
     this.listHasLoaded = true; this.listError = null; this.listFeatureOff = false; this.listRevision++;
     const rows = listRows(data);
     if (!more) this.pinnedKey = (listPinned(data) || {}).key || null; // the first page carries the Chief of Staff pin (§1.4); a later page keeps it
     // Conversations this person pinned (conversation-list-pins): the first page carries them; null ⇒ the feature is off here.
     if (!more) this.listPins = listPinnedRows(data);
-    if (more) { this.pagedMore = true; this.rows = mergeListPages(this.rows, rows); }
-    // A refresh of the first page replaces it; pages the operator opened with "Show more" are kept below.
-    else this.rows = this.pagedMore ? mergeListPages(rows, this.rows) : rows;
-    const meta = listMeta(data);
-    this.meta = more || !this.pagedMore ? meta : { ...meta, nextCursor: this.meta.nextCursor };
+    if (more) this.listDepth += LIST_PAGE_SIZE;
+    // For depths beyond the server's limit, keep the older rows and their cursor.
+    const firstPageOnly = !more && limit < this.listDepth;
+    this.rows = more ? mergeListPages(this.rows, rows) : firstPageOnly ? mergeListPages(rows, this.rows) : rows;
+    this.meta = firstPageOnly ? { ...meta, nextCursor: this.meta.nextCursor } : meta;
     this.paintList();
     this.paintListReadState();
     if (!more) void this.loadHierarchy();
@@ -665,7 +687,8 @@ class ChatsPage {
     this.moreBtn.hidden = this.listFeatureOff || !this.meta.nextCursor;
     const failed = this.meta.failed || [];
     this.failedEl.hidden = failed.length === 0;
-    this.failedEl.textContent = failed.length ? `Not shown: conversations on ${failed.map((f) => f.machineId).join(', ')} (that machine did not answer).` : '';
+    const machines = failed.map((f) => f.machineId).join(', ');
+    this.failedEl.textContent = !machines ? '' : this.listError?.partial ? `Could not refresh conversations on ${machines}.` : `Not shown: conversations on ${machines} (that machine did not answer).`;
     if (focusedHref) {
       const target = [...this.listEl.querySelectorAll('.chat-row')].find(row => row.getAttribute('href') === focusedHref && row.getAttribute('aria-disabled') !== 'true');
       (target || this.listEl).focus({ preventScroll: true });
@@ -1535,7 +1558,7 @@ class ChatsPage {
   }
 
   taskPath(task) {
-    if (task.mode === 'list') return '/mobile/conversations?scope=pool&limit=50';
+    if (task.mode === 'list') return this.listPath();
     const ref = parseConversationRef(task.ref);
     if (task.mode === 'events') { const c = this.cursors.get(task.ref); return `/mobile/chat/app/${encodeURIComponent(ref.id)}/events?limit=100${c ? `&cursor=${encodeURIComponent(c)}` : ''}`; }
     const v = { ref };
@@ -1568,6 +1591,11 @@ class ChatsPage {
     }
     if (r.ok) {
       const msg = { type: 'result', mode: task.mode, ref: task.ref, data: r.data, backoff: this.scheduler.snapshot(), union: this.union };
+      if (task.mode === 'list' && r.listLimit > LIST_PAGE_SIZE) {
+        // Tabs opened before this update treat every "list" result as a first page.
+        msg.mode = 'list-window';
+        msg.listLimit = r.listLimit;
+      }
       if (task.mode === 'newest') {
         const page = rebuildQuickPage(previous, r.data);
         this.rememberQuickPage(task.ref, page.cache);
@@ -1593,7 +1621,16 @@ class ChatsPage {
     if (m.cursor && m.ref) this.cursors.set(m.ref, m.cursor);
     if (m.resetQuickPage && m.ref) this.rememberQuickPage(m.ref, null);
     if (!m.mode || !m.data) return;
-    if (m.mode === 'list') { this.applyList(m.data, false); return; }
+    if (m.mode === 'list' || m.mode === 'list-window') {
+      if (!this.listEl?.isConnected || this.listRequest?.more) return;
+      const limit = m.mode === 'list' ? LIST_PAGE_SIZE : m.listLimit;
+      if (limit === this.listLimit()) this.applyList(m.data, false, limit);
+      else if (!this.listRequest && document.visibilityState === 'visible' && now() - this.followerListRefreshAt >= FOLLOWER_LIST_REFRESH_MS) {
+        this.followerListRefreshAt = now();
+        void this.loadList(false);
+      }
+      return;
+    }
     // Broadcasts carry full reconstructed pages. Even an unfocused tab/new leader learns rows
     // and hashes together, never an unseen hash that would suppress a missing message.
     if (m.mode === 'newest' && m.ref && m.quickFullPage) {
