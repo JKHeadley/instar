@@ -12,6 +12,8 @@ import { registerSqliteHandle } from '../core/SqliteRegistry.js';
 import { mediaDiskFloorBytes, UPLOAD_TTL_MS } from '../core/AppMediaStore.js';
 import { CHUNK_BYTES } from '../core/appMediaTypes.js';
 import { SafeFsExecutor } from '../core/SafeFsExecutor.js';
+import type { LocalHistoryChildAdmission } from './LocalHistoryChildCustody.js';
+import { localHistoryCopyRunTag } from './LocalHistoryStoreTemporaryRun.js';
 import { pinLocalHistoryCopyVolume, type LocalHistoryDirectoryIdentity } from './LocalHistoryCopyVolume.js';
 import { localHistoryUploadDirectory } from './LocalHistoryExchange.js';
 import { privateImportDatabasePath, verifyPrivateImportDirectory } from './privateImportState.js';
@@ -32,6 +34,8 @@ function validId(id: string): void {
 }
 
 export class LocalHistoryDiskLedger {
+  private readonly copyVolumePins = new WeakSet<ReturnType<typeof pinLocalHistoryCopyVolume>>();
+  private readonly stateDir: string;
   private readonly directory: string;
   private readonly blocks: string;
   private readonly device: number;
@@ -44,7 +48,8 @@ export class LocalHistoryDiskLedger {
   constructor(stateDir: string, options: { disk?: () => LocalHistoryDiskMeasurement; recordCapacity?: number } = {}) {
     this.recordCapacity = options.recordCapacity ?? MAX_RECORDS;
     if (!Number.isSafeInteger(this.recordCapacity) || this.recordCapacity < 1 || this.recordCapacity > MAX_RECORDS) throw new Error('local-history-disk-policy');
-    this.directory = localHistoryUploadDirectory(stateDir);
+    this.stateDir = path.resolve(stateDir);
+    this.directory = localHistoryUploadDirectory(this.stateDir);
     const uploadIdentity = fs.lstatSync(this.directory, { bigint: true });
     this.device = Number(uploadIdentity.dev);
     this.disk = options.disk ?? (() => {
@@ -93,7 +98,9 @@ export class LocalHistoryDiskLedger {
    * one device. The future admission owner holds this pin through worker exit. */
   pinCopyVolume(destinationDirectories: readonly string[]) {
     if (!this.db.open || !destinationDirectories.length) throw new Error('local-history-disk-volume');
-    return pinLocalHistoryCopyVolume(this.directory, [this.blocks, ...destinationDirectories], this.directoryIdentities);
+    const pin = pinLocalHistoryCopyVolume(this.directory, [this.blocks, ...destinationDirectories], this.directoryIdentities);
+    this.copyVolumePins.add(pin);
+    return pin;
   }
 
   private measurement(): LocalHistoryDiskMeasurement {
@@ -194,6 +201,34 @@ export class LocalHistoryDiskLedger {
       this.db.prepare('UPDATE allocations SET planned = ? WHERE id = ?').run(next, id);
     });
   }
+  /** Grow the parent's existing empty reservation under live admission.
+   * The operation owner retains the charge through worker exit and recovery. */
+  growCopyRunReservation(lease: LocalHistoryChildAdmission, operationId: string, allocationId: string,
+    pin: ReturnType<typeof pinLocalHistoryCopyVolume>, bytes: number, ceiling: number): void {
+    amount(bytes); amount(ceiling);
+    if (!bytes || !ceiling || !this.copyVolumePins.has(pin)) throw new Error('local-history-disk-copy-reservation');
+    const operation = localHistoryCopyRunTag(lease, this.stateDir, operationId);
+    this.transaction(() => {
+      const row = this.row(allocationId, true);
+      const planned = row.planned + bytes;
+      amount(planned);
+      if (row.operation !== operation || row.written !== 0 || planned > ceiling) {
+        throw new Error('local-history-disk-copy-reservation');
+      }
+      const checkIdentity = () => {
+        pin.revalidate();
+        const stat = fs.lstatSync(this.file(allocationId));
+        this.validate(stat, row);
+        if (stat.size !== 0) throw new Error('local-history-disk-copy-reservation');
+      };
+      checkIdentity();
+      this.checkCapacity(this.outstanding(), bytes);
+      checkIdentity();
+      if (localHistoryCopyRunTag(lease, this.stateDir, operationId) !== operation) throw new Error('local-history-disk-copy-reservation');
+      this.db.prepare('UPDATE allocations SET planned = ? WHERE id = ?').run(planned, allocationId);
+    });
+  }
+
   /** Bounded recovery inventory for the service's already-bound operation. */
   list(operation: string): LocalHistoryDiskAllocation[] {
     if (typeof operation !== 'string' || !/^[A-Za-z0-9_-]{1,128}$/.test(operation)) throw new Error('local-history-disk-operation');

@@ -101,6 +101,13 @@ function transaction<T>(db: Database.Database, work: () => T): T {
   }
 }
 
+/** Derive the ledger tag from the live, branded parent admission. */
+export function localHistoryCopyRunTag(lease: LocalHistoryChildAdmission, stateDir: string, operationId: string): string {
+  const brand = current(lease);
+  if (brand.stateDir !== path.resolve(stateDir) || !hex(operationId, 32)) refuse('invalid');
+  return 'r-' + brand.generation + '-' + operationId;
+}
+
 /** Called by the real staging constructor on its actual jobs connection. */
 export function initializeLocalHistoryStoreTemporaryRuns(db: Database.Database): void {
   parentDatabase(db);

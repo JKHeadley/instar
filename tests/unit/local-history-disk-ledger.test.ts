@@ -8,6 +8,7 @@ import { pathToFileURL } from 'node:url';
 import Database from 'better-sqlite3';
 import { localHistoryUploadDirectory } from '../../src/import/LocalHistoryExchange.js';
 import { privateImportDatabasePath } from '../../src/import/privateImportState.js';
+import { acquireLocalHistoryStoreTemporaryAdmission, localHistoryCopyRunTag } from '../../src/import/LocalHistoryStoreTemporaryRun.js';
 import { LocalHistoryDiskLedger } from '../../src/import/LocalHistoryDiskLedger.js';
 import { mediaDiskFloorBytes } from '../../src/core/AppMediaStore.js';
 import { SafeFsExecutor } from '../../src/core/SafeFsExecutor.js';
@@ -266,5 +267,42 @@ it.each(['upload', 'blocks'] as const)('refuses copy admission when the original
     expect(() => ledger.pinCopyVolume([destination])).toThrow('local-history-copy-volume');
   } finally {
     pin.close();
+  }
+});
+
+it('extends one empty reservation only under exact live custody, volume and cumulative budget', () => {
+  const { stateDir, ledger } = setup();
+  const operationId = 'a'.repeat(32);
+  const lease = acquireLocalHistoryStoreTemporaryAdmission(stateDir)!;
+  const destination = path.join(stateDir, 'copy-destination');
+  fs.mkdirSync(destination);
+  const pin = ledger.pinCopyVolume([destination]);
+  try {
+    const tag = localHistoryCopyRunTag(lease, stateDir, operationId);
+    const allocation = ledger.create(tag, 10);
+    const foreign = ledger.create('another-operation', 1);
+    ledger.growCopyRunReservation(lease, operationId, allocation, pin, 25, 60);
+    ledger.growCopyRunReservation(lease, operationId, allocation, pin, 5, 60);
+    expect(ledger.list(tag)).toMatchObject([{ id: allocation, planned: 40, written: 0, state: 'active' }]);
+    expect(() => ledger.growCopyRunReservation(lease, operationId, allocation, pin, 21, 60)).toThrow('copy-reservation');
+    expect(() => ledger.growCopyRunReservation(lease, operationId, foreign, pin, 1, 60)).toThrow('copy-reservation');
+    expect(() => ledger.growCopyRunReservation(lease, operationId, allocation, { ...pin }, 1, 60)).toThrow('copy-reservation');
+    expect(() => ledger.growCopyRunReservation({ ...lease }, operationId, allocation, pin, 1, 60)).toThrow();
+    expect(() => ledger.growCopyRunReservation(lease, operationId, allocation, pin, 60, 100)).toThrow('disk-capacity');
+    expect(ledger.inspect(allocation)).toMatchObject({ planned: 40, written: 0 });
+
+    fs.renameSync(destination, path.join(stateDir, 'moved-destination'));
+    fs.mkdirSync(destination);
+    expect(() => ledger.growCopyRunReservation(lease, operationId, allocation, pin, 1, 60)).toThrow();
+    const freshPin = ledger.pinCopyVolume([destination]);
+    try {
+      const file = path.join(localHistoryUploadDirectory(stateDir), 'blocks', allocation);
+      fs.writeFileSync(file, 'unexpected content', { flag: 'r+' });
+      expect(() => ledger.growCopyRunReservation(lease, operationId, allocation, freshPin, 1, 60)).toThrow('copy-reservation');
+    } finally { freshPin.close(); }
+    expect(ledger.inspect(allocation)).toMatchObject({ planned: 40, written: 0 });
+  } finally {
+    pin.close();
+    lease.release();
   }
 });
