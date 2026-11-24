@@ -144,6 +144,7 @@ import { fileURLToPath } from 'node:url';
 import type { SessionManager, SessionTerminateAuthority } from '../core/SessionManager.js';
 import type { StateManager } from '../core/StateManager.js';
 import type { JobScheduler } from '../scheduler/JobScheduler.js';
+import { JOB_SCHEDULE_OBSERVATION_INTERVAL_MS, JobScheduleObserver } from '../scheduler/JobScheduleObserver.js';
 import type { TelegramAdapter } from '../messaging/TelegramAdapter.js';
 import { telegramTopicKnown } from '../messaging/telegramTopicKnown.js';
 import type { MessageRouter } from '../messaging/MessageRouter.js';
@@ -1096,6 +1097,8 @@ export class AgentServer {
   private jobAnomalyTimer: ReturnType<typeof setInterval> | null = null;
   private checkInReminderTimer: ReturnType<typeof setInterval> | null = null;
   private scriptCanaryTimer: ReturnType<typeof setInterval> | null = null;
+  private jobScheduleObserver: JobScheduleObserver | null = null;
+  private jobScheduleObserverTimer: ReturnType<typeof setInterval> | null = null;
   private jobSupervisionReconcileTimer: ReturnType<typeof setInterval> | null = null;
   private jobSupervisionWorkerTimer: ReturnType<typeof setInterval> | null = null;
   private a2aDeliveryTracker: import('../threadline/A2ADeliveryTracker.js').A2ADeliveryTracker | null = null;
@@ -6748,6 +6751,13 @@ export class AgentServer {
         },
         { ...cadenceRaw, enabled: true },
       ) : null);
+    const schedulerForObservation = options.scheduler;
+    if (schedulerForObservation && options.config.jobScheduleCoverage?.enabled === true) {
+      this.jobScheduleObserver = new JobScheduleObserver({
+        list: () => schedulerForObservation.getJobs(),
+        registration: slug => schedulerForObservation.getScheduleRegistration(slug, options.coordinator?.enabled === true),
+      });
+    }
     const routeCtx: import('./routes.js').RouteContext = {
       windowLifecycleNow: options.windowLifecycleNow,
       windowRunLivenessAuthority,
@@ -6758,6 +6768,7 @@ export class AgentServer {
       terminateSessionAuthority: options.terminateSessionAuthority,
       state: options.state,
       scheduler: options.scheduler ?? null,
+      jobScheduleObserver: this.jobScheduleObserver,
       dynamicMcpService,
       // SelfActionGovernor (unified-self-action-backpressure Increment B):
       // the module-level core — process-global anchored, so this is the SAME
@@ -10070,6 +10081,18 @@ export class AgentServer {
    * Start the HTTP server.
    */
   async start(): Promise<void> {
+    if (this.jobScheduleObserver && !this.jobScheduleObserverTimer) {
+      const sample = () => {
+        try {
+          this.jobScheduleObserver?.tick();
+        } catch {
+          this.jobScheduleObserver?.clear(); // Fail visibly unavailable until an observation succeeds.
+        }
+      };
+      sample();
+      this.jobScheduleObserverTimer = setInterval(sample, JOB_SCHEDULE_OBSERVATION_INTERVAL_MS);
+      this.jobScheduleObserverTimer.unref?.();
+    }
     // Layer 2 boot self-check (spec § 2a "Runtime dependency"). Probes the
     // sqlite3 CLI + better-sqlite3 in-process driver and emits degradation
     // events on missing/broken substrate. Never throws — Layer 2 is best-
@@ -10742,6 +10765,11 @@ export class AgentServer {
       clearInterval(this.scriptCanaryTimer);
       this.scriptCanaryTimer = null;
     }
+    if (this.jobScheduleObserverTimer) {
+      clearInterval(this.jobScheduleObserverTimer);
+      this.jobScheduleObserverTimer = null;
+    }
+    this.jobScheduleObserver?.clear();
     if (this.jobSupervisionReconcileTimer) {
       clearInterval(this.jobSupervisionReconcileTimer);
       this.jobSupervisionReconcileTimer = null;

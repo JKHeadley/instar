@@ -5103,6 +5103,8 @@ export interface InstarConfig {
   enabledFrameworks?: ('claude-code' | 'codex-cli' | 'gemini-cli' | 'pi-cli' | 'grok-build')[];
   /** Job scheduler config */
   scheduler: JobSchedulerConfig;
+  /** Opt-in local scheduled-callback evidence on Jobs. */
+  jobScheduleCoverage?: { enabled?: boolean };
   /**
    * Test-agent leak guard (docs/specs/test-agent-leak-guard.md). Recorded by
    * `instar init` when it created this agent in a temporary folder or under a

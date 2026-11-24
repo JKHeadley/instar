@@ -1305,6 +1305,7 @@ export function parseTrustChange(raw: unknown): import('../core/trustJourney/Tru
 }
 
 export interface RouteContext {
+  jobScheduleObserver?: import('../scheduler/JobScheduleObserver.js').JobScheduleObserver | null;
   /** Actual signed post-spawn capture; absent until graph storage is configured. */
   conversationGraphDelegationRuntime?: import('./ConversationGraphDelegationRuntime.js').ConversationGraphDelegationRuntime | null;
   conversationGraphDelegationRemoteRuntime?: import('./ConversationGraphDelegationRemoteRuntime.js').ConversationGraphDelegationRemoteRuntime | null;
@@ -21067,10 +21068,24 @@ document.getElementById('mcpForm').addEventListener('submit', async function (e)
       // (Optional-called: test doubles of the scheduler predate these methods.)
       const sched = ctx.scheduler!;
       const isScriptRunner = sched.isScriptRunnerJob?.(job) ?? false;
+      const local = sched.isJobLocal(job.slug);
+      let scheduleCoverage: import('../scheduler/JobScheduleObserver.js').JobScheduleCoverage | undefined;
+      if (ctx.jobScheduleObserver) {
+        try {
+          scheduleCoverage = !job.enabled ? { state: 'disabled' }
+            : !local ? { state: 'not-placed' }
+            : sched.isScheduleObservationPaused() ? { state: 'paused' }
+            : ctx.jobScheduleObserver.read(job.slug);
+        } catch {
+          ctx.jobScheduleObserver.clear();
+          scheduleCoverage = { state: 'unavailable', reason: 'unverified-registration' };
+        }
+      }
       return {
         ...job,
         state: mergedState,
-        runsOnThisMachine: sched.isJobLocal(job.slug),
+        runsOnThisMachine: local,
+        ...(scheduleCoverage ? { scheduleCoverage } : {}),
         hasUserFork,
         runner: isScriptRunner
           ? (sched.scriptRunnersActiveFor(job.slug) ? 'script'
@@ -21252,7 +21267,14 @@ document.getElementById('mcpForm').addEventListener('submit', async function (e)
     const cacheKey = 'jobs';
     const cached = jobsPoolCache.get(cacheKey);
     if (cached && Date.now() - cached.at < JOBS_POOL_CACHE_TTL_MS) {
-      return cached.payload as Record<string, unknown>;
+      const payload = cached.payload as { jobs: Array<Record<string, unknown>> };
+      const bySlug = new Map(localJobs.map(job => [job.slug, job.scheduleCoverage]));
+      return ctx.jobScheduleObserver ? {
+        ...payload,
+        jobs: payload.jobs.map(job => job.remote ? job : {
+          ...job, scheduleCoverage: bySlug.get(job.slug) ?? { state: 'unavailable', reason: 'unverified-registration' },
+        }),
+      } : payload;
     }
 
     const selfMachineId = ctx.meshSelfId ?? null;
@@ -21309,9 +21331,12 @@ document.getElementById('mcpForm').addEventListener('submit', async function (e)
           for (const j of peerJobs) {
             remote.push({
               ...j,
-              machineId: j.machineId ?? p.machineId,
+              machineId: ctx.jobScheduleObserver || 'scheduleCoverage' in j ? p.machineId : j.machineId ?? p.machineId,
               machineNickname: nickname ?? j.machineNickname ?? undefined, // registry here first (see sessions)
               remote: true,
+              ...(ctx.jobScheduleObserver || 'scheduleCoverage' in j ? {
+                scheduleCoverage: { state: 'unavailable', reason: 'peer-unverified' },
+              } : {}),
             });
           }
         } catch (err) {
