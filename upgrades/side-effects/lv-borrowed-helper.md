@@ -329,3 +329,16 @@ Nits, all fixed: one lane's slice cap no longer stops later lanes; the poll's re
 **Verified by the reviewer as holding:** a helper failure, a late, invalid or other-tree answer, slice trouble or a timeout only ever leads to a local run; a local result always wins; a file reported twice makes the report untrusted; take-back processes run only their shard's portion; the proxy refuses the tunnel, other forwarders, non-loopback sockets, main-verify and finished tokens, and any field beyond the operation's own; every slice and status answer's signature is checked before the child sees it; with `borrowed` absent no flow runs and the record is unchanged (the one dark change: unit-lane file times now go into the durations file, which only balances shards).
 
 Tests after the fixes: every file under `tests/unit/localVerify` and the neighbour units (all batches green), integration (5 files, 48 tests), e2e (2 files, 21 tests), `self-action-convergence`, `tsc` clean.
+
+## Second-pass review of the November 24 merge refresh
+
+An independent read-only reviewer checked the exact merge `ac0feb5fb` against both parents, covering all six conflict resolutions. Verdict: **concur**.
+
+- The server constructor preserves current main's owner-route and shadow-fold wiring and gains the borrowed-helper dependency. Helper construction, routes, and shutdown remain connected.
+- The verifier preserves main's failure capture and wall-time observations for first parts and reruns alongside borrowed-helper flow.
+- The feature registry holds 256 unique IDs. The borrowed entry is the only changed entry relative to main. The script baseline keeps main's secret script entry and all four helper entries, with all five hashes verified against the merged files.
+- The self-action registry keeps the exact union of both parents, with 152 unique controllers.
+- The unit-duration side-effects note matches main, and its removed release fragment had already shipped in 1.3.1944.
+- The merged diff passes git's whitespace check. The review used read-only comparisons to preserve the production test slot.
+
+The author ran TypeScript, 1,862 focused unit tests, 16 integration tests, and two end-to-end lifecycle tests on the refreshed tree. This addendum and the trace record the review of that merge.
