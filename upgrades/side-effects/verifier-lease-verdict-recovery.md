@@ -7,3 +7,11 @@ The read surface withholds a successful receipt while a replacement for its head
 The principal cost is one ordinary verification run after operator priority admission. If a run is already active on this PR, front returns running. That response confirms the current run. It does not promise a second run if main moved since launch. A later front request after that run finishes can admit another changed-base run. A fresh result against the current execution inputs may be derived through the existing execution cache. Rollback is to revert the change after pending replacements finish. The previous implementation will reuse stored successes on the same head and base branch and can discard a queued replacement at restart.
 
 Independent second pass: the Throughput coordinator concurred with changed-base admission, masking prior success and preserving the existing running-front contract. A separate read-only Codex review raised hold-release and unfront-during-lookup concerns. After both corrections and their dedicated regression tests, the reviewer responded “Concur with the review.” The reviewer inspected source; test receipts were collected separately.
+
+## Second-pass review
+
+**Reviewer:** /root/publisher_review
+
+**Independent read of the artifact: concur**
+
+The independent reviewer read the side effects, implementation, and four regression tests at exact commit 842f5b008846257b32860f72f3d17d1d04e9d411. The review confirmed that the changed-base replacement is limited to an explicit recorded priority request, preserves same-base reuse, withholds the earlier success while the replacement is held, queued, or running, and survives restore. The reviewer inspected the trace binding and did not rerun the tests. The M5 full-verification result is recorded separately.
