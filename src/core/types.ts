@@ -3861,6 +3861,14 @@ export interface InstarConfig {
     display?: { enabled?: boolean; machine?: boolean; harness?: boolean; model?: boolean };
     recording?: { slackFailClosed?: boolean };
   };
+  /** The relationship index (docs/specs/work-front-doors.md §4): the agent's scoped read of what a
+   *  conversation is connected to, and the block the session hooks inject. `enabled` is dev-gated (omit
+   *  it to follow the gate). `maxBlockBytes` is the injected block's ceiling (default 1800, at least 600,
+   *  at most half the 9,000-character hook output). */
+  relationshipIndex?: {
+    enabled?: boolean;
+    maxBlockBytes?: number;
+  };
   /** Project apps (docs/specs/project-apps.md): a project's own app one tap from its Work row and
    *  conversation. `enabled` is dev-gated (omit it to follow the gate); it also needs the Chief of
    *  Staff, which is where projects come from. */

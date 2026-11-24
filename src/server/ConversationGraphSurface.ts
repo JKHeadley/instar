@@ -86,6 +86,8 @@ export function createConversationGraphSurface(options:{
  /** The suggestion step (§3). Mounted only with owner corrections, since Accept needs them. */
  /** Work-front-doors stage 2b: open cards' conversations and their projects' conversations (proposed placement). */
  cardPlacements?:()=>Array<{card:ConversationRef;project:ConversationRef}>;
+ /** Receives the read model once built, for the agent's scoped neighbourhood read (work-front-doors §4.3). Read-only. */
+ onReadModel?:(model:ConversationGraphReadModel)=>void;
  suggestions?:{intelligence:IntelligenceProvider|null;evidence(ref:ConversationRef):{project:string|null;text:string};projects?:()=>import('./ConversationGraphSuggestionService.js').ProjectSuggestionSource[];decisions?:import('../core/ConversationGraphSuggestionDecisions.js').SuggestionDecisionStore|null};
  /** "Make this group a project" (conversation-groups-phone §3): the Chief of Staff's bound goals (null = off or unreadable), its bind, and the holder the phone confirm route reads. */
  groupProjects?:{chiefOfStaffOn():boolean;boundProjects():Map<string,import('./ConversationGroupProjectDrafts.js').BoundProjectContent>|null;bindProject:GroupProjectConfirmDeps['bindProject'];confirmHolder:GroupProjectConfirmHolder};
@@ -104,6 +106,7 @@ export function createConversationGraphSurface(options:{
    ?{kind:'conversation',platform:'telegram',chatId:options.telegramChatId,topicId}:null;
  };
  const model=new ConversationGraphReadModel(source,{rootConversation});
+ options.onReadModel?.(model);
  // The phone tree's Project label reads the same Chief of Staff projects the suggestions offer (work-front-doors §3.1).
  const suggestedProjects=options.suggestions?.projects;
  router.use(createConversationGraphRouter({model,resolveViewer,...(suggestedProjects?{projects:()=>treeProjects(suggestedProjects())}:{})}));

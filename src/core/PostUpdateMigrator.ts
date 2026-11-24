@@ -22516,7 +22516,9 @@ if mode not in ('full', 'delta', 'suppressed') or not isinstance(b, str) or not 
 un = d.get('unanswered')
 un = un if isinstance(un, list) else []
 # PC_OK last: a parse cut short can never leave PC_OK set with the other values missing.
-pairs = [('PC_MODE', mode), ('TOPIC_BRIEFING', b), ('RECENT_MSGS', json.dumps({'messages': msgs})), ('CB_PC_UNANSWERED', json.dumps(un)), ('PC_OK', '1')]
+nb = d.get('neighbourhood')
+nb = nb if isinstance(nb, str) else ''
+pairs = [('PC_MODE', mode), ('TOPIC_BRIEFING', b), ('RECENT_MSGS', json.dumps({'messages': msgs})), ('CB_PC_UNANSWERED', json.dumps(un)), ('CB_PC_NEIGHBOURHOOD', nb), ('PC_OK', '1')]
 print(chr(10).join(k + '=' + shlex.quote(v) for k, v in pairs))
 CB_PY
 )
@@ -22692,6 +22694,7 @@ print(s if s and len(s) <= 128 and s.isascii() and all(c.isalnum() or c in '-_' 
 PC_OK=""
 PC_MODE="full"
 CB_PC_UNANSWERED="[]"
+CB_PC_NEIGHBOURHOOD=""
 if [ -n "\$AUTH_TOKEN" ]; then
   PC_RESP=\$(curl -s --max-time 4 -w '\\n%{http_code}' \\
     -H "Authorization: Bearer \${AUTH_TOKEN}" \\
@@ -22790,6 +22793,13 @@ fi
 
 if [ -n "\$TOPIC_BRIEFING" ]; then
   echo "\$TOPIC_BRIEFING"
+  echo ""
+fi
+
+# A changed conversation neighbourhood (work-front-doors §4.3, rule 117): the server
+# sends it once per session when it changed, '' otherwise.
+if [ -n "\$CB_PC_NEIGHBOURHOOD" ]; then
+  echo "\$CB_PC_NEIGHBOURHOOD"
   echo ""
 fi
 
@@ -23450,6 +23460,40 @@ except Exception:
       if [ -n "\$TOPIC_OP_BLOCK" ]; then
         echo ""
         echo "\$TOPIC_OP_BLOCK"
+        echo ""
+      fi
+    fi
+  fi
+fi
+
+# CONVERSATION NEIGHBOURHOOD re-injection (work-front-doors §4.3), beside the topic
+# operator's twin above. A new session gets the block on its first prompt (the
+# per-prompt hook, which fits its output to the hook limit); after a context reset that
+# delivery is gone from context, so this brings it back. This output is not fitted on
+# every path, so the block stays small (relationshipIndex.maxBlockBytes, 1,800 bytes by default).
+# Fail-open: no topic / route 503 / nothing to say / unreachable -> silent skip.
+if [ -n "\$INSTAR_TELEGRAM_TOPIC" ] && [ -f "$INSTAR_DIR/config.json" ]; then
+  NBH_PORT=\${PORT:-\$(grep -oE '"port"[[:space:]]*:[[:space:]]*[0-9]+' "$INSTAR_DIR/config.json" | head -1 | grep -oE '[0-9]+' | head -1)}
+  NBH_TOKEN="\${INSTAR_AUTH_TOKEN:-}"
+  if [ -z "\$NBH_TOKEN" ]; then
+    NBH_TOKEN=\$(python3 -c "import json; v=json.load(open('$INSTAR_DIR/config.json')).get('authToken',''); print(v if isinstance(v, str) else '')" 2>/dev/null)
+  fi
+  if [ -n "\$NBH_PORT" ] && [ -n "\$NBH_TOKEN" ]; then
+    NBH_RESPONSE=\$(curl -sf --max-time 4 --connect-timeout 1 -H "Authorization: Bearer \$NBH_TOKEN" \\
+      "http://localhost:\${NBH_PORT}/conversation-neighbourhood/session-context?topicId=\${INSTAR_TELEGRAM_TOPIC}" 2>/dev/null)
+    if [ -n "\$NBH_RESPONSE" ]; then
+      NBH_BLOCK=\$(echo "\$NBH_RESPONSE" | python3 -c "
+import sys, json
+try:
+    d = json.load(sys.stdin)
+    if d.get('present') and d.get('block'):
+        print(d['block'])
+except Exception:
+    pass
+" 2>/dev/null)
+      if [ -n "\$NBH_BLOCK" ]; then
+        echo ""
+        echo "\$NBH_BLOCK"
         echo ""
       fi
     fi

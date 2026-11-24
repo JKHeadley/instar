@@ -201,11 +201,16 @@ export class ConversationGraphReadModel {
     return { status: 200, body: { ...this.envelope(revision, partialReasons), ...(root ? { root } : {}), items, nextCursor: page.nextCursor } };
   }
 
-  node(viewer: GraphViewer, ref: NodeRef, q: { cursor?: string | null }): ReadResult {
+  /**
+   * `remember: false` is for a one-shot read that never asks for the next page (the agent's neighbourhood
+   * read, work-front-doors §4.3): its first page is not kept as a paging snapshot, so frequent reads can never
+   * push a person's own "show more" snapshot out of the bounded store.
+   */
+  node(viewer: GraphViewer, ref: NodeRef, q: { cursor?: string | null; remember?: boolean }): ReadResult {
     return this.scoped(() => this.nodeUnscoped(viewer, ref, q));
   }
 
-  private nodeUnscoped(viewer: GraphViewer, ref: NodeRef, q: { cursor?: string | null }): ReadResult {
+  private nodeUnscoped(viewer: GraphViewer, ref: NodeRef, q: { cursor?: string | null; remember?: boolean }): ReadResult {
     const ready = this.source.readiness();
     if (!ready.ready) return this.unavailable(ready.reason);
     const valid = validateNodeRef(ref);
@@ -214,7 +219,7 @@ export class ConversationGraphReadModel {
     const node = projection.item(valid);
     if (!node) return { status: 404, body: { code: 'not-found' } }; // hidden and absent look the same
     const scope = `children|${nodeKey(valid)}`;
-    const page = this.page(viewer, scope, q.cursor ?? null, () => projection.childrenOf(valid));
+    const page = this.page(viewer, scope, q.cursor ?? null, () => projection.childrenOf(valid), q.remember !== false);
     if ('status' in page) return page;
     const children = page.refs.map((r) => projection.item(r)).filter((x): x is ProjectionItem => x !== null);
     // Provenance describes a placement, so it is shown only when that placement's parent is visible
@@ -433,7 +438,7 @@ export class ConversationGraphReadModel {
    * Page 1 freezes the authorized ref list into a snapshot; later pages read the snapshot, re-filter
    * each ref through mayView, and never consult the current graph for membership or order.
    */
-  private page(viewer: GraphViewer, scope: string, cursor: string | null, fresh: () => NodeRef[]):
+  private page(viewer: GraphViewer, scope: string, cursor: string | null, fresh: () => NodeRef[], remember = true):
     { refs: NodeRef[]; nextCursor: string | null } | Extract<ReadResult, { status: 409 }> {
     const now = this.source.now().getTime();
     this.sweep(now);
@@ -445,7 +450,7 @@ export class ConversationGraphReadModel {
       offset = 0;
       snap = { principalKey: viewer.principalKey, grantVersion: viewer.grantVersion, scope, refs: fresh(), expiresAt: now + this.ttlMs };
       // Only a result with a next page needs to be remembered.
-      if (snap.refs.length > this.pageSize) {
+      if (remember && snap.refs.length > this.pageSize) {
         this.snapshots.set(snapshotId, snap);
         if (this.snapshots.size > MAX_SNAPSHOTS) this.snapshots.delete(this.snapshots.keys().next().value!);
       }
