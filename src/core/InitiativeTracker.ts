@@ -556,6 +556,14 @@ export class InitiativeTracker {
     return this.taskFlowRegistry !== null && this.taskFlowControllerInstanceId !== null;
   }
 
+  /** Read proof from the selected native store. Never fall back to JSON. */
+  proveWholeTaskFlowProjectsComparison(isAuthorized: () => boolean) {
+    const registry = this.taskFlowRegistry;
+    if (!registry || !this.isTaskFlowEnabled()) return null;
+    return registry.proveWholeDatabaseComparison(() => this.taskFlowRegistry === registry
+      && this.isTaskFlowEnabled() && isAuthorized());
+  }
+
   private taskFlowPrincipal(): TaskFlowPrincipal | null {
     if (!this.taskFlowRegistry || !this.taskFlowControllerInstanceId) return null;
     return {

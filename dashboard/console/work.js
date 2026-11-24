@@ -61,21 +61,50 @@ export async function renderWork(main, ctx) {
     workLinkVisits.set(window, visit);
     window.addEventListener('hashchange', () => { visit.opened = null; });
   }
+  workRenders.get(main)?.disposeComparison?.();
+  workRenders.get(main)?.probe?.abort();
   const run = {};
   workRenders.set(main, run);
+  ctx.onDispose?.(() => { run.disposeComparison?.(); run.probe?.abort(); });
   const { get } = ctx;
+  const comparisonToken = bearer();
   readFn = get;
   const refresh = () => renderWork(main, ctx);
   firstPaint(main, el('section', { class: 'hero page-hero' }, el('div', { class: 'eyebrow', text: EYEBROW }), el('h1', { class: 'page-title skeleton', text: 'Loading the work board' })));
   const query = queryOf();
   const page = donePageFrom(query);
-  // Projects (work-front-doors stage 2a) are read alongside the board; a failed read is named, never empty.
-  const [r, pr] = await Promise.all([get(page ? `/work-board?donePage=${page}` : '/work-board'), page ? Promise.resolve(null) : get('/work/projects')]);
+  const mayProbeComparison = !page && comparisonToken.startsWith('dst_');
+  const compareCapability = mayProbeComparison ? (async () => {
+    const probe = new AbortController();
+    run.probe = probe;
+    const timer = setTimeout(() => probe.abort(), 1_500);
+    try {
+      const capability = await fetch('/work/projects/compare', {
+        method: 'HEAD', headers: { Authorization: `Bearer ${comparisonToken}` }, cache: 'no-store', signal: probe.signal,
+      });
+      return capability.status === 204 && comparisonToken === bearer();
+    } catch { return false; }
+    finally { clearTimeout(timer); }
+  })() : false;
+  const comparisonIsCurrent = () => comparisonToken === bearer()
+    && workRenders.get(main) === run && ctx.isCurrent?.() !== false;
+  // Start the ordinary reads immediately. Only a 403 for the exact same scoped
+  // session waits for capability before deciding whether it can be shown inline.
+  const getWork = mayProbeComparison ? pathname => get(pathname, undefined, {
+    soft403: async requestToken => requestToken === comparisonToken
+      && comparisonIsCurrent() && await compareCapability && comparisonIsCurrent(),
+  }) : get;
+  const [r, pr] = await Promise.all([getWork(page ? `/work-board?donePage=${page}` : '/work-board'), page ? Promise.resolve(null) : getWork('/work/projects')]);
   if (workRenders.get(main) !== run || ctx.isCurrent?.() === false) return;
   const discovery = workDiscoveryPanel({ send, sessionToken: bearer, isCurrent: ctx.isCurrent, onDispose: ctx.onDispose });
   // "Open project" from the conversation list arrives as ?project=<key>: that project's row opens.
   const openKey = (() => { try { return new URLSearchParams(query).get('project'); } catch { return null; } })();
-  const projects = pr ? projectsSection(pr.ok ? pr.data : null, { openKey }) : null;
+  const comparisonSession = comparisonToken === bearer() ? {
+    sessionToken: () => bearer() === comparisonToken ? comparisonToken : '',
+    isCurrent: comparisonIsCurrent,
+    onDispose: dispose => { run.disposeComparison = dispose; },
+  } : null;
+  const projects = pr ? projectsSection(pr.ok ? pr.data : null, { openKey, comparisonSession, comparisonAvailable: compareCapability }) : null;
   if (!r.ok) {
     setKids(main, isOff(r)
       ? el('section', {}, el('div', { class: 'eyebrow', text: EYEBROW }), el('h1', { text: 'The work board is not switched on for this agent.' }), discovery, projects)
@@ -83,7 +112,7 @@ export async function renderWork(main, ctx) {
     return;
   }
   const board = readBoard(r.data);
-  if (!board.ok) { setKids(main, cantTell('The work board answered, but not in a shape this page can read, so it cannot say what is waiting on you.'), discovery); return; }
+  if (!board.ok) { setKids(main, cantTell('The work board answered, but not in a shape this page can read, so it cannot say what is waiting on you.'), discovery, projects); return; }
 
   const waiting = board.lanes['waiting-on-you'];
   // My board (work-board-my-board): the cards that need the reader, each once under its most pressing reason, then
