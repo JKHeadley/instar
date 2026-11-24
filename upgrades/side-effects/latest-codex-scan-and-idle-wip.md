@@ -101,3 +101,7 @@ Independent review concurred with the integrity checks and the separation from c
 ## Complete ledger snapshot
 
 Initial cursor selection has a ledger read that includes every eligible local run beyond the 16-row diagnostic window. An unreadable or incomplete ledger returns an unavailable snapshot with no rows. The bounded HTTP history uses the same eligibility filter. This read performs no writes and holds no writer lease. Production cursor publication still requires canonical writer custody and a stable artifact view.
+
+## Initial cursor publication
+
+The first advisory retention cursor is now initialized under the physical writer lease rooted in the canonical state directory. Initialization rereads the complete ledger before publication and refuses a changed or incomplete snapshot. Two concurrent initializers publish one first generation. The operation performs no cleanup and has no production caller. An existing cursor is returned as stored. Production still needs every relevant writer to honor the same lease and every reader to finish or retry before cleanup. Independent review concurred with the advisory scope.

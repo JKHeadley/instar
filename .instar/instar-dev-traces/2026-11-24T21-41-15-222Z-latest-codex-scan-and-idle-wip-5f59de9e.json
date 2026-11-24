@@ -1,0 +1,18 @@
+{
+  "version": 2,
+  "slug": "latest-codex-scan-and-idle-wip",
+  "sessionId": "aca68beb-0d4e-4546-a3c1-065299307f44",
+  "timestamp": "2026-11-24T21:41:15.222Z",
+  "artifactPath": "upgrades/side-effects/latest-codex-scan-and-idle-wip.md",
+  "artifactSha256": "6171a6aa0aa221e925c81fd37302c073b172396c18c12d0cab04089fdcd0e402",
+  "specPath": "docs/specs/latest-codex-doorway-scan.md",
+  "coveredFiles": [
+    "src/core/VerifiedDoorwayRetention.ts",
+    "tests/unit/committed-doorway-observation.test.ts"
+  ],
+  "phase": "complete",
+  "tier": 2,
+  "tierReasoning": "The initial advisory cursor is published under a physical writer lease and does not grant cleanup authority.",
+  "secondPass": "true",
+  "reviewerConcurred": true
+}

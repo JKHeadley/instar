@@ -2,8 +2,9 @@ import fs from 'node:fs';
 import os from 'node:os';
 import path from 'node:path';
 import { beforeEach, afterEach, describe, expect, it, vi } from 'vitest';
-import { selectDoorwayRetentionReferences, verifyDoorwayRetentionReferences } from '../../src/core/VerifiedDoorwayRetention.js';
+import { initializeDoorwayRetentionCursor, selectDoorwayRetentionReferences, verifyDoorwayRetentionReferences } from '../../src/core/VerifiedDoorwayRetention.js';
 import { JobRunHistory } from '../../src/scheduler/JobRunHistory.js';
+import { createPhysicalEffectLock } from '../../src/core/PhysicalEffectLock.js';
 import { SafeFsExecutor } from '../../src/core/SafeFsExecutor.js';
 import { ScheduledDoorwayObservationStore } from '../../src/core/ScheduledDoorwayObservationStore.js';
 import { readCommittedDoorwayObservation, scheduledDoorwayObservationDigest } from '../../src/core/CommittedDoorwayObservation.js';
@@ -175,6 +176,34 @@ describe('scheduled doorway evidence reconciliation', () => {
       readStaged: () => null,
       readStartedDoors: id => store.readStartedDoors(id),
     }, Date.now())).toBeNull();
+  });
+
+  it.skipIf(!createPhysicalEffectLock(os.tmpdir()).status().available)('serializes initial publication and survives reopen', async () => {
+    const source = committed();
+    const options = {
+      stateDir: dir, machineId: 'local-test', doorIds: ['alpha'],
+      readSnapshot: () => ledger.readPackagedDoorwaySnapshot('local-test'),
+      deadlineMs: Date.now() + 4000,
+    };
+    const results = await Promise.all([initializeDoorwayRetentionCursor(options), initializeDoorwayRetentionCursor(options)]);
+    expect(results.map(result => result.status).sort()).toEqual(['existing', 'published']);
+    expect(store.readRetentionCursor()).toMatchObject({
+      generation: 1, observations: [{ doorId: 'alpha', runId: source }],
+    });
+  });
+
+  it.skipIf(!createPhysicalEffectLock(os.tmpdir()).status().available)('leaves the cursor absent if the ledger changes while selecting', async () => {
+    committed();
+    let reads = 0;
+    const result = await initializeDoorwayRetentionCursor({
+      stateDir: dir, machineId: 'local-test', doorIds: ['alpha'], deadlineMs: Date.now() + 4000,
+      readSnapshot: () => {
+        if (++reads === 2) newer();
+        return ledger.readPackagedDoorwaySnapshot('local-test');
+      },
+    });
+    expect(result).toEqual({ status: 'unavailable', reason: 'ledger-changed' });
+    expect(store.readRetentionCursor()).toBeNull();
   });
 
   it('retains a past observation and exposes a newer interrupted admission after restart', () => {
