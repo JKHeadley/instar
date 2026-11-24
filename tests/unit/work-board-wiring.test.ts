@@ -74,9 +74,11 @@ describe('Work Board wiring — 1. SOURCE assertions', () => {
     expect(src).toContain("ctx.appConversations?.liveConversation(key.slice('app:'.length))");
     expect(read('src/server/AgentServer.ts')).toContain('workBoard: options.workBoard ?? null,');
   });
-  it('the session guard names exactly the two card routes a scoped session may reach', () => {
+  it('the session guard names exactly the three card routes a scoped session may reach', () => {
     const rows = MEMORY_SESSION_ROUTES.filter((r) => String(r.pattern).includes('work-board'));
-    expect(rows.map((r) => r.method).sort()).toEqual(['GET', 'POST']);
+    expect(rows.map((r) => r.method).sort()).toEqual(['GET', 'POST', 'POST']);
+    // agent-work-cards-default §2: progress notes from the session doing the work.
+    expect(rows.some((r) => r.method === 'POST' && r.pattern.test('/work-board/cards/wc_0123456789abcdef/notes'))).toBe(true);
     expect(rows.some((r) => r.pattern.test('/work-board'))).toBe(false);
     expect(rows.some((r) => r.pattern.test('/work-board/cards'))).toBe(false);
     expect(rows.some((r) => r.pattern.test('/work-board/cards/wc_0123456789abcdef/tap'))).toBe(false);

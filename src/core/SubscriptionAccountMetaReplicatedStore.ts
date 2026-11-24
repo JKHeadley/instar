@@ -250,9 +250,16 @@ export function projectAccountToMeta(account: {
   };
   if (typeof account.email === 'string' && account.email.length > 0) out.email = account.email;
   if (account.lastQuota && typeof account.lastQuota === 'object') {
-    // quota-pacing's two local telemetry flags never cross machines: a peer's strict quota
+    // quota-pacing's local telemetry fields (step 1 and step 2) never cross machines: a peer's strict quota
     // validator rejects unknown keys, so the projection stays exactly what it was.
-    const { measuredAtSynthesized: _synth, fableUnknown: _fableUnknown, ...quota } = account.lastQuota as Record<string, unknown>;
+    const {
+      measuredAtSynthesized: _synth,
+      fableUnknown: _fableUnknown,
+      windowBasis: _basis,
+      resetsAtBeforeRewrite: _before,
+      windowsListed: _listed,
+      ...quota
+    } = account.lastQuota as Record<string, unknown>;
     out.quota = quota;
   }
   return out;

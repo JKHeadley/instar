@@ -21,6 +21,7 @@ import type { SubscriptionAccount } from '../../src/core/SubscriptionPool.js';
 import { classifySpawnRefusal, classifySpawnRefusalMessage } from '../../src/core/heavyWorkPlacement.js';
 import { ReapLog } from '../../src/monitoring/ReapLog.js';
 import { SafeFsExecutor } from '../../src/core/SafeFsExecutor.js';
+import { selectAccount } from '../../src/core/QuotaAwareScheduler.js';
 
 const NOW = Date.parse('2026-11-12T23:58:00Z');
 const WEEKLY_RESET = '2026-11-14T18:01:00Z';
@@ -64,6 +65,54 @@ const MAMA_POOL = () => [
 ];
 
 describe('UsageWallRescue.codexSpawnAccount', () => {
+  it('uses the Tuesday-reset account before the less-used Thursday accounts or Saturday reserve', () => {
+    const now = Date.parse('2026-11-23T00:39:54Z');
+    const accounts = [
+      codex('dawn', 39, { resetsAt: '2026-11-28T23:50:29Z' }),
+      codex('justin-gmail', 20, { resetsAt: '2026-11-25T06:38:10Z' }),
+      codex('amrch', 10, { resetsAt: '2026-11-26T09:14:49Z' }),
+      codex('sagemindai', 9, { resetsAt: '2026-11-27T01:55:18Z' }),
+      codex('adriana', 10, { resetsAt: '2026-11-27T04:00:48Z' }),
+    ];
+    for (const a of accounts) a.lastQuota!.measuredAt = new Date(now).toISOString();
+    expect(rescueWith(accounts, { pinSessionsToPool: true }, now).codexSpawnAccount())
+      .toEqual({ configHome: '/h/.codex-justin-gmail', accountId: 'justin-gmail' });
+    for (const windowAware of [false, true]) {
+      expect(selectAccount(accounts, { framework: 'codex-cli', nowMs: now, windowAware })?.id).toBe('justin-gmail');
+    }
+  });
+
+  it('keeps short-window room as a floor, not a competing weekly spending deadline', () => {
+    const soon = codex('soon-week', 80, { fiveHour: 0, resetsAt: new Date(NOW + 24 * 3_600_000).toISOString() });
+    const reserve = codex('later-week', 0, { fiveHour: 0, resetsAt: new Date(NOW + 48 * 3_600_000).toISOString() });
+    reserve.lastQuota!.fiveHour!.resetsAt = new Date(NOW + 15 * 60_000).toISOString();
+    for (const windowAware of [false, true]) {
+      expect(selectAccount([reserve, soon], { framework: 'codex-cli', nowMs: NOW, windowAware })?.id).toBe('soon-week');
+    }
+    soon.lastQuota!.fiveHour!.utilizationPct = 100;
+    expect(rescueWith([soon, reserve]).codexSpawnAccount())
+      .toEqual({ configHome: reserve.configHome, accountId: reserve.id });
+  });
+
+  it('preserves scoring across mixed providers rather than imposing a partial deadline order', () => {
+    const soon = codex('soon', 80, { fiveHour: 0, resetsAt: new Date(NOW + 24 * 3_600_000).toISOString() });
+    const reserve = codex('reserve', 0, { fiveHour: 0, resetsAt: new Date(NOW + 48 * 3_600_000).toISOString() });
+    const claude = { ...codex('claude', 10, { framework: 'claude-code', fiveHour: 0, resetsAt: new Date(NOW + 60 * 3_600_000).toISOString() }), provider: 'anthropic' } as SubscriptionAccount;
+    for (const windowAware of [false, true]) {
+      expect(selectAccount([soon, reserve, claude], { nowMs: NOW, windowAware })?.id).toBe('reserve');
+    }
+  });
+
+  it('never turns an expired or unknown weekly date into an urgent deadline', () => {
+    const valid = codex('known-next', 40);
+    for (const reset of [new Date(NOW - 1).toISOString(), '', 'invalid']) {
+      const unknown = codex('unknown', 0, { resetsAt: reset });
+      expect(rescueWith([unknown, valid]).codexSpawnAccount())
+        .toEqual({ configHome: valid.configHome, accountId: valid.id });
+      expect(selectAccount([unknown, valid], { framework: 'codex-cli', nowMs: NOW })?.id).toBe(valid.id);
+    }
+  });
+
   it('the incident pool: never the 100% account; the coolest account with room', () => {
     const pick = rescueWith(MAMA_POOL()).codexSpawnAccount();
     expect(pick).toEqual({ configHome: '/h/.codex-codex-a', accountId: 'codex-a' });

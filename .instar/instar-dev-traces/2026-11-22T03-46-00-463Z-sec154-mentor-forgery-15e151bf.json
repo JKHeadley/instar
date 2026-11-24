@@ -1,0 +1,31 @@
+{
+  "version": 2,
+  "slug": "sec154-mentor-forgery",
+  "sessionId": "529398aa-d56e-4e54-bcee-4418188feb78",
+  "timestamp": "2026-11-22T03:46:00.463Z",
+  "artifactPath": "upgrades/side-effects/sec154-mentor-forgery.md",
+  "artifactSha256": "6d714019dc1f8071b3fbcd913680afd0f4e3c52a608dce79919a1ee7546f0654",
+  "coveredFiles": [
+    ".instar/instar-dev-decisions/2026-11-22T01-53-51-696Z-sec154-mentor-forgery.json",
+    "docs/specs/sec154-mentor-forgery.eli16.md",
+    "src/messaging/AgentTelegramComms.ts",
+    "src/server/routes.ts",
+    "tests/e2e/a2a-inbox-lifecycle.test.ts",
+    "tests/e2e/mentor-reply-via-inbox.test.ts",
+    "tests/unit/sec154-mentor-forgery.test.ts",
+    "upgrades/next/sec154-mentor-forgery.md",
+    "upgrades/side-effects/sec154-mentor-forgery.md"
+  ],
+  "phase": "complete",
+  "tier": 1,
+  "tierReasoning": "SEC-154: two refusal-only checks at the a2a accept boundary and the same-machine inbox, plus e2e tests that register their sender and use the strict marker shape; small, no new behaviour, so Tier 1.",
+  "eli16Path": "docs/specs/sec154-mentor-forgery.eli16.md",
+  "sideEffectsPath": "upgrades/side-effects/sec154-mentor-forgery.md",
+  "secondPass": "true",
+  "reviewerConcurred": true,
+  "classClosure": {
+    "defectClass": "unbounded-self-action",
+    "closure": "n/a",
+    "reason": "one-shot user-driven action, not a self-triggered loop: two checks that can only refuse a message"
+  }
+}

@@ -98,6 +98,10 @@ describe('identity A4 — same-network first phone, production wiring', () => {
     expect(me.status).toBe(200);
     // The dashboard does not exist on this listener.
     expect((await pinnedRequest({ port, pin, method: 'GET', path: '/dashboard' })).status).toBe(404);
+    // The refusal log is alive on the production path (builder #63): the refused request is there.
+    const refused = await bearer(request(app).get('/mobile/same-network/refusals'));
+    expect(refused.status).toBe(200);
+    expect(refused.body.refusals[0]).toMatchObject({ kind: 'request', route: '/dashboard', status: 404, reason: 'not-found' });
 
     await server.stop();
     servers.splice(servers.indexOf(server), 1);
@@ -108,6 +112,8 @@ describe('identity A4 — same-network first phone, production wiring', () => {
     expect(again.mobilePairing!.sameNetwork!.host()).toBe(host);
     const me2 = await pinnedRequest({ port, pin, method: 'GET', path: '/mobile/device', headers: signedHeaders(dev, String(r.json.deviceId), host, 'GET', '/mobile/device') });
     expect(me2.status).toBe(200);
+    // The refusal log survived the restart.
+    expect((await bearer(request(again.getApp()).get('/mobile/same-network/refusals'))).body.refusals.some((e: { route?: string }) => e.route === '/dashboard')).toBe(true);
   });
 
   it('A5: the app on the agent\'s own computer adds the first phone with the one-time credential its command makes, without the PIN', async () => {

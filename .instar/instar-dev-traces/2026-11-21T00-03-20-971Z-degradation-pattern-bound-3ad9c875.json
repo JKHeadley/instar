@@ -1,0 +1,23 @@
+{
+  "version": 2,
+  "slug": "degradation-pattern-bound",
+  "sessionId": "1251b1e8-8c50-4f64-9c79-779ccdf36f8e",
+  "timestamp": "2026-11-21T00:03:20.971Z",
+  "artifactPath": "upgrades/side-effects/degradation-pattern-bound.md",
+  "artifactSha256": "feda725e1bd6ef98a95fc3e78cc947e939f5c33ea6438e628fee5f0d07c5aa8a",
+  "coveredFiles": [
+    "docs/specs/degradation-pattern-bound.eli16.md",
+    "src/monitoring/DegradationReporter.ts",
+    "src/server/routes.ts",
+    "tests/unit/routes-degradations-mark-reported.test.ts",
+    "upgrades/next/degradation-pattern-bound.md",
+    "upgrades/side-effects/degradation-pattern-bound.md"
+  ],
+  "phase": "complete",
+  "tier": 1,
+  "tierReasoning": "Small hardening (SEC-125): bound the caller-supplied featurePattern on mark-reported to a backtracking-safe subset; input validation on one authenticated route, reversible by revert.",
+  "eli16Path": "docs/specs/degradation-pattern-bound.eli16.md",
+  "sideEffectsPath": "upgrades/side-effects/degradation-pattern-bound.md",
+  "secondPass": "true",
+  "reviewerConcurred": true
+}

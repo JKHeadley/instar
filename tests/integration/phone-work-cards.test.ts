@@ -168,7 +168,7 @@ describe('POST /mobile/work-board/cards (owner phone, Face ID)', () => {
     expect(r.body.card.source).toEqual(tg.source);
     expect(c.conversations.has(r.body.conversationKey)).toBe(true);
     const created = c.journal.find((e) => e.data.recordType === 'created' && e.data.cardId === r.body.cardId)!.data;
-    expect(created.by).toEqual({ kind: 'person', personKey: 'justin', proof: 'presence' });
+    expect(created.by).toEqual({ kind: 'person', personKey: 'justin', proof: 'presence', isOwner: true });
     expect(created.source).toEqual(tg.source);
     const app = cardBody({ source: { conversationKey: `app:${APP_KEY}`, messageId: 'evt-77' } });
     const a = await make(c, owner, app);

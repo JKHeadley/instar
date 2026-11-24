@@ -29,6 +29,7 @@ import { UpdateGate } from './UpdateGate.js';
 import { cleanupGlobalInstalls } from './GlobalInstallCleanup.js';
 import type { SessionManagerLike, SessionMonitorLike, SessionInfo, RestartHold } from './UpdateGate.js';
 import { SafeFsExecutor } from './SafeFsExecutor.js';
+import { announceRestartRequested } from './restartRequestSignal.js';
 import { ProcessIntegrity } from './ProcessIntegrity.js';
 import { crossesBreaking, writeLifelineRestartSignal } from './version-skew.js';
 import { RestartCascadeDampener, formatLocalTimeHHMM } from './RestartCascadeDampener.js';
@@ -995,7 +996,7 @@ export class AutoUpdater {
       this.lastRestartRequestedVersion = newVersion;
       this.saveState();
       await new Promise(r => setTimeout(r, 2000));
-      if (!this.requestRestart(newVersion, bypassHolds)) this.updateActivationPendingSince = null;
+      if (!(await this.requestRestart(newVersion, bypassHolds))) this.updateActivationPendingSince = null;
       return;
     }
 
@@ -1103,7 +1104,7 @@ export class AutoUpdater {
       this.saveState();
 
       await new Promise(r => setTimeout(r, 2000));
-      if (!this.requestRestart(newVersion, bypassHolds)) this.updateActivationPendingSince = null;
+      if (!(await this.requestRestart(newVersion, bypassHolds))) this.updateActivationPendingSince = null;
       return;
     }
 
@@ -1382,11 +1383,15 @@ export class AutoUpdater {
    * a notice that a restart is needed. This is strictly better than attempting
    * self-restart, which can loop or leave the port bound.
    */
-  private requestRestart(newVersion: string, bypassHolds = false): boolean {
+  private async requestRestart(newVersion: string, bypassHolds = false): Promise<boolean> {
     const previousVersion = this.updateChecker.getInstalledVersion();
     const flagPath = path.join(this.stateDir, 'state', 'restart-requested.json');
+    const requestedAt = new Date().toISOString();
+    // planned-restart-keeps-lead §1 step 1: a lease holder extends its lease over the coming boot
+    // before the request becomes visible. Never throws; resolves at once when there is nothing to extend.
+    await announceRestartRequested({ requestedBy: 'auto-updater', reason: `update to v${newVersion}`, requestedAt });
     const data = {
-      requestedAt: new Date().toISOString(),
+      requestedAt,
       requestedBy: 'auto-updater',
       targetVersion: newVersion,
       previousVersion,

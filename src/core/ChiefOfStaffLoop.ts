@@ -1,3 +1,4 @@
+import { CreationPlacementSnapshot, type CreationPlacementView } from './CreationPlacementSnapshot.js';
 /**
  * ChiefOfStaffLoop — the check-in loop of docs/specs/chief-of-staff-topic.md (§2.1–§2.9, §3, §4).
  *
@@ -333,6 +334,9 @@ export interface ChiefOfStaffLoopDeps {
      * decision that "nothing is there" must come from this read instead.
      */
     loadUnionComplete?(): UnionEntry[] | null;
+    /** Non-flushing creation projection read and strict current source signature. */
+    loadUnionCompleteReadOnly?(): UnionEntry[] | null;
+    creationSourceVersion?(): string | null;
     /** Resolve once `seq` is fsynced (CoherenceJournal.awaitDurableSeq). The loop awaits the check-event before it claims, so the owner's action gate reads a fresh fold (§2.4 step 2c). */
     awaitDurable?(seq: number): Promise<void>;
   };
@@ -511,10 +515,16 @@ export class ChiefOfStaffLoop {
   private timer: ReturnType<typeof setInterval> | null = null;
   private ticking = false;
 
-  constructor(private readonly d: ChiefOfStaffLoopDeps) {}
+  private readonly creationPlacement: CreationPlacementSnapshot;
+  constructor(private readonly d: ChiefOfStaffLoopDeps) {
+    this.creationPlacement = new CreationPlacementSnapshot({ enabled: d.enabled, version: () => d.journal.creationSourceVersion?.() ?? null, load: () => d.journal.loadUnionCompleteReadOnly?.() ?? null });
+  }
+
+  creationPlacementSnapshot(): CreationPlacementView { return this.creationPlacement.get(); }
 
   start(): void {
     if (this.timer) return;
+    this.creationPlacement.refresh();
     const ms = Math.max(5, this.d.config().tickMinutes) * 60_000;
     this.timer = setInterval(() => { void this.tick(); }, ms);
     (this.timer as unknown as { unref?: () => void }).unref?.();
@@ -697,6 +707,7 @@ export class ChiefOfStaffLoop {
   }
 
   async tick(): Promise<void> {
+    this.creationPlacement.refresh();
     // A tick that fires while "Ask for an update" runs is not dropped: it runs as soon as that check ends.
     if (this.ticking) { if (this.checkNowRunning) this.tickWaiting = true; return; }
     this.ticking = true;

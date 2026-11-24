@@ -1,0 +1,24 @@
+{
+  "version": 2,
+  "slug": "member-browser-any-computer",
+  "sessionId": "7f37c566-5a6b-4ca6-8057-da4b18c6d052",
+  "timestamp": "2026-11-20T23:04:51.331Z",
+  "artifactPath": "upgrades/side-effects/member-browser-any-computer.md",
+  "artifactSha256": "e6d3a1438c5ddea0fafc48a6b8e95d32223ae3b2f6da03e3e0e345c38ac4bdd3",
+  "specPath": "docs/specs/member-browser-any-computer.md",
+  "coveredFiles": [
+    "src/data/awareness/member-computers.md",
+    "src/server/CapabilityIndex.ts",
+    "src/server/documentJoinRoutes.ts",
+    "src/server/mobilePairingRoutes.ts",
+    "src/server/teamRoutes.ts",
+    "tests/e2e/documents-join.test.ts",
+    "upgrades/next/member-browser-any-computer.md",
+    "upgrades/side-effects/member-browser-any-computer.md"
+  ],
+  "phase": "complete",
+  "tier": 2,
+  "tierReasoning": "Same identity surface as #3565: a new owner-phone route that takes a member's computer away, and computers on owner People reads.",
+  "secondPass": "not-required",
+  "reviewerConcurred": null
+}

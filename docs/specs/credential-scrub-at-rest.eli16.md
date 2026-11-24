@@ -1,0 +1,19 @@
+# ELI16: keys that end up in logs or messages get blanked out by themselves (SEC-164, part 1 of 2)
+
+Your agent sometimes sees a secret key while it works. A command it runs might print one, an error message might contain one, or someone might paste one into a chat. Until now, that key was kept as-is in the agent's records: each working session's record, the server's own logs, the messages it stores, and the copies your other computers keep. Every time that happened, someone had to be told, and the key had to be dealt with by hand.
+
+Now the agent blanks such keys out by itself. A message that arrives with a key in it is cleaned before the agent saves it anywhere. So every copy, from its memory of the conversation to its record of who wrote the message, holds the cleaned version, and the message still counts as yours. The agent's own logs are cleaned before they are written. Session records, which another program writes, are gone over within about fifteen seconds. Only the key's characters change, to "[credential removed]" or to stars, so every line stays readable and nothing else moves. Copies sent between your computers are cleaned before they leave and again when they arrive.
+
+If you send your agent a key on purpose, it still removes it from the conversation, so the key never sits in your chat history. It then tells you at once, in the same conversation, that it removed a key for safety and did nothing else with it, and gives you a link to send the key safely instead, in one tap. That link puts the key straight into the agent's vault. People who are not on your team get no such message, and their keys are simply removed. The agent never changes its own settings, so it keeps working with its real keys, and nobody is asked to change a key. You also stop getting messages about leaked keys.
+
+Some honest limits. A key you sent through Telegram still sits on Telegram's own servers until you delete that message there. The messages already stored before this change are cleaned in a second part, which is planned and has a due date. And this arrives carefully: it runs on the development agent first, and the part that rewrites session records starts by only noting what it would change. It switches on after those notes are checked, and reaches every agent only after a week of that, once the person in charge of the agents has said yes.
+
+Its progress from the development agent to every agent is tracked on the agents' maturation board, so each step is checked against recorded evidence rather than remembered.
+
+Messages your agent sends to other agents are cleaned the same way. The one exception is a key you deliberately share with an agent you have verified and paired with: that key travels sealed to that agent only, and your agent's own records still hold the cleaned version.
+
+Follow-up after the first full test run of part 1b: the check that reads whether key removal is switched on could crash when there was no project folder to read from, which only happens in tests. It now just treats the switch as off in that case, the same as when the settings file cannot be read.
+
+Second follow-up: three of the new tests for messages to other agents failed because the pretend relay they used acted as if it were offline. The send stopped before the key-removal step was ever reached. The pretend relay now behaves like a connected one. The tests still check exactly the same things, and the real code did not change.
+
+Third follow-up: two tests that check the exact text of the code failed because this change had moved or extended two lines they look for. One line was moved back into place, and the other test now looks for the new exact text. Nothing about how the agent behaves changed.

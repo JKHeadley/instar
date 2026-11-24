@@ -1,5 +1,5 @@
 import { describe, it, expect } from 'vitest';
-import { resolveSessionTarget, normalizeTmuxName, type ResolverSession, type ResolverContext } from '../../src/messaging/sessionAddressResolver.js';
+import { resolveSessionTarget, normalizeTmuxName, isHolderPendingRefusal, describeHolderRefusal, type ResolverSession, type ResolverContext } from '../../src/messaging/sessionAddressResolver.js';
 
 const T0 = Date.parse('2026-11-18T12:00:00Z');
 const at = (min: number) => new Date(T0 + min * 60_000).toISOString();
@@ -124,6 +124,69 @@ describe('sessionAddressResolver', () => {
   });
 
   it('nobody holds an unknown role', () => {
-    expect(resolveSessionTarget('echo-nope', ctx([s({ tmuxSession: 'echo-a' })]))).toMatchObject({ kind: 'none', reason: 'no-session-holds-this-role' });
+    expect(resolveSessionTarget('echo-nope', ctx([s({ tmuxSession: 'echo-a' })]))).toMatchObject({ kind: 'none', reason: 'no-session-holds-this-role', known: false });
+  });
+});
+
+describe('relay-asof-holder-skew: no artificial allowance admits replacements', () => {
+  const SEND = T0;
+  const local = (sessions: ResolverSession[]) => ctx(sessions, { asOf: SEND });
+  const relayed = local;
+
+  it('N73: a holder younger than ten minutes that predates the send is accepted', () => {
+    const holder = s({ tmuxSession: 'echo-topic-144319', telegramTopicId: 144319, startedAt: '2026-11-21T20:22:23Z' });
+    for (const written of ['2026-11-21T20:24:10Z', '2026-11-21T20:26:40Z', '2026-11-21T20:29:05Z']) {
+      const sendMs = Date.parse(written);
+      expect(resolveSessionTarget('echo-topic-144319', ctx([holder], { asOf: sendMs - 10 * 60_000 }))).toMatchObject({ kind: 'none', reason: 'role-respawned-after-message' });
+      expect(resolveSessionTarget('echo-topic-144319', ctx([holder], { asOf: sendMs })).kind).toBe('exact');
+    }
+  });
+
+  it('the reference boundary accepts exactly the send time and refuses even one millisecond after', () => {
+    const edge = s({ tmuxSession: 'echo-a', startedAt: new Date(SEND).toISOString() });
+    expect(resolveSessionTarget('echo-a', relayed([edge])).kind).toBe('exact');
+    for (const delay of [1, 9 * 60_000, 11 * 60_000]) {
+      const startedAt = new Date(SEND + delay).toISOString();
+      expect(resolveSessionTarget('echo-a', relayed([s({ tmuxSession: 'echo-a', startedAt })]))).toEqual({ kind: 'none', reason: 'role-respawned-after-message', known: true, holderStartedAt: startedAt });
+    }
+  });
+
+  it('two too-new holders: the one that started earliest is named', () => {
+    const a = s({ tmuxSession: 'echo-a', telegramTopicId: 5, startedAt: new Date(SEND + 20 * 60_000).toISOString() });
+    const b = s({ tmuxSession: 'echo-b', telegramTopicId: 5, startedAt: new Date(SEND + 12 * 60_000).toISOString() });
+    expect(resolveSessionTarget('echo-topic-5', relayed([a, b]))).toMatchObject({ kind: 'none', reason: 'role-respawned-after-message', holderStartedAt: b.startedAt });
+  });
+
+  it('known: a role the store has a record of (not running) is known; an unknown name is not', () => {
+    const old = s({ tmuxSession: 'echo-helper', name: 'helper', status: 'completed' });
+    expect(resolveSessionTarget('echo-helper', local([old]))).toMatchObject({ kind: 'none', reason: 'no-session-holds-this-role', known: true });
+    const twin = s({ tmuxSession: 'echo-echo-helper', name: 'echo-helper', status: 'completed' });
+    expect(resolveSessionTarget('echo-helper', local([twin]))).toMatchObject({ kind: 'none', reason: 'no-session-holds-this-role', known: true });
+    expect(resolveSessionTarget('echo-helper', local([s({ tmuxSession: 'echo-other' })]))).toMatchObject({ kind: 'none', reason: 'no-session-holds-this-role', known: false });
+  });
+
+  it('known: a topic alias is known here when some record carried the topic', () => {
+    const old = s({ tmuxSession: 'echo-x', telegramTopicId: 7, status: 'completed' });
+    expect(resolveSessionTarget('echo-topic-7', local([old]))).toMatchObject({ kind: 'none', reason: 'topic-not-held-here', known: true });
+    expect(resolveSessionTarget('echo-topic-8', local([old]))).toMatchObject({ kind: 'none', reason: 'topic-not-held-here', known: false });
+  });
+
+  it('isHolderPendingRefusal: a too-new or not-yet-running known role waits; anything else is final', () => {
+    expect(isHolderPendingRefusal({ kind: 'none', reason: 'role-respawned-after-message', known: true })).toBe(true);
+    expect(isHolderPendingRefusal({ kind: 'none', reason: 'no-session-holds-this-role', known: true })).toBe(true);
+    expect(isHolderPendingRefusal({ kind: 'none', reason: 'topic-not-held-here', known: true })).toBe(true);
+    expect(isHolderPendingRefusal({ kind: 'none', reason: 'no-session-holds-this-role', known: false })).toBe(false);
+    expect(isHolderPendingRefusal({ kind: 'none', reason: 'topic-not-held-here', known: false })).toBe(false);
+    expect(isHolderPendingRefusal({ kind: 'none', reason: 'topic-held-on', heldOn: 'm2' })).toBe(false);
+    expect(isHolderPendingRefusal({ kind: 'none', reason: 'job-run-ended' })).toBe(false);
+    expect(isHolderPendingRefusal({ kind: 'ambiguous', candidates: ['a', 'b'], via: 'topic', reason: '2 sessions' })).toBe(false);
+  });
+
+  it('describeHolderRefusal: plain words with both times', () => {
+    const text = describeHolderRefusal({ kind: 'none', reason: 'role-respawned-after-message', known: true, holderStartedAt: at(11) }, 'echo-topic-144319', SEND);
+    expect(text).toBe(`the session holding "echo-topic-144319" started at ${at(11)}, after this message was written at ${new Date(SEND).toISOString()}; delivery to that replacement is not allowed`);
+    expect(describeHolderRefusal({ kind: 'none', reason: 'no-session-holds-this-role', known: true }, 'echo-h', SEND)).toBe('"echo-h" is known here but no session holds it right now');
+    expect(describeHolderRefusal({ kind: 'none', reason: 'no-session-holds-this-role', known: false }, 'echo-h', SEND)).toBe('no session holds "echo-h"');
+    expect(describeHolderRefusal({ kind: 'none', reason: 'topic-held-on', heldOn: 'm_mini' }, 'echo-topic-1', SEND)).toContain('held on m_mini');
   });
 });
