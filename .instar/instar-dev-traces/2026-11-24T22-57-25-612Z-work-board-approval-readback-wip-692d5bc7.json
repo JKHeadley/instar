@@ -1,0 +1,21 @@
+{
+  "version": 2,
+  "slug": "work-board-approval-readback-wip",
+  "sessionId": "b3d2cf8a-9b5d-468b-a50b-70ebf11e9e5c",
+  "timestamp": "2026-11-24T22:57:25.612Z",
+  "artifactPath": "upgrades/side-effects/work-board-approval-readback-wip.md",
+  "artifactSha256": "a42a264b70430ecf3083e4da377d49c3e0d050cab8da9fe51cbdcbf1c7d6bae3",
+  "specPath": "docs/specs/owner-work-board-slips-first-slice.md",
+  "coveredFiles": [
+    "src/core/WorkBoardApprovalWriter.ts",
+    "src/core/workBoardApprovalReadback.ts",
+    "tests/integration/work-board-approval-readback.test.ts",
+    "tests/unit/work-board-approval-readback.test.ts",
+    "upgrades/side-effects/work-board-approval-readback-wip.md"
+  ],
+  "phase": "complete",
+  "tier": 2,
+  "tierReasoning": "Exact journal durability evidence for Work Board approvals",
+  "secondPass": "true",
+  "reviewerConcurred": true
+}

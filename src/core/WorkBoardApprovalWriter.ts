@@ -29,7 +29,7 @@ export type WorkBoardApprovalResult =
   | { status: 'applied' | 'already-approved'; winner: WorkBoardApprovalEvent }
   | { status: 'changed' | 'unavailable' | 'unresolved' };
 
-type EventLookup =
+export type WorkBoardApprovalLookup =
   | { status: 'missing' | 'unknown' }
   | { status: 'durable'; event: WorkBoardApprovalEvent };
 
@@ -37,7 +37,7 @@ interface WorkBoardApprovalWriterPorts {
   currentWriter: () => WorkBoardWriterProof | null;
   currentEligibleVersion: (cardId: string) => WorkBoardApprovalVersion | null;
   // Missing requires proof that neither a committed event nor a reservation exists.
-  readEvent: (eventId: string) => EventLookup;
+  readEvent: (eventId: string) => WorkBoardApprovalLookup;
   // Append rechecks writer proof and version and reserves the generation synchronously.
   // Readers and pickup cannot see
   // the event until the journal confirms the exact sequence is durable.

@@ -1,0 +1,23 @@
+{
+  "ts": "2026-11-24T22:57:52.120Z",
+  "slug": "work-board-approval-readback-wip",
+  "suggestedTier": 2,
+  "declaredTier": 2,
+  "riskFloor": 1,
+  "riskFloorReasons": [],
+  "belowFloor": false,
+  "files": 2,
+  "loc": 62,
+  "scope": {
+    "basis": "staged-in-scope-paths-including-deleted",
+    "files": [
+      "src/core/WorkBoardApprovalWriter.ts",
+      "src/core/workBoardApprovalReadback.ts"
+    ],
+    "addedLines": 60,
+    "deletedLines": 2
+  },
+  "causalAutopsy": null,
+  "classClosure": null,
+  "verdict": "pass"
+}
