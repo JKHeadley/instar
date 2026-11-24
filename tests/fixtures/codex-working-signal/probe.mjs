@@ -1,6 +1,7 @@
 /** Review-only fixture. Never uses the operator's Codex home or a live model. */
 import { execFile } from 'node:child_process';
 import { promisify } from 'node:util';
+import { createInterface } from 'node:readline';
 import { mkdtemp, stat, realpath, writeFile, readFile, mkdir } from 'node:fs/promises';
 import { join } from 'node:path';
 import { tmpdir } from 'node:os';
@@ -10,24 +11,67 @@ import { SafeFsExecutor } from '../../../dist/core/SafeFsExecutor.js';
 import { openCodexCanaryProvider, CODEX_CANARY_MODELS } from '../../../dist/messaging/telegram-origin/OriginCodexModelCanaryProtocol.js';
 
 if (process.platform !== 'darwin') throw Error('This fixture requires macOS');
+const embedded = process.argv.includes('--embedded');
+const resume = process.argv.includes('--resume');
+const inject = process.argv.includes('--inject');
+const changedHookRestart = process.argv.includes('--changed-hook-restart');
+const trustedRestart = changedHookRestart || process.argv.includes('--trusted-restart');
+if (trustedRestart && (!resume || embedded || inject)) throw Error('Trusted restart requires managed resume');
+
 const run = promisify(execFile);
 const root = await realpath(await mkdtemp(join(tmpdir(), 'icx-')));
 let relay;
-let resolvePane;
-const panePid = new Promise(resolve => { resolvePane = resolve; });
 const mux = join(root, 'tmux.sock');
 const env = { PATH: process.env.PATH, HOME: root, CODEX_HOME: root, TERM: 'xterm-256color' };
 let provider;
 let positive = false;
 let completed = false;
 let tuiReady = false;
-const embedded = process.argv.includes('--embedded');
-const resume = process.argv.includes('--resume');
 let resumedThread;
 let confirmedThread;
 const stopReceipt = join(root, 'stop-count');
-const inject = process.argv.includes('--inject');
 const fixturePrompt = 'Return CANARY_OK without tools.';
+async function readNativeHookTrust(hookConfig, expected) {
+  const task = run('codex', ['app-server', '--stdio'], { cwd: root, env, timeout: 4000, maxBuffer: 128 * 1024 });
+  const { stdout, stdin } = task.child;
+  const lines = createInterface({ input: stdout });
+  const send = message => stdin.write(JSON.stringify(message) + '\n');
+  let trust;
+  let writeError;
+  stdin.on('error', error => { writeError = error; });
+  lines.on('line', line => {
+    let reply;
+    try {
+      reply = JSON.parse(line);
+    } catch {
+      stdin.end();
+      return;
+    }
+    if (reply.id === 1 && !reply.error) {
+      send({ method: 'initialized', params: {} });
+      send({ id: 2, method: 'hooks/list', params: { cwds: [root] } });
+    } else if (reply.id === 2) {
+      const results = reply.result?.data;
+      if (Array.isArray(results) && results.length === 1 && results[0].errors?.length === 0) {
+        const hooks = results[0].hooks?.filter(hook => hook.sourcePath === hookConfig);
+        if (hooks?.length === 1 && typeof hooks[0].currentHash === 'string') {
+          trust = hooks[0].trustStatus;
+        }
+      }
+      stdin.end();
+    }
+  });
+  send({ id: 1, method: 'initialize', params: { clientInfo: { name: 'instar-hook-trust-fixture', version: '1.0.0' } } });
+  try {
+    await task;
+  } finally {
+    lines.close();
+  }
+  if (writeError) throw writeError;
+  if (trust !== expected) throw Error('Expected native hook trust ' + expected + ', got ' + trust);
+  console.log('Native hooks/list reported fixture hook ' + trust);
+}
+
 try {
   provider = await openCodexCanaryProvider(new AbortController().signal);
   const verifier = join(root, 'peer-pid');
@@ -67,7 +111,6 @@ try {
     resumedThread = metadata.find(event => event.type === 'thread.started')?.thread_id;
     if (!resumedThread) throw Error('No native seed thread');
   }
-  const requestBaseline = provider.models.length;
   const hook = join(root, 'stop-probe.sh');
   await writeFile(hook, ['#!/bin/sh',
     'cat >/dev/null',
@@ -78,17 +121,12 @@ try {
     'printf "allowed\n" >> "' + stopReceipt + '"',
     'fi',
   ].join('\n'), {mode: 0o700});
-  await writeFile(join(root, '.codex', 'hooks.json'), JSON.stringify({
-    hooks: {Stop: [{matcher:'', hooks:[{type:'command', command:hook}]}]},
-  }));
+  const hookConfig = join(root, '.codex', 'hooks.json');
+  const stopHook = command => JSON.stringify({
+    hooks: { Stop: [{ matcher: '', hooks: [{ type: 'command', command }] }] },
+  });
+  await writeFile(hookConfig, stopHook(hook));
   if (!embedded) {
-    relay = await startCodexWorkingLaunch({
-      codexBinary: (await run('which', ['codex'])).stdout.trim(),
-      peerVerifierBinary: verifier,
-      cwd: root, env, frontendPid: panePid,
-      backendConfigArgs: ['--dangerously-bypass-hook-trust'],
-      signal: new AbortController().signal,
-    });
     const threadMethod = CodexWorkingProtocol.prototype.inspect;
     CodexWorkingProtocol.prototype.inspect = function(direction, payload) {
       const before = relay.read();
@@ -104,50 +142,113 @@ try {
         && rpc.method === 'turn/completed' && rpc.params?.turn?.status === 'completed');
     };
   }
-  const binary = (await run('which', ['codex'])).stdout.trim();
-  const command = ['-S', mux, 'new-session', '-d', '-s', 'probe', '-c', root,
-    binary, '--dangerously-bypass-hook-trust', ...(resume ? ['resume', resumedThread] : []), '--model', CODEX_CANARY_MODELS[0], ...(embedded ? [] : ['--remote', relay.remote]),
-    ...(inject ? [] : ['Return CANARY_OK without tools.'])];
-  await run('tmux', command, { env, timeout: 3000 });
-  const pane = await run('tmux', ['-S', mux, 'display-message', '-p', '-t', '=probe:', '#{pane_pid}'], { env, timeout: 3000 });
-  resolvePane(Number(pane.stdout.trim()));
-  if (process.argv.includes('--manual-trust-fixture')) {
-    let sawPrompt = false;
-    for (let attempt = 0; attempt < 40 && !sawPrompt; attempt++) {
-      const pane = await run('tmux', ['-S', mux, 'capture-pane', '-p', '-t', '=probe:'], {env,timeout:3000});
-      sawPrompt = pane.stdout.includes('Hooks need review') && pane.stdout.includes('Trust all and continue');
-      if (!sawPrompt) await new Promise(resolve => setTimeout(resolve, 100));
+
+  async function exercise(manualTrust, expectReview = false) {
+    const requestBaseline = provider.models.length;
+    let resolvePane;
+    const panePid = new Promise(resolve => { resolvePane = resolve; });
+    positive = false;
+    completed = false;
+    tuiReady = false;
+    confirmedThread = undefined;
+    if (!embedded) {
+      relay = await startCodexWorkingLaunch({
+        codexBinary: (await run('which', ['codex'])).stdout.trim(),
+        peerVerifierBinary: verifier,
+        cwd: root, env, frontendPid: panePid,
+        backendConfigArgs: ['--dangerously-bypass-hook-trust'],
+        signal: new AbortController().signal,
+      });
+
     }
-    if (!sawPrompt) throw Error('Expected fixture-only manual hook approval prompt');
-    await run('tmux', ['-S', mux, 'send-keys', '-t', '=probe:', 'Down', 'Enter'], {env,timeout:3000});
-    console.log('Explicitly selected Trust all and continue for this disposable fixture');
-  }
-  if (inject) {
-    for (let attempt = 0; attempt < 70 && !tuiReady; attempt++) {
+    const binary = (await run('which', ['codex'])).stdout.trim();
+    const command = ['-S', mux, 'new-session', '-d', '-s', 'probe', '-c', root,
+      binary, '--dangerously-bypass-hook-trust', ...(resume ? ['resume', resumedThread] : []), '--model', CODEX_CANARY_MODELS[0], ...(embedded ? [] : ['--remote', relay.remote]),
+      ...(inject ? [] : ['Return CANARY_OK without tools.'])];
+    await run('tmux', command, { env, timeout: 3000 });
+    const pane = await run('tmux', ['-S', mux, 'display-message', '-p', '-t', '=probe:', '#{pane_pid}'], { env, timeout: 3000 });
+    resolvePane(Number(pane.stdout.trim()));
+    if (manualTrust || expectReview) {
+      let sawPrompt = false;
+      for (let attempt = 0; attempt < 40 && !sawPrompt; attempt++) {
+        const pane = await run('tmux', ['-S', mux, 'capture-pane', '-p', '-t', '=probe:'], {env,timeout:3000});
+        sawPrompt = pane.stdout.includes('Hooks need review') && pane.stdout.includes('Trust all and continue');
+        if (!sawPrompt) await new Promise(resolve => setTimeout(resolve, 100));
+      }
+      if (!sawPrompt) throw Error('Expected fixture-only manual hook approval prompt');
+      if (expectReview) {
+        const hookReceipt = await stat(stopReceipt).catch(error => {
+          if (error.code === 'ENOENT') return null;
+          throw error;
+        });
+        if (provider.models.length !== requestBaseline || hookReceipt) {
+          throw Error('A changed hook ran or the fixture prompt reached the model before review');
+        }
+        console.log('Changed fixture hook required review before any Stop or model call');
+        return true;
+      }
+      await run('tmux', ['-S', mux, 'send-keys', '-t', '=probe:', 'Down', 'Enter'], {env,timeout:3000});
+      console.log('Explicitly selected Trust all and continue for this disposable fixture');
+    }
+    if (inject) {
+      for (let attempt = 0; attempt < 70 && !tuiReady; attempt++) {
+        await new Promise(resolve => setTimeout(resolve, 100));
+      }
+      if (!tuiReady) throw Error('TUI thread did not initialize');
+      await new Promise(resolve => setTimeout(resolve, 250));
+      await run('tmux', ['-S', mux, 'send-keys', '-t', '=probe:', '-l', fixturePrompt], { env, timeout: 3000 });
+      await run('tmux', ['-S', mux, 'send-keys', '-t', '=probe:', 'Enter'], { env, timeout: 3000 });
+      await new Promise(resolve => setTimeout(resolve, 300));
+      await run('tmux', ['-S', mux, 'send-keys', '-t', '=probe:', 'Enter'], { env, timeout: 3000 });
+      console.log('A prompt was submitted via literal tmux pane input and the Codex two-Enter sequence.');
+    }
+    let stops = [];
+    for (let attempt = 0; attempt < 160; attempt++) {
+      stops = (await readFile(stopReceipt, 'utf8').catch(() => '')).trim().split('\n').filter(Boolean);
+      if (stops.length >= 2 && (embedded || completed)) break;
       await new Promise(resolve => setTimeout(resolve, 100));
     }
-    if (!tuiReady) throw Error('TUI thread did not initialize');
-    await new Promise(resolve => setTimeout(resolve, 250));
-    await run('tmux', ['-S', mux, 'send-keys', '-t', '=probe:', '-l', fixturePrompt], { env, timeout: 3000 });
-    await run('tmux', ['-S', mux, 'send-keys', '-t', '=probe:', 'Enter'], { env, timeout: 3000 });
-    await new Promise(resolve => setTimeout(resolve, 300));
-    await run('tmux', ['-S', mux, 'send-keys', '-t', '=probe:', 'Enter'], { env, timeout: 3000 });
-    console.log('A prompt was submitted via literal tmux pane input and the Codex two-Enter sequence.');
+    const fixtureRequests = provider.models.length - requestBaseline;
+    const resumeMatched = !resume || embedded || resumedThread === confirmedThread;
+    console.log(JSON.stringify({embedded, resume, resumeMatched, stops, fixtureRequests, refused:provider.failed(), positive, completed}));
+    if (stops.join(',') !== 'blocked,allowed' || fixtureRequests < 2 || provider.failed() || !resumeMatched || (!embedded && (!positive || !completed))) {
+      const pane = await run('tmux', ['-S', mux, 'capture-pane', '-p', '-t', '=probe:'], {env,timeout:3000}).catch(() => null);
+      console.log('Disposable pane:', pane?.stdout?.trim().slice(-1700));
+      return false;
+    }
+    return true;
   }
-  let stops = [];
-  for (let attempt = 0; attempt < 160; attempt++) {
-    stops = (await readFile(stopReceipt, 'utf8').catch(() => '')).trim().split('\n').filter(Boolean);
-    if (stops.length >= 2 && (embedded || completed)) break;
-    await new Promise(resolve => setTimeout(resolve, 100));
-  }
-  const fixtureRequests = provider.models.length - requestBaseline;
-  const resumeMatched = !resume || embedded || resumedThread === confirmedThread;
-  console.log(JSON.stringify({embedded, resume, resumeMatched, stops, fixtureRequests, refused:provider.failed(), positive, completed}));
-  if (stops.join(',') !== 'blocked,allowed' || fixtureRequests < 2 || provider.failed() || !resumeMatched || (!embedded && (!positive || !completed))) {
-    const pane = await run('tmux', ['-S', mux, 'capture-pane', '-p', '-t', '=probe:'], {env,timeout:3000}).catch(() => null);
-    console.log('Disposable pane:', pane?.stdout?.trim().slice(-1700));
+
+  if (trustedRestart) await readNativeHookTrust(hookConfig, 'untrusted');
+  const first = await exercise(trustedRestart || process.argv.includes('--manual-trust-fixture'));
+  if (!first) {
     process.exitCode = 1;
+  } else if (trustedRestart) {
+    const configPath = join(root, 'config.toml');
+    const armedConfig = await readFile(configPath, 'utf8');
+    if (!armedConfig.includes('trusted_hash')) throw Error('Expected fixture hook approval to be stored');
+    await run('tmux', ['-S', mux, 'kill-server'], { env, timeout: 3000 });
+    await relay.close();
+    relay = undefined;
+    // The existing loopback provider intentionally accepts four calls total.
+    // Rotate only its fixture URL so that the second exercise has its own cap.
+    const firstPort = provider.port;
+    await provider.close();
+    provider = await openCodexCanaryProvider(new AbortController().signal);
+    const priorUrl = 'http://127.0.0.1:' + firstPort + '/v1';
+    if (!armedConfig.includes(priorUrl)) throw Error('Expected the original fixture URL');
+    await writeFile(configPath, armedConfig.replace(priorUrl, 'http://127.0.0.1:' + provider.port + '/v1'));
+    await SafeFsExecutor.safeUnlink(stopReceipt, { operation: 'codex-working-signal-fixture-reset' });
+    if (changedHookRestart) {
+      await writeFile(hookConfig, stopHook(hook + ' changed-fixture-argument'));
+      console.log('Reopening the same thread after changing the approved fixture hook command');
+    } else {
+      console.log('Reopening the same thread with unchanged fixture hook approval');
+    }
+    await readNativeHookTrust(hookConfig, changedHookRestart ? 'modified' : 'trusted');
+    if (!await exercise(false, changedHookRestart)) process.exitCode = 1;
   }
+
 } finally {
   try {
     await relay?.close();
