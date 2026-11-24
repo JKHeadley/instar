@@ -164,6 +164,37 @@ describe('all-member durable source inventory preserves exact machine-local open
   expect(inventory.entries.filter(e=>e.ref.platform==='slack').map(e=>e.row.id)).toEqual([-7,-7]);
   expect(inventory.coverage.asOf).not.toBeNull();const stale=reconcileGraphSourceCoverage({source:stores[1],reader,dropped,membership,now:()=>Date.now()+GRAPH_SOURCE_SWEEP_STALE_MS+1});expect(stale.staleProducerIds).toHaveLength(2);expect(stale.asOf).toBe(inventory.coverage.asOf);
  });
+ it('suppresses prior native app metadata after a later unavailability checkpoint survives a cold reopen',async()=>{
+  await certifyAll();
+  const [origin,survivor]=members;
+  const appRef={kind:'conversation',platform:'app',conversationKey:APP} as const;
+  const sweep=(member:typeof origin,flat=member.flat)=>new ConversationGraphSourceSweepCapture({
+   agentId:'echo',identity:member.identity,ownerPublicKey:owner.publicKey,membership:()=>membership,
+   flat,registry:member.registry,telegramChatId:'-100123',source:stores[1],...readerFor(stores[1]),
+  }).capture();
+  for(const member of members)await certifyAll([sweep(member).checkpoint]);
+  const baseline=materializeGraphSourceInventory({source:stores[1],...readerFor(stores[1]),membership});
+  expect(baseline.partial).toBe(false);
+  expect(baseline.entries.find(entry=>canonicalJson(entry.ref)===canonicalJson(appRef))?.row.title).toBe('private app title');
+  const independent=baseline.conversations.find(row=>row.ref.platform==='slack'&&row.ref.channelId==='CBETA');
+  expect(independent).toBeDefined();
+  const priorNativeRow=stores[1].recordsForRepair().find(record=>canonicalJson(record.core.subject??null)===canonicalJson(appRef));
+  expect(priorNativeRow?.packet.eventId).toBeDefined();
+
+  // The native service is now unavailable. Preserve the existing source
+  // history and certify the producer's later, explicitly partial sweep.
+  await certifyAll([sweep(origin,{...origin.flat,service:null}).checkpoint]);
+  stores[1]=await ConversationGraphReplication.open(storeOptions(survivor));
+  expect(stores[1].repairRecord(priorNativeRow!.packet.eventId)).toBeTruthy();
+  const rebuilt=materializeGraphSourceInventory({source:stores[1],...readerFor(stores[1]),membership});
+  expect(rebuilt.partial).toBe(true);
+  expect(rebuilt.coverage.partialProducerIds).toContain(origin.id);
+  expect(rebuilt.coverage.unavailableBy).toContainEqual({ref:appRef,producerMachineId:origin.id});
+  expect(rebuilt.entries.some(entry=>canonicalJson(entry.ref)===canonicalJson(appRef))).toBe(false);
+  expect(rebuilt.conversations.some(row=>canonicalJson(row.ref)===canonicalJson(appRef))).toBe(false);
+  expect(JSON.stringify(rebuilt)).not.toContain('private app title');
+  expect(rebuilt.conversations).toContainEqual(independent);
+ });
  it('physically purges offline local capture versions before any witness erasure acknowledgement',async()=>{
   const member=members[0],page=member.capture.capturePage(),captured=page.observations.find(o=>o.capture.subject.platform==='slack')!;
   const target={sourceKind:'conversation-metadata' as const,sourceId:canonicalHash(captured.capture.subject)},fence=new ConversationGraphLocalErasureFence(member.identity.baseDir);
