@@ -1,0 +1,19 @@
+{
+  "version": 2,
+  "slug": "source-grounded-judge-prototype",
+  "sessionId": "79673ec9-ff9b-4e49-beab-ea9ff8ee8f93",
+  "timestamp": "2026-11-24T13:17:44.961Z",
+  "artifactPath": "upgrades/side-effects/source-grounded-judge-prototype.md",
+  "artifactSha256": "c2a89d08e976f17486baaacfb4d6301a73bc97deefd38052bdb507ce61ca7879",
+  "coveredFiles": [
+    "scripts/evaluation/source_grounded_reference_rerun.mjs",
+    "scripts/evaluation/source_grounded_reference_rerun.test.mjs"
+  ],
+  "phase": "complete",
+  "tier": 1,
+  "tierReasoning": "Reversible offline research coverage check with no production caller or qualification authority.",
+  "eli16Path": "docs/eli16/source-grounded-judge-prototype.eli16.md",
+  "sideEffectsPath": "upgrades/side-effects/source-grounded-judge-prototype.md",
+  "secondPass": "not-required",
+  "reviewerConcurred": null
+}

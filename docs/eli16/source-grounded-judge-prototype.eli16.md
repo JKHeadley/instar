@@ -13,3 +13,5 @@ A synthetic cross-worktree check combined this prototype at `65ef00f5` with the 
 This check ran against two clean worktrees with an invented fixture. The branch's composed automated test still uses a validator stub. A durable integration test can use the real validator once both candidates share an integration base. Live receipt authority and model delivery require their own evidence.
 
 An adjudication result is recorded beside the original critical finding. A missing, conflicting or invalid resolution leaves the finding unresolved. A recognized resolution still requires a separate host decision before the evaluation can qualify.
+
+When a reference is defective, the prototype checks that its replacement has a new version and covers every run in the host’s frozen affected list. Rerunning only one arm leaves coverage incomplete. Coverage and approval of the corrected reference are separate decisions.
