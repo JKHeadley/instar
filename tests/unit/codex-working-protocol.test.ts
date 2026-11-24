@@ -38,6 +38,27 @@ describe('CodexWorkingProtocol', () => {
     expect(f.turn.read()).toBeUndefined()
   })
 
+  it('keeps the selected resume when the TUI starts an ephemeral side thread', () => {
+    const f = fixture()
+    f.open()
+    f.start(1)
+    f.protocol.inspect('frontend', Buffer.from(JSON.stringify({
+      id: 2, method: 'thread/start', params: { ephemeral: true },
+    })))
+    f.response(2, { thread: { id: 'auxiliary' } })
+    expect(f.turn.read()).toBeDefined()
+    f.notice('turn/completed')
+    expect(f.turn.read()).toBeUndefined()
+
+    f.request(3, 'turn/start', 'auxiliary')
+    f.notice('turn/started', 'auxiliary', 'auxiliary-turn')
+    f.response(3, { turn: { id: 'auxiliary-turn', status: 'inProgress' } })
+    expect(f.turn.read()).toBeUndefined()
+
+    f.start(4)
+    expect(f.turn.read()).toBeDefined()
+  })
+
   it('rejects a turn response already marked completed', () => {
     const f = fixture()
     f.open()

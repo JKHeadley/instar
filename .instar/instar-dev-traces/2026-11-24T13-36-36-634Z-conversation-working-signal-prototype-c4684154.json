@@ -1,0 +1,25 @@
+{
+  "version": 3,
+  "slug": "conversation-working-signal-prototype",
+  "sessionId": "633bd330-201e-4dc8-8fd9-72b89116167e",
+  "timestamp": "2026-11-24T13:36:36.634Z",
+  "artifactPath": "upgrades/side-effects/conversation-working-signal-prototype.md",
+  "artifactSha256": "58eeb8cdca2f842aa21b67e795c2c151860d22d68bbed107ec2bebd03080bd08",
+  "specPath": "docs/specs/conversation-working-signal-prototype.md",
+  "coveredFiles": [
+    "src/core/CodexWorkingProtocol.ts",
+    "tests/fixtures/codex-working-signal/probe.mjs",
+    "tests/unit/codex-working-protocol.test.ts"
+  ],
+  "phase": "complete",
+  "tier": 2,
+  "secondPass": "ran",
+  "reviewerConcurred": true,
+  "toolchain": {
+    "buildSkill": {
+      "name": "instar-dev",
+      "version": "21a45a5a5f03",
+      "verified": true
+    }
+  }
+}

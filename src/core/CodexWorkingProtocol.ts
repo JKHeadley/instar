@@ -76,6 +76,9 @@ export class CodexWorkingProtocol {
 
   private frontend(rpc: Record<string, unknown>): void {
     const id = requestId(rpc.id)
+    const params = record(rpc.params)
+    // The TUI can use an ephemeral thread for auxiliary work after a resume.
+    if (rpc.method === 'thread/start' && params?.ephemeral === true) return
     if (rpc.method === 'thread/start' || rpc.method === 'thread/resume') {
       if (this.threadRequest !== undefined) {
         this.skipMessage('frontend')
@@ -91,7 +94,7 @@ export class CodexWorkingProtocol {
       return
     }
 
-    const thread = stringId(record(rpc.params)?.threadId)
+    const thread = stringId(params?.threadId)
     if (!thread || thread !== this.selectedThread) return
     if (rpc.method === 'turn/start' && id !== undefined) this.turn.requestStart(thread, id)
     if (rpc.method === 'turn/interrupt') this.turn.observeEnd(thread)

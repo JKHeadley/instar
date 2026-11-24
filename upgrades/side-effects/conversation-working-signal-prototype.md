@@ -66,3 +66,9 @@ Two separate reviewers checked the product import, runner and packaging boundari
 ## Class-Closure Declaration
 
 No agent-authored-artifact defect. The unbounded-self-action class is not applicable. One explicit disposable launch owns one child. Its bounded startup checks do not spawn a replacement, and cleanup acts only on that exact owned child and relay. There is no automatic action loop or production caller.
+
+## Ephemeral-thread scope correction
+
+The follow-up implements the already reviewed selected-thread-only contract for actual Codex TUI auxiliary activity. A `thread/start` RPC explicitly tagged `ephemeral: true` is ignored by the observer before it can clear or replace the selected thread. It is still forwarded unchanged. This deliberately excludes an explicitly ephemeral chat from the prototype's hint. Fresh and resumed ordinary threads retain their selection and can signal when their native events match. Independent code review confirmed that the change touches no caller, launch, reply, native trust or package surface.
+
+A focused regression failed with the original source because the auxiliary start removed the selected hint. The corrected source passed all 23 tests across the four focused files. The tracked managed fixture saw the actual auxiliary thread again, but every observed positive belonged to the selected resumed thread. The managed approval prompt continues to hold modified hooks. No installed startup or signed browser route was exercised.

@@ -30,6 +30,11 @@ let completed = false;
 let tuiReady = false;
 let resumedThread;
 let confirmedThread;
+let referencedThread;
+const observedRequests = new Map();
+const observedHookReads = [];
+const threadsReturned = [];
+const positiveThreads = [];
 const stopReceipt = join(root, 'stop-count');
 const fixturePrompt = 'Return CANARY_OK without tools.';
 function fixtureHookTrust(reply, hookConfig) {
@@ -187,10 +192,43 @@ try {
       threadMethod.call(this, direction, payload);
       const after = Boolean(relay.read());
       positive ||= after;
-      if (direction !== 'backend') return;
       const rpc = JSON.parse(payload.toString());
-      tuiReady ||= typeof rpc.result?.thread?.id === 'string';
-      if (typeof rpc.result?.thread?.id === 'string') confirmedThread = rpc.result.thread.id;
+      if (direction === 'frontend') {
+        if (['thread/read', 'thread/start', 'thread/resume', 'hooks/list', 'turn/start'].includes(rpc.method)
+          && (typeof rpc.id === 'number' || typeof rpc.id === 'string')) {
+          observedRequests.set(rpc.id, {
+            method: rpc.method,
+            scope: rpc.params?.threadId ? 'thread' : 'project',
+            threadId: rpc.params?.threadId,
+            ephemeral: rpc.params?.ephemeral === true,
+          });
+        }
+        return;
+      }
+
+      const request = observedRequests.get(rpc.id);
+      observedRequests.delete(rpc.id);
+      const thread = rpc.result?.thread?.id;
+      if (typeof thread === 'string') threadsReturned.push({
+        method: request?.method ?? 'unmatched',
+        matchesSeed: resume && thread === resumedThread,
+        ephemeral: request?.ephemeral === true,
+      });
+      if (typeof thread === 'string' && request?.method === 'thread/read') referencedThread = thread;
+      if (typeof thread === 'string' && request?.method === (resume ? 'thread/resume' : 'thread/start') && !confirmedThread) {
+        confirmedThread = thread;
+        tuiReady = true;
+      }
+      if (!before && after) {
+        const signaledThread = rpc.params?.threadId ?? request?.threadId;
+        positiveThreads.push(signaledThread === confirmedThread ? 'selected' : 'other');
+      }
+      if (request?.method === 'hooks/list') {
+        observedHookReads.push({
+          scope: request.scope,
+          trust: fixtureHookTrust(rpc, hookConfig) ?? 'unavailable',
+        });
+      }
       completed ||= Boolean(before && before.freshForMs > performance.now() - elapsedStart && !after
         && rpc.method === 'turn/completed' && rpc.params?.turn?.status === 'completed');
     };
@@ -204,6 +242,11 @@ try {
     completed = false;
     tuiReady = false;
     confirmedThread = undefined;
+    referencedThread = undefined;
+    observedRequests.clear();
+    observedHookReads.length = 0;
+    threadsReturned.length = 0;
+    positiveThreads.length = 0;
     if (!embedded) {
       relay = await startCodexWorkingLaunch({
         codexBinary: (await run('which', ['codex'])).stdout.trim(),
@@ -229,7 +272,14 @@ try {
         if (!sawPrompt) await new Promise(resolve => setTimeout(resolve, 100));
       }
       if (!sawPrompt) throw Error('Expected fixture-only manual hook approval prompt');
-      await readLoadedHookTrust(hookConfig, confirmedThread, 'not-loaded');
+      const queriedThread = confirmedThread ?? referencedThread;
+      if (queriedThread !== resumedThread || confirmedThread) throw Error('Expected exact requested thread before load');
+      const reviewTrust = expectReview ? 'modified' : 'untrusted';
+      if (!observedHookReads.some(read => read.scope === 'project' && read.trust === reviewTrust)) {
+        throw Error('Expected the TUI itself to read ' + reviewTrust + ' project hooks before review');
+      }
+      console.log(JSON.stringify({ reviewPrompt: true, threadsReturned, threadLoadedByTui: confirmedThread === resumedThread, observedHookReads }));
+      await readLoadedHookTrust(hookConfig, queriedThread, 'not-loaded');
       if (expectReview) {
         const hookReceipt = await stat(stopReceipt).catch(error => {
           if (error.code === 'ENOENT') return null;
@@ -264,13 +314,19 @@ try {
     }
     const fixtureRequests = provider.models.length - requestBaseline;
     const resumeMatched = !resume || embedded || resumedThread === confirmedThread;
-    console.log(JSON.stringify({embedded, resume, resumeMatched, stops, fixtureRequests, refused:provider.failed(), positive, completed}));
-    if (stops.join(',') !== 'blocked,allowed' || fixtureRequests < 2 || provider.failed() || !resumeMatched || (!embedded && (!positive || !completed))) {
+    console.log(JSON.stringify({embedded, resume, resumeMatched, stops, fixtureRequests, refused:provider.failed(), positive, completed, threadsReturned, positiveThreads}));
+    if (stops.join(',') !== 'blocked,allowed' || fixtureRequests < 2 || provider.failed() || !resumeMatched || (!embedded && (!positive || !completed || !positiveThreads.includes('selected') || positiveThreads.includes('other')))) {
       const pane = await run('tmux', ['-S', mux, 'capture-pane', '-p', '-t', '=probe:'], {env,timeout:3000}).catch(() => null);
       console.log('Disposable pane:', pane?.stdout?.trim().slice(-1700));
       return false;
     }
-    if (expectedLoadedTrust) await readLoadedHookTrust(hookConfig, confirmedThread, expectedLoadedTrust);
+    if (expectedLoadedTrust) {
+      if (!observedHookReads.some(read => read.scope === 'project' && read.trust === 'trusted')) {
+        throw Error('Expected the TUI itself to read trusted project hooks before load');
+      }
+      console.log(JSON.stringify({ reviewPrompt: false, threadLoadedByTui: confirmedThread === resumedThread, observedHookReads }));
+      await readLoadedHookTrust(hookConfig, confirmedThread, expectedLoadedTrust);
+    }
     return true;
   }
 
