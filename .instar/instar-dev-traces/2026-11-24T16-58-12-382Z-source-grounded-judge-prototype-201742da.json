@@ -1,0 +1,19 @@
+{
+  "version": 2,
+  "slug": "source-grounded-judge-prototype",
+  "sessionId": "79673ec9-ff9b-4e49-beab-ea9ff8ee8f93",
+  "timestamp": "2026-11-24T16:58:12.382Z",
+  "artifactPath": "upgrades/side-effects/source-grounded-judge-prototype.md",
+  "artifactSha256": "65cb44e41f9fc04844681af61eef6ab44e7d0531371cba17b989bd40811e1237",
+  "coveredFiles": [
+    "scripts/evaluation/source_grounded_flow.test.mjs",
+    "scripts/evaluation/source_grounded_judge_flow.mjs"
+  ],
+  "phase": "complete",
+  "tier": 1,
+  "tierReasoning": "Offline internal prototype composition with no production consumer.",
+  "eli16Path": "docs/eli16/source-grounded-judge-prototype.eli16.md",
+  "sideEffectsPath": "upgrades/side-effects/source-grounded-judge-prototype.md",
+  "secondPass": "not-required",
+  "reviewerConcurred": null
+}

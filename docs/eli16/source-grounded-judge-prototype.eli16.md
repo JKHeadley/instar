@@ -21,3 +21,5 @@ To repeat the check, run `node scripts/evaluation/source_grounded_real_validator
 A missing judge receipt leaves its original slot empty. The other judge’s critical finding remains visible even though the pair is incomplete.
 
 Each critical finding needs its own host-issued identity before an adjudication can be recorded. This prevents one receipt from resolving two findings that share a criterion.
+
+The offline composition selects each retry once and uses that same selection to bind the output and check disclosure timing. An earlier attempt cannot stand in for a missing selected output.

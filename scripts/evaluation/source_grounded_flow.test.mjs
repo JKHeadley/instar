@@ -1,3 +1,4 @@
+import { evaluateJudgeFlow } from './source_grounded_judge_flow.mjs';
 import assert from 'node:assert/strict';
 import { createHash } from 'node:crypto';
 import { test } from 'node:test';
@@ -98,4 +99,26 @@ test('a missing selected receipt preserves its scheduled slot and the surviving 
   assert.equal(result.structurallyComplete, false);
   assert.deepEqual(result.criticalFailures, [{ criterionId: 'critical', slot: 0 }]);
   assert.deepEqual(resolveTrialJudgeSchedule(input, expected, []), { state: 'bound', slots: [null, null] });
+});
+
+test('composed flow uses the selected retry for binding and independence evidence', () => {
+  const input = { planBytes, planHash: sha(planBytes), parsePlan: JSON.parse, rubricBytes, capture };
+  const timeout = { ...receipts[0], ordinal: 0, attemptId: 'timeout', state: 'timeout' };
+  const ledgers = [
+    { slotId: receipts[0].slotId, maxRetries: 1, attempts: [timeout, receipts[0]] },
+    { slotId: receipts[1].slotId, maxRetries: 1, attempts: [receipts[1]] },
+  ];
+  const disclosure = { ...expected, ordinal: 4 };
+  const aged = { ...observations[0], attemptId: timeout.attemptId };
+  const good = evaluateJudgeFlow(input, expected, ledgers, [aged, ...observations], disclosure, validate);
+  assert.deepEqual(good.bindingStates, ['bound', 'bound']);
+  assert.equal(good.independence, 'supported');
+  const missing = evaluateJudgeFlow(input, expected, ledgers, [aged, observations[1]], disclosure, validate);
+  assert.deepEqual(missing.bindingStates, ['missing', 'bound']);
+  assert.equal(missing.independence, 'unknown');
+  assert.equal(evaluateJudgeFlow(input, expected, ledgers, observations,
+    { ...disclosure, repeat: 999 }, validate).independence, 'unknown');
+  const mixed = [{ ...ledgers[0], attempts: [{ ...timeout, trialId: 'wrong' }, receipts[0]] }, ledgers[1]];
+  assert.equal(evaluateJudgeFlow(input, expected, mixed, observations, disclosure, validate).state,
+    'ledger-identity-mismatch');
 });
