@@ -897,7 +897,7 @@ import { INITIATIVE_UPDATE_FIELDS } from '../core/InitiativeTracker.js';
 import { telegramTopicRef, topicRef } from '../messaging/shared/topicRef.js';
 import { peerFingerprintOfPlace } from '../users/peerPlaceAdmission.js';
 import { CODEX_CLI_FRAMEWORK } from '../core/frameworkFacts.js';
-import { validFrameworkModelDefaults } from '../core/frameworkModelDefaults.js';
+import { effectiveFrameworkModelDefaults, validFrameworkModelDefaults } from '../core/frameworkModelDefaults.js';
 import { mergeDefaults } from '../core/mergeDefaults.js';
 import { resolveFrameworkBinaryPath } from '../core/frameworkSessionLaunch.js';
 import { codexCliVersionCached, refreshCodexCliVersion } from '../core/codexCapabilities.js';
@@ -13952,7 +13952,7 @@ export function createRoutes(ctx: RouteContext): Router {
     }
     const options = buildTopicProfileOptions({
       ...dashboardChoiceDeps(tp),
-      frameworkDefaultModels: () => ctx.config.sessions?.frameworkDefaultModels ?? {},
+      frameworkDefaultModels: () => effectiveFrameworkModelDefaults(ctx.config.sessions?.frameworkDefaultModels),
       regime: () => tp.surface.currentRegime(),
       newTopicDefault: () => tp.newTopicDefault?.read() ?? null,
     });

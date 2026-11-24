@@ -26,3 +26,7 @@ The profile API and dashboard can report the resolved default. A new launch can 
 ## Rollback and verification
 
 A config pin restores a specific default model for new launches. Before installing an older build, restore the previous config snapshot or replace saved family selectors with verified exact pins. Then use the existing application rollback. Focused unit, authenticated integration, and lifecycle tests cover the implemented behavior. Full Local Verify remains with the release verification owner.
+
+## Configuration loader compatibility
+
+The built-in selector applies at the launch and display reader. An absent saved model map stays absent in loaded config, and a saved map contains only the explicit entries. The runtime model fallback remains available without creating a saved pin or changing the generic loader's contract.

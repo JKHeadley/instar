@@ -29,6 +29,7 @@ import path from 'node:path';
 import os from 'node:os';
 import request from 'supertest';
 import { AgentServer } from '../../src/server/AgentServer.js';
+import { effectiveFrameworkModelDefaults } from '../../src/core/frameworkModelDefaults.js';
 import { buildCoherenceFlags } from '../../src/core/machineCoherenceManifest.js';
 import { StateManager } from '../../src/core/StateManager.js';
 import { SafeFsExecutor } from '../../src/core/SafeFsExecutor.js';
@@ -83,7 +84,7 @@ describe('Topic Profile E2E lifecycle', () => {
       defaultFramework: () => 'claude-code',
       configTopicFrameworks: () => ({}),
       configProfileDefaults: () => ({}),
-      frameworkDefaultModels: () => config.sessions?.frameworkDefaultModels ?? {},
+      frameworkDefaultModels: () => effectiveFrameworkModelDefaults(config.sessions?.frameworkDefaultModels),
       tierEscalationConfig: () => undefined,
       localModelBinding: () => null,
       frameworkBinaryPath: (framework) => framework === 'codex-cli' ? process.execPath : null,
@@ -159,6 +160,8 @@ describe('Topic Profile E2E lifecycle', () => {
     expect(read.status).toBe(200);
     expect(read.body.pin.framework).toBe('codex-cli');
     expect(read.body.resolved.framework).toBe('codex-cli');
+    expect(read.body.resolved.model).toBe('gpt-6.2-sol');
+    expect(config.sessions?.frameworkDefaultModels).toBeUndefined();
   });
 
   it('reads a changed Codex family default over the authenticated API without restarting', async () => {

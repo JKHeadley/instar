@@ -15,7 +15,7 @@ import { DegradationReporter } from '../monitoring/DegradationReporter.js';
 import os from 'node:os';
 import type { InstarConfig, SessionManagerConfig, JobSchedulerConfig, FeedbackConfig, AgentType } from './types.js';
 import { CANONICAL_FEEDBACK_URL } from './canonicalFeedback.js';
-import { CODEX_CLI_FRAMEWORK, CODEX_MOVING_MODEL_DEFAULT, resolveFrameworkAlias } from './frameworkFacts.js';
+import { resolveFrameworkAlias } from './frameworkFacts.js';
 import { agentRegistryPath } from './AgentRegistryPaths.js';
 
 const DEFAULT_PORT = 4040;
@@ -1190,13 +1190,13 @@ export function loadConfig(projectDir?: string): InstarConfig {
     typeof fileConfig.sessions.componentFrameworks === 'object'
       ? { componentFrameworks: fileConfig.sessions.componentFrameworks }
       : {}),
-    frameworkDefaultModels: {
-      [CODEX_CLI_FRAMEWORK]: CODEX_MOVING_MODEL_DEFAULT,
-      ...(fileConfig.sessions?.frameworkDefaultModels
-        && typeof fileConfig.sessions.frameworkDefaultModels === 'object'
-        && !Array.isArray(fileConfig.sessions.frameworkDefaultModels)
-        ? fileConfig.sessions.frameworkDefaultModels : {}),
-    },
+    // Keep the saved overrides intact. The server resolves the built-in
+    // Codex default separately so an omitted map stays omitted in loaded config.
+    ...(fileConfig.sessions?.frameworkDefaultModels &&
+    typeof fileConfig.sessions.frameworkDefaultModels === 'object' &&
+    !Array.isArray(fileConfig.sessions.frameworkDefaultModels)
+      ? { frameworkDefaultModels: fileConfig.sessions.frameworkDefaultModels }
+      : {}),
     // dynamicMcp (DYNAMIC-MCP-LIFECYCLE-SPEC). THE SAME LOAD-PATH GAP as
     // componentFrameworks/frameworkDefaultModels above (THIRD instance — live-test
     // 2026-06-27): #1293 added the feature, the `/mcp/*` routes (which read

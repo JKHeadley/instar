@@ -1,6 +1,16 @@
 import { readFileSync } from 'node:fs';
-import { CODEX_CLI_FRAMEWORK } from './frameworkFacts.js';
+import { CODEX_CLI_FRAMEWORK, CODEX_MOVING_MODEL_DEFAULT } from './frameworkFacts.js';
 import { resolveInteractiveLaunchModel } from './frameworkSessionLaunch.js';
+
+import { mergeDefaults } from './mergeDefaults.js';
+import type { SessionManagerConfig } from './types.js';
+
+type ModelDefaults = NonNullable<SessionManagerConfig['frameworkDefaultModels']>;
+
+/** Effective defaults for launches and displays. Keep these out of saved config. */
+export function effectiveFrameworkModelDefaults(overrides: ModelDefaults | undefined): ModelDefaults {
+  return mergeDefaults<ModelDefaults>({ [CODEX_CLI_FRAMEWORK]: CODEX_MOVING_MODEL_DEFAULT }, overrides);
+}
 
 let reviewedCodexModels: readonly string[] | undefined;
 const reportedWarnings = new Set<string>();
