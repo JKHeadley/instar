@@ -29,7 +29,7 @@ import {DegradationReporter} from '../monitoring/DegradationReporter.js';
  * machine's device-key ledger and signing-key history: verified / redacted / failed / unknown /
  * none. Only `verified` adds "📱 signed" to the session tag.
  */
-import { maskInbound } from '../messaging/inboundCredentialMask.js';
+import { maskInbound, sessionRemovedKeyNote } from '../messaging/inboundCredentialMask.js';
 import { credentialScrubEnabledReader } from '../core/outputCredentialScrub.js';
 import { storageErrorResponse } from '../core/storageMachineName.js';
 import { mobileOwnerDeviceAdmission } from './mobileOwnerDeviceAdmission.js';
@@ -247,6 +247,8 @@ async function fetchPeers<T>(
 
 export interface MobileConversationRouteDeps {
   config: InstarConfig;
+  /** SEC-164 §4.5: posts the fixed removed-key notice into the conversation. Absent ⇒ no notice. */
+  credentialNotice?: ((input: { conversationKey: string; messageId: string }) => void) | null;
   pairing: MobilePairingService;
   /** Null when `mobilePairing.native.enabled` resolved off at boot. */
   service: AppConversationService | null;
@@ -1213,7 +1215,13 @@ export function createMobileConversationRouter(deps: MobileConversationRouteDeps
     let outcome: 'delivered' | 'refused';
     let originVerdict: OriginVerdict = 'unknown';
     try {
-      const r = await dispatchStoredAppMessage(s, { key, alias, title: conv.title ?? 'Untitled', event: msg, ownerName: sender?.name ?? s.ownerName(), memoryPersonId });
+      const credTeam = credRemovedKinds.length > 0 && (sender?.role === 'owner' || sender?.role === 'team' || !sender);
+      const r = await dispatchStoredAppMessage(s, { key, alias, title: conv.title ?? 'Untitled', event: msg, ownerName: sender?.name ?? s.ownerName(), memoryPersonId,
+        ...(credRemovedKinds.length > 0 ? { sessionNote: sessionRemovedKeyNote(credTeam && !!deps.credentialNotice) } : {}) });
+      // SEC-164 §4.5: the person who pasted the key gets one fixed notice in the same conversation.
+      if (credTeam && deps.credentialNotice) {
+        try { deps.credentialNotice({ conversationKey: key, messageId }); } catch { /* @silent-fallback-ok — the notice reports its own failures; the message is already delivered */ }
+      }
       outcome = r.outcome;
       originVerdict = r.originVerdict;
     } catch (err) {
