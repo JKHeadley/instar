@@ -29,6 +29,8 @@ import crypto from 'node:crypto';
 import fs from 'node:fs';
 import os from 'node:os';
 import path from 'node:path';
+import { relatedWorkSection } from '../fixtures/related-work.js';
+import { reviewDigest } from '../../skills/spec-converge/scripts/related-work-preflight.mjs';
 import { SafeFsExecutor } from '../../src/core/SafeFsExecutor.js';
 
 const REPO_ROOT = path.resolve(__dirname, '..', '..');
@@ -125,6 +127,39 @@ describe('precommit presence backstop (§3.4)', () => {
     });
     return { status: res.status, stdout: res.stdout, stderr: res.stderr };
   }
+
+  it('requires a stamped Related work section on the staged spec for a full dev trace', () => {
+    stageTier1();
+    const traceDir = path.join(sandbox, '.instar', 'instar-dev-traces');
+    const traceFile = path.join(traceDir, fs.readdirSync(traceDir)[0]);
+    const trace = JSON.parse(fs.readFileSync(traceFile, 'utf8'));
+    const spec = 'docs/specs/demo.md';
+    fs.writeFileSync(traceFile, JSON.stringify({ ...trace, tier: 2, specPath: spec }));
+    const helper = 'skills/spec-converge/scripts/related-work-preflight.mjs';
+    fs.mkdirSync(path.join(sandbox, path.dirname(helper)), { recursive: true });
+    fs.copyFileSync(path.join(REPO_ROOT, helper), path.join(sandbox, helper));
+
+    const body = '# Demo\n' + relatedWorkSection;
+    const stamped = `---\nslug: demo\nparent-principle: Structure beats Willpower\nreview-convergence: "2026-11-24T21:10:00Z"\napproved: true\nrelated-work-review-sha256: ${reviewDigest(body)}\n---\n`;
+    fs.writeFileSync(path.join(sandbox, spec), stamped + '# Demo\n');
+    git(sandbox, ['add', spec]);
+    fs.writeFileSync(path.join(sandbox, spec), stamped + body);
+
+    const missing = runPrecommit();
+    expect(missing.status).toBe(1);
+    expect(missing.stderr).toContain('Add exactly one ## Related work');
+
+    git(sandbox, ['add', spec]);
+    const valid = runPrecommit();
+    expect(valid.stderr).not.toContain('related-work review stamp');
+    expect(valid.status, valid.stderr).toBe(0);
+
+    fs.writeFileSync(path.join(sandbox, spec), stamped + body + '\nEdited after review\n');
+    git(sandbox, ['add', spec]);
+    const stale = runPrecommit();
+    expect(stale.status).toBe(1);
+    expect(stale.stderr).toContain('staged spec has changed');
+  });
 
   it('REFUSES a trace lacking duplicateBuildCheck when INSTAR_DUP_BUILD_CHECK=on', () => {
     stageTier1();

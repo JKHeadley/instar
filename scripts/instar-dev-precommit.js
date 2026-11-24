@@ -690,14 +690,18 @@ if (!spec) {
 }
 
 const specPath = path.resolve(ROOT, spec);
-if (!fs.existsSync(specPath)) {
-  blockCommit(
-    inScopeFiles,
-    `Spec file ${spec} (referenced by trace) does not exist.`,
-  );
+const specRelative = path.relative(ROOT, specPath);
+if (!specRelative || specRelative === '..' || specRelative.startsWith(`..${path.sep}`)) {
+  blockCommit(inScopeFiles, 'The trace must reference a spec inside this repository.');
 }
-
-const specContent = fs.readFileSync(specPath, 'utf8');
+let specContent;
+try {
+  specContent = execFileSync('git', ['show', `:${specRelative.split(path.sep).join('/')}`], {
+    cwd: ROOT, encoding: 'utf8', stdio: ['ignore', 'pipe', 'ignore'],
+  }).replace(/\r\n/g, '\n');
+} catch {
+  blockCommit(inScopeFiles, 'The trace spec must be present and resolved in the Git index.');
+}
 const specFmMatch = specContent.match(/^---\n([\s\S]*?)\n---\n/);
 if (!specFmMatch) {
   blockCommit(
@@ -754,6 +758,13 @@ if (!recognition.approved) {
       'recorded instructions reserve) before /instar-dev can ship this change.',
     ].join('\n'),
   );
+}
+
+const { readRelatedWorkDigest, reviewDigest, validateRelatedWork } =
+  await import('../skills/spec-converge/scripts/related-work-preflight.mjs');
+const overlapError = validateRelatedWork(specContent);
+if (overlapError || readRelatedWorkDigest(specFm) !== reviewDigest(specContent)) {
+  blockCommit(inScopeFiles, overlapError || 'The staged spec has changed or lacks a related-work review stamp. Run spec convergence again.');
 }
 
 // ── Report-backing (Part B — dark, env-gated) ──

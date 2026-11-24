@@ -19,6 +19,7 @@
  *      NOT collapse to unavailable.
  */
 
+import { writeReviewedRelatedWork } from '../fixtures/related-work.js';
 import { describe, it, expect, beforeEach, afterEach } from 'vitest';
 import { execFileSync } from 'node:child_process';
 import fs from 'node:fs';
@@ -112,7 +113,7 @@ beforeEach(() => {
     'utf-8',
   );
   fs.writeFileSync(path.join(tmpDir, 'cm-spec.eli16.md'), ELI16, 'utf-8');
-  fs.writeFileSync(reportPath, '# Convergence report\n', 'utf-8');
+  writeReviewedRelatedWork(specPath, reportPath);
   fs.writeFileSync(authPath, JSON.stringify({ tokens: { access_token: 'oauth-token' } }), 'utf-8');
 });
 

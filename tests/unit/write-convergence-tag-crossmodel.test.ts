@@ -13,6 +13,7 @@
  * so the script's `path.resolve(ROOT, ...)` resolves to our tmp fixtures.
  */
 
+import { writeReviewedRelatedWork } from '../fixtures/related-work.js';
 import { describe, it, expect, beforeEach, afterEach } from 'vitest';
 import { execFileSync } from 'node:child_process';
 import fs from 'node:fs';
@@ -71,7 +72,7 @@ beforeEach(() => {
   fs.writeFileSync(specPath, SPEC_BODY, 'utf-8');
   // sibling eli16 companion: <basename>.eli16.md
   fs.writeFileSync(path.join(tmpDir, 'test-spec.eli16.md'), ELI16_BODY, 'utf-8');
-  fs.writeFileSync(reportPath, '# Convergence report\n', 'utf-8');
+  writeReviewedRelatedWork(specPath, reportPath);
 });
 
 afterEach(() => {
@@ -138,4 +139,13 @@ describe('write-convergence-tag.mjs cross-model-review field', () => {
     expect(out).not.toMatch(/cross-model-review:/);
     expect(out).toMatch(/review-convergence:/);
   });
+});
+
+it('refuses missing evidence or a spec changed after review', () => {
+  const pathArgs = [SCRIPT, '--spec', specPath, '--report', reportPath, '--iterations', '1'];
+  const valid = fs.readFileSync(specPath, 'utf8');
+  fs.writeFileSync(specPath, SPEC_BODY);
+  expect(() => execFileSync(process.execPath, pathArgs, { stdio: 'pipe' })).toThrow(/Related work/);
+  fs.writeFileSync(specPath, valid + '\nEdited after review\n');
+  expect(() => execFileSync(process.execPath, pathArgs, { stdio: 'pipe' })).toThrow(/report needs/);
 });

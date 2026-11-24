@@ -81,6 +81,8 @@ describe('migrateFeatureMaturationGate', () => {
     const refreshed = fs.readFileSync(writer, 'utf8');
     expect(refreshed).not.toContain('stale installed writer');
     expect(refreshed).toContain('eli16-overview-check.mjs');
+    expect(refreshed).toContain('related-work-preflight.mjs');
+    expect(fs.readFileSync(path.join(path.dirname(writer), 'related-work-preflight.mjs'), 'utf8')).toContain('validateRelatedWork');
     // …and the module that import line resolves to must be delivered too, or
     // the refreshed writer dies before parsing an argument.
     expect(fs.existsSync(path.join(root, '.claude', 'scripts', 'eli16-overview-check.mjs'))).toBe(true);
