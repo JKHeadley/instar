@@ -18,7 +18,7 @@ const capture = {
 const rubricBytes = Buffer.from('synthetic rubric');
 const expected = { trialId: 'trial', arm: 'reduced', repeat: 2 };
 const planBytes = Buffer.from(JSON.stringify({
-  ...expected, judgeSlots: [{ id: 'slot-0', family: 'family-0' }, { id: 'slot-1', family: 'family-1' }],
+  ...expected, judgeSlots: [{ id: 'slot-0', family: 'family-0', maxRetries: 1 }, { id: 'slot-1', family: 'family-1', maxRetries: 0 }],
   caseId: capture.caseId, submissionId: capture.submissionId, criteria,
   sources: [{ id: 'source', hash: sha('evidence') }],
   availableSourceIds: capture.availableSourceIds, rubricHash: sha(rubricBytes),
@@ -109,6 +109,13 @@ test('composed flow uses the selected retry for binding and independence evidenc
     { slotId: receipts[1].slotId, maxRetries: 1, attempts: [receipts[1]] },
   ];
   const disclosure = { ...expected, ordinal: 4 };
+  const noRetryPlan = JSON.parse(planBytes);
+  noRetryPlan.judgeSlots[0].maxRetries = 0;
+  const lockedBytes = Buffer.from(JSON.stringify(noRetryPlan));
+  const blocked = evaluateJudgeFlow({ ...input, planBytes: lockedBytes, planHash: sha(lockedBytes) },
+    expected, ledgers, observations, disclosure, validate);
+  assert.equal(blocked.selection[0].state, 'policy-violation');
+  assert.deepEqual(blocked.bindingStates, ['missing', 'bound']);
   const aged = { ...observations[0], attemptId: timeout.attemptId };
   const good = evaluateJudgeFlow(input, expected, ledgers, [aged, ...observations], disclosure, validate);
   assert.deepEqual(good.bindingStates, ['bound', 'bound']);

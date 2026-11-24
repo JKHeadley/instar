@@ -5,7 +5,7 @@ const sha = value => createHash('sha256').update(value).digest('hex');
 
 // Supply the host’s structural parser and the independently held plan digest.
 // The plan hash is checked against the exact bytes, not reserialized JSON.
-function checkTrialInputs({ planBytes, planHash, parsePlan, rubricBytes, capture }) {
+export function checkTrialInputs({ planBytes, planHash, parsePlan, rubricBytes, capture }) {
   if (sha(planBytes) !== planHash) return { state: 'plan-mismatch' };
   const plan = parsePlan(planBytes);
   if (plan.caseId !== capture.caseId || plan.submissionId !== capture.submissionId) {
@@ -35,10 +35,14 @@ export function verifyTrialJudgeSchedule(input, expected, receipts) {
 export function resolveTrialJudgeSchedule(input, expected, receipts) {
   const result = checkTrialInputs(input);
   if (result.state !== 'bound') return result;
-  const state = verifyScheduledJudges(result.plan, expected, receipts);
+  return resolveScheduledJudges(result.plan, expected, receipts);
+}
+
+export function resolveScheduledJudges(plan, expected, receipts) {
+  const state = verifyScheduledJudges(plan, expected, receipts);
   if (state !== 'bound') return { state };
   const byId = new Map(receipts.map(receipt => [receipt.slotId, receipt]));
-  return { state, slots: result.plan.judgeSlots.map(({ id }) => byId.get(id) ?? null) };
+  return { state, slots: plan.judgeSlots.map(({ id }) => byId.get(id) ?? null) };
 }
 
 // Expected identity comes from the host's selected trial, never a judge

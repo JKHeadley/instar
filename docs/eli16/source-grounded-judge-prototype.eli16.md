@@ -23,3 +23,5 @@ A missing judge receipt leaves its original slot empty. The other judge’s crit
 Each critical finding needs its own host-issued identity before an adjudication can be recorded. This prevents one receipt from resolving two findings that share a criterion.
 
 The offline composition selects each retry once and uses that same selection to bind the output and check disclosure timing. An earlier attempt cannot stand in for a missing selected output.
+
+Each judge slot’s retry limit now comes from the verified plan. A more permissive limit supplied with attempt records has no effect. The repeatable check also calls the composed flow with the real validator.
