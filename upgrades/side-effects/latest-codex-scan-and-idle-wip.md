@@ -57,3 +57,7 @@ Both authenticated HTTP reads use the scheduler's machine-scoped window of up to
 New doorway jobs use 04:00 local time and remain disabled. Existing valid doorway manifests keep their schedule, enabled value, disable marker, and existing script or agent-message runner. A malformed or unsupported manifest stays available for operator review and is reported by the existing install result. The shared installer serves new installs and updates. The change does not alter the operator's master switch, probe execution, or delivery. Cadence and enablement remain local to the existing schedule control. Reverting the template changes the default for future installs, and previously saved schedules retain their values.
 
 Independent checkpoint review concurred after confirming the existing awareness and prober drafts are outside the installer checkpoint.
+
+## Schedule guidance checkpoint
+
+New full-layout agent instructions and the update migrator use the same schedule guidance. Migration replaces the exact previously shipped bullet. Customized or absent bullets in an existing section stay as written. This text describes the saved job schedule and the existing master switch. It does not modify configuration, schedule entries, or delivery. The update is local to each agent's generated instructions and is repeatable.
