@@ -43,5 +43,10 @@
         "verified": false
       }
     ]
+  },
+  "classClosure": {
+    "defectClass": "unbounded-self-action",
+    "closure": "n/a",
+    "reason": "This repair exposes existing verified reply and delivery facts. It creates no autonomous approval, send, retry, timer, mutation or suppression loop. Existing one-shot question delivery remains behind its current owner, receipt and budget controls."
   }
 }
