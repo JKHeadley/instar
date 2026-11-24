@@ -15,3 +15,5 @@ This check ran against two clean worktrees with an invented fixture. The branch'
 An adjudication result is recorded beside the original critical finding. A missing, conflicting or invalid resolution leaves the finding unresolved. A recognized resolution still requires a separate host decision before the evaluation can qualify.
 
 When a reference is defective, the prototype checks that its replacement has a new version and covers every run in the host’s frozen affected list. Rerunning only one arm leaves coverage incomplete. Coverage and approval of the corrected reference are separate decisions.
+
+To repeat the check, run `node scripts/evaluation/source_grounded_real_validator.check.mjs PATH_TO_VALIDATOR_WORKTREE` from the judge branch. Use the trusted local validator checkout at `e32c94417` with its locked dependencies installed. The command imports the validator code and its authored fixture from that explicit path. It uses Node with TypeScript type stripping available. This is a focused cross-worktree check.
