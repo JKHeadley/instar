@@ -1534,9 +1534,37 @@ export class SessionManager extends EventEmitter {
     this.ownerEpochForConversation = opts.ownerEpochForConversation ?? (() => 0);
     this.codexRolloutPathForSession = opts.codexRolloutPathForSession ?? ((session) => {
       if (!session.claudeSessionId) return null;
+      // The live incarnation may use a pooled account home. Looking only in
+      // ~/.codex makes a real rollout appear missing and refuses owner input
+      // before the durable FIFO can accept it. Never search another account
+      // after an explicit pin or an uncertain environment read.
+      let codexHome = path.join(os.homedir(), '.codex');
+      try {
+        const output = withSyncOp(() => execFileSync(
+          this.config.tmuxPath,
+          ['show-environment', '-t', `=${session.tmuxSession}`, 'CODEX_HOME'],
+          { encoding: 'utf-8', timeout: 2000, stdio: ['ignore', 'pipe', 'pipe'] },
+        )).replace(/\n$/, '');
+        if (output !== '-CODEX_HOME') {
+          if (!output.startsWith('CODEX_HOME=')) return null;
+          const value = output.slice('CODEX_HOME='.length);
+          // An empty or explicitly removed variable uses Codex's normal home.
+          if (value) {
+            if (!path.isAbsolute(value) || /[\r\n\0]/.test(value)) return null;
+            codexHome = value;
+          }
+        }
+      } catch (error) {
+        // @silent-fallback-ok: only tmux's named missing-key outcome permits
+        // the documented default. A dead pane, timeout or other query error
+        // supplies no authority to use a different account's transcript.
+        const e = error as { status?: number; stderr?: unknown };
+        if (e.status !== 1 || !/unknown variable: CODEX_HOME\s*$/.test(String(e.stderr ?? ''))) return null;
+      }
       return resolveFrameworkTranscriptPath({
         framework: 'codex-cli', sessionId: session.claudeSessionId,
         projectDir: session.cwd ?? this.config.projectDir,
+        rootOverride: path.join(codexHome, 'sessions'),
       });
     });
     this.stageCRecoveryEnabled = opts.stageCRecoveryEnabled === true;
