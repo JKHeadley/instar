@@ -21,3 +21,5 @@ These are generic design examples, not executed tests or private evaluation ques
 | Source export has consistent hashes and unauthenticated speaker metadata | Integrity passes; authenticity remains unestablished. Do not promote that metadata into authority. |
 
 The future validator should also prove that reference labels cannot reach the answer producer, forbidden effects cannot execute, and the actual source and output bytes match recorded hashes. Those requirements need an implementation boundary, not additional prose examples.
+
+The [offline aggregation acceptance cases](aggregation-acceptance-cases.md) cover independent judging, retries, enduring critical signals and adjudication history in more detail.
