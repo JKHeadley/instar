@@ -1,0 +1,26 @@
+{
+  "version": 2,
+  "slug": "local-verify-auto-refill",
+  "sessionId": "b9dbb2bd-d987-47b2-a538-5de71ea42e15",
+  "timestamp": "2026-11-24T01:12:53.289Z",
+  "artifactPath": "upgrades/side-effects/local-verify-auto-refill.md",
+  "artifactSha256": "d14aaccadf46b8b6d0283a1567ff81d1bf69cffaed3fb20659b58f9ca613611f",
+  "coveredFiles": [
+    "docs/specs/local-verify-automatic-waiting-refill.eli16.md",
+    "src/localVerify/LocalVerifyService.ts",
+    "src/localVerify/localVerifyRoutes.ts",
+    "tests/e2e/local-verify-queue-controls-lifecycle.test.ts",
+    "tests/integration/local-verify-queue-controls.test.ts",
+    "tests/unit/localVerify/waitingListService.test.ts",
+    "upgrades/next/local-verify-automatic-waiting-refill.md",
+    "upgrades/next/stale-login-probe-test-isolation.md",
+    "upgrades/side-effects/local-verify-auto-refill.md"
+  ],
+  "phase": "complete",
+  "tier": 1,
+  "tierReasoning": "New substantive current-shipment side-effects review following release-note correction; original artifact and all tested runtime/test blobs remain unchanged. Fresh independent exact-digest concurrence; no source, schema, capacity or merge-authority changes in this commit.",
+  "eli16Path": "docs/specs/local-verify-automatic-waiting-refill.eli16.md",
+  "sideEffectsPath": "upgrades/side-effects/local-verify-auto-refill.md",
+  "secondPass": "true",
+  "reviewerConcurred": true
+}
