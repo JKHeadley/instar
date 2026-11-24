@@ -1,0 +1,52 @@
+{
+  "version": 3,
+  "slug": "identity-pin-composition",
+  "sessionId": "bf29d051-7721-4ad2-ba3c-bec97d53bc33",
+  "timestamp": "2026-11-23T15:10:06.470Z",
+  "artifactPath": "upgrades/side-effects/identity-pin-composition.md",
+  "artifactSha256": "1fdcdc0cab77c1ecffb952faa4a13b78166e8ea25b87f85944371604eca86ae8",
+  "specPath": "docs/specs/sec135-approval-link-guess-bound.md",
+  "coveredFiles": [
+    ".instar/instar-dev-decisions/2026-11-21T20-21-56-710Z-sec135-approval-link-guess-bound.json",
+    ".instar/instar-dev-traces/2026-11-21T20-21-02-209Z-sec135-approval-link-guess-bound-39e897ec.json",
+    "dashboard-pair/service-yes.js",
+    "docs/specs/reports/sec135-approval-link-guess-bound-convergence.md",
+    "docs/specs/sec135-approval-link-guess-bound.eli16.md",
+    "docs/specs/sec135-approval-link-guess-bound.md",
+    "src/core/PinAttemptStore.ts",
+    "src/core/devGatedFeatures.ts",
+    "src/data/awareness/approval-link-guess-bound.md",
+    "src/data/feature-ladders.json",
+    "src/data/state-coherence-registry.json",
+    "src/recommended/confirmStats.ts",
+    "src/recommended/confirmTokens.ts",
+    "src/server/AgentServer.ts",
+    "src/server/middleware.ts",
+    "src/server/publicPinHook.ts",
+    "src/server/recommendedServiceRoutes.ts",
+    "src/server/routes.ts",
+    "tests/e2e/sec135-approval-link-alive.test.ts",
+    "tests/helpers/sec135Server.ts",
+    "tests/integration/local-access-link.test.ts",
+    "tests/integration/sec135-approval-link-flood.test.ts",
+    "tests/unit/sec135-approval-link-verify.test.ts",
+    "tests/unit/sec135-service-yes-page.test.ts",
+    "tests/unit/sec135-store-and-stats.test.ts",
+    "upgrades/next/identity-pin-composition.md",
+    "upgrades/next/sec135-approval-link-guess-bound.md",
+    "upgrades/side-effects/identity-pin-composition.md",
+    "upgrades/side-effects/sec135-approval-link-guess-bound.md"
+  ],
+  "phase": "complete",
+  "tier": 2,
+  "tierReasoning": "Security-sensitive reconciliation preserves both approved parent PIN boundaries; no new authority or limit",
+  "secondPass": "true",
+  "reviewerConcurred": true,
+  "toolchain": {
+    "buildSkill": {
+      "name": "build",
+      "version": null,
+      "verified": false
+    }
+  }
+}

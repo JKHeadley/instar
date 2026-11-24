@@ -1,0 +1,21 @@
+{
+  "version": 2,
+  "slug": "identity-security-piece1a-repair",
+  "sessionId": "2489beca-6bce-4817-b1fb-9ba4ff1d41b2",
+  "timestamp": "2026-11-22T23:42:20.664Z",
+  "artifactPath": "upgrades/side-effects/identity-security-piece1a-repair.md",
+  "artifactSha256": "54577292e07e8933b653f65b439df6337c23dc25f34dae0df1e5245c3199aca8",
+  "specPath": "docs/specs/identity-security-piece1a-local-link.md",
+  "coveredFiles": [
+    "src/server/localAccessRoutes.ts",
+    "tests/unit/SqliteRegistry-wiring.test.ts",
+    "tests/unit/console-chats-page.test.ts",
+    "tests/unit/local-access-routes.test.ts",
+    "upgrades/side-effects/identity-security-piece1a-repair.md"
+  ],
+  "phase": "complete",
+  "tier": 2,
+  "tierReasoning": "Narrow repair to existing request-locality security boundary under approved identity spec",
+  "secondPass": "true",
+  "reviewerConcurred": true
+}
