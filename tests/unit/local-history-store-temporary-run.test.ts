@@ -1,4 +1,4 @@
-import { afterEach, expect, it } from 'vitest';
+import { afterEach, expect, it, vi } from 'vitest';
 import Database from 'better-sqlite3';
 import fs from 'node:fs';
 import os from 'node:os';
@@ -180,6 +180,37 @@ privateIt('preserves a replaced registered directory and unrelated lookalike nam
   expect(recoverLocalHistoryStoreTemporaryRuns(db,next)).toEqual({disposed:0,pending:1});
   expect(fs.readFileSync(path.join(original,'foreign'),'utf8')).toBe('FOREIGN');
   expect(fs.readFileSync(path.join(unknown,'unknown'),'utf8')).toBe('UNKNOWN');
+});
+
+privateIt('keeps cleanup pending when syncing the removed namespace fails', async () => {
+  const { root, db, lease } = admitted();
+  const run = registerLocalHistoryStoreTemporaryRun(db, lease, { operationId });
+  const child = await started(root);
+  await run.registerChild(child);
+  await ended(child);
+  const parent = path.join(root, 'imported-history', '.local-history-temporary');
+  const namespace = path.join(parent, run.runId);
+  const expected = fs.statSync(parent), sync = fs.fsyncSync;
+  let attempted = false;
+  const failure = vi.spyOn(fs, 'fsyncSync').mockImplementation(fd => {
+    const opened = fs.fstatSync(fd);
+    if (opened.dev === expected.dev && opened.ino === expected.ino) {
+      attempted = true;
+      expect(fs.existsSync(namespace)).toBe(false);
+      throw Object.assign(new Error('synthetic directory sync failure'), { code: 'EIO' });
+    }
+    return sync(fd);
+  });
+  try {
+    expect(() => run.cleanupAfterChild()).toThrow('cleanup-pending');
+    expect(attempted).toBe(true);
+  } finally { failure.mockRestore(); }
+  expect(fs.existsSync(namespace)).toBe(false);
+  expect(db.prepare('SELECT state FROM local_history_store_temporary_runs WHERE runId = ?').get(run.runId))
+    .toEqual({ state: 'cleanup-pending' });
+  lease.release();
+  const replacement = acquireLocalHistoryStoreTemporaryAdmission(root)!; leases.push(replacement);
+  expect(recoverLocalHistoryStoreTemporaryRuns(db, replacement)).toEqual({ disposed: 0, pending: 1 });
 });
 
 privateIt('cannot recover current-generation namespaces and retains typed rows instead of retiring them', async () => {

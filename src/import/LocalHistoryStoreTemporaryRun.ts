@@ -161,14 +161,7 @@ export function hasUnsettledLocalHistoryTemporaryRun(db: Database.Database, tag:
     const value = row(db, entry.runId);
     if (value.tag !== tag) refuse('unavailable');
     if (value.state !== 'disposed') return true;
-    const names = paths(stateDir, value.runId);
-    const store = privateDirectory(names.store), before = privateDirectory(names.root);
-    if (store.dev !== value.storeDev || store.ino !== value.storeIno || before.dev !== store.dev) refuse('unavailable');
-    try { fs.lstatSync(names.directory); return true; }
-    catch (error) { if ((error as NodeJS.ErrnoException).code !== 'ENOENT') throw error; }
-    const after = privateDirectory(names.root);
-    if (after.dev !== before.dev || after.ino !== before.ino) refuse('unavailable');
-    return false;
+    return !temporaryNamespaceIsAbsent(stateDir, value);
   });
 }
 
@@ -202,13 +195,30 @@ function paths(stateDir: string, runId: string) {
   const root = path.join(store, TEMP_ROOT);
   return { store, root, directory: path.join(root, runId) };
 }
-function checkDirectory(stateDir: string, value: RunRow): ReturnType<typeof paths> {
+function checkDirectory(stateDir: string, value: RunRow, pinnedRoot?: fs.Stats): ReturnType<typeof paths> {
   const names = paths(stateDir, value.runId);
   const store = privateDirectory(names.store), root = privateDirectory(names.root), directory = privateDirectory(names.directory);
   if (store.dev !== value.storeDev || store.ino !== value.storeIno || root.dev !== store.dev
+    || (pinnedRoot && (pinnedRoot.dev !== root.dev || pinnedRoot.ino !== root.ino))
     || directory.dev !== value.directoryDev || directory.ino !== value.directoryIno || directory.dev !== store.dev) refuse('unavailable');
   return names;
 }
+function temporaryNamespaceIsAbsent(stateDir: string, value: RunRow, pinnedRoot?: fs.Stats): boolean {
+  const names = paths(stateDir, value.runId);
+  const checkRoot = () => {
+    const store = privateDirectory(names.store), root = privateDirectory(names.root);
+    if (store.dev !== value.storeDev || store.ino !== value.storeIno || root.dev !== store.dev) refuse('unavailable');
+    return root;
+  };
+  const before = checkRoot();
+  if (pinnedRoot && (pinnedRoot.dev !== before.dev || pinnedRoot.ino !== before.ino)) refuse('unavailable');
+  try { fs.lstatSync(names.directory); return false; }
+  catch (error) { if ((error as NodeJS.ErrnoException).code !== 'ENOENT') throw error; }
+  const after = checkRoot();
+  if (after.dev !== before.dev || after.ino !== before.ino) refuse('unavailable');
+  return true;
+}
+
 function boundedNames(directory: string): string[] {
   const opened = fs.opendirSync(directory), names: string[] = [];
   try {
@@ -306,8 +316,16 @@ function cleanup(db: Database.Database, stateDir: string, value: RunRow): void {
       // this directory are deliberately neither traversed nor removed.
       SafeFsExecutor.safeUnlinkSync(path.join(names.directory, name), { operation: 'dispose registered local-history store temporary name' });
     }
-    checkDirectory(stateDir, value);
-    SafeFsExecutor.safeRmdirSync(names.directory, { operation: 'dispose registered local-history store temporary namespace' });
+    const beforeRemoval = privateDirectory(names.root);
+    const rootFd = fs.openSync(names.root, fs.constants.O_RDONLY | fs.constants.O_DIRECTORY | fs.constants.O_NOFOLLOW);
+    try {
+      const pinned = fs.fstatSync(rootFd);
+      if (!pinned.isDirectory() || pinned.dev !== beforeRemoval.dev || pinned.ino !== beforeRemoval.ino) refuse('cleanup-pending');
+      checkDirectory(stateDir, value, pinned);
+      SafeFsExecutor.safeRmdirSync(names.directory, { operation: 'dispose registered local-history store temporary namespace' });
+      fs.fsyncSync(rootFd);
+      if (!temporaryNamespaceIsAbsent(stateDir, value, pinned)) refuse('cleanup-pending');
+    } finally { fs.closeSync(rootFd); }
     db.prepare(`UPDATE ${TABLE} SET state = 'disposed' WHERE runId = ?`).run(value.runId);
   } catch {
     try { db.prepare(`UPDATE ${TABLE} SET state = 'cleanup-pending' WHERE runId = ?`).run(value.runId); } catch { /* durable non-disposed record remains charged by caller */ }
