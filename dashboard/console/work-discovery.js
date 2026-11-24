@@ -11,7 +11,7 @@ const COVERAGE_LABELS = {
   unavailable: 'Unavailable', unknown: 'Could not verify coverage', unsearched: 'Not searched',
 };
 const SOURCES = [
-  ['gitRefs', 'Git refs'], ['specs', 'Specs'], ['decisions', 'Decisions'], ['documents', 'Documents'],
+  ['gitRefs', 'Git refs'], ['specs', 'Allowlisted public Instar spec paths'], ['decisions', 'Decisions'], ['documents', 'Documents'],
   ['projects', 'Projects'], ['cards', 'Cards'], ['commitments', 'Commitments'], ['jobs', 'Jobs'],
 ];
 
@@ -33,6 +33,14 @@ function answerLink(row) {
         href: `https://github.com/${PR_REPO}/pull/${row.number}` }),
       el('p', { class: 'need-sub', text: `Pull request #${row.number} · ${state}` }),
       row.matchedBy === 'all-terms' ? el('p', { class: 'need-sub', text: 'Matched all search terms across pull request fields.' }) : null,
+    );
+  }
+  if (row?.kind === 'published-spec' && row.repository === PR_REPO
+    && typeof row.commit === 'string' && /^[a-f0-9]{40}$/.test(row.commit)
+    && typeof row.path === 'string' && /^docs\/specs\/[a-zA-Z0-9_-]+\.md$/.test(row.path)) {
+    return el('li', { class: 'work-discovery-hit' },
+      el('a', { class: 'link-btn', text: row.path, href: `https://github.com/${PR_REPO}/blob/${row.commit}/${row.path}` }),
+      el('p', { class: 'need-sub', text: 'Published spec path' }),
     );
   }
   return null;
