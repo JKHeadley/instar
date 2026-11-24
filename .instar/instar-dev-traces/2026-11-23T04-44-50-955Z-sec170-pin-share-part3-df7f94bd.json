@@ -1,0 +1,33 @@
+{
+  "version": 2,
+  "slug": "sec170-pin-share-part3",
+  "sessionId": "09b2b18b-f7f7-499f-bc7b-1d38025c1520",
+  "timestamp": "2026-11-23T04:44:50.955Z",
+  "artifactPath": "upgrades/side-effects/sec170-pin-share-part3.md",
+  "artifactSha256": "bd467fccf347838e15bae85d56d9789fcf9798ab90c91a32c00fa424cb7cbd78",
+  "specPath": "docs/specs/pool-wide-pin-budget.md",
+  "coveredFiles": [
+    "docs/specs/sec170-pin-share-part3.eli16.md",
+    "src/commands/server.ts",
+    "src/core/PinOwnerSurface.ts",
+    "src/server/mobileOwnerPresenceRoutes.ts",
+    "src/server/mobilePairingRoutes.ts",
+    "src/server/mobilePermissionsRoutes.ts",
+    "src/server/routes.ts",
+    "tests/e2e/sec170-pin-share-agreement-alive.test.ts",
+    "tests/unit/mobile-session-terminal.test.ts",
+    "tests/unit/sec170-pin-owner-surface.test.ts",
+    "upgrades/next/sec170-pin-share-part3.md",
+    "upgrades/side-effects/sec170-pin-share-part3.md"
+  ],
+  "phase": "complete",
+  "tier": 2,
+  "tierReasoning": "SEC-170 part 3 of 3, phone path: the owner's retire and gone-for-good choices as one Face ID permission action (owner phone only, signed over computer, choice and list version), replacing unreachable approval cards; from the approved spec; dev-gated; independently reviewed to CONCUR.",
+  "secondPass": "true",
+  "reviewerConcurred": true,
+  "classClosure": {
+    "defectClass": "unbounded-self-action",
+    "closure": "bounded",
+    "reason": "one owner-initiated action per Face ID tap; no loop or timer added"
+  }
+}

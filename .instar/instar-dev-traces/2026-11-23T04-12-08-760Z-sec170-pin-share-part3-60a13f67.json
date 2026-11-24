@@ -1,0 +1,35 @@
+{
+  "version": 2,
+  "slug": "sec170-pin-share-part3",
+  "sessionId": "09b2b18b-f7f7-499f-bc7b-1d38025c1520",
+  "timestamp": "2026-11-23T04:12:08.760Z",
+  "artifactPath": "upgrades/side-effects/sec170-pin-share-part3.md",
+  "artifactSha256": "340ade8b46182e5279c67631505193da489e003d8271825b5413aa47781ad2b2",
+  "specPath": "docs/specs/pool-wide-pin-budget.md",
+  "coveredFiles": [
+    "docs/specs/sec170-pin-share-part3.eli16.md",
+    "src/commands/server.ts",
+    "src/core/PinAttemptStore.ts",
+    "src/core/PinGoneForGood.ts",
+    "src/core/PinOwnerSurface.ts",
+    "src/core/PinShareTable.ts",
+    "src/core/pinBudgetPoller.ts",
+    "src/server/AgentServer.ts",
+    "src/server/mobileOwnerPresenceRoutes.ts",
+    "src/server/routes.ts",
+    "tests/e2e/sec170-pin-share-agreement-alive.test.ts",
+    "tests/unit/sec170-pin-owner-surface.test.ts",
+    "upgrades/next/sec170-pin-share-part3.md",
+    "upgrades/side-effects/sec170-pin-share-part3.md"
+  ],
+  "phase": "complete",
+  "tier": 2,
+  "tierReasoning": "SEC-170 part 3 of 3: the owner's gone-for-good confirmation through the SEC-018 phone approval, the silent-machines list and the agent-wide alert, from the converged and approved spec; dev-gated; independently reviewed to CONCUR.",
+  "secondPass": "true",
+  "reviewerConcurred": true,
+  "classClosure": {
+    "defectClass": "unbounded-self-action",
+    "closure": "bounded",
+    "reason": "one unref 60-second check timer; the alert at most once per 30 minutes; adoption capped at 64 confirmations per report"
+  }
+}

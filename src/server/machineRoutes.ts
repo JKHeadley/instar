@@ -90,6 +90,10 @@ export interface MachineRouteContext {
   documentsPage?: (have: Record<string, number>, senderId: string) => unknown;
   /** A machine that can't be dialled sends its document rows and blobs out here. */
   documentsPush?: (page: unknown, senderId: string) => { applied: number; pending: number; ignored: number; blobs: number };
+  /** SEC-170 part 2: this machine's signed PIN-share report, bound to the caller's nonce. */
+  pinBudgetState?: (nonce: string, senderId: string) => unknown;
+  /** SEC-170 part 2: a hand-down from another machine of this agent (the caller is the giver). */
+  pinBudgetHandDown?: (gift: { transferId: string; amount: number; baseSeq: number }, senderId: string) => { accepted: boolean; reason?: string };
   /** Machine identity manager */
   identityManager: MachineIdentityManager;
   /** Heartbeat manager for coordination */
@@ -265,6 +269,25 @@ export function createMachineRoutes(ctx: MachineRouteContext): Router {
     if (!Array.isArray(rows) || rows.length > 500) { res.status(400).json({ error: 'bad-rows' }); return; }
     try { res.json(await ctx.teamAccessPush(rows, (req as typeof req & { machineAuth: MachineAuthContext }).machineAuth.machineId)); }
     catch { res.status(500).json({ error: 'team-access-push-failed' }); } // @silent-fallback-ok — the sender keeps the rows and retries
+  });
+
+  // SEC-170 part 2 (docs/specs/pool-wide-pin-budget.md §4): the PIN-share agreement protocol. A peer pulls
+  // this machine's signed report (acknowledgments travel this way), and a giver delivers a hand-down.
+  router.post('/api/pin-budget/state', authMiddleware, (req, res) => {
+    res.setHeader('Cache-Control', 'no-store');
+    if (!ctx.pinBudgetState) { res.status(503).json({ error: 'pin-budget-off' }); return; }
+    const nonce = (req.body as { nonce?: unknown } | undefined)?.nonce;
+    if (typeof nonce !== 'string' || !/^[0-9a-f]{32,64}$/.test(nonce)) { res.status(400).json({ error: 'bad-nonce' }); return; }
+    const out = ctx.pinBudgetState(nonce, (req as typeof req & { machineAuth: MachineAuthContext }).machineAuth.machineId);
+    if (!out) { res.status(503).json({ error: 'pin-budget-off' }); return; }
+    res.json(out);
+  });
+  router.post('/api/pin-budget/hand-down', authMiddleware, (req, res) => {
+    res.setHeader('Cache-Control', 'no-store');
+    if (!ctx.pinBudgetHandDown) { res.status(503).json({ error: 'pin-budget-off' }); return; }
+    const b = (req.body ?? {}) as { transferId?: unknown; amount?: unknown; baseSeq?: unknown };
+    if (typeof b.transferId !== 'string' || b.transferId.length > 64 || !Number.isInteger(b.amount) || !Number.isSafeInteger(b.baseSeq)) { res.status(400).json({ error: 'bad-hand-down' }); return; }
+    res.json(ctx.pinBudgetHandDown({ transferId: b.transferId, amount: b.amount as number, baseSeq: b.baseSeq as number }, (req as typeof req & { machineAuth: MachineAuthContext }).machineAuth.machineId));
   });
 
   // Instar Documents (instar-document-viewer §5.1): rows verify themselves on arrival.

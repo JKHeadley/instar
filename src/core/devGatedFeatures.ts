@@ -957,6 +957,12 @@ export const DEV_GATED_FEATURES: DevGatedFeature[] = [
     justification: 'Ships dryRun:true: a dev agent resolves and LOGS would-refuse verdicts and counts them on the authed /health, and delivers every message exactly as today (the legacy verified profile is still created). Refusing and the untrusted profile default need a deliberate dryRun:false. Reads in-memory trust profiles only: no new writes, no LLM, no spend, no outbound messages.',
   },
   {
+    name: 'pinBudgetPoolWide',
+    configPath: 'security.pinBudget.poolWide',
+    description: 'SEC-170: the agent\'s unknown-browser PIN budget (20 wrong guesses per 5 minutes) is divided into fixed per-machine shares that sum to 20, each counted on its own machine, so knowing every address no longer multiplies the guesses. Part 2 of 3 adds the agreement protocol: machines pull each other\'s signed reports every 30 seconds, a share rises only after every machine acknowledges the same table plus 5 minutes, and a newcomer or a machine that lost its records starts at 0 and receives a hand-down. Part 3 adds the owner\'s gone-for-good tap and the silent-machines notice.',
+    justification: 'Tightens an existing limit only: it can refuse a new browser sooner on one machine, never admit more. The owner\'s ways in (a browser that unlocked before, the phone, the machine itself) never depend on this budget. One small local file per machine and one signed pull per peer every 30 seconds (backed off on failure), never on the PIN path itself; no LLM, no spend, no outbound messages.',
+  },
+  {
     name: 'credentialScrub',
     configPath: 'security.credentialScrub.enabled',
     description: 'SEC-164: live credentials of the outbound wall\'s kinds are masked in the server\'s and the lifeline\'s own output (stdout, stderr and logs/server.log) before they are written. Later parts add new incoming messages, transcript copies and the session-record sweeper under the same switch.',

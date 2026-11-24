@@ -1,0 +1,36 @@
+{
+  "version": 2,
+  "slug": "sec170-pin-share-part2",
+  "sessionId": "09b2b18b-f7f7-499f-bc7b-1d38025c1520",
+  "timestamp": "2026-11-22T23:50:15.105Z",
+  "artifactPath": "upgrades/side-effects/sec170-pin-share-part2.md",
+  "artifactSha256": "79ebdc37a2d554fbeae7fd261b3551ce4bcf9027ac9ae346c6fb360e75e86ddb",
+  "specPath": "docs/specs/pool-wide-pin-budget.md",
+  "coveredFiles": [
+    "docs/specs/sec170-pin-share-part2.eli16.md",
+    "src/commands/server.ts",
+    "src/core/PinShare.ts",
+    "src/core/PinShareTable.ts",
+    "src/core/devGatedFeatures.ts",
+    "src/core/pinBudgetPoller.ts",
+    "src/data/feature-ladders.json",
+    "src/server/AgentServer.ts",
+    "src/server/machineRoutes.ts",
+    "tests/e2e/sec170-pin-share-agreement-alive.test.ts",
+    "tests/unit/sec170-pin-budget-poller.test.ts",
+    "tests/unit/sec170-pin-share-protocol.test.ts",
+    "tests/unit/sec170-pin-share-table.test.ts",
+    "upgrades/next/sec170-pin-share-part2.md",
+    "upgrades/side-effects/sec170-pin-share-part2.md"
+  ],
+  "phase": "complete",
+  "tier": 2,
+  "tierReasoning": "SEC-170 part 2 of 3: the PIN-share agreement protocol (signed pulls, canonical tables, loans, raises after full acknowledgment) on machine-authenticated routes, from the converged and approved spec; dev-gated; independently reviewed to CONCUR.",
+  "secondPass": "true",
+  "reviewerConcurred": true,
+  "classClosure": {
+    "defectClass": "unbounded-self-action",
+    "closure": "bounded",
+    "reason": "one signed pull per peer per 30-second round with backoff, a 24-hour stop and a 5-second timeout; at most one hand-down per decision pass and never twice to the same recipient"
+  }
+}

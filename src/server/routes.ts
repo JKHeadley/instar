@@ -1915,6 +1915,10 @@ export interface RouteContext {
   requestSupervisedRestart?: (reason: string, requestedBy?: string) => Promise<boolean> | boolean;
   /** Durable per-IP PIN-attempt lockout (S2-1) — undefined/null degrades to in-memory-only. */
   pinAttemptStore?: import('../core/PinAttemptStore.js').PinAttemptStore | null;
+  /** SEC-170: this machine's share of the agent's unknown-browser PIN budget (absent = 20). */
+  pinShare?: import('../core/PinShare.js').PinShareProvider | null;
+  /** SEC-170 part 3: the owner's side (silent machines, "gone for good"). Absent when the budget is unwired. */
+  pinOwnerSurface?: import('../core/PinOwnerSurface.js').PinOwnerSurface | null;
   /** The dashboard unlock's rule: this connection may not carry a PIN. */
   pinEntryRefusedHere?: (req: import('express').Request) => boolean;
   /** Layer 1c provider-report store (reporting-only; FD-21 — never a gate input). Null when the spend view is dark. */
@@ -17368,7 +17372,24 @@ export function createRoutes(ctx: RouteContext): Router {
   const requestPinCheck = createMandatePinCheck({ dashboardPin: () => ctx.config.dashboardPin, pinAttemptStore: () => ctx.pinAttemptStore,
     pinSource: (req) => `req:${String((req as unknown as { _pinRequestKey?: string })._pinRequestKey ?? 'none')}` });
   const publicCapPinCheck = createMandatePinCheck({ dashboardPin: () => ctx.config.dashboardPin, pinAttemptStore: () => ctx.pinAttemptStore,
-    pinSource: () => GLOBAL_PIN_KEY, maxAttempts: GLOBAL_PIN_MAX_ATTEMPTS, clearOnSuccess: false });
+    pinSource: () => GLOBAL_PIN_KEY, maxAttempts: GLOBAL_PIN_MAX_ATTEMPTS, maxAttemptsLive: () => ctx.pinShare?.share() ?? GLOBAL_PIN_MAX_ATTEMPTS, clearOnSuccess: false });
+  // SEC-170 part 3: the owner's side of the pool-wide PIN budget. The silent-machines list feeds the one agent-wide
+  // Needs-you item. The two choices (retire, gone for good) are owner-phone only: POST /mobile/pin-budget/silent-machine.
+  router.get('/pin-budget/silent-machines', (_req, res) => {
+    res.setHeader('Cache-Control', 'no-store');
+    const surface = ctx.pinOwnerSurface;
+    if (!surface) { res.json({ enabled: false, rows: [], heldBack: false, fingerprint: '', dismissed: false, show: false }); return; }
+    const view = surface.silent();
+    res.json({ ...view, rows: view.rows.map((r) => ({ ...r, silentSince: new Date(r.silentSince).toISOString() })) });
+  });
+  router.post('/pin-budget/silent-machines/dismiss', (req, res) => {
+    const fingerprint = (req.body as { fingerprint?: unknown } | undefined)?.fingerprint;
+    if (!ctx.pinOwnerSurface) { res.status(503).json({ error: 'pin-budget-off' }); return; }
+    if (typeof fingerprint !== 'string' || fingerprint.length > 64) { res.status(400).json({ error: 'fingerprint-required' }); return; }
+    const r = ctx.pinOwnerSurface.dismiss(fingerprint);
+    if (!r.ok) { res.status(409).json({ error: 'list-changed', detail: 'The list of silent computers changed since it was shown. Look again before dismissing.' }); return; }
+    res.json({ ok: true });
+  });
   const PIN_ALERT_ONLY_KEY = '__pin_alert_only__';
   function checkPublicPin(req: import('express').Request, res: import('express').Response, requestKey?: string): boolean {
     if (ctx.pinEntryRefusedHere?.(req)) { res.status(403).json({ error: 'insecure-connection' }); return false; }
@@ -43602,6 +43623,13 @@ document.getElementById('mcpForm').addEventListener('submit', async function (e)
         if (refusal) return refusal;
         return runMatrixStartCell(accountId, machineId, req.app?.locals?.stateDir);
       },
+      // SEC-170 part 3: the owner's choice for a silent computer (retire, or confirm gone for good). Absent when
+      // the pool-wide PIN budget is unwired; the surface itself answers 503 while its switch is off.
+      silentMachine: ctx.pinOwnerSurface ? {
+        view: () => { const v = ctx.pinOwnerSurface!.silent(); return { ...v, rows: v.rows.map((r) => ({ ...r, silentSince: new Date(r.silentSince).toISOString() })) }; },
+        precheck: (id, choice, fp) => ctx.pinOwnerSurface!.precheck(id, choice, fp),
+        apply: (id, choice, fp) => ctx.pinOwnerSurface!.apply(id, choice, fp),
+      } : undefined,
       teamAction: async (kind, req, deviceId, target) => {
         const run = ctx.mobilePairingService?.teamActionRunner;
         return run ? await run(kind, req, deviceId, target) as Awaited<ReturnType<NonNullable<Parameters<typeof mountMobilePermissionsRoutes>[1]['teamAction']>>> : { status: 503, body: { error: 'team-access-unavailable' } };

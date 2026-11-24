@@ -2631,6 +2631,10 @@ export interface MachineCapacity {
     appConversationsPool?: boolean;
     /** app-conversations-in-the-pool §2.5: memory privacy is on and its sandbox is ready here. */
     memoryPrivacyEnforced?: boolean;
+    /** SEC-170: this machine enforces its share of the agent's PIN budget (security.pinBudget.poolWide resolved on). */
+    pinBudgetPoolWide?: boolean;
+    /** SEC-170: this machine's current unknown-browser PIN share per 5-minute window (null = no provider). Display only. */
+    pinShare?: number | null;
     /** WS4.4 (§WS4.4 / F6): this machine can SERVE the holder side of a
      *  cross-machine pool-view-fetch — answer the existence probe AND verify a
      *  pool-link user-auth assertion before serving a held view body. ABSENT/false
@@ -5192,6 +5196,10 @@ export interface InstarConfig {
     /** identity-security piece 2b: the owner record on this machine. Default ON (it grants nothing by itself);
      *  `enabled: false` stops it: GET /owner-record answers 503 and no owner-record mesh traffic runs. */
     ownerRecord?: { enabled?: boolean };
+    /** SEC-170 (docs/specs/pool-wide-pin-budget.md): divide the agent's unknown-browser PIN budget (20 per
+     *  5 minutes) into fixed per-machine shares. File-only (security is never API-patchable); omitted means
+     *  on for a development agent, off on the fleet (resolveDevAgentGate). */
+    pinBudget?: { poolWide?: boolean };
     /** Dashboard PIN brute-force throttle + known-browser bypass + owner alert. Default ON. */
     pinThrottle?: {
       enabled?: boolean;

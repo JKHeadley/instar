@@ -31,6 +31,8 @@ export interface MandatePinDeps {
   pinSource?: (req: Request, forwardedBucketKey?: string) => string;
   /** Wrong guesses allowed per bucket per window (default MANDATE_PIN_MAX_ATTEMPTS). */
   maxAttempts?: number;
+  /** SEC-170: a live cap read on every request (this machine's PIN share); wins over `maxAttempts`. */
+  maxAttemptsLive?: () => number;
   /**
    * Whether a right PIN clears the bucket (default true). False for a SHARED bucket (the strangers'
    * public cap): one caller's success must never hand everyone a fresh budget (identity-security-piece1c).
@@ -66,20 +68,22 @@ export function createMandatePinCheck(deps: MandatePinDeps): MandatePinCheck {
       return false;
     }
     const store = deps.pinAttemptStore?.() ?? null;
+    const cap = deps.maxAttemptsLive?.() ?? deps.maxAttempts ?? MANDATE_PIN_MAX_ATTEMPTS;
     const ip = req.ip || req.socket?.remoteAddress || 'unknown';
     const buckets = deps.pinSource
       ? [deps.pinSource(req, opts.forwardedBucketKey)]
       : (opts.forwardedBucketKey && opts.forwardedBucketKey !== ip ? [ip, opts.forwardedBucketKey] : [ip]);
     const now = Date.now();
+    if (cap <= 0) { res.status(429).json({ error: 'Too many attempts. Try again later.' }); return false; } // SEC-170: a share of 0 admits nothing
     for (const bucket of buckets) {
-      if (store?.blocked(bucket, deps.maxAttempts ?? MANDATE_PIN_MAX_ATTEMPTS)) {
+      if (store?.blocked(bucket, cap)) {
         res.status(429).json({ error: 'Too many attempts. Try again later.' });
         return false;
       }
       if (store) continue; // the durable store is the one counter; the in-memory map is only its fallback
       let e = attempts.get(bucket);
       if (e && now > e.resetAt) { attempts.delete(bucket); e = undefined; }
-      if (e && e.count >= (deps.maxAttempts ?? MANDATE_PIN_MAX_ATTEMPTS)) {
+      if (e && e.count >= (cap)) {
         res.status(429).json({ error: 'Too many attempts. Try again later.' });
         return false;
       }
@@ -92,13 +96,13 @@ export function createMandatePinCheck(deps: MandatePinDeps): MandatePinCheck {
     const ha = createHash('sha256').update(pin).digest();
     const hb = createHash('sha256').update(expected).digest();
     if (ha.length !== hb.length || !timingSafeEqual(ha, hb)) {
-      let remaining = deps.maxAttempts ?? MANDATE_PIN_MAX_ATTEMPTS;
+      let remaining = cap;
       for (const bucket of buckets) {
-        if (store) { remaining = Math.min(remaining, store.recordFailure(bucket, deps.maxAttempts ?? MANDATE_PIN_MAX_ATTEMPTS)); continue; }
+        if (store) { remaining = Math.min(remaining, store.recordFailure(bucket, cap)); continue; }
         let e = attempts.get(bucket);
         if (!e) { e = { count: 0, resetAt: now + MANDATE_PIN_WINDOW_MS }; attempts.set(bucket, e); }
         e.count++;
-        remaining = Math.min(remaining, (deps.maxAttempts ?? MANDATE_PIN_MAX_ATTEMPTS) - e.count);
+        remaining = Math.min(remaining, (cap) - e.count);
       }
       res.status(403).json({ error: 'Incorrect PIN', attemptsRemaining: remaining });
       return false;
