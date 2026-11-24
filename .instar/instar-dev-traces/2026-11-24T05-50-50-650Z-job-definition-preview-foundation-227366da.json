@@ -1,0 +1,34 @@
+{
+  "version": 3,
+  "slug": "job-definition-preview-foundation",
+  "sessionId": "5591f135-974d-45ff-afdb-df56f5dbd35e",
+  "timestamp": "2026-11-24T05:50:50.650Z",
+  "artifactPath": "upgrades/side-effects/job-definition-preview-foundation.md",
+  "artifactSha256": "5d054d00bfb29bd0badcab8784f6537a5f20a867b24fe6a98b2f0c9bce2e6439",
+  "specPath": "docs/specs/job-definition-migration-preview.md",
+  "coveredFiles": [
+    "src/scheduler/JobDefinitionPreview.ts",
+    "tests/unit/job-definition-preview.test.ts",
+    "upgrades/side-effects/job-definition-preview-foundation.md"
+  ],
+  "phase": "complete",
+  "tier": 2,
+  "tierReasoning": "Internal-only bounded read foundation under approved Job preview. No route, worker, write or activation.",
+  "secondPass": "true",
+  "reviewerConcurred": true,
+  "toolchain": {
+    "reviewSkills": [
+      {
+        "name": "independent-side-effects-review",
+        "outcome": "concurred",
+        "verified": false,
+        "iterations": null
+      }
+    ],
+    "convergence": {
+      "reportPath": "docs/specs/reports/job-definition-migration-preview-convergence.md",
+      "iterations": 6,
+      "verified": true
+    }
+  }
+}

@@ -1,0 +1,22 @@
+{
+  "ts": "2026-11-24T05:52:42.489Z",
+  "slug": "job-definition-preview-foundation",
+  "suggestedTier": 2,
+  "declaredTier": 2,
+  "riskFloor": 1,
+  "riskFloorReasons": [],
+  "belowFloor": false,
+  "files": 1,
+  "loc": 227,
+  "scope": {
+    "basis": "staged-in-scope-paths-including-deleted",
+    "files": [
+      "src/scheduler/JobDefinitionPreview.ts"
+    ],
+    "addedLines": 227,
+    "deletedLines": 0
+  },
+  "causalAutopsy": null,
+  "classClosure": null,
+  "verdict": "pass"
+}
