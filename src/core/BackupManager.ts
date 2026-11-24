@@ -17,7 +17,8 @@ import fs from 'node:fs';
 import path from 'node:path';
 import crypto from 'node:crypto';
 import type { BackupSnapshot, BackupConfig } from './types.js';
-import { SafeFsExecutor } from './SafeFsExecutor.js';
+import { canonicalizeLeafPath, SafeFsExecutor } from './SafeFsExecutor.js';
+import { PUBLIC_PR_WARMUP_BUDGET_FILE } from './PublicPrWarmupBudget.js';
 import { mergeDefaults } from './mergeDefaults.js';
 import { resolveDevAgentGate } from './devAgentGate.js';
 
@@ -121,6 +122,9 @@ const BLOCKED_PATH_PREFIXES = new Set([
   '.instar/state/lease-continuity.json',
   'state/restart-budget.json',
   '.instar/state/restart-budget.json',
+  // The nominated installation's GitHub quota is charged locally across restarts.
+  `state/${PUBLIC_PR_WARMUP_BUDGET_FILE}`,
+  `.instar/state/${PUBLIC_PR_WARMUP_BUDGET_FILE}`,
 ]);
 
 /**
@@ -597,6 +601,7 @@ export class BackupManager {
       if (this.isAcceptableStagedEntry(key, stagedPath)) staged.set(key, stagedPath);
       else console.warn(`[BackupManager] Ignoring staged entry that is not a staged point-in-time file: ${key}`);
     }
+    const aliasesPrQuota = this.prQuotaAliasCheck();
     const copied = new Set<string>();
     let vanished = 0;
     const goneDuringCopy = (error: unknown): boolean => {
@@ -607,6 +612,7 @@ export class BackupManager {
       return true;
     };
     const copyStaged = (relative: string, stagedPath: string): void => {
+      if (aliasesPrQuota(stagedPath) || aliasesPrQuota(path.join(this.stateDir, relative))) return;
       if (!fs.existsSync(stagedPath)) throw new Error(`staged copy for ${relative} is gone; the snapshot would not hold one moment`);
       const dest = path.join(snapshotDir, relative);
       fs.mkdirSync(path.dirname(dest), { recursive: true });
@@ -615,6 +621,7 @@ export class BackupManager {
       files.push(relative);
     };
     const copyOne = (relative: string, liveAbsolute: string, liveSize: number): void => {
+      if (aliasesPrQuota(liveAbsolute)) return;
       const key = stagedKey(relative);
       const stagedPath = staged.get(key);
       if (stagedPath !== undefined) {
@@ -738,6 +745,37 @@ export class BackupManager {
     return snapshot;
   }
 
+  private prQuotaAliasCheck(protectMissing = false): (candidate: string) => boolean {
+    const file = path.join(this.stateDir, 'state', PUBLIC_PR_WARMUP_BUDGET_FILE);
+    let quota = path.resolve(file);
+    let quotaStat: fs.Stats | undefined;
+    try {
+      quota = canonicalizeLeafPath(file);
+      quotaStat = fs.lstatSync(quota);
+    } catch { /* Restore still protects the named path before provisioning. */ }
+    if (!protectMissing && !quotaStat) return () => false;
+    return (candidate) => {
+      let current = candidate;
+      const visited = new Set<string>();
+      for (;;) {
+        try {
+          const leaf = canonicalizeLeafPath(current);
+          if (path.relative(quota, leaf) === '') return true;
+          if (visited.has(leaf) || visited.size >= 40) return false;
+          visited.add(leaf);
+          const stat = fs.lstatSync(leaf);
+          if (stat.isSymbolicLink()) {
+            current = path.resolve(path.dirname(leaf), fs.readlinkSync(leaf));
+            continue;
+          }
+          return !!quotaStat?.isFile() && stat.ino !== 0 && stat.dev === quotaStat.dev && stat.ino === quotaStat.ino;
+        } catch {
+          return false; // A nonexistent path cannot alias an existing file.
+        }
+      }
+    };
+  }
+
   /**
    * A staged entry is only honoured when it is what stageSqliteFiles() produces:
    * a point-in-time file, addressed by a plain relative path inside the state
@@ -806,8 +844,9 @@ export class BackupManager {
     const dir = fs.mkdtempSync(path.join(this.backupsDir, STAGING_DIR_PREFIX));
     const sources: Record<string, string> = {};
     let index = 0;
+    const aliasesPrQuota = this.prQuotaAliasCheck();
     const stage = (relative: string, absolute: string): void => {
-      if (!isPointInTimeFile(relative) || isDeniedForBackup(relative)) return;
+      if (!isPointInTimeFile(relative) || isDeniedForBackup(relative) || aliasesPrQuota(absolute)) return;
       const target = path.join(dir, String(index++));
       try {
         // A directory that merely has a database-like name is not staged.
@@ -957,6 +996,7 @@ export class BackupManager {
     this.createSnapshot('manual');
 
     // Restore files
+    const aliasesPrQuota = this.prQuotaAliasCheck(true);
     for (const file of manifest.files) {
       // A PRE-fix snapshot (or one crafted on another machine) may carry
       // excluded per-machine state — apply the same three deny layers on the
@@ -968,7 +1008,7 @@ export class BackupManager {
       const src = path.join(snapshotDir, file);
       const dest = path.join(this.stateDir, file);
 
-      if (!fs.existsSync(src)) continue;
+      if (!fs.existsSync(src) || aliasesPrQuota(src) || aliasesPrQuota(dest)) continue;
 
       // Validate path containment
       const resolvedSrc = path.resolve(src);

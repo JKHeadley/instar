@@ -1,0 +1,43 @@
+{
+  "ts": "2026-11-24T06:06:10.766Z",
+  "slug": "warm-public-pull-request-discovery",
+  "suggestedTier": 2,
+  "declaredTier": 2,
+  "riskFloor": 2,
+  "riskFloorReasons": [
+    "new capability: new exported class / subsystem added"
+  ],
+  "belowFloor": false,
+  "files": 12,
+  "loc": 697,
+  "scope": {
+    "basis": "staged-in-scope-paths-including-deleted",
+    "files": [
+      "src/commands/server.ts",
+      "src/core/BackupManager.ts",
+      "src/core/ChiefOfStaffPrSearch.ts",
+      "src/core/PublicPrWarmupBudget.ts",
+      "src/core/githubRuntime.ts",
+      "src/core/types.ts",
+      "src/data/state-coherence-registry.json",
+      "src/server/AgentServer.ts",
+      "src/server/chiefOfStaffPrSearchRoutes.ts",
+      "src/server/middleware.ts",
+      "src/server/workDiscoveryRoutes.ts",
+      "src/testing/selfActionRegistry.ts"
+    ],
+    "addedLines": 615,
+    "deletedLines": 82
+  },
+  "causalAutopsy": null,
+  "classClosure": {
+    "defectClass": "unbounded-self-action",
+    "closure": "guard",
+    "guardEvidence": {
+      "enforcementType": "ratchet",
+      "citation": "tests/unit/self-action-convergence.test.ts",
+      "howCaught": "The startup and timer retry edge must reserve each autonomous scan at least 15 seconds after the last durable attempt, including after reconstruction. The ratchet drives the shared rolling reservation function under sustained pressure. The settling brake and steady-state bound are eight attempts and 300 pages in a rolling hour. The provider also limits each scan to one flight, 20 seconds, and 100 pages per scope. An exhausted, invalid, or orphaned budget denies more work until its applicable window clears or the required recovery is completed."
+    }
+  },
+  "verdict": "pass"
+}

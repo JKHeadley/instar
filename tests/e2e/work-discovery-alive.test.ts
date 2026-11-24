@@ -9,6 +9,9 @@ import { afterEach, describe, expect, it, vi } from 'vitest';
 import { InitiativeTracker } from '../../src/core/InitiativeTracker.js';
 import { MachineIdentityManager } from '../../src/core/MachineIdentity.js';
 import { SafeFsExecutor } from '../../src/core/SafeFsExecutor.js';
+import { LiveConfig } from '../../src/config/LiveConfig.js';
+import { SingleInstanceLock } from '../../src/core/SingleInstanceLock.js';
+import { PUBLIC_PR_WARMUP_BUDGET_FILE } from '../../src/core/PublicPrWarmupBudget.js';
 import { StateManager } from '../../src/core/StateManager.js';
 import type { InstarConfig } from '../../src/core/types.js';
 import { AgentServer } from '../../src/server/AgentServer.js';
@@ -20,9 +23,12 @@ const HOST = 'echo-work-discovery.example.dev';
 const AUTH = 'e2e-work-discovery-master';
 const dirs: string[] = [];
 const servers: AgentServer[] = [];
+const locks: SingleInstanceLock[] = [];
+const liveConfigs = new WeakMap<AgentServer, LiveConfig>();
 
 afterEach(async () => {
   for (const server of servers.splice(0)) await server.stop();
+  for (const lock of locks.splice(0)) lock.release();
   for (const dir of dirs.splice(0)) {
     SafeFsExecutor.safeRmSync(dir, { recursive: true, force: true, operation: 'tests/e2e/work-discovery-alive.test.ts' });
   }
@@ -30,36 +36,62 @@ afterEach(async () => {
   vi.unstubAllEnvs();
 });
 
-async function boot(developmentAgent: boolean, unavailableMessaging: Array<'telegram' | 'slack'> = []) {
+async function boot(developmentAgent: boolean, unavailableMessaging: Array<'telegram' | 'slack'> = [], nominated = developmentAgent, activate = true) {
   const dir = fs.mkdtempSync(path.join(os.tmpdir(), 'work-discovery-e2e-'));
   dirs.push(dir);
   const stateDir = path.join(dir, '.instar');
   for (const sub of ['state/sessions', 'state/jobs', 'logs']) fs.mkdirSync(path.join(stateDir, sub), { recursive: true });
   fs.writeFileSync(path.join(stateDir, 'config.json'), '{}');
-  await new MachineIdentityManager(stateDir).generateIdentity({ name: 'work discovery machine' });
+  const identity = await new MachineIdentityManager(stateDir).generateIdentity({ name: 'work discovery machine' });
+  const singleInstanceLock = new SingleInstanceLock({ stateDir });
+  expect(await singleInstanceLock.acquire()).toMatchObject({ acquired: true });
+  locks.push(singleInstanceLock);
+  if (nominated) fs.writeFileSync(path.join(stateDir, 'state', PUBLIC_PR_WARMUP_BUDGET_FILE),
+    JSON.stringify({ version: 1, attempts: [], pages: [], outstanding: [], retryNotBefore: 0, lastObservedAt: 0 }), { mode: 0o600 });
   const config = {
     projectName: 'work-discovery-e2e', projectDir: dir, stateDir, port: 0, developmentAgent,
+    workDiscovery: nominated ? {
+      publicPrWarmupHome: stateDir, publicPrWarmupMachineId: identity.machineId,
+      ...(activate ? { publicPrWarmupPaused: false } : {}),
+    } : {},
     authToken: AUTH, dashboardPin: PIN, security: { dashboardScopedToken: { enabled: true } },
     mobilePairing: { multiRoute: { enabled: false } },
     tunnel: { enabled: true, type: 'named', token: 'fixture', hostname: HOST },
-    requestTimeoutMs: 10_000,
+    requestTimeoutMs: 5_000,
     sessions: { claudePath: '/usr/bin/echo', maxSessions: 1, protectedSessions: [], monitorIntervalMs: 5_000 },
     scheduler: { enabled: false, jobsFile: '', maxParallelJobs: 1 }, messaging: unavailableMessaging.map(type => ({ type, enabled: true, config: {} })), updates: {},
     threadline: { ownerName: 'Owner fixture' },
   } as unknown as InstarConfig;
   const sessionManager = createMockSessionManager() as never;
   const tunnel = { lifecycleState: { lastState: 'active', activeProvider: 'cloudflare-named' }, url: `https://${HOST}`, on: () => undefined } as never;
-  const server = new AgentServer({ config, sessionManager, state: new StateManager(stateDir), initiativeTracker: new InitiativeTracker(stateDir), tunnel });
+  fs.writeFileSync(path.join(stateDir, 'config.json'), JSON.stringify({ workDiscovery: config.workDiscovery }));
+  const liveConfig = new LiveConfig(stateDir, { watchPaths: ['workDiscovery.publicPrWarmupPaused'] });
+  const server = new AgentServer({ config, liveConfig, sessionManager, meshSelfId: identity.machineId, singleInstanceLock, state: new StateManager(stateDir), initiativeTracker: new InitiativeTracker(stateDir), tunnel });
   servers.push(server);
+  liveConfigs.set(server, liveConfig);
   await server.start();
   return server;
 }
 
-function installGithubFixture(held?: Promise<void>) {
+function installGithubFixture(held?: Promise<void>, startupDelayMs = 0) {
   vi.stubEnv('GITHUB_TOKEN', 'e2e-fixture-github-token');
   const originalFetch = globalThis.fetch;
   const github = vi.fn(async (init?: RequestInit) => {
-    await held;
+    if (startupDelayMs && !held) {
+      held = new Promise(resolve => { setTimeout(resolve, startupDelayMs).unref(); });
+    }
+    if (held && init?.signal) {
+      const signal = init.signal;
+      await new Promise<void>((resolve, reject) => {
+        const abort = () => reject(signal.reason);
+        if (signal.aborted) return abort();
+        signal.addEventListener('abort', abort, { once: true });
+        void held.then(() => {
+          signal.removeEventListener('abort', abort);
+          resolve();
+        });
+      });
+    }
     const incoming = JSON.parse(String(init?.body)) as { query: string; variables: { states: string[]; cursor: string | null } };
     const step = Number(incoming.variables.cursor ?? 0);
     const open = incoming.variables.states[0] === 'OPEN';
@@ -103,7 +135,7 @@ describe('work discovery production route', () => {
     await request(app).post(PATH).send({ query: 'instar.sh', pin: PIN }).expect(401).expect('Cache-Control', 'no-store');
     await request(app).post(PATH).set('Authorization', `Bearer ${AUTH}`).set('X-Instar-AgentId', 'work-discovery-e2e')
       .send({ query: 'instar.sh' }).expect(403).expect('Cache-Control', 'no-store');
-    expect(github).not.toHaveBeenCalled();
+    expect(github).toHaveBeenCalledTimes(4);
 
     const unlock = await request(app).post('/dashboard/unlock').send({ pin: PIN }).expect(200);
     expect(unlock.body.token).toMatch(/^dst_/);
@@ -159,7 +191,7 @@ describe('work discovery production route', () => {
         expect.objectContaining({ ref: `app:${erased}`, snippet: expect.stringContaining('erased excerpt') }),
         expect.objectContaining({ ref: `app:${restricted}`, snippet: expect.stringContaining('restricted excerpt') }),
       ]));
-      expect(github).not.toHaveBeenCalled();
+      expect(github).toHaveBeenCalledTimes(2);
       const pending = request(app).post(PATH).set(owner).send({ query: 'instar.sh' }).then(response => response);
       await vi.waitFor(() => expect(github).toHaveBeenCalled(), { interval: 5 });
       native.applyDelete('fixture', 'delete-erased', erased);
@@ -187,8 +219,8 @@ describe('work discovery production route', () => {
     }
   }, 20_000);
 
-  it('submits the shipped Work form through real private dashboard admission and opens source links', async () => {
-    installGithubFixture();
+  it('keeps the shipped Work form pending during a healthy eighteen-second startup scan', async () => {
+    installGithubFixture(undefined, 18_200);
     const server = await boot(true);
     const app = server.getApp();
     const native = server.appConversations!;
@@ -197,7 +229,7 @@ describe('work discovery production route', () => {
     native.store.append({
       kind: 'message', eventId: 'work-ui-event', messageId: 'work-ui-message', conversationKey,
       at: new Date().toISOString(), machineId: native.deps.machineId(), role: 'operator',
-      text: 'The instar.sh conversation is the earlier design discussion.',
+      text: 'Earlier design discussion about instar.sh addresses for agents.',
     });
     const asset = await request(app).get('/dashboard/console/work-discovery.js').expect(200);
     expect(asset.text).toContain("'/work/discover'");
@@ -224,20 +256,108 @@ describe('work discovery production route', () => {
       } });
       const input = main.querySelector<HTMLInputElement>('#work-discovery-query')!;
       expect(input).not.toBeNull();
-      input.value = 'instar.sh';
+      input.value = 'instar.sh addresses for agents';
       input.form!.dispatchEvent(new dom.window.Event('submit', { cancelable: true }));
-      await vi.waitFor(() => expect(main.querySelector('a[href="https://github.com/JKHeadley/instar/pull/3342"]')).not.toBeNull());
+      expect(input.form!.getAttribute('aria-busy')).toBe('true');
+      expect(main.textContent).toContain('Searching for earlier work');
+      await request(app).get('/health').expect(200);
+      await vi.waitFor(() => expect(main.querySelector('a[href="https://github.com/JKHeadley/instar/pull/3342"]')).not.toBeNull(),
+        { timeout: 21_000 });
       const links = [...main.querySelectorAll('section[aria-label="Find earlier work"] a')].map(link => link.getAttribute('href'));
       expect(links).toContain(`#/work/chats?c=${encodeURIComponent('app:' + conversationKey)}&m=work-ui-event`);
+      expect(main.textContent).toContain('Matched all search terms');
       expect(main.textContent).toContain('Search coverage');
       expect(wire).toHaveBeenCalledOnce();
       const [[url, post]] = wire.mock.calls;
       expect(url).toBe(PATH);
-      expect(JSON.parse(String(post.body))).toEqual({ query: 'instar.sh' });
+      expect(JSON.parse(String(post.body))).toEqual({ query: 'instar.sh addresses for agents' });
       expect(dom.window.location.href).not.toContain('instar.sh');
     } finally {
       dom.window.close();
     }
+  }, 30_000);
+
+  it('joins the server-started cold scan even when GitHub takes more than five seconds', async () => {
+    let release!: () => void;
+    const held = new Promise<void>(resolve => { release = resolve; });
+    const github = installGithubFixture(held);
+    try {
+      const app = (await boot(true)).getApp();
+      expect(github).toHaveBeenCalledTimes(2); // No lookup was sent.
+      const unlock = await request(app).post('/dashboard/unlock').send({ pin: PIN }).expect(200);
+      const owner = { Authorization: `Bearer ${unlock.body.token}` };
+      let completed = false;
+      const cold = request(app).post(PATH).set(owner)
+        .send({ query: 'instar.sh', sources: ['pullRequests'] })
+        .then(response => { completed = true; return response; });
+      await new Promise(resolve => setTimeout(resolve, 5_200));
+      expect(completed).toBe(false);
+      expect(github).toHaveBeenCalledTimes(2);
+      release();
+      const result = await cold;
+      expect(result.status).toBe(200);
+      expect(result.body).toMatchObject({
+        candidates: [{ kind: 'pull-request', number: 3342 }],
+        coverage: { pullRequests: { status: 'fresh' } },
+      });
+      expect(github).toHaveBeenCalledTimes(4);
+      const warm = await request(app).post(PATH).set(owner).send({ query: 'instar.sh' }).expect(200);
+      expect(warm.body.candidates).toEqual(expect.arrayContaining([expect.objectContaining({ number: 3342 })]));
+      expect(github).toHaveBeenCalledTimes(4);
+      expect(JSON.stringify(github.mock.calls)).not.toContain('instar.sh');
+    } finally {
+      release();
+    }
+  }, 25_000);
+
+  it('aborts both GitHub requests as the server stops', async () => {
+    let release!: () => void;
+    const github = installGithubFixture(new Promise<void>(resolve => { release = resolve; }));
+    try {
+      const server = await boot(true);
+      expect(github).toHaveBeenCalledTimes(2);
+      const signals = github.mock.calls.map(([init]) => init?.signal);
+      expect(signals.every(signal => signal && !signal.aborted)).toBe(true);
+      await server.stop();
+      servers.splice(servers.indexOf(server), 1);
+      expect(signals.every(signal => signal?.aborted)).toBe(true);
+      expect(github).toHaveBeenCalledTimes(2);
+    } finally {
+      release();
+    }
+  }, 20_000);
+
+  it('leaves nomination alone dark and aborts immediately on an observed LiveConfig pause', async () => {
+    let release!: () => void;
+    const github = installGithubFixture(new Promise<void>(resolve => { release = resolve; }));
+    try {
+      const dark = await boot(true, [], true, false);
+      expect(github).not.toHaveBeenCalled();
+      const active = await boot(true);
+      expect(github).toHaveBeenCalledTimes(2);
+      const signals = github.mock.calls.map(([init]) => init?.signal);
+      const { config } = active as unknown as { config: InstarConfig };
+      const file = path.join(config.stateDir, 'config.json');
+      const onDisk = JSON.parse(fs.readFileSync(file, 'utf8'));
+      fs.writeFileSync(file, JSON.stringify({ ...onDisk, workDiscovery: { ...onDisk.workDiscovery, publicPrWarmupPaused: true } }));
+      const liveConfig = liveConfigs.get(active)!;
+      liveConfig.forceRefresh();
+      expect(signals.every(signal => signal?.aborted)).toBe(true);
+      expect(github).toHaveBeenCalledTimes(2);
+      expect((await request(dark.getApp()).get('/health')).status).toBe(200);
+    } finally {
+      release();
+    }
+  }, 20_000);
+
+  it('leaves an unselected development installation on its existing on-demand path', async () => {
+    const github = installGithubFixture();
+    const app = (await boot(true, [], false)).getApp();
+    expect(github).not.toHaveBeenCalled();
+    const unlocked = await request(app).post('/dashboard/unlock').send({ pin: PIN }).expect(200);
+    await request(app).post(PATH).set('Authorization', `Bearer ${unlocked.body.token}`)
+      .send({ query: 'instar.sh' }).expect(200);
+    expect(github).toHaveBeenCalledTimes(4);
   }, 20_000);
 
   it('returns an honest disabled status to the owner outside the development cohort', async () => {

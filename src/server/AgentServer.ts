@@ -33,7 +33,7 @@ import { computeOwnLastingEndpoints } from '../core/MeshUrlAdvertiser.js';
 import { holdAllSetups } from '../recommended/setupState.js';
 import { currentAgentDisplay } from '../messaging/messageOrigin.js';
 import { resolveSessionPlatform } from './sessionPlatform.js';
-import express, { type Express, type Request, type Response } from 'express';
+import express, { type Express, type NextFunction, type Request, type Response } from 'express';
 import {createConversationGraphSurface,createConversationGraphOffRouter} from './ConversationGraphSurface.js';
 import {createConversationGraphDefaultSurface} from './ConversationGraphDefaultSurface.js';
 import { setMoveAftercare } from '../core/OverloadShedPlanner.js';
@@ -271,6 +271,7 @@ import { createMobilePinRouter, recordTelegramPin } from './mobilePinRoutes.js';
 import { createConversationSearchRouter, isMeaningSearchEnabled, type ConversationSearchRouteDeps } from './mobileConversationSearchRoutes.js';
 import { createWorkDiscoveryRouter } from './workDiscoveryRoutes.js';
 import { ChiefOfStaffPrSearch } from '../core/ChiefOfStaffPrSearch.js';
+import { PublicPrWarmupBudget } from '../core/PublicPrWarmupBudget.js';
 import { resolveGitHubToken } from '../core/githubRuntime.js';
 import { conversationIndexSources } from './conversationMeaningSearch.js';
 import { ConversationEmbeddingFeeder, ConversationEmbeddingIndex, type Embedder } from '../memory/ConversationEmbeddingIndex.js';
@@ -312,7 +313,7 @@ import { NativeHookEventIngest } from '../monitoring/NativeHookEvents.js';
 import { NATIVE_HOOK_EVENTS_PATH } from '../data/http-hook-templates.js';
 import { resolveKnownOrigin as resolveProjectAppOrigin, hostOf as projectAppHostOf, type OriginDeps as ProjectAppOriginDeps } from './ProjectAppSandbox.js';
 import { boundedBody, closeUnreadBodyOnError, credentialAwareJsonParser, type BodyBudgetDeps } from './bodyBudget.js';
-import { corsMiddleware, authMiddleware, requestTimeout, buildRequestTimeoutOverrides, errorHandler, dashboardSecurityHeaders, dashboardCacheControl, DASHBOARD_STATIC_OPTIONS, duplicateResponseGuard } from './middleware.js';
+import { corsMiddleware, authMiddleware, requestTimeout, buildRequestTimeoutOverrides, PR_INVENTORY_ROUTE_FLOOR_MS, errorHandler, dashboardSecurityHeaders, dashboardCacheControl, DASHBOARD_STATIC_OPTIONS, duplicateResponseGuard } from './middleware.js';
 import { WebSocketManager } from './WebSocketManager.js';
 import { DesktopStreamManager } from './DesktopStreamManager.js';
 import { DirectDesktopAccess } from '../core/DirectDesktopAccess.js';
@@ -967,6 +968,7 @@ export class AgentServer {
     senderBotId: string;
   }) => Promise<{ ok: boolean; agentMessage?: boolean; reason?: string }>;
   private routeContext: {
+    liveConfig?: import('./routes.js').RouteContext['liveConfig'];
     jobCoverageStop?: (() => void) | null;
     telegramOrigin?: import('../messaging/telegram-origin/TelegramOriginRuntime.js').TelegramOriginRuntime | null;
     wsManager: import('./WebSocketManager.js').WebSocketManager | null;
@@ -1039,6 +1041,11 @@ export class AgentServer {
   /** Set when money-layer construction was ATTEMPTED and FAILED — distinguishes `construction-failed` from `enable-pending-restart`. */
   private moneyConstructionFailure: string | null = null;
   /** When THIS process's config snapshot was taken, so a config-derived claim is never shown without its age (MLE-1). */
+  private readonly workDiscoveryPrSearch: ChiefOfStaffPrSearch;
+  private readonly publicPrWarmup: Parameters<ChiefOfStaffPrSearch['start']>[0];
+  private publicPrLifecycle = 0;
+  private publicPrWarmConfigWatch: (() => () => void) | null = null;
+  private publicPrWarmConfigUnsubscribe: (() => void) | null = null;
   private readonly configSnapshotAt: string = new Date().toISOString();
 
   /** Increment B money layer — all null unless routingSpend.money.enabled === true (FD-16). */
@@ -3009,10 +3016,48 @@ export class AgentServer {
     const followMeRemoteScrapeTimeoutMs = (options.config as {
       multiMachine?: { accountFollowMe?: { remoteScrapeTimeoutMs?: number } };
     }).multiMachine?.accountFollowMe?.remoteScrapeTimeoutMs;
-    this.app.use(requestTimeout(
-      options.config.requestTimeoutMs,
-      buildRequestTimeoutOverrides({ paritySourceTotalTimeoutMs, followMeRemoteScrapeTimeoutMs, defaultTimeoutMs: options.config.requestTimeoutMs }),
-    ));
+    const installedStateHome = path.resolve(options.config.stateDir);
+    const configuredWarmHome = options.config.workDiscovery?.publicPrWarmupHome;
+    const configuredWarmMachine = options.config.workDiscovery?.publicPrWarmupMachineId;
+    // The nomination persists when the operational switch is paused. A missing
+    // budget cannot make a previously nominated home look like a new home.
+    const namedWarmHome = typeof configuredWarmHome === 'string' && path.isAbsolute(configuredWarmHome)
+      && path.resolve(configuredWarmHome) === installedStateHome
+      && !!options.meshSelfId && configuredWarmMachine === options.meshSelfId;
+    const warmPaused = () => options.liveConfig?.get?.('workDiscovery.publicPrWarmupPaused', options.config.workDiscovery?.publicPrWarmupPaused)
+      ?? options.config.workDiscovery?.publicPrWarmupPaused;
+    const ownsWarmHome = () => options.singleInstanceLock?.revalidate() === true;
+    this.publicPrWarmup = {
+      enabled: () => namedWarmHome && this.config.developmentAgent === true && warmPaused() === false && ownsWarmHome() && (
+        this.config.security?.dashboardScopedToken?.enabled === true
+        || (!!this.config.authToken && !!this.routeContext?.chiefOfStaffLoop
+          && this.routeContext.liveConfig?.get<boolean | undefined>('chiefOfStaff.enabled', this.config.chiefOfStaff?.enabled) !== false)
+      ),
+      budget: new PublicPrWarmupBudget(installedStateHome, ownsWarmHome),
+      jitterMs: createHash('sha256').update(installedStateHome).digest().readUInt32BE(0) % 30_001,
+    };
+    if (namedWarmHome && options.liveConfig instanceof LiveConfig) {
+      const liveConfig = options.liveConfig;
+      this.publicPrWarmConfigWatch = () => {
+        const listener = (change: { path: string; newValue: unknown }) => {
+          if (change.path === 'workDiscovery.publicPrWarmupPaused' && change.newValue !== false) {
+            this.workDiscoveryPrSearch.pauseWarmup();
+          }
+        };
+        liveConfig.on('change', listener);
+        return () => { liveConfig.off('change', listener); };
+      };
+    }
+    const requestBudgets = { paritySourceTotalTimeoutMs, followMeRemoteScrapeTimeoutMs, defaultTimeoutMs: options.config.requestTimeoutMs };
+    const baselineRequestTimeout = requestTimeout(options.config.requestTimeoutMs, buildRequestTimeoutOverrides(requestBudgets));
+    const warmRequestTimeout = requestTimeout(Math.max(options.config.requestTimeoutMs ?? 30_000, PR_INVENTORY_ROUTE_FLOOR_MS),
+      buildRequestTimeoutOverrides({ ...requestBudgets, warmPublicPrInventory: true }));
+    this.app.use((req: Request, res: Response, next: NextFunction) => {
+      const route = req.path.toLowerCase().replace(/\/+$/, '');
+      const warm = (route === '/work/discover' || route === '/chief-of-staff/pr-search')
+        && this.workDiscoveryPrSearch.isWarmEnrolled();
+      (warm ? warmRequestTimeout : baselineRequestTimeout)(req, res, next);
+    });
 
     // ── Token Ledger ──────────────────────────────────────────────────
     // Read-only token-usage observability. Reads Claude Code's per-session
@@ -7475,10 +7520,11 @@ export class AgentServer {
         });
       }
     }
-    const workDiscoveryPrSearch = new ChiefOfStaffPrSearch({
+    this.workDiscoveryPrSearch = new ChiefOfStaffPrSearch({
+      priorWarmBudget: namedWarmHome ? this.publicPrWarmup.budget : undefined,
       readToken: () => resolveGitHubToken({ stateDir: this.config.stateDir }),
     });
-    routeCtx.chiefOfStaffPrSearch = workDiscoveryPrSearch;
+    routeCtx.chiefOfStaffPrSearch = this.workDiscoveryPrSearch;
     let workDiscoveryConversationSource: ConversationSearchRouteDeps | null = null;
     this.app.use(createWorkDiscoveryRouter({
       enabled: () => this.config.developmentAgent === true,
@@ -7489,7 +7535,7 @@ export class AgentServer {
       },
       conversationSource: () => workDiscoveryConversationSource,
       configuredMessaging: platform => this.config.messaging.some(adapter => adapter.enabled && adapter.type === platform),
-      pullRequestSource: workDiscoveryPrSearch,
+      pullRequestSource: this.workDiscoveryPrSearch,
     }));
     const routes = createRoutes(routeCtx);
     this.attachWorkBoardRequestGate(options);
@@ -9942,6 +9988,7 @@ export class AgentServer {
    * Start the HTTP server.
    */
   async start(): Promise<void> {
+    const publicPrLifecycle = ++this.publicPrLifecycle;
     // Layer 2 boot self-check (spec § 2a "Runtime dependency"). Probes the
     // sqlite3 CLI + better-sqlite3 in-process driver and emits degradation
     // events on missing/broken substrate. Never throws — Layer 2 is best-
@@ -10010,6 +10057,10 @@ export class AgentServer {
       this.server = this.app.listen(this.config.port, host, () => {
         console.log(`[instar] Server listening on ${host}:${this.config.port}`);
         // bootReadiness.state becomes "ready" (GET /health): the real server is serving.
+        if (publicPrLifecycle === this.publicPrLifecycle) {
+          this.publicPrWarmConfigUnsubscribe ??= this.publicPrWarmConfigWatch?.() ?? null;
+          this.workDiscoveryPrSearch.start(this.publicPrWarmup);
+        }
         bootReadiness().markReady();
         // Identity A4: reopen the home address only if the owner had asked and the network is an allowed one.
         void this.mobilePairing?.sameNetwork?.start().catch((err) => console.warn('[instar] same-network listener start failed:', err));
@@ -10556,6 +10607,10 @@ export class AgentServer {
   }
 
   async stop(): Promise<void> {
+    this.publicPrLifecycle++;
+    this.publicPrWarmConfigUnsubscribe?.();
+    this.publicPrWarmConfigUnsubscribe = null;
+    this.workDiscoveryPrSearch.stop();
     await this.stopGraphSourceInventory();
     this.siblingHoldingsStop?.();
     if (this.teamPullTimer) clearInterval(this.teamPullTimer);

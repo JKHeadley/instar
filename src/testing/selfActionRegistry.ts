@@ -77,6 +77,8 @@ import { decideRescueGate, WALL_RESCUE_LIMITS } from '../core/UsageWallRescue.js
 import { nextBreakerState, RECONCILE_LIMITS } from '../core/ReplicatedStoreReconciler.js';
 import { findStuckPreparingRuns, PREPARING_NOTICE_MAX_ATTEMPTS } from '../core/AutonomousStartAdmission.js';
 import type { AutonomousRunRecord } from '../core/AutonomousRunStore.js';
+import { PR_INVENTORY_MAX_PAGES_PER_SCOPE } from '../core/ChiefOfStaffPrSearch.js';
+import { PUBLIC_PR_ATTEMPT_LIMIT, PUBLIC_PR_AUTONOMOUS_RETRY_FLOOR_MS, PUBLIC_PR_PAGE_LIMIT, reservePublicPrTimestamp } from '../core/PublicPrWarmupBudget.js';
 import { RECONCILER_LIMITS, admitStatusPost, nextPostRetry, orderSubmissions, passBackoffDelay, postRetryDue } from '../localVerify/StatusReconciler.js';
 import { decideFailureInvestigationAttempt, FAILURE_INVESTIGATION_MAX_ATTEMPTS } from '../monitoring/FailureInvestigationAdmission.js';
 import { repeatDue as diskRepeatDue, sendRetryDelay as diskSendRetryDelay } from '../monitoring/diskSteward/levels.js';
@@ -4864,6 +4866,53 @@ const presenceUsageNotice: SelfActionController = {
   makeUnderPressure: makePresenceUsageNotice,
 };
 
+function makePublicPrWarmupRetry(f: PressureFixture, sink: ActionSink): { tick(): void } {
+  // Drive the fastest possible repeated restart/repair attempt. The actual
+  // eight-minute schedule only lengthens the distance between ordinary scans.
+  const key = 'public-pr-warmup-retry:packed-budget';
+  const ledger = (f.durableState.get(key) as { attempts: number[]; pages: number[] } | undefined)
+    ?? { attempts: [], pages: [] };
+  f.durableState.set(key, ledger);
+  return {
+    tick() {
+      sink.considered++;
+      const now = f.clock.nowMs();
+      const attempts = reservePublicPrTimestamp(ledger.attempts, now, PUBLIC_PR_ATTEMPT_LIMIT, PUBLIC_PR_AUTONOMOUS_RETRY_FLOOR_MS);
+      if (!attempts) return;
+      ledger.attempts = attempts;
+      // All pages are contested, even after a partial scan or reconstruction.
+      let pages = 0;
+      for (let i = 0; i < PR_INVENTORY_MAX_PAGES_PER_SCOPE * 2; i++) {
+        const charge = reservePublicPrTimestamp(ledger.pages, now, PUBLIC_PR_PAGE_LIMIT);
+        if (!charge) break;
+        ledger.pages = charge;
+        pages++;
+      }
+      if (pages === 0) return;
+      sink.emit({ verb: 'retry-pr-list', target: 'public-pr-inventory' });
+      sink.emitTimesMs.push(now);
+    },
+  };
+}
+
+const publicPrWarmupRetry: SelfActionController = {
+  id: 'public-pr-warmup-retry',
+  actionVerb: 'retry-pr-list',
+  models: 'src/core/ChiefOfStaffPrSearch.ts (warm, ensureRefresh; shared durable PublicPrWarmupBudget attempt/page reservation)',
+  modelsPath: 'src/core/ChiefOfStaffPrSearch.ts',
+  boundK: Number.POSITIVE_INFINITY,
+  perTargetBoundK: Number.POSITIVE_INFINITY,
+  ticks: 900,
+  tickMs: 5_000,
+  eternalSentinel: {
+    reason: 'An enrolled installation needs fresh public inventory periodically. One flight, deadline and a finite page budget bound each attempt.',
+    rateFloorMs: PUBLIC_PR_AUTONOMOUS_RETRY_FLOOR_MS,
+  },
+  delegatedGiveUp: 'PublicPrWarmupBudget refuses further attempts or pages at eight attempts or 300 pages per rolling hour, on an unknown outstanding reservation, or before an observed upstream retry floor expires.',
+  restartPosture: { pressureSurvives: true, restartUnderPressure: makePublicPrWarmupRetry },
+  makeUnderPressure: makePublicPrWarmupRetry,
+};
+
 const graphSourceSweepCheckpointRetry: SelfActionController = {
   id: 'graph-source-sweep-checkpoint-retry',
   actionVerb: 'retry',
@@ -6235,6 +6284,7 @@ export const SELF_ACTION_CONTROLLERS: SelfActionController[] = [
   localVerifyLeftoverReaper,
   localVerifyMemoryNotice,
   graphSourceSweepCheckpointRetry,
+  publicPrWarmupRetry,
   graphSourceStatusPollRetry,
   reloginApprovalReminder,
   peerPlaceSessionTick,

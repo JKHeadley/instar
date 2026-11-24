@@ -1,4 +1,5 @@
 import { createHash, randomUUID } from 'node:crypto';
+import { PUBLIC_PR_AUTONOMOUS_RETRY_FLOOR_MS, type PublicPrWarmupBudget } from './PublicPrWarmupBudget.js';
 import { fetchGitHubGraphql, GitHubGraphqlResponseError } from './githubRuntime.js';
 
 export const CHIEF_OF_STAFF_PR_REPO = 'JKHeadley/instar';
@@ -14,15 +15,19 @@ query ChiefOfStaffPullRequests($states: [PullRequestState!], $cursor: String, $o
 }`;
 const FRESH_MS = 2 * 60_000;
 const RETAIN_MS = 10 * 60_000;
-const RETRY_MS = 15_000;
+const RETRY_MS = PUBLIC_PR_AUTONOMOUS_RETRY_FLOOR_MS;
 const RATE_LIMIT_RETRY_MS = 60_000;
-const REFRESH_MS = 20_000;
+export const PR_INVENTORY_REFRESH_BUDGET_MS = 20_000;
+export const PR_INVENTORY_LOOKUP_BUDGET_MS = 21_000;
+const WARM_SCAN_INTERVAL_MS = 8 * 60_000;
+const ENROLLMENT_CHECK_MS = 15_000;
 const MERGED_HISTORY_MS = 30 * 24 * 60 * 60_000;
-const MAX_PAGES = 100;
+export const PR_INVENTORY_MAX_PAGES_PER_SCOPE = 100;
 const MAX_BYTES = 16 * 1024 * 1024;
 const MAX_PAGE_BYTES = 4 * 1024 * 1024;
 const MAX_MATCHES = 20;
 const MAX_EXCERPT = 240;
+const CREDENTIAL_ROTATED = Symbol('credential-rotated');
 
 type MatchKind = 'literal' | 'all-terms';
 
@@ -72,17 +77,21 @@ type SourceStatus = 'fresh' | 'stale' | 'partial' | 'unavailable';
 
 interface PrSearchDependencies {
   readToken(): string | null;
-  fetchPage?(token: string, state: PrState, cursor: string | null, timeoutMs: number): Promise<PullRequestsPage>;
+  fetchPage?(token: string, state: PrState, cursor: string | null, timeoutMs: number, signal: AbortSignal, observeRateLimit: (waitMs: number) => void): Promise<PullRequestsPage>;
   now?(): number;
+  priorWarmBudget?: PublicPrWarmupBudget;
 }
 
-async function fetchPage(token: string, state: PrState, cursor: string | null, timeoutMs: number) {
+async function fetchPage(token: string, state: PrState, cursor: string | null, timeoutMs: number, signal: AbortSignal, observeRateLimit: (waitMs: number) => void) {
   const result = await fetchGitHubGraphql<PullRequestsPage>({
     token,
     query: GITHUB_ENDPOINT_QUERY,
     variables: { states: [state], cursor, order: state === 'OPEN' ? 'CREATED_AT' : 'UPDATED_AT' },
     timeoutMs,
+    signal,
     maxResponseBytes: MAX_PAGE_BYTES,
+    rejectRedirects: true,
+    observeRateLimit,
   });
   // An authenticated token may still enumerate a repository after it becomes
   // private. Only GitHub's explicit public visibility grants this source.
@@ -130,6 +139,14 @@ export class ChiefOfStaffPrSearch {
   private snapshots: Partial<Record<PrState, Snapshot>> = {};
   private lastComplete: Partial<Record<PrState, Snapshot>> = {};
   private inFlight: Promise<void> | null = null;
+  private refreshController: AbortController | null = null;
+  private refreshTimer: ReturnType<typeof setTimeout> | null = null;
+  private stopped = false;
+  private enrollment: { enabled: () => boolean; budget: PublicPrWarmupBudget; jitterMs: number } | null = null;
+  private lastWarmScanAt: number | null = null;
+  private earlyRepairAt: number | null = null;
+  private warmFlight = false;
+  private upstreamRetryAt = 0;
   private cacheToken: string | null = null;
   private retryAt = 0;
   private credentialGeneration = 0;
@@ -142,44 +159,174 @@ export class ChiefOfStaffPrSearch {
     this.readPage = deps.fetchPage ?? fetchPage;
   }
 
-  async search(query: string, scope?: PrState, offset = 0) {
-    return this.lookup(query, scope, offset, false);
+  start(enrollment: { enabled: () => boolean; budget: PublicPrWarmupBudget; jitterMs: number }): void {
+    if (this.refreshTimer) return;
+    this.stopped = false;
+    if (!enrollment.enabled() || !Number.isFinite(enrollment.budget.retryFloor())) return;
+    this.enrollment = enrollment;
+    this.scheduleWarmTick();
+    this.warm();
   }
 
-  async searchForWork(query: string) {
-    return this.lookup(query, undefined, 0, true);
+  stop(): void {
+    this.disarm();
+    this.stopped = true;
+    this.resetCredentials(null);
+    this.enrollment = null;
+    this.lastWarmScanAt = null;
+    this.earlyRepairAt = null;
   }
 
-  private async lookup(query: string, scope: PrState | undefined, offset: number, allowTermFallback: boolean) {
-    const token = this.deps.readToken();
-    if (this.cacheToken !== token) {
-      this.credentialGeneration++;
-      this.cacheToken = token;
-      this.snapshots = {};
-      this.lastComplete = {};
-      this.revision = randomUUID();
-      this.retryAt = 0;
-      this.inFlight = null;
+  pauseWarmup(): void {
+    this.disarm();
+    if (this.warmFlight) this.resetCredentials(null);
+  }
+
+  isWarmEnrolled(): boolean {
+    if (this.stopped || !this.enrollment || !this.refreshTimer) return false;
+    if (this.enrollment.enabled()) return true;
+    this.pauseWarmup();
+    return false;
+  }
+
+  private disarm(): void {
+    if (this.refreshTimer) clearTimeout(this.refreshTimer);
+    this.refreshTimer = null;
+  }
+
+  private scheduleWarmTick(): void {
+    const dueIn = this.lastWarmScanAt === null ? 0
+      : this.lastWarmScanAt + WARM_SCAN_INTERVAL_MS + (this.enrollment?.jitterMs ?? 0) - this.now();
+    const repairIn = this.earlyRepairAt === null ? 0 : this.earlyRepairAt - this.now();
+    const upcoming = [dueIn, repairIn].filter(value => value > 0);
+    const delay = Math.min(ENROLLMENT_CHECK_MS, ...upcoming);
+    this.refreshTimer = setTimeout(() => {
+      this.warm();
+      if (this.isWarmEnrolled()) this.scheduleWarmTick();
+    }, delay);
+    this.refreshTimer.unref();
+  }
+
+  private warm(): void {
+    if (!this.isWarmEnrolled()) return;
+    const token = this.currentToken();
+    /* @self-action-controller: public-pr-warmup-retry */
+    if (token) this.ensureRefresh(token, true, true);
+  }
+
+  private resetCredentials(token: string | null, reason?: symbol): void {
+    this.credentialGeneration++;
+    this.cacheToken = token;
+    this.snapshots = {};
+    this.lastComplete = {};
+    this.revision = randomUUID();
+    this.retryAt = 0;
+    this.refreshController?.abort(reason);
+    // Keep the slot until cancellation settles. A new credential cannot overlap it.
+  }
+
+  private currentToken(): string | null {
+    if (this.stopped) return null;
+    let token: string | null;
+    try { token = this.deps.readToken(); }
+    catch { token = null; /* Credential resolution failures invalidate cached results. */ }
+    if (this.cacheToken !== token) this.resetCredentials(token, token ? CREDENTIAL_ROTATED : undefined);
+    return token;
+  }
+
+  private ensureRefresh(token: string, warm: boolean, autonomous: boolean, scope?: PrState): Promise<void> | null {
+    if (this.inFlight) return this.refreshController?.signal.aborted ? null : this.inFlight;
+    const now = this.now();
+    if (now < this.retryFloor()) return null;
+    const open = this.status('OPEN');
+    const merged = this.status('MERGED');
+    const requested = scope === 'OPEN' ? [open] : scope === 'MERGED' ? [merged] : [open, merged];
+    const needs = warm
+      ? requested.some(status => status === 'unavailable' || status === 'partial')
+      : open !== 'fresh' || merged !== 'fresh';
+    const budget = this.deps.priorWarmBudget;
+    let allowEarlyRepair = false;
+    if (warm) {
+      const due = this.lastWarmScanAt === null || now >= this.lastWarmScanAt + WARM_SCAN_INTERVAL_MS + (this.enrollment?.jitterMs ?? 0);
+      const scheduledRepair = this.earlyRepairAt !== null && now >= this.earlyRepairAt;
+      if (!due && (!needs || (autonomous && !scheduledRepair))) return null;
+      if (!budget) return null;
+      allowEarlyRepair = due;
+    } else if (!needs) return null;
+    if (budget && !budget.reserveAttempt(autonomous)) return null;
+    if (warm) {
+      this.earlyRepairAt = null;
+      this.lastWarmScanAt = now;
     }
-    const generation = this.credentialGeneration;
-    if (token && (this.status('OPEN') !== 'fresh' || this.status('MERGED') !== 'fresh') && this.now() >= this.retryAt) {
-      if (!this.inFlight) {
-        const refresh = this.refresh(token, generation).finally(() => {
-          if (this.inFlight === refresh) this.inFlight = null;
-        });
-        this.inFlight = refresh;
+
+    const controller = new AbortController();
+    this.refreshController = controller;
+    this.warmFlight = warm;
+    const deadline = setTimeout(() => controller.abort(), PR_INVENTORY_REFRESH_BUDGET_MS);
+    deadline.unref();
+    const refresh = this.refresh(token, this.credentialGeneration, controller, budget, warm, allowEarlyRepair).finally(() => {
+      clearTimeout(deadline);
+      if (this.inFlight === refresh) {
+        this.inFlight = null;
+        this.refreshController = null;
+        this.warmFlight = false;
       }
-      await this.inFlight;
+    });
+    this.inFlight = refresh;
+    return refresh;
+  }
+
+  async search(query: string, scope?: PrState, offset = 0, waitSignal?: AbortSignal) {
+    return this.lookup(query, scope, offset, false, waitSignal);
+  }
+
+  async searchForWork(query: string, waitSignal?: AbortSignal) {
+    return this.lookup(query, undefined, 0, true, waitSignal);
+  }
+
+  private async lookup(query: string, scope: PrState | undefined, offset: number, allowTermFallback: boolean, waitSignal?: AbortSignal) {
+    const warm = this.isWarmEnrolled();
+    const token = this.currentToken();
+    const generation = this.credentialGeneration;
+    if (token && !waitSignal?.aborted) {
+      const predecessor = this.refreshController?.signal.reason === CREDENTIAL_ROTATED ? this.inFlight : null;
+      if (predecessor) {
+        await this.waitForPredecessor(predecessor, waitSignal);
+        if (waitSignal?.aborted || this.currentToken() !== token || this.credentialGeneration !== generation
+          || (warm && !this.isWarmEnrolled())) return this.result(query, scope, offset, false, allowTermFallback);
+      }
+      const refresh = this.ensureRefresh(token, warm, false, scope);
+      const hasSnapshot = scope ? this.status(scope) !== 'unavailable'
+        : this.status('OPEN') !== 'unavailable' || this.status('MERGED') !== 'unavailable';
+      if (!warm || !hasSnapshot) await refresh;
     }
-    const visible = !!token && this.credentialGeneration === generation && this.deps.readToken() === token;
+    const stillEnrolled = !warm || this.isWarmEnrolled();
+    const currentToken = this.currentToken();
+    const visible = stillEnrolled && !waitSignal?.aborted && !!token && this.credentialGeneration === generation && currentToken === token;
     return this.result(query, scope, offset, visible, allowTermFallback);
+  }
+
+  private async waitForPredecessor(predecessor: Promise<void>, signal?: AbortSignal): Promise<void> {
+    if (!signal) return predecessor;
+    if (signal.aborted) return;
+    let detach: () => void = () => {};
+    try {
+      await Promise.race([predecessor, new Promise<void>(resolve => {
+        detach = () => resolve();
+        signal.addEventListener('abort', detach, { once: true });
+      })]);
+    } finally {
+      signal.removeEventListener('abort', detach);
+    }
   }
 
   private status(state: PrState): SourceStatus {
     const snapshot = this.snapshots[state];
-    if (!snapshot || this.now() - snapshot.finishedAt >= RETAIN_MS) return 'unavailable';
+    if (!snapshot) return 'unavailable';
+    const age = this.now() - snapshot.finishedAt;
+    if (age < 0 || age >= RETAIN_MS) return 'unavailable';
     if (!snapshot.complete) return 'partial';
-    return this.now() - snapshot.finishedAt < FRESH_MS ? 'fresh' : 'stale';
+    return age < FRESH_MS ? 'fresh' : 'stale';
   }
 
   private coverage(state: PrState, visible: boolean) {
@@ -197,7 +344,20 @@ export class ChiefOfStaffPrSearch {
 
   private retainedComplete(state: PrState, status: SourceStatus): Snapshot | undefined {
     const prior = this.lastComplete[state];
-    return status === 'partial' && prior && this.now() - prior.finishedAt < RETAIN_MS ? prior : undefined;
+    if (status !== 'partial' || !prior) return undefined;
+    const age = this.now() - prior.finishedAt;
+    return age >= 0 && age < RETAIN_MS ? prior : undefined;
+  }
+
+  isObservationCurrent(revision: string, query: string, scope?: PrState): boolean {
+    this.isWarmEnrolled();
+    if (!this.currentToken()) return false;
+    const coverage = { open: this.coverage('OPEN', true), merged: this.coverage('MERGED', true) };
+    return revision === this.resultRevision(query.toLowerCase().trim(), scope, coverage);
+  }
+
+  private resultRevision(search: string, scope: PrState | undefined, coverage: { open: unknown; merged: unknown }): string {
+    return createHash('sha256').update(JSON.stringify([this.revision, search, scope, coverage])).digest('hex');
   }
 
   private result(query: string, scope: PrState | undefined, offset: number, visible: boolean, allowTermFallback: boolean) {
@@ -249,9 +409,7 @@ export class ChiefOfStaffPrSearch {
     const selectedCoverage = scope === 'OPEN' ? [coverage.open] : scope === 'MERGED' ? [coverage.merged] : [coverage.open, coverage.merged];
     const available = selectedCoverage.some(info => info.status !== 'unavailable');
     const complete = selectedCoverage.every(info => info.status === 'fresh' || info.status === 'stale');
-    const revision = createHash('sha256')
-      .update(JSON.stringify([this.revision, search, scope, coverage]))
-      .digest('hex');
+    const revision = this.resultRevision(search, scope, coverage);
     return {
       repository: CHIEF_OF_STAFF_PR_REPO,
       coverage,
@@ -271,9 +429,9 @@ export class ChiefOfStaffPrSearch {
     };
   }
 
-  private async refresh(token: string, generation: number): Promise<void> {
+  private async refresh(token: string, generation: number, controller: AbortController, budget: PublicPrWarmupBudget | undefined, warm: boolean, allowEarlyRepair: boolean): Promise<void> {
     const states = ['OPEN', 'MERGED'] as const;
-    const results = await Promise.allSettled(states.map(state => this.readSnapshot(token, state, generation).catch((error: unknown) => {
+    const results = await Promise.allSettled(states.map(state => this.readSnapshot(token, state, generation, controller.signal, budget, warm).catch((error: unknown) => {
       // A denial immediately invalidates this credential generation, before
       // its sibling finishes. Neither stream can republish the known data.
       if (this.credentialGeneration !== generation) throw error;
@@ -282,12 +440,13 @@ export class ChiefOfStaffPrSearch {
         this.lastComplete = {};
         this.revision = randomUUID();
         this.credentialGeneration++;
+        controller.abort();
         this.retryAt = Math.max(this.retryAt, this.now() + RETRY_MS);
+        if (allowEarlyRepair) this.earlyRepairAt = this.retryAt;
       }
-      this.observeThrottle(error);
       throw error;
     })));
-    if (this.credentialGeneration !== generation) return;
+    if (this.credentialGeneration !== generation || (warm && !this.isWarmEnrolled())) return;
     this.revision = randomUUID();
     for (const [index, result] of results.entries()) {
       if (result.status !== 'fulfilled') continue;
@@ -297,16 +456,47 @@ export class ChiefOfStaffPrSearch {
     }
     const incomplete = results.some(result => result.status === 'rejected' || !result.value.complete);
     this.retryAt = incomplete ? Math.max(this.retryAt, this.now() + RETRY_MS) : 0;
+    if (incomplete && allowEarlyRepair) this.earlyRepairAt = this.retryAt;
   }
 
-  private observeThrottle(error: unknown): void {
-    if (!(error instanceof GitHubGraphqlResponseError) || error.kind !== 'throttled' && error.retryAfterMs === undefined) return;
+  private throttleWait(error: unknown): number {
+    if (!(error instanceof GitHubGraphqlResponseError) || error.kind !== 'throttled' && error.retryAfterMs === undefined) return 0;
     const wait = error.retryAfterMs;
-    this.retryAt = Math.max(this.retryAt, this.now() + (wait !== undefined && Number.isSafeInteger(wait)
-      ? Math.max(wait, RETRY_MS) : RATE_LIMIT_RETRY_MS));
+    return wait !== undefined && Number.isSafeInteger(wait) ? Math.max(wait, RETRY_MS) : RATE_LIMIT_RETRY_MS;
   }
 
-  private async readSnapshot(token: string, state: PrState, generation: number): Promise<Snapshot> {
+  private retryFloor(): number {
+    return Math.max(this.retryAt, this.upstreamRetryAt, this.deps.priorWarmBudget?.retryFloor() ?? 0);
+  }
+
+  private async fetchReservedPage(token: string, state: PrState, cursor: string | null, remaining: number,
+    signal: AbortSignal, budget?: PublicPrWarmupBudget): Promise<PullRequestsPage> {
+    const reservation = budget?.reservePage();
+    if (budget && !reservation) throw new Error('github-pr-search-budget');
+    let wait = 0;
+    const observeRateLimit = (waitMs: number) => {
+      wait = Math.max(wait, waitMs);
+      this.upstreamRetryAt = Math.max(this.upstreamRetryAt, this.now() + waitMs);
+    };
+    try {
+      return await this.readPage(token, state, cursor, remaining, signal, observeRateLimit);
+    } catch (error) {
+      const retry = this.throttleWait(error);
+      if (retry > 0) observeRateLimit(retry);
+      // A clean cancellation still consumes its reservation. A process crash
+      // leaves the marker instead, which the successor cannot clear by waiting.
+      if (reservation && signal.aborted && signal.reason !== CREDENTIAL_ROTATED && wait === 0) observeRateLimit(RETRY_MS);
+      throw error;
+    } finally {
+      if (budget && reservation && !budget.settlePage(reservation, wait)) {
+        this.upstreamRetryAt = Infinity;
+        this.resetCredentials(this.cacheToken);
+        throw new Error('github-pr-search-budget-settlement');
+      }
+    }
+  }
+
+  private async readSnapshot(token: string, state: PrState, generation: number, signal: AbortSignal, budget: PublicPrWarmupBudget | undefined, warm: boolean): Promise<Snapshot> {
     const startedAt = this.now();
     const mergedSince = startedAt - MERGED_HISTORY_MS;
     const rows = new Map<number, IndexedPr>();
@@ -316,11 +506,15 @@ export class ChiefOfStaffPrSearch {
     let bytes = 0;
     try {
       for (let page = 1; ; page++) {
-        const remaining = REFRESH_MS - (this.now() - startedAt);
-        if (page > MAX_PAGES || remaining <= 0 || generation !== this.credentialGeneration || this.now() < this.retryAt) {
+        const remaining = PR_INVENTORY_REFRESH_BUDGET_MS - (this.now() - startedAt);
+        if (page > PR_INVENTORY_MAX_PAGES_PER_SCOPE || remaining <= 0 || signal.aborted || generation !== this.credentialGeneration || this.now() < this.retryFloor()) {
           throw new Error('github-pr-search-incomplete');
         }
-        const response = await this.readPage(token, state, cursor, remaining);
+        if (warm && !this.isWarmEnrolled()) throw new Error('github-pr-search-not-enrolled');
+        const response = await this.fetchReservedPage(token, state, cursor, remaining, signal, budget);
+        if (signal.aborted || this.now() - startedAt >= PR_INVENTORY_REFRESH_BUDGET_MS) {
+          throw new Error('github-pr-search-incomplete');
+        }
         if (!response.repository) throw new GitHubGraphqlResponseError('github-pr-search-repository-unavailable', 'authorization');
         const connection = response.repository.pullRequests;
         if (!Array.isArray(connection?.nodes) || typeof connection.pageInfo?.hasNextPage !== 'boolean') {
@@ -352,7 +546,6 @@ export class ChiefOfStaffPrSearch {
       }
     } catch (error) {
       if (authorizationUnknown(error) || rows.size === 0) throw error;
-      if (this.credentialGeneration === generation) this.observeThrottle(error);
       return { rows: [...rows.values()], startedAt, finishedAt: this.now(), complete: false };
     }
   }

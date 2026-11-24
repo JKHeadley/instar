@@ -18,6 +18,7 @@ import fs from 'node:fs';
 import path from 'node:path';
 import os from 'node:os';
 import { BackupManager, NEVER_BACKUP_PATH_SEGMENTS } from '../../src/core/BackupManager.js';
+import { PUBLIC_PR_WARMUP_BUDGET_FILE } from '../../src/core/PublicPrWarmupBudget.js';
 import { SafeFsExecutor } from '../../src/core/SafeFsExecutor.js';
 
 function resolveIncluded(bm: BackupManager): string[] {
@@ -85,6 +86,36 @@ describe('BackupManager — never-backup judgment-provenance segments', () => {
     // Belt and suspenders: nothing landed in the snapshot dir either.
     const snapDir = bm.getSnapshotPath(snap.id);
     expect(fs.existsSync(path.join(snapDir, 'state', 'judgment-provenance'))).toBe(false);
+  });
+
+  it('excludes pull request quota aliases from snapshot, staging and restore', () => {
+    const quota = path.join(stateDir, 'state', PUBLIC_PR_WARMUP_BUDGET_FILE);
+    const alias = path.join(stateDir, 'old-budget.db');
+    fs.writeFileSync(quota, 'local allowance');
+    fs.symlinkSync(quota, alias);
+    const hardLink = path.join(stateDir, 'old-budget-copy.md');
+    fs.linkSync(quota, hardLink);
+    const bm = new BackupManager(stateDir, { includeFiles: ['old-budget.db', 'old-budget-copy.md', 'custom-note.md'] });
+    const snapshot = bm.createSnapshot('manual');
+    expect(snapshot.files).toContain('custom-note.md');
+    expect(snapshot.files).not.toContain('old-budget.db');
+    expect(snapshot.files).not.toContain('old-budget-copy.md');
+    const staged = bm.stageSqliteFiles();
+    expect(Object.keys(staged.sources)).not.toContain('old-budget.db');
+
+    const dir = bm.getSnapshotPath(snapshot.id);
+    fs.writeFileSync(path.join(dir, 'old-budget.db'), 'foreign allowance');
+    fs.symlinkSync(quota, path.join(dir, 'copy-to-regular.md'));
+    fs.writeFileSync(path.join(dir, 'manifest.json'), JSON.stringify({
+      ...snapshot, integrityHash: undefined, files: ['old-budget.db', 'copy-to-regular.md'],
+    }));
+    bm.restoreSnapshot(snapshot.id);
+    expect(fs.readFileSync(quota, 'utf8')).toBe('local allowance');
+    expect(fs.existsSync(path.join(stateDir, 'copy-to-regular.md'))).toBe(false);
+
+    SafeFsExecutor.safeUnlinkSync(quota, { operation: 'public-pr-restore-dangling-fixture' });
+    bm.restoreSnapshot(snapshot.id);
+    expect(fs.existsSync(quota)).toBe(false);
   });
 
   it('is flag-immune: every combination of the OTHER gates still drops it', () => {

@@ -2,6 +2,7 @@
  * Express middleware — JSON parsing, CORS, auth, error handling.
  */
 
+import { PR_INVENTORY_LOOKUP_BUDGET_MS } from '../core/ChiefOfStaffPrSearch.js';
 import { isStorageFailure, storageMachineName, operatorError } from '../core/storageMachineName.js';
 import { memoryReplyChannel, memorySessionAllows } from './memorySessionGuard.js';
 import { featureEvidence } from '../monitoring/FeatureEvidenceLog.js';
@@ -12,6 +13,8 @@ import { PROJECT_APP_API_PATH, isProjectAppPublicRoute, isWrapperPagePath, wrapp
 import type { Request, Response, NextFunction } from 'express';
 import { createHash, createHmac, timingSafeEqual } from 'node:crypto';
 import { arrivalOf, isSameNetworkPublicRoute, mayBeLocalArrival } from '../core/requestArrival.js';
+
+export const PR_INVENTORY_ROUTE_FLOOR_MS = PR_INVENTORY_LOOKUP_BUDGET_MS + 1_000;
 
 const guardedResponses = new WeakSet<Response>();
 const GUARDED_RESPONSE_METHODS = ['json', 'send', 'sendStatus', 'redirect', 'download', 'sendFile'] as const;
@@ -897,13 +900,19 @@ export function buildRequestTimeoutOverrides(opts?: {
   paritySourceTotalTimeoutMs?: number;
   followMeRemoteScrapeTimeoutMs?: number;
   defaultTimeoutMs?: number;
+  warmPublicPrInventory?: boolean;
 }): Record<string, number> {
   const configuredTotal = opts?.paritySourceTotalTimeoutMs;
   const followMe = resolveFollowMeBudgets(opts?.followMeRemoteScrapeTimeoutMs);
   const parityBudgetMs = typeof configuredTotal === 'number' && Number.isFinite(configuredTotal) && configuredTotal > 0
     ? Math.max(PARITY_PASS_TIMEOUT_MS, configuredTotal + PARITY_ROUTE_SLACK_MS)
     : PARITY_PASS_TIMEOUT_MS;
+  const prInventoryTimeoutMs = Math.max(opts?.defaultTimeoutMs ?? 30_000, PR_INVENTORY_ROUTE_FLOOR_MS);
   return {
+    ...(opts?.warmPublicPrInventory ? {
+      '/work/discover': prInventoryTimeoutMs,
+      '/chief-of-staff/pr-search': prInventoryTimeoutMs,
+    } : {}),
     '/telegram/reply': OUTBOUND_MESSAGING_TIMEOUT_MS,
     '/telegram/post-update': OUTBOUND_MESSAGING_TIMEOUT_MS,
     '/slack/reply': OUTBOUND_MESSAGING_TIMEOUT_MS,

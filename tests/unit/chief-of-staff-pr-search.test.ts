@@ -1,5 +1,10 @@
+import fs from 'node:fs';
+import os from 'node:os';
+import path from 'node:path';
+import { PublicPrWarmupBudget, PUBLIC_PR_WARMUP_BUDGET_FILE } from '../../src/core/PublicPrWarmupBudget.js';
+import { SafeFsExecutor } from '../../src/core/SafeFsExecutor.js';
 import { describe, expect, it, vi } from 'vitest';
-import { GitHubGraphqlResponseError } from '../../src/core/githubRuntime.js';
+import { fetchGitHubGraphql, GitHubGraphqlResponseError } from '../../src/core/githubRuntime.js';
 import { ChiefOfStaffPrSearch } from '../../src/core/ChiefOfStaffPrSearch.js';
 
 const now = Date.parse('2026-11-24T03:00:00Z');
@@ -34,6 +39,279 @@ function page(nodes: ReturnType<typeof row>[], next: string | null = null) {
 }
 
 describe('Chief of Staff pull request lookup', () => {
+  it('paces complete retained observations and drops both scopes on observed denial', async () => {
+    vi.useFakeTimers({ toFake: ['setTimeout', 'clearTimeout', 'setInterval', 'clearInterval', 'Date'] });
+    vi.setSystemTime(now);
+    const root = fs.mkdtempSync(path.join(os.tmpdir(), 'public-pr-pace-'));
+    try {
+      fs.mkdirSync(path.join(root, 'state'));
+      fs.writeFileSync(path.join(root, 'state', PUBLIC_PR_WARMUP_BUDGET_FILE),
+        JSON.stringify({ version: 1, attempts: [], pages: [], outstanding: [], retryNotBefore: 0, lastObservedAt: 0 }));
+      const budget = new PublicPrWarmupBudget(root, () => true);
+      const enrollment = { enabled: () => true, budget, jitterMs: 0 };
+      const fetchPage = vi.fn(async (_token, state) => state === 'OPEN' ? page([row(3342)]) : page([]));
+      const lookup = new ChiefOfStaffPrSearch({ readToken: () => 'fixture', fetchPage, priorWarmBudget: budget });
+      try {
+        lookup.start(enrollment);
+        lookup.start(enrollment);
+        await vi.advanceTimersByTimeAsync(0);
+        expect(fetchPage).toHaveBeenCalledTimes(2);
+        expect((await lookup.search('#3342')).items).toHaveLength(1);
+        await vi.advanceTimersByTimeAsync(120_000);
+        expect((await lookup.search('#3342')).coverage.open.status).toBe('stale');
+        expect(fetchPage).toHaveBeenCalledTimes(2);
+
+        let deny!: (error: Error) => void;
+        const verifying = new Promise<never>((_resolve, reject) => { deny = reject; });
+        fetchPage.mockImplementation(async () => verifying);
+        await vi.advanceTimersByTimeAsync(360_000);
+        expect(fetchPage).toHaveBeenCalledTimes(4);
+        expect(await lookup.search('#3342')).toMatchObject({
+          items: [{ number: 3342 }], coverage: { open: { status: 'stale' } },
+        });
+        deny(new GitHubGraphqlResponseError('public visibility withdrawn', 'authorization'));
+        await vi.advanceTimersByTimeAsync(0);
+        expect(await lookup.search('#3342')).toMatchObject({
+          items: [], coverage: { open: { status: 'unavailable' }, merged: { status: 'unavailable' } },
+        });
+        lookup.stop();
+        await vi.advanceTimersByTimeAsync(120_000);
+        expect(fetchPage).toHaveBeenCalledTimes(4);
+      } finally {
+        lookup.stop();
+      }
+    } finally {
+      vi.useRealTimers();
+      SafeFsExecutor.safeRmSync(root, { recursive: true, force: true, operation: 'public-pr-pace-fixture' });
+    }
+  });
+
+  it('retains reservations across reconstruction and refuses absent, rolled-back or exhausted budgets', () => {
+    const root = fs.mkdtempSync(path.join(os.tmpdir(), 'public-pr-budget-'));
+    try {
+      let wall = now;
+      const existing = () => new PublicPrWarmupBudget(root, () => true, () => wall);
+      expect(existing().reserveAttempt()).toBe(false);
+      fs.mkdirSync(path.join(root, 'state'));
+      fs.writeFileSync(path.join(root, 'state', PUBLIC_PR_WARMUP_BUDGET_FILE),
+        JSON.stringify({ version: 1, attempts: [], pages: Array(299).fill(now), outstanding: [], retryNotBefore: 0, lastObservedAt: now }));
+      const first = existing();
+      for (let n = 0; n < 8; n++) expect(first.reserveAttempt()).toBe(true);
+      const id = first.reservePage();
+      expect(id).not.toBeNull();
+      expect(first.settlePage(id!, 60_000)).toBe(true);
+      const next = existing();
+      expect(next.read()).toMatchObject({ retryNotBefore: now + 60_000, lastObservedAt: now });
+      wall--;
+      expect(next.reserveAttempt()).toBe(false);
+      wall = now + 61_000;
+      expect(next.reserveAttempt()).toBe(false);
+      expect(next.reservePage()).toBeNull();
+      wall = now + 3_600_001;
+      expect(next.reserveAttempt()).toBe(true);
+      expect(next.reservePage()).not.toBeNull();
+    } finally {
+      SafeFsExecutor.safeRmSync(root, { recursive: true, force: true, operation: 'public-pr-budget-fixture' });
+    }
+  });
+
+  it('keeps the autonomous reservation floor after reconstructing the budget while allowing an explicit lookup', () => {
+    const root = fs.mkdtempSync(path.join(os.tmpdir(), 'public-pr-autonomous-floor-'));
+    try {
+      let elapsed = 0;
+      const makeBudget = () => new PublicPrWarmupBudget(root, () => true, () => now + elapsed);
+      fs.mkdirSync(path.join(root, 'state'));
+      fs.writeFileSync(path.join(root, 'state', PUBLIC_PR_WARMUP_BUDGET_FILE),
+        JSON.stringify({ version: 1, attempts: [], pages: [], outstanding: [], retryNotBefore: 0, lastObservedAt: 0 }));
+      expect(makeBudget().reserveAttempt(true)).toBe(true);
+      elapsed = 14_999;
+      expect(makeBudget().reserveAttempt(true)).toBe(false);
+      elapsed++;
+      expect(makeBudget().reserveAttempt(true)).toBe(true);
+      expect(makeBudget().reserveAttempt()).toBe(true);
+      expect(makeBudget().reserveAttempt(true)).toBe(false);
+    } finally {
+      SafeFsExecutor.safeRmSync(root, { recursive: true, force: true, operation: 'public-pr-autonomous-floor-fixture' });
+    }
+  });
+
+  it('repairs a missing scope once without demand and never refills a lost budget after pause and restart', async () => {
+    vi.useFakeTimers({ toFake: ['setTimeout', 'clearTimeout', 'Date'] });
+    vi.setSystemTime(now);
+    const root = fs.mkdtempSync(path.join(os.tmpdir(), 'public-pr-repair-'));
+    const file = path.join(root, 'state', PUBLIC_PR_WARMUP_BUDGET_FILE);
+    const fetchPage = vi.fn(async (_token, state) => {
+      if (state === 'MERGED') throw new Error('temporary provider failure');
+      return page([row(3342)]);
+    });
+    const configuredBudget = () => new PublicPrWarmupBudget(root, () => true);
+    const makeLookup = (budget?: PublicPrWarmupBudget) => new ChiefOfStaffPrSearch({
+      readToken: () => 'fixture', fetchPage, priorWarmBudget: budget,
+    });
+    const budget = configuredBudget();
+    const lookup = makeLookup(budget);
+    try {
+      fs.mkdirSync(path.dirname(file));
+      fs.writeFileSync(file, JSON.stringify({ version: 1, attempts: [], pages: [], outstanding: [], retryNotBefore: 0, lastObservedAt: 0 }));
+      let enabled = true;
+      lookup.start({ enabled: () => enabled, budget, jitterMs: 30_000 });
+      await vi.advanceTimersByTimeAsync(0);
+      expect(fetchPage).toHaveBeenCalledTimes(2);
+      await vi.advanceTimersByTimeAsync(15_000);
+      expect(fetchPage).toHaveBeenCalledTimes(4);
+      await vi.advanceTimersByTimeAsync(90_000);
+      expect(fetchPage).toHaveBeenCalledTimes(4);
+      expect(await lookup.search('#3342', 'OPEN')).toMatchObject({ items: [{ number: 3342 }] });
+      expect(fetchPage).toHaveBeenCalledTimes(4);
+
+      const charged = budget.reservePage();
+      expect(charged).not.toBeNull();
+      expect(budget.settlePage(charged!, 120_000)).toBe(true);
+      SafeFsExecutor.safeUnlinkSync(file, { operation: 'public-pr-warm-budget-loss-fixture' });
+      enabled = false;
+      await lookup.search('#3342');
+      lookup.stop();
+      expect(await makeLookup(configuredBudget()).search('#3342')).toMatchObject({ knownMatchCount: null });
+      expect(fetchPage).toHaveBeenCalledTimes(4);
+      await makeLookup().search('#3342');
+      expect(fetchPage).toHaveBeenCalledTimes(6);
+    } finally {
+      lookup.stop();
+      vi.useRealTimers();
+      SafeFsExecutor.safeRmSync(root, { recursive: true, force: true, operation: 'public-pr-repair-fixture' });
+    }
+  });
+
+  it('charges paused lookups and holds an orphaned page after restart without resetting the floor', async () => {
+    const root = fs.mkdtempSync(path.join(os.tmpdir(), 'public-pr-orphan-'));
+    try {
+      const file = path.join(root, 'state', PUBLIC_PR_WARMUP_BUDGET_FILE);
+      fs.mkdirSync(path.dirname(file));
+      fs.writeFileSync(file, JSON.stringify({
+        version: 1, attempts: Array(7).fill(now), pages: [], outstanding: [],
+        retryNotBefore: 0, lastObservedAt: now,
+      }));
+      let timestamp = now;
+      const budget = () => new PublicPrWarmupBudget(root, () => true, () => timestamp);
+      const fetchPage = vi.fn(async (_token, state) => state === 'OPEN' ? page([row(3342)]) : page([]));
+      const lookup = (priorWarmBudget: PublicPrWarmupBudget) => new ChiefOfStaffPrSearch({
+        readToken: () => 'fixture', fetchPage, priorWarmBudget, now: () => timestamp,
+      });
+      const paused = lookup(budget());
+      expect((await paused.search('#3342')).items).toHaveLength(1);
+      expect(fetchPage).toHaveBeenCalledTimes(2);
+      expect(await lookup(budget()).search('#3342')).toMatchObject({ knownMatchCount: null });
+      expect(fetchPage).toHaveBeenCalledTimes(2); // Eighth attempt survived pause and restart.
+
+      timestamp += 3_600_001;
+      const beforeCrash = budget();
+      const inFlight = beforeCrash.reservePage();
+      expect(inFlight).not.toBeNull();
+      expect(budget().retryFloor()).toBe(Infinity);
+      expect(await lookup(budget()).search('#3342')).toMatchObject({ knownMatchCount: null });
+      expect(fetchPage).toHaveBeenCalledTimes(2);
+      expect(beforeCrash.settlePage(inFlight!, 60_000)).toBe(true);
+      expect(budget().retryFloor()).toBe(timestamp + 60_000);
+      expect(await lookup(budget()).search('#3342')).toMatchObject({ knownMatchCount: null });
+      expect(fetchPage).toHaveBeenCalledTimes(2);
+    } finally {
+      SafeFsExecutor.safeRmSync(root, { recursive: true, force: true, operation: 'public-pr-orphan-fixture' });
+    }
+  });
+
+  it('waits for one superseded slot and joins a healthy successor without overlap', async () => {
+    let token = 'first';
+    let resolveOpen!: (value: ReturnType<typeof page>) => void;
+    let resolveMerged!: (value: ReturnType<typeof page>) => void;
+    const opened = new Promise<ReturnType<typeof page>>(resolve => { resolveOpen = resolve; });
+    const merged = new Promise<ReturnType<typeof page>>(resolve => { resolveMerged = resolve; });
+    const fetchPage = vi.fn(async (credential, state) => credential === 'first'
+      ? state === 'OPEN' ? opened : merged
+      : state === 'OPEN' ? page([row(6000)]) : page([]));
+    const lookup = new ChiefOfStaffPrSearch({ readToken: () => token, fetchPage });
+    const original = lookup.search('#3342');
+    expect(fetchPage).toHaveBeenCalledTimes(2);
+    token = 'second';
+
+    const departing = new AbortController();
+    const abandoned = lookup.search('#6000', undefined, 0, departing.signal);
+    const replacement = lookup.search('#6000');
+    const another = lookup.search('#6000');
+    departing.abort();
+    expect(await abandoned).toMatchObject({ knownMatchCount: null, items: [] });
+    expect(fetchPage).toHaveBeenCalledTimes(2);
+
+    resolveOpen(page([row(3342)]));
+    resolveMerged(page([]));
+    expect(await original).toMatchObject({ knownMatchCount: null, items: [] });
+    for (const read of [replacement, another]) {
+      expect(await read).toMatchObject({ knownMatchCount: 1, items: [{ number: 6000 }] });
+    }
+    expect(fetchPage).toHaveBeenCalledTimes(4);
+  });
+
+  it('restores baseline lookup on a stopped provider when the new lifecycle is paused or unselected', async () => {
+    const fetchPage = vi.fn(async (_token, state) => state === 'OPEN' ? page([row(3342)]) : page([]));
+    const lookup = new ChiefOfStaffPrSearch({ readToken: () => 'fixture', fetchPage });
+    lookup.stop();
+    expect(await lookup.search('#3342')).toMatchObject({ knownMatchCount: null, items: [] });
+    const neverOpened = new PublicPrWarmupBudget('/unused-dev-home', () => false);
+    lookup.start({ enabled: () => false, budget: neverOpened, jitterMs: 0 });
+    expect(lookup.isWarmEnrolled()).toBe(false);
+    expect(fetchPage).not.toHaveBeenCalled();
+    expect(await lookup.search('#3342')).toMatchObject({ items: [{ number: 3342 }] });
+    expect(fetchPage).toHaveBeenCalledTimes(2);
+    lookup.stop();
+  });
+
+  it('leaves an outstanding hold when the successful quota header cannot be settled', async () => {
+    const root = fs.mkdtempSync(path.join(os.tmpdir(), 'public-pr-header-settle-'));
+    try {
+      fs.mkdirSync(path.join(root, 'state'));
+      fs.writeFileSync(path.join(root, 'state', PUBLIC_PR_WARMUP_BUDGET_FILE),
+        JSON.stringify({ version: 1, attempts: [], pages: [], outstanding: [], retryNotBefore: 0, lastObservedAt: 0 }));
+      const makeBudget = () => new PublicPrWarmupBudget(root, () => true);
+      const budget = makeBudget();
+      const settle = budget.settlePage.bind(budget);
+      vi.spyOn(budget, 'settlePage').mockImplementation((id, wait) => wait > 0 ? false : settle(id, wait));
+      const requestPage = vi.fn(async (_target: RequestInfo | URL, init?: RequestInit) => {
+        const body = JSON.parse(String(init?.body));
+        const open = body.variables.states[0] === 'OPEN';
+        const headers = open ? { 'x-ratelimit-remaining': '0',
+          'x-ratelimit-reset': String(Math.floor(Date.now() / 1_000) + 90) } : undefined;
+        return new Response(JSON.stringify({
+          data: { repository: { isPrivate: false, ...page(open ? [row(3342)] : []).repository } },
+        }), { headers });
+      });
+      vi.stubGlobal('fetch', requestPage);
+      const lookup = (priorWarmBudget: PublicPrWarmupBudget) => new ChiefOfStaffPrSearch({
+        readToken: () => 'fixture', priorWarmBudget,
+      });
+      expect(await lookup(budget).search('#3342')).toMatchObject({ knownMatchCount: null, items: [] });
+      expect(budget.settlePage).toHaveBeenCalledWith(expect.any(String), expect.any(Number));
+      expect(makeBudget().read()?.outstanding).toHaveLength(1);
+      expect(await lookup(makeBudget()).search('#3342')).toMatchObject({ knownMatchCount: null, items: [] });
+      expect(requestPage).toHaveBeenCalledTimes(2);
+    } finally {
+      vi.unstubAllGlobals();
+      SafeFsExecutor.safeRmSync(root, { recursive: true, force: true, operation: 'public-pr-header-settle-fixture' });
+    }
+  });
+
+  it('observes successful exhausted-quota headers and fixes the redirect policy', async () => {
+    const reset = Math.floor(Date.now() / 1_000) + 90;
+    const fetchImpl = vi.fn(async (_url, _init) => new Response(JSON.stringify({ data: { ok: true } }), {
+      headers: { 'x-ratelimit-remaining': '0', 'x-ratelimit-reset': String(reset) },
+    }));
+    const observeRateLimit = vi.fn();
+    await expect(fetchGitHubGraphql({
+      token: 'fixture', query: 'query { viewer { login } }', fetchImpl, rejectRedirects: true, observeRateLimit,
+    })).resolves.toEqual({ ok: true });
+    expect(fetchImpl.mock.calls[0][1]).toMatchObject({ redirect: 'error' });
+    expect(observeRateLimit).toHaveBeenCalledTimes(1);
+    expect(observeRateLimit.mock.calls[0][0]).toBeGreaterThan(88_000);
+  });
+
   it('finds #3342 after the first 100 open PRs, including a match only in the body', async () => {
     const fetchPage = vi.fn(async (_token, state, cursor) => {
       if (state === 'MERGED') return page([]);

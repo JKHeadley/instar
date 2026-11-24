@@ -9,10 +9,10 @@ const WORK = '/work/discover';
 const OWNER = { Authorization: 'Bearer dst_owner' };
 const SECRET_QUERY = 'private-marker-4c97';
 
-function harness(options: { budgetMs?: number; hold?: Promise<void>; includeLaterLiteral?: boolean } = {}) {
+function harness(options: { budgetMs?: number; hold?: Promise<void>; readToken?: () => string; includeLaterLiteral?: boolean } = {}) {
   let active = true;
-  const fetchPage = vi.fn(async (_token: string, state: string) => {
-    await options.hold;
+  const fetchPage = vi.fn(async (token: string, state: string) => {
+    if (token === 'fixture') await options.hold;
     const nodes = state === 'OPEN' ? [{
       number: 3342, title: 'Permanent agent links', body: 'Design for instar.sh and a permanent address for each agent',
       headRefName: 'topic/links', baseRefName: 'main', state: 'OPEN' as const,
@@ -41,7 +41,7 @@ function harness(options: { budgetMs?: number; hold?: Promise<void>; includeLate
     } : null,
     undefined, token => token === 'dst_owner' && active,
   ));
-  const pullRequestSource = new ChiefOfStaffPrSearch({ readToken: () => 'fixture', fetchPage });
+  const pullRequestSource = new ChiefOfStaffPrSearch({ readToken: options.readToken ?? (() => 'fixture'), fetchPage });
   app.use(createWorkDiscoveryRouter({
     enabled: () => true,
     mayReadPrivateWork: (_req, res) => active && res.locals.dashboardScopedSession === true,
@@ -108,6 +108,29 @@ describe('work discovery HTTP boundary', () => {
     expect(legacy.matchKind).toBe('literal');
     expect(legacy.items.map(item => item.number)).toEqual([9000]);
     expect(legacy.items[0]).not.toHaveProperty('matchedBy');
+  });
+
+  it('uses the same HTTP lookup deadline while an old credential settles and shares one replacement', async () => {
+    let token = 'fixture';
+    let release!: () => void;
+    const old = new Promise<void>(resolve => { release = resolve; });
+    const { app, fetchPage } = harness({ budgetMs: 100, hold: old, readToken: () => token });
+    const search = () => request(app).post(WORK).set(OWNER).send({ query: 'instar.sh' }).then(response => response);
+    try {
+      const original = search();
+      await vi.waitFor(() => expect(fetchPage).toHaveBeenCalledTimes(2), { interval: 1 });
+      token = 'replacement';
+      const expired = await search();
+      expect(expired.status).toBe(503);
+      expect(fetchPage).toHaveBeenCalledTimes(2);
+      const retry = search();
+      release();
+      expect((await original).status).toBe(503);
+      expect((await retry).body.candidates).toEqual([expect.objectContaining({ number: 3342 })]);
+      expect(fetchPage).toHaveBeenCalledTimes(4);
+    } finally {
+      release();
+    }
   });
 
   it('rejects untrusted and masquerading requests before touching providers', async () => {

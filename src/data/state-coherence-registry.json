@@ -5,6 +5,17 @@
   "sourceDoc": "docs/specs/STATE-COHERENCE-REGISTRY.md",
   "entries": [
     {
+      "category": "public-pr-warmup-budget",
+      "description": "Rolling attempt and page reservations and upstream retry floor for the explicitly selected local public GitHub warming installation. No credential, query, or inventory data; excluded from cross-machine restore.",
+      "scope": "machine-local",
+      "freshness": "live",
+      "conflictShape": "single-writer",
+      "transport": "none",
+      "paths": ["state/public-pr-warmup-budget.json"],
+      "grandfathered": false,
+      "retention": { "class": "A", "access": "streamed", "maxBytes": 16384, "note": "Atomic snapshot of the rolling-hour budget; expired reservations are pruned on the next charge." }
+    },
+    {
       "category": "attribution-ledger",
       "description": "Append-only history of claims credited to a person: wording, verdict, source ref and lineage. Rotated into kept gzip archives, never deleted. One writer per machine; a trace merges every machine's rows on read.",
       "scope": "machine-local",
