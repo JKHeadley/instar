@@ -2,7 +2,7 @@ import { evaluateJudgeFlow } from './source_grounded_judge_flow.mjs';
 import assert from 'node:assert/strict';
 import { createHash } from 'node:crypto';
 import { test } from 'node:test';
-import { resolveTrialJudgeSchedule, verifyScheduledJudges, verifyTrialJudgeSchedule } from './source_grounded_trial_inputs.mjs';
+import { resolveTrialJudgeSchedule, verifyTrialJudgeSchedule } from './source_grounded_trial_inputs.mjs';
 import { selectJudgeAttempt } from './source_grounded_judge_retry.mjs';
 import { bindJudgeSlots } from './source_grounded_judge_slots.mjs';
 import { assessJudgeIndependence } from './source_grounded_judge_independence.mjs';
@@ -63,18 +63,18 @@ test('a wrong-slot output stays missing from consensus while the intact critical
 });
 
 test('rejects a coherent pair from another comparison arm or repeat', () => {
-  const plan = JSON.parse(planBytes);
+  const input = { planBytes, planHash: sha(planBytes), parsePlan: JSON.parse, rubricBytes, capture };
   for (const changed of [{ arm: 'full' }, { repeat: 3 }]) {
     const wrong = receipts.map(receipt => ({ ...receipt, ...changed }));
-    assert.equal(verifyScheduledJudges(plan, expected, wrong), 'schedule-mismatch');
-    assert.equal(verifyScheduledJudges(plan, { ...expected, ...changed }, wrong), 'trial-mismatch');
+    assert.equal(verifyTrialJudgeSchedule(input, expected, wrong), 'schedule-mismatch');
+    assert.equal(verifyTrialJudgeSchedule(input, { ...expected, ...changed }, wrong), 'trial-mismatch');
   }
 });
 
 test('rejects an unscheduled slot or changed scheduled family', () => {
-  const plan = JSON.parse(planBytes);
+  const input = { planBytes, planHash: sha(planBytes), parsePlan: JSON.parse, rubricBytes, capture };
   for (const changed of [{ slotId: 'wrong-slot' }, { family: 'wrong-family' }]) {
-    assert.equal(verifyScheduledJudges(plan, expected, [{ ...receipts[0], ...changed }, receipts[1]]),
+    assert.equal(verifyTrialJudgeSchedule(input, expected, [{ ...receipts[0], ...changed }, receipts[1]]),
       'schedule-mismatch');
   }
 });

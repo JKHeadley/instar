@@ -5,7 +5,10 @@ const sha = value => createHash('sha256').update(value).digest('hex');
 
 // Supply the host’s structural parser and the independently held plan digest.
 // The plan hash is checked against the exact bytes, not reserialized JSON.
-export function checkTrialInputs({ planBytes, planHash, parsePlan, rubricBytes, capture }) {
+function checkTrialInputs({ planBytes, planHash, parsePlan, rubricBytes, capture }) {
+  if (!(planBytes instanceof Uint8Array) || !(rubricBytes instanceof Uint8Array)) {
+    return { state: 'invalid-bytes' };
+  }
   if (sha(planBytes) !== planHash) return { state: 'plan-mismatch' };
   const plan = parsePlan(planBytes);
   if (plan.caseId !== capture.caseId || plan.submissionId !== capture.submissionId) {
@@ -33,21 +36,35 @@ export function verifyTrialJudgeSchedule(input, expected, receipts) {
 
 // Successful schedules are ordered by the frozen plan, including empty slots.
 export function resolveTrialJudgeSchedule(input, expected, receipts) {
-  const result = checkTrialInputs(input);
-  if (result.state !== 'bound') return result;
-  return resolveScheduledJudges(result.plan, expected, receipts);
+  const schedule = prepareTrialJudgeSchedule(input, expected);
+  return schedule.state === 'bound' ? schedule.resolve(receipts) : schedule;
 }
 
-export function resolveScheduledJudges(plan, expected, receipts) {
-  const state = verifyScheduledJudges(plan, expected, receipts);
+export function prepareTrialJudgeSchedule(input, expected) {
+  const result = checkTrialInputs(input);
+  if (result.state !== 'bound') return result;
+  const { plan } = result;
+  const state = verifyScheduledJudges(plan, expected, []);
   if (state !== 'bound') return { state };
-  const byId = new Map(receipts.map(receipt => [receipt.slotId, receipt]));
-  return { state, slots: plan.judgeSlots.map(({ id }) => byId.get(id) ?? null) };
+  const limits = new Map(plan.judgeSlots.map(slot => [slot.id, slot.maxRetries]));
+  if ([...limits.values()].some(limit => !Number.isSafeInteger(limit) || limit < 0)) {
+    return { state: 'retry-policy-mismatch' };
+  }
+  return {
+    state,
+    retryLimit: slotId => limits.get(slotId),
+    resolve(receipts) {
+      const state = verifyScheduledJudges(plan, expected, receipts);
+      if (state !== 'bound') return { state };
+      const byId = new Map(receipts.map(receipt => [receipt.slotId, receipt]));
+      return { state, slots: plan.judgeSlots.map(({ id }) => byId.get(id) ?? null) };
+    },
+  };
 }
 
 // Expected identity comes from the host's selected trial, never a judge
 // receipt. The parsed plan and its scheduled slots have been schema-checked.
-export function verifyScheduledJudges(plan, expected, receipts) {
+function verifyScheduledJudges(plan, expected, receipts) {
   if (plan.trialId !== expected.trialId || plan.arm !== expected.arm ||
       plan.repeat !== expected.repeat) return 'trial-mismatch';
 

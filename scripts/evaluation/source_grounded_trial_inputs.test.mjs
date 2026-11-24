@@ -46,3 +46,8 @@ test('rejects changed source bytes with a matching replacement digest and added 
     ...input, capture: { ...capture, availableSourceIds: ['s', 'hidden'] },
   }), 'sources-mismatch');
 });
+
+test('requires byte buffers even when a string would hash to the expected value', () => {
+  assert.equal(verifyTrialInputs({ ...input, planBytes: planBytes.toString() }), 'invalid-bytes');
+  assert.equal(verifyTrialInputs({ ...input, rubricBytes: rubricBytes.toString() }), 'invalid-bytes');
+});

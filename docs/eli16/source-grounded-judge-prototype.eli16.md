@@ -29,3 +29,5 @@ Each judge slot’s retry limit now comes from the verified plan. A more permiss
 A rerun also has to match the original case, submission, comparison arm and repeat. Reusing an affected run ID does not make an unrelated benchmark result count.
 
 The report distinguishes an empty scheduled slot from a selected attempt whose output is missing. A rejected or missing output does not erase the other judge’s critical finding.
+
+Schedule checks begin with the verified plan bytes. Callers cannot pass a separately parsed plan in place of those bytes.
