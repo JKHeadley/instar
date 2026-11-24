@@ -6,6 +6,7 @@
 import { buildShipping, stoppedLead, operatorTodos, sourceState, agentOwnedStop } from './development-model.js';
 import { buildAccountsPage } from './accounts-model.js';
 import { pairingModel, waitingCards } from './agents-model.js';
+import { buildTrustRequests } from './allowed-model.js';
 import { buildApprovals } from './mandates-model.js';
 import { buildPlansPage } from './plans-model.js';
 import { buildRequests } from './secrets-model.js';
@@ -29,6 +30,13 @@ export function documentDecisionNeedRows(res) {
     d.question ? `${d.question}${d.versionLabel ? ` (version ${d.versionLabel})` : ''}` : 'Open it on your phone to approve or decline.', `/docs/${d.id}`, [d.id]));
 }
 
+/** Current approval requests share the Allowed page's exact pending-request model. */
+export function trustRequestNeedRows(trust, now) {
+  if (sourceState(trust) === 'off') return [];
+  const requests = buildTrustRequests(trust, now);
+  return requests.ok ? requests.rows.map((r) => row(r.key, r.main, r.sub, '#/settings/allowed?s=approvals', [r.requestId])) : UNREADABLE;
+}
+
 /** A 200 that does not have the expected shape: it told us nothing, so never read it as "nothing waiting". */
 const UNREADABLE = null;
 
@@ -41,6 +49,17 @@ export function cutAtWord(text, max) {
   const sp = t[room.length] === ' ' ? room.length : room.lastIndexOf(' ');
   const base = (sp >= Math.floor(max / 3) ? room.slice(0, sp) : room).replace(/[\s,;:.\-–—(]+$/, '');
   return `${base}…`;
+}
+
+/**
+ * The rows the Conversations page's Chief of Staff card shows. Where the Needs-you list is on screen it
+ * already lists every project's wait, so the card keeps only what that list cannot do on this page: the
+ * check-in for a Chief of Staff that is paused or about to pause (2026-11-20 dashboard audit: two stacked
+ * boxes repeated the same waits and pushed the page below the first screen on a phone).
+ */
+export function chiefOfStaffCardRows(rows, { stripShown = false } = {}) {
+  const list = Array.isArray(rows) ? rows : [];
+  return stripShown ? list.filter((r) => r && (r.key === 'need:cos:paused' || r.key === 'need:cos:expiring')) : list;
 }
 
 /** A short project name from its goal, the same rule as `shortProjectTitle` in src/core/ChiefOfStaffLoop.ts. */
@@ -115,6 +134,8 @@ export const NEED_SOURCES = [
   { id: 'agents', page: 'people/agents', reads: { pairing: '/threadline/pairing', invites: '/threadline/pairing/invites' },
     rows: ({ pairing, invites }, now) => waitingCards(pairingModel(pairing, invites, undefined, now), now)
       .map((c, i) => row(`agent:${c.kind}:${c.iid || c.id || i}`, c.title, '', '#/people/agents')) },
+  { id: 'trust-requests', page: 'settings/allowed', reads: { trust: '/trust/requests' },
+    rows: ({ trust }, now) => trustRequestNeedRows(trust, now) },
   { id: 'approvals', page: 'people/mandates', reads: { approvals: '/authorization-requests?status=pending' },
     rows: ({ approvals }) => { const a = buildApprovals(approvals); return a.ok ? a.rows.map((r) => row(r.key, r.headline, r.reason, '#/people/mandates?s=waiting')) : UNREADABLE; } },
   { id: 'plans', page: 'work/plans', reads: { initiatives: '/initiatives', blockers: '/blockers' },

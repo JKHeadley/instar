@@ -11,7 +11,7 @@ import request from 'supertest';
 import fs from 'node:fs';
 import path from 'node:path';
 import os from 'node:os';
-import { DegradationReporter } from '../../src/monitoring/DegradationReporter.js';
+import { DegradationReporter, compileFeaturePattern, FEATURE_PATTERN_MAX_CHARS } from '../../src/monitoring/DegradationReporter.js';
 import { SafeFsExecutor } from '../../src/core/SafeFsExecutor.js';
 
 function buildApp(): express.Express {
@@ -28,14 +28,9 @@ function buildApp(): express.Express {
       return;
     }
     if (typeof featurePattern === 'string' && featurePattern.length > 0) {
-      let re: RegExp;
-      try {
-        re = new RegExp(featurePattern);
-      } catch (err) {
-        res.status(400).json({
-          error: 'invalid featurePattern',
-          detail: err instanceof Error ? err.message : String(err),
-        });
+      const re = compileFeaturePattern(featurePattern);
+      if (!re) {
+        res.status(400).json({ error: 'invalid featurePattern' });
         return;
       }
       const flipped = reporter.markReported(re);
@@ -118,5 +113,42 @@ describe('POST /health/degradations/mark-reported', () => {
       .post('/health/degradations/mark-reported')
       .send({ feature: 'unjustifiedStopGate.timeout' });
     expect(second.body.flipped).toBe(0);
+  });
+});
+
+describe('SEC-125 compileFeaturePattern', () => {
+  it('route copy in this test matches the real route', () => {
+    const src = fs.readFileSync(path.join(process.cwd(), 'src/server/routes.ts'), 'utf-8');
+    const route = src.slice(src.indexOf("router.post('/health/degradations/mark-reported'"));
+    const body = route.slice(0, route.indexOf("'feature or featurePattern required'"));
+    expect(body).toContain('compileFeaturePattern(featurePattern)');
+    expect(body).not.toContain('new RegExp(');
+  });
+
+  it('accepts the prefix, suffix and alternation shapes callers use', () => {
+    expect(compileFeaturePattern('^unjustifiedStopGate\\.')!.test('unjustifiedStopGate.check')).toBe(true);
+    expect(compileFeaturePattern('Gate$')!.test('unjustifiedStopGate')).toBe(true);
+    expect(compileFeaturePattern('^GitSync|^TelegramAdapter')!.test('TelegramAdapter.send')).toBe(true);
+    expect(compileFeaturePattern('^a\\.b')!.test('axb')).toBe(false);
+  });
+
+  it('refuses catastrophic-backtracking and other unsafe shapes', () => {
+    for (const bad of ['^([\\w.]+)+!$', '(a+)+$', 'a*a*a*a*a*a*a*a*b', '.+', '[a-z]', 'a{1,99}', '\\d', '(?=a)', 'a?']) {
+      expect(compileFeaturePattern(bad)).toBeNull();
+    }
+  });
+
+  it('refuses empty, non-string and over-long patterns', () => {
+    expect(compileFeaturePattern('')).toBeNull();
+    expect(compileFeaturePattern(42)).toBeNull();
+    expect(compileFeaturePattern('a'.repeat(FEATURE_PATTERN_MAX_CHARS + 1))).toBeNull();
+    expect(compileFeaturePattern('a'.repeat(FEATURE_PATTERN_MAX_CHARS))).not.toBeNull();
+  });
+
+  it('a worst-case allowed pattern over a long name finishes fast', () => {
+    const re = compileFeaturePattern('.'.repeat(60) + '|' + '.'.repeat(60) + 'x$')!;
+    const t0 = Date.now();
+    re.test('a'.repeat(5000));
+    expect(Date.now() - t0).toBeLessThan(500);
   });
 });

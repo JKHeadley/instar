@@ -2610,6 +2610,10 @@ export interface MachineCapacity {
   seamlessnessFlags?: {
     /** document-decisions §6: this build reads the decision row kinds (advertised whatever the documents switch says). */
     documentsDecisionRows?: boolean;
+    /** member-browser-any-computer §5: this build reads the computer-* team-log rows (advertised whatever the switches say). Sticky on peers while unreachable. */
+    teamLogComputerRows?: boolean;
+    /** member-browser-any-computer §3.6: this machine's own document address (its named tunnel origin), display only. */
+    documentsOrigin?: string | null;
     /** This machine can durably RECEIVE forwarded inbound messages (the
      *  'deliverMessage' receiver handler + live durable queue). */
     ws11DeliverReceive?: boolean;
@@ -2892,6 +2896,9 @@ export interface MeshTransportConfig {
 }
 
 export interface MultiMachineConfig {
+  /** N73 rollout: endpoint is always available; enable send-time generation
+   * binding only after the receiving pool supports it. Absent/false is off. */
+  messageSessionGeneration?: { enabled?: boolean };
   /** Storage prerequisite only; never enables the Conversations read/UI increment. */
   conversationGraph?: {
     /** Release switches: leave absent/off until increment-A acceptance. Storage
@@ -4236,6 +4243,14 @@ export interface InstarConfig {
    * maturing feature. `enabled` is omitted by default so the developmentAgent gate decides.
    */
   /**
+   * Permanent agent links (docs/specs/permanent-agent-links.md): links on instar.sh that name this
+   * agent by its identity and open a page in the Instar app. Optional; absent or false = off. Read
+   * live, so turning it on needs no restart.
+   */
+  agentLinks?: {
+    enabled?: boolean;
+  };
+  /**
    * Mobile pairing links (docs/specs/mobile-pairing-link.md): one-time links that add this
    * agent to the Instar iPhone app. `enabled` is omitted by default so the developmentAgent
    * gate decides; read live by the routes.
@@ -4373,6 +4388,11 @@ export interface InstarConfig {
     ledger?: {
       /** OMITTED in the shipped config so the dev-agent gate decides (LIVE-dev / DARK-fleet). */
       enabled?: boolean;
+      /**
+       * quota-pacing step 3 (docs/specs/quota-pacing-spend-by-account.md): record which account
+       * actually served each request. OMITTED so the dev-agent gate decides (LIVE-dev / DARK-fleet).
+       */
+      servedAccount?: boolean;
     };
   };
   routingSpend?: {
@@ -5110,6 +5130,12 @@ export interface InstarConfig {
   /** Messaging adapters to enable */
   messaging: MessagingAdapterConfig[];
   /**
+   * Test-only fixtures (docs/specs/throwaway-owner-chat.md). `throwawayOwnerChat.enabled` asks for the
+   * stand-in owner chat; it is honoured only on a throwaway agent in a temporary folder with no owner,
+   * no messaging adapter and no other machine. Absent everywhere by default.
+   */
+  liveTest?: { throwawayOwnerChat?: { enabled?: boolean } };
+  /**
    * Operator config for the outbound Messaging Tone Gate, read LIVE via the
    * gate's config getter (no restart needed). TOP-LEVEL by necessity:
    * `messaging` is an array of adapter configs, so the historically-documented
@@ -5232,6 +5258,13 @@ export interface InstarConfig {
        * and the first list follows the same rule as a new agent's (after a delivered first result, once).
        */
       existingAgents?: boolean;
+    };
+    /**
+     * Rollout step 4 of recommended-services.md: after a no, ask again only when a real problem shows up that the
+     * service would fix (deterministic table, cool-offs, one a day). Off by default: off records and sends nothing.
+     */
+    reoffers?: {
+      enabled?: boolean;
     };
   };
   /**
@@ -5361,7 +5394,17 @@ export interface InstarConfig {
      * defaults and resolved through resolveDevAgentGate: live on a development agent, off on the
      * fleet; an explicit value always wins. Signal only: nothing reads the forecast to decide.
      */
-    pacing?: { enabled?: boolean };
+    pacing?: {
+      enabled?: boolean;
+      /**
+       * Quota pacing, step 2 (docs/specs/quota-pacing-account-choice.md): account choice reads
+       * each limit window as it stands now (paired weekly deadlines, the Fable window for Fable
+       * launches, unmeasured never counted as room) and logs one shadow row per placement.
+       * OMITTED from defaults: resolved through the dev-agent gate (on for development agents,
+       * off for the fleet); an explicit value always wins.
+       */
+      windowAwareChoice?: boolean;
+    };
     /** DARK by default: when true, a RateLimitSentinel escalation on a
      *  pool-managed session auto-swaps it to another account. Opt-in (auto-
      *  swapping live sessions is real authority — tier-2). */
@@ -6772,6 +6815,12 @@ export interface DispatchConfig {
   version?: string;
   /** Whether to auto-apply safe dispatches (lesson, strategy types with non-critical priority) */
   autoApply?: boolean;
+  /**
+   * SEC-153: pinned Ed25519 public keys (keyId → PEM) of the dispatch server. Only a dispatch signed by
+   * one of these is auto-applied or executed; every other dispatch waits for review. Not patchable over
+   * the API: set in the config file only.
+   */
+  trustedKeys?: Record<string, string>;
 }
 
 export interface UpdateConfig {

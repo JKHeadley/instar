@@ -23,7 +23,7 @@ import { Router, type Request, type Response, type NextFunction } from 'express'
 import {
   SeedFetchLog, DeltaShadowLog, PromptCursorStore, PROMPT_HISTORY_LIMIT, REFETCH_WINDOW_MS, DELTA_HOOK_FEATURE_ID,
   boundBriefing, computePromptDelta, fitDeltaForDelivery, foldSuppression, reductionVerdict, renderPromptContextText, resolveContextEpoch,
-  slimMessage, summarizeShadow, unansweredOf, type PromptMessage,
+  slimMessage, summarizeShadow, unansweredOf, type PromptMessage, type ReworkBaseline,
 } from '../monitoring/contextLayers/promptContext.js';
 import type { CanaryReport } from '../monitoring/compactionCanary.js';
 import { featureEvidence } from '../monitoring/FeatureEvidenceLog.js';
@@ -44,6 +44,8 @@ export interface PromptContextDeps {
   messages: (topicId: number, limit: number) => Array<Record<string, unknown>> | null;
   /** Seed-shaped fetches (the briefing route and the history routes); the prompt route never records here. */
   seedFetches: SeedFetchLog;
+  /** The measurement backend's rework rate (S13); null when no token ledger is wired. */
+  rework?: () => ReworkBaseline | null;
   now?: () => number;
 }
 
@@ -192,7 +194,12 @@ export function createPromptContextRoutes(d: PromptContextDeps): Router {
     if (!d.shadowOn()) { res.status(503).json({ error: 'delta shadow not enabled on this agent', enableWith: 'contextBudget.enabled' }); return; }
     const c = d.canary();
     const verdict = reductionVerdict(d.deltaSwitchOn(), c?.report ?? null, c !== undefined);
-    res.json({ ...summarizeShadow(log), reduction: { switchOn: d.deltaSwitchOn(), allowed: verdict.allowed, reason: verdict.reason } });
+    let rework: ReworkBaseline | null = null;
+    try { rework = d.rework?.() ?? null; } catch (err) {
+      // @silent-fallback-ok: reported in the response as unknown with the reason, never as zero.
+      rework = { status: 'unknown', reason: `rework measurement failed: ${err instanceof Error ? err.message : String(err)}`.slice(0, 200) };
+    }
+    res.json({ ...summarizeShadow(log, undefined, rework), reduction: { switchOn: d.deltaSwitchOn(), allowed: verdict.allowed, reason: verdict.reason } });
   });
 
   return router;

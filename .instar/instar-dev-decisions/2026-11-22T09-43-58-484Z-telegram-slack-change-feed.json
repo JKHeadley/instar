@@ -1,0 +1,26 @@
+{
+  "ts": "2026-11-22T09:43:58.484Z",
+  "slug": "telegram-slack-change-feed",
+  "suggestedTier": 2,
+  "declaredTier": 1,
+  "riskFloor": 1,
+  "riskFloorReasons": [],
+  "belowFloor": false,
+  "files": 5,
+  "loc": 120,
+  "scope": {
+    "basis": "staged-in-scope-paths-including-deleted",
+    "files": [
+      "src/data/awareness/chat-change-feed.md",
+      "src/server/changeFeed.ts",
+      "src/server/mobileSlackHolderProxy.ts",
+      "src/server/mobileSlackRoutes.ts",
+      "src/server/routes.ts"
+    ],
+    "addedLines": 53,
+    "deletedLines": 67
+  },
+  "causalAutopsy": null,
+  "classClosure": null,
+  "verdict": "blocked"
+}

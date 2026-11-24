@@ -1,0 +1,32 @@
+{
+  "ts": "2026-11-22T07:40:00.296Z",
+  "slug": "keep-failed-verify-awareness-format",
+  "suggestedTier": 1,
+  "declaredTier": 1,
+  "riskFloor": 1,
+  "riskFloorReasons": [],
+  "belowFloor": false,
+  "files": 1,
+  "loc": 3,
+  "scope": {
+    "basis": "staged-in-scope-paths-including-deleted",
+    "files": [
+      "src/data/awareness/failed-verification-evidence.md"
+    ],
+    "addedLines": 2,
+    "deletedLines": 1
+  },
+  "causalAutopsy": null,
+  "classClosure": {
+    "defectClass": "prompt-parser-contract-drift",
+    "closure": "guard",
+    "guardEvidence": {
+      "enforcementType": "ratchet",
+      "citation": "tests/unit/awareness-entry-registry.test.ts",
+      "howCaught": "The existing shipped-entry parser test rejects malformed front matter before merge; the exact failure was reproduced red and the corrected entry passed185targeted checks."
+    },
+    "prNumber": 3636,
+    "component": "AwarenessRegistry"
+  },
+  "verdict": "pass"
+}

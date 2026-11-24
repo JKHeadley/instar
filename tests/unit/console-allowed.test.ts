@@ -393,3 +393,30 @@ describe('allowed page in a DOM', () => {
     expect(doc.querySelector('[data-feature-row="external-operation-gate"] .feat-state')!.textContent).toBe('On after a restart');
   });
 });
+
+describe('safety check rows read plainly (2026-11-20 dashboard audit)', () => {
+  it('setting keys become words with acronyms kept', async () => {
+    const { humanKey } = await import('../../dashboard/console/allowed-model.js');
+    expect(humanKey('greenPrAutoMerge')).toBe('Green PR auto merge');
+    expect(humanKey('monitoring.modelTierEscalation.dryRun')).toBe('Model tier escalation dry run');
+    expect(humanKey('monitoring.crashLoopPauser.enabled')).toBe('Crash loop pauser');
+    expect(humanKey('')).toBe('A safety check');
+  });
+  it('a dated incident tag leaves the row title; other brackets stay', async () => {
+    const { guardTitle } = await import('../../dashboard/console/allowed-model.js');
+    expect(guardTitle('host CPU protection — the multi-actor test-suite storm (2026-07-02 load-stall kill cascade)')).toBe('host CPU protection — the multi-actor test-suite storm');
+    expect(guardTitle('inbound message reachability (detects an online-but-unable-to-serve owner)')).toBe('inbound message reachability (detects an online-but-unable-to-serve owner)');
+  });
+  it('a machine that did not answer is named from the pool when its own answer had no name', async () => {
+    const { buildGuards } = await import('../../dashboard/console/allowed-model.js');
+    const g = buildGuards({ ok: true, data: { machineId: 'm1', guards: [], pool: { machines: [], failed: [{ machineId: 'm_a804869356b259820b3236e7c5a2ae7d', reason: 'no-known-url' }] } } },
+      { pool: { ok: true, data: { machines: [{ machineId: 'm_a804869356b259820b3236e7c5a2ae7d', nickname: 'M5 Pro' }] } } });
+    expect(g.failed[0].main).toBe('M5 Pro');
+  });
+  it('the need-a-look list holds only checks; unanswered machines get their own list (counts agree)', async () => {
+    const fs = await import('node:fs');
+    const src = fs.readFileSync(new URL('../../dashboard/console/allowed.js', import.meta.url), 'utf8');
+    expect(src).toContain("section({ id: 'guards-look', title: guards.counts.look ? 'Safety checks · need a look' : 'Safety checks', rows: guards.look,");
+    expect(src).toContain("section({ id: 'guards-unchecked', title: 'Machines I couldn’t check', rows: guards.failed })");
+  });
+});

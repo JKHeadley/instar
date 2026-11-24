@@ -3015,6 +3015,23 @@
       }
     },
     {
+      "category": "throwaway-owner-chat",
+      "description": "The stand-in owner chat of a throwaway test agent (docs/specs/throwaway-owner-chat.md): the log of owner-chat messages, taps and commands, and its state file (first build, adopted owner-record genesis, shut-off record). Exists only on a single-machine throwaway in a temporary folder with no owner; never replicated, synced or backed up, and its presence refuses machine pairing for the life of the home.",
+      "scope": "machine-local",
+      "freshness": "real-time",
+      "conflictShape": "single-writer",
+      "transport": "none",
+      "paths": [
+        "state/throwaway-owner-chat.jsonl",
+        "state/throwaway-owner-chat.json"
+      ],
+      "grandfathered": false,
+      "retention": {
+        "class": "size-bounded",
+        "note": "Append-only log under a 16 MiB byte budget that refuses new entries rather than evicting; the whole home is deleted with the throwaway."
+      }
+    },
+    {
       "category": "owned-repo-registry",
       "description": "The owned-repository registry (docs/specs/no-data-loss-on-machine-death.md §1, increment 1): every repository this agent works in on this machine, with its remotes, single-copy work and age, plus the scan's resume cursor, the candidate queue from session evidence and the births recorded by SafeGitExecutor. One file per machine. Its replicated half is the `owned-repo` WS2 kind; this file is the machine's own index of its own disk. machine-local-justification: hardware-bound-resource — the scan cursor and candidate queue index one disk's paths.",
       "scope": "machine-local",
