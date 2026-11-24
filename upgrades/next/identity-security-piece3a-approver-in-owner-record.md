@@ -22,3 +22,5 @@ Before this update, any device paired with your agent could make itself able to 
 ## Evidence
 
 - Unit: `tests/unit/identity-piece3a-approver-record.test.ts`, `tests/unit/identity-piece3a-approver-claim.test.ts`, `tests/unit/identity-piece3a-approver-ratchet.test.ts`.
+
+- Current-main prerequisite readiness:37unit,42HTTP and two production approver lifecycle checks passed (81total), along with TypeScript and independent source review. This maintenance refresh retains current approval disclosure and minimum-build safeguards. Security-key, private-chat, app and real-phone release holds remain in place.

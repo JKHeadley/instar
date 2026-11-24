@@ -20,3 +20,5 @@ If you lose every device that can approve changes, you can now get back in. On y
 ## Evidence
 
 - Unit: `tests/unit/identity-piece3d-recovered-key.test.ts`, `identity-piece3d-recovery-core.test.ts`, `identity-piece3d-recovery-flow.test.ts`.
+
+- Current prerequisite readiness:134unit,47HTTP and10production lifecycle/wiring checks passed (191total), along with TypeScript and independent source review. The maintenance refresh preserves recovery timing, stop and settlement safeguards. Prerequisite, private-chat, security-key, app and real-phone release holds remain in place.

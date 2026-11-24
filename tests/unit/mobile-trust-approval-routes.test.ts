@@ -254,7 +254,16 @@ describe('mobile trust approval routes', () => {
     expect(w.status).toBe(200);
     expect(w.body.withdrawn).toBe(1);
     expect(c.store.deviceAcceptance(mac.id)).toBeNull();
-    expect((await c.service.propose(change)).status).toBe('no-approver');
+    // The still-paired app retains the request for setup, but withdrawal removes approval authority.
+    const proposed = await c.service.propose(change);
+    expect(proposed).toMatchObject({ status: 'awaiting-acceptance', via: 'device' });
+    const requestId = (proposed as { requestId: string }).requestId;
+    const ln = line('approve-widening', requestId, { proposalHash: HASH });
+    const refused = await signedAct(c.app, mac, { action: 'approve-widening', target: requestId, proposalHash: HASH }, `/mobile/trust/requests/${requestId}/approve`, { proposalHash: HASH }, ln);
+    expect(refused.res.status).toBe(403);
+    expect(refused.res.body.error).toBe('acceptance-withdrawn');
+    expect(c.applied).toHaveLength(0);
+    expect(c.store.request(requestId)?.status).toBe('open');
   });
 
   it('the local override: refused for a forwarded (remote) request; over loopback an approving device keeps its key (identity piece 3a)', async () => {
