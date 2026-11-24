@@ -17,3 +17,5 @@ Find earlier work is available in the private browser console when its existing 
 ## Evidence
 
 DOM tests cover pending and failed searches, controlled coverage labels, text-only snippets, canonical links, and late replies after navigation. The production path test submits the shipped Work form using a session obtained from the actual owner console unlock route and verifies the returned source references on the page.
+
+Work can also find matching pull requests when their wording differs from the search phrase. A result found this way says that all search terms matched.
