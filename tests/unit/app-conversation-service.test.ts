@@ -33,6 +33,21 @@ function boot(dir: string, opts: { lease?: { held: boolean }; now?: () => number
 const rid = (t: number) => `${t}-${'0b3c8a3e-1b2c-4d5e-8f90-1234567890ab'}`;
 
 describe('AppConversationService', () => {
+  it('recovers reserved creation context without manufacturing a same-id conflict after a partial commit', async () => {
+    const dir = fs.mkdtempSync(path.join(os.tmpdir(), 'appsvc-context-')); dirs.push(dir);
+    let t = Date.now(); const a = boot(dir, { now: () => t }); const id = rid(t);
+    const context = { v: 1 as const, source: { kind: 'session' as const, requestId: id }, parentConversationKey: 'telegram:145738', parentBasis: 'explicit' as const };
+    a.requests.reserve(DEV, id, 'context-hash', 0, { op: 'create', conversationKey: KEY, title: 'Child', creationContext: JSON.stringify(context) });
+    a.svc.applyCreate(DEV, id, KEY, 'Child', null, context);
+    const original = a.svc.store.getCreationRecord(KEY);
+    await a.registry.close(); a.svc.store.close(); t += 6 * 60_000;
+    const b = boot(dir, { now: () => t });
+    expect(b.requests.get(DEV, id)?.state).toBe('done');
+    expect(b.svc.store.getCreationRecord(KEY)).toEqual(original);
+    expect(b.svc.store.hasCreationConflict(KEY)).toBe(false);
+    expect(b.svc.store.syncEvents(KEY, null, 100).events).toHaveLength(1);
+  });
+
   it('recovers an interrupted create as the SAME conversation (reservation names the key)', async () => {
     const dir = fs.mkdtempSync(path.join(os.tmpdir(), 'appsvc-')); dirs.push(dir);
     let t = Date.now();

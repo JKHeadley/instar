@@ -1,0 +1,23 @@
+{
+  "ts": "2026-11-20T20:33:40.725Z",
+  "slug": "doc-reanchor-whole-words-141469",
+  "suggestedTier": 2,
+  "declaredTier": 1,
+  "riskFloor": 1,
+  "riskFloorReasons": [],
+  "belowFloor": false,
+  "files": 2,
+  "loc": 56,
+  "scope": {
+    "basis": "staged-in-scope-paths-including-deleted",
+    "files": [
+      "scripts/documents-live-proof.ts",
+      "src/documents/anchor.ts"
+    ],
+    "addedLines": 50,
+    "deletedLines": 6
+  },
+  "causalAutopsy": null,
+  "classClosure": null,
+  "verdict": "pass"
+}

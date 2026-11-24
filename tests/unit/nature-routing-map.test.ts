@@ -28,20 +28,19 @@ describe('buildNatureRoutingMap (pure composition)', () => {
       moneyGated: false,
       skippedInIncrementA: false,
     });
-    // JUDGE contains a metered openrouter position — money-gated + skipped in Increment A.
-    const metered = judge.positions.find((p) => p.door === 'openrouter-api');
-    expect(metered).toMatchObject({ doorClass: 'metered', moneyGated: true, skippedInIncrementA: true });
-    expect(metered!.keyRef).toBe('metered_openrouter_bench');
+    // gemini-payg FD-G4: no default chain carries a metered (money-gated) position.
+    for (const c of map.chains) {
+      for (const p of c.positions) {
+        expect(p.doorClass).not.toBe('metered');
+        expect(p.moneyGated).toBe(false);
+      }
+    }
   });
 
-  it('flags the Groq WRITE door as unsafe for untrusted input (injectionSafe=false)', () => {
+  it('every default WRITE position is injection-safe (the Groq position left with FD-G4)', () => {
     const write = buildNatureRoutingMap().chains.find((c) => c.chain === 'WRITE')!;
-    const groq = write.positions.find((p) => p.door === 'groq-api')!;
-    expect(groq.injectionSafe).toBe(false);
-    // Every non-Groq WRITE position defaults to injection-safe.
-    for (const p of write.positions) {
-      if (p.door !== 'groq-api') expect(p.injectionSafe).toBe(true);
-    }
+    expect(write.positions.some((p) => p.door === 'groq-api')).toBe(false);
+    for (const p of write.positions) expect(p.injectionSafe).toBe(true);
   });
 
   it('resolves a known component to its declared nature + chain + full ordered route', () => {

@@ -81,5 +81,15 @@ describe('imported history — production wiring', () => {
     const found = await auth(request(app).get('/imported-history/search').query({ q: 'lentil' }));
     expect(found.status).toBe(200);
     expect(found.body.results[0].quoted).toMatch(/^<imported-history from="chatgpt" title="Recipe ideas"/);
+    expect(found.body.results[0].title).toBeUndefined();
+
+    // The chat title is export text: on the real server the agent's list carries it only inside the wrapper.
+    const list = await auth(request(app).get('/imported-history/conversations'));
+    expect(list.status).toBe(200);
+    expect(list.body.conversations[0].title).toBeUndefined();
+    expect(list.body.conversations[0].quoted).toMatch(/^<imported-history from="chatgpt" title="Recipe ideas"/);
+    const projects = await auth(request(app).get('/imported-history/projects'));
+    expect(projects.status).toBe(200);
+    expect(projects.body.projects).toEqual([]);
   });
 });

@@ -75,6 +75,20 @@ describe('POST /passkeys/revert-method (integration)', () => {
   });
   const seedless = () => new PlaywrightProfileRegistry({ stateDir, projectDir, listVaultNames: () => [] });
 
+  it('five wrong PINs from one caller, then 429 even with the right PIN — the signed-in limit; nothing changes', async () => {
+    // identity-security-piece1c: this route used to compare the PIN with no limit at all.
+    seed();
+    const app = appWith(projectDir);
+    for (let i = 0; i < 5; i++) {
+      const res = await request(app).post('/passkeys/revert-method').set(auth()).send({ pin: '000000' });
+      expect(res.status).toBe(403);
+      expect(res.body).toEqual({ error: 'operator PIN required' });
+    }
+    const locked = await request(app).post('/passkeys/revert-method').set(auth()).send({ pin: PIN });
+    expect(locked.status).toBe(429);
+    expect(seedless().listPasskeyAccounts()).toHaveLength(2);
+  });
+
   it('400 on a malformed accounts list', async () => {
     const res = await request(appWith(projectDir)).post('/passkeys/revert-method').set(auth()).send({ pin: PIN, accounts: [{ profileId: 'x' }] });
     expect(res.status).toBe(400);

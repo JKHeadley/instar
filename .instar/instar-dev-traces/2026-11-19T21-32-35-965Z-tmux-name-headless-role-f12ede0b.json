@@ -1,0 +1,20 @@
+{
+  "version": 2,
+  "slug": "tmux-name-headless-role",
+  "sessionId": "fd2ce461-1e24-498f-87dc-7910bcdc7a30",
+  "timestamp": "2026-11-19T21:32:35.965Z",
+  "artifactPath": "upgrades/side-effects/tmux-name-headless-role.md",
+  "artifactSha256": "2852c8f984f07f18d8e0614b413aa1491a70c2e73ee6a299a99c354d07c3112b",
+  "coveredFiles": [
+    "src/core/SessionManager.ts",
+    "upgrades/side-effects/tmux-name-headless-role.eli16.md",
+    "upgrades/side-effects/tmux-name-headless-role.md"
+  ],
+  "phase": "complete",
+  "tier": 1,
+  "tierReasoning": "pass job/topic role at one spawn call site; revert restores numbered names",
+  "eli16Path": "upgrades/side-effects/tmux-name-headless-role.eli16.md",
+  "sideEffectsPath": "upgrades/side-effects/tmux-name-headless-role.md",
+  "secondPass": "not-required",
+  "reviewerConcurred": null
+}

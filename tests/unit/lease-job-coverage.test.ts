@@ -104,10 +104,10 @@ describe('signed lease job coverage', () => {
 });
 
 describe('promotion catch-up admission', () => {
-  it('records one automatic request across restart and exposes a recent promotion id', () => {
+  it('records one automatic request across restart and exposes a recent promotion id', async () => {
     const dir = temp();
     try {
-      requestRoleRestart({ stateDir: dir, now: () => 1000, leaseEpoch: 7, machineId: machineB }, true);
+      await requestRoleRestart({ stateDir: dir, now: () => 1000, leaseEpoch: 7, machineId: machineB }, true);
       const promotion = readRecentPromotion(dir, 1001, { leaseEpoch: 7, machineId: machineB, holdsLease: true });
       expect(promotion?.verified).toBe(true);
       expect(readRecentPromotion(dir, 1000 + 60 * 60_000 + 1, { leaseEpoch: 7, machineId: machineB, holdsLease: true })?.verified).toBe(false);

@@ -1,0 +1,26 @@
+{
+  "version": 2,
+  "slug": "ci-pr-skip-duplicate-heavy-jobs",
+  "sessionId": "97bf6cca-cafa-44cd-9758-d86b29341a43",
+  "timestamp": "2026-11-21T19:52:26.192Z",
+  "artifactPath": "upgrades/side-effects/ci-pr-skip-duplicate-heavy-jobs.md",
+  "artifactSha256": "525ce04da0711216a0d117bdb23fecb68819906ce90dfefc3ea3eee08487c7da",
+  "coveredFiles": [
+    ".github/workflows/ci.yml",
+    ".github/workflows/publish.yml",
+    "docs/specs/ci-pr-skip-duplicate-heavy-jobs.eli16.md",
+    "scripts/safe-merge.mjs",
+    "src/feedback-factory/execute/FeedbackExecutorService.ts",
+    "tests/unit/feedback-factory/execute-service.test.ts",
+    "tests/unit/safe-merge-auto-local-floor.test.ts",
+    "upgrades/next/ci-pr-skip-duplicate-heavy-jobs.md",
+    "upgrades/side-effects/ci-pr-skip-duplicate-heavy-jobs.md"
+  ],
+  "phase": "complete",
+  "tier": 1,
+  "tierReasoning": "CI configuration plus a two-line executor mapping and a merge-script floor refactor; every piece reverts cleanly and no required status check changes; three independent review rounds concurred.",
+  "eli16Path": "docs/specs/ci-pr-skip-duplicate-heavy-jobs.eli16.md",
+  "sideEffectsPath": "upgrades/side-effects/ci-pr-skip-duplicate-heavy-jobs.md",
+  "secondPass": "true",
+  "reviewerConcurred": true
+}

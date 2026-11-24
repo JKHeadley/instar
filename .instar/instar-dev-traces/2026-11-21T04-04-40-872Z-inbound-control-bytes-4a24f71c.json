@@ -1,0 +1,26 @@
+{
+  "version": 2,
+  "slug": "inbound-control-bytes",
+  "sessionId": "4f93898c-7d72-4a33-b581-3e0933a84bf4",
+  "timestamp": "2026-11-21T04:04:40.872Z",
+  "artifactPath": "upgrades/side-effects/inbound-control-bytes.md",
+  "artifactSha256": "dc60379d508b1bb118bfe3c767ba9132f3a2803d6be7298a59a520ec5af853ba",
+  "coveredFiles": [
+    "docs/specs/inbound-control-bytes.eli16.md",
+    "src/commands/server.ts",
+    "src/core/SessionManager.ts",
+    "src/core/terminalControlBytes.ts",
+    "tests/unit/headless-spawn-reroute.test.ts",
+    "tests/unit/session-manager-pending-inject-wiring.test.ts",
+    "tests/unit/terminal-control-bytes.test.ts",
+    "upgrades/next/inbound-control-bytes.md",
+    "upgrades/side-effects/inbound-control-bytes.md"
+  ],
+  "phase": "complete",
+  "tier": 1,
+  "tierReasoning": "Input normalisation at the typing boundary; refuses nothing, grants nothing; revert-only rollback",
+  "eli16Path": "docs/specs/inbound-control-bytes.eli16.md",
+  "sideEffectsPath": "upgrades/side-effects/inbound-control-bytes.md",
+  "secondPass": "true",
+  "reviewerConcurred": true
+}

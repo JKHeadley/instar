@@ -1,0 +1,22 @@
+{
+  "ts": "2026-11-20T21:13:01.779Z",
+  "slug": "cb-p2-probe-gen",
+  "suggestedTier": 2,
+  "declaredTier": 2,
+  "riskFloor": 1,
+  "riskFloorReasons": [],
+  "belowFloor": false,
+  "files": 1,
+  "loc": 301,
+  "scope": {
+    "basis": "staged-in-scope-paths-including-deleted",
+    "files": [
+      "src/monitoring/foldProbe.ts"
+    ],
+    "addedLines": 301,
+    "deletedLines": 0
+  },
+  "causalAutopsy": null,
+  "classClosure": null,
+  "verdict": "pass"
+}

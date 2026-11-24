@@ -1,0 +1,25 @@
+{
+  "ts": "2026-11-18T06:39:59.996Z",
+  "slug": "codex-launch-account-home",
+  "suggestedTier": 2,
+  "declaredTier": 1,
+  "riskFloor": 1,
+  "riskFloorReasons": [],
+  "belowFloor": false,
+  "files": 4,
+  "loc": 144,
+  "scope": {
+    "basis": "staged-in-scope-paths-including-deleted",
+    "files": [
+      "src/commands/server.ts",
+      "src/core/SessionManager.ts",
+      "src/core/codexResumeRollout.ts",
+      "src/core/frameworkSessionLaunch.ts"
+    ],
+    "addedLines": 135,
+    "deletedLines": 9
+  },
+  "causalAutopsy": null,
+  "classClosure": null,
+  "verdict": "pass"
+}

@@ -1,0 +1,37 @@
+{
+  "ts": "2026-11-21T05:37:03.968Z",
+  "slug": "topic-name-replication",
+  "suggestedTier": 2,
+  "declaredTier": 2,
+  "riskFloor": 2,
+  "riskFloorReasons": [
+    "safety-invariant proximity: src/messaging/TelegramAdapter.ts matches Telegram adapter",
+    "new capability: new exported class / subsystem added"
+  ],
+  "belowFloor": false,
+  "files": 13,
+  "loc": 901,
+  "scope": {
+    "basis": "staged-in-scope-paths-including-deleted",
+    "files": [
+      "src/commands/server.ts",
+      "src/core/BackupManager.ts",
+      "src/core/CoherenceJournal.ts",
+      "src/core/JournalSyncApplier.ts",
+      "src/core/ReplicatedStoreReconcilerWiring.ts",
+      "src/data/awareness/telegram-topic-names-shared.md",
+      "src/data/feature-ladders.json",
+      "src/data/state-coherence-registry.json",
+      "src/lifeline/TelegramLifeline.ts",
+      "src/messaging/TelegramAdapter.ts",
+      "src/messaging/TelegramTopicNameReplication.ts",
+      "src/messaging/TelegramTopicNameReplicationWiring.ts",
+      "src/server/routes.ts"
+    ],
+    "addedLines": 877,
+    "deletedLines": 24
+  },
+  "causalAutopsy": null,
+  "classClosure": null,
+  "verdict": "pass"
+}

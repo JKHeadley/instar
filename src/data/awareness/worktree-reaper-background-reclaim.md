@@ -1,0 +1,4 @@
+---
+title: Worktree reaper reclaims hourly in the background
+---
+The worktree reaper now checks the agent home's worktrees every hour, and when removal is turned on it does the removing in a separate background process, so the server never stalls on it. Removal is off by default (`monitoring.agentWorktreeReaper.dryRun: true`): until someone turns it on, each hourly pass only reports what it would reclaim. A removed checkout is archived and checked first, renamed into `.worktrees/.trash`, then deleted; anything in use, dirty, unmerged or locked is kept. Read the report, the same in dry run and live, with `curl -H "Authorization: Bearer $INSTAR_AUTH_TOKEN" http://localhost:{{port}}/worktrees/agent-reaper`. A `.trash` folder that keeps failing to delete is listed as `trash-stuck`; raise it with the machine's stewardship owner rather than deleting it by hand.

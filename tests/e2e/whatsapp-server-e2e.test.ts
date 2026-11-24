@@ -18,6 +18,7 @@ import type { Express } from 'express';
 import os from 'node:os';
 import path from 'node:path';
 import fs from 'node:fs';
+import crypto from 'node:crypto';
 import { WhatsAppAdapter } from '../../src/messaging/WhatsAppAdapter.js';
 import {
   BusinessApiBackend,
@@ -34,6 +35,14 @@ let tmpDir: string;
 let adapter: WhatsAppAdapter;
 let backend: BusinessApiBackend;
 let handlers: BusinessApiEventHandlers;
+
+// SEC-086: Meta signs every delivery with the app secret over the exact body bytes.
+const APP_SECRET = 'e2e-app-secret';
+function signedPost(payload: unknown, secret = APP_SECRET) {
+  const body = JSON.stringify(payload);
+  const sig = 'sha256=' + crypto.createHmac('sha256', secret).update(body).digest('hex');
+  return request(app).post('/webhooks/whatsapp').set('Content-Type', 'application/json').set('X-Hub-Signature-256', sig).send(body);
+}
 
 beforeAll(async () => {
   tmpDir = fs.mkdtempSync(path.join(os.tmpdir(), 'wa-server-e2e-'));
@@ -68,6 +77,7 @@ beforeAll(async () => {
       phoneNumberId: '123456789',
       accessToken: 'test-token',
       webhookVerifyToken: 'e2e-verify-secret',
+      appSecret: APP_SECRET,
     },
     handlers,
   );
@@ -84,7 +94,8 @@ beforeAll(async () => {
 
   // Build the Express app mimicking AgentServer's structure
   app = express();
-  app.use(express.json());
+  // Same raw-body capture as AgentServer's global JSON parser (req.rawBody).
+  app.use(express.json({ verify: (req, _res, buf) => { (req as unknown as { rawBody?: Buffer }).rawBody = buf; } }));
 
   // Webhook routes — mounted BEFORE auth (matches AgentServer)
   mountWhatsAppWebhooks({ app, backend });
@@ -152,9 +163,7 @@ describe('WhatsApp Server Integration — E2E', () => {
         entry: [],
       };
 
-      const res = await request(app)
-        .post('/webhooks/whatsapp')
-        .send(payload);
+      const res = await signedPost(payload);
 
       expect(res.status).toBe(200);
       expect(res.text).toBe('EVENT_RECEIVED');
@@ -196,6 +205,44 @@ describe('WhatsApp Server Integration — E2E', () => {
     });
   });
 
+  // ── SEC-086: forged deliveries are refused ──────
+
+  describe('webhook signature (SEC-086)', () => {
+    const forged = (body: string): WebhookPayload => ({
+      object: 'whatsapp_business_account',
+      entry: [{
+        id: 'e-forged',
+        changes: [{
+          value: {
+            messaging_product: 'whatsapp',
+            metadata: { display_phone_number: '+14155551234', phone_number_id: '123456789' },
+            contacts: [{ profile: { name: 'Owner' }, wa_id: '14155552671' }],
+            messages: [{ from: '14155552671', id: `wamid.forged.${Date.now()}.${Math.random()}`, timestamp: String(Math.floor(Date.now() / 1000)), type: 'text', text: { body } }],
+          },
+          field: 'messages',
+        }],
+      }],
+    });
+
+    it('an unsigned body naming the owner number is refused and never reaches the adapter', async () => {
+      const received: string[] = [];
+      adapter.onMessage(async (msg) => { received.push(msg.content); });
+      const res = await request(app).post('/webhooks/whatsapp').send(forged('forged unsigned'));
+      expect(res.status).toBe(401);
+      await new Promise(resolve => setTimeout(resolve, 50));
+      expect(received).not.toContain('forged unsigned');
+    });
+
+    it('a body signed with the wrong secret is refused', async () => {
+      const received: string[] = [];
+      adapter.onMessage(async (msg) => { received.push(msg.content); });
+      const res = await signedPost(forged('forged wrong secret'), 'not-the-app-secret');
+      expect(res.status).toBe(401);
+      await new Promise(resolve => setTimeout(resolve, 50));
+      expect(received).not.toContain('forged wrong secret');
+    });
+  });
+
   // ── 3. Webhook delivers messages to adapter ──────
 
   describe('webhook-to-adapter message delivery', () => {
@@ -225,9 +272,7 @@ describe('WhatsApp Server Integration — E2E', () => {
         }],
       };
 
-      const res = await request(app)
-        .post('/webhooks/whatsapp')
-        .send(payload);
+      const res = await signedPost(payload);
 
       expect(res.status).toBe(200);
 

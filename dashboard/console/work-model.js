@@ -7,6 +7,22 @@ import { parseConversationRef, hashFor, messageTarget } from './chats-model.js';
 // carries that card's titleHash so a tap made on an old copy of the card is refused.
 
 import { whenWords } from './mandates-model.js';
+import { verifiedDisplayName } from './display-identity.js';
+
+/** A Needs-you row's words for a card title: whole words, ending in "…" when cut (never "needs y"). */
+export const NEED_ROW_TITLE_MAX = 140;
+export function needRowTitle(title) {
+  const t = String(title || 'A work card').replace(/\s+/g, ' ').trim() || 'A work card';
+  if (t.length <= NEED_ROW_TITLE_MAX) return t;
+  const room = t.slice(0, NEED_ROW_TITLE_MAX - 1);
+  const sp = t[room.length] === ' ' ? room.length : room.lastIndexOf(' ');
+  return `${(sp >= NEED_ROW_TITLE_MAX / 3 ? room.slice(0, sp) : room).replace(/[\s,;:.\-–—(]+$/, '')}…`;
+}
+
+/** A machine as the person knows it: its nickname, never its id. */
+export function machineWords(name, id) {
+  return verifiedDisplayName(name, id) || 'another of your machines';
+}
 
 export { whenWords };
 
@@ -52,6 +68,8 @@ export function readBoard(body) {
     pickups: isObj(body.pickups) ? body.pickups : null,
     behind: isObj(body.behind) ? body.behind : null,
     settings: isObj(body.settings) ? body.settings : null,
+    // agent-work-cards-default §1: the team's not-started internal cards (one aggregated Needs-you row). Absent on an older server.
+    notStartedCards: isObj(body.notStartedCards) && typeof body.notStartedCards.count === 'number' ? body.notStartedCards : null,
   };
 }
 
@@ -116,7 +134,7 @@ export function pickupLine(p) {
 
 export function behindLine(b) {
   if (!b || !b.machineId) return null;
-  return `This machine may not have the newest changes from ${b.machineId} yet, so a card here can be out of date.`;
+  return `This machine may not have the newest changes from ${machineWords(b.machineName, b.machineId)} yet, so a card here can be out of date.`;
 }
 
 // ── who ───────────────────────────────────────────────────────────────────
@@ -148,7 +166,7 @@ export function cardRow(card) {
   const notes = [];
   if (card.repliedAfterQuestion) notes.push('You replied; the agent has not updated the card');
   if (card.mayHaveBeenHandedOver) notes.push('This may already have been handed over');
-  if (card.mayHaveChangedOn) notes.push(`This card may have changed on ${card.mayHaveChangedOn}`);
+  if (card.mayHaveChangedOn) notes.push(`This card may have changed on ${machineWords(card.mayHaveChangedOnName, card.mayHaveChangedOn)}`);
   if (card.capacity) notes.push(capacityWords(card.capacity));
   return { key: `card:${card.id}`, main: String(card.title || 'Untitled card'), sub: String(card.needLine || ''), notes, outward: Boolean(card.outward) };
 }
@@ -215,6 +233,8 @@ export function cardActions(card, { inSheet = false } = {}) {
   const approved = Boolean(card.approved);
   switch (card.status) {
     case 'needs-approval': add('approve', 'primary'); break;
+    // agent-work-cards-default §7: the card's own Approve; "Approve and widen" lives on the aggregated row (needs-model.js).
+    case 'not-started': add('approve', 'primary'); break;
     case 'waiting-on-person': if (card.question) add('answer', 'primary'); break;
     case 'claims-done': if (card.claim) { add('confirm-done', 'primary'); add('reopen'); } break;
     case 'done': if (card.claim) add('reopen'); break;
@@ -518,7 +538,7 @@ export function workBoardNeedRows(wb) {
   const rest = lane.more + (lane.cards.length - shown.length);
   const rows = shown.map((c) => ({
     key: `work:${c.id}`,
-    main: String(c.title || 'A work card').slice(0, 80),
+    main: needRowTitle(c.title),
     sub: String(c.needLine || ''),
     href: `#/work/board?card=${encodeURIComponent(c.id)}`,
     // The Needs-you items this card is about (work-board-cards-appear §3). Only a card that just waits on the
@@ -531,6 +551,7 @@ export function workBoardNeedRows(wb) {
     cardId: c.id,
   }));
   if (rest > 0) rows.push({ key: 'work:more', main: rest === 1 ? '1 more card is waiting on you' : `${rest} more cards are waiting on you`, sub: 'On the work board, oldest first.', href: '#/work/board' });
+  // Internal policy-blocked work is diagnostic data, never an owner request. Genuine asks are in the waiting lane.
   return rows;
 }
 
@@ -542,4 +563,215 @@ export function cardSourceLink(card) {
   if (!ref) return { href: null, label: 'The original message cannot be opened here.' };
   if (!target) return { href: hashFor(ref), label: 'Original conversation', note: 'The exact message is unavailable.' };
   return { href: `${hashFor(ref)}&m=${encodeURIComponent(target)}`, label: 'Original message' };
+}
+
+// A work board card, read for people (Justin, 2026-11-18: "make the content extremely pleasant and easy to digest").
+// Pure: no DOM, no fetch, no timers. work.js draws what these return; tests/unit/console-work-brief.test.ts checks them.
+//
+// A card may carry `brief = { ask, goal?, checks?: [{ text, status }], chiefSaid?, waitingSince? }`. A card without
+// one (every card written before the brief existed, and every card a session writes) is read from its `need` prose:
+// the Chief of Staff's wait card has a fixed shape (src/core/ChiefOfStaffWaitCards.ts composeWaitCard), so its
+// goal, checklist, quoted check note and wait start are split out; any other need stays one Markdown body.
+
+export const CHECK_STATUSES = ['passes', 'needs-you', 'unknown', 'fails'];
+/** What each check status shows: an icon, its words for a screen reader, and its colour class. */
+export const CHECK_LOOK = {
+  passes: { icon: '✓', words: 'Passes' },
+  'needs-you': { icon: '●', words: 'Needs you' },
+  unknown: { icon: '○', words: 'Not known yet' },
+  fails: { icon: '✕', words: 'Fails' },
+};
+
+const str = (v) => (typeof v === 'string' && v.trim() ? v.trim() : null);
+
+/** Undo the Markdown escapes inertText adds ("\(" → "("), so the words read as typed. */
+export function unescapeMd(text) {
+  return String(text ?? '').replace(/\\([\\`*_[\]()<>!#|~])/g, '$1');
+}
+
+/** The wait's internal id "(wait c5c23e80)" means nothing to a person. */
+export function dropWaitId(text) {
+  return String(text ?? '').replace(/\s*\(wait [0-9a-f]{4,}\)/gi, '');
+}
+
+/** A checklist state in the need's words, as one of CHECK_STATUSES; null when the words are not a state. */
+export function checkStatusOf(words) {
+  const w = String(words ?? '').trim().toLowerCase();
+  if (w === 'passes' || w === 'pass' || w === 'passed') return 'passes';
+  if (w === 'fails' || w === 'fail' || w === 'failed') return 'fails';
+  if (w === 'needs your judgment' || w === 'needs your judgement' || w === 'needs you') return 'needs-you';
+  if (w === 'not known' || w === 'unknown' || w === 'not known yet') return 'unknown';
+  return null;
+}
+
+const GOAL = /^Goal:\s*/;
+const CHECKLIST = /^Done when \(from the project\):\s*/;
+const SAID = /check said \(its own words\):\s*"([\s\S]*)"/;
+const SINCE = /^Waiting on you since (\d{4}-\d{2}-\d{2})[ T](\d{2}:\d{2}(?::\d{2})?)(?:\s*UTC|Z)?/;
+const ITEM = /^-\s+([\s\S]*?)(?::\s*(passes|fails|not known|needs your judgment))?\s*$/i;
+
+/**
+ * Split a need into its parts. `structured` is true only when the need has the Chief of Staff's shape (a goal, a
+ * checklist, a quoted check note or a wait start); then `intro` holds the other paragraphs, plain. Otherwise the
+ * caller shows the need as it is.
+ */
+export function parseNeed(text) {
+  const out = { intro: [], goal: null, checks: [], chiefSaid: null, waitingSince: null, structured: false };
+  const paras = String(text ?? '').split(/\n\s*\n/).map((p) => p.trim()).filter(Boolean);
+  for (const p of paras) {
+    if (GOAL.test(p)) { out.goal = unescapeMd(p.replace(GOAL, '')).trim() || null; continue; }
+    if (CHECKLIST.test(p)) {
+      const lines = p.replace(CHECKLIST, '').split('\n').map((l) => l.trim()).filter(Boolean);
+      for (const l of lines) {
+        const m = ITEM.exec(l);
+        if (!m) continue;
+        const status = checkStatusOf(m[2]);
+        const t = unescapeMd(m[1]).trim();
+        if (t) out.checks.push({ text: t, status });
+      }
+      continue;
+    }
+    const said = SAID.exec(p);
+    if (said) { out.chiefSaid = unescapeMd(said[1]).trim() || null; continue; }
+    const since = SINCE.exec(p);
+    if (since) {
+      const iso = `${since[1]}T${since[2].length === 5 ? `${since[2]}:00` : since[2]}Z`;
+      out.waitingSince = Number.isFinite(Date.parse(iso)) ? iso : null;
+      continue;
+    }
+    out.intro.push(unescapeMd(dropWaitId(p)).trim());
+  }
+  out.structured = Boolean(out.goal || out.checks.length || out.chiefSaid || out.waitingSince);
+  return out;
+}
+
+/** The Chief of Staff's opening line that says nothing the title does not. */
+const GENERIC_INTRO = /^The Chief of Staff marks this project waiting on you\.?$/i;
+
+/** The first sentence of a plain-text body, at most `max` characters. */
+export function firstSentence(text, max = 220) {
+  const flat = String(text ?? '').replace(/\s+/g, ' ').trim();
+  if (!flat) return null;
+  const m = /^(.+?[.!?])(\s|$)/.exec(flat);
+  const s = m ? m[1] : flat;
+  return s.length <= max ? s : `${s.slice(0, max - 1).trimEnd()}…`;
+}
+
+function briefChecks(list) {
+  if (!Array.isArray(list)) return null;
+  const out = [];
+  for (const c of list) {
+    if (!isObj(c) || !str(c.text)) continue;
+    out.push({ text: str(c.text), status: CHECK_STATUSES.includes(c.status) ? c.status : 'unknown' });
+  }
+  return out;
+}
+
+/**
+ * Everything the redesigned card shows, from `card.brief` when it is there and from the need otherwise:
+ * { ask, goal, checks, chiefSaid, waitingSince, intro, body, fromBrief }.
+ * `body` is the need to show as Markdown when it has no structure (a session's card), else null.
+ */
+export function cardBrief(card) {
+  const c = isObj(card) ? card : {};
+  const b = isObj(c.brief) ? c.brief : null;
+  const parsed = parseNeed(c.need);
+  const intro = parsed.intro.filter((p) => !GENERIC_INTRO.test(p));
+  let ask = str(b && b.ask);
+  if (!ask) {
+    if (parsed.structured) ask = intro[0] || parsed.chiefSaid || null;
+    else ask = firstSentence(c.need ? unescapeMd(c.need) : '');
+  }
+  if (!ask) ask = str(c.needLine);
+  const chiefSaidRaw = str(b && b.chiefSaid) || parsed.chiefSaid;
+  const waitingSince = (b && str(b.waitingSince) && Number.isFinite(Date.parse(b.waitingSince)) ? b.waitingSince : null) || parsed.waitingSince;
+  const body = parsed.structured || !str(c.need) ? null : String(c.need);
+  return {
+    ask,
+    goal: str(b && b.goal) || parsed.goal,
+    checks: briefChecks(b && b.checks) || parsed.checks,
+    // Said once: when the check note is the ask, Details does not repeat it.
+    chiefSaid: chiefSaidRaw && chiefSaidRaw !== ask ? chiefSaidRaw : null,
+    waitingSince,
+    intro: intro.filter((p) => p !== ask),
+    body: body && firstSentence(unescapeMd(body)) === ask && unescapeMd(body).replace(/\s+/g, ' ').trim() === ask ? null : body,
+    fromBrief: Boolean(b && str(b.ask)),
+  };
+}
+
+/** The status chip's words for a card: short, in the person's terms. */
+const STATUS_WORDS = {
+  'needs-approval': 'Needs your approval', 'with-person': 'Waiting on you', 'waiting-on-person': 'Waiting for your answer',
+  'claims-done': 'Says it is done', held: 'On hold', 'with-agent': 'With the agent', parked: 'Parked', quiet: 'Quiet',
+  // agent-work-cards-default §1/§7: an agent-work card the owner has not let start (one aggregated Needs-you row, never per card).
+  'not-started': 'Not started',
+  done: 'Done', archived: 'Closed', removed: 'Removed', unknown: 'Partly unreadable',
+};
+export function statusChip(card) {
+  const c = isObj(card) ? card : {};
+  const words = STATUS_WORDS[c.status] || (c.turn === 'you' ? 'Waiting on you' : 'On the board');
+  // An older server sends no turn: its lane says the same thing.
+  const turn = typeof c.turn === 'string' ? c.turn : c.lane === 'waiting-on-you' ? 'you' : c.lane === 'with-agent' ? 'agent' : null;
+  const kind = turn === 'you' ? 'you' : turn === 'agent' || turn === 'others' ? 'moving' : 'still';
+  return { words, kind };
+}
+
+/** "Waiting on you · since yesterday 2:15 PM" when the card waits on the reader and its start is known. */
+export function waitingWords(card, since, now = Date.now(), { short = false } = {}) {
+  if (!since || !isObj(card)) return null;
+  const t = Date.parse(since);
+  if (!Number.isFinite(t)) return null;
+  // A tile already says "Waiting on you" in its chip, so its footer says only since when.
+  if (short) return `Since ${whenWords(since, now)}`;
+  const lead = card.turn === 'you' ? 'Waiting on you' : 'Waiting';
+  return `${lead} · since ${whenWords(since, now)}`;
+}
+
+/** The tile's one line under the title: a closed card says how it closed; an open one says its ask. */
+export function tileAsk(card, brief) {
+  const c = isObj(card) ? card : {};
+  if (c.closeout || c.status === 'archived' || c.status === 'done' || c.status === 'removed') return str(c.needLine);
+  return (brief && brief.ask) || str(c.needLine);
+}
+
+const QUIET_ACTIONS = new Set(['hold', 'redact']);
+/**
+ * The card's buttons in three ranks: one primary (filled), the other real choices (outlined), and the quiet
+ * ones (Put on hold, Remove for good) shown as plain text. The tile shows only the primary.
+ */
+export function rankActions(actions) {
+  const list = Array.isArray(actions) ? actions : [];
+  const main = list.filter((a) => !QUIET_ACTIONS.has(a.action));
+  const primary = main.find((a) => a.tone === 'primary') || main.find((a) => a.action === 'close-done') || main[0] || null;
+  return {
+    primary,
+    secondary: main.filter((a) => a !== primary),
+    quiet: list.filter((a) => QUIET_ACTIONS.has(a.action)),
+  };
+}
+
+/**
+ * A conversation read (GET /mobile/chat/app/:key/messages) as chat lines, oldest first:
+ * [{ id, who: 'you' | 'agent' | 'board', name, text, at }]. Null when the read is not that shape.
+ */
+export function chatLines(data, max = 30) {
+  if (!isObj(data) || !Array.isArray(data.messages)) return null;
+  const rows = data.messages.filter((m) => isObj(m) && typeof m.text === 'string' && m.text.trim());
+  const lines = rows.map((m, i) => {
+    const who = m.systemSource ? 'board' : m.role === 'operator' ? 'you' : 'agent';
+    const name = who === 'board' ? 'Work board' : who === 'you' ? (str(m.senderName) || 'You') : 'Agent';
+    return { id: String(m.messageId || m.eventId || i), who, name, text: m.text, at: typeof m.at === 'string' ? m.at : null };
+  });
+  lines.sort((a, b) => (Date.parse(a.at || '') || 0) - (Date.parse(b.at || '') || 0));
+  return lines.slice(-max);
+}
+
+/** Where a card's conversation is read, only ever an app conversation path on this server. */
+export function messagesPathOf(card) {
+  if (card?.conversationAvailable === false) return null;
+  const c = isObj(card) ? card : {};
+  const p = isObj(c.conversation) ? c.conversation.messagesPath : null;
+  if (typeof p === 'string' && /^\/mobile\/chat\/app\/[A-Za-z0-9-]+\/messages$/.test(p)) return `${p}?limit=30&scope=pool`;
+  if (typeof c.conversationKey === 'string' && /^[A-Za-z0-9-]+$/.test(c.conversationKey)) return `/mobile/chat/app/${c.conversationKey}/messages?limit=30&scope=pool`;
+  return null;
 }

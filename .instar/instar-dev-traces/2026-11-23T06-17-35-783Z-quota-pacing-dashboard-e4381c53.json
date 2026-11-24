@@ -1,0 +1,27 @@
+{
+  "version": 2,
+  "slug": "quota-pacing-dashboard",
+  "sessionId": "fa6f6527-b01e-426b-a83e-6c75395ee134",
+  "timestamp": "2026-11-23T06:17:35.783Z",
+  "artifactPath": "upgrades/side-effects/quota-pacing-dashboard.md",
+  "artifactSha256": "ad9aec4ff6223006848616a0f9675c23b4b34116a8526ad7b5affcedb068aac1",
+  "coveredFiles": [
+    "dashboard/console/accounts.js",
+    "dashboard/console/quota-forecast-model.js",
+    "dashboard/console/quota-forecast.js",
+    "docs/specs/quota-pacing-dashboard.eli16.md",
+    "src/data/awareness/quota-pacing.md",
+    "tests/e2e/quota-pacing-alive.test.ts",
+    "tests/integration/quota-pacing-routes.test.ts",
+    "tests/unit/console-quota-forecast.test.ts",
+    "upgrades/next/quota-pacing-dashboard.md",
+    "upgrades/side-effects/quota-pacing-dashboard.md"
+  ],
+  "phase": "complete",
+  "tier": 1,
+  "tierReasoning": "Small reversible read-only presentation of existing authenticated forecast API; no new authority, persistence, endpoints, credentials or spending controls.",
+  "eli16Path": "docs/specs/quota-pacing-dashboard.eli16.md",
+  "sideEffectsPath": "upgrades/side-effects/quota-pacing-dashboard.md",
+  "secondPass": "true",
+  "reviewerConcurred": true
+}

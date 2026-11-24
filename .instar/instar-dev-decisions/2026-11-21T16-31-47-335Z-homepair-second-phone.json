@@ -1,0 +1,24 @@
+{
+  "ts": "2026-11-21T16:31:47.335Z",
+  "slug": "homepair-second-phone",
+  "suggestedTier": 2,
+  "declaredTier": 1,
+  "riskFloor": 1,
+  "riskFloorReasons": [],
+  "belowFloor": false,
+  "files": 3,
+  "loc": 141,
+  "scope": {
+    "basis": "staged-in-scope-paths-including-deleted",
+    "files": [
+      "src/commands/mobileAddPhone.ts",
+      "src/server/mobilePairingRoutes.ts",
+      "src/server/phoneSetupRoutes.ts"
+    ],
+    "addedLines": 131,
+    "deletedLines": 10
+  },
+  "causalAutopsy": null,
+  "classClosure": null,
+  "verdict": "pass"
+}

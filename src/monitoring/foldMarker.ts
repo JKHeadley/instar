@@ -93,6 +93,20 @@ export function listFoldMarkers(stateDir: string): FoldMarker[] {
   return scanMarkerFiles(stateDir).flatMap((e) => (e.marker ? [e.marker] : []));
 }
 
+/**
+ * Remove ONE session's marker for a fold (§9.3 step 0: at handoff-turn end a
+ * shadow fold releases the LIVE session's marker at once, while the answerer's
+ * marker stays with the record). Only a marker naming this fold is removed.
+ */
+export function removeFoldMarkerFor(stateDir: string, instarSessionId: string, foldId: string): boolean {
+  const file = foldMarkerPath(stateDir, instarSessionId);
+  if (!file) return false;
+  const m = scanMarkerFiles(stateDir).find((e) => e.iid === instarSessionId)?.marker ?? null;
+  if (!m || m.foldId !== foldId) return false;
+  SafeFsExecutor.safeRmSync(file, { force: true, operation: 'src/monitoring/foldMarker.ts:removeFoldMarkerFor' });
+  return true;
+}
+
 /** Remove the marker files that belong to one fold (or, for TORN_MARKER_KEY, every unattributable one). */
 export function removeFoldMarkers(stateDir: string, topicKey: string, foldId: string): void {
   for (const e of scanMarkerFiles(stateDir)) {

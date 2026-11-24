@@ -2,6 +2,7 @@
  * every call before reaching this port; the native process has no listener. */
 import { spawn, type ChildProcessWithoutNullStreams } from 'node:child_process';
 import fs from 'node:fs';
+import { DesktopGuardObservation, type GuardObservationSnapshot } from './DesktopGuardObservation.js';
 import path from 'node:path';
 import { fileURLToPath } from 'node:url';
 import { parseDesktopDisplays, validDesktopInput, validDisplayId, type DesktopButton, type DesktopDisplayList, type DesktopHost, type DesktopInput, type DesktopProbe } from './DesktopHost.js';
@@ -120,18 +121,31 @@ export class MacDesktopHost implements DesktopHost {
     catch { throw new Error('mac-desktop-host-locked-invalid'); }
   }
 
+  private readonly guardObservation = new DesktopGuardObservation();
+  getRelockGuardObservation(): GuardObservationSnapshot { return this.guardObservation.snapshot(); }
+
   private lockedRoot: string | null = null;
   setLockedRoot(root: string): void { this.lockedRoot = root; }
 
   /** Detached into its own session, so nothing that kills Node reaches it. */
   async startRelockGuard(key: string): Promise<void> {
     if (!this.lockedRoot || !/^[a-f0-9-]{36}\.\d+$/.test(key)) throw new Error('mac-desktop-host-guard-invalid');
-    const child = spawn(this.trustedBinary(), ['relock-guard', this.lockedRoot, key], {
-      stdio: 'ignore', detached: true,
-      env: { ...this.helperEnv('own'), INSTAR_DESKTOP_LOCKED_ROOT: this.lockedRoot },
-    });
-    child.on('error', () => { /* @silent-fallback-ok — no heartbeat follows, so typing stays refused and the sweep replaces it. */ });
-    child.unref();
+    const attemptId = this.guardObservation.intent(key, this.lockedRoot);
+    try {
+      const child = spawn(this.trustedBinary(), ['relock-guard', this.lockedRoot, key], {
+        stdio: 'ignore', detached: true,
+        env: { ...this.helperEnv('own'), INSTAR_DESKTOP_LOCKED_ROOT: this.lockedRoot,
+          INSTAR_GUARD_OBSERVATION: attemptId ?? '' },
+      });
+      this.guardObservation.update(attemptId, { pid: child.pid ?? null });
+      child.once('spawn', () => this.guardObservation.update(attemptId, { spawn: 'spawned', pid: child.pid ?? null }));
+      child.once('error', () => this.guardObservation.update(attemptId, { spawn: 'error' }));
+      child.once('exit', (exitCode, signal) => this.guardObservation.update(attemptId, { exit: 'exited', exitCode, signal }));
+      child.unref();
+    } catch (error) {
+      this.guardObservation.update(attemptId, { spawn: 'error' });
+      throw error;
+    }
   }
 
   /** Local kill switch: stop any native input still running when a grant ends. */

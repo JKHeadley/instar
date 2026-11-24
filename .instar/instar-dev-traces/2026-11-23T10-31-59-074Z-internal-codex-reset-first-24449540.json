@@ -1,0 +1,19 @@
+{
+  "version": 2,
+  "slug": "internal-codex-reset-first",
+  "sessionId": "fa6f6527-b01e-426b-a83e-6c75395ee134",
+  "timestamp": "2026-11-23T10:31:59.074Z",
+  "artifactPath": "upgrades/side-effects/internal-codex-reset-first.md",
+  "artifactSha256": "a9f2a951b37ded370f046aa2209e42892efdabcdc5911050d19689b8fc4c4585",
+  "coveredFiles": [
+    "src/core/SubscriptionPool.ts",
+    "upgrades/side-effects/internal-codex-reset-first.md"
+  ],
+  "phase": "complete",
+  "tier": 1,
+  "tierReasoning": "Normal non-merge evaluation of the already-reviewed picker path after missing generated audit coverage; useful contract comment only, no runtime or assertion change.",
+  "eli16Path": "docs/specs/internal-codex-reset-first.eli16.md",
+  "sideEffectsPath": "upgrades/side-effects/internal-codex-reset-first.md",
+  "secondPass": "true",
+  "reviewerConcurred": true
+}
