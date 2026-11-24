@@ -8,6 +8,10 @@ const listening = new Promise<number>(resolve => server.listen(0, '127.0.0.1', (
 afterAll(() => { server.close(); });
 afterEach(() => { vi.unstubAllGlobals(); });
 
+/** `blockList` on net.connect landed in Node 22.13 / 23.4; Node 20 silently ignores it. */
+const [NODE_MAJOR, NODE_MINOR] = process.versions.node.split('.').map(Number);
+const CONNECT_HONOURS_BLOCKLIST = NODE_MAJOR > 23 || (NODE_MAJOR === 23 && NODE_MINOR >= 4) || (NODE_MAJOR === 22 && NODE_MINOR >= 13);
+
 /**
  * A host with two addresses, the second deliberately blocked inside Node. A supposedly unroutable
  * IPv6 address can instead be silently dropped by the host's current route. Node does not set an
@@ -47,9 +51,14 @@ describe('Telegram connect attempt window', () => {
     const old = await connectThroughPause(port, 250, 400);
     expect(old.ok).toBe(false);
     expect((old.error as NodeJS.ErrnoException).code).toBe('ETIMEDOUT');
-    // The first address timed out; the last was refused by Node, not an OS route.
-    expect((old.error as AggregateError).errors.map((error: NodeJS.ErrnoException) => error.code))
-      .toEqual(['ETIMEDOUT', 'ERR_IP_BLOCKED']);
+    // The first address timed out. Where net.connect honours `blockList` (Node >= 22.13), the last
+    // was refused by Node, not an OS route. Node 20 ignores the option, so there the fallback reaches
+    // the real route and must fail as unreachable (CI runners have no IPv6 route, so this is fast).
+    const codes = (old.error as AggregateError).errors.map((error: NodeJS.ErrnoException) => error.code);
+    expect(codes[0]).toBe('ETIMEDOUT');
+    expect(codes).toHaveLength(2);
+    if (CONNECT_HONOURS_BLOCKLIST) expect(codes[1]).toBe('ERR_IP_BLOCKED');
+    else expect(['ENETUNREACH', 'EHOSTUNREACH', 'EADDRNOTAVAIL']).toContain(codes[1]);
     // The actual timeout remains proven unsent. Our synthetic blocked fallback is deliberately
     // not in the transport retry allowlist; do not broaden production authority for a fixture.
     expect(provedUnsentCode((old.error as AggregateError).errors[0])).toBe('ETIMEDOUT');
