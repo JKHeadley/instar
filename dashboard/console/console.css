@@ -999,6 +999,19 @@ button.run-mark:focus-visible { outline: 2px solid var(--accent); outline-offset
 .files-menu, .files-conflict { display: flex; flex-direction: column; align-items: stretch; gap: var(--s-2); }
 .files-menu .btn-quiet, .files-conflict button { text-align: left; min-height: 44px; }
 .files-access-list { margin-bottom: var(--s-4); }
+
+@media (max-width: 599px) {
+  .files-page .ask-link {
+    min-height: 44px;
+    display: inline-flex;
+    align-items: center;
+  }
+
+  .files-page .files-access,
+  .inside-page #sec-lookup > .list-head {
+    min-height: 44px;
+  }
+}
 .files-paths li { display: flex; align-items: center; gap: var(--s-3); }
 .files-add { display: flex; gap: var(--s-2); margin-top: var(--s-2); }
 .files-add input { flex: 1; min-height: 44px; font-size: 16px; }
