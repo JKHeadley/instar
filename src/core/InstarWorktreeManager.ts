@@ -13,6 +13,7 @@
  */
 
 import crypto from 'node:crypto';
+import { withSyncOp } from './InFlightSyncOpMarker.js';
 import { execFileSync } from 'node:child_process';
 import fs from 'node:fs';
 import os from 'node:os';
@@ -642,7 +643,31 @@ export async function createWorktree(opts: CreateWorktreeOptions): Promise<Creat
       opts.nodeModulesShareMode ?? (process.platform === 'darwin' ? 'clone' : 'symlink'),
     );
   }
-  ensureHuskyHooksActive(worktreePath);
+  const runtimeEnv = { ...process.env, PATH: [path.dirname(process.execPath), process.env.PATH].join(path.delimiter) };
+  const manifestPath = path.join(worktreePath, 'package.json');
+  const needsSqlite = fs.existsSync(manifestPath) &&
+    Boolean(JSON.parse(fs.readFileSync(manifestPath, 'utf8')).dependencies?.['better-sqlite3']);
+  if (needsSqlite && shareNodeModules && !fs.existsSync(path.join(worktreePath, 'node_modules'))) {
+    try {
+      withSyncOp(() => execFileSync('npm', ['ci'], { cwd: worktreePath, env: runtimeEnv, stdio: 'inherit', timeout: 300_000 }));
+    } catch (cause) {
+      throw new Error(`Dependency installation failed in ${worktreePath} using ${process.execPath}. Inspect the private checkout before retrying.`, { cause });
+    }
+  }
+  if (needsSqlite) {
+    const sqlitePackage = path.join(worktreePath, 'node_modules', 'better-sqlite3');
+    try {
+      withSyncOp(() => execFileSync(process.execPath, ['-e', "new (require(process.argv[1]))(':memory:').close()", sqlitePackage], {
+        cwd: worktreePath, env: runtimeEnv, stdio: 'inherit', timeout: 15_000,
+      }));
+    } catch (cause) {
+      throw new Error(`Worktree SQLite check failed in ${worktreePath} using ${process.execPath} (ABI ${process.versions.modules}).`, { cause });
+    }
+  }
+  ensureHuskyHooksActive(worktreePath, runtimeEnv);
+  if (needsSqlite && fs.existsSync(path.join(worktreePath, 'scripts/check-worktree-sqlite.cjs'))) {
+    fs.writeFileSync(path.join(worktreePath, '.husky', '_', 'instar-node'), process.execPath + '\n');
+  }
 
   // Audit ledger — local and durable mirror.
   const stateDir = opts.stateDir ?? path.join(agentHome, '.instar');
@@ -932,7 +957,7 @@ function cloneNodeModules(source: string, target: string): boolean {
   }
 }
 
-export function ensureHuskyHooksActive(worktreePath: string): void {
+export function ensureHuskyHooksActive(worktreePath: string, env = process.env): void {
   const packageJsonPath = path.join(worktreePath, 'package.json');
   const trackedHookPath = path.join(worktreePath, '.husky', 'pre-commit');
   const shimHookPath = path.join(worktreePath, '.husky', '_', 'pre-commit');
@@ -970,6 +995,7 @@ export function ensureHuskyHooksActive(worktreePath: string): void {
   if (!hasRunnableHookShim(shimHookPath)) {
     try {
       execFileSync('npm', ['run', 'prepare'], {
+        env,
         cwd: worktreePath,
         stdio: ['ignore', 'pipe', 'pipe'],
       });
