@@ -1,0 +1,20 @@
+{
+  "version": 2,
+  "slug": "context-offline-replay-release-note",
+  "sessionId": "998f9cdd-58f3-4659-9992-913b0a93fc1f",
+  "timestamp": "2026-11-24T00:26:58.609Z",
+  "artifactPath": "upgrades/side-effects/context-offline-replay-release-note.md",
+  "artifactSha256": "7c5a822c0972fb64fc83cc50886ea3bcf3f4591c5df6ca3d0827d46d81159dc8",
+  "coveredFiles": [
+    "docs/evaluation/context-budget/source-grounded-answer/overview.md",
+    "upgrades/next/context-offline-replay-preparation.md",
+    "upgrades/side-effects/context-offline-replay-release-note.md"
+  ],
+  "phase": "complete",
+  "tier": 1,
+  "tierReasoning": "Documentation-only release fragment and overview; no runtime change.",
+  "eli16Path": "docs/evaluation/context-budget/source-grounded-answer/overview.md",
+  "sideEffectsPath": "upgrades/side-effects/context-offline-replay-release-note.md",
+  "secondPass": "not-required",
+  "reviewerConcurred": null
+}
