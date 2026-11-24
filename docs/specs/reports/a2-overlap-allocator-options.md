@@ -17,3 +17,9 @@ A new scope and a split can each pass their own preliminary checks, then claim t
 3. Isolate a previously authorized writer and repeat the handover attempt. If that writer can still accept changes or its final accepted state is unknown, the proposed successor must stay inactive. Verify the positive transition with the real enrolled custody boundary before enabling machine failover.
 
 The graph witness shows the transaction pattern in `src/core/GraphWitnessService.ts`. It validates writer authority and records the accepted evidence together for graph writes. The A2 work-start spec already calls for a current owner check and for permit validation at the actual effect gateway. Those are precedents for the first proof. This draft proposes a protocol choice and does not grant runtime authority or amend the constitution.
+
+## Decision and first evidence
+
+Chief of Staff selected the per-domain owner option on November 24, 2026. The decision is recorded in the A2 work-start spec. The focused SQLite cases are in `tests/unit/a2-overlap-allocator-proof.test.ts`. They use disposable local storage and separate connections. They qualify the executable contract only. An actual pool handover and connector require separate proof through the enrolled owner.
+
+All three focused cases passed. A controlled weakening of each guard caused the corresponding assertion to fail. The overlap check includes each winner order and reopens the owner after a deliberately dropped response. The isolated-writer check keeps the successor inactive after sealing until the fixture carries the writer's last accepted state.
