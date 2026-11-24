@@ -1,0 +1,11 @@
+## What Changed
+
+Dashboard notices with an explicitly unnamed short conversation reference use a plain fallback instead of a topic number.
+
+## What to Tell Your User
+
+An unnamed conversation in a notice is described as a conversation rather than an unhelpful number. Ordinary numbered text remains intact.
+
+## Summary of New Capabilities
+
+No new capability or setting. This repairs existing notice wording.
