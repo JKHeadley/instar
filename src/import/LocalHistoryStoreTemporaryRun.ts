@@ -124,13 +124,54 @@ export function initializeLocalHistoryStoreTemporaryRuns(db: Database.Database):
     state TEXT NOT NULL CHECK(state IN ('registered','active','cleanup-pending','disposed')),
     CHECK(tag = 'r-' || generation || '-' || operationId)
   ) STRICT`);
-  const columns = db.prepare(`PRAGMA table_info(${TABLE})`).all() as Array<{name: string; type: string}>;
+  validateTemporaryRunSchema(db);
+}
+function validateTemporaryRunSchema(db: Database.Database): void {
+  const columns = db.prepare(`PRAGMA table_info(${TABLE})`).all() as Array<{name: string; type: string; pk: number; notnull: number; dflt_value: unknown}>;
   const expected = ['runId','operationId','tag','generation','actorNonce','storeDev','storeIno','directoryDev','directoryIno','childPid','created','state'];
   const table = db.prepare('SELECT strict FROM pragma_table_list WHERE name = ?').get(TABLE) as {strict: number} | undefined;
   if (columns.length !== expected.length || columns.some((column, index) => column.name !== expected[index]
+    || column.pk !== (index === 0 ? 1 : 0) || column.notnull !== (column.name === 'childPid' ? 0 : 1) || column.dflt_value !== null
     || column.type !== (['storeDev','storeIno','directoryDev','directoryIno','childPid','created'].includes(column.name) ? 'INTEGER' : 'TEXT'))
     || table?.strict !== 1) refuse('unavailable');
 }
+function existingTemporaryRunRegistry(db: Database.Database): boolean {
+  const entry = db.prepare('SELECT type FROM sqlite_schema WHERE name = ?').get(TABLE) as { type: string } | undefined;
+  if (!entry) return false;
+  if (entry.type !== 'table') refuse('unavailable');
+  validateTemporaryRunSchema(db);
+  return true;
+}
+
+export function validateLocalHistoryTemporaryRunInventory(db: Database.Database): void {
+  parentDatabase(db);
+  if (!existingTemporaryRunRegistry(db)) return;
+  const selected = db.prepare(`SELECT runId FROM ${TABLE} LIMIT ?`).all(MAX_RUNS + 1) as Array<{ runId: string }>;
+  if (selected.length > MAX_RUNS) refuse('capacity');
+  for (const entry of selected) row(db, entry.runId);
+}
+
+/** The ledger retains a tag while any typed namespace remains unresolved. */
+export function hasUnsettledLocalHistoryTemporaryRun(db: Database.Database, tag: string): boolean {
+  const stateDir = parentDatabase(db);
+  if (!existingTemporaryRunRegistry(db)) return false;
+  const selected = db.prepare(`SELECT runId FROM ${TABLE} WHERE tag = ? LIMIT ?`).all(tag, MAX_RUNS + 1) as Array<{ runId: string }>;
+  if (selected.length > MAX_RUNS) refuse('capacity');
+  return selected.some(entry => {
+    const value = row(db, entry.runId);
+    if (value.tag !== tag) refuse('unavailable');
+    if (value.state !== 'disposed') return true;
+    const names = paths(stateDir, value.runId);
+    const store = privateDirectory(names.store), before = privateDirectory(names.root);
+    if (store.dev !== value.storeDev || store.ino !== value.storeIno || before.dev !== store.dev) refuse('unavailable');
+    try { fs.lstatSync(names.directory); return true; }
+    catch (error) { if ((error as NodeJS.ErrnoException).code !== 'ENOENT') throw error; }
+    const after = privateDirectory(names.root);
+    if (after.dev !== before.dev || after.ino !== before.ino) refuse('unavailable');
+    return false;
+  });
+}
+
 function operation(db: Database.Database, operationId: string, expectedTag?: string, writable = true): Operation {
   if (!hex(operationId, 32)) refuse('invalid');
   const row = db.prepare('SELECT id,tag,phase,deadline FROM upload_operations WHERE id = ?').get(operationId) as Operation | undefined;

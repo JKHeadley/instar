@@ -9,7 +9,9 @@ import { registerSqliteHandle } from '../core/SqliteRegistry.js';
 import { CHUNK_BYTES } from '../core/appMediaTypes.js';
 import { CLAUDE_CODE_FRAMEWORK } from '../core/frameworkFacts.js';
 import { UPLOAD_TTL_MS } from '../core/AppMediaStore.js';
-import { acquireLocalHistoryChild, type LocalHistoryChildAdmission } from './LocalHistoryChildCustody.js';
+import type { LocalHistoryChildAdmission } from './LocalHistoryChildCustody.js';
+import { acquireLocalHistoryStoreTemporaryAdmission, hasUnsettledLocalHistoryTemporaryRun,
+  initializeLocalHistoryStoreTemporaryRuns, validateLocalHistoryTemporaryRunInventory } from './LocalHistoryStoreTemporaryRun.js';
 import { LocalHistoryDiskLedger, type LocalHistoryDiskMeasurement } from './LocalHistoryDiskLedger.js';
 import { localHistoryUploadDirectory } from './LocalHistoryExchange.js';
 import { parseLocalHistoryManifest, type LocalHistoryManifest } from './LocalHistoryManifest.js';
@@ -104,7 +106,7 @@ export class LocalHistoryUploadStaging {
     if (typeof this.now !== 'function' || !Number.isSafeInteger(this.ttl) || this.ttl <= 0) refuse('invalid');
     this.issuer = Object.freeze(this.readIssuer());
     this.issuerHash = this.hashIssuer(this.issuer);
-    const custody = acquireLocalHistoryChild(deps.stateDir);
+    const custody = acquireLocalHistoryStoreTemporaryAdmission(deps.stateDir);
     if (!custody) refuse('busy');
     this.custody = custody;
     let ledger: LocalHistoryDiskLedger | undefined, db: Database.Database | undefined;
@@ -130,6 +132,7 @@ export class LocalHistoryUploadStaging {
       metadata = ledger.create('r-' + custody.custody.generation + '-' + crypto.randomBytes(16).toString('hex'), METADATA_RESERVE);
       this.metadata = metadata;
       this.metadataRoom();
+      initializeLocalHistoryStoreTemporaryRuns(db);
       db.exec(`CREATE TABLE IF NOT EXISTS upload_previews (
         id TEXT PRIMARY KEY, allocation TEXT NOT NULL, sha256 TEXT NOT NULL
       ) STRICT`);
@@ -454,7 +457,7 @@ export class LocalHistoryUploadStaging {
         acquireChild: async () => {
           check(); if (leased) return null; leased = true;
           return { custody: this.custody.custody,
-            registerChild: async pid => { check(); if (!leased) refuse('unavailable'); await this.custody.registerChild(pid); check(); },
+            registerChild: async pid => { check(); if (!leased) refuse('unavailable'); await this.registerChild(pid); check(); },
             release: () => { if (!leased) refuse('unavailable'); leased = false; },
           };
         },
@@ -729,7 +732,10 @@ export class LocalHistoryUploadStaging {
     if (this.preparation?.tag === tag) return false;
     let disposed = true;
     let allocations: ReturnType<LocalHistoryDiskLedger['list']>;
-    try { allocations = this.ledger.list(tag); } catch { return false; }
+    try {
+      if (hasUnsettledLocalHistoryTemporaryRun(this.db, tag)) return false;
+      allocations = this.ledger.list(tag);
+    } catch { return false; }
     for (const allocation of allocations) if (allocation.state !== 'disposed') {
       try { this.ledger.dispose(allocation.id); } catch { disposed = false; }
     }
@@ -775,6 +781,7 @@ export class LocalHistoryUploadStaging {
     const preparedCount = this.db.prepare('SELECT COUNT(*) AS n FROM upload_preparations').get() as {n: number};
     if (!Number.isSafeInteger(preparedCount.n) || preparedCount.n > MAX_ROWS
       || this.db.prepare('SELECT 1 FROM upload_preparations p LEFT JOIN upload_operations o ON o.id = p.id WHERE o.id IS NULL LIMIT 1').get()) refuse('unavailable');
+    validateLocalHistoryTemporaryRunInventory(this.db);
     const inventory = this.ledger.inventory();
     const old = new Set(inventory.map(row => row.operation).filter(tag => /^r-[a-f0-9]{64}-[a-f0-9]{32}$/.test(tag)
       && !tag.startsWith('r-' + this.custody.custody.generation + '-')));

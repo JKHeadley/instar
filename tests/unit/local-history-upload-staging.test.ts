@@ -15,6 +15,7 @@ import { LOCAL_HISTORY_PLAINTEXT_BYTES } from '../../src/import/LocalHistoryChan
 import { SafeFsExecutor } from '../../dist/core/SafeFsExecutor.js';
 import { DegradationReporter } from '../../dist/monitoring/DegradationReporter.js';
 import { ImportedHistoryStore } from '../../dist/import/ImportedHistoryStore.js';
+import { recoverLocalHistoryStoreTemporaryRuns, registerLocalHistoryStoreTemporaryRun } from '../../dist/import/LocalHistoryStoreTemporaryRun.js';
 
 const roots: string[] = [], stages: LocalHistoryUploadStaging[] = [];
 const parents: ChildProcess[] = [], sockets: string[] = [];
@@ -302,8 +303,8 @@ it.each(['cancel', 'revoke'] as const)('keeps parser-owned files charged until a
   const grant = f.stage.admit(device, f.manifest([bytes])); upload(f.stage, grant.operationId, 'file-0', bytes);
   f.stage.complete(device, grant.operationId); await until(() => f.stage.status(device, grant.operationId).phase === 'verified');
   let pid = 0, acted = false;
-  const custody = f.stage['custody'], register = custody.registerChild.bind(custody);
-  const registration = vi.spyOn(custody, 'registerChild').mockImplementation(async value => { await register(value); pid = value; });
+  const register = f.stage['registerChild'].bind(f.stage);
+  const registration = vi.spyOn(f.stage as unknown as { registerChild(pid: number): Promise<void> }, 'registerChild').mockImplementation(async value => { await register(value); pid = value; });
   const db = new Database(path.join(f.stateDir, 'local-history-upload', 'jobs.sqlite'));
   const ledger = new LocalHistoryDiskLedger(f.stateDir, { disk: f.disk });
   const { tag } = db.prepare('SELECT tag FROM upload_operations WHERE id = ?').get(grant.operationId) as {tag: string};
@@ -478,6 +479,61 @@ it('keeps multiple supported files beyond fifty megabytes as one selection', () 
   const grant = f.stage.admit(device, f.manifest([declared, declared, declared]));
   expect(grant.files).toHaveLength(3);
 });
+it('keeps a registered namespace charged across staging restart until verified old-run cleanup', async () => {
+  const f = setup();
+  const selected = f.stage.admit(device, f.manifest([Buffer.from('synthetic selected bytes')]));
+  const unrelated = f.stage.admit(device, f.manifest([Buffer.from('unrelated synthetic upload')]));
+  const db = new Database(path.join(f.stateDir, 'local-history-upload', 'jobs.sqlite'));
+  const ledger = new LocalHistoryDiskLedger(f.stateDir, { disk: f.disk });
+  try {
+    const lookup = db.prepare('SELECT tag FROM upload_operations WHERE id = ?');
+    const { tag } = lookup.get(selected.operationId) as { tag: string };
+    const unrelatedTag = (lookup.get(unrelated.operationId) as { tag: string }).tag;
+    // The registry needs a prepared operation. No child is started in this
+    // fixture, so its real exclusive next generation can settle the namespace.
+    db.prepare("UPDATE upload_operations SET phase = 'prepared' WHERE id = ?").run(selected.operationId);
+    const run = registerLocalHistoryStoreTemporaryRun(db, f.stage['custody'], selected);
+    const namespace = path.join(f.stateDir, 'imported-history', '.local-history-temporary', run.runId);
+    const reservation = ledger.create(tag, 123);
+    await f.stage.stop();
+    expect(ledger.inspect(reservation)).toMatchObject({ planned: 123, state: 'active' });
+    expect(ledger.list(unrelatedTag).every(row => row.state === 'disposed')).toBe(true);
+    const resumed = setup({ stateDir: f.stateDir, boot: 'synthetic-next-boot' });
+    expect(ledger.inspect(reservation)).toMatchObject({ planned: 123, state: 'active' });
+    expect(fs.existsSync(namespace)).toBe(true);
+    expect(recoverLocalHistoryStoreTemporaryRuns(db, resumed.stage['custody'])).toEqual({ disposed: 1, pending: 0 });
+    expect(fs.existsSync(namespace)).toBe(false);
+
+    fs.mkdirSync(namespace, { mode: 0o700 });
+    expect(resumed.stage['disposeTag'](tag)).toBe(false);
+    expect(ledger.inspect(reservation).planned).toBe(123);
+    SafeFsExecutor.safeRmdirSync(namespace, { operation: 'test recreated empty namespace' });
+    expect(resumed.stage['disposeTag'](tag)).toBe(true);
+    expect(ledger.inspect(reservation)).toMatchObject({ planned: 0, state: 'disposed' });
+  } finally { db.close(); ledger.close(); }
+});
+
+it('refuses old-tag recovery when the temporary registry lacks its primary key', async () => {
+  const f = setup();
+  const tag = 'r-' + f.stage['custody'].custody.generation + '-' + 'c'.repeat(32);
+  const db = new Database(path.join(f.stateDir, 'local-history-upload', 'jobs.sqlite'));
+  const ledger = new LocalHistoryDiskLedger(f.stateDir, { disk: f.disk });
+  try {
+    const allocation = ledger.create(tag, 123);
+    await f.stage.stop();
+    const table = 'local_history_store_temporary_runs';
+    const { sql } = db.prepare('SELECT sql FROM sqlite_schema WHERE name = ?').get(table) as { sql: string };
+    {
+      const malformed = sql.replace('runId TEXT PRIMARY KEY NOT NULL', 'runId TEXT NOT NULL');
+      expect(malformed).not.toBe(sql);
+      db.exec(`ALTER TABLE ${table} RENAME TO retained_registry_fixture`);
+      db.exec(malformed);
+    }
+    expect(() => setup({ stateDir: f.stateDir, boot: 'synthetic-next-boot' })).toThrow('upload-unavailable');
+    expect(ledger.inspect(allocation)).toMatchObject({ planned: 123, state: 'active' });
+  } finally { db.close(); ledger.close(); }
+});
+
 it('keeps an overlapping server out and recovers old status without renewing upload authority', async () => {
   const f = setup(), manifest = f.manifest([Buffer.from('synthetic')]), grant = f.stage.admit(device, manifest);
   expect(() => setup({ stateDir: f.stateDir, boot: 'new-boot' })).toThrow('upload-busy');
