@@ -1,0 +1,24 @@
+{
+  "ts": "2026-11-18T01:54:06.825Z",
+  "slug": "locked-proof-guard-ack",
+  "suggestedTier": 2,
+  "declaredTier": 1,
+  "riskFloor": 1,
+  "riskFloorReasons": [],
+  "belowFloor": false,
+  "files": 3,
+  "loc": 464,
+  "scope": {
+    "basis": "staged-in-scope-paths-including-deleted",
+    "files": [
+      "scripts/locked-proof/driver.mjs",
+      "scripts/locked-proof/guard-ack-fixture.py",
+      "scripts/locked-proof/lib.mjs"
+    ],
+    "addedLines": 444,
+    "deletedLines": 20
+  },
+  "causalAutopsy": null,
+  "classClosure": null,
+  "verdict": "pass"
+}

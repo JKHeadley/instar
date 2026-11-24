@@ -96,6 +96,10 @@ export const STAGE_B_CERTIFIED_SET = {
       "reason": "Reached through team access on the mobile pairing service (team-roles-and-access step 2a). It is identity, phone or access-record code that runs only when a phone connects, not code the Stage-B canary exercises."
     },
     {
+      "file": "src/messaging/inboundCredentialMask.ts",
+      "reason": "SEC-164 inbound key mask: pure text helpers over the excluded outbound credential guard (no I/O, no state, no delivery decision); it only replaces a live key with a fixed marker and never holds or drops a message, outside the Stage-B canaried delivery path, certified by tests/unit/sec164-inbound-mask.test.ts."
+    },
+    {
       "file": "src/messaging/outbound-credential-guard.ts",
       "reason": "Reached through team access on the mobile pairing service (team-roles-and-access step 2a). It is identity, phone or access-record code that runs only when a phone connects, not code the Stage-B canary exercises."
     },
@@ -358,6 +362,10 @@ export const STAGE_B_CERTIFIED_SET = {
     {
       "file": "src/core/agent-reach.ts",
       "reason": "Pure reach-record builder/renderer for the tone gate's B17 context (no I/O beyond the injected registry read, no delivery logic); reached through MessagingToneGate, outside the Stage-B canaried delivery path, certified by its own suite"
+    },
+    {
+      "file": "src/core/sibling-holdings.ts",
+      "reason": "Memory-only cache of what the agent's other machines hold, feeding the tone gate's OTHER MACHINES context through agent-reach (injected fetch and roster, no delivery logic, no I/O of its own); reached through the excluded MessagingToneGate, outside the Stage-B canaried delivery path, certified by tests/unit/sibling-machine-reach.test.ts"
     },
     {
       "file": "src/core/internal-id-leak.ts",

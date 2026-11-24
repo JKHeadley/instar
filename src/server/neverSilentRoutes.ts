@@ -26,12 +26,17 @@ export function createNeverSilentRoutes(): Router {
     const openOnly = req.query.open === '1' || req.query.open === 'true';
     const incidents = openOnly ? snap.incidents.filter((i) => !i.closedAt) : snap.incidents;
     const obligations = openOnly ? snap.obligations.filter((o) => o.state === 'pending' || o.state === 'told-pending') : snap.obligations;
+    // lease-freshness-lapse-retry — this machine's own replies held at the send boundary for the lease: a count
+    // beside the incidents (never judged, never noticed), closed with the delivery time.
+    const sendHolds = openOnly ? snap.sendHolds.filter((h) => !h.closedAt) : snap.sendHolds;
     res.json({
       incidents: incidents.slice(-200).reverse(),
       obligations: obligations.slice(-500).reverse(),
+      sendHolds: sendHolds.slice(-200).reverse(),
       counts: {
         openObligations: snap.obligations.filter((o) => o.state === 'pending' || o.state === 'told-pending').length,
         openIncidents: snap.incidents.filter((i) => !i.closedAt).length,
+        openSendHolds: snap.sendHolds.filter((h) => !h.closedAt).length,
       },
     });
   });

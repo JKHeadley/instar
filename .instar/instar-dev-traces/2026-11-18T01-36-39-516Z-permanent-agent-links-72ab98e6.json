@@ -1,0 +1,24 @@
+{
+  "version": 3,
+  "slug": "permanent-agent-links",
+  "sessionId": "7f26f3fc-9cf3-44af-8f5b-4f4d5a4631a6",
+  "timestamp": "2026-11-18T01:36:39.516Z",
+  "artifactPath": "upgrades/side-effects/permanent-agent-links.md",
+  "artifactSha256": "4c6e755c493a0d4b68bfc8e75c6a02935cd774259c83bc0b6b2fd4a4b1660dea",
+  "specPath": "docs/specs/permanent-agent-links.md",
+  "coveredFiles": [
+    "site/src/pages/a.astro"
+  ],
+  "phase": "complete",
+  "tier": 2,
+  "tierReasoning": "Same change: the /a page content box never exceeds a narrow screen.",
+  "secondPass": "not-required",
+  "reviewerConcurred": null,
+  "toolchain": {
+    "buildSkill": {
+      "name": "instar-dev",
+      "version": "c6ba465a6e04",
+      "verified": true
+    }
+  }
+}

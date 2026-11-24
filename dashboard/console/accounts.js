@@ -7,6 +7,7 @@
 //   cancel a sign-in          POST /subscription-pool/follow-me/cancel     bearer
 //   repair / retry / cancel   POST /subscription-relogin/repair-cell       operator session
 
+import { quotaForecastCard } from './quota-forecast.js';
 import { buildAccountsPage, frameworkName, resetWords } from './accounts-model.js';
 import { el, setKids, pageHead, askLink, sheet, closeSheet, story, details, note, cantTell, askPin, forgetOperatorSession, firstPaint, arrivalScroll, markNeed } from './ui.js';
 import { legacyHref } from './nav-model.js';
@@ -99,7 +100,7 @@ export async function renderAccounts(main, ctx) {
     pageHead({ eyebrow: 'Capacity · Accounts', headline: page.headline, sub: page.sub, tone: page.tone, facts: page.facts }),
     page.partial ? note(page.partial) : null,
     !relogin.ok ? note(`Couldn't read sign-in repairs: ${relogin.reason}.`) : null,
-    notices, needs, autoRepairSection(autoRepair, refresh), list, legacyLink());
+    notices, needs, autoRepairSection(autoRepair, refresh), list, quotaForecastCard(get, page.accounts), legacyLink());
   const want = new URLSearchParams((location.hash.split('?')[1] || '')).get('s');
   if (want === 'needs') arrivalScroll(needs);
   if (want === 'auto-repair') arrivalScroll(main.querySelector('#sec-auto-repair'));
@@ -121,6 +122,8 @@ function openAccount(a, refresh) {
       el('span', { class: c.state === 'attn' ? 'dot attn' : c.state === 'ok' ? 'dot live' : 'dot unknown' }),
       el('span', { class: 'row-main' }, el('span', { class: 'row-title', text: c.machine }), el('span', { class: 'row-sub', text: c.state === 'attn' && !c.actionable ? 'Needs sign-in; a unique account and machine name are needed first.' : c.label })),
       el('span', { class: 'row-end' }));
+    // A machine that does not hold this account: a quiet Set up that starts a fresh sign-in there.
+    if (c.state === 'missing' && c.actionable) r.querySelector('.row-end').append(el('button', { class: 'btn-quiet', type: 'button', text: 'Set up', onclick: () => startNeed({ accountId: a.id, machineId: c.machineId, machine: c.machine, title: `Set up ${a.email || a.name} on ${c.machine}`, action: 'start', episodeId: null }, refresh) }));
     if ((c.state === 'attn' || c.state === 'waiting') && c.actionable) r.querySelector('.row-end').append(el('button', { class: 'btn-quiet', type: 'button', text: 'Sign in', onclick: () => startNeed({ accountId: a.id, machineId: c.machineId, machine: c.machine, title: `Sign in ${a.email || a.name} on ${c.machine}`, action: c.episode && (c.episode.state === 'failed' || c.episode.state === 'suggested') ? (c.episode.state === 'failed' ? 'retry' : 'approve') : 'start', episodeId: c.episode ? c.episode.id : null }, refresh) }));
     return r;
   }));

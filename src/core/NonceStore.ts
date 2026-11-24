@@ -103,6 +103,29 @@ export class NonceStore {
     sequence: number,
     peerId: string,
   ): { valid: true } | { valid: false; reason: string } {
+    const verdict = this.check(timestamp, nonce, sequence, peerId);
+    if (!verdict.valid) return verdict;
+
+    // All checks passed — record the nonce and sequence
+    this.nonces.add(nonce);
+    this.sequences[peerId] = sequence;
+    this.persistNonce(nonce);
+
+    return { valid: true };
+  }
+
+  /**
+   * The same checks as `validate`, writing nothing. Used where a refusal must
+   * know the request is fresh and unseen without claiming its nonce (SEC-147: a
+   * signed binding-mismatch rejection is issued only for a delivery that could
+   * still have been admitted).
+   */
+  check(
+    timestamp: string | number,
+    nonce: string,
+    sequence: number,
+    peerId: string,
+  ): { valid: true } | { valid: false; reason: string } {
     this.initialize();
 
     // 1. Timestamp window
@@ -122,11 +145,6 @@ export class NonceStore {
     if (sequence <= lastSeq) {
       return { valid: false, reason: `Sequence ${sequence} <= last seen ${lastSeq} from ${peerId}` };
     }
-
-    // All checks passed — record the nonce and sequence
-    this.nonces.add(nonce);
-    this.sequences[peerId] = sequence;
-    this.persistNonce(nonce);
 
     return { valid: true };
   }

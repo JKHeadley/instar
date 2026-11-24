@@ -1,0 +1,20 @@
+{
+  "version": 2,
+  "slug": "lv-unit-durations",
+  "sessionId": "cff5be70-b3a4-4015-afa9-248b5a32dedc",
+  "timestamp": "2026-11-19T00:42:46.036Z",
+  "artifactPath": "upgrades/side-effects/lv-unit-durations.md",
+  "artifactSha256": "b9fbbc5b51a2cf25eb864a7ba6112628684553c38d14029079f78deb1ed68e5f",
+  "specPath": "docs/specs/local-verify-borrowed-unit-slices.md",
+  "coveredFiles": [
+    "src/localVerify/orchestrator.ts",
+    "tests/unit/localVerify/orchestrator.test.ts",
+    "upgrades/next/lv-unit-durations.md",
+    "upgrades/side-effects/lv-unit-durations.md"
+  ],
+  "phase": "complete",
+  "tier": 2,
+  "tierReasoning": "part A of an approved converged spec; observability only",
+  "secondPass": "not-required",
+  "reviewerConcurred": null
+}

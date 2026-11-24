@@ -1,0 +1,23 @@
+{
+  "ts": "2026-11-18T05:09:35.188Z",
+  "slug": "needs-list-pages",
+  "suggestedTier": 2,
+  "declaredTier": 1,
+  "riskFloor": 1,
+  "riskFloorReasons": [],
+  "belowFloor": false,
+  "files": 2,
+  "loc": 100,
+  "scope": {
+    "basis": "staged-in-scope-paths-including-deleted",
+    "files": [
+      "src/data/awareness/needs-list-pages.md",
+      "src/server/needsRoutes.ts"
+    ],
+    "addedLines": 78,
+    "deletedLines": 22
+  },
+  "causalAutopsy": null,
+  "classClosure": null,
+  "verdict": "pass"
+}

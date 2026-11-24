@@ -1,0 +1,24 @@
+{
+  "ts": "2026-11-18T16:15:39.876Z",
+  "slug": "imported-history-agent-quoting",
+  "suggestedTier": 2,
+  "declaredTier": 1,
+  "riskFloor": 1,
+  "riskFloorReasons": [],
+  "belowFloor": false,
+  "files": 3,
+  "loc": 93,
+  "scope": {
+    "basis": "staged-in-scope-paths-including-deleted",
+    "files": [
+      "src/data/awareness/import-claude-chatgpt-history.md",
+      "src/import/safeZip.ts",
+      "src/server/importedHistoryRoutes.ts"
+    ],
+    "addedLines": 70,
+    "deletedLines": 23
+  },
+  "causalAutopsy": null,
+  "classClosure": null,
+  "verdict": "pass"
+}

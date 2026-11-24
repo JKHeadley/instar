@@ -8,7 +8,7 @@ import type { HlcTimestamp } from '../../src/core/HybridLogicalClock.js';
 import { WorkBoardService, resolveWorkBoardSettings, type WorkPrincipal } from '../../src/core/WorkBoardService.js';
 import { workCardRecordStoreSchema, foldCard, toFoldRecords, partitionRecords, type UnionEntry } from '../../src/core/WorkCardStore.js';
 import { cardJson } from '../../src/core/workBoardViews.js';
-import { linkCoveredRows, HAS_CARD_LABEL } from '../../dashboard/console/needs-model.js';
+import { linkCoveredRows, HAS_CARD_LABEL, IS_CARD_LABEL, ALSO_OPENS_LABEL } from '../../dashboard/console/needs-model.js';
 import { workBoardNeedRows } from '../../dashboard/console/work-model.js';
 
 const OWNER: WorkPrincipal = { kind: 'person', personKey: 'justin', proof: 'pin', isOwner: true };
@@ -141,8 +141,13 @@ describe('what a writer may put on a card', () => {
   });
   it('route writes by the agent need a recommendation and why-you; a person\'s do not; an edit cannot clear them', () => {
     const t = makeService();
-    expect(t.svc.askFieldsRefusal(AGENT, { title: 'x' }, null)).toMatchObject({ error: 'recommendation-required' });
-    expect(t.svc.askFieldsRefusal(AGENT, { recommendation: 'y' }, null)).toMatchObject({ error: 'why-you-required' });
+    // An ASK (outward, a person carrier, or an owner-confirms item) needs both fields; an inward agent-work card asks
+    // nothing and needs neither (agent-work-cards-default §1, amending §2 here).
+    expect(t.svc.askFieldsRefusal(AGENT, { title: 'x', outward: true }, null)).toMatchObject({ error: 'recommendation-required' });
+    expect(t.svc.askFieldsRefusal(AGENT, { recommendation: 'y', outward: true }, null)).toMatchObject({ error: 'why-you-required' });
+    expect(t.svc.askFieldsRefusal(AGENT, { title: 'x', doneWhen: [{ id: 'd', text: 'Justin confirms' }] }, null)).toMatchObject({ error: 'recommendation-required' });
+    expect(t.svc.askFieldsRefusal(AGENT, { title: 'x', carrier: { personKey: 'justin' } }, null)).toMatchObject({ error: 'recommendation-required' });
+    expect(t.svc.askFieldsRefusal(AGENT, { title: 'x', outward: false, doneWhen: [{ id: 'd', text: 'Done', certify: 'agent-may-certify' }] }, null)).toBeNull();
     expect(t.svc.askFieldsRefusal(AGENT, ASK, null)).toBeNull();
     expect(t.svc.askFieldsRefusal(OWNER, {}, null)).toBeNull();
     const r = t.svc.createCard(AGENT, yours); if (!r.ok) throw new Error(r.error);
@@ -174,12 +179,49 @@ describe('each need once in Needs you', () => {
   const cosRow = { key: 'need:cos:waiting:telegram:135786', main: 'Instar Agent Creation is waiting on you', sub: '', action: { kind: 'href', href: '#/work/chats?c=telegram%3A135786' } };
   const planRow = { key: 'need:plan:plan:INI-7', main: 'Plan INI-7 waits for your OK', sub: 'its own words', action: { kind: 'href', href: '#/work/plans?s=needsYou' } };
 
-  it('a covered row keeps its words and action, gains a fixed-label link; the card row is dropped', () => {
+  it('a Chief of Staff row becomes its wait card: one row, the card\'s words, opens the card, the chat one tap away', () => {
     const rows = linkCoveredRows([cosRow, ...asNeedRows([cardRow('wc_00000000000000a1', ['cos:waiting:telegram:135786'])])]);
     expect(rows).toHaveLength(1);
-    expect(rows[0].main).toBe(cosRow.main);
-    expect(rows[0].action).toEqual(cosRow.action);
-    expect(rows[0].card).toEqual({ id: 'wc_00000000000000a1', href: '#/work/board?card=wc_00000000000000a1', label: HAS_CARD_LABEL });
+    expect(rows[0].key).toBe(cosRow.key);
+    expect(rows[0].main).toBe('Agent words');
+    expect(rows[0].action).toEqual({ kind: 'href', href: '#/work/board?card=wc_00000000000000a1' });
+    expect(rows[0].card).toEqual({ id: 'wc_00000000000000a1', href: '#/work/board?card=wc_00000000000000a1', label: IS_CARD_LABEL });
+    expect(rows[0].alsoOpens).toEqual({ href: cosRow.action.href, label: ALSO_OPENS_LABEL });
+  });
+  it('a Chief of Staff wait card asking for Confirm done still becomes its row (never two rows for one project)', () => {
+    for (const extra of [{ status: 'claims-done' }, { status: 'needs-approval' }]) {
+      const rows = linkCoveredRows([cosRow, ...asNeedRows([cardRow('wc_00000000000000a4', ['cos:waiting:telegram:135786'], 'with-person', extra)])]);
+      expect(rows, JSON.stringify(extra)).toHaveLength(1);
+      expect(rows[0].action.href).toBe('#/work/board?card=wc_00000000000000a4');
+    }
+  });
+  it('a Chief of Staff row whose action is not its own conversation keeps no alsoOpens', () => {
+    const odd = { ...cosRow, action: { kind: 'href', href: '#/work/chats' } };
+    const rows = linkCoveredRows([odd, ...asNeedRows([cardRow('wc_00000000000000a8', ['cos:waiting:telegram:135786'])])]);
+    expect(rows).toHaveLength(1);
+    expect(rows[0].alsoOpens).toBeUndefined();
+    expect(rows[0].action.href).toBe('#/work/board?card=wc_00000000000000a8');
+  });
+  it('a Chief of Staff row with no card in the shown slice keeps its own words and chat action', () => {
+    const rows = linkCoveredRows([cosRow, ...asNeedRows([cardRow('wc_00000000000000a5', ['cos:waiting:telegram:999'])])]);
+    expect(rows).toHaveLength(2);
+    expect(rows[0]).toBe(cosRow);
+  });
+  it('only a server-owned card takes a cos: row; a non-server card that names one only links it', () => {
+    const rows = linkCoveredRows([cosRow, ...asNeedRows([cardRow('wc_00000000000000a6', ['cos:waiting:telegram:135786'], 'with-person', { serverOwned: false })])]);
+    expect(rows).toHaveLength(2);
+    const r = rows.find((x: Record<string, unknown>) => x.key === cosRow.key);
+    expect(r.action).toEqual(cosRow.action);
+    expect(r.main).toBe(cosRow.main);
+    expect(r.card.label).toBe(HAS_CARD_LABEL);
+    expect(r.alsoOpens).toBeUndefined();
+  });
+  it('a plan row covered by a server-owned card is linked, never taken over (the takeover is cos: only)', () => {
+    const rows = linkCoveredRows([planRow, ...asNeedRows([cardRow('wc_00000000000000a7', ['plan:INI-7'])])]);
+    expect(rows).toHaveLength(1);
+    expect(rows[0].action).toEqual(planRow.action);
+    expect(rows[0].main).toBe(planRow.main);
+    expect(rows[0].card.label).toBe(HAS_CARD_LABEL);
   });
   it('a plan row (keyed plan:plan:<id> by its source) links to a card covering plan:<id>', () => {
     const rows = linkCoveredRows([planRow, ...asNeedRows([cardRow('wc_00000000000000a2', ['plan:INI-7'])])]);

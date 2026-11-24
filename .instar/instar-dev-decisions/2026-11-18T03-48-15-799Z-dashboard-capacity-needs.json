@@ -1,0 +1,23 @@
+{
+  "ts": "2026-11-18T03:48:15.799Z",
+  "slug": "dashboard-capacity-needs",
+  "suggestedTier": 1,
+  "declaredTier": 1,
+  "riskFloor": 1,
+  "riskFloorReasons": [],
+  "belowFloor": false,
+  "files": 2,
+  "loc": 11,
+  "scope": {
+    "basis": "staged-in-scope-paths-including-deleted",
+    "files": [
+      "src/data/awareness/dashboard-capacity-needs.md",
+      "src/monitoring/healthIssues.ts"
+    ],
+    "addedLines": 10,
+    "deletedLines": 1
+  },
+  "causalAutopsy": null,
+  "classClosure": null,
+  "verdict": "pass"
+}

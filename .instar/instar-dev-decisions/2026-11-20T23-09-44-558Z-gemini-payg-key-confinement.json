@@ -1,0 +1,32 @@
+{
+  "ts": "2026-11-20T23:09:44.558Z",
+  "slug": "gemini-payg-key-confinement",
+  "suggestedTier": 2,
+  "declaredTier": 2,
+  "riskFloor": 2,
+  "riskFloorReasons": [
+    "safety-invariant proximity: scripts/lint-metered-secret-readers.js matches SecretDrop / never-on-disk invariant",
+    "safety-invariant proximity: src/core/SecretSync.ts matches SecretDrop / never-on-disk invariant",
+    "safety-invariant proximity: src/core/meteredSecrets.ts matches SecretDrop / never-on-disk invariant",
+    "safety-invariant proximity: src/templates/scripts/secret-get.mjs matches SecretDrop / never-on-disk invariant"
+  ],
+  "belowFloor": false,
+  "files": 6,
+  "loc": 279,
+  "scope": {
+    "basis": "staged-in-scope-paths-including-deleted",
+    "files": [
+      "scripts/blocking-decision-surfaces-baseline.json",
+      "scripts/lint-metered-secret-readers.js",
+      "src/core/Config.ts",
+      "src/core/SecretSync.ts",
+      "src/core/meteredSecrets.ts",
+      "src/templates/scripts/secret-get.mjs"
+    ],
+    "addedLines": 265,
+    "deletedLines": 14
+  },
+  "causalAutopsy": null,
+  "classClosure": null,
+  "verdict": "blocked"
+}

@@ -1,0 +1,26 @@
+{
+  "version": 2,
+  "slug": "ci-pr-skip-duplicate-heavy-jobs",
+  "sessionId": "cdf43f50-f8e2-489f-9c90-1dcdf41332e5",
+  "timestamp": "2026-11-21T22:39:26.184Z",
+  "artifactPath": "upgrades/side-effects/ci-pr-skip-duplicate-heavy-jobs.md",
+  "artifactSha256": "054406644fa8c3052e7b535bcd25e9cc6aa39e28286b91b084bc184b183cb7bf",
+  "coveredFiles": [
+    ".github/workflows/ci.yml",
+    ".github/workflows/publish.yml",
+    "docs/specs/ci-pr-skip-duplicate-heavy-jobs.eli16.md",
+    "scripts/safe-merge.mjs",
+    "src/feedback-factory/execute/FeedbackExecutorService.ts",
+    "tests/unit/feedback-factory/execute-service.test.ts",
+    "tests/unit/safe-merge-auto-local-floor.test.ts",
+    "upgrades/next/ci-pr-skip-duplicate-heavy-jobs.md",
+    "upgrades/side-effects/ci-pr-skip-duplicate-heavy-jobs.md"
+  ],
+  "phase": "complete",
+  "tier": 1,
+  "tierReasoning": "Narrow reversible workflow correction retains unique native package coverage; independent review concurs; existing required Local Verify and merge floor stay intact.",
+  "eli16Path": "docs/specs/ci-pr-skip-duplicate-heavy-jobs.eli16.md",
+  "sideEffectsPath": "upgrades/side-effects/ci-pr-skip-duplicate-heavy-jobs.md",
+  "secondPass": "true",
+  "reviewerConcurred": true
+}

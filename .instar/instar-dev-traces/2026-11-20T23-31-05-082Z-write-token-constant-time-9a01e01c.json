@@ -1,0 +1,22 @@
+{
+  "version": 2,
+  "slug": "write-token-constant-time",
+  "sessionId": "1251b1e8-8c50-4f64-9c79-779ccdf36f8e",
+  "timestamp": "2026-11-20T23:31:05.082Z",
+  "artifactPath": "upgrades/side-effects/write-token-constant-time.md",
+  "artifactSha256": "c4f0e424e2681c842a142b971b88d8a80a7fdaf6c5b85fbfc633f675aa8f450e",
+  "coveredFiles": [
+    "docs/specs/write-token-constant-time.eli16.md",
+    "src/core/StateWriteAuthority.ts",
+    "tests/unit/state-write-authority.test.ts",
+    "upgrades/next/write-token-constant-time.md",
+    "upgrades/side-effects/write-token-constant-time.md"
+  ],
+  "phase": "complete",
+  "tier": 1,
+  "tierReasoning": "Small hardening (SEC-123): constant-time compare for the state-submit write token; same accept/refuse set, reversible by revert.",
+  "eli16Path": "docs/specs/write-token-constant-time.eli16.md",
+  "sideEffectsPath": "upgrades/side-effects/write-token-constant-time.md",
+  "secondPass": "true",
+  "reviewerConcurred": true
+}

@@ -136,8 +136,12 @@ export const DURABLE_SECRET_PATTERNS: readonly ScrubPattern[] = [
   { kind: 'slack-token', regex: /\bxox[baprs]-[A-Za-z0-9-]{10,}/gd },
   // AWS access key IDs (AKIA/ASIA + 16 uppercase alphanumerics).
   { kind: 'aws-access-key', regex: /\b(?:AKIA|ASIA)[A-Z0-9]{16}\b/gd },
-  // Telegram bot tokens: <digits>:<35-char base64url-ish secret>.
-  { kind: 'telegram-bot-token', regex: /\b\d{6,12}:[A-Za-z0-9_-]{30,}\b/gd },
+  // Telegram bot tokens: <digits>:<35-char base64url-ish secret>. SEC-164: an optional `bot`
+  // prefix, so the `bot<id>:<secret>` form inside a Telegram API address matches too (a word
+  // boundary never sits between "bot" and the digits). No lookbehind: the dashboard's browser copy
+  // must parse on older Safari, and the parity test pins the two sources equal. The secret part stays unbounded at the end,
+  // so padding after a key cannot hide it from the outbound wall.
+  { kind: 'telegram-bot-token', regex: /(?:\bbot|\b)\d{6,12}:[A-Za-z0-9_-]{30,}/gd },
   // PEM private-key blocks. Lazy body over a RESTRICTED char class terminated by
   // a literal `-----END…` — single quantifier, no nesting, linear.
   {

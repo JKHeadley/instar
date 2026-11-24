@@ -1,0 +1,28 @@
+{
+  "ts": "2026-11-24T07:55:53.521Z",
+  "slug": "worktree-runtime-readiness",
+  "suggestedTier": 2,
+  "declaredTier": 1,
+  "riskFloor": 1,
+  "riskFloorReasons": [],
+  "belowFloor": false,
+  "files": 7,
+  "loc": 69,
+  "scope": {
+    "basis": "staged-in-scope-paths-including-deleted",
+    "files": [
+      ".husky/instar-runtime.sh",
+      ".husky/pre-commit",
+      ".husky/pre-push",
+      "scripts/check-worktree-sqlite.cjs",
+      "scripts/lib/pre-push-scope.mjs",
+      "scripts/pre-push-smoke.mjs",
+      "src/core/InstarWorktreeManager.ts"
+    ],
+    "addedLines": 58,
+    "deletedLines": 11
+  },
+  "causalAutopsy": null,
+  "classClosure": null,
+  "verdict": "pass"
+}

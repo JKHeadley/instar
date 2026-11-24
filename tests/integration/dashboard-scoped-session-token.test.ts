@@ -30,8 +30,11 @@ function makeConfig(stateDir: string, enabled: boolean): InstarConfig {
 let project: TempProject;
 let mockSM: MockSessionManager;
 
-function server(enabled: boolean) {
-  const s = new AgentServer({ config: makeConfig(project.stateDir, enabled), sessionManager: mockSM as any, state: project.state } as any);
+const TUNNEL_HOST = 'scoped-token.trycloudflare.test';
+
+function server(enabled: boolean, opts: { tunnel?: boolean } = {}) {
+  const s = new AgentServer({ config: makeConfig(project.stateDir, enabled), sessionManager: mockSM as any, state: project.state,
+    ...(opts.tunnel ? { tunnel: { url: `https://${TUNNEL_HOST}` } } : {}) } as any);
   return s.getApp();
 }
 
@@ -105,10 +108,29 @@ describe('dashboard scoped session token (b) — integration', () => {
     expect((await request(app).post('/dashboard/session/revoke').send({})).status).toBe(404);
   });
 
-  it('step-up is rate-limited like unlock — it is not an unthrottled PIN oracle', async () => {
+  it('step-up is rate-limited like unlock — it is not an unthrottled PIN oracle (one public budget)', async () => {
+    // identity-security-piece1c: step-up uses the same public-budget helpers as unlock. A loopback
+    // caller that is neither this machine's own address nor behind the agent's own tunnel header is
+    // unattributable, so it is charged to the shared unmarked budget only (20 per window).
     const app = server(true);
-    let last: any;
-    for (let i = 0; i < 7; i++) last = await request(app).post('/dashboard/session/step-up').send({ pin: '000000' });
-    expect(last.status).toBe(429); // the shared per-client limiter trips after repeated wrong PINs
+    const statuses: number[] = [];
+    for (let i = 0; i < 21; i++) statuses.push((await request(app).post('/dashboard/session/step-up').send({ pin: '000000' })).status);
+    expect(statuses.slice(0, 20)).toEqual(Array(20).fill(403));
+    expect(statuses[20]).toBe(429);
+    // Step-up guesses drain the SAME budget as sign-in: an unmarked unlock is refused too, even with the right PIN.
+    expect((await request(app).post('/dashboard/unlock').send({ pin: PIN })).status).toBe(429);
+  });
+
+  it('step-up keys a tunnel caller on its real client: one client backs off, another is unaffected', async () => {
+    const app = server(true, { tunnel: true });
+    const stepUp = (ip: string) => request(app).post('/dashboard/session/step-up')
+      .set('Host', TUNNEL_HOST).set('cf-connecting-ip', ip).set('x-forwarded-proto', 'https');
+    for (let i = 0; i < 3; i++) expect((await stepUp('198.51.100.7').send({ pin: '000000' })).status).toBe(403);
+    // Past the 3 soft failures this client is backed off, even with the right PIN…
+    expect((await stepUp('198.51.100.7').send({ pin: PIN })).status).toBe(429);
+    // …while a different client (not the shared 127.0.0.1 socket bucket) still steps up.
+    const other = await stepUp('203.0.113.9').send({ pin: PIN });
+    expect(other.status).toBe(200);
+    expect(typeof other.body.stepUpToken).toBe('string');
   });
 });

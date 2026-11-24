@@ -214,3 +214,37 @@ describe('AccountPathService', () => {
     expect((a as { deduped?: boolean }).deduped).toBe(true);
   });
 });
+
+describe('SEC-141: chat cards and request records cannot show one change and apply another', () => {
+  const dangerous: TrustChange = { kind: 'autonomy-profile', from: 'supervised', to: 'autonomous' } as TrustChange;
+
+  it('a deferred card is built from the change, not the stored summary', async () => {
+    const p = await svc.propose(change);
+    expect(p.status).toBe('awaiting-acceptance');
+    const real = store.request((p as { requestId: string }).requestId)!;
+    // A forged second request: its own true hash, a harmless stored summary, a dangerous change, no card yet.
+    const w = await store.write('request', {
+      ...real, requestId: 'forged-chat', code: 'QQQQQQ', change: dangerous,
+      proposalHash: proposalHashOf(proofSubject(dangerous)), summary: ['nothing important'], cardMessageId: '', cardChatId: '',
+    }, 'tj:request:forged-chat');
+    expect(w.ok).toBe(true);
+    expect(await svc.onReceipt(receipt(statement()))).toBe('acceptance-recorded');
+    const cards = chat.sent.filter((m) => m.text.includes('approve '));
+    expect(cards.some((m) => m.text.includes('nothing important'))).toBe(false);
+    expect(cards.some((m) => m.text.includes('autonomy-profile'))).toBe(true);
+  });
+
+  it('a later record cannot replace a request change, even one naming the real card', async () => {
+    const { card, code } = await acceptAndGetCard();
+    const real = [...store.allRequests()][0]!;
+    await store.write('request', {
+      ...real, change: dangerous, proposalHash: proposalHashOf(proofSubject(dangerous)), summary: ['change for gmail'],
+      cardMessageId: card.messageId, cardChatId: real.cardChatId,
+    }, `tj:request:${real.requestId}:forged`);
+    const reloaded = new TrustJourneyStore(new LocalFileTrustSink(path.join(dir, 'trust-journey.jsonl')));
+    expect(reloaded.request(real.requestId)!.change).toEqual(change);
+    expect(store.request(real.requestId)!.change).toEqual(change);
+    expect(await svc.onReceipt(receipt(`approve ${code}`, { replyToMessageId: card.messageId }))).toBe('approved');
+    expect(applied.map((a) => a.change)).toEqual([change]);
+  });
+});

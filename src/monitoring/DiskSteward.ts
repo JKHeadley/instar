@@ -159,6 +159,13 @@ function emptyState(): PersistedState {
   };
 }
 
+/** True when every category that planned bytes was cut short because its tool was busy (a deferral, not a failure). */
+export function onlyBusyDeferred(categories: ReadonlyArray<{ plannedBytes: number; bytesFreed: number; skipped?: string }>): boolean {
+  const planned = categories.filter((c) => c.plannedBytes > 0);
+  if (planned.length === 0) return false;
+  return planned.every((c) => typeof c.skipped === 'string' && c.skipped.endsWith('-busy'));
+}
+
 export class DiskSteward {
   private state: PersistedState;
   private timer: ReturnType<typeof setInterval> | null = null;
@@ -383,7 +390,10 @@ export class DiskSteward {
         const last = this.state.samples[this.state.samples.length - 1];
         last.recovered = (last.recovered ?? 0) + observed;
       }
-      if (r.trigger === 'auto') this.state.breaker = total > 0 && r.bytesFreed < 0.01 * total ? this.state.breaker + 1 : 0;
+      // A run whose only planned work was deferred because a tool was busy (npm, Xcode) did not
+      // fail: it never tried. Leave the breaker as it is, or a machine that is always busy trips it
+      // after three deferrals and auto cleanup stays off through the next episode (fb-58754ac0-5e8).
+      if (r.trigger === 'auto' && !onlyBusyDeferred(r.categories)) this.state.breaker = total > 0 && r.bytesFreed < 0.01 * total ? this.state.breaker + 1 : 0;
     }
     if (r.sizes) this.state.sizes = r.sizes;
     if (r.worktrees) this.state.worktrees = r.worktrees;

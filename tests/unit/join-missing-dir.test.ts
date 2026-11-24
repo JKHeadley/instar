@@ -5,6 +5,17 @@ import path from 'node:path';
 import { joinMesh } from '../../src/commands/machine.js';
 import { SafeFsExecutor } from '../../src/core/SafeFsExecutor.js';
 
+// joinMesh installs the joined home's auto-start (a LaunchAgent on macOS, a systemd
+// user unit on Linux) in the REAL user home. Left real, every run leaves an
+// `ai.instar.home` / `instar-home` service pointing at this test's deleted temp
+// folder, failing on every restart (found on the Laptop and the Mama PC,
+// 2026-11-21). Replace only that installer; everything else stays real.
+const installAutoStart = vi.hoisted(() => vi.fn(() => false));
+vi.mock('../../src/commands/setup.js', async (importOriginal) => ({
+  ...(await importOriginal<typeof import('../../src/commands/setup.js')>()),
+  installAutoStart,
+}));
+
 /**
  * `instar join <pairing-url> --dir <path>` with a --dir that does not exist yet
  * crashed with ENOENT writing <dir>/.instar/config.json (found on the real
@@ -36,5 +47,7 @@ describe('joinMesh with a --dir that does not exist yet', () => {
     const config = JSON.parse(fs.readFileSync(path.join(dir, '.instar', 'config.json'), 'utf-8'));
     expect(config.port).toBe(4999);
     expect(typeof config.authToken).toBe('string');
+    // The join reached the auto-start step and went through the stand-in, never the real installer.
+    expect(installAutoStart).toHaveBeenCalledWith(expect.any(String), dir, expect.any(Boolean));
   }, 30_000);
 });

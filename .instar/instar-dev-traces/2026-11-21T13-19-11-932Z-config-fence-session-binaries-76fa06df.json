@@ -1,0 +1,24 @@
+{
+  "version": 2,
+  "slug": "config-fence-session-binaries",
+  "sessionId": "4f93898c-7d72-4a33-b581-3e0933a84bf4",
+  "timestamp": "2026-11-21T13:19:11.932Z",
+  "artifactPath": "upgrades/side-effects/config-fence-session-binaries.md",
+  "artifactSha256": "8158f90102b757e322b78722b3d0994a12711e4bc0f8d435552b3910ef735359",
+  "coveredFiles": [
+    ".instar/instar-dev-decisions/2026-11-21T13-19-04-271Z-config-fence-session-binaries.json",
+    "docs/specs/config-fence-session-binaries.eli16.md",
+    "src/config/bearerConfigWrite.ts",
+    "src/server/routes.ts",
+    "tests/unit/bearer-config-write.test.ts",
+    "upgrades/next/config-fence-session-binaries.md",
+    "upgrades/side-effects/config-fence-session-binaries.md"
+  ],
+  "phase": "complete",
+  "tier": 1,
+  "tierReasoning": "Whole-PR trace: five keys join the file-only config fence",
+  "eli16Path": "docs/specs/config-fence-session-binaries.eli16.md",
+  "sideEffectsPath": "upgrades/side-effects/config-fence-session-binaries.md",
+  "secondPass": "true",
+  "reviewerConcurred": true
+}

@@ -6,7 +6,7 @@
 import { describe, it, expect } from 'vitest';
 import type { HlcTimestamp } from '../../src/core/HybridLogicalClock.js';
 import {
-  workCardRecordStoreSchema, buildRecord, toFoldRecords, foldCard, deriveStatus, laneFor, derivePickupCauses, foldPickups,
+  workCardRecordStoreSchema, buildRecord, toFoldRecords, foldCard, deriveStatus, isAgentInternalCard, laneFor, derivePickupCauses, foldPickups,
   partitionRecords, materialHashOf, cardConversationKey, tapActionLine, WORK_CARD_KIND_REGISTRATION, workBoardEnabled,
   type UnionEntry, type By, type FoldRecord,
 } from '../../src/core/WorkCardStore.js';
@@ -305,14 +305,35 @@ describe('questions', () => {
 });
 
 describe('status and lanes', () => {
-  it('an agent card older than the quiet window with no pickup is quiet and waits on the owner', () => {
+  it('keeps quiet execution with the agent even when the owner created the card', () => {
     const c = rec('created', { by: OWNER, ...baseCard }, { at: T0 });
     const f = fold([c]);
     const now = T0 + 25 * 3_600_000;
     const s = deriveStatus(f, { pendingOrParked: false, parked: false }, now, 24);
     expect(s).toBe('quiet');
-    expect(laneFor(s, true, f, 'justin')).toBe('waiting-on-you');
+    expect(isAgentInternalCard(f)).toBe(false);
+    expect(laneFor(s, true, f, 'justin')).toBe('with-agent');
     expect(deriveStatus(f, { pendingOrParked: true, parked: false }, now, 24)).toBe('with-agent');
+  });
+  it('keeps a quiet internal card with the agent until it asks the owner a question', () => {
+    const c = rec('created', { by: AGENT, ...baseCard, doneWhen: [{ id: 'd1', text: 'Venue booked', certify: 'agent-may-certify' }] }, { at: T0 });
+    const policy = rec('policy', { by: OWNER, policy: 'outward-only' }, { cardId: null, at: T0 });
+    const now = T0 + 25 * 3_600_000;
+    const pickup = { pendingOrParked: false, parked: false };
+    const quiet = fold([c, policy]);
+    const quietStatus = deriveStatus(quiet, pickup, now, 24);
+    expect(quietStatus).toBe('quiet');
+    expect(isAgentInternalCard(quiet)).toBe(true);
+    expect(laneFor(quietStatus, true, quiet, 'justin')).toBe('with-agent');
+
+    const question = rec('waiting-on', {
+      by: AGENT, principal: { personKey: 'justin' }, question: { text: 'Which venue should I book?' },
+    }, { at: now });
+    const asked = fold([c, policy, question]);
+    const askedStatus = deriveStatus(asked, pickup, now, 24);
+    expect(askedStatus).toBe('waiting-on-person');
+    expect(isAgentInternalCard(asked)).toBe(false);
+    expect(laneFor(askedStatus, true, asked, 'justin')).toBe('waiting-on-you');
   });
   it('a card carried by the owner sits in Waiting on you', () => {
     const f = fold([rec('created', { by: OWNER, ...baseCard, carrier: { personKey: 'justin' } })]);
@@ -321,7 +342,8 @@ describe('status and lanes', () => {
     expect(laneFor(s, true, f, 'justin')).toBe('waiting-on-you');
   });
   it('a non-owner sees a needs-approval card under Waiting on others', () => {
-    const f = fold([rec('created', { by: AGENT, ...baseCard })]);
+    // An ask (outward): an inward agent-work card is `not-started`, with the agent (agent-work-cards-default §1).
+    const f = fold([rec('created', { by: AGENT, ...baseCard, outward: true })]);
     const s = deriveStatus(f, { pendingOrParked: false, parked: false }, T0, 24);
     expect(laneFor(s, false, f, 'adriana')).toBe('waiting-on-others');
   });

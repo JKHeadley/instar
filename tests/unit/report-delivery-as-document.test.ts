@@ -20,6 +20,7 @@ import {
   generateAgentMd,
   DOC_DELIVERY_ROW_USER,
   DOC_DELIVERY_ROW_PRODUCE,
+  DOC_DELIVERY_ROW_PRODUCE_SHORT,
   RETIRED_DOC_DELIVERY_ROWS,
   RETIRED_AGENT_PRINCIPLE_WORDING,
   PRIVATE_VIEWS_SENTENCE,
@@ -35,6 +36,14 @@ describe('report delivery rows (new agents)', () => {
     const md = generateClaudeMd('my-proj', 'echo', 4042, true);
     expect(md).toContain(DOC_DELIVERY_ROW_USER);
     expect(md).toContain(DOC_DELIVERY_ROW_PRODUCE);
+    // The always-loaded Feature Proactivity list carries the short form; the full row
+    // above sits in the "Lookup details" reference section (CLAUDE.md core size limit).
+    expect(md).toContain(DOC_DELIVERY_ROW_PRODUCE_SHORT);
+    const proactivity = md.slice(md.indexOf('### Feature Proactivity'), md.indexOf('### Conversational Tone'));
+    expect(proactivity).toContain(DOC_DELIVERY_ROW_PRODUCE_SHORT);
+    expect(proactivity).not.toContain(DOC_DELIVERY_ROW_PRODUCE);
+    const details = md.slice(md.indexOf('### Lookup details ('), md.indexOf('### Context Budget layers per conversation'));
+    expect(details).toContain(DOC_DELIVERY_ROW_PRODUCE);
     expect(md).not.toContain(RETIRED_USER);
     expect(md).not.toContain(RETIRED_PRODUCE);
     expect(md).toContain(PRIVATE_VIEWS_SENTENCE);
@@ -45,6 +54,11 @@ describe('report delivery rows (new agents)', () => {
     expect(DOC_DELIVERY_ROW_PRODUCE).toContain('POST /docs');
     expect(DOC_DELIVERY_ROW_PRODUCE).toContain('GitHub link');
     expect(DOC_DELIVERY_ROW_PRODUCE).toContain('503 documents-off');
+    // The short form keeps the trigger, the document route and the GitHub case, and points at the full row.
+    expect(DOC_DELIVERY_ROW_PRODUCE_SHORT).toContain('any markdown artifact for a person');
+    expect(DOC_DELIVERY_ROW_PRODUCE_SHORT).toContain('POST /docs');
+    expect(DOC_DELIVERY_ROW_PRODUCE_SHORT).toContain('GitHub link');
+    expect(DOC_DELIVERY_ROW_PRODUCE_SHORT).toContain('(→ Lookup details)');
   });
 
   it('the new-agent identity principles no longer send reports to the Private Viewer alone', () => {
@@ -91,7 +105,18 @@ describe.each(['full', 'reference'] as const)('migrateClaudeMd replaces the reti
     const once = read();
     expect(once).not.toContain(RETIRED_USER);
     expect(once).not.toContain(RETIRED_PRODUCE);
-    expect(count(once, DOC_DELIVERY_ROW_PRODUCE)).toBe(1);
+    // The full produce row lives in the "Lookup details" section. With the full layout that
+    // section is in CLAUDE.md; with the reference layout CLAUDE.md holds the short row and the
+    // full row is in the reference file the section goes to.
+    expect(count(once, DOC_DELIVERY_ROW_PRODUCE_SHORT)).toBe(1);
+    if (layout === 'full') {
+      expect(count(once, DOC_DELIVERY_ROW_PRODUCE)).toBe(1);
+    } else {
+      expect(count(once, DOC_DELIVERY_ROW_PRODUCE)).toBe(0);
+      const reference = fs.readFileSync(path.join(projectDir, '.instar', 'reference', 'principles-and-practices.md'), 'utf-8');
+      expect(count(reference, DOC_DELIVERY_ROW_PRODUCE)).toBe(1);
+      expect(reference).not.toContain(RETIRED_PRODUCE);
+    }
     expect(count(once, DOC_DELIVERY_ROW_USER)).toBe(1);
     expect(once).not.toContain(RETIRED_VIEWS);
     new PostUpdateMigrator({ stateDir, projectDir, version: '1.0.0' }).migrate();

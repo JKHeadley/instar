@@ -526,7 +526,8 @@ export interface AppOwnerReceiverDeps {
   /** The owner's stored epoch for a record, or null. */
   storedEpoch(recordKey: string): number | null;
   /** Sentinel, as the send route uses it. Absent or throwing fails open. */
-  classify?(text: string, alias: number): Promise<'kill' | 'pause' | 'deliver'>;
+  /** `messageKey` identifies the message, so a re-sent forward reuses its first verdict. */
+  classify?(text: string, alias: number, messageKey?: string): Promise<'kill' | 'pause' | 'deliver'>;
   /** The durable receipt's `injected` marker. */
   markInjected(session: string, messageId: string): void;
   report?(what: string, detail: string): void;
@@ -629,7 +630,7 @@ async function deliverForwarded(s: AppConversationService, key: string, f: AppFo
   if (!s.deps.registry.isAppBound(alias)) s.deps.registry.bindApp(alias);
   if (d.classify && f.event.text) {
     let verdict: 'kill' | 'pause' | 'deliver' = 'deliver';
-    try { verdict = await d.classify(f.event.text, alias); } catch { /* @silent-fallback-ok — FAIL-OPEN: a classifier error routes the message normally, as on the Telegram path */ }
+    try { verdict = await d.classify(f.event.text, alias, `app:${key}:${f.event.messageId}`); } catch { /* @silent-fallback-ok — FAIL-OPEN: a classifier error routes the message normally, as on the Telegram path */ }
     if (verdict !== 'deliver') { actOnUrgent(s, key, { ...f, urgent: verdict === 'kill' ? 'stop' : 'pause' }, f.event.messageId); return; }
   }
   if (teamPersonMissing(f)) { refuseForward(s, key, f, f.event.messageId, 'a team send with no person'); return; }
