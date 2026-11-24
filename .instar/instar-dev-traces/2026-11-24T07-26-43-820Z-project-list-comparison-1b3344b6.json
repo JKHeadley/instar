@@ -1,0 +1,23 @@
+{
+  "version": 2,
+  "slug": "project-list-comparison",
+  "sessionId": "5591f135-974d-45ff-afdb-df56f5dbd35e",
+  "timestamp": "2026-11-24T07:26:43.820Z",
+  "artifactPath": "upgrades/side-effects/project-list-comparison.md",
+  "artifactSha256": "3be2bc0698af98f294f7919d44e1582a63392d950a4675aa9628ff7e23d33cf4",
+  "specPath": "docs/specs/project-list-comparison.md",
+  "coveredFiles": [
+    "src/core/ChiefOfStaffProjectComparisonJournal.ts",
+    "src/core/ChiefOfStaffProjectComparisonJournal.worker.ts",
+    "src/core/ChiefOfStaffProjectComparisonSource.ts",
+    "src/core/CoherenceJournal.ts",
+    "tests/e2e/project-list-comparison-local-cos-alive.test.ts",
+    "tests/unit/chief-of-staff-project-comparison-journal.test.ts",
+    "tests/unit/chief-of-staff-project-comparison-source.test.ts"
+  ],
+  "phase": "complete",
+  "tier": 2,
+  "tierReasoning": "Adds an authorization-filtered read of the existing Chief of Staff journal and native App titles in the reviewed disposable comparison only.",
+  "secondPass": "true",
+  "reviewerConcurred": true
+}
