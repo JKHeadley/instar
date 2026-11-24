@@ -14,6 +14,7 @@ const run = promisify(execFile);
 const tmux = async (socket, ...args) =>
   (await run('tmux', ['-S', socket, '-f', '/dev/null', ...args], { env, timeout: 3000 })).stdout.trim();
 const names = async socket => (await tmux(socket, 'list-sessions', '-F', '#{session_name}')).split('\n');
+const hasSession = (socket, name) => tmux(socket, 'has-session', '-t', '=' + name);
 const panePid = (socket, name) => tmux(socket, 'display-message', '-p', '-t', '=' + name + ':', '#{pane_pid}');
 
 try {
@@ -23,12 +24,16 @@ try {
 
   const candidatePid = await panePid(ordinary, 'candidate');
   assert.match(candidatePid, /^[1-9][0-9]*$/);
+  await hasSession(ordinary, 'candidate');
   await tmux(ordinary, 'rename-session', '-t', '=candidate', 'promoted');
   assert.equal(await panePid(ordinary, 'promoted'), candidatePid);
+  await assert.rejects(hasSession(ordinary, 'candidate'), { stderr: /^can't find session: =?candidate\n$/ });
 
   await tmux(isolated, 'new-session', '-d', '-s', 'private-candidate', 'sleep', '25');
   assert.deepEqual(await names(isolated), ['private-candidate']);
+  await hasSession(isolated, 'private-candidate');
   assert.deepEqual((await names(ordinary)).sort(), ['ordinary', 'promoted']);
+  await assert.rejects(hasSession(ordinary, 'private-candidate'), { stderr: /^can't find session: =?private-candidate\n$/ });
   await assert.rejects(
     tmux(ordinary, 'move-window', '-s', 'private-candidate:0', '-t', 'ordinary:'),
     { stderr: /^can't find (?:window|session): private-candidate(?::0)?\n$/ },
@@ -39,6 +44,8 @@ try {
   console.log(JSON.stringify({
     sharedSocketListsCandidateBeforeRegistration: true,
     sameServerRenamePreservesPane: true,
+    previousNameStopsResolvingAfterRename: true,
+    knownPrivateNameDoesNotResolveOnOrdinaryServer: true,
     privateSocketHidesCandidateFromOrdinaryInventory: true,
     ordinaryMoveCannotResolveOtherServerWindow: true,
   }));
