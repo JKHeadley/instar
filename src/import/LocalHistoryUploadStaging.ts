@@ -599,29 +599,54 @@ export class LocalHistoryUploadStaging {
       throw error;
     } finally { bytes.fill(0); }
   }
+  /** Recheck the full prepared stream and destination before copy admission.
+   * This observation cannot replace revalidation under the mutation writer. */
+  async preflightCopyIntent(device: LocalHistoryAuthenticatedDevice, operationId: string, value: unknown): Promise<{
+    requestId: string; fingerprint: string;
+  }> {
+    const deviceCopy = Object.freeze({ deviceId: device.deviceId, deviceKeyHash: device.deviceKeyHash });
+    const before = this.bindCopyIntent(deviceCopy, operationId, value);
+    const { preview } = await this.readPreparedPreview(deviceCopy, operationId);
+    const after = this.bindCopyIntent(deviceCopy, operationId, before.intent);
+    const original = before.receipt.preview?.files;
+    if (before.fingerprint !== after.fingerprint || digest(before.receipt) !== digest(after.receipt)
+      || !Array.isArray(original) || original.length !== preview.files.length
+      || !preview.files.every((file, index) => file.fileId === original[index]?.fileId
+        && file.source === original[index].source && file.destinationFingerprint === original[index].destinationFingerprint)) {
+      refuse('conflict');
+    }
+    return { requestId: after.requestId, fingerprint: after.fingerprint };
+  }
   /** Validate the signed copy intent against current staging state. The
    * eventual permit issuer must repeat this inside its consumption transaction. */
   inspectCopyIntent(device: LocalHistoryAuthenticatedDevice, operationId: string, value: unknown): {
     requestId: string; fingerprint: string;
   } {
+    const { requestId, fingerprint } = this.bindCopyIntent(device, operationId, value);
+    return { requestId, fingerprint };
+  }
+  private bindCopyIntent(device: LocalHistoryAuthenticatedDevice, operationId: string, value: unknown) {
     const row = this.owned(operationId, device);
     if (row.phase !== 'prepared') refuse('conflict');
     const fields = ['previewId', 'machineId', 'bootId', 'confirmationChallenge', 'applyRequestId'];
     if (!value || typeof value !== 'object' || Array.isArray(value)
       || Object.keys(value).length !== fields.length
       || fields.some(field => !Object.hasOwn(value, field))) refuse('invalid');
-    const intent = value as Record<string, unknown>;
-    if (!id(intent.previewId) || typeof intent.applyRequestId !== 'string' || !id(intent.applyRequestId)
-      || intent.machineId !== this.issuer.machineId || intent.bootId !== row.boot
-      || typeof intent.confirmationChallenge !== 'string'
-      || !/^[A-Za-z0-9+/]{43}=$/.test(intent.confirmationChallenge)) refuse('invalid');
+    const { previewId, machineId, bootId, confirmationChallenge, applyRequestId: requestId } = value as Record<string, unknown>;
+    if (!id(previewId) || typeof requestId !== 'string' || !id(requestId)
+      || machineId !== this.issuer.machineId || bootId !== row.boot
+      || typeof confirmationChallenge !== 'string' || !/^[A-Za-z0-9+/]{43}=$/.test(confirmationChallenge)) refuse('invalid');
     const receipt = this.readPublishedPreview(row);
-    if (!receipt || receipt.previewId !== intent.previewId
-      || !crypto.timingSafeEqual(Buffer.from(receipt.confirmation.challenge), Buffer.from(intent.confirmationChallenge))) {
+    if (!receipt || receipt.previewId !== previewId
+      || !crypto.timingSafeEqual(Buffer.from(receipt.confirmation.challenge), Buffer.from(confirmationChallenge))) {
       refuse('conflict');
     }
-    return { requestId: intent.applyRequestId, fingerprint: digest(['copy-selected-history', row.id, row.issuerHash,
-      row.ownerHash, row.deviceHash, row.boot, row.fingerprint, receipt.previewId, receipt.confirmation.challenge, intent.applyRequestId]) };
+    const fingerprint = digest(['copy-selected-history', row.id, row.issuerHash,
+      row.ownerHash, row.deviceHash, row.boot, row.fingerprint, receipt.previewId, receipt.confirmation.challenge, requestId]);
+    return { requestId, fingerprint, receipt, intent: Object.freeze({
+      previewId: receipt.previewId, machineId: receipt.machineId, bootId: row.boot,
+      confirmationChallenge: receipt.confirmation.challenge, applyRequestId: requestId,
+    }) };
   }
   // Replay returns the original sealed receipt. Reading its prepared index
   // does not reread normalized payloads. Copy admission needs a full artifact

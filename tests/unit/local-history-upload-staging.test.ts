@@ -160,6 +160,8 @@ it('prepares both source kinds through real children and retires raw files witho
     expect(JSON.stringify(f.stage.status(device, grant.operationId))).not.toContain(candidate.confirmation.challenge);
     expect(await f.stage.publishPreparedPreview(device, grant.operationId)).toEqual(candidate);
     expect(db.prepare('SELECT count(*) AS n FROM upload_previews').get()).toEqual({ n: 1 });
+    const intent = { previewId: candidate.previewId, machineId: candidate.machineId, bootId: issuer.bootId,
+      confirmationChallenge: candidate.confirmation.challenge, applyRequestId: 'a'.repeat(32) };
     // Replay describes the original observation. Rereading the same prepared
     // selection detects same-length corruption in the last normalized file.
     const lastArtifact = artifacts.files.at(-1);
@@ -172,15 +174,18 @@ it('prepares both source kinds through real children and retires raw files witho
       expect(fs.writeSync(artifactFd, Buffer.from([firstByte[0] ^ 1]), 0, 1, 0)).toBe(1);
       expect(fs.fstatSync(artifactFd)).toMatchObject({ ino: identity.ino, size: identity.size });
       expect(await f.stage.publishPreparedPreview(device, grant.operationId)).toEqual(candidate);
-      await expect(f.stage.readPreparedPreview(device, grant.operationId)).rejects.toThrow('upload-unavailable');
+      await expect(f.stage.preflightCopyIntent(device, grant.operationId, intent)).rejects.toThrow('upload-unavailable');
     } finally {
       fs.writeSync(artifactFd, firstByte, 0, 1, 0);
       fs.closeSync(artifactFd);
     }
-    const intent = { previewId: candidate.previewId, machineId: candidate.machineId, bootId: issuer.bootId,
-      confirmationChallenge: candidate.confirmation.challenge, applyRequestId: 'a'.repeat(32) };
     const inspected = f.stage.inspectCopyIntent(device, grant.operationId, intent);
     expect(inspected.requestId).toBe(intent.applyRequestId);
+    const checked = f.stage.preflightCopyIntent(device, grant.operationId, intent);
+    intent.applyRequestId = 'c'.repeat(32);
+    try {
+      expect(await checked).toEqual(inspected);
+    } finally { intent.applyRequestId = inspected.requestId; }
     expect(f.stage.inspectCopyIntent(device, grant.operationId, intent)).toEqual(inspected);
     expect(f.stage.inspectCopyIntent(device, grant.operationId, { ...intent, applyRequestId: 'b'.repeat(32) }).fingerprint)
       .not.toBe(inspected.fingerprint);
@@ -226,6 +231,15 @@ it('keeps explicit preview retryable while the actual destination writer is lock
     const retry = await f.stage.publishPreparedPreview(device, grant.operationId);
     expect(retry.expiresAt).toBe(grant.expiresAt);
     expect(retry.preview.newMessages).toBe(1);
+    const intent = { previewId: retry.previewId, machineId: retry.machineId, bootId: issuer.bootId,
+      confirmationChallenge: retry.confirmation.challenge, applyRequestId: 'b'.repeat(32) };
+    await store.withWriter(async () => {
+      store.assertOrClaimLocalSource({ ownerUserId: 'synthetic-owner', source: 'codex',
+        originalId: 'synthetic-session-0', projectPath: '/synthetic/project', representation: 'canonical', parserContractVersion: 1 });
+    });
+    await expect(f.stage.preflightCopyIntent(device, grant.operationId, intent)).rejects.toThrow('upload-conflict');
+    expect(await f.stage.publishPreparedPreview(device, grant.operationId)).toEqual(retry);
+    expect(f.stage.status(device, grant.operationId).phase).toBe('prepared');
   } finally {
     vi.restoreAllMocks();
     db.close();
