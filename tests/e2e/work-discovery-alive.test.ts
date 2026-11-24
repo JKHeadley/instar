@@ -4,6 +4,7 @@ import fs from 'node:fs';
 import os from 'node:os';
 import path from 'node:path';
 import request from 'supertest';
+import { JSDOM } from 'jsdom';
 import { afterEach, describe, expect, it, vi } from 'vitest';
 import { InitiativeTracker } from '../../src/core/InitiativeTracker.js';
 import { MachineIdentityManager } from '../../src/core/MachineIdentity.js';
@@ -177,6 +178,59 @@ describe('work discovery production route', () => {
       await request(app).post(PATH).set(owner).send({ query: 'instar.sh', sources: ['conversations'] }).expect(200);
     } finally {
       release();
+    }
+  }, 20_000);
+
+  it('submits the shipped Work form through real private dashboard admission and opens source links', async () => {
+    installGithubFixture();
+    const server = await boot(true);
+    const app = server.getApp();
+    const native = server.appConversations!;
+    const conversationKey = crypto.randomUUID();
+    expect(native.applyCreate('work-ui-fixture', 'work-ui-created', conversationKey, 'Earlier design').status).toBe(200);
+    native.store.append({
+      kind: 'message', eventId: 'work-ui-event', messageId: 'work-ui-message', conversationKey,
+      at: new Date().toISOString(), machineId: native.deps.machineId(), role: 'operator',
+      text: 'The instar.sh conversation is the earlier design discussion.',
+    });
+    const asset = await request(app).get('/dashboard/console/work-discovery.js').expect(200);
+    expect(asset.text).toContain("'/work/discover'");
+    const unlock = await request(app).post('/dashboard/unlock').send({ pin: PIN }).expect(200);
+    expect(unlock.body.token).toMatch(/^dst_/);
+    const dom = new JSDOM('<!doctype html><main></main>', { url: 'http://localhost/dashboard/console/#/work/board' });
+    try {
+      for (const key of ['window', 'document', 'location', 'localStorage', 'Node', 'HTMLElement'] as const) {
+        vi.stubGlobal(key, key === 'window' ? dom.window : dom.window[key]);
+      }
+      dom.window.localStorage.setItem('instar_token', unlock.body.token);
+      const network = globalThis.fetch;
+      const wire = vi.fn(async (path: string, init: RequestInit) => {
+        const result = await request(app).post(path).set(init.headers as Record<string, string>).send(String(init.body));
+        return { status: result.status, json: async () => result.body };
+      });
+      vi.stubGlobal('fetch', (target: Parameters<typeof fetch>[0], init?: RequestInit) =>
+        target === '/work/discover' ? wire(target, init ?? {}) : network(target, init));
+      const { renderWork } = await import('../../dashboard/console/work.js');
+      const main = dom.window.document.querySelector('main')!;
+      await renderWork(main, { get: async (url: string) => {
+        const read = await request(app).get(url).set('Authorization', `Bearer ${unlock.body.token}`);
+        return { ok: read.status === 200, status: read.status, data: read.body };
+      } });
+      const input = main.querySelector<HTMLInputElement>('#work-discovery-query')!;
+      expect(input).not.toBeNull();
+      input.value = 'instar.sh';
+      input.form!.dispatchEvent(new dom.window.Event('submit', { cancelable: true }));
+      await vi.waitFor(() => expect(main.querySelector('a[href="https://github.com/JKHeadley/instar/pull/3342"]')).not.toBeNull());
+      const links = [...main.querySelectorAll('section[aria-label="Find earlier work"] a')].map(link => link.getAttribute('href'));
+      expect(links).toContain(`#/work/chats?c=${encodeURIComponent('app:' + conversationKey)}&m=work-ui-event`);
+      expect(main.textContent).toContain('Search coverage');
+      expect(wire).toHaveBeenCalledOnce();
+      const [[url, post]] = wire.mock.calls;
+      expect(url).toBe(PATH);
+      expect(JSON.parse(String(post.body))).toEqual({ query: 'instar.sh' });
+      expect(dom.window.location.href).not.toContain('instar.sh');
+    } finally {
+      dom.window.close();
     }
   }, 20_000);
 
