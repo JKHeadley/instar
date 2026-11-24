@@ -965,8 +965,8 @@ export const DEV_GATED_FEATURES: DevGatedFeature[] = [
   {
     name: 'pinBudgetPoolWide',
     configPath: 'security.pinBudget.poolWide',
-    description: 'SEC-170: the agent\'s unknown-browser PIN budget (20 wrong guesses per 5 minutes) is divided into fixed per-machine shares that sum to 20, each counted on its own machine, so knowing every address no longer multiplies the guesses. Part 1 of 2: shares only go down on their own; raising one after a machine is retired, and the share a pairing machine hands a newcomer, arrive with the agreement protocol in part 2.',
-    justification: 'Tightens an existing limit only: it can refuse a new browser sooner on one machine, never admit more. The owner\'s ways in (a browser that unlocked before, the phone, the machine itself) never depend on this budget. One small local file per machine, no network calls on the PIN path, no LLM, no spend, no outbound messages.',
+    description: 'SEC-170: the agent\'s unknown-browser PIN budget (20 wrong guesses per 5 minutes) is divided into fixed per-machine shares that sum to 20, each counted on its own machine, so knowing every address no longer multiplies the guesses. Part 2 of 3 adds the agreement protocol: machines pull each other\'s signed reports every 30 seconds, a share rises only after every machine acknowledges the same table plus 5 minutes, and a newcomer or a machine that lost its records starts at 0 and receives a hand-down. Part 3 adds the owner\'s gone-for-good tap and the silent-machines notice.',
+    justification: 'Tightens an existing limit only: it can refuse a new browser sooner on one machine, never admit more. The owner\'s ways in (a browser that unlocked before, the phone, the machine itself) never depend on this budget. One small local file per machine and one signed pull per peer every 30 seconds (backed off on failure), never on the PIN path itself; no LLM, no spend, no outbound messages.',
   },
   {
     name: 'credentialScrub',
