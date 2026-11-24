@@ -5,6 +5,7 @@
  *   GET /conversation-graph/nodes/:ref?cursor=         (:ref = base64url canonical JSON NodeRef)
  *   GET /mobile/conversation-graph/roots …              (same bodies; device-signed)
  *   GET /mobile/conversation-graph/nodes/:ref …
+ *   GET /mobile/conversation-graph/tree?cursor=          (phone only: root efforts with children nested)
  *
  * Owner-only in v1. The caller supplies `resolveViewer`, which turns an authenticated request into
  * the owner's GraphViewer (dashboard owner proof, or a device signature resolved to the owner) or
@@ -22,12 +23,17 @@
 import { Router } from 'express';
 import type { Request, Response } from 'express';
 import { decodeRouteRef } from '../core/conversationGraph.js';
-import type { ConversationGraphReadModel, GraphViewer, ReadResult } from '../core/conversationGraphRead.js';
+import type { ConversationGraphReadModel, GraphViewer, ReadResult, TreeProject } from '../core/conversationGraphRead.js';
 
 export interface ConversationGraphRouteDeps {
   model: ConversationGraphReadModel;
   /** The owner's viewer for this request, or null (not the owner, or not authenticated as such). */
   resolveViewer: (req: Request, surface: 'dashboard' | 'mobile') => GraphViewer | null;
+  /**
+   * The projects the Chief of Staff tracks, for the tree's Project label (work-front-doors §3.1). Absent, or
+   * throwing, means the tree says `projects: 'unknown'` and labels nothing.
+   */
+  projects?: () => TreeProject[];
 }
 
 function send(res: Response, r: ReadResult): void {
@@ -94,6 +100,23 @@ export function createConversationGraphRouter(deps: ConversationGraphRouteDeps):
       authorizedSend(req, res, surface, viewer, deps.model.destinations(viewer, ref, { q, cursor }));
     });
   }
+
+  // The phone's tree (work-front-doors stage 2; hierarchy v3 §7.4): the same owner-only viewer and read model as
+  // roots and nodes, one request instead of one per effort. The dashboard keeps composing roots and nodes itself.
+  router.get('/mobile/conversation-graph/tree', (req: Request, res: Response) => {
+    const viewer = deps.resolveViewer(req, 'mobile');
+    if (!viewer) return void res.status(403).json({ code: 'hierarchy-owner-only' });
+    const cursor = param(req.query.cursor, 2048);
+    if (cursor === INVALID_QUERY) return void res.status(409).json({ code: 'cursor-stale', reason: 'cursor-invalid' });
+    let projects: TreeProject[] | null = null;
+    if (deps.projects) {
+      try { const rows = deps.projects(); projects = Array.isArray(rows) ? rows : null; } catch {
+        // @silent-fallback-ok — unreadable projects are reported in the body as projects:'unknown'; nothing is labelled.
+        projects = null;
+      }
+    }
+    authorizedSend(req, res, 'mobile', viewer, deps.model.tree(viewer, { cursor, projects }));
+  });
 
   return router;
 }

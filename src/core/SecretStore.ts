@@ -527,6 +527,19 @@ export class SecretStore {
     this.write(secrets);
   }
 
+  /** Delete from an existing store without creating a vault or key when none exists.
+   * Only ENOENT proves absence; unreadable or corrupt storage must refuse the deletion.
+   */
+  deleteIfStoreExists(keyPath: string): void {
+    try {
+      fs.statSync(this.encryptedPath);
+    } catch (err) {
+      if ((err as NodeJS.ErrnoException).code === 'ENOENT') return;
+      throw err;
+    }
+    this.delete(keyPath);
+  }
+
   /** Whether the secret store file exists. */
   get exists(): boolean {
     return fs.existsSync(this.encryptedPath);

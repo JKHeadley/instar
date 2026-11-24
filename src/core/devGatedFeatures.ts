@@ -56,6 +56,12 @@ export const DEV_GATED_FEATURES: DevGatedFeature[] = [
     justification: 'Adds no automatic action: a change is applied only on the configured owner\'s live, authenticated "yes" to a server-rendered proposal, for an eligible conversation re-checked at the yes. Off, the propose lane works exactly as before and confirmIn is refused.',
   },
   {
+    name: 'approvalLinks',
+    configPath: 'security.approvalLinks.enabled',
+    description: 'SEC-135 (docs/specs/sec135-approval-link-guess-bound.md): a recommended-services confirm-page answer from a browser that never unlocked the dashboard, away from the machine, is admitted and charged by sign-in\'s own public PIN limits; owner opens (a marked browser or the machine itself, with the page\'s header) get their own mint allowance and protected tokens; confirmStats counters; omitted ⇒ live on a development agent, dark on the fleet.',
+    justification: 'Adds no new limit and no outward action: every number is sign-in\'s shipped piece 1c policy, applied through the same counters, so a stranger gets no more guesses than at sign-in and the owner\'s marked browser and the machine keep their own budgets. The counters write one small file at most once a minute. enabled:false restores piece 1c\'s per-token behaviour exactly; token rows written while on carry an extra field older code ignores, and expire within 30 minutes.',
+  },
+  {
     name: 'usageLedger',
     configPath: 'usage.ledger.enabled',
     description: 'Unified usage ledger (unified-usage-ledger spec): one attributed row per model call from this agent\'s own sessions, rolled up by hour, day and conversation in server-data/usage-ledger.db; omitted ⇒ live on a development agent, dark on the fleet.',

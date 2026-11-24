@@ -1,3 +1,4 @@
+import { CODEX_CLI_FRAMEWORK } from './frameworkFacts.js';
 /**
  * windowAwareChoice — quota pacing step 2 (docs/specs/quota-pacing-account-choice.md).
  *
@@ -286,9 +287,23 @@ export interface RankResult {
   fableNoRoom: boolean;
 }
 
-function compareAssessments(modelClass: LaunchModelClass, fableFallback: boolean) {
+/** Weekly allowance expires independently of the short window. Unknown or
+ * rolled dates never become an urgent deadline. Eligibility stays with callers. */
+export function compareCodexWeeklyReset(a: SubscriptionAccount, b: SubscriptionAccount, nowMs: number): number {
+  if (a.framework !== CODEX_CLI_FRAMEWORK || b.framework !== CODEX_CLI_FRAMEWORK) return 0;
+  const deadline = (account: SubscriptionAccount): number => {
+    const week = windowNow(account.lastQuota, 'sevenDay', nowMs, { provider: account.provider });
+    return isValidState(week.state) && week.resetsAtMs !== null ? week.resetsAtMs : Number.POSITIVE_INFINITY;
+  };
+  const first = deadline(a), second = deadline(b);
+  return first === second ? 0 : first < second ? -1 : 1;
+}
+
+function compareAssessments(modelClass: LaunchModelClass, fableFallback: boolean, nowMs: number, codexOnly: boolean) {
   return (x: AccountAssessment, y: AccountAssessment): number => {
     if (x.tier !== y.tier) return x.tier === 'measured' ? -1 : 1;
+    const resetOrder = codexOnly ? compareCodexWeeklyReset(x.account, y.account, nowMs) : 0;
+    if (resetOrder !== 0) return resetOrder;
     if (fableFallback) {
       const fx = x.fableRoom ?? -1;
       const fy = y.fableRoom ?? -1;
@@ -351,7 +366,7 @@ export function rankAccounts(accounts: SubscriptionAccount[], opts: RankOptions)
       }
     }
   }
-  eligible.sort(compareAssessments(modelClass, fableNoRoom));
+  eligible.sort(compareAssessments(modelClass, fableNoRoom, opts.nowMs, eligible.every((x) => x.account.framework === CODEX_CLI_FRAMEWORK)));
   return { ranked: eligible, modelClass, fableNoRoom };
 }
 

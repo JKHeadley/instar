@@ -9,7 +9,7 @@ import fs from 'node:fs';
 import net from 'node:net';
 import os from 'node:os';
 import path from 'node:path';
-import { SameNetworkListener, SAME_NETWORK_PER_ADDRESS_OPEN, SAME_NETWORK_STATE_FILE } from '../../src/server/sameNetworkListener.js';
+import { SameNetworkListener, SAME_NETWORK_PER_ADDRESS_OPEN, SAME_NETWORK_FORWARDER_OPEN, SAME_NETWORK_STATE_FILE } from '../../src/server/sameNetworkListener.js';
 import type { NetworkObservation, WslModeReading, WslNetworkingMode } from '../../src/core/SameNetworkNetwork.js';
 import { SafeFsExecutor } from '../../src/core/SafeFsExecutor.js';
 
@@ -35,10 +35,10 @@ function wsl(dir: string, mode: { m: WslNetworkingMode }, natAddress: string | n
   return l;
 }
 const stateOf = (dir: string): Record<string, unknown> => JSON.parse(fs.readFileSync(path.join(dir, SAME_NETWORK_STATE_FILE), 'utf8'));
-const limited = (l: SameNetworkListener, addr: string): boolean => {
+const limited = (l: SameNetworkListener, addr: string, cap = SAME_NETWORK_PER_ADDRESS_OPEN): boolean => {
   let passed = 0;
-  for (let i = 0; i < SAME_NETWORK_PER_ADDRESS_OPEN + 1; i++) if (l.perAddressOk(addr)) passed++;
-  return passed === SAME_NETWORK_PER_ADDRESS_OPEN;
+  for (let i = 0; i < cap + 1; i++) if (l.perAddressOk(addr)) passed++;
+  return passed === cap;
 };
 
 describe('the same-network listener inside WSL', () => {
@@ -70,13 +70,14 @@ describe('the same-network listener inside WSL', () => {
     expect(fs.existsSync(path.join(dir, SAME_NETWORK_STATE_FILE))).toBe(false);
   });
 
-  it('mirrored with the Windows app\'s word: loopback only, and the per-address limit stays on', async () => {
+  it('mirrored with the Windows app\'s word: loopback only, and the per-address limit stays on (sized for the whole pass-through door)', async () => {
     const dir = newDir();
     const l = wsl(dir, { m: 'mirrored' }, '172.20.10.5'); // a 172.16-31.x LAN address: never bound
     const r = await l.openForOwner({ windowsAppHandlesNetworkRule: true });
     expect(r.ok).toBe(true);
     expect(l.status().bind).toBe('127.0.0.1');
-    expect(limited(l, '127.0.0.1')).toBe(true);
+    // Every phone arrives from the pass-through as loopback, so loopback's bucket is the door's (builder #63).
+    expect(limited(l, '127.0.0.1', SAME_NETWORK_FORWARDER_OPEN)).toBe(true);
     expect(stateOf(dir).windowsAppNetworkRule).toBe(true);
     // A real connection past the limit is closed by the listener.
     const port = l.status().port!;

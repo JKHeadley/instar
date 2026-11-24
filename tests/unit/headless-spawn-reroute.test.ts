@@ -1115,6 +1115,24 @@ describe('rawInject sanitizer (S2 paste-escape)', () => {
     expect(sentLiterals.join('')).toContain('hello extra turn');
   });
 
+  it('SEC-138 repro: long WhatsApp/iMessage bodies are not saved in a fixed shared /tmp folder', () => {
+    const { manager } = makeManager({}, tmpDir);
+    const tmux = 'proj-sani-wa';
+    mockTmuxSessions.add(tmux);
+    sentLiterals.length = 0;
+    const m = manager as unknown as { injectWhatsAppMessage: (t: string, j: string, x: string) => void; injectIMessageMessage: (t: string, s: string, x: string) => void };
+    m.injectWhatsAppMessage(tmux, '15550001111@s.whatsapp.net', 'x'.repeat(600));
+    m.injectIMessageMessage(tmux, '+15550001111', 'y'.repeat(600));
+    const sent = sentLiterals.join('');
+    expect(sent).not.toMatch(/\/tmp\/instar-(whatsapp|imessage)\//);
+    const saved = [...sent.matchAll(/Long message saved to (\S+\.txt)/g)].map((x) => x[1]);
+    expect(saved).toHaveLength(2);
+    for (const fp of saved) {
+      expect(fs.statSync(fp).mode & 0o777).toBe(0o600);
+      expect(fs.readFileSync(fp, 'utf8')).toMatch(/^\[(whatsapp|imessage):/);
+    }
+  });
+
   it('SEC-137 repro: a carriage return or line-kill byte cannot act as a keystroke', () => {
     const { manager } = makeManager({}, tmpDir);
     const tmux = 'proj-sani-c0';

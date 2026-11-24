@@ -17,6 +17,7 @@ import { ReplicatedPeerStreamReader } from '../../src/core/ReplicatedPeerStreamR
 import { HybridLogicalClock } from '../../src/core/HybridLogicalClock.js';
 import { createTrustJourneyRuntime, journalSink } from '../../src/core/trustJourney/TrustJourneyRuntime.js';
 import { TRUST_GRANT_KIND_REGISTRATION, TRUST_JOURNEY_STORE_KEY, TrustJourneyStore, type TrustRecordSink } from '../../src/core/trustJourney/TrustJourneyStore.js';
+import { boundAgentServerBase } from '../helpers/boundAgentServerBase.js';
 import { bootTrustAppServer, cleanupTrustAppServers, DISCLOSURE, DHASH } from '../helpers/trustAppServer.js';
 
 afterAll(async () => { await cleanupTrustAppServers('tests/e2e/trust-app-approval-alive.test.ts'); });
@@ -42,6 +43,37 @@ function journalRig(stateDir: string): { journal: CoherenceJournal; sink: TrustR
 }
 
 describe('App trust approval E2E (feature is alive)', () => {
+  it('a configured but unopened Telegram chat never blocks an app setup request and exact signed approval', async () => {
+    let sends = 0;
+    const s = await bootTrustAppServer('app-first-e2e-', undefined, { getOwnerUserId: () => 777, sendOwnerDirect: async () => { sends++; return null; } });
+    await s.server.start();
+    // Needs-you reads this real listener over loopback; port zero is only the bind request.
+    s.config.port = Number(new URL(boundAgentServerBase(s.server)).port);
+    const mac = await s.pair({ local: true, name: 'App-first Mac' });
+    const opened = await s.bearer(request(s.app).post('/trust/requests')).send({ change: { kind: 'trust-grant', service: 'gmail', operation: 'write', level: 'autonomous' } });
+    expect(opened.status, JSON.stringify(opened.body)).toBe(202);
+    expect(opened.body).toMatchObject({ status: 'awaiting-acceptance', via: 'device' });
+    expect(opened.body.code).toBeUndefined();
+    expect(sends).toBe(0);
+    const waiting = (await mac.signed('GET', '/mobile/trust/requests')).body;
+    expect(waiting.approvalDelivery.state).toBe('setup');
+    const row = waiting.requests.find((r: { requestId: string }) => r.requestId === opened.body.requestId);
+    expect(row.status).toBe('open');
+    const needs = await s.bearer(request(s.app).get('/needs'));
+    expect(needs.status, JSON.stringify(needs.body)).toBe(200);
+    expect(needs.body.items.some((i: { source: string }) => i.source === 'trust-requests'), JSON.stringify(needs.body)).toBe(true);
+    const acc = await mac.act({ action: 'accept-device', target: mac.id, keyFingerprint: mac.fp, disclosureHash: DHASH }, '/mobile/trust/device-acceptance',
+      { keyFingerprint: mac.fp, disclosureHash: DHASH, disclosure: DISCLOSURE, keyPolicy: 'biometryCurrentSet' }, `accept-device ${mac.id} ${mac.fp} ${DHASH}`);
+    expect(acc.status, JSON.stringify(acc.body)).toBe(200);
+    const same = await s.bearer(request(s.app).post('/trust/requests')).send({ change: { kind: 'trust-grant', service: 'gmail', operation: 'write', level: 'autonomous' } });
+    expect(same.body).toMatchObject({ requestId: row.requestId, status: 'sent', via: 'device', expiresAt: row.expiresAt });
+    const ok = await mac.act({ action: 'approve-widening', target: row.requestId, proposalHash: row.proposalHash }, `/mobile/trust/requests/${row.requestId}/approve`, { proposalHash: row.proposalHash }, `approve-widening ${row.requestId} ${row.proposalHash}`);
+    expect(ok.status, JSON.stringify(ok.body)).toBe(200);
+    expect(ok.body.status).toBe('applied');
+    expect(s.trust.getTrustLevel('gmail', 'write').level).toBe('autonomous');
+    expect(sends).toBe(0);
+  });
+
   it('the routes are alive on the production path, an app-only agent approves a raise, and it survives a restart', async () => {
     // The journal rig needs the state dir before the server exists: build the server on a deferred sink.
     let rig: ReturnType<typeof journalRig> | null = null;
