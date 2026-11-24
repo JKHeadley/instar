@@ -1,3 +1,4 @@
+import { ManualQuotaBalance } from '../core/ManualQuotaBalance.js';
 import { normalizeCreationParentRef, type AppCreationContext } from '../core/AppCreationContext.js';
 // Governed by (docs/STANDARDS-REGISTRY.md cites this file as enforcement of):
 //   *Recall Over Our Own Material Is by Meaning, Not by Word-Match*
@@ -1498,6 +1499,8 @@ export interface RouteContext {
   quotaPoller: import('../core/QuotaPoller.js').QuotaPoller | null;
   /** QuotaAwareScheduler (P1.3) — account selection + swap-and-resume guarantee. */
   quotaAwareScheduler: import('../core/QuotaAwareScheduler.js').QuotaAwareScheduler | null;
+  /** Local, identity-partitioned forecasts; absent/off refuses explicit manual balance. */
+  manualBalanceForecasts?: () => Promise<import('../monitoring/quotaPacing.js').LoginSummary[] | null>;
   /** ProactiveSwapMonitor (P1.3, pre-limit half) — moves a session off an account
    *  BEFORE it walls. Optional; the routes report enabled:false when absent. */
   proactiveSwapMonitor?: import('../core/ProactiveSwapMonitor.js').ProactiveSwapMonitor;
@@ -43946,17 +43949,34 @@ document.getElementById('mcpForm').addEventListener('submit', async function (e)
   // surface). Resumes `sessionName` on another eligible account, preserving the
   // conversation via --resume. Body: { sessionName, exhaustedAccountId }.
   // POST (not GET) so it never collides with GET /subscription-pool/:id.
+  const manualQuotaBalance = ctx.quotaAwareScheduler && ctx.subscriptionPool && typeof ctx.config.stateDir === 'string' ? new ManualQuotaBalance({
+    stateDir: ctx.config.stateDir, accounts: () => ctx.subscriptionPool!.list(),
+    sessions: () => ctx.state.listSessions(),
+    forecasts: () => ctx.manualBalanceForecasts?.() ?? Promise.resolve(null),
+    softThreshold: () => ctx.config.subscriptionPool?.swapSoftThresholdPct ?? 90,
+    execute: (intent) => ctx.quotaAwareScheduler!.onQuotaPressure({ sessionName: intent.sessionName,
+      exhaustedAccountId: intent.sourceId, manualBalanceTarget: intent.targetId,
+      manualBalanceSourceCurrent: intent.sourceCurrent, nowMs: Date.now() }),
+  }) : null;
   router.post('/subscription-pool/swap', enforceSubscriptionPoolWriteCapability('POST /subscription-pool/swap'), async (req, res) => {
     if (!ctx.quotaAwareScheduler) {
       res.json({ enabled: false, swapped: false, reason: 'scheduler not configured' });
       return;
     }
-    const { sessionName, exhaustedAccountId } = req.body ?? {};
-    if (!sessionName || !exhaustedAccountId) {
+    const { sessionName, exhaustedAccountId, balanceUnusedQuota } = req.body ?? {};
+    if (balanceUnusedQuota !== undefined && typeof balanceUnusedQuota !== 'boolean') {
+      res.status(400).json({ error: 'balanceUnusedQuota must be boolean' }); return;
+    }
+    if (typeof sessionName !== 'string' || typeof exhaustedAccountId !== 'string' || !sessionName || !exhaustedAccountId) {
       res.status(400).json({ error: 'sessionName and exhaustedAccountId are required' });
       return;
     }
     try {
+      if (balanceUnusedQuota === true) {
+        const result = manualQuotaBalance ? await manualQuotaBalance.balance(sessionName, exhaustedAccountId)
+          : { swapped: false, toAccountId: null, reason: 'manual-balance-unavailable' };
+        res.json({ enabled: true, ...result }); return;
+      }
       const result = await ctx.quotaAwareScheduler.onQuotaPressure({
         sessionName,
         exhaustedAccountId,

@@ -25795,6 +25795,7 @@ export async function startServer(options: StartOptions): Promise<void> {
             // I11: callerClass set ONLY server-internally — the scheduler is
             // the one caller that knows its lane (proactive funnel vs reactive).
             callerClass: o.callerClass,
+            beforeKill: o.beforeKill,
           });
           // Object form: surfaces the structured refusal code so the
           // anti-thrash observation layer can classify failures (§3.1/§3.6).
