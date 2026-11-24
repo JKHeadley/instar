@@ -89,6 +89,12 @@ describe('instar-dev pre-commit — orphan deferrals enforcement', () => {
       { recursive: true },
     );
     fs.copyFileSync(HOOK_SCRIPT, path.join(sandbox, 'scripts', 'instar-dev-precommit.js'));
+    const convergeScripts = path.join('skills', 'spec-converge', 'scripts');
+    fs.mkdirSync(path.join(sandbox, convergeScripts), { recursive: true });
+    fs.copyFileSync(
+      path.join(path.dirname(HOOK_SCRIPT), '..', convergeScripts, 'related-work-preflight.mjs'),
+      path.join(sandbox, convergeScripts, 'related-work-preflight.mjs'),
+    );
     // audit-convergence-enforcement §2: the hook now imports these two sibling
     // scripts — copy them so the sandbox hook resolves its imports.
     fs.copyFileSync(path.join(path.dirname(HOOK_SCRIPT), 'write-audit-convergence.mjs'), path.join(sandbox, 'scripts', 'write-audit-convergence.mjs'));
@@ -119,10 +125,30 @@ describe('instar-dev pre-commit — orphan deferrals enforcement', () => {
     const fm = (opts.omitParentPrinciple || /^\s*parent-principle\s*:/m.test(opts.specFrontmatter))
       ? opts.specFrontmatter
       : `${opts.specFrontmatter}\nparent-principle: "Structure beats Willpower"`;
-    fs.writeFileSync(
-      path.join(sandbox, specRel),
-      `---\n${fm}\n---\n\n${opts.specBody}\n`,
-    );
+    const evidence = {
+      observedAt: '2026-11-24T22:00:00Z',
+      paths: ['src/touched.ts'],
+      keywords: ['fixture'],
+      mergedLookbackHours: 48,
+      sources: Object.fromEntries(
+        ['open-projects', 'open-specs', 'open-prs', 'recently-merged-prs', 'project-registry'].map(source => [
+          source,
+          { coverage: 'checked', evidence: 'Sandbox fixture checked', locator: 'evidence:sandbox', matchCount: 0, matches: [] },
+        ]),
+      ),
+    };
+    const body = ['',
+      opts.specBody,
+      '',
+      '## Related work',
+      '',
+      '```related-work-json',
+      JSON.stringify(evidence),
+      '```',
+      '',
+    ].join('\n');
+    const overlapDigest = crypto.createHash('sha256').update(body).digest('hex');
+    fs.writeFileSync(path.join(sandbox, specRel), `---\n${fm}\nrelated-work-review-sha256: ${overlapDigest}\n---\n${body}`);
     // ELI16 sibling — hook requires it to be staged with the spec.
     fs.writeFileSync(
       path.join(sandbox, eli16Rel),

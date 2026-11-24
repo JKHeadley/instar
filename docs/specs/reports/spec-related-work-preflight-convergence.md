@@ -6,4 +6,6 @@ The final targeted review identified a possible edit between review and writer, 
 
 The validator verifies evidence structure and reviewed body identity. It does not certify the honesty of authored search results. Existing source receipts and independent reviewer judgment cover that question. No internal-review launch gate is part of this design.
 
-related-work-review-sha256: 7d9717e656e9a68ada2ff9dcad794a0eba57be9970e91e8f31678de52868f67c
+The ladder declaration now uses the registered not-applicable format. This wording correction does not change the reviewed scope or gates.
+
+related-work-review-sha256: 10def63400de47e31c92603a12d68d730f8a5c65fa07ea9a8bc28a1c547033c2

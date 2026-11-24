@@ -10,7 +10,7 @@ review-convergence: "2026-11-24T21:19:32.549Z"
 review-iterations: 6
 review-completed-at: "2026-11-24T21:19:32.549Z"
 review-report: "docs/specs/reports/spec-related-work-preflight-convergence.md"
-related-work-review-sha256: 7d9717e656e9a68ada2ff9dcad794a0eba57be9970e91e8f31678de52868f67c
+related-work-review-sha256: 10def63400de47e31c92603a12d68d730f8a5c65fa07ea9a8bc28a1c547033c2
 cross-model-review: "codex-cli:gpt-6.2-astra"
 ---
 
@@ -170,7 +170,7 @@ Reuse the report and independent reviewer prompts already in use. Update the ins
 - **fleet:** Ship through the usual development tool update after proving installed migration.
 - **graduation criterion:** Both enforcement doors reject invalid or absent evidence. The commit gate verifies the stamped body in the index. Reviewers challenge a seeded duplicate.
 - **dark-window:** Test in a checkout before update. The migration changes development files only.
-- **ladder:** Existing development workflow, with no production runtime enrollment.
+- **ladder:** not applicable: Existing development workflow, with no production runtime enrollment.
 
 ## Open questions
 
