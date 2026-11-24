@@ -1,0 +1,14 @@
+# Offline judge prototype impact
+
+Tier 1. This reversible draft checkpoint adds internal evaluation helpers and 23 focused synthetic checks. There is no production caller, network or tool access, persistence, route change, setting, migration or release behavior.
+
+1. **Over-block.** Ambiguous or mismatched evidence produces an incomplete research result. Existing judge records are retained by the caller.
+2. **Under-block.** Correct hashes cannot authenticate host receipts. The verified plan still needs to bind receipts to trial, arm, repeat and slots in an integrating host.
+3. **Abstraction.** Helpers verify frozen inputs, select retries, bind raw results and summarize research evidence. The host owns structural validation and evidence custody.
+4. **Signal versus authority.** Consensus and independence are separate evidence. Neither outcome authorizes qualification, routing or activation.
+5. **Interactions.** The prototype has no production call sites or settings. Unit and composed tests use invented inputs and a structural validator stub. A prior manual bridge probe used the real offline validator.
+6. **External surfaces.** No new files are read or written by the helpers. No command, API, dashboard or external connection is added.
+7. **Multi-machine posture.** No deployed state is created. The draft branch carries source and invented fixtures only.
+8. **Rollback.** Revert this checkpoint. No live configuration or data migration is needed.
+
+An early independent consensus review informed distinct slot states and the structural-only result. Independent review of the complete prototype and the shared repository verification remain pending. This is a draft for preserving work, with no release request.
