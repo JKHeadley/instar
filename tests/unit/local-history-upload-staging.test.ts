@@ -562,6 +562,71 @@ it('refuses old-tag recovery when the temporary registry lacks its primary key',
   } finally { db.close(); ledger.close(); }
 });
 
+it.each(['cancel', 'shutdown', 'registration-failure'] as const)('holds registered copy custody through close after %s', async action => {
+  const f = setup();
+  const bytes = Buffer.from([
+    { type: 'session_meta', payload: { id: 'synthetic-session-0', cwd: '/synthetic/project', source: 'cli' } },
+    { type: 'response_item', payload: { type: 'message', role: 'user', content: [{ type: 'input_text', text: 'synthetic content' }] } },
+  ].map(row => JSON.stringify(row)).join('\n'));
+  const selected = f.stage.admit(device, f.manifest([bytes]));
+  upload(f.stage, selected.operationId, 'file-0', bytes);
+  f.stage.complete(device, selected.operationId);
+  await until(() => f.stage.status(device, selected.operationId).phase === 'verified');
+  f.stage.prepare(device, selected.operationId);
+  await until(() => f.stage.status(device, selected.operationId).phase === 'prepared');
+  const receipt = await f.stage.publishPreparedPreview(device, selected.operationId);
+  const intent = { previewId: receipt.previewId, machineId: receipt.machineId, bootId: issuer.bootId,
+    confirmationChallenge: receipt.confirmation.challenge, applyRequestId: '1'.repeat(32) };
+  const db = new Database(path.join(f.stateDir, 'local-history-upload', 'jobs.sqlite'));
+  const ledger = new LocalHistoryDiskLedger(f.stateDir, { disk: f.disk });
+  const child = spawn(process.execPath, ['-e',
+    "process.on('SIGTERM',()=>{});process.stdout.write('ready');setInterval(()=>{},1000)"], { stdio: ['ignore', 'pipe', 'ignore'] });
+  const closed = new Promise<void>(resolve => child.once('close', () => resolve()));
+  try {
+    await once(child.stdout!, 'data');
+    const { tag } = db.prepare('SELECT tag FROM upload_operations WHERE id = ?').get(selected.operationId) as { tag: string };
+    const originalKill = child.kill.bind(child);
+    let errorInjected = false;
+    const signals = vi.spyOn(child, 'kill');
+    if (action === 'registration-failure') {
+      signals.mockImplementation(signal => {
+        if (signal === 'SIGTERM' && !errorInjected) {
+          errorInjected = true;
+          child.emit('error', new Error('synthetic synchronous signal error'));
+        }
+        return originalKill(signal);
+      });
+      db.exec(`CREATE TRIGGER fixture_refuse_binding BEFORE UPDATE OF state ON local_history_store_temporary_runs
+        WHEN NEW.state = 'active' BEGIN SELECT RAISE(ABORT, 'fixture refusal'); END;`);
+    }
+    const work = Promise.allSettled([f.stage.holdPreparedCopyChild(device, selected.operationId, intent, child)]);
+    const state = db.prepare('SELECT state FROM local_history_store_temporary_runs');
+    await until(() => (state.get() as { state: string } | undefined)?.state === (action === 'registration-failure' ? 'registered' : 'active'));
+    await expect(f.stage.readPreparedPreview(device, selected.operationId)).rejects.toThrow('upload-busy');
+    if (action === 'cancel') f.stage.cancel(device, selected.operationId);
+    const stopping = action === 'shutdown' ? f.stage.stop() : undefined;
+    expect(f.stage['disposeTag'](tag)).toBe(false);
+    expect(ledger.list(tag).some(row => row.state === 'sealed')).toBe(true);
+    expect(() => process.kill(child.pid!, 0)).not.toThrow();
+    if (action !== 'registration-failure') child.kill('SIGKILL');
+    await closed;
+    if (action === 'registration-failure') {
+      expect(child.signalCode).toBe('SIGKILL');
+      expect(errorInjected).toBe(true);
+      expect(signals.mock.calls).toEqual([['SIGTERM'], ['SIGKILL']]);
+    }
+    const [result] = await work;
+    await stopping;
+    expect(result.status).toBe(action === 'registration-failure' ? 'rejected' : 'fulfilled');
+    expect(state.get()).toEqual({ state: 'disposed' });
+    expect(ledger.list(tag).every(row => row.state === 'disposed')).toBe(action !== 'registration-failure');
+  } finally {
+    if (child.exitCode === null && child.signalCode === null) child.kill('SIGKILL');
+    await closed;
+    db.close(); ledger.close();
+  }
+});
+
 it('quarantines a committed first permit across repeated restarts without releasing its reservation', async () => {
   const f = setup();
   const bytes = Buffer.from([

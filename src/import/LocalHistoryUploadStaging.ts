@@ -3,6 +3,7 @@
  * channel/body admission and fresh preview/apply remain independent gates.
  */
 import crypto from 'node:crypto';
+import { ChildProcess } from 'node:child_process';
 import { performance } from 'node:perf_hooks';
 import Database from 'better-sqlite3';
 import { registerSqliteHandle } from '../core/SqliteRegistry.js';
@@ -11,7 +12,7 @@ import { CLAUDE_CODE_FRAMEWORK } from '../core/frameworkFacts.js';
 import { UPLOAD_TTL_MS } from '../core/AppMediaStore.js';
 import type { LocalHistoryChildAdmission } from './LocalHistoryChildCustody.js';
 import { acquireLocalHistoryStoreTemporaryAdmission, hasUnsettledLocalHistoryTemporaryRun,
-  initializeLocalHistoryStoreTemporaryRuns, settleOldLocalHistoryTemporaryRuns, validateLocalHistoryFirstPermitRun, validateLocalHistoryTemporaryRunInventory } from './LocalHistoryStoreTemporaryRun.js';
+  initializeLocalHistoryStoreTemporaryRuns, registerLocalHistoryStoreTemporaryRun, settleOldLocalHistoryTemporaryRuns, validateLocalHistoryFirstPermitRun, validateLocalHistoryTemporaryRunInventory } from './LocalHistoryStoreTemporaryRun.js';
 import { LocalHistoryDiskLedger, type LocalHistoryDiskMeasurement } from './LocalHistoryDiskLedger.js';
 import { readLocalHistoryFirstPermitInventory } from './LocalHistoryFirstPermit.js';
 import { localHistoryUploadDirectory } from './LocalHistoryExchange.js';
@@ -94,7 +95,7 @@ export class LocalHistoryUploadStaging {
   private readonly unsettledPermitTags = new Set<string>();
   private readonly cleanups = new Map<string, ReturnType<typeof setTimeout>[]>();
   private verification: { id: string; done: Promise<void> } | undefined;
-  private preparation: { id: string; tag: string; done: Promise<void> } | undefined;
+  private activeChildWork: { id: string; tag: string; done: Promise<void>; stop?: () => void } | undefined;
   private stopped = false;
   private stopping: Promise<void> | undefined;
 
@@ -381,7 +382,7 @@ export class LocalHistoryUploadStaging {
     const row = this.owned(operationId, device);
     if (['verifying', 'verified', 'preparing', 'prepared'].includes(row.phase)) return this.status(device, operationId);
     if (row.phase !== 'uploading') refuse('conflict');
-    if (this.verification || this.preparation) refuse('busy');
+    if (this.verification || this.activeChildWork) refuse('busy');
     const plan = this.plan(row);
     if (plan.files.some((file, index) => this.ledger.inspect(file.allocation).written !== plan.manifest.files[index].bytes)) refuse('invalid');
     this.transaction(() => {
@@ -424,7 +425,7 @@ export class LocalHistoryUploadStaging {
     const row = this.owned(operationId, device);
     if (row.phase === 'preparing' || row.phase === 'prepared') return this.status(device, operationId);
     if (row.phase !== 'verified') refuse('conflict');
-    if (this.verification || this.preparation) refuse('busy');
+    if (this.verification || this.activeChildWork) refuse('busy');
     const plan = this.plan(row), ownerUserId = this.owner(device).ownerUserId;
     const destinations = new Set(plan.manifest.files.map(file => JSON.stringify([file.source, localSessionOriginalId(file.expectedSessionId)])));
     if (destinations.size !== plan.files.length) refuse('conflict');
@@ -438,13 +439,13 @@ export class LocalHistoryUploadStaging {
       try { const current = this.row(row.id); if (live(current.phase)) this.invalidate(current, 'interrupted'); }
       catch { this.invalidated.set(row.id, 'interrupted'); }
     }).finally(() => {
-      if (this.preparation?.done === done) this.preparation = undefined;
+      if (this.activeChildWork?.done === done) this.activeChildWork = undefined;
       // runLocalHistoryParseJob resolves only after the actual child exited.
       // Cancellation cannot retire its files while that promise is outstanding.
       try { const current = this.row(row.id); if (!live(current.phase)) this.invalidate(current, current.phase); }
       catch { if (!this.disposeTag(row.tag) && !this.cleanups.has(row.tag) && !this.stopped) this.scheduleCleanup(row.tag); }
     });
-    this.preparation = { id: row.id, tag: row.tag, done };
+    this.activeChildWork = { id: row.id, tag: row.tag, done };
     return this.status(deviceCopy, operationId);
   }
   private async parse(device: LocalHistoryAuthenticatedDevice, row: Row, plan: Plan, ownerUserId: string): Promise<void> {
@@ -524,7 +525,7 @@ export class LocalHistoryUploadStaging {
   async readPreparedPreview(device: LocalHistoryAuthenticatedDevice, operationId: string): Promise<PreparedPreviewRead> {
     const row = this.owned(operationId, device);
     if (row.phase !== 'prepared') refuse('conflict');
-    if (this.verification || this.preparation) refuse('busy');
+    if (this.verification || this.activeChildWork) refuse('busy');
     const deviceCopy = Object.freeze({ deviceId: device.deviceId, deviceKeyHash: device.deviceKeyHash });
     const prepared = this.prepared(row), plan = this.plan(row), ownerUserId = this.owner(deviceCopy).ownerUserId;
     const authorized = () => { try { return this.owned(row.id, deviceCopy).phase === 'prepared'; } catch { return false; } };
@@ -558,11 +559,11 @@ export class LocalHistoryUploadStaging {
       writerBusy = error instanceof LocalHistoryPreparedReadRefused
         && error.message === 'local-history-preview-writer-busy' && !error.cleanupPending;
     }).finally(() => {
-      if (this.preparation?.done === done) this.preparation = undefined;
+      if (this.activeChildWork?.done === done) this.activeChildWork = undefined;
       try { const current = this.row(row.id); if (!live(current.phase)) this.invalidate(current, current.phase); }
       catch { if (!this.disposeTag(row.tag) && !this.cleanups.has(row.tag) && !this.stopped) this.scheduleCleanup(row.tag); }
     });
-    this.preparation = { id: row.id, tag: row.tag, done };
+    this.activeChildWork = { id: row.id, tag: row.tag, done };
     await done;
     check();
     if (writerBusy) refuse('busy');
@@ -611,6 +612,62 @@ export class LocalHistoryUploadStaging {
       throw error;
     } finally { bytes.fill(0); }
   }
+  /** Take custody of a child already spawned by the internal copy coordinator.
+   * This lane registers and settles its namespace without delivering a token
+   * or authorizing any mutation. Admission failures before custody transfer
+   * leave the child with its original caller. */
+  async holdPreparedCopyChild(device: LocalHistoryAuthenticatedDevice, operationId: string, intent: unknown,
+    child: ChildProcess): Promise<void> {
+    const deviceCopy = Object.freeze({ deviceId: device.deviceId, deviceKeyHash: device.deviceKeyHash });
+    this.bindCopyIntent(deviceCopy, operationId, intent);
+    if (this.verification || this.activeChildWork) refuse('busy');
+    const row = this.owned(operationId, deviceCopy);
+    if (!(child instanceof ChildProcess) || !child.pid || !child.spawnfile
+      || child.exitCode !== null || child.signalCode !== null) refuse('invalid');
+
+    let closed = false, failed = false, stopRequested = false, killTimer: ReturnType<typeof setTimeout> | undefined;
+    const stop = () => {
+      if (closed || stopRequested) return;
+      stopRequested = true;
+      try { child.kill('SIGTERM'); } catch { /* Still await the actual close event. */ }
+      if (closed) return;
+      killTimer = setTimeout(() => {
+        if (!closed) try { child.kill('SIGKILL'); } catch { /* Custody is retained until close. */ }
+      }, 1000);
+      killTimer.unref();
+    };
+    const onError = () => { failed = true; stop(); };
+    child.on('error', onError);
+    const childClosed = new Promise<void>(resolve => {
+      child.once('close', () => { closed = true; if (killTimer) clearTimeout(killTimer); resolve(); });
+    });
+    const done = Promise.resolve().then(async () => {
+      let run: ReturnType<typeof registerLocalHistoryStoreTemporaryRun> | undefined;
+      try {
+        if (closed || this.owned(operationId, deviceCopy).phase !== 'prepared') refuse('unavailable');
+        this.metadataRoom();
+        run = registerLocalHistoryStoreTemporaryRun(this.db, this.custody, { operationId });
+        await run.registerChild(child);
+      } catch {
+        failed = true;
+        stop();
+      }
+      await childClosed;
+      child.off('error', onError);
+      if (run) {
+        try { run.cleanupAfterChild(); }
+        catch { failed = true; this.report('cleanup', 'registered-namespace-cleanup-pending'); }
+      }
+    }).finally(() => {
+      if (this.activeChildWork?.done === done) this.activeChildWork = undefined;
+      try { const current = this.row(row.id); if (!live(current.phase)) this.invalidate(current, current.phase); }
+      catch { this.report('cleanup', 'copy-child-settlement-unavailable'); }
+    });
+    this.activeChildWork = { id: row.id, tag: row.tag, done, stop };
+    await done;
+    if (failed) refuse('unavailable');
+  }
+
   /** Recheck the full prepared stream and destination before copy admission.
    * This observation cannot replace revalidation under the mutation writer. */
   async preflightCopyIntent(device: LocalHistoryAuthenticatedDevice, operationId: string, value: unknown): Promise<{
@@ -731,6 +788,7 @@ export class LocalHistoryUploadStaging {
   }
   private invalidate(row: Row, phase: Phase): void {
     this.invalidated.set(row.id, phase);
+    if (this.activeChildWork?.id === row.id) this.activeChildWork.stop?.();
     this.expiryTicks.delete(row.id);
     const timer = this.timers.get(row.id); if (timer) clearTimeout(timer); this.timers.delete(row.id);
     if (!this.disposeTag(row.tag) && !this.cleanups.has(row.tag) && !this.stopped) this.scheduleCleanup(row.tag);
@@ -738,7 +796,7 @@ export class LocalHistoryUploadStaging {
     catch { /* live memory denies authority; durable generation remains charged */ }
   }
   private disposeTag(tag: string): boolean {
-    if (this.preparation?.tag === tag || this.unsettledPermitTags.has(tag)) return false;
+    if (this.activeChildWork?.tag === tag || this.unsettledPermitTags.has(tag)) return false;
     let disposed = true;
     let allocations: ReturnType<LocalHistoryDiskLedger['list']>;
     try {
@@ -845,6 +903,7 @@ export class LocalHistoryUploadStaging {
   }
   private async close(): Promise<void> {
     this.stopped = true;
+    this.activeChildWork?.stop?.();
     const pending = [...this.cleanups.keys()];
     for (const timer of this.timers.values()) clearTimeout(timer); this.timers.clear();
     for (const timers of this.cleanups.values()) for (const timer of timers) clearTimeout(timer); this.cleanups.clear();
@@ -857,7 +916,7 @@ export class LocalHistoryUploadStaging {
     } finally {
       try {
         await this.verification?.done;
-        await this.preparation?.done;
+        await this.activeChildWork?.done;
         for (const tag of pending) this.disposeTag(tag);
       } finally {
         this.expiryTicks.clear(); this.challengeTicks.clear();
