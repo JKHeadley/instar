@@ -13,3 +13,7 @@ The preview is still being built. This update adds no Jobs action and changes no
 ## Evidence
 
 Focused checks cover actual loader selections, suppressed definitions, conflicting manifest names, byte limits and cancellation. The internal reader has no active endpoint.
+
+## Summary of New Capabilities
+
+No new user-facing capability. The reader prepares evidence for a future private Jobs preview.
