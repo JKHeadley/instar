@@ -458,16 +458,27 @@ export class JobRunHistory {
     return runId;
   }
 
+  /** Capture all matching runs for initial cursor selection before artifacts are pruned. */
+  readPackagedDoorwaySnapshot(machineId: string): { complete: boolean; runs: JobRun[] } {
+    const runs = this.readPackagedDoorwayRows(machineId);
+    return runs ? { complete: true, runs: runs.map(run => ({ ...run })) } : { complete: false, runs: [] };
+  }
+
+  private readPackagedDoorwayRows(machineId: string): JobRun[] | null {
+    const all = this.getDeduplicatedRuns();
+    if (!machineId || !this.isReadHealthy() || !this.cachedComplete) return null;
+    return all.filter(run => run.machineId === machineId
+      && run.slug === 'doorway-scan' && run.origin === 'instar' && run.runner === 'script'
+      && run.lockTrust === 'trusted' && run.result !== 'skipped'
+      && (run.packagedDoorwayScan || run.scheduledDoorwayObservationDigest));
+  }
+
   /** One bounded window of relevant local rows, excluding legacy and non-attempts. */
   readPackagedDoorwayRuns(machineId: string, limit: number):
     | { status: 'available'; runs: JobRun[]; truncated: boolean }
     | { status: 'unavailable' } {
-    const all = this.getDeduplicatedRuns();
-    if (!this.isReadHealthy() || !this.cachedComplete) return { status: 'unavailable' };
-    const runs = all.filter(run => run.machineId === machineId
-      && run.slug === 'doorway-scan' && run.origin === 'instar' && run.runner === 'script'
-      && run.lockTrust === 'trusted' && run.result !== 'skipped'
-      && (run.packagedDoorwayScan || run.scheduledDoorwayObservationDigest));
+    const runs = this.readPackagedDoorwayRows(machineId);
+    if (!runs) return { status: 'unavailable' };
     runs.sort((a, b) => b.startedAt.localeCompare(a.startedAt));
     const boundary = runs[limit - 1]?.startedAt;
     const splitTie = boundary !== undefined && runs[limit]?.startedAt === boundary;

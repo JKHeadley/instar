@@ -566,6 +566,7 @@ describe('JobRunHistory unit tests', () => {
       const reopened = new JobRunHistory(stateDir);
       expect(reopened.query().total).toBe(2);
       expect(reopened.readPackagedDoorwayRuns('local', 16).status).toBe('unavailable');
+      expect(reopened.readPackagedDoorwaySnapshot('local')).toEqual({ complete: false, runs: [] });
       expect(fs.readFileSync(file, 'utf8')).toContain(corrupt);
     });
 

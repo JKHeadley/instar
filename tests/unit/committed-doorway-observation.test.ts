@@ -139,7 +139,10 @@ describe('scheduled doorway evidence reconciliation', () => {
     }
     vi.setSystemTime(Date.parse(TIME) + 18000);
     const pending = newer(undefined, undefined, true);
-    const snapshot = { complete: true, runs: ledger.query({ slug: 'doorway-scan' }).runs };
+    const snapshot = ledger.readPackagedDoorwaySnapshot('local-test');
+    expect(snapshot.complete).toBe(true);
+    expect(snapshot.runs).toHaveLength(19);
+    expect(ledger.readPackagedDoorwayRuns('local-test', 16)).toMatchObject({ status: 'available', truncated: true });
     const select = (now = Date.now()) => selectDoorwayRetentionReferences('local-test', snapshot, store, now);
     const references = select();
     expect(references).toMatchObject({
@@ -248,6 +251,7 @@ describe('scheduled doorway evidence reconciliation', () => {
     });
     fs.mkdirSync(path.join(dir, 'ledger', 'job-runs.jsonl'));
     expect(ledger.readPackagedDoorwayRuns('local-test', 16)).toEqual({ status: 'unavailable' });
+    expect(ledger.readPackagedDoorwaySnapshot('local-test')).toEqual({ complete: false, runs: [] });
   });
 
   it('leaves conflicting same-time runs and future evidence unknown in either input order', () => {

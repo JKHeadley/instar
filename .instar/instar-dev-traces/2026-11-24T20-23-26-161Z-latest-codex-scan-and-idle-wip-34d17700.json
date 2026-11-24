@@ -1,0 +1,19 @@
+{
+  "version": 2,
+  "slug": "latest-codex-scan-and-idle-wip",
+  "sessionId": "aca68beb-0d4e-4546-a3c1-065299307f44",
+  "timestamp": "2026-11-24T20:23:26.161Z",
+  "artifactPath": "upgrades/side-effects/latest-codex-scan-and-idle-wip.md",
+  "artifactSha256": "a9084311a91bda5c8dfe19a4c499861db015b661afff5d718799f528b6341684",
+  "specPath": "docs/specs/latest-codex-doorway-scan.md",
+  "coveredFiles": [
+    "src/scheduler/JobRunHistory.ts",
+    "tests/unit/JobRunHistory.test.ts",
+    "tests/unit/committed-doorway-observation.test.ts"
+  ],
+  "phase": "complete",
+  "tier": 2,
+  "tierReasoning": "The snapshot provides a complete local ledger read for retention selection and has no writer or cleanup authority.",
+  "secondPass": "not-required",
+  "reviewerConcurred": null
+}

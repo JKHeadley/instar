@@ -97,3 +97,7 @@ Independent review concurred for intact inputs. Before cleanup, distinguish a mi
 A run directory without its required record now reports damaged evidence. A run with no directory still represents no recorded admissions. Initial cursor selection also checks admission filenames against its supplied doorway catalog and rejects unknown historical entries instead of silently dropping them. Ordinary registry reads still project the current catalog. The checks perform no deletions. Production must still supply the complete historical catalog and hold writer custody during selection.
 
 Independent review concurred with the integrity checks and the separation from cleanup.
+
+## Complete ledger snapshot
+
+Initial cursor selection has a ledger read that includes every eligible local run beyond the 16-row diagnostic window. An unreadable or incomplete ledger returns an unavailable snapshot with no rows. The bounded HTTP history uses the same eligibility filter. This read performs no writes and holds no writer lease. Production cursor publication still requires canonical writer custody and a stable artifact view.
