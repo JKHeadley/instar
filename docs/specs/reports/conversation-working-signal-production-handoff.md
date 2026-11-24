@@ -28,3 +28,11 @@ A private test tmux server proved cleanup in the fixture. Production must indepe
 ## Existing launch baseline
 
 The normal enforcing targeted runner passed all 75 tests across `interactive-session-pin.test.ts` and `session-manager-behavioral.test.ts`, exit 0. This confirms the current placement and ordinary behavioral fixtures on the checkpoint. It did not exercise managed production startup, restart, safe teardown, signed browser reads or a working indicator.
+
+## Disposable tmux visibility and promotion check
+
+The current `GET /sessions/tmux` route runs `list-sessions -F '#{session_name}'` against its configured tmux server. It does not filter its result through SessionManager's registered running-session state. Withholding the candidate's state row therefore does not hide a pane already on the ordinary socket.
+
+Using two private tmux servers and inert sleep processes, the [replay fixture](../../../tests/fixtures/codex-working-signal/probe-tmux-visibility.mjs) proved four properties. The ordinary socket listed an unregistered candidate. A same-server rename preserved that candidate's exact pane PID. Moving the candidate to a separate server hid it from ordinary inventory, but a normal `move-window` command on the ordinary server could not resolve the other server's candidate window. Both server inventories were rechecked after that refusal. No actual dashboard or product session was started.
+
+Build the checkpoint TypeScript, then run `node tests/fixtures/codex-working-signal/probe-tmux-visibility.mjs`. A product design must either prove an explicitly segregated candidate namespace across all ordinary consumers, including raw inventory and input, or verify a supported promotion mechanism across the isolated boundary. Simple state-only hiding or an assumed cross-server move does not meet the requirement.
