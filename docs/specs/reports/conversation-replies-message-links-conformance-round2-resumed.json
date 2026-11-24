@@ -1,0 +1,52 @@
+{
+  "sourceSha256": "f1c75226eff845655cd289d1a7ee94f9bc13d73e344d25afdeb1f8064210ed01",
+  "sourceCharacters": 23912,
+  "report": {
+    "report": {
+      "standardsChecked": 102,
+      "checkedAt": "2026-11-23T15:04:19.289Z",
+      "findings": [
+        {
+          "standard": "An Instar Agent Is Always a Multi-Machine Entity",
+          "family": "Building",
+          "status": "possible-violation",
+          "reason": "A quoted send can complete while another installed machine holds only a stripped copy, leaving that machine unable to identify what the user replied to if the signing machine disappears, with neither an all-member commitment nor a durable Pending receipt and loss record."
+        },
+        {
+          "standard": "Structure Decides Alone Only on an Exact Match",
+          "family": "The Substrate",
+          "status": "possible-violation",
+          "reason": "Only an exact authenticated stop is guaranteed to bypass quote admission, so a paraphrased emergency stop such as \u201chalt everything you\u2019re doing right now\u201d can be rejected for a missing source or signer before the model can recognize and execute it."
+        },
+        {
+          "standard": "Judgment Within Floors",
+          "family": "Building",
+          "status": "possible-violation",
+          "reason": "\u201cNo competing suite runs\u201d forbids even an independent test suite on an idle second machine without identifying a shared resource that requires global exclusion, while scheduling judgment within per-host capacity and shared-resource locks would permit that legitimate run."
+        },
+        {
+          "standard": "Maturation Path \u2014 Test Agent \u2192 Development Agent \u2192 Fleet",
+          "family": "Shipping",
+          "status": "possible-violation",
+          "reason": "The declared dark window can last indefinitely because \u201cuntil evidence\u201d supplies neither a review window nor machine-checkable thresholds from logged quote behavior that trigger a graduation decision at each rung."
+        }
+      ],
+      "degraded": false,
+      "fit": {
+        "parentPrinciple": "Operator-Surface Quality",
+        "checkedAt": "2026-11-23T15:04:40.722Z",
+        "verdict": "weak",
+        "parentResolved": true,
+        "reason": "Showing the sender and a readable preview helps an operator recognize the selected message, but the design centers on verifying reply identity and access while leaving action placement, wording, and phone layout to the native app owner.",
+        "degraded": false
+      }
+    },
+    "registryCanary": {
+      "ok": true,
+      "articleCount": 102,
+      "failures": [],
+      "articleHeadings": 102,
+      "completenessAssessed": true
+    }
+  }
+}

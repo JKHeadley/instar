@@ -1,0 +1,48 @@
+{
+  "report": {
+    "standardsChecked": 102,
+    "checkedAt": "2026-11-23T00:51:27.939Z",
+    "findings": [
+      {
+        "standard": "Judgment Within Floors",
+        "family": "Building",
+        "status": "possible-violation",
+        "reason": "Using the bounded history view as the final send or link admission check can reject an authorized reply to an older message with a known exact ID, even though the page boundary establishes neither absence nor lack of access and a bounded exact-ID lookup could verify both identity and permission without delegating either to model judgment."
+      },
+      {
+        "standard": "An Instar Agent Is Always a Multi-Machine Entity",
+        "family": "Building",
+        "status": "possible-violation",
+        "reason": "The compatibility plan accepts a replica that retains the base message but loses which original it answered, leaving that machine unable to recover a committed part of the conversation when it is the only survivor, with no Pending receipt or repair-before-serving requirement."
+      },
+      {
+        "standard": "No Manual Work (user *or* agent)",
+        "family": "Interaction",
+        "status": "possible-violation",
+        "reason": "Opening a link to an already identified message can require the reader to press Keep looking across history pages, making the reader drive a lookup the application already has the conversation and message IDs to perform."
+      },
+      {
+        "standard": "Documents Stand on Their Own",
+        "family": "Interaction",
+        "status": "possible-violation",
+        "reason": "The opening leads with an internal handoff identifier and assumes the reader knows what \u201cChief\u201d and \u201cApple\u201d mean before explaining what a person can do with messages today and what Reply and Copy Link will change."
+      }
+    ],
+    "degraded": false,
+    "fit": {
+      "parentPrinciple": "Operator-Surface Quality",
+      "checkedAt": "2026-11-23T00:51:40.735Z",
+      "verdict": "weak",
+      "parentResolved": true,
+      "reason": "Readable quote previews and clear unavailable states support operator-surface quality, but the design primarily governs message identity, authorization, and link accuracy and leaves action placement and phone-width usability unspecified.",
+      "degraded": false
+    }
+  },
+  "registryCanary": {
+    "ok": true,
+    "articleCount": 102,
+    "failures": [],
+    "articleHeadings": 102,
+    "completenessAssessed": true
+  }
+}

@@ -1,0 +1,710 @@
+{
+  "comparisonMode": "classification-preserving comparator only; no new design lens",
+  "round": 2,
+  "run": "resumed",
+  "actualComparator": {
+    "framework": "codex",
+    "model": "inherited authoring-session model",
+    "haikuExecution": false,
+    "crossFamilyEstablished": false
+  },
+  "converged": false,
+  "reasoning": [
+    "All seven completed reports were read; multiple unresolved declared DESIGN findings remain.",
+    "Declared classifications remain authoritative for this comparison. Counts are not voted away or relabeled using another reviewer\u2019s disposition.",
+    "No runtime, test, implementation approval, scoped operator exception or accepted correction closes these findings in the reviewed artifacts.",
+    "Round-one ledger entries remain addressed-in-round2-draft-awaiting-review; this comparison does not rewrite them as resolved."
+  ],
+  "reviewers": [
+    {
+      "reviewer": "adversarial",
+      "declaredFindingCounts": {
+        "DESIGN": 2,
+        "PRECISION": 1
+      },
+      "additionalClassifiedDispositionCounts": {
+        "DESIGN": 0,
+        "PRECISION": 2
+      },
+      "declaredFindings": [
+        {
+          "reviewer": "adversarial",
+          "findingId": "A2-1",
+          "declaredClassification": "DESIGN",
+          "report": "docs/specs/reports/conversation-replies-message-links-adversarial-round2-resumed.md",
+          "declaredSeverity": "high"
+        },
+        {
+          "reviewer": "adversarial",
+          "findingId": "A2-2",
+          "declaredClassification": "DESIGN",
+          "report": "docs/specs/reports/conversation-replies-message-links-adversarial-round2-resumed.md",
+          "declaredSeverity": "high"
+        },
+        {
+          "reviewer": "adversarial",
+          "findingId": "A2-3",
+          "declaredClassification": "PRECISION",
+          "report": "docs/specs/reports/conversation-replies-message-links-adversarial-round2-resumed.md",
+          "declaredSeverity": "medium"
+        }
+      ],
+      "additionalClassifiedDispositions": [
+        {
+          "topic": "suite scheduling",
+          "classification": "PRECISION",
+          "severity": "low"
+        },
+        {
+          "topic": "maturation evidence planning",
+          "classification": "PRECISION",
+          "severity": "medium"
+        }
+      ],
+      "separateAdvisoryCount": 1,
+      "separateAdvisories": [
+        "weak parent fit; no surface approval inferred"
+      ],
+      "signalDispositionCount": 5,
+      "signalDispositions": [
+        "mixed-version custody: disclosed foundation limit; no new all-member protocol demanded here",
+        "semantic stop: DESIGN A2-2",
+        "suite scheduling: additional PRECISION disposition",
+        "maturation: additional PRECISION disposition",
+        "weak fit: advisory"
+      ],
+      "report": "docs/specs/reports/conversation-replies-message-links-adversarial-round2-resumed.md",
+      "sha256": "3a307150ab731aabc914b20329be15a5e848570950540be14c85993fa37c7e5f"
+    },
+    {
+      "reviewer": "integration",
+      "declaredFindingCounts": {
+        "DESIGN": 2,
+        "PRECISION": 1
+      },
+      "additionalClassifiedDispositionCounts": {
+        "DESIGN": 0,
+        "PRECISION": 0
+      },
+      "declaredFindings": [
+        {
+          "reviewer": "integration",
+          "findingId": "accepted quote survivability",
+          "declaredClassification": "DESIGN",
+          "report": "docs/specs/reports/conversation-replies-message-links-integration-round2-resumed.md",
+          "declaredSeverity": "high"
+        },
+        {
+          "reviewer": "integration",
+          "findingId": "quote-specific maturation evidence",
+          "declaredClassification": "DESIGN",
+          "report": "docs/specs/reports/conversation-replies-message-links-integration-round2-resumed.md",
+          "declaredSeverity": "medium"
+        },
+        {
+          "reviewer": "integration",
+          "findingId": "suite scheduling sentence",
+          "declaredClassification": "PRECISION",
+          "report": "docs/specs/reports/conversation-replies-message-links-integration-round2-resumed.md"
+        }
+      ],
+      "separateAdvisoryCount": 1,
+      "separateAdvisories": [
+        "weak parent fit retained as advisory"
+      ],
+      "signalDispositionCount": 5,
+      "signalDispositions": [
+        "mixed-version custody: supported as high DESIGN; hierarchy Pending exception not transferable",
+        "semantic stop: deferred to owning lenses, no duplicate finding",
+        "suite scheduling: PRECISION",
+        "maturation: supported as medium DESIGN",
+        "weak fit: advisory"
+      ],
+      "report": "docs/specs/reports/conversation-replies-message-links-integration-round2-resumed.md",
+      "sha256": "dcde3869b9bffa5cc4ef9bce48dd4db9910043be07591fddc939fcb7281e65db"
+    },
+    {
+      "reviewer": "scalability",
+      "declaredFindingCounts": {
+        "DESIGN": 2,
+        "PRECISION": 2
+      },
+      "additionalClassifiedDispositionCounts": {
+        "DESIGN": 0,
+        "PRECISION": 0
+      },
+      "countingNote": "The report summary declares two PRECISION corrections: SP2-3 plus the suite-admission disposition. The latter is included here, not counted a second time.",
+      "declaredFindings": [
+        {
+          "reviewer": "scalability",
+          "findingId": "SP2-1",
+          "declaredClassification": "DESIGN",
+          "report": "docs/specs/reports/conversation-replies-message-links-scalability-round2-resumed.md",
+          "declaredSeverity": "medium"
+        },
+        {
+          "reviewer": "scalability",
+          "findingId": "SP2-2",
+          "declaredClassification": "DESIGN",
+          "report": "docs/specs/reports/conversation-replies-message-links-scalability-round2-resumed.md",
+          "declaredSeverity": "medium"
+        },
+        {
+          "reviewer": "scalability",
+          "findingId": "SP2-3",
+          "declaredClassification": "PRECISION",
+          "report": "docs/specs/reports/conversation-replies-message-links-scalability-round2-resumed.md",
+          "declaredSeverity": "medium"
+        },
+        {
+          "reviewer": "scalability",
+          "findingId": "suite-admission disposition",
+          "declaredClassification": "PRECISION",
+          "report": "docs/specs/reports/conversation-replies-message-links-scalability-round2-resumed.md",
+          "declaredSeverity": "medium"
+        }
+      ],
+      "separateAdvisoryCount": 0,
+      "signalDispositionCount": 5,
+      "signalDispositions": [
+        "suite scheduling: PRECISION, included in declared count",
+        "mixed-version custody: disclosure is not proof of broader continuity; disposition belongs to integration/security",
+        "semantic stop: respective semantic-execution owner",
+        "maturation: release-lifecycle owner",
+        "weak fit: native proof remains separate, no finding classification assigned"
+      ],
+      "report": "docs/specs/reports/conversation-replies-message-links-scalability-round2-resumed.md",
+      "sha256": "1d27d37488dbb5c8f014b1c62ce9ed8a324303a0cc871f2b7b1cbbc98b7fe3b8"
+    },
+    {
+      "reviewer": "security",
+      "declaredFindingCounts": {
+        "DESIGN": 2,
+        "PRECISION": 0
+      },
+      "additionalClassifiedDispositionCounts": {
+        "DESIGN": 0,
+        "PRECISION": 0
+      },
+      "declaredFindings": [
+        {
+          "reviewer": "security",
+          "findingId": "S2-1",
+          "declaredClassification": "DESIGN",
+          "report": "docs/specs/reports/conversation-replies-message-links-security-round2-resumed.md",
+          "declaredSeverity": "high"
+        },
+        {
+          "reviewer": "security",
+          "findingId": "S2-2",
+          "declaredClassification": "DESIGN",
+          "report": "docs/specs/reports/conversation-replies-message-links-security-round2-resumed.md",
+          "declaredSeverity": "medium"
+        }
+      ],
+      "separateAdvisoryCount": 0,
+      "signalDispositionCount": 4,
+      "signalDispositions": [
+        "semantic stop: supported as S2-1",
+        "mixed-version custody: no additional security DESIGN; disclosed durability limit, not full fleet proof",
+        "suite scheduling: no separate security finding",
+        "maturation: no separate security finding"
+      ],
+      "report": "docs/specs/reports/conversation-replies-message-links-security-round2-resumed.md",
+      "sha256": "f942f4d88e8766b0ecd387fba9d7d38740d4d5cba3f40df5245e4e1c43d51b8b"
+    },
+    {
+      "reviewer": "lessons",
+      "declaredFindingCounts": {
+        "DESIGN": 3,
+        "PRECISION": 1
+      },
+      "additionalClassifiedDispositionCounts": {
+        "DESIGN": 0,
+        "PRECISION": 0
+      },
+      "declaredFindings": [
+        {
+          "reviewer": "lessons",
+          "findingId": "F1",
+          "declaredClassification": "DESIGN",
+          "report": "docs/specs/reports/conversation-replies-message-links-lessons-round2-resumed.md",
+          "declaredSeverity": "high"
+        },
+        {
+          "reviewer": "lessons",
+          "findingId": "F2",
+          "declaredClassification": "DESIGN",
+          "report": "docs/specs/reports/conversation-replies-message-links-lessons-round2-resumed.md",
+          "declaredSeverity": "high"
+        },
+        {
+          "reviewer": "lessons",
+          "findingId": "F3",
+          "declaredClassification": "DESIGN",
+          "report": "docs/specs/reports/conversation-replies-message-links-lessons-round2-resumed.md",
+          "declaredSeverity": "medium"
+        },
+        {
+          "reviewer": "lessons",
+          "findingId": "P1",
+          "declaredClassification": "PRECISION",
+          "report": "docs/specs/reports/conversation-replies-message-links-lessons-round2-resumed.md",
+          "declaredSeverity": "low"
+        }
+      ],
+      "separateAdvisoryCount": 0,
+      "signalDispositionCount": 4,
+      "signalDispositions": [
+        "mixed-version custody: no additional all-member-ack requirement established",
+        "semantic stop: sustained as F1",
+        "suite scheduling: clarification only; no explicit global exclusion inferred",
+        "maturation: sustained as F2"
+      ],
+      "report": "docs/specs/reports/conversation-replies-message-links-lessons-round2-resumed.md",
+      "sha256": "2e3950e74de14d10866a986bdd28ab57c38e5c871b0a66c1a4f3c25cc2813ef0"
+    },
+    {
+      "reviewer": "decisions",
+      "declaredFindingCounts": {
+        "DESIGN": 3,
+        "PRECISION": 0
+      },
+      "additionalClassifiedDispositionCounts": {
+        "DESIGN": 0,
+        "PRECISION": 0
+      },
+      "declaredFindings": [
+        {
+          "reviewer": "decisions",
+          "findingId": "1 Slack outcome",
+          "declaredClassification": "DESIGN",
+          "report": "docs/specs/reports/conversation-replies-message-links-decisions-round2-resumed.md",
+          "declaredSeverity": "medium"
+        },
+        {
+          "reviewer": "decisions",
+          "findingId": "2 native handoff",
+          "declaredClassification": "DESIGN",
+          "report": "docs/specs/reports/conversation-replies-message-links-decisions-round2-resumed.md",
+          "declaredSeverity": "medium"
+        },
+        {
+          "reviewer": "decisions",
+          "findingId": "3 suite exclusion",
+          "declaredClassification": "DESIGN",
+          "report": "docs/specs/reports/conversation-replies-message-links-decisions-round2-resumed.md",
+          "declaredSeverity": "medium"
+        }
+      ],
+      "separateAdvisoryCount": 0,
+      "decisionContestCounts": {
+        "frontloadedInventoried": 18,
+        "frontloadedCompleteClaimed": false,
+        "cheapTags": 0,
+        "contestedThenCleared": 10,
+        "contestedRejected": 1,
+        "openUserDecisions": 0
+      },
+      "signalDispositionCount": 0,
+      "signalDispositionNote": "Report states independent contest generally but does not enumerate separate per-signal dispositions; none invented.",
+      "report": "docs/specs/reports/conversation-replies-message-links-decisions-round2-resumed.md",
+      "sha256": "29064583ea0e732faf1d2f880e43315fb88e2332d943a7fe89d36a85e8ed81b5"
+    },
+    {
+      "reviewer": "external",
+      "declaredFindingCounts": {
+        "DESIGN": 4,
+        "PRECISION": 0
+      },
+      "additionalClassifiedDispositionCounts": {
+        "DESIGN": 0,
+        "PRECISION": 0
+      },
+      "declaredFindings": [
+        {
+          "reviewer": "external",
+          "findingId": "1 unresolved App-source masking",
+          "declaredClassification": "DESIGN",
+          "report": "docs/specs/reports/conversation-replies-message-links-external-round2-resumed.json"
+        },
+        {
+          "reviewer": "external",
+          "findingId": "2 exact reply-base evidence attachment",
+          "declaredClassification": "DESIGN",
+          "report": "docs/specs/reports/conversation-replies-message-links-external-round2-resumed.json"
+        },
+        {
+          "reviewer": "external",
+          "findingId": "3 Telegram physical namespace",
+          "declaredClassification": "DESIGN",
+          "report": "docs/specs/reports/conversation-replies-message-links-external-round2-resumed.json"
+        },
+        {
+          "reviewer": "external",
+          "findingId": "4 authentication allowlist/read-quota bypass",
+          "declaredClassification": "DESIGN",
+          "report": "docs/specs/reports/conversation-replies-message-links-external-round2-resumed.json"
+        }
+      ],
+      "separateAdvisoryCount": 0,
+      "rawReviewerObjects": 1,
+      "countingNote": "One raw findings object contains four explicitly DESIGN bullet findings; objects are not finding counts.",
+      "signalDispositionCount": 1,
+      "signalDispositions": [
+        "semantic paraphrase requirement: explicitly rejected as unsupported; exact-stop admission still requires allowlist/read-quota exemption"
+      ],
+      "actualFramework": "codex-cli",
+      "actualModel": "gpt-6.2-astra",
+      "reportedVerdict": "SERIOUS ISSUES",
+      "rawCrossFamilyFlag": true,
+      "authorRelativeCrossFamilyEstablished": false,
+      "report": "docs/specs/reports/conversation-replies-message-links-external-round2-resumed.json",
+      "sha256": "0c507ac630a0cb00eed9a88079cd5a89f047ea9ceafed8d2434900fb080004f2"
+    }
+  ],
+  "totals": {
+    "reviewerReports": 7,
+    "declaredDESIGNFindings": 18,
+    "declaredPRECISIONFindings": 5,
+    "additionalClassifiedDESIGNDispositions": 0,
+    "additionalClassifiedPRECISIONDispositions": 2,
+    "separateAdvisories": 2,
+    "deduplicatedDESIGNThemes": 15
+  },
+  "deduplicatedDesignThemes": [
+    {
+      "id": "R2-D01",
+      "theme": "Attest the replying base identity in quote proof",
+      "origins": [
+        {
+          "reviewer": "adversarial",
+          "findingId": "A2-1",
+          "declaredClassification": "DESIGN",
+          "report": "docs/specs/reports/conversation-replies-message-links-adversarial-round2-resumed.md",
+          "declaredSeverity": "high"
+        }
+      ],
+      "status": "unresolved-in-reviewed-round",
+      "deduplicationReason": "Kept distinct from evidence attachment: this concerns authenticated proof of the base event/message identity, including copied-proof replay."
+    },
+    {
+      "id": "R2-D02",
+      "theme": "Preserve the existing semantic stop authority before quote-only refusal",
+      "origins": [
+        {
+          "reviewer": "adversarial",
+          "findingId": "A2-2",
+          "declaredClassification": "DESIGN",
+          "report": "docs/specs/reports/conversation-replies-message-links-adversarial-round2-resumed.md",
+          "declaredSeverity": "high"
+        },
+        {
+          "reviewer": "security",
+          "findingId": "S2-1",
+          "declaredClassification": "DESIGN",
+          "report": "docs/specs/reports/conversation-replies-message-links-security-round2-resumed.md",
+          "declaredSeverity": "high"
+        },
+        {
+          "reviewer": "lessons",
+          "findingId": "F1",
+          "declaredClassification": "DESIGN",
+          "report": "docs/specs/reports/conversation-replies-message-links-lessons-round2-resumed.md",
+          "declaredSeverity": "high"
+        }
+      ],
+      "status": "unresolved-in-reviewed-round",
+      "deduplicationReason": "Three internal findings describe the same exact-fast-path versus later semantic-classifier ordering failure.",
+      "disagreement": "External explicitly rejects the paraphrase requirement as unsupported; decisions clears exact-stop priority without independently demanding the intelligent arm. Comparator preserves the disagreement and selects no policy winner."
+    },
+    {
+      "id": "R2-D03",
+      "theme": "Durable cross-machine custody of accepted quoted relations",
+      "origins": [
+        {
+          "reviewer": "integration",
+          "findingId": "accepted quote survivability",
+          "declaredClassification": "DESIGN",
+          "report": "docs/specs/reports/conversation-replies-message-links-integration-round2-resumed.md",
+          "declaredSeverity": "high"
+        }
+      ],
+      "status": "unresolved-in-reviewed-round",
+      "deduplicationReason": "One integration DESIGN requires existing complete custody, a scoped operator ruling or a blocking foundation dependency.",
+      "disagreement": "Adversarial, security and lessons accept disclosed total old-codec loss as a bounded durability limitation without a new all-member protocol finding. Scalability says honesty does not itself prove broader continuity and routes disposition to owning lenses. Integration DESIGN remains blocking; not demoted by other lenses."
+    },
+    {
+      "id": "R2-D04",
+      "theme": "Quote-specific owned maturation evidence and transition",
+      "origins": [
+        {
+          "reviewer": "integration",
+          "findingId": "quote-specific maturation evidence",
+          "declaredClassification": "DESIGN",
+          "report": "docs/specs/reports/conversation-replies-message-links-integration-round2-resumed.md",
+          "declaredSeverity": "medium"
+        },
+        {
+          "reviewer": "lessons",
+          "findingId": "F2",
+          "declaredClassification": "DESIGN",
+          "report": "docs/specs/reports/conversation-replies-message-links-lessons-round2-resumed.md",
+          "declaredSeverity": "high"
+        }
+      ],
+      "status": "unresolved-in-reviewed-round",
+      "deduplicationReason": "Both require quote/version-specific evidence and an owned dated review/awake carrier; retain the different declared severities.",
+      "disagreement": "Adversarial classifies maturation planning as additional PRECISION/medium; integration and lessons classify real wiring/ownership changes as DESIGN. No reclassification."
+    },
+    {
+      "id": "R2-D05",
+      "theme": "Bounded complete provider-original lookup",
+      "origins": [
+        {
+          "reviewer": "scalability",
+          "findingId": "SP2-1",
+          "declaredClassification": "DESIGN",
+          "report": "docs/specs/reports/conversation-replies-message-links-scalability-round2-resumed.md",
+          "declaredSeverity": "medium"
+        }
+      ],
+      "status": "unresolved-in-reviewed-round",
+      "deduplicationReason": "Recent provider tails and synchronous scans do not establish the named bounded exact-reader contract."
+    },
+    {
+      "id": "R2-D06",
+      "theme": "Frozen bounded verification of all relevant quote-evidence candidates",
+      "origins": [
+        {
+          "reviewer": "scalability",
+          "findingId": "SP2-2",
+          "declaredClassification": "DESIGN",
+          "report": "docs/specs/reports/conversation-replies-message-links-scalability-round2-resumed.md",
+          "declaredSeverity": "medium"
+        }
+      ],
+      "status": "unresolved-in-reviewed-round",
+      "deduplicationReason": "Hash/index deduplication does not bound distinct verification work or prove uniqueness before late conflicts."
+    },
+    {
+      "id": "R2-D07",
+      "theme": "Missing-append recovery representation or explicit no-append disposition",
+      "origins": [
+        {
+          "reviewer": "security",
+          "findingId": "S2-2",
+          "declaredClassification": "DESIGN",
+          "report": "docs/specs/reports/conversation-replies-message-links-security-round2-resumed.md",
+          "declaredSeverity": "medium"
+        }
+      ],
+      "status": "unresolved-in-reviewed-round",
+      "deduplicationReason": "Reserved hashes/redaction proof cannot reconstruct sanitized text and attachments; require an explicit durable result or complete sanitized candidate."
+    },
+    {
+      "id": "R2-D08",
+      "theme": "Disposition of inherited resource quotas as judgment candidates",
+      "origins": [
+        {
+          "reviewer": "lessons",
+          "findingId": "F3",
+          "declaredClassification": "DESIGN",
+          "report": "docs/specs/reports/conversation-replies-message-links-lessons-round2-resumed.md",
+          "declaredSeverity": "medium"
+        }
+      ],
+      "status": "unresolved-in-reviewed-round",
+      "deduplicationReason": "Lessons requires governing floor/exception authority or an owned assessment/fallback; existing constants alone do not establish immutable limits."
+    },
+    {
+      "id": "R2-D09",
+      "theme": "Closed Slack quoted-linkage outcome",
+      "origins": [
+        {
+          "reviewer": "decisions",
+          "findingId": "1 Slack outcome",
+          "declaredClassification": "DESIGN",
+          "report": "docs/specs/reports/conversation-replies-message-links-decisions-round2-resumed.md",
+          "declaredSeverity": "medium"
+        }
+      ],
+      "status": "unresolved-in-reviewed-round",
+      "deduplicationReason": "Named slack-v1 support lacks a corresponding closed native-linkage success/default outcome."
+    },
+    {
+      "id": "R2-D10",
+      "theme": "Concrete native-app owner handoff and run completion boundary",
+      "origins": [
+        {
+          "reviewer": "decisions",
+          "findingId": "2 native handoff",
+          "declaredClassification": "DESIGN",
+          "report": "docs/specs/reports/conversation-replies-message-links-decisions-round2-resumed.md",
+          "declaredSeverity": "medium"
+        }
+      ],
+      "status": "unresolved-in-reviewed-round",
+      "deduplicationReason": "Specific app implementation/acceptance routing is separate from quote-specific maturation evidence."
+    },
+    {
+      "id": "R2-D11",
+      "theme": "Scope of competing-suite exclusion",
+      "origins": [
+        {
+          "reviewer": "decisions",
+          "findingId": "3 suite exclusion",
+          "declaredClassification": "DESIGN",
+          "report": "docs/specs/reports/conversation-replies-message-links-decisions-round2-resumed.md",
+          "declaredSeverity": "medium"
+        }
+      ],
+      "status": "unresolved-in-reviewed-round",
+      "deduplicationReason": "Decision-completeness treats a global reading as a rejected qualitative quota.",
+      "disagreement": "Adversarial, integration and scalability classify clarification as PRECISION; lessons reads existing shared-resource/no-duplicate ownership rather than a global cap. Comparator retains the original DESIGN classification without endorsing its global interpretation."
+    },
+    {
+      "id": "R2-D12",
+      "theme": "Mask unresolved App originals consistently",
+      "origins": [
+        {
+          "reviewer": "external",
+          "findingId": "1 unresolved App-source masking",
+          "declaredClassification": "DESIGN",
+          "report": "docs/specs/reports/conversation-replies-message-links-external-round2-resumed.json"
+        }
+      ],
+      "status": "unresolved-in-reviewed-round",
+      "deduplicationReason": "External requires one public outcome for hidden, local-missing and unreadable App sources after conversation authorization."
+    },
+    {
+      "id": "R2-D13",
+      "theme": "Attach evidence to the exact replying event, not its public ID",
+      "origins": [
+        {
+          "reviewer": "external",
+          "findingId": "2 exact reply-base evidence attachment",
+          "declaredClassification": "DESIGN",
+          "report": "docs/specs/reports/conversation-replies-message-links-external-round2-resumed.json"
+        }
+      ],
+      "status": "unresolved-in-reviewed-round",
+      "deduplicationReason": "Kept distinct from R2-D01: lookup/attachment uses conversation plus witness.eventId before immutable comparison."
+    },
+    {
+      "id": "R2-D14",
+      "theme": "Persisted Telegram physical namespace mapping",
+      "origins": [
+        {
+          "reviewer": "external",
+          "findingId": "3 Telegram physical namespace",
+          "declaredClassification": "DESIGN",
+          "report": "docs/specs/reports/conversation-replies-message-links-external-round2-resumed.json"
+        }
+      ],
+      "status": "unresolved-in-reviewed-round",
+      "deduplicationReason": "Historical topic/message number overlap requires defined persisted identity facts and an unavailable result when insufficient."
+    },
+    {
+      "id": "R2-D15",
+      "theme": "Register new reply paths in device admission and exact-stop quota exemption",
+      "origins": [
+        {
+          "reviewer": "external",
+          "findingId": "4 authentication allowlist/read-quota bypass",
+          "declaredClassification": "DESIGN",
+          "report": "docs/specs/reports/conversation-replies-message-links-external-round2-resumed.json"
+        }
+      ],
+      "status": "unresolved-in-reviewed-round",
+      "deduplicationReason": "Authentication-time rejection is distinct from semantic stop ordering inside the handler."
+    }
+  ],
+  "precisionThemes": [
+    {
+      "theme": "Revalidate the displayed reply with an actual current projection, not an empty delta or next-page cursor",
+      "origins": [
+        {
+          "reviewer": "adversarial",
+          "findingId": "A2-3",
+          "declaredClassification": "PRECISION",
+          "report": "docs/specs/reports/conversation-replies-message-links-adversarial-round2-resumed.md",
+          "declaredSeverity": "medium"
+        },
+        {
+          "reviewer": "scalability",
+          "findingId": "SP2-3",
+          "declaredClassification": "PRECISION",
+          "report": "docs/specs/reports/conversation-replies-message-links-scalability-round2-resumed.md",
+          "declaredSeverity": "medium"
+        }
+      ]
+    },
+    {
+      "theme": "Plain-language overview still suggests provider links ship in this increment",
+      "origins": [
+        {
+          "reviewer": "lessons",
+          "findingId": "P1",
+          "declaredClassification": "PRECISION",
+          "report": "docs/specs/reports/conversation-replies-message-links-lessons-round2-resumed.md",
+          "declaredSeverity": "low"
+        }
+      ]
+    },
+    {
+      "theme": "Suite admission scope clarification",
+      "origins": [
+        {
+          "reviewer": "integration",
+          "findingId": "suite scheduling sentence",
+          "declaredClassification": "PRECISION",
+          "report": "docs/specs/reports/conversation-replies-message-links-integration-round2-resumed.md"
+        },
+        {
+          "reviewer": "scalability",
+          "findingId": "suite-admission disposition",
+          "declaredClassification": "PRECISION",
+          "report": "docs/specs/reports/conversation-replies-message-links-scalability-round2-resumed.md",
+          "declaredSeverity": "medium"
+        }
+      ],
+      "additionalDispositionOrigins": [
+        {
+          "reviewer": "adversarial",
+          "classification": "PRECISION",
+          "severity": "low"
+        }
+      ],
+      "alsoContestedAsDESIGNTheme": "R2-D11"
+    },
+    {
+      "theme": "Maturation planning precision disposition",
+      "additionalDispositionOrigins": [
+        {
+          "reviewer": "adversarial",
+          "classification": "PRECISION",
+          "severity": "medium"
+        }
+      ],
+      "alsoDeclaredDESIGNTheme": "R2-D04"
+    }
+  ],
+  "priorLedger": {
+    "path": "docs/specs/reports/conversation-replies-message-links-review-ledger.json",
+    "sha256": "cac7a0624314f0944da857361ea0e8834fb0486a65b6786821ab0147a414a849",
+    "round1Verdict": "external SERIOUS ISSUES; no overall convergence recorded",
+    "round1DESIGNEntries": 13,
+    "round1StatusesPreserved": [
+      "addressed-in-round2-draft-awaiting-review"
+    ],
+    "round2PriorRecordedStatus": "conformance-running; external and internal reviews pending"
+  },
+  "conformanceSeparation": {
+    "path": "docs/specs/reports/conversation-replies-message-links-conformance-round2-resumed.json",
+    "notAnAdditionalReviewer": true,
+    "signalCount": 4,
+    "notAddedToDeclaredFindingCounts": true
+  },
+  "scope": "Only this comparison artifact written; no source edits, tests or external calls."
+}
