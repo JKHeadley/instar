@@ -1,0 +1,3 @@
+# Source-Grounded Judge Design Impact
+
+Tier 1: documentation and schema design only, with no runtime surface. Reverting these documents fully undoes the change. The design does not change blocking authority, installed files, configuration, external operations, persistent runtime state or machine behavior. Private evaluation content remains local. No migration or deployment is needed. The separate-session design review resolved four findings and a clarification; schemas parse and whitespace checks pass, but runtime and full JSON Schema validation have not run. This impact artifact was added after the design commit, as an explicit corrective record rather than a claim that the earlier commit carried it.
