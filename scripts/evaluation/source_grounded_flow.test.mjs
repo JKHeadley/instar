@@ -1,7 +1,7 @@
 import assert from 'node:assert/strict';
 import { createHash } from 'node:crypto';
 import { test } from 'node:test';
-import { verifyScheduledJudges, verifyTrialJudgeSchedule } from './source_grounded_trial_inputs.mjs';
+import { resolveTrialJudgeSchedule, verifyScheduledJudges, verifyTrialJudgeSchedule } from './source_grounded_trial_inputs.mjs';
 import { selectJudgeAttempt } from './source_grounded_judge_retry.mjs';
 import { bindJudgeSlots } from './source_grounded_judge_slots.mjs';
 import { assessJudgeIndependence } from './source_grounded_judge_independence.mjs';
@@ -86,4 +86,16 @@ test('schedule verification uses only the plan whose exact bytes were verified',
     planBytes: modified, planHash: sha(planBytes), rubricBytes, capture,
     parsePlan: () => assert.fail('modified plan reached the parser'),
   }, expected, [{ ...receipts[0], family: 'substituted-family' }, receipts[1]]), 'plan-mismatch');
+});
+
+test('a missing selected receipt preserves its scheduled slot and the surviving critical finding', () => {
+  const input = { planBytes, planHash: sha(planBytes), parsePlan: JSON.parse, rubricBytes, capture };
+  const schedule = resolveTrialJudgeSchedule(input, expected, [receipts[0]]);
+  assert.deepEqual(schedule, { state: 'bound', slots: [receipts[0], null] });
+  const slots = bindJudgeSlots(capture, schedule.slots, observations, validate);
+  assert.deepEqual(slots.map(slot => slot.state), ['bound', 'missing']);
+  const result = summarizeJudgeConsensus(criteria, slots.map(slot => slot.findings));
+  assert.equal(result.structurallyComplete, false);
+  assert.deepEqual(result.criticalFailures, [{ criterionId: 'critical', slot: 0 }]);
+  assert.deepEqual(resolveTrialJudgeSchedule(input, expected, []), { state: 'bound', slots: [null, null] });
 });

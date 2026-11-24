@@ -7,13 +7,15 @@ function digest(raw) {
 // Receipts are supplied by the host from its separate evidence store. This
 // verifies consistency with those receipts, not their origin or independence.
 export function bindJudgeSlots(capture, receipts, inputs, validateCapture) {
-  if (receipts.length !== 2 || receipts[0].slotId === receipts[1].slotId ||
-      receipts[0].attemptId === receipts[1].attemptId ||
-      receipts[0].trialId !== receipts[1].trialId) {
-    throw new TypeError('Expected two distinct scheduled judge slots and attempts from one trial');
+  const found = receipts.filter(receipt => receipt !== null);
+  if (receipts.length !== 2 || (found.length === 2 &&
+      (found[0].slotId === found[1].slotId || found[0].attemptId === found[1].attemptId ||
+       found[0].trialId !== found[1].trialId))) {
+    throw new TypeError('Expected two scheduled judge slots from one trial');
   }
 
   return receipts.map(receipt => {
+    if (receipt === null) return { state: 'missing', findings: null };
     const matches = inputs.filter(input =>
       input.slotId === receipt.slotId && input.attemptId === receipt.attemptId);
     if (matches.length === 0) return { state: 'missing', findings: null };

@@ -6,7 +6,7 @@ import { assessJudgeIndependence } from './source_grounded_judge_independence.mj
 import { selectJudgeAttempt } from './source_grounded_judge_retry.mjs';
 import { bindJudgeSlots } from './source_grounded_judge_slots.mjs';
 import { summarizeJudgeConsensus } from './source_grounded_consensus.mjs';
-import { verifyTrialJudgeSchedule, verifyTrialInputs } from './source_grounded_trial_inputs.mjs';
+import { resolveTrialJudgeSchedule, verifyTrialJudgeSchedule, verifyTrialInputs } from './source_grounded_trial_inputs.mjs';
 
 const [validatorRoot] = process.argv.slice(2);
 assert(validatorRoot, 'Pass the local validator worktree path');
@@ -64,6 +64,12 @@ const incomplete = bindJudgeSlots(input, receipts, wrong, validateCapture);
 assert.deepEqual(incomplete.map(slot => slot.state), ['bound', 'binding-mismatch']);
 assert.equal(aggregate(incomplete).structurallyComplete, false);
 assert.deepEqual(aggregate(incomplete).criticalFailures, [{ criterionId: 'criterion', slot: 0 }]);
+
+const partial = resolveTrialJudgeSchedule({ ...verifiedPlan, capture: input }, identity, [receipts[0]]);
+assert.equal(partial.state, 'bound');
+const partialSlots = bindJudgeSlots(input, partial.slots, observations, validateCapture);
+assert.deepEqual(partialSlots.map(slot => slot.state), ['bound', 'missing']);
+assert.deepEqual(aggregate(partialSlots).criticalFailures, [{ criterionId: 'criterion', slot: 0 }]);
 
 const slotIds = receipts.map(receipt => receipt.slotId);
 assert.equal(assessJudgeIndependence(slotIds, receipts, 4), 'supported');
