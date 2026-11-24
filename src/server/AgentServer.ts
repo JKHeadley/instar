@@ -2728,6 +2728,7 @@ export class AgentServer {
           nonceStore: coord.managers.nonceStore,
           securityLog: coord.managers.securityLog,
           localMachineId: coord.identity!.machineId,
+          localSigningKeyPem: options.localSigningKeyPem || undefined,
         },
         localMachineId: coord.identity!.machineId,
         localSigningKeyPem: options.localSigningKeyPem ?? '',
