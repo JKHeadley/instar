@@ -1,0 +1,30 @@
+{
+  "description": "Invented read-only surrounding console state for Accounts captures. This is not live agent health, a paired owner, an operational Work Board or permission to send Telegram messages.",
+  "projectName": "Synthetic Accounts Fixture",
+  "browser": {
+    "enabled": true,
+    "approveEnabled": false,
+    "ownerPhoneCanApprove": false,
+    "telegramConfigured": false,
+    "holdsLease": false,
+    "approvalPath": "dashboard",
+    "nativeEnabled": true
+  },
+  "workBoard": {
+    "enabled": true,
+    "union": []
+  },
+  "health": {
+    "uptimeMs": 0,
+    "sessionCount": 0,
+    "maxSessions": 10,
+    "currentJobFailures": 0,
+    "degradations": [],
+    "llmReliability": {
+      "status": "unavailable",
+      "components": [],
+      "reason": "The synthetic Accounts fixture does not initialize background health telemetry."
+    },
+    "claudeKeyDead": false
+  }
+}

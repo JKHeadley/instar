@@ -1,3 +1,4 @@
+import { createBrowserStatusRead } from './browserStatusRead.js';
 /**
  * Browser devices (docs/specs/dashboard-conversations-browser-device.md).
  *
@@ -452,27 +453,17 @@ export function mountBrowserDeviceRoutes(
   router: Router, svc: MobilePairingService,
   opts: { verifyOperatorSession?: (token: string | undefined) => boolean; telegramConfigured?: () => boolean; approvalChat?: () => Promise<{ name: string; username: string | null } | null> },
 ): void {
-  router.get('/mobile/browser-devices/status', async (req: Request, res: Response) => {
-    res.setHeader('Cache-Control', 'no-store');
-    if (!svc.browserOn()) { res.status(503).json({ error: 'browser-devices-off', detail: 'Conversations in the dashboard are switched off on this agent.' }); return; }
-    if (principalOf(req).kind !== 'token') { res.status(403).json({ error: 'bearer-required' }); return; }
-    const machineId = svc.deps.selfMachineId ?? null;
-    const kh = typeof req.query.keyHash === 'string' ? req.query.keyHash.toLowerCase() : null;
-    if (kh !== null && !/^[0-9a-f]{64}$/.test(kh)) { res.status(400).json({ error: 'bad-key-hash' }); return; }
-    // Which private chat the approval message arrives in, by the bot's own name, so a missed message is found.
-    const approvalChat = svc.approvalPath() === 'telegram' && opts.approvalChat
-      ? await Promise.race([opts.approvalChat().catch(() => null), new Promise<null>((r) => setTimeout(() => r(null), 1500).unref?.())])
-      : null;
-    res.json({
-      enabled: true, machineId, nickname: machineNickname(svc, machineId) ?? svc.deps.config.projectName ?? null, approvalChat,
-      serverTime: Date.now(), approvalPath: svc.approvalPath(), approveEnabled: isPairingApproveEnabled(svc.deps.config),
-      ownerPhoneApproves: isPairingApproveEnabled(svc.deps.config) && svc.ownerPhoneCanApprove(),
-      // Sending into Telegram from the app speaks as the Telegram owner and needs the serving lease.
-      telegramSend: !!opts.telegramConfigured?.() && svc.holdsLease() && (svc.deps.telegramOwnerPresent ? svc.deps.telegramOwnerPresent() : true),
-      limits: { maxFiles: MAX_ATTACHMENTS, maxMessageBytes: MAX_MESSAGE_BYTES, maxFileBytes: MAX_FILE_BYTES, chunkBytes: CHUNK_BYTES },
-      ...(kh ? { key: browserKeyState(svc, kh) } : {}),
-    });
-  });
+  router.get('/mobile/browser-devices/status', createBrowserStatusRead({
+    browserOn: () => svc.browserOn(), bearerOk: req => principalOf(req).kind === 'token',
+    machineId: () => svc.deps.selfMachineId ?? null,
+    nickname: id => machineNickname(svc, id), projectName: () => svc.deps.config.projectName,
+    approvalPath: () => svc.approvalPath(),
+    ...(opts.approvalChat ? { approvalChat: () => opts.approvalChat!() } : {}),
+    approveEnabled: () => isPairingApproveEnabled(svc.deps.config), ownerPhoneCanApprove: () => svc.ownerPhoneCanApprove(),
+    telegramConfigured: () => !!opts.telegramConfigured?.(), holdsLease: () => svc.holdsLease(),
+    telegramOwnerPresent: () => svc.deps.telegramOwnerPresent ? svc.deps.telegramOwnerPresent() : true,
+    keyState: key => browserKeyState(svc, key),
+  }));
 
   router.post('/mobile/browser-devices', async (req: Request, res: Response) => {
     res.setHeader('Cache-Control', 'no-store');

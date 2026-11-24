@@ -453,9 +453,9 @@ export class SafeFsExecutor {
    * removed with `fs.promises.rm` and its retry defaults. Missing targets are a no-op.
    */
   static async safeRmTreeSerial(target: string, opts: SafeFsOptions): Promise<void> {
-    const { operation, nukeAgentHomeScope, worktreeTrashScope } = opts;
+    const { operation, localVerifyScopeOk, nukeAgentHomeScope, worktreeTrashScope } = opts;
     // A whole-tree recursive, forced removal.
-    const canonical = guard(target, operation, 'safeRmTreeSerial', { nukeAgentHomeScope, worktreeTrash: trashOf(worktreeTrashScope), recursive: true, force: true });
+    const canonical = guard(target, operation, 'safeRmTreeSerial', { localVerifyScopeOk, nukeAgentHomeScope, worktreeTrash: trashOf(worktreeTrashScope), recursive: true, force: true });
     try {
       try {
         await removeTreeSerially(target);

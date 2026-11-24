@@ -1,0 +1,3 @@
+# Deliberately standalone: this verifier toolchain cannot resolve or change the app's runtime graph.
+# pnpm always includes this package itself; no additional workspace packages are admitted.
+packages: []

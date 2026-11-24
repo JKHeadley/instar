@@ -88,6 +88,7 @@ interface FakeOpts {
   gitDurations?: Partial<Record<string, number>>;
   mergeTreeStatus?: number;
   npmCiStatus?: number;
+  buildStatus?: number;
   lintStatus?: number;
   laneStatuses?: Partial<Record<'unit' | 'integration' | 'e2e', string[]>>;
   porcelain?: string;
@@ -159,6 +160,7 @@ function fake(o: FakeOpts = {}) {
         return ok();
       }
       case 'status': return ok(o.porcelain ?? '');
+      case 'rev-parse': return ok(`${TREE}\n`);
       case 'ls-tree': {
         const extra = [...Object.values(o.laneFiles ?? {}), ...Object.values(o.laneNamed ?? {})].flatMap((m) => Object.keys(m ?? {}));
         return ok(['package.json', 'src/index.ts', ...TEST_FILES, ...extra, ...(o.extraTree ?? []), 'tests/fixtures/x.test.ts'].join('\n') + '\n');
@@ -224,7 +226,7 @@ function fake(o: FakeOpts = {}) {
       t += dur;
       if (key === 'npm-ci') return r(o.npmCiStatus ?? 0);
       if (key === 'lint') return r(o.lintStatus ?? 0);
-      if (key === 'build') return r(0);
+      if (key === 'build') return r(o.buildStatus ?? 0);
       const out = args.find((a) => a.startsWith('--outputFile='))!.slice('--outputFile='.length);
       const lane = key as 'unit' | 'integration' | 'e2e';
       if (o.hang?.includes(lane) && opts.signal) {
@@ -1801,4 +1803,108 @@ it.each(['collection', 'assembly', 'invalid field', 'inconsistent field', 'throw
     if (fault !== 'logging') expect(f.logs.some((e) => e.event === 'first-part-evidence-incomplete')).toBe(true);
     if (fault.includes('field')) expect(result.record.firstPart).toBeUndefined();
   } finally { restore(); }
+});
+
+
+describe('internal installed design target producer lifecycle', () => {
+  function install(f: ReturnType<typeof fake>, mode: 'normal' | 'before' | 'during' | 'after' | 'seal' | 'handoff' = 'normal') {
+    const events: string[] = [];
+    const actual = f.seams.exec;
+    f.seams.exec = async (command, args, opts) => { events.push(`actual:${command}:${args.join(' ')}`); return actual(command, args, opts); };
+    const producer = {
+      observeCommand: vi.fn(async (command: { phase: string }, execute: () => Promise<ExecResult>) => {
+        events.push(`observe:${command.phase}`);
+        if (mode === 'before' && command.phase === 'build') throw new Error('observer before execution');
+        if (mode === 'during' && command.phase === 'build') { void execute(); throw new Error('observer during execution'); }
+        await execute();
+        if (mode === 'after' && command.phase === 'build') throw new Error('observer after execution');
+      }),
+      completeBuild: vi.fn(async () => { events.push('complete'); if (mode === 'seal') throw new Error('seal unavailable'); }),
+      postLanes: vi.fn(async () => { events.push('handoff'); if (mode === 'handoff') throw new Error('handoff unavailable'); }),
+      release: vi.fn(async () => { events.push('release'); return { status: 'released' as const, roots: [] }; }),
+    };
+    f.seams.designTarget = { open: vi.fn(async context => {
+      events.push('open');
+      expect(context.runDir).toBe(P.runDir); expect(context.verifyRoot).toBe(P.verifyRoot);
+      expect(context.baseSha).toBe(BASE); expect(context.mergeTree).toBe(TREE);
+      expect(await context.readSourceIdentity()).toEqual({ tree: TREE, clean: true });
+      return producer;
+    }) };
+    return { events, producer };
+  }
+  it('observes exactly the existing install/build list and completes before lint, then hands off only after the full clean lanes', async () => {
+    const f = fake(), lifecycle = install(f); const result = await runVerify(input(), f.seams);
+    expect(result.kind).toBe('record'); if(result.kind !== 'record') return;
+    expect(result.record.outcome).toBe('success'); expect(result.record).not.toHaveProperty('design');
+    expect(lifecycle.producer.observeCommand.mock.calls.map(([command]) => command.phase)).toEqual(['install','build','build']);
+    expect(lifecycle.events.indexOf('complete')).toBeLessThan(lifecycle.events.indexOf('actual:sh:-c tsc --noEmit'));
+    expect(lifecycle.events.indexOf('handoff')).toBeGreaterThan(lifecycle.events.findLastIndex(event => event.startsWith('actual:node:')));
+    expect(lifecycle.events.at(-1)).toBe('release');
+    const source = f.gitCalls.filter(call => call.args[0] === 'rev-parse' || call.args[0] === 'status' && call.workTree);
+    expect(source.every(call => call.gitDir === `${P.bare}/worktrees/${path.basename(P.runDir)}` && call.workTree === P.runDir)).toBe(true);
+    expect(f.gitCalls.some(call => call.args.join(' ') === `diff --name-status --no-renames ${BASE} ${TREE}`)).toBe(true);
+    expect(f.execCalls.filter(call => call.command === 'npm')).toHaveLength(1);
+    expect(f.execCalls.filter(call => call.command === 'sh' && call.args[1] === 'tsc')).toHaveLength(1);
+  });
+  for (const mode of ['before','during','after','seal','handoff'] as const) it(`preserves exactly-once real commands when ${mode} observation fails`, async () => {
+    const f=fake(), lifecycle=install(f,mode); const result=await runVerify(input(),f.seams);
+    expect(result.kind).toBe('record');if(result.kind !== 'record')return;expect(result.record.outcome).toBe('success');
+    expect(f.execCalls.filter(call=>call.command==='sh'&&call.args[1]==='tsc')).toHaveLength(1);
+    expect(f.execCalls.filter(call=>call.command==='sh'&&call.args[1]==='node scripts/gen.mjs')).toHaveLength(1);
+    expect(f.execCalls.filter(call=>call.command==='sh'&&call.args[1]==='tsc --noEmit')).toHaveLength(1);
+    expect(lifecycle.producer.release).toHaveBeenCalledTimes(1);
+    expect(f.logs.some(event=>event.event==='design-target-unavailable')).toBe(true);
+  });
+  for (const mode of ['before','during','after'] as const) it(`retains genuine failed build outcome after observer ${mode} error`,async()=>{
+    const f=fake({buildStatus:1}), lifecycle=install(f,mode);const result=await runVerify(input(),f.seams);
+    expect(result.kind).toBe('record');if(result.kind!=='record')return;expect(result.record.outcome).toBe('failure');
+    expect(f.execCalls.filter(call=>call.command==='sh'&&call.args[1]==='tsc')).toHaveLength(1);expect(lifecycle.producer.completeBuild).not.toHaveBeenCalled();expect(lifecycle.producer.postLanes).not.toHaveBeenCalled();
+  });
+  it('does not mint after missing build list or failed install',async()=>{
+    for(const missing of [true,false]) {const f=fake(missing?{}:{npmCiStatus:1}),lifecycle=install(f);if(missing)f.files.set(path.join(P.runDir,'package.json'),JSON.stringify({scripts:{build:'',lint:'tsc --noEmit'}}));
+      await runVerify(input(),f.seams);expect(lifecycle.producer.completeBuild).not.toHaveBeenCalled();expect(lifecycle.producer.postLanes).not.toHaveBeenCalled();expect(lifecycle.producer.release).toHaveBeenCalledTimes(1);}
+  });
+  it('keeps a first-part red separate from build provenance and releases without handoff',async()=>{
+    const f=fake({laneStatuses:{unit:['failed']}}),lifecycle=install(f);const result=await runVerify(input({likelyFailingFirst:{setting:'on',previous:[],list:['tests/unit/a.test.ts']}}),f.seams);
+    expect(result.kind).toBe('record');if(result.kind!=='record')return;expect(result.record.outcome).toBe('failure');expect(lifecycle.producer.completeBuild).toHaveBeenCalledTimes(1);expect(lifecycle.producer.postLanes).not.toHaveBeenCalled();expect(lifecycle.producer.release).toHaveBeenCalledTimes(1);expect(result.record.firstPart).not.toHaveProperty('build');
+  });
+  it('leaves nonselected runs alone and retains cleanup-unconfirmed rather than claiming removal',async()=>{
+    const f=fake();f.seams.designTarget={open:async()=>null};const result=await runVerify(input(),f.seams);expect(result.kind).toBe('record');expect(f.logs.some(event=>event.event==='design-target-unavailable')).toBe(false);
+    const g=fake(),lifecycle=install(g);lifecycle.producer.release.mockImplementation(async()=>({status:'cleanup-unconfirmed' as never,roots:['owned snapshot'] as never}));await runVerify(input(),g.seams);expect(g.logs.some(event=>event.event==='design-target-unavailable'&&String(event.reason).includes('Owned roots retained'))).toBe(true);
+  });
+});
+
+
+it('treats design open failure as unavailable and detects a changed pinned admin pointer',async()=>{
+ const f=fake();f.seams.designTarget={open:async context=>{expect(await context.readBaseFile('package.json')).toBeNull();const pointer=path.join(P.runDir,'.git'),old=f.files.get(pointer)!;f.files.set(pointer,`gitdir: ${P.bare}/worktrees/replaced`);expect(await context.readSourceIdentity()).toEqual({tree:'',clean:false});f.files.set(pointer,old);throw new Error('opening source observer failed');}};
+ const result=await runVerify(input(),f.seams);expect(result.kind).toBe('record');if(result.kind!=='record')return;expect(result.record.outcome).toBe('success');expect(f.execCalls.filter(call=>call.command==='npm')).toHaveLength(1);expect(f.execCalls.filter(call=>call.command==='sh'&&call.args[1]==='tsc')).toHaveLength(1);expect(f.logs.some(event=>event.event==='design-target-unavailable'&&event.stage==='open')).toBe(true);
+});
+it('never hands a completed snapshot to design after the final tree becomes dirty',async()=>{
+ const f=fake();const handoff=vi.fn(async()=>{}),release=vi.fn(async()=>({status:'released' as const,roots:[]}));f.seams.designTarget={open:async()=>({observeCommand:async(_command,execute)=>{await execute();},completeBuild:async()=>{},postLanes:handoff,release})};const git=f.seams.git;f.seams.git=async(args,opts)=>opts.operation==='local-verify:porcelain'?{status:0,stdout:' M source.ts\n',stderr:'',timedOut:false}:git(args,opts);
+ const result=await runVerify(input(),f.seams);expect(result.kind).toBe('record');if(result.kind!=='record')return;expect(result.record.outcome).toBe('failure');expect(handoff).not.toHaveBeenCalled();expect(release).toHaveBeenCalledTimes(1);
+});
+
+it('counts design producer time against the real total deadline without stealing actual build/lint command allowance',async()=>{
+ const f=fake();f.seams.designTarget={open:async()=>({observeCommand:async(_command,execute)=>{await execute();},completeBuild:async()=>{await f.seams.sleep(16*MIN);throw new Error('snapshot unavailable');},postLanes:async()=>{},release:async()=>({status:'released',roots:[]})})};
+ const result=await runVerify(input(),f.seams);expect(result.kind).toBe('record');if(result.kind!=='record')return;expect(result.record.outcome).toBe('success');expect(f.execCalls.filter(call=>call.command==='sh'&&call.args[1]==='tsc --noEmit')).toHaveLength(1);expect(Date.parse(result.record.finishedAt)-Date.parse(result.record.startedAt)).toBeGreaterThanOrEqual(16*MIN);
+});
+
+it('does not extend totalActive when the new snapshot interval is excluded from build/lint wall accounting',async()=>{
+ const f=fake();f.seams.designTarget={open:async()=>({observeCommand:async(_command,execute)=>{await execute();},completeBuild:async()=>{await f.seams.sleep(121*MIN);throw new Error('snapshot deadline');},postLanes:async()=>{},release:async()=>({status:'released',roots:[]})})};const result=await runVerify(input(),f.seams);expect(result.kind).toBe('record');if(result.kind!=='record')return;expect(result.record.outcome).toBe('error');expect(result.record.errorStep).toBe('deadline:total');expect(f.execCalls.some(call=>call.command==='sh'&&call.args[1]==='tsc --noEmit')).toBe(false);
+});
+it('keeps ordinary observer wrapper overhead inside the existing build/lint wall budget',async()=>{
+ const f=fake();f.seams.designTarget={open:async()=>({observeCommand:async(command,execute)=>{if(command.phase==='build')await f.seams.sleep(16*MIN);await execute();},completeBuild:async()=>{},postLanes:async()=>{},release:async()=>({status:'released',roots:[]})})};const result=await runVerify(input(),f.seams);expect(result.kind).toBe('record');if(result.kind!=='record')return;expect(result.record.outcome).toBe('error');expect(result.record.errorStep).toBe('deadline:build-lint');expect(f.execCalls.some(call=>call.command==='sh'&&call.args[1]==='tsc')).toBe(false);
+});
+it('executes real commands once and refuses design minting when an observer never invokes its execution callback',async()=>{
+ const f=fake();const complete=vi.fn(async()=>{});f.seams.designTarget={open:async()=>({observeCommand:async()=>{},completeBuild:complete,postLanes:async()=>{},release:async()=>({status:'released',roots:[]})})};const result=await runVerify(input(),f.seams);expect(result.kind).toBe('record');if(result.kind!=='record')return;expect(result.record.outcome).toBe('success');expect(complete).not.toHaveBeenCalled();expect(f.execCalls.filter(call=>call.command==='npm')).toHaveLength(1);expect(f.execCalls.filter(call=>call.command==='sh'&&call.args[1]==='tsc')).toHaveLength(1);expect(f.logs.some(event=>event.event==='design-target-unavailable'&&event.stage==='observer-did-not-execute')).toBe(true);
+});
+
+it('keeps the same failed-release owner reachable for the later cleanup pass',async()=>{
+ const f=fake();let attempts=0;const release=vi.fn(async()=>{if(++attempts===1)throw new Error('registration threw before retention');return{status:'released' as const,roots:[]};});f.seams.designTarget={open:async()=>({observeCommand:async(_command,execute)=>{await execute();},completeBuild:async()=>{throw new Error('copy unavailable');},postLanes:async()=>{},release})};const result=await runVerify(input(),f.seams);expect(result.kind).toBe('record');if(result.kind!=='record')return;expect(result.record.outcome).toBe('success');expect(release).toHaveBeenCalledTimes(2);
+});
+it('refuses a post-lanes success that arrives after the actual remaining total deadline',async()=>{
+ const f=fake();f.seams.designTarget={open:async()=>({observeCommand:async(_command,execute)=>{await execute();},completeBuild:async()=>{},postLanes:async()=>{await f.seams.sleep(121*MIN);},release:async()=>({status:'released',roots:[]})})};const result=await runVerify(input(),f.seams);expect(result.kind).toBe('record');if(result.kind!=='record')return;expect(result.record.outcome).toBe('error');expect(result.record.errorStep).toBe('deadline:total');
+});
+it('bounds a hung handoff, aborts future admission and observes its late completion without another effect',async()=>{
+ vi.useFakeTimers();try{const f=fake({durations:{'npm-ci':0,build:0,lint:0,unit:0,integration:0,e2e:0}});let started!:(signal:AbortSignal)=>void,finish!:()=>void;const began=new Promise<AbortSignal>(resolve=>{started=resolve;});const facts:string[]=[];const release=vi.fn(async()=>({status:'released' as const,roots:[]}));f.seams.designTarget={open:async()=>({observeCommand:async(_command,execute)=>{await execute();},completeBuild:async()=>{},postLanes:async signal=>{started(signal!);await new Promise<void>(resolve=>{finish=resolve;});facts.push('actual late completion');},release})};const running=runVerify(input({deadlines:{...LOCAL_VERIFY_DEADLINES,totalActiveMs:100}}),f.seams);const signal=await began;await vi.advanceTimersByTimeAsync(101);const result=await running;expect(signal.aborted).toBe(true);expect(result.kind).toBe('record');if(result.kind==='record')expect(result.record.errorStep).toBe('deadline:total');expect(release).toHaveBeenCalledTimes(1);finish();await Promise.resolve();await Promise.resolve();expect(facts).toEqual(['actual late completion']);}finally{vi.useRealTimers();}
 });

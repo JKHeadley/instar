@@ -1,0 +1,10 @@
+{
+  "name": "instar-design-renderer-toolchain",
+  "version": "0.0.0",
+  "private": true,
+  "type": "module",
+  "dependencies": {
+    "axe-core": "4.14.1",
+    "playwright-core": "1.65.1"
+  }
+}

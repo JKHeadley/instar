@@ -1,0 +1,2492 @@
+{
+  "version": 1,
+  "screens": [
+    {
+      "id": "console-work-conversations",
+      "surface": "Web",
+      "title": "Conversations",
+      "mainQuestion": "Which conversation needs my attention, and how do I open it?",
+      "route": "/dashboard/console/#/work/conversations",
+      "sources": [
+        "dashboard/console/conversation-corrections.js",
+        "dashboard/console/conversation-effort-actions.js",
+        "dashboard/console/conversation-erasure.js",
+        "dashboard/console/conversation-machines.js",
+        "dashboard/console/conversation-pending.js",
+        "dashboard/console/conversation-source-cards.js",
+        "dashboard/console/conversation-suggestions.js",
+        "dashboard/console/conversation-write-continuity.js",
+        "dashboard/console/conversations-model.js",
+        "dashboard/console/conversations.js",
+        "dashboard/console/make-card.js"
+      ],
+      "shared": [
+        "dashboard/console/agent-health-note.js",
+        "dashboard/console/console.css",
+        "dashboard/console/console.js",
+        "dashboard/console/fonts/inter-latin-wght-normal.woff2",
+        "dashboard/console/fonts/jetbrains-mono-latin-wght-normal.woff2",
+        "dashboard/console/home-model.js",
+        "dashboard/console/index.html",
+        "dashboard/console/nav-model.js",
+        "dashboard/console/needs-model.js",
+        "dashboard/console/needs-strip.js",
+        "dashboard/console/net-state.js",
+        "dashboard/console/page-lifecycle.js",
+        "dashboard/console/ticket-model.js",
+        "dashboard/console/ui.js",
+        "dashboard/favicon.png",
+        "dashboard/logo.png",
+        "src/server/accountsReadRoutes.ts",
+        "src/server/browserStatusRead.ts",
+        "src/server/mobileHealthRoutes.ts",
+        "src/server/workBoardRoutes.ts",
+        "src/server/healthBaseRead.ts"
+      ],
+      "capture": "uncaptured",
+      "trackedBy": "CMT-2169"
+    },
+    {
+      "id": "console-work-promises",
+      "surface": "Web",
+      "title": "Promises",
+      "mainQuestion": "Which promises are still open, and what are they waiting on?",
+      "route": "/dashboard/console/#/work/promises",
+      "sources": [
+        "dashboard/console/display-identity.js",
+        "dashboard/console/promise-actions.js",
+        "dashboard/console/promises-model.js",
+        "dashboard/console/promises.js",
+        "dashboard/console/topic-names.js",
+        "dashboard/console/unreachable-model.js"
+      ],
+      "shared": [
+        "dashboard/console/agent-health-note.js",
+        "dashboard/console/console.css",
+        "dashboard/console/console.js",
+        "dashboard/console/fonts/inter-latin-wght-normal.woff2",
+        "dashboard/console/fonts/jetbrains-mono-latin-wght-normal.woff2",
+        "dashboard/console/home-model.js",
+        "dashboard/console/index.html",
+        "dashboard/console/nav-model.js",
+        "dashboard/console/needs-model.js",
+        "dashboard/console/needs-strip.js",
+        "dashboard/console/net-state.js",
+        "dashboard/console/page-lifecycle.js",
+        "dashboard/console/ticket-model.js",
+        "dashboard/console/ui.js",
+        "dashboard/favicon.png",
+        "dashboard/logo.png",
+        "src/server/accountsReadRoutes.ts",
+        "src/server/browserStatusRead.ts",
+        "src/server/mobileHealthRoutes.ts",
+        "src/server/workBoardRoutes.ts",
+        "src/server/healthBaseRead.ts"
+      ],
+      "capture": "uncaptured",
+      "trackedBy": "CMT-2169"
+    },
+    {
+      "id": "console-work-plans",
+      "surface": "Web",
+      "title": "Plans",
+      "mainQuestion": "How is each plan progressing, and what needs my decision?",
+      "route": "/dashboard/console/#/work/plans",
+      "sources": [
+        "dashboard/console/display-identity.js",
+        "dashboard/console/plans-model.js",
+        "dashboard/console/plans.js",
+        "dashboard/console/promise-actions.js",
+        "dashboard/console/promises-model.js",
+        "dashboard/console/promises.js",
+        "dashboard/console/topic-names.js",
+        "dashboard/console/unreachable-model.js"
+      ],
+      "shared": [
+        "dashboard/console/agent-health-note.js",
+        "dashboard/console/console.css",
+        "dashboard/console/console.js",
+        "dashboard/console/fonts/inter-latin-wght-normal.woff2",
+        "dashboard/console/fonts/jetbrains-mono-latin-wght-normal.woff2",
+        "dashboard/console/home-model.js",
+        "dashboard/console/index.html",
+        "dashboard/console/nav-model.js",
+        "dashboard/console/needs-model.js",
+        "dashboard/console/needs-strip.js",
+        "dashboard/console/net-state.js",
+        "dashboard/console/page-lifecycle.js",
+        "dashboard/console/ticket-model.js",
+        "dashboard/console/ui.js",
+        "dashboard/favicon.png",
+        "dashboard/logo.png",
+        "src/server/accountsReadRoutes.ts",
+        "src/server/browserStatusRead.ts",
+        "src/server/mobileHealthRoutes.ts",
+        "src/server/workBoardRoutes.ts",
+        "src/server/healthBaseRead.ts"
+      ],
+      "capture": "uncaptured",
+      "trackedBy": "CMT-2169"
+    },
+    {
+      "id": "console-work-plans-in-the-way",
+      "surface": "Web",
+      "title": "Plans In The Way",
+      "mainQuestion": "What is blocking a plan from moving forward?",
+      "route": "/dashboard/console/#/work/plans/in-the-way",
+      "sources": [
+        "dashboard/console/display-identity.js",
+        "dashboard/console/plans-model.js",
+        "dashboard/console/plans.js",
+        "dashboard/console/promise-actions.js",
+        "dashboard/console/promises-model.js",
+        "dashboard/console/promises.js",
+        "dashboard/console/topic-names.js",
+        "dashboard/console/unreachable-model.js"
+      ],
+      "shared": [
+        "dashboard/console/agent-health-note.js",
+        "dashboard/console/console.css",
+        "dashboard/console/console.js",
+        "dashboard/console/fonts/inter-latin-wght-normal.woff2",
+        "dashboard/console/fonts/jetbrains-mono-latin-wght-normal.woff2",
+        "dashboard/console/home-model.js",
+        "dashboard/console/index.html",
+        "dashboard/console/nav-model.js",
+        "dashboard/console/needs-model.js",
+        "dashboard/console/needs-strip.js",
+        "dashboard/console/net-state.js",
+        "dashboard/console/page-lifecycle.js",
+        "dashboard/console/ticket-model.js",
+        "dashboard/console/ui.js",
+        "dashboard/favicon.png",
+        "dashboard/logo.png",
+        "src/server/accountsReadRoutes.ts",
+        "src/server/browserStatusRead.ts",
+        "src/server/mobileHealthRoutes.ts",
+        "src/server/workBoardRoutes.ts",
+        "src/server/healthBaseRead.ts"
+      ],
+      "capture": "uncaptured",
+      "trackedBy": "CMT-2169"
+    },
+    {
+      "id": "console-work-schedule",
+      "surface": "Web",
+      "title": "Schedule",
+      "mainQuestion": "What is scheduled, and did it run successfully?",
+      "route": "/dashboard/console/#/work/schedule",
+      "sources": [
+        "dashboard/console/display-identity.js",
+        "dashboard/console/schedule-model.js",
+        "dashboard/console/schedule.js",
+        "dashboard/console/topic-names.js",
+        "dashboard/console/unreachable-model.js"
+      ],
+      "shared": [
+        "dashboard/console/agent-health-note.js",
+        "dashboard/console/console.css",
+        "dashboard/console/console.js",
+        "dashboard/console/fonts/inter-latin-wght-normal.woff2",
+        "dashboard/console/fonts/jetbrains-mono-latin-wght-normal.woff2",
+        "dashboard/console/home-model.js",
+        "dashboard/console/index.html",
+        "dashboard/console/nav-model.js",
+        "dashboard/console/needs-model.js",
+        "dashboard/console/needs-strip.js",
+        "dashboard/console/net-state.js",
+        "dashboard/console/page-lifecycle.js",
+        "dashboard/console/ticket-model.js",
+        "dashboard/console/ui.js",
+        "dashboard/favicon.png",
+        "dashboard/logo.png",
+        "src/server/accountsReadRoutes.ts",
+        "src/server/browserStatusRead.ts",
+        "src/server/mobileHealthRoutes.ts",
+        "src/server/workBoardRoutes.ts",
+        "src/server/healthBaseRead.ts"
+      ],
+      "capture": "uncaptured",
+      "trackedBy": "CMT-2169"
+    },
+    {
+      "id": "console-work-development",
+      "surface": "Web",
+      "title": "Development",
+      "mainQuestion": "What is being built, and what is preventing it from shipping?",
+      "route": "/dashboard/console/#/work/development",
+      "sources": [
+        "dashboard/console/development-model.js",
+        "dashboard/console/development.js",
+        "dashboard/console/display-identity.js",
+        "dashboard/console/topic-names.js",
+        "dashboard/console/unreachable-model.js"
+      ],
+      "shared": [
+        "dashboard/console/agent-health-note.js",
+        "dashboard/console/console.css",
+        "dashboard/console/console.js",
+        "dashboard/console/fonts/inter-latin-wght-normal.woff2",
+        "dashboard/console/fonts/jetbrains-mono-latin-wght-normal.woff2",
+        "dashboard/console/home-model.js",
+        "dashboard/console/index.html",
+        "dashboard/console/nav-model.js",
+        "dashboard/console/needs-model.js",
+        "dashboard/console/needs-strip.js",
+        "dashboard/console/net-state.js",
+        "dashboard/console/page-lifecycle.js",
+        "dashboard/console/ticket-model.js",
+        "dashboard/console/ui.js",
+        "dashboard/favicon.png",
+        "dashboard/logo.png",
+        "src/server/accountsReadRoutes.ts",
+        "src/server/browserStatusRead.ts",
+        "src/server/mobileHealthRoutes.ts",
+        "src/server/workBoardRoutes.ts",
+        "src/server/healthBaseRead.ts"
+      ],
+      "capture": "uncaptured",
+      "trackedBy": "CMT-2169"
+    },
+    {
+      "id": "console-work-maturation",
+      "surface": "Web",
+      "title": "Maturation",
+      "mainQuestion": "Which capabilities are ready to advance and what evidence is missing?",
+      "route": "/dashboard/console/#/work/maturation",
+      "sources": [
+        "dashboard/console/display-identity.js",
+        "dashboard/console/maturation-board-model.js",
+        "dashboard/console/maturation-board.js",
+        "dashboard/console/measurement-coverage.js",
+        "dashboard/console/measurement-trend.js",
+        "dashboard/console/pace-model.js",
+        "dashboard/console/pace.js",
+        "dashboard/console/quality-history.js"
+      ],
+      "shared": [
+        "dashboard/console/agent-health-note.js",
+        "dashboard/console/console.css",
+        "dashboard/console/console.js",
+        "dashboard/console/fonts/inter-latin-wght-normal.woff2",
+        "dashboard/console/fonts/jetbrains-mono-latin-wght-normal.woff2",
+        "dashboard/console/home-model.js",
+        "dashboard/console/index.html",
+        "dashboard/console/nav-model.js",
+        "dashboard/console/needs-model.js",
+        "dashboard/console/needs-strip.js",
+        "dashboard/console/net-state.js",
+        "dashboard/console/page-lifecycle.js",
+        "dashboard/console/ticket-model.js",
+        "dashboard/console/ui.js",
+        "dashboard/favicon.png",
+        "dashboard/logo.png",
+        "src/server/accountsReadRoutes.ts",
+        "src/server/browserStatusRead.ts",
+        "src/server/mobileHealthRoutes.ts",
+        "src/server/workBoardRoutes.ts",
+        "src/server/healthBaseRead.ts"
+      ],
+      "capture": "uncaptured",
+      "trackedBy": "CMT-2169"
+    },
+    {
+      "id": "console-work-ideas",
+      "surface": "Web",
+      "title": "Ideas",
+      "mainQuestion": "Which ideas are worth pursuing next?",
+      "route": "/dashboard/console/#/work/ideas",
+      "sources": [
+        "dashboard/console/ideas-model.js",
+        "dashboard/console/ideas.js"
+      ],
+      "shared": [
+        "dashboard/console/agent-health-note.js",
+        "dashboard/console/console.css",
+        "dashboard/console/console.js",
+        "dashboard/console/fonts/inter-latin-wght-normal.woff2",
+        "dashboard/console/fonts/jetbrains-mono-latin-wght-normal.woff2",
+        "dashboard/console/home-model.js",
+        "dashboard/console/index.html",
+        "dashboard/console/nav-model.js",
+        "dashboard/console/needs-model.js",
+        "dashboard/console/needs-strip.js",
+        "dashboard/console/net-state.js",
+        "dashboard/console/page-lifecycle.js",
+        "dashboard/console/ticket-model.js",
+        "dashboard/console/ui.js",
+        "dashboard/favicon.png",
+        "dashboard/logo.png",
+        "src/server/accountsReadRoutes.ts",
+        "src/server/browserStatusRead.ts",
+        "src/server/mobileHealthRoutes.ts",
+        "src/server/workBoardRoutes.ts",
+        "src/server/healthBaseRead.ts"
+      ],
+      "capture": "uncaptured",
+      "trackedBy": "CMT-2169"
+    },
+    {
+      "id": "console-work-board",
+      "surface": "Web",
+      "title": "Work Board",
+      "mainQuestion": "What needs my approval and what work is the agent doing?",
+      "route": "/dashboard/console/#/work/board",
+      "sources": [
+        "dashboard/console/chats-model.js",
+        "dashboard/console/conversation-write-continuity.js",
+        "dashboard/console/conversations-model.js",
+        "dashboard/console/display-identity.js",
+        "dashboard/console/mandates-model.js",
+        "dashboard/console/projects-model.js",
+        "dashboard/console/projects.js",
+        "dashboard/console/topic-names.js",
+        "dashboard/console/unreachable-model.js",
+        "dashboard/console/work-model.js",
+        "dashboard/console/work.js"
+      ],
+      "shared": [
+        "dashboard/console/agent-health-note.js",
+        "dashboard/console/console.css",
+        "dashboard/console/console.js",
+        "dashboard/console/fonts/inter-latin-wght-normal.woff2",
+        "dashboard/console/fonts/jetbrains-mono-latin-wght-normal.woff2",
+        "dashboard/console/home-model.js",
+        "dashboard/console/index.html",
+        "dashboard/console/nav-model.js",
+        "dashboard/console/needs-model.js",
+        "dashboard/console/needs-strip.js",
+        "dashboard/console/net-state.js",
+        "dashboard/console/page-lifecycle.js",
+        "dashboard/console/ticket-model.js",
+        "dashboard/console/ui.js",
+        "dashboard/favicon.png",
+        "dashboard/logo.png",
+        "src/server/accountsReadRoutes.ts",
+        "src/server/browserStatusRead.ts",
+        "src/server/mobileHealthRoutes.ts",
+        "src/server/workBoardRoutes.ts",
+        "src/server/healthBaseRead.ts"
+      ],
+      "capture": "uncaptured",
+      "trackedBy": "CMT-2169"
+    },
+    {
+      "id": "console-work-sessions",
+      "surface": "Web",
+      "title": "Sessions",
+      "mainQuestion": "Which sessions are running, and how can I inspect or guide one?",
+      "route": "/dashboard/console/#/work/sessions",
+      "sources": [
+        "dashboard/console/display-identity.js",
+        "dashboard/console/input-model.js",
+        "dashboard/console/paste-model.js",
+        "dashboard/console/paste.js",
+        "dashboard/console/sessions-model.js",
+        "dashboard/console/sessions.js",
+        "dashboard/console/topic-names.js",
+        "dashboard/console/unreachable-model.js"
+      ],
+      "shared": [
+        "dashboard/console/agent-health-note.js",
+        "dashboard/console/console.css",
+        "dashboard/console/console.js",
+        "dashboard/console/fonts/inter-latin-wght-normal.woff2",
+        "dashboard/console/fonts/jetbrains-mono-latin-wght-normal.woff2",
+        "dashboard/console/home-model.js",
+        "dashboard/console/index.html",
+        "dashboard/console/nav-model.js",
+        "dashboard/console/needs-model.js",
+        "dashboard/console/needs-strip.js",
+        "dashboard/console/net-state.js",
+        "dashboard/console/page-lifecycle.js",
+        "dashboard/console/ticket-model.js",
+        "dashboard/console/ui.js",
+        "dashboard/favicon.png",
+        "dashboard/logo.png",
+        "src/server/accountsReadRoutes.ts",
+        "src/server/browserStatusRead.ts",
+        "src/server/mobileHealthRoutes.ts",
+        "src/server/workBoardRoutes.ts",
+        "src/server/healthBaseRead.ts"
+      ],
+      "capture": "uncaptured",
+      "trackedBy": "CMT-2169"
+    },
+    {
+      "id": "console-work-chats",
+      "surface": "Web",
+      "title": "Chats",
+      "mainQuestion": "Which messages and conversations can I read or reply to here?",
+      "route": "/dashboard/console/#/work/chats",
+      "sources": [
+        "dashboard/console/accounts-model.js",
+        "dashboard/console/agents-model.js",
+        "dashboard/console/browser-device.js",
+        "dashboard/console/chats-model.js",
+        "dashboard/console/chats.js",
+        "dashboard/console/context-model.js",
+        "dashboard/console/conversations-model.js",
+        "dashboard/console/costs-model.js",
+        "dashboard/console/credential-shape.js",
+        "dashboard/console/development-model.js",
+        "dashboard/console/display-identity.js",
+        "dashboard/console/health-model.js",
+        "dashboard/console/learned-model.js",
+        "dashboard/console/mandates-model.js",
+        "dashboard/console/plans-model.js",
+        "dashboard/console/projects-model.js",
+        "dashboard/console/secrets-model.js",
+        "dashboard/console/topic-names.js",
+        "dashboard/console/unreachable-model.js",
+        "dashboard/console/work-model.js"
+      ],
+      "shared": [
+        "dashboard/console/agent-health-note.js",
+        "dashboard/console/console.css",
+        "dashboard/console/console.js",
+        "dashboard/console/fonts/inter-latin-wght-normal.woff2",
+        "dashboard/console/fonts/jetbrains-mono-latin-wght-normal.woff2",
+        "dashboard/console/home-model.js",
+        "dashboard/console/index.html",
+        "dashboard/console/nav-model.js",
+        "dashboard/console/needs-model.js",
+        "dashboard/console/needs-strip.js",
+        "dashboard/console/net-state.js",
+        "dashboard/console/page-lifecycle.js",
+        "dashboard/console/ticket-model.js",
+        "dashboard/console/ui.js",
+        "dashboard/favicon.png",
+        "dashboard/logo.png",
+        "src/server/accountsReadRoutes.ts",
+        "src/server/browserStatusRead.ts",
+        "src/server/mobileHealthRoutes.ts",
+        "src/server/workBoardRoutes.ts",
+        "src/server/healthBaseRead.ts"
+      ],
+      "capture": "uncaptured",
+      "trackedBy": "CMT-2169"
+    },
+    {
+      "id": "console-work-documents",
+      "surface": "Web",
+      "title": "Documents",
+      "mainQuestion": "Which document needs my comments or decision?",
+      "route": "/dashboard/console/#/work/documents",
+      "sources": [
+        "dashboard/console/documents.js"
+      ],
+      "shared": [
+        "dashboard/console/agent-health-note.js",
+        "dashboard/console/console.css",
+        "dashboard/console/console.js",
+        "dashboard/console/fonts/inter-latin-wght-normal.woff2",
+        "dashboard/console/fonts/jetbrains-mono-latin-wght-normal.woff2",
+        "dashboard/console/home-model.js",
+        "dashboard/console/index.html",
+        "dashboard/console/nav-model.js",
+        "dashboard/console/needs-model.js",
+        "dashboard/console/needs-strip.js",
+        "dashboard/console/net-state.js",
+        "dashboard/console/page-lifecycle.js",
+        "dashboard/console/ticket-model.js",
+        "dashboard/console/ui.js",
+        "dashboard/favicon.png",
+        "dashboard/logo.png",
+        "src/server/accountsReadRoutes.ts",
+        "src/server/browserStatusRead.ts",
+        "src/server/mobileHealthRoutes.ts",
+        "src/server/workBoardRoutes.ts",
+        "src/server/healthBaseRead.ts"
+      ],
+      "capture": "uncaptured",
+      "trackedBy": "CMT-2169"
+    },
+    {
+      "id": "console-capacity-machines",
+      "surface": "Web",
+      "title": "Machines",
+      "mainQuestion": "Which machines are available, healthy and leading?",
+      "route": "/dashboard/console/#/capacity/machines",
+      "sources": [
+        "dashboard/console/display-identity.js",
+        "dashboard/console/machines-model.js",
+        "dashboard/console/machines.js",
+        "dashboard/console/topic-names.js",
+        "dashboard/console/unreachable-model.js"
+      ],
+      "shared": [
+        "dashboard/console/agent-health-note.js",
+        "dashboard/console/console.css",
+        "dashboard/console/console.js",
+        "dashboard/console/fonts/inter-latin-wght-normal.woff2",
+        "dashboard/console/fonts/jetbrains-mono-latin-wght-normal.woff2",
+        "dashboard/console/home-model.js",
+        "dashboard/console/index.html",
+        "dashboard/console/nav-model.js",
+        "dashboard/console/needs-model.js",
+        "dashboard/console/needs-strip.js",
+        "dashboard/console/net-state.js",
+        "dashboard/console/page-lifecycle.js",
+        "dashboard/console/ticket-model.js",
+        "dashboard/console/ui.js",
+        "dashboard/favicon.png",
+        "dashboard/logo.png",
+        "src/server/accountsReadRoutes.ts",
+        "src/server/browserStatusRead.ts",
+        "src/server/mobileHealthRoutes.ts",
+        "src/server/workBoardRoutes.ts",
+        "src/server/healthBaseRead.ts"
+      ],
+      "capture": "uncaptured",
+      "trackedBy": "CMT-2169"
+    },
+    {
+      "id": "console-capacity-machine-care",
+      "surface": "Web",
+      "title": "Machine Care",
+      "mainQuestion": "When will machines restart, and do I need to change that?",
+      "route": "/dashboard/console/#/capacity/machine-care",
+      "sources": [
+        "dashboard/console/machine-care-model.js",
+        "dashboard/console/machine-care.js"
+      ],
+      "shared": [
+        "dashboard/console/agent-health-note.js",
+        "dashboard/console/console.css",
+        "dashboard/console/console.js",
+        "dashboard/console/fonts/inter-latin-wght-normal.woff2",
+        "dashboard/console/fonts/jetbrains-mono-latin-wght-normal.woff2",
+        "dashboard/console/home-model.js",
+        "dashboard/console/index.html",
+        "dashboard/console/nav-model.js",
+        "dashboard/console/needs-model.js",
+        "dashboard/console/needs-strip.js",
+        "dashboard/console/net-state.js",
+        "dashboard/console/page-lifecycle.js",
+        "dashboard/console/ticket-model.js",
+        "dashboard/console/ui.js",
+        "dashboard/favicon.png",
+        "dashboard/logo.png",
+        "src/server/accountsReadRoutes.ts",
+        "src/server/browserStatusRead.ts",
+        "src/server/mobileHealthRoutes.ts",
+        "src/server/workBoardRoutes.ts",
+        "src/server/healthBaseRead.ts"
+      ],
+      "capture": "uncaptured",
+      "trackedBy": "CMT-2169"
+    },
+    {
+      "id": "console-capacity-health",
+      "surface": "Web",
+      "title": "Health",
+      "mainQuestion": "Which agent systems are healthy or need repair?",
+      "route": "/dashboard/console/#/capacity/health",
+      "sources": [
+        "dashboard/console/health-model.js",
+        "dashboard/console/health.js"
+      ],
+      "shared": [
+        "dashboard/console/agent-health-note.js",
+        "dashboard/console/console.css",
+        "dashboard/console/console.js",
+        "dashboard/console/fonts/inter-latin-wght-normal.woff2",
+        "dashboard/console/fonts/jetbrains-mono-latin-wght-normal.woff2",
+        "dashboard/console/home-model.js",
+        "dashboard/console/index.html",
+        "dashboard/console/nav-model.js",
+        "dashboard/console/needs-model.js",
+        "dashboard/console/needs-strip.js",
+        "dashboard/console/net-state.js",
+        "dashboard/console/page-lifecycle.js",
+        "dashboard/console/ticket-model.js",
+        "dashboard/console/ui.js",
+        "dashboard/favicon.png",
+        "dashboard/logo.png",
+        "src/server/accountsReadRoutes.ts",
+        "src/server/browserStatusRead.ts",
+        "src/server/mobileHealthRoutes.ts",
+        "src/server/workBoardRoutes.ts",
+        "src/server/healthBaseRead.ts"
+      ],
+      "capture": "uncaptured",
+      "trackedBy": "CMT-2169"
+    },
+    {
+      "id": "console-capacity-accounts",
+      "surface": "Web",
+      "title": "Accounts",
+      "mainQuestion": "Which account has usable capacity and which sign-in needs repair?",
+      "route": "/dashboard/console/#/capacity/accounts",
+      "sources": [
+        "dashboard/console/accounts-model.js",
+        "dashboard/console/accounts.js",
+        "dashboard/console/auto-repair-model.js",
+        "dashboard/console/display-identity.js",
+        "dashboard/console/signin-progress-model.js",
+        "dashboard/console/topic-names.js",
+        "dashboard/console/unreachable-model.js",
+        "src/server/mobileCapacityRoutes.ts"
+      ],
+      "shared": [
+        "dashboard/console/agent-health-note.js",
+        "dashboard/console/console.css",
+        "dashboard/console/console.js",
+        "dashboard/console/fonts/inter-latin-wght-normal.woff2",
+        "dashboard/console/fonts/jetbrains-mono-latin-wght-normal.woff2",
+        "dashboard/console/home-model.js",
+        "dashboard/console/index.html",
+        "dashboard/console/nav-model.js",
+        "dashboard/console/needs-model.js",
+        "dashboard/console/needs-strip.js",
+        "dashboard/console/net-state.js",
+        "dashboard/console/page-lifecycle.js",
+        "dashboard/console/ticket-model.js",
+        "dashboard/console/ui.js",
+        "dashboard/favicon.png",
+        "dashboard/logo.png",
+        "src/server/accountsReadRoutes.ts",
+        "src/server/browserStatusRead.ts",
+        "src/server/mobileHealthRoutes.ts",
+        "src/server/workBoardRoutes.ts",
+        "src/server/healthBaseRead.ts"
+      ],
+      "capture": "uncaptured",
+      "trackedBy": "CMT-2169"
+    },
+    {
+      "id": "console-capacity-costs",
+      "surface": "Web",
+      "title": "Thinking Costs",
+      "mainQuestion": "What does the agent spend on thinking and where does that cost come from?",
+      "route": "/dashboard/console/#/capacity/costs",
+      "sources": [
+        "dashboard/console/costs-model.js",
+        "dashboard/console/costs.js",
+        "dashboard/console/display-identity.js",
+        "dashboard/console/topic-names.js",
+        "dashboard/console/unreachable-model.js",
+        "dashboard/console/usage-model.js",
+        "dashboard/console/usage.js"
+      ],
+      "shared": [
+        "dashboard/console/agent-health-note.js",
+        "dashboard/console/console.css",
+        "dashboard/console/console.js",
+        "dashboard/console/fonts/inter-latin-wght-normal.woff2",
+        "dashboard/console/fonts/jetbrains-mono-latin-wght-normal.woff2",
+        "dashboard/console/home-model.js",
+        "dashboard/console/index.html",
+        "dashboard/console/nav-model.js",
+        "dashboard/console/needs-model.js",
+        "dashboard/console/needs-strip.js",
+        "dashboard/console/net-state.js",
+        "dashboard/console/page-lifecycle.js",
+        "dashboard/console/ticket-model.js",
+        "dashboard/console/ui.js",
+        "dashboard/favicon.png",
+        "dashboard/logo.png",
+        "src/server/accountsReadRoutes.ts",
+        "src/server/browserStatusRead.ts",
+        "src/server/mobileHealthRoutes.ts",
+        "src/server/workBoardRoutes.ts",
+        "src/server/healthBaseRead.ts"
+      ],
+      "capture": "uncaptured",
+      "trackedBy": "CMT-2169"
+    },
+    {
+      "id": "console-people-messages",
+      "surface": "Web",
+      "title": "Messages To You",
+      "mainQuestion": "Who wrote the messages sent to me?",
+      "route": "/dashboard/console/#/people/messages",
+      "sources": [
+        "dashboard/console/display-identity.js",
+        "dashboard/console/messages-model.js",
+        "dashboard/console/messages.js",
+        "dashboard/console/topic-names.js",
+        "dashboard/console/unreachable-model.js"
+      ],
+      "shared": [
+        "dashboard/console/agent-health-note.js",
+        "dashboard/console/console.css",
+        "dashboard/console/console.js",
+        "dashboard/console/fonts/inter-latin-wght-normal.woff2",
+        "dashboard/console/fonts/jetbrains-mono-latin-wght-normal.woff2",
+        "dashboard/console/home-model.js",
+        "dashboard/console/index.html",
+        "dashboard/console/nav-model.js",
+        "dashboard/console/needs-model.js",
+        "dashboard/console/needs-strip.js",
+        "dashboard/console/net-state.js",
+        "dashboard/console/page-lifecycle.js",
+        "dashboard/console/ticket-model.js",
+        "dashboard/console/ui.js",
+        "dashboard/favicon.png",
+        "dashboard/logo.png",
+        "src/server/accountsReadRoutes.ts",
+        "src/server/browserStatusRead.ts",
+        "src/server/mobileHealthRoutes.ts",
+        "src/server/workBoardRoutes.ts",
+        "src/server/healthBaseRead.ts"
+      ],
+      "capture": "uncaptured",
+      "trackedBy": "CMT-2169"
+    },
+    {
+      "id": "console-people-notifications",
+      "surface": "Web",
+      "title": "Notifications",
+      "mainQuestion": "Which reports are quiet and which notifications should reach me?",
+      "route": "/dashboard/console/#/people/notifications",
+      "sources": [
+        "dashboard/console/display-identity.js",
+        "dashboard/console/notifications.js",
+        "dashboard/glance.js",
+        "dashboard/subscriptions.js"
+      ],
+      "shared": [
+        "dashboard/console/agent-health-note.js",
+        "dashboard/console/console.css",
+        "dashboard/console/console.js",
+        "dashboard/console/fonts/inter-latin-wght-normal.woff2",
+        "dashboard/console/fonts/jetbrains-mono-latin-wght-normal.woff2",
+        "dashboard/console/home-model.js",
+        "dashboard/console/index.html",
+        "dashboard/console/nav-model.js",
+        "dashboard/console/needs-model.js",
+        "dashboard/console/needs-strip.js",
+        "dashboard/console/net-state.js",
+        "dashboard/console/page-lifecycle.js",
+        "dashboard/console/ticket-model.js",
+        "dashboard/console/ui.js",
+        "dashboard/favicon.png",
+        "dashboard/logo.png",
+        "src/server/accountsReadRoutes.ts",
+        "src/server/browserStatusRead.ts",
+        "src/server/mobileHealthRoutes.ts",
+        "src/server/workBoardRoutes.ts",
+        "src/server/healthBaseRead.ts"
+      ],
+      "capture": "uncaptured",
+      "trackedBy": "CMT-2169"
+    },
+    {
+      "id": "console-people-agents",
+      "surface": "Web",
+      "title": "Other Agents",
+      "mainQuestion": "Which agents are reachable and what conversations are waiting?",
+      "route": "/dashboard/console/#/people/agents",
+      "sources": [
+        "dashboard/console/agents-model.js",
+        "dashboard/console/agents.js",
+        "dashboard/console/display-identity.js",
+        "dashboard/console/topic-names.js",
+        "dashboard/console/unreachable-model.js"
+      ],
+      "shared": [
+        "dashboard/console/agent-health-note.js",
+        "dashboard/console/console.css",
+        "dashboard/console/console.js",
+        "dashboard/console/fonts/inter-latin-wght-normal.woff2",
+        "dashboard/console/fonts/jetbrains-mono-latin-wght-normal.woff2",
+        "dashboard/console/home-model.js",
+        "dashboard/console/index.html",
+        "dashboard/console/nav-model.js",
+        "dashboard/console/needs-model.js",
+        "dashboard/console/needs-strip.js",
+        "dashboard/console/net-state.js",
+        "dashboard/console/page-lifecycle.js",
+        "dashboard/console/ticket-model.js",
+        "dashboard/console/ui.js",
+        "dashboard/favicon.png",
+        "dashboard/logo.png",
+        "src/server/accountsReadRoutes.ts",
+        "src/server/browserStatusRead.ts",
+        "src/server/mobileHealthRoutes.ts",
+        "src/server/workBoardRoutes.ts",
+        "src/server/healthBaseRead.ts"
+      ],
+      "capture": "uncaptured",
+      "trackedBy": "CMT-2169"
+    },
+    {
+      "id": "console-people-reach",
+      "surface": "Web",
+      "title": "Who Can Reach Me",
+      "mainQuestion": "Who can contact the agent and what can each person see?",
+      "route": "/dashboard/console/#/people/reach",
+      "sources": [
+        "dashboard/console/display-identity.js",
+        "dashboard/console/reach-model.js",
+        "dashboard/console/reach.js",
+        "dashboard/console/unreachable-model.js"
+      ],
+      "shared": [
+        "dashboard/console/agent-health-note.js",
+        "dashboard/console/console.css",
+        "dashboard/console/console.js",
+        "dashboard/console/fonts/inter-latin-wght-normal.woff2",
+        "dashboard/console/fonts/jetbrains-mono-latin-wght-normal.woff2",
+        "dashboard/console/home-model.js",
+        "dashboard/console/index.html",
+        "dashboard/console/nav-model.js",
+        "dashboard/console/needs-model.js",
+        "dashboard/console/needs-strip.js",
+        "dashboard/console/net-state.js",
+        "dashboard/console/page-lifecycle.js",
+        "dashboard/console/ticket-model.js",
+        "dashboard/console/ui.js",
+        "dashboard/favicon.png",
+        "dashboard/logo.png",
+        "src/server/accountsReadRoutes.ts",
+        "src/server/browserStatusRead.ts",
+        "src/server/mobileHealthRoutes.ts",
+        "src/server/workBoardRoutes.ts",
+        "src/server/healthBaseRead.ts"
+      ],
+      "capture": "uncaptured",
+      "trackedBy": "CMT-2169"
+    },
+    {
+      "id": "console-people-mandates",
+      "surface": "Web",
+      "title": "Permission Slips",
+      "mainQuestion": "Which permissions are active and which decisions need approval?",
+      "route": "/dashboard/console/#/people/mandates",
+      "sources": [
+        "dashboard/console/display-identity.js",
+        "dashboard/console/mandates-model.js",
+        "dashboard/console/mandates.js",
+        "dashboard/console/topic-names.js",
+        "dashboard/console/unreachable-model.js"
+      ],
+      "shared": [
+        "dashboard/console/agent-health-note.js",
+        "dashboard/console/console.css",
+        "dashboard/console/console.js",
+        "dashboard/console/fonts/inter-latin-wght-normal.woff2",
+        "dashboard/console/fonts/jetbrains-mono-latin-wght-normal.woff2",
+        "dashboard/console/home-model.js",
+        "dashboard/console/index.html",
+        "dashboard/console/nav-model.js",
+        "dashboard/console/needs-model.js",
+        "dashboard/console/needs-strip.js",
+        "dashboard/console/net-state.js",
+        "dashboard/console/page-lifecycle.js",
+        "dashboard/console/ticket-model.js",
+        "dashboard/console/ui.js",
+        "dashboard/favicon.png",
+        "dashboard/logo.png",
+        "src/server/accountsReadRoutes.ts",
+        "src/server/browserStatusRead.ts",
+        "src/server/mobileHealthRoutes.ts",
+        "src/server/workBoardRoutes.ts",
+        "src/server/healthBaseRead.ts"
+      ],
+      "capture": "uncaptured",
+      "trackedBy": "CMT-2169"
+    },
+    {
+      "id": "console-people-secrets",
+      "surface": "Web",
+      "title": "Passwords And Keys",
+      "mainQuestion": "Which credential is needed and how can I safely provide it?",
+      "route": "/dashboard/console/#/people/secrets",
+      "sources": [
+        "dashboard/console/display-identity.js",
+        "dashboard/console/secrets-model.js",
+        "dashboard/console/secrets.js"
+      ],
+      "shared": [
+        "dashboard/console/agent-health-note.js",
+        "dashboard/console/console.css",
+        "dashboard/console/console.js",
+        "dashboard/console/fonts/inter-latin-wght-normal.woff2",
+        "dashboard/console/fonts/jetbrains-mono-latin-wght-normal.woff2",
+        "dashboard/console/home-model.js",
+        "dashboard/console/index.html",
+        "dashboard/console/nav-model.js",
+        "dashboard/console/needs-model.js",
+        "dashboard/console/needs-strip.js",
+        "dashboard/console/net-state.js",
+        "dashboard/console/page-lifecycle.js",
+        "dashboard/console/ticket-model.js",
+        "dashboard/console/ui.js",
+        "dashboard/favicon.png",
+        "dashboard/logo.png",
+        "src/server/accountsReadRoutes.ts",
+        "src/server/browserStatusRead.ts",
+        "src/server/mobileHealthRoutes.ts",
+        "src/server/workBoardRoutes.ts",
+        "src/server/healthBaseRead.ts"
+      ],
+      "capture": "uncaptured",
+      "trackedBy": "CMT-2169"
+    },
+    {
+      "id": "console-settings-allowed",
+      "surface": "Web",
+      "title": "Allowed Actions",
+      "mainQuestion": "Which capabilities and safety checks are enabled?",
+      "route": "/dashboard/console/#/settings/allowed",
+      "sources": [
+        "dashboard/console/allowed-model.js",
+        "dashboard/console/allowed.js",
+        "dashboard/console/display-identity.js",
+        "dashboard/console/services-model.js",
+        "dashboard/console/topic-names.js",
+        "dashboard/console/unreachable-model.js"
+      ],
+      "shared": [
+        "dashboard/console/agent-health-note.js",
+        "dashboard/console/console.css",
+        "dashboard/console/console.js",
+        "dashboard/console/fonts/inter-latin-wght-normal.woff2",
+        "dashboard/console/fonts/jetbrains-mono-latin-wght-normal.woff2",
+        "dashboard/console/home-model.js",
+        "dashboard/console/index.html",
+        "dashboard/console/nav-model.js",
+        "dashboard/console/needs-model.js",
+        "dashboard/console/needs-strip.js",
+        "dashboard/console/net-state.js",
+        "dashboard/console/page-lifecycle.js",
+        "dashboard/console/ticket-model.js",
+        "dashboard/console/ui.js",
+        "dashboard/favicon.png",
+        "dashboard/logo.png",
+        "src/server/accountsReadRoutes.ts",
+        "src/server/browserStatusRead.ts",
+        "src/server/mobileHealthRoutes.ts",
+        "src/server/workBoardRoutes.ts",
+        "src/server/healthBaseRead.ts"
+      ],
+      "capture": "uncaptured",
+      "trackedBy": "CMT-2169"
+    },
+    {
+      "id": "console-settings-learned",
+      "surface": "Web",
+      "title": "Learned Preferences",
+      "mainQuestion": "What preferences has the agent learned from my corrections?",
+      "route": "/dashboard/console/#/settings/learned",
+      "sources": [
+        "dashboard/console/display-identity.js",
+        "dashboard/console/learned-model.js",
+        "dashboard/console/learned.js",
+        "dashboard/console/topic-names.js",
+        "dashboard/console/unreachable-model.js"
+      ],
+      "shared": [
+        "dashboard/console/agent-health-note.js",
+        "dashboard/console/console.css",
+        "dashboard/console/console.js",
+        "dashboard/console/fonts/inter-latin-wght-normal.woff2",
+        "dashboard/console/fonts/jetbrains-mono-latin-wght-normal.woff2",
+        "dashboard/console/home-model.js",
+        "dashboard/console/index.html",
+        "dashboard/console/nav-model.js",
+        "dashboard/console/needs-model.js",
+        "dashboard/console/needs-strip.js",
+        "dashboard/console/net-state.js",
+        "dashboard/console/page-lifecycle.js",
+        "dashboard/console/ticket-model.js",
+        "dashboard/console/ui.js",
+        "dashboard/favicon.png",
+        "dashboard/logo.png",
+        "src/server/accountsReadRoutes.ts",
+        "src/server/browserStatusRead.ts",
+        "src/server/mobileHealthRoutes.ts",
+        "src/server/workBoardRoutes.ts",
+        "src/server/healthBaseRead.ts"
+      ],
+      "capture": "uncaptured",
+      "trackedBy": "CMT-2169"
+    },
+    {
+      "id": "console-settings-inside",
+      "surface": "Web",
+      "title": "Inside",
+      "mainQuestion": "What do the agent records show about recurring problems and claims?",
+      "route": "/dashboard/console/#/settings/inside",
+      "sources": [
+        "dashboard/console/display-identity.js",
+        "dashboard/console/inside-model.js",
+        "dashboard/console/inside.js",
+        "dashboard/console/topic-names.js",
+        "dashboard/console/unreachable-model.js",
+        "dashboard/process-health.js"
+      ],
+      "shared": [
+        "dashboard/console/agent-health-note.js",
+        "dashboard/console/console.css",
+        "dashboard/console/console.js",
+        "dashboard/console/fonts/inter-latin-wght-normal.woff2",
+        "dashboard/console/fonts/jetbrains-mono-latin-wght-normal.woff2",
+        "dashboard/console/home-model.js",
+        "dashboard/console/index.html",
+        "dashboard/console/nav-model.js",
+        "dashboard/console/needs-model.js",
+        "dashboard/console/needs-strip.js",
+        "dashboard/console/net-state.js",
+        "dashboard/console/page-lifecycle.js",
+        "dashboard/console/ticket-model.js",
+        "dashboard/console/ui.js",
+        "dashboard/favicon.png",
+        "dashboard/logo.png",
+        "src/server/accountsReadRoutes.ts",
+        "src/server/browserStatusRead.ts",
+        "src/server/mobileHealthRoutes.ts",
+        "src/server/workBoardRoutes.ts",
+        "src/server/healthBaseRead.ts"
+      ],
+      "capture": "uncaptured",
+      "trackedBy": "CMT-2169"
+    },
+    {
+      "id": "console-settings-files",
+      "surface": "Web",
+      "title": "Files",
+      "mainQuestion": "Which project file do I need to read or edit?",
+      "route": "/dashboard/console/#/settings/files",
+      "sources": [
+        "dashboard/console/display-identity.js",
+        "dashboard/console/files-model.js",
+        "dashboard/console/files.js"
+      ],
+      "shared": [
+        "dashboard/console/agent-health-note.js",
+        "dashboard/console/console.css",
+        "dashboard/console/console.js",
+        "dashboard/console/fonts/inter-latin-wght-normal.woff2",
+        "dashboard/console/fonts/jetbrains-mono-latin-wght-normal.woff2",
+        "dashboard/console/home-model.js",
+        "dashboard/console/index.html",
+        "dashboard/console/nav-model.js",
+        "dashboard/console/needs-model.js",
+        "dashboard/console/needs-strip.js",
+        "dashboard/console/net-state.js",
+        "dashboard/console/page-lifecycle.js",
+        "dashboard/console/ticket-model.js",
+        "dashboard/console/ui.js",
+        "dashboard/favicon.png",
+        "dashboard/logo.png",
+        "src/server/accountsReadRoutes.ts",
+        "src/server/browserStatusRead.ts",
+        "src/server/mobileHealthRoutes.ts",
+        "src/server/workBoardRoutes.ts",
+        "src/server/healthBaseRead.ts"
+      ],
+      "capture": "uncaptured",
+      "trackedBy": "CMT-2169"
+    },
+    {
+      "id": "console-settings-context",
+      "surface": "Web",
+      "title": "Context",
+      "mainQuestion": "What does each conversation summary retain and how fresh is it?",
+      "route": "/dashboard/console/#/settings/context",
+      "sources": [
+        "dashboard/console/context-model.js",
+        "dashboard/console/context.js",
+        "dashboard/console/costs-model.js",
+        "dashboard/console/display-identity.js",
+        "dashboard/console/topic-names.js",
+        "dashboard/console/unreachable-model.js"
+      ],
+      "shared": [
+        "dashboard/console/agent-health-note.js",
+        "dashboard/console/console.css",
+        "dashboard/console/console.js",
+        "dashboard/console/fonts/inter-latin-wght-normal.woff2",
+        "dashboard/console/fonts/jetbrains-mono-latin-wght-normal.woff2",
+        "dashboard/console/home-model.js",
+        "dashboard/console/index.html",
+        "dashboard/console/nav-model.js",
+        "dashboard/console/needs-model.js",
+        "dashboard/console/needs-strip.js",
+        "dashboard/console/net-state.js",
+        "dashboard/console/page-lifecycle.js",
+        "dashboard/console/ticket-model.js",
+        "dashboard/console/ui.js",
+        "dashboard/favicon.png",
+        "dashboard/logo.png",
+        "src/server/accountsReadRoutes.ts",
+        "src/server/browserStatusRead.ts",
+        "src/server/mobileHealthRoutes.ts",
+        "src/server/workBoardRoutes.ts",
+        "src/server/healthBaseRead.ts"
+      ],
+      "capture": "uncaptured",
+      "trackedBy": "CMT-2169"
+    },
+    {
+      "id": "console-work",
+      "surface": "Web",
+      "title": "Work",
+      "mainQuestion": "What is being done, and what was promised?",
+      "route": "/dashboard/console/#/work",
+      "sources": [
+        "dashboard/console/console.js"
+      ],
+      "shared": [
+        "dashboard/console/agent-health-note.js",
+        "dashboard/console/console.css",
+        "dashboard/console/fonts/inter-latin-wght-normal.woff2",
+        "dashboard/console/fonts/jetbrains-mono-latin-wght-normal.woff2",
+        "dashboard/console/home-model.js",
+        "dashboard/console/index.html",
+        "dashboard/console/nav-model.js",
+        "dashboard/console/needs-model.js",
+        "dashboard/console/needs-strip.js",
+        "dashboard/console/net-state.js",
+        "dashboard/console/page-lifecycle.js",
+        "dashboard/console/ticket-model.js",
+        "dashboard/console/ui.js",
+        "dashboard/favicon.png",
+        "dashboard/logo.png",
+        "src/server/accountsReadRoutes.ts",
+        "src/server/browserStatusRead.ts",
+        "src/server/mobileHealthRoutes.ts",
+        "src/server/workBoardRoutes.ts",
+        "src/server/healthBaseRead.ts"
+      ],
+      "capture": "uncaptured",
+      "trackedBy": "CMT-2169"
+    },
+    {
+      "id": "console-capacity",
+      "surface": "Web",
+      "title": "Capacity",
+      "mainQuestion": "What do I run on, and what does it cost?",
+      "route": "/dashboard/console/#/capacity",
+      "sources": [
+        "dashboard/console/console.js"
+      ],
+      "shared": [
+        "dashboard/console/agent-health-note.js",
+        "dashboard/console/console.css",
+        "dashboard/console/fonts/inter-latin-wght-normal.woff2",
+        "dashboard/console/fonts/jetbrains-mono-latin-wght-normal.woff2",
+        "dashboard/console/home-model.js",
+        "dashboard/console/index.html",
+        "dashboard/console/nav-model.js",
+        "dashboard/console/needs-model.js",
+        "dashboard/console/needs-strip.js",
+        "dashboard/console/net-state.js",
+        "dashboard/console/page-lifecycle.js",
+        "dashboard/console/ticket-model.js",
+        "dashboard/console/ui.js",
+        "dashboard/favicon.png",
+        "dashboard/logo.png",
+        "src/server/accountsReadRoutes.ts",
+        "src/server/browserStatusRead.ts",
+        "src/server/mobileHealthRoutes.ts",
+        "src/server/workBoardRoutes.ts",
+        "src/server/healthBaseRead.ts"
+      ],
+      "capture": "uncaptured",
+      "trackedBy": "CMT-2169"
+    },
+    {
+      "id": "console-people",
+      "surface": "Web",
+      "title": "People",
+      "mainQuestion": "Who is talking to whom, and with what permission?",
+      "route": "/dashboard/console/#/people",
+      "sources": [
+        "dashboard/console/console.js"
+      ],
+      "shared": [
+        "dashboard/console/agent-health-note.js",
+        "dashboard/console/console.css",
+        "dashboard/console/fonts/inter-latin-wght-normal.woff2",
+        "dashboard/console/fonts/jetbrains-mono-latin-wght-normal.woff2",
+        "dashboard/console/home-model.js",
+        "dashboard/console/index.html",
+        "dashboard/console/nav-model.js",
+        "dashboard/console/needs-model.js",
+        "dashboard/console/needs-strip.js",
+        "dashboard/console/net-state.js",
+        "dashboard/console/page-lifecycle.js",
+        "dashboard/console/ticket-model.js",
+        "dashboard/console/ui.js",
+        "dashboard/favicon.png",
+        "dashboard/logo.png",
+        "src/server/accountsReadRoutes.ts",
+        "src/server/browserStatusRead.ts",
+        "src/server/mobileHealthRoutes.ts",
+        "src/server/workBoardRoutes.ts",
+        "src/server/healthBaseRead.ts"
+      ],
+      "capture": "uncaptured",
+      "trackedBy": "CMT-2169"
+    },
+    {
+      "id": "console-settings",
+      "surface": "Web",
+      "title": "Settings",
+      "mainQuestion": "How is it set up, and what has it learned?",
+      "route": "/dashboard/console/#/settings",
+      "sources": [
+        "dashboard/console/console.js"
+      ],
+      "shared": [
+        "dashboard/console/agent-health-note.js",
+        "dashboard/console/console.css",
+        "dashboard/console/fonts/inter-latin-wght-normal.woff2",
+        "dashboard/console/fonts/jetbrains-mono-latin-wght-normal.woff2",
+        "dashboard/console/home-model.js",
+        "dashboard/console/index.html",
+        "dashboard/console/nav-model.js",
+        "dashboard/console/needs-model.js",
+        "dashboard/console/needs-strip.js",
+        "dashboard/console/net-state.js",
+        "dashboard/console/page-lifecycle.js",
+        "dashboard/console/ticket-model.js",
+        "dashboard/console/ui.js",
+        "dashboard/favicon.png",
+        "dashboard/logo.png",
+        "src/server/accountsReadRoutes.ts",
+        "src/server/browserStatusRead.ts",
+        "src/server/mobileHealthRoutes.ts",
+        "src/server/workBoardRoutes.ts",
+        "src/server/healthBaseRead.ts"
+      ],
+      "capture": "uncaptured",
+      "trackedBy": "CMT-2169"
+    },
+    {
+      "id": "console-agent",
+      "surface": "Web",
+      "title": "Agent",
+      "mainQuestion": "What is this agent doing and how is it configured?",
+      "route": "/dashboard/console/#/agent",
+      "sources": [
+        "dashboard/console/console.js"
+      ],
+      "shared": [
+        "dashboard/console/agent-health-note.js",
+        "dashboard/console/console.css",
+        "dashboard/console/fonts/inter-latin-wght-normal.woff2",
+        "dashboard/console/fonts/jetbrains-mono-latin-wght-normal.woff2",
+        "dashboard/console/home-model.js",
+        "dashboard/console/index.html",
+        "dashboard/console/nav-model.js",
+        "dashboard/console/needs-model.js",
+        "dashboard/console/needs-strip.js",
+        "dashboard/console/net-state.js",
+        "dashboard/console/page-lifecycle.js",
+        "dashboard/console/ticket-model.js",
+        "dashboard/console/ui.js",
+        "dashboard/favicon.png",
+        "dashboard/logo.png",
+        "src/server/accountsReadRoutes.ts",
+        "src/server/browserStatusRead.ts",
+        "src/server/mobileHealthRoutes.ts",
+        "src/server/workBoardRoutes.ts",
+        "src/server/healthBaseRead.ts"
+      ],
+      "capture": "uncaptured",
+      "trackedBy": "CMT-2169"
+    },
+    {
+      "id": "console-phone-home",
+      "surface": "Web",
+      "title": "Phone Home",
+      "mainQuestion": "What needs my attention and what is the agent doing?",
+      "route": "/dashboard/console/?phone=1#/home",
+      "sources": [
+        "dashboard/console/console.js"
+      ],
+      "shared": [
+        "dashboard/console/agent-health-note.js",
+        "dashboard/console/console.css",
+        "dashboard/console/fonts/inter-latin-wght-normal.woff2",
+        "dashboard/console/fonts/jetbrains-mono-latin-wght-normal.woff2",
+        "dashboard/console/home-model.js",
+        "dashboard/console/index.html",
+        "dashboard/console/nav-model.js",
+        "dashboard/console/needs-model.js",
+        "dashboard/console/needs-strip.js",
+        "dashboard/console/net-state.js",
+        "dashboard/console/page-lifecycle.js",
+        "dashboard/console/ticket-model.js",
+        "dashboard/console/ui.js",
+        "dashboard/favicon.png",
+        "dashboard/logo.png",
+        "src/server/accountsReadRoutes.ts",
+        "src/server/browserStatusRead.ts",
+        "src/server/mobileHealthRoutes.ts",
+        "src/server/workBoardRoutes.ts",
+        "src/server/healthBaseRead.ts"
+      ],
+      "capture": "uncaptured",
+      "trackedBy": "CMT-2169"
+    },
+    {
+      "id": "console-phone-pace",
+      "surface": "Web",
+      "title": "Phone Pace",
+      "mainQuestion": "How quickly is useful work moving?",
+      "route": "/dashboard/console/?phone=1#/work/pace",
+      "sources": [
+        "dashboard/console/display-identity.js",
+        "dashboard/console/pace-model.js",
+        "dashboard/console/pace.js"
+      ],
+      "shared": [
+        "dashboard/console/agent-health-note.js",
+        "dashboard/console/console.css",
+        "dashboard/console/console.js",
+        "dashboard/console/fonts/inter-latin-wght-normal.woff2",
+        "dashboard/console/fonts/jetbrains-mono-latin-wght-normal.woff2",
+        "dashboard/console/home-model.js",
+        "dashboard/console/index.html",
+        "dashboard/console/nav-model.js",
+        "dashboard/console/needs-model.js",
+        "dashboard/console/needs-strip.js",
+        "dashboard/console/net-state.js",
+        "dashboard/console/page-lifecycle.js",
+        "dashboard/console/ticket-model.js",
+        "dashboard/console/ui.js",
+        "dashboard/favicon.png",
+        "dashboard/logo.png",
+        "src/server/accountsReadRoutes.ts",
+        "src/server/browserStatusRead.ts",
+        "src/server/mobileHealthRoutes.ts",
+        "src/server/workBoardRoutes.ts",
+        "src/server/healthBaseRead.ts"
+      ],
+      "capture": "uncaptured",
+      "trackedBy": "CMT-2169"
+    },
+    {
+      "id": "console-work-plans-s-in-the-way",
+      "surface": "Web",
+      "title": "Plans",
+      "mainQuestion": "How is each plan progressing, and what needs my decision?",
+      "route": "/dashboard/console/#/work/plans?s=in-the-way",
+      "sources": [
+        "dashboard/console/display-identity.js",
+        "dashboard/console/plans-model.js",
+        "dashboard/console/plans.js",
+        "dashboard/console/promise-actions.js",
+        "dashboard/console/promises-model.js",
+        "dashboard/console/promises.js",
+        "dashboard/console/topic-names.js",
+        "dashboard/console/unreachable-model.js"
+      ],
+      "shared": [
+        "dashboard/console/agent-health-note.js",
+        "dashboard/console/console.css",
+        "dashboard/console/console.js",
+        "dashboard/console/fonts/inter-latin-wght-normal.woff2",
+        "dashboard/console/fonts/jetbrains-mono-latin-wght-normal.woff2",
+        "dashboard/console/home-model.js",
+        "dashboard/console/index.html",
+        "dashboard/console/nav-model.js",
+        "dashboard/console/needs-model.js",
+        "dashboard/console/needs-strip.js",
+        "dashboard/console/net-state.js",
+        "dashboard/console/page-lifecycle.js",
+        "dashboard/console/ticket-model.js",
+        "dashboard/console/ui.js",
+        "dashboard/favicon.png",
+        "dashboard/logo.png",
+        "src/server/accountsReadRoutes.ts",
+        "src/server/browserStatusRead.ts",
+        "src/server/mobileHealthRoutes.ts",
+        "src/server/workBoardRoutes.ts",
+        "src/server/healthBaseRead.ts"
+      ],
+      "capture": "uncaptured",
+      "trackedBy": "CMT-2169"
+    },
+    {
+      "id": "console-work-development-s-shipping",
+      "surface": "Web",
+      "title": "Development",
+      "mainQuestion": "What is being built, and what is preventing it from shipping?",
+      "route": "/dashboard/console/#/work/development?s=shipping",
+      "sources": [
+        "dashboard/console/development-model.js",
+        "dashboard/console/development.js",
+        "dashboard/console/display-identity.js",
+        "dashboard/console/topic-names.js",
+        "dashboard/console/unreachable-model.js"
+      ],
+      "shared": [
+        "dashboard/console/agent-health-note.js",
+        "dashboard/console/console.css",
+        "dashboard/console/console.js",
+        "dashboard/console/fonts/inter-latin-wght-normal.woff2",
+        "dashboard/console/fonts/jetbrains-mono-latin-wght-normal.woff2",
+        "dashboard/console/home-model.js",
+        "dashboard/console/index.html",
+        "dashboard/console/nav-model.js",
+        "dashboard/console/needs-model.js",
+        "dashboard/console/needs-strip.js",
+        "dashboard/console/net-state.js",
+        "dashboard/console/page-lifecycle.js",
+        "dashboard/console/ticket-model.js",
+        "dashboard/console/ui.js",
+        "dashboard/favicon.png",
+        "dashboard/logo.png",
+        "src/server/accountsReadRoutes.ts",
+        "src/server/browserStatusRead.ts",
+        "src/server/mobileHealthRoutes.ts",
+        "src/server/workBoardRoutes.ts",
+        "src/server/healthBaseRead.ts"
+      ],
+      "capture": "uncaptured",
+      "trackedBy": "CMT-2169"
+    },
+    {
+      "id": "console-work-development-s-pace",
+      "surface": "Web",
+      "title": "Development",
+      "mainQuestion": "What is being built, and what is preventing it from shipping?",
+      "route": "/dashboard/console/#/work/development?s=pace",
+      "sources": [
+        "dashboard/console/development-model.js",
+        "dashboard/console/development.js",
+        "dashboard/console/display-identity.js",
+        "dashboard/console/topic-names.js",
+        "dashboard/console/unreachable-model.js"
+      ],
+      "shared": [
+        "dashboard/console/agent-health-note.js",
+        "dashboard/console/console.css",
+        "dashboard/console/console.js",
+        "dashboard/console/fonts/inter-latin-wght-normal.woff2",
+        "dashboard/console/fonts/jetbrains-mono-latin-wght-normal.woff2",
+        "dashboard/console/home-model.js",
+        "dashboard/console/index.html",
+        "dashboard/console/nav-model.js",
+        "dashboard/console/needs-model.js",
+        "dashboard/console/needs-strip.js",
+        "dashboard/console/net-state.js",
+        "dashboard/console/page-lifecycle.js",
+        "dashboard/console/ticket-model.js",
+        "dashboard/console/ui.js",
+        "dashboard/favicon.png",
+        "dashboard/logo.png",
+        "src/server/accountsReadRoutes.ts",
+        "src/server/browserStatusRead.ts",
+        "src/server/mobileHealthRoutes.ts",
+        "src/server/workBoardRoutes.ts",
+        "src/server/healthBaseRead.ts"
+      ],
+      "capture": "uncaptured",
+      "trackedBy": "CMT-2169"
+    },
+    {
+      "id": "console-work-development-s-feedback",
+      "surface": "Web",
+      "title": "Development",
+      "mainQuestion": "What is being built, and what is preventing it from shipping?",
+      "route": "/dashboard/console/#/work/development?s=feedback",
+      "sources": [
+        "dashboard/console/development-model.js",
+        "dashboard/console/development.js",
+        "dashboard/console/display-identity.js",
+        "dashboard/console/topic-names.js",
+        "dashboard/console/unreachable-model.js"
+      ],
+      "shared": [
+        "dashboard/console/agent-health-note.js",
+        "dashboard/console/console.css",
+        "dashboard/console/console.js",
+        "dashboard/console/fonts/inter-latin-wght-normal.woff2",
+        "dashboard/console/fonts/jetbrains-mono-latin-wght-normal.woff2",
+        "dashboard/console/home-model.js",
+        "dashboard/console/index.html",
+        "dashboard/console/nav-model.js",
+        "dashboard/console/needs-model.js",
+        "dashboard/console/needs-strip.js",
+        "dashboard/console/net-state.js",
+        "dashboard/console/page-lifecycle.js",
+        "dashboard/console/ticket-model.js",
+        "dashboard/console/ui.js",
+        "dashboard/favicon.png",
+        "dashboard/logo.png",
+        "src/server/accountsReadRoutes.ts",
+        "src/server/browserStatusRead.ts",
+        "src/server/mobileHealthRoutes.ts",
+        "src/server/workBoardRoutes.ts",
+        "src/server/healthBaseRead.ts"
+      ],
+      "capture": "uncaptured",
+      "trackedBy": "CMT-2169"
+    },
+    {
+      "id": "console-settings-inside-s-problems",
+      "surface": "Web",
+      "title": "Inside",
+      "mainQuestion": "What do the agent records show about recurring problems and claims?",
+      "route": "/dashboard/console/#/settings/inside?s=problems",
+      "sources": [
+        "dashboard/console/display-identity.js",
+        "dashboard/console/inside-model.js",
+        "dashboard/console/inside.js",
+        "dashboard/console/topic-names.js",
+        "dashboard/console/unreachable-model.js",
+        "dashboard/process-health.js"
+      ],
+      "shared": [
+        "dashboard/console/agent-health-note.js",
+        "dashboard/console/console.css",
+        "dashboard/console/console.js",
+        "dashboard/console/fonts/inter-latin-wght-normal.woff2",
+        "dashboard/console/fonts/jetbrains-mono-latin-wght-normal.woff2",
+        "dashboard/console/home-model.js",
+        "dashboard/console/index.html",
+        "dashboard/console/nav-model.js",
+        "dashboard/console/needs-model.js",
+        "dashboard/console/needs-strip.js",
+        "dashboard/console/net-state.js",
+        "dashboard/console/page-lifecycle.js",
+        "dashboard/console/ticket-model.js",
+        "dashboard/console/ui.js",
+        "dashboard/favicon.png",
+        "dashboard/logo.png",
+        "src/server/accountsReadRoutes.ts",
+        "src/server/browserStatusRead.ts",
+        "src/server/mobileHealthRoutes.ts",
+        "src/server/workBoardRoutes.ts",
+        "src/server/healthBaseRead.ts"
+      ],
+      "capture": "uncaptured",
+      "trackedBy": "CMT-2169"
+    },
+    {
+      "id": "console-settings-inside-s-lookup",
+      "surface": "Web",
+      "title": "Inside",
+      "mainQuestion": "What do the agent records show about recurring problems and claims?",
+      "route": "/dashboard/console/#/settings/inside?s=lookup",
+      "sources": [
+        "dashboard/console/display-identity.js",
+        "dashboard/console/inside-model.js",
+        "dashboard/console/inside.js",
+        "dashboard/console/topic-names.js",
+        "dashboard/console/unreachable-model.js",
+        "dashboard/process-health.js"
+      ],
+      "shared": [
+        "dashboard/console/agent-health-note.js",
+        "dashboard/console/console.css",
+        "dashboard/console/console.js",
+        "dashboard/console/fonts/inter-latin-wght-normal.woff2",
+        "dashboard/console/fonts/jetbrains-mono-latin-wght-normal.woff2",
+        "dashboard/console/home-model.js",
+        "dashboard/console/index.html",
+        "dashboard/console/nav-model.js",
+        "dashboard/console/needs-model.js",
+        "dashboard/console/needs-strip.js",
+        "dashboard/console/net-state.js",
+        "dashboard/console/page-lifecycle.js",
+        "dashboard/console/ticket-model.js",
+        "dashboard/console/ui.js",
+        "dashboard/favicon.png",
+        "dashboard/logo.png",
+        "src/server/accountsReadRoutes.ts",
+        "src/server/browserStatusRead.ts",
+        "src/server/mobileHealthRoutes.ts",
+        "src/server/workBoardRoutes.ts",
+        "src/server/healthBaseRead.ts"
+      ],
+      "capture": "uncaptured",
+      "trackedBy": "CMT-2169"
+    },
+    {
+      "id": "legacy-insights",
+      "surface": "Web",
+      "title": "Legacy Insights",
+      "mainQuestion": "What stands out in the agent activity?",
+      "route": "/dashboard/legacy?tab=insights",
+      "sources": [
+        "dashboard/index.html"
+      ],
+      "shared": [
+        "dashboard/favicon.png",
+        "dashboard/glance.js",
+        "dashboard/logo.png",
+        "src/server/accountsReadRoutes.ts",
+        "src/server/healthBaseRead.ts"
+      ],
+      "capture": "uncaptured",
+      "trackedBy": "CMT-2169"
+    },
+    {
+      "id": "legacy-sessions",
+      "surface": "Web",
+      "title": "Legacy Sessions",
+      "mainQuestion": "Which sessions are running and what are they doing?",
+      "route": "/dashboard/legacy?tab=sessions",
+      "sources": [
+        "dashboard/index.html"
+      ],
+      "shared": [
+        "dashboard/favicon.png",
+        "dashboard/glance.js",
+        "dashboard/logo.png",
+        "src/server/accountsReadRoutes.ts",
+        "src/server/healthBaseRead.ts"
+      ],
+      "capture": "uncaptured",
+      "trackedBy": "CMT-2169"
+    },
+    {
+      "id": "legacy-files",
+      "surface": "Web",
+      "title": "Legacy Files",
+      "mainQuestion": "Which project files can I read or edit?",
+      "route": "/dashboard/legacy?tab=files",
+      "sources": [
+        "dashboard/index.html"
+      ],
+      "shared": [
+        "dashboard/favicon.png",
+        "dashboard/glance.js",
+        "dashboard/logo.png",
+        "src/server/accountsReadRoutes.ts",
+        "src/server/healthBaseRead.ts"
+      ],
+      "capture": "uncaptured",
+      "trackedBy": "CMT-2169"
+    },
+    {
+      "id": "legacy-dropzone",
+      "surface": "Web",
+      "title": "Legacy Dropzone",
+      "mainQuestion": "How can I send text or files to a running session?",
+      "route": "/dashboard/legacy?tab=dropzone",
+      "sources": [
+        "dashboard/index.html"
+      ],
+      "shared": [
+        "dashboard/favicon.png",
+        "dashboard/glance.js",
+        "dashboard/logo.png",
+        "src/server/accountsReadRoutes.ts",
+        "src/server/healthBaseRead.ts"
+      ],
+      "capture": "uncaptured",
+      "trackedBy": "CMT-2169"
+    },
+    {
+      "id": "legacy-jobs",
+      "surface": "Web",
+      "title": "Legacy Jobs",
+      "mainQuestion": "Which scheduled jobs ran and which need attention?",
+      "route": "/dashboard/legacy?tab=jobs",
+      "sources": [
+        "dashboard/index.html"
+      ],
+      "shared": [
+        "dashboard/favicon.png",
+        "dashboard/glance.js",
+        "dashboard/logo.png",
+        "src/server/accountsReadRoutes.ts",
+        "src/server/healthBaseRead.ts"
+      ],
+      "capture": "uncaptured",
+      "trackedBy": "CMT-2169"
+    },
+    {
+      "id": "legacy-features",
+      "surface": "Web",
+      "title": "Legacy Features",
+      "mainQuestion": "Which capabilities and safety settings are enabled?",
+      "route": "/dashboard/legacy?tab=features",
+      "sources": [
+        "dashboard/index.html"
+      ],
+      "shared": [
+        "dashboard/favicon.png",
+        "dashboard/glance.js",
+        "dashboard/logo.png",
+        "src/server/accountsReadRoutes.ts",
+        "src/server/healthBaseRead.ts"
+      ],
+      "capture": "uncaptured",
+      "trackedBy": "CMT-2169"
+    },
+    {
+      "id": "legacy-notifications",
+      "surface": "Web",
+      "title": "Legacy Notifications",
+      "mainQuestion": "Which notifications should reach me?",
+      "route": "/dashboard/legacy?tab=notifications",
+      "sources": [
+        "dashboard/index.html"
+      ],
+      "shared": [
+        "dashboard/favicon.png",
+        "dashboard/glance.js",
+        "dashboard/logo.png",
+        "src/server/accountsReadRoutes.ts",
+        "src/server/healthBaseRead.ts"
+      ],
+      "capture": "uncaptured",
+      "trackedBy": "CMT-2169"
+    },
+    {
+      "id": "legacy-origins",
+      "surface": "Web",
+      "title": "Legacy Origins",
+      "mainQuestion": "Who wrote the messages sent to me?",
+      "route": "/dashboard/legacy?tab=origins",
+      "sources": [
+        "dashboard/index.html",
+        "dashboard/origin.js"
+      ],
+      "shared": [
+        "dashboard/favicon.png",
+        "dashboard/glance.js",
+        "dashboard/logo.png",
+        "src/server/accountsReadRoutes.ts",
+        "src/server/healthBaseRead.ts"
+      ],
+      "capture": "uncaptured",
+      "trackedBy": "CMT-2169"
+    },
+    {
+      "id": "legacy-phones",
+      "surface": "Web",
+      "title": "Legacy Phones",
+      "mainQuestion": "Which phones are paired or waiting for approval?",
+      "route": "/dashboard/legacy?tab=phones",
+      "sources": [
+        "dashboard/index.html",
+        "dashboard/phones.js"
+      ],
+      "shared": [
+        "dashboard/favicon.png",
+        "dashboard/glance.js",
+        "dashboard/logo.png",
+        "src/server/accountsReadRoutes.ts",
+        "src/server/browserStatusRead.ts",
+        "src/server/healthBaseRead.ts"
+      ],
+      "capture": "uncaptured",
+      "trackedBy": "CMT-2169"
+    },
+    {
+      "id": "legacy-systems",
+      "surface": "Web",
+      "title": "Legacy Systems",
+      "mainQuestion": "Which agent systems are healthy?",
+      "route": "/dashboard/legacy?tab=systems",
+      "sources": [
+        "dashboard/index.html"
+      ],
+      "shared": [
+        "dashboard/favicon.png",
+        "dashboard/glance.js",
+        "dashboard/logo.png",
+        "src/server/accountsReadRoutes.ts",
+        "src/server/healthBaseRead.ts"
+      ],
+      "capture": "uncaptured",
+      "trackedBy": "CMT-2169"
+    },
+    {
+      "id": "legacy-integrated-being",
+      "surface": "Web",
+      "title": "Legacy Integrated Being",
+      "mainQuestion": "What do internal records reveal about the agent?",
+      "route": "/dashboard/legacy?tab=integrated-being",
+      "sources": [
+        "dashboard/index.html"
+      ],
+      "shared": [
+        "dashboard/favicon.png",
+        "dashboard/glance.js",
+        "dashboard/logo.png",
+        "src/server/accountsReadRoutes.ts",
+        "src/server/healthBaseRead.ts"
+      ],
+      "capture": "uncaptured",
+      "trackedBy": "CMT-2169"
+    },
+    {
+      "id": "legacy-pr-pipeline",
+      "surface": "Web",
+      "title": "Legacy Pr Pipeline",
+      "mainQuestion": "What is waiting in the pull request pipeline?",
+      "route": "/dashboard/legacy?tab=pr-pipeline",
+      "sources": [
+        "dashboard/index.html"
+      ],
+      "shared": [
+        "dashboard/favicon.png",
+        "dashboard/glance.js",
+        "dashboard/logo.png",
+        "src/server/accountsReadRoutes.ts",
+        "src/server/healthBaseRead.ts"
+      ],
+      "capture": "uncaptured",
+      "trackedBy": "CMT-2169"
+    },
+    {
+      "id": "legacy-projects",
+      "surface": "Web",
+      "title": "Legacy Projects",
+      "mainQuestion": "How is each project progressing?",
+      "route": "/dashboard/legacy?tab=projects",
+      "sources": [
+        "dashboard/index.html"
+      ],
+      "shared": [
+        "dashboard/favicon.png",
+        "dashboard/glance.js",
+        "dashboard/logo.png",
+        "src/server/accountsReadRoutes.ts",
+        "src/server/healthBaseRead.ts"
+      ],
+      "capture": "uncaptured",
+      "trackedBy": "CMT-2169"
+    },
+    {
+      "id": "legacy-initiatives",
+      "surface": "Web",
+      "title": "Legacy Initiatives",
+      "mainQuestion": "Which initiatives are active?",
+      "route": "/dashboard/legacy?tab=initiatives",
+      "sources": [
+        "dashboard/index.html"
+      ],
+      "shared": [
+        "dashboard/favicon.png",
+        "dashboard/glance.js",
+        "dashboard/logo.png",
+        "src/server/accountsReadRoutes.ts",
+        "src/server/healthBaseRead.ts"
+      ],
+      "capture": "uncaptured",
+      "trackedBy": "CMT-2169"
+    },
+    {
+      "id": "legacy-commitments",
+      "surface": "Web",
+      "title": "Legacy Commitments",
+      "mainQuestion": "Which promises are open and what are they waiting on?",
+      "route": "/dashboard/legacy?tab=commitments",
+      "sources": [
+        "dashboard/index.html"
+      ],
+      "shared": [
+        "dashboard/favicon.png",
+        "dashboard/glance.js",
+        "dashboard/logo.png",
+        "src/server/accountsReadRoutes.ts",
+        "src/server/healthBaseRead.ts"
+      ],
+      "capture": "uncaptured",
+      "trackedBy": "CMT-2169"
+    },
+    {
+      "id": "legacy-tokens",
+      "surface": "Web",
+      "title": "Legacy Tokens",
+      "mainQuestion": "Where are conversation tokens being used?",
+      "route": "/dashboard/legacy?tab=tokens",
+      "sources": [
+        "dashboard/index.html"
+      ],
+      "shared": [
+        "dashboard/favicon.png",
+        "dashboard/glance.js",
+        "dashboard/logo.png",
+        "src/server/accountsReadRoutes.ts",
+        "src/server/healthBaseRead.ts"
+      ],
+      "capture": "uncaptured",
+      "trackedBy": "CMT-2169"
+    },
+    {
+      "id": "legacy-resources",
+      "surface": "Web",
+      "title": "Legacy Resources",
+      "mainQuestion": "Which processes consume CPU and memory?",
+      "route": "/dashboard/legacy?tab=resources",
+      "sources": [
+        "dashboard/index.html"
+      ],
+      "shared": [
+        "dashboard/favicon.png",
+        "dashboard/glance.js",
+        "dashboard/logo.png",
+        "src/server/accountsReadRoutes.ts",
+        "src/server/healthBaseRead.ts"
+      ],
+      "capture": "uncaptured",
+      "trackedBy": "CMT-2169"
+    },
+    {
+      "id": "legacy-llm-activity",
+      "surface": "Web",
+      "title": "Legacy Llm Activity",
+      "mainQuestion": "What model calls are happening?",
+      "route": "/dashboard/legacy?tab=llm-activity",
+      "sources": [
+        "dashboard/index.html"
+      ],
+      "shared": [
+        "dashboard/favicon.png",
+        "dashboard/glance.js",
+        "dashboard/logo.png",
+        "src/server/accountsReadRoutes.ts",
+        "src/server/healthBaseRead.ts"
+      ],
+      "capture": "uncaptured",
+      "trackedBy": "CMT-2169"
+    },
+    {
+      "id": "legacy-routing-map",
+      "surface": "Web",
+      "title": "Legacy Routing Map",
+      "mainQuestion": "How are model requests routed?",
+      "route": "/dashboard/legacy?tab=routing-map",
+      "sources": [
+        "dashboard/index.html"
+      ],
+      "shared": [
+        "dashboard/favicon.png",
+        "dashboard/glance.js",
+        "dashboard/logo.png",
+        "src/server/accountsReadRoutes.ts",
+        "src/server/healthBaseRead.ts"
+      ],
+      "capture": "uncaptured",
+      "trackedBy": "CMT-2169"
+    },
+    {
+      "id": "legacy-spend",
+      "surface": "Web",
+      "title": "Legacy Spend",
+      "mainQuestion": "What is AI usage costing?",
+      "route": "/dashboard/legacy?tab=spend",
+      "sources": [
+        "dashboard/index.html",
+        "dashboard/money-layer-enable.js",
+        "dashboard/spend-arming.js"
+      ],
+      "shared": [
+        "dashboard/favicon.png",
+        "dashboard/glance.js",
+        "dashboard/logo.png",
+        "src/server/accountsReadRoutes.ts",
+        "src/server/healthBaseRead.ts"
+      ],
+      "capture": "uncaptured",
+      "trackedBy": "CMT-2169"
+    },
+    {
+      "id": "legacy-threadline",
+      "surface": "Web",
+      "title": "Legacy Threadline",
+      "mainQuestion": "Which agents and conversations can I reach?",
+      "route": "/dashboard/legacy?tab=threadline",
+      "sources": [
+        "dashboard/index.html",
+        "dashboard/pairing.js"
+      ],
+      "shared": [
+        "dashboard/favicon.png",
+        "dashboard/glance.js",
+        "dashboard/logo.png",
+        "src/server/accountsReadRoutes.ts",
+        "src/server/healthBaseRead.ts"
+      ],
+      "capture": "uncaptured",
+      "trackedBy": "CMT-2169"
+    },
+    {
+      "id": "legacy-evidence",
+      "surface": "Web",
+      "title": "Legacy Evidence",
+      "mainQuestion": "Which evidence supports an agent claim?",
+      "route": "/dashboard/legacy?tab=evidence",
+      "sources": [
+        "dashboard/index.html"
+      ],
+      "shared": [
+        "dashboard/favicon.png",
+        "dashboard/glance.js",
+        "dashboard/logo.png",
+        "src/server/accountsReadRoutes.ts",
+        "src/server/healthBaseRead.ts"
+      ],
+      "capture": "uncaptured",
+      "trackedBy": "CMT-2169"
+    },
+    {
+      "id": "legacy-process-health",
+      "surface": "Web",
+      "title": "Legacy Process Health",
+      "mainQuestion": "Which processes are stuck or unhealthy?",
+      "route": "/dashboard/legacy?tab=process-health",
+      "sources": [
+        "dashboard/index.html",
+        "dashboard/process-health.js"
+      ],
+      "shared": [
+        "dashboard/favicon.png",
+        "dashboard/glance.js",
+        "dashboard/logo.png",
+        "src/server/accountsReadRoutes.ts",
+        "src/server/healthBaseRead.ts"
+      ],
+      "capture": "uncaptured",
+      "trackedBy": "CMT-2169"
+    },
+    {
+      "id": "legacy-feedback-drain",
+      "surface": "Web",
+      "title": "Legacy Feedback Drain",
+      "mainQuestion": "Which feedback is being processed or blocked?",
+      "route": "/dashboard/legacy?tab=feedback-drain",
+      "sources": [
+        "dashboard/feedback-drain-headline.js",
+        "dashboard/feedback-readiness-authority.js",
+        "dashboard/feedback-triage.js",
+        "dashboard/index.html"
+      ],
+      "shared": [
+        "dashboard/favicon.png",
+        "dashboard/glance.js",
+        "dashboard/logo.png",
+        "src/server/accountsReadRoutes.ts",
+        "src/server/healthBaseRead.ts"
+      ],
+      "capture": "uncaptured",
+      "trackedBy": "CMT-2169"
+    },
+    {
+      "id": "legacy-subscriptions",
+      "surface": "Web",
+      "title": "Legacy Subscriptions",
+      "mainQuestion": "Which accounts have capacity or need sign-in?",
+      "route": "/dashboard/legacy?tab=subscriptions",
+      "sources": [
+        "dashboard/index.html",
+        "dashboard/subscriptions.js"
+      ],
+      "shared": [
+        "dashboard/favicon.png",
+        "dashboard/glance.js",
+        "dashboard/logo.png",
+        "src/server/accountsReadRoutes.ts",
+        "src/server/healthBaseRead.ts"
+      ],
+      "capture": "uncaptured",
+      "trackedBy": "CMT-2169"
+    },
+    {
+      "id": "legacy-throughput",
+      "surface": "Web",
+      "title": "Legacy Throughput",
+      "mainQuestion": "How quickly is development work moving?",
+      "route": "/dashboard/legacy?tab=throughput",
+      "sources": [
+        "dashboard/index.html"
+      ],
+      "shared": [
+        "dashboard/favicon.png",
+        "dashboard/glance.js",
+        "dashboard/logo.png",
+        "src/server/accountsReadRoutes.ts",
+        "src/server/healthBaseRead.ts"
+      ],
+      "capture": "uncaptured",
+      "trackedBy": "CMT-2169"
+    },
+    {
+      "id": "legacy-preferences-learning",
+      "surface": "Web",
+      "title": "Legacy Preferences Learning",
+      "mainQuestion": "Which preferences has the agent learned?",
+      "route": "/dashboard/legacy?tab=preferences-learning",
+      "sources": [
+        "dashboard/index.html",
+        "dashboard/preferences-learning.js"
+      ],
+      "shared": [
+        "dashboard/favicon.png",
+        "dashboard/glance.js",
+        "dashboard/logo.png",
+        "src/server/accountsReadRoutes.ts",
+        "src/server/healthBaseRead.ts"
+      ],
+      "capture": "uncaptured",
+      "trackedBy": "CMT-2169"
+    },
+    {
+      "id": "legacy-machines",
+      "surface": "Web",
+      "title": "Legacy Machines",
+      "mainQuestion": "Which machines are available and healthy?",
+      "route": "/dashboard/legacy?tab=machines",
+      "sources": [
+        "dashboard/index.html"
+      ],
+      "shared": [
+        "dashboard/favicon.png",
+        "dashboard/glance.js",
+        "dashboard/logo.png",
+        "src/server/accountsReadRoutes.ts",
+        "src/server/healthBaseRead.ts"
+      ],
+      "capture": "uncaptured",
+      "trackedBy": "CMT-2169"
+    },
+    {
+      "id": "legacy-mandates",
+      "surface": "Web",
+      "title": "Legacy Mandates",
+      "mainQuestion": "Which permissions are active and awaiting approval?",
+      "route": "/dashboard/legacy?tab=mandates",
+      "sources": [
+        "dashboard/index.html",
+        "dashboard/mandates.js"
+      ],
+      "shared": [
+        "dashboard/favicon.png",
+        "dashboard/glance.js",
+        "dashboard/logo.png",
+        "src/server/accountsReadRoutes.ts",
+        "src/server/healthBaseRead.ts"
+      ],
+      "capture": "uncaptured",
+      "trackedBy": "CMT-2169"
+    },
+    {
+      "id": "legacy-blockers",
+      "surface": "Web",
+      "title": "Legacy Blockers",
+      "mainQuestion": "What is preventing work from progressing?",
+      "route": "/dashboard/legacy?tab=blockers",
+      "sources": [
+        "dashboard/index.html"
+      ],
+      "shared": [
+        "dashboard/favicon.png",
+        "dashboard/glance.js",
+        "dashboard/logo.png",
+        "src/server/accountsReadRoutes.ts",
+        "src/server/healthBaseRead.ts"
+      ],
+      "capture": "uncaptured",
+      "trackedBy": "CMT-2169"
+    },
+    {
+      "id": "legacy-secrets",
+      "surface": "Web",
+      "title": "Legacy Secrets",
+      "mainQuestion": "Which credentials are present or requested?",
+      "route": "/dashboard/legacy?tab=secrets",
+      "sources": [
+        "dashboard/index.html"
+      ],
+      "shared": [
+        "dashboard/favicon.png",
+        "dashboard/glance.js",
+        "dashboard/logo.png",
+        "src/server/accountsReadRoutes.ts",
+        "src/server/healthBaseRead.ts"
+      ],
+      "capture": "uncaptured",
+      "trackedBy": "CMT-2169"
+    },
+    {
+      "id": "legacy-dashboard",
+      "surface": "Web",
+      "title": "Legacy Dashboard",
+      "mainQuestion": "What is running and what needs attention in the legacy dashboard?",
+      "route": "/dashboard/legacy",
+      "sources": [
+        "dashboard/index.html"
+      ],
+      "shared": [
+        "dashboard/favicon.png",
+        "dashboard/glance.js",
+        "dashboard/logo.png",
+        "src/server/accountsReadRoutes.ts",
+        "src/server/healthBaseRead.ts"
+      ],
+      "capture": "uncaptured",
+      "trackedBy": "CMT-2169"
+    },
+    {
+      "id": "dashboard-desktop",
+      "surface": "Web",
+      "title": "Remote Desktop",
+      "mainQuestion": "Which machine can I control and how can I stop that connection?",
+      "route": "/dashboard/desktop.html",
+      "sources": [
+        "dashboard/desktop-setup.js",
+        "dashboard/desktop.css",
+        "dashboard/desktop.html",
+        "dashboard/desktop.js",
+        "src/server/AgentServer.ts"
+      ],
+      "shared": [],
+      "capture": "uncaptured",
+      "trackedBy": "CMT-2169"
+    },
+    {
+      "id": "dashboard-recovery",
+      "surface": "Web",
+      "title": "Machine Recovery",
+      "mainQuestion": "Are the recovery routes ready and how do I set them up?",
+      "route": "/dashboard/recovery.html",
+      "sources": [
+        "dashboard/recovery.css",
+        "dashboard/recovery.html",
+        "dashboard/recovery.js"
+      ],
+      "shared": [],
+      "capture": "uncaptured",
+      "trackedBy": "CMT-2169"
+    },
+    {
+      "id": "dashboard-proposals",
+      "surface": "Web",
+      "title": "Remediation Proposals",
+      "mainQuestion": "Which proposed repairs need review?",
+      "route": "/dashboard/proposals.html",
+      "sources": [
+        "dashboard/proposals.html"
+      ],
+      "shared": [],
+      "capture": "uncaptured",
+      "trackedBy": "CMT-2169"
+    },
+    {
+      "id": "dashboard-maturation",
+      "surface": "Web",
+      "title": "Maturation Board",
+      "mainQuestion": "Which capability is ready for its next stage?",
+      "route": "/dashboard/maturation/",
+      "sources": [
+        "dashboard/console/console.css",
+        "dashboard/console/display-identity.js",
+        "dashboard/console/maturation-board-model.js",
+        "dashboard/console/maturation-board.js",
+        "dashboard/console/measurement-coverage.js",
+        "dashboard/console/measurement-trend.js",
+        "dashboard/console/nav-model.js",
+        "dashboard/console/pace-model.js",
+        "dashboard/console/pace.js",
+        "dashboard/console/quality-history.js",
+        "dashboard/console/ui.js",
+        "dashboard/maturation/app.js",
+        "dashboard/maturation/index.html"
+      ],
+      "shared": [
+        "src/server/browserStatusRead.ts",
+        "src/server/workBoardRoutes.ts",
+        "src/server/healthBaseRead.ts"
+      ],
+      "capture": "uncaptured",
+      "trackedBy": "CMT-2169"
+    },
+    {
+      "id": "dashboard-project-app",
+      "surface": "Web",
+      "title": "Project App",
+      "mainQuestion": "What does this conversation project app show?",
+      "route": "/dashboard/project-app/",
+      "sources": [
+        "dashboard/project-app/index.html",
+        "dashboard/project-app/wrapper-model.js",
+        "dashboard/project-app/wrapper.css",
+        "dashboard/project-app/wrapper.js"
+      ],
+      "shared": [],
+      "capture": "uncaptured",
+      "trackedBy": "CMT-2169"
+    },
+    {
+      "id": "dashboard-pair",
+      "surface": "Web",
+      "title": "Pair A Phone",
+      "mainQuestion": "How do I approve or enter the code for a phone?",
+      "route": "/dashboard/pair",
+      "sources": [
+        "dashboard-pair/pair-model.js",
+        "dashboard-pair/pair.css",
+        "dashboard-pair/pair.html",
+        "dashboard-pair/pair.js",
+        "src/server/dashboardEntry.ts"
+      ],
+      "shared": [
+        "src/server/browserStatusRead.ts"
+      ],
+      "capture": "uncaptured",
+      "trackedBy": "CMT-2169"
+    },
+    {
+      "id": "dashboard-service-yes",
+      "surface": "Web",
+      "title": "Service Approval",
+      "mainQuestion": "Should I enable this service and what does that allow?",
+      "route": "/dashboard/service-yes",
+      "sources": [
+        "dashboard-pair/pair.css",
+        "dashboard-pair/service-yes.html",
+        "dashboard-pair/service-yes.js",
+        "src/server/dashboardEntry.ts"
+      ],
+      "shared": [],
+      "capture": "uncaptured",
+      "trackedBy": "CMT-2169"
+    },
+    {
+      "id": "document-page",
+      "surface": "Web",
+      "title": "Document",
+      "mainQuestion": "What does this document say and which comments or decisions need me?",
+      "route": "/docs/:id",
+      "sources": [
+        "dashboard/docs/doc-page-model.js",
+        "dashboard/docs/doc-page.css",
+        "dashboard/docs/doc-page.js",
+        "src/server/documentPageRoutes.ts"
+      ],
+      "shared": [],
+      "capture": "uncaptured",
+      "trackedBy": "CMT-2169"
+    },
+    {
+      "id": "document-join",
+      "surface": "Web",
+      "title": "Document Device Join",
+      "mainQuestion": "How do I connect this browser to my documents?",
+      "route": "/docs/_join",
+      "sources": [
+        "dashboard/docs/doc-page.css",
+        "dashboard/docs/join-page.js",
+        "dashboard/docs/qr-code.js",
+        "src/server/documentJoinRoutes.ts"
+      ],
+      "shared": [],
+      "capture": "uncaptured",
+      "trackedBy": "CMT-2169"
+    },
+    {
+      "id": "private-view",
+      "surface": "Web",
+      "title": "Private View",
+      "mainQuestion": "What private report has the agent shared with me?",
+      "route": "/view/:id",
+      "sources": [
+        "src/publishing/PrivateViewer.ts",
+        "src/server/routes.ts"
+      ],
+      "shared": [],
+      "capture": "uncaptured",
+      "trackedBy": "CMT-2169"
+    },
+    {
+      "id": "secret-drop",
+      "surface": "Web",
+      "title": "Secret Drop",
+      "mainQuestion": "Which credential is needed and where can I safely enter it?",
+      "route": "/secrets/drop/:token",
+      "sources": [
+        "src/server/SecretDrop.ts",
+        "src/server/routes.ts"
+      ],
+      "shared": [],
+      "capture": "uncaptured",
+      "trackedBy": "CMT-2169"
+    },
+    {
+      "id": "recovery-phone",
+      "surface": "Web",
+      "title": "Recovery Phone Approval",
+      "mainQuestion": "Which recovery access am I granting or removing?",
+      "route": "/v1/recovery/phone",
+      "sources": [
+        "src/recovery/RecoveryControlPlane.ts",
+        "src/recovery/RecoveryPhonePage.ts"
+      ],
+      "shared": [],
+      "capture": "uncaptured",
+      "trackedBy": "CMT-2169"
+    },
+    {
+      "id": "memory-privacy-repair",
+      "surface": "Web",
+      "title": "Private Memory Repair",
+      "mainQuestion": "Can this link restore private memory access safely?",
+      "route": "/memory-privacy/fix/:token",
+      "sources": [
+        "src/server/routes.ts"
+      ],
+      "shared": [],
+      "capture": "uncaptured",
+      "trackedBy": "CMT-2169"
+    },
+    {
+      "id": "mcp-approval",
+      "surface": "Web",
+      "title": "Tool Change Approval",
+      "mainQuestion": "Which tool change will I authorize with my PIN?",
+      "route": "/mcp/approve/:requestId",
+      "sources": [
+        "src/server/routes.ts"
+      ],
+      "shared": [],
+      "capture": "uncaptured",
+      "trackedBy": "CMT-2169"
+    },
+    {
+      "id": "project-app-frame",
+      "surface": "Web",
+      "title": "Project App Frame",
+      "mainQuestion": "Can this project app open safely or why is it unavailable?",
+      "route": "/project-apps/:appId/frame",
+      "sources": [
+        "src/server/projectAppSandboxRoutes.ts"
+      ],
+      "shared": [],
+      "capture": "uncaptured",
+      "trackedBy": "CMT-2169"
+    },
+    {
+      "id": "threadline-registry",
+      "surface": "Web",
+      "title": "Agent Registry",
+      "mainQuestion": "Which agents are available on this relay?",
+      "route": "/registry",
+      "sources": [
+        "src/threadline/relay/RelayServer.ts"
+      ],
+      "shared": [],
+      "capture": "uncaptured",
+      "trackedBy": "CMT-2169"
+    },
+    {
+      "id": "feedback-receiver-front",
+      "surface": "Web",
+      "title": "Feedback Receiver Front",
+      "mainQuestion": "Is the canonical feedback receiver front available, and which endpoints does it expose?",
+      "route": "/",
+      "sources": [
+        "feedback-front/public/index.html",
+        "feedback-front/vercel.json"
+      ],
+      "shared": [],
+      "capture": "uncaptured",
+      "trackedBy": "CMT-2169"
+    }
+  ]
+}

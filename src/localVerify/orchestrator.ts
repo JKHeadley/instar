@@ -17,6 +17,7 @@
  */
 
 import crypto from 'node:crypto';
+import type { DesignTargetPort, DesignTargetProducer } from './designTargetProducer.js';
 import path from 'node:path';
 import { FailureEvidence, FAILURE_EVIDENCE_FILE } from './failureEvidence.js';
 import { computeInventory, isInventoried, LANES, type LaneName } from './inventory.js';
@@ -104,6 +105,8 @@ export interface OrchestratorFs {
 }
 
 export interface OrchestratorSeams {
+  /** Internal installed BASE-policy producer/consumer. Never taken from VerifyRunInput JSON. */
+  designTarget?: DesignTargetPort;
   /**
    * Run git with repository discovery closed: `gitDir` (the bare clone, or a run worktree's
    * admin dir under `<bare>/worktrees/`) and, for working-tree steps, `workTree` are pinned
@@ -431,6 +434,8 @@ export async function runVerify(input: VerifyRunInput, seams: OrchestratorSeams)
   let preflight: PreflightEvidence | undefined;
   let preflightStartedAt: number | null = null;
   let preflightEnded = false;
+  let designTarget: DesignTargetProducer | null = null;
+  let designTargetDisabled = false;
 
   const remaining = () => d.totalActiveMs + (enteredPreflight ? PREFLIGHT_LIMITS.totalMs : 0) - (seams.now() - startedAtMs);
   /** Deadline for a step: its own budget, capped by what is left of the total. */
@@ -482,6 +487,44 @@ export async function runVerify(input: VerifyRunInput, seams: OrchestratorSeams)
     seams.log({ event: 'step', step, ms: seams.now() - t0, status: r.status ?? null, deadlineKilled: r.deadlineKilled, ...(r.aborted ? { stoppedEarly: true } : {}) });
     if (r.deadlineKilled) throw new RunError(deadline.capped ? 'deadline:total' : `deadline:${step}`, `${command} hit its deadline`);
     return r;
+  };
+
+  const reportDesignUnavailable = (stage: string, error: unknown) => {
+    const reason = `${stage}: ${error instanceof Error ? error.message : String(error)}`;
+    try { seams.log({ event: 'design-target-unavailable', stage, reason }); } catch { /* Logging cannot veto existing checks. */ }
+    try { seams.degrade?.({ feature: 'design-target', primary: 'unavailable', fallback: 'existing-verification', reason, impact: 'No source-bound design evidence was produced by this lifecycle.' }); } catch { /* Reporter failure cannot veto existing checks. */ }
+  };
+  const releaseDesignTarget = async () => {
+    const owner = designTarget;
+    if (!owner) return;
+    try {
+      const released = await owner.release();
+      // Unknown cleanup is relinquished only after the already-established custodian proves it still owns retry.
+      if (released.status === 'released' || released.ownershipRetained === true) { if (designTarget === owner) designTarget = null; }
+      if (released.status !== 'released') reportDesignUnavailable('cleanup', new Error(`Owned roots retained: ${released.roots.join(', ')}`));
+    } catch (error) {
+      // Keep the exact owner for the later cleanup pass; never clear before a successful release/ownership ACK.
+      reportDesignUnavailable('cleanup', error);
+    }
+  };
+  const designUnavailable = async (stage: string, error: unknown) => {
+    designTargetDisabled = true; reportDesignUnavailable(stage, error); await releaseDesignTarget();
+  };
+  /** Actual command outcome belongs to the orchestrator; an observer cannot replace or duplicate it. */
+  const observedExec = async (phase: 'install' | 'build', command: string, args: string[], execute: () => Promise<ExecResult>): Promise<ExecResult> => {
+    let actual: Promise<ExecResult> | undefined;
+    const once = () => actual ??= Promise.resolve().then(execute);
+    if (designTarget && !designTargetDisabled) {
+      try {
+        await designTarget.observeCommand({ phase, command, args: Object.freeze([...args]) }, once);
+        if (!actual) await designUnavailable('observer-did-not-execute', new Error('Observer did not call the actual execution port'));
+      } catch (error) {
+        // Await the same actual process before releasing its observer; never rerun it.
+        if (actual) { try { await actual; } catch { /* The actual error is propagated below. */ } }
+        await designUnavailable('observer', error);
+      }
+    }
+    return once();
   };
 
   let failureReason: string | null = null;
@@ -537,11 +580,37 @@ export async function runVerify(input: VerifyRunInput, seams: OrchestratorSeams)
     await seams.fs.removeTree(p.reportsDir);
     seams.fs.mkdirp(p.reportsDir);
 
+    if (seams.designTarget) {
+      try {
+        const initialGitDir = worktreeGitDir(seams, p);
+        const pinnedGitDir = initialGitDir && (seams.fs.realpath ? seams.fs.realpath(initialGitDir) : path.resolve(initialGitDir));
+        if (!pinnedGitDir) throw new Error('Design source worktree admin directory unavailable');
+        const readSourceIdentity = async () => {
+          const current = worktreeGitDir(seams, p);
+          const canonical = current && (seams.fs.realpath ? seams.fs.realpath(current) : path.resolve(current));
+          if (canonical !== pinnedGitDir) return { tree: '', clean: false };
+          const wt = { gitDir: pinnedGitDir, workTree: p.runDir };
+          const tree = await git(['rev-parse', 'HEAD^{tree}'], 'design-target-tree', wt);
+          const clean = await git(['status', '--porcelain'], 'design-target-clean', wt);
+          return { tree: tree.status === 0 ? tree.stdout.trim() : '', clean: clean.status === 0 && !clean.stdout.trim() };
+        };
+        const changed = parseNameStatus(await gitOk(['diff', '--name-status', '--no-renames', input.baseSha, mergeTree], 'design-target-paths')).map(row => row.path);
+        const readBaseFile = async (file: string): Promise<string | null> => {
+          if (!file || path.isAbsolute(file) || file.includes('\\') || file.split('/').some(part => !part || part === '.' || part === '..')) throw new Error('Invalid BASE policy path');
+          const result = await git(['show', `${input.baseSha}:${file}`], 'design-target-base-policy');
+          return result.status === 0 ? result.stdout : null;
+        };
+        designTarget = await seams.designTarget.open(Object.freeze({ runId: crypto.randomBytes(16).toString('hex'), verifyRoot: p.verifyRoot, runDir: p.runDir,
+          baseSha: input.baseSha, mergeTree, headSha: input.headSha, deadlineAt: seams.now() + remaining(), now: () => seams.now(),
+          changedPaths: Object.freeze(changed), readBaseFile, readSourceIdentity }));
+      } catch (error) { await designUnavailable('open', error); }
+    }
+
     // ── 2. Install ──
     // HUSKY=0 for the install only: set for the lanes it makes husky's prepare
     // script print "HUSKY=0 skip install" on stdout, which breaks every test that
     // parses `npm pack --json` (found on the first full real runs).
-    const ci = await exec('npm', ['ci', '--no-audit', '--no-fund'], 'npm-ci', budget(d.npmCiMs), { ...runEnv, HUSKY: '0' });
+    const ci = await observedExec('install', 'npm', ['ci', '--no-audit', '--no-fund'], () => exec('npm', ['ci', '--no-audit', '--no-fund'], 'npm-ci', budget(d.npmCiMs), { ...runEnv, HUSKY: '0' }));
     if (ci.status !== 0) throw new RunError('npm-ci', `exit ${ci.status ?? ci.signal}`);
 
     // ── 3. Build, then the lint command list, then the lanes ──
@@ -552,17 +621,34 @@ export async function runVerify(input: VerifyRunInput, seams: OrchestratorSeams)
     } catch {
       throw new RunError('build-config', 'package.json unreadable in the merge tree');
     }
-    const buildLintDeadlineAt = seams.now() + d.buildLintMs;
+    let buildLintDeadlineAt = seams.now() + d.buildLintMs;
     const shared = () => {
       const b = budget(Math.max(0, buildLintDeadlineAt - seams.now()));
       if (b.ms <= 0) throw new RunError('deadline:build-lint', 'build + lint budget exhausted');
       return b;
     };
-    for (const [phase, list] of [['build', splitScript(scripts.build)], ['lint', splitScript(scripts.lint)]] as const) {
-      for (const cmd of list) {
-        const r = await exec('sh', ['-c', cmd], 'build-lint', shared());
-        if (r.status !== 0) throw new RunFailure(`${phase}-failed:${cmd.slice(0, 80)}`);
+    const buildCommands = splitScript(scripts.build);
+    for (const cmd of buildCommands) {
+      const r = await observedExec('build', 'sh', ['-c', cmd], () => exec('sh', ['-c', cmd], 'build-lint', shared()));
+      if (r.status !== 0) throw new RunFailure(`build-failed:${cmd.slice(0, 80)}`);
+    }
+    if (designTarget && !designTargetDisabled) {
+      if (!buildCommands.length) await designUnavailable('empty-build', new Error('No nonempty complete build list'));
+      else {
+        const copyStartedAt = seams.now(); let copyFailed = false, copyError: unknown;
+        try { await designTarget.completeBuild(); }
+        catch (error) { copyFailed = true; copyError = error; }
+        finally {
+          // Exclude ONLY this new preparation/copy interval from the existing wall sub-budget.
+          // remaining()/totalActive still charge all elapsed time; ordinary overhead is unchanged.
+          buildLintDeadlineAt += Math.max(0, seams.now() - copyStartedAt);
+        }
+        if (copyFailed) await designUnavailable('complete-build', copyError);
       }
+    }
+    for (const cmd of splitScript(scripts.lint)) {
+      const r = await exec('sh', ['-c', cmd], 'build-lint', shared());
+      if (r.status !== 0) throw new RunFailure(`lint-failed:${cmd.slice(0, 80)}`);
     }
 
     // Charge the optional preflight for its exact-base changed-file scan too.
@@ -1016,6 +1102,24 @@ export async function runVerify(input: VerifyRunInput, seams: OrchestratorSeams)
       failureReason = evaluationReasons[0];
     }
     flags = await classify();
+    if (designTarget && !designTargetDisabled && outcome === 'success') {
+      const left = remaining();
+      if (left <= 0) throw new RunError('deadline:total', 'No total deadline remains for design handoff');
+      const controller = new AbortController(); let timedOut = false;
+      let timer: ReturnType<typeof setTimeout> | undefined;
+      const deadline = new Promise<never>((_, reject) => { timer = setTimeout(() => {
+        timedOut = true; controller.abort(); reject(new RunError('deadline:total', 'Design handoff reached the total deadline'));
+      }, left); });
+      try {
+        // The same promise keeps its late settlement handlers; expiry never authorizes later work.
+        const work = Promise.resolve().then(() => designTarget!.postLanes(controller.signal));
+        await Promise.race([work, deadline]);
+        if (remaining() <= 0) { timedOut = true; controller.abort(); throw new RunError('deadline:total', 'Design handoff completed after the total deadline'); }
+      } catch (error) {
+        controller.abort(); await designUnavailable('post-lanes', error);
+        if (timedOut || remaining() <= 0) throw new RunError('deadline:total', 'Design handoff exceeded the total deadline');
+      } finally { if (timer) clearTimeout(timer); }
+    }
   } catch (e) {
     if (preflight && preflightStartedAt !== null && !preflightEnded) {
       preflight.elapsedMs = Math.min(PREFLIGHT_LIMITS.totalMs, Math.max(0, seams.now() - preflightStartedAt));
@@ -1432,6 +1536,7 @@ export async function runVerify(input: VerifyRunInput, seams: OrchestratorSeams)
   }
 
   async function cleanup(failed: boolean): Promise<string | null> {
+    if (designTarget) await releaseDesignTarget();
     let kept: string | null = null;
     // First, end whatever the run's tests left running (a detached tmux server, a stopped
     // helper): every lane is over, so a process still pointing into this run's own folders

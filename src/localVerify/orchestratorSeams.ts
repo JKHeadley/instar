@@ -22,6 +22,7 @@ import { SafeGitExecutor, isLocalVerifyClonePath } from '../core/SafeGitExecutor
 import { SafeFsExecutor } from '../core/SafeFsExecutor.js';
 import { getHostTestRunnerSemaphore, TestRunnerCapacityTimeoutError, TestRunnerStormCeilingError } from '../core/hostTestRunnerSemaphore.js';
 import { fileURLToPath } from 'node:url';
+import { createInstalledDesignTargetProducer, type InstalledDesignTargetOptions } from './designTargetProducer.js';
 import type { ExecResult, GitCallOpts, GitResult, OrchestratorSeams, RunDegradation } from './orchestrator.js';
 import { localImportGraph } from './verifierVersion.js';
 import { reapLeftovers, realReapDeps } from './leftoverReaper.js';
@@ -274,8 +275,14 @@ export function realExec(
 }
 
 /** `verifyRoot` is `<agentHome>/.worktrees/.verify` of the agent running the verify. */
-export function realSeams(log: (event: Record<string, unknown>) => void, verifyRoot: string, opts?: { onDegrade?: (event: RunDegradation) => void }): OrchestratorSeams {
+export function realSeams(log: (event: Record<string, unknown>) => void, verifyRoot: string, opts?: { onDegrade?: (event: RunDegradation) => void; designTarget?: InstalledDesignTargetOptions }): OrchestratorSeams {
+  let designTarget: OrchestratorSeams['designTarget'];
+  if (opts?.designTarget) {
+    try { designTarget = createInstalledDesignTargetProducer(opts.designTarget); }
+    catch (error) { designTarget = { open: async () => { throw error; } }; }
+  }
   return {
+    ...(designTarget ? { designTarget } : {}),
     git: (args, opts) => realGit(args, opts, verifyRoot),
     exec: realExec,
     fs: {

@@ -22,6 +22,15 @@ export const HARNESS_GLOBS: readonly string[] = Object.freeze([
   'src/**/GreenPrAutoMerger.ts',
   'src/**/MergeRunner.ts',
   'src/**/greenPrAutomergeWiring.ts',
+  // Design gate and its inputs execute from the trusted base, like the test harness.
+  'src/designGate/**',
+  'scripts/design/**',
+  'docs/design/screens.json',
+  'docs/design/coverage.json',
+  'docs/design/rule-ids.lock.json',
+  'tests/design/harness/**',
+  'tests/design/seeds/**',
+  'tests/design/fonts/**',
   // Test harness.
   'vitest*.config.ts',
   'tests/setup/**',
@@ -38,7 +47,7 @@ export const HARNESS_GLOBS: readonly string[] = Object.freeze([
  * `typescript-native` is the alias the build and lint scripts run the TypeScript 7
  * compiler under; its per-platform binaries are the `@typescript/` scope.
  */
-export const TOOLCHAIN_PACKAGES: readonly string[] = Object.freeze(['vitest', 'typescript', 'typescript-native', 'tsx']);
+export const TOOLCHAIN_PACKAGES: readonly string[] = Object.freeze(['vitest', 'typescript', 'typescript-native', 'tsx', 'playwright-core', 'axe-core']);
 export const TOOLCHAIN_SCOPES: readonly string[] = Object.freeze(['@vitest/', '@typescript/']);
 
 const LIFECYCLE_SCRIPTS = ['preinstall', 'install', 'postinstall', 'prepare', 'preprepare', 'postprepare', 'prepublish'];

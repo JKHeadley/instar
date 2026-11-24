@@ -1,0 +1,349 @@
+{
+  "version": 1,
+  "now": "2026-11-01T12:00:00Z",
+  "description": "Invented raw subscription-pool inputs for the Accounts design harness. No captures or production-handler mounting are certified by this file. Loading is a future harness response timing state, not fabricated display data.",
+  "busiestAccountCount": 14,
+  "longestNameLength": 104,
+  "states": {
+    "busy": {
+      "subscriptionPool": {
+        "enabled": true,
+        "accounts": [
+          {
+            "id": "seed-account-1",
+            "nickname": "Meadow Community Research And Learning Cooperative — International Accessibility And Translation Account",
+            "email": "account-1@example.com",
+            "framework": "claude-code",
+            "status": "active",
+            "loginCheck": "ok",
+            "machineId": "seed-studio",
+            "machineNickname": "Meadow Studio",
+            "lastQuota": {
+              "measuredAt": "2026-11-01T11:55:00Z",
+              "fiveHour": {
+                "utilizationPct": 0,
+                "resetsAt": "2026-11-01T14:00:00Z"
+              },
+              "sevenDay": {
+                "utilizationPct": 100,
+                "resetsAt": "2026-11-02T08:00:00Z"
+              },
+              "fable": {
+                "utilizationPct": 75,
+                "resetsAt": "2026-11-02T12:00:00Z"
+              }
+            }
+          },
+          {
+            "id": "seed-account-2",
+            "nickname": "River Library",
+            "email": "account-2@example.com",
+            "framework": "codex-cli",
+            "status": "active",
+            "loginCheck": "ok",
+            "machineId": "seed-studio",
+            "machineNickname": "Meadow Studio",
+            "lastQuota": {
+              "measuredAt": "2026-11-01T11:55:00Z",
+              "fiveHour": {
+                "utilizationPct": 100,
+                "resetsAt": "2026-11-01T14:00:00Z"
+              },
+              "sevenDay": {
+                "utilizationPct": 37,
+                "resetsAt": "2026-11-02T08:00:00Z"
+              }
+            }
+          },
+          {
+            "id": "seed-account-3",
+            "nickname": "Orchard Studio",
+            "email": "account-3@example.com",
+            "framework": "claude-code",
+            "status": "active",
+            "loginCheck": "ok",
+            "machineId": "seed-studio",
+            "machineNickname": "Meadow Studio",
+            "lastQuota": null
+          },
+          {
+            "id": "seed-account-4",
+            "nickname": "Cedar Workshop",
+            "email": "account-4@example.com",
+            "framework": "codex-cli",
+            "status": "needs-reauth",
+            "loginCheck": "unavailable",
+            "machineId": "seed-studio",
+            "machineNickname": "Meadow Studio",
+            "lastQuota": {
+              "measuredAt": "2026-11-01T11:55:00Z",
+              "fiveHour": {
+                "utilizationPct": 34,
+                "resetsAt": "2026-11-01T14:00:00Z"
+              },
+              "sevenDay": {
+                "utilizationPct": 41,
+                "resetsAt": "2026-11-02T08:00:00Z"
+              }
+            }
+          },
+          {
+            "id": "seed-account-5",
+            "nickname": "Harbor Notes",
+            "email": "account-5@example.com",
+            "framework": "claude-code",
+            "status": "active",
+            "loginCheck": "ok",
+            "machineId": "seed-studio",
+            "machineNickname": "Meadow Studio",
+            "lastQuota": {
+              "measuredAt": "2026-11-01T10:00:00Z",
+              "fiveHour": {
+                "utilizationPct": 37,
+                "resetsAt": "2026-11-01T14:00:00Z"
+              },
+              "sevenDay": {
+                "utilizationPct": 43,
+                "resetsAt": "2026-11-02T08:00:00Z"
+              }
+            }
+          },
+          {
+            "id": "seed-account-6",
+            "nickname": "Willow Classroom",
+            "email": "account-6@example.com",
+            "framework": "codex-cli",
+            "status": "active",
+            "loginCheck": "ok",
+            "machineId": "seed-studio",
+            "machineNickname": "Meadow Studio",
+            "lastQuota": {
+              "measuredAt": "2026-11-01T11:40:00Z",
+              "fiveHour": {
+                "utilizationPct": 100,
+                "resetsAt": "2026-11-01T11:50:00Z"
+              }
+            }
+          },
+          {
+            "id": "seed-account-7",
+            "nickname": "Juniper Garden",
+            "email": "account-7@example.com",
+            "framework": "claude-code",
+            "status": "active",
+            "loginCheck": "ok",
+            "machineId": "seed-studio",
+            "machineNickname": "Meadow Studio",
+            "lastQuota": {
+              "measuredAt": "2026-11-01T11:55:00Z",
+              "fiveHour": {
+                "utilizationPct": 43,
+                "resetsAt": "2026-11-01T14:00:00Z"
+              },
+              "sevenDay": {
+                "utilizationPct": 47,
+                "resetsAt": null
+              }
+            }
+          },
+          {
+            "id": "seed-account-8",
+            "nickname": "Maple Reading Room",
+            "email": "account-8@example.com",
+            "framework": "codex-cli",
+            "status": "active",
+            "loginCheck": "ok",
+            "machineId": "seed-studio",
+            "machineNickname": "Meadow Studio",
+            "lastQuota": {
+              "measuredAt": "2026-11-01T11:55:00Z",
+              "fiveHour": {
+                "utilizationPct": 46,
+                "resetsAt": "2026-11-01T14:00:00Z"
+              },
+              "sevenDay": {
+                "utilizationPct": 49,
+                "resetsAt": "2026-11-02T08:00:00Z"
+              }
+            }
+          },
+          {
+            "id": "seed-account-9",
+            "nickname": "Birch Makerspace",
+            "email": "account-9@example.com",
+            "framework": "claude-code",
+            "status": "active",
+            "loginCheck": "ok",
+            "machineId": "seed-studio",
+            "machineNickname": "Meadow Studio",
+            "lastQuota": {
+              "measuredAt": "2026-11-01T11:55:00Z",
+              "fiveHour": {
+                "utilizationPct": 49,
+                "resetsAt": "2026-11-01T14:00:00Z"
+              },
+              "sevenDay": {
+                "utilizationPct": 51,
+                "resetsAt": "2026-11-02T08:00:00Z"
+              }
+            }
+          },
+          {
+            "id": "seed-account-10",
+            "nickname": "Aspen Archive",
+            "email": "account-10@example.com",
+            "framework": "codex-cli",
+            "status": "active",
+            "loginCheck": "ok",
+            "machineId": "seed-studio",
+            "machineNickname": "Meadow Studio",
+            "lastQuota": {
+              "measuredAt": "2026-11-01T11:55:00Z",
+              "fiveHour": {
+                "utilizationPct": 52,
+                "resetsAt": "2026-11-01T14:00:00Z"
+              },
+              "sevenDay": {
+                "utilizationPct": 53,
+                "resetsAt": "2026-11-02T08:00:00Z"
+              }
+            }
+          },
+          {
+            "id": "seed-account-11",
+            "nickname": "Fern Observatory",
+            "email": "account-11@example.com",
+            "framework": "claude-code",
+            "status": "active",
+            "loginCheck": "ok",
+            "machineId": "seed-studio",
+            "machineNickname": "Meadow Studio",
+            "lastQuota": {
+              "measuredAt": "2026-11-01T11:55:00Z",
+              "fiveHour": {
+                "utilizationPct": 55,
+                "resetsAt": "2026-11-01T14:00:00Z"
+              },
+              "sevenDay": {
+                "utilizationPct": 55,
+                "resetsAt": "2026-11-02T08:00:00Z"
+              }
+            }
+          },
+          {
+            "id": "seed-account-12",
+            "nickname": "Laurel Commons",
+            "email": "account-12@example.com",
+            "framework": "codex-cli",
+            "status": "active",
+            "loginCheck": "ok",
+            "machineId": "seed-studio",
+            "machineNickname": "Meadow Studio",
+            "lastQuota": {
+              "measuredAt": "2026-11-01T11:55:00Z",
+              "fiveHour": {
+                "utilizationPct": 58,
+                "resetsAt": "2026-11-01T14:00:00Z"
+              },
+              "sevenDay": {
+                "utilizationPct": 57,
+                "resetsAt": "2026-11-02T08:00:00Z"
+              }
+            }
+          },
+          {
+            "id": "seed-account-13",
+            "nickname": "Elm Field Station",
+            "email": "account-13@example.com",
+            "framework": "claude-code",
+            "status": "active",
+            "loginCheck": "ok",
+            "machineId": "seed-studio",
+            "machineNickname": "Meadow Studio",
+            "lastQuota": {
+              "measuredAt": "2026-11-01T11:55:00Z",
+              "fiveHour": {
+                "utilizationPct": 61,
+                "resetsAt": "2026-11-01T14:00:00Z"
+              },
+              "sevenDay": {
+                "utilizationPct": 59,
+                "resetsAt": "2026-11-02T08:00:00Z"
+              }
+            }
+          },
+          {
+            "id": "seed-account-14",
+            "nickname": "Pine Language Lab",
+            "email": "account-14@example.com",
+            "framework": "codex-cli",
+            "status": "active",
+            "loginCheck": "ok",
+            "machineId": "seed-studio",
+            "machineNickname": "Meadow Studio",
+            "lastQuota": {
+              "measuredAt": "2026-11-01T11:55:00Z",
+              "fiveHour": {
+                "utilizationPct": 64,
+                "resetsAt": "2026-11-01T14:00:00Z"
+              },
+              "sevenDay": {
+                "utilizationPct": 61,
+                "resetsAt": "2026-11-02T08:00:00Z"
+              }
+            }
+          },
+          {
+            "id": "seed-account-1",
+            "nickname": "Meadow Community Research And Learning Cooperative — International Accessibility And Translation Account",
+            "email": "account-1@example.com",
+            "framework": "claude-code",
+            "status": "needs-reauth",
+            "loginCheck": "unavailable",
+            "machineId": "seed-notebook",
+            "machineNickname": "River Notebook",
+            "lastQuota": {
+              "measuredAt": "2026-11-01T11:55:00Z",
+              "fiveHour": {
+                "utilizationPct": 0,
+                "resetsAt": "2026-11-01T14:00:00Z"
+              },
+              "sevenDay": {
+                "utilizationPct": 100,
+                "resetsAt": "2026-11-02T08:00:00Z"
+              },
+              "fable": {
+                "utilizationPct": 75,
+                "resetsAt": "2026-11-02T12:00:00Z"
+              }
+            }
+          }
+        ],
+        "pool": {
+          "selfMachineId": "seed-studio",
+          "failed": []
+        }
+      },
+      "options": {
+        "episodes": [],
+        "blockers": [],
+        "inUse": {
+          "activeAccountId": "seed-account-1"
+        }
+      }
+    },
+    "empty": {
+      "subscriptionPool": {
+        "enabled": true,
+        "accounts": [],
+        "pool": {
+          "selfMachineId": "seed-studio",
+          "failed": []
+        }
+      }
+    },
+    "error": {
+      "reason": "Synthetic account service unavailable"
+    }
+  }
+}

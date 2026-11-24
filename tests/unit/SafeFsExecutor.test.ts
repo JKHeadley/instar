@@ -260,6 +260,27 @@ describe('SafeFsExecutor.safeRmTreeSerial (async, one filesystem call at a time)
     expect(fs.existsSync(target)).toBe(false);
   });
 
+  it('uses the existing exact verifier scope for serial cleanup without widening to source or siblings', async () => {
+    const verifyRoot = path.join(fakeInstar, '.worktrees', '.verify');
+    const owned = path.join(verifyRoot, 'design-targets', 'runtime-one');
+    const sibling = path.join(fakeInstar, 'source-sibling');
+    tree(owned); tree(sibling);
+    expect(fs.realpathSync(fakeInstar)).not.toContain(`${path.sep}.instar${path.sep}`);
+    await expect(SafeFsExecutor.safeRmTreeSerial(owned, {
+      operation: 'rm-serial-scoped-verifier', localVerifyScopeOk: { verifyRoot },
+    })).resolves.toBeUndefined();
+    expect(fs.existsSync(owned)).toBe(false);
+    for (const target of [sibling, fakeInstar]) {
+      await expect(SafeFsExecutor.safeRmTreeSerial(target, {
+        operation: 'rm-serial-outside-verifier', localVerifyScopeOk: { verifyRoot },
+      })).rejects.toThrow(SourceTreeGuardError);
+      expect(fs.existsSync(target)).toBe(true);
+    }
+    await expect(SafeFsExecutor.safeRmTreeSerial(sibling, {
+      operation: 'rm-serial-invalid-scope', localVerifyScopeOk: { verifyRoot: fakeInstar },
+    })).rejects.toThrow(SourceTreeGuardError);
+  });
+
   it('blocks removal of the instar source tree before touching disk', async () => {
     await expect(SafeFsExecutor.safeRmTreeSerial(fakeInstar, { operation: 'rm-serial-blocked' })).rejects.toThrow(SourceTreeGuardError);
     expect(fs.existsSync(path.join(fakeInstar, '.instar-source-tree'))).toBe(true);

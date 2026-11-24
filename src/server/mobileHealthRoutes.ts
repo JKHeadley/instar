@@ -42,6 +42,8 @@ export interface HealthChoicePeers {
 }
 
 export interface MobileHealthDeps {
+  /** Defaults to the existing production degradation reporter; fixtures may capture failures privately. */
+  reportFailure?: (detail: string, err: unknown) => void;
   /** GET /health on this server with its own token, so the detailed fields are present. */
   readHealth: () => Promise<{ status: number; body: unknown }>;
   bearerOk: (req: Request) => boolean;
@@ -97,6 +99,7 @@ function notReachedNote(unreached: number): string | null {
 }
 
 export function mountMobileHealthRoutes(router: Router, deps: MobileHealthDeps): void {
+  const reportFailure = deps.reportFailure ?? report;
   const now = () => (deps.now ? deps.now() : Date.now());
   const cached = singleFlight<RawRead>(HEALTH_READ_CACHE_MS, now);
   const events = deps.recentEvents ?? (() => DegradationReporter.getInstance().getRecentEvents()
@@ -129,7 +132,7 @@ export function mountMobileHealthRoutes(router: Router, deps: MobileHealthDeps):
     try {
       return (await deps.peers.push(rows)).unreached;
     } catch (err) {
-      report('telling other machines about a choice', err);
+      reportFailure('telling other machines about a choice', err);
       return deps.peers.list().length;
     }
   };
@@ -139,7 +142,7 @@ export function mountMobileHealthRoutes(router: Router, deps: MobileHealthDeps):
     try {
       res.json({ ...page(answer(await read())), ...(deps.choices?.failedToRead ? { hiddenUnreadable: true } : {}) });
     } catch (err) {
-      report('GET /mobile/health-issues', err);
+      reportFailure('GET /mobile/health-issues', err);
       // The one honest "can't tell": the agent answered but couldn't read its own health. Say why.
       const msg = err instanceof Error ? err.message : String(err);
       const reason = /abort|timeout|timed out/i.test(msg) ? 'timeout' : /\/health answered/.test(msg) ? 'health-read-failed' : 'summary-failed';
@@ -181,7 +184,7 @@ export function mountMobileHealthRoutes(router: Router, deps: MobileHealthDeps):
       const note = notReachedNote(await spread(rows));
       res.json({ ok: true, note, ...page(answer(raw)) });
     } catch (err) {
-      report('POST /mobile/health-issues/choices', err);
+      reportFailure('POST /mobile/health-issues/choices', err);
       res.status(500).json(storageErrorResponse({ error: 'choice-not-saved', detail: 'I couldn’t save that, so nothing changed. Try again.' }, req.app.locals.stateDir));
     }
   });
@@ -199,7 +202,7 @@ export function mountMobileHealthRoutes(router: Router, deps: MobileHealthDeps):
       const note = notReachedNote(await spread([row]));
       res.json({ ok: true, note, ...page(answer(raw)) });
     } catch (err) {
-      report('POST /mobile/health-issues/choices/undo', err);
+      reportFailure('POST /mobile/health-issues/choices/undo', err);
       res.status(500).json(storageErrorResponse({ error: 'choice-not-saved', detail: 'I couldn’t save that, so it’s still hidden. Try again.' }, req.app.locals.stateDir));
     }
   });
@@ -226,7 +229,7 @@ export function mountMobileHealthRoutes(router: Router, deps: MobileHealthDeps):
         // One machine at a time, so a long list from one can't crowd out another.
         if (peers.list().length > 0) for (const rows of await peers.pull()) store.merge(rows);
         if (store.hasRows()) answer(await read());
-      })().catch((err) => report('the hidden-problem check', err));
+      })().catch((err) => reportFailure('the hidden-problem check', err));
     }, HEALTH_CHOICES_TICK_MS).unref();
   }
 }
