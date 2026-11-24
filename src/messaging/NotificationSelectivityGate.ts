@@ -184,6 +184,10 @@ export class NotificationSelectivityGate {
     if (category === 'pairing-outcome') {
       return envelope?.inboundMessageId ? result('deliver', 'requested-follow-up') : result('record', 'unanchored-follow-up');
     }
+    // Owner secret (identity-security-piece1d): the owner's own credential, sent only to their private
+    // chat by the adapter's secret send (no producer or request maps to it). Always delivered: a
+    // held secret would sit in a served store.
+    if (category === 'owner-secret') return result('deliver', 'owner-secret');
     // Owner decision (cos-owner-decision-delivery): an offer or armed exact-change confirmation
     // needs a human answer, not a quiet report. Only trusted in-process sends stamp this category
     // (sendOfferList or the profile-confirmation producer); request metadata cannot mint it.
@@ -343,6 +347,8 @@ export class NotificationSelectivityGate {
     // Opted-in pushes also enter the durable feed; verified replies never do.
     let id: string;
     try {
+      // identity-security-piece1d: a message carrying the owner's secret is never stored, even on a gate error.
+      if (envelope?.category === 'owner-secret') text = '[a private message for the owner carrying a credential was not sent]';
       const row = await this.store.record({ category: verdict.category, sourceContext: envelope?.sourceContext ?? 'unstamped', topicId, text });
       if (this.failureSince !== null) { this.ledger({ ts: new Date(this.now()).toISOString(), reason: 'store-recovered', lost: this.activeLost, since: this.failureSince }); this.failureSince = null; this.activeLost = 0; }
       id = row.id; if (row.count > 1) this.metrics.coalesced++;

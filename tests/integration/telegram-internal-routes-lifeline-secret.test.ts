@@ -15,7 +15,7 @@
  *   - callbacks: the same tap delivered twice has one effect, also across a
  *     server restart, also when the first delivery was refused.
  */
-import { describe, it, expect, beforeEach, afterEach } from 'vitest';
+import { describe, it, expect, beforeEach, afterEach, vi } from 'vitest';
 import express from 'express';
 import request from 'supertest';
 import fs from 'node:fs';
@@ -34,10 +34,12 @@ import {
 import { LIFELINE_INGRESS_STATE_RELPATH } from '../../src/server/LifelineIngressGuard.js';
 import { readLifelineRestartSignal } from '../../src/core/version-skew.js';
 import { MessageProcessingLedger } from '../../src/messaging/MessageProcessingLedger.js';
+import { TelegramAdapter } from '../../src/messaging/TelegramAdapter.js';
 
 const AUTH_TOKEN = 'test-auth-token-lifeline-secret';
 const SERVER_VERSION = '1.3.500';
 const OPERATOR_ID = 777001;
+const fixtureAdapters: TelegramAdapter[] = [];
 
 interface Effects {
   topicMessages: Array<{ fromUserId: unknown; text: string; userId?: unknown; firstName?: unknown; username?: unknown; senderUnverified?: unknown }>;
@@ -50,6 +52,26 @@ interface Effects {
 }
 
 function makeContext(stateDir: string, effects: Effects, extra: Record<string, unknown> = {}): RouteContext {
+  // Retain real ingress hooks, including private-owner delivery; replace only the observed edges.
+  const telegram = Object.assign(new TelegramAdapter(
+    { token: '123:lifeline-secret-http-fixture', chatId: '-100123' }, stateDir,
+    { suppressLifelineAutoCreate: true },
+  ), {
+    onTopicMessage: (m: { content: string; userId?: unknown; metadata?: Record<string, unknown> }) => {
+      effects.topicMessages.push({
+        fromUserId: m.metadata?.telegramUserId, text: m.content, userId: m.userId,
+        firstName: m.metadata?.firstName, username: m.metadata?.username, senderUnverified: m.metadata?.senderUnverified,
+      });
+      },
+      logInboundMessage: (row: { telegramUserId?: unknown; fromUser?: unknown }) => { effects.inboundLogged++; effects.inboundLog.push(row); },
+      dispatchAgentMessageHook: async (a: { senderIsBot?: unknown; senderBotId?: unknown }) => { effects.a2aHook.push(a); return false; },
+      isAuthorizedSender: (id: unknown) => { effects.authorizedSenderChecks.push(id); return true; },
+      handleForwardedCallback: async (q: { id: string; data: string; from: { id: unknown } }) => {
+        effects.callbacks.push({ id: q.id, data: q.data, fromId: q.from.id });
+      },
+  });
+  telegram.apiCall = async () => ({ ok: true, result: {} }) as never;
+  fixtureAdapters.push(telegram);
   return {
     config: {
       projectName: 'test-project',
@@ -64,20 +86,7 @@ function makeContext(stateDir: string, effects: Effects, extra: Record<string, u
     sessionManager: { listRunningSessions: () => [] } as never,
     state: { getJobState: () => null, getSession: () => null, queryEvents: () => [] } as never,
     scheduler: null,
-    telegram: {
-      onTopicMessage: (m: { content: string; userId?: unknown; metadata?: Record<string, unknown> }) => {
-        effects.topicMessages.push({
-          fromUserId: m.metadata?.telegramUserId, text: m.content, userId: m.userId,
-          firstName: m.metadata?.firstName, username: m.metadata?.username, senderUnverified: m.metadata?.senderUnverified,
-        });
-      },
-      logInboundMessage: (row: { telegramUserId?: unknown; fromUser?: unknown }) => { effects.inboundLogged++; effects.inboundLog.push(row); },
-      dispatchAgentMessageHook: async (a: { senderIsBot?: unknown; senderBotId?: unknown }) => { effects.a2aHook.push(a); return false; },
-      isAuthorizedSender: (id: unknown) => { effects.authorizedSenderChecks.push(id); return true; },
-      handleForwardedCallback: async (q: { id: string; data: string; from: { id: unknown } }) => {
-        effects.callbacks.push({ id: q.id, data: q.data, fromId: q.from.id });
-      },
-    } as never,
+    telegram,
     topicOperatorStore: {
       setAuthenticatedOperator: (topicId: number, op: { uid: string }) => { effects.operatorBinds.push({ topicId, uid: op.uid }); },
     } as never,
@@ -102,6 +111,8 @@ describe('internal Telegram routes — lifeline ingress secret', () => {
     ProcessIntegrity.initialize(SERVER_VERSION, null);
   });
   afterEach(() => {
+    for (const adapter of fixtureAdapters.splice(0)) adapter.stopPromptGate();
+    vi.restoreAllMocks();
     ProcessIntegrity.reset();
     SafeFsExecutor.safeRmSync(tmpDir, { recursive: true, force: true, operation: 'tests/integration/telegram-internal-routes-lifeline-secret.test.ts' });
   });
@@ -379,7 +390,7 @@ describe('internal Telegram routes — lifeline ingress secret', () => {
       const app = express();
       app.use(express.json());
       const ctx = makeContext(stateDir, effects, dev);
-      (ctx.telegram as unknown as { isPolling: boolean }).isPolling = true;
+      vi.spyOn(ctx.telegram!, 'isPolling', 'get').mockReturnValue(true);
       app.use('/', createRoutes(ctx));
       expect((await forward(app)).status).toBe(401);
       expect(persisted()).toMatchObject({ armedBy: 'no-lifeline-ingress' });

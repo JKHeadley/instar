@@ -365,7 +365,7 @@ Added hybrid search and MEMORY.md export.
     const prompt = manager.buildPrompt(announceGuide);
 
     expect(prompt).toContain('https://test.tunnel.dev/dashboard');
-    expect(prompt).toContain('1234'); // PIN
+    expect(prompt).not.toContain('1234'); // the PIN never goes into the announce text (identity piece 1d)
     expect(prompt).toContain('0.9.86'); // version
     expect(prompt).toContain('telegram-reply.sh');
     expect(prompt).toContain('42'); // topic ID

@@ -18,6 +18,7 @@ import { describe, it, expect, beforeAll, afterAll } from 'vitest';
 import fs from 'node:fs';
 import path from 'node:path';
 import os from 'node:os';
+import { TelegramAdapter } from '../../src/messaging/TelegramAdapter.js';
 import { AgentServer } from '../../src/server/AgentServer.js';
 import { StateManager } from '../../src/core/StateManager.js';
 import { SessionManager } from '../../src/core/SessionManager.js';
@@ -62,6 +63,7 @@ describe('Lifeline ingress secret — alive between a real server and a real lif
   let projectDir: string;
   let stateDir: string;
   let server: AgentServer;
+  let telegram: TelegramAdapter;
   let base: string;
   const serverVersion = getInstarVersion();
   const routed: Array<{ text: string; from: unknown }> = [];
@@ -116,20 +118,21 @@ describe('Lifeline ingress secret — alive between a real server and a real lif
       requestTimeoutMs: 30000,
     } as unknown as InstarConfig;
 
-    const telegram = {
-      onTopicMessage: (m: { content: string; metadata?: { telegramUserId?: unknown } }) => {
-        routed.push({ text: m.content, from: m.metadata?.telegramUserId });
-      },
-      logInboundMessage: () => {},
-      isAuthorizedSender: () => false,
-      handleForwardedCallback: async (q: { id: string }) => { callbacks.push(q.id); },
-    };
+    // Use the real adapter contract so new ingress hooks cannot be absent from this fixture.
+    // Only outward Telegram API calls and the observed dispatch edges are replaced.
+    telegram = new TelegramAdapter({ token: '123:fixture', chatId: '-100123' }, stateDir, { suppressLifelineAutoCreate: true });
+    telegram.apiCall = async () => ({ ok: true, result: {} }) as never;
+    telegram.onTopicMessage = (m) => { routed.push({ text: m.content, from: m.metadata?.telegramUserId }); };
+    telegram.logInboundMessage = () => {};
+    telegram.isAuthorizedSender = () => false;
+    telegram.handleForwardedCallback = async (q) => { callbacks.push(q.id); };
+
 
     server = new AgentServer({
       config,
       sessionManager: new SessionManager({ stateDir, claudePath: 'claude', tmuxPath: 'tmux', projectDir, port: 0 } as never),
       state: new StateManager(stateDir),
-      telegram: telegram as never,
+      telegram,
     });
     await server.start();
     base = boundAgentServerBase(server);
@@ -151,6 +154,7 @@ describe('Lifeline ingress secret — alive between a real server and a real lif
 
   afterAll(async () => {
     await server?.stop();
+    telegram?.stopPromptGate();
     ProcessIntegrity.reset();
     SafeFsExecutor.safeRmSync(projectDir, { recursive: true, force: true, operation: 'tests/e2e/telegram-internal-routes-lifeline-secret-lifecycle.test.ts' });
   }, 15000);

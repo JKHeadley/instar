@@ -1,0 +1,17 @@
+{
+  "version": 2,
+  "slug": "private-pin-main-refresh",
+  "sessionId": "b3d2cf8a-9b5d-468b-a50b-70ebf11e9e5c",
+  "timestamp": "2026-11-24T16:14:13.328Z",
+  "artifactPath": "upgrades/side-effects/private-pin-main-refresh.md",
+  "artifactSha256": "5912e6d29ca9ac6a7af7cdde472fb75b9a04d29e84fd78dd01ecbc4556880197",
+  "specPath": "docs/specs/identity-security-piece1d-pin-private.md",
+  "coveredFiles": [
+    "upgrades/side-effects/private-pin-main-refresh.md"
+  ],
+  "phase": "complete",
+  "tier": 2,
+  "tierReasoning": "This documents a refreshed review of security-sensitive PIN delivery and migration semantics under the previously approved spec.",
+  "secondPass": "true",
+  "reviewerConcurred": true
+}

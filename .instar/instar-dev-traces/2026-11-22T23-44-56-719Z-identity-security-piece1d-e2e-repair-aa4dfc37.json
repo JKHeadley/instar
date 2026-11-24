@@ -1,0 +1,18 @@
+{
+  "version": 2,
+  "slug": "identity-security-piece1d-e2e-repair",
+  "sessionId": "2489beca-6bce-4817-b1fb-9ba4ff1d41b2",
+  "timestamp": "2026-11-22T23:44:56.719Z",
+  "artifactPath": "upgrades/side-effects/identity-security-piece1d-e2e-repair.md",
+  "artifactSha256": "4b901468cc8f2b198f0485550b588b39218a41dae5043e5714be3cd2ac64bfd4",
+  "specPath": "docs/specs/identity-security-piece1d-pin-private.md",
+  "coveredFiles": [
+    "tests/e2e/telegram-internal-routes-lifeline-secret-lifecycle.test.ts",
+    "upgrades/side-effects/identity-security-piece1d-e2e-repair.md"
+  ],
+  "phase": "complete",
+  "tier": 2,
+  "tierReasoning": "Fixture repair under the existing approved identity spec; full exact-head verification delegated",
+  "secondPass": "true",
+  "reviewerConcurred": true
+}

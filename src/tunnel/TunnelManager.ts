@@ -129,6 +129,8 @@ export interface TunnelManagerInjections {
 export interface TunnelMessagingAdapter {
   sendToTopic(topicId: number, text: string): Promise<unknown>;
   sendToOwnerDM(text: string): Promise<unknown>;
+  /** identity-security-piece1d: a private message carrying the owner's credential (never stored or held by the quiet gate). */
+  sendOwnerSecret?(text: string): Promise<unknown>;
   getDashboardTopicId(): number | undefined;
   getLifelineTopicId(): number | undefined;
   /**
@@ -459,8 +461,9 @@ export class TunnelManager extends EventEmitter {
         if (typeof topicId !== 'number') return; // no group destination
         await withNotificationEnvelope(stampNotification(), async () => (adapter)!.sendToTopic(topicId, text));
       },
+      // These owner messages carry the dashboard link and PIN: the secret send (identity-security-piece1d).
       sendOwnerDM: async (text: string) => {
-        await adapter.sendToOwnerDM(text);
+        await (adapter.sendOwnerSecret ? adapter.sendOwnerSecret(text) : adapter.sendToOwnerDM(text));
       },
     };
     const credentialProvider = () => ({

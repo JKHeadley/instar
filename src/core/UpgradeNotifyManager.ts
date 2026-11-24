@@ -195,7 +195,7 @@ export class UpgradeNotifyManager {
    * Build the upgrade-notify prompt with all context.
    */
   buildPrompt(guideContent: string): string {
-    const { dashboardPin, currentVersion, replyScript, notifyTopicId } = this.config;
+    const { currentVersion, replyScript, notifyTopicId } = this.config;
     const dashboardUrl = this.config.tunnelUrl
       ? `${this.config.tunnelUrl}/dashboard`
       : `http://localhost:${this.config.port}/dashboard`;
@@ -221,7 +221,8 @@ export class UpgradeNotifyManager {
           '   - Write like you\'re texting a friend — warm, conversational, no jargon',
           '   - This should NOT look like a changelog or release notes',
           '   - Apply each announcement\'s maturity framing and badge verbatim in spirit (experimental ⇒ say it is early and not ready for general use)',
-          '   - Include CONCRETE details — actual URLs, PINs, things they can click/use right now (only for STABLE features they can actually use)',
+          '   - Include CONCRETE details — actual URLs, things they can click/use right now (only for STABLE features they can actually use)',
+          '   - NEVER include the dashboard PIN: it goes only to the owner\'s private chat',
           '   - NEVER mention "bearer tokens", "auth tokens", version numbers in headers, or internal implementation details',
           '   - NO bullet lists, NO markdown headers, NO technical formatting — just natural sentences',
           '',
@@ -230,7 +231,6 @@ export class UpgradeNotifyManager {
           '',
           '   CONCRETE DETAILS YOU MAY USE:',
           `   - Dashboard URL: ${dashboardUrl}`,
-          dashboardPin ? `   - Dashboard PIN: ${dashboardPin}` : '   - No dashboard PIN set',
           `   - Current version: ${currentVersion}`,
           '',
           'Send the message via Telegram:',

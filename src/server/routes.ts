@@ -32531,6 +32531,13 @@ document.getElementById('mcpForm').addEventListener('submit', async function (e)
       if (outcome !== 'not-for-us') { res.json({ ok: true, trustAccountPath: outcome }); return; }
     }
 
+    // identity-security-piece1d: the owner's own private message (lifeline-proven) resumes a pending
+    // private PIN delivery, before the message is routed anywhere.
+    if (ingressDecision.verified === true && req.headers[LIFELINE_INGRESS_CALLER_HEADER] !== LIFELINE_INGRESS_CALLER_SERVER_SELF) {
+      ctx.telegram?.noteOwnerPrivateMessage({ chatType: req.body.sourceChatType, chatId: req.body.sourceChatId, fromId: fromUserId ?? undefined,
+        isBot: senderIsBot === true, forwarded: req.body.forwarded === true });
+    }
+
     // Desktop approval codes are credentials. Consume them before the sentinel,
     // inbound log, topic memory, and session injection. A malformed code is
     // consumed too, so a typo cannot leak into durable conversation history.
