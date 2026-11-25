@@ -1,0 +1,31 @@
+{
+  "ts": "2026-11-25T14:33:47.729Z",
+  "slug": "hosted-relay-owner-transport",
+  "suggestedTier": 2,
+  "declaredTier": 2,
+  "riskFloor": 2,
+  "riskFloorReasons": [
+    "safety-invariant proximity: src/hostedRelay/outboundTransport.ts matches relay / delivery path",
+    "safety-invariant proximity: src/hostedRelay/ownerLeaseReader.ts matches relay / delivery path",
+    "new capability: new exported class / subsystem added"
+  ],
+  "belowFloor": false,
+  "files": 2,
+  "loc": 137,
+  "scope": {
+    "basis": "staged-in-scope-paths-including-deleted",
+    "files": [
+      "src/hostedRelay/outboundTransport.ts",
+      "src/hostedRelay/ownerLeaseReader.ts"
+    ],
+    "addedLines": 137,
+    "deletedLines": 0
+  },
+  "causalAutopsy": null,
+  "classClosure": {
+    "defectClass": "unbounded-self-action",
+    "closure": "n/a",
+    "reason": "Dormant primitives open no listeners or outbound sessions."
+  },
+  "verdict": "blocked"
+}
