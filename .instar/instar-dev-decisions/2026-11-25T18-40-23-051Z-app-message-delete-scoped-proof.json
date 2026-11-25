@@ -1,0 +1,22 @@
+{
+  "ts": "2026-11-25T18:40:23.051Z",
+  "slug": "app-message-delete-scoped-proof",
+  "suggestedTier": 1,
+  "declaredTier": 2,
+  "riskFloor": 1,
+  "riskFloorReasons": [],
+  "belowFloor": false,
+  "files": 1,
+  "loc": 11,
+  "scope": {
+    "basis": "staged-in-scope-paths-including-deleted",
+    "files": [
+      "src/core/AppConversationStore.ts"
+    ],
+    "addedLines": 10,
+    "deletedLines": 1
+  },
+  "causalAutopsy": null,
+  "classClosure": null,
+  "verdict": "pass"
+}

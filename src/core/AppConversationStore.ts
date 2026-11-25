@@ -573,6 +573,7 @@ export class AppConversationStore {
   private evidenceDataVersion = 0;
   private removalIndexProof: string | null = null;
   private readonly removalHistoryProofs = new Map<string, string>();
+  private indexedPlainMessageWrites = 0;
   private removalHistoryPreparation: { key: string; result: Promise<boolean> } | null = null;
 
   constructor(private readonly opts: AppConversationStoreOptions) {
@@ -853,11 +854,15 @@ export class AppConversationStore {
     if (created) this.fsyncDir(path.dirname(filePath));
     // The commit landed. Index it (derived state; a failure here is repaired by catch-up).
     try {
+      // A plain message updates only its own journal and scoped index rows. A same-chat
+      // proof still sees the changed journal. Leave failures and all other writes global.
+      const before = event.kind === 'message' ? this.indexWriteCount() : null;
       this.db.transaction(() => {
         if (!file) this.db.prepare('INSERT OR REPLACE INTO files (canonicalKey, fileName, indexedBytes, nextIngestSeq) VALUES (?, ?, ?, ?)').run(canonicalKey, fileName, 0, 1);
         this.indexEvent({ ...event, ingestSeq }, fileName, offset, bytes - 1);
         this.db.prepare('UPDATE files SET indexedBytes = ? WHERE canonicalKey = ?').run(offset + bytes, canonicalKey);
       })();
+      if (before !== null) this.indexedPlainMessageWrites += this.indexWriteCount() - before;
     } catch (err) {
       this.reportOnce(`index-write:${fileName}`, `the conversation index missed an append (${err instanceof Error ? err.message : String(err)}); catching up from the file`);
       this.catchUpFile(filePath, fileName);
@@ -1481,6 +1486,10 @@ export class AppConversationStore {
     });
   }
 
+  private indexWriteCount(): number {
+    return (this.db.prepare('SELECT total_changes() AS count').get() as { count: number }).count;
+  }
+
   private removalHistoryCheckpoint(conversationKey: string) {
     const key = canonicalConversationKey(conversationKey);
     const custodian = this.getCreationRecord(conversationKey)?.machineId;
@@ -1492,7 +1501,7 @@ export class AppConversationStore {
     const journal = fs.statSync(filePath);
     if (journal.size !== file.indexedBytes) return null;
     const version = this.db.pragma('data_version', { simple: true });
-    const writes = this.db.prepare('SELECT total_changes() AS count').get();
+    const writes = this.indexWriteCount() - this.indexedPlainMessageWrites;
     const proof = JSON.stringify([custodian, file.fileName, journal.dev, journal.ino, journal.size,
       journal.mtimeMs, journal.ctimeMs, version, writes]);
     return { custodian, filePath, journal, proof };

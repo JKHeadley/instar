@@ -13,3 +13,5 @@ The server’s internal history reader can now leave out a confirmed removal bef
 Opening another chat no longer forces the store to repeat a recent history check for the first chat. A change to stored messages still requires a fresh check. Delete remains unavailable while this server work is tested.
 
 The store now checks a long chat in chunks so other server work can run in between. If the chat changes during the check, the store discards the result and can try again. The history reader needs a current completed check before returning messages with removals applied.
+
+A regular message arriving in another chat no longer restarts the check. A new message in the chat being checked still restarts it, and the store starts over when it cannot attribute a change safely.

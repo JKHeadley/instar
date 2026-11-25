@@ -7,9 +7,9 @@ approved: true
 approved-by: echo under standing build approval for local storage, private fresh admission and unmounted history projection only
 parent-principle: Operator-Surface Quality
 tier: 2
-review-convergence: "2026-11-25T17:57:22.650Z"
-review-iterations: 17
-review-completed-at: "2026-11-25T17:57:22.650Z"
+review-convergence: "2026-11-25T18:38:30.956Z"
+review-iterations: 18
+review-completed-at: "2026-11-25T18:38:30.956Z"
 review-report: "docs/specs/reports/conversation-message-delete-convergence.md"
 cross-model-review: "cross-model-review: codex-cli:gpt-6.2-astra"
 ---
@@ -112,3 +112,5 @@ The unmounted store keeps up to 64 recently used history proofs, one per convers
 The next unmounted checkpoint separates proof preparation from interactive reads. A cold read returns unavailable without scanning. A caller may request proof preparation after admission, with one active scan per store and coalescing for the same conversation. The scan yields after each journal chunk and compares file identity, journal metadata, local SQLite writes and external data version before each batch and at publication. Changed, missing or corrupt evidence never publishes a proof. After preparation the read repeats the checkpoint check around its indexed selection. This does not mount a route or change receipt recovery.
 
 The store-wide write generation conservatively invalidates preparation even for unrelated chat writes. Measure readiness under ordinary sustained writes before mounting the route. The startup count query is synchronous within the first scheduled turn and remains part of the first-turn performance measurement.
+
+The local store can classify a successful plain-message append as scoped to its own journal and indexed conversation. Such an append does not invalidate proof for a different chat. A change to the target journal still invalidates its proof. All other local writes, failed indexing, catch-up and external SQLite commits keep the conservative invalidation rule. The exception covers only the known committed index transaction, while retained receipt proof remains unchanged.

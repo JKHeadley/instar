@@ -25,3 +25,9 @@ The Astra review concurred on the unchanged proof identity and fail-closed behav
 ## Scheduled history proof checkpoint
 
 The independent and cross-model reviews concurred on the custody, checkpoint and descriptor lifecycle. The caller prepares a proof separately from an interactive store read, with one active scan per store. The scan yields between journal chunks and abandons its proof after either a journal append or an external index-only commit. This supersedes the prior synchronous history scan while leaving negative receipt proof unchanged. The first scheduled SQL count and readiness under sustained unrelated writes remain pre-mount performance conditions.
+
+## Scoped plain-message invalidation checkpoint
+
+The independent reviewer concurred on the successful plain-message transaction scope. The cross-model review asked for direct proof of duplicate handling and deterministic in-flight coverage. The test pauses after an actual batch, appends both a distinct and a conflicting message in another chat, and verifies the target proof and original exact text. A same-chat append invalidates the proof. The global message-ID constraint and ignored insert preserve the first binding. A failed or unattributed mutation and external SQLite commits keep their existing invalidation.
+
+The same disposable 25,000-message workload that aborted ten attempts at baseline completed on the first attempt with 34 unrelated messages committed during preparation. This checkpoint is unmounted. Ordinary signed read and Delete route integration remain separate.

@@ -108,6 +108,43 @@ describe('AppConversationStore', () => {
     } finally { store.close(); }
   });
 
+  it('keeps a suspended proof across other-chat plain messages and invalidates it on its own append', async () => {
+    const { store } = mk();
+    const other = '2f0c8a3e-1b2c-4d5e-8f90-1234567890ac';
+    try {
+      store.append(created());
+      store.append(msg('target', 1));
+      store.append({ ...created('Other'), conversationKey: other });
+      const inspector = store as unknown as { scanRemovalIndex(key: string, path: string, journal?: fs.Stats): Generator<void, boolean> };
+      const original = inspector.scanRemovalIndex.bind(store);
+      let firstBatch!: () => void;
+      const afterFirstBatch = new Promise<void>((resolve) => { firstBatch = resolve; });
+      vi.spyOn(inspector, 'scanRemovalIndex').mockImplementationOnce(function* (...args) {
+        const scanner = original(...args);
+        try {
+          const first = scanner.next();
+          firstBatch();
+          if (first.done) return first.value;
+          yield;
+          return yield* scanner;
+        } finally { scanner.return(false); }
+      });
+      const crossing = store.prepareRemovalHistory(KEY);
+      await afterFirstBatch;
+      store.append({ ...msg('elsewhere', 2), conversationKey: other });
+      store.append({ ...msg('target', 2, 'conflicting copy'), conversationKey: other });
+      expect(await crossing).toBe(true);
+      expect(store.browseRemovalAwareMessages(KEY, null)?.messages.map((row) => row.eventId)).toEqual(['ev-target']);
+      expect(store.exactRemovalAwareMessageCandidates(KEY, 'msg-target', 'message', () => true)?.[0]?.text)
+        .toBe('hello target');
+      store.append(msg('new-local', 3));
+      expect(store.browseRemovalAwareMessages(KEY, null)).toBeNull();
+      expect(await store.prepareRemovalHistory(KEY)).toBe(true);
+      expect(store.browseRemovalAwareMessages(KEY, null)?.messages.map((row) => row.eventId))
+        .toEqual(['ev-target', 'ev-new-local']);
+    } finally { store.close(); }
+  });
+
   it('discards a suspended history proof after an external index-only write', async () => {
     const { dir, store } = mk();
     try {
