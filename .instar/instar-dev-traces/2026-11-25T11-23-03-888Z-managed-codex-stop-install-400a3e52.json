@@ -1,0 +1,20 @@
+{
+  "version": 2,
+  "slug": "managed-codex-stop-install",
+  "sessionId": "017c26ed-5596-4576-9c20-20af13e4c1f8",
+  "timestamp": "2026-11-25T11:23:03.888Z",
+  "artifactPath": "upgrades/side-effects/managed-codex-stop-install.md",
+  "artifactSha256": "2f92fa2173af0a51716ae44fac9ff7dae3bcae4a88b476e2930ba2d9e82a6d3d",
+  "coveredFiles": [
+    ".claude/skills/autonomous/hooks/autonomous-stop-hook.sh",
+    "src/core/PostUpdateMigrator.ts",
+    "tests/unit/PostUpdateMigrator-vaultAuthResolve.test.ts"
+  ],
+  "phase": "complete",
+  "tier": 1,
+  "tierReasoning": "Exact-stock program byte replacement using the existing upgrader, reversible by restoring the previous packaged hook. Operator edits, project data and the existing off switch remain unchanged.",
+  "eli16Path": "upgrades/managed-codex-stop-install.eli16.md",
+  "sideEffectsPath": "upgrades/side-effects/managed-codex-stop-install.md",
+  "secondPass": "not-required",
+  "reviewerConcurred": null
+}

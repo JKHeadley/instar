@@ -100,6 +100,7 @@ fi
 # normal codex stop is unaffected — this is the instant-rollback flag (flip it off and
 # the standing hook is a no-op again, no redeploy). Claude (IS_CODEX=0) skips this.
 CODEX_TASK_CONTINUATION_ENABLED=0
+# hook-capability: MANAGED_CODEX_STOP — server-authorized managed callbacks.
 CODEX_MANAGED_STOP=0
 if [[ "$IS_CODEX" == "1" ]]; then
   CODEX_GATES=$(python3 -c "
