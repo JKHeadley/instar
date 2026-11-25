@@ -137,14 +137,14 @@ describe('the top line', () => {
     expect(lineText({ mode: 'fresh', shownAt: null }, now)).toBe('');
   });
   it('says offline and the time of what is shown', () => {
-    expect(lineText({ mode: 'offline', shownAt: new Date(2026, 10, 16, 13, 52).getTime() }, now)).toBe('Offline. Showing what I had at 1:52 pm.');
+    expect(lineText({ mode: 'offline', shownAt: new Date(2026, 10, 16, 13, 52).getTime() }, now)).toBe('Waiting for network… Showing what I had at 1:52 pm.');
   });
   it('says weak connection and that it is trying again', () => {
-    expect(lineText({ mode: 'weak', shownAt: new Date(2026, 10, 16, 13, 52).getTime() }, now)).toBe('Weak connection. Showing what I had at 1:52 pm. Trying again.');
+    expect(lineText({ mode: 'weak', shownAt: new Date(2026, 10, 16, 13, 52).getTime() }, now)).toBe('Connecting… Showing what I had at 1:52 pm.');
   });
   it('says plainly when nothing is saved', () => {
-    expect(lineText({ mode: 'offline', shownAt: null }, now)).toMatch(/^Offline\. Nothing saved on this device yet\./);
-    expect(lineText({ mode: 'weak', shownAt: null }, now)).toBe('Weak connection. Still trying to reach the agent.');
+    expect(lineText({ mode: 'offline', shownAt: null }, now)).toMatch(/^Waiting for network… Nothing saved on this device yet\./);
+    expect(lineText({ mode: 'weak', shownAt: null }, now)).toBe('Connecting… Still trying to reach the agent.');
   });
   it('names yesterday and older days', () => {
     expect(whenWords(new Date(2026, 10, 15, 18, 10).getTime(), now)).toBe('yesterday 6:10 pm');
@@ -164,7 +164,7 @@ describe('reading on a weak or missing connection', () => {
     expect(res.headers.get('X-Instar-Saved-At')).toBe(String(new Date(2026, 10, 16, 13, 52).getTime()));
     expect(r.fetchFn.mock.calls.length).toBe(before); // no network wait at all
     expect(r.net.state()).toEqual({ mode: 'offline', shownAt: new Date(2026, 10, 16, 13, 52).getTime() });
-    expect(lineText(r.net.state(), Date.now())).toBe('Offline. Showing what I had at 1:52 pm.');
+    expect(lineText(r.net.state(), Date.now())).toBe('Waiting for network… Showing what I had at 1:52 pm.');
   });
 
   it('fails at once offline when nothing is saved (no 40 s placeholder)', async () => {

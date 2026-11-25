@@ -1,0 +1,20 @@
+{
+  "version": 2,
+  "slug": "main-red-updater-silent-fallback",
+  "sessionId": "2a678492-85c3-4085-a3df-5150229d168c",
+  "timestamp": "2026-11-21T20:48:31.661Z",
+  "artifactPath": "upgrades/side-effects/main-red-updater-silent-fallback.md",
+  "artifactSha256": "9633b5a4ed7e48cec63a7e952a70c87273957134c2362fe9dd6df660508522c0",
+  "coveredFiles": [
+    "docs/specs/main-red-updater-silent-fallback.eli16.md",
+    "src/core/UpdateChecker.ts",
+    "upgrades/side-effects/main-red-updater-silent-fallback.md"
+  ],
+  "phase": "complete",
+  "tier": 1,
+  "tierReasoning": "Comment-only fix to restore main green on the no-silent-fallbacks ratchet; no runtime behaviour change.",
+  "eli16Path": "docs/specs/main-red-updater-silent-fallback.eli16.md",
+  "sideEffectsPath": "upgrades/side-effects/main-red-updater-silent-fallback.md",
+  "secondPass": "not-required",
+  "reviewerConcurred": null
+}

@@ -41,6 +41,7 @@
  *   0 — value printed (or --run command succeeded, or --names listed)
  *   1 — key not found, vault absent/undecryptable, or --run command failed
  *   2 — usage error (missing args, cannot resolve the instar dist)
+ *   3 — refused: a metered (pay-per-use) key, readable only by its door
  */
 
 import * as fs from 'node:fs';
@@ -69,6 +70,22 @@ const keyPath = positional[0];
 if (!namesOnly && !keyPath) {
   process.stderr.write('usage: secret-get.mjs <keyPath> | secret-get.mjs --names\n');
   process.exit(2);
+}
+
+// METERED keys bill real money per token (gemini-payg-metered-lane §4.2). They are
+// readable only by their door inside the agent server, never by a session. Refused
+// HERE, before vault resolution and before the plain-config fallback, in every branch
+// (stdout and --run alike). This literal list is pinned to METERED_SECRET_NAMES in
+// src/core/meteredSecrets.ts by a template-drift test; the `metered_` prefix covers
+// any future bench key.
+const METERED_SECRET_NAMES = ['gemini_api_key_payg', 'metered_gemini_bench', 'metered_openrouter_bench', 'metered_groq_bench'];
+const METERED_SECRET_PREFIX = 'metered_';
+if (keyPath) {
+  const first = String(keyPath).split('.')[0];
+  if (METERED_SECRET_NAMES.includes(first) || first.startsWith(METERED_SECRET_PREFIX)) {
+    process.stderr.write('refused: metered key — readable only by its door\n');
+    process.exit(3);
+  }
 }
 
 // Resolve the instar dist: deployed agents run from the shadow-install; the dev

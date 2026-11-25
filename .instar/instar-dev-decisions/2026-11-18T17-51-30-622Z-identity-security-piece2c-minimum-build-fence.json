@@ -1,0 +1,37 @@
+{
+  "ts": "2026-11-18T17:51:30.622Z",
+  "slug": "identity-security-piece2c-minimum-build-fence",
+  "suggestedTier": 2,
+  "declaredTier": 2,
+  "riskFloor": 2,
+  "riskFloorReasons": [
+    "new capability: new exported class / subsystem added"
+  ],
+  "belowFloor": false,
+  "files": 10,
+  "loc": 450,
+  "scope": {
+    "basis": "staged-in-scope-paths-including-deleted",
+    "files": [
+      "src/commands/machine.ts",
+      "src/commands/server.ts",
+      "src/core/UpdateChecker.ts",
+      "src/core/identityBuildFence.ts",
+      "src/core/ownerRecordStore.ts",
+      "src/core/ownerRecordSync.ts",
+      "src/core/ownerRecordWiring.ts",
+      "src/data/awareness/owner-record.md",
+      "src/server/machineRoutes.ts",
+      "src/server/ownerRecordRoutes.ts"
+    ],
+    "addedLines": 439,
+    "deletedLines": 11
+  },
+  "causalAutopsy": null,
+  "classClosure": {
+    "defectClass": "unbounded-self-action",
+    "closure": "bounded",
+    "reason": "the only self-triggered action is the aggregated owner notice: at most once a day per unchanged list, from the lease holder only, closed when the list empties"
+  },
+  "verdict": "blocked"
+}

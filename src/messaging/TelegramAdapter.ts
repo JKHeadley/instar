@@ -7,7 +7,7 @@ import type { OperatorLinkOrigin } from '../server/dashboardPaths.js';
 import { pairingDashboardLine, readPairingOrigin, PAIRING_PASTE_ROUTE } from '../threadline/pairingDashboardLink.js';
 import { NotificationSelectivityGate, QuietRecordedError, requireTelegramDelivery, verifiedReplyEnvelope, isVerifiedReplyEnvelope, notificationContext } from './NotificationSelectivityGate.js';
 import type { OutboundEnvelope, QuietReceipt } from './NotificationSelectivityGate.js';
-/** cos-owner-decision-delivery: the only producer of the owner-decision category (an offer only the owner can answer). */
+/** cos-owner-decision-delivery: trusted owner offers; profile proposals use their own registered producer. */
 const OWNER_DECISION_ENVELOPE: OutboundEnvelope = Object.freeze({ origin: 'automated', category: 'owner-decision', sourceContext: 'owner-decision-offer' });
 import { TelegramOriginHoldError, OriginForwardSettledLocallyError, relayNothingPrepared, type HubNoticeClass } from './telegram-origin/types.js';
 import { hubRepostDecision, type HubRepostState } from './telegram-origin/TokenlessNoticeBrakes.js';
@@ -70,6 +70,8 @@ import { admitItemToHub, attentionPriorityRank, recordHeldHubPost, resolveHubFil
 import { topicRef } from './shared/topicRef.js';
 import { composeInboundPayload, escapeTypedPathTags, historyTextFor, toWireMedia, type InboundMediaLocal } from '../core/inboundMedia.js';
 import { displayName as mediaDisplayName } from '../core/appMediaTypes.js';
+import { approveTapResult, declineTapResult } from './ownerChatTap.js';
+import { learningOwnerId } from '../core/ownerWords.js';
 import {
   attentionConditionKeyOf, classifyAttentionLifecycle, decideAttentionExpiry, isOpenAttentionStatus, mayReopenInPlace,
   planAttentionSupersessions, resolveAttentionLifecycleConfig,
@@ -638,6 +640,9 @@ export interface TelegramInboundMedia {
 }
 export type TelegramInboundMediaHook = (info: TelegramInboundMedia) => Promise<void> | void;
 
+/** docs/specs/topic-name-replication.md: the adapter's publish seam (see setTopicNameReplicationHook). */
+export type TopicNameReplicationHook = (topicId: number, name: string, source: 'rename' | 'fill', evidence: { atMs?: number; api?: boolean; seq?: number }) => string | null;
+
 export class TelegramAdapter implements MessagingAdapter {
   public selectivity: NotificationSelectivityGate | null = null;
   /** The mandatory origin dispatcher classifies local, relayed and recovery operations. */
@@ -1180,6 +1185,78 @@ export class TelegramAdapter implements MessagingAdapter {
   }
 
   /**
+   * Topic names reach every machine (docs/specs/topic-name-replication.md). Called after a name
+   * this machine learned from Telegram itself is put in the map, BEFORE the registry is saved:
+   * `rename` for a rename (the API call or Telegram's rename service message), `fill` for a
+   * creation or a reply to the creation message. It returns the name the map should hold, which
+   * differs only when a newer rename is already known. `evidence.atMs` is Telegram's own time for a
+   * service message; `evidence.api` marks the result of this machine's own successful API call, which
+   * is what Telegram holds now and so always wins. Never called from the replicated apply path.
+   */
+  private topicNameReplicationHook: TopicNameReplicationHook | null = null;
+
+  setTopicNameReplicationHook(fn: TopicNameReplicationHook | null, authority?: ((topicId: number) => string | null) | null): void {
+    this.topicNameReplicationHook = fn;
+    this.topicNameAuthority = authority ?? null;
+  }
+
+  /** The replicated winner's name for a topic, consulted when a session bind supplies a name. */
+  private topicNameAuthority: ((topicId: number) => string | null) | null = null;
+
+  /** Run the replication hook; a throw is logged and never affects the local write. */
+  private publishTopicName(topicId: number, name: string, source: 'rename' | 'fill', evidence: { atMs?: number; api?: boolean; seq?: number } = {}): void {
+    const hook = this.topicNameReplicationHook;
+    if (!hook) return;
+    let keep: string | null = null;
+    try { keep = hook(topicId, name, source, evidence); } catch (err) {
+      // @silent-fallback-ok: logged; the name stays local and is shared by the next boot's backfill
+      console.error(`[telegram] topic-name replication failed for ${topicId}: ${err instanceof Error ? err.message : String(err)}`);
+      return;
+    }
+    if (keep && keep !== name) this.topicToName.set(topicId, keep);
+  }
+
+  /**
+   * Put a name another machine learned into this machine's map and registry file. Not re-published
+   * (the store carries the row itself). A replaced real name fires the rename handler, as a rename
+   * seen by the poller does. False when the name is not a verified topic name.
+   */
+  applyReplicatedTopicName(topicId: number, name: string, persist = true): boolean {
+    const identity = verifiedChannelIdentity('telegram', topicId, name);
+    if (!identity || !Number.isSafeInteger(topicId)) return false;
+    const current = this.topicToName.get(topicId);
+    if (current === identity.name) return true;
+    this.topicToName.set(topicId, identity.name);
+    if (persist) this.saveRegistry();
+    const hadRealName = !!verifiedChannelIdentity('telegram', topicId, current);
+    if (hadRealName && this.topicRenamedHandler) {
+      try {
+        void Promise.resolve(this.topicRenamedHandler(topicId, identity.name)).catch((err) => {
+          // @silent-fallback-ok: rename display is non-critical; the failure is logged
+          console.error(`[telegram] topicRenamedHandler failed for ${topicId}:`, err);
+        });
+      } catch (err) {
+        // @silent-fallback-ok: rename display is non-critical; the failure is logged
+        console.error(`[telegram] topicRenamedHandler threw for ${topicId}:`, err);
+      }
+    }
+    return true;
+  }
+
+  /** Write the registry file once after a batch of replicated names (applied with `persist: false`). */
+  persistTopicNames(): void { this.saveRegistry(); }
+
+  /** Every verified topic name this machine holds (the replication backfill reads it). */
+  listTopicNames(): Array<[number, string]> {
+    const out: Array<[number, string]> = [];
+    for (const [topicId, name] of this.topicToName) {
+      const identity = verifiedChannelIdentity('telegram', topicId, name);
+      if (identity) out.push([topicId, identity.name]);
+    }
+    return out;
+  }
+
+  /**
    * Send a consent prompt to the owner DM with two inline buttons
    * (approve / decline). The buttons carry callback_data of the form
    * `tc:g:<nonce>` / `tc:d:<nonce>` (well under Telegram's 64-byte
@@ -1246,20 +1323,17 @@ export class TelegramAdapter implements MessagingAdapter {
       return 'refused';
     }
     const r = this.mobileApproveHandler ? this.mobileApproveHandler(m[1]!) : { outcome: 'ended' as const, text: 'This pairing has already ended.' };
-    const browser = r.client === 'browser';
-    await this.answerCallback(t.callbackQueryId, r.outcome === 'approved' ? (browser ? 'Approved. That browser is set up.' : 'Approved. That phone is paired.') : r.text);
-    if (r.outcome === 'approved') {
-      // The code stays in the message: a shipped app's code box only submits a complete-looking code,
-      // and once the phone is active any such code finishes it. Only the buttons go.
-      if (typeof t.messageId === 'number') await this.apiCall('editMessageReplyMarkup', { chat_id: owner, message_id: t.messageId, reply_markup: { inline_keyboard: [] } }).catch(() => {
+    // The visible result is shared with the throwaway stand-in owner chat (src/messaging/ownerChatTap.ts).
+    const shown = approveTapResult(r);
+    await this.answerCallback(t.callbackQueryId, shown.toast);
+    if (shown.approved) {
+      if (shown.removeButtons && typeof t.messageId === 'number') await this.apiCall('editMessageReplyMarkup', { chat_id: owner, message_id: t.messageId, reply_markup: { inline_keyboard: [] } }).catch(() => {
         // @silent-fallback-ok — tidying only: the old buttons answer "already ended"
       });
       // A validated owner tap and consumed pairing nonce establish this reply; scope its
       // capability to the existing owner-DM funnel without altering any topic's waiting state.
-      await withNotificationEnvelope(verifiedReplyEnvelope('verified-mobile-approval'), () => this.sendToOwnerDM(browser
-        ? 'Approved. That browser can now use your conversations with this agent. If the dashboard still shows a code box, type the code above to finish. You can remove the browser any time on the Phones page.'
-        : 'Approved. That phone is paired with this agent. If the app still shows a code box, type the code above to finish. You can remove the phone any time on the Phones page.',
-      ));
+      const confirmation = shown.confirmation ?? '';
+      await withNotificationEnvelope(verifiedReplyEnvelope('verified-mobile-approval'), () => this.sendToOwnerDM(confirmation));
       return 'approved';
     }
     return r.outcome === 'ended' ? 'unknown' : 'held';
@@ -1282,16 +1356,10 @@ export class TelegramAdapter implements MessagingAdapter {
       return 'refused';
     }
     const raw = this.mobileDeclineHandler ? this.mobileDeclineHandler(m[1]!) : 'unknown';
-    const r = typeof raw === 'string' ? raw : raw.result;
-    const browser = typeof raw !== 'string' && raw.client === 'browser';
-    // dashboard-conversations-browser-device §4.1: a Decline that loses to an approval already under
-    // way is answered "already approved", never as declined.
-    const toast = r === 'declined' ? (browser ? 'Declined. That browser will not be set up.' : 'Declined. That phone will not be paired.')
-      : r === 'already-approved' ? "Already approved — remove it on the Phones page if this wasn't you."
-      : 'This pairing has already ended.';
-    await this.answerCallback(t.callbackQueryId, toast);
-    if (r === 'declined') await this.closeOwnerPairingMessage(owner, t.messageId, browser ? 'Declined. That browser was not set up.' : 'Declined. That phone was not paired.');
-    return r === 'declined' ? 'declined' : 'unknown';
+    const shown = declineTapResult(raw);
+    await this.answerCallback(t.callbackQueryId, shown.toast);
+    if (shown.replaceText) await this.closeOwnerPairingMessage(owner, t.messageId, shown.replaceText);
+    return shown.declined ? 'declined' : 'unknown';
   }
 
   /** The small toast answering a button tap. Best-effort. */
@@ -2368,7 +2436,10 @@ export class TelegramAdapter implements MessagingAdapter {
       // Issues-group topics live in their own id range (telegramTopicSpace.ts).
       const topicId = inIssues ? ISSUES_TOPIC_OFFSET + result.message_thread_id : result.message_thread_id;
 
-      this.topicToName.set(topicId, name);
+      // Telegram's answer is the name it holds; the requested name is the fallback.
+      const created = typeof result.name === 'string' && result.name.trim() ? result.name : name;
+      this.topicToName.set(topicId, created);
+      this.publishTopicName(topicId, created, 'fill', { api: true });
       this.saveRegistry();
 
       console.log(`[telegram] Created forum topic: "${name}" (ID: ${topicId}${inIssues ? ', issues group' : ''})`);
@@ -2424,6 +2495,8 @@ export class TelegramAdapter implements MessagingAdapter {
       await this.apiCall('editForumTopic', params);
       if (name) {
         this.topicToName.set(topicId, name);
+        // Published even when the text is unchanged: a rename back to an earlier name must advance its version.
+        this.publishTopicName(topicId, name, 'rename', { api: true });
         this.saveRegistry();
       }
       console.log(`[telegram] Renamed topic ${topicId} → "${name}"`);
@@ -2507,6 +2580,14 @@ export class TelegramAdapter implements MessagingAdapter {
     return this.getCallbackApprover();
   }
 
+  /**
+   * Whose words may teach the agent preferences (SEC-105): the verified owner, else the one allowed
+   * sender of a single-person agent. Undefined means nobody's words teach.
+   */
+  getLearningOwner(): number | undefined {
+    return learningOwnerId(this.getVerifiedOwner(), this.config.authorizedUserIds);
+  }
+
   /** Whether every owner source is wired: a configured owner, or the verified-operator lookup. */
   ownerSourcesReady(): boolean {
     return this.getConfiguredApprover() !== undefined || this.callbackApproverResolver !== null;
@@ -2587,13 +2668,15 @@ export class TelegramAdapter implements MessagingAdapter {
   static readonly OWNER_DM_HELD = -1;
   /**
    * Hold reasons whose operation the origin service keeps and sends again: its RECOVERABLE_HOLD_REASONS
-   * (a unit test keeps this list a superset of it) plus credential-capacity-unavailable, which the
-   * capacity owner releases and the recovery path re-sends (2026-11-14: such holds on Echo landed late).
-   * Any other "held" error is a refusal with no retry behind it (held is the error's default outcome).
+   * (a unit test keeps this list a superset of it) plus the request-bound local refusals
+   * (ORIGIN_LOCAL_REFUSAL_REASONS: credential-capacity-unavailable, which the capacity owner releases and the
+   * recovery path re-sends (2026-11-14: such holds on Echo landed late), and the two lease refusals, retried
+   * within seconds once the lease is held again). Any other "held" error is a refusal with no retry behind it
+   * (held is the error's default outcome).
    */
   static readonly OWNER_DM_RETRIED_HOLDS: readonly string[] = Object.freeze([
     'all-durable-recording-sinks-unavailable', 'execution-admission-unavailable', 'destination-not-authorized', 'lease-not-held',
-    'credential-capacity-unavailable',
+    'credential-capacity-unavailable', 'lease-freshness-lapsed', 'lease-not-held-at-send',
   ]);
 
   /** What a caller that asked for `reportHeld` should make of a send error: a message id, OWNER_DM_HELD, or null. */
@@ -2647,6 +2730,14 @@ export class TelegramAdapter implements MessagingAdapter {
   public mobileApproveHandler: ((nonce: string) => { outcome: 'approved' | 'ended' | 'other'; text: string; client?: 'phone' | 'browser' }) | null = null;
   /** Mobile device keys: void a pending pairing whose code appears in inbound text. Wired by AgentServer. */
   public mobileInboundScan: ((text: string) => string[]) | null = null;
+  /**
+   * SEC-164 part 1 §3.5: masks a live key in a message read here (no lifeline poll owner) before the
+   * trust-account receipt, the unknown-user path, the log or the session see it. Returns the text to
+   * use; null or a throw leaves the message unchanged (the operator channel fails toward delivery).
+   */
+  public inboundCredentialMasker: ((input: {
+    text: string; topicId: number; messageId: number; fromId: number | undefined; notFromThePerson: boolean;
+  }) => string | null) | null = null;
   /**
    * Pinned messages (docs/specs/conversation-pinned-messages.md): an authorized person pinned a
    * message in a topic. Telegram sends no update for an unpin, so only pins are handed over.
@@ -3435,7 +3526,11 @@ export class TelegramAdapter implements MessagingAdapter {
     // Keep an earlier verified title when a standby rebinds the session.
     const identity = verifiedChannelIdentity('telegram', topicId, topicName);
     if (identity) {
-      this.topicToName.set(topicId, identity.name);
+      // A name a caller passes at bind time is not Telegram's evidence: when replication already
+      // holds a name for this topic (docs/specs/topic-name-replication.md), that name stands.
+      let held: string | null = null;
+      try { held = this.topicNameAuthority?.(topicId) ?? null; } catch { held = null; } // @silent-fallback-ok: no answer keeps today's behavior
+      this.topicToName.set(topicId, held ?? identity.name);
     }
     this.saveRegistry();
     console.log(`[telegram] Registered topic ${topicId} <-> session "${sessionName}"${topicName ? ` (name: "${topicName}")` : ''}`);
@@ -3528,23 +3623,48 @@ export class TelegramAdapter implements MessagingAdapter {
    * lifeline owns polling, where the server never sees those service messages.
    * A known name is replaced only by a rename.
    */
-  captureTopicName(numericTopicId: number, detectedName: string, isEditEvent: boolean): void {
+  captureTopicName(numericTopicId: number, detectedName: string, isEditEvent: boolean, eventAtMs?: number, eventSeq?: number): void {
+    const seq = typeof eventSeq === 'number' && Number.isSafeInteger(eventSeq) && eventSeq >= 0 ? eventSeq : undefined;
     const name = String(detectedName).trim().slice(0, 128); // bounded-input-reviewed: display-name cap (Telegram allows 128), not a model prompt
     if (!name || !Number.isSafeInteger(numericTopicId)) return;
     const currentName = this.topicToName.get(numericTopicId);
     if (!currentName || /^topic-\d+$/.test(currentName) || isEditEvent) {
-      const isRename = isEditEvent && currentName !== name;
-      if (currentName === name) return;
+      if (currentName === name) {
+        // A rename notice naming what is already shown still orders against renames other machines hold
+        // (renames A, B, A delivered out of order); a creation name adds nothing.
+        if (isEditEvent) {
+          const at0 = typeof eventAtMs === 'number' && Number.isSafeInteger(eventAtMs) && eventAtMs > 0 ? eventAtMs : undefined;
+          this.publishTopicName(numericTopicId, name, 'rename', { atMs: at0, seq });
+          const kept = this.topicToName.get(numericTopicId);
+          if (kept && kept !== name) {
+            // A newer rename another machine holds was put back: save it and let the session label follow.
+            this.saveRegistry();
+            if (this.topicRenamedHandler) {
+              try { void Promise.resolve(this.topicRenamedHandler(numericTopicId, kept)).catch(() => { /* @silent-fallback-ok: rename display is non-critical */ }); }
+              catch { /* @silent-fallback-ok: rename display is non-critical */ }
+            }
+          }
+        }
+        return;
+      }
       this.topicToName.set(numericTopicId, name);
+      // Telegram's own time for the event orders a late rename notice behind a newer rename
+      // another machine already shared; the hook then puts that newer name back.
+      const at = typeof eventAtMs === 'number' && Number.isSafeInteger(eventAtMs) && eventAtMs > 0 ? eventAtMs : undefined;
+      // A creation is stamped by this machine's clock; only a rename carries Telegram's time and order.
+      this.publishTopicName(numericTopicId, name, isEditEvent ? 'rename' : 'fill', isEditEvent ? { atMs: at, seq } : {});
+      const held = this.topicToName.get(numericTopicId) ?? name;
+      if (held === currentName) { this.saveRegistry(); return; }
+      const isRename = isEditEvent && currentName !== held;
       this.saveRegistry();
-      console.log(`[telegram] Captured topic name: ${numericTopicId} → "${name}"`);
+      console.log(`[telegram] Captured topic name: ${numericTopicId} → "${held}"`);
       // UNIFIED-SESSION-LIFECYCLE bonus — fire on TRUE rename only (not on
       // initial capture or topic creation). The handler updates the bound
       // session's display `name` so the dashboard label tracks the user's
       // rename. Fire-and-forget: rename-display is non-critical.
       if (isRename && this.topicRenamedHandler) {
         try {
-          void Promise.resolve(this.topicRenamedHandler(numericTopicId, name)).catch((err) => {
+          void Promise.resolve(this.topicRenamedHandler(numericTopicId, held)).catch((err) => {
             // @silent-fallback-ok: rename display is non-critical; the failure is logged
             console.error(`[telegram] topicRenamedHandler failed for ${numericTopicId}:`, err);
           });
@@ -3553,6 +3673,25 @@ export class TelegramAdapter implements MessagingAdapter {
           console.error(`[telegram] topicRenamedHandler threw for ${numericTopicId}:`, err);
         }
       }
+    }
+  }
+
+  /**
+   * A message sent into a forum topic comes back replying to that topic's creation message, which
+   * carries the topic's name. Learning it here (only when no name is known; a rename still wins)
+   * lets a machine that lost its names, as after a rebuild, name its conversations again the next
+   * time it speaks in them, instead of showing "Conversation name unavailable". No extra request.
+   */
+  private learnTopicNameFromSent(result: unknown): void {
+    try {
+      const m = result as { chat?: { id?: number | string }; message_thread_id?: number; is_topic_message?: boolean; reply_to_message?: { forum_topic_created?: { name?: unknown } } } | null;
+      const name = m?.reply_to_message?.forum_topic_created?.name;
+      if (!m || m.is_topic_message !== true || typeof name !== 'string' || typeof m.message_thread_id !== 'number') return;
+      const topicId = inboundTopicId(m.chat?.id ?? this.config.chatId, m.message_thread_id, this.topicSpace());
+      if (typeof topicId === 'number' && !this.getTopicName(topicId)) this.captureTopicName(topicId, name, false);
+    } catch (err) {
+      // @silent-fallback-ok: a display name is optional; the send itself already succeeded
+      console.warn('[telegram] could not read the topic name from a sent message:', err instanceof Error ? err.message : err);
     }
   }
 
@@ -4223,6 +4362,7 @@ export class TelegramAdapter implements MessagingAdapter {
   private async transcribeVoice(filePath: string): Promise<string> {
     return transcribeAudioFile(filePath, {
       explicit: this.config.voiceProvider,
+      channel: 'telegram',
       mediaType: 'audio/ogg',
       timeoutMs: 60_000,
       log: (note) => console.log(`[telegram] ${note}`),
@@ -4808,6 +4948,87 @@ export class TelegramAdapter implements MessagingAdapter {
       fs.closeSync(fd);
     }
     return this.authorshipJoin.join(matching);
+  }
+
+  /**
+   * Exact-id lookup of logged messages (docs/specs/waiting-on-you-links.md §3): for each wanted
+   * `{ topicId, messageId }`, whether this machine's retained log holds it, who sent it and its
+   * full text. One asynchronous pass for all ids together, read backwards in 1 MB blocks so a
+   * recent message is found in the first block, stopping as soon as every id is found. Bounded
+   * only by the log's own rotation. `topicId: null` matches the message id in any topic of the
+   * group the link named (`issues`), since a General-form link carries no topic id. Throws on a read error or when `signal` aborts;
+   * callers report "unavailable".
+   */
+  async findLoggedMessages(refs: Array<{ topicId: number | null; messageId: number; issues?: boolean }>, opts: { signal?: AbortSignal } = {}): Promise<Array<{
+    topicId: number | null; messageId: number; found: boolean; sentBy?: string; text?: string; timestamp?: string;
+  }>> {
+    const wanted = new Map<string, { topicId: number | null; messageId: number; issues: boolean }>();
+    for (const r of refs) {
+      if (!Number.isSafeInteger(r.messageId) || r.messageId <= 0) continue;
+      wanted.set(`${r.topicId ?? (r.issues ? '*issues' : '*')}:${r.messageId}`, { topicId: r.topicId, messageId: r.messageId, issues: r.issues === true });
+    }
+    const hits = new Map<string, LogEntry>();
+    if (wanted.size > 0 && fs.existsSync(this.messageLogPath)) {
+      // Cheap literal pre-filter before any parse; the exact compare after parsing decides.
+      const needles = [...new Set([...wanted.values()].map((w) => `"messageId":${w.messageId}`))];
+      const CHUNK = 1024 * 1024;
+      const fh = await fs.promises.open(this.messageLogPath, 'r');
+      try {
+        let pos = (await fh.stat()).size;
+        let carry = Buffer.alloc(0);
+        while (pos > 0 && hits.size < wanted.size) {
+          // The caller's allowance ran out: stop reading so timed-out lookups never pile up.
+          if (opts.signal?.aborted) throw new Error('find-logged-messages-aborted');
+          const size = Math.min(CHUNK, pos);
+          pos -= size;
+          const read = Buffer.alloc(size);
+          const { bytesRead } = await fh.read(read, 0, size, pos);
+          let buf = Buffer.concat([read.subarray(0, bytesRead), carry]);
+          if (pos > 0) {
+            const nl = buf.indexOf(0x0a);
+            if (nl < 0) { carry = buf; continue; }
+            carry = buf.subarray(0, nl);
+            buf = buf.subarray(nl + 1);
+          } else {
+            carry = Buffer.alloc(0);
+          }
+          const lines = buf.toString('utf-8').split('\n');
+          for (let i = lines.length - 1; i >= 0 && hits.size < wanted.size; i--) {
+            const line = lines[i];
+            if (!line || !needles.some((n) => line.includes(n))) continue;
+            try {
+              const entry: LogEntry = JSON.parse(line);
+              const entryTopicId = entry.topicId ?? (entry as unknown as { channelId?: number }).channelId ?? null;
+              for (const [key, w] of wanted) {
+                if (hits.has(key) || entry.messageId !== w.messageId) continue;
+                if (w.topicId !== null && entryTopicId !== w.topicId) continue;
+                // A link with no topic names only its chat. The main group and the Issues group
+                // number their messages separately in this one log, so the row must be in the
+                // same group the link named.
+                if (w.topicId === null && isIssuesTopicId(entryTopicId) !== w.issues) continue;
+                hits.set(key, entry);
+              }
+            } catch { /* @silent-fallback-ok: a malformed log line is skipped; the lookup is built from the lines that parse */ }
+          }
+        }
+      } finally {
+        await fh.close();
+      }
+    }
+    const joined = new Map<string, LogEntry & { authorship?: string }>();
+    const keys = [...hits.keys()];
+    const withAuthorship = this.authorshipJoin.join(keys.map((k) => hits.get(k)!));
+    keys.forEach((k, i) => joined.set(k, withAuthorship[i]));
+    return [...wanted.entries()].map(([key, w]) => {
+      const e = joined.get(key);
+      if (!e) return { topicId: w.topicId, messageId: w.messageId, found: false };
+      return {
+        topicId: w.topicId, messageId: w.messageId, found: true,
+        sentBy: e.teamPhone ? 'team-member' : e.fromUser ? 'person' : String(e.authorship ?? 'not-the-person'),
+        text: String(e.text ?? ''),
+        timestamp: String(e.timestamp ?? ''),
+      };
+    });
   }
 
   /**
@@ -6468,6 +6689,23 @@ export class TelegramAdapter implements MessagingAdapter {
     normalizeInboundThread(msg, this.topicSpace());
     // Mobile device keys (§2.2): a live phone-pairing code in a conversation voids that pairing first.
     for (const t of [msg.text, (msg as { caption?: string }).caption]) if (typeof t === 'string' && t) this.mobileInboundScan?.(t);
+    // SEC-164 §3.5: mask live keys in the text and the caption before anything below keeps them.
+    if (this.inboundCredentialMasker) {
+      const raw = msg as unknown as Record<string, unknown>;
+      const notFromThePerson = !!(raw.forward_origin || raw.forward_from || raw.forward_date || raw.sender_chat || raw.via_bot)
+        || (msg.from as { is_bot?: boolean } | undefined)?.is_bot === true;
+      for (const field of ['text', 'caption'] as const) {
+        const value = raw[field];
+        if (typeof value !== 'string' || !value) continue;
+        try {
+          const masked = this.inboundCredentialMasker({
+            text: value, topicId: msg.message_thread_id ?? GENERAL_TOPIC_ID, messageId: msg.message_id,
+            fromId: msg.from?.id, notFromThePerson,
+          });
+          if (typeof masked === 'string') raw[field] = masked;
+        } catch { /* @silent-fallback-ok — the masker reports its own failures; delivery continues */ }
+      }
+    }
 
     // Trust-journey decision 5: a text message in a sender's own private chat with the bot, read here
     // from Telegram's own getUpdates, is offered to the account path as a platform receipt. Anything
@@ -6529,7 +6767,7 @@ export class TelegramAdapter implements MessagingAdapter {
       msg.forum_topic_created?.name ??
       msg.forum_topic_edited?.name ??
       msg.reply_to_message?.forum_topic_created?.name;
-    if (detectedName) this.captureTopicName(numericTopicId, detectedName, !!msg.forum_topic_edited?.name);
+    if (detectedName) this.captureTopicName(numericTopicId, detectedName, !!msg.forum_topic_edited?.name, msg.forum_topic_edited?.name && typeof msg.date === 'number' ? msg.date * 1000 + 999 : undefined, msg.forum_topic_edited?.name ? msg.message_id : undefined);
 
     // Service messages (topic created/edited) have no user content — skip further processing
     if (msg.forum_topic_created || msg.forum_topic_edited) {
@@ -6821,6 +7059,17 @@ export class TelegramAdapter implements MessagingAdapter {
     }
     try {
       if (transcript === null) throw transcribeError ?? new Error('no transcript');
+      // SEC-164 §3.5: a voice transcript is masked at the same point as its channel's text.
+      if (this.inboundCredentialMasker) {
+        const raw = msg as unknown as Record<string, unknown>;
+        try {
+          const masked = this.inboundCredentialMasker({
+            text: transcript, topicId, messageId: msg.message_id, fromId: msg.from?.id,
+            notFromThePerson: !!(raw.forward_origin || raw.forward_from || raw.forward_date || raw.sender_chat || raw.via_bot),
+          });
+          if (typeof masked === 'string') transcript = masked;
+        } catch { /* @silent-fallback-ok — the masker reports its own failures; delivery continues */ }
+      }
       console.log(`[telegram] Transcribed voice (${voice.duration}s): "${transcript.slice(0, 80)}"`);
 
       // Create a message with the transcription
@@ -7788,6 +8037,7 @@ export class TelegramAdapter implements MessagingAdapter {
     }
 
     if (data.result && typeof data.result === 'object' && (data.result as QuietReceipt).recorded === true) throw new QuietRecordedError(data.result as QuietReceipt);
+    if (method === 'sendMessage') this.learnTopicNameFromSent(data.result);
     return data.result;
   }
 }

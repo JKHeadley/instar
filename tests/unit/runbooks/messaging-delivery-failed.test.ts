@@ -37,7 +37,7 @@ import { MessageFormatter } from '../../../src/messaging/MessageFormatter.js';
 import { DeliveryRetryManager } from '../../../src/messaging/DeliveryRetryManager.js';
 import { SafeFsExecutor } from '../../../src/core/SafeFsExecutor.js';
 import type { NormalizedDegradationEvent } from '../../../src/monitoring/DegradationReporter.js';
-import type { MessageEnvelope, AgentMessage } from '../../../src/messaging/types.js';
+import type { MessageEnvelope, AgentMessage, DeliveryResult } from '../../../src/messaging/types.js';
 
 // ── Fakes ────────────────────────────────────────────────────────────────
 
@@ -392,14 +392,15 @@ describe('messaging-delivery-failed runbook (W-3)', () => {
     // Stub deliverToSession via the manager's delivery to fail, so the
     // retry leaves them in queued state.
     vi.spyOn(
-      (fx.manager as unknown as { delivery: { deliverToSession: () => unknown } })
+      (fx.manager as unknown as { delivery: MessageDelivery })
         .delivery,
       'deliverToSession'
     ).mockResolvedValue({
       success: false,
-      reason: 'synthetic test failure',
-      action: 'queued',
-    } as never);
+      phase: 'queued',
+      failureReason: 'synthetic pre-injection refusal',
+      shouldRetry: true,
+    } satisfies DeliveryResult);
 
     fx.remediator.registerRunbook(messagingDeliveryFailedRunbook);
     const ev = makeEvent({ errorCode: 'DELIVERY_FAILURE' });
@@ -409,5 +410,8 @@ describe('messaging-delivery-failed runbook (W-3)', () => {
     const entries = readProjection(fx.tmpDir, fx.machineId);
     const outcomes = entries.map((e) => e.outcome);
     expect(outcomes).toContain('verify-failed');
+    const remaining = await fx.store.queryInbox('test-agent');
+    expect(remaining).toHaveLength(2);
+    expect(remaining.every((e) => e.delivery.phase === 'queued')).toBe(true);
   });
 });

@@ -1,0 +1,35 @@
+{
+  "ts": "2026-11-22T08:49:58.272Z",
+  "slug": "owner-framework-confirmation",
+  "suggestedTier": 2,
+  "declaredTier": 1,
+  "riskFloor": 2,
+  "riskFloorReasons": [
+    "safety-invariant proximity: src/messaging/TelegramAdapter.ts matches Telegram adapter"
+  ],
+  "belowFloor": true,
+  "files": 8,
+  "loc": 42,
+  "scope": {
+    "basis": "staged-in-scope-paths-including-deleted",
+    "files": [
+      "scripts/lint-notification-selectivity.mjs",
+      "src/core/topicCreationProvenance.ts",
+      "src/core/topicProfileWriteSurface.ts",
+      "src/data/awareness/owner-framework-confirmation.md",
+      "src/messaging/NotificationSelectivityGate.ts",
+      "src/messaging/TelegramAdapter.ts",
+      "src/messaging/notificationStampers.ts",
+      "src/server/routes.ts"
+    ],
+    "addedLines": 26,
+    "deletedLines": 16
+  },
+  "causalAutopsy": null,
+  "classClosure": {
+    "defectClass": "unbounded-self-action",
+    "closure": "n/a",
+    "reason": "One-shot authenticated HTTP proposal and operator-confirmed exact patch; the existing framework write/respawn is user-driven. No timer, self-triggered loop, retry controller or repeated action is added or changed."
+  },
+  "verdict": "pass"
+}

@@ -143,6 +143,8 @@ export const COMPONENT_CATEGORY: Readonly<Record<string, ComponentCategory>> = {
   AlignmentReviewer: 'reflector',        // compare active run focus with the durable priority digest
   PreCompactionFlush: 'reflector',       // extract durable facts before compaction
   ContextLayerChunk: 'reflector',        // context-budget chunk / range summaries from an archived transcript span
+  FoldAudit: 'reflector',                // context-budget practice fold: checks a session's handoff note (background; family-pinned)
+  FoldProbe: 'reflector',                // context-budget practice fold: writes and grades the held-out quiz (family-pinned)
   ContextLayerH3: 'reflector',           // context-budget H3 long-term view from a bounded chunk / C2 selection
   TreeSynthesis: 'reflector',            // synthesize knowledge fragments → answer
   LLMConflictResolver: 'reflector',      // resolve divergent multi-machine state

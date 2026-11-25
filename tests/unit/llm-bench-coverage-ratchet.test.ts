@@ -39,6 +39,9 @@ const PENDING_BASELINE = [
   'ContextLayerChunk',
   // context-budget-layered-summaries §6 row H3 (Phase 1 S9, 2026-11-10): the long-term view from chunk/C2 summaries.
   'ContextLayerH3',
+  // context-budget Phase 2 practice folds: pending a bench task.
+  'FoldAudit',
+  'FoldProbe',
   'SelfKnowledgeTree', 'GoalPriorityExtractor',
   'StandardsConformanceReviewer',
   'TopicSummarizer', 'TreeSynthesis', 'TreeTriage', 'a2a-checkin',

@@ -7,11 +7,12 @@
 import type { WorkBoardService, CardView } from './WorkBoardService.js';
 import { plainParkReason, isServerOwnedCard } from './WorkBoardService.js';
 import type { Lane } from './WorkCardStore.js';
-import { sha256Hex } from './WorkCardStore.js';
+import { sha256Hex, isAgentInternalCard } from './WorkCardStore.js';
 
 export interface Viewer { personKey: string | null; isOwner: boolean; isAgent: boolean }
 
-export interface BehindInfo { machineId: string; since: string }
+/** machineName: that machine's nickname when the pool knows one (shown instead of its id). */
+export interface BehindInfo { machineId: string; since: string; machineName?: string | null }
 
 /** Plain words for each status, for the row's "what is needed" line. */
 /** A stopped project app's serve card: turning the app back on comes with stage 2 (CMT-1882). */
@@ -38,8 +39,10 @@ export function needLine(v: CardView, opts: { phoneOnly?: boolean; appStopped?: 
       if (c.closeout?.as === 'done') return `Done: ${c.closeout.note}`;
       if (c.closeout?.as === 'not-important') return `Not important: ${c.closeout.note}`;
       return 'Archived';
-    case 'held': return 'On hold. Release it when the agent may carry on';
-    case 'needs-approval': return c.withdrawn ? 'Approval withdrawn. Approve again to let the agent start' : 'Needs your approval before the agent starts';
+    case 'held': return isAgentInternalCard(c) ? 'Agent work is on hold' : 'On hold. Release it when the agent may carry on';
+    case 'needs-approval': return isAgentInternalCard(c) ? (c.withdrawn ? 'Agent work is stopped after approval was withdrawn.' : 'Agent work is stopped under the current board policy.') : c.withdrawn ? 'Approval withdrawn. Approve again to let the agent start' : 'Needs your approval before the agent starts';
+    // agent-work-cards-default §1: never a per-card ask; the team's unstarted cards are one aggregated row.
+    case 'not-started': return isAgentInternalCard(c) ? 'The agent has not started this under the current board policy.' : 'Needs your approval before the agent starts';
     case 'claims-done': return 'The agent says this is done. Confirm or reopen';
     case 'done': return c.doneByAgentOwnEvidence ? 'Finished by the agent on its own evidence' : 'Done';
     case 'parked': {
@@ -50,10 +53,26 @@ export function needLine(v: CardView, opts: { phoneOnly?: boolean; appStopped?: 
     case 'with-person': return 'Yours to do';
     case 'quiet': return 'The agent has gone quiet on this';
     case 'with-agent': {
+      if (c.pickupHeld) return 'The agent is working on this in the conversation that asked for it';
       const waiting = v.pickups.find((p) => p.status === 'pending');
       return waiting ? 'Approved; waiting for the agent to pick it up' : 'The agent is working on this';
     }
   }
+}
+
+/** "asked <n> days ago" from the request's time (agent-work-cards-default §1: a label, never a cap). */
+export function askedAgoWords(askedAtIso: string | null, nowMs: number): string | null {
+  if (!askedAtIso) return null;
+  const t = Date.parse(askedAtIso); if (!Number.isFinite(t)) return null;
+  const days = Math.floor(Math.max(0, nowMs - t) / 86_400_000);
+  return days === 0 ? 'asked today' : days === 1 ? 'asked 1 day ago' : `asked ${days} days ago`;
+}
+
+/** The close-out label (§2): what an agent-attested finish rests on. */
+export function closeoutLabel(c: { done: boolean; doneByAgentOwnEvidence: boolean; evidence: Array<{ counts: boolean; text: string; attachmentIds?: string[] }> }): string | null {
+  if (!c.done || !c.doneByAgentOwnEvidence) return null;
+  const linked = c.evidence.some((e) => e.counts && ((e.attachmentIds?.length ?? 0) > 0 || /https:\/\/\S+/.test(e.text)));
+  return linked ? 'closed by the agent, with a link or attachment' : 'closed by the agent on its own word';
 }
 
 function principalJson(p: unknown, name: (k: string) => string): unknown {
@@ -66,7 +85,7 @@ function principalJson(p: unknown, name: (k: string) => string): unknown {
 function byJson(b: unknown, name: (k: string) => string): unknown {
   const x = b as { kind?: string; personKey?: string; proof?: string } | null;
   if (!x) return null;
-  if (x.kind === 'person' && x.personKey) return { kind: 'person', personKey: x.personKey, name: name(x.personKey), proof: x.proof === 'presence' ? 'phone' : 'console PIN' };
+  if (x.kind === 'person' && x.personKey) return { kind: 'person', personKey: x.personKey, name: name(x.personKey), proof: x.proof === 'presence' ? 'phone' : x.proof === 'message' ? 'their own request' : 'console PIN' };
   return { kind: x.kind };
 }
 
@@ -95,13 +114,13 @@ export function conversationRef(conversationKey: string): Record<string, string>
   return { kind: 'app', key: conversationKey, ref: `app:${conversationKey}`, messagesPath: `/mobile/chat/app/${k}/messages`, sendPath: `/mobile/chat/app/${k}` };
 }
 
-export function cardJson(svc: WorkBoardService, v: CardView, viewer: Viewer, name: (k: string) => string, extra?: { behind?: BehindInfo | null; lastWrittenOn?: string | null; repliedAfterQuestion?: boolean; capacity?: { reason: string; nextCheckAt: number; since: number } | null; brokenAttachments?: string[]; /** A server-owned card the server refuses console taps on (project-apps-sandbox §3.4), except withdraw-approval. */ phoneOnly?: boolean }): Record<string, unknown> {
+export function cardJson(svc: WorkBoardService, v: CardView, viewer: Viewer, name: (k: string) => string, extra?: { behind?: BehindInfo | null; lastWrittenOn?: string | null; repliedAfterQuestion?: boolean; capacity?: { reason: string; nextCheckAt: number; since: number } | null; brokenAttachments?: string[]; /** A server-owned card the server refuses console taps on (project-apps-sandbox §3.4), except withdraw-approval. */ phoneOnly?: boolean; /** Materialized history, never an empty internal placeholder. */ conversationAvailable?: boolean; /** agent-work-cards-default §2: the card's last progress note, or `pending` when its event has not replicated here. */ lastNote?: { text: string; at: string; eventId: string } | { pending: true; eventId: string } | null; /** The request's own time (the durable row's), for "asked <n> days ago"; falls back to the card's creation. */ askedAt?: string | null; now?: number }): Record<string, unknown> {
   const c = v.card;
   const lane: Lane = svc.lane(v, { isOwner: viewer.isOwner || viewer.isAgent, personKey: viewer.personKey });
   const phoneOnly = extra?.phoneOnly === true;
   const appStopped = phoneOnly && svc.isStoppedAppCard(c.cardId);
   const startedAt = svc.startedAt(c.cardId);
-  const base = { id: c.cardId, conversationKey: c.conversationKey, status: v.status, lane, turn: turnFor(lane), started: startedAt !== null, startedAt, needLine: needLine(v, { phoneOnly, appStopped }), newestAt: new Date(c.newestRecordAt).toISOString(), ...(appStopped ? { appStopped: true } : {}) };
+  const base = { agentInternal: isAgentInternalCard(c), conversationAvailable: extra?.conversationAvailable ?? !isAgentInternalCard(c), id: c.cardId, conversationKey: c.conversationKey, status: v.status, lane, turn: turnFor(lane), started: startedAt !== null, startedAt, needLine: needLine(v, { phoneOnly, appStopped }), newestAt: new Date(c.newestRecordAt).toISOString(), ...(appStopped ? { appStopped: true } : {}) };
   if (c.redacted) {
     return { ...base, title: `Removed by ${byName(c.redacted.by, name)}`, removed: { by: byJson(c.redacted.by, name), at: c.redacted.at, note: 'The text is hidden from every read. Its bytes stay in the journal until compaction, and a backup taken earlier still holds it.' } };
   }
@@ -128,7 +147,7 @@ export function cardJson(svc: WorkBoardService, v: CardView, viewer: Viewer, nam
     claim: c.currentClaim ? { id: c.currentClaim.id, evidenceIds: c.currentClaim.evidenceIds, needsConfirm: c.needsConfirm, confirmedBy: c.currentClaim.confirmedBy ?? null, at: c.currentClaim.at } : null,
     done: c.done, doneByAgentOwnEvidence: c.doneByAgentOwnEvidence, reopens: c.reopens, holds: c.holds, archives: c.archives,
     // A person's Done / Not important close in force; `unarchive` naming `tapId` reopens the card.
-    closeout: c.closeout ? { as: c.closeout.as, note: c.closeout.note, by: byJson(c.closeout.by, name), at: c.closeout.at, tapId: c.closeout.tapId } : null,
+    closeout: c.closeout ? { as: c.closeout.as, note: c.closeout.note, by: byJson(c.closeout.by, name), at: c.closeout.at, tapId: c.closeout.tapId, title: c.closeout.title } : null,
     conversation: conversationRef(c.conversationKey),
     carrierTrail: c.carrierTrail.map((t) => ({ carrier: principalJson(t.carrier, name), by: byJson(t.by, name), at: t.at })),
     taps: c.taps.map((t) => ({ id: t.id, action: t.action, at: t.at, by: byJson(t.by, name) })),
@@ -142,9 +161,22 @@ export function cardJson(svc: WorkBoardService, v: CardView, viewer: Viewer, nam
     repliedAfterQuestion: !!extra?.repliedAfterQuestion,
     ...(extra?.phoneOnly ? { phoneOnly: true } : {}),
     ...(extra?.behind ? { behind: extra.behind } : {}),
-    ...(extra?.behind && extra.lastWrittenOn && extra.behind.machineId === extra.lastWrittenOn ? { mayHaveChangedOn: extra.lastWrittenOn } : {}),
+    ...(extra?.behind && extra.lastWrittenOn && extra.behind.machineId === extra.lastWrittenOn ? { mayHaveChangedOn: extra.lastWrittenOn, ...(extra.behind.machineName ? { mayHaveChangedOnName: extra.behind.machineName } : {}) } : {}),
+    // ── agent-work-cards-default ──
+    agentWork: c.agentWork,
+    pickupHeld: c.pickupHeld,
+    requester: c.requester ? { personKey: c.requester.personKey, name: name(c.requester.personKey), isOwner: c.requester.isOwner } : null,
+    // "Asked: <need>" and its labels on a request-approved card (§1): deterministic, never a judgment of meaning.
+    asked: c.requestApproved ? { need: c.need, agoWords: askedAgoWords(extra?.askedAt ?? c.createdAt, extra?.now ?? Date.now()), recordedInAgentWords: c.recordedInAgentWords, changedSinceAsked: c.changedSinceAsked, needLocked: true } : null,
+    lastNote: extra?.lastNote ?? null,
+    lastEvidenceAt: c.evidence.length ? c.evidence[c.evidence.length - 1].at : null,
+    closeoutLabel: closeoutLabel(c),
+    possibleDuplicateOf: svc.possibleDuplicateOf(c.cardId),
+
   };
-  if (ownerish) { out.source = c.source; out.projectKey = c.projectKey; }
+  // Internal references (§3): the agent and the owner read them; a member's view omits ids of cards they cannot read.
+  if (ownerish) { out.source = c.source; out.projectKey = c.projectKey; out.refs = c.refs; }
+  else out.refs = c.refs.filter((r) => r.kind !== 'parent-card');
   return out;
 }
 
@@ -170,11 +202,13 @@ export interface LaneListing { lane: Lane; cards: Record<string, unknown>[]; mor
  * The board for one viewer: "Waiting on you" (oldest first, aggregated past the soft budget),
  * "With the agent", "Waiting on others", "Done" (20 newest; `donePage` pages 50), "Archived".
  */
-export function boardJson(svc: WorkBoardService, viewer: Viewer, mayRead: (conversationKey: string) => boolean, name: (k: string) => string, opts: { softOpenCards: number; donePage?: number; extraFor?: (v: CardView) => Parameters<typeof cardJson>[4]; /** Every card in every lane, no cut (the Projects read joins cards to projects and must not drop any). */ full?: boolean }): Record<string, unknown> {
+export function boardJson(svc: WorkBoardService, viewer: Viewer, mayRead: (conversationKey: string) => boolean, name: (k: string) => string, opts: { softOpenCards: number; donePage?: number; extraFor?: (v: CardView) => Parameters<typeof cardJson>[4]; /** Uncut owner projection for Projects; never implicitly includes internal work. */ full?: boolean; /** Explicit agent-cards view only, never inherited from a shared request query. */ agentCardsOnly?: boolean }): Record<string, unknown> {
   const lanes: Record<Lane, Array<{ v: CardView; json: Record<string, unknown> }>> = { 'waiting-on-you': [], 'with-agent': [], 'waiting-on-others': [], done: [], archived: [] };
   for (const id of svc.cardIds()) {
     const v = svc.view(id); if (!v || !v.card.created) continue;
     if (!viewer.isAgent && !viewer.isOwner && !mayRead(v.card.conversationKey)) continue; // not visible: the card does not exist for them
+    const internal = isAgentInternalCard(v.card);
+    if (opts.agentCardsOnly ? !internal : internal) continue;
     const json = cardJson(svc, v, viewer, name, opts.extraFor?.(v));
     lanes[json.lane as Lane].push({ v, json });
   }
@@ -191,6 +225,8 @@ export function boardJson(svc: WorkBoardService, viewer: Viewer, mayRead: (conve
   const shownIds = new Set<string>([...shownWaiting, ...lanes['with-agent'], ...lanes['waiting-on-others']].map((x) => x.v.card.cardId));
   const open = [...waiting, ...lanes['with-agent'], ...lanes['waiting-on-others']];
   return {
+    view: opts.agentCardsOnly ? 'agent' : 'owner',
+    ownerProjectionVersion: 1,
     myBoard: myBoardJson(viewer, open, shownIds),
     lanes: [
       { lane: 'waiting-on-you', cards: shownWaiting.map((x) => x.json), ...(waiting.length > shownWaiting.length ? { more: waiting.length - shownWaiting.length } : {}) },
@@ -202,7 +238,20 @@ export function boardJson(svc: WorkBoardService, viewer: Viewer, mayRead: (conve
     waitingOnYou: waiting.length,
     policy: svc.policy(),
     newestHlc: svc.newestHlc(),
+    // agent-work-cards-default §1 "One aggregated row, not zero": the team's `not-started` cards, oldest first, for the
+    // one Needs-you row (named so it does not collide with the myBoard sections' `notStarted` number). Owner and agent only.
+    ...(viewer.isOwner || viewer.isAgent ? { notStartedCards: notStartedCardsJson(svc, new Set(Object.values(lanes).flatMap((rows) => rows.map((x) => x.v.card.cardId)))) } : {}),
   };
+}
+
+/** The aggregated row's data (§1): count, ids oldest first, and the approval-screen fields of the first ten. */
+export function notStartedCardsJson(svc: WorkBoardService, visibleIds?: ReadonlySet<string>): { count: number; cardIds: string[]; shown: Array<Record<string, unknown>>; more: number } {
+  const ids = svc.notStartedCardIds().filter((id) => !visibleIds || visibleIds.has(id));
+  const shown = ids.slice(0, 10).map((id) => {
+    const v = svc.view(id)!; const c = v.card;
+    return { id, title: c.title, titleHash: sha256Hex(c.title), materialHash: c.materialHash, need: c.need, requester: c.requester, doneWhen: c.doneWhen, links: c.links, outward: c.outward, createdAt: c.createdAt, projectKey: c.projectKey };
+  });
+  return { count: ids.length, cardIds: ids, shown, more: Math.max(0, ids.length - shown.length) };
 }
 
 // ── My board (docs/specs/work-board-my-board.md) ───────────────────────────

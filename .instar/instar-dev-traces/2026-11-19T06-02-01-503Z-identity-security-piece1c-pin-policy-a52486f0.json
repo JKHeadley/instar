@@ -1,0 +1,19 @@
+{
+  "version": 2,
+  "slug": "identity-security-piece1c-pin-policy",
+  "sessionId": "2f010dce-ecf3-404e-b88a-b952c212e86e",
+  "timestamp": "2026-11-19T06:02:01.503Z",
+  "artifactPath": "upgrades/side-effects/identity-security-piece1c-pin-policy.md",
+  "artifactSha256": "d0f278f85fb3caa31f1919f0cb47253cff2fa96b36cf4f5bca61126401b6de2d",
+  "specPath": "docs/specs/identity-security-piece1c-pin-policy.md",
+  "coveredFiles": [
+    "src/data/awareness/dashboard-pin-throttle.md",
+    "src/data/awareness/pin-sign-in-paused.md",
+    "upgrades/side-effects/identity-security-piece1c-pin-policy.md"
+  ],
+  "phase": "complete",
+  "tier": 2,
+  "tierReasoning": "Instruction-file size fix on the approved 1c change: the new awareness text joins the existing PIN entry instead of adding a title.",
+  "secondPass": "not-required",
+  "reviewerConcurred": null
+}

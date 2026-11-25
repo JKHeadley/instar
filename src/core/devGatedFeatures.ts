@@ -44,6 +44,12 @@ export interface DevGatedFeature {
 
 export const DEV_GATED_FEATURES: DevGatedFeature[] = [
   {
+    name: 'noDataLossRepos',
+    configPath: 'noDataLoss.repos.enabled',
+    description: 'The owned-repository registry (docs/specs/no-data-loss-on-machine-death.md increment 1): every repository this agent works in on each machine, its remotes, single-copy work and age, at GET /repos[?scope=pool]; a repository with no remote, or unpushed work past the grace window, is a Needs-you row; omitted => live on a development agent, dark on the fleet.',
+    justification: 'Read-only: every git call is a read through SafeGitExecutor.readStream (no optional locks, no fsmonitor), so it never fetches, pushes, creates a remote or touches a working tree. The scan has a 60 s and 200,000-entry budget per 15-minute tick, runs in async child processes and never walks the whole home folder. Its only outputs are its own state file, owned-repo journal records (state changes only) and a Needs-you row. enabled:false stops it and leaves nothing behind that acts.',
+  },
+  {
     name: 'agentSessionPlacement',
     configPath: 'multiMachine.placement.agentSessions.enabled',
     description: 'Agent-started sessions placed by load (docs/specs/agent-sessions-placed-by-load.md Step 1): every POST /sessions/spawn writes where it would have gone to logs/agent-session-placement.jsonl, and a topicless helper that asks with placement:"auto" starts on a peer with room when this machine is busy (load, verdict or memory); omitted => live on a development agent, dark on the fleet.',
@@ -56,16 +62,34 @@ export const DEV_GATED_FEATURES: DevGatedFeature[] = [
     justification: 'Adds no automatic action: a change is applied only on the configured owner\'s live, authenticated "yes" to a server-rendered proposal, for an eligible conversation re-checked at the yes. Off, the propose lane works exactly as before and confirmIn is refused.',
   },
   {
+    name: 'approvalLinks',
+    configPath: 'security.approvalLinks.enabled',
+    description: 'SEC-135 (docs/specs/sec135-approval-link-guess-bound.md): a recommended-services confirm-page answer from a browser that never unlocked the dashboard, away from the machine, is admitted and charged by sign-in\'s own public PIN limits; owner opens (a marked browser or the machine itself, with the page\'s header) get their own mint allowance and protected tokens; confirmStats counters; omitted ⇒ live on a development agent, dark on the fleet.',
+    justification: 'Adds no new limit and no outward action: every number is sign-in\'s shipped piece 1c policy, applied through the same counters, so a stranger gets no more guesses than at sign-in and the owner\'s marked browser and the machine keep their own budgets. The counters write one small file at most once a minute. enabled:false restores piece 1c\'s per-token behaviour exactly; token rows written while on carry an extra field older code ignores, and expire within 30 minutes.',
+  },
+  {
     name: 'usageLedger',
     configPath: 'usage.ledger.enabled',
     description: 'Unified usage ledger (unified-usage-ledger spec): one attributed row per model call from this agent\'s own sessions, rolled up by hour, day and conversation in server-data/usage-ledger.db; omitted ⇒ live on a development agent, dark on the fleet.',
     justification: 'Read-only against source transcripts and pure data transformation: it writes only its own SQLite file in server-data (excluded from git-sync), adds no gate, notice or outward action, and changes nothing the existing TokenLedger, routes or burn alerts see. enabled:false stops it and leaves the file inert.',
   },
   {
+    name: 'usageLedgerServedAccount',
+    configPath: 'usage.ledger.servedAccount',
+    description: 'Spend by served account (docs/specs/quota-pacing-spend-by-account.md): each usage-ledger row records the account that actually served it (from the transcript folder and the recorded identity checks, with its basis), and GET /usage/accounts, /usage/accounts/size and /usage/account-mismatches report spend by login, the size of a point and tagged-vs-served disagreements; omitted ⇒ live on a development agent, dark on the fleet.',
+    justification: 'Read-only measurement: it adds nullable columns to the ledger\'s own raw-row table and two small state logs (identity checks, switch history), changes no placement, swap, shedding or model choice, and sends no notice. enabled:false writes rows as basis "off" and the three routes answer 503; the columns stay inert.',
+  },
+  {
     name: 'contextBudgetLayers',
     configPath: 'contextBudget.enabled',
     description: 'Context budget layers (docs/specs/context-budget-layered-summaries.md Phase 1): the per-topic layer store and transcript archive, and the layer writers built on them; omitted ⇒ live on a development agent, dark on the fleet.',
     justification: 'Writes only scrubbed derived summaries and row references under the agent\'s own 0700 state directory, never served and never git-synced; folds stay behind contextBudget.fold.enabled, so no session is shrunk, held or killed by this switch. Every LLM call runs on the background lane under a per-topic budget. Setting enabled:false stops every writer at the next read; the stored records are inert.',
+  },
+  {
+    name: 'contextBudgetFoldShadow',
+    configPath: 'contextBudget.fold.shadow',
+    description: 'Context budget shadow folding (docs/specs/context-budget-layered-summaries.md §16 Phase 2): at sampled clean stops a live session writes a handoff, a packet is staged and verified, and a throwaway answerer is probed and graded; nothing is replaced; omitted ⇒ live on a development agent, dark on the fleet.',
+    justification: 'Live effect is bounded and owned (spec decision 13): a sampled handoff turn in the live session (at most 2 asks per topic per hour, 1 in 3 clean stops), a fold hold and inbound hold for that turn\'s bound only, and one throwaway credential-free answerer per sampled fold; the live context is never replaced (contextBudget.fold.enabled stays off). shadow:false stops new shadow folds at the next check; open records are swept to aborted at boot.',
   },
   {
     name: 'chiefOfStaff',
@@ -153,6 +177,14 @@ export const DEV_GATED_FEATURES: DevGatedFeature[] = [
       'Outbound tone-gate representation rules resolve as overridable nudges (with a recorded reason) instead of terminal blocks; the self-stop family and the deterministic credential wall stay hard.',
     justification:
       'Takes LESS action, not more — it removes blocking authority rather than adding it, and is self-limiting: the advisory disposition is withdrawn back to a block whenever the override could not be recorded. No external action, no spend, and the rollback is a config flag.',
+  },
+  {
+    name: 'toneGateWaitingAskLinks',
+    configPath: 'toneGate.waitingAskLinks.enabled',
+    description:
+      'Outbound rule B26: a reply that refers to something the agent is waiting on the person for is handed back unless it carries the link to the ask and a plain restatement with the settling reply.',
+    justification:
+      'An advisory nudge only: a reasoned override always sends, so it can delay a message but never hold or drop it. It reads local facts (link shapes, the local message log, the local Work Board) inside a 750 ms allowance, makes no external call and writes no state; the rollback is this flag.',
   },
   {
     name: 'feedbackFactoryDrain',
@@ -937,6 +969,12 @@ export const DEV_GATED_FEATURES: DevGatedFeature[] = [
     justification: 'Ships dryRun:true: a dev agent resolves and LOGS would-refuse verdicts and counts them on the authed /health, and delivers every message exactly as today (the legacy verified profile is still created). Refusing and the untrusted profile default need a deliberate dryRun:false. Reads in-memory trust profiles only: no new writes, no LLM, no spend, no outbound messages.',
   },
   {
+    name: 'credentialScrub',
+    configPath: 'security.credentialScrub.enabled',
+    description: 'SEC-164: live credentials of the outbound wall\'s kinds are masked in the server\'s and the lifeline\'s own output (stdout, stderr and logs/server.log) before they are written. Later parts add new incoming messages, transcript copies and the session-record sweeper under the same switch.',
+    justification: 'Masks only the agent\'s own log output, with the wall\'s precise provider-prefixed kinds; a false positive costs a few characters of a log line, never a message or a record another program owns. No new writes beyond the log line itself, no LLM, no spend, no outbound messages. The sweeper that rewrites other programs\' files ships later behind its own dry-run setting.',
+  },
+  {
     name: 'blockerLifecycleLedger',
     configPath: 'monitoring.blockerLifecycleLedger.enabled',
     description: 'Raw blocker lifecycle timing ledger and bounded summary/trend read surfaces.',
@@ -970,6 +1008,12 @@ export const DEV_GATED_FEATURES: DevGatedFeature[] = [
     configPath: 'subscriptionPool.pacing.enabled',
     description: 'Quota pacing, step 1 (docs/specs/quota-pacing-forecast.md): a durable, bounded history of every subscription quota reading and a read-only forecast of where each account lands at its reset and whether each provider keeps weekly room (GET /quota-pacing).',
     justification: 'Read-only measurement: it writes only its own sync-excluded history folder and an hourly tick log, sends no message, spends nothing, and nothing reads its verdicts to decide (the quota scheduler and placement keep their authority). The poll hook is a guarded call whose failure is counted and never changes a poll result. Off answers 503 and stops writes and sweeps.',
+  },
+  {
+    name: 'windowAwareAccountChoice',
+    configPath: 'subscriptionPool.pacing.windowAwareChoice',
+    description: 'Quota pacing, step 2 (docs/specs/quota-pacing-account-choice.md): account choice reads each limit window as it stands now — the weekly deadline pairs with weekly room (never the 5-hour reset), the Fable window binds Fable launches (never emptying the pick), and a window that reset, is a placeholder or was not read recently is unmeasured (never 0% and never last cycle\'s number) and triggers a deduped out-of-cycle read. One shadow row per placement (GET /quota-pacing/account-choice).',
+    justification: 'Placement already decides where a session runs; this changes only the inputs and the ranking it reads, and the measured tier always outranks an unread account, so it never certifies capacity nobody read. Off = every picker runs today\'s code unchanged. The shadow log is bounded (30-day self-trim) and sync-excluded with the other logs. Dev agents first so two weekly resets of shadow evidence exist before the fleet rung.',
   },
   {
     name: 'ecosystemIdeas',
@@ -1024,6 +1068,17 @@ export const DEV_GATED_FEATURES: DevGatedFeature[] = [
     configPath: 'mobilePairing.permissionActions.enabled',
     description: 'Face ID-confirmed permission writes from the owner\'s phone (docs/specs/mobile-native-permissions.md): approve or decline a waiting authorization request held on this machine, and turn a feature switch on or off, each with a fresh presence-key signature over a single-use challenge bound to the device, Host and exact action (POST /mobile/permissions/challenge, /requests/:id/approve|decline, /features/:id).',
     justification: 'No authority beyond the PIN-confirmed console: the action runs the console\'s own approve, deny and operator-switch code; the bearer is refused; it needs an active owner phone, a configured dashboard PIN, local TLS or loopback, the phone\'s Secure Enclave presence key and a 60-second single-use challenge naming the exact action (an approve also names the proposal\'s hash). Every write and refusal is audited. Switching it off stops the writes at once (re-checked live); the read-only lists stay. Dark on the fleet until the development-agent live proof passes.',
+  },
+  {
+    name: 'takeoverReadyPoolBootClaimSafety',
+    configPath: 'multiMachine.takeoverReadyPool.bootClaimSafety.enabled',
+    description: 'takeover-ready-pool R1 (fb-2bf6ccd0-705): from process start until the boot hold ends, a restarted machine asks its peers before re-taking its own lapsed lease (even with a preferred machine named), never claims while the named preferred machine answers, and claims only after the preferred machine (every known peer when none is named) has been silent on 3 probes spanning 45 s; each decision is logged "boot-hold: <rule> <verdict>". takeoverReadyPool.enabled:false is the rollback.',
+    justification: 'It only withholds a claim the normal rules would already allow, and only for a bounded time: a dead peer releases it after 3 silent probes over 45 s, and a wedged peer answering errors releases it after the unsigned-answer window (45 s + 3 min, capped at 10 min). It never takes a lease the normal rules would refuse, adds no new authority, sends nothing, and a single machine with no peers is unchanged. Off (explicit false, or takeoverReadyPool.enabled:false) is byte-for-byte today\'s acquisition.',
+  },  {
+    name: 'takeoverReadyPoolPlannedRestartLeaseContinuity',
+    configPath: 'multiMachine.takeoverReadyPool.plannedRestartLeaseContinuity.enabled',
+    description: 'planned-restart-keeps-lead (fb-135e3043-add): while a restart of this server is pending (the request file exists or an in-process writer announced one), the lease holder\'s renewals carry a bounded window (measured from its own boots; 233 s unmeasured on Echo, capped under the stale-holder and presumed-dead thresholds peers enforce) instead of the TTL, run every 10 s on a tunnel transport, and are persisted beside the lease; at boot such a window lease is held only after an identity-verified peer answer with no newer epoch, with the self-fence left "never confirmed" until then. takeoverReadyPool.enabled:false is the rollback.',
+    justification: 'It extends only a lease this machine already holds, by a renewal peers already verify and fold, for a bounded time no longer than the thresholds after which a peer would take over a silent holder; a machine that dies mid-restart holds the pool for at most that window. At boot it only withholds a hold today\'s code would grant from a local file, until a peer confirms, and a dark pool resolves on boot claim safety\'s own silence evidence. It adds no new authority, sends nothing new on the wire, and a single machine with no peers is unchanged. Off (explicit false, or takeoverReadyPool.enabled:false) is byte-for-byte today\'s renewal; the boot side keeps its rule only while a window lease is on disk.',
   },
 ];
 

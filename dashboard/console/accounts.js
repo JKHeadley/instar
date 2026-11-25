@@ -7,6 +7,7 @@
 //   cancel a sign-in          POST /subscription-pool/follow-me/cancel     bearer
 //   repair / retry / cancel   POST /subscription-relogin/repair-cell       operator session
 
+import { quotaForecastCard } from './quota-forecast.js';
 import { buildAccountsPage, frameworkName, resetWords } from './accounts-model.js';
 import { el, setKids, pageHead, askLink, sheet, closeSheet, story, details, note, cantTell, askPin, forgetOperatorSession, firstPaint, arrivalScroll, markNeed } from './ui.js';
 import { legacyHref } from './nav-model.js';
@@ -38,6 +39,7 @@ async function getJson(path) {
 
 export async function renderAccounts(main, ctx) {
   const { get } = ctx;
+  main.classList.add('accounts-page');
   firstPaint(main, el('section', { class: 'hero page-hero' }, el('div', { class: 'eyebrow', text: 'Capacity · Accounts' }), el('h1', { class: 'page-title skeleton', text: 'Loading accounts' })));
   const [pool, relogin, inUse, machines] = await Promise.all([get('/subscription-pool?scope=pool', 8000), get('/subscription-relogin?scope=pool', 8000), get('/subscription-pool/in-use'), get('/pool')]);
   const names = machines.ok && Array.isArray(machines.data && machines.data.machines) ? Object.fromEntries(machines.data.machines.map((m) => [m.machineId, m.nickname])) : {};
@@ -60,11 +62,9 @@ export async function renderAccounts(main, ctx) {
         el('span', { class: 'row-main' }, el('span', { class: 'row-title', text: n.label }), el('span', { class: 'row-sub', text: n.sub })),
         el('span', { class: 'row-end' }, n.actionable ? el('button', { class: 'btn-quiet btn-small', type: 'button', text: n.action === 'start' ? 'Sign in' : n.action === 'retry' ? 'Try again' : 'Repair', onclick: () => startNeed(n, refresh) }) : null))))))) : null;
 
-  const groups = new Map();
-  for (const a of page.accounts) { const k = frameworkName(a.framework); if (!groups.has(k)) groups.set(k, []); groups.get(k).push(a); }
-  const list = el('div', { class: 'page-sections acct-list' }, [...groups.entries()].map(([name, accts]) => el('section', { class: 'list-section' },
-    el('div', { class: 'list-head' }, el('h2', { class: 'eyebrow', text: name }), el('span', { class: 'list-count', text: String(accts.length) })),
-    el('div', { class: 'list-rows' }, accts.map((a) => {
+  const list = el('div', { class: 'page-sections acct-list' }, el('section', { class: 'list-section' },
+    el('div', { class: 'list-head' }, el('h2', { class: 'eyebrow', text: 'Weekly reset, soonest first' }), el('span', { class: 'list-count', text: String(page.accounts.length) })),
+    el('div', { class: 'list-rows' }, page.accounts.map((a) => {
       const pct = a.tight ? Math.round(a.tight.pct) : null;
       // One labelled line per limit that applies (5-hour only when the account has one), each with
       // its own bar and its own reset, so a full 5-hour window never reads as the weekly one.
@@ -78,14 +78,14 @@ export async function renderAccounts(main, ctx) {
           el('span', { class: 'acct-win-reset', text: w.reset || '' }));
       })) : null;
       const row = el('button', { class: 'acct-row', type: 'button', 'data-focus-key': `a:${a.id}` },
-        el('span', { class: 'acct-name' }, document.createTextNode(a.name), a.inUse ? el('span', { class: 'acct-tag', text: 'in use here' }) : null),
+        el('span', { class: 'acct-name' }, document.createTextNode(a.name), el('span', { class: 'acct-kind', text: frameworkName(a.framework) }), a.inUse ? el('span', { class: 'acct-tag', text: 'in use here' }) : null),
         el('span', { class: `acct-pct${a.tone ? ' ' + a.tone : ''}`, text: pct === null ? '—' : `${pct}%` }),
         wins,
         !wins || a.stale ? el('span', { class: 'acct-line', text: [!wins ? a.line : null, a.stale ? `reading from ${a.readingAge}` : null].filter(Boolean).join(' · ') }) : null,
         el('span', { class: 'chips' }, a.cells.map((c) => el('span', { class: `mchip ${c.state}`, text: c.machine }))));
       row.addEventListener('click', () => openAccount(a, refresh));
       return row;
-    })))));
+    }))));
 
   // The notice spot: nothing unless something needs the person; each notice carries its action.
   const notices = page.notices.length ? el('section', { class: 'page-sections', id: 'sec-notices' },
@@ -99,7 +99,7 @@ export async function renderAccounts(main, ctx) {
     pageHead({ eyebrow: 'Capacity · Accounts', headline: page.headline, sub: page.sub, tone: page.tone, facts: page.facts }),
     page.partial ? note(page.partial) : null,
     !relogin.ok ? note(`Couldn't read sign-in repairs: ${relogin.reason}.`) : null,
-    notices, needs, autoRepairSection(autoRepair, refresh), list, legacyLink());
+    notices, needs, autoRepairSection(autoRepair, refresh), list, quotaForecastCard(get, page.accounts), legacyLink());
   const want = new URLSearchParams((location.hash.split('?')[1] || '')).get('s');
   if (want === 'needs') arrivalScroll(needs);
   if (want === 'auto-repair') arrivalScroll(main.querySelector('#sec-auto-repair'));
@@ -121,6 +121,8 @@ function openAccount(a, refresh) {
       el('span', { class: c.state === 'attn' ? 'dot attn' : c.state === 'ok' ? 'dot live' : 'dot unknown' }),
       el('span', { class: 'row-main' }, el('span', { class: 'row-title', text: c.machine }), el('span', { class: 'row-sub', text: c.state === 'attn' && !c.actionable ? 'Needs sign-in; a unique account and machine name are needed first.' : c.label })),
       el('span', { class: 'row-end' }));
+    // A machine that does not hold this account: a quiet Set up that starts a fresh sign-in there.
+    if (c.state === 'missing' && c.actionable) r.querySelector('.row-end').append(el('button', { class: 'btn-quiet', type: 'button', text: 'Set up', onclick: () => startNeed({ accountId: a.id, machineId: c.machineId, machine: c.machine, title: `Set up ${a.email || a.name} on ${c.machine}`, action: 'start', episodeId: null }, refresh) }));
     if ((c.state === 'attn' || c.state === 'waiting') && c.actionable) r.querySelector('.row-end').append(el('button', { class: 'btn-quiet', type: 'button', text: 'Sign in', onclick: () => startNeed({ accountId: a.id, machineId: c.machineId, machine: c.machine, title: `Sign in ${a.email || a.name} on ${c.machine}`, action: c.episode && (c.episode.state === 'failed' || c.episode.state === 'suggested') ? (c.episode.state === 'failed' ? 'retry' : 'approve') : 'start', episodeId: c.episode ? c.episode.id : null }, refresh) }));
     return r;
   }));

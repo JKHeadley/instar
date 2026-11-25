@@ -45,9 +45,10 @@ export function stripModel(res, { expanded = false } = {}) {
     show: true,
     // warning-path: row
     state: count > 0 ? (items.some((i) => i.tone === 'bad') ? 'bad' : 'attn') : 'unknown',
-    badge: `${count}${complete ? '' : '+?'}`,
+    // "12+" when some place could not be checked: at least that many (the line under it names what was missed).
+    badge: `${count}${complete ? '' : '+'}`,
     incomplete: !complete,
-    title: count > 0 ? `Needs you · ${count}` : 'Nothing found so far',
+    title: count > 0 ? 'Needs you' : 'Nothing found so far',
     rows,
     more: Math.max(0, items.length - rows.length),
     truncated,
@@ -59,6 +60,23 @@ export function stripModel(res, { expanded = false } = {}) {
   };
 }
 
+/**
+ * The strip's one-line, closed form (Justin, 2026-11-20: the open card was "messy, confusing, hard to
+ * digest, takes up too much space"). One calm line that reads at a glance: a tone dot, "Needs you · N"
+ * ("N+" when some place could not be checked) and the first need's title on one line; the full list,
+ * paging and the could-not-check sentences open on demand. Same words as the Instar app's build-120 line.
+ */
+export function compactLine(m) {
+  if (!m || !m.show) return null;
+  if (m.state === 'loading') return { label: 'Checking what needs you…', first: '', tone: 'unknown' };
+  const count = Number.parseInt(String(m.badge), 10);
+  if (!Number.isFinite(count)) return { label: 'Could not check what needs you', first: '', tone: 'unknown' };
+  if (count === 0) return { label: 'Needs you · ?', first: m.incomplete ? 'Nothing found so far' : '', tone: 'unknown' };
+  const first = m.rows && m.rows[0] ? String(m.rows[0].title || '') : '';
+  // warning-path: row
+  return { label: `Needs you · ${count}${m.incomplete ? '+' : ''}`, first, tone: m.state === 'bad' ? 'bad' : 'attn' };
+}
+
 /** A row's card link, only when it points at a Work page card (never another place); the label is the server's fixed words. */
 export function cardLinkOf(row) {
   const c = row && row.card;
@@ -66,11 +84,25 @@ export function cardLinkOf(row) {
   return { href: c.href, label: typeof c.label === 'string' && c.label ? c.label : 'Has a card on the work board' };
 }
 
+/** Group only by structured source and severity; never infer whether an ask is legitimate from its wording. */
+export function needGroups(rows) {
+  const labels = { plans: 'Plans to review', workBoard: 'Work that needs you', 'chief-of-staff': 'Project decisions', accounts: 'Sign-ins', 'document-decisions': 'Documents to review', approvals: 'Permissions to review' };
+  const groups = new Map();
+  for (const row of rows) {
+    const label = row.tone === 'bad' ? 'Problems to check' : labels[row.source] || 'Other requests';
+    if (!groups.has(label)) groups.set(label, { label, rows: [] });
+    groups.get(label).rows.push(row);
+  }
+  return [...groups.values()];
+}
+
 // Each shell owns its answer and timer. A late read from a previous door cannot populate this one.
 let stopPrevious;
-export function mountNeedsStrip(host, { get, hrefFor }) {
+// Open or closed, kept across page changes in this tab (closed by default).
+let rememberedOpen = false;
+export function mountNeedsStrip(host, { get, hrefFor, open: startOpen }) {
   stopPrevious?.();
-  let active = true, expanded = false, busy = false, sequence = 0;
+  let active = true, expanded = false, busy = false, sequence = 0, open = typeof startOpen === 'boolean' ? startOpen : rememberedOpen;
   let answer = null, cursor = null, failure = null;
   let retryTarget = { cursor: null, start: 0 };
   const button = (text, click, attrs = {}) => el('button', {
@@ -82,8 +114,19 @@ export function mountNeedsStrip(host, { get, hrefFor }) {
     host.dataset.state = m.state;
     host.dataset.incomplete = m.incomplete ? '1' : '0';
     if (!m.show) { host.replaceChildren(); return; }
+    host.dataset.open = open ? '1' : '0';
+    const toggle = (next) => { open = next; rememberedOpen = next; if (!next) expanded = false; paint(); host.querySelector('.needs-compact, .needs-close')?.focus(); };
+    if (!open) {
+      const c = compactLine(m);
+      host.replaceChildren(el('button', { type: 'button', class: 'needs-compact', 'aria-expanded': 'false', 'aria-label': `${c.label}${c.first ? `: ${c.first}` : ''}. Show the list`, onclick: () => toggle(true) },
+        el('span', { class: TONE_DOT[c.tone] || 'dot attn', 'aria-hidden': 'true' }),
+        el('span', { class: 'needs-compact-label', text: c.label }),
+        el('span', { class: 'needs-compact-first', text: c.first }),
+        el('span', { class: 'chev', 'aria-hidden': 'true', text: '›' })));
+      return;
+    }
     const heading = el('h2', { class: 'needs-heading', tabindex: '-1', text: m.title });
-    const rows = el('ul', { class: 'needs-rows' }, m.rows.map((r) => {
+    const renderRow = (r) => {
       const href = hrefFor ? hrefFor(r.action) : null;
       const body = [el('span', { class: TONE_DOT[r.tone] || 'dot attn', 'aria-hidden': 'true' }),
         el('span', { class: 'needs-text' }, el('span', { class: 'needs-title', text: r.title }), el('span', { class: 'needs-why', text: r.why || '' }))];
@@ -97,7 +140,12 @@ export function mountNeedsStrip(host, { get, hrefFor }) {
       return el('li', {}, href ? el('a', { class: 'needs-row', href }, ...body) : el('div', { class: 'needs-row' }, ...body),
         ...(showCard ? [el('a', { class: 'link-btn needs-card-link', href: card.href, text: card.label })] : []),
         ...(also ? [el('a', { class: 'needs-also', href: also, text: r.alsoOpens.label || 'Open the project conversation' })] : []));
-    }));
+    };
+    const rows = expanded ? el('div', { class: 'needs-groups', tabindex: '0', role: 'region', 'aria-label': 'Requests that need you' }, needGroups(m.rows).map((g) =>
+      el('section', { class: 'needs-group', 'aria-label': g.label },
+        el('h3', { class: 'needs-group-heading', text: `${g.label} · ${g.rows.length}` }),
+        el('ul', { class: 'needs-rows' }, g.rows.map(renderRow)))))
+      : el('ul', { class: 'needs-rows' }, m.rows.map(renderRow));
     const controls = [];
     if (m.more > 0 || (expanded && (m.rows.length > STRIP_ROWS || m.page?.previousCursor)) || (!expanded && m.page?.nextCursor)) {
       const text = expanded ? 'Show fewer' : m.page?.nextCursor ? 'Show more needs' : m.truncated ? `Show ${m.more} more available ${m.more === 1 ? 'item' : 'items'}` :
@@ -107,7 +155,7 @@ export function mountNeedsStrip(host, { get, hrefFor }) {
         if (!expanded && m.page?.start > 0) { void load({ cursor: null, start: 0 }); return; }
         if (!expanded) cursor = null;
         paint();
-        const firstNewRow = expanded && host.querySelector(`li:nth-child(${STRIP_ROWS + 1}) a`);
+        const firstNewRow = expanded && host.querySelector('.needs-groups');
         (firstNewRow || host.querySelector('[aria-expanded]'))?.focus();
       }, { 'aria-expanded': String(expanded) }));
     }
@@ -121,7 +169,8 @@ export function mountNeedsStrip(host, { get, hrefFor }) {
     if (failure) controls.push(button(failure === 'stale' ? 'Reload current list' : 'Try again',
       () => load(failure === 'stale' ? { cursor: null, start: 0 } : retryTarget)));
     host.replaceChildren(el('div', { class: 'needs-head' }, heading,
-      el('span', { class: 'needs-badge', 'aria-label': m.incomplete ? `${m.badge} or more` : m.badge, text: m.badge })),
+      el('span', { class: 'needs-badge', 'aria-label': m.incomplete ? `${String(m.badge).replace(/\+$/, '')} or more` : m.badge, text: m.badge }),
+      el('button', { type: 'button', class: 'needs-close link-btn', 'aria-expanded': 'true', 'aria-label': 'Hide the list', text: 'Hide', onclick: () => toggle(false) })),
       ...(m.rows.length ? [rows] : []), ...controls,
       ...(m.line ? [el('p', { class: 'needs-line', text: failure === 'stale' ? 'The needs list changed. Reload to see its current items.' : m.line })] : []));
   };
@@ -147,7 +196,7 @@ export function mountNeedsStrip(host, { get, hrefFor }) {
     const focused = document.activeElement;
     const focusInStrip = host.contains(focused);
     // Keep a live action stable during ordinary polling. A heading is only a reading position.
-    if (background && res?.ok && !failure && focusInStrip && focused.matches('a, button')) return;
+    if (background && res?.ok && !failure && focusInStrip && focused.matches('a, button, .needs-groups')) return;
     failure = res?.ok || denied ? null : res?.status === 409 ? 'stale' : 'retry';
     retryTarget = denied ? { cursor: null, start: 0 } : target;
     cursor = denied ? null : target.cursor;

@@ -7,7 +7,9 @@
  *  - a brand-new unmarked tunnel browser is refused at the hard cap during that flood;
  *  - a successful unlock sets the signed instar_pin_ok cookie;
  *  - cf-connecting-ip is the client key only over the own-name tunnel path (a forged header to a
- *    non-own Host is keyed on the socket);
+ *    non-own Host is ignored; such a loopback caller is unattributable and charged to the shared
+ *    unmarked budget only — identity-security piece 1c);
+ *  - `security.pinThrottle.enabled: false` is ignored: the throttle still applies (piece 1c);
  *  - a genuinely-local request (loopback Host) unlocks while the tunnel cap is drained (recovery);
  *  - the paired phone-app route is unaffected by the throttle.
  */
@@ -24,11 +26,11 @@ const PIN = '246810';
 const PORT = 4042;
 const TUNNEL_HOST = 'pinthrottle.trycloudflare.test';
 
-function makeConfig(stateDir: string): InstarConfig {
+function makeConfig(stateDir: string, throttleEnabled = true): InstarConfig {
   return {
     projectName: 'pin-throttle-itest', projectDir: '/tmp/pt', stateDir, port: PORT,
     authToken: AUTH, dashboardPin: PIN,
-    security: { pinThrottle: { enabled: true, globalFailureBudget: 5, coarseFailureBudget: 100, windowMs: 600000, softFailures: 3 } },
+    security: { pinThrottle: { enabled: throttleEnabled, globalFailureBudget: 5, coarseFailureBudget: 100, windowMs: 600000, softFailures: 3 } },
     sessions: { tmuxPath: '/usr/bin/tmux', claudePath: '/usr/bin/claude', projectDir: '/tmp/pt', maxSessions: 3, protectedSessions: [], completionPatterns: [] },
     scheduler: { jobsFile: '', enabled: false, maxParallelJobs: 2, quotaThresholds: { normal: 50, elevated: 70, critical: 85, shutdown: 95 } },
     users: [], messaging: [], monitoring: { quotaTracking: false, memoryMonitoring: false, healthCheckIntervalMs: 30000 },
@@ -99,16 +101,46 @@ describe('dashboard PIN throttle (b) — integration', () => {
     expect(res.body.token).toBeDefined();
   });
 
-  it('a forged cf-connecting-ip to a NON-own Host is not trusted (keyed on the socket, so forging another client fails to impersonate)', async () => {
-    // Host is not the tunnel own-name → cf-connecting-ip is ignored; all such requests key on the
-    // loopback socket, so one forged client cannot drain another distinct client's budget.
-    for (let i = 0; i < 6; i++) {
-      await request(app).post('/dashboard/unlock').set('Host', 'evil.example').set('cf-connecting-ip', `9.9.9.${i}`).send({ pin: '000000' });
-    }
-    // The socket key (loopback) is now capped; a DIFFERENT forged cf-connecting-ip on the same
-    // non-own Host is the SAME socket key → also refused (proves the header was not trusted as the key).
-    const res = await request(app).post('/dashboard/unlock').set('Host', 'evil.example').set('cf-connecting-ip', '9.9.9.200').send({ pin: PIN });
+  it('a forged cf-connecting-ip to a NON-own Host is not trusted: the caller is unattributable and charged to the shared budget only', async () => {
+    // identity-security-piece1c: Host is not the tunnel own-name → cf-connecting-ip is ignored. The
+    // socket is loopback, so the real client cannot be told: it is charged to the global unmarked
+    // budget only — never to the forged address, and never to a shared 127.0.0.1 key (one stranger
+    // must not back off everyone behind the same loopback).
+    const forged = (ip: string) => request(app).post('/dashboard/unlock').set('Host', 'evil.example').set('cf-connecting-ip', ip);
+    for (let i = 0; i < 3; i++) expect((await forged('9.9.9.1').send({ pin: '000000' })).status).toBe(403);
+    // 3 soft failures would back off a per-source key; none applies, so another unattributable caller
+    // with the right PIN still unlocks.
+    expect((await forged('9.9.9.2').send({ pin: PIN })).status).toBe(200);
+    // The forged address was never charged: the real 9.9.9.1 over the own-name tunnel unlocks.
+    expect((await tunnel('9.9.9.1').send({ pin: PIN })).status).toBe(200);
+    // The shared unmarked budget (5) still bounds unattributable guessing, and the successes above
+    // did not reset it: two more wrong PINs drain it, then even the right PIN is refused.
+    for (let i = 0; i < 2; i++) expect((await forged(`9.9.9.${10 + i}`).send({ pin: '000000' })).status).toBe(403);
+    const res = await forged('9.9.9.200').send({ pin: PIN });
     expect(res.status).toBe(429);
+  });
+
+  it('security.pinThrottle.enabled: false is ignored — the throttle still applies and the setting is reported', async () => {
+    // identity-security-piece1c: the legacy in-memory limiter (and its "a success resets the global
+    // budget") is gone; a stale off switch can never weaken PIN protection.
+    const spy = vi.spyOn(DegradationReporter.getInstance(), 'report');
+    try {
+      project.cleanup(); project = createTempProject();
+      const server = new AgentServer({ config: makeConfig(project.stateDir, false), sessionManager: mockSM as any, state: project.state, tunnel: { url: `https://${TUNNEL_HOST}` } } as any);
+      app = server.getApp();
+      expect(spy.mock.calls.some((c) => (c[0] as { feature: string }).feature === 'DashboardPin.throttleSetting')).toBe(true);
+      // Per-source backoff (3 soft failures) — the legacy limiter allowed 5 per address.
+      for (let i = 0; i < 3; i++) expect((await tunnel('198.51.100.40').send({ pin: '000000' })).status).toBe(403);
+      expect((await tunnel('198.51.100.40').send({ pin: PIN })).status).toBe(429);
+      // The hard unmarked cap (5) — the legacy limiter's global was 20.
+      await drainCap();
+      expect((await tunnel('203.0.113.250').send({ pin: PIN })).status).toBe(429);
+      // A success (here, the machine itself) never resets the shared budget.
+      expect((await local().send({ pin: PIN })).status).toBe(200);
+      expect((await tunnel('203.0.113.251').send({ pin: PIN })).status).toBe(429);
+    } finally {
+      spy.mockRestore();
+    }
   });
 
   it('a malformed instar_pin_ok cookie does not 500 the unlock route (treated as no marker)', async () => {

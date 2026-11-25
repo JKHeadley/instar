@@ -22,6 +22,7 @@
  *   POST /mobile/trust/requests/:id/approve         — approve one trust raise with a presence signature (`approve-widening`)
  *   POST /mobile/trust/device-acceptance            — a device records its own acceptance, or an accepted device approves a new one (`accept-device`)
  *   POST /mobile/trust/device-acceptance/withdraw   — withdraw a device's acceptance (a narrowing)
+ *   POST /mobile/work-board/cards                   — make a card from a message (`work-card-create`, docs/specs/phone-work-cards.md)
  *
  * The reads: the bearer or an owner phone. The writes: ONLY an active owner phone that signs the
  * request with its device key AND carries a fresh presence-key signature (Face ID / Touch ID /
@@ -31,6 +32,7 @@
  * (injected by routes.ts), so the phone can never do more than the PIN-confirmed console.
  */
 import { tapActionLine, isCardId, isRecordId, TAP_ACTIONS, CLOSE_AS, SCHEMA_MAX } from '../core/WorkCardStore.js';
+import { parsePhoneCardDraft, phoneCardDraftHash, phoneCardCreateLine, PHONE_CARD_REQUEST_ID, PHONE_CARD_SHAPE_WORDS, type PhoneCardDraft } from './phoneWorkCards.js';
 import crypto from 'node:crypto';
 import { isValidConversationKey } from '../core/ChiefOfStaffStore.js';
 import fs from 'node:fs';
@@ -127,8 +129,12 @@ export type PermissionAction =
   | { kind: 'account-add'; target: NewAccountKind }
   /** A tap on a work card (work-board-asks §4): the signed line covers the action and everything it binds to. */
   | { kind: 'work-card-tap'; target: string; tap: WorkCardTapFields }
+  /** Make a card from a message (docs/specs/phone-work-cards.md): the client request id and the draft's hash. */
+  | { kind: 'work-card-create'; target: string; proposalHash: string }
   /** Approve one trust raise (app-trust-approval §B): the request and its exact proposal hash. */
   | { kind: 'approve-widening'; target: string; proposalHash: string }
+  /** Make a group a Chief of Staff project (conversation-groups-phone §3): the draft and its exact hash. */
+  | { kind: 'group-project-confirm'; target: string; proposalHash: string }
   /**
    * A device acceptance (app-trust-approval §A): the device it is for, that device's key fingerprint
    * and the hash of the disclosure it shows. Signed by the device itself to record its own, or by an
@@ -203,7 +209,9 @@ export function actionLine(a: PermissionAction): string {
     case 'account-sign-in': return `account-sign-in ${a.target}`;
     case 'account-add': return `account-add ${a.target}`;
     case 'work-card-tap': return tapActionLine({ cardId: a.target, ...a.tap });
+    case 'work-card-create': return phoneCardCreateLine(a.target, a.proposalHash);
     case 'approve-widening': return `approve-widening ${a.target} ${a.proposalHash}`;
+    case 'group-project-confirm': return `group-project-confirm ${a.target} ${a.proposalHash}`;
     case 'accept-device': return `accept-device ${a.target} ${a.keyFingerprint} ${a.disclosureHash}`;
     case 'project-pause': return `project-pause ${a.target} ${a.value} ${a.noteHash ?? 'none'}`;
     case 'project-item-check': return `project-item-check ${a.target} ${a.checkRef} ${a.value}`;
@@ -258,8 +266,18 @@ export function buildAction(kind: unknown, target: unknown, extra: { closeAs?: u
     }
     return { ok: true, action: { kind, target, tap } };
   }
+  if (kind === 'work-card-create') {
+    if (typeof target !== 'string' || !PHONE_CARD_REQUEST_ID.test(target)) return { ok: false, error: 'bad-target' };
+    if (typeof extra.proposalHash !== 'string' || !/^[0-9a-f]{64}$/.test(extra.proposalHash)) return { ok: false, error: 'bad-proposal-hash' };
+    return { ok: true, action: { kind, target, proposalHash: extra.proposalHash } };
+  }
   if (kind === 'approve-widening') {
     if (typeof target !== 'string' || !TRUST_REQUEST_ID.test(target)) return { ok: false, error: 'bad-target' };
+    if (typeof extra.proposalHash !== 'string' || !/^[0-9a-f]{64}$/.test(extra.proposalHash)) return { ok: false, error: 'bad-proposal-hash' };
+    return { ok: true, action: { kind, target, proposalHash: extra.proposalHash } };
+  }
+  if (kind === 'group-project-confirm') {
+    if (typeof target !== 'string' || !/^gpd-[0-9a-f]{20}$/.test(target)) return { ok: false, error: 'bad-target' };
     if (typeof extra.proposalHash !== 'string' || !/^[0-9a-f]{64}$/.test(extra.proposalHash)) return { ok: false, error: 'bad-proposal-hash' };
     return { ok: true, action: { kind, target, proposalHash: extra.proposalHash } };
   }
@@ -463,7 +481,7 @@ export class ActionChallengeStore {
 
 // ── audit ─────────────────────────────────────────────────────────────────────
 
-export type PermissionAuditEvent = 'github-approval' | 'project-tap' | 'trust-approved' | 'trust-acceptance' | 'trust-withdrawn' | 'work-card-tap' | 'account-sign-in' | 'account-add' | 'team-changed' | 'challenge' | 'approved' | 'declined' | 'feature-set' | 'secret-requested' | 'secret-cancelled' | 'session-action' | 'refused';
+export type PermissionAuditEvent = 'github-approval' | 'project-tap' | 'trust-approved' | 'trust-acceptance' | 'trust-withdrawn' | 'work-card-tap' | 'work-card-created' | 'work-card-replayed' | 'group-project-confirmed' | 'account-sign-in' | 'account-add' | 'team-changed' | 'challenge' | 'approved' | 'declined' | 'feature-set' | 'secret-requested' | 'secret-cancelled' | 'session-action' | 'refused';
 export interface PermissionAuditRow { at: string; event: PermissionAuditEvent; deviceId: string | null; route?: string; personId?: string | null; action?: string; target?: string; requestKey?: string; value?: string; reason?: string; status?: number }
 
 /** Metadata-only trail of every phone permission write (never a decline text, never a secret). A record, not a gate. */
@@ -779,6 +797,23 @@ export interface MobilePermissionsDeps {
   workCardTap?: (cardId: string, tap: WorkCardTapFields) => Promise<ActionResult>;
   /** Approve a code-owner PR on GitHub (docs/specs/github-approval-from-the-app.md); absent ⇒ 503 here. */
   githubApproval?: GithubApprovalPort;
+  /**
+   * Confirm a "make this group a project" draft (conversation-groups-phone §3): Face ID over the draft's exact
+   * hash stands in for the dashboard PIN on POST /chief-of-staff/projects. The body carries the self-certifying draft back
+   * (`draft`), re-verified against the signed hash. Absent ⇒ the Chief of Staff is off here.
+   */
+  confirmGroupProject?: (draftId: string, draftHash: string, deviceId: string, req: Request, carriedDraft: unknown) => ActionResult | Promise<ActionResult>;
+  /** A refusal that makes a group-project confirm impossible on this machine right now (not the lease holder, owner changes off), checked BEFORE a Face ID is spent; null when it may proceed. */
+  groupProjectRefusal?: () => ActionResult | null;
+  /**
+   * Make a card from a message (docs/specs/phone-work-cards.md); absent ⇒ the work board is off here.
+   * `precheck` runs before the proof (board on, an owner, the source conversation known here and readable,
+   * and the write's own checks as a dry run), so a known refusal never consumes the challenge; `create` runs after it.
+   */
+  workCardCreate?: {
+    precheck: (requestId: string, draft: PhoneCardDraft, req: Request) => ActionResult | null;
+    create: (requestId: string, draft: PhoneCardDraft, draftHash: string) => Promise<ActionResult>;
+  };
   /** Approving trust raises from the app (docs/specs/app-trust-approval.md); absent ⇒ 503 here. */
   trust?: () => MobileTrustPort | null;
   now?: () => number;
@@ -969,6 +1004,11 @@ export function mountMobilePermissionsRoutes(router: Router, deps: MobilePermiss
       if (refusal) { audit.record({ event: 'refused', deviceId: g.deviceId, personId: g.personId, route: auditRoute(req), reason: errorCode(refusal.body), status: refusal.status }); res.status(refusal.status).json(refusal.body); return; }
       githubHead = b.headSha as string;
     }
+    // A group-project confirm that this machine cannot decide gets no challenge, so no Face ID is spent on it.
+    if (built.action.kind === 'group-project-confirm') {
+      const refusal = deps.confirmGroupProject ? deps.groupProjectRefusal?.() ?? null : { status: 503, body: { error: 'chief-of-staff-off' } };
+      if (refusal) { audit.record({ event: 'refused', deviceId: g.deviceId, personId: g.personId, route: auditRoute(req), reason: String((refusal.body as { error?: unknown }).error ?? 'refused'), status: refusal.status }); res.status(refusal.status).json(refusal.body); return; }
+    }
     const line = actionLine(built.action);
     const c = challenges.issue(g.deviceId, g.host, line);
     if (githubHead) { githubHeads.set(c.ref, { headSha: githubHead, expiresAt: c.expiresAt }); pruneGithubHeads(); }
@@ -1026,6 +1066,63 @@ export function mountMobilePermissionsRoutes(router: Router, deps: MobilePermiss
       r = { status: 500, body: { error: 'tap-failed' } };
     }
     finish(res, 'work-card-tap', a, g, r);
+  });
+
+  // "Make this group a project" (conversation-groups-phone §3): the owner's phone, Face ID over the draft line.
+  router.post('/mobile/work/projects/drafts/:id/confirm', async (req: Request, res: Response) => {
+    if (!deps.confirmGroupProject) { res.status(503).json({ error: 'chief-of-staff-off', detail: 'Projects need the Chief of Staff, which is not on for this agent.' }); return; }
+    const g = writeGate(req, res);
+    if (!g) return;
+    const built = buildAction('group-project-confirm', String(req.params.id), { proposalHash: rec(req.body).proposalHash });
+    if (!built.ok) { audit.record({ event: 'refused', deviceId: g.deviceId, personId: g.personId, route: auditRoute(req), reason: built.error, status: 400 }); res.status(400).json({ error: built.error }); return; }
+    const early = deps.groupProjectRefusal?.() ?? null;
+    if (early) { audit.record({ event: 'refused', deviceId: g.deviceId, personId: g.personId, route: auditRoute(req), reason: String((early.body as { error?: unknown }).error ?? 'refused'), status: early.status }); res.status(early.status).json(early.body); return; }
+    if (!proven(req, res, g, built.action)) return;
+    const a = built.action as Extract<PermissionAction, { kind: 'group-project-confirm' }>;
+    let r: ActionResult;
+    try { r = await deps.confirmGroupProject(a.target, a.proposalHash, g.deviceId, req, rec(req.body).draft); } catch (err) { // @silent-fallback-ok: not silent — reported just below, and the phone is told it did not happen
+      report('MobilePermissions.groupProject', 'the confirmed draft becomes a tracked project', 'the phone is told to try again', err);
+      r = { status: 500, body: { error: 'project-not-created', detail: 'The project was not created. Try again in a moment.' } };
+    }
+    finish(res, 'group-project-confirmed', a, g, r);
+  });
+
+  // Make a card from a message (docs/specs/phone-work-cards.md): the owner's phone, Face ID over
+  // `work-card-create <requestId> <draftHash>`. `preflight: true` answers the checks and the line to sign, writing nothing.
+  router.post('/mobile/work-board/cards', async (req: Request, res: Response) => {
+    const create = deps.workCardCreate;
+    if (!create) { res.status(503).json({ error: 'work-board-disabled', message: 'The work board is not switched on for this agent.' }); return; }
+    const g = writeGate(req, res);
+    if (!g) return;
+    const b = rec(req.body);
+    const refuseHere = (status: number, body: Rec): void => {
+      audit.record({ event: 'refused', deviceId: g.deviceId, personId: g.personId, route: auditRoute(req), reason: String(body.error ?? 'refused'), status });
+      res.status(status).json(body);
+    };
+    const parsed = parsePhoneCardDraft(b);
+    if (!parsed.ok) { refuseHere(400, { error: parsed.error, message: PHONE_CARD_SHAPE_WORDS[parsed.error] ?? 'The card could not be read. Update the app and try again.' }); return; }
+    const draftHash = phoneCardDraftHash(parsed.draft);
+    const built = buildAction('work-card-create', parsed.requestId, { proposalHash: draftHash });
+    if (!built.ok) { refuseHere(400, { error: built.error }); return; }
+    let pre: ActionResult | null;
+    try { pre = create.precheck(parsed.requestId, parsed.draft, req); } catch (err) { // @silent-fallback-ok: not silent — reported just below, and the phone is told to try again
+      report('MobilePermissions.workCardCreate', 'the card is checked before Face ID', 'the phone is told to try again', err);
+      pre = { status: 503, body: { error: 'precheck-failed', message: 'This card could not be checked just now. Try again in a moment.' } };
+    }
+    if (pre) { refuseHere(pre.status, rec(pre.body)); return; }
+    const a = built.action as Extract<PermissionAction, { kind: 'work-card-create' }>;
+    if (b.preflight === true) {
+      // The draft as the server rebuilt it: the app compares it field by field with what it shows, then signs this hash.
+      res.json({ draft: parsed.draft, draftHash, confirm: { action: 'work-card-create', target: a.target, proposalHash: draftHash, actionLine: actionLine(a) } });
+      return;
+    }
+    if (!proven(req, res, g, a)) return;
+    let r: ActionResult;
+    try { r = await create.create(parsed.requestId, parsed.draft, draftHash); } catch (err) { // @silent-fallback-ok: not silent — reported just below, and the phone is told the create failed
+      report('MobilePermissions.workCardCreate', 'the card is written', 'the phone is told to try again', err);
+      r = { status: 500, body: { error: 'create-failed', message: 'The card could not be made. Try again.' } };
+    }
+    finish(res, rec(r.body).replayed === true ? 'work-card-replayed' : 'work-card-created', a, g, r);
   });
 
   // The owner's project taps (docs/specs/work-door-project-rows.md §3.3–3.5): Face ID over the exact project line.
@@ -1298,6 +1395,7 @@ export function mountMobilePermissionsRoutes(router: Router, deps: MobilePermiss
       actions: actionsState(req, deps),
       holder: port.holdsLease(),
       requests: store.deviceListing(),
+      approvalDelivery: await store.approvalDelivery(),
       // The calling device's own key fingerprint, so the app signs exactly what the server will check.
       thisDeviceKey: self ? (port.devices.get(self)?.keyFingerprint ?? null) : null,
       approvals: {
