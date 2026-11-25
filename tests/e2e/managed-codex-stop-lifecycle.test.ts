@@ -7,6 +7,10 @@ import { expect, it, vi } from 'vitest';
 import { createTempProject } from '../helpers/setup.js';
 import { AgentServer } from '../../src/server/AgentServer.js';
 import { StateManager } from '../../src/core/StateManager.js';
+import { InitiativeTracker } from '../../src/core/InitiativeTracker.js';
+import { ProjectRoundRunner } from '../../src/core/ProjectRoundRunner.js';
+import { SafeGitExecutor } from '../../src/core/SafeGitExecutor.js';
+import { dispatchManagedCodexProject } from '../../src/core/ManagedCodexProjectDispatch.js';
 import { verifyManagedCodexStop } from '../../src/core/ManagedCodexStopVerifier.js';
 import { ManagedCodexStopStore } from '../../src/core/ManagedCodexStopStore.js';
 import type { InstarConfig } from '../../src/core/types.js';
@@ -85,32 +89,63 @@ it.skipIf(!codex).each([true, false])('drives an enrolled worker through package
       '[model_providers.fixture]', 'name = "Fixture"', `base_url = "http://127.0.0.1:${provider.port}/v1"`,
       'wire_api = "responses"', 'requires_openai_auth = false', 'supports_websockets = false',
     ].join('\n'));
-    const launchId = 'fixture-launch-incarnation';
-    expect(store.reserve('fixture-managed-action', {
-      sessionId: launchId, machineId: 'fixture-one-member', ownerEpoch: 1, remaining: 1,
-    })).toBe(true);
-    const child = spawn(codex!, ['exec', '--json', '--trust', '--skip-git-repo-check',
-      '--dangerously-bypass-hook-trust', 'Return CANARY_OK without calling tools.'], {
-      cwd: projectDir,
-      env: { PATH: process.env.PATH, HOME: home, CODEX_HOME: home,
-        INSTAR_SESSION_ID: launchId, INSTAR_HOOK_TMUX_SESSION: 'fixture-worker', INSTAR_MANAGED_CODEX_STOP: '1' },
-      stdio: ['ignore', 'pipe', 'pipe'],
+    SafeGitExecutor.run(['init', '-q'], { cwd: projectDir, operation: 'managed-codex-stop-lifecycle-fixture' });
+    const tracker = new InitiativeTracker(stateDir);
+    const runner = new ProjectRoundRunner({ tracker, stateDir, machineId: 'fixture-one-member' });
+    await tracker.create({
+      id: 'managed-project', title: 'Managed test project', description: 'Disposable lifecycle',
+      phases: [{ id: 'work', name: 'Work' }], kind: 'project', targetRepoPath: projectDir,
+      ownerMachineId: 'fixture-one-member', telegramTopicId: '147616',
+      rounds: [{ name: 'Round', itemIds: ['managed-action'], status: 'pending' }],
     });
-    const exited = once(child, 'close');
+    await tracker.create({
+      id: 'managed-action', title: 'Managed test action', description: 'Disposable approved action',
+      phases: [{ id: 'work', name: 'Work' }], parentProjectId: 'managed-project', pipelineStage: 'approved',
+    });
+    await runner.recordAck('managed-project', 0);
+    const readAdmission = () => {
+      const candidate = runner.managedRoundCandidate('managed-project', 0);
+      return candidate && { ...candidate, ownerEpoch: 1, remaining: 1 };
+    };
+    const candidate = readAdmission();
+    expect(candidate).toBeDefined();
+    let child: ReturnType<typeof spawn> | undefined;
+    let exited: Promise<unknown[]> | undefined;
     let stderr = '';
-    child.stdout.resume();
-    child.stderr.on('data', chunk => { stderr += chunk; });
     try {
-      await vi.waitFor(() => { workerId = fs.readFileSync(path.join(stateDir, 'native-session'), 'utf8'); }, { timeout: 4000 });
-      expect(store.bindNative(launchId, workerId)).toBe(true);
-      fs.writeFileSync(path.join(stateDir, 'managed-ready'), 'ready');
-      const [code] = await exited;
+      const admitted = await dispatchManagedCodexProject(candidate!.workKey, {
+        // Admit a test worker in both cases. The server switch separately
+        // controls whether its authenticated Stop gets a directive.
+        enabled: () => true,
+        store,
+        readAdmission,
+        launch: async (_admission, launchId) => {
+          child = spawn(codex!, ['exec', '--json', '--trust', '--skip-git-repo-check',
+            '--dangerously-bypass-hook-trust', 'Return CANARY_OK without calling tools.'], {
+            cwd: projectDir,
+            env: { PATH: process.env.PATH, HOME: home, CODEX_HOME: home,
+              INSTAR_SESSION_ID: launchId, INSTAR_HOOK_TMUX_SESSION: 'fixture-worker', INSTAR_MANAGED_CODEX_STOP: '1' },
+            stdio: ['ignore', 'pipe', 'pipe'],
+          });
+          exited = once(child, 'close');
+          child.stdout?.resume();
+          child.stderr?.on('data', chunk => { stderr += chunk; });
+          await vi.waitFor(() => { workerId = fs.readFileSync(path.join(stateDir, 'native-session'), 'utf8'); }, { timeout: 4000 });
+          return { launchId, nativeSessionId: workerId };
+        },
+        verifyLaunch: (_admission, launch) => launch.nativeSessionId === workerId && child?.exitCode === null,
+        releaseLaunch: () => fs.writeFileSync(path.join(stateDir, 'managed-ready'), 'ready'),
+        cancelLaunch: () => { child?.kill('SIGKILL'); },
+      });
+      expect(admitted?.nativeSessionId).toBe(workerId);
+      expect(exited).toBeDefined();
+      const [code] = await exited!;
       expect(code, stderr).toBe(0);
       expect(provider.failed()).toBe(false);
       expect(provider.models).toHaveLength(enabled ? 2 : 1);
       expect(verifiedCallbacks).toBe(enabled ? 2 : 1);
     } finally {
-      if (child.exitCode === null && child.signalCode === null) {
+      if (child && child.exitCode === null && child.signalCode === null) {
         child.kill('SIGKILL');
         await exited;
       }

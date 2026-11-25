@@ -1,0 +1,20 @@
+{
+  "version": 2,
+  "slug": "managed-codex-round-candidate",
+  "sessionId": "017c26ed-5596-4576-9c20-20af13e4c1f8",
+  "timestamp": "2026-11-25T12:24:26.037Z",
+  "artifactPath": "upgrades/side-effects/managed-codex-round-candidate.md",
+  "artifactSha256": "f84ec9cab55d683b8a3c9b28c022c9617210ee6a9c7af36c4d0be172be3caefc",
+  "coveredFiles": [
+    "src/core/ProjectRoundRunner.ts",
+    "tests/e2e/managed-codex-stop-lifecycle.test.ts",
+    "tests/unit/ProjectRoundRunner.test.ts"
+  ],
+  "phase": "complete",
+  "tier": 1,
+  "tierReasoning": "Adds an eligibility method used in tests only. No live caller, project state rewrite or enabled switch.",
+  "eli16Path": "upgrades/managed-codex-round-candidate.eli16.md",
+  "sideEffectsPath": "upgrades/side-effects/managed-codex-round-candidate.md",
+  "secondPass": "not-required",
+  "reviewerConcurred": null
+}

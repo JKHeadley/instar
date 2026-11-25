@@ -75,6 +75,35 @@ async function createChild(tracker: InitiativeTracker, id: string, parentId: str
   });
 }
 
+describe('ProjectRoundRunner managed candidate', () => {
+  it('requires explicit owner, approval, acknowledgment and one active child', async () => {
+    const stateDir = makeStateDir();
+    const targetRepoPath = makeGitRepo();
+    try {
+      const tracker = new InitiativeTracker(stateDir);
+      const runner = new ProjectRoundRunner({ tracker, stateDir, machineId: 'machine' });
+      await createProject(tracker, 'project', {
+        targetRepoPath, ownerMachineId: 'machine',
+        firstLaunchAckAt: new Date().toISOString(), lastAckedRoundIndex: 0,
+        rounds: [{ name: 'round', itemIds: ['child'], status: 'pending' }],
+      });
+      await tracker.update('project', { telegramTopicId: '123' });
+      await createChild(tracker, 'child', 'project', 'outline');
+      expect(runner.managedRoundCandidate('project', 0)).toBeUndefined();
+      await tracker.update('child', { pipelineStage: 'approved' });
+      expect(runner.managedRoundCandidate('project', 0)).toMatchObject({
+        workKey: JSON.stringify(['project', 0, 'child']), topicId: '123', machineId: 'machine',
+      });
+      await tracker.update('child', { needsUser: true });
+      expect(runner.managedRoundCandidate('project', 0)).toBeUndefined();
+    } finally {
+      for (const dir of [stateDir, targetRepoPath]) {
+        SafeFsExecutor.safeRmSync(dir, { recursive: true, force: true, operation: 'managed-round-candidate-fixture' });
+      }
+    }
+  });
+});
+
 describe('ProjectRoundRunner.preflight', () => {
   let stateDir: string;
   let targetRepo: string;
