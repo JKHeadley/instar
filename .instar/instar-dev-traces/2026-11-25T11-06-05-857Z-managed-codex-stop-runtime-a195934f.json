@@ -1,0 +1,27 @@
+{
+  "version": 2,
+  "slug": "managed-codex-stop-runtime",
+  "sessionId": "017c26ed-5596-4576-9c20-20af13e4c1f8",
+  "timestamp": "2026-11-25T11:06:05.857Z",
+  "artifactPath": "upgrades/side-effects/managed-codex-stop-runtime.md",
+  "artifactSha256": "c4da70a63babdf905fbda9eb12f97af6f3dcfddc877c69da2d0753fa3ac2bf08",
+  "coveredFiles": [
+    ".claude/skills/autonomous/hooks/autonomous-stop-hook.sh",
+    "src/config/ConfigDefaults.ts",
+    "src/core/ManagedCodexStopRuntime.ts",
+    "src/core/ManagedCodexStopStore.ts",
+    "src/core/devGatedFeatures.ts",
+    "src/core/types.ts",
+    "src/server/AgentServer.ts",
+    "src/server/routes.ts",
+    "tests/e2e/managed-codex-stop-lifecycle.test.ts",
+    "tests/integration/autonomous-sessions-api.test.ts"
+  ],
+  "phase": "complete",
+  "tier": 1,
+  "tierReasoning": "This dark composition has no live enrollment or verifier and defaults off. The installed real hook sees managed callbacks only when a test launcher explicitly tags them.",
+  "eli16Path": "upgrades/managed-codex-stop-runtime.eli16.md",
+  "sideEffectsPath": "upgrades/side-effects/managed-codex-stop-runtime.md",
+  "secondPass": "not-required",
+  "reviewerConcurred": null
+}

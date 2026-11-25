@@ -2022,6 +2022,9 @@ const SHARED_DEFAULTS: Record<string, unknown> = {
     // Bounded Codex continuation and its autonomous preparation carrier both
     // ship dark. applyDefaults backfills these leaves without overriding an
     // operator's explicit rollout choice.
+    managedCodexContinuation: {
+      enabled: false,
+    },
     codexTaskContinuation: {
       enabled: false,
       preparationCarrierEnabled: false,

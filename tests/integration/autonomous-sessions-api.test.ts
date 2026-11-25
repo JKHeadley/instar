@@ -115,6 +115,23 @@ describe('Multi-session autonomy API (integration)', () => {
     expect(await response.json()).toMatchObject({ continuationCount: 0 });
   });
 
+  it('refuses a tagged managed Stop when no managed verifier recognizes it', async () => {
+    const topicId = '9950';
+    const sessionId = 'unverified-managed-fixture';
+    const headers = { 'Content-Type': 'application/json' };
+    const started = await fetch(baseUrl + '/continuation/start', {
+      method: 'POST', headers, body: JSON.stringify({ topicId, sessionId, tasks: ['ordinary ledger task'] }),
+    });
+    expect(started.ok).toBe(true);
+    const decision = await fetch(baseUrl + '/continuation/decide', {
+      method: 'POST', headers, body: JSON.stringify({ topicId, sessionId, managedStop: true }),
+    });
+    expect(decision.ok).toBe(true);
+    expect(await decision.json()).toEqual({ decision: 'allow' });
+    const status = await fetch(baseUrl + '/continuation/9950/status');
+    expect(await status.json()).toMatchObject({ continuationCount: 0 });
+  });
+
   it('GET /autonomous/sessions lists active per-topic jobs', async () => {
     writeJob(project.stateDir, '9984');
     writeJob(project.stateDir, '12143');

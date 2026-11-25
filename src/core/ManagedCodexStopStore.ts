@@ -46,6 +46,10 @@ export class ManagedCodexStopStore {
     return this.change(sessionId, claim => claim.actionOpen ? { ...claim, actionOpen: false } : claim);
   }
 
+  hasEnrollment(sessionId: string): boolean {
+    return this.db.prepare('SELECT 1 FROM managed_codex_work_claims WHERE session_id = ?').get(sessionId) !== undefined;
+  }
+
   decide(callback: ManagedStopCallback) {
     return this.db.transaction(() => {
       const claim = this.read(callback.sessionId);

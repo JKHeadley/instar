@@ -5791,6 +5791,9 @@ export interface InstarConfig {
     codexLoopDriver?: {
       enabled?: boolean;
     };
+    /** Dark managed-project Stop test path. Does not enroll existing workers. */
+    managedCodexContinuation?: { enabled?: boolean };
+
     /**
      * Bounded continuation of ordinary Codex interactive work from an explicit
      * per-topic task ledger. Separate from autonomous jobs; ships dark.

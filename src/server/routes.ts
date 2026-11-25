@@ -9943,8 +9943,8 @@ export function createRoutes(ctx: RouteContext): Router {
       turnId: typeof body.turnId === 'string' ? body.turnId : undefined,
       lastAssistantMessage: typeof body.lastAssistantMessage === 'string' ? body.lastAssistantMessage : undefined,
     });
-    if (managedDecision) {
-      res.json(managedDecision);
+    if (managedDecision || body.managedStop === true) {
+      res.json(managedDecision ?? { decision: 'allow' });
       return;
     }
     const store = continuationStore();
