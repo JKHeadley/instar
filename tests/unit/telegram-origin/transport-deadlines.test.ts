@@ -187,10 +187,15 @@ describe('Telegram network deadlines after origin preparation', () => {
     expect((await h.runtime.store.listOrigins()).records[0].children[0].state).toBe('outcome-unknown');
     expect(await h.runtime.recoverHeld()).toEqual({ processed: 0, recovered: 0 });
   });
-  it.each([0, -1, NaN, Infinity, 1.5])('rejects invalid network duration %s before origin mutation', async networkTimeoutMs => {
+  it('rejects every invalid network duration before origin mutation', async () => {
     const h = await harness();
-    await expect(h.send({ networkTimeoutMs })).rejects.toThrow('telegram-network-timeout-invalid');
-    expect(h.network).not.toHaveBeenCalled(); expect((await h.runtime.store.listOrigins()).records).toEqual([]);
+    // A rejected duration leaves no durable state, so these checks can share the runtime.
+    for (const networkTimeoutMs of [0, -1, NaN, Infinity, 1.5]) {
+      await expect(h.send({ networkTimeoutMs }), `duration: ${networkTimeoutMs}`)
+        .rejects.toThrow('telegram-network-timeout-invalid');
+      expect(h.network).not.toHaveBeenCalled();
+      expect((await h.runtime.store.listOrigins()).records).toEqual([]);
+    }
   });
   it('starts a fresh deadline for every split child', async () => {
     const h = await harness(), clocks: AbortController[] = [];
