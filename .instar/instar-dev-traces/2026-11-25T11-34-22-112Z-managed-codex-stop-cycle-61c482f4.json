@@ -1,0 +1,19 @@
+{
+  "version": 2,
+  "slug": "managed-codex-stop-cycle",
+  "sessionId": "017c26ed-5596-4576-9c20-20af13e4c1f8",
+  "timestamp": "2026-11-25T11:34:22.112Z",
+  "artifactPath": "upgrades/side-effects/managed-codex-stop-cycle.md",
+  "artifactSha256": "84cb2061a93fce224e5f68cbbb5fe5ac4a6d401384f317ad5b3f22411103928c",
+  "coveredFiles": [
+    "src/core/ManagedCodexStopCycle.ts",
+    "tests/unit/managed-codex-stop-cycle.test.ts"
+  ],
+  "phase": "complete",
+  "tier": 1,
+  "tierReasoning": "Unwired pure parser and tests, with no runtime effects.",
+  "eli16Path": "upgrades/managed-codex-stop-cycle.eli16.md",
+  "sideEffectsPath": "upgrades/side-effects/managed-codex-stop-cycle.md",
+  "secondPass": "not-required",
+  "reviewerConcurred": null
+}
