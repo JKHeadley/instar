@@ -1,0 +1,25 @@
+{
+  "version": 2,
+  "slug": "hosted-relay-runtime-admission",
+  "sessionId": "41652017-0805-405d-bb4e-2a975fb349ce",
+  "timestamp": "2026-11-25T22:42:08.750Z",
+  "artifactPath": "upgrades/side-effects/hosted-relay-runtime-admission.md",
+  "artifactSha256": "a89df6defd97780b011b1782d46cb14f6e74c99f83610da405d0fd4dc2bd3c09",
+  "specPath": "docs/specs/hosted-relay.md",
+  "coveredFiles": [
+    "src/hostedRelay/reconnect.ts",
+    "src/hostedRelay/runtimeAdmission.ts",
+    "tests/integration/hosted-relay-disposable.test.ts",
+    "upgrades/side-effects/hosted-relay-runtime-admission.md"
+  ],
+  "phase": "complete",
+  "tier": 2,
+  "tierReasoning": "Dormant relay runtime admission with no default callers",
+  "secondPass": "true",
+  "reviewerConcurred": true,
+  "classClosure": {
+    "defectClass": "unbounded-self-action",
+    "closure": "n/a",
+    "reason": "Explicitly started lifecycle with bounded reconnect attempts and a single in-flight issue slot."
+  }
+}
