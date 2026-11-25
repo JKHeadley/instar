@@ -1,0 +1,28 @@
+{
+  "version": 2,
+  "slug": "signed-local-history-intake",
+  "sessionId": "41652017-0805-405d-bb4e-2a975fb349ce",
+  "timestamp": "2026-11-25T07:13:09.328Z",
+  "artifactPath": "upgrades/side-effects/signed-local-history-intake.md",
+  "artifactSha256": "d1812905ce9ea33bf95d907dc517a86352f9cda7c99c5115bc23c86d9ee6f5d9",
+  "specPath": "docs/specs/local-history-native-contract.md",
+  "coveredFiles": [
+    "docs/specs/local-history-native-contract.eli16.md",
+    "docs/specs/local-history-native-contract.md",
+    "src/server/mobilePairingRoutes.ts",
+    "src/server/signedLocalHistoryIntake.ts",
+    "tests/integration/signed-local-history-intake.test.ts",
+    "upgrades/next/signed-local-history-intake.md",
+    "upgrades/side-effects/signed-local-history-intake.md"
+  ],
+  "phase": "complete",
+  "tier": 2,
+  "tierReasoning": "The dormant router introduces native signed-path admission and bounded exchange custody.",
+  "secondPass": "true",
+  "reviewerConcurred": true,
+  "classClosure": {
+    "defectClass": "unbounded-self-action",
+    "closure": "n/a",
+    "reason": "The unmounted router accepts one request per lease and never retries or dispatches without a service."
+  }
+}
