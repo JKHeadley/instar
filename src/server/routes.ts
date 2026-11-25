@@ -31681,8 +31681,8 @@ document.getElementById('mcpForm').addEventListener('submit', async function (e)
       const target = JSON.parse(fs.readFileSync(regPath, 'utf-8')).topicToSession?.[String(topicId)] ?? null;
       if (target && ctx.sessionManager.isSessionAlive(target)) {
         // The hourly slot is spent only when the line is actually delivered.
-        keylessTopicNoticeAt.set(topicId, now);
         ctx.sessionManager.injectPasteNotification(target, `<system-reminder>[secret-drop-notice] ${KEYLESS_RECEIPT_NOTICE}</system-reminder>`);
+        keylessTopicNoticeAt.set(topicId, now);
       }
     } catch (err) {
       // @silent-fallback-ok — the answer itself also carries the notice for current helpers
@@ -31959,8 +31959,15 @@ document.getElementById('mcpForm').addEventListener('submit', async function (e)
 
       if (targetSession && ctx.sessionManager.isSessionAlive(targetSession)) {
         // Inject into existing session as a system reminder
-        ctx.sessionManager.injectPasteNotification(targetSession,
-          `<system-reminder>${systemMsg}</system-reminder>`);
+        try {
+          ctx.sessionManager.injectPasteNotification(targetSession,
+            `<system-reminder>${systemMsg}</system-reminder>`);
+        } catch {
+          // @silent-fallback-ok: the secret is already stored successfully.
+          // A refused best-effort notification must not make the user submit
+          // it again. Do not log the notification, token or field values.
+          console.error('[secret-drop] submitted secret notification was not delivered');
+        }
       } else {
         // No live session — spawn one to handle the secret receipt
         let topicName = `topic-${topicId}`;
@@ -33090,7 +33097,13 @@ document.getElementById('mcpForm').addEventListener('submit', async function (e)
             setTimeout(() => {
               const hint = `<system-reminder>The user's previous message may be truncated (${truncation.reason}). ` +
                 `If their content appears incomplete, suggest they paste longer content into this session's message box on the dashboard's Sessions page: ${dzUrl}</system-reminder>`;
-              ctx.sessionManager.injectPasteNotification(targetSession, hint);
+              try {
+                ctx.sessionManager.injectPasteNotification(targetSession, hint);
+              } catch {
+                // @silent-fallback-ok: the owner message is already accepted;
+                // this delayed advisory must not throw outside route handling.
+                console.error('[telegram-forward] truncation hint was not delivered');
+              }
             }, 1000);
           }
 
