@@ -1,0 +1,19 @@
+{
+  "version": 2,
+  "slug": "direct-telegram-send-evidence",
+  "sessionId": "b3d2cf8a-9b5d-468b-a50b-70ebf11e9e5c",
+  "timestamp": "2026-11-25T14:51:03.382Z",
+  "artifactPath": "upgrades/side-effects/direct-telegram-send-evidence.md",
+  "artifactSha256": "272d9144b64e654f1075051f8c684a9d6bb5a2a21ed85fa63b81871cf892938b",
+  "coveredFiles": [
+    "src/threadline/directTelegramSendEvidence.ts",
+    "tests/unit/direct-telegram-send-evidence.test.ts"
+  ],
+  "phase": "complete",
+  "tier": 1,
+  "tierReasoning": "Dormant fixture parser with no production caller, authority, migration, or send.",
+  "eli16Path": "docs/specs/direct-telegram-send-evidence.eli16.md",
+  "sideEffectsPath": "upgrades/side-effects/direct-telegram-send-evidence.md",
+  "secondPass": "true",
+  "reviewerConcurred": true
+}
