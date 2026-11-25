@@ -1,0 +1,24 @@
+{
+  "version": 2,
+  "slug": "hosted-relay-agent-tls-listener",
+  "sessionId": "41652017-0805-405d-bb4e-2a975fb349ce",
+  "timestamp": "2026-11-25T23:31:01.793Z",
+  "artifactPath": "upgrades/side-effects/hosted-relay-agent-tls-listener.md",
+  "artifactSha256": "3a8d36761269e789c7c66b6b4fd60050d0dac9cf536415280f7dbbcfbc38b57c",
+  "specPath": "docs/specs/hosted-relay.md",
+  "coveredFiles": [
+    "src/hostedRelay/agentTlsListener.ts",
+    "tests/integration/hosted-relay-agent-tls-listener.test.ts",
+    "upgrades/side-effects/hosted-relay-agent-tls-listener.md"
+  ],
+  "phase": "complete",
+  "tier": 2,
+  "tierReasoning": "Dormant bounded loopback TLS destination with exact pin",
+  "secondPass": "true",
+  "reviewerConcurred": true,
+  "classClosure": {
+    "defectClass": "unbounded-self-action",
+    "closure": "n/a",
+    "reason": "Explicit local listener with capped connections and a caller-owned abort signal."
+  }
+}

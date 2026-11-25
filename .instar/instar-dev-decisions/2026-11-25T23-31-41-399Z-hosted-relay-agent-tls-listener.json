@@ -1,0 +1,28 @@
+{
+  "ts": "2026-11-25T23:31:41.399Z",
+  "slug": "hosted-relay-agent-tls-listener",
+  "suggestedTier": 2,
+  "declaredTier": 2,
+  "riskFloor": 2,
+  "riskFloorReasons": [
+    "safety-invariant proximity: src/hostedRelay/agentTlsListener.ts matches relay / delivery path"
+  ],
+  "belowFloor": false,
+  "files": 1,
+  "loc": 68,
+  "scope": {
+    "basis": "staged-in-scope-paths-including-deleted",
+    "files": [
+      "src/hostedRelay/agentTlsListener.ts"
+    ],
+    "addedLines": 68,
+    "deletedLines": 0
+  },
+  "causalAutopsy": null,
+  "classClosure": {
+    "defectClass": "unbounded-self-action",
+    "closure": "n/a",
+    "reason": "Explicit local listener with capped connections and a caller-owned abort signal."
+  },
+  "verdict": "pass"
+}
