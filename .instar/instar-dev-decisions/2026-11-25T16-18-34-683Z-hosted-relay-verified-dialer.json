@@ -1,0 +1,28 @@
+{
+  "ts": "2026-11-25T16:18:34.683Z",
+  "slug": "hosted-relay-verified-dialer",
+  "suggestedTier": 2,
+  "declaredTier": 2,
+  "riskFloor": 2,
+  "riskFloorReasons": [
+    "safety-invariant proximity: src/hostedRelay/verifiedDialer.ts matches relay / delivery path"
+  ],
+  "belowFloor": false,
+  "files": 1,
+  "loc": 83,
+  "scope": {
+    "basis": "staged-in-scope-paths-including-deleted",
+    "files": [
+      "src/hostedRelay/verifiedDialer.ts"
+    ],
+    "addedLines": 83,
+    "deletedLines": 0
+  },
+  "causalAutopsy": null,
+  "classClosure": {
+    "defectClass": "unbounded-self-action",
+    "closure": "n/a",
+    "reason": "Each explicit dial targets one configured origin with a fixed timeout."
+  },
+  "verdict": "pass"
+}
