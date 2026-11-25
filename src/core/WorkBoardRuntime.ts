@@ -9,6 +9,8 @@
  * exercised whole in tests with fakes and wired once in production.
  */
 
+import { sameProof, type WorkBoardWriterProof } from './WorkBoardApprovalWriter.js';
+import type { WorkBoardSlipStore } from './WorkBoardSlipStore.js';
 import {
   WorkBoardService, resolveWorkBoardSettings, lineIdFor, transcriptLineFor, noteRefusalFor, JOURNAL_BUCKET_CAPACITY,
   type WorkBoardSettings, type CardView, type WorkPrincipal, type Refusal,
@@ -66,6 +68,10 @@ export interface WorkBoardCreationEvidenceSnapshot {
 
 export interface WorkBoardRuntimeSeams {
   machineId: string;
+  permissionSlips?: {
+    store: Pick<WorkBoardSlipStore, 'get' | 'readItemResults'>;
+    currentWriter: () => WorkBoardWriterProof | null;
+  };
   enabled: () => boolean;
   rawSettings: () => unknown;
   saveSettings: (patch: Record<string, unknown>) => boolean;
@@ -114,6 +120,30 @@ export class WorkBoardRuntime {
   private creationEvidenceReady = false;
   private creationEvidenceItems: ReadonlyArray<WorkBoardCreationEvidence> = Object.freeze([]);
   readonly holderStats = { sweeps: 0, cardsSwept: 0, notesDrained: 0, notesCoalesced: 0, holdsLifted: 0, quietRepickups: 0, lastPassAt: null as number | null, lastSweep: null as Record<string, unknown> | null };
+
+  readPermissionSlip(id: string) {
+    const port = this.seams.permissionSlips;
+    const writer = port?.currentWriter();
+    if (!port || !writer || !this.started || !this.seams.enabled() || writer.ownerPersonKey !== this.seams.ownerPersonKey()) {
+      return { status: 503, body: { error: 'work-board-slips-unavailable' } };
+    }
+    const slip = port.store.get(id);
+    if (!slip || !sameProof(writer, slip.proposal.writer)) return { status: 404, body: { error: 'not-found' } };
+    const results = slip.decisionId === null ? null : port.store.readItemResults({
+      slipId: id, writer, digest: slip.digest, decisionId: slip.decisionId,
+    });
+    if (slip.decisionId !== null && !results) return { status: 503, body: { error: 'work-board-slip-receipt-unavailable' } };
+    if (!sameProof(writer, port.currentWriter())) return { status: 503, body: { error: 'work-board-slips-unavailable' } };
+    return {
+      status: 200,
+      body: {
+        schemaVersion: 1, slipId: id, disclosureDigest: slip.digest, expiresAt: new Date(slip.expiresAt).toISOString(),
+        state: slip.decisionId !== null ? 'signed' : this.now() >= slip.expiresAt ? 'expired' : 'pending',
+        items: slip.proposal.items.map(({ version, disclosure }) => ({ cardId: version.cardId, version, disclosure, action: 'approve' })),
+        receipt: results === null ? null : { items: results },
+      },
+    };
+  }
 
   constructor(private readonly seams: WorkBoardRuntimeSeams) {
     this.now = seams.now ?? Date.now;

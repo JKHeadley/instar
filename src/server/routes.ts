@@ -43654,6 +43654,8 @@ document.getElementById('mcpForm').addEventListener('submit', async function (e)
       };
     }
     mountMobilePermissionsRoutes(router, {
+      readWorkBoardSlip: (id) => ctx.workBoard?.()?.readPermissionSlip(id)
+        ?? { status: 503, body: { error: 'work-board-slips-unavailable' } },
       trust: () => trustDevicePort,
       selfName: () => (ctx.meshSelfId ? verifiedEntityName(ctx.meshSelfId, ctx.machinePoolRegistry?.getCapacity(ctx.meshSelfId)?.nickname) : null),
       // Start a fresh account sign-in (account-sign-in-face-id): start-cell's own core after its PIN check.

@@ -31,6 +31,7 @@
  * in for the dashboard PIN the console asks for, and the action itself runs the console's own code
  * (injected by routes.ts), so the phone can never do more than the PIN-confirmed console.
  */
+import { isWorkBoardSlipId } from '../core/workBoardSlipPresence.js';
 import { tapActionLine, isCardId, isRecordId, TAP_ACTIONS, CLOSE_AS, SCHEMA_MAX } from '../core/WorkCardStore.js';
 import { parsePhoneCardDraft, phoneCardDraftHash, phoneCardCreateLine, PHONE_CARD_REQUEST_ID, PHONE_CARD_SHAPE_WORDS, type PhoneCardDraft } from './phoneWorkCards.js';
 import crypto from 'node:crypto';
@@ -740,6 +741,7 @@ export function summarizePeerFeatures(peers: Array<PeerSlips | PeerUnreached>, o
 export interface ActionResult { status: number; body: unknown }
 
 export interface MobilePermissionsDeps {
+  readWorkBoardSlip?: (id: string) => ActionResult;
   pairing: () => MobilePairingService | null;
   config: () => InstarConfig;
   stateDir: string;
@@ -872,6 +874,16 @@ export function mountMobilePermissionsRoutes(router: Router, deps: MobilePermiss
       return { approvals: { state: 'unavailable', rows: [] }, slips: { state: 'unavailable', mandates: [], invalidIds: [] } };
     }
   };
+
+  router.get('/mobile/work-board/slips/:id', (req: Request, res: Response) => {
+    res.set('Cache-Control', 'no-store');
+    if (!ownerOrBearer(req, () => false)) { res.status(403).json({ error: 'owner-phone-required' }); return; }
+    const id = req.params.id;
+    if (!isWorkBoardSlipId(id)) { res.status(404).json({ error: 'not-found' }); return; }
+    const result = deps.readWorkBoardSlip?.(id);
+    if (!result) { res.status(503).json({ error: 'work-board-slips-unavailable' }); return; }
+    res.status(result.status).json(result.body);
+  });
 
   router.get('/mobile/permissions/slips', async (req: Request, res: Response) => {
     if (!readGuard(req, res)) return;

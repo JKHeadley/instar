@@ -1,3 +1,4 @@
+import { WORK_BOARD_SLIP_ID_PATTERN } from '../core/workBoardSlipPresence.js';
 import { telegramTopicKnown } from '../messaging/telegramTopicKnown.js';
 import { maskInbound } from '../messaging/inboundCredentialMask.js';
 import { credentialScrubEnabledReader } from '../core/outputCredentialScrub.js';
@@ -3012,6 +3013,7 @@ export const DEVICE_ALLOWLIST: DeviceRule[] = (() => {
     { method: 'POST', re: /^\/mobile\/work-board\/cards\/wc_[0-9a-f]{16}\/tap$/, statuses: active, body: 'json', ownerOnly: true, ownBucket: 30, bucket: 'work-card-taps' },
     // Work cards from the owner's phone (docs/specs/phone-work-cards.md): one card (the board read's bucket), and
     // "Make a card" from a message (Face ID over `work-card-create`, the taps' bucket). Not in TEAM_ROUTE_TIERS: owner only.
+    { method: 'GET', re: new RegExp(`^/mobile/work-board/slips/${WORK_BOARD_SLIP_ID_PATTERN}$`), statuses: active, body: 'none', ownerOnly: true, ownBucket: 30, bucket: 'work-board-reads' },
     { method: 'GET', re: /^\/mobile\/work-board\/cards\/wc_[0-9a-f]{16}$/, statuses: active, body: 'none', ownerOnly: true, ownBucket: 30, bucket: 'work-board-reads' },
     { method: 'POST', re: /^\/mobile\/work-board\/cards$/, statuses: active, body: 'json', ownerOnly: true, ownBucket: 30, bucket: 'work-card-taps' },
     // Remote Desktop with Face ID and the PIN page (mobile-owner-presence-pin §2.1–2.4): owner phone only,

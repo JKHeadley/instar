@@ -10,6 +10,8 @@
  * The bearer reaches the create's write gate and is refused for having no device signature (the route is
  * mounted and wired: an unwired dependency answers 503 work-board-disabled).
  */
+import Database from 'better-sqlite3';
+import { WorkBoardSlipStore } from '../../src/core/WorkBoardSlipStore.js';
 import { describe, it, expect, afterAll } from 'vitest';
 import request from 'supertest';
 import fs from 'node:fs';
@@ -24,7 +26,7 @@ import { ReplicatedKindRegistry } from '../../src/core/ReplicatedRecordEnvelope.
 import { ReplicatedRecordEmitter } from '../../src/core/ReplicatedRecordEmitter.js';
 import { ReplicatedPeerStreamReader } from '../../src/core/ReplicatedPeerStreamReader.js';
 import { HybridLogicalClock } from '../../src/core/HybridLogicalClock.js';
-import { WORK_CARD_KIND_REGISTRATION, WORK_CARD_RECORD_KIND, WORK_BOARD_STORE_KEY, type UnionEntry } from '../../src/core/WorkCardStore.js';
+import { WORK_CARD_KIND_REGISTRATION, WORK_CARD_RECORD_KIND, WORK_BOARD_STORE_KEY, canonicalJson, sha256Hex, type UnionEntry } from '../../src/core/WorkCardStore.js';
 import { WorkBoardRuntime } from '../../src/core/WorkBoardRuntime.js';
 import type { MobilePairingService } from '../../src/server/mobilePairingRoutes.js';
 import { permissionPresenceMessage } from '../../src/server/mobilePermissionsRoutes.js';
@@ -59,7 +61,7 @@ afterAll(() => { for (const d of tmpDirs) SafeFsExecutor.safeRmSync(d, { recursi
 
 interface Rig { runtime: WorkBoardRuntime; journal: CoherenceJournal; lines: Array<{ key: string; id: string; text: string }>; briefs: string[]; conversations: Set<string>; removed: string[] }
 
-function mkRuntime(stateDir: string, opts: { rotateBytes?: number } = {}): Rig {
+function mkRuntime(stateDir: string, opts: { rotateBytes?: number; permissionSlips?: ConstructorParameters<typeof WorkBoardRuntime>[0]['permissionSlips'] } = {}): Rig {
   const reg = new ReplicatedKindRegistry(); reg.register(WORK_CARD_KIND_REGISTRATION);
   const journal = new CoherenceJournal({
     stateDir, machineId: 'm1', flushIntervalMs: 1_000_000,
@@ -71,7 +73,7 @@ function mkRuntime(stateDir: string, opts: { rotateBytes?: number } = {}): Rig {
   const streams = new ReplicatedPeerStreamReader({ stateDir, registry: reg, selfMachineId: 'm1', autoRebuild: false });
   const lines: Rig['lines'] = []; const briefs: string[] = []; const conversations = new Set<string>(); const removed: string[] = [];
   const runtime = new WorkBoardRuntime({
-    machineId: 'm1', enabled: () => true, rawSettings: () => ({}), saveSettings: () => true,
+    machineId: 'm1', permissionSlips: opts.permissionSlips, enabled: () => true, rawSettings: () => ({}), saveSettings: () => true,
     emit: (k, b) => { const r = emitter.emit(WORK_BOARD_STORE_KEY, k, b); journal.flush(); return { outcome: r.outcome, ...(r.seq !== undefined ? { seq: r.seq } : {}), ...(r.hlc ? { hlc: r.hlc } : {}) }; },
     awaitDurable: async () => { journal.flush(); },
     loadUnion: () => {
@@ -110,6 +112,53 @@ function send(app: Parameters<typeof request>[0], phone: Phone, method: 'POST' |
 }
 
 describe('Work cards from the owner phone E2E (feature is alive)', () => {
+  it('reads an enrolled slip and its exact receipt through the signed owner-device route', async () => {
+    const { config, stateDir } = mkConfig();
+    const db = new Database(':memory:');
+    const writer = { epoch: 'epoch1', ownerGeneration: 'owner1', ownerPersonKey: 'owner', writerIncarnation: 'i1' };
+    let active = true;
+    const store = new WorkBoardSlipStore(db);
+    const rig = mkRuntime(stateDir, { permissionSlips: { store, currentWriter: () => active ? writer : null } });
+    rig.runtime.start();
+    const server = new AgentServer({ config, sessionManager: sm(), state: new StateManager(stateDir), workBoard: () => rig.runtime });
+    await server.start();
+    const app = server.getApp();
+    try {
+      const pairing = (server as unknown as { mobilePairing: MobilePairingService }).mobilePairing;
+      const dev = makeDevice();
+      const created = pairing.devices.createPending({ deviceName: 'iPhone', label: null, publicKey: dev.publicKey, host: HOST });
+      if (!created.ok) throw new Error('pair');
+      pairing.devices.applyConfirm(created.device.id, { ok: true });
+      const phone: Phone = { dev, presence: makeDevice(), id: created.device.id };
+      const cardId = 'wc_6248a51921c41ca0';
+      const disclosure = { title: 'Review the exact card' };
+      const version = {
+        cardId, cardRevision: 'card1', policyRevision: 'policy1', visibleTextHash: sha256Hex(canonicalJson(disclosure)),
+        materialHash: 'a'.repeat(64), titleHash: 'b'.repeat(64),
+      };
+      const slip = store.issue({ sourceId: 'private-source', writer, items: [{ version, disclosure }] })!;
+      const route = `/mobile/work-board/slips/${slip.id}`;
+      const bearer = await request(app).get(route).set(auth());
+      expect(bearer.status).toBe(403);
+      const pending = await send(app, phone, 'GET', route);
+      expect(pending.status, JSON.stringify(pending.body)).toBe(200);
+      expect(pending.headers['cache-control']).toBe('no-store');
+      expect(pending.body).toMatchObject({
+        schemaVersion: 1, slipId: slip.id, disclosureDigest: slip.digest, state: 'pending',
+        receipt: null, items: [{ cardId, version, disclosure, action: 'approve' }],
+      });
+      expect(JSON.stringify(pending.body)).not.toContain('private-source');
+      expect(store.consumeVerified(slip.id, slip.digest, writer, 'decision1')).not.toBeNull();
+      const signed = await send(app, phone, 'GET', route);
+      expect(signed.status).toBe(200);
+      expect(signed.body).toMatchObject({ state: 'signed', receipt: { items: [{ cardId, status: 'pending' }] } });
+      active = false;
+      const unavailable = await send(app, phone, 'GET', route);
+      expect(unavailable.status).toBe(503);
+      expect(unavailable.body.items).toBeUndefined();
+    } finally { await server.stop(); rig.runtime.stop?.(); db.close(); }
+  });
+
   it('the owner phone opens one card and makes a card from a message through the real server', async () => {
     const { config, stateDir } = mkConfig();
     const rig = mkRuntime(stateDir);
