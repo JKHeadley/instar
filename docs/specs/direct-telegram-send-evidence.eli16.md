@@ -15,3 +15,5 @@ The test version now checks stored evidence and reserves the exact delivery in t
 The storage test now covers an edit arriving before the original message. In either order, an edit makes the reference unusable. A late copy of the original cannot restore it. The production poller still needs to authenticate edit updates before it can invalidate a record.
 
 An edit can change the request into ordinary chat or replace its text with media. The test helper uses the original chat, topic and message coordinates to find the approval record even in those cases. If an authenticated edit has too little information to locate its record, live integration must handle that uncertainty before accepting another direct approval.
+
+The polling test now calls the same helper intended for future integration. That helper returns only after it has recorded a qualifying request or applied an edit. If it cannot apply an edit, the poller must stop and leave the update unacknowledged. The test retries the update and verifies the original request stays unusable afterward.

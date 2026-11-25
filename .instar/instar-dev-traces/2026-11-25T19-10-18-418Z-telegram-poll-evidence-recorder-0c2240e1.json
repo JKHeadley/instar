@@ -1,0 +1,19 @@
+{
+  "version": 2,
+  "slug": "telegram-poll-evidence-recorder",
+  "sessionId": "b3d2cf8a-9b5d-468b-a50b-70ebf11e9e5c",
+  "timestamp": "2026-11-25T19:10:18.418Z",
+  "artifactPath": "upgrades/side-effects/telegram-poll-evidence-recorder.md",
+  "artifactSha256": "4c96880d016c3b4379506c8e8fbd366715cc95c05b2324964da8cc063dacaae8",
+  "coveredFiles": [
+    "src/threadline/recordTelegramSendPollingEvidence.ts",
+    "tests/unit/telegram-send-evidence-polling.test.ts"
+  ],
+  "phase": "complete",
+  "tier": 1,
+  "tierReasoning": "Dormant helper used only in isolated tests. No registered subscription, live caller or send.",
+  "eli16Path": "docs/specs/direct-telegram-send-evidence.eli16.md",
+  "sideEffectsPath": "upgrades/side-effects/telegram-poll-evidence-recorder.md",
+  "secondPass": "true",
+  "reviewerConcurred": true
+}

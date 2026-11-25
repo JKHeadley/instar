@@ -1,9 +1,7 @@
 import Database from 'better-sqlite3';
 import { expect, it, vi } from 'vitest';
-import {
-  editedTelegramMessageReference,
-  exactDirectTelegramPollingSend,
-} from '../../src/threadline/directTelegramSendEvidence.js';
+import { exactDirectTelegramPollingSend } from '../../src/threadline/directTelegramSendEvidence.js';
+import { recordTelegramSendPollingEvidence } from '../../src/threadline/recordTelegramSendPollingEvidence.js';
 import { TelegramSendEvidenceStore } from '../../src/threadline/TelegramSendEvidenceStore.js';
 
 const botId = 248;
@@ -19,20 +17,12 @@ const proof = exactDirectTelegramPollingSend(original, botId, ownerId)!;
 const reference = proof.ownerMessageRef;
 const digest = proof.ownerEvidenceDigest;
 
-type Update = { id: number; original: unknown } | { id: number; edit: unknown };
+type Update = { id: number; message: unknown } | { id: number; edited_message: unknown };
 
-// Models the disposable direct poller. The live adapter is deliberately absent.
+// The fixture holds the cursor until the evidence helper returns.
 function processBatch(updates: Update[], store: TelegramSendEvidenceStore, acknowledge: (id: number) => void) {
   for (const update of updates) {
-    if ('edit' in update) {
-      const edited = editedTelegramMessageReference(update.edit, botId);
-      if (!edited || !store.invalidate(edited)) throw new Error('edit coverage unavailable');
-    } else {
-      const captured = exactDirectTelegramPollingSend(update.original, botId, ownerId);
-      if (captured && store.capture(captured.ownerMessageRef, captured.ownerEvidenceDigest) === 'refused') {
-        throw new Error('capture unavailable');
-      }
-    }
+    recordTelegramSendPollingEvidence(update, store, botId, ownerId);
     acknowledge(update.id);
   }
 }
@@ -42,7 +32,7 @@ it('commits the capture and edit before acknowledging either update', () => {
   try {
     const store = new TelegramSendEvidenceStore(db);
     const acknowledged: Array<[number, boolean]> = [];
-    processBatch([{ id: 1, original }, { id: 2, edit }], store, id => {
+    processBatch([{ id: 1, message: original }, { id: 2, edited_message: edit }], store, id => {
       acknowledged.push([id, store.matches(reference, digest)]);
     });
     expect(acknowledged).toEqual([[1, true], [2, false]]);
@@ -56,8 +46,8 @@ it('stops at an unrecorded edit and can replay it before acknowledging later upd
   try {
     const store = new TelegramSendEvidenceStore(db);
     const acknowledge = vi.fn();
-    const pending = [{ id: 2, edit }, { id: 3, original }];
-    processBatch([{ id: 1, original }], store, acknowledge);
+    const pending = [{ id: 2, edited_message: edit }, { id: 3, message: original }];
+    processBatch([{ id: 1, message: original }], store, acknowledge);
     const failOnce = vi.spyOn(store, 'invalidate').mockReturnValueOnce(false);
     expect(() => processBatch(pending, store, acknowledge)).toThrow('edit coverage unavailable');
     expect(acknowledge.mock.calls).toEqual([[1]]);
@@ -67,6 +57,19 @@ it('stops at an unrecorded edit and can replay it before acknowledging later upd
     processBatch(pending, store, acknowledge);
     expect(acknowledge.mock.calls).toEqual([[1], [2], [3]]);
     expect(store.matches(reference, digest)).toBe(false);
+  } finally {
+    db.close();
+  }
+});
+
+it('does not acknowledge an edit with no usable coordinates', () => {
+  const db = new Database(':memory:');
+  try {
+    const store = new TelegramSendEvidenceStore(db);
+    const acknowledge = vi.fn();
+    expect(() => processBatch([{ id: 1, edited_message: undefined }], store, acknowledge))
+      .toThrow('edit coverage unavailable');
+    expect(acknowledge).not.toHaveBeenCalled();
   } finally {
     db.close();
   }
