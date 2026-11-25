@@ -28,6 +28,7 @@ function fixture() {
     withSnapshot: (_scope, operation) => operation({
       entries, authority: {
         holder, headSequence: entries.length,
+        headRecordKey: entries.at(-1)?.data.recordKey as string | undefined ?? null,
         verify: (text, value) => verify(null, Buffer.from(text), keys.publicKey, Buffer.from(value, 'base64')),
       },
       sign: signText,

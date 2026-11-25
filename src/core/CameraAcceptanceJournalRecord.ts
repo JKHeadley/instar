@@ -63,6 +63,7 @@ export interface CameraJournalScope {
 export interface CameraJournalAuthority {
   /** Independently attested head for this exact scope. */
   readonly headSequence: number;
+  readonly headRecordKey: string | null;
   readonly holder: string;
   verify(signingText: string, signature: string): boolean;
 }
@@ -78,7 +79,8 @@ export function readCameraJournal(
   authority: CameraJournalAuthority | null,
   entries: readonly CameraJournalEntry[],
 ): CameraJournalRecord[] | null {
-  if (!authority || !Number.isSafeInteger(authority.headSequence) || authority.headSequence < 0) return null;
+  if (!authority || !Number.isSafeInteger(authority.headSequence) || authority.headSequence < 0
+    || (authority.headSequence === 0) !== (authority.headRecordKey === null)) return null;
 
   const bySequence = new Map<number, CameraJournalRecord>();
   for (const { origin, data } of entries) {
@@ -102,7 +104,11 @@ export function readCameraJournal(
     }
 
     const previous = bySequence.get(record.journalSequence);
-    if (previous && cameraJournalSigningText(scope.conversationKey, previous) !== signingText) return null;
+    if (previous) {
+      if (cameraJournalSigningText(scope.conversationKey, previous) !== signingText) return null;
+      if (record.journalSequence === authority.headSequence
+        && cameraJournalRecordKey(scope.conversationKey, previous) === authority.headRecordKey) continue;
+    }
     bySequence.set(record.journalSequence, record);
   }
 
@@ -113,5 +119,7 @@ export function readCameraJournal(
     if (!record) return null;
     ordered.push(record);
   }
+  const terminal = ordered.at(-1);
+  if (terminal && cameraJournalRecordKey(scope.conversationKey, terminal) !== authority.headRecordKey) return null;
   return ordered;
 }

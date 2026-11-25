@@ -55,6 +55,7 @@ describe('Camera journal authority and coverage', () => {
   const scope = { conversationKey: conversation, binding, milestone: record.milestone, leaseEpoch: 2 };
   const authority = {
     holder, headSequence: 2,
+    get headRecordKey() { return signed(2, 'second').data.recordKey as string; },
     verify: (text: string, signature: string) => verify(null, Buffer.from(text), keys.publicKey, Buffer.from(signature, 'base64')),
   };
 
@@ -81,6 +82,26 @@ describe('Camera journal authority and coverage', () => {
     expect(readCameraJournal(scope, authority, [first, signed(3, 'gap')])).toBeNull();
     expect(readCameraJournal(scope, authority, [first, second, signed(2, 'conflict')])).toBeNull();
     expect(readCameraJournal({ ...scope, leaseEpoch: 3 }, authority, [first, second])).toBeNull();
+  });
+
+  it('holds when a signed terminal body differs from the attested head at the same sequence', () => {
+    const first = signed(1, 'first');
+    const alternate = signed(2, 'alternate');
+    expect(readCameraJournal(scope, authority, [first, alternate])).toBeNull();
+    expect(readCameraJournal(scope, { ...authority, headSequence: 0 }, [])).toBeNull();
+    expect(readCameraJournal(scope, { ...authority, headSequence: 0, headRecordKey: null }, [])).toEqual([]);
+  });
+
+  it('keeps the attested terminal representation regardless of duplicate arrival order', () => {
+    const first = signed(1, 'first');
+    const second = signed(2, 'second');
+    const decoded = parseCameraJournalRecord(second.data.cameraAcceptance)!;
+    const alternate = { ...decoded, signature: decoded.signature.replace(/=+$/, '') };
+    const duplicate = { origin: holder, data: buildCameraAcceptancePut(conversation, alternate)(binding, holder)! };
+    expect(duplicate.data.recordKey).not.toBe(second.data.recordKey);
+    for (const entries of [[first, second, duplicate], [first, duplicate, second]]) {
+      expect(readCameraJournal(scope, authority, entries)?.at(-1)).toEqual(decoded);
+    }
   });
 
   it('holds if the signature verification provider throws', () => {
