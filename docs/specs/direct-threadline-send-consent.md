@@ -31,3 +31,5 @@ Bind the claim to the verified accepted sender generation and a current serving 
 - Verified owner message, paired receiver and exact payload — invariant, based on existing accepted identity and durable origin records.
 - Semantic ambiguity — judgment within an existing authenticated request. If a meaning cannot be safely narrowed to this send, keep the ordinary confirmation.
 - Durable one-use effect — invariant, based on the shared send reservation and exact transport receipt.
+
+The dormant SQLite reservation uses the canonical owner message reference as the uniqueness key within the agent and owner. Changing the epoch or proposing a new delivery ID cannot spend that same message again. Only a newly committed reservation permits a transport attempt. An exact retry can consult the original transport receipt after expiry. Before mounting, use a crash-durable database owned by the current serving writer, and require successor access to the same reservation history.

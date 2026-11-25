@@ -1,0 +1,19 @@
+{
+  "version": 2,
+  "slug": "direct-request-send-claims",
+  "sessionId": "b3d2cf8a-9b5d-468b-a50b-70ebf11e9e5c",
+  "timestamp": "2026-11-25T13:59:00.190Z",
+  "artifactPath": "upgrades/side-effects/direct-request-send-claims.md",
+  "artifactSha256": "b0077da5879ac9969001435060db43e82c633c18fb7020f7b897e1a807df1442",
+  "coveredFiles": [
+    "src/threadline/DirectRequestSendClaims.ts",
+    "tests/unit/direct-request-send-binding.test.ts"
+  ],
+  "phase": "complete",
+  "tier": 1,
+  "tierReasoning": "Dormant module used only by isolated tests. No installed migration or live entry point.",
+  "eli16Path": "docs/specs/direct-threadline-send-claims.eli16.md",
+  "sideEffectsPath": "upgrades/side-effects/direct-request-send-claims.md",
+  "secondPass": "true",
+  "reviewerConcurred": true
+}

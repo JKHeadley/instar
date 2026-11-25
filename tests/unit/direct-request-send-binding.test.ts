@@ -1,3 +1,9 @@
+import Database from 'better-sqlite3';
+import { mkdtempSync } from 'node:fs';
+import { tmpdir } from 'node:os';
+import { join } from 'node:path';
+import { SafeFsExecutor } from '../../src/core/SafeFsExecutor.js';
+import { DirectRequestSendClaims } from '../../src/threadline/DirectRequestSendClaims.js';
 import { describe, expect, it } from 'vitest';
 import { directRequestSendBinding, type ExactDirectRequestSend } from '../../src/threadline/directRequestSendBinding.js';
 
@@ -30,4 +36,38 @@ describe('dark direct-request send binding', () => {
     expect(directRequestSendBinding({ ...input, message: '\ud800' })).toBeNull();
     expect(directRequestSendBinding({ ...input, message: '�' })).not.toBeNull();
   });
+});
+
+it('reserves one attempt across independent connections and process reopen', () => {
+  const dir = mkdtempSync(join(tmpdir(), 'direct-send-'));
+  const filename = join(dir, 'claims.sqlite');
+  const first = new Database(filename);
+  const second = new Database(filename);
+  try {
+    const writer = new DirectRequestSendClaims(first);
+    const other = new DirectRequestSendClaims(second);
+    const beforeExpiry = input.expiresAt - 1;
+    first.transaction(() => {
+      expect(writer.reserve(input, beforeExpiry)).toEqual({ status: 'refused' });
+    })();
+    expect(writer.reserve(input, beforeExpiry)).toEqual({ status: 'reserved', deliveryId: input.deliveryId });
+    expect(other.reserve({ ...input, deliveryId: 'new-id' }, beforeExpiry)).toEqual({ status: 'refused' });
+    expect(other.reserve({ ...input, authorityEpoch: 'epoch-3' }, beforeExpiry)).toEqual({ status: 'refused' });
+    expect(other.reserve({ ...input, ownerMessageRef: 'another-message' }, beforeExpiry)).toEqual({ status: 'refused' });
+    expect(other.reserve({ ...input, ownerMessageRef: 'another-message', deliveryId: 'new-id' }, input.expiresAt))
+      .toEqual({ status: 'refused' });
+    first.close();
+    second.close();
+    const reopened = new Database(filename);
+    try {
+      expect(new DirectRequestSendClaims(reopened).reserve(input, input.expiresAt + 1))
+        .toEqual({ status: 'already-reserved', deliveryId: input.deliveryId });
+    } finally {
+      reopened.close();
+    }
+  } finally {
+    if (first.open) first.close();
+    if (second.open) second.close();
+    SafeFsExecutor.safeRmSync(dir, { recursive: true, force: true, operation: 'direct-request send test cleanup' });
+  }
 });
