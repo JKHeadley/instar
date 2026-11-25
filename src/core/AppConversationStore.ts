@@ -1454,20 +1454,83 @@ export class AppConversationStore {
   }
 
   browseMessages(conversationKey: string, before: string | null | undefined, limit = 100, options?: { excludeForwarded?: boolean }): { messages: BrowsedMessage[]; nextBefore: string | null } {
+    return this.browseIndexedMessages(conversationKey, before, limit, options?.excludeForwarded ?? false);
+  }
+
+  /** A page from the creation custodian, or null when there is no complete removal proof. */
+  browseRemovalAwareMessages(conversationKey: string, before: string | null | undefined, limit = 100): { messages: BrowsedMessage[]; nextBefore: string | null } | null {
+    return this.withRemovalHistory(conversationKey, (custodian) =>
+      this.browseIndexedMessages(conversationKey, before, limit, false, custodian));
+  }
+
+  /** Exact candidates after the caller's row ACL, or null when removal proof is incomplete. */
+  exactRemovalAwareMessageCandidates(conversationKey: string, target: string, kind: 'event' | 'message' | 'legacy',
+    mayRead: (row: BrowsedMessage) => boolean): BrowsedMessage[] | null {
+    const key = canonicalConversationKey(conversationKey);
+    return this.withRemovalHistory(conversationKey, (custodian) => {
+      const removed = this.db.prepare('SELECT 1 FROM message_removals WHERE canonicalKey = ? AND targetEventId = ? AND targetMessageId = ? AND machineId = ? LIMIT 1');
+      const candidates = this.exactMessageCandidates(conversationKey, target, kind).filter(mayRead);
+      const visible = candidates.filter((row) => !removed.get(key, row.eventId, row.messageId, custodian));
+      // A legacy identifier may name two occurrences. Removal cannot retarget it to the survivor.
+      return kind === 'legacy' && visible.length !== candidates.length ? [] : visible;
+    });
+  }
+
+  private withRemovalHistory<T>(conversationKey: string, read: (custodian: string) => T): T | null {
+    const key = canonicalConversationKey(conversationKey);
+    try {
+      const version = this.db.pragma('data_version', { simple: true });
+      const result = this.db.transaction(() => {
+        const custodian = this.getCreationRecord(conversationKey)?.machineId;
+        if (!custodian || custodian === 'local' || custodian !== this.opts.machineId()) return null;
+        const file = this.db.prepare('SELECT fileName, indexedBytes FROM files WHERE canonicalKey = ?')
+          .get(key) as { fileName: string; indexedBytes: number } | undefined;
+        if (!file) return null;
+        const filePath = path.join(this.dir, file.fileName);
+        const journal = fs.statSync(filePath);
+        if (journal.size !== file.indexedBytes) return null;
+        const writes = this.db.prepare('SELECT total_changes() AS count').get();
+        const proof = JSON.stringify(['history', key, file.fileName, file.indexedBytes, journal.mtimeMs, journal.ctimeMs, version, writes]);
+        if (this.removalIndexProof !== proof) {
+          if (!this.verifyRemovalIndex(conversationKey, filePath, true)) return null;
+          this.removalIndexProof = proof;
+        }
+        const page = read(custodian);
+        const current = fs.statSync(filePath);
+        return current.size === journal.size && current.mtimeMs === journal.mtimeMs && current.ctimeMs === journal.ctimeMs ? page : null;
+      })();
+      return this.db.pragma('data_version', { simple: true }) === version ? result : null;
+    } catch {
+      return null; // @silent-fallback-ok — a removal-aware read has no unfiltered fallback
+    }
+  }
+
+  private browseIndexedMessages(conversationKey: string, before: string | null | undefined, limit: number, excludeForwarded: boolean,
+    removalCustodian?: string): { messages: BrowsedMessage[]; nextBefore: string | null } {
     const canonicalKey = canonicalConversationKey(conversationKey);
     const n = Math.max(1, Math.min(100, Math.floor(limit)));
-    let rows: Array<{ eventId: string; at: string }>;
-    const eligible = options?.excludeForwarded ? ' AND forwarded = 0' : '';
+    let rows: Array<{ eventId: string; at: string; messageId: string }>;
+    const eligible = (excludeForwarded ? ' AND forwarded = 0' : '') + (removalCustodian ? `
+      AND NOT EXISTS (SELECT 1 FROM message_removals r WHERE r.canonicalKey = messages.canonicalKey
+        AND r.targetEventId = messages.eventId AND r.targetMessageId = messages.messageId AND r.machineId = ?)
+    ` : '');
+    const scope = removalCustodian ? [canonicalKey, removalCustodian] : [canonicalKey];
     const b = typeof before === 'string' ? before.split(',') : null;
     if (b && b.length === 2 && b[0] && b[1]) {
-      rows = this.db.prepare(`SELECT eventId, at FROM messages WHERE canonicalKey = ?${eligible} AND (at < ? OR (at = ? AND eventId < ?)) ORDER BY at DESC, eventId DESC LIMIT ?`).all(canonicalKey, b[0], b[0], b[1], n + 1) as typeof rows;
+      rows = this.db.prepare(`SELECT eventId, at, messageId FROM messages WHERE canonicalKey = ?${eligible} AND (at < ? OR (at = ? AND eventId < ?)) ORDER BY at DESC, eventId DESC LIMIT ?`).all(...scope, b[0], b[0], b[1], n + 1) as typeof rows;
     } else {
-      rows = this.db.prepare(`SELECT eventId, at FROM messages WHERE canonicalKey = ?${eligible} ORDER BY at DESC, eventId DESC LIMIT ?`).all(canonicalKey, n + 1) as typeof rows;
+      rows = this.db.prepare(`SELECT eventId, at, messageId FROM messages WHERE canonicalKey = ?${eligible} ORDER BY at DESC, eventId DESC LIMIT ?`).all(...scope, n + 1) as typeof rows;
     }
     const more = rows.length > n;
     const page = rows.slice(0, n);
     const out: BrowsedMessage[] = [];
     for (const r of page) {
+      if (removalCustodian) {
+        const row = this.readIndexedMessage(canonicalKey, r);
+        if (row.messageId !== r.messageId) throw new Error('indexed message identity unavailable');
+        out.push(row);
+        continue;
+      }
       const loc = this.db.prepare('SELECT byteOffset, byteLength FROM events WHERE canonicalKey = ? AND eventId = ?').get(canonicalKey, r.eventId) as { byteOffset: number; byteLength: number } | undefined;
       const ev = loc ? this.readEventAt(canonicalKey, loc.byteOffset, loc.byteLength) : null;
       if (!ev || (ev.kind !== 'message' && ev.kind !== 'media-message')) continue;
@@ -1478,9 +1541,12 @@ export class AppConversationStore {
     return { messages: out, nextBefore: more && oldest ? `${oldest.at},${oldest.eventId}` : null };
   }
 
-  private verifyRemovalIndex(conversationKey: string, filePath: string): boolean {
+  private verifyRemovalIndex(conversationKey: string, filePath: string, verifyMessageBindings = false): boolean {
     const key = canonicalConversationKey(conversationKey);
     const event = this.db.prepare('SELECT kind FROM events WHERE canonicalKey = ? AND eventId = ?');
+    const message = verifyMessageBindings
+      ? this.db.prepare('SELECT eventId, at FROM messages WHERE canonicalKey = ? AND messageId = ?')
+      : null;
     const removal = this.db.prepare('SELECT targetEventId, targetMessageId, machineId FROM message_removals WHERE canonicalKey = ? AND eventId = ?');
     const counts = this.db.prepare(`
       SELECT (SELECT COUNT(*) FROM events WHERE canonicalKey = ? AND kind = 'message-removed') AS journalIndex,
@@ -1500,6 +1566,10 @@ export class AppConversationStore {
           const raw = validateAppEvent(JSON.parse(bytes.subarray(start, end).toString('utf8')));
           if (!raw || canonicalConversationKey(raw.conversationKey) !== key
             || (event.get(key, raw.eventId) as { kind: string } | undefined)?.kind !== raw.kind) return false;
+          if (message && (raw.kind === 'message' || raw.kind === 'media-message')) {
+            const row = message.get(key, raw.messageId) as { eventId: string; at: string } | undefined;
+            if (row?.eventId !== raw.eventId || row.at !== raw.at) return false;
+          }
           if (raw.kind === 'message-removed') {
             seen.add(raw.eventId);
             const row = removal.get(key, raw.eventId) as { targetEventId: string; targetMessageId: string; machineId: string } | undefined;

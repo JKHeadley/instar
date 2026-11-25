@@ -7,3 +7,5 @@ If a request is denied or the app cannot confirm the outcome, the row stays visi
 The first server work records and checks the removal in storage. It does not switch on Delete in the app. Before enabling the action, we will verify the chat history, search, previews, quotes and attachment access on both the current machine and its peers. The original storage files still follow the existing retention policy. This action does not recall files already downloaded or copies sent to another chat.
 
 The server now checks a signed request against the recorded chat owner, the machine serving that chat, and the exact selected message. The initial version requires a verifiable owner identity. This check is available inside the server, and the app still has no Delete control or route that changes history.
+
+The server’s internal history reader can now leave out a confirmed removal before it fills a page. That means the next visible message can still fill the page. It also refuses an exact lookup when the removal evidence is incomplete. This reader is still being tested and is not used by the app yet.

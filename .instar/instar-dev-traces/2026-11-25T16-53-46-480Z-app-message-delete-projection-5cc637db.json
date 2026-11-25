@@ -1,0 +1,22 @@
+{
+  "version": 2,
+  "slug": "app-message-delete-projection",
+  "sessionId": "633bd330-201e-4dc8-8fd9-72b89116167e",
+  "timestamp": "2026-11-25T16:53:46.480Z",
+  "artifactPath": "upgrades/side-effects/app-message-delete-projection.md",
+  "artifactSha256": "7484f174ddb1d14650559dd1fbd465039e3e1e9f9deda3e17ab9d80bc7ab1611",
+  "specPath": "docs/specs/conversation-message-delete.md",
+  "coveredFiles": [
+    "docs/specs/conversation-message-delete.eli16.md",
+    "docs/specs/conversation-message-delete.md",
+    "docs/specs/reports/conversation-message-delete-convergence.md",
+    "src/core/AppConversationStore.ts",
+    "tests/unit/app-conversation-store.test.ts",
+    "upgrades/side-effects/app-message-delete-projection.md"
+  ],
+  "phase": "complete",
+  "tier": 2,
+  "tierReasoning": "Exact visibility and history filtering on verified removal facts",
+  "secondPass": "true",
+  "reviewerConcurred": true
+}

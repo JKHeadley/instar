@@ -4,12 +4,12 @@ slug: conversation-message-delete
 author: echo
 status: approved
 approved: true
-approved-by: echo under standing build approval for local storage and private fresh admission only
+approved-by: echo under standing build approval for local storage, private fresh admission and unmounted history projection only
 parent-principle: Operator-Surface Quality
 tier: 2
-review-convergence: "2026-11-25T16:04:06.000Z"
-review-iterations: 13
-review-completed-at: "2026-11-25T16:04:06.000Z"
+review-convergence: "2026-11-25T16:53:37.753Z"
+review-iterations: 15
+review-completed-at: "2026-11-25T16:53:37.753Z"
 review-report: "docs/specs/reports/conversation-message-delete-convergence.md"
 cross-model-review: "cross-model-review: codex-cli:gpt-6.2-astra"
 ---
@@ -104,3 +104,5 @@ Use an explicit removal-aware read on the creation custodian. Read the page or e
 Exact context starts with the authorized anchor. If a known removal matches that anchor, return the same unavailable result as a missing or unreadable target. The earlier-message query uses the visible window, but the server must also recheck the anchor and every returned row against current removal evidence immediately before sending a response after asynchronous work. A changed snapshot must be retried or refused as a whole. A legacy identifier that can name multiple rows must remain ambiguous until the ordinary access check resolves it.
 
 Use one fixture across browse and exact context: insert an older visible row, a visible anchor and a newest removed row. Fetch a page of one row and require the visible anchor, with the older row available on the next page. Direct exact lookup of the newest row must be unavailable. Add a second fact with the wrong target message ID and verify that it cannot hide the older row. Then add a valid removal of the anchor while the context response is paused, and require the response to withhold it. Exercise a replica with no removal evidence and prove it cannot act as the authoritative read source.
+
+The local projection checkpoint provides store methods for custodian-only browse and exact candidates. It changes no app route. The cold proof compares the journal checkpoint and removal and message identity bindings. It makes no claim to detect same-length content edits that preserve those bindings. App journal retention and origin verification retain their existing responsibilities. Before interactive use, bound proof cost or move it off the request path and measure a realistic large-history and multi-conversation workload. An ordinary app read keeps its existing projection until the full visibility boundary is ready.

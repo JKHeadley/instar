@@ -37,6 +37,59 @@ const dl = (id: string, state: 'delivered' | 'refused' | 'intercepted' | 'unknow
 const fileOf = (dir: string) => path.join(dir, 'app-conversations', `${crypto.createHash('sha256').update(`app:${KEY}`).digest('hex')}.jsonl`);
 
 describe('AppConversationStore', () => {
+  it('filters exact removals before visible pagination and preserves raw recovery reads', () => {
+    const { store } = mk();
+    store.append(created());
+    for (const [id, second] of [['older', 1], ['anchor', 2], ['removed', 3]] as const) store.append(msg(id, second));
+    const fact = { kind: 'message-removed' as const, conversationKey: KEY, machineId: 'm1', at: at(5) };
+    store.append({ ...fact, eventId: 'correct-removal', targetEventId: 'ev-removed', targetMessageId: 'msg-removed' });
+    store.append({ ...fact, eventId: 'wrong-binding', targetEventId: 'ev-older', targetMessageId: 'msg-anchor' });
+    const first = store.browseRemovalAwareMessages(KEY, null, 1);
+    expect(first?.messages.map((row) => row.eventId)).toEqual(['ev-anchor']);
+    expect(first?.nextBefore).toBe(`${at(2)},ev-anchor`);
+    expect(store.browseRemovalAwareMessages(KEY, first?.nextBefore, 1)?.messages.map((row) => row.eventId)).toEqual(['ev-older']);
+    expect(store.exactRemovalAwareMessageCandidates(KEY, 'ev-removed', 'event', () => true)).toEqual([]);
+    expect(store.exactRemovalAwareMessageCandidates(KEY, 'msg-removed', 'message', () => true)).toEqual([]);
+    expect(store.exactRemovalAwareMessageCandidates(KEY, 'ev-older', 'event', () => true)?.map((row) => row.eventId)).toEqual(['ev-older']);
+    expect(store.getEvent(KEY, 'ev-removed')).toMatchObject({ kind: 'message' });
+    expect(store.browseMessages(KEY, null, 1).messages[0]?.eventId).toBe('ev-removed');
+    store.append({ ...msg('collision', 6), messageId: 'ev-removed' } as AppEvent);
+    expect(store.exactRemovalAwareMessageCandidates(KEY, 'ev-removed', 'legacy', () => true)).toEqual([]);
+    expect(store.exactRemovalAwareMessageCandidates(KEY, 'ev-removed', 'legacy', (row) => row.eventId === 'ev-collision')
+      ?.map((row) => row.eventId)).toEqual(['ev-collision']);
+    expect(store.exactRemovalAwareMessageCandidates(KEY, 'ev-removed', 'legacy', (row) => row.eventId === 'ev-removed')).toEqual([]);
+    expect(store.exactRemovalAwareMessageCandidates(KEY, 'ev-removed', 'message', () => true)?.map((row) => row.eventId)).toEqual(['ev-collision']);
+  });
+
+  it('refuses a removal-aware page off the custodian or with an unindexed journal tail', () => {
+    const { dir, store } = mk();
+    store.append(created());
+    store.append(msg('a', 1));
+    const peer = new AppConversationStore({ stateDir: dir, machineId: () => 'm2' });
+    try {
+      expect(peer.browseRemovalAwareMessages(KEY, null)).toBeNull();
+      expect(peer.exactRemovalAwareMessageCandidates(KEY, 'ev-a', 'event', () => true)).toBeNull();
+    } finally { peer.close(); }
+    fs.appendFileSync(fileOf(dir), JSON.stringify({ ...msg('b', 2), ingestSeq: 3 }) + '\n');
+    expect(store.browseRemovalAwareMessages(KEY, null)).toBeNull();
+  });
+
+
+  it('refuses removal-aware pagination and exact lookup on a damaged message binding after reopen', () => {
+    const { dir, store } = mk();
+    store.append(created());
+    store.append(msg('a', 1));
+    store.append(msg('b', 2));
+    store.close();
+    const db = new Database(path.join(dir, 'app-conversations', 'index.sqlite'));
+    try { db.exec("UPDATE messages SET eventId = 'ev-b' WHERE messageId = 'msg-a'"); }
+    finally { db.close(); }
+    const reopened = new AppConversationStore({ stateDir: dir, machineId: () => 'm1' });
+    try {
+      expect(reopened.browseRemovalAwareMessages(KEY, null)).toBeNull();
+      expect(reopened.exactRemovalAwareMessageCandidates(KEY, 'ev-a', 'event', () => true)).toBeNull();
+    } finally { reopened.close(); }
+  });
 
   it('indexes exact removal facts across arrival order and rebuild without changing the raw target', () => {
     const { store } = mk();
