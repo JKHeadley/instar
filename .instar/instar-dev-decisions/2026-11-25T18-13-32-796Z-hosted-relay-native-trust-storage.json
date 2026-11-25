@@ -1,0 +1,28 @@
+{
+  "ts": "2026-11-25T18:13:32.796Z",
+  "slug": "hosted-relay-native-trust-storage",
+  "suggestedTier": 2,
+  "declaredTier": 2,
+  "riskFloor": 2,
+  "riskFloorReasons": [
+    "safety-invariant proximity: src/hostedRelay/native/HostedRelayTrustStore.swift matches relay / delivery path"
+  ],
+  "belowFloor": false,
+  "files": 1,
+  "loc": 113,
+  "scope": {
+    "basis": "staged-in-scope-paths-including-deleted",
+    "files": [
+      "src/hostedRelay/native/HostedRelayTrustStore.swift"
+    ],
+    "addedLines": 113,
+    "deletedLines": 0
+  },
+  "causalAutopsy": null,
+  "classClosure": {
+    "defectClass": "unbounded-self-action",
+    "closure": "n/a",
+    "reason": "Each caller-requested operation performs one verification and at most one local write."
+  },
+  "verdict": "pass"
+}

@@ -1,0 +1,24 @@
+{
+  "version": 2,
+  "slug": "hosted-relay-native-trust-storage",
+  "sessionId": "41652017-0805-405d-bb4e-2a975fb349ce",
+  "timestamp": "2026-11-25T18:13:00.376Z",
+  "artifactPath": "upgrades/side-effects/hosted-relay-native-trust-storage.md",
+  "artifactSha256": "254ff96ef3e29321c787df0a407b51553e836b00897a78241a6dab5d5d64dcbf",
+  "specPath": "docs/specs/hosted-relay.md",
+  "coveredFiles": [
+    "src/hostedRelay/native/HostedRelayTrustStore.swift",
+    "tests/fixtures/hosted-relay-native/TrustStoreChecks.swift",
+    "upgrades/side-effects/hosted-relay-native-trust-storage.md"
+  ],
+  "phase": "complete",
+  "tier": 2,
+  "tierReasoning": "Dark native storage for relay trust. No app or network wiring.",
+  "secondPass": "true",
+  "reviewerConcurred": true,
+  "classClosure": {
+    "defectClass": "unbounded-self-action",
+    "closure": "n/a",
+    "reason": "Each caller-requested operation performs one verification and at most one local write."
+  }
+}
