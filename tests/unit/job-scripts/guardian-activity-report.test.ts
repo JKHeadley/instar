@@ -28,6 +28,15 @@ describe('guardian activity report', () => {
     expect(() => calculateCategoryActivity(maintenance, 'guardian')).toThrow('invalid activity report');
   });
 
+  it('matches the saved learning category at its 48-hour window', () => {
+    const learning = JSON.parse(readFileSync(new URL('../../fixtures/learning-category-report.json', import.meta.url), 'utf8'));
+    const activity = calculateCategoryActivity(learning, 'learning');
+    expect([activity.jobs.length, activity.totalRuns, activity.totalFailures, activity.jobsSkipping]).toEqual([
+      learning.summary.totalJobs, learning.summary.totalRuns, learning.summary.totalFailures, learning.summary.skipping,
+    ]);
+    expect(renderCategoryActivity(activity)).toContain('14 jobs, 41 runs, 0 failures, 7 jobs with skips.');
+  });
+
   it('rejects an impossible quota skip count', () => {
     const job = { ...saved.jobs[0], skips: { total: 0, byReason: { quota: 1 } } };
     expect(() => calculateCategoryActivity({ ...saved, jobs: [job] }, 'guardian')).toThrow('quota skips exceed skips');

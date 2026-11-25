@@ -4,7 +4,11 @@ import { mkdir, writeFile } from 'node:fs/promises';
 import path from 'node:path';
 import { fileURLToPath } from 'node:url';
 
-const CATEGORY_WINDOWS = { guardian: 24, maintenance: 48 };
+const CATEGORIES = {
+  guardian: { title: 'Guardian', hours: 24 },
+  maintenance: { title: 'Maintenance', hours: 48 },
+  learning: { title: 'Learning', hours: 48 },
+};
 
 function count(value) {
   if (!Number.isSafeInteger(value) || value < 0) throw new Error('invalid guardian count');
@@ -12,9 +16,8 @@ function count(value) {
 }
 
 export function calculateCategoryActivity(report, category) {
-  const hours = CATEGORY_WINDOWS[category];
-  if (!Object.hasOwn(CATEGORY_WINDOWS, category) || report.category !== category
-    || report.sinceHours !== hours || !Array.isArray(report.jobs)
+  if (!Object.hasOwn(CATEGORIES, category) || report.category !== category
+    || report.sinceHours !== CATEGORIES[category].hours || !Array.isArray(report.jobs)
     || !Number.isFinite(Date.parse(report.generatedAt))) throw new Error('invalid activity report');
   const slugs = new Set();
   const jobs = report.jobs.map(job => {
@@ -31,7 +34,7 @@ export function calculateCategoryActivity(report, category) {
     return { slug: job.slug, enabled: job.enabled, runs, failures, consecutiveFailures, skips, quotaSkips };
   }).sort((left, right) => left.slug.localeCompare(right.slug));
   return {
-    category, hours, generatedAt: new Date(report.generatedAt).toISOString(), jobs,
+    category, hours: CATEGORIES[category].hours, generatedAt: new Date(report.generatedAt).toISOString(), jobs,
     totalRuns: jobs.reduce((total, job) => total + (job.runs ?? 0), 0),
     totalFailures: jobs.reduce((total, job) => total + (job.failures ?? 0), 0),
     jobsSkipping: jobs.filter(job => job.skips > 0).length,
@@ -41,7 +44,7 @@ export function calculateCategoryActivity(report, category) {
 export function renderCategoryActivity(activity) {
   const quantity = (value, noun) => `${value} ${noun}${value === 1 ? '' : 's'}`;
   return [
-    `${activity.category === 'guardian' ? 'Guardian' : 'Maintenance'} job activity`,
+    `${CATEGORIES[activity.category].title} job activity`,
     `${activity.hours}-hour counts as of ${activity.generatedAt}.`,
     `${quantity(activity.jobs.length, 'job')}, ${quantity(activity.totalRuns, 'run')}, ${quantity(activity.totalFailures, 'failure')}, ${quantity(activity.jobsSkipping, 'job')} with skips.`,
     ...activity.jobs.map(job => {
@@ -70,7 +73,7 @@ async function main() {
     await mkdir(directory, { recursive: true, mode: 0o700 });
     await writeFile(path.join(directory, `${INSTAR_JOB_RUN_ID}.txt`), report, { flag: 'wx', mode: 0o600 });
   }
-  const outcomes = await Promise.allSettled(Object.entries(CATEGORY_WINDOWS).map(([category, hours]) => save(category, hours)));
+  const outcomes = await Promise.allSettled(Object.entries(CATEGORIES).map(([category, { hours }]) => save(category, hours)));
   if (outcomes.some(outcome => outcome.status === 'rejected')) throw new Error('activity reports incomplete');
 }
 

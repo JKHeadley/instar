@@ -1,6 +1,6 @@
 ---
-name: Guardian and Maintenance Activity Report (Script)
-description: Summarize monitoring and maintenance runs, failures and skips without launching a model.
+name: Overseer Activity Report (Script)
+description: Summarize monitoring, maintenance and learning runs, failures and skips without launching a model.
 schedule: "0 */6 * * *"
 priority: low
 expectedDurationMinutes: 2
@@ -15,4 +15,4 @@ scriptTimeoutMinutes: 2
 supervision: tier0
 scriptSupervision: deterministic
 ---
-Save local activity counts for guardian and maintenance jobs. Keep the existing reviews for interpreting findings, coverage and schedules. This activity report starts disabled.
+Save local activity counts for guardian, maintenance and learning jobs. Keep the existing reviews for interpreting findings, coverage and schedules. This activity report starts disabled.

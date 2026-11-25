@@ -1,0 +1,248 @@
+{
+  "category": "learning",
+  "sinceHours": 48,
+  "generatedAt": "2026-11-25T10:50:12.030Z",
+  "summary": {
+    "totalJobs": 14,
+    "healthy": 9,
+    "failing": 0,
+    "skipping": 7,
+    "disabled": 5,
+    "totalRuns": 41,
+    "totalFailures": 0,
+    "avgSuccessRate": 100
+  },
+  "jobs": [
+    {
+      "slug": "correction-analyzer",
+      "enabled": false,
+      "state": {
+        "consecutiveFailures": 0
+      },
+      "stats": {
+        "totalRuns": 0,
+        "failures": 0
+      },
+      "skips": {
+        "total": 0,
+        "byReason": {}
+      }
+    },
+    {
+      "slug": "correction-class-review-backstop",
+      "enabled": true,
+      "state": {
+        "consecutiveFailures": 0
+      },
+      "stats": {
+        "totalRuns": 3,
+        "failures": 0
+      },
+      "skips": {
+        "total": 0,
+        "byReason": {}
+      }
+    },
+    {
+      "slug": "docs-coverage-audit",
+      "enabled": false,
+      "state": {
+        "consecutiveFailures": 0
+      },
+      "stats": {
+        "totalRuns": 0,
+        "failures": 0
+      },
+      "skips": {
+        "total": 0,
+        "byReason": {}
+      }
+    },
+    {
+      "slug": "evolution-overdue-check",
+      "enabled": true,
+      "state": {
+        "consecutiveFailures": 0
+      },
+      "stats": {
+        "totalRuns": 9,
+        "failures": 0
+      },
+      "skips": {
+        "total": 1,
+        "byReason": {
+          "gate": 1
+        }
+      }
+    },
+    {
+      "slug": "evolution-proposal-evaluate",
+      "enabled": true,
+      "state": {
+        "consecutiveFailures": 0
+      },
+      "stats": {
+        "totalRuns": 0,
+        "failures": 0
+      },
+      "skips": {
+        "total": 85,
+        "byReason": {
+          "gate": 81,
+          "paused": 4
+        }
+      }
+    },
+    {
+      "slug": "evolution-proposal-implement",
+      "enabled": true,
+      "state": {
+        "consecutiveFailures": 0
+      },
+      "stats": {
+        "totalRuns": 0,
+        "failures": 0
+      },
+      "skips": {
+        "total": 85,
+        "byReason": {
+          "gate": 80,
+          "paused": 4,
+          "role-guard": 1
+        }
+      }
+    },
+    {
+      "slug": "failure-analyzer",
+      "enabled": false,
+      "state": {
+        "consecutiveFailures": 0
+      },
+      "stats": {
+        "totalRuns": 0,
+        "failures": 0
+      },
+      "skips": {
+        "total": 0,
+        "byReason": {}
+      }
+    },
+    {
+      "slug": "failure-callout-investigator",
+      "enabled": true,
+      "state": {
+        "consecutiveFailures": 0
+      },
+      "stats": {
+        "totalRuns": 20,
+        "failures": 0
+      },
+      "skips": {
+        "total": 250,
+        "byReason": {
+          "gate": 243,
+          "paused": 7
+        }
+      }
+    },
+    {
+      "slug": "initiative-digest-review",
+      "enabled": true,
+      "state": {
+        "consecutiveFailures": 0
+      },
+      "stats": {
+        "totalRuns": 0,
+        "failures": 0
+      },
+      "skips": {
+        "total": 1,
+        "byReason": {
+          "paused": 1
+        }
+      }
+    },
+    {
+      "slug": "insight-harvest",
+      "enabled": true,
+      "state": {
+        "consecutiveFailures": 0
+      },
+      "stats": {
+        "totalRuns": 0,
+        "failures": 0
+      },
+      "skips": {
+        "total": 72,
+        "byReason": {
+          "gate": 65,
+          "paused": 5,
+          "quota": 2
+        }
+      }
+    },
+    {
+      "slug": "mentor-onboarding",
+      "enabled": false,
+      "state": {
+        "consecutiveFailures": 0
+      },
+      "stats": {
+        "totalRuns": 0,
+        "failures": 0
+      },
+      "skips": {
+        "total": 0,
+        "byReason": {}
+      }
+    },
+    {
+      "slug": "org-intent-drift-audit",
+      "enabled": false,
+      "state": {
+        "consecutiveFailures": 0
+      },
+      "stats": {
+        "totalRuns": 0,
+        "failures": 0
+      },
+      "skips": {
+        "total": 0,
+        "byReason": {}
+      }
+    },
+    {
+      "slug": "reflection-trigger",
+      "enabled": true,
+      "state": {
+        "consecutiveFailures": 0
+      },
+      "stats": {
+        "totalRuns": 9,
+        "failures": 0
+      },
+      "skips": {
+        "total": 0,
+        "byReason": {}
+      }
+    },
+    {
+      "slug": "work-board-graduation",
+      "enabled": true,
+      "state": {
+        "consecutiveFailures": 0
+      },
+      "stats": {
+        "totalRuns": 0,
+        "failures": 0
+      },
+      "skips": {
+        "total": 52,
+        "byReason": {
+          "gate": 47,
+          "paused": 5
+        }
+      }
+    }
+  ]
+}

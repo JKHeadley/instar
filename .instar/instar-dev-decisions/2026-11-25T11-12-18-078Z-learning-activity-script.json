@@ -1,0 +1,23 @@
+{
+  "ts": "2026-11-25T11:12:18.078Z",
+  "slug": "learning-activity-script",
+  "suggestedTier": 1,
+  "declaredTier": 1,
+  "riskFloor": 1,
+  "riskFloorReasons": [],
+  "belowFloor": false,
+  "files": 2,
+  "loc": 23,
+  "scope": {
+    "basis": "staged-in-scope-paths-including-deleted",
+    "files": [
+      "src/scaffold/templates/jobs/instar/guardian-activity-report-script.md",
+      "src/scaffold/templates/jobs/instar/scripts/guardian-activity-report-script.mjs"
+    ],
+    "addedLines": 13,
+    "deletedLines": 10
+  },
+  "causalAutopsy": null,
+  "classClosure": null,
+  "verdict": "pass"
+}
