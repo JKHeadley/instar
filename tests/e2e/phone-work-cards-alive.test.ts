@@ -11,6 +11,7 @@
  * mounted and wired: an unwired dependency answers 503 work-board-disabled).
  */
 import Database from 'better-sqlite3';
+import { resolveTelegramWorkBoardSlipSource } from '../../src/core/workBoardSlipSource.js';
 import { WorkBoardSlipStore } from '../../src/core/WorkBoardSlipStore.js';
 import { describe, it, expect, afterAll } from 'vitest';
 import request from 'supertest';
@@ -126,9 +127,15 @@ describe('Work cards from the owner phone E2E (feature is alive)', () => {
     const rig: Rig = mkRuntime(stateDir, {
       permissionSlips: {
         store, currentWriter: () => active ? writer : null,
-        resolveIssueSource: (ref) => ref === 'owner-request' || ref === 'other-request'
-          ? { sourceId: 'private-source', ownerPersonKey: ref === 'owner-request' ? 'owner' : 'another-person', cardIds: sourceCards }
-          : null,
+        resolveIssueSource: (ref) => resolveTelegramWorkBoardSlipSource(ref, {
+          ownerUid: () => 1001,
+          ownerPersonKey: () => 'owner',
+          findRecordedMessage: (topicId, messageId) => topicId === 4242 && (messageId === 777 || messageId === 778) ? {
+            topicId, messageId, telegramUserId: messageId === 777 ? 1001 : 1002,
+            text: `Approve Work Board cards: ${sourceCards.join(', ')}`,
+            fromUser: true, forwarded: false, provenance: 'user', authorship: 'human',
+          } : null,
+        }),
         application: {
           readEvent: (id) => readWorkBoardApprovalEvent(id, {
             journal: rig.journal,
@@ -158,13 +165,13 @@ describe('Work cards from the owner phone E2E (feature is alive)', () => {
       const { cardId } = createdCard;
       const { version, disclosure } = rig.runtime.svc.approvalSnapshot(cardId)!;
       sourceCards = [cardId];
-      expect(rig.runtime.issuePermissionSlip('other-request')).toBeNull();
-      expect(rig.runtime.issuePermissionSlip('unknown-source')).toBeNull();
-      const issued = rig.runtime.issuePermissionSlip('owner-request')!;
+      expect(rig.runtime.issuePermissionSlip('telegram:4242:778')).toBeNull();
+      expect(rig.runtime.issuePermissionSlip('telegram:4242:779')).toBeNull();
+      const issued = rig.runtime.issuePermissionSlip('telegram:4242:777')!;
       expect(issued).toBeTruthy();
-      expect(rig.runtime.issuePermissionSlip('owner-request')).toEqual(issued);
+      expect(rig.runtime.issuePermissionSlip('telegram:4242:777')).toEqual(issued);
       sourceCards = [cardId, 'wc_8ef2f314f32acff4'];
-      expect(rig.runtime.issuePermissionSlip('owner-request')).toBeNull();
+      expect(rig.runtime.issuePermissionSlip('telegram:4242:777')).toBeNull();
       sourceCards = [cardId];
       const slip = store.get(issued.slipId)!;
       expect(slip.proposal.items).toEqual([{ version, disclosure }]);
@@ -178,7 +185,7 @@ describe('Work cards from the owner phone E2E (feature is alive)', () => {
         schemaVersion: 1, slipId: slip.id, disclosureDigest: slip.digest, state: 'pending',
         receipt: null, items: [{ cardId, version, disclosure, action: 'approve' }],
       });
-      expect(JSON.stringify(pending.body)).not.toContain('private-source');
+      expect(JSON.stringify(pending.body)).not.toContain('telegram:4242:777');
       const challengeRoute = '/mobile/permissions/challenge';
       const challengeInput = { action: 'work-board-slip-approve', target: slip.id, disclosureDigest: slip.digest };
       const wrong = await send(app, phone, 'POST', challengeRoute, { ...challengeInput, disclosureDigest: 'f'.repeat(64) });
@@ -237,7 +244,7 @@ describe('Work cards from the owner phone E2E (feature is alive)', () => {
       expect(rig.lines.filter(({ id }) => id === lineIdFor(eventId))).toHaveLength(1);
       expect(rig.journal.readKindComplete(WORK_CARD_RECORD_KIND).entries.filter(({ data }) => data.approvalBinding)).toHaveLength(1);
       expect(rig.runtime.svc.edit({ kind: 'agent' }, cardId, { title: 'Changed after approval' }).ok).toBe(true);
-      expect(rig.runtime.issuePermissionSlip('owner-request')).toEqual(issued);
+      expect(rig.runtime.issuePermissionSlip('telegram:4242:777')).toEqual(issued);
       rig.runtime.stop();
       rig.runtime.start();
       const changed = await send(app, phone, 'GET', route);

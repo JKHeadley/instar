@@ -8,6 +8,7 @@ const lifetimeMs = 24 * 60 * 60 * 1000;
 
 export interface WorkBoardSlipProposal {
   sourceId: string;
+  sourceDigest: string;
   writer: WorkBoardWriterProof;
   items: ReadonlyArray<{ version: WorkBoardApprovalVersion; disclosure: unknown }>;
 }
@@ -48,7 +49,9 @@ interface SlipRow {
 }
 
 function validProposal(proposal: WorkBoardSlipProposal): boolean {
-  if (!proposal || typeof proposal.sourceId !== 'string' || !proposal.sourceId || !proposal.writer
+  if (!proposal || typeof proposal.sourceId !== 'string' || !proposal.sourceId
+    || typeof proposal.sourceDigest !== 'string' || proposal.sourceDigest.length !== 64 || !/^[a-f0-9]{64}$/.test(proposal.sourceDigest)
+    || !proposal.writer
     || !Array.isArray(proposal.items) || !proposal.items.length) return false;
   const writer = proposal.writer;
   if (![writer.epoch, writer.ownerGeneration, writer.ownerPersonKey, writer.writerIncarnation]

@@ -128,3 +128,7 @@ When an enrolled runtime starts, completed slip results are candidates for read-
 ## Issue a slip from an exact owner request
 
 The runtime now accepts only a trusted resolver's explicit ordered list from the current owner. It rejects malformed or duplicate card identifiers, derives new disclosure and version data from cards still awaiting approval, and rechecks the writer before it records a new slip. A retry for the same ordered source returns the original sealed slip even after a card edit. A changed list or different owner refuses. Independent review concurred. The real-server fixture uses the runtime issuing path instead of seeding a slip directly. The production provenance resolver and chat posting integration remain unwired.
+
+## Check the recorded Telegram owner request
+
+The Telegram source resolver reads an exact topic and message coordinate from a trusted journal adapter. It requires the configured owner identity and direct human provenance and excludes forwarded, relayed and unclassified messages. The accepted explicit card-list grammar preserves order and refuses duplicates and extra text. The source digest binds the exact recorded text without retaining it in the slip. The store seals that digest, and source mutation refuses an issuance retry. Independent review concurred. Unit tests verify the resolver's refusal cases, and the real-server fixture passes the recorded owner source through complete slip issuance. No live Telegram reader is connected to a production enrollment.

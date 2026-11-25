@@ -11,6 +11,7 @@
 
 import { canonicalJson, isCardId, sha256Hex } from './WorkCardStore.js';
 import { sameProof, sameVersion, type WorkBoardApprovalLookup, type WorkBoardWriterProof } from './WorkBoardApprovalWriter.js';
+import type { WorkBoardSlipOwnerSource } from './workBoardSlipSource.js';
 import type { WorkBoardSlipStore } from './WorkBoardSlipStore.js';
 import { applyWorkBoardSlip } from './workBoardSlipApplication.js';
 import {
@@ -83,7 +84,7 @@ export interface WorkBoardRuntimeSeams {
     store: WorkBoardSlipStore;
     currentWriter: () => WorkBoardWriterProof | null;
     /** Resolve an authenticated owner request with an explicit ordered card list. */
-    resolveIssueSource?: (sourceRef: string) => { sourceId: string; ownerPersonKey: string; cardIds: readonly string[] } | null;
+    resolveIssueSource?: (sourceRef: string) => WorkBoardSlipOwnerSource | null;
     application?: {
       readEvent: (id: string) => WorkBoardApprovalLookup;
     };
@@ -157,7 +158,7 @@ export class WorkBoardRuntime {
     if (existing) {
       const exactList = existing.proposal.items.length === cardIds.length
         && existing.proposal.items.every(({ version }, index) => version.cardId === cardIds[index]);
-      if (!exactList || !sameProof(writer, existing.proposal.writer)) return null;
+      if (!exactList || existing.proposal.sourceDigest !== source.sourceDigest || !sameProof(writer, existing.proposal.writer)) return null;
       return { slipId: existing.id, disclosureDigest: existing.digest, expiresAt: existing.expiresAt };
     }
 
@@ -168,7 +169,7 @@ export class WorkBoardRuntime {
       items.push(item);
     }
     if (!sameProof(writer, this.currentSlipWriter())) return null;
-    const slip = port.store.issue({ sourceId: source.sourceId, writer, items });
+    const slip = port.store.issue({ sourceId: source.sourceId, sourceDigest: source.sourceDigest, writer, items });
     return slip ? { slipId: slip.id, disclosureDigest: slip.digest, expiresAt: slip.expiresAt } : null;
   }
 

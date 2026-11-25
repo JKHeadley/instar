@@ -19,7 +19,7 @@ function fixture() {
   const store = new WorkBoardSlipStore(db, () => now);
   const disclosure = { title: 'Review the Work Board' };
   const proposal: WorkBoardSlipProposal = {
-    sourceId: 'verified-message-1',
+    sourceId: 'verified-message-1', sourceDigest: 'c'.repeat(64),
     writer: { epoch: 'epoch1', ownerGeneration: 'owner1', ownerPersonKey: 'justin', writerIncarnation: 'i1' },
     items: [{
       version: {
