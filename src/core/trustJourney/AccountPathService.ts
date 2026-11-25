@@ -187,7 +187,7 @@ export class AccountPathService {
       const firstPhone = paired.some((d) => d.deviceKind === 'phone' && (d.firstPairing || d.localInstall));
       return { state: 'setup', message: firstPhone
         ? 'Open Changes to approve in the Instar iPhone app and turn on approvals before approving this request. Telegram is not required.'
-        : 'Open Changes to approve on an already accepted device to allow this one. With no accepted device, pair an iPhone through the local Instar app first. A locally paired Mac with Touch ID can set up or replace its approval key; a Mac without Touch ID needs the iPhone.' };
+        : 'A device is paired, but none can approve changes yet. Pair your iPhone using the Instar app on the agent’s own computer, then turn on approvals in Changes to approve on the iPhone. A locally paired Mac with Touch ID can also be set up to approve changes.' };
     } catch (err) {
       // @silent-fallback-ok: unknown refuses routing, never falls through to chat or grants approval.
       this.d.log?.('trust-device-availability-unknown', { error: err instanceof Error ? err.message : String(err) });

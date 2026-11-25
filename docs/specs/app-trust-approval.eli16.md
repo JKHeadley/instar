@@ -15,3 +15,5 @@ A live test on a throwaway agent worked from start to finish. It also showed tha
 Two small code tidy-ups: device keys are now read through the one shared reader, like everywhere else. Nothing changes for people.
 
 A safety test that lists every owner-only phone route now includes the approval routes, so only the owner's own devices can ever approve.
+
+A phone paired for chat may still need separate approval setup. If there is no device that can approve changes, the delivery status says a device is already paired and directs you to approval setup on the agent’s own computer.

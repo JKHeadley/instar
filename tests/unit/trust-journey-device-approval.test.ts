@@ -87,6 +87,15 @@ async function acceptMac(svc: AccountPathService) {
 }
 const auth = (requestId: string, over: Record<string, string> = {}) => ({ deviceId: 'mac', keyFingerprint: devices.get('mac')!.keyFingerprint!, host: 'localhost:4040', requestId, proposalHash: HASH, challengeId: `ch${Math.random().toString(16).slice(2, 10)}`, ...over });
 
+it('distinguishes a paired phone with a presence key from an accepted approver', async () => {
+  devices.add('phone');
+  const service = mkService(mkStore());
+  expect(await service.approvalDelivery()).toEqual({
+    state: 'setup',
+    message: 'A device is paired, but none can approve changes yet. Pair your iPhone using the Instar app on the agent’s own computer, then turn on approvals in Changes to approve on the iPhone. A locally paired Mac with Touch ID can also be set up to approve changes.',
+  });
+});
+
 describe('app-first publication', () => {
   it('reserves capacity across the durability await against an independent acceptance flush', async () => {
     const store = mkStore();
