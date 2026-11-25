@@ -614,3 +614,41 @@ export function developmentHeadline({ shipping, feedback, pace } = {}) {
   if (allOff) return { text: 'Development tools aren’t set up on this machine.', tone: 'muted', sub: 'Shipping and the feedback factory run on a machine with the Instar source checkout.' };
   return { text: 'Nothing here needs you.', tone: 'ok', sub: lines.join(' · ') };
 }
+
+// ── Borrowed machines on the run machine (docs/specs/local-verify-borrowed-slices-count.md, G) ──
+const BORROWED_LANE_WORDS = Object.freeze({ unit: 'quick tests', integration: 'integration tests', e2e: 'end-to-end tests' });
+
+/** One lane's state in plain words. */
+export function borrowedLaneWords(x) {
+  const l = x && typeof x === 'object' ? x : {};
+  if (l.proven === false || !l.evidence) return 'not tried yet (no dry run)';
+  if (l.state === 'counting') return 'its passing results count';
+  if (l.state === 'suspended') return 'paused after many disagreements in one run';
+  if (typeof l.state === 'string' && l.state.startsWith('lapsed')) return 'back to practice after a problem';
+  const ev = l.evidence;
+  const done = ['coverage', 'spread', 'failingDirection', 'checkSlice', 'wrongPassWindow'].filter((k) => ev[k] && ev[k].complete).length;
+  return `practising (${done} of 5 checks met)`;
+}
+
+/**
+ * The run machine's borrowed helpers in plain words: a title, then per helper its lanes, what the
+ * last run sent and it finished, and a dry run in progress. Null when no helper is set up here.
+ */
+export function borrowedSummary(b) {
+  if (!b || typeof b !== 'object' || !b.mode || b.mode === 'off' || !Array.isArray(b.helpers) || b.helpers.length === 0) return null;
+  const rows = b.helpers.filter((h) => h && typeof h.machineId === 'string').map((h) => {
+    const lanes = h.lanes && typeof h.lanes === 'object' ? h.lanes : {};
+    const laneLines = ['unit', 'integration', 'e2e'].map((k) => `${BORROWED_LANE_WORDS[k]}: ${borrowedLaneWords(lanes[k])}`);
+    const lasts = ['unit', 'integration', 'e2e'].map((k) => lanes[k] && lanes[k].lastVerify).filter((x) => x && typeof x.sent === 'number');
+    lasts.sort((a, c) => String(c.at).localeCompare(String(a.at)));
+    const last = lasts[0] ? `Last run: it was given ${plural(lasts[0].sent, 'file')} and finished ${lasts[0].finished}.` : 'It has not been given any work yet.';
+    const intent = h.dryRunIntent && h.dryRunIntent.state;
+    const dry = h.dryRunRunning ? 'A dry run is going on.' : intent === 'requested' ? 'A dry run is waiting to start.' : null;
+    return { machine: h.machineId, lanes: laneLines, last, dry };
+  });
+  return {
+    title: b.mode === 'count' ? 'Borrowed machines help the test line' : 'Borrowed machines practise for the test line',
+    sub: 'Their answers are compared with this machine’s own; a lane counts only after it has proven itself and the line’s session records that decision.',
+    rows,
+  };
+}

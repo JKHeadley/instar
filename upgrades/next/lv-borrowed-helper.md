@@ -1,0 +1,48 @@
+# Borrowed machines can take slices of the slow tests for the test line; their passes count after practice (off by default)
+
+<!-- bump: patch -->
+
+## What Changed
+
+Local Verify gains a borrowed-machine path (spec `docs/specs/local-verify-borrowed-slices-count.md`, which amends `docs/specs/local-verify-borrowed-unit-slices.md`). It ships **dark**: nothing happens on any machine until that machine's own agent sets the block below after its owner's yes, and neither block is written by config defaults or migration.
+
+**On a helper machine** (a laptop, or a Windows PC through a dedicated WSL distro), `monitoring.localVerify.helper.enabled: true` turns the role on. Then:
+
+- Routes `POST /local-verify/helper-slice` (also `prepare: true`, `retrial: true`, `dryRun: true`), `POST /local-verify/helper-slice/cancel`, `POST /local-verify/helper-learned`, `GET /local-verify/helper-status` and the owner's `POST /local-verify/helper-pause`. All answer 404 while the role is off. Every request is signed by the one pinned run machine (`pinnedRequester: { machineId, url }`), expires within 60 s, is single-use and is refused through the tunnel; every answer is signed by the helper.
+- Before running anything the helper checks for itself that the base commit is merged, that the head is the base or the current head of an open pull request of the pinned repository (by repository id: forks, closed or moved heads are refused), that its own dry run of the lane is done on its current sandbox image, that the merge of the two commits builds cleanly in its own clone (the tree's hash rides every answer), and that the change leaves the install inputs as `main` has them. Packages are installed only from merged code, on their own disk, read-only to tests.
+- Tests run only inside a Linux sandbox (a Lima VM on macOS, a WSL distro on Windows) with no host folders, no network for tests or builds, one dummy interface, and walls proven at every start. Lanes `unit`, `integration` and `e2e` are accepted; slices are queued and answered at once, served one at a time (the check slice, then counted slices, then compare-only), with signed progress through the status answer.
+- The owner comes first: a governor samples every 2 s and hands work back when the owner needs the cores, on memory pressure, on battery, at a deadline or on a pause. `instar helper pause|resume|uninstall --yes`, and a card on the console's Development page with the state, the last refusal and a pause button.
+
+**On a run machine**, `monitoring.localVerify.borrowed = { mode: 'practice' | 'count', helpers: [{ machineId, url }] }` pairs it with one helper (`shadow`, the first design's value, reads as `practice`). Then:
+
+- **Asking**: one 2-second status request at the start of every verify; after 10 unanswered every 5th verify asks, after 7 days none until the helper's signed "I am here" (`POST /local-verify/helper-here`).
+- **The dry run** (`POST /local-verify/borrowed/dry-run {"helper"}`): on the newest commit this machine verified green, every eligible file of each lane is sent once and compared with that commit's baseline results (`state/local-verify/main-file-counts.json`, kept from the last three green `main` verifies, hash-checked). It records coverage, whether each lane is proven (files worth half its time passed) and the helper's speed; the helper writes its own "dry run done" record.
+- **Practice**: the verify of a waiting change sends compare-only slices; this machine runs every file and compares by a digest of test names and outcomes. The evidence per helper and lane: coverage, spread (5 verifies, 3 of waiting changes), the failing direction (5 shared failures from 3 files and 2 verifies), the check slice exactly right in its last 20, and no confirmed wrong pass in the last 500 comparisons.
+- **Counting**: with `mode: 'count'` a lane counts only after the throughput session records the decision (`POST /local-verify/borrowed/decision`), which the code checks against the evidence (or the stated 7-day exception). Then the helper's files are held out of the lane's own processes; each shard takes back what has no accepted pass and runs it itself. A pass counts only on the same merge tree, with a digest equal to the baseline's, after a right check slice. Spot re-runs (1 in 20, 1 in 5 after a disagreement), one verify in ten drawn compare-only, a suspension after more than five disagreements in one verify, and lapses back to practice on a wrong pass, invalid answers, a new image or runner version, or a week without agreement. A local result always wins.
+- **Who is told**: every wrong pass and lapse goes to the audit log and to the line's session; the owner hears only when a helper's pass let a change merge that then made `main` red, or a helper lapsed for a fault three times in 7 days.
+- **Visibility**: `GET /local-verify` (and `GET /local-verify/borrowed` on any run machine) shows the mode and, per helper and lane, the state, each evidence item's progress and the last verify's share; the console's Development page shows the same in plain words. A verify's record gains `borrowed: { helper, assigned, lanes: [{ lane, files, filesDigest }] }`.
+
+The verify child's lane flow (`src/localVerify/borrowedLaneFlow.ts`) is part of the verifier's code, so **the verifier version changes with this release**: both run machines must be on it before the coordinator hands the peer a verify, as for any verifier change. With no helper configured every verify runs exactly as before.
+
+New state files, all registered: on a run machine `state/local-verify/borrowed-helpers.json` (the practice record) and `state/local-verify/main-file-counts.json`; on a helper `helper-learned.json`, `helper-seen-attempts.json`, `helper-control.json`, `helper-dry-run.json`, `helper-packages.json` and `helper-compared.json`. The sandbox files ship in `src/templates/helper/` and the Windows owner-signal task in `scripts/helper/`.
+
+## What to Tell Your User
+
+- **Lending a machine to the test line**: "A machine you lend, like your laptop or the old Windows PC, can now take some of the slow tests off our two test machines. It is off unless you say yes on that machine. It runs our code inside a sealed-off little Linux system that cannot see your files or your home network, and it steps back whenever you are busy, short of memory or on battery. First its answers are only compared with ours; once they have been shown to match, its passing answers count, so a few more changes a day can merge."
+- **Your controls**: "You can pause it any time from the dashboard, or just ask me to pause it, and I can remove it completely whenever you want."
+
+## Summary of New Capabilities
+
+| Capability | How to Use |
+|-----------|-----------|
+| Helper role on a lent machine (dark) | Its own agent sets `monitoring.localVerify.helper` (`enabled`, `pinnedRepoUrl`, `pinnedRequester: { machineId, url }`, optional `reserveCores`, `stopOnBattery`, `sandbox`) after the owner's yes |
+| Helper state and pause | `GET /local-verify/helper-status`; `instar helper pause`, `resume`, `uninstall --yes`, or the Development page's pause button |
+| Pair a run machine with a helper (dark) | `monitoring.localVerify.borrowed = { mode: 'practice', helpers: [{ machineId, url }] }` |
+| Dry run a helper | `POST /local-verify/borrowed/dry-run {"helper": "<machineId>"}` (`"action": "stop"` stops it) |
+| Record the decision to count a lane | `POST /local-verify/borrowed/decision {"helper", "lane", "reason"}` (refused with the missing evidence until it is complete); then `mode: 'count'` |
+| Read each helper's lanes and evidence | `GET /local-verify/borrowed`; `borrowed-verify`, `borrowed-counted`, `borrowed-dry-run-lane` and `borrowed-helper-event` rows in `logs/local-verify.jsonl` |
+| Windows owner signal | `scripts/helper/install-windows-owner-signal.ps1 -Distro <Echo distro> -LinuxUser <user> [-HelperDistroDir C:\instar-helper\distro]` on the Windows PC |
+
+## Evidence
+
+Unit tests under `tests/unit/localVerify/helper/` and `tests/unit/localVerify/borrowed*.test.ts`: helper acceptance (merged base, our head, dry-run record, merge tree, install inputs), the slice queue and progress, the sandbox drivers and templates, the practice record's rules and admission, the loopback proxy's refusals, the lane flow's pass definition, take-back, check slice, spot re-runs and comparisons, the dry run against a real helper service, notices, and a guard that a helper result enters a lane report only through one function and only as a pass. Six lane-flow cases run through the real `runVerify` (a silent and a throwing helper give the same record and commands as no helper). Integration tests of the helper and run-machine routes over real HTTP, the e2e lifecycle through `buildHelperRuntime`, the console page in jsdom, and self-action models for the asking rate, dry-run resends and notices. The sandboxes themselves are proven on the throwaway rung, after each owner's yes, never on a Local Verify machine.
