@@ -1818,3 +1818,7 @@ a.needs-row:hover { background: var(--surface-raised); }
 
 .needs-row .needs-instructions { margin: var(--s-2) 0 0; padding-inline-start: 1.5em; }
 .needs-row .needs-consent { align-self: flex-start; min-height: 44px; margin-top: var(--s-2); }
+.accounts-page .acct-layout { display: flex; flex-wrap: wrap; gap: 10px 16px; margin-bottom: 12px; }
+.accounts-page .acct-layout-field { display: flex; flex: 0 1 13rem; flex-direction: column; gap: 4px; min-width: min(100%, 10rem); }
+.accounts-page .acct-layout-field select { width: 100%; }
+.accounts-page .acct-groups { display: flex; flex-direction: column; gap: 12px; min-width: 0; }
