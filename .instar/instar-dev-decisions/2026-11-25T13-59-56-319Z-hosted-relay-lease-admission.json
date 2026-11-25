@@ -1,0 +1,29 @@
+{
+  "ts": "2026-11-25T13:59:56.319Z",
+  "slug": "hosted-relay-lease-admission",
+  "suggestedTier": 2,
+  "declaredTier": 2,
+  "riskFloor": 2,
+  "riskFloorReasons": [
+    "safety-invariant proximity: src/hostedRelay/leaseAdmission.ts matches relay / delivery path",
+    "new capability: new exported class / subsystem added"
+  ],
+  "belowFloor": false,
+  "files": 1,
+  "loc": 140,
+  "scope": {
+    "basis": "staged-in-scope-paths-including-deleted",
+    "files": [
+      "src/hostedRelay/leaseAdmission.ts"
+    ],
+    "addedLines": 140,
+    "deletedLines": 0
+  },
+  "causalAutopsy": null,
+  "classClosure": {
+    "defectClass": "unbounded-self-action",
+    "closure": "n/a",
+    "reason": "Only an independently authorized socket lease may be admitted. No listener or autonomous action is added."
+  },
+  "verdict": "pass"
+}

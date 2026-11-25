@@ -1,0 +1,25 @@
+{
+  "version": 2,
+  "slug": "hosted-relay-lease-admission",
+  "sessionId": "41652017-0805-405d-bb4e-2a975fb349ce",
+  "timestamp": "2026-11-25T13:59:11.275Z",
+  "artifactPath": "upgrades/side-effects/hosted-relay-lease-admission.md",
+  "artifactSha256": "4d9083c0e2ccd3ced56728da701ba7566f0fec9203718a6c065a55588e81ea85",
+  "specPath": "docs/specs/hosted-relay.md",
+  "coveredFiles": [
+    "src/hostedRelay/leaseAdmission.ts",
+    "tests/unit/hosted-relay-lease-admission.test.ts",
+    "upgrades/next/hosted-relay-lease-admission.md",
+    "upgrades/side-effects/hosted-relay-lease-admission.md"
+  ],
+  "phase": "complete",
+  "tier": 2,
+  "tierReasoning": "Dormant relay gate authenticates and durably fences exact serving custody.",
+  "secondPass": "true",
+  "reviewerConcurred": true,
+  "classClosure": {
+    "defectClass": "unbounded-self-action",
+    "closure": "n/a",
+    "reason": "Only an independently authorized socket lease may be admitted. No listener or autonomous action is added."
+  }
+}
