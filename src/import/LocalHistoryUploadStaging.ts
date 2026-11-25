@@ -22,6 +22,7 @@ import { MAX_LOCAL_SESSION_BYTES } from './localSessionSnapshot.js';
 import { privateImportDatabasePath } from './privateImportState.js';
 import { DegradationReporter } from '../monitoring/DegradationReporter.js';
 import { runLocalHistoryParseJob, type LocalHistoryParseReceipt } from './LocalHistoryParseJob.js';
+import { estimateLocalHistoryPhysicalBytes, type LocalHistoryPhysicalPolicy } from './LocalHistoryPhysicalBudget.js';
 import { LocalHistoryPreparedReadRefused, runLocalHistoryPreparedReadJob } from './LocalHistoryPreparedReadJob.js';
 import { summarizeLocalHistoryPreviewProjects } from './LocalHistoryPreviewProjects.js';
 import type { LocalHistoryPreparedPreview } from './LocalHistoryPreparedPreview.js';
@@ -523,7 +524,8 @@ export class LocalHistoryUploadStaging {
    * The preparation custody slot prevents cancellation/recovery from disposing
    * artifact bytes until the actual fixed reader process has closed.
    */
-  async readPreparedPreview(device: LocalHistoryAuthenticatedDevice, operationId: string): Promise<PreparedPreviewRead> {
+  async readPreparedPreview(device: LocalHistoryAuthenticatedDevice, operationId: string,
+    includeFirstClaimPlan?: true): Promise<PreparedPreviewRead> {
     const row = this.owned(operationId, device);
     if (row.phase !== 'prepared') refuse('conflict');
     if (this.verification || this.activeChildWork) refuse('busy');
@@ -536,6 +538,7 @@ export class LocalHistoryUploadStaging {
       check();
       const receipt = await runLocalHistoryPreparedReadJob({
         input: { stateDir: this.deps.stateDir, ownerUserId, maxArtifactBytes: Math.max(...prepared.files.map(file => file.bytes)),
+          ...(includeFirstClaimPlan === true && { includeFirstClaimPlan }),
           descriptors: prepared.files.map((file, index) => ({ fileId: file.fileId, source: plan.manifest.files[index].source,
             expectedSessionId: plan.manifest.files[index].expectedSessionId, projectPath: plan.manifest.project,
             representation: file.representation, bytes: file.bytes, sha256: file.sha256 })) },
@@ -697,9 +700,32 @@ export class LocalHistoryUploadStaging {
   async preflightCopyIntent(device: LocalHistoryAuthenticatedDevice, operationId: string, value: unknown): Promise<{
     requestId: string; fingerprint: string;
   }> {
+    const { requestId, fingerprint } = await this.checkCopyPreflight(device, operationId, value);
+    return { requestId, fingerprint };
+  }
+
+  /** Point-in-time sizing for the exact preflighted first claim. The caller's
+   * explicit policy still needs an admitted volume and real writer/permit. */
+  async estimateFirstCopyClaim(device: LocalHistoryAuthenticatedDevice, operationId: string, value: unknown,
+    policy: LocalHistoryPhysicalPolicy) {
+    const policySnapshot = { ...policy };
+    const { requestId, fingerprint, firstClaimPlan } = await this.checkCopyPreflight(device, operationId, value, true);
+    if (!firstClaimPlan) refuse('unavailable');
+    const { fileId, contentBytes, databaseCeilingBytes, journalBytes } = firstClaimPlan;
+    let estimatedPhysicalBytes: number;
+    try {
+      estimatedPhysicalBytes = estimateLocalHistoryPhysicalBytes({
+        kind: 'source-claim', databaseCeilingBytes, journalBytes,
+      }, policySnapshot);
+    } catch { return refuse('capacity'); }
+    return { requestId, fingerprint, fileId, contentBytes, estimatedPhysicalBytes };
+  }
+
+  private async checkCopyPreflight(device: LocalHistoryAuthenticatedDevice, operationId: string, value: unknown,
+    includeFirstClaimPlan?: true) {
     const deviceCopy = Object.freeze({ deviceId: device.deviceId, deviceKeyHash: device.deviceKeyHash });
     const before = this.bindCopyIntent(deviceCopy, operationId, value);
-    const { preview } = await this.readPreparedPreview(deviceCopy, operationId);
+    const { preview } = await this.readPreparedPreview(deviceCopy, operationId, includeFirstClaimPlan);
     const after = this.bindCopyIntent(deviceCopy, operationId, before.intent);
     const original = before.receipt.preview?.files;
     if (before.fingerprint !== after.fingerprint || digest(before.receipt) !== digest(after.receipt)
@@ -708,7 +734,7 @@ export class LocalHistoryUploadStaging {
         && file.source === original[index].source && file.destinationFingerprint === original[index].destinationFingerprint)) {
       refuse('conflict');
     }
-    return { requestId: after.requestId, fingerprint: after.fingerprint };
+    return { requestId: after.requestId, fingerprint: after.fingerprint, firstClaimPlan: preview.firstClaimPlan };
   }
   /** Validate the signed copy intent against current staging state. The
    * eventual permit issuer must repeat this inside its consumption transaction. */

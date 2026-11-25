@@ -235,11 +235,22 @@ it('keeps explicit preview retryable while the actual destination writer is lock
     expect(retry.preview.newMessages).toBe(1);
     const intent = { previewId: retry.previewId, machineId: retry.machineId, bootId: issuer.bootId,
       confirmationChallenge: retry.confirmation.challenge, applyRequestId: 'b'.repeat(32) };
+    const policy = { blockBytes: 4096, perWriteMetadataBytes: 4096, maxReservationBytes: 1024 * 1024, maxAttachments: 0 };
+    const expected = f.stage.inspectCopyIntent(device, grant.operationId, intent);
+    const estimate = await f.stage.estimateFirstCopyClaim(device, grant.operationId, intent, policy);
+    expect(estimate).toMatchObject({ ...expected, fileId: 'file-0' });
+    expect(estimate.contentBytes).toBeGreaterThan(0);
+    expect(estimate.estimatedPhysicalBytes).toBeGreaterThan(estimate.contentBytes);
+    expect(estimate.estimatedPhysicalBytes % policy.blockBytes).toBe(0);
+    expect(fs.existsSync(path.join(store.dir, 'source-claims.sqlite'))).toBe(false);
+    await expect(f.stage.estimateFirstCopyClaim(device, grant.operationId, intent, { ...policy, maxReservationBytes: 1 }))
+      .rejects.toThrow('upload-capacity');
     await store.withWriter(async () => {
       store.assertOrClaimLocalSource({ ownerUserId: 'synthetic-owner', source: 'codex',
         originalId: 'synthetic-session-0', projectPath: '/synthetic/project', representation: 'canonical', parserContractVersion: 1 });
     });
     await expect(f.stage.preflightCopyIntent(device, grant.operationId, intent)).rejects.toThrow('upload-conflict');
+    await expect(f.stage.estimateFirstCopyClaim(device, grant.operationId, intent, policy)).rejects.toThrow('upload-conflict');
     expect(await f.stage.publishPreparedPreview(device, grant.operationId)).toEqual(retry);
     expect(f.stage.status(device, grant.operationId).phase).toBe('prepared');
   } finally {
