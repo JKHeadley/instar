@@ -29,3 +29,7 @@ The primary action is the attachment type choice. A listed file offers Open and 
 ## Phone-width acceptance
 
 Real Chrome with the dashboard stylesheet at a 390 CSS pixel viewport exposed horizontal overflow on a 244-character unbroken filename. The attachment-specific grid now wraps the filename and keeps Open in view. Controls have a 44-pixel minimum height and the accessible action identifies the full filename. The same Chrome test passed after the change, including explicit signed Open, image decoding, untouched composer draft and released playback URL. This layout change does not affect ordinary history rows or server admission.
+
+## Combined browser and server verification
+
+This merge carries the server test-inventory and default-off registry repair into the phone-width browser branch. The only merge conflict was in the plain-language overview, and both explanations were kept. No runtime route or browser code changed in the merge. The combined checkout passed 190 focused attachment, route-inventory, and browser cases, plus the real Chrome test at 390 CSS pixels.

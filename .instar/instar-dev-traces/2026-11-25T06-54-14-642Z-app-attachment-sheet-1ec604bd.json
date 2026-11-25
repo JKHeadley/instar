@@ -1,0 +1,37 @@
+{
+  "version": 3,
+  "slug": "app-attachment-sheet",
+  "sessionId": "633bd330-201e-4dc8-8fd9-72b89116167e",
+  "timestamp": "2026-11-25T06:54:14.642Z",
+  "artifactPath": "upgrades/side-effects/app-attachment-sheet.md",
+  "artifactSha256": "62bd6ccb1b5f0ab60a2b1252b101a00d8567409395890f8b1ae2e5229742d9de",
+  "specPath": "docs/specs/app-attachment-browse.md",
+  "coveredFiles": [
+    ".instar/instar-dev-decisions/2026-11-25T04-49-02-091Z-conversation-media-discovery.json",
+    ".instar/instar-dev-traces/2026-11-25T04-48-26-204Z-conversation-media-discovery-f5ee2a3a.json",
+    "docs/specs/app-attachment-browse.eli16.md",
+    "docs/specs/app-attachment-browse.md",
+    "src/data/feature-ladders.json",
+    "tests/unit/mobile-app-people-roles.test.ts",
+    "tests/unit/mobile-session-terminal.test.ts",
+    "upgrades/side-effects/app-attachment-sheet.md",
+    "upgrades/side-effects/conversation-media-discovery.md"
+  ],
+  "phase": "complete",
+  "tier": 2,
+  "tierReasoning": "Combine independently reviewed attachment UI and default-off registry repair",
+  "secondPass": "true",
+  "reviewerConcurred": true,
+  "toolchain": {
+    "buildSkill": {
+      "name": "instar-dev",
+      "version": "21a45a5a5f03",
+      "verified": true
+    },
+    "convergence": {
+      "reportPath": "docs/specs/reports/app-attachment-browse-convergence.md",
+      "iterations": 6,
+      "verified": true
+    }
+  }
+}

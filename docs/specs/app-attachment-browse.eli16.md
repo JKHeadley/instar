@@ -11,3 +11,5 @@ Opening a result checks that you still have access to that file on that message.
 If the computer is still catching up with chat history, the app can ask you to retry. It checks that the file still belongs to the exact message you selected before sending any bytes. If a damaged record had to be skipped, the browse results can say that some records could not be checked.
 
 If you leave the attachment list open and the connected computer changes or stops serving attachments, the list closes. An ordinary chat refresh can still work in that situation. For a generic file, opening it shows a separate Save button.
+
+The attachment browsing option stays off unless it is explicitly enabled after verification.

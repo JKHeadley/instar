@@ -49,3 +49,7 @@ The earlier independent concurrence covered the earlier 19-path patch. The lates
 The exact Open path checks lag before opening and again before producing any range metadata or bytes. A pending durable purge or tombstone cannot be ignored by a token minted earlier. Reservation-based writes check for an unindexed tail before enqueuing replication. A skipped frame leaves a conservative durable coverage marker keyed by local log name, even when offsets are caught up. The marker contains no content. Rebuilding the same index retains that marker.
 
 The revised server patch passed 32 focused unit cases, 17 signed HTTP cases and 8 production lifecycle cases under the configured dry-run admission posture. Regression coverage includes a multi-batch oversized frame, replay of an existing attachment token while a purge is waiting to be indexed, and rejection before replication reservation when the local index is behind.
+
+## Full-verifier repair
+
+The full verifier reproduced one failure in each of the maturation and mobile route inventory files. Register the approved default-off attachment preference with a named maturation entry and list both signed GET paths in the existing owner-only and conversation-reference test inventories. This repair changes neither the authorization rules nor the routes. The registry entry declares that aggregate evidence is still needed and leaves advancement under owner control. The exact merge tree used in verification reproduced all three failures before the repair and passed all 90 cases across the same files afterward.
