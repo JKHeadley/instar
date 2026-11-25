@@ -1,0 +1,25 @@
+{
+  "version": 2,
+  "slug": "local-history-owner-consent-slip",
+  "sessionId": "41652017-0805-405d-bb4e-2a975fb349ce",
+  "timestamp": "2026-11-25T07:40:13.488Z",
+  "artifactPath": "upgrades/side-effects/local-history-owner-consent-slip.md",
+  "artifactSha256": "51bb4371eefe8aecf885face5a69d326402891f1b14e6ed71ebc1f2ff8b4d190",
+  "specPath": "docs/specs/mobile-native-permissions.md",
+  "coveredFiles": [
+    "src/server/localHistoryConsentSlip.ts",
+    "tests/unit/local-history-consent-slip.test.ts",
+    "upgrades/next/local-history-owner-consent-slip.md",
+    "upgrades/side-effects/local-history-owner-consent-slip.md"
+  ],
+  "phase": "complete",
+  "tier": 2,
+  "tierReasoning": "A dormant proof adapter reuses Work Board presence and binds exact history material.",
+  "secondPass": "true",
+  "reviewerConcurred": true,
+  "classClosure": {
+    "defectClass": "unbounded-self-action",
+    "closure": "n/a",
+    "reason": "A short-lived one-time proof has no endpoint, automatic action or retry."
+  }
+}
