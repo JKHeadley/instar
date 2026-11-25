@@ -1,11 +1,13 @@
-# Quoted Reply Design Scope
-
-<!-- internal-only -->
+# Reply to a specific App message
 
 ## What Changed
 
-The unimplemented quoted-reply design accepts loss of quote metadata through older App codecs as a disclosed compatibility limit. Known unavailable quotes use "Quoted message unavailable"; total marker loss may omit the chip. This removes the proposed transferable-evidence machinery while retaining exact base binding, masked source responses, existing stop authority and existing crash recovery. No product behavior changes in this documentation commit.
+The App server can accept a signed reply to a specific message and store the link to the original. It checks access to the original at send time. Retrying the same request keeps the same target and does not send another reply.
 
-## Evidence
+## What to Tell Your User
 
-The bounded decision and independent review are recorded in `docs/specs/reports/quoted-replies-bounded-decision-20261123.md`. The spec and plain-English companion describe future behavior, not an executed feature. No runtime tests, full convergence, deployment or native acceptance is claimed.
+Reply is off by default while the server and native menu are being verified. Where the client supports it, Reply lets you point to the exact message you are answering.
+
+## Summary of New Capabilities
+
+The default-off App Reply route accepts an exact original message and preserves that relationship in conversation history. If access to the original is lost, supported clients can show that the original is unavailable.
