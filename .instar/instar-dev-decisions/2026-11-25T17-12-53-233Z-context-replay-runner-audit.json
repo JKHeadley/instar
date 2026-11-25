@@ -1,0 +1,22 @@
+{
+  "ts": "2026-11-25T17:12:53.233Z",
+  "slug": "context-replay-runner-audit",
+  "suggestedTier": 2,
+  "declaredTier": 1,
+  "riskFloor": 1,
+  "riskFloorReasons": [],
+  "belowFloor": false,
+  "files": 1,
+  "loc": 258,
+  "scope": {
+    "basis": "staged-in-scope-paths-including-deleted",
+    "files": [
+      "scripts/evaluation/context_replay.py"
+    ],
+    "addedLines": 258,
+    "deletedLines": 0
+  },
+  "causalAutopsy": null,
+  "classClosure": null,
+  "verdict": "pass"
+}
