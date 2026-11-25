@@ -36,3 +36,23 @@ Reuse accepted-account authority and existing device presence. No agent enrollme
 ## Open questions
 
 Confirm the installed app's locator capability and verify the current owner's account acceptance on the serving holder. Define a locally verified recovery path if no accepted account is available. Any additional first-device authority needs review before implementation.
+
+## Authenticated Chief of Staff nomination
+
+The phone-only proposal starts from Justin's current Telegram-verified owner identity. The server prepares a short-lived first-device nomination and shows the exact authority change in the authenticated Chief of Staff topic. It names the paired phone and its key fingerprint, explains that the phone will be able to approve future exact changes, and distinguishes the pending Work Board decision. Justin's confirmation binds that nomination, not a general approval inferred from conversation. The screen and topic text use the same versioned disclosure.
+
+Owner identity is established from the current owner registry, the authenticated Telegram ingress envelope and the exact configured Chief of Staff chat and topic. The server needs positive evidence of the direct sender, authentic ingress, source message ID, exact nomination challenge, and pinned proposal and key digests. Forwarded content, generic owner text, a session summary, a copied challenge and ordinary Telegram-pairing history do not count. Reject a stale owner generation, changed keys, changed holder, expiry, an existing approver, and any mismatch. A server-rendered locator carries no owner authority. The phone requires an existing owner device transport signature and a fresh Face ID presence signature from that device over the nomination and its disclosure.
+
+The Trust Is Earned by Work standard names an accepted approval account as remote first-device authority. The current trust service accepts Telegram account decisions only in an authenticated private chat where chat and sender IDs match. A Chief of Staff forum confirmation is valuable operator-origin evidence but does not meet that private account rule. Use it as an exact request and status locator. Under current policy, separately accept an approval account in the existing private Telegram flow if needed, then have that account approve this exact nomination before the phone confirms it. Any proposal to let the forum confirmation alone grant first-device authority needs an explicit review and owner-ratified change to the governing rule. Do not reinterpret or write a broad existing account acceptance from a group topic.
+
+## Synthetic implementation order
+
+First verify strict equality of the authenticated topic event and the prepared nomination with a disposable owner, phone, topic and key digests. No trusted ingress or write path is mounted in this test. Then prove one durable nomination and one-use enrollment compare-and-set at the current serving holder. Finally verify the native locator, the displayed disclosure and fresh owner presence against the exact record. The existing Work Board request retains its own signature and receipt. No host access or QR scan is part of the proposed owner journey.
+
+### Review boundary
+
+The synthetic fixture models a previously accepted approval account as a separate input. It pins that acceptance ID and requires it to predate preparation and confirmation. It also requires independently resolved approval of the exact proposal from that account. Recording account acceptance and nomination from the same topic event would not demonstrate that the account was already accepted. The live design still needs a decision on separate phone-only account acceptance versus a reviewed change to the governing standard. A holder must also share one first-acceptance slot across the existing local path and the nomination path.
+
+Use one durable first-acceptance decision for local enrollment and remote nomination. Race both paths against the same generation and prove one accepted device survives restart. The owner can recover the outcome from that winning record after a lost response.
+
+The current iPhone presence key permits the existing device-policy fallback. A request for Face ID specifically requires separate evidence that the installed native flow uses the biometric-only prompt and a compatible key policy. The server cannot infer Face ID from a generic presence signature. Keep the proposed Face ID wording and enrollment off until native review and physical verification prove the promised behavior.
