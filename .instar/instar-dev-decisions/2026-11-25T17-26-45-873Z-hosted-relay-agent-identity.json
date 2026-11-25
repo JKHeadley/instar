@@ -1,0 +1,30 @@
+{
+  "ts": "2026-11-25T17:26:45.873Z",
+  "slug": "hosted-relay-agent-identity",
+  "suggestedTier": 2,
+  "declaredTier": 2,
+  "riskFloor": 2,
+  "riskFloorReasons": [
+    "safety-invariant proximity: src/hostedRelay/agentIdentity.ts matches relay / delivery path",
+    "safety-invariant proximity: src/hostedRelay/ownerLeaseReader.ts matches relay / delivery path"
+  ],
+  "belowFloor": false,
+  "files": 2,
+  "loc": 116,
+  "scope": {
+    "basis": "staged-in-scope-paths-including-deleted",
+    "files": [
+      "src/hostedRelay/agentIdentity.ts",
+      "src/hostedRelay/ownerLeaseReader.ts"
+    ],
+    "addedLines": 111,
+    "deletedLines": 5
+  },
+  "causalAutopsy": null,
+  "classClosure": {
+    "defectClass": "unbounded-self-action",
+    "closure": "n/a",
+    "reason": "One caller-requested identity check without network or storage effects."
+  },
+  "verdict": "pass"
+}

@@ -1,0 +1,26 @@
+{
+  "version": 2,
+  "slug": "hosted-relay-agent-identity",
+  "sessionId": "41652017-0805-405d-bb4e-2a975fb349ce",
+  "timestamp": "2026-11-25T17:26:15.724Z",
+  "artifactPath": "upgrades/side-effects/hosted-relay-agent-identity.md",
+  "artifactSha256": "c0b0663144e09b11b0d5a9b7f0bd5ef8a3df69eef124ded47303f47d708ba841",
+  "specPath": "docs/specs/hosted-relay.md",
+  "coveredFiles": [
+    "src/hostedRelay/agentIdentity.ts",
+    "src/hostedRelay/ownerLeaseReader.ts",
+    "tests/unit/hosted-relay-agent-identity.test.ts",
+    "upgrades/next/hosted-relay-agent-identity.md",
+    "upgrades/side-effects/hosted-relay-agent-identity.md"
+  ],
+  "phase": "complete",
+  "tier": 2,
+  "tierReasoning": "Dormant owner-record verification prevents certificate substitution and TLS revision rollback at a relay locator.",
+  "secondPass": "true",
+  "reviewerConcurred": true,
+  "classClosure": {
+    "defectClass": "unbounded-self-action",
+    "closure": "n/a",
+    "reason": "One caller-requested identity check without network or storage effects."
+  }
+}

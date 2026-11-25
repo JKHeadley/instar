@@ -13,15 +13,15 @@ interface Registration {
 
 /** All inputs come from the relay's own registration and committed evidence
  * sources. None may be taken from the connection being admitted. */
-export function createHostedRelayOwnerLeaseReader(options: {
+export function createHostedRelayOwnerEvidenceReader(options: {
   registration(hostname: string): Registration | undefined;
   /** Resolve a committed record in this agent's authority domain. The legacy
    * mesh lease signature does not include the agent ID. */
   committedLease(agentId: string): LeaseRecord | undefined;
   verifyFirstOwnerProof: NonNullable<EvaluateOptions['verifyFirstOwnerProof']>;
   now?: () => number;
-}): (hostname: string) => (HostedRelayLease & { publicKeyPem: string }) | undefined {
-  return hostname => {
+}) {
+  return (hostname: string) => {
     try {
       const registration = options.registration(hostname);
       if (!registration || !/^[a-f0-9]{64}$/.test(registration.pinnedGenesis)
@@ -44,8 +44,16 @@ export function createHostedRelayOwnerLeaseReader(options: {
       const key = createPublicKey(machine.publicKey);
       if (key.asymmetricKeyType !== 'ed25519'
         || !verify(null, Buffer.from(FencedLease.canonicalize(lease)), key, Buffer.from(lease.signature, 'base64'))) return undefined;
-      return Object.freeze({ hostname, assignment: registration.assignment, holder: lease.holder,
-        epoch: lease.epoch, expiresAt, publicKeyPem: machine.publicKey });
+      const serving: HostedRelayLease & { publicKeyPem: string } = Object.freeze({
+        hostname, assignment: registration.assignment, holder: lease.holder,
+        epoch: lease.epoch, expiresAt, publicKeyPem: machine.publicKey,
+      });
+      return { serving, agentId: registration.agentId, record, entries: registration.entries };
     } catch { return undefined; } // @silent-fallback-ok — unreadable owner or lease evidence confers no routing authority
   };
+}
+
+export function createHostedRelayOwnerLeaseReader(options: Parameters<typeof createHostedRelayOwnerEvidenceReader>[0]) {
+  const evidence = createHostedRelayOwnerEvidenceReader(options);
+  return (hostname: string) => evidence(hostname)?.serving;
 }
