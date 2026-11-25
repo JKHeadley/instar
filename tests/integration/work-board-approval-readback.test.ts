@@ -48,7 +48,7 @@ it('reads the exact approval only after the real journal advances its durable wa
     reserved = true;
     expect(read()).toEqual({ status: 'unknown' });
     await journal.awaitDurableSeq(WORK_CARD_RECORD_KIND, result.seq!);
-    expect(read()).toEqual({ status: 'durable', event });
+    expect(read()).toMatchObject({ status: 'durable', event, record: { recordKey: event.eventId } });
     const stored = journal.readKindComplete(WORK_CARD_RECORD_KIND).entries;
     expect(toFoldRecords(stored.map(({ data, machine: origin }) => ({ data, origin })))).toEqual([]);
   } finally {

@@ -46,7 +46,7 @@ function fixture(entries: JournalEntry[], { lastSeq = 3, complete = true, reserv
 
 describe('Work Board approval journal readback', () => {
   it('returns the exact winner at the durable watermark', () => {
-    expect(readWorkBoardApprovalEvent(event.eventId, fixture([row]))).toEqual({ status: 'durable', event });
+    expect(readWorkBoardApprovalEvent(event.eventId, fixture([row]))).toMatchObject({ status: 'durable', event, record: { recordKey: event.eventId } });
   });
 
   it('rejects a binding that does not reproduce the reserved generation key', () => {

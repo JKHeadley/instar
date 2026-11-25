@@ -121,7 +121,6 @@ describe('Work cards from the owner phone E2E (feature is alive)', () => {
     const writer = { epoch: 'epoch1', ownerGeneration: 'owner1', ownerPersonKey: 'owner', writerIncarnation: 'i1' };
     let active = true;
     const store = new WorkBoardSlipStore(db);
-    let projectionsObserved = 0;
     const rig: Rig = mkRuntime(stateDir, {
       permissionSlips: {
         store, currentWriter: () => active ? writer : null,
@@ -131,7 +130,6 @@ describe('Work cards from the owner phone E2E (feature is alive)', () => {
             epoch: { machineId: 'm1', journalIncarnation: rig.journal.getOwnAdvert()[WORK_CARD_RECORD_KIND].incarnation, baselineSequence: 0 },
             current: () => active, hasReservation: () => false,
           }),
-          confirmProjection: async () => { projectionsObserved++; return false; },
         },
       },
     });
@@ -194,19 +192,22 @@ describe('Work cards from the owner phone E2E (feature is alive)', () => {
       expect(store.get(slip.id)?.decisionId).toBeNull();
       const committed = await send(app, phone, 'POST', submitRoute, submit);
       expect(committed.status, JSON.stringify(committed.body)).toBe(200);
-      expect(committed.body).toMatchObject({ state: 'signed', receipt: { items: [{ cardId, status: 'unresolved' }] } });
+      expect(committed.body).toMatchObject({ state: 'signed', receipt: { items: [{ cardId, status: 'applied' }] } });
       const retry = await send(app, phone, 'POST', submitRoute, submit);
       expect(retry.status).toBe(200);
       expect(retry.body).toEqual(committed.body);
-      expect(projectionsObserved).toBe(1);
       const records = rig.journal.readKindComplete(WORK_CARD_RECORD_KIND).entries;
       expect(records.filter(({ data }) => data.approvalBinding)).toHaveLength(1);
-      expect(rig.runtime.svc.view(cardId)?.status).toBe('not-started');
+      expect(rig.runtime.svc.view(cardId)?.card.approvedBy?.id).toBe(committed.body.receipt.items[0].eventId);
 
       const signed = await send(app, phone, 'GET', route);
       expect(signed.status).toBe(200);
-      expect(signed.body).toMatchObject({ state: 'signed', receipt: { items: [{ cardId, status: 'unresolved' }] } });
+      expect(signed.body).toMatchObject({ state: 'signed', receipt: { items: [{ cardId, status: 'applied' }] } });
       expect((await send(app, phone, 'POST', challengeRoute, challengeInput)).status).toBe(409);
+      rig.runtime.svc.rebuild();
+      const rebuilt = await send(app, phone, 'GET', route);
+      expect(rebuilt.status).toBe(200);
+      expect(rebuilt.body).toMatchObject({ state: 'signed', receipt: { items: [{ cardId, status: 'unresolved' }] } });
       active = false;
       const unavailable = await send(app, phone, 'GET', route);
       expect(unavailable.status).toBe(503);

@@ -34,7 +34,7 @@ export type WorkBoardApprovalResult =
 
 export type WorkBoardApprovalLookup =
   | { status: 'missing' | 'unknown' }
-  | { status: 'durable'; event: WorkBoardApprovalEvent };
+  | { status: 'durable'; event: WorkBoardApprovalEvent; record?: Record<string, unknown> };
 
 export interface WorkBoardApprovalWriterPorts {
   currentWriter: () => WorkBoardWriterProof | null;

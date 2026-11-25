@@ -710,14 +710,15 @@ export interface CardFold {
 
 const EMPTY_LAST_WRITER = (): Record<MaterialField, 'person' | 'agent'> => ({ title: 'agent', need: 'agent', doneWhen: 'agent', carrier: 'agent', outward: 'agent', links: 'agent' });
 
-export function toFoldRecords(entries: UnionEntry[]): FoldRecord[] {
+export function toFoldRecords(entries: UnionEntry[], verifiedApprovalKey?: string): FoldRecord[] {
   const byKey = new Map<string, FoldRecord>();
   for (const e of entries) {
     const d = e.data;
     if (typeof d.recordKey !== 'string' || !isHlc(d.hlc)) continue;
     // Writer-bound approvals require an enrolled writer and durable projection gate.
-    // Until that gate is installed, the existing fold ignores this reserved record namespace.
-    if (d.approvalBinding !== undefined || /^wc:wc_[a-f0-9]{16}:approve:/.test(d.recordKey)) continue;
+    // Legacy callers omit the key and cannot fold the writer-bound namespace.
+    if (d.recordKey !== verifiedApprovalKey
+      && (d.approvalBinding !== undefined || /^wc:wc_[a-f0-9]{16}:approve:/.test(d.recordKey))) continue;
     const cur = byKey.get(d.recordKey);
     const rec: FoldRecord = { id: d.recordKey, hlc: d.hlc as HlcTimestamp, origin: String(d.origin ?? e.origin), d };
     if (!cur || compareHlc(rec.hlc, cur.hlc) > 0) byKey.set(d.recordKey, rec);

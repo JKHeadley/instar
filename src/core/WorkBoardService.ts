@@ -16,7 +16,7 @@
 
 import { createHash, randomBytes } from 'node:crypto';
 import {
-  WorkBoardApprovalWriter, approvalEventId, sameProof, sameVersion,
+  WorkBoardApprovalWriter, approvalEventId, decodeWorkBoardApprovalEvent, sameProof, sameVersion,
   type WorkBoardApprovalEvent, type WorkBoardApprovalRequest, type WorkBoardApprovalResult,
   type WorkBoardApprovalVersion, type WorkBoardApprovalWriterPorts,
 } from './WorkBoardApprovalWriter.js';
@@ -275,6 +275,34 @@ export class WorkBoardService {
     return result.outcome === 'emitted' ? result.seq ?? null : null;
   }
 
+  /** Expose only an exact durable approval and only under its current enrolled writer. */
+  projectBoundApproval(winner: WorkBoardApprovalEvent): boolean {
+    const authority = this.deps.approvalAuthority;
+    const { proof, version, decisionId, source } = winner.request;
+    const current = () => proof.ownerPersonKey === this.deps.ownerPersonKey()
+      && sameProof(proof, authority?.currentWriter() ?? null);
+    if (!authority || !current()) return false;
+    const durable = authority.readEvent(winner.eventId);
+    if (durable.status !== 'durable' || !durable.record) return false;
+    const event = decodeWorkBoardApprovalEvent(durable.record);
+    if (!event || event.eventId !== winner.eventId || !sameProof(proof, event.request.proof)
+      || !sameVersion(version, event.request.version) || decisionId !== event.request.decisionId
+      || source !== event.request.source || !current()) return false;
+    const existing = this.view(version.cardId)?.card.approvedBy;
+    if (existing?.id === winner.eventId) return true;
+    if (this.keys.has(winner.eventId) || !sameVersion(version, this.approvalSnapshot(version.cardId)?.version ?? null)) return false;
+    const rows = toFoldRecords([{ data: durable.record, origin: this.deps.machineId }], winner.eventId);
+    const record = rows[0];
+    if (!record || record.origin !== this.deps.machineId) return false;
+    // Refuse an event ordered before an already-observed card or policy mutation.
+    const predecessors = [this.recordsOf(version.cardId).at(-1), this.policies.at(-1)];
+    if (predecessors.some((prior) => prior && compareHlc(record.hlc, prior.hlc) <= 0)) return false;
+    this.applyFoldRecords(rows);
+    if (this.view(version.cardId)?.card.approvedBy?.id !== winner.eventId) return false;
+    this.deps.onLocalWrite?.(version.cardId, 'tap', durable.record);
+    return true;
+  }
+
   // ── index ────────────────────────────────────────────────────────────────
 
   rebuild(): void {
@@ -289,7 +317,11 @@ export class WorkBoardService {
 
   /** Apply committed entries (own or a peer's) to the index. Returns the card ids that changed. */
   apply(entries: UnionEntry[]): string[] {
-    const fresh = toFoldRecords(entries).filter((r) => !this.keys.has(r.id) || this.replaces(r));
+    return this.applyFoldRecords(toFoldRecords(entries));
+  }
+
+  private applyFoldRecords(records: FoldRecord[]): string[] {
+    const fresh = records.filter((r) => !this.keys.has(r.id) || this.replaces(r));
     if (!fresh.length) return [];
     const changed = new Set<string>();
     let policyChanged = false;

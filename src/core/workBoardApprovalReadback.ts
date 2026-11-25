@@ -37,7 +37,7 @@ export function readWorkBoardApprovalEvent(eventId: string, ports: ApprovalReadb
     || after.lastSeq !== before.lastSeq || !scan.complete) return { status: 'unknown' };
 
   const covered = new Set<number>();
-  let winner: WorkBoardApprovalEvent | undefined;
+  let winner: { event: WorkBoardApprovalEvent; record: Record<string, unknown> } | undefined;
   for (const row of scan.entries) {
     if (row.seq <= baselineSequence) continue;
     if (row.kind !== WORK_CARD_RECORD_KIND || row.machine !== machineId
@@ -49,9 +49,9 @@ export function readWorkBoardApprovalEvent(eventId: string, ports: ApprovalReadb
     if (checked.envelope.recordKey !== eventId) continue;
     const candidate = decodeWorkBoardApprovalEvent(checked.data);
     if (winner || !candidate || candidate.eventId !== eventId) return { status: 'unknown' };
-    winner = candidate;
+    winner = { event: candidate, record: checked.data };
   }
   if (covered.size !== after.lastSeq - baselineSequence) return { status: 'unknown' };
-  if (winner) return { status: 'durable', event: winner };
+  if (winner) return { status: 'durable', ...winner };
   return { status: ports.hasReservation(eventId) ? 'unknown' : 'missing' };
 }

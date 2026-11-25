@@ -10,7 +10,7 @@
  */
 
 import { canonicalJson, sha256Hex } from './WorkCardStore.js';
-import { sameProof, type WorkBoardApprovalEvent, type WorkBoardApprovalLookup, type WorkBoardWriterProof } from './WorkBoardApprovalWriter.js';
+import { sameProof, type WorkBoardApprovalLookup, type WorkBoardWriterProof } from './WorkBoardApprovalWriter.js';
 import type { WorkBoardSlipStore } from './WorkBoardSlipStore.js';
 import { applyWorkBoardSlip } from './workBoardSlipApplication.js';
 import {
@@ -84,7 +84,6 @@ export interface WorkBoardRuntimeSeams {
     currentWriter: () => WorkBoardWriterProof | null;
     application?: {
       readEvent: (id: string) => WorkBoardApprovalLookup;
-      confirmProjection: (winner: WorkBoardApprovalEvent) => Promise<boolean>;
     };
   };
   enabled: () => boolean;
@@ -175,7 +174,11 @@ export class WorkBoardRuntime {
         approve: (request) => this.svc.approveBound({
           kind: 'person', personKey: writer.ownerPersonKey, isOwner: true, proof: 'presence',
         }, request),
-        confirmProjection: (winner) => application.confirmProjection(winner),
+        confirmProjection: async (winner) => {
+          const projected = this.svc.projectBoundApproval(winner);
+          if (projected) this.controller.poke();
+          return projected;
+        },
       });
     }
     return this.readPermissionSlip(input.slipId);
@@ -200,7 +203,12 @@ export class WorkBoardRuntime {
         schemaVersion: 1, slipId: id, disclosureDigest: slip.digest, expiresAt: new Date(slip.expiresAt).toISOString(),
         state: slip.decisionId !== null ? 'signed' : this.now() >= slip.expiresAt ? 'expired' : 'pending',
         items: slip.proposal.items.map(({ version, disclosure }) => ({ cardId: version.cardId, version, disclosure, action: 'approve' })),
-        receipt: results === null ? null : { items: results },
+        receipt: results === null ? null : { items: results.map((result) => {
+          if ('eventId' in result && !this.svc.recordsOf(result.cardId).some((row) => row.id === result.eventId)) {
+            return { cardId: result.cardId, status: 'unresolved' };
+          }
+          return result;
+        }) },
       },
     };
   }
