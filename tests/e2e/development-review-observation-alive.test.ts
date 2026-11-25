@@ -1,8 +1,9 @@
 import fs from 'node:fs';
 import path from 'node:path';
-import { afterEach, describe, expect, it } from 'vitest';
+import { afterEach, describe, expect, it, vi } from 'vitest';
 import request from 'supertest';
 import { AgentServer } from '../../src/server/AgentServer.js';
+import { SessionManager } from '../../src/core/SessionManager.js';
 import { JobScheduler } from '../../src/scheduler/JobScheduler.js';
 import { createMockSessionManager, createTempProject } from '../helpers/setup.js';
 import type { InstarConfig } from '../../src/core/types.js';
@@ -28,23 +29,31 @@ describe('development review observation lifecycle', () => {
       expectedDurationMinutes: 1, enabled: true, execute: { type: 'agentmd' },
     }));
     const sessions = createMockSessionManager();
+    const sessionManager = new SessionManager({ projectDir: project.dir, tmuxPath: '/usr/bin/tmux',
+      claudePath: '/usr/bin/claude', maxSessions: 1, protectedSessions: [], completionPatterns: [],
+    }, project.state);
+    vi.spyOn(sessionManager, 'spawnSession').mockImplementation(async opts => {
+      const session = await sessions.spawnSession(opts);
+      project.state.saveSession(session);
+      return session;
+    });
+    vi.spyOn(sessionManager, 'listRunningSessions').mockImplementation(sessions.listRunningSessions);
     const scheduler = new JobScheduler({ jobsFile, enabled: true, maxParallelJobs: 1,
       allowOnThrowawayAgent: true, startupGraceMs: 120_000,
       quotaThresholds: { normal: 50, elevated: 70, critical: 85, shutdown: 95 },
-    }, sessions as never, project.state, project.stateDir);
+    }, sessionManager, project.state, project.stateDir);
     let observe = true;
     scheduler.setConfigReader(() => ({ jobs: { observeEmptyDevelopmentReview: observe } }));
     scheduler.start();
     cleanup.push(() => scheduler.stop());
     const config = { projectName: 'development-review-test', projectDir: project.dir,
       stateDir: project.stateDir, port: 0, authToken: 'development-review-test',
-      scheduler: { enabled: false }, monitoring: {}, messaging: [] } as InstarConfig;
-    const server = new AgentServer({ config, state: project.state, scheduler, sessionManager: sessions as never });
+      scheduler: { enabled: false }, monitoring: {}, messaging: [], usage: { ledger: { enabled: false } } } as InstarConfig;
+    const server = new AgentServer({ config, state: project.state, scheduler, sessionManager });
     cleanup.push(() => server.stop());
     await server.start();
     const ledger = server.getTokenLedger();
     expect(ledger).not.toBeNull();
-    scheduler.setTokenLedger(ledger);
     const history = (endpoint = `/jobs/${slug}/history`) =>
       request(server.getApp()).get(endpoint).set('Authorization', 'Bearer development-review-test');
     expect((await request(server.getApp()).get(`/jobs/${slug}/history`)).status).toBe(401);
@@ -54,8 +63,8 @@ describe('development review observation lifecycle', () => {
     expect(first.developmentReviewObservation).toEqual({ wouldSkip: true, actualUsage: null });
 
     const firstSession = sessions._sessions[0];
+    sessionManager.setClaudeSessionId(firstSession.id, 'fixture-transcript');
     firstSession.status = 'completed';
-    ledger!.bindJobSessionTranscript(firstSession.id, 'fixture-transcript');
     ledger!.recordEvent({ requestId: 'fixture-call', sessionId: 'fixture-transcript', ts: Date.now(),
       inputTokens: 11, outputTokens: 7, cacheReadTokens: 100, cacheCreationTokens: 5, model: 'haiku' });
     const withUsage = await history(`/jobs/history?slug=${slug}`);

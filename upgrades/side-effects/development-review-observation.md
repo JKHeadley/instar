@@ -9,3 +9,5 @@ No block or allow path is introduced. The measurement is local to the agent rost
 Focused tests cover native-session isolation, the started scheduler, real authenticated history endpoints, delayed usage, and the empty, nonempty, unknown and disabled states. Full shared verification remains required.
 
 The integration test covers older rows and a neighboring run of the same job. It also checks that the history summary keeps the ledger key internal.
+
+The production server now attaches its token ledger to the scheduler and connects the existing native transcript binding callback. The job ledger preserves the scheduler's normal and triage labels. An early transcript callback can register the session idempotently before the spawn callback. The real server lifecycle test proves attributed usage through authenticated history with the unified usage ledger disabled and no test injection into the scheduler or alias table.

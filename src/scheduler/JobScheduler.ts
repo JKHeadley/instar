@@ -142,6 +142,7 @@ const FAILURE_ALERT_REMINDER_CADENCE_MS = [
 
 /** The TokenLedger seam (job-cost-reduction §9) — optional method. */
 export interface JobSessionLedger {
+  bindJobSessionTranscript?(sessionId: string, transcriptId: string): boolean;
   recordJobSession?(
     sessionId: string,
     slug: string,
@@ -2156,6 +2157,15 @@ export class JobScheduler {
    *  ledger may not carry the method on older builds. */
   setTokenLedger(ledger: JobSessionLedger | null): void {
     this.tokenLedger = ledger;
+  }
+
+  /** Correlate the verified transcript even if its hook wins the spawn bookkeeping race. */
+  bindTokenLedgerJobSession(session: Session, transcriptId: string): void {
+    if (!session.jobSlug || !session.triggeredBy?.startsWith('scheduler:') || !this.tokenLedger) return;
+    const triage = session.jobSlug.startsWith('triage:');
+    const slug = triage ? session.jobSlug.slice('triage:'.length) : session.jobSlug;
+    this.recordLedgerSession(session.id, slug, session.startedAt, triage ? 'triage' : 'job');
+    this.tokenLedger.bindJobSessionTranscript?.(session.id, transcriptId);
   }
 
   /** Test seam: disable the fixed per-slug 0–20 s start offset. */

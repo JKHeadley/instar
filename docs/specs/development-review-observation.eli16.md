@@ -7,3 +7,5 @@ The observation starts disabled. If enabled, the standard scheduled review reads
 The authenticated job history shows the observation beside the actual usage attributed to that session. Usage is unknown until the token ledger has a measurement. Cached input, fresh input and output are separate numbers. Disabling the flag stops collecting new observations and leaves past measurements readable.
 
 The history list and its latest-run summary both use the same public observation fields.
+
+The server attaches the token ledger on startup and links each reported job transcript to its scheduler session. This works even when the separate unified usage ledger is disabled.
