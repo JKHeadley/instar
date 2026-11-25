@@ -1,0 +1,21 @@
+{
+  "version": 2,
+  "slug": "combined-candidate-experiment",
+  "sessionId": "b9dbb2bd-d987-47b2-a538-5de71ea42e15",
+  "timestamp": "2026-11-24T00:31:54.559Z",
+  "artifactPath": "upgrades/side-effects/combined-candidate-experiment.md",
+  "artifactSha256": "1e535211c14a148108a47b90f1397b562e591ac85eebba18e390f47f1f9e619d",
+  "coveredFiles": [
+    "docs/specs/local-verify-combined-candidate-experiment.md",
+    "docs/specs/local-verify-combined-candidate-proposal.json",
+    "upgrades/eli16/combined-candidate-experiment.md",
+    "upgrades/side-effects/combined-candidate-experiment.md"
+  ],
+  "phase": "complete",
+  "tier": 1,
+  "tierReasoning": "Documentation-only reversible experiment protocol; no verification authority or live behavior changes.",
+  "eli16Path": "upgrades/eli16/combined-candidate-experiment.md",
+  "sideEffectsPath": "upgrades/side-effects/combined-candidate-experiment.md",
+  "secondPass": "true",
+  "reviewerConcurred": true
+}

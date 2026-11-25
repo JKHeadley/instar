@@ -1,0 +1,29 @@
+{
+  "schema": "instar-combined-candidate-proposal-v1",
+  "status": "proposed-not-admitted",
+  "authority": "Chief testing acceleration request f280a20c-3701-4e9c-b7a5-d4a71338eb0c",
+  "historicalBase": "ec9401e5bdf28ed5ab1ff13f88e0032cc7895fc6",
+  "members": [
+    {
+      "pr": 3701,
+      "head": "4bbed4631a078df6d0ca83de724199c06c3070cd"
+    },
+    {
+      "pr": 3702,
+      "head": "3394de882bf109ad8204c08d6d3153cbbb728156"
+    }
+  ],
+  "historicalCompatibilityTree": "8b9e104227adda2ad29a159ee3996b38cb6e5b39",
+  "preconditions": [
+    "Main repair green and merged",
+    "All Chief-priority predecessors and earlier eligible normal work retained",
+    "Both members adjacent eligible normal choices",
+    "Fresh remote base and heads/open/draft readback",
+    "No active member run or safety/parent hold",
+    "PR3701 and3669 outside overlap resolved",
+    "Fresh cumulative merge and complete exact-head gate",
+    "Chief publishes separate combined candidate"
+  ],
+  "individualGreenAuthority": false,
+  "testLaunchAuthorizedByThisArtifact": false
+}
