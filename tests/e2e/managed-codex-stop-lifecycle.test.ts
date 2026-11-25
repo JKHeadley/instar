@@ -7,6 +7,7 @@ import { expect, it, vi } from 'vitest';
 import { createTempProject } from '../helpers/setup.js';
 import { AgentServer } from '../../src/server/AgentServer.js';
 import { StateManager } from '../../src/core/StateManager.js';
+import { verifyManagedCodexStop } from '../../src/core/ManagedCodexStopVerifier.js';
 import { ManagedCodexStopStore } from '../../src/core/ManagedCodexStopStore.js';
 import type { InstarConfig } from '../../src/core/types.js';
 import { resolveCodexNativeCanaryBinary } from '../../src/messaging/telegram-origin/OriginCodexModelCanary.js';
@@ -43,12 +44,17 @@ it.skipIf(!codex).each([true, false])('drives an enrolled worker through package
     managedCodexStop: {
       store,
       verify: request => {
-        if (request.topicId !== '147616' || request.sessionId !== workerId
-          || !request.turnId || request.lastAssistantMessage !== 'CANARY_OK') return undefined;
-        // The disposable admission exposes one cycle. The loopback provider
-        // returns identical output, so an additional callback is ambiguous.
-        if (++verifiedCallbacks !== 1) return undefined;
-        return { machineId: 'fixture-one-member', ownerEpoch: 1, cycle: request.turnId, marker: 'fixture-directive' };
+        if (request.topicId !== '147616' || request.sessionId !== workerId) return undefined;
+        verifiedCallbacks++;
+        const enrollment = store.getEnrollment(workerId);
+        const rollouts = fs.readdirSync(home, { recursive: true }).map(String)
+          .filter(name => name.endsWith(workerId + '.jsonl'));
+        if (!enrollment || rollouts.length !== 1) return undefined;
+        return verifyManagedCodexStop(request, {
+          topicId: '147616', nativeSessionId: workerId,
+          machineId: 'fixture-one-member', ownerEpoch: 1,
+          codexHome: home, rolloutPath: fs.realpathSync(path.join(home, rollouts[0])),
+        }, enrollment, 256 * 1024);
       },
     },
   });

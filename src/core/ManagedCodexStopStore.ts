@@ -77,6 +77,11 @@ export class ManagedCodexStopStore {
     return this.change(sessionId, claim => claim.actionOpen ? { ...claim, actionOpen: false } : claim);
   }
 
+  getEnrollment(sessionId: string): ManagedStopEnrollment | undefined {
+    const launchId = this.launchIdFor(sessionId);
+    return launchId === undefined ? undefined : this.read(launchId)?.enrollment;
+  }
+
   hasEnrollment(sessionId: string): boolean {
     return this.launchIdFor(sessionId) !== undefined;
   }

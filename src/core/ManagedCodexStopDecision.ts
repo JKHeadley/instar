@@ -1,3 +1,9 @@
+export interface ManagedStopRolloutBoundary {
+  fileKey: string;
+  turnId: string;
+  endOffset: number;
+}
+
 export interface ManagedStopEnrollment {
   sessionId: string;
   machineId: string;
@@ -5,7 +11,7 @@ export interface ManagedStopEnrollment {
   state: 'pending' | 'active' | 'retired';
   remaining: number;
   issuedCycles: readonly string[];
-  outstanding?: { cycle: string; marker: string };
+  outstanding?: { cycle: string; marker: string; boundary?: ManagedStopRolloutBoundary };
 }
 
 export interface ManagedStopInput {
@@ -17,6 +23,7 @@ export interface ManagedStopInput {
   paused: boolean;
   cycle: string;
   marker: string;
+  boundary?: ManagedStopRolloutBoundary;
   receipt?: { cycle: string; marker: string };
 }
 
@@ -59,7 +66,7 @@ export function decideManagedCodexStop(
       ...enrollment,
       remaining: enrollment.remaining - 1,
       issuedCycles: [...enrollment.issuedCycles, input.cycle],
-      outstanding: directive,
+      outstanding: input.boundary ? { ...directive, boundary: input.boundary } : directive,
     },
     directive,
   };
