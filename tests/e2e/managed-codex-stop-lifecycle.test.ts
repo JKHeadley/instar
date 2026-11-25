@@ -80,11 +80,15 @@ it.skipIf(!codex).each([true, false])('drives an enrolled worker through package
       '[model_providers.fixture]', 'name = "Fixture"', `base_url = "http://127.0.0.1:${provider.port}/v1"`,
       'wire_api = "responses"', 'requires_openai_auth = false', 'supports_websockets = false',
     ].join('\n'));
+    const launchId = 'fixture-launch-incarnation';
+    expect(store.reserve('fixture-managed-action', {
+      sessionId: launchId, machineId: 'fixture-one-member', ownerEpoch: 1, remaining: 1,
+    })).toBe(true);
     const child = spawn(codex!, ['exec', '--json', '--trust', '--skip-git-repo-check',
       '--dangerously-bypass-hook-trust', 'Return CANARY_OK without calling tools.'], {
       cwd: projectDir,
       env: { PATH: process.env.PATH, HOME: home, CODEX_HOME: home,
-        INSTAR_HOOK_TMUX_SESSION: 'fixture-worker', INSTAR_MANAGED_CODEX_STOP: '1' },
+        INSTAR_SESSION_ID: launchId, INSTAR_HOOK_TMUX_SESSION: 'fixture-worker', INSTAR_MANAGED_CODEX_STOP: '1' },
       stdio: ['ignore', 'pipe', 'pipe'],
     });
     const exited = once(child, 'close');
@@ -93,10 +97,7 @@ it.skipIf(!codex).each([true, false])('drives an enrolled worker through package
     child.stderr.on('data', chunk => { stderr += chunk; });
     try {
       await vi.waitFor(() => { workerId = fs.readFileSync(path.join(stateDir, 'native-session'), 'utf8'); }, { timeout: 4000 });
-      expect(store.reserve('fixture-managed-action', {
-        sessionId: workerId, machineId: 'fixture-one-member', ownerEpoch: 1, remaining: 1,
-      })).toBe(true);
-      expect(store.activate(workerId)).toBe(true);
+      expect(store.bindNative(launchId, workerId)).toBe(true);
       fs.writeFileSync(path.join(stateDir, 'managed-ready'), 'ready');
       const [code] = await exited;
       expect(code, stderr).toBe(0);

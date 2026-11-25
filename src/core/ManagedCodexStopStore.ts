@@ -19,6 +19,10 @@ export class ManagedCodexStopStore {
         session_id TEXT NOT NULL UNIQUE,
         claim_json TEXT NOT NULL
       );
+      CREATE TABLE IF NOT EXISTS managed_codex_native_bindings (
+        launch_id TEXT PRIMARY KEY,
+        native_session_id TEXT NOT NULL UNIQUE
+      );
     `);
   }
 
@@ -26,15 +30,42 @@ export class ManagedCodexStopStore {
     if (!workKey || !input.sessionId || !input.machineId
       || !Number.isSafeInteger(input.ownerEpoch) || input.ownerEpoch < 0
       || !Number.isSafeInteger(input.remaining) || input.remaining < 0) return false;
-    return this.db.prepare('INSERT OR IGNORE INTO managed_codex_work_claims VALUES (?, ?, ?)')
-      .run(workKey, input.sessionId, JSON.stringify({
-        enrollment: { ...input, state: 'pending', issuedCycles: [] }, actionOpen: true, paused: false,
-      } satisfies Claim)).changes === 1;
+    return this.db.transaction(() => {
+      if (this.hasEnrollment(input.sessionId)) return false;
+      return this.db.prepare('INSERT OR IGNORE INTO managed_codex_work_claims VALUES (?, ?, ?)')
+        .run(workKey, input.sessionId, JSON.stringify({
+          enrollment: { ...input, state: 'pending', issuedCycles: [] }, actionOpen: true, paused: false,
+        } satisfies Claim)).changes === 1;
+    }).immediate();
   }
 
   activate(sessionId: string): boolean {
     return this.change(sessionId, claim => claim.enrollment.state === 'pending'
       ? { ...claim, enrollment: { ...claim.enrollment, state: 'active' } }
+      : claim);
+  }
+
+  /** Bind the verified native identity after the reserved launch establishes ownership. */
+  bindNative(launchId: string, nativeSessionId: string): boolean {
+    if (!nativeSessionId || launchId === nativeSessionId) return false;
+    return this.db.transaction(() => {
+      const claim = this.read(launchId);
+      if (!claim || claim.enrollment.state !== 'pending'
+        || !claim.actionOpen || claim.paused || this.hasEnrollment(nativeSessionId)) return false;
+
+      this.db.prepare('INSERT INTO managed_codex_native_bindings VALUES (?, ?)').run(launchId, nativeSessionId);
+      this.write(launchId, {
+        ...claim,
+        enrollment: { ...claim.enrollment, sessionId: nativeSessionId, state: 'active' },
+      });
+      return true;
+    }).immediate();
+  }
+
+  /** Keep an aborted launch classified as managed without issuing a directive. */
+  abortPending(launchId: string): boolean {
+    return this.change(launchId, claim => claim.enrollment.state === 'pending'
+      ? { ...claim, actionOpen: false, enrollment: { ...claim.enrollment, state: 'retired' } }
       : claim);
   }
 
@@ -47,19 +78,20 @@ export class ManagedCodexStopStore {
   }
 
   hasEnrollment(sessionId: string): boolean {
-    return this.db.prepare('SELECT 1 FROM managed_codex_work_claims WHERE session_id = ?').get(sessionId) !== undefined;
+    return this.launchIdFor(sessionId) !== undefined;
   }
 
   decide(callback: ManagedStopCallback) {
     return this.db.transaction(() => {
-      const claim = this.read(callback.sessionId);
-      if (!claim) return { managed: false } as const;
+      const launchId = this.launchIdFor(callback.sessionId);
+      const claim = launchId === undefined ? undefined : this.read(launchId);
+      if (!claim || launchId === undefined) return { managed: false } as const;
 
       const decision = decideManagedCodexStop(claim.enrollment, {
         ...callback, actionOpen: claim.actionOpen, paused: claim.paused,
       });
       if (decision.enrollment !== claim.enrollment) {
-        this.write(callback.sessionId, { ...claim, enrollment: decision.enrollment });
+        this.write(launchId, { ...claim, enrollment: decision.enrollment });
       }
       return { managed: true, directive: decision.directive } as const;
     }).immediate();
@@ -74,6 +106,15 @@ export class ManagedCodexStopStore {
       this.write(sessionId, updated);
       return true;
     }).immediate();
+  }
+
+  private launchIdFor(sessionId: string): string | undefined {
+    const row = this.db.prepare(`
+      SELECT session_id AS launch_id FROM managed_codex_work_claims WHERE session_id = ?
+      UNION ALL
+      SELECT launch_id FROM managed_codex_native_bindings WHERE native_session_id = ?
+    `).get(sessionId, sessionId) as { launch_id: string } | undefined;
+    return row?.launch_id;
   }
 
   private read(sessionId: string): Claim | undefined {

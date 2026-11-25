@@ -1,0 +1,20 @@
+{
+  "version": 2,
+  "slug": "managed-codex-startup-binding",
+  "sessionId": "017c26ed-5596-4576-9c20-20af13e4c1f8",
+  "timestamp": "2026-11-25T11:43:04.672Z",
+  "artifactPath": "upgrades/side-effects/managed-codex-startup-binding.md",
+  "artifactSha256": "6a435815d754c1e334dc8ebdd2d596b0c7ee73d4b66d32d354409339007cfc95",
+  "coveredFiles": [
+    "src/core/ManagedCodexStopStore.ts",
+    "tests/e2e/managed-codex-stop-lifecycle.test.ts",
+    "tests/unit/managed-codex-stop-store.test.ts"
+  ],
+  "phase": "complete",
+  "tier": 1,
+  "tierReasoning": "Only the disposable lifecycle uses the new native binding. No live startup, configuration or data changes.",
+  "eli16Path": "upgrades/managed-codex-startup-binding.eli16.md",
+  "sideEffectsPath": "upgrades/side-effects/managed-codex-startup-binding.md",
+  "secondPass": "not-required",
+  "reviewerConcurred": null
+}

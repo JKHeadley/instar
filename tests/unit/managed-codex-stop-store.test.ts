@@ -73,3 +73,40 @@ describe('managed Codex Stop work claims', () => {
     }
   });
 });
+
+describe('managed Codex startup enrollment', () => {
+  it('binds native identity after launch and preserves the original administrative key', () => {
+    const db = new Database(':memory:');
+    try {
+      const store = new ManagedCodexStopStore(db);
+      expect(store.reserve('work', { ...identity, remaining: 2 })).toBe(true);
+      expect(store.decide(first)).toEqual({ managed: true, directive: undefined });
+      expect(store.bindNative(identity.sessionId, 'native')).toBe(true);
+      expect(store.bindNative(identity.sessionId, 'replacement')).toBe(false);
+      expect(store.decide(first)).toEqual({ managed: true, directive: undefined });
+      const native = { ...first, sessionId: 'native' };
+      const firstDirective = store.decide(native).directive;
+      expect(firstDirective?.cycle).toBe('first');
+      expect(store.pause(identity.sessionId)).toBe(true);
+      expect(store.decide({ ...native, cycle: 'second', receipt: firstDirective }).directive).toBeUndefined();
+    } finally {
+      db.close();
+    }
+  });
+
+  it('refuses ownership collisions and preserves a failed-launch classification', () => {
+    const db = new Database(':memory:');
+    try {
+      const store = new ManagedCodexStopStore(db);
+      expect(store.reserve('first', { ...identity, remaining: 1 })).toBe(true);
+      expect(store.reserve('second', { ...identity, sessionId: 'reserved', remaining: 1 })).toBe(true);
+      expect(store.bindNative(identity.sessionId, 'reserved')).toBe(false);
+      expect(store.abortPending(identity.sessionId)).toBe(true);
+      expect(store.bindNative(identity.sessionId, 'native')).toBe(false);
+      expect(store.activate(identity.sessionId)).toBe(false);
+      expect(store.decide(first)).toEqual({ managed: true, directive: undefined });
+    } finally {
+      db.close();
+    }
+  });
+});
