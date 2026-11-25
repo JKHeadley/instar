@@ -27,6 +27,8 @@ import { createConversationGraphSoloOwnership } from '../../src/server/Conversat
 import { ConversationGraphDelegationManager, type ConversationGraphDelegationAvailability } from '../../src/server/ConversationGraphDelegationManager.js';
 import type { ConversationGraphReplicationRuntime } from '../../src/server/ConversationGraphReplicationRuntime.js';
 
+import { createManagedCodexWorkerHome, readManagedCodexWorkerHome } from '../../src/core/ManagedCodexWorkerHome.js';
+
 const codex = process.platform === 'darwin'
   ? await resolveCodexNativeCanaryBinary('/usr/local/bin/codex')
     ?? await resolveCodexNativeCanaryBinary('/opt/homebrew/bin/codex')
@@ -35,10 +37,10 @@ const codex = process.platform === 'darwin'
 it.skipIf(!codex).each([true, false])('drives an enrolled worker through packaged Stop (enabled=%s)', async (enabled) => {
   const project = createTempProject();
   const projectDir = path.join(project.dir, 'worker');
-  const home = path.join(project.dir, 'codex-home');
+  const protectedState = path.join(project.dir, 'protected-state');
   const stateDir = path.join(projectDir, '.instar');
   const hookPath = path.join(projectDir, '.claude/skills/autonomous/hooks/autonomous-stop-hook.sh');
-  for (const dir of [home, stateDir, path.dirname(hookPath), path.join(projectDir, '.codex')]) {
+  for (const dir of [protectedState, stateDir, path.dirname(hookPath), path.join(projectDir, '.codex')]) {
     fs.mkdirSync(dir, { recursive: true });
   }
   fs.copyFileSync(path.resolve('.claude/skills/autonomous/hooks/autonomous-stop-hook.sh'), hookPath);
@@ -76,7 +78,9 @@ it.skipIf(!codex).each([true, false])('drives an enrolled worker through package
     managedCodexStop: {
       store,
       verify: (request, enrollment) => {
-        if (request.topicId !== '147616' || request.sessionId !== workerId) return undefined;
+        if (request.topicId !== '147616' || request.sessionId !== workerId || !enrollment.launchId || !enrollment.homeIdentity) return undefined;
+        const home = readManagedCodexWorkerHome(protectedState, projectDir, enrollment.launchId, enrollment.homeIdentity);
+        if (!home) return undefined;
         const currentCustody = delegation.readSoloTopicCustody(request.topicId);
         if (!currentCustody) return undefined;
         verifiedCallbacks++;
@@ -113,14 +117,14 @@ it.skipIf(!codex).each([true, false])('drives an enrolled worker through package
       hooks: { SessionStart: hook(JSON.stringify(process.execPath) + ' ' + JSON.stringify(startHook)),
         Stop: hook('bash ' + JSON.stringify(hookPath) + ' --codex') },
     }));
-    fs.writeFileSync(path.join(home, 'config.toml'), [
+    const codexConfig = [
       `model = "${CODEX_CANARY_MODELS[0]}"`, 'model_provider = "fixture"', 'approval_policy = "never"',
       'sandbox_mode = "workspace-write"', 'web_search = "disabled"',
       '[sandbox_workspace_write]', 'exclude_tmpdir_env_var = true', 'exclude_slash_tmp = true',
       '[features]', 'shell_snapshot = false', 'codex_hooks = true', '[analytics]', 'enabled = false',
       '[model_providers.fixture]', 'name = "Fixture"', `base_url = "http://127.0.0.1:${provider.port}/v1"`,
       'wire_api = "responses"', 'requires_openai_auth = false', 'supports_websockets = false',
-    ].join('\n'));
+    ].join('\n');
     SafeGitExecutor.run(['init', '-q'], { cwd: projectDir, operation: 'managed-codex-stop-lifecycle-fixture' });
     const tracker = new InitiativeTracker(stateDir);
     const runner = new ProjectRoundRunner({ tracker, stateDir, machineId });
@@ -167,6 +171,8 @@ it.skipIf(!codex).each([true, false])('drives an enrolled worker through package
         readAdmission,
         reserveWork: (admission, reserve) => runner.reserveManagedRound('managed-project', 0, admission, reserve),
         launch: async (_admission, launchId) => {
+          const { home, homeIdentity } = createManagedCodexWorkerHome(protectedState, projectDir, launchId);
+          fs.writeFileSync(path.join(home, 'config.toml'), codexConfig, { mode: 0o600 });
           child = spawn(codex!, ['exec', '--json', '--trust', '--skip-git-repo-check',
             '--dangerously-bypass-hook-trust', 'Return CANARY_OK without calling tools.'], {
             cwd: projectDir,
@@ -178,7 +184,7 @@ it.skipIf(!codex).each([true, false])('drives an enrolled worker through package
           child.stdout?.resume();
           child.stderr?.on('data', chunk => { stderr += chunk; });
           await vi.waitFor(() => { workerId = fs.readFileSync(path.join(stateDir, 'native-session'), 'utf8'); }, { timeout: 4000 });
-          return { launchId, nativeSessionId: workerId };
+          return { launchId, nativeSessionId: workerId, homeIdentity };
         },
         verifyLaunch: (_admission, launch) => launch.nativeSessionId === workerId && child?.exitCode === null,
         releaseLaunch: () => fs.writeFileSync(path.join(stateDir, 'managed-ready'), 'ready'),

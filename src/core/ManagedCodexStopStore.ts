@@ -84,7 +84,7 @@ export class ManagedCodexStopStore {
       const remaining = Math.min(input.remaining, previousBudget.remaining ?? input.remaining);
       return this.db.prepare('INSERT OR IGNORE INTO managed_codex_work_claims VALUES (?, ?, ?)')
         .run(workKey, input.sessionId, JSON.stringify({
-          enrollment: { ...input, remaining, state: 'pending', issuedCycles: [] }, actionOpen: true, paused: false, roundKey, osBootId,
+          enrollment: { ...input, launchId: input.sessionId, remaining, state: 'pending', issuedCycles: [] }, actionOpen: true, paused: false, roundKey, osBootId,
         } satisfies Claim)).changes === 1;
     }).immediate();
   }
@@ -163,7 +163,7 @@ export class ManagedCodexStopStore {
   }
 
   /** Bind the verified native identity after the reserved launch establishes ownership. */
-  bindNative(launchId: string, nativeSessionId: string): boolean {
+  bindNative(launchId: string, nativeSessionId: string, homeIdentity?: string): boolean {
     if (!nativeSessionId || launchId === nativeSessionId) return false;
     return this.db.transaction(() => {
       const claim = this.read(launchId);
@@ -173,7 +173,7 @@ export class ManagedCodexStopStore {
       this.db.prepare('INSERT INTO managed_codex_native_bindings VALUES (?, ?)').run(launchId, nativeSessionId);
       this.write(launchId, {
         ...claim,
-        enrollment: { ...claim.enrollment, sessionId: nativeSessionId, state: 'active' },
+        enrollment: { ...claim.enrollment, sessionId: nativeSessionId, homeIdentity, state: 'active' },
       });
       return true;
     }).immediate();

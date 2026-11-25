@@ -16,6 +16,7 @@ export interface ManagedProjectAdmission {
 export interface ManagedProjectLaunch {
   launchId: string;
   nativeSessionId: string;
+  homeIdentity?: string;
 }
 
 interface Dependencies {
@@ -65,7 +66,7 @@ export async function dispatchManagedCodexProject(
       || !sameAdmission(admission, deps.readAdmission(workKey))
       || !deps.verifyLaunch(admission, worker)) return;
 
-    bound = deps.store.bindNative(launchId, worker.nativeSessionId);
+    bound = deps.store.bindNative(launchId, worker.nativeSessionId, worker.homeIdentity);
     if (!bound) return;
     deps.releaseLaunch(worker);
     released = true;

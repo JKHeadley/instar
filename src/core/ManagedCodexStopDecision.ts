@@ -5,6 +5,8 @@ export interface ManagedStopRolloutBoundary {
 }
 
 export interface ManagedStopEnrollment {
+  launchId?: string;
+  homeIdentity?: string;
   sessionId: string;
   machineId: string;
   ownerEpoch: number;

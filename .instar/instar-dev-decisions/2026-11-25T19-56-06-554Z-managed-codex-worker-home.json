@@ -1,0 +1,25 @@
+{
+  "ts": "2026-11-25T19:56:06.554Z",
+  "slug": "managed-codex-worker-home",
+  "suggestedTier": 2,
+  "declaredTier": 1,
+  "riskFloor": 1,
+  "riskFloorReasons": [],
+  "belowFloor": false,
+  "files": 4,
+  "loc": 62,
+  "scope": {
+    "basis": "staged-in-scope-paths-including-deleted",
+    "files": [
+      "src/core/ManagedCodexProjectDispatch.ts",
+      "src/core/ManagedCodexStopDecision.ts",
+      "src/core/ManagedCodexStopStore.ts",
+      "src/core/ManagedCodexWorkerHome.ts"
+    ],
+    "addedLines": 58,
+    "deletedLines": 4
+  },
+  "causalAutopsy": null,
+  "classClosure": null,
+  "verdict": "pass"
+}

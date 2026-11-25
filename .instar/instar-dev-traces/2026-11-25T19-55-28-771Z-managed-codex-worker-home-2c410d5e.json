@@ -1,0 +1,23 @@
+{
+  "version": 2,
+  "slug": "managed-codex-worker-home",
+  "sessionId": "017c26ed-5596-4576-9c20-20af13e4c1f8",
+  "timestamp": "2026-11-25T19:55:28.771Z",
+  "artifactPath": "upgrades/side-effects/managed-codex-worker-home.md",
+  "artifactSha256": "aea83bda17aa73c05678bbccd3217963d3075cbe4eeaeb0aeda3ba7f7b7a5511",
+  "coveredFiles": [
+    "src/core/ManagedCodexProjectDispatch.ts",
+    "src/core/ManagedCodexStopDecision.ts",
+    "src/core/ManagedCodexStopStore.ts",
+    "src/core/ManagedCodexWorkerHome.ts",
+    "tests/e2e/managed-codex-stop-lifecycle.test.ts",
+    "tests/unit/managed-codex-worker-home.test.ts"
+  ],
+  "phase": "complete",
+  "tier": 1,
+  "tierReasoning": "Private home evidence is exercised only by the packaged dark fixture; no production provision or worker launch is added.",
+  "eli16Path": "upgrades/managed-codex-worker-home.eli16.md",
+  "sideEffectsPath": "upgrades/side-effects/managed-codex-worker-home.md",
+  "secondPass": "true",
+  "reviewerConcurred": true
+}
