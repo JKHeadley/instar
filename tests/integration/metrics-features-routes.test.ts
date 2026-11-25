@@ -7,6 +7,7 @@
  * ?feature= filter.
  */
 import { describe, it, expect, afterEach, vi } from 'vitest';
+import { createTempProject, type TempProject } from '../helpers/setup.js';
 import express from 'express';
 import request from 'supertest';
 import fs from 'node:fs';
@@ -18,11 +19,18 @@ import { CompletionClaimVerifier } from '../../src/monitoring/CompletionClaimVer
 import type { ExtractedClaim } from '../../src/monitoring/ClaimObservation.js';
 import { SafeFsExecutor } from '../../src/core/SafeFsExecutor.js';
 
+const routeProjects: TempProject[] = [];
+afterEach(() => {
+  for (const project of routeProjects.splice(0)) project.cleanup();
+});
+
 let ledger: FeatureMetricsLedger | null = null;
 
 function ctxWith(metricsLedger: FeatureMetricsLedger | null, verifier?: CompletionClaimVerifier): RouteContext {
+  const project = createTempProject();
+  routeProjects.push(project);
   return {
-    config: { projectName: 'test', projectDir: '/tmp', stateDir: '/tmp/.instar', port: 0, sessions: {} as any, scheduler: {} as any } as any,
+    config: { projectName: 'test', projectDir: project.dir, stateDir: project.stateDir, port: 0, sessions: {} as any, scheduler: {} as any } as any,
     sessionManager: {
       listRunningSessions: () => [],
       getCachedRunningSessions: () => ({ count: 0, sessions: [] }),

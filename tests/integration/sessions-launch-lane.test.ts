@@ -8,12 +8,18 @@
  * lanes through the real router (the enrichment map spreads the session, so
  * a future whitelist refactor that drops the field fails here).
  */
-import { describe, it, expect, beforeAll } from 'vitest';
+import { afterAll, describe, it, expect, beforeAll } from 'vitest';
+import { createTempProject, type TempProject } from '../helpers/setup.js';
 import express from 'express';
 import request from 'supertest';
 import { createRoutes } from '../../src/server/routes.js';
 import type { RouteContext } from '../../src/server/routes.js';
 import type { Session } from '../../src/core/types.js';
+
+const routeProjects: TempProject[] = [];
+afterAll(() => {
+  for (const project of routeProjects.splice(0)) project.cleanup();
+});
 
 const SESSIONS: Partial<Session>[] = [
   {
@@ -30,8 +36,10 @@ const SESSIONS: Partial<Session>[] = [
 ];
 
 function ctx(): RouteContext {
+  const project = createTempProject();
+  routeProjects.push(project);
   return {
-    config: { projectName: 'test', projectDir: '/tmp', stateDir: '/tmp/.instar', port: 0, sessions: {} as never, scheduler: {} as never },
+    config: { projectName: 'test', projectDir: project.dir, stateDir: project.stateDir, port: 0, sessions: {} as never, scheduler: {} as never },
     sessionManager: {
       listRunningSessions: () => SESSIONS,
     },

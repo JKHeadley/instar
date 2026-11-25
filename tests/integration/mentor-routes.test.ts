@@ -6,12 +6,18 @@
  * Uses supertest + a real MentorOnboardingRunner with fake services, so the
  * route↔runner contract is exercised over the full HTTP pipeline.
  */
-import { describe, it, expect, vi } from 'vitest';
+import { afterEach, describe, it, expect, vi } from 'vitest';
+import { createTempProject, type TempProject } from '../helpers/setup.js';
 import express from 'express';
 import request from 'supertest';
 import { createRoutes } from '../../src/server/routes.js';
 import type { RouteContext } from '../../src/server/routes.js';
 import {
+
+const routeProjects: TempProject[] = [];
+afterEach(() => {
+  for (const project of routeProjects.splice(0)) project.cleanup();
+});
   MentorOnboardingRunner,
   DEFAULT_MENTOR_CONFIG,
   type MentorConfig,
@@ -31,8 +37,10 @@ function fakeServices(): MentorRunnerServices {
 }
 
 function appWith(runner: MentorOnboardingRunner | null): express.Express {
+  const project = createTempProject();
+  routeProjects.push(project);
   const ctx = {
-    config: { projectName: 't', projectDir: '/tmp', stateDir: '/tmp/.instar', port: 0 } as any,
+    config: { projectName: 't', projectDir: project.dir, stateDir: project.stateDir, port: 0 } as any,
     sessionManager: { listRunningSessions: () => [] } as any,
     state: { getJobState: () => null, getSession: () => null } as any,
     scheduler: null, telegram: null, relationships: null, feedback: null, dispatches: null,
