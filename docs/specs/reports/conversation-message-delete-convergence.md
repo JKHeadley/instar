@@ -51,3 +51,7 @@ Independent and cross-model review concurred on publishing a fully written tempo
 ## Serialized stale process-lock recovery checkpoint
 
 The independent and cross-model reviewers concurred on interprocess serialization for cooperating updated binaries. In the reclaim transaction, the current lock must still match the observed process, hostname, start time and heartbeat. Liveness is freshly checked before unlink. The focused tests cover new ownership and start-time changes, a busy SQLite connection, simultaneous start from stale state, and recovery after a child is killed while holding the SQLite mutex. Fresh ownership remains protected by no-replace publication. Production mounting must exclude older binaries sharing the same state directory and wire the normal boot lock.
+
+## Private message-change sync projection checkpoint
+
+Independent and cross-model review required the cursor to stop before unresolved target or access evidence. The final projection distinguishes allow, deny and unknown. It suppresses a removed original at its own sequence, and emits or holds the marker at the removal fact's sequence. Denied markers advance without IDs. Unreadable original locations cannot advance search past the marker, and corrupt page source locations return no page. Tests cover retained access changes, one-entry paging, reversed arrival, duplicate removal, denial, and corrupt offsets. The production lifecycle confirms the old events route still keeps raw removal facts dark. Signed cursor scope and live cache reconciliation remain production setup work.

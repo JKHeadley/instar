@@ -1902,7 +1902,7 @@ export function createMobileConversationRouter(deps: MobileConversationRouteDeps
       conversationKey: key,
       events: page.events.filter((e) => {
         // A message, and anything about one, such as its transcript or a pin (conversation-pinned-messages).
-        if (e.kind === 'reaction' || (e.kind === 'pin' && !pinsOn())) return false;
+        if (e.kind === 'message-removed' || e.kind === 'reaction' || (e.kind === 'pin' && !pinsOn())) return false;
         const about = e.kind === 'pin' ? e.pinnedMessageId : (e as { messageId?: unknown }).messageId;
         // Text about a message that has not reached this machine waits for it.
         if (typeof about !== 'string' || (e.kind !== 'transcript' && e.kind !== 'pin' && !svc!.store.hasMessage(about))) return true;

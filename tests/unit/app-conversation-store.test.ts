@@ -37,6 +37,84 @@ const dl = (id: string, state: 'delivered' | 'refused' | 'intercepted' | 'unknow
 const fileOf = (dir: string) => path.join(dir, 'app-conversations', `${crypto.createHash('sha256').update(`app:${KEY}`).digest('hex')}.jsonl`);
 
 describe('AppConversationStore', () => {
+  it('syncs exact authorized removals without replaying the removed message', async () => {
+    const { store } = mk();
+    const readAll = () => 'allow' as const;
+    try {
+      store.append(created());
+      store.append(msg('shown', 1));
+      store.append(msg('removed', 2, 'hidden original'));
+      expect(await store.prepareRemovalHistory(KEY)).toBe(true);
+      const awaitingAccess = store.syncRemovalAwareMessageChanges(KEY, null, 100,
+        (row) => row.eventId === 'ev-shown' ? 'unknown' : 'allow');
+      expect(awaitingAccess).toMatchObject({ changes: [], blocked: true });
+      const prior = store.syncRemovalAwareMessageChanges(KEY, awaitingAccess?.cursor, 100, readAll);
+      expect(prior?.changes).toHaveLength(2);
+      store.append({ kind: 'message-removed', conversationKey: KEY, eventId: 'removal',
+        targetEventId: 'ev-removed', targetMessageId: 'msg-removed', machineId: 'm1', at: at(4) });
+      expect(store.syncRemovalAwareMessageChanges(KEY, prior?.cursor, 100, readAll)).toBeNull();
+      expect(await store.prepareRemovalHistory(KEY)).toBe(true);
+      const marker = { kind: 'message-removed', conversationKey: KEY, eventId: 'removal', targetEventId: 'ev-removed' };
+      expect(store.syncRemovalAwareMessageChanges(KEY, prior?.cursor, 100, readAll)?.changes).toEqual([marker]);
+      const fresh = store.syncRemovalAwareMessageChanges(KEY, null, 100, readAll);
+      expect(fresh?.changes).toEqual([{ kind: 'message', row: expect.objectContaining({ eventId: 'ev-shown' }) }, marker]);
+      expect(JSON.stringify(fresh)).not.toContain('hidden original');
+      const denied = store.syncRemovalAwareMessageChanges(KEY, null, 100, (row) => row.eventId === 'ev-shown' ? 'allow' : 'deny');
+      expect(denied?.changes).toEqual([fresh?.changes[0]]);
+      expect(denied?.cursor).toBe(fresh?.cursor);
+      const unresolved = store.syncRemovalAwareMessageChanges(KEY, prior?.cursor, 100, () => 'unknown');
+      expect(unresolved).toEqual({ changes: [], cursor: prior?.cursor, blocked: true });
+      expect(store.syncRemovalAwareMessageChanges(KEY, unresolved?.cursor, 100, readAll)?.changes).toEqual([marker]);
+      const earlier = store.syncRemovalAwareMessageChanges(KEY, null, 2, readAll);
+      const suppressed = store.syncRemovalAwareMessageChanges(KEY, earlier?.cursor, 1, () => 'unknown');
+      expect(suppressed).toMatchObject({ changes: [], blocked: false });
+      expect(suppressed?.cursor).toBe(prior?.cursor);
+      expect(store.syncRemovalAwareMessageChanges(KEY, suppressed?.cursor, 1, () => 'unknown')?.blocked).toBe(true);
+    } finally { store.close(); }
+  });
+
+  it('emits a single marker when a removal precedes its original across pages', async () => {
+    const { store } = mk();
+    try {
+      store.append(created());
+      const fact = { kind: 'message-removed' as const, conversationKey: KEY, eventId: 'early-removal',
+        targetEventId: 'ev-late', targetMessageId: 'msg-late', machineId: 'm1', at: at(3) };
+      store.append(fact);
+      store.append(msg('after-fact', 4));
+      expect(await store.prepareRemovalHistory(KEY)).toBe(true);
+      const beforeTarget = store.syncRemovalAwareMessageChanges(KEY, null, 100, () => 'allow');
+      expect(beforeTarget?.changes).toEqual([]);
+      expect(beforeTarget?.blocked).toBe(true);
+      store.append(msg('late', 2));
+      store.append({ ...fact, eventId: 'duplicate-early-removal' });
+      expect(await store.prepareRemovalHistory(KEY)).toBe(true);
+      const updated = store.syncRemovalAwareMessageChanges(KEY, beforeTarget?.cursor, 1, () => 'allow');
+      expect(updated?.changes).toEqual([{ kind: 'message-removed', conversationKey: KEY, eventId: fact.eventId, targetEventId: fact.targetEventId }]);
+      const remaining = store.syncRemovalAwareMessageChanges(KEY, updated?.cursor, 100, () => 'allow');
+      expect(remaining?.changes).toEqual([{ kind: 'message', row: expect.objectContaining({ eventId: 'ev-after-fact' }) }]);
+      expect(remaining?.blocked).toBe(false);
+    } finally { store.close(); }
+  });
+
+  it('does not consume a removal when the earlier original has an unreadable index location', async () => {
+    const { dir, store } = mk();
+    try {
+      store.append(created());
+      store.append(msg('target', 1));
+      expect(await store.prepareRemovalHistory(KEY)).toBe(true);
+      const prior = store.syncRemovalAwareMessageChanges(KEY, null, 100, () => 'allow');
+      store.append({ kind: 'message-removed', conversationKey: KEY, eventId: 'removal',
+        targetEventId: 'ev-target', targetMessageId: 'msg-target', machineId: 'm1', at: at(2) });
+      const db = new Database(path.join(dir, 'app-conversations', 'index.sqlite'));
+      try { db.exec("UPDATE events SET byteOffset = 1 WHERE eventId = 'ev-target'"); }
+      finally { db.close(); }
+      expect(await store.prepareRemovalHistory(KEY)).toBe(true);
+      expect(store.syncRemovalAwareMessageChanges(KEY, prior?.cursor, 1, () => 'allow'))
+        .toEqual({ changes: [], cursor: prior?.cursor, blocked: true });
+      expect(store.syncRemovalAwareMessageChanges(KEY, null, 100, () => 'allow')).toBeNull();
+    } finally { store.close(); }
+  });
+
   it('filters exact removals before visible pagination and preserves raw recovery reads', async () => {
     const { store } = mk();
     store.append(created());

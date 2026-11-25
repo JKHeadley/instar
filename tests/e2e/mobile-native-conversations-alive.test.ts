@@ -179,6 +179,14 @@ describe('native app conversations — production wiring', () => {
     expect(link.status).toBe(200);
     expect(new URL(link.body.url).hostname).toBe(HOST);
     expect(link.body.position.eventId).toBe(target);
+    server.appConversations!.store.append({
+      kind: 'message-removed', conversationKey: key, eventId: 'dark-test-removal-fact',
+      targetEventId: target, targetMessageId: reply.body.messageId,
+      machineId: server.appConversations!.deps.machineId(), at: new Date().toISOString(),
+    });
+    const darkEvents = await send('GET', `/mobile/chat/app/${key}/events`);
+    expect(darkEvents.status).toBe(200);
+    expect(darkEvents.body.events.map((event: { kind: string }) => event.kind)).not.toContain('message-removed');
     const entry = await request(app).get('/dashboard/console/message-link-v1/');
     expect(entry.status).toBe(200);
     expect(entry.text).toContain('/dashboard/console/console.js?message-link-v1');

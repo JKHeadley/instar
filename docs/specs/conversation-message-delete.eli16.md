@@ -27,3 +27,5 @@ The private Delete action now checks the server’s process lock before it write
 Two servers starting together can no longer overwrite each other’s first lock record. Taking over an old lock left behind by a stopped server still needs its own check before Delete can go live.
 
 If a server leaves an old lock behind, the next server takes a short recovery lock before removing it. It checks the record again so it cannot remove a lock that another server has already acquired.
+
+A private sync check now tells an authorized reader which exact message was removed. If the removal record arrives first, the check pauses there until it can verify who may see the notice. The existing app feed still keeps these notices off.

@@ -1432,6 +1432,12 @@ export class AppConversationStore {
    * the read starts again from the beginning and the client de-duplicates by eventId.
    */
   syncEvents(conversationKey: string, cursor: string | null | undefined, limit = 100): { events: StoredAppEvent[]; cursor: string } {
+    const { events, cursor: next } = this.syncIndexedEvents(conversationKey, cursor, limit, false);
+    return { events, cursor: next };
+  }
+
+  private syncIndexedEvents(conversationKey: string, cursor: string | null | undefined, limit: number,
+    strict: boolean): { events: StoredAppEvent[]; cursor: string; startCursor: string } {
     const canonicalKey = canonicalConversationKey(conversationKey);
     const self = this.opts.machineId();
     let after = 0;
@@ -1442,15 +1448,67 @@ export class AppConversationStore {
       } catch { /* @silent-fallback-ok — an unreadable cursor restarts from the beginning (the client de-duplicates) */ }
     }
     const n = Math.max(1, Math.min(100, Math.floor(limit)));
-    const rows = this.db.prepare('SELECT ingestSeq, byteOffset, byteLength FROM events WHERE canonicalKey = ? AND ingestSeq > ? ORDER BY ingestSeq ASC LIMIT ?').all(canonicalKey, after, n) as Array<{ ingestSeq: number; byteOffset: number; byteLength: number }>;
+    const rows = this.db.prepare('SELECT ingestSeq, eventId, kind, byteOffset, byteLength FROM events WHERE canonicalKey = ? AND ingestSeq > ? ORDER BY ingestSeq ASC LIMIT ?').all(canonicalKey, after, n) as Array<{ ingestSeq: number; eventId: string; kind: AppEventKind; byteOffset: number; byteLength: number }>;
     const events: StoredAppEvent[] = [];
     let last = after;
     for (const r of rows) {
       last = r.ingestSeq;
       const ev = this.readEventAt(canonicalKey, r.byteOffset, r.byteLength);
+      if (strict && (!ev || ev.ingestSeq !== r.ingestSeq || ev.eventId !== r.eventId
+        || ev.kind !== r.kind || canonicalConversationKey(ev.conversationKey) !== canonicalKey)) {
+        throw new Error('indexed sync event unavailable');
+      }
       if (ev) events.push(ev);
     }
-    return { events, cursor: Buffer.from(JSON.stringify({ m: self, s: last })).toString('base64url') };
+    return { events, cursor: this.syncCursor(last), startCursor: this.syncCursor(after) };
+  }
+
+  private syncCursor(sequence: number): string {
+    return Buffer.from(JSON.stringify({ m: this.opts.machineId(), s: sequence })).toString('base64url');
+  }
+
+  /** Authorized message changes only. The private projection does not replace generic App sync. */
+  syncRemovalAwareMessageChanges(conversationKey: string, cursor: string | null | undefined, limit: number,
+    mayRead: (row: BrowsedMessage) => 'allow' | 'deny' | 'unknown'): {
+      changes: Array<{ kind: 'message'; row: BrowsedMessage } |
+        { kind: 'message-removed'; conversationKey: string; eventId: string; targetEventId: string }>;
+      cursor: string;
+      blocked: boolean;
+    } | null {
+    return this.withRemovalHistory(conversationKey, (custodian) => {
+      const key = canonicalConversationKey(conversationKey);
+      const { events, cursor: next, startCursor } = this.syncIndexedEvents(conversationKey, cursor, limit, true);
+      const firstRemoval = this.db.prepare(`
+        SELECT e.eventId FROM message_removals r JOIN events e
+          ON e.canonicalKey = r.canonicalKey AND e.eventId = r.eventId
+        WHERE r.canonicalKey = ? AND r.targetEventId = ? AND r.targetMessageId = ? AND r.machineId = ?
+        ORDER BY e.ingestSeq ASC LIMIT 1
+      `);
+      type Change = NonNullable<ReturnType<AppConversationStore['syncRemovalAwareMessageChanges']>>['changes'][number];
+      const changes: Change[] = [];
+      let previous = startCursor;
+      for (const fact of events) {
+        const marker = fact.kind === 'message-removed' && fact.machineId === custodian;
+        const target = marker ? this.getEvent(conversationKey, fact.targetEventId) : fact;
+        if (marker && (!target || target.eventId !== fact.targetEventId
+          || canonicalConversationKey(target.conversationKey) !== key)) return { changes, cursor: previous, blocked: true };
+        if (target && (target.kind === 'message' || target.kind === 'media-message')
+          && canonicalConversationKey(target.conversationKey) === key
+          && (!marker || fact.targetMessageId === target.messageId)) {
+          const removal = firstRemoval.get(key, target.eventId, target.messageId, custodian) as { eventId: string } | undefined;
+          if (marker ? removal?.eventId === fact.eventId : !removal && fact.kind !== 'message-removed') {
+            const row = this.projectMessage(target);
+            const access = mayRead(row);
+            if (access === 'unknown') return { changes, cursor: previous, blocked: true };
+            if (access === 'allow') changes.push(marker
+              ? { kind: 'message-removed', conversationKey, eventId: fact.eventId, targetEventId: target.eventId }
+              : { kind: 'message', row });
+          }
+        }
+        previous = this.syncCursor(fact.ingestSeq);
+      }
+      return { changes, cursor: next, blocked: false };
+    });
   }
 
   /**
@@ -1619,7 +1677,7 @@ export class AppConversationStore {
 
   private *scanRemovalIndex(conversationKey: string, filePath: string, expectedJournal?: fs.Stats): Generator<void, boolean> {
     const key = canonicalConversationKey(conversationKey);
-    const event = this.db.prepare('SELECT kind FROM events WHERE canonicalKey = ? AND eventId = ?');
+    const event = this.db.prepare('SELECT kind, ingestSeq FROM events WHERE canonicalKey = ? AND eventId = ?');
     const message = expectedJournal
       ? this.db.prepare('SELECT eventId, at FROM messages WHERE canonicalKey = ? AND messageId = ?')
       : null;
@@ -1639,15 +1697,24 @@ export class AppConversationStore {
       const chunk = Buffer.alloc(64 * 1024);
       let carry = Buffer.alloc(0);
       const seen = new Set<string>();
+      let lastSequence = 0;
       for (;;) {
         const length = fs.readSync(fd, chunk, 0, chunk.length, null);
         if (!length) return carry.length === 0 && seen.size === counts.journalIndex && seen.size === counts.removalIndex;
         const bytes = Buffer.concat([carry, chunk.subarray(0, length)]);
         let start = 0;
         for (let end = bytes.indexOf(10); end !== -1; end = bytes.indexOf(10, start)) {
-          const raw = validateAppEvent(JSON.parse(bytes.subarray(start, end).toString('utf8')));
-          if (!raw || canonicalConversationKey(raw.conversationKey) !== key
-            || (event.get(key, raw.eventId) as { kind: string } | undefined)?.kind !== raw.kind) return false;
+          const parsed = JSON.parse(bytes.subarray(start, end).toString('utf8')) as { ingestSeq?: number };
+          const raw = validateAppEvent(parsed);
+          if (!raw || canonicalConversationKey(raw.conversationKey) !== key) return false;
+          const indexed = event.get(key, raw.eventId) as { kind: string; ingestSeq: number } | undefined;
+          if (indexed?.kind !== raw.kind) return false;
+          if (expectedJournal) {
+            const sequence = parsed.ingestSeq;
+            if (typeof sequence !== 'number' || !Number.isSafeInteger(sequence) || sequence <= lastSequence
+              || indexed.ingestSeq !== sequence) return false;
+            lastSequence = sequence;
+          }
           if (message && (raw.kind === 'message' || raw.kind === 'media-message')) {
             const row = message.get(key, raw.messageId) as { eventId: string; at: string } | undefined;
             if (row?.eventId !== raw.eventId || row.at !== raw.at) return false;

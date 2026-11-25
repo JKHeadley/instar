@@ -7,9 +7,9 @@ approved: true
 approved-by: echo under standing build approval for local storage, private signed admission and execution, and unmounted history projection only
 parent-principle: Operator-Surface Quality
 tier: 2
-review-convergence: "2026-11-25T20:27:56.633Z"
-review-iterations: 27
-review-completed-at: "2026-11-25T20:27:56.633Z"
+review-convergence: "2026-11-25T20:52:23.314Z"
+review-iterations: 30
+review-completed-at: "2026-11-25T20:52:23.314Z"
 review-report: "docs/specs/reports/conversation-message-delete-convergence.md"
 cross-model-review: "cross-model-review: codex-cli:gpt-6.2-astra"
 ---
@@ -142,3 +142,13 @@ A fresh server lock is published by linking a complete, unique temporary record 
 A stale reclaimer takes a non-waiting SQLite write transaction on a host-local mutex adjacent to the lock. While holding it, the reclaimer re-reads the canonical record, requires the same owner, process start and heartbeat, and rechecks liveness before removing it. Only this stale-reclaim section uses the database. The database contains no application records and is intentionally retained so all processes take the same OS-backed mutex. A process exit releases the transaction. A fresh publisher can acquire the free filename after stale removal, and atomic no-replace publication prevents overwrite in that case. Busy or unavailable mutexes fail closed and use the existing bounded acquisition loop.
 
 This protects cooperating updated processes sharing one host-local state directory. Production Delete mounting still requires all processes that can open that directory to use the updated primitive, the actual boot lock to be wired, and authoritative history and sync to be enforced.
+
+## Private message-change sync projection checkpoint
+
+Use the same prepared custody proof for an indexed sync page. The proof verifies journal sequence order against the index. The page also verifies the indexed identity and sequence for each returned source event. A missing or changed proof yields no page. Apply the current row access predicate to the retained occurrence before returning its content or its removal marker. Suppress removed content even for a reader starting before the removal.
+
+Emit one exact marker for the earliest matching removal by the creation custodian, at that fact’s original ingest position. If its target or authorization is unresolved, mark the page blocked, retain the cursor immediately before the fact, and withhold all later entries until it can be resolved. A conclusively denied marker advances without revealing its IDs. Signed route wiring must bind cursor validity to the current reader visibility and cache epoch before the client can reuse a cursor. The marker contains only the kind, conversation key, removal event ID and exact target event ID.
+
+This private projection covers message rows and exact removal markers. It does not replace generic App sync or define client cache restoration. Production mounting still needs a signed scope and serving-lease check, approved wire sanitization, cursor scope and consistent removal enforcement across the related event and read surfaces. The existing dark generic events route explicitly omits raw removal facts.
+
+An otherwise visible message whose authorization is unresolved likewise blocks before its sequence and can be retried from the held cursor. When the visibility epoch changes, an already open client must cover its affected cached rows and reconcile them under current authorization before showing them again. Verify this with a conversation kept open across access revocation and removal. A conclusively denied marker never reveals its IDs.
