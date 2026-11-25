@@ -1,0 +1,55 @@
+{
+  "schemaVersion": 1,
+  "purpose": "Expected App quoted reply contract. Runtime has yet to be tested against this fixture.",
+  "conversationRef": "app:a71db421-e49c-4e29-91ca-f9bc545d3d1c",
+  "selected": {
+    "eventId": "event-original-02",
+    "messageId": "message-original-02"
+  },
+  "wireBody": {
+    "text": "That works for me.",
+    "replyTo": {
+      "eventId": "event-original-02"
+    }
+  },
+  "projection": {
+    "available": {
+      "reply": {
+        "state": "available",
+        "eventId": "event-original-02",
+        "messageId": "message-original-02",
+        "preview": "Can we meet on Friday?",
+        "senderName": "Alex"
+      }
+    },
+    "sourceUnavailable": {
+      "reply": {
+        "state": "unavailable"
+      }
+    },
+    "retainedMarkerInvalidReceipt": {
+      "reply": {
+        "state": "unavailable"
+      }
+    },
+    "noMarkerV3Null": {},
+    "noMarkerDemotedReceipt": {},
+    "flagOffWithReplicatedQuote": {}
+  },
+  "sourceRefusal": {
+    "status": 409,
+    "body": {
+      "error": "reply-source-unavailable",
+      "retryable": true
+    }
+  },
+  "retryAfterSourceRevocation": {
+    "returnRecordedDisposition": true,
+    "revealOriginalFields": false,
+    "stopEffects": 0
+  },
+  "changedPayloadSameRequest": {
+    "status": 409,
+    "stopEffects": 0
+  }
+}
