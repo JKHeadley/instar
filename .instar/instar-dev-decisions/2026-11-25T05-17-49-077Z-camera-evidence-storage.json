@@ -1,0 +1,22 @@
+{
+  "ts": "2026-11-25T05:17:49.077Z",
+  "slug": "camera-evidence-storage",
+  "suggestedTier": 2,
+  "declaredTier": 2,
+  "riskFloor": 1,
+  "riskFloorReasons": [],
+  "belowFloor": false,
+  "files": 1,
+  "loc": 49,
+  "scope": {
+    "basis": "staged-in-scope-paths-including-deleted",
+    "files": [
+      "src/core/CameraAcceptanceEvidenceStorage.ts"
+    ],
+    "addedLines": 49,
+    "deletedLines": 0
+  },
+  "causalAutopsy": null,
+  "classClosure": null,
+  "verdict": "pass"
+}

@@ -8,7 +8,7 @@
  *     reconciler allowlist names the store, the applier maps the kind to its flag path, and the
  *     retention entry is never-delete.
  *  2. FUNCTIONAL registration — the registry accepts the kind and resolves it by store.
- *  3. DARKNESS — this PR emits nothing: no runtime call site emits to the store yet.
+ *  3. DARKNESS — the Camera bridge has no production caller.
  */
 import { describe, it, expect } from 'vitest';
 import fs from 'node:fs';
@@ -54,8 +54,8 @@ describe('Chief of Staff store wiring — 2. FUNCTIONAL registration', () => {
   });
 });
 
-describe('Chief of Staff store wiring — 3. DARKNESS (PR 1 emits nothing)', () => {
-  it('no runtime call site emits to the chiefOfStaff store yet', () => {
+describe('Chief of Staff store wiring — 3. DARKNESS (Camera bridge uncalled)', () => {
+  it('the dormant Camera bridge is the only direct store emitter and has no server caller', () => {
     const walk = (dir: string): string[] => fs.readdirSync(dir, { withFileTypes: true }).flatMap((d) => {
       const p = path.join(dir, d.name);
       return d.isDirectory() ? walk(p) : p.endsWith('.ts') ? [p] : [];
@@ -65,7 +65,8 @@ describe('Chief of Staff store wiring — 3. DARKNESS (PR 1 emits nothing)', () 
       const s = fs.readFileSync(f, 'utf-8');
       return /emit\w*\(\s*CHIEF_OF_STAFF_(STORE_KEY|RECORD_KIND)/.test(s) || /emitReplicatedRecord\w*\(\s*['"]chief-of-staff-record['"]/.test(s);
     });
-    expect(offenders).toEqual([]);
+    expect(offenders.map(file => path.basename(file))).toEqual(['CameraAcceptanceJournalBackend.ts']);
+    expect(read('src/commands/server.ts')).not.toContain('cameraAcceptanceJournalBackend');
   });
 });
 

@@ -1,0 +1,22 @@
+{
+  "ts": "2026-11-25T00:34:39.545Z",
+  "slug": "camera-acceptance-receipt-retry",
+  "suggestedTier": 1,
+  "declaredTier": 2,
+  "riskFloor": 1,
+  "riskFloorReasons": [],
+  "belowFloor": false,
+  "files": 1,
+  "loc": 30,
+  "scope": {
+    "basis": "staged-in-scope-paths-including-deleted",
+    "files": [
+      "src/core/CameraAcceptanceRequests.ts"
+    ],
+    "addedLines": 23,
+    "deletedLines": 7
+  },
+  "causalAutopsy": null,
+  "classClosure": null,
+  "verdict": "pass"
+}

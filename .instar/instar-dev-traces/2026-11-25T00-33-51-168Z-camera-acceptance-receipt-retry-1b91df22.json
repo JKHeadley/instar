@@ -1,0 +1,18 @@
+{
+  "version": 2,
+  "slug": "camera-acceptance-receipt-retry",
+  "sessionId": "ab1b66cc-de80-48bd-9b94-4ede369ccb55",
+  "timestamp": "2026-11-25T00:33:51.168Z",
+  "artifactPath": "upgrades/side-effects/camera-acceptance-receipt-retry.md",
+  "artifactSha256": "d0976eb80bdf6ec1aa5044beea8e8a67f6cc641c1871faf5e9db063292184adc",
+  "specPath": "docs/specs/independent-owner-surface-acceptance.md",
+  "coveredFiles": [
+    "src/core/CameraAcceptanceRequests.ts",
+    "tests/unit/camera-acceptance-requests.test.ts"
+  ],
+  "phase": "complete",
+  "tier": 2,
+  "tierReasoning": "The checkpoint applies exact receipt retry rules against the verified journal contract without wiring a runtime route.",
+  "secondPass": "true",
+  "reviewerConcurred": true
+}

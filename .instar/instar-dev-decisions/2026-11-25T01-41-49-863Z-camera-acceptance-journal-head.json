@@ -1,0 +1,22 @@
+{
+  "ts": "2026-11-25T01:41:49.863Z",
+  "slug": "camera-acceptance-journal-head",
+  "suggestedTier": 1,
+  "declaredTier": 2,
+  "riskFloor": 1,
+  "riskFloorReasons": [],
+  "belowFloor": false,
+  "files": 1,
+  "loc": 12,
+  "scope": {
+    "basis": "staged-in-scope-paths-including-deleted",
+    "files": [
+      "src/core/CameraAcceptanceJournalRecord.ts"
+    ],
+    "addedLines": 10,
+    "deletedLines": 2
+  },
+  "causalAutopsy": null,
+  "classClosure": null,
+  "verdict": "pass"
+}

@@ -1,0 +1,22 @@
+{
+  "ts": "2026-11-25T04:56:05.860Z",
+  "slug": "camera-protected-evidence-source",
+  "suggestedTier": 2,
+  "declaredTier": 2,
+  "riskFloor": 1,
+  "riskFloorReasons": [],
+  "belowFloor": false,
+  "files": 1,
+  "loc": 56,
+  "scope": {
+    "basis": "staged-in-scope-paths-including-deleted",
+    "files": [
+      "src/core/CameraAcceptanceEvidenceSource.ts"
+    ],
+    "addedLines": 56,
+    "deletedLines": 0
+  },
+  "causalAutopsy": null,
+  "classClosure": null,
+  "verdict": "pass"
+}

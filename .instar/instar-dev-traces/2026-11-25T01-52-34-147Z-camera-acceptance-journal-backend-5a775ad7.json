@@ -1,0 +1,18 @@
+{
+  "version": 2,
+  "slug": "camera-acceptance-journal-backend",
+  "sessionId": "ab1b66cc-de80-48bd-9b94-4ede369ccb55",
+  "timestamp": "2026-11-25T01:52:34.147Z",
+  "artifactPath": "upgrades/side-effects/camera-acceptance-journal-backend.md",
+  "artifactSha256": "563de4f791b32895abae0b0831f0616301d297bd82fbe61e4df2ce46cac21d69",
+  "specPath": "docs/specs/independent-owner-surface-acceptance.md",
+  "coveredFiles": [
+    "src/core/CameraAcceptanceJournalBackend.ts",
+    "tests/unit/camera-acceptance-journal-backend.test.ts"
+  ],
+  "phase": "complete",
+  "tier": 2,
+  "tierReasoning": "The bridge uses the existing replication and durability interfaces but has no production caller.",
+  "secondPass": "true",
+  "reviewerConcurred": true
+}

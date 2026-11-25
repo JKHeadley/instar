@@ -1,0 +1,18 @@
+{
+  "version": 2,
+  "slug": "camera-evidence-storage",
+  "sessionId": "ab1b66cc-de80-48bd-9b94-4ede369ccb55",
+  "timestamp": "2026-11-25T05:17:12.424Z",
+  "artifactPath": "upgrades/side-effects/camera-evidence-storage.md",
+  "artifactSha256": "1cd3caaa63e191a4eb78b2010a274c4d8b4e90df0b99f13934ce5437a4019d1d",
+  "specPath": "docs/specs/independent-owner-surface-acceptance.md",
+  "coveredFiles": [
+    "src/core/CameraAcceptanceEvidenceStorage.ts",
+    "tests/unit/camera-acceptance-evidence-storage.test.ts"
+  ],
+  "phase": "complete",
+  "tier": 2,
+  "tierReasoning": "The checkpoint adds an unwired bounded local artifact reader without changing any deployed route or writer.",
+  "secondPass": "true",
+  "reviewerConcurred": true
+}

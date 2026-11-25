@@ -1,0 +1,18 @@
+{
+  "version": 2,
+  "slug": "camera-evidence-receipt-route",
+  "sessionId": "ab1b66cc-de80-48bd-9b94-4ede369ccb55",
+  "timestamp": "2026-11-25T04:12:22.211Z",
+  "artifactPath": "upgrades/side-effects/camera-evidence-receipt-route.md",
+  "artifactSha256": "6c39cf3a15ab34d0fbc950aecfc18dd9ae003a2a1c166050f68e89138b2a03c8",
+  "specPath": "docs/specs/independent-owner-surface-acceptance.md",
+  "coveredFiles": [
+    "src/server/cameraAcceptanceRoutes.ts",
+    "tests/e2e/camera-acceptance-alive.test.ts"
+  ],
+  "phase": "complete",
+  "tier": 2,
+  "tierReasoning": "The dormant HTTP route requires protected evidence via a configured verifier and journal.",
+  "secondPass": "true",
+  "reviewerConcurred": true
+}

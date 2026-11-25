@@ -1,0 +1,19 @@
+{
+  "version": 2,
+  "slug": "camera-acceptance-journal-head",
+  "sessionId": "ab1b66cc-de80-48bd-9b94-4ede369ccb55",
+  "timestamp": "2026-11-25T01:40:54.657Z",
+  "artifactPath": "upgrades/side-effects/camera-acceptance-journal-head.md",
+  "artifactSha256": "871bafe0c567f0cd82cb0ff060d5b8e31b10aa34cc17f67219ad7a5cc58a26ab",
+  "specPath": "docs/specs/independent-owner-surface-acceptance.md",
+  "coveredFiles": [
+    "src/core/CameraAcceptanceJournalRecord.ts",
+    "tests/unit/camera-acceptance-journal-adapter.test.ts",
+    "tests/unit/camera-acceptance-journal-record.test.ts"
+  ],
+  "phase": "complete",
+  "tier": 2,
+  "tierReasoning": "This checkpoint tightens authoritative journal coverage for the unwired Camera pilot.",
+  "secondPass": "true",
+  "reviewerConcurred": true
+}

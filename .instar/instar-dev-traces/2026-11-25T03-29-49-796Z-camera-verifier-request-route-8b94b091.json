@@ -1,0 +1,19 @@
+{
+  "version": 2,
+  "slug": "camera-verifier-request-route",
+  "sessionId": "ab1b66cc-de80-48bd-9b94-4ede369ccb55",
+  "timestamp": "2026-11-25T03:29:49.796Z",
+  "artifactPath": "upgrades/side-effects/camera-verifier-request-route.md",
+  "artifactSha256": "6bd209f6f0b6cb2b8a134da93f3f0a0692b35dc434a56356bde1164e04d80bf9",
+  "specPath": "docs/specs/independent-owner-surface-acceptance.md",
+  "coveredFiles": [
+    "src/server/AgentServer.ts",
+    "src/server/cameraAcceptanceRoutes.ts",
+    "tests/e2e/chief-of-staff-alive.test.ts"
+  ],
+  "phase": "complete",
+  "tier": 2,
+  "tierReasoning": "The route requires existing server auth and a verifier session and remains unavailable pending production composition.",
+  "secondPass": "true",
+  "reviewerConcurred": true
+}

@@ -1,0 +1,18 @@
+{
+  "version": 2,
+  "slug": "camera-verifier-auth",
+  "sessionId": "ab1b66cc-de80-48bd-9b94-4ede369ccb55",
+  "timestamp": "2026-11-25T02:47:50.140Z",
+  "artifactPath": "upgrades/side-effects/camera-verifier-auth.md",
+  "artifactSha256": "aece2f827f0ad79dd15aefa8a8c1270f1ae95394066a855779b107985500a357",
+  "specPath": "docs/specs/independent-owner-surface-acceptance.md",
+  "coveredFiles": [
+    "src/core/CameraVerifierAuth.ts",
+    "tests/unit/camera-verifier-auth.test.ts"
+  ],
+  "phase": "complete",
+  "tier": 2,
+  "tierReasoning": "The transport-independent helper verifies reviewer authority without registering a route or writing data.",
+  "secondPass": "true",
+  "reviewerConcurred": true
+}

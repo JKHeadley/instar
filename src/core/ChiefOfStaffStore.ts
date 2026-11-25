@@ -29,6 +29,7 @@
 import type { StoreFieldSchema, StoreValidateContext, ReplicatedOp } from './ReplicatedRecordEnvelope.js';
 import type { HlcTimestamp } from './HybridLogicalClock.js';
 import crypto from 'node:crypto';
+import { CAMERA_JOURNAL_KEY_PREFIX, cameraJournalRecordKey, parseCameraJournalRecord } from './CameraAcceptanceJournalRecord.js';
 import { compareHlc } from './TopicPinReplicatedStore.js';
 import { resolveDevAgentGate } from './devAgentGate.js';
 
@@ -53,7 +54,7 @@ export function chiefOfStaffStoreEnabled(config: { developmentAgent?: boolean; c
 }
 
 export const COS_RECORD_TYPES = [
-  'tree', 'binding', 'binding-lifecycle', 'check-event', 'intent', 'outcome', 'renewal', 'graduation', 'last-tick', 'note',
+  'tree', 'binding', 'binding-lifecycle', 'check-event', 'intent', 'outcome', 'renewal', 'graduation', 'last-tick', 'note', 'camera-acceptance',
 ] as const;
 export type CosRecordType = typeof COS_RECORD_TYPES[number];
 
@@ -162,7 +163,7 @@ const KNOWN_FIELDS = [
   'action', 'leaseEpoch', 'sequence', 'claimedAt', 'holderSignature', 'intentKey', 'transition', 'writer', 'runId', 'injectId', 'reason',
   'renewedAt', 'renewedVia', 'principal', 'eventRef', 'machineSignature',
   'date', 'metrics', 'decision',
-  'tickAt',
+  'tickAt', 'cameraAcceptance',
 ] as const;
 
 /** A lifecycle event name a later build may add: one or more lower-case words joined by '-'. */
@@ -217,6 +218,15 @@ export const chiefOfStaffRecordStoreSchema: StoreFieldSchema = {
   knownFields: KNOWN_FIELDS as unknown as ReadonlyArray<string>,
   pathSensitiveFields: ['machine', 'by', 'writer', 'principal', 'role', 'renewedVia'],
   validate(raw: Readonly<Record<string, unknown>>, ctx: StoreValidateContext): Record<string, unknown> | null {
+    if (raw.recordType === 'camera-acceptance'
+      || (typeof raw.recordKey === 'string' && raw.recordKey.startsWith(CAMERA_JOURNAL_KEY_PREFIX))) {
+      const ck = raw.conversationKey;
+      if (raw.op !== 'put' || raw.recordType !== 'camera-acceptance' || !isValidConversationKey(ck)) return null;
+      const cameraAcceptance = parseCameraJournalRecord(raw.cameraAcceptance);
+      return cameraAcceptance && raw.origin === cameraAcceptance.holder
+        && raw.recordKey === cameraJournalRecordKey(ck, cameraAcceptance)
+        ? { recordType: 'camera-acceptance', conversationKey: ck, cameraAcceptance } : null;
+    }
     if (raw.op === 'delete') {
       // Only `tree` is ever tombstoned (unparent). Everything else is immutable.
       const deletedAt = isIso(raw.deletedAt) ? raw.deletedAt : undefined;
@@ -383,6 +393,16 @@ type Build = (hlc: HlcTimestamp, origin: string, observed?: HlcTimestamp) => Rec
 
 function envelope(recordKey: string, hlc: HlcTimestamp, origin: string, observed: HlcTimestamp | undefined, op: ReplicatedOp, fields: Record<string, unknown>): Record<string, unknown> {
   return { ...fields, recordKey, hlc, op, origin, ...(observed !== undefined ? { observed } : {}) };
+}
+
+/** Encode a signed, immutable Camera event. The publisher must verify the lease before emitting. */
+export function buildCameraAcceptancePut(conversationKey: string, input: unknown): Build {
+  const cameraAcceptance = parseCameraJournalRecord(input);
+  return (hlc, origin, observed) => {
+    if (!cameraAcceptance || !isValidConversationKey(conversationKey) || origin !== cameraAcceptance.holder) return null;
+    const recordKey = cameraJournalRecordKey(conversationKey, cameraAcceptance);
+    return envelope(recordKey, hlc, origin, observed, 'put', { recordType: 'camera-acceptance', conversationKey, cameraAcceptance });
+  };
 }
 
 export function buildTreePut(conversationKey: string, parentConversationKey: string | null, role?: 'chief-of-staff' | 'project' | 'sub-topic'): Build {

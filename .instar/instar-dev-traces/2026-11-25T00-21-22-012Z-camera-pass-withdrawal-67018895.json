@@ -1,0 +1,18 @@
+{
+  "version": 2,
+  "slug": "camera-pass-withdrawal",
+  "sessionId": "ab1b66cc-de80-48bd-9b94-4ede369ccb55",
+  "timestamp": "2026-11-25T00:21:22.012Z",
+  "artifactPath": "upgrades/side-effects/camera-pass-withdrawal.md",
+  "artifactSha256": "9311df6ad9d1fd4abaa96e5edc4ec18a99b6acf6fad133196de164b67051f6c6",
+  "specPath": "docs/specs/independent-owner-surface-acceptance.md",
+  "coveredFiles": [
+    "src/core/CameraAcceptanceRequests.ts",
+    "tests/unit/camera-acceptance-requests.test.ts"
+  ],
+  "phase": "complete",
+  "tier": 2,
+  "tierReasoning": "This checkpoint checks exact Pass withdrawal and replay under a journal transaction. It adds no live route.",
+  "secondPass": "true",
+  "reviewerConcurred": true
+}

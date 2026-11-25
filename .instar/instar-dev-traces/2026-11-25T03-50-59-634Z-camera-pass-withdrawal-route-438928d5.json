@@ -1,0 +1,19 @@
+{
+  "version": 2,
+  "slug": "camera-pass-withdrawal-route",
+  "sessionId": "ab1b66cc-de80-48bd-9b94-4ede369ccb55",
+  "timestamp": "2026-11-25T03:50:59.634Z",
+  "artifactPath": "upgrades/side-effects/camera-pass-withdrawal-route.md",
+  "artifactSha256": "2fcebd2cf58d4f3efb076247642e83c73afd0c01673cf33e0798aefc4fa8e9ce",
+  "specPath": "docs/specs/independent-owner-surface-acceptance.md",
+  "coveredFiles": [
+    "src/server/cameraAcceptanceRoutes.ts",
+    "tests/e2e/camera-acceptance-alive.test.ts",
+    "tests/e2e/chief-of-staff-alive.test.ts"
+  ],
+  "phase": "complete",
+  "tier": 2,
+  "tierReasoning": "The route uses existing server and verifier authentication, and has no production resolver.",
+  "secondPass": "true",
+  "reviewerConcurred": true
+}
