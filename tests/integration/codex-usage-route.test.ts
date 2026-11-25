@@ -18,9 +18,9 @@ import { createRoutes } from '../../src/server/routes.js';
 import type { RouteContext } from '../../src/server/routes.js';
 import { SafeFsExecutor } from '../../src/core/SafeFsExecutor.js';
 
-function minimalCtx(): RouteContext {
+function minimalCtx(projectDir: string): RouteContext {
   return {
-    config: { projectName: 'test', projectDir: '/tmp', stateDir: '/tmp/.instar', port: 0, sessions: {} as any, scheduler: {} as any } as any,
+    config: { projectName: 'test', projectDir, stateDir: path.join(projectDir, '.instar'), port: 0, sessions: {} as any, scheduler: {} as any } as any,
     sessionManager: { listRunningSessions: () => [] } as any,
     state: { getJobState: () => null, getSession: () => null } as any,
     scheduler: null, telegram: null, relationships: null, feedback: null, dispatches: null,
@@ -57,7 +57,7 @@ describe('GET /codex/usage (integration)', () => {
     home = fs.mkdtempSync(path.join(os.tmpdir(), 'codex-usage-route-'));
     app = express();
     app.use(express.json());
-    app.use('/', createRoutes(minimalCtx()));
+    app.use('/', createRoutes(minimalCtx(home)));
   });
 
   afterEach(() => {
