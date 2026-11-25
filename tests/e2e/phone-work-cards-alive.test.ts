@@ -28,6 +28,7 @@ import { ReplicatedPeerStreamReader } from '../../src/core/ReplicatedPeerStreamR
 import { HybridLogicalClock } from '../../src/core/HybridLogicalClock.js';
 import { WORK_CARD_KIND_REGISTRATION, WORK_CARD_RECORD_KIND, WORK_BOARD_STORE_KEY, type UnionEntry } from '../../src/core/WorkCardStore.js';
 import { readWorkBoardApprovalEvent } from '../../src/core/workBoardApprovalReadback.js';
+import { lineIdFor } from '../../src/core/WorkBoardService.js';
 import { WorkBoardRuntime } from '../../src/core/WorkBoardRuntime.js';
 import type { MobilePairingService } from '../../src/server/mobilePairingRoutes.js';
 import { workBoardSlipApprovalLine } from '../../src/core/workBoardSlipPresence.js';
@@ -147,7 +148,7 @@ describe('Work cards from the owner phone E2E (feature is alive)', () => {
       pairing.devices.setPresenceKey(phone.id, phone.presence.publicKey);
       const createdCard = rig.runtime.svc.createCard({ kind: 'agent' }, {
         title: 'Review the exact card', need: 'Check this before starting',
-        doneWhen: [{ id: 'done', text: 'Checked', certify: 'agent-may-certify' }], outward: false,
+        doneWhen: [{ id: 'done', text: 'Checked', certify: 'agent-may-certify' }], outward: true,
       });
       if (!createdCard.ok) throw new Error('card');
       const { cardId } = createdCard;
@@ -196,6 +197,11 @@ describe('Work cards from the owner phone E2E (feature is alive)', () => {
       const retry = await send(app, phone, 'POST', submitRoute, submit);
       expect(retry.status).toBe(200);
       expect(retry.body).toEqual(committed.body);
+      const eventId = committed.body.receipt.items[0].eventId;
+      const history = rig.lines.filter(({ id }) => id === lineIdFor(eventId));
+      expect(history).toHaveLength(1);
+      expect(history[0].key).toBe(createdCard.conversationKey);
+      expect(history[0].text).toMatch(/approved/i);
       const records = rig.journal.readKindComplete(WORK_CARD_RECORD_KIND).entries;
       expect(records.filter(({ data }) => data.approvalBinding)).toHaveLength(1);
       expect(rig.runtime.svc.view(cardId)?.card.approvedBy?.id).toBe(committed.body.receipt.items[0].eventId);

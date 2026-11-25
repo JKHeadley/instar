@@ -176,7 +176,10 @@ export class WorkBoardRuntime {
         }, request),
         confirmProjection: async (winner) => {
           const projected = this.svc.projectBoundApproval(winner);
-          if (projected) this.controller.poke();
+          if (projected) {
+            this.noteBoundApproval(winner.request.version.cardId, winner.eventId);
+            this.controller.poke();
+          }
           return projected;
         },
       });
@@ -551,6 +554,19 @@ export class WorkBoardRuntime {
     for (const id of cardIdsNowWorkable) {
       const v = this.svc.view(id); if (!v) continue;
       this.appendLine(v.card.conversationKey, lineIdFor(`${String(recordData.recordKey)}:${id}`), line);
+    }
+  }
+
+  private noteBoundApproval(cardId: string, eventId: string): void {
+    const view = this.svc.view(cardId);
+    const record = this.svc.recordsOf(cardId).find(({ id }) => id === eventId);
+    if (!view || view.card.redacted || !record) return;
+    try {
+      const line = transcriptLineFor('tap', record.d, { name: this.seams.displayName, when: (iso) => this.when(iso) });
+      if (line) this.appendLine(view.card.conversationKey, lineIdFor(eventId), line);
+    } catch (err) {
+      // @silent-fallback-ok: log separately; the durable board approval still stands.
+      this.seams.log?.('work-board-line-failed', { cardId, error: (err as Error)?.message });
     }
   }
 

@@ -114,3 +114,9 @@ The Work Board runtime now runs the ordered application adapter after a fresh ve
 ## Durable approval projection
 
 The opt-in writer now admits one exact validated durable journal record to the board fold after rechecking owner, writer, source, decision, local journal origin, and the exact current card and policy predecessors. The legacy journal apply and rebuild still exclude the reserved record namespace. An already projected event does not reapply on receipt replay. A receipt whose event is absent from the current board index reads unresolved, including after an unverified rebuild. Independent review concurred with the test-only enrollment. Startup recovery, deterministic transcript projection, and production enrollment and peer fencing still require their own evidence.
+
+## Approval conversation history
+
+After the exact durable approval reaches the board, the runtime uses the standard Work Board transcript formatter and credential guard to record one line under the winning event's deterministic transcript ID. It targets the card's existing conversation and skips redacted cards. Retry stays receipt-only. A failed history append does not undo the board event or stop pickup. The real owner-device lifecycle test checks one line in the correct conversation after submission and retry. Recovery of missing history after a restart or later conversation creation still needs the enrolled reconciliation path.
+
+Independent review verified that the line uses the existing event ID deduplication and only the standard approval text. Both formatting and append are best-effort so a lookup or write error cannot turn a durable board approval into an unresolved item.
