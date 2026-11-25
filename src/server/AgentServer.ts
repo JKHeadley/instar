@@ -316,6 +316,9 @@ import type { WorktreeManager } from '../core/WorktreeManager.js';
 import { NativeHookEventIngest } from '../monitoring/NativeHookEvents.js';
 import { NATIVE_HOOK_EVENTS_PATH } from '../data/http-hook-templates.js';
 import { resolveKnownOrigin as resolveProjectAppOrigin, hostOf as projectAppHostOf, type OriginDeps as ProjectAppOriginDeps } from './ProjectAppSandbox.js';
+import { createSignedLocalHistoryIntake, SIGNED_LOCAL_HISTORY_PREFIX } from './signedLocalHistoryIntake.js';
+import { DisposableLocalHistoryPilot } from './disposableLocalHistoryPilot.js';
+import { LOCAL_HISTORY_WIRE_BYTES } from '../import/LocalHistoryChannel.js';
 import { boundedBody, closeUnreadBodyOnError, credentialAwareJsonParser, type BodyBudgetDeps } from './bodyBudget.js';
 import { corsMiddleware, authMiddleware, requestTimeout, buildRequestTimeoutOverrides, errorHandler, dashboardSecurityHeaders, dashboardCacheControl, DASHBOARD_STATIC_OPTIONS, duplicateResponseGuard } from './middleware.js';
 import { WebSocketManager } from './WebSocketManager.js';
@@ -575,6 +578,8 @@ export class AgentServer {
   private teamSwitchPeers: () => SwitchPeer[] = () => [];
   private teamConversationChange: (<T>(ref: string, change: () => Promise<T> | T) => Promise<T>) | null = null;
   mobilePairing: MobilePairingService | null = null;
+  private disposableHistoryPilot: DisposableLocalHistoryPilot | undefined;
+  private disposableHistoryPilotStopping = false;
   /** The stand-in owner chat for a throwaway agent with no owner (docs/specs/throwaway-owner-chat.md); null on every other agent. */
   throwawayOwnerChat: ThrowawayOwnerChat | null = null;
   /** "Make this group a project" phone confirm, filled by the conversation graph surface once it opens (conversation-groups-phone §3). */
@@ -2084,6 +2089,35 @@ export class AgentServer {
     }
 
     // Middleware
+    let pilotIngress: ReturnType<typeof createSignedLocalHistoryIntake> | undefined;
+    this.app.use((req, res, next) => {
+      const route = req.path.toLowerCase();
+      if (this.config.localHistoryDisposablePilot?.enabled !== true
+        || (route !== SIGNED_LOCAL_HISTORY_PREFIX && !route.startsWith(SIGNED_LOCAL_HISTORY_PREFIX + '/'))) {
+        next(); return;
+      }
+      const pairing = this.mobilePairing, address = this.server?.address();
+      if (this.disposableHistoryPilotStopping || !pairing || !address || typeof address === 'string' || address.address !== '127.0.0.1') {
+        res.status(503).json({ error: 'local-history-unavailable' }); return;
+      }
+      if (!pilotIngress) {
+        try {
+          const signer = loadMachineSigner(this.config.stateDir);
+          if (!signer) throw new Error('disposable-pilot-signer-unavailable');
+          this.disposableHistoryPilot = new DisposableLocalHistoryPilot({
+            stateDir: this.config.stateDir, agentId: this.config.projectName,
+            origin: 'http://127.0.0.1:' + address.port, pairing, signer,
+            enabled: () => !this.disposableHistoryPilotStopping && this.config.localHistoryDisposablePilot?.enabled === true,
+          });
+          pilotIngress = createSignedLocalHistoryIntake({
+            pairing, service: () => this.disposableHistoryPilot, wireBytes: LOCAL_HISTORY_WIRE_BYTES,
+          });
+        } catch {
+          res.status(503).json({ error: 'local-history-unavailable' }); return;
+        }
+      }
+      pilotIngress(req, res, next);
+    });
     // Claim observation has a much smaller privacy/cost boundary than the
     // general API. Parse it under 96 KiB before the broad server parser.
     // Mobile device keys sign the exact request bytes: every JSON parser keeps them (req.rawBody).
@@ -10721,6 +10755,9 @@ export class AgentServer {
   }
 
   async stop(): Promise<void> {
+    this.disposableHistoryPilotStopping = true;
+    await this.disposableHistoryPilot?.stop();
+    this.disposableHistoryPilot = undefined;
     await this.historyAcquisitionWorker?.close();
     await this.stopGraphSourceInventory();
     this.siblingHoldingsStop?.();

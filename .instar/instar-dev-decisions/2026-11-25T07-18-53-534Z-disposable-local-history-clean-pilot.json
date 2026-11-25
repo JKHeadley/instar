@@ -1,0 +1,31 @@
+{
+  "ts": "2026-11-25T07:18:53.534Z",
+  "slug": "disposable-local-history-clean-pilot",
+  "suggestedTier": 2,
+  "declaredTier": 2,
+  "riskFloor": 2,
+  "riskFloorReasons": [
+    "new capability: new exported class / subsystem added"
+  ],
+  "belowFloor": false,
+  "files": 4,
+  "loc": 232,
+  "scope": {
+    "basis": "staged-in-scope-paths-including-deleted",
+    "files": [
+      "src/core/types.ts",
+      "src/import/LocalHistoryUploadStaging.ts",
+      "src/server/AgentServer.ts",
+      "src/server/disposableLocalHistoryPilot.ts"
+    ],
+    "addedLines": 231,
+    "deletedLines": 1
+  },
+  "causalAutopsy": null,
+  "classClosure": {
+    "defectClass": "unbounded-self-action",
+    "closure": "n/a",
+    "reason": "One disposable operation with one permit and finite admission and delivery waits. No automatic retry."
+  },
+  "verdict": "pass"
+}

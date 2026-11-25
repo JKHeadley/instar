@@ -873,7 +873,8 @@ export class LocalHistoryUploadStaging {
   /** Complete the first claim only for the built-in disposable fixture. The
    * remaining import is interrupted and its committed reservation stays held. */
   async applyDisposableFirstClaim(device: LocalHistoryAuthenticatedDevice, operationId: string, value: unknown,
-    budget: CopyReservationPolicy): Promise<{ claimWritten: true }> {
+    budget: CopyReservationPolicy, signal?: AbortSignal): Promise<{ claimWritten: true }> {
+    if (signal?.aborted) refuse('unavailable');
     assertLocalHistoryDisposablePilotState(this.deps.stateDir);
     const ownedBudget = { ...budget, firstClaimPolicy: { ...budget.firstClaimPolicy } };
     const { bootstrapBytes, ceiling } = ownedBudget;
@@ -883,6 +884,7 @@ export class LocalHistoryUploadStaging {
     await this.readPreparedPreviewWithObserver(deviceCopy, operationId, true, {
       budget: ownedBudget,
       pilotCommit: (claim, destinations, reservation) => this.transaction(() => {
+        if (signal?.aborted) refuse('unavailable');
         const row = this.owned(operationId, deviceCopy);
         const current = this.bindCopyIntent(deviceCopy, operationId, initial.intent);
         const destination = destinations[0], selected = current.receipt.preview.files[0];

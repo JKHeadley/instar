@@ -1,0 +1,28 @@
+{
+  "version": 2,
+  "slug": "disposable-local-history-clean-pilot",
+  "sessionId": "41652017-0805-405d-bb4e-2a975fb349ce",
+  "timestamp": "2026-11-25T07:16:59.101Z",
+  "artifactPath": "upgrades/side-effects/disposable-local-history-clean-pilot.md",
+  "artifactSha256": "e68d73a831ca7c2f9178b3cd51390ecdaabc91d13295c41afb0f33f34e4f92c6",
+  "specPath": "docs/specs/local-history-native-contract.md",
+  "coveredFiles": [
+    "src/core/types.ts",
+    "src/import/LocalHistoryUploadStaging.ts",
+    "src/server/AgentServer.ts",
+    "src/server/disposableLocalHistoryPilot.ts",
+    "tests/integration/disposable-local-history-clean-pilot.test.ts",
+    "upgrades/next/disposable-local-history-clean-pilot.md",
+    "upgrades/side-effects/disposable-local-history-clean-pilot.md"
+  ],
+  "phase": "complete",
+  "tier": 2,
+  "tierReasoning": "The explicitly enabled disposable AgentServer mount allows one generated synthetic first claim.",
+  "secondPass": "true",
+  "reviewerConcurred": true,
+  "classClosure": {
+    "defectClass": "unbounded-self-action",
+    "closure": "n/a",
+    "reason": "One disposable operation with one permit and finite admission and delivery waits. No automatic retry."
+  }
+}
