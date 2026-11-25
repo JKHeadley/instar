@@ -38,7 +38,7 @@ function authorize(pairing: MobilePairingService, req: Request, res: Response): 
   return isCurrent;
 }
 
-/** Mount only on the dedicated local listener after signed device middleware. */
+/** Mount after signed device middleware. Only the enrolled loopback origin is accepted. */
 export function createDesktopRelayPairingRoutes(pairing: MobilePairingService, getRelay: () => RelayPairing | undefined): Router {
   const router = Router();
   router.get('/desktop/relay-pairing/capability', (req, res) => {

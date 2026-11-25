@@ -14,6 +14,7 @@ import { InitiativeTracker } from '../../src/core/InitiativeTracker.js';
 import { createMockSessionManager } from '../helpers/setup.js';
 import { SafeFsExecutor } from '../../src/core/SafeFsExecutor.js';
 import type { InstarConfig } from '../../src/core/types.js';
+import { canonicalString } from '../../src/core/MobileDeviceKeys.js';
 import { makeDevice } from '../helpers/mobileDevice.js';
 import { MachineIdentityManager } from '../../src/core/MachineIdentity.js';
 import { readLocalOwnerTicket, writeLocalOwnerTicket } from '../../src/core/localOwnerTicket.js';
@@ -29,7 +30,7 @@ afterAll(async () => {
   for (const d of dirs) SafeFsExecutor.safeRmSync(d, { recursive: true, force: true, operation: 'tests/integration/mac-app-creates-agent.test.ts' });
 });
 
-async function boot() {
+async function boot(desktopRelayPairing?: ConstructorParameters<typeof AgentServer>[0]['desktopRelayPairing']) {
   const dir = fs.mkdtempSync(path.join(process.env.TMPDIR ?? os.tmpdir(), 'mac-create-int-'));
   dirs.push(dir);
   const stateDir = path.join(dir, '.instar');
@@ -44,7 +45,7 @@ async function boot() {
   } as unknown as InstarConfig;
   const sessionManager = createMockSessionManager() as any;
   sessionManager.on = () => undefined;
-  const server = new AgentServer({ config, sessionManager, state: new StateManager(stateDir), initiativeTracker: new InitiativeTracker(stateDir) });
+  const server = new AgentServer({ config, sessionManager, desktopRelayPairing, state: new StateManager(stateDir), initiativeTracker: new InitiativeTracker(stateDir) });
   servers.push(server);
   const ledger = { version: 1, installId: 'i', startedAt: '', updatedAt: '', status: 'complete', cursor: 'done', answers: { forApp: true }, completed: {}, appEnroll: { agentDir: dir, port: PORT } } as never;
   return { app: server.getApp(), stateDir, ledger };
@@ -71,6 +72,33 @@ describe('installer ticket → server route', () => {
     expect(again.body.deviceId).toBe(first.body.deviceId);
     // Another app's key gets no ticket at all.
     expect(appTicketCommand(ledger, makeDevice().publicKey)).toBe('failed');
+  });
+
+  it('exposes relay pairing at the enrolled loopback origin only when composed', async () => {
+    const code = 'b'.repeat(32);
+    const ready = await boot(() => ({ available: () => true, issuePairingCode: async () => ({ code, expiresInSeconds: 600 }) }));
+    const dark = await boot();
+    const dev = makeDevice();
+    async function pairing(target: Awaited<ReturnType<typeof boot>>) {
+      expect(appTicketCommand(target.ledger, dev.publicKey)).toBe('complete');
+      const enrolled = await enroll(target.app, dev, readLocalOwnerTicket(target.stateDir)!.ticket);
+      expect(enrolled.status).toBe(200);
+      return enrolled.body.deviceId as string;
+    }
+    const readyId = await pairing(ready);
+    const darkId = await pairing(dark);
+    function signed(app: typeof ready.app, id: string, method: 'GET' | 'POST', route: string) {
+      const time = String(Date.now());
+      const body = method === 'POST' ? '{}' : undefined;
+      const sig = dev.sign(canonicalString(id, HOST, method, route, time, body ? Buffer.from(body) : undefined));
+      const r = method === 'GET' ? request(app).get(route) : request(app).post(route);
+      r.set('Host', HOST).set('X-Instar-Device', id).set('X-Instar-Device-Time', time).set('X-Instar-Device-Sig', sig);
+      return body ? r.set('Content-Type', 'application/json').send(body) : r;
+    }
+    const capability = '/desktop/relay-pairing/capability';
+    await signed(dark.app, darkId, 'GET', capability).expect(403);
+    await signed(ready.app, readyId, 'GET', capability).expect(200, { version: 1, available: true });
+    await signed(ready.app, readyId, 'POST', '/desktop/relay-pairing/issue').expect(201, { code, expiresInSeconds: 600 });
   });
 
   it('a body over 4 KB is refused before the handler runs (the ticket is untouched)', async () => {
