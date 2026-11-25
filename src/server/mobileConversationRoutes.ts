@@ -32,7 +32,7 @@ import {DegradationReporter} from '../monitoring/DegradationReporter.js';
  * machine's device-key ledger and signing-key history: verified / redacted / failed / unknown /
  * none. Only `verified` adds "📱 signed" to the session tag.
  */
-import { maskInbound } from '../messaging/inboundCredentialMask.js';
+import { maskInbound, sessionRemovedKeyNote } from '../messaging/inboundCredentialMask.js';
 import { credentialScrubEnabledReader } from '../core/outputCredentialScrub.js';
 import { storageErrorResponse } from '../core/storageMachineName.js';
 import { mobileOwnerDeviceAdmission } from './mobileOwnerDeviceAdmission.js';
@@ -251,6 +251,8 @@ async function fetchPeers<T>(
 export interface MobileConversationRouteDeps {
   messageLinkOrigin?: () => string | null;
   config: InstarConfig;
+  /** SEC-164 §4.5: posts the fixed removed-key notice into the conversation. Absent ⇒ no notice. */
+  credentialNotice?: ((input: { conversationKey: string; messageId: string }) => void) | null;
   pairing: MobilePairingService;
   /** Null when `mobilePairing.native.enabled` resolved off at boot. */
   service: AppConversationService | null;
@@ -605,7 +607,10 @@ export function createMobileConversationRouter(deps: MobileConversationRouteDeps
       for (const x of svc!.store.listConversations({ limit: 500, cursor: c ? cursor : null }).conversations) {
         out.push({ id: x.conversationKey, platform: 'app', title: x.title, lastActivity: x.lastActivity ?? x.createdAt, lastPreview: null, ...(x.ownerPerson ? { ownerPerson: x.ownerPerson } : {}) });
       }
-    } catch { /* @silent-fallback-ok — the flag is a hint; a failed read leaves it false */ }
+    } catch (error) {
+      if (error instanceof Error && error.message === 'work-card-visibility-unavailable') throw error;
+      // @silent-fallback-ok: an ordinary history read failure leaves this optional hint false.
+    }
     try {
       for (const t of deps.telegramTopics?.() ?? []) {
         const r: ConversationListRow = { id: t.topicId, platform: 'telegram', title: t.topicName, lastActivity: t.lastActivity, lastPreview: null };
@@ -737,6 +742,7 @@ export function createMobileConversationRouter(deps: MobileConversationRouteDeps
   };
 
   router.get('/mobile/conversations', async (req: Request, res: Response) => {
+    try {
     if (!readGate(req, res)) return;
     if (req.query.scope !== undefined && req.query.scope !== 'pool') { res.status(400).json({ error: 'invalid-scope' }); return; }
     const limit = Math.max(1, Math.min(200, Number(req.query.limit) || 50));
@@ -759,7 +765,7 @@ export function createMobileConversationRouter(deps: MobileConversationRouteDeps
       return rows.filter((r) => {
         if (r.platform === 'telegram') return deviceMayUse(deps.pairing, req, `telegram:${String(r.id)}`);
         if (r.platform === 'slack') return deviceMayUse(deps.pairing, req, 'slack:');
-        return deviceMayUse(deps.pairing, req, String(r.id));
+        return !svc!.store.isHiddenConversation?.(String(r.id)) && deviceMayUse(deps.pairing, req, String(r.id));
       }).map(shownPreview).map((row) => {
         if (row.platform !== 'app') return row;
         const key = String(row.id);
@@ -838,14 +844,17 @@ export function createMobileConversationRouter(deps: MobileConversationRouteDeps
       if (!pinReader) return {};
       let refs: PinnedRef[] = [];
       try { refs = store.pinnedFor(pinReader.key); } catch { return {}; } // @silent-fallback-ok — no pin fields rather than a failed list
-      const shown = refs.filter((p) => pinReaderMay(req, pinReader, pinAccessRef(p.ref)));
+      const shown = refs.filter((p) => !(p.ref.startsWith('app:') && svc!.store.isHiddenConversation?.(p.ref)) && pinReaderMay(req, pinReader, pinAccessRef(p.ref)));
       const byRef = new Map<string, ConversationListRow>();
       const offer = (r: ConversationListRow) => { const k = canonicalRefOfRow(r); if (k && !byRef.has(k)) byRef.set(k, r); };
       for (const r of rows) offer(r);
       const missing = () => shown.some((p) => !byRef.has(p.ref));
       if (missing()) for (const r of withTree(withFields(visible(peerRows), true))) offer(r);
       if (missing()) {
-        try { for (const r of withTree(withFields(visible(localConversationListPage(deps, 200, null).rows.map((x) => ({ ...x, machine: self }))), false))) offer(r); } catch { /* @silent-fallback-ok — a pinned row not found stays in pinnedRefs only */ }
+        try { for (const r of withTree(withFields(visible(localConversationListPage(deps, 200, null).rows.map((x) => ({ ...x, machine: self }))), false))) offer(r); } catch (error) {
+          if (error instanceof Error && error.message === 'work-card-visibility-unavailable') throw error;
+          // @silent-fallback-ok: a pinned row not found stays in pinnedRefs only.
+        }
       }
       // An app conversation older than every page is read straight from the store (every machine holds it).
       for (const p of shown) {
@@ -855,7 +864,10 @@ export function createMobileConversationRouter(deps: MobileConversationRouteDeps
           if (!c || c.tombstoned) continue;
           const raw: ConversationListRow = { id: c.conversationKey, platform: 'app', title: c.title, lastActivity: c.lastActivity ?? c.createdAt, lastPreview: c.lastPreview, machine: self, ...(c.ownerPerson ? { ownerPerson: c.ownerPerson } : {}) };
           for (const r of withTree(withFields(visible([raw]), false))) offer(r);
-        } catch { /* @silent-fallback-ok — a pinned row not found stays in pinnedRefs only */ }
+        } catch (error) {
+          if (error instanceof Error && error.message === 'work-card-visibility-unavailable') throw error;
+          // @silent-fallback-ok: a pinned row not found stays in pinnedRefs only.
+        }
       }
       const pinnedRows = shown.map((p) => byRef.get(p.ref)).filter((r): r is ConversationListRow => !!r);
       return { pinnedRefs: shown, pinnedRows };
@@ -863,7 +875,7 @@ export function createMobileConversationRouter(deps: MobileConversationRouteDeps
     if (req.query.scope !== 'pool' || person?.role === 'team') {
       const m = mergeConversationPages([local], limit);
       const rows = withTree(withFields(visible(m.rows), false));
-      res.json({ conversations: rows, ...messageLinkSupport, nextCursor: m.nextCursor, ...pinnedOut(rows), ...listPinsOut(rows, []), ...ownerNote, ...totals(rows, beyondLocal(m.rows, m.nextCursor !== null)) });
+      res.json({ ownerProjectionVersion: 1, conversations: rows, ...messageLinkSupport, nextCursor: m.nextCursor, ...pinnedOut(rows), ...listPinsOut(rows, []), ...ownerNote, ...totals(rows, beyondLocal(m.rows, m.nextCursor !== null)) });
       return;
     }
     // Pool read (§4.8): every answering machine's own page after the same cursor, merged on the
@@ -871,9 +883,12 @@ export function createMobileConversationRouter(deps: MobileConversationRouteDeps
     const readerQ = reader ? `&reader=${encodeURIComponent(reader.key)}` : '';
     const q = `/mobile/conversations?limit=${limit}${cursor ? `&cursor=${encodeURIComponent(cursor)}` : ''}${readerQ}`;
     let peerBeyond = false;
+    let unreadProjectionIncomplete = false;
     const peers = deps.pool
       ? await fetchPeers(deps.pool, q, MAX_POOL_LIST_BYTES, (body, machineId) => {
-        if (body.unreadBeyondPage === true) peerBeyond = true;
+        if (body.ownerProjectionVersion === 1) {
+          if (body.unreadBeyondPage === true) peerBeyond = true;
+        } else if (body.unreadBeyondPage === true) unreadProjectionIncomplete = true;
         return {
           rows: (Array.isArray(body.conversations) ? body.conversations.slice(0, limit) : [])
             .map((r) => sanitizePeerConversation(r, machineId))
@@ -900,7 +915,14 @@ export function createMobileConversationRouter(deps: MobileConversationRouteDeps
       beyond = visible(all.slice(limit)).some((r) => r.hasUnread === true || (r.machine === self || r.platform === 'app' ? !!unread.rowFields(reader, r)?.hasUnread : false));
     }
     const treeRows = withTree(rows);
-    res.json({ conversations: treeRows, ...messageLinkSupport, ...pinnedOut(rows), ...listPinsOut(treeRows, peerPages.flatMap((p) => p.rows)), nextCursor: m.nextCursor, ...ownerNote, pool: { failed: peers.failed }, ...totals(rows, beyond) });
+    res.json({ ownerProjectionVersion: 1, conversations: treeRows, ...messageLinkSupport, ...pinnedOut(rows), ...listPinsOut(treeRows, peerPages.flatMap((p) => p.rows)), nextCursor: m.nextCursor, ...ownerNote, pool: { failed: peers.failed }, ...(unreadProjectionIncomplete ? { unreadProjectionIncomplete: true } : {}), ...totals(rows, beyond) });
+    } catch (error) {
+      if (error instanceof Error && error.message === 'work-card-visibility-unavailable') {
+        res.status(503).json({ error: 'work-card-visibility-unavailable', detail: 'Work card visibility is not ready. Try this read again.' });
+        return;
+      }
+      throw error;
+    }
   });
 
   // ── Read reports (mobile-unread-messages §3.5) ──
@@ -1391,7 +1413,13 @@ export function createMobileConversationRouter(deps: MobileConversationRouteDeps
     let outcome: 'delivered' | 'refused';
     let originVerdict: OriginVerdict = 'unknown';
     try {
-      const r = await dispatchStoredAppMessage(s, { key, alias, title: conv.title ?? 'Untitled', event: msg, ownerName: sender?.name ?? s.ownerName(), memoryPersonId });
+      const credTeam = credRemovedKinds.length > 0 && (sender?.role === 'owner' || sender?.role === 'team' || !sender);
+      const r = await dispatchStoredAppMessage(s, { key, alias, title: conv.title ?? 'Untitled', event: msg, ownerName: sender?.name ?? s.ownerName(), memoryPersonId,
+        ...(credRemovedKinds.length > 0 ? { sessionNote: sessionRemovedKeyNote(credTeam && !!deps.credentialNotice) } : {}) });
+      // SEC-164 §4.5: the person who pasted the key gets one fixed notice in the same conversation.
+      if (credTeam && deps.credentialNotice) {
+        try { deps.credentialNotice({ conversationKey: key, messageId }); } catch { /* @silent-fallback-ok — the notice reports its own failures; the message is already delivered */ }
+      }
       outcome = r.outcome;
       originVerdict = r.originVerdict;
     } catch (err) {

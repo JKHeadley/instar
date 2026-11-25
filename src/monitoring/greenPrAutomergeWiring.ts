@@ -41,7 +41,7 @@ import { DegradationReporter } from './DegradationReporter.js';
 import { GuardLatchStore, type GuardLatchEntry } from './GuardLatchStore.js';
 import type { AgentStopFacts } from './agentStopRelease.js';
 import { DefaultMergeRunner } from './MergeRunner.js';
-import { listOpenPrRowsPaged } from './greenPrOpenPrList.js';
+import { listOpenPrRowsPaged, readHandoffPrRow } from './greenPrOpenPrList.js';
 import {
   type GreenPrAutoMergerDeps,
   type GreenPrState,
@@ -379,6 +379,10 @@ export function buildGreenPrDeps(opts: GreenPrWiringOpts, latches: GuardLatchSto
       // already-armed PR for free. A failed page throws and feeds the tick-failed breaker.
       const rows = await listOpenPrRowsPaged(exec, opts.repo);
       return rows.map(mapPr);
+    },
+    refetchHandoffPr: async (pr) => {
+      const row = await readHandoffPrRow(exec, opts.repo, pr);
+      return row ? mapPr(row) : null;
     },
     codeOwnedPaths: async (pr: PrSummary): Promise<CodeOwnedPathsVerdict> => {
       // CODEOWNERS is read at runtime from the PR's base branch on GitHub (the copy GitHub

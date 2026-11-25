@@ -6,6 +6,7 @@
 import { buildShipping, stoppedLead, operatorTodos, sourceState, agentOwnedStop } from './development-model.js';
 import { buildAccountsPage } from './accounts-model.js';
 import { pairingModel, waitingCards } from './agents-model.js';
+import { buildTrustRequests } from './allowed-model.js';
 import { buildApprovals } from './mandates-model.js';
 import { buildPlansPage } from './plans-model.js';
 import { buildRequests } from './secrets-model.js';
@@ -14,6 +15,7 @@ import { healthNeedRows } from './health-model.js';
 import { proposalsNeedingVerdict, buildPending } from './learned-model.js';
 import { contextNeeds } from './context-model.js';
 import { workBoardNeedRows } from './work-model.js';
+import { repoNeedRows, REPOS_READ } from './repos-model.js';
 
 // warning-path: inline
 const row = (key, main, sub, href, refs = []) => ({ key: `need:${key}`, main, sub: sub || '', tone: 'attn', refs, action: { kind: 'href', href } });
@@ -26,6 +28,13 @@ export function documentDecisionNeedRows(res) {
   if (!docs) return UNREADABLE;
   return docs.filter((d) => d && typeof d.id === 'string').map((d) => row(`doc-decision:${d.id}`, `Decide: ${d.title || 'a document'}`,
     d.question ? `${d.question}${d.versionLabel ? ` (version ${d.versionLabel})` : ''}` : 'Open it on your phone to approve or decline.', `/docs/${d.id}`, [d.id]));
+}
+
+/** Current approval requests share the Allowed page's exact pending-request model. */
+export function trustRequestNeedRows(trust, now) {
+  if (sourceState(trust) === 'off') return [];
+  const requests = buildTrustRequests(trust, now);
+  return requests.ok ? requests.rows.map((r) => row(r.key, r.main, r.sub, '#/settings/allowed?s=approvals', [r.requestId])) : UNREADABLE;
 }
 
 /** A 200 that does not have the expected shape: it told us nothing, so never read it as "nothing waiting". */
@@ -96,6 +105,11 @@ export const NEED_SOURCES = [
   // First, so a real problem leads the Needs-you list. Only what affects the person. Internal notes stay on the Health page and never raise this count.
   { id: 'health', page: 'capacity/health', reads: { issues: '/mobile/health-issues' },
     rows: ({ issues }) => { const rows = healthNeedRows(issues); return rows === null ? UNREADABLE : rows.map((r) => row(`health:${r.key}`, r.title, r.detail, r.href)); } },
+  // Work that exists on only one machine (no-data-loss-on-machine-death.md §1.4): a repository with no remote, or
+  // unpushed work past the grace window. One row per machine per kind. 503 = the registry is off here = nothing waiting.
+  { id: 'repos', page: 'capacity/repos', reads: { repos: REPOS_READ },
+    // warning-path: inline
+    rows: ({ repos }) => { const rows = repoNeedRows(repos); return rows === null ? UNREADABLE : rows.map((r) => ({ ...row(r.key, r.main, r.sub, r.href, r.refs), tone: r.kind === 'unknown' ? 'unknown' : 'bad' })); } },
   { id: 'merging', page: 'work/development', reads: { watcher: '/green-pr-automerge' },
     rows: ({ watcher }, now) => {
       if (agentOwnedStop(watcher.data)) return []; // the agent releases this itself; the page still shows it
@@ -120,6 +134,8 @@ export const NEED_SOURCES = [
   { id: 'agents', page: 'people/agents', reads: { pairing: '/threadline/pairing', invites: '/threadline/pairing/invites' },
     rows: ({ pairing, invites }, now) => waitingCards(pairingModel(pairing, invites, undefined, now), now)
       .map((c, i) => row(`agent:${c.kind}:${c.iid || c.id || i}`, c.title, '', '#/people/agents')) },
+  { id: 'trust-requests', page: 'settings/allowed', reads: { trust: '/trust/requests' },
+    rows: ({ trust }, now) => trustRequestNeedRows(trust, now) },
   { id: 'approvals', page: 'people/mandates', reads: { approvals: '/authorization-requests?status=pending' },
     rows: ({ approvals }) => { const a = buildApprovals(approvals); return a.ok ? a.rows.map((r) => row(r.key, r.headline, r.reason, '#/people/mandates?s=waiting')) : UNREADABLE; } },
   { id: 'plans', page: 'work/plans', reads: { initiatives: '/initiatives', blockers: '/blockers' },

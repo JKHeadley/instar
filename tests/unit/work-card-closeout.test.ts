@@ -210,7 +210,7 @@ describe('whose turn, untouched first, and the conversation inside the card', ()
     const r = t.svc.createCard(AGENT, card); if (!r.ok) throw new Error('create');
     t.svc.edit(AGENT, r.cardId, { recommendation: 'Book the Hall' });
     let j = cardJson(t.svc, t.svc.view(r.cardId)!, VIEWER, name);
-    expect(j).toMatchObject({ started: false, startedAt: null, turn: 'you' });
+    expect(j).toMatchObject({ started: false, startedAt: null, turn: 'agent', agentInternal: true });
     t.advance(1000);
     t.svc.tap(OWNER, r.cardId, { action: 'hold' });
     j = cardJson(t.svc, t.svc.view(r.cardId)!, VIEWER, name);

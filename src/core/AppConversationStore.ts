@@ -1266,9 +1266,10 @@ export class AppConversationStore {
     const limit = Math.max(1, Math.min(200, Math.floor(opts.limit ?? 50)));
     const act = `COALESCE(lastActivity, createdAt, '')`;
     // Work Board §2: conversations of archived or removed cards are left out BEFORE paging. If the
-    // card store cannot be read, everything is shown (hiding must never fail closed on a list).
+    // An unreadable classification is a failed read, never permission to expose internal work.
     let hidden: Set<string> | null = null;
-    try { hidden = applyHiddenFilter ? this.hiddenConversationKeys?.() ?? null : null; } catch { hidden = null; /* @silent-fallback-ok: an unreadable card store shows every conversation */ }
+    try { hidden = applyHiddenFilter ? this.hiddenConversationKeys?.() ?? null : null; }
+    catch { throw new Error('work-card-visibility-unavailable'); }
     const isHidden = (r: Record<string, unknown>): boolean => !!hidden && hidden.size > 0 && hidden.has(String(r.canonicalKey).replace(/^app:/, ''));
     const kept: Array<Record<string, unknown>> = [];
     let cursor = opts.cursor && opts.cursor.includes('|') ? opts.cursor : null;
@@ -1298,6 +1299,11 @@ export class AppConversationStore {
 
   /** Work Board §2: set by the wiring; returns the conversation keys of archived or removed cards. */
   hiddenConversationKeys: (() => Set<string>) | null = null;
+
+  /** Human discovery only; direct history, replication and worker execution keep their existing access rules. */
+  isHiddenConversation(conversationKey: string): boolean {
+    return this.hiddenConversationKeys?.().has(conversationKey.replace(/^app:/, '').toLowerCase()) === true;
+  }
 
   /** The pin state of one message (conversation-pinned-messages): its winning event's state, or null when never pinned. */
   pinState(conversationKey: string, messageId: string): 'pinned' | 'unpinned' | null {

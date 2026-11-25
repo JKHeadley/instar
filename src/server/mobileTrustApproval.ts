@@ -58,6 +58,7 @@ export function createMobileTrustPort(runtime: TrustAccountPathRuntime, pairing:
   const devices: DeviceDirectory = {
     enabled,
     get: (id) => deviceSnapshot(pairing(), id),
+    list: () => (pairing()?.devices.list() ?? []).map((d) => deviceSnapshot(pairing(), d.id)).filter((d): d is DeviceSnapshot => d !== null),
     notify: (subject, dedupeKey) => { pairing()?.push?.notifyHere({ kind: 'notice', subject, dedupeKey }); },
   };
   return {

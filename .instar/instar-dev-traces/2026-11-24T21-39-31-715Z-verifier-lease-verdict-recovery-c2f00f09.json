@@ -1,0 +1,18 @@
+{
+  "version": 2,
+  "slug": "verifier-lease-verdict-recovery",
+  "sessionId": "ed99de61-509a-4e0d-908f-801b299fef73",
+  "timestamp": "2026-11-24T21:39:31.715Z",
+  "artifactPath": "upgrades/side-effects/verifier-lease-verdict-recovery.md",
+  "artifactSha256": "7b6bc40a5480f26c158c3b9c2f2d18e7c012f39f662493f70a82b7354796f62c",
+  "specPath": "docs/specs/verifier-lease-verdict-recovery.md",
+  "coveredFiles": [
+    "src/localVerify/LocalVerifyService.ts",
+    "tests/unit/localVerify/LocalVerifyService.test.ts",
+    "upgrades/side-effects/verifier-lease-verdict-recovery.md"
+  ],
+  "phase": "complete",
+  "tier": 2,
+  "secondPass": "true",
+  "reviewerConcurred": true
+}

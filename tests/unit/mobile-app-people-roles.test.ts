@@ -184,6 +184,13 @@ describe('DEVICE_ALLOWLIST coverage', () => {
     'GET /mobile/chat/slack/-1/pins', 'POST /mobile/chat/slack/-1/pins',
     // conversation-search: `ref=` names one conversation.
     'GET /mobile/conversations/search',
+    'POST /mobile/chat/app/<uuid>/forward',
+    'GET /mobile/chat/app/<uuid>/reactions',
+    'PUT /mobile/chat/app/<uuid>/reactions',
+    'GET /mobile/chat/app/<uuid>/reply-previews',
+    'GET /mobile/conversations/message-link',
+    'GET /mobile/chat/app/<uuid>/message-context',
+    'POST /mobile/chat/app/<uuid>/reply',
   ];
   const UUID = '22222222-2222-4222-8222-222222222222';
   const sample = (s: string) => s.replace('<uuid>', UUID).replace('<sha>', 'a'.repeat(64));
@@ -389,6 +396,13 @@ describe('route tiers (team-roles-and-access §3.7)', () => {
     ['POST', '/mobile/console-ticket', 'owner'],
     ['GET', '/mobile/files', 'owner'],
     ['GET', '/mobile/machines', 'owner'],
+    ['POST', '/mobile/chat/app/11111111-1111-4111-8111-111111111111/forward', 'guest'],
+    ['GET', '/mobile/chat/app/11111111-1111-4111-8111-111111111111/reactions', 'guest'],
+    ['PUT', '/mobile/chat/app/11111111-1111-4111-8111-111111111111/reactions', 'member'],
+    ['GET', '/mobile/chat/app/11111111-1111-4111-8111-111111111111/reply-previews', 'guest'],
+    ['GET', '/mobile/conversations/message-link', 'guest'],
+    ['GET', '/mobile/chat/app/11111111-1111-4111-8111-111111111111/message-context', 'guest'],
+    ['POST', '/mobile/chat/app/11111111-1111-4111-8111-111111111111/reply', 'member'],
   ])('%s %s needs %s', (method, p, tier) => {
     expect(tierFor(method, p)).toBe(tier);
   });
@@ -407,8 +421,15 @@ describe('route tiers (team-roles-and-access §3.7)', () => {
     // 43: work-front-doors (decision 2) opened GET /mobile/needs to guests; the route filters per viewer.
     // 43: all of the above together (31 + 8 document routes + work-board, pins, search and needs).
     // 44: work-front-doors stage 2a opened GET /mobile/work/projects to guests; only the owner gets project names.
-    // 45: document-decisions §3.2 opened GET /mobile/docs/<id>/decision to guests (the ask is checked against the conversation's audience, like the summary).
-    expect(open).toBe(45);
+    // 45: permanent-agent-links §2a opened GET /mobile/agent-link/identity to guests; it returns only the agent's
+    //     public id and key and a proof bound to that phone, so every paired person's app can open links.
+    // 46: document-decisions §3.2 opened GET /mobile/docs/<id>/decision to guests (the ask is checked against the conversation's audience, like the summary).
+    // 48: exact App message links and anchored history are reader operations.
+    // 49: the signed Reply write is a member operation.
+    // 50: Reply preview is a reader operation.
+    // 52: reaction read and write have separate guest and member tiers.
+    // 53: Forward admits readers for receipt recovery and checks send access on new writes.
+    expect(open).toBe(53);
   });
 
   it.each([
@@ -426,5 +447,11 @@ describe('route tiers (team-roles-and-access §3.7)', () => {
     expect(teamConversationTarget('DELETE', `/mobile/conversations/${uuid}`)).toEqual({ ref: uuid, op: 'delete' });
     expect(teamConversationTarget('PATCH', `/mobile/conversations/${uuid}`)).toEqual({ ref: uuid, op: 'rename' });
     expect(teamConversationTarget('GET', '/mobile/conversations')).toBeNull();
+    expect(teamConversationTarget('POST', `/mobile/chat/app/${uuid}/forward`)).toEqual({ ref: uuid, op: 'read' });
+    expect(teamConversationTarget('GET', `/mobile/chat/app/${uuid}/reactions`)).toEqual({ ref: uuid, op: 'read' });
+    expect(teamConversationTarget('PUT', `/mobile/chat/app/${uuid}/reactions`)).toEqual({ ref: uuid, op: 'send' });
+    expect(teamConversationTarget('GET', `/mobile/chat/app/${uuid}/reply-previews`)).toEqual({ ref: uuid, op: 'read' });
+    expect(teamConversationTarget('GET', `/mobile/chat/app/${uuid}/message-context`)).toEqual({ ref: uuid, op: 'read' });
+    expect(teamConversationTarget('POST', `/mobile/chat/app/${uuid}/reply`)).toEqual({ ref: uuid, op: 'send' });
   });
 });
