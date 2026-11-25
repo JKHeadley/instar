@@ -18,6 +18,7 @@
  * restores the previous plain-output invocation byte-for-byte.
  */
 
+import { codexToolFreeArgs } from './codexToolFreeProfile.js';
 import { execFile } from 'node:child_process';
 import { mkdtempSync, existsSync, readFileSync, statSync } from 'node:fs';
 import { tmpdir } from 'node:os';
@@ -434,7 +435,8 @@ export class CodexCliIntelligenceProvider implements IntelligenceProvider {
     return [
       // A read-only sandbox can still read local files, so a call carrying outside text
       // asks for no tools at all (docs/specs/ecosystem-idea-pipeline.md §1).
-      ...(noLocalTools ? ['--disable', 'shell_tool', '--disable', 'unified_exec', '--disable', 'apps', '--disable', 'browser_use', '--disable', 'computer_use', '-c', 'mcp_servers={}'] : []),
+      // The tool-free profile also turns off web search, which Codex leaves on by default (SEC-175).
+      ...(noLocalTools ? codexToolFreeArgs() : []),
       '--model',
       model,
       '--sandbox',

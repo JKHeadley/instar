@@ -1,0 +1,33 @@
+{
+  "version": 2,
+  "slug": "sec147-machine-auth-binding-stage1",
+  "sessionId": "09b2b18b-f7f7-499f-bc7b-1d38025c1520",
+  "timestamp": "2026-11-23T15:56:58.398Z",
+  "artifactPath": "upgrades/side-effects/sec147-machine-auth-binding-stage1.md",
+  "artifactSha256": "e1412386a4deeea97bee59dd6a128f0a4318f7e44408937a33d197573ee4e8ac",
+  "specPath": "docs/specs/sec147-machine-auth-binding.md",
+  "coveredFiles": [
+    "docs/specs/reports/sec147-machine-auth-binding-convergence.md",
+    "docs/specs/sec147-machine-auth-binding.eli16.md",
+    "docs/specs/sec147-machine-auth-binding.md",
+    "src/core/NonceStore.ts",
+    "src/server/AgentServer.ts",
+    "src/server/WebSocketManager.ts",
+    "src/server/machineAuth.ts",
+    "tests/e2e/multi-machine-http.test.ts",
+    "tests/unit/WebSocketManager.test.ts",
+    "tests/unit/machine-auth-binding.test.ts",
+    "upgrades/next/sec147-machine-auth-binding-stage1.md",
+    "upgrades/side-effects/sec147-machine-auth-binding-stage1.md"
+  ],
+  "phase": "complete",
+  "tier": 2,
+  "tierReasoning": "Whole-PR trace after merging main: an optional check in machine-to-machine authentication plus its spec; the spec's ladder line now uses the accepted not-applicable form.",
+  "secondPass": "true",
+  "reviewerConcurred": true,
+  "classClosure": {
+    "defectClass": "unbounded-self-action",
+    "closure": "n/a",
+    "reason": "no loop or spawn added"
+  }
+}

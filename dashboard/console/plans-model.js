@@ -48,6 +48,9 @@ export function projectNeedsOk(p) {
   if (!p || !OPEN_STATUSES.has(p.status)) return false;
   if ((Number(p.unacknowledgedAdvanceCount) || 0) > 0) return true;
   const cur = currentRoundIndex(p);
+  // A tracking-only project has not requested a launch. A real scheduled launch
+  // still requires acknowledgment, even when automatic advancement is disabled.
+  if (p.autoAdvance === false && !p.rounds?.[cur]?.autoAdvanceAt) return false;
   return cur === 0 && !p.firstLaunchAckAt;
 }
 
