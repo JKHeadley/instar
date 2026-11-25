@@ -81,6 +81,8 @@ describe('AppConversationStore', () => {
       expect(await store.prepareRemovalHistory(KEY)).toBe(true);
       const oldPage = store.syncRemovalAwareMessageChangesAfter(KEY, 0, 100, () => 'allow')!;
       expect(store.hasPreparedRemovalHistory(KEY, oldPage.proof)).toBe(true);
+      expect(oldPage.sequence).toBe(oldPage.highWater);
+      expect(store.syncRemovalAwareMessageChangesAfter(KEY, oldPage.highWater + 1, 100, () => 'allow')).toBeNull();
       store.append({ kind: 'message-removed', conversationKey: KEY, eventId: 'new-removal',
         targetEventId: 'ev-target', targetMessageId: 'msg-target', at: at(2), machineId: 'm1' });
       expect(await store.prepareRemovalHistory(KEY)).toBe(true);

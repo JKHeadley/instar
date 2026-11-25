@@ -1485,12 +1485,17 @@ export class AppConversationStore {
     mayRead: (row: BrowsedMessage) => 'allow' | 'deny' | 'unknown'): {
     changes: NonNullable<ReturnType<AppConversationStore['syncRemovalAwareMessageChanges']>>['changes'];
     sequence: number;
+    highWater: number;
     blocked: boolean;
     proof: string;
   } | null {
     if (!Number.isSafeInteger(after) || after < 0) return null;
     return this.withRemovalHistory(conversationKey, (custodian, proof) => {
       const key = canonicalConversationKey(conversationKey);
+      const frontier = this.db.prepare('SELECT COALESCE(MAX(ingestSeq), 0) AS sequence FROM events WHERE canonicalKey = ?')
+        .get(key) as { sequence: number };
+      const highWater = frontier.sequence;
+      if (!Number.isSafeInteger(highWater) || highWater < after) throw new Error('removal sync frontier unavailable');
       const { events, sequence } = this.syncIndexedEvents(conversationKey, after, limit, true);
       const firstRemoval = this.db.prepare(`
         SELECT e.eventId FROM message_removals r JOIN events e
@@ -1505,7 +1510,7 @@ export class AppConversationStore {
         const marker = fact.kind === 'message-removed' && fact.machineId === custodian;
         const target = marker ? this.getEvent(conversationKey, fact.targetEventId) : fact;
         if (marker && (!target || target.eventId !== fact.targetEventId
-          || canonicalConversationKey(target.conversationKey) !== key)) return { changes, sequence: previous, blocked: true, proof };
+          || canonicalConversationKey(target.conversationKey) !== key)) return { changes, sequence: previous, blocked: true, highWater, proof };
         if (target && (target.kind === 'message' || target.kind === 'media-message')
           && canonicalConversationKey(target.conversationKey) === key
           && (!marker || fact.targetMessageId === target.messageId)) {
@@ -1513,7 +1518,7 @@ export class AppConversationStore {
           if (marker ? removal?.eventId === fact.eventId : !removal && fact.kind !== 'message-removed') {
             const row = this.projectMessage(target);
             const access = mayRead(row);
-            if (access === 'unknown') return { changes, sequence: previous, blocked: true, proof };
+            if (access === 'unknown') return { changes, sequence: previous, blocked: true, highWater, proof };
             if (access === 'allow') changes.push(marker
               ? { kind: 'message-removed', conversationKey, eventId: fact.eventId, targetEventId: target.eventId }
               : { kind: 'message', row });
@@ -1521,7 +1526,7 @@ export class AppConversationStore {
         }
         previous = fact.ingestSeq;
       }
-      return { changes, sequence, blocked: false, proof };
+      return { changes, sequence, blocked: false, highWater, proof };
     });
   }
 

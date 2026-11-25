@@ -1295,8 +1295,14 @@ describe('private signed owner removal sync page', () => {
   it('serves exact marker and continuation without replaying the removed text', async () => {
     const { e, key, path, remove, changeTrust } = await fixture();
     expect((await bearer(e, 'get', path)).status).toBe(403);
+    const firstPage = await signed(e, 'GET', `${path}?limit=1`);
+    expect(firstPage.status).toBe(200);
+    expect(firstPage.body).toMatchObject({ changes: [], blocked: false, caughtUp: false, highWater: expect.any(String) });
+    expect(firstPage.body).not.toHaveProperty('displayForMs');
+    expect((await signed(e, 'GET', `${path}?cursor=${encodeURIComponent(firstPage.body.highWater)}`)).status).toBe(400);
     const before = await signed(e, 'GET', path);
     expect(before.status).toBe(200);
+    expect(before.body).toMatchObject({ caughtUp: true, displayForMs: 30_000, highWater: firstPage.body.highWater });
     expect(before.body.changes).toEqual([{ kind: 'message', row: {
       eventId: 'target', messageId: 'msg-target', role: 'agent', text: 'Original text', at: expect.any(String),
     } }]);
@@ -1307,6 +1313,8 @@ describe('private signed owner removal sync page', () => {
     const marker = { kind: 'message-removed', conversationKey: key, eventId: 'remove-target', targetEventId: 'target' };
     expect(after.body.changes).toEqual([marker]);
     expect(after.body.epoch).toBe(before.body.epoch);
+    expect(after.body).toMatchObject({ caughtUp: true, displayForMs: 30_000 });
+    expect(after.body.highWater).not.toBe(before.body.highWater);
     expect((await signed(e, 'GET', path)).body.changes).toEqual([marker]);
     expect((await signed(e, 'GET', `${path}?limit=101`)).status).toBe(400);
     expect((await signed(e, 'GET', `${path}?cursor=invalid`)).status).toBe(400);
@@ -1327,7 +1335,8 @@ describe('private signed owner removal sync page', () => {
     try {
       const blocked = await signed(e, 'GET', continuation);
       expect(blocked.status).toBe(200);
-      expect(blocked.body).toMatchObject({ cursor: before.body.cursor, blocked: true, changes: [] });
+      expect(blocked.body).toMatchObject({ cursor: before.body.cursor, blocked: true, changes: [], caughtUp: false });
+      expect(blocked.body).not.toHaveProperty('displayForMs');
     } finally { acl.mockRestore(); }
     const retried = await signed(e, 'GET', continuation);
     expect(retried.body.changes).toEqual([

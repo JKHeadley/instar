@@ -79,3 +79,7 @@ The independent and cross-model reviews required full post-evidence ownership an
 ## Private signed owner sync page checkpoint
 
 Independent and cross-model review confirmed the prepared page and cursor boundary after requiring an exact proof comparison and preserving unresolved row access. The fixture reads real projected messages and markers, holds the exact cursor at an unresolved marker, then retries it ahead of later rows. It withholds a page on authority change during preparation or on a removal immediately after selection. A replacement proof cannot certify an earlier page. The wire allowlist excludes retained signatures and access metadata. Production remains dark and the high-water and cache deadline handshake are still required.
+
+## Private signed high-water checkpoint
+
+Independent and cross-model review concurred that catch-up is tied to the exact prepared snapshot and cannot be inferred from an empty page. The high-water identifier has its own MAC domain and cannot resume a continuation. The HTTP fixture checks a filtered short page, a blocked page, exact catch-up and advancement when a removal arrives. The client contract binds its deadline to request start and requires durable application before displaying cached rows. The delayed-commit and missed-removal checks remain client acceptance requirements.

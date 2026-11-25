@@ -5,6 +5,7 @@ import type { createRemovalSyncCursorCodec } from './mobileAppRemovalSyncCursor.
 import { exactMessageReader } from './mobileExactMessageAuthority.js';
 import { resolveOwnerRemovalSyncAuthority } from './mobileAppRemovalSyncAuthority.js';
 
+const MAX_PRIVATE_DISPLAY_MS = 30_000;
 const unavailable = { status: 503, body: { error: 'message-removal-sync-unavailable' } } as const;
 
 /** Private signed page executor. Production route, cursor delivery and cache renewal remain unmounted. */
@@ -48,8 +49,11 @@ export async function executeOwnerRemovalSync(req: Request, pairing: MobilePairi
       const { eventId, messageId, text, at, role } = change.row;
       return { kind: 'message', row: { eventId, messageId, text, at, role } };
     });
+    const caughtUp = !page.blocked && page.sequence === page.highWater;
     return { status: 200, body: {
       conversationKey, epoch, changes, blocked: page.blocked, cursor: codec.issue(final.authority, page.sequence),
+      highWater: codec.highWaterFor(final.authority, page.highWater), caughtUp,
+      ...(caughtUp ? { displayForMs: MAX_PRIVATE_DISPLAY_MS } : {}),
     } };
   } catch {
     return unavailable; // @silent-fallback-ok — an incomplete projection cannot issue a continuation

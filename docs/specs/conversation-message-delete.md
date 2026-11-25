@@ -7,9 +7,9 @@ approved: true
 approved-by: echo under standing build approval for local storage, private signed admission and execution, and unmounted history projection only
 parent-principle: Operator-Surface Quality
 tier: 2
-review-convergence: "2026-11-25T22:59:30.521Z"
-review-iterations: 42
-review-completed-at: "2026-11-25T22:59:30.521Z"
+review-convergence: "2026-11-25T23:08:37.938Z"
+review-iterations: 43
+review-completed-at: "2026-11-25T23:08:37.938Z"
 review-report: "docs/specs/reports/conversation-message-delete-convergence.md"
 cross-model-review: "cross-model-review: codex-cli:gpt-6.2-astra"
 ---
@@ -200,3 +200,11 @@ The private executor validates the signed owner and cursor, prepares removal-awa
 The fixture emits text, role, time, message ID and event ID for visible messages, and only the existing exact fields for a removal marker. It deliberately omits media, related events and client cache readiness. Nothing mounts this executor in production. The live route still needs authoritative history wiring, a bounded high-water handshake, a rule for a permanently unresolved marker and client epoch reconciliation.
 
 The final check compares the exact proof used by the selected page. A replacement proof cannot bless older rows. In the owner-only fixture, an unexpected row access refusal is indeterminate and holds the cursor. The removal fact ID deduplicates delivery of the marker, while the target event ID identifies the row to evict. Neither an empty page nor `blocked: false` proves catch-up. The production handshake must separately verify the current high-water mark before opening cached history.
+
+## Private signed high-water checkpoint
+
+The private sync page observes the current conversation high-water mark inside the same prepared journal/index snapshot as the page. The server authenticates the high-water identifier under a distinct purpose, so it cannot be reused as a continuation. An input cursor beyond that snapshot cannot yield a page. A page is caught up only when its continuation equals the observed high-water sequence and no unresolved entry blocked it. An empty page that only consumed filtered records can still fall short.
+
+Only a caught-up response offers a private maximum display budget of 30 seconds. A client must measure the budget from the monotonic start of the request and durably apply authorized changes through the matching cursor before uncovering cached history. A stale response cannot restart the timer. Detected disconnect or access invalidation covers the affected history immediately. The budget expires if the connection fails silently or a new removal is missed. The fixture does not mount this protocol or authorize a client to uncover stale rows. Production still needs cursor renewal, a client acceptance run and the bounded snapshot reset for permanently unresolved history.
+
+A new authoritative read suppresses the removed row. An already open client evicts on an authenticated removal and covers on detected invalidation or disconnect. If it misses the notification, it covers by the deadline measured from renewal request start. For client acceptance, deliver the response at 29 seconds and finish writing the page and cursor at 31 seconds. The durable changes may commit, but the client keeps history covered until another qualifying renewal. The production response must be non-cacheable.

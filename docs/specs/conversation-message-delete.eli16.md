@@ -41,3 +41,5 @@ A change to a machine’s signing keys also changes the revision used for sync. 
 The private server check now brings the signed device, owner, chat, and evidence revisions together. An old saved position can’t be reused after a different machine or access check takes effect.
 
 The private sync test now reads real messages and removal notices. If access changes or a removal arrives while the server is preparing a page, the server discards that page so it cannot send stale rows.
+
+The private sync response now says when it has reached the latest verified entry. An empty page alone is not enough. The app can use that result to decide when it has applied enough changes to show cached messages again.

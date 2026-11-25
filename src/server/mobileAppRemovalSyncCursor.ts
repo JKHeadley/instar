@@ -32,6 +32,10 @@ export function createRemovalSyncCursorCodec() {
 
   return {
     epochFor,
+    highWaterFor(authority: RemovalSyncAuthority, sequence: number): string {
+      if (!Number.isSafeInteger(sequence) || sequence < 0) throw new Error('invalid removal sync high-water mark');
+      return mac('app-removal-sync-high-water-v1', [...scope(authority), epochFor(authority), sequence]);
+    },
     issue(authority: RemovalSyncAuthority, sequence: number): string {
       if (!Number.isSafeInteger(sequence) || sequence < 0) throw new Error('invalid removal sync sequence');
       const epoch = epochFor(authority);
