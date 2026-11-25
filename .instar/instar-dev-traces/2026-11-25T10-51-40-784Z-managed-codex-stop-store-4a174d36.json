@@ -1,0 +1,20 @@
+{
+  "version": 2,
+  "slug": "managed-codex-stop-store",
+  "sessionId": "017c26ed-5596-4576-9c20-20af13e4c1f8",
+  "timestamp": "2026-11-25T10:51:40.784Z",
+  "artifactPath": "upgrades/side-effects/managed-codex-stop-store.md",
+  "artifactSha256": "2497452221028f926029ec0251b928ef37c19f7c5c6c36526d052e77b246f0a3",
+  "coveredFiles": [
+    "src/core/ManagedCodexStopDecision.ts",
+    "src/core/ManagedCodexStopStore.ts",
+    "tests/unit/managed-codex-stop-store.test.ts"
+  ],
+  "phase": "complete",
+  "tier": 1,
+  "tierReasoning": "Only tests open the database. The new local transaction remains unwired.",
+  "eli16Path": "upgrades/managed-codex-stop-store.eli16.md",
+  "sideEffectsPath": "upgrades/side-effects/managed-codex-stop-store.md",
+  "secondPass": "not-required",
+  "reviewerConcurred": null
+}

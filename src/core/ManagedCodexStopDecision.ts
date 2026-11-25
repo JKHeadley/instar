@@ -35,7 +35,8 @@ export function decideManagedCodexStop(
   input: ManagedStopInput,
 ): ManagedStopDecision {
   if (current.sessionId !== input.sessionId || current.machineId !== input.machineId
-    || current.ownerEpoch !== input.ownerEpoch || current.state !== 'active') {
+    || current.ownerEpoch !== input.ownerEpoch || current.state !== 'active'
+    || !input.cycle || current.issuedCycles.includes(input.cycle)) {
     return { enrollment: current };
   }
 
@@ -48,8 +49,7 @@ export function decideManagedCodexStop(
     : current;
 
   if (!input.enabled || !input.actionOpen || input.paused || enrollment.remaining <= 0
-    || enrollment.outstanding || !input.cycle || !input.marker
-    || enrollment.issuedCycles.includes(input.cycle)) {
+    || enrollment.outstanding || !input.marker) {
     return { enrollment };
   }
 
