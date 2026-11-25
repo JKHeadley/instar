@@ -10,3 +10,5 @@ This report tracks the draft and synthetic binding checkpoint. Live implementati
 - The synthetic checkpoint hashes the exact plan and typed grant disclosure. The signed approval, current grant resolver, transactional booking and device receipt path remain future steps. The fixture uses no provider or live grant.
 
 External review used the configured Codex reviewer. Gemini was unavailable because its login was inactive. Independent internal concurrence was limited to synthetic work with no billing. This report does not mark the full spec as converged.
+
+Token Pacing's review of the committed draft added three concrete requirements. One authoritative booking record carries every affected allocation. The receipt contract retains unresolved obligations, deduplicates terminal evidence and records actual overruns in full. The credential-bearing egress requires the one-way claim. The spec now records these requirements. They remain open for implementation and verification.
