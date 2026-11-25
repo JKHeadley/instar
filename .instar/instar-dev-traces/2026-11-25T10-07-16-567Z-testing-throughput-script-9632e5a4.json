@@ -1,0 +1,25 @@
+{
+  "version": 2,
+  "slug": "testing-throughput-script",
+  "sessionId": "bcc82a0c-f81e-440b-88eb-304eb7ee4f4c",
+  "timestamp": "2026-11-25T10:07:16.567Z",
+  "artifactPath": "upgrades/side-effects/testing-throughput-script.md",
+  "artifactSha256": "f896bcc606466db85fa3a24e1e67fd95b8c20315bc8c92525d22c0401f55eb39",
+  "coveredFiles": [
+    "docs/specs/testing-throughput-script.eli16.md",
+    "src/scaffold/templates/jobs/instar/scripts/testing-throughput-report-script.mjs",
+    "src/scaffold/templates/jobs/instar/testing-throughput-report-script.md",
+    "src/scheduler/JobScheduler.ts",
+    "tests/fixtures/testing-throughput-saved-report.json",
+    "tests/unit/job-cost-runner/JobScheduler-script-runner.test.ts",
+    "tests/unit/job-scripts/testing-throughput-report.test.ts",
+    "upgrades/side-effects/testing-throughput-script.md"
+  ],
+  "phase": "complete",
+  "tier": 1,
+  "tierReasoning": "Reversible opt-in report beside an unchanged active job",
+  "eli16Path": "docs/specs/testing-throughput-script.eli16.md",
+  "sideEffectsPath": "upgrades/side-effects/testing-throughput-script.md",
+  "secondPass": "not-required",
+  "reviewerConcurred": null
+}
