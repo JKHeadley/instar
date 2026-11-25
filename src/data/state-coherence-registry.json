@@ -5,24 +5,6 @@
   "sourceDoc": "docs/specs/STATE-COHERENCE-REGISTRY.md",
   "entries": [
     {
-      "category": "security-review-preflight-packets",
-      "description": "Private, bounded, machine-local full declared-input snapshots for evidence-only security-review diagnostics. They certify neither model consumption nor semantic review; source ledger is never modified.",
-      "scope": "machine-local",
-      "freshness": "session-boundary",
-      "conflictShape": "single-writer",
-      "transport": "none",
-      "paths": [
-        "state/security/private/review-packets/"
-      ],
-      "grandfathered": false,
-      "retention": {
-        "class": "B",
-        "access": "bounded",
-        "maxEntries": 16,
-        "note": "Keep at most16 complete owned UUID packets (up to8MiB source bytes per packet); remove only oldest owned derived packets. Unknown/partial artifacts are never consumed; enumeration over128 entries refuses capture. These are never the sole record of a finding."
-      }
-    },
-    {
       "category": "attribution-ledger",
       "description": "Append-only history of claims credited to a person: wording, verdict, source ref and lineage. Rotated into kept gzip archives, never deleted. One writer per machine; a trace merges every machine's rows on read.",
       "scope": "machine-local",
