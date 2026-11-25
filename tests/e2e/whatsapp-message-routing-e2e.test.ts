@@ -469,9 +469,9 @@ describe('WhatsApp Message Routing E2E', () => {
       const fnStart = src.indexOf('injectWhatsAppMessage(');
       const fnBody = src.substring(fnStart, fnStart + 800);
       expect(fnBody).toContain('FILE_THRESHOLD');
-      expect(fnBody).toContain('/tmp');
-      expect(fnBody).toContain('instar-whatsapp');
-      expect(fnBody).toContain('writeFileSync');
+      // SEC-138: saved in the agent's own owner-only inbound folder, never a shared /tmp folder.
+      expect(fnBody).toContain('writePrivateInboundFile(this.config.projectDir');
+      expect(fnBody).not.toContain('instar-whatsapp');
     });
 
     it('uses generic injectMessage for short messages', () => {

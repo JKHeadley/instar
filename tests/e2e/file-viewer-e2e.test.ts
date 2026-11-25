@@ -88,6 +88,15 @@ describe('E2E: Dashboard File Viewer', () => {
     fs.writeFileSync(path.join(projectDir, '.claude', 'config', '.mcp.json'), '{"mcpServers": {}}');
     fs.mkdirSync(path.join(projectDir, '.claude', 'skills', 'copy', '.claude'), { recursive: true });
     fs.writeFileSync(path.join(projectDir, '.claude', 'skills', 'copy', '.claude', 'settings.json'), '{"hooks": {}}');
+    // SEC-173: a git folder and a script inside an editable path.
+    fs.mkdirSync(path.join(projectDir, '.claude', 'skills', 'copy', '.git'), { recursive: true });
+    fs.writeFileSync(path.join(projectDir, '.claude', 'skills', 'copy', '.git', 'config'), '[core]\n\tbare = false\n');
+    fs.writeFileSync(path.join(projectDir, '.claude', 'skills', 'reflect', 'run.sh'), '#!/bin/sh\necho ok\n', { mode: 0o755 });
+    // SEC-174: a package manifest inside an editable path (no execute bit).
+    fs.writeFileSync(path.join(projectDir, '.claude', 'skills', 'reflect', 'package.json'), '{"scripts":{}}');
+    // SEC-178: a backup snapshot copy of the jobs list inside an editable path.
+    fs.mkdirSync(path.join(projectDir, '.claude', 'skills', 'reflect', '.instar', 'backups', 'snap'), { recursive: true });
+    fs.writeFileSync(path.join(projectDir, '.claude', 'skills', 'reflect', '.instar', 'backups', 'snap', 'jobs.json'), '{"jobs":[]}');
 
     // docs/ directory (allowed by default)
     fs.mkdirSync(path.join(projectDir, 'docs', 'api'), { recursive: true });
@@ -519,6 +528,50 @@ describe('E2E: Dashboard File Viewer', () => {
       }, { 'x-instar-request': '1' });
       expect(saveRes.status).toBe(403);
       expect(saveRes.body.error).toContain('never editable');
+    });
+
+    it('SEC-173: rejects saving into a git folder inside an editable path', async () => {
+      const saveRes = await request(baseUrl, 'POST', '/api/files/save', {
+        path: '.claude/skills/copy/.git/config',
+        content: '[core]\n\tbare = true\n',
+      }, { 'x-instar-request': '1' });
+      expect(saveRes.status).toBe(403);
+      expect(saveRes.body.error).toContain('never editable');
+      expect(fs.readFileSync(path.join(projectDir, '.claude', 'skills', 'copy', '.git', 'config'), 'utf8')).toBe('[core]\n\tbare = false\n');
+    });
+
+    it('SEC-173: a script in an editable path reads as not editable and its save is refused', async () => {
+      if (process.platform === 'win32') return;
+      const readRes = await request(baseUrl, 'GET', '/api/files/read?path=' + encodeURIComponent('.claude/skills/reflect/run.sh'));
+      expect(readRes.status).toBe(200);
+      expect(readRes.body.editable).toBe(false);
+      const saveRes = await request(baseUrl, 'POST', '/api/files/save', {
+        path: '.claude/skills/reflect/run.sh',
+        content: '#!/bin/sh\necho changed\n',
+      }, { 'x-instar-request': '1' });
+      expect(saveRes.status).toBe(403);
+      expect(fs.readFileSync(path.join(projectDir, '.claude', 'skills', 'reflect', 'run.sh'), 'utf8')).toBe('#!/bin/sh\necho ok\n');
+    });
+
+    it('SEC-174: rejects saving a package manifest inside an editable path', async () => {
+      const saveRes = await request(baseUrl, 'POST', '/api/files/save', {
+        path: '.claude/skills/reflect/package.json',
+        content: '{"scripts":{"test":"echo changed"}}',
+      }, { 'x-instar-request': '1' });
+      expect(saveRes.status).toBe(403);
+      expect(saveRes.body.error).toContain('never editable');
+      expect(fs.readFileSync(path.join(projectDir, '.claude', 'skills', 'reflect', 'package.json'), 'utf8')).toBe('{"scripts":{}}');
+    });
+
+    it('SEC-178: rejects saving a backup snapshot copy inside an editable path', async () => {
+      const rel = '.claude/skills/reflect/.instar/backups/snap/jobs.json';
+      const saveRes = await request(baseUrl, 'POST', '/api/files/save', {
+        path: rel,
+        content: '{"jobs":["changed"]}',
+      }, { 'x-instar-request': '1' });
+      expect(saveRes.status).toBe(403);
+      expect(saveRes.body.error).toContain('never editable');
+      expect(fs.readFileSync(path.join(projectDir, rel), 'utf8')).toBe('{"jobs":[]}');
     });
 
     it('rejects saving to node_modules/', async () => {

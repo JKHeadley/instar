@@ -413,9 +413,11 @@ describe('route tiers (team-roles-and-access §3.7)', () => {
     // 43: work-front-doors (decision 2) opened GET /mobile/needs to guests; the route filters per viewer.
     // 43: all of the above together (31 + 8 document routes + work-board, pins, search and needs).
     // 44: work-front-doors stage 2a opened GET /mobile/work/projects to guests; only the owner gets project names.
-    // 45: document-decisions §3.2 opened GET /mobile/docs/<id>/decision to guests (the ask is checked against the conversation's audience, like the summary).
-    // 48: exact message reads and signed Reply.
-    expect(open).toBe(48);
+    // 45: permanent-agent-links §2a opened GET /mobile/agent-link/identity to guests; it returns only the agent's
+    //     public id and key and a proof bound to that phone, so every paired person's app can open links.
+    // 46: document-decisions §3.2 opened GET /mobile/docs/<id>/decision to guests (the ask is checked against the conversation's audience, like the summary).
+    // 48: exact App message links and anchored history are reader operations.
+    expect(open).toBe(49);
   });
 
   it.each([

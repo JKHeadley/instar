@@ -115,6 +115,28 @@ const audits = (stateDir: string, event: string) => {
 };
 
 describe('local-verify peer works through restart (production wiring, lifecycle)', () => {
+  it('routes a reduced PR only when a configured small peer confirms the same contract', async () => {
+    const { home, stateDir } = sourceCheckout();
+    const machineId = 'm_' + '3'.repeat(32);
+    const trial = { version: 1 as const, machineId, collector: 'darwin-vm-stat-native-pressure-v1' as const,
+      floorBytes: 8192, reserveBytes: 4096, recoveryMs: 3000, unitWorkers: 2 as const, integration: 1 as const, e2e: 1 as const };
+    const values = { 'monitoring.localVerify.smallPeerTrial': trial,
+      'monitoring.localVerify.peers': [{ machineId, url: 'http://127.0.0.1:1' }] };
+    const c = buildCoordinator({ home, stateDir, values, lease: { holds: true, epoch: 7, holder: 'm_coord' } });
+    const fake = fakePeer(c.verifierVersion, c.policyHash);
+    const status = fake.client.status;
+    fake.client.status = async (peer) => ({ ...(await status(peer))!, smallPeerTrial: trial });
+    c.svc.setPeerWiring({ client: fake.client, keyLookupFactory: () => PINS,
+      peerFit: () => ({ eligible: false, reason: 'machine-too-small', smallPeerHeadroom: true, score: 0.1 }) });
+    try {
+      await c.svc.boot();
+      await c.svc.tick();
+      expect((await c.svc.request(3)).ok).toBe(true);
+      await waitFor(() => fake.received.size === 1);
+      expect([...fake.received.values()][0]).toMatchObject({ pr: 3, smallPeerTrial: trial });
+    } finally { c.svc.shutdown(); }
+  });
+
   it('a coordinator restart mid-attempt ends in the import of that attempt; the first tick after boot (lease not yet held) does not cancel', async () => {
     const { home, stateDir } = sourceCheckout();
     const values: Record<string, unknown> = { 'monitoring.localVerify.peers': [{ machineId: 'm_peer', url: 'http://127.0.0.1:1' }], [SETTING]: true };

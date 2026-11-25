@@ -832,6 +832,7 @@ class ChatsPage {
         if (exact) { this.view.exact = exact; this.clearExactRows(this.view); this.loadExact(this.view); this.announce(); }
         else if (this.view.exact) this.leaveExact(this.view);
         else if (this.view.historyReady) this.findSource(this.view);
+        else this.loadFirst(this.view, { recoverUnfinished: true });
       }
       return;
     }
@@ -847,6 +848,7 @@ class ChatsPage {
     if (!v) return;
     v.live = false;
     v.stopExactObservation?.();
+    if (v.historyWaitTimer) { clearTimeout(v.historyWaitTimer); this.timers.delete(v.historyWaitTimer); }
     if (v.abort) { try { v.abort.abort(); } catch { /* done */ } }
     this.revokeBlobs();
     if (this.observer) { try { this.observer.disconnect(); } catch { /* gone */ } this.observer = null; }
@@ -869,6 +871,11 @@ class ChatsPage {
       menu.append(rename, del);
     }
     v.msgs = el('div', { class: 'chat-messages', role: 'log', 'aria-live': 'polite' });
+    v.historyWords = el('p', { class: 'card-line chat-muted' });
+    v.historyRetry = el('button', { class: 'btn-quiet chat-history-retry', type: 'button', text: 'Try again', hidden: true });
+    v.historyRetry.addEventListener('click', () => this.loadFirst(v));
+    v.historyNotice = el('div', { class: 'chat-history-state', role: 'status' }, v.historyWords, v.historyRetry);
+    v.msgs.append(v.historyNotice);
     v.earlier = el('button', { class: 'btn-quiet chat-earlier', type: 'button', text: 'Earlier messages', hidden: true });
     v.earlier.addEventListener('click', () => { if (v.exact) this.loadExact(v, true); else { this.pauseSource(v); this.loadEarlier(v); } });
     v.paused = el('p', { class: 'card-line chat-muted chat-paused', hidden: true, text: 'Live updates paused here — this conversation refreshes when you click into this window.' });
@@ -891,7 +898,7 @@ class ChatsPage {
     this.paintList();
     if (exact?.kind === 'pending') v.sourceText.textContent = 'Checking message-link support…';
     else if (exact) this.loadExact(v);
-    else this.loadFirst(v);
+    else this.loadFirst(v, { recoverUnfinished: true });
     this.loadAppStrip(v);
     this.announce();
   }
@@ -947,36 +954,80 @@ class ChatsPage {
     return (row) => Boolean(row && ((rec && row.originDeviceId && row.originDeviceId === rec.deviceId) || (row.messageId && this.ownIds.has(String(row.messageId)))));
   }
 
-  async loadFirst(v) {
+  async loadFirst(v, { recoverUnfinished = false } = {}) {
+    if (!this.live || !v.live || this.view !== v || v.exact || (v.historyPending && v.historyLoadGeneration === v.sourceGeneration)) return;
     const started = now();
     const generation = v.sourceGeneration;
-    const load = v.latestLoad = (v.latestLoad || 0) + 1;
+    const current = () => this.live && v.live && this.view === v && !v.exact && v.sourceGeneration === generation;
+    v.historyPending = true;
+    v.historyLoadGeneration = generation;
+    v.historyError = null;
+    v.historyWaiting = false;
+    this.paintHistoryState(v);
+    const timer = v.historyWaitTimer = this.later(() => {
+      if (!current() || !v.historyPending) return;
+      v.historyWaiting = true;
+      this.paintHistoryState(v);
+    }, 10_000);
     this.spent();
-    const r = await this.call('GET', this.historyPath(v, { pool: true }));
-    if (!v.live || r.gone || v.exact || v.sourceGeneration !== generation || v.latestLoad !== load) return;
-    if (v.latestLoading) {
-      this.exactDiagnostic('return-to-latest', r.ok ? 'resolved' : 'unavailable', started);
+    try {
+      const r = await this.readHistory(v, this.historyPath(v, { pool: true }));
+      if (!current() || r.gone) return;
+      if (v.latestLoading) this.exactDiagnostic('return-to-latest', r.ok ? 'resolved' : 'unavailable', started);
       if (!r.ok) {
-        v.sourceNotice.hidden = false;
-        v.backToLatest.hidden = true;
-        v.sourceText.textContent = 'Could not load the latest messages. ';
-        v.sourceMore.textContent = 'Try again';
-        v.sourceMore.hidden = false;
+        v.sourceNotice.hidden = true;
+        v.historyError = r.status === 404 ? 'This conversation is not here any more.' : 'Couldn\'t load this conversation right now.';
         return;
       }
+      v.latestLoading = false;
+      v.historyReady = true;
+      this.applyHistory(v, r.data, { replace: true });
+      // Preserve the existing open-time recovery; a history retry never resumes a send.
+      if (recoverUnfinished) this.resumeUnfinished(v);
+      this.scrollToEnd(v, true);
+      this.findSource(v);
+    } catch {
+      // A failed history read changes only its explanation, never messages or a draft.
+      if (current()) v.historyError = 'Couldn\'t load this conversation right now.';
+    } finally {
+      clearTimeout(timer); this.timers.delete(timer);
+      if (v.historyWaitTimer === timer) {
+        v.historyPending = false;
+        v.historyWaitTimer = null;
+        if (this.live && v.live && this.view === v && !v.exact) this.paintHistoryState(v);
+      }
     }
-    if (r.status === 404) { v.sourceNotice.hidden = true; v.statusLine.textContent = 'This conversation is not here any more.'; return; }
-    if (!r.ok) { v.sourceNotice.hidden = true; v.statusLine.textContent = r.status === 503 ? OFF_TEXT : 'Couldn\'t load this conversation right now.'; return; }
-    v.latestLoading = false;
-    this.applyHistory(v, r.data, { replace: true });
-    this.resumeUnfinished(v);
-    this.scrollToEnd(v, true);
-    v.historyReady = true;
-    this.findSource(v);
+  }
+
+  /** Initial, retry, focus and scheduled reads of one view/path share one signed request. */
+  readHistory(v, path) {
+    if (!v.historyReads) v.historyReads = new Map();
+    const key = v.sourceGeneration + ':' + path;
+    const current = v.historyReads.get(key);
+    if (current) return current;
+    const pending = this.call('GET', path).finally(() => {
+      if (v.historyReads.get(key) === pending) v.historyReads.delete(key);
+    });
+    v.historyReads.set(key, pending);
+    return pending;
+  }
+
+  paintHistoryState(v) {
+    if (!v.historyNotice) return;
+    const hasMessages = v.list.length > 0;
+    v.historyNotice.hidden = hasMessages && !v.historyError;
+    v.historyRetry.hidden = v.historyPending || (!v.historyError && hasMessages);
+    v.historyRetry.disabled = Boolean(v.historyPending);
+    if (v.historyError) v.historyWords.textContent = hasMessages
+      ? 'Couldn\'t refresh this conversation. Messages already loaded are still shown.' : v.historyError;
+    else if (v.historyPending) v.historyWords.textContent = v.historyWaiting
+      ? 'Waiting for the agent to return this conversation\'s messages. Your draft is unchanged.' : 'Loading messages…';
+    else v.historyWords.textContent = 'No messages were returned for this conversation. Try again to check its history.';
   }
 
   applyHistory(v, data, { replace = false, earlier = false } = {}) {
     if (!data) return;
+    v.historyError = null;
     if (v.ref.kind === 'slack' && typeof data.conversationKey === 'string') v.slackKey = data.conversationKey;
     const pins = pinsFrom(data);
     if (pins) this.setPins(v, pins);
@@ -1050,6 +1101,7 @@ class ChatsPage {
       }
       prev = n;
     }
+    this.paintHistoryState(v);
     if (atEnd) this.scrollToEnd(v);
   }
   scrollToEnd(v, force) {
@@ -1731,7 +1783,11 @@ class ChatsPage {
     const generation = opened?.sourceGeneration;
     const previous = task.mode === 'newest' ? this.quickPages.get(task.ref) || null : null;
     let r;
-    try { r = await this.call('GET', this.taskPath(task)); } catch { r = { ok: false, status: 0 }; }
+    try {
+      const path = this.taskPath(task);
+      const v = this.view;
+      r = v?.live && task.ref === refString(v.ref) ? await this.readHistory(v, path) : await this.call('GET', path);
+    } catch { r = { ok: false, status: 0 }; }
     if (!this.live) return;
     this.scheduler.finish(task, now(), { status: r.status, retryAfterMs: r.retryAfterMs });
     if (r.gone) return;
@@ -1792,13 +1848,13 @@ class ChatsPage {
 
   /** The focused tab's conversation: read now (an operator-caused read, counted in the budget). */
   async pollNow(v) {
-    if (!v || !v.live || v.exact) return;
+    if (!v || !v.live || v.exact || v.historyPending) return;
     if (v.latestLoading) { this.loadFirst(v); return; }
     const ref = refString(v.ref);
     if (this.leader && this.scheduler.tasks().some((t) => t.ref === ref && t.mode !== 'pool')) { this.scheduler.bump(ref, now()); this.loop(); return; }
     this.spent();
     const generation = v.sourceGeneration;
-    const r = await this.call('GET', this.historyPath(v, { pool: v.ref.kind !== 'slack' }));
+    const r = await this.readHistory(v, this.historyPath(v, { pool: v.ref.kind !== 'slack' }));
     if (r.ok && v.live && !v.exact && v.sourceGeneration === generation) this.applyHistory(v, r.data);
   }
 }

@@ -133,6 +133,16 @@ describe('project decisions', () => {
     expect(roundNameSuffix({ rounds: [{ name: '   ' }] }, 0)).toBe('');
   });
 
+  it('keeps tracking-only projects out of approval requests, preserving scheduled launches and explicit asks', () => {
+    const tracking = project({ autoAdvance: false, firstLaunchAckAt: undefined, rounds: [round()] });
+    expect(projectNeedsOk(tracking)).toBe(false);
+    expect(needsYouWords(tracking, null)).toBeNull();
+    expect(projectNeedsOk({ ...tracking, unacknowledgedAdvanceCount: 1 })).toBe(true);
+    expect(projectNeedsOk({ ...tracking, rounds: [round({ autoAdvanceAt: daysAgo(1) })] })).toBe(true);
+    expect(projectNeedsOk({ ...tracking, autoAdvance: true })).toBe(true);
+    expect(needsYouWords({ ...tracking, needsUser: true, needsUserReason: 'Choose the layout' }, null)).toBe('Waiting on you: Choose the layout');
+  });
+
   it('the current round is the first not done; the line reads in words', () => {
     expect(currentRoundIndex(project())).toBe(1);
     expect(currentRoundIndex(project({ rounds: [round({ status: 'complete' })] }))).toBe(-1);

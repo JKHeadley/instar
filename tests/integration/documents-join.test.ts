@@ -224,7 +224,28 @@ describe('joining a computer from a team invite', () => {
     const all = await request(ctx.app).get('/team/computers').set('Authorization', 'Bearer tok-1');
     expect(all.status).toBe(200);
     expect(all.body.people[0]).toMatchObject({ personKey: 'mara', computers: [], limits: { maxPerPerson: 3, idleDays: 30, maxDays: 90 } });
-    expect((await request(ctx.app).get('/docs/_join/addresses')).body.addresses).toContain('https://echo-laptop.example.dev');
+  });
+
+  it('SEC-169: the public way-back list names only addresses where a computer is set up, never every machine', async () => {
+    const ctx = setup();
+    const list = async () => (await request(ctx.app).get('/docs/_join/addresses')).body.addresses as string[];
+    // No computer anywhere: no machine's address is handed to an anonymous caller.
+    expect(await list()).toEqual([]);
+    // Mara joins a computer on this machine's address: that address, and only it, is a way back.
+    const m = ctx.svc.mintTeamLink('mara', null);
+    if (!m.ok) throw new Error('mint');
+    const dev = makeDevice();
+    const r = await redeem(ctx.app, linkCode(m.link), dev.publicKey);
+    expect((await confirm(ctx.app, dev, r.body.deviceId, heldCode(ctx.svc, r.body.deviceId))).status).toBe(200);
+    expect(await list()).toEqual([`https://${HOST}`]);
+    // A phone-linked computer on the laptop's address adds that address: its own host from the signed body,
+    // not the address the phone used.
+    const body = Buffer.from(JSON.stringify({ host: 'echo-laptop.example.dev', nonce: 'n' })).toString('base64url');
+    ctx.state.browserLinks.set('kh-phone-linked', { type: 'browser-bind', keyHash: 'kh-phone-linked', deviceId: 'd-pl', boundTo: 'mara', linkedByDeviceId: 'p1', linkedByKeyHash: 'pk', linkedAt: new Date().toISOString(), expiresAt: new Date(Date.now() + 86_400_000).toISOString(), scope: 'documents', signed: { host: HOST, timeMs: String(Date.now()), sig: 's', bodyB64: body } });
+    expect((await list()).sort()).toEqual([`https://${HOST}`, 'https://echo-laptop.example.dev'].sort());
+    // Once Mara is off the team, neither of her computers is a way back any more.
+    ctx.state.people.delete('mara');
+    expect(await list()).toEqual([]);
   });
 
   it('Forget on the computer, and removal by the agent, end a joined computer for good', async () => {
