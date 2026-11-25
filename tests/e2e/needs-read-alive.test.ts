@@ -10,6 +10,7 @@ import fs from 'node:fs';
 import os from 'node:os';
 import path from 'node:path';
 import request from 'supertest';
+import type { OwnerNeedsWithdrawal } from '../../src/core/OwnerNeedsWithdrawal.js';
 import { AgentServer } from '../../src/server/AgentServer.js';
 import { StateManager } from '../../src/core/StateManager.js';
 import { LocalAttentionItems } from '../../src/core/LocalAttentionItems.js';
@@ -31,7 +32,10 @@ afterAll(async () => {
   for (const d of dirs) SafeFsExecutor.safeRmSync(d, { recursive: true, force: true, operation: 'tests/e2e/needs-read-alive.test.ts' });
 });
 
-async function boot() {
+async function boot(
+  ownerNeedsCandidate?: ConstructorParameters<typeof AgentServer>[0]['ownerNeedsCandidate'],
+  ownerNeedsWithdrawalJournalFor?: ConstructorParameters<typeof AgentServer>[0]['ownerNeedsWithdrawalJournalFor'],
+) {
   const dir = fs.mkdtempSync(path.join(process.env.TMPDIR ?? os.tmpdir(), 'needs-e2e-'));
   dirs.push(dir);
   const stateDir = path.join(dir, '.instar');
@@ -50,7 +54,7 @@ async function boot() {
   // Capacity is full, but this ordinary wait requires no person to intervene.
   sessionManager.getCachedRunningSessions = () => ({count:1,sessions:[]});
   const tunnel = { lifecycleState: { lastState: 'active', activeProvider: 'cloudflare-named' }, url: `https://${HOST}`, on: () => undefined } as any;
-  const server = new AgentServer({ config, sessionManager, state: new StateManager(stateDir), tunnel });
+  const server = new AgentServer({ config, sessionManager, state: new StateManager(stateDir), tunnel, ownerNeedsCandidate, ownerNeedsWithdrawalJournalFor });
   servers.push(server);
   return { server, config };
 }
@@ -172,4 +176,57 @@ describe('Needs-you read — production wiring', () => {
     // A phone cannot read the canary's state (device rule: not allowed).
     expect((await send('GET', '/needs/canary')).status).toBe(403);
   }, 60_000);
+});
+
+describe('Needs-you in-place action floor — dark runtime', () => {
+  it('projects verified owner actions in place and leaves agent work out of owner counts', async () => {
+    let ask = { project: 'telegram:123', bindingVersion: 'v1', episode: 'episode-1', requestVersion: 'r1' };
+    const withdrawals = new Map<string, OwnerNeedsWithdrawal>();
+    const { server, config } = await boot(item => {
+      if (item.title === 'Disk cleanup is ready') {
+        return { responsibility: 'agent', actions: [], handoffs: [] };
+      }
+      if (item.title === 'Update Instar on your phone') {
+        return { responsibility: 'owner-required', ownerAction: 'physical', presentation: 'update-instar-phone', actions: [{ kind: 'instructions', template: 'update-instar-phone' }], handoffs: [],
+          withdrawal: { ask, record: [...withdrawals.values()][0] ?? null } };
+      }
+      return null;
+    }, async req => req.get('X-Test-Coordinator') === 'test' ? {
+      withAskLock: (_project, run) => run({
+        authority: () => ({ principal: 'coordinator', leaseEpoch: 1 }),
+        activeAsk: () => ({ identity: ask, state: 'pending' }),
+        findWithdrawal: key => withdrawals.get(key) ?? null,
+        appendIfCurrent: async record => { withdrawals.set(record.key, record); return true; },
+      }),
+    } : null);
+    const app = server.getApp();
+    const listener = app.listen(0);
+    closers.push(listener);
+    config.port = (listener.address() as { port: number }).port;
+    const attention = new LocalAttentionItems(config.stateDir);
+    for (const [id, title] of [['agent-cleanup', 'Disk cleanup is ready'], ['owner-phone-update', 'Update Instar on your phone']]) {
+      expect(attention.raise({ id, title, summary: 'A test observation.', category: 'desktop', priority: 'HIGH', source: 'agent' })).toBe(true);
+    }
+
+    const ownerRead = () => request(app).get('/needs').set('Authorization', 'Bearer e2e-token').set('X-Instar-AgentId', 'needs-e2e');
+    const older = await ownerRead().expect(426);
+    expect(older.body).not.toHaveProperty('items');
+    const result = await ownerRead().set('X-Instar-Needs-Contract', 'in-place-v1').expect(200);
+    expect(result.body.schemaVersion).toBe(2);
+    expect(result.body.items).toEqual([expect.objectContaining({
+      title: 'Update Instar on your phone', ownerAction: 'physical', action: { kind: 'instructions', steps: expect.arrayContaining(['Open Instar again.']) },
+    })]);
+    expect(result.body.count).toBe(1);
+    expect(result.body.divertedCount).toBe(1);
+    expect(JSON.stringify(result.body.items)).not.toContain('#/');
+    const retire = () => request(app).post('/needs/withdrawals').set('Authorization', 'Bearer e2e-token').set('X-Instar-AgentId', 'needs-e2e');
+    await retire().send(ask).expect(403);
+    for (let n = 0; n < 2; n++) await retire().set('X-Test-Coordinator', 'test').send(ask).expect(200);
+    expect(withdrawals.size).toBe(1);
+    const hidden = await ownerRead().set('X-Instar-Needs-Contract', 'in-place-v1').expect(200);
+    expect(hidden.body.items).toEqual([]);
+    ask = { ...ask, episode: 'episode-2' };
+    const next = await ownerRead().set('X-Instar-Needs-Contract', 'in-place-v1').expect(200);
+    expect(next.body.items.map((item: { title: string }) => item.title)).toEqual(['Update Instar on your phone']);
+  });
 });

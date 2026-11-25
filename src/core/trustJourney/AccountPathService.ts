@@ -808,6 +808,23 @@ export class AccountPathService {
     }
   }
 
+  /** Read an exact, currently eligible disclosure for an already authenticated device. */
+  openDeviceApprovalDisclosure(deviceId: string, requestId: string):
+    { requestId: string; proposalHash: string; summary: string[] } | null {
+    if (!this.holds()) return null;
+    const request = this.d.store.request(requestId);
+    const device = this.devices?.get(deviceId) ?? null;
+    const acceptance = this.d.store.deviceAcceptance(deviceId);
+    if (!request || request.status !== 'open' || request.adapter !== 'device' ||
+      new Date(request.expiresAt).getTime() <= this.now().getTime() ||
+      this.d.store.requestConsumedOrPending(requestId) || this.inFlight.has(requestId) ||
+      !acceptance || acceptance.principal !== request.principal || this.acceptanceMismatch(acceptance, device)) return null;
+
+    const verified = this.verified(request);
+    const summary = verified.ok ? appApprovalSummaryLines(verified.summary) : null;
+    return summary ? { requestId, proposalHash: request.proposalHash, summary } : null;
+  }
+
   /**
    * The requests the app lists (app-trust-approval §B, Where it is listed): open ones, and those
    * consumed (or ended) in the last 7 days, each with a status read from the store, so a restarted

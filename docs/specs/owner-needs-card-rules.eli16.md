@@ -1,7 +1,9 @@
-# Needs-you Cards That Can Be Finished in Place
+# Needs You cards you can finish in place
 
-Needs-you should show things only you can decide or do. If the agent can clean up disks, repair its own sign-in, or fix a problem in one of its projects, the work goes straight to the agent or project. It does not enter your queue. The agent can still ask you for help if it reaches a specific step that truly needs you.
+Needs You should give you a short list of things only you can do. Disk cleanup, automatic sign-in repairs, and project work the agent can finish stay with the people or agents doing that work. A project update, an urgent label, or a recommendation on an internal card is not enough to ask for your approval.
 
-When a card does need you, it gives you one thing to do right there. You can approve or decline a specific request, enter a credential in a secure form, or follow clear steps included on the card. You can finish the decision without opening the dashboard or hunting for a different conversation.
+When a request does need you, it gives you one action. You can decide on a specific approval, enter a credential in a protected form, or follow the physical steps on the card. The server checks who can act and whether the request is still current. If it knows an approval belongs to you but cannot verify that it is still available, the list tells you it could not check. The approval stays pending at its source.
 
-The check applies to Needs-you and the Attention queue. A card without a clear owner step goes back to the person or agent who wrote it. Any existing approval stays in force while a card is being corrected. An agent remains responsible for checking whether the work is actually finished.
+The first release covers the Needs You list, the dashboard and native clients that display it, and the existing-agent setup that turns on the same check. The nine source policies explain where the work stays. Direct incident views and notification delivery have their own acceptance checks. Existing approval holds stay in place.
+
+This checkpoint is for review with disposable test requests. The feature remains off in production while the team verifies the nine source paths, supported clients, and upgrade behavior. The plan is to enable it by default once those checks pass.

@@ -32,6 +32,8 @@ import { deviceAdmissionIdentity, devicePersonOf, DEVICE_ALLOWLIST } from './mob
 import { tierAtLeast } from '../permissions/TeamAccess.js';
 import { scrubSecrets } from '../monitoring/scrubSecrets.js';
 import { operatorError } from '../core/storageMachineName.js';
+import { withdrawOwnerNeedsAsk, type OwnerNeedsWithdrawalJournal } from '../core/OwnerNeedsWithdrawal.js';
+import { admitOwnerNeedsCard, ownerNeedsPresentation, type OwnerNeedsAction, type OwnerNeedsActionKind, type OwnerNeedsCandidate } from '../core/OwnerNeedsCardAdmission.js';
 
 export const NEEDS_SCHEMA_VERSION = 1;
 /** One answer is shared by every caller for this long (the phones, the console and the Mac app poll). */
@@ -115,7 +117,9 @@ export interface NeedItem {
   source: string;
   sourceLabel: string;
   /** href = a console hash (or /dashboard path); topic = a conversation; attention = the attention topic; promise = a promise. */
-  action: { kind: 'href'; href: string } | { kind: 'topic'; topicId: number } | { kind: 'attention' } | { kind: 'promise'; id: string; origin: string | null };
+  action: { kind: 'href'; href: string } | { kind: 'topic'; topicId: number } | { kind: 'attention' } | { kind: 'promise'; id: string; origin: string | null } | OwnerNeedsAction;
+  /** Present only for admitted in-place owner requests. */
+  ownerAction?: OwnerNeedsActionKind;
   refs: string[];
   /**
    * The work-board card that stands in for this item (docs/specs/work-board-cards-appear.md §3): the row keeps its
@@ -137,6 +141,10 @@ export interface NeedsAnswer {
   agent: { name: string | null };
   viewer: { role: NeedsViewerRole };
   count: number;
+  /** Agent work or rows without a declared owner action, before pagination. */
+  divertedCount?: number;
+  /** Known owner approvals whose source could not confirm whether they can still be acted on. */
+  couldNotCheckApprovalCount?: number;
   complete: boolean;
   items: NeedItem[];
   truncated: boolean;
@@ -158,6 +166,11 @@ export interface NeedsDeps {
   agentName: () => string | null;
   machineId: () => string | null;
   now?: () => number;
+  /** Absent until this agent's clients and sources support in-place actions. */
+  // undefined: audience-authorized row lacks a declaration. null: no verified audience or current ask.
+  ownerCardCandidate?: (item: NeedItem, request?: Request) => OwnerNeedsCandidate | null | undefined | Promise<OwnerNeedsCandidate | null | undefined>;
+  /** Must resolve strict coordinator authority from the request, never from submitted fields. */
+  withdrawalJournalFor?: (req: Request) => Promise<OwnerNeedsWithdrawalJournal | null>;
 }
 
 /** The console directory next to this file, in both the source and the built layout. */
@@ -266,13 +279,13 @@ function cardOf(c: unknown): { card?: NeedItem['card'] } {
 
 export interface NeedsComposer {
   /** The owner's full list (every source). */
-  owner: () => Promise<Omit<NeedsAnswer, 'viewer'>>;
+  owner: (request?: Request) => Promise<Omit<NeedsAnswer, 'viewer'>>;
   /** A team person's list: their work board only. */
   team: (board: NeedsSelfRead | null) => Promise<Omit<NeedsAnswer, 'viewer'>>;
 }
 
 type Composed = Omit<NeedsAnswer, 'viewer'>;
-type ComposerDeps = Pick<NeedsDeps, 'read' | 'consoleDir' | 'agentName' | 'machineId' | 'now'>;
+type ComposerDeps = Pick<NeedsDeps, 'read' | 'consoleDir' | 'agentName' | 'machineId' | 'now' | 'ownerCardCandidate'>;
 
 function page(answer: Composed, start: number): Composed {
   return { ...answer, items: answer.items.slice(start, start + NEEDS_MAX_ITEMS) };
@@ -282,7 +295,7 @@ function page(answer: Composed, start: number): Composed {
 export function createNeedsComposer(deps: ComposerDeps): NeedsComposer {
   const full = createFullComposer(deps);
   return {
-    owner: async () => page(await full.owner(), 0),
+    owner: async request => page(await full.owner(request), 0),
     team: async (board) => page(await full.team(board), 0),
   };
 }
@@ -291,24 +304,73 @@ function createFullComposer(deps: ComposerDeps): NeedsComposer {
   const now = () => (deps.now ? deps.now() : Date.now());
   const dir = deps.consoleDir ?? resolveConsoleDir();
   // Kept across reads so a failed source keeps its last good rows for the grace period (needs-model.js).
-  const known: Record<string, Rec> = {};
+  const legacyKnown: Record<string, Rec> = {};
   const base = () => ({ schemaVersion: NEEDS_SCHEMA_VERSION, generatedAt: new Date(now()).toISOString(), machineId: deps.machineId(), agent: { name: deps.agentName() } });
 
-  const finish = (rows: Array<{ row: Rec; source: string }>, sources: NeedsAnswer['sources'], notes: string[]) => {
+  const finish = async (rows: Array<{ row: Rec; source: string }>, sources: NeedsAnswer['sources'], notes: string[], ownerView = false, request?: Request) => {
     const seen = new Set<string>();
     const items: NeedItem[] = [];
+    let held = false;
+    let divertedCount = 0;
+    let couldNotCheckApprovalCount = 0;
+    const failedProviders = new Set<string>();
     for (const { row, source } of rows) {
       const it = toItem(row, source);
-      if (seen.has(it.id)) continue; // each item once
-      seen.add(it.id);
-      items.push(it);
+      const rowKey = ownerView && deps.ownerCardCandidate ? JSON.stringify([source, it.id]) : it.id;
+      if (seen.has(rowKey)) continue;
+      seen.add(rowKey);
+      if (ownerView && deps.ownerCardCandidate) {
+        if (source === 'workBoard' && row.ownerAction === false) {
+          divertedCount++;
+          continue;
+        }
+        let candidate: OwnerNeedsCandidate | null | undefined;
+        try { candidate = await deps.ownerCardCandidate(it, request); }
+        catch {
+          failedProviders.add(source);
+          continue;
+        }
+        if (!candidate) {
+          if (candidate === undefined) divertedCount++;
+          continue;
+        }
+        const admitted = admitOwnerNeedsCard(candidate);
+        if (admitted.disposition === 'hold') {
+          if (!candidate.ownerAction && admitted.reason !== 'source-unavailable') divertedCount++;
+          if (admitted.reason === 'source-unavailable' && candidate.ownerAction === 'approve') couldNotCheckApprovalCount++;
+          held ||= admitted.reason !== 'request-unavailable' && candidate.responsibility === 'owner-required';
+          continue;
+        }
+        if (admitted.disposition === 'route-to-agent') {
+          divertedCount++;
+          continue;
+        }
+        if (admitted.disposition !== 'show') continue;
+        const presentation = ownerNeedsPresentation(candidate.presentation, admitted.action.kind);
+        if (!presentation) {
+          held = true;
+          continue;
+        }
+        const { card: _card, alsoOpens: _alsoOpens, ...plain } = it;
+        const { action, ownerAction } = admitted;
+        items.push({ ...plain, title: presentation.title, why: presentation.why, detail: presentation.detail, ownerAction, action });
+      } else {
+        items.push(it);
+      }
     }
+    sources = sources.map(s => failedProviders.has(s.id) ? { ...s, state: 'failed' } : s);
     const couldNotCheck = sources.filter((s) => s.state === 'failed').map((s) => s.label);
+    if (held) couldNotCheck.push('some requests that are temporarily unavailable');
+    const ownerNotes = [...notes];
+    if (held) ownerNotes.push('Some requests are temporarily unavailable.');
+    if (couldNotCheckApprovalCount) ownerNotes.push(couldNotCheckApprovalCount === 1
+      ? "Couldn't check one approval." : `Couldn't check ${couldNotCheckApprovalCount} approvals.`);
     const withPosture = sources.map((s) => (NEED_SOURCE_POSTURE[s.id] ? { ...s, posture: NEED_SOURCE_POSTURE[s.id].posture } : s));
-    return { ...base(), count: items.length, complete: couldNotCheck.length === 0, items, truncated: items.length > NEEDS_MAX_ITEMS, sources: withPosture, couldNotCheck, notes };
+    return { ...base(), ...(ownerView && deps.ownerCardCandidate ? { schemaVersion: 2, divertedCount, couldNotCheckApprovalCount } : {}), count: items.length, complete: couldNotCheck.length === 0, items, truncated: items.length > NEEDS_MAX_ITEMS, sources: withPosture, couldNotCheck, notes: ownerNotes };
   };
 
-  const owner = async () => {
+  const owner = async (request?: Request) => {
+    const known = deps.ownerCardCandidate ? {} as Record<string, Rec> : legacyKnown;
     const { needs: N, home: H } = await loadModels(dir);
     const t = now();
     const cache = new Map<string, Promise<Rec>>();
@@ -328,7 +390,7 @@ function createFullComposer(deps: ComposerDeps): NeedsComposer {
     await boundedAll(later.map((s) => () => readSource(s)), NEEDS_MAX_CONCURRENT_READS);
     for (const s of all) if (s.when && !later.includes(s)) delete known[s.id as string]; // not read here (not a maintainer's agent): not a source
 
-    const surfaced = N.surfacedNeeds(known, t, NEEDS_GRACE_MS) as { rows: Rec[]; pending: string[]; failed: string[] };
+    const surfaced = N.surfacedNeeds(known, t, NEEDS_GRACE_MS, { raw: !!deps.ownerCardCandidate }) as { rows: Rec[]; pending: string[]; failed: string[] };
     const attention = await get(homeReads[0]);
     const commitments = await get(homeReads[1]);
     const pool = await get(homeReads[2]);
@@ -337,16 +399,21 @@ function createFullComposer(deps: ComposerDeps): NeedsComposer {
     const peers = pd && Array.isArray(pd.machines) ? (pd.machines as Rec[]).filter((m) => m && !m.isSelf && m.machineId !== pd.selfMachineId).length : null;
     const queue = H.buildNeeds(attention, t, names);
     const promised = H.buildPromised(commitments, t, peers);
-    const combined = H.combineNeeds(queue, promised, surfaced) as Rec;
+    const combined = (deps.ownerCardCandidate ? {} : H.combineNeeds(queue, promised, surfaced)) as Rec;
 
     // Which source each surfaced row came from: the rows each source produced on this read.
     const rowSource = new Map<string, string>();
     for (const s of all) { const k = known[s.id as string]; if (k && Array.isArray(k.rows)) for (const r of k.rows as Rec[]) rowSource.set(String(r.key), s.id as string); }
     const queueKeys = new Set(((queue && (queue.all as Rec[])) || []).map((r: Rec) => String(r.key)));
-    const rows = (Array.isArray(combined.all) ? (combined.all as Rec[]) : []).filter((r) => r.tone !== 'unknown').map((row) => ({
+    const legacyRows = (Array.isArray(combined.all) ? (combined.all as Rec[]) : []).filter((r) => r.tone !== 'unknown').map((row) => ({
       row,
       source: rowSource.get(String(row.key)) ?? (queueKeys.has(String(row.key)) ? 'attention' : 'promises'),
     }));
+    const rows = deps.ownerCardCandidate ? [
+      ...((queue.all as Rec[] | undefined) ?? []).filter(row => !row.stale && row.tone !== 'unknown').map(row => ({ row, source: 'attention' })),
+      ...surfaced.rows.filter(row => row.tone !== 'unknown').map(row => ({ row, source: String(row.source) })),
+      ...((promised.all as Rec[] | undefined) ?? []).filter(row => row.tone === 'attn').map(row => ({ row, source: 'promises' })),
+    ] : legacyRows;
 
     const sources: NeedsAnswer['sources'] = [
       { id: 'attention', label: NEED_SOURCE_LABELS.attention, state: attention.ok && Number.isFinite(queue.count) ? 'ok' : 'failed' },
@@ -384,8 +451,8 @@ function createFullComposer(deps: ComposerDeps): NeedsComposer {
       const i = sources.findIndex((x) => x.id === 'promises');
       if (i >= 0 && sources[i].state === 'ok') sources[i] = { ...sources[i], state: 'failed', label: 'promises on other machines' };
     }
-    const notes = [combined.statusNote, queue && queue.statusNote].filter((x): x is string => typeof x === 'string' && x.length > 0).map((x) => clean(x, 300));
-    return finish(rows, sources, [...new Set(notes)]);
+    const notes = (deps.ownerCardCandidate ? [] : [combined.statusNote, queue && queue.statusNote]).filter((x): x is string => typeof x === 'string' && x.length > 0).map((x) => clean(x, 300));
+    return finish(rows, sources, [...new Set(notes)], true, request);
   };
 
   const team = async (board: NeedsSelfRead | null) => {
@@ -520,6 +587,10 @@ export function mountNeedsRoutes(router: Router, deps: NeedsDeps & { canary?: Ne
     res.set('Cache-Control', 'no-store');
     const role = needsViewer(req, deps.bearerOk);
     if (!role) { res.status(403).json({ error: 'needs-viewer-unknown', detail: 'This phone is not linked to a person on this agent.' }); return; }
+    if (role === 'owner' && deps.ownerCardCandidate && req.get('X-Instar-Needs-Contract') !== 'in-place-v1') {
+      res.status(426).json({ error: 'needs-client-update-required', detail: 'Update Instar to see requests you can finish here.' });
+      return;
+    }
     try {
       const cursor = req.query.cursor;
       // Four bytes of page position plus a 32-byte signature, encoded without padding.
@@ -528,9 +599,11 @@ export function mountNeedsRoutes(router: Router, deps: NeedsDeps & { canary?: Ne
       if (cursor !== undefined && (!cursorBytes || start % NEEDS_MAX_ITEMS !== 0)) {
         res.status(400).json({ error: 'needs-cursor-invalid' }); return;
       }
-      const canaryRow = cursor === undefined && role === 'owner' && deps.canary ? deps.canary.synthetic(req.query.canary) : null;
+      const canaryRow = cursor === undefined && role === 'owner' && deps.canary && !deps.ownerCardCandidate ? deps.canary.synthetic(req.query.canary) : null;
       const full = role === 'owner'
-        ? (!cursorBytes && !canaryRow && last && now() - last.at < NEEDS_CACHE_MS ? last.first : await ownerFresh())
+        ? deps.ownerCardCandidate
+          ? snapshot(await composer.owner(req))
+          : (!cursorBytes && !canaryRow && last && now() - last.at < NEEDS_CACHE_MS ? last.first : await ownerFresh())
         : snapshot(await composer.team(teamMayReadBoard(req) ? deps.boardFor(req) : null));
       const device = deviceAdmissionIdentity(req);
       const principal = [role, device?.keyHash ?? null, devicePersonOf(req)?.userId ?? null];
@@ -560,6 +633,35 @@ export function mountNeedsRoutes(router: Router, deps: NeedsDeps & { canary?: Ne
       res.status(500).json({ error: 'needs-read-failed', detail: clean(operatorError(err), 200) });
     }
   };
+  router.post('/needs/withdrawals', async (req, res) => {
+    if (!deps.withdrawalJournalFor) { res.status(503).json({ error: 'needs-withdrawal-unavailable' }); return; }
+    try {
+      const journal = await deps.withdrawalJournalFor(req);
+      if (!journal) { res.status(403).json({ error: 'needs-coordinator-required' }); return; }
+      const result = await withdrawOwnerNeedsAsk(journal, req.body);
+      switch (result.status) {
+        case 'withdrawn':
+          res.json({ status: result.status });
+          return;
+        case 'invalid':
+          res.status(400).json({ error: 'needs-invalid-ask-identity' });
+          return;
+        case 'forbidden':
+          res.status(403).json({ error: 'needs-coordinator-required' });
+          return;
+        case 'stale':
+          res.status(409).json({ error: 'needs-ask-changed' });
+          return;
+        case 'unavailable':
+          res.status(503).json({ error: 'needs-withdrawal-unavailable' });
+          return;
+      }
+    } catch {
+      // @silent-fallback-ok: no success is reported if source authority or durability is unavailable.
+      res.status(503).json({ error: 'needs-withdrawal-unavailable' });
+    }
+  });
+
   router.get('/needs/canary', (req, res) => {
     res.set('Cache-Control', 'no-store');
     if (!deps.bearerOk(req)) { res.status(403).json({ error: 'bearer-required' }); return; }

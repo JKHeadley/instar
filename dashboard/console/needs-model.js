@@ -151,7 +151,7 @@ export const NEED_SOURCES = [
     rows: ({ cos }, now) => chiefOfStaffNeedRows(cos, now) },
   // Work board (work-board-asks.md §7 Home, Detectors "Waiting on you"): one row per card waiting on the owner. 503 = feature off = nothing waiting.
   { id: 'workBoard', page: 'work/board', reads: { wb: '/work-board' },
-    rows: ({ wb }, now) => { const rows = workBoardNeedRows(wb, now); return rows === null ? UNREADABLE : rows.map((r) => ({ ...row(r.key, r.main, r.sub, r.href), ...(r.cardId ? { board: { cardId: r.cardId, href: r.href, covers: r.covers || [], linkable: !!r.linkable, serverOwned: !!r.serverOwned, createdAt: r.createdAt || '' } } : {}) })); } },
+    rows: ({ wb }, now) => { const rows = workBoardNeedRows(wb, now); return rows === null ? UNREADABLE : rows.map((r) => ({ ...row(r.key, r.main, r.sub, r.href), ...(r.ownerAction === false ? { ownerAction: false } : {}), ...(r.cardId ? { board: { cardId: r.cardId, href: r.href, covers: r.covers || [], linkable: !!r.linkable, serverOwned: !!r.serverOwned, createdAt: r.createdAt || '' } } : {}) })); } },
   // Documents that ask the owner for a decision (document-decisions.md §3.7). 503 = documents off here = nothing waiting.
   { id: 'document-decisions', page: 'work/documents', reads: { waiting: '/docs/decisions/waiting' },
     rows: ({ waiting }) => documentDecisionNeedRows(waiting) },
@@ -187,7 +187,7 @@ export const NEED_SOURCES = [
       const needs = contextNeeds(sentinel.data, {}, now);
       if (needs === null) return UNREADABLE;
       // The fold id is the ref: the watcher's own Attention notice names it, so one incident counts once.
-      return needs.filter((n) => !n.key.startsWith('canary:')).map((n) => row(`context:${n.key}`, n.title, n.detail, '#/settings/context', n.ref ? [n.ref] : []));
+      return needs.filter((n) => n.requiresUserAction !== false).map((n) => row(`context:${n.key}`, n.title, n.detail, '#/settings/context', n.ref ? [n.ref] : []));
     } },
 ];
 
@@ -284,8 +284,9 @@ export function linkCoveredRows(rows) {
  * operator, plus which sources are unread (say "checking", never "quiet") or failed (say
  * partial, never "quiet"). A failed read keeps its last good rows for graceMs. 503 means off.
  */
-export function surfacedNeeds(known, now = Date.now(), graceMs = 120000) {
+export function surfacedNeeds(known, now = Date.now(), graceMs = 120000, { raw = false } = {}) {
   const out = { rows: [], pending: [], failed: [] };
+  const add = (source, rows) => out.rows.push(...(raw ? rows.map(row => ({ ...row, source })) : rows));
   for (const s of NEED_SOURCES) {
     const k = known && known[s.id];
     if (s.when && !s.when(known || {})) continue;
@@ -294,15 +295,15 @@ export function surfacedNeeds(known, now = Date.now(), graceMs = 120000) {
     if (reads.every((r) => sourceState(r) === 'off')) continue; // switched off here; a page's builder handles one optional read being off
     if (reads.some(failedRead)) {
       out.failed.push(s.id);
-      if (k.rows && now - (k.rowsAt || 0) <= graceMs) out.rows.push(...k.rows);
+      if (k.rows && now - (k.rowsAt || 0) <= graceMs) add(s.id, k.rows);
       continue;
     }
     const rows = s.rows(k.results, now);
-    if (rows === UNREADABLE) { out.failed.push(s.id); if (k.rows && now - (k.rowsAt || 0) <= graceMs) out.rows.push(...k.rows); continue; }
+    if (rows === UNREADABLE) { out.failed.push(s.id); if (k.rows && now - (k.rowsAt || 0) <= graceMs) add(s.id, k.rows); continue; }
     k.rows = rows;
     k.rowsAt = now;
-    out.rows.push(...rows);
+    add(s.id, rows);
   }
-  out.rows = linkCoveredRows(out.rows);
+  if (!raw) out.rows = linkCoveredRows(out.rows);
   return out;
 }

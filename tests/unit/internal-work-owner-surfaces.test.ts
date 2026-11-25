@@ -64,7 +64,11 @@ describe('Internal cards stay off owner surfaces', () => {
   });
   it('keeps an internal card internal when it includes an agent recommendation', () => {
     const t = makeService(); const v = create(t, { recommendation: 'Use the current model', whyYou: 'Routine registry maintenance' });
-    expect(json(t, v).agentInternal).toBe(true);
+    expect(json(t, v)).toMatchObject({ agentInternal: true, ownerAction: false });
+    expect(all(boardJson(t.svc, { personKey: null, isOwner: false, isAgent: true }, () => true, name, {
+      softOpenCards: 30, agentCardsOnly: true,
+    })).map((c: any) => c.id)).toContain(v.card.cardId);
+    expect(t.svc.view(v.card.cardId)?.card.approvalValid).toBe(v.card.approvalValid);
     expect(all(boardJson(t.svc, viewer, () => true, name, { softOpenCards: 30 })).map((c: any) => c.id)).not.toContain(v.card.cardId);
     expect(t.svc.hiddenConversationKeys().has(v.card.conversationKey)).toBe(true);
   });

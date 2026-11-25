@@ -278,6 +278,14 @@ describe('Home rows (needs-model workBoard source)', () => {
     b.settings.softOpenCards = 2;
     expect(workBoardNeedRows(ok(b)).map((r) => r.main)).toEqual(['Renew the domain', 'Renew the domain']);
   });
+  it('retains the typed non-owner declaration from a legacy internal recommendation', () => {
+    const internal = card({ id: 'wc_internal', ownerAction: false, recommendation: 'Continue maintenance' });
+    const ask = card({ id: 'wc_approval', title: 'Approve a purchase' });
+    expect(workBoardNeedRows(ok(board([internal, ask])))).toEqual([
+      expect.objectContaining({ cardId: 'wc_internal', ownerAction: false }),
+      expect.objectContaining({ cardId: 'wc_approval' }),
+    ]);
+  });
   it('nothing waiting ⇒ no rows', () => { expect(workBoardNeedRows(ok(board([])))).toEqual([]); });
 });
 

@@ -548,6 +548,7 @@ export function workBoardNeedRows(wb) {
     serverOwned: c.serverOwned === true,
     createdAt: typeof c.createdAt === 'string' ? c.createdAt : '',
     cardId: c.id,
+    ...(c.ownerAction === false || c.agentInternal === true ? { ownerAction: false } : {}),
   }));
   // Internal policy-blocked work is diagnostic data, never an owner request. Genuine asks are in the waiting lane.
   return rows;
