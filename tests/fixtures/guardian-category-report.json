@@ -1,0 +1,126 @@
+{
+  "category": "guardian",
+  "sinceHours": 24,
+  "generatedAt": "2026-11-25T10:14:57.879Z",
+  "summary": {
+    "totalJobs": 7,
+    "healthy": 7,
+    "failing": 0,
+    "skipping": 2,
+    "disabled": 0,
+    "totalRuns": 288,
+    "totalFailures": 1,
+    "avgSuccessRate": 99.9
+  },
+  "jobs": [
+    {
+      "slug": "templates-drift-verifier",
+      "enabled": true,
+      "state": {
+        "consecutiveFailures": 0
+      },
+      "stats": {
+        "totalRuns": 1,
+        "failures": 0
+      },
+      "skips": {
+        "total": 0,
+        "byReason": {}
+      }
+    },
+    {
+      "slug": "degradation-digest",
+      "enabled": true,
+      "state": {
+        "consecutiveFailures": 0
+      },
+      "stats": {
+        "totalRuns": 3,
+        "failures": 0
+      },
+      "skips": {
+        "total": 0,
+        "byReason": {}
+      }
+    },
+    {
+      "slug": "state-integrity-check",
+      "enabled": true,
+      "state": {
+        "consecutiveFailures": 0
+      },
+      "stats": {
+        "totalRuns": 2,
+        "failures": 0
+      },
+      "skips": {
+        "total": 0,
+        "byReason": {}
+      }
+    },
+    {
+      "slug": "guardian-pulse",
+      "enabled": true,
+      "state": {
+        "consecutiveFailures": 0
+      },
+      "stats": {
+        "totalRuns": 1,
+        "failures": 0
+      },
+      "skips": {
+        "total": 0,
+        "byReason": {}
+      }
+    },
+    {
+      "slug": "session-continuity-check",
+      "enabled": true,
+      "state": {
+        "consecutiveFailures": 0
+      },
+      "stats": {
+        "totalRuns": 3,
+        "failures": 0
+      },
+      "skips": {
+        "total": 0,
+        "byReason": {}
+      }
+    },
+    {
+      "slug": "health-check",
+      "enabled": true,
+      "state": {
+        "consecutiveFailures": 0
+      },
+      "stats": {
+        "totalRuns": 278,
+        "failures": 1
+      },
+      "skips": {
+        "total": 9,
+        "byReason": {
+          "paused": 9
+        }
+      }
+    },
+    {
+      "slug": "script-job-supervisor",
+      "enabled": true,
+      "state": {
+        "consecutiveFailures": 0
+      },
+      "stats": {
+        "totalRuns": 0,
+        "failures": 0
+      },
+      "skips": {
+        "total": 6,
+        "byReason": {
+          "disabled": 6
+        }
+      }
+    }
+  ]
+}

@@ -1,0 +1,25 @@
+{
+  "version": 2,
+  "slug": "guardian-activity-script",
+  "sessionId": "bcc82a0c-f81e-440b-88eb-304eb7ee4f4c",
+  "timestamp": "2026-11-25T10:16:48.844Z",
+  "artifactPath": "upgrades/side-effects/guardian-activity-script.md",
+  "artifactSha256": "224f4819c74c6be598a3aa13e017ae0ec6f7013113ca277a4ad417f519b906d2",
+  "coveredFiles": [
+    "docs/specs/guardian-activity-script.eli16.md",
+    "src/scaffold/templates/jobs/instar/guardian-activity-report-script.md",
+    "src/scaffold/templates/jobs/instar/scripts/guardian-activity-report-script.mjs",
+    "src/scheduler/JobScheduler.ts",
+    "tests/fixtures/guardian-category-report.json",
+    "tests/unit/job-cost-runner/JobScheduler-script-runner.test.ts",
+    "tests/unit/job-scripts/guardian-activity-report.test.ts",
+    "upgrades/side-effects/guardian-activity-script.md"
+  ],
+  "phase": "complete",
+  "tier": 1,
+  "tierReasoning": "Reversible opt-in factual report from existing read-only category data",
+  "eli16Path": "docs/specs/guardian-activity-script.eli16.md",
+  "sideEffectsPath": "upgrades/side-effects/guardian-activity-script.md",
+  "secondPass": "not-required",
+  "reviewerConcurred": null
+}

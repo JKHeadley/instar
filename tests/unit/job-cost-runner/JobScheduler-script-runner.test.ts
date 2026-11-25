@@ -7,6 +7,8 @@
  */
 import { describe, it, expect, vi, afterEach } from 'vitest';
 import fs from 'node:fs';
+import http from 'node:http';
+import { once } from 'node:events';
 import path from 'node:path';
 import yaml from 'js-yaml';
 import { createTempProject, createMockSessionManager, type TempProject } from '../../helpers/setup.js';
@@ -79,13 +81,13 @@ function trustedLockFor(slugs: Array<{ slug: string; script: string }>) {
   return { state: 'present-trusted', lockFile: {}, bySlug };
 }
 
-function mkScheduler(p: TempProject, cfg: Record<string, unknown> = { developmentAgent: true }) {
+function mkScheduler(p: TempProject, cfg: Record<string, unknown> = { developmentAgent: true }, port = 4999) {
   const jobsFile = path.join(p.stateDir, 'jobs.json');
   fs.writeFileSync(jobsFile, '[]');
   const config: JobSchedulerConfig = {
     jobsFile, enabled: true, maxParallelJobs: 2,
     quotaThresholds: { normal: 50, elevated: 70, critical: 85, shutdown: 95 },
-    authToken: 'tok-123', projectName: 'agent-x', port: 4999,
+    authToken: 'tok-123', projectName: 'agent-x', port,
   };
   const sm = createMockSessionManager();
   const s = new JobScheduler(config, sm as any, p.state, p.stateDir);
@@ -116,6 +118,49 @@ console.log('JOB_RESULT ok checked');
 `;
 
 describe('script runner execution', () => {
+  it('saves the guardian activity report with no model fallback', async () => {
+    project = createTempProject();
+    const slug = 'guardian-activity-report-script';
+    const source = new URL('../../../src/scaffold/templates/jobs/instar/scripts/guardian-activity-report-script.mjs', import.meta.url);
+    const script = fs.readFileSync(source, 'utf8');
+    const fixture = fs.readFileSync(new URL('../../fixtures/guardian-category-report.json', import.meta.url), 'utf8');
+    addScriptJob(project.stateDir, slug, script);
+    lockState.value = trustedLockFor([{ slug, script }]);
+
+    const requests: string[] = [];
+    const server = http.createServer((req, res) => {
+      if (req.method !== 'GET' || req.headers.authorization !== 'Bearer tok-123' || req.headers['x-instar-agentid'] !== 'agent-x') {
+        res.writeHead(401).end();
+        return;
+      }
+      requests.push(req.url ?? '');
+      res.writeHead(200, { 'Content-Type': 'application/json' }).end(fixture);
+    });
+    server.listen(0, '127.0.0.1');
+    try {
+      await once(server, 'listening');
+      const address = server.address();
+      if (!address || typeof address === 'string') throw new Error('missing fixture port');
+      const { s, sm, setCfg } = mkScheduler(project, { jobs: { scriptRunners: { enabled: false } } }, address.port);
+      scheduler = s;
+      s.start();
+      expect(await s.triggerJob(slug, 'test')).toBe('skipped');
+      expect(requests).toEqual([]);
+      setCfg({ jobs: { scriptRunners: { enabled: true } } });
+      expect(await s.triggerJob(slug, 'test')).toBe('triggered');
+      await waitFor(() => Boolean(lastRun(s, slug) && lastRun(s, slug).result !== 'pending'));
+      const run = lastRun(s, slug);
+      expect(run).toMatchObject({ result: 'success', runner: 'script', tokens: 0 });
+      const saved = fs.readFileSync(path.join(project.stateDir, 'reports', 'guardian', `${run.runId}.txt`), 'utf8');
+      expect(saved).toContain('7 jobs, 288 runs, 1 failure, 2 jobs with skips.');
+      expect(requests).toEqual(['/jobs/category-report/guardian?sinceHours=24']);
+      expect(sm._spawnCount).toBe(0);
+    } finally {
+      server.closeAllConnections();
+      await new Promise<void>(resolve => server.close(() => resolve()));
+    }
+  });
+
   it('runs the throughput report only while the script runner is enabled', async () => {
     project = createTempProject();
     const slug = 'testing-throughput-report-script';
