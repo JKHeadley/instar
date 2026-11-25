@@ -54,3 +54,9 @@ The merge combines three overlapping files. The coordinator keeps its Mini trial
 Both features retain their separate settings and admission checks. A malformed policy or request continues to fail closed. The resolver adds neither a route nor a persisted format. Rollback remains disabling the trial setting.
 
 Independent second pass by /root/mini_trial. Concur with the three-file merge resolution. Both parents' request and status validations survive. A trial remains pull-request-only and baseline file counts remain main-only. Returned records retain their signed receipt and known helper checks. The Mini's measured peak RSS covers processes on that host.
+
+## Second-pass review
+
+**Reviewer:** /root/publisher_review
+
+The reviewer concurs across all twelve changed Local Verify paths at 76f46aae and the five-file correction with SHA-256 4cef156c31a258db31f6f7547bc40f5683cf7a67c77f057691b87f761afe9519. A memory reading started during cleanup is processed before the receipt is finalized. Unavailable or stale measurements quarantine the Mini across restart. Valid readings below the floor retain the normal cooldown. Cleanup avoids sampling the closed execution scope. All 18 focused tests passed, including both final-probe cases.

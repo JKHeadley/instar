@@ -47,11 +47,16 @@ export async function readSmallPeerMemory(): Promise<SmallPeerMemorySample | nul
   } catch { return null; } // @silent-fallback-ok: missing measurements refuse admission and stop a running trial.
 }
 
+export function smallPeerMemoryStopReason(sample: SmallPeerMemorySample | null, floorBytes: number, now: number): 'measurement-failed' | 'memory' | null {
+  if (!sample || sample.collector !== SMALL_PEER_COLLECTOR || !Number.isFinite(now)
+    || !Number.isFinite(sample.sampledAt) || now < sample.sampledAt || now - sample.sampledAt >= SAMPLE_DEADLINE_MS
+    || !Number.isSafeInteger(sample.availableBytes) || sample.availableBytes < 0
+    || ![1, 2, 4].includes(sample.pressureLevel) || !Number.isSafeInteger(floorBytes) || floorBytes <= 0) return 'measurement-failed';
+  return sample.pressureLevel !== 1 || sample.availableBytes <= floorBytes ? 'memory' : null;
+}
+
 export function smallPeerMemoryAllows(sample: SmallPeerMemorySample | null, floorBytes: number, now: number): boolean {
-  return Number.isSafeInteger(floorBytes) && floorBytes > 0 && sample !== null
-    && sample.collector === SMALL_PEER_COLLECTOR && sample.pressureLevel === 1
-    && now >= sample.sampledAt && now - sample.sampledAt < SAMPLE_DEADLINE_MS
-    && sample.availableBytes > floorBytes;
+  return smallPeerMemoryStopReason(sample, floorBytes, now) === null;
 }
 
 /** The full policy travels in the request so the signed digest binds the measured floor. */

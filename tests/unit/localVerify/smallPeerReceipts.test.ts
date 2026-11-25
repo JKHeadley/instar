@@ -77,6 +77,16 @@ describe('signed Mini verification receipts',()=>{
       .toMatchObject({outcome:'capacity',samples:3,peakRssBytes:1024,minimumAvailableBytes:2048,reserveBreached:true});
   });
 
+  it.each([null, 'trial-disabled'])('keeps a measurement failure quarantined across supervisor cancellation (%s) and restart', reason => {
+    writeWatchdogReceipt(remote, { attemptId:id, outcome:'capacity', reason:'measurement-failed',
+      cleanupProven:true, samples:1, peakRssBytes:4096, minimumAvailableBytes:8192, elapsedMs:1100, reserveBreached:false });
+    finalizeTrialReceipt(remote,id,reason,1110);
+    finalizeInterruptedTrials(remote,'peer');
+    expect(fs.existsSync(path.join(remote,'state','local-verify','small-peer-quarantined'))).toBe(true);
+    expect(pendingTrialPackets(remote,'coordinator',peer,[id])[0].receipt)
+      .toMatchObject({reason:'measurement-failed',samples:1,minimumAvailableBytes:8192});
+  });
+
   it('fences an interrupted local trial before exposing a capacity receipt, even with no settings loaded',()=>{
     finalizeInterruptedTrials(remote,'peer');
     const state = path.join(remote,'state','local-verify');

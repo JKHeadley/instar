@@ -1,8 +1,34 @@
-import { describe, expect, it } from 'vitest';
-import { parseSmallPeerMemory, smallPeerMemoryAllows } from '../../../src/localVerify/smallPeerMemory.js';
+import { observeTrialTeardown } from '../../../src/localVerify/smallPeerWatchdog.js';
+import { describe, expect, it, vi } from 'vitest';
+import { parseSmallPeerMemory, smallPeerMemoryAllows, smallPeerMemoryStopReason } from '../../../src/localVerify/smallPeerMemory.js';
 
 const native = 'Mach Virtual Memory Statistics: (page size of 4096 bytes)\nPages free: 10.\nPages inactive: 12.\nPages purgeable: 3.\n';
 describe('small peer memory measurement', () => {
+  it.each([null, parseSmallPeerMemory(native, '2', 100)])('consumes the final probe when cleanup finishes before its result (%j)', async sample => {
+    let finishProbe!: (value: typeof sample) => void;
+    const memory = new Promise<typeof sample>(resolve => { finishProbe = resolve; });
+    const onMemory = vi.fn();
+    const scope = { stop: vi.fn(async () => {}), sample: vi.fn(() => ({ rssBytes: 10, members: [] })) };
+    const pending = observeTrialTeardown(scope, () => memory, onMemory, vi.fn());
+    await Promise.resolve(); // The scope has stopped, while its host-memory read is still outstanding.
+    expect(scope.stop).toHaveBeenCalledOnce();
+    expect(onMemory).not.toHaveBeenCalled();
+    finishProbe(sample);
+    await pending;
+    expect(onMemory).toHaveBeenCalledOnce();
+    expect(onMemory).toHaveBeenCalledWith(sample);
+    expect(scope.sample).not.toHaveBeenCalled();
+  });
+
+  it('distinguishes measured pressure and low memory from lost or stale telemetry after a healthy sample', () => {
+    const sample = parseSmallPeerMemory(native, '1', 100)!;
+    expect(smallPeerMemoryStopReason(sample, 4096, 100)).toBeNull();
+    expect(smallPeerMemoryStopReason(null, 4096, 1100)).toBe('measurement-failed');
+    expect(smallPeerMemoryStopReason(sample, 4096, 2100)).toBe('measurement-failed');
+    expect(smallPeerMemoryStopReason({ ...sample, pressureLevel: 2 }, 4096, 1100)).toBe('memory');
+    expect(smallPeerMemoryStopReason({ ...sample, availableBytes: 4096 }, 4096, 1100)).toBe('memory');
+  });
+
   it('uses the reported page size and all three available page counts', () => {
     expect(parseSmallPeerMemory(native, '1\n', 100)?.availableBytes).toBe(25 * 4096);
   });

@@ -5,7 +5,7 @@ import path from 'node:path';
 import { performance } from 'node:perf_hooks';
 import { spawnViaLaunchd } from './launchdSpawn.js';
 import { TrialExecutionScope, reconcileTrialScopes } from './trialExecutionScope.js';
-import { readSmallPeerMemory, smallPeerMemoryAllows, type SmallPeerTrialPolicy } from './smallPeerMemory.js';
+import { readSmallPeerMemory, smallPeerMemoryStopReason, type SmallPeerTrialPolicy, type SmallPeerMemorySample } from './smallPeerMemory.js';
 
 export interface TrialStart {
   stateDir: string;
@@ -32,6 +32,28 @@ export interface TrialReceipt {
   samples: number;
   cleanupProven: boolean;
   reserveBreached: boolean;
+}
+
+/** Keep every host reading started before cleanup ended. A closed coalition can no longer be sampled. */
+export async function observeTrialTeardown(
+  scope: Pick<TrialExecutionScope, 'stop' | 'sample'>,
+  readMemory: () => Promise<SmallPeerMemorySample | null>,
+  onMemory: (sample: SmallPeerMemorySample | null) => void,
+  onRss: (bytes: number) => void,
+): Promise<void> {
+  let open = true;
+  const monitor = async () => {
+    while (open) {
+      const sample = await readMemory();
+      onMemory(sample);
+      if (!open) break;
+      onRss(scope.sample().rssBytes);
+      await new Promise(resolve => setTimeout(resolve, 100));
+    }
+  };
+  const pending = monitor().catch(() => onMemory(null));
+  try { await scope.stop(); }
+  finally { open = false; await pending; }
 }
 
 export async function runSmallPeerWatchdog(a: TrialStart): Promise<void> {
@@ -61,29 +83,18 @@ export async function runSmallPeerWatchdog(a: TrialStart): Promise<void> {
       trace('teardown-start', { reason });
       if (scope) {
         // A worker may allocate throughout TERM grace. Continue observing while cleanup owns the scope.
-        let closing = true;
-        const closingScope = scope;
-        const observeTeardown = async () => {
-          while (closing) {
-            const memory = await readSmallPeerMemory();
-            if (!closing) break;
-            if (memory) minimum = Math.min(minimum ?? Infinity, memory.availableBytes);
-            if (!smallPeerMemoryAllows(memory, a.policy.floorBytes, performance.now()) && completed) {
-              completed = false;
-              reason = memory ? 'memory' : 'measurement-failed';
-            }
-            const rss = closingScope.sample().rssBytes;
-            peak = Math.max(peak ?? 0, rss);
-            trace('teardown-sample', { availableBytes: memory?.availableBytes, rssBytes: rss });
-            await new Promise(resolve => setTimeout(resolve, 100));
+        await observeTrialTeardown(scope, readSmallPeerMemory, memory => {
+          if (memory) minimum = Math.min(minimum ?? Infinity, memory.availableBytes);
+          const stopReason = smallPeerMemoryStopReason(memory, a.policy.floorBytes, performance.now());
+          if (stopReason && (completed || stopReason === 'measurement-failed')) {
+            completed = false;
+            reason = stopReason;
           }
-        };
-        const monitoring = observeTeardown().catch(() => {
-          completed = false;
-          reason = 'measurement-failed';
+          trace('teardown-memory', { availableBytes: memory?.availableBytes, pressure: memory?.pressureLevel });
+        }, rss => {
+          peak = Math.max(peak ?? 0, rss);
+          trace('teardown-scope', { rssBytes: rss });
         });
-        try { await scope.stop(); }
-        finally { closing = false; await monitoring; }
       } else await reconcileTrialScopes(a.stateDir);
       trace('scope-empty', { reason });
       const record: TrialReceipt = {
@@ -139,7 +150,8 @@ export async function runSmallPeerWatchdog(a: TrialStart): Promise<void> {
         trace('memory', { availableBytes: memory?.availableBytes, pressure: memory?.pressureLevel,
           sampleElapsedMs: memory ? memory.sampledAt - began : null });
         if (memory) minimum = Math.min(minimum ?? Infinity, memory.availableBytes);
-        if (!smallPeerMemoryAllows(memory, a.policy.floorBytes, performance.now())) { await receipt('memory'); return; }
+        const stopReason = smallPeerMemoryStopReason(memory, a.policy.floorBytes, performance.now());
+        if (stopReason) { await receipt(stopReason); return; }
         const rss = scope!.sample().rssBytes;
         if (performance.now() - lastGood >= 2000) { await receipt('sample-expired'); return; }
         peak = Math.max(peak ?? 0, rss);

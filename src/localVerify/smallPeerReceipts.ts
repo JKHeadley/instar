@@ -108,7 +108,7 @@ export function finalizeTrialReceipt(stateDir: string, id: string, reason: strin
   const provisional = read<TrialReceipt>(path.join(dir,'watchdog-receipt.json'));
   const usable = validTrialReceipt(provisional,id) ? provisional : null;
   const final: TrialReceipt = !reason && usable ? usable : {
-    attemptId:id, outcome:'capacity', reason:reason ?? 'watchdog-lost', cleanupProven:true,
+    attemptId:id, outcome:'capacity', reason:usable?.reason === 'measurement-failed' ? 'measurement-failed' : reason ?? 'watchdog-lost', cleanupProven:true,
     elapsedMs:elapsedMs ?? usable?.elapsedMs ?? null, samples:Math.max(usable?.samples ?? 0, observed?.samples ?? 0),
     peakRssBytes:usable?.peakRssBytes ?? observed?.peakRssBytes ?? null,
     minimumAvailableBytes:usable?.minimumAvailableBytes ?? observed?.minimumAvailableBytes ?? null,
