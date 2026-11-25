@@ -1,10 +1,13 @@
 ---
 title: "Chief of Staff verified closeout and blocker intake"
+slug: chief-of-staff-verified-closeout
 eli16-overview: docs/specs/chief-of-staff-verified-closeout.eli16.md
 approved: false
 ---
 
 # Chief of Staff verified closeout and blocker intake
+
+The Chief of Staff checks project progress against a finish checklist. It can already close a project whose automatic checks all pass. Some other check results turn into approval requests even when no owner decision has been established. This change makes automatic closure auditable and reversible, and sends unverified waits to the Chief of Staff for investigation. A confirmed owner decision still appears through the normal approval flow.
 
 ## Related work
 
@@ -24,7 +27,7 @@ Close and undo use the existing replicated Chief of Staff journal. The serving c
 
 ## Frontloaded Decisions
 
-A fresh deterministic pass permits automatic closure only within the confirmed evidence and lease rules. An owner undo prevents automatic close on the same checklist. Evidence and lifecycle records stay inspectable after rollout or rollback. The eight existing rows receive exact-case reconciliation only.
+A fresh deterministic pass permits automatic closure only within the confirmed evidence and lease rules. The current evaluator has no authoritative delegated judgment receipt. A checked judgment item is evidence for the separately authenticated Finish flow. A future accepted delegated receipt can extend automatic close once it carries current checklist identity and authority. An owner undo prevents automatic close on the same checklist. Evidence and lifecycle records stay inspectable after rollout or rollback. The eight existing rows receive exact-case reconciliation only.
 
 ## Owner admission contract
 
@@ -34,7 +37,7 @@ For raw Chief of Staff verdicts and their mirrored Work Board records, the sourc
 
 - The serving Chief of Staff uses its existing evidence evaluator against the current confirmed binding. Automatic close requires a nonempty checklist, all deterministic results passing on a fresh check, zero judgment items, and a current serving and check-in lease. Conversation claims and carried verdicts never authorize close. Revalidate the binding, pause, undo and lease at the authoritative write boundary. Record the exact binding and durable check reference for audit. Report completion and mirror the initiative only after a durable effective close.
 - An authenticated owner can undo an exact agent close without rebinding or dismissing another request. The undo uses a binding- and close-specific lifecycle record. It restores the linked initiative and suppresses an automatic re-close on that binding until its checklist is revised or the owner explicitly finishes. Older lifecycle records still fold under their existing semantics.
-- A raw waiting verdict, including a pending judgment item, enters the blocker ledger once per exact binding and wait episode. Use structured source identifiers and a bounded summary. The ledger starts at candidate and uses its existing evidence and authorization checks. No owner-facing card or note is created from an unqualified verdict. If the ledger is unavailable, the project remains visible to the coordinator and the candidate retries. A legitimate owner-only blocker follows the shared Design admission policy. The change must preserve adjudicated owner holds.
+- A raw waiting verdict, including a pending judgment item, enters the blocker ledger once per exact binding and wait episode. Use structured source identifiers and a display summary within the ledger’s configured text limit. Retain source references for the full evidence, mark shortened summaries, and require access to the complete evidence before an authority adjudicates owner responsibility. The ledger starts at candidate and uses its existing evidence and authorization checks. No owner-facing card or note is created from an unqualified verdict. If the ledger is unavailable, the project remains visible to the coordinator and the candidate retries. A legitimate owner-only blocker follows the shared Design admission policy. The change must preserve adjudicated owner holds.
 - Verify both owner surfaces, durable close and undo, stale binding, stale lease, pause/reopen during evidence gathering, changed checklist, stale carried verdict, duplicate across restart, unavailable ledger and preservation of an adjudicated owner hold. Use unit, HTTP and production-composition lifecycle coverage. Keep the existing PIN tests.
 - Roll back the producer and action wiring together. Keep existing journal and blocker records readable. Avoid any bulk decision on the eight reported rows. Reconcile each exact episode against current authority and evidence.
 
