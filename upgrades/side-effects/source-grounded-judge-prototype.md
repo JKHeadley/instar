@@ -12,3 +12,5 @@ Tier 1. This reversible draft checkpoint adds internal evaluation helpers and 40
 8. **Rollback.** Revert this checkpoint. No live configuration or data migration is needed.
 
 An early independent consensus review informed distinct slot states and the structural-only result. Independent review of the complete prototype and the shared repository verification remain pending. This is a draft for preserving work, with no release request.
+
+The real-validator rehearsal changes the synthetic rubric and verifies that earlier receipts are rejected. Earlier disclosure evidence leaves independence unknown, while the critical finding remains visible with an identity scoped to the revised plan. The change affects the rehearsal only and a revert removes the extra assertions.

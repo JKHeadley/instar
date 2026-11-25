@@ -103,7 +103,30 @@ assert.deepEqual(lostOutput.bindingStates, ['bound', 'output-missing']);
 assert.equal(lostOutput.independence, 'unknown');
 assert.deepEqual(lostOutput.consensus.criticalFailures, [{ criterionId: 'criterion', slot: 0 }]);
 
+const revisedRubricBytes = Buffer.from('Revised synthetic fixture rubric');
+const revisedPlanBytes = Buffer.from(JSON.stringify({ ...plan, rubricHash: sha(revisedRubricBytes) }));
+const revisedPlan = {
+  ...verifiedPlan, planBytes: revisedPlanBytes, planHash: sha(revisedPlanBytes),
+  rubricBytes: revisedRubricBytes, capture: input,
+};
+assert.deepEqual(evaluateJudgeFlow(revisedPlan, identity, ledgers, observations, disclosure,
+  validateCapture), { state: 'ledger-plan-mismatch' });
+
+const revisedLedgers = ledgers.map(ledger => ({
+  ...ledger,
+  attempts: ledger.attempts.map(attempt => ({ ...attempt, planHash: revisedPlan.planHash })),
+}));
+const staleDisclosure = evaluateJudgeFlow(revisedPlan, identity, revisedLedgers, observations,
+  disclosure, validateCapture);
+assert.deepEqual(staleDisclosure.bindingStates, ['bound', 'bound']);
+assert.equal(staleDisclosure.independence, 'unknown');
+assert.deepEqual(staleDisclosure.consensus.criticalFailures, [{ criterionId: 'criterion', slot: 0 }]);
+assert.notEqual(staleDisclosure.criticalSignals[0].id, evaluated.criticalSignals[0].id);
+const revisedDisclosure = { ...disclosure, planHash: revisedPlan.planHash };
+assert.equal(evaluateJudgeFlow(revisedPlan, identity, revisedLedgers, observations, revisedDisclosure,
+  validateCapture).independence, 'supported');
+
 const slotIds = receipts.map(receipt => receipt.slotId);
 assert.equal(assessJudgeIndependence(slotIds, receipts, 4), 'supported');
 assert.equal(assessJudgeIndependence(slotIds, receipts, 1), 'breach');
-console.log('Real validator check passed: retry, intact results, withheld source, wrong-slot output, missing output, and early disclosure.');
+console.log('Real validator check passed: retry, intact results, withheld source, wrong-slot output, missing output, early disclosure, and plan revision.');

@@ -39,3 +39,5 @@ The offline flow now assigns each critical finding an identity tied to its exact
 The finding identity also includes the verified plan. A resolution from an earlier rubric cannot clear a finding recorded under a new plan.
 
 The judge flow checks the plan fingerprint on each terminal attempt record and on disclosure evidence. A receipt from a different plan cannot supply a vote.
+
+The offline practice check now changes the rubric mid-rehearsal so we can confirm the benchmark rejects receipts from the earlier plan and still shows a critical finding when the new results support it.
