@@ -19,6 +19,7 @@ import type { InstarConfig } from '../../src/core/types.js';
 import { resolveCodexNativeCanaryBinary } from '../../src/messaging/telegram-origin/OriginCodexModelCanary.js';
 import { CODEX_CANARY_MODELS, openCodexCanaryProvider } from '../../src/messaging/telegram-origin/OriginCodexModelCanaryProtocol.js';
 
+import { readOsBootId } from '../../src/core/processIdentity.js';
 import { MachineIdentityManager } from '../../src/core/MachineIdentity.js';
 import { IdentityStore } from '../../src/core/IdentityStore.js';
 import { ownedGraphInstalledRoster } from '../../src/core/OwnedGraphCustody.js';
@@ -174,11 +175,13 @@ it.skipIf(!codex).each([true, false])('drives an enrolled worker through package
         cancelLaunch: () => { child?.kill('SIGKILL'); },
       });
       expect(admitted?.nativeSessionId).toBe(workerId);
+      const osBootId = readOsBootId();
+      expect(osBootId).toMatch(/^[0-9a-f-]{36}$/i);
       const ordinary = await runRound({
         tracker, projectId: 'managed-project', roundIndex: 0, targetRepoPath: projectDir,
         mergeBaseBranch: 'main',
         verifyMergedItems: async () => { throw new Error('ordinary execution passed the managed claim'); },
-      }, { stateDir, workFences: store });
+      }, { stateDir, workFences: store, workFenceHost: { machineId, osBootId: osBootId! } });
       expect(ordinary).toMatchObject({ outcome: 'failed', reason: 'round work is held by a managed project worker' });
       expect(exited).toBeDefined();
       const [code] = await exited!;

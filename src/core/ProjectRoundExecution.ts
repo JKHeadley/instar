@@ -36,7 +36,7 @@
 
 import { randomUUID } from 'node:crypto';
 import { processStartMs } from './processIdentity.js';
-import type { ManagedCodexStopStore } from './ManagedCodexStopStore.js';
+import type { ManagedCodexStopStore, OrdinaryWorkHost } from './ManagedCodexStopStore.js';
 import { applyClaudeChildAuth } from './claudeChildAuth.js';
 import { spawn, execFileSync, type ChildProcess } from 'node:child_process';
 
@@ -155,7 +155,9 @@ export interface RunRoundResult {
  */
 export interface RunRoundDeps {
   stateDir: string;
-  workFences?: Pick<ManagedCodexStopStore, 'hasWorkClaim' | 'reserveOrdinaryWork' | 'recordOrdinaryProcess' | 'settleOrdinaryWork'>;
+  workFences?: Pick<ManagedCodexStopStore, 'hasWorkClaim' | 'reserveOrdinaryWork' | 'recordOrdinaryProcess' | 'settleOrdinaryWork' | 'settleOrdinaryWorkAfterHostReboot'>;
+  /** Trusted local machine identity and OS boot ID from server composition. */
+  workFenceHost?: OrdinaryWorkHost;
 }
 
 /**
@@ -316,8 +318,12 @@ export async function runRound(input: RunRoundInput, deps: RunRoundDeps): Promis
       // Fence the exact item set before each spawn, including relaunches.
       const workFences = deps.workFences;
       const executionId = workFences ? randomUUID() : undefined;
+      if (workFences && deps.workFenceHost) {
+        workFences.settleOrdinaryWorkAfterHostReboot(roundKey, deps.workFenceHost);
+      }
       if (workFences && executionId && !workFences.reserveOrdinaryWork(
-        [roundKey, ...lastItemIds.map(itemId => projectRoundWorkKey(input.projectId, input.roundIndex, itemId))], executionId,
+        [roundKey, ...lastItemIds.map(itemId => projectRoundWorkKey(input.projectId, input.roundIndex, itemId))],
+        executionId, deps.workFenceHost,
       )) {
         outcome = 'failed';
         unmergedItemIds = [...lastItemIds];

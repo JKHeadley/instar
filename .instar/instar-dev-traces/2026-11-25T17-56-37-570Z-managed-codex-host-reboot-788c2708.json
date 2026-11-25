@@ -1,0 +1,28 @@
+{
+  "version": 2,
+  "slug": "managed-codex-host-reboot",
+  "sessionId": "017c26ed-5596-4576-9c20-20af13e4c1f8",
+  "timestamp": "2026-11-25T17:56:37.570Z",
+  "artifactPath": "upgrades/side-effects/managed-codex-host-reboot.md",
+  "artifactSha256": "f4b8df2d23c1c6f04abcfb05520ac26fe404be4e82ae8ef389619c34ec63f5b3",
+  "coveredFiles": [
+    "src/core/ManagedCodexStopStore.ts",
+    "src/core/ProjectRoundExecution.ts",
+    "src/core/processIdentity.ts",
+    "tests/e2e/managed-codex-stop-lifecycle.test.ts",
+    "tests/unit/ProjectRoundExecution.test.ts",
+    "tests/unit/managed-codex-stop-store.test.ts"
+  ],
+  "phase": "complete",
+  "tier": 1,
+  "tierReasoning": "Recovery is bounded and confined to the dark fixture. No production caller or install migration is added.",
+  "eli16Path": "upgrades/managed-codex-host-reboot.eli16.md",
+  "sideEffectsPath": "upgrades/side-effects/managed-codex-host-reboot.md",
+  "secondPass": "true",
+  "reviewerConcurred": true,
+  "classClosure": {
+    "defectClass": "unbounded-self-action",
+    "closure": "n/a",
+    "reason": "One reconciliation runs inside an existing launch attempt. It starts no independent work or retry loop."
+  }
+}

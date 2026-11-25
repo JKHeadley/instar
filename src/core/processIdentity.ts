@@ -10,6 +10,7 @@
  * cannot be proven, callers do not signal.
  */
 
+import fs from 'node:fs';
 import { spawnSync } from 'node:child_process';
 import { withSyncOp } from './InFlightSyncOpMarker.js';
 
@@ -97,5 +98,19 @@ function pidExists(pid: number): boolean {
     return true;
   } catch (err) {
     return (err as NodeJS.ErrnoException)?.code !== 'ESRCH';
+  }
+}
+
+/** Read the OS boot identity, which stays stable across server restarts. */
+export function readOsBootId(): string | undefined {
+  try {
+    if (process.platform === 'linux') return fs.readFileSync('/proc/sys/kernel/random/boot_id', 'utf8').trim() || undefined;
+    if (process.platform !== 'darwin') return;
+    const result = withSyncOp(() => spawnSync('/usr/sbin/sysctl', ['-n', 'kern.bootsessionuuid'], {
+      encoding: 'utf8', timeout: 1000, maxBuffer: 1024,
+    }));
+    if (result.status === 0) return result.stdout.trim() || undefined;
+  } catch {
+    return;
   }
 }

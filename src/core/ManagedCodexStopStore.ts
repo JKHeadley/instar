@@ -4,6 +4,11 @@ import type { ManagedStopEnrollment, ManagedStopInput } from './ManagedCodexStop
 
 const RELEASED_WORK_PREFIX = 'released-launch:';
 
+export interface OrdinaryWorkHost {
+  machineId: string;
+  osBootId: string;
+}
+
 export interface OrdinaryWorkProcess {
   pid: number;
   procStart: number | null;
@@ -32,7 +37,8 @@ export class ManagedCodexStopStore {
       CREATE TABLE IF NOT EXISTS ordinary_project_work_fences (
         work_key TEXT PRIMARY KEY,
         execution_id TEXT,
-        worker_json TEXT
+        worker_json TEXT,
+        host_json TEXT
       );
       CREATE TABLE IF NOT EXISTS managed_codex_native_bindings (
         launch_id TEXT PRIMARY KEY,
@@ -43,6 +49,9 @@ export class ManagedCodexStopStore {
       const columns = db.pragma('table_info(ordinary_project_work_fences)') as Array<{ name: string }>;
       if (!columns.some(column => column.name === 'worker_json')) {
         db.exec('ALTER TABLE ordinary_project_work_fences ADD COLUMN worker_json TEXT');
+      }
+      if (!columns.some(column => column.name === 'host_json')) {
+        db.exec('ALTER TABLE ordinary_project_work_fences ADD COLUMN host_json TEXT');
       }
     }).immediate();
   }
@@ -70,16 +79,17 @@ export class ManagedCodexStopStore {
   }
 
   /** Reserve every item before an ordinary process can start. */
-  reserveOrdinaryWork(workKeys: readonly string[], executionId: string): boolean {
+  reserveOrdinaryWork(workKeys: readonly string[], executionId: string, host?: OrdinaryWorkHost): boolean {
     if (!executionId || workKeys.length === 0) return false;
     return this.db.transaction(() => {
       const keys = [...new Set(workKeys)];
       if (keys.some(key => !key || this.hasWorkClaim(key) || this.hasOrdinaryFence(key))) return false;
       const write = this.db.prepare(`
-        INSERT INTO ordinary_project_work_fences (work_key, execution_id) VALUES (?, ?)
-        ON CONFLICT(work_key) DO UPDATE SET execution_id = excluded.execution_id, worker_json = NULL
+        INSERT INTO ordinary_project_work_fences (work_key, execution_id, host_json) VALUES (?, ?, ?)
+        ON CONFLICT(work_key) DO UPDATE SET execution_id = excluded.execution_id, worker_json = NULL, host_json = excluded.host_json
       `);
-      for (const key of keys) write.run(key, executionId);
+      const hostJson = host && validHost(host) ? JSON.stringify(host) : null;
+      for (const key of keys) write.run(key, executionId, hostJson);
       return true;
     }).immediate();
   }
@@ -95,8 +105,31 @@ export class ManagedCodexStopStore {
 
   /** Caller has confirmed this exact execution never started or has stopped. */
   settleOrdinaryWork(executionId: string): void {
-    this.db.prepare('UPDATE ordinary_project_work_fences SET execution_id = NULL, worker_json = NULL WHERE execution_id = ?')
+    this.db.prepare('UPDATE ordinary_project_work_fences SET execution_id = NULL, worker_json = NULL, host_json = NULL WHERE execution_id = ?')
       .run(executionId);
+  }
+
+  /** The same physical host has rebooted since this work was reserved. */
+  settleOrdinaryWorkAfterHostReboot(workKey: string, current: OrdinaryWorkHost): boolean {
+    if (!validHost(current)) return false;
+    return this.db.transaction(() => {
+      const row = this.db.prepare(`
+        SELECT execution_id, host_json FROM ordinary_project_work_fences
+        WHERE work_key = ? AND execution_id IS NOT NULL
+      `).get(workKey) as { execution_id: string; host_json: string | null } | undefined;
+      if (!row?.host_json) return false;
+
+      let previous: OrdinaryWorkHost;
+      try {
+        previous = JSON.parse(row.host_json);
+      } catch {
+        return false;
+      }
+      if (!validHost(previous) || previous.machineId !== current.machineId
+        || previous.osBootId.toLowerCase() === current.osBootId.toLowerCase()) return false;
+      this.settleOrdinaryWork(row.execution_id);
+      return true;
+    }).immediate();
   }
 
   private hasOrdinaryFence(workKey: string): boolean {
@@ -225,4 +258,10 @@ export class ManagedCodexStopStore {
     this.db.prepare('UPDATE managed_codex_work_claims SET claim_json = ? WHERE session_id = ?')
       .run(JSON.stringify(claim), sessionId);
   }
+}
+
+function validHost(host: OrdinaryWorkHost | null): boolean {
+  return typeof host?.machineId === 'string' && host.machineId.length > 0
+    && typeof host.osBootId === 'string'
+    && /^[0-9a-f]{8}(?:-[0-9a-f]{4}){3}-[0-9a-f]{12}$/i.test(host.osBootId);
 }

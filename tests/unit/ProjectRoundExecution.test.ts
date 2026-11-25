@@ -143,15 +143,23 @@ describe('ProjectRoundExecution.runRound', () => {
       groupRemains && pid < 0 && signal === 0 ? true : originalKill(pid, signal));
     try {
       const store = new ManagedCodexStopStore(db);
+      const roundKey = projectRoundWorkKey('p-fenced', 0);
+      const workFenceHost = { machineId: 'local', osBootId: 'bbbbbbbb-bbbb-bbbb-bbbb-bbbbbbbbbbbb' };
+      const previousHost = { ...workFenceHost, osBootId: 'aaaaaaaa-aaaa-aaaa-aaaa-aaaaaaaaaaaa' };
+      expect(store.reserveOrdinaryWork([roundKey], 'old-worker', previousHost)).toBe(true);
       let verified = 0;
-      const result = await runRound({
+      const input: Parameters<typeof runRound>[0] = {
         tracker, projectId: 'p-fenced', roundIndex: 0, targetRepoPath: targetRepo,
         spawnCommand: 'bash', spawnArgs: ['-c', 'exit 0'], pollIntervalMs: 50,
         verifyMergedItems: async ids => ++verified === 1 ? notLanded(ids) : allVerified(ids),
-      }, { stateDir, workFences: store });
+      };
+      const sameBoot = await runRound(input, { stateDir, workFences: store, workFenceHost: previousHost });
+      expect(sameBoot.reason).toBe('round work is held by another project execution');
+      verified = 0;
+      const result = await runRound(input, { stateDir, workFences: store, workFenceHost });
       expect(result.outcome).toBe(groupRemains ? 'unverifiable' : 'complete');
       const execution_id = groupRemains ? expect.any(String) : null;
-      const rows = db.prepare('SELECT * FROM ordinary_project_work_fences').all() as
+      const rows = db.prepare('SELECT work_key, execution_id, worker_json FROM ordinary_project_work_fences').all() as
         Array<{ work_key: string; execution_id: string | null; worker_json: string | null }>;
       expect(rows).toEqual([
         { work_key: projectRoundWorkKey('p-fenced', 0), execution_id, worker_json: groupRemains ? expect.any(String) : null },

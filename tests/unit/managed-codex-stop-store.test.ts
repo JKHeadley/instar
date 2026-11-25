@@ -47,6 +47,29 @@ describe('managed Codex Stop work claims', () => {
     }
   });
 
+  it('settles only a fence from the same machine with a different valid OS boot', () => {
+    const db = new Database(':memory:');
+    try {
+      const store = new ManagedCodexStopStore(db);
+      const previous = { machineId: 'one', osBootId: 'aaaaaaaa-aaaa-aaaa-aaaa-aaaaaaaaaaaa' };
+      const current = { ...previous, osBootId: 'bbbbbbbb-bbbb-bbbb-bbbb-bbbbbbbbbbbb' };
+      expect(store.reserveOrdinaryWork(['round', 'item'], 'old', previous)).toBe(true);
+      expect(store.reserveOrdinaryWork(['legacy'], 'legacy')).toBe(true);
+
+      expect(store.settleOrdinaryWorkAfterHostReboot('round', { ...current, machineId: 'other' })).toBe(false);
+      expect(store.settleOrdinaryWorkAfterHostReboot('round', { ...previous, osBootId: previous.osBootId.toUpperCase() })).toBe(false);
+      expect(store.settleOrdinaryWorkAfterHostReboot('round', { ...current, osBootId: 'server-restart' })).toBe(false);
+      expect(store.settleOrdinaryWorkAfterHostReboot('legacy', current)).toBe(false);
+      expect(store.reserveOrdinaryWork(['round'], 'competing', current)).toBe(false);
+
+      expect(store.settleOrdinaryWorkAfterHostReboot('round', current)).toBe(true);
+      expect(store.reserveOrdinaryWork(['round', 'item'], 'new', current)).toBe(true);
+      expect(store.settleOrdinaryWorkAfterHostReboot('round', current)).toBe(false);
+    } finally {
+      db.close();
+    }
+  });
+
   it('keeps ordinary launch fences across restart until the exact execution settles', () => {
     const directory = fs.mkdtempSync(path.join(os.tmpdir(), 'ordinary-project-fence-'));
     const file = path.join(directory, 'claims.sqlite');

@@ -1,0 +1,28 @@
+{
+  "ts": "2026-11-25T17:57:51.780Z",
+  "slug": "managed-codex-host-reboot",
+  "suggestedTier": 2,
+  "declaredTier": 1,
+  "riskFloor": 1,
+  "riskFloorReasons": [],
+  "belowFloor": false,
+  "files": 3,
+  "loc": 78,
+  "scope": {
+    "basis": "staged-in-scope-paths-including-deleted",
+    "files": [
+      "src/core/ManagedCodexStopStore.ts",
+      "src/core/ProjectRoundExecution.ts",
+      "src/core/processIdentity.ts"
+    ],
+    "addedLines": 69,
+    "deletedLines": 9
+  },
+  "causalAutopsy": null,
+  "classClosure": {
+    "defectClass": "unbounded-self-action",
+    "closure": "n/a",
+    "reason": "One reconciliation runs inside an existing launch attempt. It starts no independent work or retry loop."
+  },
+  "verdict": "pass"
+}
