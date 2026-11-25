@@ -1,0 +1,18 @@
+{
+  "version": 2,
+  "slug": "camera-protected-evidence-source",
+  "sessionId": "ab1b66cc-de80-48bd-9b94-4ede369ccb55",
+  "timestamp": "2026-11-25T04:55:26.956Z",
+  "artifactPath": "upgrades/side-effects/camera-protected-evidence-source.md",
+  "artifactSha256": "16e3249c4b24e362b5c981f0b279357c1a216226ba3cd1e8a84541dbeed5d92a",
+  "specPath": "docs/specs/independent-owner-surface-acceptance.md",
+  "coveredFiles": [
+    "src/core/CameraAcceptanceEvidenceSource.ts",
+    "tests/unit/camera-acceptance-evidence-source.test.ts"
+  ],
+  "phase": "complete",
+  "tier": 2,
+  "tierReasoning": "The protected evidence parser checks exact signature scope without enabling a runtime reader.",
+  "secondPass": "true",
+  "reviewerConcurred": true
+}
