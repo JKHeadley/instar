@@ -1,3 +1,5 @@
+import Database from 'better-sqlite3';
+import { FirstPhonePrivateNominationStore } from '../../src/core/trustJourney/FirstPhonePrivateNominationStore.js';
 import { expect, it } from 'vitest';
 import { matchesFirstPhonePrivateAccept } from '../../src/core/trustJourney/firstPhonePrivateAccept.js';
 
@@ -30,4 +32,29 @@ it('binds Accept to the current owner, exact private disclosure and active accou
     expect(matchesFirstPhonePrivateAccept(offer, tap, { ...current, ...change }, 210)).toBe(false);
   }
   expect(matchesFirstPhonePrivateAccept(offer, tap, current, 300)).toBe(false);
+});
+
+it('records at most one nomination per exact private tap and proposal', () => {
+  const db = new Database(':memory:');
+  try {
+    const store = new FirstPhonePrivateNominationStore(db);
+    db.transaction(() => {
+      expect(store.record('receipt-1', offer, tap, current, 210)).toEqual({ status: 'refused' });
+    })();
+    const first = store.record('receipt-1', offer, tap, current, 210);
+    expect(first.status).toBe('recorded');
+    expect(store.record('receipt-1', offer, tap, current, 210)).toEqual({
+      ...first, status: 'already-recorded',
+    });
+    expect(store.record('different-receipt', offer, tap, current, 210)).toEqual({ status: 'refused' });
+    const otherCallback = 'first-phone:synthetic_fixture_token_456';
+    const reissuedOffer = { ...offer, callbackData: otherCallback };
+    const reissuedTap = { ...tap, callbackData: otherCallback };
+    expect(store.record('receipt-2', reissuedOffer, reissuedTap, current, 210)).toEqual({ status: 'refused' });
+    const otherHash = 'b'.repeat(64);
+    expect(store.record('receipt-1', { ...reissuedOffer, proposalHash: otherHash }, reissuedTap,
+      { ...current, proposalHash: otherHash }, 210)).toEqual({ status: 'refused' });
+  } finally {
+    db.close();
+  }
 });

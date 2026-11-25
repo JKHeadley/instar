@@ -9,3 +9,5 @@ The first prototype is a synthetic test of the match between the account, topic 
 The private Telegram link will open the enrollment explanation on your phone. Tapping Start opens that explanation. If the private chat is already an accepted approval account, it can show the exact iPhone nomination directly. A new approval account needs its own explanation and acceptance before it can nominate the phone.
 
 The Accept button in the test is specific to the exact private message that showed the nomination. A different chat, message, owner, or changed nomination cannot use it. The live flow must also record that the button was used, so a retry can recover the same result.
+
+The isolated storage test now records a private Accept tap and its nomination together. A retry of the same tap retrieves the same nomination. A different tap cannot reuse that receipt or create another nomination for the same exact proposal. Turning on approvals from the phone is still a separate step.
