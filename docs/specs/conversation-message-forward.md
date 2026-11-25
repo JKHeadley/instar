@@ -7,9 +7,9 @@ approved: true
 approved-by: echo under standing build approval and Chief of Staff handoff be52c553 for default-off App server scope
 parent-principle: Operator-Surface Quality
 tier: 2
-review-convergence: "2026-11-25T13:43:02.098Z"
-review-iterations: 6
-review-completed-at: "2026-11-25T13:43:02.098Z"
+review-convergence: "2026-11-25T17:15:58.324Z"
+review-iterations: 9
+review-completed-at: "2026-11-25T17:15:58.324Z"
 review-report: "docs/specs/reports/conversation-message-forward-convergence.md"
 cross-model-review: "cross-model-review: codex-cli:gpt-6.2-astra"
 ---
@@ -48,7 +48,7 @@ In tests, use recognizable text from the fixture source. Assert that the new eve
 
 ## Frontloaded decisions
 
-The device signs the destination path and a body containing exactly `custodianMachineId`, `sourceConversationKey`, `sourceEventId` and `requestId`. Receipt success returns only the destination event and message IDs. The retry key is scoped to the authenticated person and immutable destination custodian under a distinct operation namespace. The client keeps a retry on its original paired machine, named by the signed custodian field and preserves the complete original intent. The request digest binds that person and both conversations plus the exact source event. A reserved intent may be settled after restart only when its exact durable destination event independently proves that the copy was accepted. Unknown acceptance returns an explicit unknown result. It never results in a second append. A reservation with no matching event remains unknown for the request lifetime. Absence in the index alone cannot prove a failed append. Each transport attempt is freshly signed over the identical path and body.
+The device signs the destination path and a body containing exactly `custodianMachineId`, `sourceConversationKey`, `sourceEventId` and `requestId`. Receipt success returns only the destination event and message IDs. The retry key is scoped to the authenticated person and immutable destination custodian under a distinct operation namespace. The client keeps a retry on its original paired machine, named by the signed custodian field and preserves the complete original intent. The request digest binds that person and both conversations plus the exact source event. A reserved intent may be settled after restart only when its exact durable destination event independently proves that the copy was accepted. Unknown acceptance returns an explicit unknown result. The client shows “Forwarding outcome unknown” and retains the original custodian, path, body and request ID for any retry. It does not make a new request ID to retry an unresolved copy. Retrying an unresolved intent never appends a second destination event. A retained reservation with no matching event remains unknown. The store keeps the reservation until 24 hours and five minutes after the request ID timestamp and may then prune it. After the reservation is pruned, a retry whose request ID is more than 24 hours old returns `request-id-too-old` before any append. Absence in the index alone cannot prove a failed append. Each transport attempt is freshly signed over the identical path and body.
 
 ## Decision points touched
 
@@ -72,3 +72,7 @@ Accepted destination history uses the App conversation journal and existing merg
 - **graduation criterion:** Prove exact new and older sources, a destination-only reader, retry custody through restart, and absence of copied text in the next session. Check the prior decoder rejects the dedicated wire event and continues processing normal events.
 - **dark-window:** Review this project card within 14 days of merge. Record the failed criterion and the next review date if the feature is still dark.
 - **ladder:** mobilePairing.native
+
+## Signed list capability
+
+An active signed App list can advertise `messageActions.forward: { custodianMachineId }` on a live row when Forward is enabled, the current actor has both read and send permission, and this machine has immutable creation custody and actively serves the conversation. The combined marker is conservative for both source and destination selection. Read-only source access may still satisfy the write contract, but does not yield this combined capability. Bearer and remote peer assertions cannot supply it. The console requires this marker on both distinct App rows with the same custodian and never derives it from the generic row machine field. The write route still checks both current conversations and the exact source message.

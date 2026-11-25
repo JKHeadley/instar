@@ -715,6 +715,40 @@ describe('signed App message reactions', () => {
 
 
 describe('signed App message forwarding', () => {
+  it('advertises only current signed App rows with write permission and serving custody', async () => {
+    const e = setup({ forwards: true });
+    await enableReplyProof(e);
+    const source = await create(e);
+    const destination = await create(e);
+    const excluded = await create(e);
+    const mayUse = e.pairing.mayUse.bind(e.pairing);
+    const policy = vi.spyOn(e.pairing, 'mayUse').mockImplementation((person, ref, op) =>
+      !(ref === excluded && op === 'send') && mayUse(person, ref, op));
+    const path = '/mobile/conversations';
+    const advertised = (rows: Array<{ id: string; messageActions?: { forward?: unknown } }>) =>
+      Object.fromEntries(rows.map((row) => [row.id, row.messageActions?.forward]));
+    try {
+      const listed = await signed(e, 'GET', path);
+      expect(listed.status).toBe(200);
+      expect(advertised(listed.body.conversations)).toMatchObject({
+        [source]: { custodianMachineId: 'm1' },
+        [destination]: { custodianMachineId: 'm1' },
+        [excluded]: undefined,
+      });
+      const tokenList = await bearer(e, 'get', path);
+      expect(tokenList.status).toBe(200);
+      expect(advertised(tokenList.body.conversations)).toMatchObject({
+        [source]: undefined, [destination]: undefined, [excluded]: undefined,
+      });
+      e.lease.held = false;
+      const withoutCustody = await signed(e, 'GET', path);
+      expect(withoutCustody.status).toBe(200);
+      expect(advertised(withoutCustody.body.conversations)).toMatchObject({
+        [source]: undefined, [destination]: undefined, [excluded]: undefined,
+      });
+    } finally { policy.mockRestore(); }
+  });
+
   it('starts disabled', async () => {
     const e = setup();
     const sourceConversationKey = await create(e);
@@ -723,6 +757,11 @@ describe('signed App message forwarding', () => {
       { custodianMachineId: 'm1', sourceConversationKey, sourceEventId: 'original', requestId: rid() });
     expect(r.status).toBe(503);
     expect(r.body.error).toBe('forwards-unavailable');
+    const list = await signed(e, 'GET', '/mobile/conversations');
+    expect(list.status).toBe(200);
+    const row = list.body.conversations.find((row: { id: string }) => row.id === destination);
+    expect(row).toBeDefined();
+    expect(row.messageActions?.forward).toBeUndefined();
   });
 
   it('copies Stop text once without invoking agent or control paths, including after restart', async () => {

@@ -693,6 +693,7 @@ export function createMobileConversationRouter(deps: MobileConversationRouteDeps
       .update(JSON.stringify([person?.role, person?.userId, person?.tier, grants])).digest('base64url');
   };
   const reactionsOn = () => deps.config.mobilePairing?.native?.reactions?.enabled === true;
+  const forwardsOn = () => deps.config.mobilePairing?.native?.forwards?.enabled === true;
   const reactionProjection = (key: string, row: BrowsedMessage, reader: ResolvedPerson | null) => {
     if (!reactionsOn() || !reader || !deps.pairing.mayUse(reader, key, 'read') || !deps.pairing.mayReadStored(reader, key, row)) return {};
     const actor = readerKeyFor(reader, deps.pairing.machineId());
@@ -707,6 +708,7 @@ export function createMobileConversationRouter(deps: MobileConversationRouteDeps
     const machineId = deps.machineId();
     return machineId !== 'local' && svc?.store.getCreationRecord(key)?.machineId === machineId;
   };
+  const hasForwardCustody = (key: string) => ownsMessageActionCustody(key) && svc?.serves(key) === true;
   const replyReader = (req: Request) => principalOf(req).kind === 'device' && quotedRepliesOn()
     ? exactMessageReader(deps.pairing, req)() : null;
   const replyProjection = (key: string, base: BrowsedMessage, person: ResolvedPerson | null) => {
@@ -752,7 +754,7 @@ export function createMobileConversationRouter(deps: MobileConversationRouteDeps
     // People and roles §3.4: an MSP phone sees Telegram topics and its own app conversations only
     // (filtered after the merge, so the cursor still advances over rows it does not see).
     const person = devicePersonOf(req);
-    const currentReplyActor = principalOf(req).kind === 'device' ? exactMessageReader(deps.pairing, req) : () => null;
+    const currentActionActor = principalOf(req).kind === 'device' ? exactMessageReader(deps.pairing, req) : () => null;
     /** A team phone's list line is the newest message it may read, so a held one is not shown there. */
     const messageLinkSupport = exactLinksOn() ? { messageLinkSupport: { exactContext: true } } : {};
     const shownPreview = (r: ConversationListRow): ConversationListRow => {
@@ -761,23 +763,27 @@ export function createMobileConversationRouter(deps: MobileConversationRouteDeps
       return { ...r, lastPreview: newest ? messagePreview(newest) : null };
     };
     const visible = (rows: ConversationListRow[]): ConversationListRow[] => {
-      const replyActor = (quotedRepliesOn() || reactionsOn()) && isMobileChatEnabled(deps.config) ? currentReplyActor() : null;
+      const actionActor = (quotedRepliesOn() || reactionsOn() || forwardsOn()) && isMobileChatEnabled(deps.config) ? currentActionActor() : null;
       return rows.filter((r) => {
         if (r.platform === 'telegram') return deviceMayUse(deps.pairing, req, `telegram:${String(r.id)}`);
         if (r.platform === 'slack') return deviceMayUse(deps.pairing, req, 'slack:');
         return !svc!.store.isHiddenConversation?.(String(r.id)) && deviceMayUse(deps.pairing, req, String(r.id));
       }).map(shownPreview).map((row) => {
-        if (row.platform !== 'app') return row;
+        const { messageActions: _incomingActions, ...localRow } = row as ConversationListRow & { messageActions?: unknown };
+        if (row.platform !== 'app') return localRow;
         const key = String(row.id);
-        const canAct = replyActor !== null && ownsMessageActionCustody(key)
-          && svc!.deps.holdsLease() && svc!.currentOwner(key) && deps.pairing.mayUse(replyActor, key, 'send');
+        const canAct = (quotedRepliesOn() || reactionsOn()) && actionActor !== null && ownsMessageActionCustody(key)
+          && svc!.deps.holdsLease() && svc!.currentOwner(key) && deps.pairing.mayUse(actionActor, key, 'send');
         const canReply = canAct && quotedRepliesOn() && svc!.deps.signer;
         const canReact = canAct && reactionsOn();
+        const canForward = forwardsOn() && actionActor !== null && hasForwardCustody(key)
+          && svc?.liveConversation(key) != null && deps.pairing.mayUse(actionActor, key, 'read')
+          && deps.pairing.mayUse(actionActor, key, 'send');
         const links = exactLinksOn() ? { exactContext: true, visibility: exactVisibility(person, key), ...(exactLinkOrigin() ? { copyLink: true } : {}) } : {};
-        const { messageActions: _incomingActions, ...localRow } = row as ConversationListRow & { messageActions?: unknown };
-        return canReply || canReact || Object.keys(links).length ? {
+        return canReply || canReact || canForward || Object.keys(links).length ? {
           ...localRow, messageActions: { ...links, ...(canReply ? { reply: true } : {}),
-            ...(canReact ? { reactions: { emoji: APP_REACTION_EMOJI } } : {}) },
+            ...(canReact ? { reactions: { emoji: APP_REACTION_EMOJI } } : {}),
+            ...(canForward ? { forward: { custodianMachineId: deps.machineId() } } : {}) },
         } : localRow;
       });
     };
@@ -1580,7 +1586,7 @@ export function createMobileConversationRouter(deps: MobileConversationRouteDeps
   router.post('/mobile/chat/app/:key/forward', (req, res) => {
     const deviceId = gate(req, res);
     if (!deviceId) return;
-    if (deps.config.mobilePairing?.native?.forwards?.enabled !== true || !isMobileChatEnabled(deps.config)) {
+    if (!forwardsOn() || !isMobileChatEnabled(deps.config)) {
       res.status(503).json({ error: 'forwards-unavailable' }); return;
     }
     const key = String(req.params.key);
@@ -1636,7 +1642,7 @@ export function createMobileConversationRouter(deps: MobileConversationRouteDeps
       if (!s.liveConversation(sourceConversationKey) || !deps.pairing.mayUse(person, sourceConversationKey, 'read')) {
         unavailable(); return;
       }
-      if (!ownsMessageActionCustody(sourceConversationKey) || !s.serves(sourceConversationKey) || !s.serves(key)) {
+      if (!hasForwardCustody(sourceConversationKey) || !hasForwardCustody(key)) {
         custodyUnavailable(); return;
       }
       const candidates = s.store.exactMessageCandidates(sourceConversationKey, sourceEventId, 'event');

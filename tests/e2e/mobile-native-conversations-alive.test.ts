@@ -216,6 +216,12 @@ describe('native app conversations — production wiring', () => {
       messageId: 'earlier-context-message', role: 'agent', text: 'Earlier ordinary context',
       at: '2026-11-20T00:00:00.000Z', machineId: server.appConversations!.deps.machineId() });
     const forwardPath = `/mobile/chat/app/${dest}/forward`;
+    const forwardList = await send('GET', '/mobile/conversations');
+    expect(forwardList.status).toBe(200);
+    for (const id of [key, dest]) {
+      expect(forwardList.body.conversations.find((row: { id: string }) => row.id === id)?.messageActions.forward)
+        .toEqual({ custodianMachineId: server.appConversations!.deps.machineId() });
+    }
     const intent = { custodianMachineId: server.appConversations!.deps.machineId(), sourceConversationKey: key, sourceEventId: target, requestId: `${Date.now()}-${crypto.randomUUID()}` };
     const before = spawned.length;
     const copy = await send('POST', forwardPath, intent);

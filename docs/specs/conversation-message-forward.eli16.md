@@ -5,3 +5,5 @@ The first version lets someone choose a text message, pick a different App chat 
 The server checks that you can read the original and send to the destination. If the response is lost, the app can retry the same request on the same paired machine. The server returns the existing copy when it can prove it was saved. If it cannot tell whether the copy was saved, the app can show that outcome without creating a second copy.
 
 A forwarded message appears in chat history. It does not wake the agent or become part of the agent's next session context. Someone can forward a message that contains the word “Stop” without issuing a Stop command. The first version accepts text, and the feature starts off while the server and app are being tested together.
+
+The app can offer Forward when the signed chat list confirms that the same machine can serve both chats and you can send to each one. It still checks the original message when you confirm. This lets the app hide the action before trying an unsupported move.

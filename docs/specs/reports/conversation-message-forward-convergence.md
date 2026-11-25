@@ -18,3 +18,9 @@ The text-only first increment provides the selected occurrence and explicit dest
 ## Disposition
 
 The independent confirming reviewer concurred on the default-off candidate. The last cross-model review, from Codex Astra, found no material issue in the dark server scope. It noted the difference between a direct assertion on the reconciliation output and the separate real-store exclusion proof, and suggested making the final read-revocation test independent of middleware call counts. The supported older decoder and live native menu are pre-activation checks. This review does not claim a live multi-machine run.
+
+## Signed list projection checkpoint
+
+The independent reviewer concurred on the locally derived signed capability. The confirming Astra review concurred on the scoped design and found no admission defect. It verified the visible-row sanitization order and that the default-off test proves the row exists before checking marker absence. The list checks custody before its live lookup. The write preserves its masked source visibility check and checks custody before exact-message lookup. The spec now spells out retry retention and the second-append guarantee. A dedicated non-App peer injection fixture is a follow-up. The peer list decoder already allowlists fields and the list projection defensively discards incoming action markers.
+
+Related work includes the Dashboard Forward picker, mobile pairing, App conversation pool sanitization, and the existing signed Forward write scope. TypeScript, three focused signed HTTP tests and both production lifecycle tests passed. Full verification and browser acceptance remain before activation.
