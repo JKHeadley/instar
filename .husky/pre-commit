@@ -1,3 +1,4 @@
+. .husky/instar-runtime.sh || exit 1
 # Fail on the FIRST failing check.
 #
 # Without this, the hook is a plain command sequence and its exit status is the

@@ -1,0 +1,29 @@
+{
+  "ts": "2026-11-23T20:15:05.127Z",
+  "slug": "app-send-refusal-audit",
+  "suggestedTier": 2,
+  "declaredTier": 1,
+  "riskFloor": 1,
+  "riskFloorReasons": [],
+  "belowFloor": false,
+  "files": 4,
+  "loc": 62,
+  "scope": {
+    "basis": "staged-in-scope-paths-including-deleted",
+    "files": [
+      "src/data/awareness/mobile-chat-serving-refusal-audit.md",
+      "src/server/AgentServer.ts",
+      "src/server/mobileChatServingAudit.ts",
+      "src/server/mobilePairingRoutes.ts"
+    ],
+    "addedLines": 61,
+    "deletedLines": 1
+  },
+  "causalAutopsy": null,
+  "classClosure": {
+    "defectClass": "unbounded-self-action",
+    "closure": "n/a",
+    "reason": "One fixed diagnostic record follows an existing request-time refusal. No autonomous action loop, retry, notification, restart, spawn or queue mutation is added."
+  },
+  "verdict": "pass"
+}

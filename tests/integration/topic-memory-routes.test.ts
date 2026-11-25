@@ -41,7 +41,7 @@ describe('TopicMemory API routes', () => {
         messageId: i,
         topicId: 100,
         text: i % 2 === 0
-          ? `User message ${i}: we need to fix the deployment pipeline`
+          ? `User message ${i}: we need to fix the deployment pipeline${i === 0 ? ' at instar.sh under SEC-123.' : ''}`
           : `Agent response ${i}: I'll look into the CI/CD configuration`,
         fromUser: i % 2 === 0,
         timestamp: new Date(2026, 1, 24, 12, i).toISOString(),
@@ -117,6 +117,14 @@ describe('TopicMemory API routes', () => {
       expect(res.body.results[0].text).toBeDefined();
       expect(res.body.results[0].topicId).toBeDefined();
       expect(res.body.results[0].highlight).toBeDefined();
+    });
+
+    it('accepts dotted names and hyphenated IDs as literal queries', async () => {
+      for (const [q, totalResults] of [['instar.sh', 1], ['SEC-123', 1], ['instarsh', 0], ['SEC-124', 0]] as const) {
+        const response = await request(app).get('/topic/search').query({ q, topic: 100 })
+          .set('Authorization', `Bearer ${AUTH_TOKEN}`).expect(200);
+        expect(response.body.totalResults).toBe(totalResults);
+      }
     });
 
     it('searches scoped to a topic', async () => {

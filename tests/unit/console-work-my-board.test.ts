@@ -132,3 +132,29 @@ describe('the page', () => {
     expect(main.querySelector('#sec-with-agent [data-card="wc_c"]')).toBeTruthy();
   });
 });
+
+describe('explicit internal-agent board view', () => {
+  beforeEach(() => installDom());
+  it('offers a deliberate agent view from the ordinary board', async () => {
+    const main = await render(boardBody());
+    expect(main.querySelector('a[href="#/work/board?view=agent"]').textContent).toBe('View the agent’s internal cards');
+  });
+  it('keeps agent paging scoped and does not mount an unavailable empty conversation', async () => {
+    location.hash = '#/work/board?view=agent&donePage=1&card=wc_0123456789abcdef';
+    const internal = card('wc_0123456789abcdef', { agentInternal: true, conversationAvailable: false, lane: 'with-agent', turn: 'agent', status: 'not-started', needLine: 'The agent has not started this under the current board policy.' });
+    const body = boardBody({ agent: [internal] });
+    body.lanes.find(l => l.lane === 'done').total = 150;
+    const get = vi.fn(async p => p.startsWith('/work-board?') ? ok(body) : { ok: false, status: 404 });
+    const { renderWork } = await import(path.join(CONSOLE, 'work.js'));
+    const main = document.createElement('main'); document.body.replaceChildren(main);
+    await renderWork(main, { get });
+    expect(get.mock.calls[0][0]).toContain('view=agent');
+    expect(get.mock.calls.some(([p]) => p === '/work/projects')).toBe(false);
+    expect(main.textContent).toContain('The agent’s internal cards');
+    expect([...main.querySelectorAll('.work-lane a.link-btn')].every(a => a.hash.includes('view=agent'))).toBe(true);
+    expect(document.querySelector('.sheet')).toBeTruthy();
+    expect(document.querySelector('.sheet').textContent).not.toContain('Open conversation');
+    expect(fetch.mock.calls.some(([p]) => String(p).includes('/messages'))).toBe(false);
+    expect(location.hash).toContain('view=agent');
+  });
+});

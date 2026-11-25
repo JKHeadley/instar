@@ -1,0 +1,45 @@
+{
+  "version": 3,
+  "slug": "conversation-search-pointers",
+  "sessionId": "5591f135-974d-45ff-afdb-df56f5dbd35e",
+  "timestamp": "2026-11-24T03:36:20.565Z",
+  "artifactPath": "upgrades/side-effects/conversation-search-pointers.md",
+  "artifactSha256": "2771027013df282e3784ce183c7dcb10e808cb485a21eb7d5170b3cc087ec603",
+  "coveredFiles": [
+    "src/core/PostUpdateMigrator.ts",
+    "src/memory/MemoryIndex.ts",
+    "src/memory/SemanticMemory.ts",
+    "src/memory/TopicMemory.ts",
+    "src/memory/ftsQueryTerms.ts",
+    "src/scaffold/conversationSearchGuidance.ts",
+    "src/scaffold/templates.ts",
+    "tests/e2e/claude-md-reference-layout-init-lifecycle.test.ts",
+    "tests/integration/claude-md-reference-layout-migration.test.ts",
+    "tests/integration/topic-memory-routes.test.ts",
+    "tests/unit/conversation-search-guidance.test.ts",
+    "tests/unit/memory-index.test.ts",
+    "tests/unit/semantic-memory-recall-query.test.ts",
+    "tests/unit/semantic-memory.test.ts",
+    "tests/unit/topic-memory.test.ts",
+    "upgrades/eli16/conversation-search-pointers.md",
+    "upgrades/next/conversation-search-pointers.md",
+    "upgrades/side-effects/conversation-search-pointers.md"
+  ],
+  "phase": "complete",
+  "tier": 1,
+  "tierReasoning": "Reversible correction to existing search guidance and literal query processing. Existing endpoints, access rules, and stored data retain their contracts.",
+  "eli16Path": "upgrades/eli16/conversation-search-pointers.md",
+  "sideEffectsPath": "upgrades/side-effects/conversation-search-pointers.md",
+  "secondPass": "not-required",
+  "reviewerConcurred": null,
+  "toolchain": {
+    "reviewSkills": [
+      {
+        "name": "independent-focused-review",
+        "outcome": "passed",
+        "verified": false,
+        "iterations": 1
+      }
+    ]
+  }
+}

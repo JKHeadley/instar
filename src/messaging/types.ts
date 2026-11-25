@@ -447,6 +447,16 @@ export interface SendResult {
   threadId?: string;
   /** Current delivery phase */
   phase: DeliveryPhase;
+  /**
+   * Cross-machine outcome honesty (messages-send-cross-machine-honest): true
+   * once the target machine accepted the envelope (phase received or later),
+   * false otherwise. Absent on same-machine sends.
+   */
+  delivered?: boolean;
+  /** Why delivery failed (phase 'failed'), in the router's own words. */
+  failureReason?: string;
+  /** One plain-language sentence a session can relay as-is when delivery failed. */
+  notice?: string;
 }
 
 /** Filter options for inbox/outbox queries */

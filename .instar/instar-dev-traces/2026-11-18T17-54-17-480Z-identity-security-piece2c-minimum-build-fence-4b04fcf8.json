@@ -1,0 +1,36 @@
+{
+  "version": 2,
+  "slug": "identity-security-piece2c-minimum-build-fence",
+  "sessionId": "97324d66-1049-40ad-9159-00ef223733aa",
+  "timestamp": "2026-11-18T17:54:17.480Z",
+  "artifactPath": "upgrades/side-effects/identity-security-piece2c-minimum-build-fence.md",
+  "artifactSha256": "f0b796deca281c3db081bc00c3d84c93cc0249c384022f6df984851dd46c5ab5",
+  "specPath": "docs/specs/identity-security-piece2c-minimum-build-fence.md",
+  "coveredFiles": [
+    "src/commands/machine.ts",
+    "src/commands/server.ts",
+    "src/core/UpdateChecker.ts",
+    "src/core/identityBuildFence.ts",
+    "src/core/ownerRecordStore.ts",
+    "src/core/ownerRecordSync.ts",
+    "src/core/ownerRecordWiring.ts",
+    "src/data/awareness/owner-record.md",
+    "src/server/machineRoutes.ts",
+    "src/server/ownerRecordRoutes.ts",
+    "src/testing/selfActionRegistry.ts"
+  ],
+  "phase": "complete",
+  "tier": 2,
+  "tierReasoning": "minimum-build fence: build evidence ledger, record withheld from unconfirmed peers after enrolment, join and install/rollback refusal; nothing refused before enrolment",
+  "secondPass": "true",
+  "reviewerConcurred": true,
+  "classClosure": {
+    "defectClass": "unbounded-self-action",
+    "closure": "guard",
+    "guardEvidence": {
+      "enforcementType": "ratchet",
+      "citation": "tests/unit/self-action-convergence.test.ts",
+      "howCaught": "owner-record-fence-notice: one notice per distinct below/unconfirmed list, saved in the ledger; under sustained pressure it is raised once and never repeated (boundK 1)"
+    }
+  }
+}

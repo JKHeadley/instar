@@ -14,7 +14,8 @@ import type { Message } from '../../src/core/types.js';
 import * as deterministicOrigin from '../../src/messaging/telegram-origin/OriginDeterministicSend.js';
 
 const fixture = vi.hoisted(() => ({ inboundDir: '' }));
-vi.mock('../../src/messaging/shared/telegramInboundFiles.js', () => ({
+vi.mock('../../src/messaging/shared/telegramInboundFiles.js', async (importOriginal) => ({
+  ...(await importOriginal<typeof import('../../src/messaging/shared/telegramInboundFiles.js')>()),
   getTelegramInboundDir: () => {
     if (!fixture.inboundDir) throw new Error('test inbound fixture is not active');
     return fixture.inboundDir;
