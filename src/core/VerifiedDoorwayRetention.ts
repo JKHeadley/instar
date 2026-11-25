@@ -1,10 +1,12 @@
 import fs from 'node:fs';
+import { createHash } from 'node:crypto';
 import { createPhysicalEffectLock, type PhysicalEffectLease } from './PhysicalEffectLock.js';
 import { readCommittedDoorwayObservation } from './CommittedDoorwayObservation.js';
 import {
   SCHEDULED_DOORWAY_DIAGNOSTIC_LIMIT,
   SCHEDULED_DOORWAY_RETENTION_SCOPE,
   ScheduledDoorwayObservationStore,
+  type ScheduledDoorwayLedgerCoverage,
   type ScheduledDoorwayRetentionCursor,
   type ScheduledDoorwayRetentionReferences,
 } from './ScheduledDoorwayObservationStore.js';
@@ -24,6 +26,33 @@ function localRuns(machineId: string, ledger: Snapshot): Map<string, JobRun> | n
     runs.set(run.runId, run);
   }
   return runs;
+}
+
+/** Stable evidence for a covered ledger prefix, independent of JSONL compaction order. */
+export function fingerprintDoorwayLedger(machineId: string, ledger: Snapshot, through?: string): ScheduledDoorwayLedgerCoverage | null {
+  const runs = localRuns(machineId, ledger);
+  if (!runs) return null;
+  const ordered = [...runs.values()].sort((a, b) =>
+    a.startedAt.localeCompare(b.startedAt) || a.runId.localeCompare(b.runId));
+  const boundary = through ?? ordered.at(-1)?.startedAt ?? null;
+  const hash = createHash('sha256');
+  const pending: Array<{ runId: string; startedAt: string }> = [];
+  let terminalCount = 0;
+  for (const run of ordered) {
+    const started = Date.parse(run.startedAt);
+    if (!Number.isFinite(started) || new Date(started).toISOString() !== run.startedAt) return null;
+    if (boundary !== null && run.startedAt > boundary) continue;
+    if (run.result === 'pending') {
+      pending.push({ runId: run.runId, startedAt: run.startedAt });
+      continue;
+    }
+    hash.update(JSON.stringify([
+      run.runId, run.machineId, run.startedAt, run.result, run.completedAt,
+      run.packagedDoorwayScan, run.scheduledDoorwayObservationDigest,
+    ]) + '\n');
+    terminalCount++;
+  }
+  return { boundary, terminalCount, pending, digest: `sha256:${hash.digest('hex')}` };
 }
 
 function admissionDoors(run: JobRun, machineId: string, store: Artifacts, requireKnownDoors = false): string[] {
@@ -90,6 +119,43 @@ export function selectDoorwayRetentionReferences(
     observations: [...observations.values()].map(({ doorId, runId, digest }) => ({ doorId, runId, digest })),
     admissions: [...admissions].map(([doorId, runId]) => ({ doorId, runId })),
     diagnosticRunIds,
+  };
+}
+
+function selectNextDoorwayRetentionReferences(
+  machineId: string,
+  snapshot: Snapshot,
+  store: Artifacts,
+  nowMs: number,
+  previous: ScheduledDoorwayRetentionCursor | null,
+): ScheduledDoorwayRetentionReferences | null {
+  if (previous?.schemaVersion !== 2 || previous.coverage.boundary === null) {
+    return selectDoorwayRetentionReferences(machineId, snapshot, store, nowMs);
+  }
+  const runs = localRuns(machineId, snapshot);
+  if (!runs) return null;
+  const { boundary, pending, digest, terminalCount } = previous.coverage;
+  const pendingIds = new Set(pending.map(row => row.runId));
+  if (pending.some(row => runs.get(row.runId)?.startedAt !== row.startedAt)) return null;
+  const covered = fingerprintDoorwayLedger(machineId, {
+    complete: true, runs: [...runs.values()].filter(run => !pendingIds.has(run.runId)),
+  }, boundary);
+  if (!covered || covered.digest !== digest || covered.terminalCount !== terminalCount || covered.pending.length) return null;
+
+  const retained = new Set([
+    ...previous.observations.map(row => row.runId),
+    ...previous.admissions.map(row => row.runId),
+  ]);
+  const ordered = [...runs.values()].sort((a, b) => b.startedAt.localeCompare(a.startedAt));
+  if (ordered.some((run, index) => run.startedAt === ordered[index - 1]?.startedAt
+    || (run.result === 'pending' && index >= SCHEDULED_DOORWAY_DIAGNOSTIC_LIMIT))) return null;
+  const candidates = ordered.filter(run =>
+    run.startedAt > boundary || pendingIds.has(run.runId) || retained.has(run.runId));
+  const references = selectDoorwayRetentionReferences(machineId, { complete: true, runs: candidates }, store, nowMs);
+  if (!references) return null;
+  return {
+    ...references,
+    diagnosticRunIds: ordered.slice(0, SCHEDULED_DOORWAY_DIAGNOSTIC_LIMIT).map(run => run.runId),
   };
 }
 
@@ -204,19 +270,24 @@ export function publishDoorwayRetentionCursor(
     return { status: 'unavailable', reason: 'generation-changed' };
   }
 
+  const catalogDigest = `sha256:${createHash('sha256').update(JSON.stringify([...new Set(options.doorIds)].sort())).digest('hex')}`;
+  if (existing?.schemaVersion === 2 && existing.coverage.catalogDigest !== catalogDigest) {
+    return { status: 'unavailable', reason: 'incomplete-evidence' };
+  }
   const snapshot = options.readSnapshot();
-  const references = selectDoorwayRetentionReferences(options.machineId, snapshot, store, nowMs);
+  const references = selectNextDoorwayRetentionReferences(options.machineId, snapshot, store, nowMs, existing);
   if (!references || !verifyDoorwayRetentionReferences(options.machineId, references, snapshot, store)
     || (existing && !verifyDoorwayRetentionReferences(options.machineId, existing, snapshot, store))) {
     return { status: 'unavailable', reason: 'incomplete-evidence' };
   }
 
-  const snapshotRows = JSON.stringify(snapshot.runs);
+  const fingerprint = fingerprintDoorwayLedger(options.machineId, snapshot);
+  if (!fingerprint) return { status: 'unavailable', reason: 'incomplete-evidence' };
   options.flushLedger();
   const latest = options.readSnapshot();
-  if (!latest.complete || JSON.stringify(latest.runs) !== snapshotRows) {
+  if (JSON.stringify(fingerprintDoorwayLedger(options.machineId, latest)) !== JSON.stringify(fingerprint)) {
     return { status: 'unavailable', reason: 'ledger-changed' };
   }
-  const cursor = store.advanceRetentionCursor(existing?.generation ?? null, references, lease);
+  const cursor = store.advanceRetentionCursor(existing?.generation ?? null, references, lease, { ...fingerprint, catalogDigest });
   return { status: 'published', cursor };
 }

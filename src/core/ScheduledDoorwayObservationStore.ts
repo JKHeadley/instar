@@ -41,11 +41,17 @@ export interface ScheduledDoorwayRetentionReferences {
   diagnosticRunIds: string[];
 }
 
-export interface ScheduledDoorwayRetentionCursor extends ScheduledDoorwayRetentionReferences {
-  schemaVersion: 1;
+export interface ScheduledDoorwayLedgerCoverage {
+  boundary: string | null;
+  terminalCount: number;
+  pending: Array<{ runId: string; startedAt: string }>;
+  digest: string;
+}
+
+export type ScheduledDoorwayRetentionCursor = ScheduledDoorwayRetentionReferences & {
   machineId: string;
   generation: number;
-}
+} & ({ schemaVersion: 1 } | { schemaVersion: 2; coverage: ScheduledDoorwayLedgerCoverage & { catalogDigest: string } });
 
 /** Every writer sharing this cursor path uses this scope on the same state directory's lock. */
 export const SCHEDULED_DOORWAY_RETENTION_SCOPE = 'scheduled-doorway-retention';
@@ -172,13 +178,15 @@ export class ScheduledDoorwayObservationStore {
     previousGeneration: number | null,
     references: ScheduledDoorwayRetentionReferences,
     lease: Pick<PhysicalEffectLease, 'scope' | 'assertHeld'>,
+    coverage?: ScheduledDoorwayLedgerCoverage & { catalogDigest: string },
   ): ScheduledDoorwayRetentionCursor {
     if (lease.scope !== SCHEDULED_DOORWAY_RETENTION_SCOPE) invalid('retention-lease-scope');
     lease.assertHeld();
     const current = this.readRetentionCursor();
     if ((current?.generation ?? null) !== previousGeneration) invalid('retention-generation-changed');
     const next = this.validateRetentionCursor({
-      ...references, schemaVersion: 1, machineId: this.machineId, generation: (previousGeneration ?? 0) + 1,
+      ...references, machineId: this.machineId, generation: (previousGeneration ?? 0) + 1,
+      ...(coverage ? { schemaVersion: 2, coverage } : { schemaVersion: 1 }),
     });
     const bytes = Buffer.from(JSON.stringify(next) + '\n');
     if (bytes.length > MAX_CURSOR_BYTES) invalid('artifact-oversize');
@@ -195,7 +203,7 @@ export class ScheduledDoorwayObservationStore {
   }
 
   private validateRetentionCursor(raw: unknown): ScheduledDoorwayRetentionCursor {
-    if (!isRecord(raw) || raw.schemaVersion !== 1 || raw.machineId !== this.machineId
+    if (!isRecord(raw) || (raw.schemaVersion !== 1 && raw.schemaVersion !== 2) || raw.machineId !== this.machineId
       || typeof raw.generation !== 'number' || !Number.isSafeInteger(raw.generation) || raw.generation < 1
       || !Array.isArray(raw.observations) || raw.observations.length > MAX_DOORS
       || !Array.isArray(raw.admissions) || raw.admissions.length > MAX_DOORS
@@ -221,7 +229,32 @@ export class ScheduledDoorwayObservationStore {
       return runId;
     });
     if (new Set(diagnosticRunIds).size !== diagnosticRunIds.length) invalid('retention-reference-invalid');
-    return { schemaVersion: 1, machineId: this.machineId, generation: raw.generation, observations, admissions, diagnosticRunIds };
+    const common = { machineId: this.machineId, generation: raw.generation, observations, admissions, diagnosticRunIds };
+    if (raw.schemaVersion === 1) return { ...common, schemaVersion: 1 };
+    const coverage = raw.coverage;
+    if (!isRecord(coverage) || typeof coverage.terminalCount !== 'number'
+      || !Number.isSafeInteger(coverage.terminalCount) || coverage.terminalCount < 0
+      || typeof coverage.digest !== 'string' || !DIGEST.test(coverage.digest)
+      || typeof coverage.catalogDigest !== 'string' || !DIGEST.test(coverage.catalogDigest)
+      || !Array.isArray(coverage.pending) || coverage.pending.length > SCHEDULED_DOORWAY_DIAGNOSTIC_LIMIT) {
+      invalid('retention-coverage-invalid');
+    }
+    const boundary = coverage.boundary;
+    if (boundary !== null && typeof boundary !== 'string') invalid('retention-coverage-boundary-invalid');
+    const end = boundary === null ? -Infinity : timestamp(boundary);
+    if (boundary === null && (coverage.terminalCount || coverage.pending.length)) invalid('retention-coverage-boundary-invalid');
+    const seen = new Set<string>();
+    const pending = coverage.pending.map(row => {
+      if (!isRecord(row) || typeof row.runId !== 'string' || !RUN_ID.test(row.runId)
+        || seen.has(row.runId) || !diagnosticRunIds.includes(row.runId)
+        || typeof row.startedAt !== 'string' || timestamp(row.startedAt) > end) invalid('retention-coverage-pending-invalid');
+      seen.add(row.runId);
+      return { runId: row.runId, startedAt: row.startedAt };
+    });
+    return {
+      ...common, schemaVersion: 2,
+      coverage: { boundary, terminalCount: coverage.terminalCount, pending, digest: coverage.digest, catalogDigest: coverage.catalogDigest },
+    };
   }
 
   startRun(runId: string, startedAt: string): void {

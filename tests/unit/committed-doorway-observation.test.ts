@@ -2,7 +2,7 @@ import fs from 'node:fs';
 import os from 'node:os';
 import path from 'node:path';
 import { beforeEach, afterEach, describe, expect, it, vi } from 'vitest';
-import { initializeDoorwayRetentionCursor, selectDoorwayRetentionReferences, updateDoorwayRetentionCursor, verifyDoorwayRetentionReferences } from '../../src/core/VerifiedDoorwayRetention.js';
+import { fingerprintDoorwayLedger, initializeDoorwayRetentionCursor, selectDoorwayRetentionReferences, updateDoorwayRetentionCursor, verifyDoorwayRetentionReferences } from '../../src/core/VerifiedDoorwayRetention.js';
 import { JobRunHistory } from '../../src/scheduler/JobRunHistory.js';
 import { createPhysicalEffectLock } from '../../src/core/PhysicalEffectLock.js';
 import { SafeFsExecutor } from '../../src/core/SafeFsExecutor.js';
@@ -20,9 +20,10 @@ function stage(lockTrust = 'trusted') {
   const id = ledger.recordStart({
     slug: 'doorway-scan', sessionId: '', trigger: 'scheduled', origin: 'instar', runner: 'script', lockTrust,
   });
-  store.startRun(id, ledger.findRun(id)!.startedAt);
-  store.startDoor(id, 'alpha', TIME);
-  store.stage(id, TIME, [{ doorId: 'alpha', probeStatus: 'ok', observedAt: TIME }]);
+  const startedAt = ledger.findRun(id)!.startedAt;
+  store.startRun(id, startedAt);
+  store.startDoor(id, 'alpha', startedAt);
+  store.stage(id, startedAt, [{ doorId: 'alpha', probeStatus: 'ok', observedAt: startedAt }]);
   return id;
 }
 
@@ -178,6 +179,23 @@ describe('scheduled doorway evidence reconciliation', () => {
     }, Date.now())).toBeNull();
   });
 
+  it('fingerprints covered ledger evidence independently of physical row order', () => {
+    const source = committed();
+    vi.setSystemTime(new Date(Date.now() + 1000));
+    const pending = newer();
+    const snapshot = ledger.readPackagedDoorwaySnapshot('local-test');
+    const original = fingerprintDoorwayLedger('local-test', snapshot);
+    expect(original).toMatchObject({ terminalCount: 1, pending: [{ runId: pending }] });
+    expect(fingerprintDoorwayLedger('local-test', { ...snapshot, runs: [...snapshot.runs].reverse() })).toEqual(original);
+
+    const altered = snapshot.runs.map(run => run.runId === source ? { ...run, scheduledDoorwayObservationDigest: undefined } : run);
+    expect(fingerprintDoorwayLedger('local-test', { ...snapshot, runs: altered })).not.toEqual(original);
+    ledger.recordCompletion({ runId: pending, result: 'failure' });
+    expect(fingerprintDoorwayLedger('local-test', ledger.readPackagedDoorwaySnapshot('local-test'))).toMatchObject({
+      terminalCount: 2, pending: [],
+    });
+  });
+
   it.skipIf(!createPhysicalEffectLock(os.tmpdir()).status().available)('serializes initial publication and survives reopen', async () => {
     const source = committed();
     const options = {
@@ -189,7 +207,8 @@ describe('scheduled doorway evidence reconciliation', () => {
     const results = await Promise.all([initializeDoorwayRetentionCursor(options), initializeDoorwayRetentionCursor(options)]);
     expect(results.map(result => result.status).sort()).toEqual(['existing', 'published']);
     expect(store.readRetentionCursor()).toMatchObject({
-      generation: 1, observations: [{ doorId: 'alpha', runId: source }],
+      schemaVersion: 2, generation: 1, observations: [{ doorId: 'alpha', runId: source }],
+      coverage: { boundary: TIME, terminalCount: 1, pending: [], digest: expect.stringMatching(/^sha256:/) },
     });
   });
 
@@ -244,6 +263,76 @@ describe('scheduled doorway evidence reconciliation', () => {
     }).doors.alpha).toMatchObject({
       lastObservation: null, freshness: 'unknown', reachable: null,
     });
+  });
+
+  it.skipIf(!createPhysicalEffectLock(os.tmpdir()).status().available)('advances past a missing unreferenced artifact and refuses covered ledger changes', async () => {
+    const obsolete = committed();
+    for (let i = 0; i < 16; i++) {
+      vi.setSystemTime(new Date(Date.now() + 1000));
+      newer('failure');
+    }
+    vi.setSystemTime(new Date(Date.now() + 1000));
+    const retained = committed();
+    const options = {
+      stateDir: dir, machineId: 'local-test', doorIds: ['alpha'],
+      readSnapshot: () => ledger.readPackagedDoorwaySnapshot('local-test'),
+      flushLedger: () => ledger.flushForDoorwayRetention(),
+      deadlineMs: Date.now() + 4000,
+    };
+    await expect(initializeDoorwayRetentionCursor(options)).resolves.toMatchObject({ status: 'published' });
+    const obsoleteStage = path.join(dir, 'state', 'doorway-scan-scheduled-runs', obsolete, 'staged.json');
+    SafeFsExecutor.safeUnlinkSync(obsoleteStage, { operation: 'simulate pruning an obsolete fixture observation' });
+    vi.setSystemTime(new Date(Date.now() + 1000));
+    const failed = newer('failure', undefined, true);
+    await expect(updateDoorwayRetentionCursor({ ...options, expectedGeneration: 1 })).resolves.toMatchObject({
+      status: 'published',
+      cursor: {
+        generation: 2, observations: [{ doorId: 'alpha', runId: retained }],
+        admissions: [{ doorId: 'alpha', runId: failed }],
+      },
+    });
+    const original = store.readRetentionCursor();
+    await expect(updateDoorwayRetentionCursor({
+      ...options, expectedGeneration: 2,
+      readSnapshot: () => {
+        const snapshot = options.readSnapshot();
+        return { ...snapshot, runs: snapshot.runs.filter(run => run.runId !== obsolete) };
+      },
+    })).resolves.toEqual({ status: 'unavailable', reason: 'incomplete-evidence' });
+    expect(store.readRetentionCursor()).toEqual(original);
+  });
+
+  it.skipIf(!createPhysicalEffectLock(os.tmpdir()).status().available)('revisits a settled pending run and refuses to reuse coverage for another catalog', async () => {
+    const source = committed();
+    vi.setSystemTime(Date.now() + 1000);
+    const pending = newer(undefined, undefined, true);
+    const options = {
+      stateDir: dir, machineId: 'local-test', doorIds: ['alpha'],
+      readSnapshot: () => ledger.readPackagedDoorwaySnapshot('local-test'),
+      flushLedger: () => ledger.flushForDoorwayRetention(),
+      deadlineMs: Date.now() + 4000,
+    };
+    await expect(initializeDoorwayRetentionCursor(options)).resolves.toMatchObject({
+      cursor: { coverage: { terminalCount: 1, pending: [{ runId: pending }] } },
+    });
+    ledger.recordCompletion({ runId: pending, result: 'failure' });
+    await expect(updateDoorwayRetentionCursor({ ...options, expectedGeneration: 1 })).resolves.toMatchObject({
+      cursor: {
+        generation: 2,
+        coverage: { terminalCount: 2, pending: [] },
+        observations: [{ doorId: 'alpha', runId: source }],
+        admissions: [{ doorId: 'alpha', runId: pending }],
+      },
+    });
+    const original = store.readRetentionCursor();
+    await expect(updateDoorwayRetentionCursor({
+      ...options, doorIds: ['alpha', 'beta'], expectedGeneration: 2,
+    })).resolves.toEqual({ status: 'unavailable', reason: 'incomplete-evidence' });
+    const pathToReference = path.join(dir, 'state', 'doorway-scan-scheduled-runs', source, 'staged.json');
+    SafeFsExecutor.safeUnlinkSync(pathToReference, { operation: 'simulate loss of a retained fixture observation' });
+    await expect(updateDoorwayRetentionCursor({ ...options, expectedGeneration: 2 }))
+      .resolves.toEqual({ status: 'unavailable', reason: 'incomplete-evidence' });
+    expect(store.readRetentionCursor()).toEqual(original);
   });
 
   it.skipIf(!createPhysicalEffectLock(os.tmpdir()).status().available)('preserves the current generation when its successor cannot be verified or flushed', async () => {
