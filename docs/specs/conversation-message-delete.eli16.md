@@ -15,3 +15,5 @@ Opening another chat no longer forces the store to repeat a recent history check
 The store now checks a long chat in chunks so other server work can run in between. If the chat changes during the check, the store discards the result and can try again. The history reader needs a current completed check before returning messages with removals applied.
 
 A regular message arriving in another chat no longer restarts the check. A new message in the chat being checked still restarts it, and the store starts over when it cannot attribute a change safely.
+
+The server can now remember an exact Delete request and check whether it reached the journal before answering a retry. A retry that asks to delete a different message is refused. The production action still needs the history and sync changes before it can be turned on.

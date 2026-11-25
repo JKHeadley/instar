@@ -18,6 +18,7 @@ import { createRoutes, type RouteContext } from '../../src/server/routes.js';
 import { authMiddleware } from '../../src/server/middleware.js';
 import { MobilePairingService, createMobilePairingRouter, deviceAuthenticator, type MobilePairingDeps } from '../../src/server/mobilePairingRoutes.js';
 import { createMobileConversationRouter } from '../../src/server/mobileConversationRoutes.js';
+import { executeAppMessageRemoval } from '../../src/server/mobileAppMessageRemoval.js';
 import { admitAppMessageRemoval } from '../../src/server/mobileAppMessageRemovalAdmission.js';
 import { MobileChatRequestStore } from '../../src/core/MobileChatRequests.js';
 import { AppConversationService, STRANDED_REQUEST_AGE_MS } from '../../src/core/AppConversationService.js';
@@ -42,7 +43,7 @@ afterAll(() => {
   for (const d of dirs) SafeFsExecutor.safeRmSync(d, { recursive: true, force: true, operation: 'tests/integration/mobile-native-conversations.test.ts' });
 });
 
-interface Opts { removalAdmissionProbe?: boolean; forwards?: boolean; reactions?: boolean; machineId?: string; links?: boolean; replies?: boolean; sentinel?: { decideInboundDisposition: () => Promise<{ disposition: string }> }; lease?: { held: boolean }; holdsLease?: () => boolean; recording?: { on: boolean }; dispatchThrows?: boolean; nativeOff?: boolean; dispatchDelayMs?: number }
+interface Opts { removalAdmissionProbe?: boolean | 'execute'; forwards?: boolean; reactions?: boolean; machineId?: string; links?: boolean; replies?: boolean; sentinel?: { decideInboundDisposition: () => Promise<{ disposition: string }> }; lease?: { held: boolean }; holdsLease?: () => boolean; recording?: { on: boolean }; dispatchThrows?: boolean; nativeOff?: boolean; dispatchDelayMs?: number }
 
 function setup(opts: Opts = {}) {
   const machineId = opts.machineId ?? 'm1';
@@ -93,6 +94,11 @@ function setup(opts: Opts = {}) {
   // JSON path. No application router advertises or mounts Delete at this checkpoint.
   if (opts.removalAdmissionProbe && svc) {
     app.post('/mobile/chat/app/:key/forward', (req, res) => {
+      if (opts.removalAdmissionProbe === 'execute') {
+        const result = executeAppMessageRemoval(req, pairing, svc);
+        res.status(result.status).json(result.body);
+        return;
+      }
       const admission = admitAppMessageRemoval(req, pairing, svc);
       res.status(admission.ok ? 200 : admission.status).json(admission);
     });
@@ -895,5 +901,98 @@ describe('signed App message removal admission checkpoint', () => {
     } finally { changedOwner.mockRestore(); }
     expect(e.svc.store.browseMessages(key, null, 10).messages).toHaveLength(2);
     expect(e.svc.store.messageRemoval(key, 'one', 'msg-one')).toEqual({ eventId: null });
+  });
+});
+
+describe('private signed App message removal runtime', () => {
+  async function fixture() {
+    const e = setup({ removalAdmissionProbe: 'execute' });
+    await enableReplyProof(e);
+    const key = await create(e);
+    for (const id of ['one', 'two']) {
+      e.svc.store.append({ kind: 'message', role: 'agent', conversationKey: key, eventId: id,
+        messageId: `msg-${id}`, text: 'Retained text', at: new Date().toISOString(), machineId: 'm1' });
+    }
+    return { e, key, endpoint: `/mobile/chat/app/${key}/forward`,
+      intent: { custodianMachineId: 'm1', eventId: 'one', requestId: rid() } };
+  }
+
+  it('confirms one exact removal and returns its receipt on signed retry after reopening requests', async () => {
+    const { e, key, endpoint, intent } = await fixture();
+    expect((await bearer(e, 'post', endpoint).send(intent)).status).toBe(403);
+    const first = await signed(e, 'POST', endpoint, intent);
+    expect(first.status).toBe(200);
+    expect(first.body).toEqual({ eventId: 'one', removalEventId: expect.any(String) });
+    const append = vi.spyOn(e.svc.store, 'append');
+    e.svc.deps.requests = new MobileChatRequestStore(e.dir);
+    const replay = await signed(e, 'POST', endpoint, intent);
+    expect(replay.status).toBe(200);
+    expect(replay.body).toEqual(first.body);
+    const access = vi.spyOn(e.pairing, 'mayReadStored').mockReturnValue(false);
+    try { expect((await signed(e, 'POST', endpoint, intent)).status).toBe(404); }
+    finally { access.mockRestore(); }
+    expect((await signed(e, 'POST', endpoint, { ...intent, eventId: 'two' })).body.error).toBe('payload-conflict');
+    const duplicate = await signed(e, 'POST', endpoint, { ...intent, requestId: rid() });
+    expect(duplicate.status).toBe(404);
+    expect(duplicate.body.error).toBe('message-removal-target-unavailable');
+    e.lease.held = false;
+    expect((await signed(e, 'POST', endpoint, intent)).status).toBe(503);
+    expect(append).not.toHaveBeenCalled();
+    expect(e.svc.store.messageRemoval(key, 'one', 'msg-one')).toEqual({ eventId: first.body.removalEventId });
+    expect(e.svc.store.messageRemoval(key, 'two', 'msg-two')).toEqual({ eventId: null });
+    expect(e.dispatched).toEqual([]);
+    expect(e.killed).toEqual([]);
+  });
+
+  it('excludes retained retries from fresh admission and rejects expired IDs', async () => {
+    const { e, endpoint, intent } = await fixture();
+    const base = Date.now();
+    const clock = vi.spyOn(Date, 'now').mockReturnValue(base);
+    try {
+      e.svc.deps.requests = new MobileChatRequestStore(e.dir, () => Date.now());
+      expect((await signed(e, 'POST', endpoint, intent)).status).toBe(200);
+      const active = { ...intent, eventId: 'two', requestId: rid() };
+      vi.spyOn(e.svc.deps.requests, 'markUnknown').mockImplementation(() => {});
+      const append = vi.spyOn(e.svc.store, 'append').mockImplementationOnce(() => { throw new Error('interrupted'); });
+      expect((await signed(e, 'POST', endpoint, active)).status).toBe(409);
+      const day = 24 * 60 * 60_000;
+      clock.mockReturnValue(base + day + 60_000);
+      expect((await signed(e, 'POST', endpoint, intent)).status).toBe(200);
+      expect((await signed(e, 'POST', endpoint, { ...intent, eventId: 'two' })).body.error).toBe('payload-conflict');
+      expect((await signed(e, 'POST', endpoint, active)).status).toBe(202);
+      clock.mockReturnValue(base + day + 6 * 60_000);
+      expect((await signed(e, 'POST', endpoint, active)).body.error).toBe('request-id-too-old');
+      expect((await signed(e, 'POST', endpoint, { ...active, eventId: 'one' })).body.error).toBe('request-id-too-old');
+      expect(append).toHaveBeenCalledTimes(1);
+      expect((await signed(e, 'POST', endpoint, intent)).body.error).toBe('request-id-too-old');
+      expect((await signed(e, 'POST', endpoint, { ...intent, eventId: 'two' })).body.error).toBe('request-id-too-old');
+    } finally { clock.mockRestore(); }
+  });
+
+  it('recovers a reserved request only when its exact removal reached the journal', async () => {
+    for (const [didAppend, crashed] of [[true, true], [false, true], [false, false]]) {
+      const { e, key, endpoint, intent } = await fixture();
+      const realAppend = e.svc.store.append.bind(e.svc.store);
+      const append = vi.spyOn(e.svc.store, 'append').mockImplementationOnce((event) => {
+        if (didAppend) realAppend(event);
+        throw new Error('simulated interruption');
+      });
+      // Preserve the reservation in entered state, as it would be after a process exit.
+      const markUnknown = vi.spyOn(e.svc.deps.requests, 'markUnknown');
+      if (crashed) markUnknown.mockImplementation(() => {});
+      const interrupted = await signed(e, 'POST', endpoint, intent);
+      expect(interrupted.status).toBe(409);
+      expect(interrupted.body.error).toBe('outcome-unknown');
+      expect(markUnknown).toHaveBeenCalledTimes(1);
+      const during = await signed(e, 'POST', endpoint, intent);
+      expect(during.status).toBe(crashed ? 202 : 409);
+      e.svc.deps.requests = new MobileChatRequestStore(e.dir);
+      const recovered = await signed(e, 'POST', endpoint, intent);
+      expect(recovered.status).toBe(didAppend ? 200 : 409);
+      if (didAppend) expect(recovered.body.eventId).toBe('one');
+      else expect(recovered.body.error).toBe('outcome-unknown');
+      expect(append).toHaveBeenCalledTimes(1);
+      expect(e.svc.store.getEvent(key, 'one')).toMatchObject({ kind: 'message' });
+    }
   });
 });

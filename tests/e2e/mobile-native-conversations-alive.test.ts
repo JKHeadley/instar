@@ -159,6 +159,10 @@ describe('native app conversations — production wiring', () => {
     });
     expect(darkDelete.status).toBe(403);
     expect(server.appConversations!.store.messageRemoval(key, target, reply.body.messageId)).toEqual({ eventId: null });
+    const afterDarkDelete = await send('GET', `/mobile/chat/app/${key}/messages`);
+    expect(afterDarkDelete.status).toBe(200);
+    expect(afterDarkDelete.body.messages.map((row: { eventId: string }) => row.eventId))
+      .toEqual(hist.body.messages.map((row: { eventId: string }) => row.eventId));
 
     const exact = await send('GET', `/mobile/chat/app/${key}/message-context?target=${encodeURIComponent(target)}&targetKind=event`);
     expect(exact.status).toBe(200);

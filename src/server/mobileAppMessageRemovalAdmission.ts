@@ -7,19 +7,17 @@ import { isOwnerPerson } from '../core/MobilePeople.js';
 import { exactMessageReader } from './mobileExactMessageAuthority.js';
 import { deviceAdmissionIdentity, principalOf, type MobilePairingService } from './mobilePairingRoutes.js';
 
-type RemovalAdmission =
-  | { ok: false; status: 400 | 403 | 404 | 503; error: string }
-  | {
-      ok: true;
-      conversationKey: string;
-      targetEventId: string;
-      targetMessageId: string;
-      requestId: string;
-      custodianMachineId: string;
-      requestActor: string;
-      intentHash: string;
-      removalEventId: string;
-    };
+type RemovalRejection = { ok: false; status: 400 | 403 | 404 | 503; error: string };
+type RemovalScope = {
+  ok: true;
+  conversationKey: string;
+  targetEventId: string;
+  requestId: string;
+  custodianMachineId: string;
+  requestActor: string;
+  removalEventId: string;
+};
+type RemovalAdmission = RemovalRejection | (RemovalScope & { targetMessageId: string; intentHash: string });
 
 const unavailable = { ok: false, status: 404, error: 'message-removal-target-unavailable' } as const;
 const wrongCustodian = { ok: false, status: 503, error: 'message-removal-custody-unavailable' } as const;
@@ -28,8 +26,8 @@ function isOpaqueId(value: unknown): value is string {
   return typeof value === 'string' && value.length > 0 && value.length <= 128 && !/[\x00-\x1f\x7f]/.test(value);
 }
 
-/** Resolve a fresh signed removal intent. Admission has no storage or projection effects. */
-export function admitAppMessageRemoval(req: Request, pairing: MobilePairingService, service: AppConversationService): RemovalAdmission {
+/** Establish current signed authority before looking up any request or target. */
+export function resolveAppMessageRemovalScope(req: Request, pairing: MobilePairingService, service: AppConversationService): RemovalScope | RemovalRejection {
   const principal = principalOf(req);
   const signedIdentity = deviceAdmissionIdentity(req);
   if (principal.kind !== 'device' || !signedIdentity) return { ok: false, status: 403, error: 'operator-device-required' };
@@ -44,7 +42,6 @@ export function admitAppMessageRemoval(req: Request, pairing: MobilePairingServi
     return { ok: false, status: 400, error: 'invalid-message-removal' };
   }
 
-  if (!requestIdAgeOk(requestId, Date.now())) return { ok: false, status: 400, error: 'request-id-too-old' };
   const current = exactMessageReader(pairing, req);
   const actor = current();
   const machine = service.deps.machineId();
@@ -61,18 +58,6 @@ export function admitAppMessageRemoval(req: Request, pairing: MobilePairingServi
   if (creation.machineId !== machine || !service.serves(key)) return wrongCustodian;
   const ownerIdentity = actor.userId === null ? pairing.ownerIdentity() : null;
   if (actor.userId === null && ownerIdentity?.telegramOwnerId == null && ownerIdentity?.slackOwnerUserId == null) return unavailable;
-  let targets;
-  try {
-    targets = service.store.exactMessageCandidates(key, eventId, 'event');
-  } catch {
-    return unavailable; // @silent-fallback-ok — unreadable target shares the unavailable response
-  }
-  const [target] = targets;
-  if (targets.length !== 1 || target?.eventId !== eventId || !pairing.mayReadStored(actor, key, target)) return unavailable;
-
-  const rechecked = current();
-  if (!rechecked || rechecked.userId !== actor.userId || rechecked.role !== actor.role) return unavailable;
-
   const actorScope = sha256Hex(JSON.stringify([
     actor.userId, principal.deviceId, signedIdentity.keyHash,
     ownerIdentity?.telegramOwnerId ?? null, ownerIdentity?.slackOwnerUserId ?? null,
@@ -82,11 +67,45 @@ export function admitAppMessageRemoval(req: Request, pairing: MobilePairingServi
     ok: true,
     conversationKey: key,
     targetEventId: eventId,
-    targetMessageId: target.messageId,
     requestId,
     custodianMachineId,
     requestActor: `app-message-removal:${actorScope}`,
-    intentHash: sha256Hex(JSON.stringify(['app-message-removal', machine, actorScope, key, eventId, target.messageId])),
     removalEventId: derivedEventId('removed', JSON.stringify([machine, actorScope, requestId])),
   };
+}
+
+export function removalIntentHash(scope: RemovalScope, targetMessageId: string): string {
+  return sha256Hex(JSON.stringify(['app-message-removal', scope.custodianMachineId, scope.requestActor,
+    scope.conversationKey, scope.targetEventId, targetMessageId]));
+}
+
+/** Resolve the exact currently visible event for a first attempt. */
+export function resolveFreshRemovalTarget(req: Request, pairing: MobilePairingService, service: AppConversationService,
+  scope: RemovalScope, now = Date.now()): RemovalAdmission {
+  if (!requestIdAgeOk(scope.requestId, now)) return { ok: false, status: 400, error: 'request-id-too-old' };
+  const current = exactMessageReader(pairing, req);
+  const actor = current();
+  if (!actor) return unavailable;
+  let targets;
+  try {
+    targets = service.store.exactMessageCandidates(scope.conversationKey, scope.targetEventId, 'event');
+  } catch {
+    return unavailable; // @silent-fallback-ok — unreadable target shares the unavailable response
+  }
+  const [target] = targets;
+  if (targets.length !== 1 || target?.eventId !== scope.targetEventId || !pairing.mayReadStored(actor, scope.conversationKey, target)) return unavailable;
+
+  const rechecked = current();
+  if (!rechecked || rechecked.userId !== actor.userId || rechecked.role !== actor.role) return unavailable;
+
+  const latest = resolveAppMessageRemovalScope(req, pairing, service);
+  if (!latest.ok) return latest;
+  if (latest.requestActor !== scope.requestActor) return unavailable;
+  return { ...scope, targetMessageId: target.messageId, intentHash: removalIntentHash(scope, target.messageId) };
+}
+
+/** Resolve a fresh signed removal intent. Admission has no storage or projection effects. */
+export function admitAppMessageRemoval(req: Request, pairing: MobilePairingService, service: AppConversationService): RemovalAdmission {
+  const scope = resolveAppMessageRemovalScope(req, pairing, service);
+  return scope.ok ? resolveFreshRemovalTarget(req, pairing, service, scope) : scope;
 }

@@ -4,12 +4,12 @@ slug: conversation-message-delete
 author: echo
 status: approved
 approved: true
-approved-by: echo under standing build approval for local storage, private fresh admission and unmounted history projection only
+approved-by: echo under standing build approval for local storage, private signed admission and execution, and unmounted history projection only
 parent-principle: Operator-Surface Quality
 tier: 2
-review-convergence: "2026-11-25T18:38:30.956Z"
-review-iterations: 18
-review-completed-at: "2026-11-25T18:38:30.956Z"
+review-convergence: "2026-11-25T19:04:04.393Z"
+review-iterations: 21
+review-completed-at: "2026-11-25T19:04:04.393Z"
 review-report: "docs/specs/reports/conversation-message-delete-convergence.md"
 cross-model-review: "cross-model-review: codex-cli:gpt-6.2-astra"
 ---
@@ -114,3 +114,11 @@ The next unmounted checkpoint separates proof preparation from interactive reads
 The store-wide write generation conservatively invalidates preparation even for unrelated chat writes. Measure readiness under ordinary sustained writes before mounting the route. The startup count query is synchronous within the first scheduled turn and remains part of the first-turn performance measurement.
 
 The local store can classify a successful plain-message append as scoped to its own journal and indexed conversation. Such an append does not invalidate proof for a different chat. A change to the target journal still invalidates its proof. All other local writes, failed indexing, catch-up and external SQLite commits keep the conservative invalidation rule. The exception covers only the known committed index transaction, while retained receipt proof remains unchanged.
+
+## Private signed execution checkpoint
+
+Current signed identity, conversation ownership, read/delete grants and creation custody are checked before a request record is read. The request namespace belongs to the original pairing and current person. An existing request compares its original intent using the conversation, exact event and stored message binding. A changed intent conflicts. A previous success or an interrupted reservation can yield a receipt only after the store verifies its exact durable removal fact. The receipt returns only the target event ID and removal event ID. An uncertain reservation never appends again. A fresh request checks its age and exact row visibility before reserving, then appends one local fact. The private signed fixture reopens the request store to test completed and uncertain retries. Mounting the route still depends on removal-aware history and sync.
+
+A fresh request must prove that the target has no prior effective removal. A prior removal produces the same unavailable answer as a missing row, and unsettled index evidence produces a temporary failure. A reservation that remains entered when the process ends is unknown on reopen because the new process has no matching active entry. It can return a receipt if the exact fact is proven. This checkpoint deliberately leaves an interrupted request unresolved even when absence can be proven. It never resumes an entered request by appending again. The private executor's absence check uses the existing synchronous receipt verifier. A production route needs the background proof path before mounting.
+
+Receipt recovery also checks current access to the retained target row. Current conversation access alone cannot expose its receipt. The ledger retains request bindings until 24 hours and five minutes after the request timestamp; fresh admission accepts IDs no older than 24 hours. If lookup prunes a record after it was read, the attempt returns `request-id-too-old` without fresh admission. An expired ID cannot reserve another intent.
