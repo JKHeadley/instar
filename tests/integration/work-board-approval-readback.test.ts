@@ -26,7 +26,7 @@ it('reads the exact approval only after the real journal advances its durable wa
     });
     const cardId = 'wc_6248a51921c41ca0';
     const request: WorkBoardApprovalRequest = {
-      proof: { epoch: 'board:2', ownerGeneration: 'owner:3', writerIncarnation: 'machine:1' },
+      proof: { epoch: 'board:2', ownerGeneration: 'owner:3', ownerPersonKey: 'owner1', writerIncarnation: 'machine:1' },
       version: { cardId, cardRevision: 'edit:2', policyRevision: 'policy:1', visibleTextHash: 'a'.repeat(64), materialHash: 'b'.repeat(64), titleHash: 'c'.repeat(64) },
       source: 'slip',
       decisionId: 'decision:1',

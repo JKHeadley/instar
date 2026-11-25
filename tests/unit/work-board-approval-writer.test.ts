@@ -1,7 +1,7 @@
 import { describe, expect, it } from 'vitest';
 import { WorkBoardApprovalWriter, type WorkBoardApprovalEvent, type WorkBoardApprovalRequest, type WorkBoardApprovalVersion, type WorkBoardWriterProof } from '../../src/core/WorkBoardApprovalWriter.js';
 
-const proof: WorkBoardWriterProof = { epoch: 'board:2', ownerGeneration: 'owner:3', writerIncarnation: 'machine:1' };
+const proof: WorkBoardWriterProof = { epoch: 'board:2', ownerGeneration: 'owner:3', ownerPersonKey: 'owner1', writerIncarnation: 'machine:1' };
 const version: WorkBoardApprovalVersion = {
   cardId: 'wc_6248a51921c41ca0', cardRevision: 'edit:2', policyRevision: 'policy:1', visibleTextHash: 'visible:2', materialHash: 'material:2', titleHash: 'title:2',
 };

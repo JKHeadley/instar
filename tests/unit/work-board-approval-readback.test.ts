@@ -5,7 +5,7 @@ import { WORK_CARD_RECORD_KIND } from '../../src/core/WorkCardStore.js';
 import { readWorkBoardApprovalEvent } from '../../src/core/workBoardApprovalReadback.js';
 
 const request: WorkBoardApprovalRequest = {
-  proof: { epoch: 'board:2', ownerGeneration: 'owner:3', writerIncarnation: 'machine:1' },
+  proof: { epoch: 'board:2', ownerGeneration: 'owner:3', ownerPersonKey: 'owner1', writerIncarnation: 'machine:1' },
   version: { cardId: 'wc_6248a51921c41ca0', cardRevision: 'edit:2', policyRevision: 'policy:1', visibleTextHash: 'a'.repeat(64), materialHash: 'b'.repeat(64), titleHash: 'c'.repeat(64) },
   source: 'slip',
   decisionId: 'decision:1',
@@ -57,6 +57,11 @@ describe('Work Board approval journal readback', () => {
   it.each(['materialHash', 'titleHash'])('rejects a changed outer %s', (field) => {
     const altered = { ...row, data: { ...row.data, [field]: 'd'.repeat(64) } };
     expect(readWorkBoardApprovalEvent(event.eventId, fixture([altered]))).toEqual({ status: 'unknown' });
+  });
+
+  it.each([{ personKey: 'other-owner' }, { proof: 'pin' }])('rejects a different outer owner or proof', (patch) => {
+    const by = { kind: 'person', personKey: 'owner1', proof: 'presence', ...patch };
+    expect(readWorkBoardApprovalEvent(event.eventId, fixture([{ ...row, data: { ...row.data, by } }]))).toEqual({ status: 'unknown' });
   });
 
   it('does not mistake an unflushed row for a durable winner', () => {

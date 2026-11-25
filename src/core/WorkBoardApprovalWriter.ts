@@ -3,6 +3,7 @@ import { createHash } from 'node:crypto';
 export interface WorkBoardWriterProof {
   epoch: string;
   ownerGeneration: string;
+  ownerPersonKey: string;
   writerIncarnation: string;
 }
 
@@ -50,6 +51,7 @@ interface WorkBoardApprovalWriterPorts {
 function sameProof(first: WorkBoardWriterProof, second: WorkBoardWriterProof | null): boolean {
   return second !== null && first.epoch === second.epoch
     && first.ownerGeneration === second.ownerGeneration
+    && first.ownerPersonKey === second.ownerPersonKey
     && first.writerIncarnation === second.writerIncarnation;
 }
 
@@ -62,7 +64,7 @@ function sameVersion(first: WorkBoardApprovalVersion, second: WorkBoardApprovalV
 }
 
 export function approvalEventId({ proof, version }: WorkBoardApprovalRequest): string {
-  const input = [proof.epoch, proof.ownerGeneration, proof.writerIncarnation,
+  const input = [proof.epoch, proof.ownerGeneration, proof.ownerPersonKey, proof.writerIncarnation,
     version.cardId, version.cardRevision, version.policyRevision, version.visibleTextHash, version.materialHash, version.titleHash];
   const generation = createHash('sha256').update(JSON.stringify(input)).digest('hex');
   return `wc:${version.cardId}:approve:${generation}`;
@@ -85,10 +87,10 @@ export function decodeWorkBoardApprovalEvent(data: Record<string, unknown>): Wor
   const version = record(input?.version);
   if (!input || !proof || !version) return null;
 
-  const { epoch, ownerGeneration, writerIncarnation } = proof;
+  const { epoch, ownerGeneration, ownerPersonKey, writerIncarnation } = proof;
   const { cardId, cardRevision, policyRevision, visibleTextHash, materialHash, titleHash } = version;
   const { source, decisionId } = input;
-  if (!bindingPart(epoch) || !bindingPart(ownerGeneration) || !bindingPart(writerIncarnation)
+  if (!bindingPart(epoch) || !bindingPart(ownerGeneration) || !bindingPart(ownerPersonKey) || !bindingPart(writerIncarnation)
     || !bindingPart(cardRevision) || !bindingPart(policyRevision) || !bindingPart(decisionId)
     || typeof cardId !== 'string' || !/^wc_[a-f0-9]{16}$/.test(cardId) || data.cardId !== cardId
     || typeof visibleTextHash !== 'string' || !/^[a-f0-9]{64}$/.test(visibleTextHash)
@@ -96,8 +98,12 @@ export function decodeWorkBoardApprovalEvent(data: Record<string, unknown>): Wor
     || typeof titleHash !== 'string' || !/^[a-f0-9]{64}$/.test(titleHash) || data.titleHash !== titleHash
     || (source !== 'console' && source !== 'phone' && source !== 'bulk' && source !== 'slip')) return null;
 
+  const actor = record(data.by);
+  const expectedProof = source === 'console' || source === 'bulk' ? 'pin' : 'presence';
+  if (actor?.kind !== 'person' || actor.personKey !== ownerPersonKey || actor.proof !== expectedProof) return null;
+
   const request: WorkBoardApprovalRequest = {
-    proof: { epoch, ownerGeneration, writerIncarnation },
+    proof: { epoch, ownerGeneration, ownerPersonKey, writerIncarnation },
     version: { cardId, cardRevision, policyRevision, visibleTextHash, materialHash, titleHash },
     source,
     decisionId,

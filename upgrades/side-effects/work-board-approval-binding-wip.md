@@ -56,3 +56,7 @@ The reviewer concurred with checkpointing after confirming the binding survives 
 ## Outer tap binding
 
 The generation now includes the material and title hashes used by the existing Work Board tap. The decoder compares both with the durable outer record and refuses a mismatch. Legacy events still omit the optional binding, and writer-bound events still cannot reach the legacy fold. Regression tests cover changing either outer field while preserving the recorded binding.
+
+## Owner and proof binding
+
+The generation now includes the enrolled owner’s person key. The decoder requires the same person on the outer tap, with PIN proof for console or bulk and presence proof for phone or slip. The independent reviewer concurred. These checks establish consistency of the durable event. The production gate still owns verification of the original authentication.
