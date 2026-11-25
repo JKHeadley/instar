@@ -29,6 +29,9 @@ import type { LocalHistoryPreparedPreview } from './LocalHistoryPreparedPreview.
 import { localSessionOriginalId } from './localSessionParsers.js';
 import type { LocalHistoryAuthenticatedDevice, LocalHistoryChannelIssuer, LocalHistoryChannelPrincipal } from './LocalHistoryChannelRegistry.js';
 
+type CopyReservationPolicy = Readonly<{ bootstrapBytes: number; ceiling: number; firstClaimPolicy: LocalHistoryPhysicalPolicy }>;
+type CopyReservationBinding = Readonly<{ allocationId: string; runId: string; reservedBytes: number }>;
+
 export interface LocalHistoryStagingIssuer extends LocalHistoryChannelIssuer { origin: string }
 export interface LocalHistoryUploadStagingDeps {
   stateDir: string;
@@ -530,7 +533,10 @@ export class LocalHistoryUploadStaging {
   }
 
   private async readPreparedPreviewWithObserver(device: LocalHistoryAuthenticatedDevice, operationId: string,
-    includeFirstClaimPlan?: true, observeFirstClaimPlan?: ObserveLocalHistoryFirstClaimPlan): Promise<PreparedPreviewRead> {
+    includeFirstClaimPlan?: true, copy?: {
+      budget: CopyReservationPolicy;
+      observe(...args: [...Parameters<ObserveLocalHistoryFirstClaimPlan>, CopyReservationBinding]): undefined;
+    }): Promise<PreparedPreviewRead> {
     const row = this.owned(operationId, device);
     if (row.phase !== 'prepared') refuse('conflict');
     if (this.verification || this.activeChildWork) refuse('busy');
@@ -539,6 +545,10 @@ export class LocalHistoryUploadStaging {
     const authorized = () => { try { return this.owned(row.id, deviceCopy).phase === 'prepared'; } catch { return false; } };
     const check = () => { if (!authorized()) refuse('unavailable'); };
     let result: PreparedPreviewRead | undefined, writerBusy = false, leased = false;
+    let run: ReturnType<typeof registerLocalHistoryStoreTemporaryRun> | undefined;
+    let pin: ReturnType<LocalHistoryDiskLedger['pinCopyVolume']> | undefined;
+    let reservation: ReturnType<LocalHistoryDiskLedger['createCopyRunReservation']> | undefined;
+    let reservationMayExist = false;
     const done = Promise.resolve().then(async () => {
       check();
       const receipt = await runLocalHistoryPreparedReadJob({
@@ -549,21 +559,47 @@ export class LocalHistoryUploadStaging {
             representation: file.representation, bytes: file.bytes, sha256: file.sha256 })) },
         heapMiB: this.parserPolicy.heapMiB, perFileDeadlineMs: this.parserPolicy.deadlineMs, rssBytes: this.parserPolicy.rssBytes,
         authorized,
-        observeFirstClaimPlan,
+        observeFirstClaimPlan: copy ? (claim, destinations) => {
+          if (!reservation || !run || !pin) refuse('unavailable');
+          const { bootstrapBytes, firstClaimPolicy } = copy.budget;
+          const physicalBytes = estimateLocalHistoryPhysicalBytes({
+            kind: 'source-claim', databaseCeilingBytes: claim.databaseCeilingBytes, journalBytes: claim.journalBytes,
+          }, firstClaimPolicy);
+          if (physicalBytes > 0) reservation.grow(physicalBytes);
+          const reservedBytes = bootstrapBytes + physicalBytes;
+          reservation.assertCovers(reservedBytes);
+          return copy.observe(claim, destinations, Object.freeze({
+            allocationId: reservation.allocationId, runId: run.runId, reservedBytes,
+          }));
+        } : undefined,
         acquireChild: async () => {
           check(); if (leased) return null; leased = true;
-          let run: ReturnType<typeof registerLocalHistoryStoreTemporaryRun> | undefined;
           return { custody: this.custody.custody,
             registerChild: async child => {
               check();
               if (!child.pid) refuse('unavailable');
-              if (observeFirstClaimPlan) {
-                if (hasUnsettledLocalHistoryTemporaryRun(this.db, row.tag)) refuse('unavailable');
+              if (copy) {
+                if (this.unsettledCopyReservationTags.has(row.tag)
+                  || hasUnsettledLocalHistoryTemporaryRun(this.db, row.tag)) refuse('unavailable');
                 this.metadataRoom();
+                pin = this.ledger.pinCopyVolume(localHistoryCopyDestinationDirectories(this.deps.stateDir));
+                const { bootstrapBytes, ceiling, firstClaimPolicy } = copy.budget;
+                if (pin.measure().blockBytes !== firstClaimPolicy.blockBytes) refuse('capacity');
+                reservationMayExist = true;
+                try {
+                  reservation = this.ledger.createCopyRunReservation(this.custody, operationId, pin, bootstrapBytes, ceiling);
+                } catch (error) {
+                  if (error instanceof Error && ['local-history-disk-capacity', 'local-history-disk-record-capacity',
+                    'local-history-disk-copy-reservation'].includes(error.message)) {
+                    reservationMayExist = false;
+                  }
+                  throw error;
+                }
                 run = registerLocalHistoryStoreTemporaryRun(this.db, this.custody, {
                   operationId, existingDirectoriesOnly: true,
                 });
                 await run.registerChild(child);
+                reservation.assertCovers(bootstrapBytes);
               } else {
                 await this.registerChild(child.pid);
               }
@@ -572,7 +608,16 @@ export class LocalHistoryUploadStaging {
             release: () => {
               if (!leased) refuse('unavailable');
               leased = false;
-              run?.cleanupAfterChild();
+              try {
+                if (run && reservation) {
+                  run.cleanupAfterChild();
+                  reservation.releaseAfterSettlement();
+                  reservationMayExist = false;
+                }
+              } finally {
+                if (reservationMayExist) this.unsettledCopyReservationTags.add(row.tag);
+                pin?.close();
+              }
             } };
         },
         chunks: async function* (this: LocalHistoryUploadStaging, signal: AbortSignal) {
@@ -587,7 +632,7 @@ export class LocalHistoryUploadStaging {
     }).catch(error => {
       if (error instanceof LocalHistoryPreparedReadRefused) {
         writerBusy = error.message === 'local-history-preview-writer-busy' && !error.cleanupPending;
-        if (observeFirstClaimPlan && error.cleanupPending) this.report('cleanup', 'registered-namespace-cleanup-pending');
+        if (copy && error.cleanupPending) this.report('cleanup', 'registered-namespace-cleanup-pending');
       }
     }).finally(() => {
       if (this.activeChildWork?.done === done) this.activeChildWork = undefined;
@@ -779,10 +824,14 @@ export class LocalHistoryUploadStaging {
   /** Inspect the copy plan only while the actual reader holds the writer.
    * The callback has no permit authority and the child will discard the plan. */
   async observeFirstCopyClaim(device: LocalHistoryAuthenticatedDevice, operationId: string, value: unknown,
-    observe: (plan: Parameters<ObserveLocalHistoryFirstClaimPlan>[0]) => undefined): Promise<void> {
+    budget: CopyReservationPolicy,
+    observe: (plan: Parameters<ObserveLocalHistoryFirstClaimPlan>[0], reservation: CopyReservationBinding) => undefined): Promise<void> {
+    const ownedBudget = { ...budget, firstClaimPolicy: { ...budget.firstClaimPolicy } };
+    const { bootstrapBytes, ceiling } = ownedBudget;
+    if (!Number.isSafeInteger(bootstrapBytes) || !Number.isSafeInteger(ceiling) || bootstrapBytes <= 0 || bootstrapBytes > ceiling) refuse('invalid');
     const deviceCopy = Object.freeze({ deviceId: device.deviceId, deviceKeyHash: device.deviceKeyHash });
     const before = this.bindCopyIntent(deviceCopy, operationId, value);
-    await this.readPreparedPreviewWithObserver(deviceCopy, operationId, true, (plan, destinations) => {
+    await this.readPreparedPreviewWithObserver(deviceCopy, operationId, true, { budget: ownedBudget, observe: (plan, destinations, reservation) => {
       const current = this.bindCopyIntent(deviceCopy, operationId, before.intent);
       const original = before.receipt.preview?.files;
       if (before.fingerprint !== current.fingerprint || digest(before.receipt) !== digest(current.receipt)
@@ -791,8 +840,8 @@ export class LocalHistoryUploadStaging {
           && file.source === original[index].source && file.destinationFingerprint === original[index].destinationFingerprint)) {
         refuse('conflict');
       }
-      return observe(plan);
-    });
+      return observe(plan, reservation);
+    } });
   }
 
   /** Validate the signed copy intent against current staging state. The

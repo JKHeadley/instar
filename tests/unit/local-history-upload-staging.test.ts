@@ -236,7 +236,20 @@ it('keeps explicit preview retryable while the actual destination writer is lock
     expect(retry.preview.newMessages).toBe(1);
     const intent = { previewId: retry.previewId, machineId: retry.machineId, bootId: issuer.bootId,
       confirmationChallenge: retry.confirmation.challenge, applyRequestId: 'b'.repeat(32) };
-    const policy = { blockBytes: 4096, perWriteMetadataBytes: 4096, maxReservationBytes: 1024 * 1024, maxAttachments: 0 };
+    const blockBytes = fs.statfsSync(f.stateDir).bsize;
+    const policy = { blockBytes, perWriteMetadataBytes: blockBytes, maxReservationBytes: 1024 * 1024, maxAttachments: 0 };
+    const budget = { bootstrapBytes: blockBytes, ceiling: policy.maxReservationBytes, firstClaimPolicy: policy };
+    const prepareAnother = async () => {
+      const selected = f.stage.admit(device, f.manifest([bytes]));
+      upload(f.stage, selected.operationId, 'file-0', bytes);
+      f.stage.complete(device, selected.operationId);
+      await until(() => f.stage.status(device, selected.operationId).phase === 'verified');
+      f.stage.prepare(device, selected.operationId);
+      await until(() => f.stage.status(device, selected.operationId).phase === 'prepared');
+      const preview = await f.stage.publishPreparedPreview(device, selected.operationId);
+      return { operationId: selected.operationId, intent: { ...intent, previewId: preview.previewId,
+        confirmationChallenge: preview.confirmation.challenge } };
+    };
     const expected = f.stage.inspectCopyIntent(device, grant.operationId, intent);
     const estimate = await f.stage.estimateFirstCopyClaim(device, grant.operationId, intent, policy);
     expect(estimate).toMatchObject({ ...expected, fileId: 'file-0' });
@@ -246,24 +259,28 @@ it('keeps explicit preview retryable while the actual destination writer is lock
     expect(estimate.estimatedPhysicalBytes % policy.blockBytes).toBe(0);
     const contender = new Database(path.join(store.dir, 'write-lock.sqlite'), { timeout: 0 });
     try {
-      const observe = vi.fn((claim: { planDigest: string }) => {
+      const observe = vi.fn((claim: { planDigest: string }, reserve: { allocationId: string; runId: string; reservedBytes: number }) => {
         expect(claim.planDigest).toBe(estimate.planDigest);
-        const runs = db.prepare('SELECT childPid, state FROM local_history_store_temporary_runs').all();
-        expect(runs).toEqual([{ childPid: expect.any(Number), state: 'active' }]);
+        const runs = db.prepare('SELECT runId, childPid, state FROM local_history_store_temporary_runs').all();
+        expect(runs).toEqual([{ runId: reserve.runId, childPid: expect.any(Number), state: 'active' }]);
+        expect(reserve.reservedBytes).toBe(budget.bootstrapBytes + estimate.estimatedPhysicalBytes);
+        expect(ledger.inspect(reserve.allocationId)).toMatchObject({ state: 'active', planned: reserve.reservedBytes, written: 0 });
         expect((runs[0] as { childPid: number }).childPid).not.toBe(process.pid);
         expect(() => contender.exec('BEGIN IMMEDIATE')).toThrow(/locked/);
         return undefined;
       });
-      await f.stage.observeFirstCopyClaim(device, grant.operationId, intent, observe);
+      await f.stage.observeFirstCopyClaim(device, grant.operationId, intent, budget, observe);
       expect(observe).toHaveBeenCalledTimes(1);
       expect(db.prepare('SELECT state FROM local_history_store_temporary_runs').all()).toEqual([{ state: 'disposed' }]);
       contender.exec('BEGIN IMMEDIATE');
       contender.exec('ROLLBACK');
     } finally { contender.close(); }
+    const registrationFailure = await prepareAnother();
     db.exec(`CREATE TRIGGER fixture_refuse_writer_binding BEFORE UPDATE OF state ON local_history_store_temporary_runs
       WHEN NEW.state = 'active' BEGIN SELECT RAISE(ABORT, 'fixture refusal'); END;`);
     const refusedObserver = vi.fn(() => undefined);
-    await expect(f.stage.observeFirstCopyClaim(device, grant.operationId, intent, refusedObserver)).rejects.toThrow('upload-unavailable');
+    await expect(f.stage.observeFirstCopyClaim(device, registrationFailure.operationId, registrationFailure.intent, budget, refusedObserver))
+      .rejects.toThrow('upload-unavailable');
     expect(refusedObserver).not.toHaveBeenCalled();
     expect(db.prepare('SELECT state FROM local_history_store_temporary_runs').all()).toEqual([
       { state: 'disposed' }, { state: 'disposed' },
@@ -273,6 +290,25 @@ it('keeps explicit preview retryable while the actual destination writer is lock
     expect(fs.existsSync(path.join(store.dir, 'source-claims.sqlite'))).toBe(false);
     await expect(f.stage.estimateFirstCopyClaim(device, grant.operationId, intent, { ...policy, maxReservationBytes: 1 }))
       .rejects.toThrow('upload-capacity');
+    const stale = await prepareAnother();
+    const pressure = await prepareAnother();
+    const pressureObserver = vi.fn(() => undefined);
+    const beforePressure = ledger.inventory();
+    f.pressure(64 * 1024);
+    await expect(f.stage.observeFirstCopyClaim(device, pressure.operationId, pressure.intent, budget, pressureObserver))
+      .rejects.toThrow('upload-unavailable');
+    expect(pressureObserver).not.toHaveBeenCalled();
+    expect(ledger.inventory()).toEqual(beforePressure);
+    const priorCharge = beforePressure.filter(row => row.state !== 'disposed').reduce((sum, row) => sum + row.planned, 0);
+    f.pressure(64 * 1024 + priorCharge + budget.bootstrapBytes);
+    await expect(f.stage.observeFirstCopyClaim(device, pressure.operationId, pressure.intent, budget, pressureObserver))
+      .rejects.toThrow('upload-unavailable');
+    expect(pressureObserver).not.toHaveBeenCalled();
+    expect(db.prepare('SELECT state FROM local_history_store_temporary_runs WHERE operationId = ?').all(pressure.operationId))
+      .toEqual([{ state: 'disposed' }]);
+    expect(ledger.inventory().filter(row => row.state !== 'disposed'))
+      .toEqual(beforePressure.filter(row => row.state !== 'disposed'));
+    f.pressure(128 * 1024 ** 2);
     await store.withWriter(async () => {
       store.assertOrClaimLocalSource({ ownerUserId: 'synthetic-owner', source: 'codex',
         originalId: 'synthetic-session-0', projectPath: '/synthetic/project', representation: 'canonical', parserContractVersion: 1 });
@@ -280,7 +316,8 @@ it('keeps explicit preview retryable while the actual destination writer is lock
     await expect(f.stage.preflightCopyIntent(device, grant.operationId, intent)).rejects.toThrow('upload-conflict');
     await expect(f.stage.estimateFirstCopyClaim(device, grant.operationId, intent, policy)).rejects.toThrow('upload-conflict');
     const staleObserver = vi.fn(() => undefined);
-    await expect(f.stage.observeFirstCopyClaim(device, grant.operationId, intent, staleObserver)).rejects.toThrow('upload-unavailable');
+    await expect(f.stage.observeFirstCopyClaim(device, stale.operationId, stale.intent, budget, staleObserver))
+      .rejects.toThrow('upload-unavailable');
     expect(staleObserver).not.toHaveBeenCalled();
     expect(await f.stage.publishPreparedPreview(device, grant.operationId)).toEqual(retry);
     expect(f.stage.status(device, grant.operationId).phase).toBe('prepared');
