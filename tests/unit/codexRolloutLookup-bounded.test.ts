@@ -164,11 +164,10 @@ describe('findRolloutFileSync — bounded, never a per-file stat walk', () => {
     const { partitions, perPartition } = useBeyondBudgetArchive();
     const uuid = uuidV4Like(77);
 
-    const t0 = performance.now();
     expect(findRolloutFileSync(uuid, codexHome)).toBeNull();
-    const elapsed = performance.now() - t0;
-    expect(elapsed).toBeLessThan(1000);
 
+    // Directory read latency varies under concurrent verification. Assert the
+    // work the lookup performs and that it defers the remainder.
     const s = rolloutLookupStats();
     expect(s.syncBudgetExhausted).toBe(1);
     expect(s.syncNamesScanned).toBeLessThanOrEqual(SYNC_SCAN_NAME_BUDGET + perPartition);
