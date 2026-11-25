@@ -1,8 +1,5 @@
 import { afterEach, expect, it } from 'vitest';
 import crypto from 'node:crypto';
-import { fork } from 'node:child_process';
-import { once, on } from 'node:events';
-import { fileURLToPath } from 'node:url';
 import Database from 'better-sqlite3';
 import fs from 'node:fs';
 import os from 'node:os';
@@ -192,44 +189,45 @@ it('delivers a committed synthetic claim to the fixed worker only inside a dispo
   const pin = ledger.pinCopyVolume([store.dir]);
   const plannedBytes = 1024 * 1024;
   const reservation = ledger.createCopyRunReservation(lease, operationId, pin, plannedBytes, plannedBytes);
-  const child = fork(fileURLToPath(new URL('../../dist/import/localHistoryPreparedReadWorker.js', import.meta.url)), [], {
-    stdio: ['pipe', 'ignore', 'ignore', 'ipc'], execArgv: [],
-    env: { LANG: 'C.UTF-8', TZ: 'UTC', INSTAR_LOCAL_HISTORY_CUSTODY: JSON.stringify(lease.custody) },
-  });
-  const closed = once(child, 'close');
-  const abort = new AbortController();
-  child.once('close', () => abort.abort());
-  const messages = on(child, 'message', { signal: AbortSignal.any([abort.signal, AbortSignal.timeout(10_000)]) });
-  const next = async () => (await messages.next()).value?.[0];
+  const claimFile = path.join(store.dir, 'source-claims.sqlite');
+  const contender = new Database(path.join(store.dir, 'write-lock.sqlite'), { timeout: 0 });
+  let childPid: number | undefined, committed = false, released = false;
   try {
-    expect(await next()).toEqual({kind: 'ready'});
-    const pilotRun = await run.registerChild(child);
-    const header = Buffer.from(JSON.stringify({ ...f.opts.input, stateDir, descriptors: [descriptor], includeFirstClaimPlan: true, pilotRun }));
-    const length = Buffer.alloc(4); length.writeUInt32BE(header.length);
-    child.stdin!.end(Buffer.concat([length, header, bytes]));
-    expect(await next()).toEqual({kind: 'file', index: 0});
-    const ready = await next();
-    expect(ready?.kind).toBe('claim-plan-ready');
-    const claimFile = path.join(store.dir, 'source-claims.sqlite');
-    expect(fs.existsSync(claimFile)).toBe(false);
-    reservation.assertCovers(plannedBytes);
-    const permit = {
-      operationId, previewId: '5'.repeat(32), applyRequestId: '6'.repeat(32), intentFingerprint: '7'.repeat(64),
-      generation, runId: run.runId, reservationId: reservation.allocationId, previewAllocation, previewSha256,
-      uploadFingerprint: fingerprint, deadline, permitId: '8'.repeat(32), fileIndex: 0, mutationKind: 'claim' as const,
-      destinationBinding: ready.preview.files[0].destinationFingerprint, planDigest: ready.preview.firstClaimPlan.planDigest, plannedBytes,
-    };
-    expect(db.transaction(() => recordLocalHistoryFirstPermit(db, permit)).immediate()).toBe('recorded');
-    child.send({kind: 'commit-first-claim', permit});
-    expect(await next()).toMatchObject({kind: 'complete'});
-    expect(await closed).toEqual([0, null]);
+    const result = await runLocalHistoryPreparedReadJob({
+      ...f.opts,
+      input: { ...f.opts.input, stateDir, descriptors: [descriptor], includeFirstClaimPlan: true },
+      async *chunks() { yield bytes; },
+      authorized: () => !committed,
+      async acquireChild() {
+        return { custody: lease.custody,
+          async registerChild(child) { childPid = child.pid; return run.registerChild(child); },
+          release() {
+            expect(childPid).toBeDefined();
+            expect(() => process.kill(childPid!, 0)).toThrow();
+            run.cleanupAfterChild();
+            reservation.releaseAfterSettlement();
+            released = true;
+          } };
+      },
+      pilotCommit(plan, destinations, pilotRun) {
+        expect(fs.existsSync(claimFile)).toBe(false);
+        expect(() => contender.exec('BEGIN IMMEDIATE')).toThrow(/locked/);
+        reservation.assertCovers(plannedBytes);
+        const permit = {
+          operationId, previewId: '5'.repeat(32), applyRequestId: '6'.repeat(32), intentFingerprint: '7'.repeat(64),
+          generation, runId: pilotRun.runId, reservationId: reservation.allocationId, previewAllocation, previewSha256,
+          uploadFingerprint: fingerprint, deadline, permitId: '8'.repeat(32), fileIndex: 0, mutationKind: 'claim' as const,
+          destinationBinding: destinations[0].destinationFingerprint!, planDigest: plan.planDigest, plannedBytes,
+        };
+        expect(db.transaction(() => recordLocalHistoryFirstPermit(db, permit)).immediate()).toBe('recorded');
+        committed = true;
+        return permit;
+      },
+    });
+    expect(result.preview.firstClaimPlan?.planDigest).toMatch(/^[a-f0-9]{64}$/);
+    expect(committed && released).toBe(true);
     expect(fs.statSync(claimFile).size).toBeGreaterThan(0);
-    run.cleanupAfterChild();
-    reservation.releaseAfterSettlement();
   } finally {
-    await messages.return?.();
-    if (child.exitCode === null && child.signalCode === null) child.kill('SIGTERM');
-    await closed;
-    pin.close(); db.close(); ledger.close(); lease.release();
+    contender.close(); pin.close(); db.close(); ledger.close(); lease.release();
   }
 });

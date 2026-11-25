@@ -8,6 +8,9 @@ import { performance } from 'node:perf_hooks';
 import { CHUNK_BYTES } from '../core/appMediaTypes.js';
 import { localHistoryChildRss, type LocalHistoryChildLease } from './LocalHistoryParseJob.js';
 import { localHistoryFirstClaimPlanDigest } from './LocalHistoryFirstClaimPlanBinding.js';
+import { assertLocalHistoryDisposablePilotArtifact, assertLocalHistoryDisposablePilotState } from './LocalHistoryDisposablePilot.js';
+import type { LocalHistoryFirstPermit } from './LocalHistoryFirstPermit.js';
+import type { LocalHistoryStoreTemporaryToken } from './LocalHistoryStoreTemporaryRun.js';
 import type { LocalHistoryPreparedPreview, LocalHistoryPreparedPreviewInput } from './LocalHistoryPreparedPreview.js';
 
 export type ObserveLocalHistoryFirstClaimPlan = (
@@ -16,7 +19,7 @@ export type ObserveLocalHistoryFirstClaimPlan = (
 ) => undefined;
 
 interface PreparedReadChildLease extends Omit<LocalHistoryChildLease, 'registerChild'> {
-  registerChild(child: ChildProcess): Promise<void>;
+  registerChild(child: ChildProcess): Promise<void | Readonly<LocalHistoryStoreTemporaryToken>>;
 }
 
 export interface LocalHistoryPreparedReadJobOptions {
@@ -30,6 +33,9 @@ export interface LocalHistoryPreparedReadJobOptions {
   /** Synchronous observation while the fixed child holds its writer. The only
    * response in this mode is a discard of the exact announced plan. */
   observeFirstClaimPlan?: ObserveLocalHistoryFirstClaimPlan;
+  /** Synchronously commit and return the exact first claim for a disposable run.
+   * A possible durable commit is the caller's responsibility if this throws. */
+  pilotCommit?: (...args: [...Parameters<ObserveLocalHistoryFirstClaimPlan>, Readonly<LocalHistoryStoreTemporaryToken>]) => LocalHistoryFirstPermit;
 }
 export class LocalHistoryPreparedReadRefused extends Error { cleanupPending = false; }
 
@@ -89,6 +95,12 @@ export async function runLocalHistoryPreparedReadJob(value: LocalHistoryPrepared
     || !Array.isArray(input.descriptors) || !input.descriptors.length || input.descriptors.length > 1024) {
     throw new LocalHistoryPreparedReadRefused('local-history-preview-policy');
   }
+  if (opts.pilotCommit !== undefined) {
+    if (typeof opts.pilotCommit !== 'function' || opts.observeFirstClaimPlan || input.includeFirstClaimPlan !== true
+      || input.descriptors.length !== 1) throw new LocalHistoryPreparedReadRefused('local-history-preview-policy');
+    assertLocalHistoryDisposablePilotState(input.stateDir);
+    assertLocalHistoryDisposablePilotArtifact(input.ownerUserId, input.descriptors[0]);
+  }
   let expectedBytes = 0;
   for (const descriptor of input.descriptors) {
     if (!Number.isSafeInteger(descriptor.bytes) || descriptor.bytes <= 0 || descriptor.bytes > input.maxArtifactBytes) {
@@ -96,7 +108,7 @@ export async function runLocalHistoryPreparedReadJob(value: LocalHistoryPrepared
     }
     expectedBytes += descriptor.bytes;
   }
-  const header = Buffer.from(JSON.stringify({
+  let header = Buffer.from(JSON.stringify({
     ...input, holdFirstClaimPlan: opts.observeFirstClaimPlan ? true : undefined,
   }));
   if (!Number.isSafeInteger(expectedBytes) || header.length > CHUNK_BYTES) {
@@ -116,6 +128,9 @@ export async function runLocalHistoryPreparedReadJob(value: LocalHistoryPrepared
     let failure: string | undefined, ready = false, ended = false, closed = false, stopRequested = false;
     let index = -1, deadline = performance.now() + opts.perFileDeadlineMs;
     let preview: LocalHistoryPreparedPreview | undefined, observedPlanDigest: string | undefined;
+    let pilotRun: Readonly<LocalHistoryStoreTemporaryToken> | undefined;
+    let permitIssued = false;
+    const holdsClaimPlan = Boolean(opts.observeFirstClaimPlan || opts.pilotCommit);
     let rssProtection: 'sampled' | 'unavailable' = 'unavailable', sampling = false;
     let killTimer: ReturnType<typeof setTimeout> | undefined;
     let wakeReady!: () => void, wakeFirstFile!: () => void;
@@ -158,14 +173,34 @@ export async function runLocalHistoryPreparedReadJob(value: LocalHistoryPrepared
         index++; deadline = performance.now() + opts.perFileDeadlineMs; wakeFirstFile(); return;
       }
       if (ready && !preview && ended && row.kind === 'claim-plan-ready' && Object.keys(row).length === 2
-        && index === input.descriptors.length - 1 && opts.observeFirstClaimPlan && !observedPlanDigest
+        && index === input.descriptors.length - 1 && holdsClaimPlan && !observedPlanDigest
         && validPreview(row.preview, input) && row.preview.firstClaimPlan) {
         const plan = Object.freeze({ ...row.preview.firstClaimPlan });
         observedPlanDigest = plan.planDigest;
         try {
           const destinations = Object.freeze(row.preview.files.map(({ fileId, source, destinationFingerprint }) =>
             Object.freeze({ fileId, source, destinationFingerprint })));
-          const observation: unknown = opts.observeFirstClaimPlan(plan, destinations);
+          if (opts.pilotCommit && pilotRun) {
+            const result = opts.pilotCommit(plan, destinations, pilotRun);
+            if (result && typeof (result as { then?: unknown }).then === 'function') {
+              void Promise.resolve(result).catch(() => {});
+              return fail('local-history-preview-claim-observation');
+            }
+            const permit = result && { ...result };
+            if (!permit || permit.planDigest !== plan.planDigest || permit.runId !== pilotRun.runId
+              || permit.operationId !== pilotRun.operationId || permit.generation !== pilotRun.generation
+              || permit.destinationBinding !== destinations[0].destinationFingerprint || permit.mutationKind !== 'claim'
+              || permit.fileIndex !== 0 || Buffer.byteLength(JSON.stringify(permit)) > CHUNK_BYTES) {
+              return fail('local-history-preview-claim-observation');
+            }
+            permitIssued = true;
+            guard();
+            child.send({ kind: 'commit-first-claim', permit }, error => {
+              if (error) fail('local-history-preview-protocol');
+            });
+            return;
+          }
+          const observation: unknown = opts.observeFirstClaimPlan?.(plan, destinations);
           if (observation !== undefined) {
             void Promise.resolve(observation).catch(() => {});
             return fail('local-history-preview-claim-observation');
@@ -179,14 +214,17 @@ export async function runLocalHistoryPreparedReadJob(value: LocalHistoryPrepared
       }
       if (ready && !preview && ended && row.kind === 'complete' && Object.keys(row).length === 2
         && index === input.descriptors.length - 1 && validPreview(row.preview, input)
-        && (!opts.observeFirstClaimPlan || (observedPlanDigest !== undefined
+        && (!opts.pilotCommit || permitIssued)
+        && (!holdsClaimPlan || (observedPlanDigest !== undefined
           && row.preview.firstClaimPlan?.planDigest === observedPlanDigest))) { preview = row.preview; return; }
       fail('local-history-preview-protocol');
     });
     const guard = () => {
-      let authorized = false;
-      try { authorized = opts.authorized() === true; } catch { /* Fail closed. */ }
-      if (!authorized) fail('local-history-not-authorized');
+      if (!permitIssued) {
+        let authorized = false;
+        try { authorized = opts.authorized() === true; } catch { /* Fail closed. */ }
+        if (!authorized) fail('local-history-not-authorized');
+      }
       if (performance.now() >= deadline) fail('local-history-preview-timeout');
       if (failure) throw new LocalHistoryPreparedReadRefused(failure);
     };
@@ -207,7 +245,19 @@ export async function runLocalHistoryPreparedReadJob(value: LocalHistoryPrepared
     };
     try {
       if (!child.pid) throw new Error('spawn');
-      await lease.registerChild(child); await readiness; guard();
+      const registered = await lease.registerChild(child);
+      if (opts.pilotCommit) {
+        if (!registered || registered.stateDir !== input.stateDir || registered.generation !== lease.custody.generation) {
+          throw new Error('local-history-pilot-child-registration');
+        }
+        pilotRun = Object.freeze({ ...registered });
+        header.fill(0);
+        header = Buffer.from(JSON.stringify({ ...input, pilotRun }));
+        if (header.length > CHUNK_BYTES) throw new Error('local-history-pilot-header');
+      } else if (registered !== undefined) {
+        throw new Error('local-history-preview-child-registration');
+      }
+      await readiness; guard();
       if (!ready) throw new Error('custody');
       const sending = (async () => {
         try {

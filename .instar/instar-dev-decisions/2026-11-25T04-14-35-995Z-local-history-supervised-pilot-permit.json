@@ -1,0 +1,26 @@
+{
+  "ts": "2026-11-25T04:14:35.995Z",
+  "slug": "local-history-supervised-pilot-permit",
+  "suggestedTier": 2,
+  "declaredTier": 2,
+  "riskFloor": 1,
+  "riskFloorReasons": [],
+  "belowFloor": false,
+  "files": 1,
+  "loc": 68,
+  "scope": {
+    "basis": "staged-in-scope-paths-including-deleted",
+    "files": [
+      "src/import/LocalHistoryPreparedReadJob.ts"
+    ],
+    "addedLines": 59,
+    "deletedLines": 9
+  },
+  "causalAutopsy": null,
+  "classClosure": {
+    "defectClass": "unbounded-self-action",
+    "closure": "n/a",
+    "reason": "One validated plan can trigger one send only and child supervision uses the existing deadline."
+  },
+  "verdict": "pass"
+}
