@@ -3,7 +3,8 @@ import type { AppConversationService } from '../core/AppConversationService.js';
 import { derivedEventId, isAppConversationKey } from '../core/appConversationText.js';
 import { sha256Hex } from '../core/AppRecordSignatures.js';
 import { requestIdAgeOk, requestIdTime } from '../core/MobileChatRequests.js';
-import { isOwnerPerson } from '../core/MobilePeople.js';
+import type { CreatedEvent } from '../core/AppConversationStore.js';
+import { isOwnerPerson, type ResolvedPerson } from '../core/MobilePeople.js';
 import { exactMessageReader } from './mobileExactMessageAuthority.js';
 import { deviceAdmissionIdentity, principalOf, type MobilePairingService } from './mobilePairingRoutes.js';
 
@@ -24,6 +25,11 @@ const wrongCustodian = { ok: false, status: 503, error: 'message-removal-custody
 
 function isOpaqueId(value: unknown): value is string {
   return typeof value === 'string' && value.length > 0 && value.length <= 128 && !/[\x00-\x1f\x7f]/.test(value);
+}
+
+export function isAppRemovalConversationOwner(actor: ResolvedPerson, creation: CreatedEvent, machine: string): boolean {
+  const owner = creation.ownerPerson;
+  return owner ? owner.machineId === machine && owner.userId === actor.userId : isOwnerPerson(actor);
 }
 
 /** Establish current signed authority before looking up any request or target. */
@@ -52,9 +58,7 @@ export function resolveAppMessageRemovalScope(req: Request, pairing: MobilePairi
   const creation = service.store.getCreationRecord(key);
   if (!creation) return unavailable;
 
-  const owner = creation.ownerPerson;
-  const ownsConversation = owner ? owner.machineId === machine && owner.userId === actor.userId : isOwnerPerson(actor);
-  if (!ownsConversation || !pairing.mayUse(actor, key, 'delete')) return unavailable;
+  if (!isAppRemovalConversationOwner(actor, creation, machine) || !pairing.mayUse(actor, key, 'delete')) return unavailable;
   if (creation.machineId !== machine || !service.serves(key)) return wrongCustodian;
   const ownerIdentity = actor.userId === null ? pairing.ownerIdentity() : null;
   if (actor.userId === null && ownerIdentity?.telegramOwnerId == null && ownerIdentity?.slackOwnerUserId == null) return unavailable;

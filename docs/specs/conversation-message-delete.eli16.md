@@ -37,3 +37,5 @@ The team access log now changes its revision when access is removed and restored
 Changes in the paired-device key records now invalidate an old sync position. If those records cannot be checked, the app must wait before trusting cached chat history.
 
 A change to a machine’s signing keys also changes the revision used for sync. The server reads the keys and their revision together so it can keep checking older signed messages after a legitimate key rotation.
+
+The private server check now brings the signed device, owner, chat, and evidence revisions together. An old saved position can’t be reused after a different machine or access check takes effect.

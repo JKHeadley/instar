@@ -71,3 +71,7 @@ Independent review concurred on the file-checkpoint scope. Cross-model review id
 ## Private machine trust evidence checkpoint
 
 Independent and cross-model review required transaction-journal refusal, descriptor/path consistency and stable revisions across alternating scopes. The private observer now couples fresh signing keys to a bounded scope cache and rejects mismatching descriptors, malformed epochs and malformed signing cutoffs. Registry evidence can invalidate the revision without governing historical key selection. Tests cover rotation and retired keys, stable alternating scopes, malformed authority data, a transaction in progress and a temporary path swap. Production still must combine this input with current access and pairing evidence, and renew display only through the current high-water mark.
+
+## Private signed owner sync authority checkpoint
+
+The independent and cross-model reviews required full post-evidence ownership and custody checks and a stable composite revision. The private resolver shares the recorded conversation owner rule with Delete admission. It denies a signature from a different recorded owner, a missing owner identifier, an unstable sample, or a lost holder. The signed HTTP fixture binds a cursor in the same scope and resets on changed revisions. It uses a fixture sequence and does not read or serve a sync page. The production lifecycle verifies the existing feed never returns private cursor authority.

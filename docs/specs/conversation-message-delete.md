@@ -7,9 +7,9 @@ approved: true
 approved-by: echo under standing build approval for local storage, private signed admission and execution, and unmounted history projection only
 parent-principle: Operator-Surface Quality
 tier: 2
-review-convergence: "2026-11-25T22:18:25.413Z"
-review-iterations: 38
-review-completed-at: "2026-11-25T22:18:25.413Z"
+review-convergence: "2026-11-25T22:38:57.041Z"
+review-iterations: 40
+review-completed-at: "2026-11-25T22:38:57.041Z"
 review-report: "docs/specs/reports/conversation-message-delete-convergence.md"
 cross-model-review: "cross-model-review: codex-cli:gpt-6.2-astra"
 ---
@@ -186,3 +186,9 @@ Use IdentityStore’s historical signing-key rules. The identity epoch store and
 Before mounting, derive the complete machine set from current signed authority evidence and revalidate the revision before returning a page. Compose it with the Team Access revision and device-key evidence. The shared Team Access verifier must re-evaluate affected rows against the current captured lookup before a refreshed epoch becomes authoritative. This checkpoint supplies fresh signing inputs, and does not certify current membership or serve a route.
 
 Protected signer capture rejects a malformed authority map, a present malformed machine epoch and malformed signing cutoffs. A missing epoch entry can still use the established pre-history fallback. When production establishes a display deadline, renewal must authenticate sync through the current custodian's high-water mark so a missed removal can expire or cover an idle view even without an access change.
+
+## Private signed owner sync authority checkpoint
+
+Resolve the current owner from the signed device, then require the recorded conversation owner, ordinary read access and a live App conversation on its active creation custodian. Legacy owner conversations use the same owner fallback as Delete admission. A stable owner account binds the reader field. Compose ledger, machine trust, journal and any configured Team Access revisions. A missing provided revision cannot resume sync. Evidence sources are read-only dependencies owned by the caller. Compare two complete revision samples, then recheck current signed owner, conversation liveness, creation evidence and serving custody before returning authority.
+
+This checkpoint uses the signed owner in a private HTTP fixture and does not mount a sync route. Both the current owner profile and recorded conversation ownership are required. A person who remains the recorded owner but changes to a team profile is refused in this checkpoint. Before mounting, supply production evidence providers, revalidate the composed authority around any awaited preparation and bind history and sync to the same epoch. Do not use the authority result as a response body.

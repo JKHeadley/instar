@@ -22,6 +22,8 @@ import { authMiddleware } from '../../src/server/middleware.js';
 import { MobilePairingService, createMobilePairingRouter, deviceAuthenticator, type MobilePairingDeps } from '../../src/server/mobilePairingRoutes.js';
 import { createMobileConversationRouter } from '../../src/server/mobileConversationRoutes.js';
 import { SingleInstanceLock } from '../../src/core/SingleInstanceLock.js';
+import { createRemovalSyncCursorCodec } from '../../src/server/mobileAppRemovalSyncCursor.js';
+import { resolveOwnerRemovalSyncAuthority } from '../../src/server/mobileAppRemovalSyncAuthority.js';
 import { executeAppMessageRemoval } from '../../src/server/mobileAppMessageRemoval.js';
 import { admitAppMessageRemoval } from '../../src/server/mobileAppMessageRemovalAdmission.js';
 import { MobileChatRequestStore } from '../../src/core/MobileChatRequests.js';
@@ -47,7 +49,7 @@ afterAll(() => {
   for (const d of dirs) SafeFsExecutor.safeRmSync(d, { recursive: true, force: true, operation: 'tests/integration/mobile-native-conversations.test.ts' });
 });
 
-interface Opts { removalAdmissionProbe?: boolean | 'execute'; forwards?: boolean; reactions?: boolean; machineId?: string; links?: boolean; replies?: boolean; sentinel?: { decideInboundDisposition: () => Promise<{ disposition: string }> }; lease?: { held: boolean }; holdsLease?: () => boolean; recording?: { on: boolean }; dispatchThrows?: boolean; nativeOff?: boolean; dispatchDelayMs?: number }
+interface Opts { removalSyncEvidence?: Parameters<typeof resolveOwnerRemovalSyncAuthority>[3]; removalAdmissionProbe?: boolean | 'execute'; forwards?: boolean; reactions?: boolean; machineId?: string; links?: boolean; replies?: boolean; sentinel?: { decideInboundDisposition: () => Promise<{ disposition: string }> }; lease?: { held: boolean }; holdsLease?: () => boolean; recording?: { on: boolean }; dispatchThrows?: boolean; nativeOff?: boolean; dispatchDelayMs?: number }
 
 function setup(opts: Opts = {}) {
   const machineId = opts.machineId ?? 'm1';
@@ -66,7 +68,7 @@ function setup(opts: Opts = {}) {
   const bindAuth = createConversationBindAuth(dir);
   const holdsLease = opts.holdsLease ?? (() => lease.held);
   const deps: MobilePairingDeps = { config: config as never, stateDir: dir, holdsLease,
-    ...(opts.removalAdmissionProbe ? { peopleMachineId: () => machineId, telegramOwnerId: () => 9000 } : {}) };
+    ...(opts.removalAdmissionProbe || opts.removalSyncEvidence ? { peopleMachineId: () => machineId, telegramOwnerId: () => 9000 } : {}) };
   const pairing = new MobilePairingService(deps);
   pairing.nativeOn = !opts.nativeOff;
   cleanups.push(() => pairing.stop());
@@ -106,6 +108,24 @@ function setup(opts: Opts = {}) {
       }
       const admission = admitAppMessageRemoval(req, pairing, svc);
       res.status(admission.ok ? 200 : admission.status).json(admission);
+    });
+  }
+  const syncEvidence = opts.removalSyncEvidence;
+  if (svc && syncEvidence) {
+    const codec = createRemovalSyncCursorCodec();
+    app.get('/mobile/chat/app/:key/events', (req, res) => {
+      const scope = resolveOwnerRemovalSyncAuthority(req, pairing, svc, syncEvidence);
+      if (!scope.ok) {
+        res.status(scope.status).json({ error: scope.error });
+        return;
+      }
+      const epoch = codec.epochFor(scope.authority);
+      const provided = req.query.cursor;
+      if (provided !== undefined) {
+        res.json({ epoch, continuation: codec.read(scope.authority, provided).kind });
+        return;
+      }
+      res.json({ epoch, cursor: codec.issue(scope.authority, 8) });
     });
   }
   app.use(createRoutes(ctx));
@@ -1182,5 +1202,68 @@ describe('private signed App message removal runtime', () => {
       expect(append).toHaveBeenCalledTimes(1);
       expect(e.svc.store.getEvent(key, 'one')).toMatchObject({ kind: 'message' });
     }
+  });
+});
+
+describe('private signed removal sync authority', () => {
+  it('accepts an exact owner and resets a saved cursor when current evidence changes', async () => {
+    let trust: string | null = 'trust-1';
+    let changing = false;
+    let samples = 0;
+    let journal = 'journal-1';
+    let team: string | null = 'team-1';
+    const e = setup({ removalSyncEvidence: {
+      machineTrustRevision: () => changing ? String(++samples) : trust,
+      journalRevision: () => journal,
+      teamVisibilityRevision: () => team,
+    } });
+    await enableReplyProof(e);
+    const key = await create(e);
+    const path = `/mobile/chat/app/${key}/events`;
+    expect((await bearer(e, 'get', path)).status).toBe(403);
+    const owner = e.pairing.ownerIdentity();
+    const absentOwner = vi.spyOn(e.pairing, 'ownerIdentity')
+      .mockReturnValue({ ...owner, telegramOwnerId: null, slackOwnerUserId: null });
+    try { expect((await signed(e, 'GET', path)).status).toBe(404); }
+    finally { absentOwner.mockRestore(); }
+    const first = await signed(e, 'GET', path);
+    expect(first.status).toBe(200);
+    const resume = `${path}?cursor=${encodeURIComponent(first.body.cursor)}`;
+    expect((await signed(e, 'GET', resume)).body.continuation).toBe('resume');
+    trust = 'trust-2';
+    expect((await signed(e, 'GET', resume)).body.continuation).toBe('reset');
+    const underTrust = await signed(e, 'GET', path);
+    const underTrustResume = `${path}?cursor=${encodeURIComponent(underTrust.body.cursor)}`;
+    journal = 'journal-2';
+    expect((await signed(e, 'GET', underTrustResume)).body.continuation).toBe('reset');
+    team = null;
+    expect((await signed(e, 'GET', resume)).status).toBe(503);
+    team = 'team-2';
+    e.lease.held = false;
+    expect((await signed(e, 'GET', resume)).status).toBe(503);
+    e.lease.held = true;
+    const other = await create(e);
+    expect((await signed(e, 'GET', `/mobile/chat/app/${other}/events?cursor=${encodeURIComponent(first.body.cursor)}`)).body.continuation)
+      .toBe('invalid');
+    changing = true;
+    expect((await signed(e, 'GET', resume)).status).toBe(503);
+    changing = false;
+    const original = e.svc.store.getCreationRecord.bind(e.svc.store);
+    const creation = vi.spyOn(e.svc.store, 'getCreationRecord');
+    creation.mockImplementationOnce((conversation) => original(conversation)).mockReturnValueOnce(null);
+    expect((await signed(e, 'GET', resume)).status).toBe(404);
+    creation.mockRestore();
+    const differentOwner = crypto.randomUUID();
+    e.svc.store.append({ kind: 'created', conversationKey: differentOwner, eventId: 'another-owner',
+      machineId: 'm1', title: 'Different owner', ownerPerson: { machineId: 'm1', userId: 'another-person' },
+      at: new Date().toISOString() });
+    const broadRead = vi.spyOn(e.pairing, 'mayUse').mockReturnValue(true);
+    try {
+      const blocked = await signed(e, 'GET', `/mobile/chat/app/${differentOwner}/events`);
+      expect(blocked.status).toBe(404);
+      expect(blocked.body).toEqual({ error: 'unknown-conversation' });
+    } finally { broadRead.mockRestore(); }
+    trust = null;
+    expect((await signed(e, 'GET', resume)).status).toBe(503);
   });
 });

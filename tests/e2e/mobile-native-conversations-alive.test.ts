@@ -195,6 +195,8 @@ describe('native app conversations — production wiring', () => {
     const legacyWithPrivateCursor = await send('GET', `/mobile/chat/app/${key}/events?cursor=${encodeURIComponent(privateCursor)}`);
     expect(legacyWithPrivateCursor.status).toBe(200);
     expect(legacyWithPrivateCursor.body).toEqual(darkEvents.body);
+    expect(legacyWithPrivateCursor.body).not.toHaveProperty('epoch');
+    expect(legacyWithPrivateCursor.body).not.toHaveProperty('continuation');
     const entry = await request(app).get('/dashboard/console/message-link-v1/');
     expect(entry.status).toBe(200);
     expect(entry.text).toContain('/dashboard/console/console.js?message-link-v1');
