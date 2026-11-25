@@ -391,6 +391,7 @@ const KNOWN_RESPONSE_ITEMS = new Set([
 ]);
 const KNOWN_TOP_LEVEL = new Set([
   'session_meta', 'turn_context', 'compacted', 'world_state', 'inter_agent_communication_metadata',
+  'token_usage_record',
 ]);
 
 function responseItemTurnMetadata(payload: Record<string, unknown>):

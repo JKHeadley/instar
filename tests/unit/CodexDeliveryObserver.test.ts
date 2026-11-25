@@ -98,6 +98,7 @@ describe('CodexDeliveryObserver', () => {
       })
       + event('event_msg', { type: 'item_completed', turn_id: 'live-turn' })
       + currentMessage('assistant', 'ok')
+      + event('token_usage_record', { usage: { input_tokens: 100, output_tokens: 4 } })
       + complete('live-turn'));
     await new CodexDeliveryObserver({
       store: f.store, hmacKey: KEY, resolveRolloutPath: () => f.rollout,
