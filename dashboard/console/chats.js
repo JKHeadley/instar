@@ -422,10 +422,19 @@ class ChatsPage {
     const r = await this.call('GET', `/mobile/conversations?scope=pool&limit=50${cursor}`);
     if (!this.live || r.gone) return;
     if (r.ok) this.applyList(r.data, more);
+    else if (this.view?.exact?.kind === 'pending') {
+      this.view.sourceText.textContent = 'Could not check message-link support. ';
+      this.view.sourceMore.textContent = 'Try again';
+      this.view.sourceMore.hidden = false;
+    }
     else if (!more && !this.rows.length) setKids(this.listEl, el('p', { class: 'card-line chat-muted', text: r.status === 503 ? OFF_TEXT : 'Couldn\'t load the conversations right now.' }));
   }
   applyList(data, more) {
     const rows = listRows(data);
+    this.initialListReady = true;
+    if (!more) this.exactContextSupported = data?.messageLinkSupport?.exactContext === true;
+    const exactView = this.view?.exact ? this.view : null;
+    const exactRow = exactView ? rows.find((row) => row.key === refString(exactView.ref)) : null;
     if (!more) this.pinnedKey = (listPinned(data) || {}).key || null; // the first page carries the Chief of Staff pin (§1.4); a later page keeps it
     // Conversations this person pinned (conversation-list-pins): the first page carries them; null ⇒ the feature is off here.
     if (!more) this.listPins = listPinnedRows(data);
@@ -435,6 +444,27 @@ class ChatsPage {
     const meta = listMeta(data);
     this.meta = more || !this.pagedMore ? meta : { ...meta, nextCursor: this.meta.nextCursor };
     this.paintList();
+    if (this.view?.live) this.paintBubbles(this.view);
+    if (exactView?.exact.kind === 'pending') {
+      if (exactRow?.exactContext || this.exactContextSupported) {
+        exactView.exact = { target: exactView.sourceTarget, kind: 'legacy' };
+        void this.loadExact(exactView);
+      } else {
+        exactView.exact = null;
+        void this.loadFirst(exactView);
+        this.announce();
+      }
+    }
+    if (exactView?.exact?.visibility && !more) {
+      const wasListed = exactView.exact.wasListed;
+      exactView.exact.wasListed = Boolean(exactRow);
+      if ((exactRow && exactRow.exactVisibility !== exactView.exact.visibility) || (wasListed && !exactRow)) {
+        this.clearExactRows(exactView);
+        void this.loadExact(exactView);
+      } else if (!exactRow) {
+        void this.recheckExactVisibility(exactView);
+      }
+    }
     if (!more) void this.loadHierarchy();
   }
 
@@ -626,23 +656,189 @@ class ChatsPage {
   }
 
   // ── the open conversation ──
+  exactDiagnostic(action, outcome, started) {
+    const entries = this.exactDiagnostics ?? (this.exactDiagnostics = []);
+    entries.push({ action, outcome, elapsedMs: Math.max(0, now() - started) });
+    const totals = this.exactDiagnosticTotals ?? (this.exactDiagnosticTotals = { overwritten: 0 });
+    const bucket = action + ':' + outcome;
+    totals[bucket] = (totals[bucket] || 0) + 1;
+    if (entries.length > 24) { entries.shift(); totals.overwritten++; }
+  }
+
+  exactCapability(v, action) {
+    return this.rows.some((row) => row.key === refString(v.ref) && row[action] === true);
+  }
+
+  leaveExact(v) {
+    if (!v.exact) return;
+    v.sourceGeneration++;
+    v.stopExactObservation?.();
+    v.exact = null;
+    v.latestLoading = true;
+    v.sourceTarget = null;
+    v.sourceNotice.hidden = true;
+    this.setBubbles(v, v.list.filter((row) => row.id.startsWith('local:')));
+    v.nextBefore = null;
+    v.earlier.hidden = true;
+    history.replaceState(history.state, '', '/dashboard/console/' + hashFor(v.ref));
+    this.loadFirst(v);
+    this.announce();
+  }
+
+  clearExactRows(v) {
+    if (v.exact) v.exact.rows = [];
+    this.paintBubbles(v);
+  }
+
+  async recheckExactVisibility(v) {
+    const exact = v.exact;
+    const generation = v.sourceGeneration;
+    if (!exact?.visibility || exact.rechecking) return;
+    try {
+      exact.rechecking = true;
+      const query = new URLSearchParams({ target: exact.target, targetKind: exact.kind, limit: '1' });
+      const result = await this.call('GET', `/mobile/chat/app/${encodeURIComponent(v.ref.id)}/message-context?${query}`);
+      if (!v.live || v.exact !== exact || v.sourceGeneration !== generation || result.gone) return;
+      if (![403, 404, 409, 503].includes(result.status) && (!result.ok || result.data?.visibility === exact.visibility)) return;
+      this.clearExactRows(v);
+      await this.loadExact(v);
+    } finally { exact.rechecking = false; }
+  }
+
+  async loadExact(v, earlier = false) {
+    const started = now();
+    const exact = v.exact;
+    const generation = ++v.sourceGeneration;
+    const cursor = earlier ? exact?.cursor : null;
+    v.stopExactObservation?.();
+    if (!exact || exact.kind === 'pending' || (earlier && !cursor)) return false;
+    const params = cursor ? new URLSearchParams({ beforeAt: cursor.at, beforeEventId: cursor.eventId })
+      : new URLSearchParams({ target: exact.target, targetKind: exact.kind });
+    v.retryExactEarlier = false;
+    v.earlier.disabled = true;
+    v.sourceNotice.hidden = false;
+    v.backToLatest.hidden = false;
+    v.sourceMore.hidden = true;
+    v.sourceText.textContent = earlier ? 'Loading earlier messages…' : 'Looking for the original message…';
+    const result = await this.call('GET', `/mobile/chat/app/${encodeURIComponent(v.ref.id)}/message-context?${params}`);
+    if (!v.live || v.sourceGeneration !== generation || v.exact !== exact || result.gone) return false;
+    v.earlier.disabled = false;
+    const data = result.data;
+    const anchor = data?.anchorApplied;
+    const rows = Array.isArray(data?.messages) ? data.messages : [];
+    const proof = cursor && data?.visibility !== exact.visibility ? false : cursor ? data?.contextApplied?.at === cursor.at && data?.contextApplied?.eventId === cursor.eventId
+      : anchor?.requestedTarget === exact.target && (exact.kind !== 'event' || anchor.eventId === exact.target)
+        && (exact.kind !== 'message' || anchor.messageId === exact.target)
+        && (exact.kind !== 'legacy' || anchor.eventId === exact.target || anchor.messageId === exact.target)
+        && rows.some((row) => row.eventId === anchor.eventId && row.messageId === anchor.messageId);
+    this.exactDiagnostic('context', !result.ok ? 'unavailable' : proof ? 'resolved' : 'invalid-proof', started);
+    if (!result.ok || data?.conversationKey !== v.ref.id || !proof) {
+      if (!earlier && [403, 404, 409].includes(result.status)) {
+        exact.cursor = null;
+        v.earlier.hidden = true;
+        this.clearExactRows(v);
+      }
+      v.sourceText.textContent = 'The original message is unavailable here. ';
+      const changed = earlier && ([403, 404].includes(result.status) || (result.ok && data?.visibility !== exact.visibility));
+      const needsReload = changed || (earlier && result.status === 409);
+      if (changed) {
+        exact.cursor = null;
+        v.earlier.hidden = true;
+        this.clearExactRows(v);
+      }
+      v.retryExactEarlier = earlier && !needsReload;
+      v.sourceMore.textContent = needsReload ? 'Reload around linked message' : 'Try again';
+      v.sourceMore.hidden = false;
+      return false;
+    }
+    const keep = v.msgs.scrollHeight - v.msgs.scrollTop;
+    const previousRows = exact.rows;
+    const page = bubbles(v.ref.kind, rows, { own: this.ownCheck() });
+    exact.rows = earlier ? mergeBubbles(exact.rows || [], page) : page;
+    this.paintBubbles(v);
+    v.sourceText.textContent = 'Original message';
+    if (earlier) v.msgs.scrollTop = v.msgs.scrollHeight - keep;
+    else {
+      const node = v.nodes.get(anchor.eventId);
+      if (!node?.isConnected || node.dataset.messageId !== anchor.messageId) {
+        this.exactDiagnostic('render', 'missing-target', started);
+        exact.rows = previousRows;
+        this.paintBubbles(v);
+        v.sourceText.textContent = 'Could not display the original message. ';
+        v.sourceMore.textContent = 'Try again';
+        v.sourceMore.hidden = false;
+        return false;
+      }
+      node.scrollIntoView?.({ block: 'center' });
+      node.classList.add('chat-flash');
+      this.exactDiagnostic('render', 'attached', started);
+      this.observeExactTarget(v, exact, generation, node, started);
+    }
+    exact.cursor = data.nextContextBefore;
+    exact.visibility = data.visibility;
+    exact.wasListed = this.rows.some((row) => row.key === refString(v.ref));
+    v.earlier.hidden = !exact.cursor;
+    return true;
+  }
+
+  observeExactTarget(v, exact, generation, node, started) {
+    if (typeof IntersectionObserver !== 'function') {
+      this.exactDiagnostic('viewport', 'unknown', started);
+      return;
+    }
+    const observer = new IntersectionObserver((entries) => {
+      if (!v.live || v.exact !== exact || v.sourceGeneration !== generation || !node.isConnected) { stop(); return; }
+      if (document.visibilityState === 'visible' && entries.some((entry) => entry.target === node
+        && entry.isIntersecting && entry.intersectionRect.width > 0 && entry.intersectionRect.height > 0)) {
+        this.exactDiagnostic('viewport', 'visible', started);
+        stop();
+      }
+    });
+    const timeout = setTimeout(() => {
+      if (v.live && v.exact === exact && v.sourceGeneration === generation) this.exactDiagnostic('viewport', 'unconfirmed', started);
+      stop();
+    }, 1000);
+    const stop = () => {
+      observer.disconnect();
+      clearTimeout(timeout);
+      if (v.stopExactObservation === stop) v.stopExactObservation = null;
+    };
+    v.stopExactObservation = stop;
+    observer.observe(node);
+  }
+
   onQuery(query) {
     if (!this.pageEl) return;
     const ref = refFromQuery(query);
     const cur = this.view ? refString(this.view.ref) : '';
-    const target = messageFromQuery(query);
+    const params = new URLSearchParams(String(query || '').replace(/^\?/, ''));
+    const typed = params.has('e');
+    const eventId = typed && params.getAll('e').length === 1 && !params.has('m') ? params.get('e') : null;
+    const versioned = location.pathname === '/dashboard/console/message-link-v1/';
+    if ((versioned || typed) && (!eventId || eventId.length > 128 || ref?.kind !== 'app' || params.getAll('c').length !== 1)) {
+      if (this.view) this.closeView();
+      setKids(this.viewEl, el('p', { role: 'status', text: 'This message link is unavailable.' }));
+      return;
+    }
+    const target = eventId || messageFromQuery(query);
+    const exact = eventId ? { target: eventId, kind: 'event' }
+      : target && ref?.kind === 'app' && !this.initialListReady ? { target, kind: 'pending' }
+        : target && ref?.kind === 'app' && (this.exactContextSupported || this.rows.some((row) => row.key === refString(ref) && row.exactContext))
+          ? { target, kind: 'legacy' } : null;
     if (ref && refString(ref) === cur) {
-      if (this.view.sourceTarget !== target) {
+      if (this.view.sourceTarget !== target || this.view.exact?.kind !== exact?.kind) {
         this.view.sourceTarget = target;
         this.view.sourceGeneration++;
-        if (this.view.historyReady) this.findSource(this.view);
+        if (exact) { this.view.exact = exact; this.clearExactRows(this.view); this.loadExact(this.view); this.announce(); }
+        else if (this.view.exact) this.leaveExact(this.view);
+        else if (this.view.historyReady) this.findSource(this.view);
       }
       return;
     }
     if (this.view) this.closeView();
     this.pageEl.classList.toggle('has-open', Boolean(ref));
     if (!ref) { setKids(this.viewEl, el('p', { class: 'chat-pick', text: 'Pick a conversation.' })); this.paintList(); this.announce(); return; }
-    this.openView(ref, target);
+    this.openView(ref, target, exact);
   }
 
   closeView() {
@@ -650,14 +846,15 @@ class ChatsPage {
     this.view = null;
     if (!v) return;
     v.live = false;
+    v.stopExactObservation?.();
     if (v.abort) { try { v.abort.abort(); } catch { /* done */ } }
     this.revokeBlobs();
     if (this.observer) { try { this.observer.disconnect(); } catch { /* gone */ } this.observer = null; }
   }
 
-  openView(ref, sourceTarget = null) {
+  openView(ref, sourceTarget = null, exact = null) {
     const row = this.rows.find((r) => r.key === refString(ref));
-    const v = { ref, sourceTarget, sourceGeneration: 0, historyReady: false, earlierLoadSeq: 0, live: true, list: [], nextBefore: null, oldestTs: null, media: new Map(), mediaQueue: [], mediaInFlight: 0, slackKey: null, abort: this.abortable(), sending: 0, pins: [], pinIndex: 0 };
+    const v = { ref, exact, sourceTarget, sourceGeneration: 0, historyReady: false, earlierLoadSeq: 0, live: true, list: [], nextBefore: null, oldestTs: null, media: new Map(), mediaQueue: [], mediaInFlight: 0, slackKey: null, abort: this.abortable(), sending: 0, pins: [], pinIndex: 0 };
     this.view = v;
     const title = el('h2', { class: 'chat-title', text: row ? row.title : 'Conversation' });
     // Opened from a link before the list arrived: the real title is filled in when the list paints.
@@ -673,13 +870,17 @@ class ChatsPage {
     }
     v.msgs = el('div', { class: 'chat-messages', role: 'log', 'aria-live': 'polite' });
     v.earlier = el('button', { class: 'btn-quiet chat-earlier', type: 'button', text: 'Earlier messages', hidden: true });
-    v.earlier.addEventListener('click', () => { this.pauseSource(v); this.loadEarlier(v); });
+    v.earlier.addEventListener('click', () => { if (v.exact) this.loadExact(v, true); else { this.pauseSource(v); this.loadEarlier(v); } });
     v.paused = el('p', { class: 'card-line chat-muted chat-paused', hidden: true, text: 'Live updates paused here — this conversation refreshes when you click into this window.' });
     v.statusLine = el('p', { class: 'card-line chat-muted', role: 'status' });
     v.sourceText = el('span', { text: 'Opening the original conversation…' });
     v.sourceMore = el('button', { class: 'btn-quiet', type: 'button', text: 'Keep looking', hidden: true });
-    v.sourceMore.addEventListener('click', () => this.findSource(v));
-    v.sourceNotice = el('div', { class: 'card-line chat-source-target', role: 'status', hidden: !sourceTarget }, v.sourceText, v.sourceMore);
+    v.sourceMore.addEventListener('click', () => v.latestLoading && !v.exact ? this.loadFirst(v) : v.exact?.kind === 'pending' ? this.loadList(false) : v.exact ? this.loadExact(v, v.retryExactEarlier === true) : this.findSource(v));
+    const latest = el('button', { class: 'btn-quiet', type: 'button', text: 'Back to latest' });
+    latest.addEventListener('click', () => this.leaveExact(v));
+    v.sourceNotice = el('div', { class: 'card-line chat-source-target', role: 'status', hidden: !sourceTarget }, v.sourceText, v.sourceMore, latest);
+    v.backToLatest = latest;
+    latest.hidden = !exact;
     v.nodes = new Map();
     v.pinBar = this.pinBar(v);
     v.appStrip = el('div', { class: 'chat-appstrip', hidden: true });
@@ -688,7 +889,9 @@ class ChatsPage {
       v.appStrip, v.pinBar, v.paused, v.sourceNotice, v.earlier, v.msgs, this.composer(v), v.statusLine));
     this.pageEl.classList.add('has-open');
     this.paintList();
-    this.loadFirst(v);
+    if (exact?.kind === 'pending') v.sourceText.textContent = 'Checking message-link support…';
+    else if (exact) this.loadExact(v);
+    else this.loadFirst(v);
     this.loadAppStrip(v);
     this.announce();
   }
@@ -745,11 +948,26 @@ class ChatsPage {
   }
 
   async loadFirst(v) {
+    const started = now();
+    const generation = v.sourceGeneration;
+    const load = v.latestLoad = (v.latestLoad || 0) + 1;
     this.spent();
     const r = await this.call('GET', this.historyPath(v, { pool: true }));
-    if (!v.live || r.gone) return;
+    if (!v.live || r.gone || v.exact || v.sourceGeneration !== generation || v.latestLoad !== load) return;
+    if (v.latestLoading) {
+      this.exactDiagnostic('return-to-latest', r.ok ? 'resolved' : 'unavailable', started);
+      if (!r.ok) {
+        v.sourceNotice.hidden = false;
+        v.backToLatest.hidden = true;
+        v.sourceText.textContent = 'Could not load the latest messages. ';
+        v.sourceMore.textContent = 'Try again';
+        v.sourceMore.hidden = false;
+        return;
+      }
+    }
     if (r.status === 404) { v.sourceNotice.hidden = true; v.statusLine.textContent = 'This conversation is not here any more.'; return; }
     if (!r.ok) { v.sourceNotice.hidden = true; v.statusLine.textContent = r.status === 503 ? OFF_TEXT : 'Couldn\'t load this conversation right now.'; return; }
+    v.latestLoading = false;
     this.applyHistory(v, r.data, { replace: true });
     this.resumeUnfinished(v);
     this.scrollToEnd(v, true);
@@ -797,7 +1015,7 @@ class ChatsPage {
    * marker the phone uses. Only when something newer than the last report is shown; one at a time.
    */
   async maybeMarkRead(v) {
-    if (!v || !v.live || v.markInFlight || document.visibilityState !== 'visible' || !(document.hasFocus && document.hasFocus())) return;
+    if (!v || !v.live || v.exact || v.latestLoading || v.markInFlight || document.visibilityState !== 'visible' || !(document.hasFocus && document.hasFocus())) return;
     const row = this.rows.find((r) => r.key === refString(v.ref));
     const mark = readMarkFor(v.ref, v.list, row ? row.machine : null, v.lastMark || null);
     if (!mark) return;
@@ -814,11 +1032,12 @@ class ChatsPage {
 
   paintBubbles(v) {
     const atEnd = v.msgs.scrollHeight - v.msgs.scrollTop - v.msgs.clientHeight < 80;
-    const want = new Set(v.list.map((b) => b.id));
+    const visible = v.exact ? v.exact.rows || [] : v.list;
+    const want = new Set(visible.map((b) => b.id));
     for (const [id, n] of v.nodes) if (!want.has(id)) { n.remove(); v.nodes.delete(id); }
     let prev = null;
-    for (const b of v.list) {
-      const sig = JSON.stringify([b.text, b.delivery && b.delivery.label, b.mark && b.mark.label, b.attachments.length, b.who, this.isPinned(v, b)]);
+    for (const b of visible) {
+      const sig = JSON.stringify([b.text, b.delivery && b.delivery.label, b.mark && b.mark.label, b.attachments.length, b.who, this.isPinned(v, b), this.exactCapability(v, 'copyLink')]);
       let n = v.nodes.get(b.id);
       if (!n || n.dataset.sig !== sig) {
         const fresh = this.bubbleNode(v, b);
@@ -845,9 +1064,9 @@ class ChatsPage {
     if (b.mark) meta.push(el('span', { class: `chat-mark tone-${b.mark.tone}`, text: b.mark.label }));
     const pinId = this.canPin(v) ? pinIdOf(v.ref.kind, b) : null;
     if (this.isPinned(v, b)) meta.push(el('span', { class: 'chat-pinned-mark', text: 'Pinned' }));
-    if (pinId) {
+    if (pinId || (v.ref.kind === 'app' && b.messageId && !b.id.startsWith('local:') && this.exactCapability(v, 'copyLink'))) {
       const more = el('button', { class: 'btn-quiet chat-msg-menu', type: 'button', text: '⋯', 'aria-label': 'Message options' });
-      more.addEventListener('click', () => this.messageMenu(v, pinId));
+      more.addEventListener('click', () => this.messageMenu(v, pinId, b));
       meta.push(more);
     }
     return el('div', { class: `chat-bubble chat-${b.side}`, 'data-id': b.id, ...(b.messageId ? { 'data-message-id': b.messageId } : {}) },
@@ -910,6 +1129,13 @@ class ChatsPage {
   }
   /** Scroll to a message and flash it, loading up to 5 earlier pages to find it. */
   async jumpTo(v, messageId) {
+    if (v.ref.kind === 'app' && this.exactCapability(v, 'exactContext')) {
+      v.exact = { target: messageId, kind: 'message' };
+      v.sourceTarget = messageId;
+      this.clearExactRows(v);
+      this.announce();
+      return this.loadExact(v);
+    }
     this.pauseSource(v);
     for (let i = 0; i <= 5 && v.live; i++) {
       const b = v.list.find((x) => x.messageId === messageId);
@@ -925,7 +1151,7 @@ class ChatsPage {
     }
     return false;
   }
-  messageMenu(v, messageId) {
+  messageMenu(v, messageId, bubble) {
     const pinned = v.pins.some((p) => p.messageId === messageId);
     const err = el('p', { class: 'unlock-error', role: 'alert' });
     const go = el('button', { class: 'btn-primary', type: 'button', text: pinned ? 'Unpin' : 'Pin' });
@@ -938,7 +1164,46 @@ class ChatsPage {
       closeSheet();
       if (words.text) v.statusLine.textContent = words.text;
     });
-    sheet({ title: 'Message' }, el('div', { class: 'pin-form' }, go, err));
+    const copy = el('button', { class: 'btn-quiet', type: 'button', text: 'Copy Message Link' });
+    let link;
+    copy.addEventListener('click', async () => {
+      const started = now();
+      const current = () => copy.isConnected && v.live && this.view === v
+        && this.exactCapability(v, 'copyLink') && (v.exact ? v.exact.rows || [] : v.list).some((row) => row.id === bubble?.id && row.messageId === bubble?.messageId);
+      if (!current()) return;
+      copy.disabled = true;
+      try {
+        if (!link) {
+          copy.textContent = 'Copying…';
+          const ref = refString(v.ref);
+          const query = new URLSearchParams({ ref, messageId: bubble.id, targetKind: 'event' });
+          const result = await this.call('GET', '/mobile/conversations/message-link?' + query);
+          if (!current()) return;
+          const data = result.data;
+          this.exactDiagnostic('copy-lookup', result.ok ? 'resolved' : 'unavailable', started);
+          if (!result.ok || data?.ref !== ref || data?.messageId !== bubble.messageId || data?.position?.eventId !== bubble.id) return;
+          const url = new URL(data.url);
+          const fragment = new URLSearchParams(url.hash.replace(/^#\/work\/chats\?/, ''));
+          if (url.protocol !== 'https:' || url.username || url.password || url.search
+            || url.pathname !== '/dashboard/console/message-link-v1/' || fragment.get('c') !== ref || fragment.get('e') !== bubble.id) return;
+          link = url.href;
+        }
+        await navigator.clipboard.writeText(link);
+        this.exactDiagnostic('clipboard', 'copied', started);
+        if (current()) { copy.textContent = 'Copied'; err.textContent = ''; }
+      } catch {
+        if (current() && link) this.exactDiagnostic('clipboard', 'unavailable', started);
+        if (current() && link) err.textContent = 'Link ready. Tap Copy Message Link again.';
+      } finally {
+        if (current()) {
+          copy.disabled = false;
+          if (copy.textContent !== 'Copied') copy.textContent = 'Copy Message Link';
+          if (!link) err.textContent = 'Could not get a link to this message.';
+        }
+      }
+    });
+    const canCopy = v.ref.kind === 'app' && bubble?.messageId && this.exactCapability(v, 'copyLink');
+    sheet({ title: 'Message' }, el('div', { class: 'pin-form' }, messageId ? go : null, canCopy ? copy : null, err));
   }
   /** Pin or unpin; answers null when the browser is gone, else the words to show (an error, or a platform refusal). */
   async setPinned(v, messageId, pinned) {
@@ -975,15 +1240,16 @@ class ChatsPage {
       rows.length ? el('ul', { class: 'chat-pin-list' }, rows) : el('p', { class: 'confirm-text', text: 'Nothing is pinned here.' }));
   }
 
-  async loadEarlier(v, current = () => v.live) {
+  async loadEarlier(v, current = () => v.live && !v.exact) {
     const seq = ++v.earlierLoadSeq;
+    const generation = v.sourceGeneration;
     v.earlier.disabled = true;
     const before = v.ref.kind === 'telegram' ? (v.oldestTs ? String(v.oldestTs) : null) : v.nextBefore;
     this.spent();
     const keep = v.msgs.scrollHeight - v.msgs.scrollTop;
     const r = await this.call('GET', this.historyPath(v, { pool: v.ref.kind !== 'slack', before }));
     if (seq === v.earlierLoadSeq) v.earlier.disabled = false;
-    if (!v.live || !current() || seq !== v.earlierLoadSeq) return 'stale';
+    if (!v.live || !current() || seq !== v.earlierLoadSeq || v.sourceGeneration !== generation) return 'stale';
     if (r.gone || !r.ok) return 'failed';
     this.applyHistory(v, r.data, { earlier: true });
     v.msgs.scrollTop = v.msgs.scrollHeight - keep;
@@ -1094,7 +1360,8 @@ class ChatsPage {
     const progress = el('progress', { class: 'chat-progress', max: '100', value: '0', hidden: true });
     v.files = [];
     const refresh = () => { send.disabled = !(text.value.trim() || v.files.length); };
-    text.addEventListener('input', refresh);
+    let draftRevision = 0;
+    text.addEventListener('input', () => { draftRevision++; refresh(); });
     text.addEventListener('keydown', (ev) => {
       if (ev.key === 'Enter' && !ev.shiftKey && !ev.isComposing) { ev.preventDefault(); if (!send.disabled) send.click(); }
     });
@@ -1105,6 +1372,7 @@ class ChatsPage {
       const ok = checkFiles(all, this.status && this.status.limits);
       if (!ok.ok) { v.statusLine.textContent = ok.reason; return; }
       v.files = all;
+      draftRevision++;
       setKids(chosen, v.files.map((f, i) => {
         const x = el('button', { class: 'btn-quiet chat-unpick', type: 'button', text: '×', 'aria-label': `Remove ${f.name}` });
         x.addEventListener('click', () => { v.files.splice(i, 1); addFiles([]); });
@@ -1125,16 +1393,25 @@ class ChatsPage {
       addFiles(pasted);
       text.focus();
     });
+    let confirming = null;
     send.addEventListener('click', async () => {
-      const body = text.value.trim();
+      const draft = text.value;
+      const revision = draftRevision;
+      const body = draft.trim();
       const files = v.files.slice();
       if (!body && !files.length) return;
       if (body && detectCredentialShape(body).detected) {
-        const choice = await credentialChoice();
+        if (confirming?.revision === revision) return;
+        const pending = { revision };
+        confirming = pending;
+        let choice;
+        try { choice = await credentialChoice(); } finally { if (confirming === pending) confirming = null; }
+        if (!v.live || this.view !== v || draftRevision !== revision || text.value !== draft || files.length !== v.files.length
+          || files.some((file, index) => file !== v.files[index])) return;
         if (choice === 'drop') { location.hash = '#/people/secrets'; return; }
         if (choice !== 'send') return;
       }
-      text.value = ''; v.files = []; setKids(chosen); refresh();
+      draftRevision++; text.value = ''; v.files = []; setKids(chosen); refresh();
       this.send(v, body, files, progress, box);
     });
     const box = el('div', { class: 'chat-composer' }, chosen, progress, el('div', { class: 'chat-compose-row' }, attach, pick, text, send));
@@ -1156,6 +1433,7 @@ class ChatsPage {
   }
 
   async send(v, text, files, progress, box) {
+    if (v.exact) this.leaveExact(v);
     const record = this.device.record;
     const requestId = newRequestId(this.device.clock.now());
     const entry = { requestId, ref: refString(v.ref), text, uploads: [], firstSentAt: now(), deviceId: record.deviceId, machineId: record.machineId };
@@ -1365,7 +1643,7 @@ class ChatsPage {
   }
 
   myAnnouncement() {
-    return { type: 'announce', tab: this.tabId, ref: this.view ? refString(this.view.ref) : null, at: now(), focusedAt: this.focusedAt, focused: Boolean(document.hasFocus && document.hasFocus()) };
+    return { type: 'announce', tab: this.tabId, ref: this.view && !this.view.exact ? refString(this.view.ref) : null, at: now(), focusedAt: this.focusedAt, focused: Boolean(document.hasFocus && document.hasFocus()) };
   }
   announce() {
     if (!this.live || document.visibilityState !== 'visible') return;
@@ -1449,12 +1727,16 @@ class ChatsPage {
     const t0 = now();
     this.scheduler.start(task, t0);
     // Snapshot the exact baseline sent: another tab's result may arrive while this read waits.
+    const opened = this.view;
+    const generation = opened?.sourceGeneration;
     const previous = task.mode === 'newest' ? this.quickPages.get(task.ref) || null : null;
     let r;
     try { r = await this.call('GET', this.taskPath(task)); } catch { r = { ok: false, status: 0 }; }
     if (!this.live) return;
     this.scheduler.finish(task, now(), { status: r.status, retryAfterMs: r.retryAfterMs });
     if (r.gone) return;
+    if (opened?.ref.kind === 'app' && task.ref === refString(opened.ref)
+      && (this.view !== opened || generation !== opened.sourceGeneration)) { this.loop(); return; }
     if (task.mode === 'events' && r.status === 404) {
       (this.fallbacks || (this.fallbacks = new Set())).add(task.ref);
       this.scheduler.fallBack(task.ref, now());
@@ -1499,7 +1781,7 @@ class ChatsPage {
       if (!page.data) return;
     }
     const v = this.view;
-    if (!v || refString(v.ref) !== m.ref || !v.live) return;
+    if (!v || refString(v.ref) !== m.ref || !v.live || v.exact || v.latestLoading) return;
     if (m.mode === 'events') {
       const since = v.list.find((b) => !b.id.startsWith('local:'))?.at || null;
       this.setBubbles(v, applyEvents(v.list, m.data.events, { own: this.ownCheck(), since }));
@@ -1510,12 +1792,14 @@ class ChatsPage {
 
   /** The focused tab's conversation: read now (an operator-caused read, counted in the budget). */
   async pollNow(v) {
-    if (!v || !v.live) return;
+    if (!v || !v.live || v.exact) return;
+    if (v.latestLoading) { this.loadFirst(v); return; }
     const ref = refString(v.ref);
     if (this.leader && this.scheduler.tasks().some((t) => t.ref === ref && t.mode !== 'pool')) { this.scheduler.bump(ref, now()); this.loop(); return; }
     this.spent();
+    const generation = v.sourceGeneration;
     const r = await this.call('GET', this.historyPath(v, { pool: v.ref.kind !== 'slack' }));
-    if (r.ok && v.live) this.applyHistory(v, r.data);
+    if (r.ok && v.live && !v.exact && v.sourceGeneration === generation) this.applyHistory(v, r.data);
   }
 }
 

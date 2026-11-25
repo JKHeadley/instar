@@ -47,7 +47,7 @@ async function boot(developmentAgent: boolean) {
   await new MachineIdentityManager(stateDir).generateIdentity({ name: 'e2e machine' });
   const config = {
     projectName: 'native-e2e', projectDir: dir, stateDir, port: 0, authToken: 'e2e-token', developmentAgent,
-    mobilePairing: { multiRoute: { enabled: false } }, // the single-host path; multi-route has its own e2e
+    mobilePairing: { multiRoute: { enabled: false }, native: { messageLinks: { enabled: true } } }, // the single-host path; multi-route has its own e2e
     tunnel: { enabled: true, type: 'named', token: 'x', hostname: HOST },
     sessions: { claudePath: '/usr/bin/echo', maxSessions: 1, defaultMaxDurationMinutes: 30, protectedSessions: [], monitorIntervalMs: 5_000 },
     scheduler: { enabled: false, jobsFile: '', maxParallelJobs: 1 }, messaging: [], updates: {},
@@ -149,6 +149,18 @@ describe('native app conversations — production wiring', () => {
     ]);
     expect(hist.body.messages[0].originVerified).toBe('verified');
     expect(hist.body.messages[1].originVerified).toBe('none');
+    const target = hist.body.messages[1].eventId as string;
+    const exact = await send('GET', `/mobile/chat/app/${key}/message-context?target=${encodeURIComponent(target)}&targetKind=event`);
+    expect(exact.status).toBe(200);
+    expect(exact.body.anchorApplied).toEqual({ requestedTarget: target, eventId: target, messageId: reply.body.messageId });
+    const link = await send('GET', `/mobile/conversations/message-link?ref=app%3A${key}&messageId=${encodeURIComponent(target)}&targetKind=event`);
+    expect(link.status).toBe(200);
+    expect(new URL(link.body.url).hostname).toBe(HOST);
+    expect(link.body.position.eventId).toBe(target);
+    const entry = await request(app).get('/dashboard/console/message-link-v1/');
+    expect(entry.status).toBe(200);
+    expect(entry.text).toContain('/dashboard/console/console.js?message-link-v1');
+
     // The approval method rides the verified row (spec §4.6 display).
     expect(hist.body.messages[0].originApprovedVia).toBe('telegram-dm');
     // Pool reads are wired on the production server: a single machine answers with an empty

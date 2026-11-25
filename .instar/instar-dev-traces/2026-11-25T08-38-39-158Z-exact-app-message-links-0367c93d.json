@@ -1,0 +1,40 @@
+{
+  "version": 3,
+  "slug": "exact-app-message-links",
+  "sessionId": "633bd330-201e-4dc8-8fd9-72b89116167e",
+  "timestamp": "2026-11-25T08:38:39.158Z",
+  "artifactPath": "upgrades/side-effects/exact-app-message-links.md",
+  "artifactSha256": "54ee95bdbbf4761b7d1b6ce600b331726a1dd69ce464c286a2adf4783c4c60b7",
+  "specPath": "docs/specs/conversation-message-links.md",
+  "coveredFiles": [
+    "dashboard/console/chats-model.js",
+    "dashboard/console/chats.js",
+    "src/core/AppConversationStore.ts",
+    "src/core/types.ts",
+    "src/data/awareness/exact-app-message-links.md",
+    "src/server/AgentServer.ts",
+    "src/server/dashboardEntry.ts",
+    "src/server/dashboardPaths.ts",
+    "src/server/mobileConversationRoutes.ts",
+    "src/server/mobileExactMessageAuthority.ts",
+    "src/server/mobilePairingRoutes.ts",
+    "tests/e2e/mobile-native-conversations-alive.test.ts",
+    "tests/integration/mobile-native-conversations.test.ts",
+    "tests/unit/app-conversation-store.test.ts",
+    "tests/unit/console-chats-page.test.ts",
+    "upgrades/next/exact-app-message-links.md",
+    "upgrades/side-effects/exact-app-message-links.md"
+  ],
+  "phase": "complete",
+  "tier": 2,
+  "tierReasoning": "Signed private history routes and operator-facing dashboard navigation",
+  "secondPass": "not-required",
+  "reviewerConcurred": null,
+  "toolchain": {
+    "buildSkill": {
+      "name": "instar-dev",
+      "version": "21a45a5a5f03",
+      "verified": true
+    }
+  }
+}

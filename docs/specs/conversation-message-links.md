@@ -2,7 +2,10 @@
 title: Links That Open The Selected App Message
 slug: conversation-message-links
 author: echo
-status: draft
+status: approved
+review-convergence: 2026-11-25T09:17:48+00:00
+approved: true
+approved-by: echo under the standing build approval, following the Chief of Staff handoff and confirming reviews
 tier: 2
 parent-principle: "Operator-Surface Quality"
 card: wc_4d8dd0e0144b636e
@@ -133,3 +136,11 @@ The fifth review confirmed the previous corrections and identified three remaini
 The sixth review identified three interaction details. Leaving a linked view now replaces the URL with the ordinary dashboard path without reloading the composer. Known grant changes invalidate the whole linked window, including prior pages. Both typed and legacy targets enter locating before any latest request or read marker. The browser acceptance test must observe zero ordinary latest requests and zero read markers before a generated typed link displays the exact target. These amendments remain in draft pending confirmation.
 
 The seventh review identified three further compatibility and history cases. Exact and context requests now have a distinct API path, stable paging is defined over locally held history with an explicit reload for late arrivals, and App pin jumps keep their existing path when exact context is unavailable. These amendments remain in draft pending confirmation and tested fixtures.
+
+
+The runtime confirmation found six implementation gaps and a versioned-entry navigation case. The candidate now waits for capability before choosing the legacy App navigation path, compares target kind as well as ID, fences the return-to-latest load, revalidates the message index's selected ID domain, guards composer confirmation, and preserves the failed continuation for a retry. The versioned entry validates its first target and restores the ordinary dashboard path on later explicit navigation away. A reader-scoped opaque visibility value carried on the signed list and context responses invalidates linked history when the relevant grant snapshot changes. The value is machine-local, process-scoped and carries no grant content. The runtime tests and confirming review determine the final disposition.
+
+
+The second confirming pass identified additional gaps at the edges of the runtime changes. A signed list-wide exact-context capability now covers conversations outside the current list page. Known visibility changes and permission-loss replies clear the selected history. The composer checks a revision spanning text and attachment edits. Rendering evidence requires the matching attached row and records viewport intersection separately. A failed return to latest shows its own retry control. The existing static dashboard middleware sends no-store on every JavaScript and CSS response, including imports of the versioned entry; real Chrome warm-cache evidence remains an activation gate.
+
+The closing runtime disposition is recorded in [the convergence report](reports/conversation-message-links-convergence.md). This approves the default-off build. Real Chrome, load measurements and complete candidate verification remain activation gates.

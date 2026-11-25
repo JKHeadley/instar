@@ -702,22 +702,66 @@ describe('Conversations page', () => {
 
 
 describe('card source message navigation', () => {
-  async function sourcePage(history: (c: Call) => any, target = 'source-event') {
+  async function sourcePage(history: (c: Call) => any, target = 'source-event', typed = false, supportOffPage = false) {
     const idb = fakeIndexedDB();
     const bd = await import('../../dashboard/console/browser-device.js');
     const { keyPair, publicKey } = await bd.generateDeviceKey();
     idb.stores.set('device', new Map([['m1', { machineId: 'm1', deviceId: 'dev-b1234567', host: 'localhost:4040', status: 'active', keyPair, publicKey, keyHash: await bd.keyHashOf(publicKey) }]]));
     const page = await boot(c => {
       if (c.url.startsWith('/mobile/browser-devices/status')) return { status: 200, body: STATUS };
+      if (supportOffPage && c.url.startsWith('/mobile/conversations?')) return {
+        status: 200, body: { conversations: [], nextCursor: 'page-two', messageLinkSupport: { exactContext: true } },
+      };
       if (c.url.startsWith('/mobile/conversations?')) return { status: 200, body: { conversations: [{ id: UUID, platform: 'app', title: 'Project planning' }], nextCursor: null } };
-      if (c.url.startsWith(`/mobile/chat/app/${UUID}/messages`)) return history(c);
+      if (c.url.startsWith(`/mobile/chat/app/${UUID}/messages`) || c.url.startsWith(`/mobile/chat/app/${UUID}/message-context`)) return history(c);
       if (c.url.startsWith(`/mobile/chat/app/${UUID}/events`)) return { status: 200, body: { events: [], cursor: 'c1' } };
       return undefined;
-    }, `#/work/chats?c=${encodeURIComponent(`app:${UUID}`)}&m=${encodeURIComponent(target)}`, idb);
+    }, `#/work/chats?c=${encodeURIComponent(`app:${UUID}`)}&${typed ? 'e' : 'm'}=${encodeURIComponent(target)}`, idb);
     return { ...page, publicKey };
   }
   const message = (eventId: string) => ({ eventId, role: 'agent', text: eventId === 'source-event' ? 'The original request' : 'Later discussion', at: '2026-11-17T12:00:00Z' });
   const reply = (ids: string[], nextBefore: string | null = null) => ({ status: 200, body: { conversationKey: UUID, messages: ids.map(message), nextBefore } });
+
+  it.each([true, false])('requires a matching typed anchor before presenting content, supported=%s', async (supported) => {
+    const { doc, publicKey } = await sourcePage(() => ({
+      status: 200, body: { conversationKey: UUID, messages: [{ ...message('source-event'), messageId: 'selected-message' }],
+        nextBefore: null, ...(supported ? { anchorApplied: { requestedTarget: 'source-event', eventId: 'source-event', messageId: 'selected-message' } } : {}) },
+    }), 'source-event', true);
+    await vi.waitFor(() => expect(doc.querySelector('.chat-source-target')?.textContent)
+      .toContain(supported ? 'Original message' : 'unavailable'));
+    expect(Boolean(doc.querySelector('[data-id="source-event"]'))).toBe(supported);
+    const reads = calls.filter((call) => call.url.includes('/message-context?'));
+    expect(reads).toHaveLength(1);
+    expect(verifySigned(reads[0]!, publicKey).ok).toBe(true);
+    expect(calls.filter((call) => call.url.includes('/messages?') || call.url === '/mobile/conversations/read')).toHaveLength(0);
+  });
+
+  it.each([403, 409])('uses exact context off-page and handles continuation status %s', async (status) => {
+    let directCalls = 0;
+    const { doc } = await sourcePage((call) => {
+      if (call.url.includes('beforeEventId=')) return { status, body: { error: status === 403 ? 'reader-no-longer-authorized' : 'message-not-available-here' } };
+      if (++directCalls === 2) return { status: 429, body: { error: 'context-busy' } };
+      return { status: 200, body: {
+        conversationKey: UUID, messages: [{ ...message('source-event'), messageId: 'selected-message' }],
+        visibility: 'scope-a', nextContextBefore: { at: '2026-11-17T12:00:00Z', eventId: 'source-event' },
+        anchorApplied: { requestedTarget: 'source-event', eventId: 'source-event', messageId: 'selected-message' },
+      } };
+    }, 'source-event', false, true);
+    await vi.waitFor(() => expect(doc.querySelector('[data-id="source-event"]')).toBeTruthy());
+    expect(calls.some((call) => call.url.includes('/message-context?target=source-event&targetKind=legacy'))).toBe(true);
+    (doc.querySelector('.chat-earlier') as HTMLButtonElement).click();
+    await vi.waitFor(() => expect(doc.querySelector('.chat-source-target')?.textContent).toContain('Reload around linked message'));
+    expect(Boolean(doc.querySelector('[data-id="source-event"]'))).toBe(status === 409);
+    if (status === 409) {
+      (doc.querySelector('.chat-source-target button') as HTMLButtonElement).click();
+      await vi.waitFor(() => expect(doc.querySelector('.chat-source-target')?.textContent).toContain('Try again'));
+      expect(doc.querySelector('[data-id="source-event"]')).toBeTruthy();
+      (doc.querySelector('.chat-source-target button') as HTMLButtonElement).click();
+      await vi.waitFor(() => expect(doc.querySelector('.chat-source-target')?.textContent).toContain('Original message'));
+      expect(doc.querySelector('[data-id="source-event"]')).toBeTruthy();
+    }
+    expect(calls.filter((call) => call.url.includes('/messages?') || call.url === '/mobile/conversations/read')).toHaveLength(0);
+  });
 
   it('finds an event id on a later page through signed reads, with explicit continued search', async () => {
     const { doc, publicKey } = await sourcePage(c => {

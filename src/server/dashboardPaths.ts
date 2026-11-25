@@ -5,6 +5,7 @@
 
 /** Where a bare `/dashboard` goes. */
 export const CONSOLE_PATH = '/dashboard/console/';
+export const MESSAGE_LINK_CONSOLE_PATH = '/dashboard/console/message-link-v1/';
 /** The legacy dashboard's own address. */
 export const LEGACY_PATH = '/dashboard/legacy';
 /** The pairing code page. */

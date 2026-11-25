@@ -9,3 +9,5 @@ You can read the selected message in its own continuous history window and use B
 This first implementation is for App conversations, whose message records already move through Instar’s existing replication. Exact Telegram and Slack links need further work to retain verified physical source identities across computers. Those findings remain owned alongside quoted replies, forwarding, editing and single-message deletion on the same open card. This App increment does not declare them finished or invent old source information.
 
 The web change still needs its complete server checks and real navigation proof. The Apple app developer owns native menu adoption and release. A source pass or merged change does not establish that the installed server and actual app already support the feature; those checks remain separate before the card can close.
+
+If another page of linked history is temporarily unavailable, the messages already on screen stay there while you retry. If the server confirms you have lost access, the linked view clears. When you return to the latest messages, the dashboard keeps your draft and waits for a fresh read before marking anything read.

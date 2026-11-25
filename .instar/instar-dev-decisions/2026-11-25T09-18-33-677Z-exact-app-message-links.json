@@ -1,0 +1,32 @@
+{
+  "ts": "2026-11-25T09:18:33.677Z",
+  "slug": "exact-app-message-links",
+  "suggestedTier": 2,
+  "declaredTier": 2,
+  "riskFloor": 2,
+  "riskFloorReasons": [
+    "new capability: new route (router.<verb>() added"
+  ],
+  "belowFloor": false,
+  "files": 9,
+  "loc": 284,
+  "scope": {
+    "basis": "staged-in-scope-paths-including-deleted",
+    "files": [
+      "src/core/AppConversationStore.ts",
+      "src/core/types.ts",
+      "src/data/awareness/exact-app-message-links.md",
+      "src/server/AgentServer.ts",
+      "src/server/dashboardEntry.ts",
+      "src/server/dashboardPaths.ts",
+      "src/server/mobileConversationRoutes.ts",
+      "src/server/mobileExactMessageAuthority.ts",
+      "src/server/mobilePairingRoutes.ts"
+    ],
+    "addedLines": 271,
+    "deletedLines": 13
+  },
+  "causalAutopsy": null,
+  "classClosure": null,
+  "verdict": "pass"
+}

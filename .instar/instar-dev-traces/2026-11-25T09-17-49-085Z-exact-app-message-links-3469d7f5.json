@@ -1,0 +1,51 @@
+{
+  "version": 3,
+  "slug": "exact-app-message-links",
+  "sessionId": "633bd330-201e-4dc8-8fd9-72b89116167e",
+  "timestamp": "2026-11-25T09:17:49.085Z",
+  "artifactPath": "upgrades/side-effects/exact-app-message-links.md",
+  "artifactSha256": "56a47ee1e34a0e0fd912b48082495ac0a262e10a510bc8754421aafc66dad398",
+  "specPath": "docs/specs/conversation-message-links.md",
+  "coveredFiles": [
+    ".instar/instar-dev-decisions/2026-11-25T08-38-44-753Z-exact-app-message-links.json",
+    ".instar/instar-dev-traces/2026-11-25T08-38-39-158Z-exact-app-message-links-0367c93d.json",
+    "dashboard/console/chats-model.js",
+    "dashboard/console/chats.js",
+    "dashboard/console/console.js",
+    "docs/specs/conversation-message-links.eli16.md",
+    "docs/specs/conversation-message-links.md",
+    "docs/specs/reports/conversation-message-links-convergence.md",
+    "src/core/AppConversationStore.ts",
+    "src/core/types.ts",
+    "src/data/awareness/exact-app-message-links.md",
+    "src/server/AgentServer.ts",
+    "src/server/dashboardEntry.ts",
+    "src/server/dashboardPaths.ts",
+    "src/server/mobileConversationRoutes.ts",
+    "src/server/mobileExactMessageAuthority.ts",
+    "src/server/mobilePairingRoutes.ts",
+    "tests/e2e/mobile-native-conversations-alive.test.ts",
+    "tests/integration/mobile-native-conversations.test.ts",
+    "tests/unit/app-conversation-store.test.ts",
+    "tests/unit/console-chats-page.test.ts",
+    "upgrades/next/exact-app-message-links.md",
+    "upgrades/side-effects/exact-app-message-links.md"
+  ],
+  "phase": "complete",
+  "tier": 2,
+  "tierReasoning": "Signed private history routes and operator-facing dashboard navigation",
+  "secondPass": "true",
+  "reviewerConcurred": true,
+  "toolchain": {
+    "buildSkill": {
+      "name": "instar-dev",
+      "version": "21a45a5a5f03",
+      "verified": true
+    },
+    "convergence": {
+      "reportPath": "docs/specs/reports/conversation-message-links-convergence.md",
+      "iterations": null,
+      "verified": true
+    }
+  }
+}

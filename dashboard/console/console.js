@@ -44,6 +44,7 @@ import { paceCard } from './pace.js';
 import { takeTicket, signInAtBoot, validToken } from './ticket-model.js';
 import { createLifecycle, splitHash } from './page-lifecycle.js';
 import { renderChats } from './chats.js';
+import { refFromQuery } from './chats-model.js';
 import { renderDocuments } from './documents.js';
 import { sheetIsOpen, closeSheet, unlockCheck, machineIssue, MACHINES_PAGE, newArrival, refreshHeld, setKids, rememberOperatorSession, forgetOperatorSession } from './ui.js';
 
@@ -783,7 +784,27 @@ const PHONE_ONLY = {
   },
 };
 
+const EXACT_LINK_PATH = '/dashboard/console/message-link-v1/';
+let openedExactEntry = false;
+
 function route() {
+  if (location.pathname === EXACT_LINK_PATH) {
+    const entry = splitHash(location.hash);
+    const fields = new URLSearchParams(entry.query);
+    const eventId = fields.get('e');
+    const valid = entry.path === 'work/chats' && refFromQuery(entry.query)?.kind === 'app'
+      && fields.getAll('c').length === 1 && fields.getAll('e').length === 1 && !fields.has('m')
+      && eventId && eventId.length <= 128 && !/[\x00-\x1f\x7f]/.test(eventId);
+    if (valid) openedExactEntry = true;
+    else if (openedExactEntry && !fields.has('e')) {
+      history.replaceState(history.state, '', '/dashboard/console/' + location.hash);
+    } else {
+      lifecycle.dispose();
+      closeSheet();
+      setKids(document.getElementById('root') || document.body, el('p', { role: 'status', text: 'This message link is unavailable.' }));
+      return;
+    }
+  }
   if (!phone && isPhoneMode('', location.hash)) phone = true;
   const { path: hashPath, query } = splitHash(location.hash);
   const path = pagePath(hashPath, phone);
