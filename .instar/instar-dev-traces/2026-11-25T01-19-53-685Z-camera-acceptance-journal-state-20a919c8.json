@@ -1,0 +1,18 @@
+{
+  "version": 2,
+  "slug": "camera-acceptance-journal-state",
+  "sessionId": "ab1b66cc-de80-48bd-9b94-4ede369ccb55",
+  "timestamp": "2026-11-25T01:19:53.685Z",
+  "artifactPath": "upgrades/side-effects/camera-acceptance-journal-state.md",
+  "artifactSha256": "813327c69596271762d7a6642ace33b6eb810069603cf6a1433864cbad47c1d6",
+  "specPath": "docs/specs/independent-owner-surface-acceptance.md",
+  "coveredFiles": [
+    "src/core/CameraAcceptanceJournalState.ts",
+    "tests/unit/camera-acceptance-journal-state.test.ts"
+  ],
+  "phase": "complete",
+  "tier": 2,
+  "tierReasoning": "The checkpoint reconstructs verified journal state, with no runtime caller or persistent schema changes.",
+  "secondPass": "true",
+  "reviewerConcurred": true
+}
