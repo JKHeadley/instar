@@ -41,6 +41,29 @@ function scriptedIntel(answers: string[], delayMs = 0) {
 afterEach(() => { vi.useRealTimers(); vi.restoreAllMocks(); });
 
 describe('MessageSentinel — one verdict per inbound message', () => {
+  it('asks the classifier to distinguish a bare withdrawal from an urgent stop', async () => {
+    const { provider, calls } = scriptedIntel(['normal']);
+    const sentinel = new MessageSentinel({ intelligence: provider });
+    expect(await sentinel.decideInboundDisposition('nevermind', 144201)).toMatchObject({ disposition: 'route-through' });
+    expect(calls).toHaveLength(1);
+    expect(calls[0]).toContain('A bare "nevermind" or "never mind"');
+    expect(calls[0]).toContain('When a message plausibly gives an urgent stop instruction and you are in doubt, prefer emergency-stop.');
+  });
+
+  it('honors an operator-configured exact stop before consulting the classifier', async () => {
+    const sentinel = new MessageSentinel({ customStopPatterns: ['nevermind'] });
+    expect(await sentinel.decideInboundDisposition('nevermind', 144201)).toMatchObject({ disposition: 'kill' });
+  });
+
+  it('does not suppress a qualified withdrawal that also gives an explicit whole-session stop', async () => {
+    const { provider, calls } = scriptedIntel(['emergency-stop']);
+    const sentinel = new MessageSentinel({ intelligence: provider });
+    expect(await sentinel.decideInboundDisposition('Never mind the last question, stop everything now', 144201))
+      .toMatchObject({ disposition: 'kill' });
+    expect(calls).toHaveLength(1);
+    expect(calls[0]).toContain('An urgent instruction to stop an action or the session is still an emergency-stop');
+  });
+
   it('replays the incident: seven deliveries of the same correction get the first verdict, and nothing kills', async () => {
     const { provider, calls } = scriptedIntel(INCIDENT_ANSWERS);
     const s = new MessageSentinel({ intelligence: provider });

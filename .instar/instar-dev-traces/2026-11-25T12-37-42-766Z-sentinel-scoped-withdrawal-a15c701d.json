@@ -1,0 +1,22 @@
+{
+  "version": 2,
+  "slug": "sentinel-scoped-withdrawal",
+  "sessionId": "dd2f336e-e8f7-40b3-97e3-09d19139bfa6",
+  "timestamp": "2026-11-25T12:37:42.766Z",
+  "artifactPath": "upgrades/side-effects/sentinel-scoped-withdrawal.md",
+  "artifactSha256": "3e0f05fdc2aeecd4b84664937e80376765de6d07f9fd9a5e229e4fd7bc09797d",
+  "coveredFiles": [
+    "docs/specs/sentinel-scoped-withdrawal.eli16.md",
+    "src/core/MessageSentinel.ts",
+    "tests/unit/MessageSentinel-one-verdict-per-message.test.ts",
+    "upgrades/next/sentinel-scoped-withdrawal.md",
+    "upgrades/side-effects/sentinel-scoped-withdrawal.md"
+  ],
+  "phase": "complete",
+  "tier": 1,
+  "tierReasoning": "Prompt examples clarify the existing judgment while preserving actuation and exact command policy.",
+  "eli16Path": "docs/specs/sentinel-scoped-withdrawal.eli16.md",
+  "sideEffectsPath": "upgrades/side-effects/sentinel-scoped-withdrawal.md",
+  "secondPass": "true",
+  "reviewerConcurred": true
+}
