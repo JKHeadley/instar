@@ -1,0 +1,26 @@
+{
+  "version": 2,
+  "slug": "hosted-relay-verified-startup",
+  "sessionId": "41652017-0805-405d-bb4e-2a975fb349ce",
+  "timestamp": "2026-11-25T23:38:04.120Z",
+  "artifactPath": "upgrades/side-effects/hosted-relay-verified-startup.md",
+  "artifactSha256": "e6aab8572a3f578e48bb33816fe2475e5f99aed9d2ef550f9afad112c8f8b564",
+  "specPath": "docs/specs/hosted-relay.md",
+  "coveredFiles": [
+    "src/hostedRelay/agentTlsListener.ts",
+    "src/hostedRelay/ownerLeaseReader.ts",
+    "src/hostedRelay/startup.ts",
+    "tests/integration/hosted-relay-disposable.test.ts",
+    "upgrades/side-effects/hosted-relay-verified-startup.md"
+  ],
+  "phase": "complete",
+  "tier": 2,
+  "tierReasoning": "Explicit dormant relay composition with independently verified owner assignment and bounded listener lifetime",
+  "secondPass": "true",
+  "reviewerConcurred": true,
+  "classClosure": {
+    "defectClass": "unbounded-self-action",
+    "closure": "n/a",
+    "reason": "The caller starts and stops one bounded runtime and listener."
+  }
+}

@@ -16,7 +16,7 @@ import { signOwnerRecordEntry } from '../../src/core/ownerRecord.js';
 import { createHostedRelayOwnerLeaseReader } from '../../src/hostedRelay/ownerLeaseReader.js';
 import { SafeFsExecutor } from '../../src/core/SafeFsExecutor.js';
 import { launchDisposableHostedRelay } from '../../src/hostedRelay/disposableLauncher.js';
-import { startHostedRelayRuntime } from '../../src/hostedRelay/runtimeAdmission.js';
+import { startVerifiedHostedRelay } from '../../src/hostedRelay/startup.js';
 import { MachineIdentityManager, sign as signMachine } from '../../src/core/MachineIdentity.js';
 import { redeemHostedRelaySetupCode } from '../../src/hostedRelay/setupReceipt.js';
 import { createHostedRelayVerifiedDialer } from '../../src/hostedRelay/verifiedDialer.js';
@@ -45,12 +45,13 @@ it('connects a signed outbound control session to an end-to-end TLS client in a 
   const draft = { holder, epoch: 1, nonce: 1, acquiredAt: new Date().toISOString(), expiresAt: new Date(expiresAt).toISOString() };
   const current = { ...draft, signature: machineSign(FencedLease.canonicalize(draft)) };
   let authorized = true;
-  const reader = createHostedRelayOwnerLeaseReader({
-    registration: name => authorized && name === hostname ? { agentId, assignment: lease.assignment, pinnedGenesis: genesis.id,
+  const authority = {
+    registration: (name: string) => authorized && name === hostname ? { agentId, assignment: lease.assignment, pinnedGenesis: genesis.id,
       entries: [genesis.entry, ownerKey.entry] } : undefined,
-    committedLease: id => id === agentId ? current : undefined,
-    verifyFirstOwnerProof: proof => proof.proof === 'fixture',
-  });
+    committedLease: (id: string) => id === agentId ? current : undefined,
+    verifyFirstOwnerProof: (proof: { proof: string }) => proof.proof === 'fixture',
+  };
+  const reader = createHostedRelayOwnerLeaseReader(authority);
   const gate = new HostedRelayLeaseAdmission(db, reader);
   const relay = createDisposableHostedRelay(gate);
   const cleanups: (() => void)[] = [];
@@ -138,16 +139,31 @@ it('connects a signed outbound control session to an end-to-end TLS client in a 
     const spki = new X509Certificate(controlCert).publicKey.export({ type: 'spki', format: 'der' });
     const launched = await launchDisposableHostedRelay({ leases: gate, cert: controlCert, key: fs.readFileSync(controlKey) });
     const controller = new AbortController();
-    const dial = createHostedRelayVerifiedDialer({ origin: 'https://localhost:' + launched.controlPort,
-      spkiSha256: createHash('sha256').update(spki).digest('hex'), ca: controlCert });
+    const relayTrust = { origin: 'https://localhost:' + launched.controlPort,
+      spkiSha256: createHash('sha256').update(spki).digest('hex'), ca: controlCert };
+    const dial = createHostedRelayVerifiedDialer(relayTrust);
+    const agentPin = createHash('sha256').update(new X509Certificate(cert).publicKey.export({ format: 'der', type: 'spki' })).digest('hex');
+    const tlsEntry = signOwnerRecordEntry({
+      kind: 'tls-key', agentId, parents: [ownerKey.id], signer: { type: 'machine', keyId: holder },
+      body: { machineId: holder, fingerprint: agentPin, seq: 1 },
+    }, machineSign);
     let holdsAuthority = true;
-    const runtimeOptions = {
-      enabled: true, stateDir: root, hostname, assignment: lease.assignment, localTlsPort: agentPort,
-      signal: controller.signal, readCommittedLease: () => current, holdsLocalAuthority: () => holdsAuthority,
-      connectVerified: dial,
+    const scope = { hostname, agentId, assignment: lease.assignment, pinnedGenesis: genesis.id };
+    const startup = {
+      enabled: true, stateDir: root, scope, signal: controller.signal, relay: relayTrust,
+      agentTls: { cert, key: fs.readFileSync(keyPath) },
+      evidence: {
+        ...authority,
+        registration: (name: string) => name === hostname ? { ...scope, entries: [genesis.entry, ownerKey.entry, tlsEntry.entry] } : undefined,
+      },
+      holdsLocalAuthority: () => holdsAuthority,
+      handlePhoneRequest: vi.fn<import('node:http').RequestListener>((_req, res) => { res.end('scoped agent response'); }),
     };
-    expect(startHostedRelayRuntime({ ...runtimeOptions, enabled: false, stateDir: '/missing' })).toBeUndefined();
-    const runtime = startHostedRelayRuntime(runtimeOptions)!;
+    expect(await startVerifiedHostedRelay({ ...startup, enabled: false, stateDir: '/missing' })).toBeUndefined();
+    expect(await startVerifiedHostedRelay({ ...startup, scope: { ...scope, assignment: '2'.repeat(64) } })).toBeUndefined();
+    expect(await startVerifiedHostedRelay({ ...startup, evidence: authority })).toBeUndefined();
+    expect(await startVerifiedHostedRelay({ ...startup, holdsLocalAuthority() { throw new Error('offline'); } })).toBeUndefined();
+    const runtime = (await startVerifiedHostedRelay(startup))!;
     expect(runtime.available()).toBe(false);
     await expect(runtime.issuePairingCode()).rejects.toThrow('relay-unavailable');
     try {
@@ -157,6 +173,8 @@ it('connects a signed outbound control session to an end-to-end TLS client in a 
         const client = tls.connect({ port: launched.clientPort, host: '127.0.0.1', servername: hostname, ca: cert });
         client.setTimeout(500, () => client.destroy(new Error('fixture TLS deadline')));
         try {
+          await once(client, 'secureConnect');
+          client.write('GET / HTTP/1.1\r\nHost: ' + hostname + '\r\n\r\n');
           answer = (await once(client, 'data'))[0].toString();
           client.setTimeout(0);
           verifiedClient = client;
@@ -166,7 +184,8 @@ it('connects a signed outbound control session to an end-to-end TLS client in a 
           await wait(20); // @silent-fallback-ok — the relay may be waiting for its first admitted offer
         }
       }
-      expect(answer).toBe('direct agent certificate');
+      expect(answer).toContain('scoped agent response');
+      expect(startup.handlePhoneRequest).toHaveBeenCalledOnce();
       const phone = await dial(controller.signal);
       cleanups.push(() => phone.session.destroy());
       const issue = '/relay/v1/rendezvous/issue', redeem = '/relay/v1/rendezvous/redeem';
@@ -211,7 +230,7 @@ it('connects a signed outbound control session to an end-to-end TLS client in a 
       await pendingClosed;
     } finally {
       controller.abort();
-      await runtime.closed;
+      await runtime.stop();
       await launched.stop();
     }
 

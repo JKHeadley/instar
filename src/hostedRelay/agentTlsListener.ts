@@ -15,7 +15,7 @@ export async function startHostedRelayAgentTlsListener(options: {
   expectedSpkiSha256: string;
   handlePhoneRequest: RequestListener;
   signal: AbortSignal;
-}): Promise<{ port: number; stop(): Promise<void> }> {
+}): Promise<{ port: number; closed: Promise<void>; stop(): Promise<void> }> {
   const { hostname, cert, key, signal } = options;
   signal.throwIfAborted();
   const certificate = new X509Certificate(cert);
@@ -37,6 +37,7 @@ export async function startHostedRelayAgentTlsListener(options: {
     }
     options.handlePhoneRequest(req, res);
   });
+  const closed = new Promise<void>(resolve => server.once('close', resolve));
   server.maxConnections = 32;
   server.on('connection', socket => {
     sockets.add(socket);
@@ -64,5 +65,5 @@ export async function startHostedRelayAgentTlsListener(options: {
     signal.throwIfAborted();
   }
   signal.addEventListener('abort', abort, { once: true });
-  return { port: (server.address() as AddressInfo).port, stop };
+  return { port: (server.address() as AddressInfo).port, closed, stop };
 }
