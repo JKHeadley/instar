@@ -14,6 +14,16 @@ The November 25 registry lists the five active machine IDs below. Before the win
 | echo, standby | `m_e8c9b243c449b1337713bc29d47a6f3a` |
 | mac-lan, standby | `m_a804869356b259820b3236e7c5a2ae7d` |
 
+## Verify the owner receipt before pausing
+
+On each registered home, run the command using the existing local agent environment and its configured API port. Keep credentials out of commands and receipts.
+
+```sh
+node scripts/read-work-board-owner-receipt.mjs "$AGENT_PORT" > "$EVIDENCE_DIR/$MACHINE_ID.team-owner.json"
+```
+
+Every command must succeed and report a healthy, gap-free verified owner. Compare owner key, heads and vector across the accepted homes and repeat after the capture. A missing endpoint, unopened log or mismatched receipt keeps every writer live and requires a rescheduled window. This evidence describes the verified Team Access owner and does not assign a Work Board enrollment generation.
+
 ## Pause and drain
 
 1. Record the current membership revision, owner generation, time, host, state directory, normal supervisor, all service and auxiliary processes with access to that home, and their package revisions. Record the original `workBoard.enabled` value or key absence. Keep the rest of the configuration out of the receipt.

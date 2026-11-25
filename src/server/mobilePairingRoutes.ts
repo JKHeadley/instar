@@ -623,6 +623,23 @@ export class MobilePairingService {
     return devicePerson(d, needsRegistry ? this.people() : null, this.ownerIdentity(), (id) => this.grants.get(id), (key) => this.teamStanding(key));
   }
 
+  /** Capture evidence from the existing verified log without opening or repairing it. */
+  teamOwnerReceipt() {
+    const log = this.teamLogInstance;
+    if (!log) return null;
+    const health = log.healthState();
+    const ownerPersonKey = health === 'ok' ? log.state().ownerPersonKey : null;
+    const gaps = log.captureGaps();
+    return {
+      ready: ownerPersonKey !== null && gaps.length === 0,
+      health,
+      ownerPersonKey: gaps.length === 0 ? ownerPersonKey : null,
+      heads: log.heads(),
+      vector: log.vector(),
+      gaps,
+    };
+  }
+
   /** The signed access log, opened once the key ledger exists; null while it does not. */
   teamLog(): TeamAccessLog | null {
     if (this.teamLogInstance) return this.teamLogInstance;

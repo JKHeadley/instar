@@ -1,0 +1,20 @@
+{
+  "version": 2,
+  "slug": "work-board-approval-binding-wip",
+  "sessionId": "b3d2cf8a-9b5d-468b-a50b-70ebf11e9e5c",
+  "timestamp": "2026-11-25T08:37:23.458Z",
+  "artifactPath": "upgrades/side-effects/work-board-approval-binding-wip.md",
+  "artifactSha256": "2f6b8b5d4ffea1b2c9d6bfdecf7772b66f5e0e21757c3a62ccf68c333e592a62",
+  "specPath": "docs/specs/owner-work-board-slips-first-slice.md",
+  "coveredFiles": [
+    "scripts/read-work-board-owner-receipt.mjs",
+    "src/core/TeamAccessLog.ts",
+    "src/server/mobilePairingRoutes.ts",
+    "src/server/routes.ts",
+    "tests/e2e/team-access-alive.test.ts",
+    "tests/unit/team-access-log.test.ts"
+  ],
+  "phase": "complete",
+  "secondPass": "true",
+  "reviewerConcurred": true
+}
