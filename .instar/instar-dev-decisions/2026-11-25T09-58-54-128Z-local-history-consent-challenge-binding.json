@@ -1,0 +1,26 @@
+{
+  "ts": "2026-11-25T09:58:54.128Z",
+  "slug": "local-history-consent-challenge-binding",
+  "suggestedTier": 2,
+  "declaredTier": 2,
+  "riskFloor": 1,
+  "riskFloorReasons": [],
+  "belowFloor": false,
+  "files": 1,
+  "loc": 101,
+  "scope": {
+    "basis": "staged-in-scope-paths-including-deleted",
+    "files": [
+      "src/server/localHistoryConsentPreview.ts"
+    ],
+    "addedLines": 72,
+    "deletedLines": 29
+  },
+  "causalAutopsy": null,
+  "classClosure": {
+    "defectClass": "unbounded-self-action",
+    "closure": "n/a",
+    "reason": "One owner-directed presence challenge with no copy authority or autonomous action."
+  },
+  "verdict": "pass"
+}

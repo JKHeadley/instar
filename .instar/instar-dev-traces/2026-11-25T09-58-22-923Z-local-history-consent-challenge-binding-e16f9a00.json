@@ -1,0 +1,25 @@
+{
+  "version": 2,
+  "slug": "local-history-consent-challenge-binding",
+  "sessionId": "41652017-0805-405d-bb4e-2a975fb349ce",
+  "timestamp": "2026-11-25T09:58:22.923Z",
+  "artifactPath": "upgrades/side-effects/local-history-consent-challenge-binding.md",
+  "artifactSha256": "dffeb5bbedaf96cbe98a115dddcb610d383678663d5cdad2f0dcaaca44960a36",
+  "specPath": "docs/specs/local-history-native-contract.md",
+  "coveredFiles": [
+    "src/server/localHistoryConsentPreview.ts",
+    "tests/integration/signed-local-history-intake.test.ts",
+    "upgrades/next/local-history-consent-challenge-binding.md",
+    "upgrades/side-effects/local-history-consent-challenge-binding.md"
+  ],
+  "phase": "complete",
+  "tier": 2,
+  "tierReasoning": "Dormant owner-consent challenge binds the displayed disclosure to current source authority and existing presence proof.",
+  "secondPass": "true",
+  "reviewerConcurred": true,
+  "classClosure": {
+    "defectClass": "unbounded-self-action",
+    "closure": "n/a",
+    "reason": "One owner-directed presence challenge with no copy authority or autonomous action."
+  }
+}
