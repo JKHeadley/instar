@@ -1,0 +1,57 @@
+{
+  "version": 1,
+  "scope": {
+    "pairingId": "paired-device-a",
+    "conversationKey": "2f0c8a3e-1b2c-4d5e-8f90-1234567890ab",
+    "epoch": "fixture-epoch-a"
+  },
+  "responses": {
+    "filteredIntermediate": {
+      "conversationKey": "2f0c8a3e-1b2c-4d5e-8f90-1234567890ab",
+      "epoch": "fixture-epoch-a",
+      "changes": [],
+      "blocked": false,
+      "cursor": "fixture-intermediate-cursor",
+      "highWater": "fixture-high-water-a",
+      "caughtUp": false
+    },
+    "blocked": {
+      "conversationKey": "2f0c8a3e-1b2c-4d5e-8f90-1234567890ab",
+      "epoch": "fixture-epoch-a",
+      "changes": [],
+      "blocked": true,
+      "cursor": "fixture-intermediate-cursor",
+      "highWater": "fixture-high-water-a",
+      "caughtUp": false
+    },
+    "caughtUp": {
+      "conversationKey": "2f0c8a3e-1b2c-4d5e-8f90-1234567890ab",
+      "epoch": "fixture-epoch-a",
+      "changes": [
+        {
+          "kind": "message-removed",
+          "conversationKey": "2f0c8a3e-1b2c-4d5e-8f90-1234567890ab",
+          "eventId": "remove-target",
+          "targetEventId": "target"
+        }
+      ],
+      "blocked": false,
+      "cursor": "fixture-caught-up-cursor",
+      "highWater": "fixture-high-water-a",
+      "caughtUp": true,
+      "displayForMs": 30000
+    }
+  },
+  "acceptance": [
+    { "name": "filtered page cannot uncover", "response": "filteredIntermediate", "expectedDisplay": "covered" },
+    { "name": "unresolved removal cannot uncover", "response": "blocked", "expectedDisplay": "covered" },
+    { "name": "durable catch-up within budget", "response": "caughtUp", "requestStartMs": 0, "receivedMs": 1000, "durableApplyMs": 1200, "expectedDisplay": "visible" },
+    { "name": "response before deadline and durable apply after deadline", "response": "caughtUp", "requestStartMs": 0, "receivedMs": 29000, "durableApplyMs": 31000, "expectedDisplay": "covered" },
+    { "name": "expiry covers previously visible history", "response": "caughtUp", "requestStartMs": 0, "receivedMs": 1000, "durableApplyMs": 1200, "observedAtMs": 30000, "expectedDisplay": "covered" },
+    { "name": "disconnect covers before expiry", "response": "caughtUp", "requestStartMs": 0, "receivedMs": 1000, "durableApplyMs": 1200, "invalidation": "disconnect", "expectedDisplay": "covered" },
+    { "name": "pairing changes before durable apply", "response": "caughtUp", "invalidation": "pairing-changed", "expectedDisplay": "covered" },
+    { "name": "conversation changes before durable apply", "response": "caughtUp", "invalidation": "conversation-changed", "expectedDisplay": "covered" },
+    { "name": "epoch changes before durable apply", "response": "caughtUp", "invalidation": "epoch-changed", "expectedDisplay": "covered" },
+    { "name": "delayed history cannot restore a removed row", "response": "caughtUp", "delayedHistoryEventId": "target", "expectedTarget": "absent" }
+  ]
+}
