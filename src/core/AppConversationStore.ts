@@ -573,6 +573,7 @@ export class AppConversationStore {
   private evidenceDataVersion = 0;
   private removalIndexProof: string | null = null;
   private readonly removalHistoryProofs = new Map<string, string>();
+  private readonly removalJournalRevisions = new Map<string, { checkpoint: string; revision: string }>();
   private indexedPlainMessageWrites = 0;
   private removalHistoryPreparation: { key: string; result: Promise<boolean> } | null = null;
 
@@ -650,6 +651,7 @@ export class AppConversationStore {
   rebuildIndex(): void {
     this.removalIndexProof = null;
     this.removalHistoryProofs.clear();
+    this.removalJournalRevisions.clear();
     this.db.exec('DELETE FROM files; DELETE FROM events; DELETE FROM messages; DELETE FROM deliveries; DELETE FROM conversations; DELETE FROM media_refs; DELETE FROM media_blobs; DELETE FROM media_purged; DELETE FROM media_totals; DELETE FROM transcripts; DELETE FROM pins;');
     this.catchUp();
   }
@@ -829,7 +831,7 @@ export class AppConversationStore {
       if (event.kind === 'created') this.indexCreationRecord(event);
       return { appended: false, ingestSeq: existing.ingestSeq };
     }
-    const file = this.db.prepare('SELECT fileName, nextIngestSeq FROM files WHERE canonicalKey = ?').get(canonicalKey) as { fileName: string; nextIngestSeq: number } | undefined;
+    const file = this.db.prepare('SELECT fileName, nextIngestSeq, indexedBytes FROM files WHERE canonicalKey = ?').get(canonicalKey) as { fileName: string; nextIngestSeq: number; indexedBytes: number } | undefined;
     const fileName = file?.fileName ?? this.fileNameFor(canonicalKey);
     const ingestSeq = file?.nextIngestSeq ?? 1;
     const line = `${JSON.stringify({ ...event, ingestSeq })}\n`;
@@ -838,12 +840,21 @@ export class AppConversationStore {
     const filePath = path.join(this.dir, fileName);
     const created = !fs.existsSync(filePath);
     const fd = fs.openSync(filePath, 'a', 0o600); /* state-registry: app-conversations */
+    const trackedJournal = this.removalJournalRevisions.get(canonicalKey);
+    let appendCheckpoint: string | null = null;
     let offset: number;
     try {
       offset = fs.fstatSync(fd).size;
+      const beforeAppend = trackedJournal && file?.indexedBytes === offset ? this.removalJournalDescriptorStat(fd) : null;
+      const trackedAppend = beforeAppend && this.removalJournalFileCheckpoint(beforeAppend) === trackedJournal?.checkpoint;
       try {
-        fs.writeSync(fd, line);
+        if (fs.writeSync(fd, line) !== bytes) throw new Error('short App conversation append');
         fs.fsyncSync(fd);
+        if (trackedAppend) {
+          const afterAppend = this.removalJournalDescriptorStat(fd);
+          if (afterAppend?.dev === beforeAppend.dev && afterAppend.ino === beforeAppend.ino
+            && afterAppend.size === BigInt(offset + bytes)) appendCheckpoint = this.removalJournalFileCheckpoint(afterAppend);
+        }
       } catch (err) {
         // A failed write must not leave a fragment mid-file for the next append to fuse onto:
         // cut back to where this line started, then report the failure (nothing was committed).
@@ -863,6 +874,7 @@ export class AppConversationStore {
         this.db.prepare('UPDATE files SET indexedBytes = ? WHERE canonicalKey = ?').run(offset + bytes, canonicalKey);
       })();
       if (before !== null) this.indexedPlainMessageWrites += this.indexWriteCount() - before;
+      if (trackedJournal && appendCheckpoint) trackedJournal.checkpoint = appendCheckpoint;
     } catch (err) {
       this.reportOnce(`index-write:${fileName}`, `the conversation index missed an append (${err instanceof Error ? err.message : String(err)}); catching up from the file`);
       this.catchUpFile(filePath, fileName);
@@ -1561,6 +1573,43 @@ export class AppConversationStore {
       // A legacy identifier may name two occurrences. Removal cannot retarget it to the survivor.
       return kind === 'legacy' && visible.length !== candidates.length ? [] : visible;
     });
+  }
+
+  private removalJournalFileCheckpoint(stat: fs.BigIntStats): string {
+    return [stat.dev, stat.ino, stat.size, stat.mtimeNs, stat.ctimeNs].join(':');
+  }
+
+  private removalJournalDescriptorStat(fd: number): fs.BigIntStats | null {
+    try {
+      return fs.fstatSync(fd, { bigint: true });
+    } catch {
+      return null; // @silent-fallback-ok — a write can finish while its continuation becomes invalid
+    }
+  }
+
+  /** A current authoritative journal epoch. Trusted indexed appends keep existing continuations valid. */
+  removalJournalRevision(conversationKey: string): string | null {
+    const key = canonicalConversationKey(conversationKey);
+    try {
+      const file = this.db.prepare('SELECT fileName, indexedBytes FROM files WHERE canonicalKey = ?')
+        .get(key) as { fileName: string; indexedBytes: number } | undefined;
+      if (!file) throw new Error('removal journal unavailable');
+      const stat = fs.statSync(path.join(this.dir, file.fileName), { bigint: true });
+      if (!stat.isFile() || stat.size !== BigInt(file.indexedBytes)) throw new Error('removal journal checkpoint unavailable');
+      const checkpoint = this.removalJournalFileCheckpoint(stat);
+      const tracked = this.removalJournalRevisions.get(key);
+      const evidence = tracked?.checkpoint === checkpoint ? tracked : { checkpoint, revision: crypto.randomUUID() };
+      this.removalJournalRevisions.delete(key);
+      if (this.removalJournalRevisions.size >= MAX_REMOVAL_HISTORY_PROOFS) {
+        const oldest = this.removalJournalRevisions.keys().next().value;
+        if (oldest !== undefined) this.removalJournalRevisions.delete(oldest);
+      }
+      this.removalJournalRevisions.set(key, evidence);
+      return evidence.revision;
+    } catch {
+      this.removalJournalRevisions.delete(key);
+      return null; // @silent-fallback-ok — uncertain journal evidence never renews cached display
+    }
   }
 
   private indexWriteCount(): number {

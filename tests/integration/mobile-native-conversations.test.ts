@@ -1278,7 +1278,7 @@ describe('private signed owner removal sync page', () => {
   async function fixture() {
     let trust = 'trust-1';
     const e = setup({ removalSyncPage: true, removalSyncEvidence: {
-      machineTrustRevision: () => trust, journalRevision: () => 'journal-1',
+      machineTrustRevision: () => trust,
     } });
     await enableReplyProof(e);
     const key = await create(e);
@@ -1320,6 +1320,16 @@ describe('private signed owner removal sync page', () => {
     expect((await signed(e, 'GET', `${path}?cursor=invalid`)).status).toBe(400);
     changeTrust();
     const reset = await signed(e, 'GET', continuation);
+    expect(reset.status).toBe(409);
+    expect(reset.body).toEqual({ error: 'message-removal-sync-reset', epoch: expect.any(String) });
+  });
+
+  it('rejects a continuation after the real journal index is rebuilt', async () => {
+    const { e, path } = await fixture();
+    const first = await signed(e, 'GET', path);
+    expect(first.status).toBe(200);
+    e.svc.store.rebuildIndex();
+    const reset = await signed(e, 'GET', `${path}?cursor=${encodeURIComponent(first.body.cursor)}`);
     expect(reset.status).toBe(409);
     expect(reset.body).toEqual({ error: 'message-removal-sync-reset', epoch: expect.any(String) });
   });

@@ -83,3 +83,7 @@ Independent and cross-model review confirmed the prepared page and cursor bounda
 ## Private signed high-water checkpoint
 
 Independent and cross-model review concurred that catch-up is tied to the exact prepared snapshot and cannot be inferred from an empty page. The high-water identifier has its own MAC domain and cannot resume a continuation. The HTTP fixture checks a filtered short page, a blocked page, exact catch-up and advancement when a removal arrives. The client contract binds its deadline to request start and requires durable application before displaying cached rows. The delayed-commit and missed-removal checks remain client acceptance requirements.
+
+## Store-backed journal revision checkpoint
+
+Independent and cross-model review required exact descriptor growth, index continuity and short-write evidence. The final store compares the exact previous indexed length and records the same inode's expected growth only after a successful index commit. An unexpected replacement or rewrite causes a new revision. Tests cover ordinary appends, exact rollback bytes and a clean subsequent append after reopen, replacement and rebuild, and signed reset after real store rebuild. Journal restoration requires the exclusive writer boundary. The production boot test exercises the same store with Delete off. Legacy offline copies and activation enrollment are explicitly outside this checkpoint.

@@ -73,6 +73,60 @@ describe('AppConversationStore', () => {
     } finally { store.close(); }
   });
 
+  it('keeps the journal revision for trusted appends and rotates after replacement or rebuild', () => {
+    const { dir, store } = mk();
+    try {
+      store.append(created());
+      const initial = store.removalJournalRevision(KEY);
+      expect(initial).toEqual(expect.any(String));
+      store.append(msg('target', 1));
+      store.append({ kind: 'message-removed', conversationKey: KEY, eventId: 'new-removal',
+        targetEventId: 'ev-target', targetMessageId: 'msg-target', at: at(2), machineId: 'm1' });
+      expect(store.removalJournalRevision(KEY)).toBe(initial);
+      const journal = fileOf(dir);
+      const replacement = journal + '.replacement';
+      fs.writeFileSync(replacement, fs.readFileSync(journal));
+      fs.renameSync(replacement, journal);
+      const replaced = store.removalJournalRevision(KEY);
+      expect(replaced).toEqual(expect.any(String));
+      expect(replaced).not.toBe(initial);
+      store.rebuildIndex();
+      const rebuilt = store.removalJournalRevision(KEY);
+      expect(rebuilt).not.toBe(replaced);
+      const priorBytes = fs.readFileSync(journal, 'utf8');
+      fs.writeFileSync(journal, priorBytes.replace('hello target', 'other target'));
+      store.append(msg('after-rewrite', 3));
+      expect(store.removalJournalRevision(KEY)).not.toBe(rebuilt);
+      fs.appendFileSync(journal, '\n');
+      expect(store.removalJournalRevision(KEY)).toBeNull();
+    } finally { store.close(); }
+  });
+
+  it('does not index a short journal append or carry forward its revision', () => {
+    const { dir, store } = mk();
+    store.append(created());
+    const prior = store.removalJournalRevision(KEY);
+    const originalBytes = fs.readFileSync(fileOf(dir));
+    const write = fs.writeSync;
+    const partial = vi.spyOn(fs, 'writeSync').mockImplementationOnce(((fd: number, text: string) =>
+      write(fd, text.slice(0, Math.floor(text.length / 2)))) as typeof fs.writeSync);
+    try { expect(() => store.append(msg('short-write', 1))).toThrow('short App conversation append'); }
+    finally { partial.mockRestore(); }
+    expect(fs.readFileSync(fileOf(dir))).toEqual(originalBytes);
+    expect(store.getEvent(KEY, 'ev-short-write')).toBeNull();
+    const reset = store.removalJournalRevision(KEY);
+    expect(reset).toEqual(expect.any(String));
+    expect(reset).not.toBe(prior);
+    store.append(msg('valid-after-rollback', 2));
+    store.close();
+    const reopened = new AppConversationStore({ stateDir: dir, machineId: () => 'm1' });
+    try {
+      expect(reopened.getEvent(KEY, 'ev-short-write')).toBeNull();
+      expect(reopened.getEvent(KEY, 'ev-valid-after-rollback')).toMatchObject({ messageId: 'msg-valid-after-rollback' });
+    }
+    finally { reopened.close(); }
+  });
+
   it('cannot attach a replacement prepared proof to an earlier selected page', async () => {
     const { store } = mk();
     try {

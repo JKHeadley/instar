@@ -7,9 +7,9 @@ approved: true
 approved-by: echo under standing build approval for local storage, private signed admission and execution, and unmounted history projection only
 parent-principle: Operator-Surface Quality
 tier: 2
-review-convergence: "2026-11-25T23:08:37.938Z"
-review-iterations: 43
-review-completed-at: "2026-11-25T23:08:37.938Z"
+review-convergence: "2026-11-25T23:38:53.878Z"
+review-iterations: 45
+review-completed-at: "2026-11-25T23:38:53.878Z"
 review-report: "docs/specs/reports/conversation-message-delete-convergence.md"
 cross-model-review: "cross-model-review: codex-cli:gpt-6.2-astra"
 ---
@@ -208,3 +208,15 @@ The private sync page observes the current conversation high-water mark inside t
 Only a caught-up response offers a private maximum display budget of 30 seconds. A client must measure the budget from the monotonic start of the request and durably apply authorized changes through the matching cursor before uncovering cached history. A stale response cannot restart the timer. Detected disconnect or access invalidation covers the affected history immediately. The budget expires if the connection fails silently or a new removal is missed. The fixture does not mount this protocol or authorize a client to uncover stale rows. Production still needs cursor renewal, a client acceptance run and the bounded snapshot reset for permanently unresolved history.
 
 A new authoritative read suppresses the removed row. An already open client evicts on an authenticated removal and covers on detected invalidation or disconnect. If it misses the notification, it covers by the deadline measured from renewal request start. For client acceptance, deliver the response at 29 seconds and finish writing the page and cursor at 31 seconds. The durable changes may commit, but the client keeps history covered until another qualifying renewal. The production response must be non-cacheable.
+
+## Store-backed journal revision checkpoint
+
+The signed private page uses the App store's real journal revision by default. It observes the indexed file's device, inode, size and write timestamps. A known local append can carry the current revision forward only when it starts on the exact observed file descriptor, commits the journal bytes and updates the index. Ordinary appends then advance the page frontier without invalidating the cursor. Unknown replacement, mismatched index bytes and rebuild require a refresh. The bounded observed revisions are local to the store.
+
+The production server constructs this same store. Its lifecycle test verifies the underlying revision while the route remains inactive. The private signed test exercises the actual revision instead of a constant, including invalidation after rebuild. Production still needs the other authority providers, read-surface enforcement and route activation.
+
+Carry-forward checks the prior indexed size and proves that the same descriptor grew by exactly the event's byte count. Journal repair and restore must be offline or cooperate with the exclusive writer. Concurrent in-place rewrites by a separate process cannot be authorized as normal appends.
+
+A short write is rolled back before indexing. Eviction from the bounded revision cache can require reconciliation when revisiting an otherwise unchanged conversation. The revision is not a content hash and does not authorize an out-of-band rewrite during append. The production lock and restore policy both apply before mounting.
+
+At first activation, an older disconnected client may still display a copy accepted before this protocol existed. The server cannot retract an offline pre-activation copy. The live display guarantee applies to views already enrolled in the deadline protocol. Before first deletion, verify how the supported clients enter that protocol and test a connection lost immediately before activation. Legacy offline copies remain subject to the existing cache and retention policy.

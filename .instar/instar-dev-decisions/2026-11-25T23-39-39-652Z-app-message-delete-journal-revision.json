@@ -1,0 +1,23 @@
+{
+  "ts": "2026-11-25T23:39:39.652Z",
+  "slug": "app-message-delete-journal-revision",
+  "suggestedTier": 2,
+  "declaredTier": 2,
+  "riskFloor": 1,
+  "riskFloorReasons": [],
+  "belowFloor": false,
+  "files": 2,
+  "loc": 57,
+  "scope": {
+    "basis": "staged-in-scope-paths-including-deleted",
+    "files": [
+      "src/core/AppConversationStore.ts",
+      "src/server/mobileAppRemovalSyncAuthority.ts"
+    ],
+    "addedLines": 53,
+    "deletedLines": 4
+  },
+  "causalAutopsy": null,
+  "classClosure": null,
+  "verdict": "pass"
+}

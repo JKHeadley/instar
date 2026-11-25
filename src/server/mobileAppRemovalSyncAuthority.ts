@@ -9,7 +9,7 @@ import type { RemovalSyncAuthority } from './mobileAppRemovalSyncCursor.js';
 
 interface RemovalSyncEvidence {
   machineTrustRevision: (custodian: string) => string | null;
-  journalRevision: (conversationKey: string) => string | null;
+  journalRevision?: (conversationKey: string) => string | null;
   teamVisibilityRevision?: () => string | null;
 }
 
@@ -47,7 +47,7 @@ export function resolveOwnerRemovalSyncAuthority(req: Request, pairing: MobilePa
     const readRevision = () => {
       const keyRevision = pairing.keyLedger?.verificationRevision();
       const trust = evidence.machineTrustRevision(machine);
-      const journal = evidence.journalRevision(key);
+      const journal = evidence.journalRevision ? evidence.journalRevision(key) : service.store.removalJournalRevision(key);
       const team = evidence.teamVisibilityRevision?.() ?? null;
       if (!keyRevision || !trust || !journal || (evidence.teamVisibilityRevision && !team)) return null;
       return hash([keyRevision, trust, journal, team]);

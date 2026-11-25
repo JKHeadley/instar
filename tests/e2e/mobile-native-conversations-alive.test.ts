@@ -162,6 +162,8 @@ describe('native app conversations — production wiring', () => {
     expect(hist.body.messages[1].originVerified).toBe('none');
     const target = hist.body.messages[1].eventId as string;
     expect(singleInstanceLock.revalidateForExclusiveWrite()).toBe(true);
+    const journalRevision = server.appConversations!.store.removalJournalRevision(key);
+    expect(journalRevision).toEqual(expect.any(String));
     const darkDelete = await send('POST', `/mobile/chat/app/${key}/message-removals`, {
       custodianMachineId: server.appConversations!.deps.machineId(), eventId: target,
       requestId: `${Date.now()}-${crypto.randomUUID()}`,
@@ -185,6 +187,7 @@ describe('native app conversations — production wiring', () => {
       targetEventId: target, targetMessageId: reply.body.messageId,
       machineId: server.appConversations!.deps.machineId(), at: new Date().toISOString(),
     });
+    expect(server.appConversations!.store.removalJournalRevision(key)).toBe(journalRevision);
     const darkEvents = await send('GET', `/mobile/chat/app/${key}/events`);
     expect(darkEvents.status).toBe(200);
     expect(darkEvents.body.events.map((event: { kind: string }) => event.kind)).not.toContain('message-removed');
