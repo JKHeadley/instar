@@ -1,0 +1,19 @@
+{
+  "version": 2,
+  "slug": "telegram-send-evidence-invalidation",
+  "sessionId": "b3d2cf8a-9b5d-468b-a50b-70ebf11e9e5c",
+  "timestamp": "2026-11-25T17:32:56.872Z",
+  "artifactPath": "upgrades/side-effects/telegram-send-evidence-invalidation.md",
+  "artifactSha256": "2675524cc7bb1a0ae241638b8ef41f321ddaee32ed1cab520697cfe3c1f02057",
+  "coveredFiles": [
+    "src/threadline/TelegramSendEvidenceStore.ts",
+    "tests/unit/telegram-send-evidence-store.test.ts"
+  ],
+  "phase": "complete",
+  "tier": 1,
+  "tierReasoning": "Test-only storage change with no production ingress caller.",
+  "eli16Path": "docs/specs/direct-telegram-send-evidence.eli16.md",
+  "sideEffectsPath": "upgrades/side-effects/telegram-send-evidence-invalidation.md",
+  "secondPass": "true",
+  "reviewerConcurred": true
+}

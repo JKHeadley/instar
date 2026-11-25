@@ -29,3 +29,26 @@ it('records an exact digest once and permanently refuses conflicting copies', ()
     db.close();
   }
 });
+
+it('invalidates already-recorded requests and blocks a late original after an edit', () => {
+  const db = new Database(':memory:');
+  try {
+    const store = new TelegramSendEvidenceStore(db);
+    const digest = 'a'.repeat(64);
+    const alreadyRecorded = 'telegram:248:-10001:42:15';
+    const notYetRecorded = 'telegram:248:-10001:42:16';
+    expect(store.capture(alreadyRecorded, digest)).toBe('recorded');
+    db.transaction(() => expect(store.invalidate(alreadyRecorded)).toBe(false))();
+    expect(store.matches(alreadyRecorded, digest)).toBe(true);
+    expect(store.invalidate(alreadyRecorded)).toBe(true);
+    expect(store.invalidate(notYetRecorded)).toBe(true);
+    expect(store.invalidate(notYetRecorded)).toBe(true);
+    expect(store.invalidate('telegram:bad')).toBe(false);
+    for (const reference of [alreadyRecorded, notYetRecorded]) {
+      expect(store.matches(reference, digest)).toBe(false);
+      expect(store.capture(reference, digest)).toBe('conflict');
+    }
+  } finally {
+    db.close();
+  }
+});

@@ -3,6 +3,10 @@ import type { Database } from 'better-sqlite3';
 type CaptureResult = 'recorded' | 'duplicate' | 'conflict' | 'refused';
 
 const referencePattern = /^telegram:[1-9]\d*:-?[1-9]\d*:[1-9]\d*:[1-9]\d*$/;
+function validReference(reference: string): boolean {
+  return typeof reference === 'string' && reference.length <= 80 && referencePattern.test(reference);
+}
+
 const digestPattern = /^[a-f0-9]{64}$/;
 
 /** Stores only an authenticated polling record's coordinates and digest.
@@ -20,8 +24,7 @@ export class TelegramSendEvidenceStore {
   }
 
   capture(reference: string, digest: string): CaptureResult {
-    if (this.db.inTransaction || typeof reference !== 'string' || reference.length > 80
-      || !referencePattern.test(reference) || typeof digest !== 'string' || !digestPattern.test(digest)) return 'refused';
+    if (this.db.inTransaction || !validReference(reference) || typeof digest !== 'string' || !digestPattern.test(digest)) return 'refused';
 
     return this.db.transaction((): CaptureResult => {
       const current = this.db.prepare('SELECT digest, conflicted FROM telegram_send_evidence WHERE reference = ?')
@@ -35,6 +38,19 @@ export class TelegramSendEvidenceStore {
       this.db.prepare('UPDATE telegram_send_evidence SET conflicted = 1 WHERE reference = ?').run(reference);
       return 'conflict';
     }).immediate();
+  }
+
+  /** The authenticated ingress caller supplies the original message reference.
+   * A tombstone also blocks capture when an edit is observed first.
+   */
+  invalidate(reference: string): boolean {
+    if (this.db.inTransaction || !validReference(reference)) return false;
+    this.db.prepare(`
+      INSERT INTO telegram_send_evidence (reference, digest, conflicted)
+      VALUES (?, '', 1)
+      ON CONFLICT (reference) DO UPDATE SET conflicted = 1
+    `).run(reference);
+    return true;
   }
 
   matches(reference: string, digest: string): boolean {
