@@ -32,6 +32,10 @@ import { promisify } from 'node:util';
 import type { CommitmentTracker, Commitment, CommitmentPriority, PromiseEvidenceKind } from './CommitmentTracker.js';
 import { COMMITMENT_PRIORITIES, PROMISE_EVIDENCE_KINDS, priorityRank } from './CommitmentTracker.js';
 import { redactForLiveTail } from '../core/liveTailRedaction.js';
+import { quoteInHistory, buildStoppedText } from './promiseKeepingCore.js';
+
+/** promise-keeping §3.7: `pick-up` decisions applied per review run. */
+export const PICKUP_PER_RUN_MAX = 5;
 
 const execFile = promisify(execFileCb);
 
@@ -102,7 +106,7 @@ export function resolvePromiseReviewConfig(raw: PromiseReviewConfig | undefined,
   };
 }
 
-export type ReviewAction = 'keep' | 'prioritize' | 'deliver' | 'archive';
+export type ReviewAction = 'keep' | 'prioritize' | 'deliver' | 'archive' | 'set-time' | 'pick-up';
 export type ArchiveKind = 'superseded' | 'duplicate' | 'obsolete';
 
 export interface ReviewDecision {
@@ -115,6 +119,8 @@ export interface ReviewDecision {
   kind?: ArchiveKind;
   duplicateOf?: string;
   supersededBy?: string;
+  /** `set-time`: the time the conversation gave (ISO). */
+  softDeadlineAt?: string;
 }
 
 export type DecisionOutcome = 'applied' | 'refused' | 'capped' | 'would-apply';
@@ -155,6 +161,10 @@ export interface PromiseReviewDeps {
    * usual proof for "I'll send you X".
    */
   findMessage?: (topicId: number, messageId: number) => { at: number; fromAgent: boolean } | null;
+  /** The topic's own message history (for `set-time`'s quote check). null = unreadable. */
+  topicHistory?: (topicId: number) => Array<{ text: string; timestamp: string }> | null;
+  /** promise-keeping §3.5: the one closing line when a promise the person was told about is retired. */
+  sendStoppedLine?: (topicId: number, text: string, commitmentId: string) => Promise<unknown>;
 }
 
 const SLIM_FIELDS = [
@@ -209,6 +219,8 @@ export class PromiseReview {
     const cfg = this.deps.config();
     // A person is or was recorded as waiting: daily, whatever the current priority or type.
     if (c.priority === 'high' || c.everHigh || c.checkInAt) return cfg.highRereviewAfterDays;
+    // promise-keeping §3.5 step 4: a parked promise handed over after 7 days is reviewed like a waited-on row.
+    if (c.parkReviewHandedAt) return cfg.highRereviewAfterDays;
     // First assessment just made: come back next run (6 h) so a row judged
     // obsolete on first sight closes one cycle later, not a week later.
     // ~5 h, under the 6-hourly cadence minus a run's length, so it is due at the NEXT run.
@@ -230,7 +242,7 @@ export class PromiseReview {
     const cfg = this.deps.config();
     if (!cfg.enabled) return { enabled: false, closureDryRun: cfg.closureDryRun, due: 0, items: [], caps: { maxClosuresPerRun: cfg.maxClosuresPerRun, maxClosuresPerDay: cfg.maxClosuresPerDay } };
     const due = this.dueRows();
-    const tier = (c: Commitment) => (c.priority === 'high' || c.everHigh || c.checkInAt) ? 0 : !c.lastReviewedAt ? 1 : 2;
+    const tier = (c: Commitment) => (c.priority === 'high' || c.everHigh || c.checkInAt || c.parkReviewHandedAt) ? 0 : !c.lastReviewedAt ? 1 : 2;
     due.sort((a, b) => {
       const t = tier(a) - tier(b);
       if (t) return t;
@@ -417,7 +429,7 @@ export class PromiseReview {
       seenIds.add(id);
       const row = tracker.get(id);
       if (!row || row.status !== 'pending') { refuse('not-own-pending'); continue; }
-      if (!['keep', 'prioritize', 'deliver', 'archive'].includes(action)) { refuse('bad-action', row); continue; }
+      if (!['keep', 'prioritize', 'deliver', 'archive', 'set-time', 'pick-up'].includes(action)) { refuse('bad-action', row); continue; }
       if (d.priority !== undefined && !COMMITMENT_PRIORITIES.includes(d.priority)) { refuse('bad-priority', row); continue; }
       const reason = typeof d.reason === 'string' ? d.reason.trim() : '';
       const evidence = typeof d.evidence === 'string' ? d.evidence.trim() : '';
@@ -435,6 +447,24 @@ export class PromiseReview {
         if (evidence.length < MIN_REASON || !ref) { refuse('high-downgrade-needs-evidence', row); continue; }
         const resolved = await this.resolveRef(row, ref, deadline);
         if (resolved !== true) { refuse('high-downgrade-needs-evidence', row); continue; }
+      }
+
+      // ── promise keeping (§3.7): non-closing, untimed one-time rows on real conversations only ──
+      if (action === 'set-time' || action === 'pick-up') {
+        if (row.type === 'behavioral' || typeof row.topicId !== 'number' || row.topicId <= 0) { refuse('promise-keeping-not-applicable', row); continue; }
+        if (row.softDeadlineAt || row.firstPromisedAt) { refuse('already-has-a-time', row); continue; }
+        if (action === 'set-time') {
+          const t = Date.parse(String(d.softDeadlineAt ?? ''));
+          if (!Number.isFinite(t) || t < atMs + 30 * 60_000) { refuse('set-time-needs-future-time', row); continue; }
+          const hist = this.deps.topicHistory?.(row.topicId) ?? null;
+          if (!quoteInHistory(hist, evidence, Date.parse(row.createdAt ?? '') || 0)) { refuse('set-time-quote-not-in-conversation', row); continue; }
+        } else {
+          if (reason.length < 8) { refuse('pick-up-needs-reason', row); continue; }
+          const pickUps = planned.filter((x) => x.plan?.d.action === 'pick-up').length;
+          if (pickUps >= PICKUP_PER_RUN_MAX) { planned.push({ result: { id, action, outcome: 'capped' }, before: row }); continue; }
+        }
+        planned.push({ plan: { d: { ...d, reason, evidence }, row }, result: { id, action, outcome: 'applied' }, before: row });
+        continue;
       }
 
       if (action === 'keep' || action === 'prioritize') {
@@ -494,6 +524,7 @@ export class PromiseReview {
       planned.push({ plan: { d: { ...d, reason, evidence, evidenceRef: ref }, row, refResolved }, result: { id, action, outcome: 'applied', ...(ref ? { evidenceRefResolved: refResolved === true } : {}) }, before: row });
     }
 
+    const stoppedLines: Array<{ topicId: number; text: string; id: string }> = [];
     // ── Pass 2: apply (synchronous; each close re-checks pending inside the mutation) ──
     const counted = this.closureCounts(runId, cfg.closureDryRun);
     let runClosures = counted.run;
@@ -511,6 +542,14 @@ export class PromiseReview {
           continue;
         }
         const { d, row, refResolved } = p.plan;
+        if (d.action === 'set-time' || d.action === 'pick-up') {
+          const s = tracker.stampPromiseKeeping(row.id, {
+            runId, at,
+            ...(d.action === 'set-time' ? { softDeadlineAt: new Date(Date.parse(String(d.softDeadlineAt))).toISOString() } : { pickupRequestedAt: at }),
+          });
+          if (!s) { r.outcome = 'refused'; r.refusal = 'changed-under-review'; }
+          continue;
+        }
         if (d.action === 'keep' || d.action === 'prioritize') {
           const s = tracker.stampReview(row.id, { runId, at, priority: d.priority, priorityReason: d.reason || undefined,
             guard: (now) => now.priority === row.priority && !!now.everHigh === !!row.everHigh });
@@ -549,8 +588,18 @@ export class PromiseReview {
         if (!closed) { r.outcome = 'refused'; r.refusal = 'changed-under-review'; continue; }
         runClosures++;
         dayClosures++;
+        // promise-keeping §3.5 step 4: the person was told "I'm still on it". Retiring that
+        // promise is said out loud, once, never silently.
+        if (d.action === 'archive' && row.lateNoticeFor && typeof row.topicId === 'number' && row.topicId > 0 && this.deps.sendStoppedLine) {
+          stoppedLines.push({ topicId: row.topicId, text: buildStoppedText(row.agentResponse || row.userRequest || '', d.reason || String(d.kind)) , id: row.id });
+        }
       }
     });
+
+    for (const line of stoppedLines) {
+      try { await this.deps.sendStoppedLine!(line.topicId, line.text, line.id); }
+      catch (err) { console.warn(`[promise-review] closing line for ${line.id} not delivered: ${err instanceof Error ? err.message : String(err)}`); }
+    }
 
     for (const p of planned) {
       const r = p.result;

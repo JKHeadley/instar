@@ -85,6 +85,7 @@ import { DEFAULT_AGENT_WORKTREE_REAPER_CONFIG } from '../monitoring/AgentWorktre
 import { EPISODE_CAP_MS, PENDING_RENEW_CADENCE_MS, REQUEST_POLL_MAX_MS, nextRequestPollMs, pendingRenewalDue } from '../core/LeaseContinuity.js';
 import { RECLAIM_DEFAULTS } from '../monitoring/agentWorktreeReclaimMain.js';
 import { nextEffectAttemptAt, EFFECT_FIRST_BACKOFF_MS } from '../server/mobileBrowserDevices.js';
+import { overdueStep, nextBackoffAt } from '../monitoring/promiseKeepingCore.js';
 import { nextFcmTrialAt, FCM_MAX_TRIALS, FCM_TRIAL_BASE_MS } from '../core/MobilePush.js';
 import { MAX_ESCALATION_ATTEMPTS, SEND_WINDOW_MS as PAIRING_SEND_WINDOW_MS, escalationRetryDelayMs, sendRetryDelayMs } from '../core/PairingOutcomeWatches.js';
 import { fallbackRetryDelayMs } from '../email/EmailService.js';
@@ -6390,6 +6391,66 @@ const smallPeerTrialAdmission: SelfActionController = {
   },
 };
 
+/**
+ * promise-keeping-pickup — the overdue-promise ladder of the promise-keeping pass
+ * (docs/specs/promise-keeping-before-the-deadline.md §3.5).
+ *
+ * Worst case modeled with the REAL decision functions (overdueStep,
+ * nextBackoffAt): every start fails and the promise never moves. The ladder
+ * spends at most LATE_MAX_FAILED attempts, sends the one last-resort message,
+ * then backs off ×2/×4/×8 the re-check interval and settles at one attempt a
+ * day. Every attempt and the message are stamped on the commitment row before
+ * the next pass, so a restart resumes the same schedule. The settling brake is
+ * the backoff plus the once-per-time last-resort stamp; without them this model
+ * would emit on every 5-minute tick.
+ */
+const promiseKeepingPickup: SelfActionController = {
+  id: 'promise-keeping-pickup',
+  actionVerb: 'respawn-pickup',
+  models: 'src/monitoring/promiseKeepingPass.ts (overdueStep ladder: failed starts, last resort once per time, backoff then daily)',
+  modelsPath: 'src/monitoring/promiseKeepingPass.ts',
+  restartPosture: { pressureSurvives: false, resetSafeReason: 'Attempts, the last-resort stamp, nextAttemptAt and backoffStep live on the commitment row, so a restart resumes the same schedule.' },
+  boundK: 40,
+  perTargetBoundK: 40,
+  ticks: 12 * 24 * 30,
+  tickMs: 5 * 60_000,
+  // An open promise the agent told the person it is "still on" keeps one restart a day for as
+  // long as it is open (the spec's no-silent-abandon rule); the 7-day promise-review hand-off is
+  // the owner that can retire it, saying so to the person.
+  eternalSentinel: { reason: 'An open promise the person was told the agent is still on gets one restart a day while it stays open, so the work is never dropped silently.', rateFloorMs: 12 * 60 * 60_000 },
+  delegatedGiveUp: 'The promise review, which receives every row parked 7 days (parkReviewHandedAt) and can deliver or retire it with a closing line to the person',
+  makeUnderPressure(f, sink) {
+    const T0 = f.clock.nowMs();
+    const T = new Date(T0).toISOString();
+    let row: Record<string, unknown> = {
+      id: 'CMT-model', status: 'pending', topicId: 1, owner: 'agent', blockedOn: 'none',
+      ownerMachineId: 'm', originMachineId: 'm', createdAt: new Date(T0 - 2 * 60 * 60_000).toISOString(), softDeadlineAt: T,
+    };
+    return {
+      tick() {
+        sink.considered += 1;
+        const now = f.clock.nowMs();
+        const v = overdueStep({ c: row as never, nowMs: now, selfMachineId: 'm', epochMs: T0, movedSincePickup: false });
+        if (v.act === 'none') return;
+        if (v.act === 'last-resort') {
+          sink.emit({ verb: 'notify', target: 'promise-topic' });
+          const b = nextBackoffAt({ ...row, backoffStep: 0 } as never, now);
+          row = { ...row, lateNoticeFor: T, backoffStep: b.step, nextAttemptAt: new Date(b.at).toISOString() };
+          return;
+        }
+        // pickup or parked attempt: the start is launched and FAILS (the worst case).
+        sink.emit({ verb: 'respawn-pickup', target: 'promise-topic' });
+        const same = row.attemptsFor === T;
+        row = { ...row, attemptsFor: T, failedAttempts: (same ? (row.failedAttempts as number ?? 0) : 0) + 1, firstHeldAt: (same && row.firstHeldAt) || new Date(now).toISOString() };
+        if (row.lateNoticeFor === T) {
+          const b = nextBackoffAt(row as never, now);
+          row = { ...row, backoffStep: b.step, nextAttemptAt: new Date(b.at).toISOString() };
+        }
+      },
+    };
+  },
+};
+
 export const SELF_ACTION_CONTROLLERS: SelfActionController[] = [
   smallPeerTrialAdmission,
   siblingHoldingsRefresh,
@@ -6502,6 +6563,7 @@ export const SELF_ACTION_CONTROLLERS: SelfActionController[] = [
   jobFailureAlertDelivery,
   jobCapacityEpisode,
   checkInReminderPass,
+  promiseKeepingPickup,
   undatedActionResurfacer,
   spendStalePriceAlert,
   ownerDarkNotice,

@@ -1,0 +1,64 @@
+{
+  "version": 3,
+  "slug": "promise-keeping-before-the-deadline",
+  "sessionId": "323b398f-4d5f-4695-ba97-33350749adc7",
+  "timestamp": "2026-11-18T21:54:16.078Z",
+  "artifactPath": "upgrades/side-effects/promise-keeping-before-the-deadline.md",
+  "artifactSha256": "414636565828d40c5681f78070f16ebf51643d303395651c27ce0e3223190aed",
+  "specPath": "docs/specs/promise-keeping-before-the-deadline.md",
+  "coveredFiles": [
+    ".instar/instar-dev-decisions/2026-11-18T21-41-21-666Z-promise-keeping-before-the-deadline.json",
+    ".instar/instar-dev-decisions/2026-11-18T21-42-23-163Z-promise-keeping-before-the-deadline.json",
+    "docs/specs/promise-keeping-before-the-deadline.eli16.md",
+    "docs/specs/promise-keeping-before-the-deadline.md",
+    "docs/specs/reports/promise-keeping-before-the-deadline-convergence.md",
+    "src/commands/server.ts",
+    "src/core/CommitmentMutation.ts",
+    "src/data/awareness/overdue-promise-follow-through.md",
+    "src/monitoring/CheckInReminderReconciler.ts",
+    "src/monitoring/CommitmentTracker.ts",
+    "src/monitoring/PromiseReview.ts",
+    "src/monitoring/lateNoticeCore.ts",
+    "src/monitoring/promiseHandoff.ts",
+    "src/monitoring/promiseKeepingCore.ts",
+    "src/monitoring/promiseKeepingGate.ts",
+    "src/monitoring/promiseKeepingPass.ts",
+    "src/scaffold/templates/jobs/instar/promise-review.md",
+    "src/server/AgentServer.ts",
+    "src/server/routes.ts",
+    "src/testing/selfActionRegistry.ts",
+    "tests/e2e/overdue-promise-follow-through-alive.test.ts",
+    "tests/integration/overdue-promise-follow-through-routes.test.ts",
+    "tests/unit/CommitmentMutation.test.ts",
+    "tests/unit/PromiseReview.test.ts",
+    "tests/unit/late-notice-core.test.ts",
+    "tests/unit/late-notice-reconciler.test.ts",
+    "tests/unit/promise-handoff.test.ts",
+    "tests/unit/promise-keeping-core.test.ts",
+    "tests/unit/promise-keeping-pass.test.ts",
+    "tests/unit/promise-notice-delivery.test.ts",
+    "upgrades/next/promise-keeping-before-the-deadline.md",
+    "upgrades/side-effects/promise-keeping-before-the-deadline.md"
+  ],
+  "phase": "complete",
+  "tier": 2,
+  "tierReasoning": "New session-start authority for promise work and new commitment write rules (reschedule, deliver evidence); behavior visible to the person. Not reversible by a revert alone for rows already stamped, so Tier 2.",
+  "secondPass": "true",
+  "reviewerConcurred": true,
+  "toolchain": {
+    "convergence": {
+      "reportPath": "docs/specs/reports/promise-keeping-before-the-deadline-convergence.md",
+      "iterations": 6,
+      "verified": true
+    }
+  },
+  "classClosure": {
+    "defectClass": "unbounded-self-action",
+    "closure": "guard",
+    "guardEvidence": {
+      "enforcementType": "ratchet",
+      "citation": "tests/unit/self-action-convergence.test.ts",
+      "howCaught": "promise-keeping-pickup: the 5-minute pass starts or notifies a session for an overdue promise. Worst case (every start fails, record never moves): at most 3 failed starts, one last-resort message per promised time (lateNoticeFor stamp), backoff x2/x4/x8 of the re-check interval, then one start a day (eternal sentinel, 12h rate floor). Brakes: attempt/backoff stamps on the commitment row (restart-safe), per-pass and third-of-maxSessions start limits, 7-day hand-off to the promise review."
+    }
+  }
+}

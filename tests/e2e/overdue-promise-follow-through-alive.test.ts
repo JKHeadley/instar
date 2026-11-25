@@ -1,14 +1,16 @@
 // safe-fs-allow: test file — SafeFsExecutor used for tmpdir cleanup.
 
 /**
- * Tier 3 — overdue-promise follow-through is ALIVE on the production path
- * (docs/specs/overdue-promise-follow-through.md).
+ * Tier 3 — promise keeping is ALIVE on the production path
+ * (docs/specs/promise-keeping-before-the-deadline.md).
  *
  * Real AgentServer, real server timer (CheckInReminderTicker), real
  * CommitmentTracker file store, real TelegramAdapter; only Telegram's HTTP
- * endpoint is stubbed. Nothing calls the pass route for the timer test: the
- * claim is that a promise whose own time passed reaches the person by itself,
- * exactly once, and an old backlog promise does not.
+ * endpoint and the session spawner are stubbed. Nothing calls the pass route
+ * for the timer test: the claim is that a promise whose own time passed is
+ * picked up by itself (a session is started for it through the promise-work
+ * runtime the server hands the routes), the person is NOT messaged, and an old
+ * backlog promise is left alone.
  */
 import { describe, it, expect, afterEach, vi } from 'vitest';
 import fs from 'node:fs';
@@ -70,6 +72,20 @@ function stubTelegramHttp() {
 
 async function boot(config: InstarConfig, stateDir: string, telegram?: TelegramAdapter) {
   const spawnSession = vi.fn();
+  const spawnPromiseWork = vi.fn(async (topicId: number) => `echo-topic-${topicId}`);
+  const promiseWork = {
+    getSessionForTopic: () => null,
+    isSessionAlive: () => false,
+    injectObserved: async () => ({ state: 'submitted' }),
+    holdsLease: () => true,
+    resumeQueueOwns: () => false,
+    capacity: () => ({ ok: true as const }),
+    spawnPromiseWork,
+    findAttemptSession: () => null,
+    workingPromiseSessions: () => 0,
+    maxSessions: () => 3,
+    listPromiseWorkSessions: () => [],
+  };
   const tracker = new CommitmentTracker({ stateDir, liveConfig: () => config as never });
   tracker.start();
   const server = new AgentServer({
@@ -78,9 +94,10 @@ async function boot(config: InstarConfig, stateDir: string, telegram?: TelegramA
     state: new StateManager(stateDir),
     commitmentTracker: tracker,
     ...(telegram ? { telegram } : {}),
+    promiseWork,
   } as never);
   await server.start();
-  return { server, tracker, spawnSession, stop: async () => { tracker.stop(); await server.stop(); } };
+  return { server, tracker, spawnSession, spawnPromiseWork, stop: async () => { tracker.stop(); await server.stop(); } };
 }
 
 const promise = (tracker: CommitmentTracker, topicId: number, agentResponse: string, softDeadlineAt: string) =>
@@ -99,8 +116,8 @@ const wait = (ms: number) => new Promise((r) => setTimeout(r, ms));
 /** A clock time three hours ahead in this machine's zone, e.g. "4:07 PM" — always inside the detector's horizon. */
 const inThreeHours = () => new Date(Date.now() + 3 * 3600_000).toLocaleTimeString('en-US', { hour: 'numeric', minute: '2-digit' });
 
-describe('overdue promise follow-through (feature is alive)', () => {
-  it('the server timer tells the person once when a promised time passes; an old backlog promise is left alone; no session is spawned', async () => {
+describe('promise keeping (feature is alive)', () => {
+  it('the server timer picks up a missed promise by itself: a session is started, the person is not messaged, the backlog is left alone', async () => {
     const { tmpDir, stateDir } = makeHome();
     const sends = stubTelegramHttp();
     const config = makeConfig(tmpDir, stateDir, { dryRun: false });
@@ -110,17 +127,20 @@ describe('overdue promise follow-through (feature is alive)', () => {
     const late = promise(running.tracker, 4242, 'Trial the Mac Mini as a third helper and tell you the run time.', new Date(Date.now() - 2 * 3600_000).toISOString());
     const backlog = promise(running.tracker, 4343, 'An old promise from last week.', new Date(Date.now() - 5 * 24 * 3600_000).toISOString());
 
-    await until(() => !!running.tracker.get(late.id)?.lateNoticeFor, 6 * TICK_MS);
-    const toTopic = sends.filter((s) => s.thread === 4242);
-    expect(toTopic).toHaveLength(1);
-    expect(toTopic[0].text).toContain("That time has passed and it isn't marked done");
-    expect(toTopic[0].text).toContain('Trial the Mac Mini');
+    await until(() => (running.tracker.get(late.id)?.pickups ?? 0) >= 1, 6 * TICK_MS);
+    expect(running.spawnPromiseWork).toHaveBeenCalled();
+    const [topicId, bootstrap, triggeredBy] = running.spawnPromiseWork.mock.calls[0] as unknown as [number, string, string];
+    expect(topicId).toBe(4242);
+    expect(bootstrap).toContain('not a message from the person');
+    expect(bootstrap).toContain('Trial the Mac Mini');
+    expect(triggeredBy).toMatch(/^promise-work:/);
 
     await wait(2.5 * TICK_MS);
-    expect(sends.filter((s) => s.thread === 4242)).toHaveLength(1); // exactly once across ticks
-    expect(sends.filter((s) => s.thread === 4343)).toHaveLength(0); // backlog before the epoch
-    expect(running.tracker.get(backlog.id)?.lateNoticeFor).toBeUndefined();
-    expect(running.spawnSession).not.toHaveBeenCalled(); // the handoff never starts a session
+    expect(sends.filter((s) => s.thread === 4242)).toHaveLength(0); // the person is not told
+    expect(sends.filter((s) => s.thread === 4343)).toHaveLength(0);
+    expect(running.spawnPromiseWork.mock.calls.filter((c) => c[0] === 4343)).toHaveLength(0); // backlog before the epoch
+    expect(running.tracker.get(backlog.id)?.pickups).toBeUndefined();
+    expect(running.spawnSession).not.toHaveBeenCalled(); // never the generic spawn path
     expect(fs.existsSync(path.join(stateDir, 'state', 'late-notice-epoch.json'))).toBe(true);
     await running.stop();
   }, 25_000);
@@ -134,9 +154,10 @@ describe('overdue promise follow-through (feature is alive)', () => {
     const res = await request(running.server.getApp()).post('/commitments/check-in-reminder/pass').set({ Authorization: `Bearer ${AUTH}` }).send({});
     expect(res.status).toBe(200);
     expect(res.body.dryRun).toBe(true);
-    expect(res.body.late).toMatchObject({ ran: true, wouldSendTopics: 1, topicsSent: 0 });
+    expect(res.body.late).toMatchObject({ ran: true, wouldAct: 1 });
     expect(sends).toHaveLength(0);
-    expect(running.tracker.get(late.id)?.lateNoticeFor).toBeUndefined();
+    expect(running.spawnPromiseWork).not.toHaveBeenCalled();
+    expect(running.tracker.get(late.id)?.pickups).toBeUndefined();
     await running.stop();
   }, 15_000);
 

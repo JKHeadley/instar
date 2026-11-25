@@ -1682,6 +1682,8 @@ export class AgentServer {
      *  so a peer's router never treats the topic as unowned and starts a second
      *  copy. Never force-claims a peer-owned topic. */
     claimTopicOwnershipOnSpawn?: (topicId: number) => import('../core/ownershipFollowsLiveWork.js').ClaimOnSpawnOutcome;
+    /** Promise keeping start runtime (docs/specs/promise-keeping-before-the-deadline.md §3.1). */
+    promiseWork?: import('./routes.js').RouteContext['promiseWork'];
     /** Every other active machine with a known URL — backs GET /sessions?scope=pool. */
     resolvePeerUrls?: () => Array<{
       machineId: string;
@@ -7295,6 +7297,7 @@ export class AgentServer {
       kickWorkingSetOnMachine,
       isOwnerUnroutable: options.isOwnerUnroutable ?? null,
       claimTopicOwnershipOnSpawn: options.claimTopicOwnershipOnSpawn ?? null,
+      promiseWork: options.promiseWork ?? null,
       resolvePeerUrls: options.resolvePeerUrls ?? null,
       guardRegistry: options.guardRegistry ?? null,
       listPoolMachines: options.listPoolMachines ?? null,
