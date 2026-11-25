@@ -200,3 +200,11 @@ The verifier compares the local projection against an independently attested dig
 - Rollback. Existing production layouts require no migration. Leave enrollment off if the verification fails.
 
 Independent review concurred for the dark follow-on. The digest attests the effective folded board projection. It does not attest every historical payload byte or replace independently verified fleet coverage. A first lifecycle run exposed that a valid empty directory has an empty stream fingerprint. The verifier now reserves null for an unreadable or moving fingerprint.
+
+### Separate-build evidence
+
+The lifecycle test accepts `INSTAR_TEST_LEGACY_WORK_BOARD_DIST` and `INSTAR_TEST_CANDIDATE_WORK_BOARD_DIST` pointing to independently compiled package outputs. With the first set, a separate Node process runs the older Work Board to produce the durable legacy batch received by the candidate. With the second set, a separate process from the candidate build attempts lock acquisition with the second-instance override while the current process holds the same-home lock. It must report an override without exclusive authority, while the holder stays exclusive. The default suite still exercises the in-process legacy producer without requiring staging builds.
+
+This proves the receiver refuses effects from an older release and the candidate denies exclusive proof to the override. It does not prove sender protection in an older binary. A production rollout must exclude any older process from write-capable enrollment and from the enrolled home before activation.
+
+Independent review concurred. The nine-case lifecycle run used legacy build `3e318c9236c29df1bd93bb6051557fcdfe16efee` and candidate build `b8fe7d4fdfa92058d5d265f7967fca4d31ef408b`.
