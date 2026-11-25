@@ -2,6 +2,7 @@ import fs from 'node:fs';
 import path from 'node:path';
 import Database from 'better-sqlite3';
 import { assertGraphLocalPath, ensureGraphLocalDirectory } from './GraphLocalFiles.js';
+import { projectRoundWorkKey } from './ProjectRoundRunner.js';
 import { ManagedCodexStopStore } from './ManagedCodexStopStore.js';
 
 /** Managed and ordinary launch paths use one local database. */
@@ -47,5 +48,20 @@ export function openManagedCodexWorkDatabase(
   } catch (error) {
     db.close();
     throw error;
+  }
+}
+
+/** Scheduling hint only. Execution must check the same holds under its lock. */
+export function readManagedRoundLaunchHold(
+  stateDir: string, projectId: string, roundIndex: number, itemIds: readonly string[],
+): string | undefined {
+  const work = openManagedCodexWorkDatabase(stateDir);
+  if (!work) return;
+  try {
+    const keys = [projectRoundWorkKey(projectId, roundIndex),
+      ...itemIds.map(itemId => projectRoundWorkKey(projectId, roundIndex, itemId))];
+    if (keys.some(key => work.store.hasWorkClaim(key))) return 'round work is held by a managed project worker';
+  } finally {
+    work.close();
   }
 }

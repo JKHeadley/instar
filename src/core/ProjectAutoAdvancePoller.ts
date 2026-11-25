@@ -81,6 +81,8 @@ export interface ProjectAutoAdvancePollerConfig {
    * present, fire-and-forget invocation after `bookKeepFire`.
    */
   executor?: ProjectRoundExecutor;
+  /** A temporary hold leaves the scheduled timestamp and attempt count intact. */
+  launchHold?: (project: Initiative, roundIndex: number) => string | undefined;
 }
 
 /** Reject codes that mean "stop retrying" — clear autoAdvanceAt. */
@@ -101,6 +103,7 @@ export class ProjectAutoAdvancePoller {
   private machineId: string;
   private now: () => Date;
   private executor?: ProjectRoundExecutor;
+  private launchHold?: ProjectAutoAdvancePollerConfig['launchHold'];
   /** Tracks in-flight executor invocations so a slow run doesn't get relaunched on the next tick. */
   private inFlight: Set<string> = new Set();
 
@@ -110,6 +113,7 @@ export class ProjectAutoAdvancePoller {
     this.machineId = config.machineId;
     this.now = config.now ?? (() => new Date());
     this.executor = config.executor;
+    this.launchHold = config.launchHold;
   }
 
   /** Test/diagnostic helper: how many executor launches are still settling. */
@@ -166,6 +170,12 @@ export class ProjectAutoAdvancePoller {
           await this.clearAutoAdvance(project, roundIdx);
           result.cleared.push(project.id);
         }
+        continue;
+      }
+
+      const hold = this.launchHold?.(pre.project, roundIdx);
+      if (hold) {
+        result.rejected.push({ projectId: project.id, code: 'WORK_HELD', reason: hold });
         continue;
       }
 

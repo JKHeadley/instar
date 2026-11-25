@@ -25162,7 +25162,7 @@ export async function startServer(options: StartOptions): Promise<void> {
     // The executor itself acquires the lock + spawns + polls + cleans up.
     // Errors are surfaced via the poller's result.executorErrors and
     // logged to stderr; they don't take the server down.
-    const { openManagedCodexWorkDatabase } = await import('../core/ManagedCodexWorkDatabase.js');
+    const { openManagedCodexWorkDatabase, readManagedRoundLaunchHold } = await import('../core/ManagedCodexWorkDatabase.js');
     const { readOsBootId } = await import('../core/processIdentity.js');
     const projectOsBootId = readOsBootId();
     const { runRound } = await import('../core/ProjectRoundExecution.js');
@@ -25171,6 +25171,14 @@ export async function startServer(options: StartOptions): Promise<void> {
       tracker: initiativeTracker,
       runner: projectRoundRunner,
       machineId: machineIdForProjects,
+      launchHold: (project, roundIndex) => {
+        try {
+          return readManagedRoundLaunchHold(config.stateDir, project.id, roundIndex, project.rounds?.[roundIndex]?.itemIds ?? []);
+        } catch {
+          console.warn('[ProjectAutoAdvancePoller] existing work store is unavailable:', { projectId: project.id, roundIndex });
+          return 'existing project work store is unavailable';
+        }
+      },
       executor: async ({ projectId, roundIndex }) => {
         const proj = initiativeTracker.get(projectId);
         if (!proj || !proj.targetRepoPath) return;

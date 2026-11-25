@@ -1,0 +1,26 @@
+{
+  "version": 2,
+  "slug": "managed-codex-scheduled-hold",
+  "sessionId": "017c26ed-5596-4576-9c20-20af13e4c1f8",
+  "timestamp": "2026-11-25T19:10:53.210Z",
+  "artifactPath": "upgrades/side-effects/managed-codex-scheduled-hold.md",
+  "artifactSha256": "b2abff457276610101981da314127b42c0ec700e6f1194143f18bc61af8abe31",
+  "coveredFiles": [
+    "src/commands/server.ts",
+    "src/core/ManagedCodexWorkDatabase.ts",
+    "src/core/ProjectAutoAdvancePoller.ts",
+    "tests/unit/ProjectAutoAdvancePoller.test.ts"
+  ],
+  "phase": "complete",
+  "tier": 1,
+  "tierReasoning": "Temporary scheduling refusal before existing bookkeeping. No new execution authority or cadence.",
+  "eli16Path": "upgrades/managed-codex-scheduled-hold.eli16.md",
+  "sideEffectsPath": "upgrades/side-effects/managed-codex-scheduled-hold.md",
+  "secondPass": "true",
+  "reviewerConcurred": true,
+  "classClosure": {
+    "defectClass": "unbounded-self-action",
+    "closure": "n/a",
+    "reason": "This change only inserts a hold check within the existing polling cadence and does not schedule or launch work."
+  }
+}

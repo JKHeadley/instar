@@ -18,7 +18,8 @@ import fs from 'node:fs';
 import os from 'node:os';
 import path from 'node:path';
 import { InitiativeTracker } from '../../src/core/InitiativeTracker.js';
-import { ProjectRoundRunner } from '../../src/core/ProjectRoundRunner.js';
+import { ProjectRoundRunner, projectRoundWorkKey } from '../../src/core/ProjectRoundRunner.js';
+import { openManagedCodexWorkDatabase, readManagedRoundLaunchHold } from '../../src/core/ManagedCodexWorkDatabase.js';
 import { ProjectAutoAdvancePoller } from '../../src/core/ProjectAutoAdvancePoller.js';
 import { SafeFsExecutor } from '../../src/core/SafeFsExecutor.js';
 import { SafeGitExecutor } from '../../src/core/SafeGitExecutor.js';
@@ -155,6 +156,42 @@ describe('ProjectAutoAdvancePoller', () => {
   // fire calls the executor fire-and-forget. Errors land in
   // executorErrors[] and don't propagate. In-flight runs are not
   // re-launched on the next tick before they settle.
+
+  it('retains a scheduled attempt while the work store reports a managed hold', async () => {
+    await newProject('held');
+    const project = tracker.get('held')!;
+    const autoAdvanceAt = new Date(Date.now() - 60_000).toISOString();
+    await tracker.update(project.id, { rounds: [{ ...project.rounds![0], autoAdvanceAt }] });
+    const database = openManagedCodexWorkDatabase(stateDir, true)!;
+    try {
+      expect(database.store.reserve(projectRoundWorkKey(project.id, 0, 'old-item'), {
+        sessionId: 'unstarted', machineId, ownerEpoch: 1, remaining: 1,
+      }, projectRoundWorkKey(project.id, 0))).toBe(true);
+      const launched: string[] = [];
+      const wired = new ProjectAutoAdvancePoller({
+        tracker, runner, machineId,
+        launchHold: (current, index) => readManagedRoundLaunchHold(
+          stateDir, current.id, index, current.rounds?.[index]?.itemIds ?? [],
+        ),
+        executor: async input => { launched.push(input.projectId); },
+      });
+
+      const held = await wired.tick();
+      expect(held.rejected).toMatchObject([{ projectId: project.id, code: 'WORK_HELD' }]);
+      expect(held.fired).toEqual([]);
+      expect(tracker.get(project.id)?.rounds?.[0].autoAdvanceAt).toBe(autoAdvanceAt);
+      expect(tracker.get(project.id)?.unacknowledgedAdvanceCount ?? 0).toBe(0);
+      expect(launched).toEqual([]);
+
+      expect(database.store.releaseUnstarted('unstarted')).toBe(true);
+      expect((await wired.tick()).fired).toEqual([project.id]);
+      await new Promise(resolve => setImmediate(resolve));
+      expect(launched).toEqual([project.id]);
+      expect(tracker.get(project.id)?.unacknowledgedAdvanceCount).toBe(1);
+    } finally {
+      database.close();
+    }
+  });
 
   it('executor is invoked after a successful fire', async () => {
     const calls: Array<{ projectId: string; roundIndex: number }> = [];

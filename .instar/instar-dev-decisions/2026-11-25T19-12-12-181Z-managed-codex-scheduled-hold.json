@@ -1,0 +1,28 @@
+{
+  "ts": "2026-11-25T19:12:12.181Z",
+  "slug": "managed-codex-scheduled-hold",
+  "suggestedTier": 1,
+  "declaredTier": 1,
+  "riskFloor": 1,
+  "riskFloorReasons": [],
+  "belowFloor": false,
+  "files": 3,
+  "loc": 36,
+  "scope": {
+    "basis": "staged-in-scope-paths-including-deleted",
+    "files": [
+      "src/commands/server.ts",
+      "src/core/ManagedCodexWorkDatabase.ts",
+      "src/core/ProjectAutoAdvancePoller.ts"
+    ],
+    "addedLines": 35,
+    "deletedLines": 1
+  },
+  "causalAutopsy": null,
+  "classClosure": {
+    "defectClass": "unbounded-self-action",
+    "closure": "n/a",
+    "reason": "This change only inserts a hold check within the existing polling cadence and does not schedule or launch work."
+  },
+  "verdict": "pass"
+}
