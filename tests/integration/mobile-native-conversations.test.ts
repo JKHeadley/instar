@@ -41,7 +41,7 @@ afterAll(() => {
   for (const d of dirs) SafeFsExecutor.safeRmSync(d, { recursive: true, force: true, operation: 'tests/integration/mobile-native-conversations.test.ts' });
 });
 
-interface Opts { machineId?: string; links?: boolean; replies?: boolean; sentinel?: { decideInboundDisposition: () => Promise<{ disposition: string }> }; lease?: { held: boolean }; holdsLease?: () => boolean; recording?: { on: boolean }; dispatchThrows?: boolean; nativeOff?: boolean; dispatchDelayMs?: number }
+interface Opts { reactions?: boolean; machineId?: string; links?: boolean; replies?: boolean; sentinel?: { decideInboundDisposition: () => Promise<{ disposition: string }> }; lease?: { held: boolean }; holdsLease?: () => boolean; recording?: { on: boolean }; dispatchThrows?: boolean; nativeOff?: boolean; dispatchDelayMs?: number }
 
 function setup(opts: Opts = {}) {
   const machineId = opts.machineId ?? 'm1';
@@ -51,7 +51,7 @@ function setup(opts: Opts = {}) {
     projectName: 'echo', projectDir: dir, stateDir: dir, port: 0, authToken: 'tok-1', developmentAgent: true,
     sessions: {}, scheduler: {}, threadline: { ownerName: 'Justin' },
     // Multi-route off: these tests cover the single paired host (mobile-multi-route.md, flag off).
-    mobilePairing: { native: { enabled: !opts.nativeOff, messageLinks: { enabled: opts.links }, quotedReplies: { enabled: opts.replies } }, multiRoute: { enabled: false } },
+    mobilePairing: { native: { enabled: !opts.nativeOff, messageLinks: { enabled: opts.links }, quotedReplies: { enabled: opts.replies }, reactions: { enabled: opts.reactions } }, multiRoute: { enabled: false } },
   };
   const lease = opts.lease ?? { held: true };
   const recording = opts.recording ?? { on: true };
@@ -99,11 +99,11 @@ function setup(opts: Opts = {}) {
 
 let tick = 0;
 type Env = ReturnType<typeof setup>;
-function signed(e: Env, method: 'GET' | 'POST' | 'PATCH' | 'DELETE', p: string, body?: unknown) {
+function signed(e: Env, method: 'GET' | 'POST' | 'PUT' | 'PATCH' | 'DELETE', p: string, body?: unknown) {
   const raw = body === undefined ? undefined : Buffer.from(JSON.stringify(body));
   const time = String(Date.now() + (tick++ % 1000));
   const sig = e.dev.sign(canonicalString(e.deviceId, HOST, method, p, time, raw));
-  const base = method === 'GET' ? request(e.app).get(p) : method === 'POST' ? request(e.app).post(p) : method === 'PATCH' ? request(e.app).patch(p) : request(e.app).delete(p);
+  const base = method === 'GET' ? request(e.app).get(p) : method === 'POST' ? request(e.app).post(p) : method === 'PUT' ? request(e.app).put(p) : method === 'PATCH' ? request(e.app).patch(p) : request(e.app).delete(p);
   const q = base.set('X-Instar-Device', e.deviceId).set('X-Instar-Device-Time', time).set('X-Instar-Device-Sig', sig);
   return raw ? q.set('Content-Type', 'application/json').send(raw.toString()) : q;
 }
@@ -635,6 +635,80 @@ describe('signed native App Reply admission', () => {
     } finally { release({ disposition: 'kill' }); }
     expect((await pending).status).toBe(403);
     expect(e.stopEffects).toHaveLength(0);
+    expect(e.dispatched).toHaveLength(0);
+  });
+});
+
+
+describe('signed App message reactions', () => {
+  it('is off by default', async () => {
+    const e = setup();
+    const key = await create(e);
+    const r = await signed(e, 'PUT', `/mobile/chat/app/${key}/reactions`,
+      { eventId: 'base', emoji: '👍', expectedRevision: 0, requestId: rid() });
+    expect(r.status).toBe(503);
+    expect(r.body.error).toBe('reactions-unavailable');
+  });
+
+  it('serializes one actor across devices and recovers terminal and appended retries', async () => {
+    const e = setup({ reactions: true });
+    await enableReplyProof(e);
+    const key = await create(e);
+    const second = makeDevice();
+    const pending = e.pairing.devices.createPending({ deviceName: 'Second phone', label: null, publicKey: second.publicKey, host: HOST });
+    if (!pending.ok) throw new Error('second pairing');
+    e.pairing.devices.applyConfirm(pending.device.id, { ok: true });
+    e.pairing.keyLedger!.recordActivation(e.pairing.devices.get(pending.device.id)!, 'telegram-dm', new Date(Date.now() - 1000).toISOString());
+    const other = { ...e, deviceId: pending.device.id, dev: second };
+    for (const eventId of ['base', 'other-base']) e.svc.store.append({
+      conversationKey: key, eventId, messageId: 'msg-' + eventId, kind: 'message', role: 'agent',
+      text: 'Original', at: new Date().toISOString(), machineId: 'm1',
+    });
+    const route = `/mobile/chat/app/${key}/reactions`;
+    const change = (env: Env, fields: { eventId?: string; emoji: string | null; expectedRevision: number; requestId: string }) =>
+      signed(env, 'PUT', route, { eventId: 'base', ...fields });
+    const exactRead = e.svc.store.exactMessageCandidates.bind(e.svc.store);
+    const ambiguous = vi.spyOn(e.svc.store, 'exactMessageCandidates').mockImplementation((ref, id, kind) =>
+      id === 'base' ? [...exactRead(ref, id, kind), ...exactRead(ref, 'other-base', kind)] : exactRead(ref, id, kind));
+    try {
+      expect((await change(e, { emoji: '👍', expectedRevision: 0, requestId: rid() })).body)
+        .toEqual({ error: 'reaction-target-unavailable' });
+    } finally { ambiguous.mockRestore(); }
+    const noop = { emoji: null, expectedRevision: 0, requestId: rid() };
+    expect((await change(e, noop)).body.own).toEqual({ emoji: null, revision: 0 });
+    const candidates = [ { emoji: '👍', expectedRevision: 0, requestId: rid() }, { emoji: '❤️', expectedRevision: 0, requestId: rid() } ];
+    const results = await Promise.all([change(e, candidates[0]!), change(other, candidates[1]!)]);
+    expect(results.map((r) => r.status).sort()).toEqual([200, 409]);
+    const winner = results.find((r) => r.status === 200)!;
+    const loser = results.find((r) => r.status === 409)!;
+    expect(loser.body).toMatchObject({ error: 'reaction-revision-conflict', own: winner.body.own });
+    expect((await change(other, noop)).body.own).toEqual({ emoji: null, revision: 0 });
+    const clear = { emoji: null, expectedRevision: 1, requestId: rid() };
+    const finish = vi.spyOn(e.svc.deps.requests, 'finish').mockImplementation((actor, requestId) => {
+      e.svc.deps.requests.markUnknown(actor, requestId);
+      return false;
+    });
+    try { expect((await change(e, clear)).body.own).toEqual({ emoji: null, revision: 2 }); }
+    finally { finish.mockRestore(); }
+    e.svc.deps.requests = new MobileChatRequestStore(e.dir);
+    expect((await change(other, clear)).body.own).toEqual({ emoji: null, revision: 2 });
+    const sharedId = rid();
+    const cross = await Promise.all([
+      change(e, { eventId: 'base', emoji: '🎉', expectedRevision: 2, requestId: sharedId }),
+      change(other, { eventId: 'other-base', emoji: '🎉', expectedRevision: 0, requestId: sharedId }),
+    ]);
+    expect(cross.map((r) => r.status).sort()).toEqual([200, 409]);
+    expect(cross.find((r) => r.status === 409)!.body.error).toBe('payload-conflict');
+    const held = await signed(other, 'GET', route + '?eventId=base');
+    expect(held.status).toBe(200);
+    expect(held.body).toEqual({ eventId: 'base', own: e.svc.store.ownReaction(key, 'base', 'owner') });
+    const facts = e.svc.store.syncEvents(key, null).events.filter((row) => row.kind === 'reaction');
+    expect(facts).toHaveLength(3);
+    const history = await signed(e, 'GET', `/mobile/chat/app/${key}/messages`);
+    expect(history.body.messages).toHaveLength(2);
+    expect(history.body.messages.find((m: { eventId: string }) => m.eventId === 'base').reaction.own.revision).toBeGreaterThanOrEqual(2);
+    const sync = await signed(e, 'GET', `/mobile/chat/app/${key}/events`);
+    expect(JSON.stringify(sync.body)).not.toContain('reactionActor');
     expect(e.dispatched).toHaveLength(0);
   });
 });

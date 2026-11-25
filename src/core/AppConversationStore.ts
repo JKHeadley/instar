@@ -42,10 +42,11 @@ import { canonicalConversationKey, cleanConversationTitle, derivedEventId } from
 import { type AppAttachment, validateAttachments, MAX_PURGE_BATCH, mediaPreview } from './appMediaTypes.js';
 import { validConversationOwner, type ConversationOwner } from './MobilePeople.js';
 import type { ReceiptSignature, StoredReplyReference } from './AppRecordSignatures.js';
+import { isReaderKey } from './ConversationReadMarkers.js';
 import type { AccessStamp } from './TeamAccessMerge.js';
 import { compareCreatedEvidence, creationBaseDigest, creationContextDigest, validateAppCreationContext, type AppCreationContext } from './AppCreationContext.js';
 
-export type AppEventKind = 'created' | 'label' | 'tombstone' | 'message' | 'delivery' | 'media-message' | 'purge' | 'platform-media' | 'transcript' | 'pin';
+export type AppEventKind = 'created' | 'label' | 'tombstone' | 'message' | 'delivery' | 'media-message' | 'purge' | 'platform-media' | 'transcript' | 'pin' | 'reaction';
 export type DeliveryEventState = 'delivered' | 'refused' | 'intercepted' | 'unknown';
 export type ReducedDeliveryState = DeliveryEventState | 'pending';
 
@@ -153,7 +154,20 @@ export interface PinEvent extends AppEventBase {
   source: 'app' | 'telegram';
 }
 export type PinnedByRole = 'owner' | 'msp' | 'team' | 'telegram';
-export type AppEvent = CreatedEvent | LabelEvent | TombstoneEvent | MessageEvent | DeliveryEvent | MediaMessageEvent | PurgeEvent | PlatformMediaEvent | TranscriptEvent | PinEvent;
+export const APP_REACTION_EMOJI = ['👍', '❤️', '😂', '😮', '😢', '🎉'] as const;
+export type AppReactionEmoji = typeof APP_REACTION_EMOJI[number];
+export function isAppReactionEmoji(value: unknown): value is AppReactionEmoji {
+  return APP_REACTION_EMOJI.some((emoji) => emoji === value);
+}
+export interface ReactionEvent extends AppEventBase {
+  kind: 'reaction';
+  reactionTarget: string;
+  reactionActor: string;
+  reactionEmoji: AppReactionEmoji | null;
+  reactionRevision: number;
+}
+
+export type AppEvent = CreatedEvent | LabelEvent | TombstoneEvent | MessageEvent | DeliveryEvent | MediaMessageEvent | PurgeEvent | PlatformMediaEvent | TranscriptEvent | PinEvent | ReactionEvent;
 
 /** The id of a pinned message: an app message id, a Telegram message id, or a Slack ts. */
 export const PIN_MESSAGE_ID_RE = /^[A-Za-z0-9._:-]{1,128}$/;
@@ -269,6 +283,7 @@ const SCHEMA = [
   `CREATE TABLE IF NOT EXISTS transcripts (attachmentId TEXT PRIMARY KEY, canonicalKey TEXT NOT NULL, eventId TEXT NOT NULL, at TEXT NOT NULL, machineId TEXT NOT NULL)`,
   // Pinned messages (conversation-pinned-messages): the winning pin event per message.
   `CREATE TABLE IF NOT EXISTS pins (canonicalKey TEXT NOT NULL, pinnedMessageId TEXT NOT NULL, eventId TEXT NOT NULL, state TEXT NOT NULL, at TEXT NOT NULL, machineId TEXT NOT NULL, PRIMARY KEY (canonicalKey, pinnedMessageId))`,
+  `CREATE TABLE IF NOT EXISTS reactions (canonicalKey TEXT NOT NULL, target TEXT NOT NULL, actor TEXT NOT NULL, revision INTEGER NOT NULL, eventId TEXT NOT NULL, emoji TEXT, PRIMARY KEY(canonicalKey, target, actor, revision, eventId), FOREIGN KEY(canonicalKey, eventId) REFERENCES events(canonicalKey, eventId) ON DELETE CASCADE)`,
   `CREATE INDEX IF NOT EXISTS pins_state ON pins(canonicalKey, state, at)`,
 ];
 
@@ -381,6 +396,14 @@ export function validateAppEvent(raw: unknown): AppEvent | null {
       if (!messageId || !attachmentId || text === null || !provider) return null;
       if (r.late !== undefined && r.late !== true) return null;
       return { ...base, kind: 'transcript', messageId, attachmentId, text, provider, ...(r.late === true ? { late: true as const } : {}) };
+    }
+    case 'reaction': {
+      const reactionTarget = str(r.reactionTarget, 128);
+      if (!reactionTarget || /[\x00-\x1f\x7f]/.test(reactionTarget) || !isReaderKey(r.reactionActor)
+        || (r.reactionEmoji !== null && !isAppReactionEmoji(r.reactionEmoji))
+        || typeof r.reactionRevision !== 'number' || !Number.isSafeInteger(r.reactionRevision) || r.reactionRevision < 1) return null;
+      return { ...base, kind: 'reaction', reactionTarget, reactionActor: r.reactionActor,
+        reactionEmoji: r.reactionEmoji, reactionRevision: r.reactionRevision };
     }
     case 'pin': {
       const pinnedMessageId = typeof r.pinnedMessageId === 'string' && PIN_MESSAGE_ID_RE.test(r.pinnedMessageId) ? r.pinnedMessageId : null;
@@ -625,28 +648,30 @@ export class AppConversationStore {
     try {
       const buf = Buffer.alloc(size - from);
       fs.readSync(fd, buf, 0, buf.length, from);
-      let offset = from;
-      let start = 0;
-      for (let i = 0; i < buf.length; i++) {
-        if (buf[i] !== 0x0a) continue;
-        const lineBuf = buf.subarray(start, i);
-        const lineOffset = offset;
-        offset += i - start + 1;
-        start = i + 1;
-        let parsed: unknown;
-        try { parsed = JSON.parse(lineBuf.toString('utf8')); } catch {
-          this.reportOnce(`bad-line:${fileName}:${lineOffset}`, `an unreadable committed line in ${fileName} at byte ${lineOffset} was skipped (left in place)`);
-          continue;
+      this.db.transaction(() => {
+        let offset = from;
+        let start = 0;
+        for (let i = 0; i < buf.length; i++) {
+          if (buf[i] !== 0x0a) continue;
+          const lineBuf = buf.subarray(start, i);
+          const lineOffset = offset;
+          offset += i - start + 1;
+          start = i + 1;
+          let parsed: unknown;
+          try { parsed = JSON.parse(lineBuf.toString('utf8')); } catch {
+            this.reportOnce(`bad-line:${fileName}:${lineOffset}`, `an unreadable committed line in ${fileName} at byte ${lineOffset} was skipped (left in place)`);
+            continue;
+          }
+          const ev = validateAppEvent(parsed);
+          const seq = (parsed as { ingestSeq?: unknown }).ingestSeq;
+          if (!ev || typeof seq !== 'number') {
+            this.reportOnce(`bad-line:${fileName}:${lineOffset}`, `an invalid event in ${fileName} at byte ${lineOffset} was skipped (left in place)`);
+            continue;
+          }
+          this.indexEvent({ ...ev, ingestSeq: seq }, fileName, lineOffset, lineBuf.length);
         }
-        const ev = validateAppEvent(parsed);
-        const seq = (parsed as { ingestSeq?: unknown }).ingestSeq;
-        if (!ev || typeof seq !== 'number') {
-          this.reportOnce(`bad-line:${fileName}:${lineOffset}`, `an invalid event in ${fileName} at byte ${lineOffset} was skipped (left in place)`);
-          continue;
-        }
-        this.indexEvent({ ...ev, ingestSeq: seq }, fileName, lineOffset, lineBuf.length);
-      }
-      this.db.prepare('UPDATE files SET indexedBytes = ? WHERE fileName = ?').run(offset, fileName);
+        this.db.prepare('UPDATE files SET indexedBytes = ? WHERE fileName = ?').run(offset, fileName);
+      })();
     } finally { fs.closeSync(fd); }
   }
 
@@ -858,6 +883,10 @@ export class AppConversationStore {
         return;
       case 'purge':
         for (const id of ev.attachmentIds) this.purgeMediaRef(id);
+        return;
+      case 'reaction':
+        this.db.prepare('INSERT OR IGNORE INTO reactions (canonicalKey, target, actor, revision, eventId, emoji) VALUES (?, ?, ?, ?, ?, ?)')
+          .run(canonicalKey, ev.reactionTarget, ev.reactionActor, ev.reactionRevision, ev.eventId, ev.reactionEmoji);
         return;
       case 'pin': {
         // Never a chat message: no messages row, no preview, no activity. One winner per message.
@@ -1403,6 +1432,24 @@ export class AppConversationStore {
     out.reverse();
     const oldest = page[page.length - 1];
     return { messages: out, nextBefore: more && oldest ? `${oldest.at},${oldest.eventId}` : null };
+  }
+
+  /** A gap or competing fact makes the slot unfit for a comparable write. */
+  ownReaction(conversationKey: string, target: string, actor: string): { emoji: AppReactionEmoji | null; revision: number } | null {
+    const canonicalKey = canonicalConversationKey(conversationKey);
+    const file = this.db.prepare('SELECT fileName, indexedBytes FROM files WHERE canonicalKey = ?')
+      .get(canonicalKey) as { fileName: string; indexedBytes: number } | undefined;
+    const custodian = this.getCreationRecord(conversationKey)?.machineId;
+    if (!custodian || !file || fs.statSync(path.join(this.dir, file.fileName)).size !== file.indexedBytes) return null;
+    const scope = [canonicalKey, target, actor, custodian];
+    const from = 'FROM reactions r JOIN events e ON r.canonicalKey = e.canonicalKey AND r.eventId = e.eventId WHERE r.canonicalKey = ? AND r.target = ? AND r.actor = ? AND e.machineId = ?';
+    const summary = this.db.prepare(`SELECT COUNT(*) AS total, COUNT(DISTINCT r.revision) AS distinctCount, MAX(r.revision) AS revision ${from}`)
+      .get(...scope) as { total: number; distinctCount: number; revision: number | null };
+    if (summary.total === 0) return { emoji: null, revision: 0 };
+    if (summary.total !== summary.distinctCount || summary.distinctCount !== summary.revision) return null;
+    const row = this.db.prepare(`SELECT r.emoji, r.revision ${from} AND r.revision = ?`)
+      .get(...scope, summary.revision) as { emoji: AppReactionEmoji | null; revision: number } | undefined;
+    return row ?? null;
   }
 
   /** Resolve using the selected ID domain. Legacy ambiguity is decided by the caller's ACL. */

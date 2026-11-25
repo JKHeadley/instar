@@ -4,7 +4,7 @@
  * deterministic delivery reduction, the derived SQLite index (catch-up + rebuild), browse/sync
  * reads, title resolution, tombstones, and the replicated-kind wire round trip.
  */
-import { describe, it, expect, afterAll } from 'vitest';
+import { describe, it, expect, afterAll, vi } from 'vitest';
 import crypto from 'node:crypto';
 import fs from 'node:fs';
 import os from 'node:os';
@@ -92,6 +92,43 @@ describe('AppConversationStore', () => {
       expect(unknown).toMatchObject({ replyTo });
       expect(unknown).not.toHaveProperty('receipt');
     } finally { reopened.close(); }
+  });
+
+  it('rebuilds reaction slots and refuses replica conflicts and missing revisions', () => {
+    const { store, dir } = mk();
+    store.append(created());
+    store.append(msg('base', 1));
+    const fact = (revision: number, eventId: string, emoji: '👍' | null) => ({
+      kind: 'reaction' as const, eventId, conversationKey: KEY, at: at(2), machineId: 'm1',
+      reactionTarget: 'ev-base', reactionActor: 'owner', reactionEmoji: emoji, reactionRevision: revision,
+    });
+    expect(store.ownReaction(KEY, 'ev-base', 'owner')).toEqual({ emoji: null, revision: 0 });
+    store.append(fact(2, 'clear', null));
+    expect(store.ownReaction(KEY, 'ev-base', 'owner')).toBeNull();
+    store.append(fact(1, 'add', '👍'));
+    expect(store.ownReaction(KEY, 'ev-base', 'owner')).toEqual({ emoji: null, revision: 2 });
+    store.rebuildIndex();
+    expect(store.ownReaction(KEY, 'ev-base', 'owner')).toEqual({ emoji: null, revision: 2 });
+    const spoofed = buildAppConversationRecordData(fact(3, 'spoofed', '👍'))({ physical: 1, logical: 0, node: 'm2' }, 'm2')!;
+    expect(appEventFromReplicatedData(spoofed)).toBeNull();
+    store.ingestReplicated({ ...fact(3, 'non-holder', '👍'), machineId: 'm2' });
+    expect(store.ownReaction(KEY, 'ev-base', 'owner')).toEqual({ emoji: null, revision: 2 });
+    fs.appendFileSync(fileOf(dir), JSON.stringify({ ...fact(3, 'late-durable', '👍'), ingestSeq: 6 }) + '\n');
+    expect(store.ownReaction(KEY, 'ev-base', 'owner')).toBeNull();
+    const internals = store as unknown as { indexEvent: (...args: unknown[]) => void };
+    const indexEvent = internals.indexEvent.bind(store);
+    const interrupted = vi.spyOn(internals, 'indexEvent').mockImplementationOnce((...args) => {
+      indexEvent(...args);
+      throw new Error('interrupted before checkpoint');
+    });
+    try { expect(() => store.catchUp()).toThrow('interrupted before checkpoint'); }
+    finally { interrupted.mockRestore(); }
+    expect(store.getEvent(KEY, 'late-durable')).toBeNull();
+    expect(store.ownReaction(KEY, 'ev-base', 'owner')).toBeNull();
+    store.catchUp();
+    expect(store.ownReaction(KEY, 'ev-base', 'owner')).toEqual({ emoji: '👍', revision: 3 });
+    store.append(fact(2, 'conflict', '👍'));
+    expect(store.ownReaction(KEY, 'ev-base', 'owner')).toBeNull();
   });
 
   it('captures a bounded content-free registration frontier including tombstones', () => {
