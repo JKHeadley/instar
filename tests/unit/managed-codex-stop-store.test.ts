@@ -30,12 +30,13 @@ describe('managed Codex Stop work claims', () => {
     const directory = fs.mkdtempSync(path.join(os.tmpdir(), 'managed-stop-store-'));
     const file = path.join(directory, 'claims.sqlite');
     const db = new Database(file);
+    const nativeStop = { ...first, sessionId: 'native-worker' };
     let receipt;
     try {
       const store = new ManagedCodexStopStore(db);
       store.reserve('work', { ...identity, remaining: 2 });
-      store.activate(identity.sessionId);
-      receipt = store.decide(first).directive;
+      expect(store.bindNative(identity.sessionId, nativeStop.sessionId)).toBe(true);
+      receipt = store.decide(nativeStop).directive;
       expect(receipt).toEqual({ cycle: 'first', marker: 'first-marker' });
     } finally {
       db.close();
@@ -43,10 +44,12 @@ describe('managed Codex Stop work claims', () => {
     const reopened = new Database(file);
     try {
       const store = new ManagedCodexStopStore(reopened);
-      expect(store.decide(first).directive).toBeUndefined();
-      expect(store.decide({ ...first, cycle: 'second' }).directive).toBeUndefined();
+      expect(store.reserve('work', { ...identity, sessionId: 'replacement', remaining: 2 })).toBe(false);
+      expect(store.hasEnrollment('replacement')).toBe(false);
+      expect(store.decide(nativeStop)).toEqual({ managed: true, directive: undefined });
+      expect(store.decide({ ...nativeStop, cycle: 'second' }).directive).toBeUndefined();
       expect(store.pause(identity.sessionId)).toBe(true);
-      expect(store.decide({ ...first, cycle: 'second', receipt }).directive).toBeUndefined();
+      expect(store.decide({ ...nativeStop, cycle: 'second', receipt }).directive).toBeUndefined();
       const row = reopened.prepare('SELECT claim_json FROM managed_codex_work_claims').get() as { claim_json: string };
       expect(JSON.parse(row.claim_json).enrollment).toMatchObject({ remaining: 1, issuedCycles: ['first'] });
       expect(JSON.parse(row.claim_json).enrollment.outstanding).toBeUndefined();
