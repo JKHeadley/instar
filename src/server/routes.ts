@@ -3527,7 +3527,7 @@ export function createRoutes(ctx: RouteContext): Router {
               signal: AbortSignal.timeout(5000),
             });
             if (!(await pinned.json() as { ok?: boolean }).ok) console.warn('[setup] Lifeline greeting delivered; pin unavailable');
-          } catch { console.warn('[setup] Lifeline greeting delivered; pin unavailable'); }
+          } catch { /* @silent-fallback-ok — the greeting already delivered and the missing pin is logged. */ console.warn('[setup] Lifeline greeting delivered; pin unavailable'); }
         }
         return receipt;
       } };

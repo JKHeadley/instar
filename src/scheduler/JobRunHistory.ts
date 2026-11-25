@@ -788,7 +788,7 @@ export class JobRunHistory {
         this.flushLedgerDirectories();
         console.log(`[JobRunHistory] Compacted ${removed} duplicate entries (${deduped.length} unique runs preserved)`);
       } catch (error) {
-        // History can still be read when optional startup compaction fails.
+        // @silent-fallback-ok — the warning reports optional compaction failure and history stays readable.
         console.warn('[JobRunHistory] Startup compaction did not complete:', error);
       } finally {
         this.cachedRuns = null;

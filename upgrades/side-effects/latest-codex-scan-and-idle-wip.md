@@ -147,3 +147,11 @@ The focused run passed 73 tests. Added cases simulate a failed rename and a conc
 A regression test that appended in the final rename callback reproduced the loss of a new job history row. Startup compaction and both repository appenders now acquire the same advisory lock on a stable path in the canonical ledger directory. The startup path skips compaction when another writer holds the lock. An appender waits for the replacement to complete and then opens the current ledger path. The cross-process test makes a second scheduler writer attempt the lock immediately before rename and checks that its row survives on the replacement ledger.
 
 The lock is machine-local. A waiting writer can recover a stale lock after 30 seconds and reports an append failure through the existing error path if it cannot acquire the lock before its deadline. This time-based lock assumes critical sections complete within the stale interval. Older binaries and external direct writers do not participate, so production rollout must exclude mixed-version writers to the same state directory. The previous source-change check remains in place and detects an outside write during staging. Cleanup remains disabled. Reverting the lock restores the previous custody assumptions and requires the same writer exclusion during rollout.
+
+## Local Verify registry and fallback checks
+
+The exact-head verification stopped in the unit lane because two specifications named missing rollout entries and the silent-fallback scan exceeded its existing limit. The registry now names both opt-in features and records independent proof requirements for their test, development and fleet stages. This change adds no activation, emits no proof and does not authorize cleanup or model switching.
+
+The fallback review records why unavailable doorway configuration and damaged evidence refuse work, why the compaction warning is sufficient for its recoverable failure, and why the existing message housekeeping paths can continue. The numerical limit and scanner are unchanged. There is no change to the covered fallback behavior.
+
+The focused registry and fallback recheck passed all 12 cases after validating the rollout metrics against the shipped schema.

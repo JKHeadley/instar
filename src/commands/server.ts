@@ -4344,9 +4344,9 @@ function wireIMessageRouting(
         const cutoff = Date.now() - 3_600_000;
         for (const f of fs.readdirSync(tmpDir)) {
           const fp = path.join(tmpDir, f);
-          try { if (fs.statSync(fp).mtimeMs < cutoff) SafeFsExecutor.safeUnlinkSync(fp, { operation: 'src/commands/server.ts:1257' }); } catch { /* ignore */ }
+          try { if (fs.statSync(fp).mtimeMs < cutoff) SafeFsExecutor.safeUnlinkSync(fp, { operation: 'src/commands/server.ts:1257' }); } catch { /* @silent-fallback-ok — optional stale bootstrap cleanup never affects the new message. */ }
         }
-      } catch { /* non-critical */ }
+      } catch { /* @silent-fallback-ok — listing old bootstrap files is optional for delivering a new message. */ }
       const senderSlug = sender.replace(/[^a-zA-Z0-9]/g, '').slice(-8);
       const filepath = path.join(tmpDir, `bootstrap-${senderSlug}-${Date.now()}-${Math.random().toString(36).slice(2, 8)}.txt`);
       fs.writeFileSync(filepath, bootstrapMessage, { mode: 0o600 });

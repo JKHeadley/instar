@@ -1,0 +1,18 @@
+{
+  "version": 2,
+  "slug": "latest-codex-scan-and-idle-wip",
+  "sessionId": "bcc82a0c-f81e-440b-88eb-304eb7ee4f4c",
+  "timestamp": "2026-11-25T13:04:03.330Z",
+  "artifactPath": "upgrades/side-effects/latest-codex-scan-and-idle-wip.md",
+  "artifactSha256": "b9d64f2d8cb7eff949d6655b0a5aa82dae558ce3ccabd6fff593fe9de2ffcb1f",
+  "specPath": "docs/specs/latest-codex-doorway-scan.md",
+  "coveredFiles": [
+    "src/data/feature-ladders.json",
+    "upgrades/side-effects/latest-codex-scan-and-idle-wip.md"
+  ],
+  "phase": "complete",
+  "tier": 2,
+  "tierReasoning": "Correction to the rollout safeguards covered by the converged doorway scan spec",
+  "secondPass": "not-required",
+  "reviewerConcurred": null
+}

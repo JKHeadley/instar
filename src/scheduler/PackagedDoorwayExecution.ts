@@ -23,7 +23,7 @@ export function readDoorwayExecutionConfig(stateDir: string): { packagedExecutio
       || (scan.packagedExecution !== undefined && typeof scan.packagedExecution !== 'boolean')) return null;
     return scan;
   } catch {
-    // An unavailable config cannot authorize packaged probes.
+    // @silent-fallback-ok — null explicitly refuses packaged probe admission.
     return null;
   }
 }

@@ -83,6 +83,7 @@ export function selectDoorwayRetentionReferences(
         if (!admissions.has(doorId)) admissions.set(doorId, run.runId);
       }
     } catch {
+      // @silent-fallback-ok — damaged admission evidence makes the snapshot unavailable.
       return null;
     }
   }
@@ -126,6 +127,7 @@ export function verifyDoorwayRetentionReferences(
         doors = new Set(admissionDoors(run, machineId, store));
         admissions.set(runId, doors);
       } catch {
+        // @silent-fallback-ok — refuse the cursor when referenced evidence cannot be opened.
         return false;
       }
     }

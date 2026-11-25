@@ -1,0 +1,23 @@
+{
+  "version": 2,
+  "slug": "latest-codex-scan-and-idle-wip",
+  "sessionId": "bcc82a0c-f81e-440b-88eb-304eb7ee4f4c",
+  "timestamp": "2026-11-25T12:58:06.029Z",
+  "artifactPath": "upgrades/side-effects/latest-codex-scan-and-idle-wip.md",
+  "artifactSha256": "54ffcf17ca82967921bdb94b2acd37792722d95d4a6cbc9d73fa12dc55fb6736",
+  "specPath": "docs/specs/latest-codex-doorway-scan.md",
+  "coveredFiles": [
+    "src/commands/server.ts",
+    "src/core/VerifiedDoorwayRetention.ts",
+    "src/data/feature-ladders.json",
+    "src/scheduler/JobRunHistory.ts",
+    "src/scheduler/PackagedDoorwayExecution.ts",
+    "src/server/routes.ts",
+    "upgrades/side-effects/latest-codex-scan-and-idle-wip.md"
+  ],
+  "phase": "complete",
+  "tier": 2,
+  "tierReasoning": "Restore two full verification gates without changing runtime flags or fallback authority",
+  "secondPass": "not-required",
+  "reviewerConcurred": null
+}
