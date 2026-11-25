@@ -52,7 +52,10 @@ describe('Camera receipt journal restart', () => {
         withConversationLock: (_conversation, run) => run(),
         readersReady: () => true, holdsLease: epoch => epoch === scope.leaseEpoch,
       });
-      return { journal, emitter, adapter: new CameraAcceptanceJournalAdapter(scope, backend) };
+      return { journal, emitter, adapter: new CameraAcceptanceJournalAdapter(scope, backend, {
+        principal: 'independent-reviewer',
+        allows: (requirement, epoch) => requirement.verifier === 'independent-reviewer' && epoch === 1,
+      }) };
     }
 
     try {

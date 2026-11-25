@@ -4,6 +4,7 @@ import {
 } from './CameraAcceptanceJournalRecord.js';
 import { foldCameraJournalState } from './CameraAcceptanceJournalState.js';
 import type { CameraPassWithdrawalTransaction, CameraReceiptTransaction, CameraRequestTransaction } from './CameraAcceptanceRequests.js';
+import type { CameraVerifierAuthorization } from './CameraVerifierAuth.js';
 import { buildCameraAcceptancePut } from './ChiefOfStaffStore.js';
 
 type CameraTransaction = CameraPassWithdrawalTransaction & CameraReceiptTransaction & CameraRequestTransaction;
@@ -22,7 +23,11 @@ export interface CameraJournalAdapterDeps {
 }
 
 export class CameraAcceptanceJournalAdapter {
-  constructor(private readonly scope: CameraJournalScope, private readonly deps: CameraJournalAdapterDeps) {}
+  constructor(
+    private readonly scope: CameraJournalScope,
+    private readonly deps: CameraJournalAdapterDeps,
+    private readonly authorization: CameraVerifierAuthorization,
+  ) {}
 
   withWriteLock<T>(operation: (transaction: CameraTransaction | null) => Promise<T>): Promise<T> {
     return this.deps.withSnapshot(this.scope, async snapshot => {
@@ -33,6 +38,8 @@ export class CameraAcceptanceJournalAdapter {
       if (!state) return operation(null);
 
       const { requirement, assignmentEpoch, receipts, requests, submissions, withdrawals } = state;
+      const authorized = () => this.authorization.allows(requirement, assignmentEpoch) === true;
+      if (!authorized()) return operation(null);
       let active = true;
       let pendingWrite: Promise<void> | undefined;
       const assertBinding = (input: Pick<typeof requirement, 'candidate' | 'revision' | 'verifier'>) => {
@@ -52,6 +59,7 @@ export class CameraAcceptanceJournalAdapter {
           || snapshot.authority.verify(cameraJournalSigningText(conversation, record), record.signature) !== true) {
           throw new Error('Invalid Camera journal record');
         }
+        if (!authorized()) throw new Error('Camera verifier authority changed before append');
         await snapshot.emitDurably(cameraJournalRecordKey(conversation, record), buildCameraAcceptancePut(conversation, record));
       };
 

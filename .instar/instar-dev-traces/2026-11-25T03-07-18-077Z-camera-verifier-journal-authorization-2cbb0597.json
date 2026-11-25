@@ -1,0 +1,19 @@
+{
+  "version": 2,
+  "slug": "camera-verifier-journal-authorization",
+  "sessionId": "ab1b66cc-de80-48bd-9b94-4ede369ccb55",
+  "timestamp": "2026-11-25T03:07:18.077Z",
+  "artifactPath": "upgrades/side-effects/camera-verifier-journal-authorization.md",
+  "artifactSha256": "336ecd4e06fc242b7b254cfc4f9e69fae163e86936c7ecb14a8f70d4b417e01d",
+  "specPath": "docs/specs/independent-owner-surface-acceptance.md",
+  "coveredFiles": [
+    "src/core/CameraAcceptanceJournalAdapter.ts",
+    "tests/integration/camera-acceptance-journal-restart.test.ts",
+    "tests/unit/camera-acceptance-journal-adapter.test.ts"
+  ],
+  "phase": "complete",
+  "tier": 2,
+  "tierReasoning": "The checkpoint adds authorization enforcement to the dark journal adapter without registering a server route.",
+  "secondPass": "true",
+  "reviewerConcurred": true
+}

@@ -24,6 +24,7 @@ function fixture() {
     data: buildCameraAcceptancePut(scope.conversationKey, { ...enrollment, signature })(binding, holder)!,
   }];
   const emit = vi.fn();
+  const allows = vi.fn(() => true);
   const adapter = new CameraAcceptanceJournalAdapter(scope, {
     withSnapshot: (_scope, operation) => operation({
       entries, authority: {
@@ -37,8 +38,8 @@ function fixture() {
         entries.push({ origin: holder, data: build(binding, holder)! });
       },
     }),
-  });
-  return { adapter, entries, emit };
+  }, { principal: 'reviewer', allows });
+  return { adapter, entries, emit, allows };
 }
 
 describe('Camera journal transaction adapter', () => {
@@ -67,6 +68,16 @@ describe('Camera journal transaction adapter', () => {
       .rejects.toThrow('Stale Camera journal input');
     const escaped = await adapter.withWriteLock(async tx => tx);
     expect(() => escaped?.appendRequest(good)).toThrow('Camera journal transaction unavailable for writes');
+    expect(emit).not.toHaveBeenCalled();
+  });
+
+  it('checks the active assignment under the lock and rechecks before submission', async () => {
+    const { adapter, emit, allows } = fixture();
+    allows.mockReturnValueOnce(false);
+    await expect(issueCameraVerifierRequest(adapter, 'reviewer')).resolves.toEqual({ status: 'unavailable' });
+    allows.mockReturnValueOnce(true).mockReturnValueOnce(false);
+    await expect(issueCameraVerifierRequest(adapter, 'reviewer')).rejects.toThrow('authority changed before append');
+    expect(allows).toHaveBeenCalledWith(expect.objectContaining({ verifier: 'reviewer' }), 1);
     expect(emit).not.toHaveBeenCalled();
   });
 
