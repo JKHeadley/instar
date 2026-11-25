@@ -18,6 +18,7 @@ import { submitView, completionView, workingView, COMPLETION_POLL_MS, COMPLETION
 // Tick state survives the page's 30-second re-render (spec one-tap-unattended-repair §6).
 const autoRepairTicks = new Map(); // machineId → boolean, only where the operator changed the default
 let autoRepairResults = null;      // { at, mode, results: [{ machineId, ... }] } from the last tap
+const latestRender = new WeakMap();
 
 const ACCOUNT_LAYOUT_KEY = 'instar.accounts.layout';
 let accountLayout = accountLayoutPreferences();
@@ -56,21 +57,34 @@ async function getJson(path) {
   } catch { return { ok: false, status: 0, data: {} }; }
 }
 
-export async function renderAccounts(main, ctx, current = () => true) {
+export async function renderAccounts(main, ctx) {
   const { get } = ctx;
+  const isCurrent = () => main.isConnected && (ctx.isCurrent?.() ?? true);
+  if (!isCurrent()) return;
+  const visit = {
+    isCurrent,
+    refresh: () => renderAccounts(main, ctx),
+    later(callback, ms) {
+      const timer = setTimeout(() => { if (isCurrent()) callback(); }, ms);
+      ctx.onDispose?.(() => clearTimeout(timer));
+    },
+  };
+  // The console keeps these rows visible during its same-page refresh. A new click uses the
+  // current visit, while an action that already opened a dialog keeps its original visit.
+  const currentVisit = () => latestRender.get(main);
+  latestRender.set(main, visit);
   main.classList.add('accounts-page');
   firstPaint(main, el('section', { class: 'hero page-hero' }, el('div', { class: 'eyebrow', text: 'Capacity · Accounts' }), el('h1', { class: 'page-title skeleton', text: 'Loading accounts' })));
   const [pool, relogin, inUse, machines] = await Promise.all([get('/subscription-pool?scope=pool', 8000), get('/subscription-relogin?scope=pool&retryTimeout=1', 16000), get('/subscription-pool/in-use'), get('/pool')]);
-  if (!current()) return;
+  if (!isCurrent() || currentVisit() !== visit) return;
   const names = machines.ok && Array.isArray(machines.data && machines.data.machines) ? Object.fromEntries(machines.data.machines.map((m) => [m.machineId, m.nickname])) : {};
   const episodes = relogin.ok && Array.isArray(relogin.data && relogin.data.episodes) ? relogin.data.episodes : [];
   const blockers = relogin.ok && Array.isArray(relogin.data && relogin.data.blockers) ? relogin.data.blockers : [];
   const autoRepair = buildAutoRepair(relogin, { names, blockers, poolMachines: machines });
   const page = buildAccountsPage(pool, Date.now(), { episodes, blockers, inUse: inUse.ok ? inUse.data : null, names, poolMachines: machines });
-  const refresh = (stillCurrent) => renderAccounts(main, ctx, stillCurrent);
   if (!page.ok) {
     setKids(main, pageHead({ eyebrow: 'Capacity · Accounts', headline: 'Accounts', tone: 'muted' }),
-      cantTell(page.reason), autoRepairSection(autoRepair, refresh), legacyLink());
+      cantTell(page.reason), autoRepairSection(autoRepair, currentVisit), legacyLink());
     return;
   }
 
@@ -84,7 +98,7 @@ export async function renderAccounts(main, ctx, current = () => true) {
       el('div', { class: 'rows' }, items.map((n) => el('div', { class: 'row' },
         el('span', { class: 'dot attn' }),
         el('span', { class: 'row-main' }, el('span', { class: 'row-title', text: n.label }), el('span', { class: 'row-sub', text: n.sub })),
-        el('span', { class: 'row-end' }, n.actionable ? el('button', { class: 'btn-quiet btn-small', type: 'button', text: n.action === 'start' ? 'Sign in' : n.action === 'retry' ? 'Try again' : 'Repair', onclick: () => startNeed(n, refresh) }) : null))))))) : null;
+        el('span', { class: 'row-end' }, n.actionable ? el('button', { class: 'btn-quiet btn-small', type: 'button', text: n.action === 'start' ? 'Sign in' : n.action === 'retry' ? 'Try again' : 'Repair', onclick: () => startNeed(n, currentVisit()) }) : null))))))) : null;
 
   const rows = el('div', { class: 'acct-groups' });
   let preferences = readAccountLayout();
@@ -92,7 +106,7 @@ export async function renderAccounts(main, ctx, current = () => true) {
     el('section', { class: 'list-section', 'aria-label': group.name || 'All accounts' },
       group.name ? el('div', { class: 'list-head' }, el('h3', { class: 'eyebrow', text: group.name }),
         el('span', { class: 'list-count', text: String(group.accounts.length) })) : null,
-      el('div', { class: 'list-rows' }, group.accounts.map(a => renderAccountRow(a, preferences.group === 'machine' ? group.key : null, refresh))))));
+      el('div', { class: 'list-rows' }, group.accounts.map(a => renderAccountRow(a, preferences.group === 'machine' ? group.key : null))))));
   const changeLayout = (field, value) => {
     preferences = accountLayout = accountLayoutPreferences({ ...preferences, [field]: value });
     try { localStorage.setItem(ACCOUNT_LAYOUT_KEY, JSON.stringify(preferences)); } catch { /* Keep the in-memory choice. */ }
@@ -105,7 +119,7 @@ export async function renderAccounts(main, ctx, current = () => true) {
     rows);
   repaint();
 
-  function renderAccountRow(a, machineGroup, refresh) {
+  function renderAccountRow(a, machineGroup) {
     const pct = a.tight ? Math.round(a.tight.pct) : null;
     // One labelled line per limit that applies (5-hour only when the account has one), each with
     // its own bar and its own reset, so a full 5-hour window never reads as the weekly one.
@@ -124,7 +138,7 @@ export async function renderAccounts(main, ctx, current = () => true) {
       wins,
       !wins || a.stale ? el('span', { class: 'acct-line', text: [!wins ? a.line : null, a.stale ? `reading from ${a.readingAge}` : null].filter(Boolean).join(' · ') }) : null,
       el('span', { class: 'chips' }, a.cells.map((c) => el('span', { class: `mchip ${c.state}`, text: c.machine }))));
-    row.addEventListener('click', () => openAccount(a, refresh));
+    row.addEventListener('click', () => openAccount(a, currentVisit()));
     return row;
   }
 
@@ -140,7 +154,7 @@ export async function renderAccounts(main, ctx, current = () => true) {
     pageHead({ eyebrow: 'Capacity · Accounts', headline: page.headline, sub: page.sub, tone: page.tone, facts: page.facts }),
     page.partial ? note(page.partial) : null,
     !relogin.ok ? note(`Couldn't read sign-in repairs: ${relogin.reason}.`) : null,
-    notices, needs, autoRepairSection(autoRepair, refresh), list, quotaForecastCard(get, page.accounts), legacyLink());
+    notices, needs, autoRepairSection(autoRepair, currentVisit), list, quotaForecastCard(get, page.accounts), legacyLink());
   const want = new URLSearchParams((location.hash.split('?')[1] || '')).get('s');
   if (want === 'needs') arrivalScroll(needs);
   if (want === 'auto-repair') arrivalScroll(main.querySelector('#sec-auto-repair'));
@@ -150,7 +164,8 @@ function legacyLink() {
   return el('p', { class: 'foot-note' }, el('a', { href: legacyHref('subscriptions'), text: 'Letting another machine use an account, and identity repair, are in the legacy Subscriptions tab' }));
 }
 
-function openAccount(a, refresh) {
+function openAccount(a, visit) {
+  if (!visit.isCurrent()) return;
   const lines = [
     { label: 'Kind', text: frameworkName(a.framework) },
     a.email ? { label: 'Email', text: a.email } : null,
@@ -163,8 +178,8 @@ function openAccount(a, refresh) {
       el('span', { class: 'row-main' }, el('span', { class: 'row-title', text: c.machine }), el('span', { class: 'row-sub', text: c.state === 'attn' && !c.actionable ? 'Needs sign-in; a unique account and machine name are needed first.' : c.label })),
       el('span', { class: 'row-end' }));
     // A machine that does not hold this account: a quiet Set up that starts a fresh sign-in there.
-    if (c.state === 'missing' && c.actionable) r.querySelector('.row-end').append(el('button', { class: 'btn-quiet', type: 'button', text: 'Set up', onclick: () => startNeed({ accountId: a.id, machineId: c.machineId, machine: c.machine, title: `Set up ${a.email || a.name} on ${c.machine}`, action: 'start', episodeId: null }, refresh) }));
-    if ((c.state === 'attn' || c.state === 'waiting') && c.actionable) r.querySelector('.row-end').append(el('button', { class: 'btn-quiet', type: 'button', text: 'Sign in', onclick: () => startNeed({ accountId: a.id, machineId: c.machineId, machine: c.machine, title: `Sign in ${a.email || a.name} on ${c.machine}`, action: c.episode && (c.episode.state === 'failed' || c.episode.state === 'suggested') ? (c.episode.state === 'failed' ? 'retry' : 'approve') : 'start', episodeId: c.episode ? c.episode.id : null }, refresh) }));
+    if (c.state === 'missing' && c.actionable) r.querySelector('.row-end').append(el('button', { class: 'btn-quiet', type: 'button', text: 'Set up', onclick: () => startNeed({ accountId: a.id, machineId: c.machineId, machine: c.machine, title: `Set up ${a.email || a.name} on ${c.machine}`, action: 'start', episodeId: null }, visit) }));
+    if ((c.state === 'attn' || c.state === 'waiting') && c.actionable) r.querySelector('.row-end').append(el('button', { class: 'btn-quiet', type: 'button', text: 'Sign in', onclick: () => startNeed({ accountId: a.id, machineId: c.machineId, machine: c.machine, title: `Sign in ${a.email || a.name} on ${c.machine}`, action: c.episode && (c.episode.state === 'failed' || c.episode.state === 'suggested') ? (c.episode.state === 'failed' ? 'retry' : 'approve') : 'start', episodeId: c.episode ? c.episode.id : null }, visit) }));
     return r;
   }));
   sheet({ title: a.name }, story(lines), el('section', { class: 'sheet-block' }, el('h3', { class: 'eyebrow', text: 'On each machine' }), machines),
@@ -172,22 +187,23 @@ function openAccount(a, refresh) {
 }
 
 /** One sign-in, start to finish, in sheets. */
-async function startNeed(n, refresh) {
-  if (n.action !== 'start') return repairNeed(n, refresh);
-  const pin = await askPin({ title: n.title, explain: `This starts a fresh sign-in for this account on ${n.machine}. Your PIN is used for this one request and not kept.`, adapter: 'body' });
+async function startNeed(n, visit) {
+  if (n.action !== 'start') return repairNeed(n, visit);
+  const pin = await askPin({ title: n.title, explain: `This starts a fresh sign-in for this account on ${n.machine}. Your PIN is used for this one request and not kept.`, adapter: 'body', isCurrent: visit.isCurrent });
   if (!pin) return;
   const status = el('p', { class: 'action-status', role: 'status', text: 'Starting the sign-in…' });
-  sheet({ title: n.title }, status);
+  const panel = visit.isCurrent() ? sheet({ title: n.title }, status) : null;
   const r = await postJson('/subscription-pool/matrix/start-cell', { accountId: n.accountId, machineId: n.machineId, pin: pin.pin });
   pin.pin = '';
+  if (!visit.isCurrent() || !panel?.isConnected) return;
   if (!r.ok || !r.data || !r.data.verificationUrl) {
     status.textContent = r.status === 403 ? 'That PIN was not accepted.' : (r.data && (r.data.error || r.data.message)) || `The server answered ${r.status}.`;
     return;
   }
-  signInSteps(n, r.data, refresh);
+  signInSteps(n, r.data, visit);
 }
 
-function signInSteps(n, d, refresh, firstError) {
+function signInSteps(n, d, visit, firstError) {
   const loginId = d.loginId || d.id || n.accountId;
   const code = el('input', { class: 'reason-input', inputmode: 'text', autocomplete: 'one-time-code', placeholder: 'Code from the sign-in page, if it shows one', 'aria-label': 'Sign-in code' });
   const status = el('p', { class: 'action-status', role: 'status', text: firstError || '' });
@@ -204,6 +220,7 @@ function signInSteps(n, d, refresh, firstError) {
     status);
   const danger = el('div', { class: 'sheet-danger' }, cancel);
   const panel = sheet({ title: n.title }, steps, danger);
+  const stillOpen = () => visit.isCurrent() && panel.isConnected;
 
   // Once the code is sent the form goes away: a spinner while it works, then one clear result.
   const show = (view) => {
@@ -218,16 +235,19 @@ function signInSteps(n, d, refresh, firstError) {
     steps.className = `signin-progress ${view.kind}`;
     steps.removeAttribute('aria-busy');
     if (view.kind === 'done') {
-      const done = el('button', { class: 'btn-primary btn-inline', type: 'button', text: 'Done', onclick: () => { closeSheet(); refresh(); } });
+      const done = el('button', { class: 'btn-primary btn-inline', type: 'button', text: 'Done', onclick: () => {
+        if (stillOpen()) { closeSheet(); visit.refresh(); }
+      } });
       setKids(steps, el('span', { class: 'signin-mark', 'aria-hidden': 'true', text: '✓' }), title, done);
-      setTimeout(() => refresh(), 0);
+      visit.later(visit.refresh, 0);
       return;
     }
-    const again = el('button', { class: 'btn-primary btn-inline', type: 'button', text: 'Start the sign-in again', onclick: () => { closeSheet(); startNeed({ ...n, action: 'start' }, refresh); } });
+    const again = el('button', { class: 'btn-primary btn-inline', type: 'button', text: 'Start the sign-in again', onclick: () => {
+      if (stillOpen()) { closeSheet(); startNeed({ ...n, action: 'start' }, visit); }
+    } });
     setKids(steps, el('span', { class: 'signin-mark', 'aria-hidden': 'true', text: '!' }), title, view.sub ? el('p', { class: 'row-sub', text: view.sub }) : null, again);
-    setTimeout(() => refresh(), 0);
+    visit.later(visit.refresh, 0);
   };
-  const stillOpen = () => panel.isConnected;
   const followCompletion = async () => {
     const giveUpAt = Date.now() + COMPLETION_GIVE_UP_MS;
     const q = `machineId=${encodeURIComponent(n.machineId || '')}&id=${encodeURIComponent(loginId)}`;
@@ -235,12 +255,14 @@ function signInSteps(n, d, refresh, firstError) {
       await new Promise((r) => setTimeout(r, COMPLETION_POLL_MS));
       if (!stillOpen()) return;
       const view = completionView(await getJson(`/subscription-pool/follow-me/completion?${q}`), n.machine);
+      if (!stillOpen()) return;
       if (view) { show(view); return; }
       if (Date.now() > giveUpAt) { show(GIVE_UP_VIEW); return; }
     }
   };
 
   submit.addEventListener('click', async () => {
+    if (!stillOpen()) return;
     const value = code.value.trim();
     if (!value) { status.textContent = 'Paste the code first.'; return; }
     code.value = '';
@@ -250,29 +272,39 @@ function signInSteps(n, d, refresh, firstError) {
     if (view.kind === 'form') {
       // The code did not go through: the same form returns, with what to do next.
       const fresh = view.freshLogin;
-      signInSteps(n, fresh ? { ...d, ...fresh, loginId: fresh.id || loginId } : d, refresh, view.error);
+      signInSteps(n, fresh ? { ...d, ...fresh, loginId: fresh.id || loginId } : d, visit, view.error);
       return;
     }
     show(view);
     if (view.kind === 'working') followCompletion();
   });
   cancel.addEventListener('click', async () => {
+    if (!stillOpen()) return;
     cancel.disabled = true;
     const r = await postJson('/subscription-pool/follow-me/cancel', { machineId: n.machineId, id: n.accountId });
+    if (!stillOpen()) return;
     status.textContent = r.ok ? 'Cancelled.' : (r.data && r.data.error) || 'Could not cancel.';
-    if (r.ok) setTimeout(() => { closeSheet(); refresh(); }, 800); else cancel.disabled = false;
+    if (r.ok) closeAndRefresh(visit, panel, 800); else cancel.disabled = false;
   });
 }
 
-async function repairNeed(n, refresh) {
-  const auth = await askPin({ title: n.title, explain: 'Automatic sign-in repair needs a recent PIN unlock. It is kept in this page only until it expires.', adapter: 'session' });
+function closeAndRefresh(visit, panel, delay) {
+  visit.later(() => {
+    if (panel.isConnected) closeSheet();
+    visit.refresh();
+  }, delay);
+}
+
+async function repairNeed(n, visit) {
+  const auth = await askPin({ title: n.title, explain: 'Automatic sign-in repair needs a recent PIN unlock. It is kept in this page only until it expires.', adapter: 'session', isCurrent: visit.isCurrent });
   if (!auth) return;
   const status = el('p', { class: 'action-status', role: 'status', text: 'Asking the repair to start…' });
-  sheet({ title: n.title }, status);
+  const panel = visit.isCurrent() ? sheet({ title: n.title }, status) : null;
   const r = await postJson('/subscription-relogin/repair-cell', { accountId: n.accountId, machineId: n.machineId, episodeId: n.episodeId, action: n.action }, { 'X-Instar-Operator-Session': auth.session });
+  if (!visit.isCurrent() || !panel?.isConnected) return;
   if (r.status === 401) { forgetOperatorSession(); status.textContent = 'The unlock expired. Tap the button again and enter your PIN.'; return; }
   status.textContent = r.ok ? `The repair is running on ${n.machine}. It usually takes a few minutes; this page updates on its own.` : (r.data && r.data.error) || `The server answered ${r.status}.`;
-  if (r.ok) setTimeout(() => { closeSheet(); refresh(); }, 2000);
+  if (r.ok) closeAndRefresh(visit, panel, 2000);
 }
 
 // ── Automatic sign-in repair (docs/specs/one-tap-unattended-repair.md §6) ──────────────────
@@ -281,7 +313,7 @@ function autoRepairTicked(row) {
   return autoRepairTicks.has(row.machineId) ? autoRepairTicks.get(row.machineId) : row.defaultTick;
 }
 
-function autoRepairSection(model, refresh) {
+function autoRepairSection(model, currentVisit) {
   if (model.rows.length === 0 && !model.unresolved) return null;
   const section = el('section', { class: 'page-sections', id: 'sec-auto-repair' },
     el('h2', { class: 'eyebrow', text: 'Automatic sign-in repair' }),
@@ -293,7 +325,7 @@ function autoRepairSection(model, refresh) {
       const button = event.currentTarget;
       for (const control of section.querySelectorAll('button[data-repair-retry]')) control.disabled = true;
       button.textContent = 'Checking…';
-      try { await refresh(() => section.isConnected); }
+      try { await currentVisit()?.refresh(); }
       finally {
         for (const control of section.querySelectorAll('button[data-repair-retry]')) control.disabled = false;
         button.textContent = 'Retry';
@@ -328,7 +360,7 @@ function autoRepairSection(model, refresh) {
     }
     const end = el('span', { class: 'row-end' });
     if (row.activationPending) end.append(el('button', { class: 'btn-quiet btn-small', type: 'button', text: 'Finish restarting',
-      onclick: () => autoRepairTap('finish-restart', [row], refresh) }));
+      onclick: () => autoRepairTap('finish-restart', [row], currentVisit()) }));
     return el('div', { class: 'row' },
       box ? el('label', { class: 'row-check' }, box) : el('span', { class: 'row-check', 'aria-hidden': 'true' }),
       el('span', { class: 'row-main' },
@@ -342,9 +374,9 @@ function autoRepairSection(model, refresh) {
   const sync = () => { const t = ticked(); turnOn.disabled = model.unresolved || !t.some((r) => r.canTurnOn); back.disabled = t.length === 0 || !t.every((r) => r.canSwitchBack); };
   section.addEventListener('change', sync);
   turnOn.addEventListener('click', () => {
-    if (!model.unresolved) void autoRepairTap('unattended', model.rows, refresh, () => section.isConnected);
+    if (!model.unresolved) void autoRepairTap('unattended', model.rows, currentVisit(), () => section.isConnected);
   });
-  back.addEventListener('click', () => autoRepairTap('approval', model.rows, refresh));
+  back.addEventListener('click', () => autoRepairTap('approval', model.rows, currentVisit()));
   sync(); held();
   section.append(rows);
   if (model.unresolved) section.append(el('div', { class: 'row' },
@@ -354,7 +386,7 @@ function autoRepairSection(model, refresh) {
   return section;
 }
 
-async function autoRepairTap(mode, rows, refresh, current = () => true) {
+async function autoRepairTap(mode, rows, visit, current = () => true) {
   const finish = mode === 'finish-restart';
   const tickedIds = new Set(finish ? rows.map((r) => r.machineId) : rows.filter((r) => !r.unreadable && autoRepairTicked(r)).map((r) => r.machineId));
   const body = finish
@@ -362,11 +394,12 @@ async function autoRepairTap(mode, rows, refresh, current = () => true) {
     : configurePayload(rows, tickedIds, mode);
   if (body.targets.length === 0) return;
   const title = finish ? 'Finish restarting' : mode === 'unattended' ? 'Turn on automatic sign-in repair' : 'Switch back to asking first';
-  const auth = await askPin({ title, explain: 'This needs a recent PIN unlock. It is kept in this page only until it expires.', adapter: 'session' });
+  const auth = await askPin({ title, explain: 'This needs a recent PIN unlock. It is kept in this page only until it expires.', adapter: 'session', isCurrent: visit.isCurrent });
   if (!auth || !current()) return;
   const status = el('p', { class: 'action-status', role: 'status', text: 'Working…' });
-  sheet({ title }, status);
+  const panel = visit.isCurrent() ? sheet({ title }, status) : null;
   const r = await postJson('/subscription-relogin/configure-pool', body, { 'X-Instar-Operator-Session': auth.session });
+  if (!visit.isCurrent() || !panel?.isConnected) return;
   if (r.status === 401) { forgetOperatorSession(); status.textContent = 'The unlock expired. Tap the button again and enter your PIN.'; return; }
   if (!r.ok || !r.data || !Array.isArray(r.data.results)) { status.textContent = (r.data && r.data.error) || `The server answered ${r.status}.`; return; }
   autoRepairResults = { at: Date.now(), mode, results: r.data.results };
@@ -377,6 +410,6 @@ async function autoRepairTap(mode, rows, refresh, current = () => true) {
     el('span', { class: 'result-mark', 'aria-hidden': 'true', text: x.ok ? '✓' : '✗' }),
     el('span', { class: 'result-words' }, el('strong', { text: `${x.name}:` }), ` ${x.words}`)))));
   // Re-read after about 30 s (a restart takes ~15 s and the supervisor polls every 10 s), then once more.
-  setTimeout(() => { closeSheet(); refresh(); }, 30_000);
-  setTimeout(() => refresh(), 60_000);
+  closeAndRefresh(visit, panel, 30_000);
+  visit.later(visit.refresh, 60_000);
 }
