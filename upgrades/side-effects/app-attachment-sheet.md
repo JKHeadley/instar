@@ -25,3 +25,7 @@ The final correction treats a pooled fallback refresh as unverified even when th
 ## 6b. Operator-surface quality
 
 The primary action is the attachment type choice. A listed file offers Open and generic files offer a separate Save. The sheet displays filenames, dates and short status text. Tokens, hashes and route details never appear in the interface. It offers no destructive action. The sheet uses the existing responsive dashboard panel and plain language for loading, retries and incomplete results. Phone-width inspection is part of the activation acceptance work and was not measured by this disposable desktop run.
+
+## Phone-width acceptance
+
+Real Chrome with the dashboard stylesheet at a 390 CSS pixel viewport exposed horizontal overflow on a 244-character unbroken filename. The attachment-specific grid now wraps the filename and keeps Open in view. Controls have a 44-pixel minimum height and the accessible action identifies the full filename. The same Chrome test passed after the change, including explicit signed Open, image decoding, untouched composer draft and released playback URL. This layout change does not affect ordinary history rows or server admission.

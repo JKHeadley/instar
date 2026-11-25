@@ -1293,10 +1293,10 @@ class ChatsPage {
     let kind = null;
     let incomplete = false;
     let incoming = null;
-    const controls = el('div', { role: 'group', 'aria-label': 'Attachment type' });
+    const controls = el('div', { class: 'chat-attachment-types', role: 'group', 'aria-label': 'Attachment type' });
     const status = el('p', { role: 'status' });
-    const results = el('div');
-    const preview = el('div');
+    const results = el('div', { class: 'chat-attachment-results' });
+    const preview = el('div', { class: 'chat-attachment-preview' });
     const alive = () => current && v.live && this.view === v && this.device.record === record && bearer() === authorization;
     const clearOpen = () => {
       open?.abort();
@@ -1341,6 +1341,7 @@ class ChatsPage {
           }
           const unavailable = failure?.error === 'attachment-unavailable';
           button.textContent = unavailable ? 'File unavailable' : 'Retry';
+          button.setAttribute('aria-label', unavailable ? `File unavailable: ${file.filename}` : `Retry opening ${file.filename}`);
           button.disabled = unavailable;
           openButton = null;
           return;
@@ -1359,6 +1360,7 @@ class ChatsPage {
       } catch {
         if (alive() && open === attempt) {
           button.textContent = 'Retry';
+          button.setAttribute('aria-label', `Retry opening ${file.filename}`);
           button.disabled = false;
         }
       }
@@ -1408,7 +1410,8 @@ class ChatsPage {
       request = null;
       const entries = page.rows.flatMap(row => row.attachments.map(file => {
         const button = retry('Open', () => openFile(page, file, button));
-        const box = el('div', { class: 'chat-file' },
+        button.setAttribute('aria-label', `Open ${file.filename}`);
+        const box = el('div', { class: 'chat-file chat-attachment-entry' },
           el('span', { class: 'chat-file-name', text: file.filename }),
           el('time', { datetime: row.at, text: messageTime(row.at) }), button);
         return box;

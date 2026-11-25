@@ -1400,6 +1400,15 @@ a.machine-line-link:hover { border-color: var(--accent); color: var(--text); }
 .chat-img, .chat-video { max-width: 100%; max-height: 360px; border-radius: var(--r-sm); display: block; }
 .chat-audio { width: 100%; }
 .chat-file-load, .chat-download { height: auto; min-height: 36px; padding: 6px 12px; text-align: left; }
+/* The attachment sheet keeps long filenames and actions inside the phone viewport. */
+.chat-attachment-types { display: flex; flex-wrap: wrap; gap: var(--s-2); }
+.chat-attachment-types > button, .chat-attachment-results button { min-height: 44px; }
+.chat-attachment-results { display: grid; gap: var(--s-3); min-width: 0; }
+.chat-attachment-entry { display: grid; grid-template-columns: minmax(0, 1fr) auto; align-items: center; gap: 4px var(--s-3); }
+.chat-attachment-entry > button { grid-column: 2; grid-row: 1 / span 2; }
+.chat-attachment-entry > time { grid-column: 1; color: var(--text-muted); font-size: 0.875rem; }
+.chat-attachment-entry .chat-file-name, .chat-attachment-preview .chat-download { min-width: 0; max-width: 100%; overflow-wrap: anywhere; }
+.chat-attachment-preview .chat-download { white-space: normal; }
 .chat-earlier { align-self: center; }
 /* Pinned messages (conversation-pinned-messages): a one-line bar under the title, like Telegram. */
 .chat-pinbar { display: flex; align-items: stretch; gap: var(--s-2); min-width: 0; }
