@@ -45,6 +45,9 @@ export function verifyManagedCodexStop(
     fd = fs.openSync(rollout, fs.constants.O_RDONLY | fs.constants.O_NOFOLLOW);
     const stat = fs.fstatSync(fd, { bigint: true });
     if (!stat.isFile() || stat.size > BigInt(maxRolloutBytes)) return;
+    const fileKey = [stat.dev.toString(), stat.ino.toString(), stat.birthtimeNs.toString()].join(':');
+    const pinnedFileKey = enrollment.rolloutFileKey ?? enrollment.outstanding?.boundary?.fileKey;
+    if (pinnedFileKey !== undefined && pinnedFileKey !== fileKey) return;
     const bytes = Buffer.alloc(Number(stat.size));
     let offset = 0;
     while (offset < bytes.length) {
@@ -61,7 +64,6 @@ export function verifyManagedCodexStop(
     );
     if (!cycle) return;
 
-    const fileKey = [stat.dev.toString(), stat.ino.toString(), stat.birthtimeNs.toString()].join(':');
     const outstanding = enrollment.outstanding;
     const prior = outstanding?.boundary;
     const receipt = outstanding && prior && prior.fileKey === fileKey

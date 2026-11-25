@@ -36,7 +36,9 @@ describe('managed Codex Stop work claims', () => {
       const store = new ManagedCodexStopStore(db);
       store.reserve('work', { ...identity, remaining: 2 });
       expect(store.bindNative(identity.sessionId, nativeStop.sessionId)).toBe(true);
-      receipt = store.decide(nativeStop).directive;
+      receipt = store.decide({
+        ...nativeStop, boundary: { fileKey: 'launch-rollout', turnId: 'native-turn', endOffset: 42 },
+      }).directive;
       expect(receipt).toEqual({ cycle: 'first', marker: 'first-marker' });
     } finally {
       db.close();
@@ -51,7 +53,7 @@ describe('managed Codex Stop work claims', () => {
       expect(store.pause(identity.sessionId)).toBe(true);
       expect(store.decide({ ...nativeStop, cycle: 'second', receipt }).directive).toBeUndefined();
       const row = reopened.prepare('SELECT claim_json FROM managed_codex_work_claims').get() as { claim_json: string };
-      expect(JSON.parse(row.claim_json).enrollment).toMatchObject({ remaining: 1, issuedCycles: ['first'] });
+      expect(JSON.parse(row.claim_json).enrollment).toMatchObject({ remaining: 1, issuedCycles: ['first'], rolloutFileKey: 'launch-rollout' });
       expect(JSON.parse(row.claim_json).enrollment.outstanding).toBeUndefined();
     } finally {
       reopened.close();

@@ -105,7 +105,10 @@ export class ManagedCodexStopStore {
         ...verified, sessionId, enabled, actionOpen: claim.actionOpen, paused: claim.paused,
       });
       if (decision.enrollment !== claim.enrollment) {
-        this.write(launchId, { ...claim, enrollment: decision.enrollment });
+        const rolloutFileKey = claim.enrollment.rolloutFileKey
+          ?? claim.enrollment.outstanding?.boundary?.fileKey
+          ?? (decision.directive ? verified.boundary?.fileKey : undefined);
+        this.write(launchId, { ...claim, enrollment: { ...decision.enrollment, rolloutFileKey } });
       }
       return { managed: true, directive: decision.directive } as const;
     }).immediate();

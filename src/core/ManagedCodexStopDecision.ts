@@ -9,6 +9,7 @@ export interface ManagedStopEnrollment {
   machineId: string;
   ownerEpoch: number;
   state: 'pending' | 'active' | 'retired';
+  rolloutFileKey?: string;
   remaining: number;
   issuedCycles: readonly string[];
   outstanding?: { cycle: string; marker: string; boundary?: ManagedStopRolloutBoundary };

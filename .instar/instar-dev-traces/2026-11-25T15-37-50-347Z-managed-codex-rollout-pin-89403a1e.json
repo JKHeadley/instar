@@ -1,0 +1,22 @@
+{
+  "version": 2,
+  "slug": "managed-codex-rollout-pin",
+  "sessionId": "017c26ed-5596-4576-9c20-20af13e4c1f8",
+  "timestamp": "2026-11-25T15:37:50.347Z",
+  "artifactPath": "upgrades/side-effects/managed-codex-rollout-pin.md",
+  "artifactSha256": "02ac899a2ca714485f1618b9a70a87bd21767d823ab5d0e7adcd36131ababbb2",
+  "coveredFiles": [
+    "src/core/ManagedCodexStopDecision.ts",
+    "src/core/ManagedCodexStopStore.ts",
+    "src/core/ManagedCodexStopVerifier.ts",
+    "tests/unit/managed-codex-stop-store.test.ts",
+    "tests/unit/managed-codex-stop-verifier.test.ts"
+  ],
+  "phase": "complete",
+  "tier": 1,
+  "tierReasoning": "Narrower refusal in the disabled managed verifier and its existing transaction. No production launcher, lifecycle action or migration.",
+  "eli16Path": "upgrades/managed-codex-rollout-pin.eli16.md",
+  "sideEffectsPath": "upgrades/side-effects/managed-codex-rollout-pin.md",
+  "secondPass": "true",
+  "reviewerConcurred": true
+}

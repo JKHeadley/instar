@@ -1,0 +1,24 @@
+{
+  "ts": "2026-11-25T15:38:33.561Z",
+  "slug": "managed-codex-rollout-pin",
+  "suggestedTier": 1,
+  "declaredTier": 1,
+  "riskFloor": 1,
+  "riskFloorReasons": [],
+  "belowFloor": false,
+  "files": 3,
+  "loc": 10,
+  "scope": {
+    "basis": "staged-in-scope-paths-including-deleted",
+    "files": [
+      "src/core/ManagedCodexStopDecision.ts",
+      "src/core/ManagedCodexStopStore.ts",
+      "src/core/ManagedCodexStopVerifier.ts"
+    ],
+    "addedLines": 8,
+    "deletedLines": 2
+  },
+  "causalAutopsy": null,
+  "classClosure": null,
+  "verdict": "pass"
+}
