@@ -1,0 +1,16 @@
+{
+  "version": 2,
+  "slug": "direct-request-send-binding",
+  "sessionId": "b3d2cf8a-9b5d-468b-a50b-70ebf11e9e5c",
+  "timestamp": "2026-11-25T13:25:12.667Z",
+  "artifactPath": "upgrades/side-effects/direct-request-send-binding.md",
+  "artifactSha256": "606d011cf49d15c59c0b3d7502ffc114ccb1f635e9cf481c1294f656d8a51eff",
+  "specPath": "docs/specs/threadline-mcp-local-http.md",
+  "coveredFiles": [
+    "src/threadline/directRequestSendBinding.ts",
+    "tests/unit/direct-request-send-binding.test.ts"
+  ],
+  "phase": "complete",
+  "secondPass": "true",
+  "reviewerConcurred": true
+}
