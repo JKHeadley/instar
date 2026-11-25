@@ -7,9 +7,9 @@ approved: true
 approved-by: echo under standing build approval for local storage, private signed admission and execution, and unmounted history projection only
 parent-principle: Operator-Surface Quality
 tier: 2
-review-convergence: "2026-11-25T19:23:33.141Z"
-review-iterations: 23
-review-completed-at: "2026-11-25T19:23:33.141Z"
+review-convergence: "2026-11-25T19:45:49.698Z"
+review-iterations: 25
+review-completed-at: "2026-11-25T19:45:49.698Z"
 review-report: "docs/specs/reports/conversation-message-delete-convergence.md"
 cross-model-review: "cross-model-review: codex-cli:gpt-6.2-astra"
 ---
@@ -126,3 +126,9 @@ Receipt recovery also checks current access to the retained target row. Current 
 The executor verifies current owner scope and the target's row access before starting background preparation. It repeats signed scope, active custody, request lookup and removal-aware row checks after the await. If a durable request appeared while preparation was running, the existing request wins. Reservation, append and exact positive receipt proof are synchronous after the last authorization check. A stale or absent prepared proof fails closed without starting any synchronous journal scan. Prior requests need only exact positive fact evidence. A missing fact leaves the outcome unknown without a full journal scan.
 
 The private executor serializes reservations in one serving process. An App creation custodian and serving lease identify a machine, so they are insufficient on their own to exclude overlapping processes using the same state directory. Before mounting the route, wire and revalidate the server's boot-acquired `SingleInstanceLock` at the mutation boundary, fail closed on a missing or lost lock, and prove that a second process sharing the state directory cannot reserve or append. The private in-process fixture cannot establish that property.
+
+## Private writer-lock checkpoint
+
+The private executor requires a server single-instance lock. It revalidates the lock against disk after initial signed scope and after preparation, immediately before reservation and append, and before writing a receipt or unknown state. If the lock is lost after reservation, the old process reports an unresolved result and leaves the durable entered record for the next process. It must not rewrite the shared request store after losing custody. The private HTTP fixture uses an acquired real lock. In a distinct Node process, a contender using the same state directory is refused while the writer lives. This checkpoint does not mount the production route. Production construction must supply the boot-owned lock and exclude deliberate second-instance bypass mode.
+
+The private executor rejects a lock for a different state directory and rejects a deliberate bypass acquisition even when that acquisition can read its own lock record. Normal lock checks establish cooperative ownership. They do not fence a lock file replaced out of band. Before mounting, close or explicitly prove out live-ownership replacement during simultaneous start and stale reclaim in the shared lock primitive, then run the production-wiring two-process proof.

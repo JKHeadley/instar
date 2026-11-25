@@ -8,6 +8,9 @@
  */
 import { describe, it, expect, afterAll, beforeAll, vi } from 'vitest';
 import crypto from 'node:crypto';
+import { execFile } from 'node:child_process';
+import { promisify } from 'node:util';
+import { build } from 'esbuild';
 import fs from 'node:fs';
 import os from 'node:os';
 import path from 'node:path';
@@ -18,6 +21,7 @@ import { createRoutes, type RouteContext } from '../../src/server/routes.js';
 import { authMiddleware } from '../../src/server/middleware.js';
 import { MobilePairingService, createMobilePairingRouter, deviceAuthenticator, type MobilePairingDeps } from '../../src/server/mobilePairingRoutes.js';
 import { createMobileConversationRouter } from '../../src/server/mobileConversationRoutes.js';
+import { SingleInstanceLock } from '../../src/core/SingleInstanceLock.js';
 import { executeAppMessageRemoval } from '../../src/server/mobileAppMessageRemoval.js';
 import { admitAppMessageRemoval } from '../../src/server/mobileAppMessageRemovalAdmission.js';
 import { MobileChatRequestStore } from '../../src/core/MobileChatRequests.js';
@@ -55,6 +59,7 @@ function setup(opts: Opts = {}) {
     // Multi-route off: these tests cover the single paired host (mobile-multi-route.md, flag off).
     mobilePairing: { native: { enabled: !opts.nativeOff, messageLinks: { enabled: opts.links }, quotedReplies: { enabled: opts.replies }, reactions: { enabled: opts.reactions }, forwards: { enabled: opts.forwards } }, multiRoute: { enabled: false } },
   };
+  let removalWriterLock: SingleInstanceLock | null = null;
   const lease = opts.lease ?? { held: true };
   const recording = opts.recording ?? { on: true };
   const registry = new ConversationRegistry({ stateDir: dir, machineId: () => machineId, isRecordingEnabled: () => recording.on });
@@ -95,7 +100,7 @@ function setup(opts: Opts = {}) {
   if (opts.removalAdmissionProbe && svc) {
     app.post('/mobile/chat/app/:key/forward', async (req, res) => {
       if (opts.removalAdmissionProbe === 'execute') {
-        const result = await executeAppMessageRemoval(req, pairing, svc);
+        const result = await executeAppMessageRemoval(req, pairing, svc, removalWriterLock);
         res.status(result.status).json(result.body);
         return;
       }
@@ -110,7 +115,7 @@ function setup(opts: Opts = {}) {
   const c = pairing.devices.createPending({ deviceName: 'iPhone', label: null, publicKey: dev.publicKey, host: HOST });
   if (!c.ok) throw new Error('setup');
   pairing.devices.applyConfirm(c.device.id, { ok: true });
-  return { app, dir, svc: svc!, registry, bindAuth, dev, deviceId: c.device.id, dispatched, killed, stopEffects, lease, recording, pairing };
+  return { app, dir, bindRemovalWriter(lock: SingleInstanceLock | null) { removalWriterLock = lock; }, svc: svc!, registry, bindAuth, dev, deviceId: c.device.id, dispatched, killed, stopEffects, lease, recording, pairing };
 }
 
 let tick = 0;
@@ -907,15 +912,116 @@ describe('signed App message removal admission checkpoint', () => {
 describe('private signed App message removal runtime', () => {
   async function fixture() {
     const e = setup({ removalAdmissionProbe: 'execute' });
+    const lock = new SingleInstanceLock({ stateDir: e.dir, env: {}, handoffGraceMs: 0 });
+    expect((await lock.acquire()).acquired).toBe(true);
+    cleanups.push(() => lock.release());
+    e.bindRemovalWriter(lock);
     await enableReplyProof(e);
     const key = await create(e);
     for (const id of ['one', 'two']) {
       e.svc.store.append({ kind: 'message', role: 'agent', conversationKey: key, eventId: id,
         messageId: `msg-${id}`, text: 'Retained text', at: new Date().toISOString(), machineId: 'm1' });
     }
-    return { e, key, endpoint: `/mobile/chat/app/${key}/forward`,
+    return { e, key, lock, endpoint: `/mobile/chat/app/${key}/forward`,
       intent: { custodianMachineId: 'm1', eventId: 'one', requestId: rid() } };
   }
+
+  it('refuses missing and competing process locks and revalidates after proof preparation', async () => {
+    const { e, lock, endpoint, intent } = await fixture();
+    const competitor = new SingleInstanceLock({ stateDir: e.dir, env: {}, handoffGraceMs: 0 });
+    expect((await competitor.acquire()).acquired).toBe(false);
+    const child = await build({
+      stdin: {
+        contents: `
+          import { SingleInstanceLock } from './src/core/SingleInstanceLock.ts';
+          const contender = new SingleInstanceLock({ stateDir: process.argv[1], env: {}, handoffGraceMs: 0, log: () => {} });
+          const acquired = await contender.acquire();
+          console.log(JSON.stringify({ pid: process.pid, acquired: acquired.acquired, reason: acquired.reason }));
+          contender.release();
+        `,
+        resolveDir: process.cwd(),
+      },
+      bundle: true, platform: 'node', format: 'esm', packages: 'external', write: false,
+    });
+    const { stdout } = await promisify(execFile)(process.execPath,
+      ['--input-type=module', '-e', child.outputFiles[0].text, e.dir], { timeout: 10_000 });
+    const attempt = JSON.parse(stdout.trim());
+    expect(attempt.pid).not.toBe(process.pid);
+    expect(attempt).toMatchObject({ acquired: false, reason: 'duplicate-live-instance' });
+    const reserve = vi.spyOn(e.svc.deps.requests, 'reserve');
+    const append = vi.spyOn(e.svc.store, 'append');
+    const otherState = fs.mkdtempSync(path.join(os.tmpdir(), 'delete-other-state-'));
+    dirs.push(otherState);
+    const otherWriter = new SingleInstanceLock({ stateDir: otherState, env: {} });
+    expect((await otherWriter.acquire()).acquired).toBe(true);
+    cleanups.push(() => otherWriter.release());
+    for (const writer of [null, competitor, otherWriter]) {
+      e.bindRemovalWriter(writer);
+      const denied = await signed(e, 'POST', endpoint, intent);
+      expect(denied.status).toBe(503);
+      expect(denied.body.error).toBe('message-removal-writer-unavailable');
+    }
+    e.bindRemovalWriter(lock);
+    const prepare = e.svc.store.prepareRemovalHistory.bind(e.svc.store);
+    vi.spyOn(e.svc.store, 'prepareRemovalHistory').mockImplementationOnce(async (key) => {
+      const ready = await prepare(key);
+      lock.release();
+      return ready;
+    });
+    const lost = await signed(e, 'POST', endpoint, intent);
+    expect(lost.status).toBe(503);
+    expect(lost.body.error).toBe('message-removal-writer-unavailable');
+    const bypass = new SingleInstanceLock({ stateDir: e.dir, env: { INSTAR_ALLOW_SECOND_INSTANCE: '1' }, log: () => {} });
+    expect(await bypass.acquire()).toMatchObject({ acquired: true, overridden: true });
+    try {
+      expect(bypass.revalidate()).toBe(true);
+      e.bindRemovalWriter(bypass);
+      expect((await signed(e, 'POST', endpoint, intent)).body.error).toBe('message-removal-writer-unavailable');
+    } finally { bypass.release(); }
+    expect(reserve).not.toHaveBeenCalled();
+    expect(append).not.toHaveBeenCalled();
+  });
+
+  it('does not append if the writer loses its lock after the reservation is durable', async () => {
+    const { e, lock, endpoint, intent } = await fixture();
+    const reserve = e.svc.deps.requests.reserve.bind(e.svc.deps.requests);
+    vi.spyOn(e.svc.deps.requests, 'reserve').mockImplementationOnce((...args) => {
+      const saved = reserve(...args);
+      lock.release();
+      return saved;
+    });
+    const markUnknown = vi.spyOn(e.svc.deps.requests, 'markUnknown');
+    const append = vi.spyOn(e.svc.store, 'append');
+    const lost = await signed(e, 'POST', endpoint, intent);
+    expect(lost.status).toBe(409);
+    expect(lost.body.error).toBe('outcome-unknown');
+    expect(append).not.toHaveBeenCalled();
+    expect(markUnknown).not.toHaveBeenCalled();
+  });
+
+  it('leaves the confirmed fact for a successor if the writer loses its lock after append', async () => {
+    const { e, lock, endpoint, intent } = await fixture();
+    const appendReal = e.svc.store.append.bind(e.svc.store);
+    const append = vi.spyOn(e.svc.store, 'append').mockImplementationOnce((event) => {
+      const result = appendReal(event);
+      lock.release();
+      return result;
+    });
+    const finish = vi.spyOn(e.svc.deps.requests, 'finish');
+    const markUnknown = vi.spyOn(e.svc.deps.requests, 'markUnknown');
+    expect((await signed(e, 'POST', endpoint, intent)).body.error).toBe('outcome-unknown');
+    expect(finish).not.toHaveBeenCalled();
+    expect(markUnknown).not.toHaveBeenCalled();
+    const successor = new SingleInstanceLock({ stateDir: e.dir, env: {} });
+    expect((await successor.acquire()).acquired).toBe(true);
+    cleanups.push(() => successor.release());
+    e.bindRemovalWriter(successor);
+    e.svc.deps.requests = new MobileChatRequestStore(e.dir);
+    const retry = await signed(e, 'POST', endpoint, intent);
+    expect(retry.status).toBe(200);
+    expect(retry.body.eventId).toBe('one');
+    expect(append).toHaveBeenCalledTimes(1);
+  });
 
   it('confirms one exact removal and returns its receipt on signed retry after reopening requests', async () => {
     const { e, key, endpoint, intent } = await fixture();

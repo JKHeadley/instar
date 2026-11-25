@@ -11,6 +11,7 @@
  * Wiring integrity: the service, its store, the dispatch, the request store, the signer and the
  * ledger are real.
  */
+import { SingleInstanceLock } from '../../src/core/SingleInstanceLock.js';
 import { describe, it, expect, afterAll } from 'vitest';
 import crypto from 'node:crypto';
 import fs from 'node:fs';
@@ -32,8 +33,11 @@ const HOST = 'echo-native-e2e.example.dev';
 const servers: AgentServer[] = [];
 const dirs: string[] = [];
 
+const writerLocks: SingleInstanceLock[] = [];
+
 afterAll(async () => {
   for (const s of servers) await s.stop();
+  for (const lock of writerLocks) lock.release();
   for (const d of dirs) SafeFsExecutor.safeRmSync(d, { recursive: true, force: true, operation: 'tests/e2e/mobile-native-conversations-alive.test.ts' });
 });
 
@@ -62,14 +66,17 @@ async function boot(developmentAgent: boolean) {
   };
   sessionManager.injectMessage = () => true;
   const tunnel = { lifecycleState: { lastState: 'active', activeProvider: 'cloudflare-named' }, url: `https://${HOST}`, on: () => undefined } as any;
-  const server = new AgentServer({ config, sessionManager, state: new StateManager(stateDir), initiativeTracker: new InitiativeTracker(stateDir), tunnel, workBoard: () => null });
+  const singleInstanceLock = new SingleInstanceLock({ stateDir, env: {} });
+  expect((await singleInstanceLock.acquire()).acquired).toBe(true);
+  writerLocks.push(singleInstanceLock);
+  const server = new AgentServer({ config, sessionManager, singleInstanceLock, state: new StateManager(stateDir), initiativeTracker: new InitiativeTracker(stateDir), tunnel, workBoard: () => null });
   servers.push(server);
-  return { server, stateDir, spawned };
+  return { server, stateDir, spawned, singleInstanceLock };
 }
 
 describe('native app conversations — production wiring', () => {
   it('is alive on a development agent with no Telegram and no Slack: create, send, session tag, reply, history', async () => {
-    const { server, stateDir, spawned } = await boot(true);
+    const { server, stateDir, spawned, singleInstanceLock } = await boot(true);
     const app = server.getApp();
     // Wiring integrity: real, non-null components on the production path.
     expect(server.mobilePairing).not.toBeNull();
@@ -153,6 +160,7 @@ describe('native app conversations — production wiring', () => {
     expect(hist.body.messages[0].originVerified).toBe('verified');
     expect(hist.body.messages[1].originVerified).toBe('none');
     const target = hist.body.messages[1].eventId as string;
+    expect(singleInstanceLock.revalidateForExclusiveWrite()).toBe(true);
     const darkDelete = await send('POST', `/mobile/chat/app/${key}/message-removals`, {
       custodianMachineId: server.appConversations!.deps.machineId(), eventId: target,
       requestId: `${Date.now()}-${crypto.randomUUID()}`,

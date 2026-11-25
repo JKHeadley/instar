@@ -177,6 +177,7 @@ export class SingleInstanceLock {
   private readonly env: NodeJS.ProcessEnv;
   private readonly log: (msg: string) => void;
   private held = false;
+  private acquiredWithOverride = false;
 
   constructor(deps: SingleInstanceLockDeps) {
     this.stateDir = deps.stateDir;
@@ -247,6 +248,7 @@ export class SingleInstanceLock {
       // Still write our record so a LATER third instance sees a holder.
       this.tryWriteLock();
       this.held = true;
+      this.acquiredWithOverride = true;
       return { acquired: true, overridden: true };
     }
 
@@ -259,6 +261,7 @@ export class SingleInstanceLock {
         // Free — take it.
         if (this.tryWriteLock()) {
           this.held = true;
+          this.acquiredWithOverride = false;
           return { acquired: true };
         }
         // Lost a creation race — loop and re-read.
@@ -344,6 +347,7 @@ export class SingleInstanceLock {
       }
       if (this.tryWriteLock()) {
         this.held = true;
+        this.acquiredWithOverride = false;
         this.log(`[single-instance] reclaimed a stale same-host lock (dead pid ${existing.pid}).`);
         return { acquired: true };
       }
@@ -371,6 +375,11 @@ export class SingleInstanceLock {
     const rec = this.readLock();
     if (!rec) return false;
     return rec.pid === process.pid && rec.hostname === this.host;
+  }
+
+  /** The deliberate second-instance mode cannot authorize exclusive writes. */
+  revalidateForExclusiveWrite(): boolean {
+    return !this.acquiredWithOverride && this.revalidate();
   }
 
   /** Refresh the heartbeat (optional — the lock is primarily pid-guarded). */

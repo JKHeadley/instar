@@ -21,3 +21,5 @@ The server can now remember an exact Delete request and check whether it reached
 Delete now uses the background history check before writing a new removal. If access changes or the chat is updated while the check is running, the server verifies again before it can record anything.
 
 Before the app can use Delete, the server also needs to prove that only one server process can write to the same chat store.
+
+The private Delete action now checks the server’s process lock before it writes. If the server loses that lock after recording the request, it leaves the request for its successor to resolve.
