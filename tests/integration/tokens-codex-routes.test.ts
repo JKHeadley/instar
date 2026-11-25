@@ -10,6 +10,7 @@
 import { describe, it, expect, beforeEach, afterEach } from 'vitest';
 import express from 'express';
 import request from 'supertest';
+import { createTempProject, type TempProject } from '../helpers/setup.js';
 import path from 'node:path';
 import { createRoutes } from '../../src/server/routes.js';
 import type { RouteContext } from '../../src/server/routes.js';
@@ -25,9 +26,9 @@ function codexSession(sessionId: string, totalTokens: number, cwd = '/tmp/agent'
   };
 }
 
-function ctxWithLedger(ledger: TokenLedger): RouteContext {
+function ctxWithLedger(ledger: TokenLedger, project: TempProject): RouteContext {
   return {
-    config: { projectName: 'test', projectDir: '/tmp', stateDir: '/tmp/.instar', port: 0, sessions: {} as any, scheduler: {} as any } as any,
+    config: { projectName: 'test', projectDir: project.dir, stateDir: project.stateDir, port: 0, sessions: {} as any, scheduler: {} as any } as any,
     sessionManager: { listRunningSessions: () => [] } as any,
     state: { getJobState: () => null, getSession: () => null } as any,
     scheduler: null, telegram: null, relationships: null, feedback: null, dispatches: null,
@@ -41,18 +42,23 @@ function ctxWithLedger(ledger: TokenLedger): RouteContext {
 
 describe('Codex token-ledger routes (integration)', () => {
   let ledger: TokenLedger;
+  let project: TempProject;
   let app: express.Express;
 
   beforeEach(() => {
+    project = createTempProject();
     ledger = new TokenLedger({ dbPath: ':memory:', claudeProjectsDir: '/nonexistent' });
     ledger.ingestCodexSession(codexSession('codex-1', 199006), Date.now());
     ledger.ingestCodexSession(codexSession('codex-2', 5000), Date.now());
     app = express();
     app.use(express.json());
-    app.use('/', createRoutes(ctxWithLedger(ledger)));
+    app.use('/', createRoutes(ctxWithLedger(ledger, project)));
   });
 
-  afterEach(() => ledger.close());
+  afterEach(() => {
+    ledger?.close();
+    project?.cleanup();
+  });
 
   it('GET /tokens/summary returns a codex rollup alongside the Claude summary', async () => {
     const res = await request(app).get('/tokens/summary');
@@ -76,7 +82,7 @@ describe('Codex token-ledger routes (integration)', () => {
   });
 
   it('GET /tokens/codex-sessions returns 503 when the ledger is unavailable', async () => {
-    const ctx = ctxWithLedger(ledger);
+    const ctx = ctxWithLedger(ledger, project);
     (ctx as { tokenLedger: TokenLedger | null }).tokenLedger = null;
     const noLedgerApp = express();
     noLedgerApp.use(express.json());

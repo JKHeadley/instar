@@ -7,9 +7,10 @@
  *  - 200 + the snapshot shape when the sentinel is wired
  */
 
-import { describe, it, expect, beforeEach } from 'vitest';
+import { describe, it, expect, beforeEach, afterEach } from 'vitest';
 import express from 'express';
 import request from 'supertest';
+import { createTempProject, type TempProject } from '../helpers/setup.js';
 import { createRoutes } from '../../src/server/routes.js';
 import type { RouteContext } from '../../src/server/routes.js';
 import {
@@ -18,9 +19,9 @@ import {
   type OrphanedWorktreeInfo,
 } from '../../src/monitoring/OrphanedWorkSentinel.js';
 
-function baseContext(): RouteContext {
+function baseContext(project: TempProject): RouteContext {
   return {
-    config: { projectName: 'test', projectDir: '/tmp', stateDir: '/tmp/.instar', port: 0 } as any,
+    config: { projectName: 'test', projectDir: project.dir, stateDir: project.stateDir, port: 0 } as any,
     sessionManager: { listRunningSessions: () => [] } as any,
     state: { getJobState: () => null, getSession: () => null } as any,
     scheduler: null, telegram: null, relationships: null, feedback: null,
@@ -48,17 +49,21 @@ function fakeSentinel(orphanPath?: string): OrphanedWorkSentinel {
 }
 
 describe('GET /orphaned-work (integration)', () => {
+  let project: TempProject;
+  beforeEach(() => { project = createTempProject(); });
+  afterEach(() => { project?.cleanup(); });
+
   it('503s when the sentinel is dark (not wired)', async () => {
     const app = express();
     app.use(express.json());
-    app.use('/', createRoutes(baseContext()));
+    app.use('/', createRoutes(baseContext(project)));
     const res = await request(app).get('/orphaned-work');
     expect(res.status).toBe(503);
     expect(res.body.error).toMatch(/dark|unavailable/i);
   });
 
   it('200s with the snapshot shape when the sentinel is wired (no orphans)', async () => {
-    const ctx = baseContext();
+    const ctx = baseContext(project);
     (ctx as any).orphanedWorkSentinel = fakeSentinel();
     const app = express();
     app.use(express.json());
@@ -70,7 +75,7 @@ describe('GET /orphaned-work (integration)', () => {
   });
 
   it('200s and reports an orphaned worktree in the snapshot', async () => {
-    const ctx = baseContext();
+    const ctx = baseContext(project);
     (ctx as any).orphanedWorkSentinel = fakeSentinel('/wt/stranded');
     const app = express();
     app.use(express.json());
