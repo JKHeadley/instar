@@ -1,0 +1,21 @@
+{
+  "version": 2,
+  "slug": "coding-tools-mcp-trial",
+  "sessionId": "bcc82a0c-f81e-440b-88eb-304eb7ee4f4c",
+  "timestamp": "2026-11-25T12:25:11.333Z",
+  "artifactPath": "upgrades/side-effects/coding-tools-mcp-trial.md",
+  "artifactSha256": "a6a9be20fc29cac0981fab3a83fd7cfcc02d2c8d992c37e3c85cfd73eeed7000",
+  "coveredFiles": [
+    "docs/specs/coding-tools-mcp-trial.eli16.md",
+    "src/scheduler/JobScheduler.ts",
+    "tests/unit/scheduler/job-mcp-access.test.ts",
+    "upgrades/side-effects/coding-tools-mcp-trial.md"
+  ],
+  "phase": "complete",
+  "tier": 1,
+  "tierReasoning": "Off-by-default scoped reuse of existing integration launch policy",
+  "eli16Path": "docs/specs/coding-tools-mcp-trial.eli16.md",
+  "sideEffectsPath": "upgrades/side-effects/coding-tools-mcp-trial.md",
+  "secondPass": "not-required",
+  "reviewerConcurred": null
+}
