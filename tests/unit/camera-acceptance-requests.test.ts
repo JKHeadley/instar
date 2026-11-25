@@ -2,6 +2,9 @@ import { describe, expect, it, vi } from 'vitest';
 import {
   issueCameraVerifierRequest,
   recordCameraVerifierReceipt,
+  withdrawCameraPass,
+  type CameraPassWithdrawalJournal,
+  type CameraPassWithdrawalTransaction,
   type CameraReceiptJournal,
   type CameraRequestJournal,
   type CameraRequestTransaction,
@@ -111,5 +114,53 @@ describe('Camera verifier receipt submission', () => {
     await expect(recordCameraVerifierReceipt(journal, 'verifier', 'request', { ...evidence, candidate: 'other' }))
       .resolves.toEqual({ status: 'stale-request' });
     expect(appendReceipt).not.toHaveBeenCalled();
+  });
+});
+
+describe('Camera Pass withdrawal', () => {
+  const input = { id: 'withdrawal', candidate: requirement.candidate, revision: 2, passSequence: 1, reason: 'retest' } as const;
+  const pending = { ...pass, sequence: 2, decision: 'pending' } as const;
+
+  function setup(overrides: Partial<CameraPassWithdrawalTransaction> = {}) {
+    const appendWithdrawal = vi.fn(async () => {});
+    const journal: CameraPassWithdrawalJournal = {
+      withWriteLock: operation => operation({
+        requirement, receipts: [pass], findWithdrawal: () => null, appendWithdrawal, ...overrides,
+      }),
+    };
+    return { journal, appendWithdrawal };
+  }
+
+  it.each([['retest', 'pending'], ['regression', 'fail']] as const)(
+    'durably records %s as %s against the exact active Pass', async (reason, decision) => {
+      const { journal, appendWithdrawal } = setup();
+      const action = { ...input, reason };
+      const receipt = { ...pending, decision };
+      await expect(withdrawCameraPass(journal, 'verifier', action)).resolves.toEqual({ status: 'recorded', receipt });
+      expect(appendWithdrawal).toHaveBeenCalledWith({ input: action, receipt });
+    },
+  );
+
+  it('returns the previous receipt after a lost response and rejects a changed retry', async () => {
+    const { journal, appendWithdrawal } = setup({
+      receipts: [pass, pending], findWithdrawal: () => ({ input, receipt: pending }),
+    });
+    await expect(withdrawCameraPass(journal, 'verifier', input)).resolves.toEqual({ status: 'recorded', receipt: pending });
+    await expect(withdrawCameraPass(journal, 'verifier', { ...input, reason: 'regression' }))
+      .resolves.toEqual({ status: 'conflict' });
+    expect(appendWithdrawal).not.toHaveBeenCalled();
+  });
+
+  it('rejects a stale sequence and an unauthorized caller', async () => {
+    const { journal, appendWithdrawal } = setup();
+    await expect(withdrawCameraPass(journal, 'verifier', { ...input, passSequence: 0 }))
+      .resolves.toEqual({ status: 'stale-pass' });
+    await expect(withdrawCameraPass(journal, 'builder', input)).resolves.toEqual({ status: 'forbidden' });
+    expect(appendWithdrawal).not.toHaveBeenCalled();
+  });
+
+  it('does not report Pending when the journal write fails', async () => {
+    const { journal } = setup({ appendWithdrawal: async () => { throw new Error('durability failed'); } });
+    await expect(withdrawCameraPass(journal, 'verifier', input)).rejects.toThrow('durability failed');
   });
 });

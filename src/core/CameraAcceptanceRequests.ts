@@ -117,3 +117,76 @@ export function recordCameraVerifierReceipt(
     return { status: 'recorded', receipt };
   });
 }
+
+export interface CameraPassWithdrawal {
+  readonly id: string;
+  readonly candidate: string;
+  readonly revision: number;
+  readonly passSequence: number;
+  readonly reason: 'retest' | 'regression';
+}
+
+interface CameraRecordedWithdrawal {
+  readonly input: CameraPassWithdrawal;
+  readonly receipt: CameraAcceptanceReceipt;
+}
+
+export interface CameraPassWithdrawalTransaction {
+  readonly requirement: CameraAcceptanceRequirement;
+  readonly receipts: readonly CameraAcceptanceReceipt[];
+  findWithdrawal(id: string): CameraRecordedWithdrawal | null;
+  /** Append the withdrawal identity and receipt as one durable, lease-fenced event. */
+  appendWithdrawal(withdrawal: CameraRecordedWithdrawal): Promise<void>;
+}
+
+export interface CameraPassWithdrawalJournal {
+  /** Hold the same milestone write lock used by issuance and receipt submission. */
+  withWriteLock<T>(operation: (transaction: CameraPassWithdrawalTransaction | null) => Promise<T>): Promise<T>;
+}
+
+export type CameraPassWithdrawalResult =
+  | { readonly status: 'recorded'; readonly receipt: CameraAcceptanceReceipt }
+  | { readonly status: 'unavailable' | 'forbidden' | 'invalid' | 'stale-pass' | 'conflict' };
+
+/** The production caller resolves and revalidates the live verifier inside the journal transaction. */
+export function withdrawCameraPass(
+  journal: CameraPassWithdrawalJournal,
+  principal: string,
+  input: CameraPassWithdrawal,
+): Promise<CameraPassWithdrawalResult> {
+  return journal.withWriteLock(async transaction => {
+    if (!transaction) return { status: 'unavailable' };
+
+    const { requirement, receipts } = transaction;
+    if (!principal || principal !== requirement.verifier || requirement.builders.includes(principal)) {
+      return { status: 'forbidden' };
+    }
+    if (!input.id || (input.reason !== 'retest' && input.reason !== 'regression')) return { status: 'invalid' };
+
+    const state = foldCameraReceipts(requirement, receipts);
+    if (!state) return { status: 'unavailable' };
+
+    const previous = transaction.findWithdrawal(input.id);
+    if (previous) {
+      const exact = previous.input.candidate === input.candidate
+        && previous.input.revision === input.revision
+        && previous.input.passSequence === input.passSequence
+        && previous.input.reason === input.reason
+        && previous.receipt.verifier === principal;
+      return exact ? { status: 'recorded', receipt: previous.receipt } : { status: 'conflict' };
+    }
+
+    if (input.candidate !== requirement.candidate || input.revision !== requirement.revision
+      || state.decision !== 'pass' || input.passSequence !== state.sequence) return { status: 'stale-pass' };
+
+    const receipt: CameraAcceptanceReceipt = {
+      candidate: requirement.candidate,
+      revision: requirement.revision,
+      verifier: principal,
+      sequence: state.sequence + 1,
+      decision: input.reason === 'retest' ? 'pending' : 'fail',
+    };
+    await transaction.appendWithdrawal({ input, receipt });
+    return { status: 'recorded', receipt };
+  });
+}

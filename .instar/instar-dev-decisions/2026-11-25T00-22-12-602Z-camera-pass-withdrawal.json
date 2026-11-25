@@ -1,0 +1,22 @@
+{
+  "ts": "2026-11-25T00:22:12.602Z",
+  "slug": "camera-pass-withdrawal",
+  "suggestedTier": 2,
+  "declaredTier": 2,
+  "riskFloor": 1,
+  "riskFloorReasons": [],
+  "belowFloor": false,
+  "files": 1,
+  "loc": 73,
+  "scope": {
+    "basis": "staged-in-scope-paths-including-deleted",
+    "files": [
+      "src/core/CameraAcceptanceRequests.ts"
+    ],
+    "addedLines": 73,
+    "deletedLines": 0
+  },
+  "causalAutopsy": null,
+  "classClosure": null,
+  "verdict": "pass"
+}
