@@ -1,0 +1,57 @@
+{
+  "version": 2,
+  "status": "case-corrections-adjudicated-not-trial-qualified",
+  "parentManifestSha256": "64207a953443931dcfad273e3e93502bf8c4f9afb8c7c2437bff78eb4010276a",
+  "privateDirectory": ".instar/state/context-budget-next/source-bound-holdout-v2",
+  "privateManifestSha256": "f60989f414f669d220cf210c9fdd3dfa15df910ff08a06d8d8ffae8d32634673",
+  "files": {
+    "sources.json": {
+      "sha256": "8eeed15a40ec520a4c671d803476c4dd7d33003eb2ffe7017f26f1e970e39f4b",
+      "bytes": 14668
+    },
+    "questions.json": {
+      "sha256": "7f63f999524c14006b5c72d91ab4d6b432c386c3c6bd5e2887b52459b5660e0c",
+      "bytes": 2450
+    },
+    "labels.json": {
+      "sha256": "dd914fe18f802570ab73cab24e3d9f57372ab390f4c7fbc498e007ca22dae2d7",
+      "bytes": 32339
+    },
+    "change-log.json": {
+      "sha256": "3ef98fff753d734bbefb0ad94570a5221585dbc9a7aa9c9064195e5e3b648b63",
+      "bytes": 3214
+    }
+  },
+  "reviews": {
+    "adjudication-review.json": {
+      "sha256": "9e1c261e45aff901d0788a248ae84083d0489cd370026ba20d011168e3995d79",
+      "bytes": 6628
+    },
+    "final-adjudication.json": {
+      "sha256": "055abcc8ce3afede8142e5badc88bd3f7afdf4f979c1a48e249720c26e520521",
+      "bytes": 3452
+    },
+    "integrity-check.json": {
+      "sha256": "e09debcbef75f1f4ef035383779251f2f4363bf4f876036f70952c55cc207bec",
+      "bytes": 336
+    }
+  },
+  "caseCount": 8,
+  "questionChanges": 2,
+  "sourceSnapshotsChanged": false,
+  "originalVersionPreserved": true,
+  "substantiveFindingsResolvedOrBounded": 8,
+  "finalMetadataFindingsResolved": 2,
+  "caseCorrectionBlockersRemain": false,
+  "reviewSeparation": "separate session, same model family; not cross-model review",
+  "exposureRecord": "Private manifest and both review receipts record materials, sessions, timestamps and hashes. Exposed author and reviewer cannot produce blind answers or tune reductions.",
+  "trials": 0,
+  "qualificationEligible": false,
+  "remainingGates": [
+    "independent provenance authentication",
+    "eventual independent human or two-family judging",
+    "verified blind confined answer route",
+    "prospective timing and exposure eligibility",
+    "context-dependence measurements and predeclared repeated three-arm protocol"
+  ]
+}

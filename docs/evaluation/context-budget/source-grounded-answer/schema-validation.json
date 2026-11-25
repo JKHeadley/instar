@@ -1,0 +1,66 @@
+{
+  "version": 1,
+  "tool": "Ajv 8.18.0",
+  "draft": "2020-12",
+  "strict": true,
+  "schemaHashes": {
+    "answer": "65b0385bbce43eb0854a3db19cc32b8e2f048dc4d36f611c9eccca419ceb164d",
+    "judge": "a354615f7ad9bc83de1a0cc3f8f3b99fe8a59b16c94f9ea4f38fd9d8472410d5"
+  },
+  "results": [
+    {
+      "name": "answer accepts uncertainty",
+      "passed": true
+    },
+    {
+      "name": "answer accepts supported claim",
+      "passed": true
+    },
+    {
+      "name": "answer rejects empty object",
+      "passed": true
+    },
+    {
+      "name": "answer requires uncertainty limitation",
+      "passed": true
+    },
+    {
+      "name": "answer requires supported claims",
+      "passed": true
+    },
+    {
+      "name": "answer rejects extra property",
+      "passed": true
+    },
+    {
+      "name": "answer requires explicit-source citation",
+      "passed": true
+    },
+    {
+      "name": "judge accepts disputed finding",
+      "passed": true
+    },
+    {
+      "name": "judge rejects empty object",
+      "passed": true
+    },
+    {
+      "name": "judge requires criterion",
+      "passed": true
+    },
+    {
+      "name": "judge rejects extra property",
+      "passed": true
+    },
+    {
+      "name": "judge rejects unknown verdict",
+      "passed": true
+    },
+    {
+      "name": "judge requires unlisted assertion record",
+      "passed": true
+    }
+  ],
+  "scope": "schema compilation and synthetic field/conditional checks only; no host span/provenance/isolation validation, no model trials, no full suite",
+  "qualification": false
+}
