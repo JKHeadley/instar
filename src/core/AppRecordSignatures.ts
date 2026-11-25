@@ -413,7 +413,7 @@ export function verifyRecordedOrigin(record: VerifiableRecord, ledger: LedgerVie
 }
 
 /** Read a JSONL file's lines (missing file ⇒ []). Throws when unreadable for another reason. */
-export function readJsonlLines(file: string): string[] {
+export function readJsonlLines(file: string | number): string[] {
   let raw: string;
   try { raw = fs.readFileSync(file, 'utf8'); } catch (err) {
     if ((err as NodeJS.ErrnoException).code === 'ENOENT') return [];

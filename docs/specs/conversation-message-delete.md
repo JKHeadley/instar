@@ -7,9 +7,9 @@ approved: true
 approved-by: echo under standing build approval for local storage, private signed admission and execution, and unmounted history projection only
 parent-principle: Operator-Surface Quality
 tier: 2
-review-convergence: "2026-11-25T21:31:46.541Z"
-review-iterations: 32
-review-completed-at: "2026-11-25T21:31:46.541Z"
+review-convergence: "2026-11-25T21:55:03.579Z"
+review-iterations: 35
+review-completed-at: "2026-11-25T21:55:03.579Z"
 review-report: "docs/specs/reports/conversation-message-delete-convergence.md"
 cross-model-review: "cross-model-review: codex-cli:gpt-6.2-astra"
 ---
@@ -166,3 +166,15 @@ The Team Access Log exposes a conservative, process-local visibility revision. A
 The cursor can consume this log revision, but it is only one input to final route authority. Production must also account for changes outside this log, including legacy access or temporary policy/refusal changes, current pairing and reader state, and journal restoration. No route is mounted in this checkpoint.
 
 Use an independent revision for key-ledger and verification authority. In particular, the current log fold may not observe every verifier transition while its pending-row count is unchanged. A stable log revision alone cannot prove that verification authority is unchanged.
+
+## Private device-key evidence revision checkpoint
+
+The paired-device key ledger exposes a process-local verification revision for a readable and stable ledger containing recognized rows. The underlying file checkpoint includes device, inode, size, modification time and change time. Revision issuance compares it before and after accessing the current row cache or parsing the file. Missing, malformed or unstable evidence yields no revision. Ordinary ledger reads keep their existing tolerance for malformed rows, and callers receive detached rows rather than mutable access to the cache. An accepted activation or revocation invalidates the prior observation; duplicates do not. Replacement by another file cannot reuse a revision even if the data is the same.
+
+This is evidence about the device-key ledger, not complete verifier authority. Production composition must also include the pinned machine key registry, current pairing and access policy, and the journal incarnation. A missing revision cannot authorize continuation. No route consumes this value yet.
+
+On a ledger cache miss, compare the descriptor with the observed file checkpoint before and after reading. Compare the canonical path again before publishing cached rows. A path swap cannot populate the cache with records for a different file. The revision also checks the cached evidence against a fresh canonical checkpoint.
+
+Before mounting the cursor route, define how connected clients receive a visibility invalidation while idle and how they renew a bounded display lease. An open client must cover the affected rows after invalidation or detected disconnect, and no later than its last authoritative display deadline even if the connection fails silently. Exercise revocation with the chat open and idle, including a lost connection, when verifying client integration.
+
+Before mounting removal-aware sync, specify a bounded authoritative reconciliation path for a marker whose original never arrives. A snapshot reset must cover and rebuild the client's affected cache under current authorization, allow later visible messages to be read, and retain the unresolved removal separately without sending its IDs. Verify a permanently unavailable original followed by a later visible message. The private incremental projection still holds before unresolved evidence.

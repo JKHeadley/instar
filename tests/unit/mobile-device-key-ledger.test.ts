@@ -4,7 +4,7 @@
  * directions); backfill idempotency; replicated-row signature acceptance and rejection; and the
  * merged view verification reads.
  */
-import { describe, it, expect, afterAll } from 'vitest';
+import { describe, it, expect, afterAll, vi } from 'vitest';
 import fs from 'node:fs';
 import os from 'node:os';
 import path from 'node:path';
@@ -51,6 +51,95 @@ function setup() {
 }
 
 describe('MobileDeviceKeyLedger — write order and boot reconciliation', () => {
+  it('tracks verification evidence across activation, revocation and file replacement', () => {
+    const s = setup();
+    const pair = s.pair();
+    expect(s.ledger.verificationRevision()).toBeNull();
+    s.registry.applyConfirm(pair.id, { ok: true });
+    s.ledger.reconcile(s.registry);
+    const active = s.ledger.verificationRevision();
+    expect(active).toEqual(expect.any(String));
+    expect(s.ledger.verificationRevision()).toBe(active);
+    s.ledger.recordRevocation(s.registry.get(pair.id)!, '2026-11-02T10:00:00.000Z');
+    const revoked = s.ledger.verificationRevision();
+    expect(revoked).toEqual(expect.any(String));
+    expect(revoked).not.toBe(active);
+    const replacement = s.ledger.file + '.replacement';
+    fs.writeFileSync(replacement, fs.readFileSync(s.ledger.file));
+    fs.renameSync(replacement, s.ledger.file);
+    const replaced = s.ledger.verificationRevision();
+    expect(replaced).toEqual(expect.any(String));
+    expect(replaced).not.toBe(revoked);
+    const moved = s.ledger.file + '.fixture';
+    fs.renameSync(s.ledger.file, moved);
+    expect(s.ledger.verificationRevision()).toBeNull();
+    fs.renameSync(moved, s.ledger.file);
+    expect(s.ledger.verificationRevision()).not.toBe(replaced);
+    expect(new MobileDeviceKeyLedger({ stateDir: s.dir, signer: s.a.signer, keyLookup: s.lookup }).verificationRevision())
+      .not.toBe(s.ledger.verificationRevision());
+  });
+
+  it('does not issue a revision when the ledger changes during observation', () => {
+    const s = setup();
+    const pair = s.pair();
+    s.registry.applyConfirm(pair.id, { ok: true });
+    s.ledger.reconcile(s.registry);
+    const inspector = s.ledger as unknown as { fileCheckpoint(): string | null };
+    const realCheckpoint = inspector.fileCheckpoint.bind(inspector);
+    const checkpoint = vi.spyOn(inspector, 'fileCheckpoint').mockImplementationOnce(() => {
+      const before = realCheckpoint();
+      fs.appendFileSync(s.ledger.file, '\n');
+      return before;
+    });
+    try {
+      expect(s.ledger.verificationRevision()).toBeNull();
+      expect(s.ledger.verificationRevision()).toEqual(expect.any(String));
+    } finally { checkpoint.mockRestore(); }
+  });
+
+  it('does not cache rows from a swapped path even if the original path is restored', () => {
+    const s = setup();
+    const pair = s.pair();
+    s.registry.applyConfirm(pair.id, { ok: true });
+    s.ledger.reconcile(s.registry);
+    const cold = new MobileDeviceKeyLedger({ stateDir: s.dir, signer: s.a.signer, keyLookup: s.lookup });
+    const reader = cold as unknown as { cache: unknown };
+    reader.cache = null;
+    const replacement = s.ledger.file + '.replacement';
+    const saved = s.ledger.file + '.saved';
+    fs.writeFileSync(replacement, fs.readFileSync(s.ledger.file));
+    const open = fs.openSync;
+    const swap = vi.spyOn(fs, 'openSync').mockImplementationOnce((file, flags, mode) => {
+      expect(file).toBe(s.ledger.file);
+      fs.renameSync(s.ledger.file, saved);
+      fs.renameSync(replacement, s.ledger.file);
+      const fd = open(file, flags, mode);
+      fs.renameSync(s.ledger.file, replacement);
+      fs.renameSync(saved, s.ledger.file);
+      return fd;
+    });
+    try { expect(() => cold.rows()).toThrow('device-key ledger changed before read'); }
+    finally { swap.mockRestore(); }
+    expect(cold.verificationRevision()).toEqual(expect.any(String));
+    expect(cold.rows()[0]?.deviceId).toBe(pair.id);
+  });
+
+  it('keeps cached evidence detached and declines revision for malformed rows', () => {
+    const s = setup();
+    const pair = s.pair();
+    s.registry.applyConfirm(pair.id, { ok: true });
+    s.ledger.reconcile(s.registry);
+    const revision = s.ledger.verificationRevision();
+    const exposed = s.ledger.rows();
+    exposed[0].deviceId = 'wrong-device';
+    exposed.pop();
+    expect(s.ledger.rows()[0]?.deviceId).toBe(pair.id);
+    expect(s.ledger.verificationRevision()).toBe(revision);
+    fs.appendFileSync(s.ledger.file, '{malformed row\n');
+    expect(s.ledger.rows()[0]?.deviceId).toBe(pair.id);
+    expect(s.ledger.verificationRevision()).toBeNull();
+  });
+
   it('backfills a pre-existing active device (telegram-dm, its approval time) and is idempotent', () => {
     const s = setup();
     const p = s.pair();
@@ -136,8 +225,12 @@ describe('MobileDeviceKeyLedger — replicated rows', () => {
   it('accepts a row that verifies under the pinned key of the machine it names; a repeat is a duplicate', () => {
     const s = setup();
     const row = peerRow(s);
+    expect(s.ledger.verificationRevision()).toBeNull();
     expect(s.ledger.ingestReplicated(row)).toBe('accepted');
+    const revision = s.ledger.verificationRevision();
+    expect(revision).toEqual(expect.any(String));
     expect(s.ledger.ingestReplicated(row)).toBe('duplicate');
+    expect(s.ledger.verificationRevision()).toBe(revision);
     expect(s.ledger.view()!.get(`${row.keyHash}|peer-dev-0001`)).toMatchObject({ deviceId: 'peer-dev-0001' });
   });
 

@@ -63,3 +63,7 @@ Independent and cross-model review concurred on the scope, epoch and exact seque
 ## Private Team Access revision checkpoint
 
 The independent and cross-model reviewers concurred on the log-local change and revoke/restore behavior. The cross-model retry confirmed the revision is insufficient for verifier transitions outside the existing fold detector. Production must add a separate key-ledger and verification revision. The tests exercise signed grant loss and restoration, stable reads, log replacement, and reset of an actual issued cursor under both later revisions. No route consumes this revision yet.
+
+## Private device-key evidence revision checkpoint
+
+Independent review concurred on the file-checkpoint scope. Cross-model review identified detached rows, malformed evidence and descriptor/path binding for a cold read. The final cache validates the opened descriptor before and after reading and compares the canonical path before publishing. Tests cover exact byte-identical replacement, disappearance, malformed rows, cold-cache path replacement, local revocation, replication and duplicate stability. The confirming review found no further ledger implementation defect and identified production-only requirements for idle client invalidation and reconciliation of a permanently unavailable original. Both are recorded as pre-mount requirements.

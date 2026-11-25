@@ -1,0 +1,23 @@
+{
+  "version": 2,
+  "slug": "app-message-delete-key-visibility",
+  "sessionId": "633bd330-201e-4dc8-8fd9-72b89116167e",
+  "timestamp": "2026-11-25T21:55:04.326Z",
+  "artifactPath": "upgrades/side-effects/app-message-delete-key-visibility.md",
+  "artifactSha256": "d047e34f1cbff9ffd86d9ad7482d27be18e3385c10560023a81b814ec0cac344",
+  "specPath": "docs/specs/conversation-message-delete.md",
+  "coveredFiles": [
+    "docs/specs/conversation-message-delete.eli16.md",
+    "docs/specs/conversation-message-delete.md",
+    "docs/specs/reports/conversation-message-delete-convergence.md",
+    "src/core/AppRecordSignatures.ts",
+    "src/core/MobileDeviceKeyLedger.ts",
+    "tests/unit/mobile-device-key-ledger.test.ts",
+    "upgrades/side-effects/app-message-delete-key-visibility.md"
+  ],
+  "phase": "complete",
+  "tier": 2,
+  "tierReasoning": "Stable device-key ledger evidence for private signed cursor epochs",
+  "secondPass": "true",
+  "reviewerConcurred": true
+}

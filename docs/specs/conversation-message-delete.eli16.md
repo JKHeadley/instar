@@ -33,3 +33,5 @@ A private sync check now tells an authorized reader which exact message was remo
 The server can now check that a saved sync position belongs to the same person, paired device and chat. A change in access means that position can’t be reused. The app must then recheck its cached rows before showing them again.
 
 The team access log now changes its revision when access is removed and restored, even if the final permissions look the same. The cursor uses that change to tell the app to recheck its saved position.
+
+Changes in the paired-device key records now invalidate an old sync position. If those records cannot be checked, the app must wait before trusting cached chat history.

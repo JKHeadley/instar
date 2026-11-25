@@ -21,6 +21,7 @@
  * one carrying the registry's `revokedAt`; a revocation row whose device is still active in the
  * registry completes the revocation there (the ledger row is the recorded intent).
  */
+import { randomUUID } from 'node:crypto';
 import fs from 'node:fs';
 import path from 'node:path';
 import {
@@ -119,7 +120,10 @@ export interface MobileDeviceKeyLedgerOptions {
 
 export class MobileDeviceKeyLedger {
   readonly file: string;
-  private cache: { size: number; mtimeMs: number; rows: LedgerRow[] } | null = null;
+  private cache: { checkpoint: string; rows: LedgerRow[]; complete: boolean } | null = null;
+  private readonly verificationIncarnation = randomUUID();
+  private verificationGeneration = 0;
+  private observedVerificationCheckpoint: string | null = null;
   private onLocalAppend: ((row: LedgerRow) => void) | undefined;
 
   /**
@@ -147,28 +151,81 @@ export class MobileDeviceKeyLedger {
 
   setReplicationHook(hook: ((row: LedgerRow) => void) | undefined): void { this.onLocalAppend = hook; }
 
-  /** Every valid row on disk (throws when the file cannot be read). Unparseable lines are skipped. */
-  rows(): LedgerRow[] {
-    let st: fs.Stats | null = null;
-    try { st = fs.statSync(this.file); } catch (err) {
-      if ((err as NodeJS.ErrnoException).code === 'ENOENT') return [];
+  private checkpointOf(stat: fs.BigIntStats): string {
+    if (!stat.isFile()) throw new Error('device-key ledger is not a regular file');
+    return [stat.dev, stat.ino, stat.size, stat.mtimeNs, stat.ctimeNs].join(':');
+  }
+
+  private fileCheckpoint(): string | null {
+    try {
+      return this.checkpointOf(fs.statSync(this.file, { bigint: true }));
+    } catch (err) {
+      if ((err as NodeJS.ErrnoException).code === 'ENOENT') return null;
       throw err;
     }
-    if (this.cache && this.cache.size === st.size && this.cache.mtimeMs === st.mtimeMs) return this.cache.rows;
+  }
+
+  /** Process-local revision of the device-key evidence. Missing or unstable evidence cannot resume. */
+  verificationRevision(): string | null {
+    try {
+      const before = this.fileCheckpoint();
+      if (before === null) {
+        this.observedVerificationCheckpoint = null;
+        return null;
+      }
+      const rows = this.readCachedRows();
+      if (rows.length === 0 || this.fileCheckpoint() !== before || this.cache?.checkpoint !== before || !this.cache.complete) {
+        this.observedVerificationCheckpoint = null;
+        return null;
+      }
+      if (this.observedVerificationCheckpoint !== before) {
+        this.observedVerificationCheckpoint = before;
+        this.verificationGeneration++;
+      }
+      return `${this.verificationIncarnation}:${this.verificationGeneration}`;
+    } catch {
+      this.observedVerificationCheckpoint = null;
+      return null; // @silent-fallback-ok — unavailable key evidence cannot authenticate continuation
+    }
+  }
+
+  /** Every valid row on disk (throws when the file cannot be read). Unparseable lines are skipped. */
+  rows(): LedgerRow[] {
+    return this.readCachedRows().map((row) => ({ ...row }));
+  }
+
+  private readCachedRows(): LedgerRow[] {
+    const checkpoint = this.fileCheckpoint();
+    if (checkpoint !== this.observedVerificationCheckpoint) this.observedVerificationCheckpoint = null;
+    if (checkpoint === null) {
+      this.cache = null;
+      return [];
+    }
+    if (this.cache?.checkpoint === checkpoint) return this.cache.rows;
     const rows: LedgerRow[] = [];
-    for (const line of readJsonlLines(this.file)) {
+    let complete = true;
+    const fd = fs.openSync(this.file, 'r');
+    let lines: string[];
+    try {
+      if (this.checkpointOf(fs.fstatSync(fd, { bigint: true })) !== checkpoint) throw new Error('device-key ledger changed before read');
+      lines = readJsonlLines(fd);
+      if (this.checkpointOf(fs.fstatSync(fd, { bigint: true })) !== checkpoint) throw new Error('device-key ledger changed during read');
+    } finally { fs.closeSync(fd); }
+    for (const line of lines) {
       let parsed: unknown;
-      try { parsed = JSON.parse(line); } catch { continue; } // @silent-fallback-ok — a torn final line was never a committed row
+      try { parsed = JSON.parse(line); } catch { complete = false; continue; } // @silent-fallback-ok — a torn final line was never a committed row
       const row = validateLedgerRow(parsed);
       if (row) rows.push(row);
+      else complete = false;
     }
-    this.cache = { size: st.size, mtimeMs: st.mtimeMs, rows };
+    if (this.fileCheckpoint() !== checkpoint) throw new Error('device-key ledger changed during parse');
+    this.cache = { checkpoint, rows, complete };
     return rows;
   }
 
   /** The merged view for verification, or null when the ledger cannot be read (verdict `unknown`). */
   view(): LedgerView {
-    try { return mergeLedgerRows(this.rows()); } catch (err) {
+    try { return mergeLedgerRows(this.readCachedRows()); } catch (err) {
       // @silent-fallback-ok — not silent: reported through the reportDegradation callback (DegradationReporter in production); the caller reads null as "couldn't check"
       this.opts.reportDegradation?.('MobileDeviceKeyLedger', `the device-key ledger could not be read (${err instanceof Error ? err.message : String(err)}); signed messages read "couldn't check"`);
       return null;
@@ -206,6 +263,7 @@ export class MobileDeviceKeyLedger {
       try { const dfd = fs.openSync(path.dirname(this.file), 'r'); try { fs.fsyncSync(dfd); } finally { fs.closeSync(dfd); } } catch { /* @silent-fallback-ok — some filesystems refuse a directory fsync; the file itself was fsynced */ }
     }
     this.cache = null;
+    this.observedVerificationCheckpoint = null;
     if (row.type === 'revocation') this.revokedPairings.add(ledgerViewKey(row.keyHash, row.deviceId));
   }
 
