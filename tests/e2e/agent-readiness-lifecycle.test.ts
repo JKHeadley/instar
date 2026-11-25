@@ -5,10 +5,22 @@
  * and the scoring actually runs end-to-end.
  */
 
-import { describe, it, expect, beforeEach, afterEach } from 'vitest';
+import { afterAll, describe, it, expect, beforeEach, afterEach } from 'vitest';
+import { createTempProject, type TempProject } from '../helpers/setup.js';
 import express from 'express';
 import type { AddressInfo } from 'node:net';
 import { createRoutes } from '../../src/server/routes.js';
+
+const routeProjects: TempProject[] = [];
+afterAll(() => {
+  for (const project of routeProjects.splice(0)) project.cleanup();
+});
+
+function createRouteProject(): TempProject {
+  const project = createTempProject();
+  routeProjects.push(project);
+  return project;
+}
 
 interface TestServer { url: string; close: () => Promise<void>; }
 async function listen(app: express.Express): Promise<TestServer> {
@@ -26,7 +38,8 @@ describe('POST /agent-readiness/score — (E2E over HTTP)', () => {
   beforeEach(async () => {
     const app = express();
     app.use(express.json());
-    const ctx: any = { config: { authToken: 'test', stateDir: '/tmp/.instar', port: 0 }, startTime: new Date() };
+    const project = createRouteProject();
+    const ctx: any = { config: { authToken: 'test', stateDir: project.stateDir, port: 0 }, startTime: new Date() };
     app.use(createRoutes(ctx));
     server = await listen(app);
   });

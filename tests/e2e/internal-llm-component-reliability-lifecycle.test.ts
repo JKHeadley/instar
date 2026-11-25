@@ -3,7 +3,8 @@
  * /metrics/features routes. Regression pin for an aggregate that looked healthy
  * while one internal LLM component was mostly failing.
  */
-import { afterEach, describe, expect, it, vi } from 'vitest';
+import { afterAll, afterEach, describe, expect, it, vi } from 'vitest';
+import { createTempProject, type TempProject } from '../helpers/setup.js';
 import express from 'express';
 import request from 'supertest';
 import fs from 'node:fs';
@@ -12,6 +13,17 @@ import path from 'node:path';
 import { FeatureMetricsLedger } from '../../src/monitoring/FeatureMetricsLedger.js';
 import { createRoutes, type RouteContext } from '../../src/server/routes.js';
 import { SafeFsExecutor } from '../../src/core/SafeFsExecutor.js';
+
+const routeProjects: TempProject[] = [];
+afterAll(() => {
+  for (const project of routeProjects.splice(0)) project.cleanup();
+});
+
+function createRouteProject(): TempProject {
+  const project = createTempProject();
+  routeProjects.push(project);
+  return project;
+}
 
 let dir: string | null = null;
 let ledger: FeatureMetricsLedger | null = null;
@@ -30,11 +42,12 @@ afterEach(() => {
 });
 
 function appWith(metrics: FeatureMetricsLedger): express.Express {
+  const project = createRouteProject();
   const ctx = {
     config: {
       projectName: 'reliability-e2e',
-      projectDir: '/tmp',
-      stateDir: '/tmp/.instar',
+      projectDir: project.dir,
+      stateDir: project.stateDir,
       port: 0,
       sessions: {},
       scheduler: {},

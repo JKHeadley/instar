@@ -21,7 +21,8 @@
  * Spec: docs/specs/gemini-multi-turn-loop-driver.md
  */
 
-import { describe, it, expect } from 'vitest';
+import { afterAll, describe, it, expect } from 'vitest';
+import { createTempProject, type TempProject } from '../helpers/setup.js';
 import fs from 'node:fs';
 import path from 'node:path';
 import { fileURLToPath } from 'node:url';
@@ -35,6 +36,17 @@ import {
   createQuotaBudgetGate,
 } from '../../src/monitoring/geminiLoopProduction.js';
 import { DEFAULT_DONE_SENTINEL } from '../../src/monitoring/GeminiLoopDriver.js';
+
+const routeProjects: TempProject[] = [];
+afterAll(() => {
+  for (const project of routeProjects.splice(0)) project.cleanup();
+});
+
+function createRouteProject(): TempProject {
+  const project = createTempProject();
+  routeProjects.push(project);
+  return project;
+}
 
 const HERE = path.dirname(fileURLToPath(import.meta.url));
 const SRC = path.resolve(HERE, '../../src');
@@ -63,8 +75,9 @@ describe('GeminiLoopRunner — E2E lifecycle (feature is alive)', () => {
       budgetGate,
     });
 
+    const project = createRouteProject();
     const ctx = {
-      config: { projectName: 't', projectDir: '/tmp', stateDir: '/tmp/.instar', port: 0, sessions: {} as any, scheduler: {} as any } as any,
+      config: { projectName: 't', projectDir: project.dir, stateDir: project.stateDir, port: 0, sessions: {} as any, scheduler: {} as any } as any,
       sessionManager: { listRunningSessions: () => [] } as any,
       state: { getJobState: () => null, getSession: () => null, listSessions: () => [] } as any,
       geminiLoopRunner: runner,

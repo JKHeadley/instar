@@ -14,6 +14,7 @@
  */
 // @ts-nocheck — the tab controller is browser-native ESM.
 import { describe, it, expect, beforeAll, afterAll } from 'vitest';
+import { createTempProject, type TempProject } from '../helpers/setup.js';
 import express from 'express';
 import type { Server } from 'node:http';
 import { JSDOM } from 'jsdom';
@@ -23,9 +24,21 @@ import { FailureLedger } from '../../src/monitoring/FailureLedger.js';
 import { FailureAttributionEngine } from '../../src/monitoring/FailureAttributionEngine.js';
 import { createController } from '../../dashboard/process-health.js';
 
+const routeProjects: TempProject[] = [];
+afterAll(() => {
+  for (const project of routeProjects.splice(0)) project.cleanup();
+});
+
+function createRouteProject(): TempProject {
+  const project = createTempProject();
+  routeProjects.push(project);
+  return project;
+}
+
 function ctxWith(extra: Partial<RouteContext>, fl?: unknown): RouteContext {
+  const project = createRouteProject();
   return {
-    config: { projectName: 'test', projectDir: '/tmp', stateDir: '/tmp/.instar', port: 0, sessions: {} as any, scheduler: {} as any, monitoring: { failureLearning: fl } } as any,
+    config: { projectName: 'test', projectDir: project.dir, stateDir: project.stateDir, port: 0, sessions: {} as any, scheduler: {} as any, monitoring: { failureLearning: fl } } as any,
     sessionManager: { listRunningSessions: () => [] } as any,
     state: { getJobState: () => null, getSession: () => null } as any,
     scheduler: null, telegram: null, relationships: null, feedback: null,
