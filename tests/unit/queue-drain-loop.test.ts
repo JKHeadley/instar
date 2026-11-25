@@ -5,7 +5,7 @@
  * forced re-place, Eternal-Sentinel episode latch, mirror reconciliation,
  * sustained-failure (P19).
  */
-import { describe, it, expect, beforeEach, afterEach } from 'vitest';
+import { describe, it, expect, beforeEach, afterEach, vi } from 'vitest';
 import fs from 'node:fs';
 import os from 'node:os';
 import path from 'node:path';
@@ -337,6 +337,18 @@ describe('stop fence interleavings (§3.6)', () => {
     // onOperatorStop, the TOCTOU-iest variant).
     expect(store.getRow(seq)?.state).toBe('expired');
     expect(store.getRow(seq)?.terminal_reason).toBe('operator-stop');
+  });
+
+  it('confirms cleared held rows from durable state and propagates confirmation read errors', () => {
+    enqueue('s', 'm1');
+    expect(loop.stopAndConfirmCleared('s')).toBe(true);
+    enqueue('s', 'm2');
+    const list = store.listNonTerminal.bind(store);
+    const read = vi.spyOn(store, 'listNonTerminal')
+      .mockImplementationOnce(list).mockImplementationOnce(() => { throw new Error('queue read failed'); });
+    try { expect(() => loop.stopAndConfirmCleared('s')).toThrow('queue read failed'); }
+    finally { read.mockRestore(); }
+    expect(store.listNonTerminal().some((row) => row.session_key === 's')).toBe(false);
   });
 
   it('onOperatorStop drops queued rows with the honest copy reason + PIS cleanup', () => {

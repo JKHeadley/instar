@@ -4266,6 +4266,7 @@ export interface InstarConfig {
       enabled?: boolean;
       /** Exact message locators and context reads. Off unless explicitly enabled. */
       messageLinks?: { enabled?: boolean };
+      quotedReplies?: { enabled?: boolean };
       contextHistoryMaxConcurrentScans?: number;
       /**
        * Media in app conversations (docs/specs/mobile-native-chat-media.md). `enabled` omitted ⇒

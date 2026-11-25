@@ -47,7 +47,7 @@ async function boot(developmentAgent: boolean) {
   await new MachineIdentityManager(stateDir).generateIdentity({ name: 'e2e machine' });
   const config = {
     projectName: 'native-e2e', projectDir: dir, stateDir, port: 0, authToken: 'e2e-token', developmentAgent,
-    mobilePairing: { multiRoute: { enabled: false }, native: { messageLinks: { enabled: true } } }, // the single-host path; multi-route has its own e2e
+    mobilePairing: { multiRoute: { enabled: false }, native: { messageLinks: { enabled: true }, quotedReplies: { enabled: true } } }, // the single-host path; multi-route has its own e2e
     tunnel: { enabled: true, type: 'named', token: 'x', hostname: HOST },
     sessions: { claudePath: '/usr/bin/echo', maxSessions: 1, defaultMaxDurationMinutes: 30, protectedSessions: [], monitorIntervalMs: 5_000 },
     scheduler: { enabled: false, jobsFile: '', maxParallelJobs: 1 }, messaging: [], updates: {},
@@ -174,6 +174,13 @@ describe('native app conversations — production wiring', () => {
     expect(poolList.body).toMatchObject({ conversations: [expect.objectContaining({ id: key, platform: 'app' })], nextCursor: null, pool: { failed: [] } });
     const health = await auth(request(app).get('/health'));
     expect(health.body.appConversations).toMatchObject({ count: 1 });
+
+    const quoted = await send('POST', `/mobile/chat/app/${key}/reply`, {
+      text: 'Thanks for the details.', requestId: `${Date.now()}-${crypto.randomUUID()}`, replyTo: { eventId: target },
+    });
+    expect(quoted.status, JSON.stringify(quoted.body)).toBe(200);
+    const quotedEvent = server.appConversations!.store.getEvent(key, quoted.body.eventId);
+    expect(quotedEvent).toMatchObject({ replyTo: { eventId: target }, receipt: { v: 3 } });
 
     // A ledger revocation alone refuses the phone at once on the production auth path, even if
     // the registry write after it failed (the registry still says active here).

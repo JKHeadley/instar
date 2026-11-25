@@ -18,7 +18,8 @@ import { createRoutes, type RouteContext } from '../../src/server/routes.js';
 import { authMiddleware } from '../../src/server/middleware.js';
 import { MobilePairingService, createMobilePairingRouter, deviceAuthenticator, type MobilePairingDeps } from '../../src/server/mobilePairingRoutes.js';
 import { createMobileConversationRouter } from '../../src/server/mobileConversationRoutes.js';
-import { AppConversationService } from '../../src/core/AppConversationService.js';
+import { MobileChatRequestStore } from '../../src/core/MobileChatRequests.js';
+import { AppConversationService, STRANDED_REQUEST_AGE_MS } from '../../src/core/AppConversationService.js';
 import { ConversationRegistry } from '../../src/core/ConversationRegistry.js';
 import { createConversationBindAuth } from '../../src/core/conversationBindToken.js';
 import type { AppDispatchInput } from '../../src/core/appInboundDispatch.js';
@@ -40,20 +41,21 @@ afterAll(() => {
   for (const d of dirs) SafeFsExecutor.safeRmSync(d, { recursive: true, force: true, operation: 'tests/integration/mobile-native-conversations.test.ts' });
 });
 
-interface Opts { links?: boolean; lease?: { held: boolean }; holdsLease?: () => boolean; recording?: { on: boolean }; dispatchThrows?: boolean; nativeOff?: boolean; dispatchDelayMs?: number }
+interface Opts { machineId?: string; links?: boolean; replies?: boolean; sentinel?: { decideInboundDisposition: () => Promise<{ disposition: string }> }; lease?: { held: boolean }; holdsLease?: () => boolean; recording?: { on: boolean }; dispatchThrows?: boolean; nativeOff?: boolean; dispatchDelayMs?: number }
 
 function setup(opts: Opts = {}) {
+  const machineId = opts.machineId ?? 'm1';
   const dir = fs.mkdtempSync(path.join(os.tmpdir(), 'mnative-'));
   dirs.push(dir);
   const config = {
     projectName: 'echo', projectDir: dir, stateDir: dir, port: 0, authToken: 'tok-1', developmentAgent: true,
     sessions: {}, scheduler: {}, threadline: { ownerName: 'Justin' },
     // Multi-route off: these tests cover the single paired host (mobile-multi-route.md, flag off).
-    mobilePairing: { native: { enabled: !opts.nativeOff, messageLinks: { enabled: opts.links } }, multiRoute: { enabled: false } },
+    mobilePairing: { native: { enabled: !opts.nativeOff, messageLinks: { enabled: opts.links }, quotedReplies: { enabled: opts.replies } }, multiRoute: { enabled: false } },
   };
   const lease = opts.lease ?? { held: true };
   const recording = opts.recording ?? { on: true };
-  const registry = new ConversationRegistry({ stateDir: dir, machineId: () => 'm1', isRecordingEnabled: () => recording.on });
+  const registry = new ConversationRegistry({ stateDir: dir, machineId: () => machineId, isRecordingEnabled: () => recording.on });
   const bindAuth = createConversationBindAuth(dir);
   const holdsLease = opts.holdsLease ?? (() => lease.held);
   const deps: MobilePairingDeps = { config: config as never, stateDir: dir, holdsLease };
@@ -65,7 +67,7 @@ function setup(opts: Opts = {}) {
   const stopEffects: number[] = [];
   const requests = pairing.chatRequests()!;
   const svc = opts.nativeOff ? null : new AppConversationService({
-    stateDir: dir, machineId: () => 'm1', registry, requests, holdsLease, ownerName: () => 'Justin',
+    stateDir: dir, machineId: () => machineId, registry, requests, holdsLease, ownerName: () => 'Justin',
     killSession: (n) => { killed.push(n); return true; },
     onEmergencyStop: (alias) => { stopEffects.push(alias); },
     dispatch: () => async (input) => {
@@ -86,7 +88,7 @@ function setup(opts: Opts = {}) {
   app.use(express.json({ verify: (req, _res, buf) => { (req as unknown as { rawBody: Buffer }).rawBody = buf; } }));
   app.use(authMiddleware(() => 'tok-1', 'echo', undefined, deviceAuthenticator(pairing)));
   app.use(createRoutes(ctx));
-  app.use(createMobileConversationRouter({ config: config as never, pairing, service: svc, machineId: () => 'm1', messageLinkOrigin: () => `https://${HOST}` }));
+  app.use(createMobileConversationRouter({ config: config as never, pairing, service: svc, machineId: () => machineId, sentinel: opts.sentinel, messageLinkOrigin: () => `https://${HOST}` }));
   app.use(createMobilePairingRouter(pairing, deps, ctx));
   const dev = makeDevice();
   const c = pairing.devices.createPending({ deviceName: 'iPhone', label: null, publicKey: dev.publicKey, host: HOST });
@@ -398,5 +400,199 @@ describe('signed exact App message links', () => {
     expect(r.body.error).toBe('message-link-unavailable');
     expect((await signed(e, 'GET', `/mobile/chat/app/${key}/message-context?target=event-a`)).status).toBe(503);
     expect((await signed(e, 'GET', `/mobile/chat/app/${key}/messages`)).status).toBe(200);
+  });
+});
+
+it('keeps stored Reply relation and machine proof out of ordinary native history and sync', async () => {
+  const e = setup();
+  const key = await create(e);
+  const at = new Date().toISOString();
+  const replyTo = { conversationKey: `app:${key}`, eventId: 'private-original-event', messageId: 'private-original-message' };
+  const base = { conversationKey: key, eventId: 'reply-event', messageId: 'reply-message', kind: 'message',
+    role: 'operator', text: 'Visible reply text', at, machineId: 'm1', receivedAt: at, replyTo } as const;
+  expect(e.svc.store.append({ ...base, receipt: { v: 3, machineId: 'm1', sig: 'opaque', signerKeyHash: '0'.repeat(64),
+    conversationKey: `app:${key}`, eventId: base.eventId, messageId: base.messageId, replyTo } }).appended).toBe(true);
+  for (const route of ['messages', 'events']) {
+    const result = await signed(e, 'GET', `/mobile/chat/app/${key}/${route}`);
+    expect(result.status).toBe(200);
+    expect(JSON.stringify(result.body)).toContain('Visible reply text');
+    expect(JSON.stringify(result.body)).not.toContain('private-original');
+    expect(JSON.stringify(result.body)).not.toContain('"receipt"');
+  }
+});
+
+
+async function enableReplyProof(e: Env) {
+  await new MachineIdentityManager(e.dir).generateIdentity({ name: 'quoted reply test machine' });
+  const signer = loadMachineSigner(e.dir)!;
+  const keyLookup = identityKeyLookup(e.dir);
+  const ledger = new MobileDeviceKeyLedger({ stateDir: e.dir, signer, keyLookup });
+  e.pairing.keyLedger = ledger;
+  e.svc.deps.signer = signer;
+  e.svc.deps.keyLedger = ledger;
+  e.svc.deps.keyLookup = keyLookup;
+  ledger.recordActivation(e.pairing.devices.get(e.deviceId)!, 'telegram-dm', new Date(Date.now() - 1000).toISOString());
+}
+
+describe('signed native App Reply admission', () => {
+  it('keeps the route off by default and the ordinary send path rejects the quote field', async () => {
+    const e = setup();
+    const key = await create(e);
+    const body = { text: 'Reply text', requestId: rid(), replyTo: { eventId: 'original-event' } };
+    expect((await signed(e, 'POST', `/mobile/chat/app/${key}/reply`, body)).body.error).toBe('quoted-replies-unavailable');
+    expect((await signed(e, 'POST', `/mobile/chat/app/${key}`, body)).body.error).toBe('invalid-reply-reference');
+    expect(e.dispatched).toHaveLength(0);
+  });
+
+  it('accepts a signed quote exactly once, verifies its receipt, and masks an absent original', async () => {
+    const e = setup({ replies: true });
+    await enableReplyProof(e);
+    const key = await create(e);
+    e.svc.store.append({ conversationKey: key, eventId: 'original-event', messageId: 'original-message', kind: 'message',
+      role: 'agent', text: 'Original', at: new Date().toISOString(), machineId: 'm1' });
+    const route = `/mobile/chat/app/${key}/reply`;
+    const send = (body: unknown) => signed(e, 'POST', route, body);
+    const body = { text: 'Reply text', requestId: rid(), replyTo: { eventId: 'original-event' } };
+    const missing = await send({ ...body, requestId: rid(), replyTo: { eventId: 'missing-event' } });
+    expect(missing.status).toBe(409);
+    expect(missing.body).toEqual({ error: 'reply-source-unavailable', retryable: true });
+    const result = await send(body);
+    expect(result.status, JSON.stringify(result.body)).toBe(200);
+    expect(result.body.replyMirror).toEqual({ state: 'not-applicable', reason: 'app-only' });
+    const duplicate = await send(body);
+    expect(duplicate.body).toEqual(result.body);
+    expect((await send({ ...body, text: 'Different text' })).body.error).toBe('payload-conflict');
+    expect(e.dispatched).toHaveLength(1);
+    const stored = e.svc.store.getEvent(key, result.body.eventId);
+    expect(stored).toMatchObject({ replyTo: { eventId: 'original-event', messageId: 'original-message' }, receipt: { v: 3 } });
+    if (stored?.kind !== 'message') throw new Error('quoted reply not stored');
+    expect(e.svc.verify(stored)).toBe('verified');
+    if (!stored.replyTo) throw new Error('quoted reply relation not stored');
+    expect(e.svc.verify({ ...stored, replyTo: { ...stored.replyTo, eventId: 'different-original' } })).toBe('failed');
+    const currentPolicy = e.pairing.mayReadStored.bind(e.pairing);
+    const revokeOriginal = vi.spyOn(e.pairing, 'mayReadStored').mockImplementation((person, ref, row) =>
+      (row as { eventId?: string }).eventId !== 'original-event' && currentPolicy(person, ref, row));
+    try {
+      const denied = await send({ ...body, requestId: rid() });
+      expect(denied.status).toBe(missing.status);
+      expect(denied.body).toEqual(missing.body);
+      expect((await send(body)).body).toEqual(result.body);
+      expect(e.dispatched).toHaveLength(1);
+    } finally { revokeOriginal.mockRestore(); }
+  });
+
+  it('refuses a fresh serving machine before it can claim or classify a replicated conversation Reply', async () => {
+    const origin = setup({ replies: true });
+    let classified = 0;
+    const peer = setup({ replies: true, machineId: 'm2', sentinel: { decideInboundDisposition: async () => {
+      classified++; return { disposition: 'kill' };
+    } } });
+    await enableReplyProof(origin);
+    await enableReplyProof(peer);
+    const key = await create(origin);
+    const created = origin.svc.store.getCreationRecord(key)!;
+    expect(created.machineId).toBe('m1');
+    peer.svc.ingestReplicated([created]);
+    expect(peer.svc.deps.holdsLease()).toBe(true);
+    expect(peer.svc.currentOwner(key)).toBe(true);
+    const requestId = rid();
+    const response = await signed(peer, 'POST', `/mobile/chat/app/${key}/reply`,
+      { text: 'Stop this task', requestId, replyTo: { eventId: 'original-event' } });
+    expect(response.status).toBe(503);
+    expect(response.body.error).toBe('reply-custody-unavailable');
+    expect(classified).toBe(0);
+    expect(peer.stopEffects).toHaveLength(0);
+    expect(peer.dispatched).toHaveLength(0);
+  });
+
+  it('blocks a fresh request on the creation machine after lease loss before classification', async () => {
+    let classified = 0;
+    const e = setup({ replies: true, sentinel: { decideInboundDisposition: async () => {
+      classified++; return { disposition: 'kill' };
+    } } });
+    await enableReplyProof(e);
+    const key = await create(e);
+    e.lease.held = false;
+    const response = await signed(e, 'POST', `/mobile/chat/app/${key}/reply`,
+      { text: 'Stop this task', requestId: rid(), replyTo: { eventId: 'original-event' } });
+    expect(response.status).toBe(503);
+    expect(response.body.error).toBe('owner-unavailable');
+    expect(classified).toBe(0);
+    expect(e.stopEffects).toHaveLength(0);
+  });
+
+  it.each([true, false, null, 'read-failure'])('stops live work and reports held-work confirmation only when cleared (%s)', async (clears) => {
+    const e = setup({ replies: true });
+    await enableReplyProof(e);
+    const key = await create(e);
+    const held = new Set([`app:${key}`]);
+    let dropCount = 0;
+    if (clears !== null) e.svc.deps.stopHeldConfirmed = (ref) => {
+      dropCount++;
+      if (clears === true || clears === 'read-failure') held.delete(ref);
+      if (clears === 'read-failure') throw new Error('injected durable queue read failure');
+      return !held.has(ref);
+    };
+    const route = `/mobile/chat/app/${key}/reply`;
+    const requestId = rid();
+    const body = { text: 'stop', requestId, replyTo: { malformed: 'ignored for Stop' } };
+    const response = await signed(e, 'POST', route, body);
+    expect(response.status).toBe(clears === true ? 200 : 503);
+    expect(response.body.outcome ?? response.body.error).toBe(clears === true ? 'sentinel-kill' : 'stop-not-confirmed');
+    expect(held.has(`app:${key}`)).toBe(clears === false || clears === null);
+    expect(response.body).not.toHaveProperty('messageId');
+    expect(e.stopEffects).toHaveLength(1);
+    expect((await signed(e, 'POST', route, body)).body).toEqual(response.body);
+    expect(dropCount).toBe(clears === null ? 0 : 1);
+    expect(e.stopEffects).toHaveLength(1);
+    expect(e.svc.store.browseMessages(key, null).messages).toHaveLength(0);
+  });
+
+  it.each(['reserved', 'queue-stopped', 'live-stopped'])('recovers an interrupted quoted Stop without replaying effects (%s)', async (phase) => {
+    const e = setup({ replies: true });
+    const key = await create(e);
+    const requestId = rid();
+    const hash = 'request-hash';
+    let time = Date.now();
+    const initial = new MobileChatRequestStore(e.dir, () => time);
+    expect(initial.reserve(e.deviceId, requestId, hash, 0,
+      { op: 'app-reply-stop', conversationKey: key, messageId: 'never-appended' }).kind).toBe('reserved');
+    let queueEffects = 0;
+    e.svc.deps.stopHeldConfirmed = () => { queueEffects++; return true; };
+    if (phase !== 'reserved') e.svc.deps.stopHeldConfirmed(`app:${key}`);
+    if (phase === 'live-stopped') e.svc.emergencyStop(key);
+    time += STRANDED_REQUEST_AGE_MS + 1;
+    e.svc.deps.requests = new MobileChatRequestStore(e.dir, () => time);
+    e.svc.recoverStranded();
+    expect(e.svc.deps.requests.lookup(e.deviceId, requestId, hash)).toMatchObject({
+      kind: 'done', status: 503, body: { error: 'stop-not-confirmed' },
+    });
+    expect(e.stopEffects).toHaveLength(phase === 'live-stopped' ? 1 : 0);
+    expect(queueEffects).toBe(phase === 'reserved' ? 0 : 1);
+  });
+
+  it('claims the request before semantic Stop and refuses its effect after the device is revoked', async () => {
+    let release!: (value: { disposition: string }) => void;
+    let entered!: () => void;
+    const classifying = new Promise<void>((resolve) => { entered = resolve; });
+    const e = setup({ replies: true, sentinel: { decideInboundDisposition: () => {
+      entered();
+      return new Promise((resolve) => { release = resolve; });
+    } } });
+    await enableReplyProof(e);
+    const key = await create(e);
+    const route = `/mobile/chat/app/${key}/reply`;
+    const body = { text: 'Please stop running this task', requestId: rid(), replyTo: { eventId: 'missing-event' } };
+    const pending = signed(e, 'POST', route, body).then((result) => result);
+    await classifying;
+    try {
+      const conflict = await signed(e, 'POST', route, { ...body, text: 'Conflicting text' });
+      expect(conflict.status).toBe(409);
+      expect(conflict.body.error).toBe('payload-conflict');
+      e.pairing.devices.revoke(e.deviceId, new Date().toISOString());
+    } finally { release({ disposition: 'kill' }); }
+    expect((await pending).status).toBe(403);
+    expect(e.stopEffects).toHaveLength(0);
+    expect(e.dispatched).toHaveLength(0);
   });
 });

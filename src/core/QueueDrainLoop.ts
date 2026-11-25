@@ -1037,6 +1037,11 @@ export class QueueDrainLoop {
    * wanted"). The claimed→expired transition is the transactional fence that
    * makes any in-flight conditional receipt write fail atomically.
    */
+  stopAndConfirmCleared(sessionKey: string): boolean {
+    this.onOperatorStop(sessionKey);
+    return !this.d.store.listNonTerminal().some((row) => row.session_key === sessionKey);
+  }
+
   onOperatorStop(sessionKey: string): void {
     const nowIso = new Date(this.d.now()).toISOString();
     const rows = this.d.store.listNonTerminal().filter((r) => r.session_key === sessionKey);

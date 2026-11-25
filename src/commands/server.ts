@@ -10936,6 +10936,7 @@ export async function startServer(options: StartOptions): Promise<void> {
           }),
         }) : null;
         const appSvc = new AppConversationService({
+          stopHeldConfirmed: (rk) => _inboundQueue?.stopAndConfirmCleared(rk) === true,
           signer: appSigner, keyLookup: appKeyLookup, keyLedger: appKeyLedger,
           // Replaced once the pairing service exists. Until then a recovery pass stops here and the
           // next one retries, so a team person's create never lands unconfined.
@@ -10943,7 +10944,7 @@ export async function startServer(options: StartOptions): Promise<void> {
           // SEC-164 §3.5: a server transcript has its live keys masked before it is stored.
           credentialScrubEnabled: credentialScrubEnabledReader(config.projectDir),
           stateDir: config.stateDir,
-          machineId: () => _meshSelfId ?? os.hostname(),
+          machineId: () => _meshSelfId ?? appSigner?.machineId() ?? os.hostname(),
           // Refusals name the machine ("Mac Studio is nearly out of disk space"), never "this machine".
           machineName: () => {
             const id = _meshSelfId;

@@ -15,6 +15,8 @@ import {
 import {
   appEventFromReplicatedData, buildAppConversationRecordData, appConversationRecordStoreSchema, deriveAppConversationRecordKey,
 } from '../../src/core/AppConversationsReplicatedStore.js';
+import { signReplyReceipt, signerKeyHashOf, verifyReplyReceipt, type MachineSigner } from '../../src/core/AppRecordSignatures.js';
+import { generateSigningKeyPair, sign as edSign } from '../../src/core/MachineIdentity.js';
 import { SafeFsExecutor } from '../../src/core/SafeFsExecutor.js';
 
 const dirs: string[] = [];
@@ -48,6 +50,48 @@ describe('AppConversationStore', () => {
     const boundary = { at: at(1), eventId: 'ev-b' };
     expect(store.exactMessageChunk(KEY, boundary, true, 4).map((row) => row.eventId)).toEqual(['ev-b', 'ev-a']);
     expect(store.exactMessageChunk(KEY, boundary, false, 4).map((row) => row.eventId)).toEqual(['ev-a']);
+  });
+
+  it('preserves quoted event, proof and timestamp through disk and replication codecs', () => {
+    const { store, dir } = mk();
+    store.append(created());
+    const key = `app:${KEY}`;
+    const receivedAt = at(2);
+    const replyTo = { conversationKey: key, eventId: 'ev-original', messageId: 'msg-original' };
+    const binding = { conversationKey: key, eventId: 'ev-reply', messageId: 'msg-reply', replyTo };
+    const origin = { deviceId: 'device-1', host: 'fixture.example', method: 'POST', pathWithQuery: `/mobile/chat/app/${KEY}/reply`,
+      timeMs: String(Date.parse(receivedAt)), bodySha256: '0'.repeat(64) };
+    const signing = generateSigningKeyPair();
+    const signerKeyHash = signerKeyHashOf(signing.publicKey);
+    const signer: MachineSigner = {
+      machineId: () => 'm1', signerKeyHash: () => signerKeyHash,
+      sign: (text) => ({ machineId: 'm1', signerKeyHash, sig: edSign(text, signing.privateKey) }),
+    };
+    const receipt = signReplyReceipt(signer, origin, receivedAt, binding);
+    const event = { ...msg('reply', 2), receivedAt, replyTo, receipt } as AppEvent;
+    expect(store.append(event).appended).toBe(true);
+    store.close();
+    const reopened = new AppConversationStore({ stateDir: dir, machineId: () => 'm1' });
+    try {
+      const actual = reopened.exactMessageCandidates(KEY, 'ev-reply', 'event')[0]!;
+      expect(actual).toMatchObject({ receivedAt, replyTo, receipt });
+      const held = reopened.getEvent(KEY, 'ev-reply')!;
+      const record = buildAppConversationRecordData(held)({ physical: 1, logical: 0, node: 'm1' }, 'm1')!;
+      const verifiedWire = appConversationRecordStoreSchema.validate(record, { mode: 'local' } as never)!;
+      const decoded = appEventFromReplicatedData(verifiedWire);
+      if (decoded?.kind !== 'message' || decoded.receipt?.v !== 3 || !decoded.receivedAt || !decoded.replyTo) {
+        throw new Error('quoted record failed to round-trip');
+      }
+      const lookup = () => ({ status: 'ok' as const, publicKeyPem: signing.publicKey });
+      const decodedBinding = { conversationKey: `app:${decoded.conversationKey}`, eventId: decoded.eventId,
+        messageId: decoded.messageId, replyTo: decoded.replyTo };
+      expect(verifyReplyReceipt(lookup, decoded.receipt, origin, decoded.receivedAt, decodedBinding)).toBe('ok');
+      expect(verifyReplyReceipt(lookup, decoded.receipt, origin, decoded.receivedAt,
+        { ...decodedBinding, conversationKey: 'app:other-conversation' })).toBe('bad');
+      const unknown = validateAppEvent({ ...event, receipt: { ...receipt, v: 4 } });
+      expect(unknown).toMatchObject({ replyTo });
+      expect(unknown).not.toHaveProperty('receipt');
+    } finally { reopened.close(); }
   });
 
   it('captures a bounded content-free registration frontier including tombstones', () => {

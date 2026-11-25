@@ -73,6 +73,7 @@ export interface AppConversationServiceDeps {
   killSession?: (tmuxSession: string) => boolean;
   pauseSession?: (tmuxSession: string) => void;
   /** The emergency-stop side effects shared with the Telegram path (resume queue pause, …). */
+  stopHeldConfirmed?: (sessionKey: string) => boolean;
   onEmergencyStop?: (alias: number, scope?: 'conversation') => void;
   /**
    * The inbox of a confined conversation's scope folder, or null when it is not confined. A confined
@@ -1025,7 +1026,13 @@ export class AppConversationService {
         this.deps.requests.finish(rec.deviceId, rec.requestId, { status: 200, body: this.applyPurge(rec.deviceId, rec.requestId, sets) });
         continue;
       }
-      if (x.op === 'send') {
+      if (x.op === 'app-reply-stop') {
+        this.deps.requests.finish(rec.deviceId, rec.requestId, { status: 503, body: {
+          error: 'stop-not-confirmed', replyMirror: { state: 'not-applicable', reason: 'emergency-stop' },
+        } });
+        continue;
+      }
+      if (x.op === 'send' || x.op === 'app-reply') {
         if (!x.messageId || !this.store.hasMessage(x.messageId)) {
           this.deps.requests.finish(rec.deviceId, rec.requestId, { status: 409, body: { error: 'not-delivered', detail: 'This message was not delivered. Send it again.' } });
           continue;
