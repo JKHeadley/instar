@@ -3,9 +3,9 @@ title: Quoted Replies
 slug: conversation-replies-message-links
 author: echo
 status: approved
-review-convergence: 2026-11-25T11:10:34+00:00
+review-convergence: 2026-11-25T11:47:25+00:00
 approved: true
-approved-by: echo under standing build approval for the default-off server checkpoint only
+approved-by: echo under standing build approval for the default-off server route, storage, preview and capability checkpoints only
 tier: 2
 parent-principle: "Operator-Surface Quality"
 card: wc_4d8dd0e0144b636e
@@ -30,6 +30,15 @@ An enabled quoted Stop runs only on that current custodian and owner. It reserve
 - Use the pre-existing send request store for duplicate and restart custody. Mark the reservation as an App reply and persist the exact original identity, accepted actor and fixed proof before calling any append or dispatch. Ordinary send reservations continue to use the existing hash and outcomes.
 - For App history and context, share the same derived public reply projection. While a signed view stays active, use its existing conversation-list refresh and reader visibility signal to invalidate cached previews and re-read the same displayed reply event identities. A changed visibility revision immediately clears previews before the read. On every successful signed list refresh revalidate the displayed reply identities, including when membership and the visibility value are unchanged. Hide previews before revalidation. Start a fresh projection generation before each revalidation, even when membership and visibility are unchanged. An off-state refresh advances that generation and clears both the chip and its navigation target without requesting a replacement. Apply results only when view, reader and projection generation all match. Test an enabled response held until after an off-state refresh. If refresh fails, previews stay hidden until authorization is verified again. A successful empty event poll supplies no such proof. Test remote revocation without navigation, focus change or a new reply event. The original event ID is emitted only when that original is independently readable now. A stored reply with unverifiable proof returns the unavailable state. Older peers that stripped every quote marker can still show the ordinary base message.
 - Prove the flag-off route, legacy sends, same-target duplicate retry, typed event collision, masked denied and missing target, emergency Stop, and crash-before/after-append against production admission. Native fixture payloads cover available and unavailable chips, a mismatch, and the exact event link. The first App runtime is not ready until the link prerequisite and these checks are verified.
+
+
+## Native Preview And Capability Follow-On
+
+Live signed App conversation rows advertise optional `messageActions.reply: true` when the feature, chat send switch, signer, signed send authority and current local custody are all available. Resolve the captured signed actor and feature state again when emitting a pooled list after peer reads. Absence or anything other than literal true leaves Reply unavailable. Peer list rows never supply capability to the signed response. Cached lists and stale pairing state carry no capability. Browsed local history and exact context can carry the authorized reply state. Pool and incremental event rows carry no preview projection.
+
+The signed `GET /mobile/chat/app/:key/reply-previews?eventId=<reply-base-eventId>` accepts up to 50 distinct repeated event IDs, returns only the named base IDs and each current authorized reply projection, and sends no-store. For an absent or unreadable base it echoes the requested ID with no reply field. A readable quoted base whose relation cannot be proved, whose original cannot be read as a validated exact stored event, or whose original has a positively failed signed origin returns only the unavailable state. Legacy and agent originals without a device signature are eligible under their existing held-store and reader authority. No bearer or notify caller receives previews. The app clears previews and navigation targets before each refresh and checks the captured pairing, conversation and projection generation before applying any response that can install a projection, including history, exact context and preview refresh. Test a delayed history response that arrives after a newer refresh withdrew the original. A current unavailable response clears navigation. An older available response cannot restore it, and a fresh authorized available response can restore it after access returns. Native route mounting and the ordering test remain pending. Before mounting the feature for users, the test must demonstrate all three transitions through the mounted native route. The flag off omits reply fields and disables refresh.
+
+Mac selection and cancellation preserve the draft, attachments, focus and scroll. Reconnecting must preserve the dedicated Reply method, path, captured pairing, conversation, selected settled event ID and all signed body fields including the original request ID. Re-sign for the current transport. If the durable outbox cannot represent Reply intent, keep the draft in the live composer and use the same request ID on retry of the unchanged intent. Never retry through ordinary send. A changed original with the same request ID yields 409 payload-conflict. Removed or inaccessible originals on new sends share 409 reply-source-unavailable. The fixture covers these wire cases and leaves native route mounting pending tested integration.
 
 ## Outcome And Scope
 
@@ -210,3 +219,5 @@ Two bounded Codex Astra passes identified and motivated these clarifications. Th
 The focused review confirmed the preview generation, Stop authority and App-only test corrections. It also identified a potential delimiter ambiguity in the draft receipt. The v3 contract now uses canonical JSON for the entire tuple. The expected-byte fixture covers the two adjacent-ID values that the prior newline-join encoding could conflate. The wire encoding still needs runtime and independent implementation verification.
 
 The default-off signed route and storage checkpoint has the scope and disposition in [the convergence report](reports/conversation-replies-message-links-convergence.md). This disposition does not activate the setting or approve client previews, capability advertisement or provider increments.
+
+The signed server preview and capability follow-on is also approved under the default-off scope. Native route mounting, composer integration, native response-ordering evidence and provider work remain pending.

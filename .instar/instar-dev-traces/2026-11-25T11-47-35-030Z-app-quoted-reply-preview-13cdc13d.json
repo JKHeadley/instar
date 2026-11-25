@@ -1,0 +1,37 @@
+{
+  "version": 3,
+  "slug": "app-quoted-reply-preview",
+  "sessionId": "633bd330-201e-4dc8-8fd9-72b89116167e",
+  "timestamp": "2026-11-25T11:47:35.030Z",
+  "artifactPath": "upgrades/side-effects/app-quoted-reply-preview.md",
+  "artifactSha256": "97e78aeee4bb82f0b5c1a78761715fc6e764925de22ab459c257dc62b646b3a9",
+  "specPath": "docs/specs/conversation-replies-message-links.md",
+  "coveredFiles": [
+    "docs/specs/conversation-replies-message-links.eli16.md",
+    "docs/specs/conversation-replies-message-links.md",
+    "docs/specs/reports/conversation-replies-message-links-convergence.md",
+    "src/server/mobileConversationRoutes.ts",
+    "src/server/mobilePairingRoutes.ts",
+    "tests/e2e/mobile-native-conversations-alive.test.ts",
+    "tests/integration/mobile-native-conversations-gaps.test.ts",
+    "tests/integration/mobile-native-conversations.test.ts",
+    "upgrades/side-effects/app-quoted-reply-preview.md"
+  ],
+  "phase": "complete",
+  "tier": 2,
+  "tierReasoning": "Signed private preview route and per-conversation capability",
+  "secondPass": "true",
+  "reviewerConcurred": true,
+  "toolchain": {
+    "buildSkill": {
+      "name": "instar-dev",
+      "version": "21a45a5a5f03",
+      "verified": true
+    },
+    "convergence": {
+      "reportPath": "docs/specs/reports/conversation-replies-message-links-convergence.md",
+      "iterations": null,
+      "verified": true
+    }
+  }
+}

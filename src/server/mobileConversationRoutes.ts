@@ -692,6 +692,34 @@ export function createMobileConversationRouter(deps: MobileConversationRouteDeps
     return crypto.createHmac('sha256', exactVisibilityKey)
       .update(JSON.stringify([person?.role, person?.userId, person?.tier, grants])).digest('base64url');
   };
+  const quotedRepliesOn = () => deps.config.mobilePairing?.native?.quotedReplies?.enabled === true;
+  const ownsReplyCustody = (key: string) => {
+    const machineId = deps.machineId();
+    return machineId !== 'local' && svc?.store.getCreationRecord(key)?.machineId === machineId;
+  };
+  const replyReader = (req: Request) => principalOf(req).kind === 'device' && quotedRepliesOn()
+    ? exactMessageReader(deps.pairing, req)() : null;
+  const replyProjection = (key: string, base: BrowsedMessage, person: ResolvedPerson | null) => {
+    if (!person || !quotedRepliesOn() || !deps.pairing.mayUse(person, key, 'read')
+      || !deps.pairing.mayReadStored(person, key, base)) return {};
+    if (!base.replyTo && !(base.receipt?.v === 3 && base.receipt.replyTo)) return {};
+    const unavailable = { reply: { state: 'unavailable' as const } };
+    const relation = base.replyTo;
+    if (!relation?.eventId || relation.conversationKey !== `app:${key}` || base.receipt?.v !== 3) return unavailable;
+    try {
+      const verdict = svc!.verify({ ...base, conversationKey: key });
+      if (verdict !== 'verified' && verdict !== 'redacted') return unavailable;
+      const [original] = svc!.store.exactMessageCandidates(key, relation.eventId, 'event');
+      if (!original || original.messageId !== relation.messageId || !deps.pairing.mayReadStored(person, key, original)) return unavailable;
+      // Legacy and agent originals need no device proof. A recorded signature that positively
+      // fails verification cannot supply an original preview or navigation target.
+      if (original.origin && svc!.verify({ ...original, conversationKey: key }) === 'failed') return unavailable;
+      return { reply: { state: 'available' as const, eventId: original.eventId, messageId: original.messageId,
+        preview: messagePreview(original), senderName: original.senderName ?? null } };
+    } catch {
+      return unavailable; // @silent-fallback-ok — reveal no detail about the original's storage or permissions
+    }
+  };
   const exactLinksOn = () => deps.config.mobilePairing?.native?.messageLinks?.enabled === true;
   const exactLinkOrigin = () => {
     const raw = deps.messageLinkOrigin?.();
@@ -714,6 +742,7 @@ export function createMobileConversationRouter(deps: MobileConversationRouteDeps
     // People and roles §3.4: an MSP phone sees Telegram topics and its own app conversations only
     // (filtered after the merge, so the cursor still advances over rows it does not see).
     const person = devicePersonOf(req);
+    const currentReplyActor = principalOf(req).kind === 'device' ? exactMessageReader(deps.pairing, req) : () => null;
     /** A team phone's list line is the newest message it may read, so a held one is not shown there. */
     const messageLinkSupport = exactLinksOn() ? { messageLinkSupport: { exactContext: true } } : {};
     const shownPreview = (r: ConversationListRow): ConversationListRow => {
@@ -721,13 +750,22 @@ export function createMobileConversationRouter(deps: MobileConversationRouteDeps
       const newest = svc!.store.browseMessages(String(r.id), null, 100).messages.filter((m) => deps.pairing.mayReadStored(person, String(r.id), m)).pop();
       return { ...r, lastPreview: newest ? messagePreview(newest) : null };
     };
-    const visible = (rows: ConversationListRow[]): ConversationListRow[] => rows.filter((r) => {
-      if (r.platform === 'telegram') return deviceMayUse(deps.pairing, req, `telegram:${String(r.id)}`);
-      if (r.platform === 'slack') return deviceMayUse(deps.pairing, req, 'slack:');
-      return !svc!.store.isHiddenConversation?.(String(r.id)) && deviceMayUse(deps.pairing, req, String(r.id));
-    }).map(shownPreview).map((row) => row.platform === 'app' && exactLinksOn() ? {
-      ...row, messageActions: { exactContext: true, visibility: exactVisibility(person, String(row.id)), ...(exactLinkOrigin() ? { copyLink: true } : {}) },
-    } : row);
+    const visible = (rows: ConversationListRow[]): ConversationListRow[] => {
+      const replyActor = quotedRepliesOn() && isMobileChatEnabled(deps.config) ? currentReplyActor() : null;
+      return rows.filter((r) => {
+        if (r.platform === 'telegram') return deviceMayUse(deps.pairing, req, `telegram:${String(r.id)}`);
+        if (r.platform === 'slack') return deviceMayUse(deps.pairing, req, 'slack:');
+        return !svc!.store.isHiddenConversation?.(String(r.id)) && deviceMayUse(deps.pairing, req, String(r.id));
+      }).map(shownPreview).map((row) => {
+        if (row.platform !== 'app') return row;
+        const key = String(row.id);
+        const canReply = replyActor !== null && svc!.deps.signer && ownsReplyCustody(key)
+          && svc!.deps.holdsLease() && svc!.currentOwner(key) && deps.pairing.mayUse(replyActor, key, 'send');
+        const links = exactLinksOn() ? { exactContext: true, visibility: exactVisibility(person, key), ...(exactLinkOrigin() ? { copyLink: true } : {}) } : {};
+        const { messageActions: _incomingActions, ...localRow } = row as ConversationListRow & { messageActions?: unknown };
+        return canReply || Object.keys(links).length ? { ...localRow, messageActions: { ...links, ...(canReply ? { reply: true } : {}) } } : localRow;
+      });
+    };
     // Unread (§3.5): read fields for a reader on every visible row, the page total, and whether
     // anything after the page is unread. A Bearer read without a forwarded reader gets none.
     const unread = unreadOn();
@@ -990,7 +1028,7 @@ export function createMobileConversationRouter(deps: MobileConversationRouteDeps
     if (quoted && req.originalUrl.includes('?')) {
       res.status(400).json({ error: 'invalid-reply-request' }); return;
     }
-    if (quoted && deps.config.mobilePairing?.native?.quotedReplies?.enabled !== true) {
+    if (quoted && !quotedRepliesOn()) {
       res.status(503).json({ error: 'quoted-replies-unavailable' }); return;
     }
     const s = svc!;
@@ -1037,13 +1075,7 @@ export function createMobileConversationRouter(deps: MobileConversationRouteDeps
     const eventId = derivedEventId('op', seed);
 
     // Step 2 — look up. Step 7 — a done/unknown request answers from the CURRENT delivery state.
-    // The durable request store is local. Only the conversation's immutable creation
-    // machine may accept this operation, even when another machine takes the serving lease.
-    const ownsReplyCustody = () => {
-      const machineId = deps.machineId();
-      return machineId !== 'local' && s.store.getCreationRecord(key)?.machineId === machineId;
-    };
-    if (quoted && !ownsReplyCustody()) {
+    if (quoted && !ownsReplyCustody(key)) {
       res.status(503).json({ error: 'reply-custody-unavailable' }); return;
     }
     const activeKey = JSON.stringify([deviceId, requestId]);
@@ -1130,7 +1162,7 @@ export function createMobileConversationRouter(deps: MobileConversationRouteDeps
         catch { /* @silent-fallback-ok — keep the existing classifier failure behavior, then require a valid source */ }
       }
       if (!actorCurrent() || !s.liveConversation(key)) { res.status(403).json({ error: 'reader-no-longer-authorized' }); return; }
-      if (!ownsReplyCustody() || !s.deps.holdsLease() || !s.currentOwner(key)) {
+      if (!ownsReplyCustody(key) || !s.deps.holdsLease() || !s.currentOwner(key)) {
         res.status(503).json({ error: 'owner-unavailable' }); return;
       }
       if (!exactStop && quoteDisposition !== 'kill') {
@@ -1196,7 +1228,7 @@ export function createMobileConversationRouter(deps: MobileConversationRouteDeps
       }
     }
     if (replyTo) {
-      const holds = ownsReplyCustody() && s.deps.holdsLease() && s.currentOwner(key);
+      const holds = ownsReplyCustody(key) && s.deps.holdsLease() && s.currentOwner(key);
       const current = holds ? source() : null;
       if (!current || current.messageId !== replyTo.messageId) {
         if (msg.kind === 'media-message') s.media.releaseClaim(uploadIds, messageId);
@@ -1276,7 +1308,7 @@ export function createMobileConversationRouter(deps: MobileConversationRouteDeps
     if (exactStop || quotedStop) {
       let heldConfirmed = true;
       if (quotedStop) {
-        if (!actorCurrent() || !ownsReplyCustody() || !s.deps.holdsLease() || !s.currentOwner(key)) {
+        if (!actorCurrent() || !ownsReplyCustody(key) || !s.deps.holdsLease() || !s.currentOwner(key)) {
           finish(403, { error: 'reader-no-longer-authorized' }); return;
         }
         try {
@@ -1516,7 +1548,11 @@ export function createMobileConversationRouter(deps: MobileConversationRouteDeps
       const page = visible.slice(0, n);
       const oldest = page[page.length - 1];
       const originCtx = { display: deps.originDisplay?.() ?? { ...DEFAULT_ORIGIN_DISPLAY }, selfMachineId: deps.machineId() };
-      const messages = page.reverse().map((m) => historyRow(m, (x) => svc!.verify({ ...x, conversationKey: key }), svc!, originCtx));
+      const projectionReader = principalOf(req).kind === 'device' ? current : null;
+      const messages = page.reverse().map((m) => ({
+        ...historyRow(m, (x) => svc!.verify({ ...x, conversationKey: key }), svc!, originCtx),
+        ...replyProjection(key, m, projectionReader),
+      }));
       res.json({ conversationKey: key, messages, nextBefore: null, visibility: admittedVisibility,
         nextContextBefore: visible.length > n && oldest ? { at: oldest.at, eventId: oldest.eventId } : null,
         ...(direct ? { anchorApplied: { requestedTarget: target, messageId: boundary.messageId, eventId: boundary.eventId } }
@@ -1528,6 +1564,32 @@ export function createMobileConversationRouter(deps: MobileConversationRouteDeps
       if (remaining) exactScans.set(store, remaining);
       else exactScans.delete(store);
     }
+  });
+
+  // Revalidate only the exact displayed reply bases. No arbitrary history page is returned.
+  router.get('/mobile/chat/app/:key/reply-previews', (req, res) => {
+    res.setHeader('Cache-Control', 'no-store');
+    const person = replyReader(req);
+    if (!quotedRepliesOn() || !svc) { res.status(503).json({ error: 'quoted-replies-unavailable' }); return; }
+    if (!person) { res.status(403).json({ error: 'reader-no-longer-authorized' }); return; }
+    const key = String(req.params.key);
+    if (!svc.liveConversation(key) || !deps.pairing.mayUse(person, key, 'read')) {
+      res.status(404).json({ error: 'unknown-conversation' }); return;
+    }
+    const ids = Array.isArray(req.query.eventId) ? req.query.eventId : [req.query.eventId];
+    if (!ids.length || ids.length > 50 || ids.some((id) => !exactScalar(id, 128))
+      || new Set(ids).size !== ids.length || Object.keys(req.query).some((field) => field !== 'eventId')) {
+      res.status(400).json({ error: 'invalid-reply-preview-request' }); return;
+    }
+    const messages = (ids as string[]).map((eventId) => {
+      try {
+        const [base] = svc.store.exactMessageCandidates(key, eventId, 'event');
+        return { eventId, ...(base ? replyProjection(key, base, person) : {}) };
+      } catch {
+        return { eventId }; // @silent-fallback-ok — unreadable and absent reply bases share the same result
+      }
+    });
+    res.json({ conversationKey: key, messages });
   });
 
   // ── Browse ──
@@ -1550,8 +1612,10 @@ export function createMobileConversationRouter(deps: MobileConversationRouteDeps
     const shown = page.messages.filter((m) => deps.pairing.mayReadStored(reader, key, m));
     const display = deps.originDisplay?.() ?? { ...DEFAULT_ORIGIN_DISPLAY };
     const originCtx = { display, selfMachineId: deps.machineId() };
+    const projectionReader = pool ? null : replyReader(req);
     const rows = shown.map((m) => {
-      const row = historyRow(m, (x) => svc!.verify({ ...x, conversationKey: key }), svc!, originCtx);
+      const row: Record<string, unknown> = { ...historyRow(m, (x) => svc!.verify({ ...x, conversationKey: key }), svc!, originCtx),
+        ...replyProjection(key, m, projectionReader) };
       const heldFrom = reader === null || isOwnerPerson(reader) ? deps.pairing.heldFrom(key, m) : [];
       return heldFrom.length > 0 ? { ...row, heldFrom } : row;
     });

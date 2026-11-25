@@ -445,11 +445,13 @@ describe('signed native App Reply admission', () => {
   });
 
   it('accepts a signed quote exactly once, verifies its receipt, and masks an absent original', async () => {
-    const e = setup({ replies: true });
+    const e = setup({ replies: true, links: true });
     await enableReplyProof(e);
     const key = await create(e);
     e.svc.store.append({ conversationKey: key, eventId: 'original-event', messageId: 'original-message', kind: 'message',
       role: 'agent', text: 'Original', at: new Date().toISOString(), machineId: 'm1' });
+    const list = await signed(e, 'GET', '/mobile/conversations');
+    expect(list.body.conversations[0].messageActions).toMatchObject({ reply: true });
     const route = `/mobile/chat/app/${key}/reply`;
     const send = (body: unknown) => signed(e, 'POST', route, body);
     const body = { text: 'Reply text', requestId: rid(), replyTo: { eventId: 'original-event' } };
@@ -461,7 +463,12 @@ describe('signed native App Reply admission', () => {
     expect(result.body.replyMirror).toEqual({ state: 'not-applicable', reason: 'app-only' });
     const duplicate = await send(body);
     expect(duplicate.body).toEqual(result.body);
-    expect((await send({ ...body, text: 'Different text' })).body.error).toBe('payload-conflict');
+    const different = await send({ ...body, replyTo: { eventId: 'different-original' } });
+    expect(different.status).toBe(409);
+    expect(different.body.error).toBe('payload-conflict');
+    const changedText = await send({ ...body, text: 'Different text' });
+    expect(changedText.status).toBe(409);
+    expect(changedText.body.error).toBe('payload-conflict');
     expect(e.dispatched).toHaveLength(1);
     const stored = e.svc.store.getEvent(key, result.body.eventId);
     expect(stored).toMatchObject({ replyTo: { eventId: 'original-event', messageId: 'original-message' }, receipt: { v: 3 } });
@@ -469,6 +476,27 @@ describe('signed native App Reply admission', () => {
     expect(e.svc.verify(stored)).toBe('verified');
     if (!stored.replyTo) throw new Error('quoted reply relation not stored');
     expect(e.svc.verify({ ...stored, replyTo: { ...stored.replyTo, eventId: 'different-original' } })).toBe('failed');
+    const refreshPath = `/mobile/chat/app/${key}/reply-previews?eventId=${encodeURIComponent(result.body.eventId)}`;
+    const available = { state: 'available', eventId: 'original-event', messageId: 'original-message', preview: 'Original', senderName: null };
+    const refresh = await signed(e, 'GET', refreshPath);
+    expect(refresh.status).toBe(200);
+    expect(refresh.body).toEqual({ conversationKey: key, messages: [{ eventId: result.body.eventId, reply: available }] });
+    expect(refresh.headers['cache-control']).toBe('no-store');
+    const batch = await signed(e, 'GET', refreshPath + '&eventId=unknown-reply-base');
+    expect(batch.body.messages).toEqual([{ eventId: result.body.eventId, reply: available }, { eventId: 'unknown-reply-base' }]);
+    expect((await signed(e, 'GET', refreshPath + '&eventId=' + encodeURIComponent(result.body.eventId))).status).toBe(400);
+    expect((await bearer(e, 'get', refreshPath)).status).toBe(403);
+    const context = await signed(e, 'GET', `/mobile/chat/app/${key}/message-context?target=${encodeURIComponent(result.body.eventId)}&targetKind=event`);
+    expect(context.body.messages.find((row: { eventId: string }) => row.eventId === result.body.eventId).reply).toEqual(available);
+    const history = await signed(e, 'GET', `/mobile/chat/app/${key}/messages`);
+    expect(history.body.messages.find((row: { eventId: string }) => row.eventId === result.body.eventId).reply).toEqual(available);
+    const exactRead = e.svc.store.exactMessageCandidates.bind(e.svc.store);
+    const altered = vi.spyOn(e.svc.store, 'exactMessageCandidates').mockImplementation((ref, id, kind) =>
+      exactRead(ref, id, kind).map((row) => id === 'original-event' ? { ...row, origin: stored.origin } : row));
+    try {
+      expect((await signed(e, 'GET', refreshPath)).body.messages)
+        .toEqual([{ eventId: result.body.eventId, reply: { state: 'unavailable' } }]);
+    } finally { altered.mockRestore(); }
     const currentPolicy = e.pairing.mayReadStored.bind(e.pairing);
     const revokeOriginal = vi.spyOn(e.pairing, 'mayReadStored').mockImplementation((person, ref, row) =>
       (row as { eventId?: string }).eventId !== 'original-event' && currentPolicy(person, ref, row));
@@ -477,8 +505,22 @@ describe('signed native App Reply admission', () => {
       expect(denied.status).toBe(missing.status);
       expect(denied.body).toEqual(missing.body);
       expect((await send(body)).body).toEqual(result.body);
+      const privatePreview = await signed(e, 'GET', refreshPath);
+      expect(privatePreview.body.messages).toEqual([{ eventId: result.body.eventId, reply: { state: 'unavailable' } }]);
+      expect(JSON.stringify(privatePreview.body)).not.toContain('original-event');
       expect(e.dispatched).toHaveLength(1);
     } finally { revokeOriginal.mockRestore(); }
+    e.pairing.deps.config.mobilePairing!.chat = { enabled: false };
+    expect((await signed(e, 'GET', '/mobile/conversations')).body.conversations[0].messageActions?.reply).toBeUndefined();
+    expect((await signed(e, 'GET', refreshPath)).body.messages[0].reply).toEqual(available);
+    e.pairing.deps.config.mobilePairing!.native!.quotedReplies!.enabled = false;
+    const disabled = await signed(e, 'GET', refreshPath);
+    expect(disabled.status).toBe(503);
+    expect(disabled.body.error).toBe('quoted-replies-unavailable');
+    const disabledHistory = await signed(e, 'GET', `/mobile/chat/app/${key}/messages`);
+    expect(disabledHistory.body.messages.find((row: { eventId: string }) => row.eventId === result.body.eventId)).not.toHaveProperty('reply');
+    expect((await signed(e, 'GET', '/mobile/conversations')).body.conversations[0].messageActions?.reply).toBeUndefined();
+
   });
 
   it('refuses a fresh serving machine before it can claim or classify a replicated conversation Reply', async () => {

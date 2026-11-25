@@ -185,6 +185,15 @@ describe('native app conversations — production wiring', () => {
     const quotedEvent = server.appConversations!.store.getEvent(key, quoted.body.eventId);
     expect(quotedEvent).toMatchObject({ replyTo: { eventId: target }, receipt: { v: 3 } });
 
+    const capabilities = await send('GET', '/mobile/conversations');
+    expect(capabilities.body.conversations[0].messageActions).toMatchObject({ reply: true });
+    const previews = await send('GET', `/mobile/chat/app/${key}/reply-previews?eventId=${encodeURIComponent(quoted.body.eventId)}`);
+    expect(previews.status).toBe(200);
+    expect(previews.body.messages).toEqual([{ eventId: quoted.body.eventId, reply: {
+      state: 'available', eventId: target, messageId: reply.body.messageId,
+      preview: 'Saturday is the farmers market at nine.', senderName: null,
+    } }]);
+
     // A ledger revocation alone refuses the phone at once on the production auth path, even if
     // the registry write after it failed (the registry still says active here).
     server.mobilePairing!.keyLedger!.recordRevocation(server.mobilePairing!.devices.get(deviceId)!, new Date().toISOString());
