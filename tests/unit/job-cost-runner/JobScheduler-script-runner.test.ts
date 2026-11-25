@@ -136,6 +136,8 @@ describe('script runner execution', () => {
     const catalog = { doors: { fixture: { probe: { kind: 'cli-version' } } } };
     readDoorwayAssets.mockReturnValue({
       status: 'verified',
+      catalog,
+      lastReviewedAt: '2026-11-24',
       catalogBytes: Buffer.from(JSON.stringify(catalog)),
       proberBytes: Buffer.from('export function probeDoorFree() { return { probeStatus: "ok" }; }'),
     });
