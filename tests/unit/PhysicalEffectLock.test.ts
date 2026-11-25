@@ -86,6 +86,26 @@ describeUnix('UnixFlockProvider', () => {
     expect(() => lease.assertHeld()).toThrow(PhysicalEffectLockError);
   });
 
+  it('blocks another synchronous contender until kernel ownership is released', () => {
+    const dir = tempDir();
+    const first = new PhysicalEffectLock(new UnixFlockProvider(dir));
+    const second = new PhysicalEffectLock(new UnixFlockProvider(dir));
+    const lease = first.acquireSync('journal-owner', Date.now() + 2_000);
+    try {
+      expect(() => second.acquireSync('journal-owner', Date.now() + 300)).toThrow(PhysicalEffectLockError);
+      lease.assertHeld();
+    } finally {
+      lease.release();
+    }
+    const successor = second.acquireSync('journal-owner', Date.now() + 2_000);
+    try {
+      successor.assertHeld();
+      expect(successor.epoch).toBeGreaterThan(lease.epoch);
+    } finally {
+      successor.release();
+    }
+  });
+
   it('does not serialize unrelated scopes', async () => {
     const provider = new UnixFlockProvider(tempDir());
     const [a, b] = await Promise.all([

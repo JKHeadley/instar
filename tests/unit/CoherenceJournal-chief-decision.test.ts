@@ -6,6 +6,7 @@ import { JournalSyncApplier } from '../../src/core/JournalSyncApplier.js';
 import { CoherenceJournal, type JournalFs } from '../../src/core/CoherenceJournal.js';
 import { buildLastTick, CHIEF_OF_STAFF_KIND_REGISTRATION } from '../../src/core/ChiefOfStaffStore.js';
 import { ReplicatedKindRegistry } from '../../src/core/ReplicatedRecordEnvelope.js';
+import type { PhysicalEffectLeaseSync } from '../../src/core/PhysicalEffectLock.js';
 import { SafeFsExecutor } from '../../src/core/SafeFsExecutor.js';
 
 const machine = 'm_studio';
@@ -23,8 +24,22 @@ describe('dark chief decision journal append', () => {
   let stateDir: string;
   let journal: CoherenceJournal;
 
+  let ownsKernelLock: boolean;
+  const decisionWriterLock = {
+    acquireSync(scope: string): PhysicalEffectLeaseSync {
+      if (ownsKernelLock) throw new Error('fixture kernel lock is held');
+      ownsKernelLock = true;
+      let live = true;
+      return {
+        scope, ownerId: 'fixture', epoch: 1, acquiredAt: 0, requiresReconciliation: false,
+        assertHeld() { if (!live) throw new Error('fixture lock no longer held'); },
+        release() { live = false; ownsKernelLock = false; },
+      };
+    },
+  };
+
   function open(fsImpl?: JournalFs) {
-    const next = new CoherenceJournal({ stateDir, machineId: machine, fsImpl });
+    const next = new CoherenceJournal({ stateDir, machineId: machine, fsImpl, decisionWriterLock });
     const registry = new ReplicatedKindRegistry();
     registry.register(CHIEF_OF_STAFF_KIND_REGISTRATION);
     next.setReplicatedKindRegistry(registry);
@@ -33,12 +48,40 @@ describe('dark chief decision journal append', () => {
   }
 
   beforeEach(() => {
+    ownsKernelLock = false;
     stateDir = fs.mkdtempSync(path.join(os.tmpdir(), 'chief-journal-'));
     journal = open();
   });
   afterEach(() => {
     journal.close();
     SafeFsExecutor.safeRmSync(stateDir, { recursive: true, force: true, operation: 'chief-decision-fixture' });
+  });
+
+  it('keeps an advisory-only journal from making exact decisions', () => {
+    journal.close();
+    journal = new CoherenceJournal({ stateDir, machineId: machine });
+    journal.open();
+    expect(journal.appendChiefDecision(() => true, () => candidate())).toBe(false);
+  });
+
+  it('does not release the winner when a second journal is locked out', () => {
+    const contender = open();
+    expect(contender.isLockedOut).toBe(true);
+    contender.close();
+    expect(journal.appendChiefDecision(() => true, () => candidate())).toBe(true);
+  });
+
+  it('leaves a stale-looking live strict owner alone, including when the contender closes', () => {
+    journal.close();
+    const lock = path.join(stateDir, 'state', 'coherence-journal', machine + '.lock');
+    const owner = JSON.stringify({ pid: process.ppid, strictDecisionWriter: true });
+    fs.writeFileSync(lock, owner);
+    fs.utimesSync(lock, new Date(0), new Date(0));
+    journal = new CoherenceJournal({ stateDir, machineId: machine });
+    journal.open();
+    expect(journal.isLockedOut).toBe(true);
+    journal.close();
+    expect(fs.readFileSync(lock, 'utf8')).toBe(owner);
   });
 
   it('writes the exact record durably and dedupes the same envelope', () => {

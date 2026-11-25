@@ -1,0 +1,29 @@
+{
+  "version": 2,
+  "slug": "owner-needs-exact-writer-lock",
+  "sessionId": "dd2f336e-e8f7-40b3-97e3-09d19139bfa6",
+  "timestamp": "2026-11-25T13:20:17.478Z",
+  "artifactPath": "upgrades/side-effects/owner-needs-exact-writer-lock.md",
+  "artifactSha256": "ee8b501176917b28a9d81a7cf9e72158e8f0fb00ce687ac5c4694f5a8ef2de02",
+  "coveredFiles": [
+    "docs/specs/owner-needs-exact-writer-lock.eli16.md",
+    "src/core/CoherenceJournal.ts",
+    "src/core/PhysicalEffectLock.ts",
+    "tests/unit/CoherenceJournal-chief-decision.test.ts",
+    "tests/unit/PhysicalEffectLock.test.ts",
+    "upgrades/next/owner-needs-exact-writer-lock.md",
+    "upgrades/side-effects/owner-needs-exact-writer-lock.md"
+  ],
+  "phase": "complete",
+  "tier": 1,
+  "tierReasoning": "Dark journal opt-in plus bounded lock-helper error cleanup, with no new production authority.",
+  "eli16Path": "docs/specs/owner-needs-exact-writer-lock.eli16.md",
+  "sideEffectsPath": "upgrades/side-effects/owner-needs-exact-writer-lock.md",
+  "secondPass": "true",
+  "reviewerConcurred": true,
+  "classClosure": {
+    "defectClass": "unbounded-self-action",
+    "closure": "n/a",
+    "reason": "The strict journal attempts kernel acquisition once on explicit open and never schedules a retry; helper release is one-shot cleanup."
+  }
+}

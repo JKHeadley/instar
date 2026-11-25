@@ -200,11 +200,23 @@ export class UnixFlockProvider implements PhysicalEffectLockProvider {
       throw new PhysicalEffectLockError(state === -2 ? 'deadline-exceeded' : 'provider-failed',
         state === -2 ? 'physical-effect lock deadline exceeded' : 'physical-effect lock worker failed');
     }
+    const releaseHelper = (): void => {
+      Atomics.store(signal, 1, 1);
+      Atomics.notify(signal, 1);
+      Atomics.wait(signal, 0, 1, 2_000);
+      void worker.terminate();
+    };
     const previous = readOwner(ownerPath);
-    const epoch = incrementDurableEpoch(epochPath);
+    let epoch: number;
     const acquiredAt = Date.now();
     const ownerId = `${os.hostname()}:${process.pid}:worker:${crypto.randomUUID()}`;
-    writeDurableJson(ownerPath, { ownerId, cleanRelease: false, epoch, acquiredAt });
+    try {
+      epoch = incrementDurableEpoch(epochPath);
+      writeDurableJson(ownerPath, { ownerId, cleanRelease: false, epoch, acquiredAt });
+    } catch (error) {
+      releaseHelper();
+      throw error;
+    }
     let released = false;
     return {
       scope, ownerId, epoch, acquiredAt,
@@ -216,12 +228,14 @@ export class UnixFlockProvider implements PhysicalEffectLockProvider {
       },
       release(): void {
         if (released) return;
-        writeDurableJson(ownerPath, { ownerId, cleanRelease: true, epoch, acquiredAt });
-        Atomics.store(signal, 1, 1);
-        Atomics.notify(signal, 1);
-        Atomics.wait(signal, 0, 1, 2_000);
-        released = true;
-        void worker.terminate();
+        try {
+          if (Atomics.load(signal, 0) === 1) {
+            writeDurableJson(ownerPath, { ownerId, cleanRelease: true, epoch, acquiredAt });
+          }
+        } finally {
+          released = true;
+          releaseHelper();
+        }
       },
     };
   }
@@ -236,13 +250,16 @@ const deadline = Number(process.hrtime.bigint()) / 1e9 + remaining;
 const child = spawn(workerData.pythonPath, ['-c', workerData.helper, workerData.lockPath, String(deadline)],
   { stdio: ['pipe', 'pipe', 'pipe'] });
 let out = '';
+let acquired = false;
 const fail = (state) => { Atomics.store(signal, 0, state); Atomics.notify(signal, 0); };
 child.stdout.on('data', (b) => {
   out += b.toString();
-  if (out.includes('LOCKED\n')) {
+  if (!acquired && out.includes('LOCKED\n')) {
+    acquired = true;
     Atomics.store(signal, 0, 1); Atomics.notify(signal, 0);
-    Atomics.wait(signal, 1, 0);
-    child.stdin.end();
+    // Keep the worker event loop available to observe an unexpected helper exit.
+    const release = Atomics.waitAsync(signal, 1, 0);
+    void Promise.resolve(release.value).then(() => child.stdin.end());
   } else if (out.includes('TIMEOUT\n')) fail(-2);
 });
 child.once('error', () => fail(-1));

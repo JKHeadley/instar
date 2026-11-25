@@ -43,6 +43,7 @@ import {
   type EnvelopeValidationCounters,
 } from './ReplicatedRecordEnvelope.js';
 import { SafeFsExecutor } from './SafeFsExecutor.js';
+import type { PhysicalEffectLock, PhysicalEffectLeaseSync } from './PhysicalEffectLock.js';
 
 /** Shared path for the writer and replication reader of the same own stream. */
 export function chiefDecisionIntentFilename(machineId: string): string {
@@ -513,6 +514,8 @@ export interface CoherenceJournalConfig {
    * node:fs primitives. Only the primitives the flusher uses are seamed.
    */
   fsImpl?: JournalFs;
+  /** Dark opt-in: exact decisions require a kernel-backed writer lifetime. */
+  decisionWriterLock?: Pick<PhysicalEffectLock, 'acquireSync'>;
 }
 
 /** The fs primitives the flusher/opener use (seamable for fault injection). */
@@ -740,6 +743,8 @@ export class CoherenceJournal {
   /** Flush counter for the lock mtime heartbeat (pid-reuse defense, #925). */
   private flushCount = 0;
   private lockFd: number | null = null;
+  private readonly decisionWriterLock?: CoherenceJournalConfig['decisionWriterLock'];
+  private decisionWriterLease: PhysicalEffectLeaseSync | null = null;
   private flushing = false;
   private chiefDecisionPending = false;
   private chiefDecisionPendingSeq: number | null = null;
@@ -824,6 +829,7 @@ export class CoherenceJournal {
     this.now = config.now ?? (() => new Date());
     this.logger = config.logger;
     this.replicatedCommitObserver = config.onReplicatedRecordsCommitted;
+    this.decisionWriterLock = config.decisionWriterLock;
     this.io = config.fsImpl ?? realFs();
     const initMs = this.now().getTime();
     this.rateBuckets = {
@@ -889,6 +895,9 @@ export class CoherenceJournal {
       // the moment the holder exits (or its lock goes mtime-stale), this
       // process takes over and the writer recovers in place.
       this.state = 'writer-locked-out';
+      // A strict startup makes one bounded kernel acquisition. In particular,
+      // do not repeatedly spawn a helper when another process holds the journal.
+      if (this.decisionWriterLock) return;
       this.log('lock', `[coherence-journal] writer locked out for ${this.machineId} — another process holds the lock; retrying in background`);
       const retryMs = Math.max(this.flushIntervalMs * 40, 10_000);
       this.retryTimer = setInterval(() => {
@@ -908,10 +917,26 @@ export class CoherenceJournal {
 
   /** Acquire + recover + start the flusher. Returns false when the lock is held. */
   private tryActivate(): boolean {
-    if (!this.acquireLock()) return false;
-    this.loadOrInitMeta();
-    for (const kind of JOURNAL_KINDS) {
-      this.recoverKind(kind);
+    if (this.decisionWriterLock) {
+      try {
+        this.decisionWriterLease = this.decisionWriterLock.acquireSync(
+          'coherence-journal:' + this.safeMachineId, Date.now() + 1_000,
+        );
+      } catch {
+        return false; // @silent-fallback-ok: strict writers cannot use an advisory-only fallback
+      }
+    }
+    if (!this.acquireLock()) {
+      this.releaseDecisionWriterLease();
+      return false;
+    }
+    try {
+      this.loadOrInitMeta();
+      for (const kind of JOURNAL_KINDS) this.recoverKind(kind);
+    } catch (error) {
+      this.releaseLock();
+      this.releaseDecisionWriterLease();
+      throw error;
     }
     this.chiefDecisionPending = this.io.existsSync(this.chiefDecisionIntentPath());
     if (this.chiefDecisionPending) {
@@ -940,8 +965,11 @@ export class CoherenceJournal {
     if (this.state === 'active') {
       this.flush(); // final best-effort drain
     }
-    this.releaseLock();
-    this.state = 'closed';
+    try { this.releaseLock(); }
+    finally {
+      this.state = 'closed';
+      this.releaseDecisionWriterLease();
+    }
   }
 
   /** Writer status (queryable from the instance per §3.1). */
@@ -1121,7 +1149,7 @@ export class CoherenceJournal {
     prepare: () => { key: string; data: Record<string, unknown> } | null,
   ): boolean {
     const kind = 'chief-of-staff-record';
-    if (!this.ownsWriterLock() || this.flushing || !stillAuthorized()) return false;
+    if (!this.ownsDecisionWriterLock() || this.flushing || !stillAuthorized()) return false;
     const marker = this.chiefDecisionIntentPath();
     if (this.chiefDecisionPending || this.io.existsSync(marker)) throw new Error('chief-decision-reconciliation-required');
     this.flush();
@@ -1129,7 +1157,7 @@ export class CoherenceJournal {
     this.flushing = true;
     try {
       const candidate = prepare();
-      if (!candidate || !this.ownsWriterLock() || candidate.data.recordKey !== candidate.key ||
+      if (!candidate || !this.ownsDecisionWriterLock() || candidate.data.recordKey !== candidate.key ||
           this.queue.some(entry => entry.kind === kind)) return false;
       if (!this.replicatedRegistry?.isReplicatedKind(kind)) return false;
       const data = this.validate(kind, candidate.data);
@@ -1153,7 +1181,7 @@ export class CoherenceJournal {
         return false; // @silent-fallback-ok: no journal bytes could be written
       }
       try {
-        if (!this.ownsWriterLock()) throw new Error('chief-decision-writer-lock-lost');
+        if (!this.ownsDecisionWriterLock()) throw new Error('chief-decision-writer-lock-lost');
         if (!stillAuthorized()) {
           this.clearChiefDecisionIntent(marker);
           return false;
@@ -1190,7 +1218,7 @@ export class CoherenceJournal {
     exactDecisionInCompleteView: (entry: JournalEntry, completeLocalEntries: readonly JournalEntry[]) => boolean,
   ): boolean {
     const kind = 'chief-of-staff-record';
-    if (!this.ownsWriterLock() || this.flushing) return false;
+    if (!this.ownsDecisionWriterLock() || this.flushing) return false;
     const marker = this.chiefDecisionIntentPath();
     if (!this.io.existsSync(marker)) return false;
     this.flushing = true;
@@ -1203,7 +1231,7 @@ export class CoherenceJournal {
       const local = this.readKindCompleteInternal(kind, 64 * 1024 * 1024);
       const candidates = local.entries.filter(candidate => candidate.seq === entry.seq);
       if (!local.complete || candidates.length !== 1 || JSON.stringify(candidates[0]) !== line ||
-          !exactDecisionInCompleteView(entry, local.entries) || !this.ownsWriterLock()) return false;
+          !exactDecisionInCompleteView(entry, local.entries) || !this.ownsDecisionWriterLock()) return false;
       // The pending marker blocks this kind's rotation. A local exact row must
       // still be in the current stream before it can be acknowledged.
       const file = this.currentFilePath(kind);
@@ -1226,8 +1254,23 @@ export class CoherenceJournal {
     }
   }
 
+  private ownsDecisionWriterLock(): boolean {
+    if (this.state !== 'active' || !this.decisionWriterLease || !this.ownsWriterLock()) return false;
+    try {
+      this.decisionWriterLease.assertHeld();
+      return true;
+    } catch {
+      return false; // @silent-fallback-ok: no decision can be written after ownership is lost
+    }
+  }
+
+  private releaseDecisionWriterLease(): void {
+    try { this.decisionWriterLease?.release(); }
+    finally { this.decisionWriterLease = null; }
+  }
+
   private ownsWriterLock(): boolean {
-    if (this.state !== 'active' || this.lockFd === null) return false;
+    if (this.lockFd === null) return false;
     try {
       const held = fs.fstatSync(this.lockFd);
       const current = fs.statSync(this.lockPath());
@@ -1264,7 +1307,7 @@ export class CoherenceJournal {
     } finally {
       this.io.closeSync(fd);
     }
-    if (!this.ownsWriterLock()) throw new Error('chief-decision-writer-lock-lost');
+    if (!this.ownsDecisionWriterLock()) throw new Error('chief-decision-writer-lock-lost');
     this.io.renameSync(staged, marker);
     this.chiefDecisionPendingSeq = seq;
     this.chiefDecisionPending = true;
@@ -1272,7 +1315,7 @@ export class CoherenceJournal {
   }
 
   private clearChiefDecisionIntent(marker: string): void {
-    if (!this.ownsWriterLock()) throw new Error('chief-decision-writer-lock-lost');
+    if (!this.ownsDecisionWriterLock()) throw new Error('chief-decision-writer-lock-lost');
     SafeFsExecutor.safeUnlinkSync(marker, { operation: 'coherence-journal:chief-decision-intent' });
     this.syncJournalDirectory();
     this.chiefDecisionPending = false;
@@ -1642,6 +1685,7 @@ export class CoherenceJournal {
     // file's mtime on a slow cadence so a LIVE holder is distinguishable from
     // a dead one whose pid was reused — reclaim treats an mtime-stale lock as
     // dead even when kill(pid, 0) succeeds.
+    if (this.decisionWriterLock && !this.ownsDecisionWriterLock()) return;
     if (this.state === 'active' && this.lockFd !== null && ++this.flushCount % 40 === 0) {
       try {
         this.io.futimesSync?.(this.lockFd, new Date(), new Date());
@@ -2109,37 +2153,38 @@ export class CoherenceJournal {
 
   private acquireLock(): boolean {
     const lockPath = this.lockPath();
+    if (this.createWriterLock(lockPath)) return true;
+    return this.reclaimStaleLock(lockPath) && this.createWriterLock(lockPath);
+  }
+
+  private createWriterLock(lockPath: string): boolean {
+    let fd: number;
     try {
-      // 'wx' fails if the file exists → advisory lock. Stale locks from a crash
-      // are reclaimed if the recorded pid is no longer alive.
-      const fd = this.io.openSync(lockPath, 'wx');
-      this.lockFd = fd;
-      try {
-        const buf = Buffer.from(JSON.stringify({ pid: process.pid, at: this.now().toISOString() }), 'utf-8');
-        this.io.writeSync(fd, buf, 0, buf.length);
-      } catch { /* @silent-fallback-ok: journal observability must never endanger the observed operation (COHERENCE-JOURNAL-SPEC §3.1) */
-        /* best-effort lock annotation */
-      }
-      return true;
-    } catch { /* @silent-fallback-ok: journal observability must never endanger the observed operation (COHERENCE-JOURNAL-SPEC §3.1) */
-      // Lock exists — check whether the holder is still alive (stale reclaim).
-      if (this.reclaimStaleLock(lockPath)) {
-        try {
-          const fd = this.io.openSync(lockPath, 'wx');
-          this.lockFd = fd;
-          const buf = Buffer.from(JSON.stringify({ pid: process.pid, at: this.now().toISOString() }), 'utf-8');
-          try {
-            this.io.writeSync(fd, buf, 0, buf.length);
-          } catch { /* @silent-fallback-ok: journal observability must never endanger the observed operation (COHERENCE-JOURNAL-SPEC §3.1) */
-            /* best-effort */
-          }
-          return true;
-        } catch { /* @silent-fallback-ok: journal observability must never endanger the observed operation (COHERENCE-JOURNAL-SPEC §3.1) */
-          return false;
-        }
-      }
-      return false;
+      fd = this.io.openSync(lockPath, 'wx');
+    } catch {
+      return false; // @silent-fallback-ok: another writer owns the lock or the path is unavailable
     }
+    this.lockFd = fd;
+    const strict = this.decisionWriterLease !== null;
+    try {
+      const bytes = Buffer.from(JSON.stringify({
+        pid: process.pid, at: this.now().toISOString(),
+        ...(strict ? { strictDecisionWriter: true } : {}),
+      }));
+      const written = this.io.writeSync(fd, bytes, 0, bytes.length);
+      if (strict) {
+        if (written !== bytes.length) throw new Error('short strict writer lock record');
+        this.io.fdatasyncSync(fd);
+        this.syncJournalDirectory();
+      }
+    } catch {
+      // @silent-fallback-ok: legacy lock annotation is best effort; strict ownership must be visible
+      if (strict) {
+        this.releaseLock();
+        return false;
+      }
+    }
+    return true;
   }
 
   /** Returns true (and removes the lock) if the recorded pid is dead. */
@@ -2156,7 +2201,7 @@ export class CoherenceJournal {
       try {
         const st = this.io.statSync(lockPath);
         const mt = (st as { mtimeMs?: number }).mtimeMs;
-        if (typeof mt === 'number' && this.now().getTime() - mt > 5 * 60 * 1000) {
+        if (!this.decisionWriterLease && obj.strictDecisionWriter !== true && typeof mt === 'number' && this.now().getTime() - mt > 5 * 60 * 1000) {
           SafeFsExecutor.safeRmSync(lockPath, { force: true, operation: 'coherence-journal:reclaim-mtime-stale-lock (#925)' });
           return true;
         }
@@ -2178,6 +2223,7 @@ export class CoherenceJournal {
   }
 
   private releaseLock(): void {
+    const owned = this.ownsWriterLock();
     if (this.lockFd !== null) {
       try {
         this.io.closeSync(this.lockFd);
@@ -2186,6 +2232,7 @@ export class CoherenceJournal {
       }
       this.lockFd = null;
     }
+    if (!owned) return;
     try {
       SafeFsExecutor.safeRmSync(this.lockPath(), { force: true, operation: 'coherence-journal:release-lock' });
     } catch {
