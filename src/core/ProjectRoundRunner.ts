@@ -101,12 +101,13 @@ export interface ProjectRoundRunnerConfig {
   ackGapCap?: number;
 }
 
-export function projectRoundWorkKey(projectId: string, roundIndex: number, itemId: string): string {
-  return JSON.stringify([projectId, roundIndex, itemId]);
+export function projectRoundWorkKey(projectId: string, roundIndex: number, itemId?: string): string {
+  return JSON.stringify([projectId, roundIndex, itemId ?? null]);
 }
 
 export interface ManagedRoundCandidate {
   workKey: string;
+  roundKey: string;
   revision: string;
   topicId: string;
   machineId: string;
@@ -162,6 +163,7 @@ export class ProjectRoundRunner {
 
     return {
       workKey: projectRoundWorkKey(project.id, roundIndex, child.id),
+      roundKey: projectRoundWorkKey(project.id, roundIndex),
       revision: JSON.stringify([project.version, child.version]),
       topicId: project.telegramTopicId,
       machineId: ownerMachineId,
@@ -177,6 +179,7 @@ export class ProjectRoundRunner {
   ): boolean {
     const current = this.managedRoundCandidate(projectId, roundIndex);
     if (!current || current.workKey !== expected.workKey || current.revision !== expected.revision
+      || current.roundKey !== expected.roundKey
       || current.topicId !== expected.topicId || current.machineId !== expected.machineId) return false;
 
     const lock = this.lock.acquire(projectId, roundIndex);

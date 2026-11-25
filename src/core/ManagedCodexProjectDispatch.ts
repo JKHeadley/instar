@@ -3,6 +3,7 @@ import type { ManagedCodexStopStore } from './ManagedCodexStopStore.js';
 
 export interface ManagedProjectAdmission {
   workKey: string;
+  roundKey: string;
   revision: string;
   topicId: string;
   machineId: string;
@@ -27,7 +28,7 @@ interface Dependencies {
 }
 
 function sameAdmission(a: ManagedProjectAdmission, b: ManagedProjectAdmission | undefined): boolean {
-  return b !== undefined && a.workKey === b.workKey && a.revision === b.revision
+  return b !== undefined && a.workKey === b.workKey && a.roundKey === b.roundKey && a.revision === b.revision
     && a.topicId === b.topicId && a.machineId === b.machineId
     && a.ownerEpoch === b.ownerEpoch && a.remaining === b.remaining;
 }
@@ -43,13 +44,13 @@ export async function dispatchManagedCodexProject(
 ): Promise<ManagedProjectLaunch | undefined> {
   if (!deps.enabled()) return;
   const admission = deps.readAdmission(workKey);
-  if (!admission || admission.workKey !== workKey || !admission.revision || !admission.topicId) return;
+  if (!admission || admission.workKey !== workKey || !admission.roundKey || !admission.revision || !admission.topicId) return;
 
   const launchId = randomUUID();
   if (!deps.reserveWork(admission, () => deps.store.reserve(workKey, {
     sessionId: launchId, machineId: admission.machineId,
     ownerEpoch: admission.ownerEpoch, remaining: admission.remaining,
-  }))) return;
+  }, admission.roundKey))) return;
 
   let bound = false;
   let released = false;

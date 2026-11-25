@@ -1,0 +1,30 @@
+{
+  "version": 2,
+  "slug": "managed-codex-ordinary-fence",
+  "sessionId": "017c26ed-5596-4576-9c20-20af13e4c1f8",
+  "timestamp": "2026-11-25T17:16:37.509Z",
+  "artifactPath": "upgrades/side-effects/managed-codex-ordinary-fence.md",
+  "artifactSha256": "63ad553c40413142267063daf83e17ebd2be1ba598afa443a873cf780b50bd79",
+  "coveredFiles": [
+    "src/core/ManagedCodexProjectDispatch.ts",
+    "src/core/ManagedCodexStopStore.ts",
+    "src/core/ProjectRoundExecution.ts",
+    "src/core/ProjectRoundRunner.ts",
+    "tests/e2e/managed-codex-stop-lifecycle.test.ts",
+    "tests/unit/ProjectRoundExecution.test.ts",
+    "tests/unit/managed-codex-project-dispatch.test.ts",
+    "tests/unit/managed-codex-stop-store.test.ts"
+  ],
+  "phase": "complete",
+  "tier": 1,
+  "tierReasoning": "The new store and startup fence are exercised in the dark fixture. Production does not supply this provider, and no flag or migration is changed.",
+  "eli16Path": "upgrades/managed-codex-ordinary-fence.eli16.md",
+  "sideEffectsPath": "upgrades/side-effects/managed-codex-ordinary-fence.md",
+  "secondPass": "true",
+  "reviewerConcurred": true,
+  "classClosure": {
+    "defectClass": "unbounded-self-action",
+    "closure": "n/a",
+    "reason": "The added operations are one-shot durable reservation and settlement for each existing launch attempt. They schedule no work or retries. An uncertain worker now stops the existing relaunch loop, and the production launcher does not use this fixture provider."
+  }
+}

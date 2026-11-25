@@ -6,6 +6,7 @@ const RELEASED_WORK_PREFIX = 'released-launch:';
 
 interface Claim {
   enrollment: ManagedStopEnrollment;
+  roundKey?: string;
   actionOpen: boolean;
   paused: boolean;
 }
@@ -22,6 +23,10 @@ export class ManagedCodexStopStore {
         session_id TEXT NOT NULL UNIQUE,
         claim_json TEXT NOT NULL
       );
+      CREATE TABLE IF NOT EXISTS ordinary_project_work_fences (
+        work_key TEXT PRIMARY KEY,
+        execution_id TEXT
+      );
       CREATE TABLE IF NOT EXISTS managed_codex_native_bindings (
         launch_id TEXT PRIMARY KEY,
         native_session_id TEXT NOT NULL UNIQUE
@@ -29,22 +34,52 @@ export class ManagedCodexStopStore {
     `);
   }
 
-  reserve(workKey: string, input: Pick<ManagedStopEnrollment, 'sessionId' | 'machineId' | 'ownerEpoch' | 'remaining'>): boolean {
+  reserve(workKey: string, input: Pick<ManagedStopEnrollment, 'sessionId' | 'machineId' | 'ownerEpoch' | 'remaining'>, roundKey?: string): boolean {
     if (!workKey || workKey.startsWith(RELEASED_WORK_PREFIX) || !input.sessionId || !input.machineId
       || !Number.isSafeInteger(input.ownerEpoch) || input.ownerEpoch < 0
       || !Number.isSafeInteger(input.remaining) || input.remaining < 0) return false;
     return this.db.transaction(() => {
-      if (this.hasEnrollment(input.sessionId)) return false;
+      if (this.hasEnrollment(input.sessionId) || this.hasOrdinaryFence(workKey)
+        || (roundKey && (this.hasOrdinaryFence(roundKey) || this.hasWorkClaim(roundKey)))) return false;
       return this.db.prepare('INSERT OR IGNORE INTO managed_codex_work_claims VALUES (?, ?, ?)')
         .run(workKey, input.sessionId, JSON.stringify({
-          enrollment: { ...input, state: 'pending', issuedCycles: [] }, actionOpen: true, paused: false,
+          enrollment: { ...input, state: 'pending', issuedCycles: [] }, actionOpen: true, paused: false, roundKey,
         } satisfies Claim)).changes === 1;
     }).immediate();
   }
 
   /** Claims remain exclusive while a past worker could still actuate. */
   hasWorkClaim(workKey: string): boolean {
-    return this.db.prepare('SELECT 1 FROM managed_codex_work_claims WHERE work_key = ?').get(workKey) !== undefined;
+    return this.db.prepare(`
+      SELECT 1 FROM managed_codex_work_claims
+      WHERE work_key = ? OR (json_extract(claim_json, '$.roundKey') = ? AND instr(work_key, ?) <> 1)
+    `).get(workKey, workKey, RELEASED_WORK_PREFIX) !== undefined;
+  }
+
+  /** Reserve every item before an ordinary process can start. */
+  reserveOrdinaryWork(workKeys: readonly string[], executionId: string): boolean {
+    if (!executionId || workKeys.length === 0) return false;
+    return this.db.transaction(() => {
+      const keys = [...new Set(workKeys)];
+      if (keys.some(key => !key || this.hasWorkClaim(key) || this.hasOrdinaryFence(key))) return false;
+      const write = this.db.prepare(`
+        INSERT INTO ordinary_project_work_fences (work_key, execution_id) VALUES (?, ?)
+        ON CONFLICT(work_key) DO UPDATE SET execution_id = excluded.execution_id
+      `);
+      for (const key of keys) write.run(key, executionId);
+      return true;
+    }).immediate();
+  }
+
+  /** Caller has confirmed this exact execution never started or has stopped. */
+  settleOrdinaryWork(executionId: string): void {
+    this.db.prepare('UPDATE ordinary_project_work_fences SET execution_id = NULL WHERE execution_id = ?')
+      .run(executionId);
+  }
+
+  private hasOrdinaryFence(workKey: string): boolean {
+    return this.db.prepare('SELECT 1 FROM ordinary_project_work_fences WHERE work_key = ? AND execution_id IS NOT NULL')
+      .get(workKey) !== undefined;
   }
 
   activate(sessionId: string): boolean {

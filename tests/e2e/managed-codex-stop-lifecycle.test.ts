@@ -178,7 +178,7 @@ it.skipIf(!codex).each([true, false])('drives an enrolled worker through package
         tracker, projectId: 'managed-project', roundIndex: 0, targetRepoPath: projectDir,
         mergeBaseBranch: 'main',
         verifyMergedItems: async () => { throw new Error('ordinary execution passed the managed claim'); },
-      }, { stateDir, managedWorkClaimed: key => store.hasWorkClaim(key) });
+      }, { stateDir, workFences: store });
       expect(ordinary).toMatchObject({ outcome: 'failed', reason: 'round work is held by a managed project worker' });
       expect(exited).toBeDefined();
       const [code] = await exited!;

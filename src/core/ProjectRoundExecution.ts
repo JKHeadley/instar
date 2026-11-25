@@ -34,6 +34,8 @@
  *   the runner.
  */
 
+import { randomUUID } from 'node:crypto';
+import type { ManagedCodexStopStore } from './ManagedCodexStopStore.js';
 import { applyClaudeChildAuth } from './claudeChildAuth.js';
 import { spawn, execFileSync, type ChildProcess } from 'node:child_process';
 
@@ -152,7 +154,7 @@ export interface RunRoundResult {
  */
 export interface RunRoundDeps {
   stateDir: string;
-  managedWorkClaimed?: (workKey: string) => boolean;
+  workFences?: Pick<ManagedCodexStopStore, 'hasWorkClaim' | 'reserveOrdinaryWork' | 'settleOrdinaryWork'>;
 }
 
 /**
@@ -230,8 +232,9 @@ export async function runRound(input: RunRoundInput, deps: RunRoundDeps): Promis
       };
     }
     let lastItemIds = [...snapshot.itemIds];
-    const managedClaimExists = (itemIds: string[]) => itemIds.some(itemId =>
-      deps.managedWorkClaimed?.(projectRoundWorkKey(input.projectId, input.roundIndex, itemId)));
+    const roundKey = projectRoundWorkKey(input.projectId, input.roundIndex);
+    const managedClaimExists = (itemIds: string[]) => deps.workFences?.hasWorkClaim(roundKey)
+      || itemIds.some(itemId => deps.workFences?.hasWorkClaim(projectRoundWorkKey(input.projectId, input.roundIndex, itemId)));
     if (managedClaimExists(lastItemIds)) {
       return {
         outcome: 'failed', mergedItemIds: [], unmergedItemIds: lastItemIds,
@@ -309,11 +312,15 @@ export async function runRound(input: RunRoundInput, deps: RunRoundDeps): Promis
         break;
       }
 
-      // A round edit can introduce a previously claimed item before a relaunch.
-      if (managedClaimExists(lastItemIds)) {
+      // Fence the exact item set before each spawn, including relaunches.
+      const workFences = deps.workFences;
+      const executionId = workFences ? randomUUID() : undefined;
+      if (workFences && executionId && !workFences.reserveOrdinaryWork(
+        [roundKey, ...lastItemIds.map(itemId => projectRoundWorkKey(input.projectId, input.roundIndex, itemId))], executionId,
+      )) {
         outcome = 'failed';
         unmergedItemIds = [...lastItemIds];
-        reason = 'round work is held by a managed project worker';
+        reason = 'round work is held by another project execution';
         break;
       }
 
@@ -328,6 +335,17 @@ export async function runRound(input: RunRoundInput, deps: RunRoundDeps): Promis
         pollIntervalMs,
         sigtermGraceMs
       );
+
+      if (workFences && executionId) {
+        const neverStarted = exit.kind === 'spawn-failed' && child.pid === undefined;
+        if (!neverStarted && !ordinaryProcessGroupIsGone(child.pid)) {
+          outcome = 'unverifiable';
+          unmergedItemIds = [...lastItemIds];
+          reason = 'ordinary worker termination could not be confirmed; work remains fenced';
+          break;
+        }
+        workFences.settleOrdinaryWork(executionId);
+      }
 
       if (exit.kind === 'set-changed') {
         relaunchCount++;
@@ -651,6 +669,16 @@ async function killProcessGroup(child: ChildProcess, graceMs: number): Promise<v
     } catch { /* already dead */ }
     // Brief wait for the OS to register the kill.
     await sleep(100);
+  }
+}
+
+function ordinaryProcessGroupIsGone(pid: number | undefined): boolean {
+  if (!pid || process.platform === 'win32') return false;
+  try {
+    process.kill(-pid, 0);
+    return false;
+  } catch (error) {
+    return (error as NodeJS.ErrnoException).code === 'ESRCH';
   }
 }
 

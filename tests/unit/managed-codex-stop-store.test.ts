@@ -26,6 +26,40 @@ describe('managed Codex Stop work claims', () => {
     }
   });
 
+  it('keeps ordinary launch fences across restart until the exact execution settles', () => {
+    const directory = fs.mkdtempSync(path.join(os.tmpdir(), 'ordinary-project-fence-'));
+    const file = path.join(directory, 'claims.sqlite');
+    const db = new Database(file);
+    try {
+      const store = new ManagedCodexStopStore(db);
+      expect(store.reserveOrdinaryWork(['round', 'one', 'two'], 'ordinary-before-restart')).toBe(true);
+    } finally {
+      db.close();
+    }
+    const reopened = new Database(file);
+    try {
+      const store = new ManagedCodexStopStore(reopened);
+      expect(store.reserve('one', { ...identity, remaining: 2 })).toBe(false);
+      expect(store.reserve('new-item', { ...identity, remaining: 2 }, 'round')).toBe(false);
+      expect(store.reserveOrdinaryWork(['round', 'new-item'], 'edited-round')).toBe(false);
+      expect(store.reserveOrdinaryWork(['two', 'three'], 'replacement')).toBe(false);
+      expect(store.reserveOrdinaryWork(['three'], 'unrelated')).toBe(true);
+      store.settleOrdinaryWork('different-execution');
+      expect(store.reserve('one', { ...identity, remaining: 2 })).toBe(false);
+
+      store.settleOrdinaryWork('ordinary-before-restart');
+      expect(store.reserve('one', { ...identity, remaining: 2 }, 'round')).toBe(true);
+      expect(store.reserveOrdinaryWork(['round', 'new-item'], 'edited-round')).toBe(false);
+      expect(store.reserveOrdinaryWork(['one', 'two'], 'replacement')).toBe(false);
+      expect(store.reserveOrdinaryWork(['two'], 'replacement')).toBe(true);
+      store.settleOrdinaryWork('ordinary-before-restart');
+      expect(store.reserve('two', { ...identity, sessionId: 'different', remaining: 2 })).toBe(false);
+    } finally {
+      reopened.close();
+      SafeFsExecutor.safeRmSync(directory, { recursive: true, force: true, operation: 'ordinary-project-fence-fixture' });
+    }
+  });
+
   it('keeps a recorded directive across reconnect and settles it under pause', () => {
     const directory = fs.mkdtempSync(path.join(os.tmpdir(), 'managed-stop-store-'));
     const file = path.join(directory, 'claims.sqlite');

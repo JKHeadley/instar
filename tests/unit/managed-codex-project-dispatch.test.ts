@@ -3,7 +3,7 @@ import { describe, expect, it, vi } from 'vitest';
 import { dispatchManagedCodexProject } from '../../src/core/ManagedCodexProjectDispatch.js';
 import { ManagedCodexStopStore } from '../../src/core/ManagedCodexStopStore.js';
 
-const admission = { workKey: 'project-action', revision: 'approved-1', topicId: 'topic',
+const admission = { workKey: 'project-action', roundKey: 'project-round', revision: 'approved-1', topicId: 'topic',
   machineId: 'sole-machine', ownerEpoch: 3, remaining: 2 };
 
 function setup() {

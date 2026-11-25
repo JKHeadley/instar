@@ -1,0 +1,29 @@
+{
+  "ts": "2026-11-25T17:17:28.753Z",
+  "slug": "managed-codex-ordinary-fence",
+  "suggestedTier": 2,
+  "declaredTier": 1,
+  "riskFloor": 1,
+  "riskFloorReasons": [],
+  "belowFloor": false,
+  "files": 4,
+  "loc": 97,
+  "scope": {
+    "basis": "staged-in-scope-paths-including-deleted",
+    "files": [
+      "src/core/ManagedCodexProjectDispatch.ts",
+      "src/core/ManagedCodexStopStore.ts",
+      "src/core/ProjectRoundExecution.ts",
+      "src/core/ProjectRoundRunner.ts"
+    ],
+    "addedLines": 82,
+    "deletedLines": 15
+  },
+  "causalAutopsy": null,
+  "classClosure": {
+    "defectClass": "unbounded-self-action",
+    "closure": "n/a",
+    "reason": "The added operations are one-shot durable reservation and settlement for each existing launch attempt. They schedule no work or retries. An uncertain worker now stops the existing relaunch loop, and the production launcher does not use this fixture provider."
+  },
+  "verdict": "pass"
+}

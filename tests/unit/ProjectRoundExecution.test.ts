@@ -18,10 +18,13 @@
  * skill on PATH.
  */
 
-import { describe, it, expect, beforeEach, afterEach } from 'vitest';
+import { describe, it, expect, beforeEach, afterEach, vi } from 'vitest';
 import fs from 'node:fs';
 import os from 'node:os';
 import path from 'node:path';
+import Database from 'better-sqlite3';
+import { ManagedCodexStopStore } from '../../src/core/ManagedCodexStopStore.js';
+import { projectRoundWorkKey } from '../../src/core/ProjectRoundRunner.js';
 import { InitiativeTracker } from '../../src/core/InitiativeTracker.js';
 import { ProjectRoundLock } from '../../src/core/ProjectRoundLock.js';
 import { runRound, type MergedVerificationResult } from '../../src/core/ProjectRoundExecution.js';
@@ -130,6 +133,32 @@ describe('ProjectRoundExecution.runRound', () => {
     expect(r.outcome).toBe('failed');
     expect(r.reason).toMatch(/lock held/);
     expect(spawned).toBe(0);
+  });
+
+  it.skipIf(process.platform === 'win32').each([false, true])('keeps a durable fence only if the process group remains (live=%s)', async (groupRemains) => {
+    await newProject(tracker, 'p-fenced', ['i1'], targetRepo);
+    const db = new Database(':memory:');
+    const originalKill = process.kill.bind(process);
+    const probe = vi.spyOn(process, 'kill').mockImplementation((pid, signal) =>
+      groupRemains && pid < 0 && signal === 0 ? true : originalKill(pid, signal));
+    try {
+      const store = new ManagedCodexStopStore(db);
+      let verified = 0;
+      const result = await runRound({
+        tracker, projectId: 'p-fenced', roundIndex: 0, targetRepoPath: targetRepo,
+        spawnCommand: 'bash', spawnArgs: ['-c', 'exit 0'], pollIntervalMs: 50,
+        verifyMergedItems: async ids => ++verified === 1 ? notLanded(ids) : allVerified(ids),
+      }, { stateDir, workFences: store });
+      expect(result.outcome).toBe(groupRemains ? 'unverifiable' : 'complete');
+      const execution_id = groupRemains ? expect.any(String) : null;
+      expect(db.prepare('SELECT * FROM ordinary_project_work_fences').all()).toEqual([
+        { work_key: projectRoundWorkKey('p-fenced', 0), execution_id },
+        { work_key: projectRoundWorkKey('p-fenced', 0, 'i1'), execution_id },
+      ]);
+    } finally {
+      probe.mockRestore();
+      db.close();
+    }
   });
 
   it('first-pass complete: verifyMergedItems returns the full set, no child spawn', async () => {
