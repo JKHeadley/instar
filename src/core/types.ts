@@ -4270,6 +4270,8 @@ export interface InstarConfig {
        * `maxStoreBytes` (default 20 GiB, read live) is the agent-wide admission cap.
        */
       media?: { enabled?: boolean; maxStoreBytes?: number };
+      /** Owner-only local App attachment browse. Requires an explicit opt-in and native media. */
+      attachmentBrowse?: { enabled?: boolean };
       /**
        * Unread counts, read reports and the app badge (docs/specs/mobile-unread-messages.md).
        * `enabled` omitted ⇒ true wherever native conversations are on; `false` turns unread off alone. Read live.

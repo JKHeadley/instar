@@ -10968,6 +10968,7 @@ export async function startServer(options: StartOptions): Promise<void> {
             try { recordOperatorStop(alias); } catch { /* @silent-fallback-ok — the stop record is observability */ }
           },
           mediaMaxStoreBytes: () => config.mobilePairing?.native?.media?.maxStoreBytes,
+          attachmentBrowseEnabled: () => config.mobilePairing?.native?.attachmentBrowse?.enabled === true,
           // §4.5.1: voice notes the phone did not transcribe use Telegram's transcriber (same provider).
           // The dispatch waits 60 s; the provider call itself may run longer (a late transcript).
           transcribeVoice: (filePath, mediaType, timeoutMs) => voiceMod.transcribeAudioFileDetailed(filePath, { explicit: voiceMod.configuredVoiceProvider(config), mediaType, timeoutMs: timeoutMs ?? VOICE_TRANSCRIBE_PROVIDER_TIMEOUT_MS }),

@@ -2623,6 +2623,8 @@ const BROWSER_ROUTES: ReadonlyArray<[string, string]> = [
   ['POST', new RegExp(`^/mobile/chat/app/${APP_CONVERSATION_KEY_PATTERN}$`).source],
   ['GET', new RegExp(`^/mobile/chat/app/${APP_CONVERSATION_KEY_PATTERN}/messages$`).source],
   ['GET', new RegExp(`^/mobile/chat/app/${APP_CONVERSATION_KEY_PATTERN}/events$`).source],
+  ['GET', new RegExp(`^/mobile/chat/app/${APP_CONVERSATION_KEY_PATTERN}/attachments$`).source],
+  ['GET', new RegExp(`^/mobile/chat/app/${APP_CONVERSATION_KEY_PATTERN}/attachments/[0-9a-f]{64}/content$`).source],
   ['GET', /^\/telegram\/topics$/.source],
   ['GET', /^\/topic\/list$/.source],
   ['GET', /^\/telegram\/topics\/[^/]+\/messages$/.source],
@@ -2722,7 +2724,7 @@ export function teamConversationTarget(method: string, pathNorm: string): { ref:
   if (m) return { ref: `slack:${m[1]}`, op: method === 'POST' ? 'send' : 'read' };
   m = /^\/mobile\/chat\/slack\/(-?\d+)$/.exec(pathNorm);
   if (m && method === 'POST') return { ref: `slack:${m[1]}`, op: 'send' };
-  m = new RegExp(`^/mobile/chat/app/(${UUID})(/messages|/events|/pins|/preview/.+)?$`).exec(pathNorm);
+  m = new RegExp(`^/mobile/chat/app/(${UUID})(/messages|/events|/pins|/attachments(?:/[0-9a-f]{64}/content)?|/preview/.+)?$`).exec(pathNorm);
   if (m) return { ref: m[1], op: method === 'POST' && (!m[2] || m[2] === '/pins') ? 'send' : 'read' };
   m = new RegExp(`^/mobile/conversations/(${UUID})$`).exec(pathNorm);
   if (m) return { ref: m[1], op: method === 'DELETE' ? 'delete' : 'rename' };
@@ -2841,6 +2843,8 @@ export const DEVICE_ALLOWLIST: DeviceRule[] = (() => {
     { method: 'POST', re: new RegExp(`^/mobile/chat/app/${UUID}$`), statuses: active, sendRoute: true, conversationRef: true },
     { method: 'GET', re: new RegExp(`^/mobile/chat/app/${UUID}/messages$`), statuses: active, conversationRef: true },
     { method: 'GET', re: new RegExp(`^/mobile/chat/app/${UUID}/events$`), statuses: active, conversationRef: true },
+    { method: 'GET', re: new RegExp(`^/mobile/chat/app/${UUID}/attachments$`), statuses: active, body: 'none', conversationRef: true, ownerOnly: true },
+    { method: 'GET', re: new RegExp(`^/mobile/chat/app/${UUID}/attachments/[0-9a-f]{64}/content$`), statuses: active, body: 'none', conversationRef: true, ownerOnly: true, ownBucket: 120, bucket: 'media-read' },
     // "Open session": which session drives a conversation on this machine, plus a dashboard link. Read-only.
     { method: 'GET', re: /^\/mobile\/conversations\/session$/, statuses: active, body: 'none', conversationRef: true },
     { method: 'GET', re: /^\/mobile\/conversations\/[0-9a-f]{8}-[0-9a-f]{4}-4[0-9a-f]{3}-[89ab][0-9a-f]{3}-[0-9a-f]{12}\/placement$/, statuses: active, body: 'none', conversationRef: true },

@@ -96,6 +96,7 @@ export interface AppConversationServiceDeps {
    * conversations are on, so a machine with the feature off still keeps and purges what it holds.
    */
   mediaMaxStoreBytes?: () => number | undefined;
+  attachmentBrowseEnabled?: () => boolean;
   /** Free and total disk for the media store's floor. Absent reads the real disk; tests pass one so they do not depend on the machine. */
   mediaDiskSpace?: () => { free: number; total: number } | null;
   /** One notice per condition (absent ⇒ degradation reports only). */
@@ -219,6 +220,7 @@ export class AppConversationService {
   readonly channels: SessionChannelRegistry;
   private lastLease: boolean | null = null;
   private timer: ReturnType<typeof setInterval> | null = null;
+  private attachmentIndexMaintenance: AbortController | null = null;
   private mediaTimer: ReturnType<typeof setInterval> | null = null;
   readonly media: AppMediaStore;
   /** Copies blobs between the agent's machines (§4.12); idle until a mesh transport is attached. */
@@ -271,6 +273,7 @@ export class AppConversationService {
     this.now = deps.now ?? Date.now;
     this.store = deps.store ?? new AppConversationStore({
       stateDir: deps.stateDir, machineId: () => this.deps.machineId(), now: this.now,
+      attachmentBrowseEnabled: deps.attachmentBrowseEnabled,
       reportDegradation: (what, detail) => deps.reportDegradation?.(what, detail),
     });
     this.channels = new SessionChannelRegistry({ registryPath: path.join(deps.stateDir, 'state', 'app-session-registry.json') });
@@ -297,7 +300,13 @@ export class AppConversationService {
 
   start(intervalMs = 5_000): void {
     if (this.timer) return;
+    const maintenance = new AbortController();
+    this.attachmentIndexMaintenance = maintenance;
     this.timer = setInterval(() => {
+      if (this.deps.attachmentBrowseEnabled?.()) {
+        void this.store.reconcileAttachmentIndexBatch(maintenance.signal)
+          .catch(error => this.report('attachment index reconciliation', error));
+      }
       this.leaseTick();
       try { this.recoverStranded(); } catch (err) { this.report('recovery', err); } // @silent-fallback-ok — reported through deps.reportDegradation; the next tick repeats it
     }, intervalMs);
@@ -309,6 +318,8 @@ export class AppConversationService {
   }
 
   stop(): void {
+    this.attachmentIndexMaintenance?.abort();
+    this.attachmentIndexMaintenance = null;
     if (this.timer) clearInterval(this.timer);
     if (this.mediaTimer) clearInterval(this.mediaTimer);
     this.timer = null;

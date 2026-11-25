@@ -81,7 +81,7 @@ async function boot(developmentAgent: boolean, telegramFactory?: (stateDir: stri
   const conversationRegistry = slack ? new ConversationRegistry({ stateDir, machineId: () => 'e2e', isRecordingEnabled: () => true }) : undefined;
   const server = new AgentServer({ config, sessionManager, state: new StateManager(stateDir), initiativeTracker: new InitiativeTracker(stateDir), tunnel, ...(telegram ? { telegram } : {}), ...(slack ? { slack, conversationRegistry } : {}) });
   servers.push(server);
-  return { server, stateDir, dir, spawned, telegram, slack, conversationRegistry };
+  return { server, stateDir, dir, spawned, telegram, slack, conversationRegistry, config };
 }
 
 describe('media in app conversations — production wiring', () => {
@@ -89,7 +89,7 @@ describe('media in app conversations — production wiring', () => {
     // No transcription provider: a voice note the phone did not transcribe must still arrive (§4.5.1).
     vi.stubEnv('GROQ_API_KEY', '');
     vi.stubEnv('OPENAI_API_KEY', '');
-    const { server, stateDir, dir, spawned } = await boot(true);
+    const { server, stateDir, dir, spawned, config } = await boot(true);
     const app = server.getApp();
     // Wiring integrity: the media store is real and the helper is installed at boot.
     expect(server.appConversations).not.toBeNull();
@@ -158,6 +158,22 @@ describe('media in app conversations — production wiring', () => {
     const sent = await send('POST', `/mobile/chat/app/${key}`, { text: 'Photos from today', requestId: rid(), attachments });
     expect(sent.status).toBe(200);
     expect(sent.body).toMatchObject({ ok: true, outcome: 'delivered' });
+
+
+    // Both attachment routes must pass through the production signed-device pipeline.
+    const browseUrl = `/mobile/chat/app/${key}/attachments?kind=photo`;
+    const darkPage = await send('GET', browseUrl);
+    expect(darkPage.status).toBe(404);
+    expect(darkPage.body.error).toBe('attachment-browse-off');
+    config.mobilePairing!.native = { attachmentBrowse: { enabled: true } };
+    const exactPage = await send('GET', browseUrl);
+    expect(exactPage.status).toBe(200);
+    expect(exactPage.body).toMatchObject({ v: 1, scope: 'local', rows: [{ attachments: [{ filename: 'beach.jpg' }] }] });
+    const { attachmentId, openToken } = exactPage.body.rows[0].attachments[0];
+    const query = new URLSearchParams({ replicaBinding: exactPage.body.replicaBinding, openToken });
+    const exactOpen = await send('GET', `/mobile/chat/app/${key}/attachments/${attachmentId}/content?${query}`);
+    expect(exactOpen.status).toBe(200);
+    expect(exactOpen.body).toEqual(photo);
 
     // The session got one line per file, with readable private copies, before the caption.
     // A bootstrap past 500 characters is handed to the session as a file it reads; read it the same way.

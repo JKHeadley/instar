@@ -33,6 +33,9 @@ import { maskInbound } from '../messaging/inboundCredentialMask.js';
 import { credentialScrubEnabledReader } from '../core/outputCredentialScrub.js';
 import { storageErrorResponse } from '../core/storageMachineName.js';
 import { mobileOwnerDeviceAdmission } from './mobileOwnerDeviceAdmission.js';
+import { AppAttachmentOpenToken } from '../core/AppAttachmentOpenToken.js';
+import { registerMobileAttachmentBrowseRoute } from './mobileAttachmentBrowseRoutes.js';
+import { registerMobileAttachmentContentRoute } from './mobileAttachmentContentRoute.js';
 import { DEFAULT_ORIGIN_DISPLAY } from '../messaging/telegram-origin/OriginPresentation.js';
 import type { OriginDisplaySettings } from '../messaging/telegram-origin/types.js';
 import { deviceOriginRow, validateDeviceOriginRow, type DeviceOriginRow } from '../messaging/messageOrigin.js';
@@ -1218,6 +1221,10 @@ export function createMobileConversationRouter(deps: MobileConversationRouteDeps
     if (!svc!.liveConversation(key)) { res.status(404).json({ error: 'unknown-conversation' }); return; }
     res.json(getAppPoolMoves()?.placement(key) ?? { conversationRef: `app:${key}`, moved: false, bringBack: { can: false } });
   });
+
+  const attachmentOpenTokens = new AppAttachmentOpenToken();
+  registerMobileAttachmentBrowseRoute(router, deps, attachmentOpenTokens);
+  registerMobileAttachmentContentRoute(router, deps, attachmentOpenTokens);
 
   // ── Browse ──
   router.get('/mobile/chat/app/:key/messages', async (req: Request, res: Response) => {

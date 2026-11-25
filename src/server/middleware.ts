@@ -2,6 +2,7 @@
  * Express middleware — JSON parsing, CORS, auth, error handling.
  */
 
+import { APP_CONVERSATION_KEY_PATTERN } from '../core/appConversationText.js';
 import { isStorageFailure, storageMachineName, operatorError } from '../core/storageMachineName.js';
 import { memoryReplyChannel, memorySessionAllows } from './memorySessionGuard.js';
 import { featureEvidence } from '../monitoring/FeatureEvidenceLog.js';
@@ -869,6 +870,7 @@ export function resolveFollowMeBudgets(remoteScrapeTimeoutMs?: number): FollowMe
 
 /** Past HOLDER_MEDIA_DEADLINE_MS (300 s), so the stream's own limit always ends first. */
 export const MOBILE_MEDIA_TIMEOUT_MS = 330_000;
+const EXACT_APP_ATTACHMENT_CONTENT = new RegExp(`^/mobile/chat/app/${APP_CONVERSATION_KEY_PATTERN}/attachments/[0-9a-f]{64}/content/?$`, 'i');
 
 /**
  * POST /updates/apply awaits the whole install: up to three npm install (120 s) +
@@ -974,7 +976,11 @@ export function resolveRequestTimeout(
   reqPath: string,
   defaultMs: number,
   perPathOverrides: Record<string, number>,
+  method = 'GET',
 ): number {
+  if (method === 'GET' && EXACT_APP_ATTACHMENT_CONTENT.test(reqPath)) {
+    return Math.max(MOBILE_MEDIA_TIMEOUT_MS, defaultMs);
+  }
   const sortedOverrides = Object.entries(perPathOverrides)
     .sort((a, b) => b[0].length - a[0].length);
   for (const [prefix, ms] of sortedOverrides) {
@@ -988,7 +994,7 @@ export function requestTimeout(
   perPathOverrides: Record<string, number> = {},
 ) {
   return (req: Request, res: Response, next: NextFunction): void => {
-    const timeoutMs = resolveRequestTimeout(req.path, defaultMs, perPathOverrides);
+    const timeoutMs = resolveRequestTimeout(req.path, defaultMs, perPathOverrides, req.method);
 
     let done = false;
     const timer = setTimeout(() => {

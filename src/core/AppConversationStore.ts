@@ -45,6 +45,16 @@ import type { AccessStamp } from './TeamAccessMerge.js';
 import { compareCreatedEvidence, creationBaseDigest, creationContextDigest, validateAppCreationContext, type AppCreationContext } from './AppCreationContext.js';
 
 export type AppEventKind = 'created' | 'label' | 'tombstone' | 'message' | 'delivery' | 'media-message' | 'purge' | 'platform-media' | 'transcript' | 'pin';
+export interface AppMessageIndexKey {
+  at: string;
+  eventId: string;
+}
+
+export interface AppMessageIndexRow extends AppMessageIndexKey {
+  byteOffset: number | null;
+  byteLength: number | null;
+}
+
 export type DeliveryEventState = 'delivered' | 'refused' | 'intercepted' | 'unknown';
 export type ReducedDeliveryState = DeliveryEventState | 'pending';
 
@@ -242,8 +252,19 @@ export const MAX_STORED_TEXT = 16_000;
 const PREVIEW_CHARS = 140;
 const MAX_LINE_BYTES = 256 * 1024;
 
+/** The exact framing charge, also used by the bounded browse caller before read admission. */
+export function exactAppMessageFrame(row: AppMessageIndexRow): { offset: number; length: number; prefix: number; bytes: number } | null {
+  const { byteOffset, byteLength } = row;
+  if (byteOffset === null || !Number.isSafeInteger(byteOffset) || byteOffset < 0
+    || byteLength === null || !Number.isSafeInteger(byteLength) || byteLength < 1
+    || byteLength >= MAX_LINE_BYTES || !Number.isSafeInteger(byteOffset + byteLength + 1)) return null;
+  const prefix = byteOffset === 0 ? 0 : 1;
+  return { offset: byteOffset, length: byteLength, prefix, bytes: byteLength + prefix + 1 };
+}
+
 const SCHEMA = [
   `CREATE TABLE IF NOT EXISTS files (canonicalKey TEXT PRIMARY KEY, fileName TEXT NOT NULL, indexedBytes INTEGER NOT NULL, nextIngestSeq INTEGER NOT NULL)`,
+  `CREATE TABLE IF NOT EXISTS attachment_index_gaps (fileName TEXT PRIMARY KEY)`,
   `CREATE TABLE IF NOT EXISTS events (canonicalKey TEXT NOT NULL, ingestSeq INTEGER NOT NULL, eventId TEXT NOT NULL, messageId TEXT, kind TEXT NOT NULL, at TEXT NOT NULL, machineId TEXT NOT NULL, byteOffset INTEGER NOT NULL, byteLength INTEGER NOT NULL, PRIMARY KEY (canonicalKey, eventId))`,
   `CREATE INDEX IF NOT EXISTS events_seq ON events(canonicalKey, ingestSeq)`,
   `CREATE INDEX IF NOT EXISTS events_at ON events(canonicalKey, at, eventId)`,
@@ -472,10 +493,16 @@ export interface AppConversationStoreOptions {
   stateDir: string;
   machineId: () => string;
   now?: () => number;
+  attachmentBrowseEnabled?: () => boolean;
   /** One report per problem (torn tail, index rebuild, a skipped unreadable line). */
   reportDegradation?: (what: string, detail: string) => void;
   /** Called after a LOCAL-origin append committed (the replication emit hook). Never for a replicated ingest. */
   onLocalAppend?: (event: AppEvent) => void;
+}
+
+function sameAttachmentLog(first: fs.Stats, second: fs.Stats): boolean {
+  return second.isFile() && first.dev === second.dev && first.ino === second.ino
+    && first.size === second.size && first.mtimeMs === second.mtimeMs && first.ctimeMs === second.ctimeMs;
 }
 
 interface CreatedEvidenceBase {
@@ -499,6 +526,15 @@ export class AppConversationStore {
   private creationVersion = 0;
   private lastDataVersion = 0;
   private evidenceDataVersion = 0;
+  private attachmentRepairVersion = 0;
+  private attachmentRepairInFlight = false;
+  private attachmentRepairAfter = '';
+  private attachmentDiscard: {
+    canonicalKey: string;
+    frameStart: number;
+    nextRead: number;
+    snapshot: fs.Stats;
+  } | undefined;
 
   constructor(private readonly opts: AppConversationStoreOptions) {
     this.dir = path.join(opts.stateDir, 'app-conversations');
@@ -570,6 +606,7 @@ export class AppConversationStore {
 
   /** Drop the index and rebuild it from the files (tests and the operator's repair path). */
   rebuildIndex(): void {
+    this.attachmentRepairVersion++;
     this.db.exec('DELETE FROM files; DELETE FROM events; DELETE FROM messages; DELETE FROM deliveries; DELETE FROM conversations; DELETE FROM media_refs; DELETE FROM media_blobs; DELETE FROM media_purged; DELETE FROM media_totals; DELETE FROM transcripts; DELETE FROM pins;');
     this.catchUp();
   }
@@ -585,6 +622,7 @@ export class AppConversationStore {
   }
 
   private catchUpFile(filePath: string, fileName: string): void {
+    this.attachmentRepairVersion++;
     this.truncateTornTail(filePath);
     let size: number;
     try { size = fs.statSync(filePath).size; } catch { return; }
@@ -601,31 +639,148 @@ export class AppConversationStore {
     if (from >= size) return;
     const fd = fs.openSync(filePath, 'r');
     try {
-      const buf = Buffer.alloc(size - from);
-      fs.readSync(fd, buf, 0, buf.length, from);
+      const chunk = Buffer.alloc(Math.min(64 * 1024, size - from));
+      const frame = Buffer.alloc(MAX_LINE_BYTES - 1);
       let offset = from;
-      let start = 0;
-      for (let i = 0; i < buf.length; i++) {
-        if (buf[i] !== 0x0a) continue;
-        const lineBuf = buf.subarray(start, i);
-        const lineOffset = offset;
-        offset += i - start + 1;
-        start = i + 1;
-        let parsed: unknown;
-        try { parsed = JSON.parse(lineBuf.toString('utf8')); } catch {
-          this.reportOnce(`bad-line:${fileName}:${lineOffset}`, `an unreadable committed line in ${fileName} at byte ${lineOffset} was skipped (left in place)`);
-          continue;
+      let lineOffset = from;
+      let frameBytes = 0;
+      let oversized = false;
+      while (offset < size) {
+        const bytesRead = fs.readSync(fd, chunk, 0, Math.min(chunk.length, size - offset), offset);
+        if (bytesRead === 0) break;
+        let start = 0;
+        while (start < bytesRead) {
+          const newline = chunk.subarray(start, bytesRead).indexOf(0x0a);
+          const end = newline === -1 ? bytesRead : start + newline;
+          const length = end - start;
+          if (!oversized && frameBytes + length <= frame.length) {
+            chunk.copy(frame, frameBytes, start, end);
+            frameBytes += length;
+          } else {
+            oversized = true;
+          }
+          if (newline === -1) break;
+          if (oversized) {
+            this.recordAttachmentIndexGap(fileName, lineOffset, 'oversized');
+          } else {
+            this.indexCatchUpFrame(frame.subarray(0, frameBytes), fileName, lineOffset);
+          }
+          start = end + 1;
+          lineOffset = offset + start;
+          frameBytes = 0;
+          oversized = false;
         }
-        const ev = validateAppEvent(parsed);
-        const seq = (parsed as { ingestSeq?: unknown }).ingestSeq;
-        if (!ev || typeof seq !== 'number') {
-          this.reportOnce(`bad-line:${fileName}:${lineOffset}`, `an invalid event in ${fileName} at byte ${lineOffset} was skipped (left in place)`);
-          continue;
-        }
-        this.indexEvent({ ...ev, ingestSeq: seq }, fileName, lineOffset, lineBuf.length);
+        offset += bytesRead;
       }
-      this.db.prepare('UPDATE files SET indexedBytes = ? WHERE fileName = ?').run(offset, fileName);
+      // Only a newline proves the next resumable record boundary.
+      this.db.prepare('UPDATE files SET indexedBytes = ? WHERE fileName = ?').run(lineOffset, fileName);
     } finally { fs.closeSync(fd); }
+  }
+
+  /** Advance one known live log from the maintenance tick, never from a browse request. */
+  async reconcileAttachmentIndexBatch(signal: AbortSignal): Promise<void> {
+    if (signal.aborted || this.attachmentRepairInFlight) return;
+    this.attachmentRepairInFlight = true;
+    try {
+      const discard = this.attachmentDiscard;
+      const row = (discard
+        ? this.db.prepare('SELECT canonicalKey, fileName, indexedBytes FROM files WHERE canonicalKey = ?')
+          .get(discard.canonicalKey)
+        : this.db.prepare(`SELECT canonicalKey, fileName, indexedBytes FROM files
+          WHERE canonicalKey > ? AND canonicalKey LIKE 'app:%' ORDER BY canonicalKey LIMIT 1`)
+          .get(this.attachmentRepairAfter)) as { canonicalKey: string; fileName: string; indexedBytes: number } | undefined;
+      if (!discard) this.attachmentRepairAfter = row?.canonicalKey ?? '';
+      else if (!row || row.fileName !== this.fileNameFor(row.canonicalKey)) this.attachmentDiscard = undefined;
+      if (!row || row.fileName !== this.fileNameFor(row.canonicalKey)) return;
+
+      const deadline = performance.now() + 2_000;
+      const filePath = path.join(this.dir, row.fileName);
+      const handle = await fs.promises.open(filePath, fs.constants.O_RDONLY | fs.constants.O_NOFOLLOW | fs.constants.O_NONBLOCK);
+      try {
+        if (signal.aborted || performance.now() >= deadline) return;
+        const before = await handle.stat();
+        if (signal.aborted || performance.now() >= deadline) return;
+        if (!before.isFile() || before.size <= row.indexedBytes) {
+          this.attachmentDiscard = undefined;
+          return;
+        }
+        const continuing = discard?.frameStart === row.indexedBytes && sameAttachmentLog(discard.snapshot, before);
+        const readStart = continuing ? discard.nextRead : row.indexedBytes;
+        if (!continuing) this.attachmentDiscard = undefined;
+        if (readStart >= before.size) {
+          this.attachmentDiscard = undefined;
+          return;
+        }
+        const buffer = Buffer.alloc(Math.min(1024 * 1024, before.size - readStart));
+        const { bytesRead } = await handle.read(buffer, 0, buffer.length, readStart);
+        if (signal.aborted || performance.now() >= deadline) return;
+        const after = await fs.promises.lstat(filePath);
+        if (signal.aborted || performance.now() >= deadline || !sameAttachmentLog(before, after)) return;
+
+        this.db.transaction(() => {
+          const current = this.attachmentIndexFile(row.canonicalKey);
+          if (current?.indexedBytes !== row.indexedBytes || current.fileName !== row.fileName) {
+            this.attachmentDiscard = undefined;
+            return;
+          }
+          let consumed = 0;
+          for (let count = 0; count < 50 && consumed < bytesRead && performance.now() < deadline; count++) {
+            const newline = buffer.subarray(consumed, bytesRead).indexOf(0x0a);
+            const offset = continuing && count === 0 ? row.indexedBytes : readStart + consumed;
+            if (newline === -1) {
+              const nextRead = readStart + bytesRead;
+              if (nextRead < before.size && nextRead - offset >= MAX_LINE_BYTES) {
+                this.attachmentDiscard = { canonicalKey: row.canonicalKey, frameStart: offset, nextRead, snapshot: before };
+              } else {
+                this.attachmentDiscard = undefined;
+              }
+              break;
+            }
+            if (readStart + consumed + newline - offset < MAX_LINE_BYTES) {
+              this.indexCatchUpFrame(buffer.subarray(consumed, consumed + newline), row.fileName, offset, row.canonicalKey);
+            } else {
+              this.recordAttachmentIndexGap(row.fileName, offset, 'oversized');
+            }
+            this.attachmentDiscard = undefined;
+            consumed += newline + 1;
+          }
+          if (consumed > 0) {
+            this.attachmentRepairVersion++;
+            this.db.prepare('UPDATE files SET indexedBytes = ? WHERE canonicalKey = ?')
+              .run(readStart + consumed, row.canonicalKey);
+          }
+        })();
+      } finally {
+        await handle.close();
+      }
+    } finally {
+      this.attachmentRepairInFlight = false;
+    }
+  }
+
+  private recordAttachmentIndexGap(fileName: string, offset: number, reason: 'oversized' | 'unreadable' | 'invalid'): void {
+    this.db.prepare('INSERT OR IGNORE INTO attachment_index_gaps (fileName) VALUES (?)').run(fileName);
+    this.reportOnce(`bad-line:${fileName}:${offset}`, `an ${reason} committed line in ${fileName} at byte ${offset} was skipped (left in place)`);
+  }
+
+  attachmentIndexHasGap(conversationKey: string): boolean {
+    const file = this.attachmentIndexFile(conversationKey);
+    return !!file && !!this.db.prepare('SELECT 1 FROM attachment_index_gaps WHERE fileName = ?').get(file.fileName);
+  }
+
+  private indexCatchUpFrame(frame: Buffer, fileName: string, offset: number, canonicalKey?: string): void {
+    let parsed: unknown;
+    try { parsed = JSON.parse(frame.toString('utf8')); } catch {
+      this.recordAttachmentIndexGap(fileName, offset, 'unreadable');
+      return;
+    }
+    const event = validateAppEvent(parsed);
+    const seq = (parsed as { ingestSeq?: unknown } | null)?.ingestSeq;
+    if (!event || typeof seq !== 'number' || (canonicalKey && canonicalConversationKey(event.conversationKey) !== canonicalKey)) {
+      this.recordAttachmentIndexGap(fileName, offset, 'invalid');
+      return;
+    }
+    this.indexEvent({ ...event, ingestSeq: seq }, fileName, offset, frame.length);
   }
 
   /** A final line without a newline is an uncommitted write: truncate back to the last newline. */
@@ -685,6 +840,13 @@ export class AppConversationStore {
       return { appended: false, ingestSeq: existing.ingestSeq, outcome: 'duplicate' };
     }
     if (this.reserveEmit) {
+      if (this.opts.attachmentBrowseEnabled?.()) {
+        const index = this.attachmentIndexFile(canonicalKey);
+        const log = fs.statSync(path.join(this.dir, index?.fileName ?? this.fileNameFor(canonicalKey)), { throwIfNoEntry: false });
+        if ((log?.size ?? 0) !== (index?.indexedBytes ?? 0)) {
+          return { appended: false, ingestSeq: 0, outcome: 'not-accepted' };
+        }
+      }
       const r = this.reserveEmit(event);
       const accepted = r.outcome === 'emitted' || r.outcome === 'disabled' || r.outcome === 'skipped';
       if (!accepted) return { appended: false, ingestSeq: 0, outcome: /rate-limited/.test(r.outcome) ? 'rate-limited' : 'not-accepted' };
@@ -742,7 +904,7 @@ export class AppConversationStore {
       if (event.kind === 'created') this.indexCreationRecord(event);
       return { appended: false, ingestSeq: existing.ingestSeq };
     }
-    const file = this.db.prepare('SELECT fileName, nextIngestSeq FROM files WHERE canonicalKey = ?').get(canonicalKey) as { fileName: string; nextIngestSeq: number } | undefined;
+    const file = this.attachmentIndexFile(canonicalKey);
     const fileName = file?.fileName ?? this.fileNameFor(canonicalKey);
     const ingestSeq = file?.nextIngestSeq ?? 1;
     const line = `${JSON.stringify({ ...event, ingestSeq })}\n`;
@@ -754,6 +916,10 @@ export class AppConversationStore {
     let offset: number;
     try {
       offset = fs.fstatSync(fd).size;
+      // A new write must not advance the indexed boundary over an unreconciled tail.
+      if (this.opts.attachmentBrowseEnabled?.() && offset !== (file?.indexedBytes ?? 0)) {
+        throw new Error('app conversation index is pending reconciliation');
+      }
       try {
         fs.writeSync(fd, line);
         fs.fsyncSync(fd);
@@ -1346,6 +1512,100 @@ export class AppConversationStore {
       if (ev) events.push(ev);
     }
     return { events, cursor: Buffer.from(JSON.stringify({ m: self, s: last })).toString('base64url') };
+  }
+
+  private attachmentIndexFile(conversationKey: string): { fileName: string; indexedBytes: number; nextIngestSeq: number } | undefined {
+    return this.db.prepare('SELECT fileName, indexedBytes, nextIngestSeq FROM files WHERE canonicalKey = ?')
+      .get(canonicalConversationKey(conversationKey)) as { fileName: string; indexedBytes: number; nextIngestSeq: number } | undefined;
+  }
+
+  /** Compare before and after asynchronous browse reads. A repair can invalidate any file. */
+  attachmentPublicationRevision(conversationKey: string): string {
+    return JSON.stringify([
+      this.attachmentIndexFile(conversationKey) ?? null,
+      this.attachmentRepairVersion,
+      this.db.pragma('data_version', { simple: true }),
+    ]);
+  }
+
+  /** A lagged or unmeasurable index cannot authorize an attachment scan. */
+  async attachmentIndexReady(conversationKey: string): Promise<boolean> {
+    const file = this.attachmentIndexFile(conversationKey);
+    if (!file || file.fileName !== this.fileNameFor(canonicalConversationKey(conversationKey))) return false;
+    try {
+      const stat = await fs.promises.lstat(path.join(this.dir, file.fileName));
+      return stat.isFile() && stat.size === file.indexedBytes;
+    } catch {
+      // @silent-fallback-ok: the browse handler returns a retryable pending response.
+      return false;
+    }
+  }
+
+  /** Newest-first attachment browse window, with one unconsumed look-ahead row. */
+  attachmentIndexWindow(conversationKey: string, before: AppMessageIndexKey | null): AppMessageIndexRow[] {
+    const canonicalKey = canonicalConversationKey(conversationKey);
+    const query = `SELECT m.at, m.eventId, e.byteOffset, e.byteLength
+      FROM messages m LEFT JOIN events e ON e.canonicalKey = m.canonicalKey AND e.eventId = m.eventId
+      WHERE m.canonicalKey = ?`;
+    const order = 'ORDER BY m.at DESC, m.eventId DESC LIMIT 51';
+    if (before) {
+      return this.db.prepare(`${query} AND (m.at, m.eventId) < (?, ?) ${order}`)
+        .all(canonicalKey, before.at, before.eventId) as AppMessageIndexRow[];
+    }
+    return this.db.prepare(`${query} ${order}`).all(canonicalKey) as AppMessageIndexRow[];
+  }
+
+  attachmentMessageIndex(conversationKey: string, messageId: string): AppMessageIndexRow | null {
+    const row = this.db.prepare(`SELECT m.at, m.eventId, e.byteOffset, e.byteLength
+      FROM messages m JOIN events e ON e.canonicalKey = m.canonicalKey AND e.eventId = m.eventId
+      WHERE m.canonicalKey = ? AND m.messageId = ?`)
+      .get(canonicalConversationKey(conversationKey), messageId) as AppMessageIndexRow | undefined;
+    return row ?? null;
+  }
+
+  /** A null result is structural uncertainty. Operational failures propagate to the page owner. */
+  async readExactAttachmentEvent(
+    conversationKey: string,
+    row: AppMessageIndexRow,
+    signal: AbortSignal,
+  ): Promise<StoredAppEvent | null> {
+    signal.throwIfAborted();
+    const framed = exactAppMessageFrame(row);
+    if (!framed) return null;
+    const { offset: byteOffset, length: byteLength, prefix, bytes } = framed;
+
+    const canonicalKey = canonicalConversationKey(conversationKey);
+    const fd = await fs.promises.open(path.join(this.dir, this.fileNameFor(canonicalKey)),
+      fs.constants.O_RDONLY | fs.constants.O_NOFOLLOW | fs.constants.O_NONBLOCK);
+    try {
+      signal.throwIfAborted();
+      const stat = await fd.stat();
+      signal.throwIfAborted();
+      if (!stat.isFile() || byteOffset + byteLength + 1 > stat.size) return null;
+
+      const buffer = Buffer.alloc(bytes);
+      const { bytesRead } = await fd.read(buffer, 0, buffer.length, byteOffset - prefix);
+      signal.throwIfAborted();
+      if (bytesRead !== buffer.length || buffer[buffer.length - 1] !== 10 || (prefix && buffer[0] !== 10)) return null;
+      const payload = buffer.subarray(prefix, buffer.length - 1);
+      if (payload.includes(10)) return null;
+      let parsed: unknown;
+      try {
+        parsed = JSON.parse(new TextDecoder('utf-8', { fatal: true }).decode(payload));
+      } catch {
+        // @silent-fallback-ok: malformed bytes are structural uncertainty, never match evidence.
+        return null;
+      }
+      const event = validateAppEvent(parsed);
+      if (!event || (event.kind !== 'message' && event.kind !== 'media-message')
+        || canonicalConversationKey(event.conversationKey) !== canonicalKey
+        || event.eventId !== row.eventId || event.at !== row.at) return null;
+      const ingestSeq = (parsed as { ingestSeq?: unknown }).ingestSeq;
+      if (typeof ingestSeq !== 'number' || !Number.isSafeInteger(ingestSeq) || ingestSeq < 1) return null;
+      return { ...event, ingestSeq };
+    } finally {
+      await fd.close();
+    }
   }
 
   /**

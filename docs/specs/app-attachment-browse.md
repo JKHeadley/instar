@@ -1,6 +1,7 @@
 ---
 title: Browse App Chat Attachments
 slug: app-attachment-browse
+parent-principle: "Verify the State, Not Its Symbol"
 author: echo
 status: approved
 approved: true
@@ -85,16 +86,18 @@ Production initialization coverage exercises the route through the normal server
 
 Removing the browser action and route requires no data migration. Existing history, search and media routes retain their current behavior. Existing attachment controls remain available in chat history.
 
-## Follow-ups before activation
+## Activation criteria
 
-Converge and verify the browser sheet and its invalidation behavior, signed transport compatibility, publication revision coverage for every relevant mutation, and the acceptance latency and restart evidence before enabling the feature. The current staged server patch predates the new listing and open token contract. It is not evidence that this contract is implemented.
+The media discovery work card `wc_6c53d5472cbe88bb` owns these criteria.
 
-The focused closure reviewer concurred with the tuple selector, look-ahead and timeout outcomes. They raised a material reconciliation issue because the existing catch-up path can allocate the entire unread tail. This revision specifies a resumable bounded worker. Independent concurrence on that correction remains unrecorded.
+Converge and verify the browser sheet and its invalidation behavior, signed transport compatibility, publication revision coverage for every relevant mutation, and the acceptance latency and restart evidence before enabling the feature.
+
+The focused closure reviewer concurred with the tuple selector, look-ahead and timeout outcomes. They raised a material reconciliation issue because the existing catch-up path can allocate the entire unread tail. This revision specifies a resumable bounded worker. The focused confirming reviewer concurred on the bounded positional correction.
 
 ## Maturation plan
 
 - **test-agent-live:** Run the production entry points on a disposable agent with a signed owner browser, local attachments and the opt-in. Verify the revised route contract, real browsing and playback, cancellation, recovery and revocation.
-- **dev-agent-live:** On the development agent, use the opt-in after the test criteria and activation follow-ups clear. Verify ordinary chat navigation and actual attachment opens.
+- **dev-agent-live:** On the development agent, use the opt-in only after the test and activation criteria are met. Verify ordinary chat navigation and actual attachment opens.
 - **fleet:** Keep the feature opt-in. Offer it after the development agent establishes the graduation criterion and the activation review clears.
 - **graduation criterion:** Meet the browser, isolation, performance and restart acceptance criteria above on the exact runtime head.
 - **dark-window:** The option defaults off. Review its disposition after verification and before release activation.
