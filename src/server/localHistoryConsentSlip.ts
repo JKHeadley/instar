@@ -27,6 +27,33 @@ export interface LocalHistoryConsentMaterial {
 
 type ConsentPreview = ReturnType<LocalHistoryUploadStaging['readOwnerConsentPreview']>;
 
+interface OwnedSourceCapture {
+  operationId: string;
+  ownerUserId: string;
+  machineId: string;
+  files: readonly { fileId: string; kind: LocalSessionSource; captureDigest: string }[];
+}
+
+/** Join the staged preview with a capture returned by a trusted server-side
+ * resolver. The resolver must independently establish current source ownership
+ * and machine identity. The uploaded manifest establishes neither. */
+export function readLocalHistoryConsentSources(preview: ConsentPreview,
+  resolveOwnedCapture: (operationId: string) => OwnedSourceCapture | undefined,
+): LocalHistoryConsentMaterial['sources'] {
+  const capture = resolveOwnedCapture(preview.operationId);
+  const refuse = (): never => { throw new Error('local-history-consent-source-binding'); };
+  if (!capture || capture.operationId !== preview.operationId || capture.ownerUserId !== preview.ownerUserId
+    || !matches(opaque, capture.machineId) || !Array.isArray(capture.files)
+    || capture.files.length !== preview.artifacts.length) return refuse();
+  return Object.freeze(preview.artifacts.map((artifact, index) => {
+    const file = capture.files[index];
+    if (!file || file.fileId !== artifact.fileId || file.kind !== artifact.kind
+      || file.captureDigest !== artifact.captureDigest) return refuse();
+    return Object.freeze({ kind: artifact.kind, machineId: capture.machineId, artifactDigest: artifact.artifactDigest });
+  }));
+}
+
+
 /** Distinguishes a material edit and revert, as well as a Work Board reopen. */
 export function localHistoryConsentCardRevision(card: Pick<CardFold, 'materialRevision' | 'reopens' | 'taps'>): string {
   if (!card.materialRevision) throw new Error('local-history-consent-card-stale');

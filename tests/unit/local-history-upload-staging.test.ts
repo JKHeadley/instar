@@ -19,6 +19,8 @@ import { ImportedHistoryStore } from '../../dist/import/ImportedHistoryStore.js'
 import { initializeLocalHistoryFirstPermits, recordLocalHistoryFirstPermit } from '../../dist/import/LocalHistoryFirstPermit.js';
 import { registerLocalHistoryStoreTemporaryRun } from '../../dist/import/LocalHistoryStoreTemporaryRun.js';
 
+import { readLocalHistoryConsentSources } from '../../dist/server/localHistoryConsentSlip.js';
+
 const roots: string[] = [], stages: LocalHistoryUploadStaging[] = [];
 const parents: ChildProcess[] = [], sockets: string[] = [];
 const device = { deviceId: 'synthetic-device', deviceKeyHash: 'synthetic-device-key' };
@@ -168,9 +170,29 @@ it('prepares both source kinds through real children and retires raw files witho
         ownerUserId: 'synthetic-owner', bootId: issuer.bootId, origin: issuer.origin },
       artifacts: artifacts.files.map((file, index) => ({
         fileId: file.fileId, kind: preview.files[index].source, artifactDigest: file.sha256,
+        captureDigest: crypto.createHash('sha256').update(index === 0 ? codex : claude).digest('hex'),
       })),
     });
     expect(Object.isFrozen(material.artifacts) && Object.isFrozen(material.destination)).toBe(true);
+    const capture = { operationId: grant.operationId, ownerUserId: 'synthetic-owner', machineId: 'source-machine',
+      files: material.artifacts.map(({ fileId, kind }, index) => ({
+        fileId, kind, captureDigest: crypto.createHash('sha256').update(index === 0 ? codex : claude).digest('hex'),
+      })),
+    };
+    const resolveCapture = vi.fn(() => capture);
+    expect(readLocalHistoryConsentSources(material, resolveCapture)).toEqual(material.artifacts.map(({ kind, artifactDigest }) => ({
+      kind, artifactDigest, machineId: 'source-machine',
+    })));
+    expect(resolveCapture).toHaveBeenCalledWith(grant.operationId);
+    for (const refused of [
+      undefined,
+      { ...capture, operationId: 'different-operation' },
+      { ...capture, ownerUserId: 'different-owner' },
+      { ...capture, files: [...capture.files].reverse() },
+      { ...capture, files: [{ ...capture.files[0], captureDigest: material.artifacts[0].artifactDigest }, capture.files[1]] },
+    ]) {
+      expect(() => readLocalHistoryConsentSources(material, () => refused)).toThrow('local-history-consent-source-binding');
+    }
     const binding = { operationId: grant.operationId, cardId: 'wc_' + 'a'.repeat(16),
       materialHash: 'b'.repeat(64), cardRevision: 'c'.repeat(64), previewId: material.previewId,
       previewDigest: material.previewDigest, ownerUserId: material.ownerUserId };

@@ -1,0 +1,27 @@
+{
+  "ts": "2026-11-25T09:05:57.426Z",
+  "slug": "local-history-consent-source-capture",
+  "suggestedTier": 1,
+  "declaredTier": 2,
+  "riskFloor": 1,
+  "riskFloorReasons": [],
+  "belowFloor": false,
+  "files": 2,
+  "loc": 36,
+  "scope": {
+    "basis": "staged-in-scope-paths-including-deleted",
+    "files": [
+      "src/import/LocalHistoryUploadStaging.ts",
+      "src/server/localHistoryConsentSlip.ts"
+    ],
+    "addedLines": 32,
+    "deletedLines": 4
+  },
+  "causalAutopsy": null,
+  "classClosure": {
+    "defectClass": "unbounded-self-action",
+    "closure": "n/a",
+    "reason": "Read-only unmounted consent projection adds no autonomous actions or authority."
+  },
+  "verdict": "pass"
+}

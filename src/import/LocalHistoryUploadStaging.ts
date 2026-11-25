@@ -969,11 +969,12 @@ export class LocalHistoryUploadStaging {
     if (!published) refuse('conflict');
     const { receipt, previewDigest, prepared } = published;
     const files = receipt.preview?.files;
-    if (!Array.isArray(files) || files.length !== prepared.length) refuse('unavailable');
+    const captures = this.plan(row).manifest.files;
+    if (!Array.isArray(files) || files.length !== prepared.length || captures.length !== prepared.length) refuse('unavailable');
     const artifacts = Object.freeze(prepared.map(({ fileId, sha256 }, index) => {
-      const file = files[index];
-      if (!file || file.fileId !== fileId || (file.source !== 'codex' && file.source !== CLAUDE_CODE_FRAMEWORK)) refuse('unavailable');
-      return Object.freeze({ fileId, kind: file.source, artifactDigest: sha256 });
+      const file = files[index], capture = captures[index];
+      if (!file || file.fileId !== fileId || capture.fileId !== fileId || capture.source !== file.source) refuse('unavailable');
+      return Object.freeze({ fileId, kind: capture.source, artifactDigest: sha256, captureDigest: capture.sha256 });
     }));
     const { ownerHash, ownerUserId } = this.owner(device);
     if (ownerHash !== row.ownerHash) refuse('not-found');
