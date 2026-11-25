@@ -56,3 +56,11 @@ The synthetic fixture models a previously accepted approval account as a separat
 Use one durable first-acceptance decision for local enrollment and remote nomination. Race both paths against the same generation and prove one accepted device survives restart. The owner can recover the outcome from that winning record after a lost response.
 
 The current iPhone presence key permits the existing device-policy fallback. A request for Face ID specifically requires separate evidence that the installed native flow uses the biometric-only prompt and a compatible key policy. The server cannot infer Face ID from a generic presence signature. Keep the proposed Face ID wording and enrollment off until native review and physical verification prove the promised behavior.
+
+## Private Telegram entry
+
+A private bot link carries only a random, short-lived Start locator. When the owner taps Start, the holder verifies the exact token against the current owner account, the private Telegram sender and chat, current holder and lifetime. The link never approves anything. Ingress must also exclude bot, forwarded, edited and alternate-sender updates, and the holder must use an acknowledged disclosure message and a one-use callback bound to that message.
+
+If the private approval account is already accepted, the button can say **Approve this iPhone** and authorize only the exact nomination. If the private account has never been accepted, show the account authority and withdrawal disclosure first. The current rule requires that acceptance to precede the exact nomination. Start cannot double as consent to that disclosure. Both Telegram steps can occur on the same phone, with no host access or QR, followed by Face ID in Instar. A draft to collapse the two private-chat decisions into one explicit consent event requires separate review before release.
+
+Suggested nomination text after account acceptance: **Allow this iPhone to approve changes for Echo. You'll confirm on the iPhone with Face ID.** The pending Work Board policy is shown separately after enrollment.
