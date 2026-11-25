@@ -107,7 +107,13 @@ async function bootPage(handler: (c: Call) => { status: number; body?: unknown }
       '/sessions': { sessions: [] }, '/health': { project: { name: 'echo' } }, '/dashboard/unlock-check': { accepted: true },
     };
     const out = await handler(c) ?? (base[url] !== undefined ? { status: 200, body: base[url] } : { status: 404, body: {} });
-    return { ok: out.status >= 200 && out.status < 300, status: out.status, json: async () => JSON.parse(JSON.stringify(out.body ?? {})), headers: new dom.window.Headers() } as unknown as Response;
+    const bytes = out.body instanceof Uint8Array ? out.body : null;
+    const headers = new dom.window.Headers(bytes ? { 'Content-Length': String(bytes.byteLength) } : {});
+    return {
+      ok: out.status >= 200 && out.status < 300, status: out.status, headers,
+      json: async () => JSON.parse(JSON.stringify(out.body ?? {})),
+      arrayBuffer: async () => bytes?.slice().buffer,
+    } as unknown as Response;
   };
   vi.resetModules();
   const lifecycleModule = await import('../../dashboard/console/page-lifecycle.js');
@@ -117,9 +123,16 @@ async function bootPage(handler: (c: Call) => { status: number; body?: unknown }
     pageLifecycles.add(lifecycle);
     return lifecycle;
   });
+  const chatsModule = await import('../../dashboard/console/chats.js');
+  const renderChats = chatsModule.renderChats;
+  let chatPage: ReturnType<typeof renderChats> | undefined;
+  vi.spyOn(chatsModule, 'renderChats').mockImplementation((main, ctx) => {
+    chatPage = renderChats(main, ctx);
+    return chatPage;
+  });
   await import('../../dashboard/console/console.js');
   for (let i = 0; i < 10; i++) await flush();
-  return { doc: dom.window.document, idb };
+  return { doc: dom.window.document, idb, chatPage };
 }
 
 afterEach(() => {
@@ -702,22 +715,216 @@ describe('Conversations page', () => {
 
 
 describe('card source message navigation', () => {
-  async function sourcePage(history: (c: Call) => any, target = 'source-event') {
+  async function sourcePage(history: (c: Call) => any, target = 'source-event', extra?: (c: Call) => any, attachmentBrowse: boolean | undefined = true) {
     const idb = fakeIndexedDB();
     const bd = await import('../../dashboard/console/browser-device.js');
     const { keyPair, publicKey } = await bd.generateDeviceKey();
     idb.stores.set('device', new Map([['m1', { machineId: 'm1', deviceId: 'dev-b1234567', host: 'localhost:4040', status: 'active', keyPair, publicKey, keyHash: await bd.keyHashOf(publicKey) }]]));
     const page = await boot(c => {
-      if (c.url.startsWith('/mobile/browser-devices/status')) return { status: 200, body: STATUS };
+      if (c.url.startsWith('/mobile/browser-devices/status')) return { status: 200, body: { ...STATUS, attachmentBrowse } };
       if (c.url.startsWith('/mobile/conversations?')) return { status: 200, body: { conversations: [{ id: UUID, platform: 'app', title: 'Project planning' }], nextCursor: null } };
       if (c.url.startsWith(`/mobile/chat/app/${UUID}/messages`)) return history(c);
-      if (c.url.startsWith(`/mobile/chat/app/${UUID}/events`)) return { status: 200, body: { events: [], cursor: 'c1' } };
-      return undefined;
+      if (c.url.startsWith(`/mobile/chat/app/${UUID}/events`)) return { status: 200, body: { events: [], cursor: 'c1', attachmentContext: 'x'.repeat(43) } };
+      return extra?.(c);
     }, `#/work/chats?c=${encodeURIComponent(`app:${UUID}`)}&m=${encodeURIComponent(target)}`, idb);
     return { ...page, publicKey };
   }
   const message = (eventId: string) => ({ eventId, role: 'agent', text: eventId === 'source-event' ? 'The original request' : 'Later discussion', at: '2026-11-17T12:00:00Z' });
   const reply = (ids: string[], nextBefore: string | null = null) => ({ status: 200, body: { conversationKey: UUID, messages: ids.map(message), nextBefore } });
+
+  it('hides the attachment entry when the connected server has not advertised it', async () => {
+    const { doc } = await sourcePage(() => reply(['source-event']), 'source-event', undefined, false);
+    await vi.waitFor(() => expect(doc.querySelector('.chat-title')?.textContent).toBe('Project planning'));
+    expect([...doc.querySelectorAll('.chat-menu button')].some(button => button.textContent === 'Attachments')).toBe(false);
+    expect(calls.some(c => c.url.includes('/attachments'))).toBe(false);
+  });
+
+  it('lists attachments on an explicit kind choice and signs the exact open with both tokens', async () => {
+    const path = `/mobile/chat/app/${UUID}/attachments`;
+    const replicaBinding = 'r'.repeat(80);
+    const openToken = 'o'.repeat(80);
+    const attachmentId = 'a'.repeat(64);
+    const { doc, publicKey } = await sourcePage(() => reply(['source-event']), 'source-event', c => {
+      if (c.url === path + '?kind=photo') return { status: 200, body: {
+        v: 1, kind: 'photo', scope: 'local', coverage: 'local', replicaBinding, attachmentContext: 'x'.repeat(43), nextCursor: null,
+        rows: [{ eventId: 'e1', messageId: 'm1', at: '2026-11-24T19:00:00Z', attachments: [
+          { attachmentId, index: 0, kind: 'photo', filename: '<photo>.png', size: 658, mediaType: 'image/png', openToken },
+        ] }],
+      } };
+      if (c.url.startsWith(path + '/' + attachmentId + '/content?')) return { status: 503 };
+      return undefined;
+    });
+    const findButton = (label: string) => [...doc.querySelectorAll('button')].find(button => button.textContent === label);
+    await vi.waitFor(() => expect(findButton('Attachments')).toBeTruthy());
+    findButton('Attachments')!.click();
+    expect(calls.some(c => c.url.startsWith(path))).toBe(false);
+    findButton('Photos')!.click();
+    await vi.waitFor(() => expect(doc.querySelector('.sheet .chat-file-name')?.textContent).toBe('<photo>.png'));
+    const list = calls.find(c => c.url === path + '?kind=photo')!;
+    expect(verifySigned(list, publicKey).ok).toBe(true);
+    expect(calls.some(c => c.url.includes('/content?'))).toBe(false);
+    findButton('Open')!.click();
+    await vi.waitFor(() => expect(findButton('Retry')).toBeTruthy());
+    const open = calls.find(c => c.url.startsWith(path + '/' + attachmentId + '/content?'))!;
+    expect(verifySigned(open, publicKey).ok).toBe(true);
+    expect(new URL(open.url, 'http://localhost').searchParams.get('replicaBinding')).toBe(replicaBinding);
+    expect(new URL(open.url, 'http://localhost').searchParams.get('openToken')).toBe(openToken);
+  });
+
+  it('retains the incoming cursor and incomplete coverage when a sparse page is busy', async () => {
+    const path = `/mobile/chat/app/${UUID}/attachments`;
+    const visited: Array<string | null> = [];
+    let busy = true;
+    const { doc } = await sourcePage(() => reply(['source-event']), 'source-event', c => {
+      if (!c.url.startsWith(path + '?')) return undefined;
+      const cursor = new URL(c.url, 'http://localhost').searchParams.get('cursor');
+      visited.push(cursor);
+      if (cursor === 'one' && busy) { busy = false; return { status: 429, body: { error: 'attachment-browse-busy' } }; }
+      const nextCursor = cursor === null ? 'one' : cursor === 'one' ? 'two' : cursor === 'two' ? 'three' : cursor === 'three' ? 'four' : null;
+      return { status: 200, body: {
+        v: 1, kind: 'photo', scope: 'local', coverage: cursor === null ? 'incomplete' : 'local',
+        rows: [], nextCursor, replicaBinding: 'r'.repeat(80), attachmentContext: 'x'.repeat(43),
+      } };
+    });
+    const button = (label: string) => [...doc.querySelectorAll('button')].find(node => node.textContent === label);
+    await vi.waitFor(() => expect(button('Attachments')).toBeTruthy());
+    button('Attachments')!.click();
+    button('Photos')!.click();
+    await vi.waitFor(() => expect(button('Retry')).toBeTruthy());
+    expect(visited).toEqual([null, 'one']);
+    button('Retry')!.click();
+    await vi.waitFor(() => expect(button('Older')).toBeTruthy());
+    expect(visited).toEqual([null, 'one', 'one', 'two', 'three']);
+    button('Older')!.click();
+    await vi.waitFor(() => expect(button('Refresh')).toBeTruthy());
+    expect(visited).toEqual([null, 'one', 'one', 'two', 'three', 'four']);
+    expect(doc.querySelector('.sheet [role="status"]')?.textContent).toContain('Some records could not be checked');
+  });
+
+  it('clears a populated idle attachment sheet when a fresh signed local read fails', async () => {
+    const path = `/mobile/chat/app/${UUID}/attachments`;
+    let denied = false;
+    const { doc } = await sourcePage(
+      () => denied ? { status: 403 } : reply(['source-event']),
+      'source-event',
+      c => c.url === path + '?kind=photo' ? { status: 200, body: {
+        v: 1, kind: 'photo', scope: 'local', coverage: 'local', replicaBinding: 'r'.repeat(80), attachmentContext: 'x'.repeat(43), nextCursor: null,
+        rows: [{ eventId: 'e1', messageId: 'm1', at: '2026-11-24T19:00:00Z', attachments: [
+          { attachmentId: 'a'.repeat(64), index: 0, kind: 'photo', filename: 'private.png',
+            size: 658, mediaType: 'image/png', openToken: 'o'.repeat(80) },
+        ] }],
+      } } : undefined,
+    );
+    const button = (label: string) => [...doc.querySelectorAll('button')].find(node => node.textContent === label);
+    await vi.waitFor(() => expect(button('Attachments')).toBeTruthy());
+    button('Attachments')!.click();
+    button('Photos')!.click();
+    await vi.waitFor(() => expect(doc.querySelector('.sheet .chat-file-name')?.textContent).toBe('private.png'));
+    denied = true;
+    bootContext.run(bootGeneration, () => dom.window.dispatchEvent(new dom.window.Event('focus')));
+    await vi.waitFor(() => expect(doc.querySelector('.sheet')).toBeNull());
+    expect(doc.body.textContent).not.toContain('private.png');
+  });
+
+  it('clears an idle attachment sheet only for a matching current-device refresh failure from another tab', async () => {
+    const path = `/mobile/chat/app/${UUID}/attachments`;
+    const { doc, publicKey } = await sourcePage(() => reply(['source-event']), 'source-event', c => {
+      if (c.url !== path + '?kind=photo') return undefined;
+      return { status: 200, body: {
+        v: 1, kind: 'photo', scope: 'local', coverage: 'local', replicaBinding: 'r'.repeat(80), attachmentContext: 'x'.repeat(43), nextCursor: null,
+        rows: [{ eventId: 'e1', messageId: 'm1', at: '2026-11-24T19:00:00Z', attachments: [
+          { attachmentId: 'a'.repeat(64), index: 0, kind: 'photo', filename: 'follower-private.png',
+            size: 658, mediaType: 'image/png', openToken: 'o'.repeat(80) },
+        ] }],
+      } };
+    });
+    const button = (label: string) => [...doc.querySelectorAll('button')].find(node => node.textContent === label);
+    await vi.waitFor(() => expect(button('Attachments')).toBeTruthy());
+    button('Attachments')!.click();
+    button('Photos')!.click();
+    await vi.waitFor(() => expect(doc.querySelector('.sheet .chat-file-name')?.textContent).toBe('follower-private.png'));
+    const bd = await import('../../dashboard/console/browser-device.js');
+    const channel = new BroadcastChannel('instar-chat');
+    const failure = {
+      type: 'attachment-access-unverified', ref: 'app:' + UUID, startedAt: Date.now(),
+      machineId: 'm1', deviceId: 'dev-b1234567', keyHash: await bd.keyHashOf(publicKey),
+    };
+    try {
+      channel.postMessage({ ...failure, machineId: 'other' });
+      channel.postMessage({ ...failure, startedAt: 1 });
+      await flush(30);
+      expect(doc.querySelector('.sheet .chat-file-name')?.textContent).toBe('follower-private.png');
+      channel.postMessage(failure);
+      await vi.waitFor(() => expect(doc.querySelector('.sheet')).toBeNull());
+      expect(doc.body.textContent).not.toContain('follower-private.png');
+    } finally {
+      channel.close();
+    }
+  });
+
+  it('offers a manual Save and clears the sheet after a successful refresh with a changed server context', async () => {
+    const path = `/mobile/chat/app/${UUID}/attachments`;
+    let context = 'x'.repeat(43);
+    const { doc } = await sourcePage(() => ({
+      status: 200, body: { ...reply(['source-event']).body, attachmentContext: context },
+    }), 'source-event', c => {
+      if (c.url === path + '?kind=file') return { status: 200, body: {
+        v: 1, kind: 'file', scope: 'local', coverage: 'local', nextCursor: null,
+        replicaBinding: 'r'.repeat(80), attachmentContext: context,
+        rows: [{ eventId: 'e1', messageId: 'm1', at: '2026-11-24T19:00:00Z', attachments: [
+          { attachmentId: 'a'.repeat(64), index: 0, kind: 'file', filename: 'private.txt',
+            size: 3, mediaType: 'text/plain', openToken: 'o'.repeat(80) },
+        ] }],
+      } };
+      if (c.url.startsWith(path + '/')) return { status: 200, body: new Uint8Array([1, 2, 3]) };
+      return undefined;
+    });
+    const button = (label: string) => [...doc.querySelectorAll('button')].find(node => node.textContent === label);
+    const save = vi.spyOn(dom.window.HTMLAnchorElement.prototype, 'click').mockImplementation(() => {});
+    const revoke = vi.spyOn(URL, 'revokeObjectURL');
+    try {
+      await vi.waitFor(() => expect(button('Attachments')).toBeTruthy());
+      button('Attachments')!.click();
+      button('Files')!.click();
+      await vi.waitFor(() => expect(button('Open')).toBeTruthy());
+      button('Open')!.click();
+      await vi.waitFor(() => expect(doc.querySelector('.sheet a[download]')?.textContent).toBe('Save private.txt'));
+      expect(save).not.toHaveBeenCalled();
+      context = 'z'.repeat(43);
+      bootContext.run(bootGeneration, () => dom.window.dispatchEvent(new dom.window.Event('focus')));
+      await vi.waitFor(() => expect(doc.querySelector('.sheet')).toBeNull());
+      expect(revoke).toHaveBeenCalled();
+    } finally {
+      save.mockRestore();
+      revoke.mockRestore();
+    }
+  });
+
+  it('clears an open sheet when a successful pooled fallback cannot verify local attachment access', async () => {
+    const path = `/mobile/chat/app/${UUID}/attachments`;
+    const ref = 'app:' + UUID;
+    const { doc, chatPage } = await sourcePage(() => reply(['source-event']), 'source-event', c => {
+      if (c.url !== path + '?kind=photo') return undefined;
+      return { status: 200, body: {
+        v: 1, kind: 'photo', scope: 'local', coverage: 'local', nextCursor: null,
+        replicaBinding: 'r'.repeat(80), attachmentContext: 'x'.repeat(43),
+        rows: [{ eventId: 'e1', messageId: 'm1', at: '2026-11-24T19:00:00Z', attachments: [
+          { attachmentId: 'a'.repeat(64), index: 0, kind: 'photo', filename: 'private-fallback.png',
+            size: 658, mediaType: 'image/png', openToken: 'o'.repeat(80) },
+        ] }],
+      } };
+    });
+    const button = (label: string) => [...doc.querySelectorAll('button')].find(node => node.textContent === label);
+    await vi.waitFor(() => expect(button('Attachments')).toBeTruthy());
+    button('Attachments')!.click();
+    button('Photos')!.click();
+    await vi.waitFor(() => expect(doc.querySelector('.sheet .chat-file-name')?.textContent).toBe('private-fallback.png'));
+    const before = calls.length;
+    await chatPage!.runTask({ ref, mode: 'fallback' });
+    expect(calls.slice(before).some(c => c.url.includes('/messages') && c.url.includes('scope=pool'))).toBe(true);
+    expect(doc.querySelector('.sheet')).toBeNull();
+    expect(doc.body.textContent).not.toContain('private-fallback.png');
+  });
 
   it('finds an event id on a later page through signed reads, with explicit continued search', async () => {
     const { doc, publicKey } = await sourcePage(c => {

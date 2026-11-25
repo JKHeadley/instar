@@ -165,7 +165,10 @@ describe('media in app conversations — production wiring', () => {
     const darkPage = await send('GET', browseUrl);
     expect(darkPage.status).toBe(404);
     expect(darkPage.body.error).toBe('attachment-browse-off');
+    const browserStatus = () => auth(request(app).get('/mobile/browser-devices/status'));
+    expect((await browserStatus()).body.attachmentBrowse).toBe(false);
     config.mobilePairing!.native = { attachmentBrowse: { enabled: true } };
+    expect((await browserStatus()).body.attachmentBrowse).toBe(true);
     const exactPage = await send('GET', browseUrl);
     expect(exactPage.status).toBe(200);
     expect(exactPage.body).toMatchObject({ v: 1, scope: 'local', rows: [{ attachments: [{ filename: 'beach.jpg' }] }] });
@@ -174,6 +177,15 @@ describe('media in app conversations — production wiring', () => {
     const exactOpen = await send('GET', `/mobile/chat/app/${key}/attachments/${attachmentId}/content?${query}`);
     expect(exactOpen.status).toBe(200);
     expect(exactOpen.body).toEqual(photo);
+    const appEvents = `/mobile/chat/app/${key}/events`;
+    const context = exactPage.body.attachmentContext;
+    expect(context).toMatch(/^[A-Za-z0-9_-]{43}$/);
+    expect((await send('GET', appEvents)).body.attachmentContext).toBe(context);
+    config.mobilePairing!.native.attachmentBrowse!.enabled = false;
+    const disabledEvents = await send('GET', appEvents);
+    expect(disabledEvents.status).toBe(200);
+    expect(disabledEvents.body).not.toHaveProperty('attachmentContext');
+    config.mobilePairing!.native.attachmentBrowse!.enabled = true;
 
     // The session got one line per file, with readable private copies, before the caption.
     // A bootstrap past 500 characters is handed to the session as a file it reads; read it the same way.

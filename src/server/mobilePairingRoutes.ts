@@ -1626,6 +1626,8 @@ export function createMobilePairingRouter(svc: MobilePairingService, deps: Mobil
   mountBrowserDeviceRoutes(router, svc, {
     verifyOperatorSession: (token) => poolCtx?.verifyDashboardOperatorSession?.(token) === true,
     telegramConfigured: () => !!poolCtx?.telegram,
+    attachmentBrowseAvailable: () => svc.nativeOn && !!poolCtx?.appConversations?.media
+      && isMobileMediaEnabled(deps.config) && deps.config.mobilePairing?.native?.attachmentBrowse?.enabled === true,
     approvalChat: async () => (poolCtx?.telegram?.botIdentity ? poolCtx.telegram.botIdentity() : null),
   });
 

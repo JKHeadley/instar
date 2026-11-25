@@ -113,6 +113,7 @@ export function registerMobileAttachmentBrowseRoute(router: Router, deps: Depend
         indexHasGap: service.store.attachmentIndexHasGap(conversationKey),
         openBinding: {
           replica: openTokens.sealReplica(scope),
+          context: openTokens.contextFor(scope),
           seal: (event, attachment) => openTokens.sealOccurrence(scope, {
             eventId: event.eventId, messageId: event.messageId, ...attachment,
           }),

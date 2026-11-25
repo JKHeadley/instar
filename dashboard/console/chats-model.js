@@ -298,6 +298,52 @@ export function applyEvents(prev, events, opts = {}) {
 }
 
 // ── media (§4.8) ───────────────────────────────────────────────────────────
+const ATTACHMENT_BROWSE_KINDS = new Set(['photo', 'video', 'voice', 'file']);
+const ATTACHMENT_TOKEN = /^[A-Za-z0-9_-]{80}$/;
+const ATTACHMENT_CURSOR = /^[A-Za-z0-9_-]{1,1627}$/;
+
+function hasAttachmentFields(value, keys) {
+  return !!value && typeof value === 'object' && !Array.isArray(value)
+    && Object.keys(value).length === keys.length && keys.every(key => Object.hasOwn(value, key));
+}
+
+function attachmentField(value, max) {
+  return typeof value === 'string' && value.length > 0 && value.length <= max;
+}
+
+/** Accept the signed browse response as one page, including every row and its exact-open token. */
+export function readAttachmentBrowsePage(body, requestedKind) {
+  if (!ATTACHMENT_BROWSE_KINDS.has(requestedKind)
+    || !hasAttachmentFields(body, ['v', 'kind', 'scope', 'coverage', 'rows', 'nextCursor', 'replicaBinding', 'attachmentContext'])
+    || body.v !== 1 || body.kind !== requestedKind || body.scope !== 'local'
+    || (body.coverage !== 'local' && body.coverage !== 'incomplete')
+    || typeof body.attachmentContext !== 'string' || !/^[A-Za-z0-9_-]{43}$/.test(body.attachmentContext)
+    || typeof body.replicaBinding !== 'string' || !ATTACHMENT_TOKEN.test(body.replicaBinding)
+    || (body.nextCursor !== null && (typeof body.nextCursor !== 'string' || !ATTACHMENT_CURSOR.test(body.nextCursor)))
+    || !Array.isArray(body.rows) || body.rows.length > 15) return null;
+
+  const messages = new Set();
+  for (const row of body.rows) {
+    if (!hasAttachmentFields(row, ['eventId', 'messageId', 'at', 'attachments'])
+      || !attachmentField(row.eventId, 128) || !attachmentField(row.messageId, 128)
+      || !attachmentField(row.at, 64) || !Number.isFinite(Date.parse(row.at))
+      || messages.has(row.messageId) || !Array.isArray(row.attachments)
+      || row.attachments.length < 1 || row.attachments.length > 10) return null;
+    messages.add(row.messageId);
+    let lastIndex = -1;
+    for (const item of row.attachments) {
+      if (!hasAttachmentFields(item, ['attachmentId', 'index', 'kind', 'filename', 'size', 'mediaType', 'openToken'])
+        || typeof item.attachmentId !== 'string' || !/^[0-9a-f]{64}$/.test(item.attachmentId)
+        || typeof item.openToken !== 'string' || !ATTACHMENT_TOKEN.test(item.openToken)
+        || item.kind !== requestedKind || !attachmentField(item.filename, 255) || !attachmentField(item.mediaType, 128)
+        || !Number.isInteger(item.index) || item.index <= lastIndex || item.index >= 10
+        || !Number.isSafeInteger(item.size) || item.size < 1 || item.size > 50 * 1024 * 1024) return null;
+      lastIndex = item.index;
+    }
+  }
+  return body;
+}
+
 /** Only these types become a viewable blob:; everything else is a download. */
 export const VIEWABLE_TYPES = new Set(['image/jpeg', 'image/png', 'image/gif', 'image/webp', 'video/mp4', 'video/quicktime', 'audio/mp4', 'audio/mpeg', 'audio/ogg', 'audio/wav']);
 export function blobTypeFor(mediaType) {

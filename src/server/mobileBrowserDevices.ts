@@ -450,7 +450,12 @@ export function browserKeyState(svc: MobilePairingService, keyHash: string): Rec
 /** Bearer routes for browser setup (§4.2) and status (§4.6). */
 export function mountBrowserDeviceRoutes(
   router: Router, svc: MobilePairingService,
-  opts: { verifyOperatorSession?: (token: string | undefined) => boolean; telegramConfigured?: () => boolean; approvalChat?: () => Promise<{ name: string; username: string | null } | null> },
+  opts: {
+    verifyOperatorSession?: (token: string | undefined) => boolean;
+    telegramConfigured?: () => boolean;
+    approvalChat?: () => Promise<{ name: string; username: string | null } | null>;
+    attachmentBrowseAvailable?: () => boolean;
+  },
 ): void {
   router.get('/mobile/browser-devices/status', async (req: Request, res: Response) => {
     res.setHeader('Cache-Control', 'no-store');
@@ -465,6 +470,7 @@ export function mountBrowserDeviceRoutes(
       : null;
     res.json({
       enabled: true, machineId, nickname: machineNickname(svc, machineId) ?? svc.deps.config.projectName ?? null, approvalChat,
+      attachmentBrowse: opts.attachmentBrowseAvailable?.() === true,
       serverTime: Date.now(), approvalPath: svc.approvalPath(), approveEnabled: isPairingApproveEnabled(svc.deps.config),
       ownerPhoneApproves: isPairingApproveEnabled(svc.deps.config) && svc.ownerPhoneCanApprove(),
       // Sending into Telegram from the app speaks as the Telegram owner and needs the serving lease.

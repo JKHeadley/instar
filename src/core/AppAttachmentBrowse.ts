@@ -29,6 +29,7 @@ export interface AppAttachmentPage {
   rows: AttachmentRow[];
   nextCursor: string | null;
   replicaBinding?: string;
+  attachmentContext?: string;
 }
 
 export class AppAttachmentPageChanged extends Error {}
@@ -42,7 +43,7 @@ interface Options {
   canRead: (event: StoredAppEvent) => boolean;
   sealCursor: (key: AppMessageIndexKey) => string;
   indexHasGap?: boolean;
-  openBinding?: { replica: string; seal: (event: MediaMessageEvent, attachment: AppAttachment) => string };
+  openBinding?: { replica: string; context: string; seal: (event: MediaMessageEvent, attachment: AppAttachment) => string };
 }
 
 function project(event: MediaMessageEvent, options: Options, canonicalKey: string) {
@@ -76,7 +77,7 @@ export async function browseAppAttachments(options: Options): Promise<AppAttachm
   const included: Array<StoredAppEvent & MediaMessageEvent> = [];
   let readBytes = 0;
   const projectedMatches: AttachmentDescriptor[][] = [];
-  let page: AppAttachmentPage = { v: 1, kind, replicaBinding: options.openBinding?.replica, scope: 'local', coverage: options.indexHasGap ? 'incomplete' : 'local', rows: [], nextCursor: null };
+  let page: AppAttachmentPage = { v: 1, kind, replicaBinding: options.openBinding?.replica, attachmentContext: options.openBinding?.context, scope: 'local', coverage: options.indexHasGap ? 'incomplete' : 'local', rows: [], nextCursor: null };
 
   for (let i = 0; i < Math.min(MAX_ROWS, candidates.length) && page.rows.length < MAX_RESULTS; i++) {
     signal.throwIfAborted();

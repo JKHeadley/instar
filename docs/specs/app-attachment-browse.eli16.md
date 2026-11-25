@@ -9,3 +9,5 @@ The first page checks the newest part of the chat. The sheet can look through a 
 Opening a result checks that you still have access to that file on that message. If its bytes are missing from the connected computer, the sheet will say the file is unavailable. It can still appear in the list so you know where it was shared. The sheet only loads file contents when you choose to open one.
 
 If the computer is still catching up with chat history, the app can ask you to retry. It checks that the file still belongs to the exact message you selected before sending any bytes. If a damaged record had to be skipped, the browse results can say that some records could not be checked.
+
+If you leave the attachment list open and the connected computer changes or stops serving attachments, the list closes. An ordinary chat refresh can still work in that situation. For a generic file, opening it shows a separate Save button.

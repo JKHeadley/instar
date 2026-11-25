@@ -1,0 +1,29 @@
+{
+  "ts": "2026-11-25T06:12:29.702Z",
+  "slug": "app-attachment-sheet",
+  "suggestedTier": 2,
+  "declaredTier": 2,
+  "riskFloor": 2,
+  "riskFloorReasons": [
+    "safety-invariant proximity: src/core/AppAttachmentOpenToken.ts matches token handling"
+  ],
+  "belowFloor": false,
+  "files": 6,
+  "loc": 41,
+  "scope": {
+    "basis": "staged-in-scope-paths-including-deleted",
+    "files": [
+      "src/core/AppAttachmentBrowse.ts",
+      "src/core/AppAttachmentOpenToken.ts",
+      "src/server/mobileAttachmentBrowseRoutes.ts",
+      "src/server/mobileBrowserDevices.ts",
+      "src/server/mobileConversationRoutes.ts",
+      "src/server/mobilePairingRoutes.ts"
+    ],
+    "addedLines": 33,
+    "deletedLines": 8
+  },
+  "causalAutopsy": null,
+  "classClosure": null,
+  "verdict": "pass"
+}

@@ -1,4 +1,4 @@
-import { createCipheriv, createDecipheriv, createHash, randomBytes, timingSafeEqual } from 'node:crypto';
+import { createCipheriv, createDecipheriv, createHash, createHmac, randomBytes, timingSafeEqual } from 'node:crypto';
 
 const NONCE_BYTES = 12;
 const TAG_BYTES = 16;
@@ -22,7 +22,7 @@ export interface AttachmentOccurrence {
   size: number;
 }
 
-function associatedData(scope: AttachmentOpenScope, purpose: 'replica' | 'occurrence'): Buffer {
+function associatedData(scope: AttachmentOpenScope, purpose: 'replica' | 'occurrence' | 'context'): Buffer {
   return Buffer.from(JSON.stringify([
     'app-attachment-open-v1', purpose, scope.deviceId, scope.deviceKeyHash,
     scope.personId, scope.canonicalConversationKey,
@@ -39,6 +39,10 @@ function occurrenceDigest(tuple: AttachmentOccurrence): Buffer {
 export class AppAttachmentOpenToken {
   private readonly key = randomBytes(32);
   private readonly incarnation = randomBytes(DIGEST_BYTES);
+
+  contextFor(scope: AttachmentOpenScope): string {
+    return createHmac('sha256', this.incarnation).update(associatedData(scope, 'context')).digest('base64url');
+  }
 
   sealReplica(scope: AttachmentOpenScope): string {
     return this.seal(associatedData(scope, 'replica'), this.incarnation);

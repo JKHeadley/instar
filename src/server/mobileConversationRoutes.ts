@@ -44,13 +44,13 @@ import { deviceKeyOf } from '../core/MobileDeviceKeys.js';
 import { Router, type Request, type Response } from 'express';
 import type { InstarConfig } from '../core/types.js';
 import type { MobilePairingService } from './mobilePairingRoutes.js';
-import { deviceAdmittedAt, deviceAdmittedHost, deviceMayUse, devicePersonOf, isMobileChatEnabled, personOfReaderKey } from './mobilePairingRoutes.js';
+import { deviceAdmittedAt, deviceAdmittedHost, deviceMayUse, devicePersonOf, isMobileChatEnabled, isMobileMediaEnabled, personOfReaderKey } from './mobilePairingRoutes.js';
 import { conversationOwnerFor, validConversationOwner, type ConversationOwner } from '../core/MobilePeople.js';
 import type { AppConversationService } from '../core/AppConversationService.js';
 import { transcriptForDelivery } from '../core/AppConversationService.js';
 import { requestIdAgeOk, requestIdTime, type ChatLookup } from '../core/MobileChatRequests.js';
 import {
-  cleanConversationTitle, derivedEventId, isAppConversationKey, newAppConversationKey, removeAuthorityTokens,
+  canonicalConversationKey, cleanConversationTitle, derivedEventId, isAppConversationKey, newAppConversationKey, removeAuthorityTokens,
 } from '../core/appConversationText.js';
 import { isOwnerPerson } from '../core/MobilePeople.js';
 import { messagePreview, type BrowsedMessage, type DeviceSignedOrigin, type MachineReceipt, type MediaMessageEvent, type MessageEvent } from '../core/AppConversationStore.js';
@@ -1223,6 +1223,16 @@ export function createMobileConversationRouter(deps: MobileConversationRouteDeps
   });
 
   const attachmentOpenTokens = new AppAttachmentOpenToken();
+  const attachmentContext = (req: Request, key: string) => {
+    if (!deps.mediaEnabled || !isMobileMediaEnabled(deps.config) || !svc?.media
+      || deps.config.mobilePairing?.native?.attachmentBrowse?.enabled !== true || !svc.liveConversation(key)) return {};
+    const owner = mobileOwnerDeviceAdmission(deps.pairing, req);
+    if (!owner) return {};
+    return { attachmentContext: attachmentOpenTokens.contextFor({
+      deviceId: owner.deviceId, deviceKeyHash: owner.identity.keyHash,
+      personId: owner.identity.userId, canonicalConversationKey: canonicalConversationKey(key),
+    }) };
+  };
   registerMobileAttachmentBrowseRoute(router, deps, attachmentOpenTokens);
   registerMobileAttachmentContentRoute(router, deps, attachmentOpenTokens);
 
@@ -1256,7 +1266,7 @@ export function createMobileConversationRouter(deps: MobileConversationRouteDeps
     const readUpTo = unreadReader && unreadOn() ? { readUpTo: unreadOn()!.readUpTo(unreadReader, `app:${key.toLowerCase()}`) } : {};
     // Pinned messages (conversation-pinned-messages) ride on every history answer, so a poll sees new pins.
     const pins = pinsOn() && live ? { pins: pinRowsFor(svc!.store, key, (id) => deps.pairing.mayReadMessageId(reader, key, id)) } : {};
-    if (!pool) { res.json({ conversationKey: key, messages: rows, nextBefore: page.nextBefore, ...readUpTo, ...pins }); return; }
+    if (!pool) { res.json({ conversationKey: key, messages: rows, nextBefore: page.nextBefore, ...readUpTo, ...pins, ...attachmentContext(req, key) }); return; }
     // Pool read (§4.5/§4.8): each machine's page before the same boundary, merged by eventId
     // (this machine's row wins). A row only a peer holds is not yet replicated here, so this
     // machine cannot check it: `originVerified: "unknown"`, never the peer's verdict. Never
@@ -1349,6 +1359,7 @@ export function createMobileConversationRouter(deps: MobileConversationRouteDeps
         };
       }),
       cursor: page.cursor,
+      ...attachmentContext(req, key),
     });
   });
 
