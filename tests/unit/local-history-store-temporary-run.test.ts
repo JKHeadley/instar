@@ -13,6 +13,8 @@ import {
   type LocalHistoryStoreTemporaryToken,
 } from '../../src/import/LocalHistoryStoreTemporaryRun.js';
 import { acquireLocalHistoryChild, type LocalHistoryChildAdmission } from '../../src/import/LocalHistoryChildCustody.js';
+import { LocalHistoryDiskLedger } from '../../src/import/LocalHistoryDiskLedger.js';
+import { initializeLocalHistoryFirstPermits, recordLocalHistoryFirstPermit } from '../../src/import/LocalHistoryFirstPermit.js';
 import { privateImportDatabasePath } from '../../src/import/privateImportState.js';
 import { SafeFsExecutor } from '../../src/core/SafeFsExecutor.js';
 
@@ -22,6 +24,8 @@ const permissionIt = it.skipIf(!supported || process.getuid?.() === 0);
 const roots: string[] = [], databases: Database.Database[] = [], leases: LocalHistoryChildAdmission[] = [], children: ChildProcess[] = [];
 const operationId = 'a'.repeat(32), attachment = 'b'.repeat(32) + '.txt';
 const helper = pathToFileURL(path.resolve(__dirname, '../../src/import/LocalHistoryStoreTemporaryRun.ts')).href;
+const storeModule = pathToFileURL(path.resolve(__dirname, '../../src/import/ImportedHistoryStore.ts')).href;
+const digestModule = pathToFileURL(path.resolve(__dirname, '../../src/import/LocalHistoryFirstClaimPlanBinding.ts')).href;
 const childSource = `import fs from 'node:fs'; import path from 'node:path';
 import {openLocalHistoryStoreTemporaryRun,assertLocalHistoryStoreTemporaryAllocator} from ${JSON.stringify(helper)};
 let allocator; let token;
@@ -304,4 +308,83 @@ privateIt('rejects a closed real allocator and still retains its child custody',
   await ended(child);
   const replacement=acquireLocalHistoryStoreTemporaryAdmission(root)!;leases.push(replacement);
   expect(recoverLocalHistoryStoreTemporaryRuns(db,replacement)).toEqual({disposed:1,pending:0});
+});
+
+
+privateIt('executes only the exact committed claim in the actual registered child and writer', async () => {
+  const {root, db} = prepare();
+  fs.mkdirSync(path.join(root, 'imported-history', 'conversations'), { mode: 0o700 });
+  const lease = acquireLocalHistoryStoreTemporaryAdmission(root)!; leases.push(lease);
+  const deadline = Date.now() + 60_000, generation = lease.custody.generation;
+  const fingerprint = '1'.repeat(64), allocation = '2'.repeat(32), sha256 = '3'.repeat(64);
+  db.exec('ALTER TABLE upload_operations ADD COLUMN fingerprint TEXT; CREATE TABLE upload_previews(id TEXT PRIMARY KEY, allocation TEXT, sha256 TEXT)');
+  db.prepare('INSERT INTO upload_operations VALUES(?,?,?,?,?)').run(operationId, 'r-' + generation + '-' + operationId, 'prepared', deadline, fingerprint);
+  db.prepare('INSERT INTO upload_previews VALUES(?,?,?)').run(operationId, allocation, sha256);
+  initializeLocalHistoryFirstPermits(db);
+  const run = registerLocalHistoryStoreTemporaryRun(db, lease, { operationId });
+  const child = await started(root, `
+import {openLocalHistoryStoreTemporaryRun,consumeLocalHistoryStoreFirstClaim} from ${JSON.stringify(helper)};
+import {ImportedHistoryStore} from ${JSON.stringify(storeModule)};
+import {localHistoryFirstClaimPlanDigest} from ${JSON.stringify(digestModule)};
+process.once('message', async ({token}) => {
+  const allocator = openLocalHistoryStoreTemporaryRun(token);
+  const store = new ImportedHistoryStore(token.stateDir, { existingOnly: true, temporaryAllocator: allocator, plannedWritesOnly: true });
+  const identity = { ownerUserId: 'synthetic-owner', originalId: 'synthetic-session', source: 'codex',
+    projectPath: '/synthetic/project', representation: 'canonical', parserContractVersion: 1 };
+  const artifact = { fileId: 'file-0', source: identity.source, expectedSessionId: identity.originalId,
+    projectPath: identity.projectPath, representation: identity.representation, bytes: 1, sha256: '4'.repeat(64) };
+  await store.withWriter(async () => {
+    const destinationBinding = store.inspectLocalDestination(identity).fingerprint;
+    const plan = store.planSourceClaimWrite(identity);
+    const {databaseCeilingBytes,journalBytes} = plan.allocationInput;
+    const planDigest = localHistoryFirstClaimPlanDigest(identity.ownerUserId, artifact, destinationBinding, {
+      fileId: artifact.fileId, contentBytes: plan.contentBytes, databaseCeilingBytes, journalBytes,
+    });
+    process.on('message', ({permit,recheck}) => {
+      if (!permit) return;
+      try {
+        if (recheck) consumeLocalHistoryStoreFirstClaim(allocator, token.stateDir, permit);
+        else store.executeCommittedFirstClaim(plan, artifact, permit);
+        process.send({kind:'written'});
+      } catch (error) { process.send({kind:'refused',code:error.message}); }
+    });
+    process.send({kind:'plan',destinationBinding,planDigest});
+    await new Promise(resolve => process.on('message', message => { if (message.finish) resolve(); }));
+  });
+  allocator.close();
+  process.disconnect();
+});
+process.send({kind:'booted'});
+`);
+  const token = await run.registerChild(child);
+  const plan = await command(child, {token});
+  expect(plan.kind).toBe('plan');
+  const ledger = new LocalHistoryDiskLedger(root);
+  const pin = ledger.pinCopyVolume([path.join(root, 'imported-history')]);
+  try {
+    const plannedBytes = 1024 * 1024;
+    const reservation = ledger.createCopyRunReservation(lease, operationId, pin, plannedBytes, plannedBytes);
+    reservation.assertCovers(plannedBytes);
+    const permit = {
+      operationId, previewId: '5'.repeat(32), applyRequestId: '6'.repeat(32), intentFingerprint: '7'.repeat(64),
+      generation, runId: run.runId, reservationId: reservation.allocationId, previewAllocation: allocation, previewSha256: sha256,
+      uploadFingerprint: fingerprint, deadline, permitId: '9'.repeat(32), fileIndex: 0, mutationKind: 'claim' as const,
+      destinationBinding: plan.destinationBinding, planDigest: plan.planDigest, plannedBytes,
+    };
+    const claimFile = path.join(root, 'imported-history', 'source-claims.sqlite');
+    expect((await command(child, {permit})).kind).toBe('refused');
+    expect(fs.existsSync(claimFile)).toBe(false);
+    expect(db.transaction(() => recordLocalHistoryFirstPermit(db, permit)).immediate()).toBe('recorded');
+    expect((await command(child, {permit: {...permit, runId: 'f'.repeat(32)}})).kind).toBe('refused');
+    expect((await command(child, {permit: {...permit, planDigest: 'f'.repeat(64)}})).kind).toBe('refused');
+    expect(fs.existsSync(claimFile)).toBe(false);
+    expect(await command(child, {permit})).toEqual({kind:'written'});
+    expect(fs.statSync(claimFile).size).toBeGreaterThan(0);
+    expect((await command(child, {permit})).kind).toBe('refused');
+    expect(await command(child, {permit, recheck: true})).toMatchObject({kind:'refused',code:'local-history-store-temporary-invalid'});
+    const closed = once(child, 'close'); child.send({finish: true});
+    await closed;
+    run.cleanupAfterChild();
+    reservation.releaseAfterSettlement();
+  } finally { pin.close(); ledger.close(); }
 });

@@ -20,9 +20,14 @@ import type { ImportedConversation, ImportedMessage, ImportedProject, ImportSour
 import { isExportSource } from './exportParsers.js';
 import { IMPORTED_HISTORY_DIRNAME } from '../core/importedHistoryPaths.js';
 import { CHUNK_BYTES } from '../core/appMediaTypes.js';
-import { assertLocalHistoryStoreTemporaryAllocator, type LocalHistoryStoreTemporaryAllocator } from './LocalHistoryStoreTemporaryRun.js';
+import { assertLocalHistoryStoreTemporaryAllocator, consumeLocalHistoryStoreFirstClaim, type LocalHistoryStoreTemporaryAllocator } from './LocalHistoryStoreTemporaryRun.js';
 import { inspectLocalClaimBudgetSource, planLocalClaimBudget, enforceLocalClaimBudget, type LocalHistoryClaimBudget } from './LocalHistoryClaimBudget.js';
 import { createLocalSourceClaim, localSourceDestination, parseLocalSourceClaim, type LocalSourceClaim, type LocalSourceIdentity } from './LocalSourceIdentity.js';
+
+import { localHistoryFirstClaimPlanDigest } from './LocalHistoryFirstClaimPlanBinding.js';
+import { verifyCommittedLocalHistoryFirstClaim, type LocalHistoryFirstPermit } from './LocalHistoryFirstPermit.js';
+import type { LocalHistoryPreparedArtifactDescriptor } from './LocalHistoryPreparedArtifacts.js';
+import { localSessionOriginalId } from './localSessionParsers.js';
 
 export interface ConversationSummary {
   ref: string;
@@ -609,6 +614,35 @@ export class ImportedHistoryStore {
     const text = this.dirty ? JSON.stringify(this.manifest) : null;
     if (this.writeRevision !== revision || this.writerLease !== lease) throw new Error('import-write-plan-stale');
     return this.publishWritePlan({ kind: 'manifest', text }, text === null ? 0 : Buffer.byteLength(text), snapshots);
+  }
+
+  /** Apply one independently verified first claim in the already-held writer.
+   * The caller owns admission and must supply its verified artifact descriptor. */
+  executeCommittedFirstClaim(plan: ImportedHistoryWritePlan, artifact: LocalHistoryPreparedArtifactDescriptor,
+    value: LocalHistoryFirstPermit): void {
+    const pending = this.pendingWrite;
+    if (!this.plannedWritesOnly || !pending || pending.token !== plan || !this.hasLocalWriter()
+      || pending.prepared.kind !== 'source-claim' || plan.allocationInput.kind !== 'source-claim') {
+      throw new Error('local-history-first-claim-plan');
+    }
+    const permit = { ...value };
+    const claim = pending.prepared.claim;
+    if (artifact.source !== claim.source || localSessionOriginalId(artifact.expectedSessionId) !== claim.originalId
+      || artifact.projectPath !== claim.projectPath || artifact.representation !== claim.representation) {
+      throw new Error('local-history-first-claim-artifact');
+    }
+    const fingerprint = this.inspectLocalDestination(claim).fingerprint;
+    const { databaseCeilingBytes, journalBytes } = plan.allocationInput;
+    const digest = localHistoryFirstClaimPlanDigest(claim.ownerUserId, artifact, fingerprint, {
+      fileId: artifact.fileId, contentBytes: plan.contentBytes, databaseCeilingBytes, journalBytes,
+    });
+    if (permit.planDigest !== digest || permit.destinationBinding !== fingerprint || permit.plannedBytes < plan.contentBytes) {
+      throw new Error('local-history-first-claim-permit');
+    }
+    const stateDir = path.dirname(this.dir);
+    verifyCommittedLocalHistoryFirstClaim(stateDir, permit);
+    consumeLocalHistoryStoreFirstClaim(this.temporaryAllocator, stateDir, permit);
+    this.executeWritePlan(plan, plan.contentBytes);
   }
 
   /** A trusted fixed worker supplies its parent's already-reserved content ceiling.

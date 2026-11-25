@@ -25,7 +25,7 @@ interface RunRow {
 interface Operation { id: string; tag: string; phase: string; deadline: number }
 interface AdmissionBrand { stateDir: string; generation: string; active: boolean }
 const admissions = new WeakMap<LocalHistoryChildAdmission, AdmissionBrand>();
-const allocatorBrands = new WeakMap<LocalHistoryStoreTemporaryAllocator, { stateDir: string; active(): void }>();
+const allocatorBrands = new WeakMap<LocalHistoryStoreTemporaryAllocator, { token: Readonly<LocalHistoryStoreTemporaryToken>; active(): void; firstClaimAttempted: boolean }>();
 // Successful child ownership lasts through OS process exit, even if a caller
 // closes its allocator and then lingers. A one-shot worker has a finite bound.
 const processHolders = new Map<string, LocalHistoryCustodyHolder>();
@@ -399,12 +399,24 @@ export interface LocalHistoryStoreTemporaryAllocator {
 }
 /** A planned store must receive the real active child allocator for its exact
  * state directory. A structural lookalike or closed allocator is not a permit. */
-export function assertLocalHistoryStoreTemporaryAllocator(value: unknown, expectedStateDir?: string): asserts value is LocalHistoryStoreTemporaryAllocator {
+export function assertLocalHistoryStoreTemporaryAllocator(value: unknown, expectedStateDir?: string,
+  expectedRun?: Pick<LocalHistoryStoreTemporaryToken, 'operationId' | 'generation' | 'runId'>): asserts value is LocalHistoryStoreTemporaryAllocator {
   if (!value || typeof value !== 'object') refuse('invalid');
   const brand = allocatorBrands.get(value as LocalHistoryStoreTemporaryAllocator);
-  if (!brand || (expectedStateDir !== undefined && path.resolve(expectedStateDir) !== brand.stateDir)) refuse('invalid');
+  if (!brand || (expectedStateDir !== undefined && path.resolve(expectedStateDir) !== brand.token.stateDir)
+    || (expectedRun && (expectedRun.operationId !== brand.token.operationId
+      || expectedRun.generation !== brand.token.generation || expectedRun.runId !== brand.token.runId))) refuse('invalid');
   brand.active();
 }
+/** Record the one permitted first-claim attempt on the exact worker run. */
+export function consumeLocalHistoryStoreFirstClaim(allocator: unknown, stateDir: string,
+  run: Pick<LocalHistoryStoreTemporaryToken, 'operationId' | 'generation' | 'runId'>): void {
+  assertLocalHistoryStoreTemporaryAllocator(allocator, stateDir, run);
+  const brand = allocatorBrands.get(allocator)!;
+  if (brand.firstClaimAttempted) refuse('invalid');
+  brand.firstClaimAttempted = true;
+}
+
 function readableJobs(stateDir: string): Database.Database {
   const file = jobsPath(stateDir), header = Buffer.alloc(20);
   const fd = fs.openSync(file, fs.constants.O_RDONLY | fs.constants.O_NOFOLLOW);
@@ -529,6 +541,6 @@ export function openLocalHistoryStoreTemporaryRun(input: LocalHistoryStoreTempor
       if (failed) refuse('unavailable');
     },
   };
-  allocatorBrands.set(allocator, { stateDir: token.stateDir, active: () => { active(); } });
+  allocatorBrands.set(allocator, { token, active: () => { active(); }, firstClaimAttempted: false });
   return allocator;
 }
