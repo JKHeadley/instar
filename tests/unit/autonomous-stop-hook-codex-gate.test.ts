@@ -57,12 +57,13 @@ function writeConfig(codexLoopEnabled: boolean | undefined, taskContinuationEnab
   fs.writeFileSync(path.join(homeDir, '.instar', 'config.json'), JSON.stringify(cfg));
 }
 
-function runHook(opts: { codex: boolean; tmuxSession: string; emergencyStop?: boolean; pathPrefix?: string }): { exitCode: number; decision: string | null; stdout: string } {
+function runHook(opts: { codex: boolean; tmuxSession: string; emergencyStop?: boolean; pathPrefix?: string; managedStop?: boolean }): { exitCode: number; decision: string | null; stdout: string } {
   if (opts.emergencyStop) fs.writeFileSync(path.join(homeDir, '.instar', 'autonomous-emergency-stop'), '');
   const env: NodeJS.ProcessEnv = {
     ...process.env,
     INSTAR_HOOK_TMUX_SESSION: opts.tmuxSession,
     INSTAR_HOOK_BACKOFF_DISABLE: '1',
+    INSTAR_MANAGED_CODEX_STOP: opts.managedStop ? '1' : '0',
     CLAUDE_PROJECT_DIR: homeDir, // anchor to the test home (prod codex uses the $0 fallback)
     PATH: opts.pathPrefix ? `${opts.pathPrefix}:${process.env.PATH}` : process.env.PATH,
   };
@@ -126,6 +127,42 @@ describe('autonomous stop hook — codex dark-launch gate (#28)', () => {
     writeConfig(false); // flag off must NOT suppress the Claude loop
     const r = runHook({ codex: false, tmuxSession: 'echo-codey' });
     expect(r.decision).toBe('block');
+  });
+
+  it.each(['allow', 'continue'])('uses a managed %s decision ahead of an active legacy run', decision => {
+    writeActiveJob('13435', 'echo-codey');
+    writeConfig(true, true);
+    const bin = path.join(homeDir, 'bin');
+    const payloadLog = path.join(homeDir, 'payload.json');
+    fs.mkdirSync(bin);
+    fs.writeFileSync(path.join(bin, 'curl'), [
+      '#!/bin/sh',
+      `cat > ${JSON.stringify(payloadLog)}`,
+      `printf '%s\\n' '${JSON.stringify({ decision, reasonText: 'Managed decision.' })}'`,
+    ].join('\n'), { mode: 0o755 });
+    const result = runHook({ codex: true, tmuxSession: 'echo-codey', pathPrefix: bin, managedStop: true });
+
+    expect(result.exitCode).toBe(0);
+    expect(result.decision).toBe(decision === 'continue' ? 'block' : null);
+    expect(JSON.parse(fs.readFileSync(payloadLog, 'utf8'))).toMatchObject({
+      topicId: '13435', sessionId: 'sess', managedStop: true,
+    });
+  });
+
+  it('allows a managed worker to stop during an emergency without calling the server', () => {
+    writeActiveJob('13435', 'echo-codey');
+    writeConfig(true, true);
+    const bin = path.join(homeDir, 'bin');
+    const called = path.join(homeDir, 'curl-called');
+    fs.mkdirSync(bin);
+    fs.writeFileSync(path.join(bin, 'curl'), `#!/bin/sh\ntouch ${JSON.stringify(called)}\n`, { mode: 0o755 });
+    const result = runHook({
+      codex: true, tmuxSession: 'echo-codey', pathPrefix: bin, managedStop: true, emergencyStop: true,
+    });
+
+    expect(result.exitCode).toBe(0);
+    expect(result.decision).toBeNull();
+    expect(fs.existsSync(called)).toBe(false);
   });
 
   it('ordinary task continuation blocks through the server decision when no autonomous job exists', () => {

@@ -8095,14 +8095,16 @@ if [[ "$ACTIVE" != "true" ]]; then`;
       // customized hook bytes remain untouched.
       const relPath = '.claude/skills/autonomous/hooks/autonomous-stop-hook.sh';
       const vaultStockSha = 'a7193fff6de4134653b7eb7658814f5e7cea222ea610a4cccd3b7a9318d9e486';
+      const priorManagedStockSha = '0517d244b83c9f1a96046053d1b9402de995d01e658491ada2e99a7a41a75c74';
+      const managedPrecedenceMarker = 'hook-capability: MANAGED_CODEX_STOP_PRECEDENCE';
       const obsoleteResolver = '.claude/skills/autonomous/scripts/resolve-auth.sh';
       try {
         const deployed = path.join(this.config.projectDir, ...relPath.split('/'));
         if (!fs.existsSync(deployed)) return;
         const current = fs.readFileSync(deployed, 'utf8');
-        if (current.includes('hook-capability: MANAGED_CODEX_STOP')) return;
+        if (current.includes(managedPrecedenceMarker)) return;
         const currentSha256 = crypto.createHash('sha256').update(current).digest('hex');
-        const vaultStock = currentSha256 === vaultStockSha;
+        const vaultStock = currentSha256 === vaultStockSha || currentSha256 === priorManagedStockSha;
         const stock = vaultStock || currentSha256 === AUTONOMOUS_STOP_HOOK_PREPARATION_CARRIER_SHA256
           || (AUTONOMOUS_STOP_HOOK_STOCK_SHA256 as readonly string[]).includes(currentSha256);
         if (!stock) {
@@ -8123,7 +8125,7 @@ if [[ "$ACTIVE" != "true" ]]; then`;
           return;
         }
         const next = fs.readFileSync(bundled, 'utf8');
-        if (!next.includes('VAULT_AUTH_RESOLVE') || !next.includes('hook-capability: MANAGED_CODEX_STOP')) {
+        if (!next.includes('VAULT_AUTH_RESOLVE') || !next.includes(managedPrecedenceMarker)) {
           result.errors.push(`${relPath} migration: bundled hook lacks managed Stop support or vault authentication`);
           return;
         }

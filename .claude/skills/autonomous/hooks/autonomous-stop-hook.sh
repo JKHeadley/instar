@@ -217,6 +217,16 @@ except Exception:
 " 2>/dev/null || echo "")
 fi
 
+# hook-capability: MANAGED_CODEX_STOP_PRECEDENCE
+# A managed worker always uses server authorization, even if an older
+# autonomous run for this topic is still on disk.
+if [[ "$CODEX_MANAGED_STOP" == "1" ]]; then
+  if [[ ! -f ".instar/autonomous-emergency-stop" ]]; then
+    continuation_decision
+  fi
+  exit 0
+fi
+
 # Helper: read a frontmatter field from an arbitrary state file (pipefail-safe).
 fm_get_from() {
   local file="$1" key="$2"

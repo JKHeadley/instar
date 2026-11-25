@@ -1,0 +1,22 @@
+{
+  "version": 2,
+  "slug": "managed-codex-stop-precedence",
+  "sessionId": "017c26ed-5596-4576-9c20-20af13e4c1f8",
+  "timestamp": "2026-11-25T15:18:33.399Z",
+  "artifactPath": "upgrades/side-effects/managed-codex-stop-precedence.md",
+  "artifactSha256": "0a0365e4a92b5ba91fc5b8cba5f80725bf46bb8128ca523bd0c07d7450b00f12",
+  "coveredFiles": [
+    ".claude/skills/autonomous/hooks/autonomous-stop-hook.sh",
+    "src/core/PostUpdateMigrator.ts",
+    "tests/e2e/managed-codex-stop-lifecycle.test.ts",
+    "tests/unit/PostUpdateMigrator-vaultAuthResolve.test.ts",
+    "tests/unit/autonomous-stop-hook-codex-gate.test.ts"
+  ],
+  "phase": "complete",
+  "tier": 1,
+  "tierReasoning": "The existing off-by-default path routes tagged callbacks to its current authority and preserves emergency stop. No live launcher or additional authority.",
+  "eli16Path": "upgrades/managed-codex-stop-precedence.eli16.md",
+  "sideEffectsPath": "upgrades/side-effects/managed-codex-stop-precedence.md",
+  "secondPass": "true",
+  "reviewerConcurred": true
+}

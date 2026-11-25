@@ -68,6 +68,8 @@ it.skipIf(!codex).each([true, false])('drives an enrolled worker through package
     cfg.port = (server as unknown as { server: { address(): { port: number } } }).server.address().port;
     fs.writeFileSync(path.join(stateDir, 'config.json'), JSON.stringify(cfg));
     fs.writeFileSync(path.join(stateDir, 'topic-session-registry.json'), JSON.stringify({ topicToSession: { 147616: 'fixture-worker' } }));
+    fs.mkdirSync(path.join(stateDir, 'autonomous'));
+    fs.writeFileSync(path.join(stateDir, 'autonomous', '147616.local.md'), '---\nactive: true\n---\n');
     const startHook = path.join(projectDir, 'start-hook.cjs');
     fs.writeFileSync(startHook, [
       "const fs = require('node:fs');",

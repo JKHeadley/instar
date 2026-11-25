@@ -140,6 +140,21 @@ describe('managed Codex Stop hook upgrade', () => {
     expect(run(projectDir).upgraded).not.toContain('skills/autonomous/hooks/autonomous-stop-hook.sh (managed Codex Stop transport)');
   });
 
+  it('upgrades the previous managed hook to managed precedence', () => {
+    const projectDir = makeProject();
+    const current = fs.readFileSync(HOOK_REL, 'utf8');
+    const start = current.indexOf('# hook-capability: MANAGED_CODEX_STOP_PRECEDENCE');
+    const end = current.indexOf('# Helper: read a frontmatter field', start);
+    expect(start).toBeGreaterThanOrEqual(0);
+    expect(end).toBeGreaterThan(start);
+    const previous = current.slice(0, start) + current.slice(end);
+    expect(crypto.createHash('sha256').update(previous).digest('hex'))
+      .toBe('0517d244b83c9f1a96046053d1b9402de995d01e658491ada2e99a7a41a75c74');
+    const dst = deploy(projectDir, HOOK_REL, previous);
+    expect(run(projectDir).errors).toEqual([]);
+    expect(fs.readFileSync(dst, 'utf8')).toContain('hook-capability: MANAGED_CODEX_STOP_PRECEDENCE');
+  });
+
   it('warns once for a missing known resolver and preserves the local hook', () => {
     const projectDir = makeProject();
     const custom = prior + `\nauth=$(bash ${resolver} 2>/dev/null)\nauth=$(bash ${resolver} 2>/dev/null)\n`;
