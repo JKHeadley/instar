@@ -15,10 +15,11 @@
  */
 
 import { createHash, randomBytes } from 'node:crypto';
+import type { WorkBoardApprovalVersion } from './WorkBoardApprovalWriter.js';
 import type { HlcTimestamp } from './HybridLogicalClock.js';
 import {
   buildRecord, toFoldRecords, partitionRecords, foldCard, deriveStatus, laneFor, derivePickupCauses, foldPickups,
-  materialHashOf, cardConversationKey, sameValue, sha256Hex, isCardId, isRecordId, mintRecordKey, isRestrictingTap, foldOrder, compareHlc, workCardRecordStoreSchema,
+  materialHashOf, canonicalJson, cardConversationKey, sameValue, sha256Hex, isCardId, isRecordId, mintRecordKey, isRestrictingTap, foldOrder, compareHlc, workCardRecordStoreSchema,
   normalizeRequestText, isAgentInternalCard,
   MATERIAL_FIELDS, WORK_BOARD_STORE_KEY, CLOSE_AS, SCHEMA_MAX, GATE_ONLY_FIELDS, MAX_REFS, NOTE_EVENT_PREFIX,
   type UnionEntry, type FoldRecord, type CardFold, type CardStatus, type Lane, type PickupState, type TapAction,
@@ -270,6 +271,25 @@ export class WorkBoardService {
   policyRecords(): FoldRecord[] { return this.policies; }
   newestHlc(): HlcTimestamp | null { return this.records.length ? this.records[this.records.length - 1].hlc : null; }
   totalRecords(): number { return this.records.length; }
+
+  /** The exact card disclosure and version used by the owner approval writer. */
+  approvalSnapshot(cardId: string) {
+    const view = this.view(cardId);
+    if (!view || (view.status !== 'not-started' && view.status !== 'needs-approval')
+      || !view.card.approvalRequired || view.card.approvalValid) return null;
+    const c = view.card;
+    const disclosure = structuredClone({
+      title: c.title, need: c.need, recommendation: c.recommendation, whyYou: c.whyYou,
+      doneWhen: c.doneWhen, brief: c.brief, carrier: c.carrier, outward: c.outward,
+      links: c.links, due: c.due, projectKey: c.projectKey,
+    });
+    const revision = (records: FoldRecord[]) => sha256Hex(canonicalJson(records.map(({ id, hlc, origin }) => [id, hlc, origin])));
+    const version: WorkBoardApprovalVersion = {
+      cardId, cardRevision: revision(this.recordsOf(cardId)), policyRevision: revision(this.policies),
+      visibleTextHash: sha256Hex(canonicalJson(disclosure)), materialHash: c.materialHash, titleHash: sha256Hex(c.title),
+    };
+    return { version, disclosure };
+  }
 
   /** The card whose `refs` names this reference (agent-work-cards-default §3), or null. */
   cardForRef(kind: CardRef['kind'], id: string): string | null { return this.refIndex.get(`${kind}:${id}`) ?? null; }

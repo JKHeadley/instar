@@ -60,3 +60,7 @@ The generation now includes the material and title hashes used by the existing W
 ## Owner and proof binding
 
 The generation now includes the enrolled owner’s person key. The decoder requires the same person on the outer tap, with PIN proof for console or bulk and presence proof for phone or slip. The independent reviewer concurred. These checks establish consistency of the durable event. The production gate still owns verification of the original authentication.
+
+## Server card snapshot
+
+WorkBoardService now derives a detached disclosure and exact version from cards that still await approval. The snapshot binds card and policy history, the selected disclosure, and the existing material and title hashes. It is internal and does not grant approval. The independent reviewer concurred. Production routing must apply the normal authorization and show the exact selected disclosure.

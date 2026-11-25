@@ -1,0 +1,19 @@
+{
+  "version": 2,
+  "slug": "work-board-approval-binding-wip",
+  "sessionId": "b3d2cf8a-9b5d-468b-a50b-70ebf11e9e5c",
+  "timestamp": "2026-11-25T00:33:56.182Z",
+  "artifactPath": "upgrades/side-effects/work-board-approval-binding-wip.md",
+  "artifactSha256": "1950340ae93f229c79382fc1bb7eb99beb52b7abb2759fc805a4a1cf4eaec301",
+  "specPath": "docs/specs/owner-work-board-slips-first-slice.md",
+  "coveredFiles": [
+    "src/core/WorkBoardService.ts",
+    "tests/unit/WorkBoardService.test.ts",
+    "upgrades/side-effects/work-board-approval-binding-wip.md"
+  ],
+  "phase": "complete",
+  "tier": 2,
+  "tierReasoning": "Derive a canonical server snapshot for exact Work Board approval",
+  "secondPass": "true",
+  "reviewerConcurred": true
+}

@@ -55,6 +55,20 @@ describe('WorkBoardService — who may write what', () => {
     const o = t.svc.createCard(AGENT, { ...card, outward: true }); if (!o.ok) throw new Error('create');
     expect(t.svc.view(o.cardId)!.status).toBe('needs-approval');
   });
+  it('binds the owner approval to the current visible disclosure and card history', () => {
+    const created = t.svc.createCard(AGENT, card);
+    if (!created.ok) throw new Error('create');
+    const initial = t.svc.approvalSnapshot(created.cardId)!;
+    expect(initial.disclosure.title).toBe(card.title);
+    expect(initial.version.titleHash).toBe(sha256Hex(card.title));
+    expect(t.svc.edit(AGENT, created.cardId, { recommendation: 'Use the local venue' }).ok).toBe(true);
+    const edited = t.svc.approvalSnapshot(created.cardId)!;
+    expect(edited.version.visibleTextHash).not.toBe(initial.version.visibleTextHash);
+    expect(edited.version.cardRevision).not.toBe(initial.version.cardRevision);
+    expect(t.svc.tap(OWNER, created.cardId, { action: 'approve', materialHash: edited.version.materialHash }).ok).toBe(true);
+    expect(t.svc.approvalSnapshot(created.cardId)).toBeNull();
+  });
+
   it('a member cannot create a card or tap; a scoped session cannot create', () => {
     expect(t.svc.createCard(MEMBER, card)).toMatchObject({ ok: false, error: 'owner-required' });
     expect(t.svc.createCard({ kind: 'session', conversationKey: 'x' }, card)).toMatchObject({ ok: false, error: 'scoped-session-cannot-create' });
