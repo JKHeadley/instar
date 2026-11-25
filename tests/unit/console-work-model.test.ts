@@ -381,6 +381,22 @@ describe('the page', () => {
     expect(main.textContent).not.toMatch(/wc_[0-9a-f]{16}/); // no internal ids on screen
   });
 
+  it('shows the original request as approval provenance in details and history', async () => {
+    const by = { kind: 'person', name: 'Justin', proof: 'their own request' };
+    reads['/work-board'] = ok(board([card({
+      outward: false, approved: true, approvedBy: { source: 'requester-message', by },
+      requestedApproval: { by, at: '2026-11-12T10:00:00Z' },
+    })]));
+    const { renderWork } = await import(path.join(CONSOLE, 'work.js'));
+    const main = mainNode();
+    await renderWork(main, ctx());
+    main.querySelector('.work-open').click();
+    const sheet = document.querySelector('.sheet');
+    expect([...sheet.querySelectorAll('dd')].some((node) => node.textContent === 'Approved by Justin’s original request')).toBe(true);
+    expect([...sheet.querySelectorAll('li')].some((node) => node.textContent.startsWith('Approved by Justin’s original request, '))).toBe(true);
+    expect(sheet.textContent).not.toContain('console PIN');
+  });
+
   it('shows the source link in the card sheet without changing its own conversation link', async () => {
     reads['/work-board'] = ok(board([card({ source: { conversationKey: 'telegram:142440', messageId: '144556' } })]));
     const { renderWork } = await import(path.join(CONSOLE, 'work.js'));

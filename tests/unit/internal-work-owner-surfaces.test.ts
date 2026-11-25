@@ -76,6 +76,10 @@ describe('Internal cards stay off owner surfaces', () => {
     expect(requested.card.agentWork).toBe(true);
     expect(json(t, requested).agentInternal).toBe(false);
     expect(requested.card.requestApproved).toBe(true);
+    const receipt = { at: requested.card.createdAt, by: { name: 'justin', proof: 'their own request' } };
+    expect(json(t, requested)).toMatchObject({ approvedBy: { source: 'requester-message' }, requestedApproval: receipt });
+    expect(t.svc.tap(OWNER, requested.card.cardId, { action: 'withdraw-approval' }).ok).toBe(true);
+    expect(json(t, t.svc.view(requested.card.cardId)!)).toMatchObject({ approvedBy: null, withdrawn: true, requestedApproval: receipt });
   });
   it('filters internal cards before default board cuts and counts, including full reads', () => {
     const t = makeService();const internal = create(t);

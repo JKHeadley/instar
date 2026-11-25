@@ -14,7 +14,7 @@ import { projectsSection } from './projects.js';
 import {
   LANES, readBoard, readMyBoard, notStartedTag, headline, pickupLine, behindLine, machineWords, isOff, cardRow, cardActions, phoneOnlyLine, tapBody, tapCovers, pinExplain,
   cardSourceLink, refusalWords, donePageFrom, cardFromQuery, donePaging, evidenceByItem, linkLines, principalWords,
-  byWords, tapWords, capacityWords, whenWords, POLICIES, SETTING_FIELDS, settingValue, settingsPatch, policyPinExplain,
+  byWords, approvalWords, tapWords, capacityWords, whenWords, POLICIES, SETTING_FIELDS, settingValue, settingsPatch, policyPinExplain,
   cardBrief, CHECK_LOOK, statusChip, waitingWords, tileAsk, rankActions, chatLines, messagesPathOf,
   OUTWARD_WORDS, CLOSE_WORDS, CLOSE_TITLES, CLOSE_NOTE_MAX, closeoutLine, turnOf, coversWords, chiefOfStaffCard, CHIEF_OF_STAFF_WORDS,
 } from './work-model.js';
@@ -380,7 +380,7 @@ function openCard(card, refresh) {
     card.waitingOn ? { label: 'Waiting on', text: principalWords(card.waitingOn) } : null,
     { label: 'Outside your team', text: card.outward ? (card.outwardWords || OUTWARD_WORDS) : 'Nothing is sent outside your team and nothing is spent' },
     card.due ? { label: 'Due', text: when(card.due) } : null,
-    { label: 'Approval', text: card.approved ? `Approved${card.approvedBy && card.approvedBy.by ? ` by ${byWords(card.approvedBy.by)}` : ''}` : card.approvalRequired ? (card.withdrawn ? 'Withdrawn; needs your approval again' : 'Needs your approval') : 'Not needed: you wrote this card' },
+    { label: 'Approval', text: approvalWords(card) },
   ].filter(Boolean);
   const detail = [];
   if (brief.goal) detail.push(el('div', { class: 'wc-detail-block' }, el('h4', { class: 'wc-label', text: 'Goal' }), el('p', { class: 'wc-body', text: brief.goal })));
@@ -406,7 +406,12 @@ function openCard(card, refresh) {
   const trail = Array.isArray(card.carrierTrail) ? card.carrierTrail : [];
   if (trail.length) detail.push(block('Who carried it', el('ul', {}, trail.map((t) => el('li', { text: `${principalWords(t.carrier)}, set by ${byWords(t.by)}, ${when(t.at)}` })))));
   const taps = Array.isArray(card.taps) ? card.taps : [];
-  if (taps.length) detail.push(block('What people decided', el('ul', {}, taps.map((t) => el('li', { text: `${tapWords(t.action)}: ${byWords(t.by)}, ${when(t.at)}` })))));
+  const requestApproval = card.requestedApproval;
+  if (requestApproval || taps.length) {
+    detail.push(block('What people decided', el('ul', {},
+      requestApproval ? el('li', { text: `Approved by ${requestApproval.by?.name || 'the owner'}’s original request, ${when(requestApproval.at)}` }) : null,
+      taps.map((t) => el('li', { text: `${tapWords(t.action)}: ${byWords(t.by)}, ${when(t.at)}` })))));
+  }
   const details = el('details', { class: 'wc-details' }, el('summary', { class: 'wc-details-head' }, el('span', { text: 'Details' }), el('span', { class: 'chev', 'aria-hidden': 'true', text: '›' })), el('div', { class: 'wc-details-body' }, detail));
 
   const mainCol = el('div', { class: 'wc-main' }, hero, warn, closedNode, decide, checks, needBody, doneWhen, details);
