@@ -7,9 +7,9 @@ approved: true
 approved-by: echo under standing build approval for local storage, private signed admission and execution, and unmounted history projection only
 parent-principle: Operator-Surface Quality
 tier: 2
-review-convergence: "2026-11-25T21:11:16.374Z"
-review-iterations: 31
-review-completed-at: "2026-11-25T21:11:16.374Z"
+review-convergence: "2026-11-25T21:31:46.541Z"
+review-iterations: 32
+review-completed-at: "2026-11-25T21:31:46.541Z"
 review-report: "docs/specs/reports/conversation-message-delete-convergence.md"
 cross-model-review: "cross-model-review: codex-cli:gpt-6.2-astra"
 ---
@@ -158,3 +158,11 @@ An otherwise visible message whose authorization is unresolved likewise blocks b
 The cursor is authenticated by a process-local server key and binds the immutable creation custodian, conversation, paired device ID, device key hash, reader ID and exact nonnegative ingest sequence. It carries an opaque visibility epoch derived from the same scope and a distinct current authorization revision. The revision source must change on access loss and restoration even if the final grant set looks identical. A valid cursor from the same scope under a former epoch requests reset. Foreign scope, malformed, modified and former-process cursors cannot resume. The authenticated route must make a rejected continuation cover the affected cached rows and restart reconciliation and omit the sequence from rejection and reset responses. The issued token authenticates the sequence and does not conceal it. A new epoch never clears confirmed removal markers in the same pairing and conversation.
 
 This codec remains unmounted. Production must create one codec instance per serving process and share it across issuance, verification and authoritative history and sync epochs. Supply a current visibility revision, verify paired scope, and invalidate the epoch if journal restoration may reuse sequence values. In the open-client acceptance test, hold an old authorized page, revoke access and reconcile under the new epoch, then release the delayed page. The client must check the response epoch at merge time so the revoked row stays absent. A valid token authenticates resume state rather than granting read access.
+
+## Private Team Access revision checkpoint
+
+The Team Access Log exposes a conservative, process-local visibility revision. A new log instance starts a fresh identity. Loading, accepting new rows, changing the verification fold, rebuilding, restoring or changing the confinement record advances its revision. The counter is log-wide, so unrelated access events may also require reconciliation. Normal reads with no new evidence are stable. A grant removed and then restored still produces a new revision even when the effective grant matches its original value.
+
+The cursor can consume this log revision, but it is only one input to final route authority. Production must also account for changes outside this log, including legacy access or temporary policy/refusal changes, current pairing and reader state, and journal restoration. No route is mounted in this checkpoint.
+
+Use an independent revision for key-ledger and verification authority. In particular, the current log fold may not observe every verifier transition while its pending-row count is unchanged. A stable log revision alone cannot prove that verification authority is unchanged.

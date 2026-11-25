@@ -31,3 +31,5 @@ If a server leaves an old lock behind, the next server takes a short recovery lo
 A private sync check now tells an authorized reader which exact message was removed. If the removal record arrives first, the check pauses there until it can verify who may see the notice. The existing app feed still keeps these notices off.
 
 The server can now check that a saved sync position belongs to the same person, paired device and chat. A change in access means that position can’t be reused. The app must then recheck its cached rows before showing them again.
+
+The team access log now changes its revision when access is removed and restored, even if the final permissions look the same. The cursor uses that change to tell the app to recheck its saved position.

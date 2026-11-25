@@ -1,0 +1,22 @@
+{
+  "version": 2,
+  "slug": "app-message-delete-team-visibility",
+  "sessionId": "633bd330-201e-4dc8-8fd9-72b89116167e",
+  "timestamp": "2026-11-25T21:31:46.971Z",
+  "artifactPath": "upgrades/side-effects/app-message-delete-team-visibility.md",
+  "artifactSha256": "852dc26ed97044c41e0a033cbb0da6676e9e5df6a0b82342b4826fc1ea8c5dbb",
+  "specPath": "docs/specs/conversation-message-delete.md",
+  "coveredFiles": [
+    "docs/specs/conversation-message-delete.eli16.md",
+    "docs/specs/conversation-message-delete.md",
+    "docs/specs/reports/conversation-message-delete-convergence.md",
+    "src/core/TeamAccessLog.ts",
+    "tests/unit/team-access-log.test.ts",
+    "upgrades/side-effects/app-message-delete-team-visibility.md"
+  ],
+  "phase": "complete",
+  "tier": 2,
+  "tierReasoning": "Conservative access-log generation for private visibility-bound cursors",
+  "secondPass": "true",
+  "reviewerConcurred": true
+}

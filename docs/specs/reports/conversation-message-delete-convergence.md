@@ -59,3 +59,7 @@ Independent and cross-model review required the cursor to stop before unresolved
 ## Private signed cursor codec checkpoint
 
 Independent and cross-model review concurred on the scope, epoch and exact sequence MAC. The production contract now requires one shared codec lifetime per serving process, an authority revision that can recognize grants revoked and restored, and a merge-time check that rejects a stale page even after a new epoch is visible. The unit tests cover exact scope, modified and malformed tokens, codec replacement, and access changes. A production lifecycle fixture confirms the generic feed cannot interpret the private continuation. Production authority and client integration remain outside this checkpoint.
+
+## Private Team Access revision checkpoint
+
+The independent and cross-model reviewers concurred on the log-local change and revoke/restore behavior. The cross-model retry confirmed the revision is insufficient for verifier transitions outside the existing fold detector. Production must add a separate key-ledger and verification revision. The tests exercise signed grant loss and restoration, stable reads, log replacement, and reset of an actual issued cursor under both later revisions. No route consumes this revision yet.
