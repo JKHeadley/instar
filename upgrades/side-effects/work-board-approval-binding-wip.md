@@ -64,3 +64,9 @@ The generation now includes the enrolled owner’s person key. The decoder requi
 ## Server card snapshot
 
 WorkBoardService now derives a detached disclosure and exact version from cards that still await approval. The snapshot binds card and policy history, the selected disclosure, and the existing material and title hashes. It is internal and does not grant approval. The independent reviewer concurred. Production routing must apply the normal authorization and show the exact selected disclosure.
+
+## Bound journal append
+
+WorkBoardService can now accept an in-process, owner-authenticated exact approval when an authority adapter is supplied. It rechecks the current writer proof, owner and card version, then enqueues the bound event without applying the legacy fold or invoking its local write observer. No production caller supplies the adapter yet. The result refers to the journal decision and cannot be shown as proof of card projection. The mounted paths must wait for the enrolled writer and durable projection gates before using it.
+
+The service reserves the event ID before enqueuing it. A timeout, missing sequence or unproved emit outcome leaves that reservation in force for the process lifetime unless exact durable readback resolves it. Recovery on restart still needs the complete enrolled journal and writer proof.

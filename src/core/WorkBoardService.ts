@@ -15,7 +15,11 @@
  */
 
 import { createHash, randomBytes } from 'node:crypto';
-import type { WorkBoardApprovalVersion } from './WorkBoardApprovalWriter.js';
+import {
+  WorkBoardApprovalWriter, approvalEventId, sameProof, sameVersion,
+  type WorkBoardApprovalEvent, type WorkBoardApprovalRequest, type WorkBoardApprovalResult,
+  type WorkBoardApprovalVersion, type WorkBoardApprovalWriterPorts,
+} from './WorkBoardApprovalWriter.js';
 import type { HlcTimestamp } from './HybridLogicalClock.js';
 import {
   buildRecord, toFoldRecords, partitionRecords, foldCard, deriveStatus, laneFor, derivePickupCauses, foldPickups,
@@ -132,6 +136,7 @@ const refuse = (status: number, error: string, detail?: Record<string, unknown>)
 
 export interface WorkBoardDeps {
   machineId: string;
+  approvalAuthority?: Pick<WorkBoardApprovalWriterPorts, 'currentWriter' | 'readEvent' | 'awaitDurable'>;
   /** Emit through the replicated-record emitter for store `workBoard`. */
   emit: (recordKey: string, build: ReturnType<typeof buildRecord>) => { outcome: string; seq?: number; hlc?: HlcTimestamp };
   /** Every work-card record this machine holds: own live file + archives, and every peer stream. */
@@ -213,7 +218,62 @@ export class WorkBoardService {
   /** Counted refusals the graduation record reads (§1: refused agent writes on `not-started` cards). */
   readonly stats = { notStartedRefusals: 0 };
 
-  constructor(private readonly deps: WorkBoardDeps) {}
+  private readonly approvalWriter?: WorkBoardApprovalWriter;
+  private readonly approvalReservations = new Set<string>();
+
+  constructor(private readonly deps: WorkBoardDeps) {
+    const authority = deps.approvalAuthority;
+    if (authority) {
+      this.approvalWriter = new WorkBoardApprovalWriter({
+        currentWriter: () => authority.currentWriter(),
+        currentEligibleVersion: (cardId) => this.approvalSnapshot(cardId)?.version ?? null,
+        readEvent: (eventId) => {
+          const result = authority.readEvent(eventId);
+          if (result.status === 'durable' && result.event.eventId === eventId) {
+            this.approvalReservations.delete(eventId);
+          }
+          return result.status !== 'durable' && this.approvalReservations.has(eventId)
+            ? { status: 'unknown' } : result;
+        },
+        append: (event) => this.appendBoundApproval(event),
+        awaitDurable: (sequence) => authority.awaitDurable(sequence),
+      });
+    }
+  }
+
+  /** Accept a request from an in-process owner authorization adapter. */
+  async approveBound(principal: WorkPrincipal, request: WorkBoardApprovalRequest): Promise<WorkBoardApprovalResult> {
+    const proof = request.source === 'console' || request.source === 'bulk' ? 'pin' : 'presence';
+    if (principal.kind !== 'person' || !principal.isOwner || principal.proof !== proof
+      || principal.personKey !== request.proof.ownerPersonKey || principal.personKey !== this.deps.ownerPersonKey()) {
+      return { status: 'unavailable' };
+    }
+    return this.approvalWriter?.approve(request) ?? { status: 'unavailable' };
+  }
+
+  private appendBoundApproval({ eventId, request }: WorkBoardApprovalEvent): number | null {
+    const { version, proof, source } = request;
+    if (!sameProof(proof, this.deps.approvalAuthority?.currentWriter() ?? null)
+      || proof.ownerPersonKey !== this.deps.ownerPersonKey()
+      || !sameVersion(version, this.approvalSnapshot(version.cardId)?.version ?? null)
+      || eventId !== approvalEventId(request)) return null;
+    const fields = {
+      action: 'approve',
+      by: {
+        kind: 'person', personKey: proof.ownerPersonKey, isOwner: true,
+        proof: source === 'console' || source === 'bulk' ? 'pin' : 'presence',
+      },
+      at: new Date(this.deps.now()).toISOString(),
+      materialHash: version.materialHash, titleHash: version.titleHash, approvalBinding: request,
+    };
+    if (this.shapeRefusal('tap', version.cardId, fields, eventId)) return null;
+    // Reserve before emit. A missing sequence or timeout cannot prove absence.
+    if (this.approvalReservations.has(eventId)) return null;
+    this.approvalReservations.add(eventId);
+    // An enqueued bound approval never takes the legacy immediate projection path.
+    const result = this.deps.emit(eventId, buildRecord('tap', version.cardId, fields, eventId));
+    return result.outcome === 'emitted' ? result.seq ?? null : null;
+  }
 
   // ── index ────────────────────────────────────────────────────────────────
 

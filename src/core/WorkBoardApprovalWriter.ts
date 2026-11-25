@@ -36,7 +36,7 @@ export type WorkBoardApprovalLookup =
   | { status: 'missing' | 'unknown' }
   | { status: 'durable'; event: WorkBoardApprovalEvent };
 
-interface WorkBoardApprovalWriterPorts {
+export interface WorkBoardApprovalWriterPorts {
   currentWriter: () => WorkBoardWriterProof | null;
   currentEligibleVersion: (cardId: string) => WorkBoardApprovalVersion | null;
   // Missing requires proof that neither a committed event nor a reservation exists.
@@ -48,14 +48,14 @@ interface WorkBoardApprovalWriterPorts {
   awaitDurable: (sequence: number) => Promise<void>;
 }
 
-function sameProof(first: WorkBoardWriterProof, second: WorkBoardWriterProof | null): boolean {
+export function sameProof(first: WorkBoardWriterProof, second: WorkBoardWriterProof | null): boolean {
   return second !== null && first.epoch === second.epoch
     && first.ownerGeneration === second.ownerGeneration
     && first.ownerPersonKey === second.ownerPersonKey
     && first.writerIncarnation === second.writerIncarnation;
 }
 
-function sameVersion(first: WorkBoardApprovalVersion, second: WorkBoardApprovalVersion | null): boolean {
+export function sameVersion(first: WorkBoardApprovalVersion, second: WorkBoardApprovalVersion | null): boolean {
   return second !== null && first.cardId === second.cardId
     && first.cardRevision === second.cardRevision
     && first.policyRevision === second.policyRevision
