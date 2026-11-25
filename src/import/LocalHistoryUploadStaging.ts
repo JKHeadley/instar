@@ -53,6 +53,20 @@ interface Plan { manifest: LocalHistoryManifest; files: Array<{ fileId: string; 
 interface PreparedFile extends LocalHistoryParseReceipt { fileId: string; allocation: string }
 interface PreparedPlan { version: 1; parserContractVersion: 1; operationId: string; fingerprint: string; files: PreparedFile[] }
 type PreparedPreviewRead = Awaited<ReturnType<typeof runLocalHistoryPreparedReadJob>>;
+/** A private server-owned association between one Work Board revision and
+ * one exact staged preview. This record conveys no approval authority. */
+export interface LocalHistoryConsentCardBinding {
+  cardId: string;
+  materialHash: string;
+  cardRevision: string;
+  operationId: string;
+  previewId: string;
+  previewDigest: string;
+  ownerUserId: string;
+}
+
+type ConsentCardRow = Omit<LocalHistoryConsentCardBinding, 'ownerUserId'>;
+
 interface PreviewReceipt {
   previewId: string;
   machineId: string;
@@ -967,6 +981,77 @@ export class LocalHistoryUploadStaging {
       destination: Object.freeze({ machineId: this.issuer.machineId, machineKeyHash: this.issuer.signingKeyHash,
         agentId: this.issuer.agentId, ownerUserId, bootId: row.boot, origin: this.issuer.origin }),
     });
+  }
+
+  /** Associate one privately selected Work Board card with an owned preview.
+   * Only the future server handler may supply the trusted card revision. */
+  bindOwnerConsentCard(device: LocalHistoryAuthenticatedDevice, binding: LocalHistoryConsentCardBinding): void {
+    const selected = { ...binding };
+    if (!/^wc_[a-f0-9]{16}$/.test(selected.cardId) || !/^[a-f0-9]{64}$/.test(selected.materialHash)
+      || !/^[a-f0-9]{64}$/.test(selected.cardRevision)) refuse('invalid');
+    this.transaction(() => {
+      const preview = this.readOwnerConsentPreview(device, selected.operationId);
+      if (preview.previewId !== selected.previewId || preview.previewDigest !== selected.previewDigest
+        || preview.ownerUserId !== selected.ownerUserId) refuse('conflict');
+      const recorded = this.ownerConsentCardRow(selected.operationId);
+      if (recorded) {
+        if (recorded.cardId !== selected.cardId || recorded.materialHash !== selected.materialHash
+          || recorded.cardRevision !== selected.cardRevision || recorded.previewId !== selected.previewId
+          || recorded.previewDigest !== selected.previewDigest) refuse('conflict');
+        return;
+      }
+      this.metadataRoom();
+      this.db.exec(`CREATE TABLE IF NOT EXISTS local_history_consent_cards (
+        operationId TEXT PRIMARY KEY NOT NULL, cardId TEXT UNIQUE NOT NULL, materialHash TEXT NOT NULL,
+        cardRevision TEXT NOT NULL, previewId TEXT NOT NULL, previewDigest TEXT NOT NULL
+      ) STRICT`);
+      const occupied = this.db.prepare('SELECT 1 FROM local_history_consent_cards WHERE cardId = ?').get(selected.cardId);
+      if (occupied) refuse('conflict');
+      const { size } = this.db.prepare('SELECT COUNT(*) AS size FROM local_history_consent_cards').get() as { size: number };
+      if (!Number.isSafeInteger(size) || size >= MAX_ROWS) refuse('capacity');
+      this.db.prepare(`INSERT INTO local_history_consent_cards (operationId,cardId,materialHash,cardRevision,previewId,previewDigest)
+        VALUES (?,?,?,?,?,?)`).run(selected.operationId, selected.cardId, selected.materialHash, selected.cardRevision,
+        selected.previewId, selected.previewDigest);
+    });
+  }
+
+  /** Resolve a private association only for the current owner and preview. */
+  readOwnerConsentCard(device: LocalHistoryAuthenticatedDevice, operationId: string): Readonly<LocalHistoryConsentCardBinding> | undefined {
+    const preview = this.readOwnerConsentPreview(device, operationId);
+    const recorded = this.ownerConsentCardRow(operationId);
+    if (!recorded) return undefined;
+    if (recorded.previewId !== preview.previewId || recorded.previewDigest !== preview.previewDigest) refuse('conflict');
+    return Object.freeze({ ...recorded, ownerUserId: preview.ownerUserId });
+  }
+
+  private ownerConsentCardRow(operationId: string): ConsentCardRow | undefined {
+    const table = this.db.prepare("SELECT type FROM main.sqlite_schema WHERE name = 'local_history_consent_cards'").get() as
+      { type: string } | undefined;
+    if (!table) return undefined;
+    if (table.type !== 'table') refuse('unavailable');
+    const schema = this.db.prepare("SELECT strict FROM pragma_table_list WHERE schema = 'main' AND name = 'local_history_consent_cards'")
+      .get() as { strict: number } | undefined;
+    if (schema?.strict !== 1) refuse('unavailable');
+    const names = ['operationId', 'cardId', 'materialHash', 'cardRevision', 'previewId', 'previewDigest'];
+    const columns = this.db.prepare('PRAGMA main.table_info(local_history_consent_cards)').all() as Array<{
+      name: string; type: string; pk: number; notnull: number;
+    }>;
+    if (columns.length !== names.length || columns.some((column, index) => column.name !== names[index]
+      || column.type !== 'TEXT' || column.pk !== (index === 0 ? 1 : 0) || column.notnull !== 1)) refuse('unavailable');
+    const unique = this.db.prepare(`SELECT name FROM pragma_index_list('local_history_consent_cards')
+      WHERE "unique" = 1 AND origin = 'u' AND partial = 0`).all() as Array<{ name: string }>;
+    if (unique.length !== 1) refuse('unavailable');
+    const key = this.db.prepare('SELECT name FROM pragma_index_info(?)').all(unique[0].name);
+    if (key.length !== 1 || (key[0] as { name?: string }).name !== 'cardId') refuse('unavailable');
+    const { size } = this.db.prepare('SELECT COUNT(*) AS size FROM main.local_history_consent_cards').get() as { size: number };
+    if (!Number.isSafeInteger(size) || size > MAX_ROWS) refuse('unavailable');
+    const row = this.db.prepare(`SELECT operationId,cardId,materialHash,cardRevision,previewId,previewDigest
+      FROM main.local_history_consent_cards WHERE operationId = ?`).get(operationId) as ConsentCardRow | undefined;
+    if (row && (row.operationId !== operationId || !id(row.previewId) || !/^wc_[a-f0-9]{16}$/.test(row.cardId)
+      || ![row.materialHash, row.cardRevision, row.previewDigest].every(value => typeof value === 'string' && /^[a-f0-9]{64}$/.test(value)))) {
+      refuse('unavailable');
+    }
+    return row;
   }
 
   // Replay returns the original sealed receipt. Reading its prepared index

@@ -171,6 +171,17 @@ it('prepares both source kinds through real children and retires raw files witho
       })),
     });
     expect(Object.isFrozen(material.artifacts) && Object.isFrozen(material.destination)).toBe(true);
+    const binding = { operationId: grant.operationId, cardId: 'wc_' + 'a'.repeat(16),
+      materialHash: 'b'.repeat(64), cardRevision: 'c'.repeat(64), previewId: material.previewId,
+      previewDigest: material.previewDigest, ownerUserId: material.ownerUserId };
+    expect(f.stage.readOwnerConsentCard(device, grant.operationId)).toBeUndefined();
+    expect(() => f.stage.bindOwnerConsentCard(device, { ...binding, previewDigest: 'e'.repeat(64) })).toThrow('upload-conflict');
+    f.stage.bindOwnerConsentCard(device, binding);
+    f.stage.bindOwnerConsentCard(device, binding);
+    expect(f.stage.readOwnerConsentCard(device, grant.operationId)).toEqual(binding);
+    expect(() => f.stage.bindOwnerConsentCard(device, { ...binding, cardRevision: 'e'.repeat(64) })).toThrow('upload-conflict');
+    expect(() => f.stage.readOwnerConsentCard({ ...device, deviceKeyHash: 'f'.repeat(64) }, grant.operationId)).toThrow('upload-unavailable');
+    expect(db.prepare('SELECT COUNT(*) AS count FROM local_history_consent_cards').get()).toEqual({ count: 1 });
     expect(JSON.stringify(material)).not.toContain(candidate.confirmation.challenge);
     expect(() => f.stage.readOwnerConsentPreview({ ...device, deviceKeyHash: 'f'.repeat(64) }, grant.operationId)).toThrow('upload-unavailable');
     const previewFd = fs.openSync(path.join(f.stateDir, 'local-history-upload', 'blocks', sealed.allocation), fs.constants.O_RDWR | fs.constants.O_NOFOLLOW);
@@ -226,6 +237,12 @@ it('prepares both source kinds through real children and retires raw files witho
     expect(() => f.stage.inspectCopyIntent(device, grant.operationId, intent)).toThrow('upload-unavailable');
     expect(fs.existsSync(path.join(f.stateDir, 'imported-history'))).toBe(false);
     expect(f.stage.complete(device, grant.operationId).phase).toBe('prepared');
+    db.prepare('UPDATE upload_previews SET sha256 = ? WHERE id = ?').run(sealed.sha256, grant.operationId);
+    await f.stage.stop();
+    const restarted = setup({ stateDir: f.stateDir, boot: 'synthetic-after-consent' });
+    expect(db.prepare('SELECT cardId, previewDigest FROM local_history_consent_cards WHERE operationId = ?').get(grant.operationId))
+      .toEqual({ cardId: binding.cardId, previewDigest: binding.previewDigest });
+    expect(() => restarted.stage.readOwnerConsentCard(device, grant.operationId)).toThrow('upload-conflict');
   } finally { db.close(); ledger.close(); }
 });
 it('keeps explicit preview retryable while the actual destination writer is locked', async () => {
@@ -334,6 +351,12 @@ it('keeps explicit preview retryable while the actual destination writer is lock
       contender.exec('ROLLBACK');
     } finally { contender.close(); }
     const registrationFailure = await prepareAnother();
+    const firstConsent = f.stage.readOwnerConsentPreview(device, grant.operationId);
+    const secondConsent = f.stage.readOwnerConsentPreview(device, registrationFailure.operationId);
+    const sameCard = { cardId: 'wc_' + 'b'.repeat(16), materialHash: 'b'.repeat(64), cardRevision: 'c'.repeat(64) };
+    f.stage.bindOwnerConsentCard(device, { ...firstConsent, ...sameCard });
+    expect(() => f.stage.bindOwnerConsentCard(device, { ...secondConsent, ...sameCard })).toThrow('upload-conflict');
+    expect(f.stage.readOwnerConsentCard(device, registrationFailure.operationId)).toBeUndefined();
     db.exec(`CREATE TRIGGER fixture_refuse_writer_binding BEFORE UPDATE OF state ON local_history_store_temporary_runs
       WHEN NEW.state = 'active' BEGIN SELECT RAISE(ABORT, 'fixture refusal'); END;`);
     const refusedObserver = vi.fn(() => undefined);

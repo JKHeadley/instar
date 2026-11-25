@@ -2,7 +2,7 @@
 import { CLAUDE_CODE_FRAMEWORK } from '../core/frameworkFacts.js';
 import type { LocalSessionSource } from '../import/localSessionParsers.js';
 import type { WorkBoardService } from '../core/WorkBoardService.js';
-import type { LocalHistoryUploadStaging } from '../import/LocalHistoryUploadStaging.js';
+import type { LocalHistoryConsentCardBinding, LocalHistoryUploadStaging } from '../import/LocalHistoryUploadStaging.js';
 import { canonicalJson, isCardId, isRestrictingTap, sha256Hex, type CardFold } from '../core/WorkCardStore.js';
 import { verifyPresenceSignature } from './mobileConsoleTicket.js';
 import { ActionChallengeStore, permissionPresenceMessage } from './mobilePermissionsRoutes.js';
@@ -26,18 +26,6 @@ export interface LocalHistoryConsentMaterial {
 }
 
 type ConsentPreview = ReturnType<LocalHistoryUploadStaging['readOwnerConsentPreview']>;
-
-/** Persisted privately by the future consent handler. It must come from the
- * server that paired the card and preview, never from a phone or card text. */
-export interface LocalHistoryConsentCardBinding {
-  cardId: string;
-  materialHash: string;
-  cardRevision: string;
-  operationId: string;
-  previewId: string;
-  previewDigest: string;
-  ownerUserId: string;
-}
 
 /** Distinguishes a material edit and revert, as well as a Work Board reopen. */
 export function localHistoryConsentCardRevision(card: Pick<CardFold, 'materialRevision' | 'reopens' | 'taps'>): string {

@@ -1,0 +1,27 @@
+{
+  "ts": "2026-11-25T08:49:01.863Z",
+  "slug": "local-history-consent-association-store",
+  "suggestedTier": 2,
+  "declaredTier": 2,
+  "riskFloor": 1,
+  "riskFloorReasons": [],
+  "belowFloor": false,
+  "files": 2,
+  "loc": 99,
+  "scope": {
+    "basis": "staged-in-scope-paths-including-deleted",
+    "files": [
+      "src/import/LocalHistoryUploadStaging.ts",
+      "src/server/localHistoryConsentSlip.ts"
+    ],
+    "addedLines": 86,
+    "deletedLines": 13
+  },
+  "causalAutopsy": null,
+  "classClosure": {
+    "defectClass": "unbounded-self-action",
+    "closure": "n/a",
+    "reason": "One bounded transaction stores inert association metadata and does not launch or retry work."
+  },
+  "verdict": "pass"
+}
