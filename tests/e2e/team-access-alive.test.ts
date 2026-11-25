@@ -84,6 +84,13 @@ describe('team access — production wiring', () => {
   it('runs the whole journey on a real server', async () => {
     const { server, app, privacy, changed, spawned, dms } = await boot();
     const auth = (q: request.Test) => q.set('Authorization', 'Bearer e2e-token').set('X-Instar-AgentId', 'team-e2e');
+    const receiptPath = '/local/work-board/owner-receipt';
+    const receiptRequest = () => auth(request(app).get(receiptPath)).set('Host', '127.0.0.1');
+    expect((await receiptRequest()).status).toBe(503);
+    expect((await receiptRequest()).body).toEqual({ error: 'verified-team-log-not-open' });
+    expect((await receiptRequest().set('X-Forwarded-For', '127.0.0.1')).status).toBe(403);
+    expect((await receiptRequest().set('Host', HOST)).status).toBe(403);
+    expect((await request(app).get(receiptPath).set('Host', '127.0.0.1')).status).toBe(401);
     expect(server.mobilePairing!.teamActionRunner).toBeTypeOf('function');
 
     // The owner's phone.
@@ -131,6 +138,17 @@ describe('team access — production wiring', () => {
     // Her phone is bound in the log, so another machine could tell whose key it is.
     expect(server.mobilePairing!.teamLog()!.allRows().some((r) => r.kind === 'machine' && r.events.some((e) => e.type === 'phone-bind' && e.boundTo === 'mia'))).toBe(true);
     // A healthy log holds nobody, and the owner's screen says so.
+    const log = server.mobilePairing!.teamLog()!;
+    const heads = log.heads();
+    const vector = log.vector();
+    const receipt = await receiptRequest();
+    expect(receipt.status).toBe(200);
+    expect(receipt.header['cache-control']).toBe('no-store');
+    expect(receipt.body).toEqual({
+      ready: true, health: 'ok', ownerPersonKey: 'owner-1', heads, vector, gaps: [],
+    });
+    expect(log.heads()).toEqual(heads);
+    expect(log.vector()).toEqual(vector);
     const context = await owner('GET', '/mobile/team/context');
     expect(context.body.held).toEqual([]);
     expect(context.body.machinesBelowFloor).toEqual([]);

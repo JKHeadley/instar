@@ -1,0 +1,23 @@
+{
+  "ts": "2026-11-25T08:17:01.100Z",
+  "slug": "work-board-approval-binding-wip",
+  "suggestedTier": 2,
+  "declaredTier": null,
+  "riskFloor": 1,
+  "riskFloorReasons": [],
+  "belowFloor": false,
+  "files": 2,
+  "loc": 58,
+  "scope": {
+    "basis": "staged-in-scope-paths-including-deleted",
+    "files": [
+      "scripts/capture-work-board-starting-history.mjs",
+      "src/core/WorkBoardRuntime.ts"
+    ],
+    "addedLines": 56,
+    "deletedLines": 2
+  },
+  "causalAutopsy": null,
+  "classClosure": null,
+  "verdict": "pass"
+}

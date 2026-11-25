@@ -3435,6 +3435,25 @@ export function createRoutes(ctx: RouteContext): Router {
   };
   let workBoardReadAs: ((req: import('express').Request, opts?: { full?: boolean }) => { status: number; body: unknown }) | null = null;
   registerWorkBoardRoutes(router, workBoardRouteDeps);
+  router.get('/local/work-board/owner-receipt', (req, res) => {
+    res.set('Cache-Control', 'no-store');
+    res.removeHeader('Access-Control-Allow-Origin');
+    const proxyHeaders = ['origin', 'forwarded', 'x-forwarded-for', 'x-forwarded-host', 'x-forwarded-proto',
+      'x-real-ip', 'cf-connecting-ip'];
+    if (!isLoopbackPeer(req.socket.remoteAddress) ||
+        !/^(localhost|127\.0\.0\.1|\[::1\])(:\d+)?$/i.test(req.headers.host ?? '') ||
+        proxyHeaders.some((name) => req.headers[name] !== undefined)) {
+      res.status(403).json({ error: 'loopback-only' });
+      return;
+    }
+    if (!bearerMatches(req, ctx.config.authToken)) {
+      res.status(403).json({ error: 'local-agent-bearer-required' });
+      return;
+    }
+    const receipt = ctx.mobilePairingService?.teamOwnerReceipt();
+    if (!receipt) { res.status(503).json({ error: 'verified-team-log-not-open' }); return; }
+    res.status(receipt.ready ? 200 : 409).json(receipt);
+  });
   router.post('/work-board/slips', (req, res) => {
     res.set('Cache-Control', 'no-store');
     if (workBoardRouteDeps.caller(req).kind !== 'bearer' || !bearerMatches(req, ctx.config.authToken)) {

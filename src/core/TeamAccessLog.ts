@@ -220,8 +220,8 @@ function rowOrder(a: TeamAccessRow, b: TeamAccessRow): number {
  * What this log can see is wrong. One machine's log has nothing to compare, so it holds nobody, and a
  * row counts as settling a gap only if the owner's phone signed it.
  */
-export function gapsIn(rows: ReadonlyArray<TeamAccessRow>, verify: (row: TeamAccessRow) => RowVerdict): Gap[] {
-  if (new Set(rows.map(originOf)).size <= 1) return [];
+export function gapsIn(rows: ReadonlyArray<TeamAccessRow>, verify: (row: TeamAccessRow) => RowVerdict, includeSingleOrigin = false): Gap[] {
+  if (!includeSingleOrigin && new Set(rows.map(originOf)).size <= 1) return [];
   const plain = foldRows(rows, verify);
   const owners = (r: TeamAccessRow): boolean => verify(r) === 'verified' && r.kind === 'request' && plain.bindings.get(r.signedOrigin.keyHash) === 'owner';
   const merge = rows.map((r) => toMergeRow(r, owners(r) ? mergeEventsOf(r) : []));
@@ -662,6 +662,11 @@ export class TeamAccessLog {
       this.refoldPending = unknown > 0;
     }
     return this.folded;
+  }
+
+  /** Capture also checks one-origin logs, which the serving policy does not hold. */
+  captureGaps(): Gap[] {
+    return gapsIn(this.rows, this.opts.verify, true);
   }
 
   /** What holds every team person right now. */

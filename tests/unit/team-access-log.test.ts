@@ -8,7 +8,7 @@ import path from 'node:path';
 import { afterEach, beforeEach, describe, expect, it } from 'vitest';
 import { SafeFsExecutor } from '../../src/core/SafeFsExecutor.js';
 import { sha256Hex, type MachineSigner } from '../../src/core/AppRecordSignatures.js';
-import { foldRows, prefixHash, rowHash, rowPayload, TeamAccessLog, toMergeRow, type RequestRow, type TeamAccessRow } from '../../src/core/TeamAccessLog.js';
+import { foldRows, gapsIn, prefixHash, rowHash, rowPayload, TeamAccessLog, toMergeRow, type RequestRow, type TeamAccessRow } from '../../src/core/TeamAccessLog.js';
 import { parseSignedEvents, validateMachineEvent, validateRequestEvent } from '../../src/core/TeamAccessEvents.js';
 import { mayDoAsTeam, tierAtLeast, tierOfRole } from '../../src/permissions/TeamAccess.js';
 
@@ -105,6 +105,16 @@ describe('TeamAccessLog', () => {
     expect(fs.existsSync(path.join(dir, 'state', 'team-access'))).toBe(false);
     expect(log.readConfined()).toEqual([]);
     expect(log.state().on).toBe(false);
+  });
+
+  it('checks gaps on a single origin for a capture receipt', () => {
+    const log = open();
+    const first = bindOwner(log);
+    log.appendSignedRequest(signed([{ type: 'team-on' }]));
+    const last = log.appendMachineEvents([{ type: 'restored', throughSeq: 2 }]);
+    expect(log.captureGaps()).toEqual([]);
+    expect(gapsIn([first, last], verify)).toEqual([]);
+    expect(gapsIn([first, last], verify, true)).toMatchObject([{ kind: 'chain-break', afterSeq: first.seq }]);
   });
 
   it('applies an owner request and folds events from the signed body only', () => {

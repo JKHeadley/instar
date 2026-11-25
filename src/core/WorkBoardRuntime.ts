@@ -9,6 +9,7 @@
  * exercised whole in tests with fakes and wired once in production.
  */
 
+import { workBoardHistoryFingerprint } from './workBoardStartingHistory.js';
 import { canonicalJson, isCardId, sha256Hex } from './WorkCardStore.js';
 import { decodeWorkBoardApprovalEvent, sameProof, sameVersion, type WorkBoardApprovalLookup, type WorkBoardWriterProof } from './WorkBoardApprovalWriter.js';
 import type { WorkBoardSlipOwnerSource } from './workBoardSlipSource.js';
@@ -67,10 +68,6 @@ export interface WorkBoardCreationEvidenceSnapshot {
   version: number;
   complete: boolean;
   items: ReadonlyArray<WorkBoardCreationEvidence>;
-}
-
-export function workBoardHistoryFingerprint({ origin, data }: UnionEntry): string {
-  return sha256Hex(canonicalJson([origin, data]));
 }
 
 export interface WorkBoardSlipDeviceBinding {
@@ -273,6 +270,8 @@ export class WorkBoardRuntime {
       } : undefined,
       machineId: seams.machineId,
       emit: (key, build) => {
+        // Pause closes the sender before any journal reservation.
+        if (!seams.enabled()) return { outcome: 'writer-unavailable' };
         // Every enrolled board mutation uses the same current writer boundary.
         if (!slips) return seams.emit(key, build);
         const writer = this.currentSlipWriter();
@@ -304,9 +303,9 @@ export class WorkBoardRuntime {
       const a = seams.conversation.attachment(attachmentId);
       return a && !a.purged && a.conversationKey === conversationKey ? { sha256: a.sha256 } : null;
     };
-    const canDeliver = () => !slips || this.currentSlipWriter() !== null;
+    const canDeliver = () => seams.enabled() && (!slips || this.currentSlipWriter() !== null);
     this.controller = new WorkBoardPickupController({
-      svc: this.svc, machineId: seams.machineId, settings: () => settings().pickup, now: this.now, enabled: () => seams.enabled() && (!slips || this.currentSlipWriter() !== null),
+      svc: this.svc, machineId: seams.machineId, settings: () => settings().pickup, now: this.now, enabled: canDeliver,
       ownsConversation: (ck) => canDeliver() && seams.conversation.serves(ck),
       relayReady: seams.relayReady,
       admits: (ck) => seams.conversation.serves(ck),

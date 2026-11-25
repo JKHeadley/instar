@@ -1,0 +1,27 @@
+{
+  "ts": "2026-11-25T08:37:56.594Z",
+  "slug": "work-board-approval-binding-wip",
+  "suggestedTier": 2,
+  "declaredTier": null,
+  "riskFloor": 2,
+  "riskFloorReasons": [
+    "new capability: new route (router.<verb>() added"
+  ],
+  "belowFloor": false,
+  "files": 4,
+  "loc": 68,
+  "scope": {
+    "basis": "staged-in-scope-paths-including-deleted",
+    "files": [
+      "scripts/read-work-board-owner-receipt.mjs",
+      "src/core/TeamAccessLog.ts",
+      "src/server/mobilePairingRoutes.ts",
+      "src/server/routes.ts"
+    ],
+    "addedLines": 66,
+    "deletedLines": 2
+  },
+  "causalAutopsy": null,
+  "classClosure": null,
+  "verdict": "pass"
+}

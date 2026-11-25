@@ -15,6 +15,8 @@ import { WorkBoardSlipStore } from '../../src/core/WorkBoardSlipStore.js';
 import { describe, it, expect, afterAll } from 'vitest';
 import request from 'supertest';
 import fs from 'node:fs';
+import { execFileSync } from 'node:child_process';
+import { fileURLToPath } from 'node:url';
 import path from 'node:path';
 import os from 'node:os';
 import { AgentServer } from '../../src/server/AgentServer.js';
@@ -22,7 +24,8 @@ import { SingleInstanceLock } from '../../src/core/SingleInstanceLock.js';
 import { StateManager } from '../../src/core/StateManager.js';
 import type { InstarConfig } from '../../src/core/types.js';
 import { SafeFsExecutor } from '../../src/core/SafeFsExecutor.js';
-import { CoherenceJournal } from '../../src/core/CoherenceJournal.js';
+import { JournalSyncApplier } from '../../src/core/JournalSyncApplier.js';
+import { CoherenceJournal, type JournalEntry } from '../../src/core/CoherenceJournal.js';
 import { ReplicatedKindRegistry } from '../../src/core/ReplicatedRecordEnvelope.js';
 import { ReplicatedRecordEmitter } from '../../src/core/ReplicatedRecordEmitter.js';
 import { ReplicatedPeerStreamReader } from '../../src/core/ReplicatedPeerStreamReader.js';
@@ -30,7 +33,8 @@ import { HybridLogicalClock } from '../../src/core/HybridLogicalClock.js';
 import { WORK_CARD_KIND_REGISTRATION, WORK_CARD_RECORD_KIND, WORK_BOARD_STORE_KEY, type UnionEntry } from '../../src/core/WorkCardStore.js';
 import { readWorkBoardApprovalEvent } from '../../src/core/workBoardApprovalReadback.js';
 import { lineIdFor } from '../../src/core/WorkBoardService.js';
-import { WorkBoardRuntime, workBoardHistoryFingerprint } from '../../src/core/WorkBoardRuntime.js';
+import { WorkBoardRuntime } from '../../src/core/WorkBoardRuntime.js';
+import { loadWorkBoardHistory, verifyWorkBoardStartingHistory, workBoardHistoryFingerprint, workBoardStartingHistoryDigest } from '../../src/core/workBoardStartingHistory.js';
 import type { MobilePairingService } from '../../src/server/mobilePairingRoutes.js';
 import { workBoardSlipApprovalLine } from '../../src/core/workBoardSlipPresence.js';
 import { permissionPresenceMessage } from '../../src/server/mobilePermissionsRoutes.js';
@@ -63,9 +67,9 @@ const auth = () => ({ Authorization: `Bearer ${AUTH}` });
 
 afterAll(() => { for (const d of tmpDirs) SafeFsExecutor.safeRmSync(d, { recursive: true, force: true, operation: 'tests/e2e/phone-work-cards-alive.test.ts' }); });
 
-interface Rig { runtime: WorkBoardRuntime; journal: CoherenceJournal; lines: Array<{ key: string; id: string; text: string }>; briefs: string[]; conversations: Set<string>; removed: string[] }
+interface Rig { runtime: WorkBoardRuntime; journal: CoherenceJournal; streams: ReplicatedPeerStreamReader; lines: Array<{ key: string; id: string; text: string }>; briefs: string[]; conversations: Set<string>; removed: string[] }
 
-function mkRuntime(stateDir: string, opts: { machineId?: string; baseline?: () => UnionEntry[]; rotateBytes?: number; permissionSlips?: ConstructorParameters<typeof WorkBoardRuntime>[0]['permissionSlips']; onAwaitDurable?: (seq: number, journal: CoherenceJournal) => void } = {}): Rig {
+function mkRuntime(stateDir: string, opts: { enabled?: () => boolean; machineId?: string; baseline?: () => UnionEntry[]; rotateBytes?: number; permissionSlips?: ConstructorParameters<typeof WorkBoardRuntime>[0]['permissionSlips']; onAwaitDurable?: (seq: number, journal: CoherenceJournal) => void } = {}): Rig {
   const machineId = opts.machineId ?? 'm1';
   const reg = new ReplicatedKindRegistry(); reg.register(WORK_CARD_KIND_REGISTRATION);
   const journal = new CoherenceJournal({
@@ -78,14 +82,12 @@ function mkRuntime(stateDir: string, opts: { machineId?: string; baseline?: () =
   const streams = new ReplicatedPeerStreamReader({ stateDir, registry: reg, selfMachineId: machineId, autoRebuild: false });
   const lines: Rig['lines'] = []; const briefs: string[] = []; const conversations = new Set<string>(); const removed: string[] = [];
   const runtime = new WorkBoardRuntime({
-    machineId, permissionSlips: opts.permissionSlips, enabled: () => true, rawSettings: () => ({}), saveSettings: () => true,
+    machineId, permissionSlips: opts.permissionSlips, enabled: opts.enabled ?? (() => true), rawSettings: () => ({}), saveSettings: () => true,
     emit: (k, b) => { const r = emitter.emit(WORK_BOARD_STORE_KEY, k, b); journal.flush(); return { outcome: r.outcome, ...(r.seq !== undefined ? { seq: r.seq } : {}), ...(r.hlc ? { hlc: r.hlc } : {}) }; },
     awaitDurable: async (seq) => { journal.flush(); opts.onAwaitDurable?.(seq, journal); },
     loadUnion: () => {
       journal.flush();
-      const out: UnionEntry[] = opts.baseline?.() ?? [];
-      for (const byOrigin of streams.loadAllOriginRecords(WORK_BOARD_STORE_KEY).values()) for (const r of byOrigin) out.push({ data: { ...r.data, recordKey: r.envelope.recordKey, hlc: r.envelope.hlc, op: r.envelope.op, origin: r.origin }, origin: r.origin });
-      return out;
+      return [...(opts.baseline?.() ?? []), ...loadWorkBoardHistory(streams)];
     },
     journalBytes: () => 0,
     conversation: {
@@ -101,7 +103,7 @@ function mkRuntime(stateDir: string, opts: { machineId?: string; baseline?: () =
     detectCredential: (text) => (/sk-ant-[A-Za-z0-9]{10,}/.test(text) ? 'anthropic-api-key' : null),
     ledgerNote: () => {}, degradation: () => {}, leaseHolder: () => machineId,
   });
-  return { runtime, journal, lines, briefs, conversations, removed };
+  return { runtime, journal, streams, lines, briefs, conversations, removed };
 }
 
 
@@ -142,6 +144,25 @@ describe('Work cards from the owner phone E2E (feature is alive)', () => {
     } finally { runtime.stop(); journal.close(); db.close(); }
   });
 
+  it('pauses local Work Board journal emission and resumes without rebuilding the runtime', () => {
+    const { stateDir } = mkConfig();
+    let enabled = true;
+    const rig = mkRuntime(stateDir, { enabled: () => enabled });
+    const create = (title: string) => rig.runtime.svc.createCard({ kind: 'agent' }, {
+      title, need: 'Check sender admission', doneWhen: [{ id: 'done', text: 'Complete' }], outward: true,
+    });
+    try {
+      rig.runtime.start();
+      expect(create('Before pause')).toMatchObject({ ok: true });
+      const before = rig.journal.readKindComplete(WORK_CARD_RECORD_KIND).entries.length;
+      enabled = false;
+      expect(create('During pause')).toMatchObject({ ok: false, error: 'store-unavailable' });
+      expect(rig.journal.readKindComplete(WORK_CARD_RECORD_KIND).entries).toHaveLength(before);
+      enabled = true;
+      expect(create('After resume')).toMatchObject({ ok: true });
+    } finally { rig.runtime.stop(); rig.journal.close(); }
+  });
+
   it('refuses an enrolled writer when it loses the real agent-home lock', async () => {
     const { stateDir } = mkConfig();
     const db = new Database(':memory:');
@@ -160,6 +181,13 @@ describe('Work cards from the owner phone E2E (feature is alive)', () => {
     });
     try {
       expect(await lock.acquire()).toMatchObject({ acquired: true });
+      const candidateDist = process.env.INSTAR_TEST_CANDIDATE_WORK_BOARD_DIST;
+      if (candidateDist) {
+        const probe = fileURLToPath(new URL('../fixtures/work-board-enrollment/override-lock.mjs', import.meta.url));
+        const result = execFileSync(process.execPath, [probe, candidateDist, stateDir], { encoding: 'utf8', timeout: 15_000 });
+        expect(JSON.parse(result)).toMatchObject({ acquired: true, overridden: true, exclusive: false });
+        expect(lock.revalidateExclusive()).toBe(true);
+      }
       rig.runtime.start();
       expect(create('Held lock')).toMatchObject({ ok: true });
       const before = rig.journal.readKindComplete(WORK_CARD_RECORD_KIND).entries.length;
@@ -211,10 +239,17 @@ describe('Work cards from the owner phone E2E (feature is alive)', () => {
     } finally { rig.runtime.stop(); rig.journal.close(); db.close(); }
   });
 
-  it('refuses a Work Board journal write from a legacy peer after enrollment', () => {
+  it('fences an enrolled writer when journal sync persists a legacy peer write', () => {
     const { stateDir } = mkConfig();
     const db = new Database(':memory:');
-    const legacy = mkRuntime(mkConfig().stateDir, { machineId: 'legacy-peer' });
+    const legacyState = mkConfig().stateDir;
+    const legacyDist = process.env.INSTAR_TEST_LEGACY_WORK_BOARD_DIST;
+    const legacy = legacyDist ? null : mkRuntime(legacyState, { machineId: 'legacy-peer' });
+    const registry = new ReplicatedKindRegistry();
+    registry.register(WORK_CARD_KIND_REGISTRATION);
+    const legacyStreams = new ReplicatedPeerStreamReader({
+      stateDir: legacyState, registry, selfMachineId: 'legacy-peer', autoRebuild: false,
+    });
     const writer = mkRuntime(stateDir, {
       permissionSlips: {
         store: new WorkBoardSlipStore(db),
@@ -225,20 +260,54 @@ describe('Work cards from the owner phone E2E (feature is alive)', () => {
       },
     });
     try {
-      legacy.runtime.start();
       writer.runtime.start();
-      const created = legacy.runtime.svc.createCard({ kind: 'agent' }, {
-        title: 'Legacy write', need: 'Reject after enrollment', doneWhen: [{ id: 'done', text: 'Complete' }], outward: true,
-      });
-      if (!created.ok) throw new Error('legacy card did not commit');
-      const entries = legacy.journal.readKindComplete(WORK_CARD_RECORD_KIND).entries;
+      let batch: { cardId: string; incarnation: string; entries: JournalEntry[] };
+      if (legacyDist) {
+        const producer = fileURLToPath(new URL('../fixtures/work-board-enrollment/legacy-producer.mjs', import.meta.url));
+        const paused = execFileSync(process.execPath, [producer, legacyDist, legacyState, 'paused'], { encoding: 'utf8', timeout: 15_000 });
+        expect(JSON.parse(paused)).toEqual({ paused: true });
+        expect(loadWorkBoardHistory(legacyStreams)).toEqual([]);
+        batch = JSON.parse(execFileSync(process.execPath, [producer, legacyDist, legacyState], { encoding: 'utf8', timeout: 15_000 }));
+      } else {
+        if (!legacy) throw new Error('legacy fixture unavailable');
+        legacy.runtime.start();
+        const created = legacy.runtime.svc.createCard({ kind: 'agent' }, {
+          title: 'Legacy write', need: 'Reject after enrollment', doneWhen: [{ id: 'done', text: 'Complete' }], outward: true,
+        });
+        if (!created.ok) throw new Error('legacy card did not commit');
+        batch = {
+          cardId: created.cardId,
+          incarnation: legacy.journal.getOwnAdvert()[WORK_CARD_RECORD_KIND].incarnation,
+          entries: legacy.journal.readKindComplete(WORK_CARD_RECORD_KIND).entries,
+        };
+      }
+      const expectedRecords = loadWorkBoardHistory(legacyStreams);
+      expect(expectedRecords.length).toBeGreaterThan(0);
+      const head = writer.journal.getOwnAdvert()[WORK_CARD_RECORD_KIND];
+      const verify = (projectionDigest: string) => verifyWorkBoardStartingHistory({
+        machineId: 'm1', ownIncarnation: head.incarnation, ownLastSeq: head.lastSeq, projectionDigest,
+      }, { machineId: 'm1', lock: { revalidateExclusive: () => true }, journal: writer.journal, streams: writer.streams });
+      const expectedDigest = workBoardStartingHistoryDigest(expectedRecords);
+      expect(verify(workBoardStartingHistoryDigest([]))).toEqual(new Set());
+      expect(verify(expectedDigest)).toBeNull();
+      const { entries, incarnation, cardId } = batch;
       expect(entries.length).toBeGreaterThan(0);
-      writer.runtime.onCommitted(entries, 'legacy-peer');
-      expect(writer.runtime.svc.view(created.cardId)).toBeNull();
+      const applier = new JournalSyncApplier({
+        stateDir,
+        replicatedRegistry: registry,
+        onReplicatedRecordsCommitted: (sender, kind, batch) => {
+          if (kind === WORK_CARD_RECORD_KIND) writer.runtime.onCommitted(batch, sender);
+        },
+      });
+      expect(applier.apply('legacy-peer', [{ kind: WORK_CARD_RECORD_KIND, incarnation, entries }]))
+        .toMatchObject({ applied: entries.length });
+      expect(verify(expectedDigest)).toEqual(new Set(expectedRecords.map(workBoardHistoryFingerprint)));
+      expect(verify(workBoardStartingHistoryDigest([]))).toBeNull();
+      expect(writer.runtime.svc.view(cardId)).toBeNull();
       expect(writer.runtime.readPermissionSlip('11111111-2222-4333-8444-555555555555').status).toBe(503);
     } finally {
-      legacy.runtime.stop();
-      legacy.journal.close();
+      legacy?.runtime.stop();
+      legacy?.journal.close();
       writer.runtime.stop();
       writer.journal.close();
       db.close();

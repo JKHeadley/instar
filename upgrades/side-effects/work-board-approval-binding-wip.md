@@ -187,3 +187,48 @@ The enrolled runtime revalidates exclusive ownership of the existing agent-home 
 - Rollback. Keep enrollment off while restoring the prior release. No production slip state is created by this candidate.
 
 Independent review concurred for the dark candidate. A second-instance override can still boot beside the normal holder while the latter's lock continues to validate. Production enrollment must prove that a same-home override or an older binary cannot emit enrolled board writes. The legacy fixture proves receiver refusal at the runtime callback using a real journal batch. A two-binary sync and sender-admission check is still needed for activation.
+
+## Starting-history verification and journal sync
+
+The verifier compares the local projection against an independently attested digest from the frozen fleet and checks the assigned writer's exact durable journal head. The agent-home lock and stream fingerprint must agree before and after the read. It returns the sealed peer set only when these checks pass. The server and verifier now share the same projection loader. The lifecycle fixture exercises a real journal sync append before the enrolled runtime's refusal.
+
+- Over-block. Verification refuses moving streams, partial peer reads, missing own sequences and changed digests. A retained own stream without the full sequence history requires a separately verified restoration procedure.
+- Under-block. A locally readable projection alone cannot establish fleet completeness. Enrollment must obtain the expected digest from the frozen accepted fleet and independently prove sender admission, including same-home override.
+- Abstraction and authority. The verifier checks enrollment evidence. It neither chooses the accepted fleet nor grants writer authority.
+- Interactions and surfaces. Production startup continues to read the same union. The new verifier has no enrollment endpoint and makes no writes.
+- Multi-machine posture. The digest binds the full folded projection, including its origins. The returned peer set is specific to the enrolled machine and current starting history.
+- Rollback. Existing production layouts require no migration. Leave enrollment off if the verification fails.
+
+Independent review concurred for the dark follow-on. The digest attests the effective folded board projection. It does not attest every historical payload byte or replace independently verified fleet coverage. A first lifecycle run exposed that a valid empty directory has an empty stream fingerprint. The verifier now reserves null for an unreadable or moving fingerprint.
+
+### Separate-build evidence
+
+The lifecycle test accepts `INSTAR_TEST_LEGACY_WORK_BOARD_DIST` and `INSTAR_TEST_CANDIDATE_WORK_BOARD_DIST` pointing to independently compiled package outputs. With the first set, a separate Node process runs the older Work Board to produce the durable legacy batch received by the candidate. With the second set, a separate process from the candidate build attempts lock acquisition with the second-instance override while the current process holds the same-home lock. It must report an override without exclusive authority, while the holder stays exclusive. The default suite still exercises the in-process legacy producer without requiring staging builds.
+
+This proves the receiver refuses effects from an older release and the candidate denies exclusive proof to the override. It does not prove sender protection in an older binary. A production rollout must exclude any older process from write-capable enrollment and from the enrolled home before activation.
+
+Independent review concurred. The nine-case lifecycle run used legacy build `3e318c9236c29df1bd93bb6051557fcdfe16efee` and candidate build `b8fe7d4fdfa92058d5d265f7967fca4d31ef408b`.
+
+## Capture window and sender pause
+
+The existing Work Board enable setting now reaches the journal sender and final pickup delivery check. A live pause blocks new reservations and dispatch while preserving replication. The read-only capture command refuses a changing stream or a local sequence that differs from the separately observed durable advert.
+
+- Over-block. The existing pause intentionally makes Work Board mutations unavailable during capture.
+- Under-block. Older already-running binaries need a managed drain and a paused restart. The capture does not enforce production process isolation.
+- Authority and interactions. The existing local configuration owns the pause. The capture produces receipts and never grants enrollment or changes a service.
+- Multi-machine posture. All active homes pause and catch up before comparing digests. Old-process evidence comes from the supervisor and inventory.
+- Rollback. Restore the original setting presence and value through the planned restart and verify normal health.
+
+Independent review concurred with the dark code and capture command. The runbook requires already-admitted pickup and dispatch to drain on all builds. The legacy fixture exercises the compiled startup predicate. The production supervisor receipt remains required.
+
+## Host-local verified owner receipt
+
+The capture command reads an already-open running Team Access log over loopback using the local agent bearer. The route does not instantiate the log, repair files, bind devices or fall back to a profile. It emits the verified owner key and stream metadata only. A missing log, unhealthy log, missing owner, or unresolved gaps prevent a ready receipt. The capture checks single-origin gaps as well, outside the serving policy’s relaxed single-origin handling.
+
+- Over-block. A host that has not opened its verified log cannot participate in the capture.
+- Under-block. A healthy receipt does not prove that every peer is caught up. The comparison still requires all accepted hosts and matching pre- and post-capture heads.
+- Authority and interactions. The signed Team Access fold is the sole source of the owner. This read does not enable enrollment or confer permission.
+- External and multi-machine posture. The endpoint rejects forwarded and browser-origin requests and is specific to the running local daemon. It exposes no signed rows, device keys or invite data.
+- Rollback. Keep the capture gated if the endpoint is unavailable. Deploying the previous binary removes the command path without touching the log.
+
+Independent review concurred after adding strict one-origin gap checking, without changing the ordinary serving policy. Fleet receipt comparison is required even when each local receipt is ready.
