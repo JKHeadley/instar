@@ -1,0 +1,19 @@
+{
+  "version": 2,
+  "slug": "private-first-approver-nomination-binding",
+  "sessionId": "b3d2cf8a-9b5d-468b-a50b-70ebf11e9e5c",
+  "timestamp": "2026-11-25T23:19:13.489Z",
+  "artifactPath": "upgrades/side-effects/private-first-approver-nomination-binding.md",
+  "artifactSha256": "4ef989e22b0dfac4e284706471e539a7f542d7dbcccce1c3b073739668fd4b5e",
+  "coveredFiles": [
+    "src/core/trustJourney/FirstPhonePrivateNominationStore.ts",
+    "tests/unit/first-phone-private-accept.test.ts"
+  ],
+  "phase": "complete",
+  "tier": 1,
+  "tierReasoning": "Additive schema and exact binding in a dormant fixture with no live caller.",
+  "eli16Path": "docs/specs/phone-only-first-approver.eli16.md",
+  "sideEffectsPath": "upgrades/side-effects/private-first-approver-nomination-binding.md",
+  "secondPass": "true",
+  "reviewerConcurred": true
+}

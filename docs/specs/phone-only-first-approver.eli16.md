@@ -17,3 +17,5 @@ The existing local enrollment now gets the first-approver record key from one pl
 The trust store now checks that a local enrollment still belongs to the same first-approver slot when it writes the acceptance. An older request cannot claim a later slot after another device was accepted and withdrawn.
 
 The private Telegram Accept check now refuses an offer for an earlier first-approver slot. The phone still needs to check that slot again when it records the final Face ID decision.
+
+The private nomination now saves the exact first-approver slot with the proposal. An old nomination saved without a slot cannot be used to finish enrollment.

@@ -1,3 +1,4 @@
+import { createHash } from 'node:crypto';
 import Database from 'better-sqlite3';
 import { FirstPhonePrivateNominationStore } from '../../src/core/trustJourney/FirstPhonePrivateNominationStore.js';
 import { expect, it } from 'vitest';
@@ -41,13 +42,22 @@ it('records at most one nomination per exact private tap and proposal', () => {
   try {
     const store = new FirstPhonePrivateNominationStore(db);
     db.transaction(() => {
+      expect(() => new FirstPhonePrivateNominationStore(db)).toThrow('top-level schema transaction');
       expect(store.record('receipt-1', offer, tap, current, 210)).toEqual({ status: 'refused' });
     })();
     expect(store.record('receipt-1', offer, tap, {
       ...current, firstAcceptanceKey: 'tj:device-acceptance:first:1',
     }, 210)).toEqual({ status: 'refused' });
     const first = store.record('receipt-1', offer, tap, current, 210);
-    expect(first.status).toBe('recorded');
+    if (first.status === 'refused') throw new Error('Expected nomination to be recorded');
+    expect(new FirstPhonePrivateNominationStore(db).binding(first.nominationId)).toEqual({
+      proposalHash: offer.proposalHash, firstAcceptanceKey: offer.firstAcceptanceKey,
+    });
+    expect(store.binding('missing')).toBeNull();
+    db.transaction(() => expect(store.binding(first.nominationId)).toBeNull())();
+    const laterKey = 'tj:device-acceptance:first:1';
+    expect(store.record('receipt-1', { ...offer, firstAcceptanceKey: laterKey }, tap,
+      { ...current, firstAcceptanceKey: laterKey }, 210)).toEqual({ status: 'refused' });
     expect(store.record('receipt-1', offer, tap, {
       ...current, firstAcceptanceKey: null,
     }, 210)).toEqual({ status: 'refused' });
@@ -62,6 +72,28 @@ it('records at most one nomination per exact private tap and proposal', () => {
     const otherHash = 'b'.repeat(64);
     expect(store.record('receipt-1', { ...reissuedOffer, proposalHash: otherHash }, reissuedTap,
       { ...current, proposalHash: otherHash }, 210)).toEqual({ status: 'refused' });
+  } finally {
+    db.close();
+  }
+});
+
+it('leaves an older nomination without a recorded slot unusable after migration', () => {
+  const db = new Database(':memory:');
+  try {
+    db.exec(`
+      CREATE TABLE first_phone_private_nominations (
+        callback_hash TEXT PRIMARY KEY,
+        receipt_id TEXT NOT NULL UNIQUE,
+        proposal_hash TEXT NOT NULL UNIQUE,
+        nomination_id TEXT NOT NULL UNIQUE
+      )
+    `);
+    db.prepare('INSERT INTO first_phone_private_nominations VALUES (?, ?, ?, ?)').run(
+      createHash('sha256').update(offer.callbackData).digest('hex'), 'legacy-receipt', offer.proposalHash, 'legacy',
+    );
+    const store = new FirstPhonePrivateNominationStore(db);
+    expect(store.binding('legacy')).toBeNull();
+    expect(store.record('legacy-receipt', offer, tap, current, 210)).toEqual({ status: 'refused' });
   } finally {
     db.close();
   }
