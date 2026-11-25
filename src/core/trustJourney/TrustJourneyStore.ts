@@ -419,6 +419,17 @@ export class TrustJourneyStore {
     return `tj:device-acceptance:first:${generation}`;
   }
 
+  /** Compare the prepared generation and claim its immutable key without yielding. */
+  writeFirstDeviceAcceptance(
+    fields: Record<string, unknown>,
+    expectedKey: string,
+  ): Promise<{ ok: boolean; recordKey: string }> {
+    if (expectedKey !== this.firstDeviceAcceptanceKey() || this.currentDeviceAcceptances().length > 0) {
+      return Promise.resolve({ ok: false, recordKey: expectedKey });
+    }
+    return this.write('device-acceptance', fields, expectedKey);
+  }
+
   /** True when this device has ever had an acceptance that is now withdrawn. */
   deviceAcceptanceWithdrawn(deviceId: string): boolean {
     return [...this.deviceAcceptances.values()].some((a) => a.deviceId === deviceId && !this.deviceAcceptanceCurrent(a));

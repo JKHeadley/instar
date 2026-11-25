@@ -1,0 +1,20 @@
+{
+  "version": 2,
+  "slug": "first-device-acceptance-generation-check",
+  "sessionId": "b3d2cf8a-9b5d-468b-a50b-70ebf11e9e5c",
+  "timestamp": "2026-11-25T22:57:49.423Z",
+  "artifactPath": "upgrades/side-effects/first-device-acceptance-generation-check.md",
+  "artifactSha256": "95adfb11b343438feeda387e148c386d1f343bac5d7af9c45726e2ebd79a3c04",
+  "coveredFiles": [
+    "src/core/trustJourney/AccountPathService.ts",
+    "src/core/trustJourney/TrustJourneyStore.ts",
+    "tests/unit/trust-journey-device-approval.test.ts"
+  ],
+  "phase": "complete",
+  "tier": 1,
+  "tierReasoning": "Existing local generation check with no new eligibility or remote caller.",
+  "eli16Path": "docs/specs/phone-only-first-approver.eli16.md",
+  "sideEffectsPath": "upgrades/side-effects/first-device-acceptance-generation-check.md",
+  "secondPass": "true",
+  "reviewerConcurred": true
+}

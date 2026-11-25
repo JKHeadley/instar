@@ -626,6 +626,7 @@ export class AccountPathService {
     if (snap.deviceKind === 'computer' && input.keyPolicy !== 'biometryCurrentSet') return refuse('key-policy-not-allowed', 'A computer can approve only with Touch ID.');
     if (!/^[0-9a-f]{64}$/.test(input.disclosureHash)) return refuse('bad-disclosure-hash', 'The disclosure hash is not valid.');
 
+    const firstAcceptanceKey = this.d.store.firstDeviceAcceptanceKey();
     let via: DeviceAcceptanceRecord['via'];
     let approvalId: string | undefined;
     let presenceKeyHash = input.presenceKeyHash;
@@ -665,17 +666,22 @@ export class AccountPathService {
       return { status: 'not-recorded', reason: 'not-recorded', message: 'The old acceptance could not be withdrawn, so the new one was not recorded. Try again.' };
     }
     const acceptanceId = `dacc-${crypto.randomUUID()}`;
-    const w = await this.d.store.write('device-acceptance', {
+    const fields = {
       acceptanceId, principal, deviceId: input.deviceId, keyFingerprint: input.keyFingerprint, presenceKeyHash,
       keyPolicy: input.keyPolicy, disclosureHash: input.disclosureHash, via, ...(approvalId ? { approvalId } : {}),
       acceptedAt: this.now().toISOString(),
-    }, approvalId ? `tj:device-acceptance:approval:${approvalId}`
-      // A first acceptance takes the next generation's fixed key: of two eligible devices accepting at
-      // the same moment, the store's key reservation lets exactly one win (second-pass review).
-      : via === 'local-install' ? this.d.store.firstDeviceAcceptanceKey()
-      : `tj:device-acceptance:${acceptanceId}`);
+    };
+    const w = via === 'local-install'
+      ? await this.d.store.writeFirstDeviceAcceptance(fields, firstAcceptanceKey)
+      : await this.d.store.write('device-acceptance', fields,
+        approvalId ? `tj:device-acceptance:approval:${approvalId}` : `tj:device-acceptance:${acceptanceId}`);
     if (!w.ok) {
-      if (via === 'local-install') return refuse('approval-needed', 'Another device already approves for this agent. Approve this device from that one first.');
+      if (via === 'local-install') {
+        if (firstAcceptanceKey !== this.d.store.firstDeviceAcceptanceKey() && !this.d.store.currentDeviceAcceptances().length) {
+          return refuse('approval-needed', 'The first-approver slot changed. Start device approval again.');
+        }
+        return refuse('approval-needed', 'Another device already approves for this agent. Approve this device from that one first.');
+      }
       return approvalId && this.d.store.unusedDeviceApprovals(input.deviceId, input.keyFingerprint, input.disclosureHash).every((a) => a.approvalId !== approvalId)
         ? refuse('approval-used', 'That approval was already used.')
         : { status: 'not-recorded', reason: 'not-recorded', message: 'The acceptance could not be recorded durably. Try again.' };

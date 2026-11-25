@@ -600,6 +600,19 @@ describe('two eligible devices taking the first acceptance at the same moment', 
     expect(mkStore().firstDeviceAcceptanceKey()).toBe('tj:device-acceptance:first:1');
   });
 
+  it('refuses a stale first-acceptance generation even after the winner is withdrawn', async () => {
+    const store = mkStore();
+    const service = mkService(store);
+    const preparedKey = store.firstDeviceAcceptanceKey();
+    await acceptMac(service);
+    const current = store.deviceAcceptance('mac')!;
+    await store.write('device-acceptance-withdrawn', { acceptanceId: current.acceptanceId });
+    expect(store.currentDeviceAcceptances()).toEqual([]);
+    expect(await store.writeFirstDeviceAcceptance({ ...current, acceptanceId: 'stale-candidate' }, preparedKey))
+      .toEqual({ ok: false, recordKey: preparedKey });
+    expect(store.currentDeviceAcceptances()).toEqual([]);
+  });
+
   it('exactly one wins; the other is told to get an approval', async () => {
     const svc = mkService(mkStore());
     const mac = devices.add('mac', { deviceKind: 'computer', localInstall: true });
