@@ -11,3 +11,5 @@ The private Telegram link will open the enrollment explanation on your phone. Ta
 The Accept button in the test is specific to the exact private message that showed the nomination. A different chat, message, owner, or changed nomination cannot use it. The live flow must also record that the button was used, so a retry can recover the same result.
 
 The isolated storage test now records a private Accept tap and its nomination together. A retry of the same tap retrieves the same nomination. A different tap cannot reuse that receipt or create another nomination for the same exact proposal. Turning on approvals from the phone is still a separate step.
+
+The existing local enrollment now gets the first-approver record key from one place in the trust store. The tests verify that concurrent candidates still compete for the same slot and that the store remembers the result after reopening. This gives the future phone path the same key to use.

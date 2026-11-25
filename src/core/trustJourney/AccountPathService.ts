@@ -672,7 +672,7 @@ export class AccountPathService {
     }, approvalId ? `tj:device-acceptance:approval:${approvalId}`
       // A first acceptance takes the next generation's fixed key: of two eligible devices accepting at
       // the same moment, the store's key reservation lets exactly one win (second-pass review).
-      : via === 'local-install' ? `tj:device-acceptance:first:${this.d.store.deviceAcceptanceHistory().filter((h) => h.via === 'local-install').length}`
+      : via === 'local-install' ? this.d.store.firstDeviceAcceptanceKey()
       : `tj:device-acceptance:${acceptanceId}`);
     if (!w.ok) {
       if (via === 'local-install') return refuse('approval-needed', 'Another device already approves for this agent. Approve this device from that one first.');

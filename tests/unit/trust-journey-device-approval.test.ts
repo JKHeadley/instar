@@ -590,6 +590,16 @@ describe('the switch off (mobilePairing.trustApproval)', () => {
 });
 
 describe('two eligible devices taking the first acceptance at the same moment', () => {
+  it('shares one fixed key and recovers the next generation from durable history', async () => {
+    const store = mkStore();
+    const key = store.firstDeviceAcceptanceKey();
+    expect(key).toBe('tj:device-acceptance:first:0');
+    expect(store.firstDeviceAcceptanceKey()).toBe(key);
+    await acceptMac(mkService(store));
+    expect(store.firstDeviceAcceptanceKey()).toBe('tj:device-acceptance:first:1');
+    expect(mkStore().firstDeviceAcceptanceKey()).toBe('tj:device-acceptance:first:1');
+  });
+
   it('exactly one wins; the other is told to get an approval', async () => {
     const svc = mkService(mkStore());
     const mac = devices.add('mac', { deviceKind: 'computer', localInstall: true });

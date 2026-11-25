@@ -410,6 +410,15 @@ export class TrustJourneyStore {
     return [...this.deviceAcceptances.values()].map((a) => ({ ...a, withdrawn: !this.deviceAcceptanceCurrent(a) }))
       .sort((a, b) => b.acceptedAt.localeCompare(a.acceptedAt));
   }
+  /** One fixed key for every candidate in the same first-device generation.
+   * Pending writes deliberately do not advance it. They compete for this key.
+   */
+  firstDeviceAcceptanceKey(): string {
+    let generation = this.deviceAcceptanceHistory().filter(acceptance => acceptance.via === 'local-install').length;
+    while (this.records.has(`tj:device-acceptance:first:${generation}`)) generation++;
+    return `tj:device-acceptance:first:${generation}`;
+  }
+
   /** True when this device has ever had an acceptance that is now withdrawn. */
   deviceAcceptanceWithdrawn(deviceId: string): boolean {
     return [...this.deviceAcceptances.values()].some((a) => a.deviceId === deviceId && !this.deviceAcceptanceCurrent(a));

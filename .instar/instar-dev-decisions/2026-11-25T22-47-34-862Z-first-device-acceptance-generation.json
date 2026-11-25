@@ -1,0 +1,23 @@
+{
+  "ts": "2026-11-25T22:47:34.862Z",
+  "slug": "first-device-acceptance-generation",
+  "suggestedTier": 1,
+  "declaredTier": 1,
+  "riskFloor": 1,
+  "riskFloorReasons": [],
+  "belowFloor": false,
+  "files": 2,
+  "loc": 11,
+  "scope": {
+    "basis": "staged-in-scope-paths-including-deleted",
+    "files": [
+      "src/core/trustJourney/AccountPathService.ts",
+      "src/core/trustJourney/TrustJourneyStore.ts"
+    ],
+    "addedLines": 10,
+    "deletedLines": 1
+  },
+  "causalAutopsy": null,
+  "classClosure": null,
+  "verdict": "pass"
+}
