@@ -10078,6 +10078,34 @@ export class AgentServer {
    * Start the HTTP server.
    */
   async start(): Promise<void> {
+    // Shadow observation is independent of whether overload admission is active.
+    if (this.config.developmentAgent === true && process.env.INSTAR_RESOURCE_ADMISSION_SHADOW === '1') {
+      try {
+        const { ResourceAdmissionShadowReport } = await import('../monitoring/ResourceAdmissionShadow.js');
+        const { readCachedHostPressureInputs, MIN_SAMPLE_WINDOW_MS } = await import('../monitoring/HostPressureSampler.js');
+        this.sessionManager.setShadowAdmissionReport(new ResourceAdmissionShadowReport(os.hostname(), () => {
+          const reading = readCachedHostPressureInputs();
+          const level = reading?.kernelMemoryPressureLevel;
+          const pressure = level === 1 ? 'normal' : level === 2 ? 'warning' : level === 4 ? 'critical' : undefined;
+          return {
+            nowMs: Date.now(),
+            maxSampleAgeMs: MIN_SAMPLE_WINDOW_MS,
+            sample: pressure && reading?.sampledAt !== undefined
+              ? {
+                  capturedAtMs: reading.sampledAt,
+                  nativePressure: pressure,
+                  availableBytes: reading.nativeAvailableBytes,
+                  cpuUtilization: reading.cpuBusyPct ?? undefined,
+                }
+              : undefined,
+          };
+        }));
+      } catch (error) {
+        // @silent-fallback-ok (logged): shadow diagnostics must not block startup.
+        console.warn('[ResourceAdmissionShadow] Observation unavailable:', error);
+      }
+    }
+
     // Layer 2 boot self-check (spec § 2a "Runtime dependency"). Probes the
     // sqlite3 CLI + better-sqlite3 in-process driver and emits degradation
     // events on missing/broken substrate. Never throws — Layer 2 is best-

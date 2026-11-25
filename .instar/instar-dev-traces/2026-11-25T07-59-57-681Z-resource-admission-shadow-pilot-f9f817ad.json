@@ -1,0 +1,39 @@
+{
+  "version": 3,
+  "slug": "resource-admission-shadow-pilot",
+  "sessionId": "233b8c8f-45fe-4930-a2d0-4ca9bb767cb1",
+  "timestamp": "2026-11-25T07:59:57.681Z",
+  "artifactPath": "upgrades/side-effects/resource-admission-shadow-pilot.md",
+  "artifactSha256": "cff722f6b695621975d96fe90cef01ecb8b6a9f935693f6d4ca95f611d6f61e2",
+  "specPath": "docs/specs/resource-admission-shadow-pilot.md",
+  "coveredFiles": [
+    ".instar/instar-dev-decisions/2026-11-25T07-59-40-242Z-resource-admission-shadow-pilot.json",
+    "docs/specs/reports/resource-admission-shadow-pilot-convergence.md",
+    "docs/specs/resource-admission-shadow-pilot.eli16.md",
+    "docs/specs/resource-admission-shadow-pilot.md",
+    "src/core/SessionManager.ts",
+    "src/data/awareness/resource-admission-shadow.md",
+    "src/monitoring/HostPressureSampler.ts",
+    "src/monitoring/ResourceAdmissionShadow.ts",
+    "src/server/AgentServer.ts",
+    "src/server/routes.ts",
+    "tests/e2e/session-reaper-lifecycle.test.ts",
+    "tests/integration/session-reaper-routes.test.ts",
+    "tests/unit/host-pressure-sampler.test.ts",
+    "tests/unit/resource-admission-shadow.test.ts",
+    "tests/unit/session-manager-behavioral.test.ts",
+    "upgrades/side-effects/resource-admission-shadow-pilot.md"
+  ],
+  "phase": "complete",
+  "tier": 2,
+  "tierReasoning": "Development-only advisory instrumentation spans launch and reporting. It grants no admission authority.",
+  "secondPass": "true",
+  "reviewerConcurred": true,
+  "toolchain": {
+    "convergence": {
+      "reportPath": "docs/specs/reports/resource-admission-shadow-pilot-convergence.md",
+      "iterations": 5,
+      "verified": true
+    }
+  }
+}

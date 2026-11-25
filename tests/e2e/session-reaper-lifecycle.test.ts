@@ -24,6 +24,7 @@ import { createMockSessionManager } from '../helpers/setup.js';
 import { StateManager } from '../../src/core/StateManager.js';
 import type { InstarConfig, Session } from '../../src/core/types.js';
 import type { TranscriptProbe } from '../../src/monitoring/transcriptProber.js';
+import type { ResourceAdmissionShadowReport } from '../../src/monitoring/ResourceAdmissionShadow.js';
 import { SafeFsExecutor } from '../../src/core/SafeFsExecutor.js';
 
 const IDLE_FRAME = 'output\n? for shortcuts\n> ';
@@ -98,8 +99,23 @@ describe('SessionReaper E2E lifecycle', () => {
       messaging: [], monitoring: {}, updates: {},
     };
     const state = new StateManager(stateDir);
-    server = new AgentServer({ config, sessionManager: createMockSessionManager() as any, state, sessionReaper: reaper });
-    await server.start();
+    let shadow: ResourceAdmissionShadowReport | undefined;
+    const sessionManager = {
+      ...createMockSessionManager(),
+      setShadowAdmissionReport: (value: ResourceAdmissionShadowReport) => { shadow = value; },
+      getShadowAdmissionReport: () => shadow?.snapshot(),
+      getShadowAdmissionObserverFailures: () => 0,
+    };
+    config.developmentAgent = true;
+    server = new AgentServer({ config, sessionManager: sessionManager as any, state, sessionReaper: reaper });
+    const oldOptIn = process.env.INSTAR_RESOURCE_ADMISSION_SHADOW;
+    process.env.INSTAR_RESOURCE_ADMISSION_SHADOW = '1';
+    try {
+      await server.start();
+    } finally {
+      if (oldOptIn === undefined) delete process.env.INSTAR_RESOURCE_ADMISSION_SHADOW;
+      else process.env.INSTAR_RESOURCE_ADMISSION_SHADOW = oldOptIn;
+    }
     app = server.getApp();
   });
 
@@ -111,6 +127,15 @@ describe('SessionReaper E2E lifecycle', () => {
 
   const auth = () => ({ Authorization: `Bearer ${AUTH_TOKEN}` });
   const reset = () => { now = 1_000_000; frame = IDLE_FRAME; transcript = { resolved: true, path: '/t.jsonl', size: 100, mtime: 1000 }; tier = 'critical'; sessions = [session('s1')]; reaping.clear(); terminate.mockClear(); (reaper as any).obs?.clear?.(); };
+
+  it('installs the opt-in shadow report on production server startup', async () => {
+    const res = await request(app).get('/sessions/reaper').set(auth());
+    expect(res.status).toBe(200);
+    expect(res.body.resourceAdmissionShadow).toMatchObject({
+      observed: 0, retained: 0, unknown: 0, observerFailures: 0,
+    });
+    expect(res.body.resourceAdmissionShadow.host).toBeTruthy();
+  });
 
   describe('Phase 1: feature is alive (not 503)', () => {
     it('GET /sessions/reaper returns 200 with a snapshot through the real AgentServer plumbing', async () => {

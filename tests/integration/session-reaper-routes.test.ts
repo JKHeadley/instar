@@ -15,6 +15,7 @@ import path from 'node:path';
 import os from 'node:os';
 import { createRoutes, type RouteContext } from '../../src/server/routes.js';
 import { computePressure, SessionReaper, type SessionReaperDeps } from '../../src/monitoring/SessionReaper.js';
+import { ResourceAdmissionShadowReport } from '../../src/monitoring/ResourceAdmissionShadow.js';
 import { SafeFsExecutor } from '../../src/core/SafeFsExecutor.js';
 import type { Session } from '../../src/core/types.js';
 
@@ -140,6 +141,30 @@ describe('GET /sessions/reaper (integration)', () => {
     expect(res.body.sessions[0].name).toBe('sess');
     expect(['keep', 'reap-eligible']).toContain(res.body.sessions[0].verdict);
     expect(res.body.pool).toBeUndefined();
+  });
+
+  it('reports opt-in shadow admission without changing the default response', async () => {
+    const reaper = new SessionReaper(reaperDeps([]), { enabled: true });
+    const off = await request(appWith(reaper)).get('/sessions/reaper');
+    expect(off.body.resourceAdmissionShadow).toBeUndefined();
+
+    const shadow = new ResourceAdmissionShadowReport('test-host', () => ({
+      nowMs: 100, maxSampleAgeMs: 10,
+      sample: { capturedAtMs: 95, nativePressure: 'warning' },
+    }));
+    shadow.observe({ path: 'normal', count: 1, limit: 15, countRefused: false });
+    const on = await request(appWith(reaper, {
+      sessionManager: {
+        getShadowAdmissionReport: () => shadow.snapshot(),
+        getShadowAdmissionObserverFailures: () => 0,
+      } as RouteContext['sessionManager'],
+    })).get('/sessions/reaper');
+    expect(on.status).toBe(200);
+    expect(on.body.resourceAdmissionShadow).toMatchObject({
+      host: 'test-host', observed: 1, observerFailures: 0,
+      recent: [{ path: 'normal', countRefused: false,
+        decision: { verdict: 'pressure-policy-excluded', reason: 'native-warning' } }],
+    });
   });
 
   it('reaper-pressure-signals: the new pressure inputs reach the route, and the 2026-10-25 phantom is gone', async () => {

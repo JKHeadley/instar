@@ -38,6 +38,8 @@ export const DEFAULT_HOST_PRESSURE_THRESHOLDS: HostPressureThresholds = {
 export type HostPressureInputs = PressureInputs & {
   /** Epoch ms of the sample these inputs came from (the cached reading's timestamp). */
   sampledAt?: number;
+  /** Bytes from the native Mac memory sample, absent on fallback. */
+  nativeAvailableBytes?: number;
   /** Width of the rate window the busy/decompression figures were measured over. */
   windowMs?: number | null;
 };
@@ -100,10 +102,14 @@ function takeSample(nowMs: number): HostPressureInputs {
   // derived from the same vm_stat snapshot — not three independent spawns that can disagree
   // and block the loop three times over (cross-model review).
   let freePct = 100;
+  let nativeAvailableBytes: number | undefined;
   let compressorPct: number | null = null;
   let decompressionsPerSec: number | null = null;
   try {
     const mem = memReader();
+    if (mem.pageSizeBytes && Number.isFinite(mem.freeGB) && mem.freeGB >= 0) {
+      nativeAvailableBytes = Math.round(mem.freeGB * 1024 ** 3);
+    }
     freePct = Math.max(0, Math.min(100, 100 - mem.pressurePercent));
     compressorPct = mem.compressorPercent == null || !Number.isFinite(mem.compressorPercent) ? null : Math.max(0, Math.min(100, mem.compressorPercent));
     decompressionsPerSec = samplers.decompressionRate.sampleFrom(mem, nowMs);
@@ -119,7 +125,12 @@ function takeSample(nowMs: number): HostPressureInputs {
   // The kernel's own compressor-aware verdict (macOS); one fast sysctl per 30 s sample.
   const kernelMemoryPressureLevel = kernelReader();
   const windowMs = cached ? nowMs - cached.atMs : null;
-  return { freePct, loadPerCore, cpuBusyPct, compressorPct, decompressionsPerSec, kernelMemoryPressureLevel, sampledAt: nowMs, windowMs };
+  return { freePct, loadPerCore, cpuBusyPct, compressorPct, decompressionsPerSec, kernelMemoryPressureLevel, sampledAt: nowMs, windowMs, nativeAvailableBytes };
+}
+
+/** Read the latest sample without invoking OS probes on the caller's path. */
+export function readCachedHostPressureInputs(): Readonly<HostPressureInputs> | undefined {
+  return cached?.inputs;
 }
 
 /**

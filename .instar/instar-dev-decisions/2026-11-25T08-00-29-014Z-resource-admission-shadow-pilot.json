@@ -1,0 +1,29 @@
+{
+  "ts": "2026-11-25T08:00:29.014Z",
+  "slug": "resource-admission-shadow-pilot",
+  "suggestedTier": 2,
+  "declaredTier": 2,
+  "riskFloor": 2,
+  "riskFloorReasons": [
+    "new capability: new exported class / subsystem added"
+  ],
+  "belowFloor": false,
+  "files": 6,
+  "loc": 293,
+  "scope": {
+    "basis": "staged-in-scope-paths-including-deleted",
+    "files": [
+      "src/core/SessionManager.ts",
+      "src/data/awareness/resource-admission-shadow.md",
+      "src/monitoring/HostPressureSampler.ts",
+      "src/monitoring/ResourceAdmissionShadow.ts",
+      "src/server/AgentServer.ts",
+      "src/server/routes.ts"
+    ],
+    "addedLines": 286,
+    "deletedLines": 7
+  },
+  "causalAutopsy": null,
+  "classClosure": null,
+  "verdict": "pass"
+}

@@ -16,6 +16,7 @@ import { describe, it, expect, beforeEach, afterEach, vi } from 'vitest';
 import fs from 'node:fs';
 import path from 'node:path';
 import os from 'node:os';
+import { ResourceAdmissionShadowReport } from '../../src/monitoring/ResourceAdmissionShadow.js';
 import { SafeFsExecutor } from '../../src/core/SafeFsExecutor.js';
 
 // Track mock tmux sessions at module scope so the mock and tests share state
@@ -553,6 +554,48 @@ describe('SessionManager behavioral tests', () => {
       const tmuxName = await manager.spawnInteractiveSession(undefined, 'chat');
       expect(tmuxName).toBeDefined();
       expect(tmuxName).toContain('chat');
+    });
+
+    it('records runner creation separately from count refusal and a later admission failure', async () => {
+      const report = new ResourceAdmissionShadowReport('test-host', () => ({ nowMs: 0, maxSampleAgeMs: 0 }));
+      manager.setShadowAdmissionReport(report);
+
+      await manager.spawnSession({ name: 'shadow-normal', prompt: 'test' });
+      await manager.spawnInteractiveSession(undefined, 'shadow-interactive');
+      await manager.spawnSession({ name: 'shadow-cap-fill', prompt: 'test' });
+      await expect(manager.spawnSession({ name: 'shadow-refused', prompt: 'test' })).rejects.toThrow();
+
+      manager.setAdmissionGate(() => ({ allowed: false, reason: 'overloaded' }));
+      await expect(manager.spawnInteractiveSession(undefined, 'shadow-overload')).rejects.toThrow();
+
+      expect(report.snapshot().recent.map(({ path, countRefused, launchOutcome }) => ({
+        path, countRefused, launchOutcome,
+      }))).toEqual([
+        { path: 'normal', countRefused: false, launchOutcome: 'runner-created' },
+        { path: 'interactive', countRefused: false, launchOutcome: 'runner-created' },
+        { path: 'normal', countRefused: false, launchOutcome: 'runner-created' },
+        { path: 'normal', countRefused: true, launchOutcome: 'not-applicable' },
+        { path: 'interactive', countRefused: false, launchOutcome: 'unresolved' },
+      ]);
+    });
+
+    it('keeps both count policies binding when shadow observation throws', async () => {
+      const observer = vi.fn((_observation: { path: string; count: number; limit: number; countRefused: boolean }) => {
+        throw new Error('observer unavailable');
+      });
+      manager.setShadowAdmissionObserver(observer);
+      for (let i = 0; i < 3; i++) {
+        await manager.spawnSession({ name: `shadow-job-${i}`, prompt: 'test' });
+      }
+      await expect(manager.spawnSession({ name: 'shadow-job-overflow', prompt: 'test' })).rejects.toThrow();
+      expect(observer).toHaveBeenLastCalledWith({ path: 'normal', count: 3, limit: 3, countRefused: true });
+
+      for (let i = 0; i < 6; i++) {
+        await manager.spawnInteractiveSession(undefined, `shadow-chat-${i}`);
+      }
+      await expect(manager.spawnInteractiveSession(undefined, 'shadow-chat-overflow')).rejects.toThrow('Absolute session limit');
+      expect(observer).toHaveBeenLastCalledWith({ path: 'interactive', count: 9, limit: 9, countRefused: true });
+      expect(manager.getShadowAdmissionObserverFailures()).toBe(11);
     });
 
     it('blocks interactive session when absolute limit is reached', async () => {

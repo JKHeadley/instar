@@ -1,3 +1,4 @@
+import type { RecordShadowOutcome, ResourceAdmissionShadowReport, SessionCountObservation } from '../monitoring/ResourceAdmissionShadow.js';
 import { neutralizeTerminalControls, sanitizeTypedText } from './terminalControlBytes.js';
 import { assertBrowserMcpProfilesSafe } from './BrowserMcpProfileGuard.js';
 /**
@@ -4576,6 +4577,42 @@ rm()  { "${shimRunner}" rm  "$@"; }
    * WorkAdmission is constructed; null = no admission control (today's behavior).
    */
   private admissionGate: ((kind: AdmissionKind, sessionName: string) => AdmissionDecision) | null = null;
+  private shadowAdmissionObserver: ((observation: SessionCountObservation) => RecordShadowOutcome | void) | null = null;
+  private shadowAdmissionReport: ResourceAdmissionShadowReport | null = null;
+  private shadowAdmissionObserverFailures = 0;
+
+  /** The observer receives count evidence only and cannot supply a verdict. */
+  setShadowAdmissionObserver(observer: SessionManager['shadowAdmissionObserver']): void {
+    this.shadowAdmissionObserver = observer;
+  }
+
+  setShadowAdmissionReport(report: ResourceAdmissionShadowReport): void {
+    this.shadowAdmissionReport = report;
+    this.setShadowAdmissionObserver(report.observe);
+  }
+
+  getShadowAdmissionReport() {
+    return this.shadowAdmissionReport?.snapshot();
+  }
+
+  private recordShadowOutcome(record: RecordShadowOutcome | void, outcome: 'runner-created' | 'unresolved'): void {
+    if (!record) return;
+    try { record(outcome); } catch { this.shadowAdmissionObserverFailures++; }
+  }
+
+  getShadowAdmissionObserverFailures(): number {
+    return this.shadowAdmissionObserverFailures;
+  }
+
+  private observeSessionCount(path: 'normal' | 'interactive', count: number, limit: number, countRefused: boolean): RecordShadowOutcome | void {
+    if (!this.shadowAdmissionObserver) return;
+    try {
+      return this.shadowAdmissionObserver({ path, count, limit, countRefused });
+    } catch {
+      this.shadowAdmissionObserverFailures++;
+    }
+  }
+
   /** Releases a recovery slot taken at admission when the spawn fails before `running` (second-pass #1). */
   private admissionRelease: ((sessionName: string) => void) | null = null;
 
@@ -4631,14 +4668,21 @@ rm()  { "${shimRunner}" rm  "$@"; }
     // one scheduled job alongside them while memory is healthy and the hard
     // absolute cap still has room. This remains a bounded loan, not an
     // increase in parallel job capacity or the rerouted memory cap.
-    if (effectiveCount >= this.config.maxSessions
-      && !(scheduled && this.scheduledOverflowAvailable(running, this.currentMemoryPressure()))) {
+    const countRefused = effectiveCount >= this.config.maxSessions
+      && !(scheduled && this.scheduledOverflowAvailable(running, this.currentMemoryPressure()));
+    const shadowOutcome = this.observeSessionCount('normal', effectiveCount, this.config.maxSessions, countRefused);
+    if (countRefused) {
       throw new SessionCapacityRefusedError(effectiveCount, this.config.maxSessions);
     }
     this.pendingHeadlessSpawns++;
     if (scheduled) this.pendingScheduledSpawns++;
     try {
-      return await this.spawnSessionInternal(options);
+      const session = await this.spawnSessionInternal(options);
+      this.recordShadowOutcome(shadowOutcome, 'runner-created');
+      return session;
+    } catch (error) {
+      this.recordShadowOutcome(shadowOutcome, 'unresolved');
+      throw error;
     } finally {
       this.pendingHeadlessSpawns--;
       if (scheduled) this.pendingScheduledSpawns--;
@@ -8476,7 +8520,9 @@ rm()  { "${shimRunner}" rm  "$@"; }
     // a human out of spawning — the death-spiral the boot purge guarded against
     // cannot relocate here.
     const countable = runningSessions.filter(s => !this.longIndeterminateSessions.has(s.id));
-    if (countable.length >= absoluteLimit) {
+    const countRefused = countable.length >= absoluteLimit;
+    const shadowOutcome = this.observeSessionCount('interactive', countable.length, absoluteLimit, countRefused);
+    if (countRefused) {
       throw new Error(
         `Absolute session limit (${absoluteLimit}) reached. ` +
         `Running: ${runningSessions.map(s => s.name).join(', ')}`
@@ -8484,7 +8530,12 @@ rm()  { "${shimRunner}" rm  "$@"; }
     }
     // Overload admission (Part C2): while overloaded, an operator session starts
     // only by taking the one host-wide recovery slot.
-    this.checkAdmission(options?.admissionKind ?? 'operator', tmuxSession);
+    try {
+      this.checkAdmission(options?.admissionKind ?? 'operator', tmuxSession);
+    } catch (error) {
+      this.recordShadowOutcome(shadowOutcome, 'unresolved');
+      throw error;
+    }
 
     // Every refusal after acquiring admission, including account selection or
     // resume placement before tmux exists, must give the recovery slot back.
@@ -8980,8 +9031,10 @@ rm()  { "${shimRunner}" rm  "$@"; }
       });
     }
 
+    this.recordShadowOutcome(shadowOutcome, 'runner-created');
     return tmuxSession;
     } catch (err) {
+      this.recordShadowOutcome(shadowOutcome, 'unresolved');
       if (!interactiveTmuxCreated) this.releaseAdmissionFor(tmuxSession);
       throw err;
     }
