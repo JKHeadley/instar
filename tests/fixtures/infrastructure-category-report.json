@@ -1,0 +1,137 @@
+{
+  "category": "infrastructure",
+  "sinceHours": 48,
+  "generatedAt": "2026-11-25T14:29:13.124Z",
+  "summary": {
+    "totalJobs": 8,
+    "healthy": 6,
+    "failing": 0,
+    "skipping": 3,
+    "disabled": 2,
+    "totalRuns": 967,
+    "totalFailures": 34,
+    "avgSuccessRate": 98.3
+  },
+  "jobs": [
+    {
+      "slug": "feedback-retry",
+      "enabled": true,
+      "state": {
+        "consecutiveFailures": 0
+      },
+      "stats": {
+        "totalRuns": 8,
+        "failures": 0
+      },
+      "skips": {
+        "total": 0,
+        "byReason": {}
+      }
+    },
+    {
+      "slug": "git-sync",
+      "enabled": false,
+      "state": {
+        "consecutiveFailures": 0
+      },
+      "stats": {
+        "totalRuns": 0,
+        "failures": 0
+      },
+      "skips": {
+        "total": 0,
+        "byReason": {}
+      }
+    },
+    {
+      "slug": "dashboard-link-refresh",
+      "enabled": true,
+      "state": {
+        "consecutiveFailures": 0
+      },
+      "stats": {
+        "totalRuns": 186,
+        "failures": 0
+      },
+      "skips": {
+        "total": 3,
+        "byReason": {}
+      }
+    },
+    {
+      "slug": "coding-tools-current",
+      "enabled": true,
+      "state": {
+        "consecutiveFailures": 0
+      },
+      "stats": {
+        "totalRuns": 5,
+        "failures": 0
+      },
+      "skips": {
+        "total": 0,
+        "byReason": {}
+      }
+    },
+    {
+      "slug": "laptop-stall-watch-review",
+      "enabled": false,
+      "state": {
+        "consecutiveFailures": 0
+      },
+      "stats": {
+        "totalRuns": 0,
+        "failures": 0
+      },
+      "skips": {
+        "total": 0,
+        "byReason": {}
+      }
+    },
+    {
+      "slug": "mini-space-floor-alert",
+      "enabled": true,
+      "state": {
+        "consecutiveFailures": 0
+      },
+      "stats": {
+        "totalRuns": 569,
+        "failures": 21
+      },
+      "skips": {
+        "total": 13,
+        "byReason": {}
+      }
+    },
+    {
+      "slug": "stewardship-disk-sample",
+      "enabled": true,
+      "state": {
+        "consecutiveFailures": 0
+      },
+      "stats": {
+        "totalRuns": 194,
+        "failures": 13
+      },
+      "skips": {
+        "total": 3,
+        "byReason": {}
+      }
+    },
+    {
+      "slug": "stewardship-worktree-storage-report",
+      "enabled": true,
+      "state": {
+        "consecutiveFailures": 0
+      },
+      "stats": {
+        "totalRuns": 5,
+        "failures": 0
+      },
+      "skips": {
+        "total": 0,
+        "byReason": {}
+      }
+    }
+  ]
+}

@@ -37,6 +37,26 @@ describe('guardian activity report', () => {
     expect(renderCategoryActivity(activity)).toContain('14 jobs, 41 runs, 0 failures, 7 jobs with skips.');
   });
 
+  it('matches the saved infrastructure category at its 48-hour window', () => {
+    const infrastructure = JSON.parse(readFileSync(new URL('../../fixtures/infrastructure-category-report.json', import.meta.url), 'utf8'));
+    const activity = calculateCategoryActivity(infrastructure, 'infrastructure');
+    expect([activity.jobs.length, activity.totalRuns, activity.totalFailures, activity.jobsSkipping]).toEqual([
+      infrastructure.summary.totalJobs, infrastructure.summary.totalRuns, infrastructure.summary.totalFailures, infrastructure.summary.skipping,
+    ]);
+    expect(renderCategoryActivity(activity)).toContain('8 jobs, 967 runs, 34 failures, 3 jobs with skips.');
+  });
+
+  it('reports an explicitly empty category and rejects an incomplete response for one with jobs', () => {
+    const checkedAt = '2026-11-25T14:29:13.124Z';
+    const empty = { category: 'infrastructure', jobs: [], summary: { totalJobs: 0, healthy: 0, failing: 0, skipping: 0 } };
+    const activity = calculateCategoryActivity(empty, 'infrastructure', checkedAt);
+    const report = renderCategoryActivity(activity);
+    expect(report).toContain('48-hour counts as of 2026-11-25T14:29:13.124Z.');
+    expect(report).toContain('0 jobs, 0 runs, 0 failures, 0 jobs with skips.');
+    expect(() => calculateCategoryActivity({ ...empty, jobs: saved.jobs }, 'infrastructure', checkedAt))
+      .toThrow('invalid activity report');
+  });
+
   it('rejects an impossible quota skip count', () => {
     const job = { ...saved.jobs[0], skips: { total: 0, byReason: { quota: 1 } } };
     expect(() => calculateCategoryActivity({ ...saved, jobs: [job] }, 'guardian')).toThrow('quota skips exceed skips');

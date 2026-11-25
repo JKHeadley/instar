@@ -118,7 +118,7 @@ console.log('JOB_RESULT ok checked');
 `;
 
 describe('script runner execution', () => {
-  it('saves the guardian activity report with no model fallback', async () => {
+  it('saves the overseer activity reports with no model fallback', async () => {
     project = createTempProject();
     const slug = 'guardian-activity-report-script';
     const source = new URL('../../../src/scaffold/templates/jobs/instar/scripts/guardian-activity-report-script.mjs', import.meta.url);
@@ -127,6 +127,7 @@ describe('script runner execution', () => {
       '/jobs/category-report/guardian?sinceHours=24': 'guardian-category-report.json',
       '/jobs/category-report/maintenance?sinceHours=48': 'maintenance-category-report.json',
       '/jobs/category-report/learning?sinceHours=48': 'learning-category-report.json',
+      '/jobs/category-report/infrastructure?sinceHours=48': 'infrastructure-category-report.json',
     };
     const fixtures = new Map(Object.entries(routes).map(([route, name]) => [
       route, fs.readFileSync(new URL(`../../fixtures/${name}`, import.meta.url), 'utf8'),
@@ -169,6 +170,8 @@ describe('script runner execution', () => {
       expect(maintenance).toContain('12 jobs, 28 runs, 0 failures, 1 job with skips.');
       const learning = fs.readFileSync(path.join(project.stateDir, 'reports', 'learning', `${run.runId}.txt`), 'utf8');
       expect(learning).toContain('14 jobs, 41 runs, 0 failures, 7 jobs with skips.');
+      const infrastructure = fs.readFileSync(path.join(project.stateDir, 'reports', 'infrastructure', `${run.runId}.txt`), 'utf8');
+      expect(infrastructure).toContain('8 jobs, 967 runs, 34 failures, 3 jobs with skips.');
       expect(requests.sort()).toEqual(Object.keys(routes).sort());
       expect(sm._spawnCount).toBe(0);
     } finally {

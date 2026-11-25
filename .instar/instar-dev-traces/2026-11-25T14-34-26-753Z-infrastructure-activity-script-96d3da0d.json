@@ -1,0 +1,24 @@
+{
+  "version": 2,
+  "slug": "infrastructure-activity-script",
+  "sessionId": "bcc82a0c-f81e-440b-88eb-304eb7ee4f4c",
+  "timestamp": "2026-11-25T14:34:26.753Z",
+  "artifactPath": "upgrades/side-effects/infrastructure-activity-script.md",
+  "artifactSha256": "668280ea36596b4a0349a69b9d7c3cac8b453221c0c48e96688687d809d9b9c4",
+  "coveredFiles": [
+    "docs/specs/guardian-activity-script.eli16.md",
+    "src/scaffold/templates/jobs/instar/guardian-activity-report-script.md",
+    "src/scaffold/templates/jobs/instar/scripts/guardian-activity-report-script.mjs",
+    "tests/fixtures/infrastructure-category-report.json",
+    "tests/unit/job-cost-runner/JobScheduler-script-runner.test.ts",
+    "tests/unit/job-scripts/guardian-activity-report.test.ts",
+    "upgrades/side-effects/infrastructure-activity-script.md"
+  ],
+  "phase": "complete",
+  "tier": 1,
+  "tierReasoning": "Disabled local evidence report expands to one existing category with no new authority",
+  "eli16Path": "docs/specs/guardian-activity-script.eli16.md",
+  "sideEffectsPath": "upgrades/side-effects/infrastructure-activity-script.md",
+  "secondPass": "not-required",
+  "reviewerConcurred": null
+}
