@@ -46,3 +46,11 @@ The unbounded-self-action guard is registered as small-peer-trial-admission. The
 Focused verification reproduced both failures on the published head. The initial repair passed all 176 cases. The second-pass revision preserves receipt precedence and single-flight recovery. Both focused files passed all 176 cases on the second-pass revision.
 
 Independent second pass by /root/mini_trial. Concur with the revised repair. Ordinary reservations poll first, receipt recovery precedes the first trial reservation's terminal checks, and empty-reservation ticks still recover pending receipts. Recovery stays within the polling lock. Renewal uses the dispatched request epoch and checks current custody before and after requesting the nonce.
+
+## Main branch refresh after borrowed-machine verification merged
+
+The merge combines three overlapping files. The coordinator keeps its Mini trial state and the borrowed-machine observer and helper seams. Peer status carries validated trial policy and parsed borrowed-machine fields. The request parser retains both optional fields and their existing validation. Trial policy still applies only to ordinary pull request verification and file counts still apply only to main.
+
+Both features retain their separate settings and admission checks. A malformed policy or request continues to fail closed. The resolver adds neither a route nor a persisted format. Rollback remains disabling the trial setting.
+
+Independent second pass by /root/mini_trial. Concur with the three-file merge resolution. Both parents' request and status validations survive. A trial remains pull-request-only and baseline file counts remain main-only. Returned records retain their signed receipt and known helper checks. The Mini's measured peak RSS covers processes on that host.

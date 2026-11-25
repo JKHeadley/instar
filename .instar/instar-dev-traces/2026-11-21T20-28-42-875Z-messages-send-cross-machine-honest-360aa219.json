@@ -1,0 +1,20 @@
+{
+  "version": 2,
+  "slug": "messages-send-cross-machine-honest",
+  "sessionId": "d281f530-04c8-44f6-8798-ffb6bbad13cd",
+  "timestamp": "2026-11-21T20:28:42.875Z",
+  "artifactPath": "upgrades/side-effects/messages-send-cross-machine-honest.md",
+  "artifactSha256": "e90e3079a667a237bbcb5602ced490d1ccc4a72c9c5cd2f828ab964fd5b9f640",
+  "coveredFiles": [
+    "docs/specs/messages-send-cross-machine-honest.eli16.md",
+    "src/core/UpdateChecker.ts",
+    "upgrades/side-effects/messages-send-cross-machine-honest.md"
+  ],
+  "phase": "complete",
+  "tier": 1,
+  "tierReasoning": "Comment-only: one catch states its @silent-fallback-ok reason so the ratchet passes on the branch merged with main; a revert fully undoes it",
+  "eli16Path": "docs/specs/messages-send-cross-machine-honest.eli16.md",
+  "sideEffectsPath": "upgrades/side-effects/messages-send-cross-machine-honest.md",
+  "secondPass": "not-required",
+  "reviewerConcurred": null
+}

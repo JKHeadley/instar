@@ -1492,6 +1492,7 @@ export class AgentServer {
     greenPrAutoMerger?: import('../monitoring/GreenPrAutoMerger.js').GreenPrAutoMerger;
     localVerify?: import('../localVerify/LocalVerifyService.js').LocalVerifyService;
     localVerifyStatus?: import('../localVerify/StatusReconciler.js').StatusReconciler;
+    localVerifyHelper?: import('../localVerify/helper/helperWiring.js').HelperRuntime;
     guardLatchStore?: import('../monitoring/GuardLatchStore.js').GuardLatchStore;
     agentStopSurfacer?: import('../monitoring/agentStopRelease.js').AgentStopSurfacer;
     workingMemory?: import('../memory/WorkingMemoryAssembler.js').WorkingMemoryAssembler;
@@ -1954,6 +1955,8 @@ export class AgentServer {
      *  GET /worktrees/agent-reaper. */
     agentWorktreeReaper?: import('../monitoring/AgentWorktreeReaper.js').AgentWorktreeReaper;
     diskSteward?: () => import('./diskStewardRoutes.js').DiskStewardRouteDeps | null;
+    /** Owned-repository registry (docs/specs/no-data-loss-on-machine-death.md §1.7): GET /repos. */
+    ownedRepos?: () => import('./ownedRepoRoutes.js').OwnedRepoRouteDeps | null;
     /** identity-security piece 2b: the owner record on this machine (GET /owner-record). */
     ownerRecord?: () => import('./ownerRecordRoutes.js').OwnerRecordRouteDeps | null;
     /** Work Board (docs/specs/work-board-asks.md): the runtime (null while off) and the seams it reads late. */
@@ -6854,6 +6857,7 @@ export class AgentServer {
       greenPrAutoMerger: options.greenPrAutoMerger ?? null,
       localVerify: options.localVerify ?? null,
       localVerifyStatus: options.localVerifyStatus ?? null,
+      localVerifyHelper: options.localVerifyHelper ?? null,
       guardLatchStore: options.guardLatchStore ?? null,
       agentStopSurfacer: options.agentStopSurfacer ?? null,
       workingMemory: options.workingMemory ?? null,
@@ -7169,6 +7173,7 @@ export class AgentServer {
       sessionReaper: options.sessionReaper ?? null,
       agentWorktreeReaper: options.agentWorktreeReaper ?? null,
       diskSteward: options.diskSteward ?? null,
+      ownedRepos: options.ownedRepos ?? null,
       ownerRecord: options.ownerRecord ?? null,
       workBoard: options.workBoard ?? null,
       workBoardLate: options.workBoardLate ?? null,
@@ -8202,6 +8207,8 @@ export class AgentServer {
         listPins: options.conversationListPins !== undefined ? options.conversationListPins : (this.appConversations ? new ConversationListPinStore({ stateDir: options.config.stateDir }) : null),
         slackConversations: slackBridge ? () => (slackOwnerUserId(options.config) ? slackListRows(slackBridge) : null) : undefined,
         config: options.config, pairing: this.mobilePairing, service: this.appConversations,
+        // SEC-164 §4.5: the removed-key notice, built by createRoutes (it holds Secret Drop).
+        credentialNotice: (input) => routeCtx.appCredentialNotice?.(input),
         mediaEnabled: isMobileMediaEnabled(options.config),
         machineId: () => this.appConversations?.deps.machineId() ?? 'local',
         sentinel: options.sentinel ?? null,

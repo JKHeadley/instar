@@ -11,7 +11,7 @@ import {
   maintainerMode, sourceState, buildShipping, watcherLine, releaseLine, holdWords, verifyWords, rollbackWords,
   buildPace, paceFailure, pacificDay, buildFeedback, operatorTodos, authorityCard, authorityStatusLine, progressLine, queueRow,
   readinessAuthorityRequest, triageAuthorityRequest, commitRequest, authorityResultWords, commitResultWords, developmentHeadline, stoppedLead, foldFromHash,
-  WATCHER_CADENCE_MS, STALL_TICKS, DEV_TOOLS_KEY,
+  WATCHER_CADENCE_MS, STALL_TICKS, DEV_TOOLS_KEY, borrowedSummary, borrowedLaneWords,
 } from '../../dashboard/console/development-model.js';
 import { NATIVE_PAGES, tabHref, GROUPS, MERGED } from '../../dashboard/console/nav-model.js';
 
@@ -513,6 +513,25 @@ describe('development page in a DOM', () => {
     expect(expanded(doc, 'shipping')).toBe('true');
   });
 
+  it('a run machine with a borrowed helper shows one quiet card with each lane in plain words; none without a helper', async () => {
+    const lane = (o: Record<string, unknown>) => ({ state: 'practice', mayCount: false, proven: true, evidence: { coverage: { complete: true }, spread: { complete: true }, failingDirection: { complete: false }, checkSlice: { complete: true }, wrongPassWindow: { complete: true } }, lastVerify: null, ...o });
+    const borrowed = { mode: 'count', helpers: [{ machineId: 'm_laptop', dryRunRunning: false, dryRunIntent: null, lanes: {
+      unit: lane({ state: 'counting', lastVerify: { at: '2026-10-25T23:00:00.000Z', sent: 40, finished: 32 } }), integration: lane({}), e2e: { state: 'practice', mayCount: false, evidence: null },
+    } }] };
+    const { doc } = await bootPage('#/work/development', { '/local-verify': { body: verify({ borrowed }) } });
+    const card = doc.querySelector('[data-borrowed-run]')!;
+    expect(card).not.toBeNull();
+    expect(card.textContent).toContain('Borrowed machines help the test line');
+    expect(card.textContent).toContain('quick tests: its passing results count');
+    expect(card.textContent).toContain('integration tests: practising (4 of 5 checks met)');
+    expect(card.textContent).toContain('end-to-end tests: not tried yet (no dry run)');
+    expect(card.textContent).toContain('it was given 40 files and finished 32');
+    // Not a need: nothing on it asks the operator anything.
+    expect(card.querySelector('button')).toBeNull();
+    const none = await bootPage('#/work/development', { '/local-verify': { body: verify({ borrowed: { mode: 'off', helpers: [] } }) } });
+    expect(none.doc.querySelector('[data-borrowed-run]')).toBeNull();
+  });
+
   it('notes under the Feedback tiles arrive as notes, never "[object HTMLParagraphElement]"', async () => {
     const summary = { ...(feedbackOk().triageSummary.data as Record<string, unknown>), quotaPause: { at: minsAgo(5) }, ignoreBrake: { engaged: true } };
     const { doc } = await bootPage('#/work/development?s=feedback', { '/feedback-factory/triage/summary': { body: summary } });
@@ -606,5 +625,24 @@ describe('development page in a DOM', () => {
     (doc.querySelector('#sec-pace .list-head') as HTMLButtonElement).click();
     expect(doc.querySelector('#sec-pace .card[data-state="unknown"] .card-line')!.textContent).toBe('Can’t reach GitHub from this machine: no GitHub sign-in found.');
     expect(doc.querySelectorAll('#sec-pace .fchip[aria-pressed="true"]')).toHaveLength(2);
+  });
+});
+
+describe('borrowed helpers on the run machine, in plain words', () => {
+  it('each lane state reads as words, never a code', () => {
+    expect(borrowedLaneWords({ state: 'counting', proven: true, evidence: {} })).toBe('its passing results count');
+    expect(borrowedLaneWords({ state: 'suspended', proven: true, evidence: {} })).toBe('paused after many disagreements in one run');
+    expect(borrowedLaneWords({ state: 'lapsed: image-changed', proven: true, evidence: {} })).toBe('back to practice after a problem');
+    expect(borrowedLaneWords({ state: 'practice', proven: false, evidence: {} })).toBe('not tried yet (no dry run)');
+    expect(borrowedLaneWords(undefined)).toBe('not tried yet (no dry run)');
+    expect(borrowedLaneWords({ state: 'practice', proven: true, evidence: { coverage: { complete: true } } })).toBe('practising (1 of 5 checks met)');
+  });
+  it('a summary only while a helper is set up; a dry run in progress is said', () => {
+    expect(borrowedSummary(null)).toBeNull();
+    expect(borrowedSummary({ mode: 'off', helpers: [{ machineId: 'm' }] })).toBeNull();
+    expect(borrowedSummary({ mode: 'practice', helpers: [] })).toBeNull();
+    const s = borrowedSummary({ mode: 'practice', helpers: [{ machineId: 'm_laptop', dryRunRunning: true, lanes: {} }] })!;
+    expect(s.title).toBe('Borrowed machines practise for the test line');
+    expect(s.rows[0]).toMatchObject({ machine: 'm_laptop', dry: 'A dry run is going on.', last: 'It has not been given any work yet.' });
   });
 });
