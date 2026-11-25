@@ -3,6 +3,9 @@
 // checks them.
 
 import { listModel, encodeNodeRef } from './conversations-model.js';
+import { verifiedDisplayName } from './display-identity.js';
+
+export const UNNAMED_TELEGRAM_CONVERSATION = 'Unnamed conversation';
 
 // ── conversations and their address in the hash (#/work/chats?c=<kind>:<id>) ──
 const UUID = /^[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12}$/;
@@ -43,7 +46,9 @@ export function listRows(body) {
     if (!ref) continue;
     out.push({
       ref, key: refString(ref), kind, kindLabel: KIND_LABEL[kind],
-      title: typeof r.title === 'string' && r.title.trim() ? r.title : (kind === 'telegram' ? `Topic ${r.id}` : 'Untitled'),
+      title: kind === 'telegram'
+        ? verifiedDisplayName(r.title, r.id) || UNNAMED_TELEGRAM_CONVERSATION
+        : typeof r.title === 'string' && r.title.trim() ? r.title : 'Untitled',
       lastActivity: typeof r.lastActivity === 'string' ? r.lastActivity : null,
       preview: typeof r.lastPreview === 'string' ? r.lastPreview : '',
       machine: typeof r.machine === 'string' ? r.machine : null,

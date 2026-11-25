@@ -15,7 +15,7 @@ import {
   createBrowserDevice, consolePathAllowed, secureContextOk, newRequestId, sha256Hex, DELETED_REASON, refusalWords, readRecord, readAllRecords, deleteRecord,
 } from './browser-device.js';
 import {
-  parseConversationRef, refString, refFromQuery, messageFromQuery, hashFor, listRows, listMeta, mergeListPages, validTitle,
+  UNNAMED_TELEGRAM_CONVERSATION, parseConversationRef, refString, refFromQuery, messageFromQuery, hashFor, listRows, listMeta, mergeListPages, validTitle,
   bubbles, mergeBubbles, applyEvents, deliveryLabel, mediaRefFor, declaredKindFor, checkFiles, humanSize,
   UNFINISHED_KEY, unfinishedAction, sendOutcome, pollUnion, createScheduler, ANNOUNCE_EVERY_MS, readMarkFor, telegramReadOnlyNote,
   setupRefusal, approvalWords, privateChatWords, blobTypeFor, listPinned, orderWithTree,
@@ -491,7 +491,10 @@ class ChatsPage {
     const open = this.view ? refString(this.view.ref) : '';
     if (this.view && this.view.titleEl) {
       const row = this.rows.find((r) => r.key === open);
-      if (row) { this.view.titleEl.textContent = row.title; this.view.titleEl = null; }
+      if (row) {
+        this.view.titleEl.textContent = row.title;
+        if (row.title !== UNNAMED_TELEGRAM_CONVERSATION) this.view.titleEl = null;
+      }
     }
     // Grouped | All: the toggle shows only when the hierarchy answered; without it the list is the full flat list.
     const grouped = Boolean(this.hierarchy) && this.listView === 'grouped';
@@ -661,8 +664,8 @@ class ChatsPage {
     const v = { ref, sourceTarget, sourceGeneration: 0, historyReady: false, earlierLoadSeq: 0, live: true, list: [], nextBefore: null, oldestTs: null, media: new Map(), mediaQueue: [], mediaInFlight: 0, slackKey: null, abort: this.abortable(), sending: 0, pins: [], pinIndex: 0 };
     this.view = v;
     const title = el('h2', { class: 'chat-title', text: row ? row.title : 'Conversation' });
-    // Opened from a link before the list arrived: the real title is filled in when the list paints.
-    v.titleEl = row ? null : title;
+    // Fill in a verified name when a later list read resolves this conversation.
+    v.titleEl = !row || row.title === UNNAMED_TELEGRAM_CONVERSATION ? title : null;
     const back = el('a', { class: 'btn-quiet chat-back', href: '#/work/chats', 'aria-label': 'Back to conversations', text: '‹' });
     const menu = el('div', { class: 'chat-menu' });
     if (ref.kind === 'app') {

@@ -1,0 +1,24 @@
+{
+  "version": 2,
+  "slug": "chat-verified-names",
+  "sessionId": "b5892410-5874-4620-9f7b-5e54791d9a9e",
+  "timestamp": "2026-11-25T18:36:10.270Z",
+  "artifactPath": "upgrades/side-effects/chat-verified-names.md",
+  "artifactSha256": "669a9338534332354b616428fa5c97212b6f7ad7d5edfcd56f68cd56038cbbb5",
+  "coveredFiles": [
+    "dashboard/console/chats-model.js",
+    "dashboard/console/chats.js",
+    "tests/unit/console-chats-model.test.ts",
+    "tests/unit/console-chats-page.test.ts",
+    "upgrades/next/chat-verified-names.md",
+    "upgrades/side-effects/chat-verified-names.eli16.md",
+    "upgrades/side-effects/chat-verified-names.md"
+  ],
+  "phase": "complete",
+  "tier": 1,
+  "tierReasoning": "Small reversible presentation fix using the shared display-name check and preserving routing.",
+  "eli16Path": "upgrades/side-effects/chat-verified-names.eli16.md",
+  "sideEffectsPath": "upgrades/side-effects/chat-verified-names.md",
+  "secondPass": "not-required",
+  "reviewerConcurred": null
+}
