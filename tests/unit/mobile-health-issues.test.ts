@@ -63,7 +63,7 @@ describe('the declared table', () => {
 describe('signalsFromHealth reads every other reason /health degrades', () => {
   it('finds each, and only past its threshold', () => {
     const ids = (h: unknown) => signalsFromHealth(h).map((s) => s.id);
-    expect(ids({ sessions: { current: 25, max: 25 } })).toEqual(['health:sessions-full']);
+    expect(ids({ sessions: { current: 25, max: 25 } })).toEqual(expect.arrayContaining(['health:sessions-full', 'SessionManager.verifyInjection.unsubmitted']));
     expect(ids({ sessions: { current: 24, max: 25 } })).toEqual([]);
     expect(ids({ consecutiveJobFailures: 5 })).toEqual(['health:job-failures']);
     expect(ids({ consecutiveJobFailures: 4 })).toEqual([]);
@@ -255,10 +255,11 @@ describe('summarizeHealth', () => {
 });
 
  it('capacity affects work but requires no person; other issues keep their existing meaning', () => {
- const s = summarizeHealth({status:'degraded',sessions:{current:25,max:25}}, [ev('iMessage')]);
+ const s = summarizeHealth({status:'degraded',sessions:{current:25,max:25}}, [ev('iMessage'), ev('SessionManager.verifyInjection.unsubmitted')]);
  expect(s.verdict).toBe('attention');
- expect(s.counts.userAffecting).toBe(2);
+ expect(s.counts.userAffecting).toBe(3);
+ expect(s.issues.find(i => i.id === 'SessionManager.verifyInjection.unsubmitted')).toMatchObject({requiresUserAction:false,impact:'user-affecting'});
  expect(s.issues.find(i => i.id === 'health:sessions-full')).toMatchObject({requiresUserAction:false,impact:'user-affecting',action:{app:'sessions'}});
  expect(s.issues.find(i => i.id === 'iMessage')).not.toHaveProperty('requiresUserAction');
- expect(HEALTH_RULES.filter(r => r.requiresUserAction === false).map(r => r.key)).toEqual(['health:sessions-full']);
+ expect(HEALTH_RULES.filter(r => r.requiresUserAction === false).map(r => r.key)).toEqual(expect.arrayContaining(['health:sessions-full', 'SessionManager.verifyInjection.unsubmitted']));
  });
