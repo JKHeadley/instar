@@ -42,7 +42,7 @@ describe('jev-correction-shadow — message seam + HTTP pipeline', () => {
     const root = fs.mkdtempSync(path.join(os.tmpdir(), 'jev-correction-it-'));
     const stateDir = path.join(root, '.instar');
     fs.mkdirSync(stateDir, { recursive: true });
-    const adapter = new TelegramAdapter({ token: 'test-token-123', chatId: '-100123456', pollIntervalMs: 100 }, stateDir);
+    const adapter = new TelegramAdapter({ token: 'test-token-123', chatId: '-100123456', pollIntervalMs: 100, authorizedUserIds: [4242] }, stateDir);
     let mid = 500;
     vi.spyOn(adapter as unknown as { apiCall: (m: string, p: Record<string, unknown>) => Promise<unknown> }, 'apiCall')
       .mockImplementation(async () => ({ message_id: ++mid, ok: true }));
@@ -66,7 +66,7 @@ describe('jev-correction-shadow — message seam + HTTP pipeline', () => {
     const seen: Array<{ fromUser: boolean }> = [];
     adapter.onMessageLogged = (entry) => { seen.push({ fromUser: entry.fromUser }); };
     const before = adapter.onMessageLogged;
-    adapter.onMessageLogged = (entry) => { if (before) before(entry); getJevCorrectionShadow()!.observe(entry); };
+    adapter.onMessageLogged = (entry) => { if (before) before(entry); getJevCorrectionShadow()!.observe(entry, adapter.getLearningOwner()); };
 
     await adapter.sendToTopic(42, 'I paused the build until Sunday.', { provenance: 'agent' } as never);
     adapter.logInboundMessage({ messageId: 9001, telegramUserId: 4242, forwarded: false, topicId: 42, text: 'No, waiting makes no sense on something we know is broken. Fix it now.', timestamp: new Date().toISOString(), senderName: 'Op' });
@@ -86,7 +86,7 @@ describe('jev-correction-shadow — message seam + HTTP pipeline', () => {
     const root = fs.mkdtempSync(path.join(os.tmpdir(), 'jev-correction-live-it-'));
     const stateDir = path.join(root, '.instar');
     fs.mkdirSync(stateDir, { recursive: true });
-    const adapter = new TelegramAdapter({ token: 'test-token-123', chatId: '-100123456', pollIntervalMs: 100 }, stateDir);
+    const adapter = new TelegramAdapter({ token: 'test-token-123', chatId: '-100123456', pollIntervalMs: 100, authorizedUserIds: [4242] }, stateDir);
     let mid = 700;
     vi.spyOn(adapter as unknown as { apiCall: (m: string, p: Record<string, unknown>) => Promise<unknown> }, 'apiCall')
       .mockImplementation(async () => ({ message_id: ++mid, ok: true }));
@@ -126,7 +126,7 @@ describe('jev-correction-shadow — message seam + HTTP pipeline', () => {
       }, rateState));
     });
     const before = adapter.onMessageLogged;
-    adapter.onMessageLogged = (entry) => { if (before) before(entry); getJevCorrectionShadow()!.observe(entry); };
+    adapter.onMessageLogged = (entry) => { if (before) before(entry); getJevCorrectionShadow()!.observe(entry, adapter.getLearningOwner()); };
 
     const pref = 'The more important thing than speed is quality and coherence, please keep that in mind going forward.';
     expect(HumanAsDetectorLog.getInstance().classify(pref)?.learningKind ?? null).toBeNull();

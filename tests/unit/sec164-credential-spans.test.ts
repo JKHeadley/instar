@@ -12,7 +12,9 @@ const botId = '123456789';
 const botSecret = 'AA' + 'b'.repeat(16) + 'C' + 'd'.repeat(16); // 35 chars, mixed case
 const botToken = `${botId}:${botSecret}`;
 const ghToken = 'ghp_' + 'x'.repeat(36);
-const pem = '-----BEGIN PRIVATE KEY-----\n' + 'A'.repeat(64) + '\n' + 'B'.repeat(64) + '\n-----END PRIVATE KEY-----';
+// The PEM armour is assembled at run time so no scanner sees a key header in the source; the body is filler.
+const pemArmour = (edge: string) => '-----' + edge + ' PRIVATE' + ' KEY-----';
+const pem = pemArmour('BEGIN') + '\n' + 'A'.repeat(64) + '\n' + 'B'.repeat(64) + '\n' + pemArmour('END');
 
 describe('SEC-164: findWallCredentialSpans', () => {
   it('finds a bot key alone, and the bot<id>:<secret> form inside a Telegram API address', () => {

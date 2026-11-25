@@ -1,6 +1,6 @@
 import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest';
 import { JSDOM } from 'jsdom';
-import { mountNeedsStrip, STRIP_REFRESH_MS } from '../../dashboard/console/needs-strip.js';
+import { mountNeedsStrip, needGroups, STRIP_REFRESH_MS } from '../../dashboard/console/needs-strip.js';
 
 const next = 'next+?=/';
 const first = 'first/';
@@ -15,6 +15,20 @@ function page(start = 0) {
     continuation: { start, nextCursor: start === 0 ? next : null, previousCursor: start === 0 ? null : first },
   } };
 }
+
+describe('grouping Needs-you requests', () => {
+  it('keeps every action, including identical titles, and uses source fields rather than title guesses', () => {
+    const rows = [
+      { title: 'Approve this', source: 'health', tone: 'bad', action: { kind: 'attention' } },
+      { title: 'Same title', source: 'workBoard', tone: 'attn', action: { kind: 'href', href: '#/one' } },
+      { title: 'Same title', source: 'plans', tone: 'attn', action: { kind: 'href', href: '#/two' } },
+      { title: 'An unfamiliar request', source: 'future-source', action: { kind: 'href', href: '#/three' } },
+    ];
+    const groups = needGroups(rows);
+    expect(groups.map(g => g.label)).toEqual(['Problems to check', 'Work that needs you', 'Plans to review', 'Other requests']);
+    expect(groups.flatMap(g => g.rows)).toEqual(rows);
+  });
+});
 
 describe('paging the Needs-you strip', () => {
   let dom: JSDOM, host: HTMLElement, stop: () => void;
@@ -41,6 +55,8 @@ describe('paging the Needs-you strip', () => {
     expect(host.querySelectorAll('li')).toHaveLength(3);
     await press('Show more needs');
     expect(host.querySelectorAll('li')).toHaveLength(100);
+    expect(host.querySelector('.needs-groups')?.getAttribute('tabindex')).toBe('0');
+    expect(host.querySelector('.needs-group-heading')?.textContent).toBe('Other requests · 100');
     await press('Next page');
     expect(get).toHaveBeenLastCalledWith('/needs?cursor=' + encodeURIComponent(next));
     expect(host.textContent).toContain('Showing 101–105 of 105');
@@ -53,6 +69,21 @@ describe('paging the Needs-you strip', () => {
     expect(host.textContent).toContain('Showing 1–100 of 105');
     await press('Show fewer');
     expect(host.querySelectorAll('li')).toHaveLength(3);
+  });
+  it('focuses the complete grouped region and preserves keyboard scrolling during refresh', async () => {
+    const mixed = page();
+    mixed.data.items = mixed.data.items.slice(0, 4).map((r, i) => ({ ...r, source: ['health', 'workBoard', 'plans', 'accounts'][i] }));
+    mixed.data.count = 4;
+    mixed.data.continuation = { start: 0, nextCursor: null, previousCursor: null };
+    const get = vi.fn().mockResolvedValue(mixed);
+    await mount(get); await press('One more thing needs you. Show it');
+    const region = host.querySelector<HTMLElement>('.needs-groups')!;
+    expect(document.activeElement).toBe(region);
+    expect(region.querySelectorAll('li')).toHaveLength(4);
+    region.scrollTop = 100;
+    await vi.advanceTimersByTimeAsync(STRIP_REFRESH_MS);
+    expect(host.querySelector('.needs-groups')).toBe(region);
+    expect(region.scrollTop).toBe(100);
   });
   it('offers retry for a dropped page and starts at the current first page after a stale cursor', async () => {
     const get = vi.fn().mockResolvedValueOnce(page()).mockRejectedValueOnce(new Error('offline'))
