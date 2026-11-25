@@ -1,0 +1,22 @@
+{
+  "ts": "2026-11-25T01:42:31.565Z",
+  "slug": "work-board-approval-binding-wip",
+  "suggestedTier": 2,
+  "declaredTier": 2,
+  "riskFloor": 1,
+  "riskFloorReasons": [],
+  "belowFloor": false,
+  "files": 1,
+  "loc": 89,
+  "scope": {
+    "basis": "staged-in-scope-paths-including-deleted",
+    "files": [
+      "src/core/WorkBoardSlipStore.ts"
+    ],
+    "addedLines": 88,
+    "deletedLines": 1
+  },
+  "causalAutopsy": null,
+  "classClosure": null,
+  "verdict": "pass"
+}

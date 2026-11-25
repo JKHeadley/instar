@@ -4,6 +4,7 @@ import { join } from 'node:path';
 import { SafeFsExecutor } from '../../src/core/SafeFsExecutor.js';
 import Database from 'better-sqlite3';
 import { afterEach, describe, expect, it } from 'vitest';
+import { approvalEventId } from '../../src/core/WorkBoardApprovalWriter.js';
 import { WorkBoardSlipStore, type WorkBoardSlipProposal } from '../../src/core/WorkBoardSlipStore.js';
 import { canonicalJson, sha256Hex } from '../../src/core/WorkCardStore.js';
 
@@ -83,15 +84,47 @@ describe('Work Board slip store', () => {
         const store = new WorkBoardSlipStore(first);
         const slip = store.issue(proposal)!;
         expect(store.consumeVerified(slip.id, slip.digest, proposal.writer, 'decision1')?.decisionId).toBe('decision1');
+        const key = { slipId: slip.id, digest: slip.digest, writer: proposal.writer, decisionId: 'decision1' };
+        const cardId = proposal.items[0].version.cardId;
+        expect(store.claimItem(key, cardId)).toBeTruthy();
         const second = new Database(path);
         try {
           first.close();
           const reopened = new WorkBoardSlipStore(second);
           expect(reopened.consumeVerified(slip.id, slip.digest, proposal.writer, 'decision1')?.decisionId).toBe('decision1');
           expect(reopened.consumeVerified(slip.id, slip.digest, proposal.writer, 'decision2')).toBeNull();
+          expect(reopened.claimItem(key, cardId)).toBeNull();
+          expect(reopened.readItemResults(key)).toEqual([{ cardId, status: 'unresolved' }]);
         } finally { second.close(); }
       } finally { if (first.open) first.close(); }
     } finally { SafeFsExecutor.safeRmSync(dir, { recursive: true, force: true, operation: 'tests/unit/work-board-slip-store.test.ts' }); }
+  });
+
+  it('claims once, rejects another generation as the winner and reports in signed order', () => {
+    const { store, proposal, nextTime } = fixture();
+    const item = proposal.items[0];
+    const secondItem = { ...item, version: { ...item.version, cardId: 'wc_8ef2f314f32acff4' } };
+    const slip = store.issue({ ...proposal, items: [secondItem, item] })!;
+    const key = { slipId: slip.id, digest: slip.digest, writer: proposal.writer, decisionId: 'decision1' };
+    const cardId = item.version.cardId;
+    expect(store.claimItem(key, cardId)).toBeNull();
+    expect(store.consumeVerified(slip.id, slip.digest, key.writer, key.decisionId)).not.toBeNull();
+    const claim = store.claimItem(key, cardId)!;
+    expect(claim).toBeTruthy();
+    expect(store.claimItem(key, cardId)).toBeNull();
+    expect(store.claimItem({ ...key, writer: { ...key.writer, epoch: 'wrong' } }, secondItem.version.cardId)).toBeNull();
+    expect(store.readItemResults(key)).toEqual([
+      { cardId: secondItem.version.cardId, status: 'pending' },
+      { cardId, status: 'unresolved' },
+    ]);
+    expect(store.finishItem(key, cardId, claim, { status: 'applied', eventId: 'wrong-event' })).toBe(false);
+    const eventId = approvalEventId({ proof: key.writer, version: item.version, source: 'slip', decisionId: key.decisionId });
+    expect(store.finishItem(key, cardId, 'wrong-claim', { status: 'applied', eventId })).toBe(false);
+    expect(store.finishItem(key, cardId, claim, { status: 'applied', eventId })).toBe(true);
+    expect(store.finishItem(key, cardId, claim, { status: 'changed' })).toBe(false);
+    expect(store.readItemResults(key)?.[1]).toEqual({ cardId, status: 'applied', eventId });
+    nextTime(slip.expiresAt);
+    expect(store.claimItem(key, secondItem.version.cardId)).toBeNull();
   });
 
   it('rejects an expired unsigned proposal and reuse of a decision ID on a second slip', () => {
