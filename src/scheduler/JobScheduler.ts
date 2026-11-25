@@ -1,3 +1,4 @@
+import { CLAUDE_CODE_FRAMEWORK } from '../core/frameworkFacts.js';
 import { SecurityReviewPreflight, securityPreflightFlags } from './SecurityReviewPreflight.js';
 import { isQuietReceipt, verifiedJobEnvelope } from '../messaging/NotificationSelectivityGate.js';
 import { notificationStamper, withNotificationEnvelope } from '../messaging/notificationStampers.js';
@@ -246,6 +247,12 @@ export class JobScheduler {
   /** Triage sessions: tmux name → their run row. */
   private projectedRuns: Map<string, { runId: string; slugTag: string; slug: string; trigger: string }> = new Map();
   private developmentReviewRosterKnown = false;
+  private memoryHygieneStartupLedgerAvailable: () => boolean = () => false;
+
+  setMemoryHygieneStartupLedgerAvailability(available: () => boolean): void {
+    this.memoryHygieneStartupLedgerAvailable = available;
+  }
+
   private tokenLedger: JobSessionLedger | null = null;
   private configReader: (() => Record<string, unknown> | null) | null = null;
   private configCache: { mtimeMs: number; value: Record<string, unknown> } | null = null;
@@ -3147,6 +3154,17 @@ export class JobScheduler {
       ? (this.developmentReviewRosterKnown
         ? !this.jobs.some(candidate => jobMatchesCategory(candidate, 'development')) : null)
       : undefined;
+    const memoryTrialMode = job.slug === 'memory-hygiene' && job.origin === undefined
+      && job.execute.type === 'skill' && job.execute.value === 'memory-hygiene'
+      && /^(?:queued:)*scheduled$/.test(reason)
+      ? (this.readAgentConfig()?.jobs as { memoryHygieneProjectIntegrationTrial?: unknown } | undefined)
+        ?.memoryHygieneProjectIntegrationTrial
+      : undefined;
+    const memoryTrialObserved = memoryTrialMode === 'baseline' || memoryTrialMode === 'without-project';
+    const memoryTrialEligible = memoryTrialObserved && this.memoryHygieneStartupLedgerAvailable()
+      && job.mcpAccess === undefined && !toolDecision.confinedTools
+      && fs.existsSync(path.join(path.dirname(this.stateDir), '.claude', 'skills', 'memory-hygiene', 'SKILL.md'))
+      && (spawnAllowedTools === undefined || ['Bash', 'Skill'].every(tool => spawnAllowedTools.includes(tool)));
     let gateSpawnAccepted = false;
     this.activeSessionSpawns.add(job.slug);
     const spawnPromise = toolDecision.refuse
@@ -3166,6 +3184,7 @@ export class JobScheduler {
       // MCP boot cost + the auth-required-remote-MCP headless hang hazard
       // (docs/specs/LOOP-SESSION-NO-MCP-SPEC.md). Absent/'project' → unchanged.
       disableProjectMcp: job.mcpAccess === 'none' ? true : undefined,
+      ...(memoryTrialMode === 'without-project' && memoryTrialEligible ? { memoryHygieneIntegrationTrial: true } : {}),
       ...(toolDecision.confinedTools ? { confinedTools: toolDecision.confinedTools } : {}),
       ...(toolDecision.requireConfinement ? { requireToolConfinement: true } : {}),
       // Per-job thinking mode (job-launch-intent-record §3): the launching builder translates
@@ -3191,6 +3210,9 @@ export class JobScheduler {
       }
       this.markCapacityJobStarted(job.slug);
       this.recordLedgerSession(session?.id ?? sessionName, job.slug, new Date().toISOString(), 'job');
+      const memoryTrialVariant = memoryTrialMode === 'baseline' && memoryTrialEligible && session?.framework === CLAUDE_CODE_FRAMEWORK
+        ? 'baseline' : session?.memoryHygieneIntegrationTrialApplied === true && memoryTrialMode === 'without-project'
+          ? 'without-project' : 'fallback';
       // Record in run history with full Phase 1b observability payload
       const runId = this.runHistory.recordStart({
         slug: job.slug,
@@ -3215,6 +3237,9 @@ export class JobScheduler {
         toolEnforcement: toolOutcome.toolEnforcement,
         // job-launch-intent-record §3/§4: taken from the same returned session as framework/model.
         ...(session?.launch ? { launch: session.launch } : {}),
+        ...(memoryTrialObserved && session?.id ? {
+          memoryHygieneIntegrationTrial: { variant: memoryTrialVariant, nativeSessionId: session.id },
+        } : {}),
         ...(wouldSkipDevelopmentReview !== undefined && session?.id ? {
           developmentReviewObservation: { wouldSkip: wouldSkipDevelopmentReview, nativeSessionId: session.id },
         } : {}),

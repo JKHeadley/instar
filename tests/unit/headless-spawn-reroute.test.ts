@@ -179,6 +179,20 @@ describe('headless-spawn reroute', () => {
     expect(saved.maxLifetimeMinutes).toBeUndefined();
   });
 
+  it.each(['off', 'force'] as const)('memory hygiene trial preserves Bash and Skill in %s mode', async mode => {
+    const { manager } = makeManager({ mode }, tmpDir);
+    const session = await manager.spawnSession({
+      name: 'memory-hygiene-fixture', jobSlug: 'memory-hygiene', prompt: 'p', allowedTools: ['Bash', 'Skill'],
+      memoryHygieneIntegrationTrial: true,
+    });
+    const argv = lastNewSessionArgv();
+    expect(argv).toContain('--strict-mcp-config');
+    expect(argv).toContain('{"mcpServers":{}}');
+    expect(argv).toContain('Bash,Skill');
+    expect(argv).not.toContain('--tools');
+    expect(session.memoryHygieneIntegrationTrialApplied).toBe(true);
+  });
+
   it('V1: mode off → identical headless argv (no reroute, no -x/-y interactive geometry)', async () => {
     const { manager } = makeManager({ mode: 'off' }, tmpDir);
     await manager.spawnSession({ name: 'job-off', prompt: 'p' });

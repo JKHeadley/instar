@@ -2146,6 +2146,25 @@ export class TokenLedger {
     }
   }
 
+  /** First observed Claude usage event of one known transcript. */
+  jobStartupUsage(transcriptSessionId: string): {
+    tokensIn: number; tokensOut: number; cacheRead: number; cacheWrite: number;
+  } | null {
+    if (this.closed || !transcriptSessionId) return null;
+    try {
+      return this.db.prepare(`
+        SELECT te.input_tokens AS tokensIn, te.output_tokens AS tokensOut,
+          te.cache_read_tokens AS cacheRead, te.cache_creation_tokens AS cacheWrite
+        FROM token_events te WHERE te.session_id = ?
+        ORDER BY te.ts, te.request_id LIMIT 1
+      `).get(transcriptSessionId) as
+        { tokensIn: number; tokensOut: number; cacheRead: number; cacheWrite: number } | undefined ?? null;
+    } catch {
+      // @silent-fallback-ok — the history response reports unknown startup usage.
+      return null;
+    }
+  }
+
   /**
    * Per-job token totals in [sinceMs, untilMs): job_sessions joined to token_events
    * (Claude, per request) and to codex_token_sessions (Codex, cumulative per session,

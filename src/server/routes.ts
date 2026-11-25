@@ -901,7 +901,7 @@ import { parseKnownRows, filterKnownRows } from './changeFeed.js';
 import { INITIATIVE_UPDATE_FIELDS } from '../core/InitiativeTracker.js';
 import { telegramTopicRef, topicRef } from '../messaging/shared/topicRef.js';
 import { peerFingerprintOfPlace } from '../users/peerPlaceAdmission.js';
-import { CODEX_CLI_FRAMEWORK } from '../core/frameworkFacts.js';
+import { CLAUDE_CODE_FRAMEWORK, CODEX_CLI_FRAMEWORK } from '../core/frameworkFacts.js';
 import { resolveFrameworkBinaryPath } from '../core/frameworkSessionLaunch.js';
 import { codexCliVersionCached, refreshCodexCliVersion } from '../core/codexCapabilities.js';
 import { operatorOnlyPathsInPatch } from '../config/bearerConfigWrite.js';
@@ -22402,6 +22402,19 @@ document.getElementById('mcpForm').addEventListener('submit', async function (e)
   // ── Job Run History ─────────────────────────────────────────────
 
   function presentJobRun(run: import('../scheduler/JobRunHistory.js').JobRun) {
+    const trial = run.memoryHygieneIntegrationTrial;
+    if (trial) {
+      const session = typeof trial.nativeSessionId === 'string' ? ctx.state.getSession(trial.nativeSessionId) : undefined;
+      const transcriptId = session?.jobSlug === run.slug && session?.framework === CLAUDE_CODE_FRAMEWORK ? session.claudeSessionId : undefined;
+      const { memoryHygieneIntegrationTrial: _privateTrial, ...publicRun } = run;
+      return {
+        ...publicRun,
+        memoryHygieneIntegrationTrial: {
+          variant: trial.variant,
+          startupUsage: transcriptId ? ctx.tokenLedger?.jobStartupUsage(transcriptId) ?? null : null,
+        },
+      };
+    }
     const observation = run.developmentReviewObservation;
     if (!observation) return run;
     // Token ingestion can lag completion. Read current attributed usage rather

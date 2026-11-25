@@ -62,6 +62,7 @@ export function boundLaunchRecord(launch: JobRunLaunch): JobRunLaunch {
 export interface JobRun {
   /** Disabled-by-default launch observation correlated to the native token ledger. */
   developmentReviewObservation?: { wouldSkip: boolean | null; nativeSessionId: string };
+  memoryHygieneIntegrationTrial?: { variant: 'baseline' | 'without-project' | 'fallback'; nativeSessionId: string };
   /** Unique run ID (slug + timestamp hash) */
   runId: string;
   /** Job slug */
@@ -289,6 +290,7 @@ export class JobRunHistory {
     toolEnforcement?: string;
     launch?: JobRunLaunch;
     developmentReviewObservation?: JobRun['developmentReviewObservation'];
+    memoryHygieneIntegrationTrial?: JobRun['memoryHygieneIntegrationTrial'];
   }): string {
     const runId = `${opts.slug}-${Date.now().toString(36)}-${(runCounter++).toString(36)}`;
     const run: JobRun = {
@@ -318,6 +320,7 @@ export class JobRunHistory {
       ...(opts.toolEnforcement !== undefined ? { toolEnforcement: opts.toolEnforcement } : {}),
       ...(opts.launch !== undefined ? { launch: boundLaunchRecord(opts.launch) } : {}),
       ...(opts.developmentReviewObservation ? { developmentReviewObservation: opts.developmentReviewObservation } : {}),
+      ...(opts.memoryHygieneIntegrationTrial ? { memoryHygieneIntegrationTrial: opts.memoryHygieneIntegrationTrial } : {}),
     };
     this.appendLine(run);
     return runId;

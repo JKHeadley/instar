@@ -3183,6 +3183,7 @@ export class AgentServer {
     const bindJobTranscript = (session: import('../core/types.js').Session, nativeId: string) =>
       options.scheduler?.bindTokenLedgerJobSession?.(session, nativeId);
     if (this.tokenLedger && options.scheduler) options.sessionManager.setClaudeSessionBoundSink?.(bindJobTranscript);
+    options.scheduler?.setMemoryHygieneStartupLedgerAvailability?.(() => this.tokenLedger !== null);
 
     // ── Unified Usage Ledger (docs/specs/unified-usage-ledger.md) ─────
     // Dev-gated (live on a development agent, dark on the fleet). Read-only against

@@ -74,6 +74,17 @@ describe('TokenLedger job_sessions', () => {
     expect(l.jobTokenTotals({ sinceMs: 0, nativeSessionId: 'missing' })).toEqual([]);
   });
 
+  it('reports the first ingested request for an exact transcript and ignores later usage', () => {
+    const l = make();
+    expect(l.jobStartupUsage('startup-transcript')).toBeNull();
+    event(l, 'later', 'startup-transcript', T0 + 5, 'haiku', 71);
+    event(l, 'first', 'startup-transcript', T0 + 1, 'haiku', 13);
+    expect(l.jobStartupUsage('startup-transcript')).toEqual({
+      tokensIn: 13, tokensOut: 10, cacheRead: 1000, cacheWrite: 50,
+    });
+    expect(l.jobStartupUsage('other-transcript')).toBeNull();
+  });
+
   it('a rotated transcript id (respawn) joins too, and origin triage is kept', () => {
     const l = make();
     l.recordJobSession('tmux-t', 'feedback-factory-triage', 'm1', T0, 'triage');

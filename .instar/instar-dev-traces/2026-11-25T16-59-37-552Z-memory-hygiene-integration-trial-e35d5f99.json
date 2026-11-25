@@ -1,0 +1,31 @@
+{
+  "version": 2,
+  "slug": "memory-hygiene-integration-trial",
+  "sessionId": "bcc82a0c-f81e-440b-88eb-304eb7ee4f4c",
+  "timestamp": "2026-11-25T16:59:37.552Z",
+  "artifactPath": "upgrades/side-effects/memory-hygiene-integration-trial.md",
+  "artifactSha256": "b520f598868528f9199fe359edc4142eafabb3843268e4ca58b6750e0bbcdf20",
+  "coveredFiles": [
+    "docs/specs/memory-hygiene-integration-trial.eli16.md",
+    "src/core/SessionManager.ts",
+    "src/core/types.ts",
+    "src/data/awareness/memory-hygiene-integration-trial.md",
+    "src/monitoring/TokenLedger.ts",
+    "src/scheduler/JobRunHistory.ts",
+    "src/scheduler/JobScheduler.ts",
+    "src/server/AgentServer.ts",
+    "src/server/routes.ts",
+    "tests/e2e/memory-hygiene-integration-trial-alive.test.ts",
+    "tests/integration/memory-hygiene-integration-trial-routes.test.ts",
+    "tests/unit/TokenLedger-job-sessions.test.ts",
+    "tests/unit/headless-spawn-reroute.test.ts",
+    "upgrades/side-effects/memory-hygiene-integration-trial.md"
+  ],
+  "phase": "complete",
+  "tier": 1,
+  "tierReasoning": "Narrow disabled-by-default launch trial, preserves existing tool policy and on missing prerequisites uses ordinary launch",
+  "eli16Path": "docs/specs/memory-hygiene-integration-trial.eli16.md",
+  "sideEffectsPath": "upgrades/side-effects/memory-hygiene-integration-trial.md",
+  "secondPass": "not-required",
+  "reviewerConcurred": null
+}

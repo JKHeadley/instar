@@ -1,0 +1,31 @@
+{
+  "ts": "2026-11-25T17:04:28.670Z",
+  "slug": "memory-hygiene-integration-trial",
+  "suggestedTier": 2,
+  "declaredTier": 1,
+  "riskFloor": 2,
+  "riskFloorReasons": [
+    "safety-invariant proximity: src/monitoring/TokenLedger.ts matches token handling"
+  ],
+  "belowFloor": true,
+  "files": 8,
+  "loc": 91,
+  "scope": {
+    "basis": "staged-in-scope-paths-including-deleted",
+    "files": [
+      "src/core/SessionManager.ts",
+      "src/core/types.ts",
+      "src/data/awareness/memory-hygiene-integration-trial.md",
+      "src/monitoring/TokenLedger.ts",
+      "src/scheduler/JobRunHistory.ts",
+      "src/scheduler/JobScheduler.ts",
+      "src/server/AgentServer.ts",
+      "src/server/routes.ts"
+    ],
+    "addedLines": 86,
+    "deletedLines": 5
+  },
+  "causalAutopsy": null,
+  "classClosure": null,
+  "verdict": "pass"
+}

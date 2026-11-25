@@ -87,6 +87,8 @@ export interface Session {
   id: string;
   name: string;
   status: SessionStatus;
+  /** The scoped memory hygiene trial sent the strict empty integration config. */
+  memoryHygieneIntegrationTrialApplied?: true;
   /** The job that spawned this session, if any */
   jobSlug?: string;
   /** tmux session name */
