@@ -37,3 +37,16 @@ it('binds the exact rendered plan and the visible grant scope in the same approv
     expect(ownerSpendingApprovalBinding({ ...disclosure, ...change })).not.toBe(expected);
   }
 });
+
+it('refuses malformed amounts, scope, times, origin and display text before hashing', () => {
+  for (const change of [
+    { dailyCapMicroUsd: 0 }, { dailyCapMicroUsd: 0.5 }, { dailyCapMicroUsd: Infinity },
+    { agentIds: [] }, { agentIds: ['z', 'a'] }, { purposeClasses: ['repeat', 'repeat'] },
+    { doors: [{ ...disclosure.doors[0], dailyCapMicroUsd: disclosure.dailyCapMicroUsd + 1 }] },
+    { grantExpiresAt: disclosure.grantStartsAt }, { slipExpiresAt: disclosure.grantExpiresAt + 1 },
+    { origin: 'https://fixture.invalid/path' }, { origin: 'http://fixture.invalid' },
+    { resetTimeZone: 'Not/AZone' }, { enablePlanText: '\ud800' },
+  ]) {
+    expect(() => ownerSpendingApprovalBinding({ ...disclosure, ...change })).toThrow('invalid owner spending disclosure');
+  }
+});

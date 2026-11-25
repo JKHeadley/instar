@@ -1,0 +1,19 @@
+{
+  "version": 2,
+  "slug": "owner-spending-disclosure-validation",
+  "sessionId": "b3d2cf8a-9b5d-468b-a50b-70ebf11e9e5c",
+  "timestamp": "2026-11-25T21:09:36.305Z",
+  "artifactPath": "upgrades/side-effects/owner-spending-disclosure-validation.md",
+  "artifactSha256": "7b70dafad15d33224eadf92280a9a101569bdded07e44a8b2017f6339fab9d25",
+  "coveredFiles": [
+    "src/core/ownerSpendingApprovalBinding.ts",
+    "tests/unit/owner-spending-approval-binding.test.ts"
+  ],
+  "phase": "complete",
+  "tier": 1,
+  "tierReasoning": "Synthetic typed codec only. No live caller or payment authority.",
+  "eli16Path": "docs/specs/owner-spending-permission-slips.eli16.md",
+  "sideEffectsPath": "upgrades/side-effects/owner-spending-disclosure-validation.md",
+  "secondPass": "true",
+  "reviewerConcurred": true
+}

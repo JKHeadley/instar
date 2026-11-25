@@ -5,3 +5,5 @@ The proposed flow puts one permission slip in Changes to approve. It shows the e
 The budget sets a ceiling across all covered routes and keeps the individual route limits in place. A covered call can use the budget without another spending question. If a call needs more authority, the app can show one separate approval for that exact call. The Spend tab will show reservations, actual charges and remaining funds, along with unresolved charges from earlier days.
 
 The checkpoint is a test of the bytes the phone would sign. It checks that changing a cap, agent, purpose, plan, date or other part of the decision changes the approval. No requests reach a provider. Before a live slip, the team must verify the enrolled phone, daily booking, revocation, recovery and each route's maximum charge.
+
+Before the test prepares a signing digest, it checks that the amounts are whole microdollars, the plan text can be encoded exactly, and the listed scope is in a consistent order with no duplicates. This prevents an incomplete or malformed plan from turning into something the phone would sign.
