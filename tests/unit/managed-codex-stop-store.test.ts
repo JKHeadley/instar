@@ -110,3 +110,38 @@ describe('managed Codex startup enrollment', () => {
     }
   });
 });
+
+it('holds the write lock from verified enrollment read through issuance', () => {
+  const directory = fs.mkdtempSync(path.join(os.tmpdir(), 'managed-stop-lock-'));
+  const file = path.join(directory, 'claims.sqlite');
+  const ownerDb = new Database(file);
+  const pauseDb = new Database(file, { timeout: 0 });
+  try {
+    const owner = new ManagedCodexStopStore(ownerDb);
+    const pauseWriter = new ManagedCodexStopStore(pauseDb);
+    owner.reserve('work', { ...identity, remaining: 2 });
+    let verified = false;
+    expect(owner.decideVerified(identity.sessionId, true, () => {
+      verified = true;
+      return first;
+    })).toMatchObject({ managed: true, directive: undefined });
+    expect(verified).toBe(false);
+    owner.activate(identity.sessionId);
+
+    const issued = owner.decideVerified(identity.sessionId, true, current => {
+      expect(current.outstanding).toBeUndefined();
+      expect(() => pauseWriter.pause(identity.sessionId)).toThrow(/database is locked/);
+      return first;
+    }).directive;
+    expect(issued?.cycle).toBe('first');
+    expect(pauseWriter.pause(identity.sessionId)).toBe(true);
+    expect(owner.decideVerified(identity.sessionId, true, current => {
+      expect(current.outstanding).toMatchObject(issued!);
+      return { ...first, cycle: 'second', marker: 'second-marker', receipt: issued };
+    }).directive).toBeUndefined();
+  } finally {
+    ownerDb.close();
+    pauseDb.close();
+    SafeFsExecutor.safeRmSync(directory, { recursive: true, force: true, operation: 'managed-stop-lock-fixture' });
+  }
+});

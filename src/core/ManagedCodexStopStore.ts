@@ -9,6 +9,7 @@ interface Claim {
 }
 
 export type ManagedStopCallback = Omit<ManagedStopInput, 'actionOpen' | 'paused'>;
+export type ManagedStopVerifiedFacts = Omit<ManagedStopCallback, 'sessionId' | 'enabled'>;
 
 /** Local authority for newly admitted managed actions in the one-member slice. */
 export class ManagedCodexStopStore {
@@ -77,29 +78,41 @@ export class ManagedCodexStopStore {
     return this.change(sessionId, claim => claim.actionOpen ? { ...claim, actionOpen: false } : claim);
   }
 
-  getEnrollment(sessionId: string): ManagedStopEnrollment | undefined {
-    const launchId = this.launchIdFor(sessionId);
-    return launchId === undefined ? undefined : this.read(launchId)?.enrollment;
-  }
-
-  hasEnrollment(sessionId: string): boolean {
-    return this.launchIdFor(sessionId) !== undefined;
-  }
-
   decide(callback: ManagedStopCallback) {
+    return this.decideVerified(callback.sessionId, callback.enabled, () => callback);
+  }
+
+  /**
+   * Read the enrollment, verify against that snapshot and consume the result
+   * under the same write lock that orders pause and one-time issuance.
+   */
+  decideVerified(
+    sessionId: string,
+    enabled: boolean,
+    verify: (enrollment: ManagedStopEnrollment) => ManagedStopVerifiedFacts | undefined,
+  ) {
     return this.db.transaction(() => {
-      const launchId = this.launchIdFor(callback.sessionId);
+      const launchId = this.launchIdFor(sessionId);
       const claim = launchId === undefined ? undefined : this.read(launchId);
       if (!claim || launchId === undefined) return { managed: false } as const;
+      if (claim.enrollment.state !== 'active' || claim.enrollment.sessionId !== sessionId) {
+        return { managed: true, directive: undefined } as const;
+      }
 
+      const verified = verify(claim.enrollment);
+      if (!verified) return { managed: true, directive: undefined } as const;
       const decision = decideManagedCodexStop(claim.enrollment, {
-        ...callback, actionOpen: claim.actionOpen, paused: claim.paused,
+        ...verified, sessionId, enabled, actionOpen: claim.actionOpen, paused: claim.paused,
       });
       if (decision.enrollment !== claim.enrollment) {
         this.write(launchId, { ...claim, enrollment: decision.enrollment });
       }
       return { managed: true, directive: decision.directive } as const;
     }).immediate();
+  }
+
+  hasEnrollment(sessionId: string): boolean {
+    return this.launchIdFor(sessionId) !== undefined;
   }
 
   private change(sessionId: string, transition: (claim: Claim) => Claim): boolean {

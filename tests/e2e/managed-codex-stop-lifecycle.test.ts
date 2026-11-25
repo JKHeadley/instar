@@ -43,13 +43,12 @@ it.skipIf(!codex).each([true, false])('drives an enrolled worker through package
     config: cfg, state: new StateManager(stateDir), sessionManager: sessionManager as never,
     managedCodexStop: {
       store,
-      verify: request => {
+      verify: (request, enrollment) => {
         if (request.topicId !== '147616' || request.sessionId !== workerId) return undefined;
         verifiedCallbacks++;
-        const enrollment = store.getEnrollment(workerId);
         const rollouts = fs.readdirSync(home, { recursive: true }).map(String)
           .filter(name => name.endsWith(workerId + '.jsonl'));
-        if (!enrollment || rollouts.length !== 1) return undefined;
+        if (rollouts.length !== 1) return undefined;
         return verifyManagedCodexStop(request, {
           topicId: '147616', nativeSessionId: workerId,
           machineId: 'fixture-one-member', ownerEpoch: 1,
