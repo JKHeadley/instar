@@ -2667,6 +2667,7 @@ export class AgentServer {
       // The same namespace the app conversation store stamps (people and roles §5).
       peopleMachineId: () => options.meshSelfId ?? options.coordinator?.identity?.machineId ?? 'local',
       holdsLease: () => (options.coordinator?.enabled ? options.coordinator.holdsLease() : true),
+      leaseFreshness: () => options.coordinator?.enabled ? options.coordinator.leaseFreshness() : null,
       // Multi-route: the real Tailscale CLI only outside a test run (a test injects its own).
       tailscaleExec: options.mobileRoutes && 'tailscaleExec' in options.mobileRoutes
         ? options.mobileRoutes.tailscaleExec ?? null
