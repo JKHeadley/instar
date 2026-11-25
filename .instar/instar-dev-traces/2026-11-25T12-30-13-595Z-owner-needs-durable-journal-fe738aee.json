@@ -1,0 +1,22 @@
+{
+  "version": 2,
+  "slug": "owner-needs-durable-journal",
+  "sessionId": "dd2f336e-e8f7-40b3-97e3-09d19139bfa6",
+  "timestamp": "2026-11-25T12:30:13.595Z",
+  "artifactPath": "upgrades/side-effects/owner-needs-durable-journal.md",
+  "artifactSha256": "4576a64e6ccd6a94e40c88b68cf5f9e3136b352b063751b4ce5f81f5f70f05b3",
+  "coveredFiles": [
+    "docs/specs/owner-needs-durable-journal.eli16.md",
+    "src/core/CoherenceJournal.ts",
+    "tests/unit/CoherenceJournal-chief-decision.test.ts",
+    "upgrades/next/owner-needs-durable-journal.md",
+    "upgrades/side-effects/owner-needs-durable-journal.md"
+  ],
+  "phase": "complete",
+  "tier": 1,
+  "tierReasoning": "Unwired checkpoint for a new append primitive, with no production entry point.",
+  "eli16Path": "docs/specs/owner-needs-durable-journal.eli16.md",
+  "sideEffectsPath": "upgrades/side-effects/owner-needs-durable-journal.md",
+  "secondPass": "true",
+  "reviewerConcurred": true
+}

@@ -726,6 +726,8 @@ export class CoherenceJournal {
   private flushCount = 0;
   private lockFd: number | null = null;
   private flushing = false;
+  private chiefDecisionPending = false;
+  private chiefDecisionPendingSeq: number | null = null;
   /** Monotonic suffix so rapid rotations within one ms get unique archive names. */
   private rotationCounter = 0;
 
@@ -896,6 +898,14 @@ export class CoherenceJournal {
     for (const kind of JOURNAL_KINDS) {
       this.recoverKind(kind);
     }
+    this.chiefDecisionPending = this.io.existsSync(this.chiefDecisionIntentPath());
+    if (this.chiefDecisionPending) {
+      try {
+        const intent = JSON.parse(this.io.readFileSync(this.chiefDecisionIntentPath(), 'utf-8') as string) as JournalEntry;
+        if (intent.kind === 'chief-of-staff-record' && intent.machine === this.machineId &&
+            Number.isSafeInteger(intent.seq) && intent.seq > 0) this.chiefDecisionPendingSeq = intent.seq;
+      } catch { /* @silent-fallback-ok: an unreadable intent withholds the whole kind */ }
+    }
     this.state = 'active';
     this.timer = setInterval(() => this.flush(), this.flushIntervalMs);
     if (typeof this.timer.unref === 'function') this.timer.unref();
@@ -955,7 +965,10 @@ export class CoherenceJournal {
   getOwnAdvert(): Record<JournalKind, { incarnation: string; lastSeq: number }> {
     const out = {} as Record<JournalKind, { incarnation: string; lastSeq: number }>;
     for (const kind of JOURNAL_KINDS) {
-      out[kind] = { incarnation: this.incarnation, lastSeq: this.highWaterSeq[kind] };
+      const lastSeq = kind === 'chief-of-staff-record' && this.chiefDecisionPending
+        ? Math.min(this.highWaterSeq[kind], (this.chiefDecisionPendingSeq ?? 1) - 1)
+        : this.highWaterSeq[kind];
+      out[kind] = { incarnation: this.incarnation, lastSeq };
     }
     return out;
   }
@@ -1085,6 +1098,168 @@ export class CoherenceJournal {
   }
 
   /**
+   * Dark exact-write path for an authenticated Chief of Staff decision.
+   * The ordinary queue cannot carry a decision because guard refusals retry.
+   */
+  appendChiefDecision(
+    stillAuthorized: () => boolean,
+    prepare: () => { key: string; data: Record<string, unknown> } | null,
+  ): boolean {
+    const kind = 'chief-of-staff-record';
+    if (!this.ownsWriterLock() || this.flushing || !stillAuthorized()) return false;
+    const marker = this.chiefDecisionIntentPath();
+    if (this.chiefDecisionPending || this.io.existsSync(marker)) throw new Error('chief-decision-reconciliation-required');
+    this.flush();
+    if (this.state !== 'active' || this.queue.some(entry => entry.kind === kind) || !stillAuthorized()) return false;
+    this.flushing = true;
+    try {
+      const candidate = prepare();
+      if (!candidate || !this.ownsWriterLock() || candidate.data.recordKey !== candidate.key ||
+          this.queue.some(entry => entry.kind === kind)) return false;
+      if (!this.replicatedRegistry?.isReplicatedKind(kind)) return false;
+      const data = this.validate(kind, candidate.data);
+      if (!data || data.recordKey !== candidate.key) return false;
+      const opKey = this.replicatedOpKey(data);
+      if (this.opKeys[kind].has(opKey)) return false;
+
+      const seq = this.nextSeq[kind];
+      const entry: JournalEntry = { seq, ts: this.now().toISOString(), machine: this.machineId, kind, data };
+      const line = JSON.stringify(entry);
+      if (Buffer.byteLength(line) > this.maxEntryBytesForKind(kind)) return false;
+      this.maybeRotate(kind);
+      const file = this.currentFilePath(kind);
+      try { this.guardWrite?.(file); }
+      catch { return false; } // @silent-fallback-ok: known preappend refusal
+      this.persistChiefDecisionIntent(marker, line, seq);
+      let fd: number;
+      try { fd = this.io.openSync(file, 'a'); }
+      catch {
+        this.clearChiefDecisionIntent(marker);
+        return false; // @silent-fallback-ok: no journal bytes could be written
+      }
+      try {
+        if (!this.ownsWriterLock()) throw new Error('chief-decision-writer-lock-lost');
+        if (!stillAuthorized()) {
+          this.clearChiefDecisionIntent(marker);
+          return false;
+        }
+        const bytes = Buffer.from(line + '\n');
+        if (this.io.writeSync(fd, bytes, 0, bytes.length) !== bytes.length) {
+          throw new Error('chief-decision-short-write');
+        }
+        this.io.fdatasyncSync(fd);
+        this.syncJournalDirectory();
+      } finally {
+        this.io.closeSync(fd);
+      }
+
+      this.nextSeq[kind] = seq + 1;
+      this.opKeys[kind].add(opKey);
+      this.trimOpKeys(kind);
+      this.highWaterSeq[kind] = Math.max(this.highWaterSeq[kind], seq);
+      this.persistMeta();
+      if (!stillAuthorized()) throw new Error('chief-decision-authority-changed-after-write');
+      this.clearChiefDecisionIntent(marker);
+      this.notifyReplicatedRecordsCommitted(kind, [{ kind, line, seq }]);
+      return true;
+    } finally {
+      this.flushing = false;
+    }
+  }
+
+  /**
+   * Clear a prior uncertain marker only for the exact local decision present in
+   * a complete, authenticated recovery view. Absence never clears this marker.
+   */
+  reconcileChiefDecision(
+    exactDecisionInCompleteView: (entry: JournalEntry, completeLocalEntries: readonly JournalEntry[]) => boolean,
+  ): boolean {
+    const kind = 'chief-of-staff-record';
+    if (!this.ownsWriterLock() || this.flushing) return false;
+    const marker = this.chiefDecisionIntentPath();
+    if (!this.io.existsSync(marker)) return false;
+    this.flushing = true;
+    try {
+      const line = this.io.readFileSync(marker, 'utf-8') as string;
+      const entry = JSON.parse(line) as JournalEntry;
+      if (entry.kind !== kind || entry.machine !== this.machineId ||
+          !Number.isSafeInteger(entry.seq) || entry.seq < 1 ||
+          !this.validate(kind, entry.data)) return false;
+      const local = this.readKindCompleteInternal(kind, 64 * 1024 * 1024);
+      const candidates = local.entries.filter(candidate => candidate.seq === entry.seq);
+      if (!local.complete || candidates.length !== 1 || JSON.stringify(candidates[0]) !== line ||
+          !exactDecisionInCompleteView(entry, local.entries) || !this.ownsWriterLock()) return false;
+      // The pending marker blocks this kind's rotation. A local exact row must
+      // still be in the current stream before it can be acknowledged.
+      const file = this.currentFilePath(kind);
+      const current = this.io.readFileSync(file, 'utf-8') as string;
+      if (!current.endsWith('\n') || !current.split('\n').includes(line)) return false;
+      const fd = this.io.openSync(file, 'r+');
+      try { this.io.fdatasyncSync(fd); }
+      finally { this.io.closeSync(fd); }
+      this.syncJournalDirectory();
+      this.nextSeq[kind] = Math.max(this.nextSeq[kind], entry.seq + 1);
+      this.highWaterSeq[kind] = Math.max(this.highWaterSeq[kind], entry.seq);
+      this.opKeys[kind].add(this.replicatedOpKey(entry.data));
+      this.trimOpKeys(kind);
+      this.persistMeta();
+      this.clearChiefDecisionIntent(marker);
+      this.notifyReplicatedRecordsCommitted(kind, [{ kind, line, seq: entry.seq }]);
+      return true;
+    } finally {
+      this.flushing = false;
+    }
+  }
+
+  private ownsWriterLock(): boolean {
+    if (this.state !== 'active' || this.lockFd === null) return false;
+    try {
+      const held = fs.fstatSync(this.lockFd);
+      const current = fs.statSync(this.lockPath());
+      return held.dev === current.dev && held.ino === current.ino;
+    } catch {
+      return false; // @silent-fallback-ok: missing or unreadable lock refuses the decision
+    }
+  }
+
+  private chiefDecisionIntentPath(): string {
+    return path.join(this.dirPath(), `${this.safeMachineId}.chief-decision-intent.json`);
+  }
+
+  private syncJournalDirectory(): void {
+    const directory = fs.openSync(this.dirPath(), 'r');
+    try { fs.fsyncSync(directory); }
+    finally { fs.closeSync(directory); }
+  }
+
+  private persistChiefDecisionIntent(marker: string, line: string, seq: number): void {
+    const staged = marker + '.' + crypto.randomUUID() + '.tmp';
+    const fd = this.io.openSync(staged, 'wx', 0o600);
+    try {
+      const bytes = Buffer.from(line);
+      if (this.io.writeSync(fd, bytes, 0, bytes.length) !== bytes.length) {
+        throw new Error('chief-decision-intent-short-write');
+      }
+      this.io.fdatasyncSync(fd);
+    } finally {
+      this.io.closeSync(fd);
+    }
+    if (!this.ownsWriterLock()) throw new Error('chief-decision-writer-lock-lost');
+    this.io.renameSync(staged, marker);
+    this.chiefDecisionPendingSeq = seq;
+    this.chiefDecisionPending = true;
+    this.syncJournalDirectory();
+  }
+
+  private clearChiefDecisionIntent(marker: string): void {
+    if (!this.ownsWriterLock()) throw new Error('chief-decision-writer-lock-lost');
+    SafeFsExecutor.safeUnlinkSync(marker, { operation: 'coherence-journal:chief-decision-intent' });
+    this.syncJournalDirectory();
+    this.chiefDecisionPending = false;
+    this.chiefDecisionPendingSeq = null;
+  }
+
+  /**
    * Resolve once `seq` for `kind` is DURABLE (meta.highWaterSeq advanced after
    * fdatasync — the same value `getOwnAdvert()` advertises), or reject: on timeout,
    * on a flush error observed while waiting, or when the journal is not active.
@@ -1145,7 +1320,7 @@ export class CoherenceJournal {
    */
   private emit(kind: JournalKind, topic: number | undefined, rawData: Record<string, unknown>, opKey: string): JournalEmitOutcome {
     try {
-      if (this.state !== 'active') return 'locked-out'; // locked-out or closed: silent no-op (never block)
+      if (this.state !== 'active' || (kind === 'chief-of-staff-record' && this.chiefDecisionPending)) return 'locked-out'; // locked-out or closed: silent no-op (never block)
 
       // Rate cap (token bucket) — over-cap emits drop + count.
       if (!this.takeToken(kind)) {
@@ -1469,6 +1644,10 @@ export class CoherenceJournal {
       }
 
       for (const [kind, items] of byKind) {
+        if (kind === 'chief-of-staff-record' && this.chiefDecisionPending) {
+          this.queue.push(...items);
+          continue;
+        }
         items.sort((a, b) => a.seq - b.seq);
         // Rotate-if-full BEFORE appending, so a current file always exists after
         // a flush and seq continues into a fresh file (§3.7). Seq is untouched.
@@ -1845,6 +2024,11 @@ export class CoherenceJournal {
    * `maxTotalBytes`, or a line other than a torn final line of the current file failed to parse. Never throws.
    */
   readKindComplete(kind: JournalKind, maxTotalBytes = 64 * 1024 * 1024): { entries: JournalEntry[]; complete: boolean } {
+    if (kind === 'chief-of-staff-record' && this.chiefDecisionPending) return { entries: [], complete: false };
+    return this.readKindCompleteInternal(kind, maxTotalBytes);
+  }
+
+  private readKindCompleteInternal(kind: JournalKind, maxTotalBytes: number): { entries: JournalEntry[]; complete: boolean } {
     // Its own directory read: an unreadable directory is an incomplete read, never "no archives".
     const listed = (): string[] | null => {
       try {
