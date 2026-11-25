@@ -64,7 +64,7 @@ afterAll(() => { for (const d of tmpDirs) SafeFsExecutor.safeRmSync(d, { recursi
 
 interface Rig { runtime: WorkBoardRuntime; journal: CoherenceJournal; lines: Array<{ key: string; id: string; text: string }>; briefs: string[]; conversations: Set<string>; removed: string[] }
 
-function mkRuntime(stateDir: string, opts: { rotateBytes?: number; permissionSlips?: ConstructorParameters<typeof WorkBoardRuntime>[0]['permissionSlips']; onAwaitDurable?: (seq: number, journal: CoherenceJournal) => void } = {}): Rig {
+function mkRuntime(stateDir: string, opts: { baseline?: () => UnionEntry[]; rotateBytes?: number; permissionSlips?: ConstructorParameters<typeof WorkBoardRuntime>[0]['permissionSlips']; onAwaitDurable?: (seq: number, journal: CoherenceJournal) => void } = {}): Rig {
   const reg = new ReplicatedKindRegistry(); reg.register(WORK_CARD_KIND_REGISTRATION);
   const journal = new CoherenceJournal({
     stateDir, machineId: 'm1', flushIntervalMs: 1_000_000,
@@ -81,7 +81,7 @@ function mkRuntime(stateDir: string, opts: { rotateBytes?: number; permissionSli
     awaitDurable: async (seq) => { journal.flush(); opts.onAwaitDurable?.(seq, journal); },
     loadUnion: () => {
       journal.flush();
-      const out: UnionEntry[] = [];
+      const out: UnionEntry[] = opts.baseline?.() ?? [];
       for (const byOrigin of streams.loadAllOriginRecords(WORK_BOARD_STORE_KEY).values()) for (const r of byOrigin) out.push({ data: { ...r.data, recordKey: r.envelope.recordKey, hlc: r.envelope.hlc, op: r.envelope.op, origin: r.origin }, origin: r.origin });
       return out;
     },
@@ -171,6 +171,34 @@ describe('Work cards from the owner phone E2E (feature is alive)', () => {
     } finally { rig.runtime.stop(); rig.journal.close(); db.close(); }
   });
 
+  it('fences an enrolled writer when a sealed peer record is missing at startup', () => {
+    const { stateDir } = mkConfig();
+    const db = new Database(':memory:');
+    const sealed = { origin: 'old-peer', data: { origin: 'old-peer', recordKey: 'wb-policy:sealed' } };
+    let baseline: UnionEntry[] = [];
+    const rig = mkRuntime(stateDir, {
+      baseline: () => [...baseline],
+      permissionSlips: {
+        store: new WorkBoardSlipStore(db),
+        currentWriter: () => ({ epoch: 'epoch1', ownerGeneration: 'owner1', ownerPersonKey: 'owner', writerIncarnation: 'i1' }),
+        sealedPeerHistory: new Set([workBoardHistoryFingerprint(sealed)]),
+        application: { readEvent: () => ({ status: 'unknown' }) },
+      },
+    });
+    const create = () => rig.runtime.svc.createCard({ kind: 'agent' }, {
+      title: 'Check sealed history', need: 'A complete baseline', doneWhen: [{ id: 'done', text: 'Checked' }], outward: true,
+    });
+    try {
+      rig.runtime.start();
+      expect(create()).toMatchObject({ ok: false, error: 'store-unavailable' });
+      baseline = [sealed];
+      rig.runtime.stop();
+      rig.runtime.start();
+      expect(create()).toMatchObject({ ok: false, error: 'store-unavailable' });
+      expect(rig.journal.readKindComplete(WORK_CARD_RECORD_KIND).entries).toHaveLength(0);
+    } finally { rig.runtime.stop(); rig.journal.close(); db.close(); }
+  });
+
   it('reads an enrolled slip and its exact receipt through the signed owner-device route', async () => {
     const { config, stateDir } = mkConfig();
     delete config.dashboardPin;
@@ -201,6 +229,7 @@ describe('Work cards from the owner phone E2E (feature is alive)', () => {
       }),
     };
     const rig: Rig = mkRuntime(stateDir, {
+      baseline: () => [sealed],
       permissionSlips: {
         store, currentWriter: () => active ? writer : null,
         sealedPeerHistory: new Set([workBoardHistoryFingerprint(sealed)]),

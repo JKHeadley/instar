@@ -287,7 +287,7 @@ export class WorkBoardRuntime {
       },
       loadUnion: () => {
         const entries = seams.loadUnion();
-        return this.admitSlipHistory(entries) && (!slips || this.currentSlipWriter()) ? entries : [];
+        return this.admitSlipHistory(entries, true) && (!slips || this.currentSlipWriter()) ? entries : [];
       },
       now: this.now,
       settings,
@@ -590,17 +590,22 @@ export class WorkBoardRuntime {
 
   stop(): void { this.controller.stop(); this.started = false; }
 
-  private admitSlipHistory(entries: UnionEntry[]): boolean {
-    const slips = this.seams.permissionSlips;
-    if (!slips) return true;
-    const conflict = entries.some((entry) => {
+  private admitSlipHistory(entries: UnionEntry[], requireCompleteBaseline = false): boolean {
+    if (!this.seams.permissionSlips) return true;
+    if (this.slipJournalConflict) return false;
+    const missing = requireCompleteBaseline ? new Set(this.sealedPeerHistory) : null;
+    const unexpected = entries.some((entry) => {
       const { origin, data } = entry;
-      return !origin || !data || data.origin !== origin
-        || (origin !== this.seams.machineId && !this.sealedPeerHistory.has(workBoardHistoryFingerprint(entry)));
+      if (!origin || !data || data.origin !== origin) return true;
+      if (origin === this.seams.machineId) return false;
+      const fingerprint = workBoardHistoryFingerprint(entry);
+      missing?.delete(fingerprint);
+      return !this.sealedPeerHistory.has(fingerprint);
     });
-    if (!conflict) return !this.slipJournalConflict;
+    const reason = unexpected ? 'unexpected-journal-origin' : missing?.size ? 'incomplete-sealed-history' : null;
+    if (!reason) return true;
     this.slipJournalConflict = true;
-    this.seams.log?.('work-board-slip-writer-fenced', { reason: 'unexpected-journal-origin' });
+    this.seams.log?.('work-board-slip-writer-fenced', { reason });
     return false;
   }
 

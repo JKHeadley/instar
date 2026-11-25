@@ -148,3 +148,16 @@ Every local Work Board journal mutation under the slip runtime now requires the 
 ## Peer journal admission and pickup fencing
 
 An enrolled runtime admits local records from trusted machine metadata and exact peer records whose fingerprints are present in the sealed enrollment history. An unexpected or unattributed record fences the runtime before applying that batch. The fence prevents later local writes and stops pickup at both the next pass and downstream dispatch or stop delivery. Legacy boards keep existing replication behavior. Independent review concurred. The lifecycle tests cover an exact sealed peer row, an unexpected peer edit, and an unexpected peer record arriving while pickup awaits its durable intent. Production proof of the sealed baseline and old-build refusal remains required.
+
+## Sealed peer history completeness
+
+The enrolled writer now checks that every sealed peer record is present in a full journal load. Missing records fence the same writer authority as unexpected records. Incoming deltas still use membership checks because each delta carries only a subset of the board.
+
+- Over-block. A temporarily incomplete peer stream leaves the enrolled board unavailable until the writer state is verified again. The fence persists through an in-process stop and start.
+- Under-block. The check covers the exact peer record set supplied by enrollment. Production enrollment still has to prove that set and the local writer journal boundary.
+- Abstraction and authority. The runtime's existing writer admission uses the exact proof supplied by enrollment. Availability probes and settings do not supply authority.
+- Interactions and surfaces. The check runs on full rebuilds before folding the journal. It adds a diagnostic reason and uses the existing unavailable behavior. Legacy boards and incremental replication retain their prior handling.
+- Multi-machine posture. The enrolled writer validates the baseline from its replicated journal union.
+- Rollback. Keep production enrollment off while changing the check. An enrolled board with unexplained journal loss needs verified recovery before it resumes writes.
+
+Independent review concurred after correcting the lifecycle fixture. Production enrollment must distinguish a verified empty peer baseline from absent evidence.
