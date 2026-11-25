@@ -1,0 +1,26 @@
+{
+  "ts": "2026-11-25T09:37:27.686Z",
+  "slug": "local-history-consent-source-proof",
+  "suggestedTier": 2,
+  "declaredTier": 2,
+  "riskFloor": 1,
+  "riskFloorReasons": [],
+  "belowFloor": false,
+  "files": 1,
+  "loc": 85,
+  "scope": {
+    "basis": "staged-in-scope-paths-including-deleted",
+    "files": [
+      "src/server/localHistoryConsentSourceProof.ts"
+    ],
+    "addedLines": 85,
+    "deletedLines": 0
+  },
+  "causalAutopsy": null,
+  "classClosure": {
+    "defectClass": "unbounded-self-action",
+    "closure": "n/a",
+    "reason": "Read-only verifier issues no proof, permit or autonomous action."
+  },
+  "verdict": "pass"
+}

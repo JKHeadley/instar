@@ -6,8 +6,8 @@ import express from 'express';
 import request from 'supertest';
 import { afterEach, expect, it } from 'vitest';
 import { canonicalString } from '../../src/core/MobileDeviceKeys.js';
-import { MachineIdentityManager } from '../../src/core/MachineIdentity.js';
-import { deviceKeyHashOf, identityKeyLookup, loadMachineSigner } from '../../src/core/AppRecordSignatures.js';
+import { MachineIdentityManager, sign } from '../../src/core/MachineIdentity.js';
+import { deviceKeyHashOf, identityKeyLookup, loadMachineSigner, signerKeyHashOf } from '../../src/core/AppRecordSignatures.js';
 import { MobileDeviceKeyLedger } from '../../src/core/MobileDeviceKeyLedger.js';
 import { SafeFsExecutor } from '../../src/core/SafeFsExecutor.js';
 import { MobilePairingService, type MobilePairingDeps } from '../../src/server/mobilePairingRoutes.js';
@@ -17,6 +17,8 @@ import { LocalHistoryChannel } from '../../src/import/LocalHistoryChannel.js';
 import { LocalHistoryChannelRegistry } from '../../src/import/LocalHistoryChannelRegistry.js';
 import { finishLocalHistoryHandshake } from '../../src/import/LocalHistoryHandshake.js';
 import { createLocalHistoryConsentPreview } from '../../src/server/localHistoryConsentPreview.js';
+import { createLocalHistoryCaptureResolver, localHistoryCaptureProofMessage, type LocalHistoryCaptureProof }
+  from '../../src/server/localHistoryConsentSourceProof.js';
 import { localHistoryConsentCardRevision } from '../../src/server/localHistoryConsentSlip.js';
 import { makeDevice } from '../helpers/mobileDevice.js';
 
@@ -147,18 +149,34 @@ it('opens the consent preview only for a signed sealed request with current card
   let card = { cardId, created: true, materialHash: '0'.repeat(64), materialRevision: '1'.repeat(64), reopens: [], taps: [] };
   const binding = { cardId, operationId, ownerUserId, previewId: preview.previewId, previewDigest: preview.previewDigest,
     materialHash: card.materialHash, cardRevision: localHistoryConsentCardRevision(card) };
-  const exactCapture = { operationId, ownerUserId, machineId: 'synthetic-source',
+  const source = crypto.generateKeyPairSync('ed25519');
+  const publicKeyPem = source.publicKey.export({ type: 'spki', format: 'pem' }).toString();
+  const sourceKey = { machineId: 'synthetic-source', signerKeyHash: signerKeyHashOf(publicKeyPem) };
+  const now = 1000;
+  const unsigned = { proofId: '9'.repeat(32), operationId, destination, sourceOwnerId: 'different-source-owner-id',
+    issuedAt: now - 100, expiresAt: now + 100,
     files: [{ fileId: artifact.fileId, kind: artifact.kind, captureDigest: artifact.captureDigest }] };
-  let capture: typeof exactCapture | undefined = exactCapture;
+  const signProof = (proof: typeof unsigned): LocalHistoryCaptureProof => ({
+    ...proof, signature: { ...sourceKey, sig: sign(localHistoryCaptureProofMessage(proof, sourceKey), source.privateKey.export({ type: 'pkcs8', format: 'pem' }).toString()) },
+  });
+  const exactProof = signProof(unsigned);
+  let proof: LocalHistoryCaptureProof | undefined = exactProof;
+  let authority: { publicKeyPem: string; destinationOwnerId: string } | undefined = { publicKeyPem, destinationOwnerId: ownerUserId };
+  const resolveOwnedCapture = createLocalHistoryCaptureResolver({
+    now: () => now,
+    loadProof: () => proof,
+    currentAuthority(query) {
+      if (query.operationId !== operationId || query.proofId !== unsigned.proofId || query.sourceOwnerId !== unsigned.sourceOwnerId
+        || query.machineId !== sourceKey.machineId || query.signerKeyHash !== sourceKey.signerKeyHash
+        || query.destination !== destination) return undefined;
+      return authority;
+    },
+  });
   const service = createLocalHistoryConsentPreview({
     withExchange: async work => { await work(); return true; }, channels,
     staging: { readOwnerConsentPreview: () => preview, readOwnerConsentCard: () => binding },
     board: { view: () => ({ status: 'not-started', card }) as never },
-    resolveOwnedCapture(operation, selectedDestination) {
-      expect(operation).toBe(operationId);
-      expect(selectedDestination).toEqual(destination);
-      return capture;
-    },
+    resolveOwnedCapture,
   });
   expect((await f.send(Buffer.alloc(24), undefined, url)).status).toBe(503);
   f.selectConsent(service);
@@ -184,19 +202,34 @@ it('opens the consent preview only for a signed sealed request with current card
   const input = { cardId, operationId };
   const reply = await sealed(input, 200);
   expect(reply).toMatchObject({ cardId, previewId: preview.previewId, destination,
-    files: [{ projectPath: artifact.projectPath, artifactDigest: artifact.artifactDigest, machineId: exactCapture.machineId }] });
+    files: [{ projectPath: artifact.projectPath, artifactDigest: artifact.artifactDigest, machineId: sourceKey.machineId }] });
   expect(JSON.stringify(reply)).not.toContain(artifact.captureDigest);
   expect(JSON.stringify(reply)).not.toContain('challenge');
   const refused = { error: 'local-history-consent-preview-unavailable' };
   expect(await sealed({ ...input, cardId: 'wc_' + 'f'.repeat(16) }, 404)).toEqual(refused);
   expect(await sealed({ ...input, machineId: 'claimed-source' }, 404)).toEqual(refused);
-  capture = undefined;
+  for (const invalid of [
+    undefined,
+    signProof({ ...unsigned, expiresAt: now }),
+    signProof({ ...unsigned, issuedAt: now + 1 }),
+    signProof({ ...unsigned, destination: { ...destination, bootId: 'other-boot' } }),
+    signProof({ ...unsigned, operationId: '8'.repeat(32) }),
+    signProof({ ...unsigned, sourceOwnerId: ownerUserId }),
+    { ...exactProof, signature: { ...exactProof.signature, sig: Buffer.alloc(64).toString('base64') } },
+    signProof({ ...unsigned, files: [{ ...unsigned.files[0], captureDigest: artifact.artifactDigest }] }),
+  ]) {
+    proof = invalid;
+    expect(await sealed(input, 404)).toEqual(refused);
+  }
+  proof = exactProof;
+  authority = undefined;
   expect(await sealed(input, 404)).toEqual(refused);
-  capture = { ...exactCapture, ownerUserId: 'other-owner' };
+  authority = { publicKeyPem: f.identity.getSigningPublicKeyPem(issuer.machineId)!, destinationOwnerId: ownerUserId };
   expect(await sealed(input, 404)).toEqual(refused);
-  capture = { ...exactCapture, files: [{ ...exactCapture.files[0], captureDigest: artifact.artifactDigest }] };
+  authority = { publicKeyPem, destinationOwnerId: 'other-owner' };
   expect(await sealed(input, 404)).toEqual(refused);
-  capture = exactCapture;
+  authority = { publicKeyPem, destinationOwnerId: ownerUserId };
+  expect(await sealed(input, 200)).toEqual(reply);
   card = { ...card, materialRevision: '2'.repeat(64) };
   expect(await sealed(input, 404)).toEqual(refused);
 });

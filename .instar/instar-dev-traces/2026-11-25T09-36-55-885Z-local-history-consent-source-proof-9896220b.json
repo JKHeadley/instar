@@ -1,0 +1,25 @@
+{
+  "version": 2,
+  "slug": "local-history-consent-source-proof",
+  "sessionId": "41652017-0805-405d-bb4e-2a975fb349ce",
+  "timestamp": "2026-11-25T09:36:55.885Z",
+  "artifactPath": "upgrades/side-effects/local-history-consent-source-proof.md",
+  "artifactSha256": "91cb135d1de4ac9e139d959fa747b817688e148cd7c1c2b4d6be8fee33f4c1ae",
+  "specPath": "docs/specs/local-history-native-contract.md",
+  "coveredFiles": [
+    "src/server/localHistoryConsentSourceProof.ts",
+    "tests/integration/signed-local-history-intake.test.ts",
+    "upgrades/next/local-history-consent-source-proof.md",
+    "upgrades/side-effects/local-history-consent-source-proof.md"
+  ],
+  "phase": "complete",
+  "tier": 2,
+  "tierReasoning": "Dormant verifier for scoped owner capture evidence and current machine and owner linkage.",
+  "secondPass": "true",
+  "reviewerConcurred": true,
+  "classClosure": {
+    "defectClass": "unbounded-self-action",
+    "closure": "n/a",
+    "reason": "Read-only verifier issues no proof, permit or autonomous action."
+  }
+}
