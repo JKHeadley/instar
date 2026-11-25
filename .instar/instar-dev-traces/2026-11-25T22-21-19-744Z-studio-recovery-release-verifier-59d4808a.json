@@ -1,0 +1,19 @@
+{
+  "version": 2,
+  "slug": "studio-recovery-release-verifier",
+  "sessionId": "79673ec9-ff9b-4e49-beab-ea9ff8ee8f93",
+  "timestamp": "2026-11-25T22:21:19.744Z",
+  "artifactPath": "upgrades/side-effects/studio-recovery-release-verifier.md",
+  "artifactSha256": "b37131c271c25b163e524fe43c0c73fa459c59982444b7bb37a0ad3a762aee5a",
+  "coveredFiles": [
+    "scripts/verify-studio-context-recovery.mjs",
+    "tests/unit/verify-studio-context-recovery.test.ts"
+  ],
+  "phase": "complete",
+  "tier": 1,
+  "tierReasoning": "Manual, read-only local diagnostic with no production wiring or authority over recovery and shortening.",
+  "eli16Path": "docs/eli16/studio-recovery-release-verifier.eli16.md",
+  "sideEffectsPath": "upgrades/side-effects/studio-recovery-release-verifier.md",
+  "secondPass": "not-required",
+  "reviewerConcurred": null
+}
