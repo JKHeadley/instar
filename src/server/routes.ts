@@ -2183,6 +2183,15 @@ export interface RouteContext {
    *  drainer's R2.6 operator-stop validation can see stops that post-date an
    *  entry's enqueue. Wired by the boot block alongside the queue. */
   operatorStopRecorder?: ((topicId: number | null) => void) | null;
+  /** Managed Stop owns enrolled workers even when it returns allow. Undefined
+   * leaves the request with the existing explicit task-ledger authority. */
+  decideManagedCodexStop?: (input: {
+    topicId: string;
+    sessionId: string;
+    turnId: string | undefined;
+    lastAssistantMessage: string | undefined;
+  }) => { decision: 'allow' } | { decision: 'continue'; reasonText: string } | undefined;
+
   /** AgentWorktreeReaper — reclaims stale CLI worktrees. Null when not wired.
    *  Powers GET /worktrees/agent-reaper observability. */
   agentWorktreeReaper?: import('../monitoring/AgentWorktreeReaper.js').AgentWorktreeReaper | null;
@@ -9927,8 +9936,19 @@ export function createRoutes(ctx: RouteContext): Router {
     const body = req.body as Record<string, unknown>;
     const topicId = String(body.topicId ?? '');
     if (refuseInadmissibleWrite(req, res, { topicId })) return;
+    const sessionId = String(body.sessionId ?? '');
+    const managedDecision = ctx.decideManagedCodexStop?.({
+      topicId,
+      sessionId,
+      turnId: typeof body.turnId === 'string' ? body.turnId : undefined,
+      lastAssistantMessage: typeof body.lastAssistantMessage === 'string' ? body.lastAssistantMessage : undefined,
+    });
+    if (managedDecision) {
+      res.json(managedDecision);
+      return;
+    }
     const store = continuationStore();
-    const decision = store.decide(topicId, String(body.sessionId ?? ''));
+    const decision = store.decide(topicId, sessionId);
     if (decision.decision === 'deactivate' && store.read(topicId)?.mode === 'autonomous-preparation') {
       setAutonomousPreparationState(ctx.config.stateDir, topicId, 'terminal');
     }
