@@ -153,6 +153,13 @@ describe('native app conversations — production wiring', () => {
     expect(hist.body.messages[0].originVerified).toBe('verified');
     expect(hist.body.messages[1].originVerified).toBe('none');
     const target = hist.body.messages[1].eventId as string;
+    const darkDelete = await send('POST', `/mobile/chat/app/${key}/message-removals`, {
+      custodianMachineId: server.appConversations!.deps.machineId(), eventId: target,
+      requestId: `${Date.now()}-${crypto.randomUUID()}`,
+    });
+    expect(darkDelete.status).toBe(403);
+    expect(server.appConversations!.store.messageRemoval(key, target, reply.body.messageId)).toEqual({ eventId: null });
+
     const exact = await send('GET', `/mobile/chat/app/${key}/message-context?target=${encodeURIComponent(target)}&targetKind=event`);
     expect(exact.status).toBe(200);
     expect(exact.body.anchorApplied).toEqual({ requestedTarget: target, eventId: target, messageId: reply.body.messageId });

@@ -1,0 +1,92 @@
+import type { Request } from 'express';
+import type { AppConversationService } from '../core/AppConversationService.js';
+import { derivedEventId, isAppConversationKey } from '../core/appConversationText.js';
+import { sha256Hex } from '../core/AppRecordSignatures.js';
+import { requestIdAgeOk, requestIdTime } from '../core/MobileChatRequests.js';
+import { isOwnerPerson } from '../core/MobilePeople.js';
+import { exactMessageReader } from './mobileExactMessageAuthority.js';
+import { deviceAdmissionIdentity, principalOf, type MobilePairingService } from './mobilePairingRoutes.js';
+
+type RemovalAdmission =
+  | { ok: false; status: 400 | 403 | 404 | 503; error: string }
+  | {
+      ok: true;
+      conversationKey: string;
+      targetEventId: string;
+      targetMessageId: string;
+      requestId: string;
+      custodianMachineId: string;
+      requestActor: string;
+      intentHash: string;
+      removalEventId: string;
+    };
+
+const unavailable = { ok: false, status: 404, error: 'message-removal-target-unavailable' } as const;
+const wrongCustodian = { ok: false, status: 503, error: 'message-removal-custody-unavailable' } as const;
+
+function isOpaqueId(value: unknown): value is string {
+  return typeof value === 'string' && value.length > 0 && value.length <= 128 && !/[\x00-\x1f\x7f]/.test(value);
+}
+
+/** Resolve a fresh signed removal intent. Admission has no storage or projection effects. */
+export function admitAppMessageRemoval(req: Request, pairing: MobilePairingService, service: AppConversationService): RemovalAdmission {
+  const principal = principalOf(req);
+  const signedIdentity = deviceAdmissionIdentity(req);
+  if (principal.kind !== 'device' || !signedIdentity) return { ok: false, status: 403, error: 'operator-device-required' };
+  const key = req.params.key;
+  const body: unknown = req.body;
+  if (!isAppConversationKey(key) || req.method !== 'POST' || req.originalUrl.includes('?') || !body || typeof body !== 'object'
+    || Array.isArray(body) || Object.keys(body).length !== 3) {
+    return { ok: false, status: 400, error: 'invalid-message-removal' };
+  }
+  const { custodianMachineId, eventId, requestId } = body as Record<string, unknown>;
+  if (!isOpaqueId(custodianMachineId) || !isOpaqueId(eventId) || typeof requestId !== 'string' || requestIdTime(requestId) === null) {
+    return { ok: false, status: 400, error: 'invalid-message-removal' };
+  }
+
+  if (!requestIdAgeOk(requestId, Date.now())) return { ok: false, status: 400, error: 'request-id-too-old' };
+  const current = exactMessageReader(pairing, req);
+  const actor = current();
+  const machine = service.deps.machineId();
+  const identityMachine = pairing.machineId();
+  if (!actor) return unavailable;
+  if (machine === 'local' || identityMachine !== machine || machine !== custodianMachineId) return wrongCustodian;
+  if (!service.liveConversation(key) || !pairing.mayUse(actor, key, 'read')) return unavailable;
+  const creation = service.store.getCreationRecord(key);
+  if (!creation) return unavailable;
+
+  const owner = creation.ownerPerson;
+  const ownsConversation = owner ? owner.machineId === machine && owner.userId === actor.userId : isOwnerPerson(actor);
+  if (!ownsConversation || !pairing.mayUse(actor, key, 'delete')) return unavailable;
+  if (creation.machineId !== machine || !service.serves(key)) return wrongCustodian;
+  const ownerIdentity = actor.userId === null ? pairing.ownerIdentity() : null;
+  if (actor.userId === null && ownerIdentity?.telegramOwnerId == null && ownerIdentity?.slackOwnerUserId == null) return unavailable;
+  let targets;
+  try {
+    targets = service.store.exactMessageCandidates(key, eventId, 'event');
+  } catch {
+    return unavailable; // @silent-fallback-ok — unreadable target shares the unavailable response
+  }
+  const [target] = targets;
+  if (targets.length !== 1 || target?.eventId !== eventId || !pairing.mayReadStored(actor, key, target)) return unavailable;
+
+  const rechecked = current();
+  if (!rechecked || rechecked.userId !== actor.userId || rechecked.role !== actor.role) return unavailable;
+
+  const actorScope = sha256Hex(JSON.stringify([
+    actor.userId, principal.deviceId, signedIdentity.keyHash,
+    ownerIdentity?.telegramOwnerId ?? null, ownerIdentity?.slackOwnerUserId ?? null,
+  ]));
+  // The caller must re-admit immediately before reservation if it awaits any work.
+  return {
+    ok: true,
+    conversationKey: key,
+    targetEventId: eventId,
+    targetMessageId: target.messageId,
+    requestId,
+    custodianMachineId,
+    requestActor: `app-message-removal:${actorScope}`,
+    intentHash: sha256Hex(JSON.stringify(['app-message-removal', machine, actorScope, key, eventId, target.messageId])),
+    removalEventId: derivedEventId('removed', JSON.stringify([machine, actorScope, requestId])),
+  };
+}

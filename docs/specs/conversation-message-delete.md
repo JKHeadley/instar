@@ -4,12 +4,12 @@ slug: conversation-message-delete
 author: echo
 status: approved
 approved: true
-approved-by: echo under standing build approval for the local storage checkpoint only
+approved-by: echo under standing build approval for local storage and private fresh admission only
 parent-principle: Operator-Surface Quality
 tier: 2
-review-convergence: "2026-11-25T15:44:49.672Z"
-review-iterations: 9
-review-completed-at: "2026-11-25T15:44:49.672Z"
+review-convergence: "2026-11-25T16:04:06.000Z"
+review-iterations: 13
+review-completed-at: "2026-11-25T16:04:06.000Z"
 review-report: "docs/specs/reports/conversation-message-delete-convergence.md"
 cross-model-review: "cross-model-review: codex-cli:gpt-6.2-astra"
 ---
@@ -20,7 +20,7 @@ The first increment hides one exact occurrence in an App conversation after an a
 
 ## Signed action and authority
 
-Use a device-signed action scoped to a live App conversation, exact event ID and request ID. The existing People policy supplies the current actor and row visibility. An eligible conversation owner may remove a visible occurrence. An eligible author may remove their own operator occurrence while their write grant is current. Establish author identity from recorded person and signed evidence, never display names or the current owner of an old device. Ambiguous or missing authorship grants no author privilege. Require active serving custody on the immutable creation machine for a first write. Same-intent retries keep the signed scope and return the recorded outcome. A changed target under the same request ID conflicts. An unresolved write cannot authorize a replacement mutation.
+Use a device-signed action scoped to a live App conversation, exact event ID and request ID. The existing People policy supplies the current actor and row visibility. An eligible conversation owner may remove a visible occurrence. Author-based removal requires immutable historical person evidence and is outside this admission checkpoint. Establish author identity from recorded person and signed evidence, never display names or the current owner of an old device. Ambiguous or missing authorship grants no author privilege. Require active serving custody on the immutable creation machine for a first write. Same-intent retries keep the signed scope and return the recorded outcome. A changed target under the same request ID conflicts. An unresolved write cannot authorize a replacement mutation.
 
 ## Visibility and durability
 
@@ -32,7 +32,7 @@ Retain original journal bytes under the existing storage policy. Message removal
 
 Show Delete only for a live capability and a settled row with an eligible action. Confirm on the captured target. Evict that row after an accepted response or an authenticated removal event. Leave the existing draft and other message actions intact. A denied or unavailable result must not remove a different row. The client must distinguish an unresolved request from a completed removal.
 
-Telegram mirroring follows the App action. It requires an exact verified provider mapping and independent provider authority. Report the two outcomes separately. The App copy can be removed even if Telegram fails or is unavailable. No substitute mutation can run when the mapping is missing.
+Telegram mirroring follows the App action. It requires an exact verified provider mapping and independent provider authority. Report the two outcomes separately. The App copy can be removed even if Telegram fails or is unavailable. No substitute mutation can run when the mapping is missing. Mirroring will require durable pending work bound to the same verified occurrence, and ambiguous provider acknowledgments remain unknown until reconciled.
 
 ## Related work
 
@@ -45,7 +45,7 @@ Telegram mirroring follows the App action. It requires an exact verified provide
 
 Name the mobile feed event `message-removed`, distinct from the existing conversation tombstone. It carries the exact removed event ID and the destination conversation scope. The paired and authorized feed establishes the account scope. Use the event ID as the merge key even when the retained message row also has a legacy message ID.
 
-A confirmed action response or authenticated feed event records a removal marker before applying any history merge. Scope markers by pairing, conversation and exact event ID. Apply markers to the current view, delayed history pages, exact context and any restored cache. Persist the marker and evict the row together when the client has durable history. A history page cannot clear a marker or revive that occurrence, even if the page was fetched later from a lagging replica. Keep markers across pagination, cursor changes and restart. Display restored durable history for a Delete-enabled conversation only after an authenticated restore handshake obtains the creation custodian’s current sync high-water mark and the client has durably applied authorized sync through that mark. Until then, keep that cached history covered. Clear markers with sign-out and when dropping the entire corresponding cache namespace, including any pending read generation. A denied or unknown action response leaves the row until an authenticated removal is observed.
+A confirmed action response or authenticated feed event records a removal marker before applying any history merge. Scope markers by pairing, conversation and exact event ID. Apply markers to the current view, delayed history pages, exact context and any restored cache. Persist the marker and evict the row together when the client has durable history. A history page cannot clear a marker or revive that occurrence, even if the page was fetched later from a lagging replica. Keep markers across pagination, cursor changes and restart. Display restored durable history for a Delete-enabled conversation only after an authenticated restore handshake obtains the creation custodian’s current sync high-water mark and the client has durably applied authorized sync through that mark. Until then, keep that cached history covered. Reconcile cached rows against current visibility before uncovering them. If current access cannot be reconciled, discard those rows and fetch authorized history. Clear markers with sign-out and when dropping the entire corresponding cache namespace, including any pending read generation. A denied or unknown action response leaves the row until an authenticated removal is observed.
 
 ## Store and read-path acceptance
 
@@ -65,7 +65,7 @@ The fact carries the conversation key, its own event ID, the exact target event 
 
 ## Frontloaded decisions
 
-The write route, when mounted, accepts one exact confirmed target and uses the same request intent at one signed custodian. Before append, persist the actor-scoped request reservation and a digest binding the full signed intent, including custodian, conversation and target event. Derive the removal event ID from the custodian, actor and request ID. A retry can acknowledge only the exact durable fact matching that reservation. Changed intent conflicts. A matching reservation with conclusively absent bytes may resume only on its original custodian after current authorization and target revalidation. Incomplete proof remains unknown. Projecting a removal into mobile sync needs authorization against the retained original access stamp, independently of whether the row itself is currently visible. Stop sync before the marker when original authorization cannot yet be determined, leaving the cursor before the fact and returning no later entries. Resume the same cursor after the original authorization evidence arrives. Consume a conclusively denied marker without exposing its IDs and continue to later entries. Recheck successful history and exact reads after awaited peer and pagination work. Before enabling Delete for a conversation, route interactive projections for that conversation to its immutable creation custodian. Fail closed while that custodian or its indexed visibility evidence is unavailable. Pool lists and search cannot fall back to a peer copy. Persist the authoritative-read requirement independently of the write flag. Keep it across disablement, transfer and downgrade, including while the custodian is unavailable. Only an upgraded custodian can serve affected interactive reads.
+The write route, when mounted, accepts one exact confirmed target and uses the same request intent at one signed custodian. Before append, persist the actor-scoped request reservation and the digest of the custodian, conversation and resolved target. The derived fact ID binds the request ID. Derive the removal event ID from the custodian, actor and request ID. A retry can acknowledge only the exact durable fact matching that reservation. Changed intent conflicts. A matching reservation with conclusively absent bytes may resume only on its original custodian after current authorization and target revalidation. Incomplete proof remains unknown. Projecting a removal into mobile sync needs authorization against the retained original access stamp, independently of whether the row itself is currently visible. Stop sync before the marker when original authorization cannot yet be determined, leaving the cursor before the fact and returning no later entries. Resume the same cursor after the original authorization evidence arrives. Consume a conclusively denied marker without exposing its IDs and continue to later entries. Recheck successful history and exact reads after awaited peer and pagination work. Before enabling Delete for a conversation, route interactive projections for that conversation to its immutable creation custodian. Fail closed while that custodian or its indexed visibility evidence is unavailable. Pool lists and search cannot fall back to a peer copy. Persist the authoritative-read requirement independently of the write flag. Keep it across disablement, transfer and downgrade, including while the custodian is unavailable. Only an upgraded custodian can serve affected interactive reads. Activation requires a version-independent front-door check that excludes incompatible serving builds, including during downgrade.
 
 ## Decision points touched
 
@@ -88,3 +88,11 @@ A future supported removal fact replicates through the existing App event journa
 - **graduation criterion:** Exact confirmed removal survives reopen, replication and stale page merges without disclosing the original text or altering any unaffected occurrence.
 - **dark-window:** Review within 14 days of the runtime merge and record any failed condition with the next review date.
 - **ladder:** mobilePairing.native
+
+## Signed admission checkpoint
+
+Fresh admission runs the exact-message device authority, then checks current conversation read access, unique creation custody, active serving status, conversation ownership, the current delete grant and exact row access. It takes a signed JSON object containing exactly `custodianMachineId`, `eventId` and `requestId` on the path that names the conversation. Denied, missing, unreadable and ambiguous targets share one response once custody and conversation authority are established. An unavailable custodian returns the same result for any target ID.
+
+The first implementation admits the recorded conversation owner. A legacy owner conversation admits its owner profile when the server has a stable named person or owner account identifier. A named owner must match the current signed person in the creation machine namespace. The pairing namespace and serving machine ID must agree. Broader conversation grants do not confer ownership. The existing device signature binds the sending key and original request, but does not authenticate a historical person assignment. Author-based admission must wait for immutable person evidence so that reassigning a device cannot transfer a former person's removal rights.
+
+The admission result is internal. It includes a derived fact ID bound to the custodian, signed pairing, current person identity and request ID, and a digest that also binds the conversation and exact message occurrence. A later handler must persist and compare these values before touching storage. The namespace uses the signed device key and named user ID, or owner account identifiers for unnamed owner profiles, so an owner account change does not inherit the old namespace. The fresh-admission helper issues no receipt and does not reserve, append, advertise or expose a production route. This keeps the storage and authorization checkpoints separate from the visibility change. Retry and recovery will run before fresh admission when the client already has a recorded request. They still require current signed scope and must not disclose original text.

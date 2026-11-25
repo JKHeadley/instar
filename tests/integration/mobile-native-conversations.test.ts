@@ -18,6 +18,7 @@ import { createRoutes, type RouteContext } from '../../src/server/routes.js';
 import { authMiddleware } from '../../src/server/middleware.js';
 import { MobilePairingService, createMobilePairingRouter, deviceAuthenticator, type MobilePairingDeps } from '../../src/server/mobilePairingRoutes.js';
 import { createMobileConversationRouter } from '../../src/server/mobileConversationRoutes.js';
+import { admitAppMessageRemoval } from '../../src/server/mobileAppMessageRemovalAdmission.js';
 import { MobileChatRequestStore } from '../../src/core/MobileChatRequests.js';
 import { AppConversationService, STRANDED_REQUEST_AGE_MS } from '../../src/core/AppConversationService.js';
 import { ConversationRegistry } from '../../src/core/ConversationRegistry.js';
@@ -41,7 +42,7 @@ afterAll(() => {
   for (const d of dirs) SafeFsExecutor.safeRmSync(d, { recursive: true, force: true, operation: 'tests/integration/mobile-native-conversations.test.ts' });
 });
 
-interface Opts { forwards?: boolean; reactions?: boolean; machineId?: string; links?: boolean; replies?: boolean; sentinel?: { decideInboundDisposition: () => Promise<{ disposition: string }> }; lease?: { held: boolean }; holdsLease?: () => boolean; recording?: { on: boolean }; dispatchThrows?: boolean; nativeOff?: boolean; dispatchDelayMs?: number }
+interface Opts { removalAdmissionProbe?: boolean; forwards?: boolean; reactions?: boolean; machineId?: string; links?: boolean; replies?: boolean; sentinel?: { decideInboundDisposition: () => Promise<{ disposition: string }> }; lease?: { held: boolean }; holdsLease?: () => boolean; recording?: { on: boolean }; dispatchThrows?: boolean; nativeOff?: boolean; dispatchDelayMs?: number }
 
 function setup(opts: Opts = {}) {
   const machineId = opts.machineId ?? 'm1';
@@ -58,7 +59,8 @@ function setup(opts: Opts = {}) {
   const registry = new ConversationRegistry({ stateDir: dir, machineId: () => machineId, isRecordingEnabled: () => recording.on });
   const bindAuth = createConversationBindAuth(dir);
   const holdsLease = opts.holdsLease ?? (() => lease.held);
-  const deps: MobilePairingDeps = { config: config as never, stateDir: dir, holdsLease };
+  const deps: MobilePairingDeps = { config: config as never, stateDir: dir, holdsLease,
+    ...(opts.removalAdmissionProbe ? { peopleMachineId: () => machineId, telegramOwnerId: () => 9000 } : {}) };
   const pairing = new MobilePairingService(deps);
   pairing.nativeOn = !opts.nativeOff;
   cleanups.push(() => pairing.stop());
@@ -87,6 +89,14 @@ function setup(opts: Opts = {}) {
   const app = express();
   app.use(express.json({ verify: (req, _res, buf) => { (req as unknown as { rawBody: Buffer }).rawBody = buf; } }));
   app.use(authMiddleware(() => 'tok-1', 'echo', undefined, deviceAuthenticator(pairing)));
+  // Private harness only: exercise production request authentication on an already allowlisted
+  // JSON path. No application router advertises or mounts Delete at this checkpoint.
+  if (opts.removalAdmissionProbe && svc) {
+    app.post('/mobile/chat/app/:key/forward', (req, res) => {
+      const admission = admitAppMessageRemoval(req, pairing, svc);
+      res.status(admission.ok ? 200 : admission.status).json(admission);
+    });
+  }
   app.use(createRoutes(ctx));
   app.use(createMobileConversationRouter({ config: config as never, pairing, service: svc, machineId: () => machineId, sentinel: opts.sentinel, messageLinkOrigin: () => `https://${HOST}` }));
   app.use(createMobilePairingRouter(pairing, deps, ctx));
@@ -835,5 +845,55 @@ describe('signed App message forwarding', () => {
     expect(classifier).not.toHaveBeenCalled();
     expect(pending).not.toHaveBeenCalled();
     pending.mockRestore();
+  });
+});
+
+
+describe('signed App message removal admission checkpoint', () => {
+  it('binds the signed owner, custodian, exact occurrence and request without mutating history', async () => {
+    const e = setup({ removalAdmissionProbe: true });
+    await enableReplyProof(e);
+    const key = await create(e);
+    const endpoint = `/mobile/chat/app/${key}/forward`;
+    for (const id of ['one', 'two']) {
+      e.svc.store.append({ kind: 'message', role: 'agent', conversationKey: key, eventId: id,
+        messageId: `msg-${id}`, text: 'Retained text', at: new Date().toISOString(), machineId: 'm1' });
+    }
+    const intent = { custodianMachineId: 'm1', eventId: 'one', requestId: rid() };
+    const admitted = await signed(e, 'POST', endpoint, intent);
+    expect(admitted.status).toBe(200);
+    expect(admitted.body).toMatchObject({ ok: true, targetEventId: 'one', targetMessageId: 'msg-one', requestId: intent.requestId });
+    expect((await signed(e, 'POST', endpoint, intent)).body).toEqual(admitted.body);
+    const changed = await signed(e, 'POST', endpoint, { ...intent, eventId: 'two' });
+    expect(changed.status).toBe(200);
+    expect(changed.body.removalEventId).toBe(admitted.body.removalEventId);
+    expect(changed.body.intentHash).not.toBe(admitted.body.intentHash);
+    for (const eventId of ['one', 'absent']) {
+      expect((await signed(e, 'POST', endpoint, { ...intent, eventId, custodianMachineId: 'm2' })).status).toBe(503);
+    }
+    expect((await signed(e, 'POST', endpoint, { ...intent, eventId: 'msg-one' })).status).toBe(404);
+    expect((await signed(e, 'POST', endpoint, { ...intent, eventId: 'absent' })).body.error).toBe('message-removal-target-unavailable');
+    expect((await signed(e, 'POST', endpoint, { ...intent, text: 'wrong' })).status).toBe(400);
+    expect((await bearer(e, 'post', endpoint).send(intent)).status).toBe(403);
+    const acl = vi.spyOn(e.pairing, 'mayReadStored').mockReturnValue(false);
+    expect((await signed(e, 'POST', endpoint, intent)).body.error).toBe('message-removal-target-unavailable');
+    acl.mockRestore();
+    e.lease.held = false;
+    expect((await signed(e, 'POST', endpoint, intent)).status).toBe(503);
+    e.lease.held = true;
+    const pairingOwner = e.pairing.ownerIdentity();
+    const unidentifiedOwner = vi.spyOn(e.pairing, 'ownerIdentity')
+      .mockReturnValue({ ...pairingOwner, telegramOwnerId: null, slackOwnerUserId: null });
+    try { expect((await signed(e, 'POST', endpoint, intent)).status).toBe(404); }
+    finally { unidentifiedOwner.mockRestore(); }
+    const changedOwner = vi.spyOn(e.pairing, 'ownerIdentity').mockReturnValue({ ...pairingOwner, telegramOwnerId: 9001 });
+    try {
+      const other = await signed(e, 'POST', endpoint, intent);
+      expect(other.status).toBe(200);
+      expect(other.body.requestActor).not.toBe(admitted.body.requestActor);
+      expect(other.body.removalEventId).not.toBe(admitted.body.removalEventId);
+    } finally { changedOwner.mockRestore(); }
+    expect(e.svc.store.browseMessages(key, null, 10).messages).toHaveLength(2);
+    expect(e.svc.store.messageRemoval(key, 'one', 'msg-one')).toEqual({ eventId: null });
   });
 });

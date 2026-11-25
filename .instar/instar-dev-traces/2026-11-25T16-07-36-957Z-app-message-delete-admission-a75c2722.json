@@ -1,0 +1,27 @@
+{
+  "version": 2,
+  "slug": "app-message-delete-admission",
+  "sessionId": "633bd330-201e-4dc8-8fd9-72b89116167e",
+  "timestamp": "2026-11-25T16:07:36.957Z",
+  "artifactPath": "upgrades/side-effects/app-message-delete-admission.md",
+  "artifactSha256": "8871ba5ef72fd45d09611a01ee438f882a7e17ef20824b1f5860221d8250a45f",
+  "specPath": "docs/specs/conversation-message-delete.md",
+  "coveredFiles": [
+    ".instar/instar-dev-decisions/2026-11-25T16-04-48-688Z-app-message-delete-admission.json",
+    ".instar/instar-dev-decisions/2026-11-25T16-05-51-374Z-app-message-delete-admission.json",
+    ".instar/instar-dev-traces/2026-11-25T16-04-06-892Z-app-message-delete-admission-cf686cfd.json",
+    ".instar/instar-dev-traces/2026-11-25T16-05-07-301Z-app-message-delete-admission-339961ce.json",
+    "docs/specs/conversation-message-delete.eli16.md",
+    "docs/specs/conversation-message-delete.md",
+    "docs/specs/reports/conversation-message-delete-convergence.md",
+    "src/server/mobileAppMessageRemovalAdmission.ts",
+    "tests/e2e/mobile-native-conversations-alive.test.ts",
+    "tests/integration/mobile-native-conversations.test.ts",
+    "upgrades/side-effects/app-message-delete-admission.md"
+  ],
+  "phase": "complete",
+  "tier": 2,
+  "tierReasoning": "Signed identity and exact-target authorization for future App message removal",
+  "secondPass": "true",
+  "reviewerConcurred": true
+}
