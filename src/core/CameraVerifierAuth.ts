@@ -25,7 +25,7 @@ export interface CameraVerifierAuthorization {
 export async function authorizeCameraVerifier(
   deps: CameraVerifierAuthDeps,
   credential: unknown,
-): Promise<CameraVerifierAuthorization | null> {
+): Promise<(CameraVerifierAuthorization & { isCurrent(): boolean }) | null> {
   if (typeof credential !== 'string' || !/^ior1_[A-Za-z0-9_-]{43}$/.test(credential)) return null;
   try {
     const producer = await deps.sessionProducer(credential);
@@ -44,17 +44,21 @@ export async function authorizeCameraVerifier(
     const initial = resolveAssignment();
     if (!initial?.principal || !Number.isSafeInteger(initial.epoch) || initial.epoch < 1) return null;
     const { principal, epoch } = initial;
+    const isCurrent = () => {
+      try {
+        const current = resolveAssignment();
+        return current?.principal === principal && current.epoch === epoch;
+      } catch {
+        // @silent-fallback-ok: unreadable current authority must refuse operations.
+        return false;
+      }
+    };
     return {
       principal,
+      isCurrent,
       allows(requirement, assignmentEpoch) {
-        if (epoch !== assignmentEpoch || principal !== requirement.verifier || requirement.builders.includes(principal)) return false;
-        try {
-          const current = resolveAssignment();
-          return current?.principal === principal && current.epoch === epoch;
-        } catch {
-          // @silent-fallback-ok: unreadable current authority must refuse the write.
-          return false;
-        }
+        return epoch === assignmentEpoch && principal === requirement.verifier
+          && !requirement.builders.includes(principal) && isCurrent();
       },
     };
   } catch {

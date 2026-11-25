@@ -1,0 +1,23 @@
+{
+  "ts": "2026-11-25T04:36:29.400Z",
+  "slug": "camera-acceptance-runtime",
+  "suggestedTier": 2,
+  "declaredTier": 2,
+  "riskFloor": 1,
+  "riskFloorReasons": [],
+  "belowFloor": false,
+  "files": 2,
+  "loc": 67,
+  "scope": {
+    "basis": "staged-in-scope-paths-including-deleted",
+    "files": [
+      "src/core/CameraAcceptanceRuntime.ts",
+      "src/core/CameraVerifierAuth.ts"
+    ],
+    "addedLines": 58,
+    "deletedLines": 9
+  },
+  "causalAutopsy": null,
+  "classClosure": null,
+  "verdict": "pass"
+}

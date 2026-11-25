@@ -1,0 +1,19 @@
+{
+  "version": 2,
+  "slug": "camera-acceptance-runtime",
+  "sessionId": "ab1b66cc-de80-48bd-9b94-4ede369ccb55",
+  "timestamp": "2026-11-25T04:35:23.692Z",
+  "artifactPath": "upgrades/side-effects/camera-acceptance-runtime.md",
+  "artifactSha256": "e8bbc5059f4ad32c170724511da93c9b1093ee8be467d327b7ebc53f4cd0570a",
+  "specPath": "docs/specs/independent-owner-surface-acceptance.md",
+  "coveredFiles": [
+    "src/core/CameraAcceptanceRuntime.ts",
+    "src/core/CameraVerifierAuth.ts",
+    "tests/unit/camera-acceptance-runtime.test.ts"
+  ],
+  "phase": "complete",
+  "tier": 2,
+  "tierReasoning": "The factory composes existing authority and journal components without enabling live service.",
+  "secondPass": "true",
+  "reviewerConcurred": true
+}
