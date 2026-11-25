@@ -59,6 +59,24 @@ const forward = (text: string, replyTo?: number) => request(app).post('/internal
   .send({ topicId: 1, text, fromUserId: OWNER, fromFirstName: 'O', messageId: 9000 + updateId, updateId: updateId++, sourceChatType: 'private', sourceChatId: OWNER, senderIsBot: false, ...(replyTo !== undefined ? { replyToMessageId: replyTo } : {}), lifelineVersion: VERSION });
 
 describe('governed effects over HTTP', () => {
+  it('connector namespace reads use the existing read policy while writes and unknown tools remain governed', async () => {
+    for (const service of ['codex_apps', 'other_engine']) {
+      for (const suffix of ['github__fetch_pr', 'github_get_pr_info', 'github__list_pull_requests', 'github_search_code', 'github__read_file']) {
+        const response = await evaluate(`mcp__${service}__${suffix}`, { repo_full_name: 'owner/repo', pr_number: 1 });
+        expect(response.status).toBe(200);
+        expect(response.body).toMatchObject({ action: 'proceed', trust: { verdict: 'not-gated', why: 'read' } });
+      }
+    }
+    expect(sent).toEqual([]);
+    expect(runtime.store.openRequests()).toEqual([]);
+    for (const suffix of ['github__create_pull_request', 'github_push_files', 'github__comment_on_pr', 'github_merge_pull_request',
+      'github__update_file', 'github_delete_file', 'github_fetch_and_push', 'github_read_then_comment', 'inspect_read', 'launch_get_status', 'github_opaque']) {
+      const response = await evaluate(`mcp__codex_apps__${suffix}`, {});
+      expect(response.status).toBe(200);
+      expect(response.body).toMatchObject({ action: 'ask', trust: { verdict: 'ask', why: 'no-grant' } });
+    }
+  });
+
   it('the legacy import recorded today\'s kinds and wrote the hook fallback file', () => {
     const file = JSON.parse(fs.readFileSync(path.join(stateDir, 'state', 'trust-legacy-kinds.json'), 'utf8'));
     expect(file.legacyKinds).toEqual(['legacysvc.delete', 'legacysvc.modify', 'legacysvc.write']);

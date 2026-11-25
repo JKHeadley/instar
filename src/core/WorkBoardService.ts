@@ -19,7 +19,7 @@ import type { HlcTimestamp } from './HybridLogicalClock.js';
 import {
   buildRecord, toFoldRecords, partitionRecords, foldCard, deriveStatus, laneFor, derivePickupCauses, foldPickups,
   materialHashOf, cardConversationKey, sameValue, sha256Hex, isCardId, isRecordId, mintRecordKey, isRestrictingTap, foldOrder, compareHlc, workCardRecordStoreSchema,
-  normalizeRequestText,
+  normalizeRequestText, isAgentInternalCard,
   MATERIAL_FIELDS, WORK_BOARD_STORE_KEY, CLOSE_AS, SCHEMA_MAX, GATE_ONLY_FIELDS, MAX_REFS, NOTE_EVENT_PREFIX,
   type UnionEntry, type FoldRecord, type CardFold, type CardStatus, type Lane, type PickupState, type TapAction,
   type WorkRecordType, type SystemRecordType, type By, type ApprovalPolicy, type DoneWhenItem, type CardLink, type Carrier, type Principal, type CardRef, type HoldLiftReason,
@@ -410,10 +410,10 @@ export class WorkBoardService {
     }
   }
 
-  /** The conversation keys of archived or removed cards (the conversation lists leave these out, §2). */
+  /** Default human discovery excludes internal work, archived cards and removed cards; history is retained. */
   hiddenConversationKeys(): Set<string> {
     const out = new Set<string>();
-    for (const [, v] of this.views) if (v.card.archives.length || v.card.redacted) out.add(v.card.conversationKey);
+    for (const [, v] of this.views) if (v.card.archives.length || v.card.redacted || isAgentInternalCard(v.card)) out.add(v.card.conversationKey);
     return out;
   }
 

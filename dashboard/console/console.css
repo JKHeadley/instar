@@ -511,7 +511,7 @@ button.list-head { cursor: pointer; }
 .sheet-grab { width: 40px; height: 4px; border-radius: 4px; background: var(--hairline-strong); margin: 10px auto 2px; }
 .sheet-head { display: flex; align-items: flex-start; gap: var(--s-3); padding: var(--s-3) var(--s-5) var(--s-2); }
 .sheet-title { flex: 1; margin: 0; font-size: 18px; line-height: 1.35; font-weight: 700; letter-spacing: -.015em; color: var(--text-strong); }
-.sheet-close { flex: none; font-size: 20px; line-height: 1; }
+.sheet-close { min-width: 44px; min-height: 44px; flex: none; font-size: 20px; line-height: 1; }
 .sheet-body { flex: 1; min-height: 0; overflow-y: auto; overscroll-behavior: contain; -webkit-overflow-scrolling: touch; touch-action: pan-y; padding: var(--s-2) var(--s-5) var(--s-6); display: flex; flex-direction: column; gap: var(--s-5); }
 @media (min-width: 900px) {
   .sheet { left: auto; top: 0; height: 100dvh; width: min(520px, 42vw); max-height: none; border-radius: 0; border: 0; border-left: 1px solid var(--hairline-strong); transform: translateX(24px); }
@@ -1435,10 +1435,24 @@ a.machine-line-link:hover { border-color: var(--accent); color: var(--text); }
 .chat-input { height: 44px; padding: 0 12px; border-radius: var(--r-md); border: 1px solid var(--hairline-strong); background: var(--surface-solid); color: var(--text); font: inherit; }
 .chat-fingerprint { font-family: var(--font-mono); letter-spacing: .04em; }
 @media (max-width: 899px) {
-  /* The open conversation fits between the top bar and the bottom tab bar: the messages scroll inside it,
-     so the composer stays on the first screen however long the conversation is (flex: 1 alone sizes to content). */
+  /* An expanded Needs-you list keeps normal document scrolling and its bottom clearance. */
   .chats-page .chat-open { min-height: 0; height: calc(100dvh - var(--topbar-h, 56px) - 64px - 32px); }
   .chats-page .chat-messages { height: auto; flex: 1 1 auto; min-height: 160px; }
+  /* With the list closed, the shell takes its actual space before sizing the chat.
+     Only messages yield space; the composer stays above the bottom navigation. */
+  .app:has(.chats-page.has-open):not(:has(.needs-strip[data-open="1"]:not([hidden]))) { display: flex; flex-direction: column; height: 100dvh; min-height: 0; padding-bottom: var(--nav-total); }
+  .app:has(.chats-page.has-open):not(:has(.needs-strip[data-open="1"]:not([hidden]))) > .topbar,
+  .app:has(.chats-page.has-open):not(:has(.needs-strip[data-open="1"]:not([hidden]))) > .preview-banner,
+  .app:has(.chats-page.has-open):not(:has(.needs-strip[data-open="1"]:not([hidden]))) > .net-line { flex-shrink: 0; }
+  .app:not(:has(.needs-strip[data-open="1"]:not([hidden]))) .main-column:has(.chats-page.has-open) { display: flex; flex-direction: column; flex: 1; min-height: 0; overflow-y: auto; }
+  .app:not(:has(.needs-strip[data-open="1"]:not([hidden]))) .main-column:has(.chats-page.has-open) > .needs-strip { flex-shrink: 0; }
+  .app:not(:has(.needs-strip[data-open="1"]:not([hidden]))) .main:has(> .chats-page.has-open) { flex: 1; min-height: 0; padding-bottom: var(--s-4); }
+  .app:not(:has(.needs-strip[data-open="1"]:not([hidden]))) > .main:has(> .chats-page.has-open) { overflow-y: auto; }
+  .app:not(:has(.needs-strip[data-open="1"]:not([hidden]))) .chats-page.has-open,
+  .app:not(:has(.needs-strip[data-open="1"]:not([hidden]))) .chats-page.has-open .chat-view,
+  .app:not(:has(.needs-strip[data-open="1"]:not([hidden]))) .chats-page.has-open .chat-open { height: 100%; min-height: 0; }
+  .app:not(:has(.needs-strip[data-open="1"]:not([hidden]))) .chats-page.has-open .chat-open > :not(.chat-messages) { flex-shrink: 0; }
+  .app:not(:has(.needs-strip[data-open="1"]:not([hidden]))) .chats-page.has-open .chat-messages { height: auto; flex: 1 1 auto; min-height: 0; }
   .chat-bubble { max-width: 88%; }
   .chat-menu .btn-quiet { padding: 0 10px; }
 }
@@ -1778,3 +1792,12 @@ a.needs-row:hover { background: var(--surface-raised); }
 .needs-groups .needs-rows { border: 0; }
 .needs-group + .needs-group { border-top: 1px solid var(--hairline); }
 .needs-groups:focus-visible { outline: 2px solid var(--accent); outline-offset: -2px; }
+
+/* Accounts remain a single reset-ordered list, including with full-width detail-page layouts. */
+.main.accounts-page { max-width: none; min-width: 0; }
+.accounts-page .acct-list,
+.accounts-page .acct-list > .list-section,
+.accounts-page .acct-list .list-rows { display: flex; flex-direction: column; align-items: stretch; min-width: 0; }
+.accounts-page .acct-list .list-rows { gap: 0; }
+.accounts-page .acct-name { white-space: normal; overflow: visible; overflow-wrap: anywhere; }
+.acct-kind { display: block; color: var(--text-muted); font-size: 12px; font-weight: 400; }

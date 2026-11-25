@@ -1,7 +1,9 @@
+import { SQL_COMMAND_CONTEXT_CHECK } from './sqlCommandContext.js';
 // Governed by (docs/STANDARDS-REGISTRY.md cites this file as enforcement of):
 //   *Avoid TCC-Protected Directories — No Agent State Under ~/Documents on macOS*
 //   *Maturation Path — Test Agent → Development Agent → Fleet*
 
+import { migrateConversationSearchGuidance } from '../scaffold/conversationSearchGuidance.js';
 import { APPROVAL_WHERE_REQUIRED_SKILL_TEXT, applySkillSentenceChanges } from './approvalWhereRequiredSkillText.js';
 import { OrgPolicyGateHooks } from './OrgPolicyGateHooks.js';
 import { beginRecoveryAutostartUpdate } from '../recovery/RecoveryAutostartUpdate.js';
@@ -755,7 +757,7 @@ export const LOCAL_VERIFY_WAITING_LIST_CLAUDEMD_LINE = '- Local Verify waiting l
  * Local Verify balanced shards — the awareness line appended to an existing CLAUDE.md's Local
  * Verify section (`migrateClaudeMd`, content-sniffed on the config key).
  */
-export const LOCAL_VERIFY_LANE_SHARDS_CLAUDEMD_LINE = '- Local Verify balanced shards: the integration lane runs as 2 processes and the e2e lane as 3, each given files planned from the per-file times of earlier runs on this machine (`<verifyRoot>/file-durations.json`, ignored above 2 MB) so the processes finish together; with too little history the lanes use vitest `--shard`. The history decides only which process runs a file, never whether it runs. Live setting `monitoring.localVerify.laneShards` (e.g. `{"integration": 1, "e2e": 2}` restores the old split; 1..4 each; read at each start). When the user asks "why is each verify faster / why are there more test processes?" → this; if runs get slower or flaky under load, lower the counts.';
+export const LOCAL_VERIFY_LANE_SHARDS_CLAUDEMD_LINE = '- Local Verify balanced shards: the integration lane runs as 2 processes and the e2e lane as 3, each given files planned from the per-file times of earlier runs on this machine (`<verifyRoot>/file-durations.json`, ignored above 2 MB) so the processes finish together; with too little history the lanes use vitest `--shard`. The history decides only which process runs a file, never whether it runs. Live setting `monitoring.localVerify.laneShards` (e.g. `{"integration": 1, "e2e": 2}` restores the old split; integration 1..5 and e2e 1..4; read at each start). When the user asks "why is each verify faster / why are there more test processes?" → this; if runs get slower or flaky under load, lower the counts.';
 export const LOCAL_VERIFY_PREFLIGHT_CLAUDEMD_LINE = '- Local Verify focused PR preflight: optional `monitoring.localVerify.preflightMode: off|observe|enforce` (default off) runs bounded changed tests after build/lint and before the full suite; `main` never uses it. Observe records a diagnostic and always continues. Enforce can stop an automatically rediscoverable PR on a repeated assertion failure, then schedules a full-suite replay without preflight; only the complete full-suite record can authorize a green merge. A skipped preflight is not a passed check. `GET /local-verify` → `preflight` shows mode and replay obligations. When a PR is red with `preflight-red` or appears to be waiting on a replay, read this status and its exact-head record before describing the result.';
 export const LOCAL_VERIFY_FAILED_FILE_DIAGNOSIS_CLAUDEMD_LINE = '- Local Verify failed-file diagnosis: optional `monitoring.localVerify.failedFileDiagnosis: off|observe|auto` (default off) asks one idle peer to run one to three failed test files on the exact PR merge and base. It is advisory: `GET /local-verify/record?pr=&head=&base=` includes a separate `diagnosis` projection, and `GET /local-verify/diagnosis?pr=&head=&base=` reads it directly. `pr-reproducible`, `machine-or-flake`, `base-or-shared`, and `inconclusive` describe file-level evidence only; no diagnosis changes the red record, merge gate, or main health. When a PR failure has named files and the user asks whether it reproduces elsewhere, read that projection before explaining. A full verify preempts any peer diagnosis.';
 
@@ -10205,8 +10207,9 @@ setTimeout(() => process.exit(0), 2000);
     // The marked feature-notes block is held out while the chain runs (a one-line stand-in keeps
     // its place), so entry text never takes part in the `content.includes(marker)` guards below.
     const heldFeatureNotes = holdRegistryBlock(input);
-    let content = heldFeatureNotes.text;
-    let patched = false;
+    let content = migrateConversationSearchGuidance(heldFeatureNotes.text);
+    let patched = content !== heldFeatureNotes.text;
+    if (patched) result.upgraded.push('CLAUDE.md: replaced legacy memory search pointers with conversation search');
     // Gravity well "Someone Else's Work" (topic 10000002523): a deferral dressed
     // as a scope fact. Inserted after the "Ask Permission" trap when that
     // paragraph is present, else appended to the end of the file.
@@ -11784,28 +11787,22 @@ setTimeout(() => process.exit(0), 2000);
       }
     }
 
-    // Keyword search over conversations (docs/specs/conversation-search.md): the bullet after the pinned messages line.
-    if (content.includes(APP_CONVERSATIONS_PINS_LINE) && !content.includes('/mobile/conversations/search')) {
+    // Mobile app search guidance has its own bullet. The Registry First link does not replace it.
+    const keywordSearchLine = APP_CONVERSATIONS_SEARCH_LINE_KEYWORD_ONLY.replace('PORT', String(port));
+    const fullSearchLine = APP_CONVERSATIONS_SEARCH_LINE.replace('PORT', String(port));
+    if (content.includes(keywordSearchLine)) {
+      content = content.replace(keywordSearchLine, fullSearchLine);
+      patched = true;
+      result.upgraded.push('CLAUDE.md: the conversation search line now mentions meaning search');
+    } else if (content.includes(APP_CONVERSATIONS_PINS_LINE) && !/^- Search conversations by keyword[^\n]*\/mobile\/conversations\/search/m.test(content)) {
       const lines = content.split('\n');
-      const listPinsAt = lines.findIndex((l) => l === APP_CONVERSATIONS_LIST_PINS_LINE);
-      const at = listPinsAt >= 0 ? listPinsAt : lines.findIndex((l) => l === APP_CONVERSATIONS_PINS_LINE);
+      const listPinsAt = lines.indexOf(APP_CONVERSATIONS_LIST_PINS_LINE);
+      const at = listPinsAt >= 0 ? listPinsAt : lines.indexOf(APP_CONVERSATIONS_PINS_LINE);
       if (at >= 0) {
-        lines.splice(at + 1, 0, APP_CONVERSATIONS_SEARCH_LINE.replace('PORT', String(port)));
+        lines.splice(at + 1, 0, fullSearchLine);
         content = lines.join('\n');
         patched = true;
         result.upgraded.push('CLAUDE.md: added the conversation search line');
-      }
-    }
-
-    // Meaning search (conversation-search §4): the keyword-only search line becomes the keyword-and-meaning line.
-    if (content.includes('/mobile/conversations/search') && !content.includes('mode=meaning')) {
-      const lines = content.split('\n');
-      const at = lines.findIndex((l) => l === APP_CONVERSATIONS_SEARCH_LINE_KEYWORD_ONLY.replace('PORT', String(port)));
-      if (at >= 0) {
-        lines[at] = APP_CONVERSATIONS_SEARCH_LINE.replace('PORT', String(port));
-        content = lines.join('\n');
-        patched = true;
-        result.upgraded.push('CLAUDE.md: the conversation search line now mentions meaning search');
       }
     }
 
@@ -14058,6 +14055,11 @@ The server runs the full test suite on the exact code a pull request would merge
       patched = true;
       result.upgraded.push('CLAUDE.md: Local Verify peer line names the works-through-restart setting');
     }
+    if (content.includes('/local-verify') && !content.includes('monitoring.localVerify.smallPeerTrial')) {
+      content += '\n- Local Verify can give one normal pull request to a calibrated small Mac with two unit workers and one worker for each remaining suite. The coordinator and peer must share the measured monitoring.localVerify.smallPeerTrial policy. The peer stops when available memory reaches the floor or telemetry expires. Read its signed attempt receipt for elapsed time, peak memory and the reason it stopped.\n';
+      patched = true;
+      result.upgraded.push('CLAUDE.md: added small Mac verification trial awareness');
+    }
     // local-verify merge-throughput overflow: a labelled PR is admitted past a full queue.
     if (content.includes('/local-verify') && !content.includes('Local Verify throughput overflow')) {
       content += '\n' + LOCAL_VERIFY_THROUGHPUT_OVERFLOW_CLAUDEMD_LINE + '\n';
@@ -14081,6 +14083,13 @@ The server runs the full test suite on the exact code a pull request would merge
       content += '\n' + LOCAL_VERIFY_LANE_SHARDS_CLAUDEMD_LINE + '\n';
       patched = true;
       result.upgraded.push('CLAUDE.md: added Local Verify balanced-shards awareness');
+    }
+    const oldLaneShardsAwareness = /^(.*monitoring\.localVerify\.laneShards.*)1\.\.4 each(; read at each start.*)$/gm;
+    const updatedLaneShardsAwareness = content.replace(oldLaneShardsAwareness, '$1integration 1..5 and e2e 1..4$2');
+    if (updatedLaneShardsAwareness !== content) {
+      content = updatedLaneShardsAwareness;
+      patched = true;
+      result.upgraded.push('CLAUDE.md: updated Local Verify integration shard limit');
     }
     if (content.includes('/local-verify') && !content.includes('monitoring.localVerify.preflightMode')) {
       content += '\n' + LOCAL_VERIFY_PREFLIGHT_CLAUDEMD_LINE + '\n';
@@ -22162,6 +22171,7 @@ for pattern in "rm -rf \\." "git push --force" "git push -f" "git reset --hard" 
   fi
 done
 
+${SQL_COMMAND_CONTEXT_CHECK}
 # SQL must look like a statement, not prose that merely names a keyword. Match
 # at input/statement start or immediately after a SQL-bearing quote/separator,
 # and require the following table/database identifier. Ambiguous statement
@@ -22175,6 +22185,10 @@ for sql_spec in \\
   pattern="\${sql_spec%%|*}"
   sql_pattern="\${sql_spec#*|}"
   if echo "\$INPUT" | grep -qE "\$sql_pattern"; then
+    if [ -z "\$SQL_LITERAL_DATA" ]; then
+      if sql_command_is_literal_data; then SQL_LITERAL_DATA=1; else SQL_LITERAL_DATA=0; fi
+    fi
+    if [ "\$SQL_LITERAL_DATA" = "1" ]; then continue; fi
     if [ "\$SAFETY_LEVEL" -eq 1 ]; then
       echo "BLOCKED: Potentially destructive command detected: \$pattern" >&2
       echo "Authorization required: Ask the user whether to proceed with this operation." >&2
@@ -25346,9 +25360,17 @@ process.stdin.on('end', async () => {
     // only explicitly unambiguous reads bypass the API; an unknown verb must
     // reach the gate for the authoritative decision.
     const actionTokens = action.split('_').filter(Boolean);
-    const hasMutatingTail = actionTokens.slice(1).some(token =>
-      /^(delete|remove|trash|purge|destroy|drop|clear|send|create|post|write|add|insert|new|compose|publish|update|modify|edit|replace|patch|rename|move|change|set|toggle|enable|disable|revoke|archive|flush|wipe|expunge)$/.test(token)
+    // The actual verb may follow connector namespaces, in either __ or _ form.
+    // Whole-token matches are engine-neutral; compound mutations and execution stay governed.
+    // Only the observed GitHub alias has a flattened namespace; unknown direct verbs stay governed.
+    const hasMutatingPart = actionTokens.some(token =>
+      /^(delete|remove|trash|purge|destroy|drop|clear|send|create|post|write|add|insert|new|compose|publish|update|modify|edit|replace|patch|rename|move|change|set|toggle|enable|disable|revoke|archive|flush|wipe|expunge|push|comment|merge|execute|run|call|invoke|eval|evaluate)$/.test(token)
     );
+    const toolSegments = parts.slice(2);
+    const toolTokens = toolSegments[toolSegments.length - 1].split('_').filter(Boolean);
+    const readVerb = /^(get|list|search|fetch|check|read|view|describe|show|count|query|find|status)$/;
+    const hasReadVerb = readVerb.test(toolTokens[0] || '')
+      || (toolSegments.length === 1 && toolTokens[0] === 'github' && readVerb.test(toolTokens[1] || ''));
     let mutability = 'modify';
     if (/^(delete|remove|trash|purge|destroy|drop|clear)/.test(action)) {
       mutability = 'delete';
@@ -25356,7 +25378,7 @@ process.stdin.on('end', async () => {
       mutability = 'write';
     } else if (/^(update|modify|edit|patch|rename|move|change|set|toggle|enable|disable)/.test(action)) {
       mutability = 'modify';
-    } else if (!hasMutatingTail && /^(get|list|search|fetch|check|read|view|describe|show|count|query|find|status)(?:_|$)/.test(action)) {
+    } else if (!hasMutatingPart && hasReadVerb) {
       mutability = 'read';
     }
 

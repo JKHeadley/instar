@@ -18,6 +18,7 @@
  * of what the user and the agent have been working on." — Justin, 2026-02-24
  */
 
+import { literalFtsTerms, quoteFtsTerm } from './ftsQueryTerms.js';
 import fs from 'node:fs';
 import path from 'node:path';
 import readline from 'node:readline';
@@ -367,17 +368,6 @@ function mapRow(row: any): TopicMessage {
     channelMessageId: row.channelMessageId ?? undefined,
     origin: coerceTopicRowOrigin(row.origin),
   };
-}
-
-/**
- * Strip FTS5 special syntax characters from a query.
- */
-function sanitizeFtsQuery(query: string): string {
-  return query
-    .replace(/\b(AND|OR|NOT|NEAR)\b/gi, '')
-    .replace(/[*:"^{}().]/g, '')
-    .replace(/\s+/g, ' ')
-    .trim();
 }
 
 export class TopicMemory {
@@ -1105,7 +1095,7 @@ export class TopicMemory {
   search(query: string, opts?: { topicId?: number; limit?: number }): TopicSearchResult[] {
     if (!this.db) return [];
 
-    const sanitized = sanitizeFtsQuery(query);
+    const sanitized = literalFtsTerms(query).map(quoteFtsTerm).join(' ');
     if (!sanitized) return [];
 
     const limit = Math.min(opts?.limit ?? 20, 100);

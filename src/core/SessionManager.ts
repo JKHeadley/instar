@@ -134,7 +134,7 @@ import {
 import { StateManager } from './StateManager.js';
 import { buildInjectionTag } from '../types/pipeline.js';
 import { sanitizeSenderName, sanitizeTopicName } from '../utils/sanitize.js';
-import { getTelegramInboundDir } from '../messaging/shared/telegramInboundFiles.js';
+import { getTelegramInboundDir, writePrivateInboundFile, ensurePrivateDir } from '../messaging/shared/telegramInboundFiles.js';
 import { SessionBuildContextStore } from './SessionBuildContextStore.js';
 import { PendingInjectStore, sweepPendingInjects } from './PendingInjectStore.js';
 import { SafeFsExecutor } from './SafeFsExecutor.js';
@@ -1534,9 +1534,37 @@ export class SessionManager extends EventEmitter {
     this.ownerEpochForConversation = opts.ownerEpochForConversation ?? (() => 0);
     this.codexRolloutPathForSession = opts.codexRolloutPathForSession ?? ((session) => {
       if (!session.claudeSessionId) return null;
+      // The live incarnation may use a pooled account home. Looking only in
+      // ~/.codex makes a real rollout appear missing and refuses owner input
+      // before the durable FIFO can accept it. Never search another account
+      // after an explicit pin or an uncertain environment read.
+      let codexHome = path.join(os.homedir(), '.codex');
+      try {
+        const output = withSyncOp(() => execFileSync(
+          this.config.tmuxPath,
+          ['show-environment', '-t', `=${session.tmuxSession}`, 'CODEX_HOME'],
+          { encoding: 'utf-8', timeout: 2000, stdio: ['ignore', 'pipe', 'pipe'] },
+        )).replace(/\n$/, '');
+        if (output !== '-CODEX_HOME') {
+          if (!output.startsWith('CODEX_HOME=')) return null;
+          const value = output.slice('CODEX_HOME='.length);
+          // An empty or explicitly removed variable uses Codex's normal home.
+          if (value) {
+            if (!path.isAbsolute(value) || /[\r\n\0]/.test(value)) return null;
+            codexHome = value;
+          }
+        }
+      } catch (error) {
+        // @silent-fallback-ok: only tmux's named missing-key outcome permits
+        // the documented default. A dead pane, timeout or other query error
+        // supplies no authority to use a different account's transcript.
+        const e = error as { status?: number; stderr?: unknown };
+        if (e.status !== 1 || !/unknown variable: CODEX_HOME\s*$/.test(String(e.stderr ?? ''))) return null;
+      }
       return resolveFrameworkTranscriptPath({
         framework: 'codex-cli', sessionId: session.claudeSessionId,
         projectDir: session.cwd ?? this.config.projectDir,
+        rootOverride: path.join(codexHome, 'sessions'),
       });
     });
     this.stageCRecoveryEnabled = opts.stageCRecoveryEnabled === true;
@@ -9752,8 +9780,8 @@ rm()  { "${shimRunner}" rm  "$@"; }
     }
 
     // Write full message to a project-local inbound file readable by sandboxed agents.
-    const tmpDir = getTelegramInboundDir(this.config.projectDir);
-    fs.mkdirSync(tmpDir, { recursive: true });
+    // SEC-138: owner-only folder (tightened if an older build left it at the default mode).
+    const tmpDir = ensurePrivateDir(getTelegramInboundDir(this.config.projectDir));
     const filename = `msg-${topicId}-${Date.now()}-${randomUUID().slice(0, 8)}.txt`;
     const filepath = path.join(tmpDir, filename);
     fs.writeFileSync(filepath, taggedText);
@@ -9804,12 +9832,8 @@ rm()  { "${shimRunner}" rm  "$@"; }
       return;
     }
 
-    // Write full message to temp file
-    const tmpDir = path.join('/tmp', 'instar-whatsapp');
-    fs.mkdirSync(tmpDir, { recursive: true });
-    const filename = `msg-${jid.split('@')[0]}-${Date.now()}.txt`;
-    const filepath = path.join(tmpDir, filename);
-    fs.writeFileSync(filepath, taggedText);
+    // SEC-138: the agent's own inbound folder, owner-only, never a fixed shared /tmp folder.
+    const filepath = writePrivateInboundFile(this.config.projectDir, `wa-${jid.split('@')[0]}`, taggedText);
 
     const ref = `${tag} [Long message saved to ${filepath} — read it to see the full message]`;
     this.injectMessage(tmuxSession, ref);
@@ -9845,13 +9869,10 @@ rm()  { "${shimRunner}" rm  "$@"; }
       return;
     }
 
-    // Write full message to temp file with restricted permissions
-    const tmpDir = path.join('/tmp', 'instar-imessage');
-    fs.mkdirSync(tmpDir, { recursive: true, mode: 0o700 });
+    // SEC-138: the agent's own inbound folder, owner-only, never a fixed shared /tmp folder (a
+    // pre-created /tmp folder kept another account's ownership despite the mode).
     const senderSlug = sender.replace(/[^a-zA-Z0-9]/g, '').slice(-8);
-    const filename = `msg-${senderSlug}-${Date.now()}.txt`;
-    const filepath = path.join(tmpDir, filename);
-    fs.writeFileSync(filepath, taggedText, { mode: 0o600 });
+    const filepath = writePrivateInboundFile(this.config.projectDir, `im-${senderSlug}`, taggedText);
 
     const ref = `${tag} [Long message saved to ${filepath} — read it to see the full message]`;
     this.injectMessage(tmuxSession, ref);

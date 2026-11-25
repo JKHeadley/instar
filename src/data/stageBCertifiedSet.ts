@@ -224,6 +224,10 @@ export const STAGE_B_CERTIFIED_SET = {
       "reason": "Codex CLI version and flag probes, reached through the excluded CodexCliIntelligenceProvider since 2026-11-17 (it picks gpt-6-sol / gpt-6-astra on a CLI below 0.166.0). Model selection only; no inbound-delivery or lifecycle logic, outside the Stage-B canaried path."
     },
     {
+      "file": "src/core/codexToolFreeProfile.ts",
+      "reason": "The tool-free argv for Codex calls holding outside text (SEC-175), reached through the excluded CodexCliIntelligenceProvider since 2026-11-22. Launch flags only; no inbound-delivery or lifecycle logic, outside the Stage-B canaried path."
+    },
+    {
       "file": "src/core/InFlightSyncOpMarker.ts",
       "reason": "cross-cutting utility shared far beyond Codex delivery, certified by its own suite; binding it would re-freeze releases on unrelated churn"
     },

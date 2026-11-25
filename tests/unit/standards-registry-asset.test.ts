@@ -769,29 +769,49 @@ describe('a REAL resolution earns verified end-to-end — no hand-built literals
     // article count, same package version — and the AUTHORED constitution has moved on.
     // Every operand written by the build that wrote the asset still agrees.
     const original = fs.readFileSync(AUTHORED, 'utf-8');
-    const fixture = fs.mkdtempSync(path.join(os.tmpdir(), 'registry-authored-drift-'));
+    const fixture = fs.mkdtempSync(path.join(os.tmpdir(), 'registry-authored-mismatch-'));
+    const authored = path.join(fixture, 'docs', 'STANDARDS-REGISTRY.md');
     try {
-      // Guard evidence stays identical and read-only, but the authored document
-      // belongs to this fixture. Parallel readers never observe a temporary
-      // extra article in the actual checkout.
-      // Only these directories contain the packed guard references. Projecting
-      // package/source-identity markers would turn this synthetic fixture into
-      // a protected source checkout that the normal cleanup guard must retain.
-      for (const name of ['src', 'scripts', 'tests']) {
-        fs.symlinkSync(path.join(ROOT, name), path.join(fixture, name));
+      // Preserve the real source inputs used by marker and route discovery,
+      // plus the packed index's file refs. Copy no working-tree or home state.
+      fs.mkdirSync(path.join(fixture, '.git'));
+      fs.mkdirSync(path.join(fixture, 'docs', 'specs'), { recursive: true });
+      fs.cpSync(path.join(ROOT, 'src'), path.join(fixture, 'src'), { recursive: true });
+      const index = JSON.parse(fs.readFileSync(GUARD_INDEX, 'utf-8')) as {
+        guards: Array<{ kind: string; ref: string }>;
+      };
+      for (const guard of index.guards) {
+        if (guard.kind !== 'file' || guard.ref.startsWith('src/')) continue;
+        const source = path.resolve(ROOT, guard.ref);
+        const target = path.resolve(fixture, guard.ref);
+        // Registry refs are inputs, never authority to copy outside the fixture.
+        expect(source.startsWith(ROOT + path.sep)).toBe(true);
+        expect(target.startsWith(fixture + path.sep)).toBe(true);
+        if (!fs.existsSync(source)) continue;
+        fs.mkdirSync(path.dirname(target), { recursive: true });
+        fs.copyFileSync(source, target);
       }
-      fs.writeFileSync(path.join(fixture, '.git'), 'fixture source-tree marker\n');
-      fs.mkdirSync(path.join(fixture, 'docs'));
-      for (const name of fs.readdirSync(path.join(ROOT, 'docs'))) {
-        if (name !== 'STANDARDS-REGISTRY.md') fs.symlinkSync(path.join(ROOT, 'docs', name), path.join(fixture, 'docs', name));
-      }
-      const authored = path.join(fixture, 'docs', 'STANDARDS-REGISTRY.md');
+      fs.writeFileSync(authored, original);
+      expect(holdsAuthoredConstitution(fixture)).toBe(true);
+      const before = computeCoverage({
+        registryPath: res.path,
+        projectDir: fixture,
+        registryMarkdown: res.markdown,
+        integrity: res.integrity,
+      });
+      expect(before.summary.guards.projectDir).toBe(fs.realpathSync(fixture));
+      expect(before.summary.assessmentConfidence).toBe('verified');
+
       fs.writeFileSync(authored, `${original}\n### A Standard Added After The Build\n**Rule.** r.\n`);
+      expect(countRegistryArticles(fs.readFileSync(authored, 'utf-8')))
+        .toBe(countRegistryArticles(original) + 1);
+      // A concurrent live-registry reader must keep seeing the real constitution.
       expect(fs.readFileSync(AUTHORED, 'utf-8')).toBe(original);
 
       // Confirm the other three operands are UNMOVED — otherwise this test proves nothing.
       const stillFine = resolveStandardsRegistry();
       if (!stillFine.usable) throw new Error('resolver went unusable — wrong precondition');
+      expect(stillFine).toEqual(res);
       expect(earnsVerified(stillFine.integrity).verified).toBe(true);
 
       const report = computeCoverage({
@@ -801,12 +821,15 @@ describe('a REAL resolution earns verified end-to-end — no hand-built literals
         integrity: stillFine.integrity,
       });
       expect(report.summary.guards.projectDir).toBe(fs.realpathSync(fixture));
-      expect(report.summary.guards.basis).toBe('source-tree-index-match');
+      expect(report.summary.total).toBe(before.summary.total);
       expect(report.summary.assessmentConfidence).toBe('unverified');
       expect(report.summary.confidenceReason).toMatch(/does NOT match the authored/);
       expect(fs.readFileSync(AUTHORED, 'utf-8')).toBe(original);
     } finally {
-      SafeFsExecutor.safeRmSync(fixture, { recursive: true, force: true, operation: 'isolated authored registry drift fixture' });
+      SafeFsExecutor.safeRmSync(fixture, {
+        recursive: true, force: true,
+        operation: 'tests/unit/standards-registry-asset.test.ts:authored-mismatch-fixture',
+      });
     }
   });
 

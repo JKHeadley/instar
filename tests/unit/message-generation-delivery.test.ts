@@ -238,7 +238,7 @@ describe('generation is checked at the injection boundary', () => {
       enabled = true;
       expect(view().sessionGenerationBinding).toBe(true);
       const guarded = await r.send({ agent: 'echo', session: 'sender', machine: 'self' }, to, 'info', 'low', 'guarded', 'body');
-      expect(guarded.phase).toBe('failed');
+      expect(guarded).toMatchObject({ phase: 'failed', delivered: false, failureReason: expect.stringContaining('no receiving session generation was proved') });
       expect((await store.get(guarded.messageId))?.message.to.sessionGenerationRequired).toBe(true);
       expect((await store.get(guarded.messageId))?.message.to.sessionId).toBeUndefined();
       expect((await store.get(guarded.messageId))?.delivery.failureReason).toContain('no receiving session generation was proved');
