@@ -7,9 +7,9 @@ approved: true
 approved-by: echo under standing build approval for local storage, private signed admission and execution, and unmounted history projection only
 parent-principle: Operator-Surface Quality
 tier: 2
-review-convergence: "2026-11-25T22:38:57.041Z"
-review-iterations: 40
-review-completed-at: "2026-11-25T22:38:57.041Z"
+review-convergence: "2026-11-25T22:59:30.521Z"
+review-iterations: 42
+review-completed-at: "2026-11-25T22:59:30.521Z"
 review-report: "docs/specs/reports/conversation-message-delete-convergence.md"
 cross-model-review: "cross-model-review: codex-cli:gpt-6.2-astra"
 ---
@@ -192,3 +192,11 @@ Protected signer capture rejects a malformed authority map, a present malformed 
 Resolve the current owner from the signed device, then require the recorded conversation owner, ordinary read access and a live App conversation on its active creation custodian. Legacy owner conversations use the same owner fallback as Delete admission. A stable owner account binds the reader field. Compose ledger, machine trust, journal and any configured Team Access revisions. A missing provided revision cannot resume sync. Evidence sources are read-only dependencies owned by the caller. Compare two complete revision samples, then recheck current signed owner, conversation liveness, creation evidence and serving custody before returning authority.
 
 This checkpoint uses the signed owner in a private HTTP fixture and does not mount a sync route. Both the current owner profile and recorded conversation ownership are required. A person who remains the recorded owner but changes to a team profile is refused in this checkpoint. Before mounting, supply production evidence providers, revalidate the composed authority around any awaited preparation and bind history and sync to the same epoch. Do not use the authority result as a response body.
+
+## Private signed owner sync page checkpoint
+
+The private executor validates the signed owner and cursor, prepares removal-aware storage, and re-resolves authority before projection and again before issuing a response. It also checks that the prepared journal proof remains current after the final authority observation. It supplies the validated numeric cursor directly to the store. A stale epoch returns a reset with no page, and an unavailable proof returns a temporary failure with no continuation.
+
+The fixture emits text, role, time, message ID and event ID for visible messages, and only the existing exact fields for a removal marker. It deliberately omits media, related events and client cache readiness. Nothing mounts this executor in production. The live route still needs authoritative history wiring, a bounded high-water handshake, a rule for a permanently unresolved marker and client epoch reconciliation.
+
+The final check compares the exact proof used by the selected page. A replacement proof cannot bless older rows. In the owner-only fixture, an unexpected row access refusal is indeterminate and holds the cursor. The removal fact ID deduplicates delivery of the marker, while the target event ID identifies the row to evict. Neither an empty page nor `blocked: false` proves catch-up. The production handshake must separately verify the current high-water mark before opening cached history.

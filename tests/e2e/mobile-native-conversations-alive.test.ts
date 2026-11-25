@@ -197,6 +197,8 @@ describe('native app conversations — production wiring', () => {
     expect(legacyWithPrivateCursor.body).toEqual(darkEvents.body);
     expect(legacyWithPrivateCursor.body).not.toHaveProperty('epoch');
     expect(legacyWithPrivateCursor.body).not.toHaveProperty('continuation');
+    expect(legacyWithPrivateCursor.body).not.toHaveProperty('changes');
+    expect(legacyWithPrivateCursor.body).not.toHaveProperty('blocked');
     const entry = await request(app).get('/dashboard/console/message-link-v1/');
     expect(entry.status).toBe(200);
     expect(entry.text).toContain('/dashboard/console/console.js?message-link-v1');

@@ -23,6 +23,7 @@ import { MobilePairingService, createMobilePairingRouter, deviceAuthenticator, t
 import { createMobileConversationRouter } from '../../src/server/mobileConversationRoutes.js';
 import { SingleInstanceLock } from '../../src/core/SingleInstanceLock.js';
 import { createRemovalSyncCursorCodec } from '../../src/server/mobileAppRemovalSyncCursor.js';
+import { executeOwnerRemovalSync } from '../../src/server/mobileAppRemovalSync.js';
 import { resolveOwnerRemovalSyncAuthority } from '../../src/server/mobileAppRemovalSyncAuthority.js';
 import { executeAppMessageRemoval } from '../../src/server/mobileAppMessageRemoval.js';
 import { admitAppMessageRemoval } from '../../src/server/mobileAppMessageRemovalAdmission.js';
@@ -49,7 +50,7 @@ afterAll(() => {
   for (const d of dirs) SafeFsExecutor.safeRmSync(d, { recursive: true, force: true, operation: 'tests/integration/mobile-native-conversations.test.ts' });
 });
 
-interface Opts { removalSyncEvidence?: Parameters<typeof resolveOwnerRemovalSyncAuthority>[3]; removalAdmissionProbe?: boolean | 'execute'; forwards?: boolean; reactions?: boolean; machineId?: string; links?: boolean; replies?: boolean; sentinel?: { decideInboundDisposition: () => Promise<{ disposition: string }> }; lease?: { held: boolean }; holdsLease?: () => boolean; recording?: { on: boolean }; dispatchThrows?: boolean; nativeOff?: boolean; dispatchDelayMs?: number }
+interface Opts { removalSyncPage?: boolean; removalSyncEvidence?: Parameters<typeof resolveOwnerRemovalSyncAuthority>[3]; removalAdmissionProbe?: boolean | 'execute'; forwards?: boolean; reactions?: boolean; machineId?: string; links?: boolean; replies?: boolean; sentinel?: { decideInboundDisposition: () => Promise<{ disposition: string }> }; lease?: { held: boolean }; holdsLease?: () => boolean; recording?: { on: boolean }; dispatchThrows?: boolean; nativeOff?: boolean; dispatchDelayMs?: number }
 
 function setup(opts: Opts = {}) {
   const machineId = opts.machineId ?? 'm1';
@@ -113,7 +114,12 @@ function setup(opts: Opts = {}) {
   const syncEvidence = opts.removalSyncEvidence;
   if (svc && syncEvidence) {
     const codec = createRemovalSyncCursorCodec();
-    app.get('/mobile/chat/app/:key/events', (req, res) => {
+    app.get('/mobile/chat/app/:key/events', async (req, res) => {
+      if (opts.removalSyncPage) {
+        const result = await executeOwnerRemovalSync(req, pairing, svc, syncEvidence, codec);
+        res.status(result.status).json(result.body);
+        return;
+      }
       const scope = resolveOwnerRemovalSyncAuthority(req, pairing, svc, syncEvidence);
       if (!scope.ok) {
         res.status(scope.status).json({ error: scope.error });
@@ -1265,5 +1271,92 @@ describe('private signed removal sync authority', () => {
     } finally { broadRead.mockRestore(); }
     trust = null;
     expect((await signed(e, 'GET', resume)).status).toBe(503);
+  });
+});
+
+describe('private signed owner removal sync page', () => {
+  async function fixture() {
+    let trust = 'trust-1';
+    const e = setup({ removalSyncPage: true, removalSyncEvidence: {
+      machineTrustRevision: () => trust, journalRevision: () => 'journal-1',
+    } });
+    await enableReplyProof(e);
+    const key = await create(e);
+    e.svc.store.append({ kind: 'message', eventId: 'target', messageId: 'msg-target', text: 'Original text',
+      role: 'agent', conversationKey: key, machineId: 'm1', at: new Date().toISOString() });
+    const remove = () => e.svc.store.append({ kind: 'message-removed', eventId: 'remove-target',
+      targetEventId: 'target', targetMessageId: 'msg-target', conversationKey: key,
+      machineId: 'm1', at: new Date().toISOString() });
+    return { e, key, remove, path: `/mobile/chat/app/${key}/events`,
+      changeTrust() { trust = 'trust-2'; },
+    };
+  }
+
+  it('serves exact marker and continuation without replaying the removed text', async () => {
+    const { e, key, path, remove, changeTrust } = await fixture();
+    expect((await bearer(e, 'get', path)).status).toBe(403);
+    const before = await signed(e, 'GET', path);
+    expect(before.status).toBe(200);
+    expect(before.body.changes).toEqual([{ kind: 'message', row: {
+      eventId: 'target', messageId: 'msg-target', role: 'agent', text: 'Original text', at: expect.any(String),
+    } }]);
+    remove();
+    const continuation = `${path}?cursor=${encodeURIComponent(before.body.cursor)}`;
+    const after = await signed(e, 'GET', continuation);
+    expect(after.status).toBe(200);
+    const marker = { kind: 'message-removed', conversationKey: key, eventId: 'remove-target', targetEventId: 'target' };
+    expect(after.body.changes).toEqual([marker]);
+    expect(after.body.epoch).toBe(before.body.epoch);
+    expect((await signed(e, 'GET', path)).body.changes).toEqual([marker]);
+    expect((await signed(e, 'GET', `${path}?limit=101`)).status).toBe(400);
+    expect((await signed(e, 'GET', `${path}?cursor=invalid`)).status).toBe(400);
+    changeTrust();
+    const reset = await signed(e, 'GET', continuation);
+    expect(reset.status).toBe(409);
+    expect(reset.body).toEqual({ error: 'message-removal-sync-reset', epoch: expect.any(String) });
+  });
+
+  it('holds before an unresolved marker and retries it before later rows', async () => {
+    const { e, key, path, remove } = await fixture();
+    const before = await signed(e, 'GET', path);
+    remove();
+    e.svc.store.append({ kind: 'message', eventId: 'later', messageId: 'msg-later', text: 'Later text',
+      role: 'agent', conversationKey: key, machineId: 'm1', at: new Date().toISOString() });
+    const continuation = `${path}?cursor=${encodeURIComponent(before.body.cursor)}`;
+    const acl = vi.spyOn(e.pairing, 'mayReadStored').mockImplementation((_reader, _conversation, row) => (row as { messageId?: string }).messageId !== 'msg-target');
+    try {
+      const blocked = await signed(e, 'GET', continuation);
+      expect(blocked.status).toBe(200);
+      expect(blocked.body).toMatchObject({ cursor: before.body.cursor, blocked: true, changes: [] });
+    } finally { acl.mockRestore(); }
+    const retried = await signed(e, 'GET', continuation);
+    expect(retried.body.changes).toEqual([
+      { kind: 'message-removed', conversationKey: key, eventId: 'remove-target', targetEventId: 'target' },
+      { kind: 'message', row: expect.objectContaining({ eventId: 'later' }) },
+    ]);
+  });
+
+  it('withholds a page if access or removal evidence changes while executing', async () => {
+    const { e, path, remove, changeTrust } = await fixture();
+    const prepare = e.svc.store.prepareRemovalHistory.bind(e.svc.store);
+    vi.spyOn(e.svc.store, 'prepareRemovalHistory').mockImplementationOnce(async (key) => {
+      const ready = await prepare(key);
+      changeTrust();
+      return ready;
+    });
+    const changed = await signed(e, 'GET', path);
+    expect(changed.status).toBe(409);
+    expect(changed.body).toEqual({ error: 'message-removal-sync-reset' });
+    const select = e.svc.store.syncRemovalAwareMessageChangesAfter.bind(e.svc.store);
+    vi.spyOn(e.svc.store, 'syncRemovalAwareMessageChangesAfter').mockImplementationOnce((...args) => {
+      const page = select(...args);
+      expect(page?.changes[0]?.kind).toBe('message');
+      remove();
+      return page;
+    });
+    const stale = await signed(e, 'GET', path);
+    expect(stale.status).toBe(503);
+    expect(stale.body).toEqual({ error: 'message-removal-sync-unavailable' });
+    expect((await signed(e, 'GET', path)).body.changes[0].kind).toBe('message-removed');
   });
 });

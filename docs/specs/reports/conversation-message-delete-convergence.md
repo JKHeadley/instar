@@ -75,3 +75,7 @@ Independent and cross-model review required transaction-journal refusal, descrip
 ## Private signed owner sync authority checkpoint
 
 The independent and cross-model reviews required full post-evidence ownership and custody checks and a stable composite revision. The private resolver shares the recorded conversation owner rule with Delete admission. It denies a signature from a different recorded owner, a missing owner identifier, an unstable sample, or a lost holder. The signed HTTP fixture binds a cursor in the same scope and resets on changed revisions. It uses a fixture sequence and does not read or serve a sync page. The production lifecycle verifies the existing feed never returns private cursor authority.
+
+## Private signed owner sync page checkpoint
+
+Independent and cross-model review confirmed the prepared page and cursor boundary after requiring an exact proof comparison and preserving unresolved row access. The fixture reads real projected messages and markers, holds the exact cursor at an unresolved marker, then retries it ahead of later rows. It withholds a page on authority change during preparation or on a removal immediately after selection. A replacement proof cannot certify an earlier page. The wire allowlist excludes retained signatures and access metadata. Production remains dark and the high-water and cache deadline handshake are still required.

@@ -1432,21 +1432,23 @@ export class AppConversationStore {
    * the read starts again from the beginning and the client de-duplicates by eventId.
    */
   syncEvents(conversationKey: string, cursor: string | null | undefined, limit = 100): { events: StoredAppEvent[]; cursor: string } {
-    const { events, cursor: next } = this.syncIndexedEvents(conversationKey, cursor, limit, false);
-    return { events, cursor: next };
+    const { events, sequence } = this.syncIndexedEvents(conversationKey, this.readSyncSequence(cursor), limit, false);
+    return { events, cursor: this.syncCursor(sequence) };
   }
 
-  private syncIndexedEvents(conversationKey: string, cursor: string | null | undefined, limit: number,
-    strict: boolean): { events: StoredAppEvent[]; cursor: string; startCursor: string } {
-    const canonicalKey = canonicalConversationKey(conversationKey);
-    const self = this.opts.machineId();
-    let after = 0;
+  private readSyncSequence(cursor: string | null | undefined): number {
     if (cursor) {
       try {
         const c = JSON.parse(Buffer.from(cursor, 'base64url').toString('utf8')) as { m?: unknown; s?: unknown };
-        if (c.m === self && typeof c.s === 'number' && c.s >= 0) after = c.s;
+        if (c.m === this.opts.machineId() && typeof c.s === 'number' && c.s >= 0) return c.s;
       } catch { /* @silent-fallback-ok — an unreadable cursor restarts from the beginning (the client de-duplicates) */ }
     }
+    return 0;
+  }
+
+  private syncIndexedEvents(conversationKey: string, after: number, limit: number,
+    strict: boolean): { events: StoredAppEvent[]; sequence: number } {
+    const canonicalKey = canonicalConversationKey(conversationKey);
     const n = Math.max(1, Math.min(100, Math.floor(limit)));
     const rows = this.db.prepare('SELECT ingestSeq, eventId, kind, byteOffset, byteLength FROM events WHERE canonicalKey = ? AND ingestSeq > ? ORDER BY ingestSeq ASC LIMIT ?').all(canonicalKey, after, n) as Array<{ ingestSeq: number; eventId: string; kind: AppEventKind; byteOffset: number; byteLength: number }>;
     const events: StoredAppEvent[] = [];
@@ -1460,7 +1462,7 @@ export class AppConversationStore {
       }
       if (ev) events.push(ev);
     }
-    return { events, cursor: this.syncCursor(last), startCursor: this.syncCursor(after) };
+    return { events, sequence: last };
   }
 
   private syncCursor(sequence: number): string {
@@ -1475,9 +1477,21 @@ export class AppConversationStore {
       cursor: string;
       blocked: boolean;
     } | null {
-    return this.withRemovalHistory(conversationKey, (custodian) => {
+    const page = this.syncRemovalAwareMessageChangesAfter(conversationKey, this.readSyncSequence(cursor), limit, mayRead);
+    return page && { changes: page.changes, cursor: this.syncCursor(page.sequence), blocked: page.blocked };
+  }
+
+  syncRemovalAwareMessageChangesAfter(conversationKey: string, after: number, limit: number,
+    mayRead: (row: BrowsedMessage) => 'allow' | 'deny' | 'unknown'): {
+    changes: NonNullable<ReturnType<AppConversationStore['syncRemovalAwareMessageChanges']>>['changes'];
+    sequence: number;
+    blocked: boolean;
+    proof: string;
+  } | null {
+    if (!Number.isSafeInteger(after) || after < 0) return null;
+    return this.withRemovalHistory(conversationKey, (custodian, proof) => {
       const key = canonicalConversationKey(conversationKey);
-      const { events, cursor: next, startCursor } = this.syncIndexedEvents(conversationKey, cursor, limit, true);
+      const { events, sequence } = this.syncIndexedEvents(conversationKey, after, limit, true);
       const firstRemoval = this.db.prepare(`
         SELECT e.eventId FROM message_removals r JOIN events e
           ON e.canonicalKey = r.canonicalKey AND e.eventId = r.eventId
@@ -1486,12 +1500,12 @@ export class AppConversationStore {
       `);
       type Change = NonNullable<ReturnType<AppConversationStore['syncRemovalAwareMessageChanges']>>['changes'][number];
       const changes: Change[] = [];
-      let previous = startCursor;
+      let previous = after;
       for (const fact of events) {
         const marker = fact.kind === 'message-removed' && fact.machineId === custodian;
         const target = marker ? this.getEvent(conversationKey, fact.targetEventId) : fact;
         if (marker && (!target || target.eventId !== fact.targetEventId
-          || canonicalConversationKey(target.conversationKey) !== key)) return { changes, cursor: previous, blocked: true };
+          || canonicalConversationKey(target.conversationKey) !== key)) return { changes, sequence: previous, blocked: true, proof };
         if (target && (target.kind === 'message' || target.kind === 'media-message')
           && canonicalConversationKey(target.conversationKey) === key
           && (!marker || fact.targetMessageId === target.messageId)) {
@@ -1499,15 +1513,15 @@ export class AppConversationStore {
           if (marker ? removal?.eventId === fact.eventId : !removal && fact.kind !== 'message-removed') {
             const row = this.projectMessage(target);
             const access = mayRead(row);
-            if (access === 'unknown') return { changes, cursor: previous, blocked: true };
+            if (access === 'unknown') return { changes, sequence: previous, blocked: true, proof };
             if (access === 'allow') changes.push(marker
               ? { kind: 'message-removed', conversationKey, eventId: fact.eventId, targetEventId: target.eventId }
               : { kind: 'message', row });
           }
         }
-        previous = this.syncCursor(fact.ingestSeq);
+        previous = fact.ingestSeq;
       }
-      return { changes, cursor: next, blocked: false };
+      return { changes, sequence, blocked: false, proof };
     });
   }
 
@@ -1604,6 +1618,10 @@ export class AppConversationStore {
     }
   }
 
+  hasPreparedRemovalHistory(conversationKey: string, proof: string): boolean {
+    return this.withRemovalHistory(conversationKey, (_custodian, current) => current === proof) === true;
+  }
+
   private rememberRemovalHistoryProof(key: string, proof: string): void {
     this.removalHistoryProofs.delete(key);
     this.removalHistoryProofs.set(key, proof);
@@ -1613,14 +1631,14 @@ export class AppConversationStore {
     }
   }
 
-  private withRemovalHistory<T>(conversationKey: string, read: (custodian: string) => T): T | null {
+  private withRemovalHistory<T>(conversationKey: string, read: (custodian: string, proof: string) => T): T | null {
     const key = canonicalConversationKey(conversationKey);
     try {
       const version = this.db.pragma('data_version', { simple: true });
       const result = this.db.transaction(() => {
         const checkpoint = this.removalHistoryCheckpoint(conversationKey);
         if (!checkpoint || this.removalHistoryProofs.get(key) !== checkpoint.proof) return null;
-        const page = read(checkpoint.custodian);
+        const page = read(checkpoint.custodian, checkpoint.proof);
         if (this.removalHistoryCheckpoint(conversationKey)?.proof !== checkpoint.proof) return null;
         this.rememberRemovalHistoryProof(key, checkpoint.proof);
         return page;

@@ -73,6 +73,23 @@ describe('AppConversationStore', () => {
     } finally { store.close(); }
   });
 
+  it('cannot attach a replacement prepared proof to an earlier selected page', async () => {
+    const { store } = mk();
+    try {
+      store.append(created());
+      store.append(msg('target', 1));
+      expect(await store.prepareRemovalHistory(KEY)).toBe(true);
+      const oldPage = store.syncRemovalAwareMessageChangesAfter(KEY, 0, 100, () => 'allow')!;
+      expect(store.hasPreparedRemovalHistory(KEY, oldPage.proof)).toBe(true);
+      store.append({ kind: 'message-removed', conversationKey: KEY, eventId: 'new-removal',
+        targetEventId: 'ev-target', targetMessageId: 'msg-target', at: at(2), machineId: 'm1' });
+      expect(await store.prepareRemovalHistory(KEY)).toBe(true);
+      const newPage = store.syncRemovalAwareMessageChangesAfter(KEY, 0, 100, () => 'allow')!;
+      expect(store.hasPreparedRemovalHistory(KEY, oldPage.proof)).toBe(false);
+      expect(store.hasPreparedRemovalHistory(KEY, newPage.proof)).toBe(true);
+    } finally { store.close(); }
+  });
+
   it('emits a single marker when a removal precedes its original across pages', async () => {
     const { store } = mk();
     try {

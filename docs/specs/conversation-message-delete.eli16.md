@@ -39,3 +39,5 @@ Changes in the paired-device key records now invalidate an old sync position. If
 A change to a machine’s signing keys also changes the revision used for sync. The server reads the keys and their revision together so it can keep checking older signed messages after a legitimate key rotation.
 
 The private server check now brings the signed device, owner, chat, and evidence revisions together. An old saved position can’t be reused after a different machine or access check takes effect.
+
+The private sync test now reads real messages and removal notices. If access changes or a removal arrives while the server is preparing a page, the server discards that page so it cannot send stale rows.
