@@ -10,8 +10,9 @@
  */
 
 import { canonicalJson, sha256Hex } from './WorkCardStore.js';
-import { sameProof, type WorkBoardWriterProof } from './WorkBoardApprovalWriter.js';
+import { sameProof, type WorkBoardApprovalEvent, type WorkBoardApprovalLookup, type WorkBoardWriterProof } from './WorkBoardApprovalWriter.js';
 import type { WorkBoardSlipStore } from './WorkBoardSlipStore.js';
+import { applyWorkBoardSlip } from './workBoardSlipApplication.js';
 import {
   WorkBoardService, resolveWorkBoardSettings, lineIdFor, transcriptLineFor, noteRefusalFor, JOURNAL_BUCKET_CAPACITY,
   type WorkBoardSettings, type CardView, type WorkPrincipal, type Refusal,
@@ -79,8 +80,12 @@ export interface WorkBoardSlipDeviceBinding {
 export interface WorkBoardRuntimeSeams {
   machineId: string;
   permissionSlips?: {
-    store: Pick<WorkBoardSlipStore, 'get' | 'readItemResults' | 'consumeVerified'>;
+    store: WorkBoardSlipStore;
     currentWriter: () => WorkBoardWriterProof | null;
+    application?: {
+      readEvent: (id: string) => WorkBoardApprovalLookup;
+      confirmProjection: (winner: WorkBoardApprovalEvent) => Promise<boolean>;
+    };
   };
   enabled: () => boolean;
   rawSettings: () => unknown;
@@ -131,13 +136,19 @@ export class WorkBoardRuntime {
   private creationEvidenceItems: ReadonlyArray<WorkBoardCreationEvidence> = Object.freeze([]);
   readonly holderStats = { sweeps: 0, cardsSwept: 0, notesDrained: 0, notesCoalesced: 0, holdsLifted: 0, quietRepickups: 0, lastPassAt: null as number | null, lastSweep: null as Record<string, unknown> | null };
 
+  private currentSlipWriter(): WorkBoardWriterProof | null {
+    if (!this.started || !this.seams.enabled()) return null;
+    const writer = this.seams.permissionSlips?.currentWriter();
+    return writer && writer.ownerPersonKey === this.seams.ownerPersonKey() ? writer : null;
+  }
+
   bindPermissionSlip(input: WorkBoardSlipDeviceBinding) {
     const port = this.seams.permissionSlips;
-    const writer = port?.currentWriter();
-    if (!port || !writer || !this.started || !this.seams.enabled() || writer.ownerPersonKey !== this.seams.ownerPersonKey()) return null;
+    const writer = this.currentSlipWriter();
+    if (!port || !writer) return null;
     const slip = port.store.get(input.slipId);
     if (!slip || slip.digest !== input.digest
-      || !sameProof(writer, slip.proposal.writer) || !sameProof(writer, port.currentWriter())) return null;
+      || !sameProof(writer, slip.proposal.writer) || !sameProof(writer, this.currentSlipWriter())) return null;
     const replay = slip.decisionId !== null && slip.decisionId === input.decisionId;
     if (!replay && (slip.decisionId !== null || this.now() >= slip.expiresAt)) return null;
     const actionBindingDigest = sha256Hex(canonicalJson([
@@ -147,22 +158,33 @@ export class WorkBoardRuntime {
     return { actionBindingDigest, expiresAt: slip.expiresAt, replay };
   }
 
-  recordPermissionSlip(input: WorkBoardSlipDeviceBinding & { decisionId: string; actionBindingDigest: string; allowFresh: boolean }) {
+  async recordPermissionSlip(input: WorkBoardSlipDeviceBinding & { decisionId: string; actionBindingDigest: string; allowFresh: boolean }) {
     const failed = { status: 409, body: { error: 'work-board-slip-unavailable' } };
     const binding = this.bindPermissionSlip(input);
     const port = this.seams.permissionSlips;
-    const writer = port?.currentWriter();
+    const writer = this.currentSlipWriter();
     if (!binding || binding.actionBindingDigest !== input.actionBindingDigest || !port || !writer) return failed;
     if (binding.replay) return this.readPermissionSlip(input.slipId);
     if (!input.allowFresh) return failed;
     if (!port.store.consumeVerified(input.slipId, input.digest, writer, input.decisionId)) return failed;
+    const application = port.application;
+    if (application) {
+      await applyWorkBoardSlip({ slipId: input.slipId, digest: input.digest, writer, decisionId: input.decisionId }, {
+        store: port.store,
+        currentWriter: () => this.currentSlipWriter(),
+        approve: (request) => this.svc.approveBound({
+          kind: 'person', personKey: writer.ownerPersonKey, isOwner: true, proof: 'presence',
+        }, request),
+        confirmProjection: (winner) => application.confirmProjection(winner),
+      });
+    }
     return this.readPermissionSlip(input.slipId);
   }
 
   readPermissionSlip(id: string) {
     const port = this.seams.permissionSlips;
-    const writer = port?.currentWriter();
-    if (!port || !writer || !this.started || !this.seams.enabled() || writer.ownerPersonKey !== this.seams.ownerPersonKey()) {
+    const writer = this.currentSlipWriter();
+    if (!port || !writer) {
       return { status: 503, body: { error: 'work-board-slips-unavailable' } };
     }
     const slip = port.store.get(id);
@@ -171,7 +193,7 @@ export class WorkBoardRuntime {
       slipId: id, writer, digest: slip.digest, decisionId: slip.decisionId,
     });
     if (slip.decisionId !== null && !results) return { status: 503, body: { error: 'work-board-slip-receipt-unavailable' } };
-    if (!sameProof(writer, port.currentWriter())) return { status: 503, body: { error: 'work-board-slips-unavailable' } };
+    if (!sameProof(writer, this.currentSlipWriter())) return { status: 503, body: { error: 'work-board-slips-unavailable' } };
     return {
       status: 200,
       body: {
@@ -187,7 +209,14 @@ export class WorkBoardRuntime {
     this.now = seams.now ?? Date.now;
     this.bootMs = this.now();
     const settings = (): WorkBoardSettings => resolveWorkBoardSettings(seams.rawSettings());
+    const slips = seams.permissionSlips;
+    const application = slips?.application;
     this.svc = new WorkBoardService({
+      approvalAuthority: slips && application ? {
+        currentWriter: () => this.currentSlipWriter(),
+        readEvent: (id) => application.readEvent(id),
+        awaitDurable: (seq) => seams.awaitDurable(seq),
+      } : undefined,
       machineId: seams.machineId,
       emit: seams.emit,
       loadUnion: seams.loadUnion,

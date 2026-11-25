@@ -106,3 +106,7 @@ The existing mobile challenge route now recognizes the finite Work Board slip ac
 ## Owner-device approval submission
 
 The signed owner-phone submit rederives the current slip, writer and device binding, verifies the existing presence signature and consumes the live action challenge before recording a decision. The durable decision ID hashes the challenge with a slip-specific domain. An exact signed retry still needs current binding and valid presence proof, and only reads the receipt. The independent reviewer concurred. The lifecycle fixture checks old-key rejection, invalid signature refusal, one durable signed decision and identical retry. The server reports pending items here. No production enrollment or application call is supplied by this checkpoint.
+
+## Opt-in runtime application
+
+The Work Board runtime now runs the ordered application adapter after a fresh verified slip decision when an enrolled application port is supplied. The same current-writer resolver checks the board is started and enabled and the enrolled owner is still current for binding, enqueue, receipt and application. After the asynchronous submission the route verifies the same current owner device, host and presence key before returning any private receipt. Exact retry remains receipt-only. Independent review concurred. The real-server fixture uses the real writer and journal, records one bound event, leaves the card unresolved without verified projection, and proves retry does not repeat the append. No production enrollment or projection adapter is supplied.

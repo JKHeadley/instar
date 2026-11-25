@@ -1,0 +1,20 @@
+{
+  "version": 2,
+  "slug": "work-board-approval-binding-wip",
+  "sessionId": "b3d2cf8a-9b5d-468b-a50b-70ebf11e9e5c",
+  "timestamp": "2026-11-25T03:21:04.003Z",
+  "artifactPath": "upgrades/side-effects/work-board-approval-binding-wip.md",
+  "artifactSha256": "148052d70530daace431036153397ed62f8695a91658093e0e856173687a093b",
+  "specPath": "docs/specs/owner-work-board-slips-first-slice.md",
+  "coveredFiles": [
+    "src/core/WorkBoardRuntime.ts",
+    "src/server/mobilePermissionsRoutes.ts",
+    "tests/e2e/phone-work-cards-alive.test.ts",
+    "upgrades/side-effects/work-board-approval-binding-wip.md"
+  ],
+  "phase": "complete",
+  "tier": 2,
+  "tierReasoning": "Connect verified slip submission to gated Work Board writer with receipt fencing",
+  "secondPass": "true",
+  "reviewerConcurred": true
+}

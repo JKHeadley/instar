@@ -745,7 +745,7 @@ export interface MobilePermissionsDeps {
   readWorkBoardSlip?: (id: string) => ActionResult;
   bindWorkBoardSlip?: (input: WorkBoardSlipDeviceBinding) =>
     { actionBindingDigest: string; expiresAt: number; replay: boolean } | null;
-  recordWorkBoardSlip?: (input: WorkBoardSlipDeviceBinding & { decisionId: string; actionBindingDigest: string; allowFresh: boolean }) => ActionResult;
+  recordWorkBoardSlip?: (input: WorkBoardSlipDeviceBinding & { decisionId: string; actionBindingDigest: string; allowFresh: boolean }) => ActionResult | Promise<ActionResult>;
   pairing: () => MobilePairingService | null;
   config: () => InstarConfig;
   stateDir: string;
@@ -1047,7 +1047,7 @@ export function mountMobilePermissionsRoutes(router: Router, deps: MobilePermiss
   };
 
   // A tap on a work card (work-board-asks §4): the owner's phone, Face ID over the exact action line.
-  router.post('/mobile/work-board/slips/:id/approve', (req: Request, res: Response) => {
+  router.post('/mobile/work-board/slips/:id/approve', async (req: Request, res: Response) => {
     const g = writeGate(req, res, 'work-slip');
     if (!g) return;
     const slipId = req.params.id;
@@ -1075,7 +1075,19 @@ export function mountMobilePermissionsRoutes(router: Router, deps: MobilePermiss
       reject(401, 'challenge-invalid'); return;
     }
     if (!deps.recordWorkBoardSlip) { reject(503, 'work-board-slips-unavailable'); return; }
-    const result = deps.recordWorkBoardSlip({ ...input, allowFresh: !binding.replay });
+    let result: ActionResult;
+    try {
+      result = await deps.recordWorkBoardSlip({ ...input, allowFresh: !binding.replay });
+    } catch (err) {
+      report('MobilePermissions.workBoardSlip', 'the slip returns its durable decision and item receipt', 'reopen the slip to check its receipt', err);
+      reject(503, 'work-board-slip-receipt-unavailable');
+      return;
+    }
+    const current = writeGate(req, res, 'work-slip');
+    if (!current) return;
+    if (current.deviceId !== g.deviceId || current.host !== g.host || current.presenceKey !== g.presenceKey) {
+      reject(409, 'work-board-slip-unavailable'); return;
+    }
     if (result.status !== 200) { reject(result.status, errorCode(result.body)); return; }
     if (!binding.replay) audit.record({ event: 'approved', deviceId: g.deviceId, personId: g.personId, action: 'work-board-slip-approve', target: slipId });
     res.status(200).json(result.body);

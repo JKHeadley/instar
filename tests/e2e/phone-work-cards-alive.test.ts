@@ -26,7 +26,8 @@ import { ReplicatedKindRegistry } from '../../src/core/ReplicatedRecordEnvelope.
 import { ReplicatedRecordEmitter } from '../../src/core/ReplicatedRecordEmitter.js';
 import { ReplicatedPeerStreamReader } from '../../src/core/ReplicatedPeerStreamReader.js';
 import { HybridLogicalClock } from '../../src/core/HybridLogicalClock.js';
-import { WORK_CARD_KIND_REGISTRATION, WORK_CARD_RECORD_KIND, WORK_BOARD_STORE_KEY, canonicalJson, sha256Hex, type UnionEntry } from '../../src/core/WorkCardStore.js';
+import { WORK_CARD_KIND_REGISTRATION, WORK_CARD_RECORD_KIND, WORK_BOARD_STORE_KEY, type UnionEntry } from '../../src/core/WorkCardStore.js';
+import { readWorkBoardApprovalEvent } from '../../src/core/workBoardApprovalReadback.js';
 import { WorkBoardRuntime } from '../../src/core/WorkBoardRuntime.js';
 import type { MobilePairingService } from '../../src/server/mobilePairingRoutes.js';
 import { workBoardSlipApprovalLine } from '../../src/core/workBoardSlipPresence.js';
@@ -120,7 +121,20 @@ describe('Work cards from the owner phone E2E (feature is alive)', () => {
     const writer = { epoch: 'epoch1', ownerGeneration: 'owner1', ownerPersonKey: 'owner', writerIncarnation: 'i1' };
     let active = true;
     const store = new WorkBoardSlipStore(db);
-    const rig = mkRuntime(stateDir, { permissionSlips: { store, currentWriter: () => active ? writer : null } });
+    let projectionsObserved = 0;
+    const rig: Rig = mkRuntime(stateDir, {
+      permissionSlips: {
+        store, currentWriter: () => active ? writer : null,
+        application: {
+          readEvent: (id) => readWorkBoardApprovalEvent(id, {
+            journal: rig.journal,
+            epoch: { machineId: 'm1', journalIncarnation: rig.journal.getOwnAdvert()[WORK_CARD_RECORD_KIND].incarnation, baselineSequence: 0 },
+            current: () => active, hasReservation: () => false,
+          }),
+          confirmProjection: async () => { projectionsObserved++; return false; },
+        },
+      },
+    });
     rig.runtime.start();
     const server = new AgentServer({ config, sessionManager: sm(), state: new StateManager(stateDir), workBoard: () => rig.runtime });
     await server.start();
@@ -133,12 +147,13 @@ describe('Work cards from the owner phone E2E (feature is alive)', () => {
       pairing.devices.applyConfirm(created.device.id, { ok: true });
       const phone: Phone = { dev, presence: makeDevice(), id: created.device.id };
       pairing.devices.setPresenceKey(phone.id, phone.presence.publicKey);
-      const cardId = 'wc_6248a51921c41ca0';
-      const disclosure = { title: 'Review the exact card' };
-      const version = {
-        cardId, cardRevision: 'card1', policyRevision: 'policy1', visibleTextHash: sha256Hex(canonicalJson(disclosure)),
-        materialHash: 'a'.repeat(64), titleHash: 'b'.repeat(64),
-      };
+      const createdCard = rig.runtime.svc.createCard({ kind: 'agent' }, {
+        title: 'Review the exact card', need: 'Check this before starting',
+        doneWhen: [{ id: 'done', text: 'Checked', certify: 'agent-may-certify' }], outward: false,
+      });
+      if (!createdCard.ok) throw new Error('card');
+      const { cardId } = createdCard;
+      const { version, disclosure } = rig.runtime.svc.approvalSnapshot(cardId)!;
       const slip = store.issue({ sourceId: 'private-source', writer, items: [{ version, disclosure }] })!;
       const route = `/mobile/work-board/slips/${slip.id}`;
       const bearer = await request(app).get(route).set(auth());
@@ -179,14 +194,18 @@ describe('Work cards from the owner phone E2E (feature is alive)', () => {
       expect(store.get(slip.id)?.decisionId).toBeNull();
       const committed = await send(app, phone, 'POST', submitRoute, submit);
       expect(committed.status, JSON.stringify(committed.body)).toBe(200);
-      expect(committed.body).toMatchObject({ state: 'signed', receipt: { items: [{ cardId, status: 'pending' }] } });
+      expect(committed.body).toMatchObject({ state: 'signed', receipt: { items: [{ cardId, status: 'unresolved' }] } });
       const retry = await send(app, phone, 'POST', submitRoute, submit);
       expect(retry.status).toBe(200);
       expect(retry.body).toEqual(committed.body);
+      expect(projectionsObserved).toBe(1);
+      const records = rig.journal.readKindComplete(WORK_CARD_RECORD_KIND).entries;
+      expect(records.filter(({ data }) => data.approvalBinding)).toHaveLength(1);
+      expect(rig.runtime.svc.view(cardId)?.status).toBe('not-started');
 
       const signed = await send(app, phone, 'GET', route);
       expect(signed.status).toBe(200);
-      expect(signed.body).toMatchObject({ state: 'signed', receipt: { items: [{ cardId, status: 'pending' }] } });
+      expect(signed.body).toMatchObject({ state: 'signed', receipt: { items: [{ cardId, status: 'unresolved' }] } });
       expect((await send(app, phone, 'POST', challengeRoute, challengeInput)).status).toBe(409);
       active = false;
       const unavailable = await send(app, phone, 'GET', route);
