@@ -305,6 +305,17 @@ describe('first-hop sender binding (§3.4 rule 1)', () => {
     expect(readReplicaEntries(PEER, 'topic-placement')).toEqual([]);
   });
 
+  it('rejects a reaction naming a different inner author even when the outer sender is valid', () => {
+    const a = newApplier();
+    const sender: JournalEntry = {
+      seq: 1, ts: '2026-11-25T12:00:00Z', machine: PEER, kind: 'app-conversation-event',
+      data: { eventKind: 'reaction', origin: OWN, machineId: OWN },
+    };
+    const result = a.apply(PEER, [{ kind: 'app-conversation-event', incarnation: 'inc-1', entries: [sender] }]);
+    expect(result.forgedEntries).toBe(1);
+    expect(result.applied).toBe(0);
+  });
+
   it('appends valid entries then stops at the first forged third-machine entry', () => {
     const a = newApplier();
     const res = a.apply(PEER, [

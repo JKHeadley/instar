@@ -1,0 +1,12 @@
+{
+  "capability": { "messageActions": { "reactions": { "emoji": ["👍", "❤️", "😂", "😮", "😢", "🎉"] } } },
+  "path": "/mobile/chat/app/:key/reactions",
+  "selectedEventId": "event-base",
+  "read": { "eventId": "event-base", "own": { "emoji": null, "revision": 0 } },
+  "set": { "eventId": "event-base", "emoji": "👍", "expectedRevision": 0, "requestId": "1795599598000-e94cb442-9772-4199-a6d1-3de648cec011" },
+  "setResponse": { "eventId": "event-base", "own": { "emoji": "👍", "revision": 1 } },
+  "clearResponse": { "eventId": "event-base", "own": { "emoji": null, "revision": 2 } },
+  "staleSetAfterClear": { "apply": false, "settleRequest": true },
+  "conflict": { "status": 409, "body": { "error": "reaction-revision-conflict", "eventId": "event-base", "own": { "emoji": "👍", "revision": 1 } } },
+  "unavailable": { "status": 409, "body": { "error": "reaction-target-unavailable" } }
+}

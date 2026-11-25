@@ -47,7 +47,7 @@ async function boot(developmentAgent: boolean) {
   await new MachineIdentityManager(stateDir).generateIdentity({ name: 'e2e machine' });
   const config = {
     projectName: 'native-e2e', projectDir: dir, stateDir, port: 0, authToken: 'e2e-token', developmentAgent,
-    mobilePairing: { multiRoute: { enabled: false }, native: { messageLinks: { enabled: true }, quotedReplies: { enabled: true } } }, // the single-host path; multi-route has its own e2e
+    mobilePairing: { multiRoute: { enabled: false }, native: { messageLinks: { enabled: true }, quotedReplies: { enabled: true }, reactions: { enabled: true } } }, // the single-host path; multi-route has its own e2e
     tunnel: { enabled: true, type: 'named', token: 'x', hostname: HOST },
     sessions: { claudePath: '/usr/bin/echo', maxSessions: 1, defaultMaxDurationMinutes: 30, protectedSessions: [], monitorIntervalMs: 5_000 },
     scheduler: { enabled: false, jobsFile: '', maxParallelJobs: 1 }, messaging: [], updates: {},
@@ -104,11 +104,11 @@ describe('native app conversations — production wiring', () => {
     expect(r.status).toBe(200);
     const deviceId = r.body.deviceId as string;
     const code = /is (\d{3}) (\d{3})\./.exec(dms[0]!)!.slice(1).join('');
-    const send = (method: 'GET' | 'POST', p: string, body?: unknown) => {
+    const send = (method: 'GET' | 'POST' | 'PUT', p: string, body?: unknown) => {
       const raw = body === undefined ? undefined : Buffer.from(JSON.stringify(body));
       const time = String(Date.now());
       const sig = dev.sign(canonicalString(deviceId, HOST, method, p, time, raw));
-      const q = method === 'GET' ? request(app).get(p) : request(app).post(p).set('Content-Type', 'application/json');
+      const q = method === 'GET' ? request(app).get(p) : request(app)[method === 'PUT' ? 'put' : 'post'](p).set('Content-Type', 'application/json');
       q.set('X-Instar-Device', deviceId).set('X-Instar-Device-Time', time).set('X-Instar-Device-Sig', sig);
       return raw ? q.send(raw.toString()) : q;
     };
@@ -190,6 +190,20 @@ describe('native app conversations — production wiring', () => {
       state: 'available', eventId: target, messageId: reply.body.messageId,
       preview: 'Saturday is the farmers market at nine.', senderName: null,
     } }]);
+
+    expect(capabilities.body.conversations[0].messageActions.reactions.emoji).toContain('👍');
+    const reaction = await send('PUT', `/mobile/chat/app/${key}/reactions`, {
+      eventId: target, emoji: '👍', expectedRevision: 0, requestId: `${Date.now()}-${crypto.randomUUID()}`,
+    });
+    expect(reaction.status, JSON.stringify(reaction.body)).toBe(200);
+    expect(reaction.body).toEqual({ eventId: target, own: { emoji: '👍', revision: 1 } });
+    const exactReaction = await send('GET', `/mobile/chat/app/${key}/reactions?eventId=${encodeURIComponent(target)}`);
+    expect(exactReaction.status).toBe(200);
+    expect(exactReaction.body).toEqual(reaction.body);
+
+    const reacted = await send('GET', `/mobile/chat/app/${key}/messages`);
+    expect(reacted.body.messages.find((row: { eventId: string }) => row.eventId === target).reaction.own)
+      .toEqual({ emoji: '👍', revision: 1 });
 
     // A ledger revocation alone refuses the phone at once on the production auth path, even if
     // the registry write after it failed (the registry still says active here).

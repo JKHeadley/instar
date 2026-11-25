@@ -5,3 +5,5 @@ Reactions let you respond to a message with an emoji without sending another cha
 The app asks the server to change the reaction on the message you selected. The server checks that the message is still available to you and that you can act in the conversation. Two devices paired to the same person update the same reaction. If one device changes it while another device is looking at an older value, the app can show the new value before you decide whether to change it again. A network retry does not add a second reaction.
 
 The first server build is off by default and applies to App messages. Telegram's bot can change its own reaction, and that would show up under the bot's identity. This first build keeps your App reaction under your own identity and leaves Telegram unchanged.
+
+A moved conversation can continue taking ordinary messages. The first Reactions build accepts changes only on the machine that created the conversation and is still serving it. This keeps a retry from creating two changes on different machines. Native menu and phone testing must finish before Reactions is turned on.

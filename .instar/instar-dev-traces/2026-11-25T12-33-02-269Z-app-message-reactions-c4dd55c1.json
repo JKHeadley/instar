@@ -1,0 +1,45 @@
+{
+  "version": 3,
+  "slug": "app-message-reactions",
+  "sessionId": "633bd330-201e-4dc8-8fd9-72b89116167e",
+  "timestamp": "2026-11-25T12:33:02.269Z",
+  "artifactPath": "upgrades/side-effects/app-message-reactions.md",
+  "artifactSha256": "cdf9409b7316f016b28dbc1dc797373bc8ac526c3deb7b5b4fb3f5b57c758628",
+  "specPath": "docs/specs/conversation-message-reactions.md",
+  "coveredFiles": [
+    "docs/specs/conversation-message-reactions.eli16.md",
+    "docs/specs/conversation-message-reactions.md",
+    "docs/specs/reports/conversation-message-reactions-convergence.md",
+    "src/core/AppConversationStore.ts",
+    "src/core/AppConversationsReplicatedStore.ts",
+    "src/core/JournalSyncApplier.ts",
+    "src/core/MobileChatRequests.ts",
+    "src/core/types.ts",
+    "src/data/awareness/app-message-reactions.md",
+    "src/server/mobileConversationRoutes.ts",
+    "src/server/mobilePairingRoutes.ts",
+    "tests/e2e/mobile-native-conversations-alive.test.ts",
+    "tests/fixtures/app-message-reactions-contract.json",
+    "tests/integration/mobile-native-conversations.test.ts",
+    "tests/unit/JournalSyncApplier.test.ts",
+    "tests/unit/app-conversation-store.test.ts",
+    "upgrades/side-effects/app-message-reactions.md"
+  ],
+  "phase": "complete",
+  "tier": 2,
+  "tierReasoning": "New signed reaction routes and replicated persisted facts",
+  "secondPass": "true",
+  "reviewerConcurred": true,
+  "toolchain": {
+    "buildSkill": {
+      "name": "instar-dev",
+      "version": "21a45a5a5f03",
+      "verified": true
+    },
+    "convergence": {
+      "reportPath": "docs/specs/reports/conversation-message-reactions-convergence.md",
+      "iterations": null,
+      "verified": true
+    }
+  }
+}

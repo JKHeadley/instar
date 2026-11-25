@@ -53,7 +53,7 @@ import {
   cleanConversationTitle, derivedEventId, isAppConversationKey, newAppConversationKey, removeAuthorityTokens,
 } from '../core/appConversationText.js';
 import { isOwnerPerson } from '../core/MobilePeople.js';
-import { messagePreview, type BrowsedMessage, type DeviceSignedOrigin, type MachineReceipt, type MediaMessageEvent, type MessageEvent } from '../core/AppConversationStore.js';
+import { APP_REACTION_EMOJI, isAppReactionEmoji, messagePreview, type BrowsedMessage, type DeviceSignedOrigin, type MachineReceipt, type MediaMessageEvent, type MessageEvent } from '../core/AppConversationStore.js';
 import { signReceipt, signReplyReceipt, type StoredReplyReference, signRedaction, signRedactionV2, sha256Hex, type MachineSigner, type OriginVerdict } from '../core/AppRecordSignatures.js';
 import {
   MAX_ATTACHMENTS, pushPreviewBody, type AppAttachment,
@@ -687,8 +687,18 @@ export function createMobileConversationRouter(deps: MobileConversationRouteDeps
     return crypto.createHmac('sha256', exactVisibilityKey)
       .update(JSON.stringify([person?.role, person?.userId, person?.tier, grants])).digest('base64url');
   };
+  const reactionsOn = () => deps.config.mobilePairing?.native?.reactions?.enabled === true;
+  const reactionProjection = (key: string, row: BrowsedMessage, reader: ResolvedPerson | null) => {
+    if (!reactionsOn() || !reader || !deps.pairing.mayUse(reader, key, 'read') || !deps.pairing.mayReadStored(reader, key, row)) return {};
+    const actor = readerKeyFor(reader, deps.pairing.machineId());
+    if (!actor) return {};
+    try {
+      const own = svc!.store.ownReaction(key, row.eventId, actor);
+      return own ? { reaction: { own } } : {};
+    } catch { return {}; } // @silent-fallback-ok — unreadable slot carries no value
+  };
   const quotedRepliesOn = () => deps.config.mobilePairing?.native?.quotedReplies?.enabled === true;
-  const ownsReplyCustody = (key: string) => {
+  const ownsMessageActionCustody = (key: string) => {
     const machineId = deps.machineId();
     return machineId !== 'local' && svc?.store.getCreationRecord(key)?.machineId === machineId;
   };
@@ -745,7 +755,7 @@ export function createMobileConversationRouter(deps: MobileConversationRouteDeps
       return { ...r, lastPreview: newest ? messagePreview(newest) : null };
     };
     const visible = (rows: ConversationListRow[]): ConversationListRow[] => {
-      const replyActor = quotedRepliesOn() && isMobileChatEnabled(deps.config) ? currentReplyActor() : null;
+      const replyActor = (quotedRepliesOn() || reactionsOn()) && isMobileChatEnabled(deps.config) ? currentReplyActor() : null;
       return rows.filter((r) => {
         if (r.platform === 'telegram') return deviceMayUse(deps.pairing, req, `telegram:${String(r.id)}`);
         if (r.platform === 'slack') return deviceMayUse(deps.pairing, req, 'slack:');
@@ -753,11 +763,16 @@ export function createMobileConversationRouter(deps: MobileConversationRouteDeps
       }).map(shownPreview).map((row) => {
         if (row.platform !== 'app') return row;
         const key = String(row.id);
-        const canReply = replyActor !== null && svc!.deps.signer && ownsReplyCustody(key)
+        const canAct = replyActor !== null && ownsMessageActionCustody(key)
           && svc!.deps.holdsLease() && svc!.currentOwner(key) && deps.pairing.mayUse(replyActor, key, 'send');
+        const canReply = canAct && quotedRepliesOn() && svc!.deps.signer;
+        const canReact = canAct && reactionsOn();
         const links = exactLinksOn() ? { exactContext: true, visibility: exactVisibility(person, key), ...(exactLinkOrigin() ? { copyLink: true } : {}) } : {};
         const { messageActions: _incomingActions, ...localRow } = row as ConversationListRow & { messageActions?: unknown };
-        return canReply || Object.keys(links).length ? { ...localRow, messageActions: { ...links, ...(canReply ? { reply: true } : {}) } } : localRow;
+        return canReply || canReact || Object.keys(links).length ? {
+          ...localRow, messageActions: { ...links, ...(canReply ? { reply: true } : {}),
+            ...(canReact ? { reactions: { emoji: APP_REACTION_EMOJI } } : {}) },
+        } : localRow;
       });
     };
     // Unread (§3.5): read fields for a reader on every visible row, the page total, and whether
@@ -1053,7 +1068,7 @@ export function createMobileConversationRouter(deps: MobileConversationRouteDeps
     const eventId = derivedEventId('op', seed);
 
     // Step 2 — look up. Step 7 — a done/unknown request answers from the CURRENT delivery state.
-    if (quoted && !ownsReplyCustody(key)) {
+    if (quoted && !ownsMessageActionCustody(key)) {
       res.status(503).json({ error: 'reply-custody-unavailable' }); return;
     }
     const activeKey = JSON.stringify([deviceId, requestId]);
@@ -1140,7 +1155,7 @@ export function createMobileConversationRouter(deps: MobileConversationRouteDeps
         catch { /* @silent-fallback-ok — keep the existing classifier failure behavior, then require a valid source */ }
       }
       if (!actorCurrent() || !s.liveConversation(key)) { res.status(403).json({ error: 'reader-no-longer-authorized' }); return; }
-      if (!ownsReplyCustody(key) || !s.deps.holdsLease() || !s.currentOwner(key)) {
+      if (!ownsMessageActionCustody(key) || !s.deps.holdsLease() || !s.currentOwner(key)) {
         res.status(503).json({ error: 'owner-unavailable' }); return;
       }
       if (!exactStop && quoteDisposition !== 'kill') {
@@ -1206,7 +1221,7 @@ export function createMobileConversationRouter(deps: MobileConversationRouteDeps
       }
     }
     if (replyTo) {
-      const holds = ownsReplyCustody(key) && s.deps.holdsLease() && s.currentOwner(key);
+      const holds = ownsMessageActionCustody(key) && s.deps.holdsLease() && s.currentOwner(key);
       const current = holds ? source() : null;
       if (!current || current.messageId !== replyTo.messageId) {
         if (msg.kind === 'media-message') s.media.releaseClaim(uploadIds, messageId);
@@ -1286,7 +1301,7 @@ export function createMobileConversationRouter(deps: MobileConversationRouteDeps
     if (exactStop || quotedStop) {
       let heldConfirmed = true;
       if (quotedStop) {
-        if (!actorCurrent() || !ownsReplyCustody(key) || !s.deps.holdsLease() || !s.currentOwner(key)) {
+        if (!actorCurrent() || !ownsMessageActionCustody(key) || !s.deps.holdsLease() || !s.currentOwner(key)) {
           finish(403, { error: 'reader-no-longer-authorized' }); return;
         }
         try {
@@ -1444,6 +1459,96 @@ export function createMobileConversationRouter(deps: MobileConversationRouteDeps
     return candidates.length === 1 ? candidates[0]! : null;
   };
 
+  const appReaction = (req: Request, res: Response) => {
+    const writing = req.method === 'PUT';
+    const deviceId = gate(req, res);
+    if (!deviceId) return;
+    if (!reactionsOn() || (writing && !isMobileChatEnabled(deps.config))) { res.status(503).json({ error: 'reactions-unavailable' }); return; }
+    const key = String(req.params.key);
+    const bodyInput = req.body ?? {};
+    const { emoji, expectedRevision, requestId } = bodyInput;
+    const eventId = writing ? bodyInput.eventId : req.query.eventId;
+    const invalid = writing ? req.originalUrl.includes('?') || (emoji !== null && !isAppReactionEmoji(emoji))
+      || !Number.isSafeInteger(expectedRevision) || expectedRevision < 0
+      || Object.keys(bodyInput).some((field) => !['eventId', 'emoji', 'expectedRevision', 'requestId'].includes(field))
+      : Object.keys(req.query).some((field) => field !== 'eventId');
+    if (invalid || !exactScalar(eventId, 128)) {
+      res.status(400).json({ error: 'invalid-message-reaction' }); return;
+    }
+    if (writing && !validRequestId(res, requestId)) return;
+    const reader = exactMessageReader(deps.pairing, req)();
+    const actor = reader && readerKeyFor(reader, deps.pairing.machineId());
+    if (!reader || !actor || !svc!.liveConversation(key) || !deps.pairing.mayUse(reader, key, 'read')
+      || (writing && !deps.pairing.mayUse(reader, key, 'send'))) { res.status(404).json({ error: 'unknown-conversation' }); return; }
+    if (!ownsMessageActionCustody(key) || (writing && (!svc!.deps.holdsLease() || !svc!.currentOwner(key)))) {
+      res.status(503).json({ error: 'reaction-custody-unavailable' }); return;
+    }
+    const store = svc!.store;
+    const targetUnavailable = () => res.status(409).json({ error: 'reaction-target-unavailable' });
+    let candidates;
+    try { candidates = store.exactMessageCandidates(key, eventId, 'event'); }
+    catch { targetUnavailable(); return; } // @silent-fallback-ok — masked target read
+    const [target] = candidates;
+    if (candidates.length !== 1 || !target || !deps.pairing.mayReadStored(reader, key, target)) { targetUnavailable(); return; }
+    if (!writing) {
+      let own;
+      try { own = store.ownReaction(key, eventId, actor); }
+      catch { own = null; } // @silent-fallback-ok — no speculative value
+      if (!own) { res.status(503).json({ error: 'reaction-state-unavailable' }); return; }
+      res.json({ eventId, own });
+      return;
+    }
+    const requests = svc!.deps.requests;
+    const hash = sha256Hex(JSON.stringify(['app-reaction', actor, key, eventId, emoji, expectedRevision]));
+    const factId = derivedEventId('react', JSON.stringify([actor, requestId]));
+    const requestActor = `app-reaction:${actor}`;
+    const previous = requests.lookup(requestActor, requestId, hash);
+    if (previous.kind === 'outcome-unknown') {
+      try {
+        const fact = store.getEvent(key, factId);
+        if (fact?.kind === 'reaction' && fact.machineId === deps.machineId() && fact.reactionActor === actor && fact.reactionTarget === eventId
+          && fact.reactionEmoji === emoji && fact.reactionRevision === expectedRevision + 1) {
+          const body = { eventId, own: { emoji, revision: fact.reactionRevision } };
+          requests.finish(requestActor, requestId, { status: 200, body });
+          res.json(body); return;
+        }
+      } catch { /* @silent-fallback-ok — durable effect remains unknown */ }
+    }
+    if (answerLookup(res, previous)) return;
+    if (!requestIdAgeOk(requestId, now())) { res.status(400).json({ error: 'request-id-too-old' }); return; }
+    if (!rateOk(deviceId)) { res.status(429).json({ error: 'too-many-requests' }); return; }
+    try {
+      const held = store.ownReaction(key, eventId, actor);
+      if (!held || held.revision === Number.MAX_SAFE_INTEGER) { res.status(503).json({ error: 'reaction-state-unavailable' }); return; }
+      if (held.revision !== expectedRevision) { res.status(409).json({ error: 'reaction-revision-conflict', eventId, own: held }); return; }
+      const unchanged = held.emoji === emoji;
+      const body = { eventId, own: unchanged ? held : { emoji, revision: held.revision + 1 } };
+      const reservation = requests.reserve(requestActor, requestId, hash, 0, { op: 'app-reaction', conversationKey: key },
+        unchanged ? { status: 200, body } : undefined);
+      if (reservation.kind === 'full') { res.status(429).json({ error: 'too-many-requests' }); return; }
+      if (reservation.kind !== 'reserved') { answerLookup(res, reservation); return; }
+      if (!unchanged) {
+        try {
+          const append = store.append({ kind: 'reaction', conversationKey: key, eventId: factId, at: new Date(now()).toISOString(),
+            machineId: deps.machineId(), reactionTarget: eventId, reactionActor: actor, reactionEmoji: emoji, reactionRevision: body.own.revision });
+          const indexed = store.ownReaction(key, eventId, actor);
+          if (!append.appended || indexed?.revision !== body.own.revision || indexed.emoji !== emoji) {
+            throw new Error('reaction append could not be confirmed');
+          }
+        } catch {
+          requests.markUnknown(requestActor, requestId);
+          res.status(409).json({ error: 'outcome-unknown' }); return; // @silent-fallback-ok — exact fact recovery decides retry
+        }
+        requests.finish(requestActor, requestId, { status: 200, body });
+      }
+      res.json(body);
+    } catch {
+      res.status(503).json({ error: 'reaction-state-unavailable' }); // @silent-fallback-ok — no speculative value
+    }
+  };
+  router.get('/mobile/chat/app/:key/reactions', appReaction);
+  router.put('/mobile/chat/app/:key/reactions', appReaction);
+
   router.get('/mobile/conversations/message-link', (req, res) => {
     const read = exactGate(req, res);
     if (!read) return;
@@ -1524,6 +1629,7 @@ export function createMobileConversationRouter(deps: MobileConversationRouteDeps
       const messages = page.reverse().map((m) => ({
         ...historyRow(m, (x) => svc!.verify({ ...x, conversationKey: key }), svc!, originCtx),
         ...replyProjection(key, m, projectionReader),
+        ...reactionProjection(key, m, projectionReader),
       }));
       res.json({ conversationKey: key, messages, nextBefore: null, visibility: admittedVisibility,
         nextContextBefore: visible.length > n && oldest ? { at: oldest.at, eventId: oldest.eventId } : null,
@@ -1585,9 +1691,10 @@ export function createMobileConversationRouter(deps: MobileConversationRouteDeps
     const display = deps.originDisplay?.() ?? { ...DEFAULT_ORIGIN_DISPLAY };
     const originCtx = { display, selfMachineId: deps.machineId() };
     const projectionReader = pool ? null : replyReader(req);
+    const reactionActor = !pool && reactionsOn() && principalOf(req).kind === 'device' ? exactMessageReader(deps.pairing, req)() : null;
     const rows = shown.map((m) => {
       const row: Record<string, unknown> = { ...historyRow(m, (x) => svc!.verify({ ...x, conversationKey: key }), svc!, originCtx),
-        ...replyProjection(key, m, projectionReader) };
+        ...replyProjection(key, m, projectionReader), ...reactionProjection(key, m, reactionActor) };
       const heldFrom = reader === null || isOwnerPerson(reader) ? deps.pairing.heldFrom(key, m) : [];
       return heldFrom.length > 0 ? { ...row, heldFrom } : row;
     });
@@ -1666,7 +1773,7 @@ export function createMobileConversationRouter(deps: MobileConversationRouteDeps
       conversationKey: key,
       events: page.events.filter((e) => {
         // A message, and anything about one, such as its transcript or a pin (conversation-pinned-messages).
-        if (e.kind === 'pin' && !pinsOn()) return false;
+        if (e.kind === 'reaction' || (e.kind === 'pin' && !pinsOn())) return false;
         const about = e.kind === 'pin' ? e.pinnedMessageId : (e as { messageId?: unknown }).messageId;
         // Text about a message that has not reached this machine waits for it.
         if (typeof about !== 'string' || (e.kind !== 'transcript' && e.kind !== 'pin' && !svc!.store.hasMessage(about))) return true;
