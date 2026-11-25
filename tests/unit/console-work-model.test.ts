@@ -271,13 +271,12 @@ describe('Home rows (needs-model workBoard source)', () => {
     expect(rows.map((r) => r.key)).toEqual(['need:work:wc_0123456789abcdef', 'need:work:wc_2222222222222222']);
     expect(rows[1]).toMatchObject({ main: 'Pick a name', sub: 'Which name?', tone: 'attn', action: { kind: 'href', href: '#/work/board?card=wc_2222222222222222' } });
   });
-  it('past the soft budget, the rest are one counted row', () => {
+  it('honors the soft budget without emitting a dashboard overflow row', () => {
     const rows = workBoardNeedRows(ok(board([card()], { more: 7 })));
-    expect(rows).toHaveLength(2);
-    expect(rows[1].main).toBe('7 more cards are waiting on you');
+    expect(rows).toHaveLength(1);
     const b = board([card(), card({ id: 'wc_3333333333333333' }), card({ id: 'wc_4444444444444444' })]);
     b.settings.softOpenCards = 2;
-    expect(workBoardNeedRows(ok(b)).map((r) => r.main)).toEqual(['Renew the domain', 'Renew the domain', '1 more card is waiting on you']);
+    expect(workBoardNeedRows(ok(b)).map((r) => r.main)).toEqual(['Renew the domain', 'Renew the domain']);
   });
   it('nothing waiting ⇒ no rows', () => { expect(workBoardNeedRows(ok(board([])))).toEqual([]); });
 });

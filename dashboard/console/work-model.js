@@ -535,7 +535,6 @@ export function workBoardNeedRows(wb) {
   const lane = b.lanes['waiting-on-you'];
   const soft = b.settings && typeof b.settings.softOpenCards === 'number' && b.settings.softOpenCards > 0 ? b.settings.softOpenCards : Infinity;
   const shown = lane.cards.slice(0, soft);
-  const rest = lane.more + (lane.cards.length - shown.length);
   const rows = shown.map((c) => ({
     key: `work:${c.id}`,
     main: needRowTitle(c.title),
@@ -550,7 +549,6 @@ export function workBoardNeedRows(wb) {
     createdAt: typeof c.createdAt === 'string' ? c.createdAt : '',
     cardId: c.id,
   }));
-  if (rest > 0) rows.push({ key: 'work:more', main: rest === 1 ? '1 more card is waiting on you' : `${rest} more cards are waiting on you`, sub: 'On the work board, oldest first.', href: '#/work/board' });
   // Internal policy-blocked work is diagnostic data, never an owner request. Genuine asks are in the waiting lane.
   return rows;
 }

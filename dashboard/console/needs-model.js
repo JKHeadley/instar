@@ -129,7 +129,7 @@ export const NEED_SOURCES = [
       const blockers = relogin.ok && Array.isArray(relogin.data && relogin.data.blockers) ? relogin.data.blockers : [];
       const page = buildAccountsPage(pool, now, { episodes, blockers });
       if (!page.ok) return pool.data && pool.data.enabled === false ? [] : UNREADABLE;
-      return page.needs.map((n) => row(`account:${n.key}`, n.title, n.sub, '#/capacity/accounts?s=needs', [String(n.label || '').split(' · ').pop()].filter(Boolean)));
+      return page.needs.filter((n) => n.action === 'start').map((n) => row(`account:${n.key}`, n.title, n.sub, '#/capacity/accounts?s=needs', [String(n.label || '').split(' · ').pop()].filter(Boolean)));
     } },
   { id: 'agents', page: 'people/agents', reads: { pairing: '/threadline/pairing', invites: '/threadline/pairing/invites' },
     rows: ({ pairing, invites }, now) => waitingCards(pairingModel(pairing, invites, undefined, now), now)
@@ -187,7 +187,7 @@ export const NEED_SOURCES = [
       const needs = contextNeeds(sentinel.data, {}, now);
       if (needs === null) return UNREADABLE;
       // The fold id is the ref: the watcher's own Attention notice names it, so one incident counts once.
-      return needs.map((n) => row(`context:${n.key}`, n.title, n.detail, '#/settings/context', n.ref ? [n.ref] : []));
+      return needs.filter((n) => !n.key.startsWith('canary:')).map((n) => row(`context:${n.key}`, n.title, n.detail, '#/settings/context', n.ref ? [n.ref] : []));
     } },
 ];
 

@@ -118,7 +118,7 @@ describe('Home: every source reaches the count and the headline', () => {
   const quietQueue = { count: 0, rows: [], all: [], state: 'ok', line: 'The queue is clear.' };
   const noPromises = { state: 'ok', count: 0, all: [], rows: [] };
 
-  it.each(Object.keys(FIXTURES))('%s', async (id: string) => {
+  it.each(Object.keys(FIXTURES).filter(id => id !== 'context'))('%s', async (id: string) => {
     const { NEED_SOURCES, surfacedNeeds } = await import(path.join(CONSOLE, 'needs-model.js'));
     const { combineNeeds, headline } = await import(path.join(CONSOLE, 'home-model.js'));
     const known: any = {};
@@ -132,6 +132,21 @@ describe('Home: every source reaches the count and the headline', () => {
     expect(h.tone).toBe('attn');
     expect(h.text).not.toMatch(/quiet|nothing needs/i);
   }, 30000);
+
+  it('keeps context recovery failures out of the owner queue', async () => {
+    const { surfacedNeeds } = await import(path.join(CONSOLE, 'needs-model.js'));
+    const sentinel = FIXTURES.context.reads['/context-budget/sentinel'];
+    const result = surfacedNeeds({ context: { results: { sentinel } } }, NOW);
+    expect(result.rows).toEqual([]);
+    expect(result.failed).not.toContain('context');
+  });
+
+  it('keeps automatic sign-in repairs out of the owner queue', async () => {
+    const { surfacedNeeds } = await import(path.join(CONSOLE, 'needs-model.js'));
+    const pool = FIXTURES.accounts.reads['/subscription-pool?scope=pool'];
+    const relogin = ok({ episodes: [{ id: 'repair-1', accountId: 'luna', machineId: 'm1', state: 'suggested' }] });
+    expect(surfacedNeeds({ accounts: { results: { pool, relogin } } }, NOW).rows).toEqual([]);
+  });
 
   it('a stopped merge names itself in the headline, with a link to act on it', async () => {
     const { surfacedNeeds } = await import(path.join(CONSOLE, 'needs-model.js'));
