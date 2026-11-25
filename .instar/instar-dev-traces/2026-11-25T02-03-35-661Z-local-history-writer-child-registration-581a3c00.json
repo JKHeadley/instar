@@ -1,0 +1,27 @@
+{
+  "version": 2,
+  "slug": "local-history-writer-child-registration",
+  "sessionId": "41652017-0805-405d-bb4e-2a975fb349ce",
+  "timestamp": "2026-11-25T02:03:35.661Z",
+  "artifactPath": "upgrades/side-effects/local-history-writer-child-registration.md",
+  "artifactSha256": "b9b70a9698ac3a95fa770b152a478c72acd6934e39c0df675d65c7de0ea38220",
+  "specPath": "docs/specs/local-history-native-contract.md",
+  "coveredFiles": [
+    "src/import/LocalHistoryPreparedReadJob.ts",
+    "src/import/LocalHistoryUploadStaging.ts",
+    "tests/unit/local-history-prepared-read-job.test.ts",
+    "tests/unit/local-history-upload-staging.test.ts",
+    "upgrades/next/local-history-writer-child-registration.md",
+    "upgrades/side-effects/local-history-writer-child-registration.md"
+  ],
+  "phase": "complete",
+  "tier": 2,
+  "tierReasoning": "Existing bounded worker now registers its actual child for temporary namespace custody.",
+  "secondPass": "true",
+  "reviewerConcurred": true,
+  "classClosure": {
+    "defectClass": "unbounded-self-action",
+    "closure": "n/a",
+    "reason": "One child registers once, awaits close, and uses existing bounded namespace recovery."
+  }
+}

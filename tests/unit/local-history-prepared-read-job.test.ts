@@ -30,7 +30,10 @@ function fixture() {
         representation: proposal.representation, bytes: bytes.length, sha256: crypto.createHash('sha256').update(bytes).digest('hex') }] },
     async acquireChild() {
       const actual = acquireLocalHistoryChild(stateDir)!;
-      return { custody: actual.custody, async registerChild(value) { pid = value; await actual.registerChild(value); },
+      return { custody: actual.custody, async registerChild(child) {
+        if (!child.pid) throw new Error('fixture child did not start');
+        pid = child.pid; await actual.registerChild(pid);
+      },
         release() { if (pid) expect(() => process.kill(pid, 0)).toThrow(); actual.release(); released++; } };
     },
     authorized: () => authorized,

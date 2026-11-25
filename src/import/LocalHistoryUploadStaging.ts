@@ -552,9 +552,28 @@ export class LocalHistoryUploadStaging {
         observeFirstClaimPlan,
         acquireChild: async () => {
           check(); if (leased) return null; leased = true;
+          let run: ReturnType<typeof registerLocalHistoryStoreTemporaryRun> | undefined;
           return { custody: this.custody.custody,
-            registerChild: async pid => { check(); await this.registerChild(pid); check(); },
-            release: () => { if (!leased) refuse('unavailable'); leased = false; } };
+            registerChild: async child => {
+              check();
+              if (!child.pid) refuse('unavailable');
+              if (observeFirstClaimPlan) {
+                if (hasUnsettledLocalHistoryTemporaryRun(this.db, row.tag)) refuse('unavailable');
+                this.metadataRoom();
+                run = registerLocalHistoryStoreTemporaryRun(this.db, this.custody, {
+                  operationId, existingDirectoriesOnly: true,
+                });
+                await run.registerChild(child);
+              } else {
+                await this.registerChild(child.pid);
+              }
+              check();
+            },
+            release: () => {
+              if (!leased) refuse('unavailable');
+              leased = false;
+              run?.cleanupAfterChild();
+            } };
         },
         chunks: async function* (this: LocalHistoryUploadStaging, signal: AbortSignal) {
           for (const file of prepared.files) for (let offset = 0; offset < file.bytes; offset += CHUNK_BYTES) {
@@ -566,8 +585,10 @@ export class LocalHistoryUploadStaging {
       });
       check(); result = receipt;
     }).catch(error => {
-      writerBusy = error instanceof LocalHistoryPreparedReadRefused
-        && error.message === 'local-history-preview-writer-busy' && !error.cleanupPending;
+      if (error instanceof LocalHistoryPreparedReadRefused) {
+        writerBusy = error.message === 'local-history-preview-writer-busy' && !error.cleanupPending;
+        if (observeFirstClaimPlan && error.cleanupPending) this.report('cleanup', 'registered-namespace-cleanup-pending');
+      }
     }).finally(() => {
       if (this.activeChildWork?.done === done) this.activeChildWork = undefined;
       try { const current = this.row(row.id); if (!live(current.phase)) this.invalidate(current, current.phase); }

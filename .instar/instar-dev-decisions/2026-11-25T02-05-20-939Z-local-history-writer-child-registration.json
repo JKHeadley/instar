@@ -1,0 +1,27 @@
+{
+  "ts": "2026-11-25T02:05:20.939Z",
+  "slug": "local-history-writer-child-registration",
+  "suggestedTier": 2,
+  "declaredTier": 2,
+  "riskFloor": 1,
+  "riskFloorReasons": [],
+  "belowFloor": false,
+  "files": 2,
+  "loc": 41,
+  "scope": {
+    "basis": "staged-in-scope-paths-including-deleted",
+    "files": [
+      "src/import/LocalHistoryPreparedReadJob.ts",
+      "src/import/LocalHistoryUploadStaging.ts"
+    ],
+    "addedLines": 33,
+    "deletedLines": 8
+  },
+  "causalAutopsy": null,
+  "classClosure": {
+    "defectClass": "unbounded-self-action",
+    "closure": "n/a",
+    "reason": "One child registers once, awaits close, and uses existing bounded namespace recovery."
+  },
+  "verdict": "pass"
+}

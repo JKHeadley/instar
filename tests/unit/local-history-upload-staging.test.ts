@@ -209,6 +209,7 @@ it('prepares both source kinds through real children and retires raw files witho
 it('keeps explicit preview retryable while the actual destination writer is locked', async () => {
   const f = setup();
   const store = new ImportedHistoryStore(f.stateDir);
+  fs.mkdirSync(path.join(store.dir, '.local-history-temporary'), { mode: 0o700 });
   const bytes = Buffer.from([
     { type: 'session_meta', payload: { id: 'synthetic-session-0', cwd: '/synthetic/project', source: 'cli' } },
     { type: 'response_item', payload: { type: 'message', role: 'user', content: [{ type: 'input_text', text: 'synthetic content' }] } },
@@ -247,14 +248,28 @@ it('keeps explicit preview retryable while the actual destination writer is lock
     try {
       const observe = vi.fn((claim: { planDigest: string }) => {
         expect(claim.planDigest).toBe(estimate.planDigest);
+        const runs = db.prepare('SELECT childPid, state FROM local_history_store_temporary_runs').all();
+        expect(runs).toEqual([{ childPid: expect.any(Number), state: 'active' }]);
+        expect((runs[0] as { childPid: number }).childPid).not.toBe(process.pid);
         expect(() => contender.exec('BEGIN IMMEDIATE')).toThrow(/locked/);
         return undefined;
       });
       await f.stage.observeFirstCopyClaim(device, grant.operationId, intent, observe);
       expect(observe).toHaveBeenCalledTimes(1);
+      expect(db.prepare('SELECT state FROM local_history_store_temporary_runs').all()).toEqual([{ state: 'disposed' }]);
       contender.exec('BEGIN IMMEDIATE');
       contender.exec('ROLLBACK');
     } finally { contender.close(); }
+    db.exec(`CREATE TRIGGER fixture_refuse_writer_binding BEFORE UPDATE OF state ON local_history_store_temporary_runs
+      WHEN NEW.state = 'active' BEGIN SELECT RAISE(ABORT, 'fixture refusal'); END;`);
+    const refusedObserver = vi.fn(() => undefined);
+    await expect(f.stage.observeFirstCopyClaim(device, grant.operationId, intent, refusedObserver)).rejects.toThrow('upload-unavailable');
+    expect(refusedObserver).not.toHaveBeenCalled();
+    expect(db.prepare('SELECT state FROM local_history_store_temporary_runs').all()).toEqual([
+      { state: 'disposed' }, { state: 'disposed' },
+    ]);
+    expect((await f.stage.readPreparedPreview(device, grant.operationId)).preview.newMessages).toBe(1);
+    db.exec('DROP TRIGGER fixture_refuse_writer_binding');
     expect(fs.existsSync(path.join(store.dir, 'source-claims.sqlite'))).toBe(false);
     await expect(f.stage.estimateFirstCopyClaim(device, grant.operationId, intent, { ...policy, maxReservationBytes: 1 }))
       .rejects.toThrow('upload-capacity');

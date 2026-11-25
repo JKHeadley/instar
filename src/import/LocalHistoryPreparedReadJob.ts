@@ -2,7 +2,7 @@
  * current owner authorization come from the actual parent operation, never a
  * serialized client assertion. This job does not publish consent or copy data.
  */
-import { fork } from 'node:child_process';
+import { fork, type ChildProcess } from 'node:child_process';
 import { fileURLToPath } from 'node:url';
 import { performance } from 'node:perf_hooks';
 import { CHUNK_BYTES } from '../core/appMediaTypes.js';
@@ -15,9 +15,13 @@ export type ObserveLocalHistoryFirstClaimPlan = (
   destinations: readonly Readonly<Pick<LocalHistoryPreparedPreview['files'][number], 'fileId' | 'source' | 'destinationFingerprint'>>[],
 ) => undefined;
 
+interface PreparedReadChildLease extends Omit<LocalHistoryChildLease, 'registerChild'> {
+  registerChild(child: ChildProcess): Promise<void>;
+}
+
 export interface LocalHistoryPreparedReadJobOptions {
   input: LocalHistoryPreparedPreviewInput;
-  acquireChild(): Promise<LocalHistoryChildLease | null>;
+  acquireChild(): Promise<PreparedReadChildLease | null>;
   authorized(): boolean;
   chunks(signal: AbortSignal): AsyncIterable<Buffer>;
   heapMiB: number;
@@ -98,7 +102,7 @@ export async function runLocalHistoryPreparedReadJob(value: LocalHistoryPrepared
   if (!Number.isSafeInteger(expectedBytes) || header.length > CHUNK_BYTES) {
     header.fill(0); throw new LocalHistoryPreparedReadRefused('local-history-preview-policy');
   }
-  let lease: LocalHistoryChildLease | null = null;
+  let lease: PreparedReadChildLease | null = null;
   let primary: LocalHistoryPreparedReadRefused | undefined;
   try {
     lease = await opts.acquireChild();
@@ -203,7 +207,7 @@ export async function runLocalHistoryPreparedReadJob(value: LocalHistoryPrepared
     };
     try {
       if (!child.pid) throw new Error('spawn');
-      await lease.registerChild(child.pid); await readiness; guard();
+      await lease.registerChild(child); await readiness; guard();
       if (!ready) throw new Error('custody');
       const sending = (async () => {
         try {
