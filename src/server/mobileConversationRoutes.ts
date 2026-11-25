@@ -217,15 +217,17 @@ function strictIso(v: unknown): string | undefined {
 const POOL_TIMEOUT_MS = 5000;
 const MAX_POOL_LIST_BYTES = 512 * 1024;
 const MAX_POOL_BROWSE_BYTES = 2 * 1024 * 1024;
-type PoolReadCtx = Pick<RouteContext, 'resolvePeerUrls' | 'recordRopeResult'> & { config: InstarConfig };
+type PoolReadCtx = Pick<RouteContext, 'resolvePeerUrls' | 'recordRopeResult' | 'listPoolMachines'> & { config: InstarConfig };
 
 /** GET a peer's own (non-pool) read with the agent's Bearer token. A 404 is "nothing there", not a failure. */
 async function fetchPeers<T>(
   ctx: PoolReadCtx, pathFor: string, maxBytes: number, take: (body: Record<string, unknown>, machineId: string) => T,
-): Promise<{ results: T[]; failed: Array<{ machineId: string; reason: string }> }> {
+): Promise<{ results: T[]; failed: Array<{ machineId: string; reason: string }>; answered: Set<string>; allAnswered: boolean }> {
   const results: T[] = [];
   const failed: Array<{ machineId: string; reason: string }> = [];
-  const peers = (ctx.resolvePeerUrls?.() ?? []).slice(0, 16);
+  const answered = new Set<string>();
+  const knownPeers = ctx.resolvePeerUrls?.() ?? [];
+  const peers = knownPeers.slice(0, 16);
   const allow = (ctx.config.multiMachine as { peerUrlAllowlist?: string[] } | undefined)?.peerUrlAllowlist;
   await Promise.all(peers.map(async (p) => {
     if (!isPeerUrlAllowedForCredentials({ url: p.url, kind: p.kind }, allow).ok) { failed.push({ machineId: p.machineId, reason: 'peer-url-refused' }); return; }
@@ -238,11 +240,12 @@ async function fetchPeers<T>(
       const text = await r.text();
       if (Buffer.byteLength(text) > maxBytes) { failed.push({ machineId: p.machineId, reason: 'too-large' }); return; }
       results.push(take(JSON.parse(text) as Record<string, unknown>, p.machineId));
+      answered.add(p.machineId);
     } catch (err) { // @silent-fallback-ok — a dark peer is a visible pool.failed row naming the machine
       failed.push({ machineId: p.machineId, reason: err instanceof Error && err.name === 'TimeoutError' ? 'deadline' : 'unreachable' });
     }
   }));
-  return { results, failed };
+  return { results, failed, answered, allAnswered: knownPeers.every((p) => answered.has(p.machineId)) };
 }
 
 export interface MobileConversationRouteDeps {
@@ -795,7 +798,7 @@ export function createMobileConversationRouter(deps: MobileConversationRouteDeps
     if (req.query.scope !== 'pool' || person?.role === 'team') {
       const m = mergeConversationPages([local], limit);
       const rows = withTree(withFields(visible(m.rows), false));
-      res.json({ ownerProjectionVersion: 1, conversations: rows, nextCursor: m.nextCursor, ...pinnedOut(rows), ...listPinsOut(rows, []), ...ownerNote, ...totals(rows, beyondLocal(m.rows, m.nextCursor !== null)) });
+      res.json({ ownerProjectionVersion: 1, conversations: rows, nextCursor: m.nextCursor, listCoverageComplete: !local.partial, ...pinnedOut(rows), ...listPinsOut(rows, []), ...ownerNote, ...totals(rows, beyondLocal(m.rows, m.nextCursor !== null)) });
       return;
     }
     // Pool read (§4.8): every answering machine's own page after the same cursor, merged on the
@@ -809,14 +812,14 @@ export function createMobileConversationRouter(deps: MobileConversationRouteDeps
         if (body.ownerProjectionVersion === 1) {
           if (body.unreadBeyondPage === true) peerBeyond = true;
         } else if (body.unreadBeyondPage === true) unreadProjectionIncomplete = true;
-        return {
-          rows: (Array.isArray(body.conversations) ? body.conversations.slice(0, limit) : [])
-            .map((r) => sanitizePeerConversation(r, machineId))
-            .filter((r): r is ConversationListRow => r !== null && isAfterListCursor(r, parseListCursor(cursor))),
-          more: typeof body.nextCursor === 'string' && body.nextCursor.length > 0,
-        };
+        const raw = Array.isArray(body.conversations) ? body.conversations : null;
+        const sanitized = (raw ?? []).slice(0, limit).map((r) => sanitizePeerConversation(r, machineId));
+        const rows = sanitized.filter((r): r is ConversationListRow => r !== null && isAfterListCursor(r, parseListCursor(cursor)));
+        const more = typeof body.nextCursor === 'string' && body.nextCursor.length > 0;
+        return { rows, more, complete: body.ownerProjectionVersion === 1 && body.listCoverageComplete === true && raw !== null
+          && raw.length === rows.length && (body.nextCursor === null || more) };
       })
-      : { results: [], failed: [] };
+      : { results: [], failed: [], answered: new Set<string>(), allAnswered: true };
     // A peer's Slack rows are never listed: a Slack conversation id is local to the machine that
     // minted it, and the Slack routes on this machine look ids up here, so a peer row could name a
     // different conversation that shares the number (and would otherwise collapse onto this
@@ -835,7 +838,10 @@ export function createMobileConversationRouter(deps: MobileConversationRouteDeps
       beyond = visible(all.slice(limit)).some((r) => r.hasUnread === true || (r.machine === self || r.platform === 'app' ? !!unread.rowFields(reader, r)?.hasUnread : false));
     }
     const treeRows = withTree(rows);
-    res.json({ ownerProjectionVersion: 1, conversations: treeRows, ...pinnedOut(rows), ...listPinsOut(treeRows, peerPages.flatMap((p) => p.rows)), nextCursor: m.nextCursor, ...ownerNote, pool: { failed: peers.failed }, ...(unreadProjectionIncomplete ? { unreadProjectionIncomplete: true } : {}), ...totals(rows, beyond) });
+    // The URL resolver can omit registered computers that have no usable endpoint.
+    const registeredComputersCovered = deps.pool?.listPoolMachines?.().every((p) => p.machineId === self || peers.answered.has(p.machineId)) ?? true;
+    const listCoverageComplete = !local.partial && peers.allAnswered && registeredComputersCovered && peers.results.every((p) => p.complete);
+    res.json({ ownerProjectionVersion: 1, conversations: treeRows, ...pinnedOut(rows), ...listPinsOut(treeRows, peerPages.flatMap((p) => p.rows)), nextCursor: m.nextCursor, listCoverageComplete, ...ownerNote, pool: { failed: peers.failed }, ...(unreadProjectionIncomplete ? { unreadProjectionIncomplete: true } : {}), ...totals(rows, beyond) });
     } catch (error) {
       if (error instanceof Error && error.message === 'work-card-visibility-unavailable') {
         res.status(503).json({ error: 'work-card-visibility-unavailable', detail: 'Work card visibility is not ready. Try this read again.' });

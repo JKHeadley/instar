@@ -1,0 +1,22 @@
+{
+  "ts": "2026-11-25T01:03:08.904Z",
+  "slug": "conversations-window-refresh",
+  "suggestedTier": 1,
+  "declaredTier": 1,
+  "riskFloor": 1,
+  "riskFloorReasons": [],
+  "belowFloor": false,
+  "files": 1,
+  "loc": 32,
+  "scope": {
+    "basis": "staged-in-scope-paths-including-deleted",
+    "files": [
+      "src/server/mobileConversationRoutes.ts"
+    ],
+    "addedLines": 19,
+    "deletedLines": 13
+  },
+  "causalAutopsy": null,
+  "classClosure": null,
+  "verdict": "pass"
+}

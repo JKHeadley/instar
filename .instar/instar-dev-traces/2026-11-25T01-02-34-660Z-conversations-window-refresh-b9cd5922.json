@@ -1,0 +1,28 @@
+{
+  "version": 2,
+  "slug": "conversations-window-refresh",
+  "sessionId": "b5892410-5874-4620-9f7b-5e54791d9a9e",
+  "timestamp": "2026-11-25T01:02:34.660Z",
+  "artifactPath": "upgrades/side-effects/conversations-window-refresh.md",
+  "artifactSha256": "703fde87572db3ede57e24602f5dce15e45ed795d0b120b0113891eedfcc72ee",
+  "coveredFiles": [
+    "dashboard/console/browser-device.js",
+    "dashboard/console/chats-model.js",
+    "dashboard/console/chats.js",
+    "src/server/mobileConversationRoutes.ts",
+    "tests/e2e/conversation-pins-alive.test.ts",
+    "tests/integration/conversation-list-pins.test.ts",
+    "tests/unit/console-chat-list-states.test.ts",
+    "tests/unit/console-chats-page.test.ts",
+    "upgrades/next/conversations-window-refresh.md",
+    "upgrades/side-effects/conversations-window-refresh.eli16.md",
+    "upgrades/side-effects/conversations-window-refresh.md"
+  ],
+  "phase": "complete",
+  "tier": 1,
+  "tierReasoning": "Reversible dashboard rendering and inventory coverage metadata on existing signed reads. No permission, schema, dispatch or persisted state changes.",
+  "eli16Path": "upgrades/side-effects/conversations-window-refresh.eli16.md",
+  "sideEffectsPath": "upgrades/side-effects/conversations-window-refresh.md",
+  "secondPass": "true",
+  "reviewerConcurred": true
+}

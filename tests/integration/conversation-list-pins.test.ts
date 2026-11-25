@@ -42,7 +42,7 @@ afterAll(() => {
 
 const USERS = [{ id: 'justin', name: 'Justin', channels: [], permissions: ['user'], telegramUserId: 555 }];
 
-function setup(opts: { maxPerReader?: number; peerUrl?: string; unread?: boolean } = {}) {
+function setup(opts: { maxPerReader?: number; telegramUnavailable?: boolean; unreachableComputer?: boolean; peerUrl?: string; unread?: boolean } = {}) {
   const dir = fs.mkdtempSync(path.join(os.tmpdir(), 'listpins-int-'));
   dirs.push(dir);
   fs.writeFileSync(path.join(dir, 'users.json'), JSON.stringify(USERS));
@@ -83,8 +83,15 @@ function setup(opts: { maxPerReader?: number; peerUrl?: string; unread?: boolean
   if (unread) cleanups.push(() => unread.stop());
   app.use(createMobileConversationRouter({
     config: config as never, pairing, service: svc, machineId: () => 'm1', listPins: pins, unread,
-    pool: opts.peerUrl ? { config: config as never, resolvePeerUrls: () => [{ machineId: 'm2', url: opts.peerUrl!, kind: 'lan' as const }] } : null,
-    telegramTopics: () => [{ topicId: TOPIC, topicName: 'Ops', lastActivity: '2020-01-01T00:00:00.000Z', lastPreview: 'old topic' }],
+    pool: {
+      config: config as never,
+      resolvePeerUrls: () => opts.peerUrl ? [{ machineId: 'm2', url: opts.peerUrl, kind: 'lan' as const }] : [],
+      listPoolMachines: () => [{ machineId: 'm1' }, ...((opts.unreachableComputer || opts.peerUrl) ? [{ machineId: 'm2' }] : [])],
+    },
+    telegramTopics: () => {
+      if (opts.telegramUnavailable) throw new Error('Telegram inventory unavailable');
+      return [{ topicId: TOPIC, topicName: 'Ops', lastActivity: '2020-01-01T00:00:00.000Z', lastPreview: 'old topic' }];
+    },
   }));
   app.use(createMobilePairingRouter(pairing, deps, ctx));
   return { app, pairing, svc, pins, config };
@@ -116,6 +123,23 @@ async function create(e: Env, p: ReturnType<typeof phone>, title: string) {
 }
 
 describe('conversation-list pins — HTTP', () => {
+  it('reports whether the signed pooled list had complete inventory coverage', async () => {
+    for (const telegramUnavailable of [false, true]) {
+      const e = setup({ telegramUnavailable });
+      const response = await signed(e, phone(e), 'GET', '/mobile/conversations?scope=pool&limit=100');
+      expect(response.status).toBe(200);
+      expect(response.body.pool.failed).toEqual([]);
+      expect(response.body.listCoverageComplete).toBe(!telegramUnavailable);
+      expect(response.body.conversations.some((row: { id: number }) => row.id === TOPIC)).toBe(!telegramUnavailable);
+    }
+  });
+  it('treats a registered computer with no usable endpoint as incomplete', async () => {
+    const e = setup({ unreachableComputer: true });
+    const response = await signed(e, phone(e), 'GET', '/mobile/conversations?scope=pool&limit=100');
+    expect(response.status).toBe(200);
+    expect(response.body.pool.failed).toEqual([]);
+    expect(response.body.listCoverageComplete).toBe(false);
+  });
   it('a phone pins; the first page carries pinnedRefs and pinnedRows, even for a conversation older than the page', async () => {
     const e = setup();
     const owner = phone(e);
@@ -270,7 +294,7 @@ describe('Internal work from an older peer', () => {
       if (new URL(req.url!, 'http://localhost').searchParams.has('cursor')) {
         res.end(JSON.stringify({conversations:[{platform:'app',id:requestedKey,title:'My request',lastActivity:'2020-01-01T00:00:00.000Z',lastPreview:''}],nextCursor:null})); return;
       }
-      res.end(JSON.stringify({ conversations: [{ platform: 'app', id: key, title: 'Registry work', lastActivity: '2099-01-01T00:00:00.000Z', lastPreview: '' }], nextCursor: 'older-page', unreadBeyondPage: true, ...(compatible ? { ownerProjectionVersion: 1 } : {}) }));
+      res.end(JSON.stringify({ conversations: [{ platform: 'app', id: key, title: 'Registry work', lastActivity: '2099-01-01T00:00:00.000Z', lastPreview: '' }], nextCursor: 'older-page', unreadBeyondPage: true, listCoverageComplete: true, ...(compatible ? { ownerProjectionVersion: 1 } : {}) }));
     });
     await new Promise<void>(resolve => peer.listen(0, '127.0.0.1', resolve));
     try {
@@ -288,11 +312,13 @@ describe('Internal work from an older peer', () => {
       expect(result.body.nextCursor).toBeTruthy();
       expect(result.body.ownerProjectionVersion).toBe(1);
       expect(result.body.unreadProjectionIncomplete).toBe(true);
+      expect(result.body.listCoverageComplete).toBe(false);
       expect(result.body.unreadBeyondPage).toBe(false);
       compatible = true;
       const modern = await signed(e, owner, 'GET', '/mobile/conversations?scope=pool&limit=1');
       expect(modern.body.unreadBeyondPage).toBe(true);
       expect(modern.body.unreadProjectionIncomplete).toBeUndefined();
+      expect(modern.body.listCoverageComplete).toBe(true);
       const next = await signed(e, owner, 'GET', '/mobile/conversations?scope=pool&limit=1&cursor='+encodeURIComponent(result.body.nextCursor));
       expect(next.status).toBe(200);
       expect(next.body.conversations.map((c:{id:string})=>c.id)).toEqual([requestedKey]);

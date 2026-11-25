@@ -46,6 +46,9 @@ import { detectCredentialShape, CREDENTIAL_QUESTION } from './credential-shape.j
 const TOKEN_KEY = 'instar_token';
 const POLL_LOCK = 'instar-chat-poll';
 const CHANNEL = 'instar-chat';
+const LIST_PAGE_SIZE = 50;
+const LIST_WINDOW_LIMIT = 200;
+const FOLLOWER_LIST_REFRESH_MS = 60000;
 const OWN_KEY = 'instar_chat_own:';
 const OFF_TEXT = 'Conversations in the dashboard are switched off on this agent.';
 // The hierarchy is read again at most this often (the list itself refreshes every 30 s).
@@ -89,6 +92,13 @@ class ChatsPage {
     this.status = null;
     this.rows = [];
     this.meta = { nextCursor: null, failed: [] };
+    this.listRequest = null;
+    this.listHasLoaded = false;
+    this.listError = null;
+    this.listRevision = 0;
+    this.listDepth = LIST_PAGE_SIZE;
+    this.followerListRefreshAt = -Infinity;
+    this.listFeatureOff = false;
     this.view = null;           // the open conversation
     this.tabId = (globalThis.crypto && globalThis.crypto.randomUUID) ? globalThis.crypto.randomUUID() : String(Math.random());
     this.focusedAt = document.hasFocus && document.hasFocus() ? now() : 0;
@@ -340,13 +350,16 @@ class ChatsPage {
   }
 
   // ── a refused signed call (§4.6) ──
-  async handle401() {
-    const d = await this.device.checkAfter401();
-    if (!this.live) return 'gone';
+  async handle401(signal) {
+    const owner = this.pageEl;
+    const current = () => this.live && !signal?.aborted && this.pageEl === owner;
+    const d = await this.device.checkAfter401({ signal });
+    if (!current() || d.show === 'cancelled') return 'gone';
     if (d.deleted) { this.clearUnfinished(); this.teardownApp(); this.paintSetup(DELETED_REASON[d.show] || DELETED_REASON.removed); return 'gone'; }
     if (d.show === 'elsewhere') {
-      this.teardownApp();
       const old = d.machineId ? await readRecord(d.machineId).catch(() => null) : null;
+      if (!current()) return 'gone';
+      this.teardownApp();
       const replace = old && old.status === 'active' && old.keyPair ? { record: old } : null;
       const nick = this.status && this.status.nickname ? this.status.nickname : 'this machine';
       this.paintSetup(`This browser was set up on ${d.nickname || 'another machine'}; this address is now served by ${nick}.`, { replace });
@@ -367,9 +380,11 @@ class ChatsPage {
   /** A signed JSON call with the 401 rule and the 5-retry backoff for a transient refusal. */
   async call(method, path, opts = {}) {
     for (;;) {
+      if (!this.live || method === 'GET' && opts.signal?.aborted) return { ok: false, gone: true };
       const r = await this.device.call(method, path, opts);
+      if (method === 'GET' && opts.signal?.aborted) return { ...r, gone: true };
       if (r.status !== 401) { if (r.ok) this.retries401 = 0; return r; }
-      const what = await this.handle401();
+      const what = await this.handle401(method === 'GET' ? opts.signal : undefined);
       if (what !== 'retry') return { ...r, gone: true };
       await new Promise((res) => this.later(res, 500 * 2 ** this.retries401));
       if (!this.live) return { ...r, gone: true };
@@ -382,9 +397,12 @@ class ChatsPage {
     const record = this.device.record;
     this.ownIds = loadOwn(record && record.deviceId);
     const skew = this.device.clock.skewMinutes();
-    this.listEl = el('div', { class: 'chat-rows', role: 'list' });
+    this.listEl = el('div', { class: 'chat-rows', role: 'list', tabindex: '-1' });
     this.moreBtn = el('button', { class: 'btn-quiet chat-more', type: 'button', text: 'Show more', hidden: true });
     this.moreBtn.addEventListener('click', () => this.loadList(true));
+    this.listStatusEl = el('p', { class: 'card-line chat-muted chat-list-status', role: 'status', hidden: true });
+    this.listRetryEl = el('button', { class: 'btn-quiet chat-list-retry', type: 'button', text: 'Try again', hidden: true });
+    this.listRetryEl.addEventListener('click', () => { if (this.listError) void this.loadList(this.listError.more); });
     this.failedEl = el('p', { class: 'card-line chat-muted', hidden: true });
     this.listPinNoteEl = el('p', { class: 'unlock-error chat-list-pin-note', role: 'alert', hidden: true });
     // Grouped | All: shown only once the hierarchy has answered; the choice is remembered in this browser.
@@ -392,7 +410,8 @@ class ChatsPage {
     for (const [view, chip] of Object.entries(this.viewChips)) chip.addEventListener('click', () => this.setListView(view));
     this.viewToggleEl = el('div', { class: 'chat-view-toggle', role: 'group', 'aria-label': 'Show conversations', hidden: true }, this.viewChips.grouped, this.viewChips.all);
     const newBtn = el('button', { class: 'btn-primary chat-new', type: 'button', text: 'New conversation' });
-    newBtn.addEventListener('click', () => this.newConversation());
+    this.newBtn = newBtn;
+    newBtn.addEventListener('click', () => { if (!this.listFeatureOff) this.newConversation(); });
     const forget = el('button', { class: 'btn-quiet chat-forget', type: 'button', text: 'Forget this browser' });
     forget.addEventListener('click', () => this.forgetBrowser());
     this.viewEl = el('div', { class: 'chat-view' }, el('p', { class: 'chat-pick', text: 'Pick a conversation.' }));
@@ -402,7 +421,7 @@ class ChatsPage {
         el('section', { class: 'hero page-hero' }, el('div', { class: 'eyebrow', text: 'Work · Conversations' }), el('h1', { class: 'page-title', text: 'Conversations' })),
         skew ? el('p', { class: 'card-line chat-note', text: `Your computer's clock is ${Math.abs(skew)} minutes off.` }) : null,
         el('div', { class: 'chat-list-actions' }, newBtn, forget),
-        this.viewToggleEl, this.listPinNoteEl, this.listEl, this.moreBtn, this.failedEl),
+        this.viewToggleEl, this.listPinNoteEl, this.listStatusEl, this.listRetryEl, this.listEl, this.moreBtn, this.failedEl),
       this.viewEl);
     setKids(this.main, this.pageEl);
     this.startPolling();
@@ -410,31 +429,124 @@ class ChatsPage {
     this.onQuery(this.ctxQuery());
   }
   teardownApp() {
+    this.listRequest?.controller?.abort();
     this.releaseLeadership();
     if (this.view) this.closeView();
     this.pageEl = null;
+    this.listRequest = null;
+    this.listError = null;
+    this.listHasLoaded = false;
+    this.listFeatureOff = false;
   }
   ctxQuery() { const h = location.hash; const i = h.indexOf('?'); return i < 0 ? '' : h.slice(i + 1); }
 
-  async loadList(more) {
-    const cursor = more && this.meta.nextCursor ? `&cursor=${encodeURIComponent(this.meta.nextCursor)}` : '';
-    this.spent();
-    const r = await this.call('GET', `/mobile/conversations?scope=pool&limit=50${cursor}`);
-    if (!this.live || r.gone) return;
-    if (r.ok) this.applyList(r.data, more);
-    else if (!more && !this.rows.length) setKids(this.listEl, el('p', { class: 'card-line chat-muted', text: r.status === 503 ? OFF_TEXT : 'Couldn\'t load the conversations right now.' }));
+  listReadable(data) {
+    return Array.isArray(data?.conversations) && listRows(data).length === data.conversations.length
+      && (data.nextCursor == null || typeof data.nextCursor === 'string' && data.nextCursor.length > 0);
   }
-  applyList(data, more) {
+  listLimit() {
+    return this.listDepth > LIST_WINDOW_LIMIT ? LIST_PAGE_SIZE : this.listDepth;
+  }
+  listPath(more = false, limit = more ? LIST_PAGE_SIZE : this.listLimit()) {
+    return `/mobile/conversations?scope=pool&limit=${limit}${more ? `&cursor=${encodeURIComponent(this.meta.nextCursor)}` : ''}`;
+  }
+  paintListReadState() {
+    if (!this.listStatusEl) return;
+    const request = this.listRequest;
+    const error = this.listError;
+    const hasRows = this.rows.length > 0 || (this.listPins?.length || 0) > 0;
+    let text = '';
+    if (error) text = error.partial ? 'The list could only be checked in part. Your last loaded list is still shown.' : error.off ? OFF_TEXT + (hasRows ? ' The last loaded list is still shown.' : '') : error.unreadable ? 'The conversation list could not be read. Try again.'
+      : error.more ? 'More conversations could not be loaded. Try again.'
+        : hasRows ? 'The list could not be refreshed. Your conversations are still shown.' : 'Conversations could not be loaded. Try again.';
+    else if (request) text = this.listFeatureOff ? 'Checking whether conversations are available…' : request.waiting ? 'Taking longer than usual to load conversations. The agent may be busy.'
+      : request.more ? 'Loading more conversations…' : this.listHasLoaded ? 'Refreshing conversations…' : 'Loading conversations…';
+    this.listStatusEl.textContent = text;
+    this.listStatusEl.hidden = !text;
+    this.listRetryEl.hidden = !error && !request?.retry;
+    this.listRetryEl.textContent = request?.retry ? 'Trying again…' : 'Try again';
+    this.listRetryEl.disabled = Boolean(request);
+    this.moreBtn.disabled = Boolean(request) || this.listFeatureOff;
+    this.newBtn.disabled = this.listFeatureOff;
+    if (error && !hasRows) setKids(this.listEl);
+    this.moreBtn.hidden = this.listFeatureOff || !this.meta.nextCursor;
+    this.listEl.setAttribute('aria-busy', String(Boolean(request)));
+  }
+  loadList(more, background = false) {
+    if (!this.live || !this.listEl?.isConnected) return Promise.resolve({ gone: true });
+    if (more && !this.meta.nextCursor) return Promise.resolve({ gone: true });
+    const owner = this.listEl;
+    const limit = more ? LIST_PAGE_SIZE : this.listLimit();
+    const path = this.listPath(more, limit);
+    // Initial open, retry and scheduled refresh share one signed read. Different pages wait their turn.
+    if (this.listRequest) return this.listRequest.path === path ? this.listRequest.promise
+      : this.listRequest.promise.then(() => this.listEl === owner && owner.isConnected ? this.loadList(more, background) : { gone: true });
+    const request = { path, more, owner: this.listEl, revision: this.listRevision, waiting: false, retry: Boolean(this.listError), retryFocused: document.activeElement === this.listRetryEl, promise: null };
+    this.listRequest = request;
+    this.listError = null;
+    this.paintListReadState();
+    const slow = this.later(() => {
+      if (this.listRequest === request && request.owner.isConnected) { request.waiting = true; this.paintListReadState(); }
+    }, 10000);
+    const controller = this.abortable();
+    request.controller = controller;
+    let deadline;
+    const timeout = new Promise(resolve => {
+      deadline = this.later(() => { controller.abort(); resolve({ ok: false, status: 0, timedOut: true }); }, 20000);
+    });
+    request.promise = (async () => {
+      let result;
+      try {
+        if (!background) this.spent();
+        try { result = await Promise.race([this.call('GET', path, { signal: controller.signal }), timeout]); } catch { result = { ok: false, status: 0 }; }
+        if (!this.live || result.gone || this.listEl !== request.owner || !request.owner.isConnected) return { ...result, gone: true };
+        if (this.listRevision !== request.revision) { result = { ...result, stale: true }; return result; }
+        if (result.ok && !this.listReadable(result.data)) result = { ...result, ok: false, status: 0, unreadable: true };
+        if (result.ok) {
+          result = { ...result, listLimit: limit };
+          this.applyList(result.data, more, limit);
+        } else if (this.listRevision === request.revision) {
+          this.listError = { more, unreadable: result.unreadable, off: result.status === 503 && result.data?.error === 'native-conversations-off' };
+          if (this.listError.off) { this.listFeatureOff = true; this.paintList(); }
+        }
+        return result;
+      } finally {
+        clearTimeout(slow); this.timers.delete(slow);
+        clearTimeout(deadline); this.timers.delete(deadline); this.aborts.delete(controller);
+        if (this.listRequest === request) {
+          this.listRequest = null;
+          if (this.live && request.owner.isConnected) {
+            const restoreFocus = request.retryFocused && (document.activeElement === this.listRetryEl || document.activeElement === document.body);
+            this.paintListReadState();
+            if (restoreFocus && result?.ok && !result.stale && !this.listError) (this.listEl.querySelector('.chat-row') || this.listEl).focus();
+          }
+        }
+      }
+    })();
+    return request.promise;
+  }
+  applyList(data, more, limit = LIST_PAGE_SIZE) {
+    if (!this.listReadable(data)) { this.listError = { more, unreadable: true }; this.paintListReadState(); return; }
+    const meta = listMeta(data);
+    if (limit > LIST_PAGE_SIZE && (data.listCoverageComplete !== true || meta.failed.length)) {
+      this.listError = { more, partial: true };
+      this.meta = { ...this.meta, failed: meta.failed };
+      this.paintList();
+      this.paintListReadState();
+      return;
+    }
+    this.listHasLoaded = true; this.listError = null; this.listFeatureOff = false; this.listRevision++;
     const rows = listRows(data);
     if (!more) this.pinnedKey = (listPinned(data) || {}).key || null; // the first page carries the Chief of Staff pin (§1.4); a later page keeps it
     // Conversations this person pinned (conversation-list-pins): the first page carries them; null ⇒ the feature is off here.
     if (!more) this.listPins = listPinnedRows(data);
-    if (more) { this.pagedMore = true; this.rows = mergeListPages(this.rows, rows); }
-    // A refresh of the first page replaces it; pages the operator opened with "Show more" are kept below.
-    else this.rows = this.pagedMore ? mergeListPages(rows, this.rows) : rows;
-    const meta = listMeta(data);
-    this.meta = more || !this.pagedMore ? meta : { ...meta, nextCursor: this.meta.nextCursor };
+    if (more) this.listDepth += LIST_PAGE_SIZE;
+    // For depths beyond the server's limit, keep the older rows and their cursor.
+    const firstPageOnly = !more && limit < this.listDepth;
+    this.rows = more ? mergeListPages(this.rows, rows) : firstPageOnly ? mergeListPages(rows, this.rows) : rows;
+    this.meta = firstPageOnly ? { ...meta, nextCursor: this.meta.nextCursor } : meta;
     this.paintList();
+    this.paintListReadState();
     if (!more) void this.loadHierarchy();
   }
 
@@ -488,6 +600,8 @@ class ChatsPage {
   }
   paintList() {
     if (!this.listEl) return;
+    const active = document.activeElement;
+    const focusedHref = this.listEl.contains(active) && active.matches?.('.chat-row') ? active.getAttribute('href') : null;
     const open = this.view ? refString(this.view.ref) : '';
     if (this.view && this.view.titleEl) {
       const row = this.rows.find((r) => r.key === open);
@@ -499,12 +613,16 @@ class ChatsPage {
       this.viewToggleEl.hidden = !this.hierarchy;
       for (const [view, chip] of Object.entries(this.viewChips)) chip.setAttribute('aria-pressed', String(view === (grouped ? 'grouped' : 'all')));
     }
-    if (!this.rows.length) { setKids(this.listEl, el('p', { class: 'card-line chat-muted', text: 'No conversations yet.' })); }
+    if (!this.rows.length && !(this.listPins?.length)) {
+      const text = !this.listHasLoaded || this.listFeatureOff ? '' : this.meta.nextCursor ? 'No conversations on this page. More pages are available.'
+        : this.meta.failed.length ? 'No conversations found on the machines that answered.' : 'No conversations yet. Use New conversation to start one.';
+      setKids(this.listEl, text ? el('p', { class: 'card-line chat-muted', text }) : null);
+    }
     else {
       const pinsOn = Array.isArray(this.listPins);
       const { pinned, rest } = splitPinned(this.rows, pinsOn ? this.listPins : []);
       const rowEl = (r, isPinned) => {
-        const link = el('a', { class: `row chat-row${r.key === open ? ' open' : ''}${r.key === this.pinnedKey ? ' chat-pinned' : ''} chat-depth-${isPinned ? 0 : Math.min(r.depth || 0, 3)}`, href: hashFor(r.ref), role: 'listitem' },
+        const link = el('a', { class: `row chat-row${r.key === open ? ' open' : ''}${r.key === this.pinnedKey ? ' chat-pinned' : ''} chat-depth-${isPinned ? 0 : Math.min(r.depth || 0, 3)}`, href: hashFor(r.ref), role: 'listitem', ...(this.listFeatureOff ? { 'aria-disabled': 'true', tabindex: '-1' } : {}), onclick: event => { if (this.listFeatureOff) event.preventDefault(); } },
           el('span', { class: 'chat-row-main' },
             el('span', { class: 'chat-row-top' }, el('span', { class: 'chat-row-title', text: r.title }), el('span', { class: `chat-kind chat-kind-${r.kind}`, text: r.kindLabel })),
             el('span', { class: 'chat-row-preview', text: r.preview || ' ' })),
@@ -513,7 +631,7 @@ class ChatsPage {
             // The conversation on screen is being read (and reported read, which clears the count on the phone too): no badge for it.
             r.unread > 0 && r.key !== open ? el('span', { class: 'chat-unread', text: String(r.unread), 'aria-label': `${r.unread} unread` }) : null));
         if (!pinsOn || !listPinRefOf(r)) return link;
-        const btn = el('button', { class: `btn-quiet chat-list-pin${isPinned ? ' chat-list-unpin' : ''}`, type: 'button', text: isPinned ? 'Unpin' : 'Pin', 'aria-label': `${isPinned ? 'Unpin' : 'Pin'} ${r.title}` });
+        const btn = el('button', { class: `btn-quiet chat-list-pin${isPinned ? ' chat-list-unpin' : ''}`, type: 'button', disabled: this.listFeatureOff, text: isPinned ? 'Unpin' : 'Pin', 'aria-label': `${isPinned ? 'Unpin' : 'Pin'} ${r.title}` });
         btn.addEventListener('click', () => this.setListPin(r, !isPinned, btn));
         return el('div', { class: 'chat-row-wrap' }, link, btn);
       };
@@ -566,10 +684,15 @@ class ChatsPage {
       } else for (const r of orderWithTree(rest, this.pinnedKey)) kids.push(rowEl(r, false));
       setKids(this.listEl, kids);
     }
-    this.moreBtn.hidden = !this.meta.nextCursor;
+    this.moreBtn.hidden = this.listFeatureOff || !this.meta.nextCursor;
     const failed = this.meta.failed || [];
     this.failedEl.hidden = failed.length === 0;
-    this.failedEl.textContent = failed.length ? `Not shown: conversations on ${failed.map((f) => f.machineId).join(', ')} (that machine did not answer).` : '';
+    const machines = failed.map((f) => f.machineId).join(', ');
+    this.failedEl.textContent = !machines ? '' : this.listError?.partial ? `Could not refresh conversations on ${machines}.` : `Not shown: conversations on ${machines} (that machine did not answer).`;
+    if (focusedHref) {
+      const target = [...this.listEl.querySelectorAll('.chat-row')].find(row => row.getAttribute('href') === focusedHref && row.getAttribute('aria-disabled') !== 'true');
+      (target || this.listEl).focus({ preventScroll: true });
+    }
   }
 
   /** Pin or unpin a whole conversation for this person (conversation-list-pins), then refresh the first page. */
@@ -650,6 +773,7 @@ class ChatsPage {
     this.view = null;
     if (!v) return;
     v.live = false;
+    if (v.historyWaitTimer) { clearTimeout(v.historyWaitTimer); this.timers.delete(v.historyWaitTimer); }
     if (v.abort) { try { v.abort.abort(); } catch { /* done */ } }
     this.revokeBlobs();
     if (this.observer) { try { this.observer.disconnect(); } catch { /* gone */ } this.observer = null; }
@@ -672,6 +796,11 @@ class ChatsPage {
       menu.append(rename, del);
     }
     v.msgs = el('div', { class: 'chat-messages', role: 'log', 'aria-live': 'polite' });
+    v.historyWords = el('p', { class: 'card-line chat-muted' });
+    v.historyRetry = el('button', { class: 'btn-quiet chat-history-retry', type: 'button', text: 'Try again', hidden: true });
+    v.historyRetry.addEventListener('click', () => this.loadFirst(v));
+    v.historyNotice = el('div', { class: 'chat-history-state', role: 'status' }, v.historyWords, v.historyRetry);
+    v.msgs.append(v.historyNotice);
     v.earlier = el('button', { class: 'btn-quiet chat-earlier', type: 'button', text: 'Earlier messages', hidden: true });
     v.earlier.addEventListener('click', () => { this.pauseSource(v); this.loadEarlier(v); });
     v.paused = el('p', { class: 'card-line chat-muted chat-paused', hidden: true, text: 'Live updates paused here — this conversation refreshes when you click into this window.' });
@@ -688,7 +817,7 @@ class ChatsPage {
       v.appStrip, v.pinBar, v.paused, v.sourceNotice, v.earlier, v.msgs, this.composer(v), v.statusLine));
     this.pageEl.classList.add('has-open');
     this.paintList();
-    this.loadFirst(v);
+    this.loadFirst(v, { recoverUnfinished: true });
     this.loadAppStrip(v);
     this.announce();
   }
@@ -744,21 +873,71 @@ class ChatsPage {
     return (row) => Boolean(row && ((rec && row.originDeviceId && row.originDeviceId === rec.deviceId) || (row.messageId && this.ownIds.has(String(row.messageId)))));
   }
 
-  async loadFirst(v) {
+  async loadFirst(v, { recoverUnfinished = false } = {}) {
+    if (!this.live || !v.live || this.view !== v || v.historyPending) return;
+    v.historyPending = true;
+    v.historyError = null;
+    v.historyWaiting = false;
+    this.paintHistoryState(v);
+    v.historyWaitTimer = this.later(() => {
+      if (!v.live || this.view !== v || !v.historyPending) return;
+      v.historyWaiting = true;
+      this.paintHistoryState(v);
+    }, 10_000);
     this.spent();
-    const r = await this.call('GET', this.historyPath(v, { pool: true }));
-    if (!v.live || r.gone) return;
-    if (r.status === 404) { v.sourceNotice.hidden = true; v.statusLine.textContent = 'This conversation is not here any more.'; return; }
-    if (!r.ok) { v.sourceNotice.hidden = true; v.statusLine.textContent = r.status === 503 ? OFF_TEXT : 'Couldn\'t load this conversation right now.'; return; }
-    this.applyHistory(v, r.data, { replace: true });
-    this.resumeUnfinished(v);
-    this.scrollToEnd(v, true);
-    v.historyReady = true;
-    this.findSource(v);
+    try {
+      const r = await this.readHistory(v, this.historyPath(v, { pool: true }));
+      if (!this.live || !v.live || this.view !== v || r.gone) return;
+      if (!r.ok) {
+        v.sourceNotice.hidden = true;
+        v.historyError = r.status === 404 ? 'This conversation is not here any more.' : 'Couldn\'t load this conversation right now.';
+        return;
+      }
+      v.historyReady = true;
+      this.applyHistory(v, r.data, { replace: true });
+      // Preserve the existing open-time recovery; a history retry never resumes a send.
+      if (recoverUnfinished) this.resumeUnfinished(v);
+      this.scrollToEnd(v, true);
+      this.findSource(v);
+    } catch {
+      // A failed history read changes only its explanation, never messages or a draft.
+      if (this.live && v.live && this.view === v) v.historyError = 'Couldn\'t load this conversation right now.';
+    } finally {
+      v.historyPending = false;
+      clearTimeout(v.historyWaitTimer); this.timers.delete(v.historyWaitTimer);
+      v.historyWaitTimer = null;
+      if (this.live && v.live && this.view === v) this.paintHistoryState(v);
+    }
+  }
+
+  /** Initial, retry, focus and scheduled reads of one view/path share one signed request. */
+  readHistory(v, path) {
+    if (!v.historyReads) v.historyReads = new Map();
+    const current = v.historyReads.get(path);
+    if (current) return current;
+    const pending = this.call('GET', path).finally(() => {
+      if (v.historyReads.get(path) === pending) v.historyReads.delete(path);
+    });
+    v.historyReads.set(path, pending);
+    return pending;
+  }
+
+  paintHistoryState(v) {
+    if (!v.historyNotice) return;
+    const hasMessages = v.list.length > 0;
+    v.historyNotice.hidden = hasMessages && !v.historyError;
+    v.historyRetry.hidden = v.historyPending || (!v.historyError && hasMessages);
+    v.historyRetry.disabled = Boolean(v.historyPending);
+    if (v.historyError) v.historyWords.textContent = hasMessages
+      ? 'Couldn\'t refresh this conversation. Messages already loaded are still shown.' : v.historyError;
+    else if (v.historyPending) v.historyWords.textContent = v.historyWaiting
+      ? 'Waiting for the agent to return this conversation\'s messages. Your draft is unchanged.' : 'Loading messages…';
+    else v.historyWords.textContent = 'No messages were returned for this conversation. Try again to check its history.';
   }
 
   applyHistory(v, data, { replace = false, earlier = false } = {}) {
     if (!data) return;
+    v.historyError = null;
     if (v.ref.kind === 'slack' && typeof data.conversationKey === 'string') v.slackKey = data.conversationKey;
     const pins = pinsFrom(data);
     if (pins) this.setPins(v, pins);
@@ -831,6 +1010,7 @@ class ChatsPage {
       }
       prev = n;
     }
+    this.paintHistoryState(v);
     if (atEnd) this.scrollToEnd(v);
   }
   scrollToEnd(v, force) {
@@ -1435,7 +1615,7 @@ class ChatsPage {
   }
 
   taskPath(task) {
-    if (task.mode === 'list') return '/mobile/conversations?scope=pool&limit=50';
+    if (task.mode === 'list') return this.listPath();
     const ref = parseConversationRef(task.ref);
     if (task.mode === 'events') { const c = this.cursors.get(task.ref); return `/mobile/chat/app/${encodeURIComponent(ref.id)}/events?limit=100${c ? `&cursor=${encodeURIComponent(c)}` : ''}`; }
     const v = { ref };
@@ -1446,15 +1626,23 @@ class ChatsPage {
   }
 
   async runTask(task) {
+    const listOwner = task.mode === 'list' ? this.listEl : null;
     const t0 = now();
-    this.scheduler.start(task, t0);
+    const sharedListRead = task.mode === 'list' && this.listRequest?.path === this.taskPath(task);
+    this.scheduler.start(task, t0, { spend: !sharedListRead });
     // Snapshot the exact baseline sent: another tab's result may arrive while this read waits.
     const previous = task.mode === 'newest' ? this.quickPages.get(task.ref) || null : null;
     let r;
-    try { r = await this.call('GET', this.taskPath(task)); } catch { r = { ok: false, status: 0 }; }
-    if (!this.live) return;
+    try {
+      const path = this.taskPath(task);
+      const v = this.view;
+      r = task.mode === 'list' ? await this.loadList(false, true)
+        : v?.live && task.ref === refString(v.ref) ? await this.readHistory(v, path) : await this.call('GET', path);
+    } catch { r = { ok: false, status: 0 }; }
+    if (!this.live || task.mode === 'list' && this.listEl !== listOwner) return;
     this.scheduler.finish(task, now(), { status: r.status, retryAfterMs: r.retryAfterMs });
     if (r.gone) return;
+    if (r.stale) { this.post({ type: 'result', backoff: this.scheduler.snapshot(), union: this.union }); this.loop(); return; }
     if (task.mode === 'events' && r.status === 404) {
       (this.fallbacks || (this.fallbacks = new Set())).add(task.ref);
       this.scheduler.fallBack(task.ref, now());
@@ -1465,6 +1653,11 @@ class ChatsPage {
     }
     if (r.ok) {
       const msg = { type: 'result', mode: task.mode, ref: task.ref, data: r.data, backoff: this.scheduler.snapshot(), union: this.union };
+      if (task.mode === 'list' && r.listLimit > LIST_PAGE_SIZE) {
+        // Tabs opened before this update treat every "list" result as a first page.
+        msg.mode = 'list-window';
+        msg.listLimit = r.listLimit;
+      }
       if (task.mode === 'newest') {
         const page = rebuildQuickPage(previous, r.data);
         this.rememberQuickPage(task.ref, page.cache);
@@ -1479,7 +1672,7 @@ class ChatsPage {
         if (Array.isArray(r.data.events) && r.data.events.length >= 100) this.scheduler.bump(task.ref, now());
       }
       this.post(msg);
-      this.applyResult(msg);
+      if (task.mode !== 'list') this.applyResult(msg);
     } else this.post({ type: 'result', backoff: this.scheduler.snapshot(), union: this.union });
     this.loop();
   }
@@ -1490,7 +1683,16 @@ class ChatsPage {
     if (m.cursor && m.ref) this.cursors.set(m.ref, m.cursor);
     if (m.resetQuickPage && m.ref) this.rememberQuickPage(m.ref, null);
     if (!m.mode || !m.data) return;
-    if (m.mode === 'list') { this.applyList(m.data, false); return; }
+    if (m.mode === 'list' || m.mode === 'list-window') {
+      if (!this.listEl?.isConnected || this.listRequest?.more) return;
+      const limit = m.mode === 'list' ? LIST_PAGE_SIZE : m.listLimit;
+      if (limit === this.listLimit()) this.applyList(m.data, false, limit);
+      else if (!this.listRequest && document.visibilityState === 'visible' && now() - this.followerListRefreshAt >= FOLLOWER_LIST_REFRESH_MS) {
+        this.followerListRefreshAt = now();
+        void this.loadList(false);
+      }
+      return;
+    }
     // Broadcasts carry full reconstructed pages. Even an unfocused tab/new leader learns rows
     // and hashes together, never an unseen hash that would suppress a missing message.
     if (m.mode === 'newest' && m.ref && m.quickFullPage) {
@@ -1510,11 +1712,11 @@ class ChatsPage {
 
   /** The focused tab's conversation: read now (an operator-caused read, counted in the budget). */
   async pollNow(v) {
-    if (!v || !v.live) return;
+    if (!v || !v.live || v.historyPending) return;
     const ref = refString(v.ref);
     if (this.leader && this.scheduler.tasks().some((t) => t.ref === ref && t.mode !== 'pool')) { this.scheduler.bump(ref, now()); this.loop(); return; }
     this.spent();
-    const r = await this.call('GET', this.historyPath(v, { pool: v.ref.kind !== 'slack' }));
+    const r = await this.readHistory(v, this.historyPath(v, { pool: v.ref.kind !== 'slack' }));
     if (r.ok && v.live) this.applyHistory(v, r.data);
   }
 }
