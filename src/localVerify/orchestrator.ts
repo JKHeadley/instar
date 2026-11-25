@@ -46,8 +46,8 @@ import {
   type BorrowedChildInput, type BorrowedFlowResult, type FileComparison, type FlowLane, type ProxyCall,
 } from './borrowedLaneFlow.js';
 
-/** Upper bound on processes per slow lane (bounded blast radius: at most 4 + 4 + 4 test workers). */
-export const MAX_LANE_SHARDS = 4;
+/** Upper bounds on processes per slow lane. Defaults are set separately in LOCAL_VERIFY_LIMITS. */
+export const MAX_LANE_SHARDS = { integration: 5, e2e: 4 } as const;
 /** Upper bound for the per-machine unit-lane worker setting (`laneShards.unitWorkers`). */
 export const MAX_UNIT_WORKERS = 12;
 
@@ -227,7 +227,7 @@ export interface VerifyRunInput {
    */
   fileCounts?: true;
   /**
-   * Processes per slow lane (`monitoring.localVerify.laneShards`, clamped 1..4 by the service),
+   * Processes per slow lane (`monitoring.localVerify.laneShards`, 1..5 for integration and 1..4 for e2e),
    * and the per-machine unit-lane worker count `unitWorkers` (1..MAX_UNIT_WORKERS).
    * Absent ⇒ `LOCAL_VERIFY_LIMITS.integrationShards` / `e2eShards` / `unitWorkersParallel`.
    */
@@ -744,8 +744,8 @@ export async function runVerify(input: VerifyRunInput, seams: OrchestratorSeams)
     if (flow) {
       try {
         const lanesIn = LANES.map((lane) => {
-          const shards = lane.name === 'e2e' ? shardCount(input.laneShards?.e2e, LOCAL_VERIFY_LIMITS.e2eShards)
-            : lane.name === 'integration' ? shardCount(input.laneShards?.integration, LOCAL_VERIFY_LIMITS.integrationShards) : 1;
+          const shards = lane.name === 'e2e' ? shardCount('e2e', input.laneShards?.e2e, LOCAL_VERIFY_LIMITS.e2eShards)
+            : lane.name === 'integration' ? shardCount('integration', input.laneShards?.integration, LOCAL_VERIFY_LIMITS.integrationShards) : 1;
           const uw = input.laneShards?.unitWorkers;
           const workers = typeof uw === 'number' && Number.isInteger(uw) && uw >= 1 && uw <= MAX_UNIT_WORKERS ? uw : LOCAL_VERIFY_LIMITS.unitWorkersParallel;
           const files = inventory.byLane[lane.name] ?? [];
@@ -801,8 +801,8 @@ export async function runVerify(input: VerifyRunInput, seams: OrchestratorSeams)
     }
 
     async function runLane(lane: (typeof LANES)[number]): Promise<LaneRunInput> {
-      const shards = lane.name === 'e2e' ? shardCount(input.laneShards?.e2e, LOCAL_VERIFY_LIMITS.e2eShards)
-        : lane.name === 'integration' ? shardCount(input.laneShards?.integration, LOCAL_VERIFY_LIMITS.integrationShards) : 1;
+      const shards = lane.name === 'e2e' ? shardCount('e2e', input.laneShards?.e2e, LOCAL_VERIFY_LIMITS.e2eShards)
+        : lane.name === 'integration' ? shardCount('integration', input.laneShards?.integration, LOCAL_VERIFY_LIMITS.integrationShards) : 1;
       const laneFiles = inventory.byLane[lane.name] ?? [];
       // The rest of the lane (spec local-verify-likely-failing-first.md D): every file that is not
       // in the first part. Without a first part it is the whole lane, planned exactly as before.
@@ -1202,9 +1202,9 @@ export async function runVerify(input: VerifyRunInput, seams: OrchestratorSeams)
       return { lane: lane.name, report, seconds: seconds(), exitCode };
     }
 
-    /** A shard count from the run input, clamped to 1..MAX_LANE_SHARDS; anything else is the default. */
-    function shardCount(v: number | undefined, fallback: number): number {
-      return typeof v === 'number' && Number.isInteger(v) && v >= 1 && v <= MAX_LANE_SHARDS ? v : fallback;
+    /** Invalid settings fall back to the lane default. */
+    function shardCount(lane: keyof typeof MAX_LANE_SHARDS, v: number | undefined, fallback: number): number {
+      return typeof v === 'number' && Number.isInteger(v) && v >= 1 && v <= MAX_LANE_SHARDS[lane] ? v : fallback;
     }
 
     /**

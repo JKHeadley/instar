@@ -1200,7 +1200,7 @@ export class LocalVerifyService {
     const out: { integration?: number; e2e?: number; unitWorkers?: number } = {};
     for (const k of ['integration', 'e2e'] as const) {
       const n = (v as Record<string, unknown>)[k];
-      if (typeof n === 'number' && Number.isInteger(n) && n >= 1 && n <= MAX_LANE_SHARDS) out[k] = n;
+      if (typeof n === 'number' && Number.isInteger(n) && n >= 1 && n <= MAX_LANE_SHARDS[k]) out[k] = n;
     }
     // Per-machine unit-lane worker count (hardware differs; 2026-11-12 the M5 sat 45-90 % idle
     // while its 4-worker unit lane hit the 20-min deadline). Which files run never changes.

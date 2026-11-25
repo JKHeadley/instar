@@ -356,3 +356,9 @@ The reviewer checked the staged merge of `a715425d9` and `646c926a6`, committed 
 The M5's full verification found that the helper's socket address handling did not use the listener identity required by the request-arrival ratchet. The fix forwards the request's listener identity into helper admission and checks it in the loopback proxy middleware. The existing tunnel, forwarding, loopback, and attempt-token requirements still apply. The shared test fixture uses the production route-facts type.
 
 The reviewer identified the fixture's old address-field name on the first pass. After it was corrected, the reviewer confirmed that helper admission refuses same-network arrivals even through the loopback test seam and that the proxy still requires the main listener. Verdict: **concur**. The ratchet failed before the correction and passed afterward. Focused admission, middleware, integration, and end-to-end lifecycle tests passed.
+
+## Second-pass review of the integration-process merge
+
+**Reviewer:** Independent Codex reviewer, read-only subagent
+
+The reviewer checked the staged merge of `6ee8a2e9d` and `4ec090a09`. Verdict: **concur**. The only written conflict was beside the main-only baseline file-count input. Baseline counts remain intact. The borrowed test planner and the runner now pass the lane to the same shard-count validator. Both retain main's integration range of one to five and end-to-end range of one to four, with the existing fallbacks. TypeScript and 146 focused tests passed, including the five-process test and the arrival ratchet.
