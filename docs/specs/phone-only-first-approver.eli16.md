@@ -7,3 +7,5 @@ The link opens the right request. Its address carries no permission on its own. 
 The first prototype is a synthetic test of the match between the account, topic confirmation and exact enrollment request. It does not create an approval account or change a device. The live path still needs a safe way to establish account authority when no such account exists, plus a test of the installed phone and holder.
 
 The private Telegram link will open the enrollment explanation on your phone. Tapping Start opens that explanation. If the private chat is already an accepted approval account, it can show the exact iPhone nomination directly. A new approval account needs its own explanation and acceptance before it can nominate the phone.
+
+The Accept button in the test is specific to the exact private message that showed the nomination. A different chat, message, owner, or changed nomination cannot use it. The live flow must also record that the button was used, so a retry can recover the same result.
