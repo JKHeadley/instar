@@ -1,0 +1,22 @@
+{
+  "ts": "2026-11-25T00:23:44.140Z",
+  "slug": "latest-codex-scan-and-idle-wip",
+  "suggestedTier": 1,
+  "declaredTier": 2,
+  "riskFloor": 1,
+  "riskFloorReasons": [],
+  "belowFloor": false,
+  "files": 1,
+  "loc": 28,
+  "scope": {
+    "basis": "staged-in-scope-paths-including-deleted",
+    "files": [
+      "src/scheduler/JobScheduler.ts"
+    ],
+    "addedLines": 27,
+    "deletedLines": 1
+  },
+  "causalAutopsy": null,
+  "classClosure": null,
+  "verdict": "pass"
+}

@@ -245,6 +245,7 @@ export class JobScheduler {
   private readonly activeScriptRunIds = new Set<string>();
   /** A failed durable write moves future fires off the script runner. */
   private supervisionBlockedSlugs = new Set<string>();
+  private doorwayRecoveryInFlight = false;
   private readonly censusRechecks = new Map<string, ReturnType<typeof setTimeout>>();
   private projectedSessionListeners: ProjectedSessionListener[] = [];
   /** Triage sessions: tmux name → their run row. */
@@ -2363,7 +2364,13 @@ export class JobScheduler {
           deferred.set(run.slug, Math.max(deferred.get(run.slug) ?? 0, waitMs));
           continue;
         }
-        if (this.settleInterruptedScriptRun(store, run)) {
+        if (run.packagedDoorwayScan || run.scheduledDoorwayObservationDigest) {
+          if (run.slug === 'doorway-scan' && run.machineId && run.machineId === this.machineId) {
+            this.recoverPackagedDoorwayRun(store, run);
+            deferred.set(run.slug, Math.max(deferred.get(run.slug) ?? 0, 5000));
+            continue;
+          }
+        } else if (this.settleInterruptedScriptRun(store, run)) {
           run = this.runHistory.findRun(run.runId) ?? run;
           row = store.findByRunId(run.runId);
         }
@@ -2425,6 +2432,25 @@ export class JobScheduler {
     if (this.activeScriptRunIds.has(run.runId)) return false;
     if (!run.machineId) return true;
     return this.machineId !== null && run.machineId === this.machineId;
+  }
+
+  /** A doorway restart must settle its permanent run record under the artifact writer lease. */
+  private recoverPackagedDoorwayRun(store: JobSupervisionStore, candidate: JobRun): void {
+    if (this.doorwayRecoveryInFlight || !this.running || this.paused || this.state.readOnly) return;
+    this.doorwayRecoveryInFlight = true;
+    void withDoorwayRetentionWriter(this.stateDir, Date.now() + 2000, async (_stateDir, lease) => {
+      if (!this.running || this.paused || this.state.readOnly) return;
+      const run = this.runHistory.findRun(candidate.runId);
+      if (!run || run.result !== 'pending' || !this.isInterruptedHere(run)
+        || run.slug !== 'doorway-scan' || run.machineId !== this.machineId || run.startedAt !== candidate.startedAt
+        || (!run.packagedDoorwayScan && !run.scheduledDoorwayObservationDigest)) return;
+      const row = store.findByRunId(run.runId);
+      if (row?.completedAt && (row.reason !== 'interrupted' || row.result !== 'failure')) return;
+      lease.assertHeld();
+      this.settleInterruptedScriptRun(store, run);
+    }).catch(error => {
+      console.warn(`[job-supervision] Doorway recovery could not acquire or keep its writer lease: ${error instanceof Error ? error.message : String(error)}`);
+    }).finally(() => { this.doorwayRecoveryInFlight = false; });
   }
 
   /** Settle both ledgers for an interrupted run; false when either write did not hold. */

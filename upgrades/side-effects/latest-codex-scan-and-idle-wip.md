@@ -115,3 +115,9 @@ Opt-in scans now use the same canonical state directory lock as initial cursor p
 The opt-in scheduler now acquires the doorway writer lease before creating the pending run or its supervision record. Failure settlement from that execution stays under the lease while it remains valid. A run whose lease is lost leaves its pending row for interrupted-run recovery. A scheduler that stops, pauses, becomes read-only, or exhausts the probe deadline while waiting creates no pending run. Legacy scripts keep their existing offset and admission order. Restart recovery still requires its own custody integration before production cursor publication or cleanup.
 
 Independent review concurred and identified a delayed-admission edge. The scheduler rechecks that the live job is enabled, remains a script job, and is scoped to this machine after acquiring the lease.
+
+## Interrupted scan settlement
+
+The scheduler now settles an interrupted packaged doorway run under the same writer lease used by normal execution and initial cursor publication. It rereads the exact local pending row and its supervision attempt after acquisition. Existing age and liveness checks still apply. Recovery schedules one asynchronous lock attempt at a time, leaves the scan on hold while it waits, and retries through the existing census recheck. Legacy settlement continues through its existing path. This checkpoint does not activate production cursor publication or cleanup.
+
+Independent review concurred after recovery was bounded to one lock attempt at a time and revalidated exact local ownership.

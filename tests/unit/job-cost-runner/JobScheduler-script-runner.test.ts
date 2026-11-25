@@ -186,6 +186,40 @@ describe('script runner execution', () => {
     expect(sm._spawnCount).toBe(0);
   });
 
+  it.skipIf(!createPhysicalEffectLock(os.tmpdir()).status().available)('settles an interrupted packaged run only after the writer releases its lease', async () => {
+    project = createTempProject();
+    const slug = 'doorway-scan';
+    const script = "console.log('JOB_RESULT ok legacy')";
+    addScriptJob(project.stateDir, slug, script);
+    lockState.value = trustedLockFor([{ slug, script }]);
+    const { s } = mkScheduler(project);
+    scheduler = s;
+    s.setMachineIdentity('fixture-machine', 'Fixture Machine');
+    const old = Date.now() - 60 * 60_000;
+    const history = s.getRunHistory();
+    let runId: string;
+    vi.useFakeTimers({ toFake: ['Date'] });
+    try {
+      vi.setSystemTime(old);
+      s.getJobSupervisionStore();
+      runId = history.recordStart({
+        slug, sessionId: 'interrupted', trigger: 'scheduled', origin: 'instar',
+        runner: 'script', lockTrust: 'trusted', packagedDoorwayScan: true,
+      });
+    } finally {
+      vi.useRealTimers();
+    }
+    await withDoorwayRetentionWriter(project.stateDir, Date.now() + 2000, async () => {
+      s.start();
+      expect(s.scriptRunnersActiveFor(slug)).toBe(false);
+      await new Promise(resolve => setTimeout(resolve, 70));
+      expect(history.findRun(runId)?.result).toBe('pending');
+    });
+    await waitFor(() => history.findRun(runId)?.result === 'failure');
+    expect(history.findRun(runId)?.error).toContain('interrupted');
+    expect(s.getJobSupervisionStore().findByRunId(runId)).toMatchObject({ result: 'failure', reason: 'interrupted' });
+  });
+
   it('does not open the supervision journal on a read-only standby', () => {
     project = createTempProject();
     addScriptJob(project.stateDir, 'probe', "console.log('JOB_RESULT ok done');");
