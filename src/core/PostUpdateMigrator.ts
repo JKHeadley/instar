@@ -303,6 +303,10 @@ export function raiseLaunchdProcessCeilings(plistXml: string, floor: number): st
   });
 }
 
+// The compact hook collects identity and recovery context before printing.
+// Its local HTTP reads can spend up to 36 seconds in sequence.
+export const COMPACT_SESSION_START_TIMEOUT_SECONDS = 45;
+
 /**
  * The PostCompact hook's settings entry (context-budget-layered-summaries §9.1).
  * Shared by init and migrateSettings so both install the same command.
@@ -18799,13 +18803,24 @@ An agent created in a temporary folder (\`/tmp\`, \`/private/tmp\`, \`/var/folde
       hooks.SessionStart = [
         { matcher: 'startup', hooks: [sessionStartHook] },
         { matcher: 'resume', hooks: [sessionStartHook] },
-        { matcher: 'compact', hooks: [sessionStartHook] },
+        { matcher: 'compact', hooks: [{ ...sessionStartHook, timeout: COMPACT_SESSION_START_TIMEOUT_SECONDS }] },
       ];
       patched = true;
       result.upgraded.push('.claude/settings.json: added SessionStart hooks (startup/resume/compact)');
     } else {
       // Migrate existing session-start paths from flat to instar/ subdirectory
       this.migrateSettingsHookPaths(hooks.SessionStart as unknown[], result);
+      const groups = hooks.SessionStart as Array<{ matcher?: string; hooks?: Array<{ command?: string; timeout?: number }> }>;
+      for (const group of groups) {
+        if (group.matcher !== 'compact') continue;
+        for (const hook of group.hooks ?? []) {
+          if (hook.command === sessionStartHook.command && hook.timeout === sessionStartHook.timeout) {
+            hook.timeout = COMPACT_SESSION_START_TIMEOUT_SECONDS;
+            patched = true;
+            result.upgraded.push('.claude/settings.json: extended compaction recovery hook timeout');
+          }
+        }
+      }
     }
     {
       // context-budget-layered-summaries §9.2 rung 1: a `clear` matcher running
@@ -23258,11 +23273,11 @@ fi
 CONFIG_FILE="\$INSTAR_DIR/config.json"
 if [ -f "\$CONFIG_FILE" ]; then
   PORT=\$(python3 -c "import json; print(json.load(open('\$CONFIG_FILE')).get('port', 4040))" 2>/dev/null || echo "4040")
-  HEALTH=\$(curl -s -o /dev/null -w "%{http_code}" "http://localhost:\${PORT}/health" 2>/dev/null)
+  HEALTH=\$(curl -s --max-time 2 -o /dev/null -w "%{http_code}" "http://localhost:\${PORT}/health" 2>/dev/null)
   if [ "\$HEALTH" = "200" ]; then
     echo ""
     echo "Instar server: RUNNING on port \${PORT}"
-    CAPS=\$(curl -s "http://localhost:\${PORT}/capabilities" 2>/dev/null)
+    CAPS=\$(curl -s --max-time 2 "http://localhost:\${PORT}/capabilities" 2>/dev/null)
     if echo "\$CAPS" | grep -q '"featureGuide"' 2>/dev/null; then
       echo ""
       echo "--- YOUR CAPABILITIES ---"
@@ -23309,10 +23324,10 @@ if [ -f "$INSTAR_DIR/config.json" ]; then
     if [ -z "\$AUTH_TOKEN" ]; then
       AUTH_TOKEN=\$(python3 -c "import json; v=json.load(open('$INSTAR_DIR/config.json')).get('authToken',''); print(v if isinstance(v, str) else '')" 2>/dev/null)
     fi
-    HEALTH=\$(curl -s -o /dev/null -w "%{http_code}" "http://localhost:\${PORT}/health" 2>/dev/null)
+    HEALTH=\$(curl -s --max-time 2 -o /dev/null -w "%{http_code}" "http://localhost:\${PORT}/health" 2>/dev/null)
     if [ "\$HEALTH" = "200" ]; then
       WM_QUERY=\$(python3 -c "import urllib.parse; print(urllib.parse.quote('compaction-recovery context-restoration'))" 2>/dev/null)
-      WORKING_MEM=\$(curl -s -H "Authorization: Bearer \${AUTH_TOKEN}" \
+      WORKING_MEM=\$(curl -s --max-time 2 -H "Authorization: Bearer \${AUTH_TOKEN}" \
         "http://localhost:\${PORT}/context/working-memory?prompt=\${WM_QUERY}&limit=6" 2>/dev/null)
       if [ -n "\$WORKING_MEM" ]; then
         WM_CONTEXT=\$(echo "\$WORKING_MEM" | python3 -c "
