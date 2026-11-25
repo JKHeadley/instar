@@ -43654,6 +43654,7 @@ document.getElementById('mcpForm').addEventListener('submit', async function (e)
       };
     }
     mountMobilePermissionsRoutes(router, {
+      bindWorkBoardSlip: (input) => ctx.workBoard?.()?.bindPermissionSlip(input) ?? null,
       readWorkBoardSlip: (id) => ctx.workBoard?.()?.readPermissionSlip(id)
         ?? { status: 503, body: { error: 'work-board-slips-unavailable' } },
       trust: () => trustDevicePort,

@@ -114,6 +114,7 @@ function send(app: Parameters<typeof request>[0], phone: Phone, method: 'POST' |
 describe('Work cards from the owner phone E2E (feature is alive)', () => {
   it('reads an enrolled slip and its exact receipt through the signed owner-device route', async () => {
     const { config, stateDir } = mkConfig();
+    delete config.dashboardPin;
     const db = new Database(':memory:');
     const writer = { epoch: 'epoch1', ownerGeneration: 'owner1', ownerPersonKey: 'owner', writerIncarnation: 'i1' };
     let active = true;
@@ -130,6 +131,7 @@ describe('Work cards from the owner phone E2E (feature is alive)', () => {
       if (!created.ok) throw new Error('pair');
       pairing.devices.applyConfirm(created.device.id, { ok: true });
       const phone: Phone = { dev, presence: makeDevice(), id: created.device.id };
+      pairing.devices.setPresenceKey(phone.id, phone.presence.publicKey);
       const cardId = 'wc_6248a51921c41ca0';
       const disclosure = { title: 'Review the exact card' };
       const version = {
@@ -148,10 +150,25 @@ describe('Work cards from the owner phone E2E (feature is alive)', () => {
         receipt: null, items: [{ cardId, version, disclosure, action: 'approve' }],
       });
       expect(JSON.stringify(pending.body)).not.toContain('private-source');
+      const challengeRoute = '/mobile/permissions/challenge';
+      const challengeInput = { action: 'work-board-slip-approve', target: slip.id, disclosureDigest: slip.digest };
+      const wrong = await send(app, phone, 'POST', challengeRoute, { ...challengeInput, disclosureDigest: 'f'.repeat(64) });
+      expect(wrong.status).toBe(409);
+      const challenge = await send(app, phone, 'POST', challengeRoute, challengeInput);
+      expect(challenge.status, JSON.stringify(challenge.body)).toBe(200);
+      expect(challenge.body.actionBindingDigest).toMatch(/^[a-f0-9]{64}$/);
+      expect(Date.parse(challenge.body.expiresAt)).toBeLessThanOrEqual(slip.expiresAt);
+      const replacement = makeDevice();
+      expect(pairing.devices.replacePresenceKey(phone.id, replacement.publicKey)).toBe('replaced');
+      const updated = await send(app, phone, 'POST', challengeRoute, challengeInput);
+      expect(updated.status).toBe(200);
+      expect(updated.body.actionBindingDigest).not.toBe(challenge.body.actionBindingDigest);
+
       expect(store.consumeVerified(slip.id, slip.digest, writer, 'decision1')).not.toBeNull();
       const signed = await send(app, phone, 'GET', route);
       expect(signed.status).toBe(200);
       expect(signed.body).toMatchObject({ state: 'signed', receipt: { items: [{ cardId, status: 'pending' }] } });
+      expect((await send(app, phone, 'POST', challengeRoute, challengeInput)).status).toBe(409);
       active = false;
       const unavailable = await send(app, phone, 'GET', route);
       expect(unavailable.status).toBe(503);

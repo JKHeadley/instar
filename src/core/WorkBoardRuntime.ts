@@ -9,6 +9,7 @@
  * exercised whole in tests with fakes and wired once in production.
  */
 
+import { canonicalJson, sha256Hex } from './WorkCardStore.js';
 import { sameProof, type WorkBoardWriterProof } from './WorkBoardApprovalWriter.js';
 import type { WorkBoardSlipStore } from './WorkBoardSlipStore.js';
 import {
@@ -120,6 +121,20 @@ export class WorkBoardRuntime {
   private creationEvidenceReady = false;
   private creationEvidenceItems: ReadonlyArray<WorkBoardCreationEvidence> = Object.freeze([]);
   readonly holderStats = { sweeps: 0, cardsSwept: 0, notesDrained: 0, notesCoalesced: 0, holdsLifted: 0, quietRepickups: 0, lastPassAt: null as number | null, lastSweep: null as Record<string, unknown> | null };
+
+  bindPermissionSlip(input: { slipId: string; digest: string; deviceId: string; host: string; presenceKey: string }) {
+    const port = this.seams.permissionSlips;
+    const writer = port?.currentWriter();
+    if (!port || !writer || !this.started || !this.seams.enabled() || writer.ownerPersonKey !== this.seams.ownerPersonKey()) return null;
+    const slip = port.store.get(input.slipId);
+    if (!slip || slip.digest !== input.digest || slip.decisionId !== null || this.now() >= slip.expiresAt
+      || !sameProof(writer, slip.proposal.writer) || !sameProof(writer, port.currentWriter())) return null;
+    const actionBindingDigest = sha256Hex(canonicalJson([
+      'work-board-slip-binding-v1', slip.id, slip.digest, slip.expiresAt,
+      writer, input.deviceId, input.host.toLowerCase(), sha256Hex(input.presenceKey),
+    ]));
+    return { actionBindingDigest, expiresAt: slip.expiresAt };
+  }
 
   readPermissionSlip(id: string) {
     const port = this.seams.permissionSlips;

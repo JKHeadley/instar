@@ -31,7 +31,7 @@
  * in for the dashboard PIN the console asks for, and the action itself runs the console's own code
  * (injected by routes.ts), so the phone can never do more than the PIN-confirmed console.
  */
-import { isWorkBoardSlipId } from '../core/workBoardSlipPresence.js';
+import { isWorkBoardSlipId, workBoardSlipApprovalLine } from '../core/workBoardSlipPresence.js';
 import { tapActionLine, isCardId, isRecordId, TAP_ACTIONS, CLOSE_AS, SCHEMA_MAX } from '../core/WorkCardStore.js';
 import { parsePhoneCardDraft, phoneCardDraftHash, phoneCardCreateLine, PHONE_CARD_REQUEST_ID, PHONE_CARD_SHAPE_WORDS, type PhoneCardDraft } from './phoneWorkCards.js';
 import crypto from 'node:crypto';
@@ -428,7 +428,7 @@ export class ActionChallengeStore {
   constructor(private readonly now: () => number = Date.now, private readonly ttlMs = PERMISSION_CHALLENGE_TTL_MS,
     private readonly perDevice = PERMISSION_CHALLENGE_PER_DEVICE, private readonly total = PERMISSION_CHALLENGE_TOTAL) {}
 
-  issue(deviceId: string, host: string, line: string): { secret: string; expiresAt: number; ref: string } {
+  issue(deviceId: string, host: string, line: string, deadline = Number.POSITIVE_INFINITY): { secret: string; expiresAt: number; ref: string } {
     this.prune();
     const mine = [...this.entries.entries()].filter(([, e]) => e.deviceId === deviceId);
     for (let i = 0; i <= mine.length - this.perDevice; i++) this.entries.delete(mine[i]![0]);
@@ -438,7 +438,7 @@ export class ActionChallengeStore {
       this.entries.delete(oldest);
     }
     const secret = crypto.randomBytes(32).toString('base64url');
-    const expiresAt = this.now() + this.ttlMs;
+    const expiresAt = Math.min(this.now() + this.ttlMs, deadline);
     const digest = sha256(secret);
     this.entries.set(digest, { deviceId, host: host.toLowerCase(), line, expiresAt });
     return { secret, expiresAt, ref: digest.slice(0, 12) };
@@ -742,6 +742,8 @@ export interface ActionResult { status: number; body: unknown }
 
 export interface MobilePermissionsDeps {
   readWorkBoardSlip?: (id: string) => ActionResult;
+  bindWorkBoardSlip?: (input: { slipId: string; digest: string; deviceId: string; host: string; presenceKey: string }) =>
+    { actionBindingDigest: string; expiresAt: number } | null;
   pairing: () => MobilePairingService | null;
   config: () => InstarConfig;
   stateDir: string;
@@ -930,7 +932,7 @@ export function mountMobilePermissionsRoutes(router: Router, deps: MobilePermiss
   /** Steps 1–6 of the write gate (spec §3.3). Answers and returns null on refusal. */
   // `teamControl`: turning team access off, restoring it and requiring privacy must always work for
   // whoever could invite, so they do not hang on this feature's switch or the console PIN (§3.6).
-  const writeGate = (req: Request, res: Response, mode: boolean | 'trust' = false): { deviceId: string; personId: string | null; host: string; presenceKey: string; svc: MobilePairingService } | null => {
+  const writeGate = (req: Request, res: Response, mode: boolean | 'trust' | 'work-slip' = false): { deviceId: string; personId: string | null; host: string; presenceKey: string; svc: MobilePairingService } | null => {
     res.set('Cache-Control', 'no-store');
     // Every refusal leaves a trace before the answer (A Refusal Stays a Refusal); the bearer has no device id.
     const refuse = (r: Refusal, deviceId: string | null = principalDevice(req)): null => {
@@ -952,7 +954,7 @@ export function mountMobilePermissionsRoutes(router: Router, deps: MobilePermiss
     const deviceId = p.deviceId;
     if (!overLocalTls(req)) return refuse({ status: 403, error: 'secure-transport-required' }, deviceId);
     if (!activeOwnerPhone(svc, deviceId)) return refuse({ status: 403, error: 'owner-phone-required' }, deviceId);
-    if (!teamControl && !config.dashboardPin) return refuse({ status: 503, error: 'console-pin-not-set', detail: 'The console has no PIN set, so it cannot approve or switch either. Set a PIN first.' }, deviceId);
+    if (!teamControl && mode !== 'work-slip' && !config.dashboardPin) return refuse({ status: 503, error: 'console-pin-not-set', detail: 'The console has no PIN set, so it cannot approve or switch either. Set a PIN first.' }, deviceId);
     const d = svc.devices.get(deviceId);
     if (!d?.presenceKey) return refuse({ status: 409, error: 'presence-key-missing' }, deviceId);
     const raw = (req as unknown as { instarDeviceHost?: unknown }).instarDeviceHost;
@@ -963,6 +965,24 @@ export function mountMobilePermissionsRoutes(router: Router, deps: MobilePermiss
 
   router.post('/mobile/permissions/challenge', (req: Request, res: Response) => {
     const b = rec(req.body);
+    if (b.action === 'work-board-slip-approve') {
+      const g = writeGate(req, res, 'work-slip');
+      if (!g) return;
+      const { target: slipId, disclosureDigest: digest } = b;
+      if (!isWorkBoardSlipId(slipId) || typeof digest !== 'string' || !/^[a-f0-9]{64}$/.test(digest) || digest.length !== 64) {
+        res.status(400).json({ error: 'invalid-work-board-slip' }); return;
+      }
+      const binding = deps.bindWorkBoardSlip?.({ slipId, digest, deviceId: g.deviceId, host: g.host, presenceKey: g.presenceKey });
+      const line = binding && workBoardSlipApprovalLine(slipId, digest, binding.actionBindingDigest);
+      if (!binding || !line || binding.expiresAt <= now()) {
+        audit.record({ event: 'refused', deviceId: g.deviceId, route: auditRoute(req), reason: 'work-board-slip-unavailable', status: 409 });
+        res.status(409).json({ error: 'work-board-slip-unavailable' }); return;
+      }
+      const c = challenges.issue(g.deviceId, g.host, line, binding.expiresAt);
+      audit.record({ event: 'challenge', deviceId: g.deviceId, personId: g.personId, action: b.action, target: slipId });
+      res.json({ challenge: c.secret, expiresAt: new Date(c.expiresAt).toISOString(), actionBindingDigest: binding.actionBindingDigest });
+      return;
+    }
     const g = writeGate(req, res, b.action === 'approve-widening' || b.action === 'accept-device' ? 'trust'
       : b.action === 'team-off' || b.action === 'team-restore' || b.action === 'team-memory-privacy' || b.action === 'team-origin-gone' || b.action === 'team-switch-on');
     if (!g) return;
