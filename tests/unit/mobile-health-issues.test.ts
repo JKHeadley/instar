@@ -63,7 +63,7 @@ describe('the declared table', () => {
 describe('signalsFromHealth reads every other reason /health degrades', () => {
   it('finds each, and only past its threshold', () => {
     const ids = (h: unknown) => signalsFromHealth(h).map((s) => s.id);
-    expect(ids({ sessions: { current: 25, max: 25 } })).toEqual(expect.arrayContaining(['health:sessions-full', 'SessionManager.verifyInjection.unsubmitted']));
+    expect(ids({ sessions: { current: 25, max: 25 } })).toEqual(['health:sessions-full']);
     expect(ids({ sessions: { current: 24, max: 25 } })).toEqual([]);
     expect(ids({ consecutiveJobFailures: 5 })).toEqual(['health:job-failures']);
     expect(ids({ consecutiveJobFailures: 4 })).toEqual([]);
