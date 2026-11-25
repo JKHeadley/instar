@@ -5,12 +5,13 @@
  * (ships dark), 200 + real data when it is wired.
  */
 
-import { describe, it, expect, beforeEach } from 'vitest';
+import { describe, it, expect, beforeEach, afterEach } from 'vitest';
 import express from 'express';
 import request from 'supertest';
 import fs from 'node:fs';
 import os from 'node:os';
 import path from 'node:path';
+import { SafeFsExecutor } from '../../src/core/SafeFsExecutor.js';
 import { createRoutes } from '../../src/server/routes.js';
 import type { RouteContext } from '../../src/server/routes.js';
 import { GrowthMilestoneAnalyst, resolveGrowthSettings } from '../../src/monitoring/GrowthMilestoneAnalyst.js';
@@ -25,7 +26,7 @@ function fakeTracker(initiatives: Initiative[]) {
 
 function baseCtx(extra: Partial<RouteContext> = {}): RouteContext {
   return {
-    config: { projectName: 'test', projectDir: '/tmp', stateDir: '/tmp/.instar', port: 0 } as any,
+    config: { projectName: 'test', projectDir: tmp, stateDir: path.join(tmp, '.instar'), port: 0 } as any,
     sessionManager: { listRunningSessions: () => [] } as any,
     state: { getJobState: () => null, getSession: () => null } as any,
     startTime: new Date(),
@@ -42,6 +43,9 @@ function appWith(ctx: RouteContext): express.Express {
 
 let tmp: string;
 beforeEach(() => { tmp = fs.mkdtempSync(path.join(os.tmpdir(), 'gma-routes-')); });
+afterEach(() => {
+  SafeFsExecutor.safeRmSync(tmp, { recursive: true, force: true, operation: 'tests/integration/growth-analyst-routes.test.ts:cleanup' });
+});
 
 describe('/growth/* (integration)', () => {
   it('503s on every route when the analyst is not wired (ships dark)', async () => {

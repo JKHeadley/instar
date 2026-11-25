@@ -45,9 +45,10 @@ function ctxWith(opts: {
   supervisionStore?: JobSupervisionStore;
   runHistory?: JobRunHistory;
 }): RouteContext {
+  const projectDir = tmpDir ??= fs.mkdtempSync(path.join(os.tmpdir(), 'decision-quality-routes-'));
   return {
     config: {
-      projectName: 'test', projectDir: '/tmp', stateDir: tmpDir ?? '/tmp/.instar', port: 0, authToken: AUTH,
+      projectName: 'test', projectDir, stateDir: projectDir, port: 0, authToken: AUTH,
       developmentAgent: opts.developmentAgent ?? false,
       provenance: { uniformSeam: { dryRun: false } },
       sessions: {} as any, scheduler: {} as any,
