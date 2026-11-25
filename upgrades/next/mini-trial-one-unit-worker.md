@@ -1,0 +1,15 @@
+# Upgrade Guide — vNEXT
+
+<!-- bump: patch -->
+
+## What Changed
+
+A calibrated Mac can use one unit worker for the small-peer verification trial. The coordinator, peer and local worker settings must agree.
+
+## What to Tell Your User
+
+The Mini can try a lower-memory test configuration. Its measured memory floor and automatic stop still apply.
+
+## Summary of New Capabilities
+
+The existing trial policy accepts one or two unit workers.
