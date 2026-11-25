@@ -1,0 +1,24 @@
+{
+  "version": 2,
+  "slug": "hosted-relay-wsl-fixture",
+  "sessionId": "41652017-0805-405d-bb4e-2a975fb349ce",
+  "timestamp": "2026-11-25T23:52:52.716Z",
+  "artifactPath": "upgrades/side-effects/hosted-relay-wsl-fixture.md",
+  "artifactSha256": "0b96281db59d7204f02fbf080a61fb923e0e11363dead248473b4fda98bcb0f5",
+  "specPath": "docs/specs/hosted-relay.md",
+  "coveredFiles": [
+    "scripts/hosted-relay-wsl-fixture.mjs",
+    "tests/integration/hosted-relay-wsl-fixture.test.ts",
+    "upgrades/side-effects/hosted-relay-wsl-fixture.md"
+  ],
+  "phase": "complete",
+  "tier": 2,
+  "tierReasoning": "Synthetic disposable WSL proof runner, loopback only and off by default",
+  "secondPass": "true",
+  "reviewerConcurred": true,
+  "classClosure": {
+    "defectClass": "unbounded-self-action",
+    "closure": "n/a",
+    "reason": "Explicit fixture with a hard ten-minute lifetime, bounded local connections and teardown."
+  }
+}
