@@ -2,8 +2,8 @@
 title: Browse App Chat Attachments
 slug: app-attachment-browse
 author: echo
-status: draft
-approved: false
+status: approved
+approved: true
 card: wc_6c53d5472cbe88bb
 eli16-overview: docs/specs/app-attachment-browse.eli16.md
 review-convergence: "2026-11-25T01:28:32.952Z"
@@ -14,6 +14,8 @@ cross-model-review: "codex-cli:gpt-6.2-astra"
 ---
 
 # Browse App Chat Attachments
+
+Approval was recorded on November 24, 2026 under Justin’s standing approval to build and ship converged Instar specs within an already requested feature. Chief of Staff confirmed this scope in handoff 15db27c4-d6a8-4216-b726-838b52d583d0. Activation remains subject to the maturation plan.
 
 An owner using the signed App chat browser can browse photos, videos, voice recordings or files in the current chat, including attachments without a caption. The first release works on the history available on the connected computer. It uses the existing file playback presentation and adds an exact, owner-authorized open action for the selected attachment. The broader media discovery draft remains under review for sender filters, text search, previews and other platforms.
 
