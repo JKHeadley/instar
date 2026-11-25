@@ -1,0 +1,20 @@
+{
+  "version": 2,
+  "slug": "latest-codex-signed-scan-assets-wip",
+  "sessionId": "6c1cc41d-f86f-4283-987c-cf9b68e7cad7",
+  "timestamp": "2026-11-24T10:59:02.856Z",
+  "artifactPath": "upgrades/side-effects/latest-codex-signed-scan-assets-wip.md",
+  "artifactSha256": "f3c20668e26cac5985496dceb98224884b07b74533865ae8012430eb7d90568a",
+  "specPath": "docs/specs/latest-codex-doorway-scan.md",
+  "coveredFiles": [
+    "scripts/sign-instar-lockfile.mjs",
+    "src/core/VerifiedPackagedCatalog.ts",
+    "src/scheduler/AgentMdLockFile.ts",
+    "tests/unit/scheduler/sign-instar-lockfile.test.ts"
+  ],
+  "phase": "complete",
+  "tier": 2,
+  "tierReasoning": "The signed lock format and exact byte verification establish provenance for a later scheduled runtime path.",
+  "secondPass": "true",
+  "reviewerConcurred": true
+}

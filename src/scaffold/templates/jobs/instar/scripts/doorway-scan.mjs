@@ -4,9 +4,9 @@
  *
  * Runs the deterministic prober `scripts/doorway-scan.mjs --scope free-probes`
  * (the ONLY scope the cadence runs; a metered scope is human-manual-only). The
- * prober owns every network call, secret, debounce, diff and delivery (it posts
- * its own view and attention item). Exit-code mapping:
- *   prober absent                  → skipped prober-absent (a non-source agent)
+ * prober owns network calls and persisted observations. Scheduled runs suppress
+ * its manual view and attention item. Exit-code mapping:
+ *   prober absent                  → skipped prober-absent
  *   "no canonical manifest" (0)    → skipped no-manifest
  *   exit 0 without its scope line  → failed prober-output-malformed
  *   exit 0 with no fresh scan-state → failed scan-state-missing|-unreadable|-stale
@@ -237,7 +237,8 @@ function scanStateProblem(startedAtMs) {
 }
 
 async function main() {
-  const file = proberPath(PROBER);
+  if (CONFIG.maintenance?.doorwayScan?.enabled === false) finish('skipped', 'scan-disabled');
+  const file = CANARY ? proberPath(PROBER) : process.env.INSTAR_DOORWAY_PROBER ?? proberPath(PROBER);
   if (!fs.existsSync(file)) finish('skipped', 'prober-absent');
   const startedAtMs = Date.now();
   const p = await runProber(file, ['--scope', 'free-probes'], PROBER_TIMEOUT_MS);

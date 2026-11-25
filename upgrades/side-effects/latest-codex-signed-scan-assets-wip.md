@@ -12,3 +12,7 @@ Tier 2 work-in-progress checkpoint under the approved doorway scan spec. This sl
 - **Rollback.** Revert the signer and verifier together and use the corresponding lock. No agent data migration is required.
 
 The independent reviewer concurred with the standalone signer and verifier slice after checking exact byte handling and canonical signature compatibility. The fixture uses an ephemeral key. Release and live activation remain on hold.
+
+## Legacy prober checkpoint
+
+This WIP preserves the staged legacy path. Scheduled runs keep local scan observations and omit direct delivery. The packaged prober resolves its adjacent manifest when the scheduler supplies it. The scheduled wrapper honors the disabled flag and retains its separate canary path. This checkpoint does not enable the scanner or cleanup. The focused regression covers local-only scheduled observations.

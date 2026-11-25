@@ -49,6 +49,13 @@ describe('doorway-scan run', () => {
     P.scanOnce({ manifest, scanStatePath: statePath, machineId: MACHINE, ctx, deps: { exec: fakeExec(installed) } });
   const onDisk = () => JSON.parse(fs.readFileSync(statePath, 'utf-8'));
 
+  it('persists scheduled observations without an attention delivery context', async () => {
+    await scan(['alpha', 'beta'], null);
+    const result = await scan(['alpha'], null);
+    expect(result).toContain('delivery local-only');
+    expect(onDisk().doorways.find((door: { id: string }) => door.id === 'beta').probeStatus).toBe('not-installed');
+  });
+
   it('the first scan writes real state, seeds the baseline and surfaces nothing', async () => {
     const { calls, ctx } = fakeServer();
     const summary = await scan(['alpha'], ctx);

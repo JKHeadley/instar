@@ -944,7 +944,8 @@ export async function scanOnce({ manifest, scanStatePath, machineId, ctx, deps, 
   // behind, so the change comes back on the next scan.
   writeScanState(scanStatePath, state);
   let delivery = 'none';
-  if (plan.shouldDeliver) {
+  if (!ctx) delivery = 'local-only';
+  if (ctx && plan.shouldDeliver) {
     const { delivered, viewId } = await deliverDiff(ctx, diff, state);
     delivery = delivered ? 'delivered' : 'held';
     const next = { ...state, maintainerViewId: viewId ?? state.maintainerViewId };
@@ -959,10 +960,10 @@ export async function scanOnce({ manifest, scanStatePath, machineId, ctx, deps, 
   // A failed escalation is retried while the failure lasts: the breaker itself
   // fires only once, exactly at the threshold.
   const failing = breaker.consecutiveCompleteFailures >= COMPLETE_FAILURE_ESCALATE_THRESHOLD;
-  if (breaker.escalate || (failing && prior.escalationPending)) {
+  if (ctx && (breaker.escalate || (failing && prior.escalationPending))) {
     const delivered = await deliverBreakerEscalation(ctx, machineId);
     writeScanState(scanStatePath, { ...JSON.parse(fs.readFileSync(scanStatePath, 'utf-8')), escalationPending: !delivered });
-  } else if (!failing && prior.escalationPending) {
+  } else if (ctx && !failing && prior.escalationPending) {
     writeScanState(scanStatePath, { ...JSON.parse(fs.readFileSync(scanStatePath, 'utf-8')), escalationPending: false });
   }
 
@@ -990,7 +991,9 @@ async function main() {
   const scheduled = isScheduledDoorwayScanSession(process.env, stateDir);
 
   // Dark posture: with no manifest present this agent has no registry to scan.
-  const manifestPath = path.join('scripts', 'model-registry-freshness.manifest.json');
+  const manifestPath = scheduled && process.env.INSTAR_DOORWAY_PROBER
+    ? fileURLToPath(new URL('./model-registry-freshness.manifest.json', import.meta.url))
+    : path.join('scripts', 'model-registry-freshness.manifest.json');
   if (!fs.existsSync(manifestPath)) {
     console.log('doorway-scan: no canonical manifest present — nothing to scan (silent no-op).');
     return;
@@ -1010,7 +1013,7 @@ async function main() {
     manifest,
     scanStatePath,
     machineId: readMachineId(stateDir),
-    ctx: {
+    ctx: scheduled ? null : {
       fetch: globalThis.fetch,
       baseUrl: `http://127.0.0.1:${process.env.INSTAR_PORT || config.port || 4042}`,
       token: process.env.INSTAR_AUTH_TOKEN || (typeof config.authToken === 'string' ? config.authToken : ''),

@@ -1,0 +1,20 @@
+{
+  "version": 2,
+  "slug": "latest-codex-signed-scan-assets-wip",
+  "sessionId": "bcc82a0c-f81e-440b-88eb-304eb7ee4f4c",
+  "timestamp": "2026-11-25T15:02:19.868Z",
+  "artifactPath": "upgrades/side-effects/latest-codex-signed-scan-assets-wip.md",
+  "artifactSha256": "11c1085e87fe7d36e03444848d19568cdd245da54ca356f31d0acc00a6abb275",
+  "specPath": "docs/specs/latest-codex-doorway-scan.md",
+  "coveredFiles": [
+    "scripts/doorway-scan.mjs",
+    "src/scaffold/templates/jobs/instar/scripts/doorway-scan.mjs",
+    "tests/unit/doorway-scan-run.test.ts",
+    "upgrades/side-effects/latest-codex-signed-scan-assets-wip.md"
+  ],
+  "phase": "complete",
+  "tier": 2,
+  "tierReasoning": "Preserve staged scheduler and delivery behavior under the approved doorway scan design",
+  "secondPass": "not-required",
+  "reviewerConcurred": null
+}

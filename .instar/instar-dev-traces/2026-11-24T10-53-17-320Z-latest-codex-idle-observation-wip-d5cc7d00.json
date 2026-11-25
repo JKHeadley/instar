@@ -1,0 +1,26 @@
+{
+  "version": 2,
+  "slug": "latest-codex-idle-observation-wip",
+  "sessionId": "6c1cc41d-f86f-4283-987c-cf9b68e7cad7",
+  "timestamp": "2026-11-24T10:53:17.320Z",
+  "artifactPath": "upgrades/side-effects/latest-codex-idle-observation-wip.md",
+  "artifactSha256": "72d9375ac7721d43d3834b19370c703df2c25c3328d56a2dde56d03c3259e517",
+  "specPath": "docs/specs/latest-codex-idle-switch.md",
+  "coveredFiles": [
+    "src/core/IdleModelObservation.ts",
+    "src/core/IdleNativeProcessCache.ts",
+    "src/core/IdleNativeProcessSampler.ts",
+    "src/core/TopicProfileStore.ts",
+    "src/native/process-identity/macos/InstarProcessIdentity.c",
+    "tests/e2e/idle-native-process-macos-fixture.test.ts",
+    "tests/unit/TopicProfileStore.test.ts",
+    "tests/unit/idle-model-observation.test.ts",
+    "tests/unit/idle-native-process-cache.test.ts",
+    "tests/unit/idle-native-process-sampler.test.ts"
+  ],
+  "phase": "complete",
+  "tier": 2,
+  "tierReasoning": "Process identity and committed policy evidence underpin a future session lifecycle feature. This checkpoint has no production caller.",
+  "secondPass": "true",
+  "reviewerConcurred": true
+}
