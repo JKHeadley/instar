@@ -17,6 +17,7 @@
  */
 
 import { EventEmitter } from 'node:events';
+import { setTimeout as delay } from 'node:timers/promises';
 
 import {
   type PrSummary,
@@ -602,8 +603,8 @@ export class GreenPrAutoMerger extends EventEmitter {
    * gate a normal tick applies (lease, latches, breaker, warm-up, floor, holds, code
    * owners, independent review, safe-merge), instead of the oldest candidate at the
    * next interval. A hand-off waits for an attempt in flight rather than feeding the
-   * busy-skip breaker, requests no verifies, and never retries: a refusal is left to
-   * the regular ticks.
+   * busy-skip breaker and requests no verifies. It retries only an unknown
+   * mergeability read for the same head before candidate evaluation.
    */
   async tick(opts: { manual?: boolean; handoff?: { pr: number; head: string } } = {}): Promise<{ acted: boolean; reason: string }> {
     this.tickCount += 1;
@@ -701,22 +702,33 @@ export class GreenPrAutoMerger extends EventEmitter {
     await this.reconcileArmed(state);
 
     // Warm-up (R10): the first tick of a new lease tenure is OBSERVE-ONLY.
-    const epoch = safeNum(() => this.deps.leaseEpoch());
-    const isWarmup = state.lastActingEpoch !== epoch;
-
     const exactHandoffRead = !!opts.handoff && !!this.deps.refetchHandoffPr;
+    const epoch = safeNum(() => this.deps.leaseEpoch(), exactHandoffRead ? NaN : 0);
+    const isWarmup = state.lastActingEpoch !== epoch;
+    const leaseCurrent = () => safeBool(() => this.deps.holdsLease())
+      && safeNum(() => this.deps.leaseEpoch(), NaN) === epoch;
     let candidates: PrSummary[];
     try {
       if (opts.handoff && this.deps.refetchHandoffPr) {
-        const target = await this.deps.refetchHandoffPr(opts.handoff.pr);
-        candidates = target && target.number === opts.handoff.pr ? [target] : [];
-        this.deps.audit({ kind: 'green-pr-automerge', event: 'handoff-read', pr: opts.handoff.pr, found: candidates.length === 1 });
+        const { pr, head } = opts.handoff;
+        if (!leaseCurrent()) return { acted: false, reason: 'not-lease-holder' };
+        let target = await this.deps.refetchHandoffPr(pr);
+        for (const backoffMs of [250, 750]) {
+          if (isWarmup || target?.number !== pr || target.headRefOid !== head || target.mergeable !== 'UNKNOWN' || !leaseCurrent()) break;
+          await delay(backoffMs);
+          if (!leaseCurrent()) break;
+          target = await this.deps.refetchHandoffPr(pr);
+        }
+        if (!leaseCurrent()) return { acted: false, reason: 'not-lease-holder' };
+        candidates = target && target.number === pr ? [target] : [];
+        this.deps.audit({ kind: 'green-pr-automerge', event: 'handoff-read', pr, found: candidates.length === 1, mergeable: target?.mergeable });
       } else {
         candidates = await this.deps.listOpenPrs();
         state.lastSuccessfulListAt = this.deps.now();
       }
       state.breaker = feedBreaker(state.breaker, 'reset', this.deps.now(), this.breakerCfg());
     } catch (e) { /* @silent-fallback-ok: green-pr-automerge fail-safe — skip/refuse, never over-merge; safe-merge is the act-time authority */
+      if (exactHandoffRead && !leaseCurrent()) return { acted: false, reason: 'not-lease-holder' };
       // Tick-failed canary (L5(b)): a failed/unparseable list call feeds the breaker.
       state.breaker = feedBreaker(state.breaker, 'tick-failed', this.deps.now(), this.breakerCfg());
       this.deps.audit({ kind: 'green-pr-automerge', event: 'tick-failed', class: opts.handoff && this.deps.refetchHandoffPr ? 'handoff-read' : 'list', detail: String((e as Error)?.message).slice(0, 200) });
@@ -1597,6 +1609,6 @@ function summarize(r: unknown): string {
 function safeBool(fn: () => boolean): boolean {
   try { return !!fn(); } catch { /* @silent-fallback-ok: green-pr-automerge fail-safe — skip/refuse, never over-merge; safe-merge is the act-time authority */ return false; }
 }
-function safeNum(fn: () => number): number {
-  try { const n = fn(); return Number.isFinite(n) ? n : 0; } catch { /* @silent-fallback-ok: green-pr-automerge fail-safe — skip/refuse, never over-merge; safe-merge is the act-time authority */ return 0; }
+function safeNum(fn: () => number, fallback = 0): number {
+  try { const n = fn(); return Number.isFinite(n) ? n : fallback; } catch { /* @silent-fallback-ok: green-pr-automerge fail-safe — skip/refuse, never over-merge; safe-merge is the act-time authority */ return fallback; }
 }
