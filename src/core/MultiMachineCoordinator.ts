@@ -1221,6 +1221,7 @@ export class MultiMachineCoordinator extends EventEmitter {
       const lease = this.leaseCoordinator.currentLease();
       if (!this.leaseRenewSkipLogged && lease && !lease.released && lease.holder === this._identity?.machineId) {
         this.leaseRenewSkipLogged = true;
+        this.leaseCoordinator.notePostRestartRenewalSkipped?.(lease);
         console.log(`[MultiMachine] lease renew skipped: still the named holder at epoch ${lease.epoch}, but the lease lapsed (last confirmed renewal ${this.leaseCoordinator.msSinceConfirmedRenewal()}ms ago, TTL ${this.leaseCoordinator.ttlMs}ms)`);
       }
       return;

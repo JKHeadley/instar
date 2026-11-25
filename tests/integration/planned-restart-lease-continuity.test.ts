@@ -6,7 +6,7 @@
  * after the restart confirms the same epoch from the peer's identity-verified answer — on the mesh
  * dial and on the legacy single-url dial (which today read every answer as silence).
  */
-import { describe, it, expect, afterEach } from 'vitest';
+import { describe, it, expect, afterEach, vi } from 'vitest';
 import http from 'node:http';
 import type { AddressInfo } from 'node:net';
 import crypto from 'node:crypto';
@@ -14,6 +14,7 @@ import fs from 'node:fs';
 import os from 'node:os';
 import path from 'node:path';
 import { FencedLease, type LeaseCrypto } from '../../src/core/FencedLease.js';
+import { featureEvidence } from '../../src/monitoring/FeatureEvidenceLog.js';
 import { LeaseCoordinator } from '../../src/core/LeaseCoordinator.js';
 import { LocalLeaseStore } from '../../src/core/LocalLeaseStore.js';
 import { LeaseContinuityStore } from '../../src/core/LeaseContinuity.js';
@@ -154,6 +155,25 @@ for (const mode of ['mesh', 'legacy'] as const) {
       expect(b.store.readPendingEpisodeId()).toBeNull();
       expect(b.continuity.bootSamplesMs()).toEqual([120_000]);
       expect(b.logs.some((l) => l.includes('keeps the lead'))).toBe(true);
+      const record = vi.spyOn(featureEvidence, 'record').mockReturnValue(null);
+      try {
+        for (let renewal = 1; renewal <= 4; renewal++) {
+          clock.wall += 1_000; clock.mono += 1_000;
+          expect(await b.lc.renew()).toBe(true);
+        }
+        const observations = record.mock.calls.filter(([id]) => id === 'multiMachine.postRestartRenewal');
+        expect(observations.map(([, row]) => row.context?.attempt)).toEqual([1, 1, 2, 2, 3, 3]);
+        expect(observations[0][1]).toMatchObject({
+          reason: 'ordinary renewal started',
+          context: { epoch, sinceReclaimMs: 1_000 },
+        });
+        expect(observations[1][1]).toMatchObject({
+          reason: 'ordinary renewal confirmed',
+          context: { epoch, nonce: observations[0][1].context?.nonce },
+        });
+      } finally {
+        record.mockRestore();
+      }
     });
 
     it('a peer that took a newer epoch meanwhile supersedes the window lease', async () => {
