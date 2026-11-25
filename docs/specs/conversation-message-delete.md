@@ -32,3 +32,9 @@ Telegram mirroring follows the App action. It requires an exact verified provide
 - App Forward for separate occurrence identity and stale client boundaries.
 - App attachment purge for reference lifecycle and authorization.
 - Mobile unread and pool history for replica and incremental payloads.
+
+## Overlapping reads and cache ordering
+
+Name the mobile feed event `message-removed`, distinct from the existing conversation tombstone. It carries the exact removed event ID and the destination conversation scope. The paired and authorized feed establishes the account scope. Use the event ID as the merge key even when the retained message row also has a legacy message ID.
+
+A confirmed action response or authenticated feed event records a removal marker before applying any history merge. Scope markers by pairing, conversation and exact event ID. Apply markers to the current view, delayed history pages, exact context and any restored cache. Persist the marker and evict the row together when the client has durable history. A history page cannot clear a marker or revive that occurrence, even if the page was fetched later from a lagging replica. Keep markers across pagination, cursor changes and restart. Clear them with sign-out and when dropping the entire corresponding cache namespace, including any pending read generation. A denied or unknown action response leaves the row until an authenticated removal is observed.
