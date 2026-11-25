@@ -1585,6 +1585,22 @@ export class LeaseCoordinator {
         ) {
           this.peerTakeoverAuthorizedEpoch = candidate.epoch;
         }
+        const prior = view.lease;
+        const priorObservedAt = prior ? this.freshObservedMonoMs.get(prior.holder) : undefined;
+        featureEvidence.record('multiMachine.leaseAcquisitionEvidence', {
+          kind: 'fired',
+          reason: 'lease acquisition accepted',
+          context: {
+            epoch: candidate.epoch,
+            previousEpoch: view.epoch,
+            previousHolder: prior?.holder ?? null,
+            previousExpiresAt: prior?.expiresAt ?? null,
+            previousReleased: prior?.released ?? false,
+            previousNonce: prior?.nonce ?? null,
+            previousObservationAgeMs: priorObservedAt === undefined ? null : Math.max(0, this.monotonicNow() - priorObservedAt),
+            decision: decision.reason,
+          },
+        });
         await this.broadcast(candidate);
         this.markRenewOk();
         this.emitEpoch(candidate.epoch);
