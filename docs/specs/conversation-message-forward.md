@@ -14,7 +14,7 @@ The first candidate copies an explicitly selected plain-text message into anothe
 
 Use a device-signed POST to the destination App conversation with source conversation ID, exact source event ID and request ID. Reject unknown fields, a same-conversation destination, absent or ambiguous events, and sources without eligible plain text. Mask unreadable and missing source messages alike. Require current destination send access independent of source access. Recheck both immediately before acceptance after any asynchronous work. Require one current machine with durable custody for the destination and authoritative visibility for the source.
 
-The forward includes the permitted source text and marks it as forwarded. Resolve text using the ordinary outbound content protections and keep the server-side provenance separate from the displayed message. The forwarded text grants no permission to open the original. Run dispatch through an explicit Forward operation so copied text cannot be interpreted as a literal operator Stop command. Verify that in normal server wiring.
+The forward includes the permitted source text and marks it as forwarded. Resolve text using the ordinary outbound content protections and keep the server-side provenance separate from the displayed message. The forwarded text grants no permission to open the original. Accept the copy through the explicit Forward operation described below. Verify the command boundary in normal server wiring.
 
 ## Retry
 
@@ -29,3 +29,11 @@ Cover hidden capability when disabled, exact selection, unreadable and removed o
 - [Message actions](conversation-message-actions.md) defines the forwarding milestone.
 - [App replies and message links](conversation-replies-message-links.md) covers exact targets and signed acceptance.
 - [Inbound delivery custody](inbound-delivery-sacred.md) covers durable acceptance and uncertain outcomes.
+
+## Content and delivery boundary
+
+The ordinary send pipeline has both an exact Stop check and a semantic classifier that can pause or terminate work. A Forward request must enter neither branch. Its signed body proves the operator chose an exact source and destination. It does not prove the operator authored the source text or asked the agent to carry out instructions in it.
+
+For the first candidate, accept the forwarded copy as a durable destination history event. Do not enqueue it into the destination agent session, including indirectly as pending session context. This keeps imported text from inheriting the operator's command authority. Give the destination event its own identity and a presence-only forwarded marker. Keep source identities out of destination history, exact-context and preview payloads. Appending the event is the completion boundary for this slice. A later increment may introduce delivery to the agent with explicit treatment as quoted, untrusted context.
+
+In tests, use recognizable text from the fixture source. Assert that the new event appears exactly once in destination history and never appears in source history as a new occurrence. Assert zero changes to session dispatch, pending context, and emergency or pause state. Reopen the store between copy and retry, then repeat the request and verify the same destination event ID.
