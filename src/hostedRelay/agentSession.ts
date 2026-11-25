@@ -14,8 +14,10 @@ export function startHostedRelayAgentSession(options: {
   lease: HostedRelayLease;
   sign(message: string): string;
   openLocalTls(): Duplex | undefined;
-}): Promise<{ stop(): void }> {
-  const { session } = options;
+  signal?: AbortSignal;
+}): Promise<{ stop(): void; closed: Promise<void> }> {
+  const { session, signal } = options;
+  const closed = session.closed || session.destroyed ? Promise.resolve() : new Promise<void>(done => session.once('close', done));
   return new Promise((resolve, reject) => {
     const active = new Map<ClientHttp2Stream, Duplex | undefined>();
     let stopped = false, admitted = false, challenged = false, started = false;
@@ -28,6 +30,7 @@ export function startHostedRelayAgentSession(options: {
       if (stopped) return;
       stopped = true;
       clearTimeout(timeout);
+      signal?.removeEventListener('abort', stop);
       pending.fill(0);
       for (const [stream, local] of active) {
         local?.destroy();
@@ -94,12 +97,14 @@ export function startHostedRelayAgentSession(options: {
         admitted = true;
         clearTimeout(timeout);
         for (let i = 0; i < offerCount; i++) offer();
-        if (!stopped) { started = true; resolve({ stop }); }
+        if (!stopped) { started = true; resolve({ stop, closed }); }
       } else {
         stop();
       }
     }
 
+    if (signal?.aborted) { stop(); return; }
+    signal?.addEventListener('abort', stop, { once: true });
     session.on('error', stop);
     session.once('close', stop);
     try {
