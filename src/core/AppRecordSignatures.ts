@@ -159,26 +159,121 @@ export function loadMachineSigner(stateDir: string): MachineSigner | null {
  * after, or retired before, the signing time is not used (`unknown`): `validFrom` is the local
  * pinning time, which can postdate an honest old record, so it is never grounds for `failed`.
  */
+type AppSigningKey = { hash: string; pem: string; until: number | null };
+
+function appSigningKeys(store: IdentityStore, machineId: string, readJson?: (file: string) => unknown): AppSigningKey[] {
+  return store.signingKeyHistory(machineId, readJson).map((key) => {
+    const dates = [key.validUntil, key.revokedAt];
+    const cuts = dates.map((value) => value === null ? null : Date.parse(value));
+    if (readJson && dates.some((value, index) => value !== null && (typeof value !== 'string' || !Number.isFinite(cuts[index])))) {
+      throw new Error('machine signing cutoff is malformed');
+    }
+    const ends = cuts.filter((value): value is number => value !== null && Number.isFinite(value));
+    return { hash: signerKeyHashOf(key.publicKey), pem: toPem(key.publicKey), until: ends.length ? Math.min(...ends) : null };
+  });
+}
+
+function lookupAppSigningKey(keys: readonly AppSigningKey[], hash: string, atMs: number): ReturnType<MachineKeyLookup> {
+  const key = keys.find((item) => item.hash === hash);
+  if (!key || (key.until !== null && Number.isFinite(atMs) && atMs >= key.until)) return { status: 'unknown' };
+  return { status: 'ok', publicKeyPem: key.pem };
+}
+
 export function identityKeyLookup(stateDir: string): MachineKeyLookup {
-  const cache = new Map<string, { at: number; keys: Array<{ hash: string; pem: string; until: number | null }> }>();
+  const cache = new Map<string, { at: number; keys: AppSigningKey[] }>();
   return (machineId, signerKeyHash, atMs) => {
     const now = Date.now();
     let entry = cache.get(machineId);
     if (!entry || now - entry.at > 30_000) {
-      const history = new IdentityStore({ stateDir }).signingKeyHistory(machineId); // throws when unreadable
-      entry = {
-        at: now,
-        keys: history.map((k) => {
-          const until = [k.validUntil, k.revokedAt].map((v) => (v === null ? null : Date.parse(v))).filter((v): v is number => v !== null && Number.isFinite(v));
-          return { hash: signerKeyHashOf(k.publicKey), pem: toPem(k.publicKey), until: until.length ? Math.min(...until) : null };
-        }),
-      };
+      entry = { at: now, keys: appSigningKeys(new IdentityStore({ stateDir }), machineId) };
       cache.set(machineId, entry);
     }
-    const k = entry.keys.find((x) => x.hash === signerKeyHash);
-    if (!k) return { status: 'unknown' };
-    if (k.until !== null && Number.isFinite(atMs) && atMs >= k.until) return { status: 'unknown' };
-    return { status: 'ok', publicKeyPem: k.pem };
+    return lookupAppSigningKey(entry.keys, signerKeyHash, atMs);
+  };
+}
+
+/** Private Delete sync evidence. The caller supplies every machine whose verification can affect this read. */
+export function createAppMachineTrustEvidence(stateDir: string) {
+  const store = new IdentityStore({ stateDir });
+  const manager = new MachineIdentityManager(stateDir);
+  const incarnation = crypto.randomUUID();
+  let generation = 0;
+  const evidenceByScope = new Map<string, { fingerprint: string; evidence: { revision: string; lookup: MachineKeyLookup } }>();
+
+  const statCheckpoint = (stat: fs.BigIntStats) => {
+    if (!stat.isFile()) throw new Error('machine trust evidence is not a regular file');
+    return [stat.dev, stat.ino, stat.size, stat.mtimeNs, stat.ctimeNs].join(':');
+  };
+
+  const checkpoint = (file: string): string | null => {
+    try {
+      return statCheckpoint(fs.statSync(file, { bigint: true }));
+    } catch (err) {
+      if ((err as NodeJS.ErrnoException).code === 'ENOENT') return null;
+      throw err;
+    }
+  };
+
+  return (machineIds: readonly string[]): { revision: string; lookup: MachineKeyLookup } | null => {
+    try {
+      if (!machineIds.length || machineIds.length > 64) throw new Error('machine trust scope is out of bounds');
+      const ids = [...new Set(machineIds)].sort();
+      const scope = JSON.stringify(ids);
+      const files = [manager.identityPath, manager.registryPath, store.epochPath,
+        ...ids.map((id) => store.identityPath(id, 'remote'))];
+      const checkpoints = () => {
+        if (checkpoint(store.transactionPath) !== null) throw new Error('machine identity transaction in progress');
+        const result = files.map(checkpoint);
+        if (checkpoint(store.transactionPath) !== null) throw new Error('machine identity transaction in progress');
+        return result;
+      };
+      const observed = checkpoints();
+      const before = JSON.stringify(observed);
+      const cached = evidenceByScope.get(scope);
+      if (cached?.fingerprint === before) {
+        evidenceByScope.delete(scope);
+        evidenceByScope.set(scope, cached);
+        return cached.evidence;
+      }
+      const fileCheckpoints = new Map(files.map((file, index) => [file, observed[index]]));
+      const parsed = new Map<string, unknown>();
+      const readJson = (file: string): unknown => {
+        if (parsed.has(file)) return parsed.get(file);
+        const expected = fileCheckpoints.get(file);
+        if (expected === undefined) throw new Error('machine trust file is outside scope');
+        if (expected === null) return null;
+        const fd = fs.openSync(file, 'r');
+        try {
+          if (statCheckpoint(fs.fstatSync(fd, { bigint: true })) !== expected) throw new Error('machine trust file changed before read');
+          const value: unknown = JSON.parse(fs.readFileSync(fd, 'utf8'));
+          if (!value || typeof value !== 'object' || Array.isArray(value)) throw new Error('machine trust file is malformed');
+          if (statCheckpoint(fs.fstatSync(fd, { bigint: true })) !== expected) throw new Error('machine trust file changed during read');
+          parsed.set(file, value);
+          return value;
+        } finally { fs.closeSync(fd); }
+      };
+      const local = readJson(manager.identityPath) as { machineId?: string; signingPublicKey?: string } | null;
+      if (!local?.machineId || !local.signingPublicKey) throw new Error('local machine identity unavailable');
+      const registry = readJson(manager.registryPath) as { machines?: unknown; version?: unknown } | null;
+      if (registry !== null && (typeof registry.version !== 'number' || !registry.machines
+        || typeof registry.machines !== 'object' || Array.isArray(registry.machines))) throw new Error('machine registry unavailable');
+      const history = new Map(ids.map((id) => [id, appSigningKeys(store, id, readJson)]));
+      if (JSON.stringify(checkpoints()) !== before) throw new Error('machine trust evidence changed during capture');
+      const revision = `${incarnation}:${++generation}`;
+      const lookup: MachineKeyLookup = (machineId, hash, atMs) => lookupAppSigningKey(history.get(machineId) ?? [], hash, atMs);
+      const evidence = Object.freeze({ revision, lookup });
+      evidenceByScope.delete(scope);
+      if (evidenceByScope.size >= 64) {
+        const oldest = evidenceByScope.keys().next().value;
+        if (oldest !== undefined) evidenceByScope.delete(oldest);
+      }
+      evidenceByScope.set(scope, { fingerprint: before, evidence });
+      return evidence;
+    } catch {
+      // A failed capture can reveal a transient transaction affecting every scope.
+      evidenceByScope.clear();
+      return null; // @silent-fallback-ok — unstable trust evidence cannot resume sync
+    }
   };
 }
 

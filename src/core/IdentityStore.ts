@@ -247,8 +247,9 @@ export class IdentityStore {
       : path.join(this.stateDir, 'machines', machineId, 'identity.json');
   }
 
-  loadIdentity(machineId: string, scope: 'local' | 'remote'): MachineIdentity | null {
+  loadIdentity(machineId: string, scope: 'local' | 'remote', readJson?: (file: string) => unknown): MachineIdentity | null {
     const file = this.identityPath(machineId, scope);
+    if (readJson) return readJson(file) as MachineIdentity | null;
     if (!fs.existsSync(file)) return null;
     try {
       return JSON.parse(fs.readFileSync(file, 'utf8')) as MachineIdentity;
@@ -297,27 +298,34 @@ export class IdentityStore {
     });
   }
 
-  loadEpochs(): IdentityEpochFile {
-    if (!fs.existsSync(this.epochPath)) return { version: 1, machines: {} };
+  loadEpochs(readJson?: (file: string) => unknown): IdentityEpochFile {
+    if (!readJson && !fs.existsSync(this.epochPath)) return { version: 1, machines: {} };
     try {
-      const parsed = JSON.parse(fs.readFileSync(this.epochPath, 'utf8')) as IdentityEpochFile;
-      if (parsed?.version === 1 && parsed.machines && typeof parsed.machines === 'object') return parsed;
+      const parsed = (readJson ? readJson(this.epochPath) : JSON.parse(fs.readFileSync(this.epochPath, 'utf8'))) as IdentityEpochFile | null;
+      if (readJson && parsed === null) return { version: 1, machines: {} };
+      if (parsed?.version === 1 && parsed.machines && typeof parsed.machines === 'object' && !Array.isArray(parsed.machines)) return parsed;
     } catch {
       // A corrupt authority file cannot be treated as epoch zero.
     }
     throw new IdentityStoreRefusal('epoch-store-corrupt', 'Identity epoch/tombstone store is unreadable');
   }
 
-  getEpoch(machineId: string): IdentityEpochEntry {
+  getEpoch(machineId: string, readJson?: (file: string) => unknown): IdentityEpochEntry {
     assertValidMachineId(machineId);
-    const stored = this.loadEpochs().machines[machineId];
+    const stored = this.loadEpochs(readJson).machines[machineId];
+    if (readJson && stored !== undefined && (!stored || typeof stored !== 'object' || Array.isArray(stored)
+      || !Number.isSafeInteger(stored.keyEpoch) || stored.keyEpoch < 0
+      || !Number.isSafeInteger(stored.recoveryEpoch) || stored.recoveryEpoch < 0
+      || (stored.signingKeys !== undefined && !Array.isArray(stored.signingKeys)))) {
+      throw new IdentityStoreRefusal('epoch-store-corrupt', 'Machine identity epoch entry is unreadable');
+    }
     return stored ?? { keyEpoch: 0, recoveryEpoch: 0, signingTombstones: [], recoveryTombstones: [] };
   }
 
   /** Historical reads never manufacture a key's validity from identity.createdAt. */
-  signingKeyHistory(machineId: string): IdentitySigningKeyEpoch[] {
-    const epoch = this.getEpoch(machineId);
-    const identity = this.loadIdentity(machineId, 'remote') ?? this.loadIdentity(machineId, 'local');
+  signingKeyHistory(machineId: string, readJson?: (file: string) => unknown): IdentitySigningKeyEpoch[] {
+    const epoch = this.getEpoch(machineId, readJson);
+    const identity = this.loadIdentity(machineId, 'remote', readJson) ?? this.loadIdentity(machineId, 'local', readJson);
     return this.retainSigningKey(epoch, identity?.machineId === machineId ? identity.signingPublicKey : undefined,
       identity?.keyEpoch ?? epoch.keyEpoch);
   }

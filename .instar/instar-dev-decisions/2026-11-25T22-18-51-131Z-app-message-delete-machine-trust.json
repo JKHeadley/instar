@@ -1,0 +1,23 @@
+{
+  "ts": "2026-11-25T22:18:51.131Z",
+  "slug": "app-message-delete-machine-trust",
+  "suggestedTier": 2,
+  "declaredTier": 2,
+  "riskFloor": 1,
+  "riskFloorReasons": [],
+  "belowFloor": false,
+  "files": 2,
+  "loc": 149,
+  "scope": {
+    "basis": "staged-in-scope-paths-including-deleted",
+    "files": [
+      "src/core/AppRecordSignatures.ts",
+      "src/core/IdentityStore.ts"
+    ],
+    "addedLines": 126,
+    "deletedLines": 23
+  },
+  "causalAutopsy": null,
+  "classClosure": null,
+  "verdict": "pass"
+}

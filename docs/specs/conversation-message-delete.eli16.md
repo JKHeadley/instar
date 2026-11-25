@@ -35,3 +35,5 @@ The server can now check that a saved sync position belongs to the same person, 
 The team access log now changes its revision when access is removed and restored, even if the final permissions look the same. The cursor uses that change to tell the app to recheck its saved position.
 
 Changes in the paired-device key records now invalidate an old sync position. If those records cannot be checked, the app must wait before trusting cached chat history.
+
+A change to a machine’s signing keys also changes the revision used for sync. The server reads the keys and their revision together so it can keep checking older signed messages after a legitimate key rotation.

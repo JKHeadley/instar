@@ -67,3 +67,7 @@ The independent and cross-model reviewers concurred on the log-local change and 
 ## Private device-key evidence revision checkpoint
 
 Independent review concurred on the file-checkpoint scope. Cross-model review identified detached rows, malformed evidence and descriptor/path binding for a cold read. The final cache validates the opened descriptor before and after reading and compares the canonical path before publishing. Tests cover exact byte-identical replacement, disappearance, malformed rows, cold-cache path replacement, local revocation, replication and duplicate stability. The confirming review found no further ledger implementation defect and identified production-only requirements for idle client invalidation and reconciliation of a permanently unavailable original. Both are recorded as pre-mount requirements.
+
+## Private machine trust evidence checkpoint
+
+Independent and cross-model review required transaction-journal refusal, descriptor/path consistency and stable revisions across alternating scopes. The private observer now couples fresh signing keys to a bounded scope cache and rejects mismatching descriptors, malformed epochs and malformed signing cutoffs. Registry evidence can invalidate the revision without governing historical key selection. Tests cover rotation and retired keys, stable alternating scopes, malformed authority data, a transaction in progress and a temporary path swap. Production still must combine this input with current access and pairing evidence, and renew display only through the current high-water mark.

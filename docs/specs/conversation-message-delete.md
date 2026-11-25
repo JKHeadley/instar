@@ -7,9 +7,9 @@ approved: true
 approved-by: echo under standing build approval for local storage, private signed admission and execution, and unmounted history projection only
 parent-principle: Operator-Surface Quality
 tier: 2
-review-convergence: "2026-11-25T21:55:03.579Z"
-review-iterations: 35
-review-completed-at: "2026-11-25T21:55:03.579Z"
+review-convergence: "2026-11-25T22:18:25.413Z"
+review-iterations: 38
+review-completed-at: "2026-11-25T22:18:25.413Z"
 review-report: "docs/specs/reports/conversation-message-delete-convergence.md"
 cross-model-review: "cross-model-review: codex-cli:gpt-6.2-astra"
 ---
@@ -178,3 +178,11 @@ On a ledger cache miss, compare the descriptor with the observed file checkpoint
 Before mounting the cursor route, define how connected clients receive a visibility invalidation while idle and how they renew a bounded display lease. An open client must cover the affected rows after invalidation or detected disconnect, and no later than its last authoritative display deadline even if the connection fails silently. Exercise revocation with the chat open and idle, including a lost connection, when verifying client integration.
 
 Before mounting removal-aware sync, specify a bounded authoritative reconciliation path for a marker whose original never arrives. A snapshot reset must cover and rebuild the client's affected cache under current authorization, allow later visible messages to be read, and retain the unresolved removal separately without sending its IDs. Verify a permanently unavailable original followed by a later visible message. The private incremental projection still holds before unresolved evidence.
+
+## Private machine trust evidence checkpoint
+
+Use IdentityStore’s historical signing-key rules. The identity epoch store and identity files supply the lookup, while the registry checkpoint independently invalidates its revision. Registry entries do not override retained key history or grant membership in this helper. Limit raw input to 64 IDs, then canonicalize the set and cache up to 64 scopes. Verify the descriptors used to read the captured records against the initial checkpoint. Check canonical files again after capture, and couple the revision with the exact captured lookup. Refuse capture or reuse while an identity transaction journal exists. Construct the observer at controlled boot, since opening the identity store can recover a pending transaction. This lookup does not use the existing timed historical cache. A previous snapshot stays immutable. An unreadable or changed capture yields no protected cursor authority.
+
+Before mounting, derive the complete machine set from current signed authority evidence and revalidate the revision before returning a page. Compose it with the Team Access revision and device-key evidence. The shared Team Access verifier must re-evaluate affected rows against the current captured lookup before a refreshed epoch becomes authoritative. This checkpoint supplies fresh signing inputs, and does not certify current membership or serve a route.
+
+Protected signer capture rejects a malformed authority map, a present malformed machine epoch and malformed signing cutoffs. A missing epoch entry can still use the established pre-history fallback. When production establishes a display deadline, renewal must authenticate sync through the current custodian's high-water mark so a missed removal can expire or cover an idle view even without an access change.
