@@ -6,6 +6,11 @@ status: draft
 approved: false
 card: wc_6c53d5472cbe88bb
 eli16-overview: docs/specs/app-attachment-browse.eli16.md
+review-convergence: "2026-11-25T01:28:32.952Z"
+review-iterations: 6
+review-completed-at: "2026-11-25T01:28:32.952Z"
+review-report: "docs/specs/reports/app-attachment-browse-convergence.md"
+cross-model-review: "codex-cli:gpt-6.2-astra"
 ---
 
 # Browse App Chat Attachments
@@ -83,3 +88,12 @@ Removing the browser action and route requires no data migration. Existing histo
 Converge and verify the browser sheet and its invalidation behavior, signed transport compatibility, publication revision coverage for every relevant mutation, and the acceptance latency and restart evidence before enabling the feature. The current staged server patch predates the new listing and open token contract. It is not evidence that this contract is implemented.
 
 The focused closure reviewer concurred with the tuple selector, look-ahead and timeout outcomes. They raised a material reconciliation issue because the existing catch-up path can allocate the entire unread tail. This revision specifies a resumable bounded worker. Independent concurrence on that correction remains unrecorded.
+
+## Maturation plan
+
+- **test-agent-live:** Run the production entry points on a disposable agent with a signed owner browser, local attachments and the opt-in. Verify the revised route contract, real browsing and playback, cancellation, recovery and revocation.
+- **dev-agent-live:** On the development agent, use the opt-in after the test criteria and activation follow-ups clear. Verify ordinary chat navigation and actual attachment opens.
+- **fleet:** Keep the feature opt-in. Offer it after the development agent establishes the graduation criterion and the activation review clears.
+- **graduation criterion:** Meet the browser, isolation, performance and restart acceptance criteria above on the exact runtime head.
+- **dark-window:** The option defaults off. Review its disposition after verification and before release activation.
+- **ladder:** Disposable agent, development agent with opt-in, then fleet availability with opt-in.
