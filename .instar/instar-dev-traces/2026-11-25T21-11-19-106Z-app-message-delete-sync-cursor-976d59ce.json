@@ -1,0 +1,23 @@
+{
+  "version": 2,
+  "slug": "app-message-delete-sync-cursor",
+  "sessionId": "633bd330-201e-4dc8-8fd9-72b89116167e",
+  "timestamp": "2026-11-25T21:11:19.106Z",
+  "artifactPath": "upgrades/side-effects/app-message-delete-sync-cursor.md",
+  "artifactSha256": "06c005b2a6f34cec0693b0c7a4858354b4970fc363a7cd58b4be2a98f20a970d",
+  "specPath": "docs/specs/conversation-message-delete.md",
+  "coveredFiles": [
+    "docs/specs/conversation-message-delete.eli16.md",
+    "docs/specs/conversation-message-delete.md",
+    "docs/specs/reports/conversation-message-delete-convergence.md",
+    "src/server/mobileAppRemovalSyncCursor.ts",
+    "tests/e2e/mobile-native-conversations-alive.test.ts",
+    "tests/unit/mobile-app-removal-sync-cursor.test.ts",
+    "upgrades/side-effects/app-message-delete-sync-cursor.md"
+  ],
+  "phase": "complete",
+  "tier": 2,
+  "tierReasoning": "Bind the private sync cursor to current signed scope and visibility epoch",
+  "secondPass": "true",
+  "reviewerConcurred": true
+}

@@ -11,6 +11,7 @@
  * Wiring integrity: the service, its store, the dispatch, the request store, the signer and the
  * ledger are real.
  */
+import { createRemovalSyncCursorCodec } from '../../src/server/mobileAppRemovalSyncCursor.js';
 import { SingleInstanceLock } from '../../src/core/SingleInstanceLock.js';
 import { describe, it, expect, afterAll } from 'vitest';
 import crypto from 'node:crypto';
@@ -187,6 +188,13 @@ describe('native app conversations — production wiring', () => {
     const darkEvents = await send('GET', `/mobile/chat/app/${key}/events`);
     expect(darkEvents.status).toBe(200);
     expect(darkEvents.body.events.map((event: { kind: string }) => event.kind)).not.toContain('message-removed');
+    const privateCursor = createRemovalSyncCursorCodec().issue({
+      custodianMachineId: server.appConversations!.deps.machineId(), conversationKey: key, deviceId,
+      deviceKeyHash: 'unused-dark-fixture', readerId: 'unused-dark-fixture', visibilityRevision: 'fixture-1',
+    }, 1000);
+    const legacyWithPrivateCursor = await send('GET', `/mobile/chat/app/${key}/events?cursor=${encodeURIComponent(privateCursor)}`);
+    expect(legacyWithPrivateCursor.status).toBe(200);
+    expect(legacyWithPrivateCursor.body).toEqual(darkEvents.body);
     const entry = await request(app).get('/dashboard/console/message-link-v1/');
     expect(entry.status).toBe(200);
     expect(entry.text).toContain('/dashboard/console/console.js?message-link-v1');

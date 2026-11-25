@@ -55,3 +55,7 @@ The independent and cross-model reviewers concurred on interprocess serializatio
 ## Private message-change sync projection checkpoint
 
 Independent and cross-model review required the cursor to stop before unresolved target or access evidence. The final projection distinguishes allow, deny and unknown. It suppresses a removed original at its own sequence, and emits or holds the marker at the removal fact's sequence. Denied markers advance without IDs. Unreadable original locations cannot advance search past the marker, and corrupt page source locations return no page. Tests cover retained access changes, one-entry paging, reversed arrival, duplicate removal, denial, and corrupt offsets. The production lifecycle confirms the old events route still keeps raw removal facts dark. Signed cursor scope and live cache reconciliation remain production setup work.
+
+## Private signed cursor codec checkpoint
+
+Independent and cross-model review concurred on the scope, epoch and exact sequence MAC. The production contract now requires one shared codec lifetime per serving process, an authority revision that can recognize grants revoked and restored, and a merge-time check that rejects a stale page even after a new epoch is visible. The unit tests cover exact scope, modified and malformed tokens, codec replacement, and access changes. A production lifecycle fixture confirms the generic feed cannot interpret the private continuation. Production authority and client integration remain outside this checkpoint.

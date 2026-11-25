@@ -7,9 +7,9 @@ approved: true
 approved-by: echo under standing build approval for local storage, private signed admission and execution, and unmounted history projection only
 parent-principle: Operator-Surface Quality
 tier: 2
-review-convergence: "2026-11-25T20:52:23.314Z"
-review-iterations: 30
-review-completed-at: "2026-11-25T20:52:23.314Z"
+review-convergence: "2026-11-25T21:11:16.374Z"
+review-iterations: 31
+review-completed-at: "2026-11-25T21:11:16.374Z"
 review-report: "docs/specs/reports/conversation-message-delete-convergence.md"
 cross-model-review: "cross-model-review: codex-cli:gpt-6.2-astra"
 ---
@@ -152,3 +152,9 @@ Emit one exact marker for the earliest matching removal by the creation custodia
 This private projection covers message rows and exact removal markers. It does not replace generic App sync or define client cache restoration. Production mounting still needs a signed scope and serving-lease check, approved wire sanitization, cursor scope and consistent removal enforcement across the related event and read surfaces. The existing dark generic events route explicitly omits raw removal facts.
 
 An otherwise visible message whose authorization is unresolved likewise blocks before its sequence and can be retried from the held cursor. When the visibility epoch changes, an already open client must cover its affected cached rows and reconcile them under current authorization before showing them again. Verify this with a conversation kept open across access revocation and removal. A conclusively denied marker never reveals its IDs.
+
+## Private signed sync cursor codec
+
+The cursor is authenticated by a process-local server key and binds the immutable creation custodian, conversation, paired device ID, device key hash, reader ID and exact nonnegative ingest sequence. It carries an opaque visibility epoch derived from the same scope and a distinct current authorization revision. The revision source must change on access loss and restoration even if the final grant set looks identical. A valid cursor from the same scope under a former epoch requests reset. Foreign scope, malformed, modified and former-process cursors cannot resume. The authenticated route must make a rejected continuation cover the affected cached rows and restart reconciliation and omit the sequence from rejection and reset responses. The issued token authenticates the sequence and does not conceal it. A new epoch never clears confirmed removal markers in the same pairing and conversation.
+
+This codec remains unmounted. Production must create one codec instance per serving process and share it across issuance, verification and authoritative history and sync epochs. Supply a current visibility revision, verify paired scope, and invalidate the epoch if journal restoration may reuse sequence values. In the open-client acceptance test, hold an old authorized page, revoke access and reconcile under the new epoch, then release the delayed page. The client must check the response epoch at merge time so the revoked row stays absent. A valid token authenticates resume state rather than granting read access.

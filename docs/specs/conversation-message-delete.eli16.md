@@ -29,3 +29,5 @@ Two servers starting together can no longer overwrite each other’s first lock 
 If a server leaves an old lock behind, the next server takes a short recovery lock before removing it. It checks the record again so it cannot remove a lock that another server has already acquired.
 
 A private sync check now tells an authorized reader which exact message was removed. If the removal record arrives first, the check pauses there until it can verify who may see the notice. The existing app feed still keeps these notices off.
+
+The server can now check that a saved sync position belongs to the same person, paired device and chat. A change in access means that position can’t be reused. The app must then recheck its cached rows before showing them again.
