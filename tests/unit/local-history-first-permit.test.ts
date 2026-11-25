@@ -4,7 +4,7 @@ import path from 'node:path';
 import Database from 'better-sqlite3';
 import { afterEach, expect, it } from 'vitest';
 import { SafeFsExecutor } from '../../src/core/SafeFsExecutor.js';
-import { initializeLocalHistoryFirstPermits, recordLocalHistoryFirstPermit, recordLocalHistoryFirstPermitObservation,
+import { initializeLocalHistoryFirstPermits, recordLocalHistoryFirstPermit, recordLocalHistoryFirstPermitObservation, verifyCommittedLocalHistoryFirstClaim,
   type LocalHistoryFirstPermit } from '../../src/import/LocalHistoryFirstPermit.js';
 import { privateImportDatabasePath } from '../../src/import/privateImportState.js';
 
@@ -38,7 +38,7 @@ function fixture() {
     .run(draft.operationId, 'prepared', 'r-' + draft.generation + '-' + draft.operationId, draft.deadline, draft.uploadFingerprint);
   db.prepare('INSERT INTO upload_previews VALUES (?, ?, ?)').run(draft.operationId, draft.previewAllocation, draft.previewSha256);
   initializeLocalHistoryFirstPermits(db);
-  return { db, filename };
+  return { db, filename, root };
 }
 const phase = (db: Database.Database) => db.prepare('SELECT phase FROM upload_operations').get();
 const records = (db: Database.Database) => db.prepare('SELECT * FROM local_history_first_permits').all();
@@ -160,4 +160,24 @@ it('refuses to inherit a matching-operation progress row with no original slot',
   expect(() => recordInTransaction(db)).toThrow('first-permit-conflict');
   expect(phase(db)).toEqual({ phase: 'prepared' });
   expect(records(db)).toEqual([]);
+});
+
+
+it('accepts only the exact first claim after the outer transaction commits', () => {
+  const { db, root } = fixture();
+  const verify = (slot = draft) => verifyCommittedLocalHistoryFirstClaim(root, slot);
+  expect(() => verify()).toThrow('first-permit-conflict');
+  db.transaction(() => {
+    expect(recordLocalHistoryFirstPermit(db, draft)).toBe('recorded');
+    expect(() => verify()).toThrow('first-permit-conflict');
+  }).immediate();
+  expect(() => verify()).not.toThrow();
+  for (const changed of [
+    { permitId: 'd'.repeat(32) }, { runId: 'd'.repeat(32) }, { reservationId: 'd'.repeat(32) },
+    { destinationBinding: 'd'.repeat(64) }, { planDigest: 'd'.repeat(64) }, { plannedBytes: draft.plannedBytes + 1 },
+  ]) expect(() => verify({ ...draft, ...changed })).toThrow('first-permit-conflict');
+  expect(() => verify({ ...draft, mutationKind: 'append' })).toThrow('first-permit-invalid');
+  db.prepare("UPDATE upload_operations SET phase = 'interrupted'").run();
+  expect(() => verify()).toThrow('first-permit-conflict');
+  expect(records(db)).toEqual([draft]);
 });

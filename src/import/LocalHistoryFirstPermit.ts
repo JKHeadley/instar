@@ -117,6 +117,32 @@ export function readLocalHistoryFirstPermitInventory(db: Database.Database): Loc
   return records;
 }
 
+/** Verify the exact committed slot in the worker's private jobs database.
+ * This is a read-only prerequisite. The caller must still prove actual child
+ * and writer custody and invoke only its matching one-shot mutation plan. */
+export function verifyCommittedLocalHistoryFirstClaim(stateDir: string, expected: LocalHistoryFirstPermit): void {
+  const permit = { ...expected };
+  validate(permit);
+  if (!path.isAbsolute(stateDir) || permit.mutationKind !== 'claim' || permit.fileIndex !== 0) refuse('invalid');
+  const directory = path.join(stateDir, 'local-history-upload');
+  const filename = privateImportDatabasePath(directory, 'jobs.sqlite', { readOnly: true });
+  const db = new Database(filename, { readonly: true, fileMustExist: true, timeout: 0 });
+  try {
+    db.transaction(() => {
+      validateSchema(db);
+      const row = db.prepare(`SELECT * FROM main.${TABLE} WHERE operationId = ?`)
+        .get(permit.operationId) as LocalHistoryFirstPermit | undefined;
+      if (!row) refuse('conflict');
+      validate(row);
+      if (fields.some(field => row[field] !== permit[field])) refuse('conflict');
+      const operation = db.prepare(`SELECT 1 FROM main.upload_operations
+        WHERE id = ? AND phase = 'applying' AND tag = ? AND deadline = ? AND fingerprint = ?`)
+        .get(permit.operationId, 'r-' + permit.generation + '-' + permit.operationId, permit.deadline, permit.uploadFingerprint);
+      if (!operation) refuse('conflict');
+    })();
+  } finally { db.close(); }
+}
+
 /** The caller holds its jobs transaction. A nested savepoint prevents a partial
  * consume if the caller catches a write error and later commits. This function
  * never commits that outer transaction or authorizes delivery. */
