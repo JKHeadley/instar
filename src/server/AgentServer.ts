@@ -1492,6 +1492,7 @@ export class AgentServer {
     greenPrAutoMerger?: import('../monitoring/GreenPrAutoMerger.js').GreenPrAutoMerger;
     localVerify?: import('../localVerify/LocalVerifyService.js').LocalVerifyService;
     localVerifyStatus?: import('../localVerify/StatusReconciler.js').StatusReconciler;
+    localVerifyHelper?: import('../localVerify/helper/helperWiring.js').HelperRuntime;
     guardLatchStore?: import('../monitoring/GuardLatchStore.js').GuardLatchStore;
     agentStopSurfacer?: import('../monitoring/agentStopRelease.js').AgentStopSurfacer;
     workingMemory?: import('../memory/WorkingMemoryAssembler.js').WorkingMemoryAssembler;
@@ -2666,6 +2667,7 @@ export class AgentServer {
       // The same namespace the app conversation store stamps (people and roles §5).
       peopleMachineId: () => options.meshSelfId ?? options.coordinator?.identity?.machineId ?? 'local',
       holdsLease: () => (options.coordinator?.enabled ? options.coordinator.holdsLease() : true),
+      leaseFreshness: () => options.coordinator?.enabled ? options.coordinator.leaseFreshness() : null,
       // Multi-route: the real Tailscale CLI only outside a test run (a test injects its own).
       tailscaleExec: options.mobileRoutes && 'tailscaleExec' in options.mobileRoutes
         ? options.mobileRoutes.tailscaleExec ?? null
@@ -6856,6 +6858,7 @@ export class AgentServer {
       greenPrAutoMerger: options.greenPrAutoMerger ?? null,
       localVerify: options.localVerify ?? null,
       localVerifyStatus: options.localVerifyStatus ?? null,
+      localVerifyHelper: options.localVerifyHelper ?? null,
       guardLatchStore: options.guardLatchStore ?? null,
       agentStopSurfacer: options.agentStopSurfacer ?? null,
       workingMemory: options.workingMemory ?? null,

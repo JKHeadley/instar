@@ -71,11 +71,18 @@ import { DURATIONS_MAX_BYTES } from './shardPlan.js';
 import { requestDigest, signPeerResult, verifyPeerResult, type PeerResultRefusal } from './peerResultSignature.js';
 import { holdingDecision, keptHolding, noteDuration, refreshAgeMs, noteLocallyVerified, olderClock, peerMainRoutingAllowed, peersGreenOn, readPeerTrust, rememberPeerGreen, resetHoldingState, writePeerTrust, type PeerTrustState } from './peerTrust.js';
 import type { MachineKeyLookup, MachineSigner } from '../core/AppRecordSignatures.js';
+import type { MainRunEnd, MainRunObserver, MainRunStart } from './mainRunObserver.js';
+import type { BorrowedHttpAnswer, BorrowedRunSeam } from './mainRunObserver.js';
 import {
   PEER_LIMITS, cleanMarkerExtras, importRefusal, judgePeerAttempt, laneOfKey, markerCurrent, markerEpochDecision, noteFailure, noteSuccess, parsePeerMainRun, parsePeers, peerHealthy,
   type PeerAttemptVerdict, type PeerClient, type PeerProgress, type PeerMainRun, type PeerHealth, type PeerResult, type PeerRunAnswer, type PeerRunRequest, type PeerStatus, type PeerTarget, type RemoteMarker,
 } from './peer.js';
 import { localVerifyRunPrefixes, type LeftoverPrefix, type ReapOptions, type ReapResult } from './leftoverReaper.js';
+import { spawnSmallPeerSupervisor } from './smallPeerSupervisor.js';
+import { acknowledgeTrial, bindTrial, finalizeInterruptedTrials, finishDelivery, importTrialPacket, localTrialReceipt, pendingTrialBindings, pendingTrialPackets, receivedTrial, type TrialAck, type TrialPacket, validTrialReceipt } from './smallPeerReceipts.js';
+import { trialDirectory, type TrialReceipt } from './smallPeerWatchdog.js';
+import { reconcileTrialScopes } from './trialExecutionScope.js';
+import { SAMPLE_DEADLINE_MS, readSmallPeerMemory, smallPeerMemoryAllows, parseSmallPeerTrialPolicy, type SmallPeerTrialPolicy } from './smallPeerMemory.js';
 import { FIRST_PART_LIMITS, boundLikelyFailingWire, parseFirstPartSetting, type FirstPartGroup, type FirstPartInput, type FirstPartSetting, type FirstPartSummary, type LikelyFailingWire } from './firstPart.js';
 import { LikelyFailingStore, type LikelyFailingInfo } from './likelyFailingList.js';
 import { FirstPartGroups } from './firstPartTrial.js';
@@ -83,6 +90,7 @@ import { FirstPartReport, observation, redMainEpisode, type FirstPartEvidence, t
 
 /** A verify peer's fit for a full verify (resource-aware placement §4). */
 export interface PeerFit {
+  smallPeerHeadroom?: boolean;
   eligible: boolean;
   reason: string;
   score: number | null;
@@ -273,6 +281,8 @@ export function checkEligibility(
 
 export interface ChildHandle {
   pid: number;
+  renewTrial?: (hostMonotonicExpiryMs: number) => void;
+  cancelTrial?: (reason: string) => void;
   exited: Promise<{ status: number | null; signal: string | null }>;
 }
 
@@ -434,7 +444,10 @@ export interface QueueEntry {
   /** Peer: the coordinator's attempt this run answers. Never persisted in the queue (the peer keeps its own attempt file). */
   peerAttempt?: { id: string; coordinatorMachineId: string; leaseEpoch: number | null };
   /** Peer: the coordinator's isolation input for this run (its last green `main`, and its switch and list of main-flaky tests). */
+  smallPeerTrial?: SmallPeerTrialPolicy;
   peerIsolation?: IsolationInput;
+  /** Peer side, a `main` verify: the coordinator asked for the per-file counts with the record. */
+  peerFileCounts?: true;
   /** Peer: the coordinator's likely-failing list in use and the change's previous failures (spec local-verify-likely-failing-first.md B). */
   peerLikelyFailing?: LikelyFailingWire;
   /** Peer: the coordinator's assignment of this pull request for the first-part trial. */
@@ -677,6 +690,10 @@ export interface OperatorQueueView {
 }
 
 interface InFlight {
+  trialHandle?: ChildHandle;
+  trialLease?: {nonce: string; issuedAt: number};
+  trialExpiresAt?: number;
+  trialCleanupDone?: boolean;
   entry: QueueEntry;
   token: string;
   pgid: number;
@@ -693,6 +710,8 @@ interface InFlight {
   settled?: boolean;
   /** The immutable setting and assignment used by this run. */
   runInput?: VerifyRunInput;
+  /** The borrowed helper named when this run started (a setting switched off mid-run cannot lose its record). */
+  borrowedHelper?: string | null;
 }
 
 /** Peer side: what this machine knows about the attempts coordinators handed it. */
@@ -963,6 +982,14 @@ export class LocalVerifyService {
   /** Coordinator: the configured peers (`monitoring.localVerify.peers`; absent ⇒ none). */
   private peersSetting: (() => unknown) | null = null;
   private peerClient: PeerClient | null = null;
+  private trialHealthySince: number | null = null;
+  private trialRecoveryPending = false;
+  private trialAdmissionPending = false;
+  private smallPeerTrialSetting: (() => unknown) | null = null;
+  /** Borrowed-machine shadow observer (never awaited; type-only dependency). */
+  private mainRunObserver: MainRunObserver | null = null;
+  /** The run machine's borrowed-helper side (practice record, loopback proxy, baseline results); type-only dependency. */
+  private borrowedSeam: BorrowedRunSeam | null = null;
   private peerFitFn: ((machineId: string) => PeerFit) | null = null;
   private readonly peerSkipAudited = new Map<string, number>();
   /** Machines out of the line for memory now (machineId → since). */
@@ -1190,7 +1217,7 @@ export class LocalVerifyService {
     const out: { integration?: number; e2e?: number; unitWorkers?: number } = {};
     for (const k of ['integration', 'e2e'] as const) {
       const n = (v as Record<string, unknown>)[k];
-      if (typeof n === 'number' && Number.isInteger(n) && n >= 1 && n <= MAX_LANE_SHARDS) out[k] = n;
+      if (typeof n === 'number' && Number.isInteger(n) && n >= 1 && n <= MAX_LANE_SHARDS[k]) out[k] = n;
     }
     // Per-machine unit-lane worker count (hardware differs; 2026-11-12 the M5 sat 45-90 % idle
     // while its 4-worker unit lane hit the 20-min deadline). Which files run never changes.
@@ -1285,7 +1312,17 @@ export class LocalVerifyService {
   // ---- read surface ----
 
   getRecord(pr: number, headSha: string, baseRefName: string): LocalVerifyRecord | null {
-    try { return this.index.get(recordKey(this.cfg.repo, pr, headSha, baseRefName)) ?? null; } catch { return null; }
+    try {
+      const record = this.index.get(recordKey(this.cfg.repo, pr, headSha, baseRefName)) ?? null;
+      if (record?.outcome === 'success') {
+        const differentBase = (e: Pick<QueueEntry, 'headSha' | 'baseRefName' | 'baseSha'>) =>
+          e.headSha === headSha && e.baseRefName === baseRefName && e.baseSha !== record.baseSha;
+        const replaces = (e: QueueEntry) => e.pr === pr && differentBase(e);
+        const held = this.operator.get(pr)?.hold?.entry;
+        if ((held && differentBase(held)) || (this.inFlight && replaces(this.inFlight.entry)) || this.queue.some(replaces)) return null;
+      }
+      return record;
+    } catch { return null; }
   }
 
   snapshot(): { queue: Array<QueueEntry & { held?: { reason: 'main-red'; why: 'no-overlap' | 'files-unknown' } }>; inFlight: { pr: number; headSha: string; kind?: 'main' } | null; blocked: boolean; verifierHold: { since: string; detail: string; where: VerifierHold['where'] } | null; records: number; flakyFiles: Record<string, { count: number; lastSeen: string; lane: string }>; mergeLine: ReturnType<LocalVerifyService['mergeLine']>; mainRedHold: ReturnType<LocalVerifyService['mainRedHold']>; peers: ReturnType<LocalVerifyService['peersInfo']>; waiting: Array<Waiter & { live: boolean }>; operator?: OperatorQueueView; preflight: { mode: 'off' | 'observe' | 'enforce'; replayStoreReady: boolean; replays: Array<{ pr: number; headSha: string; baseRefName: string; state: PreflightReplay['state']; admissionAttempts: number; executionAttempts: number; blockedReason?: string }> }; likelyFailingFirst: ReturnType<LocalVerifyService['likelyFailingFirstStatus']> } {
@@ -1364,7 +1401,10 @@ export class LocalVerifyService {
     this.mainObs.immediate = true; // the boot-time `main` verify skips the debounce
     // Order matters: the orphan reap runs first, and a still-blocked reap keeps every
     // restored entry waiting (pump refuses while blockedBy is set).
-    await this.reapOrphan();
+    if (await this.reapOrphan() !== 'incomplete') {
+      await reconcileTrialScopes(this.cfg.stateDir);
+      finalizeInterruptedTrials(this.cfg.stateDir, this.cfg.machineId);
+    }
     this.loadPeerState(); // after the reap: an interrupted peer attempt is tombstoned, never resumed
     await this.sweepLeftovers('boot');
     await this.rebuildIndex();
@@ -1472,9 +1512,10 @@ export class LocalVerifyService {
       }
       const open = await this.seams.isPrOpen(e.pr).catch(() => null);
       const view = open === false ? null : await this.seams.prView(e.pr).catch(() => null);
+      const recorded = this.getRecord(e.pr, e.headSha, e.baseRefName);
       const why = open === false ? 'closed'
         : view && (view.headRefOid !== e.headSha || view.baseRefName !== e.baseRefName) ? 'head-or-base-moved'
-          : this.getRecord(e.pr, e.headSha, e.baseRefName)?.outcome === 'success' ? 'already-recorded' : null;
+          : recorded?.outcome === 'success' && recorded.baseSha === e.baseSha ? 'already-recorded' : null;
       if (why) {
         drops[why]++;
         this.audit({ event: 'queue-restore-dropped', pr: e.pr, headSha: e.headSha, reason: why });
@@ -1909,7 +1950,12 @@ export class LocalVerifyService {
     // a capacity refusal — full queue or an older waiter's place — must not spend the PR's one re-run).
     let spendRerun: (() => void) | null = null;
     if (existing) {
-      if (existing.outcome === 'success') return this.recordedAnswer(pr, existing);
+      if (existing.outcome === 'success') {
+        // The mark is read after the asynchronous PR/base lookup: an intervening unfront
+        // withdraws the request, and a front placed during a hold survives until release.
+        const frontOnNewBase = opts.operator && this.queueControlsOn() && this.operator.get(pr)?.front && existing.baseSha !== baseSha;
+        if (!frontOnNewBase) return this.recordedAnswer(pr, existing);
+      }
       if (existing.outcome === 'failure') {
         const tried = this.failureReruns.get(key) ?? new Set<string>();
         const newBase = existing.baseSha !== baseSha && !tried.has(baseSha);
@@ -2070,6 +2116,7 @@ export class LocalVerifyService {
 
   /** Wire the peer settings (read at each use) and the coordinator's client and lease view. */
   setPeerWiring(o: {
+    smallPeerTrial?: (() => unknown) | null;
     peerRoleEnabled?: (() => boolean) | null;
     peers?: (() => unknown) | null;
     client?: PeerClient | null;
@@ -2083,6 +2130,7 @@ export class LocalVerifyService {
     /** SEC-113 D1, coordinator side: builds an uncached pinned-key lookup per import. Absent ⇒ no peer is dispatchable. */
     keyLookupFactory?: (() => MachineKeyLookup) | null;
   }): void {
+    if (o.smallPeerTrial !== undefined) this.smallPeerTrialSetting = o.smallPeerTrial;
     if (o.signer !== undefined) this.peerSigner = o.signer;
     if (o.keyLookupFactory !== undefined) this.peerKeyLookupFactory = o.keyLookupFactory;
     if (o.mainOnPeers !== undefined) this.mainOnPeersEnabled = o.mainOnPeers;
@@ -2094,6 +2142,74 @@ export class LocalVerifyService {
   }
 
   isPeerOnly(): boolean { return this.cfg.peerOnly === true; }
+
+  /**
+   * Borrowed-machine shadow (docs/specs/local-verify-borrowed-unit-slices.md, F): a passive observer
+   * of this machine's own `main` runs. Type-only import, never awaited, every call caught: nothing
+   * it does can change a run, its record or its timing, and nothing it computes reaches a verdict.
+   */
+  setMainRunObserver(o: MainRunObserver | null): void { this.mainRunObserver = o; }
+
+  /** The observer's read-only summary for `GET /local-verify` (null when none is wired). */
+  mainRunObserverInfo(): unknown {
+    try { return this.mainRunObserver?.info?.() ?? null; } catch { return null; } // @silent-fallback-ok: observability only
+  }
+
+  private notifyMainRunObserver(kind: 'start', e: MainRunStart): void;
+  private notifyMainRunObserver(kind: 'end', e: MainRunEnd): void;
+  private notifyMainRunObserver(kind: 'start' | 'end', e: MainRunStart | MainRunEnd): void {
+    const o = this.mainRunObserver;
+    if (!o) return;
+    try {
+      if (kind === 'start') o.onMainRunStart(e as MainRunStart);
+      else o.onMainRunEnd(e as MainRunEnd);
+    } catch (err) {
+      this.audit({ event: 'borrowed-shadow-error', step: `observer-${kind}`, detail: String(err instanceof Error ? err.message : err).slice(0, 300) });
+    }
+  }
+
+  /**
+   * The run machine's borrowed-helper side (docs/specs/local-verify-borrowed-slices-count.md, F):
+   * the practice record, the asking rate, the loopback proxy, the baseline results and the helper
+   * events. Type-only import; every call below is caught, and nothing it starts is awaited by a
+   * verify. Null (the setting absent, or not wired) leaves every path exactly as it was.
+   */
+  setBorrowedRunSeam(o: BorrowedRunSeam | null): void { this.borrowedSeam = o; }
+
+  /** Whether `ancestor` is `descendant` or an ancestor of it, by this machine's own clone (null: could not tell). The borrowed side's "pass made main red" rule reads it. */
+  ancestry(ancestor: string, descendant: string): Promise<boolean | null> {
+    return this.seams.isAncestor ? this.seams.isAncestor(ancestor, descendant).catch(() => null) : Promise.resolve(null);
+  }
+
+  /** The seam for the routes (null when none is wired). */
+  borrowedRunSeam(): BorrowedRunSeam | null { return this.borrowedSeam; }
+
+  private borrowedCall<T>(step: string, fn: (s: BorrowedRunSeam) => T, fallback: T): T {
+    const s = this.borrowedSeam;
+    if (!s) return fallback;
+    try { return fn(s); } catch (err) {
+      this.audit({ event: 'borrowed-seam-error', step, detail: String(err instanceof Error ? err.message : err).slice(0, 300) });
+      return fallback;
+    }
+  }
+
+  /** The borrowed-helper summary for `GET /local-verify`: the practice record's view when wired, else the observer's. */
+  borrowedInfo(): unknown {
+    if (!this.borrowedSeam) return this.mainRunObserverInfo();
+    const info = this.borrowedCall<unknown>('info', (s) => s.info(), null);
+    // The main-verify observer's own summary (its last comparison, the helper's learned list) rides beside it.
+    return info && typeof info === 'object' && !Array.isArray(info) ? { ...(info as Record<string, unknown>), mainObserver: this.mainRunObserverInfo() } : info;
+  }
+
+  /** Peer side: `POST /local-verify/peer-main-red` (a red `main` the coordinator recorded, checked against this machine's counted helper passes). */
+  peerMainRed(body: unknown, ctx: { holdsLease: boolean; holderMachineId: string | null }): BorrowedHttpAnswer {
+    return this.borrowedCall<BorrowedHttpAnswer>('peer-main-red', (s) => s.acceptPeerMainRed(body, ctx), { status: 404, body: { error: 'not found' } });
+  }
+
+  /** Peer side: `POST /local-verify/peer-baseline` (the coordinator's copy of the baseline results). */
+  peerBaseline(body: unknown, ctx: { holdsLease: boolean; holderMachineId: string | null }): BorrowedHttpAnswer {
+    return this.borrowedCall<BorrowedHttpAnswer>('peer-baseline', (s) => s.acceptPeerBaseline(body, ctx), { status: 404, body: { error: 'not found' } });
+  }
 
   private mainOnPeersOn(): boolean {
     try { return this.mainOnPeersEnabled ? this.mainOnPeersEnabled() === true : false; } catch { return false; } // @silent-fallback-ok: an unreadable switch reads as off (main stays on the coordinator)
@@ -2117,7 +2233,7 @@ export class LocalVerifyService {
       let fit: PeerFit;
       try { fit = fitFn(peer.machineId); } catch { fit = { eligible: true, reason: 'fit-unreadable', score: null }; } // @silent-fallback-ok: an unreadable fit keeps today's behaviour for that peer (no filter), never a silent drop
       this.noteMemory(peer.machineId, fit.eligible ? null : (fit.memoryReason ?? null), 'peer');
-      if (fit.eligible) {
+      if (fit.eligible || (fit.smallPeerHeadroom && this.smallPeerPolicy(peer.machineId))) {
         kept.push({ peer, score: typeof fit.score === 'number' && Number.isFinite(fit.score) ? fit.score : Number.POSITIVE_INFINITY, i });
         return;
       }
@@ -2130,6 +2246,54 @@ export class LocalVerifyService {
     });
     kept.sort((a, b) => (a.score - b.score) || (a.i - b.i));
     return kept.map((k) => k.peer);
+  }
+
+  private smallPeerPolicy(machineId: string): SmallPeerTrialPolicy | null {
+    let p: SmallPeerTrialPolicy | null;
+    try { p = parseSmallPeerTrialPolicy(this.smallPeerTrialSetting?.()); }
+    catch { return null; } // @silent-fallback-ok — unreadable settings never authorize a trial
+    return p?.machineId === machineId ? p : null;
+  }
+
+  private managesSmallPeer(policy: SmallPeerTrialPolicy | null): boolean {
+    const marker = path.join(this.lvStateDir, 'small-peer-managed');
+    if (!policy) return fs.existsSync(marker);
+    if (!fs.existsSync(marker)) {
+      fs.mkdirSync(this.lvStateDir, { recursive: true, mode: 0o700 });
+      fs.writeFileSync(marker, this.cfg.machineId, { mode: 0o600 });
+    }
+    return true;
+  }
+
+  private trialPolicyCurrent(policy: SmallPeerTrialPolicy): boolean {
+    const shards = this.laneShards();
+    return process.platform === 'darwin' && shards?.unitWorkers === 2 && shards.integration === 1 && shards.e2e === 1
+      && JSON.stringify(this.smallPeerPolicy(this.cfg.machineId)) === JSON.stringify(policy)
+      && !fs.existsSync(path.join(this.lvStateDir, 'small-peer-quarantined'));
+  }
+
+  private beginTrialRecovery(policy: SmallPeerTrialPolicy, quarantine: boolean): void {
+    if (quarantine) fs.writeFileSync(path.join(this.lvStateDir, 'small-peer-quarantined'), 'recalibration required', { mode: 0o600 });
+    const marker = path.join(this.lvStateDir, 'small-peer-recovering');
+    fs.writeFileSync(marker, 'waiting for sustained healthy samples', { mode: 0o600 });
+    if (this.trialRecoveryPending) return;
+    this.trialRecoveryPending = true;
+    this.trialHealthySince = null;
+    let previousSample = -Infinity;
+    const sample = async () => {
+      if (this.stopped) return;
+      const value = await readSmallPeerMemory();
+      const now = performance.now();
+      if (now - previousSample >= SAMPLE_DEADLINE_MS) this.trialHealthySince = null;
+      previousSample = now;
+      if (smallPeerMemoryAllows(value, policy.floorBytes, now)) this.trialHealthySince ??= now;
+      else this.trialHealthySince = null;
+      if (this.trialHealthySince !== null && now - this.trialHealthySince >= policy.recoveryMs) {
+        SafeFsExecutor.safeRmSync(marker, { force: true, operation: 'local-verify:small-peer-recovered' });
+        this.trialRecoveryPending = false;
+      } else setTimeout(() => void sample(), 1000).unref();
+    };
+    void sample();
   }
 
   private configuredPeers(): PeerTarget[] {
@@ -2250,7 +2414,7 @@ export class LocalVerifyService {
     this.saveTrust();
     const client = this.peerClient;
     const lease = this.leaseState();
-    const candidates = this.configuredPeers().filter((p) => p.machineId !== forPeer && !t.quarantine[p.machineId]);
+    const candidates = this.configuredPeers().filter((p) => p.machineId !== forPeer && !this.smallPeerPolicy(p.machineId) && !t.quarantine[p.machineId]);
     for (const peer of client && lease.holds ? candidates : []) {
       const st = await client!.status(peer).catch(() => null);
       if (!st || st.inFlight || st.slotBusy || st.verifierVersion !== this.cfg.verifierVersion || st.policyHash !== this.policyHash) continue;
@@ -2386,6 +2550,12 @@ export class LocalVerifyService {
       this.audit({ event: 'peer-run-refused', attemptId: req.attemptId, pr: req.pr, reason });
       return { ok: false, reason };
     };
+    const trial = this.smallPeerPolicy(this.cfg.machineId);
+    const managedSmallPeer = this.managesSmallPeer(trial);
+    if (managedSmallPeer || req.smallPeerTrial) {
+      if (!trial || !req.smallPeerTrial || req.kind || !this.trialPolicyCurrent(trial)
+        || JSON.stringify(parseSmallPeerTrialPolicy(req.smallPeerTrial)) !== JSON.stringify(trial)) return refuse('peer-disabled');
+    }
     if (!this.peerRoleOn() || this.stopped) return refuse('peer-disabled');
     if (ctx.holdsLease) return refuse('is-lease-holder');
     if (!ctx.holderMachineId || req.coordinatorMachineId !== ctx.holderMachineId) return refuse('not-coordinator');
@@ -2436,16 +2606,40 @@ export class LocalVerifyService {
     if (busy()) return refuse('peer-busy');
     if (this.notePause()) return refuse('peer-busy');
     if (this.verifierChangedOnDisk()) return refuse('verifier-mismatch');
+    if (trial) {
+      if (!this.trialRecoveryPending && fs.existsSync(path.join(this.lvStateDir, 'small-peer-recovering'))) this.beginTrialRecovery(trial, false);
+      if (this.trialAdmissionPending || this.trialRecoveryPending) return refuse('peer-busy');
+      this.trialAdmissionPending = true;
+      try {
+        const sample = await readSmallPeerMemory();
+        const now = performance.now();
+        if (!smallPeerMemoryAllows(sample, trial.floorBytes, now)) {
+          this.trialHealthySince = null;
+          return refuse('peer-busy');
+        }
+        const lease = this.leaseState();
+        if (busy() || this.notePause() || this.stopped || !this.peerRoleOn() || !this.trialPolicyCurrent(trial)
+          || lease.holds || lease.holder !== req.coordinatorMachineId || lease.epoch !== req.leaseEpoch
+          || this.peerState.tombstones[req.attemptId] !== undefined || this.verifierChangedOnDisk()) return refuse('peer-busy');
+        if (this.trialRecoveryPending) return refuse('peer-busy');
+      } finally { this.trialAdmissionPending = false; }
+    }
     const entry: QueueEntry = {
       id: crypto.randomBytes(6).toString('hex'), pr: req.pr, headSha: req.headSha, baseSha: req.baseSha, baseRefName: req.baseRefName,
       firstQueuedAt: this.now(), attempts: 0, errorRetries: 0, starvedRaised: false, priority: QUEUE_PRIORITY.ordinary,
       ...((req.kind === 'main' || req.kind === 'main-arbitration') ? { kind: 'main' as const } : {}),
       peerAttempt: { id: req.attemptId, coordinatorMachineId: req.coordinatorMachineId, leaseEpoch: req.leaseEpoch },
       ...(req.preflightRediscoverable === true ? { preflightRediscoverable: true } : {}),
+      ...(trial ? { smallPeerTrial: trial } : {}),
       ...(req.isolation ? { peerIsolation: req.isolation } : {}),
+      ...(req.kind === 'main' && req.fileCounts === true ? { peerFileCounts: true as const } : {}),
       ...(req.likelyFailing ? { peerLikelyFailing: req.likelyFailing } : {}),
       ...(req.firstPartGroup ? { peerFirstPartGroup: req.firstPartGroup } : {}),
     };
+    if (trial) {
+      try { bindTrial(this.cfg.stateDir, req, this.cfg.machineId); }
+      catch (err) { this.audit({event:'small-peer-binding-failed', detail:String(err)}); return refuse('state-unwritable'); }
+    }
     this.peerState.current = { attemptId: req.attemptId, pr: req.pr, headSha: req.headSha, state: 'running', acceptedAt: this.now(), requestDigest: requestDigest(req) };
     if (!this.persistPeerState()) {
       // Without the durable record a restart could not tombstone this attempt: never start it.
@@ -2497,18 +2691,105 @@ export class LocalVerifyService {
   /** Peer side: `GET /local-verify/peer-status`. */
   peerStatus(): PeerStatus & { enabled: boolean } {
     const cur = this.peerState.current;
+    const trial = this.smallPeerPolicy(this.cfg.machineId);
     return {
+      ...(this.managesSmallPeer(trial) && trial && this.trialPolicyCurrent(trial) ? { smallPeerTrial: trial } : {}),
       enabled: this.peerRoleOn(),
       inFlight: cur && cur.state === 'running' ? { attemptId: cur.attemptId, pr: cur.pr } : null,
       verifierVersion: this.cfg.verifierVersion,
       policyHash: this.policyHash,
       slotBusy: !!this.inFlight || !!this.starting || this.seams.foreignSuiteHolders().length > 0 || this.notePause(),
       ...(this.peerSignerKeyHash() ? { signerKeyHash: this.peerSignerKeyHash()! } : {}),
+      // Borrowed helpers: this machine's helper events, its helpers and whether it wants the baseline results (absent with no helper).
+      ...(this.borrowedCall('peer-status', (s) => s.peerStatusExtras(), {}) as Pick<PeerStatus, 'helperEvents' | 'wantsBaseline' | 'helpers'>),
     };
+  }
+
+  trialLease(attemptId: string, coordinator: string, epoch: number, nonce?: string): string | null {
+    const f = this.inFlight;
+    const policy = f?.entry.smallPeerTrial;
+    const lease = this.leaseState();
+    const now = performance.now();
+    if (!f?.trialHandle || !policy || f.entry.peerAttempt?.id !== attemptId || f.cancelled || this.stopped
+      || lease.holds || lease.epoch !== epoch || lease.holder !== coordinator || !this.trialPolicyCurrent(policy)
+      || now >= (f.trialExpiresAt ?? 0)) return null;
+    if (nonce !== undefined) {
+      const challenge = f.trialLease;
+      if (!challenge || challenge.nonce !== nonce || now >= challenge.issuedAt + 10_000) return null;
+      delete f.trialLease;
+      f.trialExpiresAt = challenge.issuedAt + 10_000;
+      // Host-monotonic uptime remains comparable across the local IPC boundary, even when delivery is delayed.
+      f.trialHandle.renewTrial?.(Number(process.hrtime.bigint() / 1000000n) + f.trialExpiresAt - now);
+      return nonce;
+    }
+    f.trialLease = { nonce: crypto.randomBytes(16).toString('hex'), issuedAt: now };
+    return f.trialLease.nonce;
+  }
+
+  private startTrialRenewal(peer: PeerTarget, entry: QueueEntry, m: RemoteMarker, trial: SmallPeerTrialPolicy, epoch: number | null): void {
+    const client = this.peerClient;
+    if (!client?.trialLease || epoch === null) return;
+    const valid = () => {
+      const l = this.leaseState();
+      return !this.stopped && this.queue.includes(entry) && entry.remote === m && l.holds && l.epoch === epoch
+        && JSON.stringify(this.smallPeerPolicy(peer.machineId)) === JSON.stringify(trial);
+    };
+    const tick = async () => {
+      if (!valid()) return;
+      const req = { attemptId: m.attemptId, coordinatorMachineId: this.cfg.machineId, leaseEpoch: epoch };
+      try {
+        const nonce = await client.trialLease!(peer, req);
+        if (nonce && valid()) await client.trialLease!(peer, { ...req, nonce });
+      } catch (e) { this.audit({ event: 'small-peer-renewal-unavailable', pr: entry.pr, detail: String(e) }); }
+      if (valid()) setTimeout(() => void tick(), 3000).unref();
+    };
+    void tick();
   }
 
   private peerSignerKeyHash(): string | null {
     try { return this.peerSigner ? this.peerSigner.signerKeyHash() : null; } catch { return null; } // @silent-fallback-ok — the hint is optional; a missing one only skips the coordinator's pre-check
+  }
+
+  trialReceiptsFor(coordinator: string, attemptIds: string[]): TrialPacket[] {
+    return this.peerSigner ? pendingTrialPackets(this.cfg.stateDir, coordinator, this.peerSigner, attemptIds) : [];
+  }
+
+  acknowledgeTrialReceipt(ack: TrialAck): boolean {
+    return !!this.peerKeyLookupFactory && acknowledgeTrial(this.cfg.stateDir, ack, this.now(), this.peerKeyLookupFactory());
+  }
+
+  private trialReceiptPollAt = 0;
+  private async recoverTrialReceipts(): Promise<void> {
+    const client = this.peerClient;
+    if (!client?.trialReceipts || !client.acknowledgeTrial || !this.peerSigner || !this.peerKeyLookupFactory || !this.leaseState().holds) return;
+    if (this.now() - this.trialReceiptPollAt < PEER_LIMITS.pollMs) return;
+    this.trialReceiptPollAt = this.now();
+    const pending = pendingTrialBindings(this.cfg.stateDir);
+    if (pending.length === 0) return;
+    for (const peer of this.configuredPeers()) {
+      const outstanding = pending.filter(b => b.peer === peer.machineId && b.coordinator === this.cfg.machineId);
+      if (outstanding.length === 0) continue;
+      // Retry a committed receipt's acknowledgement even if the previous POST reached
+      // the peer and its response was lost. Its outbox may already be clear.
+      const saved = outstanding.flatMap(b => receivedTrial(this.cfg.stateDir, b.attemptId) ?? []);
+      const packets: TrialPacket[] = [];
+      const outstandingIds = outstanding.map(b => b.attemptId);
+      for (let i = 0; i < outstandingIds.length; i += 8) {
+        if (!this.leaseState().holds) return;
+        packets.push(...await client.trialReceipts(peer, this.cfg.machineId, outstandingIds.slice(i, i + 8)));
+      }
+      const byAttempt = new Map([...saved, ...packets].map(p => [p?.binding?.attemptId, p]));
+      for (const packet of byAttempt.values()) {
+        if (!this.leaseState().holds) return;
+        try {
+          const {ack, fresh} = importTrialPacket(this.cfg.stateDir, packet, peer.machineId, this.now(), this.peerKeyLookupFactory(), this.peerSigner);
+          if (fresh) this.audit({event:'small-peer-receipt-imported', ...packet.binding, receipt:packet.receipt});
+          if (await client.acknowledgeTrial(peer, ack)) finishDelivery(this.cfg.stateDir, ack.attemptId);
+        } catch (err) {
+          this.audit({event:'small-peer-receipt-refused', peer:peer.machineId, detail:String(err)});
+        }
+      }
+    }
   }
 
   /** Peer side: `GET /local-verify/peer-result`. */
@@ -2663,13 +2944,34 @@ export class LocalVerifyService {
       // back without the field stays without it, so it reads as unknown, never as "no first parts".
       if (record.kind !== 'main' && f.runInput?.firstPartEvidence) record.firstPart = f.runInput.firstPartEvidence;
     }
+    if (f.entry.smallPeerTrial) {
+      try {
+        const receipt = localTrialReceipt(this.cfg.stateDir, id);
+        if (receipt) record.smallPeerReceipt = receipt;
+      } catch (err) {
+        this.audit({event:'small-peer-receipt-refused', attemptId:id, detail:String(err)});
+      }
+    }
     this.noteFirstPart(f, { ...(r ?? {}), kind: 'record', record });
     // A red `main` run also hands over which files failed: the record itself may not carry them.
-    const mainRun = record.kind === 'main' && record.outcome === 'failure' && r && r.kind === 'record' ? parsePeerMainRun(r) : undefined;
+    // A green one the coordinator asked per-file counts of hands those over (and nothing else).
+    const mainRun = record.kind === 'main' && r && r.kind === 'record'
+      ? record.outcome === 'failure' ? parsePeerMainRun({ reasons: (r as { reasons?: unknown }).reasons, failures: (r as { failures?: unknown }).failures })
+        : record.outcome === 'success' && f.entry.peerFileCounts ? parsePeerMainRun({ fileCounts: (r as { fileCounts?: unknown }).fileCounts }) : undefined
+      : undefined;
     cur.state = 'done';
     cur.record = record;
     if (mainRun) cur.run = mainRun;
-    this.peerState.results = [...this.peerState.results.filter((x) => x.attemptId !== id), { attemptId: id, record, ...(mainRun ? { run: mainRun } : {}), ...(cur.requestDigest ? { requestDigest: cur.requestDigest } : {}) }].slice(-PEER_RESULTS_KEPT);
+    // Per-file counts are about 1 MB: only the newest finished attempt keeps them (a late poll of an older one gets the record without them).
+    const older = this.peerState.results.filter((x) => x.attemptId !== id).map((x) => {
+      if (!x.run?.fileCounts) return x;
+      const { fileCounts: _dropped, ...rest } = x.run;
+      void _dropped;
+      const { run: _run, ...without } = x;
+      void _run;
+      return rest.reasons.length > 0 || rest.failures.length > 0 ? { ...x, run: rest } : without;
+    });
+    this.peerState.results = [...older, { attemptId: id, record, ...(mainRun ? { run: mainRun } : {}), ...(cur.requestDigest ? { requestDigest: cur.requestDigest } : {}) }].slice(-PEER_RESULTS_KEPT);
     this.persistPeerState();
     this.audit({ event: 'peer-attempt-done', attemptId: id, pr: record.pr, outcome: record.outcome });
     // Why it went red, in THIS machine's audit log. The coordinator imports only the record, so
@@ -2749,8 +3051,11 @@ export class LocalVerifyService {
           h.statusAt = this.now();
           h.status = st;
           if (!st) { this.peerFailure(peer, h, 'status-unreachable'); continue; }
+          this.borrowedCall('peer-status-read', (b) => b.onPeerStatus(peer, { ...(st.helperEvents ? { helperEvents: st.helperEvents } : {}), ...(st.wantsBaseline ? { wantsBaseline: true as const } : {}), ...(st.helpers ? { helpers: st.helpers } : {}) }), undefined);
         }
         const st = h.status;
+        const trial = this.smallPeerPolicy(peer.machineId);
+        if (trial && JSON.stringify(parseSmallPeerTrialPolicy(st?.smallPeerTrial)) !== JSON.stringify(trial)) continue;
         this.notePeerSkew(peer.machineId, h);
         if (!st || st.inFlight || st.slotBusy || st.verifierVersion !== this.cfg.verifierVersion || st.policyHash !== this.policyHash) continue;
         if (!this.peerPinned(peer.machineId, st.signerKeyHash)) continue; // SEC-113 D1: never burn a run whose answer could not be verified
@@ -2765,7 +3070,7 @@ export class LocalVerifyService {
           const hold = this.holdDecision();
           const held = new Set(hold.active ? hold.heldPrs.map((x) => x.pr) : []);
           const sorted = this.orderQueue([...this.queue], this.now());
-          let chosen = sorted.find((e) => (!restartPause || e.kind !== 'main') && this.dispatchable(e, held));
+          let chosen = sorted.find((e) => (!(restartPause || trial) || e.kind !== 'main') && this.dispatchable(e, held));
           if (!chosen) return null;
           if (chosen.kind === 'main') {
             // A free peer takes `main` under the same fair share as the local slot (never by
@@ -2831,11 +3136,14 @@ export class LocalVerifyService {
           if (repicks++ < 3) pi--;
           continue;
         }
+        if (trial && (JSON.stringify(this.smallPeerPolicy(peer.machineId)) !== JSON.stringify(trial)
+          || !this.peerFitFn?.(peer.machineId).smallPeerHeadroom || entry.kind === 'main')) continue;
         // The head is fixed here, before the snapshot: a reserved entry is never retargeted.
         if (entry.kind === 'main') this.retargetStaleMain(entry);
         // Computed ONCE, before the marker exists: the list that is sent is the list the marker remembers.
         const iso = entry.kind === 'main' ? null : this.isolationInput();
         const marker: RemoteMarker = {
+          ...(trial ? {trialReceiptExpected: true as const} : {}),
           machineId: peer.machineId, attemptId: crypto.randomBytes(16).toString('hex'), leaseEpoch: lease.epoch,
           sentAt: this.now(), state: 'sending',
           dispatched: { pr: entry.pr, headSha: entry.headSha, baseSha: entry.baseSha, baseRefName: entry.baseRefName, verifierVersion: this.cfg.verifierVersion, policyHash: this.policyHash,
@@ -2849,13 +3157,20 @@ export class LocalVerifyService {
         if (episode) { marker.sentDuringPause = episode.id; episode.pauseDispatches++; }
         const isMain = entry.kind === 'main';
         const req: PeerRunRequest = {
+          ...(trial ? { smallPeerTrial: trial } : {}),
           attemptId: marker.attemptId, ...marker.dispatched, coordinatorMachineId: this.cfg.machineId, leaseEpoch: marker.leaseEpoch,
           ...(iso ? { isolation: { allowed: iso.allowed, notCleanOnGreenMain: [...iso.notCleanOnGreenMain], importRelatedRerun: iso.importRelatedRerun, flakyOnMain: iso.flakyOnMain } } : {}),
           ...(entry.preflightRediscoverable === true ? { preflightRediscoverable: true } : {}),
+          // Borrowed helpers' baseline results: asked only of a `main` verify, only when a helper is configured here or on a peer.
+          ...(isMain && this.borrowedCall('wants-file-counts', (b) => b.wantsMainFileCounts(), false) ? { fileCounts: true as const } : {}),
           ...(isMain ? {} : this.firstPartWire(entry.pr)),
         };
         // SEC-113 D1: the digest of exactly what is sent; the peer signs it back with its answer.
         marker.requestDigest = requestDigest(req);
+        if (trial) {
+          try { bindTrial(this.cfg.stateDir, req, peer.machineId, true); }
+          catch (err) { this.audit({event:'small-peer-binding-failed', detail:String(err)}); continue; }
+        }
         entry.remote = marker;
         entry.remoteAttempts = (entry.remoteAttempts ?? 0) + 1;
         if (!this.persistQueue()) { // durable intent BEFORE the send, or no send at all
@@ -2877,11 +3192,13 @@ export class LocalVerifyService {
           this.mainRunOnCurrentHead = curHead !== null && (entry.headSha === curHead || this.releaseAlias.get(curHead) === entry.headSha) ? entry.headSha : null;
         }
         const ans = await client.run(peer, req).catch(() => null);
+        if (trial && ans && !ans.ok) finishDelivery(this.cfg.stateDir, marker.attemptId);
         if (entry.remote !== marker) continue; // abandoned meanwhile
         if (ans === null) {
           this.audit({ event: 'peer-dispatch-unanswered', pr: entry.pr, peer: peer.machineId, attemptId: marker.attemptId });
         } else if (ans.ok) {
           marker.state = 'accepted';
+          if (trial) this.startTrialRenewal(peer, entry, marker, trial, req.leaseEpoch);
           this.remoteLastOkAt.set(marker.attemptId, this.now()); // the accept was a successful round trip
           this.audit({ event: 'peer-dispatch-accepted', pr: entry.pr, peer: peer.machineId, attemptId: marker.attemptId });
           if (isMain) {
@@ -3042,10 +3359,20 @@ export class LocalVerifyService {
   private async pollPeers(): Promise<void> {
     if (this.pollRunning || this.cfg.peerOnly) return;
     const reserved = this.queue.filter((e) => e.remote);
-    if (reserved.length === 0) return;
     this.pollRunning = true;
     try {
-      for (const entry of reserved) {
+      // Ordinary attempts can start polling immediately. Trial attempts must
+      // look for a recovered receipt before judging a terminal peer response.
+      const ordered = [
+        ...reserved.filter(entry => !entry.remote?.trialReceiptExpected),
+        ...reserved.filter(entry => entry.remote?.trialReceiptExpected),
+      ];
+      let receiptsChecked = false;
+      for (const entry of ordered) {
+        if (entry.remote?.trialReceiptExpected && !receiptsChecked) {
+          await this.recoverTrialReceipts();
+          receiptsChecked = true;
+        }
         const m = entry.remote;
         if (!m) continue;
         const now = this.now();
@@ -3061,6 +3388,11 @@ export class LocalVerifyService {
           m.adoptedEpoch = decision.toEpoch;
           this.persistQueue(); // before the next await
           this.audit({ event: 'peer-attempt-adopted', pr: entry.pr, attemptId: m.attemptId, fromEpoch: decision.fromEpoch, toEpoch: decision.toEpoch });
+        }
+        const trialReceipt = m.trialReceiptExpected ? receivedTrial(this.cfg.stateDir, m.attemptId) : null;
+        if (decision.action !== 'wait' && trialReceipt?.receipt.outcome === 'capacity') {
+          this.abandonRemote(entry, 'small-peer-capacity', { failure: false, cancel: false });
+          continue;
         }
         const waiting = decision.action === 'wait';
         if (decision.action === 'wait') {
@@ -3130,7 +3462,9 @@ export class LocalVerifyService {
         // The lease is read again NOW (the result fetch awaited): a lease lost or moved meanwhile imports nothing.
         const leaseNow = this.leaseState();
         const adoptionOn = this.peerWorksThroughRestartOn();
-        const why = importRefusal(res.record, m, { repo: this.cfg.repo, verifierVersion: this.cfg.verifierVersion, policyHash: this.policyHash, holdsLease: leaseNow.holds, leaseEpoch: leaseNow.epoch, coordinatorMachineId: this.cfg.machineId, adoptionOn });
+        const why = importRefusal(res.record, m, { repo: this.cfg.repo, verifierVersion: this.cfg.verifierVersion, policyHash: this.policyHash, holdsLease: leaseNow.holds, leaseEpoch: leaseNow.epoch, coordinatorMachineId: this.cfg.machineId, adoptionOn,
+          // A record's borrowed helper must be one the peer itself reported as its own.
+          knownHelpers: [...new Set([...(this.peerHealth.get(peer.machineId)?.status?.helpers ?? []), ...this.borrowedCall<string[]>('peer-helpers', (b) => b.peerHelpersSeen(peer.machineId), [])])] });
         // Spec C.5: the lease moved during the result fetch. Not a peer failure: the next poll decides again (C.3).
         if (adoptionOn && ((why === 'lease-epoch-changed' && !markerCurrent(m, leaseNow, true)) || why === 'not-lease-holder')) {
           this.remotePolledAt.delete(m.attemptId);
@@ -3153,6 +3487,17 @@ export class LocalVerifyService {
           this.abandonRemote(entry, `unverified:${unverified}`, { failure: true, cancel: false });
           if (unverified === 'signature-bad' || unverified === 'request-mismatch') this.notePeerResultTampered(peer, h, unverified);
           continue;
+        }
+        if (m.trialReceiptExpected) {
+          if (!trialReceipt) {
+            if (age > PEER_LIMITS.maxRunMs) this.abandonRemote(entry, 'missing-trial-receipt', {failure:false, cancel:true});
+            continue;
+          }
+          if (trialReceipt.receipt.outcome !== 'completed' || !validTrialReceipt(res.record.smallPeerReceipt, m.attemptId)
+            || requestDigest(res.record.smallPeerReceipt) !== requestDigest(trialReceipt.receipt)) {
+            this.abandonRemote(entry, 'trial-verdict-receipt-mismatch', {failure:true, cancel:false});
+            continue;
+          }
         }
         this.clearPeerResultTampered(peer.machineId);
         if (res.record.outcome === 'error') {
@@ -3193,6 +3538,8 @@ export class LocalVerifyService {
         this.persistQueue();
         this.writePeerHold(); // the restart this attempt held need not wait for the next tick
       }
+      if (!receiptsChecked) await this.recoverTrialReceipts();
+      if (reserved.length === 0) return;
     } finally {
       this.pollRunning = false;
     }
@@ -3271,7 +3618,10 @@ export class LocalVerifyService {
     this.noteRestartEpisode();
     this.writePeerHold();
     if (!this.cfg.peerOnly) this.noteEpisodeProgress(paused);
-    if (this.blockedBy) await this.reapOrphan();
+    if (this.blockedBy && await this.reapOrphan() !== 'incomplete') {
+      await reconcileTrialScopes(this.cfg.stateDir);
+      finalizeInterruptedTrials(this.cfg.stateDir, this.cfg.machineId);
+    }
     if (this.verifierHold) this.recheckVerifierHold();
     this.checkStarved();
     if (!this.cfg.peerOnly) this.checkTrustHolding();
@@ -3289,6 +3639,7 @@ export class LocalVerifyService {
     if (!this.cfg.peerOnly) await this.tickWaitingList();
     if (!this.cfg.peerOnly) await this.tickOperator().catch((e) => this.audit({ event: 'operator-tick-error', detail: e instanceof Error ? e.message : String(e) }));
     this.checkPeerAttempt();
+    this.borrowedCall('tick', (b) => b.tick(), undefined);
     await this.failedFileDiagnosisPeer?.tick();
     this.pump();
     if (!this.cfg.peerOnly) await this.failedFileDiagnosis?.tick([...this.index.values()]);
@@ -4207,12 +4558,21 @@ export class LocalVerifyService {
       ...(entry.kind !== 'main' && this.failFastOn() ? { failFast: true } : {}),
       ...(entry.kind !== 'main' ? { preflightMode: replay || entry.preflightBypassRetry ? 'off' as const : this.preflightMode() } : {}),
       ...(entry.kind !== 'main' ? { preflightRediscoverable: entry.preflightRediscoverable === true } : {}),
-      ...(() => { const ls = this.laneShards(); return ls ? { laneShards: ls } : {}; })(),
+      ...(() => { const ls = entry.smallPeerTrial ? { unitWorkers: 2, integration: 1, e2e: 1 } : this.laneShards(); return ls ? { laneShards: ls } : {}; })(),
       ...(entry.kind === 'main' ? { kind: 'main' as const } : {}),
+      // Borrowed helpers' baseline results: a `main` verify reports its per-file counts only when someone keeps them
+      // (a peer run: the coordinator asked; a local run: a helper is configured here or on a peer). Absent otherwise.
+      ...(entry.kind === 'main' && (entry.peerAttempt ? entry.peerFileCounts === true : this.borrowedCall('wants-file-counts', (b) => b.wantsMainFileCounts(), false)) ? { fileCounts: true as const } : {}),
       // A peer run answers one coordinator attempt: the record carries it (spec local-verify-capacity.md Part D).
       ...(entry.peerAttempt ? { attempt: entry.peerAttempt } : {}),
       // PR verifies with the setting on or alternate here: the first parts' inputs. Off ⇒ nothing is added.
       ...this.firstPartInput(entry),
+      // A verify of a waiting change with a borrowed helper configured here: how its child reaches the helper. Absent otherwise.
+      ...(() => {
+        if (entry.kind === 'main') return {};
+        const b = this.borrowedCall('child-input', (x) => x.childInput(token), null);
+        return b ? { borrowed: b } : {};
+      })(),
     };
     fs.writeFileSync(inputPath, JSON.stringify(input), { mode: 0o600 });
 
@@ -4229,11 +4589,16 @@ export class LocalVerifyService {
     const useNice = this.cfg.nice ?? true;
     let handle: ChildHandle;
     try {
-      handle = this.seams.spawnRun({
+      const runArgs = {
         command: useNice ? 'nice' : this.cfg.nodePath,
         args: useNice ? ['-n', '10', this.cfg.nodePath, ...childArgs] : childArgs,
         env: this.cfg.baseEnv, logFile,
-      });
+      };
+      const trial = entry.smallPeerTrial;
+      handle = trial && entry.peerAttempt
+        ? spawnSmallPeerSupervisor({ ...runArgs, stateDir: this.cfg.stateDir, attemptId: entry.peerAttempt.id, policy: trial },
+            () => this.trialPolicyCurrent(trial) && this.peerRoleOn() && !this.stopped)
+        : this.seams.spawnRun(runArgs);
     } catch (e) {
       this.clearInFlight();
       if (entry.preflightReplay && replay) {
@@ -4265,16 +4630,28 @@ export class LocalVerifyService {
       const cur = this.mainObs.head;
       this.mainRunOnCurrentHead = cur !== null && (entry.headSha === cur || this.releaseAlias.get(cur) === entry.headSha) ? entry.headSha : null;
     }
-    this.inFlight = { entry, token, pgid: handle.pid, inputPath, resultPath, cancelled: false, startedAt: intent.startedAt,
+    this.inFlight = { entry, token, ...(entry.smallPeerTrial ? { trialHandle: handle, trialExpiresAt: performance.now() + 10_000 } : {}), pgid: handle.pid, inputPath, resultPath, cancelled: false, startedAt: intent.startedAt,
       preflightAllowanceMs: input.preflightMode && input.preflightMode !== 'off' ? PREFLIGHT_LIMITS.totalMs : 0,
       runInput: input };
     this.publishSuitePriority(true);
     const mine = this.inFlight;
-    handle.exited.then((x) => this.onExit(mine, x), () => this.onExit(mine, { status: null, signal: null }));
+    handle.exited.then((x) => {
+      mine.trialCleanupDone = !!entry.smallPeerTrial;
+      this.onExit(mine, x);
+    }, () => {
+      if (entry.smallPeerTrial) {
+        this.audit({ event: 'small-peer-cleanup-unproven', pr: entry.pr, attemptId: entry.peerAttempt?.id });
+        mine.cancelled = true; // Keep the in-flight slot until startup reconciliation proves cleanup.
+      } else this.onExit(mine, { status: null, signal: null });
+    });
     this.writeInFlight(intent);
     this.persistQueue();
     this.audit({ event: 'started', pr: entry.pr, headSha: entry.headSha, baseSha: entry.baseSha, pgid: handle.pid, attempt: entry.attempts,
       ...(entry.firstRefusedAt !== undefined ? { firstRefusedAt: entry.firstRefusedAt } : {}) });
+    if (entry.kind === 'main' && !entry.peerAttempt) this.notifyMainRunObserver('start', { headSha: entry.headSha, runToken: token, startedAt: intent.startedAt });
+    // The server's own record of this verify for the borrowed-helper side (the loopback proxy reads the commits from it, never from the child).
+    this.borrowedCall('verify-start', (b) => b.onVerifyStart({ token, kind: entry.kind === 'main' ? 'main' : 'waiting', pr: entry.pr, baseSha: entry.baseSha, headSha: entry.headSha, startedAt: intent.startedAt }), undefined);
+    mine.borrowedHelper = this.borrowedCall('helper-for', (b) => b.helperFor(token), null);
     // Queue controls, the harm detector: a start of a change that is held at that moment. The start
     // check and the dispatch check make this impossible; the row exists so the review can count zero.
     if (entry.kind !== 'main' && !entry.peerAttempt && this.operatorHeld(entry.pr)) this.audit({ event: 'operator-held-started', pr: entry.pr, headSha: entry.headSha });
@@ -4322,6 +4699,7 @@ export class LocalVerifyService {
     const f = this.inFlight;
     if (!f || f.cancelled) return;
     f.cancelled = true;
+    if (f.trialHandle) { f.trialHandle.cancelTrial?.(reason); return; }
     this.publishSuitePriority(false);
     this.audit({ event: 'cancel', pr: f.entry.pr, headSha: f.entry.headSha, reason });
     try { this.seams.killGroup(f.pgid, 'SIGTERM'); } catch { /* @silent-fallback-ok: group may already be gone */ }
@@ -4338,8 +4716,10 @@ export class LocalVerifyService {
     // Handled exactly once: shutdown() settles a run whose result is already on disk, and the
     // child's real exit event may still arrive afterwards. Handling it again would find the
     // result file gone and record a crash over the real verdict.
-    if (f.settled) return;
+    if (f.settled || (f.trialHandle && !f.trialCleanupDone)) return;
     f.settled = true;
+    // The verify is over for the borrowed-helper side whatever follows: its attempt token no longer opens the loopback proxy.
+    this.borrowedCall('verify-end', (b) => b.onVerifyEnd({ token: f.token, recorded: false, outcome: null, cancelled: f.cancelled }), undefined);
     // Sweep leftovers of the group right away (step processes the child left behind).
     if (this.seams.isGroupAlive(f.pgid)) {
       try { this.seams.killGroup(f.pgid, 'SIGKILL'); } catch { /* @silent-fallback-ok: best-effort */ }
@@ -4354,18 +4734,37 @@ export class LocalVerifyService {
     // The restart hold this run held is gone: let a waiting update restart now, not at its next re-check.
     // (also when the settling marker could not be written: nothing would announce the end later)
     if (!settling || this.mergeHoldFile === null) { try { this.runEnded?.(); } catch { /* @silent-fallback-ok: the updater's own re-check still runs within 5 minutes */ } }
-    const result = this.readResult(f.resultPath);
+    let result = this.readResult(f.resultPath);
+    if (f.entry.smallPeerTrial && f.entry.peerAttempt) {
+      const id = f.entry.peerAttempt.id;
+      let receipt: TrialReceipt | null = null;
+      try { receipt = JSON.parse(fs.readFileSync(path.join(trialDirectory(this.cfg.stateDir, id), 'receipt.json'), 'utf8')); }
+      catch (e) { this.audit({ event: 'small-peer-receipt-unreadable', attemptId: id, detail: String(e) }); }
+      if (!validTrialReceipt(receipt, id) || receipt.outcome !== 'completed') {
+        result = null;
+        this.beginTrialRecovery(f.entry.smallPeerTrial, receipt?.reserveBreached === true || !receipt || ['measurement-failed', 'setup-failed', 'cleanup-timeout', 'watchdog-lost'].includes(receipt.reason));
+      }
+      this.audit({ event: 'small-peer-receipt', pr: f.entry.pr, headSha: f.entry.headSha, attemptId: id, receipt });
+      if (receipt && result && 'record' in result && result.record) result.record.smallPeerReceipt = receipt;
+    }
     if (!f.runInput) {
       try { f.runInput = JSON.parse(fs.readFileSync(f.inputPath, 'utf8')) as VerifyRunInput; }
       catch { /* An incomplete observation discloses an unavailable run input after restart. */ }
     }
     this.removeRunFiles(f);
+    // The borrowed-helper side hears what the verify's lane flow reported once the record is handled (null: no record, no helper).
+    const tellBorrowed = (outcome: 'success' | 'failure' | 'error', recorded: boolean) => this.borrowedCall('verify-result', (b) => b.onVerifyResult({
+      token: f.token, pr: f.entry.pr, headSha: f.entry.headSha, outcome,
+      flow: recorded && !f.cancelled && result?.kind === 'record' && result.borrowed ? result.borrowed : null,
+    }), undefined);
+    let borrowedOutcome: { outcome: 'success' | 'failure' | 'error'; recorded: boolean } = { outcome: 'error', recorded: false };
     for (const d of (result && 'degradations' in result && Array.isArray(result.degradations)) ? result.degradations : []) {
       try { this.seams.onDegradation?.(d); } catch { /* @silent-fallback-ok: the run log still carries the event */ }
     }
     if (f.entry.peerAttempt) {
       this.publishSuitePriority(false);
       this.finishPeerAttempt(f, result);
+      tellBorrowed(result?.kind === 'record' ? result.record.outcome : 'error', result?.kind === 'record');
       const waiters = this.idleWaiters;
       this.idleWaiters = [];
       for (const w of waiters) w();
@@ -4387,7 +4786,7 @@ export class LocalVerifyService {
         this.audit({ event: 'run-error', kind: 'main', headSha: f.entry.headSha, exit });
         this.completeMain(this.syntheticError(f.entry, !result || result.kind === 'crash' ? 'crash' : 'invalid-record'), f.entry);
       } else {
-        this.completeMain(result.record, f.entry, { reasons: result.reasons, failures: result.failures, runLog: `${f.token}.log`, flakyTestLines: result.flakyTestLines });
+        this.completeMain(result.record, f.entry, { reasons: result.reasons, failures: result.failures, runLog: `${f.token}.log`, flakyTestLines: result.flakyTestLines, fileCounts: result.fileCounts });
       }
     } else if (!result || result.kind === 'crash' || result.kind === 'invalid') {
       const step = !result ? 'crash' : result.kind === 'crash' ? 'crash' : 'invalid-record';
@@ -4408,7 +4807,8 @@ export class LocalVerifyService {
       this.retry(f.entry);
     } else {
       for (const o of result.overlaps) this.audit({ event: 'overlap', where: `before-${o.beforeLane}`, holders: o.holders });
-      const rec = this.complete(result.record, 'run');
+      const rec = this.complete(result.record, 'run', f.borrowedHelper ?? null);
+      if (rec) borrowedOutcome = { outcome: rec.outcome, recorded: true };
       if (rec && (rec.outcome !== 'success' || rec.flakyRetried)) {
         // Why it went red (or what was flaky), bounded: reasons, each failed file's first error, the flaky re-runs.
         this.audit({ event: 'run-detail', ...runDetail(rec, { ...result, runLog: `${f.token}.log` }) });
@@ -4422,6 +4822,16 @@ export class LocalVerifyService {
     // No hand-off was opened for this run (red, error, re-queued, or the line held by another
     // PR): the settling hold ends here and a waiting restart may go.
     if (settling && this.mergeHoldFile === 'settling') this.clearMergeHold();
+    if (f.entry.kind !== 'main') tellBorrowed(borrowedOutcome.outcome, borrowedOutcome.recorded);
+    if (f.entry.kind === 'main' && !f.entry.peerAttempt) {
+      // After completeMain: the record is written before the borrowed shadow compares anything.
+      const recorded = !f.cancelled && !isVerifierMismatch(result) && result?.kind !== 'requeue';
+      const rr = recorded && result?.kind === 'record' ? result : null;
+      this.notifyMainRunObserver('end', {
+        headSha: f.entry.headSha, runToken: f.token, recorded, outcome: recorded ? (result?.kind === 'record' ? result.record.outcome : 'error') : null, cancelled: f.cancelled,
+        ...(rr ? { mergeTree: rr.record.mergeTree } : {}), ...(rr?.fileCounts ? { fileCounts: rr.fileCounts } : {}), ...(rr?.confirmedFailed ? { confirmedFailed: rr.confirmedFailed } : {}),
+      });
+    }
     const waiters = this.idleWaiters;
     this.idleWaiters = [];
     for (const w of waiters) w();
@@ -4503,7 +4913,7 @@ export class LocalVerifyService {
   }
 
   /** Completion of a `main` verify: feeds main health only, never the PR index or journal. */
-  private completeMain(record: LocalVerifyRecord, entry: QueueEntry, run?: { reasons: string[]; failures?: FailureDetail[]; runLog?: string; flakyTestLines?: unknown }, dispatchedAt?: number, source: 'local' | 'peer' = 'local'): void {
+  private completeMain(record: LocalVerifyRecord, entry: QueueEntry, run?: { reasons: string[]; failures?: FailureDetail[]; runLog?: string; flakyTestLines?: unknown; fileCounts?: unknown }, dispatchedAt?: number, source: 'local' | 'peer' = 'local'): void {
     const v = validateRecord(record);
     if (!v.ok || record.kind !== 'main' || record.headSha !== entry.headSha) {
       this.audit({ event: 'record-rejected', kind: 'main', errors: v.ok ? ['kind-or-head'] : v.errors });
@@ -4527,6 +4937,16 @@ export class LocalVerifyService {
     if (record.outcome !== 'error') this.noteMainHeadVerified(head);
     // SEC-113 D2.1: only this machine's own green becomes the isolation baseline; a peer green never does.
     if (record.outcome === 'success' && source === 'local') this.saveGreenMain(record);
+    // Borrowed helpers' baseline results: a green `main` verify (this machine's, or a peer's signed one) with its per-file counts.
+    // Inert with no helper configured anywhere; it never touches main health or the isolation baseline above.
+    if (record.outcome === 'success') this.borrowedCall('green-main', (b) => b.onGreenMain({ commit: head, finishedAt: record.finishedAt, machineId: record.machineId, fileCounts: run?.fileCounts }), undefined);
+    // A red `main` (this machine's run or a peer's signed one): any helper pass that counted for a change merged
+    // into it, on a file that failed finally there, is reported. A file that passed alone on its re-run is not.
+    if (record.outcome === 'failure' && run?.failures && run.failures.length > 0) {
+      const flaky = new Set((record.flakyRetried ?? []).map((x) => x.file));
+      const failedFiles = [...new Set(run.failures.map((x) => x.file))].filter((x) => !flaky.has(x));
+      if (failedFiles.length > 0) this.borrowedCall('main-red', (b) => b.onMainRed({ headSha: head, failedFiles }), undefined);
+    }
     if (record.outcome === 'success' && this.preflightReplays) {
       const work = (async () => {
         for (const marker of this.preflightReplays!.list().filter((r) => r.state === 'blocked')) {
@@ -4748,10 +5168,17 @@ export class LocalVerifyService {
    * Validates, appends, indexes, then derives records for queued PRs that share
    * the execution key (dedupe by merge-tree inputs).
    */
-  private complete(record: LocalVerifyRecord, source: 'run' | 'derived' | 'peer'): LocalVerifyRecord | null {
+  private complete(record: LocalVerifyRecord, source: 'run' | 'derived' | 'peer', startHelper: string | null = null): LocalVerifyRecord | null {
     const v = validateRecord(record);
     if (!v.ok || record.repo !== this.cfg.repo) {
       this.audit({ event: 'record-rejected', pr: record.pr, errors: v.ok ? ['repo'] : v.errors });
+      return null;
+    }
+    // The record check validates a borrowed helper's id by format; whether it is a known machine is checked here,
+    // where this machine's own run is imported (a peer's record is checked in importRefusal before it gets here).
+    // The helper named when the run started is known for its own record even if the setting was switched off since.
+    if (record.borrowed && source === 'run' && record.borrowed.helper !== startHelper && !this.borrowedCall('known-helper', (b) => b.knownHelper(record.borrowed!.helper), false)) {
+      this.audit({ event: 'record-rejected', pr: record.pr, errors: ['borrowed-helper-unknown'] });
       return null;
     }
     const enforcedRed = record.preflight?.mode === 'enforce' && record.preflight.outcome === 'red' && record.preflight.reason === 'preflight-red';

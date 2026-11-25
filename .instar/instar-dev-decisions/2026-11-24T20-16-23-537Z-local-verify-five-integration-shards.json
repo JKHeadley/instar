@@ -1,0 +1,28 @@
+{
+  "ts": "2026-11-24T20:16:23.537Z",
+  "slug": "local-verify-five-integration-shards",
+  "suggestedTier": 2,
+  "declaredTier": 1,
+  "riskFloor": 2,
+  "riskFloorReasons": [
+    "irreversibility: src/core/PostUpdateMigrator.ts touches PostUpdateMigrator",
+    "migration / fleet-rollout surface: src/core/PostUpdateMigrator.ts touches PostUpdateMigrator (fleet migration machinery)"
+  ],
+  "belowFloor": true,
+  "files": 4,
+  "loc": 29,
+  "scope": {
+    "basis": "staged-in-scope-paths-including-deleted",
+    "files": [
+      "src/core/PostUpdateMigrator.ts",
+      "src/localVerify/LocalVerifyService.ts",
+      "src/localVerify/orchestrator.ts",
+      "src/scaffold/templates.ts"
+    ],
+    "addedLines": 18,
+    "deletedLines": 11
+  },
+  "causalAutopsy": null,
+  "classClosure": null,
+  "verdict": "pass"
+}

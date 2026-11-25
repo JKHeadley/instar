@@ -39,6 +39,7 @@ async function getJson(path) {
 
 export async function renderAccounts(main, ctx) {
   const { get } = ctx;
+  main.classList.add('accounts-page');
   firstPaint(main, el('section', { class: 'hero page-hero' }, el('div', { class: 'eyebrow', text: 'Capacity · Accounts' }), el('h1', { class: 'page-title skeleton', text: 'Loading accounts' })));
   const [pool, relogin, inUse, machines] = await Promise.all([get('/subscription-pool?scope=pool', 8000), get('/subscription-relogin?scope=pool', 8000), get('/subscription-pool/in-use'), get('/pool')]);
   const names = machines.ok && Array.isArray(machines.data && machines.data.machines) ? Object.fromEntries(machines.data.machines.map((m) => [m.machineId, m.nickname])) : {};
@@ -61,11 +62,9 @@ export async function renderAccounts(main, ctx) {
         el('span', { class: 'row-main' }, el('span', { class: 'row-title', text: n.label }), el('span', { class: 'row-sub', text: n.sub })),
         el('span', { class: 'row-end' }, n.actionable ? el('button', { class: 'btn-quiet btn-small', type: 'button', text: n.action === 'start' ? 'Sign in' : n.action === 'retry' ? 'Try again' : 'Repair', onclick: () => startNeed(n, refresh) }) : null))))))) : null;
 
-  const groups = new Map();
-  for (const a of page.accounts) { const k = frameworkName(a.framework); if (!groups.has(k)) groups.set(k, []); groups.get(k).push(a); }
-  const list = el('div', { class: 'page-sections acct-list' }, [...groups.entries()].map(([name, accts]) => el('section', { class: 'list-section' },
-    el('div', { class: 'list-head' }, el('h2', { class: 'eyebrow', text: name }), el('span', { class: 'list-count', text: String(accts.length) })),
-    el('div', { class: 'list-rows' }, accts.map((a) => {
+  const list = el('div', { class: 'page-sections acct-list' }, el('section', { class: 'list-section' },
+    el('div', { class: 'list-head' }, el('h2', { class: 'eyebrow', text: 'Weekly reset, soonest first' }), el('span', { class: 'list-count', text: String(page.accounts.length) })),
+    el('div', { class: 'list-rows' }, page.accounts.map((a) => {
       const pct = a.tight ? Math.round(a.tight.pct) : null;
       // One labelled line per limit that applies (5-hour only when the account has one), each with
       // its own bar and its own reset, so a full 5-hour window never reads as the weekly one.
@@ -79,14 +78,14 @@ export async function renderAccounts(main, ctx) {
           el('span', { class: 'acct-win-reset', text: w.reset || '' }));
       })) : null;
       const row = el('button', { class: 'acct-row', type: 'button', 'data-focus-key': `a:${a.id}` },
-        el('span', { class: 'acct-name' }, document.createTextNode(a.name), a.inUse ? el('span', { class: 'acct-tag', text: 'in use here' }) : null),
+        el('span', { class: 'acct-name' }, document.createTextNode(a.name), el('span', { class: 'acct-kind', text: frameworkName(a.framework) }), a.inUse ? el('span', { class: 'acct-tag', text: 'in use here' }) : null),
         el('span', { class: `acct-pct${a.tone ? ' ' + a.tone : ''}`, text: pct === null ? '—' : `${pct}%` }),
         wins,
         !wins || a.stale ? el('span', { class: 'acct-line', text: [!wins ? a.line : null, a.stale ? `reading from ${a.readingAge}` : null].filter(Boolean).join(' · ') }) : null,
         el('span', { class: 'chips' }, a.cells.map((c) => el('span', { class: `mchip ${c.state}`, text: c.machine }))));
       row.addEventListener('click', () => openAccount(a, refresh));
       return row;
-    })))));
+    }))));
 
   // The notice spot: nothing unless something needs the person; each notice carries its action.
   const notices = page.notices.length ? el('section', { class: 'page-sections', id: 'sec-notices' },

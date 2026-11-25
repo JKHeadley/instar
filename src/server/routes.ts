@@ -109,6 +109,7 @@ import { parseAutoExpiryHold } from '../core/AutoExpiryLedger.js';
 import { getCodexDeviceLimitWiring } from '../core/codexDeviceLimitWiring.js';
 import type { AutoExpiryHold } from '../core/types.js';
 import { registerLocalVerifyRoutes } from '../localVerify/localVerifyRoutes.js';
+import { registerHelperRoutes } from '../localVerify/helper/helperRoutes.js';
 import { cleanMergeHoldReason } from '../localVerify/operatorQueue.js';
 import { getActiveWorkAdmission } from '../core/workAdmission.js';
 import { getActiveOverloadShedPlanner } from '../core/OverloadShedPlanner.js';
@@ -1576,6 +1577,8 @@ export interface RouteContext {
   localVerify?: import('../localVerify/LocalVerifyService.js').LocalVerifyService | null;
   /** The `instar/local-verify` status reconcile loop (local-verify-merge-authority §3); null → GET /local-verify/status 503. */
   localVerifyStatus?: import('../localVerify/StatusReconciler.js').StatusReconciler | null;
+  /** Borrowed-machine helper role (docs/specs/local-verify-borrowed-unit-slices.md, B); null/disabled → helper routes 404. */
+  localVerifyHelper?: import('../localVerify/helper/helperWiring.js').HelperRuntime | null;
   /** GuardLatchStore — the pool-visible rollback/enable/pool-armed latches. */
   guardLatchStore: import('../monitoring/GuardLatchStore.js').GuardLatchStore | null;
   /** Keeps an agent-class stop from being orphaned; checks its release condition. */
@@ -20340,6 +20343,10 @@ document.getElementById('mcpForm').addEventListener('submit', async function (e)
     ...(ctx.greenPrAutoMerger ? { applyMergeHold: (pr: number, reason: string) => ctx.greenPrAutoMerger!.applyHold(pr, reason) } : {}),
   });
 
+  // ── borrowed-machine helper role (local-verify-borrowed-unit-slices B) ──
+  // Dark: 404 unless this machine's own monitoring.localVerify.helper.enabled is true.
+  registerHelperRoutes(router, { helper: () => ctx.localVerifyHelper?.get() ?? null });
+
   // ── Green-PR auto-merge (green-pr-automerge-enforcement) ──────────────
   // The watcher is null on installs with no analyzable instar repo + safe-merge,
   // or when disabled in config → routes 503. The GuardLatchStore may exist even
@@ -31705,8 +31712,8 @@ document.getElementById('mcpForm').addEventListener('submit', async function (e)
       const target = JSON.parse(fs.readFileSync(regPath, 'utf-8')).topicToSession?.[String(topicId)] ?? null;
       if (target && ctx.sessionManager.isSessionAlive(target)) {
         // The hourly slot is spent only when the line is actually delivered.
-        keylessTopicNoticeAt.set(topicId, now);
         ctx.sessionManager.injectPasteNotification(target, `<system-reminder>[secret-drop-notice] ${KEYLESS_RECEIPT_NOTICE}</system-reminder>`);
+        keylessTopicNoticeAt.set(topicId, now);
       }
     } catch (err) {
       // @silent-fallback-ok — the answer itself also carries the notice for current helpers
@@ -31983,8 +31990,15 @@ document.getElementById('mcpForm').addEventListener('submit', async function (e)
 
       if (targetSession && ctx.sessionManager.isSessionAlive(targetSession)) {
         // Inject into existing session as a system reminder
-        ctx.sessionManager.injectPasteNotification(targetSession,
-          `<system-reminder>${systemMsg}</system-reminder>`);
+        try {
+          ctx.sessionManager.injectPasteNotification(targetSession,
+            `<system-reminder>${systemMsg}</system-reminder>`);
+        } catch {
+          // @silent-fallback-ok: the secret is already stored successfully.
+          // A refused best-effort notification must not make the user submit
+          // it again. Do not log the notification, token or field values.
+          console.error('[secret-drop] submitted secret notification was not delivered');
+        }
       } else {
         // No live session — spawn one to handle the secret receipt
         let topicName = `topic-${topicId}`;
@@ -33114,7 +33128,13 @@ document.getElementById('mcpForm').addEventListener('submit', async function (e)
             setTimeout(() => {
               const hint = `<system-reminder>The user's previous message may be truncated (${truncation.reason}). ` +
                 `If their content appears incomplete, suggest they paste longer content into this session's message box on the dashboard's Sessions page: ${dzUrl}</system-reminder>`;
-              ctx.sessionManager.injectPasteNotification(targetSession, hint);
+              try {
+                ctx.sessionManager.injectPasteNotification(targetSession, hint);
+              } catch {
+                // @silent-fallback-ok: the owner message is already accepted;
+                // this delayed advisory must not throw outside route handling.
+                console.error('[telegram-forward] truncation hint was not delivered');
+              }
             }, 1000);
           }
 

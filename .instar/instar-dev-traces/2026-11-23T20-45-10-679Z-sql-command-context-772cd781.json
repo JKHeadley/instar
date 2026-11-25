@@ -1,0 +1,47 @@
+{
+  "version": 3,
+  "slug": "sql-command-context",
+  "sessionId": "fb2d9241-bc5a-479b-9443-bbce50a353bc",
+  "timestamp": "2026-11-23T20:45:10.679Z",
+  "artifactPath": "upgrades/side-effects/sql-command-context.md",
+  "artifactSha256": "a745077545d70db4eb1af77fde7b1c0ce2f56cbd7ba6af462e05834eabc6f91d",
+  "coveredFiles": [
+    "docs/specs/sql-command-context.eli16.md",
+    "src/commands/init.ts",
+    "src/core/PostUpdateMigrator.ts",
+    "src/core/sqlCommandContext.ts",
+    "src/data/awareness/sql-command-context.md",
+    "src/templates/hooks/dangerous-command-guard.sh",
+    "tests/e2e/sql-command-context-update-lifecycle.test.ts",
+    "tests/integration/codex-dangerous-command-block.test.ts",
+    "tests/unit/dangerous-command-guard-command-context.test.ts",
+    "upgrades/next/sql-command-context.md",
+    "upgrades/side-effects/sql-command-context.md"
+  ],
+  "phase": "complete",
+  "tier": 1,
+  "tierReasoning": "Narrow reversible correction to an existing false-positive classifier. Existing per-writer SQL patterns, safety levels, catastrophic and non-SQL rules stay in force for all unrecognized contexts. Dedicated independent guard review and allocated158unit32native1lifecycle checks passed; complete coordinator gate remains required.",
+  "eli16Path": "docs/specs/sql-command-context.eli16.md",
+  "sideEffectsPath": "upgrades/side-effects/sql-command-context.md",
+  "secondPass": "true",
+  "reviewerConcurred": true,
+  "toolchain": {
+    "buildSkill": {
+      "name": "build",
+      "version": null,
+      "verified": false
+    },
+    "reviewSkills": [
+      {
+        "name": "sql_context_review",
+        "outcome": "concur",
+        "verified": false
+      }
+    ]
+  },
+  "classClosure": {
+    "defectClass": "unbounded-self-action",
+    "closure": "n/a",
+    "reason": "One existing hook evaluation per tool call may run one bounded context check on an existing SQL-pattern match. No autonomous loop, retry, notification, restart, spawn policy or state repair is introduced."
+  }
+}
