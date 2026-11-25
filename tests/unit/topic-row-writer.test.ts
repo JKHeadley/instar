@@ -254,16 +254,16 @@ describe('TopicRowWriter × a real TopicMemory', () => {
   describe('reconcile from the app store', () => {
     const msgs = (n: number, start = 0) => Array.from({ length: n }, (_, i) => ({
       eventId: `ev-${String(start + i).padStart(4, '0')}`, role: (i % 2 ? 'agent' : 'operator') as 'operator' | 'agent',
-      text: `m${start + i}`, at: new Date(Date.UTC(2026, 10, 10, 0, 0, 0, 0) + (start + i) * 1000).toISOString(),
+      forwarded: undefined as true | undefined, text: `m${start + i}`, at: new Date(Date.UTC(2026, 10, 10, 0, 0, 0, 0) + (start + i) * 1000).toISOString(),
     }));
     /** A source that pages backwards like AppConversationStore.browseMessages. */
     const source = (byKey: Record<string, ReturnType<typeof msgs>>): AppConversationSource & { pages: number } => {
       const src = {
         pages: 0,
         liveConversationKeys: () => Object.keys(byKey),
-        browseMessages(key: string, before: string | null | undefined, limit = 100) {
+        browseAgentMessages(key: string, before: string | null | undefined, limit = 100) {
           src.pages++;
-          const all = byKey[key] ?? [];
+          const all = (byKey[key] ?? []).filter((row) => !row.forwarded);
           const end = before ? all.findIndex((m) => `${m.at},${m.eventId}` === before) : all.length;
           const startAt = Math.max(0, end - limit);
           const page = all.slice(startAt, end);
@@ -273,6 +273,14 @@ describe('TopicRowWriter × a real TopicMemory', () => {
       return src;
     };
     const d = { aliasFor: (k: string) => (k === APP_KEY ? APP_TOPIC : k === APP_KEY_2 ? APP_TOPIC - 1 : null), ownerUserId: () => 'u-owner' };
+
+    it('keeps forwarded history out of live writes and boot reconciliation', () => {
+      const copy = { ...msgs(1, 1)[0]!, text: 'Forwarded only', forwarded: true as const };
+      expect(writeAppConversationRow(writer, { ...copy, kind: 'message', conversationKey: APP_KEY }, d))
+        .toMatchObject({ written: false });
+      expect(reconcileAppConversationRows(writer, source({ [APP_KEY]: [msgs(1)[0]!, copy] }), d, { maxPerConversation: 1 }))
+        .toMatchObject({ inserted: 1 });
+    });
 
     it('replays missed rows, is idempotent, and is bounded to the most recent N per conversation', () => {
       const src = source({ [APP_KEY]: msgs(30), 'slack:T1:C1': msgs(3) });

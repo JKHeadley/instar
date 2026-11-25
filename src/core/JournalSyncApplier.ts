@@ -586,7 +586,7 @@ export class JournalSyncApplier {
     // as well as the transport entry, so a peer cannot impersonate another
     // case's sole writer. Other historical kinds keep their existing contract.
     if (kind === 'failure-callout-chunk' && entry.data?.origin !== senderMachineId) return 'forged';
-    if (kind === 'app-conversation-event' && entry.data?.eventKind === 'reaction'
+    if (kind === 'app-conversation-event' && (entry.data?.eventKind === 'reaction' || entry.data?.eventKind === 'forward-copy')
       && (entry.data.origin !== senderMachineId || entry.data.machineId !== senderMachineId)) return 'forged';
     // Transcript checkpoints (native-conversation-any-machine-access §3f) come only from the machine
     // that ran the session: the inner origin and the named source must both be the sender.

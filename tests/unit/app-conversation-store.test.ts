@@ -36,6 +36,27 @@ const dl = (id: string, state: 'delivered' | 'refused' | 'intercepted' | 'unknow
 const fileOf = (dir: string) => path.join(dir, 'app-conversations', `${crypto.createHash('sha256').update(`app:${KEY}`).digest('hex')}.jsonl`);
 
 describe('AppConversationStore', () => {
+  it('replicates forwarded history with a dedicated wire kind and hides the private binding in projections', () => {
+    const { store } = mk('m2');
+    store.append(created());
+    const copy = { ...msg('copy', 1, 'Copied text'), forwarded: true as const, forwardBinding: 'a'.repeat(64) };
+    const wire = buildAppConversationRecordData(copy)({ physical: 1, logical: 0, node: 'm1' }, 'm1')!;
+    expect(wire.eventKind).toBe('forward-copy');
+    expect(appEventFromReplicatedData({ ...wire, eventKind: 'message' })).toBeNull();
+    expect(appEventFromReplicatedData({ ...wire, origin: 'm2' })).toBeNull();
+    expect(appEventFromReplicatedData({ ...wire, forwardBinding: undefined })).toBeNull();
+    expect(appEventFromReplicatedData({ ...wire, role: 'agent' })).toBeNull();
+    const decoded = appEventFromReplicatedData(wire);
+    expect(decoded).toMatchObject(copy);
+    expect(store.ingestReplicated(decoded)?.appended).toBe(true);
+    const projected = store.browseMessages(KEY, null, 10).messages[0];
+    expect(projected).toMatchObject({ forwarded: true, deliveryState: 'delivered', text: 'Copied text' });
+    expect(projected).not.toHaveProperty('forwardBinding');
+    store.append(msg('ordinary', 0, 'Earlier text'));
+    expect(store.browseAgentMessages(KEY, null, 1).messages)
+      .toEqual([expect.objectContaining({ text: 'Earlier text' })]);
+  });
+
   it('keeps exact ID domains distinct and seeks within the raw timestamp tuple', () => {
     const { store } = mk();
     store.append(created());

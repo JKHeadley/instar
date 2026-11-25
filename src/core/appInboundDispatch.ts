@@ -185,9 +185,9 @@ export function createAppFollowUpInjector(deps: { sessions: Pick<AppDispatchSess
 /** The session context: recent history and the relay instructions, written to a private file. */
 function writeContext(deps: AppInboundDispatchDeps, input: Pick<AppDispatchInput, 'conversationKey' | 'alias' | 'ownerName' | 'notes'> & { messageId: string | null }): { ctxPath: string; contextData: string; fileFor: (name: string) => string } {
     // Context: recent history from the conversation store (never a platform API).
-    const history = deps.store.browseMessages(input.conversationKey, null, HISTORY).messages
+    const history = deps.store.browseAgentMessages(input.conversationKey, null, HISTORY).messages
       // A session serves every reader of its conversation, so it leaves out what any of them may not see.
-      .filter((m) => m.messageId !== input.messageId && !deps.heldFromAReader?.(input.conversationKey, m));
+      .filter((m) => !m.forwarded && m.messageId !== input.messageId && !deps.heldFromAReader?.(input.conversationKey, m));
     const lines: string[] = [];
     if (input.notes && input.notes.length > 0) {
       lines.push('--- Files from earlier messages ---');

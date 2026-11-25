@@ -41,7 +41,7 @@ afterAll(() => {
   for (const d of dirs) SafeFsExecutor.safeRmSync(d, { recursive: true, force: true, operation: 'tests/integration/mobile-native-conversations.test.ts' });
 });
 
-interface Opts { reactions?: boolean; machineId?: string; links?: boolean; replies?: boolean; sentinel?: { decideInboundDisposition: () => Promise<{ disposition: string }> }; lease?: { held: boolean }; holdsLease?: () => boolean; recording?: { on: boolean }; dispatchThrows?: boolean; nativeOff?: boolean; dispatchDelayMs?: number }
+interface Opts { forwards?: boolean; reactions?: boolean; machineId?: string; links?: boolean; replies?: boolean; sentinel?: { decideInboundDisposition: () => Promise<{ disposition: string }> }; lease?: { held: boolean }; holdsLease?: () => boolean; recording?: { on: boolean }; dispatchThrows?: boolean; nativeOff?: boolean; dispatchDelayMs?: number }
 
 function setup(opts: Opts = {}) {
   const machineId = opts.machineId ?? 'm1';
@@ -51,7 +51,7 @@ function setup(opts: Opts = {}) {
     projectName: 'echo', projectDir: dir, stateDir: dir, port: 0, authToken: 'tok-1', developmentAgent: true,
     sessions: {}, scheduler: {}, threadline: { ownerName: 'Justin' },
     // Multi-route off: these tests cover the single paired host (mobile-multi-route.md, flag off).
-    mobilePairing: { native: { enabled: !opts.nativeOff, messageLinks: { enabled: opts.links }, quotedReplies: { enabled: opts.replies }, reactions: { enabled: opts.reactions } }, multiRoute: { enabled: false } },
+    mobilePairing: { native: { enabled: !opts.nativeOff, messageLinks: { enabled: opts.links }, quotedReplies: { enabled: opts.replies }, reactions: { enabled: opts.reactions }, forwards: { enabled: opts.forwards } }, multiRoute: { enabled: false } },
   };
   const lease = opts.lease ?? { held: true };
   const recording = opts.recording ?? { on: true };
@@ -710,5 +710,130 @@ describe('signed App message reactions', () => {
     const sync = await signed(e, 'GET', `/mobile/chat/app/${key}/events`);
     expect(JSON.stringify(sync.body)).not.toContain('reactionActor');
     expect(e.dispatched).toHaveLength(0);
+  });
+});
+
+
+describe('signed App message forwarding', () => {
+  it('starts disabled', async () => {
+    const e = setup();
+    const sourceConversationKey = await create(e);
+    const destination = await create(e);
+    const r = await signed(e, 'POST', `/mobile/chat/app/${destination}/forward`,
+      { custodianMachineId: 'm1', sourceConversationKey, sourceEventId: 'original', requestId: rid() });
+    expect(r.status).toBe(503);
+    expect(r.body.error).toBe('forwards-unavailable');
+  });
+
+  it('copies Stop text once without invoking agent or control paths, including after restart', async () => {
+    const classifier = vi.fn(async () => ({ disposition: 'kill' }));
+    const e = setup({ forwards: true, sentinel: { decideInboundDisposition: classifier } });
+    await enableReplyProof(e);
+    const sourceConversationKey = await create(e);
+    const destination = await create(e);
+    const alternate = await create(e);
+    const sourceEventId = 'exact-original';
+    e.svc.store.append({ kind: 'message', conversationKey: sourceConversationKey, eventId: sourceEventId,
+      messageId: 'original-msg', role: 'agent', text: 'Stop', at: new Date().toISOString(), machineId: 'm1' });
+    const body = { custodianMachineId: 'm1', sourceConversationKey, sourceEventId, requestId: rid() };
+    const forward = (key = destination, params = body) =>
+      signed(e, 'POST', `/mobile/chat/app/${key}/forward`, params);
+    const pending = vi.spyOn(e.svc, 'pendingContext');
+    const finish = vi.spyOn(e.svc.deps.requests, 'finish').mockImplementationOnce(() => {
+      throw new Error('interrupted receipt write');
+    });
+    const first = await forward();
+    expect(first.status).toBe(200);
+    finish.mockRestore();
+    expect(first.body).toEqual({ eventId: expect.any(String), messageId: expect.any(String) });
+    e.svc.deps.requests = new MobileChatRequestStore(e.dir);
+    const proof = vi.spyOn(e.svc.store, 'getEvent').mockImplementationOnce(() => { throw new Error('proof unreadable'); });
+    expect((await forward()).body).toMatchObject({ error: 'outcome-unknown' });
+    proof.mockRestore();
+    const retries = await Promise.all([forward(), forward()]);
+    expect(retries.map((retry) => retry.body)).toEqual([first.body, first.body]);
+    expect((await forward(destination, { ...body, custodianMachineId: 'different-machine' })).body)
+      .toEqual({ error: 'forward-custody-unavailable' });
+    expect((await forward(alternate)).body).toMatchObject({ error: 'payload-conflict' });
+    expect((await forward(destination, { ...body, sourceEventId: 'absent' })).body)
+      .toMatchObject({ error: 'payload-conflict' });
+    expect((await forward(destination, { ...body, sourceEventId: 'absent', requestId: rid() })).body)
+      .toMatchObject({ error: 'forward-source-unavailable' });
+    const mayUse = e.pairing.mayUse.bind(e.pairing);
+    const readOnly = vi.spyOn(e.pairing, 'mayUse').mockImplementation((person, ref, op) =>
+      (ref !== destination || op !== 'send') && mayUse(person, ref, op));
+    try {
+      expect((await forward()).body).toEqual(first.body);
+      for (const id of [sourceEventId, 'absent']) {
+        expect((await forward(destination, { ...body, sourceEventId: id, requestId: rid() })).body)
+          .toEqual({ error: 'unknown-conversation' });
+      }
+    } finally { readOnly.mockRestore(); }
+    let sendChecks = 0;
+    const revoked = vi.spyOn(e.pairing, 'mayUse').mockImplementation((person, ref, op) => {
+      if (ref === destination && op === 'send') return ++sendChecks === 1;
+      return mayUse(person, ref, op);
+    });
+    try {
+      expect((await forward(destination, { ...body, requestId: rid() })).body)
+        .toEqual({ error: 'unknown-conversation' });
+    } finally { revoked.mockRestore(); }
+    let readChecks = 0;
+    const revokedRead = vi.spyOn(e.pairing, 'mayUse').mockImplementation((person, ref, op) => {
+      if (ref === destination && op === 'read') return ++readChecks === 1;
+      return mayUse(person, ref, op);
+    });
+    try {
+      expect((await forward(destination, { ...body, requestId: rid() })).body)
+        .toEqual({ error: 'unknown-conversation' });
+    } finally { revokedRead.mockRestore(); }
+    const interrupted = { ...body, requestId: rid() };
+    const reserve = e.svc.deps.requests.reserve.bind(e.svc.deps.requests);
+    const crash = vi.spyOn(e.svc.deps.requests, 'reserve').mockImplementationOnce((...args) => {
+      expect(reserve(...args).kind).toBe('reserved');
+      throw new Error('process stopped after reservation');
+    });
+    expect((await forward(destination, interrupted)).status).toBe(503);
+    crash.mockRestore();
+    e.svc.deps.requests = new MobileChatRequestStore(e.dir);
+    expect((await forward(destination, interrupted)).body).toMatchObject({ error: 'outcome-unknown' });
+    expect(e.svc.store.browseMessages(destination, null, 10).messages).toEqual([
+      expect.objectContaining({ ...first.body, text: 'Stop', forwarded: true }),
+    ]);
+    const second = makeDevice();
+    const paired = e.pairing.devices.createPending({ deviceName: 'Destination reader', label: null, publicKey: second.publicKey, host: HOST });
+    if (!paired.ok) throw new Error('destination reader pairing');
+    e.pairing.devices.applyConfirm(paired.device.id, { ok: true });
+    e.pairing.keyLedger!.recordActivation(e.pairing.devices.get(paired.device.id)!, 'telegram-dm', new Date(Date.now() - 1000).toISOString());
+    const destinationReader = { ...e, deviceId: paired.device.id, dev: second };
+    const destinationOnly = vi.spyOn(e.pairing, 'mayUse').mockImplementation((person, ref, op) =>
+      ref !== sourceConversationKey && mayUse(person, ref, op));
+    try {
+      const originalPath = `/mobile/chat/app/${sourceConversationKey}/messages`;
+      const copiedPath = `/mobile/chat/app/${destination}/messages`;
+      expect((await signed(destinationReader, 'GET', originalPath)).status).toBe(404);
+      const copied = await signed(destinationReader, 'GET', copiedPath);
+      expect(copied.status).toBe(200);
+      expect(copied.body.messages).toEqual([expect.objectContaining({ text: 'Stop', forwarded: true })]);
+      expect(JSON.stringify(copied.body)).not.toContain(sourceConversationKey);
+      expect(JSON.stringify(copied.body)).not.toContain(sourceEventId);
+      expect(JSON.stringify(copied.body)).not.toContain('forwardBinding');
+      for (const id of [sourceEventId, 'absent']) {
+        expect((await forward(destination, { ...body, sourceEventId: id, requestId: rid() })).body)
+          .toEqual({ error: 'forward-source-unavailable' });
+      }
+    } finally { destinationOnly.mockRestore(); }
+    const fresh = { ...body, requestId: rid() };
+    const raced = await Promise.all([forward(alternate, fresh), forward(alternate, fresh)]);
+    expect(raced.map((r) => r.status)).toEqual([200, 200]);
+    expect(raced[0]!.body).toEqual(raced[1]!.body);
+    expect(e.svc.store.browseMessages(alternate, null, 10).messages).toHaveLength(1);
+    expect(e.svc.store.browseMessages(sourceConversationKey, null, 10).messages).toHaveLength(1);
+    expect(e.dispatched).toEqual([]);
+    expect(e.killed).toEqual([]);
+    expect(e.stopEffects).toEqual([]);
+    expect(classifier).not.toHaveBeenCalled();
+    expect(pending).not.toHaveBeenCalled();
+    pending.mockRestore();
   });
 });

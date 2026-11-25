@@ -308,6 +308,7 @@ export function writeTelegramLogRow(writer: TopicRowWriter, tm: TopicMemory, nat
 
 /** The fields of a stored app message event the row writer reads. */
 export interface AppMessageEventLike {
+  forwarded?: true;
   eventId: string;
   kind: string;
   conversationKey: string;
@@ -334,7 +335,7 @@ export function writeAppConversationRow(
 ): WriteRowResult {
   // A Slack or Telegram conversation opened from the app is stored in the same store under its
   // platform key; its rows come from that platform's writer, never this one.
-  if (!isAppConversationKey(ev.conversationKey)) return { written: false, skipped: 'not-this-channel' };
+  if (ev.forwarded || !isAppConversationKey(ev.conversationKey)) return { written: false, skipped: 'not-this-channel' };
   const alias = d.aliasFor(ev.conversationKey);
   const hlc = appEventHlc(ev);
   const fromUser = ev.role === 'operator';
@@ -402,7 +403,7 @@ export function writeSlackLogRow(
 /** The part of AppConversationStore the reconcile reads (the source of truth). */
 export interface AppConversationSource {
   liveConversationKeys(): string[];
-  browseMessages(conversationKey: string, before: string | null | undefined, limit?: number): {
+  browseAgentMessages(conversationKey: string, before: string | null | undefined, limit?: number): {
     messages: Array<{ eventId: string; role: 'operator' | 'agent'; text: string; at: string; senderName?: string; senderRole?: 'owner' | 'msp' | 'team'; senderPerson?: { machineId: string; userId: string } }>;
     nextBefore: string | null;
   };
@@ -452,11 +453,11 @@ export function reconcileAppConversationRows(
       out.refused++;
       continue;
     }
-    const collected: ReturnType<AppConversationSource['browseMessages']>['messages'] = [];
+    const collected: ReturnType<AppConversationSource['browseAgentMessages']>['messages'] = [];
     try {
       let before: string | null = null;
       while (collected.length < max) {
-        const page = source.browseMessages(conversationKey, before, Math.min(100, max - collected.length));
+        const page = source.browseAgentMessages(conversationKey, before, Math.min(100, max - collected.length));
         collected.unshift(...page.messages);
         if (!page.nextBefore || page.messages.length === 0) break;
         before = page.nextBefore;

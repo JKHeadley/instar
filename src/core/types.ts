@@ -4268,6 +4268,7 @@ export interface InstarConfig {
       messageLinks?: { enabled?: boolean };
       quotedReplies?: { enabled?: boolean };
       reactions?: { enabled?: boolean };
+      forwards?: { enabled?: boolean };
       contextHistoryMaxConcurrentScans?: number;
       /**
        * Media in app conversations (docs/specs/mobile-native-chat-media.md). `enabled` omitted ⇒
