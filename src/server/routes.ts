@@ -1,3 +1,4 @@
+import { resolveTelegramWorkBoardSlipSource } from '../core/workBoardSlipSource.js';
 import { ManualQuotaBalance } from '../core/ManualQuotaBalance.js';
 import { normalizeCreationParentRef, type AppCreationContext } from '../core/AppCreationContext.js';
 // Governed by (docs/STANDARDS-REGISTRY.md cites this file as enforcement of):
@@ -3431,6 +3432,36 @@ export function createRoutes(ctx: RouteContext): Router {
   };
   let workBoardReadAs: ((req: import('express').Request, opts?: { full?: boolean }) => { status: number; body: unknown }) | null = null;
   registerWorkBoardRoutes(router, workBoardRouteDeps);
+  router.post('/work-board/slips', (req, res) => {
+    res.set('Cache-Control', 'no-store');
+    if (workBoardRouteDeps.caller(req).kind !== 'bearer' || !bearerMatches(req, ctx.config.authToken)) {
+      res.status(403).json({ error: 'work-board-slip-proposer-required' }); return;
+    }
+    const sourceRef = req.body?.sourceRef;
+    if (typeof sourceRef !== 'string') { res.status(400).json({ error: 'invalid-work-board-slip-source' }); return; }
+    const telegram = ctx.telegram;
+    const runtime = ctx.workBoard?.();
+    if (!telegram || !runtime || !workBoardRouteDeps.enabled()) {
+      res.status(503).json({ error: 'work-board-slips-unavailable' }); return;
+    }
+    const resolve = (ref: string) => resolveTelegramWorkBoardSlipSource(ref, {
+      ownerUid: () => {
+        const uid = telegram.getOwnerUserId();
+        const owner = workBoardOwnerKey();
+        const team = ctx.mobilePairingService?.teamLog()?.state();
+        const link = team?.ownerPersonKey
+          ? team.people.get(team.ownerPersonKey)?.links.telegram
+          : ctx.config.users?.find((person) => person.id === owner)?.telegramUserId;
+        return typeof uid === 'number' && uid > 0 && (link === uid || link === String(uid)) ? uid : null;
+      },
+      ownerPersonKey: workBoardOwnerKey,
+      findRecordedMessage: (topicId, messageId) => telegramTopicKnown(telegram, topicId)
+        ? telegram.findTopicMessage(topicId, messageId, 0).entry : null,
+    });
+    const issued = runtime.issuePermissionSlip(sourceRef, resolve);
+    if (!issued) { res.status(409).json({ error: 'work-board-slip-not-issued' }); return; }
+    res.status(200).json({ ...issued, expiresAt: new Date(issued.expiresAt).toISOString() });
+  });
   // The Needs-you list (docs/specs/work-front-doors.md decision 2): one read for the console, the phones and
   // the Mac app, built from Home's own sources over this server's loopback, filtered per viewer.
   const needsSelfRead = async (p: string, timeoutMs = NEEDS_READ_TIMEOUT_MS): Promise<{ status: number; body: unknown }> => {

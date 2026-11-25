@@ -132,3 +132,7 @@ The runtime now accepts only a trusted resolver's explicit ordered list from the
 ## Check the recorded Telegram owner request
 
 The Telegram source resolver reads an exact topic and message coordinate from a trusted journal adapter. It requires the configured owner identity and direct human provenance and excludes forwarded, relayed and unclassified messages. The accepted explicit card-list grammar preserves order and refuses duplicates and extra text. The source digest binds the exact recorded text without retaining it in the slip. The store seals that digest, and source mutation refuses an issuance retry. Independent review concurred. Unit tests verify the resolver's refusal cases, and the real-server fixture passes the recorded owner source through complete slip issuance. No live Telegram reader is connected to a production enrollment.
+
+## Agent proposal endpoint for a recorded owner request
+
+The server now mounts a root-agent authenticated proposal route. It uses the existing Telegram journal reader and requires the configured Telegram owner to match the current Work Board owner's linked identity. The known topic and exact message are checked before issuance, and the response contains only locator metadata. The endpoint grants no card authority and enqueues no approval. Agent awareness explains how to use it. Independent review concurred with the dark checkpoint. The real server fixture uses a recorded-message test adapter and legacy owner registry. Live Telegram authorship and Team Access linkage remain activation checks.

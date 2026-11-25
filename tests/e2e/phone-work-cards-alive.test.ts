@@ -11,7 +11,6 @@
  * mounted and wired: an unwired dependency answers 503 work-board-disabled).
  */
 import Database from 'better-sqlite3';
-import { resolveTelegramWorkBoardSlipSource } from '../../src/core/workBoardSlipSource.js';
 import { WorkBoardSlipStore } from '../../src/core/WorkBoardSlipStore.js';
 import { describe, it, expect, afterAll } from 'vitest';
 import request from 'supertest';
@@ -119,23 +118,27 @@ describe('Work cards from the owner phone E2E (feature is alive)', () => {
   it('reads an enrolled slip and its exact receipt through the signed owner-device route', async () => {
     const { config, stateDir } = mkConfig();
     delete config.dashboardPin;
+    config.users = [{ id: 'owner', name: 'Owner', channels: [], permissions: [], preferences: {}, telegramUserId: 1001, orgRole: 'owner' }];
     const db = new Database(':memory:');
     const writer = { epoch: 'epoch1', ownerGeneration: 'owner1', ownerPersonKey: 'owner', writerIncarnation: 'i1' };
     let active = true;
     const store = new WorkBoardSlipStore(db);
     let sourceCards: string[] = [];
+    const telegram = {
+      getOwnerUserId: () => 1001,
+      getAllTopicMappings: () => [{ topicId: 4242 }],
+      getTopicHistory: () => [],
+      findTopicMessage: (topicId: number, messageId: number) => ({
+        entry: topicId === 4242 && (messageId === 777 || messageId === 778) ? {
+          topicId, messageId, telegramUserId: messageId === 777 ? 1001 : 1002,
+          text: `Approve Work Board cards: ${sourceCards.join(', ')}`,
+          fromUser: true, forwarded: false, provenance: 'user', authorship: 'human',
+        } : null,
+      }),
+    };
     const rig: Rig = mkRuntime(stateDir, {
       permissionSlips: {
         store, currentWriter: () => active ? writer : null,
-        resolveIssueSource: (ref) => resolveTelegramWorkBoardSlipSource(ref, {
-          ownerUid: () => 1001,
-          ownerPersonKey: () => 'owner',
-          findRecordedMessage: (topicId, messageId) => topicId === 4242 && (messageId === 777 || messageId === 778) ? {
-            topicId, messageId, telegramUserId: messageId === 777 ? 1001 : 1002,
-            text: `Approve Work Board cards: ${sourceCards.join(', ')}`,
-            fromUser: true, forwarded: false, provenance: 'user', authorship: 'human',
-          } : null,
-        }),
         application: {
           readEvent: (id) => readWorkBoardApprovalEvent(id, {
             journal: rig.journal,
@@ -146,7 +149,7 @@ describe('Work cards from the owner phone E2E (feature is alive)', () => {
       },
     });
     rig.runtime.start();
-    const server = new AgentServer({ config, sessionManager: sm(), state: new StateManager(stateDir), workBoard: () => rig.runtime });
+    const server = new AgentServer({ config, sessionManager: sm(), state: new StateManager(stateDir), workBoard: () => rig.runtime, telegram: telegram as never });
     await server.start();
     const app = server.getApp();
     try {
@@ -165,13 +168,15 @@ describe('Work cards from the owner phone E2E (feature is alive)', () => {
       const { cardId } = createdCard;
       const { version, disclosure } = rig.runtime.svc.approvalSnapshot(cardId)!;
       sourceCards = [cardId];
-      expect(rig.runtime.issuePermissionSlip('telegram:4242:778')).toBeNull();
-      expect(rig.runtime.issuePermissionSlip('telegram:4242:779')).toBeNull();
-      const issued = rig.runtime.issuePermissionSlip('telegram:4242:777')!;
-      expect(issued).toBeTruthy();
-      expect(rig.runtime.issuePermissionSlip('telegram:4242:777')).toEqual(issued);
+      const issue = (sourceRef: string) => request(app).post('/work-board/slips').set(auth()).send({ sourceRef });
+      expect((await issue('telegram:4242:778')).status).toBe(409);
+      expect((await issue('telegram:4242:779')).status).toBe(409);
+      const issuance = await issue('telegram:4242:777');
+      expect(issuance.status, JSON.stringify(issuance.body)).toBe(200);
+      const issued = issuance.body;
+      expect((await issue('telegram:4242:777')).body).toEqual(issued);
       sourceCards = [cardId, 'wc_8ef2f314f32acff4'];
-      expect(rig.runtime.issuePermissionSlip('telegram:4242:777')).toBeNull();
+      expect((await issue('telegram:4242:777')).status).toBe(409);
       sourceCards = [cardId];
       const slip = store.get(issued.slipId)!;
       expect(slip.proposal.items).toEqual([{ version, disclosure }]);
@@ -244,7 +249,7 @@ describe('Work cards from the owner phone E2E (feature is alive)', () => {
       expect(rig.lines.filter(({ id }) => id === lineIdFor(eventId))).toHaveLength(1);
       expect(rig.journal.readKindComplete(WORK_CARD_RECORD_KIND).entries.filter(({ data }) => data.approvalBinding)).toHaveLength(1);
       expect(rig.runtime.svc.edit({ kind: 'agent' }, cardId, { title: 'Changed after approval' }).ok).toBe(true);
-      expect(rig.runtime.issuePermissionSlip('telegram:4242:777')).toEqual(issued);
+      expect((await issue('telegram:4242:777')).body).toEqual(issued);
       rig.runtime.stop();
       rig.runtime.start();
       const changed = await send(app, phone, 'GET', route);

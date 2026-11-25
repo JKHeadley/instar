@@ -83,8 +83,6 @@ export interface WorkBoardRuntimeSeams {
   permissionSlips?: {
     store: WorkBoardSlipStore;
     currentWriter: () => WorkBoardWriterProof | null;
-    /** Resolve an authenticated owner request with an explicit ordered card list. */
-    resolveIssueSource?: (sourceRef: string) => WorkBoardSlipOwnerSource | null;
     application?: {
       readEvent: (id: string) => WorkBoardApprovalLookup;
     };
@@ -144,11 +142,11 @@ export class WorkBoardRuntime {
     return writer && writer.ownerPersonKey === this.seams.ownerPersonKey() ? writer : null;
   }
 
-  issuePermissionSlip(sourceRef: string): { slipId: string; disclosureDigest: string; expiresAt: number } | null {
+  issuePermissionSlip(sourceRef: string, resolveSource: (sourceRef: string) => WorkBoardSlipOwnerSource | null): { slipId: string; disclosureDigest: string; expiresAt: number } | null {
     const port = this.seams.permissionSlips;
     const writer = this.currentSlipWriter();
-    if (!port?.resolveIssueSource || !writer) return null;
-    const source = port.resolveIssueSource(sourceRef);
+    if (!port || !writer) return null;
+    const source = resolveSource(sourceRef);
     if (!source || source.ownerPersonKey !== writer.ownerPersonKey || !source.sourceId) return null;
     const cardIds = [...source.cardIds];
     if (!cardIds.length || !cardIds.every(isCardId) || new Set(cardIds).size !== cardIds.length
