@@ -1,0 +1,28 @@
+{
+  "version": 2,
+  "slug": "hosted-relay-tls-routing",
+  "sessionId": "41652017-0805-405d-bb4e-2a975fb349ce",
+  "timestamp": "2026-11-25T12:58:21.600Z",
+  "artifactPath": "upgrades/side-effects/hosted-relay-tls-routing.md",
+  "artifactSha256": "4e97daeec2d3aaa94dce16c7e347fdb1000dfbfef55f5efc08ebb3beb3bba8c9",
+  "specPath": "docs/specs/hosted-relay.md",
+  "coveredFiles": [
+    "docs/specs/hosted-relay.md",
+    "src/hostedRelay/clientHello.ts",
+    "src/hostedRelay/tlsPassthrough.ts",
+    "tests/integration/hosted-relay-passthrough.test.ts",
+    "tests/unit/hosted-relay-client-hello.test.ts",
+    "upgrades/next/hosted-relay-tls-routing.md",
+    "upgrades/side-effects/hosted-relay-tls-routing.md"
+  ],
+  "phase": "complete",
+  "tier": 2,
+  "tierReasoning": "Dormant TLS routing foundation with bounded input, transparent encrypted forwarding and independent review.",
+  "secondPass": "true",
+  "reviewerConcurred": true,
+  "classClosure": {
+    "defectClass": "unbounded-self-action",
+    "closure": "n/a",
+    "reason": "Transport requires an explicitly selected stream from a future trusted authority and opens no listener itself."
+  }
+}

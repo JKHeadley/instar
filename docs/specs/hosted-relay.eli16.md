@@ -32,3 +32,5 @@ Apple only accepts alerts for our App Store app when signed with our key, and th
 ## What needs deciding
 
 Justin decides three things later: deploying the relay with a cost ceiling and confirming its limits, both after the first two parts are live, and submitting the app to the App Store. Nothing else waits on him.
+
+The November 25 decision authorizes implementation and disposable testing in the public repository. Production hosting and spending have their own approval steps.
