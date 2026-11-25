@@ -1,0 +1,34 @@
+{
+  "version": 3,
+  "slug": "conversation-media-discovery",
+  "sessionId": "633bd330-201e-4dc8-8fd9-72b89116167e",
+  "timestamp": "2026-11-25T04:48:26.204Z",
+  "artifactPath": "upgrades/side-effects/conversation-media-discovery.md",
+  "artifactSha256": "5eeea0bb45b16e0b87eb2e82a31e7e0ed17967ef4b00184bade3102f209a74dd",
+  "specPath": "docs/specs/app-attachment-browse.md",
+  "coveredFiles": [
+    "docs/specs/app-attachment-browse.eli16.md",
+    "docs/specs/app-attachment-browse.md",
+    "src/data/feature-ladders.json",
+    "tests/unit/mobile-app-people-roles.test.ts",
+    "tests/unit/mobile-session-terminal.test.ts",
+    "upgrades/side-effects/conversation-media-discovery.md"
+  ],
+  "phase": "complete",
+  "tier": 2,
+  "tierReasoning": "Registry posture and explicit inventories for signed owner routes",
+  "secondPass": "true",
+  "reviewerConcurred": true,
+  "toolchain": {
+    "buildSkill": {
+      "name": "instar-dev",
+      "version": "21a45a5a5f03",
+      "verified": true
+    },
+    "convergence": {
+      "reportPath": "docs/specs/reports/app-attachment-browse-convergence.md",
+      "iterations": 6,
+      "verified": true
+    }
+  }
+}

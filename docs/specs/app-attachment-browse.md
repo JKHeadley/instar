@@ -101,4 +101,4 @@ The focused closure reviewer concurred with the tuple selector, look-ahead and t
 - **fleet:** Keep the feature opt-in. Offer it after the development agent establishes the graduation criterion and the activation review clears.
 - **graduation criterion:** Meet the browser, isolation, performance and restart acceptance criteria above on the exact runtime head.
 - **dark-window:** The option defaults off. Review its disposition after verification and before release activation.
-- **ladder:** Disposable agent, development agent with opt-in, then fleet availability with opt-in.
+- **ladder:** mobilePairing.native.attachmentBrowse
