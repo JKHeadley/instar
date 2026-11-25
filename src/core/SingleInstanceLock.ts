@@ -34,6 +34,7 @@ import fs from 'node:fs';
 import os from 'node:os';
 import path from 'node:path';
 import { execFileSync } from 'node:child_process';
+import Database from 'better-sqlite3';
 
 import { SafeFsExecutor } from './SafeFsExecutor.js';
 import { isAlive } from './ProjectRoundLock.js';
@@ -340,13 +341,7 @@ export class SingleInstanceLock {
         );
         return { acquired: false, reason: 'foreign-host-conflict', currentHolder: existing };
       }
-      // Reclaim the stale lock atomically and take it.
-      try {
-        SafeFsExecutor.safeUnlinkSync(this.lockPath(), { operation: 'SingleInstanceLock.acquire:reclaim-stale' });
-      } catch {
-        /* race with another reclaimer — loop and re-read */
-      }
-      if (this.tryWriteLock()) {
+      if (this.tryReclaimLock(existing)) {
         this.held = true;
         this.acquiredWithOverride = false;
         this.log(`[single-instance] reclaimed a stale same-host lock (dead pid ${existing.pid}).`);
@@ -430,6 +425,30 @@ export class SingleInstanceLock {
       // @silent-fallback-ok: a missing/corrupt lock file reads as "no holder"
       // (null) — the acquire loop then treats the slot as free, the safe direction.
       return null;
+    }
+  }
+
+  /** Serialize stale-record removal across processes. SQLite releases the mutex if a process exits. */
+  private tryReclaimLock(observed: InstanceLockRecord): boolean {
+    let mutex: Database.Database | undefined;
+    try {
+      const mutexPath = path.join(this.stateDir, 'local', 'server-instance-reclaim.sqlite');
+      mutex = new Database(mutexPath, { timeout: 0 });
+      return mutex.transaction(() => {
+        const current = this.readLock();
+        if (!current || current.pid !== observed.pid || current.hostname !== observed.hostname
+          || current.startedAt !== observed.startedAt || current.heartbeat !== observed.heartbeat) return false;
+        this.startProbeMemo.delete(current.pid);
+        if (this.holderIsLive(current)) return false;
+        SafeFsExecutor.safeUnlinkSync(this.lockPath(), { operation: 'SingleInstanceLock.acquire:reclaim-stale' });
+        // A first-time publisher can win the newly free name. Atomic publication
+        // ensures this contender can never overwrite it.
+        return this.tryWriteLock();
+      }).immediate();
+    } catch {
+      return false; // @silent-fallback-ok — an unavailable or busy mutex cannot authorize reclaim
+    } finally {
+      mutex?.close();
     }
   }
 

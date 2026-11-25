@@ -47,3 +47,7 @@ The independent review concurred on lock revalidation at reserve, append, receip
 ## Atomic process-lock publication checkpoint
 
 Independent and cross-model review concurred on publishing a fully written temporary record through an atomic no-replace hard link. The follow-up distinguishes best-effort scratch cleanup and tests an unsupported link explicitly. The unit test places a winning record at the destination immediately before publication and verifies that the record is intact. The lifecycle test coordinates two distinct Node processes against an empty state directory and verifies one acquired process and one matching disk record. Stale-holder reclamation is outside this checkpoint and remains a pre-mount requirement.
+
+## Serialized stale process-lock recovery checkpoint
+
+The independent and cross-model reviewers concurred on interprocess serialization for cooperating updated binaries. In the reclaim transaction, the current lock must still match the observed process, hostname, start time and heartbeat. Liveness is freshly checked before unlink. The focused tests cover new ownership and start-time changes, a busy SQLite connection, simultaneous start from stale state, and recovery after a child is killed while holding the SQLite mutex. Fresh ownership remains protected by no-replace publication. Production mounting must exclude older binaries sharing the same state directory and wire the normal boot lock.

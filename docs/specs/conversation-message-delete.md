@@ -7,9 +7,9 @@ approved: true
 approved-by: echo under standing build approval for local storage, private signed admission and execution, and unmounted history projection only
 parent-principle: Operator-Surface Quality
 tier: 2
-review-convergence: "2026-11-25T20:05:52.872Z"
-review-iterations: 26
-review-completed-at: "2026-11-25T20:05:52.872Z"
+review-convergence: "2026-11-25T20:27:56.633Z"
+review-iterations: 27
+review-completed-at: "2026-11-25T20:27:56.633Z"
 review-report: "docs/specs/reports/conversation-message-delete-convergence.md"
 cross-model-review: "cross-model-review: codex-cli:gpt-6.2-astra"
 ---
@@ -136,3 +136,9 @@ The private executor rejects a lock for a different state directory and rejects 
 ## Atomic process-lock publication checkpoint
 
 A fresh server lock is published by linking a complete, unique temporary record to the canonical lock name. The filesystem creates the destination atomically only when it is absent. A competing publisher cannot replace the active record, and the temporary name is removed on a best-effort basis. A leftover temporary name confers no ownership. A filesystem that cannot publish the link denies acquisition. The empty-directory startup test releases two independent Node processes together and confirms that only one claims and retains the record. This change addresses fresh publication. Stale reclaim still uses the existing verification and removal path and must separately exclude replacement of a newly live record before Delete is mounted.
+
+## Serialized stale process-lock recovery checkpoint
+
+A stale reclaimer takes a non-waiting SQLite write transaction on a host-local mutex adjacent to the lock. While holding it, the reclaimer re-reads the canonical record, requires the same owner, process start and heartbeat, and rechecks liveness before removing it. Only this stale-reclaim section uses the database. The database contains no application records and is intentionally retained so all processes take the same OS-backed mutex. A process exit releases the transaction. A fresh publisher can acquire the free filename after stale removal, and atomic no-replace publication prevents overwrite in that case. Busy or unavailable mutexes fail closed and use the existing bounded acquisition loop.
+
+This protects cooperating updated processes sharing one host-local state directory. Production Delete mounting still requires all processes that can open that directory to use the updated primitive, the actual boot lock to be wired, and authoritative history and sync to be enforced.

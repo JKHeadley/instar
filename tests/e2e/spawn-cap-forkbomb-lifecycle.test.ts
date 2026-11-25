@@ -118,12 +118,19 @@ describe('Fork-bomb prevention — lifecycle (E2E over HTTP)', () => {
       first.release();
     });
 
-    it('publishes exactly one owner when two processes start against an empty state directory', async () => {
+    it.each([false, true])('publishes one owner under simultaneous startup (stale lock: %s)', async (stale) => {
+      if (stale) {
+        const local = path.join(stateDir, 'local');
+        fs.mkdirSync(local);
+        fs.writeFileSync(path.join(local, 'server-instance.lock'), JSON.stringify({
+          pid: 2147483647, hostname: os.hostname(), heartbeat: Date.now() - 60_000,
+        }));
+      }
       const code = await build({
         stdin: {
           contents: `
             import { SingleInstanceLock } from './src/core/SingleInstanceLock.ts';
-            const lock = new SingleInstanceLock({ stateDir: process.argv[1], env: {}, handoffGraceMs: 0, log: () => {} });
+            const lock = new SingleInstanceLock({ stateDir: process.argv[1], env: {}, handoffGraceMs: 0, isStateDirHostLocal: () => true, log: () => {} });
             process.on('message', async (message) => {
               if (message !== 'acquire') return;
               const result = await lock.acquire();
@@ -164,6 +171,35 @@ describe('Fork-bomb prevention — lifecycle (E2E over HTTP)', () => {
         } finally { clearTimeout(cleanupDeadline); }
       }
     }, 15_000);
+
+    it('recovers when a process exits while holding the stale-reclaim mutex', async () => {
+      const local = path.join(stateDir, 'local');
+      const record = JSON.stringify({ pid: 2147483647, hostname: os.hostname(), heartbeat: Date.now() - 60_000 });
+      fs.mkdirSync(local);
+      fs.writeFileSync(path.join(local, 'server-instance.lock'), record);
+      const child = spawn(process.execPath, ['--input-type=module', '-e', `
+        import Database from 'better-sqlite3';
+        const mutex = new Database(process.argv[1]);
+        mutex.exec('BEGIN IMMEDIATE');
+        process.on('message', () => {});
+        process.send('locked');
+      `, path.join(local, 'server-instance-reclaim.sqlite')], { stdio: ['ignore', 'ignore', 'inherit', 'ipc'] });
+      const exit = once(child, 'exit');
+      const contender = new SingleInstanceLock({ stateDir, env: {}, handoffGraceMs: 0, isStateDirHostLocal: () => true, log: () => {} });
+      try {
+        const [ready] = await once(child, 'message', { signal: AbortSignal.timeout(5_000) });
+        expect(ready).toBe('locked');
+        expect((await contender.acquire()).acquired).toBe(false);
+        expect(fs.readFileSync(contender.lockPath(), 'utf8')).toBe(record);
+      } finally {
+        if (child.exitCode === null && child.signalCode === null) child.kill('SIGKILL');
+        await exit;
+      }
+      try {
+        expect((await contender.acquire()).acquired).toBe(true);
+        expect(contender.revalidateForExclusiveWrite()).toBe(true);
+      } finally { contender.release(); }
+    }, 10_000);
 
     it('after the holder releases (clean restart), a fresh acquisition SUCCEEDS (hands off, never wedges)', async () => {
       const first = new SingleInstanceLock({ stateDir, handoffGraceMs: 80, pollIntervalMs: 10 });
