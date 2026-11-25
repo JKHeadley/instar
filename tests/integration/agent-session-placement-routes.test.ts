@@ -237,3 +237,170 @@ describe('agent-session placement routes', () => {
     expect(getActiveAgentSessionPlacement()).toBeNull();
   });
 });
+
+// ── placement Step 2: topic-bound agent spawns (docs/specs/topic-spawns-placed-by-load.md) ──
+
+describe('topic-bound agent spawn placement routes (Step 2)', () => {
+  const SELF = 'm_studio';
+  let dir: string;
+  let registry: MachinePoolRegistry;
+  let server: Server;
+  let localSpawns: Array<Record<string, unknown>>;
+  let starts: Array<{ key: string; target: string; payload: Record<string, any> }>;
+  let startAnswer: Record<string, unknown>;
+  let ownership: Record<string, { status: string; ownerMachineId: string; ownershipEpoch: number }>;
+  let emitted: Array<Record<string, unknown>>;
+  let claimOps: string[];
+  let fallbackSpawns: Array<{ topicId: number; name: string; task?: string }>;
+  let holdsLease: boolean;
+  let config: Record<string, unknown>;
+
+  function beat(machineId: string, r: MachineLoadReport, brief = true) {
+    registry.recordHeartbeat({ machineId, selfReportedLastSeen: new Date().toISOString(), loadAvg: r.loadPerCore! * r.cores!, loadReport: r, seamlessnessFlags: brief ? { 'agent-brief@1': true } : {} } as never);
+  }
+
+  async function boot() {
+    const ctx: Record<string, unknown> = {
+      config,
+      stateDir: dir,
+      machinePoolRegistry: registry,
+      meshSelfId: SELF,
+      resolvePeerUrls: () => [],
+      coordinator: { enabled: true, holdsLease: () => holdsLease },
+      sessionOwnershipRegistry: { read: (k: string) => ownership[k] ?? null, ownerOf: (k: string) => ownership[k]?.ownerMachineId ?? null },
+      state: { listSessions: () => [], getSession: () => null },
+      sessionManager: {
+        spawnSession: async (o: Record<string, unknown>) => { localSpawns.push(o); return { id: 'local-1', name: o.name, tmuxSession: `echo-${o.name}`, status: 'running' }; },
+        captureOutput: () => null,
+        isSessionAlive: () => true,
+      },
+      topicProfile: {
+        startAgentTopicOnMachine: async (key: string, target: string, payload: Record<string, any>) => { starts.push({ key, target, payload }); return startAnswer; },
+        agentStartSeamWired: () => true,
+        briefReplication: {
+          emit: (rec: Record<string, unknown>) => { emitted.push(rec); return 'emitted'; },
+          read: () => null,
+          markCompleted: () => 'nothing-to-mark',
+        },
+        sessionPoolLocalClaim: () => ({
+          kind: 'ready',
+          place: () => { claimOps.push('place'); return { ok: true }; },
+          confirm: () => { claimOps.push('confirm'); return true; },
+          release: () => { claimOps.push('release'); return true; },
+        }),
+        spawnForTopic: async (topicId: number, name: string, task?: string) => { fallbackSpawns.push({ topicId, name, task }); return { ok: true, session: `echo-topic-${topicId}`, registered: true }; },
+      },
+    };
+    const app = express();
+    app.use(express.json());
+    app.use(createRoutes(ctx as never));
+    server = await listen(app);
+  }
+
+  beforeEach(async () => {
+    heavyReservations.clear();
+    agentSessionReservations.clear();
+    dir = fs.mkdtempSync(path.join(os.tmpdir(), 'tsp-routes-'));
+    config = { authToken: 'test-token', stateDir: dir, port: 0, projectName: 'echo', developmentAgent: true };
+    registry = new MachinePoolRegistry({
+      listMachines: () => [{ machineId: SELF, nickname: 'Mac Studio' }, { machineId: 'm_m5', nickname: 'Mac M5 Pro' }],
+      clockSkewToleranceMs: 300_000,
+      failoverThresholdMs: 60_000,
+    });
+    beat(SELF, report(16, 0.5, 'saturated'));
+    beat('m_m5', report(18, 0.1));
+    localSpawns = []; starts = []; emitted = []; claimOps = []; fallbackSpawns = []; ownership = {};
+    startAnswer = { ok: true, epoch: 2, settled: true };
+    holdsLease = true;
+    await boot();
+  });
+
+  afterEach(async () => {
+    await server.close();
+    setActiveAgentSessionPlacement(null);
+    SafeFsExecutor.safeRmSync(path.join(dir, '..', 'logs', 'agent-session-placement.jsonl'), { force: true, operation: 'tests/integration/agent-session-placement-routes.test.ts' });
+    SafeFsExecutor.safeRmSync(dir, { recursive: true, force: true, operation: 'tests/integration/agent-session-placement-routes.test.ts' });
+  });
+
+  const spawn = async (body: Record<string, unknown>) => {
+    const res = await fetch(server.url + '/sessions/spawn', { method: 'POST', body: JSON.stringify(body), headers: { 'Content-Type': 'application/json' } });
+    return { status: res.status, body: await res.json().catch(() => ({})) as Record<string, any> };
+  };
+  const rows = () => {
+    const f = path.join(dir, '..', 'logs', 'agent-session-placement.jsonl');
+    return fs.existsSync(f) ? fs.readFileSync(f, 'utf8').trim().split('\n').map((l) => JSON.parse(l)) : [];
+  };
+
+  it('a busy lease holder places the topic spawn on the peer: 202 peer-accepted, tmuxSession null, agent authorship, brief replicated first', async () => {
+    const r = await spawn({ name: 'review-1', prompt: 'review PR 9', topicId: 4242, placement: 'auto' });
+    expect(r.status).toBe(202);
+    expect(r.body).toMatchObject({ placementOutcome: 'peer-accepted', tmuxSession: null, topicId: 4242, placedOn: { machineId: 'm_m5', nickname: 'Mac M5 Pro' } });
+    expect(localSpawns).toHaveLength(0);
+    expect(starts).toHaveLength(1);
+    expect(starts[0]).toMatchObject({ key: '4242', target: 'm_m5', payload: { authorship: { kind: 'agent', originMachineId: SELF, session: 'review-1' } } });
+    expect(starts[0].payload.text).toContain('review PR 9');
+    expect(emitted[0]).toMatchObject({ topicId: 4242, placedOn: 'm_m5', originMachineId: SELF });
+    expect(rows().at(-1)).toMatchObject({ topicBound: true, topicId: 4242, topicOwnership: 'none', outcome: 'peer-accepted' });
+  });
+
+  it('a rejected deliver falls back to a checked local claim and the agent-task spawn (201 local-fallback)', async () => {
+    startAnswer = { ok: false, code: 'start-failed', error: 'rejected', released: true, settled: true };
+    const r = await spawn({ name: 'review-1', prompt: 'review PR 9', topicId: 4242, placement: 'auto' });
+    expect(r.status).toBe(201);
+    expect(r.body).toMatchObject({ placementOutcome: 'local-fallback', tmuxSession: 'echo-topic-4242' });
+    expect(claimOps).toEqual(['place', 'confirm']);
+    expect(fallbackSpawns).toEqual([{ topicId: 4242, name: 'review-1', task: 'review PR 9' }]);
+    expect(localSpawns).toHaveLength(0);
+  });
+
+  it('an unknown outcome keeps the claim and starts nothing locally (202 unconfirmed)', async () => {
+    startAnswer = { ok: false, code: 'start-unknown', error: 'timeout', settled: false };
+    const r = await spawn({ name: 'review-1', prompt: 'p', topicId: 4242, placement: 'auto' });
+    expect(r.status).toBe(202);
+    expect(r.body.placementOutcome).toBe('unconfirmed');
+    expect(localSpawns).toHaveLength(0);
+    expect(fallbackSpawns).toHaveLength(0);
+  }, 30_000);
+
+  it('a topic owned by a peer answers 409 on EVERY topic-bound spawn, with or without placement:"auto"', async () => {
+    ownership['4242'] = { status: 'active', ownerMachineId: 'm_m5', ownershipEpoch: 3 };
+    const plain = await spawn({ name: 'review-1', prompt: 'p', topicId: 4242 });
+    expect(plain.status).toBe(409);
+    expect(plain.body).toMatchObject({ placementOutcome: 'topic-owned-elsewhere', owner: { machineId: 'm_m5' }, ownerReachable: true });
+    const auto = await spawn({ name: 'review-1', prompt: 'p', topicId: 4242, placement: 'auto' });
+    expect(auto.status).toBe(409);
+    expect(localSpawns).toHaveLength(0);
+    expect(starts).toHaveLength(0);
+  });
+
+  it('with topicBound off, a spawn into a peer-owned topic is unchanged (starts here) and placement:"auto" stays topic-bound local', async () => {
+    await server.close();
+    setActiveAgentSessionPlacement(null);
+    config = { ...config, multiMachine: { placement: { agentSessions: { topicBound: false } } } };
+    await boot();
+    ownership['4242'] = { status: 'active', ownerMachineId: 'm_m5', ownershipEpoch: 3 };
+    const plain = await spawn({ name: 'review-1', prompt: 'p', topicId: 4242 });
+    expect(plain.status).toBe(201);
+    delete ownership['4242'];
+    const auto = await spawn({ name: 'review-2', prompt: 'p', topicId: 4243, placement: 'auto' });
+    expect(auto.body).toMatchObject({ placementOutcome: 'local', placementReason: 'topic-bound' });
+    expect(starts).toHaveLength(0);
+  });
+
+  it('stays local through today\'s route: not the lease holder, an explicit model, a peer without agent-brief@1', async () => {
+    holdsLease = false;
+    expect((await spawn({ name: 'a1', prompt: 'p', topicId: 1, placement: 'auto' })).body).toMatchObject({ placementOutcome: 'local', placementReason: 'not-router' });
+    holdsLease = true;
+    expect((await spawn({ name: 'a2', prompt: 'p', topicId: 2, placement: 'auto', model: 'opus' })).body).toMatchObject({ placementOutcome: 'local', placementReason: 'options-do-not-travel' });
+    beat('m_m5', report(18, 0.1), false);
+    expect((await spawn({ name: 'a3', prompt: 'p', topicId: 3, placement: 'auto' })).body).toMatchObject({ placementOutcome: 'local', placementReason: 'no-eligible-peer' });
+    expect(starts).toHaveLength(0);
+    expect(localSpawns).toHaveLength(3);
+  });
+
+  it('every topic-bound shadow row carries the topic ownership state', async () => {
+    ownership['77'] = { status: 'released', ownerMachineId: 'm_m5', ownershipEpoch: 4 };
+    await spawn({ name: 'plain-topic', prompt: 'p', topicId: 77 });
+    expect(rows().find((x) => x.name === 'plain-topic')).toMatchObject({ mode: 'shadow', topicBound: true, topicId: 77, topicOwnership: 'released' });
+  });
+});

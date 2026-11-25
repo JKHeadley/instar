@@ -25,7 +25,9 @@ describe('dashboard door + model — server.ts wiring', () => {
   it('spawnForTopic goes through the ONE chokepoint with silentStart, guarded by the late-bound spawningTopics ref', () => {
     expect(ctxBlock).toContain('spawnForTopic: createSpawnForTopic({');
     expect(ctxBlock).toContain('guard: () => _spawningTopicsRegistryRef');
-    expect(ctxBlock).toMatch(/spawn: \(topicId, name\) => spawnSessionForTopic\([\s\S]*?\{ silentStart: true \}/);
+    // Placement Step 2: the same chokepoint also carries an optional agent task (fresh-task
+    // framing for the checked local fallback); without one it is still the silent start.
+    expect(ctxBlock).toMatch(/spawn: \(topicId, name, task\) => spawnSessionForTopic\([\s\S]*?\{ agentTask: task \} : \{ silentStart: true \}/);
   });
 
   it('the pool seam reads the NULLABLE lease accessor (never the `: true` fallback) and the hoisted replication flag', () => {

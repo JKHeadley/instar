@@ -1,0 +1,54 @@
+{
+  "version": 3,
+  "slug": "topic-spawns-placed-by-load",
+  "sessionId": "233b8c8f-45fe-4930-a2d0-4ca9bb767cb1",
+  "timestamp": "2026-11-25T13:06:28.116Z",
+  "artifactPath": "upgrades/side-effects/topic-spawns-placed-by-load.md",
+  "artifactSha256": "575c65ec2a5dce752590312f45e79a747f239864f485e90fd8af740f0af04134",
+  "specPath": "docs/specs/topic-spawns-placed-by-load.md",
+  "coveredFiles": [
+    "docs/specs/carriers/topic-spawns-placed-by-load.json",
+    "docs/specs/reports/topic-spawns-placed-by-load-convergence.md",
+    "docs/specs/topic-spawns-placed-by-load.eli16.md",
+    "docs/specs/topic-spawns-placed-by-load.md",
+    "src/commands/server.ts",
+    "src/core/CoherenceJournal.ts",
+    "src/core/JournalSyncApplier.ts",
+    "src/core/ReplicatedStoreReconcilerWiring.ts",
+    "src/core/TopicSpawnBriefReplicatedStore.ts",
+    "src/core/TopicSpawnBriefStore.ts",
+    "src/core/agentSessionPlacement.ts",
+    "src/core/dashboardTopicProfile.ts",
+    "src/core/devGatedFeatures.ts",
+    "src/core/machineCoherenceManifest.ts",
+    "src/core/topicSpawnPlacement.ts",
+    "src/core/types.ts",
+    "src/data/awareness/agent-sessions-placed-by-load.md",
+    "src/data/feature-ladders.json",
+    "src/server/routes.ts",
+    "tests/e2e/agent-session-placement-alive.test.ts",
+    "tests/integration/agent-session-placement-routes.test.ts",
+    "tests/unit/CoherenceJournal.test.ts",
+    "tests/unit/dashboard-door-model-server-wiring.test.ts",
+    "tests/unit/topic-spawn-placement.test.ts",
+    "upgrades/next/topic-spawns-placed-by-load.md",
+    "upgrades/side-effects/topic-spawns-placed-by-load.md"
+  ],
+  "phase": "complete",
+  "tier": 2,
+  "tierReasoning": "Reconciles the approved implementation with current main and preserves the rollout policy.",
+  "secondPass": "true",
+  "reviewerConcurred": true,
+  "toolchain": {
+    "convergence": {
+      "reportPath": "docs/specs/reports/topic-spawns-placed-by-load-convergence.md",
+      "iterations": 7,
+      "verified": true
+    }
+  },
+  "classClosure": {
+    "defectClass": "unbounded-self-action",
+    "closure": "n/a",
+    "reason": "Placement runs once for an explicit topic spawn request. The branch neither schedules new spawn requests nor retries an ambiguous delivery. The local fallback requires a definitive remote rejection."
+  }
+}

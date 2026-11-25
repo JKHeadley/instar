@@ -170,7 +170,8 @@ import {
   type ProfileSpawnFailureClass,
   type TopicProfileOrchestratorDeps,
 } from '../core/TopicProfileOrchestrator.js';
-import { TopicSpawnBriefStore, formatCarriedBriefBlock } from '../core/TopicSpawnBriefStore.js';
+import { TopicSpawnBriefStore, formatCarriedBriefBlock, formatAgentTaskBlock } from '../core/TopicSpawnBriefStore.js';
+import { classifyForwardedAgentTask } from '../core/topicSpawnPlacement.js';
 import { effectivePending, heavyFit, peerMemoryReason, selfHeavyJobProfile } from '../core/machineResourceProfile.js';
 import { acceptedHeavy, heavyReservations } from '../core/heavyWorkPlacement.js';
 import { CodexResumeMap, type CodexSpawnFence } from '../core/CodexResumeMap.js';
@@ -1722,6 +1723,11 @@ export async function spawnSessionForTopic(
     /** Chief of Staff §2.4 step 3: the caller already holds the conversation lock (it is NOT
      *  reentrant), so spawn through the unlocked entry point. Never set outside that lock. */
     unlocked?: boolean;
+    /** Placement Step 2 (docs/specs/topic-spawns-placed-by-load.md): a task the agent itself
+     *  started (a verified agent-spawn forward, or the checked local fallback). Framed as a fresh
+     *  task to do now: never "the user's latest message", and without the carried-brief restart
+     *  wording or the hand-off instruction (both tell a resumed session to wait). */
+    agentTask?: string;
     /** SEC-106 decision 7: the latest message was verified agent-signed at ingress. Frames the
      *  first message the way the inject path's tag does. Set only from a carried envelope label
      *  (`framingLabel`), never from content. Unset = every line byte-identical to before. */
@@ -1732,7 +1738,10 @@ export async function spawnSessionForTopic(
   },
 ): Promise<string> {
   const silentStart = spawnOpts?.silentStart === true;
-  const carriedBriefBlock = !silentStart && typeof spawnOpts?.carriedBrief === 'string' && spawnOpts.carriedBrief.length > 0
+  const agentTaskBlock = !silentStart && typeof spawnOpts?.agentTask === 'string' && spawnOpts.agentTask.length > 0
+    ? formatAgentTaskBlock(spawnOpts.agentTask)
+    : null;
+  const carriedBriefBlock = !silentStart && !agentTaskBlock && typeof spawnOpts?.carriedBrief === 'string' && spawnOpts.carriedBrief.length > 0
     && !(typeof latestMessage === 'string' && latestMessage.length > 0)
     ? formatCarriedBriefBlock(spawnOpts.carriedBrief)
     : null;
@@ -1894,7 +1903,9 @@ export async function spawnSessionForTopic(
     const inlineContext = contextContent;
 
     const parts = [
-      `CONTINUATION — You are resuming an EXISTING conversation. Read the context below before responding.`,
+      agentTaskBlock
+        ? `NEW TASK — The agent started this session to do a task. The conversation context below is for reference; the task follows it.`
+        : `CONTINUATION — You are resuming an EXISTING conversation. Read the context below before responding.`,
       ``,
     ];
 
@@ -1914,7 +1925,10 @@ export async function spawnSessionForTopic(
     const quietContext = await telegram.selectivity?.bootContextPool(topicId);
     if (quietContext) parts.push(quietContext, ``);
     parts.push(inlineContext, ``);
-    if (hasLatestMessage) {
+    if (agentTaskBlock) {
+      // Placement Step 2: the agent's own task, to do now — no hand-off "wait silently" instruction.
+      parts.push(agentTaskBlock);
+    } else if (hasLatestMessage) {
       parts.push(
         `IMPORTANT: Your response MUST acknowledge and continue the conversation above. Do NOT introduce yourself or ask "how can I help" — the user has been talking to you. Pick up where the conversation left off.`,
         ``,
@@ -1965,7 +1979,9 @@ export async function spawnSessionForTopic(
       newSessionParts.push(userContextBlock);
       newSessionParts.push(``);
     }
-    newSessionParts.push(carriedBriefBlock ? `[telegram:${topicId}]\n${carriedBriefBlock}` : firstLabel ? `${recoveryPreamble ? `${recoveryPreamble}\n\n` : ''}${firstLabel.tag} ${msg}` : `[telegram:${topicId}] ${msg}`);
+    newSessionParts.push(agentTaskBlock
+      ? `[telegram:${topicId}]\n${agentTaskBlock}`
+      : carriedBriefBlock ? `[telegram:${topicId}]\n${carriedBriefBlock}` : firstLabel ? `${recoveryPreamble ? `${recoveryPreamble}\n\n` : ''}${firstLabel.tag} ${msg}` : `[telegram:${topicId}] ${msg}`);
 
     bootstrapMessage = newSessionParts.join('\n');
   }
@@ -6358,6 +6374,10 @@ export async function startServer(options: StartOptions): Promise<void> {
     // chunks + revisions of custom apps). Its own kind and advert; INERT until `projectApps.custom.enabled`.
     const { PROJECT_APP_BLOB_KIND_REGISTRATION } = await import('../core/ProjectAppBlobStore.js');
     replicatedKindRegistry.register(PROJECT_APP_BLOB_KIND_REGISTRATION);
+    // Placement Step 2 (docs/specs/topic-spawns-placed-by-load.md): register `topic-spawn-brief` (the brief of an
+    // agent topic spawn handed to a peer, on every pool machine). INERT until topicBound placement resolves on.
+    const { TOPIC_SPAWN_BRIEF_KIND_REGISTRATION } = await import('../core/TopicSpawnBriefReplicatedStore.js');
+    replicatedKindRegistry.register(TOPIC_SPAWN_BRIEF_KIND_REGISTRATION);
     // Context Budget layers (docs/specs/context-budget-layered-summaries.md §14): register
     // `context-layer-record`. Registration is INERT — nothing emits until the layer store
     // (Phase 1) writes through it and `multiMachine.stateSync.contextLayers` is on. Its presence
@@ -6639,6 +6659,8 @@ export async function startServer(options: StartOptions): Promise<void> {
     const _projectAppsOn = _projectAppsEnabledFn(config);
     const { customProjectAppsEnabled: _customProjectAppsEnabledFn } = await import('../server/ProjectAppSandbox.js');
     const _projectAppsCustomOn = _projectAppsOn && _customProjectAppsEnabledFn(config);
+    const { topicBoundPlacementEnabled: _topicBoundPlacementEnabledFn } = await import('../core/topicSpawnPlacement.js');
+    const _topicSpawnBriefsOn = !!coherenceJournal && _topicBoundPlacementEnabledFn(config as never, resolveDevAgentGate as never);
     const _suggestionDecisionsOn = !!coherenceJournal && _stateSyncStoresBase?.conversationGraphSuggestions?.enabled !== false;
     const _ownedRepoOn = !!coherenceJournal && resolveDevAgentGate((config as { noDataLoss?: { repos?: { enabled?: boolean } } }).noDataLoss?.repos?.enabled, config) && _stateSyncStoresBase?.ownedRepo?.enabled !== false;
     // Telegram topic names (docs/specs/topic-name-replication.md): on wherever the journal runs; `enabled: false` is the kill switch.
@@ -6673,6 +6695,8 @@ export async function startServer(options: StartOptions): Promise<void> {
       // Project apps part 2 (docs/specs/project-apps-sandbox.md §3.2): the custom apps' code and data are
       // the agent's, so their own kind is forced on with `projectApps.custom.enabled`.
       if (_projectAppsCustomOn) s = { ...s, projectAppBlobs: { enabled: true } };
+      // Placement Step 2: a placed agent topic spawn's brief is the agent's, on every machine, with the feature.
+      if (_topicSpawnBriefsOn) s = { ...s, topicSpawnBriefs: { enabled: true } };
       // Conversations suggestions (docs/specs/conversation-graph-suggestions-replicated-decisions.md): the owner's
       // decisions are the agent's, so the store is on wherever the journal runs; `enabled: false` is the kill switch.
       if (_suggestionDecisionsOn) s = { ...s, conversationGraphSuggestions: { enabled: true } };
@@ -6680,7 +6704,7 @@ export async function startServer(options: StartOptions): Promise<void> {
       // `noDataLoss.repos.enabled` (development-agent gate); `ownedRepo.enabled: false` is the kill switch.
       if (_ownedRepoOn) s = { ...s, ownedRepo: { enabled: true } };
       if (_telegramTopicNamesOn) s = { ...s, telegramTopicNames: { enabled: true } };
-      return _ownedRepoOn || s.failureCallout?.enabled || _recommendedServicesOn || _appNativeOn || _accountFollowMeEnabled || _pinReplicateEnabled || _workBoardOn || _projectAppsOn || _trustJourneyStoreOn || _suggestionDecisionsOn || _telegramTopicNamesOn || _staleOwnerReleaseResolved || _chiefOfStaffStoreOn || _stateSyncStoresBase ? s : _stateSyncStoresBase;
+      return _ownedRepoOn || _topicSpawnBriefsOn || s.failureCallout?.enabled || _recommendedServicesOn || _appNativeOn || _accountFollowMeEnabled || _pinReplicateEnabled || _workBoardOn || _projectAppsOn || _trustJourneyStoreOn || _suggestionDecisionsOn || _telegramTopicNamesOn || _staleOwnerReleaseResolved || _chiefOfStaffStoreOn || _stateSyncStoresBase ? s : _stateSyncStoresBase;
     })();
 
     // WS2 send-side: the generic journal-backed record emitter (the concrete emitter
@@ -6701,6 +6725,18 @@ export async function startServer(options: StartOptions): Promise<void> {
         stores: () => _stateSyncStoresResolved,
         loadWitness: (store, recordKey) => replicatedPeerStreamReader!.loadWitness(store, recordKey),
         log: (event, detail) => console.log(pc.dim(`  [ws2-send] ${event} ${JSON.stringify(detail)}`)),
+      });
+    }
+
+    // Placement Step 2 (docs/specs/topic-spawns-placed-by-load.md): the replicated brief of an agent
+    // topic spawn. Built only when the store is on (topicBound placement) and the journal is live.
+    let _topicSpawnBriefReplication: import('../core/TopicSpawnBriefReplicatedStore.js').TopicSpawnBriefReplication | null = null;
+    if (_topicSpawnBriefsOn && replicatedRecordEmitter) {
+      const { createTopicSpawnBriefReplication } = await import('../core/TopicSpawnBriefReplicatedStore.js');
+      _topicSpawnBriefReplication = createTopicSpawnBriefReplication({
+        emitter: replicatedRecordEmitter,
+        reader: replicatedPeerStreamReader ?? null,
+        secrets: () => [config.authToken, config.dashboardPin],
       });
     }
 
@@ -8089,6 +8125,17 @@ export async function startServer(options: StartOptions): Promise<void> {
     sessionManager.on('sessionComplete', (session) => sessionManager.releaseMemorySession(session));
     // native-conversation-any-machine-access §3f: session end cuts the final checkpoint (null while dark).
     sessionManager.on('sessionComplete', (session) => _transcriptCheckpointFinal?.(session));
+    // Placement Step 2 (docs/specs/topic-spawns-placed-by-load.md): a placed agent topic session that
+    // ends here marks its replicated brief completed (an update, never a delete).
+    if (_topicSpawnBriefReplication && cjOwnMachineId) {
+      const briefs = _topicSpawnBriefReplication;
+      const selfForBriefs = cjOwnMachineId;
+      sessionManager.on('sessionComplete', (session) => {
+        const topic = session.telegramTopicId;
+        if (typeof topic !== 'number') return;
+        try { briefs.markCompleted(topic, selfForBriefs); } catch { /* @silent-fallback-ok — the origin's reconciliation also marks it when it sees the session gone */ }
+      });
+    }
     await _memoryWiring.ready.catch((err) => console.error('[memory-privacy] boot probe failed; scoped conversations stay refused:', err));
     await sessionManager.retireBoundedSessionsWhenPrivacyOff()
       .then((names) => { if (names.length) console.log(`[memory-privacy] off: ended ${names.length} bounded session(s)`); })
@@ -28135,6 +28182,10 @@ export async function startServer(options: StartOptions): Promise<void> {
           // resets on restart; receivers NEVER use it as a freshness check
           // (freshness is the receiver-stamped advert receipt time; R2-L1).
           let _coherenceBeatSeq = 0;
+          // Placement Step 2 (docs/specs/topic-spawns-placed-by-load.md): this build frames a verified
+          // agent-spawn forward as the agent's own task; advertised while topicBound resolves on.
+          const { AGENT_BRIEF_FLAG, topicBoundPlacementEnabled: _topicBoundForAdvert } = await import('../core/topicSpawnPlacement.js');
+          const _agentBriefAdvertised = _topicBoundForAdvert(config as never, resolveDevAgentGate as never);
           const refreshPool = (): void => {
             try {
               machinePoolRegistry!.recordHeartbeat({
@@ -28169,7 +28220,7 @@ export async function startServer(options: StartOptions): Promise<void> {
                 // WS1.1 capability advertisement (spec invariant 5): a bounded
                 // fixed-size summary, never an inventory. Reported live each
                 // heartbeat so a queue going dark withdraws the capability.
-                seamlessnessFlags: { ws11DeliverReceive: !!_inboundQueue, ws12DrainReceive: !!_drainRunner, appConversationsPool: _appPoolAdvertised(), memoryPrivacyEnforced: _memoryPrivacyEnforced(), dashboardCreateReceive: _sessionPoolStage() !== 'dark' && !!telegram && !!_topicProfileCtxRef?.spawnForTopic, ws44PoolLinks: !!_poolLink, ws44PoolCache: !!_poolPollCache, ws43JournalLease: JOB_LEASE_POOL_AUTHORITY_READY && resolveDevAgentGate(config.multiMachine?.seamlessness?.ws43JournalLease, config) && (config.multiMachine?.seamlessness?.ws43JournalLeaseDryRun ?? !resolveDevAgentGate(undefined, config)) !== true, stateSyncReceive: selfStateSyncReceive(), documentsDecisionRows: true, teamLogComputerRows: true, documentsOrigin: (config.tunnel as { type?: string; hostname?: string } | undefined)?.type === 'named' && (config.tunnel as { hostname?: string } | undefined)?.hostname ? `https://${String((config.tunnel as { hostname?: string }).hostname).toLowerCase()}` : null, undatedActionStateOwnerMachineId: config.evolutionActions?.undatedResurfacer?.stateOwnerMachineId?.trim() || null },
+                seamlessnessFlags: { ws11DeliverReceive: !!_inboundQueue, ws12DrainReceive: !!_drainRunner, appConversationsPool: _appPoolAdvertised(), memoryPrivacyEnforced: _memoryPrivacyEnforced(), dashboardCreateReceive: _sessionPoolStage() !== 'dark' && !!telegram && !!_topicProfileCtxRef?.spawnForTopic, ws44PoolLinks: !!_poolLink, ws44PoolCache: !!_poolPollCache, ws43JournalLease: JOB_LEASE_POOL_AUTHORITY_READY && resolveDevAgentGate(config.multiMachine?.seamlessness?.ws43JournalLease, config) && (config.multiMachine?.seamlessness?.ws43JournalLeaseDryRun ?? !resolveDevAgentGate(undefined, config)) !== true, stateSyncReceive: selfStateSyncReceive(), documentsDecisionRows: true, [AGENT_BRIEF_FLAG]: _agentBriefAdvertised, teamLogComputerRows: true, documentsOrigin: (config.tunnel as { type?: string; hostname?: string } | undefined)?.type === 'named' && (config.tunnel as { hostname?: string } | undefined)?.hostname ? `https://${String((config.tunnel as { hostname?: string }).hostname).toLowerCase()}` : null, undatedActionStateOwnerMachineId: config.evolutionActions?.undatedResurfacer?.stateOwnerMachineId?.trim() || null },
                 // Machine-coherence advert (machine-coherence-guard §3.2).
                 // Emission is UNCONDITIONAL (M3, normative): it ships live with
                 // the code, regardless of the sentinel's dev-gate/enabled/dryRun
@@ -30635,8 +30686,23 @@ export async function startServer(options: StartOptions): Promise<void> {
             // native-conversation-base §3c: files arrive by attachment id in `media`; the session's
             // file lines are built here, on the machine that serves it. A forward from an older
             // poller has no `media` at all and is resolved by its own platform message id.
+            // Placement Step 2 (docs/specs/topic-spawns-placed-by-load.md): an agent's own topic spawn
+            // arrives as an `agent-spawn:` forward with `authorship.kind: "agent"`. It is the agent's task
+            // only when the claimed origin IS the signed sender; any other claim of agent authorship is
+            // refused and never injected. Authority comes from the signed sender, never from the text.
+            const agentFwd = classifyForwardedAgentTask(cmd.messageId, cmd.payload, sender);
+            if (agentFwd.kind === 'refused') {
+              console.warn(`  [session-pool] forwarded agent task for topic ${topicId} refused (${agentFwd.reason}); not injected`);
+              _inboundQueue?.reportPeerInjectError(cmd.session, cmd.messageId, agentFwd.reason);
+              return;
+            }
+            const agentTask = agentFwd.kind === 'agent-task' ? agentFwd : null;
+            if (agentTask) {
+              console.log(pc.green(`  [session-pool] agent task for topic ${topicId} from ${agentTask.authorship.session || 'a session'} on ${agentTask.authorship.originMachineId} (author: agent)`));
+            }
             const fwdMedia = parseInboundMediaField((cmd as { media?: unknown }).media);
-            const sessionTextP = (): Promise<string> => buildTelegramSessionText(topicId, text ?? '', fwdMedia, cmd.messageId);
+            // An agent brief has no platform message, so it has no media id to look up.
+            const sessionTextP = (): Promise<string> => buildTelegramSessionText(topicId, text ?? '', fwdMedia, agentTask ? null : cmd.messageId);
             // This machine judges a team person for itself: it may know of a removal the sender did not.
             const teamSender = (cmd as { senderEnvelope?: { personKey?: string } }).senderEnvelope?.personKey;
             if (teamSender && !_teamMayDeliver?.(teamSender, `telegram:${topicId}`)) {
@@ -30714,6 +30780,11 @@ export async function startServer(options: StartOptions): Promise<void> {
               // instead of starting blank. Best-effort — on any failure we spawn without it.
               void (async (): Promise<string> => {
                 const movedContext = await pullMovedTopicContext(tg, topicId);
+                // Placement Step 2: a verified agent task starts as the agent's fresh task (agentTask
+                // framing), never as "the user's latest message" or a hand-off to wait on.
+                if (agentTask) {
+                  return spawnSessionForTopic(sessionManager, tg, spawnName, topicId, undefined, undefined, undefined, movedContext, undefined, { agentTask: agentTask.text });
+                }
                 const label = text ? fwdLabelFor() : undefined;
                 return spawnSessionForTopic(sessionManager, tg, spawnName, topicId, text ? await sessionTextP() : text, undefined, undefined, movedContext,
                   undefined, label ? { firstMessageLabel: { signedByAgent: label, ...(fwdSenderName ? { senderName: fwdSenderName } : {}) } } : undefined);
@@ -35845,7 +35916,7 @@ export async function startServer(options: StartOptions): Promise<void> {
       orchestrator: TopicProfileOrchestrator | null;
       carrier: import('../core/TopicProfileTransferCarrier.js').TopicProfileTransferCarrier | null;
     } & Pick<NonNullable<import('../server/routes.js').RouteContext['topicProfile']>,
-      'newTopicDefault' | 'audit' | 'discloseCreationSeed' | 'spawnForTopic' | 'startAppSession' | 'appSessionReady' | 'sessionPoolLocalClaim' | 'startTopicOnMachine' | 'pinReplicationLive' | 'startSeamWired' | 'probeMachineReachable' | 'spawnBriefs'> | null =
+      'newTopicDefault' | 'audit' | 'discloseCreationSeed' | 'spawnForTopic' | 'startAppSession' | 'appSessionReady' | 'sessionPoolLocalClaim' | 'startTopicOnMachine' | 'pinReplicationLive' | 'startSeamWired' | 'probeMachineReachable' | 'spawnBriefs' | 'startAgentTopicOnMachine' | 'agentStartSeamWired' | 'briefReplication'> | null =
       (_topicProfileStore && _topicProfileResolver && _topicProfileWriteSurface && _topicProfileConfirmSlots)
         ? {
             store: _topicProfileStore,
@@ -35883,12 +35954,25 @@ export async function startServer(options: StartOptions): Promise<void> {
               // A mapping left behind by a reaped/crashed session must not
               // refuse the spawn (2026-10-14: the 2.0 desk topic).
               isSessionAlive: (tmux) => sessionManager.isSessionAlive(tmux),
-              spawn: (topicId, name) => spawnSessionForTopic(
+              spawn: (topicId, name, task) => spawnSessionForTopic(
                 sessionManager, telegram!, name, topicId,
                 undefined, undefined, undefined, undefined, undefined,
-                { silentStart: true },
+                // Placement Step 2's checked local fallback carries the agent's task (fresh-task framing).
+                typeof task === 'string' && task.length > 0 ? { agentTask: task } : { silentStart: true },
               ),
             }),
+            // Placement Step 2 (docs/specs/topic-spawns-placed-by-load.md): the same fenced
+            // place → checked deliver → settle the graph path uses, with an ordinary forwarded
+            // `{text, authorship}` payload under an `agent-spawn:` messageId.
+            startAgentTopicOnMachine: async (topicKey, target, payload) => {
+              const placementDeps = graphDelegationPlacement;
+              if (!placementDeps) return { ok: false as const, code: 'start-failed' as const, error: 'the session router is not wired on this machine', released: false, settled: true };
+              const { startCheckedTopicOnMachine } = await import('../core/dashboardMachineChoice.js');
+              const { agentSpawnMessageId } = await import('../core/topicSpawnPlacement.js');
+              return startCheckedTopicOnMachine({ ...placementDeps, makeDelivery: () => ({ messageId: agentSpawnMessageId(topicKey, placementDeps.nonce()), payload }) }, topicKey, target);
+            },
+            agentStartSeamWired: () => !!graphDelegationPlacement,
+            briefReplication: _topicSpawnBriefReplication ?? undefined,
             // §3.3 2b — evaluated AT CALL TIME. `ready` only when router-live AND
             // placement replication on AND this machine holds the lease; a null
             // lease accessor is not-authoritative (never the `: true` fallback).
