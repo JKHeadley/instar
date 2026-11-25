@@ -52,3 +52,9 @@ One-off operations still need verified source triage. The opt-in provider does n
 ## Maturation registry
 
 The opt-in uses the registered Needs You owner admission ladder. The registry links release criteria to the flag and preserves the existing source and client checks. Tracking stays marked needed until the release evidence exists. Registering the ladder changes no live setting.
+
+## Private chat approvals during fleet preparation
+
+A paired owner can see an unavailable approval count for an exact pending request when the original private chat delivery and the currently configured chat owner match. The response carries no chat identifiers, request ID or action. The original chat still owns consent and execution. Rotated or missing owner identity, missing delivery evidence and stale requests contribute no count.
+
+The fleet migration and remaining source adapter work have separate acceptance. This checkpoint leaves runtime activation opt-in.

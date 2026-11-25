@@ -98,4 +98,29 @@ describe('App approval disclosure E2E', () => {
     expect((await needs().expect(200)).body).toMatchObject({ items: [], couldNotCheckApprovalCount: 2 });
   });
 
+  it('counts a pending private-chat approval for its signed owner without disclosing a native action', async () => {
+    const s = await bootTrustAppServer('needs-chat-provider-e2e-', undefined, {
+      getOwnerUserId: () => 777,
+      sendOwnerDirect: async () => ({ messageId: 123 }),
+    }, undefined, true);
+    const listener = s.app.listen(0, '127.0.0.1');
+    listeners.push(listener);
+    if (!listener.listening) await new Promise<void>(resolve => listener.once('listening', resolve));
+    s.config.port = (listener.address() as { port: number }).port;
+    await s.runtime.store.write('acceptance', {
+      acceptanceId: 'fixture-chat', principal: 'owner', adapter: 'telegram', accountId: '777',
+      acceptedAt: new Date().toISOString(), messageId: '100',
+    });
+    const proposed = await s.bearer(request(s.app).post('/trust/requests'))
+      .send({ change: { kind: 'trust-grant', service: 'gmail', operation: 'write', level: 'autonomous' } }).expect(202);
+    expect(proposed.body.via).toBe('chat');
+    const mac = await s.pair({ local: true, name: 'Paired owner' });
+    const legacy = await mac.signed('GET', '/mobile/needs').expect(426);
+    expect(legacy.body).toEqual({ error: 'needs-client-update-required', detail: expect.any(String) });
+    const owner = await mac.signed('GET', '/mobile/needs').set('X-Instar-Needs-Contract', 'in-place-v1').expect(200);
+    expect(owner.body).toMatchObject({ schemaVersion: 2, items: [], couldNotCheckApprovalCount: 1, complete: false });
+    expect(JSON.stringify(owner.body)).not.toContain(proposed.body.requestId);
+    expect(s.runtime.store.request(proposed.body.requestId)).toMatchObject({ status: 'open', adapter: 'telegram' });
+  });
+
 });
