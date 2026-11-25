@@ -1,0 +1,28 @@
+{
+  "version": 2,
+  "slug": "state-integrity-integration-trial",
+  "sessionId": "bcc82a0c-f81e-440b-88eb-304eb7ee4f4c",
+  "timestamp": "2026-11-25T18:15:35.044Z",
+  "artifactPath": "upgrades/side-effects/state-integrity-integration-trial.md",
+  "artifactSha256": "2cd9bb6280796aa4b99ad2406d490a9b7cbebdaeb8fae9ed9a8d7b910e614f6c",
+  "coveredFiles": [
+    "docs/specs/state-integrity-integration-trial.eli16.md",
+    "src/core/SessionManager.ts",
+    "src/core/projectIntegrationTrials.ts",
+    "src/data/awareness/state-integrity-integration-trial.md",
+    "src/scheduler/JobRunHistory.ts",
+    "src/scheduler/JobScheduler.ts",
+    "src/server/routes.ts",
+    "tests/e2e/memory-hygiene-integration-trial-alive.test.ts",
+    "tests/integration/memory-hygiene-integration-trial-routes.test.ts",
+    "tests/unit/headless-spawn-reroute.test.ts",
+    "upgrades/side-effects/state-integrity-integration-trial.md"
+  ],
+  "phase": "complete",
+  "tier": 1,
+  "tierReasoning": "One additional opt-in schedule on the existing launch and telemetry path, with repair rules unchanged",
+  "eli16Path": "docs/specs/state-integrity-integration-trial.eli16.md",
+  "sideEffectsPath": "upgrades/side-effects/state-integrity-integration-trial.md",
+  "secondPass": "not-required",
+  "reviewerConcurred": null
+}

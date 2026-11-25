@@ -13,6 +13,7 @@ afterEach(async () => { for (const stop of cleanup.splice(0).reverse()) await st
 it.each([
   ['memory-hygiene', 'memoryHygieneProjectIntegrationTrial', 'memoryHygieneIntegrationTrial'],
   ['session-continuity-check', 'sessionContinuityProjectIntegrationTrial', 'sessionContinuityIntegrationTrial'],
+  ['state-integrity-check', 'stateIntegrityProjectIntegrationTrial', 'stateIntegrityIntegrationTrial'],
 ] as const)('%s compares startup usage and keeps its local skill workflow', async (slug, configKey, historyKey) => {
   const project = createTempProject();
   cleanup.push(project.cleanup);
@@ -25,6 +26,11 @@ it.each([
   const sessions = createMockSessionManager();
   const spawn = sessions.spawnSession;
   const applied: boolean[] = [];
+  const orphanReports: string[] = [];
+  const fixtureActiveJob = { sessionName: 'fixture-ended-job' };
+  const activeJobPath = path.join(project.dir, 'replay-active-job.json');
+  fs.writeFileSync(activeJobPath, JSON.stringify(fixtureActiveJob));
+  const runningJobNames = new Set<string>();
   const proposals: Array<{ variant: 'baseline' | 'without-project'; reason: string }> = [];
   const skillDir = path.join(project.dir, '.claude', 'skills', slug);
   const skillPath = path.join(skillDir, 'SKILL.md');
@@ -44,6 +50,14 @@ it.each([
       if (finishedSession.durationMinutes > 10 && !fs.existsSync(finishedSession.artifact)) {
         proposals.push({ variant: trial ? 'without-project' : 'baseline', reason: 'missing-artifact' });
       }
+    }
+    if (slug === 'state-integrity-check' && fs.existsSync(skillPath)) {
+      expect(opts.prompt).toContain('state-integrity-check');
+      expect(fs.readFileSync(skillPath, 'utf8')).toContain('Active Job Orphan');
+      // Replay the reporting input only. The existing skill's repair policy
+      // is outside this launch test and the simulated record stays untouched.
+      const activeJob = JSON.parse(fs.readFileSync(activeJobPath, 'utf8')) as typeof fixtureActiveJob;
+      if (!runningJobNames.has(activeJob.sessionName)) orphanReports.push(trial ? 'without-project' : 'baseline');
     }
     return session;
   };
@@ -85,9 +99,10 @@ it.each([
   expect((await history()).body.runs[0][historyKey].variant).toBe('fallback');
   fs.mkdirSync(skillDir, { recursive: true });
   const initSource = fs.readFileSync(new URL('../../src/commands/init.ts', import.meta.url), 'utf8');
-  const continuitySkill = initSource.match(/'session-continuity-check': \{[\s\S]*?content: `([\s\S]*?)\n`,/);
-  if (slug === 'session-continuity-check' && !continuitySkill) throw new Error('shipped continuity skill missing');
-  fs.writeFileSync(skillPath, slug === 'session-continuity-check' ? continuitySkill![1] : '# Local skill fixture');
+  const installedSkill = slug === 'memory-hygiene' ? '# Local skill fixture'
+    : initSource.split(`'${slug}': {`)[1]?.match(/content: `([\s\S]*?)\n`,/)?.[1];
+  if (!installedSkill) throw new Error('shipped skill missing');
+  fs.writeFileSync(skillPath, installedSkill);
   mode = 'baseline';
   await runAndClose(80);
   mode = 'without-project';
@@ -110,9 +125,15 @@ it.each([
     ]);
     fs.writeFileSync(finishedSession.artifact, '# Retained handoff');
   }
+  if (slug === 'state-integrity-check') {
+    expect(orphanReports).toEqual(['baseline', 'without-project']);
+    expect(fs.readFileSync(activeJobPath, 'utf8')).toBe(JSON.stringify(fixtureActiveJob));
+    runningJobNames.add(fixtureActiveJob.sessionName);
+  }
   mode = 'off';
   await runAndClose(80);
   expect(applied).toEqual([false, false, true, false]);
+  expect(orphanReports).toHaveLength(slug === 'state-integrity-check' ? 2 : 0);
   expect(proposals).toHaveLength(slug === 'session-continuity-check' ? 2 : 0);
   expect((await history()).body.runs[0]).not.toHaveProperty(historyKey);
 });

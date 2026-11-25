@@ -182,6 +182,7 @@ describe('headless-spawn reroute', () => {
   it.each([
     ['memory-hygiene', 'off'], ['memory-hygiene', 'force'],
     ['session-continuity-check', 'off'], ['session-continuity-check', 'force'],
+    ['state-integrity-check', 'off'], ['state-integrity-check', 'force'],
   ] as const)('%s integration trial preserves Bash and Skill in %s mode', async (jobSlug, mode) => {
     const { manager } = makeManager({ mode }, tmpDir);
     const session = await manager.spawnSession({

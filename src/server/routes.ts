@@ -901,6 +901,7 @@ import { parseKnownRows, filterKnownRows } from './changeFeed.js';
 import { INITIATIVE_UPDATE_FIELDS } from '../core/InitiativeTracker.js';
 import { telegramTopicRef, topicRef } from '../messaging/shared/topicRef.js';
 import { peerFingerprintOfPlace } from '../users/peerPlaceAdmission.js';
+import { projectIntegrationTrialFor } from '../core/projectIntegrationTrials.js';
 import { CLAUDE_CODE_FRAMEWORK, CODEX_CLI_FRAMEWORK } from '../core/frameworkFacts.js';
 import { resolveFrameworkBinaryPath } from '../core/frameworkSessionLaunch.js';
 import { codexCliVersionCached, refreshCodexCliVersion } from '../core/codexCapabilities.js';
@@ -22402,9 +22403,9 @@ document.getElementById('mcpForm').addEventListener('submit', async function (e)
   // ── Job Run History ─────────────────────────────────────────────
 
   function presentJobRun(run: import('../scheduler/JobRunHistory.js').JobRun) {
-    const trialKey = run.slug === 'session-continuity-check' ? 'sessionContinuityIntegrationTrial' : 'memoryHygieneIntegrationTrial';
-    const trial = run[trialKey];
-    if (trial) {
+    const trialKey = projectIntegrationTrialFor(run.slug)?.historyField;
+    const trial = trialKey ? run[trialKey] : undefined;
+    if (trialKey && trial) {
       const session = typeof trial.nativeSessionId === 'string' ? ctx.state.getSession(trial.nativeSessionId) : undefined;
       const transcriptId = session?.jobSlug === run.slug && session?.framework === CLAUDE_CODE_FRAMEWORK ? session.claudeSessionId : undefined;
       const { [trialKey]: _privateTrial, ...publicRun } = run;

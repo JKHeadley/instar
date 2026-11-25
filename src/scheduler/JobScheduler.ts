@@ -1,3 +1,4 @@
+import { projectIntegrationTrialFor } from '../core/projectIntegrationTrials.js';
 import { CLAUDE_CODE_FRAMEWORK } from '../core/frameworkFacts.js';
 import { SecurityReviewPreflight, securityPreflightFlags } from './SecurityReviewPreflight.js';
 import { isQuietReceipt, verifiedJobEnvelope } from '../messaging/NotificationSelectivityGate.js';
@@ -3154,16 +3155,12 @@ export class JobScheduler {
       ? (this.developmentReviewRosterKnown
         ? !this.jobs.some(candidate => jobMatchesCategory(candidate, 'development')) : null)
       : undefined;
-    const trialJob = job.slug === 'memory-hygiene' || job.slug === 'session-continuity-check';
-    const trialConfig = trialJob && job.origin === undefined
+    const integrationTrial = projectIntegrationTrialFor(job.slug);
+    const trialMode = integrationTrial && job.origin === undefined
       && job.execute.type === 'skill' && job.execute.value === job.slug
       && /^(?:queued:)*scheduled$/.test(reason)
-      ? this.readAgentConfig()?.jobs as {
-        memoryHygieneProjectIntegrationTrial?: unknown;
-        sessionContinuityProjectIntegrationTrial?: unknown;
-      } | undefined : undefined;
-    const trialMode = job.slug === 'memory-hygiene' ? trialConfig?.memoryHygieneProjectIntegrationTrial
-      : trialConfig?.sessionContinuityProjectIntegrationTrial;
+      ? (this.readAgentConfig()?.jobs as Record<string, unknown> | undefined)?.[integrationTrial.setting]
+      : undefined;
     const trialObserved = trialMode === 'baseline' || trialMode === 'without-project';
     const trialEligible = trialObserved && this.projectTrialStartupLedgerAvailable()
       && job.mcpAccess === undefined && !toolDecision.confinedTools
@@ -3241,8 +3238,8 @@ export class JobScheduler {
         toolEnforcement: toolOutcome.toolEnforcement,
         // job-launch-intent-record §3/§4: taken from the same returned session as framework/model.
         ...(session?.launch ? { launch: session.launch } : {}),
-        ...(trialObserved && session?.id ? {
-          [job.slug === 'memory-hygiene' ? 'memoryHygieneIntegrationTrial' : 'sessionContinuityIntegrationTrial']:
+        ...(integrationTrial && trialObserved && session?.id ? {
+          [integrationTrial.historyField]:
             { variant: trialVariant, nativeSessionId: session.id },
         } : {}),
         ...(wouldSkipDevelopmentReview !== undefined && session?.id ? {

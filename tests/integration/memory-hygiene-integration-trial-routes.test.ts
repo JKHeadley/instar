@@ -11,6 +11,7 @@ afterEach(async () => { for (const stop of cleanup.splice(0).reverse()) await st
 it.each([
   ['memory-hygiene', 'memoryHygieneIntegrationTrial'],
   ['session-continuity-check', 'sessionContinuityIntegrationTrial'],
+  ['state-integrity-check', 'stateIntegrityIntegrationTrial'],
 ] as const)('%s history shows unknown usage for an absent transcript', async (slug, trialKey) => {
   const project = createTempProject();
   cleanup.push(project.cleanup);

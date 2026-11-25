@@ -1,0 +1,27 @@
+{
+  "ts": "2026-11-25T18:16:15.399Z",
+  "slug": "state-integrity-integration-trial",
+  "suggestedTier": 2,
+  "declaredTier": 1,
+  "riskFloor": 1,
+  "riskFloorReasons": [],
+  "belowFloor": false,
+  "files": 6,
+  "loc": 51,
+  "scope": {
+    "basis": "staged-in-scope-paths-including-deleted",
+    "files": [
+      "src/core/SessionManager.ts",
+      "src/core/projectIntegrationTrials.ts",
+      "src/data/awareness/state-integrity-integration-trial.md",
+      "src/scheduler/JobRunHistory.ts",
+      "src/scheduler/JobScheduler.ts",
+      "src/server/routes.ts"
+    ],
+    "addedLines": 36,
+    "deletedLines": 15
+  },
+  "causalAutopsy": null,
+  "classClosure": null,
+  "verdict": "pass"
+}

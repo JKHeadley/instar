@@ -66,6 +66,7 @@ export interface JobRun {
   developmentReviewObservation?: { wouldSkip: boolean | null; nativeSessionId: string };
   memoryHygieneIntegrationTrial?: ProjectIntegrationTrial;
   sessionContinuityIntegrationTrial?: ProjectIntegrationTrial;
+  stateIntegrityIntegrationTrial?: ProjectIntegrationTrial;
   /** Unique run ID (slug + timestamp hash) */
   runId: string;
   /** Job slug */
@@ -295,6 +296,7 @@ export class JobRunHistory {
     developmentReviewObservation?: JobRun['developmentReviewObservation'];
     memoryHygieneIntegrationTrial?: ProjectIntegrationTrial;
     sessionContinuityIntegrationTrial?: ProjectIntegrationTrial;
+    stateIntegrityIntegrationTrial?: ProjectIntegrationTrial;
   }): string {
     const runId = `${opts.slug}-${Date.now().toString(36)}-${(runCounter++).toString(36)}`;
     const run: JobRun = {
@@ -326,6 +328,7 @@ export class JobRunHistory {
       ...(opts.developmentReviewObservation ? { developmentReviewObservation: opts.developmentReviewObservation } : {}),
       ...(opts.memoryHygieneIntegrationTrial ? { memoryHygieneIntegrationTrial: opts.memoryHygieneIntegrationTrial } : {}),
       ...(opts.sessionContinuityIntegrationTrial ? { sessionContinuityIntegrationTrial: opts.sessionContinuityIntegrationTrial } : {}),
+      ...(opts.stateIntegrityIntegrationTrial ? { stateIntegrityIntegrationTrial: opts.stateIntegrityIntegrationTrial } : {}),
     };
     this.appendLine(run);
     return runId;

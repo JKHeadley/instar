@@ -141,6 +141,7 @@ import { SafeFsExecutor } from './SafeFsExecutor.js';
 import { ClaudeBinaryRetainer, resolveRetainerEnabled, type RetainerStatus } from './ClaudeBinaryRetainer.js';
 import { placeResumeTranscript } from './claudeResumeTranscript.js';
 import { placeCodexResumeRollout, type CodexRolloutPlacement } from './codexResumeRollout.js';
+import { projectIntegrationTrialFor } from './projectIntegrationTrials.js';
 import { CLAUDE_CODE_FRAMEWORK, CODEX_CLI_FRAMEWORK } from './frameworkFacts.js';
 import {
   InboundDeliveryStore,
@@ -5078,7 +5079,7 @@ rm()  { "${shimRunner}" rm  "$@"; }
     //  - `--strict-mcp-config --mcp-config {}` — no-project-MCP spawn for headless
     //    one-shot sessions that would otherwise hang on auth-required remote MCP
     //    boot (the mentor autonomous-fix loop). See claudeHeadlessExtraFlags.
-    const projectTrialApplied = options.projectIntegrationTrial === true && (options.jobSlug === 'memory-hygiene' || options.jobSlug === 'session-continuity-check')
+    const projectTrialApplied = options.projectIntegrationTrial === true && projectIntegrationTrialFor(options.jobSlug) !== undefined
       && headlessFramework === CLAUDE_CODE_FRAMEWORK && headlessSpec.argv.indexOf('-p') > 0
       && !options.disableProjectMcp && !options.confinement && !options.confinedTools;
     if (projectTrialApplied) {
@@ -5609,7 +5610,7 @@ rm()  { "${shimRunner}" rm  "$@"; }
     // of the argv (the interactive argv has no `-p` positional to splice before).
     // Without --strict-mcp-config, an MCP-restricted rerouted job re-introduces
     // the documented ~4.5-min OAuth-remote-MCP boot hang (spec F4/S3).
-    const projectTrialApplied = options.projectIntegrationTrial === true && (options.jobSlug === 'memory-hygiene' || options.jobSlug === 'session-continuity-check')
+    const projectTrialApplied = options.projectIntegrationTrial === true && projectIntegrationTrialFor(options.jobSlug) !== undefined
       && !options.disableProjectMcp && !options.confinement && !options.confinedTools;
     const extraClaudeFlags = claudeHeadlessExtraFlags({
       framework: 'claude-code',
