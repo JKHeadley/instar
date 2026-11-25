@@ -1,0 +1,19 @@
+{
+  "version": 2,
+  "slug": "camera-acceptance-journal-record",
+  "sessionId": "ab1b66cc-de80-48bd-9b94-4ede369ccb55",
+  "timestamp": "2026-11-25T00:48:55.327Z",
+  "artifactPath": "upgrades/side-effects/camera-acceptance-journal-record.md",
+  "artifactSha256": "810e6211a12425e5a2da2c5a555a90055c6a5c9ec0b1e37003475251775cf611",
+  "specPath": "docs/specs/independent-owner-surface-acceptance.md",
+  "coveredFiles": [
+    "src/core/CameraAcceptanceJournalRecord.ts",
+    "src/core/ChiefOfStaffStore.ts",
+    "tests/unit/camera-acceptance-journal-record.test.ts"
+  ],
+  "phase": "complete",
+  "tier": 2,
+  "tierReasoning": "The checkpoint changes the replicated store reader schema but has no producer or live decision path.",
+  "secondPass": "true",
+  "reviewerConcurred": true
+}
