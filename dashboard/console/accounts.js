@@ -8,7 +8,7 @@
 //   repair / retry / cancel   POST /subscription-relogin/repair-cell       operator session
 
 import { quotaForecastCard } from './quota-forecast.js';
-import { buildAccountsPage, frameworkName, resetWords } from './accounts-model.js';
+import { ACCOUNT_GROUPS, ACCOUNT_SORTS, accountLayoutPreferences, buildAccountsPage, frameworkName, layoutAccounts, resetWords } from './accounts-model.js';
 import { el, setKids, pageHead, askLink, sheet, closeSheet, story, details, note, cantTell, askPin, forgetOperatorSession, firstPaint, arrivalScroll, markNeed } from './ui.js';
 import { legacyHref } from './nav-model.js';
 import { verifiedDisplayName } from './display-identity.js';
@@ -18,6 +18,25 @@ import { submitView, completionView, workingView, COMPLETION_POLL_MS, COMPLETION
 // Tick state survives the page's 30-second re-render (spec one-tap-unattended-repair §6).
 const autoRepairTicks = new Map(); // machineId → boolean, only where the operator changed the default
 let autoRepairResults = null;      // { at, mode, results: [{ machineId, ... }] } from the last tap
+
+const ACCOUNT_LAYOUT_KEY = 'instar.accounts.layout';
+let accountLayout = accountLayoutPreferences();
+
+function readAccountLayout() {
+  try {
+    const saved = localStorage.getItem(ACCOUNT_LAYOUT_KEY);
+    if (saved !== null) accountLayout = accountLayoutPreferences(JSON.parse(saved));
+  } catch { /* Storage is optional; controls work for the current browser visit. */ }
+  return accountLayout;
+}
+
+function layoutSelect(label, options, selected, onChange) {
+  const select = el('select', { class: 'reason-select', 'data-focus-key': `accounts:${label}` },
+    options.map(([value, text]) => el('option', { value, text })));
+  select.value = selected;
+  select.addEventListener('change', () => onChange(select.value));
+  return el('label', { class: 'acct-layout-field' }, el('span', { text: label }), select);
+}
 
 async function postJson(path, body, headers = {}) {
   const token = (() => { try { return localStorage.getItem('instar_token') || ''; } catch { return ''; } })();
@@ -62,30 +81,47 @@ export async function renderAccounts(main, ctx) {
         el('span', { class: 'row-main' }, el('span', { class: 'row-title', text: n.label }), el('span', { class: 'row-sub', text: n.sub })),
         el('span', { class: 'row-end' }, n.actionable ? el('button', { class: 'btn-quiet btn-small', type: 'button', text: n.action === 'start' ? 'Sign in' : n.action === 'retry' ? 'Try again' : 'Repair', onclick: () => startNeed(n, refresh) }) : null))))))) : null;
 
-  const list = el('div', { class: 'page-sections acct-list' }, el('section', { class: 'list-section' },
-    el('div', { class: 'list-head' }, el('h2', { class: 'eyebrow', text: 'Weekly reset, soonest first' }), el('span', { class: 'list-count', text: String(page.accounts.length) })),
-    el('div', { class: 'list-rows' }, page.accounts.map((a) => {
-      const pct = a.tight ? Math.round(a.tight.pct) : null;
-      // One labelled line per limit that applies (5-hour only when the account has one), each with
-      // its own bar and its own reset, so a full 5-hour window never reads as the weekly one.
-      const wins = a.windows && a.windows.length ? el('span', { class: 'acct-wins' }, a.windows.map((w) => {
-        const bar = el('span', { class: `acct-bar${w.tone ? ' ' + w.tone : ''}` }, el('span'));
-        bar.firstChild.style.width = w.rolledOver ? '0%' : `${Math.min(100, Math.max(2, Math.round(w.pct)))}%`;
-        return el('span', { class: `acct-win${w.rolledOver ? ' rolled' : ''}`, 'data-window': w.key },
-          el('span', { class: 'acct-win-label', text: w.name }),
-          bar,
-          el('span', { class: `acct-win-pct${w.tone ? ' ' + w.tone : ''}`, text: w.pctText }),
-          el('span', { class: 'acct-win-reset', text: w.reset || '' }));
-      })) : null;
-      const row = el('button', { class: 'acct-row', type: 'button', 'data-focus-key': `a:${a.id}` },
-        el('span', { class: 'acct-name' }, document.createTextNode(a.name), el('span', { class: 'acct-kind', text: frameworkName(a.framework) }), a.inUse ? el('span', { class: 'acct-tag', text: 'in use here' }) : null),
-        el('span', { class: `acct-pct${a.tone ? ' ' + a.tone : ''}`, text: pct === null ? '—' : `${pct}%` }),
-        wins,
-        !wins || a.stale ? el('span', { class: 'acct-line', text: [!wins ? a.line : null, a.stale ? `reading from ${a.readingAge}` : null].filter(Boolean).join(' · ') }) : null,
-        el('span', { class: 'chips' }, a.cells.map((c) => el('span', { class: `mchip ${c.state}`, text: c.machine }))));
-      row.addEventListener('click', () => openAccount(a, refresh));
-      return row;
-    }))));
+  const rows = el('div', { class: 'acct-groups' });
+  let preferences = readAccountLayout();
+  const repaint = () => rows.replaceChildren(...layoutAccounts(page.accounts, preferences).map(group =>
+    el('section', { class: 'list-section', 'aria-label': group.name || 'All accounts' },
+      group.name ? el('div', { class: 'list-head' }, el('h3', { class: 'eyebrow', text: group.name }),
+        el('span', { class: 'list-count', text: String(group.accounts.length) })) : null,
+      el('div', { class: 'list-rows' }, group.accounts.map(a => renderAccountRow(a, preferences.group === 'machine' ? group.key : null, refresh))))));
+  const changeLayout = (field, value) => {
+    preferences = accountLayout = accountLayoutPreferences({ ...preferences, [field]: value });
+    try { localStorage.setItem(ACCOUNT_LAYOUT_KEY, JSON.stringify(preferences)); } catch { /* Keep the in-memory choice. */ }
+    repaint();
+  };
+  const list = el('section', { class: 'page-sections acct-list', 'aria-label': 'Accounts' },
+    el('div', { class: 'acct-layout' },
+      layoutSelect('Group by', ACCOUNT_GROUPS, preferences.group, value => changeLayout('group', value)),
+      layoutSelect('Sort by', ACCOUNT_SORTS, preferences.sort, value => changeLayout('sort', value))),
+    rows);
+  repaint();
+
+  function renderAccountRow(a, machineGroup, refresh) {
+    const pct = a.tight ? Math.round(a.tight.pct) : null;
+    // One labelled line per limit that applies (5-hour only when the account has one), each with
+    // its own bar and its own reset, so a full 5-hour window never reads as the weekly one.
+    const wins = a.windows && a.windows.length ? el('span', { class: 'acct-wins' }, a.windows.map((w) => {
+      const bar = el('span', { class: `acct-bar${w.tone ? ' ' + w.tone : ''}` }, el('span'));
+      bar.firstChild.style.width = w.rolledOver ? '0%' : `${Math.min(100, Math.max(2, Math.round(w.pct)))}%`;
+      return el('span', { class: `acct-win${w.rolledOver ? ' rolled' : ''}`, 'data-window': w.key },
+        el('span', { class: 'acct-win-label', text: w.name }),
+        bar,
+        el('span', { class: `acct-win-pct${w.tone ? ' ' + w.tone : ''}`, text: w.pctText }),
+        el('span', { class: 'acct-win-reset', text: w.reset || '' }));
+    })) : null;
+    const row = el('button', { class: 'acct-row', type: 'button', 'data-focus-key': machineGroup ? `a:${encodeURIComponent(machineGroup)}:${a.id}` : `a:${a.id}` },
+      el('span', { class: 'acct-name' }, document.createTextNode(a.name), el('span', { class: 'acct-kind', text: frameworkName(a.framework) }), a.inUse && !machineGroup ? el('span', { class: 'acct-tag', text: 'in use here' }) : null),
+      el('span', { class: `acct-pct${a.tone ? ' ' + a.tone : ''}`, text: pct === null ? '—' : `${pct}%` }),
+      wins,
+      !wins || a.stale ? el('span', { class: 'acct-line', text: [!wins ? a.line : null, a.stale ? `reading from ${a.readingAge}` : null].filter(Boolean).join(' · ') }) : null,
+      el('span', { class: 'chips' }, a.cells.map((c) => el('span', { class: `mchip ${c.state}`, text: c.machine }))));
+    row.addEventListener('click', () => openAccount(a, refresh));
+    return row;
+  }
 
   // The notice spot: nothing unless something needs the person; each notice carries its action.
   const notices = page.notices.length ? el('section', { class: 'page-sections', id: 'sec-notices' },

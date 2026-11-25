@@ -1801,3 +1801,8 @@ a.needs-row:hover { background: var(--surface-raised); }
 .accounts-page .acct-list .list-rows { gap: 0; }
 .accounts-page .acct-name { white-space: normal; overflow: visible; overflow-wrap: anywhere; }
 .acct-kind { display: block; color: var(--text-muted); font-size: 12px; font-weight: 400; }
+
+.accounts-page .acct-layout { display: flex; flex-wrap: wrap; gap: 10px 16px; margin-bottom: 12px; }
+.accounts-page .acct-layout-field { display: flex; flex: 0 1 13rem; flex-direction: column; gap: 4px; min-width: min(100%, 10rem); }
+.accounts-page .acct-layout-field select { width: 100%; }
+.accounts-page .acct-groups { display: flex; flex-direction: column; gap: 12px; min-width: 0; }
