@@ -55,9 +55,9 @@ export async function freezeGraphDist(repository,critical,onPhase=()=>{}){
   onPhase('verify-ready');directories(root,'',0o500,true);const frozenMetadata=JSON.stringify(fileMeta(root,names));onPhase('readonly-ready');
   let closed=false;return{root,modules,identity:{manifestPath,format:'isolated-declared-package-v1',treeSha256:sha(JSON.stringify(copied)),fileCount:copied.length,createdAt:new Date().toISOString(),assetSelection:'package-json-files-exact-declared-roots',dependencyMode:'existing-node_modules-symlink',dependencyLockSha256:sha(fs.readFileSync(path.join(repository,'package-lock.json')))},moduleURL:name=>pathToFileURL(path.join(root,'dist',name+'.js')).href,
    assertUnchanged(){if(JSON.stringify(fileMeta(root,names))!==frozenMetadata)throw new Error('fixture-frozen-code-changed');},
-   close(){if(closed)return;thaw();SafeFsExecutor.safeRmSync(root,{recursive:true,force:true,operation:'graph-live-fixture:frozen-public-code-cleanup'});closed=true;}};
+   async close(){if(closed)return;thaw();await SafeFsExecutor.safeRm(root,{recursive:true,force:true,operation:'graph-live-fixture:frozen-public-code-cleanup'});closed=true;}};
  }catch(error){
   if(!SafeFsExecutor&&fs.existsSync(path.join(root,'dist/core/SafeFsExecutor.js')))try{({SafeFsExecutor}=await import(pathToFileURL(path.join(root,'dist/core/SafeFsExecutor.js')).href));}catch{/* public-code-only incomplete copy has no service/keys/admission; startup remains refused */}
-  if(SafeFsExecutor){thaw();SafeFsExecutor.safeRmSync(root,{recursive:true,force:true,operation:'graph-live-fixture:failed-code-snapshot-cleanup'});}throw error;
+  if(SafeFsExecutor){thaw();await SafeFsExecutor.safeRm(root,{recursive:true,force:true,operation:'graph-live-fixture:failed-code-snapshot-cleanup'});}throw error;
  }
 }
