@@ -14,7 +14,9 @@ import type { LocalHistoryChildAdmission } from './LocalHistoryChildCustody.js';
 import { acquireLocalHistoryStoreTemporaryAdmission, hasUnsettledLocalHistoryTemporaryRun,
   initializeLocalHistoryStoreTemporaryRuns, localHistoryCopyDestinationDirectories, registerLocalHistoryStoreTemporaryRun, settleOldLocalHistoryTemporaryRuns, validateLocalHistoryFirstPermitRun, validateLocalHistoryTemporaryRunInventory } from './LocalHistoryStoreTemporaryRun.js';
 import { LocalHistoryDiskLedger, type LocalHistoryDiskMeasurement } from './LocalHistoryDiskLedger.js';
-import { readLocalHistoryFirstPermitInventory } from './LocalHistoryFirstPermit.js';
+import { initializeLocalHistoryFirstPermits, readLocalHistoryFirstPermitInventory, recordLocalHistoryFirstPermit,
+  recordLocalHistoryFirstPermitObservation, type LocalHistoryFirstPermit } from './LocalHistoryFirstPermit.js';
+import { assertLocalHistoryDisposablePilotState } from './LocalHistoryDisposablePilot.js';
 import { localHistoryUploadDirectory } from './LocalHistoryExchange.js';
 import { parseLocalHistoryManifest, type LocalHistoryManifest } from './LocalHistoryManifest.js';
 import { LOCAL_HISTORY_PLAINTEXT_BYTES } from './LocalHistoryChannel.js';
@@ -535,7 +537,8 @@ export class LocalHistoryUploadStaging {
   private async readPreparedPreviewWithObserver(device: LocalHistoryAuthenticatedDevice, operationId: string,
     includeFirstClaimPlan?: true, copy?: {
       budget: CopyReservationPolicy;
-      observe(...args: [...Parameters<ObserveLocalHistoryFirstClaimPlan>, CopyReservationBinding]): undefined;
+      observe?: (...args: [...Parameters<ObserveLocalHistoryFirstClaimPlan>, CopyReservationBinding]) => undefined;
+      pilotCommit?: (...args: [...Parameters<ObserveLocalHistoryFirstClaimPlan>, CopyReservationBinding]) => LocalHistoryFirstPermit;
     }): Promise<PreparedPreviewRead> {
     const row = this.owned(operationId, device);
     if (row.phase !== 'prepared') refuse('conflict');
@@ -549,6 +552,18 @@ export class LocalHistoryUploadStaging {
     let pin: ReturnType<LocalHistoryDiskLedger['pinCopyVolume']> | undefined;
     let reservation: ReturnType<LocalHistoryDiskLedger['createCopyRunReservation']> | undefined;
     let reservationMayExist = false;
+    let issuedPermit: LocalHistoryFirstPermit | undefined;
+    const bindReservation = (claim: Parameters<ObserveLocalHistoryFirstClaimPlan>[0]): CopyReservationBinding => {
+      if (!copy || !reservation || !run || !pin) refuse('unavailable');
+      const { bootstrapBytes, firstClaimPolicy } = copy.budget;
+      const physicalBytes = estimateLocalHistoryPhysicalBytes({
+        kind: 'source-claim', databaseCeilingBytes: claim.databaseCeilingBytes, journalBytes: claim.journalBytes,
+      }, firstClaimPolicy);
+      if (physicalBytes > 0) reservation.grow(physicalBytes);
+      const reservedBytes = bootstrapBytes + physicalBytes;
+      reservation.assertCovers(reservedBytes);
+      return Object.freeze({ allocationId: reservation.allocationId, runId: run.runId, reservedBytes });
+    };
     const done = Promise.resolve().then(async () => {
       check();
       const receipt = await runLocalHistoryPreparedReadJob({
@@ -559,18 +574,13 @@ export class LocalHistoryUploadStaging {
             representation: file.representation, bytes: file.bytes, sha256: file.sha256 })) },
         heapMiB: this.parserPolicy.heapMiB, perFileDeadlineMs: this.parserPolicy.deadlineMs, rssBytes: this.parserPolicy.rssBytes,
         authorized,
-        observeFirstClaimPlan: copy ? (claim, destinations) => {
-          if (!reservation || !run || !pin) refuse('unavailable');
-          const { bootstrapBytes, firstClaimPolicy } = copy.budget;
-          const physicalBytes = estimateLocalHistoryPhysicalBytes({
-            kind: 'source-claim', databaseCeilingBytes: claim.databaseCeilingBytes, journalBytes: claim.journalBytes,
-          }, firstClaimPolicy);
-          if (physicalBytes > 0) reservation.grow(physicalBytes);
-          const reservedBytes = bootstrapBytes + physicalBytes;
-          reservation.assertCovers(reservedBytes);
-          return copy.observe(claim, destinations, Object.freeze({
-            allocationId: reservation.allocationId, runId: run.runId, reservedBytes,
-          }));
+        observeFirstClaimPlan: copy?.observe ? (claim, destinations) =>
+          copy.observe!(claim, destinations, bindReservation(claim)) : undefined,
+        pilotCommit: copy?.pilotCommit ? (claim, destinations, registered) => {
+          const binding = bindReservation(claim);
+          if (registered.runId !== binding.runId) refuse('unavailable');
+          issuedPermit = copy.pilotCommit!(claim, destinations, binding);
+          return issuedPermit;
         } : undefined,
         acquireChild: async () => {
           check(); if (leased) return null; leased = true;
@@ -582,6 +592,7 @@ export class LocalHistoryUploadStaging {
                 if (this.unsettledCopyReservationTags.has(row.tag)
                   || hasUnsettledLocalHistoryTemporaryRun(this.db, row.tag)) refuse('unavailable');
                 this.metadataRoom();
+                if (copy.pilotCommit) initializeLocalHistoryFirstPermits(this.db);
                 pin = this.ledger.pinCopyVolume(localHistoryCopyDestinationDirectories(this.deps.stateDir));
                 const { bootstrapBytes, ceiling, firstClaimPolicy } = copy.budget;
                 if (pin.measure().blockBytes !== firstClaimPolicy.blockBytes) refuse('capacity');
@@ -598,8 +609,10 @@ export class LocalHistoryUploadStaging {
                 run = registerLocalHistoryStoreTemporaryRun(this.db, this.custody, {
                   operationId, existingDirectoriesOnly: true,
                 });
-                await run.registerChild(child);
+                const registered = await run.registerChild(child);
                 reservation.assertCovers(bootstrapBytes);
+                check();
+                if (copy.pilotCommit) return registered;
               } else {
                 await this.registerChild(child.pid);
               }
@@ -611,11 +624,13 @@ export class LocalHistoryUploadStaging {
               try {
                 if (run && reservation) {
                   run.cleanupAfterChild();
-                  reservation.releaseAfterSettlement();
-                  reservationMayExist = false;
+                  if (!this.unsettledPermitTags.has(row.tag)) {
+                    reservation.releaseAfterSettlement();
+                    reservationMayExist = false;
+                  }
                 }
               } finally {
-                if (reservationMayExist) this.unsettledCopyReservationTags.add(row.tag);
+                if (reservationMayExist && !this.unsettledPermitTags.has(row.tag)) this.unsettledCopyReservationTags.add(row.tag);
                 pin?.close();
               }
             } };
@@ -628,7 +643,15 @@ export class LocalHistoryUploadStaging {
           }
         }.bind(this),
       });
-      check(); result = receipt;
+      if (issuedPermit) {
+        const permit = issuedPermit;
+        this.transaction(() => recordLocalHistoryFirstPermitObservation(this.db, permit, {
+          kind: 'acknowledge', digest: digest(['synthetic-first-claim-complete', permit.permitId, permit.planDigest]),
+        }));
+      } else {
+        check();
+      }
+      result = receipt;
     }).catch(error => {
       if (error instanceof LocalHistoryPreparedReadRefused) {
         writerBusy = error.message === 'local-history-preview-writer-busy' && !error.cleanupPending;
@@ -636,12 +659,15 @@ export class LocalHistoryUploadStaging {
       }
     }).finally(() => {
       if (this.activeChildWork?.done === done) this.activeChildWork = undefined;
-      try { const current = this.row(row.id); if (!live(current.phase)) this.invalidate(current, current.phase); }
+      try {
+        const current = this.row(row.id);
+        if (!live(current.phase)) this.invalidate(current, copy?.pilotCommit && current.phase === 'applying' ? 'interrupted' : current.phase);
+      }
       catch { if (!this.disposeTag(row.tag) && !this.cleanups.has(row.tag) && !this.stopped) this.scheduleCleanup(row.tag); }
     });
     this.activeChildWork = { id: row.id, tag: row.tag, done };
     await done;
-    check();
+    if (!issuedPermit) check();
     if (writerBusy) refuse('busy');
     if (!result) refuse('unavailable');
     return result;
@@ -844,6 +870,48 @@ export class LocalHistoryUploadStaging {
     } });
   }
 
+  /** Complete the first claim only for the built-in disposable fixture. The
+   * remaining import is interrupted and its committed reservation stays held. */
+  async applyDisposableFirstClaim(device: LocalHistoryAuthenticatedDevice, operationId: string, value: unknown,
+    budget: CopyReservationPolicy): Promise<{ claimWritten: true }> {
+    assertLocalHistoryDisposablePilotState(this.deps.stateDir);
+    const ownedBudget = { ...budget, firstClaimPolicy: { ...budget.firstClaimPolicy } };
+    const { bootstrapBytes, ceiling } = ownedBudget;
+    if (!Number.isSafeInteger(bootstrapBytes) || !Number.isSafeInteger(ceiling) || bootstrapBytes <= 0 || bootstrapBytes > ceiling) refuse('invalid');
+    const deviceCopy = Object.freeze({ deviceId: device.deviceId, deviceKeyHash: device.deviceKeyHash });
+    const initial = this.bindCopyIntent(deviceCopy, operationId, value);
+    await this.readPreparedPreviewWithObserver(deviceCopy, operationId, true, {
+      budget: ownedBudget,
+      pilotCommit: (claim, destinations, reservation) => this.transaction(() => {
+        const row = this.owned(operationId, deviceCopy);
+        const current = this.bindCopyIntent(deviceCopy, operationId, initial.intent);
+        const destination = destinations[0], selected = current.receipt.preview.files[0];
+        if (initial.fingerprint !== current.fingerprint || digest(initial.receipt) !== digest(current.receipt)
+          || destinations.length !== 1 || current.receipt.preview.files.length !== 1
+          || !destination?.destinationFingerprint || destination.fileId !== selected?.fileId
+          || destination.source !== selected.source || destination.destinationFingerprint !== selected.destinationFingerprint) {
+          refuse('conflict');
+        }
+        const index = this.db.prepare('SELECT allocation, sha256 FROM upload_previews WHERE id = ?').get(operationId) as
+          { allocation: string; sha256: string } | undefined;
+        if (!index) refuse('unavailable');
+        const permit: LocalHistoryFirstPermit = {
+          operationId, previewId: current.receipt.previewId, applyRequestId: current.requestId, intentFingerprint: current.fingerprint,
+          generation: this.custody.custody.generation, runId: reservation.runId, reservationId: reservation.allocationId,
+          previewAllocation: index.allocation, previewSha256: index.sha256, uploadFingerprint: row.fingerprint,
+          deadline: row.deadline, permitId: crypto.randomBytes(16).toString('hex'), fileIndex: 0,
+          destinationBinding: destination.destinationFingerprint, mutationKind: 'claim',
+          planDigest: claim.planDigest, plannedBytes: reservation.reservedBytes,
+        };
+        // Fence before attempting COMMIT. A failure can leave an issued permit.
+        this.unsettledPermitTags.add(row.tag);
+        if (recordLocalHistoryFirstPermit(this.db, permit) !== 'recorded') refuse('conflict');
+        return permit;
+      }),
+    });
+    return { claimWritten: true };
+  }
+
   /** Validate the signed copy intent against current staging state. The
    * eventual permit issuer must repeat this inside its consumption transaction. */
   inspectCopyIntent(device: LocalHistoryAuthenticatedDevice, operationId: string, value: unknown): {
@@ -949,7 +1017,9 @@ export class LocalHistoryUploadStaging {
     if (this.activeChildWork?.id === row.id) this.activeChildWork.stop?.();
     this.expiryTicks.delete(row.id);
     const timer = this.timers.get(row.id); if (timer) clearTimeout(timer); this.timers.delete(row.id);
-    if (!this.disposeTag(row.tag) && !this.cleanups.has(row.tag) && !this.stopped) this.scheduleCleanup(row.tag);
+    if (!this.unsettledPermitTags.has(row.tag) && !this.disposeTag(row.tag) && !this.cleanups.has(row.tag) && !this.stopped) {
+      this.scheduleCleanup(row.tag);
+    }
     try { this.metadataRoom(); this.db.prepare('UPDATE upload_operations SET phase = ? WHERE id = ?').run(phase, row.id); }
     catch { /* live memory denies authority; durable generation remains charged */ }
   }

@@ -10,6 +10,7 @@ import { fileURLToPath } from 'node:url';
 import { performance as monotonicClock } from 'node:perf_hooks';
 import Database from 'better-sqlite3';
 import { LocalHistoryUploadStaging, type LocalHistoryStagingIssuer } from '../../dist/import/LocalHistoryUploadStaging.js';
+import { LOCAL_HISTORY_DISPOSABLE_PILOT_LINES } from '../../dist/import/LocalHistoryDisposablePilot.js';
 import { LocalHistoryDiskLedger } from '../../dist/import/LocalHistoryDiskLedger.js';
 import { LOCAL_HISTORY_PLAINTEXT_BYTES } from '../../src/import/LocalHistoryChannel.js';
 import { SafeFsExecutor } from '../../dist/core/SafeFsExecutor.js';
@@ -1021,4 +1022,52 @@ it('does not reclaim a dead parent upload until its actual surviving child custo
   });
   expect(recovered!.stage.status(device, ready.operationId).phase).toBe('interrupted');
   expect(fs.readdirSync(blocks)).toHaveLength(1); // only the new metadata work reserve
+});
+
+
+it('commits and delivers only the synthetic first claim through real staging', async () => {
+  const base = path.join(fs.realpathSync(os.homedir()), '.instar', 'test-deploys');
+  fs.mkdirSync(base, { recursive: true, mode: 0o700 });
+  const home = path.join(base, 'local-history-reserve-pilot-' + crypto.randomBytes(16).toString('hex'));
+  fs.mkdirSync(home, { mode: 0o700 }); roots.push(home);
+  const stateDir = path.join(home, '.instar');
+  fs.mkdirSync(stateDir, { mode: 0o700 });
+  const f = setup({ stateDir });
+  const bytes = Buffer.from(LOCAL_HISTORY_DISPOSABLE_PILOT_LINES.join('\n'));
+  const store = new ImportedHistoryStore(stateDir);
+  fs.mkdirSync(path.join(store.dir, '.local-history-temporary'), { mode: 0o700 });
+  const manifest = f.manifest([bytes]);
+  manifest.files[0].expectedSessionId = 'synthetic-session';
+  const selected = f.stage.admit(device, manifest);
+  upload(f.stage, selected.operationId, 'file-0', bytes);
+  f.stage.complete(device, selected.operationId);
+  await until(() => f.stage.status(device, selected.operationId).phase === 'verified');
+  f.stage.prepare(device, selected.operationId);
+  await until(() => f.stage.status(device, selected.operationId).phase === 'prepared');
+  const receipt = await f.stage.publishPreparedPreview(device, selected.operationId);
+  const intent = { previewId: receipt.previewId, machineId: receipt.machineId, bootId: issuer.bootId,
+    confirmationChallenge: receipt.confirmation.challenge, applyRequestId: '1'.repeat(32) };
+  const blockBytes = fs.statfsSync(stateDir).bsize;
+  const budget = { bootstrapBytes: 64 * 1024 ** 2, ceiling: 256 * 1024 ** 2,
+    firstClaimPolicy: { blockBytes, perWriteMetadataBytes: 1024 ** 2, maxReservationBytes: 256 * 1024 ** 2, maxAttachments: 32 } };
+  const db = new Database(path.join(stateDir, 'local-history-upload', 'jobs.sqlite'));
+  const ledger = new LocalHistoryDiskLedger(stateDir, { disk: f.disk });
+  try {
+    await expect(f.stage.applyDisposableFirstClaim(device, selected.operationId, intent, budget)).resolves.toEqual({ claimWritten: true });
+    expect(f.stage.status(device, selected.operationId).phase).toBe('interrupted');
+    const slot = db.prepare('SELECT * FROM local_history_first_permits WHERE operationId = ?').get(selected.operationId) as
+      { reservationId: string; runId: string; plannedBytes: number; mutationKind: string };
+    expect(slot.mutationKind).toBe('claim');
+    expect(ledger.inspect(slot.reservationId)).toMatchObject({ state: 'active', written: 0, planned: slot.plannedBytes });
+    expect(db.prepare('SELECT state FROM local_history_store_temporary_runs WHERE runId = ?').get(slot.runId)).toEqual({ state: 'disposed' });
+    expect(db.prepare('SELECT acknowledgementDigest FROM local_history_first_permit_progress WHERE operationId = ?').get(selected.operationId))
+      .toEqual({ acknowledgementDigest: expect.stringMatching(/^[a-f0-9]{64}$/) });
+    expect(fs.statSync(path.join(store.dir, 'source-claims.sqlite')).size).toBeGreaterThan(0);
+    expect(fs.readdirSync(path.join(store.dir, 'conversations'))).toEqual([]);
+    await expect(f.stage.applyDisposableFirstClaim(device, selected.operationId, intent, budget)).rejects.toThrow('upload-conflict');
+    await f.stage.stop();
+    const reopened = setup({ stateDir, boot: 'synthetic-pilot-next-boot' });
+    expect(reopened.stage.status(device, selected.operationId).phase).toBe('interrupted');
+    expect(ledger.inspect(slot.reservationId)).toMatchObject({ state: 'active', written: 0, planned: slot.plannedBytes });
+  } finally { db.close(); ledger.close(); }
 });

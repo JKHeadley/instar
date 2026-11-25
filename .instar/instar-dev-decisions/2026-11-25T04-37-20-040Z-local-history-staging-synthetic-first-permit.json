@@ -1,0 +1,26 @@
+{
+  "ts": "2026-11-25T04:37:20.040Z",
+  "slug": "local-history-staging-synthetic-first-permit",
+  "suggestedTier": 2,
+  "declaredTier": 2,
+  "riskFloor": 1,
+  "riskFloorReasons": [],
+  "belowFloor": false,
+  "files": 1,
+  "loc": 114,
+  "scope": {
+    "basis": "staged-in-scope-paths-including-deleted",
+    "files": [
+      "src/import/LocalHistoryUploadStaging.ts"
+    ],
+    "addedLines": 92,
+    "deletedLines": 22
+  },
+  "causalAutopsy": null,
+  "classClosure": {
+    "defectClass": "unbounded-self-action",
+    "closure": "n/a",
+    "reason": "The coordinator commits and sends one claim, stops and retains the issued record without retry."
+  },
+  "verdict": "pass"
+}
