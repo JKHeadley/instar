@@ -25162,6 +25162,9 @@ export async function startServer(options: StartOptions): Promise<void> {
     // The executor itself acquires the lock + spawns + polls + cleans up.
     // Errors are surfaced via the poller's result.executorErrors and
     // logged to stderr; they don't take the server down.
+    const { openManagedCodexWorkDatabase } = await import('../core/ManagedCodexWorkDatabase.js');
+    const { readOsBootId } = await import('../core/processIdentity.js');
+    const projectOsBootId = readOsBootId();
     const { runRound } = await import('../core/ProjectRoundExecution.js');
     const { ProjectAutoAdvancePoller } = await import('../core/ProjectAutoAdvancePoller.js');
     const projectAutoAdvancePoller = new ProjectAutoAdvancePoller({
@@ -25171,15 +25174,33 @@ export async function startServer(options: StartOptions): Promise<void> {
       executor: async ({ projectId, roundIndex }) => {
         const proj = initiativeTracker.get(projectId);
         if (!proj || !proj.targetRepoPath) return;
-        await runRound(
-          {
+        // A flag change cannot hide durable work still held by a managed worker.
+        let work: ReturnType<typeof openManagedCodexWorkDatabase>;
+        try {
+          work = openManagedCodexWorkDatabase(config.stateDir);
+          const result = await runRound({
             tracker: initiativeTracker,
             projectId,
             roundIndex,
             targetRepoPath: proj.targetRepoPath,
-          },
-          { stateDir: config.stateDir }
-        );
+          }, {
+            stateDir: config.stateDir,
+            workFences: work?.store,
+            workFenceHost: projectOsBootId && coordinator.identity?.machineId
+              ? { machineId: coordinator.identity.machineId, osBootId: projectOsBootId }
+              : undefined,
+          });
+          if (work && (result.outcome === 'failed' || result.outcome === 'unverifiable')) {
+            console.warn('[ProjectAutoAdvancePoller] round execution held or failed:', {
+              projectId, roundIndex, reason: result.reason,
+            });
+          }
+        } catch (error) {
+          console.warn('[ProjectAutoAdvancePoller] round executor failed:', { projectId, roundIndex });
+          throw error;
+        } finally {
+          work?.close();
+        }
       },
     });
     // Tick once a minute; .unref() so the timer never keeps the process alive.

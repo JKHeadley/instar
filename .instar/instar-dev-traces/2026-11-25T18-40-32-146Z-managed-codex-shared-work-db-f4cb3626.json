@@ -1,0 +1,26 @@
+{
+  "version": 2,
+  "slug": "managed-codex-shared-work-db",
+  "sessionId": "017c26ed-5596-4576-9c20-20af13e4c1f8",
+  "timestamp": "2026-11-25T18:40:32.146Z",
+  "artifactPath": "upgrades/side-effects/managed-codex-shared-work-db.md",
+  "artifactSha256": "d7c327a8bb151b3ea2f355fc4347eca349c2bc7b2a003f87a872b1f2e2cab535",
+  "coveredFiles": [
+    "src/commands/server.ts",
+    "src/core/ManagedCodexWorkDatabase.ts",
+    "tests/e2e/managed-codex-stop-lifecycle.test.ts",
+    "tests/unit/managed-codex-work-database.test.ts"
+  ],
+  "phase": "complete",
+  "tier": 1,
+  "tierReasoning": "Ordinary-only wiring adds refusal for existing managed state, with no live store provisioning or new launch authority.",
+  "eli16Path": "upgrades/managed-codex-shared-work-db.eli16.md",
+  "sideEffectsPath": "upgrades/side-effects/managed-codex-shared-work-db.md",
+  "secondPass": "true",
+  "reviewerConcurred": true,
+  "classClosure": {
+    "defectClass": "unbounded-self-action",
+    "closure": "n/a",
+    "reason": "One existing launch attempt opens and closes the work store. It adds no autonomous schedule, retries or new child launch."
+  }
+}

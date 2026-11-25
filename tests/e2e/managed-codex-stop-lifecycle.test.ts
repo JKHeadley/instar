@@ -2,7 +2,6 @@ import { spawn } from 'node:child_process';
 import { once } from 'node:events';
 import fs from 'node:fs';
 import path from 'node:path';
-import Database from 'better-sqlite3';
 import { expect, it, vi } from 'vitest';
 import { createTempProject } from '../helpers/setup.js';
 import { AgentServer } from '../../src/server/AgentServer.js';
@@ -14,7 +13,7 @@ import { ProjectRoundRunner } from '../../src/core/ProjectRoundRunner.js';
 import { SafeGitExecutor } from '../../src/core/SafeGitExecutor.js';
 import { dispatchManagedCodexProject } from '../../src/core/ManagedCodexProjectDispatch.js';
 import { verifyManagedCodexStop } from '../../src/core/ManagedCodexStopVerifier.js';
-import { ManagedCodexStopStore } from '../../src/core/ManagedCodexStopStore.js';
+import { openManagedCodexWorkDatabase } from '../../src/core/ManagedCodexWorkDatabase.js';
 import type { InstarConfig } from '../../src/core/types.js';
 import { resolveCodexNativeCanaryBinary } from '../../src/messaging/telegram-origin/OriginCodexModelCanary.js';
 import { CODEX_CANARY_MODELS, openCodexCanaryProvider } from '../../src/messaging/telegram-origin/OriginCodexModelCanaryProtocol.js';
@@ -52,8 +51,8 @@ it.skipIf(!codex).each([true, false])('drives an enrolled worker through package
     admission: { evaluate: () => ({ admit: true }) }, telegramChatId: 'fixture-chat',
   } as unknown as Parameters<typeof createConversationGraphSoloOwnership>[0]);
   custody.establish([{ kind: 'conversation', platform: 'telegram', chatId: 'fixture-chat', topicId: 147616 }]);
-  const db = new Database(path.join(stateDir, 'managed-stop.sqlite'));
-  const store = new ManagedCodexStopStore(db);
+  const work = openManagedCodexWorkDatabase(stateDir, true)!;
+  const { store } = work;
   const cfg = {
     projectName: 'managed-stop-e2e', projectDir, stateDir, port: 0, authToken: 'disposable-managed-stop',
     sessions: { claudePath: '/usr/bin/echo', maxSessions: 1, protectedSessions: [], monitorIntervalMs: 5000 },
@@ -177,12 +176,18 @@ it.skipIf(!codex).each([true, false])('drives an enrolled worker through package
         cancelLaunch: () => { child?.kill('SIGKILL'); },
       });
       expect(admitted?.nativeSessionId).toBe(workerId);
-      const ordinary = await runRound({
-        tracker, projectId: 'managed-project', roundIndex: 0, targetRepoPath: projectDir,
-        mergeBaseBranch: 'main',
-        verifyMergedItems: async () => { throw new Error('ordinary execution passed the managed claim'); },
-      }, { stateDir, workFences: store, workFenceHost: { machineId, osBootId: osBootId! } });
-      expect(ordinary).toMatchObject({ outcome: 'failed', reason: 'round work is held by a managed project worker' });
+      const ordinaryWork = openManagedCodexWorkDatabase(stateDir);
+      expect(ordinaryWork).toBeDefined();
+      try {
+        const ordinary = await runRound({
+          tracker, projectId: 'managed-project', roundIndex: 0, targetRepoPath: projectDir,
+          mergeBaseBranch: 'main',
+          verifyMergedItems: async () => { throw new Error('ordinary execution passed the managed claim'); },
+        }, { stateDir, workFences: ordinaryWork!.store, workFenceHost: { machineId, osBootId: osBootId! } });
+        expect(ordinary).toMatchObject({ outcome: 'failed', reason: 'round work is held by a managed project worker' });
+      } finally {
+        ordinaryWork?.close();
+      }
       expect(exited).toBeDefined();
       const [code] = await exited!;
       expect(code, stderr).toBe(0);
@@ -198,7 +203,7 @@ it.skipIf(!codex).each([true, false])('drives an enrolled worker through package
   } finally {
     await provider.close();
     await server.stop();
-    db.close();
+    work.close();
     project.cleanup();
   }
 }, 30_000);
