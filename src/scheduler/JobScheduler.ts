@@ -247,10 +247,10 @@ export class JobScheduler {
   /** Triage sessions: tmux name → their run row. */
   private projectedRuns: Map<string, { runId: string; slugTag: string; slug: string; trigger: string }> = new Map();
   private developmentReviewRosterKnown = false;
-  private memoryHygieneStartupLedgerAvailable: () => boolean = () => false;
+  private projectTrialStartupLedgerAvailable: () => boolean = () => false;
 
-  setMemoryHygieneStartupLedgerAvailability(available: () => boolean): void {
-    this.memoryHygieneStartupLedgerAvailable = available;
+  setProjectTrialStartupLedgerAvailability(available: () => boolean): void {
+    this.projectTrialStartupLedgerAvailable = available;
   }
 
   private tokenLedger: JobSessionLedger | null = null;
@@ -3154,16 +3154,20 @@ export class JobScheduler {
       ? (this.developmentReviewRosterKnown
         ? !this.jobs.some(candidate => jobMatchesCategory(candidate, 'development')) : null)
       : undefined;
-    const memoryTrialMode = job.slug === 'memory-hygiene' && job.origin === undefined
-      && job.execute.type === 'skill' && job.execute.value === 'memory-hygiene'
+    const trialJob = job.slug === 'memory-hygiene' || job.slug === 'session-continuity-check';
+    const trialConfig = trialJob && job.origin === undefined
+      && job.execute.type === 'skill' && job.execute.value === job.slug
       && /^(?:queued:)*scheduled$/.test(reason)
-      ? (this.readAgentConfig()?.jobs as { memoryHygieneProjectIntegrationTrial?: unknown } | undefined)
-        ?.memoryHygieneProjectIntegrationTrial
-      : undefined;
-    const memoryTrialObserved = memoryTrialMode === 'baseline' || memoryTrialMode === 'without-project';
-    const memoryTrialEligible = memoryTrialObserved && this.memoryHygieneStartupLedgerAvailable()
+      ? this.readAgentConfig()?.jobs as {
+        memoryHygieneProjectIntegrationTrial?: unknown;
+        sessionContinuityProjectIntegrationTrial?: unknown;
+      } | undefined : undefined;
+    const trialMode = job.slug === 'memory-hygiene' ? trialConfig?.memoryHygieneProjectIntegrationTrial
+      : trialConfig?.sessionContinuityProjectIntegrationTrial;
+    const trialObserved = trialMode === 'baseline' || trialMode === 'without-project';
+    const trialEligible = trialObserved && this.projectTrialStartupLedgerAvailable()
       && job.mcpAccess === undefined && !toolDecision.confinedTools
-      && fs.existsSync(path.join(path.dirname(this.stateDir), '.claude', 'skills', 'memory-hygiene', 'SKILL.md'))
+      && fs.existsSync(path.join(path.dirname(this.stateDir), '.claude', 'skills', job.slug, 'SKILL.md'))
       && (spawnAllowedTools === undefined || ['Bash', 'Skill'].every(tool => spawnAllowedTools.includes(tool)));
     let gateSpawnAccepted = false;
     this.activeSessionSpawns.add(job.slug);
@@ -3184,7 +3188,7 @@ export class JobScheduler {
       // MCP boot cost + the auth-required-remote-MCP headless hang hazard
       // (docs/specs/LOOP-SESSION-NO-MCP-SPEC.md). Absent/'project' → unchanged.
       disableProjectMcp: job.mcpAccess === 'none' ? true : undefined,
-      ...(memoryTrialMode === 'without-project' && memoryTrialEligible ? { memoryHygieneIntegrationTrial: true } : {}),
+      ...(trialMode === 'without-project' && trialEligible ? { projectIntegrationTrial: true } : {}),
       ...(toolDecision.confinedTools ? { confinedTools: toolDecision.confinedTools } : {}),
       ...(toolDecision.requireConfinement ? { requireToolConfinement: true } : {}),
       // Per-job thinking mode (job-launch-intent-record §3): the launching builder translates
@@ -3210,8 +3214,8 @@ export class JobScheduler {
       }
       this.markCapacityJobStarted(job.slug);
       this.recordLedgerSession(session?.id ?? sessionName, job.slug, new Date().toISOString(), 'job');
-      const memoryTrialVariant = memoryTrialMode === 'baseline' && memoryTrialEligible && session?.framework === CLAUDE_CODE_FRAMEWORK
-        ? 'baseline' : session?.memoryHygieneIntegrationTrialApplied === true && memoryTrialMode === 'without-project'
+      const trialVariant = trialMode === 'baseline' && trialEligible && session?.framework === CLAUDE_CODE_FRAMEWORK
+        ? 'baseline' : session?.projectIntegrationTrialApplied === true && trialMode === 'without-project'
           ? 'without-project' : 'fallback';
       // Record in run history with full Phase 1b observability payload
       const runId = this.runHistory.recordStart({
@@ -3237,8 +3241,9 @@ export class JobScheduler {
         toolEnforcement: toolOutcome.toolEnforcement,
         // job-launch-intent-record §3/§4: taken from the same returned session as framework/model.
         ...(session?.launch ? { launch: session.launch } : {}),
-        ...(memoryTrialObserved && session?.id ? {
-          memoryHygieneIntegrationTrial: { variant: memoryTrialVariant, nativeSessionId: session.id },
+        ...(trialObserved && session?.id ? {
+          [job.slug === 'memory-hygiene' ? 'memoryHygieneIntegrationTrial' : 'sessionContinuityIntegrationTrial']:
+            { variant: trialVariant, nativeSessionId: session.id },
         } : {}),
         ...(wouldSkipDevelopmentReview !== undefined && session?.id ? {
           developmentReviewObservation: { wouldSkip: wouldSkipDevelopmentReview, nativeSessionId: session.id },

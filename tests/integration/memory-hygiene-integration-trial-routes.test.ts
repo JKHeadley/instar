@@ -8,7 +8,10 @@ import type { InstarConfig } from '../../src/core/types.js';
 const cleanup: Array<() => void | Promise<void>> = [];
 afterEach(async () => { for (const stop of cleanup.splice(0).reverse()) await stop(); });
 
-it('shows unknown trial usage through authenticated job history when the transcript is absent', async () => {
+it.each([
+  ['memory-hygiene', 'memoryHygieneIntegrationTrial'],
+  ['session-continuity-check', 'sessionContinuityIntegrationTrial'],
+] as const)('%s history shows unknown usage for an absent transcript', async (slug, trialKey) => {
   const project = createTempProject();
   cleanup.push(project.cleanup);
   const sessions = createMockSessionManager();
@@ -20,14 +23,13 @@ it('shows unknown trial usage through authenticated job history when the transcr
   } as InstarConfig;
   const server = new AgentServer({ config, state: project.state, scheduler, sessionManager: sessions as never });
   cleanup.push(() => server.stop());
-  const slug = 'memory-hygiene';
   scheduler.getRunHistory().recordStart({ slug, sessionId: 'job-fixture', trigger: 'scheduled',
-    memoryHygieneIntegrationTrial: { variant: 'fallback', nativeSessionId: 'internal-binding' } });
-  const endpoint = '/jobs/memory-hygiene/history';
+    [trialKey]: { variant: 'fallback', nativeSessionId: 'internal-binding' } });
+  const endpoint = `/jobs/${slug}/history`;
   expect((await request(server.getApp()).get(endpoint)).status).toBe(401);
   const response = await request(server.getApp()).get(endpoint).set('Authorization', 'Bearer memory-trial-routes');
   expect(response.status).toBe(200);
-  expect(response.body.runs[0].memoryHygieneIntegrationTrial).toEqual({ variant: 'fallback', startupUsage: null });
-  expect(response.body.stats.lastRun.memoryHygieneIntegrationTrial).toEqual({ variant: 'fallback', startupUsage: null });
+  expect(response.body.runs[0][trialKey]).toEqual({ variant: 'fallback', startupUsage: null });
+  expect(response.body.stats.lastRun[trialKey]).toEqual({ variant: 'fallback', startupUsage: null });
   expect(JSON.stringify(response.body)).not.toContain('internal-binding');
 });

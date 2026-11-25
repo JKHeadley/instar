@@ -59,10 +59,13 @@ export function boundLaunchRecord(launch: JobRunLaunch): JobRunLaunch {
   return out;
 }
 
+type ProjectIntegrationTrial = { variant: 'baseline' | 'without-project' | 'fallback'; nativeSessionId: string };
+
 export interface JobRun {
   /** Disabled-by-default launch observation correlated to the native token ledger. */
   developmentReviewObservation?: { wouldSkip: boolean | null; nativeSessionId: string };
-  memoryHygieneIntegrationTrial?: { variant: 'baseline' | 'without-project' | 'fallback'; nativeSessionId: string };
+  memoryHygieneIntegrationTrial?: ProjectIntegrationTrial;
+  sessionContinuityIntegrationTrial?: ProjectIntegrationTrial;
   /** Unique run ID (slug + timestamp hash) */
   runId: string;
   /** Job slug */
@@ -290,7 +293,8 @@ export class JobRunHistory {
     toolEnforcement?: string;
     launch?: JobRunLaunch;
     developmentReviewObservation?: JobRun['developmentReviewObservation'];
-    memoryHygieneIntegrationTrial?: JobRun['memoryHygieneIntegrationTrial'];
+    memoryHygieneIntegrationTrial?: ProjectIntegrationTrial;
+    sessionContinuityIntegrationTrial?: ProjectIntegrationTrial;
   }): string {
     const runId = `${opts.slug}-${Date.now().toString(36)}-${(runCounter++).toString(36)}`;
     const run: JobRun = {
@@ -321,6 +325,7 @@ export class JobRunHistory {
       ...(opts.launch !== undefined ? { launch: boundLaunchRecord(opts.launch) } : {}),
       ...(opts.developmentReviewObservation ? { developmentReviewObservation: opts.developmentReviewObservation } : {}),
       ...(opts.memoryHygieneIntegrationTrial ? { memoryHygieneIntegrationTrial: opts.memoryHygieneIntegrationTrial } : {}),
+      ...(opts.sessionContinuityIntegrationTrial ? { sessionContinuityIntegrationTrial: opts.sessionContinuityIntegrationTrial } : {}),
     };
     this.appendLine(run);
     return runId;

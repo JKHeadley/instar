@@ -22402,14 +22402,15 @@ document.getElementById('mcpForm').addEventListener('submit', async function (e)
   // ── Job Run History ─────────────────────────────────────────────
 
   function presentJobRun(run: import('../scheduler/JobRunHistory.js').JobRun) {
-    const trial = run.memoryHygieneIntegrationTrial;
+    const trialKey = run.slug === 'session-continuity-check' ? 'sessionContinuityIntegrationTrial' : 'memoryHygieneIntegrationTrial';
+    const trial = run[trialKey];
     if (trial) {
       const session = typeof trial.nativeSessionId === 'string' ? ctx.state.getSession(trial.nativeSessionId) : undefined;
       const transcriptId = session?.jobSlug === run.slug && session?.framework === CLAUDE_CODE_FRAMEWORK ? session.claudeSessionId : undefined;
-      const { memoryHygieneIntegrationTrial: _privateTrial, ...publicRun } = run;
+      const { [trialKey]: _privateTrial, ...publicRun } = run;
       return {
         ...publicRun,
-        memoryHygieneIntegrationTrial: {
+        [trialKey]: {
           variant: trial.variant,
           startupUsage: transcriptId ? ctx.tokenLedger?.jobStartupUsage(transcriptId) ?? null : null,
         },

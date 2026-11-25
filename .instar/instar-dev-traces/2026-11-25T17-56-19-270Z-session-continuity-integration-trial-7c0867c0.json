@@ -1,0 +1,29 @@
+{
+  "version": 2,
+  "slug": "session-continuity-integration-trial",
+  "sessionId": "bcc82a0c-f81e-440b-88eb-304eb7ee4f4c",
+  "timestamp": "2026-11-25T17:56:19.270Z",
+  "artifactPath": "upgrades/side-effects/session-continuity-integration-trial.md",
+  "artifactSha256": "befcd41cad0756b5eb1f2f586e103286707749e60ae7280736063342fbcc06df",
+  "coveredFiles": [
+    "docs/specs/session-continuity-integration-trial.eli16.md",
+    "src/core/SessionManager.ts",
+    "src/core/types.ts",
+    "src/data/awareness/session-continuity-integration-trial.md",
+    "src/scheduler/JobRunHistory.ts",
+    "src/scheduler/JobScheduler.ts",
+    "src/server/AgentServer.ts",
+    "src/server/routes.ts",
+    "tests/e2e/memory-hygiene-integration-trial-alive.test.ts",
+    "tests/integration/memory-hygiene-integration-trial-routes.test.ts",
+    "tests/unit/headless-spawn-reroute.test.ts",
+    "upgrades/side-effects/session-continuity-integration-trial.md"
+  ],
+  "phase": "complete",
+  "tier": 1,
+  "tierReasoning": "Reuse existing disabled-and-reversible launcher and recording path for one additional scheduled skill",
+  "eli16Path": "docs/specs/session-continuity-integration-trial.eli16.md",
+  "sideEffectsPath": "upgrades/side-effects/session-continuity-integration-trial.md",
+  "secondPass": "not-required",
+  "reviewerConcurred": null
+}

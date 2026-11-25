@@ -4699,8 +4699,8 @@ rm()  { "${shimRunner}" rm  "$@"; }
      *  init; with this flag a headless spawn boots in ~9s. No effect on Codex
      *  spawns (Codex MCP wiring is separate). */
     disableProjectMcp?: boolean;
-    /** Optional empty project integrations for the narrowly scoped memory hygiene trial. */
-    memoryHygieneIntegrationTrial?: true;
+    /** Optional empty project integrations for the narrowly scoped job integration trial. */
+    projectIntegrationTrial?: true;
     /** Threadline A2A continuity (claude-code HEADLESS only): when set, the
      *  headless `claude -p` spawn is launched with `--session-id <uuid>` so the
      *  transcript is created at a deterministic, caller-chosen id. The caller
@@ -5078,17 +5078,17 @@ rm()  { "${shimRunner}" rm  "$@"; }
     //  - `--strict-mcp-config --mcp-config {}` — no-project-MCP spawn for headless
     //    one-shot sessions that would otherwise hang on auth-required remote MCP
     //    boot (the mentor autonomous-fix loop). See claudeHeadlessExtraFlags.
-    const memoryHygieneTrialApplied = options.memoryHygieneIntegrationTrial === true && options.jobSlug === 'memory-hygiene'
+    const projectTrialApplied = options.projectIntegrationTrial === true && (options.jobSlug === 'memory-hygiene' || options.jobSlug === 'session-continuity-check')
       && headlessFramework === CLAUDE_CODE_FRAMEWORK && headlessSpec.argv.indexOf('-p') > 0
       && !options.disableProjectMcp && !options.confinement && !options.confinedTools;
-    if (memoryHygieneTrialApplied) {
+    if (projectTrialApplied) {
       headlessThreadline = this.planHeadlessThreadlineMcp(headlessFramework, headlessBinaryPath,
         { ...options, disableProjectMcp: true });
     }
     const extraClaudeFlags = claudeHeadlessExtraFlags({
       framework: headlessFramework,
       allowedTools: options.allowedTools,
-      disableProjectMcp: options.disableProjectMcp || memoryHygieneTrialApplied || Boolean(options.confinement),
+      disableProjectMcp: options.disableProjectMcp || projectTrialApplied || Boolean(options.confinement),
       ...(options.confinement ? { confinementSettingsPath: options.confinement.settingsPath } : {}),
     });
     if (options.confinement && !extraClaudeFlags.includes('--settings')) {
@@ -5352,7 +5352,7 @@ rm()  { "${shimRunner}" rm  "$@"; }
       completionMode: 'exit',
       // job-launch-intent-record §3: captured from the final tmux argv/env just before the spawn.
       ...(headlessLaunchCapture.launch ? { launch: headlessLaunchCapture.launch } : {}),
-      ...(memoryHygieneTrialApplied ? { memoryHygieneIntegrationTrialApplied: true } : {}),
+      ...(projectTrialApplied ? { projectIntegrationTrialApplied: true } : {}),
       // EVO-008: set ONLY after the final argv passed the confinement contract check.
       ...(headlessConfined ? { confinedTools: headlessConfined } : {}),
       ...(options.confinement ? { confinedConfigHome: headlessSpec.envOverrides.CLAUDE_CONFIG_DIR ?? defaultClaudeConfigHome() } : {}),
@@ -5609,12 +5609,12 @@ rm()  { "${shimRunner}" rm  "$@"; }
     // of the argv (the interactive argv has no `-p` positional to splice before).
     // Without --strict-mcp-config, an MCP-restricted rerouted job re-introduces
     // the documented ~4.5-min OAuth-remote-MCP boot hang (spec F4/S3).
-    const memoryHygieneTrialApplied = options.memoryHygieneIntegrationTrial === true && options.jobSlug === 'memory-hygiene'
+    const projectTrialApplied = options.projectIntegrationTrial === true && (options.jobSlug === 'memory-hygiene' || options.jobSlug === 'session-continuity-check')
       && !options.disableProjectMcp && !options.confinement && !options.confinedTools;
     const extraClaudeFlags = claudeHeadlessExtraFlags({
       framework: 'claude-code',
       allowedTools: options.allowedTools,
-      disableProjectMcp: options.disableProjectMcp || memoryHygieneTrialApplied || Boolean(options.confinement),
+      disableProjectMcp: options.disableProjectMcp || projectTrialApplied || Boolean(options.confinement),
       ...(options.confinement ? { confinementSettingsPath: options.confinement.settingsPath } : {}),
     });
     if (options.confinement && !extraClaudeFlags.includes('--settings')) {
@@ -5631,7 +5631,7 @@ rm()  { "${shimRunner}" rm  "$@"; }
       binaryPath,
       knownVersion: this.claudeLaunchVersions.get(binaryPath) ?? null,
       stripped: Boolean(options.omitAuthEnv) || Boolean(options.confinement)
-        || Boolean(options.disableProjectMcp) || memoryHygieneTrialApplied || Boolean(options.confinedTools),
+        || Boolean(options.disableProjectMcp) || projectTrialApplied || Boolean(options.confinedTools),
     });
     if (reroutedThreadline.transport === 'http' && reroutedThreadline.claudeConfigPath) {
       launchSpec.argv.push('--mcp-config', reroutedThreadline.claudeConfigPath);
@@ -5820,7 +5820,7 @@ rm()  { "${shimRunner}" rm  "$@"; }
       ...(reroutedConfined ? { confinedTools: reroutedConfined } : {}),
       // job-launch-intent-record §3: captured from the final tmux argv/env just before the spawn.
       ...(reroutedLaunchCapture.launch ? { launch: reroutedLaunchCapture.launch } : {}),
-      ...(memoryHygieneTrialApplied ? { memoryHygieneIntegrationTrialApplied: true } : {}),
+      ...(projectTrialApplied ? { projectIntegrationTrialApplied: true } : {}),
       // Subscription-pool pinning: tag with the account this launched under, so
       // auto-swap can move it when that account hits a quota wall.
       ...(pinnedAccount ? { subscriptionAccountId: pinnedAccount.accountId } : {}),
