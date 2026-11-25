@@ -2,14 +2,20 @@
 import path from 'node:path';
 import { pathToFileURL } from 'node:url';
 
-const [dist, stateDir] = process.argv.slice(2);
+const [dist, stateDir, mode] = process.argv.slice(2);
 const fromBuild = (file) => import(pathToFileURL(path.resolve(dist, 'core', file)).href);
 const { CoherenceJournal } = await fromBuild('CoherenceJournal.js');
 const { ReplicatedKindRegistry } = await fromBuild('ReplicatedRecordEnvelope.js');
 const { ReplicatedRecordEmitter } = await fromBuild('ReplicatedRecordEmitter.js');
 const { HybridLogicalClock } = await fromBuild('HybridLogicalClock.js');
 const { WorkBoardRuntime } = await fromBuild('WorkBoardRuntime.js');
-const { WORK_CARD_KIND_REGISTRATION, WORK_BOARD_STORE_KEY, WORK_CARD_RECORD_KIND } = await fromBuild('WorkCardStore.js');
+const { WORK_CARD_KIND_REGISTRATION, WORK_BOARD_STORE_KEY, WORK_CARD_RECORD_KIND, workBoardEnabled } = await fromBuild('WorkCardStore.js');
+
+// Mirrors the production boot branch that constructs the Work Board only when enabled.
+if (!workBoardEnabled({ developmentAgent: true, workBoard: { enabled: mode !== 'paused' } })) {
+  process.stdout.write(JSON.stringify({ paused: true }));
+  process.exit(0);
+}
 
 const machineId = 'legacy-peer';
 const registry = new ReplicatedKindRegistry();

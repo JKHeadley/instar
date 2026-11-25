@@ -208,3 +208,15 @@ The lifecycle test accepts `INSTAR_TEST_LEGACY_WORK_BOARD_DIST` and `INSTAR_TEST
 This proves the receiver refuses effects from an older release and the candidate denies exclusive proof to the override. It does not prove sender protection in an older binary. A production rollout must exclude any older process from write-capable enrollment and from the enrolled home before activation.
 
 Independent review concurred. The nine-case lifecycle run used legacy build `3e318c9236c29df1bd93bb6051557fcdfe16efee` and candidate build `b8fe7d4fdfa92058d5d265f7967fca4d31ef408b`.
+
+## Capture window and sender pause
+
+The existing Work Board enable setting now reaches the journal sender and final pickup delivery check. A live pause blocks new reservations and dispatch while preserving replication. The read-only capture command refuses a changing stream or a local sequence that differs from the separately observed durable advert.
+
+- Over-block. The existing pause intentionally makes Work Board mutations unavailable during capture.
+- Under-block. Older already-running binaries need a managed drain and a paused restart. The capture does not enforce production process isolation.
+- Authority and interactions. The existing local configuration owns the pause. The capture produces receipts and never grants enrollment or changes a service.
+- Multi-machine posture. All active homes pause and catch up before comparing digests. Old-process evidence comes from the supervisor and inventory.
+- Rollback. Restore the original setting presence and value through the planned restart and verify normal health.
+
+Independent review concurred with the dark code and capture command. The runbook requires already-admitted pickup and dispatch to drain on all builds. The legacy fixture exercises the compiled startup predicate. The production supervisor receipt remains required.

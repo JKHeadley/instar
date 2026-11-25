@@ -69,7 +69,7 @@ afterAll(() => { for (const d of tmpDirs) SafeFsExecutor.safeRmSync(d, { recursi
 
 interface Rig { runtime: WorkBoardRuntime; journal: CoherenceJournal; streams: ReplicatedPeerStreamReader; lines: Array<{ key: string; id: string; text: string }>; briefs: string[]; conversations: Set<string>; removed: string[] }
 
-function mkRuntime(stateDir: string, opts: { machineId?: string; baseline?: () => UnionEntry[]; rotateBytes?: number; permissionSlips?: ConstructorParameters<typeof WorkBoardRuntime>[0]['permissionSlips']; onAwaitDurable?: (seq: number, journal: CoherenceJournal) => void } = {}): Rig {
+function mkRuntime(stateDir: string, opts: { enabled?: () => boolean; machineId?: string; baseline?: () => UnionEntry[]; rotateBytes?: number; permissionSlips?: ConstructorParameters<typeof WorkBoardRuntime>[0]['permissionSlips']; onAwaitDurable?: (seq: number, journal: CoherenceJournal) => void } = {}): Rig {
   const machineId = opts.machineId ?? 'm1';
   const reg = new ReplicatedKindRegistry(); reg.register(WORK_CARD_KIND_REGISTRATION);
   const journal = new CoherenceJournal({
@@ -82,7 +82,7 @@ function mkRuntime(stateDir: string, opts: { machineId?: string; baseline?: () =
   const streams = new ReplicatedPeerStreamReader({ stateDir, registry: reg, selfMachineId: machineId, autoRebuild: false });
   const lines: Rig['lines'] = []; const briefs: string[] = []; const conversations = new Set<string>(); const removed: string[] = [];
   const runtime = new WorkBoardRuntime({
-    machineId, permissionSlips: opts.permissionSlips, enabled: () => true, rawSettings: () => ({}), saveSettings: () => true,
+    machineId, permissionSlips: opts.permissionSlips, enabled: opts.enabled ?? (() => true), rawSettings: () => ({}), saveSettings: () => true,
     emit: (k, b) => { const r = emitter.emit(WORK_BOARD_STORE_KEY, k, b); journal.flush(); return { outcome: r.outcome, ...(r.seq !== undefined ? { seq: r.seq } : {}), ...(r.hlc ? { hlc: r.hlc } : {}) }; },
     awaitDurable: async (seq) => { journal.flush(); opts.onAwaitDurable?.(seq, journal); },
     loadUnion: () => {
@@ -142,6 +142,25 @@ describe('Work cards from the owner phone E2E (feature is alive)', () => {
       expect(runtime.readPermissionSlip('11111111-2222-4333-8444-555555555555').status).toBe(503);
       expect(journal.readKindComplete(WORK_CARD_RECORD_KIND).entries).toHaveLength(0);
     } finally { runtime.stop(); journal.close(); db.close(); }
+  });
+
+  it('pauses local Work Board journal emission and resumes without rebuilding the runtime', () => {
+    const { stateDir } = mkConfig();
+    let enabled = true;
+    const rig = mkRuntime(stateDir, { enabled: () => enabled });
+    const create = (title: string) => rig.runtime.svc.createCard({ kind: 'agent' }, {
+      title, need: 'Check sender admission', doneWhen: [{ id: 'done', text: 'Complete' }], outward: true,
+    });
+    try {
+      rig.runtime.start();
+      expect(create('Before pause')).toMatchObject({ ok: true });
+      const before = rig.journal.readKindComplete(WORK_CARD_RECORD_KIND).entries.length;
+      enabled = false;
+      expect(create('During pause')).toMatchObject({ ok: false, error: 'store-unavailable' });
+      expect(rig.journal.readKindComplete(WORK_CARD_RECORD_KIND).entries).toHaveLength(before);
+      enabled = true;
+      expect(create('After resume')).toMatchObject({ ok: true });
+    } finally { rig.runtime.stop(); rig.journal.close(); }
   });
 
   it('refuses an enrolled writer when it loses the real agent-home lock', async () => {
@@ -245,6 +264,9 @@ describe('Work cards from the owner phone E2E (feature is alive)', () => {
       let batch: { cardId: string; incarnation: string; entries: JournalEntry[] };
       if (legacyDist) {
         const producer = fileURLToPath(new URL('../fixtures/work-board-enrollment/legacy-producer.mjs', import.meta.url));
+        const paused = execFileSync(process.execPath, [producer, legacyDist, legacyState, 'paused'], { encoding: 'utf8', timeout: 15_000 });
+        expect(JSON.parse(paused)).toEqual({ paused: true });
+        expect(loadWorkBoardHistory(legacyStreams)).toEqual([]);
         batch = JSON.parse(execFileSync(process.execPath, [producer, legacyDist, legacyState], { encoding: 'utf8', timeout: 15_000 }));
       } else {
         if (!legacy) throw new Error('legacy fixture unavailable');

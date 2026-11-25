@@ -19,3 +19,5 @@ The proposal, paired-device disclosure, challenge, submission and receipt routes
 Focused coverage includes exclusive lock acquisition and loss, rejection of an operator override, explicit empty and complete peer history, and refusal of a journal write emitted through the legacy path.
 
 The follow-on also verifies the folded starting history against a separately attested digest. Its sync fixture persists a real legacy journal batch before checking that the enrolled writer refuses it.
+
+The capture follow-on checks the existing Work Board pause at the journal sender and pickup. The restart runbook compares read-only history receipts across the accepted fleet before restoring its previous settings.
