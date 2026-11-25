@@ -243,6 +243,18 @@ it('keeps explicit preview retryable while the actual destination writer is lock
     expect(estimate.contentBytes).toBeGreaterThan(0);
     expect(estimate.estimatedPhysicalBytes).toBeGreaterThan(estimate.contentBytes);
     expect(estimate.estimatedPhysicalBytes % policy.blockBytes).toBe(0);
+    const contender = new Database(path.join(store.dir, 'write-lock.sqlite'), { timeout: 0 });
+    try {
+      const observe = vi.fn((claim: { planDigest: string }) => {
+        expect(claim.planDigest).toBe(estimate.planDigest);
+        expect(() => contender.exec('BEGIN IMMEDIATE')).toThrow(/locked/);
+        return undefined;
+      });
+      await f.stage.observeFirstCopyClaim(device, grant.operationId, intent, observe);
+      expect(observe).toHaveBeenCalledTimes(1);
+      contender.exec('BEGIN IMMEDIATE');
+      contender.exec('ROLLBACK');
+    } finally { contender.close(); }
     expect(fs.existsSync(path.join(store.dir, 'source-claims.sqlite'))).toBe(false);
     await expect(f.stage.estimateFirstCopyClaim(device, grant.operationId, intent, { ...policy, maxReservationBytes: 1 }))
       .rejects.toThrow('upload-capacity');
@@ -252,6 +264,9 @@ it('keeps explicit preview retryable while the actual destination writer is lock
     });
     await expect(f.stage.preflightCopyIntent(device, grant.operationId, intent)).rejects.toThrow('upload-conflict');
     await expect(f.stage.estimateFirstCopyClaim(device, grant.operationId, intent, policy)).rejects.toThrow('upload-conflict');
+    const staleObserver = vi.fn(() => undefined);
+    await expect(f.stage.observeFirstCopyClaim(device, grant.operationId, intent, staleObserver)).rejects.toThrow('upload-unavailable');
+    expect(staleObserver).not.toHaveBeenCalled();
     expect(await f.stage.publishPreparedPreview(device, grant.operationId)).toEqual(retry);
     expect(f.stage.status(device, grant.operationId).phase).toBe('prepared');
   } finally {

@@ -1,0 +1,27 @@
+{
+  "ts": "2026-11-25T01:36:50.895Z",
+  "slug": "local-history-writer-held-intent-check",
+  "suggestedTier": 1,
+  "declaredTier": 2,
+  "riskFloor": 1,
+  "riskFloorReasons": [],
+  "belowFloor": false,
+  "files": 2,
+  "loc": 38,
+  "scope": {
+    "basis": "staged-in-scope-paths-including-deleted",
+    "files": [
+      "src/import/LocalHistoryPreparedReadJob.ts",
+      "src/import/LocalHistoryUploadStaging.ts"
+    ],
+    "addedLines": 35,
+    "deletedLines": 3
+  },
+  "causalAutopsy": null,
+  "classClosure": {
+    "defectClass": "unbounded-self-action",
+    "closure": "n/a",
+    "reason": "A single synchronous observation can only discard one plan and uses the existing bounded reader."
+  },
+  "verdict": "pass"
+}

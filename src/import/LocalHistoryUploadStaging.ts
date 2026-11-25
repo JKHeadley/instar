@@ -23,7 +23,7 @@ import { privateImportDatabasePath } from './privateImportState.js';
 import { DegradationReporter } from '../monitoring/DegradationReporter.js';
 import { runLocalHistoryParseJob, type LocalHistoryParseReceipt } from './LocalHistoryParseJob.js';
 import { estimateLocalHistoryPhysicalBytes, type LocalHistoryPhysicalPolicy } from './LocalHistoryPhysicalBudget.js';
-import { LocalHistoryPreparedReadRefused, runLocalHistoryPreparedReadJob } from './LocalHistoryPreparedReadJob.js';
+import { LocalHistoryPreparedReadRefused, runLocalHistoryPreparedReadJob, type ObserveLocalHistoryFirstClaimPlan } from './LocalHistoryPreparedReadJob.js';
 import { summarizeLocalHistoryPreviewProjects } from './LocalHistoryPreviewProjects.js';
 import type { LocalHistoryPreparedPreview } from './LocalHistoryPreparedPreview.js';
 import { localSessionOriginalId } from './localSessionParsers.js';
@@ -526,6 +526,11 @@ export class LocalHistoryUploadStaging {
    */
   async readPreparedPreview(device: LocalHistoryAuthenticatedDevice, operationId: string,
     includeFirstClaimPlan?: true): Promise<PreparedPreviewRead> {
+    return this.readPreparedPreviewWithObserver(device, operationId, includeFirstClaimPlan);
+  }
+
+  private async readPreparedPreviewWithObserver(device: LocalHistoryAuthenticatedDevice, operationId: string,
+    includeFirstClaimPlan?: true, observeFirstClaimPlan?: ObserveLocalHistoryFirstClaimPlan): Promise<PreparedPreviewRead> {
     const row = this.owned(operationId, device);
     if (row.phase !== 'prepared') refuse('conflict');
     if (this.verification || this.activeChildWork) refuse('busy');
@@ -544,6 +549,7 @@ export class LocalHistoryUploadStaging {
             representation: file.representation, bytes: file.bytes, sha256: file.sha256 })) },
         heapMiB: this.parserPolicy.heapMiB, perFileDeadlineMs: this.parserPolicy.deadlineMs, rssBytes: this.parserPolicy.rssBytes,
         authorized,
+        observeFirstClaimPlan,
         acquireChild: async () => {
           check(); if (leased) return null; leased = true;
           return { custody: this.custody.custody,
@@ -748,6 +754,25 @@ export class LocalHistoryUploadStaging {
     }
     return { requestId: after.requestId, fingerprint: after.fingerprint, previewDigest, firstClaimPlan: preview.firstClaimPlan };
   }
+  /** Inspect the copy plan only while the actual reader holds the writer.
+   * The callback has no permit authority and the child will discard the plan. */
+  async observeFirstCopyClaim(device: LocalHistoryAuthenticatedDevice, operationId: string, value: unknown,
+    observe: (plan: Parameters<ObserveLocalHistoryFirstClaimPlan>[0]) => undefined): Promise<void> {
+    const deviceCopy = Object.freeze({ deviceId: device.deviceId, deviceKeyHash: device.deviceKeyHash });
+    const before = this.bindCopyIntent(deviceCopy, operationId, value);
+    await this.readPreparedPreviewWithObserver(deviceCopy, operationId, true, (plan, destinations) => {
+      const current = this.bindCopyIntent(deviceCopy, operationId, before.intent);
+      const original = before.receipt.preview?.files;
+      if (before.fingerprint !== current.fingerprint || digest(before.receipt) !== digest(current.receipt)
+        || !Array.isArray(original) || original.length !== destinations.length
+        || !destinations.every((file, index) => file.fileId === original[index]?.fileId
+          && file.source === original[index].source && file.destinationFingerprint === original[index].destinationFingerprint)) {
+        refuse('conflict');
+      }
+      return observe(plan);
+    });
+  }
+
   /** Validate the signed copy intent against current staging state. The
    * eventual permit issuer must repeat this inside its consumption transaction. */
   inspectCopyIntent(device: LocalHistoryAuthenticatedDevice, operationId: string, value: unknown): {

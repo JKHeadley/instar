@@ -10,6 +10,11 @@ import { localHistoryChildRss, type LocalHistoryChildLease } from './LocalHistor
 import { localHistoryFirstClaimPlanDigest } from './LocalHistoryFirstClaimPlanBinding.js';
 import type { LocalHistoryPreparedPreview, LocalHistoryPreparedPreviewInput } from './LocalHistoryPreparedPreview.js';
 
+export type ObserveLocalHistoryFirstClaimPlan = (
+  plan: Readonly<NonNullable<LocalHistoryPreparedPreview['firstClaimPlan']>>,
+  destinations: readonly Readonly<Pick<LocalHistoryPreparedPreview['files'][number], 'fileId' | 'source' | 'destinationFingerprint'>>[],
+) => undefined;
+
 export interface LocalHistoryPreparedReadJobOptions {
   input: LocalHistoryPreparedPreviewInput;
   acquireChild(): Promise<LocalHistoryChildLease | null>;
@@ -20,7 +25,7 @@ export interface LocalHistoryPreparedReadJobOptions {
   rssBytes: number;
   /** Synchronous observation while the fixed child holds its writer. The only
    * response in this mode is a discard of the exact announced plan. */
-  observeFirstClaimPlan?(plan: Readonly<NonNullable<LocalHistoryPreparedPreview['firstClaimPlan']>>): undefined;
+  observeFirstClaimPlan?: ObserveLocalHistoryFirstClaimPlan;
 }
 export class LocalHistoryPreparedReadRefused extends Error { cleanupPending = false; }
 
@@ -154,7 +159,9 @@ export async function runLocalHistoryPreparedReadJob(value: LocalHistoryPrepared
         const plan = Object.freeze({ ...row.preview.firstClaimPlan });
         observedPlanDigest = plan.planDigest;
         try {
-          const observation: unknown = opts.observeFirstClaimPlan(plan);
+          const destinations = Object.freeze(row.preview.files.map(({ fileId, source, destinationFingerprint }) =>
+            Object.freeze({ fileId, source, destinationFingerprint })));
+          const observation: unknown = opts.observeFirstClaimPlan(plan, destinations);
           if (observation !== undefined) {
             void Promise.resolve(observation).catch(() => {});
             return fail('local-history-preview-claim-observation');
