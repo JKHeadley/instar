@@ -26,10 +26,10 @@ function exercise(failures: number) {
 }
 
 describe('release dependency install retry under GitHub Bash options', () => {
-  it('is wired before the build and never retries npm publish', () => {
+  it('is wired before the build and leaves npm publishing to its own step', () => {
     expect(install.shell).toBe('bash');
     expect(steps.indexOf(install)).toBeLessThan(steps.findIndex((s: any) => s.run === 'npm run build'));
-    expect(steps.find((s: any) => s.name === 'Publish to npm').run).toBe('npm publish --provenance --access public');
+    expect(steps.find((s: any) => s.name === 'Publish to npm').run).toBe('bash scripts/publish-npm-release.sh');
   });
   it.each([0, 1, 2])('succeeds after %i failed installs and stops immediately', (failures) => {
     const result = exercise(failures);

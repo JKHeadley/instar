@@ -280,9 +280,10 @@ jobs:
 
       - name: Publish to npm
         if: steps.guide-check.outputs.skip != 'true' && steps.tier-gate.outputs.skip != 'true'
-        run: npm publish --provenance --access public
+        run: bash scripts/publish-npm-release.sh
         env:
           NODE_AUTH_TOKEN: ${{ secrets.NPM_TOKEN }}
+          INSTAR_NPM_PUBLISH_HOLD_HINT: ${{ vars.INSTAR_NPM_PUBLISH_HOLD_HINT }}
 
       - name: Mark the version as consumed (published/ tag)
         if: steps.guide-check.outputs.skip != 'true' && steps.tier-gate.outputs.skip != 'true'

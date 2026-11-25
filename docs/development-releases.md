@@ -1,5 +1,18 @@
 # Development updates during a publishing outage
 
+## npm account suspension
+
+If the publish step reports `E403` and says the npm account was temporarily
+suspended after a security-sensitive action, use the opt-in development release
+below if a build is needed during the hold. This GitHub prerelease leaves the
+stable npm channel in place. Resume normal publishing when npm lifts the hold.
+
+The publish workflow can display a link here on that exact failure when the
+repository variable `INSTAR_NPM_PUBLISH_HOLD_HINT` is set to `true`. It defaults
+to off.
+
+## Create and install a development release
+
 When npm publishing is unavailable, the **Development release (no npm publishing)** GitHub workflow builds current main into a GitHub prerelease. It uses no npm account credentials. npm installs of public dependencies must still work. These releases are opt-in for development and temporary agents. They do not change the stable channel, npm tags, release version, or consume pending upgrade fragments.
 
 Run from a clean current main checkout:
