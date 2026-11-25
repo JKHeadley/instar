@@ -3,7 +3,7 @@ import { WorkBoardApprovalWriter, type WorkBoardApprovalEvent, type WorkBoardApp
 
 const proof: WorkBoardWriterProof = { epoch: 'board:2', ownerGeneration: 'owner:3', writerIncarnation: 'machine:1' };
 const version: WorkBoardApprovalVersion = {
-  cardId: 'wc_6248a51921c41ca0', cardRevision: 'edit:2', policyRevision: 'policy:1', visibleTextHash: 'visible:2',
+  cardId: 'wc_6248a51921c41ca0', cardRevision: 'edit:2', policyRevision: 'policy:1', visibleTextHash: 'visible:2', materialHash: 'material:2', titleHash: 'title:2',
 };
 const slip: WorkBoardApprovalRequest = { proof, version, source: 'slip', decisionId: 'slip-approve-1' };
 const consoleTap: WorkBoardApprovalRequest = { proof, version, source: 'console', decisionId: 'console-approve-1' };

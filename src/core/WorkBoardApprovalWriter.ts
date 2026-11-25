@@ -11,6 +11,8 @@ export interface WorkBoardApprovalVersion {
   cardRevision: string;
   policyRevision: string;
   visibleTextHash: string;
+  materialHash: string;
+  titleHash: string;
 }
 
 export interface WorkBoardApprovalRequest {
@@ -55,12 +57,13 @@ function sameVersion(first: WorkBoardApprovalVersion, second: WorkBoardApprovalV
   return second !== null && first.cardId === second.cardId
     && first.cardRevision === second.cardRevision
     && first.policyRevision === second.policyRevision
-    && first.visibleTextHash === second.visibleTextHash;
+    && first.visibleTextHash === second.visibleTextHash
+    && first.materialHash === second.materialHash && first.titleHash === second.titleHash;
 }
 
 export function approvalEventId({ proof, version }: WorkBoardApprovalRequest): string {
   const input = [proof.epoch, proof.ownerGeneration, proof.writerIncarnation,
-    version.cardId, version.cardRevision, version.policyRevision, version.visibleTextHash];
+    version.cardId, version.cardRevision, version.policyRevision, version.visibleTextHash, version.materialHash, version.titleHash];
   const generation = createHash('sha256').update(JSON.stringify(input)).digest('hex');
   return `wc:${version.cardId}:approve:${generation}`;
 }
@@ -83,17 +86,19 @@ export function decodeWorkBoardApprovalEvent(data: Record<string, unknown>): Wor
   if (!input || !proof || !version) return null;
 
   const { epoch, ownerGeneration, writerIncarnation } = proof;
-  const { cardId, cardRevision, policyRevision, visibleTextHash } = version;
+  const { cardId, cardRevision, policyRevision, visibleTextHash, materialHash, titleHash } = version;
   const { source, decisionId } = input;
   if (!bindingPart(epoch) || !bindingPart(ownerGeneration) || !bindingPart(writerIncarnation)
     || !bindingPart(cardRevision) || !bindingPart(policyRevision) || !bindingPart(decisionId)
     || typeof cardId !== 'string' || !/^wc_[a-f0-9]{16}$/.test(cardId) || data.cardId !== cardId
     || typeof visibleTextHash !== 'string' || !/^[a-f0-9]{64}$/.test(visibleTextHash)
+    || typeof materialHash !== 'string' || !/^[a-f0-9]{64}$/.test(materialHash) || data.materialHash !== materialHash
+    || typeof titleHash !== 'string' || !/^[a-f0-9]{64}$/.test(titleHash) || data.titleHash !== titleHash
     || (source !== 'console' && source !== 'phone' && source !== 'bulk' && source !== 'slip')) return null;
 
   const request: WorkBoardApprovalRequest = {
     proof: { epoch, ownerGeneration, writerIncarnation },
-    version: { cardId, cardRevision, policyRevision, visibleTextHash },
+    version: { cardId, cardRevision, policyRevision, visibleTextHash, materialHash, titleHash },
     source,
     decisionId,
   };

@@ -6,7 +6,7 @@ import { readWorkBoardApprovalEvent } from '../../src/core/workBoardApprovalRead
 
 const request: WorkBoardApprovalRequest = {
   proof: { epoch: 'board:2', ownerGeneration: 'owner:3', writerIncarnation: 'machine:1' },
-  version: { cardId: 'wc_6248a51921c41ca0', cardRevision: 'edit:2', policyRevision: 'policy:1', visibleTextHash: 'a'.repeat(64) },
+  version: { cardId: 'wc_6248a51921c41ca0', cardRevision: 'edit:2', policyRevision: 'policy:1', visibleTextHash: 'a'.repeat(64), materialHash: 'b'.repeat(64), titleHash: 'c'.repeat(64) },
   source: 'slip',
   decisionId: 'decision:1',
 };
@@ -26,7 +26,7 @@ const row: JournalEntry = {
     action: 'approve',
     by: { kind: 'person', personKey: 'owner1', proof: 'presence' },
     at: '2026-11-24T20:00:00.000Z',
-    materialHash: 'a'.repeat(64),
+    materialHash: 'b'.repeat(64), titleHash: 'c'.repeat(64),
     approvalBinding: request,
   },
 };
@@ -52,6 +52,11 @@ describe('Work Board approval journal readback', () => {
   it('rejects a binding that does not reproduce the reserved generation key', () => {
     const altered = { ...request, version: { ...request.version, cardRevision: 'edit:3' } };
     expect(readWorkBoardApprovalEvent(event.eventId, fixture([{ ...row, data: { ...row.data, approvalBinding: altered } }]))).toEqual({ status: 'unknown' });
+  });
+
+  it.each(['materialHash', 'titleHash'])('rejects a changed outer %s', (field) => {
+    const altered = { ...row, data: { ...row.data, [field]: 'd'.repeat(64) } };
+    expect(readWorkBoardApprovalEvent(event.eventId, fixture([altered]))).toEqual({ status: 'unknown' });
   });
 
   it('does not mistake an unflushed row for a durable winner', () => {

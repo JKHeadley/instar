@@ -27,7 +27,7 @@ it('reads the exact approval only after the real journal advances its durable wa
     const cardId = 'wc_6248a51921c41ca0';
     const request: WorkBoardApprovalRequest = {
       proof: { epoch: 'board:2', ownerGeneration: 'owner:3', writerIncarnation: 'machine:1' },
-      version: { cardId, cardRevision: 'edit:2', policyRevision: 'policy:1', visibleTextHash: 'a'.repeat(64) },
+      version: { cardId, cardRevision: 'edit:2', policyRevision: 'policy:1', visibleTextHash: 'a'.repeat(64), materialHash: 'b'.repeat(64), titleHash: 'c'.repeat(64) },
       source: 'slip',
       decisionId: 'decision:1',
     };
@@ -41,7 +41,7 @@ it('reads the exact approval only after the real journal advances its durable wa
     expect(read()).toEqual({ status: 'missing' });
     const result = emitter.emit(WORK_BOARD_STORE_KEY, event.eventId, buildRecord('tap', cardId, {
       action: 'approve', by: { kind: 'person', personKey: 'owner1', proof: 'presence' },
-      at: '2026-11-24T20:00:00.000Z', materialHash: 'a'.repeat(64), approvalBinding: request,
+      at: '2026-11-24T20:00:00.000Z', materialHash: 'b'.repeat(64), titleHash: 'c'.repeat(64), approvalBinding: request,
     }, event.eventId));
     expect(result.outcome).toBe('emitted');
     expect(result.seq).toBeDefined();

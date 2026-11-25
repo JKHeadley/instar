@@ -52,3 +52,7 @@ Focused unit tests include a mismatched-generation regression. The real Work Boa
 ## Independent second pass
 
 The reviewer concurred with checkpointing after confirming the binding survives real durable readback and that boot rebuild and live projection both exclude bound records or the reserved event namespace. The receiver must prove the enrolled writer, and the applied tap must match its exact owner proof and material version, before enabling the projection path.
+
+## Outer tap binding
+
+The generation now includes the material and title hashes used by the existing Work Board tap. The decoder compares both with the durable outer record and refuses a mismatch. Legacy events still omit the optional binding, and writer-bound events still cannot reach the legacy fold. Regression tests cover changing either outer field while preserving the recorded binding.
