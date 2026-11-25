@@ -1,0 +1,25 @@
+{
+  "version": 2,
+  "slug": "hosted-relay-stream-custody",
+  "sessionId": "41652017-0805-405d-bb4e-2a975fb349ce",
+  "timestamp": "2026-11-25T14:21:19.063Z",
+  "artifactPath": "upgrades/side-effects/hosted-relay-stream-custody.md",
+  "artifactSha256": "738e9146850091c12722ea8efdd84da6581856db13edf7bdb4d996b33e79b038",
+  "specPath": "docs/specs/hosted-relay.md",
+  "coveredFiles": [
+    "src/hostedRelay/streamCustody.ts",
+    "tests/integration/hosted-relay-passthrough.test.ts",
+    "upgrades/next/hosted-relay-stream-custody.md",
+    "upgrades/side-effects/hosted-relay-stream-custody.md"
+  ],
+  "phase": "complete",
+  "tier": 2,
+  "tierReasoning": "Dormant stream ownership binds TLS passthrough to committed relay lease custody.",
+  "secondPass": "true",
+  "reviewerConcurred": true,
+  "classClosure": {
+    "defectClass": "unbounded-self-action",
+    "closure": "n/a",
+    "reason": "Dormant connection-level custody never starts or changes a listener."
+  }
+}
