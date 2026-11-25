@@ -1,0 +1,20 @@
+{
+  "version": 2,
+  "slug": "managed-codex-unstarted-claim",
+  "sessionId": "017c26ed-5596-4576-9c20-20af13e4c1f8",
+  "timestamp": "2026-11-25T16:29:08.782Z",
+  "artifactPath": "upgrades/side-effects/managed-codex-unstarted-claim.md",
+  "artifactSha256": "0dc68a7e8d29d77d5fe5d178ab3d30385d4be5e2ac96958ee38c288915a8d93b",
+  "coveredFiles": [
+    "src/core/ManagedCodexProjectDispatch.ts",
+    "src/core/ManagedCodexStopStore.ts",
+    "tests/unit/managed-codex-project-dispatch.test.ts"
+  ],
+  "phase": "complete",
+  "tier": 1,
+  "tierReasoning": "Only the disabled managed dispatcher releases an unstarted claim. It retains old launch refusal and no production path is enrolled.",
+  "eli16Path": "upgrades/managed-codex-unstarted-claim.eli16.md",
+  "sideEffectsPath": "upgrades/side-effects/managed-codex-unstarted-claim.md",
+  "secondPass": "true",
+  "reviewerConcurred": true
+}

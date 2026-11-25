@@ -48,10 +48,30 @@ describe('managed Codex project dispatch', () => {
       expect(await dispatchManagedCodexProject(admission.workKey, deps)).toBeUndefined();
       const launchId = deps.launch.mock.calls[0][1];
       expect(deps.store.hasEnrollment(launchId)).toBe(true);
+      expect(deps.store.hasWorkClaim(admission.workKey)).toBe(true);
       expect(deps.store.hasEnrollment('native-worker')).toBe(false);
       expect(deps.store.activate(launchId)).toBe(false);
       expect(deps.releaseLaunch).not.toHaveBeenCalled();
       expect(deps.cancelLaunch).toHaveBeenCalledWith(launchId);
+    } finally {
+      deps.db.close();
+    }
+  });
+
+  it('releases the claim for retry when admission changes before starting any worker', async () => {
+    const deps = setup();
+    try {
+      deps.readAdmission.mockReturnValueOnce(admission).mockReturnValueOnce({ ...admission, revision: 'revised' });
+      expect(await dispatchManagedCodexProject(admission.workKey, deps)).toBeUndefined();
+      expect(deps.launch).not.toHaveBeenCalled();
+      expect(deps.cancelLaunch).not.toHaveBeenCalled();
+      expect(deps.store.hasWorkClaim(admission.workKey)).toBe(false);
+      const retired = deps.db.prepare('SELECT session_id FROM managed_codex_work_claims').get() as { session_id: string };
+      expect(deps.store.hasEnrollment(retired.session_id)).toBe(true);
+      expect(deps.store.activate(retired.session_id)).toBe(false);
+
+      expect(await dispatchManagedCodexProject(admission.workKey, deps)).toMatchObject({ nativeSessionId: 'native-worker' });
+      expect(deps.launch).toHaveBeenCalledOnce();
     } finally {
       deps.db.close();
     }

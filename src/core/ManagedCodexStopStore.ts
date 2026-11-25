@@ -2,6 +2,8 @@ import type { Database } from 'better-sqlite3';
 import { decideManagedCodexStop } from './ManagedCodexStopDecision.js';
 import type { ManagedStopEnrollment, ManagedStopInput } from './ManagedCodexStopDecision.js';
 
+const RELEASED_WORK_PREFIX = 'released-launch:';
+
 interface Claim {
   enrollment: ManagedStopEnrollment;
   actionOpen: boolean;
@@ -28,7 +30,7 @@ export class ManagedCodexStopStore {
   }
 
   reserve(workKey: string, input: Pick<ManagedStopEnrollment, 'sessionId' | 'machineId' | 'ownerEpoch' | 'remaining'>): boolean {
-    if (!workKey || !input.sessionId || !input.machineId
+    if (!workKey || workKey.startsWith(RELEASED_WORK_PREFIX) || !input.sessionId || !input.machineId
       || !Number.isSafeInteger(input.ownerEpoch) || input.ownerEpoch < 0
       || !Number.isSafeInteger(input.remaining) || input.remaining < 0) return false;
     return this.db.transaction(() => {
@@ -65,6 +67,19 @@ export class ManagedCodexStopStore {
         enrollment: { ...claim.enrollment, sessionId: nativeSessionId, state: 'active' },
       });
       return true;
+    }).immediate();
+  }
+
+  /** Free the work key and retain the non-actuating launch identity. */
+  releaseUnstarted(launchId: string): boolean {
+    return this.db.transaction(() => {
+      const claim = this.read(launchId);
+      if (claim?.enrollment.state !== 'pending') return false;
+      const retired: Claim = {
+        ...claim, actionOpen: false, enrollment: { ...claim.enrollment, state: 'retired' },
+      };
+      return this.db.prepare('UPDATE managed_codex_work_claims SET work_key = ?, claim_json = ? WHERE session_id = ?')
+        .run(RELEASED_WORK_PREFIX + launchId, JSON.stringify(retired), launchId).changes === 1;
     }).immediate();
   }
 

@@ -71,7 +71,8 @@ export async function dispatchManagedCodexProject(
     if (!released) {
       try {
         if (bound) deps.store.pause(launchId);
-        else deps.store.abortPending(launchId);
+        else if (launched) deps.store.abortPending(launchId);
+        else deps.store.releaseUnstarted(launchId);
       } finally {
         if (launched) deps.cancelLaunch(launchId);
       }
