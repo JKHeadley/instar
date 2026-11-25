@@ -3109,7 +3109,12 @@ const NOTIFY_TOKEN_PATHS: ReadonlyArray<RegExp> = [
   /^\/mobile\/docs\/[0-9a-f-]{36}\/summary$/,
 ];
 
-export function deviceAuthenticator(svc: MobilePairingService) {
+const DESKTOP_RELAY_LOCAL_RULES: readonly DeviceRule[] = [
+  { method: 'GET', re: /^\/desktop\/relay-pairing\/capability$/, statuses: new Set(['active']), ownerOnly: true, body: 'none', ownBucket: 60, bucket: 'desktop-relay-capability' },
+  { method: 'POST', re: /^\/desktop\/relay-pairing\/issue$/, statuses: new Set(['active']), ownerOnly: true, body: 'json', ownBucket: 6, bucket: 'desktop-relay-issue' },
+];
+
+export function deviceAuthenticator(svc: MobilePairingService, options?: { desktopRelayLoopback?: boolean }) {
   return (req: Request, res: Response): 'none' | 'ok' | 'refused' => {
     const id = req.headers['x-instar-device'];
     if (id === undefined) return 'none';
@@ -3154,7 +3159,10 @@ export function deviceAuthenticator(svc: MobilePairingService) {
       (req as unknown as { instarDevicePerson: ResolvedPerson }).instarDevicePerson = np;
       return 'ok';
     }
-    const rule = DEVICE_ALLOWLIST.find((r) => r.method === req.method && r.re.test(pathNorm));
+    const relayRule = options?.desktopRelayLoopback
+      ? DESKTOP_RELAY_LOCAL_RULES.find(rule => rule.method === req.method && rule.re.test(req.path))
+      : undefined;
+    const rule = relayRule ?? DEVICE_ALLOWLIST.find((r) => r.method === req.method && r.re.test(pathNorm));
     if (!rule) return refuse(403, 'device-not-allowed');
     const raw = (req as unknown as { rawBody?: Buffer }).rawBody;
     const contentLength = Number(req.headers['content-length'] ?? 0);
@@ -3172,6 +3180,9 @@ export function deviceAuthenticator(svc: MobilePairingService) {
     // loopback peer with no forwarding header, in both multi-route modes.
     const peek = typeof id === 'string' ? svc.devices.get(id) : null;
     const browserDevice = !!peek && isBrowserDevice(peek);
+    if (relayRule && (!peek?.localBinding || browserDevice || !localBindingOk(peek, req, svc.deps.selfMachineId))) {
+      return refuse(401, 'device-unauthorized');
+    }
     // Identity A4: a phone paired on the same-network address signs only on that listener, and that
     // listener accepts no other device; neither falls through to another branch.
     const sameNetworkArrival = arrivalOf(req) === 'same-network';
