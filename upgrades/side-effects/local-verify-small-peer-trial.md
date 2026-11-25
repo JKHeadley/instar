@@ -31,3 +31,18 @@ The named reviewer /root/mini_trial/design_review examined dispatch, scope owner
 ## Class-Closure Declaration
 
 The unbounded-self-action guard is registered as small-peer-trial-admission. The convergence test exercises the real memory predicate under sustained pressure. Admission refuses each attempted start. Recovery requires consecutive healthy samples, and the existing per-entry remote attempt budget bounds a PR that exhausts capacity after admission.
+
+## Shared verification repair
+
+- Over-block. Ordinary reservations poll first. Trial receipt recovery runs before polling a trial reservation, so a recovered signed receipt can inform terminal decisions.
+- Under-block. Trial renewal still requires the exact epoch sent with the accepted request and the current lease to match it. Adoption never changes that renewal epoch.
+- Layer. The coordinator owns both result polling and receipt recovery. The dispatched request already carries the binding needed by the renewal sender.
+- Signal and authority. A receipt recovery error emits an audit event. The existing lease and signed receipt checks still govern renewal and import. See docs/signal-vs-authority.md.
+- Interactions. The existing poll lock covers the ordinary poll, trial receipt recovery, and trial polling. Concurrent ticks cannot start a second recovery pass.
+- External surfaces. The wire schema and eligibility rules are unchanged. Ordinary peer result requests start without waiting for trial receipt recovery.
+- Multi-machine posture. The coordinator retains ownership of polling and validates signed Mini receipts through the existing transport. The Mini retains its local memory and scope enforcement.
+- Rollback. Disable the Mini trial setting to stop trial dispatch. Reverting the repair requires no migration.
+
+Focused verification reproduced both failures on the published head. The initial repair passed all 176 cases. The second-pass revision preserves receipt precedence and single-flight recovery. Both focused files passed all 176 cases on the second-pass revision.
+
+Independent second pass by /root/mini_trial. Concur with the revised repair. Ordinary reservations poll first, receipt recovery precedes the first trial reservation's terminal checks, and empty-reservation ticks still recover pending receipts. Recovery stays within the polling lock. Renewal uses the dispatched request epoch and checks current custody before and after requesting the nonce.

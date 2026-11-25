@@ -2629,10 +2629,9 @@ export class LocalVerifyService {
     return f.trialLease.nonce;
   }
 
-  private startTrialRenewal(peer: PeerTarget, entry: QueueEntry, m: RemoteMarker, trial: SmallPeerTrialPolicy): void {
+  private startTrialRenewal(peer: PeerTarget, entry: QueueEntry, m: RemoteMarker, trial: SmallPeerTrialPolicy, epoch: number | null): void {
     const client = this.peerClient;
-    if (!client?.trialLease || m.leaseEpoch === null) return;
-    const epoch = m.leaseEpoch;
+    if (!client?.trialLease || epoch === null) return;
     const valid = () => {
       const l = this.leaseState();
       return !this.stopped && this.queue.includes(entry) && entry.remote === m && l.holds && l.epoch === epoch
@@ -3086,7 +3085,7 @@ export class LocalVerifyService {
           this.audit({ event: 'peer-dispatch-unanswered', pr: entry.pr, peer: peer.machineId, attemptId: marker.attemptId });
         } else if (ans.ok) {
           marker.state = 'accepted';
-          if (trial) this.startTrialRenewal(peer, entry, marker, trial);
+          if (trial) this.startTrialRenewal(peer, entry, marker, trial, req.leaseEpoch);
           this.remoteLastOkAt.set(marker.attemptId, this.now()); // the accept was a successful round trip
           this.audit({ event: 'peer-dispatch-accepted', pr: entry.pr, peer: peer.machineId, attemptId: marker.attemptId });
           if (isMain) {
@@ -3249,9 +3248,18 @@ export class LocalVerifyService {
     const reserved = this.queue.filter((e) => e.remote);
     this.pollRunning = true;
     try {
-      await this.recoverTrialReceipts();
-      if (reserved.length === 0) return;
-      for (const entry of reserved) {
+      // Ordinary attempts can start polling immediately. Trial attempts must
+      // look for a recovered receipt before judging a terminal peer response.
+      const ordered = [
+        ...reserved.filter(entry => !entry.remote?.trialReceiptExpected),
+        ...reserved.filter(entry => entry.remote?.trialReceiptExpected),
+      ];
+      let receiptsChecked = false;
+      for (const entry of ordered) {
+        if (entry.remote?.trialReceiptExpected && !receiptsChecked) {
+          await this.recoverTrialReceipts();
+          receiptsChecked = true;
+        }
         const m = entry.remote;
         if (!m) continue;
         const now = this.now();
@@ -3415,6 +3423,8 @@ export class LocalVerifyService {
         this.persistQueue();
         this.writePeerHold(); // the restart this attempt held need not wait for the next tick
       }
+      if (!receiptsChecked) await this.recoverTrialReceipts();
+      if (reserved.length === 0) return;
     } finally {
       this.pollRunning = false;
     }
