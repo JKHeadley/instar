@@ -1,0 +1,26 @@
+{
+  "ts": "2026-11-25T10:42:02.620Z",
+  "slug": "local-history-atomic-consent-permit",
+  "suggestedTier": 2,
+  "declaredTier": 2,
+  "riskFloor": 1,
+  "riskFloorReasons": [],
+  "belowFloor": false,
+  "files": 1,
+  "loc": 73,
+  "scope": {
+    "basis": "staged-in-scope-paths-including-deleted",
+    "files": [
+      "src/import/LocalHistoryFirstPermit.ts"
+    ],
+    "addedLines": 73,
+    "deletedLines": 0
+  },
+  "causalAutopsy": null,
+  "classClosure": {
+    "defectClass": "unbounded-self-action",
+    "closure": "n/a",
+    "reason": "Dormant transaction requires an owner proof and independent writer prerequisites."
+  },
+  "verdict": "pass"
+}

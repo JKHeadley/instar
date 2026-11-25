@@ -4,7 +4,7 @@ import path from 'node:path';
 import Database from 'better-sqlite3';
 import { afterEach, expect, it } from 'vitest';
 import { SafeFsExecutor } from '../../src/core/SafeFsExecutor.js';
-import { initializeLocalHistoryFirstPermits, recordLocalHistoryFirstPermit, recordLocalHistoryFirstPermitObservation, verifyCommittedLocalHistoryFirstClaim,
+import { initializeLocalHistoryConsentUses, initializeLocalHistoryFirstPermits, recordLocalHistoryFirstPermitWithConsent, recordLocalHistoryFirstPermit, recordLocalHistoryFirstPermitObservation, verifyCommittedLocalHistoryFirstClaim,
   type LocalHistoryFirstPermit } from '../../src/import/LocalHistoryFirstPermit.js';
 import { privateImportDatabasePath } from '../../src/import/privateImportState.js';
 
@@ -180,4 +180,69 @@ it('accepts only the exact first claim after the outer transaction commits', () 
   db.prepare("UPDATE upload_operations SET phase = 'interrupted'").run();
   expect(() => verify()).toThrow('first-permit-conflict');
   expect(records(db)).toEqual([draft]);
+});
+
+const consent = { operationId: draft.operationId, previewId: draft.previewId, previewDigest: draft.previewSha256,
+  applyRequestId: draft.applyRequestId, approvalDigest: 'd'.repeat(64), cardId: 'wc_' + 'b'.repeat(16),
+  cardRevision: 'e'.repeat(64), disclosureHash: 'f'.repeat(64) };
+const consentUses = (db: Database.Database) => db.prepare('SELECT * FROM local_history_first_permit_consent_uses').all();
+
+it('records the first permit and a single durable use of the verified approval', () => {
+  const { db, filename } = fixture();
+  initializeLocalHistoryConsentUses(db);
+  const record = () => recordLocalHistoryFirstPermitWithConsent(db, draft, current => {
+    expect(db.inTransaction).toBe(true);
+    expect(current).toEqual(draft);
+    expect(Object.isFrozen(current)).toBe(true);
+    return consent;
+  });
+  expect(db.transaction(record).immediate()).toBe('recorded');
+  expect(() => db.transaction(record).immediate()).toThrow('first-permit-conflict');
+  const next = { ...draft, operationId: 'a'.repeat(32), permitId: 'c'.repeat(32) };
+  db.prepare('INSERT INTO upload_operations VALUES (?, ?, ?, ?, ?)')
+    .run(next.operationId, 'prepared', 'r-' + next.generation + '-' + next.operationId, next.deadline, next.uploadFingerprint);
+  db.prepare('INSERT INTO upload_previews VALUES (?, ?, ?)').run(next.operationId, next.previewAllocation, next.previewSha256);
+  expect(() => db.transaction(() => recordLocalHistoryFirstPermitWithConsent(db, next,
+    () => ({ ...consent, operationId: next.operationId }))).immediate()).toThrow('first-permit-conflict');
+  expect(db.prepare('SELECT phase FROM upload_operations WHERE id = ?').get(next.operationId)).toEqual({ phase: 'prepared' });
+  db.close();
+  const reopened = new Database(filename); connections.push(reopened);
+  expect(records(reopened)).toEqual([draft]);
+  expect(consentUses(reopened)).toEqual([{ operationId: draft.operationId, approvalDigest: consent.approvalDigest,
+    cardId: consent.cardId, cardRevision: consent.cardRevision, disclosureHash: consent.disclosureHash, permitId: draft.permitId }]);
+});
+
+it('refuses missing or substituted current consent before the first permit write', () => {
+  const { db } = fixture();
+  initializeLocalHistoryConsentUses(db);
+  for (const invalid of [undefined, { ...consent, operationId: 'a'.repeat(32) },
+    { ...consent, previewId: 'a'.repeat(32) }, { ...consent, previewDigest: 'a'.repeat(64) },
+    { ...consent, applyRequestId: 'a'.repeat(32) }, { ...consent, approvalDigest: 'short-ref' }]) {
+    expect(() => db.transaction(() => recordLocalHistoryFirstPermitWithConsent(db, draft, () => invalid)).immediate())
+      .toThrow('first-permit-conflict');
+  }
+  expect(phase(db)).toEqual({ phase: 'prepared' });
+  expect(records(db)).toEqual([]);
+  expect(consentUses(db)).toEqual([]);
+});
+
+it('rolls back both records and the phase if consent recording fails or the outer transaction rolls back', () => {
+  const { db } = fixture();
+  initializeLocalHistoryConsentUses(db);
+  const record = () => recordLocalHistoryFirstPermitWithConsent(db, draft, () => consent);
+  db.exec(`CREATE TRIGGER fixture_consent_refusal BEFORE INSERT ON local_history_first_permit_consent_uses
+    BEGIN SELECT RAISE(ABORT, 'synthetic consent write refusal'); END;`);
+  db.transaction(() => {
+    expect(record).toThrow('synthetic consent write refusal');
+    expect(phase(db)).toEqual({ phase: 'prepared' });
+    expect(records(db)).toEqual([]);
+  }).immediate();
+  db.exec('DROP TRIGGER fixture_consent_refusal');
+  expect(() => db.transaction(() => {
+    expect(record()).toBe('recorded');
+    throw new Error('synthetic outer rollback');
+  }).immediate()).toThrow('synthetic outer rollback');
+  expect(phase(db)).toEqual({ phase: 'prepared' });
+  expect(records(db)).toEqual([]);
+  expect(consentUses(db)).toEqual([]);
 });

@@ -214,3 +214,76 @@ export function recordLocalHistoryFirstPermitObservation(db: Database.Database, 
   }
   return { stopRequested, acknowledgementDigest };
 }
+
+const CONSENT_USES = 'local_history_first_permit_consent_uses';
+const consentUseFields = ['operationId', 'approvalDigest', 'cardId', 'cardRevision', 'disclosureHash', 'permitId'] as const;
+
+export interface LocalHistoryFirstPermitConsent {
+  readonly operationId: string;
+  readonly previewId: string;
+  readonly previewDigest: string;
+  readonly applyRequestId: string;
+  readonly approvalDigest: string;
+  readonly cardId: string;
+  readonly cardRevision: string;
+  readonly disclosureHash: string;
+}
+
+function validateConsentUseSchema(db: Database.Database): void {
+  const table = db.prepare('SELECT strict FROM pragma_table_list WHERE schema = ? AND name = ?').get('main', CONSENT_USES) as
+    { strict: number } | undefined;
+  const columns = db.prepare(`PRAGMA main.table_info(${CONSENT_USES})`).all() as
+    Array<{ name: string; type: string; pk: number; notnull: number; dflt_value: unknown }>;
+  if (table?.strict !== 1 || columns.length !== consentUseFields.length || columns.some((column, index) =>
+    column.name !== consentUseFields[index] || column.pk !== (index === 0 ? 1 : 0)
+    || column.notnull !== 1 || column.type !== 'TEXT' || column.dflt_value !== null)) refuse('schema');
+  const indexes = db.prepare('SELECT name FROM pragma_index_list(?) WHERE "unique" = 1 AND origin = ? AND partial = 0')
+    .all(CONSENT_USES, 'u') as Array<{ name: string }>;
+  if (indexes.length !== 1) refuse('schema');
+  const key = db.prepare('SELECT name FROM pragma_index_info(?)').all(indexes[0].name) as Array<{ name: string }>;
+  if (key.length !== 1 || key[0].name !== 'approvalDigest') refuse('schema');
+}
+
+/** Only for an independently authorized owner-consent path. The pilot uses
+ * the original recorder and does not create or inspect this table. */
+export function initializeLocalHistoryConsentUses(db: Database.Database): void {
+  jobsConnection(db, false);
+  db.exec(`CREATE TABLE IF NOT EXISTS main.${CONSENT_USES} (
+    operationId TEXT PRIMARY KEY NOT NULL,
+    approvalDigest TEXT NOT NULL UNIQUE,
+    cardId TEXT NOT NULL,
+    cardRevision TEXT NOT NULL,
+    disclosureHash TEXT NOT NULL,
+    permitId TEXT NOT NULL
+  ) STRICT`);
+  validateConsentUseSchema(db);
+}
+
+/** Commit one verified approval with its first permit in the same caller
+ * transaction. The synchronous verifier must check current source ownership,
+ * owner presence, and card/destination state while the writer lease is held.
+ * It reads evidence without consuming it. The durable row consumes its full
+ * digest, never a short challenge reference or a client assertion. */
+export function recordLocalHistoryFirstPermitWithConsent(db: Database.Database, input: LocalHistoryFirstPermit,
+  verifyCurrentApproval: (permit: Readonly<LocalHistoryFirstPermit>) => LocalHistoryFirstPermitConsent | undefined): 'recorded' {
+  jobsConnection(db, true);
+  const permit = Object.freeze({ ...input });
+  validate(permit);
+  validateConsentUseSchema(db);
+  return db.transaction(() => {
+    const approval = verifyCurrentApproval(permit);
+    if (!approval || approval.operationId !== permit.operationId || approval.previewId !== permit.previewId
+      || approval.previewDigest !== permit.previewSha256 || approval.applyRequestId !== permit.applyRequestId
+      || typeof approval.cardId !== 'string' || !/^wc_[a-f0-9]{16}$/.test(approval.cardId)
+      || ![approval.approvalDigest, approval.cardRevision, approval.disclosureHash].every(value => hex(value, 64))) refuse('conflict');
+    const { count } = db.prepare(`SELECT COUNT(*) AS count FROM main.${CONSENT_USES}`).get() as { count: number };
+    if (!Number.isSafeInteger(count) || count >= MAX_ROWS) refuse('capacity');
+    if (db.prepare(`SELECT 1 FROM main.${CONSENT_USES} WHERE approvalDigest = ? OR operationId = ?`)
+      .get(approval.approvalDigest, permit.operationId)) refuse('conflict');
+    if (recordLocalHistoryFirstPermit(db, permit) !== 'recorded') refuse('conflict');
+    db.prepare(`INSERT INTO main.${CONSENT_USES}
+      (operationId, approvalDigest, cardId, cardRevision, disclosureHash, permitId) VALUES (?, ?, ?, ?, ?, ?)`)
+      .run(permit.operationId, approval.approvalDigest, approval.cardId, approval.cardRevision, approval.disclosureHash, permit.permitId);
+    return 'recorded' as const;
+  })();
+}

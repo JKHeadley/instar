@@ -1,0 +1,25 @@
+{
+  "version": 2,
+  "slug": "local-history-atomic-consent-permit",
+  "sessionId": "41652017-0805-405d-bb4e-2a975fb349ce",
+  "timestamp": "2026-11-25T10:41:31.219Z",
+  "artifactPath": "upgrades/side-effects/local-history-atomic-consent-permit.md",
+  "artifactSha256": "20e082f8c232b6b698309873b7c11b19b1594e2611b7632d97c3066e9799d979",
+  "specPath": "docs/specs/local-history-native-contract.md",
+  "coveredFiles": [
+    "src/import/LocalHistoryFirstPermit.ts",
+    "tests/unit/local-history-first-permit.test.ts",
+    "upgrades/next/local-history-atomic-consent-permit.md",
+    "upgrades/side-effects/local-history-atomic-consent-permit.md"
+  ],
+  "phase": "complete",
+  "tier": 2,
+  "tierReasoning": "Dormant owner-consent receipt and first permit share the private jobs transaction.",
+  "secondPass": "true",
+  "reviewerConcurred": true,
+  "classClosure": {
+    "defectClass": "unbounded-self-action",
+    "closure": "n/a",
+    "reason": "Dormant transaction requires an owner proof and independent writer prerequisites."
+  }
+}
