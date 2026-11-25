@@ -1803,3 +1803,11 @@ a.needs-row:hover { background: var(--surface-raised); }
 .accounts-page .acct-list .list-rows { gap: 0; }
 .accounts-page .acct-name { white-space: normal; overflow: visible; overflow-wrap: anywhere; }
 .acct-kind { display: block; color: var(--text-muted); font-size: 12px; font-weight: 400; }
+
+.chat-reply-preview {
+  margin: 0 0 .4rem;
+  padding: .35rem .65rem;
+  border-inline-start: 2px solid currentColor;
+  overflow-wrap: anywhere;
+}
+.chat-reply-preview button { margin-inline-start: .5rem; min-height: 44px; }

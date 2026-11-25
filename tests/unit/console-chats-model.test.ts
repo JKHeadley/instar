@@ -638,3 +638,11 @@ describe('quick-page payload diff (telegram-slack-change-feed)', () => {
     expect(m.rebuildQuickPage(previous, data)).toEqual({ data, cache: null });
   });
 });
+
+
+it('does not let an older history response overwrite a newer reaction revision', () => {
+  const make = (emoji: string, revision: number) => m.bubble('app', { eventId: 'event', role: 'agent', text: 'Message',
+    at: '2026-11-08T10:00:00Z', reaction: { own: { emoji, revision } },
+  });
+  expect(m.mergeBubbles([make('👍', 4)], [make('❤️', 3)])[0].reaction).toEqual({ emoji: '👍', revision: 4 });
+});

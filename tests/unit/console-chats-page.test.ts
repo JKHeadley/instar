@@ -966,3 +966,109 @@ describe('interactive chat history explanations', () => {
     expect(doc.querySelector('.chat-history-state')).toBeNull();
   });
 });
+
+describe('signed message actions', () => {
+  const DEST = '87654321-4321-4321-8321-abcdefabcdef';
+  const sourcePath = `/mobile/chat/app/${UUID}`;
+
+  async function actionsPage(actionFields: Record<string, unknown>, handler: Parameters<typeof boot>[0], messageFields = {}) {
+    const idb = fakeIndexedDB();
+    const bd = await import('../../dashboard/console/browser-device.js');
+    const { keyPair, publicKey } = await bd.generateDeviceKey();
+    idb.stores.set('device', new Map([['m1', { machineId: 'm1', deviceId: 'dev-b1234567', host: 'localhost:4040', status: 'active', keyPair, publicKey, keyHash: await bd.keyHashOf(publicKey) }]]));
+    const { doc } = await boot(async c => {
+      if (c.url.startsWith('/mobile/browser-devices/status')) return { status: 200, body: STATUS };
+      if (c.url.startsWith('/mobile/conversations?scope=pool')) return { status: 200, body: { conversations: [
+        { id: UUID, platform: 'app', title: 'Plans', messageActions: actionFields },
+        { id: DEST, platform: 'app', title: 'Notes', messageActions: { forward: { custodianMachineId: 'm1' } } },
+      ] } };
+      if (c.url.startsWith(sourcePath + '/messages')) return { status: 200, body: { conversationKey: UUID, messages: [
+        { eventId: 'e1', messageId: 'msg-1', role: 'agent', text: 'Original text', at: new Date().toISOString(), ...messageFields },
+      ] } };
+      if (c.url.startsWith(sourcePath + '/events')) return { status: 200, body: { events: [], cursor: 'c1' } };
+      return handler(c);
+    }, `#/work/chats?c=${encodeURIComponent(`app:${UUID}`)}`, idb);
+    await vi.waitFor(() => expect(doc.querySelector('.chat-bubble .chat-text')?.textContent).toBe('Original text'));
+    const click = (text: string) => {
+      const button = [...doc.querySelectorAll('button')].find(b => b.textContent === text);
+      expect(button, text).toBeTruthy();
+      button!.click();
+    };
+    const menu = () => (doc.querySelector('.chat-bubble button[aria-label="Message options"]') as HTMLButtonElement).click();
+    return { doc, menu, click, publicKey };
+  }
+
+  it('stays dark without a positive source capability', async () => {
+    const { doc, menu } = await actionsPage({}, () => undefined);
+    menu();
+    const options = [...doc.querySelectorAll('[role=dialog] button')].map(button => button.textContent);
+    expect(options).not.toContain('Reply');
+    expect(options).not.toContain('React');
+    expect(options).not.toContain('Forward');
+    expect(calls.some(c => /\/(reply|reactions|forward)(\?|$)/.test(c.url))).toBe(false);
+  });
+
+  it('signs an exact quoted reply and restores the draft when the original is refused', async () => {
+    const { doc, menu, click, publicKey } = await actionsPage({ reply: true }, c =>
+      c.url === sourcePath + '/reply' ? { status: 409, body: { error: 'reply-source-unavailable' } } : undefined);
+    menu();
+    click('Reply');
+    expect(doc.body.textContent).toContain('Replying to: Original text');
+    const input = doc.querySelector('textarea.chat-compose') as HTMLTextAreaElement;
+    input.value = 'Keep this reply';
+    input.dispatchEvent(new dom.window.Event('input'));
+    click('Send');
+    await vi.waitFor(() => expect(input.value).toBe('Keep this reply'));
+    const sent = calls.find(c => c.url === sourcePath + '/reply');
+    expect(verifySigned(sent!, publicKey).ok).toBe(true);
+    expect(JSON.parse(sent!.body!)).toMatchObject({ replyTo: { eventId: 'e1' }, text: 'Keep this reply' });
+    expect(doc.body.textContent).toContain('Replying to: Original text');
+    expect(calls.some(c => c.method === 'POST' && c.url === sourcePath)).toBe(false);
+  });
+
+  it('renders a history quote only after a fresh exact read confirms the preview', async () => {
+    const { doc, publicKey } = await actionsPage({ reply: true }, c =>
+      c.url === sourcePath + '/reply-previews?eventId=e1' ? { status: 200, body: { conversationKey: UUID,
+        messages: [{ eventId: 'e1', reply: { state: 'available', eventId: 'original', preview: 'Current preview' } }],
+      } } : undefined,
+    { reply: { state: 'available', eventId: 'original', preview: 'Stale history preview' } });
+    await vi.waitFor(() => expect(doc.querySelector('blockquote')?.textContent).toBe('Current preview'));
+    expect(doc.body.textContent).not.toContain('Stale history preview');
+    expect(verifySigned(calls.find(c => c.url.includes('/reply-previews'))!, publicKey).ok).toBe(true);
+  });
+
+  it('reads the current reaction and signs a revision-bound change', async () => {
+    const { doc, menu, click, publicKey } = await actionsPage({ reactions: { emoji: ['👍'] } }, c =>
+      c.url === sourcePath + '/reactions?eventId=e1' ? { status: 200, body: { eventId: 'e1', own: { emoji: null, revision: 2 } } }
+        : c.url === sourcePath + '/reactions' ? { status: 200, body: { eventId: 'e1', own: { emoji: '👍', revision: 3 } } } : undefined);
+    menu();
+    click('React');
+    await vi.waitFor(() => expect(doc.body.textContent).toContain('React 👍'));
+    click('React 👍');
+    await vi.waitFor(() => expect(doc.body.textContent).toContain('Reaction set to 👍.'));
+    const sent = calls.find(c => c.method === 'PUT' && c.url === sourcePath + '/reactions');
+    expect(verifySigned(sent!, publicKey).ok).toBe(true);
+    expect(JSON.parse(sent!.body!)).toMatchObject({ eventId: 'e1', emoji: '👍', expectedRevision: 2 });
+  });
+
+  it('forwards to the server-advertised destination and retries an unknown result with the same signed intent', async () => {
+    const path = `/mobile/chat/app/${DEST}/forward`;
+    let attempts = 0;
+    const { doc, menu, click, publicKey } = await actionsPage({ forward: { custodianMachineId: 'm1' } }, c => {
+      if (c.url !== path) return undefined;
+      return ++attempts === 1 ? { status: 409, body: { error: 'outcome-unknown' } }
+        : { status: 200, body: { eventId: 'fwd-event', messageId: 'fwd-message' } };
+    });
+    menu();
+    click('Forward');
+    click('Notes');
+    await vi.waitFor(() => expect(doc.body.textContent).toContain('Retry: Notes'));
+    click('Retry: Notes');
+    await vi.waitFor(() => expect(doc.body.textContent).toContain('Forwarded to Notes.'));
+    const writes = calls.filter(c => c.method === 'POST' && c.url === path);
+    expect(writes).toHaveLength(2);
+    expect(writes[0].body).toBe(writes[1].body);
+    expect(verifySigned(writes[1], publicKey).ok).toBe(true);
+    expect(JSON.parse(writes[1].body!)).toMatchObject({ custodianMachineId: 'm1', sourceConversationKey: UUID, sourceEventId: 'e1' });
+  });
+});
