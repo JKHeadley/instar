@@ -161,3 +161,16 @@ The enrolled writer now checks that every sealed peer record is present in a ful
 - Rollback. Keep production enrollment off while changing the check. An enrolled board with unexplained journal loss needs verified recovery before it resumes writes.
 
 Independent review concurred after correcting the lifecycle fixture. Production enrollment must distinguish a verified empty peer baseline from absent evidence.
+
+## Explicit empty baseline
+
+Missing baseline evidence now keeps an enrolled writer unavailable, even when its application and writer assignment exist. An explicit empty set still allows the writer to start with zero peer records. Legacy boards keep their existing path.
+
+- Over-block. A partial application configuration cannot write until enrollment supplies a baseline.
+- Under-block. The runtime trusts the enrollment boundary to prove the supplied set and cannot authenticate how it was assembled.
+- Abstraction and authority. The existing writer gate consumes explicit enrollment evidence. A missing input cannot infer authority from the absence of journal records.
+- Interactions and surfaces. A partial setup yields the existing unavailable response. Journal folding and writer acquisition share the same requirement.
+- Multi-machine posture. A verified empty baseline remains valid only for the enrollment that attests to it.
+- Rollback. Keep production enrollment off if evidence cannot be supplied. Legacy boards require no migration.
+
+Independent review concurred. The lifecycle fixtures distinguish missing baseline evidence, missing application wiring, and an explicit empty baseline.

@@ -115,12 +115,20 @@ function send(app: Parameters<typeof request>[0], phone: Phone, method: 'POST' |
 }
 
 describe('Work cards from the owner phone E2E (feature is alive)', () => {
-  it('fences a partially configured slip writer before it can issue or write', () => {
+  it.each(['application', 'baseline'] as const)('fences an enrolled writer missing its %s before it can issue or write', (missing) => {
     const { stateDir } = mkConfig();
     const db = new Database(':memory:');
     const store = new WorkBoardSlipStore(db);
     const writer = { epoch: 'epoch1', ownerGeneration: 'owner1', ownerPersonKey: 'owner', writerIncarnation: 'i1' };
-    const { runtime, journal } = mkRuntime(stateDir, { permissionSlips: { store, currentWriter: () => writer } });
+    const { runtime, journal } = mkRuntime(stateDir, {
+      permissionSlips: {
+        store,
+        currentWriter: () => writer,
+        ...(missing === 'application' ? { sealedPeerHistory: new Set<string>() } : {
+          application: { readEvent: () => ({ status: 'unknown' as const }) },
+        }),
+      },
+    });
     try {
       runtime.start();
       const created = runtime.svc.createCard({ kind: 'agent' }, {
@@ -141,6 +149,7 @@ describe('Work cards from the owner phone E2E (feature is alive)', () => {
     const rig: Rig = mkRuntime(stateDir, {
       permissionSlips: {
         store, currentWriter: () => writer,
+        sealedPeerHistory: new Set(),
         application: { readEvent: (id) => readWorkBoardApprovalEvent(id, {
           journal: rig.journal,
           epoch: { machineId: 'm1', journalIncarnation: rig.journal.getOwnAdvert()[WORK_CARD_RECORD_KIND].incarnation, baselineSequence: 0 },

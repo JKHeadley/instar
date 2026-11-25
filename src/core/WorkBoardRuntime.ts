@@ -86,7 +86,7 @@ export interface WorkBoardRuntimeSeams {
   machineId: string;
   permissionSlips?: {
     store: WorkBoardSlipStore;
-    /** Exact peer records already accepted by the verified enrollment baseline. */
+    /** Exact peer records accepted by enrollment. An explicit empty set attests to zero peer records. */
     sealedPeerHistory?: ReadonlySet<string>;
     currentWriter: () => WorkBoardWriterProof | null;
     application?: {
@@ -132,7 +132,7 @@ export class WorkBoardRuntime {
   private journalSignalled = false;
   private started = false;
   private slipJournalConflict = false;
-  private readonly sealedPeerHistory: ReadonlySet<string>;
+  private readonly sealedPeerHistory: ReadonlySet<string> | null;
   private readonly now: () => number;
   /** §2 "Note rate and the drain set": pending note event ids per card conversation, reconciled by event id against the pointers. */
   private readonly pendingNotes = new Map<string, Map<string, string>>();
@@ -145,7 +145,7 @@ export class WorkBoardRuntime {
   readonly holderStats = { sweeps: 0, cardsSwept: 0, notesDrained: 0, notesCoalesced: 0, holdsLifted: 0, quietRepickups: 0, lastPassAt: null as number | null, lastSweep: null as Record<string, unknown> | null };
 
   private currentSlipWriter(): WorkBoardWriterProof | null {
-    if (!this.started || !this.seams.enabled() || this.slipJournalConflict) return null;
+    if (!this.started || !this.seams.enabled() || this.slipJournalConflict || !this.sealedPeerHistory) return null;
     const port = this.seams.permissionSlips;
     if (!port?.application) return null;
     const writer = port.currentWriter();
@@ -261,7 +261,7 @@ export class WorkBoardRuntime {
     this.bootMs = this.now();
     const settings = (): WorkBoardSettings => resolveWorkBoardSettings(seams.rawSettings());
     const slips = seams.permissionSlips;
-    this.sealedPeerHistory = new Set(slips?.sealedPeerHistory);
+    this.sealedPeerHistory = slips?.sealedPeerHistory ? new Set(slips.sealedPeerHistory) : null;
     const application = slips?.application;
     this.svc = new WorkBoardService({
       approvalAuthority: slips && application ? {
@@ -592,15 +592,16 @@ export class WorkBoardRuntime {
 
   private admitSlipHistory(entries: UnionEntry[], requireCompleteBaseline = false): boolean {
     if (!this.seams.permissionSlips) return true;
-    if (this.slipJournalConflict) return false;
-    const missing = requireCompleteBaseline ? new Set(this.sealedPeerHistory) : null;
+    const sealed = this.sealedPeerHistory;
+    if (this.slipJournalConflict || !sealed) return false;
+    const missing = requireCompleteBaseline ? new Set(sealed) : null;
     const unexpected = entries.some((entry) => {
       const { origin, data } = entry;
       if (!origin || !data || data.origin !== origin) return true;
       if (origin === this.seams.machineId) return false;
       const fingerprint = workBoardHistoryFingerprint(entry);
       missing?.delete(fingerprint);
-      return !this.sealedPeerHistory.has(fingerprint);
+      return !sealed.has(fingerprint);
     });
     const reason = unexpected ? 'unexpected-journal-origin' : missing?.size ? 'incomplete-sealed-history' : null;
     if (!reason) return true;
