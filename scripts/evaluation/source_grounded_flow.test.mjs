@@ -30,7 +30,7 @@ const observations = ['fail', 'pass'].map((verdict, index) => ({
   raw: JSON.stringify({ submissionId: capture.submissionId, criteria: [{ criterionId: 'critical', verdict }] }),
 }));
 const receipts = observations.map(({ raw, ...identity }, index) => ({
-  ...expected, ...identity, ordinal: index === 0 ? 1 : 0, state: 'valid',
+  ...expected, ...identity, planHash: sha(planBytes), ordinal: index === 0 ? 1 : 0, state: 'valid',
   completedOrdinal: index + 2, rawHash: sha(raw), answerHash: sha(capture.answerRaw),
 }));
 const validate = ({ judgeRaw }) => ({
@@ -109,12 +109,13 @@ test('composed flow uses the selected retry for binding and independence evidenc
     { slotId: receipts[0].slotId, maxRetries: 1, attempts: [timeout, receipts[0]] },
     { slotId: receipts[1].slotId, maxRetries: 1, attempts: [receipts[1]] },
   ];
-  const disclosure = { ...expected, ordinal: 4 };
+  const disclosure = { ...expected, planHash: sha(planBytes), ordinal: 4 };
   const noRetryPlan = JSON.parse(planBytes);
   noRetryPlan.judgeSlots[0].maxRetries = 0;
   const lockedBytes = Buffer.from(JSON.stringify(noRetryPlan));
   const blocked = evaluateJudgeFlow({ ...input, planBytes: lockedBytes, planHash: sha(lockedBytes) },
-    expected, ledgers, observations, disclosure, validate);
+    expected, ledgers.map(ledger => ({ ...ledger, attempts: ledger.attempts.map(attempt =>
+      ({ ...attempt, planHash: sha(lockedBytes) })) })), observations, disclosure, validate);
   assert.equal(blocked.selection[0].state, 'policy-violation');
   assert.deepEqual(blocked.bindingStates, ['slot-empty', 'bound']);
   const aged = { ...observations[0], attemptId: timeout.attemptId };
@@ -138,7 +139,7 @@ test('a resolution for one judge attempt cannot resolve the other judge’s crit
     ...receipt, ordinal: 0, rawHash: sha(index === 0 ? observations[0].raw : amended.raw),
   }] }));
   const result = evaluateJudgeFlow(input, expected, ledger, [observations[0], amended],
-    { ...expected, ordinal: 4 }, validate);
+    { ...expected, planHash: sha(planBytes), ordinal: 4 }, validate);
   assert.equal(result.criticalSignals.length, 2);
   const [first, second] = result.criticalSignals;
   assert.notEqual(first.id, second.id);
@@ -146,21 +147,24 @@ test('a resolution for one judge attempt cannot resolve the other judge’s crit
     { id: 'resolution', signalId: first.id, resolution: 'judge-error' },
   ]).map(item => item.resolution), ['judge-error', 'unresolved']);
   const reordered = evaluateJudgeFlow(input, expected, [...ledger].reverse(), [amended, observations[0]],
-    { ...expected, ordinal: 4 }, validate);
+    { ...expected, planHash: sha(planBytes), ordinal: 4 }, validate);
   assert.deepEqual(reordered.criticalSignals, result.criticalSignals);
 });
 
 test('an adjudication for an earlier plan cannot resolve a finding under a new rubric', () => {
   const input = { planBytes, planHash: sha(planBytes), parsePlan: JSON.parse, rubricBytes, capture };
   const ledger = receipts.map(receipt => ({ slotId: receipt.slotId, attempts: [{ ...receipt, ordinal: 0 }] }));
-  const disclosure = { ...expected, ordinal: 4 };
+  const disclosure = { ...expected, planHash: sha(planBytes), ordinal: 4 };
   const original = evaluateJudgeFlow(input, expected, ledger, observations, disclosure, validate);
   const revisedRubric = Buffer.from('revised synthetic rubric');
   const revisedPlan = { ...JSON.parse(planBytes), rubricHash: sha(revisedRubric) };
   const revisedBytes = Buffer.from(JSON.stringify(revisedPlan));
-  const revised = evaluateJudgeFlow({
-    ...input, planBytes: revisedBytes, planHash: sha(revisedBytes), rubricBytes: revisedRubric,
-  }, expected, ledger, observations, disclosure, validate);
+  const revisedInput = { ...input, planBytes: revisedBytes, planHash: sha(revisedBytes), rubricBytes: revisedRubric };
+  assert.equal(evaluateJudgeFlow(revisedInput, expected, ledger, observations, disclosure, validate).state,
+    'ledger-plan-mismatch');
+  const revised = evaluateJudgeFlow(revisedInput, expected, ledger.map(entry => ({
+    ...entry, attempts: entry.attempts.map(attempt => ({ ...attempt, planHash: revisedInput.planHash })),
+  })), observations, { ...disclosure, planHash: revisedInput.planHash }, validate);
   assert.equal(original.criticalSignals.length, 1);
   assert.equal(revised.criticalSignals.length, 1);
   assert.notEqual(original.criticalSignals[0].id, revised.criticalSignals[0].id);

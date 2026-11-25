@@ -37,3 +37,5 @@ Matching output bytes are insufficient when the captured output belongs to a dif
 The offline flow now assigns each critical finding an identity tied to its exact bound judge attempt. Two judges who fail the same criterion still produce separate findings.
 
 The finding identity also includes the verified plan. A resolution from an earlier rubric cannot clear a finding recorded under a new plan.
+
+The judge flow checks the plan fingerprint on each terminal attempt record and on disclosure evidence. A receipt from a different plan cannot supply a vote.
