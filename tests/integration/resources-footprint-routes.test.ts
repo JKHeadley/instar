@@ -6,18 +6,26 @@
  * authMiddleware: 401 without bearer, 503 when the monitor is null (disabled /
  * dark), 200 + status (latest sample + trend) with data.
  */
-import { describe, it, expect } from 'vitest';
+import { afterEach, describe, it, expect } from 'vitest';
+import { createTempProject, type TempProject } from '../helpers/setup.js';
 import express from 'express';
 import request from 'supertest';
 import { createRoutes, type RouteContext } from '../../src/server/routes.js';
 import { authMiddleware } from '../../src/server/middleware.js';
 import { ProcessFootprintMonitor, type FootprintProcess } from '../../src/monitoring/ProcessFootprintMonitor.js';
 
+const routeProjects: TempProject[] = [];
+afterEach(() => {
+  for (const project of routeProjects.splice(0)) project.cleanup();
+});
+
 const AUTH = 'test-bearer-token';
 
 function ctxWith(processFootprintMonitor: ProcessFootprintMonitor | null): RouteContext {
+  const project = createTempProject();
+  routeProjects.push(project);
   return {
-    config: { projectName: 'test', projectDir: '/tmp', stateDir: '/tmp/.instar', port: 0, authToken: AUTH, sessions: {} as any, scheduler: {} as any } as any,
+    config: { projectName: 'test', projectDir: project.dir, stateDir: project.stateDir, port: 0, authToken: AUTH, sessions: {} as any, scheduler: {} as any } as any,
     sessionManager: { listRunningSessions: () => [] } as any,
     state: { getJobState: () => null, getSession: () => null } as any,
     scheduler: null, telegram: null, relationships: null, feedback: null, dispatches: null,

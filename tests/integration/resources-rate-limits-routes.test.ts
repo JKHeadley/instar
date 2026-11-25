@@ -6,16 +6,24 @@
  * when the ledger is present, 503 when it is null (disabled / not initialized).
  */
 import { describe, it, expect, afterEach } from 'vitest';
+import { createTempProject, type TempProject } from '../helpers/setup.js';
 import express from 'express';
 import request from 'supertest';
 import { createRoutes, type RouteContext } from '../../src/server/routes.js';
 import { ResourceLedger } from '../../src/monitoring/ResourceLedger.js';
 
+const routeProjects: TempProject[] = [];
+afterEach(() => {
+  for (const project of routeProjects.splice(0)) project.cleanup();
+});
+
 let ledger: ResourceLedger | null = null;
 
 function ctxWith(resourceLedger: ResourceLedger | null): RouteContext {
+  const project = createTempProject();
+  routeProjects.push(project);
   return {
-    config: { projectName: 'test', projectDir: '/tmp', stateDir: '/tmp/.instar', port: 0, sessions: {} as any, scheduler: {} as any } as any,
+    config: { projectName: 'test', projectDir: project.dir, stateDir: project.stateDir, port: 0, sessions: {} as any, scheduler: {} as any } as any,
     sessionManager: { listRunningSessions: () => [] } as any,
     state: { getJobState: () => null, getSession: () => null } as any,
     scheduler: null, telegram: null, relationships: null, feedback: null, dispatches: null,
