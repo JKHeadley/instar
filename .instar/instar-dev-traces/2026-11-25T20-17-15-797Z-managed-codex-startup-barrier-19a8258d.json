@@ -1,0 +1,20 @@
+{
+  "version": 2,
+  "slug": "managed-codex-startup-barrier",
+  "sessionId": "017c26ed-5596-4576-9c20-20af13e4c1f8",
+  "timestamp": "2026-11-25T20:17:15.797Z",
+  "artifactPath": "upgrades/side-effects/managed-codex-startup-barrier.md",
+  "artifactSha256": "a96a60c8c78646ae0e3fcd0dfee552b1cede16327c343a76cabf4b26a4eb5831",
+  "coveredFiles": [
+    "src/core/ManagedCodexStartupBarrier.ts",
+    "tests/e2e/managed-codex-stop-lifecycle.test.ts",
+    "tests/unit/managed-codex-startup-barrier.test.ts"
+  ],
+  "phase": "complete",
+  "tier": 1,
+  "tierReasoning": "Native startup hold used only by the dark fixture. No production launch or new live effect.",
+  "eli16Path": "upgrades/managed-codex-startup-barrier.eli16.md",
+  "sideEffectsPath": "upgrades/side-effects/managed-codex-startup-barrier.md",
+  "secondPass": "true",
+  "reviewerConcurred": true
+}

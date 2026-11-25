@@ -29,18 +29,22 @@ import type { ConversationGraphReplicationRuntime } from '../../src/server/Conve
 
 import { createManagedCodexWorkerHome, readManagedCodexWorkerHome } from '../../src/core/ManagedCodexWorkerHome.js';
 
+import { createManagedCodexStartupBarrier } from '../../src/core/ManagedCodexStartupBarrier.js';
+
 const codex = process.platform === 'darwin'
   ? await resolveCodexNativeCanaryBinary('/usr/local/bin/codex')
     ?? await resolveCodexNativeCanaryBinary('/opt/homebrew/bin/codex')
   : null;
 
-it.skipIf(!codex).each([true, false])('drives an enrolled worker through packaged Stop (enabled=%s)', async (enabled) => {
+it.skipIf(!codex).each([
+  [true, true], [false, true], [true, false],
+])('drives a managed launch through packaged hooks (enabled=%s, authorized=%s)', async (enabled, authorized) => {
   const project = createTempProject();
   const projectDir = path.join(project.dir, 'worker');
   const protectedState = path.join(project.dir, 'protected-state');
   const stateDir = path.join(projectDir, '.instar');
   const hookPath = path.join(projectDir, '.claude/skills/autonomous/hooks/autonomous-stop-hook.sh');
-  for (const dir of [protectedState, stateDir, path.dirname(hookPath), path.join(projectDir, '.codex')]) {
+  for (const dir of [protectedState, stateDir, path.dirname(hookPath)]) {
     fs.mkdirSync(dir, { recursive: true });
   }
   fs.copyFileSync(path.resolve('.claude/skills/autonomous/hooks/autonomous-stop-hook.sh'), hookPath);
@@ -104,19 +108,6 @@ it.skipIf(!codex).each([true, false])('drives an enrolled worker through package
     fs.writeFileSync(path.join(stateDir, 'topic-session-registry.json'), JSON.stringify({ topicToSession: { 147616: 'fixture-worker' } }));
     fs.mkdirSync(path.join(stateDir, 'autonomous'));
     fs.writeFileSync(path.join(stateDir, 'autonomous', '147616.local.md'), '---\nactive: true\n---\n');
-    const startHook = path.join(projectDir, 'start-hook.cjs');
-    fs.writeFileSync(startHook, [
-      "const fs = require('node:fs');",
-      "const input = JSON.parse(fs.readFileSync(0, 'utf8'));",
-      "fs.writeFileSync('.instar/native-session', input.session_id);",
-      "const ready = setInterval(() => { if (fs.existsSync('.instar/managed-ready')) { clearInterval(ready); clearTimeout(deadline); } }, 10);",
-      "const deadline = setTimeout(() => { clearInterval(ready); process.exitCode = 1; }, 5000);",
-    ].join('\n'));
-    const hook = (command: string) => [{ matcher: '', hooks: [{ type: 'command', command, timeout: 10 }] }];
-    fs.writeFileSync(path.join(projectDir, '.codex/hooks.json'), JSON.stringify({
-      hooks: { SessionStart: hook(JSON.stringify(process.execPath) + ' ' + JSON.stringify(startHook)),
-        Stop: hook('bash ' + JSON.stringify(hookPath) + ' --codex') },
-    }));
     const codexConfig = [
       `model = "${CODEX_CANARY_MODELS[0]}"`, 'model_provider = "fixture"', 'approval_policy = "never"',
       'sandbox_mode = "workspace-write"', 'web_search = "disabled"',
@@ -160,6 +151,7 @@ it.skipIf(!codex).each([true, false])('drives an enrolled worker through package
       ordinaryLock.release();
     }
     let child: ReturnType<typeof spawn> | undefined;
+    let barrier: ReturnType<typeof createManagedCodexStartupBarrier> | undefined;
     let exited: Promise<unknown[]> | undefined;
     let stderr = '';
     try {
@@ -173,6 +165,12 @@ it.skipIf(!codex).each([true, false])('drives an enrolled worker through package
         launch: async (_admission, launchId) => {
           const { home, homeIdentity } = createManagedCodexWorkerHome(protectedState, projectDir, launchId);
           fs.writeFileSync(path.join(home, 'config.toml'), codexConfig, { mode: 0o600 });
+          barrier = createManagedCodexStartupBarrier(home, launchId);
+          const hook = (command: string) => [{ matcher: '', hooks: [{ type: 'command', command, timeout: 25 }] }];
+          fs.writeFileSync(path.join(home, 'hooks.json'), JSON.stringify({
+            hooks: { SessionStart: hook(barrier.hookCommand),
+              Stop: hook('bash ' + JSON.stringify(hookPath) + ' --codex') },
+          }));
           child = spawn(codex!, ['exec', '--json', '--trust', '--skip-git-repo-check',
             '--dangerously-bypass-hook-trust', 'Return CANARY_OK without calling tools.'], {
             cwd: projectDir,
@@ -183,13 +181,29 @@ it.skipIf(!codex).each([true, false])('drives an enrolled worker through package
           exited = once(child, 'close');
           child.stdout?.resume();
           child.stderr?.on('data', chunk => { stderr += chunk; });
-          await vi.waitFor(() => { workerId = fs.readFileSync(path.join(stateDir, 'native-session'), 'utf8'); }, { timeout: 4000 });
+          await vi.waitFor(() => {
+            const receipt = barrier?.readReceipt();
+            if (!receipt) throw new Error('managed worker startup receipt unavailable');
+            workerId = receipt;
+          }, { timeout: 15_000 });
+          expect(provider.models).toHaveLength(0);
           return { launchId, nativeSessionId: workerId, homeIdentity };
         },
-        verifyLaunch: (_admission, launch) => launch.nativeSessionId === workerId && child?.exitCode === null,
-        releaseLaunch: () => fs.writeFileSync(path.join(stateDir, 'managed-ready'), 'ready'),
+        verifyLaunch: (_admission, launch) => authorized && launch.nativeSessionId === workerId && child?.exitCode === null,
+        releaseLaunch: launch => {
+          if (!barrier) throw new Error('managed startup barrier is missing');
+          barrier.release(launch.nativeSessionId);
+        },
         cancelLaunch: () => { child?.kill('SIGKILL'); },
       });
+      if (!authorized) {
+        expect(admitted).toBeUndefined();
+        expect(exited).toBeDefined();
+        expect((await exited!)[1]).toBe('SIGKILL');
+        expect(provider.models).toHaveLength(0);
+        expect(verifiedCallbacks).toBe(0);
+        return;
+      }
       expect(admitted?.nativeSessionId).toBe(workerId);
       const ordinaryWork = openManagedCodexWorkDatabase(stateDir);
       expect(ordinaryWork).toBeDefined();
@@ -222,4 +236,4 @@ it.skipIf(!codex).each([true, false])('drives an enrolled worker through package
     work.close();
     project.cleanup();
   }
-}, 30_000);
+}, 50_000);
