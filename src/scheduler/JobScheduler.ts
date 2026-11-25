@@ -47,7 +47,7 @@ import { getInstarVersion } from '../core/Config.js';
 import { readVerifiedInstalledDoorwayAssets } from '../core/VerifiedPackagedCatalog.js';
 import { ScheduledDoorwayObservationStore } from '../core/ScheduledDoorwayObservationStore.js';
 import { readScheduledDoorwayEvidence, type ScheduledDoorwayEvidence } from '../core/ScheduledDoorwayRead.js';
-import { withDoorwayRetentionWriter } from '../core/VerifiedDoorwayRetention.js';
+import { publishInitialDoorwayRetentionCursor, withDoorwayRetentionWriter } from '../core/VerifiedDoorwayRetention.js';
 import { executePackagedDoorwayScan, readDoorwayExecutionConfig } from './PackagedDoorwayExecution.js';
 import { JobSupervisionStore } from './JobSupervisionStore.js';
 import { projectSupervisionEvidence, SUPERVISION_EVIDENCE_POLICY } from './JobSupervisionEvidence.js';
@@ -2717,7 +2717,7 @@ export class JobScheduler {
           this.releaseClaim(job.slug, 'failure');
           return;
         }
-        await this.startScriptRunnerJob(live, reason, { stateDir, probeDeadline, assertHeld: () => lease.assertHeld() });
+        await this.startScriptRunnerJob(live, reason, { stateDir, probeDeadline, scope: lease.scope, assertHeld: () => lease.assertHeld() });
       })
         .catch(error => {
           console.error(`[scheduler] Doorway writer for "${job.slug}" failed: ${error instanceof Error ? error.message : String(error)}`);
@@ -2733,7 +2733,7 @@ export class JobScheduler {
   private startScriptRunnerJob(
     job: JobDefinition,
     reason: string,
-    writer?: { stateDir: string; probeDeadline: number; assertHeld: () => void },
+    writer?: { stateDir: string; probeDeadline: number; scope: string; assertHeld: () => void },
   ): Promise<void> {
     const packagedDoorwayRun = writer !== undefined;
     const slug = job.slug;
@@ -2817,6 +2817,7 @@ export class JobScheduler {
       let parsed: ParsedScriptRun;
       let scrubbed = '';
       let scheduledDoorwayObservationDigest: string | undefined;
+      let retentionInput: { machineId: string; doorIds: string[] } | undefined;
       const doorwayConfig = slug === 'doorway-scan' ? readDoorwayExecutionConfig(this.stateDir) : undefined;
       if (doorwayConfig === null) {
         parsed = parseScriptOutput('JOB_RESULT failed doorway-config-unavailable', 1);
@@ -2839,7 +2840,8 @@ export class JobScheduler {
         }
       } else if (packagedDoorwayRun) {
         const pending = this.runHistory.findRun(runId);
-        if (!writer || !pending || !this.machineId || job.lockTrust !== 'trusted') {
+        const machineId = this.machineId;
+        if (!writer || !pending || !machineId || job.lockTrust !== 'trusted') {
           parsed = this.untrustedParse('packaged-run-unverified');
         } else {
           const assets = readVerifiedInstalledDoorwayAssets(getInstarVersion());
@@ -2849,11 +2851,15 @@ export class JobScheduler {
             scheduledDoorwayObservationDigest = await executePackagedDoorwayScan({
               stateDir: writer.stateDir,
               run: pending,
-              machineId: this.machineId,
+              machineId,
               assets,
               timeoutMs: writer.probeDeadline - performance.now(),
               assertWriterHeld: writer.assertHeld,
             });
+            retentionInput = {
+              machineId,
+              doorIds: Object.keys(assets.catalog.doors as Record<string, unknown>),
+            };
             scrubbed = 'JOB_RESULT ok verified free probes';
             parsed = parseScriptOutput(scrubbed, 0);
           }
@@ -2866,6 +2872,21 @@ export class JobScheduler {
       }
       writer?.assertHeld();
       this.finishScriptRun(job, runId, supervisionId, parsed, scrubbed, startedAt, supervisionActiveAtStart, scheduledDoorwayObservationDigest);
+      if (writer && retentionInput) {
+        const completed = this.runHistory.findRun(runId);
+        if (completed?.result !== 'success' || completed.scheduledDoorwayObservationDigest !== scheduledDoorwayObservationDigest) return;
+        const { machineId, doorIds } = retentionInput;
+        try {
+          const result = publishInitialDoorwayRetentionCursor({
+            stateDir: writer.stateDir, machineId, doorIds,
+            readSnapshot: () => this.runHistory.readPackagedDoorwaySnapshot(machineId),
+          }, writer);
+          if (result.status === 'unavailable') console.warn(`[scheduler] Doorway cursor publication unavailable: ${result.reason}`);
+        } catch (error) {
+          // The probe already completed. Advisory cursor failure does not change its outcome.
+          console.warn(`[scheduler] Doorway cursor publication failed: ${error instanceof Error ? error.message : String(error)}`);
+        }
+      }
     };
 
     const execute = () => run().catch((err) => {

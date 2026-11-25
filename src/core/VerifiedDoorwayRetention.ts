@@ -150,35 +150,46 @@ export async function withDoorwayRetentionWriter<T>(
   }
 }
 
-/** Establish the first advisory cursor under the canonical state's writer lease. */
-export async function initializeDoorwayRetentionCursor(options: {
+type InitializationOptions = {
   stateDir: string;
   machineId: string;
   doorIds: readonly string[];
   readSnapshot: () => Snapshot;
-  deadlineMs: number;
-}): Promise<{ status: 'published' | 'existing'; cursor: ScheduledDoorwayRetentionCursor }
-  | { status: 'unavailable'; reason: 'incomplete-evidence' | 'ledger-changed' }> {
-  return withDoorwayRetentionWriter(options.stateDir, options.deadlineMs, async (stateDir, lease) => {
-    const nowMs = Date.now();
-    const store = new ScheduledDoorwayObservationStore(stateDir, options.machineId, options.doorIds, () => nowMs);
-    const existing = store.readRetentionCursor();
-    if (existing) return { status: 'existing', cursor: existing };
+};
+type InitializationResult = { status: 'published' | 'existing'; cursor: ScheduledDoorwayRetentionCursor }
+  | { status: 'unavailable'; reason: 'incomplete-evidence' | 'ledger-changed' };
 
-    const snapshot = options.readSnapshot();
-    const references = selectDoorwayRetentionReferences(options.machineId, snapshot, store, nowMs);
-    if (!references || !verifyDoorwayRetentionReferences(options.machineId, references, snapshot, store)) {
-      return { status: 'unavailable', reason: 'incomplete-evidence' };
-    }
+/** Establish the first advisory cursor under the canonical state's writer lease. */
+export async function initializeDoorwayRetentionCursor(
+  options: InitializationOptions & { deadlineMs: number },
+): Promise<InitializationResult> {
+  return withDoorwayRetentionWriter(options.stateDir, options.deadlineMs, async (stateDir, lease) =>
+    publishInitialDoorwayRetentionCursor({ ...options, stateDir }, lease));
+}
 
-    // Until all writers share this scope, a changed ledger invalidates the
-    // proposed generation. Even a stable double read grants no cleanup authority.
-    const snapshotRows = JSON.stringify(snapshot.runs);
-    const latest = options.readSnapshot();
-    if (!latest.complete || JSON.stringify(latest.runs) !== snapshotRows) {
-      return { status: 'unavailable', reason: 'ledger-changed' };
-    }
-    const cursor = store.advanceRetentionCursor(null, references, lease);
-    return { status: 'published', cursor };
-  });
+/** The scheduler already holds the canonical writer lease while recording completion. */
+export function publishInitialDoorwayRetentionCursor(
+  options: InitializationOptions,
+  lease: Pick<PhysicalEffectLease, 'scope' | 'assertHeld'>,
+): InitializationResult {
+  if (lease.scope !== SCHEDULED_DOORWAY_RETENTION_SCOPE) throw new Error('doorway retention writer scope mismatch');
+  lease.assertHeld();
+  const nowMs = Date.now();
+  const store = new ScheduledDoorwayObservationStore(options.stateDir, options.machineId, options.doorIds, () => nowMs);
+  const existing = store.readRetentionCursor();
+  if (existing) return { status: 'existing', cursor: existing };
+
+  const snapshot = options.readSnapshot();
+  const references = selectDoorwayRetentionReferences(options.machineId, snapshot, store, nowMs);
+  if (!references || !verifyDoorwayRetentionReferences(options.machineId, references, snapshot, store)) {
+    return { status: 'unavailable', reason: 'incomplete-evidence' };
+  }
+
+  const snapshotRows = JSON.stringify(snapshot.runs);
+  const latest = options.readSnapshot();
+  if (!latest.complete || JSON.stringify(latest.runs) !== snapshotRows) {
+    return { status: 'unavailable', reason: 'ledger-changed' };
+  }
+  const cursor = store.advanceRetentionCursor(null, references, lease);
+  return { status: 'published', cursor };
 }

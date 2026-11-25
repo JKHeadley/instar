@@ -158,6 +158,12 @@ describe('script runner execution', () => {
     expect(JSON.parse(fs.readFileSync(stage, 'utf8'))).toMatchObject({
       runId: packaged.runId, startedAt: packaged.startedAt, observations: [{ doorId: 'fixture', probeStatus: 'ok' }],
     });
+    const cursor = path.join(project.stateDir, 'state', 'doorway-scan-scheduled-runs', 'retention-cursor.json');
+    expect(JSON.parse(fs.readFileSync(cursor, 'utf8'))).toMatchObject({
+      generation: 1, machineId: 'fixture-machine',
+      observations: [{ doorId: 'fixture', runId: packaged.runId, digest: packaged.scheduledDoorwayObservationDigest }],
+      admissions: [{ doorId: 'fixture', runId: packaged.runId }],
+    });
 
     expect(s.readScheduledDoorwayHistory(['fixture'])).toMatchObject({
       machineId: 'fixture-machine', historyTruncated: false,

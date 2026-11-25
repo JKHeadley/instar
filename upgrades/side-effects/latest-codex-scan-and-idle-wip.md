@@ -121,3 +121,9 @@ Independent review concurred and identified a delayed-admission edge. The schedu
 The scheduler now settles an interrupted packaged doorway run under the same writer lease used by normal execution and initial cursor publication. It rereads the exact local pending row and its supervision attempt after acquisition. Existing age and liveness checks still apply. Recovery schedules one asynchronous lock attempt at a time, leaves the scan on hold while it waits, and retries through the existing census recheck. Legacy settlement continues through its existing path. This checkpoint does not activate production cursor publication or cleanup.
 
 Independent review concurred after recovery was bounded to one lock attempt at a time and revalidated exact local ownership.
+
+## First cursor on scheduled completion
+
+The opt-in scheduler now invokes advisory cursor publication while still holding its writer lease, after rereading the exact successful run and matching its observation digest. The first cursor uses the verified catalog and complete local ledger. An existing generation stays as stored, and a publication failure leaves the completed scan result intact. Legacy scans do not invoke the publisher. Readers do not consume the cursor yet, and no artifacts are removed. Cursor advancement and reader coordination are the next steps before cleanup.
+
+Independent review concurred for advisory publication. Before cleanup, the job ledger must explicitly flush the completion to disk so a power loss cannot leave a durable cursor ahead of its source ledger.
