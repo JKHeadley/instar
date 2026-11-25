@@ -21,3 +21,5 @@ The dispatcher sequences existing authority checks and durable transactions. It 
 ## Tests, impact and rollback
 
 Tests cover duplicate launch, verified binding, stale admission and disabled configuration. No live work, database, policy or external service changes. Revert removes the unused dispatcher and fixture.
+
+A failed claim retirement or pause still invokes cancellation for the allocated worker. The regression test forces the store write to throw after a rejected launch and verifies cancellation without releasing initial input.

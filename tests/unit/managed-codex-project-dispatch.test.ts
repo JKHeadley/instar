@@ -56,6 +56,24 @@ describe('managed Codex project dispatch', () => {
     }
   });
 
+  it('cancels a rejected worker even when retiring its pending claim fails', async () => {
+    const deps = setup();
+    try {
+      vi.spyOn(deps.store, 'abortPending').mockImplementation(() => {
+        throw new Error('claim write failed');
+      });
+      await expect(dispatchManagedCodexProject(admission.workKey, {
+        ...deps,
+        verifyLaunch: () => false,
+      })).rejects.toThrow('claim write failed');
+
+      expect(deps.cancelLaunch).toHaveBeenCalledWith(deps.launch.mock.calls[0][1]);
+      expect(deps.releaseLaunch).not.toHaveBeenCalled();
+    } finally {
+      deps.db.close();
+    }
+  });
+
   it('leaves the authority and launcher untouched while disabled', async () => {
     const deps = setup();
     try {

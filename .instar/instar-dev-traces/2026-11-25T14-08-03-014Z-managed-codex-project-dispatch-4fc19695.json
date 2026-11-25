@@ -1,0 +1,19 @@
+{
+  "version": 2,
+  "slug": "managed-codex-project-dispatch",
+  "sessionId": "017c26ed-5596-4576-9c20-20af13e4c1f8",
+  "timestamp": "2026-11-25T14:08:03.014Z",
+  "artifactPath": "upgrades/side-effects/managed-codex-project-dispatch.md",
+  "artifactSha256": "dc379ecb6be2aa73377bfb2fadd0b4c72b82f1f722a96853fa5e165184d825f0",
+  "coveredFiles": [
+    "src/core/ManagedCodexProjectDispatch.ts",
+    "tests/unit/managed-codex-project-dispatch.test.ts"
+  ],
+  "phase": "complete",
+  "tier": 1,
+  "tierReasoning": "Cleanup correction for the unconnected dispatcher. Launch authority, release conditions and default switch stay the same.",
+  "eli16Path": "upgrades/managed-codex-project-dispatch.eli16.md",
+  "sideEffectsPath": "upgrades/side-effects/managed-codex-project-dispatch.md",
+  "secondPass": "not-required",
+  "reviewerConcurred": null
+}

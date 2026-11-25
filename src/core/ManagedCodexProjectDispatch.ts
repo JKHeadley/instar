@@ -68,9 +68,12 @@ export async function dispatchManagedCodexProject(
     return worker;
   } finally {
     if (!released) {
-      if (bound) deps.store.pause(launchId);
-      else deps.store.abortPending(launchId);
-      if (launched) deps.cancelLaunch(launchId);
+      try {
+        if (bound) deps.store.pause(launchId);
+        else deps.store.abortPending(launchId);
+      } finally {
+        if (launched) deps.cancelLaunch(launchId);
+      }
     }
   }
 }
