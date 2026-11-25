@@ -126,6 +126,7 @@ describe('script runner execution', () => {
     const routes = {
       '/jobs/category-report/guardian?sinceHours=24': 'guardian-category-report.json',
       '/jobs/category-report/maintenance?sinceHours=48': 'maintenance-category-report.json',
+      '/jobs/category-report/learning?sinceHours=48': 'learning-category-report.json',
     };
     const fixtures = new Map(Object.entries(routes).map(([route, name]) => [
       route, fs.readFileSync(new URL(`../../fixtures/${name}`, import.meta.url), 'utf8'),
@@ -166,6 +167,8 @@ describe('script runner execution', () => {
       expect(saved).toContain('7 jobs, 288 runs, 1 failure, 2 jobs with skips.');
       const maintenance = fs.readFileSync(path.join(project.stateDir, 'reports', 'maintenance', `${run.runId}.txt`), 'utf8');
       expect(maintenance).toContain('12 jobs, 28 runs, 0 failures, 1 job with skips.');
+      const learning = fs.readFileSync(path.join(project.stateDir, 'reports', 'learning', `${run.runId}.txt`), 'utf8');
+      expect(learning).toContain('14 jobs, 41 runs, 0 failures, 7 jobs with skips.');
       expect(requests.sort()).toEqual(Object.keys(routes).sort());
       expect(sm._spawnCount).toBe(0);
     } finally {
