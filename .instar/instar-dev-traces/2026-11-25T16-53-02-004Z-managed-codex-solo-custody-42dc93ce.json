@@ -1,0 +1,20 @@
+{
+  "version": 2,
+  "slug": "managed-codex-solo-custody",
+  "sessionId": "017c26ed-5596-4576-9c20-20af13e4c1f8",
+  "timestamp": "2026-11-25T16:53:02.004Z",
+  "artifactPath": "upgrades/side-effects/managed-codex-solo-custody.md",
+  "artifactSha256": "4ee46617370a5225bd7dced18184f5e0ea9839f276ac96ec63565c74f9caf8fb",
+  "coveredFiles": [
+    "src/server/ConversationGraphSoloOwnership.ts",
+    "tests/e2e/managed-codex-stop-lifecycle.test.ts",
+    "tests/unit/conversation-graph-solo-ownership.test.ts"
+  ],
+  "phase": "complete",
+  "tier": 1,
+  "tierReasoning": "Internal read of existing authority with no production consumer, action, new ownership store or setting.",
+  "eli16Path": "upgrades/managed-codex-solo-custody.eli16.md",
+  "sideEffectsPath": "upgrades/side-effects/managed-codex-solo-custody.md",
+  "secondPass": "true",
+  "reviewerConcurred": true
+}

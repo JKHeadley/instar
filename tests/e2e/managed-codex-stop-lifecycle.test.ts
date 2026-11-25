@@ -19,6 +19,11 @@ import type { InstarConfig } from '../../src/core/types.js';
 import { resolveCodexNativeCanaryBinary } from '../../src/messaging/telegram-origin/OriginCodexModelCanary.js';
 import { CODEX_CANARY_MODELS, openCodexCanaryProvider } from '../../src/messaging/telegram-origin/OriginCodexModelCanaryProtocol.js';
 
+import { MachineIdentityManager } from '../../src/core/MachineIdentity.js';
+import { IdentityStore } from '../../src/core/IdentityStore.js';
+import { ownedGraphInstalledRoster } from '../../src/core/OwnedGraphCustody.js';
+import { createConversationGraphSoloOwnership } from '../../src/server/ConversationGraphSoloOwnership.js';
+
 const codex = process.platform === 'darwin'
   ? await resolveCodexNativeCanaryBinary('/usr/local/bin/codex')
     ?? await resolveCodexNativeCanaryBinary('/opt/homebrew/bin/codex')
@@ -34,6 +39,18 @@ it.skipIf(!codex).each([true, false])('drives an enrolled worker through package
     fs.mkdirSync(dir, { recursive: true });
   }
   fs.copyFileSync(path.resolve('.claude/skills/autonomous/hooks/autonomous-stop-hook.sh'), hookPath);
+  const state = new StateManager(stateDir);
+  const identity = new MachineIdentityManager(stateDir);
+  const { machineId } = await identity.generateIdentity();
+  const identities = new IdentityStore({ stateDir });
+  const members = ownedGraphInstalledRoster(identity, identities);
+  const custody = createConversationGraphSoloOwnership({
+    state, identity, identities, runtime: { installedMembership: { members } },
+    instanceLock: { revalidate: () => true },
+    coordinator: { holdsLease: () => true, currentLease: () => ({ holder: machineId }) },
+    admission: { evaluate: () => ({ admit: true }) }, telegramChatId: 'fixture-chat',
+  } as unknown as Parameters<typeof createConversationGraphSoloOwnership>[0]);
+  custody.establish([{ kind: 'conversation', platform: 'telegram', chatId: 'fixture-chat', topicId: 147616 }]);
   const db = new Database(path.join(stateDir, 'managed-stop.sqlite'));
   const store = new ManagedCodexStopStore(db);
   const cfg = {
@@ -46,18 +63,20 @@ it.skipIf(!codex).each([true, false])('drives an enrolled worker through package
   let workerId = '';
   let verifiedCallbacks = 0;
   const server = new AgentServer({
-    config: cfg, state: new StateManager(stateDir), sessionManager: sessionManager as never,
+    config: cfg, state, sessionManager: sessionManager as never,
     managedCodexStop: {
       store,
       verify: (request, enrollment) => {
         if (request.topicId !== '147616' || request.sessionId !== workerId) return undefined;
+        const currentCustody = custody.readActive(request.topicId);
+        if (!currentCustody) return undefined;
         verifiedCallbacks++;
         const rollouts = fs.readdirSync(home, { recursive: true }).map(String)
           .filter(name => name.endsWith(workerId + '.jsonl'));
         if (rollouts.length !== 1) return undefined;
         return verifyManagedCodexStop(request, {
           topicId: '147616', nativeSessionId: workerId,
-          machineId: 'fixture-one-member', ownerEpoch: 1,
+          ...currentCustody,
           codexHome: home, rolloutPath: fs.realpathSync(path.join(home, rollouts[0])),
         }, enrollment, 256 * 1024);
       },
@@ -95,11 +114,11 @@ it.skipIf(!codex).each([true, false])('drives an enrolled worker through package
     ].join('\n'));
     SafeGitExecutor.run(['init', '-q'], { cwd: projectDir, operation: 'managed-codex-stop-lifecycle-fixture' });
     const tracker = new InitiativeTracker(stateDir);
-    const runner = new ProjectRoundRunner({ tracker, stateDir, machineId: 'fixture-one-member' });
+    const runner = new ProjectRoundRunner({ tracker, stateDir, machineId });
     await tracker.create({
       id: 'managed-project', title: 'Managed test project', description: 'Disposable lifecycle',
       phases: [{ id: 'work', name: 'Work' }], kind: 'project', targetRepoPath: projectDir,
-      ownerMachineId: 'fixture-one-member', telegramTopicId: '147616',
+      ownerMachineId: machineId, telegramTopicId: '147616',
       rounds: [{ name: 'Round', itemIds: ['managed-action'], status: 'pending' }],
     });
     await tracker.create({
@@ -109,7 +128,10 @@ it.skipIf(!codex).each([true, false])('drives an enrolled worker through package
     await runner.recordAck('managed-project', 0);
     const readAdmission = () => {
       const candidate = runner.managedRoundCandidate('managed-project', 0);
-      return candidate && { ...candidate, ownerEpoch: 1, remaining: 1 };
+      const currentCustody = candidate && custody.readActive(candidate.topicId);
+      if (candidate && currentCustody?.machineId === candidate.machineId) {
+        return { ...candidate, ownerEpoch: currentCustody.ownerEpoch, remaining: 1 };
+      }
     };
     const candidate = readAdmission();
     expect(candidate).toBeDefined();

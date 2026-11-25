@@ -19,6 +19,22 @@ export function createConversationGraphSoloOwnership(o:Omit<ConversationGraphDel
  const confirm=(key:string)=>{const file=path.join(directory,key+'.json');assertGraphLocalPath(root,file);const fd=fs.openSync(file,fs.constants.O_RDONLY|(fs.constants.O_NOFOLLOW??0));let raw:unknown;
   try{const stat=fs.fstatSync(fd);if(!stat.isFile()||stat.size>65536)throw new Error('graph-solo-ownership-file-invalid');fs.fsyncSync(fd);raw=JSON.parse(fs.readFileSync(fd,'utf8'));}finally{fs.closeSync(fd);}
   const dir=fs.openSync(directory,'r');try{fs.fsyncSync(dir);}finally{fs.closeSync(dir);}if(canonicalHash(raw)!==canonicalHash(registry.read(key)))throw new Error('graph-solo-ownership-readback-failed');};
+ // Read through the same live authority used to establish custody. A stored
+ // epoch alone cannot prove the installation still owns this conversation.
+ const readActive = (topicId: string): { machineId: string; ownerEpoch: number } | undefined => {
+  if (!/^[1-9]\d*$/.test(topicId)) return;
+  try {
+   const machineId = native();
+   const record = registry.read(topicId);
+   if (record?.status !== 'active' || record.ownerMachineId !== machineId
+    || !Number.isSafeInteger(record.ownershipEpoch) || record.ownershipEpoch < 1) return;
+   confirm(topicId);
+   if (native() !== machineId || canonicalHash(registry.read(topicId)) !== canonicalHash(record)) return;
+   return { machineId, ownerEpoch: record.ownershipEpoch };
+  } catch {
+   return;
+  }
+ };
  const establish=(refs:readonly GraphDelegationConversationRef[])=>{
   const id=native();for(const ref of refs){if(ref.platform!=='telegram'||ref.chatId!==o.telegramChatId)throw new Error('graph-solo-binding-unsupported');
    const key=String(ref.topicId);let current=registry.read(key);
@@ -30,5 +46,5 @@ export function createConversationGraphSoloOwnership(o:Omit<ConversationGraphDel
    current=registry.read(key);if(current?.status!=='active'||current.ownerMachineId!==id)throw new Error('graph-solo-ownership-not-active');confirm(key);
   }
  };
- return{registry,establish};
+ return{registry,establish,readActive};
 }
