@@ -33,12 +33,12 @@ export class HostedRelayRendezvous {
   constructor(private readonly currentAssignment: (hostname: string) => string | undefined,
     private readonly now: () => number = () => performance.now()) {}
 
-  issue(hostname: string, authorizedAssignment: string): { code: string; expiresInSeconds: number } | undefined {
+  issue(hostname: string, authorizedAssignment: string, isCurrentIssuer?: () => boolean): { code: string; expiresInSeconds: number } | undefined {
     const name = normalizeHostedRelayHostname(hostname);
     const now = this.now();
     this.prune(this.codes, now);
     if (!name || !/^[a-f0-9]{64}$/.test(authorizedAssignment) || this.codes.size >= codeCapacity
-      || !this.assignmentMatches(name, authorizedAssignment)) return undefined;
+      || !this.assignmentMatches(name, authorizedAssignment) || (isCurrentIssuer && !isCurrentIssuer())) return undefined;
     const code = randomBytes(24).toString('base64url');
     const key = digest(code);
     if (this.codes.has(key)) return undefined;

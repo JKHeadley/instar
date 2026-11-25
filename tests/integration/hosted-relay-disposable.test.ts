@@ -134,10 +134,16 @@ it('connects a signed outbound control session to an end-to-end TLS client in a 
     const spki = new X509Certificate(controlCert).publicKey.export({ type: 'spki', format: 'der' });
     const launched = await launchDisposableHostedRelay({ leases: gate, cert: controlCert, key: fs.readFileSync(controlKey) });
     const controller = new AbortController();
+    const dial = createHostedRelayVerifiedDialer({ origin: 'https://localhost:' + launched.controlPort,
+      spkiSha256: createHash('sha256').update(spki).digest('hex'), ca: controlCert });
+    let holderSession: http2.ClientHttp2Session | undefined;
     const run = runHostedRelayReconnect({
       scope: lease, signal: controller.signal, currentLease: () => lease, sign: machineSign,
-      connectVerified: createHostedRelayVerifiedDialer({ origin: 'https://localhost:' + launched.controlPort,
-        spkiSha256: createHash('sha256').update(spki).digest('hex'), ca: controlCert }),
+      async connectVerified(signal) {
+        const connection = await dial(signal);
+        holderSession = connection.session;
+        return connection;
+      },
       openLocalTls: () => net.connect(agentPort, '127.0.0.1'),
     });
     try {
@@ -157,13 +163,37 @@ it('connects a signed outbound control session to an end-to-end TLS client in a 
         }
       }
       expect(answer).toBe('direct agent certificate');
-      const revoked = once(verifiedClient!, 'close');
+      const phone = await dial(controller.signal);
+      cleanups.push(() => phone.session.destroy());
+      const issue = '/relay/v1/rendezvous/issue', redeem = '/relay/v1/rendezvous/redeem';
+      async function requestJson(session: http2.ClientHttp2Session, path: string, input?: object) {
+        const stream = session.request({ ':method': 'POST', ':path': path });
+        const response = once(stream, 'response');
+        stream.end(input && JSON.stringify(input));
+        const [headers] = await response;
+        const parts: Buffer[] = [];
+        for await (const part of stream) parts.push(part);
+        expect(headers['cache-control']).toBe('no-store');
+        return { status: headers[':status'], value: JSON.parse(Buffer.concat(parts).toString()) };
+      }
+      expect((await requestJson(phone.session, issue)).status).toBe(403);
+      const issued = await requestJson(holderSession!, issue);
+      expect(issued).toEqual({ status: 201, value: { code: expect.any(String), expiresInSeconds: 600 } });
+      expect(await requestJson(phone.session, redeem, { code: issued.value.code }))
+        .toEqual({ status: 200, value: { hostname } });
+      expect((await requestJson(phone.session, redeem, { code: issued.value.code })).status).toBe(404);
+      const pendingCode = await requestJson(holderSession!, issue);
+
+      const revoked = new Promise<void>(done => verifiedClient!.once('close', () => done()));
+      verifiedClient!.on('error', error => expect((error as NodeJS.ErrnoException).code).toBe('ECONNRESET'));
       authorized = false;
       await revoked;
+      expect((await requestJson(phone.session, redeem, { code: pendingCode.value.code })).status).toBe(404);
       const pendingControl = net.connect(launched.controlPort, '127.0.0.1');
       cleanups.push(() => pendingControl.destroy());
       await once(pendingControl, 'connect');
-      const pendingClosed = once(pendingControl, 'close');
+      const pendingClosed = new Promise<void>(done => pendingControl.once('close', () => done()));
+      pendingControl.on('error', error => expect((error as NodeJS.ErrnoException).code).toBe('ECONNRESET'));
       controller.abort();
       await expect(run).resolves.toBe('stopped');
       await launched.stop();

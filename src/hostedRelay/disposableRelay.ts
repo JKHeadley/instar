@@ -3,10 +3,13 @@ import type { Socket } from 'node:net';
 import type { HostedRelayLeaseAdmission, HostedRelayLeaseClaim } from './leaseAdmission.js';
 import { HostedRelayOutboundTransport } from './outboundTransport.js';
 import { HostedRelayStreamCustody } from './streamCustody.js';
+import { HostedRelayRendezvous } from './rendezvous.js';
 import { routeHostedRelaySocket } from './tlsPassthrough.js';
 
 const controlPath = '/relay/v1/control';
 const offerPath = '/relay/v1/offer';
+const issuePath = '/relay/v1/rendezvous/issue';
+const redeemPath = '/relay/v1/rendezvous/redeem';
 const maxClaimBytes = 4096;
 const maxControlSessions = 64;
 const maxClientSockets = 256;
@@ -24,13 +27,62 @@ function decodeClaim(bytes: Buffer): HostedRelayLeaseClaim | undefined {
 interface Control {
   stream: ServerHttp2Stream;
   transport?: HostedRelayOutboundTransport;
+  hostname?: string;
   detach?: () => void;
+}
+
+function respondJson(stream: ServerHttp2Stream, status: number, value: object): void {
+  if (stream.destroyed || stream.closed) return;
+  stream.respond({ ':status': status, 'cache-control': 'no-store', 'content-type': 'application/json' });
+  stream.end(JSON.stringify(value));
+}
+
+function readBounded(stream: ServerHttp2Stream, maximum: number, receive: (data: Buffer | undefined) => void): void {
+  const chunks: Buffer[] = [];
+  let bytes = 0, finished = false;
+  function finish(complete: boolean) {
+    if (finished) return;
+    finished = true;
+    clearTimeout(timer);
+    const body = complete ? Buffer.concat(chunks, bytes) : undefined;
+    for (const chunk of chunks) chunk.fill(0);
+    chunks.length = 0;
+    try { receive(body); } finally { body?.fill(0); }
+  }
+  const timer = setTimeout(() => {
+    finish(false);
+    if (!stream.closed && !stream.destroyed) stream.close(constants.NGHTTP2_CANCEL);
+  }, 2000);
+  timer.unref();
+  stream.on('data', (chunk: Buffer) => {
+    if (finished) return;
+    if (bytes + chunk.length > maximum) {
+      finish(false);
+      if (!stream.closed && !stream.destroyed) stream.close(constants.NGHTTP2_CANCEL);
+      return;
+    }
+    bytes += chunk.length;
+    chunks.push(chunk);
+  });
+  stream.once('end', () => finish(true));
+  stream.once('close', () => finish(false));
+  stream.on('error', () => stream.destroy());
+}
+
+function parseCode(bytes: Buffer | undefined): unknown {
+  if (!bytes) return undefined;
+  try {
+    const input = JSON.parse(new TextDecoder('utf-8', { fatal: true }).decode(bytes));
+    return input && typeof input === 'object' && !Array.isArray(input)
+      && Object.keys(input).length === 1 && Object.hasOwn(input, 'code') ? input.code : undefined;
+  } catch { return undefined; } // @silent-fallback-ok — unreadable codes receive the normal refusal
 }
 
 /** Integration entry points for isolated relay listeners. The caller owns
  * socket creation, trustworthy lease sources and aggregate ingress limits. */
 export function createDisposableHostedRelay(leases: HostedRelayLeaseAdmission) {
   const custody = new HostedRelayStreamCustody(leases);
+  const rendezvous = new HostedRelayRendezvous(hostname => custody.currentAssignment(hostname));
   const controls = new Map<Http2Session, Control>();
   const clients = new Set<Socket>();
   let stopped = false;
@@ -87,6 +139,7 @@ export function createDisposableHostedRelay(leases: HostedRelayLeaseAdmission) {
       if (!detach) { refuse(); return; }
       state.transport = transport;
       state.detach = detach;
+      state.hostname = claim.hostname;
       stream.write(JSON.stringify({ type: 'admitted' }) + '\n');
     });
   }
@@ -100,6 +153,27 @@ export function createDisposableHostedRelay(leases: HostedRelayLeaseAdmission) {
         return;
       }
       if (headers[':path'] === offerPath && controls.get(session)?.transport?.offer(stream)) return;
+      if (headers[':path'] === issuePath) {
+        readBounded(stream, 0, body => {
+          if (!body || stopped || stream.closed || stream.destroyed) return;
+          const active = controls.get(session);
+          const { hostname, transport } = active ?? {};
+          const assignment = hostname && transport && custody.currentAssignment(hostname, transport);
+          const issued = assignment && hostname && transport
+            ? rendezvous.issue(hostname, assignment, () => custody.currentAssignment(hostname, transport) === assignment)
+            : undefined;
+          respondJson(stream, issued ? 201 : 403, issued ?? { error: 'relay-rendezvous-unavailable' });
+        });
+        return;
+      }
+      if (headers[':path'] === redeemPath) {
+        const peer = session.socket.remoteAddress ?? '';
+        readBounded(stream, 128, body => {
+          const selected = stopped ? undefined : rendezvous.redeem(peer, parseCode(body));
+          respondJson(stream, selected ? 200 : 404, selected ?? { error: 'relay-rendezvous-unavailable' });
+        });
+        return;
+      }
       stream.respond({ ':status': 403 }, { endStream: true });
       stream.close(constants.NGHTTP2_CANCEL);
     },

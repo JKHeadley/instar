@@ -14,6 +14,7 @@ function fixture() {
 it('returns only the name once for the exact live assignment', () => {
   const { store } = fixture();
   expect(store.issue(hostname, '2'.repeat(64))).toBeUndefined();
+  expect(store.issue(hostname, assignment, () => false)).toBeUndefined();
   expect(store.issue('different.relay.example', assignment)).toBeUndefined();
   const issued = store.issue('Agent.Relay.Example', assignment)!;
   expect(issued).toEqual({ code: expect.stringMatching(/^[A-Za-z0-9_-]{32}$/), expiresInSeconds: 600 });

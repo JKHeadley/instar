@@ -1,0 +1,32 @@
+{
+  "ts": "2026-11-25T16:52:00.752Z",
+  "slug": "hosted-relay-rendezvous-surface",
+  "suggestedTier": 2,
+  "declaredTier": 2,
+  "riskFloor": 2,
+  "riskFloorReasons": [
+    "safety-invariant proximity: src/hostedRelay/disposableRelay.ts matches relay / delivery path",
+    "safety-invariant proximity: src/hostedRelay/rendezvous.ts matches relay / delivery path",
+    "safety-invariant proximity: src/hostedRelay/streamCustody.ts matches relay / delivery path"
+  ],
+  "belowFloor": false,
+  "files": 3,
+  "loc": 85,
+  "scope": {
+    "basis": "staged-in-scope-paths-including-deleted",
+    "files": [
+      "src/hostedRelay/disposableRelay.ts",
+      "src/hostedRelay/rendezvous.ts",
+      "src/hostedRelay/streamCustody.ts"
+    ],
+    "addedLines": 83,
+    "deletedLines": 2
+  },
+  "causalAutopsy": null,
+  "classClosure": {
+    "defectClass": "unbounded-self-action",
+    "closure": "n/a",
+    "reason": "Each caller-initiated request owns one bounded deadline."
+  },
+  "verdict": "pass"
+}

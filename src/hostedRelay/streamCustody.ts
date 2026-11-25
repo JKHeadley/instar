@@ -82,6 +82,13 @@ export class HostedRelayStreamCustody {
     }
   }
 
+  currentAssignment(hostname: string, tunnel?: HostedRelayTunnel): string | undefined {
+    const active = this.tunnels.get(hostname);
+    if (!active || this.stopped || (tunnel && tunnel !== active.tunnel) || !this.leases.canServe(active.connection)
+      || this.tunnels.get(hostname) !== active) return undefined;
+    return active.connection.assignment;
+  }
+
   sweep(): void {
     for (const active of this.tunnels.values()) {
       if (!this.leases.canServe(active.connection)) this.close(active, 'expired');
