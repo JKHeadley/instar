@@ -672,7 +672,12 @@ class ChatsPage {
       del.addEventListener('click', () => this.remove(v));
       menu.append(rename, del);
     }
-    v.msgs = el('div', { class: 'chat-messages', role: 'log', 'aria-live': 'polite' });
+    v.msgs = el('div', { class: 'chat-messages', role: 'log', 'aria-live': 'polite', tabindex: '0', 'aria-label': 'Messages' });
+    v.newMessages = el('button', { class: 'btn-quiet chat-new-messages', type: 'button', text: 'New messages', hidden: true });
+    v.newMessages.addEventListener('click', () => this.scrollToEnd(v));
+    v.msgs.addEventListener('scroll', () => {
+      if (this.atChatEnd(v)) v.newMessages.hidden = true;
+    }, { passive: true });
     v.historyWords = el('p', { class: 'card-line chat-muted' });
     v.historyRetry = el('button', { class: 'btn-quiet chat-history-retry', type: 'button', text: 'Try again', hidden: true });
     v.historyRetry.addEventListener('click', () => this.loadFirst(v));
@@ -691,7 +696,7 @@ class ChatsPage {
     v.appStrip = el('div', { class: 'chat-appstrip', hidden: true });
     setKids(this.viewEl, el('div', { class: 'chat-open' },
       el('div', { class: 'chat-bar' }, back, el('div', { class: 'chat-titles' }, title, el('p', { class: 'chat-sub', text: row ? row.kindLabel : ({ app: 'App', telegram: 'Telegram', slack: 'Slack' })[ref.kind] })), menu),
-      v.appStrip, v.pinBar, v.paused, v.sourceNotice, v.earlier, v.msgs, this.composer(v), v.statusLine));
+      v.appStrip, v.pinBar, v.paused, v.sourceNotice, v.earlier, v.msgs, v.newMessages, this.composer(v), v.statusLine));
     this.pageEl.classList.add('has-open');
     this.paintList();
     this.loadFirst(v, { recoverUnfinished: true });
@@ -774,7 +779,7 @@ class ChatsPage {
       this.applyHistory(v, r.data, { replace: true });
       // Preserve the existing open-time recovery; a history retry never resumes a send.
       if (recoverUnfinished) this.resumeUnfinished(v);
-      this.scrollToEnd(v, true);
+      this.scrollToEnd(v);
       this.findSource(v);
     } catch {
       // A failed history read changes only its explanation, never messages or a draft.
@@ -825,10 +830,12 @@ class ChatsPage {
       if (v.ref.kind === 'telegram') { const t = rows.length ? Date.parse(rows[0].timestamp) : NaN; v.oldestTs = Number.isFinite(t) ? t : null; }
       v.earlier.hidden = v.ref.kind === 'telegram' ? !(rows.length >= 50) : !v.nextBefore;
     }
-    this.setBubbles(v, mergeBubbles(v.list, next));
+    this.setBubbles(v, mergeBubbles(v.list, next), { announceNew: !replace && !earlier });
   }
 
-  setBubbles(v, list) {
+  setBubbles(v, list, { announceNew = false } = {}) {
+    const last = announceNew ? v.list.findLast(bubble => !bubble.id.startsWith('local:')) : null;
+    const known = last ? new Set(v.list.map(bubble => bubble.id)) : null;
     // A server row replaces this page's own placeholder for the same message.
     const real = new Set(list.filter((b) => !b.id.startsWith('local:') && b.messageId).map((b) => b.messageId));
     const realTexts = list.filter((b) => !b.id.startsWith('local:') && b.side === 'right').map((b) => `${b.text}|${b.at}`);
@@ -843,7 +850,10 @@ class ChatsPage {
       if (b.final && v.ref.kind !== 'app' && realTexts.some((k) => k.startsWith(`${b.text}|`))) return false;
       return true;
     });
-    this.paintBubbles(v);
+    const lastIndex = last ? v.list.findIndex(bubble => bubble.id === last.id) : -1;
+    const appended = lastIndex >= 0 && v.list.slice(lastIndex + 1).some(
+      bubble => !bubble.id.startsWith('local:') && !bubble.own && !known.has(bubble.id));
+    this.paintBubbles(v, appended);
     this.maybeMarkRead(v);
   }
 
@@ -868,8 +878,13 @@ class ChatsPage {
     } catch { /* @silent-fallback-ok — a read report is best-effort; the next new message reports again */ } finally { v.markInFlight = false; }
   }
 
-  paintBubbles(v) {
-    const atEnd = v.msgs.scrollHeight - v.msgs.scrollTop - v.msgs.clientHeight < 80;
+  atChatEnd(v) {
+    // scrollTop can be fractional while the element's two heights are rounded.
+    return v.msgs.scrollHeight - v.msgs.clientHeight - v.msgs.scrollTop <= 2;
+  }
+
+  paintBubbles(v, appended = false) {
+    const atEnd = this.atChatEnd(v);
     const want = new Set(v.list.map((b) => b.id));
     for (const [id, n] of v.nodes) if (!want.has(id)) { n.remove(); v.nodes.delete(id); }
     let prev = null;
@@ -889,10 +904,13 @@ class ChatsPage {
     }
     this.paintHistoryState(v);
     if (atEnd) this.scrollToEnd(v);
+    else if (appended) v.newMessages.hidden = false;
   }
-  scrollToEnd(v, force) {
-    if (!force && v.msgs.scrollTop > 0 && v.msgs.scrollHeight - v.msgs.scrollTop - v.msgs.clientHeight > 200) return;
+  scrollToEnd(v) {
+    const focusPill = v.newMessages === document.activeElement;
+    v.newMessages.hidden = true;
     v.msgs.scrollTop = v.msgs.scrollHeight;
+    if (focusPill) v.msgs.focus({ preventScroll: true });
   }
 
   bubbleNode(v, b) {
@@ -1037,11 +1055,11 @@ class ChatsPage {
     v.earlier.disabled = true;
     const before = v.ref.kind === 'telegram' ? (v.oldestTs ? String(v.oldestTs) : null) : v.nextBefore;
     this.spent();
-    const keep = v.msgs.scrollHeight - v.msgs.scrollTop;
     const r = await this.call('GET', this.historyPath(v, { pool: v.ref.kind !== 'slack', before }));
     if (seq === v.earlierLoadSeq) v.earlier.disabled = false;
     if (!v.live || !current() || seq !== v.earlierLoadSeq) return 'stale';
     if (r.gone || !r.ok) return 'failed';
+    const keep = v.msgs.scrollHeight - v.msgs.scrollTop;
     this.applyHistory(v, r.data, { earlier: true });
     v.msgs.scrollTop = v.msgs.scrollHeight - keep;
     const after = v.ref.kind === 'telegram' ? (v.oldestTs ? String(v.oldestTs) : null) : v.nextBefore;
@@ -1220,7 +1238,7 @@ class ChatsPage {
     v.sending++;
     box.setAttribute('data-interaction-open', '');
     this.setBubbles(v, mergeBubbles(v.list, [local]));
-    this.scrollToEnd(v, true);
+    this.scrollToEnd(v);
     try {
       if (files.length) {
         progress.hidden = false;
@@ -1563,7 +1581,7 @@ class ChatsPage {
     if (!v || refString(v.ref) !== m.ref || !v.live) return;
     if (m.mode === 'events') {
       const since = v.list.find((b) => !b.id.startsWith('local:'))?.at || null;
-      this.setBubbles(v, applyEvents(v.list, m.data.events, { own: this.ownCheck(), since }));
+      this.setBubbles(v, applyEvents(v.list, m.data.events, { own: this.ownCheck(), since }), { announceNew: true });
       if (Array.isArray(m.data.events) && m.data.events.some((e) => e && e.kind === 'pin')) this.loadPins(v);
     }
     else this.applyHistory(v, m.data);

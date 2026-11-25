@@ -1,0 +1,23 @@
+{
+  "version": 2,
+  "slug": "chat-scroll-follow",
+  "sessionId": "b5892410-5874-4620-9f7b-5e54791d9a9e",
+  "timestamp": "2026-11-25T20:18:16.022Z",
+  "artifactPath": "upgrades/side-effects/chat-scroll-follow.md",
+  "artifactSha256": "8ec3f7469200a6bbb76f4d59547cf7b8c6e569d12b4cb5f1b7cad5a57b5d1fc1",
+  "coveredFiles": [
+    "dashboard/console/chats.js",
+    "dashboard/console/console.css",
+    "tests/unit/console-chats-page.test.ts",
+    "upgrades/next/chat-scroll-follow.md",
+    "upgrades/side-effects/chat-scroll-follow.eli16.md",
+    "upgrades/side-effects/chat-scroll-follow.md"
+  ],
+  "phase": "complete",
+  "tier": 1,
+  "tierReasoning": "Small reversible presentation correction. Preserves existing server and message behavior.",
+  "eli16Path": "upgrades/side-effects/chat-scroll-follow.eli16.md",
+  "sideEffectsPath": "upgrades/side-effects/chat-scroll-follow.md",
+  "secondPass": "not-required",
+  "reviewerConcurred": null
+}

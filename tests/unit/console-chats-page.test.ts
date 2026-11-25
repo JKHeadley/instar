@@ -966,3 +966,45 @@ describe('interactive chat history explanations', () => {
     expect(doc.querySelector('.chat-history-state')).toBeNull();
   });
 });
+
+it('keeps a reader above the bottom in place and follows a tall new message from the bottom', async () => {
+  const idb = fakeIndexedDB();
+  const bd = await import('../../dashboard/console/browser-device.js');
+  const { keyPair, publicKey } = await bd.generateDeviceKey();
+  idb.stores.set('device', new Map([['m1', { machineId: 'm1', deviceId: 'dev-b1234567', host: 'localhost:4040', status: 'active', keyPair, publicKey, keyHash: await bd.keyHashOf(publicKey) }]]));
+  const message = (id: number) => ({ eventId: `scroll-${id}`, messageId: `msg-${id}`, kind: 'message', role: 'agent',
+    text: `Message ${id}`, at: new Date(Date.UTC(2026, 10, 25, 10, id)).toISOString() });
+  const messages = Array.from({ length: 6 }, (_, i) => message(i + 1));
+  const path = `/mobile/chat/app/${UUID}`;
+  const { doc } = await boot(c => {
+    if (c.url.startsWith('/mobile/browser-devices/status')) return { status: 200, body: STATUS };
+    if (c.url.startsWith('/mobile/conversations?scope=pool')) return { status: 200, body: { conversations: [{ id: UUID, platform: 'app', title: 'Plans' }] } };
+    if (c.url.startsWith(path + '/messages')) return { status: 200, body: { messages, nextBefore: null } };
+    if (c.url.startsWith(path + '/events')) return { status: 200, body: { events: messages.slice(6), cursor: `cursor-${messages.length}` } };
+    return undefined;
+  }, `#/work/chats?c=app%3A${UUID}`, idb);
+  const log = doc.querySelector('.chat-messages') as HTMLElement;
+  await vi.waitFor(() => expect(log.querySelector('[data-id="scroll-6"]')).toBeTruthy());
+  let top = 250;
+  const height = () => [...log.querySelectorAll('[data-id]')].reduce((sum, row) => sum + (row.getAttribute('data-id') === 'scroll-8' ? 400 : 100), 0);
+  Object.defineProperties(log, {
+    clientHeight: { get: () => 300 },
+    scrollHeight: { get: height },
+    scrollTop: { get: () => top, set: (value: number) => { top = Math.max(0, Math.min(value, height() - 300)); } },
+  });
+  messages.push(message(7));
+  window.dispatchEvent(new dom.window.Event('focus'));
+  await vi.waitFor(() => expect(log.querySelector('[data-id="scroll-7"]')).toBeTruthy());
+  expect(top).toBe(250);
+  const pill = doc.querySelector('.chat-new-messages') as HTMLButtonElement;
+  expect(pill.hidden).toBe(false);
+  pill.click();
+  expect(top).toBe(400);
+  expect(pill.hidden).toBe(true);
+
+  messages.push(message(8));
+  window.dispatchEvent(new dom.window.Event('focus'));
+  await vi.waitFor(() => expect(log.querySelector('[data-id="scroll-8"]')).toBeTruthy());
+  expect(top).toBe(800);
+  expect(pill.hidden).toBe(true);
+});
