@@ -25,6 +25,9 @@ export function evaluateJudgeFlow(input, expected, ledgers, observations, disclo
     if (maxRetries === undefined || !ledger.attempts.every(attempt => sameTrial(attempt, expected) && attempt.slotId === ledger.slotId)) {
       return { state: 'ledger-identity-mismatch' };
     }
+    if (ledger.attempts.some(attempt => attempt.planHash !== input.planHash)) {
+      return { state: 'ledger-plan-mismatch' };
+    }
     const result = selectJudgeAttempt(ledger.attempts, maxRetries);
     selection.push({ slotId: ledger.slotId, state: result.state });
     if (result.selected) selected.push(result.selected);
@@ -34,7 +37,8 @@ export function evaluateJudgeFlow(input, expected, ledgers, observations, disclo
   if (schedule.state !== 'bound') return { state: schedule.state };
   const slots = bindJudgeSlots(input.capture, schedule.slots, observations, validateCapture);
   const boundReceipts = schedule.slots.filter((_, index) => slots[index].state === 'bound');
-  const independence = boundReceipts.length === 2 && disclosure && sameTrial(disclosure, expected)
+  const independence = boundReceipts.length === 2 && disclosure &&
+    disclosure.planHash === input.planHash && sameTrial(disclosure, expected)
     ? assessJudgeIndependence(schedule.slots.map(receipt => receipt.slotId), boundReceipts, disclosure.ordinal)
     : 'unknown';
 

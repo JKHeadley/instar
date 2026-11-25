@@ -76,7 +76,10 @@ const ledgers = [
   { slotId: terminal[0].slotId, attempts: [{ ...terminal[0], state: 'timeout', ordinal: 0, attemptId: 'timeout' }, terminal[0]] },
   { slotId: terminal[1].slotId, attempts: [terminal[1]] },
 ];
-const disclosure = { ...identity, ordinal: 4 };
+for (const ledger of ledgers) {
+  ledger.attempts = ledger.attempts.map(attempt => ({ ...attempt, planHash: verifiedPlan.planHash }));
+}
+const disclosure = { ...identity, planHash: verifiedPlan.planHash, ordinal: 4 };
 const evaluated = evaluateJudgeFlow({ ...verifiedPlan, capture: input }, identity, ledgers,
   observations, disclosure, validateCapture);
 assert.deepEqual(evaluated.bindingStates, ['bound', 'bound']);
