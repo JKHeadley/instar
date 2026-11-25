@@ -12,5 +12,31 @@ describe('lazy delegation composition publication lifecycle',()=>{
   const m=new ConversationGraphDelegationManager(),a=runtime(),b=runtime(),av=ready(),bv=ready();let finish!:(v:ConversationGraphDelegationAvailability)=>void;
   m.setFactory(async r=>r===a?await new Promise(resolve=>{finish=resolve;}):bv);m.publish(a);const old=m.get();await Promise.resolve();await Promise.resolve();m.publish(b);expect(await m.get()).toBe(bv);finish(av);expect(await old).toMatchObject({status:'held'});expect(av.local.start).not.toHaveBeenCalled();expect(av.local.close).toHaveBeenCalledOnce();m.publish(a);expect(await m.get()).toBe(bv);await m.close();
  });
+ it('removes custody immediately while a replacement runtime is initializing', async () => {
+  const invalidated = vi.fn(() => m.readSoloTopicCustody('12'));
+  const m: ConversationGraphDelegationManager = new ConversationGraphDelegationManager(undefined, invalidated);
+  const first = runtime(), second = runtime();
+  const reader = vi.fn(() => ({ machineId: 'local', ownerEpoch: 4 }));
+  let finish!: (value: ConversationGraphDelegationAvailability) => void;
+  m.setFactory(async current => current === first
+   ? { ...ready(), readSoloTopicCustody: reader }
+   : new Promise(resolve => { finish = resolve; }));
+  expect(m.readSoloTopicCustody('12')).toBeUndefined();
+  m.publish(first);
+  await m.get();
+  expect(m.readSoloTopicCustody('12')).toEqual({ machineId: 'local', ownerEpoch: 4 });
+
+  m.publish(second);
+  expect(invalidated.mock.results.at(-1)?.value).toBeUndefined();
+  expect(m.readSoloTopicCustody('12')).toBeUndefined();
+  await Promise.resolve();
+  await Promise.resolve();
+  finish(ready());
+  await m.get();
+  expect(m.readSoloTopicCustody('12')).toBeUndefined();
+  expect(reader).toHaveBeenCalledOnce();
+  await m.close();
+  expect(m.readSoloTopicCustody('12')).toBeUndefined();
+ });
  it('close before factory installation unblocks waiting requests with explicit held status',async()=>{const m=new ConversationGraphDelegationManager();m.publish(runtime());const waiting=m.get();await m.close();expect(await waiting).toMatchObject({status:'held'});});
 });

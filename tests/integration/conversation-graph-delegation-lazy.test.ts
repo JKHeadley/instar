@@ -24,6 +24,7 @@ it('awaits first owner publication, derives real solo CAS, retries failed direct
   expect((await lazy.get()).status).toBe('held');expect(await manager.restore()).toBeNull();
   const runtime=await manager.ensureOwner({principalKey:'owner:lazy-agent',authenticationMethod:'owner-device',requestId:'lazy-first-owner',isCurrent:()=>true});
   const binding=await lazy.get();expect(binding.status).toBe('ready');if(binding.status!=='ready')throw new Error('expected actual composition');expect(binding.remote).toBeNull();
+  expect(lazy.readSoloTopicCustody('42')).toBeUndefined();
   const now=Date.now();for(const [id,name,topic] of [['parent-id','parent',42],['child-id','child',43]] as const){state.saveSession({id,name,tmuxSession:name,status:'running',startedAt:new Date(now-1000).toISOString()});telegram.registerTopicSession(topic,name);}
   const parent=auth.mint('parent',[42]),child=auth.mint('child',[43]);
   expect(await binding.local.afterSuccessfulSpawn(parent,'child-id')).toMatchObject({status:'refused'});
@@ -38,6 +39,10 @@ it('awaits first owner publication, derives real solo CAS, retries failed direct
   expect(await binding.local.afterSuccessfulSpawn(parent,'child-id')).toMatchObject({status:'refused'});expect(barriers).toBeGreaterThan(0);
   expect(await binding.local.afterSuccessfulSpawn(parent,'child-id')).toMatchObject({status:'refused'});fault.mockRestore();
   const result=await binding.local.afterSuccessfulSpawn(parent,'child-id');expect(result).toMatchObject({status:'prepared-local',coordinatorNotified:true});
+  expect(lazy.readSoloTopicCustody('42')).toEqual({
+   machineId:manager.nativeDelegationDependencies!.identity.loadIdentity().machineId,
+   ownerEpoch:expect.any(Number),
+  });
   const records=runtime.source.recordsForRepair().filter(r=>r.coreType==='graph-event'&&r.core.authority==='delegation');expect(records).toHaveLength(1);expect(records[0].certificate).toBeDefined();expect(runtime.source.verifyHistoricalRecord(records[0])).toBe(true);
   expect(records[0].core).toMatchObject({parent:{topicId:42},subject:{topicId:43},relation:'delegates-to'});
   lazy.publish(runtime);expect(await lazy.get()).toBe(binding);expect(await binding.local.afterSuccessfulSpawn(parent,'child-id')).toMatchObject({coordinatorNotified:true});expect(runtime.source.recordsForRepair().filter(r=>r.core.authority==='delegation')).toHaveLength(1);

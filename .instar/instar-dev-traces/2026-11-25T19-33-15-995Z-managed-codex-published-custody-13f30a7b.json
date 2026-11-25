@@ -1,0 +1,22 @@
+{
+  "version": 2,
+  "slug": "managed-codex-published-custody",
+  "sessionId": "017c26ed-5596-4576-9c20-20af13e4c1f8",
+  "timestamp": "2026-11-25T19:33:15.995Z",
+  "artifactPath": "upgrades/side-effects/managed-codex-published-custody.md",
+  "artifactSha256": "a51e691ff9c0576cd6291196acf5bafdf6493499a0705f5d5cb6b5c79d9295dd",
+  "coveredFiles": [
+    "src/server/ConversationGraphDelegationFactory.ts",
+    "src/server/ConversationGraphDelegationManager.ts",
+    "tests/e2e/managed-codex-stop-lifecycle.test.ts",
+    "tests/integration/conversation-graph-delegation-lazy.test.ts",
+    "tests/unit/conversation-graph-delegation-manager.test.ts"
+  ],
+  "phase": "complete",
+  "tier": 1,
+  "tierReasoning": "Read-only custody publication for the existing single-member provider. No production managed launch, route or settings change.",
+  "eli16Path": "upgrades/managed-codex-published-custody.eli16.md",
+  "sideEffectsPath": "upgrades/side-effects/managed-codex-published-custody.md",
+  "secondPass": "true",
+  "reviewerConcurred": true
+}

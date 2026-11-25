@@ -24,6 +24,9 @@ import { IdentityStore } from '../../src/core/IdentityStore.js';
 import { ownedGraphInstalledRoster } from '../../src/core/OwnedGraphCustody.js';
 import { createConversationGraphSoloOwnership } from '../../src/server/ConversationGraphSoloOwnership.js';
 
+import { ConversationGraphDelegationManager, type ConversationGraphDelegationAvailability } from '../../src/server/ConversationGraphDelegationManager.js';
+import type { ConversationGraphReplicationRuntime } from '../../src/server/ConversationGraphReplicationRuntime.js';
+
 const codex = process.platform === 'darwin'
   ? await resolveCodexNativeCanaryBinary('/usr/local/bin/codex')
     ?? await resolveCodexNativeCanaryBinary('/opt/homebrew/bin/codex')
@@ -51,6 +54,12 @@ it.skipIf(!codex).each([true, false])('drives an enrolled worker through package
     admission: { evaluate: () => ({ admit: true }) }, telegramChatId: 'fixture-chat',
   } as unknown as Parameters<typeof createConversationGraphSoloOwnership>[0]);
   custody.establish([{ kind: 'conversation', platform: 'telegram', chatId: 'fixture-chat', topicId: 147616 }]);
+  const delegation = new ConversationGraphDelegationManager();
+  delegation.setFactory(async () => ({
+    status: 'ready', local: { start() {}, close() {} }, remote: null, readSoloTopicCustody: custody.readActive,
+  } as unknown as ConversationGraphDelegationAvailability));
+  delegation.publish({} as ConversationGraphReplicationRuntime);
+  await delegation.get();
   const work = openManagedCodexWorkDatabase(stateDir, true)!;
   const { store } = work;
   const cfg = {
@@ -68,7 +77,7 @@ it.skipIf(!codex).each([true, false])('drives an enrolled worker through package
       store,
       verify: (request, enrollment) => {
         if (request.topicId !== '147616' || request.sessionId !== workerId) return undefined;
-        const currentCustody = custody.readActive(request.topicId);
+        const currentCustody = delegation.readSoloTopicCustody(request.topicId);
         if (!currentCustody) return undefined;
         verifiedCallbacks++;
         const rollouts = fs.readdirSync(home, { recursive: true }).map(String)
@@ -130,7 +139,7 @@ it.skipIf(!codex).each([true, false])('drives an enrolled worker through package
     expect(osBootId).toMatch(/^[0-9a-f-]{36}$/i);
     const readAdmission = () => {
       const candidate = runner.managedRoundCandidate('managed-project', 0);
-      const currentCustody = candidate && custody.readActive(candidate.topicId);
+      const currentCustody = candidate && delegation.readSoloTopicCustody(candidate.topicId);
       if (candidate && currentCustody?.machineId === candidate.machineId) {
         return { ...candidate, ownerEpoch: currentCustody.ownerEpoch, osBootId, remaining: 1 };
       }
@@ -203,6 +212,7 @@ it.skipIf(!codex).each([true, false])('drives an enrolled worker through package
   } finally {
     await provider.close();
     await server.stop();
+    await delegation.close();
     work.close();
     project.cleanup();
   }
