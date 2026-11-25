@@ -1,0 +1,43 @@
+{
+  "disclosure": {
+    "slipId": "synthetic-slip",
+    "origin": "https://fixture.invalid",
+    "ownerGeneration": "owner-8",
+    "deviceGeneration": "device-2",
+    "holderEpoch": "epoch-4",
+    "enableRevision": "enable-1",
+    "capsRevision": "caps-3",
+    "grantRevision": "grant-0",
+    "enablePlanId": "fixture-plan",
+    "enablePlanText": "Enable the money layer. No paid service is armed.\nTrial / café 雪.",
+    "slipExpiresAt": 1795590300000,
+    "grantStartsAt": 1795590000000,
+    "grantExpiresAt": 1795676400000,
+    "resetTimeZone": "UTC",
+    "dailyCapMicroUsd": 50000000,
+    "agentIds": [
+      "fixture-agent",
+      "fixture-agent-two"
+    ],
+    "purposeClasses": [
+      "fixture-work"
+    ],
+    "doors": [
+      {
+        "id": "fixture-door",
+        "provider": "fixture-provider",
+        "keyRef": "fixture-key",
+        "dailyCapMicroUsd": 5000000
+      }
+    ]
+  },
+  "expectedDigest": "f3655899b3ddc269923ebab153d927e1245d1d523fb1ae30438313c524c9906c",
+  "canonicalDisclosureBase64": "WyJpbnN0YXItb3duZXItc3BlbmRpbmctZW5hYmxlLWFuZC1ncmFudC12MSIsInN5bnRoZXRpYy1zbGlwIiwiaHR0cHM6Ly9maXh0dXJlLmludmFsaWQiLCJvd25lci04IiwiZGV2aWNlLTIiLCJlcG9jaC00IiwiZW5hYmxlLTEiLCJjYXBzLTMiLCJncmFudC0wIiwiZml4dHVyZS1wbGFuIiwiRW5hYmxlIHRoZSBtb25leSBsYXllci4gTm8gcGFpZCBzZXJ2aWNlIGlzIGFybWVkLlxuVHJpYWwgLyBjYWbDqSDpm6ouIiwxNzk1NTkwMzAwMDAwLDE3OTU1OTAwMDAwMDAsMTc5NTY3NjQwMDAwMCwiVVRDIiwiVVNEIiw1MDAwMDAwMCxbImZpeHR1cmUtYWdlbnQiLCJmaXh0dXJlLWFnZW50LXR3byJdLFsiZml4dHVyZS13b3JrIl0sW1siZml4dHVyZS1kb29yIiwiZml4dHVyZS1wcm92aWRlciIsImZpeHR1cmUta2V5Iiw1MDAwMDAwXV1d",
+  "presence": {
+    "deviceId": "fixture-phone",
+    "host": "fixture.invalid",
+    "purpose": "spending-enable-and-grant",
+    "challenge": "synthetic-challenge",
+    "expectedMessageBase64": "aW5zdGFyLW93bmVyLWFjdGlvbi12MQpmaXh0dXJlLXBob25lCmZpeHR1cmUuaW52YWxpZApzcGVuZGluZy1lbmFibGUtYW5kLWdyYW50CmYzNjU1ODk5YjNkZGMyNjk5MjNlYmFiMTUzZDkyN2UxMjQ1ZDFkNTIzZmIxYWUzMDQzODMxM2M1MjRjOTkwNmMKc3ludGhldGljLWNoYWxsZW5nZQ=="
+  }
+}

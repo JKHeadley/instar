@@ -4,26 +4,21 @@ import {
   type OwnerSpendingApprovalDisclosure,
 } from '../../src/core/ownerSpendingApprovalBinding.js';
 
-const disclosure: OwnerSpendingApprovalDisclosure = {
-  slipId: 'synthetic-slip',
-  origin: 'https://fixture.invalid',
-  ownerGeneration: 'owner-8',
-  deviceGeneration: 'device-2',
-  holderEpoch: 'epoch-4',
-  enableRevision: 'enable-1',
-  capsRevision: 'caps-3',
-  grantRevision: 'grant-0',
-  enablePlanId: 'fixture-plan',
-  enablePlanText: 'Enable the money layer. No paid service is armed.',
-  slipExpiresAt: 1795590300000,
-  grantStartsAt: 1795590000000,
-  grantExpiresAt: 1795676400000,
-  resetTimeZone: 'UTC',
-  dailyCapMicroUsd: 50_000_000,
-  agentIds: ['fixture-agent'],
-  purposeClasses: ['fixture-work'],
-  doors: [{ id: 'fixture-door', provider: 'fixture-provider', keyRef: 'fixture-key', dailyCapMicroUsd: 5_000_000 }],
-};
+import { createHash } from 'node:crypto';
+import { actionApprovalMessage } from '../../src/server/mobileOwnerPresenceRoutes.js';
+import vector from '../fixtures/owner-spending-approval/synthetic-signing-vector.json';
+
+const disclosure: OwnerSpendingApprovalDisclosure = vector.disclosure;
+
+it('matches the fixed disclosure digest and owner presence bytes', () => {
+  const publishedBytes = Buffer.from(vector.canonicalDisclosureBase64, 'base64');
+  expect(createHash('sha256').update(publishedBytes).digest('hex')).toBe(vector.expectedDigest);
+  expect(ownerSpendingApprovalBinding(disclosure)).toBe(vector.expectedDigest);
+
+  const { deviceId, host, purpose, challenge, expectedMessageBase64 } = vector.presence;
+  const message = actionApprovalMessage(deviceId, host, purpose, vector.expectedDigest, challenge);
+  expect(Buffer.from(message, 'utf8').toString('base64')).toBe(expectedMessageBase64);
+});
 
 it('binds the exact rendered plan and the visible grant scope in the same approval', () => {
   const expected = ownerSpendingApprovalBinding(disclosure);
