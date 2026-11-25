@@ -1,0 +1,5 @@
+# Reuse dependencies safely on the Studio
+
+Every fresh copy of the project needs many of the same packages. Installing them separately takes time and fills the Studio disk. This change gives the normal checkout command a verified copy it can use when the new project copy needs the same package versions. The Studio keeps the verified copy on its local disk. The program makes a private copy that shares disk blocks until someone writes to them. This means one checkout can change or reinstall a package without changing anyone else's files.
+
+The checkout command checks that the saved package versions and runtime match before using the shared copy. It still opens SQLite and checks that the Git hooks work before handing the checkout back. If the package versions or runtime are incompatible, the command follows its usual setup. The first test runs with the feature disabled by default. Once the Studio test shows that the shared copy works and that one checkout cannot modify another, the Studio can enable it for new worktrees. Existing work stays in place while the stewardship checks look for idle copies eligible to migrate.

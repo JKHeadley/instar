@@ -1,0 +1,36 @@
+{
+  "version": 3,
+  "slug": "studio-worktree-dependency-provider",
+  "sessionId": "233b8c8f-45fe-4930-a2d0-4ca9bb767cb1",
+  "timestamp": "2026-11-25T14:14:38.941Z",
+  "artifactPath": "upgrades/side-effects/studio-worktree-dependency-provider.md",
+  "artifactSha256": "3c4da81b671ab5c08e28c8e043ada6617f05928b466fd340719b8e250283edb9",
+  "specPath": "docs/specs/studio-worktree-dependency-provider.md",
+  "coveredFiles": [
+    ".instar/instar-dev-decisions/2026-11-25T14-14-22-786Z-studio-worktree-dependency-provider.json",
+    "docs/specs/reports/studio-worktree-dependency-provider-convergence.md",
+    "docs/specs/studio-worktree-dependency-provider.eli16.md",
+    "docs/specs/studio-worktree-dependency-provider.md",
+    "scripts/verified-worktree-dependencies.py",
+    "src/commands/worktree.ts",
+    "src/core/InstarWorktreeManager.ts",
+    "src/core/VerifiedWorktreeDependencies.ts",
+    "src/data/awareness/studio-verified-worktree-dependencies.md",
+    "tests/integration/instar-worktree-create.test.ts",
+    "tests/unit/VerifiedWorktreeDependencies.test.ts",
+    "upgrades/next/studio-worktree-dependency-provider.md",
+    "upgrades/side-effects/studio-worktree-dependency-provider.md"
+  ],
+  "phase": "complete",
+  "tier": 2,
+  "tierReasoning": "Adds a disabled-by-default provider with isolated APFS and real Git fixture verification.",
+  "secondPass": "true",
+  "reviewerConcurred": true,
+  "toolchain": {
+    "convergence": {
+      "reportPath": "docs/specs/reports/studio-worktree-dependency-provider-convergence.md",
+      "iterations": 3,
+      "verified": true
+    }
+  }
+}

@@ -15,6 +15,7 @@
  */
 
 import { describe, it, expect, beforeEach, afterEach, vi } from 'vitest';
+import { createHash } from 'node:crypto';
 import { execFileSync } from 'node:child_process';
 import { SafeGitExecutor } from '../../src/core/SafeGitExecutor.js';
 import fs from 'node:fs';
@@ -116,6 +117,43 @@ describe('createWorktree (integration)', () => {
 
   beforeEach(() => { fix = makeFixture(); });
   afterEach(() => { vi.restoreAllMocks(); cleanup(fix); });
+
+  it.skipIf(process.platform !== 'darwin')('uses the verified provider before the SQLite and hook checks', async () => {
+    const manifest = path.join(fix.bareRepo, 'package.json');
+    const pkg = JSON.parse(fs.readFileSync(manifest, 'utf8'));
+    pkg.dependencies = { 'better-sqlite3': '12.8.0' };
+    fs.writeFileSync(manifest, JSON.stringify(pkg));
+    git(['add', 'package.json'], fix.bareRepo);
+    git(['commit', '-m', 'declare native fixture'], fix.bareRepo);
+    const head = git(['rev-parse', 'HEAD'], fix.bareRepo);
+    const state = path.join(fix.agentHome, '.instar');
+    const helper = path.join(state, 'state', 'studio-worktree-dependencies', 'bin', 'verified-worktree-dependencies');
+    fs.mkdirSync(path.dirname(helper), { recursive: true });
+    const contents = '#!/bin/sh\nmkdir -p "$1/node_modules/better-sqlite3"\nprintf "module.exports = class { close() {} }" > "$1/node_modules/better-sqlite3/index.js"\n';
+    fs.writeFileSync(helper, contents, { mode: 0o700 });
+    fs.writeFileSync(path.join(state, 'config.json'), JSON.stringify({
+      worktree: {
+        verifiedDependencyStore: true,
+        verifiedDependencyHelperSha256: createHash('sha256').update(contents).digest('hex'),
+      },
+    }));
+    const result = await createWorktree({
+      branch: 'test/verified-store',
+      baseBranch: head,
+      resolveAgentHomeOpts: {
+        env: { INSTAR_AGENT_HOME: fix.agentHome },
+        instarHome: fix.instarHome,
+        registryLookup: fix.registryLookup,
+      },
+      resolveInstarRepoOpts: {
+        env: { INSTAR_REPO: fix.bareRepo },
+        fallbackChain: [],
+        urlAllowlist: fix.repoAllowlist,
+      },
+    });
+    expect(result.verifiedDependencyOutcome).toBe('verified-clone');
+    expect(fs.statSync(path.join(result.worktreePath, '.husky', '_', 'pre-commit')).mode & 0o111).not.toBe(0);
+  });
 
   it('refuses at the physical directory cap before adding a git worktree', async () => {
     const root = path.join(fix.agentHome, '.worktrees');
