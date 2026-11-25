@@ -18,3 +18,5 @@ This is the first part of the remaining message actions. Forwarding and deleting
 
 
 The first server build is off by default. Only the machine that created the conversation can accept a Reply, and only while it still serves that conversation. Another machine can continue taking ordinary messages after a move. A Stop request still stops live work on the current owner, and the server confirms success only after checking that held work is clear. The preview and client controls come in a later update.
+
+The follow-on server build supplies a short preview when the person can still read the original. If access goes away, the server returns an unavailable state without the original text or link. The app needs to finish its live integration checks before people can use Reply.

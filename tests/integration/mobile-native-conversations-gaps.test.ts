@@ -340,7 +340,7 @@ describe('review follow-ups — peer rows are re-validated, and pool browse cove
     const peer = express();
     peer.get('/mobile/conversations', (_req, res) => {
       res.json({ conversations: [
-        { id: crypto.randomUUID(), platform: 'app', title: 'offset', lastActivity: '2035-01-01T02:00:00+02:00', lastPreview: null },
+        { id: crypto.randomUUID(), platform: 'app', title: 'offset', lastActivity: '2035-01-01T02:00:00+02:00', lastPreview: null, messageActions: { reply: true } },
         { id: crypto.randomUUID(), platform: 'app', title: 'odd', lastActivity: '0', lastPreview: null },
         { id: crypto.randomUUID(), platform: 'app', title: 'loose date', lastActivity: 'Mon, 01 Jan 2035 00:00:00 GMT', lastPreview: null },
       ], nextCursor: null });
@@ -358,6 +358,7 @@ describe('review follow-ups — peer rows are re-validated, and pool browse cove
       } while (cursor);
       expect(seen.map((x) => x.title)).not.toContain('odd');
       expect(seen.map((x) => x.title)).not.toContain('loose date');
+      expect(seen.find((x) => x.title === 'offset')).not.toHaveProperty('messageActions');
       expect(seen.find((x) => x.title === 'offset')!.lastActivity).toBe('2035-01-01T00:00:00.000Z');
       for (const k of keys) expect(seen.map((x) => x.id)).toContain(k); // every local conversation reached
     } finally { server.close(); }

@@ -9,3 +9,9 @@ A new lease holder cannot claim an original machine's Reply request, even with a
 Related work includes the exact message link checkpoint, immutable App conversation creation evidence, MobileChatRequests restart handling, the native signed send route, and the existing QueueDrainLoop Stop transaction.
 
 Focused verification covered receipt binding and storage, queue confirmation and read failure, native signed HTTP with lease transfer, held-work Stop and interruption on restart, and production server construction of a signed quoted send. The full published-candidate suite and client activation are follow-ons.
+
+## Signed preview and capability follow-on
+
+The independent reviewer confirmed current actor and feature rechecks after pooled reads, omission when the chat send switch is off, and existing preview read access independent of the send switch. The cross-model review confirmed the source-integrity and stamped-projection contract changes and surfaced possible peer-field leakage. Peer rows are reconstructed from a whitelist. The output mapper also strips incoming actions before adding current local capabilities, with a pooled peer fixture covering the claim. The server does not implement native response ordering.
+
+The approval covers the default-off server read and capability path only. Apple’s standalone retry and preview fixture passed. Mounted native ordering still has to prove withdrawal, rejection of an older available response, and restoration only from a fresh authorized response.
