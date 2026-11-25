@@ -573,7 +573,7 @@ it('refuses old-tag recovery when the temporary registry lacks its primary key',
   } finally { db.close(); ledger.close(); }
 });
 
-it.each(['cancel', 'shutdown', 'registration-failure', 'missing-store', 'pin-change'] as const)('holds registered copy custody through close after %s', async action => {
+it.each(['cancel', 'shutdown', 'registration-failure', 'missing-store', 'pin-change', 'policy-mismatch', 'receipt-mismatch'] as const)('holds registered copy custody through close after %s', async action => {
   const f = setup();
   const bytes = Buffer.from([
     { type: 'session_meta', payload: { id: 'synthetic-session-0', cwd: '/synthetic/project', source: 'cli' } },
@@ -585,13 +585,13 @@ it.each(['cancel', 'shutdown', 'registration-failure', 'missing-store', 'pin-cha
   await until(() => f.stage.status(device, selected.operationId).phase === 'verified');
   f.stage.prepare(device, selected.operationId);
   await until(() => f.stage.status(device, selected.operationId).phase === 'prepared');
-  const receipt = await f.stage.publishPreparedPreview(device, selected.operationId);
-  const intent = { previewId: receipt.previewId, machineId: receipt.machineId, bootId: issuer.bootId,
-    confirmationChallenge: receipt.confirmation.challenge, applyRequestId: '1'.repeat(32) };
   if (action !== 'missing-store') {
     const store = new ImportedHistoryStore(f.stateDir);
     fs.mkdirSync(path.join(store.dir, '.local-history-temporary'), { mode: 0o700 });
   }
+  const receipt = await f.stage.publishPreparedPreview(device, selected.operationId);
+  const intent = { previewId: receipt.previewId, machineId: receipt.machineId, bootId: issuer.bootId,
+    confirmationChallenge: receipt.confirmation.challenge, applyRequestId: '1'.repeat(32) };
   const db = new Database(path.join(f.stateDir, 'local-history-upload', 'jobs.sqlite'));
   const ledger = new LocalHistoryDiskLedger(f.stateDir, { disk: f.disk });
   const child = spawn(process.execPath, ['-e',
@@ -615,14 +615,25 @@ it.each(['cancel', 'shutdown', 'registration-failure', 'missing-store', 'pin-cha
         WHEN NEW.state = 'active' BEGIN SELECT RAISE(ABORT, 'fixture refusal'); END;`);
     }
     const before = ledger.list(tag);
+    const originalEstimate = f.stage.estimateFirstCopyClaim.bind(f.stage);
+    const estimate = vi.spyOn(f.stage, 'estimateFirstCopyClaim');
+    if (action === 'receipt-mismatch') estimate.mockImplementation(async (...args) => ({
+      ...await originalEstimate(...args), previewDigest: 'f'.repeat(64),
+    }));
+    const blockBytes = fs.statfsSync(f.stateDir).bsize;
+    let settled = false;
     const work = Promise.allSettled([f.stage.holdPreparedCopyChild(device, selected.operationId, intent, child, {
-      bootstrapBytes: 513, ceiling: 1024,
-    })]);
-    if (action === 'missing-store') {
+      bootstrapBytes: 513, ceiling: 1024 * 1024,
+      firstClaimPolicy: { blockBytes: action === 'policy-mismatch' ? blockBytes * 2 : blockBytes,
+        perWriteMetadataBytes: blockBytes, maxReservationBytes: 1024 * 1024, maxAttachments: 0 },
+    })]).then(results => { settled = true; return results; });
+    if (action === 'missing-store' || action === 'policy-mismatch' || action === 'receipt-mismatch') {
+      await until(() => settled);
       const [result] = await work;
       expect(result.status).toBe('rejected');
       expect(ledger.list(tag)).toEqual(before);
-      expect(fs.existsSync(path.join(f.stateDir, 'imported-history'))).toBe(false);
+      expect(db.prepare('SELECT COUNT(*) AS n FROM local_history_store_temporary_runs').get()).toEqual({ n: 0 });
+      if (action === 'missing-store') expect(fs.existsSync(path.join(f.stateDir, 'imported-history'))).toBe(false);
       return;
     }
     const state = db.prepare('SELECT state FROM local_history_store_temporary_runs');
@@ -632,7 +643,9 @@ it.each(['cancel', 'shutdown', 'registration-failure', 'missing-store', 'pin-cha
     const stopping = action === 'shutdown' ? f.stage.stop() : undefined;
     expect(f.stage['disposeTag'](tag)).toBe(false);
     expect(ledger.list(tag).some(row => row.state === 'sealed')).toBe(true);
-    const reservation = ledger.list(tag).find(row => row.planned === 513 && row.written === 0)!;
+    const checked = await estimate.mock.results[0].value;
+    const planned = 513 + checked.estimatedPhysicalBytes;
+    const reservation = ledger.list(tag).find(row => row.planned === planned && row.written === 0)!;
     expect(reservation.state).toBe('active');
     expect(() => process.kill(child.pid!, 0)).not.toThrow();
     if (action === 'pin-change') {
@@ -652,7 +665,7 @@ it.each(['cancel', 'shutdown', 'registration-failure', 'missing-store', 'pin-cha
     expect(result.status).toBe(['registration-failure', 'pin-change'].includes(action) ? 'rejected' : 'fulfilled');
     expect(state.get()).toEqual({ state: 'disposed' });
     expect(ledger.inspect(reservation.id)).toMatchObject(action === 'pin-change'
-      ? { planned: 513, state: 'active' } : { planned: 0, state: 'disposed' });
+      ? { planned, state: 'active' } : { planned: 0, state: 'disposed' });
     if (action === 'pin-change') expect(f.stage['disposeTag'](tag)).toBe(false);
     expect(ledger.list(tag).every(row => row.state === 'disposed')).toBe(action === 'cancel' || action === 'shutdown');
   } finally {

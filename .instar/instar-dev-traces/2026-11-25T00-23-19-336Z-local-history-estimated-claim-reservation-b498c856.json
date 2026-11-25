@@ -1,0 +1,25 @@
+{
+  "version": 2,
+  "slug": "local-history-estimated-claim-reservation",
+  "sessionId": "41652017-0805-405d-bb4e-2a975fb349ce",
+  "timestamp": "2026-11-25T00:23:19.336Z",
+  "artifactPath": "upgrades/side-effects/local-history-estimated-claim-reservation.md",
+  "artifactSha256": "76bb2d92bb425eba1bdcdd200a07ee5a20c68cfeb0cc4559b9ed56dded7871fc",
+  "specPath": "docs/specs/local-history-native-contract.md",
+  "coveredFiles": [
+    "src/import/LocalHistoryUploadStaging.ts",
+    "tests/unit/local-history-upload-staging.test.ts",
+    "upgrades/next/local-history-estimated-claim-reservation.md",
+    "upgrades/side-effects/local-history-estimated-claim-reservation.md"
+  ],
+  "phase": "complete",
+  "tier": 2,
+  "tierReasoning": "Verified preflight sizing now determines the dedicated private copy reservation held through child close.",
+  "secondPass": "true",
+  "reviewerConcurred": true,
+  "classClosure": {
+    "defectClass": "unbounded-self-action",
+    "closure": "n/a",
+    "reason": "One explicit estimate and adoption of one caller-owned child. The path has no additional launch, retry, or controller."
+  }
+}

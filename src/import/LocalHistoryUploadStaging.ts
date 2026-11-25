@@ -621,17 +621,27 @@ export class LocalHistoryUploadStaging {
    * or authorizing any mutation. Admission failures before custody transfer
    * leave the child with its original caller. */
   async holdPreparedCopyChild(device: LocalHistoryAuthenticatedDevice, operationId: string, intent: unknown,
-    child: ChildProcess, budget: Readonly<{ bootstrapBytes: number; ceiling: number }>): Promise<void> {
+    child: ChildProcess, budget: Readonly<{ bootstrapBytes: number; ceiling: number; firstClaimPolicy: LocalHistoryPhysicalPolicy }>): Promise<void> {
     const deviceCopy = Object.freeze({ deviceId: device.deviceId, deviceKeyHash: device.deviceKeyHash });
-    this.bindCopyIntent(deviceCopy, operationId, intent);
+    const before = this.bindCopyIntent(deviceCopy, operationId, intent);
     if (this.verification || this.activeChildWork) refuse('busy');
-    const row = this.owned(operationId, deviceCopy);
-    const { bootstrapBytes, ceiling } = budget;
+    const { bootstrapBytes, ceiling, firstClaimPolicy } = budget;
+    const policy = { ...firstClaimPolicy };
     if (!Number.isSafeInteger(bootstrapBytes) || !Number.isSafeInteger(ceiling) || bootstrapBytes <= 0 || bootstrapBytes > ceiling) {
       refuse('invalid');
     }
     if (!(child instanceof ChildProcess) || !child.pid || !child.spawnfile
       || child.exitCode !== null || child.signalCode !== null) refuse('invalid');
+    const estimate = await this.estimateFirstCopyClaim(deviceCopy, operationId, before.intent, policy);
+    const initialCharge = bootstrapBytes + estimate.estimatedPhysicalBytes;
+    if (!Number.isSafeInteger(initialCharge) || initialCharge > ceiling) refuse('capacity');
+    const current = this.bindCopyIntent(deviceCopy, operationId, before.intent);
+    const previewDigest = digest(current.receipt);
+    if (estimate.requestId !== current.requestId || estimate.fingerprint !== current.fingerprint
+      || estimate.previewDigest !== previewDigest || digest(before.receipt) !== previewDigest) refuse('conflict');
+    if (this.verification || this.activeChildWork) refuse('busy');
+    const row = this.owned(operationId, deviceCopy);
+    if (child.exitCode !== null || child.signalCode !== null) refuse('invalid');
 
     let closed = false, failed = false, stopRequested = false, killTimer: ReturnType<typeof setTimeout> | undefined;
     const stop = () => {
@@ -658,8 +668,9 @@ export class LocalHistoryUploadStaging {
         if (closed || this.owned(operationId, deviceCopy).phase !== 'prepared') refuse('unavailable');
         this.metadataRoom();
         pin = this.ledger.pinCopyVolume(localHistoryCopyDestinationDirectories(this.deps.stateDir));
+        if (pin.measure().blockBytes !== policy.blockBytes) refuse('capacity');
         reservationMayExist = true;
-        reservation = this.ledger.createCopyRunReservation(this.custody, operationId, pin, bootstrapBytes, ceiling);
+        reservation = this.ledger.createCopyRunReservation(this.custody, operationId, pin, initialCharge, ceiling);
         pin.revalidate();
         run = registerLocalHistoryStoreTemporaryRun(this.db, this.custody, { operationId, existingDirectoriesOnly: true });
         pin.revalidate();
@@ -709,7 +720,7 @@ export class LocalHistoryUploadStaging {
   async estimateFirstCopyClaim(device: LocalHistoryAuthenticatedDevice, operationId: string, value: unknown,
     policy: LocalHistoryPhysicalPolicy) {
     const policySnapshot = { ...policy };
-    const { requestId, fingerprint, firstClaimPlan } = await this.checkCopyPreflight(device, operationId, value, true);
+    const { requestId, fingerprint, previewDigest, firstClaimPlan } = await this.checkCopyPreflight(device, operationId, value, true);
     if (!firstClaimPlan) refuse('unavailable');
     const { fileId, contentBytes, databaseCeilingBytes, journalBytes } = firstClaimPlan;
     let estimatedPhysicalBytes: number;
@@ -718,7 +729,7 @@ export class LocalHistoryUploadStaging {
         kind: 'source-claim', databaseCeilingBytes, journalBytes,
       }, policySnapshot);
     } catch { return refuse('capacity'); }
-    return { requestId, fingerprint, fileId, contentBytes, estimatedPhysicalBytes };
+    return { requestId, fingerprint, previewDigest, fileId, contentBytes, estimatedPhysicalBytes };
   }
 
   private async checkCopyPreflight(device: LocalHistoryAuthenticatedDevice, operationId: string, value: unknown,
@@ -728,13 +739,14 @@ export class LocalHistoryUploadStaging {
     const { preview } = await this.readPreparedPreview(deviceCopy, operationId, includeFirstClaimPlan);
     const after = this.bindCopyIntent(deviceCopy, operationId, before.intent);
     const original = before.receipt.preview?.files;
-    if (before.fingerprint !== after.fingerprint || digest(before.receipt) !== digest(after.receipt)
+    const previewDigest = digest(after.receipt);
+    if (before.fingerprint !== after.fingerprint || digest(before.receipt) !== previewDigest
       || !Array.isArray(original) || original.length !== preview.files.length
       || !preview.files.every((file, index) => file.fileId === original[index]?.fileId
         && file.source === original[index].source && file.destinationFingerprint === original[index].destinationFingerprint)) {
       refuse('conflict');
     }
-    return { requestId: after.requestId, fingerprint: after.fingerprint, firstClaimPlan: preview.firstClaimPlan };
+    return { requestId: after.requestId, fingerprint: after.fingerprint, previewDigest, firstClaimPlan: preview.firstClaimPlan };
   }
   /** Validate the signed copy intent against current staging state. The
    * eventual permit issuer must repeat this inside its consumption transaction. */
