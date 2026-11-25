@@ -12425,7 +12425,14 @@ export function createRoutes(ctx: RouteContext): Router {
       res.status(503).json({ error: 'session reaper unavailable' });
       return;
     }
-    const local = ctx.sessionReaper.snapshot();
+    const shadow = ctx.sessionManager.getShadowAdmissionReport?.();
+    const local = {
+      ...ctx.sessionReaper.snapshot(),
+      ...(shadow ? { resourceAdmissionShadow: {
+        ...shadow,
+        observerFailures: ctx.sessionManager.getShadowAdmissionObserverFailures(),
+      } } : {}),
+    };
     if (req.query.scope !== 'pool') {
       res.json(local);
       return;

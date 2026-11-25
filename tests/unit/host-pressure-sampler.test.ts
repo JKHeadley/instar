@@ -8,6 +8,7 @@ import { describe, it, expect } from 'vitest';
 import {
   sampleHostPressure,
   sampleHostPressureInputs,
+  readCachedHostPressureInputs,
   DEFAULT_HOST_PRESSURE_THRESHOLDS,
   _resetHostPressureSamplerForTests,
   MIN_SAMPLE_WINDOW_MS,
@@ -58,6 +59,23 @@ describe('HostPressureSampler', () => {
 
 describe('HostPressureSampler — one memory read per sample, cached for a minimum window', () => {
   const reading = (decompressions: number) => ({ pressurePercent: 57.2, freeGB: 50, totalGB: 128, compressorPercent: 27.3, decompressions, pageSizeBytes: 16384 });
+
+  it('exposes measured native bytes without sampling on the admission path', () => {
+    let reads = 0;
+    const t0 = 1_800_000_000_000;
+    try {
+      _resetHostPressureSamplerForTests(() => { reads++; return reading(1); }, () => 1, () => t0);
+      expect(readCachedHostPressureInputs()).toBeUndefined();
+      expect(reads).toBe(0);
+      expect(sampleHostPressureInputs(t0).nativeAvailableBytes).toBe(50 * 1024 ** 3);
+      expect(readCachedHostPressureInputs()?.nativeAvailableBytes).toBe(50 * 1024 ** 3);
+      expect(reads).toBe(1);
+      _resetHostPressureSamplerForTests(() => ({ ...reading(1), pageSizeBytes: null }), () => 1, () => t0);
+      expect(sampleHostPressureInputs(t0).nativeAvailableBytes).toBeUndefined();
+    } finally {
+      _resetHostPressureSamplerForTests();
+    }
+  });
 
   it('reads memory ONCE per sample and derives freePct, compressorPct and the decompression rate from it', () => {
     let reads = 0;
