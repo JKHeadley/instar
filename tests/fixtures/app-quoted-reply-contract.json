@@ -104,5 +104,56 @@
       }
     ],
     "expectedUtf8": "[\"instar-app-receipt-v3\",\"0000000000000000000000000000000000000000000000000000000000000000\",\"2026-11-25T09:45:16.000Z\",\"machine-a\",\"app:a71db421-e49c-4e29-91ca-f9bc545d3d1c\",\"a\\nb\",\"c\",{\"conversationKey\":\"app:a71db421-e49c-4e29-91ca-f9bc545d3d1c\",\"eventId\":\"event-original-02\",\"messageId\":\"message-original-02\"}]"
+  },
+  "liveClient": {
+    "capability": {
+      "messageActions": {
+        "reply": true
+      }
+    },
+    "send": {
+      "method": "POST",
+      "path": "/mobile/chat/app/:key/reply",
+      "body": {
+        "text": "That works for me.",
+        "requestId": "1795595969000-e94cb442-9772-4199-a6d1-3de648cec011",
+        "replyTo": {
+          "eventId": "event-original-02"
+        }
+      }
+    },
+    "revalidation": {
+      "method": "GET",
+      "path": "/mobile/chat/app/:key/reply-previews?eventId=event-reply-03",
+      "baseEventId": "event-reply-03"
+    },
+    "retryAfterDisconnect": {
+      "sameMethodPathRequestIdAndBody": true,
+      "samePairingAndConversation": true,
+      "newTransportSignature": true,
+      "dispatchCount": 1
+    },
+    "changedSelectedEventWithSameRequestId": {
+      "status": 409,
+      "body": {
+        "error": "payload-conflict"
+      }
+    },
+    "removedOrDeniedOriginal": {
+      "status": 409,
+      "body": {
+        "error": "reply-source-unavailable",
+        "retryable": true
+      }
+    },
+    "projectionAfterRevocation": {
+      "eventId": "event-reply-03",
+      "reply": {
+        "state": "unavailable"
+      }
+    },
+    "projectionAfterDisablement": {
+      "eventId": "event-reply-03"
+    }
   }
 }
