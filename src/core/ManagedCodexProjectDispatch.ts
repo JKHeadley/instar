@@ -19,15 +19,15 @@ export interface ManagedProjectLaunch {
   homeIdentity?: string;
 }
 
-interface Dependencies {
+export interface ManagedProjectDispatchDependencies {
   enabled(): boolean;
   readAdmission(workKey: string): ManagedProjectAdmission | undefined;
   store: ManagedCodexStopStore;
   reserveWork(admission: ManagedProjectAdmission, reserve: () => boolean): boolean;
   launch(admission: ManagedProjectAdmission, launchId: string): Promise<ManagedProjectLaunch>;
   verifyLaunch(admission: ManagedProjectAdmission, launch: ManagedProjectLaunch): boolean;
-  releaseLaunch(launch: ManagedProjectLaunch): void;
-  cancelLaunch(launchId: string): void;
+  releaseLaunch(launch: ManagedProjectLaunch): void | Promise<void>;
+  cancelLaunch(launchId: string): void | Promise<void>;
 }
 
 function sameAdmission(a: ManagedProjectAdmission, b: ManagedProjectAdmission | undefined): boolean {
@@ -43,7 +43,7 @@ function sameAdmission(a: ManagedProjectAdmission, b: ManagedProjectAdmission | 
  */
 export async function dispatchManagedCodexProject(
   workKey: string,
-  deps: Dependencies,
+  deps: ManagedProjectDispatchDependencies,
 ): Promise<ManagedProjectLaunch | undefined> {
   if (!deps.enabled()) return;
   const admission = deps.readAdmission(workKey);
@@ -68,7 +68,7 @@ export async function dispatchManagedCodexProject(
 
     bound = deps.store.bindNative(launchId, worker.nativeSessionId, worker.homeIdentity);
     if (!bound) return;
-    deps.releaseLaunch(worker);
+    await deps.releaseLaunch(worker);
     released = true;
     return worker;
   } finally {
@@ -78,7 +78,7 @@ export async function dispatchManagedCodexProject(
         else if (launched) deps.store.abortPending(launchId);
         else deps.store.releaseUnstarted(launchId);
       } finally {
-        if (launched) deps.cancelLaunch(launchId);
+        if (launched) await deps.cancelLaunch(launchId);
       }
     }
   }

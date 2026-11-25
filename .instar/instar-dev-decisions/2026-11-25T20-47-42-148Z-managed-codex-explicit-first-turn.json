@@ -1,0 +1,28 @@
+{
+  "ts": "2026-11-25T20:47:42.148Z",
+  "slug": "managed-codex-explicit-first-turn",
+  "suggestedTier": 2,
+  "declaredTier": 1,
+  "riskFloor": 1,
+  "riskFloorReasons": [],
+  "belowFloor": false,
+  "files": 3,
+  "loc": 205,
+  "scope": {
+    "basis": "staged-in-scope-paths-including-deleted",
+    "files": [
+      "src/core/ManagedCodexAppServer.ts",
+      "src/core/ManagedCodexAppServerLaunch.ts",
+      "src/core/ManagedCodexProjectDispatch.ts"
+    ],
+    "addedLines": 199,
+    "deletedLines": 6
+  },
+  "causalAutopsy": null,
+  "classClosure": {
+    "defectClass": "unbounded-self-action",
+    "closure": "n/a",
+    "reason": "A single native thread and first-turn request are prepared per admitted launch. The adapter cannot retry or schedule itself."
+  },
+  "verdict": "pass"
+}
