@@ -1,0 +1,26 @@
+{
+  "version": 2,
+  "slug": "console-accounts-action-lifecycle",
+  "sessionId": "b5892410-5874-4620-9f7b-5e54791d9a9e",
+  "timestamp": "2026-11-25T01:47:44.367Z",
+  "artifactPath": "upgrades/side-effects/console-accounts-action-lifecycle.md",
+  "artifactSha256": "3c2881e78f2a7535513d38a2dc9bcf170d72f0ecfb93fbe69909c84ff7d0ee69",
+  "coveredFiles": [
+    "dashboard/console/accounts-model.js",
+    "dashboard/console/accounts.js",
+    "dashboard/console/console.css",
+    "dashboard/console/ui.js",
+    "tests/unit/console-accounts-lifecycle.test.ts",
+    "tests/unit/console-accounts-order.test.ts",
+    "upgrades/next/console-accounts-action-lifecycle.md",
+    "upgrades/side-effects/console-accounts-action-lifecycle.eli16.md",
+    "upgrades/side-effects/console-accounts-action-lifecycle.md"
+  ],
+  "phase": "complete",
+  "tier": 1,
+  "tierReasoning": "Reversible browser presentation and dialog ownership. Existing reads, writes, authorization and persistence contracts are preserved.",
+  "eli16Path": "upgrades/side-effects/console-accounts-action-lifecycle.eli16.md",
+  "sideEffectsPath": "upgrades/side-effects/console-accounts-action-lifecycle.md",
+  "secondPass": "true",
+  "reviewerConcurred": true
+}
