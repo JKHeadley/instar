@@ -1,0 +1,19 @@
+{
+  "version": 2,
+  "slug": "telegram-evidence-send-reservation",
+  "sessionId": "b3d2cf8a-9b5d-468b-a50b-70ebf11e9e5c",
+  "timestamp": "2026-11-25T17:12:43.326Z",
+  "artifactPath": "upgrades/side-effects/telegram-evidence-send-reservation.md",
+  "artifactSha256": "8ddb226e6a17841bc294b0318d5fa540e730b2ed4eb330936672f2e59f3ca190",
+  "coveredFiles": [
+    "src/threadline/DirectRequestSendClaims.ts",
+    "tests/unit/direct-request-send-binding.test.ts"
+  ],
+  "phase": "complete",
+  "tier": 1,
+  "tierReasoning": "Dormant composition called only by focused fixtures. No production admission, installed migration or transport.",
+  "eli16Path": "docs/specs/direct-telegram-send-evidence.eli16.md",
+  "sideEffectsPath": "upgrades/side-effects/telegram-evidence-send-reservation.md",
+  "secondPass": "true",
+  "reviewerConcurred": true
+}

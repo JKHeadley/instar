@@ -1,0 +1,22 @@
+{
+  "ts": "2026-11-25T17:13:29.426Z",
+  "slug": "telegram-evidence-send-reservation",
+  "suggestedTier": 1,
+  "declaredTier": 1,
+  "riskFloor": 1,
+  "riskFloorReasons": [],
+  "belowFloor": false,
+  "files": 1,
+  "loc": 17,
+  "scope": {
+    "basis": "staged-in-scope-paths-including-deleted",
+    "files": [
+      "src/threadline/DirectRequestSendClaims.ts"
+    ],
+    "addedLines": 16,
+    "deletedLines": 1
+  },
+  "causalAutopsy": null,
+  "classClosure": null,
+  "verdict": "pass"
+}

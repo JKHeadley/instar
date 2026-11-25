@@ -1,3 +1,5 @@
+import { TelegramSendEvidenceStore } from '../../src/threadline/TelegramSendEvidenceStore.js';
+import { exactDirectTelegramPollingSend } from '../../src/threadline/directTelegramSendEvidence.js';
 import Database from 'better-sqlite3';
 import { mkdtempSync } from 'node:fs';
 import { tmpdir } from 'node:os';
@@ -47,21 +49,42 @@ it('reserves one attempt across independent connections and process reopen', () 
     const writer = new DirectRequestSendClaims(first);
     const other = new DirectRequestSendClaims(second);
     const beforeExpiry = input.expiresAt - 1;
+    const polling = {
+      raw: {
+        message_id: 11, message_thread_id: 42, is_topic_message: true, date: 1795586700,
+        from: { id: 75, is_bot: false }, chat: { id: -10001, type: 'supergroup' },
+        text: `Send via Threadline to ${input.recipientFingerprint}:\n${input.message}`,
+      },
+      botAccountId: 248, ownerId: 75,
+    };
+    const proof = exactDirectTelegramPollingSend(polling.raw, polling.botAccountId, polling.ownerId)!;
+    const send = { ...input, ...proof };
+    const evidence = new TelegramSendEvidenceStore(second);
+    expect(writer.reserve(send, polling, beforeExpiry)).toEqual({ status: 'refused' });
+    expect(evidence.capture(proof.ownerMessageRef, proof.ownerEvidenceDigest)).toBe('recorded');
+    expect(writer.reserve({ ...send, message: 'substituted' }, polling, beforeExpiry)).toEqual({ status: 'refused' });
+    expect(writer.reserve({ ...send, deliveryId: 'expired' }, polling, input.expiresAt)).toEqual({ status: 'refused' });
     first.transaction(() => {
-      expect(writer.reserve(input, beforeExpiry)).toEqual({ status: 'refused' });
+      expect(writer.reserve(send, polling, beforeExpiry)).toEqual({ status: 'refused' });
     })();
-    expect(writer.reserve(input, beforeExpiry)).toEqual({ status: 'reserved', deliveryId: input.deliveryId });
-    expect(other.reserve({ ...input, deliveryId: 'new-id' }, beforeExpiry)).toEqual({ status: 'refused' });
-    expect(other.reserve({ ...input, authorityEpoch: 'epoch-3' }, beforeExpiry)).toEqual({ status: 'refused' });
-    expect(other.reserve({ ...input, ownerMessageRef: 'another-message' }, beforeExpiry)).toEqual({ status: 'refused' });
-    expect(other.reserve({ ...input, ownerMessageRef: 'another-message', deliveryId: 'new-id' }, input.expiresAt))
-      .toEqual({ status: 'refused' });
+    expect(writer.reserve(send, polling, beforeExpiry)).toEqual({ status: 'reserved', deliveryId: input.deliveryId });
+    expect(other.reserve({ ...send, deliveryId: 'new-id' }, polling, beforeExpiry)).toEqual({ status: 'refused' });
+    expect(other.reserve({ ...send, authorityEpoch: 'epoch-3' }, polling, beforeExpiry)).toEqual({ status: 'refused' });
+    expect(other.reserve({ ...send, ownerMessageRef: 'another-message' }, polling, beforeExpiry)).toEqual({ status: 'refused' });
+    const otherPolling = { ...polling, raw: { ...polling.raw, message_id: 12 } };
+    const otherProof = exactDirectTelegramPollingSend(otherPolling.raw, otherPolling.botAccountId, otherPolling.ownerId)!;
+    expect(evidence.capture(otherProof.ownerMessageRef, otherProof.ownerEvidenceDigest)).toBe('recorded');
+    expect(other.reserve({ ...send, ...otherProof }, otherPolling, beforeExpiry)).toEqual({ status: 'refused' });
+    expect(other.reserve({ ...send, ...otherProof, deliveryId: 'other-send' }, otherPolling, beforeExpiry))
+      .toEqual({ status: 'reserved', deliveryId: 'other-send' });
     first.close();
     second.close();
     const reopened = new Database(filename);
     try {
-      expect(new DirectRequestSendClaims(reopened).reserve(input, input.expiresAt + 1))
+      expect(new DirectRequestSendClaims(reopened).reserve(send, polling, input.expiresAt + 1))
         .toEqual({ status: 'already-reserved', deliveryId: input.deliveryId });
+      new TelegramSendEvidenceStore(reopened).capture(proof.ownerMessageRef, H('f'));
+      expect(new DirectRequestSendClaims(reopened).reserve(send, polling, beforeExpiry)).toEqual({ status: 'refused' });
     } finally {
       reopened.close();
     }
