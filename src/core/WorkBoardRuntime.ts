@@ -9,7 +9,7 @@
  * exercised whole in tests with fakes and wired once in production.
  */
 
-import { canonicalJson, sha256Hex } from './WorkCardStore.js';
+import { canonicalJson, isCardId, sha256Hex } from './WorkCardStore.js';
 import { sameProof, sameVersion, type WorkBoardApprovalLookup, type WorkBoardWriterProof } from './WorkBoardApprovalWriter.js';
 import type { WorkBoardSlipStore } from './WorkBoardSlipStore.js';
 import { applyWorkBoardSlip } from './workBoardSlipApplication.js';
@@ -82,6 +82,8 @@ export interface WorkBoardRuntimeSeams {
   permissionSlips?: {
     store: WorkBoardSlipStore;
     currentWriter: () => WorkBoardWriterProof | null;
+    /** Resolve an authenticated owner request with an explicit ordered card list. */
+    resolveIssueSource?: (sourceRef: string) => { sourceId: string; ownerPersonKey: string; cardIds: readonly string[] } | null;
     application?: {
       readEvent: (id: string) => WorkBoardApprovalLookup;
     };
@@ -139,6 +141,35 @@ export class WorkBoardRuntime {
     if (!this.started || !this.seams.enabled()) return null;
     const writer = this.seams.permissionSlips?.currentWriter();
     return writer && writer.ownerPersonKey === this.seams.ownerPersonKey() ? writer : null;
+  }
+
+  issuePermissionSlip(sourceRef: string): { slipId: string; disclosureDigest: string; expiresAt: number } | null {
+    const port = this.seams.permissionSlips;
+    const writer = this.currentSlipWriter();
+    if (!port?.resolveIssueSource || !writer) return null;
+    const source = port.resolveIssueSource(sourceRef);
+    if (!source || source.ownerPersonKey !== writer.ownerPersonKey || !source.sourceId) return null;
+    const cardIds = [...source.cardIds];
+    if (!cardIds.length || !cardIds.every(isCardId) || new Set(cardIds).size !== cardIds.length
+      || !sameProof(writer, this.currentSlipWriter())) return null;
+
+    const existing = port.store.getBySource(source.sourceId);
+    if (existing) {
+      const exactList = existing.proposal.items.length === cardIds.length
+        && existing.proposal.items.every(({ version }, index) => version.cardId === cardIds[index]);
+      if (!exactList || !sameProof(writer, existing.proposal.writer)) return null;
+      return { slipId: existing.id, disclosureDigest: existing.digest, expiresAt: existing.expiresAt };
+    }
+
+    const items = [];
+    for (const cardId of cardIds) {
+      const item = this.svc.approvalSnapshot(cardId);
+      if (!item) return null;
+      items.push(item);
+    }
+    if (!sameProof(writer, this.currentSlipWriter())) return null;
+    const slip = port.store.issue({ sourceId: source.sourceId, writer, items });
+    return slip ? { slipId: slip.id, disclosureDigest: slip.digest, expiresAt: slip.expiresAt } : null;
   }
 
   bindPermissionSlip(input: WorkBoardSlipDeviceBinding) {

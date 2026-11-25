@@ -126,6 +126,12 @@ export class WorkBoardSlipStore {
     return issue.immediate();
   }
 
+  getBySource(sourceId: string): WorkBoardSlip | null {
+    const row = this.db.prepare('SELECT * FROM work_board_permission_slips WHERE source_id = ?')
+      .get(sourceId) as SlipRow | undefined;
+    return row ? unpack(row) : null;
+  }
+
   get(id: string): WorkBoardSlip | null {
     const row = this.db.prepare('SELECT * FROM work_board_permission_slips WHERE id = ?').get(id) as SlipRow | undefined;
     return row ? unpack(row) : null;

@@ -122,9 +122,13 @@ describe('Work cards from the owner phone E2E (feature is alive)', () => {
     const writer = { epoch: 'epoch1', ownerGeneration: 'owner1', ownerPersonKey: 'owner', writerIncarnation: 'i1' };
     let active = true;
     const store = new WorkBoardSlipStore(db);
+    let sourceCards: string[] = [];
     const rig: Rig = mkRuntime(stateDir, {
       permissionSlips: {
         store, currentWriter: () => active ? writer : null,
+        resolveIssueSource: (ref) => ref === 'owner-request' || ref === 'other-request'
+          ? { sourceId: 'private-source', ownerPersonKey: ref === 'owner-request' ? 'owner' : 'another-person', cardIds: sourceCards }
+          : null,
         application: {
           readEvent: (id) => readWorkBoardApprovalEvent(id, {
             journal: rig.journal,
@@ -153,7 +157,17 @@ describe('Work cards from the owner phone E2E (feature is alive)', () => {
       if (!createdCard.ok) throw new Error('card');
       const { cardId } = createdCard;
       const { version, disclosure } = rig.runtime.svc.approvalSnapshot(cardId)!;
-      const slip = store.issue({ sourceId: 'private-source', writer, items: [{ version, disclosure }] })!;
+      sourceCards = [cardId];
+      expect(rig.runtime.issuePermissionSlip('other-request')).toBeNull();
+      expect(rig.runtime.issuePermissionSlip('unknown-source')).toBeNull();
+      const issued = rig.runtime.issuePermissionSlip('owner-request')!;
+      expect(issued).toBeTruthy();
+      expect(rig.runtime.issuePermissionSlip('owner-request')).toEqual(issued);
+      sourceCards = [cardId, 'wc_8ef2f314f32acff4'];
+      expect(rig.runtime.issuePermissionSlip('owner-request')).toBeNull();
+      sourceCards = [cardId];
+      const slip = store.get(issued.slipId)!;
+      expect(slip.proposal.items).toEqual([{ version, disclosure }]);
       const route = `/mobile/work-board/slips/${slip.id}`;
       const bearer = await request(app).get(route).set(auth());
       expect(bearer.status).toBe(403);
@@ -223,6 +237,7 @@ describe('Work cards from the owner phone E2E (feature is alive)', () => {
       expect(rig.lines.filter(({ id }) => id === lineIdFor(eventId))).toHaveLength(1);
       expect(rig.journal.readKindComplete(WORK_CARD_RECORD_KIND).entries.filter(({ data }) => data.approvalBinding)).toHaveLength(1);
       expect(rig.runtime.svc.edit({ kind: 'agent' }, cardId, { title: 'Changed after approval' }).ok).toBe(true);
+      expect(rig.runtime.issuePermissionSlip('owner-request')).toEqual(issued);
       rig.runtime.stop();
       rig.runtime.start();
       const changed = await send(app, phone, 'GET', route);
