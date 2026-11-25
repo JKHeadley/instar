@@ -136,3 +136,7 @@ The Telegram source resolver reads an exact topic and message coordinate from a 
 ## Agent proposal endpoint for a recorded owner request
 
 The server now mounts a root-agent authenticated proposal route. It uses the existing Telegram journal reader and requires the configured Telegram owner to match the current Work Board owner's linked identity. The known topic and exact message are checked before issuance, and the response contains only locator metadata. The endpoint grants no card authority and enqueues no approval. Agent awareness explains how to use it. Independent review concurred with the dark checkpoint. The real server fixture uses a recorded-message test adapter and legacy owner registry. Live Telegram authorship and Team Access linkage remain activation checks.
+
+## Chat link locator
+
+The locator codec uses a fixed Instar host and a versioned fragment containing a canonical HTTPS agent origin and UUID slip ID. It rejects credentials, non-origin URLs and alternate outer paths or fields. It makes no network request and carries no credential, decision or authority. Native code must check the origin against its existing pairing before any signed read. The server never derives a target from an inbound Host header. This checkpoint adds no link emission or website configuration. Apple associated-domain coverage and a signed real-device open remain activation checks.
