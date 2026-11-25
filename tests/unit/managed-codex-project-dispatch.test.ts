@@ -18,7 +18,8 @@ function setup() {
     expect(store.hasEnrollment(worker.nativeSessionId)).toBe(true);
   });
   const cancelLaunch = vi.fn();
-  return { db, store, readAdmission, launch, releaseLaunch, cancelLaunch, enabled: () => true, verifyLaunch: () => true };
+  const reserveWork = vi.fn((_: typeof admission, reserve: () => boolean) => reserve());
+  return { db, store, readAdmission, launch, releaseLaunch, cancelLaunch, reserveWork, enabled: () => true, verifyLaunch: () => true };
 }
 
 describe('managed Codex project dispatch', () => {

@@ -39,6 +39,7 @@ import { spawn, execFileSync, type ChildProcess } from 'node:child_process';
 
 import type { Initiative, InitiativeTracker, RoundStatus } from './InitiativeTracker.js';
 import { ProjectRoundLock } from './ProjectRoundLock.js';
+import { projectRoundWorkKey } from './ProjectRoundRunner.js';
 import { ProjectRoundWorktrees } from './ProjectRoundWorktrees.js';
 import { detectClaudePath } from './Config.js';
 import { SafeGitExecutor } from './SafeGitExecutor.js';
@@ -151,6 +152,7 @@ export interface RunRoundResult {
  */
 export interface RunRoundDeps {
   stateDir: string;
+  managedWorkClaimed?: (workKey: string) => boolean;
 }
 
 /**
@@ -228,6 +230,14 @@ export async function runRound(input: RunRoundInput, deps: RunRoundDeps): Promis
       };
     }
     let lastItemIds = [...snapshot.itemIds];
+    const managedClaimExists = (itemIds: string[]) => itemIds.some(itemId =>
+      deps.managedWorkClaimed?.(projectRoundWorkKey(input.projectId, input.roundIndex, itemId)));
+    if (managedClaimExists(lastItemIds)) {
+      return {
+        outcome: 'failed', mergedItemIds: [], unmergedItemIds: lastItemIds,
+        relaunchCount, resumeAttempts, reason: 'round work is held by a managed project worker',
+      };
+    }
 
     // Step 3: lazy worktree allocation for round items. The autonomous
     // child opens more as it reaches them; we kick off only the first
@@ -296,6 +306,14 @@ export async function runRound(input: RunRoundInput, deps: RunRoundDeps): Promis
       if (lastItemIds.every((id) => verdict.verified.has(id))) {
         outcome = 'complete';
         mergedItemIds = [...lastItemIds];
+        break;
+      }
+
+      // A round edit can introduce a previously claimed item before a relaunch.
+      if (managedClaimExists(lastItemIds)) {
+        outcome = 'failed';
+        unmergedItemIds = [...lastItemIds];
+        reason = 'round work is held by a managed project worker';
         break;
       }
 

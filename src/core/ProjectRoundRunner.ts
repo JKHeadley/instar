@@ -101,6 +101,10 @@ export interface ProjectRoundRunnerConfig {
   ackGapCap?: number;
 }
 
+export function projectRoundWorkKey(projectId: string, roundIndex: number, itemId: string): string {
+  return JSON.stringify([projectId, roundIndex, itemId]);
+}
+
 export interface ManagedRoundCandidate {
   workKey: string;
   revision: string;
@@ -157,11 +161,31 @@ export class ProjectRoundRunner {
       || !Number.isSafeInteger(project.version) || !Number.isSafeInteger(child.version)) return;
 
     return {
-      workKey: JSON.stringify([project.id, roundIndex, child.id]),
+      workKey: projectRoundWorkKey(project.id, roundIndex, child.id),
       revision: JSON.stringify([project.version, child.version]),
       topicId: project.telegramTopicId,
       machineId: ownerMachineId,
     };
+  }
+
+  /** Serialize a durable managed reservation with ordinary round startup. */
+  reserveManagedRound(
+    projectId: string,
+    roundIndex: number,
+    expected: ManagedRoundCandidate,
+    reserve: () => boolean,
+  ): boolean {
+    const current = this.managedRoundCandidate(projectId, roundIndex);
+    if (!current || current.workKey !== expected.workKey || current.revision !== expected.revision
+      || current.topicId !== expected.topicId || current.machineId !== expected.machineId) return false;
+
+    const lock = this.lock.acquire(projectId, roundIndex);
+    if (!lock.ok) return false;
+    try {
+      return reserve();
+    } finally {
+      this.lock.release();
+    }
   }
 
   preflight(projectId: string, roundIndex: number): PreflightResult {

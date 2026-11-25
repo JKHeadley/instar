@@ -19,6 +19,7 @@ interface Dependencies {
   enabled(): boolean;
   readAdmission(workKey: string): ManagedProjectAdmission | undefined;
   store: ManagedCodexStopStore;
+  reserveWork(admission: ManagedProjectAdmission, reserve: () => boolean): boolean;
   launch(admission: ManagedProjectAdmission, launchId: string): Promise<ManagedProjectLaunch>;
   verifyLaunch(admission: ManagedProjectAdmission, launch: ManagedProjectLaunch): boolean;
   releaseLaunch(launch: ManagedProjectLaunch): void;
@@ -45,10 +46,10 @@ export async function dispatchManagedCodexProject(
   if (!admission || admission.workKey !== workKey || !admission.revision || !admission.topicId) return;
 
   const launchId = randomUUID();
-  if (!deps.store.reserve(workKey, {
+  if (!deps.reserveWork(admission, () => deps.store.reserve(workKey, {
     sessionId: launchId, machineId: admission.machineId,
     ownerEpoch: admission.ownerEpoch, remaining: admission.remaining,
-  })) return;
+  }))) return;
 
   let bound = false;
   let released = false;

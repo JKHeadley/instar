@@ -1,0 +1,25 @@
+{
+  "ts": "2026-11-25T15:57:45.352Z",
+  "slug": "managed-codex-round-exclusion",
+  "suggestedTier": 2,
+  "declaredTier": 1,
+  "riskFloor": 1,
+  "riskFloorReasons": [],
+  "belowFloor": false,
+  "files": 4,
+  "loc": 54,
+  "scope": {
+    "basis": "staged-in-scope-paths-including-deleted",
+    "files": [
+      "src/core/ManagedCodexProjectDispatch.ts",
+      "src/core/ManagedCodexStopStore.ts",
+      "src/core/ProjectRoundExecution.ts",
+      "src/core/ProjectRoundRunner.ts"
+    ],
+    "addedLines": 51,
+    "deletedLines": 3
+  },
+  "causalAutopsy": null,
+  "classClosure": null,
+  "verdict": "pass"
+}

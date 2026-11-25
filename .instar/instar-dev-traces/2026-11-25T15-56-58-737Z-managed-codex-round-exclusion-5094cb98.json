@@ -1,0 +1,23 @@
+{
+  "version": 2,
+  "slug": "managed-codex-round-exclusion",
+  "sessionId": "017c26ed-5596-4576-9c20-20af13e4c1f8",
+  "timestamp": "2026-11-25T15:56:58.737Z",
+  "artifactPath": "upgrades/side-effects/managed-codex-round-exclusion.md",
+  "artifactSha256": "10e7742c7847e2ecefbc0548ef1a10bbf68d0a9dd5d540351a41dd644b1470de",
+  "coveredFiles": [
+    "src/core/ManagedCodexProjectDispatch.ts",
+    "src/core/ManagedCodexStopStore.ts",
+    "src/core/ProjectRoundExecution.ts",
+    "src/core/ProjectRoundRunner.ts",
+    "tests/e2e/managed-codex-stop-lifecycle.test.ts",
+    "tests/unit/managed-codex-project-dispatch.test.ts"
+  ],
+  "phase": "complete",
+  "tier": 1,
+  "tierReasoning": "Fixture composition only exercises the new exclusion. Neither production path supplies a managed reservation or claim reader.",
+  "eli16Path": "upgrades/managed-codex-round-exclusion.eli16.md",
+  "sideEffectsPath": "upgrades/side-effects/managed-codex-round-exclusion.md",
+  "secondPass": "true",
+  "reviewerConcurred": true
+}

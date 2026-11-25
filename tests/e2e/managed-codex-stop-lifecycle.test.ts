@@ -8,6 +8,8 @@ import { createTempProject } from '../helpers/setup.js';
 import { AgentServer } from '../../src/server/AgentServer.js';
 import { StateManager } from '../../src/core/StateManager.js';
 import { InitiativeTracker } from '../../src/core/InitiativeTracker.js';
+import { runRound } from '../../src/core/ProjectRoundExecution.js';
+import { ProjectRoundLock } from '../../src/core/ProjectRoundLock.js';
 import { ProjectRoundRunner } from '../../src/core/ProjectRoundRunner.js';
 import { SafeGitExecutor } from '../../src/core/SafeGitExecutor.js';
 import { dispatchManagedCodexProject } from '../../src/core/ManagedCodexProjectDispatch.js';
@@ -111,6 +113,15 @@ it.skipIf(!codex).each([true, false])('drives an enrolled worker through package
     };
     const candidate = readAdmission();
     expect(candidate).toBeDefined();
+    const ordinaryLock = new ProjectRoundLock({ stateDir });
+    expect(ordinaryLock.acquire('managed-project', 0).ok).toBe(true);
+    try {
+      expect(runner.reserveManagedRound('managed-project', 0, candidate!, () => {
+        throw new Error('managed reservation must not run while ordinary execution is active');
+      })).toBe(false);
+    } finally {
+      ordinaryLock.release();
+    }
     let child: ReturnType<typeof spawn> | undefined;
     let exited: Promise<unknown[]> | undefined;
     let stderr = '';
@@ -121,6 +132,7 @@ it.skipIf(!codex).each([true, false])('drives an enrolled worker through package
         enabled: () => true,
         store,
         readAdmission,
+        reserveWork: (admission, reserve) => runner.reserveManagedRound('managed-project', 0, admission, reserve),
         launch: async (_admission, launchId) => {
           child = spawn(codex!, ['exec', '--json', '--trust', '--skip-git-repo-check',
             '--dangerously-bypass-hook-trust', 'Return CANARY_OK without calling tools.'], {
@@ -140,6 +152,12 @@ it.skipIf(!codex).each([true, false])('drives an enrolled worker through package
         cancelLaunch: () => { child?.kill('SIGKILL'); },
       });
       expect(admitted?.nativeSessionId).toBe(workerId);
+      const ordinary = await runRound({
+        tracker, projectId: 'managed-project', roundIndex: 0, targetRepoPath: projectDir,
+        mergeBaseBranch: 'main',
+        verifyMergedItems: async () => { throw new Error('ordinary execution passed the managed claim'); },
+      }, { stateDir, managedWorkClaimed: key => store.hasWorkClaim(key) });
+      expect(ordinary).toMatchObject({ outcome: 'failed', reason: 'round work is held by a managed project worker' });
       expect(exited).toBeDefined();
       const [code] = await exited!;
       expect(code, stderr).toBe(0);

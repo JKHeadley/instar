@@ -40,6 +40,11 @@ export class ManagedCodexStopStore {
     }).immediate();
   }
 
+  /** Claims remain exclusive while a past worker could still actuate. */
+  hasWorkClaim(workKey: string): boolean {
+    return this.db.prepare('SELECT 1 FROM managed_codex_work_claims WHERE work_key = ?').get(workKey) !== undefined;
+  }
+
   activate(sessionId: string): boolean {
     return this.change(sessionId, claim => claim.enrollment.state === 'pending'
       ? { ...claim, enrollment: { ...claim.enrollment, state: 'active' } }
