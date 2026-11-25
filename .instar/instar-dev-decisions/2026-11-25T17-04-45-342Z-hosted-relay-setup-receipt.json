@@ -1,0 +1,28 @@
+{
+  "ts": "2026-11-25T17:04:45.342Z",
+  "slug": "hosted-relay-setup-receipt",
+  "suggestedTier": 2,
+  "declaredTier": 2,
+  "riskFloor": 2,
+  "riskFloorReasons": [
+    "safety-invariant proximity: src/hostedRelay/setupReceipt.ts matches relay / delivery path"
+  ],
+  "belowFloor": false,
+  "files": 1,
+  "loc": 83,
+  "scope": {
+    "basis": "staged-in-scope-paths-including-deleted",
+    "files": [
+      "src/hostedRelay/setupReceipt.ts"
+    ],
+    "addedLines": 83,
+    "deletedLines": 0
+  },
+  "causalAutopsy": null,
+  "classClosure": {
+    "defectClass": "unbounded-self-action",
+    "closure": "n/a",
+    "reason": "One caller-requested redemption owns one bounded verified connection."
+  },
+  "verdict": "pass"
+}

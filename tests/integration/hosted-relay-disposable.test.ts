@@ -17,6 +17,7 @@ import { createHostedRelayOwnerLeaseReader } from '../../src/hostedRelay/ownerLe
 import { SafeFsExecutor } from '../../src/core/SafeFsExecutor.js';
 import { launchDisposableHostedRelay } from '../../src/hostedRelay/disposableLauncher.js';
 import { runHostedRelayReconnect } from '../../src/hostedRelay/reconnect.js';
+import { redeemHostedRelaySetupCode } from '../../src/hostedRelay/setupReceipt.js';
 import { createHostedRelayVerifiedDialer } from '../../src/hostedRelay/verifiedDialer.js';
 import { startHostedRelayAgentSession } from '../../src/hostedRelay/agentSession.js';
 import { createDisposableHostedRelay } from '../../src/hostedRelay/disposableRelay.js';
@@ -179,8 +180,9 @@ it('connects a signed outbound control session to an end-to-end TLS client in a 
       expect((await requestJson(phone.session, issue)).status).toBe(403);
       const issued = await requestJson(holderSession!, issue);
       expect(issued).toEqual({ status: 201, value: { code: expect.any(String), expiresInSeconds: 600 } });
-      expect(await requestJson(phone.session, redeem, { code: issued.value.code }))
-        .toEqual({ status: 200, value: { hostname } });
+      expect(await redeemHostedRelaySetupCode({ code: issued.value.code, routingDomain: 'relay.example',
+        connectVerified: dial, signal: controller.signal }))
+        .toEqual({ kind: 'relay-locator', hostname, origin: 'https://' + hostname });
       expect((await requestJson(phone.session, redeem, { code: issued.value.code })).status).toBe(404);
       const pendingCode = await requestJson(holderSession!, issue);
 
