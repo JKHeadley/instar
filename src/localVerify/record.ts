@@ -32,6 +32,7 @@ export interface PreflightEvidence {
 export const PREFLIGHT_MAX_SELECTED_FILES = 5;
 
 export interface LocalVerifyRecord {
+  smallPeerReceipt?: import('./smallPeerWatchdog.js').TrialReceipt;
   repo: string;
   pr: number;
   headSha: string;

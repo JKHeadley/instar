@@ -1,3 +1,4 @@
+import { smallPeerMemoryAllows, SMALL_PEER_COLLECTOR } from '../localVerify/smallPeerMemory.js';
 import { claimReconciliationNotice } from '../core/TopicProfileOrchestrator.js';
 /**
  * selfActionRegistry.ts — the self-action controller registry (Part D1 of
@@ -6368,7 +6369,29 @@ function makeMessageHolderRedeliveryLoop(f: PressureFixture, sink: ActionSink): 
 }
 
 
+const smallPeerTrialAdmission: SelfActionController = {
+  id: 'small-peer-trial-admission',
+  actionVerb: 'spawn',
+  models: 'src/localVerify/LocalVerifyService.ts (acceptPeerRun checks the local memory floor before starting the trial)',
+  modelsPath: 'src/localVerify/LocalVerifyService.ts',
+  restartPosture: { pressureSurvives: false, resetSafeReason: 'Every admission measures current memory. Reboot cannot turn insufficient memory into an eligible sample.' },
+  boundK: 0,
+  perTargetBoundK: 0,
+  ticks: 40,
+  tickMs: 1000,
+  makeUnderPressure(f, sink) {
+    return { tick() {
+      sink.considered++;
+      const now = f.clock.nowMs();
+      const floor = 4 * 2 ** 30;
+      const sample = { collector: SMALL_PEER_COLLECTOR, sampledAt: now, pressureLevel: 1, availableBytes: floor };
+      if (smallPeerMemoryAllows(sample, floor, now)) sink.emit({ verb: 'spawn', target: 'small-peer-trial' });
+    } };
+  },
+};
+
 export const SELF_ACTION_CONTROLLERS: SelfActionController[] = [
+  smallPeerTrialAdmission,
   siblingHoldingsRefresh,
   pairingOutcomeNoticeRetry,
   neverSilentConversationRecovery,

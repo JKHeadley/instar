@@ -27725,7 +27725,8 @@ export async function startServer(options: StartOptions): Promise<void> {
                 const memReason = peerMemoryReason(cap);
                 if (memReason) return { eligible: false, reason: 'memory-pressure', score: null, memoryReason: memReason };
                 const fit = heavyFit(cap, effectivePending(cap, heavyReservations.count(machineId)));
-                return { eligible: fit.eligible, reason: fit.reason, score: fit.loadPerCore };
+                return { eligible: fit.eligible, reason: fit.reason, score: fit.loadPerCore,
+                  smallPeerHeadroom: fit.profile.reason === 'below-floor' && fit.headroom === 'headroom' };
               },
               authToken: String(config.authToken ?? ''),
               agentId: config.projectName,
