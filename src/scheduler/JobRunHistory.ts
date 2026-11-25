@@ -19,6 +19,7 @@
 import fs from 'node:fs';
 import path from 'node:path';
 import { capacityOutcome, type CapacityEnforcementResult } from '../core/CapacityEnforcement.js';
+import { SafeFsExecutor } from '../core/SafeFsExecutor.js';
 import { DegradationReporter } from '../monitoring/DegradationReporter.js';
 import type { JobRunLaunch } from '../core/types.js';
 
@@ -471,6 +472,10 @@ export class JobRunHistory {
     } finally {
       fs.closeSync(fd);
     }
+    this.flushLedgerDirectories();
+  }
+
+  private flushLedgerDirectories(): void {
     for (const dir of [this.ledgerDir, path.dirname(this.ledgerDir)]) {
       const parent = fs.openSync(dir, fs.constants.O_RDONLY);
       try {
@@ -755,26 +760,29 @@ export class JobRunHistory {
       // Sort by startedAt to preserve chronological order in the file
       deduped.sort((a, b) => a.startedAt.localeCompare(b.startedAt));
       const content = deduped.map(l => JSON.stringify(l)).join('\n') + '\n';
-      fs.writeFileSync(this.file, content);
-      // The rewrite invalidates the (size, mtime) readLines() just cached.
-      // Seed the cache with the deduped set and the post-rewrite stat so the
-      // first read after boot is a no-IO cache hit, not a full 13MB re-parse.
+      const assertUnchanged = (): fs.Stats => {
+        const stat = fs.lstatSync(this.file);
+        if (!stat.isFile() || `${stat.dev}:${stat.ino}` !== this.cachedFileIdentity
+          || stat.size !== this.cachedSize || stat.mtimeMs !== this.cachedMtimeMs) {
+          throw new Error('job ledger changed during startup compaction');
+        }
+        return stat;
+      };
       try {
-        const stat = fs.statSync(this.file);
-        this.cachedRuns = deduped;
-        this.cachedSize = stat.size;
-        this.cachedMtimeMs = stat.mtimeMs;
-        this.cachedFileIdentity = `${stat.dev}:${stat.ino}`;
-      } catch {
-        // @silent-fallback-ok — if the post-compaction stat fails, drop the cache
-        // so the next read re-reads the freshly-written file from disk. The
-        // compaction itself already succeeded (writeFileSync above); this only
-        // governs whether we seed the in-memory cache or rebuild it lazily.
+        const original = assertUnchanged();
+        SafeFsExecutor.atomicWriteFileSync(this.file, content, {
+          mode: original.mode & 0o777,
+          operation: 'compact job run history on startup',
+          beforeReplace: assertUnchanged,
+        });
+        this.flushLedgerDirectories();
+        console.log(`[JobRunHistory] Compacted ${removed} duplicate entries (${deduped.length} unique runs preserved)`);
+      } catch (error) {
+        // History can still be read when optional startup compaction fails.
+        console.warn('[JobRunHistory] Startup compaction did not complete:', error);
+      } finally {
         this.cachedRuns = null;
-        this.cachedSize = 0;
-        this.cachedMtimeMs = 0;
       }
-      console.log(`[JobRunHistory] Compacted ${removed} duplicate entries (${deduped.length} unique runs preserved)`);
     }
   }
 

@@ -641,7 +641,11 @@ export class SafeFsExecutor {
    * Atomically write a string to `target`. Writes to a temp sibling, fsyncs,
    * then renames over the target. Creates parent directories if missing.
    */
-  static atomicWriteFileSync(target: string, data: string | Uint8Array, opts?: { operation?: string; mode?: number }): void {
+  static atomicWriteFileSync(target: string, data: string | Uint8Array, opts?: {
+    operation?: string;
+    mode?: number;
+    beforeReplace?: () => void;
+  }): void {
     const operation = opts?.operation ?? 'atomicWriteFileSync';
     const resolved = path.resolve(target);
     const dir = path.dirname(resolved);
@@ -653,10 +657,11 @@ export class SafeFsExecutor {
     let fd: number | undefined;
     try {
       fd = fs.openSync(tmp, 'w', opts?.mode ?? 0o644);
-      fs.writeSync(fd, data as never);
+      fs.writeFileSync(fd, data);
       fs.fsyncSync(fd);   // flush data to durable storage before rename
       fs.closeSync(fd);
       fd = undefined;
+      opts?.beforeReplace?.();
       fs.renameSync(tmp, resolved);  // atomic replace
       audit('atomicWriteFileSync', operation, resolved, 'allowed');
     } catch (err) {

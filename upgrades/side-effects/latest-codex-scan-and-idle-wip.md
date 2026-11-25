@@ -133,3 +133,11 @@ Independent review concurred for advisory publication. Before cleanup, the job l
 Initial publication now synchronizes the job ledger and its containing directories after verifying references and before writing the cursor. It checks that the ledger still names the same file and compares the complete snapshot again after the flush. A flush failure leaves the cursor absent and the successful run intact. An existing cursor does not trigger another flush. This checkpoint covers initial publication. Startup ledger compaction and future cursor advancement still need crash-safe ordering review before cleanup.
 
 Independent review concurred for first publication with no cleanup authority.
+
+## Startup job history compaction
+
+Startup writes a complete compacted ledger to a sibling file and flushes it before atomic replacement. It verifies the source file's identity and metadata again immediately before replacement and flushes the containing directories afterward. Incomplete history and a source change observed during staging cause compaction to be skipped. A failed write or rename leaves the original ledger readable and allows a retry on the next startup. Startup compaction remains local to this machine and does not change the scheduler's authority over run outcomes.
+
+A writer can still append between the final source check and the rename. Compaction has no common lock with every ledger writer, so that append could land on the displaced inode or miss the replacement. The disposition is to keep cleanup disabled and treat this as a draft verification checkpoint. Before production approval, reviewers should require common writer custody for the replacement and append paths, or evidence that all writers are excluded for the full replacement window. Reverting the patch backs out this implementation but cannot restore a row lost during concurrent replacement.
+
+The focused run passed 73 tests. Added cases simulate a failed rename and a concurrent append during staging. They establish that the original survives both cases and that compaction can retry. The narrower race after the final check remains open.

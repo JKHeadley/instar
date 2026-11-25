@@ -334,6 +334,47 @@ describe('JobRunHistory unit tests', () => {
       expect(found!.reflection).toBeDefined();
     });
 
+    it('preserves the original ledger when replacement fails and compacts on the next startup', () => {
+      const history = new JobRunHistory(stateDir);
+      const runId = history.recordStart({ slug: 'test-job', sessionId: 'sess-1', trigger: 'scheduled' });
+      history.recordCompletion({ runId, result: 'success', outputSummary: 'done' });
+      const file = path.join(stateDir, 'ledger', 'job-runs.jsonl');
+      const original = fs.readFileSync(file);
+      const replace = vi.spyOn(fs, 'renameSync').mockImplementationOnce(() => {
+        throw new Error('simulated interruption at replacement');
+      });
+      try {
+        const reopened = new JobRunHistory(stateDir);
+        expect(replace).toHaveBeenCalled();
+        expect(fs.readFileSync(file)).toEqual(original);
+        expect(reopened.findRun(runId)).toMatchObject({ result: 'success', outputSummary: 'done' });
+      } finally {
+        replace.mockRestore();
+      }
+
+      const retried = new JobRunHistory(stateDir);
+      expect(readRawJSONL(stateDir)).toHaveLength(1);
+      expect(retried.findRun(runId)).toMatchObject({ result: 'success', outputSummary: 'done' });
+    });
+
+    it('keeps an append made while the compacted copy is being written', () => {
+      const history = new JobRunHistory(stateDir);
+      const runId = history.recordStart({ slug: 'test-job', sessionId: 'sess-1', trigger: 'scheduled' });
+      history.recordCompletion({ runId, result: 'success' });
+      const sync = fs.fsyncSync;
+      const staging = vi.spyOn(fs, 'fsyncSync').mockImplementationOnce(fd => {
+        sync(fd);
+        history.recordStart({ slug: 'other-job', sessionId: 'sess-2', trigger: 'scheduled' });
+      });
+      try {
+        const reopened = new JobRunHistory(stateDir);
+        expect(reopened.query().total).toBe(2);
+        expect(readRawJSONL(stateDir)).toHaveLength(3);
+      } finally {
+        staging.mockRestore();
+      }
+    });
+
     it('preserves multiple distinct runs during compaction', () => {
       const history = new JobRunHistory(stateDir);
 
