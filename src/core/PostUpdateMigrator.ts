@@ -14056,9 +14056,14 @@ The server runs the full test suite on the exact code a pull request would merge
       result.upgraded.push('CLAUDE.md: Local Verify peer line names the works-through-restart setting');
     }
     if (content.includes('/local-verify') && !content.includes('monitoring.localVerify.smallPeerTrial')) {
-      content += '\n- Local Verify can give one normal pull request to a calibrated small Mac with two unit workers and one worker for each remaining suite. The coordinator and peer must share the measured monitoring.localVerify.smallPeerTrial policy. The peer stops when available memory reaches the floor or telemetry expires. Read its signed attempt receipt for elapsed time, peak memory and the reason it stopped.\n';
+      content += '\n- Local Verify can give one normal pull request to a calibrated small Mac with one or two unit workers and one worker for each remaining suite. The coordinator and peer must share the measured monitoring.localVerify.smallPeerTrial policy. The peer stops when available memory reaches the floor or telemetry expires. Read its signed attempt receipt for elapsed time, peak memory and the reason it stopped.\n';
       patched = true;
       result.upgraded.push('CLAUDE.md: added small Mac verification trial awareness');
+    }
+    if (content.includes('calibrated small Mac with two unit workers and one worker for each remaining suite')) {
+      content = content.replace('calibrated small Mac with two unit workers', 'calibrated small Mac with one or two unit workers');
+      patched = true;
+      result.upgraded.push('CLAUDE.md: small Mac verification awareness names both worker settings');
     }
     // local-verify merge-throughput overflow: a labelled PR is admitted past a full queue.
     if (content.includes('/local-verify') && !content.includes('Local Verify throughput overflow')) {

@@ -67,7 +67,7 @@ export interface SmallPeerTrialPolicy {
   floorBytes: number;
   reserveBytes: number;
   recoveryMs: number;
-  unitWorkers: 2;
+  unitWorkers: 1 | 2;
   integration: 1;
   e2e: 1;
 }
@@ -81,11 +81,11 @@ export function parseSmallPeerTrialPolicy(raw: unknown): SmallPeerTrialPolicy | 
     || typeof p.reserveBytes !== 'number' || !Number.isSafeInteger(p.reserveBytes)
     || p.reserveBytes <= 0 || p.floorBytes <= p.reserveBytes
     || typeof p.recoveryMs !== 'number' || !Number.isSafeInteger(p.recoveryMs) || p.recoveryMs < 2 * SAMPLE_INTERVAL_MS
-    || p.unitWorkers !== 2 || p.integration !== 1 || p.e2e !== 1) return null;
+    || (p.unitWorkers !== 1 && p.unitWorkers !== 2) || p.integration !== 1 || p.e2e !== 1) return null;
   return {
     version: 1, machineId: p.machineId, collector: SMALL_PEER_COLLECTOR,
     floorBytes: p.floorBytes, reserveBytes: p.reserveBytes, recoveryMs: p.recoveryMs,
-    unitWorkers: 2, integration: 1, e2e: 1,
+    unitWorkers: p.unitWorkers, integration: 1, e2e: 1,
   };
 }
 

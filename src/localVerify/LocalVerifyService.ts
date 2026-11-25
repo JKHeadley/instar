@@ -2267,7 +2267,7 @@ export class LocalVerifyService {
 
   private trialPolicyCurrent(policy: SmallPeerTrialPolicy): boolean {
     const shards = this.laneShards();
-    return process.platform === 'darwin' && shards?.unitWorkers === 2 && shards.integration === 1 && shards.e2e === 1
+    return process.platform === 'darwin' && shards?.unitWorkers === policy.unitWorkers && shards.integration === policy.integration && shards.e2e === policy.e2e
       && JSON.stringify(this.smallPeerPolicy(this.cfg.machineId)) === JSON.stringify(policy)
       && !fs.existsSync(path.join(this.lvStateDir, 'small-peer-quarantined'));
   }
@@ -4558,7 +4558,7 @@ export class LocalVerifyService {
       ...(entry.kind !== 'main' && this.failFastOn() ? { failFast: true } : {}),
       ...(entry.kind !== 'main' ? { preflightMode: replay || entry.preflightBypassRetry ? 'off' as const : this.preflightMode() } : {}),
       ...(entry.kind !== 'main' ? { preflightRediscoverable: entry.preflightRediscoverable === true } : {}),
-      ...(() => { const ls = entry.smallPeerTrial ? { unitWorkers: 2, integration: 1, e2e: 1 } : this.laneShards(); return ls ? { laneShards: ls } : {}; })(),
+      ...(() => { const ls = entry.smallPeerTrial ? { unitWorkers: entry.smallPeerTrial.unitWorkers, integration: 1, e2e: 1 } : this.laneShards(); return ls ? { laneShards: ls } : {}; })(),
       ...(entry.kind === 'main' ? { kind: 'main' as const } : {}),
       // Borrowed helpers' baseline results: a `main` verify reports its per-file counts only when someone keeps them
       // (a peer run: the coordinator asked; a local run: a helper is configured here or on a peer). Absent otherwise.
