@@ -1,3 +1,4 @@
+import { SQL_COMMAND_CONTEXT_CHECK } from '../core/sqlCommandContext.js';
 import { ACCOUNT_PAGE_SAFETY_SCRIPT } from '../data/accountPageSafetyScript.js';
 /**
  * `instar init` — Initialize agent infrastructure.
@@ -4561,6 +4562,7 @@ for pattern in "rm -rf \\." "git push --force" "git push -f" "git reset --hard" 
   fi
 done
 
+${SQL_COMMAND_CONTEXT_CHECK}
 # SQL must look like a statement, not prose that merely names a keyword. Match
 # at input/statement start or immediately after a SQL-bearing quote/separator,
 # and require the following table/database identifier. Ambiguous statement
@@ -4574,6 +4576,10 @@ for sql_spec in \\
   pattern="\${sql_spec%%|*}"
   sql_pattern="\${sql_spec#*|}"
   if echo "\$INPUT" | grep -qE "\$sql_pattern"; then
+    if [ -z "\$SQL_LITERAL_DATA" ]; then
+      if sql_command_is_literal_data; then SQL_LITERAL_DATA=1; else SQL_LITERAL_DATA=0; fi
+    fi
+    if [ "\$SQL_LITERAL_DATA" = "1" ]; then continue; fi
     if [ "\$SAFETY_LEVEL" -eq 1 ]; then
       echo "BLOCKED: Potentially destructive command detected: \$pattern" >&2
       echo "Ask the user for explicit confirmation before running this command." >&2
