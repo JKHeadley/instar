@@ -1,0 +1,26 @@
+{
+  "version": 2,
+  "slug": "hosted-relay-rendezvous",
+  "sessionId": "41652017-0805-405d-bb4e-2a975fb349ce",
+  "timestamp": "2026-11-25T13:47:22.847Z",
+  "artifactPath": "upgrades/side-effects/hosted-relay-rendezvous.md",
+  "artifactSha256": "84e60f93174cb8a43c8e8506a34cb6063424a2327323dfc1faf345f08ac2d9ee",
+  "specPath": "docs/specs/hosted-relay.md",
+  "coveredFiles": [
+    "src/hostedRelay/clientHello.ts",
+    "src/hostedRelay/rendezvous.ts",
+    "tests/unit/hosted-relay-rendezvous.test.ts",
+    "upgrades/next/hosted-relay-rendezvous.md",
+    "upgrades/side-effects/hosted-relay-rendezvous.md"
+  ],
+  "phase": "complete",
+  "tier": 2,
+  "tierReasoning": "Dormant rendezvous code store scopes discovery to a current route assignment and consumes a code exactly once.",
+  "secondPass": "true",
+  "reviewerConcurred": true,
+  "classClosure": {
+    "defectClass": "unbounded-self-action",
+    "closure": "n/a",
+    "reason": "Dormant caller-driven locator grants no ownership or autonomous action."
+  }
+}

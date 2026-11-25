@@ -6,6 +6,13 @@ export type HostedRelayHello =
   | { status: 'incomplete' | 'invalid' }
   | { status: 'named'; hostname: string };
 
+export function normalizeHostedRelayHostname(value: string): string | undefined {
+  if (!/^[\x00-\x7f]{1,253}$/.test(value)) return undefined;
+  const name = value.toLowerCase();
+  return name.includes('.') && !/^[\d.]+$/.test(name)
+    && name.split('.').every(label => /^[a-z0-9](?:[a-z0-9-]{0,61}[a-z0-9])?$/.test(label)) ? name : undefined;
+}
+
 function routingName(hello: Buffer): string | undefined {
   let offset = 34; // legacy version and random
   const advance = (size: number): number => {
@@ -32,9 +39,8 @@ function routingName(hello: Buffer): string | undefined {
     if (type !== 0) continue;
     if (name || size < 6 || extension.readUInt16BE(0) !== size - 2
       || extension[2] !== 0 || extension.readUInt16BE(3) !== size - 5 || extension.subarray(5).some(byte => byte > 127)) return undefined;
-    name = extension.toString('ascii', 5).toLowerCase();
-    if (name.length > 253 || !name.includes('.') || !name.split('.').every(label => /^[a-z0-9](?:[a-z0-9-]{0,61}[a-z0-9])?$/.test(label))
-      || /^[\d.]+$/.test(name)) return undefined;
+    name = normalizeHostedRelayHostname(extension.toString('ascii', 5));
+    if (!name) return undefined;
   }
   return name;
 }
