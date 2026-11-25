@@ -4,7 +4,7 @@ Status: draft for independent review. The Tier 2 spec is awaiting convergence an
 
 ## Scope
 
-This review covers the 19-path staged server and test patch with SHA-256 `e0686d999222dc39d1f64b6d9a92f736309b03941656af611c9ffb9a614b1a93`. The patch adds 1,427 lines and removes 18. It adds local App attachment browsing and exact-content reads behind an explicit opt-in. It includes neither browser sheet rendering nor search and preview delivery.
+This review covers the 19-path staged server and test patch with SHA-256 `4a65c533e63d5f6dbf4e3b3918e3601a26482181bb66e79a3f262ac3146fb957`. The patch adds 1,433 lines and removes 18. It adds local App attachment browsing and exact-content reads behind an explicit opt-in. It includes neither browser sheet rendering nor search and preview delivery.
 
 ## Decision points and impact
 
@@ -26,12 +26,14 @@ Browse and exact content each admit one request per device and four per server. 
 
 ## Under-block and rollback
 
-Signed device admission charges existing quotas before owner checks and the handler switch. Browse shares the general signed read quota. Exact content shares the ordinary media-read bucket, including its 120-per-minute limit. The allowlists, rate charges, exact GET timeout override and ordinary media header refactor remain when opt-in is removed. A previously published stream can continue until completion or its deadline. Reverting the patch removes these integration effects. Access denied for a non-owner and unavailable after deletion or purge retain distinct response statuses.
+Signed device admission charges existing quotas before owner checks and the handler switch. Browse shares the general signed read quota. Exact content shares the ordinary media-read bucket, including its 120-per-minute limit. The allowlists, rate charges, exact GET timeout override and ordinary media header refactor remain when opt-in is removed. After the server observes the disabled setting, new responses stop. A stream whose headers were published before revocation or opt-out can continue until completion or its deadline. Reverting the patch removes these integration effects. Access denied for a non-owner and unavailable after deletion or purge retain distinct response statuses.
 
 ## Authority and machine routing
 
-Existing live owner admission and the exact conversation and reference checks determine whether to return authorized metadata or bytes. A cursor or media hash is a selector. Neither is proof of authority. The routes address the App conversation holder and read its existing local store and descriptor. This slice adds no replicated cache, peer read path or new storage. A holder without an available blob returns unavailable, and the client must preserve that distinction.
+Existing live owner admission and the exact conversation and reference checks determine whether to return authorized metadata or bytes. A cursor or media hash is a selector. Neither is proof of authority. The routes read the connected server’s local replicated view and descriptor. Admission does not establish that the server is the current conversation holder. This slice adds no replicated cache, peer read path or new storage. A local server without an available blob returns unavailable, and the client must preserve that distinction.
 
 ## Review disposition
 
 An artifact reviewer traced the staged authorization and raised the pre-handler off-state effects and permit cleanup findings above. They helped author the runtime, so an independent implementation concurrence is still outstanding. These findings change the draft review only.
+
+The independent second pass flagged the local-replica wording and a size-bearing 416 before descriptor verification. The staged correction places the 416 after verification and the final authorization recheck. The regression simulates unavailable bytes for an otherwise authorized out-of-bounds range and expects 404 with no size. All 13 targeted integration cases passed in the configured dry-run admission posture. Concurrence on the revised patch is pending.
