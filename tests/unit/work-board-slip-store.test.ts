@@ -1,0 +1,106 @@
+import { mkdtempSync } from 'node:fs';
+import { tmpdir } from 'node:os';
+import { join } from 'node:path';
+import { SafeFsExecutor } from '../../src/core/SafeFsExecutor.js';
+import Database from 'better-sqlite3';
+import { afterEach, describe, expect, it } from 'vitest';
+import { WorkBoardSlipStore, type WorkBoardSlipProposal } from '../../src/core/WorkBoardSlipStore.js';
+import { canonicalJson, sha256Hex } from '../../src/core/WorkCardStore.js';
+
+const dbs: Database.Database[] = [];
+afterEach(() => { for (const db of dbs.splice(0)) db.close(); });
+
+function fixture() {
+  const db = new Database(':memory:');
+  dbs.push(db);
+  let now = 100;
+  const store = new WorkBoardSlipStore(db, () => now);
+  const disclosure = { title: 'Review the Work Board' };
+  const proposal: WorkBoardSlipProposal = {
+    sourceId: 'verified-message-1',
+    writer: { epoch: 'epoch1', ownerGeneration: 'owner1', ownerPersonKey: 'justin', writerIncarnation: 'i1' },
+    items: [{
+      version: {
+        cardId: 'wc_6248a51921c41ca0', cardRevision: 'card1', policyRevision: 'policy1',
+        titleHash: 'a'.repeat(64), materialHash: 'b'.repeat(64), visibleTextHash: sha256Hex(canonicalJson(disclosure)),
+      },
+      disclosure,
+    }],
+  };
+  return { db, store, proposal, nextTime: (value: number) => { now = value; } };
+}
+
+describe('Work Board slip store', () => {
+  it('issues one immutable exact proposal per authenticated source', () => {
+    const { store, proposal } = fixture();
+    const slip = store.issue(proposal)!;
+    expect(slip).toMatchObject({ expiresAt: 86_400_100, decisionId: null });
+    expect(store.issue(proposal)).toEqual(slip);
+    const [item] = proposal.items;
+    expect(store.issue({ ...proposal, items: [{ ...item, version: { ...item.version, cardRevision: 'card2' } }] })).toBeNull();
+    expect(store.issue({ ...proposal, items: [{ ...item, disclosure: { title: 'Replaced' } }] })).toBeNull();
+    expect(store.issue({ ...proposal, items: [item, item] })).toBeNull();
+  });
+
+  it('consumes only the exact digest and writer once and returns the same decision on replay', () => {
+    const { store, proposal, nextTime } = fixture();
+    const slip = store.issue(proposal)!;
+    expect(store.consumeVerified(slip.id, 'wrong', proposal.writer, 'decision1')).toBeNull();
+    expect(store.consumeVerified(slip.id, slip.digest, { ...proposal.writer, epoch: 'epoch2' }, 'decision1')).toBeNull();
+    const decided = store.consumeVerified(slip.id, slip.digest, proposal.writer, 'decision1');
+    expect(decided?.decisionId).toBe('decision1');
+    nextTime(slip.expiresAt);
+    expect(store.consumeVerified(slip.id, slip.digest, proposal.writer, 'decision1')).toEqual(decided);
+    expect(store.consumeVerified(slip.id, slip.digest, proposal.writer, 'decision2')).toBeNull();
+  });
+
+  it('fails closed on a changed stored proposal even when its digest column is intact', () => {
+    const { db, store, proposal } = fixture();
+    const slip = store.issue(proposal)!;
+    db.prepare('UPDATE work_board_permission_slips SET proposal = ? WHERE id = ?')
+      .run(canonicalJson({ ...proposal, sourceId: 'another-source' }), slip.id);
+    expect(store.get(slip.id)).toBeNull();
+    expect(store.consumeVerified(slip.id, slip.digest, proposal.writer, 'decision1')).toBeNull();
+    db.prepare('UPDATE work_board_permission_slips SET proposal = ?, source_id = ? WHERE id = ?')
+      .run(canonicalJson(proposal), 'wrong-source', slip.id);
+    expect(store.get(slip.id)).toBeNull();
+  });
+
+  it.each(['malformed', 86_400_101])('rejects a changed stored deadline', (deadline) => {
+    const { db, store, proposal } = fixture();
+    const slip = store.issue(proposal)!;
+    db.prepare('UPDATE work_board_permission_slips SET expires_at = ? WHERE id = ?').run(deadline, slip.id);
+    expect(store.consumeVerified(slip.id, slip.digest, proposal.writer, 'decision1')).toBeNull();
+  });
+
+  it('recovers the same committed decision after reopening a persistent database', () => {
+    const { proposal } = fixture();
+    const dir = mkdtempSync(join(tmpdir(), 'work-board-slip-store-'));
+    const path = join(dir, 'slips.sqlite');
+    try {
+      const first = new Database(path);
+      try {
+        const store = new WorkBoardSlipStore(first);
+        const slip = store.issue(proposal)!;
+        expect(store.consumeVerified(slip.id, slip.digest, proposal.writer, 'decision1')?.decisionId).toBe('decision1');
+        const second = new Database(path);
+        try {
+          first.close();
+          const reopened = new WorkBoardSlipStore(second);
+          expect(reopened.consumeVerified(slip.id, slip.digest, proposal.writer, 'decision1')?.decisionId).toBe('decision1');
+          expect(reopened.consumeVerified(slip.id, slip.digest, proposal.writer, 'decision2')).toBeNull();
+        } finally { second.close(); }
+      } finally { if (first.open) first.close(); }
+    } finally { SafeFsExecutor.safeRmSync(dir, { recursive: true, force: true, operation: 'tests/unit/work-board-slip-store.test.ts' }); }
+  });
+
+  it('rejects an expired unsigned proposal and reuse of a decision ID on a second slip', () => {
+    const { store, proposal, nextTime } = fixture();
+    const first = store.issue(proposal)!;
+    const second = store.issue({ ...proposal, sourceId: 'verified-message-2' })!;
+    expect(store.consumeVerified(first.id, first.digest, proposal.writer, 'decision1')).not.toBeNull();
+    expect(store.consumeVerified(second.id, second.digest, proposal.writer, 'decision1')).toBeNull();
+    nextTime(second.expiresAt);
+    expect(store.consumeVerified(second.id, second.digest, proposal.writer, 'decision2')).toBeNull();
+  });
+});

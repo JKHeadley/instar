@@ -76,3 +76,9 @@ The service reserves the event ID before enqueuing it. A timeout, missing sequen
 The server builds a distinct finite-slip action line using the existing owner-device presence envelope. The shared fixture checks byte-for-byte parity with the iPhone implementation and rejects noncanonical UUID or digest strings. Existing routes remain unchanged. Challenge issuance, authentication, and consumption stay with the owner-device authority when the new action is mounted.
 
 Independent review reproduced the shared fixture digest and concurred with the dark checkpoint. The helper rejects non-string inputs before constructing the signing line.
+
+## Durable slip decisions
+
+The store saves one immutable ordered slip per authenticated source and records one exact decision per slip in an immediate SQLite transaction. The decision, source, proposal digest, and current writer must match. An unsigned expired slip refuses a decision. An exact committed replay returns the same record. Digest, canonical shape, and source identity are verified on read, and persistent database handles require a durable journal mode. Routes must authenticate source and owner proof before calling the store and must verify the currently enrolled writer and sealed history before applying the recorded decision. The store checkpoint has no live call site. Tests cover integrity, expiry, source deduplication, decision replay, and reopening a persistent database.
+
+Independent review concurred after sealing the exact slip ID and expiry together with the canonical proposal. Tests cover malformed and changed stored deadlines and a real database reopen. The production authority must distinguish committed receipt recovery from fresh application.
