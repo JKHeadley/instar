@@ -938,6 +938,29 @@ describe('runVerify — retention of failed worktrees', () => {
     expect(modes).toEqual([{ mode: 0o600, flag: 'wx' }]);
     expect(f.removed).toContain(P.reportsDir);
   });
+  it('retains unit process output when the report lists no failed tests', async () => {
+    const f = fake();
+    const exec = f.seams.exec;
+    f.seams.exec = async (command, args, options) => {
+      const result = await exec(command, args, options);
+      if (!command.endsWith('vitest') || !args.some(a => a.endsWith('/unit.json'))) return result;
+      f.files.set(options.env.LOCAL_VERIFY_UNHANDLED_ERRORS_FILE!, JSON.stringify({
+        v: 1, unhandledErrors: 5, messages: Array(5).fill('worker error: ' + '\n'.repeat(380)),
+      }));
+      return { ...result, status: 1, signal: null, stderr: 'Unhandled Errors: worker unexpectedly exited' };
+    };
+    const result = await runVerify(input(), f.seams);
+    expect(result.kind === 'record' && result.record.outcome).toBe('failure');
+    const artifact = f.files.get(path.join(P.runDir, '.local-verify-failures.json'));
+    expect(JSON.parse(artifact!)).toMatchObject({
+      failures: [],
+      processFailures: [{
+        step: 'unit', status: 1, signal: null, stderr: 'Unhandled Errors: worker unexpectedly exited',
+        unhandled: { count: 5, messages: Array(5).fill('worker error: ' + '\n'.repeat(380)) },
+      }],
+    });
+  });
+
   it('keeps a failed verdict when diagnostic storage fails', async () => {
     const f = fake({ laneStatuses: { unit: ['failed'] } });
     const write = f.seams.fs.writeFile;

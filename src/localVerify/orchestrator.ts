@@ -924,7 +924,14 @@ export async function runVerify(input: VerifyRunInput, seams: OrchestratorSeams)
             own: changedForIsolation?.has(file) ?? false, result: 'failed',
           });
         });
-        const unhandled = reporter ? readUnhandledErrors(seams.fs.readFile(errorsPath)) : null;
+        const errors = reporter ? seams.fs.readFile(errorsPath) : null;
+        const unhandled = readUnhandledErrors(errors);
+        if (lane.name === 'unit' && (r.status !== 0 || r.signal) &&
+            ![...(report?.files.values() ?? [])].some(counts => counts.failed > 0)) {
+          try {
+            failureEvidence.captureUnitExit({ step: key, status: r.status, signal: r.signal, stdout: r.stdout, stderr: r.stderr }, errors);
+          } catch { seams.log({ event: 'failure-evidence-capture-failed' }); }
+        }
         return { report, status: r.status, unhandled, aborted: false };
       };
       /** The lane's usual processes, side by side. allSettled: every process has exited before the lane settles, even when one hits its deadline (nothing is left running outside the slot or the cleanup). */
