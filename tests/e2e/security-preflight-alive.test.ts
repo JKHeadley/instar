@@ -13,7 +13,11 @@ describe('security preflight production-shaped lifecycle', () => {
       port: 0, authToken: 'preflight-alive', scheduler: { enabled: false }, monitoring: {}, messaging: [] } as InstarConfig;
     async function boot(scheduler: typeof r.scheduler) {
       const s = new AgentServer({ config, state: r.project.state, scheduler, sessionManager: r.sessions as never });
-      await s.start(); cleanup.push(() => s.stop()); return s;
+      await s.start();
+      let stopRequest: Promise<void> | undefined;
+      const stop = () => stopRequest ??= s.stop();
+      cleanup.push(stop);
+      return { server: s, stop };
     }
     async function triggerAndCheckSpawn(server: AgentServer, spawnCount: number) {
       const response = await request(server.getApp()).post('/jobs/security-review/trigger')
@@ -39,18 +43,23 @@ describe('security preflight production-shaped lifecycle', () => {
       const packets = r.packets();
       expect(packets).toHaveLength(packetCount);
       const packet = packets.find(p => p.binding.sessionId === sessionId);
-      expect(packet).toBeDefined();
-      return packet!;
+      if (!packet) throw new Error('No evidence packet matched the launched session');
+      expect(outcome.map(event => event.metadata)).toContainEqual(expect.objectContaining({
+        status: 'recorded',
+        packetId: packet.packetId,
+        runId: packet.binding.runId,
+      }));
+      expect(packet.sources.every(source => verifyPacketSource(source) !== null)).toBe(true);
+      return packet;
     }
     const first = await boot(r.scheduler);
-    const session = await triggerAndCheckSpawn(first, 1);
+    const session = await triggerAndCheckSpawn(first.server, 1);
     const prior = await capturedPacket(session.id, 1);
-    expect(prior.sources.every(s => verifyPacketSource(s) !== null)).toBe(true);
     session.status = 'completed'; r.project.state.saveSession(session);
     await r.scheduler.notifyJobComplete(session.id, session.tmuxSession); await first.stop(); r.scheduler.stop();
     const rebuilt = r.rebuild(); cleanup.push(() => rebuilt.stop());
     const second = await boot(rebuilt);
-    const relaunched = await triggerAndCheckSpawn(second, 2);
+    const relaunched = await triggerAndCheckSpawn(second.server, 2);
     const next = await capturedPacket(relaunched.id, 2);
     expect(next.packetId).not.toBe(prior.packetId);
     expect(r.packets()).toContainEqual(prior);
