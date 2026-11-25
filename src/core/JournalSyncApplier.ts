@@ -59,6 +59,8 @@ import {
   type GuardLatchAction,
   JOURNAL_KINDS,
   sanitizeMachineId,
+  chiefDecisionIntentFilename,
+  chiefDecisionIntentBlocksRead,
   readTailTolerant,
   type JournalEntry,
   type JournalKind,
@@ -968,13 +970,16 @@ export class JournalSyncApplier {
     fromSeq: number,
     ownMachineId: string,
     maxBatchBytes = DEFAULT_MAX_BATCH_BYTES,
-  ): { kind: JournalKind; incarnation: string; entries: JournalEntry[]; oldestRetainedSeq?: number } {
+  ): { kind: JournalKind; incarnation: string; entries: JournalEntry[]; oldestRetainedSeq?: number; blockedByPendingDecision?: true } {
     const out: { kind: JournalKind; incarnation: string; entries: JournalEntry[]; oldestRetainedSeq?: number } = {
       kind,
       incarnation: this.readOwnIncarnation(ownMachineId),
       entries: [],
     };
     if (!JOURNAL_KINDS.includes(kind)) return out;
+    if (kind === 'chief-of-staff-record' && this.chiefDecisionBlocksServe(ownMachineId)) {
+      return { ...out, blockedByPendingDecision: true };
+    }
 
     // Read own current file + archives newest→oldest, collect entries with
     // seq > fromSeq, then return them ascending and byte-capped.
@@ -990,6 +995,11 @@ export class JournalSyncApplier {
         if (e.seq < minServableSeq) minServableSeq = e.seq;
         if (e.seq > fromSeq) collected.push(e);
       }
+    }
+
+    // A writer on the same host may have installed the intent during the read.
+    if (kind === 'chief-of-staff-record' && this.chiefDecisionBlocksServe(ownMachineId)) {
+      return { ...out, blockedByPendingDecision: true };
     }
 
     // Ascending by seq (the apply side requires contiguous in-order).
@@ -1143,6 +1153,10 @@ export class JournalSyncApplier {
   }
 
   /** Own current + archive stream files (newest-first) for serve reads. */
+  private chiefDecisionBlocksServe(machineId: string): boolean {
+    return chiefDecisionIntentBlocksRead(path.join(this.dirPath(), chiefDecisionIntentFilename(machineId)), this.io.statSync);
+  }
+
   private ownStreamFilesNewestFirst(ownMachineId: string, kind: JournalKind): string[] {
     const safe = sanitizeMachineId(ownMachineId);
     const dir = this.dirPath();

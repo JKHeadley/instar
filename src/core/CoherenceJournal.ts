@@ -44,6 +44,21 @@ import {
 } from './ReplicatedRecordEnvelope.js';
 import { SafeFsExecutor } from './SafeFsExecutor.js';
 
+/** Shared path for the writer and replication reader of the same own stream. */
+export function chiefDecisionIntentFilename(machineId: string): string {
+  return `${sanitizeMachineId(machineId)}.chief-decision-intent.json`;
+}
+
+/** An unreadable marker is not evidence of an available stream. */
+export function chiefDecisionIntentBlocksRead(file: string, stat: JournalFs['statSync']): boolean {
+  try {
+    stat(file);
+    return true;
+  } catch (error) {
+    return (error as NodeJS.ErrnoException).code !== 'ENOENT';
+  }
+}
+
 export type JournalKind = 'topic-placement' | 'session-lifecycle' | 'autonomous-run' | 'threadline-conversation' | 'guard-latch' | 'ssh-direction-proof' | 'pref-record' | 'relationship-record' | 'learning-record' | 'knowledge-record' | 'evolution-action-record' | 'user-record' | 'topic-operator-record' | 'threadline-pairing-record' | 'subscription-account-meta' | 'topic-pin-record' | 'topic-claim-annotation' | 'working-set-artifact' | 'class-review-record' | 'failure-callout-chunk' | 'app-conversation-event' | 'mobile-device-key-ledger-row' | 'ecosystem-idea-event' | 'recommended-service-record' | 'conversation-list-pin' | 'conversation-read-marker' | 'email-outbox-record' | 'chief-of-staff-record' | 'work-card-record' | 'trust-grant-record' | 'trust-outcome-record' | 'session-transcript-checkpoint' | 'context-layer-record' | 'conversation-graph-event' | 'project-app-record' | 'project-app-blob' | 'conversation-graph-suggestion-record' | 'telegram-topic-name-record' | 'owned-repo';
 
 /**
@@ -965,7 +980,7 @@ export class CoherenceJournal {
   getOwnAdvert(): Record<JournalKind, { incarnation: string; lastSeq: number }> {
     const out = {} as Record<JournalKind, { incarnation: string; lastSeq: number }>;
     for (const kind of JOURNAL_KINDS) {
-      const lastSeq = kind === 'chief-of-staff-record' && this.chiefDecisionPending
+      const lastSeq = kind === 'chief-of-staff-record' && this.chiefDecisionReadBlocked()
         ? Math.min(this.highWaterSeq[kind], (this.chiefDecisionPendingSeq ?? 1) - 1)
         : this.highWaterSeq[kind];
       out[kind] = { incarnation: this.incarnation, lastSeq };
@@ -1222,8 +1237,13 @@ export class CoherenceJournal {
     }
   }
 
+  private chiefDecisionReadBlocked(): boolean {
+    return this.chiefDecisionPending ||
+      chiefDecisionIntentBlocksRead(this.chiefDecisionIntentPath(), this.io.statSync);
+  }
+
   private chiefDecisionIntentPath(): string {
-    return path.join(this.dirPath(), `${this.safeMachineId}.chief-decision-intent.json`);
+    return path.join(this.dirPath(), chiefDecisionIntentFilename(this.machineId));
   }
 
   private syncJournalDirectory(): void {
@@ -2024,8 +2044,10 @@ export class CoherenceJournal {
    * `maxTotalBytes`, or a line other than a torn final line of the current file failed to parse. Never throws.
    */
   readKindComplete(kind: JournalKind, maxTotalBytes = 64 * 1024 * 1024): { entries: JournalEntry[]; complete: boolean } {
-    if (kind === 'chief-of-staff-record' && this.chiefDecisionPending) return { entries: [], complete: false };
-    return this.readKindCompleteInternal(kind, maxTotalBytes);
+    if (kind === 'chief-of-staff-record' && this.chiefDecisionReadBlocked()) return { entries: [], complete: false };
+    const result = this.readKindCompleteInternal(kind, maxTotalBytes);
+    return kind === 'chief-of-staff-record' && this.chiefDecisionReadBlocked()
+      ? { entries: [], complete: false } : result;
   }
 
   private readKindCompleteInternal(kind: JournalKind, maxTotalBytes: number): { entries: JournalEntry[]; complete: boolean } {
@@ -2076,7 +2098,11 @@ export class CoherenceJournal {
    */
   readTail(kind: JournalKind, limit = 100, byteCeiling = DEFAULT_READ_BYTE_CEILING): TolerantReadResult {
     const filePath = this.currentFilePath(kind);
-    return readTailTolerant(this.io, filePath, limit, byteCeiling);
+    const tail = readTailTolerant(this.io, filePath, limit, byteCeiling);
+    if (kind === 'chief-of-staff-record' && this.chiefDecisionReadBlocked()) {
+      return { ...tail, entries: tail.entries.filter(entry => entry.seq < (this.chiefDecisionPendingSeq ?? 1)) };
+    }
+    return tail;
   }
 
   // ---- single-process lock ------------------------------------------------

@@ -2,6 +2,7 @@ import { afterEach, beforeEach, describe, expect, it } from 'vitest';
 import fs from 'node:fs';
 import os from 'node:os';
 import path from 'node:path';
+import { JournalSyncApplier } from '../../src/core/JournalSyncApplier.js';
 import { CoherenceJournal, type JournalFs } from '../../src/core/CoherenceJournal.js';
 import { buildLastTick, CHIEF_OF_STAFF_KIND_REGISTRATION } from '../../src/core/ChiefOfStaffStore.js';
 import { ReplicatedKindRegistry } from '../../src/core/ReplicatedRecordEnvelope.js';
@@ -76,6 +77,12 @@ describe('dark chief decision journal append', () => {
 
     expect(journal.readKindComplete(kind)).toEqual({ entries: [], complete: false });
     expect(journal.getOwnAdvert()[kind].lastSeq).toBe(0);
+    const applier = new JournalSyncApplier({ stateDir });
+    expect(applier.buildServeBatch(kind, 0, machine)).toMatchObject({ entries: [], blockedByPendingDecision: true });
+    expect(journal.readTail(kind).entries).toEqual([]);
+    const observer = new CoherenceJournal({ stateDir, machineId: machine });
+    expect(observer.readTail(kind).entries).toEqual([]);
+    expect(observer.readKindComplete(kind)).toEqual({ entries: [], complete: false });
     expect(journal.emitReplicatedRecord(kind, candidate(1).data)).toBe('locked-out');
     expect(journal.reconcileChiefDecision(() => false)).toBe(false);
     expect(() => journal.appendChiefDecision(() => true, () => candidate(1)))
@@ -83,6 +90,7 @@ describe('dark chief decision journal append', () => {
     expect(journal.reconcileChiefDecision(entry => JSON.stringify(entry.data) === JSON.stringify(prepared.data))).toBe(true);
     expect(journal.appendChiefDecision(() => true, () => prepared)).toBe(false);
     expect(journal.readKindComplete(kind).entries).toHaveLength(1);
+    expect(applier.buildServeBatch(kind, 0, machine).entries).toHaveLength(1);
   });
 
   it('keeps a partial append fenced after restart even when no complete line exists', () => {
