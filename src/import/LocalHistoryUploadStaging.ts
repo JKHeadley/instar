@@ -945,10 +945,38 @@ export class LocalHistoryUploadStaging {
       confirmationChallenge: receipt.confirmation.challenge, applyRequestId: requestId,
     }) };
   }
+  /** Inspect the prepared material for a future sealed owner-consent slip.
+   * This exposes neither selection challenges nor copy authority. Capture
+   * provenance still must establish who owns each source and its machine. */
+  readOwnerConsentPreview(device: LocalHistoryAuthenticatedDevice, operationId: string) {
+    const row = this.owned(operationId, device);
+    if (row.phase !== 'prepared') refuse('conflict');
+    const published = this.readPublishedPreviewRecord(row);
+    if (!published) refuse('conflict');
+    const { receipt, previewDigest, prepared } = published;
+    const files = receipt.preview?.files;
+    if (!Array.isArray(files) || files.length !== prepared.length) refuse('unavailable');
+    const artifacts = Object.freeze(prepared.map(({ fileId, sha256 }, index) => {
+      const file = files[index];
+      if (!file || file.fileId !== fileId || (file.source !== 'codex' && file.source !== CLAUDE_CODE_FRAMEWORK)) refuse('unavailable');
+      return Object.freeze({ fileId, kind: file.source, artifactDigest: sha256 });
+    }));
+    const { ownerHash, ownerUserId } = this.owner(device);
+    if (ownerHash !== row.ownerHash) refuse('not-found');
+    return Object.freeze({ previewId: receipt.previewId, previewDigest, ownerUserId, expiresAt: row.deadline, artifacts,
+      destination: Object.freeze({ machineId: this.issuer.machineId, machineKeyHash: this.issuer.signingKeyHash,
+        agentId: this.issuer.agentId, ownerUserId, bootId: row.boot, origin: this.issuer.origin }),
+    });
+  }
+
   // Replay returns the original sealed receipt. Reading its prepared index
   // does not reread normalized payloads. Copy admission needs a full artifact
   // digest and EOF check before its first mutation permit.
   private readPublishedPreview(row: Row): PreviewReceipt | undefined {
+    return this.readPublishedPreviewRecord(row)?.receipt;
+  }
+
+  private readPublishedPreviewRecord(row: Row) {
     const record = this.db.prepare('SELECT allocation,sha256 FROM upload_previews WHERE id = ?').get(row.id) as
       { allocation: string; sha256: string } | undefined;
     if (!record) return undefined;
@@ -973,7 +1001,7 @@ export class LocalHistoryUploadStaging {
         || !['sampled', 'unavailable'].includes(receipt.readerRssProtection)
         || receipt.confirmation?.action !== 'copy-selected-history'
         || !/^[A-Za-z0-9+/]{43}=$/.test(receipt.confirmation.challenge)) refuse('unavailable');
-      return receipt;
+      return { receipt, previewDigest: record.sha256, prepared };
     } catch { return refuse('unavailable'); }
     finally { bytes.fill(0); }
   }

@@ -160,6 +160,26 @@ it('prepares both source kinds through real children and retires raw files witho
     const stored = ledger.read(sealed.allocation, 0, ledger.inspect(sealed.allocation).written);
     expect(crypto.createHash('sha256').update(stored).digest('hex')).toBe(sealed.sha256);
     expect(JSON.parse(stored.toString()).receipt).toEqual(candidate);
+    const material = f.stage.readOwnerConsentPreview(device, grant.operationId);
+    expect(material).toEqual({
+      previewId: candidate.previewId, previewDigest: sealed.sha256, ownerUserId: 'synthetic-owner', expiresAt: candidate.expiresAt,
+      destination: { machineId: issuer.machineId, machineKeyHash: issuer.signingKeyHash, agentId: issuer.agentId,
+        ownerUserId: 'synthetic-owner', bootId: issuer.bootId, origin: issuer.origin },
+      artifacts: artifacts.files.map((file, index) => ({
+        fileId: file.fileId, kind: preview.files[index].source, artifactDigest: file.sha256,
+      })),
+    });
+    expect(Object.isFrozen(material.artifacts) && Object.isFrozen(material.destination)).toBe(true);
+    expect(JSON.stringify(material)).not.toContain(candidate.confirmation.challenge);
+    expect(() => f.stage.readOwnerConsentPreview({ ...device, deviceKeyHash: 'f'.repeat(64) }, grant.operationId)).toThrow('upload-unavailable');
+    const previewFd = fs.openSync(path.join(f.stateDir, 'local-history-upload', 'blocks', sealed.allocation), fs.constants.O_RDWR | fs.constants.O_NOFOLLOW);
+    try {
+      expect(fs.writeSync(previewFd, Buffer.from([stored[0] ^ 1]), 0, 1, 0)).toBe(1);
+      expect(() => f.stage.readOwnerConsentPreview(device, grant.operationId)).toThrow('upload-unavailable');
+    } finally {
+      fs.writeSync(previewFd, stored.subarray(0, 1), 0, 1, 0);
+      fs.closeSync(previewFd);
+    }
     expect(JSON.stringify(f.stage.status(device, grant.operationId))).not.toContain(candidate.confirmation.challenge);
     expect(await f.stage.publishPreparedPreview(device, grant.operationId)).toEqual(candidate);
     expect(db.prepare('SELECT count(*) AS n FROM upload_previews').get()).toEqual({ n: 1 });

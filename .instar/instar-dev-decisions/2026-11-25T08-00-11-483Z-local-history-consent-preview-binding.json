@@ -1,0 +1,26 @@
+{
+  "ts": "2026-11-25T08:00:11.483Z",
+  "slug": "local-history-consent-preview-binding",
+  "suggestedTier": 1,
+  "declaredTier": 2,
+  "riskFloor": 1,
+  "riskFloorReasons": [],
+  "belowFloor": false,
+  "files": 1,
+  "loc": 30,
+  "scope": {
+    "basis": "staged-in-scope-paths-including-deleted",
+    "files": [
+      "src/import/LocalHistoryUploadStaging.ts"
+    ],
+    "addedLines": 29,
+    "deletedLines": 1
+  },
+  "causalAutopsy": null,
+  "classClosure": {
+    "defectClass": "unbounded-self-action",
+    "closure": "n/a",
+    "reason": "One finite sealed metadata read makes no new commitment and does not start or retry work."
+  },
+  "verdict": "pass"
+}
