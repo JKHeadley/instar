@@ -5,7 +5,7 @@
 // this round, confirms in a sheet that says what really happens.
 
 import {
-  buildPlansPage, roundsTrack, projectActions, resultWords, refusalWords, driftSentence, linkChips, stepList, blockerStory, reasonWord, statusWord, PROJECT_DETAIL_CAP, OPEN_STATUSES, roundNameSuffix,
+  buildPlansPage, roundsTrack, projectActions, resultWords, refusalWords, driftSentence, linkChips, stepList, blockerStory, reasonWord, statusWord, PROJECT_DETAIL_CAP, OPEN_STATUSES, planApprovalWords,
 } from './plans-model.js';
 import { el, setKids, pageHead, section, sheet, closeSheet, sheetIsOpen, story, details, note, cantTell, firstPaint, arrivalScroll, markNeed, askLink } from './ui.js';
 import { legacyHref } from './nav-model.js';
@@ -161,12 +161,19 @@ function openProject(r, { post, topicHref, refresh }) {
   const title = r.main.length > 70 ? r.main.slice(0, 68) + '…' : r.main;
   const summary = el('p', { class: 'card-line', text: r.detailFailed ? `Couldn't load its rounds: ${r.detailFailed}.` : r.sub });
 
-  const done = () => setTimeout(() => { closeSheet(); refresh(); }, 700);
+  let panel;
+  // Completion owns the panel that started it, never a dialog opened afterward.
+  const closeOwnPanel = () => {
+    if (!panel?.isConnected) return;
+    closeSheet();
+    refresh();
+  };
+  const done = () => setTimeout(closeOwnPanel, 700);
   const write = async (kind, path, body) => {
     const x = await post(`/projects/${id}/${path}`, body);
     if (x.ok) return { ok: true, message: resultWords(kind, x.data) };
     const w = refusalWords(x.reason);
-    if (w.refresh) setTimeout(() => { closeSheet(); refresh(); }, 900);
+    if (w.refresh) setTimeout(closeOwnPanel, 900);
     return { ok: false, message: w.text };
   };
 
@@ -192,9 +199,9 @@ function openProject(r, { post, topicHref, refresh }) {
   const body = [summary];
   if (acts.ack !== null) {
     body.push(el('div', { class: 'need-card' },
-      el('span', { class: 'need-title', text: `Waiting for your OK on round ${acts.ack + 1}${roundNameSuffix(p, acts.ack)}` }),
-      el('span', { class: 'need-sub', text: 'Your OK records permission for this round. It does not start work by itself.' }),
-      actionBox({ label: `OK, continue round ${acts.ack + 1}`, kind: 'primary', run: () => write('ack', 'ack', { forRoundIndex: acts.ack }), done })));
+      el('span', { class: 'need-title', text: planApprovalWords(p, acts.ack) }),
+      el('span', { class: 'need-sub', text: 'Approving gives permission for this step. It does not start work by itself.' }),
+      actionBox({ label: `Approve step ${acts.ack + 1}`, kind: 'primary', run: () => write('ack', 'ack', { forRoundIndex: acts.ack }), done })));
   }
   body.push(block('Rounds', track.length ? rounds : el('p', { class: 'card-line', text: 'No rounds on this plan yet.' })));
   body.push(el('p', { class: 'drift', 'data-tone': drift.tone }, document.createTextNode(drift.text), drift.tone === 'attn' || drift.tone === 'bad' ? askLink(drift.text) : null));
@@ -210,7 +217,7 @@ function openProject(r, { post, topicHref, refresh }) {
     })));
   }
   body.push(details(p, PROJECT_KEYS));
-  sheet({ title }, ...body);
+  panel = sheet({ title }, ...body);
 }
 
 /**
