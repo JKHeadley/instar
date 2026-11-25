@@ -22725,8 +22725,6 @@ if [ "\$PC_OK" = "1" ] && [ "\$PC_MODE" = "suppressed" ]; then
   exit 3
 fi
 
-if [ "\$PC_OK" != "1" ]; then
-# Older server: the two calls the hook always made.
 # Codex next-prompt seed (context-budget-layered-summaries §9.6): Codex has no
 # post-compaction seed hook, so on the first prompt after a detected compaction
 # the server returns the topic's verified standing packet, in its disclosure
@@ -22780,6 +22778,8 @@ if [ -n "\$CB_SEED_SHOWN" ]; then
   exit 0
 fi
 
+if [ "\$PC_OK" != "1" ]; then
+# Older server: the two calls the hook always made.
 # Fetch recent messages for this topic
 if [ -n "\$AUTH_TOKEN" ]; then
   RECENT_MSGS=\$(curl -s \\

@@ -15,13 +15,8 @@
  *
  * Concrete failure mode this test catches
  * ---------------------------------------
- * Today (snapshotted while writing): `installHooks()` writes 16 hook files;
- * `migrateHooks()` writes 21. Five files (telegram-topic-context.sh,
- * slopcheck-guard.js, scope-coherence-collector.js,
- * scope-coherence-checkpoint.js, free-text-guard.sh, skill-usage-telemetry.sh)
- * exist on disk only AFTER the first auto-update — a fresh `instar init` agent
- * is missing them until the first migration cycle runs. The test records the
- * gap explicitly (allowlist below), so any NEW gap fails immediately.
+ * The recorded exceptions are installed on the first auto-update.
+ * Any additional gap fails this test.
  *
  * Allowlist semantics
  * -------------------
@@ -57,11 +52,6 @@ const MIGRATOR_PATH = path.join(REPO_ROOT, 'src/core/PostUpdateMigrator.ts');
  * Audit timestamp: 2026-05-29 (during the pipeline post-mortem PR).
  */
 const INSTALL_VS_MIGRATE_KNOWN_GAPS: Record<string, string> = {
-  'telegram-topic-context.sh':
-    'Deferred-install accepted: settings.json references this hook on init, ' +
-    'but the file is written by PostUpdateMigrator on first auto-update. ' +
-    'A fresh-init agent will fail-silent on this hook for the ~30min until ' +
-    'the first auto-update tick. Follow-up: surface in `installHooks()`.',
   'slopcheck-guard.js':
     'Deferred-install accepted: optional review hook; first auto-update covers it.',
   'scope-coherence-collector.js':

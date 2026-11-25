@@ -4468,6 +4468,7 @@ function installHooks(stateDir: string): void {
   const migrator = new PostUpdateMigrator(
     { stateDir, port: 4040, sessions: { claudePath: 'claude' } } as any
   );
+  fs.writeFileSync(path.join(hooksDir, 'telegram-topic-context.sh'), migrator.getHookContent('telegram-topic-context'), { mode: 0o755 });
   fs.writeFileSync(path.join(hooksDir, 'session-start.sh'), migrator.getHookContent('session-start'), { mode: 0o755 });
   // Clear-seed hook (context-budget-layered-summaries §9.2 rung 1): silent on a human /clear.
   fs.writeFileSync(path.join(hooksDir, 'clear-seed.sh'), migrator.getHookContent('clear-seed'), { mode: 0o755 });
