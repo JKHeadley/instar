@@ -2677,7 +2677,41 @@ export class JobScheduler {
    * the claim and has added the slug to `scriptInFlight`.
    */
   private runScriptRunnerJob(job: JobDefinition, reason: string, packagedDoorwayRun: boolean): void {
+    if (!packagedDoorwayRun) {
+      this.startScriptRunnerJob(job, reason);
+      return;
+    }
+    const start = () => {
+      const timeoutMs = Math.max(1, job.scriptTimeoutMinutes ?? JobScheduler.DEFAULT_SCRIPT_TIMEOUT_MINUTES) * 2 * 60_000;
+      const probeDeadline = performance.now() + timeoutMs;
+      void withDoorwayRetentionWriter(this.stateDir, Date.now() + timeoutMs, async (stateDir, lease) => {
+        const live = this.jobs.find(candidate => candidate.slug === job.slug);
+        if (!this.running || this.paused || this.state.readOnly || performance.now() >= probeDeadline
+          || !live?.enabled || !this.isScriptRunnerJob(live) || !this.isJobScopedToThisMachine(live)) {
+          this.releaseClaim(job.slug, 'failure');
+          return;
+        }
+        await this.startScriptRunnerJob(live, reason, { stateDir, probeDeadline, assertHeld: () => lease.assertHeld() });
+      })
+        .catch(error => {
+          console.error(`[scheduler] Doorway writer for "${job.slug}" failed: ${error instanceof Error ? error.message : String(error)}`);
+          this.releaseClaim(job.slug, 'failure');
+        })
+        .finally(() => this.scriptInFlight.delete(job.slug));
+    };
+    const offset = this.scriptStartOffsetEnabled ? JobScheduler.scriptStartOffsetMs(job.slug) : 0;
+    if (offset > 0) setTimeout(start, offset).unref?.();
+    else start();
+  }
+
+  private startScriptRunnerJob(
+    job: JobDefinition,
+    reason: string,
+    writer?: { stateDir: string; probeDeadline: number; assertHeld: () => void },
+  ): Promise<void> {
+    const packagedDoorwayRun = writer !== undefined;
     const slug = job.slug;
+    writer?.assertHeld();
     const sessionName = `script-${slug}-${Date.now().toString(36)}`;
     const projected = this.projectAsAgentmd(job);
     const observability = JobScheduler.computeRunObservability(projected, JobScheduler.resolveAllowlist(projected));
@@ -2702,8 +2736,8 @@ export class JobScheduler {
     } catch (error) {
       this.supervisionWriteFailed(slug, error);
       this.releaseClaim(slug, 'failure');
-      this.scriptInFlight.delete(slug);
-      return;
+      if (!writer) this.scriptInFlight.delete(slug);
+      return Promise.resolve();
     }
     this.activeScriptRunIds.add(runId);
     let supervisionId: string;
@@ -2731,9 +2765,9 @@ export class JobScheduler {
       this.supervisionWriteFailed(slug, error);
       this.completeScriptHistory(runId, slug, { runId, result: 'failure', error: 'supervision-register-failed' });
       this.releaseClaim(slug, 'failure');
-      this.scriptInFlight.delete(slug);
+      if (!writer) this.scriptInFlight.delete(slug);
       this.activeScriptRunIds.delete(runId);
-      return;
+      return Promise.resolve();
     }
     const prior = this.state.getJobState(slug);
     this.state.saveJobState({
@@ -2752,7 +2786,7 @@ export class JobScheduler {
       metadata: { slug, reason, mode: 'script-runner' },
     });
 
-    const run = async (writer?: { stateDir: string; probeDeadline: number; assertHeld: () => void }): Promise<void> => {
+    const run = async (): Promise<void> => {
       const trust = this.checkScriptTrust(job);
       let parsed: ParsedScriptRun;
       let scrubbed = '';
@@ -2808,32 +2842,27 @@ export class JobScheduler {
       this.finishScriptRun(job, runId, supervisionId, parsed, scrubbed, startedAt, supervisionActiveAtStart, scheduledDoorwayObservationDigest);
     };
 
-    const offset = this.scriptStartOffsetEnabled ? JobScheduler.scriptStartOffsetMs(slug) : 0;
-    const go = () => {
-      const timeoutMs = Math.max(1, job.scriptTimeoutMinutes ?? JobScheduler.DEFAULT_SCRIPT_TIMEOUT_MINUTES) * 2 * 60_000;
-      const probeDeadline = performance.now() + timeoutMs;
-      const execution = packagedDoorwayRun
-        ? withDoorwayRetentionWriter(this.stateDir, Date.now() + timeoutMs, (stateDir, lease) =>
-          run({ stateDir, probeDeadline, assertHeld: () => lease.assertHeld() }))
-        : run();
-      execution.catch((err) => {
-          console.error(`[scheduler] Script runner for "${slug}" threw: ${err instanceof Error ? err.message : String(err)}`);
-          const completed = packagedDoorwayRun ? this.runHistory.findRun(runId) : null;
-          if (completed && completed.result !== 'pending') return;
-          try {
-            const reason = packagedDoorwayRun && err instanceof Error && err.message === 'packaged-probe-timeout'
-              ? 'packaged-probe-timeout' : 'script-runner-error';
-            this.finishScriptRun(job, runId, supervisionId, { ...this.untrustedParse(''), reason, reasonCode: reason }, '', startedAt, supervisionActiveAtStart);
-          } catch { /* @silent-fallback-ok — bookkeeping best-effort on an internal throw */ }
-        })
-        .finally(() => { this.scriptInFlight.delete(slug); this.activeScriptRunIds.delete(runId); });
-    };
-    if (offset > 0) {
-      const t = setTimeout(go, offset);
-      t.unref?.();
-    } else {
-      go();
-    }
+    const execute = () => run().catch((err) => {
+      console.error(`[scheduler] Script runner for "${slug}" threw: ${err instanceof Error ? err.message : String(err)}`);
+      const completed = packagedDoorwayRun ? this.runHistory.findRun(runId) : null;
+      if (completed && completed.result !== 'pending') return;
+      // A lost lease leaves the pending row for recovery, which can reconcile it later.
+      writer?.assertHeld();
+      try {
+        const reason = packagedDoorwayRun && err instanceof Error && err.message === 'packaged-probe-timeout'
+          ? 'packaged-probe-timeout' : 'script-runner-error';
+        this.finishScriptRun(job, runId, supervisionId, { ...this.untrustedParse(''), reason, reasonCode: reason }, '', startedAt, supervisionActiveAtStart);
+      } catch { /* @silent-fallback-ok — bookkeeping best-effort on an internal throw */ }
+    }).finally(() => {
+      if (!writer) this.scriptInFlight.delete(slug);
+      this.activeScriptRunIds.delete(runId);
+    });
+
+    const offset = !writer && this.scriptStartOffsetEnabled ? JobScheduler.scriptStartOffsetMs(slug) : 0;
+    if (offset <= 0) return execute();
+    const timer = setTimeout(() => { void execute(); }, offset);
+    timer.unref?.();
+    return Promise.resolve();
   }
 
   /** Record a finished script run: job state, history, alerts, claim, observers. */

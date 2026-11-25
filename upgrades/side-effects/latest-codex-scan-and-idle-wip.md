@@ -109,3 +109,9 @@ The first advisory retention cursor is now initialized under the physical writer
 ## Scheduled artifact writer custody
 
 Opt-in scans now use the same canonical state directory lock as initial cursor publication. The scheduler holds the lease through admission and observation file writes and normal completion, and checks it before each write. Time waiting for the lease counts against the probe budget. An unavailable lock provider prevents the opt-in run from probing. Legacy routing is unaffected. Pending ledger creation and exceptional settlement remain outside this lease, and no caller uses the cursor for cleanup. Independent review concurred with the scoped checkpoint.
+
+## Scheduled admission custody
+
+The opt-in scheduler now acquires the doorway writer lease before creating the pending run or its supervision record. Failure settlement from that execution stays under the lease while it remains valid. A run whose lease is lost leaves its pending row for interrupted-run recovery. A scheduler that stops, pauses, becomes read-only, or exhausts the probe deadline while waiting creates no pending run. Legacy scripts keep their existing offset and admission order. Restart recovery still requires its own custody integration before production cursor publication or cleanup.
+
+Independent review concurred and identified a delayed-admission edge. The scheduler rechecks that the live job is enabled, remains a script job, and is scoped to this machine after acquiring the lease.

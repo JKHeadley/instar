@@ -145,7 +145,7 @@ describe('script runner execution', () => {
     await withDoorwayRetentionWriter(project.stateDir, Date.now() + 2000, async () => {
       expect(await s.triggerJob(slug, 'test')).toBe('triggered');
       await new Promise(resolve => setTimeout(resolve, 70));
-      expect(lastRun(s, slug)?.result).toBe('pending');
+      expect(lastRun(s, slug)).toBeUndefined();
       expect(readDoorwayAssets).not.toHaveBeenCalled();
       expect(fs.existsSync(path.join(project!.stateDir, 'state', 'doorway-scan-scheduled-runs'))).toBe(false);
     });
