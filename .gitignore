@@ -146,3 +146,7 @@ state/codex-device-limit-provenance/
 docs/research/jev/harness/**/sample-*.json
 docs/research/jev/harness/**/corpus-*.json
 /dist
+
+# Python bytecode (tests that import playbook-scripts/*.py write it; CI fails on an untracked tree)
+__pycache__/
+*.pyc
