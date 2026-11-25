@@ -1,0 +1,24 @@
+{
+  "ts": "2026-11-25T01:32:29.946Z",
+  "slug": "camera-acceptance-journal-adapter",
+  "suggestedTier": 2,
+  "declaredTier": 2,
+  "riskFloor": 2,
+  "riskFloorReasons": [
+    "new capability: new exported class / subsystem added"
+  ],
+  "belowFloor": false,
+  "files": 1,
+  "loc": 97,
+  "scope": {
+    "basis": "staged-in-scope-paths-including-deleted",
+    "files": [
+      "src/core/CameraAcceptanceJournalAdapter.ts"
+    ],
+    "addedLines": 97,
+    "deletedLines": 0
+  },
+  "causalAutopsy": null,
+  "classClosure": null,
+  "verdict": "pass"
+}

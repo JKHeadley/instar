@@ -1,0 +1,18 @@
+{
+  "version": 2,
+  "slug": "camera-acceptance-journal-adapter",
+  "sessionId": "ab1b66cc-de80-48bd-9b94-4ede369ccb55",
+  "timestamp": "2026-11-25T01:31:54.416Z",
+  "artifactPath": "upgrades/side-effects/camera-acceptance-journal-adapter.md",
+  "artifactSha256": "4d09f3219b96c20895826bb85af90133538c99b9050d915617c5768f042ccd07",
+  "specPath": "docs/specs/independent-owner-surface-acceptance.md",
+  "coveredFiles": [
+    "src/core/CameraAcceptanceJournalAdapter.ts",
+    "tests/unit/camera-acceptance-journal-adapter.test.ts"
+  ],
+  "phase": "complete",
+  "tier": 2,
+  "tierReasoning": "The checkpoint composes journal transactions with caller-supplied authority and emission, without installing a runtime caller.",
+  "secondPass": "true",
+  "reviewerConcurred": true
+}
