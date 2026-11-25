@@ -1,5 +1,6 @@
+import { generateKeyPairSync, sign, verify } from 'node:crypto';
 import { describe, expect, it } from 'vitest';
-import { cameraJournalRecordKey, cameraJournalSigningText, parseCameraJournalRecord, type CameraJournalRecord } from '../../src/core/CameraAcceptanceJournalRecord.js';
+import { cameraJournalRecordKey, cameraJournalSigningText, parseCameraJournalRecord, readCameraJournal, type CameraJournalRecord } from '../../src/core/CameraAcceptanceJournalRecord.js';
 import { buildCameraAcceptancePut, chiefOfStaffRecordStoreSchema } from '../../src/core/ChiefOfStaffStore.js';
 
 const conversation = 'app:camera-test';
@@ -46,5 +47,55 @@ describe('Camera journal records', () => {
     const { signature: _signature, ...body } = record;
     expect(cameraJournalSigningText(conversation, record)).toBe(cameraJournalSigningText(conversation, body));
     expect(cameraJournalSigningText(conversation, body)).not.toBe(cameraJournalSigningText('app:other', body));
+  });
+});
+
+describe('Camera journal authority and coverage', () => {
+  const keys = generateKeyPairSync('ed25519');
+  const scope = { conversationKey: conversation, binding, milestone: record.milestone, leaseEpoch: 2 };
+  const authority = {
+    holder, headSequence: 2,
+    verify: (text: string, signature: string) => verify(null, Buffer.from(text), keys.publicKey, Buffer.from(signature, 'base64')),
+  };
+
+  function signed(sequence: number, id: string) {
+    const unsigned: CameraJournalRecord = {
+      ...record, journalSequence: sequence, event: { kind: 'request', id, receiptSequence: 0 },
+    };
+    const signature = sign(null, Buffer.from(cameraJournalSigningText(conversation, unsigned)), keys.privateKey).toString('base64');
+    const event = { ...unsigned, signature };
+    return { origin: holder, data: buildCameraAcceptancePut(conversation, event)(binding, holder)! };
+  }
+
+  it('orders complete verified records and tolerates duplicated transport entries', () => {
+    const first = signed(1, 'first');
+    const second = signed(2, 'second');
+    expect(readCameraJournal(scope, authority, [second, first, second])?.map(event => event.journalSequence))
+      .toEqual([1, 2]);
+  });
+
+  it('holds a truncated head, internal gap, conflicting sequence or changed lease', () => {
+    const first = signed(1, 'first');
+    const second = signed(2, 'second');
+    expect(readCameraJournal(scope, authority, [first])).toBeNull();
+    expect(readCameraJournal(scope, authority, [first, signed(3, 'gap')])).toBeNull();
+    expect(readCameraJournal(scope, authority, [first, second, signed(2, 'conflict')])).toBeNull();
+    expect(readCameraJournal({ ...scope, leaseEpoch: 3 }, authority, [first, second])).toBeNull();
+  });
+
+  it('holds if the signature verification provider throws', () => {
+    expect(readCameraJournal(scope, {
+      ...authority, verify: () => { throw new Error('key unavailable'); },
+    }, [signed(1, 'first'), signed(2, 'second')])).toBeNull();
+  });
+
+  it('rejects a key-shaped record with an invalid signature and a false envelope origin', () => {
+    const first = signed(1, 'first');
+    const second = signed(2, 'second');
+    const fake = { ...record, journalSequence: 2 };
+    expect(readCameraJournal(scope, authority, [first, {
+      origin: holder, data: buildCameraAcceptancePut(conversation, fake)(binding, holder)!,
+    }])).toBeNull();
+    expect(readCameraJournal(scope, authority, [first, { ...second, origin: 'other' }])).toBeNull();
   });
 });

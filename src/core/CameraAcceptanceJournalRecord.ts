@@ -52,3 +52,66 @@ export const CAMERA_JOURNAL_KEY_PREFIX = 'camera-acceptance:';
 export function cameraJournalRecordKey(conversationKey: string, record: CameraJournalRecord): string {
   return `${CAMERA_JOURNAL_KEY_PREFIX}${canonicalHash({ conversationKey, record })}`;
 }
+
+export interface CameraJournalScope {
+  readonly conversationKey: string;
+  readonly binding: CameraJournalRecordBody['binding'];
+  readonly milestone: string;
+  readonly leaseEpoch: number;
+}
+
+export interface CameraJournalAuthority {
+  /** Independently attested head for this exact scope. */
+  readonly headSequence: number;
+  readonly holder: string;
+  verify(signingText: string, signature: string): boolean;
+}
+
+export interface CameraJournalEntry {
+  readonly origin: string;
+  readonly data: Readonly<Record<string, unknown>>;
+}
+
+/** A null result holds the pilot. No partial prefix can authorize a decision. */
+export function readCameraJournal(
+  scope: CameraJournalScope,
+  authority: CameraJournalAuthority | null,
+  entries: readonly CameraJournalEntry[],
+): CameraJournalRecord[] | null {
+  if (!authority || !Number.isSafeInteger(authority.headSequence) || authority.headSequence < 0) return null;
+
+  const bySequence = new Map<number, CameraJournalRecord>();
+  for (const { origin, data } of entries) {
+    if (data.recordType !== 'camera-acceptance' || data.conversationKey !== scope.conversationKey) continue;
+    const record = parseCameraJournalRecord(data.cameraAcceptance);
+    if (!record) return null;
+    if (record.milestone !== scope.milestone
+      || record.binding.physical !== scope.binding.physical
+      || record.binding.logical !== scope.binding.logical
+      || record.binding.node !== scope.binding.node) continue;
+    if (record.leaseEpoch !== scope.leaseEpoch
+      || record.holder !== authority.holder || origin !== authority.holder || data.origin !== origin
+      || data.op !== 'put' || data.recordKey !== cameraJournalRecordKey(scope.conversationKey, record)) return null;
+
+    const signingText = cameraJournalSigningText(scope.conversationKey, record);
+    try {
+      if (authority.verify(signingText, record.signature) !== true) return null;
+    } catch {
+      // @silent-fallback-ok: an unavailable verification provider holds the pilot.
+      return null;
+    }
+
+    const previous = bySequence.get(record.journalSequence);
+    if (previous && cameraJournalSigningText(scope.conversationKey, previous) !== signingText) return null;
+    bySequence.set(record.journalSequence, record);
+  }
+
+  if (bySequence.size !== authority.headSequence) return null;
+  const ordered: CameraJournalRecord[] = [];
+  for (let sequence = 1; sequence <= bySequence.size; sequence++) {
+    const record = bySequence.get(sequence);
+    if (!record) return null;
+    ordered.push(record);
+  }
+  return ordered;
+}

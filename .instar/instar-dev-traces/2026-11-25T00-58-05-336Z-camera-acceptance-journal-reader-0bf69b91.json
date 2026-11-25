@@ -1,0 +1,18 @@
+{
+  "version": 2,
+  "slug": "camera-acceptance-journal-reader",
+  "sessionId": "ab1b66cc-de80-48bd-9b94-4ede369ccb55",
+  "timestamp": "2026-11-25T00:58:05.336Z",
+  "artifactPath": "upgrades/side-effects/camera-acceptance-journal-reader.md",
+  "artifactSha256": "439c20c1a7743bf3a5b510a9861572f0dc9e90b7e2c881add8177ce0cdb5a15a",
+  "specPath": "docs/specs/independent-owner-surface-acceptance.md",
+  "coveredFiles": [
+    "src/core/CameraAcceptanceJournalRecord.ts",
+    "tests/unit/camera-acceptance-journal-record.test.ts"
+  ],
+  "phase": "complete",
+  "tier": 2,
+  "tierReasoning": "The scoped reader validates signed records against an independently supplied authority, with no new runtime callers.",
+  "secondPass": "true",
+  "reviewerConcurred": true
+}
