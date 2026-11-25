@@ -203,12 +203,13 @@ describe('Needs-you in-place action floor — dark runtime', () => {
     const listener = app.listen(0);
     closers.push(listener);
     config.port = (listener.address() as { port: number }).port;
+    const ownerRead = () => request(app).get('/needs').set('Authorization', 'Bearer e2e-token').set('X-Instar-AgentId', 'needs-e2e');
+    const baseline = await ownerRead().set('X-Instar-Needs-Contract', 'in-place-v1').expect(200);
     const attention = new LocalAttentionItems(config.stateDir);
     for (const [id, title] of [['agent-cleanup', 'Disk cleanup is ready'], ['owner-phone-update', 'Update Instar on your phone']]) {
       expect(attention.raise({ id, title, summary: 'A test observation.', category: 'desktop', priority: 'HIGH', source: 'agent' })).toBe(true);
     }
 
-    const ownerRead = () => request(app).get('/needs').set('Authorization', 'Bearer e2e-token').set('X-Instar-AgentId', 'needs-e2e');
     const older = await ownerRead().expect(426);
     expect(older.body).not.toHaveProperty('items');
     const result = await ownerRead().set('X-Instar-Needs-Contract', 'in-place-v1').expect(200);
@@ -217,7 +218,7 @@ describe('Needs-you in-place action floor — dark runtime', () => {
       title: 'Update Instar on your phone', ownerAction: 'physical', action: { kind: 'instructions', steps: expect.arrayContaining(['Open Instar again.']) },
     })]);
     expect(result.body.count).toBe(1);
-    expect(result.body.divertedCount).toBe(1);
+    expect(result.body.divertedCount).toBe(baseline.body.divertedCount + 1);
     expect(JSON.stringify(result.body.items)).not.toContain('#/');
     const retire = () => request(app).post('/needs/withdrawals').set('Authorization', 'Bearer e2e-token').set('X-Instar-AgentId', 'needs-e2e');
     await retire().send(ask).expect(403);

@@ -310,18 +310,17 @@ function createFullComposer(deps: ComposerDeps): NeedsComposer {
   const finish = async (rows: Array<{ row: Rec; source: string }>, sources: NeedsAnswer['sources'], notes: string[], ownerView = false, request?: Request) => {
     const seen = new Set<string>();
     const items: NeedItem[] = [];
-    let held = false;
-    let divertedCount = 0;
-    let couldNotCheckApprovalCount = 0;
+    const heldRows = new Set<string>();
+    const divertedRows = new Set<string>();
+    const unavailableApprovals = new Set<string>();
     const failedProviders = new Set<string>();
     for (const { row, source } of rows) {
       const it = toItem(row, source);
       const rowKey = ownerView && deps.ownerCardCandidate ? JSON.stringify([source, it.id]) : it.id;
       if (seen.has(rowKey)) continue;
-      seen.add(rowKey);
       if (ownerView && deps.ownerCardCandidate) {
-        if (source === 'workBoard' && row.ownerAction === false) {
-          divertedCount++;
+        if ((source === 'workBoard' || source === 'repos' || source === 'context' || source === 'health') && row.ownerAction === false) {
+          divertedRows.add(rowKey);
           continue;
         }
         let candidate: OwnerNeedsCandidate | null | undefined;
@@ -331,35 +330,42 @@ function createFullComposer(deps: ComposerDeps): NeedsComposer {
           continue;
         }
         if (!candidate) {
-          if (candidate === undefined) divertedCount++;
+          if (candidate === undefined) divertedRows.add(rowKey);
           continue;
         }
         const admitted = admitOwnerNeedsCard(candidate);
         if (admitted.disposition === 'hold') {
-          if (!candidate.ownerAction && admitted.reason !== 'source-unavailable') divertedCount++;
-          if (admitted.reason === 'source-unavailable' && candidate.ownerAction === 'approve') couldNotCheckApprovalCount++;
-          held ||= admitted.reason !== 'request-unavailable' && candidate.responsibility === 'owner-required';
+          if (!candidate.ownerAction && admitted.reason !== 'source-unavailable') divertedRows.add(rowKey);
+          if (admitted.reason === 'source-unavailable' && candidate.ownerAction === 'approve') unavailableApprovals.add(rowKey);
+          if (admitted.reason !== 'request-unavailable' && candidate.responsibility === 'owner-required') heldRows.add(rowKey);
           continue;
         }
         if (admitted.disposition === 'route-to-agent') {
-          divertedCount++;
+          divertedRows.add(rowKey);
           continue;
         }
         if (admitted.disposition !== 'show') continue;
         const presentation = ownerNeedsPresentation(candidate.presentation, admitted.action.kind);
         if (!presentation) {
-          held = true;
+          heldRows.add(rowKey);
           continue;
         }
+        divertedRows.delete(rowKey);
+        unavailableApprovals.delete(rowKey);
+        heldRows.delete(rowKey);
         const { card: _card, alsoOpens: _alsoOpens, ...plain } = it;
         const { action, ownerAction } = admitted;
         items.push({ ...plain, title: presentation.title, why: presentation.why, detail: presentation.detail, ownerAction, action });
       } else {
         items.push(it);
       }
+      seen.add(rowKey);
     }
     sources = sources.map(s => failedProviders.has(s.id) ? { ...s, state: 'failed' } : s);
     const couldNotCheck = sources.filter((s) => s.state === 'failed').map((s) => s.label);
+    const held = heldRows.size > 0;
+    const divertedCount = divertedRows.size;
+    const couldNotCheckApprovalCount = unavailableApprovals.size;
     if (held) couldNotCheck.push('some requests that are temporarily unavailable');
     const ownerNotes = [...notes];
     if (held) ownerNotes.push('Some requests are temporarily unavailable.');
@@ -447,7 +453,7 @@ function createFullComposer(deps: ComposerDeps): NeedsComposer {
       const i = sources.findIndex((x) => x.id === id);
       if (i >= 0 && sources[i].state === 'ok') sources[i] = { ...sources[i], state: 'failed', label };
     }
-    if (combined.coverage === 'partial view' && promised && promised.coverage === 'partial view') {
+    if (promised?.coverage === 'partial view' && (deps.ownerCardCandidate || combined.coverage === 'partial view')) {
       const i = sources.findIndex((x) => x.id === 'promises');
       if (i >= 0 && sources[i].state === 'ok') sources[i] = { ...sources[i], state: 'failed', label: 'promises on other machines' };
     }

@@ -281,6 +281,8 @@ describe('Home count source', () => {
     expect(surfacedNeeds({ context: { results: { sentinel: ok(sentinel()) } } }, NOW).rows.filter((r: any) => r.key.startsWith('need:context:'))).toEqual([]);
     const rows = surfacedNeeds({ context: { results: { sentinel: ok(sentinel({ canary: { groups: [group({ state: 'diverged' })] } })) } } }, NOW).rows;
     expect(rows).toEqual([]);
+    const raw = surfacedNeeds({ context: { results: { sentinel: ok(sentinel({ canary: { groups: [group({ state: 'diverged' })] } })) } } }, NOW, 120000, { raw: true });
+    expect(raw.rows).toEqual([expect.objectContaining({ source: 'context', ownerAction: false })]);
   });
 });
 

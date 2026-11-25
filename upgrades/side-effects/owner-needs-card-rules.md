@@ -22,3 +22,11 @@ The authority reviewer concurred for the dark checkpoint. The reviewer identifie
 2. The owner list renders reviewed presentation copy. Internal identifiers, queue details and failure internals are not primary content. Exact references remain available to the client for authorized execution.
 3. The checkpoint adds no destructive control. Existing decline, approval withdrawal and card holds retain their signed execution rules.
 4. The copy uses plain language, and Dashboard's provisional disposable checks covered 390 and 1280 pixels. Exact signed acceptance at phone width is a release verification item.
+
+## Read coverage and legacy tracking cards
+
+The prototype reports incomplete peer promise coverage even when the local list contains a finite count. It deduplicates a source row only after a candidate is eligible. This prevents stale copies from obscuring a current request. Health, Context and repository diagnostics remain available in their source views. The typed declarations affect the optional owner projection and provide no new authority.
+
+The Work Board reclassifies an inward agent card whose future owner-certified milestone does not have a current claim, question or person wait. This changes the owner and agent views, including on legacy records, but leaves approval and execution holds intact. A real completion claim still goes to the owner. The copied Engine and Easy Setup journals proved that all twelve reviewed cards leave the owner views, remain available to the agent, and retain their existing approval posture. Engine independently reproduced its five-card result.
+
+The user-facing effect is a quieter owner list and an honest unavailable status. This change adds no tap or destructive control. It preserves the reviewed copy and supported action payloads tested by the dashboard and native clients. Fleet activation, migration and the remaining production source declarations still require separate verification.

@@ -104,12 +104,17 @@ export function chiefOfStaffNeedRows(cos, now) {
 export const NEED_SOURCES = [
   // First, so a real problem leads the Needs-you list. Only what affects the person. Internal notes stay on the Health page and never raise this count.
   { id: 'health', page: 'capacity/health', reads: { issues: '/mobile/health-issues' },
-    rows: ({ issues }) => { const rows = healthNeedRows(issues); return rows === null ? UNREADABLE : rows.map((r) => row(`health:${r.key}`, r.title, r.detail, r.href)); } },
+    rows: ({ issues }, _now, { raw = false } = {}) => {
+      const rows = healthNeedRows(issues, { includeAgentWork: raw });
+      return rows === null ? UNREADABLE : rows.map(r => ({
+        ...row(`health:${r.key}`, r.title, r.detail, r.href), ...(r.ownerAction === false ? { ownerAction: false } : {}),
+      }));
+    } },
   // Work that exists on only one machine (no-data-loss-on-machine-death.md §1.4): a repository with no remote, or
   // unpushed work past the grace window. One row per machine per kind. 503 = the registry is off here = nothing waiting.
   { id: 'repos', page: 'capacity/repos', reads: { repos: REPOS_READ },
     // warning-path: inline
-    rows: ({ repos }) => { const rows = repoNeedRows(repos); return rows === null ? UNREADABLE : rows.map((r) => ({ ...row(r.key, r.main, r.sub, r.href, r.refs), tone: r.kind === 'unknown' ? 'unknown' : 'bad' })); } },
+    rows: ({ repos }) => { const rows = repoNeedRows(repos); return rows === null ? UNREADABLE : rows.map((r) => ({ ...row(r.key, r.main, r.sub, r.href, r.refs), ownerAction: false, tone: r.kind === 'unknown' ? 'unknown' : 'bad' })); } },
   { id: 'merging', page: 'work/development', reads: { watcher: '/green-pr-automerge' },
     rows: ({ watcher }, now) => {
       if (agentOwnedStop(watcher.data)) return []; // the agent releases this itself; the page still shows it
@@ -183,11 +188,14 @@ export const NEED_SOURCES = [
   // machine). 503 = off here; a stale watcher heartbeat is "can't tell", never "nothing".
   // Read from the watcher's status only (cheap); the conversation names stay on the page itself.
   { id: 'context', page: 'settings/context', reads: { sentinel: '/context-budget/sentinel' },
-    rows: ({ sentinel }, now) => {
+    rows: ({ sentinel }, now, { raw = false } = {}) => {
       const needs = contextNeeds(sentinel.data, {}, now);
       if (needs === null) return UNREADABLE;
-      // The fold id is the ref: the watcher's own Attention notice names it, so one incident counts once.
-      return needs.filter((n) => n.requiresUserAction !== false).map((n) => row(`context:${n.key}`, n.title, n.detail, '#/settings/context', n.ref ? [n.ref] : []));
+      // Keep the agent-owned diagnostic in the raw input so the gate can count it.
+      return needs.filter(n => raw || n.requiresUserAction !== false).map(n => ({
+        ...row(`context:${n.key}`, n.title, n.detail, '#/settings/context', n.ref ? [n.ref] : []),
+        ...(n.requiresUserAction === false ? { ownerAction: false } : {}),
+      }));
     } },
 ];
 
@@ -298,7 +306,7 @@ export function surfacedNeeds(known, now = Date.now(), graceMs = 120000, { raw =
       if (k.rows && now - (k.rowsAt || 0) <= graceMs) add(s.id, k.rows);
       continue;
     }
-    const rows = s.rows(k.results, now);
+    const rows = s.rows(k.results, now, { raw });
     if (rows === UNREADABLE) { out.failed.push(s.id); if (k.rows && now - (k.rowsAt || 0) <= graceMs) add(s.id, k.rows); continue; }
     k.rows = rows;
     k.rowsAt = now;

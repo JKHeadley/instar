@@ -72,6 +72,26 @@ describe('Internal cards stay off owner surfaces', () => {
     expect(all(boardJson(t.svc, viewer, () => true, name, { softOpenCards: 30 })).map((c: any) => c.id)).not.toContain(v.card.cardId);
     expect(t.svc.hiddenConversationKeys().has(v.card.conversationKey)).toBe(true);
   });
+  it('keeps a future owner confirmation in agent work until a claim actually needs it', () => {
+    const t = makeService();
+    const v = create(t, {
+      recommendation: 'Use the current model',
+      whyYou: 'Routine registry maintenance',
+      doneWhen: [{ id: 'd1', text: 'Review the completed work', certify: 'owner-confirms' }],
+    });
+    expect(v.card).toMatchObject({ approvalRequired: true, approvalValid: false, workable: false, currentClaim: null });
+    expect(laneFor(v.status, true, v.card, 'justin')).toBe('with-agent');
+    expect(json(t, v)).toMatchObject({ agentInternal: true, ownerAction: false });
+    const owner = boardJson(t.svc, viewer, () => true, name, { softOpenCards: 30, full: true });
+    expect(owner.waitingOnYou).toBe(0);
+    expect(workBoardNeedRows({ ok: true, data: owner })).toEqual([]);
+    const agent = boardJson(t.svc, { ...viewer, isAgent: true }, () => true, name, { softOpenCards: 30, agentCardsOnly: true, full: true });
+    expect(all(agent)).toEqual([expect.objectContaining({ id: v.card.cardId, lane: 'with-agent', ownerAction: false })]);
+    const claimed = { ...v.card, currentClaim: { id: 'claim' }, needsConfirm: true } as typeof v.card;
+    expect(laneFor('claims-done', true, claimed, 'justin')).toBe('waiting-on-you');
+    expect(t.svc.view(v.card.cardId)?.card).toMatchObject({ approvalRequired: true, approvalValid: false, workable: false });
+  });
+
   it('classifies pure agent work but keeps verified requester provenance separate', () => {
     const t = makeService(); const internal = create(t);
     expect(json(t, internal).agentInternal).toBe(true);

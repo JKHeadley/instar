@@ -104,6 +104,49 @@ describe('needs read: the owner', () => {
     expect(await strict.owner()).toMatchObject({ count: 0, items: [], divertedCount: 1 });
   });
 
+  it('counts repository inventory as agent work without trying to turn it into an approval', async () => {
+    const repo = { key: 'repos:no-remote:m_self', machineId: 'm_self', title: 'Repository without a backup copy', kind: 'no-remote', repos: ['example'] };
+    let calls = 0;
+    const strict = createNeedsComposer({
+      read: reader({ '/repos?scope=pool': { status: 200, body: { defects: [repo] } } }),
+      consoleDir: CONSOLE, agentName: () => 'Echo', machineId: () => 'm_self',
+      ownerCardCandidate: () => { calls++; return undefined; },
+    });
+    expect(await strict.owner()).toMatchObject({ count: 0, items: [], divertedCount: 1 });
+    expect(calls).toBe(0);
+  });
+
+  it('admits the current same-source row after an earlier copy was held', async () => {
+    const id = 'wc_0123456789abcdef';
+    const strict = createNeedsComposer({
+      read: reader({ '/work-board': { status: 200, body: board([{ id, title: 'Earlier ask' }, { id, title: 'Current ask' }]) } }),
+      consoleDir: CONSOLE, agentName: () => 'Echo', machineId: () => 'm_self',
+      ownerCardCandidate: item => ({
+        responsibility: 'owner-required', ownerAction: 'approve',
+        actions: [{ kind: 'approval', requestId: item.title === 'Current ask' ? 'current' : 'earlier' }],
+        handoffs: [], presentation: 'trust-change',
+        verifiesCurrentOwnerRequest: action => action.kind === 'approval' && action.requestId === 'current',
+      }),
+    });
+    const result = await strict.owner();
+    expect(result.items).toEqual([expect.objectContaining({ action: { kind: 'approval', requestId: 'current' } })]);
+    expect(result.divertedCount).toBe(0);
+  });
+
+  it('reports unavailable peer promises even when the local count is finite', async () => {
+    const strict = createNeedsComposer({
+      read: reader({
+        '/commitments?scope=mesh': { status: 200, body: { scope: 'mesh', commitments: [] } },
+        '/pool': { status: 200, body: { selfMachineId: 'm_self', machines: [{ machineId: 'm_peer' }] } },
+      }),
+      consoleDir: CONSOLE, agentName: () => 'Echo', machineId: () => 'm_self', ownerCardCandidate: () => null,
+    });
+    const result = await strict.owner();
+    expect(result.count).toBe(0);
+    expect(result.complete).toBe(false);
+    expect(result.couldNotCheck).toContain('promises on other machines');
+  });
+
   it('resolves concurrent in-place reads separately for each request', async () => {
     const app = express();
     const work = board([{ id: 'wc_0123456789abcdef', title: 'Approval requiring a device' }]);
@@ -510,4 +553,16 @@ it('the shared owner read excludes a real capacity wait while retaining a real r
  expect(res.sources.find(s=>s.id==='health')?.state).toBe('ok');
  expect(res.items.filter(i=>i.source==='health').map(i=>i.title)).toEqual(['iMessage isn’t connected']);
  expect(res.count).toBe(1);
+});
+
+it('counts an agent-owned Health incident without exposing it as an owner action', async () => {
+  const body = summarizeHealth({ status: 'degraded', sessions: { current: 25, max: 25 } }, []);
+  const result = await createNeedsComposer({
+    read: reader({ '/mobile/health-issues': { status: 200, body } }),
+    consoleDir: CONSOLE, agentName: () => 'Echo', machineId: () => 'm_self',
+    ownerCardCandidate: () => { throw new Error('The explicit agent classification should not query owner authority'); },
+  }).owner();
+  expect(body.issues).toEqual([expect.objectContaining({ id: 'health:sessions-full', requiresUserAction: false })]);
+  expect(result).toMatchObject({ count: 0, items: [], divertedCount: 1 });
+  expect(result.sources.find(source => source.id === 'health')?.state).toBe('ok');
 });
