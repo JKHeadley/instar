@@ -1,0 +1,34 @@
+{
+  "ts": "2026-11-23T22:54:10.834Z",
+  "slug": "security-review-preflight",
+  "suggestedTier": 2,
+  "declaredTier": 1,
+  "riskFloor": 2,
+  "riskFloorReasons": [
+    "new capability: new exported class / subsystem added"
+  ],
+  "belowFloor": true,
+  "files": 4,
+  "loc": 214,
+  "scope": {
+    "basis": "staged-in-scope-paths-including-deleted",
+    "files": [
+      "src/data/awareness/security-review-preflight.md",
+      "src/data/state-coherence-registry.json",
+      "src/scheduler/JobScheduler.ts",
+      "src/scheduler/SecurityReviewPreflight.ts"
+    ],
+    "addedLines": 214,
+    "deletedLines": 0
+  },
+  "causalAutopsy": {
+    "origin": "new-code",
+    "notes": "Approved new diagnostic stage; source evidence does not establish retained model context, so no reads are suppressed."
+  },
+  "classClosure": {
+    "defectClass": "unbounded-self-action",
+    "closure": "n/a",
+    "reason": "One bounded detached diagnostic per already-authorized normal security-review launch. No new loop, timer, retry, recovery, re-drive, notification or model spawn is introduced; the existing scheduler retains all action authority."
+  },
+  "verdict": "pass"
+}
