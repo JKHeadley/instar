@@ -4,6 +4,12 @@ import type { ManagedStopEnrollment, ManagedStopInput } from './ManagedCodexStop
 
 const RELEASED_WORK_PREFIX = 'released-launch:';
 
+export interface OrdinaryWorkProcess {
+  pid: number;
+  procStart: number | null;
+  startedAt: string;
+}
+
 interface Claim {
   enrollment: ManagedStopEnrollment;
   roundKey?: string;
@@ -25,13 +31,20 @@ export class ManagedCodexStopStore {
       );
       CREATE TABLE IF NOT EXISTS ordinary_project_work_fences (
         work_key TEXT PRIMARY KEY,
-        execution_id TEXT
+        execution_id TEXT,
+        worker_json TEXT
       );
       CREATE TABLE IF NOT EXISTS managed_codex_native_bindings (
         launch_id TEXT PRIMARY KEY,
         native_session_id TEXT NOT NULL UNIQUE
       );
     `);
+    this.db.transaction(() => {
+      const columns = db.pragma('table_info(ordinary_project_work_fences)') as Array<{ name: string }>;
+      if (!columns.some(column => column.name === 'worker_json')) {
+        db.exec('ALTER TABLE ordinary_project_work_fences ADD COLUMN worker_json TEXT');
+      }
+    }).immediate();
   }
 
   reserve(workKey: string, input: Pick<ManagedStopEnrollment, 'sessionId' | 'machineId' | 'ownerEpoch' | 'remaining'>, roundKey?: string): boolean {
@@ -64,16 +77,25 @@ export class ManagedCodexStopStore {
       if (keys.some(key => !key || this.hasWorkClaim(key) || this.hasOrdinaryFence(key))) return false;
       const write = this.db.prepare(`
         INSERT INTO ordinary_project_work_fences (work_key, execution_id) VALUES (?, ?)
-        ON CONFLICT(work_key) DO UPDATE SET execution_id = excluded.execution_id
+        ON CONFLICT(work_key) DO UPDATE SET execution_id = excluded.execution_id, worker_json = NULL
       `);
       for (const key of keys) write.run(key, executionId);
       return true;
     }).immediate();
   }
 
+  /** Record identity only for the execution that still owns the fence. */
+  recordOrdinaryProcess(executionId: string, worker: OrdinaryWorkProcess): boolean {
+    if (!Number.isSafeInteger(worker.pid) || worker.pid <= 0) return false;
+    return this.db.prepare(`
+      UPDATE ordinary_project_work_fences SET worker_json = ?
+      WHERE execution_id = ? AND worker_json IS NULL
+    `).run(JSON.stringify(worker), executionId).changes > 0;
+  }
+
   /** Caller has confirmed this exact execution never started or has stopped. */
   settleOrdinaryWork(executionId: string): void {
-    this.db.prepare('UPDATE ordinary_project_work_fences SET execution_id = NULL WHERE execution_id = ?')
+    this.db.prepare('UPDATE ordinary_project_work_fences SET execution_id = NULL, worker_json = NULL WHERE execution_id = ?')
       .run(executionId);
   }
 

@@ -35,6 +35,7 @@
  */
 
 import { randomUUID } from 'node:crypto';
+import { processStartMs } from './processIdentity.js';
 import type { ManagedCodexStopStore } from './ManagedCodexStopStore.js';
 import { applyClaudeChildAuth } from './claudeChildAuth.js';
 import { spawn, execFileSync, type ChildProcess } from 'node:child_process';
@@ -154,7 +155,7 @@ export interface RunRoundResult {
  */
 export interface RunRoundDeps {
   stateDir: string;
-  workFences?: Pick<ManagedCodexStopStore, 'hasWorkClaim' | 'reserveOrdinaryWork' | 'settleOrdinaryWork'>;
+  workFences?: Pick<ManagedCodexStopStore, 'hasWorkClaim' | 'reserveOrdinaryWork' | 'recordOrdinaryProcess' | 'settleOrdinaryWork'>;
 }
 
 /**
@@ -326,6 +327,16 @@ export async function runRound(input: RunRoundInput, deps: RunRoundDeps): Promis
 
       // Spawn the autonomous child with stop condition + ids in env.
       const child = spawnAutonomousChild(input, lastItemIds);
+      if (workFences && executionId && child.pid !== undefined) {
+        try {
+          workFences.recordOrdinaryProcess(executionId, {
+            pid: child.pid, procStart: processStartMs(child.pid), startedAt: new Date().toISOString(),
+          });
+        } catch {
+          // The persistent fence still holds. Keep supervising this child even
+          // when its identity cannot be saved for a future server.
+        }
+      }
       const exit = await waitForExitOrPollChange(
         child,
         input.tracker,

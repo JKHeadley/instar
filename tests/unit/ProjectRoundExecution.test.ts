@@ -151,10 +151,16 @@ describe('ProjectRoundExecution.runRound', () => {
       }, { stateDir, workFences: store });
       expect(result.outcome).toBe(groupRemains ? 'unverifiable' : 'complete');
       const execution_id = groupRemains ? expect.any(String) : null;
-      expect(db.prepare('SELECT * FROM ordinary_project_work_fences').all()).toEqual([
-        { work_key: projectRoundWorkKey('p-fenced', 0), execution_id },
-        { work_key: projectRoundWorkKey('p-fenced', 0, 'i1'), execution_id },
+      const rows = db.prepare('SELECT * FROM ordinary_project_work_fences').all() as
+        Array<{ work_key: string; execution_id: string | null; worker_json: string | null }>;
+      expect(rows).toEqual([
+        { work_key: projectRoundWorkKey('p-fenced', 0), execution_id, worker_json: groupRemains ? expect.any(String) : null },
+        { work_key: projectRoundWorkKey('p-fenced', 0, 'i1'), execution_id, worker_json: groupRemains ? expect.any(String) : null },
       ]);
+      if (groupRemains) {
+        expect(JSON.parse(rows[0].worker_json!)).toMatchObject({ pid: expect.any(Number), startedAt: expect.any(String) });
+        expect(rows[0].worker_json).toEqual(rows[1].worker_json);
+      }
     } finally {
       probe.mockRestore();
       db.close();

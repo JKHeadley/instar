@@ -1,0 +1,26 @@
+{
+  "version": 2,
+  "slug": "managed-codex-ordinary-worker-proof",
+  "sessionId": "017c26ed-5596-4576-9c20-20af13e4c1f8",
+  "timestamp": "2026-11-25T17:35:16.497Z",
+  "artifactPath": "upgrades/side-effects/managed-codex-ordinary-worker-proof.md",
+  "artifactSha256": "f5964a5cb09374ad93754ccb725007b8b43e35e73f5785dc3ee01443e1958e78",
+  "coveredFiles": [
+    "src/core/ManagedCodexStopStore.ts",
+    "src/core/ProjectRoundExecution.ts",
+    "tests/unit/ProjectRoundExecution.test.ts",
+    "tests/unit/managed-codex-stop-store.test.ts"
+  ],
+  "phase": "complete",
+  "tier": 1,
+  "tierReasoning": "One-shot identity evidence capture in the still-unwired fixture provider. No production migration, launch, or recovery enabled.",
+  "eli16Path": "upgrades/managed-codex-ordinary-worker-proof.eli16.md",
+  "sideEffectsPath": "upgrades/side-effects/managed-codex-ordinary-worker-proof.md",
+  "secondPass": "true",
+  "reviewerConcurred": true,
+  "classClosure": {
+    "defectClass": "unbounded-self-action",
+    "closure": "n/a",
+    "reason": "A single worker identity record is attached to an existing launch. The change does not schedule or retry any action."
+  }
+}

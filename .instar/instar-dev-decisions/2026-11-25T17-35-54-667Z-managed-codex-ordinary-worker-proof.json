@@ -1,0 +1,27 @@
+{
+  "ts": "2026-11-25T17:35:54.667Z",
+  "slug": "managed-codex-ordinary-worker-proof",
+  "suggestedTier": 2,
+  "declaredTier": 1,
+  "riskFloor": 1,
+  "riskFloorReasons": [],
+  "belowFloor": false,
+  "files": 2,
+  "loc": 41,
+  "scope": {
+    "basis": "staged-in-scope-paths-including-deleted",
+    "files": [
+      "src/core/ManagedCodexStopStore.ts",
+      "src/core/ProjectRoundExecution.ts"
+    ],
+    "addedLines": 37,
+    "deletedLines": 4
+  },
+  "causalAutopsy": null,
+  "classClosure": {
+    "defectClass": "unbounded-self-action",
+    "closure": "n/a",
+    "reason": "A single worker identity record is attached to an existing launch. The change does not schedule or retry any action."
+  },
+  "verdict": "pass"
+}

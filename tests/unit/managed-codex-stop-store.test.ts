@@ -26,6 +26,27 @@ describe('managed Codex Stop work claims', () => {
     }
   });
 
+  it('upgrades a prior fence without releasing the hold and binds worker evidence once', () => {
+    const db = new Database(':memory:');
+    try {
+      db.exec('CREATE TABLE ordinary_project_work_fences (work_key TEXT PRIMARY KEY, execution_id TEXT)');
+      db.prepare('INSERT INTO ordinary_project_work_fences VALUES (?, ?)').run('round', 'original');
+      const store = new ManagedCodexStopStore(db);
+      expect(store.reserveOrdinaryWork(['round'], 'other')).toBe(false);
+      const worker = { pid: 123, procStart: 1000, startedAt: '2026-11-25T00:00:00.000Z' };
+      expect(store.recordOrdinaryProcess('other', worker)).toBe(false);
+      expect(store.recordOrdinaryProcess('original', worker)).toBe(true);
+      expect(store.recordOrdinaryProcess('original', { ...worker, pid: 456 })).toBe(false);
+      expect(db.prepare('SELECT worker_json FROM ordinary_project_work_fences').get())
+        .toEqual({ worker_json: JSON.stringify(worker) });
+      store.settleOrdinaryWork('original');
+      expect(store.reserveOrdinaryWork(['round'], 'replacement')).toBe(true);
+      expect(store.recordOrdinaryProcess('original', worker)).toBe(false);
+    } finally {
+      db.close();
+    }
+  });
+
   it('keeps ordinary launch fences across restart until the exact execution settles', () => {
     const directory = fs.mkdtempSync(path.join(os.tmpdir(), 'ordinary-project-fence-'));
     const file = path.join(directory, 'claims.sqlite');
