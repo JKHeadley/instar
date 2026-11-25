@@ -87,5 +87,22 @@
       ],
       "expectedUtf8": "[\"instar-app-receipt-v3\",\"0000000000000000000000000000000000000000000000000000000000000000\",\"2026-11-25T09:45:16.000Z\",\"machine-a\",\"app:a71db421-e49c-4e29-91ca-f9bc545d3d1c\",\"a\",\"b\\nc\",{\"conversationKey\":\"app:a71db421-e49c-4e29-91ca-f9bc545d3d1c\",\"eventId\":\"event-original-02\",\"messageId\":\"message-original-02\"}]"
     }
-  ]
+  ],
+  "receiptCanonicalKeyOrderFixture": {
+    "tuple": [
+      "instar-app-receipt-v3",
+      "0000000000000000000000000000000000000000000000000000000000000000",
+      "2026-11-25T09:45:16.000Z",
+      "machine-a",
+      "app:a71db421-e49c-4e29-91ca-f9bc545d3d1c",
+      "a\nb",
+      "c",
+      {
+        "messageId": "message-original-02",
+        "eventId": "event-original-02",
+        "conversationKey": "app:a71db421-e49c-4e29-91ca-f9bc545d3d1c"
+      }
+    ],
+    "expectedUtf8": "[\"instar-app-receipt-v3\",\"0000000000000000000000000000000000000000000000000000000000000000\",\"2026-11-25T09:45:16.000Z\",\"machine-a\",\"app:a71db421-e49c-4e29-91ca-f9bc545d3d1c\",\"a\\nb\",\"c\",{\"conversationKey\":\"app:a71db421-e49c-4e29-91ca-f9bc545d3d1c\",\"eventId\":\"event-original-02\",\"messageId\":\"message-original-02\"}]"
+  }
 }
