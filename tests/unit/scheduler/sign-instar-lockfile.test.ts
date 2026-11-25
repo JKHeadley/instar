@@ -21,10 +21,12 @@ import {
   hashBody,
   hashFrontmatter,
 } from '../../../src/scheduler/AgentMdLockFile.js';
+import { readVerifiedPackagedCatalog, readVerifiedPackagedDoorwayAssets } from '../../../src/core/VerifiedPackagedCatalog.js';
 import { SafeFsExecutor } from '../../../src/core/SafeFsExecutor.js';
 
 const REPO_ROOT = path.resolve(__dirname, '..', '..', '..');
 const SIGNER_SCRIPT = path.join(REPO_ROOT, 'scripts', 'sign-instar-lockfile.mjs');
+const FIXTURE_ENV = { ...process.env, INSTAR_RELEASE_PRIVATE_KEY_PEM: '', INSTAR_RELEASE_PRIVATE_KEY_PEM_PATH: '' };
 
 describe('sign-instar-lockfile build script', () => {
   let workspace: string;
@@ -80,7 +82,7 @@ describe('sign-instar-lockfile build script', () => {
   });
 
   it('produces a present-trusted lock-file from empty templates dir', () => {
-    execFileSync('node', ['scripts/sign-instar-lockfile.mjs', '--quiet'], { cwd: workspace });
+    execFileSync('node', ['scripts/sign-instar-lockfile.mjs', '--quiet'], { cwd: workspace, env: FIXTURE_ENV });
 
     const distLock = path.join(distDir, 'jobs', 'instar.lock.json');
     expect(fs.existsSync(distLock)).toBe(true);
@@ -94,6 +96,7 @@ describe('sign-instar-lockfile build script', () => {
     expect(result.state).toBe('present-trusted');
     if (result.state === 'present-trusted') {
       expect(result.lockFile.entries).toEqual([]);
+      expect(result.lockFile.catalogHash).toBeUndefined();
       expect(result.lockFile.signature).toMatch(/^[A-Za-z0-9+/=]+$/);
       expect(result.lockFile.keyId).toMatch(/^instar-release\/sha256:[0-9a-f]{64}$/);
     }
@@ -123,7 +126,7 @@ describe('sign-instar-lockfile build script', () => {
     const fileContent = `---\n${fmYaml}\n---\n${body}`;
     fs.writeFileSync(path.join(templatesDir, `${slug}.md`), fileContent, 'utf-8');
 
-    execFileSync('node', ['scripts/sign-instar-lockfile.mjs', '--quiet'], { cwd: workspace });
+    execFileSync('node', ['scripts/sign-instar-lockfile.mjs', '--quiet'], { cwd: workspace, env: FIXTURE_ENV });
 
     const distLock = path.join(distDir, 'jobs', 'instar.lock.json');
     const lockFile = JSON.parse(fs.readFileSync(distLock, 'utf-8'));
@@ -151,7 +154,7 @@ describe('sign-instar-lockfile build script', () => {
     try {
       execFileSync('node', ['scripts/sign-instar-lockfile.mjs', '--quiet'], {
         cwd: workspace,
-        env: { ...process.env, INSTAR_RELEASE_PRIVATE_KEY_PEM: '', INSTAR_RELEASE_PRIVATE_KEY_PEM_PATH: '' },
+        env: FIXTURE_ENV,
       });
       // The signer must NOT have produced a lock-file (no key → no signed
       // file → runtime sees `absent` → lockTrust=untrusted-no-lockfile).
@@ -175,15 +178,89 @@ describe('sign-instar-lockfile build script', () => {
     }
   });
 
+  it('signs the exact packaged catalog digest and refuses an altered or stripped digest', () => {
+    const catalogPath = path.join(workspace, 'scripts', 'model-registry-freshness.manifest.json');
+    const catalogBytes = Buffer.from('{\r\n  "doors": {}\r\n}\r\n');
+    fs.writeFileSync(catalogPath, catalogBytes);
+    try {
+      execFileSync('node', ['scripts/sign-instar-lockfile.mjs', '--quiet'], { cwd: workspace, env: FIXTURE_ENV });
+
+      const jobsRoot = path.join(distDir, 'jobs');
+      const lockPath = path.join(jobsRoot, 'instar.lock.json');
+      expect(readLockFile(jobsRoot, workspace)).toMatchObject({
+        state: 'present-trusted',
+        lockFile: {
+          catalogHash: 'sha256:' + crypto.createHash('sha256').update(catalogBytes).digest('hex'),
+        },
+      });
+
+      const lockFile = JSON.parse(fs.readFileSync(lockPath, 'utf-8'));
+      const writeDigest = (catalogHash: unknown) => {
+        fs.writeFileSync(lockPath, JSON.stringify({ ...lockFile, catalogHash }));
+      };
+      writeDigest('sha256:' + '0'.repeat(64));
+      expect(readLockFile(jobsRoot, workspace).state).toBe('present-untrusted');
+
+      writeDigest(undefined);
+      expect(readLockFile(jobsRoot, workspace).state).toBe('present-untrusted');
+
+      writeDigest(null);
+      expect(readLockFile(jobsRoot, workspace)).toMatchObject({
+        state: 'malformed',
+        reason: expect.stringContaining('catalogHash'),
+      });
+    } finally {
+      SafeFsExecutor.safeUnlinkSync(catalogPath, { operation: 'sign-instar-lockfile.test catalog cleanup' });
+    }
+  });
+
+  it('verifies the exact signed prober and catalog bytes together', () => {
+    const catalogPath = path.join(workspace, 'scripts', 'model-registry-freshness.manifest.json');
+    const proberPath = path.join(workspace, 'scripts', 'doorway-scan.mjs');
+    const alternate = path.join(workspace, 'alternate-prober.mjs');
+    const catalog = Buffer.from('{"lastReviewedAt":"2026-11-01","doors":{}}');
+    const prober = Buffer.from('export const fixture = true;\r\n');
+    const key = crypto.createPublicKey(fs.readFileSync(path.join(publicKeyDir, 'instar-release-pub.pem')));
+    const pin = crypto.createHash('sha256').update(key.export({ type: 'spki', format: 'der' })).digest('hex');
+    const sign = () => execFileSync('node', ['scripts/sign-instar-lockfile.mjs', '--quiet'], { cwd: workspace, env: FIXTURE_ENV });
+    const readPair = () => readVerifiedPackagedDoorwayAssets(workspace, '0.0.1', pin);
+
+    fs.writeFileSync(catalogPath, catalog);
+    try {
+      sign();
+      expect(readPair()).toEqual({ status: 'unavailable', reason: 'prober-digest-absent' });
+
+      fs.writeFileSync(proberPath, prober);
+      sign();
+      expect(readPair()).toMatchObject({ status: 'verified', catalogBytes: catalog, proberBytes: prober });
+
+      fs.writeFileSync(proberPath, prober.toString().replace('\r\n', '\n'));
+      expect(readPair()).toEqual({ status: 'tampered', reason: 'prober-digest-mismatch' });
+      expect(readVerifiedPackagedCatalog(workspace, '0.0.1', pin).status).toBe('verified');
+
+      SafeFsExecutor.safeUnlinkSync(proberPath, { operation: 'signer prober fixture replacement' });
+      expect(readPair()).toEqual({ status: 'unavailable', reason: 'prober-file-unavailable-or-invalid' });
+
+      fs.writeFileSync(alternate, prober);
+      fs.symlinkSync(alternate, proberPath);
+      expect(readPair()).toEqual({ status: 'tampered', reason: 'prober-file-unavailable-or-invalid' });
+    } finally {
+      for (const file of [catalogPath, proberPath, alternate]) {
+        if (fs.existsSync(file)) SafeFsExecutor.safeUnlinkSync(file, { operation: 'signed assets fixture cleanup' });
+      }
+    }
+  });
+
   it('--dry-run prints lock-file JSON without writing dist files', () => {
     // Re-run the signer to produce a fresh dist file (prior test may have
     // removed it). This gives dry-run a baseline mtime to compare against.
-    execFileSync('node', ['scripts/sign-instar-lockfile.mjs', '--quiet'], { cwd: workspace });
+    execFileSync('node', ['scripts/sign-instar-lockfile.mjs', '--quiet'], { cwd: workspace, env: FIXTURE_ENV });
     const distLock = path.join(distDir, 'jobs', 'instar.lock.json');
     const stat = fs.statSync(distLock).mtimeMs;
     const out = execFileSync('node', ['scripts/sign-instar-lockfile.mjs', '--dry-run', '--quiet'], {
       cwd: workspace,
       encoding: 'utf-8',
+      env: FIXTURE_ENV,
     });
     expect(() => JSON.parse(out)).not.toThrow();
     const json = JSON.parse(out);

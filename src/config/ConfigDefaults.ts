@@ -83,7 +83,7 @@ const SHARED_DEFAULTS: Record<string, unknown> = {
   },
   // Doorway/Model Knowledge Registry — the recurring doorway-scan job's config knob
   // (docs/specs/DOORWAY-MODEL-KNOWLEDGE-REGISTRY-SPEC.md §D6). Fail-closed defaults:
-  // free-probes (zero metered spend), weekly cadence, no digest topic, and a $0 money
+  // free-probes (zero metered spend), daily cadence, no digest topic, and a $0 money
   // cap so no metered probe can EVER run until an operator sets a positive cap AND opts
   // into a metered scope by hand. applyDefaults is add-missing-only (seeds `0`/`null`
   // correctly and never clobbers an operator override), and it runs on BOTH init and
@@ -98,7 +98,7 @@ const SHARED_DEFAULTS: Record<string, unknown> = {
   maintenance: {
     doorwayScan: {
       scope: 'free-probes',
-      cadence: '0 4 * * 1',
+      cadence: '0 4 * * *',
       digestTopicId: null,
       budgetCapUsd: 0,
     },

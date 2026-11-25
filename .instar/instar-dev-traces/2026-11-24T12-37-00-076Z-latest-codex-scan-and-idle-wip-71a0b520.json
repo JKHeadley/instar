@@ -1,0 +1,27 @@
+{
+  "version": 2,
+  "slug": "latest-codex-scan-and-idle-wip",
+  "sessionId": "aca68beb-0d4e-4546-a3c1-065299307f44",
+  "timestamp": "2026-11-24T12:37:00.076Z",
+  "artifactPath": "upgrades/side-effects/latest-codex-scan-and-idle-wip.md",
+  "artifactSha256": "739869d4fe43465d73426e1869a189fd0388cd1f0475686ff7d5cb44cfdf4537",
+  "specPath": "docs/specs/latest-codex-doorway-scan.md",
+  "coveredFiles": [
+    "src/core/CapabilityRegistry.ts",
+    "src/core/DoorwayRegistryReader.ts",
+    "src/core/ScheduledDoorwayRead.ts",
+    "src/scheduler/JobRunHistory.ts",
+    "src/scheduler/JobScheduler.ts",
+    "src/server/AgentServer.ts",
+    "src/server/measurementCoverageRead.ts",
+    "src/server/routes.ts",
+    "tests/e2e/doorway-registry-alive.test.ts",
+    "tests/unit/committed-doorway-observation.test.ts",
+    "tests/unit/job-cost-runner/JobScheduler-script-runner.test.ts"
+  ],
+  "phase": "complete",
+  "tier": 2,
+  "tierReasoning": "Both authenticated HTTP readers use the same machine-scoped read projection when the signed catalog is selected.",
+  "secondPass": "not-required",
+  "reviewerConcurred": null
+}

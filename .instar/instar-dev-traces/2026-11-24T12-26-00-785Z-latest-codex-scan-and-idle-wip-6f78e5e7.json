@@ -1,0 +1,28 @@
+{
+  "version": 2,
+  "slug": "latest-codex-scan-and-idle-wip",
+  "sessionId": "aca68beb-0d4e-4546-a3c1-065299307f44",
+  "timestamp": "2026-11-24T12:26:00.785Z",
+  "artifactPath": "upgrades/side-effects/latest-codex-scan-and-idle-wip.md",
+  "artifactSha256": "c28b050576930c8d81635824f56ae2019f42f488d31ac45026e1ddbc74092d73",
+  "specPath": "docs/specs/latest-codex-doorway-scan.md",
+  "coveredFiles": [
+    "src/core/CommittedDoorwayObservation.ts",
+    "src/core/ScheduledDoorwayObservationStore.ts",
+    "src/core/ScheduledDoorwayRead.ts",
+    "src/core/VerifiedPackagedCatalog.ts",
+    "src/core/types.ts",
+    "src/scheduler/JobRunHistory.ts",
+    "src/scheduler/JobScheduler.ts",
+    "src/scheduler/PackagedDoorwayExecution.ts",
+    "tests/unit/committed-doorway-observation.test.ts",
+    "tests/unit/job-cost-runner/JobScheduler-script-runner.test.ts",
+    "tests/unit/scheduled-doorway-observation-store.test.ts",
+    "tests/unit/verified-packaged-catalog.test.ts"
+  ],
+  "phase": "complete",
+  "tier": 2,
+  "tierReasoning": "The opt-in job picks a verified executable and attests immutable evidence under the scheduler run. The read checkpoint stays dark.",
+  "secondPass": "true",
+  "reviewerConcurred": true
+}

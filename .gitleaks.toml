@@ -142,4 +142,5 @@ regexes = [
   "^xoxb-1234-5678-abcdef$",
   "^xoxb-123456789012-abcdefghijk$",
   "^xoxb-1234567890123-abcdefghijklmnop$",
+  "^12e3fb25ab9cfd87591e550b07434a0c492ead03f66c8b6e1eae548a883eed6e$",
 ]

@@ -2,7 +2,7 @@
  * doorway-scan job template invariants (DOORWAY-MODEL-KNOWLEDGE-REGISTRY-SPEC §2.1/§Testing).
  *
  * Pins the safety-load-bearing frontmatter + body invariants so a later edit
- * can't silently arm the dark scan, select a metered scope, or turn the review-
+ * can't select a metered scope or turn the review-
  * only diff into an auto-apply. Mirrors bench-refresh-job-template.test.ts.
  */
 import { describe, it, expect } from 'vitest';
@@ -26,7 +26,7 @@ describe('doorway-scan job template', () => {
     expect(fs.existsSync(TEMPLATE)).toBe(true);
   });
 
-  it('ships OFF by default (dark — a scheduled session-spawner is a deliberate opt-in)', () => {
+  it('ships disabled as a deterministic script job', () => {
     expect(parse().frontmatter.enabled).toBe(false);
   });
 
@@ -39,10 +39,8 @@ describe('doorway-scan job template', () => {
     expect(parse().frontmatter.perMachineIndependent).toBe(true);
   });
 
-  it('runs on a pinned WEEKDAY cadence (not * — never daily/hourly)', () => {
-    const fields = String(parse().frontmatter.schedule).trim().split(/\s+/);
-    expect(fields).toHaveLength(5);
-    expect(fields[4]).not.toBe('*'); // day-of-week pinned → weekly
+  it('runs once daily', () => {
+    expect(parse().frontmatter.schedule).toBe('0 4 * * *');
   });
 
   it('is gated on server health', () => {

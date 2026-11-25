@@ -1,4 +1,5 @@
 import { neutralizeTerminalControls, sanitizeTypedText } from './terminalControlBytes.js';
+import { resolveFrameworkModelDefault } from './frameworkModelDefaults.js';
 import { assertBrowserMcpProfilesSafe } from './BrowserMcpProfileGuard.js';
 /**
  * Session Manager — spawn and monitor Claude Code sessions via tmux.
@@ -630,6 +631,7 @@ type TmuxOutcome =
  *  off-path/test caller) keep today's behavior byte-for-byte: tmuxAsyncEnabled
  *  defaults false ⇒ the legacy sync hot path runs unchanged. */
 export interface SessionManagerOptions {
+  frameworkDefaultModels?: () => SessionManagerConfig['frameworkDefaultModels'];
   /** Resolved once at boot. Absence/inactive preserves the legacy injection path byte-for-byte. */
   stageBActivation?: StageBActivationStatus;
   localMachineId?: () => string;
@@ -1514,8 +1516,11 @@ export class SessionManager extends EventEmitter {
   private threadlineMcpWiring: ThreadlineMcpSpawnWiring | null = null;
   private static readonly CLAUDE_BINARY_PRUNE_INTERVAL_MS = 60 * 60 * 1000;
 
+  private readonly frameworkDefaultModels: NonNullable<SessionManagerOptions['frameworkDefaultModels']>;
+
   constructor(config: SessionManagerConfig, state: StateManager, opts: SessionManagerOptions = {}) {
     super();
+    this.frameworkDefaultModels = opts.frameworkDefaultModels ?? (() => this.config.frameworkDefaultModels);
     this.config = config;
     this.state = state;
     this.claudeBinaryRetainer = new ClaudeBinaryRetainer({
@@ -4998,7 +5003,9 @@ rm()  { "${shimRunner}" rm  "$@"; }
     // Match interactive spawns: an explicit model (including a tier used by
     // internal judges) wins; otherwise honor the saved default for the actual
     // launch framework, after any closed-lane fallback.
-    const requestedModel = options.model ?? this.config.frameworkDefaultModels?.[headlessFramework];
+    const requestedModel = options.model ?? (options.codexLocalProvider ? undefined : resolveFrameworkModelDefault(
+      headlessFramework, this.frameworkDefaultModels()?.[headlessFramework],
+    ));
     const launchModel = await this.resolveCodexLaunchModel(headlessFramework, requestedModel, options.codexLocalProvider);
 
 
@@ -8543,7 +8550,9 @@ rm()  { "${shimRunner}" rm  "$@"; }
     // Per-call defaultModel override (used by /local-model to set Codex's
     // local model id) wins over config defaults. Config defaults survive
     // for cloud-Codex topics that haven't been customized.
-    const defaultModel = options?.defaultModel ?? this.config.frameworkDefaultModels?.[framework];
+    const defaultModel = options?.defaultModel ?? (options?.codexLocalProvider ? undefined : resolveFrameworkModelDefault(
+      framework, this.frameworkDefaultModels()?.[framework],
+    ));
     // Codex rate-limit model-swap (see resolveCodexLaunchModel) — applies to the
     // interactive (user-facing) codex session too, not just headless spawns.
     const launchDefaultModel = await this.resolveCodexLaunchModel(framework, defaultModel, options?.codexLocalProvider);

@@ -1,0 +1,22 @@
+{
+  "version": 2,
+  "slug": "latest-codex-scan-and-idle-wip",
+  "sessionId": "bcc82a0c-f81e-440b-88eb-304eb7ee4f4c",
+  "timestamp": "2026-11-25T02:34:35.191Z",
+  "artifactPath": "upgrades/side-effects/latest-codex-scan-and-idle-wip.md",
+  "artifactSha256": "72d4e3a71ec7b02195ab78006fd0fd51ee6721db272f0988857d112c6f2a4bb6",
+  "specPath": "docs/specs/latest-codex-doorway-scan.md",
+  "coveredFiles": [
+    "src/core/ScheduledDoorwayRead.ts",
+    "src/core/VerifiedDoorwayRetention.ts",
+    "src/scheduler/JobScheduler.ts",
+    "tests/unit/committed-doorway-observation.test.ts",
+    "tests/unit/job-cost-runner/JobScheduler-script-runner.test.ts",
+    "upgrades/side-effects/latest-codex-scan-and-idle-wip.md"
+  ],
+  "phase": "complete",
+  "tier": 2,
+  "tierReasoning": "Durable advisory cursor generation and scheduler read integration",
+  "secondPass": "not-required",
+  "reviewerConcurred": null
+}

@@ -40,6 +40,8 @@ const ROOT = path.resolve(__dirname, '..');
 
 const TEMPLATES_DIR = path.join(ROOT, 'src', 'scaffold', 'templates', 'jobs', 'instar');
 const PUBLIC_KEY_SRC = path.join(ROOT, 'src', 'scaffold', 'keys', 'instar-release-pub.pem');
+const PROBER_PATH = path.join(ROOT, 'scripts', 'doorway-scan.mjs');
+const CATALOG_PATH = path.join(ROOT, 'scripts', 'model-registry-freshness.manifest.json');
 const DIST_LOCKFILE = path.join(ROOT, 'dist', 'jobs', 'instar.lock.json');
 const DIST_PUBLIC_KEY = path.join(ROOT, 'dist', 'keys', 'instar-release-pub.pem');
 
@@ -202,14 +204,6 @@ function main() {
 
   const generatedAt = new Date().toISOString();
 
-  // Canonical payload (everything except `signature`).
-  const canonical = canonicalizeForHash({
-    instarVersion,
-    generatedAt,
-    entries,
-    keyId,
-  });
-
   if (!keyInfo) {
     log('WARNING: No signing key found. Skipping lock-file generation.');
     log('  Set INSTAR_RELEASE_PRIVATE_KEY_PEM in CI, or generate a local dev key:');
@@ -233,16 +227,20 @@ function main() {
     return;
   }
 
-  const signature = signCanonicalPayload(canonical, keyInfo.pem);
-  log(`Signed with key source: ${keyInfo.source}, keyId=${keyId.slice(0, 32)}…`);
-
-  const lockFile = {
+  // Hash the shipped catalog's exact bytes. A lock without a catalog remains
+  // valid for jobs, but carries no attestation for catalog consumers.
+  const payload = {
     instarVersion,
     generatedAt,
     entries,
     keyId,
-    signature,
+    ...(fs.existsSync(PROBER_PATH) ? { proberHash: hashScriptBytes(fs.readFileSync(PROBER_PATH)) } : {}),
+    ...(fs.existsSync(CATALOG_PATH) ? { catalogHash: hashScriptBytes(fs.readFileSync(CATALOG_PATH)) } : {}),
   };
+  const signature = signCanonicalPayload(canonicalizeForHash(payload), keyInfo.pem);
+  log(`Signed with key source: ${keyInfo.source}, keyId=${keyId.slice(0, 32)}…`);
+
+  const lockFile = { ...payload, signature };
 
   if (dryRun) {
     console.log(JSON.stringify(lockFile, null, 2));

@@ -334,6 +334,47 @@ describe('JobRunHistory unit tests', () => {
       expect(found!.reflection).toBeDefined();
     });
 
+    it('preserves the original ledger when replacement fails and compacts on the next startup', () => {
+      const history = new JobRunHistory(stateDir);
+      const runId = history.recordStart({ slug: 'test-job', sessionId: 'sess-1', trigger: 'scheduled' });
+      history.recordCompletion({ runId, result: 'success', outputSummary: 'done' });
+      const file = path.join(stateDir, 'ledger', 'job-runs.jsonl');
+      const original = fs.readFileSync(file);
+      const replace = vi.spyOn(fs, 'renameSync').mockImplementationOnce(() => {
+        throw new Error('simulated interruption at replacement');
+      });
+      try {
+        const reopened = new JobRunHistory(stateDir);
+        expect(replace).toHaveBeenCalled();
+        expect(fs.readFileSync(file)).toEqual(original);
+        expect(reopened.findRun(runId)).toMatchObject({ result: 'success', outputSummary: 'done' });
+      } finally {
+        replace.mockRestore();
+      }
+
+      const retried = new JobRunHistory(stateDir);
+      expect(readRawJSONL(stateDir)).toHaveLength(1);
+      expect(retried.findRun(runId)).toMatchObject({ result: 'success', outputSummary: 'done' });
+    });
+
+    it('keeps an append made while the compacted copy is being written', () => {
+      const history = new JobRunHistory(stateDir);
+      const runId = history.recordStart({ slug: 'test-job', sessionId: 'sess-1', trigger: 'scheduled' });
+      history.recordCompletion({ runId, result: 'success' });
+      const sync = fs.fsyncSync;
+      const staging = vi.spyOn(fs, 'fsyncSync').mockImplementationOnce(fd => {
+        sync(fd);
+        history.recordStart({ slug: 'other-job', sessionId: 'sess-2', trigger: 'scheduled' });
+      });
+      try {
+        const reopened = new JobRunHistory(stateDir);
+        expect(reopened.query().total).toBe(2);
+        expect(readRawJSONL(stateDir)).toHaveLength(3);
+      } finally {
+        staging.mockRestore();
+      }
+    });
+
     it('preserves multiple distinct runs during compaction', () => {
       const history = new JobRunHistory(stateDir);
 
@@ -544,6 +585,74 @@ describe('JobRunHistory unit tests', () => {
       // Should have 2 valid runs, corrupted line skipped
       expect(total).toBe(2);
       expect(runs.map(r => r.runId).sort()).toEqual(['valid-1', 'valid-2']);
+    });
+
+    it('keeps corrupt ledger evidence across cache hits, appends, and restart', () => {
+      const file = path.join(stateDir, 'ledger', 'job-runs.jsonl');
+      const history = new JobRunHistory(stateDir);
+      history.setMachineId('local');
+      const runId = history.recordStart({ slug: 'other-job', sessionId: 's1', trigger: 'scheduled' });
+      history.recordCompletion({ runId, result: 'success' });
+      expect(history.readPackagedDoorwayRuns('local', 16).status).toBe('available');
+
+      const corrupt = '{broken ledger row}';
+      fs.appendFileSync(file, corrupt + '\n');
+      expect(history.readPackagedDoorwayRuns('local', 16).status).toBe('unavailable');
+      expect(history.readPackagedDoorwayRuns('local', 16).status).toBe('unavailable');
+      const later = history.recordStart({ slug: 'another-job', sessionId: 's2', trigger: 'scheduled' });
+      expect(history.findRun(later)?.result).toBe('pending');
+      expect(history.query().total).toBe(2);
+      expect(history.readPackagedDoorwayRuns('local', 16).status).toBe('unavailable');
+
+      const reopened = new JobRunHistory(stateDir);
+      expect(reopened.query().total).toBe(2);
+      expect(reopened.readPackagedDoorwayRuns('local', 16).status).toBe('unavailable');
+      expect(reopened.readPackagedDoorwaySnapshot('local')).toEqual({ complete: false, runs: [] });
+      expect(fs.readFileSync(file, 'utf8')).toContain(corrupt);
+    });
+
+    it('recovers when an external writer finishes the same torn row', () => {
+      const file = path.join(stateDir, 'ledger', 'job-runs.jsonl');
+      const history = new JobRunHistory(stateDir);
+      history.recordStart({ slug: 'first', sessionId: 's1', trigger: 'scheduled' });
+      expect(history.query().total).toBe(1);
+      const row = JSON.stringify({
+        runId: 'external', slug: 'doorway-scan', sessionId: 's2', trigger: 'scheduled',
+        startedAt: new Date().toISOString(), result: 'pending', machineId: 'local',
+        origin: 'instar', runner: 'script', lockTrust: 'trusted', packagedDoorwayScan: true,
+      });
+      fs.appendFileSync(file, row.slice(0, 20));
+      expect(history.readPackagedDoorwayRuns('local', 16).status).toBe('unavailable');
+      fs.appendFileSync(file, row.slice(20) + '\n');
+      expect(history.readPackagedDoorwayRuns('local', 16)).toMatchObject({
+        status: 'available', runs: [{ runId: 'external' }],
+      });
+    });
+
+    it('keeps a new local row separate from a known torn line', () => {
+      const file = path.join(stateDir, 'ledger', 'job-runs.jsonl');
+      const history = new JobRunHistory(stateDir);
+      history.recordStart({ slug: 'original', sessionId: 's1', trigger: 'scheduled' });
+      fs.appendFileSync(file, '{"runId":"torn"');
+      expect(history.readPackagedDoorwayRuns('local', 16).status).toBe('unavailable');
+      const next = history.recordStart({ slug: 'next', sessionId: 's2', trigger: 'scheduled' });
+      expect(new JobRunHistory(stateDir).findRun(next)?.result).toBe('pending');
+      expect(history.readPackagedDoorwayRuns('local', 16).status).toBe('unavailable');
+    });
+
+    it('reads a larger atomic replacement from its beginning', () => {
+      const file = path.join(stateDir, 'ledger', 'job-runs.jsonl');
+      const history = new JobRunHistory(stateDir);
+      const runId = history.recordStart({ slug: 'original', sessionId: 's1', trigger: 'scheduled' });
+      expect(history.readPackagedDoorwayRuns('local', 16).status).toBe('available');
+
+      const good = JSON.stringify(history.findRun(runId));
+      const originalSize = fs.statSync(file).size;
+      fs.writeFileSync(file + '.new', '{bad replacement}\n' + ' '.repeat(originalSize) + '\n' + good + '\n');
+      fs.renameSync(file + '.new', file);
+
+      expect(history.readPackagedDoorwayRuns('local', 16).status).toBe('unavailable');
+      expect(history.query().runs.map(row => row.runId)).toEqual([runId]);
     });
 
     it('handles empty file gracefully', () => {

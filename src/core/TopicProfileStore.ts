@@ -229,6 +229,7 @@ export class TopicProfileStore {
   private topics: Record<string, TopicProfileEntry> = {};
   /** Deep snapshot of the last durably-flushed topics map (rollback target). */
   private lastFlushed: Record<string, TopicProfileEntry> = {};
+  private committedProfiles: Record<string, TopicProfileEntry> = {};
   private mirrorGeneratedAt: string | undefined;
 
   /** Per-topic process-local locks (promise chains). */
@@ -259,6 +260,23 @@ export class TopicProfileStore {
   /** The live profile for a topic (resolution input). Never the shadow. */
   resolve(topicKey: number | string): TopicProfile | null {
     return this.topics[String(topicKey)]?.current ?? null;
+  }
+
+  /** Saved model policy only. Excludes staged writes and unflushed legacy seeds. */
+  readCommittedModelPolicy(topicKey: number | string): {
+    model: TopicProfile['model'];
+    modelTier: TopicProfile['modelTier'];
+    framework: TopicProfile['framework'];
+    revision: string;
+  } | null {
+    const key = String(topicKey);
+    const profile = this.committedProfiles[key]?.current;
+    if (!profile) return null;
+    const { model, modelTier, framework, updatedAt } = profile;
+    const revision = createHash('sha256')
+      .update(JSON.stringify([key, model, modelTier, framework, updatedAt]))
+      .digest('hex');
+    return { model, modelTier, framework, revision };
   }
 
   /** Undo target (§10.3). Null when nothing to undo yet. */
@@ -642,8 +660,9 @@ export class TopicProfileStore {
       this.topics = {};
     }
 
+    this.committedProfiles = deepCloneTopics(this.topics);
     const seeded = this.seedFromLegacy();
-    this.lastFlushed = deepCloneTopics(this.topics);
+    this.lastFlushed = seeded ? deepCloneTopics(this.topics) : this.committedProfiles;
     this.bootFinalize(seeded);
   }
 
@@ -822,6 +841,7 @@ export class TopicProfileStore {
       try {
         await this.writeFileAtomic(snapshot, mirrorStamp);
         this.lastFlushed = snapshot;
+        this.committedProfiles = snapshot;
       } catch (err) {
         // Rollback to the last durably-flushed snapshot, then refuse loudly.
         this.topics = deepCloneTopics(this.lastFlushed);

@@ -1,0 +1,38 @@
+{
+  "version": 3,
+  "slug": "latest-codex-model-defaults",
+  "sessionId": "6c1cc41d-f86f-4283-987c-cf9b68e7cad7",
+  "timestamp": "2026-11-24T03:31:33.299Z",
+  "artifactPath": "upgrades/side-effects/latest-codex-model-defaults.md",
+  "artifactSha256": "03f8a853b5af219852afc2c1608e5031fbc9e0857b9213a4fc4d33599108f0b0",
+  "specPath": "docs/specs/latest-codex-model-defaults.md",
+  "coveredFiles": [
+    "docs/specs/latest-codex-model-defaults.md",
+    "src/commands/server.ts",
+    "src/core/Config.ts",
+    "src/core/frameworkModelDefaults.ts",
+    "src/server/routes.ts",
+    "tests/e2e/topic-profile-lifecycle.test.ts",
+    "upgrades/side-effects/latest-codex-model-defaults.md"
+  ],
+  "phase": "complete",
+  "tier": 2,
+  "tierReasoning": "Restore the saved-config contract while preserving the reviewed launch defaults and runtime override behavior.",
+  "secondPass": "true",
+  "reviewerConcurred": true,
+  "toolchain": {
+    "reviewSkills": [
+      {
+        "name": "spec-converge",
+        "outcome": "converged",
+        "verified": false,
+        "iterations": 6
+      }
+    ],
+    "convergence": {
+      "reportPath": "docs/specs/reports/latest-codex-model-defaults-convergence.md",
+      "iterations": 6,
+      "verified": true
+    }
+  }
+}

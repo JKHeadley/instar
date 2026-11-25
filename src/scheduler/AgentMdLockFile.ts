@@ -42,7 +42,10 @@ export interface LockFile {
   generatedAt: string;            // ISO 8601
   entries: LockFileEntry[];
   keyId: string;                  // identifies the signing key used (forward-compat)
-  signature: string;              // base64 Ed25519 over the canonical-JSON entries
+  /** SHA-256 over exact bytes of the packaged doorway model catalog. */
+  catalogHash?: string;
+  proberHash?: string;
+  signature: string;              // base64 Ed25519 over the canonical payload
   significantChanges?: Array<{ slug: string; significant: boolean; reason: string }>;
 }
 
@@ -165,18 +168,9 @@ export function readLockFile(jobsRootDir: string, packageRoot?: string): LockFil
     return { state: 'malformed', reason: `Failed to read lock-file: ${err instanceof Error ? err.message : String(err)}` };
   }
 
-  let parsed: unknown;
-  try {
-    parsed = JSON.parse(raw);
-  } catch (err) {
-    return { state: 'malformed', reason: `Lock-file is not valid JSON: ${err instanceof Error ? err.message : String(err)}` };
-  }
-
-  const schemaCheck = validateLockFileSchema(parsed);
-  if (!schemaCheck.ok) {
-    return { state: 'malformed', reason: schemaCheck.reason };
-  }
-  const lockFile = schemaCheck.lockFile;
+  const parsed = parseLockFileContent(raw);
+  if (!parsed.ok) return { state: 'malformed', reason: parsed.reason };
+  const lockFile = parsed.lockFile;
 
   // Signature verification. The bundled public key is at
   // <packageRoot>/dist/keys/instar-release-pub.pem. In Phase 1c-runtime the
@@ -197,7 +191,31 @@ export function readLockFile(jobsRootDir: string, packageRoot?: string): LockFil
     };
   }
 
-  const verifyResult = verifySignature(lockFile, pubKeyPath);
+  return verifyBundledKeySignature(lockFile, pubKeyPath);
+}
+
+/** Verify a bounded lock snapshot using authority provided by the caller. */
+export function verifySignedLockFileContent(raw: Buffer, publicKey: crypto.KeyObject): LockFileLoadResult {
+  if (raw.length > MAX_LOCKFILE_BYTES) {
+    return { state: 'malformed', reason: 'Lock-file exceeds size cap' };
+  }
+  const parsed = parseLockFileContent(raw.toString('utf8'));
+  if (!parsed.ok) return { state: 'malformed', reason: parsed.reason };
+  return signedLockResult(parsed.lockFile, publicKey);
+}
+
+function parseLockFileContent(raw: string): ReturnType<typeof validateLockFileSchema> {
+  let parsed: unknown;
+  try {
+    parsed = JSON.parse(raw);
+  } catch (err) {
+    return { ok: false, reason: `Lock-file is not valid JSON: ${err instanceof Error ? err.message : String(err)}` };
+  }
+  return validateLockFileSchema(parsed);
+}
+
+function signedLockResult(lockFile: LockFile, publicKey: crypto.KeyObject): LockFileLoadResult {
+  const verifyResult = verifySignature(lockFile, publicKey);
   if (!verifyResult.ok) {
     return { state: 'present-untrusted', lockFile, reason: verifyResult.reason };
   }
@@ -245,6 +263,12 @@ function validateLockFileSchema(
       return { ok: false, reason: `Lock-file field "${field}" must be a non-empty string` };
     }
   }
+  for (const field of ['catalogHash', 'proberHash']) {
+    const digest = obj[field];
+    if (digest !== undefined && (typeof digest !== 'string' || !/^sha256:[0-9a-f]{64}$/.test(digest))) {
+      return { ok: false, reason: `Lock-file "${field}" must match sha256:<64-hex> if present` };
+    }
+  }
   if (!Array.isArray(obj.entries)) {
     return { ok: false, reason: 'Lock-file "entries" must be an array' };
   }
@@ -285,6 +309,8 @@ function validateLockFileSchema(
       entries,
       keyId: obj.keyId as string,
       signature: obj.signature as string,
+      ...(typeof obj.proberHash === 'string' ? { proberHash: obj.proberHash } : {}),
+      ...(typeof obj.catalogHash === 'string' ? { catalogHash: obj.catalogHash } : {}),
       significantChanges: Array.isArray(obj.significantChanges)
         ? (obj.significantChanges as LockFile['significantChanges'])
         : undefined,
@@ -294,28 +320,37 @@ function validateLockFileSchema(
 
 /**
  * Verify the Ed25519 signature on the lock-file. The signature covers the
- * canonical-JSON serialization of `{instarVersion, generatedAt, entries, keyId}`
+ * canonical-JSON serialization of `{instarVersion, generatedAt, entries, keyId, catalogHash?, proberHash?}`
  * — everything EXCEPT the signature field itself. The same canonicalization
  * runs at build-time signing (Phase 1c-build PR).
  */
-function verifySignature(
-  lockFile: LockFile,
-  publicKeyPath: string,
-): { ok: true } | { ok: false; reason: string } {
+function verifyBundledKeySignature(lockFile: LockFile, publicKeyPath: string): LockFileLoadResult {
   let publicKeyPem: string;
   try {
     publicKeyPem = fs.readFileSync(publicKeyPath, 'utf-8');
   } catch (err) {
-    return { ok: false, reason: `Failed to read bundled public key at ${publicKeyPath}: ${err instanceof Error ? err.message : String(err)}` };
+    return {
+      state: 'present-untrusted', lockFile,
+      reason: `Failed to read bundled public key at ${publicKeyPath}: ${err instanceof Error ? err.message : String(err)}`,
+    };
   }
 
   let publicKey: crypto.KeyObject;
   try {
     publicKey = crypto.createPublicKey(publicKeyPem);
   } catch (err) {
-    return { ok: false, reason: `Bundled public key is malformed: ${err instanceof Error ? err.message : String(err)}` };
+    return {
+      state: 'present-untrusted', lockFile,
+      reason: `Bundled public key is malformed: ${err instanceof Error ? err.message : String(err)}`,
+    };
   }
+  return signedLockResult(lockFile, publicKey);
+}
 
+function verifySignature(
+  lockFile: LockFile,
+  publicKey: crypto.KeyObject,
+): { ok: true } | { ok: false; reason: string } {
   // Canonical JSON over everything except `signature`. The build-time signer
   // uses the same canonicalization.
   const canonical = canonicalizeForHash({
@@ -323,6 +358,8 @@ function verifySignature(
     generatedAt: lockFile.generatedAt,
     entries: lockFile.entries,
     keyId: lockFile.keyId,
+    catalogHash: lockFile.catalogHash,
+    proberHash: lockFile.proberHash,
   });
 
   let signatureBytes: Buffer;

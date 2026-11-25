@@ -23,12 +23,14 @@
  * production _agentServerRef pattern.
  */
 
-import { describe, it, expect, beforeAll, afterAll } from 'vitest';
+import { describe, it, expect, beforeAll, afterAll, vi } from 'vitest';
 import fs from 'node:fs';
 import path from 'node:path';
 import os from 'node:os';
 import request from 'supertest';
 import { AgentServer } from '../../src/server/AgentServer.js';
+import { effectiveFrameworkModelDefaults } from '../../src/core/frameworkModelDefaults.js';
+import { buildCoherenceFlags } from '../../src/core/machineCoherenceManifest.js';
 import { StateManager } from '../../src/core/StateManager.js';
 import { SafeFsExecutor } from '../../src/core/SafeFsExecutor.js';
 import { TopicProfileStore } from '../../src/core/TopicProfileStore.js';
@@ -49,15 +51,20 @@ describe('Topic Profile E2E lifecycle', () => {
   let server: AgentServer;
   let app: ReturnType<AgentServer['getApp']>;
   let respawns: string[];
+  let config: InstarConfig;
 
   beforeAll(() => {
     tmpDir = fs.mkdtempSync(path.join(os.tmpdir(), 'topic-profile-e2e-'));
     stateDir = path.join(tmpDir, '.instar');
     fs.mkdirSync(path.join(stateDir, 'state', 'sessions'), { recursive: true });
     fs.mkdirSync(path.join(stateDir, 'state', 'jobs'), { recursive: true });
-    fs.writeFileSync(path.join(stateDir, 'config.json'), JSON.stringify({ port: 0, projectName: 'topic-profile-e2e' }));
+    fs.writeFileSync(path.join(stateDir, 'config.json'), JSON.stringify({
+      port: 0,
+      projectName: 'topic-profile-e2e',
+      sessions: { frameworkDefaultModels: { 'pi-cli': 'openai/gpt-5.5' } },
+    }));
 
-    const config: InstarConfig = {
+    config = {
       projectName: 'topic-profile-e2e',
       agentName: 'E2E Agent',
       projectDir: tmpDir,
@@ -77,10 +84,11 @@ describe('Topic Profile E2E lifecycle', () => {
       defaultFramework: () => 'claude-code',
       configTopicFrameworks: () => ({}),
       configProfileDefaults: () => ({}),
-      frameworkDefaultModels: () => ({}),
+      frameworkDefaultModels: () => effectiveFrameworkModelDefaults(config.sessions?.frameworkDefaultModels),
       tierEscalationConfig: () => undefined,
       localModelBinding: () => null,
-      frameworkBinaryPath: () => null,
+      frameworkBinaryPath: (framework) => framework === 'codex-cli' ? process.execPath : null,
+      codexModelSupported: () => true,
     });
     const confirmSlots = new ProfileConfirmSlots({ ttlMs: () => 300_000 });
     respawns = [];
@@ -152,6 +160,80 @@ describe('Topic Profile E2E lifecycle', () => {
     expect(read.status).toBe(200);
     expect(read.body.pin.framework).toBe('codex-cli');
     expect(read.body.resolved.framework).toBe('codex-cli');
+    expect(read.body.resolved.model).toBe('gpt-6.2-sol');
+    expect(config.sessions?.frameworkDefaultModels).toBeUndefined();
+  });
+
+  it('reads a changed Codex family default over the authenticated API without restarting', async () => {
+    for (const [selector, model, policy] of [
+      ['gpt-6.1-sol', 'gpt-6.1-sol', 'gpt-6-1-sol'],
+      ['latest:sol', 'gpt-6.2-sol', 'latest-sol'],
+      ['latest:astra', 'gpt-6.2-astra', 'latest-astra'],
+    ]) {
+      const patch = await request(app).patch('/config')
+        .set(auth())
+        .set('X-Instar-Request', '1')
+        .send({ sessions: { frameworkDefaultModels: { 'codex-cli': selector } } });
+      expect(patch.status).toBe(200);
+      expect(patch.body.modelDefaultsScope).toBe('this-machine');
+
+      const profile = await request(app).get(`/topic-profile/${TOPIC}`).set(auth());
+      expect(profile.status).toBe(200);
+      expect(profile.body.resolved.model).toBe(model);
+      expect(buildCoherenceFlags({ boot: config })['defaultModel.codex-cli']).toBe(policy);
+    }
+  });
+
+  it('preserves sibling pins and keeps the last live default after a rejected or failed write', async () => {
+    const patchDefault = (value: unknown) => request(app).patch('/config')
+      .set(auth())
+      .set('X-Instar-Request', '1')
+      .send({ sessions: { frameworkDefaultModels: { 'codex-cli': value } } });
+
+    const readDefaults = () => JSON.parse(fs.readFileSync(path.join(stateDir, 'config.json'), 'utf8'))
+      .sessions.frameworkDefaultModels;
+    expect(readDefaults()).toEqual({ 'codex-cli': 'latest:astra', 'pi-cli': 'openai/gpt-5.5' });
+    expect((await patchDefault('latest:typo')).status).toBe(400);
+    expect((await patchDefault(42)).status).toBe(400);
+
+    const failedWrite = vi.spyOn(SafeFsExecutor, 'atomicWriteFileSync').mockImplementationOnce(() => {
+      throw new Error('test write failure');
+    });
+    try {
+      const mixed = await request(app).patch('/config')
+        .set(auth())
+        .set('X-Instar-Request', '1')
+        .send({
+          sessions: { frameworkDefaultModels: { 'codex-cli': 'latest:sol' } },
+          intelligence: { selfActionGovernor: { emergencyDisable: false } },
+        });
+      expect(mixed.status).toBe(500);
+      expect(config.intelligence?.selfActionGovernor?.emergencyDisable).toBeUndefined();
+    } finally {
+      failedWrite.mockRestore();
+    }
+
+    const profile = await request(app).get(`/topic-profile/${TOPIC}`).set(auth());
+    expect(profile.body.resolved.model).toBe('gpt-6.2-astra');
+    expect(readDefaults()['codex-cli']).toBe('latest:astra');
+  });
+
+  it('retains both accepted model pins when requests overlap', async () => {
+    const patches = await Promise.all([
+      { 'codex-cli': 'latest:sol' },
+      { 'pi-cli': 'openai/gpt-5.4' },
+    ].map(frameworkDefaultModels => request(app).patch('/config')
+      .set(auth())
+      .set('X-Instar-Request', '1')
+      .send({ sessions: { frameworkDefaultModels } })));
+    expect(patches.map(patch => patch.status)).toEqual([200, 200]);
+    const saved = JSON.parse(fs.readFileSync(path.join(stateDir, 'config.json'), 'utf8'));
+    expect(saved.sessions.frameworkDefaultModels).toEqual({
+      'codex-cli': 'latest:sol',
+      'pi-cli': 'openai/gpt-5.4',
+    });
+    const profile = await request(app).get(`/topic-profile/${TOPIC}`).set(auth());
+    expect(profile.body.resolved.model).toBe('gpt-6.2-sol');
   });
 
   it('durably persisted the pin to state/topic-profiles.json and regenerated the legacy mirror', () => {

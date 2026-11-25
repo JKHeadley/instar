@@ -1,0 +1,18 @@
+{
+  "version": 2,
+  "slug": "latest-codex-scan-and-idle-wip",
+  "sessionId": "aca68beb-0d4e-4546-a3c1-065299307f44",
+  "timestamp": "2026-11-24T18:01:49.262Z",
+  "artifactPath": "upgrades/side-effects/latest-codex-scan-and-idle-wip.md",
+  "artifactSha256": "f2e89bc1c803c0bcd99acbf5310c2cfec52110e43065ceba3eba8a4da8688f5f",
+  "specPath": "docs/specs/latest-codex-doorway-scan.md",
+  "coveredFiles": [
+    "src/core/VerifiedDoorwayRetention.ts",
+    "tests/unit/committed-doorway-observation.test.ts"
+  ],
+  "phase": "complete",
+  "tier": 2,
+  "tierReasoning": "The verifier checks the provenance of each exact retention reference and grants no removal authority.",
+  "secondPass": "true",
+  "reviewerConcurred": true
+}

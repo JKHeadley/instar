@@ -23,6 +23,7 @@ describe('Doorway registry CLAUDE.md awareness (Agent Awareness Standard)', () =
     expect(md).toContain('GET /doorways');
     expect(md).toContain('http://localhost:4042/doorways');
     expect(md).toContain('registry-unavailable-no-instar-source');
+    expect(md).toContain('Existing jobs keep their saved schedule.');
   });
 
   it('the section function honors the injected port (never hardcoded)', () => {
@@ -63,6 +64,31 @@ describe('migrateClaudeMd appends the doorway section for existing agents (Migra
     // Second run must not double-append.
     new PostUpdateMigrator({ stateDir, projectDir, version: '1.0.0' }).migrate();
     expect(countMarker()).toBe(1);
+  });
+
+  it('replaces the shipped schedule bullet once and preserves nearby edits', () => {
+    const old = `- **Keeping the map current** is a recurring \`doorway-scan\` job that re-probes each door and surfaces ONE plain-English heads-up only when something changes. It ships **OFF by default** (dark for the fleet; the job manifest is \`enabled:false\`) — enable it per maintainer agent via the \`doorway-scan\` job manifest (free-probes spends zero metered budget; metered probes are manual-only + budget-fail-closed). The \`maintenance.doorwayScan\` config block (\`scope\`/\`cadence\`/\`digestTopicId\`/\`budgetCapUsd\`) tunes it; an explicit \`maintenance.doorwayScan.enabled:false\` is a master kill-switch (deny-wins).`;
+    const custom = '- Our doorway scan runs on Tuesdays.';
+    const currentSection = DOORWAY_REGISTRY_CLAUDEMD_SECTION(4042);
+    fs.appendFileSync(claudeMdPath, currentSection.replace(/^- \*\*Keeping the map current\*\*.*$/m, () => old) + custom + '\n');
+    const migrate = () => new PostUpdateMigrator({ stateDir, projectDir, version: '1.0.0' }).migrate();
+    migrate();
+    const first = fs.readFileSync(claudeMdPath, 'utf8');
+    expect(first).toContain('Existing jobs keep their saved schedule.');
+    expect(first).toContain(custom);
+    expect(first).not.toContain(old);
+    migrate();
+    expect(countMarker()).toBe(1);
+    expect(fs.readFileSync(claudeMdPath, 'utf8')).toContain('Existing jobs keep their saved schedule.');
+  });
+
+  it('keeps an agent-customized schedule bullet', () => {
+    const custom = '- **Keeping the map current** follows our Tuesday maintenance window.';
+    const currentSection = DOORWAY_REGISTRY_CLAUDEMD_SECTION(4042);
+    fs.appendFileSync(claudeMdPath, currentSection.replace(/^- \*\*Keeping the map current\*\*.*$/m, () => custom));
+    new PostUpdateMigrator({ stateDir, projectDir, version: '1.0.0' }).migrate();
+    expect(countMarker()).toBe(1);
+    expect(fs.readFileSync(claudeMdPath, 'utf8')).toContain(custom);
   });
 
   it('does NOT re-append when the section is already present', () => {

@@ -10,6 +10,9 @@ import fs from 'node:fs';
 import path from 'node:path';
 import yaml from 'js-yaml';
 import { createTempProject, createMockSessionManager, type TempProject } from '../../helpers/setup.js';
+import os from 'node:os';
+import { createPhysicalEffectLock } from '../../../src/core/PhysicalEffectLock.js';
+import { withDoorwayRetentionWriter } from '../../../src/core/VerifiedDoorwayRetention.js';
 import { hashBody, hashFrontmatter, hashScriptBytes } from '../../../src/scheduler/AgentMdLockFile.js';
 import type { JobSchedulerConfig } from '../../../src/core/types.js';
 import type { ScriptRunContext } from '../../../src/scheduler/scriptRunObservers.js';
@@ -20,6 +23,11 @@ vi.mock('../../../src/scheduler/AgentMdLockFile.js', async (importOriginal) => {
   const orig = await importOriginal<typeof import('../../../src/scheduler/AgentMdLockFile.js')>();
   return { ...orig, readLockFile: () => lockState.value };
 });
+const readDoorwayAssets = vi.hoisted(() => vi.fn());
+vi.mock('../../../src/core/VerifiedPackagedCatalog.js', async (importOriginal) => ({
+  ...await importOriginal<typeof import('../../../src/core/VerifiedPackagedCatalog.js')>(),
+  readVerifiedInstalledDoorwayAssets: readDoorwayAssets,
+}));
 const { JobScheduler } = await import('../../../src/scheduler/JobScheduler.js');
 type Scheduler = InstanceType<typeof JobScheduler>;
 
@@ -116,6 +124,170 @@ console.log('JOB_RESULT ok checked');
 `;
 
 describe('script runner execution', () => {
+  it.skipIf(!createPhysicalEffectLock(os.tmpdir()).status().available)('attests the exact opt-in doorway run and restores the legacy routing decision when opted out', async () => {
+    project = createTempProject();
+    const slug = 'doorway-scan';
+    const wrapper = "console.log('JOB_RESULT ok legacy profile')";
+    addScriptJob(project.stateDir, slug, wrapper);
+    lockState.value = trustedLockFor([{ slug, script: wrapper }]);
+    const { s, sm, setCfg } = mkScheduler(project);
+    scheduler = s;
+    s.setMachineIdentity('fixture-machine', 'Fixture Machine');
+    const catalog = { doors: { fixture: { probe: { kind: 'cli-version' } } } };
+    readDoorwayAssets.mockReturnValue({
+      status: 'verified',
+      catalog,
+      lastReviewedAt: '2026-11-24',
+      catalogBytes: Buffer.from(JSON.stringify(catalog)),
+      proberBytes: Buffer.from('export function probeDoorFree() { return { probeStatus: "ok" }; }'),
+    });
+    const config = path.join(project.stateDir, 'config.json');
+    fs.writeFileSync(config, JSON.stringify({ maintenance: { doorwayScan: { packagedExecution: true } } }));
+    s.start();
+    await withDoorwayRetentionWriter(project.stateDir, Date.now() + 2000, async () => {
+      expect(await s.triggerJob(slug, 'test')).toBe('triggered');
+      await new Promise(resolve => setTimeout(resolve, 70));
+      expect(lastRun(s, slug)).toBeUndefined();
+      expect(readDoorwayAssets).not.toHaveBeenCalled();
+      expect(fs.existsSync(path.join(project!.stateDir, 'state', 'doorway-scan-scheduled-runs'))).toBe(false);
+    });
+    await waitFor(() => lastRun(s, slug)?.result === 'success');
+    const packaged = lastRun(s, slug);
+    expect(packaged).toMatchObject({
+      tokens: 0, machineId: 'fixture-machine', scheduledDoorwayObservationDigest: expect.stringMatching(/^sha256:/),
+    });
+    const stage = path.join(project.stateDir, 'state', 'doorway-scan-scheduled-runs', packaged.runId, 'staged.json');
+    expect(JSON.parse(fs.readFileSync(stage, 'utf8'))).toMatchObject({
+      runId: packaged.runId, startedAt: packaged.startedAt, observations: [{ doorId: 'fixture', probeStatus: 'ok' }],
+    });
+    const cursor = path.join(project.stateDir, 'state', 'doorway-scan-scheduled-runs', 'retention-cursor.json');
+    expect(JSON.parse(fs.readFileSync(cursor, 'utf8'))).toMatchObject({
+      generation: 1, machineId: 'fixture-machine',
+      observations: [{ doorId: 'fixture', runId: packaged.runId, digest: packaged.scheduledDoorwayObservationDigest }],
+      admissions: [{ doorId: 'fixture', runId: packaged.runId }],
+    });
+
+    expect(s.readScheduledDoorwayHistory(['fixture'])).toMatchObject({
+      machineId: 'fixture-machine', historyTruncated: false,
+      latestRun: { runId: packaged.runId, outcome: 'observed' },
+      doors: { fixture: { freshness: 'current', reachable: true } },
+    });
+
+    const historyRead = vi.spyOn(s.getRunHistory(), 'readPackagedDoorwayRuns');
+    historyRead.mockReturnValueOnce({ status: 'unavailable' });
+    expect(s.readScheduledDoorwayHistory(['fixture'])).toMatchObject({
+      latestRun: null, ledgerUnavailable: true,
+      doors: { fixture: { freshness: 'unknown', reachable: null } },
+    });
+    historyRead.mockRestore();
+
+    await withDoorwayRetentionWriter(project.stateDir, Date.now() + 2000, async () => {});
+    expect(await s.triggerJob(slug, 'test')).toBe('triggered');
+    await waitFor(() => {
+      const latest = lastRun(s, slug);
+      return latest?.runId !== packaged.runId && latest?.result === 'success';
+    });
+    const successor = lastRun(s, slug);
+    expect(JSON.parse(fs.readFileSync(cursor, 'utf8'))).toMatchObject({
+      generation: 2,
+      observations: [{ doorId: 'fixture', runId: successor.runId, digest: successor.scheduledDoorwayObservationDigest }],
+      admissions: [{ doorId: 'fixture', runId: successor.runId }],
+    });
+    expect(fs.existsSync(stage)).toBe(true);
+
+    setCfg({ developmentAgent: true, jobs: { scriptRunners: { disabledSlugs: [slug] } } });
+    expect(await s.triggerJob(slug, 'test')).toBe('skipped');
+    expect(lastRun(s, slug).runId).toBe(successor.runId);
+    setCfg({ developmentAgent: true });
+    fs.writeFileSync(config, '{}');
+    expect(s.scriptRunnersActiveFor(slug)).toBe(false);
+    expect(s.readScheduledDoorwayHistory(['fixture'])?.doors.fixture).toMatchObject({
+      freshness: 'disabled', reachable: null, lastObservation: { runId: successor.runId },
+    });
+    expect(readDoorwayAssets).toHaveBeenCalledTimes(2);
+    expect(sm._spawnCount).toBe(0);
+
+    fs.writeFileSync(config, JSON.stringify({ maintenance: { doorwayScan: { packagedExecution: true } } }));
+    const ledger = s.getRunHistory();
+    const baseline = Date.now();
+    vi.useFakeTimers({ toFake: ['Date'] });
+    try {
+      for (let i = 1; i <= 17; i++) {
+        vi.setSystemTime(baseline + i * 1000);
+        const runId = ledger.recordStart({
+          slug, sessionId: '', trigger: 'scheduled', origin: 'instar', runner: 'script',
+          lockTrust: 'trusted', packagedDoorwayScan: true,
+        });
+        ledger.recordCompletion({ runId, result: 'failure' });
+      }
+      expect(s.readScheduledDoorwayHistory(['fixture'])).toMatchObject({
+        historyTruncated: true,
+        doors: { fixture: { freshness: 'unknown', reachable: null, lastObservation: { runId: successor.runId } } },
+      });
+
+      const firstRead = ledger.findRun.bind(ledger);
+      const previousCursor = JSON.parse(fs.readFileSync(cursor, 'utf8'));
+      const concurrentUpdate = vi.spyOn(ledger, 'findRun').mockImplementationOnce(id => {
+        fs.writeFileSync(cursor, JSON.stringify({
+          ...previousCursor, generation: previousCursor.generation + 1, observations: [],
+        }));
+        return firstRead(id);
+      });
+      try {
+        expect(s.readScheduledDoorwayHistory(['fixture'])).toMatchObject({
+          historyTruncated: true,
+          doors: { fixture: { freshness: 'unknown', reachable: null, lastObservation: null } },
+        });
+        expect(concurrentUpdate).toHaveBeenCalledWith(successor.runId);
+      } finally {
+        concurrentUpdate.mockRestore();
+      }
+
+      fs.writeFileSync(cursor, '{');
+      expect(s.readScheduledDoorwayHistory(['fixture'])).toMatchObject({
+        historyTruncated: true,
+        latestRun: { outcome: 'failed' },
+        doors: { fixture: { freshness: 'unknown', reachable: null, lastObservation: null } },
+      });
+    } finally {
+      vi.useRealTimers();
+    }
+  });
+
+  it.skipIf(!createPhysicalEffectLock(os.tmpdir()).status().available)('settles an interrupted packaged run only after the writer releases its lease', async () => {
+    project = createTempProject();
+    const slug = 'doorway-scan';
+    const script = "console.log('JOB_RESULT ok legacy')";
+    addScriptJob(project.stateDir, slug, script);
+    lockState.value = trustedLockFor([{ slug, script }]);
+    const { s } = mkScheduler(project);
+    scheduler = s;
+    s.setMachineIdentity('fixture-machine', 'Fixture Machine');
+    const old = Date.now() - 60 * 60_000;
+    const history = s.getRunHistory();
+    let runId: string;
+    vi.useFakeTimers({ toFake: ['Date'] });
+    try {
+      vi.setSystemTime(old);
+      s.getJobSupervisionStore();
+      runId = history.recordStart({
+        slug, sessionId: 'interrupted', trigger: 'scheduled', origin: 'instar',
+        runner: 'script', lockTrust: 'trusted', packagedDoorwayScan: true,
+      });
+    } finally {
+      vi.useRealTimers();
+    }
+    await withDoorwayRetentionWriter(project.stateDir, Date.now() + 2000, async () => {
+      s.start();
+      expect(s.scriptRunnersActiveFor(slug)).toBe(false);
+      await new Promise(resolve => setTimeout(resolve, 70));
+      expect(history.findRun(runId)?.result).toBe('pending');
+    });
+    await waitFor(() => history.findRun(runId)?.result === 'failure');
+    expect(history.findRun(runId)?.error).toContain('interrupted');
+    expect(s.getJobSupervisionStore().findByRunId(runId)).toMatchObject({ result: 'failure', reason: 'interrupted' });
+  });
+
   it('does not open the supervision journal on a read-only standby', () => {
     project = createTempProject();
     addScriptJob(project.stateDir, 'probe', "console.log('JOB_RESULT ok done');");

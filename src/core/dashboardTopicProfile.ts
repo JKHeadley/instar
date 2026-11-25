@@ -23,6 +23,7 @@
  *    router (routes never call `cas`).
  */
 
+import { resolveFrameworkModelDefault } from './frameworkModelDefaults.js';
 import fs from 'node:fs';
 import path from 'node:path';
 import type { IntelligenceFramework } from './intelligenceProviderFactory.js';
@@ -180,7 +181,7 @@ export function buildTopicProfileOptions(deps: TopicProfileOptionsDeps): TopicPr
     };
     // defaultModel is NORMALIZED through the same check — never offered or
     // preselected when the configured default would be refused.
-    const configured = fwDefaults[framework];
+    const configured = resolveFrameworkModelDefault(framework, fwDefaults[framework]);
     if (configured) {
       const check = validateDashboardProfileChoice(deps, { framework, model: configured });
       if (check.ok) door.defaultModel = configured;

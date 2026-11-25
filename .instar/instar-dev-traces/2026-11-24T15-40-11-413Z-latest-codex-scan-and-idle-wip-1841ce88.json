@@ -1,0 +1,22 @@
+{
+  "version": 2,
+  "slug": "latest-codex-scan-and-idle-wip",
+  "sessionId": "aca68beb-0d4e-4546-a3c1-065299307f44",
+  "timestamp": "2026-11-24T15:40:11.413Z",
+  "artifactPath": "upgrades/side-effects/latest-codex-scan-and-idle-wip.md",
+  "artifactSha256": "831f566229af7a0730069859d252df1ba6d49c63b5cc83dff5763a46fc3988a6",
+  "specPath": "docs/specs/latest-codex-doorway-scan.md",
+  "coveredFiles": [
+    "src/core/CapabilityRegistry.ts",
+    "src/core/ScheduledDoorwayRead.ts",
+    "src/scheduler/JobRunHistory.ts",
+    "src/scheduler/JobScheduler.ts",
+    "tests/unit/committed-doorway-observation.test.ts",
+    "tests/unit/job-cost-runner/JobScheduler-script-runner.test.ts"
+  ],
+  "phase": "complete",
+  "tier": 2,
+  "tierReasoning": "The packaged reader withholds reachability when the scheduler ledger cannot be read.",
+  "secondPass": "not-required",
+  "reviewerConcurred": null
+}
