@@ -200,6 +200,10 @@ export function isServerOwnedCard(card: { covers?: string[] | null }): boolean {
 }
 const nonEmpty = (v: unknown): boolean => typeof v === 'string' && v.trim().length > 0;
 
+function approvalRevision(records: FoldRecord[]): string {
+  return sha256Hex(canonicalJson(records.map(({ id, hlc, origin }) => [id, hlc, origin])));
+}
+
 export class WorkBoardService {
   private records: FoldRecord[] = [];
   private byCard = new Map<string, FoldRecord[]>();
@@ -276,7 +280,7 @@ export class WorkBoardService {
   }
 
   /** Expose only an exact durable approval and only under its current enrolled writer. */
-  projectBoundApproval(winner: WorkBoardApprovalEvent): boolean {
+  projectBoundApproval(winner: WorkBoardApprovalEvent, recovering = false): boolean {
     const authority = this.deps.approvalAuthority;
     const { proof, version, decisionId, source } = winner.request;
     const current = () => proof.ownerPersonKey === this.deps.ownerPersonKey()
@@ -290,13 +294,23 @@ export class WorkBoardService {
       || source !== event.request.source || !current()) return false;
     const existing = this.view(version.cardId)?.card.approvedBy;
     if (existing?.id === winner.eventId) return true;
-    if (this.keys.has(winner.eventId) || !sameVersion(version, this.approvalSnapshot(version.cardId)?.version ?? null)) return false;
+    if (this.keys.has(winner.eventId)) return false;
     const rows = toFoldRecords([{ data: durable.record, origin: this.deps.machineId }], winner.eventId);
     const record = rows[0];
     if (!record || record.origin !== this.deps.machineId) return false;
     // Refuse an event ordered before an already-observed card or policy mutation.
-    const predecessors = [this.recordsOf(version.cardId).at(-1), this.policies.at(-1)];
-    if (predecessors.some((prior) => prior && compareHlc(record.hlc, prior.hlc) <= 0)) return false;
+    const snapshot = this.approvalSnapshot(version.cardId);
+    if (!snapshot) return false;
+    const history = this.recordsOf(version.cardId);
+    const policy = this.policies.at(-1);
+    if (policy && compareHlc(record.hlc, policy.hlc) <= 0) return false;
+    const later = history.filter((prior) => compareHlc(prior.hlc, record.hlc) >= 0);
+    if (later.length) {
+      if (!recovering || later.some((row) => compareHlc(row.hlc, record.hlc) === 0
+        || (row.d.recordType !== 'dispatching' && row.d.recordType !== 'dispatched'))) return false;
+      snapshot.version.cardRevision = approvalRevision(history.filter((prior) => compareHlc(prior.hlc, record.hlc) < 0));
+    }
+    if (!sameVersion(version, snapshot.version)) return false;
     this.applyFoldRecords(rows);
     if (this.view(version.cardId)?.card.approvedBy?.id !== winner.eventId) return false;
     this.deps.onLocalWrite?.(version.cardId, 'tap', durable.record);
@@ -375,9 +389,8 @@ export class WorkBoardService {
       doneWhen: c.doneWhen, brief: c.brief, carrier: c.carrier, outward: c.outward,
       links: c.links, due: c.due, projectKey: c.projectKey,
     });
-    const revision = (records: FoldRecord[]) => sha256Hex(canonicalJson(records.map(({ id, hlc, origin }) => [id, hlc, origin])));
     const version: WorkBoardApprovalVersion = {
-      cardId, cardRevision: revision(this.recordsOf(cardId)), policyRevision: revision(this.policies),
+      cardId, cardRevision: approvalRevision(this.recordsOf(cardId)), policyRevision: approvalRevision(this.policies),
       visibleTextHash: sha256Hex(canonicalJson(disclosure)), materialHash: c.materialHash, titleHash: sha256Hex(c.title),
     };
     return { version, disclosure };

@@ -10,7 +10,7 @@
  */
 
 import { canonicalJson, sha256Hex } from './WorkCardStore.js';
-import { sameProof, type WorkBoardApprovalLookup, type WorkBoardWriterProof } from './WorkBoardApprovalWriter.js';
+import { sameProof, sameVersion, type WorkBoardApprovalLookup, type WorkBoardWriterProof } from './WorkBoardApprovalWriter.js';
 import type { WorkBoardSlipStore } from './WorkBoardSlipStore.js';
 import { applyWorkBoardSlip } from './workBoardSlipApplication.js';
 import {
@@ -485,6 +485,28 @@ export class WorkBoardRuntime {
   /** True when this machine holds the lease (or no other holder is known). */
   holdsLease(): boolean { const h = this.seams.leaseHolder(); return h === null || h === this.seams.machineId; }
 
+  private recoverBoundApprovals(): void {
+    const port = this.seams.permissionSlips;
+    const application = port?.application;
+    const writer = this.currentSlipWriter();
+    if (!port || !application || !writer) return;
+    try {
+      for (const row of port.store.completedApprovals(writer)) {
+        if (!sameProof(writer, this.currentSlipWriter())) return;
+        const durable = application.readEvent(row.eventId);
+        if (durable.status !== 'durable') continue;
+        const winner = durable.event;
+        const self = winner.request.source === 'slip' && winner.request.decisionId === row.decisionId;
+        if ((row.status === 'applied') !== self || !sameVersion(row.version, winner.request.version)
+          || !sameProof(writer, winner.request.proof)) continue;
+        if (this.svc.projectBoundApproval(winner, true)) this.noteBoundApproval(row.cardId, row.eventId);
+      }
+    } catch (err) {
+      // @silent-fallback-ok: unresolved receipt remains visible without applying any unseen event.
+      this.seams.log?.('work-board-approval-recovery-unavailable', { error: (err as Error)?.message });
+    }
+  }
+
   start(): void {
     if (this.started) return;
     this.started = true;
@@ -500,6 +522,7 @@ export class WorkBoardRuntime {
     this.selfWasHolder = holder === this.seams.machineId;
     if (holder && !this.selfWasHolder) this.lastOtherHolder = holder;
     this.ensureConversations();
+    this.recoverBoundApprovals();
     this.checkJournalGrowth();
     this.controller.start(this.settings().pickup.tickSeconds);
   }

@@ -192,6 +192,25 @@ export class WorkBoardSlipStore {
     return finish.immediate();
   }
 
+  /** Candidate evidence for one enrolled writer. The journal still owns exact event proof. */
+  *completedApprovals(writer: WorkBoardWriterProof) {
+    const rows = this.db.prepare(`
+      SELECT DISTINCT slip_id FROM work_board_permission_slip_items
+      WHERE status IN ('applied', 'already-approved')
+      ORDER BY slip_id
+    `).all() as Array<{ slip_id: string }>;
+    for (const { slip_id: slipId } of rows) {
+      const slip = this.get(slipId);
+      if (!slip?.decisionId || !sameProof(writer, slip.proposal.writer)) continue;
+      const decisionId = slip.decisionId;
+      const results = this.readItemResults({ slipId, writer, digest: slip.digest, decisionId });
+      if (!results) continue;
+      for (const [index, result] of results.entries()) {
+        if ('eventId' in result) yield { ...result, decisionId, version: slip.proposal.items[index].version };
+      }
+    }
+  }
+
   /** Report in signed order. A claim without a durable result remains unresolved. */
   readItemResults(key: WorkBoardSlipDecision): Array<{ cardId: string } & (WorkBoardSlipItemOutcome | { status: 'pending' })> | null {
     const slip = this.readDecision(key);
