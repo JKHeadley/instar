@@ -33,3 +33,18 @@ Real Chrome with the dashboard stylesheet at a 390 CSS pixel viewport exposed ho
 ## Combined browser and server verification
 
 This merge carries the server test-inventory and default-off registry repair into the phone-width browser branch. The only merge conflict was in the plain-language overview, and both explanations were kept. No runtime route or browser code changed in the merge. The combined checkout passed 190 focused attachment, route-inventory, and browser cases, plus the real Chrome test at 390 CSS pixels.
+
+## Disposable latency measurements
+
+Measured the combined browser and server checkout with real signed loopback HTTP, distinct scored owner devices and the normal read limits. Each fixture used a separate 20-page preflight, five warm-ups per scored device, 20 ordinary reads alone and 20 concurrent browse/history pairs. No scored response returned 429.
+
+| Fixture | Browse p95 | Ordinary alone p95 | Ordinary with browse p95 | Change |
+|---|---:|---:|---:|---:|
+| 1,040 rows, 26 matching attachments | 10.21 ms | 3.32 ms | 4.34 ms | +1.01 ms |
+| 100 matching rows, 240 KiB framed JSON each | 14.23 ms | 10.48 ms | 11.91 ms | +1.43 ms |
+
+The dense fixture uses valid JSON with trailing whitespace to exercise near-limit framed reads. It provides no estimate for more expensive application payloads with the same byte length.
+
+A separate fixture timed 20 ordinary reads alone, 10 starting with four authentic 50 MiB hash verifications underway, and 10 while four published responses waited for drain. It checked real hash-read progress, suppressed automatic drains until release, and waited for descriptor close before the next round. Ordinary read p95 was 3.41 ms alone, 4.90 ms in the hash samples, and 3.60 ms in the stalled samples. The combined loaded p95 was 4.89 ms, a 1.47 ms increase. The uncapped host test admission was in its configured dry-run posture.
+
+These are disposable local measurements. The initial concurrent-open attempts found fixture issues around reference creation, overlapping cleanup and deterministic drain. Only the corrected final run scored. Full verification, development-agent evidence and opt-in remain separate steps.
