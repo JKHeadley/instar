@@ -141,11 +141,11 @@ describe('Home: every source reaches the count and the headline', () => {
     expect(result.failed).not.toContain('context');
   });
 
-  it('keeps automatic sign-in repairs out of the owner queue', async () => {
+  it('preserves sign-in repairs that still require owner approval', async () => {
     const { surfacedNeeds } = await import(path.join(CONSOLE, 'needs-model.js'));
     const pool = FIXTURES.accounts.reads['/subscription-pool?scope=pool'];
     const relogin = ok({ episodes: [{ id: 'repair-1', accountId: 'luna', machineId: 'm1', state: 'suggested' }] });
-    expect(surfacedNeeds({ accounts: { results: { pool, relogin } } }, NOW).rows).toEqual([]);
+    expect(surfacedNeeds({ accounts: { results: { pool, relogin } } }, NOW).rows).toHaveLength(1);
   });
 
   it('a stopped merge names itself in the headline, with a link to act on it', async () => {
