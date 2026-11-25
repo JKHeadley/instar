@@ -147,6 +147,20 @@ describe('ContextWedgeSentinel — confirm window', () => {
     expect(s.listActive()).toHaveLength(0);
   });
 
+  it('retries an unavailable confirmation instead of reporting recovery', async () => {
+    const deps = makeDeps({ outcome: 'detect-only' });
+    const frames = [WEDGE_TAIL, null, WEDGE_TAIL];
+    const getRecentOutput = vi.fn(async () => frames.shift() ?? null);
+    const sentinel = new ContextWedgeSentinel({ ...deps, getRecentOutput });
+    const falseAlarm = vi.fn();
+    sentinel.on('false-alarm', falseAlarm);
+    await sentinel.scanSession('echo-wedged');
+    await deps.drainTimers();
+    expect(getRecentOutput).toHaveBeenCalledTimes(3);
+    expect(falseAlarm).not.toHaveBeenCalled();
+    expect(deps.captured).toHaveLength(0);
+  });
+
   it('confirmed wedge still showing tail → recoverFn invoked', async () => {
     const deps = makeDeps({ output: WEDGE_TAIL, outcome: 'detect-only' });
     const s = new ContextWedgeSentinel(deps);

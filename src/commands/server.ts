@@ -17225,6 +17225,25 @@ export async function startServer(options: StartOptions): Promise<void> {
           })),
       };
 
+      const listCachedSessions = () => sessionManager.listRecordedRunningSessions().map((sess) => ({
+        tmuxSession: sess.tmuxSession,
+        framework: sess.framework,
+      }));
+      const monitoringCapture = () => {
+        let pending = false;
+        return async (sessionName: string, lines?: number): Promise<string | null> => {
+          if (pending) return null;
+          pending = true;
+          try {
+            return await sessionManager.captureOutputAsync(sessionName, lines);
+          } finally {
+            pending = false;
+          }
+        };
+      };
+      const silenceCapture = monitoringCapture();
+      const wedgeCapture = monitoringCapture();
+
       // Audit log: console + JSONL. setupServerLog already created the logs dir.
       const sentinelLogPath = path.join(config.stateDir, '..', 'logs', 'sentinel-events.jsonl');
       const logSink = (entry: _LogEntry): void => {
@@ -17277,7 +17296,9 @@ export async function startServer(options: StartOptions): Promise<void> {
 
       const silenceCfg = config.monitoring?.activeWorkSilenceSentinel ?? { enabled: true };
       if (silenceCfg.enabled !== false) {
-        const tracker = new OutputActivityTracker(sessionSurface);
+        const tracker = new OutputActivityTracker({
+          ...sessionSurface, listCachedSessions, captureOutputAsync: silenceCapture,
+        });
         // Share this tracker's snapshot with AutonomousProgressHeartbeat
         // (predicate #8 reads its lastOutputAt — never its own capture).
         sharedOutputTracker = tracker;
@@ -17327,11 +17348,11 @@ export async function startServer(options: StartOptions): Promise<void> {
             // session is stuck: re-capture the live frame, check it isn't still
             // generating, and check no sub-agent is live. The whole path fails
             // closed inside the sentinel (FD-6).
-            captureFrame: (name: string) => sessionSurface.captureOutput(name, 60),
-            frameworkForSession: (name: string) => sessionManager.frameworkForSession(name),
+            captureFrame: (name: string) => silenceCapture(name, 60),
+            frameworkForSession: (name: string) => listCachedSessions().find((s) => s.tmuxSession === name)?.framework,
             hasActiveSubagents: (name: string) => {
               const csid = sessionManager
-                .listRunningSessions()
+                .listRecordedRunningSessions()
                 .find((s) => s.tmuxSession === name)?.claudeSessionId;
               return csid ? subagentTracker.hasActiveSubagents(csid) : false;
             },
@@ -17381,7 +17402,7 @@ export async function startServer(options: StartOptions): Promise<void> {
         const autoRecovery = wedgeCfg.autoRecovery ?? { enabled: false, dryRun: true };
         const wedgeSentinel = new ContextWedgeSentinel(
           buildContextWedgeDeps({
-            sessions: sessionSurface,
+            sessions: { ...sessionSurface, listCachedSessions, captureOutputAsync: wedgeCapture },
             escalate: (name, text) => notifier.escalate('context-wedge', name, text),
             autoRecovery,
             freshRespawn: async (name: string): Promise<boolean> => {
@@ -22328,19 +22349,17 @@ export async function startServer(options: StartOptions): Promise<void> {
     const summarySentinel = new SessionSummarySentinel({
       stateDir: config.stateDir,
       scrubber: durableOutputScrubber,
-      getActiveSessions: () => sessionManager.sessionsForAgentDigests(),
-      captureOutput: (tmuxSession: string) => {
-        // RULE 3: EXEMPT — this is raw byte capture (the whole pane), not state parsing.
-        // The output is handed verbatim to the SummarySentinel (LLM-backed) which is the
-        // authority that interprets it. No structural format is parsed here; per
-        // signal-vs-authority, this is a signal producer with no blocking authority.
+      getActiveSessions: () => sessionManager.listRecordedRunningSessions()
+        .filter((session) => sessionManager.feedsAgentDigests(session)),
+      isEligible: (session) => sessionManager.listRecordedRunningSessions().some((current) =>
+        current.id === session.id && current.tmuxSession === session.tmuxSession && sessionManager.feedsAgentDigests(current)),
+      captureOutput: async (tmuxSession: string) => {
+        // Raw pane capture for the summarizer. A timeout is an unreadable frame.
         try {
-          const tmuxBin = detectTmuxPath();
-          if (!tmuxBin) return null;
-          const output = execFileSync(tmuxBin, ['capture-pane', '-t', `=${tmuxSession}:`, '-p'], {
-            encoding: 'utf-8', timeout: 5000,
+          const { stdout } = await execFileAsync(config.sessions.tmuxPath, ['capture-pane', '-t', `=${tmuxSession}:`, '-p'], {
+            encoding: 'utf-8', timeout: 5000, killSignal: 'SIGKILL',
           });
-          return output;
+          return stdout;
         } catch { return null; } // @silent-fallback-ok — tmux capture-pane for sentinel
       },
     });
