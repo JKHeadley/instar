@@ -67,10 +67,19 @@ export interface WorkBoardCreationEvidenceSnapshot {
   items: ReadonlyArray<WorkBoardCreationEvidence>;
 }
 
+export interface WorkBoardSlipDeviceBinding {
+  slipId: string;
+  digest: string;
+  deviceId: string;
+  host: string;
+  presenceKey: string;
+  decisionId?: string;
+}
+
 export interface WorkBoardRuntimeSeams {
   machineId: string;
   permissionSlips?: {
-    store: Pick<WorkBoardSlipStore, 'get' | 'readItemResults'>;
+    store: Pick<WorkBoardSlipStore, 'get' | 'readItemResults' | 'consumeVerified'>;
     currentWriter: () => WorkBoardWriterProof | null;
   };
   enabled: () => boolean;
@@ -122,18 +131,32 @@ export class WorkBoardRuntime {
   private creationEvidenceItems: ReadonlyArray<WorkBoardCreationEvidence> = Object.freeze([]);
   readonly holderStats = { sweeps: 0, cardsSwept: 0, notesDrained: 0, notesCoalesced: 0, holdsLifted: 0, quietRepickups: 0, lastPassAt: null as number | null, lastSweep: null as Record<string, unknown> | null };
 
-  bindPermissionSlip(input: { slipId: string; digest: string; deviceId: string; host: string; presenceKey: string }) {
+  bindPermissionSlip(input: WorkBoardSlipDeviceBinding) {
     const port = this.seams.permissionSlips;
     const writer = port?.currentWriter();
     if (!port || !writer || !this.started || !this.seams.enabled() || writer.ownerPersonKey !== this.seams.ownerPersonKey()) return null;
     const slip = port.store.get(input.slipId);
-    if (!slip || slip.digest !== input.digest || slip.decisionId !== null || this.now() >= slip.expiresAt
+    if (!slip || slip.digest !== input.digest
       || !sameProof(writer, slip.proposal.writer) || !sameProof(writer, port.currentWriter())) return null;
+    const replay = slip.decisionId !== null && slip.decisionId === input.decisionId;
+    if (!replay && (slip.decisionId !== null || this.now() >= slip.expiresAt)) return null;
     const actionBindingDigest = sha256Hex(canonicalJson([
       'work-board-slip-binding-v1', slip.id, slip.digest, slip.expiresAt,
       writer, input.deviceId, input.host.toLowerCase(), sha256Hex(input.presenceKey),
     ]));
-    return { actionBindingDigest, expiresAt: slip.expiresAt };
+    return { actionBindingDigest, expiresAt: slip.expiresAt, replay };
+  }
+
+  recordPermissionSlip(input: WorkBoardSlipDeviceBinding & { decisionId: string; actionBindingDigest: string; allowFresh: boolean }) {
+    const failed = { status: 409, body: { error: 'work-board-slip-unavailable' } };
+    const binding = this.bindPermissionSlip(input);
+    const port = this.seams.permissionSlips;
+    const writer = port?.currentWriter();
+    if (!binding || binding.actionBindingDigest !== input.actionBindingDigest || !port || !writer) return failed;
+    if (binding.replay) return this.readPermissionSlip(input.slipId);
+    if (!input.allowFresh) return failed;
+    if (!port.store.consumeVerified(input.slipId, input.digest, writer, input.decisionId)) return failed;
+    return this.readPermissionSlip(input.slipId);
   }
 
   readPermissionSlip(id: string) {

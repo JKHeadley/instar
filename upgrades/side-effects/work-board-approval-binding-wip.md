@@ -102,3 +102,7 @@ The mobile Work Board read now checks the signed owner-device scope at admission
 ## Scoped owner-device presence challenge
 
 The existing mobile challenge route now recognizes the finite Work Board slip action. It binds the slip ID, exact disclosure and expiry, enrolled writer and owner, signed device, host, and presence-key fingerprint. It caps challenge expiry at the slip deadline. This specific owner-phone action can request a challenge without a console PIN. All existing secure transport, active owner device, enrolled presence and permission feature checks still apply. Existing actions keep their current policy. The independent reviewer concurred with the checkpoint. A future submit route must rederive the binding and verify the single-use presence challenge before it records the durable decision. No submit or production enrollment is supplied here.
+
+## Owner-device approval submission
+
+The signed owner-phone submit rederives the current slip, writer and device binding, verifies the existing presence signature and consumes the live action challenge before recording a decision. The durable decision ID hashes the challenge with a slip-specific domain. An exact signed retry still needs current binding and valid presence proof, and only reads the receipt. The independent reviewer concurred. The lifecycle fixture checks old-key rejection, invalid signature refusal, one durable signed decision and identical retry. The server reports pending items here. No production enrollment or application call is supplied by this checkpoint.

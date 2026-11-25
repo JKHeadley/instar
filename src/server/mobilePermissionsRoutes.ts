@@ -31,6 +31,7 @@
  * in for the dashboard PIN the console asks for, and the action itself runs the console's own code
  * (injected by routes.ts), so the phone can never do more than the PIN-confirmed console.
  */
+import type { WorkBoardSlipDeviceBinding } from '../core/WorkBoardRuntime.js';
 import { isWorkBoardSlipId, workBoardSlipApprovalLine } from '../core/workBoardSlipPresence.js';
 import { tapActionLine, isCardId, isRecordId, TAP_ACTIONS, CLOSE_AS, SCHEMA_MAX } from '../core/WorkCardStore.js';
 import { parsePhoneCardDraft, phoneCardDraftHash, phoneCardCreateLine, PHONE_CARD_REQUEST_ID, PHONE_CARD_SHAPE_WORDS, type PhoneCardDraft } from './phoneWorkCards.js';
@@ -742,8 +743,9 @@ export interface ActionResult { status: number; body: unknown }
 
 export interface MobilePermissionsDeps {
   readWorkBoardSlip?: (id: string) => ActionResult;
-  bindWorkBoardSlip?: (input: { slipId: string; digest: string; deviceId: string; host: string; presenceKey: string }) =>
-    { actionBindingDigest: string; expiresAt: number } | null;
+  bindWorkBoardSlip?: (input: WorkBoardSlipDeviceBinding) =>
+    { actionBindingDigest: string; expiresAt: number; replay: boolean } | null;
+  recordWorkBoardSlip?: (input: WorkBoardSlipDeviceBinding & { decisionId: string; actionBindingDigest: string; allowFresh: boolean }) => ActionResult;
   pairing: () => MobilePairingService | null;
   config: () => InstarConfig;
   stateDir: string;
@@ -1045,6 +1047,40 @@ export function mountMobilePermissionsRoutes(router: Router, deps: MobilePermiss
   };
 
   // A tap on a work card (work-board-asks §4): the owner's phone, Face ID over the exact action line.
+  router.post('/mobile/work-board/slips/:id/approve', (req: Request, res: Response) => {
+    const g = writeGate(req, res, 'work-slip');
+    if (!g) return;
+    const slipId = req.params.id;
+    const b = rec(req.body);
+    const { disclosureDigest: digest, actionBindingDigest, challenge, presenceSig } = b;
+    const line = workBoardSlipApprovalLine(slipId, digest, actionBindingDigest);
+    const reject = (status: number, error: string) => {
+      audit.record({ event: 'refused', deviceId: g.deviceId, route: auditRoute(req), reason: error, status });
+      res.status(status).json({ error });
+    };
+    if (!line || typeof slipId !== 'string' || typeof digest !== 'string' || typeof actionBindingDigest !== 'string'
+      || typeof challenge !== 'string' || challenge.length !== 43 || !SECRET_PATTERN.test(challenge)) {
+      reject(400, 'invalid-work-board-slip'); return;
+    }
+    const decisionId = sha256(`work-board-slip-decision-v1\n${challenge}`);
+    const input = { slipId, digest, deviceId: g.deviceId, host: g.host, presenceKey: g.presenceKey, decisionId, actionBindingDigest };
+    const binding = deps.bindWorkBoardSlip?.(input);
+    if (!binding || binding.actionBindingDigest !== actionBindingDigest) {
+      reject(409, 'work-board-slip-unavailable'); return;
+    }
+    if (!verifyPresenceSignature(g.presenceKey, permissionPresenceMessage(g.deviceId, g.host, challenge, line), presenceSig)) {
+      reject(401, 'presence-invalid'); return;
+    }
+    if (!binding.replay && !challenges.take(challenge, g.deviceId, g.host, line)) {
+      reject(401, 'challenge-invalid'); return;
+    }
+    if (!deps.recordWorkBoardSlip) { reject(503, 'work-board-slips-unavailable'); return; }
+    const result = deps.recordWorkBoardSlip({ ...input, allowFresh: !binding.replay });
+    if (result.status !== 200) { reject(result.status, errorCode(result.body)); return; }
+    if (!binding.replay) audit.record({ event: 'approved', deviceId: g.deviceId, personId: g.personId, action: 'work-board-slip-approve', target: slipId });
+    res.status(200).json(result.body);
+  });
+
   router.post('/mobile/work-board/cards/:id/tap', async (req: Request, res: Response) => {
     if (!deps.workCardTap) { res.status(503).json({ error: 'work-board-disabled' }); return; }
     const g = writeGate(req, res);

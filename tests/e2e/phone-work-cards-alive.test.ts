@@ -29,6 +29,7 @@ import { HybridLogicalClock } from '../../src/core/HybridLogicalClock.js';
 import { WORK_CARD_KIND_REGISTRATION, WORK_CARD_RECORD_KIND, WORK_BOARD_STORE_KEY, canonicalJson, sha256Hex, type UnionEntry } from '../../src/core/WorkCardStore.js';
 import { WorkBoardRuntime } from '../../src/core/WorkBoardRuntime.js';
 import type { MobilePairingService } from '../../src/server/mobilePairingRoutes.js';
+import { workBoardSlipApprovalLine } from '../../src/core/workBoardSlipPresence.js';
 import { permissionPresenceMessage } from '../../src/server/mobilePermissionsRoutes.js';
 import { phoneCardDraftHash, parsePhoneCardDraft } from '../../src/server/phoneWorkCards.js';
 import { canonicalString } from '../../src/core/MobileDeviceKeys.js';
@@ -164,7 +165,25 @@ describe('Work cards from the owner phone E2E (feature is alive)', () => {
       expect(updated.status).toBe(200);
       expect(updated.body.actionBindingDigest).not.toBe(challenge.body.actionBindingDigest);
 
-      expect(store.consumeVerified(slip.id, slip.digest, writer, 'decision1')).not.toBeNull();
+      const submitRoute = `${route}/approve`;
+      const bodyFor = (c: { challenge: string; actionBindingDigest: string }, key: typeof replacement) => {
+        const line = workBoardSlipApprovalLine(slip.id, slip.digest, c.actionBindingDigest)!;
+        return {
+          challenge: c.challenge, disclosureDigest: slip.digest, actionBindingDigest: c.actionBindingDigest,
+          presenceSig: key.sign(permissionPresenceMessage(phone.id, HOST, c.challenge, line)),
+        };
+      };
+      expect((await send(app, phone, 'POST', submitRoute, bodyFor(challenge.body, phone.presence))).status).toBe(409);
+      const submit = bodyFor(updated.body, replacement);
+      expect((await send(app, phone, 'POST', submitRoute, { ...submit, presenceSig: 'invalid' })).status).toBe(401);
+      expect(store.get(slip.id)?.decisionId).toBeNull();
+      const committed = await send(app, phone, 'POST', submitRoute, submit);
+      expect(committed.status, JSON.stringify(committed.body)).toBe(200);
+      expect(committed.body).toMatchObject({ state: 'signed', receipt: { items: [{ cardId, status: 'pending' }] } });
+      const retry = await send(app, phone, 'POST', submitRoute, submit);
+      expect(retry.status).toBe(200);
+      expect(retry.body).toEqual(committed.body);
+
       const signed = await send(app, phone, 'GET', route);
       expect(signed.status).toBe(200);
       expect(signed.body).toMatchObject({ state: 'signed', receipt: { items: [{ cardId, status: 'pending' }] } });

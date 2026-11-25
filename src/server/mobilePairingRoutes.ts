@@ -3013,6 +3013,7 @@ export const DEVICE_ALLOWLIST: DeviceRule[] = (() => {
     { method: 'POST', re: /^\/mobile\/work-board\/cards\/wc_[0-9a-f]{16}\/tap$/, statuses: active, body: 'json', ownerOnly: true, ownBucket: 30, bucket: 'work-card-taps' },
     // Work cards from the owner's phone (docs/specs/phone-work-cards.md): one card (the board read's bucket), and
     // "Make a card" from a message (Face ID over `work-card-create`, the taps' bucket). Not in TEAM_ROUTE_TIERS: owner only.
+    { method: 'POST', re: new RegExp(`^/mobile/work-board/slips/${WORK_BOARD_SLIP_ID_PATTERN}/approve$`), statuses: active, body: 'json', ownerOnly: true, ownBucket: 12, bucket: 'permission-actions' },
     { method: 'GET', re: new RegExp(`^/mobile/work-board/slips/${WORK_BOARD_SLIP_ID_PATTERN}$`), statuses: active, body: 'none', ownerOnly: true, ownBucket: 30, bucket: 'work-board-reads' },
     { method: 'GET', re: /^\/mobile\/work-board\/cards\/wc_[0-9a-f]{16}$/, statuses: active, body: 'none', ownerOnly: true, ownBucket: 30, bucket: 'work-board-reads' },
     { method: 'POST', re: /^\/mobile\/work-board\/cards$/, statuses: active, body: 'json', ownerOnly: true, ownBucket: 30, bucket: 'work-card-taps' },
