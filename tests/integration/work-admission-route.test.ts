@@ -19,9 +19,9 @@ import { WorkAdmission, setActiveWorkAdmission } from '../../src/core/workAdmiss
 
 const AUTH = 'test-bearer-token';
 
-function ctx(): RouteContext {
+function ctx(projectDir: string): RouteContext {
   return {
-    config: { projectName: 'test', projectDir: '/tmp', stateDir: '/tmp/.instar', port: 0, authToken: AUTH, sessions: {} as any, scheduler: {} as any } as any,
+    config: { projectName: 'test', projectDir, stateDir: path.join(projectDir, '.instar'), port: 0, authToken: AUTH, sessions: {} as any, scheduler: {} as any } as any,
     sessionManager: { listRunningSessions: () => [] } as any,
     state: { getJobState: () => null, getSession: () => null } as any,
     scheduler: null, telegram: null, relationships: null, feedback: null, dispatches: null,
@@ -33,11 +33,11 @@ function ctx(): RouteContext {
   } as unknown as RouteContext;
 }
 
-function app(): express.Express {
+function app(projectDir: string): express.Express {
   const a = express();
   a.use(express.json());
   a.use(authMiddleware(() => AUTH, 'test'));
-  a.use('/', createRoutes(ctx()));
+  a.use('/', createRoutes(ctx(projectDir)));
   return a;
 }
 
@@ -47,11 +47,11 @@ describe('GET /work-admission (integration)', () => {
   afterEach(() => { setActiveWorkAdmission(null); SafeFsExecutor.safeRmSync(dir, { recursive: true, force: true, operation: 'tests/integration/work-admission-route.test.ts' }); });
 
   it('401 without a bearer token', async () => {
-    expect((await request(app()).get('/work-admission')).status).toBe(401);
+    expect((await request(app(dir)).get('/work-admission')).status).toBe(401);
   });
 
   it('503 when overload admission is dark on this agent', async () => {
-    const res = await request(app()).get('/work-admission').set('Authorization', `Bearer ${AUTH}`);
+    const res = await request(app(dir)).get('/work-admission').set('Authorization', `Bearer ${AUTH}`);
     expect(res.status).toBe(503);
     expect(res.body.enabled).toBe(false);
     expect(res.body.error).toMatch(/monitoring\.workAdmission/);
@@ -65,14 +65,14 @@ describe('GET /work-admission (integration)', () => {
       agentName: 'echo',
     });
     setActiveWorkAdmission(wa);
-    let res = await request(app()).get('/work-admission').set('Authorization', `Bearer ${AUTH}`);
+    let res = await request(app(dir)).get('/work-admission').set('Authorization', `Bearer ${AUTH}`);
     expect(res.status).toBe(200);
     expect(res.body).toMatchObject({ enabled: true, dryRun: false, enforced: true, acceptingWork: true, lastVerdict: 'unknown', recoverySlot: { cap: 1, inUse: 0 } });
 
     wa.observe('saturated');
     wa.admit('automatic');
     wa.admit('operator', 'echo-main');
-    res = await request(app()).get('/work-admission').set('Authorization', `Bearer ${AUTH}`);
+    res = await request(app(dir)).get('/work-admission').set('Authorization', `Bearer ${AUTH}`);
     expect(res.body).toMatchObject({ acceptingWork: false, lastVerdict: 'saturated', recoverySlot: { cap: 1, inUse: 1 } });
     expect(res.body.counters).toMatchObject({ closes: 1, refused: 1, recoverySlotGrants: 1 });
     expect(typeof res.body.closedAt).toBe('string');

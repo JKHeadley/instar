@@ -82,9 +82,10 @@ function writeQueue(actions: Array<{ id: string; status: string }>): void {
 
 async function censusDebt(): Promise<Record<string, any>> {
   ledger = new FeatureMetricsLedger({ dbPath: ':memory:' });
+  const projectDir = tmpDir ??= fs.mkdtempSync(path.join(os.tmpdir(), 'dq-act-'));
   const ctx = {
     config: {
-      projectName: 'test', projectDir: '/tmp', stateDir: tmpDir ?? '/tmp/.instar', port: 0,
+      projectName: 'test', projectDir, stateDir: projectDir, port: 0,
       authToken: AUTH, developmentAgent: true,
       provenance: { uniformSeam: { dryRun: false } },
       sessions: {} as any, scheduler: {} as any,
