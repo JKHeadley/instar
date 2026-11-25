@@ -25,6 +25,7 @@ import { ReplicatedKindRegistry } from '../../src/core/ReplicatedRecordEnvelope.
 import { ReplicatedRecordEmitter } from '../../src/core/ReplicatedRecordEmitter.js';
 import { HybridLogicalClock } from '../../src/core/HybridLogicalClock.js';
 import { CHIEF_OF_STAFF_KIND_REGISTRATION, CHIEF_OF_STAFF_RECORD_KIND, CHIEF_OF_STAFF_STORE_KEY, buildBindingPut, type UnionEntry } from '../../src/core/ChiefOfStaffStore.js';
+import type { CameraRequestJournal } from '../../src/core/CameraAcceptanceRequests.js';
 import { ChiefOfStaffLoop, CHIEF_OF_STAFF_LOOP_DEFAULTS } from '../../src/core/ChiefOfStaffLoop.js';
 
 const AUTH = 'test-e2e-cos';
@@ -156,5 +157,49 @@ describe('Chief of Staff E2E (feature is alive)', () => {
       const st = await request(server.getApp()).get('/chief-of-staff').set(auth());
       expect(st.body.conversationKey).toBe('telegram:900');
     } finally { await server.stop(); journal.close(); }
+  });
+});
+
+describe('Camera verifier request HTTP wiring', () => {
+  const route = '/chief-of-staff/camera-acceptance/requests';
+  const originHeader = 'X-Instar-Origin-Session';
+  const verifierToken = 'ior1_' + 'v'.repeat(43);
+
+  it('holds when the Camera pilot has no runtime', async () => {
+    const { config, stateDir } = mkConfig();
+    const server = new AgentServer({ config, sessionManager: sm(), state: new StateManager(stateDir) });
+    await server.start();
+    try {
+      await request(server.getApp()).post(route).set(auth()).expect(503);
+    } finally { await server.stop(); }
+  });
+
+  it('requires the verifier session and only acknowledges an issued journal request', async () => {
+    const { config, stateDir } = mkConfig();
+    const appendRequest = vi.fn(async () => {});
+    const journal: CameraRequestJournal = {
+      withWriteLock: operation => operation({
+        requirement: { candidate: 'camera-build', revision: 1, verifier: 'reviewer', builders: ['builder'] },
+        receipts: [], appendRequest,
+      }),
+    };
+    const resolveVerifier = vi.fn(async (credential: string) => credential === verifierToken
+      ? { principal: 'reviewer', journal } : null);
+    const server = new AgentServer({
+      config, sessionManager: sm(), state: new StateManager(stateDir), cameraAcceptance: { resolveVerifier },
+    });
+    await server.start();
+    try {
+      await request(server.getApp()).post(route).set(originHeader, verifierToken).expect(401);
+      await request(server.getApp()).post(route).set(auth()).expect(403);
+      expect(resolveVerifier).not.toHaveBeenCalled();
+      await request(server.getApp()).post(route).set(auth()).set(originHeader, 'ior1_' + 'w'.repeat(43)).expect(403);
+      expect(appendRequest).not.toHaveBeenCalled();
+      const issued = await request(server.getApp()).post(route).set(auth()).set(originHeader, verifierToken).expect(201);
+      expect(issued.body).toEqual({ requestId: expect.any(String) });
+      expect(appendRequest).toHaveBeenCalledWith(expect.objectContaining({ id: issued.body.requestId, verifier: 'reviewer' }));
+      appendRequest.mockRejectedValueOnce(new Error('write did not reach disk'));
+      await request(server.getApp()).post(route).set(auth()).set(originHeader, verifierToken).expect(503);
+    } finally { await server.stop(); }
   });
 });

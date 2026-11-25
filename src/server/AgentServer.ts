@@ -173,6 +173,7 @@ import { createMachineRoutes, type MachineRouteContext } from './machineRoutes.j
 import { createWorktreeRoutes, createOidcWorktreeRoutes } from './worktreeRoutes.js';
 import { registerRemediationProposalsRoutes } from './routes/remediation-proposals.js';
 import { registerProvenanceRoutes } from './routes/provenance.js';
+import { createCameraAcceptanceRoutes, type CameraAcceptanceRouteDeps } from './cameraAcceptanceRoutes.js';
 import { CanonicalIdentityManager } from '../identity/IdentityManager.js';
 import { IdentityManager as ThreadlineIdentityManager } from '../threadline/client/IdentityManager.js';
 import { FileSeenNonceStore } from '../core/aspNonceStore.js';
@@ -1989,6 +1990,7 @@ export class AgentServer {
       | null;
     autonomousThroughputFloor?: import('../monitoring/AutonomousThroughputFloor.js').AutonomousThroughputFloor | null;
     /** Chief of Staff (docs/specs/chief-of-staff-topic.md §5): the check-in loop + action protocol, null where the dev-gated feature is off. */
+    cameraAcceptance?: CameraAcceptanceRouteDeps;
     chiefOfStaffLoop?: import('../core/ChiefOfStaffLoop.js').ChiefOfStaffLoop | null;
     chiefOfStaffProtocol?: import('../core/ChiefOfStaffActionProtocol.js').ChiefOfStaffActionProtocol | null;
     /** Project apps (docs/specs/project-apps.md): late-bound runtime, null where the feature is off. */
@@ -8813,6 +8815,7 @@ export class AgentServer {
     // Usher (rung 4) — read-only pull surface for mid-task re-surface signals.
     // Mounted unconditionally; 503-stubs when the store is absent. Signal-only.
     // Spec: docs/specs/cwa-usher.md.
+    this.app.use(createCameraAcceptanceRoutes(options.cameraAcceptance));
     this.app.use(createUsherRoutes({ signalStore: options.usherSignalStore ?? null }));
 
     // Planned-handoff operator/test trigger (spec §8 G3e). Bearer-authed (mounted
