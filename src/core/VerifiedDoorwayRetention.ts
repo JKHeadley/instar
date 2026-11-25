@@ -150,39 +150,64 @@ export async function withDoorwayRetentionWriter<T>(
   }
 }
 
-type InitializationOptions = {
+type PublicationOptions = {
   stateDir: string;
   machineId: string;
   doorIds: readonly string[];
   readSnapshot: () => Snapshot;
   flushLedger: () => void;
 };
-type InitializationResult = { status: 'published' | 'existing'; cursor: ScheduledDoorwayRetentionCursor }
-  | { status: 'unavailable'; reason: 'incomplete-evidence' | 'ledger-changed' };
+type PublicationResult = { status: 'published' | 'existing'; cursor: ScheduledDoorwayRetentionCursor }
+  | { status: 'unavailable'; reason: 'incomplete-evidence' | 'ledger-changed' | 'generation-changed' };
 
 /** Establish the first advisory cursor under the canonical state's writer lease. */
 export async function initializeDoorwayRetentionCursor(
-  options: InitializationOptions & { deadlineMs: number },
-): Promise<InitializationResult> {
+  options: PublicationOptions & { deadlineMs: number },
+): Promise<PublicationResult> {
   return withDoorwayRetentionWriter(options.stateDir, options.deadlineMs, async (stateDir, lease) =>
     publishInitialDoorwayRetentionCursor({ ...options, stateDir }, lease));
 }
 
-/** The scheduler already holds the canonical writer lease while recording completion. */
+/** Publish the first generation under an existing writer lease. */
 export function publishInitialDoorwayRetentionCursor(
-  options: InitializationOptions,
+  options: PublicationOptions,
   lease: Pick<PhysicalEffectLease, 'scope' | 'assertHeld'>,
-): InitializationResult {
+): PublicationResult {
+  return publishDoorwayRetentionCursor(options, lease);
+}
+
+/** Advance an advisory cursor while the complete historical artifacts are still present. */
+export async function updateDoorwayRetentionCursor(
+  options: PublicationOptions & { deadlineMs: number; expectedGeneration: number },
+): Promise<PublicationResult> {
+  return withDoorwayRetentionWriter(options.stateDir, options.deadlineMs, async (stateDir, lease) =>
+    publishDoorwayRetentionCursor({ ...options, stateDir }, lease, options.expectedGeneration));
+}
+
+/**
+ * The scheduler may use the current generation while it owns the writer lease.
+ * Every publication still requires the full historical artifact set.
+ */
+export function publishDoorwayRetentionCursor(
+  options: PublicationOptions,
+  lease: Pick<PhysicalEffectLease, 'scope' | 'assertHeld'>,
+  expectedGeneration?: number | 'current',
+): PublicationResult {
   if (lease.scope !== SCHEDULED_DOORWAY_RETENTION_SCOPE) throw new Error('doorway retention writer scope mismatch');
   lease.assertHeld();
   const nowMs = Date.now();
   const store = new ScheduledDoorwayObservationStore(options.stateDir, options.machineId, options.doorIds, () => nowMs);
   const existing = store.readRetentionCursor();
-  if (existing) return { status: 'existing', cursor: existing };
+  if (expectedGeneration === undefined) {
+    if (existing) return { status: 'existing', cursor: existing };
+  } else if (expectedGeneration !== 'current' && existing?.generation !== expectedGeneration) {
+    return { status: 'unavailable', reason: 'generation-changed' };
+  }
 
   const snapshot = options.readSnapshot();
   const references = selectDoorwayRetentionReferences(options.machineId, snapshot, store, nowMs);
-  if (!references || !verifyDoorwayRetentionReferences(options.machineId, references, snapshot, store)) {
+  if (!references || !verifyDoorwayRetentionReferences(options.machineId, references, snapshot, store)
+    || (existing && !verifyDoorwayRetentionReferences(options.machineId, existing, snapshot, store))) {
     return { status: 'unavailable', reason: 'incomplete-evidence' };
   }
 
@@ -192,6 +217,6 @@ export function publishInitialDoorwayRetentionCursor(
   if (!latest.complete || JSON.stringify(latest.runs) !== snapshotRows) {
     return { status: 'unavailable', reason: 'ledger-changed' };
   }
-  const cursor = store.advanceRetentionCursor(null, references, lease);
+  const cursor = store.advanceRetentionCursor(existing?.generation ?? null, references, lease);
   return { status: 'published', cursor };
 }

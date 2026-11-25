@@ -2,7 +2,7 @@ import fs from 'node:fs';
 import os from 'node:os';
 import path from 'node:path';
 import { beforeEach, afterEach, describe, expect, it, vi } from 'vitest';
-import { initializeDoorwayRetentionCursor, selectDoorwayRetentionReferences, verifyDoorwayRetentionReferences } from '../../src/core/VerifiedDoorwayRetention.js';
+import { initializeDoorwayRetentionCursor, selectDoorwayRetentionReferences, updateDoorwayRetentionCursor, verifyDoorwayRetentionReferences } from '../../src/core/VerifiedDoorwayRetention.js';
 import { JobRunHistory } from '../../src/scheduler/JobRunHistory.js';
 import { createPhysicalEffectLock } from '../../src/core/PhysicalEffectLock.js';
 import { SafeFsExecutor } from '../../src/core/SafeFsExecutor.js';
@@ -191,6 +191,91 @@ describe('scheduled doorway evidence reconciliation', () => {
     expect(store.readRetentionCursor()).toMatchObject({
       generation: 1, observations: [{ doorId: 'alpha', runId: source }],
     });
+  });
+
+  it.skipIf(!createPhysicalEffectLock(os.tmpdir()).status().available)('advances one cursor generation and preserves the prior artifacts', async () => {
+    const source = committed();
+    const options = {
+      stateDir: dir, machineId: 'local-test', doorIds: ['alpha'],
+      readSnapshot: () => ledger.readPackagedDoorwaySnapshot('local-test'),
+      flushLedger: () => ledger.flushForDoorwayRetention(),
+      deadlineMs: Date.now() + 4000,
+    };
+    await expect(initializeDoorwayRetentionCursor(options)).resolves.toMatchObject({ status: 'published' });
+    vi.setSystemTime(new Date(Date.now() + 1000));
+    const interrupted = newer('failure', undefined, true);
+    const advance = { ...options, expectedGeneration: 1 };
+    const results = await Promise.all([updateDoorwayRetentionCursor(advance), updateDoorwayRetentionCursor(advance)]);
+    expect(results.map(result => result.status).sort()).toEqual(['published', 'unavailable']);
+    expect(results).toContainEqual({ status: 'unavailable', reason: 'generation-changed' });
+    expect(store.readRetentionCursor()).toMatchObject({
+      generation: 2,
+      observations: [{ doorId: 'alpha', runId: source }],
+      admissions: [{ doorId: 'alpha', runId: interrupted }],
+    });
+    expect(store.readStaged(source)).toBeTruthy();
+  });
+
+  it.skipIf(!createPhysicalEffectLock(os.tmpdir()).status().available)('recovers an older cursor observation as historical evidence only', async () => {
+    const source = committed();
+    for (let i = 0; i < 17; i++) {
+      vi.setSystemTime(new Date(Date.now() + 1000));
+      newer('failure');
+    }
+    await expect(initializeDoorwayRetentionCursor({
+      stateDir: dir, machineId: 'local-test', doorIds: ['alpha'],
+      readSnapshot: () => ledger.readPackagedDoorwaySnapshot('local-test'),
+      flushLedger: () => ledger.flushForDoorwayRetention(),
+      deadlineMs: Date.now() + 4000,
+    })).resolves.toMatchObject({ status: 'published' });
+    const cursor = store.readRetentionCursor()!;
+    const options = {
+      machineId: 'local-test', doorIds: ['alpha'], store, cadence, nowMs: Date.now(),
+      runs: ledger.query({ slug: 'doorway-scan', limit: 16 }).runs,
+      historyTruncated: true,
+      retainedHistory: { cursor, findRun: (id: string) => ledger.findRun(id) },
+    };
+    expect(readScheduledDoorwayEvidence(options).doors.alpha).toMatchObject({
+      lastObservation: { runId: source }, latestAttempt: null, freshness: 'unknown', reachable: null,
+    });
+    expect(readScheduledDoorwayEvidence({
+      ...options,
+      retainedHistory: { ...options.retainedHistory, findRun: () => null },
+    }).doors.alpha).toMatchObject({
+      lastObservation: null, freshness: 'unknown', reachable: null,
+    });
+  });
+
+  it.skipIf(!createPhysicalEffectLock(os.tmpdir()).status().available)('preserves the current generation when its successor cannot be verified or flushed', async () => {
+    const source = committed();
+    const options = {
+      stateDir: dir, machineId: 'local-test', doorIds: ['alpha'],
+      readSnapshot: () => ledger.readPackagedDoorwaySnapshot('local-test'),
+      flushLedger: () => ledger.flushForDoorwayRetention(),
+      deadlineMs: Date.now() + 4000,
+    };
+    await expect(initializeDoorwayRetentionCursor(options)).resolves.toMatchObject({ status: 'published' });
+    const original = store.readRetentionCursor();
+    vi.setSystemTime(new Date(Date.now() + 1000));
+    newer('failure', undefined, true);
+    const advance = { ...options, expectedGeneration: 1 };
+
+    await expect(updateDoorwayRetentionCursor({
+      ...advance,
+      flushLedger: () => { throw new Error('fixture successor flush failed'); },
+    })).rejects.toThrow('fixture successor flush failed');
+    expect(store.readRetentionCursor()).toEqual(original);
+
+    let reads = 0;
+    await expect(updateDoorwayRetentionCursor({
+      ...advance,
+      readSnapshot: () => {
+        if (++reads === 2) newer();
+        return options.readSnapshot();
+      },
+    })).resolves.toEqual({ status: 'unavailable', reason: 'ledger-changed' });
+    expect(store.readRetentionCursor()).toEqual(original);
+    expect(store.readStaged(source)).toBeTruthy();
   });
 
   it.skipIf(!createPhysicalEffectLock(os.tmpdir()).status().available)('leaves the cursor absent if the ledger changes while selecting', async () => {

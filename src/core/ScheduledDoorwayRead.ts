@@ -1,7 +1,7 @@
 import { Cron } from 'croner';
 import { readCommittedDoorwayObservation } from './CommittedDoorwayObservation.js';
 import { probeStatusToReachable } from './DoorwayRegistryReader.js';
-import type { ScheduledDoorwayObservation, ScheduledDoorwayObservationStore } from './ScheduledDoorwayObservationStore.js';
+import type { ScheduledDoorwayObservation, ScheduledDoorwayObservationStore, ScheduledDoorwayRetentionCursor } from './ScheduledDoorwayObservationStore.js';
 import type { JobRun } from '../scheduler/JobRunHistory.js';
 
 type Outcome = 'observed' | 'pending' | 'failed' | 'timeout' | 'interrupted' | 'unavailable';
@@ -58,6 +58,7 @@ export function readScheduledDoorwayEvidence(options: {
   cadence: { schedule: string; timeoutMs: number } | null;
   nowMs: number;
   historyTruncated?: boolean;
+  retainedHistory?: { cursor: ScheduledDoorwayRetentionCursor; findRun: (id: string) => JobRun | null };
 }): ScheduledDoorwayEvidence {
   const { machineId, doorIds, runs, store, cadence, nowMs } = options;
   const local = new Map(runs.filter(run => machineId && run.machineId === machineId
@@ -112,6 +113,29 @@ export function readScheduledDoorwayEvidence(options: {
     }
   }
 
+  const retained = new Map<string, HistoricalObservation>();
+  const history = options.retainedHistory;
+  if (options.historyTruncated && history?.cursor.machineId === machineId) {
+    const opened = new Map<string, ReturnType<typeof readCommittedDoorwayObservation>>();
+    for (const { doorId, runId, digest } of history.cursor.observations) {
+      if (!knownDoors.has(doorId) || observations.has(doorId) || local.has(runId)) continue;
+      const run = history.findRun(runId);
+      if (run?.scheduledDoorwayObservationDigest !== digest) continue;
+      const start = instant(run.startedAt);
+      const completion = instant(run.completedAt);
+      if (!(start <= completion && completion <= nowMs)) continue;
+      const result = opened.get(runId) ?? readCommittedDoorwayObservation(runId, machineId, {
+        findRun: () => run,
+      }, store);
+      opened.set(runId, result);
+      if (result.status !== 'committed') continue;
+      const row = result.observation.observations.find(item => item.doorId === doorId);
+      if (row && start <= instant(row.observedAt) && instant(row.observedAt) <= completion) {
+        retained.set(doorId, { ...row, runId, completedAt: result.observation.completedAt });
+      }
+    }
+  }
+
   const latestRun = newest(runEvidence, run => run.startedAt);
   const doors = Object.fromEntries([...knownDoors].map(doorId => {
     const doorAttempts = attempts.get(doorId) ?? [];
@@ -133,7 +157,7 @@ export function readScheduledDoorwayEvidence(options: {
       freshness = !Number.isFinite(deadline) ? 'unknown' : nowMs >= deadline ? 'stale' : 'current';
     }
     const reading: DoorReading = {
-      lastObservation, latestAttempt, freshness,
+      lastObservation: lastObservation ?? retained.get(doorId) ?? null, latestAttempt, freshness,
       reachable: freshness === 'current' && lastObservation ? probeStatusToReachable(lastObservation.probeStatus) : null,
     };
     return [doorId, reading];

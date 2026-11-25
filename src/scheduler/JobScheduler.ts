@@ -47,7 +47,7 @@ import { getInstarVersion } from '../core/Config.js';
 import { readVerifiedInstalledDoorwayAssets } from '../core/VerifiedPackagedCatalog.js';
 import { ScheduledDoorwayObservationStore } from '../core/ScheduledDoorwayObservationStore.js';
 import { readScheduledDoorwayEvidence, type ScheduledDoorwayEvidence } from '../core/ScheduledDoorwayRead.js';
-import { publishInitialDoorwayRetentionCursor, withDoorwayRetentionWriter } from '../core/VerifiedDoorwayRetention.js';
+import { publishDoorwayRetentionCursor, withDoorwayRetentionWriter } from '../core/VerifiedDoorwayRetention.js';
 import { executePackagedDoorwayScan, readDoorwayExecutionConfig } from './PackagedDoorwayExecution.js';
 import { JobSupervisionStore } from './JobSupervisionStore.js';
 import { projectSupervisionEvidence, SUPERVISION_EVIDENCE_POLICY } from './JobSupervisionEvidence.js';
@@ -1695,9 +1695,25 @@ export class JobScheduler {
       ? { schedule: job.schedule, timeoutMs: Math.max(1, job.scriptTimeoutMinutes ?? JobScheduler.DEFAULT_SCRIPT_TIMEOUT_MINUTES) * 2 * 60_000 }
       : null;
     const store = new ScheduledDoorwayObservationStore(path.resolve(this.stateDir), machineId, doorIds, () => nowMs);
-    return readScheduledDoorwayEvidence({
+    const recent = {
       machineId, doorIds, runs: history.runs, store, cadence, nowMs, historyTruncated: history.truncated,
-    });
+    };
+    if (history.truncated) {
+      try {
+        let cursor = store.readRetentionCursor();
+        for (let attempt = 0; cursor && attempt < 2; attempt++) {
+          const projection = readScheduledDoorwayEvidence({
+            ...recent, retainedHistory: { cursor, findRun: id => this.runHistory.findRun(id) },
+          });
+          const next = store.readRetentionCursor();
+          if (next && JSON.stringify(next) === JSON.stringify(cursor)) return projection;
+          cursor = next;
+        }
+      } catch {
+        // Advisory history is optional when its cursor is unreadable or unstable.
+      }
+    }
+    return readScheduledDoorwayEvidence(recent);
   }
 
   /**
@@ -2877,11 +2893,11 @@ export class JobScheduler {
         if (completed?.result !== 'success' || completed.scheduledDoorwayObservationDigest !== scheduledDoorwayObservationDigest) return;
         const { machineId, doorIds } = retentionInput;
         try {
-          const result = publishInitialDoorwayRetentionCursor({
+          const result = publishDoorwayRetentionCursor({
             stateDir: writer.stateDir, machineId, doorIds,
             readSnapshot: () => this.runHistory.readPackagedDoorwaySnapshot(machineId),
             flushLedger: () => this.runHistory.flushForDoorwayRetention(),
-          }, writer);
+          }, writer, 'current');
           if (result.status === 'unavailable') console.warn(`[scheduler] Doorway cursor publication unavailable: ${result.reason}`);
         } catch (error) {
           // The probe already completed. Advisory cursor failure does not change its outcome.
