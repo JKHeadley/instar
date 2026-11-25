@@ -141,7 +141,7 @@ export class LocalHistoryConsentChallenges {
   }
 
   confirm(deviceId: string, host: string, material: LocalHistoryConsentMaterial, challenge: string, signature: unknown):
-    Readonly<{ actionLine: string; proofRef: string }> {
+    Readonly<{ actionLine: string; proofRef: string; expiresAt: number; presenceBinding: string }> {
     const actionLine = localHistoryConsentActionLine(material);
     const owner = this.phone(deviceId, host, material);
     if (typeof challenge !== 'string' || !/^[A-Za-z0-9_-]{43}$/.test(challenge)
@@ -150,7 +150,12 @@ export class LocalHistoryConsentChallenges {
     }
     const proof = this.challenges.take(challenge, deviceId, host, challengeBinding(actionLine, owner.presenceKey));
     if (!proof) throw new Error('local-history-consent-challenge');
-    return Object.freeze({ actionLine, proofRef: proof.ref });
+    return Object.freeze({ actionLine, proofRef: proof.ref, expiresAt: Math.min(proof.expiresAt, material.expiresAt),
+      presenceBinding: sha256Hex(owner.presenceKey) });
+  }
+
+  currentPresenceBinding(deviceId: string, host: string, material: LocalHistoryConsentMaterial): string {
+    return sha256Hex(this.phone(deviceId, host, material).presenceKey);
   }
 
   private phone(deviceId: string, host: string, material: LocalHistoryConsentMaterial): OwnerPhone {

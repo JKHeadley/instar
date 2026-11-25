@@ -2,6 +2,7 @@ import crypto from 'node:crypto';
 import fs from 'node:fs';
 import os from 'node:os';
 import path from 'node:path';
+import Database from 'better-sqlite3';
 import express from 'express';
 import request from 'supertest';
 import { afterEach, expect, it } from 'vitest';
@@ -14,10 +15,13 @@ import { MobilePairingService, type MobilePairingDeps } from '../../src/server/m
 import { createSignedLocalHistoryIntake, LOCAL_HISTORY_CONSENT_CHALLENGE_PATH, LOCAL_HISTORY_CONSENT_CONFIRM_PATH,
   LOCAL_HISTORY_CONSENT_PREVIEW_PATH, SIGNED_LOCAL_HISTORY_PREFIX, type SignedLocalHistoryIntakeService }
   from '../../src/server/signedLocalHistoryIntake.js';
+import { initializeLocalHistoryConsentUses, initializeLocalHistoryFirstPermits, recordLocalHistoryFirstPermitWithConsent,
+  type LocalHistoryFirstPermit } from '../../src/import/LocalHistoryFirstPermit.js';
+import { privateImportDatabasePath } from '../../src/import/privateImportState.js';
 import { LocalHistoryChannel } from '../../src/import/LocalHistoryChannel.js';
 import { LocalHistoryChannelRegistry } from '../../src/import/LocalHistoryChannelRegistry.js';
 import { finishLocalHistoryHandshake } from '../../src/import/LocalHistoryHandshake.js';
-import { createLocalHistoryConsentPreview } from '../../src/server/localHistoryConsentPreview.js';
+import { createLocalHistoryConsentChallengeBinding, createLocalHistoryConsentPreview } from '../../src/server/localHistoryConsentPreview.js';
 import { createLocalHistoryCaptureResolver, localHistoryCaptureProofMessage, type LocalHistoryCaptureProof }
   from '../../src/server/localHistoryConsentSourceProof.js';
 import { permissionPresenceMessage } from '../../src/server/mobilePermissionsRoutes.js';
@@ -62,7 +66,7 @@ async function fixture() {
   };
   return { app, send, select(service: SignedLocalHistoryIntakeService) { selected = service; },
     selectConsent(service: SignedLocalHistoryIntakeService) { consentPreview = service; },
-    deviceId: enrolled.device.id, identity, signer: loadMachineSigner(stateDir)!, phone };
+    deviceId: enrolled.device.id, identity, signer: loadMachineSigner(stateDir)!, phone, stateDir };
 }
 
 it('is dark with no service and authenticates the exact signed bytes before dispatch', async () => {
@@ -155,6 +159,7 @@ it('opens the consent preview only for a signed sealed request with current card
   const publicKeyPem = source.publicKey.export({ type: 'spki', format: 'pem' }).toString();
   const sourceKey = { machineId: 'synthetic-source', signerKeyHash: signerKeyHashOf(publicKeyPem) };
   const now = 1000;
+  let approvalNow = now;
   const unsigned = { proofId: '9'.repeat(32), operationId, destination, sourceOwnerId: 'different-source-owner-id',
     issuedAt: now - 100, expiresAt: now + 100,
     files: [{ fileId: artifact.fileId, kind: artifact.kind, captureDigest: artifact.captureDigest }] };
@@ -180,11 +185,13 @@ it('opens the consent preview only for a signed sealed request with current card
     resolveOwnedCapture,
   };
   const phone = makeDevice();
+  let presenceKey = phone.publicKey;
   const challenges = new LocalHistoryConsentChallenges(() => ({
-    host, deviceId: principal.deviceId, ownerUserId, presenceKey: phone.publicKey,
-  }), () => now);
+    host, deviceId: principal.deviceId, ownerUserId, presenceKey,
+  }), () => approvalNow);
+  const actions = createLocalHistoryConsentChallengeBinding(review, challenges, () => approvalNow);
   const service = createLocalHistoryConsentPreview({
-    ...review, withExchange: async work => { await work(); return true; }, channels, challenges,
+    ...review, withExchange: async work => { await work(); return true; }, channels, actions,
   });
   const challengePath = LOCAL_HISTORY_CONSENT_CHALLENGE_PATH, confirmPath = LOCAL_HISTORY_CONSENT_CONFIRM_PATH;
   const paths = [url, challengePath, confirmPath];
@@ -257,11 +264,59 @@ it('opens the consent preview only for a signed sealed request with current card
   expect(await sealed(confirmation, 404, confirmPath)).toEqual(actionRefusal);
   expect(await sealed(selection, 404, challengePath)).toEqual(actionRefusal);
   authority = { publicKeyPem, destinationOwnerId: ownerUserId };
-  expect(await sealed(confirmation, 200, confirmPath)).toEqual({
-    actionLine: issued.actionLine, proofRef: expect.any(String),
+  const approved = await sealed(confirmation, 200, confirmPath);
+  expect(approved).toEqual({
+    actionLine: issued.actionLine, proofRef: expect.any(String), approvalToken: expect.any(String), expiresAt: issued.expiresAt,
   });
+  const readApproval = () => actions.readForFirstPermit(principal, host, selection, approved.approvalToken);
+  expect(readApproval()).toMatchObject({
+    operationId, applyRequestId: selection.applyRequestId, previewId: preview.previewId, previewDigest: preview.previewDigest,
+    cardId, disclosureHash: selection.disclosureHash, approvalDigest: expect.stringMatching(/^[a-f0-9]{64}$/),
+  });
+  const staging = path.join(f.stateDir, 'local-history-upload');
+  fs.mkdirSync(staging, { mode: 0o700 });
+  const db = new Database(privateImportDatabasePath(staging, 'jobs.sqlite'));
+  cleanups.push(() => db.close());
+  db.pragma('journal_mode = DELETE');
+  db.pragma('synchronous = FULL');
+  db.exec(`CREATE TABLE upload_operations (id TEXT PRIMARY KEY, phase TEXT, tag TEXT, deadline INTEGER, fingerprint TEXT);
+    CREATE TABLE upload_previews (id TEXT PRIMARY KEY, allocation TEXT, sha256 TEXT)`);
+  initializeLocalHistoryFirstPermits(db);
+  initializeLocalHistoryConsentUses(db);
+  const permit: LocalHistoryFirstPermit = {
+    operationId, previewId: preview.previewId, previewSha256: preview.previewDigest, applyRequestId: selection.applyRequestId,
+    intentFingerprint: '1'.repeat(64), generation: '2'.repeat(64), runId: '3'.repeat(32), reservationId: '4'.repeat(32),
+    previewAllocation: '5'.repeat(32), uploadFingerprint: '6'.repeat(64), deadline: preview.expiresAt, permitId: '7'.repeat(32),
+    fileIndex: 0, destinationBinding: '8'.repeat(64), mutationKind: 'claim', planDigest: '9'.repeat(64), plannedBytes: 4096,
+  };
+  db.prepare('INSERT INTO upload_operations VALUES (?, ?, ?, ?, ?)')
+    .run(operationId, 'prepared', 'r-' + permit.generation + '-' + operationId, permit.deadline, permit.uploadFingerprint);
+  db.prepare('INSERT INTO upload_previews VALUES (?, ?, ?)').run(operationId, permit.previewAllocation, permit.previewSha256);
+  const record = db.transaction(() => recordLocalHistoryFirstPermitWithConsent(db, permit, readApproval));
+  authority = undefined;
+  expect(() => record.immediate()).toThrow('first-permit-conflict');
+  expect(db.prepare('SELECT phase FROM upload_operations').get()).toEqual({ phase: 'prepared' });
+  authority = { publicKeyPem, destinationOwnerId: ownerUserId };
+  expect(record.immediate()).toBe('recorded');
+  expect(db.prepare('SELECT permitId FROM local_history_first_permit_consent_uses').get()).toEqual({ permitId: permit.permitId });
+  expect(() => record.immediate()).toThrow('first-permit-conflict');
+  expect(actions.readForFirstPermit(principal, host, selection, approved.proofRef)).toBeUndefined();
+  expect(actions.readForFirstPermit({ ...principal, deviceKeyHash: '1'.repeat(64) }, host, selection, approved.approvalToken)).toBeUndefined();
+  expect(actions.readForFirstPermit(principal, host, { ...selection, applyRequestId: '6'.repeat(32) }, approved.approvalToken)).toBeUndefined();
+  const otherProcess = createLocalHistoryConsentChallengeBinding(review, challenges, () => approvalNow);
+  expect(otherProcess.readForFirstPermit(principal, host, selection, approved.approvalToken)).toBeUndefined();
+  authority = undefined;
+  expect(readApproval()).toBeUndefined();
+  authority = { publicKeyPem, destinationOwnerId: ownerUserId };
+  presenceKey = makeDevice().publicKey;
+  expect(readApproval()).toBeUndefined();
+  presenceKey = phone.publicKey;
+  approvalNow = approved.expiresAt;
+  expect(readApproval()).toBeUndefined();
+  approvalNow = now;
   expect(await sealed(confirmation, 404, confirmPath)).toEqual(actionRefusal);
   card = { ...card, materialRevision: '2'.repeat(64) };
   expect(await sealed(input, 404)).toEqual(refused);
   expect(await sealed(selection, 404, challengePath)).toEqual(actionRefusal);
+  expect(readApproval()).toBeUndefined();
 });

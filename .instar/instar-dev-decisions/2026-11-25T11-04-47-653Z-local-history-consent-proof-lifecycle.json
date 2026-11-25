@@ -1,0 +1,27 @@
+{
+  "ts": "2026-11-25T11:04:47.653Z",
+  "slug": "local-history-consent-proof-lifecycle",
+  "suggestedTier": 2,
+  "declaredTier": 2,
+  "riskFloor": 1,
+  "riskFloorReasons": [],
+  "belowFloor": false,
+  "files": 2,
+  "loc": 53,
+  "scope": {
+    "basis": "staged-in-scope-paths-including-deleted",
+    "files": [
+      "src/server/localHistoryConsentPreview.ts",
+      "src/server/localHistoryConsentSlip.ts"
+    ],
+    "addedLines": 46,
+    "deletedLines": 7
+  },
+  "causalAutopsy": null,
+  "classClosure": {
+    "defectClass": "unbounded-self-action",
+    "closure": "n/a",
+    "reason": "Owner-driven approval token is checked in a dormant fixture and starts no action."
+  },
+  "verdict": "pass"
+}

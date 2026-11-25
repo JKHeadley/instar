@@ -1,0 +1,26 @@
+{
+  "version": 2,
+  "slug": "local-history-consent-proof-lifecycle",
+  "sessionId": "41652017-0805-405d-bb4e-2a975fb349ce",
+  "timestamp": "2026-11-25T11:04:19.698Z",
+  "artifactPath": "upgrades/side-effects/local-history-consent-proof-lifecycle.md",
+  "artifactSha256": "2f18a0385cdb97968c6e489324611caccba481c08669aa9daa2221e51b4f7970",
+  "specPath": "docs/specs/local-history-native-contract.md",
+  "coveredFiles": [
+    "src/server/localHistoryConsentPreview.ts",
+    "src/server/localHistoryConsentSlip.ts",
+    "tests/integration/signed-local-history-intake.test.ts",
+    "upgrades/next/local-history-consent-proof-lifecycle.md",
+    "upgrades/side-effects/local-history-consent-proof-lifecycle.md"
+  ],
+  "phase": "complete",
+  "tier": 2,
+  "tierReasoning": "Dormant consent proof authenticates the exact review through the private first-permit transaction.",
+  "secondPass": "true",
+  "reviewerConcurred": true,
+  "classClosure": {
+    "defectClass": "unbounded-self-action",
+    "closure": "n/a",
+    "reason": "Owner-driven approval token is checked in a dormant fixture and starts no action."
+  }
+}

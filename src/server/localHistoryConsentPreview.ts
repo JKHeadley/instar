@@ -1,8 +1,10 @@
 // E2E-PAIRING: EXEMPT — the production server leaves the consent preview service unset.
+import { createHmac, randomBytes, timingSafeEqual } from 'node:crypto';
 import { canonicalJson, isCardId, sha256Hex } from '../core/WorkCardStore.js';
 import type { WorkBoardService } from '../core/WorkBoardService.js';
 import { LOCAL_HISTORY_PLAINTEXT_BYTES } from '../import/LocalHistoryChannel.js';
 import type { LocalHistoryChannelExchange, LocalHistoryChannelRegistry } from '../import/LocalHistoryChannelRegistry.js';
+import type { LocalHistoryFirstPermitConsent } from '../import/LocalHistoryFirstPermit.js';
 import type { LocalHistoryUploadStaging } from '../import/LocalHistoryUploadStaging.js';
 import { localHistoryConsentActionLine, readLocalHistoryConsentCard, readLocalHistoryConsentSources,
   type LocalHistoryConsentChallenges, type LocalHistoryConsentMaterial } from './localHistoryConsentSlip.js';
@@ -55,7 +57,14 @@ function readReview(options: ConsentReviewDeps, device: Device, operationId: str
 /** Dormant native consent path. The transport supplies the admitted device and
  * verified Host. Each call independently rebuilds the same private disclosure.
  * Confirming proves presence only and does not create an apply permit. */
-export function createLocalHistoryConsentChallengeBinding(options: ConsentReviewDeps, challenges: LocalHistoryConsentChallenges) {
+export function createLocalHistoryConsentChallengeBinding(options: ConsentReviewDeps, challenges: LocalHistoryConsentChallenges,
+  now: () => number = Date.now) {
+  const key = randomBytes(32);
+  function approvalMac(device: Device, host: string, actionLine: string, presenceBinding: string, nonce: string, expiresAt: number): Buffer {
+    return createHmac('sha256', key).update(canonicalJson([
+      'instar-history-confirmation-v1', device.deviceId, device.deviceKeyHash, host.toLowerCase(), actionLine, presenceBinding, nonce, expiresAt,
+    ])).digest();
+  }
   function material(device: Device, selection: LocalHistoryConsentSelection): LocalHistoryConsentMaterial {
     const { operationId, cardId, applyRequestId } = selection;
     const { disclosure, sources, ownerUserId, disclosureHash } = readReview(options, device, operationId, cardId);
@@ -70,7 +79,33 @@ export function createLocalHistoryConsentChallengeBinding(options: ConsentReview
       return { ...challenges.issue(device.deviceId, host, selected), actionLine: localHistoryConsentActionLine(selected) };
     },
     confirm(device: Device, host: string, selection: LocalHistoryConsentSelection, challenge: string, signature: unknown) {
-      return challenges.confirm(device.deviceId, host, material(device, selection), challenge, signature);
+      const selected = material(device, selection);
+      const proof = challenges.confirm(device.deviceId, host, selected, challenge, signature);
+      const nonce = randomBytes(16).toString('hex');
+      const mac = approvalMac(device, host, proof.actionLine, proof.presenceBinding, nonce, proof.expiresAt);
+      const approvalToken = [nonce, proof.expiresAt, mac.toString('hex')].join('.');
+      return { actionLine: proof.actionLine, proofRef: proof.proofRef, approvalToken, expiresAt: proof.expiresAt };
+    },
+    /** Read-only proof check for the writer holding the lease and reservation.
+     * The transaction consumes the full digest, so a failed write can retry. */
+    readForFirstPermit(device: Device, host: string, selection: LocalHistoryConsentSelection,
+      approvalToken: unknown): LocalHistoryFirstPermitConsent | undefined {
+      if (typeof approvalToken !== 'string') return undefined;
+      const token = /^([a-f0-9]{32})\.([1-9][0-9]{0,15})\.([a-f0-9]{64})$/.exec(approvalToken);
+      if (!token) return undefined;
+      const expiresAt = Number(token[2]);
+      try {
+        const current = now();
+        if (!Number.isSafeInteger(expiresAt) || !Number.isSafeInteger(current) || current < 0 || current >= expiresAt) return undefined;
+        const selected = material(device, selection);
+        const actionLine = localHistoryConsentActionLine(selected);
+        const presenceBinding = challenges.currentPresenceBinding(device.deviceId, host, selected);
+        const expected = approvalMac(device, host, actionLine, presenceBinding, token[1], expiresAt);
+        if (expiresAt > selected.expiresAt || !timingSafeEqual(Buffer.from(token[3], 'hex'), expected)) return undefined;
+        return Object.freeze({ operationId: selection.operationId, previewId: selected.previewId,
+          previewDigest: selected.previewDigest, applyRequestId: selected.applyRequestId, approvalDigest: sha256Hex(approvalToken),
+          cardId: selected.cardId, cardRevision: selected.cardRevision, disclosureHash: selected.disclosureHash });
+      } catch { return undefined; } // @silent-fallback-ok — unavailable current review confers no first-permit authority
     },
   };
 }
@@ -121,9 +156,8 @@ function readConsentReply(options: ConsentReviewDeps, request: SignedLocalHistor
 export function createLocalHistoryConsentPreview(options: ConsentReviewDeps & {
   withExchange: SignedLocalHistoryIntakeService['withExchange'];
   channels: Pick<LocalHistoryChannelRegistry, 'open'>;
-  challenges?: LocalHistoryConsentChallenges;
+  actions?: ConsentActions;
 }): SignedLocalHistoryIntakeService {
-  const actions = options.challenges && createLocalHistoryConsentChallengeBinding(options, options.challenges);
   return {
     withExchange: options.withExchange,
     dispatch(request) {
@@ -140,7 +174,7 @@ export function createLocalHistoryConsentPreview(options: ConsentReviewDeps & {
       let reply: object;
       try {
         const input = JSON.parse(new TextDecoder('utf-8', { fatal: true }).decode(exchange.plaintext));
-        reply = readConsentReply(options, request, input, actions);
+        reply = readConsentReply(options, request, input, options.actions);
       } catch {
         status = 404;
         reply = { error: pathname === LOCAL_HISTORY_CONSENT_PREVIEW_PATH
