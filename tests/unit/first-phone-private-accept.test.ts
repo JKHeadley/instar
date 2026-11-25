@@ -4,10 +4,20 @@ import { FirstPhonePrivateNominationStore } from '../../src/core/trustJourney/Fi
 import { expect, it } from 'vitest';
 import { matchesFirstPhonePrivateAccept } from '../../src/core/trustJourney/firstPhonePrivateAccept.js';
 
+import { firstPhoneProposalHash } from '../../src/core/trustJourney/firstPhoneProposal.js';
+
+const proposal = {
+  ownerId: '7001', ownerGeneration: 'owner-1', accountAcceptanceId: 'accepted-fixture',
+  holderEpoch: 'holder-2', origin: 'https://paired.example', deviceId: 'phone-1',
+  deviceKeyFingerprint: '0123-4567-89AB-CDEF', deviceKeyHash: 'c'.repeat(64), presenceKeyHash: 'a'.repeat(64),
+  disclosureHash: 'b'.repeat(64), firstAcceptanceKey: 'tj:device-acceptance:first:0', expiresAt: 300,
+};
+
 const offer = {
   callbackData: 'first-phone:synthetic_fixture_token_123', chatId: '7001', disclosureMessageId: 15,
-  proposalHash: 'a'.repeat(64), accountAcceptanceId: 'accepted-fixture', holderEpoch: 'holder-2',
-  firstAcceptanceKey: 'tj:device-acceptance:first:0', issuedAt: 100, expiresAt: 300,
+  proposalHash: firstPhoneProposalHash(proposal), accountAcceptanceId: proposal.accountAcceptanceId,
+  holderEpoch: proposal.holderEpoch, firstAcceptanceKey: proposal.firstAcceptanceKey,
+  issuedAt: 100, expiresAt: proposal.expiresAt,
 };
 const tap = {
   callbackData: offer.callbackData, senderId: '7001', senderIsBot: false,
@@ -96,5 +106,12 @@ it('leaves an older nomination without a recorded slot unusable after migration'
     expect(store.record('legacy-receipt', offer, tap, current, 210)).toEqual({ status: 'refused' });
   } finally {
     db.close();
+  }
+});
+
+it('changes the proposal digest for every bound authorization input', () => {
+  for (const [key, value] of Object.entries(proposal)) {
+    const changed = typeof value === 'number' ? value + 1 : value + '-changed';
+    expect(firstPhoneProposalHash({ ...proposal, [key]: changed }), key).not.toBe(offer.proposalHash);
   }
 });
