@@ -1,0 +1,16 @@
+{
+  "version": 2,
+  "slug": "work-board-approval-binding-wip",
+  "sessionId": "b3d2cf8a-9b5d-468b-a50b-70ebf11e9e5c",
+  "timestamp": "2026-11-25T08:55:46.259Z",
+  "artifactPath": "upgrades/side-effects/work-board-approval-binding-wip.md",
+  "artifactSha256": "660613a3c2c3c63e42f8c025ad1e16f70014be6910a34a75f5b2f69a9a07b5b1",
+  "specPath": "docs/specs/owner-work-board-slips-first-slice.md",
+  "coveredFiles": [
+    "scripts/compare-work-board-capture.mjs",
+    "tests/unit/work-board-capture-comparison.test.ts"
+  ],
+  "phase": "complete",
+  "secondPass": "true",
+  "reviewerConcurred": true
+}

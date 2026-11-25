@@ -232,3 +232,15 @@ The capture command reads an already-open running Team Access log over loopback 
 - Rollback. Keep the capture gated if the endpoint is unavailable. Deploying the previous binary removes the command path without touching the log.
 
 Independent review concurred after adding strict one-origin gap checking, without changing the ordinary serving policy. Fleet receipt comparison is required even when each local receipt is ready.
+
+## Offline fleet receipt comparison
+
+The comparator checks the exact supplied roster, independent frozen heads, both owner snapshots and each folded-history receipt. A successful result prints only the matched machine IDs and the projection digest and origin count.
+
+- Over-block. Missing, incomplete, inconsistent or malformed receipts fail the comparison and leave enrollment unavailable.
+- Under-block. Matching files alone do not prove that they were collected from the accepted fleet or that all writers were paused. The runbook keeps those checks with the operators who observed them.
+- Authority and interactions. This command compares evidence and cannot change any server or establish an enrollment.
+- Multi-machine posture. Inputs are private per-home receipts. Only their comparison summary needs to leave the evidence directory.
+- Rollback. The comparison is read-only. A bad result requires restoring writers per the runbook and discarding the capture.
+
+Independent review concurred after confirming the producer’s exact empty digest and bounding known origin counts by their frozen sequences.

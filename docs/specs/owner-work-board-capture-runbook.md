@@ -19,10 +19,10 @@ The November 25 registry lists the five active machine IDs below. Before the win
 On each registered home, run the command using the existing local agent environment and its configured API port. Keep credentials out of commands and receipts.
 
 ```sh
-node scripts/read-work-board-owner-receipt.mjs "$AGENT_PORT" > "$EVIDENCE_DIR/$MACHINE_ID.team-owner.json"
+node scripts/read-work-board-owner-receipt.mjs "$AGENT_PORT" > "$EVIDENCE_DIR/$MACHINE_ID.team-owner.before.json"
 ```
 
-Every command must succeed and report a healthy, gap-free verified owner. Compare owner key, heads and vector across the accepted homes and repeat after the capture. A missing endpoint, unopened log or mismatched receipt keeps every writer live and requires a rescheduled window. This evidence describes the verified Team Access owner and does not assign a Work Board enrollment generation.
+Every command must succeed and report a healthy, gap-free verified owner. Compare owner key, heads and vector across the accepted homes and repeat after the capture into `$MACHINE_ID.team-owner.after.json`. A missing endpoint, unopened log or mismatched receipt keeps every writer live and requires a rescheduled window. This evidence describes the verified Team Access owner and does not assign a Work Board enrollment generation.
 
 ## Pause and drain
 
@@ -40,7 +40,13 @@ Run the following locally on every accepted home while it is paused, using the r
 node scripts/capture-work-board-starting-history.mjs "$AGENT_STATE_DIR" "$MACHINE_ID" "$CANDIDATE_DIST" "$DURABLE_LOCAL_SEQ" > "$EVIDENCE_DIR/$MACHINE_ID.work-board.json"
 ```
 
-Throughput compares all projection digests, compares each origin's count and digest across the receivers, and checks each receipt's local incarnation and sequence against its frozen advert. Keep the compare result, process exclusion receipts and sync heads with the capture time and revisions. A verified empty projection is a distinct receipt. An unreadable stream or missing receipt fails the window. Treat a resumed write as invalidating this snapshot for activation. Retain it as rehearsal evidence and take a fresh capture at the actual enrollment cutover.
+Throughput saves the accepted roster and independently observed frozen heads into a private JSON manifest with fields `roster` (array of accepted machine IDs) and `heads` (map from each accepted ID to its `incarnation` and integer `lastSeq`). Identity compares the collected receipts before the hard stop.
+
+```sh
+node scripts/compare-work-board-capture.mjs "$FROZEN_MANIFEST" "$EVIDENCE_DIR"
+```
+
+The comparator checks all projection digests, each origin's count and digest, both owner observations, and each local incarnation and sequence against the frozen advert. A matching result describes the supplied receipts. Chief and Throughput still verify roster provenance, sender exclusion, and both sync observations independently. Keep the compare result, process exclusion receipts and sync heads with the capture time and revisions. A verified empty projection is a distinct receipt. An unreadable stream or missing receipt fails the window. Treat a resumed write as invalidating this snapshot for activation. Retain it as rehearsal evidence and take a fresh capture at the actual enrollment cutover.
 
 ## Resume and rollback
 
