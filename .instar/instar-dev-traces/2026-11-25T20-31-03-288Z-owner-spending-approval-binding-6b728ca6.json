@@ -1,0 +1,19 @@
+{
+  "version": 2,
+  "slug": "owner-spending-approval-binding",
+  "sessionId": "b3d2cf8a-9b5d-468b-a50b-70ebf11e9e5c",
+  "timestamp": "2026-11-25T20:31:03.288Z",
+  "artifactPath": "upgrades/side-effects/owner-spending-approval-binding.md",
+  "artifactSha256": "8f728ebf6d1fa0be8b99a2e497d8b514b13bc377be9d52fadd1ef6030cf084aa",
+  "coveredFiles": [
+    "src/core/ownerSpendingApprovalBinding.ts",
+    "tests/unit/owner-spending-approval-binding.test.ts"
+  ],
+  "phase": "complete",
+  "tier": 1,
+  "tierReasoning": "Isolated synthetic core codec only. No runtime route, signature verifier, state or spending authority.",
+  "eli16Path": "docs/specs/owner-spending-permission-slips.eli16.md",
+  "sideEffectsPath": "upgrades/side-effects/owner-spending-approval-binding.md",
+  "secondPass": "true",
+  "reviewerConcurred": true
+}
