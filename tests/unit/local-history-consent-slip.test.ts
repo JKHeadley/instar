@@ -5,7 +5,7 @@ import { localHistoryConsentActionLine, LocalHistoryConsentChallenges, type Loca
   from '../../src/server/localHistoryConsentSlip.js';
 
 const material: LocalHistoryConsentMaterial = {
-  cardId: 'wc_' + 'a'.repeat(16), materialHash: '1'.repeat(64), disclosureHash: '2'.repeat(64),
+  cardId: 'wc_' + 'a'.repeat(16), materialHash: '1'.repeat(64), cardRevision: '9'.repeat(64), disclosureHash: '2'.repeat(64),
   ownerUserId: 'synthetic-owner', previewId: '3'.repeat(32), previewDigest: '4'.repeat(64), applyRequestId: '5'.repeat(32),
   sources: [
     { kind: 'codex', machineId: 'source-machine', artifactDigest: '6'.repeat(64) },
@@ -35,7 +35,7 @@ it('uses the Work Board presence envelope for one exact approval and refuses rep
 });
 
 it.each([
-  { cardId: 'wc_' + 'b'.repeat(16) }, { materialHash: 'f'.repeat(64) }, { disclosureHash: 'f'.repeat(64) }, { previewDigest: 'f'.repeat(64) },
+  { cardId: 'wc_' + 'b'.repeat(16) }, { materialHash: 'f'.repeat(64) }, { cardRevision: 'f'.repeat(64) }, { disclosureHash: 'f'.repeat(64) }, { previewDigest: 'f'.repeat(64) },
   { applyRequestId: 'f'.repeat(32) }, { sources: [...material.sources].reverse() },
   { destination: { ...material.destination, machineId: 'other-machine' } },
   { destination: { ...material.destination, bootId: 'next-boot' } },

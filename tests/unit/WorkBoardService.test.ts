@@ -4,9 +4,10 @@
  * refusals, restricting taps always accepted, and the index staying in step with replicated applies.
  */
 import { describe, it, expect, beforeEach } from 'vitest';
+import { localHistoryConsentCardRevision, readLocalHistoryConsentCard } from '../../src/server/localHistoryConsentSlip.js';
 import type { HlcTimestamp } from '../../src/core/HybridLogicalClock.js';
 import { WorkBoardService, resolveWorkBoardSettings, validateSettingsPatch, transcriptLineFor, lineIdFor, type WorkPrincipal } from '../../src/core/WorkBoardService.js';
-import { workCardRecordStoreSchema, sha256Hex, type UnionEntry } from '../../src/core/WorkCardStore.js';
+import { foldCard, workCardRecordStoreSchema, sha256Hex, type UnionEntry } from '../../src/core/WorkCardStore.js';
 
 const OWNER: WorkPrincipal = { kind: 'person', personKey: 'justin', proof: 'pin', isOwner: true };
 const MEMBER: WorkPrincipal = { kind: 'person', personKey: 'adriana', proof: 'presence', isOwner: false };
@@ -284,4 +285,48 @@ describe('graduation (Maturation plan)', () => {
     expect(q.ok).toBe(true);
     expect(t.svc.view(o.cardId)!.card.openQuestion?.principal).toEqual({ personKey: 'justin' });
   });
+});
+
+
+it('binds history consent to the actual folded card and private preview association', () => {
+  const { svc } = makeService();
+  const created = svc.createCard(AGENT, card);
+  if (!created.ok) throw new Error('synthetic card creation refused');
+  const { cardId } = created, materialHash = svc.view(cardId)!.card.materialHash;
+  const cardRevision = localHistoryConsentCardRevision(svc.view(cardId)!.card);
+  const preview = { operationId: 'a'.repeat(32), previewId: 'b'.repeat(32), previewDigest: 'c'.repeat(64),
+    ownerUserId: 'synthetic-owner', expiresAt: 10_000, artifacts: [],
+    destination: { machineId: 'synthetic-machine', machineKeyHash: 'd'.repeat(64), agentId: 'synthetic-agent',
+      ownerUserId: 'synthetic-owner', bootId: 'synthetic-boot', origin: 'https://example.test' },
+  };
+  const binding = { cardId, materialHash, cardRevision, operationId: preview.operationId, previewId: preview.previewId,
+    previewDigest: preview.previewDigest, ownerUserId: preview.ownerUserId };
+  expect(readLocalHistoryConsentCard(svc, binding, preview)).toEqual({ cardId, materialHash, cardRevision });
+  expect(() => readLocalHistoryConsentCard(svc, binding, { ...preview, operationId: 'f'.repeat(32) })).toThrow('consent-card-binding');
+  expect(() => readLocalHistoryConsentCard(svc, binding, { ...preview, previewDigest: 'f'.repeat(64) })).toThrow('consent-card-binding');
+  expect(() => readLocalHistoryConsentCard(svc, binding, { ...preview, ownerUserId: 'another-owner' })).toThrow('consent-card-binding');
+  expect(svc.edit(OWNER, cardId, { title: 'Changed review' }).ok).toBe(true);
+  expect(() => readLocalHistoryConsentCard(svc, binding, preview)).toThrow('consent-card-stale');
+  const revisedMaterial = svc.view(cardId)!.card.materialHash;
+  expect(revisedMaterial).not.toBe(materialHash);
+  expect(svc.edit(OWNER, cardId, { title: card.title }).ok).toBe(true);
+  expect(svc.view(cardId)!.card.materialHash).toBe(materialHash);
+  expect(() => readLocalHistoryConsentCard(svc, binding, preview)).toThrow('consent-card-stale');
+  const currentRevision = localHistoryConsentCardRevision(svc.view(cardId)!.card);
+  const [createdRecord, ...edits] = svc.recordsOf(cardId);
+  const earlierEdit = edits.find(record => record.d.recordType === 'edited')!;
+  const earlierId = `wc:${cardId}:late-replicated-edit`;
+  const withReplicatedEdit = foldCard(cardId, [createdRecord, {
+    ...earlierEdit, id: earlierId, d: { ...earlierEdit.d, recordKey: earlierId, title: 'Earlier replicated change' },
+  }, ...edits], svc.policyRecords());
+  expect(withReplicatedEdit.materialHash).toBe(materialHash);
+  expect(localHistoryConsentCardRevision(withReplicatedEdit)).not.toBe(currentRevision);
+  const revisedBinding = { ...binding, cardRevision: currentRevision };
+  expect(readLocalHistoryConsentCard(svc, revisedBinding, preview)).toEqual({ cardId, materialHash, cardRevision: currentRevision });
+  expect(svc.tap(OWNER, cardId, { action: 'withdraw-approval' }).ok).toBe(true);
+  expect(svc.tap(OWNER, cardId, { action: 'approve', materialHash }).ok).toBe(true);
+  expect(() => readLocalHistoryConsentCard(svc, revisedBinding, preview)).toThrow('consent-card-stale');
+  const approvedBinding = { ...binding, cardRevision: localHistoryConsentCardRevision(svc.view(cardId)!.card) };
+  expect(svc.tap(OWNER, cardId, { action: 'redact' }).ok).toBe(true);
+  expect(() => readLocalHistoryConsentCard(svc, approvedBinding, preview)).toThrow('consent-card-stale');
 });

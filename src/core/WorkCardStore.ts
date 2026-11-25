@@ -672,6 +672,7 @@ export interface CardFold {
   lastMaterialChangeFields: string[];
   /** The index (fold order) of the last record that changed a material field; -1 when none after creation. */
   lastMaterialIdx: number;
+  materialRevision: string;
   workable: boolean;
   policy: ApprovalPolicy;
   // ── agent-work-cards-default ──
@@ -747,7 +748,7 @@ export function foldCard(cardId: string, records: FoldRecord[], policies: FoldRe
     waitingOn: 'agent', materialHash: '', lastWriter: EMPTY_LAST_WRITER(), carrierTrail: [], questions: [], openQuestion: null,
     evidence: [], claims: [], taps: [], reopens: [], holds: [], archives: [], closeout: null, redacted: null,
     approvalRequired: true, approvalValid: false, approvedBy: null, withdrawn: false, currentClaim: null, needsConfirm: false, done: false, doneByAgentOwnEvidence: false,
-    unknown: [], newestRecordAt: 0, newestAgentRecordAt: 0, newestAgentRecordId: null, newestHlc: null, lastMaterialChangeFields: [], lastMaterialIdx: -1, workable: false, policy: 'every-agent-card',
+    unknown: [], newestRecordAt: 0, newestAgentRecordAt: 0, newestAgentRecordId: null, newestHlc: null, lastMaterialChangeFields: [], lastMaterialIdx: -1, materialRevision: '', workable: false, policy: 'every-agent-card',
     refs: [], requester: null, requestTextHash: null, recordedAsHash: null, pickupHold: null, pickupHeld: false, needLockedToRequest: false, requestApproved: false,
     recordedInAgentWords: false, changedSinceAsked: false, agentWork: false, notes: [], quietRepickups: [], holdLifted: null,
   };
@@ -806,6 +807,7 @@ export function foldCard(cardId: string, records: FoldRecord[], policies: FoldRe
         for (const k of MATERIAL_FIELDS) f.lastWriter[k] = w;
         f.carrierTrail.push({ carrier: f.carrier, by, at });
         f.lastMaterialIdx = idx; // creation is the first material write
+        f.materialRevision = sha256Hex(canonicalJson([rec.id]));
         break;
       }
       case 'edited': {
@@ -825,7 +827,11 @@ export function foldCard(cardId: string, records: FoldRecord[], policies: FoldRe
         }
         if (v.title !== undefined && titlesSeen[titlesSeen.length - 1] !== f.title) titlesSeen.push(f.title);
         if (v.carrier !== undefined && changed.includes('carrier')) f.carrierTrail.push({ carrier: f.carrier, by, at });
-        if (changed.length) { f.lastMaterialIdx = idx; f.lastMaterialChangeFields = changed; }
+        if (changed.length) {
+          f.lastMaterialIdx = idx;
+          f.materialRevision = sha256Hex(canonicalJson([f.materialRevision, rec.id]));
+          f.lastMaterialChangeFields = changed;
+        }
         // "changed since asked" (§1): a deterministic label on a request-approved card, never a judgment of meaning.
         if (!byIsPerson(by) && (changed.includes('title') || changed.includes('doneWhen'))) f.changedSinceAsked = true;
         break;

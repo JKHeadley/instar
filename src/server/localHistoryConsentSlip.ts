@@ -1,7 +1,9 @@
 // E2E-PAIRING: EXEMPT — unmounted proof helper with no HTTP route or runtime caller.
 import { CLAUDE_CODE_FRAMEWORK } from '../core/frameworkFacts.js';
 import type { LocalSessionSource } from '../import/localSessionParsers.js';
-import { canonicalJson, isCardId, sha256Hex } from '../core/WorkCardStore.js';
+import type { WorkBoardService } from '../core/WorkBoardService.js';
+import type { LocalHistoryUploadStaging } from '../import/LocalHistoryUploadStaging.js';
+import { canonicalJson, isCardId, isRestrictingTap, sha256Hex, type CardFold } from '../core/WorkCardStore.js';
 import { verifyPresenceSignature } from './mobileConsoleTicket.js';
 import { ActionChallengeStore, permissionPresenceMessage } from './mobilePermissionsRoutes.js';
 
@@ -12,6 +14,7 @@ const opaque = /^[A-Za-z0-9][A-Za-z0-9_.:@-]{0,127}$/;
 export interface LocalHistoryConsentMaterial {
   cardId: string;
   materialHash: string;
+  cardRevision: string;
   disclosureHash: string;
   ownerUserId: string;
   previewId: string;
@@ -20,6 +23,45 @@ export interface LocalHistoryConsentMaterial {
   destination: { machineId: string; machineKeyHash: string; agentId: string; ownerUserId: string; bootId: string; origin: string };
   expiresAt: number;
   applyRequestId: string;
+}
+
+type ConsentPreview = ReturnType<LocalHistoryUploadStaging['readOwnerConsentPreview']>;
+
+/** Persisted privately by the future consent handler. It must come from the
+ * server that paired the card and preview, never from a phone or card text. */
+export interface LocalHistoryConsentCardBinding {
+  cardId: string;
+  materialHash: string;
+  cardRevision: string;
+  operationId: string;
+  previewId: string;
+  previewDigest: string;
+  ownerUserId: string;
+}
+
+/** Distinguishes a material edit and revert, as well as a Work Board reopen. */
+export function localHistoryConsentCardRevision(card: Pick<CardFold, 'materialRevision' | 'reopens' | 'taps'>): string {
+  if (!card.materialRevision) throw new Error('local-history-consent-card-stale');
+  const restrictions = card.taps.filter(tap => isRestrictingTap(tap.action)).map(tap => tap.id);
+  return sha256Hex(canonicalJson([card.materialRevision, card.reopens, restrictions]));
+}
+
+const closedCardStatuses = new Set(['removed', 'unknown', 'archived', 'done', 'held']);
+
+/** Read the actual folded Work Board revision for one server-owned association.
+ * A generic Work Board approval still provides no import authority. */
+export function readLocalHistoryConsentCard(board: Pick<WorkBoardService, 'view'>,
+  binding: LocalHistoryConsentCardBinding, preview: ConsentPreview): Readonly<{ cardId: string; materialHash: string; cardRevision: string }> {
+  if (!isCardId(binding.cardId) || !matches(digest, binding.materialHash) || binding.operationId !== preview.operationId
+    || binding.previewId !== preview.previewId || binding.previewDigest !== preview.previewDigest
+    || binding.ownerUserId !== preview.ownerUserId) throw new Error('local-history-consent-card-binding');
+  const view = board.view(binding.cardId);
+  if (!view || closedCardStatuses.has(view.status) || !view.card.created || view.card.cardId !== binding.cardId
+    || view.card.redacted || view.card.withdrawn || view.card.materialHash !== binding.materialHash
+    || localHistoryConsentCardRevision(view.card) !== binding.cardRevision) {
+    throw new Error('local-history-consent-card-stale');
+  }
+  return Object.freeze({ cardId: view.card.cardId, materialHash: view.card.materialHash, cardRevision: binding.cardRevision });
 }
 
 interface OwnerPhone {
@@ -42,10 +84,10 @@ function matches(pattern: RegExp, value: unknown): boolean {
  * sealed preview. It must never accept a phone-supplied preview projection. */
 export function localHistoryConsentActionLine(material: LocalHistoryConsentMaterial): string {
   const refuse = () => { throw new Error('local-history-consent-material'); };
-  if (!shape(material, ['cardId', 'materialHash', 'disclosureHash', 'ownerUserId', 'previewId', 'previewDigest', 'sources',
+  if (!shape(material, ['cardId', 'materialHash', 'cardRevision', 'disclosureHash', 'ownerUserId', 'previewId', 'previewDigest', 'sources',
     'destination', 'expiresAt', 'applyRequestId'])) refuse();
   const { destination, sources } = material;
-  if (!isCardId(material.cardId) || ![material.materialHash, material.disclosureHash, material.previewDigest].every(value => matches(digest, value))
+  if (!isCardId(material.cardId) || ![material.materialHash, material.cardRevision, material.disclosureHash, material.previewDigest].every(value => matches(digest, value))
     || !matches(opaque, material.ownerUserId) || !matches(id, material.previewId) || !matches(id, material.applyRequestId)
     || !Number.isSafeInteger(material.expiresAt) || material.expiresAt <= 0
     || !Array.isArray(sources) || sources.length < 1 || sources.length > 1024

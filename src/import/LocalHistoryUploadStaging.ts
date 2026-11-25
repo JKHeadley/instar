@@ -963,7 +963,7 @@ export class LocalHistoryUploadStaging {
     }));
     const { ownerHash, ownerUserId } = this.owner(device);
     if (ownerHash !== row.ownerHash) refuse('not-found');
-    return Object.freeze({ previewId: receipt.previewId, previewDigest, ownerUserId, expiresAt: row.deadline, artifacts,
+    return Object.freeze({ operationId: row.id, previewId: receipt.previewId, previewDigest, ownerUserId, expiresAt: row.deadline, artifacts,
       destination: Object.freeze({ machineId: this.issuer.machineId, machineKeyHash: this.issuer.signingKeyHash,
         agentId: this.issuer.agentId, ownerUserId, bootId: row.boot, origin: this.issuer.origin }),
     });

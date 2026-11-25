@@ -162,7 +162,8 @@ it('prepares both source kinds through real children and retires raw files witho
     expect(JSON.parse(stored.toString()).receipt).toEqual(candidate);
     const material = f.stage.readOwnerConsentPreview(device, grant.operationId);
     expect(material).toEqual({
-      previewId: candidate.previewId, previewDigest: sealed.sha256, ownerUserId: 'synthetic-owner', expiresAt: candidate.expiresAt,
+      operationId: grant.operationId, previewId: candidate.previewId, previewDigest: sealed.sha256,
+      ownerUserId: 'synthetic-owner', expiresAt: candidate.expiresAt,
       destination: { machineId: issuer.machineId, machineKeyHash: issuer.signingKeyHash, agentId: issuer.agentId,
         ownerUserId: 'synthetic-owner', bootId: issuer.bootId, origin: issuer.origin },
       artifacts: artifacts.files.map((file, index) => ({
