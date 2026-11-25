@@ -30,3 +30,17 @@ The prototype reports incomplete peer promise coverage even when the local list 
 The Work Board reclassifies an inward agent card whose future owner-certified milestone does not have a current claim, question or person wait. This changes the owner and agent views, including on legacy records, but leaves approval and execution holds intact. A real completion claim still goes to the owner. The copied Engine and Easy Setup journals proved that all twelve reviewed cards leave the owner views, remain available to the agent, and retain their existing approval posture. Engine independently reproduced its five-card result.
 
 The user-facing effect is a quieter owner list and an honest unavailable status. This change adds no tap or destructive control. It preserves the reviewed copy and supported action payloads tested by the dashboard and native clients. Fleet activation, migration and the remaining production source declarations still require separate verification.
+
+## Opt-in server and signed credential fixture checkpoint
+
+The server can construct its owner provider when the acceptance setting is explicitly true. It resolves a Work Board policy request from the trust store by exact reference and checks the active accepted device against that request. This does not authorize any trust change, and all execution stays on the signed trust route. Other references need their own source adapter. Pooled private inputs with no proven audience remain absent from counts.
+
+The old synthetic canary cannot exercise the new typed path. The opt-in server stops scheduling it and returns the explicit off status for its status route. The legacy configuration keeps its existing scheduler. Fleet activation still requires a replacement verification path.
+
+The signed credential consent module loads in the same source tree and retains the standalone verified single-field fixture boundary. It is not mounted on production routes. The test principal, disclosure proof and submission are disposable. No token or value is carried in the owner card. A request change, expiry, reassignment or replay must refuse before storage. Existing Secret Drop storage remains responsible for the one-time write.
+
+The production default stays off at this checkpoint. An ordinary install or update does not enable this opt-in setting. Default-on migration, verified project delivery and full browser/native signed acceptance remain separate release requirements.
+
+The independent authority reviewer concurred for opt-in acceptance. Clients with no negotiated contract receive HTTP 426 when the setting is true. This provider admits only an accepted-device Work Board policy approval. Other genuine asks may be absent, so use the setting only with disposable or expressly authorized acceptance agents. Setting it to false and restarting the server restores the legacy owner list.
+
+The test opens the policy request after device acceptance. The initial provider does not yet expose an individually known approval when the accepting device is absent or the initial disclosure read fails. Keeping the same real request reachable through enrollment and reporting known-owner verification failures remain release acceptance requirements.

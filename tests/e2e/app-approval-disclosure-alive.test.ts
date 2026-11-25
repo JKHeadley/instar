@@ -8,9 +8,9 @@ import { LocalAttentionItems } from '../../src/core/LocalAttentionItems.js';
 import { ownerNeedsTrustApprovalCandidate } from '../../src/server/ownerNeedsTrustApproval.js';
 import { bootTrustAppServer, cleanupTrustAppServers, DISCLOSURE, DHASH } from '../helpers/trustAppServer.js';
 
-let listener: Server | undefined;
+const listeners: Server[] = [];
 afterAll(async () => {
-  if (listener) await new Promise<void>(resolve => listener!.close(() => resolve()));
+  await Promise.all(listeners.map(server => new Promise<void>(resolve => server.close(() => resolve()))));
   await cleanupTrustAppServers('tests/e2e/app-approval-disclosure-alive.test.ts');
 });
 
@@ -20,8 +20,9 @@ describe('App approval disclosure E2E', () => {
     const s = await bootTrustAppServer('approval-disclosure-e2e-', undefined, null, runtime => (item, req) =>
       item.title === 'Trust approval fixture' && source ? ownerNeedsTrustApprovalCandidate(runtime.service, req, source) : null,
     );
-    listener = s.app.listen(0, '127.0.0.1');
-    if (!listener.listening) await new Promise<void>(resolve => listener!.once('listening', resolve));
+    const listener = s.app.listen(0, '127.0.0.1');
+    listeners.push(listener);
+    if (!listener.listening) await new Promise<void>(resolve => listener.once('listening', resolve));
     s.config.port = (listener.address() as { port: number }).port;
     const attention = new LocalAttentionItems(s.stateDir);
     expect(attention.raise({ id: 'trust-approval-fixture', title: 'Trust approval fixture', category: 'desktop', priority: 'HIGH', source: 'agent', summary: 'A disposable request.' })).toBe(true);
@@ -63,4 +64,26 @@ describe('App approval disclosure E2E', () => {
     const actual = JSON.parse(fs.readFileSync(path.join(s.stateDir, 'config.json'), 'utf8'));
     expect(actual.externalOperations).toEqual(patch.externalOperations);
   });
+  it('uses the configured server provider for a signed board-policy request with an accepted device', async () => {
+    const s = await bootTrustAppServer('needs-production-provider-e2e-', undefined, null, undefined, true);
+    const listener = s.app.listen(0, '127.0.0.1');
+    listeners.push(listener);
+    if (!listener.listening) await new Promise<void>(resolve => listener.once('listening', resolve));
+    s.config.port = (listener.address() as { port: number }).port;
+    await s.bearer(request(s.app).get('/needs/canary')).expect(503, { error: 'needs-canary-off' });
+    const mac = await s.pair({ local: true, name: 'Board policy test Mac' });
+    const needs = () => mac.signed('GET', '/mobile/needs').set('X-Instar-Needs-Contract', 'in-place-v1');
+    expect((await needs().expect(200)).body).toMatchObject({ schemaVersion: 2, items: [] });
+
+    const accepted = await mac.act({ action: 'accept-device', target: mac.id, keyFingerprint: mac.fp, disclosureHash: DHASH }, '/mobile/trust/device-acceptance',
+      { keyFingerprint: mac.fp, disclosureHash: DHASH, disclosure: DISCLOSURE, keyPolicy: 'biometryCurrentSet' }, `accept-device ${mac.id} ${mac.fp} ${DHASH}`);
+    expect(accepted.status).toBe(200);
+    const proposed = await s.bearer(request(s.app).post('/trust/requests'))
+      .send({ change: { kind: 'board-policy', policy: 'outward-only' } }).expect(202);
+    const result = await needs().expect(200);
+    expect(result.body.items).toEqual([expect.objectContaining({
+      source: 'trust-requests', ownerAction: 'approve', action: { kind: 'approval', requestId: proposed.body.requestId },
+    })]);
+  });
+
 });

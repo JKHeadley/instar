@@ -39,6 +39,7 @@ export async function bootTrustAppServer(
   sink?: Parameters<typeof createTrustJourneyRuntime>[0]['sink'],
   telegram: Parameters<typeof createTrustJourneyRuntime>[0]['telegram'] = null,
   ownerNeeds?: (runtime: ReturnType<typeof createTrustJourneyRuntime>) => ConstructorParameters<typeof AgentServer>[0]['ownerNeedsCandidate'],
+  enableOwnerAdmission = false,
 ) {
   const dir = fs.mkdtempSync(path.join(process.env.TMPDIR ?? os.tmpdir(), prefix));
   dirs.push(dir);
@@ -50,6 +51,7 @@ export async function bootTrustAppServer(
   const config = {
     projectName: 'trust-app', projectDir: dir, stateDir, port: 0, authToken: 'tok', developmentAgent: true, dashboardPin: '424242',
     mobilePairing: { multiRoute: { enabled: false } },
+    ...(enableOwnerAdmission ? { needsYou: { ownerAdmission: { enabled: true } } } : {}),
     tunnel: { enabled: true, type: 'named', token: 'x', hostname: HOST },
     sessions: { claudePath: '/usr/bin/echo', maxSessions: 1, defaultMaxDurationMinutes: 30, protectedSessions: [], monitorIntervalMs: 5_000 },
     scheduler: { enabled: false, jobsFile: '', maxParallelJobs: 1 }, messaging: [], updates: {},
