@@ -59,3 +59,37 @@ export async function executeOwnerRemovalSync(req: Request, pairing: MobilePairi
     return unavailable; // @silent-fallback-ok — an incomplete projection cannot issue a continuation
   }
 }
+
+/** Private first history page. A history read cannot renew the sync display deadline. */
+export async function executeOwnerRemovalHistory(req: Request, pairing: MobilePairingService,
+  service: AppConversationService, evidence: Parameters<typeof resolveOwnerRemovalSyncAuthority>[3],
+  codec: ReturnType<typeof createRemovalSyncCursorCodec>): Promise<{ status: number; body: Record<string, unknown> }> {
+  try {
+    const initial = resolveOwnerRemovalSyncAuthority(req, pairing, service, evidence);
+    if (!initial.ok) return { status: initial.status, body: { error: initial.error } };
+    if (Object.keys(req.query).length) return { status: 400, body: { error: 'invalid-message-removal-history-request' } };
+
+    const { conversationKey } = initial.authority;
+    const epoch = codec.epochFor(initial.authority);
+    await service.store.prepareRemovalHistory(conversationKey);
+    const admitted = resolveOwnerRemovalSyncAuthority(req, pairing, service, evidence);
+    if (!admitted.ok) return { status: admitted.status, body: { error: admitted.error } };
+    if (codec.epochFor(admitted.authority) !== epoch) return { status: 409, body: { error: 'message-removal-sync-reset' } };
+
+    const reader = exactMessageReader(pairing, req)();
+    if (reader?.role !== 'owner') return { status: 404, body: { error: 'unknown-conversation' } };
+    const page = service.store.readPreparedRemovalHistory(conversationKey, null, 100);
+    if (!page || page.messages.some((row) => !pairing.mayReadStored(reader, conversationKey, row))) return unavailable;
+    const final = resolveOwnerRemovalSyncAuthority(req, pairing, service, evidence);
+    if (!final.ok) return { status: final.status, body: { error: final.error } };
+    if (codec.epochFor(final.authority) !== epoch) return { status: 409, body: { error: 'message-removal-sync-reset' } };
+    if (!service.store.hasPreparedRemovalHistory(conversationKey, page.proof)) return unavailable;
+
+    return { status: 200, body: {
+      conversationKey, epoch, hasOlder: page.nextBefore !== null,
+      messages: page.messages.map(({ eventId, messageId, text, at, role }) => ({ eventId, messageId, text, at, role })),
+    } };
+  } catch {
+    return unavailable; // @silent-fallback-ok — a protected history read has no unfiltered fallback
+  }
+}

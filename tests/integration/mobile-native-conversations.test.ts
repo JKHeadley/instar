@@ -23,7 +23,7 @@ import { MobilePairingService, createMobilePairingRouter, deviceAuthenticator, t
 import { createMobileConversationRouter } from '../../src/server/mobileConversationRoutes.js';
 import { SingleInstanceLock } from '../../src/core/SingleInstanceLock.js';
 import { createRemovalSyncCursorCodec } from '../../src/server/mobileAppRemovalSyncCursor.js';
-import { executeOwnerRemovalSync } from '../../src/server/mobileAppRemovalSync.js';
+import { executeOwnerRemovalHistory, executeOwnerRemovalSync } from '../../src/server/mobileAppRemovalSync.js';
 import { resolveOwnerRemovalSyncAuthority } from '../../src/server/mobileAppRemovalSyncAuthority.js';
 import { executeAppMessageRemoval } from '../../src/server/mobileAppMessageRemoval.js';
 import { admitAppMessageRemoval } from '../../src/server/mobileAppMessageRemovalAdmission.js';
@@ -114,6 +114,10 @@ function setup(opts: Opts = {}) {
   const syncEvidence = opts.removalSyncEvidence;
   if (svc && syncEvidence) {
     const codec = createRemovalSyncCursorCodec();
+    if (opts.removalSyncPage) app.get('/mobile/chat/app/:key/messages', async (req, res) => {
+      const result = await executeOwnerRemovalHistory(req, pairing, svc, syncEvidence, codec);
+      res.set('Cache-Control', 'no-store').status(result.status).json(result.body);
+    });
     app.get('/mobile/chat/app/:key/events', async (req, res) => {
       if (opts.removalSyncPage) {
         const result = await executeOwnerRemovalSync(req, pairing, svc, syncEvidence, codec);
@@ -1322,6 +1326,35 @@ describe('private signed owner removal sync page', () => {
     const reset = await signed(e, 'GET', continuation);
     expect(reset.status).toBe(409);
     expect(reset.body).toEqual({ error: 'message-removal-sync-reset', epoch: expect.any(String) });
+  });
+
+  it('uses the sync epoch on history and suppresses a removed row', async () => {
+    const { e, key, path, remove } = await fixture();
+    const history = `/mobile/chat/app/${key}/messages`;
+    expect((await bearer(e, 'get', history)).status).toBe(403);
+    const [sync, before] = await Promise.all([signed(e, 'GET', path), signed(e, 'GET', history)]);
+    expect(before.status).toBe(200);
+    expect(before.headers['cache-control']).toBe('no-store');
+    expect(before.body).toMatchObject({ epoch: sync.body.epoch, messages: [{ eventId: 'target' }] });
+    expect(before.body).not.toHaveProperty('displayForMs');
+    remove();
+    expect((await signed(e, 'GET', history)).body).toMatchObject({ epoch: sync.body.epoch, messages: [] });
+  });
+
+  it('refuses an old page when a removal lands during row authorization', async () => {
+    const { e, key, remove } = await fixture();
+    const original = e.pairing.mayReadStored.bind(e.pairing);
+    const acl = vi.spyOn(e.pairing, 'mayReadStored').mockImplementationOnce((...args) => {
+      remove();
+      return original(...args);
+    });
+    try {
+      const history = `/mobile/chat/app/${key}/messages`;
+      const raced = await signed(e, 'GET', history);
+      expect(raced.status).toBe(503);
+      expect(raced.body).toEqual({ error: 'message-removal-sync-unavailable' });
+      expect((await signed(e, 'GET', history)).body.messages).toEqual([]);
+    } finally { acl.mockRestore(); }
   });
 
   it('rejects a continuation after the real journal index is rebuilt', async () => {

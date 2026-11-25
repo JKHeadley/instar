@@ -45,3 +45,5 @@ The private sync test now reads real messages and removal notices. If access cha
 The private sync response now says when it has reached the latest verified entry. An empty page alone is not enough. The app can use that result to decide when it has applied enough changes to show cached messages again.
 
 The sync check now reads the real chat journal. New messages keep the current sync position usable, while a rebuilt or replaced journal makes the app check its cached history again.
+
+The first protected history page now checks the same signed view as sync. If removal happens while the page is being checked, the server asks the app to try again. Only the private test route uses this behavior so far.

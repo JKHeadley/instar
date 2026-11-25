@@ -188,6 +188,10 @@ describe('native app conversations — production wiring', () => {
       machineId: server.appConversations!.deps.machineId(), at: new Date().toISOString(),
     });
     expect(server.appConversations!.store.removalJournalRevision(key)).toBe(journalRevision);
+    expect(await server.appConversations!.store.prepareRemovalHistory(key)).toBe(true);
+    const protectedHistory = server.appConversations!.store.readPreparedRemovalHistory(key, null, 100);
+    expect(protectedHistory?.messages.map((row) => row.text)).toEqual(['What is on for Saturday?']);
+    expect(server.appConversations!.store.hasPreparedRemovalHistory(key, protectedHistory!.proof)).toBe(true);
     const darkEvents = await send('GET', `/mobile/chat/app/${key}/events`);
     expect(darkEvents.status).toBe(200);
     expect(darkEvents.body.events.map((event: { kind: string }) => event.kind)).not.toContain('message-removed');

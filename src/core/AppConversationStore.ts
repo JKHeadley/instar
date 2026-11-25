@@ -1558,8 +1558,16 @@ export class AppConversationStore {
 
   /** A page from the creation custodian, or null when there is no complete removal proof. */
   browseRemovalAwareMessages(conversationKey: string, before: string | null | undefined, limit = 100): { messages: BrowsedMessage[]; nextBefore: string | null } | null {
-    return this.withRemovalHistory(conversationKey, (custodian) =>
-      this.browseIndexedMessages(conversationKey, before, limit, false, custodian));
+    const page = this.readPreparedRemovalHistory(conversationKey, before, limit);
+    return page ? { messages: page.messages, nextBefore: page.nextBefore } : null;
+  }
+
+  /** Keep the exact evidence used by the read available for final response validation. */
+  readPreparedRemovalHistory(conversationKey: string, before: string | null | undefined, limit: number) {
+    return this.withRemovalHistory(conversationKey, (custodian, proof) => ({
+      ...this.browseIndexedMessages(conversationKey, before, limit, false, custodian),
+      proof,
+    }));
   }
 
   /** Exact candidates after the caller's row ACL, or null when removal proof is incomplete. */
