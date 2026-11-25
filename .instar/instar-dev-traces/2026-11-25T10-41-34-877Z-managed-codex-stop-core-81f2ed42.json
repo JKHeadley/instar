@@ -1,0 +1,21 @@
+{
+  "version": 2,
+  "slug": "managed-codex-stop-core",
+  "sessionId": "017c26ed-5596-4576-9c20-20af13e4c1f8",
+  "timestamp": "2026-11-25T10:41:34.877Z",
+  "artifactPath": "upgrades/side-effects/managed-codex-stop-core.md",
+  "artifactSha256": "9ffc627f265899ac0ba8bb3e6f94417f4c106a1ba8c2c5410ce07921c08c214e",
+  "coveredFiles": [
+    "src/core/ManagedCodexStopDecision.ts",
+    "src/core/ManagedCodexStopReceipt.ts",
+    "tests/unit/managed-codex-stop-decision.test.ts",
+    "tests/unit/managed-codex-stop-receipt.test.ts"
+  ],
+  "phase": "complete",
+  "tier": 1,
+  "tierReasoning": "Only pure unwired code and unit tests. A revert removes all effects and no runtime path can dispatch.",
+  "eli16Path": "upgrades/managed-codex-stop-core.eli16.md",
+  "sideEffectsPath": "upgrades/side-effects/managed-codex-stop-core.md",
+  "secondPass": "not-required",
+  "reviewerConcurred": null
+}
