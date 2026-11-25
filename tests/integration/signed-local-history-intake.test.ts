@@ -11,12 +11,13 @@ import { deviceKeyHashOf, identityKeyLookup, loadMachineSigner, signerKeyHashOf 
 import { MobileDeviceKeyLedger } from '../../src/core/MobileDeviceKeyLedger.js';
 import { SafeFsExecutor } from '../../src/core/SafeFsExecutor.js';
 import { MobilePairingService, type MobilePairingDeps } from '../../src/server/mobilePairingRoutes.js';
-import { createSignedLocalHistoryIntake, LOCAL_HISTORY_CONSENT_PREVIEW_PATH, SIGNED_LOCAL_HISTORY_PREFIX, type SignedLocalHistoryIntakeService }
+import { createSignedLocalHistoryIntake, LOCAL_HISTORY_CONSENT_CHALLENGE_PATH, LOCAL_HISTORY_CONSENT_CONFIRM_PATH,
+  LOCAL_HISTORY_CONSENT_PREVIEW_PATH, SIGNED_LOCAL_HISTORY_PREFIX, type SignedLocalHistoryIntakeService }
   from '../../src/server/signedLocalHistoryIntake.js';
 import { LocalHistoryChannel } from '../../src/import/LocalHistoryChannel.js';
 import { LocalHistoryChannelRegistry } from '../../src/import/LocalHistoryChannelRegistry.js';
 import { finishLocalHistoryHandshake } from '../../src/import/LocalHistoryHandshake.js';
-import { createLocalHistoryConsentChallengeBinding, createLocalHistoryConsentPreview } from '../../src/server/localHistoryConsentPreview.js';
+import { createLocalHistoryConsentPreview } from '../../src/server/localHistoryConsentPreview.js';
 import { createLocalHistoryCaptureResolver, localHistoryCaptureProofMessage, type LocalHistoryCaptureProof }
   from '../../src/server/localHistoryConsentSourceProof.js';
 import { permissionPresenceMessage } from '../../src/server/mobilePermissionsRoutes.js';
@@ -50,7 +51,7 @@ async function fixture() {
   const app = express();
   let selected: SignedLocalHistoryIntakeService | undefined;
   let consentPreview: SignedLocalHistoryIntakeService | undefined;
-  app.use(createSignedLocalHistoryIntake({ pairing, service: () => selected, consentPreview: () => consentPreview, wireBytes: 8192 }));
+  app.use(createSignedLocalHistoryIntake({ pairing, service: () => selected, consent: () => consentPreview, wireBytes: 8192 }));
   app.get('/unrelated', (_req, res) => res.status(204).end());
   let lastTime = 0;
   const send = (body: Buffer, signedBytes = body, url = applyPath, contentType = 'application/octet-stream') => {
@@ -178,17 +179,25 @@ it('opens the consent preview only for a signed sealed request with current card
     board: { view: () => ({ status: 'not-started', card }) as never },
     resolveOwnedCapture,
   };
+  const phone = makeDevice();
+  const challenges = new LocalHistoryConsentChallenges(() => ({
+    host, deviceId: principal.deviceId, ownerUserId, presenceKey: phone.publicKey,
+  }), () => now);
   const service = createLocalHistoryConsentPreview({
-    ...review, withExchange: async work => { await work(); return true; }, channels,
+    ...review, withExchange: async work => { await work(); return true; }, channels, challenges,
   });
-  expect((await f.send(Buffer.alloc(24), undefined, url)).status).toBe(503);
+  const challengePath = LOCAL_HISTORY_CONSENT_CHALLENGE_PATH, confirmPath = LOCAL_HISTORY_CONSENT_CONFIRM_PATH;
+  const paths = [url, challengePath, confirmPath];
+  for (const path of paths) expect((await f.send(Buffer.alloc(24), undefined, path)).status).toBe(503);
   f.selectConsent(service);
-  expect((await request(f.app).post(url).set('Authorization', 'Bearer test-bearer')
-    .set('Content-Type', 'application/octet-stream').send(Buffer.alloc(24))).status).toBe(403);
-  const sealed = async (input: object, expectedStatus: number) => {
-    const route = { method: 'POST' as const, path: url };
+  for (const path of paths) {
+    expect((await request(f.app).post(path).set('Authorization', 'Bearer test-bearer')
+      .set('Content-Type', 'application/octet-stream').send(Buffer.alloc(24))).status).toBe(403);
+  }
+  const sealed = async (input: object, expectedStatus: number, path = url) => {
+    const route = { method: 'POST' as const, path };
     const record = channel.sealRequest(Buffer.from(JSON.stringify(input)), route);
-    const target = url + '?channelId=' + grant.channelId + '&sequence=' + record.readBigUInt64BE();
+    const target = path + '?channelId=' + grant.channelId + '&sequence=' + record.readBigUInt64BE();
     const res = await f.send(record, record, target).buffer(true).parse((stream, done) => {
       const parts: Buffer[] = [];
       stream.on('data', part => parts.push(part));
@@ -233,26 +242,26 @@ it('opens the consent preview only for a signed sealed request with current card
   expect(await sealed(input, 404)).toEqual(refused);
   authority = { publicKeyPem, destinationOwnerId: ownerUserId };
   expect(await sealed(input, 200)).toEqual(reply);
-  const phone = makeDevice();
-  const challenges = new LocalHistoryConsentChallenges(() => ({
-    host, deviceId: principal.deviceId, ownerUserId, presenceKey: phone.publicKey,
-  }), () => now);
-  const consent = createLocalHistoryConsentChallengeBinding(review, challenges);
+  const actionRefusal = { error: 'local-history-consent-unavailable' };
   const selection = { ...input, disclosureHash: reply.disclosureHash, applyRequestId: '7'.repeat(32) };
-  expect(() => consent.issue(principal, host, { ...selection, disclosureHash: '1'.repeat(64) })).toThrow('disclosure-changed');
-  const issued = consent.issue(principal, host, selection);
-  const signature = phone.sign(permissionPresenceMessage(principal.deviceId, host, issued.secret, issued.actionLine));
-  expect(() => consent.confirm(principal, host, { ...selection, applyRequestId: '6'.repeat(32) }, issued.secret, signature))
-    .toThrow('consent-presence');
+  expect(await sealed({ ...selection, disclosureHash: '1'.repeat(64) }, 404, challengePath)).toEqual(actionRefusal);
+  expect(await sealed({ ...selection, host }, 404, challengePath)).toEqual(actionRefusal);
+  const issued = await sealed(selection, 200, challengePath);
+  expect(issued).toEqual({ actionLine: expect.any(String), challenge: expect.any(String), expiresAt: expect.any(Number) });
+  const signature = phone.sign(permissionPresenceMessage(principal.deviceId, host, issued.challenge, issued.actionLine));
+  const confirmation = { ...selection, challenge: issued.challenge, signature };
+  expect(await sealed({ ...confirmation, applyRequestId: '6'.repeat(32) }, 404, confirmPath)).toEqual(actionRefusal);
+  const otherHost = phone.sign(permissionPresenceMessage(principal.deviceId, 'different.example', issued.challenge, issued.actionLine));
+  expect(await sealed({ ...confirmation, signature: otherHost }, 404, confirmPath)).toEqual(actionRefusal);
   authority = undefined;
-  expect(() => consent.confirm(principal, host, selection, issued.secret, signature)).toThrow('source-binding');
-  expect(() => consent.issue(principal, host, selection)).toThrow('source-binding');
+  expect(await sealed(confirmation, 404, confirmPath)).toEqual(actionRefusal);
+  expect(await sealed(selection, 404, challengePath)).toEqual(actionRefusal);
   authority = { publicKeyPem, destinationOwnerId: ownerUserId };
-  expect(consent.confirm(principal, host, selection, issued.secret, signature)).toEqual({
-    actionLine: issued.actionLine, proofRef: issued.ref,
+  expect(await sealed(confirmation, 200, confirmPath)).toEqual({
+    actionLine: issued.actionLine, proofRef: expect.any(String),
   });
-  expect(() => consent.confirm(principal, host, selection, issued.secret, signature)).toThrow('consent-challenge');
+  expect(await sealed(confirmation, 404, confirmPath)).toEqual(actionRefusal);
   card = { ...card, materialRevision: '2'.repeat(64) };
   expect(await sealed(input, 404)).toEqual(refused);
-  expect(() => consent.issue(principal, host, selection)).toThrow('card-stale');
+  expect(await sealed(selection, 404, challengePath)).toEqual(actionRefusal);
 });

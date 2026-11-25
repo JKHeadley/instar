@@ -2998,7 +2998,7 @@ export const DEVICE_ALLOWLIST: DeviceRule[] = (() => {
     // Local history intake dispatches only after the ordinary native owner signature.
     { method: 'GET', re: /^\/mobile\/imported-history\/local\/(?:targets|operations\/[a-f0-9]{32})$/, statuses: active, body: 'none', ownerOnly: true, ownBucket: 60, bucket: 'local-history-control' },
     { method: 'POST', re: /^\/mobile\/imported-history\/local\/channels$/, statuses: active, body: 'json', ownerOnly: true, ownBucket: 30, bucket: 'local-history-control' },
-    { method: 'POST', re: /^\/mobile\/imported-history\/local\/(?:challenge|uploads|cancel|preview|consent\/preview|apply|uploads\/[a-f0-9]{32}\/complete)$/, statuses: active, body: 'octet', ownerOnly: true, ownBucket: 60, bucket: 'local-history-control' },
+    { method: 'POST', re: /^\/mobile\/imported-history\/local\/(?:challenge|uploads|cancel|preview|consent\/(?:preview|challenge|confirm)|apply|uploads\/[a-f0-9]{32}\/complete)$/, statuses: active, body: 'octet', ownerOnly: true, ownBucket: 60, bucket: 'local-history-control' },
     { method: 'PUT', re: /^\/mobile\/imported-history\/local\/uploads\/[a-f0-9]{32}\/files\/[A-Za-z0-9_-]{1,128}\/chunks\/(?:0|[1-9][0-9]{0,5})$/, statuses: active, body: 'octet', ownerOnly: true, ownBucket: 120, bucket: 'local-history-chunks' },
     // Native Permission slips and What I'm allowed to do (docs/specs/mobile-native-permissions.md): two
     // read-only trimmed lists, and the owner phone's Face ID-confirmed writes (each route re-checks the

@@ -1,0 +1,28 @@
+{
+  "ts": "2026-11-25T10:20:36.979Z",
+  "slug": "local-history-native-consent-actions",
+  "suggestedTier": 2,
+  "declaredTier": 2,
+  "riskFloor": 1,
+  "riskFloorReasons": [],
+  "belowFloor": false,
+  "files": 3,
+  "loc": 76,
+  "scope": {
+    "basis": "staged-in-scope-paths-including-deleted",
+    "files": [
+      "src/server/localHistoryConsentPreview.ts",
+      "src/server/mobilePairingRoutes.ts",
+      "src/server/signedLocalHistoryIntake.ts"
+    ],
+    "addedLines": 63,
+    "deletedLines": 13
+  },
+  "causalAutopsy": null,
+  "classClosure": {
+    "defectClass": "unbounded-self-action",
+    "closure": "n/a",
+    "reason": "Owner-directed proof transport grants no permit or autonomous action."
+  },
+  "verdict": "pass"
+}

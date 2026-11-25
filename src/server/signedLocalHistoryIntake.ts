@@ -1,10 +1,17 @@
 import express, { type Request, type Response } from 'express';
-import { activeOwnerPhone } from './mobileConsoleTicket.js';
+import { activeOwnerPhone, signedHost } from './mobileConsoleTicket.js';
 import { deviceAdmissionIdentity, deviceAuthenticator, type MobilePairingService } from './mobilePairingRoutes.js';
 
 export const SIGNED_LOCAL_HISTORY_PREFIX = '/mobile/imported-history/local';
 const prefix = SIGNED_LOCAL_HISTORY_PREFIX;
 export const LOCAL_HISTORY_CONSENT_PREVIEW_PATH = prefix + '/consent/preview';
+export const LOCAL_HISTORY_CONSENT_CHALLENGE_PATH = prefix + '/consent/challenge';
+export const LOCAL_HISTORY_CONSENT_CONFIRM_PATH = prefix + '/consent/confirm';
+
+export function isLocalHistoryConsentPath(pathname: string): boolean {
+  return pathname === LOCAL_HISTORY_CONSENT_PREVIEW_PATH || pathname === LOCAL_HISTORY_CONSENT_CHALLENGE_PATH
+    || pathname === LOCAL_HISTORY_CONSENT_CONFIRM_PATH;
+}
 const operation = '[a-f0-9]{32}';
 const statusRoute = new RegExp(`^${prefix}/operations/${operation}$`);
 const completeRoute = new RegExp(`^${prefix}/uploads/${operation}/complete$`);
@@ -15,7 +22,7 @@ const mediaType = { json: 'application/json', octet: 'application/octet-stream' 
 function bodyFor(method: string, pathname: string): Body | undefined {
   const route = pathname.slice(prefix.length);
   if (method === 'GET' && (route === '/targets' || statusRoute.test(pathname))) return 'none';
-  if (method === 'POST' && pathname === LOCAL_HISTORY_CONSENT_PREVIEW_PATH) return 'octet';
+  if (method === 'POST' && isLocalHistoryConsentPath(pathname)) return 'octet';
   if (method === 'POST' && route === '/channels') return 'json';
   if (method === 'POST' && (['/challenge', '/uploads', '/cancel', '/preview', '/apply'].includes(route) || completeRoute.test(pathname))) return 'octet';
   if (method === 'PUT' && chunkRoute.test(pathname)) return 'octet';
@@ -26,6 +33,7 @@ export interface SignedLocalHistoryIntakeRequest {
   readonly method: string;
   readonly pathname: string;
   readonly query: string;
+  readonly host: string;
   readonly body: Buffer;
   readonly recordHeader: string | undefined;
   readonly device: Readonly<{ deviceId: string; deviceKeyHash: string; ownerUserId: string }>;
@@ -49,7 +57,7 @@ export interface SignedLocalHistoryIntakeService {
 export function createSignedLocalHistoryIntake(options: {
   pairing: MobilePairingService;
   service(): SignedLocalHistoryIntakeService | undefined;
-  consentPreview?(): SignedLocalHistoryIntakeService | undefined;
+  consent?(): SignedLocalHistoryIntakeService | undefined;
   wireBytes: number;
   deadlineMs?: number;
 }) {
@@ -74,7 +82,7 @@ export function createSignedLocalHistoryIntake(options: {
     res.setHeader('Cache-Control', 'no-store');
     const format = bodyFor(req.method, pathname);
     if (!pathname.startsWith(prefix + '/') || !format) { refuse(404, 'local-history-route'); return; }
-    const service = pathname === LOCAL_HISTORY_CONSENT_PREVIEW_PATH ? options.consentPreview?.() : options.service();
+    const service = isLocalHistoryConsentPath(pathname) ? options.consent?.() : options.service();
     if (!service) { refuse(503, 'local-history-unavailable'); return; }
     const length = req.headers['content-length'];
     const declared = typeof length === 'string' && /^(0|[1-9][0-9]{0,8})$/.test(length) ? Number(length) : undefined;
@@ -122,6 +130,7 @@ export function createSignedLocalHistoryIntake(options: {
           const result = await service.dispatch({
             method: req.method, pathname, query: mark < 0 ? '' : req.originalUrl.slice(mark),
             body: req.rawBody ?? Buffer.alloc(0), recordHeader: record,
+            host: signedHost(req, options.pairing, deviceId),
             device: Object.freeze({ deviceId, deviceKeyHash: identity.keyHash, ownerUserId: identity.userId }),
             signal: abort.signal,
             onDispose(run) {

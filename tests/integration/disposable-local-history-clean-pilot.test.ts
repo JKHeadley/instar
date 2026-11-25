@@ -16,7 +16,7 @@ import { LocalHistoryChannel } from '../../dist/import/LocalHistoryChannel.js';
 import { finishLocalHistoryHandshake } from '../../dist/import/LocalHistoryHandshake.js';
 import { LocalHistoryDiskLedger } from '../../dist/import/LocalHistoryDiskLedger.js';
 import { LOCAL_HISTORY_DISPOSABLE_PILOT_LINES } from '../../dist/import/LocalHistoryDisposablePilot.js';
-import { LOCAL_HISTORY_CONSENT_PREVIEW_PATH, SIGNED_LOCAL_HISTORY_PREFIX as prefix } from '../../dist/server/signedLocalHistoryIntake.js';
+import { LOCAL_HISTORY_CONSENT_CHALLENGE_PATH, LOCAL_HISTORY_CONSENT_CONFIRM_PATH, LOCAL_HISTORY_CONSENT_PREVIEW_PATH, SIGNED_LOCAL_HISTORY_PREFIX as prefix } from '../../dist/server/signedLocalHistoryIntake.js';
 import { makeDevice } from '../helpers/mobileDevice.js';
 import { createMockSessionManager } from '../helpers/setup.js';
 
@@ -80,9 +80,11 @@ it('runs the dark-by-default clean signed pilot over AgentServer with live disk 
     const discovery = await signed('GET', prefix + '/targets');
     expect(discovery.status).toBe(200);
     expect(discovery.body.importAvailable).toBe(false);
-    const consent = await signed('POST', LOCAL_HISTORY_CONSENT_PREVIEW_PATH, Buffer.alloc(24), 'application/octet-stream');
-    expect(consent.status).toBe(503);
-    expect(consent.headers['cache-control']).toBe('no-store');
+    for (const path of [LOCAL_HISTORY_CONSENT_PREVIEW_PATH, LOCAL_HISTORY_CONSENT_CHALLENGE_PATH, LOCAL_HISTORY_CONSENT_CONFIRM_PATH]) {
+      const consent = await signed('POST', path, Buffer.alloc(24), 'application/octet-stream');
+      expect(consent.status).toBe(503);
+      expect(consent.headers['cache-control']).toBe('no-store');
+    }
     const ecdh = crypto.createECDH('prime256v1'); ecdh.generateKeys();
     const handshake = { machineId: identity.machineId, clientPublicKey: ecdh.getPublicKey().toString('base64'),
       clientNonce: crypto.randomBytes(32).toString('base64') };
