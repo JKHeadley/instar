@@ -9,3 +9,5 @@ The first server work records and checks the removal in storage. It does not swi
 The server now checks a signed request against the recorded chat owner, the machine serving that chat, and the exact selected message. The initial version requires a verifiable owner identity. This check is available inside the server, and the app still has no Delete control or route that changes history.
 
 The server’s internal history reader can now leave out a confirmed removal before it fills a page. That means the next visible message can still fill the page. It also refuses an exact lookup when the removal evidence is incomplete. This reader is still being tested and is not used by the app yet.
+
+Opening another chat no longer forces the store to repeat a recent history check for the first chat. A change to stored messages still requires a fresh check. Delete remains unavailable while this server work is tested.

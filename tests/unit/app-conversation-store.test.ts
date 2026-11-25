@@ -61,6 +61,28 @@ describe('AppConversationStore', () => {
     expect(store.exactRemovalAwareMessageCandidates(KEY, 'ev-removed', 'message', () => true)?.map((row) => row.eventId)).toEqual(['ev-collision']);
   });
 
+  it('refreshes cached history proof after a removal with another conversation open', () => {
+    const { store } = mk();
+    const other = '2f0c8a3e-1b2c-4d5e-8f90-1234567890ac';
+    const inspector = store as unknown as { verifyRemovalIndex(key: string, path: string): boolean };
+    const scan = vi.spyOn(inspector, 'verifyRemovalIndex');
+    try {
+      store.append(created());
+      store.append(msg('a', 1));
+      store.append({ ...created('Other'), conversationKey: other });
+      store.append({ ...msg('b', 2), conversationKey: other });
+      expect(store.browseRemovalAwareMessages(KEY, null)?.messages.map((row) => row.eventId)).toEqual(['ev-a']);
+      expect(store.browseRemovalAwareMessages(other, null)?.messages.map((row) => row.eventId)).toEqual(['ev-b']);
+      expect(store.browseRemovalAwareMessages(KEY, null)?.messages.map((row) => row.eventId)).toEqual(['ev-a']);
+      expect(scan).toHaveBeenCalledTimes(2);
+      store.append({ kind: 'message-removed', conversationKey: KEY, eventId: 'remove-a',
+        machineId: 'm1', at: at(3), targetEventId: 'ev-a', targetMessageId: 'msg-a' });
+      expect(store.browseRemovalAwareMessages(KEY, null)?.messages).toEqual([]);
+      expect(scan).toHaveBeenCalledTimes(3);
+      expect(store.browseRemovalAwareMessages(other, null)?.messages.map((row) => row.eventId)).toEqual(['ev-b']);
+    } finally { store.close(); }
+  });
+
   it('refuses a removal-aware page off the custodian or with an unindexed journal tail', () => {
     const { dir, store } = mk();
     store.append(created());

@@ -267,6 +267,7 @@ export interface MediaRef {
 export const MAX_STORED_TEXT = 16_000;
 const PREVIEW_CHARS = 140;
 const MAX_LINE_BYTES = 256 * 1024;
+const MAX_REMOVAL_HISTORY_PROOFS = 64;
 
 const SCHEMA = [
   `CREATE TABLE IF NOT EXISTS files (canonicalKey TEXT PRIMARY KEY, fileName TEXT NOT NULL, indexedBytes INTEGER NOT NULL, nextIngestSeq INTEGER NOT NULL)`,
@@ -570,6 +571,7 @@ export class AppConversationStore {
   private lastDataVersion = 0;
   private evidenceDataVersion = 0;
   private removalIndexProof: string | null = null;
+  private readonly removalHistoryProofs = new Map<string, string>();
 
   constructor(private readonly opts: AppConversationStoreOptions) {
     this.dir = path.join(opts.stateDir, 'app-conversations');
@@ -644,6 +646,7 @@ export class AppConversationStore {
   /** Drop the index and rebuild it from the files (tests and the operator's repair path). */
   rebuildIndex(): void {
     this.removalIndexProof = null;
+    this.removalHistoryProofs.clear();
     this.db.exec('DELETE FROM files; DELETE FROM events; DELETE FROM messages; DELETE FROM deliveries; DELETE FROM conversations; DELETE FROM media_refs; DELETE FROM media_blobs; DELETE FROM media_purged; DELETE FROM media_totals; DELETE FROM transcripts; DELETE FROM pins;');
     this.catchUp();
   }
@@ -1490,10 +1493,14 @@ export class AppConversationStore {
         const journal = fs.statSync(filePath);
         if (journal.size !== file.indexedBytes) return null;
         const writes = this.db.prepare('SELECT total_changes() AS count').get();
-        const proof = JSON.stringify(['history', key, file.fileName, file.indexedBytes, journal.mtimeMs, journal.ctimeMs, version, writes]);
-        if (this.removalIndexProof !== proof) {
-          if (!this.verifyRemovalIndex(conversationKey, filePath, true)) return null;
-          this.removalIndexProof = proof;
+        const proof = JSON.stringify([file.fileName, file.indexedBytes, journal.mtimeMs, journal.ctimeMs, version, writes]);
+        if (this.removalHistoryProofs.get(key) !== proof && !this.verifyRemovalIndex(conversationKey, filePath, true)) return null;
+        // Keep recently read conversations warm without relaxing either index or journal invalidation.
+        this.removalHistoryProofs.delete(key);
+        this.removalHistoryProofs.set(key, proof);
+        if (this.removalHistoryProofs.size > MAX_REMOVAL_HISTORY_PROOFS) {
+          const oldest = this.removalHistoryProofs.keys().next().value;
+          if (oldest !== undefined) this.removalHistoryProofs.delete(oldest);
         }
         const page = read(custodian);
         const current = fs.statSync(filePath);

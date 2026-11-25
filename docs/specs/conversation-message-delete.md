@@ -7,9 +7,9 @@ approved: true
 approved-by: echo under standing build approval for local storage, private fresh admission and unmounted history projection only
 parent-principle: Operator-Surface Quality
 tier: 2
-review-convergence: "2026-11-25T16:53:37.753Z"
-review-iterations: 15
-review-completed-at: "2026-11-25T16:53:37.753Z"
+review-convergence: "2026-11-25T17:27:35.057Z"
+review-iterations: 16
+review-completed-at: "2026-11-25T17:27:35.057Z"
 review-report: "docs/specs/reports/conversation-message-delete-convergence.md"
 cross-model-review: "cross-model-review: codex-cli:gpt-6.2-astra"
 ---
@@ -106,3 +106,5 @@ Exact context starts with the authorized anchor. If a known removal matches that
 Use one fixture across browse and exact context: insert an older visible row, a visible anchor and a newest removed row. Fetch a page of one row and require the visible anchor, with the older row available on the next page. Direct exact lookup of the newest row must be unavailable. Add a second fact with the wrong target message ID and verify that it cannot hide the older row. Then add a valid removal of the anchor while the context response is paused, and require the response to withhold it. Exercise a replica with no removal evidence and prove it cannot act as the authoritative read source.
 
 The local projection checkpoint provides store methods for custodian-only browse and exact candidates. It changes no app route. The cold proof compares the journal checkpoint and removal and message identity bindings. It makes no claim to detect same-length content edits that preserve those bindings. App journal retention and origin verification retain their existing responsibilities. Before interactive use, bound proof cost or move it off the request path and measure a realistic large-history and multi-conversation workload. An ordinary app read keeps its existing projection until the full visibility boundary is ready.
+
+The unmounted store keeps up to 64 recently used history proofs, one per conversation. A cached proof is reused only for the same journal checkpoint and SQLite write generations. Rebuilding the index clears every entry. Alternating between conversations on an unchanged index can reuse their proofs, while ordinary writes continue to invalidate them. This cache does not bound the first proof scan or make the projection ready for request-path use.

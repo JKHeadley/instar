@@ -17,3 +17,7 @@ The closing cross-model pass found no material issue in the private admission he
 ## Local history projection checkpoint
 
 The independent and closing cross-model reviews concurred on this unmounted scope. The initial exact projection checked removal before row authorization. The final version applies the caller's access check first, retains ambiguity for a caller who could see both occurrences, and keeps a link usable for a caller whose only visible occurrence survives. Filtered pagination matches both target identifiers and the custodian before consuming page slots. The proof intentionally checks journal checkpoint and identity consistency, with no claim of detecting content-only tampering. The cold journal scan needs a bounded or background implementation and workload evidence before request-path use.
+
+## Local history proof cache checkpoint
+
+The Astra review concurred on the unchanged proof identity and fail-closed behavior. Its coverage suggestion was applied. The focused regression now counts two scans for A, B, A and a third scan after removing A's message, while separately asserting the visible rows. The cache is capped at 64 entries and index rebuild clears it. Cold proof cost remains a requirement before mounting interactive routes.
