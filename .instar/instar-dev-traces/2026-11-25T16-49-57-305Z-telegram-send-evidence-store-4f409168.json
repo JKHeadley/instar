@@ -1,0 +1,19 @@
+{
+  "version": 2,
+  "slug": "telegram-send-evidence-store",
+  "sessionId": "b3d2cf8a-9b5d-468b-a50b-70ebf11e9e5c",
+  "timestamp": "2026-11-25T16:49:57.305Z",
+  "artifactPath": "upgrades/side-effects/telegram-send-evidence-store.md",
+  "artifactSha256": "518b47802c87ce3024fb59ccc11256138cf078ffb7dc1eb48776bf7addb73c86",
+  "coveredFiles": [
+    "src/threadline/TelegramSendEvidenceStore.ts",
+    "tests/unit/telegram-send-evidence-store.test.ts"
+  ],
+  "phase": "complete",
+  "tier": 1,
+  "tierReasoning": "Dormant store with no installed migration, production caller or send effect.",
+  "eli16Path": "docs/specs/direct-telegram-send-evidence.eli16.md",
+  "sideEffectsPath": "upgrades/side-effects/telegram-send-evidence-store.md",
+  "secondPass": "true",
+  "reviewerConcurred": true
+}
