@@ -1,0 +1,32 @@
+{
+  "ts": "2026-11-24T10:56:06.090Z",
+  "slug": "source-grounded-judge-prototype",
+  "suggestedTier": 2,
+  "declaredTier": 1,
+  "riskFloor": 1,
+  "riskFloorReasons": [],
+  "belowFloor": false,
+  "files": 11,
+  "loc": 453,
+  "scope": {
+    "basis": "staged-in-scope-paths-including-deleted",
+    "files": [
+      "scripts/evaluation/source_grounded_consensus.mjs",
+      "scripts/evaluation/source_grounded_consensus.test.mjs",
+      "scripts/evaluation/source_grounded_flow.test.mjs",
+      "scripts/evaluation/source_grounded_judge_independence.mjs",
+      "scripts/evaluation/source_grounded_judge_independence.test.mjs",
+      "scripts/evaluation/source_grounded_judge_retry.mjs",
+      "scripts/evaluation/source_grounded_judge_retry.test.mjs",
+      "scripts/evaluation/source_grounded_judge_slots.mjs",
+      "scripts/evaluation/source_grounded_judge_slots.test.mjs",
+      "scripts/evaluation/source_grounded_trial_inputs.mjs",
+      "scripts/evaluation/source_grounded_trial_inputs.test.mjs"
+    ],
+    "addedLines": 453,
+    "deletedLines": 0
+  },
+  "causalAutopsy": null,
+  "classClosure": null,
+  "verdict": "pass"
+}

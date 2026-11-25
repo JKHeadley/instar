@@ -1,0 +1,28 @@
+{
+  "version": 2,
+  "slug": "source-grounded-judge-prototype",
+  "sessionId": "79673ec9-ff9b-4e49-beab-ea9ff8ee8f93",
+  "timestamp": "2026-11-24T10:52:39.165Z",
+  "artifactPath": "upgrades/side-effects/source-grounded-judge-prototype.md",
+  "artifactSha256": "4d074f9973466f282fdd358157ee7a5e05a47b4236f97b43524eb1a73a88dedb",
+  "coveredFiles": [
+    "scripts/evaluation/source_grounded_consensus.mjs",
+    "scripts/evaluation/source_grounded_consensus.test.mjs",
+    "scripts/evaluation/source_grounded_flow.test.mjs",
+    "scripts/evaluation/source_grounded_judge_independence.mjs",
+    "scripts/evaluation/source_grounded_judge_independence.test.mjs",
+    "scripts/evaluation/source_grounded_judge_retry.mjs",
+    "scripts/evaluation/source_grounded_judge_retry.test.mjs",
+    "scripts/evaluation/source_grounded_judge_slots.mjs",
+    "scripts/evaluation/source_grounded_judge_slots.test.mjs",
+    "scripts/evaluation/source_grounded_trial_inputs.mjs",
+    "scripts/evaluation/source_grounded_trial_inputs.test.mjs"
+  ],
+  "phase": "complete",
+  "tier": 1,
+  "tierReasoning": "Reversible offline research prototype with no runtime caller, deployment change or decision authority.",
+  "eli16Path": "docs/eli16/source-grounded-judge-prototype.eli16.md",
+  "sideEffectsPath": "upgrades/side-effects/source-grounded-judge-prototype.md",
+  "secondPass": "not-required",
+  "reviewerConcurred": null
+}

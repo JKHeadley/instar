@@ -1,0 +1,19 @@
+{
+  "version": 2,
+  "slug": "source-grounded-judge-prototype",
+  "sessionId": "79673ec9-ff9b-4e49-beab-ea9ff8ee8f93",
+  "timestamp": "2026-11-24T21:08:48.219Z",
+  "artifactPath": "upgrades/side-effects/source-grounded-judge-prototype.md",
+  "artifactSha256": "584bf7d01acd3f839b518bfd0a79b20ab4697d3adfe8539708a2a4138c47bc5a",
+  "coveredFiles": [
+    "scripts/evaluation/source_grounded_flow.test.mjs",
+    "scripts/evaluation/source_grounded_judge_flow.mjs"
+  ],
+  "phase": "complete",
+  "tier": 1,
+  "tierReasoning": "Offline research evidence identity with no production consumer.",
+  "eli16Path": "docs/eli16/source-grounded-judge-prototype.eli16.md",
+  "sideEffectsPath": "upgrades/side-effects/source-grounded-judge-prototype.md",
+  "secondPass": "not-required",
+  "reviewerConcurred": null
+}

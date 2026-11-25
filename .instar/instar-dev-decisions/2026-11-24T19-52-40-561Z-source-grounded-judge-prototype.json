@@ -1,0 +1,25 @@
+{
+  "ts": "2026-11-24T19:52:40.561Z",
+  "slug": "source-grounded-judge-prototype",
+  "suggestedTier": 2,
+  "declaredTier": 1,
+  "riskFloor": 1,
+  "riskFloorReasons": [],
+  "belowFloor": false,
+  "files": 4,
+  "loc": 24,
+  "scope": {
+    "basis": "staged-in-scope-paths-including-deleted",
+    "files": [
+      "scripts/evaluation/source_grounded_flow.test.mjs",
+      "scripts/evaluation/source_grounded_judge_slots.mjs",
+      "scripts/evaluation/source_grounded_judge_slots.test.mjs",
+      "scripts/evaluation/source_grounded_real_validator.check.mjs"
+    ],
+    "addedLines": 20,
+    "deletedLines": 4
+  },
+  "causalAutopsy": null,
+  "classClosure": null,
+  "verdict": "pass"
+}
