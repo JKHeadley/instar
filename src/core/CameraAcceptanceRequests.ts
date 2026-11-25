@@ -1,4 +1,5 @@
 import { randomUUID } from 'node:crypto';
+import { canonicalHash } from './GraphWitnessTypes.js';
 import {
   checkCameraOwnerEvidence,
   foldCameraReceipts,
@@ -70,8 +71,15 @@ export interface CameraReceiptTransaction {
   readonly receipts: readonly CameraAcceptanceReceipt[];
   /** Read the verified, unconsumed server-issued request under the same lock. */
   findRequest(id: string): CameraVerifierRequest | null;
-  /** Consume the request and append the receipt as one durable journal event. */
-  appendReceipt(request: CameraVerifierRequest, receipt: CameraAcceptanceReceipt): Promise<void>;
+  /** Read a verified prior submission from the authoritative head. */
+  findSubmission(id: string): CameraRecordedSubmission | null;
+  /** Consume the request and append the submission as one durable journal event. */
+  appendReceipt(request: CameraVerifierRequest, submission: CameraRecordedSubmission): Promise<void>;
+}
+
+export interface CameraRecordedSubmission {
+  readonly evidenceHash: string;
+  readonly receipt: CameraAcceptanceReceipt;
 }
 
 export interface CameraReceiptJournal {
@@ -81,7 +89,7 @@ export interface CameraReceiptJournal {
 
 export type CameraReceiptResult =
   | { readonly status: 'recorded'; readonly receipt: CameraAcceptanceReceipt }
-  | { readonly status: 'unavailable' | 'forbidden' | 'stale-request' };
+  | { readonly status: 'unavailable' | 'forbidden' | 'stale-request' | 'conflict' };
 
 /** The production caller verifies the live session and same-request evidence provenance. */
 export function recordCameraVerifierReceipt(
@@ -100,11 +108,19 @@ export function recordCameraVerifierReceipt(
     const state = foldCameraReceipts(requirement, receipts);
     if (!state) return { status: 'unavailable' };
 
+    const evidenceHash = canonicalHash(evidence);
+    const previous = transaction.findSubmission(requestId);
+    if (previous) {
+      const { receipt } = previous;
+      if (receipt.candidate !== requirement.candidate || receipt.revision !== requirement.revision
+        || receipt.verifier !== principal) return { status: 'stale-request' };
+      return previous.evidenceHash === evidenceHash ? { status: 'recorded', receipt } : { status: 'conflict' };
+    }
+
     const request = transaction.findRequest(requestId);
-    if (state.decision === 'pass' || !request || request.id !== requestId
+    if (state.decision === 'pass' || evidence.candidate !== requirement.candidate || !request || request.id !== requestId
       || request.candidate !== requirement.candidate || request.revision !== requirement.revision
-      || request.verifier !== principal || request.receiptSequence !== state.sequence
-      || evidence.candidate !== requirement.candidate) return { status: 'stale-request' };
+      || request.verifier !== principal || request.receiptSequence !== state.sequence) return { status: 'stale-request' };
 
     const receipt = {
       candidate: requirement.candidate,
@@ -113,7 +129,7 @@ export function recordCameraVerifierReceipt(
       sequence: state.sequence + 1,
       decision: checkCameraOwnerEvidence(requirement.candidate, evidence),
     };
-    await transaction.appendReceipt(request, receipt);
+    await transaction.appendReceipt(request, { evidenceHash, receipt });
     return { status: 'recorded', receipt };
   });
 }

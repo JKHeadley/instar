@@ -1,4 +1,5 @@
 import { describe, expect, it, vi } from 'vitest';
+import { canonicalHash } from '../../src/core/GraphWitnessTypes.js';
 import {
   issueCameraVerifierRequest,
   recordCameraVerifierReceipt,
@@ -81,12 +82,31 @@ describe('Camera verifier receipt submission', () => {
     const appendReceipt = vi.fn(async () => {});
     const journal: CameraReceiptJournal = {
       withWriteLock: operation => operation({
-        requirement, receipts: [], findRequest: () => request, appendReceipt,
+        requirement, receipts: [], findRequest: () => request, findSubmission: () => null, appendReceipt,
       }),
     };
     const result = await recordCameraVerifierReceipt(journal, 'verifier', 'request', evidence);
     expect(result).toEqual({ status: 'recorded', receipt: pass });
-    expect(appendReceipt).toHaveBeenCalledWith(request, pass);
+    expect(appendReceipt).toHaveBeenCalledWith(request, { evidenceHash: canonicalHash(evidence), receipt: pass });
+  });
+
+  it('recovers an exact retry after consumption and refuses changed evidence', async () => {
+    const appendReceipt = vi.fn(async () => {});
+    const findRequest = vi.fn(() => null);
+    const journal: CameraReceiptJournal = {
+      withWriteLock: operation => operation({
+        requirement, receipts: [pass], findRequest, appendReceipt,
+        findSubmission: id => id === request.id
+          ? { evidenceHash: canonicalHash(evidence), receipt: pass } : null,
+      }),
+    };
+
+    await expect(recordCameraVerifierReceipt(journal, 'verifier', 'request', evidence))
+      .resolves.toEqual({ status: 'recorded', receipt: pass });
+    await expect(recordCameraVerifierReceipt(journal, 'verifier', 'request', { ...evidence, redirected: true }))
+      .resolves.toEqual({ status: 'conflict' });
+    expect(findRequest).not.toHaveBeenCalled();
+    expect(appendReceipt).not.toHaveBeenCalled();
   });
 
   it('rejects outstanding requests from before a Pass and Pending cycle', async () => {
@@ -94,7 +114,7 @@ describe('Camera verifier receipt submission', () => {
     const journal: CameraReceiptJournal = {
       withWriteLock: operation => operation({
         requirement, receipts: [pass, { ...pass, sequence: 2, decision: 'pending' }],
-        findRequest: () => request, appendReceipt,
+        findRequest: () => request, findSubmission: () => null, appendReceipt,
       }),
     };
     await expect(recordCameraVerifierReceipt(journal, 'verifier', 'request', evidence))
@@ -106,7 +126,7 @@ describe('Camera verifier receipt submission', () => {
     const appendReceipt = vi.fn(async () => {});
     const journal: CameraReceiptJournal = {
       withWriteLock: operation => operation({
-        requirement, receipts: [], findRequest: id => id === request.id ? request : null, appendReceipt,
+        requirement, receipts: [], findRequest: id => id === request.id ? request : null, findSubmission: () => null, appendReceipt,
       }),
     };
     await expect(recordCameraVerifierReceipt(journal, 'verifier', 'unknown', evidence))
