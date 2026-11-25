@@ -1,0 +1,19 @@
+{
+  "version": 2,
+  "slug": "managed-codex-project-dispatch",
+  "sessionId": "017c26ed-5596-4576-9c20-20af13e4c1f8",
+  "timestamp": "2026-11-25T12:15:32.825Z",
+  "artifactPath": "upgrades/side-effects/managed-codex-project-dispatch.md",
+  "artifactSha256": "3e4b3de572a3208e317624745a72d5fb0e720e2b796a25133973a0f25e74e0f7",
+  "coveredFiles": [
+    "src/core/ManagedCodexProjectDispatch.ts",
+    "tests/unit/managed-codex-project-dispatch.test.ts"
+  ],
+  "phase": "complete",
+  "tier": 1,
+  "tierReasoning": "Only tests supply a launcher. No production change or live state.",
+  "eli16Path": "upgrades/managed-codex-project-dispatch.eli16.md",
+  "sideEffectsPath": "upgrades/side-effects/managed-codex-project-dispatch.md",
+  "secondPass": "not-required",
+  "reviewerConcurred": null
+}
