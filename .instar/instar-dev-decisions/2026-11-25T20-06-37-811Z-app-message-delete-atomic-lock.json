@@ -1,0 +1,22 @@
+{
+  "ts": "2026-11-25T20:06:37.811Z",
+  "slug": "app-message-delete-atomic-lock",
+  "suggestedTier": 1,
+  "declaredTier": 2,
+  "riskFloor": 1,
+  "riskFloorReasons": [],
+  "belowFloor": false,
+  "files": 1,
+  "loc": 35,
+  "scope": {
+    "basis": "staged-in-scope-paths-including-deleted",
+    "files": [
+      "src/core/SingleInstanceLock.ts"
+    ],
+    "addedLines": 10,
+    "deletedLines": 25
+  },
+  "causalAutopsy": null,
+  "classClosure": null,
+  "verdict": "pass"
+}

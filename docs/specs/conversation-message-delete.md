@@ -7,9 +7,9 @@ approved: true
 approved-by: echo under standing build approval for local storage, private signed admission and execution, and unmounted history projection only
 parent-principle: Operator-Surface Quality
 tier: 2
-review-convergence: "2026-11-25T19:45:49.698Z"
-review-iterations: 25
-review-completed-at: "2026-11-25T19:45:49.698Z"
+review-convergence: "2026-11-25T20:05:52.872Z"
+review-iterations: 26
+review-completed-at: "2026-11-25T20:05:52.872Z"
 review-report: "docs/specs/reports/conversation-message-delete-convergence.md"
 cross-model-review: "cross-model-review: codex-cli:gpt-6.2-astra"
 ---
@@ -132,3 +132,7 @@ The private executor serializes reservations in one serving process. An App crea
 The private executor requires a server single-instance lock. It revalidates the lock against disk after initial signed scope and after preparation, immediately before reservation and append, and before writing a receipt or unknown state. If the lock is lost after reservation, the old process reports an unresolved result and leaves the durable entered record for the next process. It must not rewrite the shared request store after losing custody. The private HTTP fixture uses an acquired real lock. In a distinct Node process, a contender using the same state directory is refused while the writer lives. This checkpoint does not mount the production route. Production construction must supply the boot-owned lock and exclude deliberate second-instance bypass mode.
 
 The private executor rejects a lock for a different state directory and rejects a deliberate bypass acquisition even when that acquisition can read its own lock record. Normal lock checks establish cooperative ownership. They do not fence a lock file replaced out of band. Before mounting, close or explicitly prove out live-ownership replacement during simultaneous start and stale reclaim in the shared lock primitive, then run the production-wiring two-process proof.
+
+## Atomic process-lock publication checkpoint
+
+A fresh server lock is published by linking a complete, unique temporary record to the canonical lock name. The filesystem creates the destination atomically only when it is absent. A competing publisher cannot replace the active record, and the temporary name is removed on a best-effort basis. A leftover temporary name confers no ownership. A filesystem that cannot publish the link denies acquisition. The empty-directory startup test releases two independent Node processes together and confirms that only one claims and retains the record. This change addresses fresh publication. Stale reclaim still uses the existing verification and removal path and must separately exclude replacement of a newly live record before Delete is mounted.

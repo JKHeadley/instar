@@ -1,0 +1,23 @@
+{
+  "version": 2,
+  "slug": "app-message-delete-atomic-lock",
+  "sessionId": "633bd330-201e-4dc8-8fd9-72b89116167e",
+  "timestamp": "2026-11-25T20:05:54.076Z",
+  "artifactPath": "upgrades/side-effects/app-message-delete-atomic-lock.md",
+  "artifactSha256": "8f95e10f15736f765249f9b817a83be14d98926ec0098724b4803ebce1250816",
+  "specPath": "docs/specs/conversation-message-delete.md",
+  "coveredFiles": [
+    "docs/specs/conversation-message-delete.eli16.md",
+    "docs/specs/conversation-message-delete.md",
+    "docs/specs/reports/conversation-message-delete-convergence.md",
+    "src/core/SingleInstanceLock.ts",
+    "tests/e2e/spawn-cap-forkbomb-lifecycle.test.ts",
+    "tests/unit/single-instance-lock.test.ts",
+    "upgrades/side-effects/app-message-delete-atomic-lock.md"
+  ],
+  "phase": "complete",
+  "tier": 2,
+  "tierReasoning": "Atomically publish the complete shared process lock without replacing a competing writer",
+  "secondPass": "true",
+  "reviewerConcurred": true
+}

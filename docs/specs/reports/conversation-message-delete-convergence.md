@@ -43,3 +43,7 @@ Independent review concurred on the one-process synchronous reservation and appe
 ## Private writer-lock checkpoint
 
 The independent review concurred on lock revalidation at reserve, append, receipt persistence and unknown persistence. Cross-model review identified bypass eligibility and the distinction between the cooperative lock and an atomic ownership fence. Delete now requires a normal acquisition for the same state directory. The fixture checks wrong-directory and bypass locks, a different Node process refused by an established holder, and loss of ownership before and after append. After a durable append, the successor can confirm the original fact without appending again. Concurrent fresh acquisition and stale-reclaim hardening remain production mount requirements for the shared lock primitive.
+
+## Atomic process-lock publication checkpoint
+
+Independent and cross-model review concurred on publishing a fully written temporary record through an atomic no-replace hard link. The follow-up distinguishes best-effort scratch cleanup and tests an unsupported link explicitly. The unit test places a winning record at the destination immediately before publication and verifies that the record is intact. The lifecycle test coordinates two distinct Node processes against an empty state directory and verifies one acquired process and one matching disk record. Stale-holder reclamation is outside this checkpoint and remains a pre-mount requirement.

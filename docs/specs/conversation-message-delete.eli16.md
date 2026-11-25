@@ -23,3 +23,5 @@ Delete now uses the background history check before writing a new removal. If ac
 Before the app can use Delete, the server also needs to prove that only one server process can write to the same chat store.
 
 The private Delete action now checks the server’s process lock before it writes. If the server loses that lock after recording the request, it leaves the request for its successor to resolve.
+
+Two servers starting together can no longer overwrite each other’s first lock record. Taking over an old lock left behind by a stopped server still needs its own check before Delete can go live.

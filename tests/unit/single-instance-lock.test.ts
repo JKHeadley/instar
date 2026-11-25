@@ -16,7 +16,7 @@
  *   - release only removes OUR OWN lock (never a successor's).
  */
 
-import { describe, it, expect, beforeEach, afterEach } from 'vitest';
+import { describe, it, expect, beforeEach, afterEach, vi } from 'vitest';
 import fs from 'node:fs';
 import os from 'node:os';
 import path from 'node:path';
@@ -270,6 +270,37 @@ describe('SingleInstanceLock', () => {
     expect(r.acquired).toBe(false); // the holder (this very process) is genuinely live
     expect(r.reason).toBe('duplicate-live-instance');
     first.release();
+  });
+
+  it('leaves a winning record intact if another writer publishes first', async () => {
+    const livePid = process.pid + 12345;
+    const lock = makeLock(dir, { alivePids: new Set([livePid]), handoffGraceMs: 0 });
+    const destination = lock.lockPath();
+    const winner = JSON.stringify({ pid: livePid, hostname: HOST, heartbeat: Date.now() });
+    const realLink = fs.linkSync;
+    const publish = vi.spyOn(fs, 'linkSync').mockImplementationOnce((from, to) => {
+      expect(to).toBe(destination);
+      fs.writeFileSync(destination, winner, { flag: 'wx' });
+      realLink(from, to);
+    });
+    try {
+      expect(await lock.acquire()).toMatchObject({ acquired: false, reason: 'duplicate-live-instance' });
+      expect(lock.revalidateForExclusiveWrite()).toBe(false);
+      expect(fs.readFileSync(destination, 'utf8')).toBe(winner);
+      expect(fs.readdirSync(path.dirname(destination))).toEqual([path.basename(destination)]);
+    } finally { publish.mockRestore(); }
+  });
+
+  it('denies ownership when the filesystem cannot create a hard link', async () => {
+    const lock = makeLock(dir, { handoffGraceMs: 0 });
+    const publish = vi.spyOn(fs, 'linkSync').mockImplementation(() => {
+      throw Object.assign(new Error('hard links unsupported'), { code: 'EOPNOTSUPP' });
+    });
+    try {
+      expect((await lock.acquire()).acquired).toBe(false);
+      expect(lock.revalidateForExclusiveWrite()).toBe(false);
+      expect(fs.readdirSync(path.dirname(lock.lockPath()))).toEqual([]);
+    } finally { publish.mockRestore(); }
   });
 
   it('acquires a free lock', async () => {

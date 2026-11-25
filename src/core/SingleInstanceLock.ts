@@ -29,6 +29,7 @@
  * process exit handler (SIGTERM/SIGINT/exit) — see `installReleaseHandlers`.
  */
 
+import { randomUUID } from 'node:crypto';
 import fs from 'node:fs';
 import os from 'node:os';
 import path from 'node:path';
@@ -432,7 +433,7 @@ export class SingleInstanceLock {
     }
   }
 
-  /** Atomic O_CREAT|O_EXCL write. Returns false if another writer won the race. */
+  /** Publish a complete lock record atomically without replacing an existing holder. */
   private tryWriteLock(): boolean {
     this.ensureDir();
     const rec: InstanceLockRecord = {
@@ -447,34 +448,18 @@ export class SingleInstanceLock {
       rec.startedAt = Math.round(selfStart / 1000) * 1000;
     }
     const body = JSON.stringify(rec);
-    const tmp = `${this.lockPath()}.tmp.${process.pid}`;
+    const tmp = `${this.lockPath()}.tmp.${process.pid}.${randomUUID()}`;
     try {
-      const fd = fs.openSync(tmp, 'wx', 0o600);
-      fs.writeSync(fd, body);
-      fs.closeSync(fd);
-    } catch {
-      // @silent-fallback-ok: a tmp-file write race ⇒ report "did not acquire"
-      // (false); the acquire loop re-reads and retries — never a silent grant.
-      try { SafeFsExecutor.safeUnlinkSync(tmp, { operation: 'SingleInstanceLock.tryWriteLock:cleanup-tmp' }); } catch { /* @silent-fallback-ok: tmp cleanup is best-effort */ }
-      return false;
-    }
-    // Use link()/rename guarded by an O_EXCL pre-check: rename would clobber an
-    // existing lock, so only rename when the target does NOT exist. The window
-    // is narrow; a clobber would only happen between two simultaneous fresh
-    // starts, and the pid-guarded release prevents deleting the winner's lock.
-    try {
-      if (fs.existsSync(this.lockPath())) {
-        // Someone created the lock between our read and now — back off.
-        try { SafeFsExecutor.safeUnlinkSync(tmp, { operation: 'SingleInstanceLock.tryWriteLock:exists-backoff' }); } catch { /* @silent-fallback-ok: tmp cleanup is best-effort */ }
-        return false;
-      }
-      fs.renameSync(tmp, this.lockPath());
+      fs.writeFileSync(tmp, body, { flag: 'wx', mode: 0o600 });
+      // A hard link publishes the complete record and fails if the destination exists.
+      fs.linkSync(tmp, this.lockPath());
       return true;
     } catch {
-      // @silent-fallback-ok: a rename race ⇒ report "did not acquire" (false);
-      // the acquire loop re-reads and retries — never a silent grant past the cap.
-      try { SafeFsExecutor.safeUnlinkSync(tmp, { operation: 'SingleInstanceLock.tryWriteLock:cleanup-tmp' }); } catch { /* @silent-fallback-ok: tmp cleanup is best-effort */ }
+      // @silent-fallback-ok: contention or unsupported publication must never grant ownership.
       return false;
+    } finally {
+      try { SafeFsExecutor.safeUnlinkSync(tmp, { operation: 'SingleInstanceLock.tryWriteLock:cleanup-tmp' }); }
+      catch { /* @silent-fallback-ok — temporary file cleanup is best-effort */ }
     }
   }
 
