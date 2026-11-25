@@ -1,0 +1,18 @@
+{
+  "version": 2,
+  "slug": "source-grounded-judge-prototype",
+  "sessionId": "79673ec9-ff9b-4e49-beab-ea9ff8ee8f93",
+  "timestamp": "2026-11-25T02:47:25.968Z",
+  "artifactPath": "upgrades/side-effects/source-grounded-judge-prototype.md",
+  "artifactSha256": "9711df90b53d79ba1772c76be11a6142af422a0b48aef6ed181686283626a38e",
+  "coveredFiles": [
+    "scripts/evaluation/source_grounded_real_validator.check.mjs"
+  ],
+  "phase": "complete",
+  "tier": 1,
+  "tierReasoning": "Reversible synthetic rehearsal assertions with no runtime behavior change.",
+  "eli16Path": "docs/eli16/source-grounded-judge-prototype.eli16.md",
+  "sideEffectsPath": "upgrades/side-effects/source-grounded-judge-prototype.md",
+  "secondPass": "not-required",
+  "reviewerConcurred": null
+}
