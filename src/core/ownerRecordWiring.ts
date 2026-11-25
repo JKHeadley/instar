@@ -10,6 +10,9 @@ import { OwnerRecordSync, type OwnerRecordPullCmd, type OwnerRecordPushCmd } fro
 import { sign as machineSign } from './MachineIdentity.js';
 import type { MachineIdentityManager } from './MachineIdentity.js';
 import type { OwnerRecordRouteDeps } from '../server/ownerRecordRoutes.js';
+import { PeerBuildLedger, fenceInForce, keyFingerprint } from './identityBuildFence.js';
+import { getInstarVersion } from './Config.js';
+import type { GateVerdict } from './ownerRecordStore.js';
 
 const PULL_INTERVAL_MS = 15 * 60 * 1000;
 const FIRST_PULL_DELAY_MS = 30 * 1000;
@@ -60,15 +63,16 @@ export function ownerRecordHeardFrom(peer: string): void {
 }
 
 /** The two mesh handlers. Registered always, so a peer gets a clean "disabled" answer, never no-handler. */
-export function ownerRecordMeshHandlers(): Record<'owner-record-push' | 'owner-record-pull', (cmd: unknown, sender: string) => unknown> {
+export function ownerRecordMeshHandlers(): Record<'owner-record-push' | 'owner-record-pull', (cmd: unknown, sender: string, env?: { timestamp?: number }) => unknown> {
   return {
     'owner-record-push': (cmd, sender) => {
       if (!live?.sync) return { ok: false, reason: 'owner-record disabled' };
       return live.sync.handlePush(sender, cmd as OwnerRecordPushCmd);
     },
-    'owner-record-pull': (cmd, sender) => {
+    'owner-record-pull': (cmd, sender, env) => {
       if (!live?.sync) return { ok: false, reason: 'owner-record disabled' };
-      return live.sync.handlePull(sender, cmd as OwnerRecordPullCmd);
+      // The envelope's signed time orders this peer's build statements (piece 2c §2).
+      return live.sync.handlePull(sender, cmd as OwnerRecordPullCmd, typeof env?.timestamp === 'number' ? env.timestamp : undefined);
     },
   };
 }
@@ -81,6 +85,31 @@ export interface OwnerRecordSyncWiring {
   leaseHolder: () => string | null;
   splitBrain: () => boolean;
   degrade: (summary: string) => void;
+  /** Piece 2c: the one aggregated owner notice about machines below the fence. */
+  notify?: (summary: string) => void;
+  machineName?: (machineId: string) => string;
+  clearNotice?: () => void;
+  degradeFence?: (summary: string) => void;
+}
+
+/**
+ * The one place later pieces ask what the owner record means right now (piece 2b §5): basic, record or hold.
+ * Null while the owner record is off.
+ */
+export function ownerRecordGate(): GateVerdict | null {
+  if (!live) return null;
+  const view = live.sync ? live.sync.peerView() : { allAnswered: true, honouredPeerMarker: false };
+  return live.store.gate(view);
+}
+
+/**
+ * The fence a join or a rollback must respect (piece 2c §4): the live one when the owner record runs here,
+ * else the last verified fence saved on disk. Null before enrolment.
+ */
+export function ownerRecordFence(stateDir: string): string | null {
+  if (live?.sync) return live.sync.fence().value;
+  if (live) return fenceInForce(live.store.state(), PeerBuildLedger.at(stateDir)).value;
+  return PeerBuildLedger.at(stateDir).lastVerifiedFence();
 }
 
 /** Start keeping the record in step: a first pull 30 s after boot, then every 15 minutes. */
@@ -95,6 +124,17 @@ export function startOwnerRecordSync(w: OwnerRecordSyncWiring): OwnerRecordSync 
     isLeaseHolder: () => w.leaseHolder() === w.selfMachineId,
     splitBrain: w.splitBrain,
     degrade: w.degrade,
+    selfBuild: () => getInstarVersion(),
+    // Identity guards this build runs live (piece 2c §3). Pieces that add one list it here, e.g. 2d's
+    // 'fence-lease' and 'fence-routing'. None yet.
+    selfGuards: () => [],
+    peerKey: (machineId) => keyFingerprint(w.identity.getSigningPublicKeyPem(machineId)),
+    ledger: PeerBuildLedger.at(w.config.stateDir),
+    notify: w.notify,
+    machineName: w.machineName,
+    clearNotice: w.clearNotice,
+    degradeFence: w.degradeFence,
+    peerSince: (machineId) => { const t = Date.parse(String(w.identity.loadRegistry().machines?.[machineId]?.pairedAt ?? '')); return Number.isFinite(t) ? t : null; },
   });
   live.sync = sync;
   // @silent-fallback-ok: a failed pass is logged and retried on the next 15-minute tick; peers' state is per pass.

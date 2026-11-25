@@ -42,3 +42,7 @@ AI judge for up to two hours. Test runs were not on that list.
 Agents can run the full test suite, or push code, without the watchdog cutting
 it off part-way. Nothing new can be killed by this change: it only ever removes
 an interruption. If something does go wrong, undoing it is a single revert.
+
+Git opens its HTTPS connection before it starts checking a push. While the
+pre-push hook uses CPU, the watchdog gives that push's idle connection time
+to wait. Once the hook finishes, the watchdog evaluates the connection again.

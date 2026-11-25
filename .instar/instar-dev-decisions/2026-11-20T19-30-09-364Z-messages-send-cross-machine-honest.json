@@ -1,0 +1,25 @@
+{
+  "ts": "2026-11-20T19:30:09.364Z",
+  "slug": "messages-send-cross-machine-honest",
+  "suggestedTier": 2,
+  "declaredTier": 1,
+  "riskFloor": 1,
+  "riskFloorReasons": [],
+  "belowFloor": false,
+  "files": 4,
+  "loc": 133,
+  "scope": {
+    "basis": "staged-in-scope-paths-including-deleted",
+    "files": [
+      "src/data/awareness/cross-machine-send-honest.md",
+      "src/messaging/MessageRouter.ts",
+      "src/messaging/types.ts",
+      "src/server/routes.ts"
+    ],
+    "addedLines": 120,
+    "deletedLines": 13
+  },
+  "causalAutopsy": null,
+  "classClosure": null,
+  "verdict": "pass"
+}

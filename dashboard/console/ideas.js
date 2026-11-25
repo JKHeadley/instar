@@ -21,12 +21,12 @@ async function decide(request, status, refresh) {
   status.textContent = 'Working…';
   const planned = await send('/ecosystem-ideas/plan', request);
   if (planned.status !== 200) { status.textContent = planned.data.detail || planned.data.error || 'That could not be prepared.'; return; }
-  const pin = await askPin({ title: 'Confirm', explain: planned.data.renderedText });
+  const pin = await askPin({ title: 'Confirm', explain: planned.data.renderedText, isCurrent: () => status.isConnected });
   if (!pin) { status.textContent = ''; return; }
   const done = await send('/ecosystem-ideas/commit', { pin: pin.pin, planId: planned.data.planId, nonce: planned.data.nonce });
   pin.pin = '';
   status.textContent = done.status === 200 ? 'Done.' : (done.data.error || 'That did not go through.');
-  if (done.status === 200) setTimeout(refresh, 600);
+  if (done.status === 200) setTimeout(() => { if (status.isConnected) refresh(); }, 600);
 }
 
 function ideaCard(idea, refresh) {

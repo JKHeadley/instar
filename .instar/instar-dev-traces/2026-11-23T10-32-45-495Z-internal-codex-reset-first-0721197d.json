@@ -1,0 +1,22 @@
+{
+  "version": 2,
+  "slug": "internal-codex-reset-first",
+  "sessionId": "fa6f6527-b01e-426b-a83e-6c75395ee134",
+  "timestamp": "2026-11-23T10:32:45.495Z",
+  "artifactPath": "upgrades/side-effects/internal-codex-reset-first.md",
+  "artifactSha256": "75b74ff3ff709f8369fc2806fcfd12014f1e524f8c0aca1c3e8891bb145fc52e",
+  "coveredFiles": [
+    ".instar/instar-dev-decisions/2026-11-23T10-32-07-512Z-internal-codex-reset-first.json",
+    ".instar/instar-dev-traces/2026-11-23T10-31-59-074Z-internal-codex-reset-first-24449540.json",
+    "docs/specs/internal-codex-reset-first.eli16.md",
+    "src/core/SubscriptionPool.ts",
+    "upgrades/side-effects/internal-codex-reset-first.md"
+  ],
+  "phase": "complete",
+  "tier": 1,
+  "tierReasoning": "Comment-only correction on already-reviewed picker path, evaluated by actual normal non-merge pre-commit hook to supply missing audit coverage. No runtime or assertion change.",
+  "eli16Path": "docs/specs/internal-codex-reset-first.eli16.md",
+  "sideEffectsPath": "upgrades/side-effects/internal-codex-reset-first.md",
+  "secondPass": "true",
+  "reviewerConcurred": true
+}

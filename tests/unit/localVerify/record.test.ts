@@ -241,3 +241,50 @@ describe('validateRecord — flakyRetried name fields', () => {
     }
   });
 });
+
+describe('validateRecord — the borrowed field (spec local-verify-borrowed-slices-count.md, F "The record")', () => {
+  const D = 'd'.repeat(64);
+  const good = { helper: 'm_laptop', assigned: 'counting', lanes: [{ lane: 'integration', files: 240, filesDigest: D }] };
+  const errs = (borrowed: unknown, over: Partial<LocalVerifyRecord> = {}) => {
+    const v = validateRecord({ ...rec(over), borrowed });
+    return v.ok ? [] : v.errors;
+  };
+
+  it('accepts a helper, an assignment, and up to three lanes with a count and a digest; a record without the field is unchanged', () => {
+    expect(errs(good)).toEqual([]);
+    expect(errs({ ...good, assigned: 'compare-only' })).toEqual([]);
+    expect(errs({ ...good, lanes: [] })).toEqual([]); // a helper that was asked and sent nothing
+    expect(errs({ ...good, lanes: [{ lane: 'unit', files: 0, filesDigest: D }, { lane: 'integration', files: 20_000, filesDigest: D }, { lane: 'e2e', files: 1, filesDigest: D }] })).toEqual([]);
+    expect(validateRecord(rec())).toMatchObject({ ok: true });
+    const v = validateRecord({ ...rec(), borrowed: good });
+    expect(v.ok && v.record.borrowed).toEqual(good); // carried as it is
+  });
+
+  it.each([
+    ['a helper id that is not a machine id by format', { ...good, helper: 'my laptop' }],
+    ['an empty helper id', { ...good, helper: '' }],
+    ['a helper id over 64 characters', { ...good, helper: 'm'.repeat(65) }],
+    ['a missing assignment', { helper: good.helper, lanes: good.lanes }],
+    ['an unknown assignment', { ...good, assigned: 'trusted' }],
+    ['more than three lanes', { ...good, lanes: [{ lane: 'unit', files: 1, filesDigest: D }, { lane: 'integration', files: 1, filesDigest: D }, { lane: 'e2e', files: 1, filesDigest: D }, { lane: 'unit', files: 1, filesDigest: D }] }],
+    ['a lane named twice', { ...good, lanes: [{ lane: 'unit', files: 1, filesDigest: D }, { lane: 'unit', files: 2, filesDigest: D }] }],
+    ['an unknown lane', { ...good, lanes: [{ lane: 'smoke', files: 1, filesDigest: D }] }],
+    ['20,001 files', { ...good, lanes: [{ lane: 'unit', files: 20_001, filesDigest: D }] }],
+    ['a count that is not a whole number', { ...good, lanes: [{ lane: 'unit', files: 1.5, filesDigest: D }] }],
+    ['a negative count', { ...good, lanes: [{ lane: 'unit', files: -1, filesDigest: D }] }],
+    ['a 63-character digest', { ...good, lanes: [{ lane: 'unit', files: 1, filesDigest: 'd'.repeat(63) }] }],
+    ['an upper-case digest', { ...good, lanes: [{ lane: 'unit', files: 1, filesDigest: 'D'.repeat(64) }] }],
+    ['a file list in place of a count', { ...good, lanes: [{ lane: 'unit', files: ['tests/unit/a.test.ts'], filesDigest: D }] }],
+    ['an extra key on a lane', { ...good, lanes: [{ lane: 'unit', files: 1, filesDigest: D, names: [] }] }],
+    ['an extra key', { ...good, url: 'http://x' }],
+    ['lanes that are not a list', { ...good, lanes: {} }],
+    ['a string', 'm_laptop'],
+    ['null', null],
+  ])('refuses %s', (_name, borrowed) => {
+    expect(errs(borrowed)).toEqual(['borrowed']);
+  });
+
+  it('never rides a main record: a main verify does not count a helper\'s results', () => {
+    expect(errs(good, { kind: 'main', pr: 0, baseSha: H })).toEqual(['borrowed']);
+  });
+});
