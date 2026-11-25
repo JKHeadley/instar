@@ -93,9 +93,9 @@ function setup(opts: Opts = {}) {
   // Private harness only: exercise production request authentication on an already allowlisted
   // JSON path. No application router advertises or mounts Delete at this checkpoint.
   if (opts.removalAdmissionProbe && svc) {
-    app.post('/mobile/chat/app/:key/forward', (req, res) => {
+    app.post('/mobile/chat/app/:key/forward', async (req, res) => {
       if (opts.removalAdmissionProbe === 'execute') {
-        const result = executeAppMessageRemoval(req, pairing, svc);
+        const result = await executeAppMessageRemoval(req, pairing, svc);
         res.status(result.status).json(result.body);
         return;
       }
@@ -944,6 +944,85 @@ describe('private signed App message removal runtime', () => {
     expect(e.killed).toEqual([]);
   });
 
+  it('refuses stale preparation and rechecks current custody before reserving', async () => {
+    const { e, key, endpoint, intent } = await fixture();
+    const realPrepare = e.svc.store.prepareRemovalHistory.bind(e.svc.store);
+    const prepare = vi.spyOn(e.svc.store, 'prepareRemovalHistory');
+    const append = vi.spyOn(e.svc.store, 'append');
+    prepare.mockImplementationOnce(async (conversation) => {
+      const ready = await realPrepare(conversation);
+      e.lease.held = false;
+      return ready;
+    });
+    expect((await signed(e, 'POST', endpoint, intent)).status).toBe(503);
+    expect(append).not.toHaveBeenCalled();
+    e.lease.held = true;
+    const access = vi.spyOn(e.pairing, 'mayReadStored');
+    prepare.mockImplementationOnce(async (conversation) => {
+      const ready = await realPrepare(conversation);
+      access.mockReturnValue(false);
+      return ready;
+    });
+    try { expect((await signed(e, 'POST', endpoint, intent)).status).toBe(404); }
+    finally { access.mockRestore(); }
+    expect(append).not.toHaveBeenCalled();
+    prepare.mockImplementationOnce(async (conversation) => {
+      const ready = await realPrepare(conversation);
+      e.svc.store.append({ kind: 'message', conversationKey: key, eventId: 'during-proof',
+        messageId: 'msg-during-proof', role: 'agent', text: 'A new message',
+        machineId: 'm1', at: new Date().toISOString() });
+      return ready;
+    });
+    const stale = await signed(e, 'POST', endpoint, intent);
+    expect(stale.status).toBe(503);
+    expect(stale.body.error).toBe('message-removal-state-unavailable');
+    expect(append.mock.calls.map(([event]) => event.kind)).toEqual(['message']);
+    expect((await signed(e, 'POST', endpoint, intent)).status).toBe(200);
+    expect(append.mock.calls.map(([event]) => event.kind)).toEqual(['message', 'message-removed']);
+  });
+
+  it.each(['identical', 'distinct-id', 'changed-target'])('serializes fresh requests that both wait for proof (%s)', async (scenario) => {
+    const { e, endpoint, intent } = await fixture();
+    const append = vi.spyOn(e.svc.store, 'append');
+    const reserve = vi.spyOn(e.svc.deps.requests, 'reserve');
+    const realPrepare = e.svc.store.prepareRemovalHistory.bind(e.svc.store);
+    const release: Array<() => void> = [];
+    let bothWaiting!: () => void;
+    const waiting = new Promise<void>((resolve) => { bothWaiting = resolve; });
+    vi.spyOn(e.svc.store, 'prepareRemovalHistory').mockImplementation(async (conversation) => {
+      const proof = realPrepare(conversation);
+      await new Promise<void>((resolve) => {
+        release.push(resolve);
+        if (release.length === 2) bothWaiting();
+      });
+      return proof;
+    });
+    const secondIntent = scenario === 'changed-target' ? { ...intent, eventId: 'two' }
+      : scenario === 'distinct-id' ? { ...intent, requestId: rid() } : intent;
+    const first = signed(e, 'POST', endpoint, intent).then((response) => response);
+    const second = signed(e, 'POST', endpoint, secondIntent).then((response) => response);
+    await waiting;
+    for (const resume of release) resume();
+    const outcomes = await Promise.all([first, second]);
+    if (scenario === 'identical') {
+      expect(outcomes.map((response) => response.status)).toEqual([200, 200]);
+      expect(outcomes[0].body).toEqual(outcomes[1].body);
+    } else {
+      expect(outcomes.filter((outcome) => outcome.status === 200)).toHaveLength(1);
+      const loser = outcomes[0].status === 200 ? 1 : 0;
+      if (scenario === 'changed-target') {
+        expect(outcomes[loser].status).toBe(409);
+        expect(outcomes[loser].body.error).toBe('payload-conflict');
+      } else {
+        vi.mocked(e.svc.store.prepareRemovalHistory).mockRestore();
+        const retry = await signed(e, 'POST', endpoint, loser === 0 ? intent : secondIntent);
+        expect(retry.status).toBe(404);
+      }
+    }
+    expect(append.mock.calls.map(([event]) => event.kind)).toEqual(['message-removed']);
+    expect(reserve).toHaveBeenCalledTimes(1);
+  });
+
   it('excludes retained retries from fresh admission and rejects expired IDs', async () => {
     const { e, endpoint, intent } = await fixture();
     const base = Date.now();
@@ -987,7 +1066,10 @@ describe('private signed App message removal runtime', () => {
       const during = await signed(e, 'POST', endpoint, intent);
       expect(during.status).toBe(crashed ? 202 : 409);
       e.svc.deps.requests = new MobileChatRequestStore(e.dir);
+      const inspector = e.svc.store as unknown as { verifyRemovalIndex(key: string, path: string): boolean };
+      const fullScan = vi.spyOn(inspector, 'verifyRemovalIndex');
       const recovered = await signed(e, 'POST', endpoint, intent);
+      expect(fullScan).not.toHaveBeenCalled();
       expect(recovered.status).toBe(didAppend ? 200 : 409);
       if (didAppend) expect(recovered.body.eventId).toBe('one');
       else expect(recovered.body.error).toBe('outcome-unknown');

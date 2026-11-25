@@ -198,6 +198,7 @@ describe('native app conversations — production wiring', () => {
 
     const capabilities = await send('GET', '/mobile/conversations');
     expect(capabilities.body.conversations[0].messageActions).toMatchObject({ reply: true });
+    expect(capabilities.body.conversations[0].messageActions).not.toHaveProperty('delete');
     const previews = await send('GET', `/mobile/chat/app/${key}/reply-previews?eventId=${encodeURIComponent(quoted.body.eventId)}`);
     expect(previews.status).toBe(200);
     expect(previews.body.messages).toEqual([{ eventId: quoted.body.eventId, reply: {

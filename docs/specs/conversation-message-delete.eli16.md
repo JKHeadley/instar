@@ -17,3 +17,7 @@ The store now checks a long chat in chunks so other server work can run in betwe
 A regular message arriving in another chat no longer restarts the check. A new message in the chat being checked still restarts it, and the store starts over when it cannot attribute a change safely.
 
 The server can now remember an exact Delete request and check whether it reached the journal before answering a retry. A retry that asks to delete a different message is refused. The production action still needs the history and sync changes before it can be turned on.
+
+Delete now uses the background history check before writing a new removal. If access changes or the chat is updated while the check is running, the server verifies again before it can record anything.
+
+Before the app can use Delete, the server also needs to prove that only one server process can write to the same chat store.

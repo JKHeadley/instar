@@ -81,17 +81,21 @@ export function removalIntentHash(scope: RemovalScope, targetMessageId: string):
 
 /** Resolve the exact currently visible event for a first attempt. */
 export function resolveFreshRemovalTarget(req: Request, pairing: MobilePairingService, service: AppConversationService,
-  scope: RemovalScope, now = Date.now()): RemovalAdmission {
+  scope: RemovalScope, now = Date.now(), options?: { preparedHistory: true }): RemovalAdmission {
   if (!requestIdAgeOk(scope.requestId, now)) return { ok: false, status: 400, error: 'request-id-too-old' };
   const current = exactMessageReader(pairing, req);
   const actor = current();
   if (!actor) return unavailable;
   let targets;
   try {
-    targets = service.store.exactMessageCandidates(scope.conversationKey, scope.targetEventId, 'event');
+    targets = options?.preparedHistory
+      ? service.store.exactRemovalAwareMessageCandidates(scope.conversationKey, scope.targetEventId, 'event',
+        (row) => pairing.mayReadStored(actor, scope.conversationKey, row))
+      : service.store.exactMessageCandidates(scope.conversationKey, scope.targetEventId, 'event');
   } catch {
     return unavailable; // @silent-fallback-ok — unreadable target shares the unavailable response
   }
+  if (targets === null) return { ok: false, status: 503, error: 'message-removal-state-unavailable' };
   const [target] = targets;
   if (targets.length !== 1 || target?.eventId !== scope.targetEventId || !pairing.mayReadStored(actor, scope.conversationKey, target)) return unavailable;
 

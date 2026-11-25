@@ -1670,6 +1670,16 @@ export class AppConversationStore {
 
   /** Matching durable removal, known absence, or null when local proof is incomplete. */
   messageRemoval(conversationKey: string, targetEventId: string, targetMessageId: string, removalEventId?: string): { eventId: string | null } | null {
+    return this.readMessageRemoval(conversationKey, targetEventId, targetMessageId, removalEventId, true);
+  }
+
+  /** Exact positive evidence only. An unproven receipt does not need a journal scan. */
+  hasConfirmedMessageRemoval(conversationKey: string, targetEventId: string, targetMessageId: string, removalEventId: string): boolean {
+    return this.readMessageRemoval(conversationKey, targetEventId, targetMessageId, removalEventId, false)?.eventId === removalEventId;
+  }
+
+  private readMessageRemoval(conversationKey: string, targetEventId: string, targetMessageId: string,
+    removalEventId: string | undefined, proveAbsence: boolean): { eventId: string | null } | null {
     const key = canonicalConversationKey(conversationKey);
     try {
       const version = this.db.pragma('data_version', { simple: true });
@@ -1713,6 +1723,7 @@ export class AppConversationStore {
           return stableResult(null);
         };
         if (!found) {
+          if (!proveAbsence) return null;
           if (exactReceipt && this.db.prepare('SELECT 1 FROM events WHERE canonicalKey = ? AND eventId = ?').get(key, removalEventId)) return null;
           return verifiedAbsence();
         }
