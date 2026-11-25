@@ -20,6 +20,7 @@
 
 import fs from 'node:fs';
 import path from 'node:path';
+import { JOB_RUN_LEDGER_WRITE_WAIT_MS, withJobRunLedgerLock } from './JobRunLedgerLock.js';
 
 export type MigrationEventKind = 'migration.completed' | 'migration.aborted';
 
@@ -69,7 +70,9 @@ export function appendMigrationEvent(stateDir: string, event: MigrationEvent): {
   const ledgerFile = path.join(ledgerDir, 'job-runs.jsonl');
   try {
     fs.mkdirSync(ledgerDir, { recursive: true });
-    fs.appendFileSync(ledgerFile, JSON.stringify(event) + '\n', 'utf-8');
+    withJobRunLedgerLock(ledgerFile, JOB_RUN_LEDGER_WRITE_WAIT_MS, () => {
+      fs.appendFileSync(ledgerFile, JSON.stringify(event) + '\n', 'utf-8');
+    });
     return { ok: true };
   } catch (err) {
     return { ok: false, reason: err instanceof Error ? err.message : String(err) };

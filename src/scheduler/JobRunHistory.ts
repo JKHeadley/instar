@@ -21,6 +21,7 @@ import path from 'node:path';
 import { capacityOutcome, type CapacityEnforcementResult } from '../core/CapacityEnforcement.js';
 import { SafeFsExecutor } from '../core/SafeFsExecutor.js';
 import { DegradationReporter } from '../monitoring/DegradationReporter.js';
+import { JOB_RUN_LEDGER_WRITE_WAIT_MS, withJobRunLedgerLock } from './JobRunLedgerLock.js';
 import type { JobRunLaunch } from '../core/types.js';
 
 // capacity-enforcement-contract: job-run-history-row@1
@@ -744,7 +745,16 @@ export class JobRunHistory {
    */
   private compact(): void {
     if (!fs.existsSync(this.file)) return;
+    try {
+      withJobRunLedgerLock(this.file, 0, () => this.compactLocked());
+    } catch (error) {
+      if ((error as NodeJS.ErrnoException).code !== 'ELOCKED') {
+        console.warn('[JobRunHistory] Startup compaction could not lock the ledger:', error);
+      }
+    }
+  }
 
+  private compactLocked(): void {
     const lines = this.readLines();
     if (lines.length === 0 || !this.cachedComplete) return;
 
@@ -795,8 +805,12 @@ export class JobRunHistory {
       }
       const capped = outcome.value;
       // Preserve a known torn record for diagnosis and give the new run its own line.
-      const serialized = (this.cachedEndsWithNewline ? '' : '\n') + JSON.stringify(capped) + '\n';
-      fs.appendFileSync(this.file, serialized);
+      const serialized = withJobRunLedgerLock(this.file, JOB_RUN_LEDGER_WRITE_WAIT_MS, () => {
+        this.readLines();
+        const line = (this.cachedEndsWithNewline ? '' : '\n') + JSON.stringify(capped) + '\n';
+        fs.appendFileSync(this.file, line);
+        return line;
+      });
       // Keep the in-memory cache coherent with our own append so the read that
       // typically follows a completion does NOT have to re-stat+tail-read. If
       // the cache isn't populated yet, leave it null — the next read builds it.

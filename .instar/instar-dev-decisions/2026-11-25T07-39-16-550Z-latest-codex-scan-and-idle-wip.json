@@ -1,0 +1,26 @@
+{
+  "ts": "2026-11-25T07:39:16.550Z",
+  "slug": "latest-codex-scan-and-idle-wip",
+  "suggestedTier": 2,
+  "declaredTier": 2,
+  "riskFloor": 2,
+  "riskFloorReasons": [
+    "irreversibility: src/scheduler/MigrationLedger.ts touches migration"
+  ],
+  "belowFloor": false,
+  "files": 3,
+  "loc": 56,
+  "scope": {
+    "basis": "staged-in-scope-paths-including-deleted",
+    "files": [
+      "src/scheduler/JobRunHistory.ts",
+      "src/scheduler/JobRunLedgerLock.ts",
+      "src/scheduler/MigrationLedger.ts"
+    ],
+    "addedLines": 53,
+    "deletedLines": 3
+  },
+  "causalAutopsy": null,
+  "classClosure": null,
+  "verdict": "pass"
+}

@@ -10,6 +10,9 @@
 
 import { describe, it, expect, beforeEach, afterEach, vi } from 'vitest';
 import fs from 'node:fs';
+import { spawn } from 'node:child_process';
+import { once } from 'node:events';
+import { fileURLToPath } from 'node:url';
 import path from 'node:path';
 import os from 'node:os';
 import { JobRunHistory, averageMeasuredJobSuccessRates } from '../../src/scheduler/JobRunHistory.js';
@@ -357,6 +360,55 @@ describe('JobRunHistory unit tests', () => {
       expect(retried.findRun(runId)).toMatchObject({ result: 'success', outputSummary: 'done' });
     });
 
+    it('keeps a write arriving just before the startup swap', async () => {
+      const history = new JobRunHistory(stateDir);
+      const runId = history.recordStart({ slug: 'test-job', sessionId: 'sess-1', trigger: 'scheduled' });
+      history.recordCompletion({ runId, result: 'success' });
+      const module = fileURLToPath(new URL('../../dist/scheduler/JobRunHistory.js', import.meta.url));
+      const marker = path.join(stateDir, 'writer-ready');
+      const rename = fs.renameSync;
+      const pause = new Int32Array(new SharedArrayBuffer(4));
+      let writerDone: Promise<unknown[]> | undefined;
+      const swap = vi.spyOn(fs, 'renameSync').mockImplementationOnce((source, target) => {
+        const worker = spawn(process.execPath, ['--input-type=module', '-e', `
+          import fs from 'node:fs';
+          import { pathToFileURL } from 'node:url';
+          import lockfile from 'proper-lockfile';
+          const [module, dir, marker] = process.argv.slice(1);
+          const { JobRunHistory } = await import(pathToFileURL(module));
+          const writer = new JobRunHistory(dir);
+          const lock = lockfile.lockSync;
+          lockfile.lockSync = (...args) => {
+            try {
+              return lock(...args);
+            } catch (error) {
+              if (error.code === 'ELOCKED') fs.writeFileSync(marker, '');
+              throw error;
+            }
+          };
+          writer.recordStart({ slug: 'other-job', sessionId: 'sess-2', trigger: 'scheduled' });
+        `, module, stateDir, marker], { stdio: 'ignore' });
+        writerDone = once(worker, 'exit');
+        const deadline = performance.now() + 3000;
+        while (!fs.existsSync(marker) && performance.now() < deadline) Atomics.wait(pause, 0, 0, 5);
+        expect(fs.existsSync(marker)).toBe(true);
+        expect(readRawJSONL(stateDir)).toHaveLength(2);
+        rename(source, target);
+      });
+      try {
+        const reopened = new JobRunHistory(stateDir);
+        expect(swap).toHaveBeenCalledTimes(1);
+        await expect(writerDone).resolves.toEqual([0, null]);
+        expect(reopened.query().runs).toEqual(expect.arrayContaining([
+          expect.objectContaining({ runId, result: 'success' }),
+          expect.objectContaining({ slug: 'other-job', result: 'pending' }),
+        ]));
+        expect(readRawJSONL(stateDir)).toHaveLength(2);
+      } finally {
+        swap.mockRestore();
+      }
+    });
+
     it('keeps an append made while the compacted copy is being written', () => {
       const history = new JobRunHistory(stateDir);
       const runId = history.recordStart({ slug: 'test-job', sessionId: 'sess-1', trigger: 'scheduled' });
@@ -364,7 +416,8 @@ describe('JobRunHistory unit tests', () => {
       const sync = fs.fsyncSync;
       const staging = vi.spyOn(fs, 'fsyncSync').mockImplementationOnce(fd => {
         sync(fd);
-        history.recordStart({ slug: 'other-job', sessionId: 'sess-2', trigger: 'scheduled' });
+        const externalRow = { ...history.findRun(runId), runId: 'other-job-external', slug: 'other-job' };
+        fs.appendFileSync(path.join(stateDir, 'ledger', 'job-runs.jsonl'), JSON.stringify(externalRow) + '\n');
       });
       try {
         const reopened = new JobRunHistory(stateDir);
