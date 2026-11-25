@@ -681,6 +681,7 @@ export class LocalHistoryUploadStaging {
         run = registerLocalHistoryStoreTemporaryRun(this.db, this.custody, { operationId, existingDirectoriesOnly: true });
         pin.revalidate();
         await run.registerChild(child);
+        reservation.assertCovers(initialCharge);
       } catch (error) {
         if (!reservation && error instanceof Error
           && ['local-history-disk-capacity', 'local-history-disk-record-capacity'].includes(error.message)) reservationMayExist = false;

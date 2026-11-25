@@ -296,6 +296,9 @@ it('creates one dedicated reservation for a live operation and pins its identity
     reservation.grow(5);
     expect(ledger.inspect(other).planned).toBe(1);
     expect(ledger.inspect(reservation.allocationId)).toMatchObject({ planned: 40, written: 0 });
+    reservation.assertCovers(40);
+    expect(() => reservation.assertCovers(41)).toThrow('copy-reservation');
+    expect(() => reservation.assertCovers(0)).toThrow('copy-reservation');
     expect(() => reservation.grow(61)).toThrow('copy-reservation');
     expect(() => reservation.grow(60)).toThrow('disk-capacity');
 
@@ -304,11 +307,13 @@ it('creates one dedicated reservation for a live operation and pins its identity
     try {
       fs.writeSync(fd, Buffer.from('x'), 0, 1, 0);
       expect(() => reservation.grow(1)).toThrow('copy-reservation');
+      expect(() => reservation.assertCovers(40)).toThrow('copy-reservation');
       fs.ftruncateSync(fd, 0);
     } finally { fs.closeSync(fd); }
     fs.renameSync(destination, path.join(stateDir, 'moved-destination'));
     fs.mkdirSync(destination);
     expect(() => reservation.grow(1)).toThrow();
+    expect(() => reservation.assertCovers(40)).toThrow();
     expect(ledger.inspect(reservation.allocationId)).toMatchObject({ planned: 40, written: 0 });
   } finally {
     pin.close();
@@ -339,6 +344,31 @@ it('retains an interrupted bootstrap charge and refuses a second creation in the
     expect(ledger.list(tag)).toMatchObject([{ planned: 10, written: 0, state: 'active' }]);
   } finally {
     opens.mockRestore();
+    pin.close();
+    lease.release();
+  }
+});
+
+
+it('rechecks the floor against the full existing charge without growing it', () => {
+  const { stateDir } = setup();
+  let available = 100;
+  const ledger = new LocalHistoryDiskLedger(stateDir, {
+    disk: () => ({ total, free: mediaDiskFloorBytes(total) + 64 * 1024 + available }),
+  });
+  ledgers.push(ledger);
+  const lease = acquireLocalHistoryStoreTemporaryAdmission(stateDir)!;
+  const pin = ledger.pinCopyVolume([stateDir]);
+  try {
+    ledger.create('other-operation', 60);
+    const reservation = ledger.createCopyRunReservation(lease, 'b'.repeat(32), pin, 40, 40);
+    reservation.assertCovers(40);
+    available--;
+    expect(() => reservation.assertCovers(40)).toThrow('disk-capacity');
+    expect(ledger.inspect(reservation.allocationId)).toMatchObject({ planned: 40, written: 0 });
+    available++;
+    reservation.assertCovers(40);
+  } finally {
     pin.close();
     lease.release();
   }

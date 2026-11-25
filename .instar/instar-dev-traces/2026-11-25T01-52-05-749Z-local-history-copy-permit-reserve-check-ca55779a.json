@@ -1,0 +1,26 @@
+{
+  "version": 2,
+  "slug": "local-history-copy-permit-reserve-check",
+  "sessionId": "41652017-0805-405d-bb4e-2a975fb349ce",
+  "timestamp": "2026-11-25T01:52:05.749Z",
+  "artifactPath": "upgrades/side-effects/local-history-copy-permit-reserve-check.md",
+  "artifactSha256": "8f98a2097f9b6d57976dea79899de00a81ff8b896fdfce64063bdfc8c0bba1bd",
+  "specPath": "docs/specs/local-history-native-contract.md",
+  "coveredFiles": [
+    "src/import/LocalHistoryDiskLedger.ts",
+    "src/import/LocalHistoryUploadStaging.ts",
+    "tests/unit/local-history-disk-ledger.test.ts",
+    "upgrades/next/local-history-copy-permit-reserve-check.md",
+    "upgrades/side-effects/local-history-copy-permit-reserve-check.md"
+  ],
+  "phase": "complete",
+  "tier": 2,
+  "tierReasoning": "This rechecks the same held reserve after private child registration.",
+  "secondPass": "true",
+  "reviewerConcurred": true,
+  "classClosure": {
+    "defectClass": "unbounded-self-action",
+    "closure": "n/a",
+    "reason": "The existing one-shot custody path adds one synchronous capacity check and no retry."
+  }
+}

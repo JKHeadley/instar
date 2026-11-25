@@ -242,7 +242,10 @@ export class LocalHistoryDiskLedger {
     }
     return Object.freeze({
       allocationId,
-      grow: (bytes: number) => this.growCopyRunReservation(operation, allocationId, revalidate, bytes, ceiling),
+      grow: (bytes: number) => this.checkCopyRunReservation(operation, allocationId, revalidate, ceiling, bytes, 0),
+      /** Recheck the existing charge and current floor immediately before a permit.
+       * The jobs transaction and eventual mutation still belong to the coordinator. */
+      assertCovers: (required: number) => this.checkCopyRunReservation(operation, allocationId, revalidate, ceiling, 0, required),
       releaseAfterSettlement: () => this.disposeAllocation(allocationId, row => {
         revalidate();
         if (row.operation !== operation || row.written !== 0) throw new Error('local-history-disk-copy-reservation');
@@ -255,15 +258,15 @@ export class LocalHistoryDiskLedger {
     });
   }
 
-  private growCopyRunReservation(operation: string, allocationId: string, revalidate: () => void,
-    bytes: number, ceiling: number): void {
-    amount(bytes);
-    if (!bytes) throw new Error('local-history-disk-copy-reservation');
+  private checkCopyRunReservation(operation: string, allocationId: string, revalidate: () => void,
+    ceiling: number, growth: number, required: number): void {
+    amount(growth); amount(required);
+    if ((growth === 0) === (required === 0)) throw new Error('local-history-disk-copy-reservation');
     this.transaction(() => {
       const row = this.row(allocationId, true);
-      const planned = row.planned + bytes;
+      const planned = row.planned + growth;
       amount(planned);
-      if (row.operation !== operation || row.written !== 0 || planned > ceiling) {
+      if (row.operation !== operation || row.written !== 0 || planned > ceiling || required > row.planned) {
         throw new Error('local-history-disk-copy-reservation');
       }
       const checkIdentity = () => {
@@ -273,9 +276,9 @@ export class LocalHistoryDiskLedger {
         if (stat.size !== 0) throw new Error('local-history-disk-copy-reservation');
       };
       checkIdentity();
-      this.checkCapacity(this.outstanding(), bytes);
+      this.checkCapacity(this.outstanding(), growth);
       checkIdentity();
-      this.db.prepare('UPDATE allocations SET planned = ? WHERE id = ?').run(planned, allocationId);
+      if (growth > 0) this.db.prepare('UPDATE allocations SET planned = ? WHERE id = ?').run(planned, allocationId);
     });
   }
 
