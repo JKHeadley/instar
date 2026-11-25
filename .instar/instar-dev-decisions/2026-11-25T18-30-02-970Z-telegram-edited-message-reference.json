@@ -1,0 +1,22 @@
+{
+  "ts": "2026-11-25T18:30:02.970Z",
+  "slug": "telegram-edited-message-reference",
+  "suggestedTier": 1,
+  "declaredTier": 1,
+  "riskFloor": 1,
+  "riskFloorReasons": [],
+  "belowFloor": false,
+  "files": 1,
+  "loc": 22,
+  "scope": {
+    "basis": "staged-in-scope-paths-including-deleted",
+    "files": [
+      "src/threadline/directTelegramSendEvidence.ts"
+    ],
+    "addedLines": 20,
+    "deletedLines": 2
+  },
+  "causalAutopsy": null,
+  "classClosure": null,
+  "verdict": "pass"
+}

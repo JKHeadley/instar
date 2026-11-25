@@ -1,0 +1,19 @@
+{
+  "version": 2,
+  "slug": "telegram-edited-message-reference",
+  "sessionId": "b3d2cf8a-9b5d-468b-a50b-70ebf11e9e5c",
+  "timestamp": "2026-11-25T18:29:25.914Z",
+  "artifactPath": "upgrades/side-effects/telegram-edited-message-reference.md",
+  "artifactSha256": "705cf58e3530baed1587443fc7bc84de3bb26e9bc8c17806ee041b64c98675ec",
+  "coveredFiles": [
+    "src/threadline/directTelegramSendEvidence.ts",
+    "tests/unit/direct-telegram-send-evidence.test.ts"
+  ],
+  "phase": "complete",
+  "tier": 1,
+  "tierReasoning": "Dormant reverse lookup for isolated fixtures. No production ingress caller or state change.",
+  "eli16Path": "docs/specs/direct-telegram-send-evidence.eli16.md",
+  "sideEffectsPath": "upgrades/side-effects/telegram-edited-message-reference.md",
+  "secondPass": "true",
+  "reviewerConcurred": true
+}

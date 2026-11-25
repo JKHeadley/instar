@@ -1,5 +1,5 @@
 import { expect, it } from 'vitest';
-import { exactDirectTelegramPollingSend, exactDirectTelegramSend } from '../../src/threadline/directTelegramSendEvidence.js';
+import { editedTelegramMessageReference, exactDirectTelegramPollingSend, exactDirectTelegramSend } from '../../src/threadline/directTelegramSendEvidence.js';
 
 const recipient = 'a'.repeat(32);
 const header = `Send via Threadline to ${recipient}:\n`;
@@ -57,4 +57,13 @@ it('refuses insufficient raw source evidence before request parsing', () => {
   ]) {
     expect(exactDirectTelegramPollingSend({ ...raw, ...patch }, 248, 75)).toBeNull();
   }
+});
+
+it('locates the same evidence when an edit changes the text or adds unsupported fields', () => {
+  const original = exactDirectTelegramPollingSend(raw, 248, 75);
+  expect(editedTelegramMessageReference({ ...raw, text: undefined, photo: [], edit_date: raw.date + 1 }, 248))
+    .toBe(original?.ownerMessageRef);
+  expect(editedTelegramMessageReference({ ...raw, message_thread_id: undefined }, 248)).toBeNull();
+  expect(editedTelegramMessageReference({ ...raw, chat: { id: 123, type: 'private' } }, 248)).toBeNull();
+  expect(editedTelegramMessageReference(raw, 0)).toBeNull();
 });

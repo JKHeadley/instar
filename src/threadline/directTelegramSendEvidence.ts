@@ -34,7 +34,7 @@ export function exactDirectTelegramSend(
   const message = text.slice(header[0].length);
   if (!message.trim()) return null;
 
-  const ownerMessageRef = `telegram:${botScope}:${chatId}:${topicId}:${messageId}`;
+  const ownerMessageRef = telegramMessageReference(botScope, chatId, topicId, messageId);
   const ownerEvidenceDigest = createHash('sha256')
     .update(JSON.stringify(['instar-telegram-direct-send-v1', ownerMessageRef, senderId, sentAt, text]))
     .digest('hex');
@@ -59,7 +59,7 @@ export function exactDirectTelegramPollingSend(
   const from = message.from as { id?: unknown; is_bot?: unknown } | undefined;
   const chat = message.chat as { id?: unknown; type?: unknown } | undefined;
   const { message_id: messageId, message_thread_id: topicId, date, text } = message;
-  if (message.is_topic_message !== true || chat?.type !== 'supergroup' || typeof chat.id !== 'number'
+  if (message.is_topic_message !== true || chat?.type !== 'supergroup' || typeof chat.id !== 'number' || chat.id >= 0
     || from?.is_bot !== false || typeof from.id !== 'number' || typeof messageId !== 'number'
     || typeof topicId !== 'number' || typeof date !== 'number' || !Number.isSafeInteger(date)
     || typeof text !== 'string') return null;
@@ -69,4 +69,22 @@ export function exactDirectTelegramPollingSend(
     senderId: from.id, sentAt: date * 1000, text,
     forwarded: false, automaticForward: false, botOrChannelAuthor: false, quoteOrReply: false, hasMedia: false,
   }, ownerId);
+}
+
+function telegramMessageReference(botScope: string, chatId: number, topicId: number, messageId: number): string {
+  return `telegram:${botScope}:${chatId}:${topicId}:${messageId}`;
+}
+
+/** Revocation only. Call on a trusted edited_message update before topic normalization.
+ * An edit can invalidate its source regardless of the new text or sender shape.
+ */
+export function editedTelegramMessageReference(raw: unknown, botAccountId: number): string | null {
+  if (!raw || typeof raw !== 'object' || !Number.isSafeInteger(botAccountId) || botAccountId <= 0) return null;
+  const { chat, message_id: messageId, message_thread_id: topicId } = raw as {
+    chat?: { id?: unknown; type?: unknown }; message_id?: unknown; message_thread_id?: unknown;
+  };
+  if (chat?.type !== 'supergroup' || typeof chat.id !== 'number' || !Number.isSafeInteger(chat.id) || chat.id >= 0
+    || typeof messageId !== 'number' || !Number.isSafeInteger(messageId) || messageId <= 0
+    || typeof topicId !== 'number' || !Number.isSafeInteger(topicId) || topicId <= 0) return null;
+  return telegramMessageReference(String(botAccountId), chat.id, topicId, messageId);
 }
