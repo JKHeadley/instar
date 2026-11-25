@@ -56,10 +56,10 @@ Register the dedicated reply actions in actual signed-device route admission and
 
 Message/media-message stores only normalized replyTo; derive original preview/author at read time. Extend verifyRecordedOrigin's accepted paths to the exact reply actions. For App, compare signed input eventId with the selected stored event identity; derive its public messageId from that same decoded source witness. For providers, compare signed input messageId with the verified physical message identity. The machine receipt binds the complete normalized reference, server-derived namespace and actual stored destination.
 
-Receipt shape is {v:3,conversationKey,eventId,messageId,replyTo:ReplyReference|null,machineId,signerKeyHash,sig}. eventId/messageId identify the replying base, not the selected original. Its exact Ed25519 payload is the following array joined by one literal newline, with no trailing newline:
+Receipt shape is {v:3,conversationKey,eventId,messageId,replyTo:ReplyReference|null,machineId,signerKeyHash,sig}. eventId/messageId identify the replying base, not the selected original. Its exact Ed25519 payload is the UTF-8 canonical JSON encoding of the following array, with no trailing newline. Every field occupies its own array slot, so adjacent opaque IDs cannot collide through separator placement:
 
     ["instar-app-receipt-v3", sha256(canonicalDeviceRequest), receivedAt,
-     machineId, canonicalStoredDestinationKey, replyingEventId, replyingMessageId, canonicalJson(replyToOrNull)]
+     machineId, canonicalStoredDestinationKey, replyingEventId, replyingMessageId, replyToOrNull]
 
 Use the existing canonicalJson, device canonical request, signer and key-history implementations. Quoted admission requires v3 even with original signed bytes. Redacted bodies retain existing text/attachment redaction proof plus v3 reference binding. The new validator rejects unknown receipt versions as unsupported proof instead of demoting them. Unquoted v1/v2 verification remains unchanged.
 
@@ -199,3 +199,5 @@ This is a bounded design revision after two historical review rounds, not implem
 The first App increment requires the App rows of the boundary matrix, including dedicated-route default-off checks, duplicate outcome after source revocation, and the retained-marker/absent-marker pair. Telegram mirroring and Slack routing outcomes require their own provider increments.
 
 Two bounded Codex Astra passes identified and motivated these clarifications. The final revisions require confirmation. No successful runtime or convergence is recorded by this checkpoint.
+
+The focused review confirmed the preview generation, Stop authority and App-only test corrections. It also identified a potential delimiter ambiguity in the draft receipt. The v3 contract now uses canonical JSON for the entire tuple. The expected-byte fixture covers the two adjacent-ID values that the prior newline-join encoding could conflate. The wire encoding still needs runtime and independent implementation verification.
