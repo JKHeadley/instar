@@ -19,3 +19,5 @@ An edit can change the request into ordinary chat or replace its text with media
 The polling test now calls the same helper intended for future integration. That helper returns only after it has recorded a qualifying request or applied an edit. If it cannot apply an edit, the poller must stop and leave the update unacknowledged. The test retries the update and verifies the original request stays unusable afterward.
 
 The real adapter now has a test-only connection point for the evidence recorder. The test calls the adapter with a simulated Telegram response. When the recorder refuses an edit, the next poll requests the same update. After the recorder accepts it, the next poll advances. No live Telegram account is part of this test.
+
+The catch-up test now gives each poll a unique generation. An empty result can open only the current generation at the cursor it used. A later poll or explicit closure makes older results unusable. The test exercises this against SQLite. Live integration must bind the generation to the authenticated poller and check it together with the send reservation.

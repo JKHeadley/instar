@@ -1,0 +1,19 @@
+{
+  "version": 2,
+  "slug": "telegram-polling-coverage",
+  "sessionId": "b3d2cf8a-9b5d-468b-a50b-70ebf11e9e5c",
+  "timestamp": "2026-11-25T20:15:33.821Z",
+  "artifactPath": "upgrades/side-effects/telegram-polling-coverage.md",
+  "artifactSha256": "3e66dcb638f7ce736dc1ce14ae116e824968e9af78f79483e23ce6e8e0023e82",
+  "coveredFiles": [
+    "src/threadline/TelegramPollingCoverage.ts",
+    "tests/unit/telegram-polling-coverage.test.ts"
+  ],
+  "phase": "complete",
+  "tier": 1,
+  "tierReasoning": "Isolated fixture state without production caller, migration or reservation authority.",
+  "eli16Path": "docs/specs/direct-telegram-send-evidence.eli16.md",
+  "sideEffectsPath": "upgrades/side-effects/telegram-polling-coverage.md",
+  "secondPass": "true",
+  "reviewerConcurred": true
+}
