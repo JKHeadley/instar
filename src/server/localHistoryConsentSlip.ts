@@ -38,9 +38,9 @@ interface OwnedSourceCapture {
  * resolver. The resolver must independently establish current source ownership
  * and machine identity. The uploaded manifest establishes neither. */
 export function readLocalHistoryConsentSources(preview: ConsentPreview,
-  resolveOwnedCapture: (operationId: string) => OwnedSourceCapture | undefined,
+  resolveOwnedCapture: (operationId: string, destination: ConsentPreview['destination']) => OwnedSourceCapture | undefined,
 ): LocalHistoryConsentMaterial['sources'] {
-  const capture = resolveOwnedCapture(preview.operationId);
+  const capture = resolveOwnedCapture(preview.operationId, preview.destination);
   const refuse = (): never => { throw new Error('local-history-consent-source-binding'); };
   if (!capture || capture.operationId !== preview.operationId || capture.ownerUserId !== preview.ownerUserId
     || !matches(opaque, capture.machineId) || !Array.isArray(capture.files)

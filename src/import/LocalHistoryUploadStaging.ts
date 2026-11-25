@@ -974,7 +974,8 @@ export class LocalHistoryUploadStaging {
     const artifacts = Object.freeze(prepared.map(({ fileId, sha256 }, index) => {
       const file = files[index], capture = captures[index];
       if (!file || file.fileId !== fileId || capture.fileId !== fileId || capture.source !== file.source) refuse('unavailable');
-      return Object.freeze({ fileId, kind: capture.source, artifactDigest: sha256, captureDigest: capture.sha256 });
+      return Object.freeze({ fileId, kind: capture.source, artifactDigest: sha256, captureDigest: capture.sha256,
+        projectPath: file.projectPath, messages: file.messages, newMessages: file.newMessages, redactions: file.redactions });
     }));
     const { ownerHash, ownerUserId } = this.owner(device);
     if (ownerHash !== row.ownerHash) refuse('not-found');

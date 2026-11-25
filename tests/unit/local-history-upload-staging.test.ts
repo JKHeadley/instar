@@ -171,6 +171,8 @@ it('prepares both source kinds through real children and retires raw files witho
       artifacts: artifacts.files.map((file, index) => ({
         fileId: file.fileId, kind: preview.files[index].source, artifactDigest: file.sha256,
         captureDigest: crypto.createHash('sha256').update(index === 0 ? codex : claude).digest('hex'),
+        projectPath: preview.files[index].projectPath, messages: preview.files[index].messages,
+        newMessages: preview.files[index].newMessages, redactions: preview.files[index].redactions,
       })),
     });
     expect(Object.isFrozen(material.artifacts) && Object.isFrozen(material.destination)).toBe(true);
@@ -183,7 +185,7 @@ it('prepares both source kinds through real children and retires raw files witho
     expect(readLocalHistoryConsentSources(material, resolveCapture)).toEqual(material.artifacts.map(({ kind, artifactDigest }) => ({
       kind, artifactDigest, machineId: 'source-machine',
     })));
-    expect(resolveCapture).toHaveBeenCalledWith(grant.operationId);
+    expect(resolveCapture).toHaveBeenCalledWith(grant.operationId, material.destination);
     for (const refused of [
       undefined,
       { ...capture, operationId: 'different-operation' },

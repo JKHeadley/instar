@@ -1,0 +1,30 @@
+{
+  "ts": "2026-11-25T09:19:05.086Z",
+  "slug": "local-history-native-consent-preview",
+  "suggestedTier": 2,
+  "declaredTier": 2,
+  "riskFloor": 1,
+  "riskFloorReasons": [],
+  "belowFloor": false,
+  "files": 5,
+  "loc": 87,
+  "scope": {
+    "basis": "staged-in-scope-paths-including-deleted",
+    "files": [
+      "src/import/LocalHistoryUploadStaging.ts",
+      "src/server/localHistoryConsentPreview.ts",
+      "src/server/localHistoryConsentSlip.ts",
+      "src/server/mobilePairingRoutes.ts",
+      "src/server/signedLocalHistoryIntake.ts"
+    ],
+    "addedLines": 82,
+    "deletedLines": 5
+  },
+  "causalAutopsy": null,
+  "classClosure": {
+    "defectClass": "unbounded-self-action",
+    "closure": "n/a",
+    "reason": "Read-only dormant preview issues no challenge, permit, or autonomous action."
+  },
+  "verdict": "pass"
+}
