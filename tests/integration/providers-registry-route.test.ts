@@ -7,6 +7,7 @@
  * nothing beyond adapter ids + capability flag names (T-04).
  */
 import { describe, it, expect, beforeAll, afterAll } from 'vitest';
+import { createTempProject, type TempProject } from '../helpers/setup.js';
 import express from 'express';
 import request from 'supertest';
 import { createRoutes } from '../../src/server/routes.js';
@@ -14,9 +15,16 @@ import type { RouteContext } from '../../src/server/routes.js';
 import { registry } from '../../src/providers/registry.js';
 import { registerAnthropicAdapters } from '../../src/providers/bootRegistration.js';
 
+const routeProjects: TempProject[] = [];
+afterAll(() => {
+  for (const project of routeProjects.splice(0)) project.cleanup();
+});
+
 function minimalCtx(): RouteContext {
+  const project = createTempProject();
+  routeProjects.push(project);
   return {
-    config: { projectName: 'test', projectDir: '/tmp', stateDir: '/tmp/.instar', port: 0, sessions: {} as never, scheduler: {} as never },
+    config: { projectName: 'test', projectDir: project.dir, stateDir: project.stateDir, port: 0, sessions: {} as never, scheduler: {} as never },
     sessionManager: { listRunningSessions: () => [] },
     state: { getJobState: () => null, getSession: () => null },
     scheduler: null, telegram: null, relationships: null, feedback: null, dispatches: null,

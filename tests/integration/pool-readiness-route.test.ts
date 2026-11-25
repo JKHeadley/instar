@@ -2,17 +2,25 @@
  * GET /session-pool/readiness over the real route and auth (session-pool-default-on).
  */
 import { afterEach, describe, expect, it } from 'vitest';
+import { createTempProject, type TempProject } from '../helpers/setup.js';
 import express from 'express';
 import request from 'supertest';
 import { createRoutes, type RouteContext } from '../../src/server/routes.js';
 import { authMiddleware } from '../../src/server/middleware.js';
 import { setActivePoolReadiness } from '../../src/core/poolReadiness.js';
 
+const routeProjects: TempProject[] = [];
+afterEach(() => {
+  for (const project of routeProjects.splice(0)) project.cleanup();
+});
+
 const AUTH = 'test-bearer-token';
 
 function app(): express.Express {
+  const project = createTempProject();
+  routeProjects.push(project);
   const ctx = {
-    config: { projectName: 'test', projectDir: '/tmp', stateDir: '/tmp/.instar', port: 0, authToken: AUTH, sessions: {}, scheduler: {} },
+    config: { projectName: 'test', projectDir: project.dir, stateDir: project.stateDir, port: 0, authToken: AUTH, sessions: {}, scheduler: {} },
     sessionManager: { listRunningSessions: () => [] }, state: { getJobState: () => null, getSession: () => null },
     scheduler: null, telegram: null, relationships: null, feedback: null, dispatches: null, updateChecker: null, autoUpdater: null,
     autoDispatcher: null, quotaTracker: null, publisher: null, viewer: null, tunnel: null, evolution: null, watchdog: null,
