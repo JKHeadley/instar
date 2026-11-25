@@ -2880,6 +2880,7 @@ export class JobScheduler {
           const result = publishInitialDoorwayRetentionCursor({
             stateDir: writer.stateDir, machineId, doorIds,
             readSnapshot: () => this.runHistory.readPackagedDoorwaySnapshot(machineId),
+            flushLedger: () => this.runHistory.flushForDoorwayRetention(),
           }, writer);
           if (result.status === 'unavailable') console.warn(`[scheduler] Doorway cursor publication unavailable: ${result.reason}`);
         } catch (error) {

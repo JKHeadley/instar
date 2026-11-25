@@ -458,6 +458,29 @@ export class JobRunHistory {
     return runId;
   }
 
+  /** Flush the ledger and its directory entries before the first doorway cursor is persisted. */
+  flushForDoorwayRetention(): void {
+    const fd = fs.openSync(this.file, fs.constants.O_RDONLY | (fs.constants.O_NOFOLLOW ?? 0) | (fs.constants.O_NONBLOCK ?? 0));
+    try {
+      const opened = fs.fstatSync(fd);
+      if (!opened.isFile()) throw new Error('doorway ledger is not a regular file');
+      fs.fsyncSync(fd);
+      const current = fs.lstatSync(this.file);
+      if (current.dev !== opened.dev || current.ino !== opened.ino || current.size !== opened.size
+        || current.mtimeMs !== opened.mtimeMs) throw new Error('doorway ledger changed during flush');
+    } finally {
+      fs.closeSync(fd);
+    }
+    for (const dir of [this.ledgerDir, path.dirname(this.ledgerDir)]) {
+      const parent = fs.openSync(dir, fs.constants.O_RDONLY);
+      try {
+        fs.fsyncSync(parent);
+      } finally {
+        fs.closeSync(parent);
+      }
+    }
+  }
+
   /** Capture all matching runs for initial cursor selection before artifacts are pruned. */
   readPackagedDoorwaySnapshot(machineId: string): { complete: boolean; runs: JobRun[] } {
     const runs = this.readPackagedDoorwayRows(machineId);

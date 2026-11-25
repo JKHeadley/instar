@@ -127,3 +127,9 @@ Independent review concurred after recovery was bounded to one lock attempt at a
 The opt-in scheduler now invokes advisory cursor publication while still holding its writer lease, after rereading the exact successful run and matching its observation digest. The first cursor uses the verified catalog and complete local ledger. An existing generation stays as stored, and a publication failure leaves the completed scan result intact. Legacy scans do not invoke the publisher. Readers do not consume the cursor yet, and no artifacts are removed. Cursor advancement and reader coordination are the next steps before cleanup.
 
 Independent review concurred for advisory publication. Before cleanup, the job ledger must explicitly flush the completion to disk so a power loss cannot leave a durable cursor ahead of its source ledger.
+
+## Ledger flush before initial cursor publication
+
+Initial publication now synchronizes the job ledger and its containing directories after verifying references and before writing the cursor. It checks that the ledger still names the same file and compares the complete snapshot again after the flush. A flush failure leaves the cursor absent and the successful run intact. An existing cursor does not trigger another flush. This checkpoint covers initial publication. Startup ledger compaction and future cursor advancement still need crash-safe ordering review before cleanup.
+
+Independent review concurred for first publication with no cleanup authority.

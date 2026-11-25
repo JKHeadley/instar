@@ -183,6 +183,7 @@ describe('scheduled doorway evidence reconciliation', () => {
     const options = {
       stateDir: dir, machineId: 'local-test', doorIds: ['alpha'],
       readSnapshot: () => ledger.readPackagedDoorwaySnapshot('local-test'),
+      flushLedger: () => ledger.flushForDoorwayRetention(),
       deadlineMs: Date.now() + 4000,
     };
     const results = await Promise.all([initializeDoorwayRetentionCursor(options), initializeDoorwayRetentionCursor(options)]);
@@ -197,6 +198,7 @@ describe('scheduled doorway evidence reconciliation', () => {
     let reads = 0;
     const result = await initializeDoorwayRetentionCursor({
       stateDir: dir, machineId: 'local-test', doorIds: ['alpha'], deadlineMs: Date.now() + 4000,
+      flushLedger: () => ledger.flushForDoorwayRetention(),
       readSnapshot: () => {
         if (++reads === 2) newer();
         return ledger.readPackagedDoorwaySnapshot('local-test');
@@ -204,6 +206,25 @@ describe('scheduled doorway evidence reconciliation', () => {
     });
     expect(result).toEqual({ status: 'unavailable', reason: 'ledger-changed' });
     expect(store.readRetentionCursor()).toBeNull();
+  });
+
+  it.skipIf(!createPhysicalEffectLock(os.tmpdir()).status().available)('does not publish a cursor if flushing the ledger fails', async () => {
+    committed();
+    const flush = vi.spyOn(ledger, 'flushForDoorwayRetention').mockImplementationOnce(() => {
+      throw new Error('fixture ledger flush failed');
+    });
+    const options = {
+      stateDir: dir, machineId: 'local-test', doorIds: ['alpha'], deadlineMs: Date.now() + 4000,
+      readSnapshot: () => ledger.readPackagedDoorwaySnapshot('local-test'),
+      flushLedger: () => ledger.flushForDoorwayRetention(),
+    };
+    try {
+      await expect(initializeDoorwayRetentionCursor(options)).rejects.toThrow('fixture ledger flush failed');
+      expect(store.readRetentionCursor()).toBeNull();
+      await expect(initializeDoorwayRetentionCursor(options)).resolves.toMatchObject({ status: 'published' });
+    } finally {
+      flush.mockRestore();
+    }
   });
 
   it('retains a past observation and exposes a newer interrupted admission after restart', () => {

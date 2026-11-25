@@ -1,0 +1,20 @@
+{
+  "version": 2,
+  "slug": "latest-codex-scan-and-idle-wip",
+  "sessionId": "aca68beb-0d4e-4546-a3c1-065299307f44",
+  "timestamp": "2026-11-25T00:46:49.610Z",
+  "artifactPath": "upgrades/side-effects/latest-codex-scan-and-idle-wip.md",
+  "artifactSha256": "8e22c6fbb5c2d606d5d18c2a95c3f2ce83f0c427e0930df493398d2a2f66945f",
+  "specPath": "docs/specs/latest-codex-doorway-scan.md",
+  "coveredFiles": [
+    "src/core/VerifiedDoorwayRetention.ts",
+    "src/scheduler/JobRunHistory.ts",
+    "src/scheduler/JobScheduler.ts",
+    "tests/unit/committed-doorway-observation.test.ts"
+  ],
+  "phase": "complete",
+  "tier": 2,
+  "tierReasoning": "The first doorway cursor now flushes the ledger before referring to its verified rows.",
+  "secondPass": "true",
+  "reviewerConcurred": true
+}

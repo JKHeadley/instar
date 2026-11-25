@@ -155,6 +155,7 @@ type InitializationOptions = {
   machineId: string;
   doorIds: readonly string[];
   readSnapshot: () => Snapshot;
+  flushLedger: () => void;
 };
 type InitializationResult = { status: 'published' | 'existing'; cursor: ScheduledDoorwayRetentionCursor }
   | { status: 'unavailable'; reason: 'incomplete-evidence' | 'ledger-changed' };
@@ -186,6 +187,7 @@ export function publishInitialDoorwayRetentionCursor(
   }
 
   const snapshotRows = JSON.stringify(snapshot.runs);
+  options.flushLedger();
   const latest = options.readSnapshot();
   if (!latest.complete || JSON.stringify(latest.runs) !== snapshotRows) {
     return { status: 'unavailable', reason: 'ledger-changed' };
