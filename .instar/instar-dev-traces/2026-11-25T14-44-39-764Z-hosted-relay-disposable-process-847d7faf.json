@@ -1,0 +1,25 @@
+{
+  "version": 2,
+  "slug": "hosted-relay-disposable-process",
+  "sessionId": "41652017-0805-405d-bb4e-2a975fb349ce",
+  "timestamp": "2026-11-25T14:44:39.764Z",
+  "artifactPath": "upgrades/side-effects/hosted-relay-disposable-process.md",
+  "artifactSha256": "08d4b62c2640296fc3cf8957024f6473613754390dc8ff04a5aa3186a5ce20bb",
+  "specPath": "docs/specs/hosted-relay.md",
+  "coveredFiles": [
+    "src/hostedRelay/disposableRelay.ts",
+    "tests/integration/hosted-relay-disposable.test.ts",
+    "upgrades/next/hosted-relay-disposable-process.md",
+    "upgrades/side-effects/hosted-relay-disposable-process.md"
+  ],
+  "phase": "complete",
+  "tier": 2,
+  "tierReasoning": "Disposable relay wiring enforces bounded input and signed lease control before exposing opaque streams.",
+  "secondPass": "true",
+  "reviewerConcurred": true,
+  "classClosure": {
+    "defectClass": "unbounded-self-action",
+    "closure": "n/a",
+    "reason": "One bounded handshake per externally accepted connection. No listener or recurring action is started."
+  }
+}

@@ -1,0 +1,28 @@
+{
+  "ts": "2026-11-25T14:45:11.671Z",
+  "slug": "hosted-relay-disposable-process",
+  "suggestedTier": 2,
+  "declaredTier": 2,
+  "riskFloor": 2,
+  "riskFloorReasons": [
+    "safety-invariant proximity: src/hostedRelay/disposableRelay.ts matches relay / delivery path"
+  ],
+  "belowFloor": false,
+  "files": 1,
+  "loc": 122,
+  "scope": {
+    "basis": "staged-in-scope-paths-including-deleted",
+    "files": [
+      "src/hostedRelay/disposableRelay.ts"
+    ],
+    "addedLines": 122,
+    "deletedLines": 0
+  },
+  "causalAutopsy": null,
+  "classClosure": {
+    "defectClass": "unbounded-self-action",
+    "closure": "n/a",
+    "reason": "One bounded handshake per externally accepted connection. No listener or recurring action is started."
+  },
+  "verdict": "pass"
+}
