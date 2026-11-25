@@ -1,0 +1,19 @@
+{
+  "version": 2,
+  "slug": "camera-evidence-publication",
+  "sessionId": "ab1b66cc-de80-48bd-9b94-4ede369ccb55",
+  "timestamp": "2026-11-25T05:39:16.936Z",
+  "artifactPath": "upgrades/side-effects/camera-evidence-publication.md",
+  "artifactSha256": "147f065d5dfabb7745a13d80f5fc05722107d68acea11dee845b631c8b3cc64d",
+  "specPath": "docs/specs/independent-owner-surface-acceptance.md",
+  "coveredFiles": [
+    "src/core/CameraAcceptanceEvidenceSource.ts",
+    "src/core/CameraAcceptanceEvidenceStorage.ts",
+    "tests/unit/camera-acceptance-evidence-storage.test.ts"
+  ],
+  "phase": "complete",
+  "tier": 2,
+  "tierReasoning": "The protected writer remains unwired and cannot alter live evidence.",
+  "secondPass": "true",
+  "reviewerConcurred": true
+}

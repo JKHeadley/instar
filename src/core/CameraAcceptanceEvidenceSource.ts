@@ -26,6 +26,11 @@ const evidenceRecord = z.strictObject({
 
 type CameraEvidenceRecord = z.infer<typeof evidenceRecord>;
 
+export function parseCameraEvidenceRecord(input: unknown): CameraEvidenceRecord | null {
+  const parsed = evidenceRecord.safeParse(input);
+  return parsed.success ? parsed.data : null;
+}
+
 interface CameraEvidenceSourceDeps {
   /** Load a bounded, immutable artifact for this request from protected storage. */
   readProtected(requestId: string): Promise<unknown>;
@@ -42,9 +47,8 @@ export function cameraAcceptanceEvidenceSource(deps: CameraEvidenceSourceDeps) {
   return async (scope: CameraJournalScope, principal: string, requestId: string): Promise<CameraOwnerEvidence | null> => {
     if (!z.uuidv4().safeParse(requestId).success || !token.safeParse(principal).success) return null;
     try {
-      const parsed = evidenceRecord.safeParse(await deps.readProtected(requestId));
-      if (!parsed.success) return null;
-      const record = parsed.data;
+      const record = parseCameraEvidenceRecord(await deps.readProtected(requestId));
+      if (!record) return null;
       if (record.requestId !== requestId || record.principal !== principal || record.scopeDigest !== canonicalHash(scope)) return null;
       return deps.verifyAttester(scope, principal, cameraEvidenceSigningText(record), record.signature) === true
         ? record.evidence : null;

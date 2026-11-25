@@ -2,7 +2,7 @@ import { chmod, mkdtemp, mkdir, open, symlink, writeFile } from 'node:fs/promise
 import os from 'node:os';
 import path from 'node:path';
 import { afterEach, beforeEach, describe, expect, it } from 'vitest';
-import { cameraAcceptanceEvidenceStorage } from '../../src/core/CameraAcceptanceEvidenceStorage.js';
+import { cameraAcceptanceEvidenceStorage, saveCameraAcceptanceEvidence } from '../../src/core/CameraAcceptanceEvidenceStorage.js';
 import { SafeFsExecutor } from '../../src/core/SafeFsExecutor.js';
 
 const id = 'fe45a4f2-2bd4-4c72-b16e-43ecda0b441f';
@@ -52,6 +52,30 @@ describe.skipIf(!process.getuid)('Camera evidence filesystem reader', () => {
     await chmod(root, 0o770);
     try { await expect(cameraAcceptanceEvidenceStorage(root)(id)).resolves.toBeNull(); }
     finally { await chmod(root, 0o700); }
+  });
+
+  it('atomically publishes one private record and refuses concurrent replacement', async () => {
+    const unlinked = { before: [], after: [], visibleComputer: null };
+    const record = {
+      requestId: id, principal: 'reviewer', scopeDigest: 'a'.repeat(64), signature: 'test',
+      evidence: {
+        candidate: 'build', phone: 'phone', computer: 'target', observedAt: '2026-11-25T05:36:00Z',
+        expectedGrant: { id: 'grant', phone: 'phone', computer: 'target', access: 'read', expiresAt: null, revokedAt: null },
+        redirected: true, success: unlinked, cancellation: unlinked, expiry: unlinked, replay: unlinked,
+      },
+    };
+    const changed = { ...record, signature: 'other' };
+    const results = await Promise.all([
+      saveCameraAcceptanceEvidence(root, record),
+      saveCameraAcceptanceEvidence(root, changed),
+    ]);
+    expect(results.sort()).toEqual(['exists', 'saved']);
+    const read = cameraAcceptanceEvidenceStorage(root);
+    const original = await read(id);
+    expect([record, changed]).toContainEqual(original);
+    await expect(saveCameraAcceptanceEvidence(root, { ...record, signature: 'third' })).resolves.toBe('exists');
+    await expect(read(id)).resolves.toEqual(original);
+    await expect(saveCameraAcceptanceEvidence(root, { ...record, requestId: '../invalid' })).resolves.toBe('invalid');
   });
 
   it('refuses oversized records before reading them', async () => {
