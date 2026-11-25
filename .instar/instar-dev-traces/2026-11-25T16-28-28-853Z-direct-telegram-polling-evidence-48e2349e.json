@@ -1,0 +1,19 @@
+{
+  "version": 2,
+  "slug": "direct-telegram-polling-evidence",
+  "sessionId": "b3d2cf8a-9b5d-468b-a50b-70ebf11e9e5c",
+  "timestamp": "2026-11-25T16:28:28.853Z",
+  "artifactPath": "upgrades/side-effects/direct-telegram-polling-evidence.md",
+  "artifactSha256": "fe1dfc498f5a944d07a8489794fc734159219525479b2b5fca8c2b32e84e2c7d",
+  "coveredFiles": [
+    "src/threadline/directTelegramSendEvidence.ts",
+    "tests/unit/direct-telegram-send-evidence.test.ts"
+  ],
+  "phase": "complete",
+  "tier": 1,
+  "tierReasoning": "Dormant fixture adapter, with no production caller or authority.",
+  "eli16Path": "docs/specs/direct-telegram-send-evidence.eli16.md",
+  "sideEffectsPath": "upgrades/side-effects/direct-telegram-polling-evidence.md",
+  "secondPass": "true",
+  "reviewerConcurred": true
+}

@@ -1,5 +1,5 @@
 import { expect, it } from 'vitest';
-import { exactDirectTelegramSend } from '../../src/threadline/directTelegramSendEvidence.js';
+import { exactDirectTelegramPollingSend, exactDirectTelegramSend } from '../../src/threadline/directTelegramSendEvidence.js';
 
 const recipient = 'a'.repeat(32);
 const header = `Send via Threadline to ${recipient}:\n`;
@@ -30,5 +30,31 @@ it('refuses nonowners, uncertain source facts, quoted requests and ambiguous syn
     { text: header + '\ud800' }, { topicId: 0 },
   ]) {
     expect(exactDirectTelegramSend({ ...source, ...patch } as typeof source, 75)).toBeNull();
+  }
+});
+
+const raw = {
+  from: { id: 75, is_bot: false },
+  chat: { id: -10001, type: 'supergroup' },
+  date: 1795586730, is_topic_message: true,
+  message_thread_id: 42, message_id: 15, text: source.text,
+};
+
+it('extracts the original forum coordinates under a numeric bot account', () => {
+  expect(exactDirectTelegramPollingSend(raw, 248, 75)).toEqual(
+    exactDirectTelegramSend({ ...source, botScope: '248' }, 75),
+  );
+});
+
+it('refuses insufficient raw source evidence before request parsing', () => {
+  expect(exactDirectTelegramPollingSend(raw, 0, 75)).toBeNull();
+  expect(exactDirectTelegramPollingSend(raw, 248, 76)).toBeNull();
+  for (const patch of [
+    { from: { id: 75 } }, { message_thread_id: undefined }, { is_topic_message: undefined },
+    { forward_origin: {} }, { is_automatic_forward: true }, { sender_chat: {} },
+    { external_reply: {} }, { reply_to_message: {} }, { quote: {} }, { photo: [] },
+    { entities: [] }, { unexpected_field: true }, { date: raw.date + 0.1 },
+  ]) {
+    expect(exactDirectTelegramPollingSend({ ...raw, ...patch }, 248, 75)).toBeNull();
   }
 });

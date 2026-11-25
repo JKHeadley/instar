@@ -1,0 +1,22 @@
+{
+  "ts": "2026-11-25T16:29:04.300Z",
+  "slug": "direct-telegram-polling-evidence",
+  "suggestedTier": 1,
+  "declaredTier": 1,
+  "riskFloor": 1,
+  "riskFloorReasons": [],
+  "belowFloor": false,
+  "files": 1,
+  "loc": 30,
+  "scope": {
+    "basis": "staged-in-scope-paths-including-deleted",
+    "files": [
+      "src/threadline/directTelegramSendEvidence.ts"
+    ],
+    "addedLines": 30,
+    "deletedLines": 0
+  },
+  "causalAutopsy": null,
+  "classClosure": null,
+  "verdict": "pass"
+}
