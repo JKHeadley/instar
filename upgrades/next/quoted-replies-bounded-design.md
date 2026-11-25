@@ -11,3 +11,7 @@ Reply is off by default while the server and native menu are being verified. Whe
 ## Summary of New Capabilities
 
 The default-off App Reply route accepts an exact original message and preserves that relationship in conversation history. If access to the original is lost, supported clients can show that the original is unavailable.
+
+## Evidence
+
+Not reproducible in dev — the earlier server had no signed quoted Reply action to exercise. In a disposable agent, the enabled candidate accepted a signed reply to a visible original, returned the same recorded outcome on retry, and stored one reply. A denied or missing original returned the same unavailable response. Native acceptance remains pending.
