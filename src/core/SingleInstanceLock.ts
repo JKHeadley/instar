@@ -177,6 +177,7 @@ export class SingleInstanceLock {
   private readonly env: NodeJS.ProcessEnv;
   private readonly log: (msg: string) => void;
   private held = false;
+  private exclusive = false;
 
   constructor(deps: SingleInstanceLockDeps) {
     this.stateDir = deps.stateDir;
@@ -247,6 +248,7 @@ export class SingleInstanceLock {
       // Still write our record so a LATER third instance sees a holder.
       this.tryWriteLock();
       this.held = true;
+      this.exclusive = false;
       return { acquired: true, overridden: true };
     }
 
@@ -259,6 +261,7 @@ export class SingleInstanceLock {
         // Free — take it.
         if (this.tryWriteLock()) {
           this.held = true;
+          this.exclusive = true;
           return { acquired: true };
         }
         // Lost a creation race — loop and re-read.
@@ -344,6 +347,8 @@ export class SingleInstanceLock {
       }
       if (this.tryWriteLock()) {
         this.held = true;
+        this.exclusive = true;
+
         this.log(`[single-instance] reclaimed a stale same-host lock (dead pid ${existing.pid}).`);
         return { acquired: true };
       }
@@ -373,6 +378,11 @@ export class SingleInstanceLock {
     return rec.pid === process.pid && rec.hostname === this.host;
   }
 
+  /** Prove current ownership established through exclusive acquisition. */
+  revalidateExclusive(): boolean {
+    return this.exclusive && this.revalidate();
+  }
+
   /** Refresh the heartbeat (optional — the lock is primarily pid-guarded). */
   heartbeat(): void {
     if (!this.held) return;
@@ -391,6 +401,7 @@ export class SingleInstanceLock {
   release(): void {
     if (!this.held) return;
     this.held = false;
+    this.exclusive = false;
     const rec = this.readLock();
     if (!rec) return;
     if (rec.pid !== process.pid || rec.hostname !== this.host) {

@@ -174,3 +174,16 @@ Missing baseline evidence now keeps an enrolled writer unavailable, even when it
 - Rollback. Keep production enrollment off if evidence cannot be supplied. Legacy boards require no migration.
 
 Independent review concurred. The lifecycle fixtures distinguish missing baseline evidence, missing application wiring, and an explicit empty baseline.
+
+## Dark rollout candidate on current main
+
+The enrolled runtime revalidates exclusive ownership of the existing agent-home instance lock before authorizing a writer operation. The explicit second-instance override still works for its current callers and supplies no Work Board writer proof. Production startup has no enrollment. A lifecycle fixture produces a real journal batch through the legacy Work Board path and verifies that the enrolled runtime fences before applying it.
+
+- Over-block. Losing the lock disables slip reads and writes and blocks further enrolled board mutations. This is the required failure state.
+- Under-block. The legacy fixture exercises the existing protocol in-process. Fleet admission and a mixed-binary rollout still require evidence before activation.
+- Abstraction and authority. The existing lock owns exclusive-process proof. The writer combines it with the existing enrollment and owner proof.
+- Interactions and surfaces. The new method leaves existing lock callers on their current contract. The dark routes report unavailability and legacy boards continue to work.
+- Multi-machine posture. The lock covers the enrolled agent home on its assigned machine. The sealed journal and epoch constrain foreign records independently.
+- Rollback. Keep enrollment off while restoring the prior release. No production slip state is created by this candidate.
+
+Independent review concurred for the dark candidate. A second-instance override can still boot beside the normal holder while the latter's lock continues to validate. Production enrollment must prove that a same-home override or an older binary cannot emit enrolled board writes. The legacy fixture proves receiver refusal at the runtime callback using a real journal batch. A two-binary sync and sender-admission check is still needed for activation.

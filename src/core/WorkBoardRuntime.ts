@@ -88,6 +88,8 @@ export interface WorkBoardRuntimeSeams {
     store: WorkBoardSlipStore;
     /** Exact peer records accepted by enrollment. An explicit empty set attests to zero peer records. */
     sealedPeerHistory?: ReadonlySet<string>;
+    /** Revalidate the boot-acquired agent-home lock at each writer check. */
+    instanceLock?: Pick<import('./SingleInstanceLock.js').SingleInstanceLock, 'revalidateExclusive'>;
     currentWriter: () => WorkBoardWriterProof | null;
     application?: {
       readEvent: (id: string) => WorkBoardApprovalLookup;
@@ -147,7 +149,7 @@ export class WorkBoardRuntime {
   private currentSlipWriter(): WorkBoardWriterProof | null {
     if (!this.started || !this.seams.enabled() || this.slipJournalConflict || !this.sealedPeerHistory) return null;
     const port = this.seams.permissionSlips;
-    if (!port?.application) return null;
+    if (!port?.application || !port.instanceLock?.revalidateExclusive()) return null;
     const writer = port.currentWriter();
     return writer && writer.ownerPersonKey === this.seams.ownerPersonKey() ? writer : null;
   }

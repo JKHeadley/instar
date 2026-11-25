@@ -1,0 +1,18 @@
+{
+  "version": 2,
+  "slug": "work-board-approval-binding-wip",
+  "sessionId": "b3d2cf8a-9b5d-468b-a50b-70ebf11e9e5c",
+  "timestamp": "2026-11-25T07:39:36.234Z",
+  "artifactPath": "upgrades/side-effects/work-board-approval-binding-wip.md",
+  "artifactSha256": "7186def315b55e64b694a98271e32e8b53c59722523d620f5391a38d2275540b",
+  "specPath": "docs/specs/owner-work-board-slips-first-slice.md",
+  "coveredFiles": [
+    "src/core/SingleInstanceLock.ts",
+    "src/core/WorkBoardRuntime.ts",
+    "tests/e2e/phone-work-cards-alive.test.ts",
+    "tests/unit/single-instance-lock.test.ts"
+  ],
+  "phase": "complete",
+  "secondPass": "true",
+  "reviewerConcurred": true
+}

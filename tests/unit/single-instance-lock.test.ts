@@ -94,6 +94,15 @@ describe('SingleInstanceLock', () => {
   // server refuses to boot. 42 consecutive spawns were refused across ~3.5h
   // (and ~35h over the preceding weekend) before a pid happened to be free.
 
+  it('does not treat a second-instance override as exclusive ownership', async () => {
+    const lock = makeLock(dir, { env: { INSTAR_ALLOW_SECOND_INSTANCE: '1' } });
+    try {
+      expect(await lock.acquire()).toMatchObject({ acquired: true, overridden: true });
+      expect(lock.revalidate()).toBe(true);
+      expect(lock.revalidateExclusive()).toBe(false);
+    } finally { lock.release(); }
+  });
+
   it('reclaims a lock whose pid is ALIVE but is a REUSED pid (start time far from the record)', async () => {
     const holderStart = 1_000_000_000_000;
     seedLock(dir, { pid: 12345, hostname: HOST, startedAt: holderStart });

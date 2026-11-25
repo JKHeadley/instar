@@ -18,6 +18,7 @@ import fs from 'node:fs';
 import path from 'node:path';
 import os from 'node:os';
 import { AgentServer } from '../../src/server/AgentServer.js';
+import { SingleInstanceLock } from '../../src/core/SingleInstanceLock.js';
 import { StateManager } from '../../src/core/StateManager.js';
 import type { InstarConfig } from '../../src/core/types.js';
 import { SafeFsExecutor } from '../../src/core/SafeFsExecutor.js';
@@ -64,19 +65,20 @@ afterAll(() => { for (const d of tmpDirs) SafeFsExecutor.safeRmSync(d, { recursi
 
 interface Rig { runtime: WorkBoardRuntime; journal: CoherenceJournal; lines: Array<{ key: string; id: string; text: string }>; briefs: string[]; conversations: Set<string>; removed: string[] }
 
-function mkRuntime(stateDir: string, opts: { baseline?: () => UnionEntry[]; rotateBytes?: number; permissionSlips?: ConstructorParameters<typeof WorkBoardRuntime>[0]['permissionSlips']; onAwaitDurable?: (seq: number, journal: CoherenceJournal) => void } = {}): Rig {
+function mkRuntime(stateDir: string, opts: { machineId?: string; baseline?: () => UnionEntry[]; rotateBytes?: number; permissionSlips?: ConstructorParameters<typeof WorkBoardRuntime>[0]['permissionSlips']; onAwaitDurable?: (seq: number, journal: CoherenceJournal) => void } = {}): Rig {
+  const machineId = opts.machineId ?? 'm1';
   const reg = new ReplicatedKindRegistry(); reg.register(WORK_CARD_KIND_REGISTRATION);
   const journal = new CoherenceJournal({
-    stateDir, machineId: 'm1', flushIntervalMs: 1_000_000,
+    stateDir, machineId, flushIntervalMs: 1_000_000,
     ...(opts.rotateBytes ? { retention: { [WORK_CARD_RECORD_KIND]: { maxFileBytes: opts.rotateBytes, rotateKeep: 0 } } } : {}),
   } as never);
   journal.open(); journal.setReplicatedKindRegistry(reg);
   let t = Date.parse('2026-11-12T20:00:00Z');
-  const emitter = new ReplicatedRecordEmitter({ journal, clock: new HybridLogicalClock({ node: 'm1', now: () => (t += 1000) }), registry: reg, origin: 'm1', stores: () => ({ [WORK_BOARD_STORE_KEY]: { enabled: true } }), loadWitness: () => undefined });
-  const streams = new ReplicatedPeerStreamReader({ stateDir, registry: reg, selfMachineId: 'm1', autoRebuild: false });
+  const emitter = new ReplicatedRecordEmitter({ journal, clock: new HybridLogicalClock({ node: machineId, now: () => (t += 1000) }), registry: reg, origin: machineId, stores: () => ({ [WORK_BOARD_STORE_KEY]: { enabled: true } }), loadWitness: () => undefined });
+  const streams = new ReplicatedPeerStreamReader({ stateDir, registry: reg, selfMachineId: machineId, autoRebuild: false });
   const lines: Rig['lines'] = []; const briefs: string[] = []; const conversations = new Set<string>(); const removed: string[] = [];
   const runtime = new WorkBoardRuntime({
-    machineId: 'm1', permissionSlips: opts.permissionSlips, enabled: () => true, rawSettings: () => ({}), saveSettings: () => true,
+    machineId, permissionSlips: opts.permissionSlips, enabled: () => true, rawSettings: () => ({}), saveSettings: () => true,
     emit: (k, b) => { const r = emitter.emit(WORK_BOARD_STORE_KEY, k, b); journal.flush(); return { outcome: r.outcome, ...(r.seq !== undefined ? { seq: r.seq } : {}), ...(r.hlc ? { hlc: r.hlc } : {}) }; },
     awaitDurable: async (seq) => { journal.flush(); opts.onAwaitDurable?.(seq, journal); },
     loadUnion: () => {
@@ -97,7 +99,7 @@ function mkRuntime(stateDir: string, opts: { baseline?: () => UnionEntry[]; rota
     relayReady: () => true, capacityProbe: () => ({ ok: true }),
     ownerPersonKey: () => 'owner', displayName: () => 'Justin', timezone: () => 'America/Los_Angeles',
     detectCredential: (text) => (/sk-ant-[A-Za-z0-9]{10,}/.test(text) ? 'anthropic-api-key' : null),
-    ledgerNote: () => {}, degradation: () => {}, leaseHolder: () => 'm1',
+    ledgerNote: () => {}, degradation: () => {}, leaseHolder: () => machineId,
   });
   return { runtime, journal, lines, briefs, conversations, removed };
 }
@@ -115,7 +117,7 @@ function send(app: Parameters<typeof request>[0], phone: Phone, method: 'POST' |
 }
 
 describe('Work cards from the owner phone E2E (feature is alive)', () => {
-  it.each(['application', 'baseline'] as const)('fences an enrolled writer missing its %s before it can issue or write', (missing) => {
+  it.each(['application', 'baseline', 'lock'] as const)('fences an enrolled writer missing its %s before it can issue or write', (missing) => {
     const { stateDir } = mkConfig();
     const db = new Database(':memory:');
     const store = new WorkBoardSlipStore(db);
@@ -124,9 +126,9 @@ describe('Work cards from the owner phone E2E (feature is alive)', () => {
       permissionSlips: {
         store,
         currentWriter: () => writer,
-        ...(missing === 'application' ? { sealedPeerHistory: new Set<string>() } : {
-          application: { readEvent: () => ({ status: 'unknown' as const }) },
-        }),
+        ...(missing !== 'application' ? { application: { readEvent: () => ({ status: 'unknown' as const }) } } : {}),
+        ...(missing !== 'baseline' ? { sealedPeerHistory: new Set<string>() } : {}),
+        ...(missing !== 'lock' ? { instanceLock: { revalidateExclusive: () => true } } : {}),
       },
     });
     try {
@@ -140,6 +142,34 @@ describe('Work cards from the owner phone E2E (feature is alive)', () => {
     } finally { runtime.stop(); journal.close(); db.close(); }
   });
 
+  it('refuses an enrolled writer when it loses the real agent-home lock', async () => {
+    const { stateDir } = mkConfig();
+    const db = new Database(':memory:');
+    const lock = new SingleInstanceLock({ stateDir, handoffGraceMs: 0, env: {} });
+    const rig = mkRuntime(stateDir, {
+      permissionSlips: {
+        store: new WorkBoardSlipStore(db),
+        currentWriter: () => ({ epoch: 'epoch1', ownerGeneration: 'owner1', ownerPersonKey: 'owner', writerIncarnation: 'i1' }),
+        sealedPeerHistory: new Set(),
+        instanceLock: lock,
+        application: { readEvent: () => ({ status: 'unknown' }) },
+      },
+    });
+    const create = (title: string) => rig.runtime.svc.createCard({ kind: 'agent' }, {
+      title, need: 'Check the lock', doneWhen: [{ id: 'done', text: 'Complete' }], outward: true,
+    });
+    try {
+      expect(await lock.acquire()).toMatchObject({ acquired: true });
+      rig.runtime.start();
+      expect(create('Held lock')).toMatchObject({ ok: true });
+      const before = rig.journal.readKindComplete(WORK_CARD_RECORD_KIND).entries.length;
+      lock.release();
+      expect(create('Released lock')).toMatchObject({ ok: false, error: 'store-unavailable' });
+      expect(rig.runtime.readPermissionSlip('11111111-2222-4333-8444-555555555555').status).toBe(503);
+      expect(rig.journal.readKindComplete(WORK_CARD_RECORD_KIND).entries).toHaveLength(before);
+    } finally { rig.runtime.stop(); rig.journal.close(); lock.release(); db.close(); }
+  });
+
   it('refuses a pickup when an unexpected peer record arrives during the durability wait', async () => {
     const { stateDir } = mkConfig();
     const db = new Database(':memory:');
@@ -149,6 +179,7 @@ describe('Work cards from the owner phone E2E (feature is alive)', () => {
     const rig: Rig = mkRuntime(stateDir, {
       permissionSlips: {
         store, currentWriter: () => writer,
+        instanceLock: { revalidateExclusive: () => true },
         sealedPeerHistory: new Set(),
         application: { readEvent: (id) => readWorkBoardApprovalEvent(id, {
           journal: rig.journal,
@@ -180,6 +211,40 @@ describe('Work cards from the owner phone E2E (feature is alive)', () => {
     } finally { rig.runtime.stop(); rig.journal.close(); db.close(); }
   });
 
+  it('refuses a Work Board journal write from a legacy peer after enrollment', () => {
+    const { stateDir } = mkConfig();
+    const db = new Database(':memory:');
+    const legacy = mkRuntime(mkConfig().stateDir, { machineId: 'legacy-peer' });
+    const writer = mkRuntime(stateDir, {
+      permissionSlips: {
+        store: new WorkBoardSlipStore(db),
+        currentWriter: () => ({ epoch: 'epoch1', ownerGeneration: 'owner1', ownerPersonKey: 'owner', writerIncarnation: 'i1' }),
+        sealedPeerHistory: new Set(),
+        instanceLock: { revalidateExclusive: () => true },
+        application: { readEvent: () => ({ status: 'unknown' }) },
+      },
+    });
+    try {
+      legacy.runtime.start();
+      writer.runtime.start();
+      const created = legacy.runtime.svc.createCard({ kind: 'agent' }, {
+        title: 'Legacy write', need: 'Reject after enrollment', doneWhen: [{ id: 'done', text: 'Complete' }], outward: true,
+      });
+      if (!created.ok) throw new Error('legacy card did not commit');
+      const entries = legacy.journal.readKindComplete(WORK_CARD_RECORD_KIND).entries;
+      expect(entries.length).toBeGreaterThan(0);
+      writer.runtime.onCommitted(entries, 'legacy-peer');
+      expect(writer.runtime.svc.view(created.cardId)).toBeNull();
+      expect(writer.runtime.readPermissionSlip('11111111-2222-4333-8444-555555555555').status).toBe(503);
+    } finally {
+      legacy.runtime.stop();
+      legacy.journal.close();
+      writer.runtime.stop();
+      writer.journal.close();
+      db.close();
+    }
+  });
+
   it('fences an enrolled writer when a sealed peer record is missing at startup', () => {
     const { stateDir } = mkConfig();
     const db = new Database(':memory:');
@@ -190,6 +255,7 @@ describe('Work cards from the owner phone E2E (feature is alive)', () => {
       permissionSlips: {
         store: new WorkBoardSlipStore(db),
         currentWriter: () => ({ epoch: 'epoch1', ownerGeneration: 'owner1', ownerPersonKey: 'owner', writerIncarnation: 'i1' }),
+        instanceLock: { revalidateExclusive: () => true },
         sealedPeerHistory: new Set([workBoardHistoryFingerprint(sealed)]),
         application: { readEvent: () => ({ status: 'unknown' }) },
       },
@@ -241,6 +307,7 @@ describe('Work cards from the owner phone E2E (feature is alive)', () => {
       baseline: () => [sealed],
       permissionSlips: {
         store, currentWriter: () => active ? writer : null,
+        instanceLock: { revalidateExclusive: () => true },
         sealedPeerHistory: new Set([workBoardHistoryFingerprint(sealed)]),
         application: {
           readEvent: (id) => readWorkBoardApprovalEvent(id, {
