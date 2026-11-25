@@ -11,3 +11,5 @@ The server now checks a signed request against the recorded chat owner, the mach
 The server’s internal history reader can now leave out a confirmed removal before it fills a page. That means the next visible message can still fill the page. It also refuses an exact lookup when the removal evidence is incomplete. This reader is still being tested and is not used by the app yet.
 
 Opening another chat no longer forces the store to repeat a recent history check for the first chat. A change to stored messages still requires a fresh check. Delete remains unavailable while this server work is tested.
+
+The store now checks a long chat in chunks so other server work can run in between. If the chat changes during the check, the store discards the result and can try again. The history reader needs a current completed check before returning messages with removals applied.

@@ -21,3 +21,7 @@ The independent and closing cross-model reviews concurred on this unmounted scop
 ## Local history proof cache checkpoint
 
 The Astra review concurred on the unchanged proof identity and fail-closed behavior. Its coverage suggestion was applied. The focused regression now counts two scans for A, B, A and a third scan after removing A's message, while separately asserting the visible rows. The cache is capped at 64 entries and index rebuild clears it. Cold proof cost remains a requirement before mounting interactive routes.
+
+## Scheduled history proof checkpoint
+
+The independent and cross-model reviews concurred on the custody, checkpoint and descriptor lifecycle. The caller prepares a proof separately from an interactive store read, with one active scan per store. The scan yields between journal chunks and abandons its proof after either a journal append or an external index-only commit. This supersedes the prior synchronous history scan while leaving negative receipt proof unchanged. The first scheduled SQL count and readiness under sustained unrelated writes remain pre-mount performance conditions.

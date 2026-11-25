@@ -7,9 +7,9 @@ approved: true
 approved-by: echo under standing build approval for local storage, private fresh admission and unmounted history projection only
 parent-principle: Operator-Surface Quality
 tier: 2
-review-convergence: "2026-11-25T17:27:35.057Z"
-review-iterations: 16
-review-completed-at: "2026-11-25T17:27:35.057Z"
+review-convergence: "2026-11-25T17:57:22.650Z"
+review-iterations: 17
+review-completed-at: "2026-11-25T17:57:22.650Z"
 review-report: "docs/specs/reports/conversation-message-delete-convergence.md"
 cross-model-review: "cross-model-review: codex-cli:gpt-6.2-astra"
 ---
@@ -108,3 +108,7 @@ Use one fixture across browse and exact context: insert an older visible row, a 
 The local projection checkpoint provides store methods for custodian-only browse and exact candidates. It changes no app route. The cold proof compares the journal checkpoint and removal and message identity bindings. It makes no claim to detect same-length content edits that preserve those bindings. App journal retention and origin verification retain their existing responsibilities. Before interactive use, bound proof cost or move it off the request path and measure a realistic large-history and multi-conversation workload. An ordinary app read keeps its existing projection until the full visibility boundary is ready.
 
 The unmounted store keeps up to 64 recently used history proofs, one per conversation. A cached proof is reused only for the same journal checkpoint and SQLite write generations. Rebuilding the index clears every entry. Alternating between conversations on an unchanged index can reuse their proofs, while ordinary writes continue to invalidate them. This cache does not bound the first proof scan or make the projection ready for request-path use.
+
+The next unmounted checkpoint separates proof preparation from interactive reads. A cold read returns unavailable without scanning. A caller may request proof preparation after admission, with one active scan per store and coalescing for the same conversation. The scan yields after each journal chunk and compares file identity, journal metadata, local SQLite writes and external data version before each batch and at publication. Changed, missing or corrupt evidence never publishes a proof. After preparation the read repeats the checkpoint check around its indexed selection. This does not mount a route or change receipt recovery.
+
+The store-wide write generation conservatively invalidates preparation even for unrelated chat writes. Measure readiness under ordinary sustained writes before mounting the route. The startup count query is synchronous within the first scheduled turn and remains part of the first-turn performance measurement.

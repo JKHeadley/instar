@@ -34,6 +34,7 @@ import { validateMessageOriginEvidence, type MessageOriginEvidence } from '../me
 import crypto from 'node:crypto';
 import fs from 'node:fs';
 import path from 'node:path';
+import { setImmediate as nextTurn } from 'node:timers/promises';
 import Database from 'better-sqlite3';
 import type { Database as BetterSqliteDatabase } from 'better-sqlite3';
 import { registerSqliteHandle } from './SqliteRegistry.js';
@@ -572,6 +573,7 @@ export class AppConversationStore {
   private evidenceDataVersion = 0;
   private removalIndexProof: string | null = null;
   private readonly removalHistoryProofs = new Map<string, string>();
+  private removalHistoryPreparation: { key: string; result: Promise<boolean> } | null = null;
 
   constructor(private readonly opts: AppConversationStoreOptions) {
     this.dir = path.join(opts.stateDir, 'app-conversations');
@@ -1479,32 +1481,82 @@ export class AppConversationStore {
     });
   }
 
+  private removalHistoryCheckpoint(conversationKey: string) {
+    const key = canonicalConversationKey(conversationKey);
+    const custodian = this.getCreationRecord(conversationKey)?.machineId;
+    if (!custodian || custodian === 'local' || custodian !== this.opts.machineId()) return null;
+    const file = this.db.prepare('SELECT fileName, indexedBytes FROM files WHERE canonicalKey = ?')
+      .get(key) as { fileName: string; indexedBytes: number } | undefined;
+    if (!file) return null;
+    const filePath = path.join(this.dir, file.fileName);
+    const journal = fs.statSync(filePath);
+    if (journal.size !== file.indexedBytes) return null;
+    const version = this.db.pragma('data_version', { simple: true });
+    const writes = this.db.prepare('SELECT total_changes() AS count').get();
+    const proof = JSON.stringify([custodian, file.fileName, journal.dev, journal.ino, journal.size,
+      journal.mtimeMs, journal.ctimeMs, version, writes]);
+    return { custodian, filePath, journal, proof };
+  }
+
+  /** Prepare one custody proof off the interactive read path. A competing conversation can retry. */
+  prepareRemovalHistory(conversationKey: string): Promise<boolean> {
+    const key = canonicalConversationKey(conversationKey);
+    if (this.removalHistoryPreparation) {
+      return this.removalHistoryPreparation.key === key ? this.removalHistoryPreparation.result : Promise.resolve(false);
+    }
+    const result = this.scanRemovalHistory(conversationKey, key).finally(() => {
+      this.removalHistoryPreparation = null;
+    });
+    this.removalHistoryPreparation = { key, result };
+    return result;
+  }
+
+  private async scanRemovalHistory(conversationKey: string, key: string): Promise<boolean> {
+    try {
+      await nextTurn();
+      const checkpoint = this.removalHistoryCheckpoint(conversationKey);
+      if (!checkpoint) return false;
+      if (this.removalHistoryProofs.get(key) === checkpoint.proof) return true;
+      const scan = this.scanRemovalIndex(conversationKey, checkpoint.filePath, checkpoint.journal);
+      try {
+        for (;;) {
+          if (this.removalHistoryCheckpoint(conversationKey)?.proof !== checkpoint.proof) return false;
+          const step = scan.next();
+          if (step.done) {
+            if (!step.value || this.removalHistoryCheckpoint(conversationKey)?.proof !== checkpoint.proof) return false;
+            this.rememberRemovalHistoryProof(key, checkpoint.proof);
+            return true;
+          }
+          await nextTurn();
+        }
+      } finally {
+        scan.return(false);
+      }
+    } catch {
+      return false; // @silent-fallback-ok — an incomplete history proof never enables a read
+    }
+  }
+
+  private rememberRemovalHistoryProof(key: string, proof: string): void {
+    this.removalHistoryProofs.delete(key);
+    this.removalHistoryProofs.set(key, proof);
+    if (this.removalHistoryProofs.size > MAX_REMOVAL_HISTORY_PROOFS) {
+      const oldest = this.removalHistoryProofs.keys().next().value;
+      if (oldest !== undefined) this.removalHistoryProofs.delete(oldest);
+    }
+  }
+
   private withRemovalHistory<T>(conversationKey: string, read: (custodian: string) => T): T | null {
     const key = canonicalConversationKey(conversationKey);
     try {
       const version = this.db.pragma('data_version', { simple: true });
       const result = this.db.transaction(() => {
-        const custodian = this.getCreationRecord(conversationKey)?.machineId;
-        if (!custodian || custodian === 'local' || custodian !== this.opts.machineId()) return null;
-        const file = this.db.prepare('SELECT fileName, indexedBytes FROM files WHERE canonicalKey = ?')
-          .get(key) as { fileName: string; indexedBytes: number } | undefined;
-        if (!file) return null;
-        const filePath = path.join(this.dir, file.fileName);
-        const journal = fs.statSync(filePath);
-        if (journal.size !== file.indexedBytes) return null;
-        const writes = this.db.prepare('SELECT total_changes() AS count').get();
-        const proof = JSON.stringify([file.fileName, file.indexedBytes, journal.mtimeMs, journal.ctimeMs, version, writes]);
-        if (this.removalHistoryProofs.get(key) !== proof && !this.verifyRemovalIndex(conversationKey, filePath, true)) return null;
-        // Keep recently read conversations warm without relaxing either index or journal invalidation.
-        this.removalHistoryProofs.delete(key);
-        this.removalHistoryProofs.set(key, proof);
-        if (this.removalHistoryProofs.size > MAX_REMOVAL_HISTORY_PROOFS) {
-          const oldest = this.removalHistoryProofs.keys().next().value;
-          if (oldest !== undefined) this.removalHistoryProofs.delete(oldest);
-        }
-        const page = read(custodian);
-        const current = fs.statSync(filePath);
-        return current.size === journal.size && current.mtimeMs === journal.mtimeMs && current.ctimeMs === journal.ctimeMs ? page : null;
+        const checkpoint = this.removalHistoryCheckpoint(conversationKey);
+        if (!checkpoint || this.removalHistoryProofs.get(key) !== checkpoint.proof) return null;
+        const page = read(checkpoint.custodian);
+        if (this.removalHistoryCheckpoint(conversationKey)?.proof !== checkpoint.proof) return null;
+        this.rememberRemovalHistoryProof(key, checkpoint.proof);
+        return page;
       })();
       return this.db.pragma('data_version', { simple: true }) === version ? result : null;
     } catch {
@@ -1548,10 +1600,18 @@ export class AppConversationStore {
     return { messages: out, nextBefore: more && oldest ? `${oldest.at},${oldest.eventId}` : null };
   }
 
-  private verifyRemovalIndex(conversationKey: string, filePath: string, verifyMessageBindings = false): boolean {
+  private verifyRemovalIndex(conversationKey: string, filePath: string): boolean {
+    const scan = this.scanRemovalIndex(conversationKey, filePath);
+    for (;;) {
+      const step = scan.next();
+      if (step.done) return step.value;
+    }
+  }
+
+  private *scanRemovalIndex(conversationKey: string, filePath: string, expectedJournal?: fs.Stats): Generator<void, boolean> {
     const key = canonicalConversationKey(conversationKey);
     const event = this.db.prepare('SELECT kind FROM events WHERE canonicalKey = ? AND eventId = ?');
-    const message = verifyMessageBindings
+    const message = expectedJournal
       ? this.db.prepare('SELECT eventId, at FROM messages WHERE canonicalKey = ? AND messageId = ?')
       : null;
     const removal = this.db.prepare('SELECT targetEventId, targetMessageId, machineId FROM message_removals WHERE canonicalKey = ? AND eventId = ?');
@@ -1561,6 +1621,12 @@ export class AppConversationStore {
     `).get(key, key) as { journalIndex: number; removalIndex: number };
     const fd = fs.openSync(filePath, 'r');
     try {
+      if (expectedJournal) {
+        const actual = fs.fstatSync(fd);
+        if (actual.dev !== expectedJournal.dev || actual.ino !== expectedJournal.ino
+          || actual.size !== expectedJournal.size || actual.mtimeMs !== expectedJournal.mtimeMs
+          || actual.ctimeMs !== expectedJournal.ctimeMs) return false;
+      }
       const chunk = Buffer.alloc(64 * 1024);
       let carry = Buffer.alloc(0);
       const seen = new Set<string>();
@@ -1586,6 +1652,7 @@ export class AppConversationStore {
         }
         carry = Buffer.from(bytes.subarray(start));
         if (carry.length > MAX_LINE_BYTES) return false;
+        yield;
       }
     } finally {
       fs.closeSync(fd);

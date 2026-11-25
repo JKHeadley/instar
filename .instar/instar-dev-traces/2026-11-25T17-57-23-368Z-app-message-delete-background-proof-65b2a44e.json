@@ -1,0 +1,22 @@
+{
+  "version": 2,
+  "slug": "app-message-delete-background-proof",
+  "sessionId": "633bd330-201e-4dc8-8fd9-72b89116167e",
+  "timestamp": "2026-11-25T17:57:23.368Z",
+  "artifactPath": "upgrades/side-effects/app-message-delete-background-proof.md",
+  "artifactSha256": "a9663afb6151c87345924ca85211741af33afe0fcd60a4bf07281a5f90612bf4",
+  "specPath": "docs/specs/conversation-message-delete.md",
+  "coveredFiles": [
+    "docs/specs/conversation-message-delete.eli16.md",
+    "docs/specs/conversation-message-delete.md",
+    "docs/specs/reports/conversation-message-delete-convergence.md",
+    "src/core/AppConversationStore.ts",
+    "tests/unit/app-conversation-store.test.ts",
+    "upgrades/side-effects/app-message-delete-background-proof.md"
+  ],
+  "phase": "complete",
+  "tier": 2,
+  "tierReasoning": "Separate asynchronous custody proof preparation from unmounted removal-aware reads",
+  "secondPass": "true",
+  "reviewerConcurred": true
+}
