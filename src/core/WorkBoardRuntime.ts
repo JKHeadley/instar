@@ -9,6 +9,7 @@
  * exercised whole in tests with fakes and wired once in production.
  */
 
+import { workBoardHistoryFingerprint } from './workBoardStartingHistory.js';
 import { canonicalJson, isCardId, sha256Hex } from './WorkCardStore.js';
 import { decodeWorkBoardApprovalEvent, sameProof, sameVersion, type WorkBoardApprovalLookup, type WorkBoardWriterProof } from './WorkBoardApprovalWriter.js';
 import type { WorkBoardSlipOwnerSource } from './workBoardSlipSource.js';
@@ -67,10 +68,6 @@ export interface WorkBoardCreationEvidenceSnapshot {
   version: number;
   complete: boolean;
   items: ReadonlyArray<WorkBoardCreationEvidence>;
-}
-
-export function workBoardHistoryFingerprint({ origin, data }: UnionEntry): string {
-  return sha256Hex(canonicalJson([origin, data]));
 }
 
 export interface WorkBoardSlipDeviceBinding {

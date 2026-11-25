@@ -17,3 +17,5 @@ The proposal, paired-device disclosure, challenge, submission and receipt routes
 ## Evidence
 
 Focused coverage includes exclusive lock acquisition and loss, rejection of an operator override, explicit empty and complete peer history, and refusal of a journal write emitted through the legacy path.
+
+The follow-on also verifies the folded starting history against a separately attested digest. Its sync fixture persists a real legacy journal batch before checking that the enrolled writer refuses it.

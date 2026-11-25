@@ -187,3 +187,16 @@ The enrolled runtime revalidates exclusive ownership of the existing agent-home 
 - Rollback. Keep enrollment off while restoring the prior release. No production slip state is created by this candidate.
 
 Independent review concurred for the dark candidate. A second-instance override can still boot beside the normal holder while the latter's lock continues to validate. Production enrollment must prove that a same-home override or an older binary cannot emit enrolled board writes. The legacy fixture proves receiver refusal at the runtime callback using a real journal batch. A two-binary sync and sender-admission check is still needed for activation.
+
+## Starting-history verification and journal sync
+
+The verifier compares the local projection against an independently attested digest from the frozen fleet and checks the assigned writer's exact durable journal head. The agent-home lock and stream fingerprint must agree before and after the read. It returns the sealed peer set only when these checks pass. The server and verifier now share the same projection loader. The lifecycle fixture exercises a real journal sync append before the enrolled runtime's refusal.
+
+- Over-block. Verification refuses moving streams, partial peer reads, missing own sequences and changed digests. A retained own stream without the full sequence history requires a separately verified restoration procedure.
+- Under-block. A locally readable projection alone cannot establish fleet completeness. Enrollment must obtain the expected digest from the frozen accepted fleet and independently prove sender admission, including same-home override.
+- Abstraction and authority. The verifier checks enrollment evidence. It neither chooses the accepted fleet nor grants writer authority.
+- Interactions and surfaces. Production startup continues to read the same union. The new verifier has no enrollment endpoint and makes no writes.
+- Multi-machine posture. The digest binds the full folded projection, including its origins. The returned peer set is specific to the enrolled machine and current starting history.
+- Rollback. Existing production layouts require no migration. Leave enrollment off if the verification fails.
+
+Independent review concurred for the dark follow-on. The digest attests the effective folded board projection. It does not attest every historical payload byte or replace independently verified fleet coverage. A first lifecycle run exposed that a valid empty directory has an empty stream fingerprint. The verifier now reserves null for an unreadable or moving fingerprint.

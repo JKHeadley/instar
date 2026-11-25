@@ -22,6 +22,7 @@ import { SingleInstanceLock } from '../../src/core/SingleInstanceLock.js';
 import { StateManager } from '../../src/core/StateManager.js';
 import type { InstarConfig } from '../../src/core/types.js';
 import { SafeFsExecutor } from '../../src/core/SafeFsExecutor.js';
+import { JournalSyncApplier } from '../../src/core/JournalSyncApplier.js';
 import { CoherenceJournal } from '../../src/core/CoherenceJournal.js';
 import { ReplicatedKindRegistry } from '../../src/core/ReplicatedRecordEnvelope.js';
 import { ReplicatedRecordEmitter } from '../../src/core/ReplicatedRecordEmitter.js';
@@ -30,7 +31,8 @@ import { HybridLogicalClock } from '../../src/core/HybridLogicalClock.js';
 import { WORK_CARD_KIND_REGISTRATION, WORK_CARD_RECORD_KIND, WORK_BOARD_STORE_KEY, type UnionEntry } from '../../src/core/WorkCardStore.js';
 import { readWorkBoardApprovalEvent } from '../../src/core/workBoardApprovalReadback.js';
 import { lineIdFor } from '../../src/core/WorkBoardService.js';
-import { WorkBoardRuntime, workBoardHistoryFingerprint } from '../../src/core/WorkBoardRuntime.js';
+import { WorkBoardRuntime } from '../../src/core/WorkBoardRuntime.js';
+import { loadWorkBoardHistory, verifyWorkBoardStartingHistory, workBoardHistoryFingerprint, workBoardStartingHistoryDigest } from '../../src/core/workBoardStartingHistory.js';
 import type { MobilePairingService } from '../../src/server/mobilePairingRoutes.js';
 import { workBoardSlipApprovalLine } from '../../src/core/workBoardSlipPresence.js';
 import { permissionPresenceMessage } from '../../src/server/mobilePermissionsRoutes.js';
@@ -63,7 +65,7 @@ const auth = () => ({ Authorization: `Bearer ${AUTH}` });
 
 afterAll(() => { for (const d of tmpDirs) SafeFsExecutor.safeRmSync(d, { recursive: true, force: true, operation: 'tests/e2e/phone-work-cards-alive.test.ts' }); });
 
-interface Rig { runtime: WorkBoardRuntime; journal: CoherenceJournal; lines: Array<{ key: string; id: string; text: string }>; briefs: string[]; conversations: Set<string>; removed: string[] }
+interface Rig { runtime: WorkBoardRuntime; journal: CoherenceJournal; streams: ReplicatedPeerStreamReader; lines: Array<{ key: string; id: string; text: string }>; briefs: string[]; conversations: Set<string>; removed: string[] }
 
 function mkRuntime(stateDir: string, opts: { machineId?: string; baseline?: () => UnionEntry[]; rotateBytes?: number; permissionSlips?: ConstructorParameters<typeof WorkBoardRuntime>[0]['permissionSlips']; onAwaitDurable?: (seq: number, journal: CoherenceJournal) => void } = {}): Rig {
   const machineId = opts.machineId ?? 'm1';
@@ -83,9 +85,7 @@ function mkRuntime(stateDir: string, opts: { machineId?: string; baseline?: () =
     awaitDurable: async (seq) => { journal.flush(); opts.onAwaitDurable?.(seq, journal); },
     loadUnion: () => {
       journal.flush();
-      const out: UnionEntry[] = opts.baseline?.() ?? [];
-      for (const byOrigin of streams.loadAllOriginRecords(WORK_BOARD_STORE_KEY).values()) for (const r of byOrigin) out.push({ data: { ...r.data, recordKey: r.envelope.recordKey, hlc: r.envelope.hlc, op: r.envelope.op, origin: r.origin }, origin: r.origin });
-      return out;
+      return [...(opts.baseline?.() ?? []), ...loadWorkBoardHistory(streams)];
     },
     journalBytes: () => 0,
     conversation: {
@@ -101,7 +101,7 @@ function mkRuntime(stateDir: string, opts: { machineId?: string; baseline?: () =
     detectCredential: (text) => (/sk-ant-[A-Za-z0-9]{10,}/.test(text) ? 'anthropic-api-key' : null),
     ledgerNote: () => {}, degradation: () => {}, leaseHolder: () => machineId,
   });
-  return { runtime, journal, lines, briefs, conversations, removed };
+  return { runtime, journal, streams, lines, briefs, conversations, removed };
 }
 
 
@@ -211,7 +211,7 @@ describe('Work cards from the owner phone E2E (feature is alive)', () => {
     } finally { rig.runtime.stop(); rig.journal.close(); db.close(); }
   });
 
-  it('refuses a Work Board journal write from a legacy peer after enrollment', () => {
+  it('fences an enrolled writer when journal sync persists a legacy peer write', () => {
     const { stateDir } = mkConfig();
     const db = new Database(':memory:');
     const legacy = mkRuntime(mkConfig().stateDir, { machineId: 'legacy-peer' });
@@ -231,9 +231,31 @@ describe('Work cards from the owner phone E2E (feature is alive)', () => {
         title: 'Legacy write', need: 'Reject after enrollment', doneWhen: [{ id: 'done', text: 'Complete' }], outward: true,
       });
       if (!created.ok) throw new Error('legacy card did not commit');
+      const expectedRecords = loadWorkBoardHistory(legacy.streams);
+      expect(expectedRecords.length).toBeGreaterThan(0);
+      const head = writer.journal.getOwnAdvert()[WORK_CARD_RECORD_KIND];
+      const verify = (projectionDigest: string) => verifyWorkBoardStartingHistory({
+        machineId: 'm1', ownIncarnation: head.incarnation, ownLastSeq: head.lastSeq, projectionDigest,
+      }, { machineId: 'm1', lock: { revalidateExclusive: () => true }, journal: writer.journal, streams: writer.streams });
+      const expectedDigest = workBoardStartingHistoryDigest(expectedRecords);
+      expect(verify(workBoardStartingHistoryDigest([]))).toEqual(new Set());
+      expect(verify(expectedDigest)).toBeNull();
       const entries = legacy.journal.readKindComplete(WORK_CARD_RECORD_KIND).entries;
       expect(entries.length).toBeGreaterThan(0);
-      writer.runtime.onCommitted(entries, 'legacy-peer');
+      const registry = new ReplicatedKindRegistry();
+      registry.register(WORK_CARD_KIND_REGISTRATION);
+      const applier = new JournalSyncApplier({
+        stateDir,
+        replicatedRegistry: registry,
+        onReplicatedRecordsCommitted: (sender, kind, batch) => {
+          if (kind === WORK_CARD_RECORD_KIND) writer.runtime.onCommitted(batch, sender);
+        },
+      });
+      const { incarnation } = legacy.journal.getOwnAdvert()[WORK_CARD_RECORD_KIND];
+      expect(applier.apply('legacy-peer', [{ kind: WORK_CARD_RECORD_KIND, incarnation, entries }]))
+        .toMatchObject({ applied: entries.length });
+      expect(verify(expectedDigest)).toEqual(new Set(expectedRecords.map(workBoardHistoryFingerprint)));
+      expect(verify(workBoardStartingHistoryDigest([]))).toBeNull();
       expect(writer.runtime.svc.view(created.cardId)).toBeNull();
       expect(writer.runtime.readPermissionSlip('11111111-2222-4333-8444-555555555555').status).toBe(503);
     } finally {

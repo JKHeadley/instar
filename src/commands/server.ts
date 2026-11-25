@@ -11217,6 +11217,7 @@ export async function startServer(options: StartOptions): Promise<void> {
           try {
             const wbStore = await import('../core/WorkCardStore.js');
             const { WorkBoardRuntime } = await import('../core/WorkBoardRuntime.js');
+            const { loadWorkBoardHistory } = await import('../core/workBoardStartingHistory.js');
             const { detectOutboundCredential } = await import('../messaging/outbound-credential-guard.js');
             const { derivedEventId } = await import('../core/appConversationText.js');
             const { createAppFollowUpInjector } = await import('../core/appInboundDispatch.js');
@@ -11251,13 +11252,7 @@ export async function startServer(options: StartOptions): Promise<void> {
               awaitDurable: (seq) => wbJournal.awaitDurableSeq(wbStore.WORK_CARD_RECORD_KIND as import('../core/CoherenceJournal.js').JournalKind, seq, 5_000),
               // Own stream and every peer stream, the live file and every archive (approval, evidence and the
               // carrier trail fold from the whole stream).
-              loadUnion: () => {
-                const out: Array<{ data: Record<string, unknown>; origin: string }> = [];
-                for (const byOrigin of wbStreams.loadAllOriginRecords(wbStore.WORK_BOARD_STORE_KEY).values()) {
-                  for (const r of byOrigin) out.push({ data: { ...r.data, recordKey: r.envelope.recordKey, hlc: r.envelope.hlc, op: r.envelope.op, origin: r.origin }, origin: r.origin });
-                }
-                return out;
-              },
+              loadUnion: () => loadWorkBoardHistory(wbStreams),
               journalBytes: () => {
                 let n = 0;
                 for (const f of wbJournal.enumerateStreams()) {
