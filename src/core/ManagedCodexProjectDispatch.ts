@@ -8,6 +8,8 @@ export interface ManagedProjectAdmission {
   topicId: string;
   machineId: string;
   ownerEpoch: number;
+  /** Trusted local OS boot ID, separate from the server process incarnation. */
+  osBootId?: string;
   remaining: number;
 }
 
@@ -30,7 +32,7 @@ interface Dependencies {
 function sameAdmission(a: ManagedProjectAdmission, b: ManagedProjectAdmission | undefined): boolean {
   return b !== undefined && a.workKey === b.workKey && a.roundKey === b.roundKey && a.revision === b.revision
     && a.topicId === b.topicId && a.machineId === b.machineId
-    && a.ownerEpoch === b.ownerEpoch && a.remaining === b.remaining;
+    && a.ownerEpoch === b.ownerEpoch && a.osBootId === b.osBootId && a.remaining === b.remaining;
 }
 
 /**
@@ -50,7 +52,7 @@ export async function dispatchManagedCodexProject(
   if (!deps.reserveWork(admission, () => deps.store.reserve(workKey, {
     sessionId: launchId, machineId: admission.machineId,
     ownerEpoch: admission.ownerEpoch, remaining: admission.remaining,
-  }, admission.roundKey))) return;
+  }, admission.roundKey, admission.osBootId))) return;
 
   let bound = false;
   let released = false;

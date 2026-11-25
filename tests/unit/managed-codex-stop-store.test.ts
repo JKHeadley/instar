@@ -70,6 +70,66 @@ describe('managed Codex Stop work claims', () => {
     }
   });
 
+  it('re-enrolls managed work after a proved same-host reboot without resetting its budget', () => {
+    const db = new Database(':memory:');
+    try {
+      const store = new ManagedCodexStopStore(db);
+      const oldBoot = 'aaaaaaaa-aaaa-aaaa-aaaa-aaaaaaaaaaaa';
+      const newBoot = 'bbbbbbbb-bbbb-bbbb-bbbb-bbbbbbbbbbbb';
+      expect(store.reserve('work', { ...identity, remaining: 2 }, 'round', oldBoot)).toBe(true);
+      expect(store.bindNative(identity.sessionId, 'old-native')).toBe(true);
+      const oldStop = { ...first, sessionId: 'old-native' };
+      expect(store.decide(oldStop).directive).toBeDefined();
+
+      const replacement = { ...identity, sessionId: 'replacement', remaining: 2 };
+      expect(store.reserve('work', replacement, 'round', oldBoot)).toBe(false);
+      expect(store.reserve('work', { ...replacement, machineId: 'other' }, 'round', newBoot)).toBe(false);
+      expect(store.reserve('work', { ...replacement, ownerEpoch: 5 }, 'round', newBoot)).toBe(false);
+      expect(store.reserve('work', { ...replacement, sessionId: 'unstarted' }, 'round', newBoot)).toBe(true);
+      expect(store.releaseUnstarted('unstarted')).toBe(true);
+      expect(store.reserve('work', replacement, 'round', newBoot)).toBe(true);
+      expect(store.decide(oldStop)).toEqual({ managed: true, directive: undefined });
+      expect(store.bindNative(replacement.sessionId, 'new-native')).toBe(true);
+      const freshStop = { ...first, sessionId: 'new-native' };
+      const directive = store.decide(freshStop).directive;
+      expect(directive).toBeDefined();
+      expect(store.decide({ ...freshStop, cycle: 'second', receipt: directive }).directive).toBeUndefined();
+    } finally {
+      db.close();
+    }
+  });
+
+  it('keeps the old managed worker held when a legacy row owns the replacement item', () => {
+    const db = new Database(':memory:');
+    try {
+      const store = new ManagedCodexStopStore(db);
+      expect(store.reserve('old-item', { ...identity, remaining: 1 }, 'round',
+        'aaaaaaaa-aaaa-aaaa-aaaa-aaaaaaaaaaaa')).toBe(true);
+      expect(store.reserve('new-item', { ...identity, sessionId: 'legacy', remaining: 1 })).toBe(true);
+      expect(store.reserve('new-item', { ...identity, sessionId: 'replacement', remaining: 1 }, 'round',
+        'bbbbbbbb-bbbb-bbbb-bbbb-bbbbbbbbbbbb')).toBe(false);
+      expect(store.hasWorkClaim('old-item')).toBe(true);
+      expect(store.hasWorkClaim('round')).toBe(true);
+    } finally {
+      db.close();
+    }
+  });
+
+  it.each(['paused', 'completed', 'legacy'])('keeps a %s managed claim held after reboot', state => {
+    const db = new Database(':memory:');
+    try {
+      const store = new ManagedCodexStopStore(db);
+      const oldBoot = state === 'legacy' ? undefined : 'aaaaaaaa-aaaa-aaaa-aaaa-aaaaaaaaaaaa';
+      expect(store.reserve('work', { ...identity, remaining: 1 }, 'round', oldBoot)).toBe(true);
+      if (state === 'paused') expect(store.pause(identity.sessionId)).toBe(true);
+      if (state === 'completed') expect(store.complete(identity.sessionId)).toBe(true);
+      expect(store.reserve('work', { ...identity, sessionId: 'replacement', remaining: 1 }, 'round',
+        'bbbbbbbb-bbbb-bbbb-bbbb-bbbbbbbbbbbb')).toBe(false);
+    } finally {
+      db.close();
+    }
+  });
+
   it('keeps ordinary launch fences across restart until the exact execution settles', () => {
     const directory = fs.mkdtempSync(path.join(os.tmpdir(), 'ordinary-project-fence-'));
     const file = path.join(directory, 'claims.sqlite');

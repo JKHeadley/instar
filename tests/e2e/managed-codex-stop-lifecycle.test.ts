@@ -127,11 +127,13 @@ it.skipIf(!codex).each([true, false])('drives an enrolled worker through package
       phases: [{ id: 'work', name: 'Work' }], parentProjectId: 'managed-project', pipelineStage: 'approved',
     });
     await runner.recordAck('managed-project', 0);
+    const osBootId = readOsBootId();
+    expect(osBootId).toMatch(/^[0-9a-f-]{36}$/i);
     const readAdmission = () => {
       const candidate = runner.managedRoundCandidate('managed-project', 0);
       const currentCustody = candidate && custody.readActive(candidate.topicId);
       if (candidate && currentCustody?.machineId === candidate.machineId) {
-        return { ...candidate, ownerEpoch: currentCustody.ownerEpoch, remaining: 1 };
+        return { ...candidate, ownerEpoch: currentCustody.ownerEpoch, osBootId, remaining: 1 };
       }
     };
     const candidate = readAdmission();
@@ -175,8 +177,6 @@ it.skipIf(!codex).each([true, false])('drives an enrolled worker through package
         cancelLaunch: () => { child?.kill('SIGKILL'); },
       });
       expect(admitted?.nativeSessionId).toBe(workerId);
-      const osBootId = readOsBootId();
-      expect(osBootId).toMatch(/^[0-9a-f-]{36}$/i);
       const ordinary = await runRound({
         tracker, projectId: 'managed-project', roundIndex: 0, targetRepoPath: projectDir,
         mergeBaseBranch: 'main',

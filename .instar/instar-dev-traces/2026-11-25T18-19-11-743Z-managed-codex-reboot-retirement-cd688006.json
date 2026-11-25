@@ -1,0 +1,21 @@
+{
+  "version": 2,
+  "slug": "managed-codex-reboot-retirement",
+  "sessionId": "017c26ed-5596-4576-9c20-20af13e4c1f8",
+  "timestamp": "2026-11-25T18:19:11.743Z",
+  "artifactPath": "upgrades/side-effects/managed-codex-reboot-retirement.md",
+  "artifactSha256": "7c967889d99b5df4a4c7f34177a98d73c619ad79dd7541cd7ebe93659fa25e56",
+  "coveredFiles": [
+    "src/core/ManagedCodexProjectDispatch.ts",
+    "src/core/ManagedCodexStopStore.ts",
+    "tests/e2e/managed-codex-stop-lifecycle.test.ts",
+    "tests/unit/managed-codex-stop-store.test.ts"
+  ],
+  "phase": "complete",
+  "tier": 1,
+  "tierReasoning": "Tightens existing dark fixture admission and its retry budget. No new production action or migration.",
+  "eli16Path": "upgrades/managed-codex-reboot-retirement.eli16.md",
+  "sideEffectsPath": "upgrades/side-effects/managed-codex-reboot-retirement.md",
+  "secondPass": "true",
+  "reviewerConcurred": true
+}

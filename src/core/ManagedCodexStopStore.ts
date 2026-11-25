@@ -18,6 +18,8 @@ export interface OrdinaryWorkProcess {
 interface Claim {
   enrollment: ManagedStopEnrollment;
   roundKey?: string;
+  osBootId?: string;
+  rebootBudgetScope?: string;
   actionOpen: boolean;
   paused: boolean;
 }
@@ -33,6 +35,11 @@ export class ManagedCodexStopStore {
         work_key TEXT PRIMARY KEY,
         session_id TEXT NOT NULL UNIQUE,
         claim_json TEXT NOT NULL
+      );
+      CREATE INDEX IF NOT EXISTS managed_codex_reboot_budget ON managed_codex_work_claims (
+        json_extract(claim_json, '$.rebootBudgetScope'),
+        json_extract(claim_json, '$.enrollment.machineId'),
+        json_extract(claim_json, '$.enrollment.ownerEpoch')
       );
       CREATE TABLE IF NOT EXISTS ordinary_project_work_fences (
         work_key TEXT PRIMARY KEY,
@@ -56,16 +63,28 @@ export class ManagedCodexStopStore {
     }).immediate();
   }
 
-  reserve(workKey: string, input: Pick<ManagedStopEnrollment, 'sessionId' | 'machineId' | 'ownerEpoch' | 'remaining'>, roundKey?: string): boolean {
+  reserve(workKey: string, input: Pick<ManagedStopEnrollment, 'sessionId' | 'machineId' | 'ownerEpoch' | 'remaining'>, roundKey?: string, osBootId?: string): boolean {
     if (!workKey || workKey.startsWith(RELEASED_WORK_PREFIX) || !input.sessionId || !input.machineId
       || !Number.isSafeInteger(input.ownerEpoch) || input.ownerEpoch < 0
       || !Number.isSafeInteger(input.remaining) || input.remaining < 0) return false;
     return this.db.transaction(() => {
-      if (this.hasEnrollment(input.sessionId) || this.hasOrdinaryFence(workKey)
-        || (roundKey && (this.hasOrdinaryFence(roundKey) || this.hasWorkClaim(roundKey)))) return false;
+      if (this.hasEnrollment(input.sessionId)) return false;
+      const host = osBootId ? { machineId: input.machineId, osBootId } : undefined;
+      if (this.hasOrdinaryFence(workKey) || (roundKey && this.hasOrdinaryFence(roundKey))) return false;
+      const scope = roundKey ?? workKey;
+      if (host && validHost(host)) this.retireManagedAfterHostReboot(scope, workKey, host, input.ownerEpoch);
+      if (roundKey && this.hasWorkClaim(roundKey)) return false;
+      const previousBudget = this.db.prepare(`
+        SELECT MIN(json_extract(claim_json, '$.enrollment.remaining')) AS remaining
+        FROM managed_codex_work_claims
+        WHERE json_extract(claim_json, '$.rebootBudgetScope') = ?
+          AND json_extract(claim_json, '$.enrollment.machineId') = ?
+          AND json_extract(claim_json, '$.enrollment.ownerEpoch') = ?
+      `).get(scope, input.machineId, input.ownerEpoch) as { remaining: number | null };
+      const remaining = Math.min(input.remaining, previousBudget.remaining ?? input.remaining);
       return this.db.prepare('INSERT OR IGNORE INTO managed_codex_work_claims VALUES (?, ?, ?)')
         .run(workKey, input.sessionId, JSON.stringify({
-          enrollment: { ...input, state: 'pending', issuedCycles: [] }, actionOpen: true, paused: false, roundKey,
+          enrollment: { ...input, remaining, state: 'pending', issuedCycles: [] }, actionOpen: true, paused: false, roundKey, osBootId,
         } satisfies Claim)).changes === 1;
     }).immediate();
   }
@@ -160,17 +179,40 @@ export class ManagedCodexStopStore {
     }).immediate();
   }
 
+  private retireManagedAfterHostReboot(scope: string, workKey: string, current: OrdinaryWorkHost, ownerEpoch: number): void {
+    const rows = this.db.prepare(`
+      SELECT session_id, claim_json FROM managed_codex_work_claims
+      WHERE instr(work_key, ?) <> 1 AND (work_key = ? OR json_extract(claim_json, '$.roundKey') = ?)
+      LIMIT 2
+    `).all(RELEASED_WORK_PREFIX, scope, scope) as Array<{ session_id: string; claim_json: string }>;
+    if (rows.length !== 1) return;
+    const row = rows[0];
+    const target = this.db.prepare('SELECT session_id FROM managed_codex_work_claims WHERE work_key = ?')
+      .get(workKey) as { session_id: string } | undefined;
+    if (target && target.session_id !== row.session_id) return;
+    const claim = JSON.parse(row.claim_json) as Claim;
+    if (claim.enrollment.machineId !== current.machineId || claim.enrollment.ownerEpoch !== ownerEpoch
+      || !claim.osBootId || !validHost({ machineId: claim.enrollment.machineId, osBootId: claim.osBootId })
+      || claim.osBootId.toLowerCase() === current.osBootId.toLowerCase()
+      || claim.paused || (!claim.actionOpen && claim.enrollment.state !== 'retired')) return;
+    this.retireAndFree(row.session_id, { ...claim, rebootBudgetScope: scope });
+  }
+
   /** Free the work key and retain the non-actuating launch identity. */
   releaseUnstarted(launchId: string): boolean {
     return this.db.transaction(() => {
       const claim = this.read(launchId);
       if (claim?.enrollment.state !== 'pending') return false;
-      const retired: Claim = {
-        ...claim, actionOpen: false, enrollment: { ...claim.enrollment, state: 'retired' },
-      };
-      return this.db.prepare('UPDATE managed_codex_work_claims SET work_key = ?, claim_json = ? WHERE session_id = ?')
-        .run(RELEASED_WORK_PREFIX + launchId, JSON.stringify(retired), launchId).changes === 1;
+      return this.retireAndFree(launchId, claim);
     }).immediate();
+  }
+
+  private retireAndFree(launchId: string, claim: Claim): boolean {
+    const retired: Claim = {
+      ...claim, actionOpen: false, enrollment: { ...claim.enrollment, state: 'retired' },
+    };
+    return this.db.prepare('UPDATE managed_codex_work_claims SET work_key = ?, claim_json = ? WHERE session_id = ?')
+      .run(RELEASED_WORK_PREFIX + launchId, JSON.stringify(retired), launchId).changes === 1;
   }
 
   /** Keep an aborted launch classified as managed without issuing a directive. */
