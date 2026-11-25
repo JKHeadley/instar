@@ -59,6 +59,34 @@ describe('managed Codex Stop work claims', () => {
     }
   });
 
+  it.each([false, true])('blocks issuance after completion with outstanding directive=%s', (outstanding) => {
+    const db = new Database(':memory:');
+    try {
+      const store = new ManagedCodexStopStore(db);
+      expect(store.reserve('work', { ...identity, remaining: 3 })).toBe(true);
+      const native = { ...first, sessionId: 'native' };
+      expect(store.bindNative(identity.sessionId, native.sessionId)).toBe(true);
+      const receipt = outstanding ? store.decide(native).directive : undefined;
+      if (outstanding) expect(receipt).toEqual({ cycle: 'first', marker: 'first-marker' });
+
+      expect(store.complete(identity.sessionId)).toBe(true);
+      expect(store.complete(identity.sessionId)).toBe(false);
+      expect(store.decide({ ...native, cycle: 'second', receipt }))
+        .toEqual({ managed: true, directive: undefined });
+      expect(store.decide({ ...native, cycle: 'third' }))
+        .toEqual({ managed: true, directive: undefined });
+
+      const row = db.prepare('SELECT claim_json FROM managed_codex_work_claims').get() as { claim_json: string };
+      expect(JSON.parse(row.claim_json)).toMatchObject({
+        actionOpen: false,
+        enrollment: { remaining: outstanding ? 2 : 3, issuedCycles: outstanding ? ['first'] : [] },
+      });
+      expect(JSON.parse(row.claim_json).enrollment.outstanding).toBeUndefined();
+    } finally {
+      db.close();
+    }
+  });
+
   it('rejects a duplicate callback carrying a receipt for a newer directive', () => {
     const db = new Database(':memory:');
     try {
