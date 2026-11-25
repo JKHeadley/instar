@@ -267,6 +267,42 @@ it('keeps explicit preview retryable while the actual destination writer is lock
         expect(ledger.inspect(reserve.allocationId)).toMatchObject({ state: 'active', planned: reserve.reservedBytes, written: 0 });
         expect((runs[0] as { childPid: number }).childPid).not.toBe(process.pid);
         expect(() => contender.exec('BEGIN IMMEDIATE')).toThrow(/locked/);
+
+        // Rehearse the first-permit transaction under actual writer custody.
+        // The discard-only child cannot consume a permit, so roll back this
+        // transaction before the observation returns.
+        db.pragma('synchronous = FULL');
+        initializeLocalHistoryFirstPermits(db);
+        const operation = db.prepare('SELECT tag, fingerprint, deadline FROM upload_operations WHERE id = ?')
+          .get(grant.operationId) as { tag: string; fingerprint: string; deadline: number };
+        const index = db.prepare('SELECT allocation, sha256 FROM upload_previews WHERE id = ?')
+          .get(grant.operationId) as { allocation: string; sha256: string };
+        const destination = retry.preview.files[0].destinationFingerprint;
+        if (!destination) throw new Error('fixture destination missing');
+        const slot = {
+          operationId: grant.operationId, previewId: retry.previewId, applyRequestId: expected.requestId,
+          intentFingerprint: expected.fingerprint, generation: operation.tag.split('-')[1], runId: reserve.runId,
+          reservationId: reserve.allocationId, previewAllocation: index.allocation, previewSha256: index.sha256,
+          uploadFingerprint: operation.fingerprint, deadline: operation.deadline, permitId: '5'.repeat(32),
+          fileIndex: 0, destinationBinding: destination, mutationKind: 'claim' as const,
+          planDigest: claim.planDigest, plannedBytes: reserve.reservedBytes,
+        };
+        const rollback = new Error('fixture rolls back the unsent permit');
+        const phase = db.prepare('SELECT phase FROM upload_operations WHERE id = ?');
+        const permits = db.prepare('SELECT * FROM local_history_first_permits WHERE operationId = ?');
+        expect(() => db.transaction(() => {
+          expect(phase.get(grant.operationId)).toEqual({ phase: 'prepared' });
+          expect(() => recordLocalHistoryFirstPermit(db, { ...slot, previewSha256: '0'.repeat(64) }))
+            .toThrow('local-history-first-permit-conflict');
+          expect(phase.get(grant.operationId)).toEqual({ phase: 'prepared' });
+          expect(permits.get(grant.operationId)).toBeUndefined();
+          expect(recordLocalHistoryFirstPermit(db, slot)).toBe('recorded');
+          expect(phase.get(grant.operationId)).toEqual({ phase: 'applying' });
+          expect(permits.get(grant.operationId)).toEqual(slot);
+          throw rollback;
+        }).immediate()).toThrow(rollback);
+        expect(phase.get(grant.operationId)).toEqual({ phase: 'prepared' });
+        expect(permits.get(grant.operationId)).toBeUndefined();
         return undefined;
       });
       await f.stage.observeFirstCopyClaim(device, grant.operationId, intent, budget, observe);
