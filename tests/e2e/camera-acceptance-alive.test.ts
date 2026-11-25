@@ -7,7 +7,7 @@ import { AgentServer } from '../../src/server/AgentServer.js';
 import { StateManager } from '../../src/core/StateManager.js';
 import type { InstarConfig } from '../../src/core/types.js';
 import { SafeFsExecutor } from '../../src/core/SafeFsExecutor.js';
-import type { CameraPassWithdrawal, CameraPassWithdrawalJournal, CameraRequestJournal } from '../../src/core/CameraAcceptanceRequests.js';
+import type { CameraPassWithdrawal, CameraPassWithdrawalJournal, CameraReceiptJournal, CameraRecordedSubmission, CameraRequestJournal } from '../../src/core/CameraAcceptanceRequests.js';
 import type { CameraAcceptanceReceipt } from '../../src/core/CameraOwnerAcceptance.js';
 
 const AUTH = 'test-e2e-cos';
@@ -48,10 +48,11 @@ describe('Camera verifier request HTTP wiring', () => {
   it('requires the verifier session and only acknowledges an issued journal request', async () => {
     const { config, stateDir } = mkConfig();
     const appendRequest = vi.fn(async () => {});
-    const journal: CameraRequestJournal & CameraPassWithdrawalJournal = {
+    const journal: CameraRequestJournal & CameraPassWithdrawalJournal & CameraReceiptJournal = {
       withWriteLock: operation => operation({
         requirement: { candidate: 'camera-build', revision: 1, verifier: 'reviewer', builders: ['builder'] },
         receipts: [], appendRequest, findWithdrawal: () => null, appendWithdrawal: async () => {},
+        findRequest: () => null, findSubmission: () => null, appendReceipt: async () => {},
       }),
     };
     const resolveVerifier = vi.fn(async (credential: string) => credential === verifierToken
@@ -92,11 +93,11 @@ describe('Camera Pass withdrawal HTTP wiring', () => {
       stored = entry;
       receipts.push(entry.receipt);
     });
-    const journal: CameraRequestJournal & CameraPassWithdrawalJournal = {
+    const journal: CameraRequestJournal & CameraPassWithdrawalJournal & CameraReceiptJournal = {
       withWriteLock: operation => operation({
         requirement, receipts, appendRequest: async () => {},
         findWithdrawal: id => stored?.input.id === id ? stored : null,
-        appendWithdrawal,
+        appendWithdrawal, findRequest: () => null, findSubmission: () => null, appendReceipt: async () => {},
       }),
     };
     const server = new AgentServer({
@@ -114,6 +115,53 @@ describe('Camera Pass withdrawal HTTP wiring', () => {
       await request(server.getApp()).post(withdrawalPath).set(headers).send({ ...withdrawal, reason: 'regression' }).expect(409);
       expect(appendWithdrawal).toHaveBeenCalledTimes(1);
       await request(server.getApp()).post(reqPath).set(headers).expect(201);
+    } finally { await server.stop(); }
+  });
+});
+
+describe('Camera evidence receipt HTTP wiring', () => {
+  it('refuses caller evidence and only records the independently loaded result for the issued request', async () => {
+    const { config, stateDir } = mkConfig();
+    const token = 'ior1_' + 'v'.repeat(43);
+    const headers = { ...auth(), 'X-Instar-Origin-Session': token };
+    const route = '/chief-of-staff/camera-acceptance/receipts';
+    const requirement = { candidate: 'camera-build', revision: 1, verifier: 'reviewer', builders: ['builder'] };
+    const issued = { id: 'issued', candidate: requirement.candidate, verifier: 'reviewer', revision: 1, receiptSequence: 0 };
+    const receipts: CameraAcceptanceReceipt[] = [];
+    let stored: CameraRecordedSubmission | null = null;
+    const appendReceipt = vi.fn(async (_request: typeof issued, submission: CameraRecordedSubmission) => {
+      stored = submission;
+      receipts.push(submission.receipt);
+    });
+    const journal: CameraReceiptJournal & CameraRequestJournal & CameraPassWithdrawalJournal = {
+      withWriteLock: operation => operation({
+        requirement, receipts, appendRequest: async () => {}, findWithdrawal: () => null, appendWithdrawal: async () => {},
+        findRequest: id => id === issued.id && !stored ? issued : null,
+        findSubmission: id => id === issued.id ? stored : null,
+        appendReceipt,
+      }),
+    };
+    const unlinked = { before: [], after: [], visibleComputer: null };
+    const loadEvidence = vi.fn(async (id: string) => id === issued.id ? {
+      candidate: requirement.candidate, phone: 'phone', computer: 'target', observedAt: '2026-11-25T04:10:00Z',
+      redirected: true, success: unlinked, cancellation: unlinked, expiry: unlinked, replay: unlinked,
+      expectedGrant: { id: 'grant', phone: 'phone', computer: 'target', access: 'manage', expiresAt: null, revokedAt: null },
+    } : null);
+    const server = new AgentServer({
+      config, sessionManager: sm(), state: new StateManager(stateDir),
+      cameraAcceptance: { resolveVerifier: async credential => credential === token
+        ? { principal: 'reviewer', journal, loadEvidence } : null },
+    });
+    await server.start();
+    try {
+      await request(server.getApp()).post(route).set(auth()).send({ requestId: issued.id }).expect(403);
+      await request(server.getApp()).post(route).set(headers).send({ requestId: issued.id, evidence: { redirected: false } }).expect(400);
+      expect(loadEvidence).not.toHaveBeenCalled();
+      await request(server.getApp()).post(route).set(headers).send({ requestId: 'unknown' }).expect(409);
+      const result = await request(server.getApp()).post(route).set(headers).send({ requestId: issued.id }).expect(200);
+      expect(result.body).toEqual({ decision: 'fail', sequence: 1 });
+      await request(server.getApp()).post(route).set(headers).send({ requestId: issued.id }).expect(200);
+      expect(appendReceipt).toHaveBeenCalledTimes(1);
     } finally { await server.stop(); }
   });
 });
