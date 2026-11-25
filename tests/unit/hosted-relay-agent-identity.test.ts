@@ -3,15 +3,18 @@ import { execFileSync } from 'node:child_process';
 import fs from 'node:fs';
 import os from 'node:os';
 import path from 'node:path';
+import Database from 'better-sqlite3';
 import { expect, it } from 'vitest';
 import { SafeFsExecutor } from '../../src/core/SafeFsExecutor.js';
 import { FencedLease } from '../../src/core/FencedLease.js';
 import { signOwnerRecordEntry, type OwnerRecordEntry } from '../../src/core/ownerRecord.js';
+import { HostedRelayAgentPinStore } from '../../src/hostedRelay/agentPinStore.js';
 import { readHostedRelayAgentPin, type HostedRelayAgentPin } from '../../src/hostedRelay/agentIdentity.js';
 import { createHostedRelayOwnerEvidenceReader } from '../../src/hostedRelay/ownerLeaseReader.js';
 
 it('accepts only the current signed agent key and refuses old owner history or lease epochs', () => {
   const root = fs.mkdtempSync(path.join(os.tmpdir(), 'instar-agent-pin-'));
+  const handles: Database.Database[] = [];
   try {
     const hostname = 'agent.relay.example', agentId = 'agent-one', holder = 'm_first';
     const assignment = '4'.repeat(64);
@@ -57,6 +60,14 @@ it('accepts only the current signed agent key and refuses old owner history or l
       trusted: { agentId, assignment, genesis: genesis.id }, currentEvidence };
     const verify = (certificateDer: Buffer, previous?: HostedRelayAgentPin) =>
       readHostedRelayAgentPin({ ...setup, certificateDer, previous });
+    const database = path.join(root, 'pins.sqlite');
+    const openStore = () => {
+      const db = new Database(database);
+      handles.push(db);
+      db.pragma('synchronous = FULL');
+      return { db, pins: new HostedRelayAgentPinStore(db) };
+    };
+    const firstStore = openStore();
     registration.entries = [genesis.entry, enrolled.entry, firstTls.entry];
     const original = verify(first.der)!;
     const wrongTls = tls(enrolled.id, holder, wrongName.pin, 2, firstMachine);
@@ -64,13 +75,24 @@ it('accepts only the current signed agent key and refuses old owner history or l
     expect(verify(wrongName.der, original)).toBeUndefined();
     registration.entries.pop();
     expect(original.spkiSha256).toBe(first.pin);
+    expect(firstStore.pins.verifyAndRecord({ ...setup, certificateDer: first.der })).toEqual(original);
     expect(verify(next.der, original)).toBeUndefined();
     registration.entries.push(rotation.entry);
     const rotated = verify(next.der, original)!;
     expect(rotated.spkiSha256).toBe(next.pin);
+    const secondStore = openStore();
+    secondStore.db.exec(`CREATE TRIGGER ignore_pin_replacement BEFORE UPDATE ON hosted_relay_agent_pins
+      BEGIN SELECT RAISE(IGNORE); END;`);
+    expect(secondStore.pins.verifyAndRecord({ ...setup, certificateDer: next.der })).toBeUndefined();
+    secondStore.db.exec('DROP TRIGGER ignore_pin_replacement');
+    expect(secondStore.pins.verifyAndRecord({ ...setup, certificateDer: next.der })).toEqual(rotated);
     expect(verify(first.der, original)).toBeUndefined();
     registration.entries.pop();
     expect(verify(first.der, rotated)).toBeUndefined();
+    expect(firstStore.pins.verifyAndRecord({ ...setup, certificateDer: first.der })).toBeUndefined();
+    firstStore.db.close(); secondStore.db.close();
+    const restarted = openStore();
+    expect(restarted.pins.verifyAndRecord({ ...setup, certificateDer: first.der })).toBeUndefined();
 
     const add = signOwnerRecordEntry({ kind: 'add-machine-key', agentId, parents: [enrolled.id],
       body: { machineId: 'm_other', publicKey: otherMachine.pem }, signer: { type: 'owner-key', keyId: 'o_owner' } }, owner.sign);
@@ -81,13 +103,19 @@ it('accepts only the current signed agent key and refuses old owner history or l
     lease = signedLease(2, 'm_other', otherMachine);
     const takeover = verify(first.der, rotated)!;
     expect(takeover).toMatchObject({ holder: 'm_other', leaseEpoch: 2, spkiSha256: first.pin });
+    expect(restarted.pins.verifyAndRecord({ ...setup, certificateDer: first.der })).toEqual(takeover);
     lease = signedLease(3, holder, firstMachine);
     registration.entries = registration.entries.filter(entry => entry !== rotation.entry);
     expect(verify(first.der, takeover)).toBeUndefined();
+    expect(restarted.pins.verifyAndRecord({ ...setup, certificateDer: first.der })).toBeUndefined();
     registration.entries.push(rotation.entry);
     expect(verify(next.der, takeover)).toMatchObject({ holder, leaseEpoch: 3, spkiSha256: next.pin });
+    expect(restarted.pins.verifyAndRecord({ ...setup, certificateDer: next.der })).toMatchObject({ leaseEpoch: 3 });
+    restarted.db.prepare('UPDATE hosted_relay_agent_pins SET pinJson = ? WHERE hostname = ?').run('{}', hostname);
+    expect(restarted.pins.verifyAndRecord({ ...setup, certificateDer: next.der })).toBeUndefined();
     expect(readHostedRelayAgentPin({ ...setup, trusted: { ...setup.trusted, assignment: '5'.repeat(64) }, certificateDer: first.der })).toBeUndefined();
   } finally {
+    for (const db of handles) if (db.open) db.close();
     SafeFsExecutor.safeRmSync(root, { recursive: true, force: true, operation: 'agent TLS pin fixture cleanup' });
   }
 });

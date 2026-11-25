@@ -1,0 +1,25 @@
+{
+  "version": 2,
+  "slug": "hosted-relay-agent-pin-custody",
+  "sessionId": "41652017-0805-405d-bb4e-2a975fb349ce",
+  "timestamp": "2026-11-25T17:45:58.728Z",
+  "artifactPath": "upgrades/side-effects/hosted-relay-agent-pin-custody.md",
+  "artifactSha256": "1b6df5c1d91ec9aa6cfb4ef03043dabfda0edeb7cba4b05f2fbb774ab59126a6",
+  "specPath": "docs/specs/hosted-relay.md",
+  "coveredFiles": [
+    "src/hostedRelay/agentPinStore.ts",
+    "tests/unit/hosted-relay-agent-identity.test.ts",
+    "upgrades/next/hosted-relay-agent-pin-custody.md",
+    "upgrades/side-effects/hosted-relay-agent-pin-custody.md"
+  ],
+  "phase": "complete",
+  "tier": 2,
+  "tierReasoning": "Dormant client parity transaction binds pin replacement to the latest durable trust floor.",
+  "secondPass": "true",
+  "reviewerConcurred": true,
+  "classClosure": {
+    "defectClass": "unbounded-self-action",
+    "closure": "n/a",
+    "reason": "One caller-triggered verification and local pin write."
+  }
+}
