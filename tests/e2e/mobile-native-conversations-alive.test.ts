@@ -47,7 +47,7 @@ async function boot(developmentAgent: boolean) {
   await new MachineIdentityManager(stateDir).generateIdentity({ name: 'e2e machine' });
   const config = {
     projectName: 'native-e2e', projectDir: dir, stateDir, port: 0, authToken: 'e2e-token', developmentAgent, workBoard: { enabled: false },
-    mobilePairing: { multiRoute: { enabled: false }, native: { messageLinks: { enabled: true }, quotedReplies: { enabled: true }, reactions: { enabled: true } } }, // the single-host path; multi-route has its own e2e
+    mobilePairing: { multiRoute: { enabled: false }, native: { messageLinks: { enabled: true }, quotedReplies: { enabled: true }, reactions: { enabled: true }, forwards: { enabled: true } } }, // the single-host path; multi-route has its own e2e
     tunnel: { enabled: true, type: 'named', token: 'x', hostname: HOST },
     sessions: { claudePath: '/usr/bin/echo', maxSessions: 1, defaultMaxDurationMinutes: 30, protectedSessions: [], monitorIntervalMs: 5_000 },
     scheduler: { enabled: false, jobsFile: '', maxParallelJobs: 1 }, messaging: [], updates: {},
@@ -207,6 +207,48 @@ describe('native app conversations — production wiring', () => {
     const reacted = await send('GET', `/mobile/chat/app/${key}/messages`);
     expect(reacted.body.messages.find((row: { eventId: string }) => row.eventId === target).reaction.own)
       .toEqual({ emoji: '👍', revision: 1 });
+
+    const destination = await send('POST', '/mobile/conversations',
+      { title: 'Forward destination', requestId: `${Date.now()}-${crypto.randomUUID()}` });
+    expect(destination.status).toBe(200);
+    const dest = destination.body.conversationKey;
+    server.appConversations!.store.append({ kind: 'message', conversationKey: dest, eventId: 'earlier-context-event',
+      messageId: 'earlier-context-message', role: 'agent', text: 'Earlier ordinary context',
+      at: '2026-11-20T00:00:00.000Z', machineId: server.appConversations!.deps.machineId() });
+    const forwardPath = `/mobile/chat/app/${dest}/forward`;
+    const forwardList = await send('GET', '/mobile/conversations');
+    expect(forwardList.status).toBe(200);
+    for (const id of [key, dest]) {
+      expect(forwardList.body.conversations.find((row: { id: string }) => row.id === id)?.messageActions.forward)
+        .toEqual({ custodianMachineId: server.appConversations!.deps.machineId() });
+    }
+    const intent = { custodianMachineId: server.appConversations!.deps.machineId(), sourceConversationKey: key, sourceEventId: target, requestId: `${Date.now()}-${crypto.randomUUID()}` };
+    const before = spawned.length;
+    const copy = await send('POST', forwardPath, intent);
+    expect(copy.status, JSON.stringify(copy.body)).toBe(200);
+    expect((await send('POST', forwardPath, intent)).body).toEqual(copy.body);
+    const copies = await send('GET', `/mobile/chat/app/${dest}/messages`);
+    expect(copies.body.messages).toEqual([
+      expect.objectContaining({ text: 'Earlier ordinary context' }),
+      expect.objectContaining({ ...copy.body, forwarded: true, text: 'Saturday is the farmers market at nine.' }),
+    ]);
+    const raw = await send('GET', `/mobile/chat/app/${dest}/events`);
+    expect(raw.status).toBe(200);
+    const copiedEvent = raw.body.events.find((event: { eventId: string }) => event.eventId === copy.body.eventId);
+    expect(copiedEvent).toMatchObject({ forwarded: true });
+    expect(copiedEvent).not.toHaveProperty('forwardBinding');
+    expect(spawned).toHaveLength(before);
+    const next = await send('POST', `/mobile/chat/app/${dest}/reply`,
+      { text: 'An ordinary new message', requestId: `${Date.now()}-${crypto.randomUUID()}`, replyTo: { eventId: copy.body.eventId } });
+    expect(next.status, JSON.stringify(next.body)).toBe(200);
+    expect(spawned).toHaveLength(before + 1);
+    const contextPath = spawned.at(-1)!.message.match(/Read (.+?\.txt) for conversation history/)?.[1];
+    expect(contextPath).toBeTruthy();
+    expect(spawned.at(-1)!.message).toContain('An ordinary new message');
+    expect(spawned.at(-1)!.message).not.toContain('Saturday is the farmers market at nine.');
+    const context = fs.readFileSync(contextPath!, 'utf8');
+    expect(context).toContain('Earlier ordinary context');
+    expect(context).not.toContain('Saturday is the farmers market at nine.');
 
     // A ledger revocation alone refuses the phone at once on the production auth path, even if
     // the registry write after it failed (the registry still says active here).

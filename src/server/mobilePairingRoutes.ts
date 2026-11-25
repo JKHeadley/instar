@@ -2662,6 +2662,7 @@ const BROWSER_ROUTES: ReadonlyArray<[string, string]> = [
   ['POST', new RegExp(`^/mobile/chat/app/${APP_CONVERSATION_KEY_PATTERN}$`).source],
   ['POST', new RegExp(`^/mobile/chat/app/${APP_CONVERSATION_KEY_PATTERN}/reply$`).source],
   ['PUT', new RegExp(`^/mobile/chat/app/${APP_CONVERSATION_KEY_PATTERN}/reactions$`).source],
+  ['POST', new RegExp(`^/mobile/chat/app/${APP_CONVERSATION_KEY_PATTERN}/forward$`).source],
   ['GET', new RegExp(`^/mobile/chat/app/${APP_CONVERSATION_KEY_PATTERN}/reactions$`).source],
   ['GET', new RegExp(`^/mobile/chat/app/${APP_CONVERSATION_KEY_PATTERN}/messages$`).source],
   ['GET', new RegExp(`^/mobile/chat/app/${APP_CONVERSATION_KEY_PATTERN}/message-context$`).source],
@@ -2745,6 +2746,7 @@ const TEAM_ROUTE_TIERS: ReadonlyArray<[string, RegExp, Tier]> = [
   ['POST', new RegExp(`^/mobile/chat/app/${UUID}$`), 'member'],
   ['POST', new RegExp(`^/mobile/chat/app/${UUID}/reply$`), 'member'],
   ['PUT', new RegExp(`^/mobile/chat/app/${UUID}/reactions$`), 'member'],
+  ['POST', new RegExp(`^/mobile/chat/app/${UUID}/forward$`), 'guest'],
   ['GET', new RegExp(`^/mobile/chat/app/${UUID}/reactions$`), 'guest'],
   ['POST', /^\/mobile\/media\/uploads$/, 'member'],
   ['PUT', new RegExp(`^/mobile/media/uploads/${UUID}/chunks/(0|[1-9][0-9]{0,5})$`), 'member'],
@@ -2773,7 +2775,7 @@ export function teamConversationTarget(method: string, pathNorm: string): { ref:
   if (m) return { ref: `slack:${m[1]}`, op: method === 'POST' ? 'send' : 'read' };
   m = /^\/mobile\/chat\/slack\/(-?\d+)$/.exec(pathNorm);
   if (m && method === 'POST') return { ref: `slack:${m[1]}`, op: 'send' };
-  m = new RegExp(`^/mobile/chat/app/(${UUID})(/reply|/reactions|/messages|/message-context|/reply-previews|/events|/pins|/preview/.+)?$`).exec(pathNorm);
+  m = new RegExp(`^/mobile/chat/app/(${UUID})(/reply|/forward|/reactions|/messages|/message-context|/reply-previews|/events|/pins|/preview/.+)?$`).exec(pathNorm);
   if (m) return { ref: m[1], op: method === 'POST' && (!m[2] || m[2] === '/pins' || m[2] === '/reply') || (method === 'PUT' && m[2] === '/reactions') ? 'send' : 'read' };
   m = new RegExp(`^/mobile/conversations/(${UUID})$`).exec(pathNorm);
   if (m) return { ref: m[1], op: method === 'DELETE' ? 'delete' : 'rename' };
@@ -2897,6 +2899,7 @@ export const DEVICE_ALLOWLIST: DeviceRule[] = (() => {
     { method: 'POST', re: new RegExp(`^/mobile/chat/app/${UUID}$`), statuses: active, sendRoute: true, conversationRef: true },
     { method: 'POST', re: new RegExp(`^/mobile/chat/app/${UUID}/reply$`), statuses: active, sendRoute: true, conversationRef: true },
     { method: 'PUT', re: new RegExp(`^/mobile/chat/app/${UUID}/reactions$`), statuses: active, body: 'json', conversationRef: true },
+    { method: 'POST', re: new RegExp(`^/mobile/chat/app/${UUID}/forward$`), statuses: active, body: 'json', conversationRef: true },
     { method: 'GET', re: new RegExp(`^/mobile/chat/app/${UUID}/reactions$`), statuses: active, body: 'none', conversationRef: true },
     { method: 'GET', re: new RegExp(`^/mobile/chat/app/${UUID}/messages$`), statuses: active, conversationRef: true },
     { method: 'GET', re: new RegExp(`^/mobile/chat/app/${UUID}/message-context$`), statuses: active, body: 'none', conversationRef: true },

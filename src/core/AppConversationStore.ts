@@ -99,6 +99,8 @@ export interface MessageEvent extends AppEventBase {
   receivedAt?: string;
   receipt?: MachineReceipt;
   replyTo?: StoredReplyReference;
+  forwarded?: true;
+  forwardBinding?: string;
   /**
    * People and roles §3.3: who sent an operator message, recorded at accept time. Absent on older
    * events, which were necessarily sent by an owner phone (no other kind existed).
@@ -238,6 +240,7 @@ export interface BrowsedMessage {
   receivedAt?: string;
   receipt?: MachineReceipt;
   replyTo?: StoredReplyReference;
+  forwarded?: true;
   attachments?: AppAttachment[];
   senderName?: string;
   senderRole?: 'owner' | 'msp' | 'team';
@@ -264,7 +267,7 @@ const SCHEMA = [
   `CREATE TABLE IF NOT EXISTS events (canonicalKey TEXT NOT NULL, ingestSeq INTEGER NOT NULL, eventId TEXT NOT NULL, messageId TEXT, kind TEXT NOT NULL, at TEXT NOT NULL, machineId TEXT NOT NULL, byteOffset INTEGER NOT NULL, byteLength INTEGER NOT NULL, PRIMARY KEY (canonicalKey, eventId))`,
   `CREATE INDEX IF NOT EXISTS events_seq ON events(canonicalKey, ingestSeq)`,
   `CREATE INDEX IF NOT EXISTS events_at ON events(canonicalKey, at, eventId)`,
-  `CREATE TABLE IF NOT EXISTS messages (messageId TEXT PRIMARY KEY, canonicalKey TEXT NOT NULL, eventId TEXT NOT NULL, at TEXT NOT NULL, deliveryState TEXT NOT NULL, lastPreview TEXT)`,
+  `CREATE TABLE IF NOT EXISTS messages (messageId TEXT PRIMARY KEY, canonicalKey TEXT NOT NULL, eventId TEXT NOT NULL, at TEXT NOT NULL, deliveryState TEXT NOT NULL, lastPreview TEXT, forwarded INTEGER NOT NULL DEFAULT 0)`,
   `CREATE INDEX IF NOT EXISTS messages_at ON messages(canonicalKey, at, eventId)`,
   `CREATE TABLE IF NOT EXISTS deliveries (eventId TEXT PRIMARY KEY, messageId TEXT NOT NULL, state TEXT NOT NULL, at TEXT NOT NULL, machineId TEXT NOT NULL)`,
   `CREATE INDEX IF NOT EXISTS deliveries_msg ON deliveries(messageId)`,
@@ -353,6 +356,13 @@ export function validateAppEvent(raw: unknown): AppEvent | null {
       if (receipt) out.receipt = receipt;
       const replyTo = validateReplyReference(r.replyTo);
       if (replyTo) out.replyTo = replyTo;
+      if (r.forwarded !== undefined || r.forwardBinding !== undefined) {
+        if (r.kind !== 'message' || r.role !== 'operator' || r.forwarded !== true
+          || typeof r.forwardBinding !== 'string' || !/^[a-f0-9]{64}$/.test(r.forwardBinding)
+          || ['origin', 'receipt', 'replyTo', 'attachments', 'systemSource', 'agentOrigin'].some((field) => r[field] !== undefined)) return null;
+        out.forwarded = true;
+        out.forwardBinding = r.forwardBinding;
+      }
       const accessStamp = validateAccessStamp(r.accessStamp);
       if (accessStamp) out.accessStamp = accessStamp;
       const senderName = typeof r.senderName === 'string' && r.senderName.length > 0 && r.senderName.length <= 128 ? r.senderName : null;
@@ -596,6 +606,8 @@ export class AppConversationStore {
       if (!cols.has('ownerMachine')) db.exec('ALTER TABLE conversations ADD COLUMN ownerMachine TEXT');
       if (!cols.has('ownerUser')) db.exec('ALTER TABLE conversations ADD COLUMN ownerUser TEXT');
       if (!cols.has('creationRecord')) db.exec('ALTER TABLE conversations ADD COLUMN creationRecord TEXT');
+      const messageCols = db.prepare('PRAGMA table_info(messages)').all() as Array<{ name: string }>;
+      if (!messageCols.some((c) => c.name === 'forwarded')) db.exec('ALTER TABLE messages ADD COLUMN forwarded INTEGER NOT NULL DEFAULT 0');
       const ok = db.pragma('quick_check', { simple: true });
       if (ok !== 'ok') throw new Error(`index quick_check: ${String(ok)}`);
       return db;
@@ -914,8 +926,8 @@ export class AppConversationStore {
         const state = this.reduceFor(ev.messageId);
         const preview = messagePreview(ev.kind === 'media-message' ? ev : { text: ev.text });
         if (ev.kind === 'media-message') this.indexMediaRefs(canonicalKey, ev);
-        this.db.prepare('INSERT OR IGNORE INTO messages (messageId, canonicalKey, eventId, at, deliveryState, lastPreview) VALUES (?, ?, ?, ?, ?, ?)')
-          .run(ev.messageId, canonicalKey, ev.eventId, ev.at, state, preview);
+        this.db.prepare('INSERT OR IGNORE INTO messages (messageId, canonicalKey, eventId, at, deliveryState, lastPreview, forwarded) VALUES (?, ?, ?, ?, ?, ?, ?)')
+          .run(ev.messageId, canonicalKey, ev.eventId, ev.at, state, preview, ev.forwarded ? 1 : 0);
         const cur = this.db.prepare('SELECT lastActivity FROM conversations WHERE canonicalKey = ?').get(canonicalKey) as { lastActivity: string | null };
         if (!cur.lastActivity || ev.at >= cur.lastActivity) {
           this.db.prepare('UPDATE conversations SET lastActivity = ?, lastPreview = ? WHERE canonicalKey = ?').run(ev.at, preview, canonicalKey);
@@ -1410,15 +1422,21 @@ export class AppConversationStore {
    * delivery state. `before` is `<at>,<eventId>` (exclusive). The page is returned oldest-first,
    * with `nextBefore` naming the oldest row when older messages remain.
    */
-  browseMessages(conversationKey: string, before: string | null | undefined, limit = 100): { messages: BrowsedMessage[]; nextBefore: string | null } {
+  /** Ordinary history for session and context consumers. Copies cannot become agent instructions. */
+  browseAgentMessages(conversationKey: string, before: string | null | undefined, limit = 100) {
+    return this.browseMessages(conversationKey, before, limit, { excludeForwarded: true });
+  }
+
+  browseMessages(conversationKey: string, before: string | null | undefined, limit = 100, options?: { excludeForwarded?: boolean }): { messages: BrowsedMessage[]; nextBefore: string | null } {
     const canonicalKey = canonicalConversationKey(conversationKey);
     const n = Math.max(1, Math.min(100, Math.floor(limit)));
     let rows: Array<{ eventId: string; at: string }>;
+    const eligible = options?.excludeForwarded ? ' AND forwarded = 0' : '';
     const b = typeof before === 'string' ? before.split(',') : null;
     if (b && b.length === 2 && b[0] && b[1]) {
-      rows = this.db.prepare('SELECT eventId, at FROM messages WHERE canonicalKey = ? AND (at < ? OR (at = ? AND eventId < ?)) ORDER BY at DESC, eventId DESC LIMIT ?').all(canonicalKey, b[0], b[0], b[1], n + 1) as typeof rows;
+      rows = this.db.prepare(`SELECT eventId, at FROM messages WHERE canonicalKey = ?${eligible} AND (at < ? OR (at = ? AND eventId < ?)) ORDER BY at DESC, eventId DESC LIMIT ?`).all(canonicalKey, b[0], b[0], b[1], n + 1) as typeof rows;
     } else {
-      rows = this.db.prepare('SELECT eventId, at FROM messages WHERE canonicalKey = ? ORDER BY at DESC, eventId DESC LIMIT ?').all(canonicalKey, n + 1) as typeof rows;
+      rows = this.db.prepare(`SELECT eventId, at FROM messages WHERE canonicalKey = ?${eligible} ORDER BY at DESC, eventId DESC LIMIT ?`).all(canonicalKey, n + 1) as typeof rows;
     }
     const more = rows.length > n;
     const page = rows.slice(0, n);
@@ -1491,7 +1509,8 @@ export class AppConversationStore {
   private projectMessage(ev: StoredAppEvent & (MessageEvent | MediaMessageEvent)): BrowsedMessage {
     return {
         eventId: ev.eventId, messageId: ev.messageId, role: ev.role, text: ev.text, at: ev.at, machineId: ev.machineId,
-        deliveryState: this.deliveryState(ev.messageId) ?? 'pending',
+        deliveryState: ev.forwarded ? 'delivered' : this.deliveryState(ev.messageId) ?? 'pending',
+        ...(ev.forwarded ? { forwarded: true as const } : {}),
         ...(ev.origin ? { origin: ev.origin } : {}), ...(ev.receivedAt ? { receivedAt: ev.receivedAt } : {}),
         ...(ev.receipt ? { receipt: ev.receipt } : {}),
         ...(ev.replyTo ? { replyTo: ev.replyTo } : {}),

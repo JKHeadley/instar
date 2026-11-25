@@ -27,7 +27,7 @@ function deps(over: Partial<AppInboundDispatchDeps> = {}): AppInboundDispatchDep
       spawnInteractiveSession: async (msg, n, opts) => { spawns.push({ msg: msg ?? '', opts: (opts ?? {}) as Record<string, unknown>, name: n }); const name = `s${spawns.length}`; running.push({ id: name, tmuxSession: name }); return name; },
     },
     channels,
-    store: { browseMessages: () => ({ messages: [] }) } as unknown as AppInboundDispatchDeps['store'],
+    store: { browseAgentMessages: () => ({ messages: [] }) } as unknown as AppInboundDispatchDeps['store'],
     stateDir: dir,
     spawnAdmission: () => ({ admit: (i) => { admits.push(i.callsite); return { allow: true, reason: 'ok' }; } }),
     spawned: (key, applied) => recorded.push({ key, applied }),
@@ -87,7 +87,7 @@ describe('restarting an app conversation on a new engine (startApp)', () => {
   it('a session\'s history leaves out what any reader of the conversation may not see', async () => {
     const row = (messageId: string, text: string) => ({ eventId: `e-${messageId}`, messageId, role: 'agent', text, at: '2026-11-07T10:00:00.000Z', machineId: 'm', deliveryState: 'delivered' });
     const d = deps({
-      store: { browseMessages: () => ({ messages: [row('open', 'Shown to all'), row('held', 'Held from Mia')] }) } as unknown as AppInboundDispatchDeps['store'],
+      store: { browseAgentMessages: () => ({ messages: [row('open', 'Shown to all'), row('held', 'Held from Mia')] }) } as unknown as AppInboundDispatchDeps['store'],
       heldFromAReader: (_key, m) => m.messageId === 'held',
     });
     await createAppSessionStarter(d, start())(KEY, { framework: 'codex', model: null });

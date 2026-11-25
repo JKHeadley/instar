@@ -1,0 +1,34 @@
+{
+  "ts": "2026-11-25T13:44:04.211Z",
+  "slug": "app-message-forward",
+  "suggestedTier": 2,
+  "declaredTier": 2,
+  "riskFloor": 2,
+  "riskFloorReasons": [
+    "new capability: new route (router.<verb>() added"
+  ],
+  "belowFloor": false,
+  "files": 11,
+  "loc": 181,
+  "scope": {
+    "basis": "staged-in-scope-paths-including-deleted",
+    "files": [
+      "src/commands/server.ts",
+      "src/core/AppConversationStore.ts",
+      "src/core/AppConversationsReplicatedStore.ts",
+      "src/core/JournalSyncApplier.ts",
+      "src/core/appInboundDispatch.ts",
+      "src/core/attribution/channelReaders.ts",
+      "src/core/types.ts",
+      "src/data/awareness/app-message-forward.md",
+      "src/memory/topicRowWriter.ts",
+      "src/server/mobileConversationRoutes.ts",
+      "src/server/mobilePairingRoutes.ts"
+    ],
+    "addedLines": 156,
+    "deletedLines": 25
+  },
+  "causalAutopsy": null,
+  "classClosure": null,
+  "verdict": "pass"
+}

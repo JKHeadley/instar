@@ -347,7 +347,7 @@ export function historyRow(m: BrowsedMessage, verify: (m: BrowsedMessage) => Ori
   return {
     ...(deliveryDetail ? { deliveryDetail } : {}),
     eventId: m.eventId, messageId: m.messageId, role: m.role, text: m.text, at: m.at, machineId: m.machineId,
-    deliveryState: m.deliveryState, originVerified: verdict, ...(approvedVia ? { originApprovedVia: approvedVia } : {}), ...(originClient ? { originClient, ...originDeviceOf(m) } : {}),
+    deliveryState: m.deliveryState, ...(m.forwarded ? { forwarded: true } : {}), originVerified: verdict, ...(approvedVia ? { originApprovedVia: approvedVia } : {}), ...(originClient ? { originClient, ...originDeviceOf(m) } : {}),
     // People and roles §3.3: who sent an operator message, as recorded when it was accepted.
     ...(m.senderName ? { senderName: m.senderName } : {}), ...(m.senderRole ? { senderRole: m.senderRole } : {}),
     ...(m.attachments && svc ? { attachments: attachmentRows(m.attachments, svc) } : {}),
@@ -693,6 +693,7 @@ export function createMobileConversationRouter(deps: MobileConversationRouteDeps
       .update(JSON.stringify([person?.role, person?.userId, person?.tier, grants])).digest('base64url');
   };
   const reactionsOn = () => deps.config.mobilePairing?.native?.reactions?.enabled === true;
+  const forwardsOn = () => deps.config.mobilePairing?.native?.forwards?.enabled === true;
   const reactionProjection = (key: string, row: BrowsedMessage, reader: ResolvedPerson | null) => {
     if (!reactionsOn() || !reader || !deps.pairing.mayUse(reader, key, 'read') || !deps.pairing.mayReadStored(reader, key, row)) return {};
     const actor = readerKeyFor(reader, deps.pairing.machineId());
@@ -707,6 +708,7 @@ export function createMobileConversationRouter(deps: MobileConversationRouteDeps
     const machineId = deps.machineId();
     return machineId !== 'local' && svc?.store.getCreationRecord(key)?.machineId === machineId;
   };
+  const hasForwardCustody = (key: string) => ownsMessageActionCustody(key) && svc?.serves(key) === true;
   const replyReader = (req: Request) => principalOf(req).kind === 'device' && quotedRepliesOn()
     ? exactMessageReader(deps.pairing, req)() : null;
   const replyProjection = (key: string, base: BrowsedMessage, person: ResolvedPerson | null) => {
@@ -752,7 +754,7 @@ export function createMobileConversationRouter(deps: MobileConversationRouteDeps
     // People and roles §3.4: an MSP phone sees Telegram topics and its own app conversations only
     // (filtered after the merge, so the cursor still advances over rows it does not see).
     const person = devicePersonOf(req);
-    const currentReplyActor = principalOf(req).kind === 'device' ? exactMessageReader(deps.pairing, req) : () => null;
+    const currentActionActor = principalOf(req).kind === 'device' ? exactMessageReader(deps.pairing, req) : () => null;
     /** A team phone's list line is the newest message it may read, so a held one is not shown there. */
     const messageLinkSupport = exactLinksOn() ? { messageLinkSupport: { exactContext: true } } : {};
     const shownPreview = (r: ConversationListRow): ConversationListRow => {
@@ -761,23 +763,27 @@ export function createMobileConversationRouter(deps: MobileConversationRouteDeps
       return { ...r, lastPreview: newest ? messagePreview(newest) : null };
     };
     const visible = (rows: ConversationListRow[]): ConversationListRow[] => {
-      const replyActor = (quotedRepliesOn() || reactionsOn()) && isMobileChatEnabled(deps.config) ? currentReplyActor() : null;
+      const actionActor = (quotedRepliesOn() || reactionsOn() || forwardsOn()) && isMobileChatEnabled(deps.config) ? currentActionActor() : null;
       return rows.filter((r) => {
         if (r.platform === 'telegram') return deviceMayUse(deps.pairing, req, `telegram:${String(r.id)}`);
         if (r.platform === 'slack') return deviceMayUse(deps.pairing, req, 'slack:');
         return !svc!.store.isHiddenConversation?.(String(r.id)) && deviceMayUse(deps.pairing, req, String(r.id));
       }).map(shownPreview).map((row) => {
-        if (row.platform !== 'app') return row;
+        const { messageActions: _incomingActions, ...localRow } = row as ConversationListRow & { messageActions?: unknown };
+        if (row.platform !== 'app') return localRow;
         const key = String(row.id);
-        const canAct = replyActor !== null && ownsMessageActionCustody(key)
-          && svc!.deps.holdsLease() && svc!.currentOwner(key) && deps.pairing.mayUse(replyActor, key, 'send');
+        const canAct = (quotedRepliesOn() || reactionsOn()) && actionActor !== null && ownsMessageActionCustody(key)
+          && svc!.deps.holdsLease() && svc!.currentOwner(key) && deps.pairing.mayUse(actionActor, key, 'send');
         const canReply = canAct && quotedRepliesOn() && svc!.deps.signer;
         const canReact = canAct && reactionsOn();
+        const canForward = forwardsOn() && actionActor !== null && hasForwardCustody(key)
+          && svc?.liveConversation(key) != null && deps.pairing.mayUse(actionActor, key, 'read')
+          && deps.pairing.mayUse(actionActor, key, 'send');
         const links = exactLinksOn() ? { exactContext: true, visibility: exactVisibility(person, key), ...(exactLinkOrigin() ? { copyLink: true } : {}) } : {};
-        const { messageActions: _incomingActions, ...localRow } = row as ConversationListRow & { messageActions?: unknown };
-        return canReply || canReact || Object.keys(links).length ? {
+        return canReply || canReact || canForward || Object.keys(links).length ? {
           ...localRow, messageActions: { ...links, ...(canReply ? { reply: true } : {}),
-            ...(canReact ? { reactions: { emoji: APP_REACTION_EMOJI } } : {}) },
+            ...(canReact ? { reactions: { emoji: APP_REACTION_EMOJI } } : {}),
+            ...(canForward ? { forward: { custodianMachineId: deps.machineId() } } : {}) },
         } : localRow;
       });
     };
@@ -1577,6 +1583,107 @@ export function createMobileConversationRouter(deps: MobileConversationRouteDeps
   router.get('/mobile/chat/app/:key/reactions', appReaction);
   router.put('/mobile/chat/app/:key/reactions', appReaction);
 
+  router.post('/mobile/chat/app/:key/forward', (req, res) => {
+    const deviceId = gate(req, res);
+    if (!deviceId) return;
+    if (!forwardsOn() || !isMobileChatEnabled(deps.config)) {
+      res.status(503).json({ error: 'forwards-unavailable' }); return;
+    }
+    const key = String(req.params.key);
+    const input = req.body ?? {};
+    const { custodianMachineId, sourceConversationKey, sourceEventId, requestId } = input;
+    if (!isAppConversationKey(key) || !isAppConversationKey(sourceConversationKey) || key === sourceConversationKey
+      || !exactScalar(sourceEventId, 128) || !exactScalar(custodianMachineId, 128) || req.originalUrl.includes('?')
+      || Object.keys(input).some((field) => !['custodianMachineId', 'sourceConversationKey', 'sourceEventId', 'requestId'].includes(field))) {
+      res.status(400).json({ error: 'invalid-forward' }); return;
+    }
+    if (!validRequestId(res, requestId)) return;
+    const s = svc!;
+    const read = exactMessageReader(deps.pairing, req);
+    const person = read();
+    const actor = person && readerKeyFor(person, deps.pairing.machineId());
+    if (!person || !actor || !s.liveConversation(key) || !deps.pairing.mayUse(person, key, 'read')) {
+      res.status(404).json({ error: 'unknown-conversation' }); return;
+    }
+    const custodyUnavailable = () => res.status(503).json({ error: 'forward-custody-unavailable' });
+    if (custodianMachineId !== deps.machineId() || !ownsMessageActionCustody(key)) { custodyUnavailable(); return; }
+    const namespace = `app-forward:${actor}`;
+    const seed = JSON.stringify([deps.machineId(), actor, requestId]);
+    const eventId = derivedEventId('fwd', seed);
+    const messageId = derivedEventId('msg', JSON.stringify(['forward', seed]));
+    const hash = sha256Hex(JSON.stringify(['app-forward', actor, key, sourceConversationKey, sourceEventId]));
+    const receipt = { eventId, messageId };
+    const requests = s.deps.requests;
+    const confirmed = () => {
+      try {
+        const fact = s.store.getEvent(key, eventId);
+        return fact?.kind === 'message' && fact.machineId === deps.machineId()
+          && fact.messageId === messageId && fact.forwarded === true && fact.forwardBinding === hash;
+      } catch {
+        return false; // @silent-fallback-ok — unreadable evidence leaves acceptance unknown
+      }
+    };
+    const acknowledge = () => {
+      try { requests.finish(namespace, requestId, { status: 200, body: receipt }); }
+      catch { /* @silent-fallback-ok — the exact durable event already proves acceptance */ }
+      res.json(receipt);
+    };
+    try {
+      const prior = requests.lookup(namespace, requestId, hash);
+      if (prior.kind === 'outcome-unknown' && confirmed()) {
+        acknowledge(); return;
+      }
+      if (answerLookup(res, prior)) return;
+      if (!requestIdAgeOk(requestId, now())) { res.status(400).json({ error: 'request-id-too-old' }); return; }
+      if (!rateOk(deviceId)) { res.status(429).json({ error: 'too-many-requests' }); return; }
+
+      if (!deps.pairing.mayUse(person, key, 'send')) { res.status(404).json({ error: 'unknown-conversation' }); return; }
+      const unavailable = () => res.status(409).json({ error: 'forward-source-unavailable' });
+      if (!s.liveConversation(sourceConversationKey) || !deps.pairing.mayUse(person, sourceConversationKey, 'read')) {
+        unavailable(); return;
+      }
+      if (!hasForwardCustody(sourceConversationKey) || !hasForwardCustody(key)) {
+        custodyUnavailable(); return;
+      }
+      const candidates = s.store.exactMessageCandidates(sourceConversationKey, sourceEventId, 'event');
+      const [source] = candidates;
+      if (candidates.length !== 1 || !source || source.attachments?.length || source.systemSource
+        || !deps.pairing.mayReadStored(person, sourceConversationKey, source)) { unavailable(); return; }
+      const text = removeAuthorityTokens(maskInbound(source.text, { enabled: appCredentialScrubOn(deps.config) }).text).text;
+      if (!text.trim()) { unavailable(); return; }
+      // These checks and the durable append are synchronous. No classifier, outbound
+      // router or agent dispatcher takes possession of the copied text.
+      const current = read();
+      if (!current || readerKeyFor(current, deps.pairing.machineId()) !== actor || !s.liveConversation(key)
+        || !deps.pairing.mayUse(current, key, 'read') || !deps.pairing.mayUse(current, key, 'send')) {
+        res.status(404).json({ error: 'unknown-conversation' }); return;
+      }
+      if (!s.liveConversation(sourceConversationKey) || !deps.pairing.mayUse(current, sourceConversationKey, 'read')
+        || !deps.pairing.mayReadStored(current, sourceConversationKey, source)) { unavailable(); return; }
+      if (!s.serves(sourceConversationKey) || !s.serves(key)) { custodyUnavailable(); return; }
+      const reserved = requests.reserve(namespace, requestId, hash, 0, {
+        op: 'app-forward', conversationKey: key, eventId, messageId, sourceConversationKey, sourceEventId,
+      });
+      if (reserved.kind === 'full') { res.status(429).json({ error: 'too-many-requests' }); return; }
+      if (reserved.kind !== 'reserved') { answerLookup(res, reserved); return; }
+      try {
+        const senderPerson = conversationOwnerFor(current, deps.pairing.machineId());
+        s.store.append({ kind: 'message', conversationKey: key, eventId, messageId, role: 'operator', text,
+          at: new Date(now()).toISOString(), machineId: deps.machineId(), forwarded: true, forwardBinding: hash,
+          senderName: current.name, senderRole: current.role,
+          ...(senderPerson ? { senderPerson } : {}),
+        });
+        if (!confirmed()) throw new Error('forward append could not be confirmed');
+      } catch {
+        requests.markUnknown(namespace, requestId);
+        answerLookup(res, { kind: 'outcome-unknown' }); return; // @silent-fallback-ok — retry requires the exact durable event
+      }
+      acknowledge();
+    } catch {
+      res.status(503).json({ error: 'forward-state-unavailable' }); // @silent-fallback-ok — no speculative receipt
+    }
+  });
+
   router.get('/mobile/conversations/message-link', (req, res) => {
     const read = exactGate(req, res);
     if (!read) return;
@@ -1809,7 +1916,7 @@ export function createMobileConversationRouter(deps: MobileConversationRouteDeps
         if (e.kind === 'pin' && !svc!.store.getMessageEvent(key, about)) return false;
         return deps.pairing.mayReadMessageId(devicePersonOf(req), key, about);
       }).map((e) => {
-        const { origin: _origin, receipt: _receipt, replyTo: _replyTo, ingestSeq: _seq, creationContext: _creationContext, ...rest } = e as typeof e & { origin?: DeviceSignedOrigin; receipt?: MachineReceipt; replyTo?: unknown; creationContext?: AppCreationContext };
+        const { origin: _origin, receipt: _receipt, replyTo: _replyTo, forwardBinding: _forwardBinding, ingestSeq: _seq, creationContext: _creationContext, ...rest } = e as typeof e & { origin?: DeviceSignedOrigin; receipt?: MachineReceipt; replyTo?: unknown; forwardBinding?: string; creationContext?: AppCreationContext };
         return {
           ...rest,
           ...(e.kind === 'message' || e.kind === 'media-message' ? (() => {

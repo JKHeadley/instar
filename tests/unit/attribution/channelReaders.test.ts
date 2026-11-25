@@ -133,7 +133,7 @@ describe('ChannelReaders', () => {
 
     it('reads app turns through the store, an operator as the user', () => {
       const browseMessages = vi.fn(() => ({ messages: [{ role: 'operator', text: 'yes' }, { role: 'agent', text: 'on it' }, { role: 'operator', text: '' }], nextBefore: null }));
-      const readers = new ChannelReaders({ stateDir: dir, appStore: () => ({ browseMessages }) as never });
+      const readers = new ChannelReaders({ stateDir: dir, appStore: () => ({ browseAgentMessages: browseMessages }) as never });
       expect(readers.recentConversation('app', 'k1')).toEqual([{ role: 'user', text: 'yes' }, { role: 'agent', text: 'on it' }]);
     });
   });

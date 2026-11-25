@@ -83,8 +83,8 @@ export class ChannelReaders {
     if (channel === 'app') {
       const store = this.deps.appStore?.();
       if (!store) return [];
-      return store.browseMessages(conversation, null, limit).messages
-        .filter((message) => typeof message.text === 'string' && message.text)
+      return store.browseAgentMessages(conversation, null, limit).messages
+        .filter((message) => !message.forwarded && typeof message.text === 'string' && message.text)
         .map((message) => ({ role: message.role === 'agent' ? 'agent' as const : 'user' as const, text: message.text }));
     }
     const log = LOG_FILES[channel];

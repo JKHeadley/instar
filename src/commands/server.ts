@@ -11303,7 +11303,7 @@ export async function startServer(options: StartOptions): Promise<void> {
                   return ref ? { sha256: ref.sha256, conversationKey: ref.canonicalKey.replace(/^app:/, ''), purged: !!ref.purged || !!ref.tombstoned } : null;
                 },
                 lastPersonMessageAt: (conversationKey) => {
-                  const m = appSvc.store.browseMessages(conversationKey, null, 20).messages.filter((x) => x.role === 'operator');
+                  const m = appSvc.store.browseAgentMessages(conversationKey, null, 20).messages.filter((x) => x.role === 'operator' && !x.forwarded);
                   return m.length ? m.reduce((a, b) => (a.at > b.at ? a : b)).at : null;
                 },
                 // agent-work-cards-default §2: the agent's progress note, emit reserved first (appendWithEmit); nothing is written on a refused emit.

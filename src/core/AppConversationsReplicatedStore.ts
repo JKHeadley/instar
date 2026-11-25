@@ -25,7 +25,7 @@ export const APP_CONVERSATION_RECORD_KIND = 'app-conversation-event';
 export const APP_CONVERSATIONS_STORE_KEY = 'appConversations';
 export const APP_CONVERSATIONS_IMPACT_TIER: ImpactTier = 'low';
 
-const KNOWN = ['accessStamp', 'eventId', 'eventKind', 'conversationKey', 'at', 'machineId', 'title', 'setAt', 'messageId', 'role', 'text', 'signedOrigin', 'receivedAt', 'receipt', 'replyTo', 'state', 'attachments', 'attachmentIds', 'platformMessageId', 'attachmentId', 'provider', 'late', 'agentOrigin', 'pinnedMessageId', 'pinState', 'pinnedBy', 'preview', 'source', 'ownerPerson', 'creationContext', 'reactionTarget', 'reactionActor', 'reactionEmoji', 'reactionRevision'] as const;
+const KNOWN = ['accessStamp', 'eventId', 'eventKind', 'conversationKey', 'at', 'machineId', 'title', 'setAt', 'messageId', 'role', 'text', 'signedOrigin', 'receivedAt', 'receipt', 'replyTo', 'state', 'attachments', 'attachmentIds', 'platformMessageId', 'attachmentId', 'provider', 'late', 'agentOrigin', 'pinnedMessageId', 'pinState', 'pinnedBy', 'preview', 'source', 'ownerPerson', 'creationContext', 'reactionTarget', 'reactionActor', 'reactionEmoji', 'reactionRevision', 'forwarded', 'forwardBinding'] as const;
 
 export function deriveAppConversationRecordKey(conversationKey: string, eventId: string): string {
   return crypto.createHash('sha256').update(`${canonicalConversationKey(conversationKey)}\u0000${eventId}`).digest('hex');
@@ -33,9 +33,11 @@ export function deriveAppConversationRecordKey(conversationKey: string, eventId:
 
 /** The event (as validated by the store) from a replicated record's data, or null. */
 export function appEventFromReplicatedData(data: Readonly<Record<string, unknown>>): AppEvent | null {
-  const { eventKind, signedOrigin, ...rest } = data as Record<string, unknown>;
-  const event = validateAppEvent({ ...rest, kind: eventKind, ...(signedOrigin !== undefined ? { origin: signedOrigin } : {}) });
-  if (event?.kind === 'reaction' && event.machineId !== data.origin) return null;
+  const { eventKind, signedOrigin, origin, ...rest } = data as Record<string, unknown>;
+  if (eventKind === 'forward-copy' && (rest.forwarded !== true || rest.machineId !== origin)) return null;
+  if (eventKind !== 'forward-copy' && (rest.forwarded !== undefined || rest.forwardBinding !== undefined)) return null;
+  const event = validateAppEvent({ ...rest, kind: eventKind === 'forward-copy' ? 'message' : eventKind, ...(signedOrigin !== undefined ? { origin: signedOrigin } : {}) });
+  if (event?.kind === 'reaction' && event.machineId !== origin) return null;
   return event;
 }
 
@@ -49,7 +51,7 @@ export const appConversationRecordStoreSchema: StoreFieldSchema = {
 
 function toWire(ev: AppEvent): Record<string, unknown> {
   const { kind, ...rest } = ev as AppEvent & { origin?: unknown };
-  const out: Record<string, unknown> = { ...rest, eventKind: kind };
+  const out: Record<string, unknown> = { ...rest, eventKind: ev.kind === 'message' && ev.forwarded ? 'forward-copy' : kind };
   if ('origin' in out) { out.signedOrigin = out.origin; delete out.origin; }
   return out;
 }
