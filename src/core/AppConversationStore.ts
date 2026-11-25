@@ -38,7 +38,7 @@ import Database from 'better-sqlite3';
 import type { Database as BetterSqliteDatabase } from 'better-sqlite3';
 import { registerSqliteHandle } from './SqliteRegistry.js';
 import { SafeFsExecutor } from './SafeFsExecutor.js';
-import { canonicalConversationKey, cleanConversationTitle, derivedEventId } from './appConversationText.js';
+import { canonicalConversationKey, cleanConversationTitle, derivedEventId, isAppConversationKey } from './appConversationText.js';
 import { type AppAttachment, validateAttachments, MAX_PURGE_BATCH, mediaPreview } from './appMediaTypes.js';
 import { validConversationOwner, type ConversationOwner } from './MobilePeople.js';
 import type { ReceiptSignature, StoredReplyReference } from './AppRecordSignatures.js';
@@ -46,7 +46,7 @@ import { isReaderKey } from './ConversationReadMarkers.js';
 import type { AccessStamp } from './TeamAccessMerge.js';
 import { compareCreatedEvidence, creationBaseDigest, creationContextDigest, validateAppCreationContext, type AppCreationContext } from './AppCreationContext.js';
 
-export type AppEventKind = 'created' | 'label' | 'tombstone' | 'message' | 'delivery' | 'media-message' | 'purge' | 'platform-media' | 'transcript' | 'pin' | 'reaction';
+export type AppEventKind = 'created' | 'label' | 'tombstone' | 'message' | 'delivery' | 'media-message' | 'purge' | 'platform-media' | 'transcript' | 'pin' | 'reaction' | 'message-removed';
 export type DeliveryEventState = 'delivered' | 'refused' | 'intercepted' | 'unknown';
 export type ReducedDeliveryState = DeliveryEventState | 'pending';
 
@@ -169,7 +169,13 @@ export interface ReactionEvent extends AppEventBase {
   reactionRevision: number;
 }
 
-export type AppEvent = CreatedEvent | LabelEvent | TombstoneEvent | MessageEvent | DeliveryEvent | MediaMessageEvent | PurgeEvent | PlatformMediaEvent | TranscriptEvent | PinEvent | ReactionEvent;
+export interface MessageRemovedEvent extends AppEventBase {
+  kind: 'message-removed';
+  targetEventId: string;
+  targetMessageId: string;
+}
+
+export type AppEvent = CreatedEvent | LabelEvent | TombstoneEvent | MessageEvent | DeliveryEvent | MediaMessageEvent | PurgeEvent | PlatformMediaEvent | TranscriptEvent | PinEvent | ReactionEvent | MessageRemovedEvent;
 
 /** The id of a pinned message: an app message id, a Telegram message id, or a Slack ts. */
 export const PIN_MESSAGE_ID_RE = /^[A-Za-z0-9._:-]{1,128}$/;
@@ -287,6 +293,8 @@ const SCHEMA = [
   // Pinned messages (conversation-pinned-messages): the winning pin event per message.
   `CREATE TABLE IF NOT EXISTS pins (canonicalKey TEXT NOT NULL, pinnedMessageId TEXT NOT NULL, eventId TEXT NOT NULL, state TEXT NOT NULL, at TEXT NOT NULL, machineId TEXT NOT NULL, PRIMARY KEY (canonicalKey, pinnedMessageId))`,
   `CREATE TABLE IF NOT EXISTS reactions (canonicalKey TEXT NOT NULL, target TEXT NOT NULL, actor TEXT NOT NULL, revision INTEGER NOT NULL, eventId TEXT NOT NULL, emoji TEXT, PRIMARY KEY(canonicalKey, target, actor, revision, eventId), FOREIGN KEY(canonicalKey, eventId) REFERENCES events(canonicalKey, eventId) ON DELETE CASCADE)`,
+  `CREATE TABLE IF NOT EXISTS message_removals (canonicalKey TEXT NOT NULL, targetEventId TEXT NOT NULL, targetMessageId TEXT NOT NULL, machineId TEXT NOT NULL, eventId TEXT NOT NULL, PRIMARY KEY(canonicalKey, targetEventId, targetMessageId, machineId, eventId), FOREIGN KEY(canonicalKey, eventId) REFERENCES events(canonicalKey, eventId) ON DELETE CASCADE)`,
+  `CREATE UNIQUE INDEX IF NOT EXISTS message_removals_event ON message_removals(canonicalKey, eventId)`,
   `CREATE INDEX IF NOT EXISTS pins_state ON pins(canonicalKey, state, at)`,
 ];
 
@@ -406,6 +414,13 @@ export function validateAppEvent(raw: unknown): AppEvent | null {
       if (!messageId || !attachmentId || text === null || !provider) return null;
       if (r.late !== undefined && r.late !== true) return null;
       return { ...base, kind: 'transcript', messageId, attachmentId, text, provider, ...(r.late === true ? { late: true as const } : {}) };
+    }
+    case 'message-removed': {
+      const targetEventId = str(r.targetEventId, 128);
+      const targetMessageId = str(r.targetMessageId, 128);
+      if (!isAppConversationKey(conversationKey) || !targetEventId || !targetMessageId || targetEventId === eventId
+        || [eventId, targetEventId, targetMessageId, machineId].some((id) => /[\x00-\x1f\x7f]/.test(id))) return null;
+      return { ...base, kind: 'message-removed', targetEventId, targetMessageId };
     }
     case 'reaction': {
       const reactionTarget = str(r.reactionTarget, 128);
@@ -554,6 +569,7 @@ export class AppConversationStore {
   private creationVersion = 0;
   private lastDataVersion = 0;
   private evidenceDataVersion = 0;
+  private removalIndexProof: string | null = null;
 
   constructor(private readonly opts: AppConversationStoreOptions) {
     this.dir = path.join(opts.stateDir, 'app-conversations');
@@ -627,6 +643,7 @@ export class AppConversationStore {
 
   /** Drop the index and rebuild it from the files (tests and the operator's repair path). */
   rebuildIndex(): void {
+    this.removalIndexProof = null;
     this.db.exec('DELETE FROM files; DELETE FROM events; DELETE FROM messages; DELETE FROM deliveries; DELETE FROM conversations; DELETE FROM media_refs; DELETE FROM media_blobs; DELETE FROM media_purged; DELETE FROM media_totals; DELETE FROM transcripts; DELETE FROM pins;');
     this.catchUp();
   }
@@ -783,6 +800,11 @@ export class AppConversationStore {
   useAccessStamps(stamps: AccessStamps): void { this.stamps = stamps; }
 
   private write(event: AppEvent): { appended: boolean; ingestSeq: number } {
+    if (event.kind === 'message-removed') {
+      const normalized = validateAppEvent(event);
+      if (normalized?.kind !== 'message-removed') throw new Error('invalid App message removal');
+      event = normalized;
+    }
     if (event.kind === 'created') {
       const normalized = validateAppEvent(event);
       if (!normalized || normalized.kind !== 'created') throw new Error('invalid app creation evidence');
@@ -895,6 +917,10 @@ export class AppConversationStore {
         return;
       case 'purge':
         for (const id of ev.attachmentIds) this.purgeMediaRef(id);
+        return;
+      case 'message-removed':
+        this.db.prepare('INSERT OR IGNORE INTO message_removals (canonicalKey, targetEventId, targetMessageId, machineId, eventId) VALUES (?, ?, ?, ?, ?)')
+          .run(canonicalKey, ev.targetEventId, ev.targetMessageId, ev.machineId, ev.eventId);
         return;
       case 'reaction':
         this.db.prepare('INSERT OR IGNORE INTO reactions (canonicalKey, target, actor, revision, eventId, emoji) VALUES (?, ?, ?, ?, ?, ?)')
@@ -1450,6 +1476,106 @@ export class AppConversationStore {
     out.reverse();
     const oldest = page[page.length - 1];
     return { messages: out, nextBefore: more && oldest ? `${oldest.at},${oldest.eventId}` : null };
+  }
+
+  private verifyRemovalIndex(conversationKey: string, filePath: string): boolean {
+    const key = canonicalConversationKey(conversationKey);
+    const event = this.db.prepare('SELECT kind FROM events WHERE canonicalKey = ? AND eventId = ?');
+    const removal = this.db.prepare('SELECT targetEventId, targetMessageId, machineId FROM message_removals WHERE canonicalKey = ? AND eventId = ?');
+    const counts = this.db.prepare(`
+      SELECT (SELECT COUNT(*) FROM events WHERE canonicalKey = ? AND kind = 'message-removed') AS journalIndex,
+             (SELECT COUNT(*) FROM message_removals WHERE canonicalKey = ?) AS removalIndex
+    `).get(key, key) as { journalIndex: number; removalIndex: number };
+    const fd = fs.openSync(filePath, 'r');
+    try {
+      const chunk = Buffer.alloc(64 * 1024);
+      let carry = Buffer.alloc(0);
+      const seen = new Set<string>();
+      for (;;) {
+        const length = fs.readSync(fd, chunk, 0, chunk.length, null);
+        if (!length) return carry.length === 0 && seen.size === counts.journalIndex && seen.size === counts.removalIndex;
+        const bytes = Buffer.concat([carry, chunk.subarray(0, length)]);
+        let start = 0;
+        for (let end = bytes.indexOf(10); end !== -1; end = bytes.indexOf(10, start)) {
+          const raw = validateAppEvent(JSON.parse(bytes.subarray(start, end).toString('utf8')));
+          if (!raw || canonicalConversationKey(raw.conversationKey) !== key
+            || (event.get(key, raw.eventId) as { kind: string } | undefined)?.kind !== raw.kind) return false;
+          if (raw.kind === 'message-removed') {
+            seen.add(raw.eventId);
+            const row = removal.get(key, raw.eventId) as { targetEventId: string; targetMessageId: string; machineId: string } | undefined;
+            if (!row || row.targetEventId !== raw.targetEventId || row.targetMessageId !== raw.targetMessageId || row.machineId !== raw.machineId) return false;
+          }
+          start = end + 1;
+        }
+        carry = Buffer.from(bytes.subarray(start));
+        if (carry.length > MAX_LINE_BYTES) return false;
+      }
+    } finally {
+      fs.closeSync(fd);
+    }
+  }
+
+  /** Matching durable removal, known absence, or null when local proof is incomplete. */
+  messageRemoval(conversationKey: string, targetEventId: string, targetMessageId: string, removalEventId?: string): { eventId: string | null } | null {
+    const key = canonicalConversationKey(conversationKey);
+    try {
+      const version = this.db.pragma('data_version', { simple: true });
+      const result = this.db.transaction(() => {
+        const custodian = this.getCreationRecord(conversationKey)?.machineId;
+        const file = this.db.prepare('SELECT fileName, indexedBytes FROM files WHERE canonicalKey = ?')
+          .get(key) as { fileName: string; indexedBytes: number } | undefined;
+        if (!custodian || !file) return null;
+        const filePath = path.join(this.dir, file.fileName);
+        const journal = fs.statSync(filePath);
+        const stableResult = (eventId: string | null) => {
+          const current = fs.statSync(filePath);
+          return current.size === journal.size && current.mtimeMs === journal.mtimeMs && current.ctimeMs === journal.ctimeMs
+            ? { eventId } : null;
+        };
+        if (journal.size !== file.indexedBytes) return null;
+        type RemovalIndexRow = { eventId: string; targetEventId: string; targetMessageId: string; machineId: string };
+        const matches = this.db.prepare(
+          'SELECT eventId, targetEventId, targetMessageId, machineId FROM message_removals WHERE canonicalKey = ? AND eventId = ?',
+        );
+        const agreesWithJournal = (row: RemovalIndexRow) => {
+          const fact = this.getEvent(conversationKey, row.eventId);
+          return fact?.kind === 'message-removed' && fact.eventId === row.eventId
+            && canonicalConversationKey(fact.conversationKey) === key && fact.machineId === row.machineId
+            && fact.targetEventId === row.targetEventId && fact.targetMessageId === row.targetMessageId;
+        };
+        const exactReceipt = removalEventId !== undefined;
+        const found = (exactReceipt
+          ? matches.get(key, removalEventId)
+          : this.db.prepare(
+            'SELECT eventId, targetEventId, targetMessageId, machineId FROM message_removals WHERE canonicalKey = ? AND targetEventId = ? AND targetMessageId = ? AND machineId = ? ORDER BY eventId LIMIT 1',
+          ).get(key, targetEventId, targetMessageId, custodian)) as RemovalIndexRow | undefined;
+        const verifiedAbsence = () => {
+          // Check negative evidence once per local journal/index checkpoint.
+          const writes = this.db.prepare('SELECT total_changes() AS count').get();
+          const proof = JSON.stringify([key, file.fileName, file.indexedBytes, journal.mtimeMs, journal.ctimeMs, version, writes]);
+          if (this.removalIndexProof !== proof) {
+            if (!this.verifyRemovalIndex(conversationKey, filePath)) return null;
+            this.removalIndexProof = proof;
+          }
+          return stableResult(null);
+        };
+        if (!found) {
+          if (exactReceipt && this.db.prepare('SELECT 1 FROM events WHERE canonicalKey = ? AND eventId = ?').get(key, removalEventId)) return null;
+          return verifiedAbsence();
+        }
+        if (found.targetEventId !== targetEventId || found.targetMessageId !== targetMessageId || found.machineId !== custodian
+          || !agreesWithJournal(found)) return null;
+        const target = this.getEvent(conversationKey, targetEventId);
+        if (!target || target.eventId !== targetEventId || canonicalConversationKey(target.conversationKey) !== key) return null;
+        if ((target.kind !== 'message' && target.kind !== 'media-message') || target.messageId !== targetMessageId) {
+          return exactReceipt ? null : verifiedAbsence();
+        }
+        return stableResult(found.eventId);
+      })();
+      return this.db.pragma('data_version', { simple: true }) === version ? result : null;
+    } catch {
+      return null; // @silent-fallback-ok — callers must treat unreadable journal evidence as unknown
+    }
   }
 
   /** A gap or competing fact makes the slot unfit for a comparable write. */

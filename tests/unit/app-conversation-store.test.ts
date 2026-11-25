@@ -17,6 +17,7 @@ import {
 } from '../../src/core/AppConversationsReplicatedStore.js';
 import { signReplyReceipt, signerKeyHashOf, verifyReplyReceipt, type MachineSigner } from '../../src/core/AppRecordSignatures.js';
 import { generateSigningKeyPair, sign as edSign } from '../../src/core/MachineIdentity.js';
+import Database from 'better-sqlite3';
 import { SafeFsExecutor } from '../../src/core/SafeFsExecutor.js';
 
 const dirs: string[] = [];
@@ -36,6 +37,147 @@ const dl = (id: string, state: 'delivered' | 'refused' | 'intercepted' | 'unknow
 const fileOf = (dir: string) => path.join(dir, 'app-conversations', `${crypto.createHash('sha256').update(`app:${KEY}`).digest('hex')}.jsonl`);
 
 describe('AppConversationStore', () => {
+
+  it('indexes exact removal facts across arrival order and rebuild without changing the raw target', () => {
+    const { store } = mk();
+    const deletion = { kind: 'message-removed' as const, conversationKey: KEY, eventId: 'removed-a',
+      targetEventId: 'ev-a', targetMessageId: 'msg-a', at: at(5), machineId: 'm1' };
+    expect(buildAppConversationRecordData(deletion)({ physical: 1, logical: 0, node: 'm1' }, 'm1')).toBeNull();
+    expect(appEventFromReplicatedData({ ...deletion, eventKind: deletion.kind, origin: 'm1' })).toBeNull();
+    store.append(deletion);
+    expect(store.messageRemoval(KEY, 'ev-a', 'msg-a')).toBeNull();
+    store.append(created());
+    expect(store.messageRemoval(KEY, 'ev-a', 'msg-a')).toBeNull();
+    store.append(msg('a', 1));
+    store.append(msg('b', 2));
+    expect(store.messageRemoval(KEY, 'ev-a', 'msg-a')).toEqual({ eventId: 'removed-a' });
+    expect(store.messageRemoval(KEY, 'ev-a', 'msg-b')).toEqual({ eventId: null });
+    expect(store.messageRemoval(KEY, 'ev-b', 'msg-b')).toEqual({ eventId: null });
+    expect(store.append(deletion).appended).toBe(false);
+    store.append({ ...deletion, eventId: 'removed-second' });
+    store.rebuildIndex();
+    expect(store.messageRemoval(KEY, 'ev-a', 'msg-a')).toEqual({ eventId: 'removed-a' });
+    expect(store.messageRemoval(KEY, 'ev-a', 'msg-a', 'removed-a')).toEqual({ eventId: 'removed-a' });
+    expect(store.messageRemoval(KEY, 'ev-a', 'msg-a', 'removed-second')).toEqual({ eventId: 'removed-second' });
+    expect(store.messageRemoval(KEY, 'ev-a', 'msg-a', 'unrecorded')).toEqual({ eventId: null });
+    expect(store.messageRemoval(KEY, 'ev-b', 'msg-b', 'removed-a')).toBeNull();
+    expect(store.messageRemoval(KEY, 'ev-b', 'msg-b', 'ev-a')).toBeNull();
+    expect(store.getEvent(KEY, 'ev-a')).toMatchObject({ kind: 'message', text: 'hello a' });
+    expect(store.getEvent(KEY, 'removed-a')).toMatchObject(deletion);
+  });
+
+  it('keeps a wrong custodian or target binding from taking effect or blocking a valid fact', () => {
+    const { store } = mk();
+    store.append(created());
+    store.append(msg('a', 1));
+    const deletion = { kind: 'message-removed' as const, conversationKey: KEY, eventId: 'wrong-machine',
+      targetEventId: 'ev-a', targetMessageId: 'msg-a', at: at(5), machineId: 'm2' };
+    store.append(deletion);
+    store.append({ ...deletion, eventId: 'wrong-target', targetMessageId: 'other', machineId: 'm1' });
+    expect(store.messageRemoval(KEY, 'ev-a', 'msg-a')).toEqual({ eventId: null });
+    expect(store.messageRemoval(KEY, 'ev-a', 'other')).toEqual({ eventId: null });
+    store.append({ ...deletion, eventId: 'right', machineId: 'm1' });
+    expect(store.messageRemoval(KEY, 'ev-a', 'msg-a')).toEqual({ eventId: 'right' });
+  });
+
+  it('reports incomplete removal evidence until a durable unindexed fact is replayed', () => {
+    const { dir, store } = mk();
+    store.append(created());
+    store.append(msg('a', 1));
+    const fact = { kind: 'message-removed', conversationKey: KEY, eventId: 'removed-a',
+      targetEventId: 'ev-a', targetMessageId: 'msg-a', at: at(5), machineId: 'm1' } as const;
+    expect(() => store.append({ ...fact, targetEventId: fact.eventId })).toThrow('invalid App message removal');
+    expect(store.messageRemoval(KEY, 'ev-a', 'msg-a')).toEqual({ eventId: null });
+    fs.appendFileSync(fileOf(dir), JSON.stringify({ ...fact, ingestSeq: 3 }) + '\n');
+    expect(store.messageRemoval(KEY, 'ev-a', 'msg-a')).toBeNull();
+    store.close();
+    const reopened = new AppConversationStore({ stateDir: dir, machineId: () => 'm1' });
+    try {
+      expect(reopened.messageRemoval(KEY, 'ev-a', 'msg-a')).toEqual({ eventId: 'removed-a' });
+    } finally { reopened.close(); }
+  });
+
+  it.each([
+    'ALTER TABLE message_removals RENAME TO incomplete_removal_fixture',
+    "UPDATE message_removals SET targetMessageId = 'mismatched-index-fixture'",
+    "UPDATE events SET kind = 'label' WHERE eventId = 'removed-a'; ALTER TABLE message_removals RENAME TO incomplete_removal_fixture",
+  ])('reports unknown when removal index evidence is inconsistent (%s)', (mutateIndex) => {
+    const { dir, store } = mk();
+    store.append(created());
+    store.append(msg('a', 1));
+    store.append({ kind: 'message-removed', conversationKey: KEY, eventId: 'removed-a',
+      targetEventId: 'ev-a', targetMessageId: 'msg-a', at: at(5), machineId: 'm1' });
+    store.close();
+    const db = new Database(path.join(dir, 'app-conversations', 'index.sqlite'));
+    try { db.exec(mutateIndex); }
+    finally { db.close(); }
+    const reopened = new AppConversationStore({ stateDir: dir, machineId: () => 'm1' });
+    try {
+      expect(reopened.messageRemoval(KEY, 'ev-a', 'msg-a')).toBeNull();
+      expect(reopened.messageRemoval(KEY, 'ev-a', 'mismatched-index-fixture')).toBeNull();
+    }
+    finally { reopened.close(); }
+  });
+
+  it('refuses negative proof when the event index claims a removal absent from journal bytes', () => {
+    const { dir, store } = mk();
+    store.append(created());
+    store.append(msg('a', 1));
+    store.append(msg('b', 2));
+    store.append({ kind: 'message-removed', conversationKey: KEY, eventId: 'mismatched',
+      targetEventId: 'ev-a', targetMessageId: 'msg-b', at: at(5), machineId: 'm1' });
+    expect(store.messageRemoval(KEY, 'ev-a', 'msg-b')).toEqual({ eventId: null });
+    store.close();
+    const db = new Database(path.join(dir, 'app-conversations', 'index.sqlite'));
+    try {
+      db.exec(`INSERT INTO events SELECT canonicalKey, ingestSeq, 'phantom', messageId, 'message-removed', at, machineId, byteOffset, byteLength FROM events WHERE eventId = 'ev-b'`);
+    } finally { db.close(); }
+    const reopened = new AppConversationStore({ stateDir: dir, machineId: () => 'm1' });
+    try {
+      expect(reopened.messageRemoval(KEY, 'ev-a', 'msg-a')).toBeNull();
+      expect(reopened.messageRemoval(KEY, 'ev-a', 'msg-b')).toBeNull();
+      expect(reopened.messageRemoval(KEY, 'ev-a', 'msg-a', 'phantom')).toBeNull();
+    } finally { reopened.close(); }
+  });
+
+  it('reuses one integrity scan for negative lookups within a journal checkpoint', () => {
+    const { store } = mk();
+    store.append(created());
+    store.append(msg('a', 1));
+    store.append({ kind: 'message-removed', conversationKey: KEY, eventId: 'removed-a',
+      targetEventId: 'ev-a', targetMessageId: 'msg-a', at: at(5), machineId: 'm1' });
+    const inspector = store as unknown as { verifyRemovalIndex(key: string, path: string): boolean; db: Database.Database };
+    const scan = vi.spyOn(inspector, 'verifyRemovalIndex');
+    for (const id of ['ev-b', 'ev-c', 'ev-d']) {
+      expect(store.messageRemoval(KEY, id, 'other')).toEqual({ eventId: null });
+    }
+    expect(scan).toHaveBeenCalledTimes(1);
+    store.append(msg('b', 6));
+    expect(store.messageRemoval(KEY, 'ev-b', 'msg-b')).toEqual({ eventId: null });
+    expect(scan).toHaveBeenCalledTimes(2);
+    inspector.db.exec("UPDATE message_removals SET targetMessageId = 'corrupted-after-proof' WHERE eventId = 'removed-a'");
+    expect(store.messageRemoval(KEY, 'ev-b', 'msg-b')).toBeNull();
+    expect(scan).toHaveBeenCalledTimes(3);
+  });
+
+  it('cannot turn a concurrent durable removal into a negative receipt', () => {
+    const { dir, store } = mk();
+    store.append(created());
+    store.append(msg('a', 1));
+    const writer = new AppConversationStore({ stateDir: dir, machineId: () => 'm1' });
+    const inspector = store as unknown as { verifyRemovalIndex(key: string, path: string): boolean };
+    const scan = inspector.verifyRemovalIndex.bind(inspector);
+    vi.spyOn(inspector, 'verifyRemovalIndex').mockImplementationOnce((key, filepath) => {
+      writer.append({ kind: 'message-removed', conversationKey: KEY, eventId: 'removed-a',
+        targetEventId: 'ev-a', targetMessageId: 'msg-a', at: at(5), machineId: 'm1' });
+      return scan(key, filepath);
+    });
+    try {
+      expect(store.messageRemoval(KEY, 'ev-a', 'msg-a', 'removed-a')).toBeNull();
+      expect(store.messageRemoval(KEY, 'ev-a', 'msg-a', 'removed-a')).toEqual({ eventId: 'removed-a' });
+    } finally { writer.close(); }
+  });
+
   it('replicates forwarded history with a dedicated wire kind and hides the private binding in projections', () => {
     const { store } = mk('m2');
     store.append(created());
