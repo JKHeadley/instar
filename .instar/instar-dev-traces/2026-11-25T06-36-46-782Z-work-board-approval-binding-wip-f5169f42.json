@@ -1,0 +1,18 @@
+{
+  "version": 2,
+  "slug": "work-board-approval-binding-wip",
+  "sessionId": "b3d2cf8a-9b5d-468b-a50b-70ebf11e9e5c",
+  "timestamp": "2026-11-25T06:36:46.782Z",
+  "artifactPath": "upgrades/side-effects/work-board-approval-binding-wip.md",
+  "artifactSha256": "232bcec91b8e6ddecadc14af5d9cc952580df9a300d99a0816a255b0c4b68700",
+  "specPath": "docs/specs/owner-work-board-slips-first-slice.md",
+  "coveredFiles": [
+    "src/core/WorkBoardRuntime.ts",
+    "tests/e2e/phone-work-cards-alive.test.ts"
+  ],
+  "phase": "complete",
+  "tier": 2,
+  "tierReasoning": "Fence enrolled board on unexpected peer journal state before projection or delivery",
+  "secondPass": "true",
+  "reviewerConcurred": true
+}

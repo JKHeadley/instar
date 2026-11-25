@@ -144,3 +144,7 @@ The locator codec uses a fixed Instar host and a versioned fragment containing a
 ## Enrolled journal writer fence
 
 Every local Work Board journal mutation under the slip runtime now requires the current enrolled writer both before emit and inside record building. The builder also verifies its local origin and refuses an unbound or wrong-writer approval. Partial enrollment without an application adapter leaves slips and Work Board writes unavailable. Legacy boards without slip enrollment keep their current behavior. Independent review concurred. The real-server fixture checks lost writer and zero journal mutations, legacy approval refusal on the enrolled board, and partial enrollment refusal. Peer record admission and ordinary versioned client wiring remain separate activation requirements.
+
+## Peer journal admission and pickup fencing
+
+An enrolled runtime admits local records from trusted machine metadata and exact peer records whose fingerprints are present in the sealed enrollment history. An unexpected or unattributed record fences the runtime before applying that batch. The fence prevents later local writes and stops pickup at both the next pass and downstream dispatch or stop delivery. Legacy boards keep existing replication behavior. Independent review concurred. The lifecycle tests cover an exact sealed peer row, an unexpected peer edit, and an unexpected peer record arriving while pickup awaits its durable intent. Production proof of the sealed baseline and old-build refusal remains required.

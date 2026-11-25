@@ -69,6 +69,10 @@ export interface WorkBoardCreationEvidenceSnapshot {
   items: ReadonlyArray<WorkBoardCreationEvidence>;
 }
 
+export function workBoardHistoryFingerprint({ origin, data }: UnionEntry): string {
+  return sha256Hex(canonicalJson([origin, data]));
+}
+
 export interface WorkBoardSlipDeviceBinding {
   slipId: string;
   digest: string;
@@ -82,6 +86,8 @@ export interface WorkBoardRuntimeSeams {
   machineId: string;
   permissionSlips?: {
     store: WorkBoardSlipStore;
+    /** Exact peer records already accepted by the verified enrollment baseline. */
+    sealedPeerHistory?: ReadonlySet<string>;
     currentWriter: () => WorkBoardWriterProof | null;
     application?: {
       readEvent: (id: string) => WorkBoardApprovalLookup;
@@ -125,6 +131,8 @@ export class WorkBoardRuntime {
   private selfWasHolder = false;
   private journalSignalled = false;
   private started = false;
+  private slipJournalConflict = false;
+  private readonly sealedPeerHistory: ReadonlySet<string>;
   private readonly now: () => number;
   /** §2 "Note rate and the drain set": pending note event ids per card conversation, reconciled by event id against the pointers. */
   private readonly pendingNotes = new Map<string, Map<string, string>>();
@@ -137,7 +145,7 @@ export class WorkBoardRuntime {
   readonly holderStats = { sweeps: 0, cardsSwept: 0, notesDrained: 0, notesCoalesced: 0, holdsLifted: 0, quietRepickups: 0, lastPassAt: null as number | null, lastSweep: null as Record<string, unknown> | null };
 
   private currentSlipWriter(): WorkBoardWriterProof | null {
-    if (!this.started || !this.seams.enabled()) return null;
+    if (!this.started || !this.seams.enabled() || this.slipJournalConflict) return null;
     const port = this.seams.permissionSlips;
     if (!port?.application) return null;
     const writer = port.currentWriter();
@@ -253,6 +261,7 @@ export class WorkBoardRuntime {
     this.bootMs = this.now();
     const settings = (): WorkBoardSettings => resolveWorkBoardSettings(seams.rawSettings());
     const slips = seams.permissionSlips;
+    this.sealedPeerHistory = new Set(slips?.sealedPeerHistory);
     const application = slips?.application;
     this.svc = new WorkBoardService({
       approvalAuthority: slips && application ? {
@@ -276,7 +285,10 @@ export class WorkBoardRuntime {
           return data;
         });
       },
-      loadUnion: seams.loadUnion,
+      loadUnion: () => {
+        const entries = seams.loadUnion();
+        return this.admitSlipHistory(entries) && (!slips || this.currentSlipWriter()) ? entries : [];
+      },
       now: this.now,
       settings,
       ownerPersonKey: seams.ownerPersonKey,
@@ -290,9 +302,10 @@ export class WorkBoardRuntime {
       const a = seams.conversation.attachment(attachmentId);
       return a && !a.purged && a.conversationKey === conversationKey ? { sha256: a.sha256 } : null;
     };
+    const canDeliver = () => !slips || this.currentSlipWriter() !== null;
     this.controller = new WorkBoardPickupController({
-      svc: this.svc, machineId: seams.machineId, settings: () => settings().pickup, now: this.now, enabled: seams.enabled,
-      ownsConversation: (ck) => seams.conversation.serves(ck),
+      svc: this.svc, machineId: seams.machineId, settings: () => settings().pickup, now: this.now, enabled: () => seams.enabled() && (!slips || this.currentSlipWriter() !== null),
+      ownsConversation: (ck) => canDeliver() && seams.conversation.serves(ck),
       relayReady: seams.relayReady,
       admits: (ck) => seams.conversation.serves(ck),
       hasLiveSession: (ck) => seams.conversation.hasLiveSession(ck),
@@ -300,16 +313,18 @@ export class WorkBoardRuntime {
       awaitDurable: seams.awaitDurable,
       appendLine: async (ck, id, text) => { this.appendLine(ck, id, text); },
       deliver: async (ck, brief, title) => {
+        if (!canDeliver()) return { outcome: 'refused', reason: 'work-board-writer-unavailable' };
         // The conversation may not be bound here yet (created on a standby): create is idempotent.
         const cardId = this.svc.cardIdForConversation(ck);
         if (cardId) this.ensureConversation(cardId, true);
         const alias = seams.conversation.aliasFor(ck);
         if (alias === null) return { outcome: 'refused', reason: 'the card\'s chat is not open on this machine yet' };
+        if (!canDeliver()) return { outcome: 'refused', reason: 'work-board-writer-unavailable' };
         return seams.conversation.dispatchSystem({ conversationKey: ck, alias, title, text: brief, messageId: `wb-brief-${this.now()}` });
       },
       injectStop: async (ck, brief, tagTitle) => {
         const alias = seams.conversation.aliasFor(ck);
-        if (alias === null) return false;
+        if (alias === null || !canDeliver()) return false;
         return seams.conversation.injectLive(alias, `[app:${alias} "${tagTitle.replace(/["\n\r]/g, ' ').slice(0, 80)}" system:work-board] ${brief}`);
       },
       ledgerNote: seams.ledgerNote,
@@ -575,20 +590,37 @@ export class WorkBoardRuntime {
 
   stop(): void { this.controller.stop(); this.started = false; }
 
+  private admitSlipHistory(entries: UnionEntry[]): boolean {
+    const slips = this.seams.permissionSlips;
+    if (!slips) return true;
+    const conflict = entries.some((entry) => {
+      const { origin, data } = entry;
+      return !origin || !data || data.origin !== origin
+        || (origin !== this.seams.machineId && !this.sealedPeerHistory.has(workBoardHistoryFingerprint(entry)));
+    });
+    if (!conflict) return !this.slipJournalConflict;
+    this.slipJournalConflict = true;
+    this.seams.log?.('work-board-slip-writer-fenced', { reason: 'unexpected-journal-origin' });
+    return false;
+  }
+
   /** Committed entries from the journal (own) or the sync applier (a peer's). */
   onCommitted(entries: Array<{ data: unknown; machine?: string }>, fromPeer: string | null): void {
     if (!this.started) return;
-    // Switched off live: the records still land in the index (they are data, and re-enabling must
-    // show them), but nothing is created, noted or handed over.
+    const union: UnionEntry[] = entries.map((e) => {
+      const d = e.data as Record<string, unknown>;
+      const origin = this.seams.permissionSlips
+        ? fromPeer ?? e.machine ?? ''
+        : String(d.origin ?? fromPeer ?? this.seams.machineId);
+      return { data: d, origin };
+    });
+    if (!this.admitSlipHistory(union) || (this.seams.permissionSlips && !this.currentSlipWriter())) return;
+    // A disabled legacy board still remembers its committed data without side effects.
     if (!this.seams.enabled()) {
-      const changed = this.svc.apply(entries.map((e) => { const d = e.data as Record<string, unknown>; return { data: d, origin: String(d.origin ?? fromPeer ?? this.seams.machineId) }; }));
+      const changed = this.svc.apply(union);
       for (const id of changed) this.refreshCreationEvidence(id);
       return;
     }
-    const union: UnionEntry[] = entries.map((e) => {
-      const d = e.data as Record<string, unknown>;
-      return { data: d, origin: String(d.origin ?? fromPeer ?? this.seams.machineId) };
-    });
     const before = new Set(this.svc.cardIds());
     const changed = this.svc.apply(union);
     if (!changed.length) return;

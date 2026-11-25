@@ -29,7 +29,7 @@ import { HybridLogicalClock } from '../../src/core/HybridLogicalClock.js';
 import { WORK_CARD_KIND_REGISTRATION, WORK_CARD_RECORD_KIND, WORK_BOARD_STORE_KEY, type UnionEntry } from '../../src/core/WorkCardStore.js';
 import { readWorkBoardApprovalEvent } from '../../src/core/workBoardApprovalReadback.js';
 import { lineIdFor } from '../../src/core/WorkBoardService.js';
-import { WorkBoardRuntime } from '../../src/core/WorkBoardRuntime.js';
+import { WorkBoardRuntime, workBoardHistoryFingerprint } from '../../src/core/WorkBoardRuntime.js';
 import type { MobilePairingService } from '../../src/server/mobilePairingRoutes.js';
 import { workBoardSlipApprovalLine } from '../../src/core/workBoardSlipPresence.js';
 import { permissionPresenceMessage } from '../../src/server/mobilePermissionsRoutes.js';
@@ -64,7 +64,7 @@ afterAll(() => { for (const d of tmpDirs) SafeFsExecutor.safeRmSync(d, { recursi
 
 interface Rig { runtime: WorkBoardRuntime; journal: CoherenceJournal; lines: Array<{ key: string; id: string; text: string }>; briefs: string[]; conversations: Set<string>; removed: string[] }
 
-function mkRuntime(stateDir: string, opts: { rotateBytes?: number; permissionSlips?: ConstructorParameters<typeof WorkBoardRuntime>[0]['permissionSlips'] } = {}): Rig {
+function mkRuntime(stateDir: string, opts: { rotateBytes?: number; permissionSlips?: ConstructorParameters<typeof WorkBoardRuntime>[0]['permissionSlips']; onAwaitDurable?: (seq: number, journal: CoherenceJournal) => void } = {}): Rig {
   const reg = new ReplicatedKindRegistry(); reg.register(WORK_CARD_KIND_REGISTRATION);
   const journal = new CoherenceJournal({
     stateDir, machineId: 'm1', flushIntervalMs: 1_000_000,
@@ -78,7 +78,7 @@ function mkRuntime(stateDir: string, opts: { rotateBytes?: number; permissionSli
   const runtime = new WorkBoardRuntime({
     machineId: 'm1', permissionSlips: opts.permissionSlips, enabled: () => true, rawSettings: () => ({}), saveSettings: () => true,
     emit: (k, b) => { const r = emitter.emit(WORK_BOARD_STORE_KEY, k, b); journal.flush(); return { outcome: r.outcome, ...(r.seq !== undefined ? { seq: r.seq } : {}), ...(r.hlc ? { hlc: r.hlc } : {}) }; },
-    awaitDurable: async () => { journal.flush(); },
+    awaitDurable: async (seq) => { journal.flush(); opts.onAwaitDurable?.(seq, journal); },
     loadUnion: () => {
       journal.flush();
       const out: UnionEntry[] = [];
@@ -132,6 +132,45 @@ describe('Work cards from the owner phone E2E (feature is alive)', () => {
     } finally { runtime.stop(); journal.close(); db.close(); }
   });
 
+  it('refuses a pickup when an unexpected peer record arrives during the durability wait', async () => {
+    const { stateDir } = mkConfig();
+    const db = new Database(':memory:');
+    const store = new WorkBoardSlipStore(db);
+    const writer = { epoch: 'epoch1', ownerGeneration: 'owner1', ownerPersonKey: 'owner', writerIncarnation: 'i1' };
+    let fenced = false;
+    const rig: Rig = mkRuntime(stateDir, {
+      permissionSlips: {
+        store, currentWriter: () => writer,
+        application: { readEvent: (id) => readWorkBoardApprovalEvent(id, {
+          journal: rig.journal,
+          epoch: { machineId: 'm1', journalIncarnation: rig.journal.getOwnAdvert()[WORK_CARD_RECORD_KIND].incarnation, baselineSequence: 0 },
+          current: () => !fenced, hasReservation: () => false,
+        }) },
+      },
+      onAwaitDurable: (seq, journal) => {
+        const intent = journal.readKindComplete(WORK_CARD_RECORD_KIND).entries.find((row) => row.seq === seq);
+        if (intent?.data.recordType !== 'dispatching') return;
+        fenced = true;
+        rig.runtime.onCommitted([{ machine: 'unexpected-peer', data: { ...intent.data, origin: 'unexpected-peer' } }], 'unexpected-peer');
+      },
+    });
+    rig.runtime.start();
+    try {
+      const created = rig.runtime.svc.createCard({ kind: 'agent' }, {
+        title: 'Test pickup fence', need: 'Check this card', doneWhen: [{ id: 'done', text: 'Checked' }], outward: true,
+      });
+      if (!created.ok) throw new Error('card');
+      const { version } = rig.runtime.svc.approvalSnapshot(created.cardId)!;
+      const result = await rig.runtime.svc.approveBound({ kind: 'person', personKey: 'owner', isOwner: true, proof: 'presence' },
+        { proof: writer, version, source: 'slip', decisionId: 'fixture-decision' });
+      if (result.status !== 'applied') throw new Error('approval');
+      expect(rig.runtime.svc.projectBoundApproval(result.winner)).toBe(true);
+      await rig.runtime.controller.tick();
+      expect(fenced).toBe(true);
+      expect(rig.briefs).toEqual([]);
+    } finally { rig.runtime.stop(); rig.journal.close(); db.close(); }
+  });
+
   it('reads an enrolled slip and its exact receipt through the signed owner-device route', async () => {
     const { config, stateDir } = mkConfig();
     delete config.dashboardPin;
@@ -140,6 +179,14 @@ describe('Work cards from the owner phone E2E (feature is alive)', () => {
     const writer = { epoch: 'epoch1', ownerGeneration: 'owner1', ownerPersonKey: 'owner', writerIncarnation: 'i1' };
     let active = true;
     const store = new WorkBoardSlipStore(db);
+    const sealed = {
+      origin: 'old-peer',
+      data: {
+        origin: 'old-peer', recordKey: 'wb-policy:sealed-fixture', recordType: 'policy', policy: 'every-agent-card',
+        hlc: { physical: 100, logical: 0, node: 'old-peer' }, op: 'put',
+        at: '2026-11-12T20:00:00.000Z', by: { kind: 'person', personKey: 'owner', proof: 'pin' },
+      },
+    };
     let sourceCards: string[] = [];
     const telegram = {
       getOwnerUserId: () => 1001,
@@ -156,6 +203,7 @@ describe('Work cards from the owner phone E2E (feature is alive)', () => {
     const rig: Rig = mkRuntime(stateDir, {
       permissionSlips: {
         store, currentWriter: () => active ? writer : null,
+        sealedPeerHistory: new Set([workBoardHistoryFingerprint(sealed)]),
         application: {
           readEvent: (id) => readWorkBoardApprovalEvent(id, {
             journal: rig.journal,
@@ -287,6 +335,19 @@ describe('Work cards from the owner phone E2E (feature is alive)', () => {
       const unavailable = await send(app, phone, 'GET', route);
       expect(unavailable.status).toBe(503);
       expect(unavailable.body.items).toBeUndefined();
+      active = true;
+      rig.runtime.onCommitted([{ data: sealed.data, machine: sealed.origin }], sealed.origin);
+      expect(rig.runtime.svc.policyRecords().some(({ id }) => id === sealed.data.recordKey)).toBe(true);
+      expect((await send(app, phone, 'GET', route)).status).toBe(200);
+      const oldPeerEdit = {
+        origin: 'old-peer', recordKey: `wc:${cardId}:e:peer`, recordType: 'edited', cardId,
+        hlc: { physical: Date.now(), logical: 0, node: 'old-peer' }, title: 'Unexpected peer change',
+      };
+      rig.runtime.onCommitted([{ data: oldPeerEdit, machine: 'old-peer' }], 'old-peer');
+      expect(rig.runtime.svc.view(cardId)?.card.title).toBe('Changed after approval');
+      expect((await send(app, phone, 'GET', route)).status).toBe(503);
+      expect(rig.runtime.svc.edit({ kind: 'agent' }, cardId, { title: 'Cannot write after peer conflict' }))
+        .toMatchObject({ ok: false, error: 'store-unavailable' });
     } finally { await server.stop(); rig.runtime.stop?.(); db.close(); }
   });
 
