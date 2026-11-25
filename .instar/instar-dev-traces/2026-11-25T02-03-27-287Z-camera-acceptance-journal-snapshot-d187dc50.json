@@ -1,0 +1,18 @@
+{
+  "version": 2,
+  "slug": "camera-acceptance-journal-snapshot",
+  "sessionId": "ab1b66cc-de80-48bd-9b94-4ede369ccb55",
+  "timestamp": "2026-11-25T02:03:27.287Z",
+  "artifactPath": "upgrades/side-effects/camera-acceptance-journal-snapshot.md",
+  "artifactSha256": "fa0cd5c52bdb8123029079ef0f23970ee312b6b4c0724333e26aff230ce68308",
+  "specPath": "docs/specs/independent-owner-surface-acceptance.md",
+  "coveredFiles": [
+    "src/core/CameraAcceptanceJournalSnapshot.ts",
+    "tests/unit/camera-acceptance-journal-snapshot.test.ts"
+  ],
+  "phase": "complete",
+  "tier": 2,
+  "tierReasoning": "The snapshot source checks existing durable journal data without creating a runtime route or writer.",
+  "secondPass": "true",
+  "reviewerConcurred": true
+}
