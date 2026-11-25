@@ -97,7 +97,7 @@ export interface CameraAcceptanceReceipt {
 export function foldCameraReceipts(
   requirement: CameraAcceptanceRequirement,
   receipts: readonly CameraAcceptanceReceipt[] | null,
-): { decision: CameraDecision } | null {
+): { decision: CameraDecision; sequence: number } | null {
   if (!receipts || !requirement.verifier || requirement.builders.includes(requirement.verifier)) return null;
 
   const current = receipts.filter(receipt => receipt.revision === requirement.revision);
@@ -116,7 +116,7 @@ export function foldCameraReceipts(
   for (let sequence = 1; sequence <= bySequence.size; sequence++) {
     if (!bySequence.has(sequence)) return null;
   }
-  return { decision: bySequence.get(bySequence.size)?.decision ?? 'pending' };
+  return { decision: bySequence.get(bySequence.size)?.decision ?? 'pending', sequence: bySequence.size };
 }
 
 export function cameraDeliveryDecision(

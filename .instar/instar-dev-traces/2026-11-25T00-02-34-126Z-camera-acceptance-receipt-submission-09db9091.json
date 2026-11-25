@@ -1,0 +1,19 @@
+{
+  "version": 2,
+  "slug": "camera-acceptance-receipt-submission",
+  "sessionId": "ab1b66cc-de80-48bd-9b94-4ede369ccb55",
+  "timestamp": "2026-11-25T00:02:34.126Z",
+  "artifactPath": "upgrades/side-effects/camera-acceptance-receipt-submission.md",
+  "artifactSha256": "e1f6255225c5f3c772f59a6aac89bb49015878091ccfe3f19b1bcdfe14bdc306",
+  "specPath": "docs/specs/independent-owner-surface-acceptance.md",
+  "coveredFiles": [
+    "src/core/CameraAcceptanceRequests.ts",
+    "src/core/CameraOwnerAcceptance.ts",
+    "tests/unit/camera-acceptance-requests.test.ts"
+  ],
+  "phase": "complete",
+  "tier": 2,
+  "tierReasoning": "The prototype applies receipt binding rules against a caller-supplied journal transaction and adds no production route.",
+  "secondPass": "true",
+  "reviewerConcurred": true
+}

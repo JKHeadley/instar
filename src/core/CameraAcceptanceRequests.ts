@@ -1,8 +1,10 @@
 import { randomUUID } from 'node:crypto';
 import {
+  checkCameraOwnerEvidence,
   foldCameraReceipts,
   type CameraAcceptanceReceipt,
   type CameraAcceptanceRequirement,
+  type CameraOwnerEvidence,
 } from './CameraOwnerAcceptance.js';
 
 export interface CameraVerifierRequest {
@@ -10,6 +12,7 @@ export interface CameraVerifierRequest {
   readonly candidate: string;
   readonly revision: number;
   readonly verifier: string;
+  readonly receiptSequence: number;
 }
 
 export interface CameraRequestTransaction {
@@ -55,8 +58,62 @@ export function issueCameraVerifierRequest(
       candidate: requirement.candidate,
       revision: requirement.revision,
       verifier: principal,
+      receiptSequence: state.sequence,
     };
     await transaction.appendRequest(request);
     return { status: 'issued', request };
+  });
+}
+
+export interface CameraReceiptTransaction {
+  readonly requirement: CameraAcceptanceRequirement;
+  readonly receipts: readonly CameraAcceptanceReceipt[];
+  /** Read the verified, unconsumed server-issued request under the same lock. */
+  findRequest(id: string): CameraVerifierRequest | null;
+  /** Consume the request and append the receipt as one durable journal event. */
+  appendReceipt(request: CameraVerifierRequest, receipt: CameraAcceptanceReceipt): Promise<void>;
+}
+
+export interface CameraReceiptJournal {
+  /** Hold the same milestone write lock used by request issuance. */
+  withWriteLock<T>(operation: (transaction: CameraReceiptTransaction | null) => Promise<T>): Promise<T>;
+}
+
+export type CameraReceiptResult =
+  | { readonly status: 'recorded'; readonly receipt: CameraAcceptanceReceipt }
+  | { readonly status: 'unavailable' | 'forbidden' | 'stale-request' };
+
+/** The production caller verifies the live session and same-request evidence provenance. */
+export function recordCameraVerifierReceipt(
+  journal: CameraReceiptJournal,
+  principal: string,
+  requestId: string,
+  evidence: CameraOwnerEvidence,
+): Promise<CameraReceiptResult> {
+  return journal.withWriteLock(async transaction => {
+    if (!transaction) return { status: 'unavailable' };
+
+    const { requirement, receipts } = transaction;
+    if (!principal || principal !== requirement.verifier || requirement.builders.includes(principal)) {
+      return { status: 'forbidden' };
+    }
+    const state = foldCameraReceipts(requirement, receipts);
+    if (!state) return { status: 'unavailable' };
+
+    const request = transaction.findRequest(requestId);
+    if (state.decision === 'pass' || !request || request.id !== requestId
+      || request.candidate !== requirement.candidate || request.revision !== requirement.revision
+      || request.verifier !== principal || request.receiptSequence !== state.sequence
+      || evidence.candidate !== requirement.candidate) return { status: 'stale-request' };
+
+    const receipt = {
+      candidate: requirement.candidate,
+      revision: requirement.revision,
+      verifier: principal,
+      sequence: state.sequence + 1,
+      decision: checkCameraOwnerEvidence(requirement.candidate, evidence),
+    };
+    await transaction.appendReceipt(request, receipt);
+    return { status: 'recorded', receipt };
   });
 }
