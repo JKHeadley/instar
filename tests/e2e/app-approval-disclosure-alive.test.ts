@@ -64,7 +64,7 @@ describe('App approval disclosure E2E', () => {
     const actual = JSON.parse(fs.readFileSync(path.join(s.stateDir, 'config.json'), 'utf8'));
     expect(actual.externalOperations).toEqual(patch.externalOperations);
   });
-  it('uses the configured server provider for a signed board-policy request with an accepted device', async () => {
+  it('uses the configured server provider for a signed board-policy request across device approval enrollment', async () => {
     const s = await bootTrustAppServer('needs-production-provider-e2e-', undefined, null, undefined, true);
     const listener = s.app.listen(0, '127.0.0.1');
     listeners.push(listener);
@@ -75,15 +75,27 @@ describe('App approval disclosure E2E', () => {
     const needs = () => mac.signed('GET', '/mobile/needs').set('X-Instar-Needs-Contract', 'in-place-v1');
     expect((await needs().expect(200)).body).toMatchObject({ schemaVersion: 2, items: [] });
 
+    const proposed = await s.bearer(request(s.app).post('/trust/requests'))
+      .send({ change: { kind: 'board-policy', policy: 'outward-only' } }).expect(202);
+    expect(proposed.body.status).toBe('awaiting-acceptance');
+    expect((await needs().expect(200)).body).toMatchObject({ items: [], couldNotCheckApprovalCount: 1 });
+
     const accepted = await mac.act({ action: 'accept-device', target: mac.id, keyFingerprint: mac.fp, disclosureHash: DHASH }, '/mobile/trust/device-acceptance',
       { keyFingerprint: mac.fp, disclosureHash: DHASH, disclosure: DISCLOSURE, keyPolicy: 'biometryCurrentSet' }, `accept-device ${mac.id} ${mac.fp} ${DHASH}`);
     expect(accepted.status).toBe(200);
-    const proposed = await s.bearer(request(s.app).post('/trust/requests'))
-      .send({ change: { kind: 'board-policy', policy: 'outward-only' } }).expect(202);
     const result = await needs().expect(200);
     expect(result.body.items).toEqual([expect.objectContaining({
       source: 'trust-requests', ownerAction: 'approve', action: { kind: 'approval', requestId: proposed.body.requestId },
     })]);
+    const settings = await s.bearer(request(s.app).post('/trust/requests'))
+      .send({ change: { kind: 'config-patch', patch: { externalOperations: { enabled: false } } } }).expect(202);
+    expect((await needs().expect(200)).body.items).toEqual(expect.arrayContaining([
+      expect.objectContaining({ action: { kind: 'approval', requestId: proposed.body.requestId } }),
+      expect.objectContaining({ action: { kind: 'approval', requestId: settings.body.requestId } }),
+    ]));
+
+    s.config.mobilePairing!.trustApproval = { enabled: false };
+    expect((await needs().expect(200)).body).toMatchObject({ items: [], couldNotCheckApprovalCount: 2 });
   });
 
 });

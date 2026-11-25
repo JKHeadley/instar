@@ -808,10 +808,21 @@ export class AccountPathService {
     }
   }
 
+  /** Recognize a pending approval for a paired owner even while approval consent is unavailable. */
+  hasPendingOwnerDeviceApproval(deviceId: string, requestId: string, proposalHash: string): boolean {
+    const request = this.d.store.request(requestId);
+    const device = this.devices?.get(deviceId);
+    if (!device?.active || !device.keyFingerprint || !request || request.principal !== 'owner' ||
+      request.status !== 'open' || request.adapter !== 'device' || request.proposalHash !== proposalHash ||
+      !(new Date(request.expiresAt).getTime() > this.now().getTime()) ||
+      this.d.store.requestConsumedOrPending(requestId) || this.inFlight.has(requestId)) return false;
+    return this.verified(request).ok;
+  }
+
   /** Read an exact, currently eligible disclosure for an already authenticated device. */
   openDeviceApprovalDisclosure(deviceId: string, requestId: string):
     { requestId: string; proposalHash: string; summary: string[] } | null {
-    if (!this.holds()) return null;
+    if (!this.holds() || this.devices?.enabled?.() === false) return null;
     const request = this.d.store.request(requestId);
     const device = this.devices?.get(deviceId) ?? null;
     const acceptance = this.d.store.deviceAcceptance(deviceId);

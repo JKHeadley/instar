@@ -41,6 +41,10 @@ The signed credential consent module loads in the same source tree and retains t
 
 The production default stays off at this checkpoint. An ordinary install or update does not enable this opt-in setting. Default-on migration, verified project delivery and full browser/native signed acceptance remain separate release requirements.
 
-The independent authority reviewer concurred for opt-in acceptance. Clients with no negotiated contract receive HTTP 426 when the setting is true. This provider admits only an accepted-device Work Board policy approval. Other genuine asks may be absent, so use the setting only with disposable or expressly authorized acceptance agents. Setting it to false and restarting the server restores the legacy owner list.
+The independent authority reviewer concurred for opt-in acceptance. Clients with no negotiated contract receive HTTP 426 when the setting is true. Use the setting only with disposable or expressly authorized acceptance agents until the remaining genuine actions have been verified. Setting it to false and restarting the server restores the legacy owner list.
 
-The test opens the policy request after device acceptance. The initial provider does not yet expose an individually known approval when the accepting device is absent or the initial disclosure read fails. Keeping the same real request reachable through enrollment and reporting known-owner verification failures remain release acceptance requirements.
+## Pending trust approvals and device setup
+
+The opt-in provider recognizes verified, open native requests for six explicit settings and authority proposal types. The signed device must already belong to the owner. A request pending during approval enrollment contributes only an unavailable count. It becomes actionable under its original request ID when the device can retrieve the exact signed disclosure. Turning off app approvals removes its action while preserving the pending count.
+
+One-off operations still need verified source triage. The opt-in provider does not yet cover approvals delivered through chat or genuine actions that lack a typed and authorized source adapter. These paths require separate proof before enabling the gate for a live agent. The fleet setting migration is a separate change.
