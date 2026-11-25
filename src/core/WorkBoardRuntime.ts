@@ -10,7 +10,7 @@
  */
 
 import { canonicalJson, isCardId, sha256Hex } from './WorkCardStore.js';
-import { sameProof, sameVersion, type WorkBoardApprovalLookup, type WorkBoardWriterProof } from './WorkBoardApprovalWriter.js';
+import { decodeWorkBoardApprovalEvent, sameProof, sameVersion, type WorkBoardApprovalLookup, type WorkBoardWriterProof } from './WorkBoardApprovalWriter.js';
 import type { WorkBoardSlipOwnerSource } from './workBoardSlipSource.js';
 import type { WorkBoardSlipStore } from './WorkBoardSlipStore.js';
 import { applyWorkBoardSlip } from './workBoardSlipApplication.js';
@@ -138,7 +138,9 @@ export class WorkBoardRuntime {
 
   private currentSlipWriter(): WorkBoardWriterProof | null {
     if (!this.started || !this.seams.enabled()) return null;
-    const writer = this.seams.permissionSlips?.currentWriter();
+    const port = this.seams.permissionSlips;
+    if (!port?.application) return null;
+    const writer = port.currentWriter();
     return writer && writer.ownerPersonKey === this.seams.ownerPersonKey() ? writer : null;
   }
 
@@ -259,7 +261,21 @@ export class WorkBoardRuntime {
         awaitDurable: (seq) => seams.awaitDurable(seq),
       } : undefined,
       machineId: seams.machineId,
-      emit: seams.emit,
+      emit: (key, build) => {
+        // Every enrolled board mutation uses the same current writer boundary.
+        if (!slips) return seams.emit(key, build);
+        const writer = this.currentSlipWriter();
+        if (!writer) return { outcome: 'writer-unavailable' };
+        return seams.emit(key, (hlc, origin, observed) => {
+          if (origin !== seams.machineId || !sameProof(writer, this.currentSlipWriter())) return null;
+          const data = build(hlc, origin, observed);
+          if (data?.recordType === 'tap' && data.action === 'approve') {
+            const approval = decodeWorkBoardApprovalEvent(data);
+            if (!approval || !sameProof(writer, approval.request.proof)) return null;
+          }
+          return data;
+        });
+      },
       loadUnion: seams.loadUnion,
       now: this.now,
       settings,

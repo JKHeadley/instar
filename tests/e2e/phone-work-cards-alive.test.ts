@@ -115,6 +115,23 @@ function send(app: Parameters<typeof request>[0], phone: Phone, method: 'POST' |
 }
 
 describe('Work cards from the owner phone E2E (feature is alive)', () => {
+  it('fences a partially configured slip writer before it can issue or write', () => {
+    const { stateDir } = mkConfig();
+    const db = new Database(':memory:');
+    const store = new WorkBoardSlipStore(db);
+    const writer = { epoch: 'epoch1', ownerGeneration: 'owner1', ownerPersonKey: 'owner', writerIncarnation: 'i1' };
+    const { runtime, journal } = mkRuntime(stateDir, { permissionSlips: { store, currentWriter: () => writer } });
+    try {
+      runtime.start();
+      const created = runtime.svc.createCard({ kind: 'agent' }, {
+        title: 'Cannot create', need: 'Await an enrolled writer', doneWhen: [{ id: 'done', text: 'Complete' }],
+      });
+      expect(created).toMatchObject({ ok: false, error: 'store-unavailable' });
+      expect(runtime.readPermissionSlip('11111111-2222-4333-8444-555555555555').status).toBe(503);
+      expect(journal.readKindComplete(WORK_CARD_RECORD_KIND).entries).toHaveLength(0);
+    } finally { runtime.stop(); journal.close(); db.close(); }
+  });
+
   it('reads an enrolled slip and its exact receipt through the signed owner-device route', async () => {
     const { config, stateDir } = mkConfig();
     delete config.dashboardPin;
@@ -167,6 +184,11 @@ describe('Work cards from the owner phone E2E (feature is alive)', () => {
       if (!createdCard.ok) throw new Error('card');
       const { cardId } = createdCard;
       const { version, disclosure } = rig.runtime.svc.approvalSnapshot(cardId)!;
+      const beforeLegacyTap = rig.journal.readKindComplete(WORK_CARD_RECORD_KIND).entries.length;
+      const legacy = rig.runtime.svc.tap({ kind: 'person', personKey: 'owner', proof: 'pin', isOwner: true }, cardId,
+        { action: 'approve', materialHash: version.materialHash, titleHash: version.titleHash });
+      expect(legacy).toMatchObject({ ok: false, error: 'bound-approval-required' });
+      expect(rig.journal.readKindComplete(WORK_CARD_RECORD_KIND).entries).toHaveLength(beforeLegacyTap);
       sourceCards = [cardId];
       const issue = (sourceRef: string) => request(app).post('/work-board/slips').set(auth()).send({ sourceRef });
       expect((await issue('telegram:4242:778')).status).toBe(409);
@@ -257,6 +279,11 @@ describe('Work cards from the owner phone E2E (feature is alive)', () => {
       expect(changed.body).toMatchObject({ state: 'signed', receipt: { items: [{ cardId, status: 'unresolved' }] } });
       expect(rig.journal.readKindComplete(WORK_CARD_RECORD_KIND).entries.filter(({ data }) => data.approvalBinding)).toHaveLength(1);
       active = false;
+      const beforeLostWriter = rig.journal.readKindComplete(WORK_CARD_RECORD_KIND).entries.length;
+      const refusedEdit = rig.runtime.svc.edit({ kind: 'agent' }, cardId, { title: 'Cannot write after authority loss' });
+      expect(refusedEdit).toMatchObject({ ok: false, error: 'store-unavailable' });
+      expect(rig.journal.readKindComplete(WORK_CARD_RECORD_KIND).entries).toHaveLength(beforeLostWriter);
+      expect(rig.runtime.svc.view(cardId)?.card.title).toBe('Changed after approval');
       const unavailable = await send(app, phone, 'GET', route);
       expect(unavailable.status).toBe(503);
       expect(unavailable.body.items).toBeUndefined();

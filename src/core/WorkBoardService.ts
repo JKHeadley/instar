@@ -1035,6 +1035,7 @@ export class WorkBoardService {
     const stale = (detail?: Record<string, unknown>) => refuse(409, 'stale-card', detail);
     switch (action) {
       case 'approve':
+        if (this.deps.approvalAuthority) return refuse(409, 'bound-approval-required');
         if (input.materialHash !== card.materialHash) return stale({ materialHash: card.materialHash });
         fields.materialHash = card.materialHash; break;
       case 'answer': {

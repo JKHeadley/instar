@@ -140,3 +140,7 @@ The server now mounts a root-agent authenticated proposal route. It uses the exi
 ## Chat link locator
 
 The locator codec uses a fixed Instar host and a versioned fragment containing a canonical HTTPS agent origin and UUID slip ID. It rejects credentials, non-origin URLs and alternate outer paths or fields. It makes no network request and carries no credential, decision or authority. Native code must check the origin against its existing pairing before any signed read. The server never derives a target from an inbound Host header. This checkpoint adds no link emission or website configuration. Apple associated-domain coverage and a signed real-device open remain activation checks.
+
+## Enrolled journal writer fence
+
+Every local Work Board journal mutation under the slip runtime now requires the current enrolled writer both before emit and inside record building. The builder also verifies its local origin and refuses an unbound or wrong-writer approval. Partial enrollment without an application adapter leaves slips and Work Board writes unavailable. Legacy boards without slip enrollment keep their current behavior. Independent review concurred. The real-server fixture checks lost writer and zero journal mutations, legacy approval refusal on the enrolled board, and partial enrollment refusal. Peer record admission and ordinary versioned client wiring remain separate activation requirements.
