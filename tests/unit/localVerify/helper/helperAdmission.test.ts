@@ -50,13 +50,14 @@ const ctx = (seen: { has(id: string): boolean } = { has: () => false }) => ({ se
 
 describe('route', () => {
   it('refuses the Cloudflare tunnel (cf-connecting-ip) and loopback; serves the LAN / tailnet address', () => {
-    expect(routeRefusal({ cfConnectingIp: '203.0.113.9', localAddress: '100.64.0.5' })).toBe('tunnel');
-    expect(routeRefusal({ localAddress: '127.0.0.1' })).toBe('tunnel');
-    expect(routeRefusal({ localAddress: '::ffff:127.0.0.1' })).toBe('tunnel');
-    expect(routeRefusal({ localAddress: '100.64.0.5' })).toBeNull();
-    expect(routeRefusal({ localAddress: '192.168.1.20' })).toBeNull();
-    expect(routeRefusal({ localAddress: '127.0.0.1' }, { allowLoopback: true })).toBeNull();
-    expect(routeRefusal({ cfConnectingIp: 'x', localAddress: '127.0.0.1' }, { allowLoopback: true })).toBe('tunnel');
+    expect(routeRefusal({ cfConnectingIp: '203.0.113.9', listenerAddress: '100.64.0.5' })).toBe('tunnel');
+    expect(routeRefusal({ listenerAddress: '127.0.0.1' })).toBe('tunnel');
+    expect(routeRefusal({ listenerAddress: '::ffff:127.0.0.1' })).toBe('tunnel');
+    expect(routeRefusal({ listenerAddress: '100.64.0.5' })).toBeNull();
+    expect(routeRefusal({ listenerAddress: '192.168.1.20' })).toBeNull();
+    expect(routeRefusal({ arrival: 'same-network', listenerAddress: '192.168.1.20' }, { allowLoopback: true })).toBe('tunnel');
+    expect(routeRefusal({ listenerAddress: '127.0.0.1' }, { allowLoopback: true })).toBeNull();
+    expect(routeRefusal({ cfConnectingIp: 'x', listenerAddress: '127.0.0.1' }, { allowLoopback: true })).toBe('tunnel');
   });
 });
 

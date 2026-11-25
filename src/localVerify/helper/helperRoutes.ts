@@ -17,7 +17,8 @@
  */
 import type { Request, Response, Router } from 'express';
 import type { HelperService, HelperStatusQuery } from './HelperService.js';
-import { routeRefusal } from './admission.js';
+import { arrivalOf } from '../../core/requestArrival.js';
+import { routeRefusal, type RouteFacts } from './admission.js';
 import { HELPER_ID_RE, HELPER_LANES, type HelperLane } from './helperProtocol.js';
 
 /** The status request's query, strictly: a malformed value is ignored, never guessed at. */
@@ -33,8 +34,10 @@ export interface HelperRouteDeps {
   helper: () => HelperService | null;
 }
 
-function facts(req: Request): { cfConnectingIp: string | string[] | undefined; localAddress: string | undefined } {
-  return { cfConnectingIp: req.headers['cf-connecting-ip'], localAddress: req.socket?.localAddress };
+function facts(req: Request): RouteFacts {
+  const arrival = arrivalOf(req);
+  const listenerAddress = req.socket?.localAddress;
+  return { arrival, cfConnectingIp: req.headers['cf-connecting-ip'], listenerAddress };
 }
 
 export function registerHelperRoutes(router: Router, deps: HelperRouteDeps): void {

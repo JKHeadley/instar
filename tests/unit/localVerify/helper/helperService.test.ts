@@ -27,7 +27,7 @@ describe('HelperService — admission', () => {
     r.cfg.value = null;
     expect((await r.send(r.slice(), r.route)).status).toBe(404);
     const r2 = helperRig({}, dirs);
-    const t = await r2.send(r2.slice(), { cfConnectingIp: '1.2.3.4', localAddress: '100.64.1.2' });
+    const t = await r2.send(r2.slice(), { cfConnectingIp: '1.2.3.4', listenerAddress: '100.64.1.2' });
     expect(t.status).toBe(403);
     expect(body(t).reason).toBe('tunnel');
   });

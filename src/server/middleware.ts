@@ -385,9 +385,10 @@ export function authMiddleware(
     // nothing that came through the tunnel or any forwarder, both checked here before the route (which
     // checks them again and then the token). Everything else under /local-verify stays behind the bearer gate.
     if (req.method === 'POST' && req.path === '/local-verify/borrowed-proxy') {
+      const localArrival = mayBeLocalArrival(req);
       const remote = req.socket.remoteAddress;
       const loopback = remote === '127.0.0.1' || remote === '::1' || remote === '::ffff:127.0.0.1';
-      if (!loopback || req.headers['cf-connecting-ip'] !== undefined || req.headers['x-forwarded-for'] !== undefined) {
+      if (!localArrival || !loopback || req.headers['cf-connecting-ip'] !== undefined || req.headers['x-forwarded-for'] !== undefined) {
         res.status(403).json({ ok: false, reason: 'loopback-only' });
         return;
       }

@@ -7,14 +7,16 @@
  * single use). The commit and file checks need GitHub and the tree and live in HelperService.
  * Pure.
  */
+import type { Arrival } from '../../core/requestArrival.js';
 import { verifyMachineSignature, type MachineKeyLookup } from '../../core/AppRecordSignatures.js';
 import { HELPER_LIMITS, isSig, requestPayload, type HelperRefusal, type SignedHelperRequest } from './helperProtocol.js';
 
 export interface RouteFacts {
   /** The `cf-connecting-ip` header, present when the request came through the Cloudflare tunnel. */
   cfConnectingIp?: string | string[] | undefined;
-  /** The local address the request arrived on. */
-  localAddress?: string | undefined;
+  /** The listener receiving the request and the address to which its socket was bound. */
+  arrival?: Arrival;
+  listenerAddress?: string | undefined;
 }
 
 const LOOPBACK = /^(?:127\.|::1$|::ffff:127\.)/;
@@ -25,8 +27,9 @@ const LOOPBACK = /^(?:127\.|::1$|::ffff:127\.)/;
  * suites only; production wiring never sets it (tests/unit/localVerify/helper/helperWiring.test.ts).
  */
 export function routeRefusal(f: RouteFacts, opts: { allowLoopback?: boolean } = {}): 'tunnel' | null {
+  if (f.arrival === 'same-network') return 'tunnel';
   if (f.cfConnectingIp !== undefined && f.cfConnectingIp !== '') return 'tunnel';
-  if (!opts.allowLoopback && typeof f.localAddress === 'string' && LOOPBACK.test(f.localAddress)) return 'tunnel';
+  if (!opts.allowLoopback && typeof f.listenerAddress === 'string' && LOOPBACK.test(f.listenerAddress)) return 'tunnel';
   return null;
 }
 

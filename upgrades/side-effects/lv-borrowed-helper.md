@@ -348,3 +348,11 @@ The author ran TypeScript, 1,862 focused unit tests, 16 integration tests, and t
 **Reviewer:** Independent Codex reviewer, read-only subagent
 
 The reviewer checked the staged merge of `a715425d9` and `646c926a6`, committed as `f17754e50`. Verdict: **concur**. The only conflict was the server constructor. Removing the single borrowed-helper argument from the resolved constructor yields current main's constructor byte for byte, including the owned-repository dependency. The reviewer verified that each dependency reaches its route mount. The merged diff passed git's whitespace check, and the author reran TypeScript and the commit lint checks.
+
+## Second-pass review of the listener-identity correction
+
+**Reviewer:** Independent Codex reviewer, read-only subagent
+
+The M5's full verification found that the helper's socket address handling did not use the listener identity required by the request-arrival ratchet. The fix forwards the request's listener identity into helper admission and checks it in the loopback proxy middleware. The existing tunnel, forwarding, loopback, and attempt-token requirements still apply. The shared test fixture uses the production route-facts type.
+
+The reviewer identified the fixture's old address-field name on the first pass. After it was corrected, the reviewer confirmed that helper admission refuses same-network arrivals even through the loopback test seam and that the proxy still requires the main listener. Verdict: **concur**. The ratchet failed before the correction and passed afterward. Focused admission, middleware, integration, and end-to-end lifecycle tests passed.

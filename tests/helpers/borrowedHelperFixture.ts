@@ -10,6 +10,7 @@ import path from 'node:path';
 import { Readable } from 'node:stream';
 import { generateSigningKeyPair, sign as edSign } from '../../src/core/MachineIdentity.js';
 import { signerKeyHashOf, type MachineKeyLookup, type MachineSigner } from '../../src/core/AppRecordSignatures.js';
+import type { RouteFacts } from '../../src/localVerify/helper/admission.js';
 import { HelperService, type HelperServiceDeps } from '../../src/localVerify/helper/HelperService.js';
 import { buildTar, type HeadVerdict, type HelperGitHubReader, type HostTreeSource, type MergeTreeResult, type TreeEntry } from '../../src/localVerify/helper/hostTree.js';
 import { HelperDryRunStore, type SandboxImageIdentity } from '../../src/localVerify/helper/dryRunRecord.js';
@@ -139,14 +140,14 @@ export interface HelperRig {
   cancel(runAttemptId: string, over?: Partial<HelperCancelRequest>): HelperCancelRequest & { sig: unknown };
   /** A signed learned request about the merged commit's tree (`over.treeHash` names another). */
   learned(runAttemptId: string, observations: HelperLearnedRequest['observations'], over?: Partial<HelperLearnedRequest>): HelperLearnedRequest & { sig: unknown };
-  route: { localAddress: string };
+  route: RouteFacts;
   /**
    * Send a slice (or preparation) request as the route does. A slice is queued and answered at
    * once; this waits for its LAST signed answer and returns that (status 200), as a run machine
    * reads it from the status answer. Every other answer (a refusal, `preparing`, `owner-busy`) is
    * returned as it came.
    */
-  send(body: unknown, route?: { localAddress: string; cfConnectingIp?: string }): Promise<{ status: number; body: unknown }>;
+  send(body: unknown, route?: RouteFacts): Promise<{ status: number; body: unknown }>;
   /** Prepare the merge of `base` (default: `head` itself, a merged commit) and `head`, and wait until it is ready. */
   prepareReady(runAttemptId: string, head?: string, base?: string): Promise<void>;
   /** Write this helper's own "dry run done" record for a lane, on the fake sandbox's current image unless another is given. */
@@ -186,7 +187,7 @@ export function helperRig(over: Partial<HelperServiceDeps> = {}, dirs: string[] 
   });
   const rig: HelperRig = {
     dir, svc, driver, trees, github, owner, requester, helperKeys, audits, clock, cfg, hostFree,
-    route: { localAddress: '100.64.1.2' },
+    route: { arrival: 'main', listenerAddress: '100.64.1.2' },
     slice(o = {}, signer = requester.signer) {
       // A merged commit by default (base = head, as on a main verify); a slice with files is compare-only unless said otherwise.
       const head = o.headSha ?? HEAD;
