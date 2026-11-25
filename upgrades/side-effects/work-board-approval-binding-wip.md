@@ -70,3 +70,9 @@ WorkBoardService now derives a detached disclosure and exact version from cards 
 WorkBoardService can now accept an in-process, owner-authenticated exact approval when an authority adapter is supplied. It rechecks the current writer proof, owner and card version, then enqueues the bound event without applying the legacy fold or invoking its local write observer. No production caller supplies the adapter yet. The result refers to the journal decision and cannot be shown as proof of card projection. The mounted paths must wait for the enrolled writer and durable projection gates before using it.
 
 The service reserves the event ID before enqueuing it. A timeout, missing sequence or unproved emit outcome leaves that reservation in force for the process lifetime unless exact durable readback resolves it. Recovery on restart still needs the complete enrolled journal and writer proof.
+
+## Server presence-signing fixture
+
+The server builds a distinct finite-slip action line using the existing owner-device presence envelope. The shared fixture checks byte-for-byte parity with the iPhone implementation and rejects noncanonical UUID or digest strings. Existing routes remain unchanged. Challenge issuance, authentication, and consumption stay with the owner-device authority when the new action is mounted.
+
+Independent review reproduced the shared fixture digest and concurred with the dark checkpoint. The helper rejects non-string inputs before constructing the signing line.

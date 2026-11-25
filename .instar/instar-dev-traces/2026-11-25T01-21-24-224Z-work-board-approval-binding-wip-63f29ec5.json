@@ -1,0 +1,18 @@
+{
+  "version": 2,
+  "slug": "work-board-approval-binding-wip",
+  "sessionId": "b3d2cf8a-9b5d-468b-a50b-70ebf11e9e5c",
+  "timestamp": "2026-11-25T01:21:24.224Z",
+  "artifactPath": "upgrades/side-effects/work-board-approval-binding-wip.md",
+  "artifactSha256": "aaf580d191bd3122f837b1323bf66bf7c806aa32df00ea02bb6c4b01c34d1051",
+  "specPath": "docs/specs/owner-work-board-slips-first-slice.md",
+  "coveredFiles": [
+    "src/core/workBoardSlipPresence.ts",
+    "tests/unit/work-board-slip-presence.test.ts"
+  ],
+  "phase": "complete",
+  "tier": 2,
+  "tierReasoning": "Canonical presence signing bytes for a finite owner approval",
+  "secondPass": "true",
+  "reviewerConcurred": true
+}
