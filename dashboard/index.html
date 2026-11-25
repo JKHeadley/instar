@@ -3103,7 +3103,7 @@
             <button class="tab" data-tab="jobs" onclick="switchTab('jobs')">Jobs <span class="tab-count" id="tabJobCount">0</span></button>
             <button class="tab" data-tab="notifications" onclick="switchTab('notifications')">Notifications</button>
             <button class="tab" data-tab="origins" onclick="switchTab('origins')">Message origins</button>
-            <button class="tab" data-tab="phones" onclick="switchTab('phones')">Phones</button>
+            <button class="tab" data-tab="phones" onclick="switchTab('phones')">Devices</button>
             <button class="tab" data-tab="systems" onclick="switchTab('systems')">Health</button>
           </div>
           <div class="tab-group" role="group" aria-label="Work & Delivery">
@@ -11023,7 +11023,7 @@
           unlock: () => { document.getElementById('authOverlay').style.display = 'flex'; document.getElementById('pinInput').focus(); },
         });
         phonesPanel.start();
-      } catch { document.getElementById('phonesTab').textContent = 'Phones are unavailable. Refresh to try again.'; }
+      } catch { document.getElementById('phonesTab').textContent = 'Devices are unavailable. Refresh to try again.'; }
     }
 
     let originPanel = null;

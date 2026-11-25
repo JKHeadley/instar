@@ -89,6 +89,31 @@ describe('mobile pairing routes', () => {
     expect((await redeem(app, 'z'.repeat(22))).status).toBe(403);
   });
 
+  it('projects paired phones, native computers and linked document computers together', async () => {
+    const ctx = setup();
+    const phone = await pairDevice(ctx);
+    const mac = ctx.svc.devices.createPending({
+      deviceName: 'MacBook', label: null, publicKey: makeDevice().publicKey, host: HOST, deviceKind: 'computer',
+    });
+    if (!mac.ok) throw new Error(mac.reason);
+    const linked = ctx.svc.devices.createLinkedBrowser({
+      browserPublicKey: makeDevice().publicKey, host: HOST, scope: 'documents', userId: 'owner',
+      linkedByDeviceId: phone.deviceId, linkedByKeyHash: 'a'.repeat(64),
+      linkExpiresAt: new Date(Date.now() + 86_400_000).toISOString(), approvedAt: new Date().toISOString(),
+    });
+    expect(linked.ok).toBe(true);
+    if (!linked.ok) throw new Error(linked.reason);
+    const res = await request(ctx.app).get('/mobile/devices').set('Authorization', 'Bearer tok-1');
+    expect(res.status).toBe(200);
+    expect(res.body.devices).toEqual(expect.arrayContaining([
+      expect.objectContaining({ id: phone.deviceId, deviceKind: 'phone' }),
+      expect.objectContaining({ id: mac.device.id, deviceKind: 'computer' }),
+      expect.objectContaining({ id: linked.device.id, deviceKind: 'computer', linkedForDocuments: true }),
+    ]));
+    const documentComputer = res.body.devices.find((row: { id: string }) => row.id === linked.device.id);
+    expect(documentComputer).not.toHaveProperty('browserPublicKey');
+  });
+
   it('mints a v1 link; redeem registers a pending device, returns no token, and DMs the owner a code', async () => {
     const ctx = setup();
     const m = await mint(ctx.app);

@@ -35,20 +35,20 @@ export function phonesGlanceSpec({ waiting = null, paired = null, locked = false
 }
 
 /**
- * The paired devices, split for display (a copy of dashboard-pair/pair-model.js pairedGroups;
- * this folder is served separately) (docs/specs/dashboard-ui-quality-standard.md): phones and
- * browsers are separate groups, so neither heading lists the other kind and no row repeats its kind.
+ * Projection for the Devices list (mirrors dashboard-pair/pair-model.js, served separately).
  * Each row is a name line and one short detail line. Only active and pending devices are shown.
  * `personText` (optional) adds whose device it is to the name.
  */
-export function pairedGroups(devices, { browserOff = false, personText = () => '' } = {}) {
-  const phones = [], browsers = [];
+export function pairedDeviceRows(devices, { browserOff = false, personText = () => '' } = {}) {
+  const rows = [];
   for (const d of Array.isArray(devices) ? devices : []) {
     if (!d || (d.status !== 'active' && d.status !== 'pending')) continue;
     const isBrowser = d.client === 'browser';
-    const name = `${d.deviceName || (isBrowser ? 'Unnamed browser' : 'Unnamed phone')}${personText(d)}`;
+    const what = d.deviceKind === 'computer' || isBrowser ? 'computer' : d.deviceKind === 'phone' ? 'phone' : 'device';
+    const name = `${d.deviceName || `Unnamed ${what}`}${personText(d)}`;
     let detail;
     if (d.status === 'pending') detail = 'Waiting to confirm';
+    else if (d.linkedForDocuments === true) detail = 'Linked for Documents';
     else if (isBrowser) {
       const t = Date.parse(d.lastSeenAt || '');
       detail = browserOff ? 'Switched off on this agent' : Number.isFinite(t) ? `Last used on this machine ${new Date(t).toLocaleString(undefined, { dateStyle: 'medium', timeStyle: 'short' })}` : 'Not used yet';
@@ -56,9 +56,9 @@ export function pairedGroups(devices, { browserOff = false, personText = () => '
       const t = Date.parse(d.approvedAt || '');
       detail = Number.isFinite(t) ? `Paired since ${new Date(t).toLocaleDateString(undefined, { dateStyle: 'medium' })}` : 'Paired';
     }
-    (isBrowser ? browsers : phones).push({ id: d.id, name, detail, removable: d.status === 'active', what: isBrowser ? 'browser' : 'phone' });
+    rows.push({ id: d.id, name, detail, removable: d.status === 'active', what });
   }
-  return { phones, browsers };
+  return rows;
 }
 
 /** "123 456" — easier to read off a screen. A word code ("KITE-4172") is shown as the server sent it. */
@@ -86,7 +86,9 @@ export function mountPhonesPanel(root, { request, unlock, now = () => Date.now()
     return el;
   };
   root.replaceChildren();
-  make('h2', 'Phones');
+  make('h2', 'Devices');
+  const link = make('a', 'Link this computer');
+  link.href = '/dashboard/pair';
   make('p', 'Pair the Instar iPhone app with this agent, and see the phones already paired.').className = 'tab-purpose';
   const notice = make('p'); notice.setAttribute('role', 'status'); notice.setAttribute('aria-live', 'polite');
   const unlockButton = make('button', 'Unlock with PIN to see pairing codes'); unlockButton.hidden = true; unlockButton.onclick = unlock;
@@ -141,14 +143,11 @@ export function mountPhonesPanel(root, { request, unlock, now = () => Date.now()
 
   const renderDevices = (list, opts = {}) => {
     devices.replaceChildren();
-    make('h3', 'Paired phones', devices);
-    const { phones, browsers } = pairedGroups(list, { ...opts, personText });
+    make('h3', 'Paired devices', devices);
+    const rows = pairedDeviceRows(list, { ...opts, personText });
     counts.paired = list.filter((d) => d && d.status === 'active').length;
-    if (!phones.length) make('p', 'No phones are paired with this machine.', devices);
-    for (const r of phones) deviceRow(r);
-    if (!browsers.length) return;
-    make('h3', 'Paired browsers', devices);
-    for (const r of browsers) deviceRow(r);
+    if (!rows.length) make('p', 'No devices are paired with this agent.', devices);
+    for (const r of rows) deviceRow(r);
   };
 
   /** One device: its name, one short detail line, and a Remove button that never wraps. */
@@ -156,7 +155,7 @@ export function mountPhonesPanel(root, { request, unlock, now = () => Date.now()
     const row = make('div', undefined, devices); row.className = 'phone-row';
     const words = make('div', undefined, row); words.className = 'phone-row-words';
     make('span', r.name, words).className = 'phone-row-name';
-    make('span', r.detail, words).className = 'phone-row-detail';
+    make('span', `${r.what[0].toUpperCase()}${r.what.slice(1)} · ${r.detail}`, words).className = 'phone-row-detail';
     if (!r.removable) return;
     const revoke = make('button', 'Remove', row);
     revoke.setAttribute('aria-label', `Remove ${r.name}`);
@@ -194,7 +193,7 @@ export function mountPhonesPanel(root, { request, unlock, now = () => Date.now()
         const list = Array.isArray(body.devices) ? body.devices : [];
         // Browser rows say when browsers are switched off on this agent (§4.9).
         let browserOff = false;
-        if (list.some((x) => x && x.client === 'browser')) {
+        if (list.some((x) => x && x.client === 'browser' && x.linkedForDocuments !== true)) {
           try { const s = await request('/mobile/browser-devices/status'); browserOff = s.status === 503; } catch { browserOff = false; }
         }
         renderDevices(list, { browserOff });

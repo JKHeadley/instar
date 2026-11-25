@@ -30,7 +30,7 @@ function boot(hash = '', opts: { refused?: boolean; slowCheck?: boolean } = {}):
   h.answers['GET /dashboard/unlock-check'] = () => opts.slowCheck ? new Promise<Response>(() => {}) : json(200, opts.refused ? { accepted: false, reason: 'Not a secure connection.', secureUrl: 'https://secure.example.dev' } : { accepted: true });
   h.answers['POST /dashboard/unlock'] = () => json(200, { token: 'tok', operatorSessionToken: 'ops', operatorSessionExpiresAt: '2026-11-03T20:15:00Z' });
   h.answers['GET /mobile/pairing-approvals'] = () => json(200, { approval: 'dashboard', approvals: [WAITING] });
-  h.answers['GET /mobile/devices'] = () => json(200, { devices: [{ id: 'dev-0', deviceName: 'Old phone', status: 'active' }] });
+  h.answers['GET /mobile/devices'] = () => json(200, { devices: [{ id: 'dev-0', deviceName: 'Old phone', status: 'active', deviceKind: 'phone' }] });
   mountPairPage(doc, {
     fetchFn: async (url: string, o: { method?: string; headers?: Record<string, string> } = {}) => {
       const method = o.method ?? 'GET';
@@ -167,7 +167,7 @@ describe('the pairing code page', () => {
     expect(approvals.headers).toMatchObject({ Authorization: 'Bearer tok', 'X-Instar-Operator-Session': 'ops' });
     const row = h.doc.querySelector('.pair-device-row')!;
     expect(row.querySelector('.pair-device-name')!.textContent).toBe('Old phone');
-    expect(row.querySelector('.pair-device-detail')!.textContent).toBe('Paired');
+    expect(row.querySelector('.pair-device-detail')!.textContent).toBe('Phone · Paired');
     expect(row.querySelector('button.pair-remove')!.getAttribute('aria-label')).toBe('Remove Old phone');
   });
 
@@ -232,7 +232,7 @@ describe('the pairing code page', () => {
     h.answers['GET /mobile/devices'] = () => new Promise<Response>(() => {});
     await unlock(h);
     expect(h.doc.querySelector('.pair-code')!.textContent).toBe('KITE-4172');
-    expect(text(h)).toContain('Reading the paired phones');
+    expect(text(h)).toContain('Reading paired devices');
   });
 
   it('the session deadline wipes the code even with no poll and no network answer', async () => {

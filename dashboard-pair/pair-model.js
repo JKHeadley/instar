@@ -73,19 +73,20 @@ export function approveHint(fingerprint) {
 }
 
 /**
- * The paired devices, split for display (docs/specs/dashboard-ui-quality-standard.md): phones and
- * browsers are separate groups, so neither heading lists the other kind and no row repeats its kind.
+ * Projection for the Devices list (mirrors dashboard/phones.js, served separately).
  * Each row is a name line and one short detail line. Only active and pending devices are shown.
  * `personText` (optional) adds whose device it is to the name.
  */
-export function pairedGroups(devices, { browserOff = false, personText = () => '' } = {}) {
-  const phones = [], browsers = [];
+export function pairedDeviceRows(devices, { browserOff = false, personText = () => '' } = {}) {
+  const rows = [];
   for (const d of Array.isArray(devices) ? devices : []) {
     if (!d || (d.status !== 'active' && d.status !== 'pending')) continue;
     const isBrowser = d.client === 'browser';
-    const name = `${d.deviceName || (isBrowser ? 'Unnamed browser' : 'Unnamed phone')}${personText(d)}`;
+    const what = d.deviceKind === 'computer' || isBrowser ? 'computer' : d.deviceKind === 'phone' ? 'phone' : 'device';
+    const name = `${d.deviceName || `Unnamed ${what}`}${personText(d)}`;
     let detail;
     if (d.status === 'pending') detail = 'Waiting to confirm';
+    else if (d.linkedForDocuments === true) detail = 'Linked for Documents';
     else if (isBrowser) {
       const t = Date.parse(d.lastSeenAt || '');
       detail = browserOff ? 'Switched off on this agent' : Number.isFinite(t) ? `Last used on this machine ${new Date(t).toLocaleString(undefined, { dateStyle: 'medium', timeStyle: 'short' })}` : 'Not used yet';
@@ -93,7 +94,7 @@ export function pairedGroups(devices, { browserOff = false, personText = () => '
       const t = Date.parse(d.approvedAt || '');
       detail = Number.isFinite(t) ? `Paired since ${new Date(t).toLocaleDateString(undefined, { dateStyle: 'medium' })}` : 'Paired';
     }
-    (isBrowser ? browsers : phones).push({ id: d.id, name, detail, removable: d.status === 'active', what: isBrowser ? 'browser' : 'phone' });
+    rows.push({ id: d.id, name, detail, removable: d.status === 'active', what });
   }
-  return { phones, browsers };
+  return rows;
 }
