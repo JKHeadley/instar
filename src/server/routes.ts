@@ -146,7 +146,7 @@ import { withUnknownProducerOrigin } from '../messaging/telegram-origin/OriginDe
 import { Router } from 'express';
 import { FOLD_PROBE_PLACE_PREFIX } from '../users/MemoryPrivacy.js';
 import { readShadowFolds, summarizeShadowFolds } from '../monitoring/foldShadowLog.js';
-import { loadJobsDetailed } from '../scheduler/JobLoader.js';
+import { jobMatchesCategory, loadJobsDetailed } from '../scheduler/JobLoader.js';
 import { JobCoverageMonitor } from '../core/JobCoverageMonitor.js';
 import { isLoopbackPeer } from '../core/desktopTransport.js';
 import { DESKTOP_CHECK_FAILED_REASON, desktopProbeUnavailableReason } from '../core/DesktopProbeReadiness.js';
@@ -21445,10 +21445,7 @@ document.getElementById('mcpForm').addEventListener('submit', async function (e)
     const skipLedger = ctx.scheduler.getSkipLedger();
 
     // Find jobs matching this category (tag starts with "cat:" or exact match)
-    const categoryTag = `cat:${category}`;
-    const matchingJobs = allJobs.filter(j =>
-      j.tags?.includes(categoryTag) || j.tags?.includes(category)
-    );
+    const matchingJobs = allJobs.filter(job => jobMatchesCategory(job, category));
 
     if (matchingJobs.length === 0) {
       res.json({ category, jobs: [], summary: { totalJobs: 0, healthy: 0, failing: 0, skipping: 0 } });
@@ -22404,6 +22401,35 @@ document.getElementById('mcpForm').addEventListener('submit', async function (e)
 
   // ── Job Run History ─────────────────────────────────────────────
 
+  function presentJobRun(run: import('../scheduler/JobRunHistory.js').JobRun) {
+    const observation = run.developmentReviewObservation;
+    if (!observation) return run;
+    // Token ingestion can lag completion. Read current attributed usage rather
+    // than freezing an unknown or partial value into the durable run record.
+    const nativeSessionId = observation.nativeSessionId;
+    const usage = typeof nativeSessionId === 'string' && nativeSessionId && ctx.tokenLedger
+      ? ctx.tokenLedger.jobTokenTotals({ sinceMs: 0, nativeSessionId })
+        .filter(row => row.jobSlug === run.slug && row.origin === 'job')
+      : [];
+    return {
+      ...run,
+      developmentReviewObservation: {
+        wouldSkip: observation.wouldSkip,
+        actualUsage: usage.length === 0 ? null : usage.reduce((total, row) => ({
+          modelCalls: total.modelCalls + row.modelCalls,
+          tokensIn: total.tokensIn + row.tokensIn,
+          tokensOut: total.tokensOut + row.tokensOut,
+          cacheRead: total.cacheRead + row.cacheRead,
+          cacheWrite: total.cacheWrite + row.cacheWrite,
+        }), { modelCalls: 0, tokensIn: 0, tokensOut: 0, cacheRead: 0, cacheWrite: 0 }),
+      },
+    };
+  }
+
+  function presentJobRunStats(stats: import('../scheduler/JobRunHistory.js').JobRunStats) {
+    return stats.lastRun ? { ...stats, lastRun: presentJobRun(stats.lastRun) } : stats;
+  }
+
   router.get('/jobs/history', (_req, res) => {
     if (!ctx.scheduler) {
       res.json({ runs: [], total: 0, stats: [] });
@@ -22428,7 +22454,8 @@ document.getElementById('mcpForm').addEventListener('submit', async function (e)
     const data = history.query({ slug, sinceHours, result: resultFilter, limit, offset });
     const stats = slug ? history.stats(slug, sinceHours) : history.allStats(sinceHours);
 
-    res.json({ ...data, stats });
+    const publicStats = Array.isArray(stats) ? stats.map(presentJobRunStats) : stats && presentJobRunStats(stats);
+    res.json({ ...data, runs: data.runs.map(presentJobRun), stats: publicStats });
   });
 
   router.get('/jobs/:slug/history', (req, res) => {
@@ -22454,7 +22481,7 @@ document.getElementById('mcpForm').addEventListener('submit', async function (e)
     const data = history.query({ slug, sinceHours, result: resultFilter, limit, offset });
     const stats = history.stats(slug, sinceHours);
 
-    res.json({ ...data, stats });
+    res.json({ ...data, runs: data.runs.map(presentJobRun), stats: stats && presentJobRunStats(stats) });
   });
 
   // ── Skip Ledger ──────────────────────────────────────────────────

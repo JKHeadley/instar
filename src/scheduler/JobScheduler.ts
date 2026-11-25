@@ -31,7 +31,7 @@ import path from 'node:path';
 import { ExecutionJournal } from '../core/ExecutionJournal.js';
 import { IntegrationGate } from './IntegrationGate.js';
 import { JobReflector } from '../core/JobReflector.js';
-import { formatLoadProblem, loadJobsDetailed } from './JobLoader.js';
+import { jobMatchesCategory, formatLoadProblem, loadJobsDetailed } from './JobLoader.js';
 import { readRecentPromotion, markPromotionSweepComplete } from '../core/roleFollowRestart.js';
 import { PromotionCatchUpStore } from './PromotionCatchUpStore.js';
 import { readAgentMdBody, rehydrateAgentMdJobFromLastValidatedBody, verifyScriptHash } from './AgentMdJobLoader.js';
@@ -244,6 +244,7 @@ export class JobScheduler {
   private projectedSessionListeners: ProjectedSessionListener[] = [];
   /** Triage sessions: tmux name → their run row. */
   private projectedRuns: Map<string, { runId: string; slugTag: string; slug: string; trigger: string }> = new Map();
+  private developmentReviewRosterKnown = false;
   private tokenLedger: JobSessionLedger | null = null;
   private configReader: (() => Record<string, unknown> | null) | null = null;
   private configCache: { mtimeMs: number; value: Record<string, unknown> } | null = null;
@@ -548,6 +549,7 @@ export class JobScheduler {
     const firstLoad = this.jobsSignature === '';
     const loaded = loadJobsDetailed(this.config.jobsFile, { quiet: !firstLoad });
     const nextJobs = loaded.jobs;
+    this.developmentReviewRosterKnown = loaded.rosterComplete;
 
     // Disk is the truth for the MANIFEST (existence, enabled, schedule, …);
     // the agentmd BODY is owned by refreshAgentMdBodyIfChanged() at the
@@ -3126,6 +3128,15 @@ export class JobScheduler {
     // permit repeated model sessions against one reservation. Failed launches
     // restore this same batch; queuing never consumes it.
     if (gateReceipt && !gateReceipt.consumed) consumeJobGateReceipt(gateReceiptFile, gateReceipt.batchId);
+    // This is a signal only, taken from the same loaded roster used for admission.
+    // It never affects the launch decision, even when the roster is empty.
+    const observeDevelopmentReview = job.slug === 'overseer-development' && job.origin === 'instar'
+      && /^(?:queued:)*scheduled$/.test(reason)
+      && (this.readAgentConfig()?.jobs as { observeEmptyDevelopmentReview?: unknown } | undefined)?.observeEmptyDevelopmentReview === true;
+    const wouldSkipDevelopmentReview = observeDevelopmentReview
+      ? (this.developmentReviewRosterKnown
+        ? !this.jobs.some(candidate => jobMatchesCategory(candidate, 'development')) : null)
+      : undefined;
     let gateSpawnAccepted = false;
     this.activeSessionSpawns.add(job.slug);
     const spawnPromise = toolDecision.refuse
@@ -3194,6 +3205,9 @@ export class JobScheduler {
         toolEnforcement: toolOutcome.toolEnforcement,
         // job-launch-intent-record §3/§4: taken from the same returned session as framework/model.
         ...(session?.launch ? { launch: session.launch } : {}),
+        ...(wouldSkipDevelopmentReview !== undefined && session?.id ? {
+          developmentReviewObservation: { wouldSkip: wouldSkipDevelopmentReview, nativeSessionId: session.id },
+        } : {}),
       });
       this.activeRunIds.set(sessionName, runId);
       this.recordLaunchIntentEvidence(job.slug, runId, session);

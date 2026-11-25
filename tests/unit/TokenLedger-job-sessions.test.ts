@@ -60,6 +60,20 @@ describe('TokenLedger job_sessions', () => {
     expect(l.jobSessionCounts({ sinceMs: 0 })[0].unbound).toBe(0);
   });
 
+  it('separates adjacent runs of the same job by native session, including transcript aliases', () => {
+    const l = make();
+    l.recordJobSession('native-a', 'overseer-development', 'm1', T0);
+    l.recordJobSession('native-b', 'overseer-development', 'm1', T0);
+    l.bindJobSessionTranscript('native-a', 'transcript-a');
+    l.bindJobSessionTranscript('native-b', 'transcript-b');
+    event(l, 'r1', 'transcript-a', T0 + 1, 'test-model', 13);
+    event(l, 'r2', 'transcript-b', T0 + 2, 'test-model', 72);
+    expect(l.jobTokenTotals({ sinceMs: 0, nativeSessionId: 'native-a' })).toEqual([
+      expect.objectContaining({ jobSlug: 'overseer-development', modelCalls: 1, tokensIn: 13 }),
+    ]);
+    expect(l.jobTokenTotals({ sinceMs: 0, nativeSessionId: 'missing' })).toEqual([]);
+  });
+
   it('a rotated transcript id (respawn) joins too, and origin triage is kept', () => {
     const l = make();
     l.recordJobSession('tmux-t', 'feedback-factory-triage', 'm1', T0, 'triage');
