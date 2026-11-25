@@ -1,0 +1,27 @@
+{
+  "version": 2,
+  "slug": "ask-links-escalation",
+  "sessionId": "bcc82a0c-f81e-440b-88eb-304eb7ee4f4c",
+  "timestamp": "2026-11-25T13:03:04.116Z",
+  "artifactPath": "upgrades/side-effects/ask-links-escalation.md",
+  "artifactSha256": "f8da249e66e479228fa2525eb6ec569def9ab397acfcb37bc98740b6d9291fb2",
+  "coveredFiles": [
+    "docs/specs/ask-links-escalation.eli16.md",
+    "src/core/types.ts",
+    "src/data/awareness/ask-links-escalation.md",
+    "src/messaging/RuleResponseLedger.ts",
+    "src/server/routes.ts",
+    "src/server/ruleResponseRoutes.ts",
+    "tests/e2e/rule-response-routes-alive.test.ts",
+    "tests/integration/rule-response-routes.test.ts",
+    "tests/unit/rule-response-ledger.test.ts",
+    "upgrades/side-effects/ask-links-escalation.md"
+  ],
+  "phase": "complete",
+  "tier": 1,
+  "tierReasoning": "Off-by-default advisory per-rule review with no send authority",
+  "eli16Path": "docs/specs/ask-links-escalation.eli16.md",
+  "sideEffectsPath": "upgrades/side-effects/ask-links-escalation.md",
+  "secondPass": "not-required",
+  "reviewerConcurred": null
+}

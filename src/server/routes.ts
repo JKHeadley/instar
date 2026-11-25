@@ -1,4 +1,5 @@
 import { ManualQuotaBalance } from '../core/ManualQuotaBalance.js';
+import { registerRuleResponseRoutes } from './ruleResponseRoutes.js';
 import { normalizeCreationParentRef, type AppCreationContext } from '../core/AppCreationContext.js';
 // Governed by (docs/STANDARDS-REGISTRY.md cites this file as enforcement of):
 //   *Recall Over Our Own Material Is by Meaning, Not by Word-Match*
@@ -3324,6 +3325,15 @@ export function createRoutes(ctx: RouteContext): Router {
   };
 
   const router = Router();
+  registerRuleResponseRoutes(router, {
+    stateDir: ctx.config.stateDir,
+    enabled: () => !ctx.state.readOnly && (ctx.liveConfig?.get<boolean>(
+      'toneGate.askLinksEscalation.enabled', ctx.config.toneGate?.askLinksEscalation?.enabled ?? false,
+    ) ?? ctx.config.toneGate?.askLinksEscalation?.enabled) === true,
+    isDeliveredAgentReply: (topic, message) => Number.isSafeInteger(topic) && Number.isSafeInteger(message)
+      && Boolean(ctx.telegram?.getTopicHistory(topic, 1_000).some(row =>
+        row.messageId === message && !row.fromUser && row.authorship === 'agent-outbound')),
+  });
   // A PR link sent to the operator is a review request on GitHub too (Echo Bugs 10000002537).
   // Mounted FIRST so the origin send-policy binds the final text (an unconfirmed request appends a note).
   {
