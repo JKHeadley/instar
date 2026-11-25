@@ -293,6 +293,7 @@ export const chiefOfStaffRecordStoreSchema: StoreFieldSchema = {
         if (!isMachine(raw.machine)) return null;
         if (!isIso(raw.at)) return null;
         if (raw.note !== undefined && !isShortText(raw.note, 500)) return null;
+        if (raw.bindingHlc !== undefined && !isHlc(raw.bindingHlc)) return null;
         let doneItems: Record<string, 'pass' | 'fail' | 'unknown'> | undefined;
         if (raw.doneItems !== undefined) {
           if (!raw.doneItems || typeof raw.doneItems !== 'object' || Array.isArray(raw.doneItems)) return null;
@@ -305,6 +306,7 @@ export const chiefOfStaffRecordStoreSchema: StoreFieldSchema = {
           progressSeen: raw.progressSeen, machine: raw.machine, at: raw.at,
           ...(raw.netDiffHighWater !== undefined ? { netDiffHighWater: raw.netDiffHighWater } : {}),
           ...(raw.note !== undefined ? { note: raw.note } : {}),
+          ...(raw.bindingHlc !== undefined ? { bindingHlc: raw.bindingHlc } : {}),
           ...(doneItems !== undefined ? { doneItems } : {}),
         };
       }
@@ -444,6 +446,8 @@ export function buildCheckRequestedEvent(conversationKey: string, bindingHlc: Hl
 
 export interface CheckEventInput {
   conversationKey: string; verdict: CosVerdict; evidenceHash: string; evidenceIds: string[]; progressSeen: boolean; netDiffHighWater?: number; machine: string; at: string; note?: string;
+  /** Exact project binding evaluated by this check. Older checks may omit it. */
+  bindingHlc?: HlcTimestamp;
   /** The deterministic done-item results at this check — the DURABLE baseline the next check's progress detection compares against (never an in-memory map). */
   doneItems?: Record<string, 'pass' | 'fail' | 'unknown'>;
 }

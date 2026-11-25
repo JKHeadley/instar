@@ -5806,6 +5806,10 @@ export class AgentServer {
       this.blockerLedger = null;
     }
 
+    if (this.blockerLedger && options.config.chiefOfStaff?.waitBlockerIntake === true) {
+      options.chiefOfStaffLoop?.attachWaitBlockerLedger(this.blockerLedger);
+    }
+
     // GrowthMilestoneAnalyst (docs/specs/PROACTIVE-GROWTH-MILESTONE-ANALYST-SPEC.md)
     // — the proactive growth & milestone analyst. Resolved through the standard
     // developmentAgent dark-feature gate (standard_development_agent_dark_feature_gate):

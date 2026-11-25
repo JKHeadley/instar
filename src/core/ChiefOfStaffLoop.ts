@@ -319,6 +319,8 @@ export function composeNote(items: NoteItem[], cap: number, statusUrl: string | 
 
 // ── deps ─────────────────────────────────────────────────────────────────────
 
+type WaitBlockerLedger = Pick<import('../monitoring/BlockerLedger.js').BlockerLedger, 'openChiefOfStaffWait'>;
+
 export interface ChiefOfStaffLoopDeps {
   now: () => number;
   machineId: string;
@@ -516,6 +518,38 @@ export class ChiefOfStaffLoop {
   private ticking = false;
 
   private readonly creationPlacement: CreationPlacementSnapshot;
+  private waitBlockerLedger: WaitBlockerLedger | null = null;
+  private readonly syncedWaitEpisodes = new Set<string>();
+
+  attachWaitBlockerLedger(ledger: WaitBlockerLedger): void {
+    this.waitBlockerLedger = ledger;
+    this.syncedWaitEpisodes.clear();
+  }
+
+  private async syncWaitBlockers(): Promise<void> {
+    const ledger = this.waitBlockerLedger;
+    if (!ledger || !this.d.holdsLease()) return;
+    const union = this.d.journal.loadUnionCompleteReadOnly?.() ?? null;
+    if (!union) return;
+    const { chiefOfStaffWaitEpisodes } = await import('./ChiefOfStaffWaitCards.js');
+    const episodes = chiefOfStaffWaitEpisodes(union);
+    const current = new Set(episodes.map((episode) => episode.episodeKey));
+    for (const key of this.syncedWaitEpisodes) {
+      if (!current.has(key)) this.syncedWaitEpisodes.delete(key);
+    }
+    for (const episode of episodes) {
+      if (this.syncedWaitEpisodes.has(episode.episodeKey)) continue;
+      if (!this.d.holdsLease()) return;
+      await ledger.openChiefOfStaffWait({
+        episodeKey: episode.episodeKey,
+        conversationKey: episode.conversationKey,
+        firstCheckRef: episode.firstCheckRef,
+        detectedText: 'A project check recorded a wait that the Chief of Staff needs to investigate.',
+      });
+      this.syncedWaitEpisodes.add(episode.episodeKey);
+    }
+  }
+
   constructor(private readonly d: ChiefOfStaffLoopDeps) {
     this.creationPlacement = new CreationPlacementSnapshot({ enabled: d.enabled, version: () => d.journal.creationSourceVersion?.() ?? null, load: () => d.journal.loadUnionCompleteReadOnly?.() ?? null });
   }
@@ -751,6 +785,10 @@ export class ChiefOfStaffLoop {
       const noteStates = new Map<string, ProjectCheckState>();
       for (const p of projects) noteStates.set(p.conversationKey, foldProjectCheckState(noteUnion, p.conversationKey, { checkCadenceHours: Math.max(cfg.minCadenceHours, p.checkCadenceHours || cfg.defaultCadenceHours), maxRestartsWithoutProgress: cfg.maxRestartsWithoutProgress, breakerRestartsPerWeek: cfg.breakerRestartsPerWeek, jitter: jitterFor(p.conversationKey) }, new Date(now), p.binding));
       await this.maybeSendNote(now, cfg, lease, noteUnion, projects, noteStates);
+      if (!graceTick && this.waitBlockerLedger) {
+        try { await this.syncWaitBlockers(); }
+        catch (e) { /* @silent-fallback-ok: the source journal retains the wait for the next tick */ this.d.log?.(`[chief-of-staff] blocker intake failed: ${(e as Error)?.message}`); }
+      }
       // Wait cards (work-board-cards-appear §1): mirror this tick's recorded waits onto the board. Not on the grace
       // tick after a holder change, so the previous holder's card records have a tick to arrive. Never fails the tick.
       if (this.d.waitCards && !graceTick) {
@@ -860,7 +898,7 @@ export class ChiefOfStaffLoop {
   }
 
   private recordCheck(p: BoundProject, verdict: CosVerdict, note: string, hash: string, ids: string[], progress: boolean, highWater: number, now: number, doneItems?: Record<string, 'pass' | 'fail' | 'unknown'>): number | undefined {
-    return this.d.journal.emit(`check:${p.conversationKey}:${now}`, buildCheckEvent({ conversationKey: p.conversationKey, verdict, evidenceHash: hash, evidenceIds: ids, progressSeen: progress, netDiffHighWater: highWater, machine: this.d.machineId, at: new Date(now).toISOString(), note: cutAtWord(note, 500), ...(doneItems ? { doneItems } : {}) })).seq;
+    return this.d.journal.emit(`check:${p.conversationKey}:${now}`, buildCheckEvent({ conversationKey: p.conversationKey, verdict, evidenceHash: hash, evidenceIds: ids, progressSeen: progress, netDiffHighWater: highWater, machine: this.d.machineId, at: new Date(now).toISOString(), note: cutAtWord(note, 500), ...(p.binding.bindingHlc ? { bindingHlc: p.binding.bindingHlc } : {}), ...(doneItems ? { doneItems } : {}) })).seq;
   }
 
   private bumpUnknown(p: BoundProject, cfg: ChiefOfStaffLoopConfig, why: string): void {

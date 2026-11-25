@@ -143,6 +143,12 @@ export interface TrueBlockerTerminal {
 
 export type BlockerTerminal = ResolvedTerminal | TrueBlockerTerminal;
 
+export interface ChiefOfStaffBlockerSource {
+  episodeKey: string;
+  conversationKey: string;
+  firstCheckRef: string;
+}
+
 export interface BlockerEntry {
   id: string;
   /** CAS version — bumped on every mutation. */
@@ -155,6 +161,7 @@ export interface BlockerEntry {
   createdAt: string;
   updatedAt: string;
   history: BlockerTransition[];
+  chiefOfStaffSource?: ChiefOfStaffBlockerSource;
   authorityCheck?: AuthorityCheckEvidence;
   accessRequest?: AccessRequestEvidence;
   dryRun?: AttemptEvidence;
@@ -401,9 +408,37 @@ export class BlockerLedger {
    * trigger (Structure > Willpower — the agent doesn't choose to log it).
    */
   async open(input: { detectedText: string; origin: string }): Promise<BlockerEntry> {
+    return this.openCandidate(input);
+  }
+
+  /** Internal intake keyed by the canonical Chief of Staff wait episode. */
+  async openChiefOfStaffWait(input: ChiefOfStaffBlockerSource & { detectedText: string }): Promise<BlockerEntry> {
+    const source: ChiefOfStaffBlockerSource = {
+      episodeKey: this.boundText(input.episodeKey, 'episodeKey'),
+      conversationKey: this.boundText(input.conversationKey, 'conversationKey'),
+      firstCheckRef: this.boundText(input.firstCheckRef, 'firstCheckRef'),
+    };
+    return this.openCandidate({ origin: 'chief-of-staff', detectedText: input.detectedText }, source);
+  }
+
+  private async openCandidate(
+    input: { detectedText: string; origin: string },
+    chiefOfStaffSource?: ChiefOfStaffBlockerSource,
+  ): Promise<BlockerEntry> {
     const detectedText = this.boundText(input.detectedText, 'detectedText');
     const origin = this.boundText(input.origin, 'origin');
     return this.mutate(() => {
+      if (chiefOfStaffSource) {
+        const matchesEpisode = (entry: BlockerEntry) => entry.chiefOfStaffSource?.episodeKey === chiefOfStaffSource.episodeKey;
+        const existing = this.store.entries.find(matchesEpisode) ?? this.loadArchive().find(matchesEpisode);
+        if (existing) {
+          if (existing.chiefOfStaffSource?.conversationKey !== chiefOfStaffSource.conversationKey ||
+              existing.chiefOfStaffSource.firstCheckRef !== chiefOfStaffSource.firstCheckRef) {
+            throw new BlockerLedgerError('Chief of Staff episode key already identifies a different check', 'invalid_field');
+          }
+          return existing;
+        }
+      }
       const id = `BLK-${this.store.nextId}`;
       this.store.nextId += 1;
       const at = this.iso();
@@ -411,6 +446,7 @@ export class BlockerLedger {
         id,
         version: 1,
         state: 'candidate',
+        ...(chiefOfStaffSource ? { chiefOfStaffSource } : {}),
         detectedText,
         origin,
         createdAt: at,

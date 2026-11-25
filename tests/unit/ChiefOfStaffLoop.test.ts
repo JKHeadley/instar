@@ -75,6 +75,42 @@ function renew(w: World, atMs: number, ok = true) {
 }
 const checks = (w: World) => w.j.entries.filter((e) => e.data.recordType === 'check-event').map((e) => e.data.verdict);
 
+describe('Chief of Staff blocker ledger intake', () => {
+  it('hands a durable current wait to the ledger only when complete history is available', async () => {
+    const w = world({ judge: { verdict: 'waiting-on-user', reason: 'A dependency needs review.', citedIds: ['run'] } });
+    bind(w);
+    renew(w, w.now);
+    let available = false;
+    const entries: Array<{ episodeKey: string; conversationKey: string; firstCheckRef: string; detectedText: string }> = [];
+    const l = loop(w, {}, { journal: {
+      emit: w.j.emit('m_a'),
+      loadUnion: () => w.j.entries.slice(),
+      loadUnionCompleteReadOnly: () => available ? w.j.entries.slice() : null,
+    } });
+    l.attachWaitBlockerLedger({
+      openChiefOfStaffWait: async (input) => {
+        entries.push(input);
+        return { id: 'BLK-1', version: 1, state: 'candidate', detectedText: input.detectedText,
+          origin: 'chief-of-staff', createdAt: '', updatedAt: '', history: [] };
+      },
+    });
+
+    await l.tick();
+    expect(checks(w)).toContain('waiting-on-user');
+    expect(entries).toEqual([]);
+    available = true;
+    w.now += 60_000;
+    await l.tick();
+    expect(entries).toHaveLength(1);
+    expect(entries[0].episodeKey).toMatch(/^[a-f0-9]{64}$/);
+    expect(entries[0].conversationKey).toBe(CK);
+    expect(entries[0].firstCheckRef).toBe(w.j.entries.find((e) => e.data.recordType === 'check-event')?.data.recordKey);
+    w.now += 60_000;
+    await l.tick();
+    expect(entries).toHaveLength(1);
+  });
+});
+
 describe('clampLoopConfig', () => {
   it('applies the floors and the breaker upper bound', () => {
     const c = clampLoopConfig({ tickMinutes: 1, minCadenceHours: 0.1, breakerRestartsPerWeek: 9999, maxRunHours: 0, noteTime: 'bogus' });

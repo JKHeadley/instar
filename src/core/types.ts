@@ -3874,6 +3874,8 @@ export interface InstarConfig {
    *  owner-tunable at the agent level; per-project values live on the binding. */
   chiefOfStaff?: {
     enabled?: boolean;
+    /** Opt in to recording unverified waits as internal blocker candidates. Defaults off. */
+    waitBlockerIntake?: boolean;
     displayName?: string;
     tickMinutes?: number;
     defaultCadenceHours?: number;
