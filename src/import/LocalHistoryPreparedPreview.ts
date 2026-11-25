@@ -7,6 +7,9 @@ import path from 'node:path';
 import { CHUNK_BYTES } from '../core/appMediaTypes.js';
 import { ImportedHistoryStore } from './ImportedHistoryStore.js';
 import { localHistoryFirstClaimPlanDigest, type LocalHistoryFirstClaimSizing } from './LocalHistoryFirstClaimPlanBinding.js';
+import type { LocalHistoryFirstPermit } from './LocalHistoryFirstPermit.js';
+import type { LocalHistoryStoreTemporaryAllocator } from './LocalHistoryStoreTemporaryRun.js';
+import { assertLocalHistoryDisposablePilotArtifact, assertLocalHistoryDisposablePilotState } from './LocalHistoryDisposablePilot.js';
 import type { LocalSourceIdentity } from './LocalSourceIdentity.js';
 import { visitPreparedArtifacts, type LocalHistoryPreparedArtifactDescriptor } from './LocalHistoryPreparedArtifacts.js';
 
@@ -35,14 +38,27 @@ export interface LocalHistoryPreparedPreview {
 
 export async function readLocalHistoryPreparedPreview(input: LocalHistoryPreparedPreviewInput,
   body: AsyncIterable<Uint8Array>, onArtifactStart?: (index: number) => void,
-  onFirstClaimReady?: (result: LocalHistoryPreparedPreview) => Promise<void>): Promise<LocalHistoryPreparedPreview> {
+  onFirstClaimReady?: (result: LocalHistoryPreparedPreview) => Promise<void>,
+  pilot?: { allocator: LocalHistoryStoreTemporaryAllocator; receivePermit(preview: LocalHistoryPreparedPreview,
+    execute: (permit: LocalHistoryFirstPermit) => void): Promise<void> }): Promise<LocalHistoryPreparedPreview> {
   if (!input || typeof input !== 'object' || typeof input.stateDir !== 'string' || !path.isAbsolute(input.stateDir)
     || input.stateDir.includes('\0') || typeof input.ownerUserId !== 'string' || !input.ownerUserId.trim()
     || input.ownerUserId.includes('\0') || Buffer.byteLength(input.ownerUserId) > 256) throw new Error('local-history-preview-header');
   // A missing store is a fresh destination. A present but unsafe/incomplete
   // store is refused by the existing-only constructor; it is never repaired here.
+  if (pilot) {
+    assertLocalHistoryDisposablePilotState(input.stateDir);
+    if (!input.includeFirstClaimPlan || input.descriptors.length !== 1 || onFirstClaimReady) {
+      throw new Error('local-history-disposable-pilot-input');
+    }
+    assertLocalHistoryDisposablePilotArtifact(input.ownerUserId, input.descriptors[0]);
+  }
   let store: ImportedHistoryStore | undefined;
-  try { fs.lstatSync(path.join(input.stateDir, 'imported-history')); store = new ImportedHistoryStore(input.stateDir, { existingOnly: true }); }
+  try {
+    fs.lstatSync(path.join(input.stateDir, 'imported-history'));
+    store = new ImportedHistoryStore(input.stateDir, { existingOnly: true,
+      ...(pilot && { plannedWritesOnly: true, temporaryAllocator: pilot.allocator }) });
+  }
   catch (error) { if ((error as NodeJS.ErrnoException).code !== 'ENOENT') throw error;
     // ENOENT inside a present store is not an absent store.
     if (fs.existsSync(path.join(input.stateDir, 'imported-history'))) throw error;
@@ -84,7 +100,12 @@ export async function readLocalHistoryPreparedPreview(input: LocalHistoryPrepare
         input.ownerUserId, input.descriptors[0], first.destinationFingerprint, sizing,
       ) };
       if (Buffer.byteLength(JSON.stringify(result)) > CHUNK_BYTES) throw new Error('local-history-preview-capacity');
-      await onFirstClaimReady?.(result);
+      if (pilot) {
+        const writer = store;
+        await pilot.receivePermit(result, permit => writer.executeCommittedFirstClaim(plan, input.descriptors[0], permit));
+      } else {
+        await onFirstClaimReady?.(result);
+      }
     }
     return result;
   };

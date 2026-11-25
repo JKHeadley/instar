@@ -1,0 +1,28 @@
+{
+  "ts": "2026-11-25T03:53:19.243Z",
+  "slug": "local-history-fixed-worker-pilot-receive",
+  "suggestedTier": 2,
+  "declaredTier": 2,
+  "riskFloor": 1,
+  "riskFloorReasons": [],
+  "belowFloor": false,
+  "files": 3,
+  "loc": 110,
+  "scope": {
+    "basis": "staged-in-scope-paths-including-deleted",
+    "files": [
+      "src/import/LocalHistoryDisposablePilot.ts",
+      "src/import/LocalHistoryPreparedPreview.ts",
+      "src/import/localHistoryPreparedReadWorker.ts"
+    ],
+    "addedLines": 93,
+    "deletedLines": 17
+  },
+  "causalAutopsy": null,
+  "classClosure": {
+    "defectClass": "unbounded-self-action",
+    "closure": "n/a",
+    "reason": "The fixed child attempts one synthetic first claim and exits without retry."
+  },
+  "verdict": "pass"
+}

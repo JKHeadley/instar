@@ -1,9 +1,19 @@
 import { afterEach, expect, it } from 'vitest';
 import crypto from 'node:crypto';
+import { fork } from 'node:child_process';
+import { once, on } from 'node:events';
+import { fileURLToPath } from 'node:url';
 import Database from 'better-sqlite3';
 import fs from 'node:fs';
 import os from 'node:os';
 import path from 'node:path';
+import { privateImportDatabasePath } from '../../dist/import/privateImportState.js';
+import { assertLocalHistoryDisposablePilotArtifact, assertLocalHistoryDisposablePilotState,
+  LOCAL_HISTORY_DISPOSABLE_PILOT_LINES } from '../../dist/import/LocalHistoryDisposablePilot.js';
+import { LocalHistoryDiskLedger } from '../../dist/import/LocalHistoryDiskLedger.js';
+import { initializeLocalHistoryFirstPermits, recordLocalHistoryFirstPermit } from '../../dist/import/LocalHistoryFirstPermit.js';
+import { acquireLocalHistoryStoreTemporaryAdmission, initializeLocalHistoryStoreTemporaryRuns,
+  registerLocalHistoryStoreTemporaryRun } from '../../dist/import/LocalHistoryStoreTemporaryRun.js';
 import { acquireLocalHistoryChild } from '../../dist/import/LocalHistoryChildCustody.js';
 import { runLocalHistoryPreparedReadJob, type LocalHistoryPreparedReadJobOptions } from '../../dist/import/LocalHistoryPreparedReadJob.js';
 import { parseLocalSessionLines } from '../../src/import/localSessionParsers.js';
@@ -146,4 +156,80 @@ it('refuses an asynchronous claim observer and owns its rejection through child 
   f.opts.observeFirstClaimPlan = asyncObserver as unknown as LocalHistoryPreparedReadJobOptions['observeFirstClaimPlan'];
   await expect(runLocalHistoryPreparedReadJob(f.opts)).rejects.toThrow('local-history-preview-claim-observation');
   expect(f.released()).toBe(1);
+});
+
+
+it('delivers a committed synthetic claim to the fixed worker only inside a disposable home', async () => {
+  const f = fixture();
+  const base = path.join(fs.realpathSync(os.homedir()), '.instar', 'test-deploys');
+  fs.mkdirSync(base, { recursive: true, mode: 0o700 });
+  const home = path.join(base, 'local-history-reserve-pilot-' + crypto.randomBytes(16).toString('hex'));
+  fs.mkdirSync(home, { mode: 0o700 }); dirs.push(home);
+  const stateDir = path.join(home, '.instar');
+  fs.mkdirSync(stateDir, { mode: 0o700 });
+  expect(() => assertLocalHistoryDisposablePilotState(f.opts.input.stateDir)).toThrow('disposable-pilot-state');
+  const link = path.join(base, 'local-history-reserve-pilot-' + crypto.randomBytes(16).toString('hex'));
+  fs.symlinkSync(home, link); dirs.push(link);
+  expect(() => assertLocalHistoryDisposablePilotState(path.join(link, '.instar'))).toThrow('disposable-pilot-state');
+  expect(() => assertLocalHistoryDisposablePilotArtifact(f.opts.input.ownerUserId, f.opts.input.descriptors[0]))
+    .toThrow('disposable-pilot-artifact');
+  const bytes = Buffer.from(JSON.stringify(parseLocalSessionLines('codex', [...LOCAL_HISTORY_DISPOSABLE_PILOT_LINES])));
+  const descriptor = { ...f.opts.input.descriptors[0], bytes: bytes.length,
+    sha256: crypto.createHash('sha256').update(bytes).digest('hex') };
+  const store = new ImportedHistoryStore(stateDir);
+  const ledger = new LocalHistoryDiskLedger(stateDir);
+  const lease = acquireLocalHistoryStoreTemporaryAdmission(stateDir)!;
+  const db = new Database(privateImportDatabasePath(path.join(stateDir, 'local-history-upload'), 'jobs.sqlite'));
+  db.pragma('synchronous = FULL');
+  db.exec('CREATE TABLE upload_operations(id TEXT PRIMARY KEY, tag TEXT NOT NULL, phase TEXT NOT NULL, deadline INTEGER NOT NULL, fingerprint TEXT); CREATE TABLE upload_previews(id TEXT PRIMARY KEY, allocation TEXT, sha256 TEXT)');
+  initializeLocalHistoryStoreTemporaryRuns(db);
+  initializeLocalHistoryFirstPermits(db);
+  const operationId = '1'.repeat(32), deadline = Date.now() + 60_000, generation = lease.custody.generation;
+  const fingerprint = '2'.repeat(64), previewAllocation = '3'.repeat(32), previewSha256 = '4'.repeat(64);
+  db.prepare('INSERT INTO upload_operations VALUES(?,?,?,?,?)').run(operationId, 'r-' + generation + '-' + operationId, 'prepared', deadline, fingerprint);
+  db.prepare('INSERT INTO upload_previews VALUES(?,?,?)').run(operationId, previewAllocation, previewSha256);
+  const run = registerLocalHistoryStoreTemporaryRun(db, lease, { operationId });
+  const pin = ledger.pinCopyVolume([store.dir]);
+  const plannedBytes = 1024 * 1024;
+  const reservation = ledger.createCopyRunReservation(lease, operationId, pin, plannedBytes, plannedBytes);
+  const child = fork(fileURLToPath(new URL('../../dist/import/localHistoryPreparedReadWorker.js', import.meta.url)), [], {
+    stdio: ['pipe', 'ignore', 'ignore', 'ipc'], execArgv: [],
+    env: { LANG: 'C.UTF-8', TZ: 'UTC', INSTAR_LOCAL_HISTORY_CUSTODY: JSON.stringify(lease.custody) },
+  });
+  const closed = once(child, 'close');
+  const abort = new AbortController();
+  child.once('close', () => abort.abort());
+  const messages = on(child, 'message', { signal: AbortSignal.any([abort.signal, AbortSignal.timeout(10_000)]) });
+  const next = async () => (await messages.next()).value?.[0];
+  try {
+    expect(await next()).toEqual({kind: 'ready'});
+    const pilotRun = await run.registerChild(child);
+    const header = Buffer.from(JSON.stringify({ ...f.opts.input, stateDir, descriptors: [descriptor], includeFirstClaimPlan: true, pilotRun }));
+    const length = Buffer.alloc(4); length.writeUInt32BE(header.length);
+    child.stdin!.end(Buffer.concat([length, header, bytes]));
+    expect(await next()).toEqual({kind: 'file', index: 0});
+    const ready = await next();
+    expect(ready?.kind).toBe('claim-plan-ready');
+    const claimFile = path.join(store.dir, 'source-claims.sqlite');
+    expect(fs.existsSync(claimFile)).toBe(false);
+    reservation.assertCovers(plannedBytes);
+    const permit = {
+      operationId, previewId: '5'.repeat(32), applyRequestId: '6'.repeat(32), intentFingerprint: '7'.repeat(64),
+      generation, runId: run.runId, reservationId: reservation.allocationId, previewAllocation, previewSha256,
+      uploadFingerprint: fingerprint, deadline, permitId: '8'.repeat(32), fileIndex: 0, mutationKind: 'claim' as const,
+      destinationBinding: ready.preview.files[0].destinationFingerprint, planDigest: ready.preview.firstClaimPlan.planDigest, plannedBytes,
+    };
+    expect(db.transaction(() => recordLocalHistoryFirstPermit(db, permit)).immediate()).toBe('recorded');
+    child.send({kind: 'commit-first-claim', permit});
+    expect(await next()).toMatchObject({kind: 'complete'});
+    expect(await closed).toEqual([0, null]);
+    expect(fs.statSync(claimFile).size).toBeGreaterThan(0);
+    run.cleanupAfterChild();
+    reservation.releaseAfterSettlement();
+  } finally {
+    await messages.return?.();
+    if (child.exitCode === null && child.signalCode === null) child.kill('SIGTERM');
+    await closed;
+    pin.close(); db.close(); ledger.close(); lease.release();
+  }
 });
