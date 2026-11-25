@@ -9,13 +9,14 @@ import path from 'node:path';
 import tls from 'node:tls';
 import readline from 'node:readline';
 import Database from 'better-sqlite3';
-import { expect, it } from 'vitest';
+import { expect, it, vi } from 'vitest';
 import { FencedLease } from '../../src/core/FencedLease.js';
 import { signOwnerRecordEntry } from '../../src/core/ownerRecord.js';
 import { createHostedRelayOwnerLeaseReader } from '../../src/hostedRelay/ownerLeaseReader.js';
 import { SafeFsExecutor } from '../../src/core/SafeFsExecutor.js';
+import { startHostedRelayAgentSession } from '../../src/hostedRelay/agentSession.js';
 import { createDisposableHostedRelay } from '../../src/hostedRelay/disposableRelay.js';
-import { HostedRelayLeaseAdmission, hostedRelayLeaseMessage } from '../../src/hostedRelay/leaseAdmission.js';
+import { HostedRelayLeaseAdmission } from '../../src/hostedRelay/leaseAdmission.js';
 
 it('connects a signed outbound control session to an end-to-end TLS client in a disposable service', async () => {
   const root = fs.mkdtempSync(path.join(os.tmpdir(), 'hosted-relay-service-'));
@@ -71,34 +72,24 @@ it('connects a signed outbound control session to an end-to-end TLS client in a 
     expect((await once(early, 'response'))[0][':status']).toBe(403);
     early.close();
 
-    const control = request('control');
-    const reader = readline.createInterface({ input: control });
-    cleanups.push(() => reader.close());
-    const lines = reader[Symbol.asyncIterator]();
-    const challenge = JSON.parse((await lines.next()).value!);
-    expect(challenge.type).toBe('challenge');
-    const signature = machineSign(hostedRelayLeaseMessage(lease, challenge.nonce));
-    const claim = JSON.stringify({ ...lease, challenge: challenge.nonce, signature });
-    control.write(claim.slice(0, 45));
-    control.write(claim.slice(45) + '\n');
-    expect(JSON.parse((await lines.next()).value!)).toEqual({ type: 'admitted' });
-
-    const seen = once(outbound, 'stream');
-    const offered = request('offer');
-    offered.on('response', headers => {
-      if (headers[':status'] !== 200) return;
-      const upstream = net.connect(agentPort, '127.0.0.1');
-      cleanups.push(() => upstream.destroy());
-      upstream.on('error', () => offered.destroy());
-      upstream.pipe(offered).pipe(upstream);
+    const arrival = Promise.withResolvers<void>();
+    outbound.on('stream', (_stream, headers) => { if (headers[':path'] === '/relay/v1/offer') arrival.resolve(); });
+    let signedControl: string | undefined;
+    const session = await startHostedRelayAgentSession({
+      session: agent, lease,
+      sign(text) { signedControl = machineSign(text); return signedControl; },
+      openLocalTls: () => {
+        const upstream = net.connect(agentPort, '127.0.0.1');
+        cleanups.push(() => upstream.destroy());
+        return upstream;
+      },
     });
-    // Wait for the offer to arrive at the dedicated listener before opening the TLS client.
-    await seen;
+    await arrival.promise;
     const client = tls.connect({ port: relayPort, host: '127.0.0.1', servername: hostname, ca: cert });
     cleanups.push(() => client.destroy());
     expect((await once(client, 'data'))[0].toString()).toBe('direct agent certificate');
     const closed = once(client, 'close');
-    control.end();
+    session.stop();
     await closed;
 
     const deniedAgent = http2.connect('http://127.0.0.1:' + outboundPort);
@@ -108,8 +99,20 @@ it('connects a signed outbound control session to an end-to-end TLS client in a 
     cleanups.push(() => deniedReader.close());
     const denied = deniedReader[Symbol.asyncIterator]();
     const deniedChallenge = JSON.parse((await denied.next()).value!);
-    deniedStream.write(JSON.stringify({ ...lease, challenge: deniedChallenge.nonce, signature }) + '\n');
+    deniedStream.write(JSON.stringify({ ...lease, challenge: deniedChallenge.nonce, signature: signedControl }) + '\n');
     expect(JSON.parse((await denied.next()).value!)).toEqual({ type: 'refused' });
+
+    const broken = http2.connect('http://127.0.0.1:' + outboundPort);
+    cleanups.push(() => broken.destroy());
+    const originalRequest = broken.request.bind(broken);
+    vi.spyOn(broken, 'request').mockImplementation((headers, options) => {
+      if (headers?.[':path'] === '/relay/v1/offer') throw new Error('fixture offer creation failure');
+      return originalRequest(headers, options);
+    });
+    const openLocalTls = vi.fn(() => undefined);
+    await expect(startHostedRelayAgentSession({ session: broken, lease, sign: machineSign, openLocalTls }))
+      .rejects.toThrow('hosted-relay-agent-unavailable');
+    expect(openLocalTls).not.toHaveBeenCalled();
 
     const accepted = once(tcp, 'connection');
     const waiting = net.connect(relayPort, '127.0.0.1');

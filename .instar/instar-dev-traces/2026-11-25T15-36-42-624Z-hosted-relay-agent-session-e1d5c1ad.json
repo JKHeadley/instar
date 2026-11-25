@@ -1,0 +1,25 @@
+{
+  "version": 2,
+  "slug": "hosted-relay-agent-session",
+  "sessionId": "41652017-0805-405d-bb4e-2a975fb349ce",
+  "timestamp": "2026-11-25T15:36:42.624Z",
+  "artifactPath": "upgrades/side-effects/hosted-relay-agent-session.md",
+  "artifactSha256": "9b5bd5424bde03deda8072b327c784f7ed0493905af16c2f4bbce18adef326bf",
+  "specPath": "docs/specs/hosted-relay.md",
+  "coveredFiles": [
+    "src/hostedRelay/agentSession.ts",
+    "tests/integration/hosted-relay-disposable.test.ts",
+    "upgrades/next/hosted-relay-agent-session.md",
+    "upgrades/side-effects/hosted-relay-agent-session.md"
+  ],
+  "phase": "complete",
+  "tier": 2,
+  "tierReasoning": "Dormant outbound agent session authenticates one exact lease and owns bounded streams.",
+  "secondPass": "true",
+  "reviewerConcurred": true,
+  "classClosure": {
+    "defectClass": "unbounded-self-action",
+    "closure": "n/a",
+    "reason": "Only a caller-started session replenishes its bounded data offers."
+  }
+}
