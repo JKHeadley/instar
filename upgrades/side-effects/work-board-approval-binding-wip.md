@@ -88,3 +88,9 @@ Independent review concurred after sealing the exact slip ID and expiry together
 Recording the signed decision and inserting its pending item rows occur in the same SQLite transaction. The enrolled application adapter must claim each exact item before invoking the writer. A claim cannot be taken again, including after a reopen. An incomplete claim appears unresolved. A completion must match the recorded claim, and a winning event must match that exact signed card generation. Results are returned in the signed order. The caller still owns current enrollment, verified presence, and journal proof for every asserted winner. This store has no production caller.
 
 Independent review concurred with the per-card state transitions. The 24-hour deadline also bounds new claims. Exact completion of an already claimed item can still record its durable receipt after expiry. Production claims require fresh enrolled writer proof from the adapter.
+
+## Apply a signed slip
+
+The internal application adapter reads the signed decision, claims items in order and supplies the exact stored version to the approval writer. It checks the enrolled writer before each claim and after each asynchronous result. It accepts an applied or independent winner only when the proof and version match the signed item and the production projection adapter confirms the exact event. An uncertain result remains claimed and is never retried blindly. The adapter has no production caller.
+
+The loop snapshots the decision and writer proof on entry and preserves the validated winning event ID across asynchronous observation. Projection confirmation is read-only. Regressions exercise a caller changing its decision during application and a winner generated for a different version.

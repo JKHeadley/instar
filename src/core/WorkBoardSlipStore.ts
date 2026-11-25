@@ -158,17 +158,18 @@ export class WorkBoardSlipStore {
   }
 
   /** The active writer may claim a pending item once. A claim survives process loss. */
-  claimItem(key: WorkBoardSlipDecision, cardId: string): string | null {
+  claimItem(key: WorkBoardSlipDecision, cardId: string): { id: string; version: WorkBoardApprovalVersion } | null {
     const claim = this.db.transaction(() => {
       const slip = this.readDecision(key);
-      if (!slip || this.now() >= slip.expiresAt
-        || !slip.proposal.items.some(({ version }) => version.cardId === cardId)) return null;
+      if (!slip || this.now() >= slip.expiresAt) return null;
+      const item = slip.proposal.items.find(({ version }) => version.cardId === cardId);
+      if (!item) return null;
       const claimId = randomUUID();
       const result = this.db.prepare(`
         UPDATE work_board_permission_slip_items SET status = 'claimed', claim_id = ?
         WHERE slip_id = ? AND card_id = ? AND status = 'pending'
       `).run(claimId, key.slipId, cardId);
-      return result.changes === 1 ? claimId : null;
+      return result.changes === 1 ? { id: claimId, version: item.version } : null;
     });
     return claim.immediate();
   }

@@ -6,6 +6,7 @@ import Database from 'better-sqlite3';
 import { afterEach, describe, expect, it } from 'vitest';
 import { approvalEventId } from '../../src/core/WorkBoardApprovalWriter.js';
 import { WorkBoardSlipStore, type WorkBoardSlipProposal } from '../../src/core/WorkBoardSlipStore.js';
+import { applyWorkBoardSlip } from '../../src/core/workBoardSlipApplication.js';
 import { canonicalJson, sha256Hex } from '../../src/core/WorkCardStore.js';
 
 const dbs: Database.Database[] = [];
@@ -109,7 +110,7 @@ describe('Work Board slip store', () => {
     const cardId = item.version.cardId;
     expect(store.claimItem(key, cardId)).toBeNull();
     expect(store.consumeVerified(slip.id, slip.digest, key.writer, key.decisionId)).not.toBeNull();
-    const claim = store.claimItem(key, cardId)!;
+    const { id: claim } = store.claimItem(key, cardId)!;
     expect(claim).toBeTruthy();
     expect(store.claimItem(key, cardId)).toBeNull();
     expect(store.claimItem({ ...key, writer: { ...key.writer, epoch: 'wrong' } }, secondItem.version.cardId)).toBeNull();
@@ -125,6 +126,66 @@ describe('Work Board slip store', () => {
     expect(store.readItemResults(key)?.[1]).toEqual({ cardId, status: 'applied', eventId });
     nextTime(slip.expiresAt);
     expect(store.claimItem(key, secondItem.version.cardId)).toBeNull();
+  });
+
+  it('applies only the exact signed items once and leaves an unprojected approval unresolved', async () => {
+    const { store, proposal } = fixture();
+    const first = proposal.items[0];
+    const second = { ...first, version: { ...first.version, cardId: 'wc_8ef2f314f32acff4' } };
+    const slip = store.issue({ ...proposal, items: [first, second] })!;
+    const key = { slipId: slip.id, digest: slip.digest, writer: proposal.writer, decisionId: 'decision1' };
+    store.consumeVerified(slip.id, slip.digest, key.writer, key.decisionId);
+    const attempts: string[] = [];
+    const ports: Parameters<typeof applyWorkBoardSlip>[1] = {
+      store, currentWriter: () => key.writer,
+      approve: async (request) => {
+        attempts.push(request.version.cardId);
+        return { status: 'applied', winner: { request, eventId: approvalEventId(request) } };
+      },
+      confirmProjection: async (winner) => winner.request.version.cardId === first.version.cardId,
+    };
+    const submitted = { ...key };
+    const originalApprove = ports.approve;
+    ports.approve = (request) => { submitted.decisionId = 'changed-during-apply'; return originalApprove(request); };
+    const expected = [
+      { cardId: first.version.cardId, status: 'applied', eventId: approvalEventId({ proof: key.writer, version: first.version, source: 'slip', decisionId: key.decisionId }) },
+      { cardId: second.version.cardId, status: 'unresolved' },
+    ];
+    await expect(applyWorkBoardSlip(submitted, ports)).resolves.toEqual(expected);
+    await expect(applyWorkBoardSlip(key, ports)).resolves.toEqual(expected);
+    expect(attempts).toEqual([first.version.cardId, second.version.cardId]);
+  });
+
+  it('rejects a valid event ID for the wrong version before observing projection', async () => {
+    const { store, proposal } = fixture();
+    const slip = store.issue(proposal)!;
+    const key = { slipId: slip.id, digest: slip.digest, writer: proposal.writer, decisionId: 'decision1' };
+    store.consumeVerified(slip.id, slip.digest, key.writer, key.decisionId);
+    await expect(applyWorkBoardSlip(key, {
+      store, currentWriter: () => key.writer,
+      approve: async (request) => {
+        const altered = { ...request, version: { ...request.version, cardRevision: 'wrong' } };
+        return { status: 'applied', winner: { request: altered, eventId: approvalEventId(altered) } };
+      },
+      confirmProjection: async () => { throw new Error('mismatched winner'); },
+    })).resolves.toEqual([{ cardId: proposal.items[0].version.cardId, status: 'unresolved' }]);
+  });
+
+  it('stops after writer loss before asking the projection port to act', async () => {
+    const { store, proposal } = fixture();
+    const slip = store.issue(proposal)!;
+    const key = { slipId: slip.id, digest: slip.digest, writer: proposal.writer, decisionId: 'decision1' };
+    store.consumeVerified(slip.id, slip.digest, key.writer, key.decisionId);
+    let active = true;
+    await expect(applyWorkBoardSlip(key, {
+      store, currentWriter: () => active ? key.writer : null,
+      approve: async (request) => {
+        active = false;
+        return { status: 'applied', winner: { request, eventId: approvalEventId(request) } };
+      },
+      confirmProjection: async () => { throw new Error('stale projection'); },
+    })).resolves.toBeNull();
+    expect(store.readItemResults(key)).toEqual([{ cardId: proposal.items[0].version.cardId, status: 'unresolved' }]);
   });
 
   it('rejects an expired unsigned proposal and reuse of a decision ID on a second slip', () => {
