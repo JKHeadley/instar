@@ -1,0 +1,29 @@
+{
+  "version": 2,
+  "slug": "local-history-first-claim-plan-binding",
+  "sessionId": "41652017-0805-405d-bb4e-2a975fb349ce",
+  "timestamp": "2026-11-25T00:47:35.140Z",
+  "artifactPath": "upgrades/side-effects/local-history-first-claim-plan-binding.md",
+  "artifactSha256": "e9dda0b2a927a206a44aeaa388e1c4bd8eaea50cb4611f2e7216529a8d9d6f17",
+  "specPath": "docs/specs/local-history-native-contract.md",
+  "coveredFiles": [
+    "src/import/LocalHistoryFirstClaimPlanBinding.ts",
+    "src/import/LocalHistoryPreparedPreview.ts",
+    "src/import/LocalHistoryPreparedReadJob.ts",
+    "src/import/LocalHistoryUploadStaging.ts",
+    "tests/unit/local-history-prepared-read-job.test.ts",
+    "tests/unit/local-history-upload-staging.test.ts",
+    "upgrades/next/local-history-first-claim-plan-binding.md",
+    "upgrades/side-effects/local-history-first-claim-plan-binding.md"
+  ],
+  "phase": "complete",
+  "tier": 2,
+  "tierReasoning": "The private first-claim estimate carries an exact digest that an eventual write permit can compare.",
+  "secondPass": "true",
+  "reviewerConcurred": true,
+  "classClosure": {
+    "defectClass": "unbounded-self-action",
+    "closure": "n/a",
+    "reason": "Pure validation on the existing one-shot reader result with no new launch or retry."
+  }
+}

@@ -722,14 +722,14 @@ export class LocalHistoryUploadStaging {
     const policySnapshot = { ...policy };
     const { requestId, fingerprint, previewDigest, firstClaimPlan } = await this.checkCopyPreflight(device, operationId, value, true);
     if (!firstClaimPlan) refuse('unavailable');
-    const { fileId, contentBytes, databaseCeilingBytes, journalBytes } = firstClaimPlan;
+    const { fileId, contentBytes, databaseCeilingBytes, journalBytes, planDigest } = firstClaimPlan;
     let estimatedPhysicalBytes: number;
     try {
       estimatedPhysicalBytes = estimateLocalHistoryPhysicalBytes({
         kind: 'source-claim', databaseCeilingBytes, journalBytes,
       }, policySnapshot);
     } catch { return refuse('capacity'); }
-    return { requestId, fingerprint, previewDigest, fileId, contentBytes, estimatedPhysicalBytes };
+    return { requestId, fingerprint, previewDigest, fileId, contentBytes, estimatedPhysicalBytes, planDigest };
   }
 
   private async checkCopyPreflight(device: LocalHistoryAuthenticatedDevice, operationId: string, value: unknown,

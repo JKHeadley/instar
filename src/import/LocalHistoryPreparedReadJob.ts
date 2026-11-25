@@ -7,6 +7,7 @@ import { fileURLToPath } from 'node:url';
 import { performance } from 'node:perf_hooks';
 import { CHUNK_BYTES } from '../core/appMediaTypes.js';
 import { localHistoryChildRss, type LocalHistoryChildLease } from './LocalHistoryParseJob.js';
+import { localHistoryFirstClaimPlanDigest } from './LocalHistoryFirstClaimPlanBinding.js';
 import type { LocalHistoryPreparedPreview, LocalHistoryPreparedPreviewInput } from './LocalHistoryPreparedPreview.js';
 
 export interface LocalHistoryPreparedReadJobOptions {
@@ -30,7 +31,7 @@ function validPreview(value: unknown, input: LocalHistoryPreparedPreviewInput): 
   if (input.includeFirstClaimPlan) {
     const plan = result.firstClaimPlan;
     if (!plan || typeof plan !== 'object'
-      || Object.keys(plan).sort().join(',') !== 'contentBytes,databaseCeilingBytes,fileId,journalBytes'
+      || Object.keys(plan).sort().join(',') !== 'contentBytes,databaseCeilingBytes,fileId,journalBytes,planDigest'
       || plan.fileId !== input.descriptors[0].fileId
       || ![plan.contentBytes, plan.databaseCeilingBytes, plan.journalBytes].every(n => Number.isSafeInteger(n) && n >= 0)
       || !Number.isSafeInteger(plan.databaseCeilingBytes + plan.journalBytes)
@@ -48,6 +49,13 @@ function validPreview(value: unknown, input: LocalHistoryPreparedPreviewInput): 
       || (file.destinationFingerprint !== null && (typeof file.destinationFingerprint !== 'string'
         || !/^[a-f0-9]{64}$/.test(file.destinationFingerprint)))) return false;
     messages += file.messages; fresh += file.newMessages;
+  }
+  if (input.includeFirstClaimPlan) {
+    const plan = result.firstClaimPlan!;
+    const fingerprint = result.files[0].destinationFingerprint;
+    if (fingerprint === null || plan.planDigest !== localHistoryFirstClaimPlanDigest(
+      input.ownerUserId, input.descriptors[0], fingerprint, plan,
+    )) return false;
   }
   return Number.isSafeInteger(messages) && Number.isSafeInteger(fresh) && messages === result.messages && fresh === result.newMessages;
 }

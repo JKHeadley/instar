@@ -239,6 +239,7 @@ it('keeps explicit preview retryable while the actual destination writer is lock
     const expected = f.stage.inspectCopyIntent(device, grant.operationId, intent);
     const estimate = await f.stage.estimateFirstCopyClaim(device, grant.operationId, intent, policy);
     expect(estimate).toMatchObject({ ...expected, fileId: 'file-0' });
+    expect(estimate.planDigest).toMatch(/^[0-9a-f]{64}$/);
     expect(estimate.contentBytes).toBeGreaterThan(0);
     expect(estimate.estimatedPhysicalBytes).toBeGreaterThan(estimate.contentBytes);
     expect(estimate.estimatedPhysicalBytes % policy.blockBytes).toBe(0);

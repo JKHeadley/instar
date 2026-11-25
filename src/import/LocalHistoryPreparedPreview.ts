@@ -6,6 +6,7 @@ import fs from 'node:fs';
 import path from 'node:path';
 import { CHUNK_BYTES } from '../core/appMediaTypes.js';
 import { ImportedHistoryStore } from './ImportedHistoryStore.js';
+import { localHistoryFirstClaimPlanDigest, type LocalHistoryFirstClaimSizing } from './LocalHistoryFirstClaimPlanBinding.js';
 import type { LocalSourceIdentity } from './LocalSourceIdentity.js';
 import { visitPreparedArtifacts, type LocalHistoryPreparedArtifactDescriptor } from './LocalHistoryPreparedArtifacts.js';
 
@@ -29,12 +30,7 @@ export interface LocalHistoryPreparedPreview {
   files: LocalHistoryPreparedPreviewFile[];
   messages: number;
   newMessages: number;
-  firstClaimPlan?: {
-    fileId: string;
-    contentBytes: number;
-    databaseCeilingBytes: number;
-    journalBytes: number;
-  };
+  firstClaimPlan?: LocalHistoryFirstClaimSizing & { planDigest: string };
 }
 
 export async function readLocalHistoryPreparedPreview(input: LocalHistoryPreparedPreviewInput,
@@ -75,12 +71,17 @@ export async function readLocalHistoryPreparedPreview(input: LocalHistoryPrepare
       if (!store || !firstIdentity) throw new Error('local-history-claim-plan-existing-store-required');
       const plan = store.planSourceClaimWrite(firstIdentity);
       if (plan.allocationInput.kind !== 'source-claim') throw new Error('local-history-claim-plan-kind');
-      result.firstClaimPlan = {
-        fileId: result.files[0].fileId,
+      const first = result.files[0];
+      if (!first?.destinationFingerprint) throw new Error('local-history-claim-plan-destination');
+      const sizing = {
+        fileId: first.fileId,
         contentBytes: plan.contentBytes,
         databaseCeilingBytes: plan.allocationInput.databaseCeilingBytes,
         journalBytes: plan.allocationInput.journalBytes,
       };
+      result.firstClaimPlan = { ...sizing, planDigest: localHistoryFirstClaimPlanDigest(
+        input.ownerUserId, input.descriptors[0], first.destinationFingerprint, sizing,
+      ) };
       if (Buffer.byteLength(JSON.stringify(result)) > CHUNK_BYTES) throw new Error('local-history-preview-capacity');
     }
     return result;
