@@ -17,3 +17,5 @@ The storage test now covers an edit arriving before the original message. In eit
 An edit can change the request into ordinary chat or replace its text with media. The test helper uses the original chat, topic and message coordinates to find the approval record even in those cases. If an authenticated edit has too little information to locate its record, live integration must handle that uncertainty before accepting another direct approval.
 
 The polling test now calls the same helper intended for future integration. That helper returns only after it has recorded a qualifying request or applied an edit. If it cannot apply an edit, the poller must stop and leave the update unacknowledged. The test retries the update and verifies the original request stays unusable afterward.
+
+The real adapter now has a test-only connection point for the evidence recorder. The test calls the adapter with a simulated Telegram response. When the recorder refuses an edit, the next poll requests the same update. After the recorder accepts it, the next poll advances. No live Telegram account is part of this test.

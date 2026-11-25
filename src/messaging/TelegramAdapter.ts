@@ -276,6 +276,7 @@ export interface DashboardBroadcastResult {
 
 interface TelegramUpdate {
   update_id: number;
+  edited_message?: unknown;
   message?: {
     message_id: number;
     // `is_bot` distinguishes a bot-sent message from a human user typing the same text —
@@ -1430,11 +1431,18 @@ export class TelegramAdapter implements MessagingAdapter {
     return this.eventBus;
   }
 
+  private readonly recordPollingEvidence?: (update: TelegramUpdate) => void;
+
   constructor(
     config: TelegramConfig,
     stateDir: string,
-    opts?: { subDir?: string; suppressLifelineAutoCreate?: boolean },
+    opts?: {
+      subDir?: string;
+      suppressLifelineAutoCreate?: boolean;
+      recordPollingEvidence?: (update: TelegramUpdate) => void;
+    },
   ) {
+    this.recordPollingEvidence = opts?.recordPollingEvidence;
     if (config.chatId && !/^-?\d+$/.test(String(config.chatId))) {
       throw new Error(
         `Invalid Telegram chatId "${config.chatId}". Chat IDs must be numeric (e.g., -1001234567890). ` +
@@ -6581,6 +6589,7 @@ export class TelegramAdapter implements MessagingAdapter {
         const maxReceivedId = Math.max(...updates.map(u => u.update_id));
         const OFFSET_RANGE_THRESHOLD = 10_000_000; // 10M delta = cross-token corruption
         if (maxReceivedId < this.lastUpdateId - OFFSET_RANGE_THRESHOLD) {
+          if (this.recordPollingEvidence) throw new Error('poll offset mismatch while recording evidence');
           console.warn(
             `[telegram] Offset range mismatch: stored=${this.lastUpdateId}, ` +
             `received max=${maxReceivedId} (delta=${this.lastUpdateId - maxReceivedId}). ` +
@@ -6592,6 +6601,9 @@ export class TelegramAdapter implements MessagingAdapter {
       }
 
       for (const update of updates) {
+        // Record raw coordinates before routing can normalize the topic. A throw
+        // leaves the edit and any later updates unacknowledged.
+        this.recordPollingEvidence?.(update);
         await this.processUpdate(update);
         this.lastUpdateId = Math.max(this.lastUpdateId, update.update_id);
         // Save offset after each update so a crash mid-batch doesn't re-deliver
@@ -7906,7 +7918,9 @@ export class TelegramAdapter implements MessagingAdapter {
     const result = await this.apiCall('getUpdates', {
       offset: this.lastUpdateId + 1,
       timeout: 30,
-      allowed_updates: ['message', 'callback_query'],
+      allowed_updates: this.recordPollingEvidence
+        ? ['message', 'callback_query', 'edited_message']
+        : ['message', 'callback_query'],
     });
 
     return (result as TelegramUpdate[]) ?? [];

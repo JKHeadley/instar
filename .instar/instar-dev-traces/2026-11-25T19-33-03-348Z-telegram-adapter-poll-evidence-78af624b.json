@@ -1,0 +1,19 @@
+{
+  "version": 2,
+  "slug": "telegram-adapter-poll-evidence",
+  "sessionId": "b3d2cf8a-9b5d-468b-a50b-70ebf11e9e5c",
+  "timestamp": "2026-11-25T19:33:03.348Z",
+  "artifactPath": "upgrades/side-effects/telegram-adapter-poll-evidence.md",
+  "artifactSha256": "e25b1777029f656c22fba1bbb2900824df32700d1b686d34862480ca4eeb910b",
+  "coveredFiles": [
+    "src/messaging/TelegramAdapter.ts",
+    "tests/unit/telegram-messaging.test.ts"
+  ],
+  "phase": "complete",
+  "tier": 1,
+  "tierReasoning": "Optional constructor seam exercised only by test. Existing runtime callers do not configure it.",
+  "eli16Path": "docs/specs/direct-telegram-send-evidence.eli16.md",
+  "sideEffectsPath": "upgrades/side-effects/telegram-adapter-poll-evidence.md",
+  "secondPass": "true",
+  "reviewerConcurred": true
+}

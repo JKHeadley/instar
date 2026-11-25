@@ -643,6 +643,51 @@ describe('TelegramAdapter messaging', () => {
       expect(JSON.parse(fs.readFileSync(offsetPath, 'utf-8')).lastUpdateId).toBe(3002);
     });
 
+    it('acknowledges an edited update only after the configured recorder accepts it', async () => {
+      const editedUpdate = { update_id: 3003, edited_message: { message_id: 703 } };
+      const recorder = vi.fn()
+        .mockImplementationOnce(() => { throw new Error('edit store unavailable'); });
+      adapter = new TelegramAdapter(config, tmpDir, { recordPollingEvidence: recorder });
+      vi.spyOn(adapter, 'ensureLifelineTopic').mockResolvedValue(null);
+      const pollRequests: Array<{ offset: number; allowed_updates: string[] }> = [];
+      global.fetch = vi.fn(async (_url, request) => {
+        pollRequests.push(JSON.parse(request!.body as string));
+        return { ok: true, json: async () => ({
+          ok: true, result: pollRequests.length <= 2 ? [editedUpdate] : [],
+        }) } as Response;
+      });
+
+      await adapter.start();
+      await vi.waitFor(() => expect(pollRequests.length).toBeGreaterThanOrEqual(3), { timeout: 10_000 });
+      await adapter.stop();
+      expect(recorder.mock.calls).toEqual([[editedUpdate], [editedUpdate]]);
+      expect(pollRequests.slice(0, 3).map(request => request.offset)).toEqual([1, 1, 3004]);
+      expect(pollRequests[0].allowed_updates).toContain('edited_message');
+    });
+
+    it('preserves the stored offset on a range mismatch while recording evidence', async () => {
+      const storedOffset = 20_000_000;
+      const offsetPath = path.join(tmpDir, 'telegram-poll-offset.json');
+      fs.writeFileSync(offsetPath, JSON.stringify({ lastUpdateId: storedOffset }));
+      const recorder = vi.fn();
+      adapter = new TelegramAdapter(config, tmpDir, { recordPollingEvidence: recorder });
+      vi.spyOn(adapter, 'ensureLifelineTopic').mockResolvedValue(null);
+      const offsets: number[] = [];
+      global.fetch = vi.fn(async (_url, request) => {
+        offsets.push(JSON.parse(request!.body as string).offset);
+        return { ok: true, json: async () => ({
+          ok: true, result: [{ update_id: 1, edited_message: { message_id: 703 } }],
+        }) } as Response;
+      });
+
+      await adapter.start();
+      await vi.waitFor(() => expect(offsets.length).toBeGreaterThanOrEqual(2), { timeout: 10_000 });
+      await adapter.stop();
+      expect(offsets.slice(0, 2)).toEqual([storedOffset + 1, storedOffset + 1]);
+      expect(recorder).not.toHaveBeenCalled();
+      expect(JSON.parse(fs.readFileSync(offsetPath, 'utf-8')).lastUpdateId).toBe(storedOffset);
+    });
+
     it('does not advance the poll offset when topic routing rejects', async () => {
       const redeliveredUpdate = {
         update_id: 3003,
