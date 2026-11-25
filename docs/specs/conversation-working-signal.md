@@ -56,6 +56,28 @@ Use only local Unix endpoints under a private per-incarnation directory. Codex c
 
 Before enabling the managed launch, exercise account placement, startup and resume, one-time approval behavior, interruption, stop and reaping, and protection against two clients entering the relay. Before enabling the path, run the same deterministic blocking Stop hook through embedded and managed launches, including resume. Verify one invocation per attempted stop and the same decision effect for both launch variants. Keep the capability dark if that check differs. A failed probe or startup yields unknown. A failed or disconnected live launch follows existing recovery ownership and cannot automatically replay a submitted message or create a second writer. End of the managed incarnation closes its child and relay; stopping observation alone does not stop the conversation.
 
+## Production launch ownership and restart
+
+Use one durable launch reservation under the existing conversation launch lock and current holder epoch. The reservation binds the conversation, selected native thread, placement, exact managed generation and existing inbound custody reference. Keep payloads and credentials in their existing stores. The reservation records resource identities and transitions only. The first cohort admits only ingress paths that prove they take the same lock and respect the same holder fence. An existing ordinary pane takes the ordinary path immediately.
+
+Use a reserved name on the ordinary tmux server so promotion can preserve the exact pane. Before the first candidate starts, ordinary session inventory, named reads and all external input paths must enforce the reservation through a shared admission check. An absent registration cannot implement that check. Trusted lifecycle operations need an explicit internal handle for the exact generation. Document host shell access as outside the application boundary. If any application path cannot enforce the reservation, leave managed launch disabled.
+
+Persist launch intent before allocating each child or endpoint and derive discoverable resource identity from the reservation, so a restart can reconcile creation even before the child PID was recorded. Validate exact process birth identity, private socket ownership, the TUI’s successful native resume response, and selected home and working directory. A timeout or a missing ready marker is inconclusive. Never transfer the launch on ambiguous evidence.
+
+Persist a promotion intent before renaming. Verify the exact same pane after the rename, then persist the registered owner while the reservation denies ordinary input under both names. Commit custody before releasing the admission fence. Once input could have been submitted, reuse the existing delivery acceptance observer and recovery policy. Never infer permission to resend from a missed acknowledgement or a process restart.
+
+For rejected candidates with zero proof of input release, persist teardown intent, revoke generation-scoped credentials and verify the child, relay and pane are gone before ordinary fallback. Require affirmative evidence that input custody was never released. On restart, reconcile the reservation before servicing new starts or pending input. Resume the same committed generation or complete teardown before consuming a single ordinary fallback intent. A stale holder or uncertain process identity keeps the request with its existing custodian while recovery reports uncertainty. Rollback disables new reservations and drains existing generations through the same recovery rules.
+
+### Related work
+
+| Work | Reuse and boundary |
+|---|---|
+| [Disposable production-handoff findings](reports/conversation-working-signal-production-handoff.md) | Defines the ordinary-path acceptance cases and records why registration alone cannot hide or protect a candidate. |
+| [Codex session lifecycle reliability](codex-session-lifecycle-reliability.md) | Reuse ordinary startup and recovery ownership. Managed resources must remain attributable to a single generation. |
+| [Inbound delivery custody](inbound-delivery-sacred.md) | Reuse acceptance and pending input custody. This presentation feature cannot authorize replay. |
+| [Placement behavior](placement-platform-workspace-aware.md) | Preserve existing placement once selected. The reservation carries its result across fallback. |
+| [Launch intent records](job-launch-intent-record.md) | Reuse the evidence pattern for exact launch identity. A diagnostic launch record cannot authorize a state transition. |
+
 ## Chat Reads and Rendering
 
 Carry optional status on the existing latest-chat responses for a currently authorized signed owner device, including a signed owner browser device. A team reader may enter a chat while being barred from specific messages. Since raw turn evidence cannot identify which visible message triggered it, omit status for team devices, unaffiliated Bearer callers and all other principals. The web scheduler already polls App events, Telegram topic messages and Slack messages; scheduled App history fallback also needs the field. Older-page responses cannot update the current indicator. A successful latest response without the field clears prior positive evidence. An empty delta still carries status, independently of how message hashes or cursors are handled. When the latest response comes from an unverified holder, omit the positive status. Reuse each route’s existing remote caller eligibility and post-await ownership check, including Slack’s signed current-owner handset restriction. A pool page can merge history, but only the verified current holder supplies working evidence. A historical copy or a secondary holder cannot supply it. App’s local events route must verify a live authorized conversation before including status. The existing App and Telegram history fan-outs cannot elect the holder from the rows they merge. If a current ownership check and targeted authorized read are unavailable, omit status for that pool result.
@@ -99,6 +121,8 @@ The 10,000 ms compatibility ceiling is a conservative display default covering t
 | Missing, unsupported or dark evidence | invariant; basis: enumerable-domain; evidence: knowledge of current working state requires accepted start evidence, which these cases do not provide |
 | Turn ordering | invariant; basis: external-constraint; evidence: the launch-owned stream supplies request order, thread ID and turn ID, while independently delivered hooks can arrive out of order |
 | History and status independence | invariant; basis: external-constraint; evidence: latest polling can return zero messages while evidence changes, and older-page requests can complete after a conversation switch |
+| Candidate admission and promotion | invariant; basis: irreversible-consequence; evidence: exposing pending input before verified ownership could send a person’s message to a different launch |
+| Restart and fallback custody | invariant; basis: irreversible-consequence; evidence: replay after a possibly released input can produce duplicate model and tool effects |
 
 ## Multi-Machine Posture
 
