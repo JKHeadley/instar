@@ -31232,6 +31232,7 @@ export async function startServer(options: StartOptions): Promise<void> {
                   cjOwnMachineId ?? meshSelfId,
                   maxBatchBytes,
                 );
+                if (served.blockedByPendingDecision) return { ok: false, reason: 'journal-decision-reconciliation-required' };
                 return { batch: [served] };
               }
               if (c.batch) {
