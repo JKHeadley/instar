@@ -1,5 +1,6 @@
 import { afterEach, expect, it } from 'vitest';
 import crypto from 'node:crypto';
+import Database from 'better-sqlite3';
 import fs from 'node:fs';
 import os from 'node:os';
 import path from 'node:path';
@@ -100,5 +101,46 @@ it('refuses first-claim planning if the destination store does not exist', async
   f.opts.input.includeFirstClaimPlan = true;
   await expect(runLocalHistoryPreparedReadJob(f.opts)).rejects.toThrow('local-history-preview');
   expect(fs.existsSync(path.join(f.opts.input.stateDir, 'imported-history'))).toBe(false);
+  expect(f.released()).toBe(1);
+});
+
+it('observes the exact first-claim plan while the real writer is held, then discards it', async () => {
+  const f = fixture();
+  const store = new ImportedHistoryStore(f.opts.input.stateDir);
+  f.opts.input.includeFirstClaimPlan = true;
+  let digest: string | undefined;
+  f.opts.observeFirstClaimPlan = plan => {
+    const other = new Database(path.join(store.dir, 'write-lock.sqlite'), { timeout: 0 });
+    try {
+      expect(() => other.exec('BEGIN IMMEDIATE')).toThrow(/locked/);
+      digest = plan.planDigest;
+    } finally { other.close(); }
+  };
+  const result = await runLocalHistoryPreparedReadJob(f.opts);
+  expect(digest).toBe(result.preview.firstClaimPlan?.planDigest);
+  expect(digest).toMatch(/^[0-9a-f]{64}$/);
+  expect(f.released()).toBe(1);
+  await expect(store.withWriter(async () => true)).resolves.toBe(true);
+  expect(fs.existsSync(path.join(store.dir, 'source-claims.sqlite'))).toBe(false);
+});
+
+it('closes and releases the writer if the trusted plan observer refuses', async () => {
+  const f = fixture();
+  const store = new ImportedHistoryStore(f.opts.input.stateDir);
+  f.opts.input.includeFirstClaimPlan = true;
+  f.opts.observeFirstClaimPlan = () => { throw new Error('synthetic policy refusal'); };
+  await expect(runLocalHistoryPreparedReadJob(f.opts)).rejects.toThrow('local-history-preview-claim-observation');
+  expect(f.released()).toBe(1);
+  await expect(store.withWriter(async () => true)).resolves.toBe(true);
+  expect(fs.existsSync(path.join(store.dir, 'source-claims.sqlite'))).toBe(false);
+});
+
+it('refuses an asynchronous claim observer and owns its rejection through child close', async () => {
+  const f = fixture();
+  new ImportedHistoryStore(f.opts.input.stateDir);
+  f.opts.input.includeFirstClaimPlan = true;
+  const asyncObserver = async () => { throw new Error('synthetic asynchronous refusal'); };
+  f.opts.observeFirstClaimPlan = asyncObserver as unknown as LocalHistoryPreparedReadJobOptions['observeFirstClaimPlan'];
+  await expect(runLocalHistoryPreparedReadJob(f.opts)).rejects.toThrow('local-history-preview-claim-observation');
   expect(f.released()).toBe(1);
 });

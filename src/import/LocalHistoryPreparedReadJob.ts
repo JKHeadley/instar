@@ -18,6 +18,9 @@ export interface LocalHistoryPreparedReadJobOptions {
   heapMiB: number;
   perFileDeadlineMs: number;
   rssBytes: number;
+  /** Synchronous observation while the fixed child holds its writer. The only
+   * response in this mode is a discard of the exact announced plan. */
+  observeFirstClaimPlan?(plan: Readonly<NonNullable<LocalHistoryPreparedPreview['firstClaimPlan']>>): undefined;
 }
 export class LocalHistoryPreparedReadRefused extends Error { cleanupPending = false; }
 
@@ -72,6 +75,8 @@ export async function runLocalHistoryPreparedReadJob(value: LocalHistoryPrepared
   if (![opts.heapMiB, opts.perFileDeadlineMs, opts.rssBytes, input?.maxArtifactBytes].every(n => Number.isSafeInteger(n) && n > 0)
     || ![opts.acquireChild, opts.authorized, opts.chunks].every(fn => typeof fn === 'function')
     || (input.includeFirstClaimPlan !== undefined && input.includeFirstClaimPlan !== true)
+    || (opts.observeFirstClaimPlan !== undefined
+      && (typeof opts.observeFirstClaimPlan !== 'function' || input.includeFirstClaimPlan !== true))
     || !Array.isArray(input.descriptors) || !input.descriptors.length || input.descriptors.length > 1024) {
     throw new LocalHistoryPreparedReadRefused('local-history-preview-policy');
   }
@@ -82,7 +87,9 @@ export async function runLocalHistoryPreparedReadJob(value: LocalHistoryPrepared
     }
     expectedBytes += descriptor.bytes;
   }
-  const header = Buffer.from(JSON.stringify(input));
+  const header = Buffer.from(JSON.stringify({
+    ...input, holdFirstClaimPlan: opts.observeFirstClaimPlan ? true : undefined,
+  }));
   if (!Number.isSafeInteger(expectedBytes) || header.length > CHUNK_BYTES) {
     header.fill(0); throw new LocalHistoryPreparedReadRefused('local-history-preview-policy');
   }
@@ -97,9 +104,9 @@ export async function runLocalHistoryPreparedReadJob(value: LocalHistoryPrepared
       env: { LANG: 'C.UTF-8', TZ: 'UTC', INSTAR_LOCAL_HISTORY_CUSTODY: JSON.stringify(lease.custody) },
     });
     const abort = new AbortController();
-    let failure: string | undefined, ready = false, ended = false, closed = false;
+    let failure: string | undefined, ready = false, ended = false, closed = false, stopRequested = false;
     let index = -1, deadline = performance.now() + opts.perFileDeadlineMs;
-    let preview: LocalHistoryPreparedPreview | undefined;
+    let preview: LocalHistoryPreparedPreview | undefined, observedPlanDigest: string | undefined;
     let rssProtection: 'sampled' | 'unavailable' = 'unavailable', sampling = false;
     let killTimer: ReturnType<typeof setTimeout> | undefined;
     let wakeReady!: () => void, wakeFirstFile!: () => void;
@@ -107,9 +114,14 @@ export async function runLocalHistoryPreparedReadJob(value: LocalHistoryPrepared
     const firstFile = new Promise<void>(resolve => { wakeFirstFile = resolve; });
     const fail = (code: string) => {
       failure ??= code; abort.abort(); wakeReady(); wakeFirstFile(); child.stdin!.destroy();
-      if (!closed && child.pid) {
-        child.kill('SIGTERM');
-        killTimer ??= setTimeout(() => { if (!closed) child.kill('SIGKILL'); }, 1000);
+      if (!closed && child.pid && !stopRequested) {
+        stopRequested = true;
+        try { child.kill('SIGTERM'); } catch { /* Wait for actual close even if signaling fails. */ }
+        if (!closed) {
+          killTimer = setTimeout(() => {
+            if (!closed) try { child.kill('SIGKILL'); } catch { /* Custody still requires close. */ }
+          }, 1000);
+        }
       }
     };
     const close = new Promise<{ code: number | null; signal: NodeJS.Signals | null }>(resolve => {
@@ -119,7 +131,7 @@ export async function runLocalHistoryPreparedReadJob(value: LocalHistoryPrepared
         wakeReady(); resolve({ code, signal });
       });
     });
-    child.once('error', () => fail('local-history-preview-spawn'));
+    child.on('error', () => fail('local-history-preview-spawn'));
     child.stdin!.on('error', () => fail('local-history-preview-input'));
     child.stdout!.on('data', () => fail('local-history-preview-output'));
     child.stderr!.resume(); // Never retain or relay private/native diagnostics.
@@ -136,8 +148,28 @@ export async function runLocalHistoryPreparedReadJob(value: LocalHistoryPrepared
         && row.index === index + 1 && index + 1 < input.descriptors.length) {
         index++; deadline = performance.now() + opts.perFileDeadlineMs; wakeFirstFile(); return;
       }
+      if (ready && !preview && ended && row.kind === 'claim-plan-ready' && Object.keys(row).length === 2
+        && index === input.descriptors.length - 1 && opts.observeFirstClaimPlan && !observedPlanDigest
+        && validPreview(row.preview, input) && row.preview.firstClaimPlan) {
+        const plan = Object.freeze({ ...row.preview.firstClaimPlan });
+        observedPlanDigest = plan.planDigest;
+        try {
+          const observation: unknown = opts.observeFirstClaimPlan(plan);
+          if (observation !== undefined) {
+            void Promise.resolve(observation).catch(() => {});
+            return fail('local-history-preview-claim-observation');
+          }
+          guard();
+          child.send({ kind: 'discard-claim-plan', planDigest: plan.planDigest }, error => {
+            if (error) fail('local-history-preview-protocol');
+          });
+        } catch { return fail('local-history-preview-claim-observation'); }
+        return;
+      }
       if (ready && !preview && ended && row.kind === 'complete' && Object.keys(row).length === 2
-        && index === input.descriptors.length - 1 && validPreview(row.preview, input)) { preview = row.preview; return; }
+        && index === input.descriptors.length - 1 && validPreview(row.preview, input)
+        && (!opts.observeFirstClaimPlan || (observedPlanDigest !== undefined
+          && row.preview.firstClaimPlan?.planDigest === observedPlanDigest))) { preview = row.preview; return; }
       fail('local-history-preview-protocol');
     });
     const guard = () => {

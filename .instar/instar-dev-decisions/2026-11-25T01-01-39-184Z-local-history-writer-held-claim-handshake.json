@@ -1,0 +1,28 @@
+{
+  "ts": "2026-11-25T01:01:39.184Z",
+  "slug": "local-history-writer-held-claim-handshake",
+  "suggestedTier": 2,
+  "declaredTier": 2,
+  "riskFloor": 1,
+  "riskFloorReasons": [],
+  "belowFloor": false,
+  "files": 3,
+  "loc": 86,
+  "scope": {
+    "basis": "staged-in-scope-paths-including-deleted",
+    "files": [
+      "src/import/LocalHistoryPreparedPreview.ts",
+      "src/import/LocalHistoryPreparedReadJob.ts",
+      "src/import/localHistoryPreparedReadWorker.ts"
+    ],
+    "addedLines": 73,
+    "deletedLines": 13
+  },
+  "causalAutopsy": null,
+  "classClosure": {
+    "defectClass": "unbounded-self-action",
+    "closure": "n/a",
+    "reason": "The one-shot child announces one plan, accepts at most one exact discard, and does not retry."
+  },
+  "verdict": "pass"
+}

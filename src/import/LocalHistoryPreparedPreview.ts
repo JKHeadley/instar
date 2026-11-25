@@ -34,7 +34,8 @@ export interface LocalHistoryPreparedPreview {
 }
 
 export async function readLocalHistoryPreparedPreview(input: LocalHistoryPreparedPreviewInput,
-  body: AsyncIterable<Uint8Array>, onArtifactStart?: (index: number) => void): Promise<LocalHistoryPreparedPreview> {
+  body: AsyncIterable<Uint8Array>, onArtifactStart?: (index: number) => void,
+  onFirstClaimReady?: (result: LocalHistoryPreparedPreview) => Promise<void>): Promise<LocalHistoryPreparedPreview> {
   if (!input || typeof input !== 'object' || typeof input.stateDir !== 'string' || !path.isAbsolute(input.stateDir)
     || input.stateDir.includes('\0') || typeof input.ownerUserId !== 'string' || !input.ownerUserId.trim()
     || input.ownerUserId.includes('\0') || Buffer.byteLength(input.ownerUserId) > 256) throw new Error('local-history-preview-header');
@@ -83,6 +84,7 @@ export async function readLocalHistoryPreparedPreview(input: LocalHistoryPrepare
         input.ownerUserId, input.descriptors[0], first.destinationFingerprint, sizing,
       ) };
       if (Buffer.byteLength(JSON.stringify(result)) > CHUNK_BYTES) throw new Error('local-history-preview-capacity');
+      await onFirstClaimReady?.(result);
     }
     return result;
   };

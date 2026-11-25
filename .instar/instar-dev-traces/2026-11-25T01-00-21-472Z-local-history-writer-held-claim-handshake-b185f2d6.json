@@ -1,0 +1,27 @@
+{
+  "version": 2,
+  "slug": "local-history-writer-held-claim-handshake",
+  "sessionId": "41652017-0805-405d-bb4e-2a975fb349ce",
+  "timestamp": "2026-11-25T01:00:21.472Z",
+  "artifactPath": "upgrades/side-effects/local-history-writer-held-claim-handshake.md",
+  "artifactSha256": "29017741a5c4113bad6c538a1c190e9450493761b5739dcc2e1cbaa495b8f97b",
+  "specPath": "docs/specs/local-history-native-contract.md",
+  "coveredFiles": [
+    "src/import/LocalHistoryPreparedPreview.ts",
+    "src/import/LocalHistoryPreparedReadJob.ts",
+    "src/import/localHistoryPreparedReadWorker.ts",
+    "tests/unit/local-history-prepared-read-job.test.ts",
+    "upgrades/next/local-history-writer-held-claim-handshake.md",
+    "upgrades/side-effects/local-history-writer-held-claim-handshake.md"
+  ],
+  "phase": "complete",
+  "tier": 2,
+  "tierReasoning": "The internal exchange observes a private copy plan under writer custody.",
+  "secondPass": "true",
+  "reviewerConcurred": true,
+  "classClosure": {
+    "defectClass": "unbounded-self-action",
+    "closure": "n/a",
+    "reason": "The one-shot child announces one plan, accepts at most one exact discard, and does not retry."
+  }
+}
