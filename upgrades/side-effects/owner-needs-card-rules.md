@@ -48,3 +48,7 @@ The independent authority reviewer concurred for opt-in acceptance. Clients with
 The opt-in provider recognizes verified, open native requests for six explicit settings and authority proposal types. The signed device must already belong to the owner. A request pending during approval enrollment contributes only an unavailable count. It becomes actionable under its original request ID when the device can retrieve the exact signed disclosure. Turning off app approvals removes its action while preserving the pending count.
 
 One-off operations still need verified source triage. The opt-in provider does not yet cover approvals delivered through chat or genuine actions that lack a typed and authorized source adapter. These paths require separate proof before enabling the gate for a live agent. The fleet setting migration is a separate change.
+
+## Maturation registry
+
+The opt-in uses the registered Needs You owner admission ladder. The registry links release criteria to the flag and preserves the existing source and client checks. Tracking stays marked needed until the release evidence exists. Registering the ladder changes no live setting.

@@ -122,7 +122,7 @@ The first-release check is an exact owner action that remains reachable on an el
 - **fleet:** The release defaults the gate on after the supported clients, nine source providers, source retention and migration pass acceptance.
 - **graduation criterion:** In-place actions work for eligible callers while all nine agent-work cases stay with their source. Prove startup, migration, downgrade, incomplete reads and rollback.
 - **dark-window:** Reassess at the next release verification checkpoint. The prototype remains dark when any acceptance evidence is missing.
-- **ladder:** test-agent-live, dev-agent-live, fleet.
+- **ladder:** needsYou.ownerAdmission
 
 ## Open questions
 
