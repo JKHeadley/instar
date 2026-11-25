@@ -15,3 +15,5 @@ The isolated storage test now records a private Accept tap and its nomination to
 The existing local enrollment now gets the first-approver record key from one place in the trust store. The tests verify that concurrent candidates still compete for the same slot and that the store remembers the result after reopening. This gives the future phone path the same key to use.
 
 The trust store now checks that a local enrollment still belongs to the same first-approver slot when it writes the acceptance. An older request cannot claim a later slot after another device was accepted and withdrawn.
+
+The private Telegram Accept check now refuses an offer for an earlier first-approver slot. The phone still needs to check that slot again when it records the final Face ID decision.

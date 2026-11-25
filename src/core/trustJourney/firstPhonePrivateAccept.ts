@@ -5,6 +5,7 @@ interface FirstPhonePrivateOffer {
   proposalHash: string;
   accountAcceptanceId: string;
   holderEpoch: string;
+  firstAcceptanceKey: string;
   issuedAt: number;
   expiresAt: number;
 }
@@ -25,7 +26,7 @@ interface AuthenticatedPrivateTap {
 export function matchesFirstPhonePrivateAccept(
   offer: FirstPhonePrivateOffer,
   tap: AuthenticatedPrivateTap,
-  current: { ownerId: string; accountAcceptanceId: string; holderEpoch: string; proposalHash: string },
+  current: { ownerId: string; accountAcceptanceId: string; holderEpoch: string; proposalHash: string; firstAcceptanceKey: string | null },
   now: number,
 ): boolean {
   return /^first-phone:[A-Za-z0-9_-]{22,52}$/.test(offer.callbackData)
@@ -36,6 +37,8 @@ export function matchesFirstPhonePrivateAccept(
     && /^[a-f0-9]{64}$/.test(offer.proposalHash) && offer.proposalHash === current.proposalHash
     && offer.accountAcceptanceId.length > 0 && offer.accountAcceptanceId === current.accountAcceptanceId
     && offer.holderEpoch === current.holderEpoch
+    && /^tj:device-acceptance:first:(?:0|[1-9][0-9]*)$/.test(offer.firstAcceptanceKey)
+    && offer.firstAcceptanceKey === current.firstAcceptanceKey
     && [now, tap.receivedAt, offer.issuedAt, offer.expiresAt].every(Number.isSafeInteger)
     && offer.issuedAt <= tap.receivedAt && tap.receivedAt <= now && now < offer.expiresAt;
 }

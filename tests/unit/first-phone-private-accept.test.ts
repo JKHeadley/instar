@@ -6,7 +6,7 @@ import { matchesFirstPhonePrivateAccept } from '../../src/core/trustJourney/firs
 const offer = {
   callbackData: 'first-phone:synthetic_fixture_token_123', chatId: '7001', disclosureMessageId: 15,
   proposalHash: 'a'.repeat(64), accountAcceptanceId: 'accepted-fixture', holderEpoch: 'holder-2',
-  issuedAt: 100, expiresAt: 300,
+  firstAcceptanceKey: 'tj:device-acceptance:first:0', issuedAt: 100, expiresAt: 300,
 };
 const tap = {
   callbackData: offer.callbackData, senderId: '7001', senderIsBot: false,
@@ -15,6 +15,7 @@ const tap = {
 const current = {
   ownerId: '7001', accountAcceptanceId: offer.accountAcceptanceId,
   holderEpoch: offer.holderEpoch, proposalHash: offer.proposalHash,
+  firstAcceptanceKey: offer.firstAcceptanceKey,
 };
 
 it('binds Accept to the current owner, exact private disclosure and active account acceptance', () => {
@@ -28,6 +29,7 @@ it('binds Accept to the current owner, exact private disclosure and active accou
   for (const change of [
     { accountAcceptanceId: 'new-account' }, { holderEpoch: 'holder-3' },
     { proposalHash: 'b'.repeat(64) }, { ownerId: '999' },
+    { firstAcceptanceKey: 'tj:device-acceptance:first:1' }, { firstAcceptanceKey: null },
   ]) {
     expect(matchesFirstPhonePrivateAccept(offer, tap, { ...current, ...change }, 210)).toBe(false);
   }
@@ -41,8 +43,14 @@ it('records at most one nomination per exact private tap and proposal', () => {
     db.transaction(() => {
       expect(store.record('receipt-1', offer, tap, current, 210)).toEqual({ status: 'refused' });
     })();
+    expect(store.record('receipt-1', offer, tap, {
+      ...current, firstAcceptanceKey: 'tj:device-acceptance:first:1',
+    }, 210)).toEqual({ status: 'refused' });
     const first = store.record('receipt-1', offer, tap, current, 210);
     expect(first.status).toBe('recorded');
+    expect(store.record('receipt-1', offer, tap, {
+      ...current, firstAcceptanceKey: null,
+    }, 210)).toEqual({ status: 'refused' });
     expect(store.record('receipt-1', offer, tap, current, 210)).toEqual({
       ...first, status: 'already-recorded',
     });
