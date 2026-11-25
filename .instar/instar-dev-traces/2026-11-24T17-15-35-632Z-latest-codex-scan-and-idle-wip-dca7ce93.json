@@ -1,0 +1,18 @@
+{
+  "version": 2,
+  "slug": "latest-codex-scan-and-idle-wip",
+  "sessionId": "aca68beb-0d4e-4546-a3c1-065299307f44",
+  "timestamp": "2026-11-24T17:15:35.632Z",
+  "artifactPath": "upgrades/side-effects/latest-codex-scan-and-idle-wip.md",
+  "artifactSha256": "d02d221ef94971bbd9414addeb0b86c482282a16b3a92d62fc49c8241ad01c1d",
+  "specPath": "docs/specs/latest-codex-doorway-scan.md",
+  "coveredFiles": [
+    "src/core/ScheduledDoorwayObservationStore.ts",
+    "tests/unit/scheduled-doorway-observation-store.test.ts"
+  ],
+  "phase": "complete",
+  "tier": 2,
+  "tierReasoning": "A bounded machine-local cursor records references under an exclusive lease and carries no removal authority.",
+  "secondPass": "true",
+  "reviewerConcurred": true
+}

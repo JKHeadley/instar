@@ -1,0 +1,20 @@
+{
+  "version": 2,
+  "slug": "latest-codex-scan-and-idle-wip",
+  "sessionId": "aca68beb-0d4e-4546-a3c1-065299307f44",
+  "timestamp": "2026-11-24T22:28:52.424Z",
+  "artifactPath": "upgrades/side-effects/latest-codex-scan-and-idle-wip.md",
+  "artifactSha256": "2a5bdee1851608444f67cdd16efc9db4f4bd71928931772aa3750c8ac770a019",
+  "specPath": "docs/specs/latest-codex-doorway-scan.md",
+  "coveredFiles": [
+    "src/core/VerifiedDoorwayRetention.ts",
+    "src/scheduler/JobScheduler.ts",
+    "src/scheduler/PackagedDoorwayExecution.ts",
+    "tests/unit/job-cost-runner/JobScheduler-script-runner.test.ts"
+  ],
+  "phase": "complete",
+  "tier": 2,
+  "tierReasoning": "Scheduled artifact writes and normal completion use the canonical retention writer lease while the legacy route remains independent.",
+  "secondPass": "true",
+  "reviewerConcurred": true
+}

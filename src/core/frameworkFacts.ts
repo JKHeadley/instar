@@ -96,6 +96,7 @@ export function frameworkHasNoUsageSurface(framework: string | undefined | null)
  */
 export const CLAUDE_CODE_FRAMEWORK = 'claude-code' as const satisfies IntelligenceFramework;
 export const CODEX_CLI_FRAMEWORK = 'codex-cli' as const satisfies IntelligenceFramework;
+export const CODEX_MOVING_MODEL_DEFAULT = 'latest:sol';
 
 /** The two engines whose context recovery the Context Budget work verifies. */
 export type ClaudeOrCodexEngine = typeof CLAUDE_CODE_FRAMEWORK | typeof CODEX_CLI_FRAMEWORK;

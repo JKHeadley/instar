@@ -1,4 +1,5 @@
 import { isQuietReceipt, verifiedJobEnvelope } from '../messaging/NotificationSelectivityGate.js';
+import { fileURLToPath } from 'node:url';
 import { notificationStamper, withNotificationEnvelope } from '../messaging/notificationStampers.js';
 const stampNotification = notificationStamper('src/scheduler/JobScheduler.ts');
 import { verifyImportedPortableJob, recordImportedPortableIntegrityFailure } from '../core/JobPortableIntegrity.js';
@@ -42,6 +43,12 @@ import { SCRIPT_RUNNER_FIRST_WAVE_DISABLED_SLUGS } from '../config/ConfigDefault
 import { AUDIT_READY_SCRIPT_SLUGS, JOB_COST_AUDIT_READY, JOB_MODEL_ROUTING_AUDIT_READY } from './JobCostAuditReadiness.js';
 import { hashBody } from './AgentMdLockFile.js';
 import { JobRunHistory, isSideRun, type JobRun } from './JobRunHistory.js';
+import { getInstarVersion } from '../core/Config.js';
+import { readVerifiedInstalledDoorwayAssets } from '../core/VerifiedPackagedCatalog.js';
+import { ScheduledDoorwayObservationStore } from '../core/ScheduledDoorwayObservationStore.js';
+import { readScheduledDoorwayEvidence, type ScheduledDoorwayEvidence } from '../core/ScheduledDoorwayRead.js';
+import { publishInitialDoorwayRetentionCursor, withDoorwayRetentionWriter } from '../core/VerifiedDoorwayRetention.js';
+import { executePackagedDoorwayScan, readDoorwayExecutionConfig } from './PackagedDoorwayExecution.js';
 import { JobSupervisionStore } from './JobSupervisionStore.js';
 import { projectSupervisionEvidence, SUPERVISION_EVIDENCE_POLICY } from './JobSupervisionEvidence.js';
 import { jobSupervisionRolloutState } from './JobSupervisionRollout.js';
@@ -238,6 +245,7 @@ export class JobScheduler {
   private readonly activeScriptRunIds = new Set<string>();
   /** A failed durable write moves future fires off the script runner. */
   private supervisionBlockedSlugs = new Set<string>();
+  private doorwayRecoveryInFlight = false;
   private readonly censusRechecks = new Map<string, ReturnType<typeof setTimeout>>();
   private projectedSessionListeners: ProjectedSessionListener[] = [];
   /** Triage sessions: tmux name → their run row. */
@@ -1020,7 +1028,17 @@ export class JobScheduler {
     // job's body runs as an agentmd session exactly as before the change,
     // through the normal quota / capacity / claim path below.
     const isScriptRunner = this.isScriptRunnerJob(job);
+    const doorwayConfig = slug === 'doorway-scan' ? readDoorwayExecutionConfig(this.stateDir) : undefined;
+    const packagedDoorwayRun = doorwayConfig?.packagedExecution === true;
+    if (doorwayConfig === null || (packagedDoorwayRun && !isScriptRunner)) {
+      this.skipLedger.recordSkip(slug, 'disabled');
+      return 'skipped';
+    }
     if (isScriptRunner && !this.scriptRunnersActiveFor(job.slug)) {
+      if (packagedDoorwayRun) {
+        this.skipLedger.recordSkip(slug, 'disabled');
+        return 'skipped';
+      }
       // This job was introduced with script runners, so it has no historical
       // session behavior to restore when the rollout is dark.
       if (job.slug === 'script-job-supervisor') {
@@ -1282,6 +1300,11 @@ export class JobScheduler {
     // The gate above can wait for seconds. A safety hold recorded during that
     // wait must take effect on this fire, before the script claim or launch.
     if (runsAsScript && !this.scriptRunnersActiveFor(slug)) {
+      if (packagedDoorwayRun || (slug === 'doorway-scan'
+        && readDoorwayExecutionConfig(this.stateDir)?.packagedExecution === true)) {
+        this.skipLedger.recordSkip(slug, 'disabled');
+        return 'skipped';
+      }
       if (slug === 'script-job-supervisor') {
         this.skipLedger.recordSkip(slug, 'disabled');
         this.state.appendEvent({
@@ -1342,7 +1365,7 @@ export class JobScheduler {
       if (!this.takeClaim(job, reason, claimPath, scriptBoundMs + JobScheduler.MAX_SCRIPT_START_OFFSET_MS)) return 'skipped';
       if (!reason.startsWith('retry:')) this.clearRetryState(slug);
       this.scriptInFlight.add(slug);
-      this.runScriptRunnerJob(job, reason);
+      this.runScriptRunnerJob(job, reason, packagedDoorwayRun);
       return 'triggered';
     }
 
@@ -1367,6 +1390,14 @@ export class JobScheduler {
     if (jobSessions.length + this.activeSessionSpawns.size >= this.config.maxParallelJobs) {
       this.enqueue(slug, reason);
       return 'queued';
+    }
+
+    if (slug === 'doorway-scan') {
+      const live = readDoorwayExecutionConfig(this.stateDir);
+      if (!live || live.packagedExecution === true) {
+        this.skipLedger.recordSkip(slug, 'disabled');
+        return 'skipped';
+      }
     }
 
     const timeoutMs = (job.expectedDurationMinutes ?? 30) * 2 * 60_000;
@@ -1640,6 +1671,33 @@ export class JobScheduler {
    */
   getRunHistory(): JobRunHistory {
     return this.runHistory;
+  }
+
+  /** Shared machine-scoped history for the doorway and capability reads. */
+  readScheduledDoorwayHistory(doorIds: readonly string[], nowMs = Date.now()): ScheduledDoorwayEvidence | null {
+    if (!this.machineId) return null;
+    const machineId = this.machineId;
+    const config = readDoorwayExecutionConfig(this.stateDir);
+    const history = this.runHistory.readPackagedDoorwayRuns(machineId, 16);
+    if (history.status === 'unavailable') {
+      if (!config?.packagedExecution) return null;
+      return {
+        machineId, historyTruncated: false, ledgerUnavailable: true, latestRun: null,
+        doors: Object.fromEntries(doorIds.map(id => [id, {
+          lastObservation: null, latestAttempt: null, reachable: null, freshness: 'unknown' as const,
+        }])),
+      };
+    }
+    if (!config?.packagedExecution && history.runs.length === 0 && !history.truncated) return null;
+    const job = this.jobs.find(row => row.slug === 'doorway-scan');
+    const cadence = config?.packagedExecution && config.enabled !== false && job?.enabled
+      && this.isJobScopedToThisMachine(job) && this.running && !this.paused && this.cronTasks.has(job.slug)
+      ? { schedule: job.schedule, timeoutMs: Math.max(1, job.scriptTimeoutMinutes ?? JobScheduler.DEFAULT_SCRIPT_TIMEOUT_MINUTES) * 2 * 60_000 }
+      : null;
+    const store = new ScheduledDoorwayObservationStore(path.resolve(this.stateDir), machineId, doorIds, () => nowMs);
+    return readScheduledDoorwayEvidence({
+      machineId, doorIds, runs: history.runs, store, cadence, nowMs, historyTruncated: history.truncated,
+    });
   }
 
   /**
@@ -2253,7 +2311,10 @@ export class JobScheduler {
       this.supervisionWriteFailed(slug, error);
       return false;
     }
-    if (!JOB_COST_AUDIT_READY.laterScriptJobs && !AUDIT_READY_SCRIPT_SLUGS.has(slug)
+    // This explicit profile performs only signed free probes and makes no model call.
+    const packagedDoorway = slug === 'doorway-scan'
+      && readDoorwayExecutionConfig(this.stateDir)?.packagedExecution === true;
+    if (!packagedDoorway && !JOB_COST_AUDIT_READY.laterScriptJobs && !AUDIT_READY_SCRIPT_SLUGS.has(slug)
       && (SCRIPT_RUNNER_FIRST_WAVE_DISABLED_SLUGS as readonly string[]).includes(slug)) return false;
     if (!JOB_COST_AUDIT_READY.dailySupervision && slug === 'script-job-supervisor') return false;
     const cfg = this.readAgentConfig() ?? {};
@@ -2262,7 +2323,7 @@ export class JobScheduler {
     const explicit = typeof sr.enabled === 'boolean' ? sr.enabled : undefined;
     if (!resolveDevAgentGate(explicit, cfg as { developmentAgent?: boolean })) return false;
     const disabledSlugs: readonly string[] = Array.isArray(sr.disabledSlugs)
-      ? sr.disabledSlugs : SCRIPT_RUNNER_FIRST_WAVE_DISABLED_SLUGS;
+      ? sr.disabledSlugs : packagedDoorway ? [] : SCRIPT_RUNNER_FIRST_WAVE_DISABLED_SLUGS;
     if (disabledSlugs.includes(slug)) return false;
     return true;
   }
@@ -2303,7 +2364,13 @@ export class JobScheduler {
           deferred.set(run.slug, Math.max(deferred.get(run.slug) ?? 0, waitMs));
           continue;
         }
-        if (this.settleInterruptedScriptRun(store, run)) {
+        if (run.packagedDoorwayScan || run.scheduledDoorwayObservationDigest) {
+          if (run.slug === 'doorway-scan' && run.machineId && run.machineId === this.machineId) {
+            this.recoverPackagedDoorwayRun(store, run);
+            deferred.set(run.slug, Math.max(deferred.get(run.slug) ?? 0, 5000));
+            continue;
+          }
+        } else if (this.settleInterruptedScriptRun(store, run)) {
           run = this.runHistory.findRun(run.runId) ?? run;
           row = store.findByRunId(run.runId);
         }
@@ -2365,6 +2432,25 @@ export class JobScheduler {
     if (this.activeScriptRunIds.has(run.runId)) return false;
     if (!run.machineId) return true;
     return this.machineId !== null && run.machineId === this.machineId;
+  }
+
+  /** A doorway restart must settle its permanent run record under the artifact writer lease. */
+  private recoverPackagedDoorwayRun(store: JobSupervisionStore, candidate: JobRun): void {
+    if (this.doorwayRecoveryInFlight || !this.running || this.paused || this.state.readOnly) return;
+    this.doorwayRecoveryInFlight = true;
+    void withDoorwayRetentionWriter(this.stateDir, Date.now() + 2000, async (_stateDir, lease) => {
+      if (!this.running || this.paused || this.state.readOnly) return;
+      const run = this.runHistory.findRun(candidate.runId);
+      if (!run || run.result !== 'pending' || !this.isInterruptedHere(run)
+        || run.slug !== 'doorway-scan' || run.machineId !== this.machineId || run.startedAt !== candidate.startedAt
+        || (!run.packagedDoorwayScan && !run.scheduledDoorwayObservationDigest)) return;
+      const row = store.findByRunId(run.runId);
+      if (row?.completedAt && (row.reason !== 'interrupted' || row.result !== 'failure')) return;
+      lease.assertHeld();
+      this.settleInterruptedScriptRun(store, run);
+    }).catch(error => {
+      console.warn(`[job-supervision] Doorway recovery could not acquire or keep its writer lease: ${error instanceof Error ? error.message : String(error)}`);
+    }).finally(() => { this.doorwayRecoveryInFlight = false; });
   }
 
   /** Settle both ledgers for an interrupted run; false when either write did not hold. */
@@ -2480,7 +2566,10 @@ export class JobScheduler {
   private completeScriptHistory(runId: string, slug: string, input: Parameters<JobRunHistory['recordCompletion']>[0]): boolean {
     try {
       this.runHistory.recordCompletion(input);
-      if (this.runHistory.findRun(runId)?.result !== input.result) {
+      const completed = this.runHistory.findRun(runId);
+      if (completed?.result !== input.result
+        || (input.scheduledDoorwayObservationDigest !== undefined
+          && completed.scheduledDoorwayObservationDigest !== input.scheduledDoorwayObservationDigest)) {
         throw new Error(`script run history did not persist completion for ${runId}`);
       }
       return true;
@@ -2510,6 +2599,10 @@ export class JobScheduler {
     if (this.config.projectName) env.INSTAR_AGENT_ID = this.config.projectName;
     const port = this.resolveAgentPort();
     if (port !== undefined) env.INSTAR_PORT = String(port);
+    if (job.slug === 'doorway-scan') {
+      env.INSTAR_DOORWAY_PROBER = fileURLToPath(new URL('../../scripts/doorway-scan.mjs', import.meta.url));
+      env.INSTAR_STATE_DIR = path.resolve(this.stateDir);
+    }
     env.INSTAR_JOB_SLUG = job.slug;
     env.INSTAR_MESSAGE_KIND = 'automated';
     env.INSTAR_SENDER_CLASS = 'script';
@@ -2609,8 +2702,42 @@ export class JobScheduler {
    * Execute an instar `runner: script` job (§5.1). The caller already holds
    * the claim and has added the slug to `scriptInFlight`.
    */
-  private runScriptRunnerJob(job: JobDefinition, reason: string): void {
+  private runScriptRunnerJob(job: JobDefinition, reason: string, packagedDoorwayRun: boolean): void {
+    if (!packagedDoorwayRun) {
+      this.startScriptRunnerJob(job, reason);
+      return;
+    }
+    const start = () => {
+      const timeoutMs = Math.max(1, job.scriptTimeoutMinutes ?? JobScheduler.DEFAULT_SCRIPT_TIMEOUT_MINUTES) * 2 * 60_000;
+      const probeDeadline = performance.now() + timeoutMs;
+      void withDoorwayRetentionWriter(this.stateDir, Date.now() + timeoutMs, async (stateDir, lease) => {
+        const live = this.jobs.find(candidate => candidate.slug === job.slug);
+        if (!this.running || this.paused || this.state.readOnly || performance.now() >= probeDeadline
+          || !live?.enabled || !this.isScriptRunnerJob(live) || !this.isJobScopedToThisMachine(live)) {
+          this.releaseClaim(job.slug, 'failure');
+          return;
+        }
+        await this.startScriptRunnerJob(live, reason, { stateDir, probeDeadline, scope: lease.scope, assertHeld: () => lease.assertHeld() });
+      })
+        .catch(error => {
+          console.error(`[scheduler] Doorway writer for "${job.slug}" failed: ${error instanceof Error ? error.message : String(error)}`);
+          this.releaseClaim(job.slug, 'failure');
+        })
+        .finally(() => this.scriptInFlight.delete(job.slug));
+    };
+    const offset = this.scriptStartOffsetEnabled ? JobScheduler.scriptStartOffsetMs(job.slug) : 0;
+    if (offset > 0) setTimeout(start, offset).unref?.();
+    else start();
+  }
+
+  private startScriptRunnerJob(
+    job: JobDefinition,
+    reason: string,
+    writer?: { stateDir: string; probeDeadline: number; scope: string; assertHeld: () => void },
+  ): Promise<void> {
+    const packagedDoorwayRun = writer !== undefined;
     const slug = job.slug;
+    writer?.assertHeld();
     const sessionName = `script-${slug}-${Date.now().toString(36)}`;
     const projected = this.projectAsAgentmd(job);
     const observability = JobScheduler.computeRunObservability(projected, JobScheduler.resolveAllowlist(projected));
@@ -2623,6 +2750,7 @@ export class JobScheduler {
         trigger: reason,
         origin: 'instar',
         runner: 'script',
+        ...(packagedDoorwayRun ? { packagedDoorwayScan: true } : {}),
         lockTrust: job.lockTrust ?? 'unknown',
         tokens: 0,
         resolvedPath: observability.resolvedPath,
@@ -2634,8 +2762,8 @@ export class JobScheduler {
     } catch (error) {
       this.supervisionWriteFailed(slug, error);
       this.releaseClaim(slug, 'failure');
-      this.scriptInFlight.delete(slug);
-      return;
+      if (!writer) this.scriptInFlight.delete(slug);
+      return Promise.resolve();
     }
     this.activeScriptRunIds.add(runId);
     let supervisionId: string;
@@ -2663,9 +2791,9 @@ export class JobScheduler {
       this.supervisionWriteFailed(slug, error);
       this.completeScriptHistory(runId, slug, { runId, result: 'failure', error: 'supervision-register-failed' });
       this.releaseClaim(slug, 'failure');
-      this.scriptInFlight.delete(slug);
+      if (!writer) this.scriptInFlight.delete(slug);
       this.activeScriptRunIds.delete(runId);
-      return;
+      return Promise.resolve();
     }
     const prior = this.state.getJobState(slug);
     this.state.saveJobState({
@@ -2688,7 +2816,16 @@ export class JobScheduler {
       const trust = this.checkScriptTrust(job);
       let parsed: ParsedScriptRun;
       let scrubbed = '';
-      if (!trust.ok) {
+      let scheduledDoorwayObservationDigest: string | undefined;
+      let retentionInput: { machineId: string; doorIds: string[] } | undefined;
+      const doorwayConfig = slug === 'doorway-scan' ? readDoorwayExecutionConfig(this.stateDir) : undefined;
+      if (doorwayConfig === null) {
+        parsed = parseScriptOutput('JOB_RESULT failed doorway-config-unavailable', 1);
+      } else if (slug === 'doorway-scan' && packagedDoorwayRun !== (doorwayConfig?.packagedExecution === true)) {
+        parsed = parseScriptOutput('JOB_RESULT skipped doorway-profile-changed', 0);
+      } else if (packagedDoorwayRun && doorwayConfig?.enabled === false) {
+        parsed = parseScriptOutput('JOB_RESULT skipped scan-disabled', 0);
+      } else if (!trust.ok) {
         parsed = this.untrustedParse(trust.reason);
         const key = `${slug}|${trust.reason}`;
         if (!this.untrustedReported.has(key)) {
@@ -2701,32 +2838,79 @@ export class JobScheduler {
             impact: `"${slug}" does no work until the shipped script verifies again (reinstall or update instar)`,
           });
         }
+      } else if (packagedDoorwayRun) {
+        const pending = this.runHistory.findRun(runId);
+        const machineId = this.machineId;
+        if (!writer || !pending || !machineId || job.lockTrust !== 'trusted') {
+          parsed = this.untrustedParse('packaged-run-unverified');
+        } else {
+          const assets = readVerifiedInstalledDoorwayAssets(getInstarVersion());
+          if (assets.status !== 'verified') {
+            parsed = this.untrustedParse(assets.reason);
+          } else {
+            scheduledDoorwayObservationDigest = await executePackagedDoorwayScan({
+              stateDir: writer.stateDir,
+              run: pending,
+              machineId,
+              assets,
+              timeoutMs: writer.probeDeadline - performance.now(),
+              assertWriterHeld: writer.assertHeld,
+            });
+            retentionInput = {
+              machineId,
+              doorIds: Object.keys(assets.catalog.doors as Record<string, unknown>),
+            };
+            scrubbed = 'JOB_RESULT ok verified free probes';
+            parsed = parseScriptOutput(scrubbed, 0);
+          }
+        }
       } else {
         const exec = await this.executeScript(job, [], receiptToken
           ? { INSTAR_JOB_RUN_ID: runId, INSTAR_JOB_RECEIPT_TOKEN: receiptToken }
           : { INSTAR_JOB_RUN_ID: runId });
         ({ parsed, scrubbed } = this.parseExec(job, exec));
       }
-      this.finishScriptRun(job, runId, supervisionId, parsed, scrubbed, startedAt, supervisionActiveAtStart);
+      writer?.assertHeld();
+      this.finishScriptRun(job, runId, supervisionId, parsed, scrubbed, startedAt, supervisionActiveAtStart, scheduledDoorwayObservationDigest);
+      if (writer && retentionInput) {
+        const completed = this.runHistory.findRun(runId);
+        if (completed?.result !== 'success' || completed.scheduledDoorwayObservationDigest !== scheduledDoorwayObservationDigest) return;
+        const { machineId, doorIds } = retentionInput;
+        try {
+          const result = publishInitialDoorwayRetentionCursor({
+            stateDir: writer.stateDir, machineId, doorIds,
+            readSnapshot: () => this.runHistory.readPackagedDoorwaySnapshot(machineId),
+            flushLedger: () => this.runHistory.flushForDoorwayRetention(),
+          }, writer);
+          if (result.status === 'unavailable') console.warn(`[scheduler] Doorway cursor publication unavailable: ${result.reason}`);
+        } catch (error) {
+          // The probe already completed. Advisory cursor failure does not change its outcome.
+          console.warn(`[scheduler] Doorway cursor publication failed: ${error instanceof Error ? error.message : String(error)}`);
+        }
+      }
     };
 
-    const offset = this.scriptStartOffsetEnabled ? JobScheduler.scriptStartOffsetMs(slug) : 0;
-    const go = () => {
-      run()
-        .catch((err) => {
-          console.error(`[scheduler] Script runner for "${slug}" threw: ${err instanceof Error ? err.message : String(err)}`);
-          try {
-            this.finishScriptRun(job, runId, supervisionId, { ...this.untrustedParse(''), reason: 'script-runner-error', reasonCode: 'script-runner-error' }, '', startedAt, supervisionActiveAtStart);
-          } catch { /* @silent-fallback-ok — bookkeeping best-effort on an internal throw */ }
-        })
-        .finally(() => { this.scriptInFlight.delete(slug); this.activeScriptRunIds.delete(runId); });
-    };
-    if (offset > 0) {
-      const t = setTimeout(go, offset);
-      t.unref?.();
-    } else {
-      go();
-    }
+    const execute = () => run().catch((err) => {
+      console.error(`[scheduler] Script runner for "${slug}" threw: ${err instanceof Error ? err.message : String(err)}`);
+      const completed = packagedDoorwayRun ? this.runHistory.findRun(runId) : null;
+      if (completed && completed.result !== 'pending') return;
+      // A lost lease leaves the pending row for recovery, which can reconcile it later.
+      writer?.assertHeld();
+      try {
+        const reason = packagedDoorwayRun && err instanceof Error && err.message === 'packaged-probe-timeout'
+          ? 'packaged-probe-timeout' : 'script-runner-error';
+        this.finishScriptRun(job, runId, supervisionId, { ...this.untrustedParse(''), reason, reasonCode: reason }, '', startedAt, supervisionActiveAtStart);
+      } catch { /* @silent-fallback-ok — bookkeeping best-effort on an internal throw */ }
+    }).finally(() => {
+      if (!writer) this.scriptInFlight.delete(slug);
+      this.activeScriptRunIds.delete(runId);
+    });
+
+    const offset = !writer && this.scriptStartOffsetEnabled ? JobScheduler.scriptStartOffsetMs(slug) : 0;
+    if (offset <= 0) return execute();
+    const timer = setTimeout(() => { void execute(); }, offset);
+    timer.unref?.();
+    return Promise.resolve();
   }
 
   /** Record a finished script run: job state, history, alerts, claim, observers. */
@@ -2738,6 +2922,7 @@ export class JobScheduler {
     scrubbed: string,
     startedAt: string,
     supervisionActiveAtStart: boolean,
+    scheduledDoorwayObservationDigest?: string,
   ): void {
     const slug = job.slug;
     const finishedAt = new Date().toISOString();
@@ -2787,7 +2972,7 @@ export class JobScheduler {
         slug, lastRun: finishedAt, lastResult: 'success', lastError: undefined, lastAssessment,
         consecutiveFailures: 0, nextScheduled: this.getNextRun(slug),
       });
-      historyRecorded = this.completeScriptHistory(runId, slug, { runId, result: 'success', outputSummary });
+      historyRecorded = this.completeScriptHistory(runId, slug, { runId, result: 'success', outputSummary, scheduledDoorwayObservationDigest });
       if (historyRecorded) {
         captureJev('success');
         this.clearRetryState(slug);

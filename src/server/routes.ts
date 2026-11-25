@@ -192,6 +192,7 @@ import { activeSpawnPollers } from '../core/SpawnCapIntelligenceProvider.js';
 import { poolPollerVerdict } from '../core/pollerCount.js';
 import { writeServeProgress } from '../core/serveProgress.js';
 import { readDoorwayRegistry } from '../core/DoorwayRegistryReader.js';
+import type { VerifiedPackagedCatalogResult } from '../core/VerifiedPackagedCatalog.js';
 import {
   clampPeerFinding as clampBenchmarkPeerFinding,
   mergeFindingsByKey as mergeBenchmarkFindingsByKey,
@@ -902,6 +903,8 @@ import { INITIATIVE_UPDATE_FIELDS } from '../core/InitiativeTracker.js';
 import { telegramTopicRef, topicRef } from '../messaging/shared/topicRef.js';
 import { peerFingerprintOfPlace } from '../users/peerPlaceAdmission.js';
 import { CODEX_CLI_FRAMEWORK } from '../core/frameworkFacts.js';
+import { effectiveFrameworkModelDefaults, validFrameworkModelDefaults } from '../core/frameworkModelDefaults.js';
+import { mergeDefaults } from '../core/mergeDefaults.js';
 import { resolveFrameworkBinaryPath } from '../core/frameworkSessionLaunch.js';
 import { codexCliVersionCached, refreshCodexCliVersion } from '../core/codexCapabilities.js';
 import { operatorOnlyPathsInPatch } from '../config/bearerConfigWrite.js';
@@ -1592,6 +1595,7 @@ export interface RouteContext {
   selfKnowledgeTree: SelfKnowledgeTree | null;
   coverageAuditor: CoverageAuditor | null;
   topicResumeMap: TopicResumeMap | null;
+  packagedDoorwayCatalog?: VerifiedPackagedCatalogResult;
   /** Topic Profile (TOPIC-PROFILE-SPEC §10.1/§12) — store + resolver + write
    *  surface + shared confirm slots behind GET/POST /topic-profile/:topicId.
    *  Null when the profile store failed to initialize; the routes then report
@@ -3549,16 +3553,35 @@ export function createRoutes(ctx: RouteContext): Router {
       } };
     } });
 
+  const scheduledDoorwayEvidence = (nowMs = Date.now()) => {
+    const catalog = ctx.packagedDoorwayCatalog;
+    if (catalog?.status !== 'verified') return undefined;
+    const doorIds = Object.keys(catalog.catalog.doors as Record<string, unknown>);
+    const evidence = ctx.scheduler?.readScheduledDoorwayHistory?.(doorIds, nowMs);
+    return evidence ?? (ctx.config.maintenance?.doorwayScan?.packagedExecution === true ? null : undefined);
+  };
+
   router.get('/capability-registry', (_req, res) => {
     const cfg = (ctx.config as InstarConfig & { capabilityRegistry?: { enabled?: boolean } }).capabilityRegistry;
     if (!resolveDevAgentGate(cfg?.enabled, ctx.config)) return res.status(503).json({ code: 'capability-registry-dark' });
     if (!ctx.capabilityRegistry) return res.status(503).json({ code: 'capability-registry-unavailable' });
     const projectionFile = path.join(ctx.config.stateDir, 'capability-registry.json');
-    let projection: CapabilityProjection | null = new CapabilityRegistryWriter(projectionFile, 'local').read();
+    const packagedCatalog = ctx.packagedDoorwayCatalog;
+    if (packagedCatalog && packagedCatalog.status !== 'verified') {
+      return res.status(503).json({ code: 'capability-registry-packaged-catalog-unavailable', reason: packagedCatalog.reason });
+    }
+    let projection: CapabilityProjection | null = packagedCatalog
+      ? null
+      : new CapabilityRegistryWriter(projectionFile, 'local').read();
     if (!projection) {
       try {
-        const local = readDoorwaySources(ctx.config.projectDir, ctx.config.stateDir, new Date().toISOString(), 'local');
-        projection = { schemaVersion: 1, machineId: 'local', machineEpoch: 0, projectionSeq: 0, ...local, truncated: false, entries: local.entries } as CapabilityProjection;
+        const nowMs = Date.now();
+        const scheduled = scheduledDoorwayEvidence(nowMs);
+        const machineId = scheduled?.machineId ?? 'local';
+        const local = readDoorwaySources(
+          ctx.config.projectDir, ctx.config.stateDir, new Date(nowMs).toISOString(), machineId, packagedCatalog, scheduled,
+        );
+        projection = { schemaVersion: 1, machineId, machineEpoch: 0, projectionSeq: 0, ...local, truncated: scheduled?.historyTruncated ?? false, entries: local.entries } as CapabilityProjection;
       } catch (error) {
         DegradationReporter.getInstance().report({
           feature: 'CapabilityRegistry.routeProjection',
@@ -13976,7 +13999,7 @@ export function createRoutes(ctx: RouteContext): Router {
     }
     const options = buildTopicProfileOptions({
       ...dashboardChoiceDeps(tp),
-      frameworkDefaultModels: () => ctx.config.sessions?.frameworkDefaultModels ?? {},
+      frameworkDefaultModels: () => effectiveFrameworkModelDefaults(ctx.config.sessions?.frameworkDefaultModels),
       regime: () => tp.surface.currentRegime(),
       newTopicDefault: () => tp.newTopicDefault?.read() ?? null,
     });
@@ -20647,7 +20670,14 @@ document.getElementById('mcpForm').addEventListener('submit', async function (e)
     const result = readDoorwayRegistry({
       projectDir: ctx.config.projectDir,
       stateDir: ctx.config.stateDir,
+      packagedCatalog: ctx.packagedDoorwayCatalog,
     });
+    if (ctx.packagedDoorwayCatalog && result.status !== 'ok') {
+      return res.status(503).json({
+        code: result.status === 'corrupt' ? 'registry-packaged-catalog-invalid' : 'registry-packaged-catalog-unavailable',
+        reason: result.reason,
+      });
+    }
     if (result.status === 'no-manifest') {
       // A pure end-user (non-instar-source) install carries no canonical manifest — there is
       // no doorway knowledge registry to serve. Honest 503, NOT a fabricated empty payload.
@@ -20664,7 +20694,8 @@ document.getElementById('mcpForm').addEventListener('submit', async function (e)
       });
       return;
     }
-    res.json(result.body);
+    const scheduledEvidence = scheduledDoorwayEvidence();
+    res.json(scheduledEvidence === undefined ? result.body : { ...result.body, scheduledEvidence });
   });
 
   // ── Framework-Onboarding Mentor System: issue ledger (read-only) ──
@@ -39530,6 +39561,11 @@ document.getElementById('mcpForm').addEventListener('submit', async function (e)
     // and the environment, which is where the other two rungs already live.
     if (patch && typeof patch === 'object' && 'sessions' in patch) {
       const sess = (patch as Record<string, unknown>).sessions;
+      if (sess && typeof sess === 'object' && 'frameworkDefaultModels' in sess
+          && !validFrameworkModelDefaults(sess.frameworkDefaultModels)) {
+        res.status(400).json({ error: 'Provide framework defaults as a map of model IDs or supported Codex family selectors.' });
+        return;
+      }
       // Round-14 (adversarial): the fence matched ONE key name, and there is a
       // THIRD path to the same authority — `sessions.claudePath` is a live load
       // path that populates `frameworkBinaryPaths['claude-code']` AND is the
@@ -39670,6 +39706,7 @@ document.getElementById('mcpForm').addEventListener('submit', async function (e)
         return;
       }
 
+      const runtimeUpdates: Record<string, unknown> = {};
       // Deep merge for the validated selfActionGovernor subtree (multi-level
       // by design — INT9-1's one-level-deep-merge hazard note).
       if (sagPatch) {
@@ -39692,43 +39729,51 @@ document.getElementById('mcpForm').addEventListener('submit', async function (e)
             : {},
           sagPatch,
         );
-        const rt = ctx.config as any;
-        rt.intelligence = rt.intelligence && typeof rt.intelligence === 'object' ? rt.intelligence : {};
-        rt.intelligence.selfActionGovernor = deepMerge(
-          rt.intelligence.selfActionGovernor && typeof rt.intelligence.selfActionGovernor === 'object'
-            ? rt.intelligence.selfActionGovernor
-            : {},
-        sagPatch,
-        );
+        const intelligence = ctx.config.intelligence ?? {};
+        runtimeUpdates.intelligence = {
+          ...intelligence,
+          selfActionGovernor: deepMerge(structuredClone(intelligence.selfActionGovernor ?? {}), sagPatch),
+        };
         if (Object.keys(patch).length === 0) {
           fs.writeFileSync(configPath, JSON.stringify(fileConfig, null, 2) + '\n');
+          Object.assign(ctx.config, runtimeUpdates);
           res.json({ success: true, patched: ['intelligence.selfActionGovernor'], note: 'emergencyDisable is read live by the governor; per-class overrides apply on its next slow tick.' });
           return;
         }
       }
 
-      // Deep merge (one level deep — sufficient for feature toggles)
+      const modelDefaults = patch.sessions?.frameworkDefaultModels;
+      const previousFileModelDefaults = fileConfig.sessions?.frameworkDefaultModels;
+      const merge = (previous: unknown, update: unknown) =>
+        update && typeof update === 'object' && !Array.isArray(update)
+        && previous && typeof previous === 'object'
+          ? { ...previous, ...update }
+          : update;
       for (const [key, value] of Object.entries(patch)) {
-        if (typeof value === 'object' && value !== null && !Array.isArray(value) &&
-            typeof fileConfig[key] === 'object' && fileConfig[key] !== null) {
-          fileConfig[key] = { ...fileConfig[key], ...value };
-        } else {
-          fileConfig[key] = value;
-        }
-        // Also update runtime config
-        if (typeof value === 'object' && value !== null && !Array.isArray(value) &&
-            typeof (ctx.config as any)[key] === 'object' && (ctx.config as any)[key] !== null) {
-          (ctx.config as any)[key] = { ...(ctx.config as any)[key], ...value };
-        } else {
-          (ctx.config as any)[key] = value;
+        fileConfig[key] = merge(fileConfig[key], value);
+        runtimeUpdates[key] = merge((ctx.config as unknown as Record<string, unknown>)[key], value);
+        if (key === 'sessions' && modelDefaults) {
+          // Merge each existing snapshot independently. Defaults synthesized
+          // at boot should not become durable pins as a side effect of PATCH.
+          fileConfig[key].frameworkDefaultModels = mergeDefaults({}, previousFileModelDefaults, modelDefaults);
+          (runtimeUpdates[key] as Record<string, unknown>).frameworkDefaultModels = mergeDefaults(
+            {}, ctx.config.sessions?.frameworkDefaultModels, previousFileModelDefaults, modelDefaults,
+          );
         }
       }
 
-      fs.writeFileSync(configPath, JSON.stringify(fileConfig, null, 2) + '\n');
+      const serialized = JSON.stringify(fileConfig, null, 2) + '\n';
+      if (modelDefaults) {
+        SafeFsExecutor.atomicWriteFileSync(configPath, serialized, { operation: 'routes.config.patch', mode: 0o600 });
+      } else {
+        fs.writeFileSync(configPath, serialized);
+      }
+      Object.assign(ctx.config, runtimeUpdates);
 
       res.json({
         success: true,
         patched: Object.keys(patch),
+        ...(modelDefaults ? { modelDefaultsScope: 'this-machine' } : {}),
         note: 'Some changes may require a server restart to take full effect.',
       });
     } catch (err) {

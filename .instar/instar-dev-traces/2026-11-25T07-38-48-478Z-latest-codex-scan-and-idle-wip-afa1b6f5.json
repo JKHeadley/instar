@@ -1,0 +1,21 @@
+{
+  "version": 2,
+  "slug": "latest-codex-scan-and-idle-wip",
+  "sessionId": "bcc82a0c-f81e-440b-88eb-304eb7ee4f4c",
+  "timestamp": "2026-11-25T07:38:48.478Z",
+  "artifactPath": "upgrades/side-effects/latest-codex-scan-and-idle-wip.md",
+  "artifactSha256": "a6dfb6ee3a57c3ca80e674a34c33e756419b902ba7c39106a2625780ec974cd1",
+  "specPath": "docs/specs/latest-codex-doorway-scan.md",
+  "coveredFiles": [
+    "src/scheduler/JobRunHistory.ts",
+    "src/scheduler/JobRunLedgerLock.ts",
+    "src/scheduler/MigrationLedger.ts",
+    "tests/unit/JobRunHistory.test.ts",
+    "upgrades/side-effects/latest-codex-scan-and-idle-wip.md"
+  ],
+  "phase": "complete",
+  "tier": 2,
+  "tierReasoning": "Shared writer exclusion protects a durable scheduler ledger during replacement",
+  "secondPass": "not-required",
+  "reviewerConcurred": null
+}

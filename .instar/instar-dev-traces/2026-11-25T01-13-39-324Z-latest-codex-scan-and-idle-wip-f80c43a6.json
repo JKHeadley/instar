@@ -1,0 +1,20 @@
+{
+  "version": 2,
+  "slug": "latest-codex-scan-and-idle-wip",
+  "sessionId": "bcc82a0c-f81e-440b-88eb-304eb7ee4f4c",
+  "timestamp": "2026-11-25T01:13:39.324Z",
+  "artifactPath": "upgrades/side-effects/latest-codex-scan-and-idle-wip.md",
+  "artifactSha256": "c061e6f2d00fb786d65a1febd61df661520e5de40ccbdc1d098892a7cebd1322",
+  "specPath": "docs/specs/latest-codex-doorway-scan.md",
+  "coveredFiles": [
+    "src/core/SafeFsExecutor.ts",
+    "src/scheduler/JobRunHistory.ts",
+    "tests/unit/JobRunHistory.test.ts",
+    "upgrades/side-effects/latest-codex-scan-and-idle-wip.md"
+  ],
+  "phase": "complete",
+  "tier": 2,
+  "tierReasoning": "Durable scheduler history replacement with evidence that gates future retention cleanup",
+  "secondPass": "not-required",
+  "reviewerConcurred": null
+}

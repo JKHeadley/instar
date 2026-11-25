@@ -12,7 +12,7 @@ import { parseMaturationOutcome } from '../monitoring/MaturationOutcome.js';
 import { measurementCoverage, type CoverageDeclaration, type CoverageMember, type CoverageParent, type CoverageProof, type CoverageSource } from '../monitoring/MeasurementCoverage.js';
 import type { RouteContext } from './routes.js';
 
-export type MeasurementCoverageContext = Pick<RouteContext, 'config' | 'meshSelfId' | 'scheduler' | 'initiativeTracker' | 'commitmentTracker' | 'blockerLifecycleService' | 'featureRegistry'>
+export type MeasurementCoverageContext = Pick<RouteContext, 'config' | 'meshSelfId' | 'scheduler' | 'initiativeTracker' | 'commitmentTracker' | 'blockerLifecycleService' | 'featureRegistry' | 'packagedDoorwayCatalog'>
   & { maturationLadder?: () => MaturationLadderService | null };
 export const measurementOrigin = (ctx: MeasurementCoverageContext): string => ctx.meshSelfId ?? ctx.blockerLifecycleService?.measurementOrigin() ?? 'unknown-origin';
 export const COMMITMENT_INVENTORY_SOURCE = 'commitment-tracker';
@@ -101,7 +101,9 @@ function collectMeasurementInputs(ctx: MeasurementCoverageContext, now = Date.no
   });
   read('local-model-capability-projection', () => {
     if (!ctx.meshSelfId && ctx.config.multiMachine?.enabled) throw Error('unavailable');
-    const projection = readLocalCapabilityInventory(ctx.config.projectDir, ctx.config.stateDir, ctx.meshSelfId ?? 'local', now);
+    const projection = readLocalCapabilityInventory(
+      ctx.config.projectDir, ctx.config.stateDir, ctx.meshSelfId ?? 'local', now, ctx.packagedDoorwayCatalog,
+    );
     for (const entry of projection.entries) members.push({ kind: 'capability', id: `${entry.capabilityId}:${entry.doorwayId}`,
       title: bounded(entry.capabilityId), sources: ['local-model-capability-projection'], subjects: [], posture: 'registered-definition' });
     // Keep the known prefix, but never certify an incomplete source as a zero.

@@ -1,0 +1,18 @@
+{
+  "version": 2,
+  "slug": "latest-codex-scan-and-idle-wip",
+  "sessionId": "aca68beb-0d4e-4546-a3c1-065299307f44",
+  "timestamp": "2026-11-25T00:23:03.923Z",
+  "artifactPath": "upgrades/side-effects/latest-codex-scan-and-idle-wip.md",
+  "artifactSha256": "d3c11ef87108968b2755bf6804c7b23fc455e6d1cc6104e78e3b54f21a81eebd",
+  "specPath": "docs/specs/latest-codex-doorway-scan.md",
+  "coveredFiles": [
+    "src/scheduler/JobScheduler.ts",
+    "tests/unit/job-cost-runner/JobScheduler-script-runner.test.ts"
+  ],
+  "phase": "complete",
+  "tier": 2,
+  "tierReasoning": "Interrupted scheduled runs settle their exact ledger records under artifact writer custody.",
+  "secondPass": "true",
+  "reviewerConcurred": true
+}

@@ -17,6 +17,7 @@ import { describe, it, expect, beforeEach, afterEach } from 'vitest';
 import fs from 'node:fs';
 import path from 'node:path';
 import os from 'node:os';
+import { stampDisabledAtBodyHash } from '../../../src/scheduler/DisabledBodyDrift.js';
 import { installBuiltinJobs } from '../../../src/scheduler/InstallBuiltinJobs.js';
 import { validateManifest, loadAgentMdJobs } from '../../../src/scheduler/AgentMdJobLoader.js';
 import { SafeFsExecutor } from '../../../src/core/SafeFsExecutor.js';
@@ -212,6 +213,53 @@ describe('installBuiltinJobs', () => {
     // Body refreshed:
     const newBody = fs.readFileSync(path.join(agentStateDir, 'jobs', 'instar', 'toggle-test.md'), 'utf-8');
     expect(newBody).toContain('body v2');
+  });
+
+  it.each([false, true])('preserves a disabled weekly doorway scan with a recorded opt-out of %s', (operatorDisabled) => {
+    const slug = 'doorway-scan';
+    writeTemplate(slug, 'old scan\n', { schedule: '0 4 * * 1', enabled: 'false' });
+    installBuiltinJobs({ agentStateDir, packageRoot, port: 4042 });
+
+    const manifestPath = path.join(agentStateDir, 'jobs', 'schedule', `${slug}.json`);
+    if (operatorDisabled) {
+      expect(stampDisabledAtBodyHash(agentStateDir, slug)).toBeTruthy();
+    }
+
+    writeTemplate(slug, 'daily scan\n', { schedule: '0 4 * * *', enabled: 'true' });
+    for (let run = 0; run < 2; run += 1) {
+      installBuiltinJobs({ agentStateDir, packageRoot, port: 4042 });
+      expect(JSON.parse(fs.readFileSync(manifestPath, 'utf8'))).toMatchObject({
+        enabled: false,
+        schedule: '0 4 * * 1',
+      });
+    }
+  });
+
+  it.each(['0 4 * * 1', '17 9 * * 2'])('keeps an enabled doorway scan on its saved schedule %s', schedule => {
+    const slug = 'doorway-scan';
+    writeTemplate(slug, 'old scan\n', { schedule, enabled: 'true' });
+    installBuiltinJobs({ agentStateDir, packageRoot, port: 4042 });
+    const manifestPath = path.join(agentStateDir, 'jobs', 'schedule', `${slug}.json`);
+    writeTemplate(slug, 'daily scan\n', { schedule: '0 4 * * *', enabled: 'false' });
+    for (let run = 0; run < 2; run += 1) {
+      installBuiltinJobs({ agentStateDir, packageRoot, port: 4042 });
+      expect(JSON.parse(fs.readFileSync(manifestPath, 'utf8'))).toMatchObject({
+        enabled: true, schedule, execute: { type: 'agentmd' },
+      });
+    }
+  });
+
+  it('reports a malformed doorway scan manifest and preserves its bytes', () => {
+    const slug = 'doorway-scan';
+    writeTemplate(slug, 'scan\n', { enabled: 'false' });
+    installBuiltinJobs({ agentStateDir, packageRoot, port: 4042 });
+    const manifestPath = path.join(agentStateDir, 'jobs', 'schedule', `${slug}.json`);
+    const malformed = '{"enabled":true,';
+    fs.writeFileSync(manifestPath, malformed);
+    const report = installBuiltinJobs({ agentStateDir, packageRoot, port: 4042 });
+    expect(report.installed).not.toContain(slug);
+    expect(report.errors).toContainEqual({ slug, reason: expect.stringContaining('operator review') });
+    expect(fs.readFileSync(manifestPath, 'utf8')).toBe(malformed);
   });
 
   // CMT-1586 (fb-d075a5c4-c4c): an update reverted health-check */10 → */5.

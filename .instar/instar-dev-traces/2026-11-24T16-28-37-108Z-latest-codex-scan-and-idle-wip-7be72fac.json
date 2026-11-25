@@ -1,0 +1,18 @@
+{
+  "version": 2,
+  "slug": "latest-codex-scan-and-idle-wip",
+  "sessionId": "aca68beb-0d4e-4546-a3c1-065299307f44",
+  "timestamp": "2026-11-24T16:28:37.108Z",
+  "artifactPath": "upgrades/side-effects/latest-codex-scan-and-idle-wip.md",
+  "artifactSha256": "4be1573e4e6b9b3819c31d356b934399b10712edc48150a145a6d4b6feac1946",
+  "specPath": "docs/specs/latest-codex-doorway-scan.md",
+  "coveredFiles": [
+    "src/scheduler/JobRunHistory.ts",
+    "tests/unit/JobRunHistory.test.ts"
+  ],
+  "phase": "complete",
+  "tier": 2,
+  "tierReasoning": "The shared job ledger preserves evidence of incomplete reads without removing artifacts or changing the job-run compatibility view.",
+  "secondPass": "true",
+  "reviewerConcurred": true
+}

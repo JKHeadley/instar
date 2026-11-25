@@ -4216,9 +4216,13 @@ export interface InstarConfig {
     doorwayScan?: {
       /** Master kill-switch (deny-wins). Absent/undefined by default; NEVER seeded false. */
       enabled?: boolean;
+      /** Opt in at startup to read the catalog from the signed installed package. */
+      packagedRegistryEnabled?: boolean;
+      /** Explicit opt-in to run signed free probes with isolated observations. */
+      packagedExecution?: boolean;
       /** 'free-probes' (default; zero metered spend) | '+liveness' | '+web-verify' (manual-only). */
       scope?: string;
-      /** Cron expression; default '0 4 * * 1' (weekly). */
+      /** Cron expression for new jobs, default '0 4 * * *' (daily). */
       cadence?: string;
       /** Alert digest topic id; null → the default alerts/hub attention surface. */
       digestTopicId?: number | null;

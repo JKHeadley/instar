@@ -219,12 +219,26 @@ export function installBuiltinJobs(opts: InstallBuiltinJobsOptions): InstallRepo
     let existingDisabledAtBodyHash: string | undefined;
     let existingSchedule: string | undefined;
     let existingShippedSchedule: string | undefined;
+    let existingDoorwayExecute: { type: 'agentmd' } | { type: 'script'; value: string } | undefined;
     // Operator-set thinking mode on an installed built-in (the awareness bullet tells
     // agents to set it in this manifest) survives reinstall, like `enabled` does.
     let existingThinkingMode: string | undefined;
     if (fs.existsSync(manifestPath)) {
       try {
         const existing = JSON.parse(fs.readFileSync(manifestPath, 'utf-8'));
+        if (slug === 'doorway-scan') {
+          const saved = validateManifest(existing, slug);
+          if (saved.slug !== slug || saved.origin !== 'instar') {
+            throw new Error('invalid built-in doorway scan settings');
+          }
+          if (saved.execute.type === 'agentmd') {
+            existingDoorwayExecute = { type: 'agentmd' };
+          } else if (saved.execute.type === 'script' && saved.execute.value === 'doorway-scan.mjs') {
+            existingDoorwayExecute = { type: 'script', value: saved.execute.value };
+          } else {
+            throw new Error('unsupported built-in doorway scan runner');
+          }
+        }
         if (typeof existing.enabled === 'boolean') existingEnabled = existing.enabled;
         if (typeof existing.disabledAtBodyHash === 'string') {
           existingDisabledAtBodyHash = existing.disabledAtBodyHash;
@@ -236,7 +250,11 @@ export function installBuiltinJobs(opts: InstallBuiltinJobsOptions): InstallRepo
           existingThinkingMode = existing.thinkingMode;
         }
       } catch {
-        // malformed; we'll overwrite with a fresh one
+        if (slug === 'doorway-scan') {
+          report.errors.push({ slug, reason: 'Existing doorway scan manifest is unreadable or invalid. Saved settings were preserved for operator review.' });
+          continue;
+        }
+        // Other built-in manifests recover from the shipped template.
       }
     }
 
@@ -296,8 +314,10 @@ export function installBuiltinJobs(opts: InstallBuiltinJobsOptions): InstallRepo
     // shipped value once (today's behaviour), after which edits are kept.
     const shippedSchedule = String(frontmatter.schedule ?? '');
     let schedule = shippedSchedule;
-    if (existingSchedule !== undefined && existingShippedSchedule !== undefined
-      && existingSchedule.trim() && existingSchedule !== existingShippedSchedule) {
+    // A doorway scan may have been installed disabled or edited before the
+    // enable and schedule provenance fields existed. Carry forward its cadence.
+    if (existingSchedule?.trim() && (slug === 'doorway-scan'
+      || (existingShippedSchedule !== undefined && existingSchedule !== existingShippedSchedule))) {
       if (isValidCron(existingSchedule)) {
         schedule = existingSchedule;
       } else {
@@ -312,8 +332,8 @@ export function installBuiltinJobs(opts: InstallBuiltinJobsOptions): InstallRepo
       shippedSchedule,
       priority: frontmatter.priority as JobPriority,
       expectedDurationMinutes: durationMinutes,
-      enabled: existingEnabled !== undefined ? existingEnabled : frontmatter.enabled !== 'false',
-      execute,
+      enabled: existingEnabled ?? (frontmatter.enabled !== 'false'),
+      execute: existingDoorwayExecute ?? execute,
       model: frontmatter.model != null && String(frontmatter.model).trim() ? (String(frontmatter.model) as ModelTier) : undefined,
       framework: typeof frontmatter.framework === 'string' && frontmatter.framework.trim()
         ? frontmatter.framework as import('../core/intelligenceProviderFactory.js').IntelligenceFramework

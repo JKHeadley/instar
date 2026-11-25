@@ -19,7 +19,9 @@
 import fs from 'node:fs';
 import path from 'node:path';
 import { capacityOutcome, type CapacityEnforcementResult } from '../core/CapacityEnforcement.js';
+import { SafeFsExecutor } from '../core/SafeFsExecutor.js';
 import { DegradationReporter } from '../monitoring/DegradationReporter.js';
+import { JOB_RUN_LEDGER_WRITE_WAIT_MS, withJobRunLedgerLock } from './JobRunLedgerLock.js';
 import type { JobRunLaunch } from '../core/types.js';
 
 // capacity-enforcement-contract: job-run-history-row@1
@@ -91,6 +93,10 @@ export interface JobRun {
   reason?: string;
   /** Machine ID that ran this job (multi-machine) */
   machineId?: string;
+  /** This trigger selected the opt-in packaged scan profile. */
+  packagedDoorwayScan?: true;
+  /** Digest of exact staged scan evidence validated before trusted script completion. */
+  scheduledDoorwayObservationDigest?: string;
   /** Condensed output from the session (last ~1000 chars) */
   outputSummary?: string;
   /** LLM reflection on what happened and what was learned */
@@ -244,7 +250,10 @@ export class JobRunHistory {
   private cachedRuns: JobRun[] | null = null;
   private cachedSize = 0;
   private cachedMtimeMs = 0;
+  private cachedFileIdentity: string | null = null;
   private lastReadHealthy = true;
+  private cachedComplete = true;
+  private cachedEndsWithNewline = true;
 
   /** Lets coverage reporters distinguish an empty ledger from a failed read. */
   isReadHealthy(): boolean { return this.lastReadHealthy; }
@@ -274,6 +283,7 @@ export class JobRunHistory {
     // Phase 1b observability extensions (jobs-as-agentmd spec)
     origin?: 'instar' | 'user' | 'legacy' | 'triage';
     runner?: 'script';
+    packagedDoorwayScan?: true;
     lockTrust?: string;
     tokens?: number;
     resolvedPath?: string | null;
@@ -302,6 +312,7 @@ export class JobRunHistory {
       machineId: this.machineId ?? undefined,
       origin: opts.origin,
       ...(opts.runner !== undefined ? { runner: opts.runner } : {}),
+      ...(opts.packagedDoorwayScan ? { packagedDoorwayScan: true } : {}),
       ...(opts.lockTrust !== undefined ? { lockTrust: opts.lockTrust } : {}),
       ...(opts.tokens !== undefined ? { tokens: opts.tokens } : {}),
       resolvedPath: opts.resolvedPath ?? null,
@@ -351,6 +362,7 @@ export class JobRunHistory {
     error?: string;
     outputSummary?: string;
     emailOutboxId?: string;
+    scheduledDoorwayObservationDigest?: string;
   }): void {
     // Find the pending entry to get start time
     const pending = this.findRun(opts.runId);
@@ -362,6 +374,13 @@ export class JobRunHistory {
       // Already completed — first writer wins.
       console.debug(`[JobRunHistory] recordCompletion no-op for ${opts.runId}: already ${pending.result}`);
       return;
+    }
+
+    const digest = opts.scheduledDoorwayObservationDigest;
+    if (digest !== undefined && (opts.result !== 'success' || pending.slug !== 'doorway-scan'
+      || pending.runner !== 'script' || pending.origin !== 'instar' || pending.lockTrust !== 'trusted'
+      || !pending.machineId || !/^sha256:[0-9a-f]{64}$/.test(digest))) {
+      throw new Error('Invalid scheduled doorway observation attestation');
     }
 
     const completedAt = new Date().toISOString();
@@ -376,6 +395,7 @@ export class JobRunHistory {
       result: opts.result,
       error: opts.error,
       outputSummary: opts.outputSummary,
+      ...(digest ? { scheduledDoorwayObservationDigest: digest } : {}),
       ...(opts.emailOutboxId ? { emailOutboxId: opts.emailOutboxId } : {}),
     };
     this.appendLine(completed);
@@ -438,6 +458,66 @@ export class JobRunHistory {
     };
     this.appendLine(run);
     return runId;
+  }
+
+  /** Flush the ledger and its directory entries before the first doorway cursor is persisted. */
+  flushForDoorwayRetention(): void {
+    const fd = fs.openSync(this.file, fs.constants.O_RDONLY | (fs.constants.O_NOFOLLOW ?? 0) | (fs.constants.O_NONBLOCK ?? 0));
+    try {
+      const opened = fs.fstatSync(fd);
+      if (!opened.isFile()) throw new Error('doorway ledger is not a regular file');
+      fs.fsyncSync(fd);
+      const current = fs.lstatSync(this.file);
+      if (current.dev !== opened.dev || current.ino !== opened.ino || current.size !== opened.size
+        || current.mtimeMs !== opened.mtimeMs) throw new Error('doorway ledger changed during flush');
+    } finally {
+      fs.closeSync(fd);
+    }
+    this.flushLedgerDirectories();
+  }
+
+  private flushLedgerDirectories(): void {
+    for (const dir of [this.ledgerDir, path.dirname(this.ledgerDir)]) {
+      const parent = fs.openSync(dir, fs.constants.O_RDONLY);
+      try {
+        fs.fsyncSync(parent);
+      } finally {
+        fs.closeSync(parent);
+      }
+    }
+  }
+
+  /** Capture all matching runs for initial cursor selection before artifacts are pruned. */
+  readPackagedDoorwaySnapshot(machineId: string): { complete: boolean; runs: JobRun[] } {
+    const runs = this.readPackagedDoorwayRows(machineId);
+    return runs ? { complete: true, runs: runs.map(run => ({ ...run })) } : { complete: false, runs: [] };
+  }
+
+  private readPackagedDoorwayRows(machineId: string): JobRun[] | null {
+    const all = this.getDeduplicatedRuns();
+    if (!machineId || !this.isReadHealthy() || !this.cachedComplete) return null;
+    return all.filter(run => run.machineId === machineId
+      && run.slug === 'doorway-scan' && run.origin === 'instar' && run.runner === 'script'
+      && run.lockTrust === 'trusted' && run.result !== 'skipped'
+      && (run.packagedDoorwayScan || run.scheduledDoorwayObservationDigest));
+  }
+
+  /** One bounded window of relevant local rows, excluding legacy and non-attempts. */
+  readPackagedDoorwayRuns(machineId: string, limit: number):
+    | { status: 'available'; runs: JobRun[]; truncated: boolean }
+    | { status: 'unavailable' } {
+    const runs = this.readPackagedDoorwayRows(machineId);
+    if (!runs) return { status: 'unavailable' };
+    runs.sort((a, b) => b.startedAt.localeCompare(a.startedAt));
+    const boundary = runs[limit - 1]?.startedAt;
+    const splitTie = boundary !== undefined && runs[limit]?.startedAt === boundary;
+    const window = runs.slice(0, limit);
+    // An unresolved tie crossing the read boundary cannot pick a winner.
+    return {
+      status: 'available',
+      runs: splitTie ? window.filter(run => run.startedAt !== boundary) : window,
+      truncated: runs.length > limit,
+    };
   }
 
   /**
@@ -665,9 +745,18 @@ export class JobRunHistory {
    */
   private compact(): void {
     if (!fs.existsSync(this.file)) return;
+    try {
+      withJobRunLedgerLock(this.file, 0, () => this.compactLocked());
+    } catch (error) {
+      if ((error as NodeJS.ErrnoException).code !== 'ELOCKED') {
+        console.warn('[JobRunHistory] Startup compaction could not lock the ledger:', error);
+      }
+    }
+  }
 
+  private compactLocked(): void {
     const lines = this.readLines();
-    if (lines.length === 0) return;
+    if (lines.length === 0 || !this.cachedComplete) return;
 
     const byId = new Map<string, JobRun>();
     for (const run of lines) {
@@ -681,25 +770,29 @@ export class JobRunHistory {
       // Sort by startedAt to preserve chronological order in the file
       deduped.sort((a, b) => a.startedAt.localeCompare(b.startedAt));
       const content = deduped.map(l => JSON.stringify(l)).join('\n') + '\n';
-      fs.writeFileSync(this.file, content);
-      // The rewrite invalidates the (size, mtime) readLines() just cached.
-      // Seed the cache with the deduped set and the post-rewrite stat so the
-      // first read after boot is a no-IO cache hit, not a full 13MB re-parse.
+      const assertUnchanged = (): fs.Stats => {
+        const stat = fs.lstatSync(this.file);
+        if (!stat.isFile() || `${stat.dev}:${stat.ino}` !== this.cachedFileIdentity
+          || stat.size !== this.cachedSize || stat.mtimeMs !== this.cachedMtimeMs) {
+          throw new Error('job ledger changed during startup compaction');
+        }
+        return stat;
+      };
       try {
-        const stat = fs.statSync(this.file);
-        this.cachedRuns = deduped;
-        this.cachedSize = stat.size;
-        this.cachedMtimeMs = stat.mtimeMs;
-      } catch {
-        // @silent-fallback-ok — if the post-compaction stat fails, drop the cache
-        // so the next read re-reads the freshly-written file from disk. The
-        // compaction itself already succeeded (writeFileSync above); this only
-        // governs whether we seed the in-memory cache or rebuild it lazily.
+        const original = assertUnchanged();
+        SafeFsExecutor.atomicWriteFileSync(this.file, content, {
+          mode: original.mode & 0o777,
+          operation: 'compact job run history on startup',
+          beforeReplace: assertUnchanged,
+        });
+        this.flushLedgerDirectories();
+        console.log(`[JobRunHistory] Compacted ${removed} duplicate entries (${deduped.length} unique runs preserved)`);
+      } catch (error) {
+        // History can still be read when optional startup compaction fails.
+        console.warn('[JobRunHistory] Startup compaction did not complete:', error);
+      } finally {
         this.cachedRuns = null;
-        this.cachedSize = 0;
-        this.cachedMtimeMs = 0;
       }
-      console.log(`[JobRunHistory] Compacted ${removed} duplicate entries (${deduped.length} unique runs preserved)`);
     }
   }
 
@@ -711,17 +804,30 @@ export class JobRunHistory {
         return;
       }
       const capped = outcome.value;
-      const serialized = JSON.stringify(capped) + '\n';
-      fs.appendFileSync(this.file, serialized);
+      // Preserve a known torn record for diagnosis and give the new run its own line.
+      const serialized = withJobRunLedgerLock(this.file, JOB_RUN_LEDGER_WRITE_WAIT_MS, () => {
+        this.readLines();
+        const line = (this.cachedEndsWithNewline ? '' : '\n') + JSON.stringify(capped) + '\n';
+        fs.appendFileSync(this.file, line);
+        return line;
+      });
       // Keep the in-memory cache coherent with our own append so the read that
       // typically follows a completion does NOT have to re-stat+tail-read. If
       // the cache isn't populated yet, leave it null — the next read builds it.
       if (this.cachedRuns !== null) {
-        this.cachedRuns.push(capped);
         try {
           const stat = fs.statSync(this.file);
+          const identity = `${stat.dev}:${stat.ino}`;
+          const sameFile = this.cachedFileIdentity === null ? this.cachedSize === 0 : identity === this.cachedFileIdentity;
+          if (!sameFile || !this.cachedEndsWithNewline
+            || stat.size !== this.cachedSize + Buffer.byteLength(serialized)) {
+            this.cachedRuns = null;
+          } else {
+            this.cachedRuns.push(capped);
+          }
           this.cachedSize = stat.size;
           this.cachedMtimeMs = stat.mtimeMs;
+          this.cachedFileIdentity = identity;
         } catch {
           // @silent-fallback-ok — if we can't stat after writing, drop the cache
           // so the NEXT read does a fresh full re-read rather than trusting a
@@ -834,23 +940,32 @@ export class JobRunHistory {
   }
 
   /**
-   * Parse a JSONL string into JobRun rows, skipping torn/corrupt lines
-   * (matches the long-standing readLines convention — a corrupt line reads as
-   * absent and is repaired on the next compaction/append).
+   * Keep valid rows readable for legacy callers while recording whether the
+   * supplied bytes include an invalid record or a missing final newline.
    */
-  private parseJsonl(content: string): JobRun[] {
-    const trimmed = content.trim();
-    if (!trimmed) return [];
-    return trimmed.split('\n').map(line => {
+  private parseJsonl(content: string): { runs: JobRun[]; complete: boolean } {
+    const runs: JobRun[] = [];
+    let complete = content.length === 0 || content.endsWith('\n');
+    for (const line of content.split('\n')) {
+      if (!line.trim()) continue;
       try {
-        return JSON.parse(line) as JobRun;
+        const row: unknown = JSON.parse(line);
+        if (!row || typeof row !== 'object' || !('runId' in row) || typeof row.runId !== 'string'
+          || !('startedAt' in row) || typeof row.startedAt !== 'string') {
+          complete = false;
+          continue;
+        }
+        const migration = 'kind' in row && (row.kind === 'migration.completed' || row.kind === 'migration.aborted');
+        if (!migration && (!('slug' in row) || typeof row.slug !== 'string'
+          || !('result' in row) || typeof row.result !== 'string')) complete = false;
+        runs.push(row as JobRun);
       } catch {
-        // @silent-fallback-ok — a torn/corrupt JSONL line reads as absent; the
-        // next compaction/append repairs it. This is the long-standing readLines
-        // convention (moved here unchanged), not a new degradation.
-        return null;
+        // Legacy readers can still use valid rows. Retention callers must see
+        // the lost evidence and startup compaction must leave it on disk.
+        complete = false;
       }
-    }).filter(Boolean) as JobRun[];
+    }
+    return { runs, complete };
   }
 
   /**
@@ -870,6 +985,9 @@ export class JobRunHistory {
     if (!fs.existsSync(this.file)) {
       this.lastReadHealthy = true;
       this.cachedRuns = [];
+      this.cachedComplete = true;
+      this.cachedEndsWithNewline = true;
+      this.cachedFileIdentity = null;
       this.cachedSize = 0;
       this.cachedMtimeMs = 0;
       return [];
@@ -880,27 +998,34 @@ export class JobRunHistory {
       const stat = fs.statSync(this.file);
       const size = stat.size;
       const mtimeMs = stat.mtimeMs;
+      const identity = `${stat.dev}:${stat.ino}`;
+      const sameFile = this.cachedFileIdentity === identity;
 
       // Fast path: nothing changed on disk since the last read.
-      if (this.cachedRuns !== null && size === this.cachedSize && mtimeMs === this.cachedMtimeMs) {
+      if (sameFile && this.cachedRuns !== null && size === this.cachedSize && mtimeMs === this.cachedMtimeMs) {
         return this.cachedRuns;
       }
 
       // Incremental tail-read: the file only grew and our cached prefix is
       // still valid (no truncation/rewrite). Read just the new bytes.
-      if (this.cachedRuns !== null && size > this.cachedSize && this.cachedSize > 0) {
+      if (sameFile && this.cachedRuns !== null && this.cachedEndsWithNewline && size > this.cachedSize && this.cachedSize > 0) {
         const fd = fs.openSync(this.file, 'r');
         try {
+          const opened = fs.fstatSync(fd);
+          if (opened.dev !== stat.dev || opened.ino !== stat.ino) throw new Error('job ledger replaced before tail read');
           const tailLen = size - this.cachedSize;
           const buf = Buffer.allocUnsafe(tailLen);
-          fs.readSync(fd, buf, 0, tailLen, this.cachedSize);
+          let read = 0;
+          while (read < tailLen) {
+            const count = fs.readSync(fd, buf, read, tailLen - read, this.cachedSize + read);
+            if (count === 0) throw new Error('short job ledger tail read');
+            read += count;
+          }
           const tail = buf.toString('utf-8');
-          // The cached prefix ended on a newline boundary IFF the byte at
-          // cachedSize-1 was '\n'. appendLine always writes a trailing '\n',
-          // so a grow that begins mid-line means the previous write was torn;
-          // parseJsonl drops that torn fragment safely. Merge the new rows.
-          const newRuns = this.parseJsonl(tail);
-          if (newRuns.length > 0) this.cachedRuns = this.cachedRuns.concat(newRuns);
+          const next = this.parseJsonl(tail);
+          if (next.runs.length > 0) this.cachedRuns = this.cachedRuns.concat(next.runs);
+          this.cachedComplete &&= next.complete;
+          this.cachedEndsWithNewline = tail.endsWith('\n');
           this.cachedSize = size;
           this.cachedMtimeMs = mtimeMs;
           return this.cachedRuns;
@@ -911,10 +1036,17 @@ export class JobRunHistory {
 
       // Full re-read: first read, or the file shrank / was rewritten.
       const content = fs.readFileSync(this.file, 'utf-8');
-      const runs = this.parseJsonl(content);
+      const after = fs.statSync(this.file);
+      if (after.dev !== stat.dev || after.ino !== stat.ino || after.size !== size || after.mtimeMs !== mtimeMs) {
+        throw new Error('job ledger changed during full read');
+      }
+      const { runs, complete } = this.parseJsonl(content);
       this.cachedRuns = runs;
+      this.cachedComplete = complete;
+      this.cachedEndsWithNewline = content.length === 0 || content.endsWith('\n');
       this.cachedSize = size;
       this.cachedMtimeMs = mtimeMs;
+      this.cachedFileIdentity = identity;
       return runs;
     } catch (error) {
       this.lastReadHealthy = false;

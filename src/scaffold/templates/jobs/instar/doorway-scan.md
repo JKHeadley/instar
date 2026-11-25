@@ -1,7 +1,7 @@
 ---
 name: Doorway Scan
 description: "Cadenced live re-probe of every doorway + top-model map refresh + drift diff. A deterministic prober (scripts/doorway-scan.mjs) probes CLIs (which/--version/model-list) and free model-list APIs, updates the per-agent live scan-state (.instar/state/doorway-scan.json), diffs against the previous scan, and raises ONE operator attention item with ONLY the changes (jargon-safe body + a private-view link to the raw diff). It NEVER auto-edits canonical source. Free probes by default; metered liveness / web-verify are opt-in, budget-capped, human-manual-only, and refuse on an unknown price. Ships OFF by default (enabled:false). perMachineIndependent — each machine scans its own disk. Spec: docs/specs/DOORWAY-MODEL-KNOWLEDGE-REGISTRY-SPEC.md §2."
-schedule: "0 4 * * 1"
+schedule: "0 4 * * *"
 priority: low
 expectedDurationMinutes: 10
 model: haiku

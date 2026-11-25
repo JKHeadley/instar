@@ -1,0 +1,24 @@
+{
+  "ts": "2026-11-24T11:00:33.677Z",
+  "slug": "latest-codex-signed-scan-assets-wip",
+  "suggestedTier": 2,
+  "declaredTier": 2,
+  "riskFloor": 1,
+  "riskFloorReasons": [],
+  "belowFloor": false,
+  "files": 3,
+  "loc": 265,
+  "scope": {
+    "basis": "staged-in-scope-paths-including-deleted",
+    "files": [
+      "scripts/sign-instar-lockfile.mjs",
+      "src/core/VerifiedPackagedCatalog.ts",
+      "src/scheduler/AgentMdLockFile.ts"
+    ],
+    "addedLines": 231,
+    "deletedLines": 34
+  },
+  "causalAutopsy": null,
+  "classClosure": null,
+  "verdict": "pass"
+}

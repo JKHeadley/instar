@@ -2,6 +2,7 @@ import { workBoardEnabled } from '../core/WorkCardStore.js';
 // Governed by (docs/STANDARDS-REGISTRY.md cites this file as enforcement of):
 //   *Live-User-Channel Proof Before Done*
 
+import { readVerifiedInstalledCatalog } from '../core/VerifiedPackagedCatalog.js';
 import { credentialScrubEnabledReader } from '../core/outputCredentialScrub.js';
 import { instarMachineMarker } from '../core/HttpLeaseTransport.js';
 import { mayBeLocalArrival } from '../core/requestArrival.js';
@@ -1397,6 +1398,7 @@ export class AgentServer {
 
   constructor(options: {
     config: InstarConfig;
+    readPackagedDoorwayCatalog?: typeof readVerifiedInstalledCatalog;
     sessionManager: SessionManager;
     terminateSessionAuthority?: SessionTerminateAuthority;
     /** Override the same-host apprenticeship peer read (tests/custom embeddings). */
@@ -6752,7 +6754,11 @@ export class AgentServer {
         },
         { ...cadenceRaw, enabled: true },
       ) : null);
+    const packagedDoorwayCatalog = options.config.maintenance?.doorwayScan?.packagedRegistryEnabled === true
+      ? (options.readPackagedDoorwayCatalog ?? readVerifiedInstalledCatalog)(options.config.version ?? '')
+      : undefined;
     const routeCtx: import('./routes.js').RouteContext = {
+      packagedDoorwayCatalog,
       windowLifecycleNow: options.windowLifecycleNow,
       windowRunLivenessAuthority,
       windowRunCadenceExecutor,
