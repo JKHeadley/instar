@@ -7,3 +7,5 @@ The proposed cleanup waits until a pull request has merged and its checkout has 
 Before removing an eligible checkout, it saves local evidence such as logs, screenshots, and receipts in a compressed archive and verifies the archive. Dependencies and other files that can be rebuilt can go with the checkout. The branch and any backups stay available.
 
 The first rollout will only report what it would remove. The report will explain each decision and later show how much disk space removal actually recovered.
+
+The first build is a command that reads a saved snapshot and prints what it would release and why. It cannot archive or delete anything. If the snapshot cannot prove that a checkout is clean, merged and idle, the report explains why it would keep it. Automatic cleanup is a separate proposal.

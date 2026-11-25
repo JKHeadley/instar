@@ -1,71 +1,48 @@
-# Release merged worktrees after 24 hours idle
+---
+title: Report eligibility for merged worktree release
+approved: true
+approved-by: Chief of Staff, offline report-only decision of 2026-11-24
+review-convergence: "2026-11-25T01:00:47.754Z"
+review-iterations: 7
+review-completed-at: "2026-11-25T01:00:47.754Z"
+review-report: "docs/specs/reports/merged-worktree-release-convergence.md"
+cross-model-review: "codex-cli:gpt-6.2-astra"
+---
 
-Extend the existing agent worktree reclaimer. A registered checkout becomes eligible 24 hours after the later of its PR merge or last verified checkout activity. Verify the exact HEAD against the merged PR, including squash merges. Hold when provenance or activity evidence is missing. A new HEAD or new activity resets eligibility.
+# Report eligibility for merged worktree release
 
-Require clean Git status including untracked files. Hold owner-reserved, locked, unreadable and nested worktrees, live session and process directories, build and index markers, and incoming dependency links. Preserve branch refs, backups and bundles. Recheck these guards under the existing reclaimer lock immediately before removal.
+The first build is an offline report. Read one JSON snapshot assembled by the stewardship evidence collector and print one verdict and all hold reasons per checkout. Accept an explicit evaluation time for replay. The reporter does not fetch, start a scheduler, alter legacy reaper custody, create archives, modify Git or remove paths.
 
-Allow recognized rebuildable dependencies and build outputs to go with the checkout. Treat other ignored files as evidence by default. Before removal, write one compressed archive per checkout under `.instar/backups/released-worktree-residue/` and record its source HEAD, manifest, byte count and SHA-256. Verify the archive contents against the source and publish the archive atomically. Hold the checkout on insufficient space, archive failure or changed content. Retain completed archives unless the owner approves their deletion.
+Report “would release” only where the snapshot attests all of the following for the same checkout generation and exact HEAD: registered path, trusted merged PR evidence, at least 24 hours since merge and at least 24 hours of verified idle time, clean status including untracked and hidden tracked edits, and no lock, owner hold, live use, dependency or nested checkout. Missing, stale or mismatched evidence produces a hold. An archive-needed flag is informational and never asserts an archive exists. A report is an advisory snapshot, not permission to remove.
 
-Use non-forced Git worktree removal through SafeGitExecutor. Make retries idempotent and report per-path decisions, archive checksums and measured disk change. Start in dry run. Keep the storage alert open while the threshold is exceeded.
-
-Cover exact merge and squash provenance, the 24-hour boundary, active use and owner holds, shared dependencies, and archive failure and races. Use real disposable Git worktrees for integration and the normal schedule for lifecycle verification. Route full verification through Throughput.
-
-## Report-only implementation boundary
-
-Add an independent default report-only policy. For checkouts enrolled in this policy, the legacy reaper must defer to it even when legacy deletion is enabled. The first implementation must have no route from this policy to archive creation, deletion, or cleanup callbacks. Existing unenrolled worktrees retain their existing behavior.
-
-Bind evidence to a canonical repository, worktree registration, and exact HEAD. Read the PR's exact final head and merged timestamp from the repository's trusted upstream. Stale tracking refs and patch equivalence cannot establish eligibility. Where an ancestor is allowed, require authoritative evidence linking that exact commit to the merged change. A fresh merged record can be cached with a bounded lifetime, but a changed registration or HEAD invalidates it immediately.
-
-Record the start of continuous observation and last known session or build activity using the existing lifecycle signals. Start the clock at observation time if past activity cannot be established, and reset after a monitoring gap that could conceal activity. Filesystem changes and live processes can extend a hold. Their absence cannot establish past idleness. Bound per-pass work using the existing worker deadline and scan budgets, resume incomplete scans, and treat incomplete checks as holds. Report-only reads metadata and status without reading archive payloads.
-
-A later deletion implementation needs a per-checkout claim shared with session and build admission and dependency registration. Hold if unmanaged writers cannot be excluded. Restrict archive entries to relative paths inside the checkout, preserve symlinks without following them, and hold on special files, nested repositories, or backup and bundle collisions. Use private permissions and never overwrite a completed archive. Verify the source manifest again while the claim is held before removing the checkout.
-
-## Multi-machine posture
-
-Checkout observation, removal claims and recovery archives live on the host that owns the checkout. machine-local-justification: hardware-bound-resource
-
-Expose report decisions through the existing host-qualified reclaimer status and use the existing pool reporting path for summary visibility. A report on one machine grants no authority over another machine's checkout.
+Use the observed 24-hour policy for automatic reports; this has no effect on separately authorized manual disposition. Checkout-specific evidence is host-qualified and must not be used to authorize work on another host.
 
 ## Decision points touched
 
-- Minimum idle time — invariant; basis: external-constraint; evidence: the requested 24-hour policy applies before any checkout can be released.
-- Exact merge identity and activity evidence — invariant; basis: irreversible-consequence; evidence: a stale ref or observation gap could authorize deletion of unpublished or active work.
-- Owner holds, locks, dependencies, and archive integrity — invariant; basis: irreversible-consequence; evidence: a deletion can destroy local evidence or break a dependent checkout. Unknown inputs hold.
-- Report-only rollout and later activation — invariant; basis: irreversible-consequence; evidence: a dry-run verdict cannot authorize an archive write or deletion. Any future destructive mode needs separate activation.
+- Report eligibility — invariant; basis: enumerable-domain; evidence: this report only reflects the explicit predicates of the owner-directed merged checkout policy, and ambiguity is a hold.
+- Read-only scope — invariant; basis: irreversible-consequence; evidence: an advisory verdict must not authorize deletion or change checkout custody.
 
-## Enrollment, observation and rollback
+## Multi-machine posture
 
-Enroll through an explicit host rollout setting scoped to the existing registered worktree roots. Ship with enrollment off, then enable report-only on the test host and Studio as separate operator actions. On an enrolled host, reserve all supported registered checkouts before legacy eligibility runs, even while merge lookup is unavailable. Enrolled checkouts remain reserved on a partial scan or unreadable state. Keep observation active when legacy removal is disabled. Rollback stops observation but preserves the reservation until an explicit operator decision restores legacy custody.
+The report reads an explicit host-qualified snapshot and can run anywhere. It preserves the evidence host and does not offer a fleet-wide view or transfer authority.
 
-Use durable session and build admission and exit events keyed by checkout generation. A short session between scans must reset the idle clock. Require a continuous event cursor and reset observation after a missing range, unknown restart continuity, path reuse, or a backward clock adjustment. Advance partial scans with a bounded resume cursor. Never backdate idle time to a commit timestamp. The 24-hour floor governs automatic eligibility only; separately authorized manual handling follows its own guards.
+## Open questions
 
-Before proposing any destructive rollout, review at least one full observation window on the test host and then the Studio, including missed and unexpected candidates. Verify reporting works with legacy deletion disabled and cannot call cleanup callbacks on a legacy-armed host when upstream evidence is missing. A later retry after archive publication must reacquire the checkout claim and verify the current manifest matches the completed archive. If it differs, preserve both and report the hold.
+*(none)*
 
-At enrollment, reserve the supported roots before reading Git registration. An unreadable or unregistered path discovered under a reserved root receives a hold verdict. Persist root custody independently of any individual activity row, so a failed registration lookup or lost cursor cannot route the path to legacy removal. The idle calculation includes the first observation of the current HEAD alongside merge time and the last activity event.
+## Verification
 
-Emit the checkout generation's admission record in the session and build admission paths before a runner receives the checkout, and record exit in their normal teardown paths. A failed start-record write must prevent that checkout from being treated as continuously observed. An unmatched start holds it. If an entry point cannot provide durable coverage, keep the checkout ineligible. Test short sessions wholly between scans, write failures, unreadable registration on first discovery, and a HEAD change just before expiry.
+Run the normal command against eligible, recent, stale, mismatched and missing evidence. Verify the input remains byte-identical and output has no deletion or archive effects.
 
-The archive contains only non-rebuildable ignored entries and a manifest of that exact set. Tracked files remain recoverable through Git. Rebuildable ignored output stays out of the archive. Untracked non-ignored files hold removal. Test the archive against a checkout with all three file classes.
+## Maturation plan
 
-An enrolled checkout cannot be handed to a runner until its admission event is durable or an independent durable custody record marks that checkout ineligible and invalidates its idle interval. A writer that cannot participate in that contract keeps the checkout ineligible. Require 24 hours of verified monotonic elapsed time for the current observation interval, separately from upstream merge age. Restart without clock continuity starts a fresh observation interval. Wall-clock jumps cannot advance either eligibility proof.
+- **test-agent-live:** replay controlled positive and negative snapshots through the CLI.
+- **dev-agent-live:** replay a Studio audit snapshot and compare its holds against source evidence.
+- **fleet:** ship as a manually invoked report command, with no scheduler or mutation capability.
+- **graduation criterion:** controlled verdicts match their fixtures and the Studio replay identifies unknown inputs as holds.
+- **dark-window:** no runtime enablement. Report verification precedes shipment.
+- **ladder:** fixture replay, development-agent evidence replay, then manual CLI availability.
 
-Before publishing an eligible verdict, refresh mutable guards and reconcile events through a fresh cursor for the same checkout generation. A resumed scan may reuse immutable provenance within its freshness window, but cannot reuse stale cleanliness or activity checks. Test an untracked write between scan stages and verify the final report holds the path.
+## Running the report
 
-A downgrade must disable legacy deletion and drain the worker before reverting to any version that cannot honor reservations. Keep legacy deletion disabled after downgrade until an operator explicitly resolves reserved custody. Test that sequence with a reserved checkout that would otherwise pass the legacy rules.
-
-Restart the monotonic idle interval on the latest recorded activity or exit, including activity between scans. Eligibility requires 24 monotonic hours from that reset as well as trusted merge age. Record managed HEAD changes in the same durable activity stream. When an entry point can change HEAD outside that stream and coverage cannot be established, hold. Test a forward clock jump after an exit and an A→B→A change between scans.
-
-Exclude an ignored file only when generation provenance identifies that exact file as reproducible from tracked inputs. Directory names alone do not prove rebuildability. Archive ambiguous files, including manually maintained files inside build directories. Test a mixed-output directory and verify recovery of its manually maintained file.
-
-Serialize enrollment with the legacy worker's final removal decision. Drain an in-flight legacy pass before accepting custody, then require every removal to recheck current custody under the same lock. Test a legacy pass paused after classification while enrollment is requested.
-
-Hold a checkout with assume-unchanged or skip-worktree index entries until independent verification establishes that its tracked working bytes match HEAD. Ordinary Git status alone is insufficient. Include a fixture with an edited file hidden by an index flag.
-
-On an opt-in host, if event recording fails, first try the independent custody record. It can allow work to proceed while leaving the checkout ineligible. If neither write can be verified, hold admission to that checkout until one path recovers. Disclose this availability trade-off in the pilot opt-in. Test both failures and re-admission after recovery.
-
-
-Before starting continuous observation, reconcile live session and build checkout assignments under their admission lock or drain those assignments. A process changing its working directory does not release its checkout assignment. Hold if any pre-enrollment assignment cannot be reconciled. Test enrollment while a build still owns a checkout after changing directories.
-
-The generated-file proof must bind the exact path and content digest to the tracked inputs. Recheck the current bytes under the claim. Archive a file with an unknown or changed digest, including a local edit at the exact path previously generated by a build.
-
-Apply the Responsible Resource Usage standard by reclaiming finished work without risking active work or local evidence. The requested 24 hours is the pilot's automatic minimum; an owner can authorize a separate manual disposition where otherwise permitted. Use the existing reclaimer status read for the first pilot and identify the executing worker deadline separately from the deletion cap. Give the report scan its own resumable metadata budget. Enroll by role from test agent to development agent, then review fleet rollout. Before enabling the pilot, record a linked follow-through for the later archive-and-removal stage and its owner. If the pilot fails, stop expanding enrollment and leave reserved paths held until explicitly resolved.
+Run `node scripts/report-merged-worktrees.mjs SNAPSHOT.json [ISO_TIME]`. The snapshot has a `host` string and `worktrees` array. Each row carries a unique `path`, full lowercase `head` SHA, and `generation` identity. Its optional `evidence` repeats the head and generation, supplies `observedAt`, `validUntil`, `mergedAt` and `verifiedIdleMs` in milliseconds, and explicitly asserts `trustedMergedPr` and the seven guards named in the command. The supplying collector owns those attestations. A legacy audit that lacks them can still be replayed and produces hold reasons. Use a fresh trusted snapshot when interpreting a positive verdict.
