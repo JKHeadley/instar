@@ -1,4 +1,4 @@
-import { generateKeyPairSync, sign } from 'node:crypto';
+import { createHash, generateKeyPairSync, sign, X509Certificate } from 'node:crypto';
 import { execFileSync } from 'node:child_process';
 import { once } from 'node:events';
 import fs from 'node:fs';
@@ -8,12 +8,16 @@ import os from 'node:os';
 import path from 'node:path';
 import tls from 'node:tls';
 import readline from 'node:readline';
+import { setTimeout as wait } from 'node:timers/promises';
 import Database from 'better-sqlite3';
 import { expect, it, vi } from 'vitest';
 import { FencedLease } from '../../src/core/FencedLease.js';
 import { signOwnerRecordEntry } from '../../src/core/ownerRecord.js';
 import { createHostedRelayOwnerLeaseReader } from '../../src/hostedRelay/ownerLeaseReader.js';
 import { SafeFsExecutor } from '../../src/core/SafeFsExecutor.js';
+import { launchDisposableHostedRelay } from '../../src/hostedRelay/disposableLauncher.js';
+import { runHostedRelayReconnect } from '../../src/hostedRelay/reconnect.js';
+import { createHostedRelayVerifiedDialer } from '../../src/hostedRelay/verifiedDialer.js';
 import { startHostedRelayAgentSession } from '../../src/hostedRelay/agentSession.js';
 import { createDisposableHostedRelay } from '../../src/hostedRelay/disposableRelay.js';
 import { HostedRelayLeaseAdmission } from '../../src/hostedRelay/leaseAdmission.js';
@@ -36,8 +40,9 @@ it('connects a signed outbound control session to an end-to-end TLS client in a 
   const lease = { hostname, assignment: '1'.repeat(64), holder, epoch: 1, expiresAt };
   const draft = { holder, epoch: 1, nonce: 1, acquiredAt: new Date().toISOString(), expiresAt: new Date(expiresAt).toISOString() };
   const current = { ...draft, signature: machineSign(FencedLease.canonicalize(draft)) };
+  let authorized = true;
   const reader = createHostedRelayOwnerLeaseReader({
-    registration: name => name === hostname ? { agentId, assignment: lease.assignment, pinnedGenesis: genesis.id,
+    registration: name => authorized && name === hostname ? { agentId, assignment: lease.assignment, pinnedGenesis: genesis.id,
       entries: [genesis.entry, ownerKey.entry] } : undefined,
     committedLease: id => id === agentId ? current : undefined,
     verifyFirstOwnerProof: proof => proof.proof === 'fixture',
@@ -121,6 +126,54 @@ it('connects a signed outbound control session to an end-to-end TLS client in a 
     const stopped = once(waiting, 'close');
     relay.stop();
     await stopped;
+
+    const controlCertificate = path.join(root, 'control.pem'), controlKey = path.join(root, 'control.key');
+    execFileSync('openssl', ['req', '-x509', '-newkey', 'rsa:2048', '-nodes', '-days', '1',
+      '-subj', '/CN=localhost', '-keyout', controlKey, '-out', controlCertificate], { stdio: 'ignore', timeout: 10000 });
+    const controlCert = fs.readFileSync(controlCertificate);
+    const spki = new X509Certificate(controlCert).publicKey.export({ type: 'spki', format: 'der' });
+    const launched = await launchDisposableHostedRelay({ leases: gate, cert: controlCert, key: fs.readFileSync(controlKey) });
+    const controller = new AbortController();
+    const run = runHostedRelayReconnect({
+      scope: lease, signal: controller.signal, currentLease: () => lease, sign: machineSign,
+      connectVerified: createHostedRelayVerifiedDialer({ origin: 'https://localhost:' + launched.controlPort,
+        spkiSha256: createHash('sha256').update(spki).digest('hex'), ca: controlCert }),
+      openLocalTls: () => net.connect(agentPort, '127.0.0.1'),
+    });
+    try {
+      let answer: string | undefined;
+      let verifiedClient: tls.TLSSocket | undefined;
+      for (let attempt = 0; attempt < 20 && !answer; attempt++) {
+        const client = tls.connect({ port: launched.clientPort, host: '127.0.0.1', servername: hostname, ca: cert });
+        client.setTimeout(500, () => client.destroy(new Error('fixture TLS deadline')));
+        try {
+          answer = (await once(client, 'data'))[0].toString();
+          client.setTimeout(0);
+          verifiedClient = client;
+          cleanups.push(() => client.destroy());
+        } catch {
+          client.destroy();
+          await wait(20); // @silent-fallback-ok — the relay may be waiting for its first admitted offer
+        }
+      }
+      expect(answer).toBe('direct agent certificate');
+      const revoked = once(verifiedClient!, 'close');
+      authorized = false;
+      await revoked;
+      const pendingControl = net.connect(launched.controlPort, '127.0.0.1');
+      cleanups.push(() => pendingControl.destroy());
+      await once(pendingControl, 'connect');
+      const pendingClosed = once(pendingControl, 'close');
+      controller.abort();
+      await expect(run).resolves.toBe('stopped');
+      await launched.stop();
+      await pendingClosed;
+    } finally {
+      controller.abort();
+      await run;
+      await launched.stop();
+    }
+
 
   } finally {
     relay.stop();
