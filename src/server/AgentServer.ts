@@ -294,7 +294,7 @@ import { poolPeerFetch } from './poolPeerFetch.js';
 import { AttributionRuntime, type AttributionConfig } from '../core/attribution/attributionRuntime.js';
 import { AppConversationService, VOICE_TRANSCRIBE_PROVIDER_TIMEOUT_MS } from '../core/AppConversationService.js';
 import { transcribeAudioFileDetailed, configuredVoiceProvider, describeVoiceTranscription } from '../core/VoiceTranscription.js';
-import { deviceKeyHashOf, identityKeyLookup, loadMachineSigner } from '../core/AppRecordSignatures.js';
+import { createAppMachineTrustEvidence, deviceKeyHashOf, identityKeyLookup, loadMachineSigner } from '../core/AppRecordSignatures.js';
 import { MobileDeviceKeyLedger } from '../core/MobileDeviceKeyLedger.js';
 import { stopAutonomousTopic } from '../core/AutonomousSessions.js';
 import { createAppFollowUpInjector, createAppInboundDispatch, type AppInboundDispatch } from '../core/appInboundDispatch.js';
@@ -1619,6 +1619,8 @@ export class AgentServer {
     spawnAdmission?: import('../core/SpawnAdmission.js').SpawnAdmission;
     /** Native app conversations: the bootstrap-wired service (server.ts). Absent ⇒ default-constructed when the gate is on. */
     appConversations?: AppConversationService;
+    /** In-process acceptance enrollment for an isolated development server. */
+    appRemovalReadAcceptance?: (conversationKey: string) => boolean;
     conversationGraphReplicationRuntime?: import('./ConversationGraphReplicationRuntime.js').ConversationGraphReplicationRuntime;
     conversationGraphDefault?: import('./ConversationGraphDefault.js').ConversationGraphDefault;
     conversationGraphDelegationRuntime?: import('./ConversationGraphDelegationRuntime.js').ConversationGraphDelegationRuntime;
@@ -8202,7 +8204,17 @@ export class AgentServer {
         try { return projectTitlesByTopic(options.chiefOfStaffLoop?.projectsSummary() ?? []); }
         catch { return new Map(); } // @silent-fallback-ok — the title is only a fallback for a missing name
       };
+      const removalEnrollment = options.config.developmentAgent === true ? options.appRemovalReadAcceptance : undefined;
+      const removalTrust = removalEnrollment ? createAppMachineTrustEvidence(options.config.stateDir) : null;
+      const removalTeamLog = removalEnrollment ? this.mobilePairing.teamLog() : null;
       const conversationFlatDeps: import('./mobileConversationRoutes.js').MobileConversationRouteDeps = {
+        removalReadAcceptance: removalEnrollment && removalTrust ? {
+          enrolled: removalEnrollment,
+          evidence: {
+            machineTrustRevision: (custodian) => removalTrust([custodian])?.revision ?? null,
+            teamVisibilityRevision: () => removalTeamLog?.visibilityRevision() ?? null,
+          },
+        } : undefined,
         unread: this.conversationUnread,
         // Conversation-list pins: server.ts builds it replicated; a server built without it keeps pins on this machine only.
         listPins: options.conversationListPins !== undefined ? options.conversationListPins : (this.appConversations ? new ConversationListPinStore({ stateDir: options.config.stateDir }) : null),

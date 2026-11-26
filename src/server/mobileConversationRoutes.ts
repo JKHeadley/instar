@@ -41,7 +41,7 @@ import type { OriginDisplaySettings } from '../messaging/telegram-origin/types.j
 import { deviceOriginRow, validateDeviceOriginRow, type DeviceOriginRow } from '../messaging/messageOrigin.js';
 import crypto from 'node:crypto';
 import { deviceKeyOf } from '../core/MobileDeviceKeys.js';
-import { Router, type Request, type Response } from 'express';
+import { Router, type NextFunction, type Request, type Response } from 'express';
 import type { InstarConfig } from '../core/types.js';
 import type { MobilePairingService } from './mobilePairingRoutes.js';
 import { deviceAdmissionIdentity, deviceAdmittedAt, deviceAdmittedHost, deviceMayUse, devicePersonOf, isMobileChatEnabled, personOfReaderKey } from './mobilePairingRoutes.js';
@@ -76,6 +76,9 @@ import { isConversationListPinsEnabled, MAX_LIST_PINS_PER_READER, type Conversat
 import type { ResolvedPerson } from '../core/MobilePeople.js';
 import { mediaOffBody } from './mobileMediaOff.js';
 import { AppCreationHierarchyProjection, type AppHierarchyFields, type CreationHierarchySource, type CreationHierarchyScope } from './appCreationHierarchy.js';
+import { executeOwnerRemovalHistory, executeOwnerRemovalSync } from './mobileAppRemovalSync.js';
+import { createRemovalSyncCursorCodec } from './mobileAppRemovalSyncCursor.js';
+import type { resolveOwnerRemovalSyncAuthority } from './mobileAppRemovalSyncAuthority.js';
 import { normalizeCreationParentRef, type AppCreationContext } from '../core/AppCreationContext.js';
 import {
   checkSignedFiles, claimMediaUploads, mediaRecordTooLarge, preflightMediaAttachments, publishMediaMessage, signedFileHashParts,
@@ -249,6 +252,11 @@ async function fetchPeers<T>(
 }
 
 export interface MobileConversationRouteDeps {
+  /** Explicit isolated acceptance enrollment. No normal boot supplies this. */
+  removalReadAcceptance?: {
+    enrolled: (conversationKey: string) => boolean;
+    evidence: Parameters<typeof resolveOwnerRemovalSyncAuthority>[3];
+  };
   messageLinkOrigin?: () => string | null;
   config: InstarConfig;
   /** SEC-164 §4.5: posts the fixed removed-key notice into the conversation. Absent ⇒ no notice. */
@@ -439,6 +447,26 @@ export function createMobileConversationRouter(deps: MobileConversationRouteDeps
   const sendRate = new Map<string, number[]>();
   const mutationRate = new Map<string, number[]>();
   const svc = deps.service;
+  const removalReads = deps.removalReadAcceptance;
+  const removalCodec = removalReads ? createRemovalSyncCursorCodec() : null;
+  const protectedAcceptanceKeys = new Set<string>();
+  const serveProtectedRead = (req: Request, res: Response, next: NextFunction, execute: typeof executeOwnerRemovalHistory) => {
+    if (!svc || !removalReads || !removalCodec) return false;
+    const key = String(req.params.key).toLowerCase();
+    try {
+      if (!protectedAcceptanceKeys.has(key)) {
+        if (!removalReads.enrolled(key)) return false;
+        protectedAcceptanceKeys.add(key);
+      }
+    } catch {
+      res.status(503).json({ error: 'message-removal-sync-unavailable' });
+      return true;
+    }
+    void execute(req, deps.pairing, svc, removalReads.evidence, removalCodec)
+      .then(({ status, body }) => { res.status(status).json(body); })
+      .catch(next);
+    return true;
+  };
   const creationProjection = deps.creationHierarchyProjection ?? (svc ? new AppCreationHierarchyProjection(svc.store, () => deps.creationHierarchySource?.()) : null);
   const ownerMetadata = (req: Request): boolean => {
     const principal = principalOf(req);
@@ -1800,8 +1828,9 @@ export function createMobileConversationRouter(deps: MobileConversationRouteDeps
   });
 
   // ── Browse ──
-  router.get('/mobile/chat/app/:key/messages', async (req: Request, res: Response) => {
+  router.get('/mobile/chat/app/:key/messages', async (req: Request, res: Response, next: NextFunction) => {
     if (!readGate(req, res)) return;
+    if (serveProtectedRead(req, res, next, executeOwnerRemovalHistory)) return;
     if (req.query.scope !== undefined && req.query.scope !== 'pool') { res.status(400).json({ error: 'invalid-scope' }); return; }
     const key = String(req.params.key);
     if (!allowed(req, res, key)) return;
@@ -1891,8 +1920,9 @@ export function createMobileConversationRouter(deps: MobileConversationRouteDeps
   });
 
   // ── Sync ──
-  router.get('/mobile/chat/app/:key/events', (req: Request, res: Response) => {
+  router.get('/mobile/chat/app/:key/events', (req: Request, res: Response, next: NextFunction) => {
     if (!readGate(req, res)) return;
+    if (serveProtectedRead(req, res, next, executeOwnerRemovalSync)) return;
     const key = String(req.params.key);
     if (!allowed(req, res, key)) return;
     if (!isAppConversationKey(key) || !svc!.store.getConversation(key)) { res.status(404).json({ error: 'unknown-conversation' }); return; }

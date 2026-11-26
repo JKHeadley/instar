@@ -224,3 +224,7 @@ At first activation, an older disconnected client may still display a copy accep
 ## Private signed first-history-page checkpoint
 
 An owner-only history fixture shares the signed sync authority and epoch codec. It uses the exact prepared journal proof from the selected page. It rechecks owner, custody and epoch after preparation and after row selection, then revalidates the selected proof. A concurrent removal can invalidate that proof without resetting the epoch. If a row's access is uncertain, refuse the page without returning either the row or a pagination position. This fixture returns a bounded first page, applies no-store and cannot renew a display deadline. It does not mount the production history route or decide the wire contract for older pages and exact reads.
+
+## Isolated server-router acceptance
+
+An in-process development-server hook enrolls synthetic conversations for the owner-only first page and sync on the normal App URLs. It shares a boot-scoped codec and uses the real ledger, journal, Team Access log and the machine trust revision for the synthetic single custodian. Enrollment sticks for the life of the acceptance process, and an enrolled route never falls back to legacy history. Normal CLI boot does not supply the hook. No removal write, production enrollment or capability advertisement is added. This proof covers these two HTTP projections. It leaves other read surfaces and the preactivation requirements in place.

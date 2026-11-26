@@ -42,14 +42,14 @@ afterAll(async () => {
   for (const d of dirs) SafeFsExecutor.safeRmSync(d, { recursive: true, force: true, operation: 'tests/e2e/mobile-native-conversations-alive.test.ts' });
 });
 
-async function boot(developmentAgent: boolean) {
+async function boot(developmentAgent: boolean, appRemovalReadAcceptance?: (key: string) => boolean) {
   const dir = fs.mkdtempSync(path.join(process.env.TMPDIR ?? os.tmpdir(), 'native-e2e-'));
   dirs.push(dir);
   const stateDir = path.join(dir, '.instar');
   for (const d of ['state/sessions', 'state/jobs', 'logs']) fs.mkdirSync(path.join(stateDir, d), { recursive: true });
   fs.writeFileSync(path.join(stateDir, 'config.json'), '{}');
   // Every agent gets a machine identity at `instar init`; the receipt signer reads it.
-  await new MachineIdentityManager(stateDir).generateIdentity({ name: 'e2e machine' });
+  const identity = await new MachineIdentityManager(stateDir).generateIdentity({ name: 'e2e machine' });
   const config = {
     projectName: 'native-e2e', projectDir: dir, stateDir, port: 0, authToken: 'e2e-token', developmentAgent, workBoard: { enabled: false },
     mobilePairing: { multiRoute: { enabled: false }, native: { messageLinks: { enabled: true }, quotedReplies: { enabled: true }, reactions: { enabled: true }, forwards: { enabled: true } } }, // the single-host path; multi-route has its own e2e
@@ -70,14 +70,15 @@ async function boot(developmentAgent: boolean) {
   const singleInstanceLock = new SingleInstanceLock({ stateDir, env: {} });
   expect((await singleInstanceLock.acquire()).acquired).toBe(true);
   writerLocks.push(singleInstanceLock);
-  const server = new AgentServer({ config, sessionManager, singleInstanceLock, state: new StateManager(stateDir), initiativeTracker: new InitiativeTracker(stateDir), tunnel, workBoard: () => null });
+  const server = new AgentServer({ config, sessionManager, singleInstanceLock, appRemovalReadAcceptance, meshSelfId: identity.machineId, state: new StateManager(stateDir), initiativeTracker: new InitiativeTracker(stateDir), tunnel, workBoard: () => null });
   servers.push(server);
   return { server, stateDir, spawned, singleInstanceLock };
 }
 
 describe('native app conversations — production wiring', () => {
   it('is alive on a development agent with no Telegram and no Slack: create, send, session tag, reply, history', async () => {
-    const { server, stateDir, spawned, singleInstanceLock } = await boot(true);
+    const enrolled = new Set<string>();
+    const { server, stateDir, spawned, singleInstanceLock } = await boot(true, (key) => enrolled.has(key));
     const app = server.getApp();
     // Wiring integrity: real, non-null components on the production path.
     expect(server.mobilePairing).not.toBeNull();
@@ -106,6 +107,7 @@ describe('native app conversations — production wiring', () => {
     expect(m.status).toBe(200);
     const dms: string[] = [];
     server.mobilePairing!.deps.ownerDM = async (text) => { dms.push(text); return 1; };
+    server.mobilePairing!.deps.telegramOwnerId = () => 91472; // Synthetic account, with no Telegram adapter.
     server.mobilePairing!.deps.telegramOwnerPresent = () => true; // the Telegram path (no owner ⇒ the dashboard path, §4.4)
     const dev = makeDevice();
     const r = await request(app).post('/mobile/pairing-codes/redeem').set('Host', HOST).send({ code: m.body.code, deviceName: 'e2e phone', devicePublicKey: dev.publicKey });
@@ -292,6 +294,25 @@ describe('native app conversations — production wiring', () => {
     const context = fs.readFileSync(contextPath!, 'utf8');
     expect(context).toContain('Earlier ordinary context');
     expect(context).not.toContain('Saturday is the farmers market at nine.');
+
+    expect(server.mobilePairing!.machineId()).toBe(server.appConversations!.deps.machineId());
+    enrolled.add(key);
+    const acceptedHistory = await send('GET', `/mobile/chat/app/${key}/messages`);
+    expect(acceptedHistory.status, JSON.stringify(acceptedHistory.body)).toBe(200);
+    expect(acceptedHistory.headers['cache-control']).toBe('no-store');
+    expect(acceptedHistory.body.messages.map((row: { eventId: string }) => row.eventId)).not.toContain(target);
+    expect(acceptedHistory.body).not.toHaveProperty('displayForMs');
+    const acceptedSync = await send('GET', `/mobile/chat/app/${key}/events`);
+    expect(acceptedSync.status, JSON.stringify(acceptedSync.body)).toBe(200);
+    expect(acceptedSync.body.epoch).toBe(acceptedHistory.body.epoch);
+    expect(acceptedSync.body.changes).toContainEqual({
+      kind: 'message-removed', conversationKey: key, eventId: 'dark-test-removal-fact', targetEventId: target,
+    });
+    expect((await send('GET', `/mobile/chat/app/${key}/messages?scope=pool`)).status).toBe(400);
+    expect((await auth(request(app).get(`/mobile/chat/app/${key}/messages`))).status).toBe(403);
+    expect((await send('GET', `/mobile/chat/app/${dest}/messages`)).body).not.toHaveProperty('epoch');
+    enrolled.delete(key);
+    expect((await send('GET', `/mobile/chat/app/${key}/messages`)).body.epoch).toBe(acceptedHistory.body.epoch);
 
     // A ledger revocation alone refuses the phone at once on the production auth path, even if
     // the registry write after it failed (the registry still says active here).
