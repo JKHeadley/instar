@@ -45,3 +45,5 @@ The private offer sender checks that Telegram accepted the exact enrollment mess
 The bot keeps the one-time Start command out of ordinary conversation. Only a direct message in the verified owner's private chat can reach the enrollment handler.
 
 The server stores a fingerprint of the temporary Start token. A matching Start can open the exact offer once, and the token expires within ten minutes.
+
+The server checks the owner and the machine responsible for enrollment before showing the offer and again when Telegram confirms delivery. If responsibility changes during delivery, the resulting button cannot nominate the phone.

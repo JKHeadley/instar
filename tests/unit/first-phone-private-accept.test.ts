@@ -1,3 +1,5 @@
+import { createFirstPhoneStartHandler } from '../../src/core/trustJourney/firstPhoneStartHandler.js';
+import { FirstPhonePrivateStartStore } from '../../src/core/trustJourney/FirstPhonePrivateStartStore.js';
 import { createHash } from 'node:crypto';
 import fs from 'node:fs';
 import os from 'node:os';
@@ -280,6 +282,70 @@ it('saves only a direct acknowledged offer which is still current after Telegram
     expect(offers.lookup(sentDigest())).toEqual({
       offer: { ...prepared.offer, disclosureMessageId: 15 }, deviceId: prepared.deviceId, holderMachineId: prepared.holderMachineId,
     });
+  } finally {
+    db.close();
+  }
+});
+
+it('issues the exact offer once from an authenticated Start and drops acknowledgement after a holder change', async () => {
+  const db = new Database(':memory:');
+  try {
+    const starts = new FirstPhonePrivateStartStore(db);
+    const offers = new FirstPhonePrivateOfferStore(db);
+    const { callbackData: _callback, disclosureMessageId: _message, ...fields } = offer;
+    const disclosure = 'Exact disclosure';
+    const exactProposal = { ...proposal, disclosureHash: createHash('sha256').update(disclosure).digest('hex') };
+    const prepared = {
+      offer: { ...fields, proposalHash: firstPhoneProposalHash(exactProposal) },
+      deviceId: proposal.deviceId, holderMachineId: 'holder-machine', disclosure, proposal: exactProposal,
+    };
+    const originalAuthority = {
+      ownerAccountId: prepared.offer.chatId, localMachineId: prepared.holderMachineId,
+      holderMachineId: prepared.holderMachineId, epoch: prepared.offer.holderEpoch, expiresAt: 400,
+    };
+    let authority = originalAuthority;
+    const startReceipt = (updateId: number) => {
+      const token = starts.prepare({
+        ownerAccountId: originalAuthority.ownerAccountId, holderEpoch: originalAuthority.epoch,
+        holderMachineId: originalAuthority.holderMachineId, proposalHash: prepared.offer.proposalHash,
+        issuedAt: 100, expiresAt: 300,
+      });
+      return {
+        text: `/start ${token}`, adapter: 'telegram' as const, receiptId: `tg-${updateId}`, uniqueKey: `tg-update:${updateId}`,
+        senderId: offer.chatId, chatId: offer.chatId, chatType: 'private', messageId: String(updateId),
+        senderIsBot: false, forwarded: false, receivedAt: new Date(190).toISOString(),
+      };
+    };
+    const sendPrivate = vi.fn(async (chatId: string, _text: string, _data: string) => ({ chatId, messageId: 15 }));
+    const readPreparedOffer = vi.fn(() => prepared);
+    const handle = createFirstPhoneStartHandler({
+      starts, offers, readAuthority: () => authority, readPreparedOffer,
+      stillCurrent: () => true, now: () => 200, sendPrivate,
+    });
+    const digest = () => createHash('sha256').update(sendPrivate.mock.lastCall![2]).digest('hex');
+    const receipt = startReceipt(12);
+    await handle({ ...receipt, senderId: '8001' });
+    authority = { ...originalAuthority, holderMachineId: 'other-holder' };
+    await handle(receipt);
+    expect(readPreparedOffer).not.toHaveBeenCalled();
+
+    authority = originalAuthority;
+    readPreparedOffer.mockReturnValueOnce({ ...prepared, offer: { ...prepared.offer, proposalHash: 'b'.repeat(64) } });
+    await handle(startReceipt(14));
+    expect(sendPrivate).not.toHaveBeenCalled();
+    await handle(receipt);
+    expect(readPreparedOffer).toHaveBeenCalledWith(prepared.offer.proposalHash);
+    expect(offers.lookup(digest())?.offer.disclosureMessageId).toBe(15);
+    await handle(receipt);
+    expect(sendPrivate).toHaveBeenCalledTimes(1);
+
+    sendPrivate.mockImplementationOnce(async chatId => {
+      authority = { ...originalAuthority, epoch: 'holder-3' };
+      return { chatId, messageId: 16 };
+    });
+    await handle(startReceipt(13));
+    expect(sendPrivate).toHaveBeenCalledTimes(2);
+    expect(offers.lookup(digest())).toBeNull();
   } finally {
     db.close();
   }
