@@ -1,0 +1,19 @@
+{
+  "version": 2,
+  "slug": "owner-conversation-tree-sections",
+  "sessionId": "633bd330-201e-4dc8-8fd9-72b89116167e",
+  "timestamp": "2026-11-26T11:24:30.551Z",
+  "artifactPath": "upgrades/side-effects/owner-conversation-tree-sections.md",
+  "artifactSha256": "bb4cf432beac68fce668bbca19d05517cffb3e17c884aefe81b67f7422ef3f3d",
+  "specPath": "docs/specs/work-front-doors.md",
+  "coveredFiles": [
+    "scripts/conversation-tree-native-acceptance.mjs",
+    "tests/e2e/conversation-tree-native-acceptance.test.ts",
+    "upgrades/side-effects/owner-conversation-tree-sections.md"
+  ],
+  "phase": "complete",
+  "tier": 2,
+  "tierReasoning": "Join disposable card and conversation in signed acceptance",
+  "secondPass": "not-required",
+  "reviewerConcurred": null
+}

@@ -19,3 +19,5 @@ enable the new layout on a live connection.
 Both owner routes use the same output without platform-specific placement.
 
 The signed fixture also seeds a project descendant pin through the real pin store.
+
+The fixture joins a visible card to the exact same conversation across signed list, Projects and tree reads.

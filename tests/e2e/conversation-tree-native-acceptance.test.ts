@@ -45,10 +45,17 @@ it('keeps all three conversation-tree routes open for a simulator-signed owner',
     expect(list.pinnedRows).toEqual([expect.objectContaining({ id: child, projectConversationKey: 'telegram:42' })]);
     const projects = await read('/mobile/work/projects');
     expect(projects.projects).toContainEqual(expect.objectContaining({ key: 'telegram:42' }));
+    const linked = projects.projects.find((project: { key: string }) => project.key === 'telegram:42').cards[0];
+    expect(linked).toMatchObject({ id: 'wc_0000000000000042', title: 'Fixture Linked Card' });
+    expect(list.conversations).toContainEqual(expect.objectContaining({
+      id: linked.conversationKey, projectConversationKey: 'telegram:42',
+      creationSource: expect.objectContaining({ kind: 'work-board-card', cardId: linked.id }),
+    }));
     const tree = await read('/mobile/conversation-graph/tree');
     expect(tree.placementComplete).toBe(true);
     expect(tree.sections.projects).toEqual([expect.objectContaining({
-      projectConversationKey: 'telegram:42', children: [expect.objectContaining({ title: 'Generated Project Chat' })],
+      projectConversationKey: 'telegram:42', children: expect.arrayContaining([expect.objectContaining({ title: 'Generated Project Chat' }),
+        expect.objectContaining({ ref: expect.objectContaining({ conversationKey: linked.conversationKey }) })]),
     })]);
     expect(tree.sections.ungrouped).toEqual([expect.objectContaining({ title: 'Ordinary Chat' })]);
     expect(tree.sections.groups[0].children[0]).toMatchObject({ title: 'Nested Group' });

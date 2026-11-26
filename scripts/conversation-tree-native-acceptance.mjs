@@ -73,6 +73,14 @@ try {
         parentConversationKey: 'telegram:42', parentBasis: 'explicit' } });
     parents.set(`app:${key}`, 'telegram:42');
   }
+  const cardConversation = crypto.randomUUID();
+  const card = { id: 'wc_0000000000000042', title: 'Fixture Linked Card', lane: 'with-agent',
+    conversationKey: cardConversation, projectKey: 'telegram:42' };
+  const cardContext = { v: 1, source: { kind: 'work-board-card', cardId: card.id, originMachineId: machineId(),
+    projectKey: card.projectKey }, parentConversationKey: card.projectKey, parentBasis: 'project' };
+  service.store.append({ eventId: crypto.randomUUID(), kind: 'created', conversationKey: cardConversation,
+    title: card.title, at, machineId: machineId(), creationContext: cardContext });
+  parents.set(`app:${cardConversation}`, card.projectKey);
   service.store.hiddenConversationKeys = () => new Set([hidden]);
   const group = { kind: 'effort', id: '012fdaec-70de-4324-9ef3-22b616fc83ce' };
   const nested = { kind: 'effort', id: '012fdaec-70de-4324-9ef3-22b616fc83cf' };
@@ -83,21 +91,24 @@ try {
     projectScope: [], headerId: `hdr-${subject.id.replaceAll('-', '')}` }));
   events.push(event(3, { subject: nested, op: 'set-primary-placement', parent: group, relation: 'contains', replacesPlacementEventIds: [] }));
   events.push(event(4, { subject: telegram(43), op: 'set-primary-placement', parent: nested, relation: 'coordinates', replacesPlacementEventIds: [] }));
+  const cardRef = { kind: 'conversation', platform: 'app', conversationKey: cardConversation };
   const generatedRef = { kind: 'conversation', platform: 'app', conversationKey: child };
   const model = new ConversationGraphReadModel({
     readiness: () => ({ ready: true }), certifiedEvents: () => events, verify: () => true,
     conversations: () => [...topics.map(([id, title]) => ({ ref: telegram(id), conversationId: id, title, lastActivity: at })),
-      { ref: generatedRef, conversationId: child, title: 'Generated Project Chat', lastActivity: at }],
+      { ref: generatedRef, conversationId: child, title: 'Generated Project Chat', lastActivity: at },
+      { ref: cardRef, conversationId: cardConversation, title: card.title, lastActivity: at }],
     treeProjectMembership: () => new Map([
       ...topics.map(([id]) => [nodeKey(telegram(id)), id === 42 ? 'telegram:42' : null]),
-      [nodeKey(generatedRef), 'telegram:42'],
+      [nodeKey(generatedRef), 'telegram:42'], [nodeKey(cardRef), card.projectKey],
     ]),
     effortTitle: (ref) => ref.id === group.id ? 'Fixture Group' : 'Nested Group',
     replication: () => ({ replicaLag: false, eventGap: false, evidenceMissing: false }), now: () => new Date(),
   }, { rootConversation: () => telegram(41) });
 
   const source = { version: 'fixture', complete: true, parents, confirmedProjects: new Set(['telegram:42']),
-    cardEvidence: [], resolveRef: (ref) => parents.has(ref) || topics.some(([id]) => ref === `telegram:${id}`) ? ref : null };
+    cardEvidence: [{ conversationKey: cardConversation, cardId: card.id, creationContext: cardContext, conflict: false }],
+    resolveRef: (ref) => parents.has(ref) || topics.some(([id]) => ref === `telegram:${id}`) ? ref : null };
   const creationProjection = new AppCreationHierarchyProjection(service.store, () => source);
   const authorizationVersion = 'disposable-single-owner';
   const listPins = new ConversationListPinStore({ stateDir });
@@ -110,7 +121,7 @@ try {
     creationAuthorizationVersion: () => authorizationVersion,
   }));
   const projects = express.Router();
-  mountProjectsRoutes(projects, { bearerOk: () => false, projects: () => [project], boardFor: () => null });
+  mountProjectsRoutes(projects, { bearerOk: () => false, projects: () => [project], boardFor: () => ({ status: 200, body: { lanes: [{ lane: card.lane, cards: [card] }] } }) });
   app.use(projects);
   app.use(createConversationGraphRouter({ model, resolveViewer: createConversationGraphViewerResolver({
     agentId: config.projectName, pairing, verifyDashboardOwner: () => false,
