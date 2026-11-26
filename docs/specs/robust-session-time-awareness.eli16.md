@@ -56,6 +56,15 @@ trustworthy part of every turn — so "how far along are we?" always has a real
 answer instead of a guess. It's purely additive: a healthy short chat is
 unaffected; the change only shows up when there's a session worth timing.
 
+## Proposed follow-up (not yet approved)
+
+The time stamp described above shows the computer's time zone and leaves out the
+weekday. On 2026-10-20 an agent called a Tuesday deadline "today" on a Monday
+night. A proposed amendment
+([operator-local-time-day-claim.eli16.md](operator-local-time-day-claim.eli16.md))
+would make the stamp say the day and time *for the person the agent works for*, and
+add a check that catches day mistakes before a message goes out.
+
 ---
 
 *Constitutional anchor: this serves **"Structure beats Willpower"** — the agent
