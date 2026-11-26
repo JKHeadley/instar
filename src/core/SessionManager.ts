@@ -9642,7 +9642,7 @@ rm()  { "${shimRunner}" rm  "$@"; }
       prev = t;
       if (!this.tmuxSessionExists(tmuxSession)) return { state: 'stuck' };
       lastPane = this.captureOutput(tmuxSession, 30) || '';
-      if (!this.isMarkerStuckAtPrompt(lastPane, marker)) return { state: 'submitted' };
+      if (!this.isMarkerStuckAtPrompt(lastPane, marker, this.sessionFrameworkCache?.get(tmuxSession))) return { state: 'submitted' };
     }
     if (this.paneShowsActiveWork(lastPane)) {
       let watch: Promise<InjectionSettlement> | null = null;
@@ -9701,7 +9701,7 @@ rm()  { "${shimRunner}" rm  "$@"; }
       try {
         if (!this.tmuxSessionExists(tmuxSession)) return 'session-gone';
         const pane = this.captureOutput(tmuxSession, 30) || '';
-        if (!this.isMarkerStuckAtPrompt(pane, marker)) return 'submitted';
+        if (!this.isMarkerStuckAtPrompt(pane, marker, this.sessionFrameworkCache?.get(tmuxSession))) return 'submitted';
         if (this.paneShowsActiveWork(pane)) {
           idleStuckStreak = 0;
         } else if (++idleStuckStreak >= 2) {
@@ -10198,15 +10198,6 @@ rm()  { "${shimRunner}" rm  "$@"; }
       this.idleKillBackoff?.reset(match.id); // new input arriving → re-evaluate fresh, not a zombie
     }
 
-    // Framework-specific submit semantics. Claude Code's readline buffers
-    // the bracketed paste and accepts a single Enter ~500ms later to
-    // submit. Codex's TUI takes longer to commit a paste into its
-    // input state and silently discards the first Enter that arrives
-    // before the commit is done — observed live: messages stacked up
-    // in the input box because the post-paste Enter landed too early.
-    // For codex we wait longer and send Enter twice (the second one
-    // submits if the first was eaten; if both land, the second is a
-    // harmless no-op against an empty buffer).
     const framework = this.getSessionFramework(tmuxSession);
     const conversationId = authoritativeConversationId
       ?? String(this.getTopicBinding(tmuxSession)?.topicId ?? tmuxSession);
@@ -10301,12 +10292,8 @@ rm()  { "${shimRunner}" rm  "$@"; }
       if (framework === 'codex-cli') {
         this.recordStrandedDraftMarker(tmuxSession, text, framework, delivery?.deliveryId, conversationId);
       }
-        // Verify Enter actually submitted — on fresh Claude Code TUIs (v2.1.105+)
-        // the Enter after bracketed-paste-end is occasionally eaten, leaving the
-        // text sitting in the input box unsubmitted. verifyInjection captures the
-        // pane after a short delay and sends one extra Enter if the marker text
-        // is still visible at the ❯ (or codex `›`) prompt.
-      this.verifyInjection(tmuxSession, text);
+      // The bounded verifier can recover a submit that the TUI still missed.
+      this.verifyInjection(tmuxSession, text, framework);
       return true;
     } catch (err) {
         const errMsg = err instanceof Error ? err.message : String(err);
@@ -10332,7 +10319,9 @@ rm()  { "${shimRunner}" rm  "$@"; }
     if (this.confinedWriteRefused(tmuxSession, 'text')) return;
     text = this.guardConfinedToolsText(tmuxSession, text);
     const exactTarget = `=${tmuxSession}:`;
-    const postPasteDelaySec = framework === 'codex-cli' ? '1.5' : '0.5';
+    // On Claude the old 500 ms Enter can precede paste commit. Send the single
+    // submit at the time its first recovery key used to land.
+    const postPasteDelaySec = framework === 'claude-code' ? '1' : framework === 'codex-cli' ? '1.5' : '0.5';
     const enterPresses = framework === 'codex-cli' ? 2 : 1;
     // SEC-137: a tab typed key-by-key can trigger completion; send it inside a paste instead.
     if (text.includes('\n') || text.includes('\t')) {
@@ -10386,11 +10375,11 @@ rm()  { "${shimRunner}" rm  "$@"; }
    *
    * Runs asynchronously via setTimeout. Does not block the caller.
    */
-  private verifyInjection(tmuxSession: string, injectedText: string): void {
+  private verifyInjection(tmuxSession: string, injectedText: string, framework?: IntelligenceFramework | null): void {
     // Extract a distinguishing first-40-chars marker from the injected text.
     // Strip leading whitespace/newlines so we match what's visible at the prompt.
-    const marker = injectedText.replace(/^\s+/, '').slice(0, 40).trim();
-    if (!marker || marker.length < 8) return; // too short to be a reliable marker
+    const marker = SessionManager.extractInjectionMarker(injectedText);
+    if (!marker) return;
 
     // Polling schedule in ms from injection. Each entry is the absolute
     // time-from-injection at which that attempt fires. Stops on success
@@ -10439,7 +10428,7 @@ rm()  { "${shimRunner}" rm  "$@"; }
           return;
         }
         const pane = this.captureOutput(tmuxSession, 30) || '';
-        if (!this.isMarkerStuckAtPrompt(pane, marker)) {
+        if (!this.isMarkerStuckAtPrompt(pane, marker, framework)) {
           // Submitted (or marker no longer at the input prompt) — stop polling
           // and release the stranded-draft marker so the sentinel doesn't keep
           // re-checking a message that already landed.
@@ -10569,9 +10558,35 @@ rm()  { "${shimRunner}" rm  "$@"; }
    *
    * Exposed as a method so StuckInputSentinel and tests can reuse it.
    */
-  isMarkerStuckAtPrompt(pane: string, marker: string): boolean {
+  isMarkerStuckAtPrompt(pane: string, marker: string, framework?: IntelligenceFramework | null): boolean {
     if (!marker || marker.length < 8) return false;
     const lines = pane.split('\n');
+    if (framework === 'claude-code') {
+      // Claude echoes submitted turns with the same ❯ as its composer. Read up
+      // from the footer and stop at either the current prompt or a later answer.
+      for (let i = lines.length - 1; i >= 0; i--) {
+        // The role glyph is at the left edge. An indented glyph is pasted
+        // content and must never identify a different composer or answer.
+        const line = lines[i];
+        if (line.startsWith('⏺')) return false;
+        if (!line.startsWith('❯')) continue;
+        let draft = line.slice(1).trimStart();
+        for (let j = i + 1; j < lines.length && draft.length < marker.length; j++) {
+          const row = lines[j];
+          // capture-pane drops the two padding spaces on an empty composer row.
+          if (row === '' && marker.startsWith(draft + '\n')) {
+            draft += '\n';
+            continue;
+          }
+          if (!row.startsWith('  ')) break;
+          const continuation = row.slice(2);
+          if (continuation.startsWith('⏵⏵ ') || /^─+$/.test(continuation)) break;
+          draft += (draft ? '\n' : '') + continuation;
+        }
+        return draft.startsWith(marker);
+      }
+      return false;
+    }
     const shortMarker = marker.slice(0, 30);
     for (let i = 0; i < lines.length; i++) {
       const line = lines[i];
