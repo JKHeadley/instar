@@ -18,9 +18,12 @@ it('requires a live, target-bound viewer proof and consumes it once', () => {
     }
     throw new Error('could not produce low-S test signature');
   }
+  expect(() => new ConnectViewerEnrollment(binding, Number.NaN)).toThrow(RangeError);
   const signature = proof('machine-a');
   expect(enrollment.accept(encoded, proof('machine-b'), 200)).toBeUndefined();
   expect(enrollment.accept(encoded, signature, enrollment.challenge.expiresAt)).toBeUndefined();
+  expect(enrollment.accept(encoded, signature, Number.NaN)).toBeUndefined();
+  expect(enrollment.accept(encoded, signature, 99)).toBeUndefined();
   expect(enrollment.accept(encoded, signature, 200)).toEqual(binding);
   expect(enrollment.accept(encoded, signature, 201)).toBeUndefined();
 });

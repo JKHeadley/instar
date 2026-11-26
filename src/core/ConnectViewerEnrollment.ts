@@ -25,6 +25,7 @@ export class ConnectViewerEnrollment {
   #used = false;
 
   constructor(binding: ConnectViewerBinding, now = Date.now()) {
+    if (!Number.isSafeInteger(now + 60_000) || !Number.isSafeInteger(now) || now < 0) throw new RangeError("Invalid enrollment time");
     this.challenge = Object.freeze({
       agentId: binding.agentId,
       targetMachineId: binding.targetMachineId,
@@ -35,7 +36,7 @@ export class ConnectViewerEnrollment {
   }
 
   accept(publicKey: string, signature: string, now = Date.now()): ConnectViewerBinding | undefined {
-    if (this.#used || now >= this.challenge.expiresAt || !/^[\w-]{8,100}$/.test(signature)) return;
+    if (this.#used || !Number.isSafeInteger(now) || now < 0 || now < this.challenge.expiresAt - 60_000 || now >= this.challenge.expiresAt || !/^[\w-]{8,100}$/.test(signature)) return;
     const key = parseDevicePublicKey(publicKey);
     if (!key) return;
     const digest = createHash('sha256').update(key.export({ type: 'spki', format: 'der' })).digest('hex');
