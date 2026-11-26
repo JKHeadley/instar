@@ -1,0 +1,46 @@
+{
+  "ts": "2026-11-26T08:38:10.887Z",
+  "slug": "telegram-inbound-custody-status",
+  "suggestedTier": 2,
+  "declaredTier": 1,
+  "riskFloor": 2,
+  "riskFloorReasons": [
+    "safety-invariant proximity: src/messaging/TelegramAdapter.ts matches Telegram adapter",
+    "new capability: new exported class / subsystem added"
+  ],
+  "belowFloor": true,
+  "files": 14,
+  "loc": 271,
+  "scope": {
+    "basis": "staged-in-scope-paths-including-deleted",
+    "files": [
+      "src/commands/server.ts",
+      "src/core/QueueDrainLoop.ts",
+      "src/core/SessionManager.ts",
+      "src/core/TelegramInboundHandoff.ts",
+      "src/lifeline/TelegramLifeline.ts",
+      "src/lifeline/queueDeliveryNotice.ts",
+      "src/messaging/NotificationSelectivityGate.ts",
+      "src/messaging/TelegramAdapter.ts",
+      "src/messaging/notificationCategories.ts",
+      "src/messaging/shared/isSystemOrProxyMessage.ts",
+      "src/messaging/telegram-origin/OriginDeterministicSend.ts",
+      "src/messaging/userNotices.ts",
+      "src/server/routes.ts",
+      "src/testing/selfActionRegistry.ts"
+    ],
+    "addedLines": 231,
+    "deletedLines": 40
+  },
+  "causalAutopsy": null,
+  "classClosure": {
+    "defectClass": "unbounded-self-action",
+    "closure": "guard",
+    "guardEvidence": {
+      "enforcementType": "ratchet",
+      "citation": "tests/unit/self-action-convergence.test.ts",
+      "howCaught": "One notice per custody transition, retired terminal rows, bounded confirmation projection and per-topic output limits."
+    }
+  },
+  "verdict": "pass"
+}

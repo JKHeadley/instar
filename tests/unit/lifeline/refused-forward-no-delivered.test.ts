@@ -23,10 +23,10 @@ describe('readForwardRefused', () => {
   });
 });
 
-describe('every lifeline "✓ Delivered" asks whether the server refused the message', () => {
+describe('lifeline receipt notices honor inbound refusal', () => {
   it('text, photo and document acks are all conditional on !fwd.refused', () => {
-    const acks = src.match(/sendFixedNotice\(topicId, '✓ Delivered'\)/g) ?? [];
-    const guarded = src.match(/if \(!fwd\.refused\) await this\.sendFixedNotice\(topicId, '✓ Delivered'\)/g) ?? [];
+    const acks = src.match(/sendFixedNotice\(topicId, INBOUND_RECEIVED_NOTICE\)/g) ?? [];
+    const guarded = src.match(/if \(!fwd\.refused\) await this\.sendFixedNotice\(topicId, INBOUND_RECEIVED_NOTICE\)/g) ?? [];
     expect(acks.length).toBe(3);
     expect(guarded.length).toBe(3);
   });

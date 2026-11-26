@@ -1,3 +1,4 @@
+import { isTelegramInboundStatusNotice } from '../messaging/userNotices.js';
 import { ManualQuotaBalance } from '../core/ManualQuotaBalance.js';
 import { promotionMismatchReason, unavailableConsumerPromotionProposal } from '../feedback-factory/drain/consumerPromotionProposal.js';
 import { normalizeCreationParentRef, type AppCreationContext } from '../core/AppCreationContext.js';
@@ -23012,6 +23013,7 @@ document.getElementById('mcpForm').addEventListener('submit', async function (e)
     const systemHeader = req.headers['x-instar-system'];
     const systemFlag = Array.isArray(systemHeader) ? systemHeader[0] : systemHeader;
     const isSystemTemplate = systemFlag === 'true' && matchesSystemTemplate(text);
+    const isInboundStatus = isTelegramInboundStatusNotice(text);
 
     // Outbound gate — single authority. Skipped for proxy messages (PresenceProxy
     // etc. are system-generated). The authority receives structured signals from
@@ -23225,7 +23227,12 @@ document.getElementById('mcpForm').addEventListener('submit', async function (e)
       // ever return a placeholder 0 and so reported "ok" even when nothing was
       // delivered (the false-success-under-load class).
       const originProducer = ctx.telegramOrigin?.service.hasProducerContext() ? ctx.telegramOrigin.service.currentProducer() : undefined;
-      const conversationNotice = originProducer?.producerKind === 'server-automation' && originProducer.producerId === 'presence-proxy'
+      const inboundStatusMessageId = isInboundStatus ? / Telegram message #([1-9]\d*)\.$/.exec(text)?.[1] : undefined;
+      const conversationNotice = originProducer?.producerKind === 'server-automation'
+        && originProducer.producerId === 'telegram-inbound-status' && inboundStatusMessageId
+        ? { origin: 'automated' as const, category: 'telegram-inbound-status' as const,
+          sourceContext: 'telegram-inbound-status', inboundMessageId: inboundStatusMessageId }
+        : originProducer?.producerKind === 'server-automation' && originProducer.producerId === 'presence-proxy'
         && typeof metadata?.inboundMessageId === 'string'
         ? { origin: 'automated' as const, category: 'presence-standby' as const,
           sourceContext: 'presence-proxy', inboundMessageId: metadata.inboundMessageId }
@@ -23238,11 +23245,11 @@ document.getElementById('mcpForm').addEventListener('submit', async function (e)
             sourceContext: PAIRING_OUTCOME_PRODUCER, inboundMessageId: metadata.inboundMessageId }
           : undefined;
       const sendOptions = {
-        envelope: conversationNotice ?? (originProducer?.producerKind !== 'server-automation' && !(originProducer?.sessionId && ctx.state.getSession(originProducer.sessionId)?.jobSlug) && !isProxy && !isSystemTemplate && !notificationJobSession && !metadataJobSlug && senderClass !== 'script'
+        envelope: conversationNotice ?? (originProducer?.producerKind !== 'server-automation' && !(originProducer?.sessionId && ctx.state.getSession(originProducer.sessionId)?.jobSlug) && !isProxy && !isSystemTemplate && !isInboundStatus && !notificationJobSession && !metadataJobSlug && senderClass !== 'script'
           && (messageKind === undefined || messageKind === 'reply')
           ? verifiedReplyEnvelope('telegram-reply-route')
           : { origin: 'automated' as const, category: categoryForProducer(originProducer?.producerId, metadataJobSlug || (notificationJobSession ? 'topic-job' : undefined)), sourceContext: metadataJobSlug || originProducer?.producerId || 'reply-route-automation' }),
-        skipStallClear: isProxy,
+        skipStallClear: isProxy || isInboundStatus,
         provenance,
         // Relay-hop forwarding (§2.5): when this standby relays through the
         // lease holder, the kind metadata must survive the hop so the
@@ -23293,7 +23300,7 @@ document.getElementById('mcpForm').addEventListener('submit', async function (e)
       if (!originOwnsContent) outboundContentDedup.record(topicId, text);
       // Clear injection tracker — but NOT for proxy messages (PresenceProxy)
       // Proxy messages should not reset stall detection timers
-      if (!isProxy) {
+      if (!isProxy && !isInboundStatus) {
         ctx.sessionManager.clearInjectionTracker(topicId);
       }
       let destinationStoreConfirmed = false;
@@ -23312,7 +23319,7 @@ document.getElementById('mcpForm').addEventListener('submit', async function (e)
       // mark that signal acted — the precision numerator that gates rung-5
       // mid-task injection. Proxy/system templates aren't the agent reasoning, so
       // they can't "use" a nudge and are excluded. Best-effort (never throws).
-      if (!isProxy && !isSystemTemplate) {
+      if (!isProxy && !isSystemTemplate && !isInboundStatus) {
         const credited = creditUsherOnOutbound(ctx.usherSignalStore, topicId, text);
         if (credited.length) {
           console.log(`[Usher] ${credited.length} signal(s) marked acted (use) on ${topicRef(topicId)}`);
@@ -23323,7 +23330,7 @@ document.getElementById('mcpForm').addEventListener('submit', async function (e)
       // is processing as answered, so a provider redelivery or handoff-window
       // replay of that same inbound is dropped by the gate above. Skipped for
       // proxy/system sends (they aren't replies to a user inbound). FAIL-OPEN.
-      if (!isProxy && ctx.messageLedger && ctx.currentInboundByTopic) {
+      if (!isProxy && !isInboundStatus && ctx.messageLedger && ctx.currentInboundByTopic) {
         try {
           const dedupeKey = ctx.currentInboundByTopic.get(String(topicId));
           if (dedupeKey) {
@@ -23385,7 +23392,7 @@ document.getElementById('mcpForm').addEventListener('submit', async function (e)
       // belongs to this topic, so its pairing notices come back here, and the owner is offered
       // "It's one of my agents" (§11.6). After the send, never blocking or changing it.
       if (pairingInviteTelegram && PairingInviteTelegram.carriesInvite(text)) void pairingInviteTelegram.noteOutboundInvite(text, topicId);
-      if (!isProxy && !isSystemTemplate) noteDeliveredFirstResult('telegram', sendResult?.messageId);
+      if (!isProxy && !isSystemTemplate && !isInboundStatus) noteDeliveredFirstResult('telegram', sendResult?.messageId);
       // waiting-on-you-links §2: the link to the message just sent, so a later reminder can carry it.
       const messageLink = askTelegramLink(topicId, sendResult?.messageId);
       res.json({ ok: true, topicId, messageId: sendResult?.messageId, destinationStoreConfirmed, ...(messageLink ? { messageLink } : {}) });

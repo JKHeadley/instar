@@ -36,8 +36,8 @@ describe('lifeline queued-message notice lifecycle', () => {
       return value;
     }, { outage: 0, delayedHandoff: 0, legacyUnknown: 0 });
     expect(buildQueueDeliveryNotices(counts)).toEqual([
-      '✓ Server recovered — your queued message has been delivered.',
-      '✓ Your delayed message has now been delivered to the session.',
+      'Server recovered. Instar received your queued message.',
+      'Instar received your delayed message.',
     ]);
   });
 });

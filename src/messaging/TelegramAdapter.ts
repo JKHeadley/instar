@@ -1,3 +1,4 @@
+import { isTelegramInboundStatusNotice } from './userNotices.js';
 import { categoryForAttention } from './notificationCategories.js';
 import { notificationStamper, responseNotificationStamper, withNotificationEnvelope } from './notificationStampers.js';
 const stampNotification = notificationStamper('src/messaging/TelegramAdapter.ts');
@@ -2058,7 +2059,7 @@ export class TelegramAdapter implements MessagingAdapter {
         }
         const sent = await this.selectivityAdmitted.run(true, () => this.sendToTopicDelivered(topicId, text, options));
         if (envelope?.category === 'command-response' && envelope.inboundMessageId) this.commandReceipts.set(sent, { topicId, messageId: sent.messageId, until: Date.now() + 900000, inboundMessageId: envelope.inboundMessageId });
-        if (!options?.operatorMirror && !envelope?.inboundMirror && (isVerifiedReplyEnvelope(envelope) || envelope?.category === 'command-response')) this.selectivity?.markAnswered(topicId);
+        if (!options?.operatorMirror && !envelope?.inboundMirror && !isTelegramInboundStatusNotice(text) && (isVerifiedReplyEnvelope(envelope) || envelope?.category === 'command-response')) this.selectivity?.markAnswered(topicId);
         // identity-security-creation-provenance v5: a later message into a topic disarms a cross-topic
         // proposal waiting there, so an owner's "yes" can only answer the proposal itself.
         if (this.onTopicMessageSent && typeof sent.messageId === 'number') { try { this.onTopicMessageSent(topicId, sent.messageId); } catch { /* @silent-fallback-ok: an observer fault never blocks a send */ } }
@@ -2295,7 +2296,7 @@ export class TelegramAdapter implements MessagingAdapter {
 
     // Clear stall tracking for this topic (agent responded)
     // Skip for proxy messages — PresenceProxy messages should NOT reset stall timers
-    if (!options?.skipStallClear) {
+    if (!options?.skipStallClear && !isTelegramInboundStatusNotice(text)) {
       this.clearStallForTopic(topicId);
     }
 

@@ -131,6 +131,7 @@ export interface QueueDrainLoopDeps {
   /** Loss reporting — the dep aggregates into ONE attention item per episode
    *  (§1 copy rules). Never receives payload bytes. */
   reportLoss(items: LossItem[], reason: string): void;
+  reportWaiting?(identity: { sessionKey: string; messageId: string }): void;
   /** "Possibly not injected — resend if unanswered" (§3.4/§5 windows 4+6). */
   reportPossiblyNotInjected(items: LossItem[]): void;
   log(line: string): void;
@@ -318,6 +319,7 @@ export class QueueDrainLoop {
             'dropped-overflow',
           );
         }
+        this.d.reportWaiting?.({ sessionKey: msg.sessionKey, messageId: msg.messageId });
       } else if (out.result === 'refused') {
         this.refusalCache.set(cacheKey, nowMs + q.refusalNegativeCacheMs);
         this.pruneRefusalCache(nowMs);

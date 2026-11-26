@@ -95,8 +95,32 @@ export function jobCapacityNotice(names: string[], ageMs: number): string {
  * isSystemOrProxyMessage() reads this so a reworded notice is never mistaken
  * for a real answer. Old wordings stay listed: they are still in message history.
  */
+export const INBOUND_RECEIVED_NOTICE = 'Received by Instar.';
+
+const TELEGRAM_INBOUND_LABELS = {
+  waiting: 'Waiting for the session.',
+  delivered: 'Delivered to the session.',
+  expired: 'Message expired without delivery confirmation.',
+} as const;
+
+export function telegramInboundStatusNotice(
+  status: keyof typeof TELEGRAM_INBOUND_LABELS,
+  messageId: number,
+): string {
+  return `${TELEGRAM_INBOUND_LABELS[status]} Telegram message #${messageId}.`;
+}
+
+export function isTelegramInboundStatusNotice(text: string): boolean {
+  if (text === INBOUND_RECEIVED_NOTICE) return true;
+  if (/^(?:Server recovered\. )?Instar received (?:your (?:queued|delayed) message|[1-9]\d* (?:queued|delayed) messages)\.$/.test(text)) return true;
+  const match = /^(.*) Telegram message #([1-9]\d*)\.$/.exec(text);
+  return !!match && Number.isSafeInteger(Number(match[2])) &&
+    Object.values(TELEGRAM_INBOUND_LABELS).some(label => label === match[1]);
+}
+
 export const LIFECYCLE_NOTICE_EXACT: ReadonlySet<string> = new Set([
   SESSION_BACK_NOTICE,
+  INBOUND_RECEIVED_NOTICE,
   'Session respawned.',
   'Session terminated.',
 ]);

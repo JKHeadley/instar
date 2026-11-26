@@ -22,13 +22,13 @@
  * path silently decline when the only from-agent message since the user's
  * question was a PresenceProxy standby.
  */
-import { LIFECYCLE_NOTICE_EXACT, LIFECYCLE_NOTICE_PREFIXES } from '../userNotices.js';
+import { LIFECYCLE_NOTICE_EXACT, LIFECYCLE_NOTICE_PREFIXES, isTelegramInboundStatusNotice } from '../userNotices.js';
 
 export function isSystemOrProxyMessage(text: string | null | undefined): boolean {
   if (!text) return true;
   const t = text.trim();
   if (!t) return true;
-  if (t === '✓ Delivered' || t.startsWith('✓ Delivered')) return true;
+  if (t === '✓ Delivered' || t.startsWith('✓ Delivered') || isTelegramInboundStatusNotice(t)) return true;
   // Server lifecycle notices — one list, owned by the notice catalog, so a
   // reworded notice can never start passing as a real answer.
   if (LIFECYCLE_NOTICE_EXACT.has(t)) return true;

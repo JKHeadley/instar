@@ -90,6 +90,7 @@ import { writeWakeRequestIfSlept } from './agentSleepWake.js';
 import { detectLaunchdSupervised } from './detectLaunchdSupervised.js';
 import { LifelineDriftPromoter, DRIFT_RESTART_PENDING_NOTICE_FILE } from './LifelineDriftPromoter.js';
 import { buildQueuedNotice } from './queuedNotice.js';
+import { INBOUND_RECEIVED_NOTICE } from '../messaging/userNotices.js';
 import { buildQueueAcknowledgement, buildQueueDeliveryNotices } from './queueDeliveryNotice.js';
 import {
   LifelineHealthWatchdog,
@@ -1468,9 +1469,9 @@ export class TelegramLifeline {
       const fwd: ForwardAck = {};
       const forwarded = await this.forwardToServer(topicId, text, msg, fwd, []);
       if (forwarded) {
-        // Delivery confirmation — user knows message reached the server. Never for a message the
-        // server's inbound gate refused (it already told the sender it was not delivered).
-        if (!fwd.refused) await this.sendFixedNotice(topicId, '✓ Delivered');
+        // The handler accepted the server handoff. A session receipt is separate.
+        // The inbound gate sends its own notice when it refuses a message.
+        if (!fwd.refused) await this.sendFixedNotice(topicId, INBOUND_RECEIVED_NOTICE);
         return;
       }
     }
@@ -1559,7 +1560,7 @@ export class TelegramLifeline {
       const fwd: ForwardAck = {};
       const forwarded = await this.forwardToServer(topicId, content, msg, fwd, media);
       if (forwarded) {
-        if (!fwd.refused) await this.sendFixedNotice(topicId, '✓ Delivered');
+        if (!fwd.refused) await this.sendFixedNotice(topicId, INBOUND_RECEIVED_NOTICE);
         return;
       }
     }
@@ -1670,7 +1671,7 @@ export class TelegramLifeline {
       const fwd: ForwardAck = {};
       const forwarded = await this.forwardToServer(topicId, content, msg, fwd, media);
       if (forwarded) {
-        if (!fwd.refused) await this.sendFixedNotice(topicId, '✓ Delivered');
+        if (!fwd.refused) await this.sendFixedNotice(topicId, INBOUND_RECEIVED_NOTICE);
         return;
       }
     }
@@ -2571,7 +2572,7 @@ export class TelegramLifeline {
       console.log(`[Lifeline] Replay complete: ${replayed} delivered, ${failed} re-queued, ${dropped} dropped`);
     }
 
-    // Notify the user that their queued messages were delivered.
+    // Confirm forwarding into Instar after the lifeline released its local queue.
     if (replayed > 0) {
       for (const [topicId, counts] of deliveredByTopic) {
         for (const notice of buildQueueDeliveryNotices(counts)) {

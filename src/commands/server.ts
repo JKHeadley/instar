@@ -41,7 +41,7 @@ import { PATCHABLE_CONFIG_KEYS, OPERATOR_ONLY_SESSION_KEYS } from '../server/rou
 import { isOwnersOwnWords } from '../core/ownerWords.js';
 import { buildThrowawayJobGuard, checkThrowawayExpiry, describeExpiry, takeLastAutoStartRefusal, throwawayStartupDecision } from '../core/ThrowawayAgentGuard.js';
 import { appendGuardEvidence } from '../core/guardEvidenceLog.js';
-import { bindUnknownProducerTelegramSender, sendDeterministicTelegramNotice } from '../messaging/telegram-origin/OriginDeterministicSend.js';
+import { bindUnknownProducerTelegramSender, sendDeterministicTelegramNotice, sendTelegramInboundStatusNotice } from '../messaging/telegram-origin/OriginDeterministicSend.js';
 /**
  * `instar server start|stop` — Manage the persistent agent server.
  *
@@ -150,7 +150,7 @@ import { activeUsageLimitWatch, setActiveUsageLimitWatch, UsageLimitWatch } from
 import { claimSuspensionExcludesPin } from '../core/TopicClaimAnnotationStore.js';
 import { parseProfileTrigger, platformMessageIdFrom } from '../core/topicProfileIngress.js';
 import { NewTopicDefaultStore, evaluateSessionPoolLocalClaim, createSpawnForTopic, createDashboardPoolClaimOps, seedTopicProfileAtCreation } from '../core/dashboardTopicProfile.js';
-import { movedMachinesMidStepNotice, movedMachinesResumingNotice, SESSION_RESTARTING_NOTICE, SESSION_BACK_NOTICE } from '../messaging/userNotices.js';
+import { movedMachinesMidStepNotice, movedMachinesResumingNotice, SESSION_RESTARTING_NOTICE, SESSION_BACK_NOTICE, INBOUND_RECEIVED_NOTICE, telegramInboundStatusNotice } from '../messaging/userNotices.js';
 import { handOffInterruptedMove, InterruptedMoveResumeReceiver, parseInterruptedMoveResume } from '../core/InterruptedMoveResume.js';
 /** The target answers within its 20 s ownership wait; the mesh route's own limit is 30 s. */
 const INTERRUPTED_MOVE_RESUME_TIMEOUT_MS = 28_000;
@@ -3693,6 +3693,7 @@ export function wireTelegramRouting(
           // metadata, never from `content` — content cannot forge it.
           {
             reDelivered: msg.metadata?.replay === true,
+            receiptMessageId: msg.metadata?.viaMobileDevice === true ? null : inboundMessageId,
             signedByAgent: framingLabel(signedLabelSource, isReplay ? 'F' : 'live', { topicId, messageId: inboundMessageId ?? undefined }),
           },
         );
@@ -3702,10 +3703,10 @@ export function wireTelegramRouting(
           return;
         }
         if (injected) confirmLocalSessionPoolClaim();
-        // Delivery confirmation — only when WE own polling. When lifeline owns
-        // polling (--no-telegram / standby), it already sends its own confirmation.
+        // A paste attempt does not establish exact session receipt. The polling owner
+        // acknowledges receipt by Instar, and the lifeline handles its own polling.
         if (telegram.isPolling) {
-          withNotificationEnvelope(stampResponse(), async () => (telegram)!.sendToTopic(topicId, `✓ Delivered`)).catch(() => {});
+          withNotificationEnvelope(stampResponse(), async () => (telegram)!.sendToTopic(topicId, INBOUND_RECEIVED_NOTICE, { skipStallClear: true })).catch(() => {});
         }
         // Track for stall detection
         telegram.trackMessageInjection(topicId, targetSession, text);
@@ -4047,7 +4048,10 @@ export function wireTelegramRouting(
           targetSession, topicId, drainSessionText, verifiedTopicName ?? 'Conversation name unavailable', senderFirstName, senderUserId,
           Number(dmsg.messageId.replace(/^\D*/, '')) || undefined,
           // SEC-106 path A: the ingress-time label carried in the queue envelope.
-          (() => { const l = framingLabel(sender, 'A', { topicId, messageId: dmsg.messageId }); return l ? { signedByAgent: l } : undefined; })(),
+          {
+            signedByAgent: framingLabel(sender, 'A', { topicId, messageId: dmsg.messageId }),
+            receiptMessageId: /^tg-[1-9]\d*$/.test(dmsg.messageId) ? Number(dmsg.messageId.slice(3)) : null,
+          },
         );
         if (injected === false) {
           return { kind: 'local-delivered', injectError: 'inject-returned-false' };
@@ -5293,6 +5297,20 @@ export async function startServer(options: StartOptions): Promise<void> {
    * NEVER silently expired (the Inbound-Delivery-Is-Sacred corollary). Spec:
    * docs/specs/inbound-delivery-sacred.md.
    */
+  /* @self-action-controller: telegram-custody-status-notice */
+  function sendTelegramInboundStatus(
+    telegram: TelegramAdapter | null | undefined,
+    status: 'waiting' | 'delivered' | 'expired',
+    topicId: number,
+    messageId: number,
+  ): void {
+    if (!telegram || !Number.isSafeInteger(topicId) || topicId <= 0 ||
+        !Number.isSafeInteger(messageId) || messageId <= 0) return;
+    const text = telegramInboundStatusNotice(status, messageId);
+    void sendTelegramInboundStatusNotice(telegram, topicId, text, String(messageId))
+      .catch((err) => { console.warn('[inbound-queue] Telegram status notice failed:', err instanceof Error ? err.message : String(err)); });
+  }
+
   function notifyInboundLoss(
     items: ReadonlyArray<{ sessionKey: string }>,
     tier: NotificationTier,
@@ -14819,6 +14837,9 @@ export async function startServer(options: StartOptions): Promise<void> {
       });
 
       const inboundNoticeInFlight = new Set<string>();
+      sessionManager.on('telegramInboundConfirmed', ({ topicId, messageId }) => {
+        sendTelegramInboundStatus(telegram, 'delivered', topicId, messageId);
+      });
       sessionManager.on('inboundDeliveryNotice', (notice: import('../core/InboundDeliveryStore.js').InboundDeliveryNotice) => {
         const topicId = Number(notice.conversationId);
         const key = `${notice.conversationId}\0${notice.deliveryId}\0${notice.kind}`;
@@ -30684,7 +30705,11 @@ export async function startServer(options: StartOptions): Promise<void> {
               const label = fwdLabelFor();
               return sessionManager.injectTelegramMessage(
                 session, topicId, sessionText, tg.getTopicName?.(topicId) ?? undefined, fwdSenderName, fwdSenderUid,
-                undefined, label ? { signedByAgent: label } : undefined,
+                undefined, {
+                  ...(label ? { signedByAgent: label } : {}),
+                  receiptMessageId: /^(?:tg-)?[1-9]\d*$/.test(cmd.messageId)
+                    ? Number(cmd.messageId.replace(/^tg-/, '')) : undefined,
+                },
               );
             };
             // bug #13: a moved session ALREADY running on this machine must receive
@@ -33905,6 +33930,10 @@ export async function startServer(options: StartOptions): Promise<void> {
                       queuePis.clear(r.tmuxSession);
                     }
                   },
+                  reportWaiting: ({ sessionKey, messageId }) => {
+                    if (!/^tg-\d+$/.test(messageId)) return;
+                    sendTelegramInboundStatus(telegram, 'waiting', Number(sessionKey), Number(messageId.slice(3)));
+                  },
                   reportLoss: (allItems, reason) => {
                     // app-conversations-in-the-pool §2.2: the phone's request is finished as refused, in words.
                     const items = settleAppQueueLoss(allItems, reason);
@@ -33924,7 +33953,17 @@ export async function startServer(options: StartOptions): Promise<void> {
                       }
                       return;
                     }
-                    notifyInboundLoss(items, 'SUMMARY', (count) =>
+                    const remaining = items.filter(({ sessionKey, messageId }) => {
+                      if ((reason !== 'ttl-expired' && reason !== 'attempts-exhausted') ||
+                          !/^\d+$/.test(sessionKey) || !/^tg-\d+$/.test(messageId) || !telegram) return true;
+                      const topicId = Number(sessionKey);
+                      const originalId = Number(messageId.slice(3));
+                      if (!Number.isSafeInteger(topicId) || topicId <= 0 ||
+                          !Number.isSafeInteger(originalId) || originalId <= 0) return true;
+                      sendTelegramInboundStatus(telegram, 'expired', topicId, originalId);
+                      return false;
+                    });
+                    notifyInboundLoss(remaining, 'SUMMARY', (count) =>
                       `I didn't get to ${count} of your message(s) (${reason}) — resend anything still needed.`);
                   },
                   reportPossiblyNotInjected: (allItems) => {
