@@ -199,6 +199,18 @@ describe('checkOpenPrOverlap', () => {
     expect(written.join('\n')).toContain('UNKNOWN');
   });
 
+  it('reports an incomplete active PR list as unknown instead of clear', () => {
+    const written: string[] = [];
+    const result = checkOpenPrOverlap({
+      ...base,
+      stagedFiles: ['src/core/Fresh.ts'],
+      listOpenPrs: () => Array.from({ length: 301 }, (_, number) => ({ number })),
+      write: (line: string) => written.push(line),
+    });
+    expect(result.status).toBe('degraded');
+    expect(written.join('\n')).toContain('UNKNOWN');
+  });
+
   it('never throws even if a dependency does unexpectedly', () => {
     const r = checkOpenPrOverlap({
       ...base,

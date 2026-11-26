@@ -26,3 +26,5 @@ It never blocks a commit. Two pull requests can share a file without conflicting
 ## What is left for later
 
 This is the first, smallest step. The rest of the report (a pool-wide list of active efforts with machine and topic, a gate before a plan and before a build, an hourly cross-machine collision job, sessions starting with the live machine list, the M5 being unable to post into Echo Bugs, and messages to the Mama PC having no address) is filed separately in the feedback queue: fb-c474f83a-5ad (shared efforts list and gate), fb-8390730a-16f (hourly job), fb-51fa3dca-dcf (session start), fb-43860e3f-1ce (M5 and Echo Bugs), fb-4c703763-559 (Mama PC address).
+
+On a busy repository, GitHub may need more than eight seconds to return changed files. The advisory now asks for recently updated pull requests and allows up to 20 seconds. If the lookup times out or the active list is too large to check completely, the advisory says the result is unknown. The commit can still proceed.

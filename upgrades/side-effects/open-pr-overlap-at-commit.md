@@ -113,3 +113,7 @@ Review changed the design once: the first live run listed 20 PRs for `src/comman
 - `tests/unit/open-pr-overlap.test.ts` (19 tests) — overlap, own branch excluded, stale and hub handling, fail-open, skip paths, wiring before the scope exit.
 - Live: `checkOpenPrOverlap` with PR 3082's real file list and branch → `overlap [3102:5, 3095:2, 3093:1]` in ~2.5 s.
 - Hook suites: duplicate-build-guard-gates (13), converging-audit e2e (5), 9 precommit unit files — all pass.
+
+## Active-window lookup
+
+The same advisory now filters the GitHub search by the existing 14-day activity window and checks the exact cutoff locally. The maximum GitHub wait increases from eight to 20 seconds. A result beyond the existing 300 active-PR limit is reported as unknown. Live testing found four overlap matches in 11.4 seconds. The hook remains advisory.

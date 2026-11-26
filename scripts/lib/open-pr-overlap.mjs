@@ -29,7 +29,8 @@ import { execFileSync } from 'node:child_process';
 
 export const DEFAULT_REPO = 'JKHeadley/instar';
 export const OPEN_PR_LIMIT = 300;
-export const GH_TIMEOUT_MS = 8_000;
+// Normal active-window reads took about 12 seconds with 245 matching PRs.
+export const GH_TIMEOUT_MS = 20_000;
 /** Most files a notice lists per PR before summarising. */
 export const MAX_FILES_SHOWN = 6;
 
@@ -160,10 +161,14 @@ export function formatOverlapNotice(result) {
 }
 
 /** Default `gh` reader — throws on any failure (the caller fails open). */
-function defaultListOpenPrs(repo, cwd) {
+function defaultListOpenPrs(repo, cwd, now) {
+  // GitHub searches in UTC dates. Round down, then apply the precise cutoff
+  // locally so a PR active near midnight is still considered.
+  const cutoffDate = new Date(now - ACTIVE_DAYS * 24 * 60 * 60 * 1000).toISOString().slice(0, 10);
   const raw = execFileSync(
     'gh',
-    ['pr', 'list', '--repo', repo, '--state', 'open', '--limit', String(OPEN_PR_LIMIT),
+    ['pr', 'list', '--repo', repo, '--state', 'open', '--search', `updated:>=${cutoffDate}`,
+      '--limit', String(OPEN_PR_LIMIT + 1),
       '--json', 'number,title,headRefName,updatedAt,files'],
     { cwd, encoding: 'utf8', timeout: GH_TIMEOUT_MS, maxBuffer: 64 * 1024 * 1024, stdio: ['ignore', 'pipe', 'ignore'] },
   ).trim();
@@ -220,15 +225,17 @@ export function checkOpenPrOverlap({
     if (files.length === 0) return { status: 'skipped', overlaps: [], reason: 'no-files' };
     if (!isRepoClone(repo, cwd)) return { status: 'skipped', overlaps: [], reason: 'not-repo-clone' };
 
+    const now = Date.now();
     let prs;
     try {
-      prs = listOpenPrs(repo, cwd);
+      prs = listOpenPrs(repo, cwd, now);
+      if (prs.length > OPEN_PR_LIMIT) throw new Error(`more than ${OPEN_PR_LIMIT} recently updated open PRs`);
     } catch (err) {
       const msg = (err && err.message ? err.message : String(err)).split('\n')[0].slice(0, 160);
       write(`[instar-dev-precommit] open-PR overlap check could not run (${msg}) — overlap with other sessions' PRs is UNKNOWN for this commit.`);
       return { status: 'degraded', overlaps: [], reason: msg };
     }
-    const result = findOpenPrOverlaps(files, prs, currentBranch(cwd));
+    const result = findOpenPrOverlaps(files, prs, currentBranch(cwd), { now });
     const notice = formatOverlapNotice(result);
     if (notice) write(notice);
     if (result.overlaps.length === 0) return { status: result.hubOnly.length ? 'hub-only' : 'clear', overlaps: [], hubOnly: result.hubOnly };
