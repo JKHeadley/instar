@@ -8,6 +8,7 @@
  * secret scan. The checker here is what the Secret Scan workflow runs first.
  */
 import { describe, it, expect } from 'vitest';
+import { execFileSync, spawnSync } from 'node:child_process';
 import fs from 'node:fs';
 import os from 'node:os';
 import path from 'node:path';
@@ -23,6 +24,8 @@ import {
   literalRegexProblem,
   regexForExactValue,
   shadowedByDefaultPaths,
+  shadowedChangedPaths,
+  secretScanRange,
   tomlLineForExactValue,
 } from '../../scripts/lint-gitleaks-allowlist-exact.mjs';
 
@@ -204,7 +207,7 @@ describe('the Secret Scan workflow', () => {
     has('github.event.pull_request.base.sha || github.event.before');
     has('--config .gitleaks.toml');
     has('--redact');
-    has('--exit-code 1');
+    has('--exit-code 42');
     has('--ignore-gitleaks-allow');
     has('--gitleaks-ignore-path');
     has('gitleaks stdin');
@@ -216,7 +219,60 @@ describe('the Secret Scan workflow', () => {
     has('persist-credentials: false');
     expect(text).toMatch(/permissions:\s*\n\s*contents: read/);
     expect(text).toMatch(/timeout-minutes: \d+/);
-    // The advice step speaks only when a scan step failed, not when the checker or the download did.
-    expect(text).toMatch(/if: failure\(\) && \(steps\.scan\.outcome == 'failure' \|\| steps\.shadow\.outcome == 'failure'\)/);
+    // Scanner crashes cannot trigger the credential rotation message.
+    expect(text).toMatch(/if: failure\(\) && \(steps\.scan\.outputs\.finding == 'true' \|\| steps\.shadow\.outputs\.finding == 'true'\)/);
   });
+});
+
+it('uses complete reachable history and the shadowed head tree for missing and divergent push bases', () => {
+  const dir = fs.mkdtempSync(path.join(os.tmpdir(), 'secret-scan-range-'));
+  const git = (...args: string[]) => execFileSync('git', args, { cwd: dir, encoding: 'utf8', stdio: ['ignore', 'pipe', 'pipe'] }).trim();
+  try {
+    git('init', '-q', '-b', 'main');
+    git('config', 'user.name', 'Fixture');
+    git('config', 'user.email', 'fixture@example.invalid');
+    const commit = (name: string) => {
+      fs.writeFileSync(path.join(dir, name), 'synthetic text');
+      git('add', name);
+      git('commit', '-qm', name);
+      return git('rev-parse', 'HEAD');
+    };
+    const root = commit('package-lock.json');
+    const before = commit('old.txt');
+    git('switch', '-qc', 'rewritten', root);
+    const head = commit('new.txt');
+    expect(secretScanRange(root, head, 'push', dir)).toBe(root + '..' + head);
+    expect(secretScanRange(root, head, 'pull_request', dir)).toBe(root + '..' + head);
+    expect(secretScanRange(before, head, 'push', dir)).toBe(head);
+    expect(secretScanRange('0'.repeat(40), head, 'push', dir)).toBe(head);
+    expect(secretScanRange('f'.repeat(40), head, 'push', dir)).toBe(head);
+    expect(() => secretScanRange('f'.repeat(40), head, 'pull_request', dir)).toThrow();
+    expect(shadowedChangedPaths(head, dir)).toContain('package-lock.json');
+    expect(shadowedChangedPaths(root + '..' + head, dir)).not.toContain('package-lock.json');
+  } finally {
+    fs.rmSync(dir, { recursive: true, force: true });
+  }
+});
+
+it.skipIf(process.platform === 'win32')('sets the rotation advisory flag only for a confirmed scanner finding', () => {
+  const dir = fs.mkdtempSync(path.join(os.tmpdir(), 'secret-scan-finding-'));
+  try {
+    const block = fs.readFileSync(WORKFLOW, 'utf8').split('        id: scan\n')[1].split('      - name: Scan the content')[0];
+    const run = block.split('        run: |\n')[1].split('\n').map(line => line.replace(/^ {10}/, '')).join('\n');
+    const scanner = path.join(dir, 'gitleaks');
+    fs.writeFileSync(scanner, '#!/bin/sh\nexit "$FIXTURE_STATUS"\n', { mode: 0o700 });
+    const output = path.join(dir, 'output');
+    for (const status of [0, 2, 42]) {
+      fs.writeFileSync(output, '');
+      const result = spawnSync('/bin/bash', ['-c', run], {
+        cwd: dir, encoding: 'utf8',
+        env: { ...process.env, PATH: dir + path.delimiter + process.env.PATH, GITHUB_OUTPUT: output,
+          FIXTURE_STATUS: String(status), RUNNER_TEMP: dir, SCAN_RANGE: 'a'.repeat(40) },
+      });
+      expect(result.status).toBe(status);
+      expect(fs.readFileSync(output, 'utf8')).toBe(status === 42 ? 'finding=true\n' : '');
+    }
+  } finally {
+    fs.rmSync(dir, { recursive: true, force: true });
+  }
 });
