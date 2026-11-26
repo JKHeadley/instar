@@ -31,6 +31,8 @@ it('keeps the first serialized outcome and recovers only its exact operation', (
 
 it('refuses substituted authority, challenge identity, and device presence keys', () => {
   const { current, consume, cancel, phone, encoded } = fixture();
+  const mixedChallenge = { ...current.challenge, faceIdKeyHash: 'e'.repeat(64) };
+  expect(decideFirstPhoneOrderedAttempt({ ...current, challenge: mixedChallenge }, consume, null)).toBeNull();
   expect(decideFirstPhoneOrderedAttempt({ ...current, presencePublicKey: makeDevice().publicKey }, consume, null)).toBeNull();
   expect(decideFirstPhoneOrderedAttempt(current, { ...consume, presenceSignature: phone.sign('version 1') }, null)).toBeNull();
   expect(decideFirstPhoneOrderedAttempt(current, { ...consume, presenceSignature: phone.sign(encoded.bytes.toString('utf8'), true) }, null)).toBeNull();

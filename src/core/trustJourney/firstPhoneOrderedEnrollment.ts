@@ -6,14 +6,17 @@ import {
 type CurrentAttempt = Parameters<typeof decideFirstPhoneOrderedAttempt>[0];
 type DecisionRequest = Parameters<typeof decideFirstPhoneOrderedAttempt>[1];
 type Consume = Extract<DecisionRequest, { kind: 'consume' }>;
+type FaceIdConsume = Extract<DecisionRequest, { kind: 'consume-face-id' }>;
 type Cancel = Extract<DecisionRequest, { kind: 'cancel' }>;
 
-interface PhoneCaller {
+interface PairedCaller {
   origin: string;
   deviceId: string;
   deviceKeyHash: string;
-  presenceKeyHash: string;
 }
+
+type PhoneCaller = PairedCaller & { presenceKeyHash: string };
+type FaceIdCaller = PairedCaller & { faceIdKeyHash: string; faceIdKeyGeneration: string };
 
 interface AttemptAtCommit {
   current: CurrentAttempt;
@@ -40,7 +43,7 @@ type Result = { kind: 'witnessed'; outcome: FirstPhoneOrderedOutcome } | { kind:
 
 /** Unmounted v2 server handler. The transport supplies an authenticated paired owner for consume. */
 export function createFirstPhoneOrderedEnrollment(authority: FirstPhoneOrderedAuthority) {
-  async function decide(input: DecisionRequest, caller?: PhoneCaller): Promise<Result> {
+  async function decide(input: DecisionRequest, caller?: PhoneCaller | FaceIdCaller): Promise<Result> {
     const request = Object.freeze({ ...input });
     const phone = caller && Object.freeze({ ...caller });
     if (!/^[a-f0-9]{64}$/.test(request.challengeKey)) return { kind: 'refused' };
@@ -49,11 +52,17 @@ export function createFirstPhoneOrderedEnrollment(authority: FirstPhoneOrderedAu
     try {
       const result = await authority.decide(request.challengeKey, (state) => {
         selected = null;
-        if (request.kind === 'consume') {
+        if (request.kind !== 'cancel') {
           const c = state.current.challenge;
           if (!phone || phone.origin !== c.origin || phone.deviceId !== c.deviceId
-            || phone.deviceKeyHash !== c.deviceKeyHash || phone.presenceKeyHash !== c.presenceKeyHash
+            || phone.deviceKeyHash !== c.deviceKeyHash
             || (!state.existing && (!state.slotEmpty || !state.admitsConsume))) return null;
+          if (request.kind === 'consume-face-id') {
+            if (!('faceIdKeyHash' in phone) || !('faceIdPublicKeySpkiDerBase64' in state.current)
+              || phone.faceIdKeyHash !== state.current.challenge.faceIdKeyHash
+              || phone.faceIdKeyGeneration !== state.current.challenge.faceIdKeyGeneration) return null;
+          } else if (!('presenceKeyHash' in phone) || !('presencePublicKey' in state.current)
+            || phone.presenceKeyHash !== state.current.challenge.presenceKeyHash) return null;
         } else if (!state.existing && !state.admitsCancel) {
           return null;
         }
@@ -75,6 +84,7 @@ export function createFirstPhoneOrderedEnrollment(authority: FirstPhoneOrderedAu
 
   return {
     consume: (request: Omit<Consume, 'kind'>, caller: PhoneCaller) => decide({ ...request, kind: 'consume' }, caller),
+    consumeFaceId: (request: Omit<FaceIdConsume, 'kind'>, caller: FaceIdCaller) => decide({ ...request, kind: 'consume-face-id' }, caller),
     cancel: (request: Omit<Cancel, 'kind'>) => decide({ ...request, kind: 'cancel' }),
   };
 }

@@ -23,3 +23,5 @@ The unmounted version 2 server handler checks the paired caller and delegates co
 The first-phone version 2 handler now exercises the compound witness reservation in an isolated test. Production enrollment stays off.
 
 The dedicated Face ID proof verifier matches the Swift and Node test vector. It remains unmounted.
+
+The unmounted first-phone decision handler now checks dedicated Face ID proof and key eligibility at the witness boundary.

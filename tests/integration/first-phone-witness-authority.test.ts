@@ -7,21 +7,26 @@ import { SafeFsExecutor } from '../../src/core/SafeFsExecutor.js';
 import { keyHashOf } from '../../src/core/MobileDeviceKeys.js';
 import { orderedDecisionBytes } from '../../src/core/OrderedPublicationWitness.js';
 import { OrderedWitnessSnapshotStore } from '../../src/core/OrderedWitnessSnapshotStore.js';
-import { encodeFirstPhoneOrderedChallenge } from '../../src/core/trustJourney/firstPhoneOrderedChallenge.js';
+import { encodeFirstPhoneFaceIdChallenge, encodeFirstPhoneOrderedChallenge, FIRST_PHONE_FACE_ID_ASSURANCE } from '../../src/core/trustJourney/firstPhoneOrderedChallenge.js';
 import { createFirstPhoneOrderedEnrollment } from '../../src/core/trustJourney/firstPhoneOrderedEnrollment.js';
 import { createFirstPhoneWitnessAuthority } from '../../src/core/trustJourney/firstPhoneWitnessAuthority.js';
 import type { FirstPhoneSlotDecision } from '../../src/core/FirstPhoneSlotDecision.js';
+import faceIdVector from '../fixtures/first-phone/face-id-challenge-v2.json';
 import vector from '../fixtures/first-phone/ordered-challenge-v2.json';
 import { makeDevice } from '../helpers/mobileDevice.js';
 
-it.each(['consume', 'cancel', 'closed-during-observation', 'missing-staged-candidate'] as const)('connects the handler to the compound witness transaction: %s', async (mode) => {
+it.each(['consume', 'face-id-consume', 'cancel', 'closed-during-observation', 'missing-staged-candidate'] as const)('connects the handler to the compound witness transaction: %s', async (mode) => {
   const dir = mkdtempSync(join(tmpdir(), 'first-phone-witness-authority-'));
   const store = OrderedWitnessSnapshotStore.open(join(dir, 'witness.sqlite'));
   const { privateKey, publicKey } = generateKeyPairSync('ed25519');
   const pins = new Map([['mini', publicKey.export({ type: 'spki', format: 'der' }).toString('base64')]]);
   const phone = makeDevice();
   const challenge = { ...vector.input, holderEpoch: '1', presenceKeyHash: keyHashOf(phone.publicKey) };
-  const { challengeKey, challengeDigest, bytes } = encodeFirstPhoneOrderedChallenge(challenge)!;
+  const dedicated = mode === 'face-id-consume';
+  const faceIdChallenge = { ...faceIdVector.input, localAssurance: FIRST_PHONE_FACE_ID_ASSURANCE };
+  const { challengeKey, challengeDigest, bytes } = (dedicated
+    ? encodeFirstPhoneFaceIdChallenge(faceIdChallenge) : encodeFirstPhoneOrderedChallenge(challenge))!;
+  let faceIdEligible = false;
   const priorSlot = { slotKey: challenge.slotKey, generation: 0, keyDigest: 'a'.repeat(64), reservedBy: null };
   const scope = { agentId: 'echo', namespace: 'machine-key-history' } as const;
   let admitsConsume = true;
@@ -29,7 +34,10 @@ it.each(['consume', 'cancel', 'closed-during-observation', 'missing-staged-candi
   const authority = createFirstPhoneWitnessAuthority({
     ...scope, holderMachineId: challenge.holderMachineId, store, pins,
     readAttempt: (key) => key === challengeKey ? {
-      current: { challenge, presencePublicKey: phone.publicKey }, priorSlot,
+      current: dedicated ? {
+        challenge: faceIdChallenge, faceIdPublicKeySpkiDerBase64: faceIdVector.key.publicKeySpkiDerBase64, faceIdEligible,
+      } : { challenge, presencePublicKey: phone.publicKey },
+      priorSlot,
       projectionDigest: 'b'.repeat(64), admitsConsume, admitsCancel: true, historical,
     } : null,
     async observe(_expected, decision, payload) {
@@ -44,6 +52,9 @@ it.each(['consume', 'cancel', 'closed-during-observation', 'missing-staged-candi
   let candidate: FirstPhoneSlotDecision | undefined;
   const handler = createFirstPhoneOrderedEnrollment(authority);
   const consume = { challengeKey, challengeDigest, operationId: 'phone-confirmation-1', presenceSignature: phone.sign(bytes.toString('utf8')) };
+  const faceIdConsume = { challengeKey, challengeDigest, operationId: consume.operationId,
+    localAssurance: FIRST_PHONE_FACE_ID_ASSURANCE, faceIdSignature: faceIdVector.confirmation.signatureDerBase64url };
+  const submit = () => dedicated ? handler.consumeFaceId(faceIdConsume, faceIdChallenge) : handler.consume(consume, challenge);
   const cancel = { challengeKey, challengeDigest, operationId: 'holder-cancellation-1' };
 
   try {
@@ -52,25 +63,36 @@ it.each(['consume', 'cancel', 'closed-during-observation', 'missing-staged-candi
       position: 0, head: '0'.repeat(64),
     } })).toBe(true);
     expect(store.provisionFirstPhoneSlot(scope.agentId, priorSlot)).toBe(true);
-    const first = mode === 'cancel' ? await handler.cancel(cancel) : await handler.consume(consume, challenge);
+    if (dedicated) {
+      await expect(submit()).resolves.toEqual({ kind: 'refused' });
+      faceIdEligible = true;
+      await expect(handler.consumeFaceId(faceIdConsume, { ...faceIdChallenge, faceIdKeyGeneration: '2' }))
+        .resolves.toEqual({ kind: 'refused' });
+      await expect(handler.consume(consume, challenge)).resolves.toEqual({ kind: 'refused' });
+      expect(store.read(scope)?.floor.position).toBe(0);
+    }
+    const first = mode === 'cancel' ? await handler.cancel(cancel) : await submit();
     if (mode === 'closed-during-observation' || mode === 'missing-staged-candidate') {
       expect(first).toEqual({ kind: 'pending' });
       expect(store.read(scope)?.floor.position).toBe(0);
       expect(store.readFirstPhoneSlot(scope.agentId, challenge.slotKey)).toEqual(priorSlot);
       return;
     }
-    expect(first).toMatchObject({ kind: 'witnessed', outcome: { decision: mode === 'consume' ? 'accepted' : 'canceled' } });
+    expect(first).toMatchObject({ kind: 'witnessed', outcome: { decision: mode === 'cancel' ? 'canceled' : 'accepted' } });
     expect(store.read(scope)?.floor.position).toBe(1);
     expect(store.readFirstPhoneSlot(scope.agentId, challenge.slotKey)).toMatchObject({
-      generation: mode === 'consume' ? 1 : 0, reservedBy: mode === 'consume' ? challengeKey : null,
+      generation: mode === 'cancel' ? 0 : 1, reservedBy: mode === 'cancel' ? null : challengeKey,
     });
+    if (dedicated) {
+      expect(store.readFirstPhoneSlot(scope.agentId, challenge.slotKey)?.keyDigest).toBe(faceIdChallenge.faceIdKeyHash);
+    }
     historical = candidate;
     admitsConsume = false;
-    const exactRetry = mode === 'cancel' ? await handler.cancel(cancel) : await handler.consume(consume, challenge);
+    const exactRetry = mode === 'cancel' ? await handler.cancel(cancel) : await submit();
     expect(exactRetry).toEqual(first);
     const original = historical!;
     historical = { ...original, requestDigest: 'd'.repeat(64) };
-    await expect(handler.consume(consume, challenge)).resolves.toEqual({ kind: 'pending' });
+    await expect(submit()).resolves.toEqual({ kind: 'pending' });
     historical = original;
     const loser = mode === 'cancel' ? await handler.consume(consume, challenge) : await handler.cancel(cancel);
     expect(loser).toEqual({ kind: 'refused' });

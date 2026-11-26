@@ -1,0 +1,25 @@
+{
+  "version": 2,
+  "slug": "first-phone-face-id-decision",
+  "sessionId": "b3d2cf8a-9b5d-468b-a50b-70ebf11e9e5c",
+  "timestamp": "2026-11-26T16:51:49.226Z",
+  "artifactPath": "upgrades/side-effects/first-phone-face-id-decision.md",
+  "artifactSha256": "3ef2426ce4caec5c72769c91432e8a135e0016912b857a32f9f374026c867bf7",
+  "coveredFiles": [
+    "docs/specs/phone-only-first-approver.eli16.md",
+    "src/core/trustJourney/firstPhoneOrderedDecision.ts",
+    "src/core/trustJourney/firstPhoneOrderedEnrollment.ts",
+    "src/core/trustJourney/firstPhoneWitnessAuthority.ts",
+    "tests/integration/first-phone-witness-authority.test.ts",
+    "tests/unit/first-phone-ordered-decision.test.ts",
+    "upgrades/next/phone-only-first-approver.md",
+    "upgrades/side-effects/first-phone-face-id-decision.md"
+  ],
+  "phase": "complete",
+  "tier": 1,
+  "tierReasoning": "Connect dedicated proof to an unmounted ceremony with no runtime authority change",
+  "eli16Path": "docs/specs/phone-only-first-approver.eli16.md",
+  "sideEffectsPath": "upgrades/side-effects/first-phone-face-id-decision.md",
+  "secondPass": "true",
+  "reviewerConcurred": true
+}

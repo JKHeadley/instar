@@ -25,10 +25,12 @@ type Attempt = Omit<AuthorityState, 'existing' | 'slotEmpty'> & {
 
 function slotDecision(attempt: Attempt, outcome: FirstPhoneOrderedOutcome): FirstPhoneSlotDecision {
   const { challengeKey, challengeDigest, operationId, requestDigest } = outcome;
+  const keyDigest = 'faceIdPublicKeySpkiDerBase64' in attempt.current
+    ? attempt.current.challenge.faceIdKeyHash : attempt.current.challenge.presenceKeyHash;
   return {
     prior: { ...attempt.priorSlot }, operationId, requestDigest,
     action: outcome.decision === 'accepted'
-      ? { kind: 'consume', challengeKey, challengeDigest, keyDigest: attempt.current.challenge.presenceKeyHash,
+      ? { kind: 'consume', challengeKey, challengeDigest, keyDigest,
           projectionDigest: attempt.projectionDigest }
       : { kind: 'cancel', challengeKey, challengeDigest },
   };
