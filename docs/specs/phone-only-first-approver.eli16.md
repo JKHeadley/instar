@@ -39,3 +39,5 @@ The enrollment fixture now compares the saved offer with the current holder and 
 The test store can now recover the acknowledged private enrollment offer after restart. It keeps a digest of the button token and refuses attempts to change the offer or reuse the disclosure message.
 
 The test flow now saves the offer only after Telegram acknowledges the exact private message and the offer is still current. A button sent just before the authority changes cannot start enrollment.
+
+The private offer sender checks that Telegram accepted the exact enrollment message in the verified owner's private chat. This check does not activate delivery or enroll a phone.

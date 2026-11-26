@@ -55,3 +55,51 @@ it('forwards only firsthand private owner taps to the first-phone nomination han
     SafeFsExecutor.safeRmSync(stateDir, { recursive: true, force: true, operation: 'test first-phone ingress' });
   }
 });
+
+it('accepts only acknowledgement of the exact disclosure in the verified private owner chat', async () => {
+  const stateDir = fs.mkdtempSync(path.join(os.tmpdir(), 'first-phone-send-'));
+  const adapter = new TelegramAdapter({ token: 'test-token', chatId: '-100999' }, stateDir);
+  const owner = vi.spyOn(adapter, 'getVerifiedOwner').mockReturnValue(7001);
+  const api = vi.spyOn(adapter as unknown as {
+    apiCall(method: string, payload: unknown): Promise<unknown>;
+  }, 'apiCall');
+  const disclosure = 'Accept to nominate this iPhone to approve changes in Instar.';
+  const callbackData = 'first-phone:synthetic_fixture_token_123';
+  const replyMarkup = { inline_keyboard: [[{ text: 'Accept', callback_data: callbackData }]] };
+  const ack = {
+    chat: { id: 7001, type: 'private' }, message_id: 15, text: disclosure, reply_markup: replyMarkup,
+  };
+  const send = (chatId = '7001') => adapter.sendFirstPhonePrivateOffer(chatId, disclosure, callbackData);
+  try {
+    await expect(send('7002')).resolves.toBeNull();
+    expect(api).not.toHaveBeenCalled();
+    api.mockResolvedValueOnce(ack);
+    await expect(send()).resolves.toEqual({ chatId: '7001', messageId: 15 });
+    expect(api).toHaveBeenCalledWith('sendMessage', {
+      chat_id: 7001,
+      text: disclosure,
+      _formatMode: 'legacy-passthrough',
+      reply_markup: replyMarkup,
+    });
+    for (const change of [
+      { chat: { id: 7002, type: 'private' } },
+      { chat: { id: 7001, type: 'group' } },
+      { text: 'Changed disclosure' },
+      { message_id: 0 },
+      { reply_markup: undefined },
+      { reply_markup: { inline_keyboard: [[{ text: 'Accept', callback_data: 'changed' }]] } },
+    ]) {
+      api.mockResolvedValueOnce({ ...ack, ...change });
+      await expect(send()).resolves.toBeNull();
+    }
+    api.mockRejectedValueOnce(new Error('unavailable'));
+    await expect(send()).resolves.toBeNull();
+    api.mockImplementationOnce(async () => {
+      owner.mockReturnValue(7002);
+      return ack;
+    });
+    await expect(send()).resolves.toBeNull();
+  } finally {
+    SafeFsExecutor.safeRmSync(stateDir, { recursive: true, force: true, operation: 'test first-phone sender' });
+  }
+});

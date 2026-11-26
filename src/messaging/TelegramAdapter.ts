@@ -9,6 +9,13 @@ import { pairingDashboardLine, readPairingOrigin, PAIRING_PASTE_ROUTE } from '..
 import { NotificationSelectivityGate, QuietRecordedError, requireTelegramDelivery, verifiedReplyEnvelope, isVerifiedReplyEnvelope, notificationContext } from './NotificationSelectivityGate.js';
 import type { OutboundEnvelope, QuietReceipt } from './NotificationSelectivityGate.js';
 /** cos-owner-decision-delivery: trusted owner offers; profile proposals use their own registered producer. */
+const firstPhoneReceipt = Symbol('first-phone-private-receipt');
+type PrivateOwnerMessageReceipt = {
+  chat?: { id?: number; type?: string };
+  message_id?: number;
+  text?: string;
+  reply_markup?: { inline_keyboard?: Array<Array<{ text?: string; callback_data?: string }>> };
+};
 const OWNER_DECISION_ENVELOPE: OutboundEnvelope = Object.freeze({ origin: 'automated', category: 'owner-decision', sourceContext: 'owner-decision-offer' });
 import { TelegramOriginHoldError, OriginForwardSettledLocallyError, relayNothingPrepared, type HubNoticeClass } from './telegram-origin/types.js';
 import { hubRepostDecision, type HubRepostState } from './telegram-origin/TokenlessNoticeBrakes.js';
@@ -707,6 +714,30 @@ export class TelegramAdapter implements MessagingAdapter {
    *  (voice/photo/document) cannot carry the [a2a:…] marker and bypass the hook.
    *  See installAgentMessageHook for the production binding. */
   private agentMessageHook?: AgentMessageHook;
+  /** Send the exact enrollment disclosure and verify its private-chat receipt. */
+  async sendFirstPhonePrivateOffer(chatId: string, disclosure: string, callbackData: string):
+      Promise<{ chatId: string; messageId: number } | null> {
+    const owner = this.getVerifiedOwner();
+    if (owner === undefined || !Number.isSafeInteger(owner) || owner <= 0 || String(owner) !== chatId ||
+        !FIRST_PHONE_PRIVATE_CALLBACK.test(callbackData)) return null;
+
+    try {
+      const result = await this.sendOwnerDMWithButton(disclosure, { text: 'Accept', data: callbackData }, {
+        [firstPhoneReceipt]: owner,
+      });
+      const messageId = result?.message_id;
+      const keyboard = result?.reply_markup?.inline_keyboard;
+      const button = keyboard?.[0]?.[0];
+      if (result?.chat?.id !== owner || result.chat.type !== 'private' ||
+          result.text !== disclosure || keyboard?.length !== 1 || keyboard[0].length !== 1 ||
+          button?.text !== 'Accept' || button.callback_data !== callbackData || typeof messageId !== 'number' ||
+          !Number.isSafeInteger(messageId) || messageId <= 0 || this.getVerifiedOwner() !== owner) return null;
+      return { chatId, messageId };
+    } catch {
+      return null;
+    }
+  }
+
   /**
    * Pairing by invite on the DIRECT-POLLING path (no lifeline). Updates this adapter reads with
    * getUpdates come from Telegram itself, so a forwarded invite or a pairing tap read here is as
@@ -2698,9 +2729,15 @@ export class TelegramAdapter implements MessagingAdapter {
     return null;
   }
 
+  async sendOwnerDMWithButton(text: string, button: { text: string; data: string },
+    opts: { [firstPhoneReceipt]: number }): Promise<PrivateOwnerMessageReceipt | null>;
   async sendOwnerDMWithButton(text: string, button: { text: string; data: string } | Array<{ text: string; data: string }> | null,
-    opts?: { reportHeld?: boolean }): Promise<number | null> {
-    const owner = this.getOwnerUserId();
+    opts?: { reportHeld?: boolean }): Promise<number | null>;
+  async sendOwnerDMWithButton(text: string, button: { text: string; data: string } | Array<{ text: string; data: string }> | null,
+    opts?: { reportHeld?: boolean; [firstPhoneReceipt]?: number }): Promise<PrivateOwnerMessageReceipt | number | null> {
+    const firstPhoneOwner = opts?.[firstPhoneReceipt];
+    const owner = firstPhoneOwner === undefined ? this.getOwnerUserId() : this.getVerifiedOwner();
+    if (firstPhoneOwner !== undefined && owner !== firstPhoneOwner) return null;
     if (!owner) return null;
     const buttons = Array.isArray(button) ? button : button ? [button] : [];
     try {
@@ -2710,15 +2747,19 @@ export class TelegramAdapter implements MessagingAdapter {
       // Sent as escaped HTML, never through the markdown converter: the text carries a caller-chosen device
       // name, which must not become a link or bold text inside the bot's own approval message.
       const escaped = text.replace(/&/g, '&amp;').replace(/</g, '&lt;').replace(/>/g, '&gt;');
-      const result = await withNotificationEnvelope(verifiedReplyEnvelope('verified-mobile-approval'), () => this.apiCall('sendMessage', {
+      const envelope = firstPhoneOwner === undefined
+        ? verifiedReplyEnvelope('verified-mobile-approval')
+        : OWNER_DECISION_ENVELOPE;
+      const result = await withNotificationEnvelope(envelope, () => this.apiCall('sendMessage', {
         chat_id: owner,
-        text: escaped,
-        parse_mode: 'HTML',
-        _formatMode: 'html',
+        ...(firstPhoneOwner === undefined
+          ? { text: escaped, parse_mode: 'HTML', _formatMode: 'html' }
+          : { text, _formatMode: 'legacy-passthrough' }),
         // A yes/no pair shares one row; three or more (one per project in a Chief of Staff note) get a row each,
         // so every button keeps its full name on a phone instead of being squeezed into one line.
         ...(buttons.length ? { reply_markup: { inline_keyboard: buttons.length > 2 ? buttons.map((b) => [{ text: b.text, callback_data: b.data }]) : [buttons.map((b) => ({ text: b.text, callback_data: b.data }))] } } : {}),
-      })) as { message_id: number };
+      })) as PrivateOwnerMessageReceipt | null;
+      if (firstPhoneOwner !== undefined) return result;
       return typeof result?.message_id === 'number' ? result.message_id : null;
     } catch (err) {
       // @silent-fallback-ok — not silent: null makes the caller cancel the pending pairing and answer 409

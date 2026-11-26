@@ -1,0 +1,19 @@
+{
+  "version": 2,
+  "slug": "first-phone-telegram-offer-sender",
+  "sessionId": "b3d2cf8a-9b5d-468b-a50b-70ebf11e9e5c",
+  "timestamp": "2026-11-26T04:49:10.847Z",
+  "artifactPath": "upgrades/side-effects/first-phone-telegram-offer-sender.md",
+  "artifactSha256": "1efa44bfb2ca866baa52c904c85f836f7b0f9c5725ae166cb93b13f3b4070da5",
+  "coveredFiles": [
+    "src/messaging/TelegramAdapter.ts",
+    "tests/unit/first-phone-telegram-ingress.test.ts"
+  ],
+  "phase": "complete",
+  "tier": 1,
+  "tierReasoning": "Private Telegram sender seam has no production caller",
+  "eli16Path": "docs/specs/phone-only-first-approver.eli16.md",
+  "sideEffectsPath": "upgrades/side-effects/first-phone-telegram-offer-sender.md",
+  "secondPass": "true",
+  "reviewerConcurred": true
+}
