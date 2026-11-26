@@ -1,8 +1,17 @@
+import { verify } from 'node:crypto';
+import { isStrictLowSDer, parseDevicePublicKey } from './MobileDeviceKeys.js';
 import { ConnectViewerEnrollment, type ConnectViewerBinding } from './ConnectViewerEnrollment.js';
 import { ConnectViewerSession, type ConnectViewerConsent } from './ConnectViewerSession.js';
 
 const MAX_VIEWERS = 16;
 const MAX_CHALLENGES = 16;
+
+export function connectViewerAttachMessage(session: ConnectViewerSession): Buffer {
+  const { agentId, targetMachineId, keyDigest, displayId, expiresAt } = session.consent;
+  return Buffer.from(JSON.stringify([
+    'instar-connect-attach-v1', 'look-only', session.id, agentId, targetMachineId, keyDigest, displayId, expiresAt,
+  ]));
+}
 
 /** One process owns all approvals and grants. Restart drops both. */
 export class ConnectViewerAuthority {
@@ -47,6 +56,17 @@ export class ConnectViewerAuthority {
     const session = new ConnectViewerSession(consent);
     this.#sessions.set(consent.keyDigest, session);
     return session;
+  }
+
+  attach(keyDigest: string, sessionId: string, signature: string): AbortSignal | undefined {
+    const viewer = this.#viewers.get(keyDigest);
+    const session = this.#sessions.get(keyDigest);
+    if (!viewer || !session || session.id !== sessionId || !/^[A-Za-z0-9_-]{8,100}$/.test(signature)) return;
+    const key = parseDevicePublicKey(viewer.publicKey);
+    const bytes = Buffer.from(signature, 'base64url');
+    if (!key || bytes.toString('base64url') !== signature || !isStrictLowSDer(bytes) ||
+        !verify('sha256', connectViewerAttachMessage(session), key, bytes)) return;
+    return session.attach(viewer.binding, session.consent.displayId);
   }
 
   revoke(keyDigest: string): void {
