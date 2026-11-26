@@ -142,7 +142,7 @@ import { SafeFsExecutor } from './SafeFsExecutor.js';
 import { ClaudeBinaryRetainer, resolveRetainerEnabled, type RetainerStatus } from './ClaudeBinaryRetainer.js';
 import { placeResumeTranscript } from './claudeResumeTranscript.js';
 import { placeCodexResumeRollout, type CodexRolloutPlacement } from './codexResumeRollout.js';
-import { CODEX_CLI_FRAMEWORK } from './frameworkFacts.js';
+import { CLAUDE_CODE_FRAMEWORK, CODEX_CLI_FRAMEWORK } from './frameworkFacts.js';
 import {
   InboundDeliveryStore,
   InboundDeliveryStoreUnavailableError,
@@ -10321,7 +10321,7 @@ rm()  { "${shimRunner}" rm  "$@"; }
     const exactTarget = `=${tmuxSession}:`;
     // On Claude the old 500 ms Enter can precede paste commit. Send the single
     // submit at the time its first recovery key used to land.
-    const postPasteDelaySec = framework === 'claude-code' ? '1' : framework === 'codex-cli' ? '1.5' : '0.5';
+    const postPasteDelaySec = framework === CLAUDE_CODE_FRAMEWORK ? '1' : framework === CODEX_CLI_FRAMEWORK ? '1.5' : '0.5';
     const enterPresses = framework === 'codex-cli' ? 2 : 1;
     // SEC-137: a tab typed key-by-key can trigger completion; send it inside a paste instead.
     if (text.includes('\n') || text.includes('\t')) {
@@ -10561,7 +10561,7 @@ rm()  { "${shimRunner}" rm  "$@"; }
   isMarkerStuckAtPrompt(pane: string, marker: string, framework?: IntelligenceFramework | null): boolean {
     if (!marker || marker.length < 8) return false;
     const lines = pane.split('\n');
-    if (framework === 'claude-code') {
+    if (framework === CLAUDE_CODE_FRAMEWORK) {
       // Claude echoes submitted turns with the same ❯ as its composer. Read up
       // from the footer and stop at either the current prompt or a later answer.
       for (let i = lines.length - 1; i >= 0; i--) {

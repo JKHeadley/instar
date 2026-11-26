@@ -15,3 +15,5 @@ The observed notification and queued-settlement callers also consume this matche
 The independent review identified that stripping indentation let a quoted ❯ in a different draft impersonate a prompt, and let a quoted ⏺ hide real input. Both cases failed in the fixture. The matcher now reads Claude role glyphs at the left edge and retains indentation on subsequent content rows.
 
 A second fixture exposed an unpadded blank line between pasted paragraphs. The reader now consumes the blank row only when the marker expects a newline at that position.
+
+The follow-up replaces duplicated framework identifiers with their shared constants. Both constants resolve to the same identifiers that the injection code compared before.
