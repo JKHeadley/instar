@@ -1,0 +1,47 @@
+{
+  "version": 2,
+  "profile": "face-id-current-set-v1",
+  "synthetic": true,
+  "key": {
+    "publicKeySpkiDerBase64": "MFkwEwYHKoZIzj0CAQYIKoZIzj0DAQcDQgAEaTzqzT8ddLuv+DEb2Uwbz8CWXebyoo5fkB1LnsADPJELKqYDr6ax9gB/JIzsIIiEhVlfuE5Bd9QQ/fDb1zGNYw==",
+    "hashInput": "canonical-p256-spki-der-bytes",
+    "hashAlgorithm": "sha256",
+    "hashEncoding": "lowercase-hex"
+  },
+  "input": {
+    "attemptId": "11111111-1111-4111-8111-111111111111",
+    "nonce": "BwcHBwcHBwcHBwcHBwcHBwcHBwcHBwcHBwcHBwcHBwc",
+    "holderMachineId": "machine-1",
+    "holderEpoch": "1",
+    "holderIncarnation": "process-1",
+    "ownerId": "7001",
+    "ownerGeneration": "owner-1",
+    "accountAcceptanceId": "accept-1",
+    "accountAcceptanceGeneration": "account-1",
+    "policyRevision": "policy-1",
+    "origin": "https://paired.example",
+    "deviceId": "device-1",
+    "deviceKeyHash": "aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa",
+    "nominationId": "22222222-2222-4222-8222-222222222222",
+    "proposalHash": "cccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccc",
+    "disclosureHash": "dddddddddddddddddddddddddddddddddddddddddddddddddddddddddddddddd",
+    "slotKey": "tj:device-acceptance:first:0",
+    "faceIdKeyHash": "f768181fca3e9760ed31d3a16dfc4009c44d833bf7f38884a3cc46f97e5cc1ec",
+    "faceIdKeyGeneration": "1",
+    "localAssurance": "face-id-current-set-v1"
+  },
+  "registration": {
+    "registrationId": "33333333-3333-4333-8333-333333333333",
+    "nonce": "ExMTExMTExMTExMTExMTExMTExMTExMTExMTExMTExM",
+    "expectedFaceIdKeyGeneration": "0",
+    "transcriptBase64": "WyJpbnN0YXIuZmlyc3QtcGhvbmUtYXBwcm92ZXIuZmFjZS1pZC1yZWdpc3RyYXRpb24udjEiLCIzMzMzMzMzMy0zMzMzLTQzMzMtODMzMy0zMzMzMzMzMzMzMzMiLCJFeE1URXhNVEV4TVRFeE1URXhNVEV4TVRFeE1URXhNVEV4TVRFeE1URXhNIiwibWFjaGluZS0xIiwiMSIsInByb2Nlc3MtMSIsIjcwMDEiLCJvd25lci0xIiwicG9saWN5LTEiLCJodHRwczovL3BhaXJlZC5leGFtcGxlIiwiZGV2aWNlLTEiLCJhYWFhYWFhYWFhYWFhYWFhYWFhYWFhYWFhYWFhYWFhYWFhYWFhYWFhYWFhYWFhYWFhYWFhYWFhYWFhYWFhYWFhIiwiZjc2ODE4MWZjYTNlOTc2MGVkMzFkM2ExNmRmYzQwMDljNDRkODMzYmY3ZjM4ODg0YTNjYzQ2Zjk3ZTVjYzFlYyIsIjAiLCJmYWNlLWlkLWN1cnJlbnQtc2V0LXYxIl0=",
+    "digestSha256Hex": "68714fff246339661f96e7f0409a3c4f043938f9d01f5ba6307fbfdf5a3b6a5c",
+    "signatureDerBase64url": "MEQCIDxEkHZa6n8JA3oaERAEdug5K75VY3uKkLQpi-E4HZwNAiAQYQoLJ0f8F-1pkgUx144RAwpyEKb4swGyYvavHo_mTQ"
+  },
+  "confirmation": {
+    "challengeKey": "2bec7389edcf611ae1f4fb04c922207479d1b9c4090fbde7e16b656e18356893",
+    "transcriptBase64": "WyJpbnN0YXIuZmlyc3QtcGhvbmUtYXBwcm92ZXIuZmFjZS1pZC52MiIsIjExMTExMTExLTExMTEtNDExMS04MTExLTExMTExMTExMTExMSIsIkJ3Y0hCd2NIQndjSEJ3Y0hCd2NIQndjSEJ3Y0hCd2NIQndjSEJ3Y0hCd2MiLCJtYWNoaW5lLTEiLCIxIiwicHJvY2Vzcy0xIiwiNzAwMSIsIm93bmVyLTEiLCJhY2NlcHQtMSIsImFjY291bnQtMSIsInBvbGljeS0xIiwiaHR0cHM6Ly9wYWlyZWQuZXhhbXBsZSIsImRldmljZS0xIiwiYWFhYWFhYWFhYWFhYWFhYWFhYWFhYWFhYWFhYWFhYWFhYWFhYWFhYWFhYWFhYWFhYWFhYWFhYWFhYWFhYWFhYSIsImY3NjgxODFmY2EzZTk3NjBlZDMxZDNhMTZkZmM0MDA5YzQ0ZDgzM2JmN2YzODg4NGEzY2M0NmY5N2U1Y2MxZWMiLCIyMjIyMjIyMi0yMjIyLTQyMjItODIyMi0yMjIyMjIyMjIyMjIiLCJjY2NjY2NjY2NjY2NjY2NjY2NjY2NjY2NjY2NjY2NjY2NjY2NjY2NjY2NjY2NjY2NjY2NjY2NjY2NjY2NjY2NjIiwiZGRkZGRkZGRkZGRkZGRkZGRkZGRkZGRkZGRkZGRkZGRkZGRkZGRkZGRkZGRkZGRkZGRkZGRkZGRkZGRkZGRkZCIsInRqOmRldmljZS1hY2NlcHRhbmNlOmZpcnN0OjAiLCIxIiwiZmFjZS1pZC1jdXJyZW50LXNldC12MSJd",
+    "digestSha256Hex": "d0d1ef26da1f5de5c7082ffb37e837ae41cd6f667e4c183283981eacaac43dd0",
+    "signatureDerBase64url": "MEUCIQC_b7bKNQRCgmRTXT5CDMsZm4-xlgYENvjlGnHd5pINgwIgJYFw20UkVPGaL5nUzV2tHUVdM38PdxY7T96YQbOqDeA"
+  }
+}

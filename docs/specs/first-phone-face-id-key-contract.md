@@ -1,6 +1,6 @@
 # First-phone Face ID approval key
 
-Status: dark protocol proposal for Identity and Apple review. No existing enrollment evidence qualifies automatically.
+Status: dark protocol, with transcript positions agreed by Identity and Apple. No existing enrollment evidence qualifies automatically.
 
 ## Key and device binding
 
@@ -19,7 +19,7 @@ The registration proof signs a compact UTF-8 JSON array with these positions in 
 
 Use the v2 nonce and canonical-origin rules and a separately issued, single-use registration ID. Encode holder epoch and binding generation as nonnegative decimal strings without leading zeroes. Generation zero represents an empty initial binding. The transport submission supplies the registration ID, public key, local assurance literal and dedicated signature. The holder reconstructs the signed bytes from its own stored challenge. The pinned installed-device rehearsal may use explicitly provisioned, independently checked evidence for the exact tuple. General rollout requires a verified way to establish eligibility for each binding.
 
-Commit the candidate public key and its fingerprint as a purpose-specific binding on the exact device record. Use canonical P-256 DER SPKI and the same key-hash representation as the existing mobile verifier. Compare the verified owner, holder, policy, device identity and prior binding generation during the conditional write. The record carries the binding generation, policy ID and eligibility evidence reference. Initial registration grants no approver authority. Replacing or withdrawing a binding advances its generation and invalidates outstanding attempts through witnessed cancellation. Replacement requires a fresh authorized registration and eligibility check. The app never submits a new approval key to the approval endpoint itself.
+Commit the candidate public key and its fingerprint as a purpose-specific binding on the exact device record. For the dedicated key, use canonical P-256 DER SPKI and lowercase hexadecimal SHA-256 of those exact DER bytes. The existing transport-key binding continues to use its established encoding. The shared synthetic vector in `tests/fixtures/first-phone/face-id-challenge-v2.json` pins both transcript types and the dedicated key encoding. Compare the verified owner, holder, policy, device identity and prior binding generation during the conditional write. The record carries the binding generation, policy ID and eligibility evidence reference. Initial registration grants no approver authority. Replacing or withdrawing a binding advances its generation and invalidates outstanding attempts through witnessed cancellation. Replacement requires a fresh authorized registration and eligibility check. The app never submits a new approval key to the approval endpoint itself.
 
 ## Confirmation profile
 
