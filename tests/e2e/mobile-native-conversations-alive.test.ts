@@ -1,3 +1,4 @@
+import { attachmentIdFor } from '../../src/core/appMediaTypes.js';
 /**
  * Feature-is-alive proof for native app conversations (docs/specs/mobile-native-conversations.md,
  * increment 1): an AgentServer booted on a development agent with NO Telegram and NO Slack
@@ -420,6 +421,38 @@ describe('native app conversations — production wiring', () => {
       expect(raced.status).toBe(503);
       expect(raced.body).not.toHaveProperty('own');
     } finally { reactionRace.mockRestore(); }
+
+    const bytes = Buffer.from('download fallback fixture');
+    const sha = crypto.createHash('sha256').update(bytes).digest('hex');
+    const blob = path.join(server.appConversations!.media.root, 'blobs', sha.slice(0, 2), sha);
+    fs.mkdirSync(path.dirname(blob), { recursive: true });
+    fs.writeFileSync(blob, bytes);
+    for (const id of ['removed-media', 'surviving-media']) {
+      store.append({ kind: 'media-message', conversationKey: key, eventId: `event-${id}`, messageId: id,
+        role: 'agent', text: '', machineId: server.appConversations!.deps.machineId(), at: new Date().toISOString(),
+        attachments: [{ attachmentId: attachmentIdFor(id, 0), index: 0, sha256: sha, size: bytes.length, filename: 'fixture.bin',
+          kind: 'file', declaredKind: 'file', mediaType: 'application/octet-stream', declaredType: 'application/octet-stream' }],
+      });
+    }
+    const removeMedia = (id: string) => store.append({ kind: 'message-removed', conversationKey: key, eventId: `delete-${id}`,
+      targetEventId: `event-${id}`, targetMessageId: id, machineId: server.appConversations!.deps.machineId(), at: new Date().toISOString() });
+    removeMedia('removed-media');
+    const mediaPath = `/mobile/media/${sha}?ref=app%3A${key}`;
+    const sharedDownload = await send('GET', mediaPath).set('Range', 'bytes=0-7');
+    expect(sharedDownload.status).toBe(206);
+    expect(sharedDownload.body).toEqual(bytes.subarray(0, 8));
+    const openFile = fs.promises.open.bind(fs.promises);
+    const mediaRace = vi.spyOn(fs.promises, 'open').mockImplementation(async (...args) => {
+      const handle = await openFile(...args);
+      if (args[0] === blob) removeMedia('surviving-media');
+      return handle;
+    });
+    try {
+      const raced = await send('GET', mediaPath);
+      expect(raced.status).toBe(404);
+      expect(raced.body).toEqual({ error: 'not-found' });
+    } finally { mediaRace.mockRestore(); }
+    expect((await send('GET', mediaPath)).status).toBe(404);
 
     // A ledger revocation alone refuses the phone at once on the production auth path, even if
     // the registry write after it failed (the registry still says active here).

@@ -8365,6 +8365,7 @@ export class AgentServer {
       }
       const slackRegistry = options.slack ? routeCtx.conversationRegistry ?? null : null;
       this.app.use(createMobileMediaRouter({
+        removalReadAcceptance: conversationFlatDeps.removalReadAcceptance,
         pairing: this.mobilePairing, service: this.appConversations, mediaEnabled: isMobileMediaEnabled(options.config),
         machineId: () => this.appConversations?.deps.machineId() ?? 'local',
         // The owner's phone opens a Slack file from the machine that holds it (mobile-remote-media).

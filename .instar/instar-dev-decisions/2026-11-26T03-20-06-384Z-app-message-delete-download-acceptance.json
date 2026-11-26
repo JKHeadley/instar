@@ -1,0 +1,23 @@
+{
+  "ts": "2026-11-26T03:20:06.384Z",
+  "slug": "app-message-delete-download-acceptance",
+  "suggestedTier": 2,
+  "declaredTier": 2,
+  "riskFloor": 1,
+  "riskFloorReasons": [],
+  "belowFloor": false,
+  "files": 2,
+  "loc": 73,
+  "scope": {
+    "basis": "staged-in-scope-paths-including-deleted",
+    "files": [
+      "src/server/AgentServer.ts",
+      "src/server/mobileMediaRoutes.ts"
+    ],
+    "addedLines": 60,
+    "deletedLines": 13
+  },
+  "causalAutopsy": null,
+  "classClosure": null,
+  "verdict": "pass"
+}

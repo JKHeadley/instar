@@ -65,3 +65,5 @@ The isolated server also refuses to show reactions for a deleted message. It can
 On the isolated server, search skips protected chats until it can verify what is still available. Results from other chats can still be shown.
 
 The server can now check whether a file is still attached to another readable message in the same chat after the first message is deleted. The download and session routes still need to use that check.
+
+On the isolated server, a shared file still downloads if another readable message contains it. If the last readable attachment is deleted while the server opens the file, the download stops before sending any bytes.
