@@ -5,13 +5,14 @@
  * loopback from Home's sources; a source that cannot be read is named instead of reading as zero; and a
  * synthetic need (an attention item raised for the owner) travels the real read and shows up.
  */
-import { describe, it, expect, afterAll } from 'vitest';
+import { describe, it, expect, afterAll, vi } from 'vitest';
 import fs from 'node:fs';
 import os from 'node:os';
 import path from 'node:path';
 import request from 'supertest';
 import { AgentServer } from '../../src/server/AgentServer.js';
 import { StateManager } from '../../src/core/StateManager.js';
+import { DegradationReporter } from '../../src/monitoring/DegradationReporter.js';
 import { LocalAttentionItems } from '../../src/core/LocalAttentionItems.js';
 import { createMockSessionManager } from '../helpers/setup.js';
 import { SafeFsExecutor } from '../../src/core/SafeFsExecutor.js';
@@ -76,7 +77,25 @@ describe('Needs-you read — production wiring', () => {
       })).toBe(true);
     }
 
-    const first = await auth(request(app).get('/needs'));
+    const feature = 'SessionManager.verifyInjection.unsubmitted';
+    const reporter = DegradationReporter.getInstance();
+    const recentEvents = vi.spyOn(reporter, 'getRecentEvents').mockReturnValue([{
+      timestamp: new Date().toISOString(),
+      feature,
+      primary: 'Submit the message',
+      fallback: 'The background recovery check will try again',
+      reason: 'The input is still at the prompt',
+      impact: 'Message is still waiting',
+      reported: false,
+      alerted: false,
+    }]);
+    const [first, health] = await (async () => {
+      try {
+        return [await auth(request(app).get('/needs')), await auth(request(app).get('/mobile/health-issues'))];
+      } finally {
+        recentEvents.mockRestore();
+      }
+    })();
     expect(first.status, JSON.stringify(first.body)).toBe(200);
     expect(first.body).toMatchObject({ schemaVersion: 1, viewer: { role: 'owner' }, agent: { name: 'needs-e2e' } });
     expect(Array.isArray(first.body.items)).toBe(true);
@@ -89,9 +108,10 @@ describe('Needs-you read — production wiring', () => {
     // A feature switched off on this agent (here: plan tracking and the blocker list) is off, never
     // "could not check", even when its 503 also says "not initialized".
     expect(first.body.couldNotCheck).not.toContain('plans');
-    const health = await auth(request(app).get('/mobile/health-issues'));
     expect(health.status).toBe(200);
     expect(health.body.issues).toContainEqual(expect.objectContaining({id:'health:sessions-full',requiresUserAction:false}));
+    expect(health.body.issues).toContainEqual(expect.objectContaining({ id: feature, requiresUserAction: false }));
+    expect(first.body.items.some((i: { id: string }) => i.id === `need:health:${feature}`)).toBe(false);
     expect(first.body.sources.find((s: {id:string}) => s.id === 'health').state).toBe('ok');
     expect(first.body.items.some((i: {title:string}) => i.title === 'All session slots are in use')).toBe(false);
     // Each thing once (work-board-cards-appear §3, amended 2026-11-18): an item that IS its card opens the card and

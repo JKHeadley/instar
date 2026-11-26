@@ -3701,7 +3701,7 @@ export class PostUpdateMigrator {
         prior: new Set<string>(),
         alwaysOverwrite: true,
       },
-      {
+      ...templateRoots.map((skillRoot) => ({
         // grok-build reviewer-door plumbing (grok-build spec §8/§11): the
         // wrapper must plumb enabledFrameworks into detection on EXISTING
         // agents too — installBuiltinSkills never overwrites, so this sync
@@ -3710,12 +3710,12 @@ export class PostUpdateMigrator {
         // shipped-content entries: a prior-hash gate over a shipped script
         // classifies ordinary drift as customization and stops refreshing
         // forever (the constitution-mirror lesson).
-        label: 'spec-converge cross-model-review enabledFrameworks plumbing',
+        label: `spec-converge cross-model-review enabledFrameworks plumbing${skillRoot === '.claude' ? '' : ` (${skillRoot})`}`,
         bundled: path.join(bundledRoot, 'skills', 'spec-converge', 'scripts', 'cross-model-review.mjs'),
-        target: path.join(root, '.claude', 'skills', 'spec-converge', 'scripts', 'cross-model-review.mjs'),
+        target: path.join(root, skillRoot, 'skills', 'spec-converge', 'scripts', 'cross-model-review.mjs'),
         prior: new Set<string>(),
         alwaysOverwrite: true,
-      },
+      })),
       // spec-converge REVIEWER TEMPLATES (round-10, integration+lessons).
       // `installBuiltinSkills` writes a skill's files only when the skill is
       // MISSING, so an existing agent's templates freeze at whatever version
@@ -14060,9 +14060,14 @@ The server runs the full test suite on the exact code a pull request would merge
       result.upgraded.push('CLAUDE.md: Local Verify peer line names the works-through-restart setting');
     }
     if (content.includes('/local-verify') && !content.includes('monitoring.localVerify.smallPeerTrial')) {
-      content += '\n- Local Verify can give one normal pull request to a calibrated small Mac with two unit workers and one worker for each remaining suite. The coordinator and peer must share the measured monitoring.localVerify.smallPeerTrial policy. The peer stops when available memory reaches the floor or telemetry expires. Read its signed attempt receipt for elapsed time, peak memory and the reason it stopped.\n';
+      content += '\n- Local Verify can give one normal pull request to a calibrated small Mac with one or two unit workers and one worker for each remaining suite. The coordinator and peer must share the measured monitoring.localVerify.smallPeerTrial policy. The peer stops when available memory reaches the floor or telemetry expires. Read its signed attempt receipt for elapsed time, peak memory and the reason it stopped.\n';
       patched = true;
       result.upgraded.push('CLAUDE.md: added small Mac verification trial awareness');
+    }
+    if (content.includes('calibrated small Mac with two unit workers and one worker for each remaining suite')) {
+      content = content.replace('calibrated small Mac with two unit workers', 'calibrated small Mac with one or two unit workers');
+      patched = true;
+      result.upgraded.push('CLAUDE.md: small Mac verification awareness names both worker settings');
     }
     // local-verify merge-throughput overflow: a labelled PR is admitted past a full queue.
     if (content.includes('/local-verify') && !content.includes('Local Verify throughput overflow')) {

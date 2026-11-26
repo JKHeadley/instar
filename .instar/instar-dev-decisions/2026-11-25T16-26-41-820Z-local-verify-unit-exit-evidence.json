@@ -1,0 +1,24 @@
+{
+  "ts": "2026-11-25T16:26:41.820Z",
+  "slug": "local-verify-unit-exit-evidence",
+  "suggestedTier": 2,
+  "declaredTier": 1,
+  "riskFloor": 1,
+  "riskFloorReasons": [],
+  "belowFloor": false,
+  "files": 3,
+  "loc": 60,
+  "scope": {
+    "basis": "staged-in-scope-paths-including-deleted",
+    "files": [
+      "src/data/awareness/failed-verification-evidence.md",
+      "src/localVerify/failureEvidence.ts",
+      "src/localVerify/orchestrator.ts"
+    ],
+    "addedLines": 57,
+    "deletedLines": 3
+  },
+  "causalAutopsy": null,
+  "classClosure": null,
+  "verdict": "pass"
+}

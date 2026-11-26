@@ -1245,6 +1245,7 @@ a.machine-line-link:hover { border-color: var(--accent); color: var(--text); }
 /* Conversations uses the console's existing rows, chips and semantic colors. */
 .conversations-page { max-width: 760px; min-width: 0; }
 .conversation-tabs { display: flex; flex-wrap: wrap; gap: 8px; margin: 16px 0; }
+.conversation-tabs .chip { min-width: 44px; min-height: 44px; justify-content: center; }
 .conversation-tabs .active { border-color: var(--accent); color: var(--accent); }
 .conversation-search { display: flex; flex-wrap: wrap; align-items: center; gap: 8px; margin: 16px 0; }
 .conversation-search input { flex: 1 1 180px; min-width: 0; margin: 0; }
@@ -1677,7 +1678,8 @@ a.needs-row:hover { background: var(--surface-raised); }
 .needs-compact-first { flex: 1; min-width: 0; font-size: 14px; color: var(--text-muted); white-space: nowrap; overflow: hidden; text-overflow: ellipsis; }
 .needs-compact .chev { flex: none; color: var(--text-muted); }
 .needs-strip[data-state="loading"] .needs-compact-label, .needs-strip[data-state="unknown"] .needs-compact-label { color: var(--text-muted); font-weight: 600; }
-.needs-close { flex: none; font-size: 13px; }
+.needs-close { flex: none; font-size: 13px; min-width: 44px; min-height: 44px; }
+.needs-strip button.needs-more { min-width: 44px; min-height: 44px; }
 /* "Make a card" on a conversation message (work-front-doors stage 2b): quiet, after the message. */
 .conversation-message .conversation-make-card { margin-top: 2px; font-size: 13px; min-height: 32px; padding: 2px 8px; }
 /* Whose turn (work-front-doors §6, Luna's board): light red while a card waits on you, light blue while it moves. */
@@ -1785,6 +1787,11 @@ a.needs-row:hover { background: var(--surface-raised); }
   .wc-tile-foot .work-actions { width: 100%; }
   .wc-tile-foot .work-actions > button { flex: 1 1 auto; }
 }
+
+/* Suggestions still under review do not bury the useful next step. */
+.ideas-unranked { min-width: 0; margin: var(--s-4) 0; }
+.ideas-unranked > summary { min-height: 44px; padding: 12px 0; cursor: pointer; font-weight: 600; overflow-wrap: anywhere; }
+
 
 /* A long approval inbox stays within the screen; all received actions remain reachable. */
 .needs-groups { max-height: min(52vh, 28rem); overflow-y: auto; overscroll-behavior: contain; border: 1px solid var(--strip-line); border-top: 0; background: var(--surface); scrollbar-gutter: stable; }

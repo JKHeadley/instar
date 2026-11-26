@@ -47,9 +47,13 @@ describe('Telegram connect attempt window', () => {
     const old = await connectThroughPause(port, 250, 400);
     expect(old.ok).toBe(false);
     expect((old.error as NodeJS.ErrnoException).code).toBe('ETIMEDOUT');
-    // The first address timed out; the last was refused by Node, not an OS route.
-    expect((old.error as AggregateError).errors.map((error: NodeJS.ErrnoException) => error.code))
-      .toEqual(['ETIMEDOUT', 'ERR_IP_BLOCKED']);
+    // The first address timed out. The last fails fast either way: refused by Node's BlockList, or,
+    // on a host with no IPv6 route at all (the GitHub runner), by the OS before the BlockList is
+    // consulted. Which of those happens is a property of the host, not of the code under test.
+    const codes = (old.error as AggregateError).errors.map((error: NodeJS.ErrnoException) => error.code);
+    expect(codes).toHaveLength(2);
+    expect(codes[0]).toBe('ETIMEDOUT');
+    expect(['ERR_IP_BLOCKED', 'ENETUNREACH', 'EHOSTUNREACH', 'EADDRNOTAVAIL']).toContain(codes[1]);
     // The actual timeout remains proven unsent. Our synthetic blocked fallback is deliberately
     // not in the transport retry allowlist; do not broaden production authority for a fixture.
     expect(provedUnsentCode((old.error as AggregateError).errors[0])).toBe('ETIMEDOUT');
