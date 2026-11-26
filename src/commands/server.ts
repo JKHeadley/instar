@@ -459,6 +459,7 @@ import { shouldOwnTelegramPoll } from '../lifeline/telegramPollOwnership.js';
 import { TopicRef, topicRef, setTopicNameResolver } from '../messaging/shared/topicRef.js';
 import { isConfigureOnlyMandate } from '../coordination/AccountFollowMeMandateDelivery.js';
 import { CLAUDE_CODE_FRAMEWORK, CODEX_CLI_FRAMEWORK } from '../core/frameworkFacts.js';
+import { effectiveFrameworkModelDefaults } from '../core/frameworkModelDefaults.js';
 
 /** Helper-death alert: the tail of the helper's last message (see the helper-failed wiring). */
 export const HELPER_DEATH_SNIPPET_CHARS = 160 + BOUNDED_INPUT_MIN_CHARS;
@@ -8002,7 +8003,9 @@ export async function startServer(options: StartOptions): Promise<void> {
     writeStageCActivationLease(config.stateDir, stageCRecoveryEnabled);
     let stageBOwnerEpochForConversation = (_conversationId: string): number => 0;
     console.log(pc.dim(`  Codex session lifecycle Stage B: ${stageBActivation.reason}`));
+    const modelDefaults = () => effectiveFrameworkModelDefaults(config.sessions?.frameworkDefaultModels);
     const sessionManager = new SessionManager(sessionManagerConfig, state, {
+      frameworkDefaultModels: modelDefaults,
       bindTerminateAuthority: (authority) => { boundTerminateAuthority = authority; },
       tmuxAsyncEnabled: _tmuxAsyncEnabled,
       degradedTmuxGuard,
@@ -8536,7 +8539,7 @@ export async function startServer(options: StartOptions): Promise<void> {
           configTopicFrameworks: () => _topicFrameworks,
           configProfileDefaults: () => topicProfilesCfg?.defaults ?? {},
           configGroupDefaults: () => topicProfilesCfg?.groupDefaults ?? {},
-          frameworkDefaultModels: () => config.sessions?.frameworkDefaultModels ?? {},
+          frameworkDefaultModels: modelDefaults,
           tierEscalationConfig: () =>
             normalizeTierEscalationConfig(
               (config as { models?: { tierEscalation?: unknown } }).models?.tierEscalation,

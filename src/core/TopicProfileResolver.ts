@@ -31,6 +31,7 @@
  * underlying condition changes.
  */
 
+import { resolveFrameworkModelDefault } from './frameworkModelDefaults.js';
 import fs from 'node:fs';
 import type { IntelligenceFramework } from './intelligenceProviderFactory.js';
 import type { TopicProfileStore, TopicProfile } from './TopicProfileStore.js';
@@ -249,7 +250,7 @@ export class TopicProfileResolver {
       }
     }
     if (model === undefined && modelSource === 'account-default') {
-      const fwDefault = this.opts.frameworkDefaultModels()[framework];
+      const fwDefault = resolveFrameworkModelDefault(framework, this.opts.frameworkDefaultModels()[framework]);
       if (fwDefault) {
         model = fwDefault;
         modelSource = 'frameworkDefaultModels';

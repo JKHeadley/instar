@@ -1,0 +1,51 @@
+{
+  "version": 3,
+  "slug": "latest-codex-model-defaults",
+  "sessionId": "6c1cc41d-f86f-4283-987c-cf9b68e7cad7",
+  "timestamp": "2026-11-24T02:21:47.285Z",
+  "artifactPath": "upgrades/side-effects/latest-codex-model-defaults.md",
+  "artifactSha256": "3447a684e5f6d8f6998286e2264a9991e0a2bb9081e609b3d5cc052fd2d9c2d5",
+  "specPath": "docs/specs/latest-codex-model-defaults.md",
+  "coveredFiles": [
+    "docs/specs/latest-codex-model-defaults-continuation.md",
+    "docs/specs/latest-codex-model-defaults.eli16.md",
+    "docs/specs/latest-codex-model-defaults.md",
+    "docs/specs/reports/latest-codex-model-defaults-convergence.md",
+    "src/commands/server.ts",
+    "src/core/Config.ts",
+    "src/core/SessionManager.ts",
+    "src/core/TopicProfileResolver.ts",
+    "src/core/dashboardTopicProfile.ts",
+    "src/core/frameworkFacts.ts",
+    "src/core/frameworkModelDefaults.ts",
+    "src/core/machineCoherenceManifest.ts",
+    "src/core/types.ts",
+    "src/data/awareness/codex-model-defaults.md",
+    "src/server/routes.ts",
+    "tests/e2e/topic-profile-lifecycle.test.ts",
+    "tests/integration/topic-profile-routes.test.ts",
+    "tests/unit/framework-model-defaults.test.ts",
+    "tests/unit/machine-coherence-default-model.test.ts",
+    "upgrades/side-effects/latest-codex-model-defaults.md"
+  ],
+  "phase": "complete",
+  "tier": 2,
+  "tierReasoning": "The saved selector and authenticated API affect launches after upgrade and require durable compatibility checks.",
+  "secondPass": "true",
+  "reviewerConcurred": true,
+  "toolchain": {
+    "reviewSkills": [
+      {
+        "name": "spec-converge",
+        "outcome": "converged",
+        "verified": false,
+        "iterations": 6
+      }
+    ],
+    "convergence": {
+      "reportPath": "docs/specs/reports/latest-codex-model-defaults-convergence.md",
+      "iterations": 6,
+      "verified": true
+    }
+  }
+}

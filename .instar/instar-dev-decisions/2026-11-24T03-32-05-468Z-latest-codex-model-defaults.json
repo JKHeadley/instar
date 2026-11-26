@@ -1,0 +1,25 @@
+{
+  "ts": "2026-11-24T03:32:05.468Z",
+  "slug": "latest-codex-model-defaults",
+  "suggestedTier": 2,
+  "declaredTier": 2,
+  "riskFloor": 1,
+  "riskFloorReasons": [],
+  "belowFloor": false,
+  "files": 4,
+  "loc": 38,
+  "scope": {
+    "basis": "staged-in-scope-paths-including-deleted",
+    "files": [
+      "src/commands/server.ts",
+      "src/core/Config.ts",
+      "src/core/frameworkModelDefaults.ts",
+      "src/server/routes.ts"
+    ],
+    "addedLines": 25,
+    "deletedLines": 13
+  },
+  "causalAutopsy": null,
+  "classClosure": null,
+  "verdict": "blocked"
+}
