@@ -1,5 +1,4 @@
 <!-- bump: patch -->
-<!-- internal-only -->
 
 ## What Changed
 
@@ -12,3 +11,11 @@ The focused boot-path test checks the exact acknowledged renewal and refuses a c
 The dark supervisor path can leave a planned restart request pending until its exact lease window is confirmed. Role-change and explicit bypass requests keep their current behavior.
 
 The supervisor can obtain fresh readiness evidence from the running server over an authenticated loopback call. It compares the exact request file again before consumption.
+
+## What to Tell Your User
+
+A planned restart can now wait for the current lead machine to confirm it has enough lease time to come back safely. This behavior starts off while it is tested in isolated deployments.
+
+## Summary of New Capabilities
+
+Use `multiMachine.takeoverReadyPool.plannedRestartLeaseContinuity.admissionEnabled` in compatible deployments to require fresh confirmation before the supervisor consumes a planned restart of the preferred holder.
