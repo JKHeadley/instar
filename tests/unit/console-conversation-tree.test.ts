@@ -50,7 +50,9 @@ describe('shared Conversations tree', () => {
         ungrouped: [chat(2, 'Ordinary conversation'), projectChat, chat(7, 'Pending project header', { projectConversationKey: 'telegram:9' })],
       } };
     const host = draw(page);
-    expect(host.firstElementChild?.textContent).toBe('PinnedChief of Staff');
+    expect(host.firstElementChild?.querySelector('a')?.textContent).toBe('Chief of Staff');
+    expect(host.firstElementChild?.querySelector('.conversation-tree-pinned-label')?.textContent).toBe('Pinned');
+    expect(host.firstElementChild?.querySelector('.conversation-tree-chief-subtitle')?.textContent).toBe('Ask about any of your work here.');
     expect([...host.querySelectorAll(':scope > details > summary')].map(node => node.textContent)).toEqual(['Projects', 'Groups', 'Not in a group yet']);
     expect([...host.querySelectorAll('details')].every(section => section.open)).toBe(true);
     expect([...host.querySelectorAll('a')].map(node => node.textContent)).toEqual([

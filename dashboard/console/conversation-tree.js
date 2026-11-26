@@ -153,7 +153,8 @@ export function renderOwnerTree(pages, { preferences, conversationRow, groupDeta
   }
   const output = [];
   if (root) output.push(el('div', { class: 'conversation-tree-chief' },
-    el('span', { class: 'conversation-tree-pinned-label', text: 'Pinned' }), conversationRow(root, true)));
+    el('span', { class: 'conversation-tree-pinned-label', text: 'Pinned' }), conversationRow(root, true),
+    el('p', { class: 'conversation-tree-chief-subtitle', text: 'Ask about any of your work here.' })));
   const hasSections = pages.every(page => page.sections);
   const sectionItems = (name) => pages.flatMap(page => page.sections?.[name] || []);
   const projectRoots = hasSections ? sectionItems('projects') : roots.filter(n => n.kind === 'effort' && n.project);

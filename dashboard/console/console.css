@@ -1833,6 +1833,11 @@ a.needs-row:hover { background: var(--surface-raised); }
 }
 .conversation-tree-chief .row { font-weight: 700; border: 0; }
 .conversation-tree-pinned-label { color: var(--text-muted); font-size: 12px; padding-inline: var(--s-2); }
+.conversation-tree-chief-subtitle {
+  margin: 0 var(--s-2) var(--s-1);
+  color: var(--text-muted);
+  font-size: 13px;
+}
 .conversation-tree-avatar {
   display: inline-grid;
   place-items: center;
