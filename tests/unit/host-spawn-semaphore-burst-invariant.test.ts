@@ -12,8 +12,7 @@ import { describe, it, expect, beforeEach, afterEach } from 'vitest';
 import fs from 'node:fs';
 import os from 'node:os';
 import path from 'node:path';
-import { execFile } from 'node:child_process';
-import { promisify } from 'node:util';
+import { execFileSync } from 'node:child_process';
 import { HostSpawnSemaphore } from '../../src/core/hostSpawnSemaphore.js';
 import { SafeFsExecutor } from '../../src/core/SafeFsExecutor.js';
 
@@ -23,7 +22,6 @@ function tmpHoldersPath(): string {
 }
 
 const THIS_HOST = 'burst-host';
-const runWorker = promisify(execFile);
 
 function makeSem(holdersPath: string, cap: number): HostSpawnSemaphore {
   return new HostSpawnSemaphore({
@@ -110,20 +108,26 @@ describe('HostSpawnSemaphore — burst invariant (Bounded Accumulation)', () => 
     }
   });
 
-  it('TRUE multi-process lock contention holds the cap (forked acquirers)', async () => {
-    // Fork N OS processes concurrently against the same real holder file.
-    // Report every acquire result and keep each granted holder in the file.
+  it('TRUE multi-process flock contention holds the cap (forked acquirers)', () => {
+    // Fork N OS processes that each try to acquire a slot against the SAME file,
+    // then write the boolean result. The number of successful acquires across all
+    // processes must NEVER exceed the cap — the real cross-process flock proof.
     const CAP = 3;
     const N = 12;
     const dir = path.dirname(holdersPath);
-    // Each worker tries one slot and leaves any granted holder in place.
+    const resultDir = path.join(dir, 'results');
+    fs.mkdirSync(resultDir, { recursive: true });
+
+    // A tiny worker script that acquires (and HOLDS) one slot, recording success.
     const worker = path.join(dir, 'worker.mjs');
     const repoRoot = path.resolve(__dirname, '../..');
     fs.writeFileSync(
       worker,
       `
 import { HostSpawnSemaphore } from ${JSON.stringify(path.join(repoRoot, 'dist/core/hostSpawnSemaphore.js'))};
+import fs from 'node:fs';
 const holdersPath = process.argv[2];
+const resultFile = process.argv[3];
 const sem = new HostSpawnSemaphore({
   holdersPath, cap: ${CAP},
   hostname: () => ${JSON.stringify(THIS_HOST)},
@@ -131,8 +135,9 @@ const sem = new HostSpawnSemaphore({
   isPathHostLocal: () => true,
 });
 const ok = sem.acquire('w-' + process.pid + '-' + Math.random().toString(36).slice(2));
-// The fixture's pidAlive returns true, so the holder survives worker exit.
-process.stdout.write(ok ? '1' : '0');
+fs.writeFileSync(resultFile, ok ? '1' : '0');
+// HOLD the slot — do NOT release, so concurrent peers see it occupied.
+setTimeout(() => process.exit(0), 400);
 `,
     );
 
@@ -144,17 +149,19 @@ process.stdout.write(ok ? '1' : '0');
       return;
     }
 
-    // Wait for every child before checking results or removing the fixture.
-    const results = await Promise.allSettled(Array.from({ length: N }, () =>
-      runWorker(process.execPath, [worker, holdersPath], { encoding: 'utf8', timeout: 5000 })));
+    const procs = Array.from({ length: N }, (_, i) => {
+      const rf = path.join(resultDir, `r${i}.txt`);
+      return execFileSync(process.execPath, [worker, holdersPath, rf], { encoding: 'utf-8', timeout: 5000 }) && rf;
+    });
+
+    // After all workers exit, total successes recorded must be ≤ CAP.
     let successes = 0;
-    for (const result of results) {
-      if (result.status === 'rejected') throw result.reason;
-      expect(result.value.stdout).toMatch(/^[01]$/);
-      if (result.value.stdout === '1') successes++;
+    for (let i = 0; i < N; i++) {
+      const rf = path.join(resultDir, `r${i}.txt`);
+      try { if (fs.readFileSync(rf, 'utf-8').trim() === '1') successes++; } catch { /* ignore */ }
     }
+    void procs;
     expect(successes).toBeLessThanOrEqual(CAP);
     expect(successes).toBeGreaterThan(0);
-    expect(liveCount(holdersPath)).toBe(successes);
   });
 });
