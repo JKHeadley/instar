@@ -10,16 +10,17 @@ import { getChatOutbox } from './chat-outbox.js';
 // The only innerHTML writes are the static SVG icon strings from nav-model.js.
 
 import {
-  failure, buildNeeds, buildDoing, buildPromised, buildRunning, buildAllowed, headline, ago, combineNeeds, needsCardList, machineNames,
+  failure, buildDoing, buildPromised, buildRunning, buildAllowed, headline, ago, machineNames,
 } from './home-model.js';
 import { GROUPS, legacyHref, icon, tabHref, LEGACY_DASHBOARD, isPhoneMode, pagePath, DOORS, doorHref, doorOf, resolveRoute, startDoor, FLEET_TILES } from './nav-model.js';
-import { mountNeedsStrip } from './needs-strip.js';
+import { homeNeedsModel, mountNeedsStrip, stripModel } from './needs-strip.js';
 import { mountAgentHealthNote } from './agent-health-note.js';
 import { fillPartial } from './home-model.js';
-import { NEED_SOURCES, surfacedNeeds } from './needs-model.js';
+import { readHeaders } from './needs-actions.js';
 import { renderPromises, topicLink } from './promises.js';
 import { renderMachines } from './machines.js';
 import { renderMachineCare } from './machine-care.js';
+import { renderRepos } from './repos.js';
 import { renderHealth } from './health.js';
 import { renderAccounts } from './accounts.js';
 import { renderMessages } from './messages.js';
@@ -124,12 +125,14 @@ function toggleTheme() {
 // told "can't tell". Cross-machine reads in particular can be slow for a moment.
 const MIN_TIMEOUT_MS = 20000;
 const RETRY_DELAY_MS = 0; // retry at once: a timeout already waited MIN_TIMEOUT_MS
-async function getOnce(path, timeoutMs, soft403 = false) {
+async function getOnce(path, timeoutMs) {
   const ctl = new AbortController();
   const t = setTimeout(() => ctl.abort(), timeoutMs);
   try {
-    const r = await fetch(path, { headers: { Authorization: `Bearer ${token}` }, signal: ctl.signal, cache: 'no-store' });
-    if (r.status === 403 && soft403) return { ...failure('the server answered 403'), status: r.status };
+    const r = await fetch(path, { headers: readHeaders(path, token), signal: ctl.signal, cache: 'no-store' });
+    const needs = path.split('?', 1)[0] === '/needs';
+    if (needs && r.headers.has('X-Instar-Saved-At')) return failure('a current list was not available');
+    if (r.status === 403 && needs) return { ...failure('the server answered 403'), status: r.status };
     if (r.status === 401 || r.status === 403) { signOut(); return { ...failure('not signed in'), status: r.status }; }
     if (r.status === 503) return failure('switched off on this agent');
     if (!r.ok) return { ...failure(`the server answered ${r.status}`), status: r.status, retryable: r.status >= 500 };
@@ -404,7 +407,6 @@ async function fillAgentName() {
 // ── Home ──────────────────────────────────────────────────────────────────
 // col: which desktop column the card sits in. On a phone both columns stack.
 const CARDS = [
-  { id: 'needs', title: 'What needs you', feature: true, col: 'main' },
   { id: 'promised', title: 'What I’ve promised', href: '#/work/promises', col: 'main' },
   { id: 'doing', title: 'What I’m doing', href: '#/work/sessions', col: 'main' },
   { id: 'running', title: 'Where I’m running', href: '#/capacity/machines', col: 'side' },
@@ -474,7 +476,6 @@ function paintCard(def, model, repaint = false) {
   });
   const visual = model.state === 'partial' || model.state === 'stale' ? 'unknown' : model.state;
   card.setAttribute('data-state', visual);
-  if (def.id === 'needs') card.hidden = (model.count === 1 && Boolean(actionHref(model.rows?.[0]?.action))) || (model.count === 0 && model.state !== 'unknown' && !model.retrying);
   card.removeAttribute('aria-busy');
   card.classList.add('resolved');
   card.querySelector('.dot').className = dotClass(model.state);
@@ -515,9 +516,7 @@ function paintCard(def, model, repaint = false) {
     body.append(meter);
   }
   const expandedNow = expanded.has(def.id);
-  // "What needs you": the headline names and links the first item, so the list does not repeat it.
-  const listed = def.id === 'needs' ? needsCardList(model, Boolean(actionHref(model.all?.[0]?.action))) : { rows: model.rows, all: model.all };
-  const list = expandedNow && listed.all ? listed.all : listed.rows;
+  const list = expandedNow && model.all ? model.all : model.rows;
   if (list && list.length) {
     const rows = el('div', { class: 'rows' });
     for (const r of list) {
@@ -555,9 +554,9 @@ function paintCard(def, model, repaint = false) {
   if (model.note) body.append(el('p', { class: 'card-note', text: model.note }));
   const foot = card.querySelector('.card-foot');
   foot.replaceChildren();
-  const extra = listed.all ? listed.all.length - listed.rows.length : (model.more || 0);
-  if (listed.all && extra > 0) {
-    const b = el('button', { class: 'link-btn', type: 'button', 'data-focus-key': `${def.id}:see-all`, 'aria-expanded': expandedNow ? 'true' : 'false', text: expandedNow ? 'Show fewer' : `See all ${listed.all.length}` });
+  const extra = model.all ? model.all.length - (model.rows?.length || 0) : (model.more || 0);
+  if (model.all && extra > 0) {
+    const b = el('button', { class: 'link-btn', type: 'button', 'data-focus-key': `${def.id}:see-all`, 'aria-expanded': expandedNow ? 'true' : 'false', text: expandedNow ? 'Show fewer' : `See all ${model.all.length}` });
     b.addEventListener('click', () => { if (expanded.has(def.id)) expanded.delete(def.id); else expanded.add(def.id); paintCard(def, model, true); });
     foot.append(b);
   } else foot.append(el('span', { class: 'card-age', text: extra > 0 ? `and ${extra} more` : '' }));
@@ -613,7 +612,7 @@ function paintHeadline(models) {
 // machine is slow still has it (page memory alone is lost on reload). Storage can be
 // absent or full; then it is page memory only, as before.
 const lastComplete = {};
-const ROW_LISTS = { attention: 'items', sessions: 'sessions' };
+const ROW_LISTS = { sessions: 'sessions' };
 const LAST_COMPLETE_STORE = 'console.lastComplete.';
 function rememberComplete(key, result) {
   if (!ROW_LISTS[key]) return;
@@ -637,28 +636,21 @@ function loadHome(reconnecting = false) {
   const { models, raw, results } = run;
   const readsInThisCatchup = [];
   run.inFlight ||= {};
-  run.sourceFlights ||= {};
   const paint = (id) => {
-    // "What needs you" is the one answer: queue items plus promises waiting on the operator.
-    const model = id === 'needs' ? combineNeeds(raw.needs, raw.promised, surfacedNeeds(run.sources)) : raw[id];
+    const model = raw[id];
     if (!model) return; // nothing read yet for this card
     const shown = paintCard(CARDS.find((c) => c.id === id), model) || model;
     models[id] = shown;
-    // The action queue must use the same last-known promise reading as its
-    // companion card. Otherwise a transient refresh failure hides known work.
-    if (id === 'promised') raw.promised = shown;
   };
   const set = (id, model) => {
     raw[id] = model;
     paint(id);
-    if (id === 'promised' && raw.needs) paint('needs');
     paintHeadline(models);
   };
   const annotate = (model, ...reads) => reads.some((r) => r && (r.retrying || (!r.ok && r.reason !== 'not signed in' && r.reason !== 'switched off on this agent')))
     ? { ...model, retrying: true, line: [model.line, 'Checking again automatically.'].filter(Boolean).join(' ') } : model;
   const refresh = (key) => {
     const names = results.pool ? machineNames(results.pool) : {};
-    if ((key === 'attention' || key === 'pool' || key === 'systemTopics') && results.attention) set('needs', annotate(buildNeeds(results.attention, Date.now(), names), results.attention));
     if ((key === 'sessions' || key === 'pool' || key === 'topics') && results.sessions) set('doing', annotate(buildDoing(results.sessions, Date.now(), names, topicNameMap(results.topics)), results.sessions));
     if (key === 'pool' && results.pool) set('running', annotate(buildRunning(results.pool), results.pool));
     if ((key === 'commitments' || key === 'pool' || key === 'topics') && results.commitments) {
@@ -682,7 +674,7 @@ function loadHome(reconnecting = false) {
       if (!run.active || run.document !== document) return false;
       // A 200 that omitted a peer is a partial answer, so keep it visible and
       // retry for coverage just as we do after a transport timeout.
-      const partial = result.ok && (['attention', 'sessions'].includes(key) && Array.isArray(result.data?.pool?.failed) && result.data.pool.failed.length > 0
+      const partial = result.ok && (key === 'sessions' && Array.isArray(result.data?.pool?.failed) && result.data.pool.failed.length > 0
         || key === 'topics' && ((result.data?.pool?.failed?.length || 0) > 0 || (result.data?.pool?.unresolved?.length || 0) > 0));
       const retryable = partial || (!result.ok && !['not signed in', 'switched off on this agent'].includes(result.reason));
       const filled = partial ? fillFromLastComplete(key, result) : null;
@@ -711,33 +703,7 @@ function loadHome(reconnecting = false) {
     };
     readsInThisCatchup.push(launch());
   };
-  // What needs the operator on other pages (needs-model.js): one in-flight read per source, no
-  // retry timer of its own (the next tick is the retry), and a 403 here never signs anyone out.
-  run.tick = (run.tick || 0) + 1;
-  for (const source of NEED_SOURCES) {
-    if (run.sourceBusy[source.id]) { if (run.sourceFlights[source.id]) readsInThisCatchup.push(run.sourceFlights[source.id]); continue; }
-    if (source.when && !source.when(run.sources)) continue;
-    if (source.everyTicks && run.sourceAt[source.id] && run.tick - run.sourceAt[source.id] < source.everyTicks) continue;
-    run.sourceAt[source.id] = run.tick;
-    run.sourceBusy[source.id] = true;
-    const keys = Object.keys(source.reads);
-    const work = Promise.all(keys.map((k) => getOnce(source.reads[k], Math.max(TIMEOUT_MS, MIN_TIMEOUT_MS), true))).then((reads) => {
-      run.sourceBusy[source.id] = false;
-      if (!run.active || run.document !== document) return;
-      run.sources[source.id] = { ...(run.sources[source.id] || {}), results: Object.fromEntries(keys.map((k, i) => [k, reads[i]])) };
-      paint('needs');
-      paintHeadline(models);
-      return reads.every((r) => r.ok || [401, 403, 503].includes(r.status));
-    }).finally(() => { if (run.sourceFlights[source.id] === work) delete run.sourceFlights[source.id]; });
-    run.sourceFlights[source.id] = work;
-    readsInThisCatchup.push(work);
-  }
-  // Every source has one in-flight request and its own bounded retry timer.
-  // A slow source cannot block another card or start overlapping refreshes.
   read('pool', '/pool', POOL_TIMEOUT_MS);
-  // Open items only: a machine's full history (closed items included) can be
-  // over a megabyte, enough to miss the per-machine time limit.
-  read('attention', '/attention?scope=pool&status=OPEN', POOL_TIMEOUT_MS);
   read('systemTopics', '/telegram/system-topics');
   read('sessions', '/sessions?scope=pool', POOL_TIMEOUT_MS);
   read('topics', '/telegram/topics?scope=pool', POOL_TIMEOUT_MS);
@@ -748,7 +714,9 @@ function loadHome(reconnecting = false) {
 }
 
 function renderHome(main, ctx) {
-  const run = { active: true, document, models: Object.fromEntries(CARDS.map((c) => [c.id, { state: 'loading' }])), raw: {}, results: {}, pending: {}, failures: {}, sources: {}, sourceBusy: {}, sourceAt: {} };
+  const models = Object.fromEntries(CARDS.map((c) => [c.id, { state: 'loading' }]));
+  models.needs = homeNeedsModel(stripModel(null));
+  const run = { active: true, document, models, raw: {}, results: {}, pending: {}, failures: {} };
   homeRun = run;
   main.replaceChildren(
     el('section', { class: 'hero' },
@@ -757,16 +725,23 @@ function renderHome(main, ctx) {
       el('p', { id: 'heroSub' }),
       el('a', { id: 'heroIssueLink', class: 'hero-issue-link', hidden: true }),
     ),
-    cardShell(CARDS[0]),
+    el('section', { class: 'needs-strip', id: 'homeNeedsStrip', 'aria-label': 'What needs you' }),
     el('details', { class: 'home-details' },
       el('summary', { text: 'See agent status' }),
       el('p', { id: 'homeStatusNote', class: 'home-status-note', hidden: true }),
       el('div', { class: 'home-cols' },
-        el('div', { class: 'col col-main' }, CARDS.filter((c) => c.col === 'main' && c.id !== 'needs').map(cardShell)),
+        el('div', { class: 'col col-main' }, CARDS.filter((c) => c.col === 'main').map(cardShell)),
         el('div', { class: 'col col-side' }, CARDS.filter((c) => c.col === 'side').map(cardShell)),
       ),
     ),
   );
+  const stopNeeds = mountNeedsStrip(main.querySelector('#homeNeedsStrip'), {
+    get, hrefFor: stripActionHref, home: true, open: true,
+    onModel: (model) => {
+      run.models.needs = homeNeedsModel(model);
+      paintHeadline(run.models);
+    },
+  });
   loadHome();
   if (refreshTimer) clearInterval(refreshTimer);
   const timer = setInterval(() => { if (document.visibilityState === 'visible' && location.hash.startsWith('#/home')) loadHome(); }, REFRESH_MS);
@@ -774,6 +749,7 @@ function renderHome(main, ctx) {
   // Home's teardown is its own disposer, closing over this run: its retry timers and its refresh timer.
   if (ctx) ctx.onDispose(() => {
     run.active = false;
+    stopNeeds();
     for (const p of Object.values(run.pending)) if (p && p !== true) clearTimeout(p);
     clearInterval(timer);
     if (refreshTimer === timer) refreshTimer = null;
@@ -887,6 +863,7 @@ const NATIVE = {
   'work/documents': renderDocuments,
   'capacity/machines': renderMachines,
   'capacity/machine-care': renderMachineCare,
+  'capacity/repos': renderRepos,
   'capacity/health': renderHealth,
   'capacity/accounts': renderAccounts,
   'capacity/costs': renderCosts,

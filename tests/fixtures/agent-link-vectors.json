@@ -1,0 +1,216 @@
+{
+ "accept": [
+  {
+   "name": "home",
+   "fragment": "v=1&i=aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa&t=home",
+   "parsed": {
+    "id": "aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa",
+    "target": "home",
+    "ref": null,
+    "comment": null
+   }
+  },
+  {
+   "name": "home with leading #",
+   "fragment": "#v=1&i=aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa&t=home",
+   "parsed": {
+    "id": "aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa",
+    "target": "home",
+    "ref": null,
+    "comment": null
+   }
+  },
+  {
+   "name": "keys in any order",
+   "fragment": "t=home&i=aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa&v=1",
+   "parsed": {
+    "id": "aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa",
+    "target": "home",
+    "ref": null,
+    "comment": null
+   }
+  },
+  {
+   "name": "doc",
+   "fragment": "v=1&i=aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa&t=doc&r=12345678-1234-1234-1234-123456789abc",
+   "parsed": {
+    "id": "aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa",
+    "target": "doc",
+    "ref": "12345678-1234-1234-1234-123456789abc",
+    "comment": null
+   }
+  },
+  {
+   "name": "doc with comment",
+   "fragment": "v=1&i=aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa&t=doc&r=12345678-1234-1234-1234-123456789abc&c=p1:12345678-1234-1234-1234-123456789abc",
+   "parsed": {
+    "id": "aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa",
+    "target": "doc",
+    "ref": "12345678-1234-1234-1234-123456789abc",
+    "comment": "p1:12345678-1234-1234-1234-123456789abc"
+   }
+  },
+  {
+   "name": "doc with encoded comment colon",
+   "fragment": "v=1&i=aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa&t=doc&r=12345678-1234-1234-1234-123456789abc&c=p1%3A12345678-1234-1234-1234-123456789abc",
+   "parsed": {
+    "id": "aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa",
+    "target": "doc",
+    "ref": "12345678-1234-1234-1234-123456789abc",
+    "comment": "p1:12345678-1234-1234-1234-123456789abc"
+   }
+  },
+  {
+   "name": "doc with lowercase %3a",
+   "fragment": "v=1&i=aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa&t=doc&r=12345678-1234-1234-1234-123456789abc&c=p1%3a12345678-1234-1234-1234-123456789abc",
+   "parsed": {
+    "id": "aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa",
+    "target": "doc",
+    "ref": "12345678-1234-1234-1234-123456789abc",
+    "comment": "p1:12345678-1234-1234-1234-123456789abc"
+   }
+  },
+  {
+   "name": "conversation uuid",
+   "fragment": "v=1&i=aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa&t=conversation&r=12345678-1234-1234-1234-123456789abc",
+   "parsed": {
+    "id": "aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa",
+    "target": "conversation",
+    "ref": "12345678-1234-1234-1234-123456789abc",
+    "comment": null
+   }
+  },
+  {
+   "name": "telegram topic",
+   "fragment": "v=1&i=aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa&t=conversation&r=tg:144473",
+   "parsed": {
+    "id": "aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa",
+    "target": "conversation",
+    "ref": "tg:144473",
+    "comment": null
+   }
+  },
+  {
+   "name": "largest safe topic id",
+   "fragment": "v=1&i=aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa&t=conversation&r=tg:9007199254740991",
+   "parsed": {
+    "id": "aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa",
+    "target": "conversation",
+    "ref": "tg:9007199254740991",
+    "comment": null
+   }
+  },
+  {
+   "name": "telegram topic with encoded colon",
+   "fragment": "v=1&i=aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa&t=conversation&r=tg%3A144473",
+   "parsed": {
+    "id": "aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa",
+    "target": "conversation",
+    "ref": "tg:144473",
+    "comment": null
+   }
+  }
+ ],
+ "reject": [
+  {
+   "name": "empty",
+   "fragment": ""
+  },
+  {
+   "name": "version 2",
+   "fragment": "v=2&i=aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa&t=home"
+  },
+  {
+   "name": "missing version",
+   "fragment": "i=aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa&t=home"
+  },
+  {
+   "name": "uppercase id",
+   "fragment": "v=1&i=AAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAA&t=home"
+  },
+  {
+   "name": "short id",
+   "fragment": "v=1&i=aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa&t=home"
+  },
+  {
+   "name": "unknown target",
+   "fragment": "v=1&i=aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa&t=settings"
+  },
+  {
+   "name": "unknown key",
+   "fragment": "v=1&i=aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa&t=home&x=1"
+  },
+  {
+   "name": "duplicate key",
+   "fragment": "v=1&i=aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa&t=home&t=home"
+  },
+  {
+   "name": "home with ref",
+   "fragment": "v=1&i=aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa&t=home&r=12345678-1234-1234-1234-123456789abc"
+  },
+  {
+   "name": "doc without ref",
+   "fragment": "v=1&i=aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa&t=doc"
+  },
+  {
+   "name": "doc ref not uuid",
+   "fragment": "v=1&i=aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa&t=doc&r=../../api/x"
+  },
+  {
+   "name": "loose uuid of hyphens",
+   "fragment": "v=1&i=aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa&t=doc&r=------------------------------------"
+  },
+  {
+   "name": "conversation with comment",
+   "fragment": "v=1&i=aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa&t=conversation&r=12345678-1234-1234-1234-123456789abc&c=p1:12345678-1234-1234-1234-123456789abc"
+  },
+  {
+   "name": "telegram zero",
+   "fragment": "v=1&i=aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa&t=conversation&r=tg:0"
+  },
+  {
+   "name": "telegram negative",
+   "fragment": "v=1&i=aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa&t=conversation&r=tg:-5"
+  },
+  {
+   "name": "telegram above 2^53",
+   "fragment": "v=1&i=aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa&t=conversation&r=tg:9007199254740992"
+  },
+  {
+   "name": "telegram 17 digits",
+   "fragment": "v=1&i=aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa&t=conversation&r=tg:12345678901234567"
+  },
+  {
+   "name": "slack negative id",
+   "fragment": "v=1&i=aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa&t=conversation&r=-129091233340"
+  },
+  {
+   "name": "percent in id",
+   "fragment": "v=1&i=%61aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa&t=home"
+  },
+  {
+   "name": "percent other than colon in comment",
+   "fragment": "v=1&i=aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa&t=doc&r=12345678-1234-1234-1234-123456789abc&c=p1%2F12345678-1234-1234-1234-123456789abc"
+  },
+  {
+   "name": "bad comment",
+   "fragment": "v=1&i=aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa&t=doc&r=12345678-1234-1234-1234-123456789abc&c=nocolon"
+  },
+  {
+   "name": "key without value sign",
+   "fragment": "v=1&i=aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa&t=home&r"
+  },
+  {
+   "name": "empty key",
+   "fragment": "v=1&i=aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa&t=home&=x"
+  },
+  {
+   "name": "conversation without ref",
+   "fragment": "v=1&i=aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa&t=conversation"
+  },
+  {
+   "name": "percent other than colon in ref",
+   "fragment": "v=1&i=aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa&t=conversation&r=tg%2F1"
+  }
+ ]
+}

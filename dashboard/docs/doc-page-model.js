@@ -613,7 +613,7 @@ export const LINK_WORDS = Object.freeze({
   stepsTitle: 'On your iPhone',
   steps: Object.freeze([
     Object.freeze({ text: 'Open Instar on your iPhone.' }),
-    Object.freeze({ text: 'Tap ', button: 'People', after: '.' }),
+    Object.freeze({ text: 'Tap Agents, select this agent, then scroll down to ', button: 'People', after: '.' }),
     Object.freeze({ text: 'Tap ', button: 'Link a computer', after: '.' }),
     Object.freeze({ text: 'Scan the code on this screen.' }),
     Object.freeze({ text: 'Check that the code on your phone matches the one here, tap ', button: 'Link for 30 days', after: ', then confirm with Face ID.' }),

@@ -10,8 +10,9 @@
 // server requires it. Every value reaches the DOM through textContent.
 
 import {
-  buildShipping, buildPace, buildFeedback, developmentHeadline, stoppedLead, foldFromHash, maintainerMode, authorityCard, holdWords, verifyWords, rollbackWords,
+  buildShipping, buildPace, buildFeedback, developmentHeadline, stoppedLead, foldFromHash, maintainerMode, authorityCard, consumerPromotionSummary, holdWords, verifyWords, rollbackWords,
   readinessAuthorityRequest, triageAuthorityRequest, commitRequest, authorityResultWords, commitResultWords, newDecisionRef, PACE_METRICS, DEV_TOOLS_KEY,
+  borrowedSummary,
 } from './development-model.js';
 import { el, setKids, pageHead, section, sheet, closeSheet, story, details, note, cantTell, askPin, forgetOperatorSession, firstPaint, arrivalScroll, markNeed, askLink } from './ui.js';
 import { legacyHref } from './nav-model.js';
@@ -97,13 +98,15 @@ export async function renderDevelopment(main, ctx) {
     const want = foldFromHash(location.hash);
     if (want) { view.open = want; view.scrollTo = want; }
   }
-  const [watcher, verify, release, readiness, triageSummary, triageProposal, execute, queue, drain, pace] = await Promise.all([
+  const [watcher, verify, release, readiness, triageSummary, triageProposal, execute, queue, drain, consumerPromotion, pace, helper] = await Promise.all([
     read('/green-pr-automerge'), read('/local-verify'), read('/release-readiness'),
     read('/feedback-factory/readiness-authorities/proposal'), read('/feedback-factory/triage/summary'), read('/feedback-factory/triage/authority/proposal'),
-    read('/feedback-factory/execute/status'), read('/feedback-factory/triage/queue'), read('/feedback-factory/drain/status'),
+    read('/feedback-factory/execute/status'), read('/feedback-factory/triage/queue'), read('/feedback-factory/drain/status'), read('/feedback-factory/consumer/promotion/proposal'),
     read(`/throughput/series?days=${view.days}`, 15000),
+    // Borrowed-machine helper role (docs/specs/local-verify-borrowed-unit-slices.md, G): 404 while off, so no card.
+    read('/local-verify/helper-status'),
   ]);
-  last = { res: { watcher, verify, release, readiness, triageSummary, triageProposal, execute, queue, drain, pace }, main, ctx };
+  last = { res: { watcher, verify, release, readiness, triageSummary, triageProposal, execute, queue, drain, consumerPromotion, pace, helper }, main, ctx };
   paint();
 }
 
@@ -112,7 +115,7 @@ function paint() {
   const now = Date.now();
   const pace = buildPace(res.pace, { days: view.days, person: view.person }, now);
   const shipping = buildShipping({ watcher: res.watcher, verify: res.verify, release: res.release }, now, { repo: pace.repo || null });
-  const feedback = buildFeedback({ readiness: res.readiness, triageSummary: res.triageSummary, triageProposal: res.triageProposal, execute: res.execute, queue: res.queue, drain: res.drain }, now);
+  const feedback = buildFeedback({ readiness: res.readiness, triageSummary: res.triageSummary, triageProposal: res.triageProposal, execute: res.execute, queue: res.queue, drain: res.drain, consumerPromotion: res.consumerPromotion }, now);
   const h = developmentHeadline({ shipping, feedback, pace });
   const refresh = () => renderDevelopment(main, ctx);
   const deps = { refresh, shipping, feedback, pace };
@@ -126,13 +129,15 @@ function paint() {
   const approvalsLine = approvals ? markNeed(el('button', { class: 'btn-primary btn-inline need-line', type: 'button', text: `${approvals === 1 ? 'A pull request needs' : `${approvals} pull requests need`} your approval: show ${approvals === 1 ? 'it' : 'them'}`, onclick: () => { view.open = 'shipping'; paint(); arrivalScroll(main.querySelector('#sec-shipping'), { key: `tap:${Date.now()}` }); } }), 'shipping-approvals') : null;
   const stopped = stoppedCard(shipping, deps);
   const keptOff = keptOffMainCards(res.verify, deps);
+  const helperLend = helperCard(res.helper, deps);
+  const borrowedRun = borrowedRunCard(res.verify);
   const moreLine = todos.length > 1 ? el('button', { class: 'link-btn older-line', type: 'button', text: `${todos.length - 1} more ${todos.length === 2 ? 'thing needs' : 'things need'} you ›`, onclick: () => openMore(todos.slice(1), deps) }) : null;
 
   // First arrival opens the section with the worst news (Shipping otherwise); 'none' is the operator's own collapse.
   if (!view.open) view.open = feedback.tone === 'attn' || feedback.state === 'cant-tell' ? 'feedback' : 'shipping';
   setKids(main, el('div', { class: 'dev-page' },
     pageHead({ eyebrow: EYEBROW, headline: h.text, sub: h.sub, tone: h.tone }),
-    stopped, ...keptOff, lead, approvalsLine, moreLine,
+    stopped, ...keptOff, helperLend, lead, approvalsLine, moreLine, borrowedRun,
     el('div', { class: 'page-sections' },
       fold({ id: 'shipping', title: 'Shipping', line: shipping.line, tone: shipping.tone, body: () => shippingBody(shipping, deps) }),
       fold({ id: 'feedback', title: 'Feedback', line: feedback.line, tone: feedback.tone, body: () => feedbackBody(feedback, deps) }),
@@ -192,6 +197,71 @@ function keptOffMainCards(verify, deps) {
   ), 'peer-main-quarantine'));
 }
 
+/**
+ * This run machine's borrowed helpers (docs/specs/local-verify-borrowed-slices-count.md, G): one quiet
+ * card, after anything that needs the operator, only while a helper is set up here. Nothing to do on it.
+ */
+function borrowedRunCard(verify) {
+  const s = borrowedSummary(verify && verify.ok && verify.data ? verify.data.borrowed : null);
+  if (!s) return null;
+  return el('div', { class: 'need-card muted', 'data-borrowed-run': '1' },
+    el('span', { class: 'need-title', text: s.title }),
+    el('span', { class: 'need-sub muted', text: s.sub }),
+    ...s.rows.flatMap((r) => [
+      el('span', { class: 'need-sub', text: `${r.machine}: ${r.lanes.join('; ')}.` }),
+      el('span', { class: 'need-sub muted', text: r.last }),
+      ...(r.dry ? [el('span', { class: 'need-sub muted', text: r.dry })] : []),
+    ]));
+}
+
+/**
+ * This machine lends test time to the test line (a borrowed helper): its state and the owner's
+ * pause toggle. Shown only while the helper role is on. No PIN: pausing is always safe, and resuming
+ * only lets the runs continue.
+ */
+function helperCard(r, deps) {
+  if (!r || !r.ok || !r.data || r.data.enabled !== true) return null;
+  const d = r.data;
+  const busy = d.busy ? (d.busy.kind === 'slice' ? 'running a slice of tests' : 'preparing a copy of the code') : 'idle';
+  const state = d.paused ? 'Paused by you' : (d.sandbox && d.sandbox.ownerBusy) ? 'Waiting: your machine was short of memory' : `Test runs on (${busy})`;
+  const refusal = d.lastRefusal ? `Last time it said no: ${helperReasonWords(d.lastRefusal.reason)}` : null;
+  const containment = d.sandbox && d.sandbox.containment && d.sandbox.containment.ok === false ? 'A safety check on the sealed-off sandbox did not pass, so nothing runs until it does.' : null;
+  const status = el('p', { class: 'action-status', role: 'status' });
+  const toggle = el('button', { class: 'btn-primary btn-inline', type: 'button', text: d.paused ? 'Resume test runs' : 'Pause test runs' });
+  toggle.addEventListener('click', async () => {
+    status.textContent = d.paused ? 'Resuming…' : 'Pausing…';
+    try {
+      const res = await fetch('/local-verify/helper-pause', { method: 'POST', headers: { Authorization: `Bearer ${bearer()}`, 'Content-Type': 'application/json', 'X-Instar-Request': '1' }, body: JSON.stringify({ paused: !d.paused }), cache: 'no-store' });
+      status.textContent = res.ok ? (d.paused ? 'Resumed.' : 'Paused. Current work stopped.') : `The server answered ${res.status}.`;
+      if (res.ok) setTimeout(() => deps.refresh(), 600);
+    } catch { status.textContent = 'The server could not be reached.'; }
+  });
+  return el('div', { class: 'need-card', 'data-helper-lend': '1' },
+    el('span', { class: 'need-title', text: 'This machine lends spare time to the test line' }),
+    el('span', { class: 'need-sub', text: state }),
+    ...(refusal ? [el('span', { class: 'need-sub muted', text: refusal })] : []),
+    ...(containment ? [el('span', { class: 'need-sub', text: containment })] : []),
+    el('span', { class: 'need-sub muted', text: 'Its answers are first only compared with the test line’s own; its passing answers count only after they have matched. It runs Instar’s code in a sealed-off sandbox that cannot see your files, and steps back when you are busy.' }),
+    toggle, status);
+}
+
+/** Plain words for a helper refusal code; an unknown code gets a general phrase, never the raw code. */
+function helperReasonWords(code) {
+  const c = String(code || '');
+  if (c.startsWith('owner-busy')) return c.endsWith('battery') ? 'your machine was on battery' : 'your machine was busy';
+  const words = {
+    busy: 'it was already working on another piece', 'disk-low': 'there was not enough free disk space', 'host-disk-low': 'there was not enough free disk space',
+    'not-merged': 'the code was not yet merged', expired: 'the request arrived too late', replayed: 'the same request came twice',
+    'wrong-helper': 'the request was meant for another machine', unsigned: 'the request was not signed by a trusted machine', tunnel: 'the request came from outside the home network',
+    paused: 'you had paused it', 'result-oversize': 'a test result was too large to accept',
+    'base-not-merged': 'the code was not yet merged', 'head-not-ours': 'the change was not one of the project’s own open changes', 'head-fork': 'the change came from a copy of the project',
+    'head-pr-closed': 'the change was already closed', 'head-moved': 'the change had moved on', 'dry-run-not-done': 'its first full trial run was not done yet',
+    'merge-conflict': 'the change did not merge cleanly', 'install-inputs-changed': 'the change alters the installed packages', 'queue-full': 'it already had a full queue of work',
+    'not-prepared': 'its copy of the code was not ready yet',
+  };
+  return words[c] || 'a safety rule did not allow it';
+}
+
 async function clearKeptOff(machineId, deps) {
   const auth = await askPin({ title: 'Let it test main again', explain: 'This helper machine will test main again. A recent PIN unlock is needed; it is kept in this page only until it expires.', adapter: 'session' });
   if (!auth) return;
@@ -216,6 +286,7 @@ function stoppedCard(s, deps) {
 
 // ── to-dos (Feedback approvals and links) ────────────────────────────────────
 function todoCard(todo, deps, lead = false) {
+  if (todo.kind === 'consumer-promotion') return consumerPromotionForm(todo, deps, lead);
   if (todo.kind === 'link') {
     return el('div', { class: 'need-card' }, el('span', { class: 'need-title', text: todo.sentence }), el('span', { class: 'need-sub', text: todo.detail }),
       el('a', { class: 'btn-primary btn-inline', href: todo.href, target: '_blank', rel: 'noopener', text: `${todo.button} ↗` }));
@@ -228,6 +299,53 @@ function todoCard(todo, deps, lead = false) {
   }
   const kind = todo.kind === 'readiness-authority' ? 'readiness' : 'triage';
   return authorityForm(kind, authorityCard(kind, todo.proposal), todo.action, deps, { lead, detail: todo.detail });
+}
+
+function consumerPromotionForm(todo, deps, lead) {
+  const { evidenceHash, approvedBatchBound, items } = todo.proposal;
+  const title = 'Promote feedback processing';
+  const summary = consumerPromotionSummary(approvedBatchBound);
+  const holdExplanation = 'If an item in this batch is put on hold before processing starts on it, processing will not move beyond this batch until you revoke the approval and approve a new batch.';
+  const promote = el('button', { class: 'btn-primary btn-inline', type: 'button', text: 'Promote' });
+  promote.addEventListener('click', () => {
+    const confirm = el('button', { class: 'btn-primary', type: 'button', text: 'Confirm with PIN' });
+    const panel = sheet({ title },
+      el('p', { class: 'confirm-text plan-text', text: summary }),
+      el('h3', { class: 'eyebrow', text: 'Work items in this proposal' }),
+      el('ul', { class: 'todo-list' }, items.map((item) => el('li', {},
+        el('div', { class: 'need-title', text: item.title }),
+        el('div', { class: 'need-sub', text: `${item.priority} priority · ${item.reportCount} ${item.reportCount === 1 ? 'report' : 'reports'} · ${item.workId}` })))),
+      el('p', { class: 'card-note', text: holdExplanation }),
+      el('div', { class: 'sheet-actions' }, confirm));
+    confirm.addEventListener('click', async () => {
+      confirm.disabled = true;
+      promote.disabled = true;
+      const consent = await askPin({ title, explain: `${summary} ${holdExplanation}`, adapter: 'body', isCurrent: () => panel.isConnected });
+      if (!consent) { confirm.disabled = false; promote.disabled = false; return; }
+      const status = el('p', { class: 'action-status', role: 'status', text: 'Promoting feedback processing…' });
+      sheet({ title }, status);
+      const body = { approvedBatchBound, evidenceHash, operatorDecisionId: newDecisionRef('console-consumer-promotion'), pin: consent.pin };
+      consent.pin = '';
+      const result = await send('/feedback-factory/consumer/promote', body);
+      body.pin = '';
+      if (result.ok && result.data?.promoted === true && result.data.approvedBatchBound === approvedBatchBound) {
+        status.textContent = 'Feedback processing is approved. The next run can create work items.';
+        await deps.refresh();
+      } else if (result.status === 409) {
+        status.textContent = 'Promotion could not be applied. The proposal may have changed. Check the current proposal before approving.';
+        await deps.refresh();
+      } else {
+        status.textContent = result.ok ? 'The promotion outcome could not be confirmed. Check the current proposal before approving again.'
+          : authorityResultWords('readiness', result.status, result.data).text;
+        promote.disabled = false;
+      }
+    });
+  });
+  return el('div', { class: `need-card authority-card${lead ? ' lead' : ''}` },
+    el('span', { class: 'need-title', text: title }),
+    el('span', { class: 'need-sub', text: todo.detail }),
+    el('p', { class: 'confirm-text plan-text', text: summary }),
+    el('div', { class: 'sheet-actions' }, promote));
 }
 
 function openMore(rest, deps) {

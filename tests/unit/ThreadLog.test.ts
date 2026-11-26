@@ -184,3 +184,22 @@ describe('ThreadLog — close-only retention', () => {
     expect(log.read('thread-j').entries).toEqual([]);
   });
 });
+
+describe('ThreadLog — SEC-127: the write side is confined like the read side', () => {
+  it('append refuses a thread id that is not a plain file name and writes nothing outside the threads dir', () => {
+    const log = new ThreadLog(dir);
+    for (const id of ['../../escape', '../x', '/tmp/abs', 'a/b', '..']) {
+      expect(() => log.append(entry(id, 'msg-1', 'body'))).toThrow(/unsafe thread id/);
+    }
+    expect(fs.existsSync(path.join(dir, 'escape.log.jsonl'))).toBe(false);
+    expect(fs.existsSync(path.join(dir, 'threadline', 'x.log.jsonl'))).toBe(false);
+    expect(fs.existsSync(path.join(dir, 'threadline', 'threads', '..', 'x.meta.json'))).toBe(false);
+    expect(log.isPathConfined('../x')).toBe(false);
+  });
+
+  it('an ordinary thread id still appends and reads back', () => {
+    const log = new ThreadLog(dir);
+    log.append(entry('thread-ok-1', 'msg-1', 'hello'));
+    expect(log.read('thread-ok-1').entries.map((e) => e.messageId)).toEqual(['msg-1']);
+  });
+});

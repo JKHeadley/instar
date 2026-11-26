@@ -1022,6 +1022,15 @@ export type Lane = 'waiting-on-you' | 'with-agent' | 'waiting-on-others' | 'done
 /** `not-started` is deliberately NOT here (§1): it is never a per-card Needs-you row; its lane is `with-agent`. */
 export const WAITING_STATUSES: ReadonlySet<CardStatus> = new Set<CardStatus>(['unknown', 'held', 'needs-approval', 'claims-done', 'parked', 'waiting-on-person', 'with-person', 'quiet']);
 
+/** Internal origin is not the same as agent-carried work: verified requests and actual person decisions stay public. */
+export function isAgentInternalCard(f: CardFold): boolean {
+  return f.createdBy?.kind === 'agent' && !f.requester && !f.outward && f.carrier === 'agent'
+    && typeof f.waitingOn !== 'object'
+    && !(f.openQuestion && typeof f.openQuestion.principal === 'object')
+    // A future owner-certified milestone becomes actionable when a claim exists.
+    && !(f.currentClaim && f.needsConfirm && !f.done);
+}
+
 /** The lane for a viewer. Phase 1: only the team owner acts, so only the owner has "Waiting on you". */
 export function laneFor(status: CardStatus, viewerIsOwner: boolean, f: CardFold, viewerPersonKey: string | null, capacityWaitSurfaced = false): Lane {
   if (status === 'removed') return 'archived';
@@ -1029,6 +1038,15 @@ export function laneFor(status: CardStatus, viewerIsOwner: boolean, f: CardFold,
   if (status === 'archived') return f.closeout?.as === 'done' ? 'done' : 'archived';
   if (status === 'done') return 'done';
   if (viewerIsOwner) {
+    // Execution state belongs to the agent. Only a structured person action can put it on the owner's list.
+    if (f.carrier === 'agent') {
+      const question = f.openQuestion && typeof f.openQuestion.principal === 'object' ? f.openQuestion.principal.personKey : null;
+      const waiting = typeof f.waitingOn === 'object' ? f.waitingOn.personKey : null;
+      const approval = f.approvalRequired && !f.approvalValid && !isAgentInternalCard(f);
+      const confirmation = status === 'claims-done' && f.needsConfirm && !f.done;
+      if (approval || confirmation || question !== null && (viewerPersonKey === null || question === viewerPersonKey) || waiting !== null && (viewerPersonKey === null || waiting === viewerPersonKey)) return 'waiting-on-you';
+      return question || waiting ? 'waiting-on-others' : 'with-agent';
+    }
     if (WAITING_STATUSES.has(status) || capacityWaitSurfaced) return 'waiting-on-you';
     return 'with-agent';
   }

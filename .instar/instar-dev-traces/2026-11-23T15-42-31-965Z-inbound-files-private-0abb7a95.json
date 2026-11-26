@@ -1,0 +1,39 @@
+{
+  "version": 2,
+  "slug": "inbound-files-private",
+  "sessionId": "09b2b18b-f7f7-499f-bc7b-1d38025c1520",
+  "timestamp": "2026-11-23T15:42:31.965Z",
+  "artifactPath": "upgrades/side-effects/inbound-files-private.md",
+  "artifactSha256": "3680eea3ca06717f5a4ecb7cbfc344a461eaa756f6f618abeb17f545827f49f3",
+  "coveredFiles": [
+    "docs/messaging-platform-parity.md",
+    "docs/specs/inbound-files-private.eli16.md",
+    "src/commands/server.ts",
+    "src/core/SessionManager.ts",
+    "src/core/memorySessionPolicy.ts",
+    "src/messaging/shared/telegramInboundFiles.ts",
+    "tests/e2e/whatsapp-message-routing-e2e.test.ts",
+    "tests/unit/cold-start-fallback-wiring.test.ts",
+    "tests/unit/headless-spawn-reroute.test.ts",
+    "tests/unit/imessage-session-injection.test.ts",
+    "tests/unit/memory-session-policy.test.ts",
+    "tests/unit/private-inbound-file.test.ts",
+    "tests/unit/respawn-collision-notice.test.ts",
+    "tests/unit/slack-context-exhaustion-recovery.test.ts",
+    "tests/unit/spawn-session-silent-start.test.ts",
+    "upgrades/next/inbound-files-private.md",
+    "upgrades/side-effects/inbound-files-private.md"
+  ],
+  "phase": "complete",
+  "tier": 1,
+  "tierReasoning": "Whole-PR trace after merging main: storage location and permissions of inbound message files; refuses nothing, grants nothing; revert-only rollback",
+  "eli16Path": "docs/specs/inbound-files-private.eli16.md",
+  "sideEffectsPath": "upgrades/side-effects/inbound-files-private.md",
+  "secondPass": "true",
+  "reviewerConcurred": true,
+  "classClosure": {
+    "defectClass": "unbounded-self-action",
+    "closure": "n/a",
+    "reason": "no loop or spawn added"
+  }
+}
