@@ -19,6 +19,7 @@ import { submitView, completionView, workingView, COMPLETION_POLL_MS, COMPLETION
 const autoRepairTicks = new Map(); // machineId → boolean, only where the operator changed the default
 let autoRepairResults = null;      // { at, mode, results: [{ machineId, ... }] } from the last tap
 const latestRender = new WeakMap();
+const repairDisclosureState = new WeakMap();
 
 const ACCOUNT_LAYOUT_KEY = 'instar.accounts.layout';
 let accountLayout = accountLayoutPreferences();
@@ -88,14 +89,37 @@ export async function renderAccounts(main, ctx) {
     return;
   }
 
-  const repairs = page.repairs.length ? el('section', { class: 'page-sections acct-repairs', id: 'sec-needs', 'aria-labelledby': 'account-repair-title' },
-    el('h2', { class: 'section-heading', id: 'account-repair-title', text: 'Sign-in repair' }),
-    el('p', { class: 'row-sub', text: 'The agent handles sign-ins automatically. This list shows progress and gaps by machine.' }),
-    page.repairs.map(group => el('section', { class: 'acct-repair-machine' },
-      el('h3', { class: 'acct-repair-machine-name', text: group.machine }),
+  const expandedRepairs = repairDisclosureState.get(main) || new Set();
+  repairDisclosureState.set(main, expandedRepairs);
+  const machineRepairs = page.repairs.map(group => {
+    const ownerCount = group.rows.filter(row => row.ownerAction).length;
+    const agentCount = group.rows.length - ownerCount;
+    const status = [
+      `${group.signedIn} of ${group.total} signed in`,
+      agentCount ? `${agentCount} for the agent to check or repair` : '',
+      ownerCount ? `${ownerCount} ${ownerCount === 1 ? 'needs' : 'need'} you to sign in` : '',
+    ].filter(Boolean).join(', ');
+    const disclosure = el('details', { class: 'acct-repair-machine', open: ownerCount > 0 || expandedRepairs.has(group.key) },
+      el('summary', { class: 'acct-repair-summary' }, el('strong', { text: group.machine }), el('span', { text: status })),
       el('ul', { class: 'acct-repair-rows' }, group.rows.map(row => el('li', { class: 'acct-repair-row' },
         el('div', {}, el('span', { class: 'row-title', text: row.label }), el('span', { class: 'row-sub', text: row.status })),
-        row.ownerAction ? el('button', { class: 'btn-quiet', type: 'button', text: 'Sign in', onclick: () => startNeed(row.ownerAction, currentVisit()) }) : null)))))) : null;
+        row.ownerAction ? el('button', { class: 'btn-quiet', type: 'button', text: 'Sign in', onclick: () => startNeed(row.ownerAction, currentVisit()) }) : null))));
+    disclosure.addEventListener('toggle', () => {
+      if (disclosure.open) expandedRepairs.add(group.key);
+      else expandedRepairs.delete(group.key);
+    });
+    return disclosure;
+  });
+  const readyCount = page.signedInMachines.length;
+  const allSignedIn = readyCount ? el('details', { class: 'acct-repair-machine acct-repair-ready' },
+    el('summary', { class: 'acct-repair-summary' }, el('strong', { text: 'All signed in' }),
+      el('span', { text: `On ${readyCount} ${readyCount === 1 ? 'machine' : 'machines'}` })),
+    el('ul', { class: 'acct-repair-rows' }, page.signedInMachines.map(machine => el('li', { class: 'acct-repair-row', text: machine })))) : null;
+  const repairs = machineRepairs.length || allSignedIn
+    ? el('section', { class: 'page-sections acct-repairs', id: 'sec-needs', 'aria-labelledby': 'account-repair-title' },
+      el('h2', { class: 'section-heading', id: 'account-repair-title', text: 'Sign-in repair' }),
+      machineRepairs.length ? el('p', { class: 'row-sub', text: 'The agent handles sign-ins automatically. Open a machine to see its accounts.' }) : null,
+      machineRepairs, allSignedIn) : null;
 
   const rows = el('div', { class: 'acct-groups' });
   let preferences = readAccountLayout();

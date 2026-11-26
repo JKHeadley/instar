@@ -9,6 +9,6 @@ Rollback is a revert of the follow-up. Older client and server versions remain c
 ## 6b. Operator-surface quality
 
 - Known usage and reset times lead the ordinary page. Group and sort controls act on usage only.
-- Sign-in repair is one named section, with one row per affected account and machine. Routine repair rows have no Ask or sign-in action. A real owner-only sign-in still leads when present.
+- Sign-in repair is one named section with one summary per affected machine. Expanding the summary shows its affected accounts. Machines with confirmed sign-ins for every account share one summary. Unchecked sign-ins stay in the machine’s status. Routine repair rows have no Ask or sign-in action. A real owner-only sign-in still leads when present.
 - Names and plain status copy are displayed. There are no raw machine or account identifiers on the page.
 - Chromium tests exercise 390 and 1280 pixels in both themes, including overflow and the grouping controls' minimum hit area.
