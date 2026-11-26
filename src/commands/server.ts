@@ -1,3 +1,4 @@
+import { publishRestartRequestFileAsync } from '../core/restartRequestFile.js';
 import { creationPlacementSourceVersion } from '../core/CreationPlacementSnapshot.js';
 import { readPeerMessageGeneration } from '../messaging/peerMessageTarget.js';
 import { resolveStallReconfirm } from '../core/StallReconfirm.js';
@@ -701,8 +702,7 @@ async function handleFixCommand(topicId: number, text: string, deps: FixCommandD
     // before the request is visible; the request carries the same fields as every planned writer.
     await announceRestartRequested({ requestedBy: 'fix-command', reason, requestedAt });
     fs.mkdirSync(path.dirname(restartFile), { recursive: true });
-    const restartTmp = `${restartFile}.${process.pid}.tmp`;
-    fs.writeFileSync(restartTmp, JSON.stringify({
+    await publishRestartRequestFileAsync(restartFile, JSON.stringify({
       requestedAt,
       reason,
       requestedBy: 'fix-command',
@@ -711,7 +711,6 @@ async function handleFixCommand(topicId: number, text: string, deps: FixCommandD
       expiresAt: new Date(Date.now() + 60 * 60_000).toISOString(),
       pid: process.pid,
     }, null, 2));
-    fs.renameSync(restartTmp, restartFile);
     await send('Restart requested. Your agent will restart momentarily.');
     return true;
   }
@@ -6976,6 +6975,7 @@ export async function startServer(options: StartOptions): Promise<void> {
     // honesty observer that STOPS attempting goes BLIND if the registry recovers.
     const MAX_BACKOFF_TICKS = 20;
     let leaseCoordinatorRef: LeaseCoordinator | undefined;
+    let restartTopologyIsSolo = (): boolean => false;
     const plannedRestartMinimumRemainingMs = (): number | null => {
       const boot = bootReadiness().snapshot();
       if (boot.state !== 'ready') return null;
@@ -7052,6 +7052,20 @@ export async function startServer(options: StartOptions): Promise<void> {
     if (coordinator.enabled && coordinator.identity) {
       const idMgr = coordinator.managers.identityManager;
       const selfMachineId = coordinator.identity.machineId;
+      restartTopologyIsSolo = () => {
+        try {
+          const machines = idMgr.loadRegistry().machines;
+          const self = machines[selfMachineId];
+          if (self?.status !== 'active' || self.revokedAt || !leaseTransport) return false;
+          // Use enrollment inventory as well as dialable peers: a registered but
+          // unreachable successor still makes this a multi-machine restart.
+          return leaseTransport.knownPeerIds().length === 0 &&
+            Object.entries(machines).every(([id, entry]) => id === selfMachineId ||
+              entry.status === 'revoked' || !!entry.revokedAt);
+        } catch {
+          return false;
+        }
+      };
       // ── Git-sync substrate (OPTIONAL — not required for coordination) ──
       // git is the durable shared-CAS substrate for the lease + the registry
       // push channel. It is NOT required for cross-machine coordination: a
@@ -16079,11 +16093,13 @@ export async function startServer(options: StartOptions): Promise<void> {
       if (config.multiMachine?.takeoverReadyPool?.plannedRestartLeaseContinuity?.admissionEnabled !== true) return 'wait';
       const lease = leaseCoordinatorRef;
       const preferred = config.multiMachine?.leaseSelfHeal?.preferredAwakeMachineId;
-      if (!lease) return 'wait';
+      if (bootReadiness().snapshot().state !== 'ready') return 'wait';
+      if (!lease) return !preferred && !coordinator.enabled && !coordinator.identity ? 'not-applicable' : 'wait';
       if (!preferred || preferred !== lease.selfMachineId) return 'not-applicable';
       const holder = lease.currentHolder();
       if (holder && holder !== lease.selfMachineId) return 'not-applicable';
       if (!lease.holdsLease()) return 'wait';
+      if (restartTopologyIsSolo()) return 'not-applicable';
       const minimumRemainingMs = plannedRestartMinimumRemainingMs();
       if (minimumRemainingMs === null) return 'wait';
       return lease.confirmedPlannedRestartWindow({ ...request, minimumRemainingMs }) ? 'ready' : 'wait';
