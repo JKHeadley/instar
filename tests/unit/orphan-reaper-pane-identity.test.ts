@@ -77,6 +77,7 @@ function reaper(owns = true) {
 
 let kill: ReturnType<typeof vi.spyOn>;
 beforeEach(() => {
+  vi.mocked(execFile).mockClear();
   vi.useFakeTimers({ toFake: ['setTimeout'] });
   kill = vi.spyOn(process, 'kill').mockImplementation(() => true);
   script.panes = '';
