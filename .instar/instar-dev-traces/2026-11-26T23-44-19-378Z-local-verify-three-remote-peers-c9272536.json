@@ -1,0 +1,26 @@
+{
+  "version": 2,
+  "slug": "local-verify-three-remote-peers",
+  "sessionId": "b528b042-91e4-4687-b182-8f0750aaedd6",
+  "timestamp": "2026-11-26T23:44:19.378Z",
+  "artifactPath": "upgrades/side-effects/local-verify-three-remote-peers.md",
+  "artifactSha256": "cc28641f5b37973bc192117933272a348248401b7be3b730fa8c95ccd9302507",
+  "specPath": "docs/specs/local-verify-capacity.md",
+  "coveredFiles": [
+    "docs/specs/local-verify-capacity.eli16.md",
+    "docs/specs/local-verify-capacity.md",
+    "src/core/PostUpdateMigrator.ts",
+    "src/localVerify/localVerifyWiring.ts",
+    "src/localVerify/peer.ts",
+    "src/scaffold/templates.ts",
+    "tests/unit/PostUpdateMigrator-localVerifyMainRedHold.test.ts",
+    "tests/unit/localVerify/peerVerifier.test.ts",
+    "upgrades/next/local-verify-three-remote-peers.md",
+    "upgrades/side-effects/local-verify-three-remote-peers.md"
+  ],
+  "phase": "complete",
+  "tier": 2,
+  "tierReasoning": "Expands the existing verification dispatch capacity. Reviewed the list-bound change, existing authority checks, and upgrade migration.",
+  "secondPass": "true",
+  "reviewerConcurred": true
+}

@@ -1,5 +1,7 @@
 # A second machine for pull-request test runs — plain-English overview
 
+The coordinator now accepts up to three remote machines, for four test slots including its own. Each remote machine runs one full test at a time after passing the coordinator's availability, software, policy, and signing checks. The original rollout below describes the first remote machine.
+
 Before a pull request can merge, its tests run on the Studio, one pull request at a time, about 18 minutes each. On busy days more pull requests are waiting than the Studio can get through, even after this week's speed-ups. The Mac Mini sits mostly idle.
 
 **What this adds.** The Mac Mini can run pull-request test runs that the Studio hands it. The Studio stays in charge: it keeps the line, decides what to hand over, and is still the only machine that merges. The Mini only runs the tests and keeps the result. The Studio then fetches that result and treats it like one of its own.

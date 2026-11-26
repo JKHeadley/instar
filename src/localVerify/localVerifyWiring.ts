@@ -65,7 +65,7 @@ export interface LocalVerifyConfigBlock {
    * requests (docs/specs/local-verify-likely-failing-first.md). Read live at each run start.
    */
   likelyFailingFirst?: 'off' | 'on' | 'alternate';
-  /** Coordinator: peers it may hand verifies to (`[{ machineId, url }]`, at most 2). Default none. */
+  /** Coordinator: peers it may hand verifies to (`[{ machineId, url }]`, at most 3). Default none. */
   peers?: Array<{ machineId: string; url: string }>;
   /**
    * Operator controls on the queue: hold a change, and move a change to the front, without a
