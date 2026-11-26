@@ -43,3 +43,7 @@ A prepared order-plus-witness scope can complete only if its current witness sig
 ## Predecessor prefix verification
 
 The verifier consumes already authenticated seal metadata and the predecessor identity resolved independently from lease history. It recomputes the framed digest over a contiguous, canonical byte sequence. Its verdict describes prefix completeness and grants no write or handover permission. Resolving an uncertain append still requires exact authenticated reconciliation.
+
+## Uncertain append reconciliation
+
+The verifier consumes authenticated evidence and independently resolved current manifest identity. Only an exact positive reconciliation matched to the canonical row returns reconciled. The verifier never clears a durable intent, retries an append or enables an effect. Signed synthetic vectors cover unknown, exact, mismatched, replayed, delayed and unavailable inputs.

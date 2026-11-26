@@ -9,3 +9,5 @@ The setting starts off. This checkpoint has no live connection to the Needs-you 
 A holder change now also has a local completion step. The receiver stays paused until the independent journal confirms the exact move, including the sealed predecessor. It updates the local holder and journal position together so a restart sees either the pending move or the completed move.
 
 The predecessor proof also needs the old journal itself. The verifier checks every record in order against the seal, so a delayed last record or a rewritten row cannot pass as a complete journal. A verified prefix is one input to resolving an earlier attempt whose outcome is still unknown.
+
+If the old machine lost the reply to an append, the new machine keeps that attempt outstanding. It can recognize a confirmed append only when the authenticated reconciliation names the current handover and the exact attempt, and the sealed journal contains those exact bytes.
