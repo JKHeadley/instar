@@ -2186,6 +2186,13 @@ export class JobScheduler {
     return h.readUInt32BE(0) % (JobScheduler.MAX_SCRIPT_START_OFFSET_MS + 1);
   }
 
+  private disableProjectMcpForJob(job: JobDefinition): true | undefined {
+    if (job.mcpAccess === 'none') return true;
+    if (job.mcpAccess === 'project' || job.origin !== 'user' || job.slug !== 'coding-tools-current') return undefined;
+    const jobs = this.readAgentConfig()?.jobs as { codingToolsCurrentWithoutProjectMcp?: unknown } | undefined;
+    return jobs?.codingToolsCurrentWithoutProjectMcp === true ? true : undefined;
+  }
+
   private readAgentConfig(): Record<string, unknown> | null {
     if (this.configReader) {
       try {
@@ -3144,7 +3151,7 @@ export class JobScheduler {
       // only; the flag builder no-ops for codex). Bash/curl-only jobs skip the
       // MCP boot cost + the auth-required-remote-MCP headless hang hazard
       // (docs/specs/LOOP-SESSION-NO-MCP-SPEC.md). Absent/'project' → unchanged.
-      disableProjectMcp: job.mcpAccess === 'none' ? true : undefined,
+      disableProjectMcp: this.disableProjectMcpForJob(job),
       ...(toolDecision.confinedTools ? { confinedTools: toolDecision.confinedTools } : {}),
       ...(toolDecision.requireConfinement ? { requireToolConfinement: true } : {}),
       // Per-job thinking mode (job-launch-intent-record §3): the launching builder translates

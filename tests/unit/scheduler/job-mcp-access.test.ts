@@ -254,6 +254,25 @@ describe('JobScheduler mcpAccess spawn plumbing', () => {
     expect(disableProjectMcp).toBeUndefined();
   });
 
+  it.each([
+    [{}, undefined, undefined],
+    [{ codingToolsCurrentWithoutProjectMcp: 'true' }, undefined, undefined],
+    [{ codingToolsCurrentWithoutProjectMcp: true }, undefined, true],
+    [{ codingToolsCurrentWithoutProjectMcp: true }, 'project', undefined],
+    [{ codingToolsCurrentWithoutProjectMcp: false }, 'none', true],
+  ] as const)('applies a dark coding-tools trial for %j with manifest policy %s', async (jobs, policy, expected) => {
+    scheduler.setConfigReader(() => ({ jobs }));
+    const { disableProjectMcp } = await trigger({
+      ...makeJob(policy), slug: 'coding-tools-current', origin: 'user',
+    });
+    expect(disableProjectMcp).toBe(expected);
+  });
+
+  it('does not apply the coding-tools trial to other jobs', async () => {
+    scheduler.setConfigReader(() => ({ jobs: { codingToolsCurrentWithoutProjectMcp: true } }));
+    expect((await trigger({ ...makeJob(), origin: 'user' })).disableProjectMcp).toBeUndefined();
+  });
+
   it('mcpAccess absent → disableProjectMcp stays undefined (legacy spawn)', async () => {
     const { disableProjectMcp } = await trigger(makeJob());
     expect(disableProjectMcp).toBeUndefined();
