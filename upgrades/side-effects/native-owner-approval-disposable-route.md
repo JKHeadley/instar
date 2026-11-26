@@ -11,3 +11,5 @@ The native app reads a signed description of the policy and returns a short stat
 Receipt results are projected onto the known machine outcome fields and may name only machines in the exact approved proposal. Unknown or duplicate target rows leave the response unavailable.
 
 The merge candidate is based on main independently of the first-phone branch. It carries only the shared biometric signature primitive needed by the disposable router. Application key registration and first-phone enrollment are outside this diff.
+
+The router now declares its public Express type explicitly. This fixes declaration generation with pnpm's isolated dependency layout. The factory's runtime behavior, inputs, outputs and deployment wiring are unaffected. The local TypeScript check passed.

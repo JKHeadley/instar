@@ -90,6 +90,7 @@ function projectResults(results: readonly unknown[], targets: ReadonlySet<string
 }
 
 /** Disposable HTTP adapter. The normal server does not mount it. */
+// E2E-PAIRING: EXEMPT — explicit return type for declaration emit; no runtime change.
 export function createNativeOwnerApprovalRoutes(deps: {
   enabled?: boolean;
   /** From the normal signed owner request and current verified dedicated binding. */
@@ -103,7 +104,7 @@ export function createNativeOwnerApprovalRoutes(deps: {
    * A historical state is supplied only for an exact authenticated retry of a recorded receipt. */
   consume(caller: Caller, requestId: string, proof: Submit, validate: (current: ProofAtCommit) => boolean):
     Promise<Receipt | null>;
-}) {
+}): Router {
   const router = Router();
   if (deps.enabled !== true) return router;
 
