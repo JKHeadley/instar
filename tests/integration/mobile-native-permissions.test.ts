@@ -9,7 +9,7 @@
  * proven action reaches the injected console path (the e2e drives the real one).
  */
 import { describe, it, expect, afterAll, vi } from 'vitest';
-import { createHash } from 'node:crypto';
+import { createHash, createECDH } from 'node:crypto';
 import fs from 'node:fs';
 import os from 'node:os';
 import path from 'node:path';
@@ -627,3 +627,81 @@ describe('disposable first-phone signed enrollment submission', () => {
     expect(submit).toHaveBeenCalledTimes(1);
   });
 });
+
+// Explicitly invoked by the disposable iPhone simulator runner. Never binds outside loopback.
+const simulatorDescriptor = process.env.FIRST_PHONE_SIM_TEST_DESCRIPTOR;
+it.skipIf(!simulatorDescriptor)('serves a disposable enrollment to the native simulator', async () => {
+  const disclosure = 'Allow the simulator iPhone to approve changes for the disposable agent.';
+  const disclosureHash = createHash('sha256').update(disclosure).digest('hex');
+  const slot = 'tj:device-acceptance:first:0';
+  const fixedPublicKey = (byte: number) => {
+    const key = createECDH('prime256v1');
+    key.setPrivateKey(Buffer.alloc(32, byte));
+    return key.getPublicKey().toString('base64url');
+  };
+  const deviceKey = fixedPublicKey(1);
+  const presenceKey = fixedPublicKey(2);
+  let deviceId: string;
+  let nominationId: string;
+  let db: Database.Database;
+  let recovered = false;
+  const fixture = setup({ dashboardPin: undefined }, (action, caller) =>
+    action.target === nominationId && action.proposalHash === HASH && action.disclosureHash === disclosureHash
+      && caller.deviceId === deviceId && caller.host === HOST ? null : { status: 409, error: 'nomination-changed' },
+    async (action, proof) => {
+      const binding = new FirstPhonePrivateNominationStore(db).binding(action.target);
+      if (proof.deviceId !== deviceId || proof.host !== HOST || proof.deviceKeyHash !== keyHashOf(deviceKey)
+        || proof.presenceKeyHash !== keyHashOf(presenceKey) || proof.challengeExpiresAt <= Date.now()
+        || action.target !== nominationId || action.proposalHash !== HASH || action.disclosureHash !== disclosureHash
+        || binding?.proposalHash !== HASH || binding.firstAcceptanceKey !== slot) {
+        return { status: 409, body: { error: 'nomination-changed' } };
+      }
+      const receipt = firstPhoneEnrollmentReceipt(db).claim(slot, nominationId, HASH, deviceId);
+      return receipt ? { status: 200, body: receipt } : { status: 409, body: { error: 'slot-occupied' } };
+    }, async (id, caller) => {
+      if (id !== nominationId || caller.deviceId !== deviceId || caller.host !== HOST
+        || caller.deviceKeyHash !== keyHashOf(deviceKey) || caller.presenceKeyHash !== keyHashOf(presenceKey)) {
+        return { status: 404, body: { error: 'nomination-unavailable' } };
+      }
+      const receipt = firstPhoneEnrollmentReceipt(db).receipt(id, HASH, deviceId, slot);
+      if (receipt) recovered = true;
+      return { status: 200, body: receipt
+        ? { status: 'recorded', receipt, current: true }
+        : { status: 'eligible', nominationId, proposalHash: HASH, disclosureVersion: 1, disclosure, disclosureHash,
+          expiresAt: new Date(Date.now() + 60_000).toISOString() } };
+    });
+  const created = fixture.svc.devices.createPending({ deviceName: 'Simulator iPhone', label: null, publicKey: deviceKey, host: HOST });
+  if (!created.ok) throw new Error('Could not register fixture phone');
+  deviceId = created.device.id;
+  fixture.svc.devices.applyConfirm(deviceId, { ok: true });
+  fixture.svc.devices.setPresenceKey(deviceId, presenceKey);
+  db = new Database(path.join(fixture.dir, 'simulator-receipt.sqlite'));
+  const server = fixture.app.listen(0, '127.0.0.1');
+  try {
+    const offer = {
+      callbackData: 'first-phone:synthetic_fixture_token_123', chatId: '777', disclosureMessageId: 15,
+      proposalHash: HASH, accountAcceptanceId: 'fixture-account', holderEpoch: 'fixture-holder',
+      firstAcceptanceKey: slot, issuedAt: 100, expiresAt: 300,
+    };
+    const nomination = new FirstPhonePrivateNominationStore(db).record('simulator-private-tap', offer, {
+      callbackData: offer.callbackData, senderId: '777', senderIsBot: false,
+      chatId: '777', chatType: 'private', messageId: 15, receivedAt: 200,
+    }, {
+      ownerId: '777', accountAcceptanceId: offer.accountAcceptanceId, holderEpoch: offer.holderEpoch,
+      proposalHash: HASH, firstAcceptanceKey: slot,
+    }, 210);
+    if (nomination.status !== 'recorded') throw new Error('Could not record fixture nomination');
+    nominationId = nomination.nominationId;
+    if (!server.listening) await new Promise<void>((resolve, reject) => {
+      server.once('listening', resolve);
+      server.once('error', reject);
+    });
+    const address = server.address();
+    if (!address || typeof address === 'string') throw new Error('No fixture address');
+    fs.writeFileSync(simulatorDescriptor!, JSON.stringify({ port: address.port, deviceId, host: HOST, nominationId }));
+    await expect.poll(() => recovered, { timeout: 300_000, interval: 100 }).toBe(true);
+  } finally {
+    await new Promise<void>(resolve => server.close(() => resolve()));
+    db.close();
+  }
+}, 310_000);
