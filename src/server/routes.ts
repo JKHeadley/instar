@@ -29,6 +29,7 @@ import { packetRowSource } from '../monitoring/contextLayers/standingPacketBoot.
 import { computeContextBudgetMetrics, parseMetricsQuery } from '../monitoring/contextBudgetMetrics.js';
 import { h3SummarizeView } from '../monitoring/contextLayers/h3Builder.js';
 import { TopicSummaryTable, H3_OWNS_REASON } from '../memory/TopicSummaryTable.js';
+import { readRecentTelegramHistory } from '../messaging/recentTelegramHistory.js';
 import { runTopicHistoryImport, ImportTooLargeError } from '../memory/topicHistoryImport.js';
 import { createRecoverySetupRoutes } from './recoverySetupRoutes.js';
 import { currentRecoveryStatus } from '../recovery/RecoveryRuntime.js';
@@ -24009,6 +24010,23 @@ document.getElementById('mcpForm').addEventListener('submit', async function (e)
   });
 
   router.get('/telegram/search', (req, res) => {
+    // Bounded local poll for the installed commitment job. Ordinary text/topic searches
+    // keep their adapter filters and authorship/link enrichment.
+    if (req.query.recent === '1') {
+      if (req.query.q !== undefined || req.query.topicId !== undefined || req.query.since !== undefined) {
+        return res.status(400).json({ error: 'recent polling does not accept search filters' });
+      }
+      const limit = Number(req.query.limit ?? 100);
+      if (!Number.isSafeInteger(limit) || limit < 1 || limit > 500) {
+        return res.status(400).json({ error: 'recent limit must be an integer from 1 to 500' });
+      }
+      try {
+        const results = readRecentTelegramHistory(ctx.config.stateDir, ctx.topicMemory, limit);
+        return res.json({ results, count: results.length });
+      } catch (err) {
+        return res.status(503).json({ error: 'Telegram history unavailable', reason: operatorError(err, ctx.config.stateDir) });
+      }
+    }
     if (!ctx.telegram) {
       res.status(503).json({ error: 'Telegram not configured' });
       return;

@@ -1,3 +1,4 @@
+import { coerceMessageProvenance, type MessageProvenance } from '../messaging/shared/MessageProvenance.js';
 /**
  * TopicMemory — SQLite-backed conversational memory per Telegram topic.
  *
@@ -48,6 +49,7 @@ export const SESSION_HISTORY_MESSAGE_CHARS = 4096 + BOUNDED_INPUT_MIN_CHARS;
 type Database = import('better-sqlite3').Database;
 
 export interface TopicMessage {
+  provenance?: MessageProvenance;
   messageId: number;
   topicId: number;
   text: string;
@@ -150,7 +152,7 @@ export interface TopicContext {
   topicName: string | null;
 }
 
-const SCHEMA_VERSION = '6';
+const SCHEMA_VERSION = '7';
 
 /**
  * The Slack message log, a sibling of the Telegram log in the state dir.
@@ -297,6 +299,7 @@ function parseLogLine(line: string): ParsedLogLine {
     telegramUserId: entry.telegramUserId ?? undefined,
     userId: entry.userId ?? undefined,
     privacyScope: entry.privacyScope ?? undefined,
+    provenance: coerceMessageProvenance(entry.provenance),
     forwarded: entry.forwarded == null ? undefined : entry.forwarded === true,
     origin: coerceTopicRowOrigin(entry.rowOrigin),
   };
@@ -364,6 +367,7 @@ function mapRow(row: any): TopicMessage {
     telegramUserId: row.telegramUserId ?? undefined,
     userId: row.userId ?? undefined,
     privacyScope: row.privacyScope ?? undefined,
+    ...(row.provenance ? { provenance: coerceMessageProvenance(row.provenance) } : {}),
     forwarded: row.forwarded == null ? undefined : !!row.forwarded,
     channelMessageId: row.channelMessageId ?? undefined,
     origin: coerceTopicRowOrigin(row.origin),
@@ -516,6 +520,7 @@ export class TopicMemory {
         forwarded INTEGER,
         channel_message_id TEXT,
         origin TEXT,
+        provenance TEXT,
         UNIQUE(message_id, topic_id)
       );
 
@@ -667,6 +672,13 @@ export class TopicMemory {
         this.db.exec('ALTER TABLE messages ADD COLUMN origin TEXT');
       }
     }
+
+    if (currentVersion < '7') {
+      const columns = this.db.prepare('PRAGMA table_info(messages)').all() as Array<{ name: string }>;
+      if (!columns.some(column => column.name === 'provenance')) {
+        this.db.exec('ALTER TABLE messages ADD COLUMN provenance TEXT');
+      }
+    }
   }
 
   // ── Message Operations ──────────────────────────────────────
@@ -679,8 +691,8 @@ export class TopicMemory {
     if (!this.db) return;
 
     const stmt = this.db.prepare(`
-      INSERT OR IGNORE INTO messages (message_id, topic_id, text, from_user, timestamp, session_name, sender_name, sender_username, telegram_user_id, user_id, privacy_scope, forwarded, channel_message_id, origin)
-      VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
+      INSERT OR IGNORE INTO messages (message_id, topic_id, text, from_user, timestamp, session_name, sender_name, sender_username, telegram_user_id, user_id, privacy_scope, forwarded, channel_message_id, origin, provenance)
+      VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
     `);
     stmt.run(
       msg.messageId, msg.topicId, msg.text, msg.fromUser ? 1 : 0,
@@ -688,7 +700,7 @@ export class TopicMemory {
       msg.senderName ?? null, msg.senderUsername ?? null, msg.telegramUserId ?? null,
       msg.userId ?? null, msg.privacyScope ?? 'private',
       msg.forwarded == null ? null : (msg.forwarded ? 1 : 0),
-      msg.channelMessageId ?? null, msg.origin ?? null,
+      msg.channelMessageId ?? null, msg.origin ?? null, msg.provenance ?? null,
     );
 
     // Update topic metadata
@@ -761,8 +773,8 @@ export class TopicMemory {
     if (!this.db) return 0;
 
     const insert = this.db.prepare(`
-      INSERT OR IGNORE INTO messages (message_id, topic_id, text, from_user, timestamp, session_name, sender_name, sender_username, telegram_user_id, user_id, privacy_scope, forwarded, channel_message_id, origin)
-      VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
+      INSERT OR IGNORE INTO messages (message_id, topic_id, text, from_user, timestamp, session_name, sender_name, sender_username, telegram_user_id, user_id, privacy_scope, forwarded, channel_message_id, origin, provenance)
+      VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
     `);
 
     let count = 0;
@@ -774,7 +786,7 @@ export class TopicMemory {
           msg.senderName ?? null, msg.senderUsername ?? null, msg.telegramUserId ?? null,
           msg.userId ?? null, msg.privacyScope ?? 'private',
           msg.forwarded == null ? null : (msg.forwarded ? 1 : 0),
-          msg.channelMessageId ?? null, msg.origin ?? null,
+          msg.channelMessageId ?? null, msg.origin ?? null, msg.provenance ?? null,
         );
         if (result.changes > 0) count++;
       }
@@ -785,6 +797,21 @@ export class TopicMemory {
     this.rebuildTopicMeta();
 
     return count;
+  }
+
+  /** Local Telegram history for background polling, including topics without a running session. */
+  getRecentTelegramMessages(limit: number, marks: Record<number, number> = {}): TopicMessage[] {
+    if (!this.db) throw new Error('Telegram history unavailable: TopicMemory is closed');
+    // Positive topic IDs are the Telegram namespace (rowChannelForTopicId). Apply
+    // marks before LIMIT so a busy, already-scanned topic cannot hide a new pair.
+    const rows = this.db.prepare(`
+      SELECT message_id AS messageId, topic_id AS topicId, text, from_user AS fromUser,
+             timestamp, session_name AS sessionName, provenance
+      FROM messages
+      WHERE topic_id > 0 AND origin IS NOT 'imported' AND message_id > COALESCE(json_extract(?, '$."' || topic_id || '"'), 0)
+      ORDER BY message_id DESC, topic_id DESC LIMIT ?
+    `).all(JSON.stringify(marks), limit);
+    return rows.reverse().map(mapRow);
   }
 
   /**
@@ -1340,8 +1367,8 @@ export class TopicMemory {
 
     const db = this.db;
     const insert = db.prepare(`
-      INSERT OR IGNORE INTO messages (message_id, topic_id, text, from_user, timestamp, session_name, sender_name, sender_username, telegram_user_id, user_id, privacy_scope, forwarded, channel_message_id, origin)
-      VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
+      INSERT OR IGNORE INTO messages (message_id, topic_id, text, from_user, timestamp, session_name, sender_name, sender_username, telegram_user_id, user_id, privacy_scope, forwarded, channel_message_id, origin, provenance)
+      VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
     `);
 
     const tally = emptyImportStats();
@@ -1358,7 +1385,7 @@ export class TopicMemory {
             msg.senderName ?? null, msg.senderUsername ?? null, msg.telegramUserId ?? null,
             msg.userId ?? null, msg.privacyScope ?? 'private',
             msg.forwarded == null ? null : (msg.forwarded ? 1 : 0),
-            msg.channelMessageId ?? null, msg.origin ?? null,
+            msg.channelMessageId ?? null, msg.origin ?? null, msg.provenance ?? null,
           );
           if (result.changes > 0) tally.imported++;
         }
@@ -1571,11 +1598,11 @@ export class TopicMemory {
     if (!this.db) return false;
     const r = this.db.prepare(`
       UPDATE messages SET text = ?, from_user = ?, timestamp = ?, session_name = ?, sender_name = ?, sender_username = ?,
-        telegram_user_id = ?, user_id = ?, forwarded = ?, origin = ?
+        telegram_user_id = ?, user_id = ?, forwarded = ?, origin = ?, provenance = ?
       WHERE topic_id = ? AND message_id = ? AND origin = 'imported'
     `).run(
       msg.text, msg.fromUser ? 1 : 0, msg.timestamp, msg.sessionName ?? null, msg.senderName ?? null, msg.senderUsername ?? null,
-      msg.telegramUserId ?? null, msg.userId ?? null, msg.forwarded == null ? null : (msg.forwarded ? 1 : 0), msg.origin ?? null,
+      msg.telegramUserId ?? null, msg.userId ?? null, msg.forwarded == null ? null : (msg.forwarded ? 1 : 0), msg.origin ?? null, msg.provenance ?? null,
       msg.topicId, msg.messageId,
     );
     return r.changes > 0;
@@ -1599,7 +1626,7 @@ export class TopicMemory {
   mergeTopicHistory(topicId: number, imported: TopicMessage[]): { inserted: number; total: number } {
     const db = this.db;
     if (!db || imported.length === 0) return { inserted: 0, total: 0 };
-    const cols = 'message_id, topic_id, text, from_user, timestamp, session_name, sender_name, sender_username, telegram_user_id, user_id, privacy_scope, forwarded, channel_message_id, origin';
+    const cols = 'message_id, topic_id, text, from_user, timestamp, session_name, sender_name, sender_username, telegram_user_id, user_id, privacy_scope, forwarded, channel_message_id, origin, provenance';
     type Raw = { message_id: number; timestamp: string; [k: string]: unknown };
     return db.transaction(() => {
       const existing = db.prepare(`SELECT ${cols} FROM messages WHERE topic_id = ? ORDER BY id ASC`).all(topicId) as Raw[];
@@ -1619,18 +1646,18 @@ export class TopicMemory {
         telegram_user_id: m.telegramUserId ?? null, user_id: m.userId ?? null,
         privacy_scope: m.privacyScope ?? 'private',
         forwarded: m.forwarded == null ? null : (m.forwarded ? 1 : 0),
-        channel_message_id: m.channelMessageId ?? null, origin: m.origin ?? null,
+        channel_message_id: m.channelMessageId ?? null, origin: m.origin ?? null, provenance: m.provenance ?? null,
       });
       const merged = mergeSequence(live, importedRows.map((r) => ({ ...r, messageId: r.message_id })));
       db.prepare('DELETE FROM messages WHERE topic_id = ?').run(topicId);
-      const insert = db.prepare(`INSERT INTO messages (${cols}) VALUES (@message_id, @topic_id, @text, @from_user, @timestamp, @session_name, @sender_name, @sender_username, @telegram_user_id, @user_id, @privacy_scope, @forwarded, @channel_message_id, @origin)`);
+      const insert = db.prepare(`INSERT INTO messages (${cols}) VALUES (@message_id, @topic_id, @text, @from_user, @timestamp, @session_name, @sender_name, @sender_username, @telegram_user_id, @user_id, @privacy_scope, @forwarded, @channel_message_id, @origin, @provenance)`);
       for (const m of merged) {
         const r = m.row as Raw;
         insert.run({
           message_id: r.message_id, topic_id: topicId, text: r.text, from_user: r.from_user, timestamp: r.timestamp,
           session_name: r.session_name ?? null, sender_name: r.sender_name ?? null, sender_username: r.sender_username ?? null,
           telegram_user_id: r.telegram_user_id ?? null, user_id: r.user_id ?? null, privacy_scope: r.privacy_scope ?? 'private',
-          forwarded: r.forwarded ?? null, channel_message_id: r.channel_message_id ?? null, origin: r.origin ?? null,
+          forwarded: r.forwarded ?? null, channel_message_id: r.channel_message_id ?? null, origin: r.origin ?? null, provenance: r.provenance ?? null,
         });
       }
       db.prepare(`
