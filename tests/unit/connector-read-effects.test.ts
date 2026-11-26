@@ -37,3 +37,14 @@ describe('engine-neutral connector effects', () => {
     expect(deriveEffect('mcp__playwright__browser_type', { element: 'Password', text: 'x' })?.operation).toBe('sign-in');
   });
 });
+
+describe('registered Threadline discovery', () => {
+  it.each(['threadline_agents', 'threadline_discover'])('treats %s as a read without a grant', (tool) => {
+    expect(admission(`mcp__threadline__${tool}`)).toEqual({ verdict: 'not-gated', why: 'read' });
+  });
+
+  it.each(['mcp__threadline__threadline_send', 'mcp__threadline__threadline_pair', 'mcp__threadline__threadline_trust',
+    'mcp__threadline__threadline__agents', 'mcp__unrelated__threadline_agents'])('keeps %s governed', (name) => {
+    expect(admission(name)).toEqual({ verdict: 'ask', why: 'no-grant' });
+  });
+});

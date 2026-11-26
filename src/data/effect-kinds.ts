@@ -32,14 +32,10 @@ export interface EffectEntry {
   floor?: FloorItem[];
 }
 
-/**
- * Explicit entries refine the verb rules for tools whose real names and inputs are known. Stage 0
- * ships none beyond the sign-in rule below: a guessed tool name would classify nothing real and
- * would read as coverage that does not exist. Entries are added with the tool's real name and a
- * test, and each later entry ships with a migration recording a legacy grant at its current
- * behaviour (spec 6a), except sign-in, which is always governed (decision 15).
- */
-export const EFFECT_ENTRIES: readonly EffectEntry[] = [];
+/** Exact registered tools refine the generic verb rules. Reads require no legacy grant migration. */
+export const EFFECT_ENTRIES: readonly EffectEntry[] = [
+  { service: 'threadline', actions: ['threadline_agents', 'threadline_discover'], operation: 'read', selfOnly: true },
+];
 
 /**
  * Decision 15, sign-in: on the Playwright MCP server (the browser tools today's gate intercepts),
@@ -139,7 +135,9 @@ export function deriveEffect(toolName: string, toolInput: unknown): DerivedEffec
   const input = (toolInput && typeof toolInput === 'object' && !Array.isArray(toolInput) ? toolInput : {}) as Record<string, unknown>;
   let itemCount = 1;
   for (const v of Object.values(input)) if (Array.isArray(v)) itemCount = Math.max(itemCount, v.length);
-  const entry = EFFECT_ENTRIES.find((e) => e.service === service && e.actions.includes(action));
+  const entry = parts.length === 3
+    ? EFFECT_ENTRIES.find((e) => e.service === service && e.actions.includes(action))
+    : undefined;
   const rules = verbRules(parts.slice(2).join('__'));
   const signIn = isSignIn(service, action, input);
   const operation: EffectOperation = signIn ? 'sign-in' : (entry?.operation ?? rules.operation);

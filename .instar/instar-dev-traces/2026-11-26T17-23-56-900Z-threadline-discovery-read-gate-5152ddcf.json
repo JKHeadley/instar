@@ -1,0 +1,25 @@
+{
+  "version": 2,
+  "slug": "threadline-discovery-read-gate",
+  "sessionId": "b3d2cf8a-9b5d-468b-a50b-70ebf11e9e5c",
+  "timestamp": "2026-11-26T17:23:56.900Z",
+  "artifactPath": "upgrades/side-effects/threadline-discovery-read-gate.md",
+  "artifactSha256": "86320602cd3cffe1fabee7d29912e1cbfad5c90626c51d65570a1fa8bc7a7e40",
+  "coveredFiles": [
+    "docs/specs/threadline-discovery-read-gate.eli16.md",
+    "src/core/PostUpdateMigrator.ts",
+    "src/data/effect-kinds.ts",
+    "tests/e2e/trust-account-path-alive.test.ts",
+    "tests/unit/connector-read-effects.test.ts",
+    "tests/unit/connector-read-hook-migration.test.ts",
+    "upgrades/next/threadline-discovery-read-gate.md",
+    "upgrades/side-effects/threadline-discovery-read-gate.md"
+  ],
+  "phase": "complete",
+  "tier": 1,
+  "tierReasoning": "Correct classification for two exact read tools while preserving all grants and write handling",
+  "eli16Path": "docs/specs/threadline-discovery-read-gate.eli16.md",
+  "sideEffectsPath": "upgrades/side-effects/threadline-discovery-read-gate.md",
+  "secondPass": "true",
+  "reviewerConcurred": true
+}
