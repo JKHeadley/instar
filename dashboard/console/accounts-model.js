@@ -14,6 +14,55 @@ const FRAMEWORK_WORDS = { 'claude-code': 'Claude', 'codex-cli': 'Codex', 'gemini
 
 export function frameworkName(f) { return FRAMEWORK_WORDS[f] || f || 'Other'; }
 
+export const ACCOUNT_SORTS = [
+  ['reset', 'Soonest weekly reset'],
+  ['used', 'Most used'],
+  ['name', 'Name'],
+];
+export const ACCOUNT_GROUPS = [
+  ['provider', 'Provider'],
+  ['machine', 'Machine'],
+  ['none', 'None'],
+];
+
+export function accountLayoutPreferences(value) {
+  return {
+    sort: ACCOUNT_SORTS.some(([key]) => key === value?.sort) ? value.sort : 'reset',
+    group: ACCOUNT_GROUPS.some(([key]) => key === value?.group) ? value.group : 'provider',
+  };
+}
+
+const compareNames = (a, b) => String(a ?? '').localeCompare(String(b ?? ''));
+const compareAccounts = (a, b) => compareNames(a.name, b.name) || compareNames(a.id, b.id);
+const compareWeeklyReset = (a, b) => (a.weeklyResetAt ?? Infinity) - (b.weeklyResetAt ?? Infinity) || compareAccounts(a, b);
+const compareUsage = (a, b) => (b.tight?.pct ?? -Infinity) - (a.tight?.pct ?? -Infinity) || compareAccounts(a, b);
+
+/** Group only the rows. Global totals, forecasts, and sign-in notices still use the original accounts. */
+export function layoutAccounts(accounts, preferences) {
+  const { sort, group } = accountLayoutPreferences(preferences);
+  const compare = sort === 'used' ? compareUsage : sort === 'name' ? compareAccounts : compareWeeklyReset;
+  const ordered = [...accounts].sort(compare);
+  if (group === 'none') return [{ key: 'all', name: null, accounts: ordered }];
+
+  const groups = new Map();
+  function add(key, name, account) {
+    if (!groups.has(key)) groups.set(key, { key, name, accounts: [] });
+    groups.get(key).accounts.push(account);
+  }
+  for (const account of ordered) {
+    if (group === 'provider') {
+      add(account.framework || 'other', frameworkName(account.framework), account);
+      continue;
+    }
+    const machines = new Map(account.cells.filter(cell => !cell.missing && cell.machineId).map(cell => [cell.machineId, cell]));
+    if (!machines.size) add('unassigned', 'No machine listed', account);
+    for (const cell of machines.values()) {
+      add(`machine:${cell.machineId}`, cell.machine, { ...account, cells: [cell] });
+    }
+  }
+  return [...groups.values()].sort((a, b) => compareNames(a.name, b.name) || compareNames(a.key, b.key));
+}
+
 /** The one blocker that is a decision only the operator can make (which accounts live on this machine). */
 const OPERATOR_BLOCKERS = new Set(['device-limit-benched']);
 
@@ -294,9 +343,7 @@ export function buildAccountsPage(res, now = Date.now(), { episodes = [], blocke
       // warning-path: row
       tone: t ? usageTone(t.pct) : null,
     };
-  }).sort((a, b) => (a.weeklyResetAt ?? Infinity) - (b.weeklyResetAt ?? Infinity)
-    // Stable ties keep equally timed or unknown accounts from moving between refreshes.
-    || String(a.name || '').localeCompare(String(b.name || '')) || String(a.id).localeCompare(String(b.id)));
+  }).sort(compareWeeklyReset);
 
   const accountKeys = accounts.map((a) => verifiedDisplayName(a.name, a.id)
     ? `${a.name.toLocaleLowerCase()}\u0000${(a.email || '').toLocaleLowerCase()}` : null);
