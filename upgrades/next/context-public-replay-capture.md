@@ -2,7 +2,7 @@
 
 ## What Changed
 
-Added a manual Claude capture adapter for the checked-in synthetic replay plan.
+Added a manual Claude capture adapter for the checked-in synthetic replay plan. Each captured answer records a parse outcome (valid, json-parse-failed, or schema-invalid with the validator's reason), so an ungradeable answer can be told apart from a wrong one.
 
 ## What to Tell Your User
 

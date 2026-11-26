@@ -68,6 +68,26 @@ def checked_result(raw, exit_code):
     }
 
 
+def classify_answer(text):
+    """Turn a final answer into grader actions and say why it failed, if it did.
+
+    An answer that is not JSON and an answer that is JSON of the wrong shape both
+    grade as an empty action list, but they are different failures, so the
+    capture records which one it was. The reason is the validator's own short
+    message, never the answer text.
+    """
+    try:
+        answer = json.loads(text)
+    except ValueError:
+        return [], {"status": "json-parse-failed"}
+    try:
+        validate_answer(answer)
+    except (ValueError, TypeError, KeyError) as error:
+        reason = error.args[0] if error.args and isinstance(error.args[0], str) else type(error).__name__
+        return [], {"status": "schema-invalid", "reason": reason[:120]}
+    return [{"kind": "final", "answer": answer}], {"status": "valid"}
+
+
 def main():
     parser = argparse.ArgumentParser(description=__doc__)
     for name in ("plan", "plan-hash", "claude", "config-home", "model", "output"):
@@ -100,14 +120,10 @@ def main():
                     prompt = ("Return only a JSON answer object for the supplied scenario.\n" +
                               json.dumps(trial["payload"], ensure_ascii=False))
                     text, usage = capture(cli, args.model, config_home, prompt, scratch)
-                    try:
-                        answer = json.loads(text)
-                        validate_answer(answer)
-                        actions = [{"kind": "final", "answer": answer}]
-                    except (ValueError, TypeError, KeyError):
-                        actions = []
+                    actions, outcome = classify_answer(text)
                     out.write(json.dumps({"planHash": plan["planHash"], "id": trial["id"],
-                                          "actions": actions, "usage": usage}) + "\n")
+                                          "actions": actions, "parseOutcome": outcome,
+                                          "usage": usage}) + "\n")
                     out.flush()
     except (ValueError, KeyError, TypeError, OSError, subprocess.TimeoutExpired) as error:
         reason = error.args[0] if isinstance(error, ValueError) and error.args else ""
