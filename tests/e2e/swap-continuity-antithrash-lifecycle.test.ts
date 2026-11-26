@@ -15,7 +15,7 @@
  *     DURABLE trace in state/swap-ledger.jsonl on disk.
  */
 
-import { describe, it, expect, afterEach } from 'vitest';
+import { describe, it, expect, afterEach, vi } from 'vitest';
 import express from 'express';
 import fs from 'node:fs';
 import os from 'node:os';
@@ -79,6 +79,64 @@ describe('swap-continuity anti-thrash — E2E feature-alive', () => {
       if (dir) SafeFsExecutor.safeRmSync(dir, { recursive: true, force: true, operation: 'tests/e2e/swap-continuity-antithrash-lifecycle.test.ts:cleanup' });
     } catch { /* @silent-fallback-ok */ }
     dir = '';
+  });
+
+  it.each(['idle', 'working', 'background', 'unobserved'] as const)('checks pin admission for a %s cloud Codex topic', async (mode) => {
+    dir = fs.mkdtempSync(path.join(os.tmpdir(), 'refresh-pin-e2e-'));
+    const source = {
+      id: 'source-instance', tmuxSession: 'echo-idle', status: 'running',
+      framework: 'codex-cli', telegramTopicId: 42, subscriptionAccountId: 'source', claudeSessionId: '56f6396f-85ff-4e3a-8003-9ed6c3bf5ca2',
+    };
+    const state = { listSessions: () => [source] } as unknown as StateManager;
+    const payload = Buffer.from(JSON.stringify({ email: 'requested@example.test' })).toString('base64url');
+    fs.writeFileSync(path.join(dir, 'auth.json'), JSON.stringify({ tokens: { id_token: `test.${payload}.test` } }));
+    const account = {
+      id: 'requested', provider: 'openai', framework: 'codex-cli',
+      email: 'requested@example.test', status: 'active', configHome: dir,
+    };
+    const workGate = new SwapWorkGate({
+      checkSessionWorkState: async () => mode === 'working' ? 'working' : 'idle',
+      getClaudeSessionId: () => mode === 'unobserved' ? null : source.claudeSessionId,
+      hasActiveSubagents: () => mode === 'background',
+      getActiveSubagents: () => [{ agentType: 'reviewer', startedAt: new Date(NOW).toISOString() }],
+      now: () => NOW,
+    });
+    const actions: unknown[] = [];
+    const sessionRefresh = new SessionRefresh({
+      pinnedRebriefDir: path.join(dir, 'rebriefs'),
+      sessionManager: { killSession: (id: string) => { actions.push(id); return true; } } as unknown as SessionManager,
+      state,
+      telegram: { getTopicForSession: () => 42 } as unknown as TelegramAdapter,
+      respawner: async (_name, _topic, prompt, pin) => { actions.push({ prompt, pin }); return 'echo-idle'; },
+      workGateCtx: {
+        probe: name => workGate.probe(name),
+        resolveUnansweredInbound: () => 'none',
+        getKnobs: () => ({ enabled: true, dryRun: false, reactiveGraceMs: 0, recheckMs: 0 }),
+      },
+    });
+    server = await boot({
+      config: { authToken: 't', stateDir: dir, port: 0, subscriptionPool: { explicitRefreshAccountPin: true } },
+      startTime: new Date(), state, sessionRefresh,
+      subscriptionPool: { list: () => [account] },
+      topicProfile: { resolver: { resolve: () => ({ framework: 'codex-cli', sources: { model: 'profile-pin' } }) } },
+    });
+    const response = await fetch(`${server.url}/sessions/refresh`, {
+      method: 'POST',
+      headers: { Authorization: 'Bearer t', 'Content-Type': 'application/json' },
+      body: JSON.stringify({ sessionName: 'echo-idle', targetAccountId: 'requested', followUpPrompt: 'Continue the project.' }),
+    });
+    if (mode !== 'idle') {
+      expect(response.status).toBe(409);
+      expect(await response.json()).toMatchObject({ code: 'session-busy' });
+      expect(actions).toEqual([]);
+      return;
+    }
+    expect(response.status).toBe(202);
+    const receipt = await response.json() as { pinnedRefreshAttemptId: string };
+    await vi.waitFor(() => expect(actions).toEqual([
+      'source-instance',
+      { prompt: 'Continue the project.', pin: { accountId: 'requested', configHome: dir, expectedCodexEmail: 'requested@example.test', expectedResumeThreadId: '56f6396f-85ff-4e3a-8003-9ed6c3bf5ca2', expectedSourceSessionId: 'source-instance', pinnedRefreshAttemptId: receipt.pinnedRefreshAttemptId } },
+    ]));
   });
 
   it('DARK: the status route answers 200 with the legacy shape when nothing is wired (never 503)', async () => {

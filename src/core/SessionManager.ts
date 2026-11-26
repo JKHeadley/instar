@@ -1,3 +1,4 @@
+import { readCodexSlotIdentity } from '../providers/adapters/openai-codex/codexSlotIdentity.js';
 import { neutralizeTerminalControls, sanitizeTypedText } from './terminalControlBytes.js';
 import { assertBrowserMcpProfilesSafe } from './BrowserMcpProfileGuard.js';
 /**
@@ -6243,7 +6244,7 @@ rm()  { "${shimRunner}" rm  "$@"; }
   /**
    * Kill a session by terminating its tmux session.
    */
-  killSession(sessionId: string): boolean {
+  killSession(sessionId: string, pinnedRefreshStopId?: string): boolean {
     const session = this.state.getSession(sessionId);
     if (!session) return false;
 
@@ -6274,12 +6275,13 @@ rm()  { "${shimRunner}" rm  "$@"; }
       } catch {
         // @silent-fallback-ok — an explicit absent-session probe is required;
         // uncertain kill outcomes preserve live-session preparation authority.
-        if (this.originLifecycle && !this.originConfirmsProcessGone(session.tmuxSession)) return false;
+        if ((this.originLifecycle || pinnedRefreshStopId) && !this.originConfirmsProcessGone(session.tmuxSession)) return false;
       }
 
       session.status = 'killed';
       session.endedAt = new Date().toISOString();
       session.endedReason = 'manual-kill';
+      if (pinnedRefreshStopId) session.pinnedRefreshStopId = pinnedRefreshStopId;
       this.state.saveSession(session);
       this.revokeOriginSession(session.id);
       // NB: killSession historically does NOT emit 'sessionComplete' (only
@@ -8365,6 +8367,11 @@ rm()  { "${shimRunner}" rm  "$@"; }
      *  scheduler-picked pool home automatically so the interactive lane pins like
      *  the headless lane; unset + no resolver = inherit the parent's login. */
     configHome?: string;
+    /** A pinned refresh must launch its own process, never reuse a replacement. */
+    expectedCodexEmail?: string;
+    expectedResumeThreadId?: string;
+    expectedSourceSessionId?: string;
+    pinnedRefreshAttemptId?: string;
     /** P1.3: record which subscription-pool account this session runs under. An
      *  explicit value wins; otherwise B1 fills it from the resolver-pinned account
      *  (kept in lockstep with configHome). */
@@ -8412,6 +8419,19 @@ rm()  { "${shimRunner}" rm  "$@"; }
       throw new Error(`Cannot interact with protected session: ${tmuxSession}`);
     }
 
+    const pinnedTopicId = options?.telegramTopicId;
+    if ((options?.expectedCodexEmail || options?.expectedResumeThreadId) && (this.tmuxSessionExists(tmuxSession) ||
+        this.listRunningSessions().some(session => session.telegramTopicId === pinnedTopicId))) {
+      throw new Error('The topic already has a running session. The pinned replacement was not started.');
+    }
+
+    if (options?.expectedSourceSessionId) {
+      const source = this.state.getSession(options.expectedSourceSessionId);
+      if (!source || source.telegramTopicId !== pinnedTopicId || this.state.hasTelegramSessionSuccessor(source, source.pinnedRefreshStopId)) {
+        throw new Error('A newer session has already taken over this topic. The refresh replacement was not started.');
+      }
+    }
+
     if (this.tmuxSessionExists(tmuxSession) && this.resumeFollowsAccountEnabled() && this.isPaneDead(tmuxSession)) {
       // A same-name session whose Claude process already exited: reusing it
       // would type the bootstrap into a dead pane. Record why it died, remove
@@ -8444,6 +8464,7 @@ rm()  { "${shimRunner}" rm  "$@"; }
       }
     }
     if (this.tmuxSessionExists(tmuxSession)) {
+      if (options?.expectedCodexEmail || options?.expectedResumeThreadId) throw new Error('The refresh session name is already in use.');
       // Session already exists — just reuse it. The initial message is
       // instar-composed bootstrap content (F7) — mark it first-party so the
       // InputGuard doesn't flag instar's own boot template as an injection.
@@ -8547,6 +8568,10 @@ rm()  { "${shimRunner}" rm  "$@"; }
     // Codex rate-limit model-swap (see resolveCodexLaunchModel) — applies to the
     // interactive (user-facing) codex session too, not just headless spawns.
     const launchDefaultModel = await this.resolveCodexLaunchModel(framework, defaultModel, options?.codexLocalProvider);
+    if ((options?.expectedCodexEmail || options?.expectedResumeThreadId) &&
+        (!isSafeSessionRef(options?.resumeSessionId) || options.resumeSessionId !== options.expectedResumeThreadId)) {
+      throw new Error('The saved Codex conversation changed before the refresh replacement could launch.');
+    }
     // Subscription-pool pinning for the INTERACTIVE (user-facing) lane (B1).
     // Mirrors the headless lane (spawnSession): when pinSessionsToPool wired the
     // spawn-account resolver, launch this claude-code session under the
@@ -8665,7 +8690,7 @@ rm()  { "${shimRunner}" rm  "$@"; }
         outcome = 'error';
       }
       console.log(`[SessionManager] Codex resume placement for "${tmuxSession}": ${outcome} (thread=${codexThreadToPlace}, home=${codexPlacementHome})`);
-      if (pinnedAccount && (outcome === 'not-found' || outcome === 'error')) {
+      if ((pinnedAccount || options?.expectedCodexEmail || options?.expectedResumeThreadId) && (outcome === 'not-found' || outcome === 'error')) {
         throw new Error('codex-account-resume-unavailable: the saved conversation could not be placed in the selected account; no fresh conversation was started.');
       }
       if (explicitConfigHome && (outcome === 'not-found' || outcome === 'error')) {
@@ -8881,6 +8906,12 @@ rm()  { "${shimRunner}" rm  "$@"; }
         console.log(`[SessionManager] Spawning interactive session "${tmuxSession}" (framework: ${framework})`);
       }
 
+      if (options?.expectedCodexEmail) {
+        const identity = effectiveConfigHome ? readCodexSlotIdentity(effectiveConfigHome) : null;
+        if (!identity || identity.unavailable || identity.email?.trim().toLowerCase() !== options.expectedCodexEmail) {
+          throw new Error('The selected Codex home no longer has the expected login.');
+        }
+      }
       withSyncOp(() => execFileSync(this.config.tmuxPath, tmuxArgs, { encoding: 'utf-8' }));
       interactiveTmuxCreated = true;
       this.retainFailedExitStatus(tmuxSession);
@@ -8924,6 +8955,7 @@ rm()  { "${shimRunner}" rm  "$@"; }
       // user-facing interactive lane is now tagged just like the headless lane).
       // Undefined for single-account agents (resolver unwired → no pin).
       ...(effectiveAccountId ? { subscriptionAccountId: effectiveAccountId } : {}),
+      ...(options?.pinnedRefreshAttemptId ? { pinnedRefreshAttemptId: options.pinnedRefreshAttemptId } : {}),
       // §2.10 credential provenance — derived from the SAME predicate as the env block.
       ...(interactiveCredentialSource ? { credentialSource: interactiveCredentialSource } : {}),
       ...(memoryPlan ? { memoryAudience: audienceKey(memoryPlan.audience) } : {}),
@@ -8970,7 +9002,7 @@ rm()  { "${shimRunner}" rm  "$@"; }
         freshPreRolloutBootstrap: framework === 'codex-cli' && !options?.resumeSessionId,
       });
       const injection = this.handleReadyAndInject(tmuxSession, name, effectiveInitialMessage, readyTimeout,
-        framework === CODEX_CLI_FRAMEWORK && pinnedAccount && options?.resumeSessionId
+        framework === CODEX_CLI_FRAMEWORK && (pinnedAccount || options?.expectedCodexEmail || options?.expectedResumeThreadId) && options?.resumeSessionId
           ? { ...options, strictCodexResume: true }
           : options);
       if (options?.awaitInitialInjection) {
@@ -9012,6 +9044,7 @@ rm()  { "${shimRunner}" rm  "$@"; }
       framework?: IntelligenceFramework; cwd?: string; defaultModel?: string; thinkingMode?: import('./topicProfileValidation.js').ThinkingMode; effort?: import('./topicProfileValidation.js').EffortLevel; configHome?: string; subscriptionAccountId?: string;
       /** An automatic account move must not discard its saved conversation. */
       strictCodexResume?: boolean;
+      pinnedRefreshAttemptId?: string;
     },
   ): Promise<void> {
     const ready = await this.waitForClaudeReadyWithRetry(tmuxSession, readyTimeout);
@@ -9071,6 +9104,10 @@ rm()  { "${shimRunner}" rm  "$@"; }
         if (failed) {
           failed.status = 'failed';
           failed.endedAt = new Date().toISOString();
+          if (options.strictCodexResume && options.pinnedRefreshAttemptId &&
+              failed.pinnedRefreshAttemptId === options.pinnedRefreshAttemptId) {
+            failed.pinnedRefreshRebriefUndelivered = true;
+          }
           this.state.saveSession(failed);
         }
       } catch { /* state cleanup is best-effort */ }

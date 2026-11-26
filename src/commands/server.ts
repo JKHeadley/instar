@@ -1701,7 +1701,7 @@ export async function spawnSessionForTopic(
   /** Subscription & Auth Standard P1.3 (additive): launch under this account's
    *  config home + record its id (the quota-aware account-swap mechanism).
    *  Omitted = unchanged behaviour. */
-  accountSwap?: { configHome?: string; accountId?: string },
+  accountSwap?: { configHome?: string; accountId?: string; expectedCodexEmail?: string; expectedResumeThreadId?: string; expectedSourceSessionId?: string; pinnedRefreshAttemptId?: string },
   /** Reap-notify spec R2.8 / L13 — explicit per-spawn working directory (the
    *  resume-queue drainer passes a queue entry's recorded cwd so interrupted
    *  worktree work resumes in ITS tree). Omitted = module project dir. */
@@ -2075,6 +2075,10 @@ export async function spawnSessionForTopic(
   // `codex exec --oss --local-provider <p> --model <m>` argv.
   const localEntry = _topicLocalModelStore?.get(topicId) ?? null;
   const codexLocalProvider = framework === 'codex-cli' ? localEntry?.provider : undefined;
+  if ((accountSwap?.expectedCodexEmail || accountSwap?.expectedResumeThreadId) &&
+      (framework !== CODEX_CLI_FRAMEWORK || localEntry)) {
+    throw new Error('The topic no longer uses cloud Codex. The pinned replacement was not started.');
+  }
   const codexLocalModelOverride = framework === 'codex-cli' && localEntry?.model ? localEntry.model : undefined;
 
   // Topic Profile §5.2 precedence on the model arm: an active local-model
@@ -2109,10 +2113,19 @@ export async function spawnSessionForTopic(
     // this account's config home + record its id. Unset = unchanged.
     ...(accountSwap?.configHome ? { configHome: accountSwap.configHome } : {}),
     ...(accountSwap?.accountId ? { subscriptionAccountId: accountSwap.accountId } : {}),
+    ...(accountSwap?.expectedCodexEmail ? { expectedCodexEmail: accountSwap.expectedCodexEmail } : {}),
+    ...(accountSwap?.expectedResumeThreadId ? { expectedResumeThreadId: accountSwap.expectedResumeThreadId, expectedSourceSessionId: accountSwap.expectedSourceSessionId, pinnedRefreshAttemptId: accountSwap.pinnedRefreshAttemptId } : {}),
     // R2.8/L13: per-spawn cwd from the resume-queue entry. Unset = projectDir.
     ...(spawnOpts?.cwd ? { cwd: spawnOpts.cwd } : {}),
-    ...(spawnOpts?.awaitInitialInjection ? { awaitInitialInjection: true } : {}),
+    ...((spawnOpts?.awaitInitialInjection || accountSwap?.expectedCodexEmail || accountSwap?.expectedResumeThreadId) ? { awaitInitialInjection: true } : {}),
   });
+
+  if (accountSwap?.expectedCodexEmail && !sessionManager.listRunningSessions().some(session =>
+    session.tmuxSession === newSessionName && session.telegramTopicId === topicId &&
+    session.framework === CODEX_CLI_FRAMEWORK && session.subscriptionAccountId === accountSwap.accountId &&
+    session.pinnedRefreshAttemptId === accountSwap.pinnedRefreshAttemptId)) {
+    throw new Error('Could not confirm that the replacement is running on the requested Codex account.');
+  }
 
   // Clear the resume entry after successful spawn to prevent stale reuse
   if (resumeSessionId) {
@@ -2199,7 +2212,7 @@ async function respawnSessionForTopic(
   topicMemory?: TopicMemory,
   userProfile?: UserProfile,
   recoveryPrompt?: string,
-  options?: { silent?: boolean; quietAfterRespawn?: boolean; configHome?: string; accountId?: string; awaitInitialInjection?: boolean;
+  options?: { silent?: boolean; quietAfterRespawn?: boolean; configHome?: string; accountId?: string; expectedCodexEmail?: string; expectedResumeThreadId?: string; expectedSourceSessionId?: string; pinnedRefreshAttemptId?: string; awaitInitialInjection?: boolean;
     /** SEC-106 decision 7: threaded explicitly to spawnSessionForTopic. */
     firstMessageLabel?: { signedByAgent: string; senderName?: string } },
 ): Promise<void> {
@@ -2224,9 +2237,11 @@ async function respawnSessionForTopic(
   // framework swap via /route would silently keep the old session
   // alive and the new framework binding never takes effect.
   // Idempotent: if the session is already dead the kill is a no-op.
-  try {
-    execFileSync(detectTmuxPath()!, ['kill-session', '-t', `=${targetSession}`], { stdio: 'ignore' });
-  } catch { /* session may already be dead — that's fine */ }
+  if (!options?.expectedCodexEmail && !options?.expectedResumeThreadId) {
+    try {
+      execFileSync(detectTmuxPath()!, ['kill-session', '-t', `=${targetSession}`], { stdio: 'ignore' });
+    } catch { /* session may already be dead — that's fine */ }
+  }
   // Invalidate the framework cache for this tmux name. The kill+respawn
   // may reuse the same name under a different framework (e.g., /route
   // claude-code → codex-cli), and a stale cache entry would make
@@ -2263,7 +2278,7 @@ async function respawnSessionForTopic(
     topicMemory,
     userProfile,
     undefined,
-    (options?.configHome || options?.accountId) ? { configHome: options?.configHome, accountId: options?.accountId } : undefined,
+    (options?.configHome || options?.accountId || options?.expectedResumeThreadId) ? { configHome: options?.configHome, accountId: options?.accountId, expectedCodexEmail: options?.expectedCodexEmail, expectedResumeThreadId: options?.expectedResumeThreadId, expectedSourceSessionId: options?.expectedSourceSessionId, pinnedRefreshAttemptId: options?.pinnedRefreshAttemptId } : undefined,
     (options?.awaitInitialInjection || labelled)
       ? {
         ...(options?.awaitInitialInjection ? { awaitInitialInjection: true } : {}),
@@ -25686,6 +25701,7 @@ export async function startServer(options: StartOptions): Promise<void> {
       const telegramRef = telegram ?? null; // may be null on a Slack-only server
       const slackRef = _slackAdapter; // narrow for closures
       _sessionRefresh = new SessionRefresh({
+        pinnedRebriefDir: path.join(config.stateDir, 'state', 'pinned-refresh-rebriefs'),
         sessionManager,
         state,
         telegram: telegramRef,
@@ -25792,7 +25808,7 @@ export async function startServer(options: StartOptions): Promise<void> {
               return newSessionName || sessionName;
             }
           : null),
-        respawner: async (sessionName: string, topicId: number, followUpPrompt: string | undefined, accountSwap?: { configHome?: string; accountId?: string }): Promise<string> => {
+        respawner: async (sessionName: string, topicId: number, followUpPrompt: string | undefined, accountSwap?: { configHome?: string; accountId?: string; expectedCodexEmail?: string; expectedResumeThreadId?: string; expectedSourceSessionId?: string; pinnedRefreshAttemptId?: string }): Promise<string> => {
           // killSession (called inside SessionRefresh) has already fired
           // beforeSessionKill (UUID persisted) and destroyed the tmux
           // session. respawnSessionForTopic spawns the new tmux running
@@ -25807,7 +25823,7 @@ export async function startServer(options: StartOptions): Promise<void> {
             return sessionName;
           }
           await respawnSessionForTopic(sessionManager, telegramRef, sessionName, topicId, followUpPrompt, topicMemory, undefined, undefined,
-            accountSwap ? { configHome: accountSwap.configHome, accountId: accountSwap.accountId } : undefined);
+            accountSwap);
           return telegramRef.getSessionForTopic(topicId) ?? sessionName;
         },
       });

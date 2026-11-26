@@ -95,6 +95,95 @@ describe('Resume Follows the Account — dead pane handling', () => {
     SafeFsExecutor.safeRmSync(dir, { recursive: true, force: true, operation: 'tests/unit/resume-follows-account-dead-pane.test.ts:cleanup' });
   });
 
+  it('refuses to kill or inject into a competing session that wins the topic launch lock', async () => {
+    const inject = vi.spyOn(manager, 'injectMessage');
+    const running = vi.spyOn(manager, 'listRunningSessions').mockReturnValue([]);
+    let publishWinner!: () => void;
+    const hold = new Promise<void>(resolve => { publishWinner = resolve; });
+    const concurrentLaunch = manager.withConversationLock('telegram:42', async () => {
+      await hold;
+      running.mockReturnValue([{
+        id: 'winner', tmuxSession: 'different-topic-name', name: 'Renamed',
+        status: 'running', startedAt: new Date().toISOString(), telegramTopicId: 42,
+      }]);
+    });
+    const pin = manager.spawnInteractiveSession('Continue work.', 'a', {
+      telegramTopicId: 42, framework: 'codex-cli', expectedCodexEmail: 'target@example.test',
+    });
+    publishWinner();
+    await concurrentLaunch;
+    await expect(pin).rejects.toThrow('topic already has a running session');
+    expect(inject).not.toHaveBeenCalled();
+    expect(calls.some(call => call[0] === 'kill-session' || call[0] === 'new-session')).toBe(false);
+  });
+
+  it('refuses a rebrief if the launcher resolves a different saved thread', async () => {
+    build({ framework: 'codex-cli', frameworkBinaryPaths: { 'codex-cli': '/usr/local/bin/codex' } });
+    await expect(manager.spawnInteractiveSession('Saved rebrief.', 'a', {
+      telegramTopicId: 42, framework: 'codex-cli',
+      resumeSessionId: '56f6396f-85ff-4e3a-8003-9ed6c3bf5ca2',
+      expectedResumeThreadId: '66f6396f-85ff-4e3a-8003-9ed6c3bf5ca2',
+    })).rejects.toThrow('The saved Codex conversation changed');
+    expect(calls.some(call => call[0] === 'kill-session' || call[0] === 'new-session')).toBe(false);
+  });
+
+  it('persists the exact refresh stop receipt with the killed session', () => {
+    const stateDir = path.join(dir, 'state');
+    const state = new StateManager(stateDir);
+    state.saveSession({
+      id: 'original', tmuxSession: 'echo-original', name: 'Original',
+      status: 'running', startedAt: new Date().toISOString(), telegramTopicId: 42,
+    });
+    sessions.add('echo-original');
+    expect(manager.killSession('original', 'refresh-attempt')).toBe(true);
+    const restarted = new StateManager(stateDir);
+    expect(restarted.getSession('original')).toMatchObject({
+      status: 'killed', pinnedRefreshStopId: 'refresh-attempt',
+    });
+  });
+
+  it('finds a newer successor after that successor has ended', () => {
+    const state = new StateManager(path.join(dir, 'state'));
+    const source = {
+      id: 'source', tmuxSession: 'old-name', name: 'Old Name', status: 'killed' as const,
+      startedAt: '2026-11-25T10:00:00Z', telegramTopicId: 42,
+    };
+    state.saveSession(source);
+    expect(state.hasTelegramSessionSuccessor(source)).toBe(false);
+    state.saveSession({
+      ...source, id: 'successor', tmuxSession: 'new-name', startedAt: '2026-11-25T11:00:00Z',
+      status: 'completed',
+    });
+    expect(state.hasTelegramSessionSuccessor(source)).toBe(true);
+  });
+
+  it('recovers only a same-attempt startup failure that never tried to inject', async () => {
+    const state = new StateManager(path.join(dir, 'state'));
+    const source = {
+      id: 'source', tmuxSession: 'source-name', name: 'Source', status: 'killed' as const,
+      startedAt: '2026-11-25T10:00:00Z', telegramTopicId: 42,
+    };
+    state.saveSession(source);
+    state.saveSession({
+      ...source, id: 'replacement', tmuxSession: 'replacement-name', startedAt: '2026-11-25T11:00:00Z',
+      status: 'running', pinnedRefreshAttemptId: 'attempt',
+    });
+    sessions.add('replacement-name');
+    deadPanes.add('replacement-name');
+    const inject = vi.spyOn(manager, 'injectMessage');
+    await expect((manager as unknown as Handle).handleReadyAndInject(
+      'replacement-name', 'replacement', 'Saved rebrief.', 1,
+      { resumeSessionId: '56f6396f-85ff-4e3a-8003-9ed6c3bf5ca2', strictCodexResume: true, pinnedRefreshAttemptId: 'attempt' },
+    )).rejects.toThrow('codex-account-resume-failed');
+    expect(inject).not.toHaveBeenCalled();
+    const restarted = new StateManager(path.join(dir, 'state'));
+    expect(restarted.getSession('replacement')).toMatchObject({
+      status: 'failed', pinnedRefreshRebriefUndelivered: true,
+    });
+    expect(restarted.hasTelegramSessionSuccessor(source, 'attempt')).toBe(false);
+    expect(restarted.hasTelegramSessionSuccessor(source, 'other-attempt')).toBe(true);
+  });
+
   it('isPaneDead is true only on a positive pane_dead=1', () => {
     sessions.add('p'); deadPanes.add('p');
     expect(manager.isPaneDead('p')).toBe(true);
