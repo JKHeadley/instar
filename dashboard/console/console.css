@@ -1806,3 +1806,8 @@ a.needs-row:hover { background: var(--surface-raised); }
 
 .needs-row .needs-instructions { margin: var(--s-2) 0 0; padding-inline-start: 1.5em; }
 .needs-row .needs-consent { align-self: flex-start; min-height: 44px; margin-top: var(--s-2); }
+
+.needs-credential-dialog { width: min(32rem, calc(100% - 2rem)); padding: var(--s-4); border: 1px solid var(--line); border-radius: var(--r-md); background: var(--surface-raised); color: var(--text-strong); }
+.needs-credential-dialog::backdrop { background: #0009; }
+.needs-credential-dialog form, .needs-credential-dialog label { display: grid; gap: var(--s-2); }
+.needs-credential-dialog input, .needs-credential-dialog button { min-height: 44px; font: inherit; }

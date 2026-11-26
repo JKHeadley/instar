@@ -3540,6 +3540,7 @@ export function createRoutes(ctx: RouteContext): Router {
   }
   mountNeedsRoutes(router, {
     ownerCardCandidate: ownerNeedsCandidate,
+    browserCredentialGrantsEnabled: browserGrantsEnabled,
     browserCredentialViewer: req => isCredentialBrowser(req) ? browserGrantsEnabled() : null,
     ownerCredentialRequestIds: req => {
       const id = ownerAdmissionEnabled ? credentialOwner(req) : null;

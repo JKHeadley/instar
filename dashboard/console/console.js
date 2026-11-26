@@ -15,6 +15,7 @@ import { homeNeedsModel, mountNeedsStrip, stripModel } from './needs-strip.js';
 import { mountAgentHealthNote } from './agent-health-note.js';
 import { fillPartial } from './home-model.js';
 import { needsContractHeaders } from './needs-actions.js';
+import { mountBrowserCredentials } from './needs-browser-credentials.js';
 import { renderPromises, topicLink } from './promises.js';
 import { renderMachines } from './machines.js';
 import { renderMachineCare } from './machine-care.js';
@@ -163,6 +164,7 @@ async function post(path, body) {
 
 // ── auth ──────────────────────────────────────────────────────────────────
 function signOut() {
+  stopShellNeeds?.();
   forgetOperatorSession();
   net.clear(); // saved copies belong to this sign-in
   try { localStorage.removeItem(TOKEN_KEY); } catch { /* storage blocked */ }
@@ -253,6 +255,29 @@ function navItems(active) {
   return nav;
 }
 
+let stopShellNeeds;
+function mountDashboardNeeds(strip, options = {}) {
+  const credentials = el('section', { class: 'needs-strip', hidden: true, 'aria-label': 'Credential requests for this browser' });
+  strip.after(credentials);
+  let active = true, stopCredentials, credentialMachine;
+  const stop = mountNeedsStrip(strip, {
+    ...options, hrefFor: stripActionHref,
+    get: async (path) => {
+      const result = await get(path);
+      if (!active || path !== '/needs') return result;
+      const enabled = result.ok && result.data?.schemaVersion === 2 && result.data.browserCredentialGrants === true;
+      const machine = enabled ? result.data.machineId ?? null : undefined;
+      if (machine !== credentialMachine) {
+        stopCredentials?.();
+        credentialMachine = machine;
+        stopCredentials = enabled ? mountBrowserCredentials(credentials, { bearer: () => token, machineId: machine }) : null;
+      }
+      return result;
+    },
+  });
+  return () => { active = false; stop(); stopCredentials?.(); credentials.remove(); };
+}
+
 function renderShell(active) {
   if (phone) {
     // Only the page: the app's own frame holds the title bar and navigation.
@@ -275,7 +300,7 @@ function renderShell(active) {
   const app = el('div', { class: 'app' }, previewBanner(), net.lineElement(), top, navItems(active), column);
   document.body.replaceChildren(app);
   mountAgentHealthNote(app.querySelector('nav a[data-door="agent"]'), { get });
-  if (strip) mountNeedsStrip(strip, { get, hrefFor: stripActionHref });
+  if (strip) stopShellNeeds = mountDashboardNeeds(strip);
   applyTheme(document.documentElement.getAttribute('data-theme') || readTheme());
   fillAgentName();
   return main;
@@ -438,9 +463,9 @@ function paintCard(def, model, repaint = false) {
   if (model.note) body.append(el('p', { class: 'card-note', text: model.note }));
   const foot = card.querySelector('.card-foot');
   foot.replaceChildren();
-  const extra = listed.all ? listed.all.length - listed.rows.length : (model.more || 0);
-  if (listed.all && extra > 0) {
-    const b = el('button', { class: 'link-btn', type: 'button', 'data-focus-key': `${def.id}:see-all`, 'aria-expanded': expandedNow ? 'true' : 'false', text: expandedNow ? 'Show fewer' : `See all ${listed.all.length}` });
+  const extra = model.all ? model.all.length - (model.rows?.length || 0) : (model.more || 0);
+  if (model.all && extra > 0) {
+    const b = el('button', { class: 'link-btn', type: 'button', 'data-focus-key': `${def.id}:see-all`, 'aria-expanded': expandedNow ? 'true' : 'false', text: expandedNow ? 'Show fewer' : `See all ${model.all.length}` });
     b.addEventListener('click', () => { if (expanded.has(def.id)) expanded.delete(def.id); else expanded.add(def.id); paintCard(def, model, true); });
     foot.append(b);
   } else foot.append(el('span', { class: 'card-age', text: extra > 0 ? `and ${extra} more` : '' }));
@@ -605,8 +630,8 @@ function renderHome(main, ctx) {
       ),
     ),
   );
-  const stopNeeds = mountNeedsStrip(main.querySelector('#homeNeedsStrip'), {
-    get, hrefFor: stripActionHref, home: true, open: true,
+  const stopNeeds = mountDashboardNeeds(main.querySelector('#homeNeedsStrip'), {
+    home: true, open: true,
     onModel: (model) => {
       run.models.needs = homeNeedsModel(model);
       paintHeadline(run.models);
@@ -771,6 +796,8 @@ function route() {
   // Only the query changed on a page that handles that itself: no rebuild, no sheet close, no scroll.
   if (lifecycle.tryQuery(path, query)) return;
   // The previous visit's disposers run before anything new is drawn.
+  stopShellNeeds?.();
+  stopShellNeeds = null;
   lifecycle.dispose();
   if (homeRun) { homeRun.active = false; for (const p of Object.values(homeRun.pending)) if (p && p !== true) clearTimeout(p); homeRun = null; }
   closeSheet();

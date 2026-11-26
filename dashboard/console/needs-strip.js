@@ -118,8 +118,8 @@ export function needGroups(rows) {
 let stopPrevious;
 // Open or closed, kept across page changes in this tab (closed by default).
 let rememberedOpen = false;
-export function mountNeedsStrip(host, { get, hrefFor, open: startOpen, home = false, onModel, signedAdapters = {} }) {
-  stopPrevious?.();
+export function mountNeedsStrip(host, { get, hrefFor, open: startOpen, home = false, onModel, signedAdapters = {}, credentialOnly = false }) {
+  if (!credentialOnly) stopPrevious?.();
   let actionBusy = false;
   let active = true, expanded = false, busy = false, sequence = 0, open = typeof startOpen === 'boolean' ? startOpen : rememberedOpen;
   let answer = null, cursor = null, failure = null, actionStatus = '';
@@ -130,6 +130,7 @@ export function mountNeedsStrip(host, { get, hrefFor, open: startOpen, home = fa
   const paint = () => {
     const m = stripModel(answer, { expanded });
     const pageLength = m.rows.length;
+    if (credentialOnly && m.show && m.state !== 'unknown') m.title = 'Credential requests for this browser';
     if (m.strict) {
       m.rows = m.rows.filter((row) => canRenderStrictAction(row, signedAdapters));
       if (m.rows.length < pageLength) {
@@ -137,7 +138,9 @@ export function mountNeedsStrip(host, { get, hrefFor, open: startOpen, home = fa
       }
     }
     onModel?.(m);
-    host.hidden = !m.show && !home && !actionStatus;
+    const hideCredentialStatus = credentialOnly && !actionStatus && ['loading', 'unknown'].includes(m.state);
+    host.hidden = hideCredentialStatus || !m.show && !home && !actionStatus;
+    if (hideCredentialStatus) { host.replaceChildren(); return; }
     if (!m.show && (home || actionStatus)) {
       host.replaceChildren(el('p', { class: 'needs-line', role: 'status', text: actionStatus || 'Nothing needs you right now.' }));
       return;
@@ -146,7 +149,7 @@ export function mountNeedsStrip(host, { get, hrefFor, open: startOpen, home = fa
     host.dataset.incomplete = m.incomplete ? '1' : '0';
     if (!m.show) { host.replaceChildren(); return; }
     host.dataset.open = open ? '1' : '0';
-    const toggle = (next) => { open = next; if (!home) rememberedOpen = next; if (!next) expanded = false; paint(); host.querySelector('.needs-compact, .needs-close')?.focus(); };
+    const toggle = (next) => { open = next; if (!home && !credentialOnly) rememberedOpen = next; if (!next) expanded = false; paint(); host.querySelector('.needs-compact, .needs-close')?.focus(); };
     if (!open) {
       const c = compactLine(m);
       host.replaceChildren(el('button', { type: 'button', class: 'needs-compact', 'aria-expanded': 'false', 'aria-label': `${c.label}${c.first ? `: ${c.first}` : ''}. Show the list`, onclick: () => toggle(true) },
@@ -265,7 +268,7 @@ export function mountNeedsStrip(host, { get, hrefFor, open: startOpen, home = fa
     }
   }, STRIP_REFRESH_MS);
   const stop = () => { active = false; clearInterval(timer); };
-  stopPrevious = stop;
+  if (!credentialOnly) stopPrevious = stop;
   paint();
   void load({ cursor: null, start: 0 }, true);
   return stop;

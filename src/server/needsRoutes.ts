@@ -143,6 +143,7 @@ export interface NeedsAnswer {
   count: number;
   /** Agent work or rows without a declared owner action, before pagination. */
   divertedCount?: number;
+  browserCredentialGrants?: true;
   /** Known owner approvals whose source could not confirm whether they can still be acted on. */
   couldNotCheckApprovalCount?: number;
   complete: boolean;
@@ -168,6 +169,7 @@ export interface NeedsDeps {
   now?: () => number;
   /** Absent until this agent's clients and sources support in-place actions. */
   // undefined: audience-authorized row lacks a declaration. null: no verified audience or current ask.
+  browserCredentialGrantsEnabled?: () => boolean;
   browserCredentialViewer?: (req: Request) => boolean | null;
   ownerCredentialRequestIds?: (request?: Request) => readonly string[];
   ownerCardCandidate?: (item: NeedItem, request?: Request) => OwnerNeedsCandidate | null | undefined | Promise<OwnerNeedsCandidate | null | undefined>;
@@ -643,7 +645,9 @@ export function mountNeedsRoutes(router: Router, deps: NeedsDeps & { canary?: Ne
           nextCursor: start + NEEDS_MAX_ITEMS < answer.count ? token(start + NEEDS_MAX_ITEMS).toString('base64url') : null,
         };
       }
-      res.json({ ...answer, viewer: { role } } satisfies NeedsAnswer);
+      const browserCredentialGrants = browserCredentialViewer === null && role === 'owner' && deps.bearerOk(req)
+        && deps.browserCredentialGrantsEnabled?.() === true ? { browserCredentialGrants: true as const } : {};
+      res.json({ ...answer, ...browserCredentialGrants, viewer: { role } } satisfies NeedsAnswer);
     } catch (err) {
       // The list could not be built at all: say so; a surface shows "could not check" and keeps the strip.
       res.status(500).json({ error: 'needs-read-failed', detail: clean(operatorError(err), 200) });

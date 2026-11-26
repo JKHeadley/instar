@@ -263,11 +263,15 @@ describe('App approval disclosure E2E', () => {
     const id = minted.body.needsRequestId;
     const credentialPath = `/mobile/needs/credentials/${id}`;
     const grantPath = credentialPath + '/browser-grant';
+    const dashboard = () => s.bearer(request(s.app).get('/needs')).set('X-Instar-Needs-Contract', 'in-place-v1');
+    expect((await dashboard().expect(200)).body).not.toHaveProperty('browserCredentialGrants');
     await list().expect(403);
     expect((await restricted.signed('GET', '/mobile/needs').set('X-Instar-Needs-Contract', 'in-place-v1').expect(403)).body.error).toBe('cannot-approve-yet');
     await native.signed('GET', grantPath + '?browserId=' + browserId).expect(404);
 
     s.config.needsYou = { browserCredentialGrants: { enabled: true } };
+    expect((await dashboard().expect(200)).body).toMatchObject({ browserCredentialGrants: true });
+    expect((await list().expect(200)).body).not.toHaveProperty('browserCredentialGrants');
     expect((await restricted.signed('GET', '/mobile/needs').set('X-Instar-Needs-Contract', 'in-place-v1').expect(403)).body.error).toBe('cannot-approve-yet');
     expect((await list().expect(200)).body.items).toEqual([]);
     await browserCall('GET', credentialPath).expect(404);
