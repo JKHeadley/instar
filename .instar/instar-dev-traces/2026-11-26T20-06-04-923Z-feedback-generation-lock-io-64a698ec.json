@@ -1,0 +1,29 @@
+{
+  "version": 3,
+  "slug": "feedback-generation-lock-io",
+  "sessionId": "1f52ddfa-542b-4f86-9d54-e7d5d9f38c43",
+  "timestamp": "2026-11-26T20:06:04.923Z",
+  "artifactPath": "upgrades/side-effects/feedback-generation-lock-io.md",
+  "artifactSha256": "f5771b479b8883c1175f7f503814b2299d20fbd5371ba677a9e2ac29f6dc1289",
+  "coveredFiles": [
+    "docs/specs/feedback-generation-lock-io.eli16.md",
+    "src/feedback-factory/store/FeedbackSourceGenerations.ts",
+    "tests/unit/feedback-source-generations.test.ts",
+    "upgrades/next/feedback-generation-lock-io.md",
+    "upgrades/side-effects/feedback-generation-lock-io.md"
+  ],
+  "phase": "complete",
+  "tier": 1,
+  "tierReasoning": "The change removes one extra flush of a temporary PID record. Exclusive acquisition, mutation, recovery and durable source writes retain the same behavior.",
+  "eli16Path": "docs/specs/feedback-generation-lock-io.eli16.md",
+  "sideEffectsPath": "upgrades/side-effects/feedback-generation-lock-io.md",
+  "secondPass": "true",
+  "reviewerConcurred": true,
+  "toolchain": {
+    "buildSkill": {
+      "name": "build",
+      "version": null,
+      "verified": false
+    }
+  }
+}
