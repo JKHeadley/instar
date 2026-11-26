@@ -1,0 +1,13 @@
+# Codex Hook Registration During Project Setup
+
+## What Changed
+
+Instar now writes the native Codex hook configuration during both named-project and existing-directory setup when you select Codex. The registration includes the prompt hook used for conversation recovery and preserves your custom hooks. Codex applies its normal trust rules before running the hooks.
+
+## What to Tell Your User
+
+When you set up a project with Codex, Instar now installs the hook that helps recover conversation context.
+
+## Summary of New Capabilities
+
+This repairs project setup for the existing Codex integration.
