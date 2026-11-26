@@ -2,7 +2,7 @@ import { createHash, createPublicKey, verify } from 'node:crypto';
 import { expect, it } from 'vitest';
 import { isStrictLowSDer } from '../../src/core/MobileDeviceKeys.js';
 import {
-  subscriptionReloginConfigureDigest, validateSubscriptionReloginOperatorInput,
+  prepareSubscriptionReloginPoolTarget, subscriptionReloginConfigureDigest, validateSubscriptionReloginOperatorInput,
 } from '../../src/core/SubscriptionReloginOperatorConfig.js';
 import vector from '../fixtures/owner-approvals/signin-repair-v1.json';
 
@@ -25,6 +25,8 @@ it('signs the exact inventory, disclosure and challenge and binds one configurat
   const parsed = validateSubscriptionReloginOperatorInput(vector.policy.config);
   if (!parsed.ok) throw new Error(parsed.error);
   expect(subscriptionReloginConfigureDigest(parsed.value, vector.policy.expectedRevision)).toBe(vector.policy.configDigest);
+  expect(prepareSubscriptionReloginPoolTarget(vector.policy.config.unattendedPolicy, parsed.value.mode, vector.policy.expectedRevision))
+    .toEqual({ config: parsed.value, configDigest: vector.policy.configDigest });
   expect(subscriptionReloginConfigureDigest(parsed.value, 'sha256:' + 'c'.repeat(64))).not.toBe(vector.policy.configDigest);
   expect(JSON.stringify(vector.disclosure.disclosure)).toContain(vector.policy.configDigest);
   expect(hash(Buffer.from(vector.exactBytesBase64.disclosure, 'base64'))).toBe(vector.submit.proposalHash);

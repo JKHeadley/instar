@@ -1,0 +1,25 @@
+{
+  "ts": "2026-11-26T19:16:04.415Z",
+  "slug": "native-owner-signin-repair-writer",
+  "suggestedTier": 2,
+  "declaredTier": 1,
+  "riskFloor": 2,
+  "riskFloorReasons": [
+    "new capability: new route (router.<verb>() added"
+  ],
+  "belowFloor": true,
+  "files": 2,
+  "loc": 81,
+  "scope": {
+    "basis": "staged-in-scope-paths-including-deleted",
+    "files": [
+      "src/core/SubscriptionReloginOperatorConfig.ts",
+      "src/server/routes.ts"
+    ],
+    "addedLines": 51,
+    "deletedLines": 30
+  },
+  "causalAutopsy": null,
+  "classClosure": null,
+  "verdict": "pass"
+}

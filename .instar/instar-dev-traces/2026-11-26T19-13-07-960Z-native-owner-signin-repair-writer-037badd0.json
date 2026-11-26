@@ -1,0 +1,24 @@
+{
+  "version": 2,
+  "slug": "native-owner-signin-repair-writer",
+  "sessionId": "b3d2cf8a-9b5d-468b-a50b-70ebf11e9e5c",
+  "timestamp": "2026-11-26T19:13:07.960Z",
+  "artifactPath": "upgrades/side-effects/native-owner-signin-repair-writer.md",
+  "artifactSha256": "8c716c342c47ee566b9825dbb414f50176a504ad6a2788cbced3514199d78d92",
+  "coveredFiles": [
+    "docs/specs/native-owner-approval-signin-repair.eli16.md",
+    "src/core/SubscriptionReloginOperatorConfig.ts",
+    "src/server/routes.ts",
+    "tests/e2e/subscription-relogin-one-tap-lifecycle.test.ts",
+    "tests/unit/native-owner-approval-signin-repair-vector.test.ts",
+    "upgrades/next/native-owner-signin-repair-writer.md",
+    "upgrades/side-effects/native-owner-signin-repair-writer.md"
+  ],
+  "phase": "complete",
+  "tier": 1,
+  "tierReasoning": "Behavior-preserving extraction behind the identical PIN fence, no new authority path",
+  "eli16Path": "docs/specs/native-owner-approval-signin-repair.eli16.md",
+  "sideEffectsPath": "upgrades/side-effects/native-owner-signin-repair-writer.md",
+  "secondPass": "true",
+  "reviewerConcurred": true
+}
