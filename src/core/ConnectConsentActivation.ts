@@ -1,4 +1,4 @@
-import type { KeyObject } from 'node:crypto';
+import { createHash, type KeyObject } from 'node:crypto';
 import { verifyConnectConsentFrame } from './ConnectConsentWireFrame.js';
 
 export type ConsentActivationKind = 'decision' | 'ack' | 'confirm' | 'active';
@@ -6,6 +6,7 @@ export type ConsentActivationKind = 'decision' | 'ack' | 'confirm' | 'active';
 export interface ConsentActivationFields {
   readonly sessionId: string;
   readonly digest: string;
+  readonly transcriptDigest: string;
   readonly generation: string;
   readonly nonce?: string;
   readonly decision?: 'allow' | 'decline';
@@ -22,6 +23,7 @@ export function verifyConsentActivation(
   if (bytes.length < 2 + domain.length || bytes.readUInt16BE(0) !== domain.length ||
       !bytes.subarray(2, 2 + domain.length).equals(domain)) return;
   const payload = bytes.subarray(2 + domain.length);
+  const transcriptDigest = createHash("sha256").update(bytes).digest("hex");
   if (kind === 'decision') {
     if (payload.length < 114) return;
     const size = payload.readUInt16BE(112);
@@ -30,6 +32,7 @@ export function verifyConsentActivation(
     const decision = word.equals(Buffer.from('allow')) ? 'allow' : word.equals(Buffer.from('decline')) ? 'decline' : undefined;
     if (!decision) return;
     return {
+      transcriptDigest,
       digest: payload.toString('hex', 0, 32), sessionId: payload.toString('hex', 32, 48),
       nonce: payload.toString('hex', 48, 80), generation: payload.toString('hex', 80, 112), decision,
     };
@@ -37,6 +40,7 @@ export function verifyConsentActivation(
   if (payload.length !== (kind === 'confirm' ? 80 : 88)) return;
   const offset = kind === 'ack' ? 0 : 32;
   const fields = {
+    transcriptDigest,
     sessionId: payload.toString('hex', offset, offset + 16),
     digest: kind === 'ack' ? payload.toString('hex', 16, 48) : payload.toString('hex', 0, 32),
     generation: payload.toString('hex', 48, 80),
