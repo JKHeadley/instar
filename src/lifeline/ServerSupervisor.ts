@@ -307,6 +307,9 @@ export class ServerSupervisor extends EventEmitter {
   private maintenanceWaitMs = 5 * 60_000; // 5 minutes default (configurable via maintenanceWaitMinutes)
   private pendingUpdateVersion: string | null = null; // Version being applied — triggers lifeline self-restart on recovery
   private deferredRestartRequestedAt: string | null = null;
+  private deferredLeaseRequest: string | null = null;
+  private readonly plannedLeaseAdmission?: (request: { requestedBy: string; requestedAt: string }) =>
+    'ready' | 'wait' | 'not-applicable';
 
   // Agent hard-sleep (Stage B mechanism; docs/specs/agent-hard-sleep-mechanism.md).
   // When `slept` is true the server was INTENTIONALLY stopped to save resources —
@@ -379,6 +382,9 @@ export class ServerSupervisor extends EventEmitter {
      * boolean. Default false ⇒ legacy behavior (no inflight defer).
      */
     inflightDeferEnabled?: boolean;
+    /** Default off. The trusted provider checks the live preferred holder and exact confirmed window. */
+    plannedLeaseAdmission?: (request: { requestedBy: string; requestedAt: string }) =>
+      'ready' | 'wait' | 'not-applicable';
   }) {
     super();
     this.projectDir = options.projectDir;
@@ -394,6 +400,7 @@ export class ServerSupervisor extends EventEmitter {
     // has projectConfig; the supervisor is config-less) and passed as a plain boolean.
     this.inflightMarkerProvider = options.inflightMarkerProvider ?? defaultInflightMarkerReader(this.stateDir);
     this.inflightDeferEnabled = options.inflightDeferEnabled ?? false;
+    this.plannedLeaseAdmission = options.plannedLeaseAdmission;
     this.sentinelEscalation = new SlowRetrySentinelEscalation({
       escalateAfterMs: options.slowRetryEscalateAfterMs,
     });
@@ -1706,6 +1713,7 @@ export class ServerSupervisor extends EventEmitter {
     try {
       if (!fs.existsSync(flagPath)) {
         this.deferredRestartRequestedAt = null;
+        this.deferredLeaseRequest = null;
         return;
       }
       const data = JSON.parse(fs.readFileSync(flagPath, 'utf-8'));
@@ -1734,6 +1742,23 @@ export class ServerSupervisor extends EventEmitter {
       // Name the requester plainly. A hand-written flag names nobody; it still restarts
       // (refusing would leave its change unapplied, unannounced), but it is said and recorded.
       const requester = describeRestartRequester(data);
+      if (this.plannedLeaseAdmission && data.plannedRestart === true && data.bypassHolds !== true &&
+          data.requestedBy !== 'role-change') {
+        let admission: 'ready' | 'wait' | 'not-applicable' = 'wait';
+        if (requester.attributed && typeof data.requestedAt === 'string') {
+          try { admission = this.plannedLeaseAdmission({ requestedBy: requester.label, requestedAt: data.requestedAt }); }
+          catch { /* @silent-fallback-ok — the deferral below is visible */ }
+        }
+        if (admission !== 'ready' && admission !== 'not-applicable') {
+          const key = JSON.stringify([requester.label, data.requestedAt]);
+          if (this.deferredLeaseRequest !== key) {
+            this.deferredLeaseRequest = key;
+            console.log('[Supervisor] Planned restart deferred for preferred-holder lease confirmation');
+          }
+          return;
+        }
+      }
+      this.deferredLeaseRequest = null;
       console.log(typeof data.targetVersion === 'string' && data.targetVersion
         ? `[Supervisor] Restart requested by ${requester.label} for v${data.targetVersion}`
         : `[Supervisor] Restart requested by ${requester.label} (no version change${typeof data.reason === 'string' && data.reason ? `: ${String(data.reason).slice(0, 200)}` : ''})`);
