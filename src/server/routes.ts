@@ -42775,6 +42775,10 @@ document.getElementById('mcpForm').addEventListener('submit', async function (e)
     res.status(result.status).json(result.body);
   });
 
+  function isReloginPeerTimeout(error: unknown): boolean {
+    return error instanceof Error && (error.name === 'TimeoutError' || error.name === 'AbortError');
+  }
+
   router.get('/subscription-relogin', async (req, res) => {
     if (!ctx.subscriptionRelogin && req.query.scope !== 'pool') {
       const config = localReloginConfig();
@@ -42825,9 +42829,26 @@ document.getElementById('mcpForm').addEventListener('submit', async function (e)
       const suffix = query.size > 0 ? `?${query.toString()}` : '';
       await Promise.all((ctx.resolvePeerUrls?.() ?? []).map(async (peer) => {
         try {
-          const response = await poolPeerFetch(ctx.recordRopeResult ?? undefined, peer, `/subscription-relogin${suffix}`, {
-            headers: { Authorization: `Bearer ${ctx.config.authToken}` },
-            signal: AbortSignal.timeout(5_000),
+          const readPeer = async (deadlineMs: number) => {
+            const signal = AbortSignal.timeout(deadlineMs);
+            try {
+              const response = await poolPeerFetch(ctx.recordRopeResult ?? undefined, peer, `/subscription-relogin${suffix}`, {
+                headers: { Authorization: `Bearer ${ctx.config.authToken}` },
+                signal,
+              });
+              const body = (response.ok ? await response.json() : response.status === 503
+                ? await response.json().catch(error => { if (signal.aborted) throw error; return null; })
+                : null) as { enabled?: boolean; episodes?: Array<Record<string, unknown>>;
+                blockers?: Array<Record<string, unknown>>; config?: unknown } | null;
+              return { response, body };
+            } catch (error) {
+              if (signal.aborted) throw signal.reason;
+              throw error;
+            }
+          };
+          const { response, body } = await readPeer(5_000).catch(error => {
+            if (req.query.retryTimeout === '1' && isReloginPeerTimeout(error)) return readPeer(8_000);
+            throw error;
           });
           const takeConfig = (body: { config?: unknown } | null) => {
             const c = body?.config;
@@ -42838,15 +42859,14 @@ document.getElementById('mcpForm').addEventListener('submit', async function (e)
           };
           if (!response.ok) {
             if (response.status === 503) {
-              takeConfig(await response.json().catch(() => null) as { config?: unknown } | null);
+              takeConfig(body);
               unavailable.push({ machineId: peer.machineId, reason: 'feature-unavailable' });
               return;
             }
             failed.push({ machineId: peer.machineId, error: response.status === 401 || response.status === 403 ? 'unauthorized' : 'error' });
             return;
           }
-          const body = await response.json() as { enabled?: boolean; episodes?: Array<Record<string, unknown>>;
-            blockers?: Array<Record<string, unknown>>; config?: unknown };
+          if (!body) throw new Error('missing peer re-login response');
           takeConfig(body);
           if (body.enabled === false) {
             unavailable.push({ machineId: peer.machineId, reason: 'feature-unavailable' });
@@ -42863,11 +42883,14 @@ document.getElementById('mcpForm').addEventListener('submit', async function (e)
               machineId: peer.machineId, machineNickname: nickname, remote: true });
           }
         } catch (error) {
-          const name = error instanceof Error ? error.name : '';
-          failed.push({ machineId: peer.machineId, error: name === 'TimeoutError' || name === 'AbortError' ? 'timeout' : 'unreachable' });
+          failed.push({ machineId: peer.machineId, error: isReloginPeerTimeout(error) ? 'timeout' : 'unreachable' });
         }
       }));
-      res.json({ enabled: true, episodes, blockers, scope: 'pool', pool: { failed, unavailable, blockersUnknown, configs, configsMissing } });
+      res.json({ enabled: true, episodes, blockers, scope: 'pool', pool: { failed, unavailable, blockersUnknown, configs, configsMissing,
+        ...(req.query.retryTimeout === '1' ? { expectedMachines: [
+          { machineId: selfMachineId, nickname: selfMachineNickname },
+          ...(ctx.listPoolMachines?.() ?? []).map(({ machineId, nickname }) => ({ machineId, nickname })),
+        ] } : {}) } });
     } catch (error) {
       res.status(400).json({ error: error instanceof Error ? operatorError(error, res.app?.locals?.stateDir) : 'invalid re-login query' });
     }

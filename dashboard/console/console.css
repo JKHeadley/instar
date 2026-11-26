@@ -366,6 +366,13 @@ details.more[open] summary .chev { transform: rotate(90deg); }
 a.btn-primary { display: inline-flex; align-items: center; justify-content: center; text-align: center; text-decoration: none; padding: 10px 16px; box-sizing: border-box; }
 .btn-primary:hover { filter: brightness(1.06); }
 .btn-primary:disabled { opacity: .55; cursor: default; }
+#sec-auto-repair .btn-primary:disabled {
+  opacity: 1;
+  background: var(--surface-raised);
+  border: 1px solid var(--hairline);
+  color: var(--text-muted);
+  filter: none;
+}
 .unlock-error { min-height: 20px; margin-top: var(--s-3); color: var(--bad); font-size: 13px; }
 
 .foot-note { margin-top: var(--s-10); text-align: center; font-size: 12.5px; color: var(--text-faint); }

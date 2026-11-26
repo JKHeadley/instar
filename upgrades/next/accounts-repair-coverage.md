@@ -1,0 +1,13 @@
+<!-- bump: patch -->
+
+## What Changed
+
+Accounts retries a timed-out automatic sign-in repair read once, with a longer deadline. If a machine still has no confirmed setting, its row stays visible and offers Retry. Turning on unattended repair requires a complete machine check.
+
+## What to Tell Your User
+
+If one of your machines is slow to answer, Accounts keeps it on the page. Tap Retry to check again. You can turn on automatic repair after Accounts has checked every machine.
+
+## Summary of New Capabilities
+
+Accounts can retry an incomplete machine check from the affected row.
