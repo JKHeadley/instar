@@ -1,16 +1,24 @@
-import { createHash } from 'node:crypto';
+import { createHash, createPublicKey, verify } from 'node:crypto';
 import { expect, it } from 'vitest';
 import { encodeFirstPhoneOrderedChallenge } from '../../src/core/trustJourney/firstPhoneOrderedChallenge.js';
 
-const fixture = {
-  attemptId: '11111111-1111-4111-8111-111111111111', nonce: Buffer.alloc(32, 7).toString('base64url'),
-  holderMachineId: 'machine-1', holderEpoch: 'epoch-1', holderIncarnation: 'process-1',
-  ownerId: '7001', ownerGeneration: 'owner-1', accountAcceptanceId: 'accept-1',
-  accountAcceptanceGeneration: 'account-1', policyRevision: 'policy-1',
-  origin: 'https://paired.example', deviceId: 'device-1', deviceKeyHash: 'a'.repeat(64),
-  presenceKeyHash: 'b'.repeat(64), nominationId: '22222222-2222-4222-8222-222222222222',
-  proposalHash: 'c'.repeat(64), disclosureHash: 'd'.repeat(64), slotKey: 'tj:device-acceptance:first:0',
-};
+import vector from '../fixtures/first-phone/ordered-challenge-v2.json';
+import { isStrictLowSDer } from '../../src/core/MobileDeviceKeys.js';
+
+const fixture = vector.input;
+
+it('matches the native interoperability vector and verifies its synthetic signature', () => {
+  const encoded = encodeFirstPhoneOrderedChallenge(fixture)!;
+  const signature = Buffer.from(vector.expected.signatureDerBase64, 'base64');
+  const signer = createPublicKey({ key: Buffer.from(vector.expected.syntheticP256SpkiBase64, 'base64'), type: 'spki', format: 'der' });
+  expect(encoded.challengeKey).toBe(vector.expected.challengeKey);
+  expect(encoded.challengeDigest).toBe(vector.expected.challengeDigest);
+  expect(encoded.bytes.toString('base64')).toBe(vector.expected.bytesBase64);
+  expect(isStrictLowSDer(signature)).toBe(true);
+  expect(verify('sha256', encoded.bytes, signer, signature)).toBe(true);
+  const changed = encodeFirstPhoneOrderedChallenge({ ...fixture, policyRevision: 'policy-2' })!;
+  expect(verify('sha256', changed.bytes, signer, signature)).toBe(false);
+});
 
 it('uses a stable attempt key and binds changes in all signed fields', () => {
   const initial = encodeFirstPhoneOrderedChallenge(fixture)!;
