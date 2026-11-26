@@ -19,3 +19,5 @@ Enrollment can bind the verified Telegram owner, exact phone and one-time privat
 A disposable iPhone simulator run exercised Face ID policy and four signed HTTP steps using simulated Telegram evidence and a software test key. Focused tests cover the owner and private chat checks, exact Telegram acknowledgement and offer expiry. Production delivery and physical-device verification are pending.
 
 The unmounted version 2 server handler checks the paired caller and delegates confirmation or cancellation to the shared authority. Production enrollment stays off.
+
+The first-phone version 2 handler now exercises the compound witness reservation in an isolated test. Production enrollment stays off.

@@ -1,0 +1,22 @@
+{
+  "ts": "2026-11-26T16:10:57.418Z",
+  "slug": "first-phone-witness-authority",
+  "suggestedTier": 2,
+  "declaredTier": 1,
+  "riskFloor": 1,
+  "riskFloorReasons": [],
+  "belowFloor": false,
+  "files": 1,
+  "loc": 98,
+  "scope": {
+    "basis": "staged-in-scope-paths-including-deleted",
+    "files": [
+      "src/core/trustJourney/firstPhoneWitnessAuthority.ts"
+    ],
+    "addedLines": 98,
+    "deletedLines": 0
+  },
+  "causalAutopsy": null,
+  "classClosure": null,
+  "verdict": "pass"
+}

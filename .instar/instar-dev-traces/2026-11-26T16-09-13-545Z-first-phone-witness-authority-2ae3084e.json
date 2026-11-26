@@ -1,0 +1,22 @@
+{
+  "version": 2,
+  "slug": "first-phone-witness-authority",
+  "sessionId": "b3d2cf8a-9b5d-468b-a50b-70ebf11e9e5c",
+  "timestamp": "2026-11-26T16:09:13.545Z",
+  "artifactPath": "upgrades/side-effects/first-phone-witness-authority.md",
+  "artifactSha256": "9bf9ffe7e722c5faf8683e5caab38885321cc5df2cdae9d84df65476922bb31d",
+  "coveredFiles": [
+    "docs/specs/phone-only-first-approver.eli16.md",
+    "src/core/trustJourney/firstPhoneWitnessAuthority.ts",
+    "tests/integration/first-phone-witness-authority.test.ts",
+    "upgrades/next/phone-only-first-approver.md",
+    "upgrades/side-effects/first-phone-witness-authority.md"
+  ],
+  "phase": "complete",
+  "tier": 1,
+  "tierReasoning": "Unmounted integration and disposable witness tests without changing production routing or authority",
+  "eli16Path": "docs/specs/phone-only-first-approver.eli16.md",
+  "sideEffectsPath": "upgrades/side-effects/first-phone-witness-authority.md",
+  "secondPass": "true",
+  "reviewerConcurred": true
+}
