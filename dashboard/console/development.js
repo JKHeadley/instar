@@ -305,6 +305,7 @@ function consumerPromotionForm(todo, deps, lead) {
   const { evidenceHash, approvedBatchBound, items } = todo.proposal;
   const title = 'Promote feedback processing';
   const summary = consumerPromotionSummary(approvedBatchBound);
+  const holdExplanation = 'If an item in this batch is put on hold before processing starts on it, processing will not move beyond this batch until you revoke the approval and approve a new batch.';
   const promote = el('button', { class: 'btn-primary btn-inline', type: 'button', text: 'Promote' });
   promote.addEventListener('click', () => {
     const confirm = el('button', { class: 'btn-primary', type: 'button', text: 'Confirm with PIN' });
@@ -314,11 +315,12 @@ function consumerPromotionForm(todo, deps, lead) {
       el('ul', { class: 'todo-list' }, items.map((item) => el('li', {},
         el('div', { class: 'need-title', text: item.title }),
         el('div', { class: 'need-sub', text: `${item.priority} priority · ${item.reportCount} ${item.reportCount === 1 ? 'report' : 'reports'} · ${item.workId}` })))),
+      el('p', { class: 'card-note', text: holdExplanation }),
       el('div', { class: 'sheet-actions' }, confirm));
     confirm.addEventListener('click', async () => {
       confirm.disabled = true;
       promote.disabled = true;
-      const consent = await askPin({ title, explain: summary, adapter: 'body', isCurrent: () => panel.isConnected });
+      const consent = await askPin({ title, explain: `${summary} ${holdExplanation}`, adapter: 'body', isCurrent: () => panel.isConnected });
       if (!consent) { confirm.disabled = false; promote.disabled = false; return; }
       const status = el('p', { class: 'action-status', role: 'status', text: 'Promoting feedback processing…' });
       sheet({ title }, status);

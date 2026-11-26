@@ -254,6 +254,8 @@ describe('Feedback', () => {
     expect(pending.tiles.find((tile) => tile.key === 'needs')?.n).toBe(1);
     expect(pending.headline).toBe('Feedback needs your approval to create work items.');
     expect(pending.line).toContain('1 thing needs you');
+    const previous = feedback({ ...consumerProposal, promotionRecord: { requiresReapproval: true } });
+    expect(previous.todos[0].detail).toContain('previous approval needs to be renewed');
     for (const state of ['already-live', 'configured-simulation', 'no-work', 'non-owner', 'restore', 'unavailable']) {
       expect(feedback({ state }).todos).toEqual([]);
     }
@@ -481,7 +483,9 @@ describe('development page in a DOM', () => {
     expect(doc.querySelector('#sec-feedback .fold-line')!.textContent).toContain('1 thing needs you');
     button('Promote').click();
     const review = doc.querySelector('.sheet')!;
+    expect(review.textContent).toContain('starts with this batch');
     expect(review.textContent).toContain('up to 2 work items per run');
+    expect(review.textContent).toContain('until you revoke the approval and approve a new batch');
     expect(review.textContent).toContain('Keep messages in view');
     expect(review.textContent).toContain('normal priority · 1 report · work-2');
     expect(posted).toHaveLength(0);

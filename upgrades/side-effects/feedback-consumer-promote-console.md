@@ -36,7 +36,7 @@ No new static heuristic at a competing-signals decision point. The console needs
 
 ## 5. Interactions
 
-Approval or stale conflict refreshes the existing page. A missing proposal route keeps the control absent on older servers. PIN entry remains scoped to the single request and is cleared after entry.
+Approval or stale conflict refreshes the existing page. The review explains that approved items go first and a held item can pause the consumer. A previous approval requiring renewal is displayed as such. A missing proposal route keeps the control absent on older servers. PIN entry remains scoped to the single request and is cleared after entry.
 
 ## 6. External surfaces
 

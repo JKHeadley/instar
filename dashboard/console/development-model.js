@@ -428,7 +428,7 @@ function pendingConsumerPromotion(response) {
 }
 
 export function consumerPromotionSummary(batch) {
-  return `Turn on feedback processing so it can create up to ${plural(batch, 'work item')} per run from approved feedback.`;
+  return `Turn on feedback processing. It starts with this batch and can create up to ${plural(batch, 'work item')} per run.`;
 }
 
 const PROMOTION_NOTES = {
@@ -449,7 +449,10 @@ export function operatorTodos({ readiness, triageProposal, execute, queue, consu
   const promotion = pendingConsumerPromotion(consumerPromotion);
   if (promotion) todos.push({
     kind: 'consumer-promotion', sentence: 'Feedback needs your approval to create work items.',
-    detail: 'Feedback processing is currently in practice mode.', proposal: promotion,
+    detail: consumerPromotion.data.promotionRecord?.requiresReapproval === true
+      ? 'The previous approval needs to be renewed before feedback processing can create work items.'
+      : 'Feedback processing is currently in practice mode.',
+    proposal: promotion,
   });
   const x = sourceState(execute) === 'ok' ? execute.data : null;
   if (x && x.reason === 'approver-not-independent') todos.push({ kind: 'plan', action: 'accept-approver-dependence', sentence: 'The fix worker needs your one-time OK to run.', detail: 'This agent could approve its own fixes on GitHub, so it waits for you. Every fix still needs your GitHub approval to merge.', button: 'Let it run anyway…' });

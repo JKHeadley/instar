@@ -2,7 +2,7 @@
 
 ## What Changed
 
-The Development page shows a Promote action when the feedback service returns a batch ready for owner approval. The review lists the work items and the maximum number feedback processing can create per run. Approval sends the exact proposal and PIN in one request. A stale proposal is refreshed so the owner can review the current batch.
+The Development page shows a Promote action when the feedback service returns a batch ready for owner approval. The review lists the work items that run first, the maximum for each run, and what happens when an item is held. Approval sends the exact proposal and PIN in one request. A stale proposal is refreshed so the owner can review the current batch.
 
 ## What to Tell Your User
 
