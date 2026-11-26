@@ -269,6 +269,8 @@ export interface LeaseCoordinatorDeps {
    * base of the window.
    */
   plannedRestartContinuity?: () => { enabled: boolean; windowMs: number | null } | null;
+  /** Dark until the supervisor has a request-bound authenticated admission path. */
+  plannedRestartAdmissionEnabled?: () => boolean;
   /** planned-restart-keeps-lead — this machine's continuity file and restart budget. */
   continuity?: LeaseContinuityStore;
   /** The renew tick's normal cadence (the pending cadence derives from it). */
@@ -2307,6 +2309,26 @@ export class LeaseCoordinator {
       }, () => { /* @silent-fallback-ok: the renew tick retries at its cadence */ });
     }
     return true;
+  }
+
+  /**
+   * Evidence for a planned restart of the current holder. The caller must
+   * match its request and revalidate immediately before taking down the server.
+   */
+  confirmedPlannedRestartWindow(
+    request: { requestedBy: string; requestedAt: string; minimumRemainingMs: number },
+  ): { holder: string; epoch: number; nonce: number; expiresAt: string } | null {
+    if (this.d.plannedRestartAdmissionEnabled?.() !== true || !this.continuitySettings() ||
+        request.requestedBy === 'role-change' || !Number.isSafeInteger(request.minimumRemainingMs) ||
+        request.minimumRemainingMs <= 0 || !this.holdsLease()) return null;
+    const continuity = this.d.continuity?.read();
+    const file = continuity?.file;
+    if (continuity?.verdict !== 'ok' || !file || file.meta.exitedAt !== null ||
+        file.meta.requestedBy !== request.requestedBy || file.meta.requestedAt !== request.requestedAt ||
+        !file.meta.confirmed || file.lease.nonce !== this.lastConfirmedNonce ||
+        file.lease.epoch !== this.currentEpoch() || file.lease.holder !== this.selfMachineId ||
+        Date.parse(file.lease.expiresAt) - this.now() < request.minimumRemainingMs) return null;
+    return { holder: file.lease.holder, epoch: file.lease.epoch, nonce: file.lease.nonce, expiresAt: file.lease.expiresAt };
   }
 
   /** §1 step 5 — the shutdown handler's one synchronous action. */

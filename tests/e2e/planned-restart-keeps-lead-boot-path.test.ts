@@ -77,7 +77,7 @@ class PeerTransport implements LeaseTransport {
   attachProbeListener = (fn: (p: string, a: ProbeAnswer, r: number) => void) => { this.listeners.push(fn); return () => { this.listeners = this.listeners.filter((l) => l !== fn); }; };
 }
 
-function machine(developmentAgent: boolean, extra: Record<string, unknown> = {}) {
+function machine(developmentAgent: boolean, extra: Record<string, unknown> = {}, restartAdmission = false) {
   const machineId = `m_${crypto.randomBytes(6).toString('hex')}`;
   const identity = { machineId, signingPublicKey: 'k1', encryptionPublicKey: 'k2', name: 'studio', platform: 'test', createdAt: new Date().toISOString(), capabilities: ['sessions'] };
   fs.mkdirSync(path.join(dir, 'machine'), { recursive: true });
@@ -110,6 +110,7 @@ function machine(developmentAgent: boolean, extra: Record<string, unknown> = {})
       survivorMayHold: () => true,
       bootClaimSafety: () => resolveBootClaimSafety(config),
       plannedRestartContinuity: () => resolvePlannedRestartLeaseContinuity(config),
+      plannedRestartAdmissionEnabled: () => restartAdmission,
       renewIntervalMs: () => coord.leaseRenewIntervalMs(),
       broadcastDeadlineMs: () => 8_000,
       readRequestFile: () => ({ present: false }),
@@ -314,4 +315,31 @@ describe('planned restart keeps the lead — production wiring', () => {
     expect(mmc).toContain('onRestartRequested(');
     expect(mmc).toContain('onRestartWithdrawn(');
   });
+});
+
+it('requires an exact request and exact confirmed nonce for dark restart admission', async () => {
+  vi.useFakeTimers();
+  const m = machine(true, {}, true);
+  const tunnel = new PeerTransport();
+  const { coord, lc } = m.build(tunnel);
+  const request = { requestedBy: 'fixture-supervisor', requestedAt: new Date().toISOString(), minimumRemainingMs: 90_000 };
+  try {
+    await coord.initializeLease();
+    expect(lc.confirmedPlannedRestartWindow(request)).toBeNull();
+    expect(await announceRestartRequested({ ...request, reason: 'fixture update' })).toBe('confirmed');
+    const confirmed = m.continuity.read().file!;
+    expect(lc.confirmedPlannedRestartWindow(request)).toEqual({
+      holder: m.machineId, epoch: confirmed.lease.epoch, nonce: confirmed.lease.nonce, expiresAt: confirmed.lease.expiresAt,
+    });
+    expect(lc.confirmedPlannedRestartWindow({ ...request, requestedAt: new Date(Date.now() + 1).toISOString() })).toBeNull();
+    expect(lc.confirmedPlannedRestartWindow({ ...request, requestedBy: 'role-change' })).toBeNull();
+    expect(lc.confirmedPlannedRestartWindow({ ...request, minimumRemainingMs: 900_000 })).toBeNull();
+
+    // Even when the episode's confirmation bit remains set, a different nonce is not a confirmed window.
+    const newer = m.fl.signLease(confirmed.lease.epoch, confirmed.lease.acquiredAt, confirmed.lease.expiresAt, confirmed.lease.nonce + 1);
+    expect(m.continuity.write(m.continuity.sign({ ...confirmed, lease: newer }))).toBe(true);
+    expect(lc.confirmedPlannedRestartWindow(request)).toBeNull();
+  } finally {
+    coord.stop();
+  }
 });
