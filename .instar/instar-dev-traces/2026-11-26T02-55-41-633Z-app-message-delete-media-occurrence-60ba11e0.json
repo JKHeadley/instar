@@ -1,0 +1,21 @@
+{
+  "version": 2,
+  "slug": "app-message-delete-media-occurrence",
+  "sessionId": "633bd330-201e-4dc8-8fd9-72b89116167e",
+  "timestamp": "2026-11-26T02:55:41.633Z",
+  "artifactPath": "upgrades/side-effects/app-message-delete-media-occurrence.md",
+  "artifactSha256": "c4818943046bf293102cc6f5b1d2c518627cee070b7cceae024aafa3ecbf6d0c",
+  "specPath": "docs/specs/conversation-message-delete.md",
+  "coveredFiles": [
+    "docs/specs/conversation-message-delete.eli16.md",
+    "docs/specs/conversation-message-delete.md",
+    "src/core/AppConversationStore.ts",
+    "tests/unit/app-conversation-store.test.ts",
+    "upgrades/side-effects/app-message-delete-media-occurrence.md"
+  ],
+  "phase": "complete",
+  "tier": 2,
+  "tierReasoning": "Resolve an exact surviving attachment occurrence under prepared removal proof",
+  "secondPass": "true",
+  "reviewerConcurred": true
+}

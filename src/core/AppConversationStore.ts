@@ -1069,6 +1069,32 @@ export class AppConversationStore {
     return r ? this.mediaRef(r.attachmentId) : null;
   }
 
+  /** Select a readable media occurrence under the same proof as protected message history. */
+  readPreparedRemovalMedia(conversationKey: string, sha256: string, mayRead: (row: BrowsedMessage) => boolean) {
+    const key = canonicalConversationKey(conversationKey);
+    return this.withRemovalHistory(conversationKey, (custodian, proof) => {
+      if (this.isTombstoned(key)) return { occurrence: null, proof };
+      const rows = this.db.prepare(`
+        SELECT m.eventId, m.at, f.attachmentId, f.messageId, f.idx, f.size
+        FROM media_refs f JOIN messages m ON m.canonicalKey = f.canonicalKey AND m.messageId = f.messageId
+        WHERE f.canonicalKey = ? AND f.sha256 = ? AND f.purged = 0
+          AND NOT EXISTS (SELECT 1 FROM message_removals r
+            WHERE r.canonicalKey = f.canonicalKey AND r.targetEventId = m.eventId
+            AND r.targetMessageId = f.messageId AND r.machineId = ?)
+        ORDER BY f.attachmentId LIMIT 101
+      `).all(key, sha256, custodian) as Array<{ eventId: string; at: string; attachmentId: string; messageId: string; idx: number; size: number }>;
+      for (const row of rows.slice(0, 100)) {
+        const message = this.readIndexedMessage(key, row);
+        const attachment = message.attachments?.[row.idx];
+        if (!attachment || attachment.attachmentId !== row.attachmentId || attachment.sha256 !== sha256
+          || attachment.size !== row.size || message.messageId !== row.messageId) throw new Error('indexed media occurrence unavailable');
+        if (mayRead(message)) return { occurrence: { eventId: row.eventId, messageId: row.messageId, attachment }, proof };
+      }
+      if (rows.length > 100) throw new Error('media occurrence search incomplete');
+      return { occurrence: null, proof };
+    });
+  }
+
   /** The conversations (canonical keys) with an unpurged attachment of this hash. */
   mediaConversationsFor(sha256: string): string[] {
     return (this.db.prepare('SELECT DISTINCT canonicalKey FROM media_refs WHERE sha256 = ? AND purged = 0 ORDER BY canonicalKey').all(sha256) as Array<{ canonicalKey: string }>).map((r) => r.canonicalKey);

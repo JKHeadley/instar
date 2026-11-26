@@ -63,3 +63,5 @@ The isolated server also drops a deleted message from the pin list and builds th
 The isolated server also refuses to show reactions for a deleted message. It can still show a surviving message’s reaction state.
 
 On the isolated server, search skips protected chats until it can verify what is still available. Results from other chats can still be shown.
+
+The server can now check whether a file is still attached to another readable message in the same chat after the first message is deleted. The download and session routes still need to use that check.

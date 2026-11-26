@@ -1,3 +1,4 @@
+import { attachmentIdFor } from '../../src/core/appMediaTypes.js';
 /**
  * AppConversationStore (docs/specs/mobile-native-conversations.md §4.5): append-only per-
  * conversation JSONL as the source of truth, fsync'd commits, torn-tail truncation, ingestSeq,
@@ -37,6 +38,39 @@ const dl = (id: string, state: 'delivered' | 'refused' | 'intercepted' | 'unknow
 const fileOf = (dir: string) => path.join(dir, 'app-conversations', `${crypto.createHash('sha256').update(`app:${KEY}`).digest('hex')}.jsonl`);
 
 describe('AppConversationStore', () => {
+  it('keeps shared media reachable through a surviving occurrence until that occurrence is removed', async () => {
+    const { store } = mk();
+    const sha256 = 'a'.repeat(64);
+    const add = (id: string, second: number) => {
+      const messageId = `file-${id}`;
+      store.append({ eventId: `ev-${id}`, kind: 'media-message', conversationKey: KEY, messageId,
+        role: 'agent', text: '', at: at(second), machineId: 'm1', attachments: [{
+          attachmentId: attachmentIdFor(messageId, 0), index: 0, sha256, size: 17, filename: 'photo.png',
+          kind: 'photo', declaredKind: 'photo', mediaType: 'image/png', declaredType: 'image/png',
+        }] });
+    };
+    const remove = (id: string, second: number) => store.append({
+      kind: 'message-removed', conversationKey: KEY, eventId: `remove-${id}`, machineId: 'm1', at: at(second),
+      targetEventId: `ev-${id}`, targetMessageId: `file-${id}`,
+    });
+    try {
+      store.append(created());
+      add('first', 1);
+      add('second', 2);
+      remove('first', 3);
+      expect(store.readPreparedRemovalMedia(KEY, sha256, () => true)).toBeNull();
+      expect(await store.prepareRemovalHistory(KEY)).toBe(true);
+      expect(store.readPreparedRemovalMedia(KEY, sha256, () => false)).toMatchObject({ occurrence: null });
+      const page = store.readPreparedRemovalMedia(KEY, sha256, () => true);
+      expect(page?.occurrence).toMatchObject({ eventId: 'ev-second', attachment: { attachmentId: attachmentIdFor('file-second', 0) } });
+      remove('second', 4);
+      expect(store.hasPreparedRemovalHistory(KEY, page!.proof)).toBe(false);
+      expect(await store.prepareRemovalHistory(KEY)).toBe(true);
+      expect(store.readPreparedRemovalMedia(KEY, sha256, () => true)).toMatchObject({ occurrence: null });
+      expect(store.mediaRef(attachmentIdFor('file-first', 0))).not.toBeNull();
+    } finally { store.close(); }
+  });
+
   it('syncs exact authorized removals without replaying the removed message', async () => {
     const { store } = mk();
     const readAll = () => 'allow' as const;
