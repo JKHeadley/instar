@@ -1,0 +1,17 @@
+# Feedback processing tolerates brief write contention
+
+## What Changed
+
+Feedback processing now waits through brief contention on the shared feedback-store write lock instead of failing after a short retry window. Writes still fail if the lock remains busy beyond the bounded retry period, and other storage errors are reported immediately.
+
+## What to Tell Your User
+
+Feedback processing is less likely to stop when a new report arrives at the same time a processing status is being saved.
+
+## Summary of New Capabilities
+
+None. This improves reliability of the existing feedback processing path.
+
+## Evidence
+
+A unit regression reproduces a concurrent append while the status update waits for the same lock. The focused regression, related feedback-drain unit cases, the multiprocess generation test, and the 500-record drain performance integration passed on the candidate. The performance test retains its 90-second and 512 MiB limits. The test fixture uses a 45-second clustering-stage allowance; production retains its existing 20-second default. Full shared verification remains pending.
