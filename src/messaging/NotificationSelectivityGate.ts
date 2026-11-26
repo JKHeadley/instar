@@ -219,6 +219,11 @@ export class NotificationSelectivityGate {
     if (category === 'promise-notice') {
       return this.budget(`promise-notice:${topicId}`, 6) ? result('deliver', 'promise-notice') : result('record', 'promise-notice-budget');
     }
+    if (category === 'telegram-inbound-status' && envelope?.sourceContext === 'telegram-inbound-status'
+        && /^[1-9]\d*$/.test(envelope.inboundMessageId ?? '')) {
+      return this.budget(`telegram-inbound-status:${topicId}`, 12)
+        ? result('deliver', 'telegram-inbound-status') : result('record', 'telegram-inbound-status-budget');
+    }
     if (CONVERSATION_CATEGORIES.has(category)) {
       // Never-Silent Conversation: the notice that a person's message went unanswered is the ONE
       // outcome besides a reply (spec §2). It is produced only by the internal never-silent

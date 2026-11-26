@@ -6390,7 +6390,40 @@ const smallPeerTrialAdmission: SelfActionController = {
   },
 };
 
+const telegramCustodyStatusNotice: SelfActionController = {
+  id: 'telegram-custody-status-notice',
+  actionVerb: 'telegram-custody-notify',
+  models: 'src/commands/server.ts (status only on new custody or confirmed evidence)',
+  modelsPath: 'src/commands/server.ts',
+  boundK: 2,
+  perTargetBoundK: 2,
+  tickMs: 60_000,
+  ticks: 60,
+  restartPosture: {
+    pressureSurvives: true,
+    restartUnderPressure(f, sink) { return telegramCustodyStatusNotice.makeUnderPressure(f, sink); },
+  },
+  makeUnderPressure(f, sink) {
+    return {
+      tick() {
+        sink.considered += 1;
+        const row = f.durableState.get('telegram-custody-row');
+        if (row === 'expired') return;
+        if (row === undefined) {
+          f.durableState.set('telegram-custody-row', 'waiting');
+        } else if (f.clock.nowMs() >= 30 * 60_000) {
+          f.durableState.set('telegram-custody-row', 'expired');
+        } else {
+          return;
+        }
+        sink.emit({ verb: 'telegram-custody-notify', target: 'original-message' });
+      },
+    };
+  },
+};
+
 export const SELF_ACTION_CONTROLLERS: SelfActionController[] = [
+  telegramCustodyStatusNotice,
   smallPeerTrialAdmission,
   siblingHoldingsRefresh,
   pairingOutcomeNoticeRetry,

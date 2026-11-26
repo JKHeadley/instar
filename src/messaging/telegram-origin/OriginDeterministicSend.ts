@@ -10,7 +10,7 @@ import { TelegramOriginHoldError } from './types.js';
  * enroll a transport or assert a deterministic author. */
 export type DeterministicOriginProducer = 'auto-updater' | 'session-monitor' | 'session-lifecycle' |
   'cold-start-fallback' | 'respawn-collision' | 'owner-dark-ladder' |
-  'telegram-lifeline' | 'topic-profile-creation-seed' | 'never-silent';
+  'telegram-lifeline' | 'topic-profile-creation-seed' | 'never-silent' | 'telegram-inbound-status';
 const transports = new WeakMap<object, TelegramOriginService>();
 export function bindOriginAutomationTransport(transport: object, service: TelegramOriginService): void {
   transports.set(transport, service);
@@ -46,6 +46,18 @@ export function sendNeverSilentTelegramNotice<T>(
   const envelope = { origin: 'automated' as const, category: categoryForProducer('never-silent'), sourceContext: 'never-silent', inboundMessageId };
   return withDeterministicOrigin(transports.get(transport), 'never-silent', () => withNotificationEnvelope(envelope,
     async () => transport.sendToTopic(topicId, text, { provenance: 'automation', ...(buttons?.length ? { inlineButtons: buttons } : {}) })));
+}
+
+/** An exact Telegram custody event is system status, never a substantive reply. */
+export function sendTelegramInboundStatusNotice<T>(
+  transport: { sendToTopic(topicId: number, text: string, options?: { skipStallClear?: boolean; provenance?: 'automation' }): Promise<T> },
+  topicId: number, text: string, inboundMessageId: string,
+): Promise<T> {
+  const producer = 'telegram-inbound-status';
+  const envelope = { origin: 'automated' as const, category: categoryForProducer(producer),
+    sourceContext: producer, inboundMessageId };
+  return withDeterministicOrigin(transports.get(transport), producer, () => withNotificationEnvelope(envelope,
+    async () => transport.sendToTopic(topicId, text, { skipStallClear: true, provenance: 'automation' })));
 }
 
 /** These producers include copied prose without a native author observation. */

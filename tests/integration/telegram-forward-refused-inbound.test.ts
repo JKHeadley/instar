@@ -3,17 +3,18 @@
  * so it never sends "✓ Delivered" for it (Echo Bugs topic 10000002533). The message is still handed
  * to onTopicMessage so the gate logs it and tells the sender it was not delivered.
  */
-import { describe, it, expect, beforeEach, afterEach } from 'vitest';
+import { describe, it, expect, beforeEach, afterEach, vi } from 'vitest';
 import express from 'express';
 import request from 'supertest';
 import { createRoutes } from '../../src/server/routes.js';
 import type { RouteContext } from '../../src/server/routes.js';
 import { ProcessIntegrity } from '../../src/core/ProcessIntegrity.js';
 import { chiefOfStaffRefusesInbound } from '../../src/core/chiefOfStaffOwner.js';
+import { telegramInboundStatusNotice } from '../../src/messaging/userNotices.js';
 
 const COS = 4242;
 
-function mount(telegram: unknown): express.Express {
+function mount(telegram: unknown, extra: Partial<RouteContext> = {}): express.Express {
   const ctx = {
     config: { projectName: 't', projectDir: '/tmp', stateDir: '/tmp/.instar', port: 0, authToken: '' } as any,
     sessionManager: { listRunningSessions: () => [], isSessionAlive: () => false } as any,
@@ -22,7 +23,7 @@ function mount(telegram: unknown): express.Express {
     updateChecker: null, autoUpdater: null, autoDispatcher: null, quotaTracker: null,
     publisher: null, viewer: null, tunnel: null, evolution: null, watchdog: null,
     triageNurse: null, topicMemory: null, discoveryEvaluator: null, startTime: new Date(),
-    mentorRunner: null, currentInboundByTopic: new Map(),
+    mentorRunner: null, currentInboundByTopic: new Map(), ...extra,
   } as unknown as RouteContext;
   const app = express();
   app.use(express.json());
@@ -80,5 +81,26 @@ describe('/internal/telegram-forward reports an inbound-gate refusal', () => {
     expect(res.body).toEqual(expect.objectContaining({ ok: true, forwarded: true }));
     expect(res.body.refused).toBeUndefined();
     expect(calls).toBe(1);
+  });
+});
+
+
+describe('Telegram custody notices on the holder reply route', () => {
+  it('leaves a newer inbound message unanswered after an older status is sent', async () => {
+    const pending = new Map([['555', 'newer-inbound']]);
+    const clearInjectionTracker = vi.fn();
+    const sendToTopic = vi.fn().mockResolvedValue({ messageId: 41, timestamp: new Date().toISOString() });
+    const app = mount({ sendToTopic }, {
+      sessionManager: { clearInjectionTracker } as unknown as RouteContext['sessionManager'],
+      messageLedger: {} as RouteContext['messageLedger'],
+      currentInboundByTopic: pending,
+    });
+    const notice = telegramInboundStatusNotice('expired', 12);
+    const res = await request(app).post('/telegram/reply/555').set('Authorization', 'Bearer test')
+      .send({ text: notice, metadata: { messageKind: 'automated', provenance: 'automation' } });
+    expect(res.status).toBe(200);
+    expect(sendToTopic).toHaveBeenCalledWith(555, notice, expect.objectContaining({ skipStallClear: true }));
+    expect(clearInjectionTracker).not.toHaveBeenCalled();
+    expect(pending.get('555')).toBe('newer-inbound');
   });
 });

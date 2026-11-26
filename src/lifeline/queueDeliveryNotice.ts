@@ -22,18 +22,18 @@ export function buildQueueDeliveryNotices(counts: QueueDeliveryCounts): string[]
   const notices: string[] = [];
   if (counts.outage > 0) {
     notices.push(counts.outage === 1
-      ? '✓ Server recovered — your queued message has been delivered.'
-      : `✓ Server recovered — ${counts.outage} queued messages delivered.`);
+      ? 'Server recovered. Instar received your queued message.'
+      : `Server recovered. Instar received ${counts.outage} queued messages.`);
   }
   if (counts.delayedHandoff > 0) {
     notices.push(counts.delayedHandoff === 1
-      ? '✓ Your delayed message has now been delivered to the session.'
-      : `✓ ${counts.delayedHandoff} delayed messages have now been delivered to the session.`);
+      ? 'Instar received your delayed message.'
+      : `Instar received ${counts.delayedHandoff} delayed messages.`);
   }
   if (counts.legacyUnknown > 0) {
     notices.push(counts.legacyUnknown === 1
-      ? '✓ Your queued message has been delivered.'
-      : `✓ ${counts.legacyUnknown} queued messages delivered.`);
+      ? 'Instar received your queued message.'
+      : `Instar received ${counts.legacyUnknown} queued messages.`);
   }
   return notices;
 }

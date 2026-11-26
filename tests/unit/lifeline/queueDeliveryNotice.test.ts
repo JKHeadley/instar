@@ -10,14 +10,14 @@ describe('queue delivery notice policy', () => {
 
   it('does not invent recovery for slow healthy-server handoffs', () => {
     expect(buildQueueDeliveryNotices({ outage: 0, delayedHandoff: 1, legacyUnknown: 0 })).toEqual([
-      '✓ Your delayed message has now been delivered to the session.',
+      'Instar received your delayed message.',
     ]);
   });
 
   it('uses recovery copy for outages and neutral copy for legacy entries', () => {
     expect(buildQueueDeliveryNotices({ outage: 2, delayedHandoff: 0, legacyUnknown: 1 })).toEqual([
-      '✓ Server recovered — 2 queued messages delivered.',
-      '✓ Your queued message has been delivered.',
+      'Server recovered. Instar received 2 queued messages.',
+      'Instar received your queued message.',
     ]);
   });
 });

@@ -1,3 +1,4 @@
+import { TelegramInboundHandoff, type TelegramInboundIdentity } from './TelegramInboundHandoff.js';
 import type { RoutineCodexPlacementContext } from './routineCodexPlacement.js';
 import { neutralizeTerminalControls, sanitizeTypedText } from './terminalControlBytes.js';
 import { assertBrowserMcpProfilesSafe } from './BrowserMcpProfileGuard.js';
@@ -607,6 +608,7 @@ export interface SessionManagerEvents {
    * immediate single-nudge is deliberately skipped for this case.
    */
   rateLimitedAtIdle: [sessionName: string];
+  telegramInboundConfirmed: [identity: TelegramInboundIdentity];
   inboundDeliveryNotice: [notice: import('./InboundDeliveryStore.js').InboundDeliveryNotice];
   codexObserverSustainedFailure: [episode: { episodeId: string; nextAttemptAt: number }];
 }
@@ -1410,6 +1412,7 @@ export class SessionManager extends EventEmitter {
   private buildContextStore: SessionBuildContextStore | null = null;
   private pendingInjects!: PendingInjectStore;
   private inboundDeliveries: InboundDeliveryStore | null = null;
+  private readonly telegramInboundHandoffs = new TelegramInboundHandoff();
   private inboundDeliveryHmacKey: string | null = null;
   private trackedPhysicalEffects: TrackedPhysicalEffectDispatcher | null = null;
   private codexDeliveryObserver: CodexDeliveryObserver | null = null;
@@ -4410,6 +4413,11 @@ rm()  { "${shimRunner}" rm  "$@"; }
       if (this.codexDeliveryObserver) {
         void this.codexDeliveryObserver.sweep().then(() => {
           this.dispatchPreparedInboundDeliveries();
+          for (const identity of this.telegramInboundHandoffs.takeConfirmed(
+            (conversationId, deliveryId) => this.inboundDeliveries?.get(conversationId, deliveryId) ?? null,
+          )) {
+            this.emit('telegramInboundConfirmed', identity);
+          }
           for (const notice of this.inboundDeliveries?.pendingNotices(20) ?? []) {
             this.emit('inboundDeliveryNotice', notice);
           }
@@ -9740,6 +9748,8 @@ rm()  { "${shimRunner}" rm  "$@"; }
        * name the signing agent and the account that carried the message.
        */
       signedByAgent?: string;
+      /** Preserve the exact platform id on forwarding paths with their own dedupe. */
+      receiptMessageId?: number | null;
     },
   ): boolean {
     // Structural dedup at the delivery chokepoint: a given Telegram messageId
@@ -9810,8 +9820,11 @@ rm()  { "${shimRunner}" rm  "$@"; }
     const topicTag = buildInjectionTag(topicId, safeTopic, safeName, telegramUserId, opts?.reDelivered, opts?.signedByAgent);
     const taggedText = `${topicTag} ${transformed}`;
 
+    const receiptId = opts?.receiptMessageId;
+    const telegramInbound = typeof receiptId === 'number' && receiptId > 0
+      ? { topicId, messageId: receiptId } : undefined;
     if (taggedText.length <= FILE_THRESHOLD) {
-      return this.injectMessage(tmuxSession, taggedText) !== false;
+      return this.injectMessage(tmuxSession, taggedText, { telegramInbound }) !== false;
     }
 
     // Write full message to a project-local inbound file readable by sandboxed agents.
@@ -9828,7 +9841,7 @@ rm()  { "${shimRunner}" rm  "$@"; }
     // falsy flag returns `[telegram:N]`, byte-identical to the previous literal.
     const refTag = buildInjectionTag(topicId, safeTopic, undefined, undefined, opts?.reDelivered, opts?.signedByAgent);
     const ref = `${refTag} [Long message saved to ${filepath} — read it to see the full message]`;
-    return this.injectMessage(tmuxSession, ref) !== false;
+    return this.injectMessage(tmuxSession, ref, { telegramInbound }) !== false;
   }
 
   /**
@@ -9970,6 +9983,7 @@ rm()  { "${shimRunner}" rm  "$@"; }
       firstParty?: { source: string };
       /** Canonical durable delivery-ledger conversation key. */
       conversationId?: string;
+      telegramInbound?: TelegramInboundIdentity;
     },
   ): boolean {
     text = this.withInboundFilesInScope(tmuxSession, text);
@@ -9988,7 +10002,7 @@ rm()  { "${shimRunner}" rm  "$@"; }
           });
         } catch { /* logging must never block a bootstrap injection */ }
       }
-      return this.rawInject(tmuxSession, text, opts.conversationId);
+      return this.rawInject(tmuxSession, text, opts.conversationId, opts.telegramInbound);
     }
 
     // ── Input Guard: Layer 1 + 1.5 (deterministic, synchronous) ──
@@ -10040,7 +10054,7 @@ rm()  { "${shimRunner}" rm  "$@"; }
             }
             if (action === 'warn') {
               // Inject the message, then inject warning afterward
-              const result = this.rawInject(tmuxSession, text, opts?.conversationId);
+              const result = this.rawInject(tmuxSession, text, opts?.conversationId, opts?.telegramInbound);
               // Small delay so warning arrives after message
               setTimeout(() => {
                 const warning = this.inputGuard!.buildWarning(binding, `Matched injection pattern: ${pattern}`);
@@ -10053,7 +10067,7 @@ rm()  { "${shimRunner}" rm  "$@"; }
 
           // Layer 2: Async LLM topic coherence review (non-blocking)
           // Inject immediately, review in background
-          const injected = this.rawInject(tmuxSession, text, opts?.conversationId);
+          const injected = this.rawInject(tmuxSession, text, opts?.conversationId, opts?.telegramInbound);
           this.inputGuard.reviewTopicCoherence(text, binding).then(result => {
             if (result.verdict === 'suspicious') {
               const action = this.inputGuard!['config'].action ?? 'warn';
@@ -10085,7 +10099,7 @@ rm()  { "${shimRunner}" rm  "$@"; }
     }
 
     // ── Normal injection (verified provenance or no InputGuard) ──
-    return this.rawInject(tmuxSession, text, opts?.conversationId);
+    return this.rawInject(tmuxSession, text, opts?.conversationId, opts?.telegramInbound);
   }
 
   /**
@@ -10168,7 +10182,7 @@ rm()  { "${shimRunner}" rm  "$@"; }
    * Raw tmux send-keys injection. No validation — just sends text to the session.
    * Used by injectMessage after provenance checks pass.
    */
-  private rawInject(tmuxSession: string, text: string, authoritativeConversationId?: string): boolean {
+  private rawInject(tmuxSession: string, text: string, authoritativeConversationId?: string, telegramInbound?: TelegramInboundIdentity): boolean {
     if (this.confinedWriteRefused(tmuxSession, 'text')) return false;
     // Strip any EMBEDDED bracketed-paste markers from the prompt content before
     // we wrap it in our own \x1b[200~…\x1b[201~ (june15-headless-spawn-reroute,
@@ -10245,6 +10259,9 @@ rm()  { "${shimRunner}" rm  "$@"; }
         ownerMachineId: this.localMachineId(),
         ownerEpoch: this.ownerEpochForConversation(conversationId),
         });
+        if (telegramInbound) {
+          this.telegramInboundHandoffs.track(telegramInbound, conversationId, delivery.deliveryId);
+        }
         if (this.inboundDeliveries.hasOtherActiveDispatch(conversationId, delivery.deliveryId)) {
           // FIFO: custody is already durable, but only the oldest row may own
           // an unconsumed physical dispatch. The monitor drains this prepared

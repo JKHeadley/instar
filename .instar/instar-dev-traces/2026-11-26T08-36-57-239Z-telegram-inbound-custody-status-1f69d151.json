@@ -1,0 +1,48 @@
+{
+  "version": 2,
+  "slug": "telegram-inbound-custody-status",
+  "sessionId": "dd2f336e-e8f7-40b3-97e3-09d19139bfa6",
+  "timestamp": "2026-11-26T08:36:57.239Z",
+  "artifactPath": "upgrades/side-effects/telegram-inbound-custody-status.md",
+  "artifactSha256": "76b1779832f146ca6b606fce64d02e9c3bd94372a3b50b0dde17b0e0cc597b0f",
+  "coveredFiles": [
+    "src/commands/server.ts",
+    "src/core/QueueDrainLoop.ts",
+    "src/core/SessionManager.ts",
+    "src/core/TelegramInboundHandoff.ts",
+    "src/lifeline/TelegramLifeline.ts",
+    "src/lifeline/queueDeliveryNotice.ts",
+    "src/messaging/NotificationSelectivityGate.ts",
+    "src/messaging/TelegramAdapter.ts",
+    "src/messaging/notificationCategories.ts",
+    "src/messaging/shared/isSystemOrProxyMessage.ts",
+    "src/messaging/telegram-origin/OriginDeterministicSend.ts",
+    "src/messaging/userNotices.ts",
+    "src/server/routes.ts",
+    "src/testing/selfActionRegistry.ts",
+    "tests/e2e/lifeline-queue-notice-lifecycle.test.ts",
+    "tests/integration/telegram-forward-refused-inbound.test.ts",
+    "tests/unit/TelegramInboundHandoff.test.ts",
+    "tests/unit/lifeline/queueDeliveryNotice.test.ts",
+    "tests/unit/lifeline/refused-forward-no-delivered.test.ts",
+    "upgrades/eli16/telegram-inbound-custody-status.md",
+    "upgrades/next/telegram-inbound-custody-status.md",
+    "upgrades/side-effects/telegram-inbound-custody-status.md"
+  ],
+  "phase": "complete",
+  "tier": 1,
+  "tierReasoning": "Changes Telegram custody status reporting and preserves inbound tracking and relay custody semantics. Session notices use existing exact transcript evidence.",
+  "eli16Path": "upgrades/eli16/telegram-inbound-custody-status.md",
+  "sideEffectsPath": "upgrades/side-effects/telegram-inbound-custody-status.md",
+  "secondPass": "true",
+  "reviewerConcurred": true,
+  "classClosure": {
+    "defectClass": "unbounded-self-action",
+    "closure": "guard",
+    "guardEvidence": {
+      "enforcementType": "ratchet",
+      "citation": "tests/unit/self-action-convergence.test.ts",
+      "howCaught": "One notice per custody transition, retired terminal rows, bounded confirmation projection and per-topic output limits."
+    }
+  }
+}
