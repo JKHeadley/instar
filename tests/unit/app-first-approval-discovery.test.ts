@@ -28,6 +28,8 @@ describe('approval continuation is based on current eligibility', () => {
     const res = answer([open({ adapter: 'device' })], { state: 'setup', message });
     expect(buildTrustRequests(res, NOW).rows[0].continuation).toBe(message);
     expect(trustRequestNeedRows(res, NOW)?.[0].sub).toBe('Set up approvals in the Instar app to review this request.');
+    expect(trustRequestNeedRows(answer([open()], { state: 'setup', message }), NOW)?.[0].sub)
+      .toBe('Set up approvals in the Instar app because chat delivery is unconfirmed.');
   });
   it('does not infer a live app or failed chat delivery from absent availability metadata', () => {
     const r = buildTrustRequests({ ok: true, data: { requests: [open()] } }, NOW).rows[0];

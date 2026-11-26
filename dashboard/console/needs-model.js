@@ -35,8 +35,12 @@ export function trustRequestNeedRows(trust, now) {
   if (sourceState(trust) === 'off') return [];
   const requests = buildTrustRequests(trust, now);
   return requests.ok ? requests.rows.map((r) => {
-    const reason = r.deliveryState === 'setup' && r.sub === r.continuation
-      ? 'Set up approvals in the Instar app to review this request.' : r.sub;
+    let reason = r.sub;
+    if (r.deliveryState === 'setup') {
+      reason = r.chatDeliveryUnconfirmed
+        ? 'Set up approvals in the Instar app because chat delivery is unconfirmed.'
+        : 'Set up approvals in the Instar app to review this request.';
+    }
     return row(r.key, r.main, reason, `#/settings/allowed?s=approvals&request=${encodeURIComponent(r.requestId)}`, [r.requestId]);
   }) : UNREADABLE;
 }
