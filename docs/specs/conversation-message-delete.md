@@ -272,3 +272,39 @@ The unmounted fleet decision combines a complete authenticated enrollment classi
 Identity review requires the selector and its monotonic classification index to survive application rollback and restore. Controller-enrolled deployment evidence must expire on revocation or loss of freshness. A supervisor must own reachable listeners, isolate older workers from protected data and credentials, and cancel generation-bound streams or cached route handles when custody changes. Verify by booting an actual older binary and trying retained client routes, local binds, peer fanout, search and session reads. Raw recovery needs separate authenticated access. The decision checkpoint does not supply those components.
 
 The unmounted peer retention helper requires both the authenticated enrollment-envelope origin and independently verified creation origin to match the exact creation event and machine. If creation evidence is pending, defer retention. Refuse conflict, malformed payloads and any attempted replacement of the retained tuple. The helper does not accept clearing instructions. Verified creation provenance and transport evidence must be supplied separately. A retained peer record does not make the fleet inventory complete.
+
+#### Restart evidence for peer custody
+
+The journal commit observer receives the authenticated sender after the replica
+append is durable. The replica itself retains the entry but discards the signed
+transport envelope. Its filename, sequence metadata and inner origin therefore
+cannot establish fresh creation provenance at boot. The normal App fold can
+still replay those records for display.
+
+Use a versioned machine-signed creation proof for protected custody. The origin
+signs only after durably rereading the exact immutable, conflict-free creation
+record. Define bounded canonical bytes and a normalization version. Bind a
+dedicated protocol domain, deployment or agent namespace, exact conversation
+key and event ID, normalized record digest, signer machine and key identifier,
+and claimed signing time. The receiver checks the signature, exact scope and
+its own durable normalized creation projection with affirmative origin and
+coverage evidence and conflict checks. The live custody envelope separately
+authenticates to the same machine.
+
+A claimed signing time cannot establish pre-rotation admission. Newly seen
+proofs require a currently eligible key or independently durable evidence
+anchoring the exact proof before that key's cutoff. Persist the authenticated
+first-admission provenance, key-history revision, immutable assignment and
+exact proof together. On reopen, reverify against current custody and the
+normalized local record, applying the established historical signing policy
+for rotation, revocation and compromise cutoffs. Missing, restored or
+rolled-back authority evidence denies. A proof establishes one positive
+assignment only. Fleet inventory must independently establish coverage before
+an unenrolled decision.
+
+Verify substitutions of domain, namespace, conversation, event, record and
+sender, wrong and revoked keys, newly presented backdated old-key proofs,
+corrupt or restored assignment evidence, and conflicting creations before and
+after restart. Identity concurred for an off-by-default implementation with
+these conditions. Active routing also requires the independent selector and
+proof that older workers cannot access protected data.
