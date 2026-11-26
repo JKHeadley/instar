@@ -1622,6 +1622,8 @@ export class AgentServer {
     appConversations?: AppConversationService;
     /** In-process acceptance enrollment for an isolated development server. */
     appRemovalReadAcceptance?: (conversationKey: string) => boolean;
+    /** Test-only write mount, gated separately from disposable read enrollment. */
+    appRemovalWriteAcceptance?: true;
     conversationGraphReplicationRuntime?: import('./ConversationGraphReplicationRuntime.js').ConversationGraphReplicationRuntime;
     conversationGraphDefault?: import('./ConversationGraphDefault.js').ConversationGraphDefault;
     conversationGraphDelegationRuntime?: import('./ConversationGraphDelegationRuntime.js').ConversationGraphDelegationRuntime;
@@ -2085,6 +2087,11 @@ export class AgentServer {
     // general API. Parse it under 96 KiB before the broad server parser.
     // Mobile device keys sign the exact request bytes: every JSON parser keeps them (req.rawBody).
     const keepRawBody = (req: unknown, _res: unknown, buf: Buffer) => { (req as { rawBody?: Buffer }).rawBody = buf; };
+    const privateRemovalWrite = options.config.developmentAgent === true
+      && options.appRemovalWriteAcceptance === true && !!options.appRemovalReadAcceptance && !!options.singleInstanceLock;
+    const privateRemovalArrival = (req: import('express').Request) =>
+      privateRemovalWrite && isLoopbackPeer(req.socket.remoteAddress)
+      && !Object.keys(req.headers).some((header) => header === 'forwarded' || header.startsWith('x-forwarded-'));
     // SEC-103: one credential check (before any body is read) for every parser above 64 KB.
     const bodyBudgetDeps: BodyBudgetDeps = {
       authToken: () => this.config.authToken,
@@ -3091,7 +3098,7 @@ export class AgentServer {
         res.status(401).json({ error: 'threadline-mcp-local-secret-required' });
         return false;
       },
-      this.mobilePairing ? deviceAuthenticator(this.mobilePairing) : undefined,
+      this.mobilePairing ? deviceAuthenticator(this.mobilePairing, privateRemovalArrival) : undefined,
       options.memoryPrivacy ? (token) => options.memoryPrivacy!.sessionForToken(token) : undefined,
       options.memoryPrivacy ? (session) => options.memoryPrivacy!.noteSessionReply(session.sessionId) : undefined,
       // SEC-002b: a dst_ scoped session token is accepted ONLY when the feature is enabled (dark by
@@ -8243,6 +8250,9 @@ export class AgentServer {
                 && retained.record.custodianMachineId === creation.machineId;
             },
           },
+        } : undefined,
+        removalWriteAcceptance: privateRemovalWrite && removalCustody && options.singleInstanceLock ? {
+          loopback: privateRemovalArrival, custody: removalCustody, lock: options.singleInstanceLock,
         } : undefined,
         unread: this.conversationUnread,
         // Conversation-list pins: server.ts builds it replicated; a server built without it keeps pins on this machine only.

@@ -81,3 +81,5 @@ Protected chats stay in the isolated server’s conversation list. Their cached 
 The isolated server now applies the same deleted-message check when the app asks for the pin list directly.
 
 The private deletion writer now has a check for the saved history assignment before it records or confirms a deletion. Production Delete still stays off.
+
+The isolated server can now accept a signed Delete request over a direct connection on the same machine. The normal app server still has Delete turned off.

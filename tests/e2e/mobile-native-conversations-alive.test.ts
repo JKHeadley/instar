@@ -44,7 +44,7 @@ afterAll(async () => {
   for (const d of dirs) SafeFsExecutor.safeRmSync(d, { recursive: true, force: true, operation: 'tests/e2e/mobile-native-conversations-alive.test.ts' });
 });
 
-async function boot(developmentAgent: boolean, appRemovalReadAcceptance?: (key: string) => boolean) {
+async function boot(developmentAgent: boolean, appRemovalReadAcceptance?: (key: string) => boolean, appRemovalWriteAcceptance?: true) {
   const dir = fs.mkdtempSync(path.join(process.env.TMPDIR ?? os.tmpdir(), 'native-e2e-'));
   dirs.push(dir);
   const stateDir = path.join(dir, '.instar');
@@ -72,15 +72,15 @@ async function boot(developmentAgent: boolean, appRemovalReadAcceptance?: (key: 
   const singleInstanceLock = new SingleInstanceLock({ stateDir, env: {} });
   expect((await singleInstanceLock.acquire()).acquired).toBe(true);
   writerLocks.push(singleInstanceLock);
-  const server = new AgentServer({ config, sessionManager, singleInstanceLock, appRemovalReadAcceptance, meshSelfId: identity.machineId, state: new StateManager(stateDir), initiativeTracker: new InitiativeTracker(stateDir), tunnel, workBoard: () => null });
+  const server = new AgentServer({ config, sessionManager, singleInstanceLock, appRemovalReadAcceptance, appRemovalWriteAcceptance, meshSelfId: identity.machineId, state: new StateManager(stateDir), initiativeTracker: new InitiativeTracker(stateDir), tunnel, workBoard: () => null });
   servers.push(server);
   return { server, stateDir, spawned, singleInstanceLock };
 }
 
 describe('native app conversations — production wiring', () => {
-  it('is alive on a development agent with no Telegram and no Slack: create, send, session tag, reply, history', async () => {
+  it.each([false, true])('serves App conversations with an explicit Delete acceptance writer: %s', async (writeAcceptance) => {
     const enrolled = new Set<string>();
-    const { server, stateDir, spawned, singleInstanceLock } = await boot(true, (key) => enrolled.has(key));
+    const { server, stateDir, spawned, singleInstanceLock } = await boot(true, (key) => enrolled.has(key), writeAcceptance ? true : undefined);
     const app = server.getApp();
     // Wiring integrity: real, non-null components on the production path.
     expect(server.mobilePairing).not.toBeNull();
@@ -308,14 +308,16 @@ describe('native app conversations — production wiring', () => {
     enrolled.add(key);
     const acceptedHistory = await send('GET', `/mobile/chat/app/${key}/messages`);
     expect(acceptedHistory.status, JSON.stringify(acceptedHistory.body)).toBe(200);
-    const stillDark = await send('POST', `/mobile/chat/app/${key}/message-removals`, {
-      custodianMachineId: server.appConversations!.deps.machineId(), eventId: quoted.body.eventId,
-      requestId: `${Date.now()}-${crypto.randomUUID()}`,
-    });
-    expect(stillDark.status).toBe(403);
-    expect(server.appConversations!.store.messageRemoval(key, quoted.body.eventId, quoted.body.messageId))
-      .toEqual({ eventId: null });
+    if (!writeAcceptance) {
+      const stillDark = await send('POST', `/mobile/chat/app/${key}/message-removals`, {
+        custodianMachineId: server.appConversations!.deps.machineId(), eventId: quoted.body.eventId,
+        requestId: `${Date.now()}-${crypto.randomUUID()}`,
+      });
+      expect(stillDark.status).toBe(403);
+      expect(server.appConversations!.store.messageRemoval(key, quoted.body.eventId, quoted.body.messageId))
+        .toEqual({ eventId: null });
 
+    }
     const retainedCustody = new AppRemovalReadCustody(stateDir).observe(key);
     expect(retainedCustody).toMatchObject({ kind: 'recorded', record: {
       creationEventId: server.appConversations!.store.getCreationRecord(key)!.eventId,
@@ -522,6 +524,23 @@ describe('native app conversations — production wiring', () => {
       expect(list.body.conversations).toContainEqual(expect.objectContaining({ id: key, lastPreview: null }));
 
     } finally { fs.writeFileSync(custodyFile, retained); }
+
+    if (writeAcceptance) {
+      const endpoint = `/mobile/chat/app/${key}/message-removals`;
+      const intent = { custodianMachineId: server.appConversations!.deps.machineId(),
+        eventId: quoted.body.eventId, requestId: `${Date.now()}-${crypto.randomUUID()}` };
+      const forwarded = await send('POST', endpoint, intent).set('X-Forwarded-Proto', 'https');
+      expect(forwarded.status).toBe(403);
+      const removed = await send('POST', endpoint, intent);
+      expect(removed.status, JSON.stringify(removed.body)).toBe(200);
+      expect(removed.body).toEqual({ eventId: intent.eventId, removalEventId: expect.any(String) });
+      expect((await send('POST', endpoint, intent)).body).toEqual(removed.body);
+      const sync = await send('GET', `/mobile/chat/app/${key}/events`);
+      expect(sync.body.changes).toContainEqual({ kind: 'message-removed', conversationKey: key,
+        eventId: removed.body.removalEventId, targetEventId: intent.eventId });
+      expect((await send('GET', `/mobile/chat/app/${key}/messages`)).body.messages)
+        .not.toContainEqual(expect.objectContaining({ eventId: intent.eventId }));
+    }
 
     // A ledger revocation alone refuses the phone at once on the production auth path, even if
     // the registry write after it failed (the registry still says active here).

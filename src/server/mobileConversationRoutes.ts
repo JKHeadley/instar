@@ -76,6 +76,9 @@ import { isConversationListPinsEnabled, MAX_LIST_PINS_PER_READER, type Conversat
 import type { ResolvedPerson } from '../core/MobilePeople.js';
 import { mediaOffBody } from './mobileMediaOff.js';
 import { AppCreationHierarchyProjection, type AppHierarchyFields, type CreationHierarchySource, type CreationHierarchyScope } from './appCreationHierarchy.js';
+import { executeAppMessageRemoval } from './mobileAppMessageRemoval.js';
+import type { AppRemovalReadCustody } from '../core/AppRemovalReadCustody.js';
+import type { SingleInstanceLock } from '../core/SingleInstanceLock.js';
 import { executeOwnerRemovalContext, executeOwnerRemovalHistory, executeOwnerRemovalSync } from './mobileAppRemovalSync.js';
 import { createRemovalSyncCursorCodec } from './mobileAppRemovalSyncCursor.js';
 import { resolveOwnerRemovalSyncAuthority } from './mobileAppRemovalSyncAuthority.js';
@@ -256,6 +259,11 @@ export interface MobileConversationRouteDeps {
   removalReadAcceptance?: {
     enrolled: (conversationKey: string) => boolean;
     evidence: Parameters<typeof resolveOwnerRemovalSyncAuthority>[3];
+  };
+  removalWriteAcceptance?: {
+    loopback: (req: Request) => boolean;
+    custody: AppRemovalReadCustody;
+    lock: SingleInstanceLock;
   };
   messageLinkOrigin?: () => string | null;
   config: InstarConfig;
@@ -1885,6 +1893,27 @@ export function createMobileConversationRouter(deps: MobileConversationRouteDeps
     });
     res.json({ conversationKey: key, messages });
   });
+
+  const removalWrites = deps.removalWriteAcceptance;
+  if (removalWrites && removalReads && svc) {
+    router.post('/mobile/chat/app/:key/message-removals', (req, res, next) => {
+      res.setHeader('Cache-Control', 'no-store');
+      if (!removalWrites.loopback(req) || principalOf(req).kind !== 'device') {
+        res.status(403).json({ error: 'device-not-allowed' }); return;
+      }
+      try {
+        const key = String(req.params.key);
+        if (removalWrites.custody.observe(key).kind !== 'recorded' || !removalReads.enrolled(key)) {
+          res.status(403).json({ error: 'device-not-allowed' }); return;
+        }
+      } catch {
+        res.status(503).json({ error: 'message-removal-custody-unavailable' }); return;
+      }
+      void executeAppMessageRemoval(req, deps.pairing, svc, removalWrites.lock, now, removalWrites.custody)
+        .then(({ status, body }) => { res.status(status).json(body); })
+        .catch(next);
+    });
+  }
 
   // ── Browse ──
   router.get('/mobile/chat/app/:key/messages', async (req: Request, res: Response, next: NextFunction) => {
