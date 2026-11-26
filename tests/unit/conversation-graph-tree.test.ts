@@ -219,11 +219,11 @@ describe('GET /mobile/conversation-graph/tree', () => {
     expect(r.body.projects).toBe('known');
     expect(r.body.items[0].project).toEqual({ title: 'Shop launch', conversationKey: 'telegram:101' });
   });
-  it('refuses a viewer that is not the owner, and is not a dashboard route', async () => {
+  it('refuses requests without owner admission on both routes', async () => {
     const a = express();
     a.use(createConversationGraphRouter({ model, resolveViewer: () => null }));
     expect((await request(a).get('/mobile/conversation-graph/tree')).body).toEqual({ code: 'hierarchy-owner-only' });
-    expect((await request(appWith({})).get('/conversation-graph/tree')).status).toBe(404);
+    expect((await request(appWith({})).get('/conversation-graph/tree')).status).toBe(403);
   });
   it('says projects are unknown when they cannot be read, and refuses a bad cursor', async () => {
     const throwing = await request(appWith({ projects: () => { throw new Error('boom'); } })).get('/mobile/conversation-graph/tree');
