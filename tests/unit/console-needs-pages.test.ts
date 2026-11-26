@@ -1,6 +1,6 @@
 import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest';
 import { JSDOM } from 'jsdom';
-import { mountNeedsStrip, needGroups, STRIP_REFRESH_MS } from '../../dashboard/console/needs-strip.js';
+import { homeNeedsModel, mountNeedsStrip, needGroups, stripModel, STRIP_REFRESH_MS } from '../../dashboard/console/needs-strip.js';
 
 const next = 'next+?=/';
 const first = 'first/';
@@ -49,6 +49,38 @@ describe('paging the Needs-you strip', () => {
     control!.click();
     await Promise.resolve();
   }
+  it('uses the server count while showing only supported strict actions', async () => {
+    const response = { ok: true, data: { schemaVersion: 2, count: 3, complete: false,
+      couldNotCheck: ['one source'], items: [
+        { title: 'Physical step', action: { kind: 'instructions', steps: ['First', 'Second'] } },
+        { title: 'Unavailable credential', action: { kind: 'credential', requestId: 'opaque' } },
+        { title: 'Old referral', action: { kind: 'href', href: '#/work' } },
+      ] } };
+    await mount(vi.fn().mockResolvedValue(response));
+    expect(homeNeedsModel(stripModel(response))).toMatchObject({ count: 3, state: 'partial', authoritative: true });
+    expect([...host.querySelectorAll('ol li')].map((item) => item.textContent)).toEqual(['First', 'Second']);
+    expect(host.querySelector('a, .needs-consent')).toBeNull();
+    expect(host.textContent).not.toMatch(/Old referral|Unavailable credential/);
+    expect(host.textContent).toContain('Could not check one source.');
+    expect(host.textContent).toContain('Some requests cannot be completed on this device.');
+  });
+
+  it('passes the exact reference to the signed adapter and refreshes a stale request', async () => {
+    const current = { ok: true, data: { schemaVersion: 2, count: 1, complete: true,
+      items: [{ title: 'Approval', action: { kind: 'approval', requestId: 'exact-request' } }] } };
+    const get = vi.fn().mockResolvedValueOnce(current).mockResolvedValueOnce({ ok: true,
+      data: { schemaVersion: 2, count: 0, complete: true, items: [] } });
+    const approval = vi.fn().mockResolvedValue('stale');
+    stop = mountNeedsStrip(host, { get, open: true, signedAdapters: { approval } });
+    await Promise.resolve();
+    await press('Review approval');
+    await Promise.resolve();
+    expect(approval).toHaveBeenCalledWith('exact-request', expect.anything());
+    expect(get.mock.calls).toEqual([['/needs'], ['/needs']]);
+    expect(host.textContent).toContain('This request has changed.');
+    expect(host.querySelector('.needs-consent')).toBeNull();
+  });
+
   it('opens action 105, page by page, and reads previous pages without retaining their rows', async () => {
     const get = vi.fn(async path => page(path.endsWith(encodeURIComponent(next)) ? 100 : 0));
     await mount(get);
