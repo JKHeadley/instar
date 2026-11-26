@@ -1,0 +1,19 @@
+{
+  "version": 2,
+  "slug": "codex-usage-delivery-observation",
+  "sessionId": "dd2f336e-e8f7-40b3-97e3-09d19139bfa6",
+  "timestamp": "2026-11-26T01:38:38.228Z",
+  "artifactPath": "upgrades/side-effects/codex-usage-delivery-observation.md",
+  "artifactSha256": "b482a95361f2100ec8c84027d8b0d7a829083cc07fe9c868e357bb70b3e5480b",
+  "coveredFiles": [
+    "src/core/CodexDeliveryObserver.ts",
+    "tests/unit/CodexDeliveryObserver.test.ts"
+  ],
+  "phase": "complete",
+  "tier": 1,
+  "tierReasoning": "Exact developer tool-definition recognition supplies no delivery evidence or recovery authority; a revert restores the prior parser.",
+  "eli16Path": "upgrades/eli16/codex-usage-delivery-observation.md",
+  "sideEffectsPath": "upgrades/side-effects/codex-usage-delivery-observation.md",
+  "secondPass": "true",
+  "reviewerConcurred": true
+}

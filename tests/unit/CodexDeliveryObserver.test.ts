@@ -83,6 +83,7 @@ describe('CodexDeliveryObserver', () => {
       + currentMessage('user', f.envelope)
       + event('event_msg', { type: 'item_completed', turn_id: 'live-turn' })
       + currentMessage('developer', 'hook context')
+      + event('response_item', { type: 'additional_tools', role: 'developer', tools: [] })
       + currentMessage('system', 'runtime context')
       + event('response_item', {
         type: 'agent_message', id: 'agent-message-1', author: 'helper', recipient: 'root', content: 'status',
@@ -207,6 +208,14 @@ describe('CodexDeliveryObserver', () => {
     fs.writeFileSync(f.rollout, JSON.stringify({ type: 'session_meta', payload: { id: 'replacement-thread' } }) + '\n');
     await observer.sweep();
     expect(f.store.get('59199', 'd1')).toMatchObject({ transcriptState: 'unknown', eligibilityState: 'unknown' });
+  });
+
+  it('fails closed on additional tools outside the developer role', () => {
+    const f = fixture();
+    fs.appendFileSync(f.rollout,
+      event('event_msg', { type: 'task_started', turn_id: 'tools-turn' })
+      + event('response_item', { type: 'additional_tools', role: 'assistant', tools: [] }));
+    expect(scanSharedRollout(f.store.rolloutWork()[0], KEY)).toMatchObject({ kind: 'unknown' });
   });
 
   it('fails closed on a user turn that is not enclosed by its task_started id', async () => {

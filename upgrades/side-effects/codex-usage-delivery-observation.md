@@ -14,3 +14,7 @@ Tier 1. One explicit metadata record type and one added line in the existing rea
 ## Second-pass review
 
 Concur with the review. The independent reviewer checked that the exact type follows the metadata path, the cursor advances without modifying turn state or producing evidence, and the regression exercises the production sweep through the following turn-complete marker. Unknown records retain their current fail-closed behavior.
+
+## Fresh bootstrap follow-up
+
+The exact original candidate durably dispatched a live pilot message, bound its rollout, and then failed on a developer response item named additional_tools. A read-only replay of the revised parser accepted the complete captured rollout. This second metadata exception requires both the exact type and developer role. It supplies no message or turn evidence. The independent reviewer concurred on those boundaries. The regression covers the observed record in a successful turn and refusal for a different role. Fresh signed release evidence remains required.

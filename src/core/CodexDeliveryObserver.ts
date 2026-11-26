@@ -354,6 +354,8 @@ export function scanSharedRollout(work: RolloutWork, hmacKey: string, maxBytes =
     }
     if (event.type === 'response_item') {
       if (payload.type !== 'message') {
+        // Codex reports deferred tool definitions as developer metadata during a fresh turn.
+        if (payload.type === 'additional_tools' && payload.role === 'developer') continue;
         if (!KNOWN_RESPONSE_ITEMS.has(payload.type)) return { kind: 'unknown', bytesRead: bytes };
         continue;
       }
