@@ -1,0 +1,23 @@
+{
+  "ts": "2026-10-14T17:26:48.444Z",
+  "slug": "retained-claude-executable",
+  "suggestedTier": 1,
+  "declaredTier": 1,
+  "riskFloor": 1,
+  "riskFloorReasons": [],
+  "belowFloor": false,
+  "files": 2,
+  "loc": 20,
+  "scope": {
+    "basis": "staged-in-scope-additions-plus-deletions",
+    "files": [
+      "src/core/ClaudeBinaryRetainer.ts",
+      "src/core/SessionManager.ts"
+    ],
+    "addedLines": 18,
+    "deletedLines": 2
+  },
+  "causalAutopsy": null,
+  "classClosure": null,
+  "verdict": "pass"
+}

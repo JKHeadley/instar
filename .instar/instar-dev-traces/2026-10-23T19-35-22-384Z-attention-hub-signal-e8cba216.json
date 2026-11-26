@@ -1,0 +1,37 @@
+{
+  "version": 2,
+  "slug": "attention-hub-signal",
+  "sessionId": "57cb3262-33ad-44b2-97a0-2365b05cbec1",
+  "timestamp": "2026-10-23T19:35:22.384Z",
+  "artifactPath": "upgrades/side-effects/attention-hub-signal.md",
+  "artifactSha256": "4c49e8557a398c832d08f94f75d5a3c394e690957af99a8068208e10944509ef",
+  "coveredFiles": [
+    "src/commands/server.ts",
+    "src/core/PostUpdateMigrator.ts",
+    "src/messaging/TelegramAdapter.ts",
+    "src/messaging/attentionHubPolicy.ts",
+    "src/monitoring/machineCoherenceEffectsExecutor.ts",
+    "src/monitoring/ropeSinkRouter.ts",
+    "src/scaffold/templates.ts",
+    "tests/unit/PostUpdateMigrator-attentionHubFilter.test.ts",
+    "tests/unit/attention-single-topic-routing.test.ts",
+    "tests/unit/attentionHubPolicy.test.ts",
+    "tests/unit/machine-coherence-calm-narration.test.ts",
+    "tests/unit/system-topic-single-creator.test.ts",
+    "upgrades/attention-hub-signal.eli16.md",
+    "upgrades/next/attention-hub-signal.md",
+    "upgrades/side-effects/attention-hub-signal.md"
+  ],
+  "phase": "complete",
+  "tier": 1,
+  "tierReasoning": "Routing filter on automated hub posts; nothing is dropped (items stay in store/dashboard/log) and a config flip (attentionHubFilter: all) or revert fully undoes it.",
+  "eli16Path": "upgrades/attention-hub-signal.eli16.md",
+  "sideEffectsPath": "upgrades/side-effects/attention-hub-signal.md",
+  "secondPass": "true",
+  "reviewerConcurred": true,
+  "classClosure": {
+    "defectClass": "unbounded-self-action",
+    "closure": "n/a",
+    "reason": "Adds no self-triggered action: the change only withholds posts the existing notify/attention paths already make (it can reduce, never increase, notify volume); the one new timing rule is a repost throttle that only suppresses."
+  }
+}

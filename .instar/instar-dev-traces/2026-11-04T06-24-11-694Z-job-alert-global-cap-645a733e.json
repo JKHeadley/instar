@@ -1,0 +1,35 @@
+{
+  "version": 2,
+  "slug": "job-alert-global-cap",
+  "sessionId": "960acda4-a670-45c1-839c-5359a41daab2",
+  "timestamp": "2026-11-04T06:24:11.694Z",
+  "artifactPath": "upgrades/side-effects/job-alert-global-cap.md",
+  "artifactSha256": "831ee9e91a3fbe8a98ab25091c313f6f0dbc5f95790241ee773ee4b6d84706ce",
+  "coveredFiles": [
+    "src/core/SessionManager.ts",
+    "src/core/sessionCapacityRefusedError.ts",
+    "src/scheduler/JobScheduler.ts",
+    "tests/e2e/job-run-history-lifecycle.test.ts",
+    "tests/unit/headless-spawn-reroute.test.ts",
+    "tests/unit/job-capacity-episode.test.ts",
+    "upgrades/job-alert-global-cap.eli16.md",
+    "upgrades/next/job-alert-global-cap.md",
+    "upgrades/side-effects/job-alert-global-cap.md"
+  ],
+  "phase": "complete",
+  "tier": 1,
+  "tierReasoning": "Reversible correction to the existing capacity episode after the Studio live check found the global session cap still failing Health Check; bounded by the existing hard cap and memory gate.",
+  "eli16Path": "upgrades/job-alert-global-cap.eli16.md",
+  "sideEffectsPath": "upgrades/side-effects/job-alert-global-cap.md",
+  "secondPass": "true",
+  "reviewerConcurred": true,
+  "classClosure": {
+    "defectClass": "unbounded-self-action",
+    "closure": "guard",
+    "guardEvidence": {
+      "enforcementType": "ratchet",
+      "citation": "tests/unit/job-capacity-episode.test.ts",
+      "howCaught": "The global cap refusal enters the existing durable capacity episode; tests verify no per-job alert, a single bounded episode notice, and one queued retry per 15-second poll. Pending admission counters permit only one borrowed scheduled slot."
+    }
+  }
+}

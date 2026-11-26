@@ -25,6 +25,8 @@ import {
   hasCanonicalIdentity,
   migrateFromLegacy,
 } from '../identity/Migration.js';
+import { detectJoinedMesh } from './client/JoinedMeshDetector.js';
+import { IdentityNotProvisionedError } from './client/IdentityManager.js';
 
 // ── Types ────────────────────────────────────────────────────────────
 
@@ -95,6 +97,17 @@ export function createUnifiedTrustSystem(
       // via the dashboard or attention queue. Not done here.
       identity.load({ passphrase: config.identityPassphrase });
     } else {
+      // ── The SECOND mint site, guarded (a2a-single-agent-identity §1.1) ──────────────
+      // Until this guard, `createUnifiedTrustSystem` minted a canonical identity whenever
+      // `.instar/identity.json` was absent — with no join check. The Threadline client's
+      // `getOrCreate()` was guarded, but this ran FIRST, wrote the canonical file, and the
+      // guarded site never fired. That is how the Studio minted `afd256bc…` six days after
+      // the join-time carry shipped (2026-08-26), and why peers' messages were lost until
+      // 2026-10-09. Same predicate, same refusal, both sites.
+      const verdict = detectJoinedMesh(stateDir);
+      if (!verdict.mintAllowed) {
+        throw new IdentityNotProvisionedError(verdict.joined ? verdict.peerMachineCount : 0, verdict);
+      }
       identity.create({
         passphrase: config.identityPassphrase,
         skipRecovery: !config.identityPassphrase,

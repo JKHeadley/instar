@@ -1,0 +1,32 @@
+{
+  "version": 3,
+  "slug": "job-result-supervision-v2",
+  "sessionId": "d384ab47-df76-4f5e-98ea-d49268d23429",
+  "timestamp": "2026-10-28T05:16:39.823Z",
+  "artifactPath": "upgrades/side-effects/job-result-supervision-v2.md",
+  "artifactSha256": "7e69c93400c19f76a2a5ee212bf42ca0e1e8f7b9a6c4108e39b47ea064a4f5c5",
+  "specPath": "docs/specs/job-result-supervision-v2.md",
+  "coveredFiles": [
+    "docs/specs/job-result-supervision-v2-benchmark-evidence.md",
+    "src/scheduler/JobSupervisionStore.ts",
+    "src/server/AgentServer.ts",
+    "src/server/jobTriageRoutes.ts",
+    "tests/e2e/job-cost-lifecycle.test.ts",
+    "tests/integration/job-supervision-routes.test.ts",
+    "tests/unit/job-supervision-store.test.ts",
+    "tests/unit/job-triage-routes.test.ts",
+    "upgrades/side-effects/job-result-supervision-v2.md"
+  ],
+  "phase": "complete",
+  "tier": 2,
+  "tierReasoning": "Pool accuracy is safety-relevant and crosses persistent state, server wiring, and machine membership.",
+  "secondPass": "true",
+  "reviewerConcurred": true,
+  "toolchain": {
+    "buildSkill": {
+      "name": "instar-dev",
+      "version": "9a75c36ba521",
+      "verified": true
+    }
+  }
+}

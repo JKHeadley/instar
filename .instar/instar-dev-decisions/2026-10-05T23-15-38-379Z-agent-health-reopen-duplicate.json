@@ -1,0 +1,28 @@
+{
+  "ts": "2026-10-05T23:15:38.379Z",
+  "slug": "agent-health-reopen-duplicate",
+  "suggestedTier": 2,
+  "declaredTier": 1,
+  "riskFloor": 2,
+  "riskFloorReasons": [
+    "safety-invariant proximity: src/messaging/TelegramAdapter.ts matches Telegram adapter"
+  ],
+  "belowFloor": true,
+  "files": 1,
+  "loc": 11,
+  "scope": {
+    "basis": "staged-in-scope-additions-plus-deletions",
+    "files": [
+      "src/messaging/TelegramAdapter.ts"
+    ],
+    "addedLines": 10,
+    "deletedLines": 1
+  },
+  "causalAutopsy": null,
+  "classClosure": {
+    "defectClass": "unbounded-self-action",
+    "closure": "n/a",
+    "reason": "Adds no self-triggered action: it classifies a duplicate-content hold on one notice as already delivered, which REMOVES the trigger for the callers 30s retry loop. Other holds still throw, bounded by the spawn drain existing give-up latch."
+  },
+  "verdict": "pass"
+}

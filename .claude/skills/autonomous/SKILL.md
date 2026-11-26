@@ -18,7 +18,9 @@ Before activating the stop hook, you MUST:
 2. **Present the task list** to the user with clear completion criteria
 3. **Propose a measurable `completion_condition`** synthesized from those tasks — an
    artifact-grounded end-state an INDEPENDENT judge can verify from what you SURFACE
-   (a commit SHA, a file's content, a CI run id, a test-count delta). This is the
+   (a commit SHA, a file's content, a CI run id, a test-count delta). It covers EVERY
+   deliverable the goal needs, including pieces in another repo, the app or another
+   owner's code (see "The cross-boundary form" below) — not only the repo you are in. This is the
    PRIMARY completion mechanism. Only fall back to a self-declared promise when no
    verifiable condition can be expressed — and then record `completion_mode:
    promise-fallback` + a one-line `promise_fallback_reason:`.
@@ -34,11 +36,11 @@ User: /autonomous --duration=8h --goal="Complete Slack feature parity"
 Agent: Here's my task breakdown for autonomous mode:
 
 TASKS (all must be complete before I can exit):
-1. [ ] Implement job-specific Slack channels
-2. [ ] Build full PresenceProxy Slack integration
-3. [ ] Update dashboard HTML with platform badges
-4. [ ] Implement Slack Lifeline process
-5. [ ] Add platform dropdown to new session UI
+- [ ] (1) Implement job-specific Slack channels
+- [ ] (2) Build full PresenceProxy Slack integration
+- [ ] (3) Update dashboard HTML with platform badges
+- [ ] (4) Implement Slack Lifeline process
+- [ ] (5) Add platform dropdown to new session UI
 ...
 
 Completion promise: "ALL_TASKS_COMPLETE"
@@ -47,6 +49,13 @@ Emergency stop: "stop everything" via messaging
 
 Shall I proceed? (The stop hook will prevent me from exiting until all tasks are done)
 ```
+
+<!-- CHECKBOX_TASK_LIST — task lines MUST be `- [ ] text` (a dash bullet). The server's task
+parser reads only dash-bullet checkboxes; numbered `1. [ ]` lines are invisible to it, so no
+work receipt can ever be minted against them and the run is never admitted. Put any number
+inside the text: `- [ ] (1) text`. -->
+**Task lines must use `- [ ]` checkboxes** (put a number inside the text if you want one:
+`- [ ] (1) ...`). Numbered `1. [ ]` lines are not read as tasks by the server.
 
 **The user must confirm before the hook activates.** This is the safety gate.
 
@@ -69,7 +78,7 @@ hooks = s.setdefault('hooks', {}).setdefault('Stop', [])
 # never deployed, so the hook silently failed every Stop and the loop never
 # re-engaged.) Self-heal: drop any prior autonomous-stop-hook entry (incl. the
 # legacy wrong path), then add exactly one correct-path entry.
-correct = 'bash \${CLAUDE_PROJECT_DIR}/.claude/skills/autonomous/hooks/autonomous-stop-hook.sh'
+correct = 'bash \"\${CLAUDE_PROJECT_DIR}/.claude/skills/autonomous/hooks/autonomous-stop-hook.sh\"'
 before = json.dumps(hooks)
 hooks[:] = [e for e in hooks if not any('autonomous-stop-hook' in str(h.get('command','')) for h in e.get('hooks', []))]
 hooks.append({'matcher': '', 'hooks': [{'type': 'command', 'command': correct, 'timeout': 10000}]})
@@ -261,6 +270,25 @@ sweep is the enforcement. If deferral is genuinely right, ASK the operator in th
 and only the verified operator's reply binds it. The operator can also ratify from the dashboard
 (PIN-gated).
 
+<!-- FRACTAL_8020_TRIAGE (CMT-917) -->
+### Found problems (applies to the scope-accretion sweep): triage, never accrete
+
+Finding problems along the way is good. Triage each one on the spot; only the first kind joins this work:
+
+1. **Blocks the current work?** Fix it now.
+2. **A major issue** (broken for users, a safety/security/data-loss risk, or more than about a day of work)? Spin it off: a new topic with its own session (dashboard New Session, or `POST /sessions/create`) whose brief starts an `/autonomous` run to complete it under these same 80/20 + triage rules; tell the operator in one line.
+3. **Everything else** → a queue, and say which: an instar defect or improvement → the feedback queue (`/feedback`); an improvement to this agent's own process → the evolution queue (`/commit-action`).
+
+Never add a found problem to the task list silently, and never draft a spec or audit for a non-blocking one inside this run.
+
+This is how accretion and triage fit: work you CREATE for the goal joins your bar (above); a
+problem you merely FIND is triaged. A spun-off or queued problem is not a deferral of your goal —
+it was never your goal. The server's completion sweep cannot tell whose files are whose, though: it
+counts every new worktree and commit in this agent home since the run started, including the
+spun-off session's. So when you spin one off, ask in the topic right away to "ratify deferral" of
+its paths (and of any artifact you already drafted for a found problem), so they do not hold your
+run. Do the asked-for work first; an unrelated fix never goes ahead of it.
+
 ### The Defer-to-Future-Self Trap
 
 **This is the #1 failure mode.** It looks like:
@@ -272,12 +300,30 @@ and only the verified operator's reply binds it. The operator can also ratify fr
 | "Future improvement" | Your future self has no advantage over you |
 | "Remaining work" | Work you're choosing not to do |
 | "Deferred" | Abdication disguised as planning |
+| "This will need X in the app / another repo" · "outside this repository" · "recorded for the owner" | A deferral dressed as a scope fact — work with no owner, no plan and no place on your list |
 
 **The test:** Can you do this task right now with the tools and knowledge you have?
 - **Yes** → Do it. Not later. Now.
 - **No** → Document exactly WHY (missing dependency, needs external access, etc.)
 
 **"Phase 2" is only valid when the current phase genuinely cannot contain the work** — not when you're tired, not when it's complex, not when it's 2 AM.
+
+<!-- CROSS_BOUNDARY_OWNER (topic 10000002523) -->
+**The cross-boundary form.** When the goal needs a piece that lives somewhere else — another
+repo, the app, another machine, a session or team that owns that code — writing "X will need
+Y" or "that is outside this repository" into a spec, a progress message or a report is NOT
+scoping. It is a claim with no plan. Every such piece gets, in the same step:
+
+1. **A route:** pull the code to your machine and build it yourself, OR hand it to the
+   session/conversation that owns it (named) with a concrete handoff — a brief sent, a tracked
+   commitment, and how you will check it landed.
+2. **A place on your completion bar:** a `- [ ]` task in the state file, and the
+   `completion_condition` covers it (e.g. "app build with the button installed and the proof
+   passing in the app"), so the run cannot finish "done" without it.
+
+Find the owner before writing the sentence (your memory, the project map, a grep). If you
+genuinely cannot find a route, that is a stop condition (a) to report with what you tried —
+not a sentence in an "Open questions" list.
 
 ---
 
@@ -344,7 +390,9 @@ genuinely done:
 2. Run `npx tsc --noEmit` — zero errors
 3. Run relevant tests
 4. Write learnings to MEMORY.md
-5. Send final report via messaging
+5. Send final report via messaging. Include a **proportion line**: what was asked, the size of
+   what shipped, review rounds and commit/gate attempts used, and each found problem with its
+   triage. Say plainly if the effort was out of line with the size (a signal, never a gate).
 6. Output: `<promise>ALL_TASKS_COMPLETE</promise>`
 
 The stop hook detects the promise and allows exit.
@@ -394,8 +442,13 @@ Remaining:
 - [task 4]
 
 Issues: none
+Found (triaged): none
 EOF
 ```
+
+The FINAL report, on every completion path, adds the proportion line from Step 4: asked vs
+shipped, rounds and gate attempts, found problems with their triage, and a one-line flag if the
+effort was out of line with the size.
 
 ---
 

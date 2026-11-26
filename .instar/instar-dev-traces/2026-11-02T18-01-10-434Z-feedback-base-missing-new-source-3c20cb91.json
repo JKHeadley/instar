@@ -1,0 +1,27 @@
+{
+  "version": 3,
+  "slug": "feedback-base-missing-new-source",
+  "sessionId": "fd0699ed-7bf6-4340-bbdf-e97225114a49",
+  "timestamp": "2026-11-02T18:01:10.434Z",
+  "artifactPath": "upgrades/side-effects/feedback-base-missing-new-source.md",
+  "artifactSha256": "44072241056a98f66cacfec00d7f992ed427a8b7d85257854d7fc6fa2854dbed",
+  "specPath": "docs/specs/feedback-triage-and-execution.md",
+  "coveredFiles": [
+    "src/feedback-factory/execute/executorSession.ts",
+    "tests/unit/feedback-factory/execute-units.test.ts",
+    "upgrades/next/feedback-base-missing-new-source.md",
+    "upgrades/side-effects/feedback-base-missing-new-source.md"
+  ],
+  "phase": "complete",
+  "tier": 2,
+  "tierReasoning": "This changes the executor safety proof gate for publishing feedback fixes; the existing approved execution spec governs it.",
+  "secondPass": "true",
+  "reviewerConcurred": true,
+  "toolchain": {
+    "buildSkill": {
+      "name": "instar-dev",
+      "version": "9a75c36ba521",
+      "verified": true
+    }
+  }
+}

@@ -1,0 +1,26 @@
+{
+  "ts": "2026-11-19T16:42:33.758Z",
+  "slug": "project-state-quiet-stalled",
+  "suggestedTier": 2,
+  "declaredTier": 1,
+  "riskFloor": 1,
+  "riskFloorReasons": [],
+  "belowFloor": false,
+  "files": 5,
+  "loc": 117,
+  "scope": {
+    "basis": "staged-in-scope-paths-including-deleted",
+    "files": [
+      "src/core/ChiefOfStaffLoop.ts",
+      "src/data/awareness/chief-of-staff-checkable-done-items.md",
+      "src/server/CapabilityIndex.ts",
+      "src/server/routes.ts",
+      "src/server/workProjectsRoutes.ts"
+    ],
+    "addedLines": 107,
+    "deletedLines": 10
+  },
+  "causalAutopsy": null,
+  "classClosure": null,
+  "verdict": "pass"
+}

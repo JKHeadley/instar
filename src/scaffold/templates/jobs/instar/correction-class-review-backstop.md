@@ -6,7 +6,6 @@ priority: medium
 expectedDurationMinutes: 2
 model: haiku
 enabled: true
-supervision: tier1
 tags:
   - cat:learning
   - correction-class-review
@@ -14,6 +13,11 @@ tags:
 toolAllowlist: "*"
 unrestrictedTools: true
 mcpAccess: none
+runner: script
+script: correction-class-review-backstop.mjs
+scriptTimeoutMinutes: 2
+supervision: tier0
+scriptSupervision: deterministic
 ---
 Run the bounded correction class-review backstop on this machine.
 

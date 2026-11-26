@@ -32,6 +32,8 @@ export class FakeBlobServer {
   private objects = new Map<string, string>(); // storedPathname -> content
   baseUrl = '';
   private suffixCounter = 0;
+  /** Every Authorization header received — lets a test prove WHICH token was used. */
+  authHeaders: string[] = [];
 
   constructor() {
     this.server = http.createServer((req, res) => this.handle(req, res));
@@ -56,6 +58,7 @@ export class FakeBlobServer {
   }
 
   private handle(req: http.IncomingMessage, res: http.ServerResponse): void {
+    this.authHeaders.push(String(req.headers.authorization ?? ''));
     const chunks: Buffer[] = [];
     req.on('data', (c) => chunks.push(c));
     req.on('end', () => {

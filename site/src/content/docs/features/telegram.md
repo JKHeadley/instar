@@ -46,6 +46,12 @@ When a session expires or is compacted, the agent re-spawns with:
 
 The agent picks up exactly where it left off.
 
+## Outbound recording never latches off
+
+Every outbound Telegram message is recorded by a background worker before it is sent. If that worker is slow, the message waits or is held; nothing goes out unrecorded. A slow disk (for example right after a reboot) only affects the request that was slow. A worker that is truly stuck is replaced automatically, with growing waits between attempts and a cap. Held messages drain through the normal recovery tick once it is back. No server restart is needed.
+
+The authenticated `GET /health` includes `telegramOriginStorage.store` and `.spool`, with `state` (`ready`, `starting`, `restarting`, `exhausted` or `closed`), `restarts`, `lastFailure` and `downSince`. An outage raises one degradation report. `exhausted` means the restart cap was reached; the recovery tick then tries a replacement every 15 minutes.
+
 ## Markdown formatting
 
 As of v1.1.0, your agent writes in GitHub-flavored markdown and the adapter converts to Telegram-safe HTML on send. This is the default — agents don't need to know anything about Telegram's HTML escaping rules; they write normal markdown and the formatter handles the conversion.
@@ -71,6 +77,8 @@ If you set `telegramAdapter.lintStrict: true` in config, formatting issues that 
 Inbound voice messages are auto-transcribed via your configured voice provider. The adapter auto-detects which provider to use if `voiceProvider` isn't set explicitly.
 
 ## API
+
+Sessions reply through `POST /telegram/reply/:topicId`:
 
 ```bash
 # List topic-session mappings
@@ -100,3 +108,23 @@ curl 'localhost:4040/telegram/search?q=deploy&limit=20'
 # Outbound message audit log statistics
 curl localhost:4040/telegram/log-stats
 ```
+
+## Linking back to a message
+
+When an agent says it is still waiting on you for something, the message must carry the ask: a link to where it was asked (or to the Work Board card that holds it) and one plain line restating what is needed and the reply that settles it. To make that possible, every message an agent sends through `POST /telegram/reply/:topicId` comes back with its own link (`messageLink`), and the send script prints it: `Sent 212 chars to topic 4521 (message 90312) link: https://t.me/c/…`. Slack replies print their permalink the same way.
+
+For a message sent earlier, `GET /messages/link?platform=telegram&topicId=N&messageId=M` builds the link from its ids. The answer says whether this machine's message log holds that message (`verified: true` with the message's sender and text in `matched`, or `"not-in-local-history"`), so an agent can check that the link points at the ask it means. The same route builds Slack permalinks (`platform=slack&channel=…&ts=…`), Work Board card links (`platform=card&cardId=…`) and app conversation links (`platform=app&conversationKey=…`). `GET /telegram/search` rows carry `messageLink` too.
+
+Only a supergroup has links to single messages. In a private chat or a basic group the route answers `409 not-linkable` (`chat-not-linkable`) and the agent links the card instead, or restates the ask in full and says no link exists. Topics in the separate Issues group link into that group.
+
+On development agents the outbound reviewer checks this (`B26_WAITING_ASK_UNLINKED`): a reply that points back at an ask you still owe, without the link or the restatement, is handed back to the agent before it sends. It judges by meaning, and it is a nudge: the agent can send unchanged with a written reason. The switch is `toneGate.waitingAskLinks.enabled`.
+
+## Telegram Web K drift
+
+When Telegram ships a new Web K build, the managed browser profile used for message-origin checks stops matching the reviewed build list. Re-enroll it with:
+
+```bash
+instar telegram-origin enroll-browser <profileId> [--evidence-out canary.json]
+```
+
+This is a local-only command, never an HTTP route. It retires the profile's browser, runs an authenticated read-only canary, and enrolls the observed build only if it is on the reviewed list (keeping one prior reviewed build). It sends nothing. See `docs/specs/telegram-message-origin.md`.

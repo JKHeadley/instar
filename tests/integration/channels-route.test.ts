@@ -52,14 +52,19 @@ function mount(tmpDir: string, over: Record<string, unknown> = {}): express.Expr
 
 describe('GET /channels (integration — the wiring, not just the resolver)', () => {
   let tmpDir: string;
+  let originalRegistryDir: string | undefined;
 
   beforeEach(() => {
     tmpDir = fs.mkdtempSync(path.join(os.tmpdir(), 'channels-route-'));
     fs.mkdirSync(path.join(tmpDir, '.instar'), { recursive: true });
+    originalRegistryDir = process.env.INSTAR_TEST_REGISTRY_DIR;
+    process.env.INSTAR_TEST_REGISTRY_DIR = path.join(tmpDir, 'registry');
     AUTH = generateAgentToken(PROJECT_NAME);
   });
   afterEach(() => {
     try { deleteAgentToken(PROJECT_NAME); } catch { /* best-effort */ }
+    if (originalRegistryDir === undefined) delete process.env.INSTAR_TEST_REGISTRY_DIR;
+    else process.env.INSTAR_TEST_REGISTRY_DIR = originalRegistryDir;
     SafeFsExecutor.safeRmSync(tmpDir, {
       recursive: true, force: true, operation: 'tests/integration/channels-route.test.ts:cleanup',
     });
@@ -71,8 +76,8 @@ describe('GET /channels (integration — the wiring, not just the resolver)', ()
 
     expect(res.status).toBe(200);
     expect(res.body.channels.map((c: { id: string }) => c.id).sort())
-      .toEqual(['a2a-telegram', 'mutual-ssh', 'peer-http', 'threadline-relay', 'user-imessage', 'user-slack', 'user-telegram', 'user-whatsapp']);
-    expect(res.body.summary.total).toBe(8);
+      .toEqual(['a2a-telegram', 'mutual-ssh', 'peer-http', 'server-down-recovery', 'threadline-relay', 'user-imessage', 'user-slack', 'user-telegram', 'user-whatsapp']);
+    expect(res.body.summary.total).toBe(9);
   });
 
   /**
@@ -90,7 +95,7 @@ describe('GET /channels (integration — the wiring, not just the resolver)', ()
       res.body.channels.filter((c: { audience: string }) => c.audience === a)
         .map((c: { id: string }) => c.id).sort();
 
-    expect(byAudience('peer')).toEqual(['a2a-telegram', 'mutual-ssh', 'peer-http', 'threadline-relay']);
+    expect(byAudience('peer')).toEqual(['a2a-telegram', 'mutual-ssh', 'peer-http', 'server-down-recovery', 'threadline-relay']);
     expect(byAudience('user')).toEqual(['user-imessage', 'user-slack', 'user-telegram', 'user-whatsapp']);
     // Every row must declare one; an untagged channel is not a third state, it is a bug.
     for (const c of res.body.channels) expect(['peer', 'user']).toContain(c.audience);
@@ -107,20 +112,37 @@ describe('GET /channels (integration — the wiring, not just the resolver)', ()
     }
   });
 
-  it('with NO relay client, threadline reports not-configured rather than working', async () => {
+  it('recovery is a peer channel and remains explicitly unknown without verified route evidence', async () => {
+    const res=await request(mount(tmpDir)).get('/channels').set('Authorization',`Bearer ${AUTH}`);
+    expect(res.status).toBe(200);
+    const recovery=res.body.channels.find((c:{id:string})=>c.id==='server-down-recovery');
+    expect(recovery).toMatchObject({id:'server-down-recovery',audience:'peer',state:'unknown',direction:'none',detail:'recovery-degraded-or-unknown'});
+    expect(recovery.cost).toContain('owner enrollment');
+    expect(recovery.cost).toContain('two fresh independent source-verified recovery routes');
+    expect(res.body.summary.working).toBe(0);
+  });
+
+  it('with NO relay client, the local view reports not-configured rather than working', async () => {
     // The failure direction that matters: absent infrastructure must never read as healthy.
-    const res = await request(mount(tmpDir)).get('/channels').set('Authorization', `Bearer ${AUTH}`);
+    const res = await request(mount(tmpDir)).get('/channels?scope=local').set('Authorization', `Bearer ${AUTH}`);
     const relay = res.body.channels.find((c: { id: string }) => c.id === 'threadline-relay');
     expect(relay.state).toBe('not-configured');
     expect(res.body.summary.working).toBe(0);
   });
 
-  it('with a DISCONNECTED relay client, it reports broken — the incident state', async () => {
+  it('with a DISCONNECTED relay client, the local view reports broken — the incident state', async () => {
     const res = await request(mount(tmpDir, { threadlineRelayClient: { connectionState: 'disconnected' } }))
-      .get('/channels').set('Authorization', `Bearer ${AUTH}`);
+      .get('/channels?scope=local').set('Authorization', `Bearer ${AUTH}`);
     const relay = res.body.channels.find((c: { id: string }) => c.id === 'threadline-relay');
     expect(relay.state).toBe('broken');
     expect(relay.detail).toContain('connected=false');
+  });
+
+  it('with no verified agent identity, the agent view stays unknown even when local relay is absent', async () => {
+    const res = await request(mount(tmpDir)).get('/channels').set('Authorization', `Bearer ${AUTH}`);
+    const relay = res.body.channels.find((c: { id: string }) => c.id === 'threadline-relay');
+    expect(relay.state).toBe('unknown');
+    expect(res.body.scope).toBe('agent');
   });
 
   it('with a CONNECTED relay client, it reports working — the surface discriminates', async () => {

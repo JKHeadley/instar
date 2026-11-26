@@ -152,13 +152,33 @@ describe('frameworkSessionLaunch.buildInteractiveLaunch', () => {
   });
 
   describe('codex-cli', () => {
+    // 2026-11-18: a swap onto a Codex account tagged the session with that account
+    // while Codex ran on the server's default login (~/.codex), because this builder
+    // dropped configHome. The account a session is tagged with must be its CODEX_HOME.
+    it('launches under the account home it is given (CODEX_HOME), fresh or resumed', () => {
+      const bin = fakeCodexBinary(false);
+      const fresh = buildInteractiveLaunch('codex-cli', { binaryPath: bin, configHome: '/Users/x/.codex-followme-justin-gmail' });
+      expect(fresh.envOverrides.CODEX_HOME).toBe('/Users/x/.codex-followme-justin-gmail');
+      expect(fresh.envOverrides.CLAUDE_CONFIG_DIR).toBeUndefined();
+      const resumed = buildInteractiveLaunch('codex-cli', {
+        binaryPath: bin, configHome: '/Users/x/.codex-followme-justin-gmail', resumeSessionId: '01a1ec19-77d5-7870-8e3c-e20adced3374',
+      });
+      expect(resumed.envOverrides.CODEX_HOME).toBe('/Users/x/.codex-followme-justin-gmail');
+      expect(resumed.argv.slice(1, 3)).toEqual(['resume', '01a1ec19-77d5-7870-8e3c-e20adced3374']);
+    });
+
+    it('sets no CODEX_HOME without a configHome (inherits the default login, unchanged)', () => {
+      const spec = buildInteractiveLaunch('codex-cli', { binaryPath: fakeCodexBinary(false) });
+      expect(spec.envOverrides.CODEX_HOME).toBeUndefined();
+    });
+
     it('reports the same concrete default model the interactive builder launches', () => {
-      expect(resolveInteractiveLaunchModel('codex-cli', undefined)).toBe('gpt-5.6-sol');
-      expect(resolveInteractiveLaunchModel('codex-cli', 'balanced')).toBe('gpt-5.6-sol');
+      expect(resolveInteractiveLaunchModel('codex-cli', undefined)).toBe('gpt-6.2-sol');
+      expect(resolveInteractiveLaunchModel('codex-cli', 'balanced')).toBe('gpt-6.2-sol');
       expect(resolveInteractiveLaunchModel('codex-cli', undefined, 'ollama')).toBe('llama3.2:latest');
     });
 
-    it('passes --model gpt-5.6-sol + --dangerously-bypass-approvals-and-sandbox by default (parity with Claude\'s --dangerously-skip-permissions)', () => {
+    it('passes --model gpt-6.2-sol + --dangerously-bypass-approvals-and-sandbox by default (parity with Claude\'s --dangerously-skip-permissions)', () => {
       // The binary is a FAKE whose --help advertises no hook-trust flag, so this
       // asserts the DEFAULT argv deterministically. It previously passed the real
       // '/usr/local/bin/codex' path, which made the assertion depend on whichever
@@ -171,7 +191,7 @@ describe('frameworkSessionLaunch.buildInteractiveLaunch', () => {
       const spec = buildInteractiveLaunch('codex-cli', { binaryPath: bin });
       // The explicit `--model` flag avoids Codex CLI's own historical
       // default `gpt-5.2-codex` (retired from ChatGPT-subscription auth
-      // 2026-04-14). The session default is gpt-5.6-sol as of 2026-09-09
+      // 2026-04-14). The session default is gpt-6.2-sol as of 2026-11-17
       // (Justin's call) — newest generalist + Codex CLI's own default,
       // confirmed working on the subscription. See models.ts comment block.
       // The bypass flag is the single-flag parity for Claude's
@@ -185,7 +205,7 @@ describe('frameworkSessionLaunch.buildInteractiveLaunch', () => {
       expect(spec.argv).toEqual([
         bin,
         '--model',
-        'gpt-5.6-sol',
+        'gpt-6.2-sol',
         '--dangerously-bypass-approvals-and-sandbox',
         '-c',
         'check_for_update_on_startup=false',
@@ -365,7 +385,7 @@ describe('frameworkSessionLaunch.buildHeadlessLaunch', () => {
       expect(spec.argv).toContain('sandbox_workspace_write.network_access=true');
       expect(spec.argv).not.toContain('--dangerously-bypass-approvals-and-sandbox');
       expect(spec.argv).toContain('-m');
-      expect(spec.argv).toContain('gpt-5.6-sol');
+      expect(spec.argv).toContain('gpt-6.2-sol');
       expect(spec.argv[spec.argv.length - 1]).toBe('analyze this');
     });
 
@@ -487,17 +507,16 @@ describe('frameworkSessionLaunch.resolveModelForFramework', () => {
 
   describe('codex-cli', () => {
     it('maps generic tiers to subscription-safe Codex model ids', () => {
-      // light/medium/heavy mapping. NOTE: gpt-5.2 was retired from ChatGPT-account
-      // Codex on 2026-09-09 (now 400s), so `fast`/`haiku` moved to gpt-5.6-sol —
-      // the cheapest still-accepted model (== balanced). See models.ts.
-      expect(resolveModelForFramework('codex-cli', 'fast')).toBe('gpt-5.6-sol');
-      expect(resolveModelForFramework('codex-cli', 'balanced')).toBe('gpt-5.6-sol');
-      expect(resolveModelForFramework('codex-cli', 'capable')).toBe('gpt-6-astra');
+      // light/medium/heavy mapping — the GPT-6 family since 2026-09-23
+      // (luna / sol / astra). See models.ts for the live-probe record.
+      expect(resolveModelForFramework('codex-cli', 'fast')).toBe('gpt-6-luna');
+      expect(resolveModelForFramework('codex-cli', 'balanced')).toBe('gpt-6.2-sol');
+      expect(resolveModelForFramework('codex-cli', 'capable')).toBe('gpt-6.2-astra');
     });
     it('maps legacy Claude tier names to Codex equivalents (cross-port back-compat)', () => {
-      expect(resolveModelForFramework('codex-cli', 'haiku')).toBe('gpt-5.6-sol');
-      expect(resolveModelForFramework('codex-cli', 'sonnet')).toBe('gpt-5.6-sol');
-      expect(resolveModelForFramework('codex-cli', 'opus')).toBe('gpt-6-astra');
+      expect(resolveModelForFramework('codex-cli', 'haiku')).toBe('gpt-6-luna');
+      expect(resolveModelForFramework('codex-cli', 'sonnet')).toBe('gpt-6.2-sol');
+      expect(resolveModelForFramework('codex-cli', 'opus')).toBe('gpt-6.2-astra');
     });
     it('passes raw Codex model ids through verbatim', () => {
       expect(resolveModelForFramework('codex-cli', 'gpt-5.4-codex')).toBe('gpt-5.4-codex');
@@ -542,7 +561,7 @@ describe('frameworkSessionLaunch.resolveModelForFramework', () => {
 
   it('codex headless builder rewrites generic tier to gpt-5.x', () => {
     const balanced = buildHeadlessLaunch('codex-cli', { binaryPath: '/x/codex', prompt: 'p', model: 'balanced' });
-    expect(balanced.argv).toContain('gpt-5.6-sol'); // medium tier
+    expect(balanced.argv).toContain('gpt-6.2-sol'); // medium tier
     expect(balanced.argv).not.toContain('balanced');
   });
 });

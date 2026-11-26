@@ -1,0 +1,42 @@
+{
+  "version": 3,
+  "slug": "storage-refusals-named",
+  "sessionId": "3117ee1f-b832-43c4-82c6-601c1f9a80a9",
+  "timestamp": "2026-11-08T00:49:51.347Z",
+  "artifactPath": "upgrades/side-effects/storage-refusals-named.md",
+  "artifactSha256": "3c00c2e1428af403e67311b0409f41c85612df0372d667cabf61005b792adb5a",
+  "coveredFiles": [
+    "docs/specs/storage-refusals-named.eli16.md",
+    "src/core/storageMachineName.ts",
+    "src/server/middleware.ts",
+    "tests/unit/storage-machine-name.test.ts",
+    "upgrades/side-effects/storage-refusals-named.md"
+  ],
+  "phase": "complete",
+  "tier": 1,
+  "tierReasoning": "Diagnostic-only filesystem and SQLite coverage; no admission, recovery or threshold changes.",
+  "eli16Path": "docs/specs/storage-refusals-named.eli16.md",
+  "sideEffectsPath": "upgrades/side-effects/storage-refusals-named.md",
+  "secondPass": "true",
+  "reviewerConcurred": true,
+  "toolchain": {
+    "buildSkill": {
+      "name": "build",
+      "version": null,
+      "verified": false
+    },
+    "reviewSkills": [
+      {
+        "name": "instar-dev",
+        "outcome": "concur",
+        "verified": false,
+        "iterations": 1
+      }
+    ]
+  },
+  "classClosure": {
+    "defectClass": "unbounded-self-action",
+    "closure": "n/a",
+    "reason": "Pure diagnostic classification, no autonomous actions or execution decisions."
+  }
+}

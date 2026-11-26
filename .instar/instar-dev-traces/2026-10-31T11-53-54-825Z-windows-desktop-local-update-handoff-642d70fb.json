@@ -1,0 +1,17 @@
+{
+  "version": 2,
+  "slug": "windows-desktop-local-update-handoff",
+  "sessionId": "e0a70e98-3933-416c-b0c6-3ded161084be",
+  "timestamp": "2026-10-31T11:53:54.825Z",
+  "artifactPath": "upgrades/side-effects/windows-desktop-local-update-handoff.md",
+  "artifactSha256": "f25ba628bfbf7915e24b3a4d18a4543e37630187efdc3083ac9c838d01d9866d",
+  "specPath": "docs/specs/blocker-handoff-across-machines-and-surfaces.md",
+  "coveredFiles": [
+    ".github/workflows/ci.yml"
+  ],
+  "phase": "complete",
+  "tier": 2,
+  "tierReasoning": "Windows CI must accept a lost final TCP reply only when the exact prepared companion exits successfully; the production installer already requires Task Scheduler to confirm stopped state.",
+  "secondPass": "true",
+  "reviewerConcurred": true
+}

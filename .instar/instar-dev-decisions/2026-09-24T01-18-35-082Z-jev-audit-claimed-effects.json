@@ -1,0 +1,29 @@
+{
+  "ts": "2026-09-24T01:18:35.082Z",
+  "slug": "jev-audit-claimed-effects",
+  "suggestedTier": 2,
+  "declaredTier": 1,
+  "riskFloor": 1,
+  "riskFloorReasons": [],
+  "belowFloor": false,
+  "files": 8,
+  "loc": 99,
+  "scope": {
+    "basis": "staged-in-scope-additions-plus-deletions",
+    "files": [
+      "src/core/types.ts",
+      "src/scaffold/templates/jobs/instar/commitment-detection.md",
+      "src/scaffold/templates/jobs/instar/reflection-trigger.md",
+      "src/scheduler/AgentMdJobLoader.ts",
+      "src/scheduler/InstallBuiltinJobs.ts",
+      "src/scheduler/JevJobCompletionAudit.ts",
+      "src/scheduler/JobScheduler.ts",
+      "src/scheduler/buildPerSlugManifest.ts"
+    ],
+    "addedLines": 81,
+    "deletedLines": 18
+  },
+  "causalAutopsy": null,
+  "classClosure": null,
+  "verdict": "pass"
+}

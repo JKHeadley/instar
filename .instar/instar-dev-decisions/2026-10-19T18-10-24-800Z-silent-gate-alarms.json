@@ -1,0 +1,30 @@
+{
+  "ts": "2026-10-19T18:10:24.800Z",
+  "slug": "silent-gate-alarms",
+  "suggestedTier": 2,
+  "declaredTier": 1,
+  "riskFloor": 1,
+  "riskFloorReasons": [],
+  "belowFloor": false,
+  "files": 5,
+  "loc": 111,
+  "scope": {
+    "basis": "staged-in-scope-additions-plus-deletions",
+    "files": [
+      "src/commands/server.ts",
+      "src/feedback-factory/triage/FeedbackTriageService.ts",
+      "src/messaging/telegram-origin/OriginForwardToHolder.ts",
+      "src/monitoring/SessionWatchdog.ts",
+      "src/monitoring/watchdog-notifications.ts"
+    ],
+    "addedLines": 102,
+    "deletedLines": 9
+  },
+  "causalAutopsy": null,
+  "classClosure": {
+    "defectClass": "unbounded-self-action",
+    "closure": "n/a",
+    "reason": "no loop is added: each new emission fires at most once per hold episode, once per interrupted process (bounded 500-entry dedupe set) or once per triage quota pause, driven by an external event, never by its own output"
+  },
+  "verdict": "pass"
+}

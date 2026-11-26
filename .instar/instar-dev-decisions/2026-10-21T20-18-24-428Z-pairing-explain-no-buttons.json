@@ -1,0 +1,31 @@
+{
+  "ts": "2026-10-21T20:18:24.428Z",
+  "slug": "pairing-explain-no-buttons",
+  "suggestedTier": 1,
+  "declaredTier": 2,
+  "riskFloor": 1,
+  "riskFloorReasons": [],
+  "belowFloor": false,
+  "files": 3,
+  "loc": 40,
+  "scope": {
+    "basis": "staged-in-scope-additions-plus-deletions",
+    "files": [
+      "src/server/LifelineIngressGuard.ts",
+      "src/server/routes.ts",
+      "src/threadline/PairingInviteTelegram.ts"
+    ],
+    "addedLines": 38,
+    "deletedLines": 2
+  },
+  "causalAutopsy": {
+    "origin": "latent",
+    "relatedPrs": [
+      2181,
+      2276
+    ],
+    "notes": "The fallback text never named its cause; Justin's second PP test could not be diagnosed remotely."
+  },
+  "classClosure": null,
+  "verdict": "pass"
+}

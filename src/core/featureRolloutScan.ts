@@ -12,10 +12,12 @@
 
 import * as fs from 'node:fs';
 import * as path from 'node:path';
+import { rolloutGitAsync } from './featureRolloutGitAsync.js';
 import { SafeGitExecutor } from './SafeGitExecutor.js';
 import type { SpecArtifact } from './FeatureRolloutReconciler.js';
 import type { RolloutFlagObservation } from './featureRollout.js';
 import type { MaturationEvaluationContract, MaturationMetricSource, RolloutAccountingDisposition } from './InitiativeTracker.js';
+import { parseMaturationOutcome } from '../monitoring/MaturationOutcome.js';
 
 const RECENT_MERGE_WINDOW_MS = 14 * 24 * 60 * 60 * 1000; // 14d ⇒ active vs terminal backfill
 
@@ -55,7 +57,7 @@ const MATURATION_SOURCE_REFS: Readonly<Record<MaturationMetricSource, ReadonlySe
   ]),
   'blocker-trend': new Set(['request-to-persist.ratio', 'clear-latency.ratio']),
   'feature-summary': new Set([
-    'feedback-factory.completed-runs', 'autonomous-throughput.observed-runs',
+    'feedback-factory.completed-runs', 'feedback-factory.run-success-share-7d', 'feedback-factory.finished-runs-7d', 'autonomous-throughput.observed-runs',
     'claim-verification.classified-claims', 'blocker-lifecycle.completed-transitions',
     'mutual-ssh.ready-peers', 'context-recovery.successful-recoveries',
     'slack-decision-gate.considered-acknowledgments', 'self-heal-gate.successful-repairs',
@@ -91,7 +93,10 @@ export function parseMaturationContract(raw: string | undefined): MaturationCont
     ids.add(m.id);
     metrics.push({ id: m.id, source, sourceRef: m.sourceRef, direction: m.direction as 'at-least' | 'at-most', threshold: m.threshold, minSamples: m.minSamples as number });
   }
-  return { ok: true, contract: { cadenceHours: v.cadenceHours as number, evidenceMaxAgeHours: v.evidenceMaxAgeHours as number, metrics } };
+  const outcome = v.outcome === undefined ? undefined : parseMaturationOutcome(v.outcome, metrics.map(m => m.id));
+  if (outcome === null) return { ok: false, error: 'invalid-shape' };
+  return { ok: true, contract: { cadenceHours: v.cadenceHours as number, evidenceMaxAgeHours: v.evidenceMaxAgeHours as number, metrics,
+    ...(outcome ? { outcome } : {}) } };
 }
 
 function maturationContractFrom(fm: Record<string, string>): MaturationEvaluationContract | undefined {
@@ -352,4 +357,133 @@ export function makeFlagObserver(liveConfig: unknown, shippedDefaults: unknown):
       defaultEnabled: defObj?.enabled === true,
     };
   };
+}
+
+
+/** Shared pure projection for the asynchronous local/canonical discovery paths. */
+function projectAsyncArtifact(specPath: string, content: string, trace: TraceInfo | undefined, canonical: boolean, now: () => number): SpecArtifact {
+  const fm = parseSpecFrontmatter(content);
+  const approved = fm.approved === 'true';
+  const reviewConverged = Boolean(fm['review-convergence']);
+  const shipsStaged = fm['ships-staged'] === 'true';
+  const traceExists = trace != null;
+  const merged = canonical || (approved && traceExists);
+  const mergedRecently = merged && trace?.createdAtMs != null && (now() - trace.createdAtMs) <= RECENT_MERGE_WINDOW_MS;
+  return {
+      id: normalizeSpecId(path.basename(specPath)),
+      specPath,
+      title: (content.match(/^#\s+(.+)$/m)?.[1] ?? fm.title ?? specPath).slice(0, 120),
+      approved, reviewConverged, shipsStaged,
+      flagPath: fm['rollout-flag-path'] || undefined,
+      promotionCriteria: fm['rollout-criteria'] || undefined,
+      evidenceSource: fm['rollout-evidence-ref']
+        ? { type: (fm['rollout-evidence-type'] as 'log-filter' | 'endpoint') || 'log-filter', ref: fm['rollout-evidence-ref'], filter: fm['rollout-evidence-filter'] || undefined }
+        : undefined,
+      maturationEvaluation: maturationContractFrom(fm),
+      maturationContractError: maturationContractErrorFrom(fm),
+      rolloutDisposition: ['active', 'composed', 'excluded'].includes(fm['rollout-disposition'])
+        ? fm['rollout-disposition'] as RolloutAccountingDisposition : undefined,
+      sourcePrNumber: /^\d+$/.test(fm['rollout-source-pr'] ?? '') ? Number(fm['rollout-source-pr']) : undefined,
+      ownerFeatureId: fm['rollout-owner-feature'] || undefined,
+      exclusionReason: fm['rollout-exclusion-reason'] || undefined,
+      traceExists,
+      prNumber: trace?.prNumber,
+      merged,
+      mergedRecently,
+    };
+}
+
+function traceInfo(content: string): { specPath: string; info: TraceInfo } | undefined {
+  let t: Record<string, unknown>;
+  try { t = JSON.parse(content); } catch { return undefined; } // @silent-fallback-ok: malformed trace is not observation evidence
+  if (!t || typeof t !== 'object' || typeof t.specPath !== 'string') return undefined;
+  const ts = t.createdAt ?? t.timestamp;
+  return { specPath: t.specPath, info: {
+    prNumber: typeof t.prNumber === 'number' ? t.prNumber : undefined,
+    createdAtMs: ts ? Date.parse(String(ts)) : undefined,
+  } };
+}
+
+async function discoveryNames(dir: string, signal?: AbortSignal): Promise<string[]> {
+  signal?.throwIfAborted();
+  try { return await fs.promises.readdir(dir); }
+  catch (error) {
+    signal?.throwIfAborted();
+    if ((error as NodeJS.ErrnoException).code === 'ENOENT') return []; // @silent-fallback-ok: absent optional inventory is empty
+    throw error;
+  }
+}
+
+/** No synchronous tree read is permitted on the server discovery path. */
+export async function scanSpecArtifactsAsync(repoRoot: string, now: () => number = Date.now, signal?: AbortSignal): Promise<SpecArtifact[]> {
+  const traces = new Map<string, TraceInfo>();
+  const traceDir = path.join(repoRoot, '.instar', 'instar-dev-traces');
+  for (const name of await discoveryNames(traceDir, signal)) {
+    signal?.throwIfAborted();
+    if (!name.endsWith('.json')) continue;
+    const info = traceInfo(await fs.promises.readFile(path.join(traceDir, name), { encoding: 'utf8', signal }));
+    if (info) traces.set(info.specPath, info.info);
+  }
+  const artifacts: SpecArtifact[] = [];
+  const specsDir = path.join(repoRoot, 'docs', 'specs');
+  for (const name of await discoveryNames(specsDir, signal)) {
+    signal?.throwIfAborted();
+    if (!name.endsWith('.md') || name.endsWith('.eli16.md')) continue;
+    const specPath = `docs/specs/${name}`;
+    const content = await fs.promises.readFile(path.join(specsDir, name), { encoding: 'utf8', signal });
+    artifacts.push(projectAsyncArtifact(specPath, content, traces.get(specPath), false, now));
+  }
+  signal?.throwIfAborted();
+  return artifacts;
+}
+
+/** Pin a canonical-main commit, then await each complete blob before projection. */
+export async function scanSpecArtifactsCanonicalAsync(opts: CanonicalScanOpts & { signal?: AbortSignal }): Promise<CanonicalScanResult> {
+  const { signal } = opts;
+  const now = opts.now ?? Date.now;
+  const remoteRef = `refs/remotes/${opts.canonicalRemote}/main`;
+  const run = (args: string[], operation: string, timeout?: number): Promise<string> =>
+    rolloutGitAsync(args, opts.repoPath, operation, signal, timeout);
+  await run(['fetch', opts.canonicalRemote, `+refs/heads/main:${remoteRef}`, '--no-tags', '--no-recurse-submodules'],
+    'featureRolloutScan:canonicalFetch', opts.fetchTimeoutMs ?? 30_000);
+  const canonicalHeadSha = (await run(['rev-parse', '--verify', `${remoteRef}^{commit}`], 'featureRolloutScan:canonicalRevParse')).trim();
+  const specNames = await run(['ls-tree', '-r', '--name-only', canonicalHeadSha, '--', 'docs/specs/'], 'featureRolloutScan:lsSpecs');
+  const traceNames = await run(['ls-tree', '-r', '--name-only', canonicalHeadSha, '--', '.instar/instar-dev-traces/'], 'featureRolloutScan:lsTraces');
+  const traces = new Map<string, TraceInfo>();
+  for (const name of traceNames.split('\n').filter(name => name.endsWith('.json'))) {
+    const content = await run(['show', `${canonicalHeadSha}:${name}`], 'featureRolloutScan:traceBlob');
+    const info = traceInfo(content);
+    if (info) traces.set(info.specPath, info.info);
+  }
+  const artifacts: SpecArtifact[] = [];
+  for (const name of specNames.split('\n').filter(name => name.endsWith('.md') && !name.endsWith('.eli16.md'))) {
+    const content = await run(['show', `${canonicalHeadSha}:${name}`], 'featureRolloutScan:specBlob');
+    artifacts.push(projectAsyncArtifact(name, content, traces.get(name), true, now));
+  }
+  signal?.throwIfAborted();
+  return { artifacts, canonicalHeadSha };
+}
+
+/** Same observation fallback, entirely asynchronous; cancellation never falls back. */
+export async function scanSpecArtifactsWithCanonicalAsync(
+  repoRoot: string,
+  opts: { canonicalRefScanEnabled: boolean; canonicalRemote?: string; fetchTimeoutMs?: number; onDegradation?: (reason: string) => void },
+  now: () => number = Date.now,
+  signal?: AbortSignal,
+): Promise<SpecArtifact[]> {
+  signal?.throwIfAborted();
+  if (!opts.canonicalRefScanEnabled) return scanSpecArtifactsAsync(repoRoot, now, signal);
+  if (!opts.canonicalRemote) {
+    opts.onDegradation?.('canonical-ref scan enabled but no canonicalRemote configured — falling back to local scan');
+    return scanSpecArtifactsAsync(repoRoot, now, signal);
+  }
+  try {
+    return (await scanSpecArtifactsCanonicalAsync({ repoPath: repoRoot, canonicalRemote: opts.canonicalRemote,
+      fetchTimeoutMs: opts.fetchTimeoutMs, now, signal })).artifacts;
+  } catch (error) {
+    signal?.throwIfAborted();
+    if (error instanceof Error && error.name === 'AbortError') throw error;
+    opts.onDegradation?.(`canonical-ref scan failed (${error instanceof Error ? error.message : String(error)}) — falling back to local scan`);
+    return scanSpecArtifactsAsync(repoRoot, now, signal);
+  }
 }

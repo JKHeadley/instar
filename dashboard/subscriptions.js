@@ -16,6 +16,8 @@
 // No verification URL is ever rendered as a live href (defense-in-depth): it is
 // shown as sanitized TEXT for the operator to copy.
 
+import { verifiedDisplayName } from './console/display-identity.js';
+
 const CAPS = { label: 64, code: 48, url: 320, summary: 240 };
 
 // Structural presentation-glyph class (NFKC-fold THEN strip), identical to the
@@ -90,6 +92,18 @@ const KNOWN_REPAIR_STATES = new Set([
  *  history, but must never shadow a newer Active observation or offer a retry that
  *  the server's admission policy is required to refuse. In-flight states remain
  *  visible because pool activation can precede the controller's final ledger close. */
+/**
+ * Codex device-limit tripwire (spec codex-device-limit-tripwire §8): the account is benched
+ * on THIS machine because its Codex refusal was judged a per-device paid-account limit.
+ * Signing in again here cannot help, so the dashboard shows the bench and hides Sign in /
+ * Repair. Only the exact cause on a needs-reauth row counts — a peer on older code (cause
+ * absent) or a cause of 'unknown' is ordinary state, never shown as benched.
+ */
+export const DEVICE_LIMIT_WORDS = 'Suspected device limit: benched on this machine';
+export function isDeviceLimitBenched(account) {
+  return !!(account && account.status === 'needs-reauth' && account.statusCause === 'codex-device-limit');
+}
+
 export function repairAppliesToCurrentState(repair, currentState) {
   if (!repair || !KNOWN_REPAIR_STATES.has(repair.state)) return false;
   if (repair.state === 'suggested' || repair.state === 'failed') {
@@ -195,6 +209,25 @@ export function relativeAge(iso, now = Date.now()) {
 }
 
 /**
+ * Plain text for when a failed sign-in repair will try again on its own (spec
+ * relogin-unattended-agent-session-and-slow-retry), else ''. Only a `failed` repair carrying a
+ * future-or-due `nextAttemptAt` has one.
+ */
+export function slowRetryLabel(repair, now = Date.now()) {
+  if (!repair || repair.state !== 'failed' || typeof repair.nextAttemptAt !== 'string') return '';
+  const t = Date.parse(repair.nextAttemptAt);
+  if (Number.isNaN(t)) return '';
+  const min = Math.ceil((t - now) / 60_000);
+  // An approval-mode repair is only RE-OFFERED for a tap; it never starts on its own.
+  const lead = repair.mode === 'approval' ? 'Will offer to try again' : 'Trying again on its own';
+  if (min <= 1) return `${lead} shortly.`;
+  if (min < 60) return `${lead} in ${min} min.`;
+  const hr = Math.round(min / 60);
+  if (hr < 48) return `${lead} in about ${hr} h.`;
+  return `${lead} in about ${Math.round(hr / 24)} days.`;
+}
+
+/**
  * Age text for a quota reading that is old enough to mislead, else ''.
  *
  * Codex quota is read from the account's own session log, so it only advances
@@ -282,6 +315,15 @@ export function quotaBar(doc, label, pct, resetIso, now = Date.now()) {
  *   pinned by a test, because "we grouped everything" would quietly add a redundant
  *   heading to the common case.
  */
+/** CSS class that colors a provider's group at a glance (operator request 2026-09-25:
+ *  Claude and Codex must be distinguishable without reading). Closed mapping, so a
+ *  provider string never reaches a class name raw. */
+export function providerClass(provider) {
+  if (provider === 'anthropic') return 'sub-prov-claude';
+  if (provider === 'openai') return 'sub-prov-codex';
+  return 'sub-prov-other';
+}
+
 export function groupAccountsByProvider(accounts) {
   if (!Array.isArray(accounts)) return [];
   const groups = new Map(); // provider key (raw) → accounts, in first-appearance order
@@ -298,7 +340,7 @@ export function groupAccountsByProvider(accounts) {
       // else, so an unrecognised or hostile provider string cannot reach the DOM raw.
       // An absent provider has no honest name, so say so rather than invent one.
       const label = friendlyProvider(key) || 'Other';
-      out.push({ __providerHeading: label });
+      out.push({ __providerHeading: label, __providerKey: key });
     }
     for (const m of members) out.push(m);
   }
@@ -316,25 +358,31 @@ export function renderAccounts(doc, target, accounts, now = Date.now(), inUseAcc
     target.appendChild(el(doc, 'div', 'sub-empty', 'No subscription accounts enrolled yet.'));
     return;
   }
+  const visibleAccountKey = (a) => {
+    const nick = verifiedDisplayName(a && a.nickname, a && a.id);
+    const email = verifiedDisplayName(a && a.email, a && a.id);
+    return nick || email ? `${(nick || '').toLocaleLowerCase()}\u0000${(email || '').toLocaleLowerCase()}` : null;
+  };
+  const accountKeys = accounts.map(visibleAccountKey);
   for (const a of groupAccountsByProvider(accounts)) {
     // A group marker, not an account: render the provider heading and continue.
     // (The operator's complaint was a flat interleaved list — Claude and Codex
     // accounts mixed together with only a small per-card meta line to tell them
     // apart. The heading is what makes the split scannable.)
     if (a && a.__providerHeading) {
-      target.appendChild(el(doc, 'div', 'sub-provider-heading', a.__providerHeading));
+      target.appendChild(el(doc, 'div', `sub-provider-heading ${providerClass(a.__providerKey)}`, a.__providerHeading));
       continue;
     }
     const inUse = !!(inUseAccountId && a && a.id === inUseAccountId);
-    const card = el(doc, 'div', inUse ? 'sub-account sub-account-inuse' : 'sub-account');
+    const card = el(doc, 'div', `${inUse ? 'sub-account sub-account-inuse' : 'sub-account'} ${providerClass(a && a.provider)}`);
     const head = el(doc, 'div', 'sub-account-head');
-    head.appendChild(el(doc, 'span', 'sub-account-nick', sanitizeForDisplay(a && a.nickname, 'label')));
+    head.appendChild(el(doc, 'span', 'sub-account-nick', sanitizeForDisplay(verifiedDisplayName(a && a.nickname, a && a.id) || verifiedDisplayName(a && a.email, a && a.id) || 'Account name unavailable', 'label')));
     if (inUse) head.appendChild(el(doc, 'span', 'sub-account-inuse-badge', '● In use now'));
     head.appendChild(el(doc, 'span', 'sub-account-status', friendlyStatus(effectiveAccountStatus(a))));
     card.appendChild(head);
     card.appendChild(el(doc, 'div', 'sub-account-meta',
       `${friendlyProvider(a && a.provider)} · ${sanitizeForDisplay(a && a.framework, 'label')}`));
-    if (a && a.email) {
+    if (verifiedDisplayName(a && a.email, a && a.id)) {
       card.appendChild(el(doc, 'div', 'sub-account-email', sanitizeForDisplay(a.email, 'label')));
     }
     const q = (a && a.lastQuota) || null;
@@ -379,7 +427,13 @@ export function renderAccounts(doc, target, accounts, now = Date.now(), inUseAcc
     const repair = repairAppliesToCurrentState(repairCandidate, effectiveAccountStatus(a))
       ? repairCandidate
       : null;
-    if (repair) {
+    const benched = isDeviceLimitBenched(a);
+    if (benched) {
+      card.appendChild(el(doc, 'div', 'sub-account-device-limit', DEVICE_LIMIT_WORDS));
+    }
+    const accountKey = visibleAccountKey(a);
+    const uniqueAccount = accountKey !== null && accountKeys.indexOf(accountKey) === accountKeys.lastIndexOf(accountKey);
+    if (repair && !benched) {
       const repairBox = el(doc, 'div', 'sub-account-repair');
       const terminal = ['succeeded', 'refused', 'cancelled', 'failed'].includes(repair.state);
       const label = repair.state === 'suggested' ? 'Sign-in repair is ready.'
@@ -390,15 +444,28 @@ export function renderAccounts(doc, target, accounts, now = Date.now(), inUseAcc
                 : repair.state === 'cancelled' ? 'Sign-in repair cancelled.'
                   : 'Repairing sign-in…';
       repairBox.appendChild(el(doc, 'div', 'sub-account-repair-status', label));
+      const retryText = slowRetryLabel(repair, now);
+      if (retryText) repairBox.appendChild(el(doc, 'div', 'sub-account-repair-next', retryText));
+      else if (repair.state === 'failed' && repair.slowRetryHeld === true) {
+        repairBox.appendChild(el(doc, 'div', 'sub-account-repair-next', 'Won’t try again on its own. Try repair again any time.'));
+      }
       const action = repair.state === 'suggested' ? ['approve', 'Repair sign-in']
         : repair.state === 'failed' ? ['retry', 'Try repair again']
           : (!terminal ? ['cancel', 'Cancel repair'] : null);
-      if (action) {
+      if (action && uniqueAccount) {
         const button = el(doc, 'button', `sub-account-repair-${action[0]}`, action[1]);
         button.setAttribute('data-relogin-action', action[0]);
         button.setAttribute('data-relogin-id', sanitizeForDisplay(repair.id, 'label'));
         repairBox.appendChild(button);
       }
+      if (retryText && uniqueAccount) {
+        // "Cancel" on a failed repair holds its automatic retries (the failure itself is kept).
+        const hold = el(doc, 'button', 'sub-account-repair-hold', 'Don’t retry on its own');
+        hold.setAttribute('data-relogin-action', 'cancel');
+        hold.setAttribute('data-relogin-id', sanitizeForDisplay(repair.id, 'label'));
+        repairBox.appendChild(hold);
+      }
+      if (!uniqueAccount && (action || retryText)) repairBox.appendChild(el(doc, 'div', 'sub-account-repair-next', 'A unique account name is needed before you can act here.'));
       card.appendChild(repairBox);
     }
     target.appendChild(card);
@@ -416,15 +483,19 @@ export function renderAccounts(doc, target, accounts, now = Date.now(), inUseAcc
  * are sent server-side at POST time. By construction this card carries zero raw
  * technical text, so it PASSES the arm-1 operator-surface gate.
  */
-export function renderFollowMeApproveCard(doc, offer) {
+export function renderFollowMeApproveCard(doc, offer, ambiguous = false) {
   const card = el(doc, 'div', 'sub-followme-offer');
   // Non-sensitive identifiers, for the Approve handler to resolve the offer. NOT
   // operator-facing text; never a fingerprint/JSON.
   card.setAttribute('data-account-id', sanitizeForDisplay(offer && offer.accountId, 'label'));
   card.setAttribute('data-target-machine-id', sanitizeForDisplay(offer && offer.targetMachineId, 'label'));
 
-  const machine = sanitizeForDisplay(offer && offer.machineNickname, 'label');
-  const account = sanitizeForDisplay(offer && offer.accountLabel, 'label');
+  const machineName = verifiedDisplayName(offer && offer.machineNickname, offer && offer.targetMachineId);
+  const accountName = verifiedDisplayName(offer && offer.accountLabel, offer && offer.accountId);
+  const canApprove = Boolean(machineName && accountName && !ambiguous);
+  const machine = sanitizeForDisplay(machineName || 'Machine name unavailable', 'label');
+  const account = sanitizeForDisplay(accountName || 'account name unavailable', 'label');
+  card.setAttribute('data-target-verified', canApprove ? '1' : '0');
   card.appendChild(el(doc, 'div', 'sub-followme-headline',
     `Let ${machine} use your ${account} subscription`));
   card.appendChild(el(doc, 'div', 'sub-followme-sub',
@@ -435,11 +506,12 @@ export function renderFollowMeApproveCard(doc, offer) {
   pin.setAttribute('class', 'sub-followme-pin');
   pin.setAttribute('placeholder', 'Your PIN'); // a PIN box, not a technical value
   pin.setAttribute('autocomplete', 'off');
-  card.appendChild(pin);
+  if (canApprove) card.appendChild(pin);
 
   const approve = el(doc, 'button', 'sub-followme-approve', 'Approve');
   approve.setAttribute('data-followme-approve', '1');
-  card.appendChild(approve);
+  if (canApprove) card.appendChild(approve);
+  else card.appendChild(el(doc, 'div', 'sub-followme-status', 'A unique account and machine name are needed before approval.'));
   return card;
 }
 
@@ -449,7 +521,24 @@ export function renderFollowMeOffers(doc, target, offers) {
   target.replaceChildren();
   if (!Array.isArray(offers) || offers.length === 0) return; // silent when nothing to offer
   target.appendChild(el(doc, 'div', 'sub-followme-title', 'Let another machine use a subscription'));
-  for (const offer of offers) target.appendChild(renderFollowMeApproveCard(doc, offer));
+  const labels = offers.map((offer) => {
+    const machine = verifiedDisplayName(offer.machineNickname, offer.targetMachineId);
+    const account = verifiedDisplayName(offer.accountLabel, offer.accountId);
+    return machine && account ? `${machine.toLocaleLowerCase()}\u0000${account.toLocaleLowerCase()}` : null;
+  });
+  const machineIdsByName = new Map();
+  for (const offer of offers) {
+    const name = verifiedDisplayName(offer.machineNickname, offer.targetMachineId);
+    if (!name) continue;
+    const key = name.toLocaleLowerCase();
+    if (!machineIdsByName.has(key)) machineIdsByName.set(key, new Set());
+    machineIdsByName.get(key).add(offer.targetMachineId);
+  }
+  for (let i = 0; i < offers.length; i++) {
+    const machine = verifiedDisplayName(offers[i].machineNickname, offers[i].targetMachineId);
+    const ambiguousMachine = machine && machineIdsByName.get(machine.toLocaleLowerCase())?.size > 1;
+    target.appendChild(renderFollowMeApproveCard(doc, offers[i], Boolean(ambiguousMachine || (labels[i] !== null && labels.indexOf(labels[i]) !== labels.lastIndexOf(labels[i])))));
+  }
 }
 
 /**
@@ -465,6 +554,7 @@ export function buildFollowMeIssuePayload(card, offers, pinValue) {
   if (!card || typeof card.getAttribute !== 'function') return null;
   const accountId = card.getAttribute('data-account-id');
   const targetMachineId = card.getAttribute('data-target-machine-id');
+  if (card.getAttribute('data-target-verified') !== '1') return null;
   if (!accountId || !targetMachineId) return null;
   const offer = (Array.isArray(offers) ? offers : []).find(
     (o) => o && o.accountId === accountId && o.targetMachineId === targetMachineId,
@@ -502,8 +592,8 @@ function trustedLoginUrl(raw) {
 export function renderOutcomeCard(doc, o) {
   const isDone = o && o.kind === 'validated';
   const row = el(doc, 'div', isDone ? 'sub-pending sub-pending-done' : 'sub-pending sub-pending-failed');
-  const who = sanitizeForDisplay((o && (o.email || o.accountId)) || 'The account', 'label');
-  const machine = sanitizeForDisplay((o && (o.machineNickname || o.machineId)) || 'the machine', 'label');
+  const who = sanitizeForDisplay(verifiedDisplayName(o && o.email, o && o.accountId) || 'the account', 'label');
+  const machine = sanitizeForDisplay(verifiedDisplayName(o && o.machineNickname, o && o.machineId) || 'the machine', 'label');
   if (isDone) {
     row.appendChild(el(doc, 'div', 'sub-pending-done-head', '✓ Done'));
     row.appendChild(el(doc, 'div', 'sub-pending-outcome-body', `${who} is now set up on ${machine}.`));
@@ -529,7 +619,15 @@ export function renderPendingLogins(doc, target, logins, now = Date.now(), outco
     if (cards.length === 0) target.appendChild(el(doc, 'div', 'sub-empty', 'No logins waiting for approval.'));
     return;
   }
-  for (const l of logins) {
+  const pendingNames = logins.map((login) => {
+    const account = verifiedDisplayName(login && login.expectedEmail, login && login.id)
+      || verifiedDisplayName(login && login.email, login && login.id)
+      || verifiedDisplayName(login && login.label, login && login.id);
+    const machine = verifiedDisplayName(login && login.machineNickname, login && login.machineId);
+    return account ? `${account.toLocaleLowerCase()}\u0000${(machine || '').toLocaleLowerCase()}` : null;
+  });
+  for (let loginIndex = 0; loginIndex < logins.length; loginIndex++) {
+    const l = logins[loginIndex];
     const row = el(doc, 'div', 'sub-pending');
     // Non-sensitive identifiers for the code-submit handler (never a credential).
     row.setAttribute('data-login-id', sanitizeForDisplay(l && l.id, 'label'));
@@ -539,7 +637,10 @@ export function renderPendingLogins(doc, target, logins, now = Date.now(), outco
     // the ACCOUNT is shown by its email when known (the label can be an internal nickname
     // like "Justin"); the MACHINE by nickname, NEVER a raw m_<hex> machine id.
     const machine = friendlyMachine(l && l.machineNickname, l && l.machineId);
-    const who = sanitizeForDisplay(l && (l.expectedEmail || l.email || l.label), 'label');
+    const who = sanitizeForDisplay(
+      verifiedDisplayName(l && l.expectedEmail, l && l.id)
+        || verifiedDisplayName(l && l.email, l && l.id)
+        || verifiedDisplayName(l && l.label, l && l.id), 'label');
 
     // D5 record ⟂ pane liveness: a login whose sign-in window is GONE (paneAlive === false)
     // must not present as submittable — no link, no code input; an explicit needs-restart
@@ -558,11 +659,17 @@ export function renderPendingLogins(doc, target, logins, now = Date.now(), outco
       ? `Sign in to finish setting up ${who} on ${machine}`
       : `Sign in to finish setting up ${who}`;
     row.appendChild(el(doc, 'div', 'sub-pending-headline', headline));
+    const pendingKey = pendingNames[loginIndex];
+    if (!pendingKey || pendingNames.indexOf(pendingKey) !== pendingNames.lastIndexOf(pendingKey)) {
+      row.appendChild(el(doc, 'div', 'sub-pending-notice', 'A unique account name is needed before this sign-in can continue.'));
+      target.appendChild(row);
+      continue;
+    }
 
     // Wrong-account hazard (topic 29836 D3): state prominently, BEFORE the link, which
     // account the provider's OAuth page MUST show — the page opens in whatever login
     // state the browser already has, and nothing else warns.
-    if (l && l.expectedEmail) {
+    if (l && verifiedDisplayName(l.expectedEmail, l.id)) {
       row.appendChild(el(doc, 'div', 'sub-pending-expected',
         `The sign-in page must show ${sanitizeForDisplay(l.expectedEmail, 'label')} — if it shows a different account, tap “Switch account” first.`));
     }
@@ -651,21 +758,25 @@ export function buildMatrixModel(poolScope, pendingScope, transient = {}) {
   for (const a of accountRows) {
     const mid = a && a.machineId;
     if (!mid || offlineMachineIds.has(mid)) continue;
-    if (!machines.has(mid)) machines.set(mid, { machineId: mid, nickname: (a.machineNickname || mid), offline: false });
+    const name = verifiedDisplayName(a.machineNickname, mid);
+    if (!machines.has(mid)) machines.set(mid, { machineId: mid, nickname: name || 'Machine name unavailable', offline: false });
+    else if (name && machines.get(mid).nickname === 'Machine name unavailable') machines.get(mid).nickname = name;
   }
   for (const gap of gapRows) {
     const mid = gap && gap.machineId;
     if (!mid || offlineMachineIds.has(mid)) continue;
+    const name = verifiedDisplayName(gap.machineNickname, mid);
     if (!machines.has(mid)) machines.set(mid, {
       machineId: mid,
-      nickname: gap.machineNickname || mid,
+      nickname: name || 'Machine name unavailable',
       offline: false,
     });
+    else if (name && machines.get(mid).nickname === 'Machine name unavailable') machines.get(mid).nickname = name;
   }
   for (const f of failed) {
     const mid = f && f.machineId;
     if (!mid) continue;
-    if (!machines.has(mid)) machines.set(mid, { machineId: mid, nickname: mid, offline: true });
+    if (!machines.has(mid)) machines.set(mid, { machineId: mid, nickname: verifiedDisplayName(f.nickname, mid) || 'Machine name unavailable', offline: true });
     else machines.get(mid).offline = true;
   }
 
@@ -680,10 +791,11 @@ export function buildMatrixModel(poolScope, pendingScope, transient = {}) {
     const id = a && a.id;
     if (!id) continue;
     const provider = typeof (a && a.provider) === 'string' ? a.provider : '';
-    if (!accounts.has(id)) accounts.set(id, { accountId: id, email: a.email || id, provider });
+    const name = verifiedDisplayName(a.email, id) || verifiedDisplayName(a.nickname, id);
+    if (!accounts.has(id)) accounts.set(id, { accountId: id, email: name || 'Account name unavailable', provider });
     else {
       const rec = accounts.get(id);
-      if (!rec.email && a.email) rec.email = a.email;
+      if (rec.email === 'Account name unavailable' && name) rec.email = name;
       // Pool scope carries one row per (account, machine); the same account on a second
       // machine must not blank a provider the first row already established.
       if (!rec.provider && provider) rec.provider = provider;
@@ -693,7 +805,7 @@ export function buildMatrixModel(poolScope, pendingScope, transient = {}) {
     const id = gap && gap.accountId;
     if (id && !accounts.has(id)) accounts.set(id, {
       accountId: id,
-      email: gap.nickname || id,
+      email: verifiedDisplayName(gap.nickname, id) || 'Account name unavailable',
       provider: typeof (gap && gap.provider) === 'string' ? gap.provider : '',
     });
   }
@@ -702,7 +814,7 @@ export function buildMatrixModel(poolScope, pendingScope, transient = {}) {
     const id = l && l.id;
     if (id && !accounts.has(id)) accounts.set(id, {
       accountId: id,
-      email: id,
+      email: verifiedDisplayName(l.expectedEmail, id) || verifiedDisplayName(l.email, id) || verifiedDisplayName(l.label, id) || 'Account name unavailable',
       provider: typeof (l && l.provider) === 'string' ? l.provider : '',
     });
   }
@@ -726,6 +838,13 @@ export function buildMatrixModel(poolScope, pendingScope, transient = {}) {
   // sign-in flow (link, expected email, code input, TTL, notice) from SERVER state — the flow
   // must never exist only in the bottom panel (topic 29836 D2), and a rebuild mid-flow renders
   // the same step back instead of losing it (D1 defense-in-depth).
+  // (accountId, machineId) benched by the Codex device-limit tripwire (reachable machine only).
+  const deviceLimited = new Set();
+  for (const a of accountRows) {
+    const mid = a && a.machineId;
+    if (!a || !a.id || !mid || offlineMachineIds.has(mid)) continue;
+    if (isDeviceLimitBenched(a)) deviceLimited.add(`${a.id}::${mid}`);
+  }
   const inProgress = new Map();
   for (const l of pendingRows) {
     if (l && l.id && l.machineId) inProgress.set(`${l.id}::${l.machineId}`, l);
@@ -756,6 +875,9 @@ export function buildMatrixModel(poolScope, pendingScope, transient = {}) {
       const pendingLogin = cancelled ? null : (inProgress.get(key) || null);
       let state;
       if (m.offline) state = 'offline';                              // whole column offline (FD6)
+      // Benched for a suspected device limit: another sign-in here cannot help, so no
+      // client transient or pending login turns it back into an actionable cell.
+      else if (deviceLimited.has(key)) state = 'device-limit';
       else if (t && t.state === 'held') state = 'held';
       else if (t && t.state === 'cant-resolve') state = 'cant-resolve';
       else if (emailMissing.has(key) || (t && t.state === 'email-missing')) state = 'email-missing';
@@ -793,23 +915,20 @@ export function buildMatrixModel(poolScope, pendingScope, transient = {}) {
 
 const MATRIX_CELL_GLYPH = {
   active: '✓', 'needs-reauth': '⟳', 'in-progress': '◷', offline: '—', held: '⚠', 'cant-resolve': '✗',
-  'email-missing': '⚠', expired: '✗', 'just-verified': '✓', broken: '✗',
+  'email-missing': '⚠', expired: '✗', 'just-verified': '✓', broken: '✗', 'device-limit': '⛔',
 };
 const MATRIX_CELL_WORD = {
   active: 'Active', 'needs-reauth': 'Needs sign-in', 'in-progress': 'Signing in…',
   offline: 'Machine offline', held: 'Didn’t match — re-try', 'cant-resolve': 'Can’t set up', other: 'Set up',
   'email-missing': 'Account record is missing its email', expired: 'Sign-in link expired',
   'just-verified': 'Set up complete', broken: 'Sign-in needs a restart',
+  'device-limit': DEVICE_LIMIT_WORDS,
 };
 
 /** D5 wording floor: never show a raw internal machine id (m_<hex>) to the operator —
  *  a nickname, or nothing. Exported for the floor test. */
 export function friendlyMachine(nickname, machineId) {
-  const nick = sanitizeForDisplay(nickname, 'label');
-  if (nick) return nick;
-  const id = typeof machineId === 'string' ? machineId : '';
-  if (/^m_[0-9a-f]{8,}$/i.test(id)) return '';
-  return sanitizeForDisplay(id, 'label');
+  return sanitizeForDisplay(verifiedDisplayName(nickname, machineId), 'label');
 }
 
 /**
@@ -823,7 +942,7 @@ export function friendlyMachine(nickname, machineId) {
  */
 export function appendCellSignInFlow(doc, cell, flow, now = Date.now()) {
   cell.appendChild(el(doc, 'div', 'sub-matrix-flow-step', 'Open the sign-in link, then paste the code it gives you below.'));
-  if (flow && flow.expectedEmail) {
+  if (flow && verifiedDisplayName(flow.expectedEmail, flow.accountId)) {
     cell.appendChild(el(doc, 'div', 'sub-matrix-expected',
       `The sign-in page must show ${sanitizeForDisplay(flow.expectedEmail, 'label')} — if it shows a different account, tap “Switch account” first.`));
   }
@@ -893,10 +1012,44 @@ export function groupMatrixRowsByProvider(rows) {
 /** Render the account × machine grid. `target` is replaced. Each empty (reachable) cell
  *  gets a "Set up" button carrying its (accountId, machineId) as data-* attributes for the
  *  controller's delegated tap handler. Offline columns are disabled; no state is fabricated. */
-export function renderAccountMatrix(doc, target, poolScope, pendingScope, transient = {}, reloginEpisodes = [], reloginFailures = []) {
+/**
+ * Why the automatic repair will not start for a needs-sign-in cell, in plain words (from
+ * GET /subscription-relogin `blockers`). Unknown reasons get a generic line, never silence.
+ */
+const REPAIR_BLOCKER_TEXT = {
+  'no-open-incident': 'Won’t repair on its own: this machine has no confirmed sign-in failure for it yet (its saved login can’t be read).',
+  'profile-unresolved': 'Won’t repair on its own: this machine has no browser profile signed in to this account.',
+  'profile-directory-missing': 'Won’t repair on its own: this account’s browser profile folder is missing on this machine.',
+  'profile-not-dedicated': 'Won’t repair on its own: this account has no browser profile of its own on this machine.',
+  'profile-ambiguous': 'Won’t repair on its own: more than one browser profile claims this account on this machine.',
+  'profile-identity-mismatch': 'Won’t repair on its own: the browser profile is signed in to a different account.',
+  'vault-reference-missing': 'Won’t repair on its own: a saved password or code for this account is missing.',
+  'login-method-not-autonomous': 'Won’t repair on its own: this account’s sign-in method can’t be done automatically.',
+  'breaker-open': 'Won’t repair on its own: repairs for this account failed too often and are paused.',
+  'source-not-exchange-corroborated': 'Won’t repair on its own: the sign-in failure isn’t confirmed yet.',
+  'cause-not-actionable': 'Won’t repair on its own: the failure isn’t one a new sign-in fixes.',
+  'feature-off': 'Automatic repair is turned off on this machine.',
+  'feature-unavailable': 'Automatic repair isn’t running on this machine.',
+};
+export function repairBlockerText(reason) {
+  if (typeof reason !== 'string' || !reason) return '';
+  return REPAIR_BLOCKER_TEXT[reason] || 'Won’t repair on its own on this machine. Use Sign in.';
+}
+
+export function renderAccountMatrix(doc, target, poolScope, pendingScope, transient = {}, reloginEpisodes = [], reloginFailures = [], reloginBlockers = []) {
   if (!target) return;
   target.replaceChildren();
   const model = buildMatrixModel(poolScope, pendingScope, transient);
+  const accountNames = new Map();
+  const machineNames = new Map();
+  for (const a of model.accounts) {
+    const name = verifiedDisplayName(a.email, a.accountId);
+    if (name) accountNames.set(name.toLocaleLowerCase(), (accountNames.get(name.toLocaleLowerCase()) || 0) + 1);
+  }
+  for (const m of model.machines) {
+    const name = verifiedDisplayName(m.nickname, m.machineId);
+    if (name) machineNames.set(name.toLocaleLowerCase(), (machineNames.get(name.toLocaleLowerCase()) || 0) + 1);
+  }
   if (model.accounts.length === 0 || model.machines.length === 0) {
     target.appendChild(el(doc, 'div', 'sub-empty', 'No accounts or machines to show yet.'));
     return;
@@ -924,7 +1077,7 @@ export function renderAccountMatrix(doc, target, poolScope, pendingScope, transi
   for (const entry of groupMatrixRowsByProvider(model.rows)) {
     if (entry && entry.__providerHeading) {
       const gtr = doc.createElement('tr');
-      const gth = el(doc, 'th', 'sub-matrix-group', entry.__providerHeading);
+      const gth = el(doc, 'th', `sub-matrix-group ${providerClass(entry.__providerKey)}`, entry.__providerHeading);
       // Span the account column + every machine column so the heading reads as a band
       // across the grid rather than a stray cell.
       gth.setAttribute('colspan', String(model.machines.length + 1));
@@ -934,13 +1087,13 @@ export function renderAccountMatrix(doc, target, poolScope, pendingScope, transi
       continue;
     }
     const row = entry.__row;
-    const tr = doc.createElement('tr');
+    const tr = el(doc, 'tr', providerClass(row && row.account && row.account.provider));
     tr.appendChild(el(doc, 'th', 'sub-matrix-acct', sanitizeForDisplay(row.account.email, 'label')));
     for (const c of row.cells) {
       const repairCandidate = Array.isArray(reloginEpisodes)
         ? reloginEpisodes.find((episode) => episode && episode.accountId === c.accountId && episode.machineId === c.machineId)
         : null;
-      const repair = repairAppliesToCurrentState(repairCandidate, c.state)
+      const repair = c.state !== 'device-limit' && repairAppliesToCurrentState(repairCandidate, c.state)
         ? repairCandidate
         : null;
       const repairUnavailable = Array.isArray(reloginFailures)
@@ -950,6 +1103,15 @@ export function renderAccountMatrix(doc, target, poolScope, pendingScope, transi
       const td = el(doc, 'td', `sub-matrix-cell sub-matrix-${c.state}${justVerified && c.state !== 'just-verified' ? ' sub-matrix-just-verified' : ''}`);
       // Stable cell identity for the interaction-hold rule + targeted merge updates (F9).
       td.setAttribute('data-cell-key', sanitizeForDisplay(`${c.accountId}::${c.machineId}`, 'url'));
+      const machineRecord = model.machines.find((m) => m.machineId === c.machineId);
+      const accountName = verifiedDisplayName(row.account.email, c.accountId);
+      const machineName = verifiedDisplayName(machineRecord && machineRecord.nickname, c.machineId);
+      if (!accountName || !machineName || accountNames.get(accountName.toLocaleLowerCase()) !== 1 || machineNames.get(machineName.toLocaleLowerCase()) !== 1) {
+        td.appendChild(el(doc, 'div', 'sub-matrix-glyph', `${MATRIX_CELL_GLYPH[c.state] || ''} ${MATRIX_CELL_WORD[c.state] || 'Status unavailable'}`.trim()));
+        td.appendChild(el(doc, 'div', 'sub-matrix-held-detail', 'A unique account and machine name are needed before you can act here.'));
+        tr.appendChild(td);
+        continue;
+      }
       if (repairUnavailable && ['needs-reauth', 'held', 'cant-resolve', 'expired', 'broken'].includes(c.state)) {
         td.appendChild(el(doc, 'div', 'sub-account-repair-status', 'Repair status is unavailable for this machine.'));
         td.appendChild(el(doc, 'div', 'sub-matrix-held-detail', 'Wait for the machine connection to recover, then try again.'));
@@ -959,6 +1121,11 @@ export function renderAccountMatrix(doc, target, poolScope, pendingScope, transi
             : repair.state === 'failed' ? 'Sign-in repair stopped safely.'
               : 'Repairing sign-in…';
         td.appendChild(el(doc, 'div', 'sub-account-repair-status', label));
+        const retryText = slowRetryLabel(repair);
+        if (retryText) td.appendChild(el(doc, 'div', 'sub-matrix-next-try', retryText));
+        else if (repair.state === 'failed' && repair.slowRetryHeld === true) {
+          td.appendChild(el(doc, 'div', 'sub-matrix-next-try', 'Won’t try again on its own. Try repair again any time.'));
+        }
         const repairAction = repair.state === 'suggested' ? ['approve', 'Repair sign-in']
           : repair.state === 'failed' ? ['retry', 'Try repair again']
             : ['cancel', 'Cancel repair'];
@@ -970,6 +1137,26 @@ export function renderAccountMatrix(doc, target, poolScope, pendingScope, transi
           button.setAttribute('data-machine-id', sanitizeForDisplay(c.machineId, 'label'));
           button.setAttribute('data-episode-id', sanitizeForDisplay(repair.id, 'label'));
           td.appendChild(button);
+        }
+        if (retryText) {
+          // Quieter secondary action: hold this failed repair's automatic retries (relayed to its machine).
+          const hold = el(doc, 'button', 'sub-matrix-repair sub-matrix-repair-hold', 'Don’t retry on its own');
+          hold.setAttribute('data-matrix-relogin', '1');
+          hold.setAttribute('data-repair-action', 'cancel');
+          hold.setAttribute('data-account-id', sanitizeForDisplay(c.accountId, 'label'));
+          hold.setAttribute('data-machine-id', sanitizeForDisplay(c.machineId, 'label'));
+          hold.setAttribute('data-episode-id', sanitizeForDisplay(repair.id, 'label'));
+          td.appendChild(hold);
+        }
+        // While a repair waits on the operator (a phone tap, a macOS Allow, no helper account), the
+        // operator can also finish the sign-in themselves from here — the same one-tap Sign in flow
+        // as a needs-reauth cell (spec skill-driven-signin-repair, operator contact).
+        if (repair.state === 'waiting-operator-only') {
+          const signIn = el(doc, 'button', 'sub-matrix-setup', 'Sign in');
+          signIn.setAttribute('data-matrix-setup', '1');
+          signIn.setAttribute('data-account-id', sanitizeForDisplay(c.accountId, 'label'));
+          signIn.setAttribute('data-machine-id', sanitizeForDisplay(c.machineId, 'label'));
+          td.appendChild(signIn);
         }
       } else if (c.state === 'empty' || c.state === 'needs-reauth' || c.state === 'held' || c.state === 'cant-resolve' || c.state === 'email-missing' || c.state === 'expired' || c.state === 'broken') {
         // An actionable cell → a button that runs the SAME in-dashboard sign-in flow (PIN → link →
@@ -1005,6 +1192,12 @@ export function renderAccountMatrix(doc, target, poolScope, pendingScope, transi
           td.appendChild(el(doc, 'div', 'sub-matrix-outcome sub-matrix-outcome-failed',
             'Didn’t finish — the sign-in link expired before this account was set up.'));
         }
+        if (c.state === 'needs-reauth' && Array.isArray(reloginBlockers)) {
+          const blocker = reloginBlockers.find((b) => b && b.accountId === c.accountId && b.machineId === c.machineId)
+            || reloginBlockers.find((b) => b && b.accountId === '*' && b.machineId === c.machineId);
+          const text = blocker ? repairBlockerText(blocker.reason) : '';
+          if (text) td.appendChild(el(doc, 'div', 'sub-matrix-held-detail', text));
+        }
         td.appendChild(btn);
       } else if (c.state === 'in-progress' && c.login && c.login.verificationUrl) {
         // The cell carries the COMPLETE flow, rebuilt from SERVER pending-login state
@@ -1022,6 +1215,10 @@ export function renderAccountMatrix(doc, target, poolScope, pendingScope, transi
           : (justVerified && c.state === 'active' ? 'Active — just set up' : MATRIX_CELL_WORD[c.state]);
         const glyph = MATRIX_CELL_GLYPH[c.state] || '';
         td.appendChild(el(doc, 'span', 'sub-matrix-glyph', `${glyph} ${word}`.trim()));
+        if (c.state === 'device-limit') {
+          td.appendChild(el(doc, 'div', 'sub-matrix-held-detail',
+            'Another sign-in on this machine can’t fix this.'));
+        }
         if (justVerified) {
           td.appendChild(el(doc, 'div', 'sub-matrix-outcome sub-matrix-outcome-done',
             'Done — this account is set up on this machine.'));
@@ -1063,6 +1260,7 @@ const URLS = {
   pending: '/subscription-pool/pending-logins?scope=pool',
   inUse: '/subscription-pool/in-use',
   submitCode: '/subscription-pool/follow-me/submit-code', // POST — paste-back the sign-in code (ws52-code-paste-back)
+  completion: '/subscription-pool/follow-me/completion', // GET — after a sent code: finishing → done | failed
   scan: '/subscription-pool/follow-me/scan', // POST — follow-me consent offers (one-tap card)
   issue: '/mandate/issue-for-machine',       // POST (PIN-gated) — Approve issues the mandate
   // account-machine-matrix: pool-scope accounts feed the grid (the SAME read the accounts list
@@ -1073,52 +1271,7 @@ const URLS = {
   relogin: '/subscription-relogin?scope=pool',
   reloginAction: '/subscription-relogin',
   repairCell: '/subscription-relogin/repair-cell',
-  provisionProfile: '/playwright-profiles/provision',
 };
-
-export function renderProfileProvisioner(doc, target) {
-  if (!target) return;
-  const card = el(doc, 'div', 'sub-profile-provision');
-  card.setAttribute('data-interaction-open', '1');
-  card.appendChild(el(doc, 'div', 'sub-profile-title', 'Create a dedicated sign-in profile'));
-  card.appendChild(el(doc, 'p', 'sub-profile-copy',
-    'Instar prepares the private Chrome profile on this machine. If a password or verification step is needed, your agent will send a secure link — you never need to access this machine.'));
-
-  const identity = el(doc, 'input', 'sub-profile-input');
-  identity.setAttribute('type', 'email');
-  identity.setAttribute('inputmode', 'email');
-  identity.setAttribute('autocomplete', 'email');
-  identity.setAttribute('placeholder', 'Google account email');
-  identity.setAttribute('aria-label', 'Google account email');
-  card.appendChild(identity);
-
-  const profileId = el(doc, 'input', 'sub-profile-input');
-  profileId.setAttribute('type', 'text');
-  profileId.setAttribute('placeholder', 'Profile name, for example work-google');
-  profileId.setAttribute('aria-label', 'Profile name');
-  card.appendChild(profileId);
-
-  const method = el(doc, 'select', 'sub-profile-input');
-  method.setAttribute('aria-label', 'Sign-in method');
-  for (const [value, label] of [
-    ['session-cookie', 'Already signed in / provider approval'],
-    ['password', 'Password'],
-    ['password+totp', 'Password + authenticator'],
-  ]) {
-    const option = el(doc, 'option', '', label);
-    option.setAttribute('value', value);
-    method.appendChild(option);
-  }
-  card.appendChild(method);
-
-  const button = el(doc, 'button', 'sub-profile-create', 'Create dedicated profile');
-  button.setAttribute('type', 'button');
-  card.appendChild(button);
-  const status = el(doc, 'div', 'sub-profile-status', '');
-  status.setAttribute('aria-live', 'polite');
-  card.appendChild(status);
-  target.replaceChildren(card);
-}
 
 export function createController(opts) {
   const {
@@ -1141,7 +1294,7 @@ export function createController(opts) {
   // add the D4 ceremony when the episode lands. recentOutcomes: client-observed terminal
   // outcomes rendered as explicit cards in the pending panel (D4 — never a vanishing line).
   const state = { timerId: null, active: false, inFlight: null, offers: [], approveWired: false,
-    reloginWired: false, reloginEpisodes: [], reloginFailures: [], profileProvisionWired: false,
+    reloginWired: false, reloginEpisodes: [], reloginFailures: [], reloginBlockers: [],
     matrixWired: false, matrixTransient: {}, lastPoolBody: null, lastPendingBody: null,
     matrixEpisodes: {}, recentOutcomes: [] };
 
@@ -1206,59 +1359,12 @@ export function createController(opts) {
     state.reloginEpisodes = reloginBody && Array.isArray(reloginBody.episodes) ? reloginBody.episodes : [];
     state.reloginFailures = reloginBody && reloginBody.pool && Array.isArray(reloginBody.pool.failed)
       ? reloginBody.pool.failed : [];
-    if (els.profileProvision && !state.profileProvisionWired) {
-      renderProfileProvisioner(doc, els.profileProvision);
-      wireProfileProvisioner();
-    }
+    state.reloginBlockers = (reloginBody && Array.isArray(reloginBody.blockers) ? reloginBody.blockers : [])
+      // A machine where the repair is not running at all blocks every one of its cells.
+      .concat((reloginBody && reloginBody.pool && Array.isArray(reloginBody.pool.unavailable) ? reloginBody.pool.unavailable : [])
+        .map((u) => ({ accountId: '*', machineId: u && u.machineId, reason: 'feature-unavailable' })));
     render(accountsBody, pendingBody, inUseBody, poolBody);
     reschedule();
-  }
-
-  function wireProfileProvisioner() {
-    if (!els.profileProvision || state.profileProvisionWired) return;
-    state.profileProvisionWired = true;
-    els.profileProvision.addEventListener('click', (event) => {
-      const button = event.target && event.target.closest ? event.target.closest('.sub-profile-create') : null;
-      if (!button) return;
-      const proof = getOperatorSessionToken();
-      const identity = els.profileProvision.querySelector('[aria-label="Google account email"]')?.value?.trim() || '';
-      const profileId = els.profileProvision.querySelector('[aria-label="Profile name"]')?.value?.trim() || '';
-      const loginMethod = els.profileProvision.querySelector('[aria-label="Sign-in method"]')?.value || 'session-cookie';
-      const status = els.profileProvision.querySelector('.sub-profile-status');
-      if (!proof) {
-        requestUnlock();
-        status.textContent = 'Enter your dashboard PIN, then retry.';
-        return;
-      }
-      if (!identity || !profileId) { status.textContent = 'Enter the Google account and a profile name.'; return; }
-      button.setAttribute('disabled', 'disabled');
-      status.textContent = 'Preparing the private profile…';
-      void (async () => {
-        try {
-          const response = await fetchImpl(URLS.provisionProfile, {
-            method: 'POST',
-            headers: { 'Content-Type': 'application/json', 'X-Instar-Operator-Session': proof },
-            body: JSON.stringify({ profileId, identity, loginMethod }),
-          });
-          const body = await response.json().catch(() => ({}));
-          if (!response.ok) {
-            if (response.status === 401) requestUnlock();
-            status.textContent = response.status === 401
-              ? 'Enter your dashboard PIN, then retry.'
-              : `Couldn’t create the profile: ${body.error || 'try again'}`;
-            button.removeAttribute('disabled');
-            return;
-          }
-          status.textContent = loginMethod === 'session-cookie'
-            ? 'Profile ready. Your agent can now open the provider sign-in and send you any required approval link.'
-            : 'Profile ready. Your agent will send a secure credential link before the first sign-in.';
-          button.textContent = 'Profile created';
-        } catch {
-          status.textContent = 'Couldn’t reach the server — try again.';
-          button.removeAttribute('disabled');
-        }
-      })();
-    });
   }
 
   // ── Episode + outcome bookkeeping (D1/D4/D5) ───────────────────────────────
@@ -1363,7 +1469,7 @@ export function createController(opts) {
   function rerenderMatrixFromCache() {
     if (!els.matrix || !state.lastPoolBody) return;
     if (hasOpenInteraction(doc, els.matrix)) return;
-    renderAccountMatrix(doc, els.matrix, state.lastPoolBody, state.lastPendingBody, state.matrixTransient, state.reloginEpisodes, state.reloginFailures);
+    renderAccountMatrix(doc, els.matrix, state.lastPoolBody, state.lastPendingBody, state.matrixTransient, state.reloginEpisodes, state.reloginFailures, state.reloginBlockers);
   }
 
   function render(accountsBody, pendingBody, inUseBody, poolBody) {
@@ -1398,7 +1504,7 @@ export function createController(opts) {
     // the (already pool-scope) pending logins. Hidden when the pool-scope read is unavailable.
     if (els.matrix) {
       if (!hasOpenInteraction(doc, els.matrix)) {
-        renderAccountMatrix(doc, els.matrix, poolBody, pendingBody, state.matrixTransient, state.reloginEpisodes, state.reloginFailures);
+        renderAccountMatrix(doc, els.matrix, poolBody, pendingBody, state.matrixTransient, state.reloginEpisodes, state.reloginFailures, state.reloginBlockers);
       } else {
         updateCountdowns(doc, els.matrix, now());
       }
@@ -1539,9 +1645,32 @@ export function createController(opts) {
             setRowStatus(row, `✓ Done — ${r.json.email ? r.json.email + ' is' : 'this account is'} set up on this machine.`);
             rerenderMatrixFromCache();
           } else if (r.ok && r.json && r.json.outcome === 'submitted') {
-            setRowStatus(row, 'Code sent — finishing sign-in…');
-            if (input) input.value = '';
-            row.removeAttribute('data-interaction-open');
+            // The form goes away while the machine finishes: no input, no button, one clear line.
+            if (input) { input.value = ''; input.remove(); }
+            btn.remove();
+            row.setAttribute('class', 'sub-pending sub-pending-finishing');
+            row.setAttribute('aria-busy', 'true');
+            row.setAttribute('data-interaction-open', 'finishing');
+            setRowStatus(row, '⟳ Finishing the sign-in… this usually takes under a minute and updates by itself.');
+            followCompletion(machineId, id, (c) => {
+              row.removeAttribute('data-interaction-open');
+              row.removeAttribute('aria-busy');
+              settleCompletion(c, { accountId: id, machineId }, {
+                done: (email) => {
+                  row.setAttribute('class', 'sub-pending sub-pending-done');
+                  setRowStatus(row, `✓ Done — ${email ? email + ' is' : 'this account is'} set up on this machine.`);
+                },
+                held: (body) => {
+                  row.setAttribute('class', 'sub-pending sub-pending-failed');
+                  setRowStatus(row, `✗ ${heldExplanation(body.expected, body.got, body.reason)}`);
+                },
+                failed: (words) => {
+                  row.setAttribute('class', 'sub-pending sub-pending-failed');
+                  setRowStatus(row, `✗ ${words} Start a fresh sign-in from its grid cell.`);
+                },
+              });
+              rerenderMatrixFromCache();
+            });
           } else if (r.ok && r.json && r.json.outcome === 'held') {
             if (input) input.value = '';
             row.removeAttribute('data-interaction-open');
@@ -1579,6 +1708,55 @@ export function createController(opts) {
         }
       })();
     });
+  }
+
+  // After a sent code the SERVER finishes the sign-in (operator report 2026-11-10, topic 33890:
+  // a faint "Code sent — finishing sign-in…" under a still-live form looked stalled). The page
+  // follows it to one terminal answer: done, or failed with a reason.
+  const COMPLETION_POLL_MS = 2_000;
+  const COMPLETION_GIVE_UP_MS = 4 * 60_000;
+  function followCompletion(machineId, id, onTerminal) {
+    const started = now();
+    const q = `?machineId=${encodeURIComponent(machineId || '')}&id=${encodeURIComponent(id || '')}`;
+    const step = async () => {
+      let c = null;
+      try {
+        const resp = await fetchImpl(URLS.completion + q, {});
+        if (resp && resp.ok) { const j = await resp.json(); c = j && j.completion; }
+      } catch (e) { /* unreachable this time — keep asking until the bound */ }
+      // waiting-for-code / unknown: no live watch on that machine (it restarted mid-finish) —
+      // not final; its background check can still complete it. Keep asking until the bound.
+      if (c && (c.state === 'done' || c.state === 'failed')) { onTerminal(c); return; }
+      if (now() - started > COMPLETION_GIVE_UP_MS) { onTerminal({ state: 'failed', reason: 'no-answer' }); return; }
+      schedule(step, COMPLETION_POLL_MS);
+    };
+    schedule(step, COMPLETION_POLL_MS);
+  }
+  function completionFailureWords(c) {
+    const words = {
+      'window-closed': 'The sign-in window closed before the sign-in finished.',
+      'timed-out': 'The sign-in did not finish in time. If it finishes later, the account shows as signed in by itself.',
+      cancelled: 'This sign-in was cancelled.',
+      gone: 'This sign-in is no longer open.',
+      'could-not-save': 'The sign-in finished, but the account could not be saved.',
+      'no-answer': 'No answer came back in time. If the sign-in finishes later, the account shows as signed in by itself.',
+    };
+    if (c && c.state === 'failed' && words[c.reason]) return words[c.reason];
+    return (c && c.message) || 'The sign-in did not finish.';
+  }
+  /** Terminal handling shared by the matrix cell and the pending row. */
+  function settleCompletion(c, ids, view) {
+    if (c.state === 'done') {
+      recordSubmitOutcome('validated', ids, { email: c.email || null });
+      view.done(c.email || null);
+    } else if (c.state === 'failed' && c.reason === 'wrong-account') {
+      const body = { expected: c.expected || null, got: c.got || null, reason: c.heldReason || 'email-mismatch' };
+      recordSubmitOutcome('held', ids, body);
+      view.held(body);
+    } else {
+      recordSubmitOutcome('broken', ids, null);
+      view.failed(completionFailureWords(c));
+    }
   }
 
   function setRowStatus(row, text) {
@@ -1642,7 +1820,8 @@ export function createController(opts) {
       return;
     }
     btn.setAttribute('disabled', 'disabled');
-    setCellStatus(cell, 'Starting autonomous sign-in repair…');
+    const holding = action === 'cancel' && btn.classList && btn.classList.contains('sub-matrix-repair-hold');
+    setCellStatus(cell, holding ? 'Stopping automatic retries…' : 'Starting autonomous sign-in repair…');
     void (async () => {
       try {
         const response = await fetchImpl(URLS.repairCell, {
@@ -1661,7 +1840,10 @@ export function createController(opts) {
           if (resolvedConflict) await tick();
           return;
         }
-        setCellStatus(cell, 'Repair started — Instar is handling the sign-in.');
+        const reoffered = body && body.episode && body.episode.state === 'suggested';
+        setCellStatus(cell, holding ? 'Automatic retries stopped. Try repair again any time.'
+          : reoffered ? 'Things changed since the last try — tap Repair sign-in once more.'
+            : 'Repair started — Instar is handling the sign-in.');
         await tick();
       } catch {
         setCellStatus(cell, 'Couldn’t reach the target machine — try again.');
@@ -1813,10 +1995,18 @@ export function createController(opts) {
           // enrollment verifies; the transient keeps the ceremony on the next rebuilds.
           cell.removeAttribute('data-interaction-open');
           recordSubmitOutcome('validated', { accountId, machineId }, r.json);
-          renderCellDone(cell, r.json.email || null);
+          renderCellDone(cell, r.json.email || null, accountId);
         } else if (r.ok && r.json && r.json.outcome === 'submitted') {
-          setCellStatus(cell, 'Code sent — finishing sign-in…');
-          cell.removeAttribute('data-interaction-open');
+          // The form goes away while the machine finishes; the cell answers once, terminally.
+          renderCellFinishing(cell);
+          followCompletion(machineId, loginId, (c) => {
+            cell.removeAttribute('data-interaction-open');
+            settleCompletion(c, { accountId, machineId }, {
+              done: (email) => renderCellDone(cell, email, accountId),
+              held: (body) => renderCellHeld(cell, accountId, machineId, body),
+              failed: (words) => renderCellFailed(cell, accountId, machineId, words),
+            });
+          });
         } else if (r.ok && r.json && r.json.outcome === 'held') {
           // TERMINAL REFUSAL (D3): the identity gate held the enrollment — name BOTH
           // accounts in plain language; the wrong account was NOT enrolled.
@@ -1851,17 +2041,43 @@ export function createController(opts) {
   }
 
   // The in-cell terminal SUCCESS presentation (D4): unmistakable, named, highlighted.
-  function renderCellDone(cell, email) {
+  function renderCellDone(cell, email, accountId) {
     cell.replaceChildren();
+    cell.removeAttribute('aria-busy');
     cell.setAttribute('class', 'sub-matrix-cell sub-matrix-just-verified sub-matrix-done');
     cell.appendChild(el(doc, 'div', 'sub-matrix-glyph', '✓ All set'));
     cell.appendChild(el(doc, 'div', 'sub-matrix-done-detail',
-      email ? `${sanitizeForDisplay(email, 'label')} is signed in on this machine.` : 'The account is signed in on this machine.'));
+      verifiedDisplayName(email, accountId) ? `${sanitizeForDisplay(email, 'label')} is signed in on this machine.` : 'The account is signed in on this machine.'));
+  }
+
+  // In progress after a sent code: the inputs and buttons are gone, one prominent line.
+  function renderCellFinishing(cell) {
+    cell.replaceChildren();
+    cell.setAttribute('class', 'sub-matrix-cell sub-matrix-finishing');
+    cell.setAttribute('aria-busy', 'true');
+    cell.setAttribute('data-interaction-open', 'finishing');
+    cell.appendChild(el(doc, 'div', 'sub-matrix-glyph', '⟳ Finishing sign-in…'));
+    cell.appendChild(el(doc, 'div', 'sub-matrix-done-detail', 'This usually takes under a minute. It updates by itself.'));
+  }
+
+  // The sign-in did not finish after the code: the reason + one Retry.
+  function renderCellFailed(cell, accountId, machineId, words) {
+    cell.replaceChildren();
+    cell.removeAttribute('aria-busy');
+    cell.setAttribute('class', 'sub-matrix-cell sub-matrix-held');
+    cell.appendChild(el(doc, 'div', 'sub-matrix-glyph', '✗ Not finished'));
+    cell.appendChild(el(doc, 'div', 'sub-matrix-held-detail', words));
+    const btn = el(doc, 'button', 'sub-matrix-setup', 'Retry');
+    btn.setAttribute('data-matrix-setup', '1');
+    btn.setAttribute('data-account-id', sanitizeForDisplay(accountId, 'label'));
+    btn.setAttribute('data-machine-id', sanitizeForDisplay(machineId, 'label'));
+    cell.appendChild(btn);
   }
 
   // The in-cell terminal HELD presentation (D3): both accounts named + a working Retry.
   function renderCellHeld(cell, accountId, machineId, body) {
     cell.replaceChildren();
+    cell.removeAttribute('aria-busy');
     cell.setAttribute('class', 'sub-matrix-cell sub-matrix-held');
     cell.appendChild(el(doc, 'div', 'sub-matrix-glyph', `${MATRIX_CELL_GLYPH.held} ${MATRIX_CELL_WORD.held}`));
     cell.appendChild(el(doc, 'div', 'sub-matrix-held-detail',

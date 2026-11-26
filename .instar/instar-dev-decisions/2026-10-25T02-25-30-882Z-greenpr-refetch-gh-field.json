@@ -1,0 +1,22 @@
+{
+  "ts": "2026-10-25T02:25:30.882Z",
+  "slug": "greenpr-refetch-gh-field",
+  "suggestedTier": 2,
+  "declaredTier": 1,
+  "riskFloor": 1,
+  "riskFloorReasons": [],
+  "belowFloor": false,
+  "files": 1,
+  "loc": 83,
+  "scope": {
+    "basis": "staged-in-scope-additions-plus-deletions",
+    "files": [
+      "src/monitoring/greenPrAutomergeWiring.ts"
+    ],
+    "addedLines": 79,
+    "deletedLines": 4
+  },
+  "causalAutopsy": null,
+  "classClosure": null,
+  "verdict": "pass"
+}

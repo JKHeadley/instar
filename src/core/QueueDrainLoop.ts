@@ -25,6 +25,7 @@
  * one degradation signal after 10 min sustained, recovery logged once.
  */
 
+import { parseQueuedMediaCell, type InboundMediaLocal } from './inboundMedia.js';
 import type {
   PendingInboundStore,
   PendingInboundRow,
@@ -32,7 +33,11 @@ import type {
   EnqueueOutcome,
 } from './PendingInboundStore.js';
 import { sanitizeError } from './PendingInboundStore.js';
+import { featureEvidence } from '../monitoring/FeatureEvidenceLog.js';
 import type { InboundQueueConfig, HoldForStabilityConfig } from './inboundQueueConfig.js';
+
+/** The enqueue reason the Telegram cold-spawn path records when work admission refuses a session start. */
+export const WORK_ADMISSION_REFUSAL_REASON = 'work-admission-refusal';
 
 // ── Dispatch seam contract (§3.1/§3.4) ────────────────────────────────
 
@@ -43,6 +48,12 @@ export interface DrainMessage {
   senderEnvelope: SenderEnvelope | null;
   topicMetadata: unknown;
   enqueueSeq: number;
+  enqueuedAt?: string;
+  /**
+   * Files by attachment id (native-conversation-base §3c). Null for a row written before the column
+   * existed, or by older code: its payload still carries the path-free sentence (or an old tag).
+   */
+  media?: InboundMediaLocal[] | null;
 }
 
 /**
@@ -107,8 +118,11 @@ export interface QueueDrainLoopDeps {
    *  non-terminal failure (→ attempts-exhausted), or the DISTINCT `'rejected'`
    *  verdict when the re-place hit a first-class sender refusal (silent-loss-
    *  refusal-conservation §2.A — mapped to the SAME sender-deauthorized terminal
-   *  + unified notice, NOT mislabeled attempts-exhausted). */
-  forceReplace(msg: DrainMessage): Promise<boolean | 'rejected'>;
+   *  + unified notice, NOT mislabeled attempts-exhausted). `'local'` means
+   *  the re-place put the session on THIS machine: the router only decided,
+   *  nothing has delivered the message yet, so the drain runs ONE local
+   *  dispatch under the held claim (a failure there is terminal). */
+  forceReplace(msg: DrainMessage): Promise<boolean | 'rejected' | 'local'>;
   /** §4 hold verdict — required; the server injects always-'failover' when the
    *  policy is off (§4.2). Pure in-memory (breaker + capacity registry). */
   holdVerdict(sessionKey: string): HoldVerdict;
@@ -151,6 +165,11 @@ export class QueueDrainLoop {
   private heldSeqs = new Set<number>();
   /** Refusal negative cache keyed on the canonical id (§1). */
   private refusalCache = new Map<string, number>();
+  private evidenceAt = -Infinity;
+  private evidenceDelivered = 0;
+  private evidenceFailed = 0;
+  private evidenceUnroutable = 0;
+  private evidenceHeld = 0;
   /** Single-flight + rerun (§3.2). */
   private passInFlight = false;
   private rerunRequested: string | null = null;
@@ -225,6 +244,7 @@ export class QueueDrainLoop {
     payload: string;
     senderEnvelope?: SenderEnvelope | null;
     topicMetadata?: unknown;
+    media?: ReadonlyArray<InboundMediaLocal> | null;
   }, reason: string): EnqueueOutcome {
     const q = this.d.qcfg;
     // Dry-run: never claims custody, never short-circuits (§2.4) — durable
@@ -267,6 +287,7 @@ export class QueueDrainLoop {
           payload: msg.payload,
           senderEnvelope: msg.senderEnvelope ?? null,
           topicMetadata: msg.topicMetadata,
+          media: msg.media ?? null,
           reason,
           tenure: this.tenure,
           nowIso: new Date(nowMs).toISOString(),
@@ -303,6 +324,7 @@ export class QueueDrainLoop {
         // A refusal for a session WITH queued entries is ordering-affecting (§1).
         if (this.hasQueued(msg.sessionKey)) {
           this.d.store.incrementCounter('orderingViolations');
+          featureEvidence.recordAtMostEvery('multiMachine.sessionPool.inboundQueue', 'ordering-violation', 60 * 60_000, { kind: 'error', reason: 'ordering violation: refused a message for a session with queued entries', context: { refusal: out.reason ?? null } });
         }
         this.d.store.incrementCounter('wouldRefuse');
       }
@@ -382,6 +404,7 @@ export class QueueDrainLoop {
       // Record proof BEFORE cleanup. A crash in the gap leaves the shadow row
       // for constructor recovery, rather than erasing the only evidence.
       this.d.store.recordDryRunShadowCustodyResult('verified', nowIso);
+      featureEvidence.recordAtMostEvery('multiMachine.sessionPool.inboundQueue', 'shadow-verified', 60 * 60_000, { kind: 'fired', reason: 'dry-run: shadow custody round trip verified', context: { dryRun: true } });
       if (!shadow.transition(seq, 'queued', 'delivered', { nowIso, terminalReason: 'dry-run-shadow-verified' })) {
         throw new Error('shadow custody cleanup transition lost its row');
       }
@@ -390,6 +413,7 @@ export class QueueDrainLoop {
       this.d.store.recordDryRunShadowCustodyResult('error', nowIso);
       this.d.store.incrementCounter('dryRunErrors');
       this.d.log(`[inbound-queue] dry-run shadow custody failed: ${sanitizeError(err)}`);
+      featureEvidence.recordAtMostEvery('multiMachine.sessionPool.inboundQueue', 'shadow-error', 60 * 60_000, { kind: 'error', reason: 'dry-run: shadow custody failed', context: { dryRun: true } });
       if (seq !== null) {
         try {
           const row = shadow.getRow(seq);
@@ -558,7 +582,10 @@ export class QueueDrainLoop {
         expired.push(this.lossItem(row, 'ttl-expired'));
       }
     }
-    if (expired.length > 0) this.d.reportLoss(expired, 'ttl-expired');
+    if (expired.length > 0) {
+      this.d.reportLoss(expired, 'ttl-expired');
+      featureEvidence.record('multiMachine.sessionPool.inboundQueue', { kind: 'error', reason: 'queued messages expired: ttl', context: { terminalReason: 'ttl-expired', count: expired.length, entryTtlMs: q.entryTtlMs } });
+    }
   }
 
   // ── Hold recheck (§3.2/§4.3) ────────────────────────────────────────
@@ -599,6 +626,7 @@ export class QueueDrainLoop {
         // is imprecise for restart-recovered owners, round-7 — the bound is
         // drainConcurrency + the peer's spawn-in-progress backpressure).
         this.d.store.incrementCounter(verdict === 'failover' ? 'holdsReleasedToFailover:flap-forced' : 'holdsRecoveredInPlace');
+        featureEvidence.record('multiMachine.sessionPool.inboundQueue', { kind: 'held', reason: verdict === 'failover' ? 'hold released to failover: flap forced' : 'hold recovered in place', context: { verdict, seq, trigger: 'recheck' } });
       }
       this.heldSeqs.delete(seq);
       this.d.store.resetNextAttempt(row.session_key);
@@ -625,6 +653,7 @@ export class QueueDrainLoop {
       if (this.d.holdVerdict(row.session_key) !== 'hold') {
         this.heldSeqs.delete(seq);
         this.d.store.incrementCounter('holdsRecoveredInPlace');
+        featureEvidence.record('multiMachine.sessionPool.inboundQueue', { kind: 'held', reason: 'hold recovered in place', context: { seq, trigger: 'breaker-close' } });
         this.d.store.resetNextAttempt(row.session_key);
       }
     }
@@ -715,6 +744,7 @@ export class QueueDrainLoop {
         }
         if (summary.deadlineHit) break;
       }
+      this.recordDrainEvidence(summary);
       return summary;
     } finally {
       // Abnormal pass releases the single-flight guard (§3.3).
@@ -750,13 +780,19 @@ export class QueueDrainLoop {
     // mismatch — monotonic deadlines unreconstructable, wall governs, §6).
     const crossTenure = row.lease_epoch !== this.tenure;
     const crossBoot = row.boot_session_id !== this.d.bootSessionId;
-    if (crossTenure || crossBoot) {
-      const age = nowMs - Date.parse(row.enqueued_at) - row.total_frozen_ms;
+    // An app message waiting for its conversation's machine keeps the normal TTL across a reboot of
+    // THIS holder (same tenure): the restart doesn't change where it must go, the app tail re-reads the
+    // owner on every attempt, and the owner dedupes by message id. Clamping it dropped a message the
+    // phone showed as saved and waiting after a 3-second holder restart.
+    const appAcrossOwnReboot = crossBoot && !crossTenure && row.session_key.startsWith('app:');
+    if ((crossTenure || crossBoot) && !appAcrossOwnReboot) {
+      const age = nowMs - Date.parse(row.enqueued_at) - row.total_frozen_ms - (row.fold_frozen_ms ?? 0); // fold-held time never ages a row (§9.3)
       if (age > q.staleCustodyTtlMs) {
         if (this.d.store.transition(row.enqueue_seq, 'queued', 'expired', { nowIso, terminalReason: crossTenure ? 'stale-custody-tenure' : 'stale-custody-reboot' })) {
           this.mirrorRemove(row.session_key);
           summary.staleCustodyExpired += 1;
           this.d.reportLoss([this.lossItem(row, 'stale-custody')], 'stale-custody');
+          featureEvidence.record('multiMachine.sessionPool.inboundQueue', { kind: 'error', reason: 'queued message expired: stale custody', context: { terminalReason: crossTenure ? 'stale-custody-tenure' : 'stale-custody-reboot', seq: row.enqueue_seq, ageMs: age } });
         }
         return;
       }
@@ -773,6 +809,7 @@ export class QueueDrainLoop {
       if (this.d.store.transition(row.enqueue_seq, 'queued', 'expired', { nowIso, terminalReason: 'poisoned', lastError: sanitizeError(err) })) {
         this.mirrorRemove(row.session_key);
         this.d.reportLoss([this.lossItem(row, 'poisoned')], 'poisoned');
+        featureEvidence.record('multiMachine.sessionPool.inboundQueue', { kind: 'error', reason: 'queued message dropped: unreadable row', context: { terminalReason: 'poisoned', seq: row.enqueue_seq } });
       }
       return;
     }
@@ -782,11 +819,16 @@ export class QueueDrainLoop {
       const claimed = this.d.store.claim(row.enqueue_seq, nowIso);
       if (!claimed) return;
       this.d.store.incrementCounter('holdBypassedByAttemptsCap');
-      let res: boolean | 'rejected' = false;
+      let res: boolean | 'rejected' | 'local' = false;
       try {
         res = await this.d.forceReplace(this.toMsg(row, senderEnvelope, topicMetadata));
       } catch { res = false; }
-      if (res === true) {
+      if (res === 'local') {
+        // Counting this `delivered` would drop the message: the router's
+        // local verdict is only a decision (2026-11-01 second-pass finding).
+        summary.dispatched += 1;
+        await this.dispatchClaimed(row, claimed, senderEnvelope, topicMetadata, summary, true);
+      } else if (res === true) {
         this.d.store.transition(row.enqueue_seq, 'claimed', 'delivered', { nowIso: new Date(this.d.now()).toISOString() });
         this.mirrorRemove(row.session_key);
         summary.delivered += 1;
@@ -798,9 +840,41 @@ export class QueueDrainLoop {
         this.mirrorRemove(row.session_key);
         this.d.reportLoss([this.lossItem(row, 'sender-deauthorized')], 'sender-deauthorized');
       } else {
-        this.d.store.transition(row.enqueue_seq, 'claimed', 'expired', { nowIso: new Date(this.d.now()).toISOString(), terminalReason: 'attempts-exhausted' });
+        this.expireAttemptsExhausted(row, new Date(this.d.now()).toISOString());
+      }
+      return;
+    }
+
+    // Overload brake: a message saved because THIS machine's work admission refused
+    // its session start goes straight to a re-place on its first drain attempt, instead
+    // of retrying the refusing machine through every backoff step (~25 min at the
+    // defaults). forceReplace runs normal placement, which skips a machine that is
+    // refusing work; 'local' means placement chose this machine (it has recovered).
+    // When no machine can take it, the row is released with backoff exactly like an
+    // un-routable dispatch, so the maxAttempts escape and the TTL still bound it.
+    if (row.reason === WORK_ADMISSION_REFUSAL_REASON) {
+      const claimed = this.d.store.claim(row.enqueue_seq, nowIso);
+      if (!claimed) return;
+      this.d.store.incrementCounter('admissionRefusalReplaced');
+      let res: boolean | 'rejected' | 'local' = false;
+      try {
+        res = await this.d.forceReplace(this.toMsg(row, senderEnvelope, topicMetadata));
+      } catch { res = false; }
+      const settleIso = new Date(this.d.now()).toISOString();
+      if (res === 'local') {
+        summary.dispatched += 1;
+        await this.dispatchClaimed(row, claimed, senderEnvelope, topicMetadata, summary, false);
+      } else if (res === true) {
+        this.d.store.transition(row.enqueue_seq, 'claimed', 'delivered', { nowIso: settleIso });
         this.mirrorRemove(row.session_key);
-        this.d.reportLoss([this.lossItem(row, 'attempts-exhausted')], 'attempts-exhausted');
+        summary.delivered += 1;
+      } else if (res === 'rejected') {
+        this.d.store.transition(row.enqueue_seq, 'claimed', 'expired', { nowIso: settleIso, terminalReason: 'sender-deauthorized' });
+        this.mirrorRemove(row.session_key);
+        this.d.reportLoss([this.lossItem(row, 'sender-deauthorized')], 'sender-deauthorized');
+      } else {
+        summary.unroutable += 1;
+        this.releaseWithBackoff(row, claimed.attempts + 1, 'admission-refused: no machine can take it yet', settleIso);
       }
       return;
     }
@@ -809,7 +883,21 @@ export class QueueDrainLoop {
     const claimed = this.d.store.claim(row.enqueue_seq, nowIso);
     if (!claimed) return;
     summary.dispatched += 1;
+    await this.dispatchClaimed(row, claimed, senderEnvelope, topicMetadata, summary, false);
+  }
 
+  /** Dispatch a claimed row and settle it. `final` (the forced re-place's one
+   *  local attempt): a retryable failure terminals attempts-exhausted instead
+   *  of releasing, so the escape hatch stays bounded. */
+  private async dispatchClaimed(
+    row: PendingInboundRow,
+    claimed: { attempts: number },
+    senderEnvelope: SenderEnvelope | null,
+    topicMetadata: unknown,
+    summary: DrainPassSummary,
+    final: boolean,
+  ): Promise<void> {
+    const q = this.d.qcfg;
     // The §3.4 handover contract, bound to THIS row.
     const handover: DrainHandover = {
       commitReceipt: () => this.d.store.writeReceiptIfClaimed(row.enqueue_seq, row.session_key, row.message_id, new Date(this.d.now()).toISOString()),
@@ -873,12 +961,14 @@ export class QueueDrainLoop {
         // attempts++ (§3.1 round-3: without the increment, maxAttempts was
         // unreachable from this class).
         summary.unroutable += 1;
-        this.releaseWithBackoff(row, claimed.attempts + 1, `un-routable: ${result.reason}`, settleIso);
+        if (final) this.expireAttemptsExhausted(row, settleIso);
+        else this.releaseWithBackoff(row, claimed.attempts + 1, `un-routable: ${result.reason}`, settleIso);
         break;
       }
       case 'failed': {
         summary.failed += 1;
-        this.releaseWithBackoff(row, claimed.attempts + 1, sanitizeError(result.error) ?? 'dispatch-failed', settleIso);
+        if (final) this.expireAttemptsExhausted(row, settleIso);
+        else this.releaseWithBackoff(row, claimed.attempts + 1, sanitizeError(result.error) ?? 'dispatch-failed', settleIso);
         break;
       }
     }
@@ -892,7 +982,38 @@ export class QueueDrainLoop {
       senderEnvelope,
       topicMetadata,
       enqueueSeq: row.enqueue_seq,
+      enqueuedAt: row.enqueued_at,
+      // An unreadable media cell never poisons the row: the payload carries the path-free sentence.
+      media: ((): InboundMediaLocal[] | null => {
+        if (!row.media) return null;
+        try { return parseQueuedMediaCell(JSON.parse(row.media)); } catch { return null; } // @silent-fallback-ok — the payload's sentence still tells the session a file was sent
+      })(),
     };
+  }
+
+  /** Deliveries as a bounded summary, not one row per message: at most one row per 15 minutes. */
+  private recordDrainEvidence(summary: DrainPassSummary): void {
+    this.evidenceDelivered += summary.delivered;
+    this.evidenceFailed += summary.failed;
+    this.evidenceUnroutable += summary.unroutable;
+    this.evidenceHeld += summary.skippedHeld;
+    if (this.evidenceDelivered + this.evidenceFailed + this.evidenceUnroutable + this.evidenceHeld === 0) return;
+    const now = this.d.now();
+    if (now - this.evidenceAt < 15 * 60_000) return;
+    this.evidenceAt = now;
+    featureEvidence.record('multiMachine.sessionPool.inboundQueue', {
+      kind: this.evidenceDelivered > 0 ? 'fired' : 'held',
+      reason: 'drain summary',
+      context: { delivered: this.evidenceDelivered, failed: this.evidenceFailed, unroutable: this.evidenceUnroutable, skippedHeld: this.evidenceHeld, trigger: summary.trigger },
+    });
+    this.evidenceDelivered = this.evidenceFailed = this.evidenceUnroutable = this.evidenceHeld = 0;
+  }
+
+  private expireAttemptsExhausted(row: PendingInboundRow, nowIso: string): void {
+    this.d.store.transition(row.enqueue_seq, 'claimed', 'expired', { nowIso, terminalReason: 'attempts-exhausted' });
+    this.mirrorRemove(row.session_key);
+    this.d.reportLoss([this.lossItem(row, 'attempts-exhausted')], 'attempts-exhausted');
+    featureEvidence.record('multiMachine.sessionPool.inboundQueue', { kind: 'error', reason: 'queued message dropped: attempts exhausted', context: { terminalReason: 'attempts-exhausted', seq: row.enqueue_seq, attempts: row.attempts } });
   }
 
   private releaseWithBackoff(row: PendingInboundRow, attempts: number, lastError: string, nowIso: string): void {
@@ -983,7 +1104,7 @@ export class QueueDrainLoop {
     const stale: LossItem[] = [];
     for (const row of this.d.store.listNonTerminal()) {
       if (row.frozen_since) continue; // pause governs frozen rows
-      const age = nowMs - Date.parse(row.enqueued_at) - row.total_frozen_ms;
+      const age = nowMs - Date.parse(row.enqueued_at) - row.total_frozen_ms - (row.fold_frozen_ms ?? 0); // fold-held time never ages a row (§9.3)
       if (age > q.maxNapDeliveryAgeMs && row.state === 'queued') {
         if (this.d.store.transition(row.enqueue_seq, 'queued', 'expired', { nowIso, terminalReason: 'nap-stale' })) {
           this.mirrorRemove(row.session_key);
@@ -1022,6 +1143,10 @@ export class QueueDrainLoop {
   // ── Remote receive side (§3.4 remote path — peer-side surface) ──────
 
   /** Receive-side durable receipt, canonical-id keyed (loss window 6 arm). */
+  hasRemoteReceipt(sessionKey: string, messageId: string): boolean {
+    return this.d.store.hasRemoteReceipt(sessionKey, messageId);
+  }
+
   recordRemoteReceipt(sessionKey: string, messageId: string): boolean {
     return this.d.store.recordRemoteReceipt(sessionKey, messageId, new Date(this.d.now()).toISOString());
   }
@@ -1059,7 +1184,7 @@ export class QueueDrainLoop {
       'holdsReleasedToFailover:budget-exhausted', 'holdsReleasedToFailover:flap-forced',
       'holdsReleasedToFailover:maxHeldTotal-refused', 'budgetOverrunHolds',
       'shadowCustodyVerified', 'shadowCustodyRefused', 'shadowCustodyError',
-      'shadowCustodyRecoveredAfterRestart',
+      'shadowCustodyRecoveredAfterRestart', 'admissionRefusalReplaced',
     ];
     const counters: Record<string, number> = {};
     for (const k of counterKeys) counters[k] = this.d.store.getCounter(k);

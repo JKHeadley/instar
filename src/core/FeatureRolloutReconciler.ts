@@ -1,3 +1,6 @@
+// Governed by (docs/STANDARDS-REGISTRY.md cites this file as enforcement of):
+//   *Maturation Path — Test Agent → Development Agent → Fleet*
+
 /**
  * FeatureRolloutReconciler — makes the InitiativeTracker self-populating
  * (GRADUATED-FEATURE-ROLLOUT-SPEC §4.1). Runs IN-PROCESS against the tracker
@@ -14,7 +17,8 @@
  * or ships-staged specs become `active` tracks (anti-flood).
  */
 
-import type { InitiativeTracker, PipelineStage, Initiative, MaturationEvaluationContract, RolloutAccountingDisposition, MaturationLadderRung } from './InitiativeTracker.js';
+import { setImmediate as yieldToEventLoop } from 'node:timers/promises';
+import type { InitiativeTracker, PipelineStage, Initiative, MaturationEvaluationContract, RolloutAccountingDisposition, RolloutAccountingInfo, MaturationLadderRung } from './InitiativeTracker.js';
 import {
   deriveRolloutStage,
   rolloutPhaseStatuses,
@@ -59,7 +63,9 @@ export interface SpecArtifact {
 export interface ReconcilerDeps {
   tracker: Pick<InitiativeTracker, 'list' | 'get' | 'create' | 'update' | 'setPhaseStatus'>;
   /** Discover spec artifacts (fs + git). Injected for testability. */
-  listSpecArtifacts: () => SpecArtifact[];
+  listSpecArtifacts: (signal?: AbortSignal) => SpecArtifact[] | Promise<SpecArtifact[]>;
+  /** Reports a non-cancellation failure encountered while stopping. */
+  onError?: (error: unknown) => void;
   /** Observe a feature's flag (live config + shipped default). Read-only. */
   observeFlag: (flagPath: string) => RolloutFlagObservation;
   now?: () => number;
@@ -93,14 +99,39 @@ export function accountingRung(stage: ReturnType<typeof deriveRolloutStage>): Ma
 export class FeatureRolloutReconciler {
   private readonly deps: ReconcilerDeps;
   private readonly now: () => number;
+  private flight: Promise<ReconcileSummary> | null = null;
+  private stopped = false;
+  private readonly discoveryAbort = new AbortController();
 
   constructor(deps: ReconcilerDeps) {
     this.deps = deps;
     this.now = deps.now ?? (() => Date.now());
   }
 
-  /** One reconciliation pass over all discovered specs. Idempotent. */
-  async reconcile(): Promise<ReconcileSummary> {
+  /** Share the entire discovery/application pass; do not queue another run. */
+  reconcile(): Promise<ReconcileSummary> {
+    if (this.stopped) return Promise.reject(new DOMException('Rollout reconciliation stopped', 'AbortError'));
+    if (this.flight) return this.flight;
+    this.flight = this.run().finally(() => { this.flight = null; });
+    return this.flight;
+  }
+
+  /** Mark stopped synchronously, then await owned discovery and writes already in flight. */
+  stop(): Promise<void> {
+    this.stopped = true;
+    this.discoveryAbort.abort();
+    return (this.flight ?? Promise.resolve()).then(() => undefined, (error: unknown) => {
+      if (!(error instanceof Error && error.name === 'AbortError')) this.deps.onError?.(error);
+    });
+  }
+
+  private ensureRunning(): void {
+    if (this.stopped) throw new DOMException('Rollout reconciliation stopped', 'AbortError');
+  }
+
+  private async run(): Promise<ReconcileSummary> {
+    const artifacts = await this.deps.listSpecArtifacts(this.discoveryAbort.signal);
+    this.ensureRunning();
     const summary: ReconcileSummary = { created: [], advanced: [], archived: [], regressed: [], skipped: [], unchanged: [] };
     // Index existing tasks by specPath for rename detection.
     const bySpecPath = new Map<string, Initiative>();
@@ -109,10 +140,13 @@ export class FeatureRolloutReconciler {
       if (init.specPath) bySpecPath.set(init.specPath, init);
     }
 
-    for (const art of this.deps.listSpecArtifacts()) {
+    for (const art of artifacts) {
+      await yieldToEventLoop();
+      this.ensureRunning();
       try {
         await this.reconcileOne(art, bySpecPath, summary);
-      } catch {
+      } catch (error) {
+        if (this.stopped) throw error;
         // A single bad spec must not abort the whole pass.
         summary.skipped.push(art.id);
       }
@@ -136,6 +170,10 @@ export class FeatureRolloutReconciler {
         evidenceSource: art.evidenceSource, graduationCriterion: art.promotionCriteria,
         maturationEvaluation: art.maturationEvaluation, maturationContractError: art.maturationContractError }
       : undefined;
+    const nextAccounting = rolloutAccounting ?? (observedStage && existing?.rolloutAccounting
+      ? { ...existing.rolloutAccounting, rung: accountingRung(observedStage),
+        maturationEvaluation: art.maturationEvaluation, maturationContractError: art.maturationContractError }
+      : undefined);
 
     if (!existing) {
       // ── CREATE ──
@@ -146,12 +184,13 @@ export class FeatureRolloutReconciler {
       const phases = rolloutEligible && phaseStatuses
         ? ROLLOUT_PHASE_IDS.map(id => ({ id, name: id, status: phaseStatuses[id] }))
         : [{ id: 'lifecycle', name: stage }];
+      this.ensureRunning();
       await this.deps.tracker.create({
         id: art.id, title: art.title, description: `Auto-registered from ${art.specPath}`,
         phases, kind: 'task', pipelineStage: stage, specPath: art.specPath,
         prNumber: art.prNumber,
         rollout: rolloutEligible
-          ? { flagPath: art.flagPath!, stage: observedStage!, evidenceSource: art.evidenceSource, promotionCriteria: art.promotionCriteria, maturationEvaluation: art.maturationEvaluation }
+          ? { flagPath: art.flagPath!, stage: observedStage!, evidenceSource: art.evidenceSource, promotionCriteria: art.promotionCriteria, maturationEvaluation: art.maturationEvaluation, maturationContractError: art.maturationContractError }
           : undefined,
         rolloutAccounting,
       });
@@ -160,10 +199,13 @@ export class FeatureRolloutReconciler {
       // which would seal it). Historical non-rollout backfill uses 'archived'
       // (genuinely terminal provenance, never reopened).
       if (observedStage && shouldArchiveAtStage(observedStage)) {
+        this.ensureRunning();
         await this.deps.tracker.update(art.id, { status: 'paused', ifMatch: this.deps.tracker.get(art.id)?.version });
       } else if (disposition === 'excluded') {
+        this.ensureRunning();
         await this.deps.tracker.update(art.id, { status: 'paused', ifMatch: this.deps.tracker.get(art.id)?.version });
       } else if (!isActive && !rolloutAccounting) {
+        this.ensureRunning();
         await this.deps.tracker.update(art.id, { status: 'archived', ifMatch: this.deps.tracker.get(art.id)?.version });
       }
       summary.created.push(art.id);
@@ -176,6 +218,7 @@ export class FeatureRolloutReconciler {
 
     // Advance dev pipelineStage when artifacts moved it forward.
     if (existing.pipelineStage !== stage) {
+      this.ensureRunning();
       await this.deps.tracker.update(id, { pipelineStage: stage, prNumber: art.prNumber, ifMatch: this.deps.tracker.get(id)?.version });
       touched = true;
     }
@@ -183,28 +226,24 @@ export class FeatureRolloutReconciler {
     if (rolloutEligible && observedStage) {
       const prevStage = existing.rollout?.stage;
       if (prevStage && isRegression(prevStage, observedStage)) {
+        this.ensureRunning();
         await this.deps.tracker.update(id, { pipelineStage: 'regressed', status: 'active', ifMatch: this.deps.tracker.get(id)?.version });
-        await this.applyRolloutStage(id, observedStage);
-        const latest = this.deps.tracker.get(id);
-        if (latest?.rolloutAccounting) await this.deps.tracker.update(id, {
-          rolloutAccounting: { ...latest.rolloutAccounting, rung: accountingRung(observedStage) }, ifMatch: latest.version,
-        });
+        await this.applyRolloutStage(id, observedStage, art, nextAccounting);
         summary.regressed.push(id);
         return;
       }
       if (prevStage !== observedStage) {
-        await this.applyRolloutStage(id, observedStage);
-        const latest = this.deps.tracker.get(id);
-        if (latest?.rolloutAccounting) await this.deps.tracker.update(id, {
-          rolloutAccounting: { ...latest.rolloutAccounting, rung: accountingRung(observedStage) }, ifMatch: latest.version,
-        });
+        await this.applyRolloutStage(id, observedStage, art, nextAccounting);
         if (shouldArchiveAtStage(observedStage)) summary.archived.push(id);
         else summary.advanced.push(id);
         return;
       }
-      if (JSON.stringify(existing.rollout?.maturationEvaluation) !== JSON.stringify(art.maturationEvaluation)) {
+      if (JSON.stringify(existing.rollout?.maturationEvaluation) !== JSON.stringify(art.maturationEvaluation) ||
+          existing.rollout?.maturationContractError !== art.maturationContractError) {
+        this.ensureRunning();
         await this.deps.tracker.update(id, {
-          rollout: { ...existing.rollout!, maturationEvaluation: art.maturationEvaluation },
+          rollout: { ...existing.rollout!, maturationEvaluation: art.maturationEvaluation, maturationContractError: art.maturationContractError },
+          ...(nextAccounting ? { rolloutAccounting: nextAccounting } : {}),
           ifMatch: this.deps.tracker.get(id)?.version,
         });
         summary.advanced.push(id);
@@ -212,8 +251,9 @@ export class FeatureRolloutReconciler {
       }
     }
 
-    if (rolloutAccounting && JSON.stringify(existing.rolloutAccounting) !== JSON.stringify(rolloutAccounting)) {
-      await this.deps.tracker.update(id, { rolloutAccounting, ifMatch: this.deps.tracker.get(id)?.version });
+    if (nextAccounting && JSON.stringify(existing.rolloutAccounting) !== JSON.stringify(nextAccounting)) {
+      this.ensureRunning();
+      await this.deps.tracker.update(id, { rolloutAccounting: nextAccounting, ifMatch: this.deps.tracker.get(id)?.version });
       summary.advanced.push(id);
       return;
     }
@@ -224,19 +264,22 @@ export class FeatureRolloutReconciler {
 
   /** Apply a rollout stage: sync phase statuses + the rollout block; archive
    *  (reopenable) at default-on rather than completing. */
-  private async applyRolloutStage(id: string, stage: string): Promise<void> {
+  private async applyRolloutStage(id: string, stage: string, art: SpecArtifact, accounting?: RolloutAccountingInfo): Promise<void> {
     const cur = this.deps.tracker.get(id);
     if (!cur) return;
     const statuses = rolloutPhaseStatuses(stage as never);
     for (const pid of ROLLOUT_PHASE_IDS) {
       const phase = cur.phases.find(p => p.id === pid);
       if (phase && phase.status !== statuses[pid]) {
+        this.ensureRunning();
         await this.deps.tracker.setPhaseStatus(id, pid, statuses[pid]);
       }
     }
     const fresh = this.deps.tracker.get(id);
+    this.ensureRunning();
     await this.deps.tracker.update(id, {
-      rollout: { flagPath: fresh?.rollout?.flagPath ?? '', stage: stage as never, evidenceSource: fresh?.rollout?.evidenceSource, promotionCriteria: fresh?.rollout?.promotionCriteria, maturationEvaluation: fresh?.rollout?.maturationEvaluation, lastDigestNotifiedAt: fresh?.rollout?.lastDigestNotifiedAt },
+      rollout: { flagPath: fresh?.rollout?.flagPath ?? '', stage: stage as never, evidenceSource: fresh?.rollout?.evidenceSource, promotionCriteria: fresh?.rollout?.promotionCriteria, maturationEvaluation: art.maturationEvaluation, maturationContractError: art.maturationContractError, lastDigestNotifiedAt: fresh?.rollout?.lastDigestNotifiedAt },
+      ...(accounting ? { rolloutAccounting: accounting } : {}),
       // 'paused' (non-terminal, reopenable) at default-on — NOT 'archived'
       // (which maps to TaskFlow's terminal `cancelled` and would seal the
       // record against a later regression). 'active' for live/dry-run.

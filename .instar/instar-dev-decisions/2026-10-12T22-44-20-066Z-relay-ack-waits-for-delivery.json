@@ -1,0 +1,27 @@
+{
+  "ts": "2026-10-12T22:44:20.066Z",
+  "slug": "relay-ack-waits-for-delivery",
+  "suggestedTier": 2,
+  "declaredTier": 2,
+  "riskFloor": 1,
+  "riskFloorReasons": [],
+  "belowFloor": false,
+  "files": 6,
+  "loc": 317,
+  "scope": {
+    "basis": "staged-in-scope-additions-plus-deletions",
+    "files": [
+      "src/commands/server.ts",
+      "src/core/SessionManager.ts",
+      "src/threadline/ThreadlineRouter.ts",
+      "src/threadline/TopicLinkageHandler.ts",
+      "src/threadline/autoAck.ts",
+      "src/threadline/topicRespawnHook.ts"
+    ],
+    "addedLines": 279,
+    "deletedLines": 38
+  },
+  "causalAutopsy": null,
+  "classClosure": null,
+  "verdict": "pass"
+}

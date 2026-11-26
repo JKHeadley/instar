@@ -10,8 +10,10 @@ import path from 'node:path';
 import {
   suspendAutonomousTopicForMove,
   listAutonomousJobs,
+  reportableAutonomousJobs,
   activeAutonomousJobs,
   autonomousRunRemainingForTopic,
+  structuralLongWorkActive,
   canStartAutonomousJob,
   stopAutonomousTopic,
   stopAllAutonomousJobs,
@@ -44,6 +46,36 @@ afterEach(() => {
 });
 
 describe('listing', () => {
+  it('keeps an active unbounded run reportable', () => {
+    writeJob('13480'); // no duration_seconds is a valid unbounded run
+    expect(reportableAutonomousJobs(stateDir, Date.parse('2026-05-24T18:00:00Z')).map(({ job }) => job.topic)).toEqual(['13480']);
+  });
+  it('reports a real suspended move and a paused run after its original window', () => {
+    writeJob('13481');
+    writeJob('13482', { paused: true });
+    for (const topic of ['13481', '13482']) {
+      const file = path.join(stateDir, 'autonomous', `${topic}.local.md`);
+      fs.writeFileSync(file, fs.readFileSync(file, 'utf8').replace(/^started_at:.*$/m, '$&\nduration_seconds: 3600'));
+    }
+    suspendAutonomousTopicForMove(stateDir, '13481', 'm_destination');
+    const jobs = reportableAutonomousJobs(stateDir, Date.parse('2026-05-24T18:00:00Z'));
+    expect(jobs.map(({ job }) => job.topic).sort()).toEqual(['13481', '13482']);
+    expect(jobs.every(({ remainingSeconds }) => remainingSeconds === 0)).toBe(true);
+    expect(jobs.find(({ job }) => job.topic === '13481')?.job.active).toBe(false);
+  });
+
+  it('never reports a stopped record whose stale paused or move markers remain', () => {
+    writeJob('13481', { paused: true });
+    writeJob('13482');
+    for (const topic of ['13481', '13482']) {
+      const file = path.join(stateDir, 'autonomous', `${topic}.local.md`);
+      fs.writeFileSync(file, fs.readFileSync(file, 'utf8').replace(/^started_at:.*$/m, '$&\nduration_seconds: 3600'));
+    }
+    suspendAutonomousTopicForMove(stateDir, '13482', 'm_destination');
+    expect(stopAutonomousTopic(stateDir, '13481')).toBe(true);
+    expect(stopAutonomousTopic(stateDir, '13482')).toBe(true);
+    expect(reportableAutonomousJobs(stateDir, Date.parse('2026-05-23T18:30:00Z'))).toEqual([]);
+  });
   it('lists per-topic jobs and a legacy job', () => {
     writeJob('9984');
     writeJob('12143', { paused: true });
@@ -298,5 +330,41 @@ describe('autonomousRunRemainingForTopic (honest-recycle helper)', () => {
     expect(autonomousRunRemainingForTopic(stateDir, 'paused', now)).toBeNull();
     writeRun('nodur', { durationSeconds: null });
     expect(autonomousRunRemainingForTopic(stateDir, 'nodur', now)).toBeNull();
+  });
+});
+
+describe('structuralLongWorkActive (ReapGuard buildOrAutonomousActive)', () => {
+  const now = Date.parse('2026-09-30T02:00:00Z');
+  function writeRun(topic: string, fm: string, mtimeMinutesAgo = 31) {
+    fs.mkdirSync(path.join(stateDir, 'autonomous'), { recursive: true });
+    const file = path.join(stateDir, 'autonomous', `${topic}.local.md`);
+    fs.writeFileSync(file, `---\n${fm}\nreport_topic: "${topic}"\n---\n\ntask\n`);
+    const t = new Date(Date.now() - mtimeMinutesAgo * 60_000);
+    fs.utimesSync(file, t, t);
+  }
+
+  it('an active run inside its window counts, however old its file is', () => {
+    writeRun('1', 'active: true\nstarted_at: "2026-09-30T01:00:00Z"\nduration_seconds: 14400', 600);
+    expect(structuralLongWorkActive(stateDir, 1, now)).toBe(true);
+  });
+
+  it('inactive, paused, expired, unbounded and absent runs do not count, even with a fresh file', () => {
+    writeRun('2', 'active: false\nstarted_at: "2026-09-30T01:00:00Z"\nduration_seconds: 14400', 0);
+    writeRun('3', 'active: true\npaused: true\nstarted_at: "2026-09-30T01:00:00Z"\nduration_seconds: 14400', 0);
+    writeRun('4', 'active: true\nstarted_at: "2026-09-29T20:00:00Z"\nduration_seconds: 14400', 0);
+    writeRun('5', 'active: true\nstarted_at: "2026-09-30T01:00:00Z"', 0);
+    for (const t of [2, 3, 4, 5, 6]) expect(structuralLongWorkActive(stateDir, t, now)).toBe(false);
+    expect(structuralLongWorkActive(stateDir, null, now)).toBe(false);
+  });
+
+  it('a /build state file counts only while written in the last 30 minutes', () => {
+    const dir = path.join(stateDir, 'state', 'build');
+    fs.mkdirSync(dir, { recursive: true });
+    const file = path.join(dir, 'build-state.json');
+    fs.writeFileSync(file, '{}');
+    expect(structuralLongWorkActive(stateDir, null)).toBe(true);
+    const old = new Date(Date.now() - 31 * 60_000);
+    fs.utimesSync(file, old, old);
+    expect(structuralLongWorkActive(stateDir, null)).toBe(false);
   });
 });

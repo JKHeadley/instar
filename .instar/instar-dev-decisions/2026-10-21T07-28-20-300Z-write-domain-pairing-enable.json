@@ -1,0 +1,28 @@
+{
+  "ts": "2026-10-21T07:28:20.300Z",
+  "slug": "write-domain-pairing-enable",
+  "suggestedTier": 1,
+  "declaredTier": 1,
+  "riskFloor": 1,
+  "riskFloorReasons": [],
+  "belowFloor": false,
+  "files": 1,
+  "loc": 13,
+  "scope": {
+    "basis": "staged-in-scope-additions-plus-deletions",
+    "files": [
+      "src/core/WriteDomainRegistry.ts"
+    ],
+    "addedLines": 13,
+    "deletedLines": 0
+  },
+  "causalAutopsy": {
+    "origin": "prior-pr",
+    "relatedPrs": [
+      2248
+    ],
+    "notes": "PR #2248 added POST /threadline/pairing/enable without the write-domain declaration every mutating route needs. The ratchet that refuses an undeclared route caught it correctly, but only on a full-suite run — the PR's own CI shards evidently did not include that file, so main merged red. Same merge also landed a test importing bootstrapThreadline without useHermeticHome, caught by its own guard in shard 2."
+  },
+  "classClosure": null,
+  "verdict": "pass"
+}

@@ -109,6 +109,12 @@ describe('WorkEvidence — midWork + eligibility classifier (R2.1/R2.2)', () => 
     expect(evidenceEligible(['unverified-under-pressure', 'active-process'], true)).toBe(false);
   });
 
+  it('background-shell (a reaped session still running its own tool shell) is STRONG ⇒ eligible alone, and survives the clamp', () => {
+    expect(clampWorkEvidence(['background-shell'])).toEqual(['background-shell']);
+    expect(evidenceEligible(['background-shell'], true)).toBe(true);
+    expect(strongEvidence(['background-shell', 'active-process'])).toEqual(['background-shell']);
+  });
+
   it('class helpers split the vocabulary correctly', () => {
     const all = ['open-commitment', 'active-process', 'unverified-under-pressure'];
     expect(strongEvidence(all)).toEqual(['open-commitment']);

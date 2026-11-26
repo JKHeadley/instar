@@ -136,7 +136,7 @@ describe('Pre-push gate integration — malformed NEXT.md', () => {
     // script would still see the production __dirname and walk the production
     // tree — making the integration test sensitive to unrelated changes in
     // the rest of the repo. Copying isolates the test to its scratch dir.
-    for (const file of ['pre-push-gate.js', 'upgrade-guide-validator.mjs', 'assemble-next-md.mjs', 'release-relevant-paths.mjs', 'lint-no-direct-destructive.js', 'lint-no-direct-llm-http.js']) {
+    for (const file of ['pre-push-gate.js', 'upgrade-guide-validator.mjs', 'assemble-next-md.mjs', 'release-relevant-paths.mjs', 'release-cut-diff.mjs', 'lint-no-direct-destructive.js', 'lint-no-direct-llm-http.js']) {
       fs.copyFileSync(
         path.join(ROOT, 'scripts', file),
         path.join(scratch, 'scripts', file),
@@ -314,7 +314,7 @@ describe('Pre-push gate integration — release-note fragments', () => {
       path.join(scratch, 'package.json'),
       JSON.stringify({ name: 'instar-test', version: '0.28.999' }),
     );
-    for (const file of ['pre-push-gate.js', 'upgrade-guide-validator.mjs', 'assemble-next-md.mjs', 'release-relevant-paths.mjs', 'lint-no-direct-destructive.js', 'lint-no-direct-llm-http.js']) {
+    for (const file of ['pre-push-gate.js', 'upgrade-guide-validator.mjs', 'assemble-next-md.mjs', 'release-relevant-paths.mjs', 'release-cut-diff.mjs', 'lint-no-direct-destructive.js', 'lint-no-direct-llm-http.js']) {
       fs.copyFileSync(path.join(ROOT, 'scripts', file), path.join(scratch, 'scripts', file));
     }
   });
@@ -515,7 +515,12 @@ describe('Pre-push gate integration — release-note fragments', () => {
 
     const { status, stdout } = runGate();
     expect(status).not.toBe(0);
-    expect(stdout).toContain('side-effects review artifact was written in the last 24h');
+    // The refusal now names the PAIRING failure, not a wall-clock window: this
+    // change replaced "…written in the last 24h" with "…as recent as it", so a
+    // reviewed backlog stops aging into a false refusal. The case still asserts
+    // the same behaviour — an unreviewed in-flight fragment is refused — via the
+    // wording the gate actually emits.
+    expect(stdout).toContain('no side-effects review artifact is as recent as it');
     // And the remedy it names must be the slug form, never a version-named file.
     expect(stdout).toContain('upgrades/side-effects/<slug>.md');
   });

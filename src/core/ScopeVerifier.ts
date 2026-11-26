@@ -23,6 +23,7 @@ import fs from 'node:fs';
 import path from 'node:path';
 import { execFileSync } from 'node:child_process';
 import { SafeGitExecutor } from './SafeGitExecutor.js';
+import { TopicRef } from '../messaging/shared/topicRef.js';
 
 export interface ScopeVerificationResult {
   /** Whether the action passed all coherence checks */
@@ -333,10 +334,10 @@ export class ScopeVerifier {
       return {
         name: 'topic-project-alignment',
         passed: null,
-        expected: `Topic ${topicId} bound to a specific project`,
+        expected: `${TopicRef(topicId)} bound to a specific project`,
         actual: 'No topic-project binding exists',
         severity: 'warning',
-        message: `Topic ${topicId} has no project binding — verify which project this topic is for`,
+        message: `${TopicRef(topicId)} has no project binding — verify which project this topic is for`,
       };
     }
 
@@ -353,7 +354,7 @@ export class ScopeVerifier {
       severity: 'error',
       message: matches
         ? `Topic is correctly bound to ${binding.projectName}`
-        : `WRONG PROJECT: Topic ${topicId} is for ${binding.projectName} but current project is ${this.config.projectName}`,
+        : `WRONG PROJECT: ${TopicRef(topicId)} is for ${binding.projectName} but current project is ${this.config.projectName}`,
     };
   }
 
@@ -453,6 +454,9 @@ export class ScopeVerifier {
   private detectGitRemote(): string | null {
     try {
       return SafeGitExecutor.readSync(['remote', 'get-url', 'origin'], { cwd: this.config.projectDir,
+        // Inspecting a protected Instar checkout is evidence acquisition. The
+        // fixed read shape and the expected-remote comparison remain enforced.
+        sourceTreeReadOk: true,
         encoding: 'utf-8',
         stdio: 'pipe', operation: 'src/core/ScopeVerifier.ts:450' }).trim() || null;
     } catch {

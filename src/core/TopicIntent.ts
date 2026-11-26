@@ -102,7 +102,32 @@ export interface PendingConfirmation {
   dequeuedAtTime?: string;
   answeredAtTime?: string;
   answerVerdict?: 'positive' | 'negative' | 'ambiguous' | 'non-responsive';
+  /**
+   * context-budget-layered-summaries §6.1 (the primitive extended, not
+   * forked): what is being confirmed. Absent ⇒ `ref` (every record written
+   * before the extension). An `evolution` is a purpose change in the ledger;
+   * it outranks ref confirmations and its clock runs from SURFACING.
+   */
+  kind?: PendingConfirmKind;
+  /** Evolution and backfill: when the next agent reply after it went outstanding was captured (the clock's start). */
+  surfacedAtTime?: string;
+  /** Evolution only: the topic's user-turn counter at surfacing (expiry needs a user message since). */
+  surfacedAtTurn?: number;
+  /** Evolution only: the agent message that carried it. */
+  surfacedAfterMessageId?: string;
+  /** How many times a higher-priority confirmation displaced this one back into the queue. */
+  requeued?: number;
+  /** Set when the confirmation was resolved by its ledger entry (confirmed, withdrawn or superseded elsewhere). */
+  settledAs?: string;
 }
+
+/**
+ * `backfill` (context-budget §6.1, S7): one per topic, for the Anchor and
+ * ledger rebuilt from TopicMemory history. It is folded into the agent's next
+ * reply only once the user has written since it went outstanding, never sent
+ * as a message of its own.
+ */
+export type PendingConfirmKind = 'ref' | 'evolution' | 'backfill';
 
 export interface TopicIntentFile {
   topicId: number;
@@ -112,6 +137,13 @@ export interface TopicIntentFile {
   pending: {
     outstanding: PendingConfirmation | null;
     queue: PendingConfirmation[];
+    /**
+     * Queue overflow (context-budget §6.1): confirmations that did not fit the
+     * queue wait here, oldest first, and move up as the queue drains. Never
+     * silently dropped. Optional: absent on every file written before
+     * the extension, and only ever written by the manager when it overflows.
+     */
+    deferred?: PendingConfirmation[];
   };
   telemetry: TelemetryCounters;
   /** Three temporal awareness levels; orthogonal to ref confidence tiers. */
@@ -128,6 +160,12 @@ export interface TelemetryCounters {
   pending_confirm_abandoned_total: number;
   pending_confirm_expired_total: number;
   pending_confirm_answered_total: Record<string, number>; // keyed by verdict
+  /** Overflow moved to `pending.deferred` instead of dropped (context-budget §6.1). Absent ⇒ 0. */
+  pending_confirm_deferred_total?: number;
+  /** Ref confirmations displaced back into the queue by an evolution. Absent ⇒ 0. */
+  pending_confirm_requeued_total?: number;
+  /** Confirmations resolved by their ledger entry rather than by an answer. Absent ⇒ 0. */
+  pending_confirm_settled_total?: number;
   /**
    * Capture-loop funnel counters (spec §10 — observability across the WHOLE
    * loop: captured → surfaced → used → corrected). Additive; defaulted on read
@@ -153,6 +191,8 @@ export interface CaptureCounters {
   degraded_cap_or_error: number;       // extractor degraded on cap breach / provider error
   degraded_shed: number;               // turns skipped under QuotaTracker load-shedding
   rate_limited: number;                // turns skipped by the per-topic rate ceiling
+  budget_deferred?: number;            // turns deferred by the layer token ceilings (context-budget §6.4)
+  layer_ticks?: number;                // transcript-growth ticks that reached the extractor (§6.4)
   // ── surface + use side (did it reach the agent / change anything?) ──
   briefing_served: number;             // agent-context briefing fetched for this topic
   briefing_refs_settled: number;       // cumulative authoritative refs carried by briefings
@@ -580,6 +620,23 @@ export class TopicIntentStore {
     }
   }
 
+  /**
+   * Run `fn` over the topic's file under the per-topic lock and save it
+   * (load → mutate → atomic save), so a confirmation-queue change can never
+   * lose a concurrent evidence append. `fn` must not call back into a locked
+   * store method (the lock is not re-entrant).
+   */
+  mutate<T>(topicId: number, fn: (file: TopicIntentFile) => T): T {
+    return this.withTopicLock(topicId, () => {
+      const file = this.load(topicId);
+      const before = JSON.stringify(file);
+      const out = fn(file);
+      // Only a change is written (a sweep that finds nothing to expire leaves the file untouched).
+      if (JSON.stringify(file) !== before) this.save(file);
+      return out;
+    });
+  }
+
   /** Single load→mutate→atomic-save pass (runs under withTopicLock). */
   private applyEvidence(topicId: number, refId: string, ev: EvidenceEvent, refInit?: Partial<EstablishedRef>): TopicIntentFile {
     const file = this.load(topicId);
@@ -814,6 +871,8 @@ export function defaultCaptureCounters(): CaptureCounters {
     degraded_cap_or_error: 0,
     degraded_shed: 0,
     rate_limited: 0,
+    budget_deferred: 0,
+    layer_ticks: 0,
     briefing_served: 0,
     briefing_refs_settled: 0,
     briefing_refs_tentative: 0,

@@ -47,9 +47,17 @@ export interface StoredPayloadInput { payloadId: string; digest: string; size: n
 export interface OriginStoreOptions {
   stateDir: string;
   agentId: string;
+  /** Caller deadline: rejects that one caller as outcome-unknown; the worker keeps serving. */
   requestTimeoutMs?: number;
+  /** An operation outstanding this long marks the worker stuck; the generation is replaced. */
+  stallTimeoutMs?: number;
+  /** Bounded worker restarts after a failed generation (exponential backoff, capped). The
+   * budget is restored only after a generation stays failure-free for healthyWindowMs. */
+  restart?: { baseDelayMs?: number; maxDelayMs?: number; maxAttempts?: number; healthyWindowMs?: number };
   /** Conservative aggregate structured-clone budget before worker enqueue. */
   maxPendingBytes?: number;
+  /** Audit horizon for origin stubs and their archives. An explicit operator policy. */
+  auditRetentionDays?: number;
   maxOperations?: number;
   maxPayloadBytes?: number;
   maxChildren?: number;
@@ -135,7 +143,13 @@ export interface OriginAuditRecord {
   diagnostic?: { state: string; reason: string; createdAt: number; resolvedAt: number | null; diagnosis: string | null };
   sequence: number;
   record: StoredOriginInput;
-  operation: { operationId: string; preparedAt: number; deadlineAt: number; maxAttempts: number; state: string } | null;
+  operation: { operationId: string; preparedAt: number; deadlineAt: number; maxAttempts: number; state: string;
+    /** native-conversation-base §3a item 2 — late-mark carrier (null on rows that were never replaced). */
+    firstPreparedAt?: number | null; lateMarkedAt?: number | null;
+    /** a2a-single-agent-identity §4.2 — present only while a named hold is recorded. */
+    holdReason?: string; holdDetail?: Record<string, unknown> | null;
+    /** native-conversation-forwarded-advisory item 2 — the outbound check's verdict (`policy_verdict_json`), never cleared. */
+    policyVerdict?: Record<string, unknown> | null } | null;
   children: Array<{ childId: string; deliveryId: string; destinationJson: string; generation: number; state: string; attempts: number }>;
   attempts: Array<{ attemptId: string; childId: string; materializationId: string; ownerBootId: string; deliveryMachineId: string | null; phase: string; outcome: string | null; receiptJson: string | null; createdAt: number; resolvedAt: number | null; reason?: string | null; nextAttemptAt?: number | null }>;
 }
@@ -155,6 +169,8 @@ export interface OriginListPage {
   cursor: string | null;
   upperSequence: number;
   coverage: 'complete';
+  /** Set once the audit horizon has removed records created before this time. */
+  historyExpiredBefore?: number;
 }
 export interface OriginMetrics {
   sampledAt: number;
@@ -179,3 +195,32 @@ export interface StoredChild {
   materializations: StoredMaterializationInput[];
 }
 export type OutcomeWriteResult = { recorded: true } | { recorded: false; reason: 'stale-fence' | 'not-dispatched' | 'receipt-required' | 'invalid-transition' };
+
+/** a2a-single-agent-identity §4.2 — one durable held (or expired-while-held) row. */
+export interface HeldOperationRow {
+  operationId: string;
+  originId: string;
+  state: 'held' | 'expired';
+  holdReason: string | null;
+  holdDetail: Record<string, unknown> | null;
+  preparedAt: number;
+  deadlineAt: number;
+  executionOwnerMachineId: string | null;
+  destination: { accountId: string | null; chatId: string | null; topicId: string | null };
+  recovery: { attempts: number; nextAttemptAt: number } | null;
+  expiryReportedAt: number | null;
+  /** Who authored the held send (`session` / `server-automation` / …), read from the
+   * sealed envelope. Null when unreadable. Gates the user-facing delayed-reply notice:
+   * background output never claims "I have your message". */
+  producerKind?: string | null;
+  /** native-conversation-base §3a item 2 — the original draft time of a replaced reply (null = its own preparedAt). */
+  firstPreparedAt?: number | null;
+  /** §3a item 2 — set when a late first line was added; never marked twice. */
+  lateMarkedAt?: number | null;
+  /** The sealed author binding, read from the envelope (null when unreadable). */
+  originMachineId?: string | null;
+  sessionId?: string | null;
+  harnessId?: string | null;
+  /** native-conversation-forwarded-advisory item 2 — the recorded verdict, when there is one. */
+  policyVerdict?: Record<string, unknown> | null;
+}

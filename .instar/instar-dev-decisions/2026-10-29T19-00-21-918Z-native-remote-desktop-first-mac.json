@@ -1,0 +1,30 @@
+{
+  "ts": "2026-10-29T19:00:21.918Z",
+  "slug": "native-remote-desktop-first-mac",
+  "suggestedTier": 1,
+  "declaredTier": 2,
+  "riskFloor": 1,
+  "riskFloorReasons": [],
+  "belowFloor": false,
+  "files": 1,
+  "loc": 5,
+  "scope": {
+    "basis": "staged-in-scope-additions-plus-deletions",
+    "files": [
+      "src/core/DesktopAead.ts"
+    ],
+    "addedLines": 4,
+    "deletedLines": 1
+  },
+  "causalAutopsy": null,
+  "classClosure": {
+    "defectClass": "unbounded-self-action",
+    "closure": "guard",
+    "guardEvidence": {
+      "enforcementType": "ratchet",
+      "citation": "tests/unit/DesktopStreamManager.test.ts",
+      "howCaught": "Capture retries stop after three consecutive failures; the stream grant expires or revokes and the test asserts bounded cleanup."
+    }
+  },
+  "verdict": "blocked"
+}

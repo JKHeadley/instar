@@ -10,16 +10,35 @@
  *   - https URLs whose host matches a known tunnel pattern (or an
  *     operator-extended allowlist), or
  *   - private-network/localhost hosts (http allowed for LAN peers).
- * A URL failing the check is refused VISIBLY (`url-rejected` failure row) —
- * never silently skipped, never sent the token.
+ * A URL failing the check is refused VISIBLY — never silently skipped, never
+ * sent the token.
  *
- * Redirect note: callers use plain fetch() WITHOUT `redirect: 'manual'` —
- * that is safe by the Fetch spec, which strips the Authorization header on
- * cross-origin redirects (a 301 from an allowlisted peer to a hostile host
- * arrives token-less). Do not "fix" this by following redirects manually
- * with the header preserved (the Slack FileHandler pattern is for a CDN
- * that REQUIRES it — the opposite trade).
+ * ── Shared predicate vocabulary (peer-credential-guard-tailscale-coherence) ──
+ * The RFC-1918 / CGNAT range arithmetic lives in `PeerEndpointResolver` and is
+ * IMPORTED here, never re-implemented. This file previously carried a third,
+ * hand-written copy that had silently drifted: it never learned Tailscale CGNAT
+ * `100.64.0.0/10`, so a tailnet rope was refused with the misleading
+ * `scheme-not-allowed`, which read as "we don't do plaintext" when the true
+ * statement is "we do plaintext inside ranges we treat as the operator's own,
+ * and CGNAT is deliberately not one of them."
+ * `mesh-endpoint-http-propagation.md`: "Both validate via the SAME function so
+ * the two can never diverge."
+ *
+ * Deliberately NOT shared: `isForbiddenHost`. The resolver FORBIDS loopback
+ * (`localhost`, `127/8`, `::1`) because a PEER advertising loopback is nonsense
+ * or an attack. This guard ALLOWS it, because here loopback is *us* — a
+ * same-machine call, not a peer rope. Importing `isForbiddenHost` wholesale
+ * would regress that, and the resolver has no IPv6 ULA/link-local predicates at
+ * all, so it would regress those too. The two layers answer different
+ * questions; they share the VOCABULARY, not a single verdict.
+ *
+ * Redirect note: the credential-bearing read path sets `redirect: 'manual'` and
+ * treats a 3xx as terminal, so a redirect can never produce a second
+ * token-bearing request (same-origin included). Do not "fix" this by following
+ * redirects with the header preserved.
  */
+
+import { ipv4ToInt, isRfc1918, isTailscaleCgnat } from '../core/PeerEndpointResolver.js';
 
 const DEFAULT_HOST_PATTERNS: readonly RegExp[] = [
   /(^|\.)trycloudflare\.com$/i, // Cloudflare quick tunnels
@@ -27,48 +46,100 @@ const DEFAULT_HOST_PATTERNS: readonly RegExp[] = [
   /\.local$/i, // mDNS LAN names
 ];
 
-function isPrivateOrLocalHost(host: string): boolean {
+/**
+ * The transport kind a candidate rope was advertised as. REQUIRED on
+ * `PeerEndpointSelection` so a caller cannot forget it: an absent kind used to
+ * be expressible and produced the wrong refusal silently. `last-known-url` is
+ * the explicit kind for a legacy `lastKnownUrl` with no matching endpoint
+ * record, so "kind unknown" is a representable VALUE rather than a missing
+ * argument.
+ */
+export type PeerEndpointKind = 'tailscale' | 'lan' | 'cloudflare' | 'last-known-url';
+
+export interface PeerEndpointSelection {
+  url: string;
+  kind: PeerEndpointKind;
+}
+
+/** Strip the brackets URL.hostname keeps on an IPv6 literal. */
+function bareHost(host: string): string {
+  const h = host.toLowerCase();
+  return h.startsWith('[') && h.endsWith(']') ? h.slice(1, -1) : h;
+}
+
+/**
+ * Loopback — allowed HERE and forbidden in the resolver, deliberately (see the
+ * header). This is `us`, not a peer.
+ */
+function isLoopbackSelf(host: string): boolean {
   const h = host.toLowerCase();
   if (h === 'localhost') return true;
-  // IPv6 literals (URL.hostname keeps the brackets): loopback, unique-local
-  // (fc00::/7), and link-local (fe80::/10) get the same trust as RFC-1918 —
-  // an IPv6 LAN peer must not dead-end as url-rejected (security review
-  // 2026-06-12 finding T-05; previously these over-blocked).
-  const v6 = h.startsWith('[') && h.endsWith(']') ? h.slice(1, -1) : h;
-  if (v6 === '::1') return true;
-  if (/^f[cd][0-9a-f]{0,2}:/.test(v6)) return true; // fc00::/7 unique-local
-  if (/^fe[89ab][0-9a-f]:/.test(v6)) return true; // fe80::/10 link-local
-  // RFC-1918 + loopback IPv4 literals.
-  if (/^127\.\d{1,3}\.\d{1,3}\.\d{1,3}$/.test(h)) return true;
-  if (/^10\.\d{1,3}\.\d{1,3}\.\d{1,3}$/.test(h)) return true;
-  if (/^192\.168\.\d{1,3}\.\d{1,3}$/.test(h)) return true;
-  const m = /^172\.(\d{1,3})\.\d{1,3}\.\d{1,3}$/.exec(h);
-  if (m) {
-    const second = Number(m[1]);
-    return second >= 16 && second <= 31;
-  }
+  if (bareHost(h) === '::1') return true;
+  const ip = ipv4ToInt(h);
+  if (ip === null) return false;
+  const base = ipv4ToInt('127.0.0.0')!;
+  const mask = (0xffffffff << (32 - 8)) >>> 0;
+  return (ip & mask) >>> 0 === (base & mask) >>> 0;
+}
+
+/**
+ * IPv6 unique-local (fc00::/7) and link-local (fe80::/10). The resolver has NO
+ * IPv6 predicates, so these stay local to this guard rather than being dropped
+ * (security review 2026-06-12 finding T-05 — previously these over-blocked and
+ * an IPv6 LAN peer dead-ended as url-rejected).
+ */
+function isIpv6PrivateHost(host: string): boolean {
+  const v6 = bareHost(host);
+  // fc00::/7 unique-local — the first hextet must be fc00..fdff, so it needs
+  // EXACTLY four hex digits. The previous `{0,2}` quantifier also matched
+  // `fc::1` (first hextet 0x00fc) and `fd0::1` (0x0fd0), which are OUTSIDE the
+  // range — a pre-existing OVER-ADMISSION in a credential guard, found by the
+  // second-pass reviewer on this change and fixed here rather than inherited.
+  if (/^f[cd][0-9a-f]{2}:/.test(v6)) return true;
+  // fe80::/10 link-local — fe80..febf, already exactly four digits.
+  if (/^fe[89ab][0-9a-f]:/.test(v6)) return true;
   return false;
+}
+
+/** A host inside the operator's own network, for the purposes of THIS guard. */
+function isPrivateOrLocalHost(host: string): boolean {
+  return isLoopbackSelf(host) || isIpv6PrivateHost(host) || isRfc1918(host);
 }
 
 export interface PeerUrlVerdict {
   ok: boolean;
   /** Normalized refusal reason (never a raw error string). */
-  reason?: 'invalid-url' | 'scheme-not-allowed' | 'host-not-allowlisted';
+  reason?:
+    | 'invalid-url'
+    | 'scheme-not-allowed'
+    | 'host-not-allowlisted'
+    /**
+     * A Tailscale CGNAT (`100.64.0.0/10`) host over plaintext http. Refused
+     * DELIBERATELY and named accurately: admitting it would release the full
+     * agent API token to a destination nothing authenticates as the peer, on a
+     * premise the spec documents as forgeable. Admission is sequenced behind
+     * destination authentication, and is NOT built here.
+     */
+    | 'cgnat-plaintext-unsupported';
 }
 
 /**
  * May this peer URL receive our Bearer token?
- * `extraHostPatterns` comes from config (`multiMachine.peerUrlAllowlist`,
+ * `extraHostSuffixes` comes from config (`multiMachine.peerUrlAllowlist`,
  * plain suffix strings) so an operator on a custom tunnel domain has a lever
  * instead of a dead end.
+ *
+ * NOTE: there is NO kind for which a CGNAT host is admitted over http. The
+ * `kind` is used to name refusals accurately and to let callers reason about
+ * what was skipped — never to widen trust.
  */
 export function isPeerUrlAllowedForCredentials(
-  rawUrl: string,
+  selection: PeerEndpointSelection,
   extraHostSuffixes?: readonly string[],
 ): PeerUrlVerdict {
   let parsed: URL;
   try {
-    parsed = new URL(rawUrl);
+    parsed = new URL(selection.url);
   } catch {
     return { ok: false, reason: 'invalid-url' };
   }
@@ -76,7 +147,11 @@ export function isPeerUrlAllowedForCredentials(
 
   if (parsed.protocol === 'http:') {
     // Plaintext is acceptable ONLY inside the operator's own network.
-    return isPrivateOrLocalHost(host) ? { ok: true } : { ok: false, reason: 'scheme-not-allowed' };
+    if (isPrivateOrLocalHost(host)) return { ok: true };
+    // Name the CGNAT case precisely instead of the misleading
+    // `scheme-not-allowed`. Kind-independent: no kind admits it.
+    if (isTailscaleCgnat(host)) return { ok: false, reason: 'cgnat-plaintext-unsupported' };
+    return { ok: false, reason: 'scheme-not-allowed' };
   }
   if (parsed.protocol !== 'https:') {
     return { ok: false, reason: 'scheme-not-allowed' };

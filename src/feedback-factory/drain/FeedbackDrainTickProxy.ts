@@ -171,7 +171,11 @@ export class FeedbackDrainTickProxy {
 
   private acceptOwned(agentId: string, nonce: string, proxied: boolean, replayAlreadyAdmitted = false): DrainTickGatewayResult {
     if (!this.opts.isCanonicalOwner()) return { status: 409, body: { error: 'not canonical owner', reason: 'not-canonical-owner', proxied } };
-    if (!this.opts.service.canAgentMutateReadiness(agentId)) return { status: 403, body: { error: 'current registered readiness agent required', proxied } };
+    if (!this.opts.service.canAgentMutateReadiness(agentId)) {
+      // A paused authority refuses every tick, so this refusal is the only place left to say so.
+      this.opts.service.notifyIfReadinessPaused?.();
+      return { status: 403, body: { error: 'current registered readiness agent required', proxied } };
+    }
     if (!replayAlreadyAdmitted && !this.opts.store.admitRequestNonce(agentId, nonce, { now: this.now(), ttlMs: this.ttlMs })) {
       return { status: 409, body: { error: 'request nonce replayed', reason: 'replay', proxied } };
     }

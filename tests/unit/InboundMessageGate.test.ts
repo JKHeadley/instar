@@ -54,6 +54,24 @@ describe('InboundMessageGate', () => {
     gate = new InboundMessageGate(trustManager as any, router, {});
   });
 
+  // ── Kinded acks (a2a-required-acknowledgment D1) ─────────
+
+  describe('ack receipts', () => {
+    it('a kinded ack passes without any allowed operation', async () => {
+      trustManager = createMockTrustManager({ allowedOps: [] });
+      gate = new InboundMessageGate(trustManager as any, router, {});
+      const result = await gate.evaluate(createMessage({ content: { type: 'ack', content: 'r', ack: { kind: 'read', refMessageIds: ['m'] } } as any }));
+      expect(result.action).toBe('pass');
+    });
+
+    it('an encrypted ack with no kind stays behind the trust check', async () => {
+      trustManager = createMockTrustManager({ allowedOps: [] });
+      gate = new InboundMessageGate(trustManager as any, router, {});
+      const result = await gate.evaluate(createMessage({ content: { type: 'ack', content: 'Message received.' } as any }));
+      expect(result.action).toBe('block');
+    });
+  });
+
   // ── Layer 0: Payload Size ──────────────────────────────────────
 
   describe('payload size check', () => {

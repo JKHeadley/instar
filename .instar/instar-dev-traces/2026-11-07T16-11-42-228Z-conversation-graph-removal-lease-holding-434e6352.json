@@ -1,0 +1,34 @@
+{
+  "version": 2,
+  "slug": "conversation-graph-removal-lease-holding",
+  "sessionId": "f7388af1-08a7-4e6d-b54b-dc07d6afc31e",
+  "timestamp": "2026-11-07T16:11:42.228Z",
+  "artifactPath": "upgrades/side-effects/conversation-graph-removal-lease-holding.md",
+  "artifactSha256": "08edf3bb63ad87b98e429af39d801b9eb4bc3ab160b4f38cf8c78f9353775a39",
+  "specPath": "docs/specs/conversation-effort-hierarchy-v3.md",
+  "coveredFiles": [
+    "src/core/GraphMemberLossActivation.ts",
+    "src/core/GraphMemberLossOwnedRole.ts",
+    "src/core/GraphNativeMemberLossStore.ts",
+    "src/core/GraphWitnessBootstrapStream.ts",
+    "src/core/GraphWitnessService.ts",
+    "src/core/GraphWitnessTypes.ts",
+    "src/server/GraphOwnerMemberLossExecution.ts",
+    "tests/helpers/graph-member-loss-production-entry.ts",
+    "tests/integration/graph-member-loss-plan-revision.test.ts",
+    "tests/integration/graph-member-loss-surface.test.ts",
+    "tests/integration/graph-native-member-loss-store.test.ts",
+    "tests/integration/graph-owner-member-loss-execution.test.ts",
+    "tests/integration/graph-source-loss-sender-session.test.ts",
+    "tests/unit/graph-member-loss-activation-holding.test.ts",
+    "upgrades/side-effects/conversation-graph-removal-lease-holding.md"
+  ],
+  "phase": "complete",
+  "secondPass": "true",
+  "reviewerConcurred": true,
+  "classClosure": {
+    "defectClass": "unbounded-self-action",
+    "closure": "n/a",
+    "reason": "One owner-driven action per attempt, with no new loop or trigger."
+  }
+}

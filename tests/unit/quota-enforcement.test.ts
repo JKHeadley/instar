@@ -529,6 +529,87 @@ describe('Quota Enforcement Tiers', () => {
 
   // ── Edge: sendKey failure doesn't crash enforced_pause ──
 
+  describe('enforcement pause release (the 2026-09-24 twelve-hour stall)', () => {
+    async function pauseAt(fiveHour: number) {
+      const deps = createMockDeps({ getAccountStatuses: vi.fn(() => []) });
+      migrator.setDeps(deps);
+      await migrator.checkAndMigrate({ percentUsed: 50, fiveHourPercent: fiveHour, activeAccountEmail: 'a@test.io' });
+      expect(deps.pauseScheduler).toHaveBeenCalledTimes(1);
+      return deps;
+    }
+
+    it('resumes the scheduler once the 5-hour rate drops below threshold minus hysteresis', async () => {
+      const deps = await pauseAt(97);
+      const resumed: unknown[] = [];
+      migrator.on('enforced_resume', (e) => resumed.push(e));
+      expect(migrator.releaseEnforcementPauseIfRecovered({ percentUsed: 63, fiveHourPercent: 20 })).toBe(true);
+      expect(deps.resumeScheduler).toHaveBeenCalledTimes(1);
+      expect(migrator.isEnforcementPaused()).toBe(false);
+      expect(resumed).toEqual([{ fiveHourPercent: 20, weeklyPercent: 63 }]);
+    });
+
+    it('releases an enforced_pause (90%) the same way', async () => {
+      const deps = await pauseAt(91);
+      expect(migrator.releaseEnforcementPauseIfRecovered({ percentUsed: 40, fiveHourPercent: 10 })).toBe(true);
+      expect(deps.resumeScheduler).toHaveBeenCalledTimes(1);
+    });
+
+    it('holds inside the hysteresis band (threshold 88 → must be below 83)', async () => {
+      const deps = await pauseAt(97);
+      expect(migrator.releaseEnforcementPauseIfRecovered({ percentUsed: 50, fiveHourPercent: 85 })).toBe(false);
+      expect(migrator.releaseEnforcementPauseIfRecovered({ percentUsed: 50, fiveHourPercent: 83 })).toBe(false);
+      expect(deps.resumeScheduler).not.toHaveBeenCalled();
+      expect(migrator.releaseEnforcementPauseIfRecovered({ percentUsed: 50, fiveHourPercent: 82 })).toBe(true);
+    });
+
+    it('holds while the weekly budget is still over its threshold', async () => {
+      const deps = await pauseAt(97);
+      expect(migrator.releaseEnforcementPauseIfRecovered({ percentUsed: 95, fiveHourPercent: 10 })).toBe(false);
+      expect(deps.resumeScheduler).not.toHaveBeenCalled();
+    });
+
+    it('treats an unknown 5-hour rate as recovered when weekly is healthy (no reading must not mean frozen forever)', async () => {
+      const deps = await pauseAt(97);
+      expect(migrator.releaseEnforcementPauseIfRecovered({ percentUsed: 40, fiveHourPercent: null })).toBe(true);
+      expect(deps.resumeScheduler).toHaveBeenCalledTimes(1);
+    });
+
+    it('never resumes a scheduler it did not pause', () => {
+      const deps = createMockDeps();
+      migrator.setDeps(deps);
+      expect(migrator.releaseEnforcementPauseIfRecovered({ percentUsed: 10, fiveHourPercent: 5 })).toBe(false);
+      expect(deps.resumeScheduler).not.toHaveBeenCalled();
+    });
+
+    it('releases on the next checkAndMigrate even while the migration cooldown is active', async () => {
+      const deps = await pauseAt(97);
+      await migrator.checkAndMigrate({ percentUsed: 30, fiveHourPercent: 15, activeAccountEmail: 'a@test.io' });
+      expect(deps.resumeScheduler).toHaveBeenCalledTimes(1);
+      expect(migrator.isEnforcementPaused()).toBe(false);
+    });
+
+    it('a migration that resumes the scheduler clears the flag (no later false "resumed" notice)', async () => {
+      const deps = await pauseAt(97);
+      // An alternative account appears; after the cooldown a real migration runs and resumes.
+      (deps.getAccountStatuses as any).mockReturnValue([createAccountSnapshot({ email: 'spare@test.io' })]);
+      (migrator as any).thresholds.cooldownMs = 0;
+      await migrator.checkAndMigrate({ percentUsed: 50, fiveHourPercent: 97, activeAccountEmail: 'a@test.io' });
+      expect(deps.resumeScheduler).toHaveBeenCalledTimes(1);
+      expect(migrator.isEnforcementPaused()).toBe(false);
+      const resumed: unknown[] = [];
+      migrator.on('enforced_resume', (e) => resumed.push(e));
+      expect(migrator.releaseEnforcementPauseIfRecovered({ percentUsed: 10, fiveHourPercent: 5 })).toBe(false);
+      expect(resumed).toHaveLength(0);
+    });
+
+    it('releases only once', async () => {
+      const deps = await pauseAt(97);
+      migrator.releaseEnforcementPauseIfRecovered({ percentUsed: 30, fiveHourPercent: 15 });
+      migrator.releaseEnforcementPauseIfRecovered({ percentUsed: 30, fiveHourPercent: 15 });
+      expect(deps.resumeScheduler).toHaveBeenCalledTimes(1);
+    });
+  });
+
   describe('resilience', () => {
     it('enforced_pause continues if sendKey throws for one session', async () => {
       const sessions = [

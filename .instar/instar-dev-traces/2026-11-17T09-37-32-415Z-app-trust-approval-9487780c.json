@@ -1,0 +1,29 @@
+{
+  "version": 2,
+  "slug": "app-trust-approval",
+  "sessionId": "71633c8d-121b-4780-802b-80cc79b00151",
+  "timestamp": "2026-11-17T09:37:32.415Z",
+  "artifactPath": "upgrades/side-effects/app-trust-approval.md",
+  "artifactSha256": "8a596dcc858d0f86aa12b829df609570b13bd08c9ccf8d6be2e509da2e5f4db5",
+  "specPath": "docs/specs/app-trust-approval.md",
+  "coveredFiles": [
+    "docs/specs/app-trust-approval.eli16.md",
+    "docs/specs/app-trust-approval.md",
+    "src/core/trustJourney/AccountPathService.ts",
+    "src/core/trustJourney/accountPath.ts",
+    "src/data/awareness/app-trust-approval.md",
+    "tests/integration/trust-app-approval-routes.test.ts",
+    "tests/unit/trust-journey-device-approval.test.ts",
+    "upgrades/side-effects/app-trust-approval.md"
+  ],
+  "phase": "complete",
+  "tier": 2,
+  "tierReasoning": "Wording of the set-up instruction after the live run; no logic change.",
+  "secondPass": "true",
+  "reviewerConcurred": true,
+  "classClosure": {
+    "defectClass": "unbounded-self-action",
+    "closure": "n/a",
+    "reason": "wording only"
+  }
+}

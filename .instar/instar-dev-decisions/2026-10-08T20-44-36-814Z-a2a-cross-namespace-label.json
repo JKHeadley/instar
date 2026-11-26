@@ -1,0 +1,30 @@
+{
+  "ts": "2026-10-08T20:44:36.814Z",
+  "slug": "a2a-cross-namespace-label",
+  "suggestedTier": 2,
+  "declaredTier": 2,
+  "riskFloor": 2,
+  "riskFloorReasons": [
+    "irreversibility: src/core/PostUpdateMigrator.ts touches PostUpdateMigrator",
+    "migration / fleet-rollout surface: src/core/PostUpdateMigrator.ts touches PostUpdateMigrator (fleet migration machinery)"
+  ],
+  "belowFloor": false,
+  "files": 6,
+  "loc": 94,
+  "scope": {
+    "basis": "staged-in-scope-additions-plus-deletions",
+    "files": [
+      "src/core/PostUpdateMigrator.ts",
+      "src/scaffold/templates.ts",
+      "src/server/routes.ts",
+      "src/threadline/InboundIdLedger.ts",
+      "src/threadline/ThreadlineEndpoints.ts",
+      "src/threadline/inboundIdLedgerWiring.ts"
+    ],
+    "addedLines": 88,
+    "deletedLines": 6
+  },
+  "causalAutopsy": null,
+  "classClosure": null,
+  "verdict": "pass"
+}

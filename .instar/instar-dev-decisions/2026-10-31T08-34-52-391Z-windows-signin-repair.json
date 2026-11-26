@@ -1,0 +1,34 @@
+{
+  "ts": "2026-10-31T08:34:52.391Z",
+  "slug": "windows-signin-repair",
+  "suggestedTier": 2,
+  "declaredTier": 1,
+  "riskFloor": 2,
+  "riskFloorReasons": [
+    "irreversibility: src/core/PostUpdateMigrator.ts touches PostUpdateMigrator",
+    "migration / fleet-rollout surface: src/core/PostUpdateMigrator.ts touches PostUpdateMigrator (fleet migration machinery)",
+    "new capability: new route (router.<verb>() added"
+  ],
+  "belowFloor": true,
+  "files": 9,
+  "loc": 216,
+  "scope": {
+    "basis": "staged-in-scope-additions-plus-deletions",
+    "files": [
+      "src/commands/server.ts",
+      "src/core/PlaywrightProfileRegistry.ts",
+      "src/core/PostUpdateMigrator.ts",
+      "src/core/SubscriptionReloginHelper.ts",
+      "src/core/SubscriptionReloginRuntime.ts",
+      "src/core/wslPlatform.ts",
+      "src/data/builtinSkillContent.ts",
+      "src/scaffold/templates.ts",
+      "src/server/routes.ts"
+    ],
+    "addedLines": 191,
+    "deletedLines": 25
+  },
+  "causalAutopsy": null,
+  "classClosure": null,
+  "verdict": "pass"
+}

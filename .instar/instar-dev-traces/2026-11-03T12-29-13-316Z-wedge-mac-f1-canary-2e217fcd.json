@@ -1,0 +1,42 @@
+{
+  "version": 2,
+  "slug": "wedge-mac-f1-canary",
+  "sessionId": "fbad3c4d-66be-4847-be50-4e9084534054",
+  "timestamp": "2026-11-03T12:29:13.316Z",
+  "artifactPath": "upgrades/side-effects/wedge-mac-f1-canary.md",
+  "artifactSha256": "5b1148a2006938544bcb4b649facd49814a814d42852915174973212662d7c7b",
+  "specPath": "docs/specs/machine-self-maintenance.md",
+  "coveredFiles": [
+    ".github/workflows/ci.yml",
+    ".github/workflows/publish.yml",
+    "scripts/build-native-desktop-host.mjs",
+    "scripts/check-native-desktop-release.mjs",
+    "scripts/release-local.mjs",
+    "src/commands/server.ts",
+    "src/core/PostUpdateMigrator.ts",
+    "src/monitoring/machineMaintenance/WedgeMonitor.ts",
+    "src/monitoring/machineMaintenance/readings.ts",
+    "src/monitoring/machineMaintenance/wedgeEvidence.ts",
+    "src/native/wedge-canary/macos/Info.plist",
+    "src/native/wedge-canary/macos/InstarWedgeCanary.swift",
+    "tests/e2e/machine-wedge-lifecycle.test.ts",
+    "tests/integration/machine-wedge-route.test.ts",
+    "tests/unit/machine-maintenance-watch-only.test.ts",
+    "tests/unit/machine-wedge-judge.test.ts",
+    "tests/unit/machine-wedge-mac-canary.test.ts",
+    "tests/unit/machine-wedge-monitor.test.ts",
+    "upgrades/next/wedge-mac-f1-canary.md",
+    "upgrades/side-effects/wedge-mac-f1-canary.eli16.md",
+    "upgrades/side-effects/wedge-mac-f1-canary.md"
+  ],
+  "phase": "complete",
+  "tier": 2,
+  "tierReasoning": "dry-run wedge evidence: macOS canary app shipped in package + release pipeline change + kernel-zone read",
+  "secondPass": "true",
+  "reviewerConcurred": true,
+  "classClosure": {
+    "defectClass": "unbounded-self-action",
+    "closure": "n/a",
+    "reason": "adds read-only probes inside the existing single-flight bounded wedge sampler; no new action, notice or loop"
+  }
+}

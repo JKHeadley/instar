@@ -1,0 +1,24 @@
+{
+  "ts": "2026-11-02T03:24:40.046Z",
+  "slug": "ecosystem-idea-pipeline",
+  "suggestedTier": 1,
+  "declaredTier": 2,
+  "riskFloor": 1,
+  "riskFloorReasons": [],
+  "belowFloor": false,
+  "files": 3,
+  "loc": 21,
+  "scope": {
+    "basis": "staged-in-scope-additions-plus-deletions",
+    "files": [
+      "src/core/ClaudeCliIntelligenceProvider.ts",
+      "src/core/CodexCliIntelligenceProvider.ts",
+      "src/core/types.ts"
+    ],
+    "addedLines": 15,
+    "deletedLines": 6
+  },
+  "causalAutopsy": null,
+  "classClosure": null,
+  "verdict": "pass"
+}

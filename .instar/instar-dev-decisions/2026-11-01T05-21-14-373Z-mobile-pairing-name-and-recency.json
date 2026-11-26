@@ -1,0 +1,23 @@
+{
+  "ts": "2026-11-01T05:21:14.373Z",
+  "slug": "mobile-pairing-name-and-recency",
+  "suggestedTier": 1,
+  "declaredTier": 1,
+  "riskFloor": 1,
+  "riskFloorReasons": [],
+  "belowFloor": false,
+  "files": 2,
+  "loc": 10,
+  "scope": {
+    "basis": "staged-in-scope-additions-plus-deletions",
+    "files": [
+      "src/core/MobilePairing.ts",
+      "src/server/mobilePairingRoutes.ts"
+    ],
+    "addedLines": 7,
+    "deletedLines": 3
+  },
+  "causalAutopsy": null,
+  "classClosure": null,
+  "verdict": "pass"
+}

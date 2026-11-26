@@ -25,6 +25,7 @@
 // reusing the shipped hasOpenInteraction primitive.
 
 import { sanitizeForDisplay, hasOpenInteraction } from './subscriptions.js';
+import { verifiedDisplayName } from './console/display-identity.js';
 
 export const GLANCE_MAX_TILES = 5;
 export const GLANCE_WORD_BUDGET = 150; // words on the front page before interaction
@@ -49,6 +50,8 @@ export const GLANCE_ADOPTED_TABS = [
   'pr-pipeline', 'tokens', 'llm-activity', 'secrets', 'resources', 'initiatives',
   'origins', // real settings / recording / message drills in origin.js
   'feedback-drain', // operated summary reviewed against the F10/F11 floor
+  'notifications', // unread reports and confirmed push-choice drills
+  'phones', // phones.js: waiting / paired drills (mobile-native-conversations §4.4)
 ];
 
 export const GLANCE_GRANDFATHERED = [
@@ -905,8 +908,27 @@ const MACHINE_STATUS_WORD = {
   offline: 'Offline',
   'suspect-clock-removed': 'Clock out of sync — paused for new conversations',
 };
+const LOAD_VERDICT_WORD = {
+  ok: 'ok', elevated: 'busy', saturated: 'overloaded', impaired: 'struggling to respond', unknown: 'unknown',
+};
+/** Plain words for the evidence-derived liveness (trustworthy-machine-load A5):
+ *  never "Offline" without positive evidence — the server's livenessLine carries
+ *  the age + source; this is the short status word. */
+function livenessWord(m) {
+  const l = m.liveness;
+  if (!l || !l.state) return null;
+  if (l.state === 'live') return null; // the online wording below applies
+  if (l.state === 'unreachable') {
+    const shape = l.shape === 'refusing' ? 'refusing connections' : l.shape === 'silent' ? 'not answering' : 'struggling to answer';
+    return 'Unreachable — ' + shape + (m.livenessLine ? ' (' + m.livenessLine.replace(/^[^,]*,\s*/, '') + ')' : '');
+  }
+  if (l.state === 'stale') return 'Not checked recently' + (m.livenessLine ? ' — ' + m.livenessLine.replace(/^[^,]*,\s*/, '') : '');
+  return 'Unknown — no contact yet' + (m.livenessLine && m.livenessLine.indexOf(';') >= 0 ? m.livenessLine.slice(m.livenessLine.indexOf(';')) : '');
+}
 function machineStatusWord(m) {
-  if (!m.online) return 'Offline';
+  const lw = livenessWord(m);
+  if (lw) return lw;
+  if (!m.online && !(m.liveness && m.liveness.state === 'live')) return 'Offline';
   if (m.clockSkewStatus === 'suspect-clock-removed') return MACHINE_STATUS_WORD['suspect-clock-removed'];
   if (machineNeedsAttention(m)) return 'Online — needs a look';
   return 'Online and healthy';
@@ -945,7 +967,7 @@ function guardNeedsLook(g) {
 }
 
 export function machineRowText(m) {
-  const nick = sanitizeForDisplay(m.nickname || m.machineId || 'A machine', 'label');
+  const nick = sanitizeForDisplay(verifiedDisplayName(m.nickname, m.machineId) || 'A machine', 'label');
   return `${nick} — ${machineStatusWord(m)}`;
 }
 
@@ -957,11 +979,21 @@ export function machineRecordNode(doc, m, opts = {}) {
     ? `${m.activeSessionCount}${m.maxSessions ? ' / ' + m.maxSessions : ''} conversation${m.activeSessionCount === 1 ? '' : 's'}`
     : '—';
   const rows = [
-    ['Name', m.nickname || m.machineId || '—'],
+    ['Name', verifiedDisplayName(m.nickname, m.machineId) || 'name unavailable'],
     ['Status', machineStatusWord(m)],
     ['Specs', machineSpecLine(m.hardware)],
     ['Conversations', online ? sessions : '—'],
   ];
+  if (m.livenessLine) rows.push(['Evidence', m.livenessLine]);
+  if (m.loadVerdict) {
+    const lr = m.loadReport;
+    const bits = [];
+    if (lr && lr.cpuIdlePct != null) bits.push(Math.round(100 - lr.cpuIdlePct) + '% CPU busy');
+    if (lr && lr.memAvailablePct != null) bits.push(Math.round(lr.memAvailablePct) + '% memory free');
+    if (lr && lr.eventLoopLagP99Ms != null) bits.push('server lag ' + Math.round(lr.eventLoopLagP99Ms) + ' ms');
+    const age = (typeof m.loadReportAgeMs === 'number') ? ' (as of ' + Math.round(m.loadReportAgeMs / 1000) + ' s ago)' : '';
+    rows.push(['Load', (LOAD_VERDICT_WORD[m.loadVerdict] || m.loadVerdict) + (bits.length ? ' — ' + bits.join(', ') : '') + (m.loadVerdict === 'unknown' ? '' : age)]);
+  }
   const p = m.guardPosture;
   if (p) {
     const on = (p.onConfirmed || 0) + (p.onUnverified || 0) + (p.onDryRun || 0);
@@ -996,7 +1028,7 @@ export function machineRecordNode(doc, m, opts = {}) {
     const input = doc.createElement('input');
     input.type = 'text';
     input.className = 'glance-record-input machine-nick';
-    input.value = m.nickname || m.machineId;
+    input.value = verifiedDisplayName(m.nickname, m.machineId) || '';
     input.setAttribute('data-mid', m.machineId);
     input.setAttribute('aria-label', 'Machine nickname — press Enter or click away to save');
     let last = input.value;
@@ -1137,11 +1169,11 @@ const CAP_STAT_LABEL = {
 
 export function healthCapRowText(c) {
   const word = c.status === 'error' ? 'needs attention' : 'working';
-  return `${sanitizeForDisplay(c.label || c.id || 'A subsystem', 'label')} — ${word}`;
+  return `${sanitizeForDisplay(verifiedDisplayName(c.label, c.id) || 'Subsystem name unavailable', 'label')} — ${word}`;
 }
 export function healthCapRecordNode(doc, c) {
   const rows = [
-    ['Subsystem', c.label || c.id || '—'],
+    ['Subsystem', verifiedDisplayName(c.label, c.id) || 'Subsystem name unavailable'],
     ['Status', c.status === 'error' ? 'Needs attention' : 'Working'],
     ['What it does', c.description || '—'],
     ['Right now', c.metric || '—'],
@@ -1794,6 +1826,7 @@ const INITIATIVE_STATUS_WORD = {
 const SIGNAL_REASON_WORD = {
   'needs-user': 'Waiting on you', 'next-check-due': 'Time for a check-in',
   'ready-to-advance': 'Ready to move forward', 'stale': "Hasn't moved in a while",
+  'feedback-summary': 'Feedback work items (see the triage queue)',
 };
 
 /** The single population for the list tile: the (already server-filtered) items. */
@@ -1832,7 +1865,7 @@ export function buildInitiativesGlance(itemsRes, digestRes) {
 }
 
 export function initiativeRowText(i) {
-  const title = sanitizeForDisplay(i.title || i.id || 'An initiative', 'summary');
+  const title = sanitizeForDisplay(verifiedDisplayName(i.title, i.id) || 'Initiative name unavailable', 'summary');
   return `${title} — ${INITIATIVE_STATUS_WORD[i.status] || (i.status || 'unknown')}`;
 }
 export function initiativeRecordNode(doc, i, opts = {}) {
@@ -1840,7 +1873,7 @@ export function initiativeRecordNode(doc, i, opts = {}) {
   const phases = Array.isArray(i.phases) ? i.phases : [];
   const done = phases.filter((p) => p && p.status === 'done').length;
   const rows = [
-    ['Initiative', i.title || i.id || '—'],
+    ['Initiative', verifiedDisplayName(i.title, i.id) || 'Initiative name unavailable'],
     ['Status', INITIATIVE_STATUS_WORD[i.status] || (i.status || '—')],
     ['What it is', i.description || '—'],
   ];

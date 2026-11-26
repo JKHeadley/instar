@@ -11,7 +11,8 @@
  *
  * v2 (perTopic: true, the shipped default):
  *   - Per-topic coalescing (R1.1): every topic that lost a session gets ONE
- *     notice in THAT topic; the lifeline gets unbound sessions plus — when >1
+ *     notice in THAT topic; the lifeline gets unbound sessions (except a
+ *     routine completion — see isRoutineCompletion) plus — when >1
  *     topic is affected — a one-line cross-topic index. Never creates topics.
  *   - Affected-set tracking is SEPARATE from the bounded detail buffer, so in
  *     a storm larger than the buffer every affected topic still gets at least
@@ -44,6 +45,7 @@ import type { Session } from '../core/types.js';
 import type { ReapNotifyOutcome } from './ReapLog.js';
 import { buildReapNotifyDeliveryId } from '../messaging/reap-notice-delivery-id.js';
 import { mergeDefaults } from '../core/mergeDefaults.js';
+import { topicRef } from '../messaging/shared/topicRef.js';
 
 export interface ReapEvent {
   session: Pick<Session, 'name' | 'tmuxSession'>;
@@ -69,6 +71,26 @@ export interface ReapNotifierDeps {
   resolveTopic: (tmuxSession: string) => number | null;
   /** The always-on system/lifeline topic, or null if none is configured. */
   lifelineTopic: () => number | null;
+  /**
+   * Last-resort delivery for a notice that has no lifeline topic to go to.
+   * Wired to the server's notification gateway, which already reaches whichever
+   * platform the agent actually uses (Telegram topic AND/OR Slack attention
+   * channel) — unlike `lifelineTopic`, which is Telegram-shaped.
+   *
+   * Without it a Slack-only agent dropped every unbound-session and
+   * cross-topic notice it ever produced: the indra agent's own records show
+   * repeated `notify:no-topic` / "lifeline topic not configured" outcomes, so
+   * the one layer whose job is to say "your work was interrupted" was speaking
+   * into a channel that did not exist. Returns true when it delivered.
+   */
+  fallbackNotify?: (text: string) => boolean;
+  /**
+   * Raise ONE visible item when a notice has nowhere at all to go. A notice
+   * recorded as undeliverable and then forgotten is the same silence the
+   * notifier exists to prevent — so the absence of a destination is itself
+   * reported, once, rather than per notice.
+   */
+  raiseNoDestination?: (detail: string) => void;
   /** Legacy delivery (perTopic:false and drainEnabled:false modes). */
   send: (topicId: number, text: string) => void | Promise<void>;
   /** Durable store enqueue (v2). Returns false on PK-dedupe no-op. */
@@ -179,6 +201,12 @@ function reapDetailClause(ev: ReapEvent): string {
   return plainEnglishReason(ev.reason);
 }
 
+/** An unbound reap that is a normal finish: work detected complete, nothing
+ *  in flight, no restart queued. Lifeline-silent (it stays in the reap-log). */
+export function isRoutineCompletion(ev: ReapEvent, resumeQueued: boolean): boolean {
+  return ev.reason === 'sentinel-complete' && !ev.midWork && !resumeQueued;
+}
+
 interface TopicAggregate {
   count: number;
   midWorkCount: number;
@@ -255,6 +283,11 @@ export class ReapNotifier {
       agg.detail.push(event);
     };
     if (topicId == null) {
+      // A conversation-less session (a job run) that ended because its work
+      // completed is routine, not an interruption: the `reaped` entry in the
+      // reap-log is its whole record (reap-notify spec R1.1, amended
+      // 2026-11-01 after a */5 job posted a Lifeline notice every few minutes).
+      if (isRoutineCompletion(event, resumeQueued)) return;
       bump(this.unbound);
       return;
     }
@@ -363,12 +396,42 @@ export class ReapNotifier {
     }
     if (lifelineParts.length > 0) {
       if (lifeline == null) {
+        // No lifeline topic. Before this, that ended the story: the notice was
+        // recorded as `no-topic` and dropped, which on a Slack-only agent means
+        // EVERY such notice is dropped, forever, silently. Try the gateway that
+        // knows the agent's real platforms first.
+        const text = lifelineParts.join('\n\n');
+        let delivered = false;
+        try {
+          delivered = this.deps.fallbackNotify?.(text) ?? false;
+        } catch {
+          // @silent-fallback-ok: a failing fallback must not lose the record
+          // below, which is the whole audit trail for this notice.
+          delivered = false;
+        }
         this.deps.recordNotify?.({
           noticeId: this.nextNoticeId('lifeline'),
           topicId: null,
-          outcome: 'no-topic',
-          detail: 'lifeline topic not configured',
+          outcome: delivered ? 'sent' : 'no-topic',
+          detail: delivered
+            ? 'no lifeline topic — delivered via the notification gateway'
+            : 'lifeline topic not configured and no fallback destination',
         });
+        if (!delivered) {
+          // Loud in the log too: on an agent with no Telegram adapter at all the
+          // attention item below cannot be raised either, and a dropped notice
+          // that leaves no trace anywhere is the exact failure being fixed.
+          console.warn(
+            '[reap-notify] a session-interrupted notice had NO destination (no lifeline topic, no '
+            + 'fallback channel) — it was not delivered to anyone.',
+          );
+          try {
+            this.deps.raiseNoDestination?.(
+              'A session-interrupted notice had nowhere to go: this agent has no lifeline topic '
+              + 'and no reachable fallback channel, so notices about interrupted work are being dropped.',
+            );
+          } catch { /* @silent-fallback-ok: reporting the gap must never throw into the flush */ }
+        }
       } else {
         await this.deliver(lifeline, lifelineParts.join('\n\n'), 'SUMMARY');
       }
@@ -476,7 +539,7 @@ export class ReapNotifier {
     });
     try {
       this.deps.reportDegradation?.(
-        `reap-notice enqueue failed for topic ${topicId}${enqueueError ? ` (${enqueueError})` : ''}`,
+        `reap-notice enqueue failed for ${topicRef(topicId)}${enqueueError ? ` (${enqueueError})` : ''}`,
         `The durable-delivery guarantee degraded to one direct attempt (${sendResult}).`,
       );
     } catch {
@@ -541,7 +604,7 @@ export class ReapNotifier {
 
   private formatCrossTopicIndex(affected: Map<number, TopicAggregate>, overflow: number): string {
     const total = [...affected.values()].reduce((n, a) => n + a.count, 0);
-    const parts = [...affected.entries()].slice(0, 20).map(([topicId, agg]) => `topic ${topicId} (${agg.count})`);
+    const parts = [...affected.entries()].slice(0, 20).map(([topicId, agg]) => `${topicRef(topicId)} (${agg.count})`);
     const more = affected.size > 20 ? `, +${affected.size - 20} more topics` : '';
     const overflowNote = overflow > 0 ? ` (+${overflow} past the tracking cap)` : '';
     return `Index: ${total} session${total === 1 ? '' : 's'} across ${affected.size} topics${overflowNote} — ${parts.join(', ')}${more}. Each affected topic got its own notice.`;

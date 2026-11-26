@@ -75,7 +75,8 @@ describe('Single-alerts-topic routing (default mode)', () => {
   function makeAdapter(config: Partial<TelegramConfig> = {}): TelegramAdapter {
     tmpDir = fs.mkdtempSync(path.join(os.tmpdir(), 'instar-single-topic-'));
     adapter = new TelegramAdapter(
-      { token: 'test-token-123', chatId: '-100123456', pollIntervalMs: 100, ...config },
+      // Routing mechanics are tested with the hub filter off; the filter has its own block below.
+      { token: 'test-token-123', chatId: '-100123456', pollIntervalMs: 100, attentionHubFilter: 'all', ...config },
       tmpDir,
     );
     return adapter;
@@ -94,6 +95,22 @@ describe('Single-alerts-topic routing (default mode)', () => {
     await expect((adapter as any).editMessageWithRetry(123, 'Prompt answered')).rejects.toBe(failure);
     expect(api).toHaveBeenCalledOnce();
   });
+  it('confirms an attention send and retries an existing item after transport failure', async () => {
+    makeAdapter({ getAttentionHubTopicId: () => 7848 });
+    const rec = installApiStub(adapter);
+    const failedSend = vi.spyOn(adapter, 'sendToTopic').mockRejectedValue(new Error('transport down'));
+    const item = { id: 'lease-coverage-alert', title: 'Scheduled jobs need review',
+      summary: 'A job is missing after takeover', category: 'job' as const,
+      priority: 'HIGH' as const };
+    await expect(adapter.createAttentionItemConfirmed(item)).rejects.toThrow('transport down');
+    expect(adapter.getAttentionItems().some(row => row.id === item.id)).toBe(true);
+    failedSend.mockRestore();
+    const delivered = await adapter.createAttentionItemConfirmed(item);
+    expect(rec.messagesByThread.get(delivered.topicId!)).toHaveLength(1);
+    await adapter.createAttentionItemConfirmed(item);
+    expect(rec.messagesByThread.get(delivered.topicId!)).toHaveLength(2);
+  });
+
   it('keeps origin recovery in the operator hub even with legacy per-item routing enabled', async () => {
     makeAdapter({ attentionRouting: { mode: 'per-item' }, getAttentionHubTopicId: () => 7848 });
     const rec = installApiStub(adapter);
@@ -132,7 +149,7 @@ describe('Single-alerts-topic routing (default mode)', () => {
     expect(adapter.getAttentionItems().length).toBe(priorities.length);
   });
 
-  it('the hub message carries title, category | priority, summary, clipped description, and source', async () => {
+  it('the hub message carries title, summary and clipped description — no category, priority or source labels', async () => {
     const HUB = 778;
     makeAdapter({ getAttentionHubTopicId: () => HUB });
     const rec = installApiStub(adapter);
@@ -149,11 +166,11 @@ describe('Single-alerts-topic routing (default mode)', () => {
 
     const [msg] = rec.messagesByThread.get(HUB)!;
     expect(msg).toContain('<b>A real &lt;escalation&gt;</b>');
-    expect(msg).toContain('general | Priority: HIGH');
+    expect(msg).not.toContain('Priority:');
     expect(msg).toContain('please look');
     expect(msg).toContain('x'.repeat(500));
     expect(msg).not.toContain('x'.repeat(501));
-    expect(msg).toContain('<i>Source: rope-recovery-probe</i>');
+    expect(msg).not.toContain('Source:');
   });
 
   it('the hub post rides parse_mode HTML + _formatMode html (the 2026-07-11 literal-tag fix)', async () => {
@@ -277,7 +294,7 @@ describe('Single-alerts-topic routing (default mode)', () => {
     expect(rec.messagesByThread.get(healedThread)?.length).toBe(1);
   });
 
-  it('an agent-health-lane item STILL routes to the lane topic, not the hub', async () => {
+  it('an Agent Health item that needs the user routes to the lane, not the hub', async () => {
     const HUB = 780;
     makeAdapter({ getAttentionHubTopicId: () => HUB });
     const rec = installApiStub(adapter);
@@ -285,7 +302,7 @@ describe('Single-alerts-topic routing (default mode)', () => {
     const item = await adapter.createAttentionItem({
       id: 'lane-1', healthKey: 'lane-entity', lane: 'agent-health',
       title: 'Heads-up on the "X" session', summary: 'maybe stuck',
-      category: 'degradation', priority: 'HIGH',
+      category: 'degradation', priority: 'HIGH', needsUser: true,
     });
 
     expect(rec.forumTopicsCreated).toBe(1);
@@ -294,7 +311,58 @@ describe('Single-alerts-topic routing (default mode)', () => {
     expect(rec.messagesByThread.get(HUB)).toBeUndefined();
   });
 
-  it('the agent-health lane ITEM post rides parse_mode HTML + _formatMode html (the 2026-07-14 raw <b>-tag fix)', async () => {
+  it('records routine Agent Health observations without a Telegram post, including urgent refreshes', async () => {
+    const HUB = 780;
+    makeAdapter({ getAttentionHubTopicId: () => HUB });
+    const rec = installApiStub(adapter);
+    const base = { id: 'routine-health', healthKey: 'laptop', lane: 'agent-health' as const,
+      title: 'Inbound stranded on Laptop', summary: 'Internal routing issue', category: 'agent-health',
+      priority: 'URGENT' as const, sourceContext: 'stranded-topic:laptop' };
+    const item = await adapter.createAttentionItem(base);
+    await adapter.upsertAttentionItem({ ...base, summary: 'Still waiting' });
+    expect(adapter.getAttentionItem(item.id)).toBeDefined();
+    expect(item.hubHeld).toBe(true);
+    expect(rec.forumTopicsCreated).toBe(0);
+    expect([...rec.messagesByThread.values()].flat()).toEqual([]);
+    expect(fs.readFileSync(path.join(tmpDir, 'logs', 'attention-hub-held.jsonl'), 'utf8')).toContain('agent-health-routine');
+  });
+
+  it('posts when a recorded Agent Health condition later needs the user', async () => {
+    makeAdapter({ getAttentionHubTopicId: () => 780 });
+    const rec = installApiStub(adapter);
+    const base = { id: 'health-now-needs-user', healthKey: 'machine', lane: 'agent-health' as const,
+      title: 'A machine needs your help', summary: 'Please reconnect the Mac Studio.',
+      category: 'agent-health', priority: 'NORMAL' as const };
+    await adapter.createAttentionItem(base);
+    expect(rec.forumTopicsCreated).toBe(0);
+    const item = await adapter.upsertAttentionItem({ ...base, needsUser: true });
+    expect(item.hubHeld).toBe(false);
+    expect(item.needsUser).toBe(true);
+    expect(adapter.attentionHubAdmits(item.id)).toBe(true);
+    expect(rec.forumTopicsCreated).toBe(1);
+    expect(rec.messagesByThread.get(item.topicId!)?.some(m => m.includes('Please reconnect the Mac Studio.'))).toBe(true);
+    await adapter.upsertAttentionItem({ ...base, summary: 'Recovered; no action needed.' });
+    expect(item.needsUser).toBe(false);
+    expect(item.hubHeld).toBe(true);
+    expect(adapter.attentionHubAdmits(item.id)).toBe(false);
+    expect(rec.messagesByThread.get(item.topicId!)?.filter(m => m.includes('Recovered'))).toEqual([]);
+  });
+
+  it('a recent WONT_DO keeps a held Agent Health item quiet when a producer marks it actionable', async () => {
+    makeAdapter({ getAttentionHubTopicId: () => 780 });
+    const rec = installApiStub(adapter);
+    const base = { id: 'dismissed-health', healthKey: 'dismissed-machine', lane: 'agent-health' as const,
+      title: 'Machine needs attention', summary: 'Routine observation',
+      category: 'agent-health', priority: 'NORMAL' as const };
+    await adapter.createAttentionItem(base);
+    await adapter.updateAttentionStatus(base.id, 'WONT_DO');
+    const item = await adapter.createAttentionItem({ ...base, needsUser: true });
+    expect(item.status).toBe('WONT_DO');
+    expect(rec.forumTopicsCreated).toBe(0);
+    expect([...rec.messagesByThread.values()].flat()).toEqual([]);
+  });
+
+  it('an actionable Agent Health post renders formatting without raw tags', async () => {
     makeAdapter({ getAttentionHubTopicId: () => 781 });
     const rec = installApiStub(adapter);
 
@@ -302,7 +370,7 @@ describe('Single-alerts-topic routing (default mode)', () => {
       id: 'lane-fmt-1', healthKey: 'lane-entity-fmt', lane: 'agent-health',
       title: 'Inbound stranded on Laptop (67 topics)',
       summary: "Topics owned by Laptop — inbound can't reach a servable machine.",
-      category: 'agent-health', priority: 'NORMAL',
+      category: 'agent-health', priority: 'NORMAL', needsUser: true,
     });
 
     const laneThread = item.topicId!;
@@ -316,7 +384,7 @@ describe('Single-alerts-topic routing (default mode)', () => {
     expect(itemPost!._formatMode).toBe('html');
   });
 
-  it('refreshes and visibly reopens one target-stable Agent-Health item across episodes', async () => {
+  it('refreshes and quietly reopens one target-stable Agent Health item across episodes', async () => {
     makeAdapter({ getAttentionHubTopicId: () => 782 });
     const rec = installApiStub(adapter);
     const base = {
@@ -344,10 +412,31 @@ describe('Single-alerts-topic routing (default mode)', () => {
     expect(reopened.status).toBe('OPEN');
     expect(reopened.summary).toBe('second refusal episode');
     expect(reopened.description).toBe('second episode');
-    expect(rec.forumTopicsCreated).toBe(1);
-    const sends = rec.messagesByThread.get(reopened.topicId!) ?? [];
-    expect(sends.some(text => text.includes('second refusal episode'))).toBe(true);
-    expect(sends.some(text => text.includes('returned after recovery'))).toBe(true);
+    expect(rec.forumTopicsCreated).toBe(0);
+    expect(reopened.hubHeld).toBe(true);
+    expect([...rec.messagesByThread.values()].flat()).toEqual([]);
+  });
+
+  it('a reopen whose notice is held as duplicate-content counts as delivered (no endless caller retry)', async () => {
+    // sagemind 2026-10-04: the spawn-drain give-up reopen was retried every 30 s
+    // for 13+ minutes because each retry was held as a duplicate of the copy the
+    // operator already had, and the hold was treated as a failure.
+    makeAdapter({ getAttentionHubTopicId: () => 782 });
+    installApiStub(adapter);
+    const base = {
+      id: 'spawn-drain-refusal-giveup:peer', healthKey: 'spawn-drain-refusal:peer', lane: 'agent-health' as const,
+      title: 'Spawn drain gave up for peer', summary: 's', description: 'd', category: 'agent-health',
+      priority: 'HIGH' as const, sourceContext: 'spawn-drain-refusal:peer', needsUser: true,
+    };
+    await adapter.createOrReopenAgentHealthAttentionItem(base);
+    const send = vi.spyOn(adapter, 'sendToTopic');
+    send.mockRejectedValueOnce(new TelegramOriginHoldError('duplicate-content'));
+    const reopened = await adapter.createOrReopenAgentHealthAttentionItem(base);
+    expect(reopened.status).toBe('OPEN');
+    expect(reopened.coalesced).toBe(true);
+
+    send.mockRejectedValueOnce(new TelegramOriginHoldError('origin-display-authority-unavailable'));
+    await expect(adapter.createOrReopenAgentHealthAttentionItem(base)).rejects.toThrow('origin-display-authority-unavailable');
   });
 
   it("LEGACY 'per-item' mode preserves the pre-flip behavior: own topic, registered maps, /done closes it", async () => {
@@ -394,8 +483,117 @@ describe('attentionBodyBlocks (pure) — summary/description dedupe', () => {
     expect(attentionBodyBlocks('impact', undefined, 500)).toEqual(['impact']);
     expect(attentionBodyBlocks('', '', 500)).toEqual([]);
   });
-  it('description is clipped to the slice bound', () => {
+  it('description is clipped to the slice bound, and the cut says so with a pointer to the full item', () => {
     const [only] = attentionBodyBlocks('s', 's' + 'x'.repeat(900), 500);
-    expect(only.length).toBe(500);
+    expect(only.startsWith('s' + 'x'.repeat(499))).toBe(true);
+    expect(only).toContain('[description cut at 500 of 901 characters; the full text is in the attention item]');
+    expect(attentionBodyBlocks('s', 's' + 'x'.repeat(100), 500)[0]).toBe('s' + 'x'.repeat(100)); // under the bound: unmarked
+  });
+});
+
+describe('Attention hub filter (default "signal" mode, operator report 2026-10-23)', () => {
+  let adapter: TelegramAdapter;
+  let tmpDir: string;
+  const HUB = 4815;
+
+  function makeAdapter(): TelegramAdapter {
+    tmpDir = fs.mkdtempSync(path.join(os.tmpdir(), 'instar-hub-filter-'));
+    adapter = new TelegramAdapter(
+      { token: 'test-token-123', chatId: '-100123456', pollIntervalMs: 100, getAttentionHubTopicId: () => HUB },
+      tmpDir,
+    );
+    return adapter;
+  }
+
+  afterEach(async () => {
+    await adapter.stop();
+    vi.restoreAllMocks();
+    SafeFsExecutor.safeRmSync(tmpDir, { recursive: true, force: true, operation: 'hub-filter cleanup' });
+  });
+
+  it('routine automated status is stored and logged, never posted', async () => {
+    makeAdapter();
+    const rec = installApiStub(adapter);
+    const item = await adapter.createAttentionItem({
+      id: 'passkey-health-digest', title: 'Passkey health: 0 cell(s) need attention', summary: 'Peers unobserved',
+      category: 'passkeys', priority: 'NORMAL', sourceContext: 'passkey-health',
+    });
+    expect(rec.messagesByThread.get(HUB)).toBeUndefined();
+    expect(item.hubHeld).toBe(true);
+    expect(adapter.getAttentionItem('passkey-health-digest')).toBeDefined();
+    expect(adapter.attentionHubAdmits('passkey-health-digest')).toBe(false);
+    const held = fs.readFileSync(path.join(tmpDir, 'logs', 'attention-hub-held.jsonl'), 'utf8');
+    expect(held).toContain('"reason":"automated-status"');
+    // An upsert refresh of the same status item stays held too.
+    await adapter.upsertAttentionItem({
+      id: 'passkey-health-digest', title: 'Passkey health: 1 cell(s) need attention', summary: 'changed', description: 'changed',
+      category: 'passkeys', priority: 'NORMAL', sourceContext: 'passkey-health',
+    });
+    expect(rec.messagesByThread.get(HUB)).toBeUndefined();
+  });
+
+  it('agent-raised, urgent and needs-user items are posted', async () => {
+    makeAdapter();
+    const rec = installApiStub(adapter);
+    await adapter.createAttentionItem({ id: 'a1', title: 'Folder can be cleared', summary: 'Reply yes', category: 'general', priority: 'LOW', sourceContext: 'agent' });
+    await adapter.createAttentionItem({ id: 'u1', title: 'Disk full', summary: 'now', category: 'system', priority: 'URGENT', sourceContext: 'disk' });
+    await adapter.createAttentionItem({ id: 'r1', title: 'Claude Code sign-in repair', summary: 'Tap Repair', category: 'subscription-relogin', priority: 'HIGH', sourceContext: 'assisted-subscription-relogin' });
+    expect(rec.messagesByThread.get(HUB)).toHaveLength(3);
+  });
+
+  it('an upserted posted item is reposted at most once per 6 h unless it gets more urgent', async () => {
+    makeAdapter();
+    const rec = installApiStub(adapter);
+    const base = { id: 'ag', title: 'Agent note', category: 'general', sourceContext: 'agent' };
+    await adapter.upsertAttentionItem({ ...base, summary: 'v1', description: 'v1', priority: 'NORMAL' });
+    await adapter.upsertAttentionItem({ ...base, summary: 'v2', description: 'v2', priority: 'NORMAL' });
+    expect(rec.messagesByThread.get(HUB)).toHaveLength(1);
+    await adapter.upsertAttentionItem({ ...base, summary: 'v3', description: 'v3', priority: 'HIGH' });
+    expect(rec.messagesByThread.get(HUB)).toHaveLength(2);
+  });
+
+  it('a resolved item that is raised again posts at once — the throttle never hides a new episode', async () => {
+    makeAdapter();
+    const rec = installApiStub(adapter);
+    const base = { id: 'rl', title: 'Claude Code sign-in repair', category: 'subscription-relogin', priority: 'HIGH' as const, sourceContext: 'assisted-subscription-relogin' };
+    await adapter.upsertAttentionItem({ ...base, summary: 'tap Repair', description: 'tap Repair' });
+    await adapter.updateAttentionStatus('rl', 'DONE', { silent: true });
+    await adapter.upsertAttentionItem({ ...base, summary: 'tap Repair', description: 'tap Repair' });
+    expect(rec.messagesByThread.get(HUB)).toHaveLength(2);
+  });
+
+  // operator report 2026-11-02: the evolution-overdue-check job's row was raised as
+  // "agent" and reposted on every reworded run. Once the job names itself, its old
+  // row must stop reaching the hub; a row still raised as "agent" keeps posting.
+  for (const [label, nextSource, expectedPosts] of [
+    ['a row re-raised under a job source is held from then on', 'evolution-overdue-check', 1],
+    ['a row re-raised as "agent" still posts after the throttle window', 'agent', 2],
+  ] as const) {
+    it(label, async () => {
+      makeAdapter();
+      const rec = installApiStub(adapter);
+      const base = { id: 'evolution-overdue', conditionKey: 'evolution-overdue', title: 'Evolution actions are overdue', category: 'general', priority: 'NORMAL' as const };
+      await adapter.createAttentionItem({ ...base, summary: '125 overdue: ACT-1, ACT-2', sourceContext: 'agent' });
+      expect(rec.messagesByThread.get(HUB)).toHaveLength(1);
+      const later = Date.now() + 7 * 60 * 60 * 1000;
+      vi.spyOn(Date, 'now').mockReturnValue(later);
+      const row = await adapter.createAttentionItem({ ...base, summary: '126 overdue, 3 pending over 48h', sourceContext: nextSource });
+      expect(rec.messagesByThread.get(HUB)).toHaveLength(expectedPosts);
+      expect(row.sourceContext).toBe(nextSource);
+      expect(row.summary).toBe('126 overdue, 3 pending over 48h'); // the dashboard row still refreshes
+      expect(adapter.attentionHubAdmits('evolution-overdue')).toBe(nextSource === 'agent');
+    });
+  }
+
+  it('a failed hub post does not start the repost throttle', async () => {
+    makeAdapter();
+    const rec = installApiStub(adapter);
+    // Both the injected hub and the self-heal fallback send fail: nothing was delivered.
+    const down = new Error('telegram down');
+    vi.spyOn(adapter, 'sendToTopic').mockRejectedValueOnce(down).mockRejectedValueOnce(down);
+    const base = { id: 'ag2', title: 'Agent note', category: 'general', sourceContext: 'agent', priority: 'NORMAL' as const };
+    await adapter.upsertAttentionItem({ ...base, summary: 'v1', description: 'v1' });
+    await adapter.upsertAttentionItem({ ...base, summary: 'v2', description: 'v2' });
+    expect(rec.messagesByThread.get(HUB)).toHaveLength(1);
   });
 });

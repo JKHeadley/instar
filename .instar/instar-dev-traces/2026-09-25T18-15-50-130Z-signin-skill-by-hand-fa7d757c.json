@@ -1,0 +1,21 @@
+{
+  "version": 2,
+  "slug": "signin-skill-by-hand",
+  "sessionId": "c0099817-18ba-4d8c-bb6e-edb9901228c9",
+  "timestamp": "2026-09-25T18:15:50.130Z",
+  "artifactPath": "upgrades/side-effects/signin-skill-by-hand.md",
+  "artifactSha256": "ab4506a1a0391e466fbae9b289c345bd0979edb6940d24aee7d71205601e03ba",
+  "coveredFiles": [
+    "src/data/builtinSkillContent.ts",
+    "upgrades/next/signin-skill-by-hand.md",
+    "upgrades/side-effects/signin-skill-by-hand.md",
+    "upgrades/signin-skill-by-hand.eli16.md"
+  ],
+  "phase": "complete",
+  "tier": 1,
+  "tierReasoning": "skill content additions (Codex recipe, safety lessons); same migration",
+  "eli16Path": "upgrades/signin-skill-by-hand.eli16.md",
+  "sideEffectsPath": "upgrades/side-effects/signin-skill-by-hand.md",
+  "secondPass": "not-required",
+  "reviewerConcurred": null
+}

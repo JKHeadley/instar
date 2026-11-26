@@ -1,0 +1,31 @@
+{
+  "ts": "2026-10-21T21:07:52.950Z",
+  "slug": "pairing-polling-agents",
+  "suggestedTier": 2,
+  "declaredTier": 2,
+  "riskFloor": 2,
+  "riskFloorReasons": [
+    "safety-invariant proximity: src/messaging/TelegramAdapter.ts matches Telegram adapter"
+  ],
+  "belowFloor": false,
+  "files": 1,
+  "loc": 20,
+  "scope": {
+    "basis": "staged-in-scope-additions-plus-deletions",
+    "files": [
+      "src/messaging/TelegramAdapter.ts"
+    ],
+    "addedLines": 13,
+    "deletedLines": 7
+  },
+  "causalAutopsy": {
+    "origin": "new-code",
+    "notes": "e0b2cd93e logged a handler failure without replying to the owner."
+  },
+  "classClosure": {
+    "defectClass": "unbounded-self-action",
+    "closure": "n/a",
+    "reason": "one-shot user-driven action, not a self-triggered loop: one dashboard-line reply to the owner's own forwarded invite when the pairing handler throws; no retry"
+  },
+  "verdict": "blocked"
+}

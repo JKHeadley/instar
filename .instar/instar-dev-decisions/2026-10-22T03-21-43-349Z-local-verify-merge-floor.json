@@ -1,0 +1,32 @@
+{
+  "ts": "2026-10-22T03:21:43.349Z",
+  "slug": "local-verify-merge-floor",
+  "suggestedTier": 2,
+  "declaredTier": 2,
+  "riskFloor": 2,
+  "riskFloorReasons": [
+    "new capability: new config key added"
+  ],
+  "belowFloor": false,
+  "files": 9,
+  "loc": 1084,
+  "scope": {
+    "basis": "staged-in-scope-additions-plus-deletions",
+    "files": [
+      "scripts/local-verify-floor.d.mts",
+      "scripts/local-verify-floor.mjs",
+      "scripts/safe-merge.mjs",
+      "src/commands/server.ts",
+      "src/feedback-factory/execute/reviewGate.ts",
+      "src/monitoring/GreenPrAutoMerger.ts",
+      "src/monitoring/MergeRunner.ts",
+      "src/monitoring/greenPrAutomergeWiring.ts",
+      "src/monitoring/greenPrLogic.ts"
+    ],
+    "addedLines": 976,
+    "deletedLines": 108
+  },
+  "causalAutopsy": null,
+  "classClosure": null,
+  "verdict": "pass"
+}

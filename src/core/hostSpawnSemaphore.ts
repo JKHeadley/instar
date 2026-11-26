@@ -14,7 +14,7 @@
  *
  * MECHANISM — a holder-SET model (NOT decrement/increment counter math):
  *   A host-local file (`~/.instar/host-spawn-holders.json`, NOT a synced
- *   volume), guarded by an exclusive O_CREAT|O_EXCL lock (the in-tree
+ *   volume), guarded by an exclusive atomically published lock (the in-tree
  *   ProjectRoundLock pattern). The cap is enforced by COUNTING LIVE holder
  *   records — never by mutating a shared integer:
  *     - acquire(id): under the lock, prune dead holders, and if
@@ -360,6 +360,40 @@ export class HostSpawnSemaphore {
     }, /* fallbackOnLockFail */ undefined);
   }
 
+  /**
+   * LOCK-FREE peek: live-holder count after an in-memory prune, WITHOUT the
+   * file lock and WITHOUT writing the holders file. For periodic samplers
+   * (the 15 s machine load report) that must never spin on the lock or inflate
+   * event-loop lag under spawn contention — `status()` takes the lock and
+   * rewrites the file, which is right for the route but wrong on a timer.
+   * Best-effort: never throws (a read error reports zero holders).
+   */
+  peek(): { cap: number; liveHolders: number } {
+    let live: SpawnHolder[] = [];
+    try {
+      live = this.pruneDead(this.readHolders().holders);
+    } catch {
+      // @silent-fallback-ok: a peek is observability — a read error reports
+      // zero holders rather than throwing into a sampler tick.
+      live = [];
+    }
+    return { cap: this.cap, liveHolders: live.length };
+  }
+
+  /**
+   * LOCK-FREE list of live holders (same prune and best-effort contract as
+   * `peek()`). The recovery-slot owner uses it to release a holder whose
+   * session has already ended (trustworthy-machine-load C2).
+   */
+  listHolders(): SpawnHolder[] {
+    try {
+      return this.pruneDead(this.readHolders().holders);
+    } catch {
+      // @silent-fallback-ok: observability read — an error reports no holders.
+      return [];
+    }
+  }
+
   /** Read-only status (count of live holders after a prune). Best-effort: never throws. */
   status(): SpawnSemaphoreStatus {
     let live: SpawnHolder[] = [];
@@ -455,7 +489,7 @@ export class HostSpawnSemaphore {
   }
 
   /**
-   * Run `fn` while holding the exclusive O_CREAT|O_EXCL lock on `<holdersPath>.lock`.
+   * Run `fn` while holding the exclusive atomically published lock on `<holdersPath>.lock`.
    * On a lock-contention failure (another process holds it), returns
    * `fallbackOnLockFail` — for `acquire`, fallback=false is the SAFE direction
    * (refuse the slot under contention rather than over-grant past the cap).
@@ -472,7 +506,7 @@ export class HostSpawnSemaphore {
       if (!res.ok) {
         if (res.reason === 'held') {
           // Lock held. SPAWN-lane lock-reclaim policy: reclaim when the
-          // recorded holder pid is dead (legacy behavior, preserved verbatim —
+          // recorded holder pid is confirmed dead (legacy reclaim —
           // the test lane deliberately does NOT ride this, §2.1).
           if (legacyPidDeathLockReclaim(lockPath, this.pidAlive)) continue;
           if (this.now() >= deadline) return fallbackOnLockFail; // give up safely

@@ -1,0 +1,31 @@
+{
+  "version": 2,
+  "slug": "test-runner-fair-suite-waiters",
+  "sessionId": "b87f298f-3c2d-4340-9e2a-fe9dfaf527f3",
+  "timestamp": "2026-10-29T01:23:09.176Z",
+  "artifactPath": "upgrades/side-effects/test-runner-fair-suite-waiters.md",
+  "artifactSha256": "a89a594c26851b33c02b5dc93c5c42ff55ce58cad5cfb2ac21e45ac28714f89f",
+  "specPath": "docs/specs/test-runner-concurrency-bound.md",
+  "coveredFiles": [
+    "docs/specs/test-runner-concurrency-bound.eli16.md",
+    "docs/specs/test-runner-concurrency-bound.md",
+    "docs/specs/test-runner-fair-suite-waiters.eli16.md",
+    "src/core/PostUpdateMigrator.ts",
+    "src/core/hostTestRunnerSemaphore.ts",
+    "src/scaffold/templates.ts",
+    "src/server/CapabilityIndex.ts",
+    "src/server/routes.ts",
+    "tests/e2e/test-runner-limiter-lifecycle.test.ts",
+    "tests/integration/test-runner-limiter-route.test.ts",
+    "tests/setup/test-runner-semaphore.globalSetup.ts",
+    "tests/unit/PostUpdateMigrator-mergeGatePreparation.test.ts",
+    "tests/unit/host-test-runner-semaphore.test.ts",
+    "upgrades/next/test-runner-fair-suite-waiters.md",
+    "upgrades/side-effects/test-runner-fair-suite-waiters.md"
+  ],
+  "phase": "complete",
+  "tier": 2,
+  "tierReasoning": "Evidence-only follow-up on the limiter change; this trace re-covers every file of the PR, including the harness file, against the final artifact.",
+  "secondPass": "true",
+  "reviewerConcurred": true
+}

@@ -1,0 +1,21 @@
+{
+  "version": 2,
+  "slug": "locked-proof-test-build",
+  "sessionId": "03f51762-938f-4d63-ba6d-eb28aeb6941b",
+  "timestamp": "2026-11-02T21:24:28.333Z",
+  "artifactPath": "upgrades/side-effects/locked-proof-test-build.md",
+  "artifactSha256": "f49911324afd9e28823e8bf568823138a4463b4f9ddb26ed219d3a4f5bfae664",
+  "coveredFiles": [
+    "docs/specs/locked-proof-test-build.eli16.md",
+    "scripts/build-locked-proof.mjs",
+    "tests/unit/locked-proof-build.test.ts",
+    "upgrades/side-effects/locked-proof-test-build.md"
+  ],
+  "phase": "complete",
+  "tier": 1,
+  "tierReasoning": "Review follow-up: test build never release-signed; maintainer script only.",
+  "eli16Path": "docs/specs/locked-proof-test-build.eli16.md",
+  "sideEffectsPath": "upgrades/side-effects/locked-proof-test-build.md",
+  "secondPass": "true",
+  "reviewerConcurred": true
+}

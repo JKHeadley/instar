@@ -1,0 +1,20 @@
+{
+  "version": 2,
+  "slug": "executor-clone-base-objects",
+  "sessionId": "7f2a8220-744b-4650-af3f-bfd06ec29ea8",
+  "timestamp": "2026-10-24T16:45:19.859Z",
+  "artifactPath": "upgrades/side-effects/executor-clone-base-objects.md",
+  "artifactSha256": "bc17dd8a9154353a57a19e3d6fc9d8c2bf39da2353257e0e202824295b6758d7",
+  "coveredFiles": [
+    "src/feedback-factory/execute/confinementCanary.ts",
+    "tests/unit/feedback-factory/execute-units.test.ts",
+    "upgrades/side-effects/executor-clone-base-objects.md"
+  ],
+  "phase": "complete",
+  "tier": 1,
+  "tierReasoning": "Fifth-round review fix: per-line credential withholding across both streams after blank-line removal; unit tests cover consecutive labels, blank-line and stream-boundary splits.",
+  "eli16Path": "docs/specs/executor-clone-base-objects.eli16.md",
+  "sideEffectsPath": "upgrades/side-effects/executor-clone-base-objects.md",
+  "secondPass": "not-required",
+  "reviewerConcurred": null
+}

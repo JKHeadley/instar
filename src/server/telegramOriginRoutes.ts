@@ -1,9 +1,20 @@
+import { storageErrorResponse } from '../core/storageMachineName.js';
+import { QuietRecordedError } from '../messaging/NotificationSelectivityGate.js';
 import type { Router, Request, Response } from 'express';
 import type { TelegramOriginRuntime } from '../messaging/telegram-origin/TelegramOriginRuntime.js';
 import { TelegramOriginHoldError } from '../messaging/telegram-origin/types.js';
 import { renderOriginSetupGreeting } from '../messaging/telegram-origin/OriginSetupGreeting.js';
 import { OriginSendPolicyRefusal } from '../messaging/telegram-origin/OriginSendPolicy.js';
 import { originToolGuardDigest } from '../messaging/telegram-origin/OriginToolGuard.js';
+import { classifyOperationOutcome } from '../messaging/telegram-origin/OriginOperationOutcome.js';
+import { readOperationOutcome } from '../messaging/telegram-origin/OriginOwnerRead.js';
+import { devicePersonOf, principalOf } from './mobilePairingRoutes.js';
+
+/** held-and-startup-parked-send-release §5 — the operation ids the per-operation routes accept: an
+ * ordinary id, a derived successor id (`~`), or an imported startup-queue id (`legacy:<delivery id>`). */
+export function isOperationIdParam(value: unknown): value is string {
+  return typeof value === 'string' && /^(legacy:)?[A-Za-z0-9~-]{8,96}$/.test(value);
+}
 
 export function sendOriginHoldResponse(res: Response, error: TelegramOriginHoldError): void {
   if (error instanceof OriginSendPolicyRefusal) {
@@ -12,13 +23,20 @@ export function sendOriginHoldResponse(res: Response, error: TelegramOriginHoldE
   }
   // A generic 5xx would ask existing callers to submit a new logical operation,
   // including after an uncertain external acceptance. Only the outbox may retry.
+  const delivered = error.outcome === 'accepted-unrecorded';
   res.status(409).json({ error: 'telegram-origin-held', reason: error.reason,
-    outcome: error.outcome, operationId: error.operationId, retryable: false });
+    outcome: error.outcome, operationId: error.operationId, retryable: false,
+    // Telegram accepted it: the caller must not resend (held-reply outcome lookup).
+    ...(delivered ? { delivered: true, messageId: error.delivered?.messageId ?? null, fallbackRecorded: error.delivered?.fallbackRecorded ?? false } : {}),
+    ...(error.operationId ? { checkOutcome: `/telegram/origins/operations/${error.operationId}/outcome` } : {}),
+    ...(error.custody ? { custody: error.custody } : {}) });
 }
 export function mountTelegramOriginRoutes(router: Router, deps: {
   runtime: () => TelegramOriginRuntime | null | undefined;
   verifyOperator: (proof: string | undefined) => boolean;
   setupGreeting?: () => { send: (text: string) => Promise<{ messageId: number }> } | null;
+  /** native-conversation-base §3a item 6 — the conversation's own read check (`deviceMayUse`, `read`). */
+  mayReadConversation?: (req: Request, ref: string) => boolean;
 }): void {
   const operator = (req: Request, res: Response): boolean => {
     if (deps.verifyOperator(req.get('X-Instar-Operator-Session'))) return true;
@@ -88,6 +106,7 @@ export function mountTelegramOriginRoutes(router: Router, deps: {
       }));
       res.json(result);
     } catch (error) {
+      if (error instanceof QuietRecordedError) { res.json({ ok: true, ...error.receipt }); return; }
       if (error instanceof TelegramOriginHoldError) sendOriginHoldResponse(res, error);
       else res.status(409).json({ error: 'telegram-browser-held', reason: 'browser-preparation-or-recording-unavailable', retryable: false });
     }
@@ -98,7 +117,14 @@ export function mountTelegramOriginRoutes(router: Router, deps: {
     try {
       const result = await runtime.service.runWithSessionToken(req.get('X-Instar-Origin-Session') ?? '', () => browser.executor.broker.readSnapshot());
       res.json(result);
-    } catch { res.status(409).json({ error: 'telegram-browser-snapshot-unavailable' }); }
+    } catch (error) {
+      // Server-side diagnosis only; the response body stays the fixed hold code.
+      const name = error instanceof Error ? error.constructor.name : typeof error;
+      const message = error instanceof Error ? error.message : String(error);
+      // One string: the server's console wrapper prints an object argument as [object Object].
+      console.warn(`[telegram-origin] browser snapshot unavailable: profile=${req.params.profileId} class=${name} message=${message.slice(0, 200)}`);
+      res.status(409).json({ error: 'telegram-browser-snapshot-unavailable' });
+    }
   });
   router.get('/telegram/origins/status', async (req, res) => {
     if (!operator(req, res)) return;
@@ -112,7 +138,11 @@ export function mountTelegramOriginRoutes(router: Router, deps: {
       return;
     }
     if (req.query.scope !== undefined && req.query.scope !== 'local') { res.status(400).json({ error: 'invalid-origin-scope' }); return; }
-    try { res.json(await runtime.status()); }
+    try {
+      // §9 (standby-durable-forward-without-token): other machines' token-less holds past the deadline.
+      const { peerHeldDebtSummary } = await import('../messaging/telegram-origin/TokenlessHeldDebt.js');
+      res.json({ ...(await runtime.status()), peerHeldDebt: peerHeldDebtSummary(6 * 60 * 60_000) });
+    }
     catch { res.status(503).json({ error: 'origin-status-unavailable', coverage: 'unknown' }); }
   });
   router.post('/telegram/origins/diagnose', async (req, res) => {
@@ -154,6 +184,111 @@ export function mountTelegramOriginRoutes(router: Router, deps: {
     }
     catch { res.status(503).json({ error: 'origin-audit-unavailable', coverage: 'unknown' }); }
   });
+  // "Did my held reply arrive?" by operation id. Ordinary API auth only (a
+  // session holds no operator proof); answers delivery state and Telegram
+  // message ids, never message content.
+  router.get('/telegram/origins/operations/:operationId/outcome', async (req, res) => {
+    const operationId = req.params.operationId;
+    // `~` admits derived successor ids (`<root>~r<hop>-<plan8>`, standby-durable-forward-without-token §2);
+    // `legacy:` admits imported startup-queue ids (held-and-startup-parked-send-release §5).
+    if (!isOperationIdParam(operationId)) { res.status(400).json({ error: 'invalid-operation-id' }); return; }
+    const runtime = deps.runtime();
+    if (!runtime) { res.status(503).json({ error: 'origin-runtime-unavailable', operationId, outcome: 'unknown', safeToResend: false }); return; }
+    let captured: import('../messaging/telegram-origin/OriginUnrecordedReceipts.js').UnrecordedReceiptEntry[] = [];
+    try { captured = runtime.unrecordedReceipts?.forOperation(operationId) ?? []; } catch { /* @silent-fallback-ok — the fallback file is unreadable; the store answers alone and the verdict degrades to unknown, never to not-delivered */ }
+    // native-conversation-base §3b — answer locally when the local row is enough,
+    // otherwise ask the execution owner (and the author) over the signed
+    // `receipt` verb, inside one 4 s deadline. Absence is never non-delivery.
+    try {
+      const answer = await readOperationOutcome({ selfMachineId: runtime.options.identity.originMachineId,
+        getOperation: id => runtime.store.getOperation(id),
+        unrecorded: id => id === operationId ? captured : runtime.unrecordedReceipts?.forOperation(id) ?? [],
+        reader: runtime.ownerReader }, operationId);
+      res.status(answer.status).json(answer.body);
+    } catch {
+      // @silent-fallback-ok — not silent: answers 503 origin-store-unavailable (or delivered from the fallback record)
+      const verdict = classifyOperationOutcome(operationId, null, captured);
+      if (verdict.outcome === 'delivered') { res.json({ ...verdict, storeAvailable: false }); return; }
+      res.status(503).json(storageErrorResponse({ error: 'origin-store-unavailable', operationId, outcome: 'unknown', safeToResend: false,
+        detail: 'The delivery record cannot be read right now. Do not resend; ask again in a minute.' }, req.app.locals.stateDir));
+    }
+  });
+  // held-and-startup-parked-send-release §5 — retire ONE held or startup-parked reply on THIS
+  // machine by operation id, so it is never sent. Agent API token only (a device token is refused);
+  // the agent is the operator's interface. Only ever stops a send; every success writes an audit row.
+  router.post('/telegram/origins/operations/:operationId/retire', async (req, res) => {
+    const operationId = req.params.operationId;
+    if (!isOperationIdParam(operationId)) { res.status(400).json({ error: 'invalid-operation-id' }); return; }
+    if (principalOf(req).kind !== 'token' || devicePersonOf(req) !== null) { res.status(403).json({ error: 'device-token-refused' }); return; }
+    const body = (req.body ?? {}) as { note?: unknown; supersededBy?: unknown };
+    if (body.note !== undefined && (typeof body.note !== 'string' || body.note.length > 500)) { res.status(400).json({ error: 'invalid-note', detail: 'note must be a string of at most 500 characters' }); return; }
+    if (body.supersededBy !== undefined && !isOperationIdParam(body.supersededBy)) { res.status(400).json({ error: 'invalid-superseded-by' }); return; }
+    const runtime = deps.runtime();
+    if (!runtime) { res.status(503).json({ error: 'origin-runtime-unavailable', operationId }); return; }
+    let actor = 'api-token';
+    const token = req.get('X-Instar-Origin-Session');
+    if (token) {
+      try { const verified = runtime.sessions.verify(token); if (verified.ok) actor = `session:${verified.binding.sessionId}`; }
+      catch { /* @silent-fallback-ok — an unverifiable session header is recorded as the plain API token, never as a session */ }
+    }
+    try {
+      const result = await runtime.retireHeld({ operationId, actor, note: typeof body.note === 'string' ? body.note : null,
+        supersededBy: typeof body.supersededBy === 'string' ? body.supersededBy : null });
+      if (result.retired) {
+        const audit = await runtime.store.getOperation(operationId).catch(() => null);
+        res.json({ retired: true, operationId, actor, outcome: classifyOperationOutcome(operationId, audit, []) });
+        return;
+      }
+      if (result.refusal === 'unknown-operation') { res.status(404).json({ error: 'unknown-operation', operationId, detail: 'This machine holds no such reply. A held reply lives on the machine that wrote it.' }); return; }
+      if (result.refusal === 'recovery-busy') { res.status(503).json({ error: 'recovery-busy', operationId, retryable: true }); return; }
+      const detail = result.refusal === 'uncertain' ? 'An earlier attempt may have reached Telegram (or the sending machine may still deliver it); it cannot be retired from here.'
+        : result.refusal === 'in-flight' ? 'It may be in the middle of being sent right now; nothing was changed.'
+        : result.refusal === 'already-retired' ? 'It was already retired.' : 'It is not a held or startup-parked reply.';
+      res.status(409).json({ retired: false, operationId, refusal: result.refusal, detail });
+    } catch {
+      res.status(503).json(storageErrorResponse({ error: 'origin-store-unavailable', operationId }, req.app.locals.stateDir));
+    }
+  });
+  // native-conversation-base §3a item 6 — the authored text of a reply this machine
+  // wrote, for its session after a hand-back. API token only: a device token is
+  // refused here whatever the allowlist says, and the caller must pass the same
+  // conversation check the topic's history read applies. Any refusal of a known id
+  // reads exactly like an unknown one.
+  router.get('/telegram/origins/operations/:operationId/text', async (req, res) => {
+    const operationId = req.params.operationId;
+    // `~` admits derived successor ids, as the outcome route does (fb-b7abf24e-6cb); `legacy:` imported ids.
+    if (!isOperationIdParam(operationId)) { res.status(400).json({ error: 'invalid-operation-id' }); return; }
+    if (principalOf(req).kind !== 'token' || devicePersonOf(req) !== null) { res.status(403).json({ error: 'device-token-refused' }); return; }
+    const runtime = deps.runtime();
+    if (!runtime) { res.status(503).json({ error: 'origin-runtime-unavailable', operationId }); return; }
+    const unknown = () => res.status(404).json({ error: 'unknown-operation', operationId });
+    try {
+      const audit = await runtime.store.getOperation(operationId);
+      if (!audit) { unknown(); return; }
+      const record = JSON.parse(audit.record.envelopeJson) as import('../messaging/telegram-origin/types.js').TelegramOriginRecord;
+      const self = runtime.options.identity.originMachineId;
+      // held-and-startup-parked-send-release §4 — an imported startup-queue reply attributed to a
+      // session, imported by this machine, is its author's text too.
+      const authoredHere = record.producerKind === 'session' && record.originMachineId === self
+        || record.producerKind === 'imported-legacy' && record.importedByMachineId === self;
+      // An imported reply this machine took from its own queue is readable even with no attributed
+      // session: the agent needs it to act on the operator's "send it" (§4). Same token-only and
+      // conversation-read checks.
+      if (!authoredHere || (!record.sessionId && record.producerKind !== 'imported-legacy')) { unknown(); return; }
+      const topicId = record.destination.topicId;
+      if (topicId === null || (deps.mayReadConversation && !deps.mayReadConversation(req, `telegram:${topicId}`))) { unknown(); return; }
+      if (!audit.operation) { res.status(410).json({ error: 'gone', operationId, detail: 'The reply text was removed with the record after its retention window.' }); return; }
+      const held = audit.operation.holdDetail?.text;
+      if (typeof held === 'string') { res.json({ operationId, source: 'hold-detail', text: held }); return; }
+      const child = audit.children[0] ? await runtime.store.getChild(audit.children[0].childId) : null;
+      let sealed: unknown = null;
+      try { sealed = (JSON.parse(child?.materializations[0]?.requestJson ?? 'null') as { policy?: { text?: unknown } } | null)?.policy?.text; } catch { sealed = null; } // @silent-fallback-ok — not silent: an unreadable sealed body answers 410 gone below
+      if (typeof sealed === 'string') { res.json({ operationId, source: 'sealed-policy-input', text: sealed }); return; }
+      res.status(410).json({ error: 'gone', operationId, detail: 'The reply text is no longer stored on this machine.' });
+    } catch {
+      res.status(503).json(storageErrorResponse({ error: 'origin-store-unavailable', operationId }, req.app.locals.stateDir));
+    }
+  });
   router.get('/telegram/origins/:originId', async (req, res) => {
     if (!operator(req, res)) return;
     const runtime = deps.runtime();
@@ -180,7 +315,10 @@ export function mountTelegramOriginRoutes(router: Router, deps: {
       const automationToken = req.get('X-Instar-Origin-Automation');
       if (automationToken) {
         if (req.get('X-Instar-Origin-Session')) throw new TelegramOriginHoldError('conflicting-origin-credentials');
-        runtime.service.runWithAutomationReply(automationToken, Number(req.params.topicId), req.body, next);
+        runtime.service.runWithAutomationReply(automationToken, Number(req.params.topicId), req.body, () => {
+          if (typeof req.body?.text === 'string') runtime.service.runWithSendPolicyInput(req.body.text, req.body.metadata, next);
+          else next();
+        });
         return;
       }
       await runtime.service.runWithSessionToken(req.get('X-Instar-Origin-Session') ?? '', async () => {
@@ -191,5 +329,43 @@ export function mountTelegramOriginRoutes(router: Router, deps: {
       if (error instanceof TelegramOriginHoldError) sendOriginHoldResponse(res, error);
       else res.status(409).json({ error: 'telegram-origin-held', reason: 'origin-session-unavailable', retryable: false });
     }
+  });
+  // Typed Telegram test groups (docs/specs/telegram-test-groups.md). Same session
+  // credential as send; the TelegramTestGroups instance holds every other gate.
+  const testGroupsFor = async (req: Request, res: Response) => {
+    const runtime = deps.runtime(), browser = runtime?.browsers.get(String(req.params.profileId));
+    if (!runtime || !browser?.testGroups) { res.status(503).json({ error: 'telegram-browser-not-enrolled' }); return null; }
+    try {
+      const producer = await runtime.service.sessionProducer(req.get('X-Instar-Origin-Session') ?? '');
+      return { testGroups: browser.testGroups, producer: { originMachineId: producer.originMachineId, harnessId: producer.harnessId, sessionId: producer.sessionId } };
+    } catch (error) {
+      // @silent-fallback-ok — not silent: an unverified session is refused with an explicit 409, never served.
+      if (error instanceof TelegramOriginHoldError) sendOriginHoldResponse(res, error);
+      else res.status(409).json({ error: 'telegram-origin-held', reason: 'session-unverified', retryable: false });
+      return null;
+    }
+  };
+  router.get('/telegram/browser/:profileId/test-groups', async (req, res) => {
+    const found = await testGroupsFor(req, res); if (!found) return;
+    const result = await found.testGroups.list();
+    res.status(result.status).json(result.body);
+  });
+  router.post('/telegram/browser/:profileId/test-groups', async (req, res) => {
+    const body = req.body ?? {};
+    if (!body || typeof body !== 'object' || Array.isArray(body) || Object.keys(body).some(key => !['title', 'bot'].includes(key))) {
+      res.status(400).json({ error: 'invalid-test-group-request' }); return;
+    }
+    const found = await testGroupsFor(req, res); if (!found) return;
+    const result = await found.testGroups.create({ title: body.title, bot: body.bot }, found.producer);
+    res.status(result.status).json(result.body);
+  });
+  router.post('/telegram/browser/:profileId/test-groups/:channelId/delete', async (req, res) => {
+    const body = req.body ?? {};
+    if (!body || typeof body !== 'object' || Array.isArray(body) || Object.keys(body).length) {
+      res.status(400).json({ error: 'invalid-test-group-request' }); return;
+    }
+    const found = await testGroupsFor(req, res); if (!found) return;
+    const result = await found.testGroups.delete(String(req.params.channelId), found.producer);
+    res.status(result.status).json(result.body);
   });
 }

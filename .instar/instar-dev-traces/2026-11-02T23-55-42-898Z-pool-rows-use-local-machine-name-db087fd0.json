@@ -1,0 +1,22 @@
+{
+  "version": 2,
+  "slug": "pool-rows-use-local-machine-name",
+  "sessionId": "d18b0bbf-d233-4b55-a0c0-df85292c7c41",
+  "timestamp": "2026-11-02T23:55:42.898Z",
+  "artifactPath": "upgrades/side-effects/pool-rows-use-local-machine-name.md",
+  "artifactSha256": "bd2c6d2ef8a696b61b0997fbb5d6bf0c4a406406cbb423ed55a7991896817657",
+  "coveredFiles": [
+    "src/server/routes.ts",
+    "tests/integration/attention-pool-scope.test.ts",
+    "upgrades/next/pool-rows-use-local-machine-name.md",
+    "upgrades/side-effects/pool-rows-use-local-machine-name.eli16.md",
+    "upgrades/side-effects/pool-rows-use-local-machine-name.md"
+  ],
+  "phase": "complete",
+  "tier": 1,
+  "tierReasoning": "display naming in pool reads; revert fully undoes it",
+  "eli16Path": "upgrades/side-effects/pool-rows-use-local-machine-name.eli16.md",
+  "sideEffectsPath": "upgrades/side-effects/pool-rows-use-local-machine-name.md",
+  "secondPass": "not-required",
+  "reviewerConcurred": null
+}

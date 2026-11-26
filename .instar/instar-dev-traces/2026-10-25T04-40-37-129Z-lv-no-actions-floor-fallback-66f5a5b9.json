@@ -1,0 +1,34 @@
+{
+  "version": 3,
+  "slug": "lv-no-actions-floor-fallback",
+  "sessionId": "8da0775f-0138-4aed-a265-6b7c1634d695",
+  "timestamp": "2026-10-25T04:40:37.129Z",
+  "artifactPath": "upgrades/side-effects/lv-no-actions-floor-fallback.md",
+  "artifactSha256": "101ecf1dcee7dd5368cdad5be56a6e821bbed5224e0a190c412db7e48054e01c",
+  "coveredFiles": [
+    "docs/specs/lv-no-actions-floor-fallback.eli16.md",
+    "src/commands/server.ts",
+    "src/localVerify/StatusReconciler.ts",
+    "src/localVerify/floorGate.ts",
+    "src/localVerify/statusProjection.ts",
+    "tests/unit/localVerify/StatusReconciler.test.ts",
+    "tests/unit/localVerify/floorGate.test.ts",
+    "tests/unit/localVerify/statusProjection.test.ts",
+    "upgrades/next/lv-no-actions-floor-fallback.md",
+    "upgrades/side-effects/lv-no-actions-floor-fallback.md"
+  ],
+  "phase": "complete",
+  "tier": 1,
+  "tierReasoning": "Narrow fail-closed bug fix in the local-verify status projection: 4 src files ~90 LOC, no new authority, no stored state; a revert fully undoes it. Harness path, so the independent second-pass review was run and concurred.",
+  "eli16Path": "docs/specs/lv-no-actions-floor-fallback.eli16.md",
+  "sideEffectsPath": "upgrades/side-effects/lv-no-actions-floor-fallback.md",
+  "secondPass": "true",
+  "reviewerConcurred": true,
+  "toolchain": {
+    "buildSkill": {
+      "name": "instar-dev",
+      "version": "9a75c36ba521",
+      "verified": true
+    }
+  }
+}

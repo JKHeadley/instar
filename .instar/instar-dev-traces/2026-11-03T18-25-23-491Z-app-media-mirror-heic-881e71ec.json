@@ -1,0 +1,31 @@
+{
+  "version": 2,
+  "slug": "app-media-mirror-heic",
+  "sessionId": "fbad3c4d-66be-4847-be50-4e9084534054",
+  "timestamp": "2026-11-03T18:25:23.491Z",
+  "artifactPath": "upgrades/side-effects/app-media-mirror-heic.md",
+  "artifactSha256": "9c08f84f80d38cd16c7c37f92b1a8950669fa2d8f3b75acdf49de1acb6e3aa67",
+  "coveredFiles": [
+    "src/messaging/TelegramAdapter.ts",
+    "src/messaging/telegramMedia.ts",
+    "src/server/AgentServer.ts",
+    "src/server/mobileConversationRoutes.ts",
+    "tests/integration/mobile-media-to-platform.test.ts",
+    "tests/unit/mobile-media-to-platform.test.ts",
+    "upgrades/next/app-media-mirror-heic.md",
+    "upgrades/side-effects/app-media-mirror-heic.eli16.md",
+    "upgrades/side-effects/app-media-mirror-heic.md"
+  ],
+  "phase": "complete",
+  "tier": 1,
+  "tierReasoning": "transport/display fix on the existing app-to-Telegram copy path; revert restores old behavior",
+  "eli16Path": "upgrades/side-effects/app-media-mirror-heic.eli16.md",
+  "sideEffectsPath": "upgrades/side-effects/app-media-mirror-heic.md",
+  "secondPass": "not-required",
+  "reviewerConcurred": null,
+  "classClosure": {
+    "defectClass": "unbounded-self-action",
+    "closure": "n/a",
+    "reason": "one copy per operator send, unchanged; no new loop"
+  }
+}

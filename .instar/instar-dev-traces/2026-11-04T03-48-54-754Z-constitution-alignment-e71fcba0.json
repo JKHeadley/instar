@@ -1,0 +1,36 @@
+{
+  "version": 3,
+  "slug": "constitution-alignment",
+  "sessionId": "e15921d4-3f1a-4813-bef9-44982528144f",
+  "timestamp": "2026-11-04T03:48:54.754Z",
+  "artifactPath": "upgrades/side-effects/constitution-alignment.md",
+  "artifactSha256": "cdd37f06f3a8ba710d2be8bf235c23bb4d94f985a033773c42d3afe189adbde1",
+  "specPath": "docs/specs/constitution-alignment.md",
+  "coveredFiles": [
+    "docs/STANDARDS-DIRECTION-GUARD.md",
+    "docs/constitution-alignment-map.md",
+    "docs/specs/constitution-alignment.eli16.md",
+    "docs/specs/constitution-alignment.md",
+    "scripts/check-constitution-pairing.mjs",
+    "scripts/safe-merge.mjs",
+    "src/monitoring/GreenPrAutoMerger.ts",
+    "tests/integration/safe-merge-constitution-counterpart.test.ts",
+    "tests/integration/safe-merge-no-checks-ran.test.ts",
+    "tests/unit/check-constitution-pairing.test.ts",
+    "upgrades/next/constitution-alignment.md",
+    "upgrades/side-effects/constitution-alignment.eli16.md",
+    "upgrades/side-effects/constitution-alignment.md"
+  ],
+  "phase": "complete",
+  "tier": 2,
+  "tierReasoning": "Adds a refusal to the merge funnel, so new blocking authority; reversible by revert, no fleet state.",
+  "secondPass": "true",
+  "reviewerConcurred": true,
+  "toolchain": {
+    "convergence": {
+      "reportPath": "docs/specs/reports/constitution-alignment-convergence.md",
+      "iterations": 5,
+      "verified": true
+    }
+  }
+}

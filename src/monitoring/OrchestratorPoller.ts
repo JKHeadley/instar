@@ -17,6 +17,7 @@
  * actuator; the poller only drives cadence + idle backoff + a coarse error breaker.
  */
 import { IdleAwareCadence } from './IdleAwareCadence.js';
+import { featureEvidence } from './FeatureEvidenceLog.js';
 import type { OrchestratorPassResult } from '../core/SeamlessOrchestratorEngine.js';
 import type { ActuationResult } from '../core/OrchestratorActuator.js';
 
@@ -74,6 +75,7 @@ export class OrchestratorPoller {
   private breakerOpen = false;
   private lastTick: OrchestratorTickResult | null = null;
   private lastTickAt: number | null = null;
+  private lastEvidenceKey: string | null = null;
 
   constructor(opts: OrchestratorPollerOptions) {
     this.engine = opts.engine;
@@ -121,6 +123,16 @@ export class OrchestratorPoller {
       // Idle-backoff bookkeeping: a pass that proposes nothing (or didn't run) is "idle".
       if (result.proposalCount === 0) this.consecutiveZeroProposal += 1;
       else this.consecutiveZeroProposal = 0;
+      // A tick with proposals always records; an idle tick only when its reason changes.
+      const evidenceKey = `${result.ranProposePath}|${result.suspended}|${result.reason}`;
+      if (result.proposalCount > 0 || evidenceKey !== this.lastEvidenceKey) {
+        this.lastEvidenceKey = evidenceKey;
+        featureEvidence.record('multiMachine.seamlessOrchestrator', {
+          kind: result.proposalCount > 0 && result.refused === 0 ? 'fired' : 'held',
+          reason: `tick: ${result.reason}`,
+          context: { ranProposePath: result.ranProposePath, suspended: result.suspended, proposals: result.proposalCount, actuated: result.actuated, refused: result.refused },
+        });
+      }
       return result;
     } catch (err) {
       // @silent-fallback-ok — a tick error is REPORTED via onError (the injected logger) and drives
@@ -128,6 +140,7 @@ export class OrchestratorPoller {
       // data-loss: the next cadence retries; a sustained failure trips the breaker (the real surface).
       this.onError(err);
       this.consecutiveErrors += 1;
+      featureEvidence.record('multiMachine.seamlessOrchestrator', { kind: 'error', reason: 'orchestrator tick failed', context: { consecutiveErrors: this.consecutiveErrors, error: (err instanceof Error ? err.message : String(err)).slice(0, 80) } });
       if (this.consecutiveErrors >= this.errorTicksToBreak && !this.breakerOpen) {
         this.breakerOpen = true;
         this.log(`[seamless-orchestrator] breaker OPEN — ${this.consecutiveErrors} consecutive tick errors; backing off cadence.`);

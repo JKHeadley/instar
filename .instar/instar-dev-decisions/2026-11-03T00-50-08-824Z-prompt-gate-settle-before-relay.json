@@ -1,0 +1,28 @@
+{
+  "ts": "2026-11-03T00:50:08.824Z",
+  "slug": "prompt-gate-settle-before-relay",
+  "suggestedTier": 2,
+  "declaredTier": 1,
+  "riskFloor": 2,
+  "riskFloorReasons": [
+    "safety-invariant proximity: src/messaging/TelegramAdapter.ts matches Telegram adapter",
+    "safety-invariant proximity: src/monitoring/promptRelaySettle.ts matches relay / delivery path"
+  ],
+  "belowFloor": true,
+  "files": 4,
+  "loc": 105,
+  "scope": {
+    "basis": "staged-in-scope-additions-plus-deletions",
+    "files": [
+      "src/commands/server.ts",
+      "src/core/types.ts",
+      "src/messaging/TelegramAdapter.ts",
+      "src/monitoring/promptRelaySettle.ts"
+    ],
+    "addedLines": 94,
+    "deletedLines": 11
+  },
+  "causalAutopsy": null,
+  "classClosure": null,
+  "verdict": "pass"
+}

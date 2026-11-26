@@ -1,0 +1,28 @@
+{
+  "ts": "2026-11-03T14:46:43.004Z",
+  "slug": "feedback-confined-timeout",
+  "suggestedTier": 2,
+  "declaredTier": 2,
+  "riskFloor": 1,
+  "riskFloorReasons": [],
+  "belowFloor": false,
+  "files": 3,
+  "loc": 53,
+  "scope": {
+    "basis": "staged-in-scope-additions-plus-deletions",
+    "files": [
+      "src/feedback-factory/execute/ConfinedRunner.ts",
+      "src/feedback-factory/execute/FeedbackExecutorService.ts",
+      "src/feedback-factory/execute/executePolicy.ts"
+    ],
+    "addedLines": 41,
+    "deletedLines": 12
+  },
+  "causalAutopsy": null,
+  "classClosure": {
+    "defectClass": "unbounded-self-action",
+    "closure": "n/a",
+    "reason": "The timeout kill is a one-shot reaction to one confined command crossing its fixed wall-clock or output limit; it does not schedule another action or create a retry loop."
+  },
+  "verdict": "pass"
+}

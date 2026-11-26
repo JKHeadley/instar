@@ -1,0 +1,23 @@
+{
+  "ts": "2026-11-06T06:56:31.723Z",
+  "slug": "coverage-source-boundary",
+  "suggestedTier": 1,
+  "declaredTier": 1,
+  "riskFloor": 1,
+  "riskFloorReasons": [],
+  "belowFloor": false,
+  "files": 2,
+  "loc": 29,
+  "scope": {
+    "basis": "staged-in-scope-additions-plus-deletions",
+    "files": [
+      "src/core/CapabilityRegistry.ts",
+      "src/server/measurementCoverageRead.ts"
+    ],
+    "addedLines": 23,
+    "deletedLines": 6
+  },
+  "causalAutopsy": null,
+  "classClosure": null,
+  "verdict": "pass"
+}

@@ -1,0 +1,30 @@
+{
+  "version": 2,
+  "slug": "app-reply-push-preview",
+  "sessionId": "fbad3c4d-66be-4847-be50-4e9084534054",
+  "timestamp": "2026-11-03T01:28:41.163Z",
+  "artifactPath": "upgrades/side-effects/app-reply-push-preview.md",
+  "artifactSha256": "f94106414d7abd3deeb42edd771ac62f12e2bd15ecf88b270d0da54dfcd59ed1",
+  "coveredFiles": [
+    "src/core/MobilePush.ts",
+    "src/core/appMediaTypes.ts",
+    "src/server/CapabilityIndex.ts",
+    "src/server/mobileConversationRoutes.ts",
+    "src/server/mobilePairingRoutes.ts",
+    "src/server/mobilePairingRoutes.ts",
+    "tests/integration/mobile-native-conversations.test.ts",
+    "tests/unit/mobile-push.test.ts",
+    "tests/unit/push-preview-body.test.ts",
+    "upgrades/next/app-reply-push-preview.md",
+    "upgrades/side-effects/app-reply-push-preview.eli16.md",
+    "upgrades/side-effects/app-reply-push-preview.eli16.md",
+    "upgrades/side-effects/app-reply-push-preview.md"
+  ],
+  "phase": "complete",
+  "tier": 1,
+  "tierReasoning": "one read route plus payload fields; read token allowlist grows by one exact GET path; revert fully undoes it",
+  "eli16Path": "upgrades/side-effects/app-reply-push-preview.eli16.md",
+  "sideEffectsPath": "upgrades/side-effects/app-reply-push-preview.md",
+  "secondPass": "true",
+  "reviewerConcurred": true
+}

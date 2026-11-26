@@ -1,0 +1,21 @@
+{
+  "version": 2,
+  "slug": "codex-clear-replies",
+  "sessionId": "d384ab47-df76-4f5e-98ea-d49268d23429",
+  "timestamp": "2026-10-28T00:05:18.066Z",
+  "artifactPath": "upgrades/side-effects/codex-clear-replies.md",
+  "artifactSha256": "d532cdfdd82c67f03721a8df17dacb53496b0a51ef17cea5d2062ea6daad702c",
+  "coveredFiles": [
+    "src/core/IdentityRenderer.ts",
+    "tests/unit/IdentityRenderer.test.ts",
+    "upgrades/eli16/codex-clear-replies.md",
+    "upgrades/side-effects/codex-clear-replies.md"
+  ],
+  "phase": "complete",
+  "tier": 1,
+  "tierReasoning": "A short reversible Codex instruction and generated-shadow refresh; no authority, security policy, or durable state changes.",
+  "eli16Path": "upgrades/eli16/codex-clear-replies.md",
+  "sideEffectsPath": "upgrades/side-effects/codex-clear-replies.md",
+  "secondPass": "not-required",
+  "reviewerConcurred": null
+}

@@ -221,9 +221,12 @@ describe('SessionManager.terminateSession (single-writer CAS)', () => {
     isSessionAliveAsync(): Promise<boolean>;
     recordBuildContextMaybeAsync(): Promise<void>;
     detectCompletionMaybeAsync(): Promise<boolean>;
-    captureMeaningfulTailMaybeAsync(): Promise<string>;
+    captureMeaningfulTailMaybeAsync(): Promise<string | null>;
     hasActiveProcessesMaybeAsync(): Promise<boolean>;
     isTranscriptRecentlyActive(): boolean;
+    captureOutputMaybeAsync(): Promise<string>;
+    ageGateLastWorkingAt: Map<string, number>;
+    ageGateConfirmedWorkPastLimit: Set<string>;
   };
 
   const runLocalExpiredMonitorTick = async (
@@ -244,6 +247,7 @@ describe('SessionManager.terminateSession (single-writer CAS)', () => {
     seam.captureMeaningfulTailMaybeAsync = async () => 'bypass permissions on';
     seam.hasActiveProcessesMaybeAsync = async () => false;
     seam.isTranscriptRecentlyActive = () => false;
+    seam.captureOutputMaybeAsync = async () => '';
 
     const blocked: string[] = [];
     const authorityScopes: string[] = [];
@@ -398,6 +402,39 @@ describe('SessionManager.terminateSession (single-writer CAS)', () => {
     expect(state.getSession(s.id)!.status).toBe('running');
   });
 
+  // ── topic-transfer drain close (topicTransferClose, 2026-10-23 incident) ────
+  // The old owner closes its own copy on a fenced drain order. It is usually
+  // not the lease holder, and the user has usually just written, so the lease
+  // gate and recent-user-message used to refuse every remote drain close.
+  it('drain close on a NON-lease-holder with a recent user message ⇒ terminates', async () => {
+    manager.setReapGuard(guardWith({ hasActiveProcesses: () => false, topicBinding: () => 1, recentUserMessage: () => true }));
+    manager.setAwakeChecker(() => false);
+    const s = await spawn('drain-close-1');
+    const r = await terminateAuthority(s.id, 'topic 1 transferring to m_studio — turn boundary reached, clean close', {
+      via: 'ws12-drain',
+      topicTransferClose: true,
+    });
+    expect(r.terminated).toBe(true);
+    expect(state.getSession(s.id)!.status).toBe('completed');
+  });
+
+  it('without topicTransferClose the same close is lease-refused (public path unchanged)', async () => {
+    manager.setReapGuard(guardWith({ hasActiveProcesses: () => false }));
+    manager.setAwakeChecker(() => false);
+    const s = await spawn('drain-close-2');
+    const r = await manager.terminateSession(s.id, 'topic 1 transferring to m_studio');
+    expect(r).toEqual({ terminated: false, skipped: 'not-lease-holder' });
+  });
+
+  it('drain close still refuses a session with a live subagent (other keep-guards re-checked)', async () => {
+    manager.setReapGuard(guardWith({ hasActiveProcesses: () => false, activeSubagentCount: () => 1 }));
+    manager.setAwakeChecker(() => false);
+    const s = await spawn('drain-close-3');
+    const r = await terminateAuthority(s.id, 'topic 1 transferring', { topicTransferClose: true });
+    expect(r).toEqual({ terminated: false, skipped: 'active-subagent' });
+    expect(state.getSession(s.id)!.status).toBe('running');
+  });
+
   // ── runtime-private topic-moved closeout authority (F8) ─────────────────────
   // The machine a topic moves AWAY from is by definition usually NOT the
   // serving-lease holder, so the lease gate structurally vetoed the exact
@@ -535,6 +572,311 @@ describe('SessionManager.terminateSession (single-writer CAS)', () => {
     expect(mockTmuxSessions.has(saved.tmuxSession)).toBe(true);
     expect(blocked).toContain('tmux-kill-failed');
     expect(authorityScopes).toEqual([]);
+  });
+
+  // ── Age gate: one blind sample must not kill a working session ─────────────
+  // 2026-09-29 02:32 PDT: the Instar 2.0 coordinator (920m old, topic 52075) was
+  // age-killed as `terminal` two seconds after its last transcript write. It was
+  // mid-turn right after a background watch ended: no child process, the status
+  // bar matched IDLE_PROMPT_PATTERNS, and the transcript probe read a stale
+  // Claude session id. Earlier ticks had seen the watch running.
+  const standby = () => {
+    state.setSessionPoolActive(true);
+    state.setReadOnly(true);
+  };
+  const monitorSeam = () => manager as unknown as MonitorSeam;
+
+  const advanceMinutes = async (minutes: number) => {
+    vi.useFakeTimers({ toFake: ['Date'] });
+    try {
+      vi.setSystemTime(Date.now() + minutes * 60_000);
+      await maintenanceTick();
+    } finally {
+      vi.useRealTimers();
+    }
+  };
+
+  it('age gate: quoted "esc to interrupt" left on an idle pane does not keep it alive ⇒ age-killed', async () => {
+    manager.setReapGuard(guardWith({ hasActiveProcesses: () => false }));
+    manager.setAwakeChecker(() => false);
+    const quoted = 'Earlier source output: "esc to interrupt"\n> \nbypass permissions on';
+    // Tick 1: real work (a live child process) while the quote sits on screen.
+    const { id, authorityScopes } = await runLocalExpiredMonitorTick('age-quoted-footer', () => {
+      standby();
+      monitorSeam().captureMeaningfulTailMaybeAsync = async () => quoted;
+      monitorSeam().captureOutputMaybeAsync = async () => quoted;
+      monitorSeam().hasActiveProcessesMaybeAsync = async () => true;
+    });
+    expect(state.getSession(id)!.status).toBe('running');
+    // The work ends; the unchanged quote stays. Inside the grace it is kept...
+    monitorSeam().hasActiveProcessesMaybeAsync = async () => false;
+    await advanceMinutes(5);
+    expect(state.getSession(id)!.status).toBe('running');
+    // ...and the quote never renews it, so past the grace it is age-killed.
+    await advanceMinutes(11);
+    expect(state.getSession(id)).toMatchObject({ status: 'killed', endedReason: 'age-limit' });
+    expect(authorityScopes).toEqual(['local-age-limit']);
+    expect(monitorSeam().ageGateLastWorkingAt.has(id)).toBe(false);
+  });
+
+  it('age gate: work memory is dropped for an ended session and kept for a running one', async () => {
+    manager.setReapGuard(guardWith({ hasActiveProcesses: () => false }));
+    manager.setAwakeChecker(() => false);
+    const { id: ended } = await runLocalExpiredMonitorTick('age-mem-ended', () => {
+      standby();
+      monitorSeam().hasActiveProcessesMaybeAsync = async () => true;
+    });
+    const running = await spawn('age-mem-running');
+    state.saveSession({
+      ...state.getSession(running.id)!,
+      startedAt: new Date(Date.now() - 10 * 60_000).toISOString(),
+      maxDurationMinutes: 1,
+    });
+    await maintenanceTick();
+    expect(monitorSeam().ageGateLastWorkingAt.has(ended)).toBe(true);
+    expect(monitorSeam().ageGateLastWorkingAt.has(running.id)).toBe(true);
+
+    // One session ends by a route other than the age gate.
+    expect(manager.killSession(ended)).toBe(true);
+    monitorSeam().hasActiveProcessesMaybeAsync = async () => false;
+    await maintenanceTick();
+    expect(monitorSeam().ageGateLastWorkingAt.has(ended)).toBe(false);
+    // The running one keeps its grace: every probe now reads idle, still kept.
+    expect(monitorSeam().ageGateLastWorkingAt.has(running.id)).toBe(true);
+    expect(state.getSession(running.id)!.status).toBe('running');
+  });
+
+  it('age gate REPRO: seen working (background shell) then one quiet sample ⇒ kept; quiet past the grace ⇒ age-killed', async () => {
+    manager.setReapGuard(guardWith({ hasActiveProcesses: () => false }));
+    manager.setAwakeChecker(() => false);
+    // Tick 1: the coordinator's background watch is running (live child process).
+    const { id, authorityScopes } = await runLocalExpiredMonitorTick('age-coordinator', () => {
+      standby();
+      monitorSeam().hasActiveProcessesMaybeAsync = async () => true;
+    });
+    expect(state.getSession(id)!.status).toBe('running');
+
+    // Tick 2: the watch just ended — every probe reads idle for this one sample.
+    monitorSeam().hasActiveProcessesMaybeAsync = async () => false;
+    await maintenanceTick();
+    expect(state.getSession(id)!.status).toBe('running');
+    expect(authorityScopes).toEqual([]);
+
+    // Genuinely stale: nothing seen working for longer than the grace window.
+    await advanceMinutes(11);
+    expect(state.getSession(id)).toMatchObject({ status: 'killed', endedReason: 'age-limit' });
+    expect(authorityScopes).toEqual(['local-age-limit']);
+  });
+
+  // ── Age gate round 2 (2026-09-30 01:28 → 01:52Z, topic 52075) ─────────────
+  // 01:28 the coordinator was deferred (procs=true: a backgrounded command ran
+  // until 01:38). 01:52 it was idle with nothing running and age-killed with
+  // `midWork:false`, so the resume queue skipped it (`insufficient-evidence`)
+  // although its worktree held uncommitted work the idle reaper would have
+  // recorded. The age kill now collects that evidence too.
+  const reapedEvents = () => {
+    type Reaped = { midWork?: boolean; workEvidence?: string[]; disposition?: string; seenWorkingPastAgeLimit?: boolean };
+    const events: Reaped[] = [];
+    manager.on('sessionReaped', (e: Reaped) => { events.push(e); });
+    return events;
+  };
+  // Topic sessions record the agent home as their cwd; the probe reads it.
+  const withCwd = (name: string) => {
+    const s = state.listSessions({ status: 'running' }).find((x) => x.name === name)!;
+    state.saveSession({ ...s, cwd: tmpDir });
+  };
+  const topicBoundGuard = (over: Partial<ReapGuardDeps> = {}) =>
+    guardWith({ hasActiveProcesses: () => false, topicBinding: () => 52075, ...over });
+
+  it('age gate R2 REPRO: live shell classifies as working on every sample; later idle kill carries the dirty worktree ⇒ resume-eligible', async () => {
+    manager.setReapGuard(topicBoundGuard());
+    manager.setAwakeChecker(() => false);
+    manager.setWorktreeDirtyCheck(() => true);
+    const events = reapedEvents();
+    // 01:28 — a live tool shell under the session.
+    const { id } = await runLocalExpiredMonitorTick('age-r2-coordinator', () => {
+      withCwd('age-r2-coordinator');
+      standby();
+      monitorSeam().hasActiveProcessesMaybeAsync = async () => true;
+    });
+    expect(state.getSession(id)!.status).toBe('running');
+    // The same signals classify the same way on a later sample (no flip).
+    await advanceMinutes(20);
+    expect(state.getSession(id)!.status).toBe('running');
+    // 01:52 — the shell has ended and nothing has run for over ten minutes
+    // (advanceMinutes is measured from real time, so 34 = 14 after the last sample).
+    monitorSeam().hasActiveProcessesMaybeAsync = async () => false;
+    await advanceMinutes(34);
+    expect(state.getSession(id)).toMatchObject({ status: 'killed', endedReason: 'age-limit' });
+    expect(events).toHaveLength(1);
+    expect(events[0].midWork).toBe(true);
+    expect(events[0].workEvidence).toContain('uncommitted-worktree-work');
+    // A live child process defers the kill but is not confirmed work (it may be
+    // an idle MCP server), so it does not reset the resume queue's loop brake.
+    expect(events[0].seenWorkingPastAgeLimit).toBeUndefined();
+    const { classifyEligibility } = await import('../../src/monitoring/ResumeQueue.js');
+    expect(classifyEligibility({
+      sessionName: 'age-r2-coordinator', tmuxSession: 'x', topicId: 52075, cwd: tmpDir,
+      reason: 'age-limit', disposition: 'terminal', origin: 'autonomous',
+      workEvidence: events[0].workEvidence ?? [],
+    }, { includeOperatorKills: false })).toEqual({ eligible: true });
+  });
+
+  it('age gate R2: a stale topic-bound session (clean worktree, no work) is still reaped and not revived', async () => {
+    manager.setReapGuard(topicBoundGuard());
+    manager.setAwakeChecker(() => false);
+    manager.setWorktreeDirtyCheck(() => false);
+    const events = reapedEvents();
+    const { id } = await runLocalExpiredMonitorTick('age-r2-stale', () => { withCwd('age-r2-stale'); standby(); });
+    expect(state.getSession(id)).toMatchObject({ status: 'killed', endedReason: 'age-limit' });
+    expect(events[0].midWork).toBe(false);
+    expect(events[0].seenWorkingPastAgeLimit).toBeUndefined();
+    const { classifyEligibility } = await import('../../src/monitoring/ResumeQueue.js');
+    expect(classifyEligibility({
+      sessionName: 'age-r2-stale', tmuxSession: 'x', topicId: 52075, cwd: tmpDir,
+      reason: 'age-limit', disposition: 'terminal', origin: 'autonomous',
+      workEvidence: events[0].workEvidence ?? [],
+    }, { includeOperatorKills: false })).toEqual({ eligible: false, why: 'insufficient-evidence' });
+  });
+
+  // ── Age gate round 3 (2026-09-30 18:14Z, topic 52075) ────────────────────
+  // Two idle-reap revivals, then the revived coordinator worked for five hours
+  // (transcript writes past its age limit), went quiet, and was age-killed with
+  // uncommitted work. The resume queue refused it with resurrection-cap. Only a
+  // transcript write past the limit is confirmed work and restarts the ledger;
+  // uncertain samples (Astra round 1) defer the kill but never earn the reset.
+  const replayCapAfterTwoRevivals = async (reaped: { seenWorkingPastAgeLimit?: boolean }) => {
+    const { ResumeQueue } = await import('../../src/monitoring/ResumeQueue.js');
+    const q = new ResumeQueue({ stateDir: tmpDir }, { dryRun: false, maxResurrections: 2 });
+    q.start();
+    try {
+      const candidate = {
+        sessionName: 'coord', tmuxSession: 'tmux-coord', topicId: 52075, cwd: tmpDir,
+        reason: 'age-limit', disposition: 'terminal' as const, origin: 'autonomous' as const,
+        workEvidence: ['uncommitted-worktree-work'],
+      };
+      for (let i = 0; i < 2; i++) {
+        const enqueued = q.considerEnqueue(candidate);
+        expect(enqueued.enqueued).toBe(true);
+        q.transition(enqueued.entry!.id, 'respawned');
+        q.recordResumeSuccess('topic:52075');
+      }
+      const result = q.considerEnqueue({ ...candidate, ...reaped });
+      return { flag: reaped.seenWorkingPastAgeLimit, enqueued: result.enqueued, why: result.why };
+    } finally { q.stop(); }
+  };
+
+  it('age gate R3 REPRO: a transcript written past the age limit flags the kill ⇒ revived despite two earlier revivals', async () => {
+    manager.setReapGuard(topicBoundGuard());
+    manager.setAwakeChecker(() => false);
+    manager.setWorktreeDirtyCheck(() => true);
+    const events = reapedEvents();
+    const { id } = await runLocalExpiredMonitorTick('age-r3-coordinator', () => {
+      withCwd('age-r3-coordinator');
+      standby();
+      monitorSeam().isTranscriptRecentlyActive = () => true;
+    });
+    expect(state.getSession(id)!.status).toBe('running');
+    monitorSeam().isTranscriptRecentlyActive = () => false;
+    await advanceMinutes(11);
+    expect(state.getSession(id)).toMatchObject({ status: 'killed', endedReason: 'age-limit' });
+    expect(events).toHaveLength(1);
+    expect(events[0].seenWorkingPastAgeLimit).toBe(true);
+    expect(monitorSeam().ageGateConfirmedWorkPastLimit.has(id)).toBe(false);
+    expect(await replayCapAfterTwoRevivals(events[0])).toEqual({ flag: true, enqueued: true, why: undefined });
+  });
+
+  it.each([null, '', 'process-probe-error', 'idle-child-process'])('age gate R3: an uncertain sample (%j) defers the kill but does not clear the cap', async (sample) => {
+    manager.setReapGuard(topicBoundGuard());
+    manager.setAwakeChecker(() => false);
+    manager.setWorktreeDirtyCheck(() => true);
+    const events = reapedEvents();
+    const { id } = await runLocalExpiredMonitorTick('age-r3-uncertain', () => {
+      withCwd('age-r3-uncertain');
+      standby();
+      if (sample === 'process-probe-error') {
+        monitorSeam().hasActiveProcessesMaybeAsync = async () => {
+          const cp = await import('node:child_process');
+          vi.mocked(cp.execFileSync).mockImplementationOnce(() => { throw new Error('injected process-probe timeout'); });
+          return manager.hasActiveProcesses('age-r3-uncertain');
+        };
+      } else if (sample === 'idle-child-process') {
+        monitorSeam().hasActiveProcessesMaybeAsync = async () => true;
+      } else {
+        monitorSeam().captureMeaningfulTailMaybeAsync = async () => sample;
+      }
+    });
+    expect(state.getSession(id)!.status).toBe('running');
+    monitorSeam().captureMeaningfulTailMaybeAsync = async () => 'bypass permissions on';
+    monitorSeam().hasActiveProcessesMaybeAsync = async () => false;
+    await advanceMinutes(11);
+    expect(state.getSession(id)).toMatchObject({ status: 'killed', endedReason: 'age-limit' });
+    expect(events).toHaveLength(1);
+    expect(await replayCapAfterTwoRevivals(events[0])).toEqual({ flag: undefined, enqueued: false, why: 'resurrection-cap' });
+  });
+
+  it('age gate R2: a failing dirty-worktree probe omits the signal and never blocks the kill', async () => {
+    manager.setReapGuard(topicBoundGuard());
+    manager.setAwakeChecker(() => false);
+    manager.setWorktreeDirtyCheck(() => { throw new Error('git timed out'); });
+    const events = reapedEvents();
+    const { id } = await runLocalExpiredMonitorTick('age-r2-probe-fails', () => { withCwd('age-r2-probe-fails'); standby(); });
+    expect(state.getSession(id)).toMatchObject({ status: 'killed', endedReason: 'age-limit' });
+    expect(events[0].workEvidence ?? []).not.toContain('uncommitted-worktree-work');
+  });
+
+  // The REAL production dependency (structuralLongWorkActive, wired as
+  // buildOrAutonomousActive in server.ts) over run files whose mtime is 31
+  // minutes old — past the old freshness cut-off that killed an active run.
+  const writeRunFile = (topic: number, fields: { active: boolean; startedMinutesAgo: number; durationSeconds: number }) => {
+    const dir = path.join(tmpDir, 'autonomous');
+    fs.mkdirSync(dir, { recursive: true });
+    const file = path.join(dir, `${topic}.local.md`);
+    fs.writeFileSync(file, `---\nactive: ${fields.active}\nreport_topic: ${topic}\nstarted_at: "${new Date(Date.now() - fields.startedMinutesAgo * 60_000).toISOString()}"\nduration_seconds: ${fields.durationSeconds}\ngoal_mode: "native"\ngoal: "Finish the work"\n---\n`);
+    const old = new Date(Date.now() - 31 * 60_000);
+    fs.utimesSync(file, old, old);
+  };
+  const productionRunGuard = async (topic: number) => {
+    const { structuralLongWorkActive } = await import('../../src/core/AutonomousSessions.js');
+    return topicBoundGuard({
+      topicBinding: () => topic,
+      buildOrAutonomousActive: (t) => structuralLongWorkActive(tmpDir, t),
+    });
+  };
+
+  it('age gate R2: an active run with time left keeps an over-age idle session although its file is 31 minutes old', async () => {
+    writeRunFile(52075, { active: true, startedMinutesAgo: 60, durationSeconds: 4 * 3600 });
+    manager.setReapGuard(await productionRunGuard(52075));
+    manager.setAwakeChecker(() => false);
+    manager.setPressureTierProvider(() => 'normal');
+    const { id, authorityScopes } = await runLocalExpiredMonitorTick('age-r2-goal', standby);
+    expect(state.getSession(id)!.status).toBe('running');
+    expect(authorityScopes).toEqual([]);
+  });
+
+  it('age gate R2: an inactive run on a neighbouring topic does not keep the session ⇒ age-killed', async () => {
+    writeRunFile(52075, { active: true, startedMinutesAgo: 60, durationSeconds: 4 * 3600 });
+    writeRunFile(52076, { active: false, startedMinutesAgo: 60, durationSeconds: 4 * 3600 });
+    manager.setReapGuard(await productionRunGuard(52076));
+    manager.setAwakeChecker(() => false);
+    manager.setPressureTierProvider(() => 'normal');
+    const { id } = await runLocalExpiredMonitorTick('age-r2-goal-inactive', standby);
+    expect(state.getSession(id)).toMatchObject({ status: 'killed', endedReason: 'age-limit' });
+  });
+
+  it('age gate R2: an expired run on a neighbouring topic does not keep the session ⇒ age-killed', async () => {
+    writeRunFile(52075, { active: true, startedMinutesAgo: 60, durationSeconds: 4 * 3600 });
+    writeRunFile(52077, { active: true, startedMinutesAgo: 5 * 60, durationSeconds: 4 * 3600 });
+    manager.setReapGuard(await productionRunGuard(52077));
+    manager.setAwakeChecker(() => false);
+    manager.setPressureTierProvider(() => 'normal');
+    const { id } = await runLocalExpiredMonitorTick('age-r2-goal-expired', standby);
+    expect(state.getSession(id)).toMatchObject({ status: 'killed', endedReason: 'age-limit' });
+  });
+
+  it('age gate R2: server.ts wires the real run reader as the KEEP guard dependency', () => {
+    const server = fs.readFileSync(path.join(__dirname, '../../src/commands/server.ts'), 'utf8');
+    expect(server).toMatch(/buildOrAutonomousActive: \(topicId\) => structuralLongWorkActive\(config\.stateDir, topicId\)/);
   });
 
   it('an arbitrary public origin label is normalized to autonomous authority', async () => {
@@ -725,4 +1067,105 @@ describe('SessionManager.terminateSession (single-writer CAS)', () => {
     expect(state.getSession(s.id)!.status).toBe('running');
   });
 
+  // ── Standing sessions (sessions.standingSessions) ──────────────────────────
+  // A long-lived coordinator (the 2.0 desk, 2026-10-14) must never be ended by an
+  // AUTONOMOUS lifecycle path, yet must stay restartable — unlike
+  // protectedSessions, which also refuses killSession (2026-10-05 6h outage).
+  const setStanding = (entries: string[]) => {
+    (manager as unknown as { config: SessionManagerConfig }).config.standingSessions = entries;
+  };
+  const standingGuard = (over: Partial<ReapGuardDeps> = {}) =>
+    guardWith({ hasActiveProcesses: () => false, isStandingSession: (t) => manager.isStandingSession(t), ...over });
+
+  it('standing: matches by tmux name and by bound topic; nothing else', async () => {
+    setStanding(['desk-by-name', 'topic:52075']);
+    manager.setStandingTopicResolver((t) => (t === 'desk-by-topic' ? 52075 : t === 'other' ? 7 : null));
+    expect(manager.isStandingSession('desk-by-name')).toBe(true);
+    expect(manager.isStandingSession('desk-by-topic')).toBe(true);
+    expect(manager.isStandingSession('other')).toBe(false);
+    expect(manager.isStandingSession('unbound')).toBe(false);
+    manager.setStandingTopicResolver(() => { throw new Error('adapter down'); });
+    expect(manager.isStandingSession('desk-by-topic')).toBe(false); // name-only fallback
+    expect(manager.isStandingSession('desk-by-name')).toBe(true);
+    setStanding([]);
+    expect(manager.isStandingSession('desk-by-name')).toBe(false);
+  });
+
+  it('standing: an autonomous idle reap is refused with standing-session; a non-standing twin is reaped', async () => {
+    manager.setReapGuard(standingGuard());
+    const desk = await spawn('desk');
+    const job = await spawn('job');
+    setStanding([desk.tmuxSession]);
+    expect(await manager.terminateSession(desk.id, 'reaped-idle')).toEqual({ terminated: false, skipped: 'standing-session' });
+    expect(state.getSession(desk.id)!.status).toBe('running');
+    expect((await manager.terminateSession(job.id, 'reaped-idle')).terminated).toBe(true);
+  });
+
+  it('standing: sentinel-complete is refused too (never treated as job-complete)', async () => {
+    manager.setReapGuard(standingGuard());
+    const desk = await spawn('desk-sc');
+    setStanding([desk.tmuxSession]);
+    expect(await manager.terminateSession(desk.id, 'sentinel-complete')).toEqual({ terminated: false, skipped: 'standing-session' });
+  });
+
+  it('standing: stays restartable — killSession and an operator close still end it', async () => {
+    manager.setReapGuard(standingGuard());
+    const a = await spawn('desk-kill');
+    const b = await spawn('desk-op');
+    setStanding([a.tmuxSession, b.tmuxSession]);
+    expect(manager.killSession(a.id)).toBe(true);
+    expect(state.getSession(a.id)!.status).not.toBe('running');
+    const r = await terminateAuthority(b.id, 'operator close', { origin: 'operator' });
+    expect(r.terminated).toBe(true);
+  });
+
+  it('standing: trusted duplicate-removing closes lift ONLY standing-session; a public "topic moved" reason does not', async () => {
+    manager.setReapGuard(standingGuard());
+    const pub = await spawn('desk-moved-public');
+    const reaper = await spawn('desk-moved-reaper');
+    const drain = await spawn('desk-moved-drain');
+    setStanding([pub.tmuxSession, reaper.tmuxSession, drain.tmuxSession]);
+    // A reason string is not authority: the public method cannot lift the keep.
+    expect(await manager.terminateSession(pub.id, 'topic moved to mini — closing the leftover')).toEqual({ terminated: false, skipped: 'standing-session' });
+    expect((await terminateAuthority(reaper.id, 'topic moved to mini — closing the leftover session on this machine (post-transfer closeout)', { localPostTransferCloseout: true })).terminated).toBe(true);
+    // The topic-transfer drain's real reason string.
+    expect((await terminateAuthority(drain.id, 'topic 52075 transferring to mini — turn boundary reached, clean close', { topicTransferClose: true, via: 'ws12-drain' })).terminated).toBe(true);
+    manager.setReapGuard(standingGuard({ hasActiveProcesses: () => true }));
+    const busy = await spawn('desk-moved-busy');
+    setStanding([busy.tmuxSession]);
+    expect(await terminateAuthority(busy.id, 'topic 52075 transferring to mini — turn boundary reached, clean close', { topicTransferClose: true })).toEqual({ terminated: false, skipped: 'active-process' });
+  });
+
+  it('standing: the recovery engine kill-to-respawn is allowed (restartable); a public recovery-bounce claim is not', async () => {
+    manager.setReapGuard(standingGuard());
+    const a = await spawn('desk-recovery');
+    const b = await spawn('desk-recovery-public');
+    setStanding([a.tmuxSession, b.tmuxSession]);
+    expect((await terminateAuthority(a.id, 'session-recovery', { disposition: 'recovery-bounce', finalStatus: 'killed', bypassRecoveryFlag: true })).terminated).toBe(true);
+    expect(await manager.terminateSession(b.id, 'session-recovery', { disposition: 'recovery-bounce' })).toEqual({ terminated: false, skipped: 'standing-session' });
+  });
+
+  it('standing: the age-limit monitor path leaves an over-age idle standing session running', async () => {
+    manager.setReapGuard(standingGuard());
+    setStanding(['topic:99']);
+    manager.setStandingTopicResolver(() => 99); // every session here is bound to the standing topic
+    const { id, blocked } = await runLocalExpiredMonitorTick('standing-over-age');
+    expect(state.getSession(id)!.status).toBe('running');
+    expect(blocked).toEqual([]); // skipped before any terminate attempt, so no reap-log churn
+  });
+
+  it('standing: a completion pattern does not close a live standing session', async () => {
+    const s = await spawn('desk-complete');
+    setStanding([s.tmuxSession]);
+    const seam = manager as unknown as MonitorSeam;
+    seam.isSessionAliveAsync = async () => true;
+    seam.recordBuildContextMaybeAsync = async () => {};
+    seam.detectCompletionMaybeAsync = async () => true; // pane shows a completion pattern
+    seam.captureMeaningfulTailMaybeAsync = async () => 'working';
+    seam.hasActiveProcessesMaybeAsync = async () => true;
+    seam.isTranscriptRecentlyActive = () => true;
+    seam.captureOutputMaybeAsync = async () => '';
+    await maintenanceTick();
+    expect(state.getSession(s.id)!.status).toBe('running');
+  });
 });

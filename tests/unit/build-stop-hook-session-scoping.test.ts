@@ -71,12 +71,13 @@ describe('build-stop-hook session-scoping', () => {
    * Fire the hook as a given session. `myTmux === null` simulates no resolvable
    * tmux (INSTAR_HOOK_NO_TMUX=1); otherwise the seam pins the tmux name.
    */
-  function fireHook(opts: { sessionId?: string; myTmux: string | null }): HookResult {
-    const env: NodeJS.ProcessEnv = { ...process.env };
+  function fireHook(opts: { sessionId?: string; myTmux: string | null; cwd?: string }): HookResult {
+    // Claude Code sets CLAUDE_PROJECT_DIR on every hook; pin it to the fixture.
+    const env: NodeJS.ProcessEnv = { ...process.env, CLAUDE_PROJECT_DIR: tmpDir };
     if (opts.myTmux === null) { env.INSTAR_HOOK_NO_TMUX = '1'; delete env.INSTAR_HOOK_TMUX_SESSION; }
     else { env.INSTAR_HOOK_TMUX_SESSION = opts.myTmux; delete env.INSTAR_HOOK_NO_TMUX; }
     const stdin = JSON.stringify(opts.sessionId !== undefined ? { session_id: opts.sessionId } : {});
-    const out = execSync(`bash "${hookPath}"`, { cwd: tmpDir, env, input: stdin, encoding: 'utf8' });
+    const out = execSync(`bash "${hookPath}"`, { cwd: opts.cwd ?? tmpDir, env, input: stdin, encoding: 'utf8' });
     const parsed = JSON.parse(out.trim());
     const state = readState();
     return {
@@ -113,6 +114,37 @@ describe('build-stop-hook session-scoping', () => {
     expect(fireHook({ sessionId: 'uuid-A', myTmux: 'echo-A' }).decision).toBe('block');
     // Budget now exhausted (3/3) → owner is allowed to exit.
     expect(fireHook({ sessionId: 'uuid-A', myTmux: 'echo-A' }).decision).toBe('approve');
+  });
+
+  it('reads build state from the project dir when the session runs in a subdirectory', () => {
+    startBuild('echo-A', 'uuid-A');
+    const sub = path.join(tmpDir, '.instar', 'lanes', 'pipeline');
+    fs.mkdirSync(sub, { recursive: true });
+    const r = fireHook({ sessionId: 'uuid-A', myTmux: 'echo-A', cwd: sub });
+    expect(r.decision).toBe('block');
+    expect(r.counter).toBe(1);
+  });
+
+  it("still blocks when the agent home path contains an apostrophe and a space", () => {
+    // The absolute state path is handed to Python as argv, never spliced into
+    // its source — a home like "Justin's Agent" must not become a SyntaxError.
+    const home = path.join(tmpDir, "Justin's Agent Home");
+    fs.mkdirSync(path.join(home, '.instar', 'state', 'build'), { recursive: true });
+    const env = { ...process.env, INSTAR_HOOK_TMUX_SESSION: 'echo-A' };
+    execSync(`python3 "${BUILD_STATE}" init "apostrophe" --size SMALL --owner-session uuid-A --owner-tmux echo-A`, { cwd: home, env, encoding: 'utf8' });
+    execSync(`python3 "${BUILD_STATE}" transition planning`, { cwd: home, encoding: 'utf8' });
+    execSync(`python3 "${BUILD_STATE}" transition executing`, { cwd: home, encoding: 'utf8' });
+    const sub = path.join(home, '.instar', 'lanes', 'pipeline');
+    fs.mkdirSync(sub, { recursive: true });
+    const out = execSync(`bash "${hookPath}"`, {
+      cwd: sub,
+      env: { ...env, CLAUDE_PROJECT_DIR: home },
+      input: JSON.stringify({ session_id: 'uuid-A' }),
+      encoding: 'utf8',
+    });
+    expect(JSON.parse(out.trim()).decision).toBe('block');
+    const state = JSON.parse(fs.readFileSync(path.join(home, '.instar', 'state', 'build', 'build-state.json'), 'utf8'));
+    expect(state.reinforcementsUsed).toBe(1);
   });
 
   it('owner identified by SESSION UUID alone (owner tmux empty) is blocked', () => {

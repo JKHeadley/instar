@@ -42,6 +42,14 @@ async function runFamily(family: string, config: ReviewerConfig, provider: { eva
 }
 
 describe('driver --family claude-code path (enabled)', () => {
+  it('uses the explicitly selected Opus 5.5 clean-door model', async () => {
+    const config: ReviewerConfig = { developmentAgent: true, specConverge: { reviewers: { anthropic: { enabled: true, model: 'claude-opus-5-5' } } } };
+    const r = (await runFamily('claude-code', config, stub('Verdict: CLEAN'))) as ReviewerResult;
+    expect(r.status).toBe('ok');
+    expect(r.model).toBe('claude-opus-5-5');
+    expect(r.crossFamily).toBe(false);
+  });
+
   it('accepted by the trusted allowlist and emits the clean-door flag, NEVER cross-model', async () => {
     const r = (await runFamily('claude-code', DEV, stub('Verdict: MINOR ISSUES\nlgtm-ish'))) as ReviewerResult;
     expect(r.status).toBe('ok');

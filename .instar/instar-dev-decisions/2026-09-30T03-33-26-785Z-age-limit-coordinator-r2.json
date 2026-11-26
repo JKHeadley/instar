@@ -1,0 +1,23 @@
+{
+  "ts": "2026-09-30T03:33:26.785Z",
+  "slug": "age-limit-coordinator-r2",
+  "suggestedTier": 2,
+  "declaredTier": 1,
+  "riskFloor": 1,
+  "riskFloorReasons": [],
+  "belowFloor": false,
+  "files": 2,
+  "loc": 44,
+  "scope": {
+    "basis": "staged-in-scope-additions-plus-deletions",
+    "files": [
+      "src/commands/server.ts",
+      "src/core/AutonomousSessions.ts"
+    ],
+    "addedLines": 35,
+    "deletedLines": 9
+  },
+  "causalAutopsy": null,
+  "classClosure": null,
+  "verdict": "pass"
+}

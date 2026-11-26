@@ -63,6 +63,26 @@ describe('TreeTraversal', () => {
     expect(errors).toHaveLength(0);
   });
 
+  // CLAUDE.md reference layout: a CLAUDE.md section that moved to
+  // .instar/reference/ is still found by a file_section source.
+  it('file_section on CLAUDE.md falls back to the reference files', async () => {
+    fs.writeFileSync(path.join(projectDir, 'CLAUDE.md'), '# small core\n\n## Who I Am\n\nshort.\n');
+    fs.mkdirSync(path.join(projectDir, '.instar', 'reference'), { recursive: true });
+    fs.writeFileSync(
+      path.join(projectDir, '.instar', 'reference', 'agent-to-agent.md'),
+      '# Talking to other agents\n\n### Connecting to another agent\n\nUse threadline_pair.\n\n### Next\n\nother\n',
+    );
+    const node: SelfKnowledgeNode = {
+      id: 'capabilities.agent_connect', name: 'Agent connect', alwaysInclude: true, managed: true,
+      depth: 'shallow', maxTokens: 500, sensitivity: 'public',
+      sources: [{ type: 'file_section', path: 'CLAUDE.md', section: 'Connecting to another agent' }],
+    };
+    const { fragments } = await traversal.gather([node], { capabilities: 0.9 });
+    expect(fragments).toHaveLength(1);
+    expect(fragments[0].content).toContain('Use threadline_pair.');
+    expect(fragments[0].content).not.toContain('### Next');
+  });
+
   // Gate Test 1.15: Per-source timeout isolation
   it('isolates per-source timeouts', async () => {
     // Register a slow probe that will timeout

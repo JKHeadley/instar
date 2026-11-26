@@ -1,0 +1,23 @@
+{
+  "ts": "2026-11-06T00:26:05.077Z",
+  "slug": "maturation-quality-bars",
+  "suggestedTier": 1,
+  "declaredTier": 1,
+  "riskFloor": 1,
+  "riskFloorReasons": [],
+  "belowFloor": false,
+  "files": 2,
+  "loc": 22,
+  "scope": {
+    "basis": "staged-in-scope-additions-plus-deletions",
+    "files": [
+      "src/data/feature-ladders.json",
+      "src/monitoring/MaturationLadder.ts"
+    ],
+    "addedLines": 19,
+    "deletedLines": 3
+  },
+  "causalAutopsy": null,
+  "classClosure": null,
+  "verdict": "pass"
+}

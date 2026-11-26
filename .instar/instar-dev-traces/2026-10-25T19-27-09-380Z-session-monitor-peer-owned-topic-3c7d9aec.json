@@ -1,0 +1,23 @@
+{
+  "version": 2,
+  "slug": "session-monitor-peer-owned-topic",
+  "sessionId": "e2d5e004-e0e8-4673-b8e8-2cf9f1c72ced",
+  "timestamp": "2026-10-25T19:27:09.380Z",
+  "artifactPath": "upgrades/side-effects/session-monitor-peer-owned-topic.md",
+  "artifactSha256": "1e27f1399ee7ce99fa74716a7356f36383a3ce642ce2a07c93271bfe41a466d9",
+  "coveredFiles": [
+    "docs/specs/session-monitor-peer-owned-topic.eli16.md",
+    "src/commands/server.ts",
+    "src/monitoring/SessionMonitor.ts",
+    "tests/unit/SessionMonitor.test.ts",
+    "upgrades/next/session-monitor-peer-owned-topic.md",
+    "upgrades/side-effects/session-monitor-peer-owned-topic.md"
+  ],
+  "phase": "complete",
+  "tier": 1,
+  "tierReasoning": "One optional dep + one skip in SessionMonitor.poll and one wiring closure; removes a false user notice and local triage on peer-owned topics; revert fully undoes it; no persistent state.",
+  "eli16Path": "docs/specs/session-monitor-peer-owned-topic.eli16.md",
+  "sideEffectsPath": "upgrades/side-effects/session-monitor-peer-owned-topic.md",
+  "secondPass": "true",
+  "reviewerConcurred": true
+}

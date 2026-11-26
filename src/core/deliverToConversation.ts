@@ -30,6 +30,7 @@
  */
 import { createHash } from 'node:crypto';
 import type { ConversationRegistry } from './ConversationRegistry.js';
+import { featureEvidence } from '../monitoring/FeatureEvidenceLog.js';
 import {
   ConversationTuple,
   idWithinCoherenceBound,
@@ -294,6 +295,7 @@ export function createConversationDelivery(deps: ConversationDeliveryDeps): Deli
           'Durable binding failed the id↔tuple coherence check',
           `A binding stored topicId ${id} beside boundTuple ${routingKeyForTuple(boundTuple)}, but the id is not within MAX_PROBE_DISTANCE of the tuple's candidate (§3.5.2 R5-M2). This proves corruption of one field; delivery is refused on BOTH (typed conversation-binding-incoherent — the beacon re-arms, the N-fail dead-letter escalates).`,
         );
+        featureEvidence.record('conversationIdentity.followThrough', { kind: 'error', reason: 'refused: conversation-binding-incoherent', context: { id, source: opts?.source ?? null } });
         return {
           delivered: false,
           outcome: 'not-delivered',
@@ -319,6 +321,7 @@ export function createConversationDelivery(deps: ConversationDeliveryDeps): Deli
           'Durable binding target has no current assignment',
           `The bind-time tuple ${routingKeyForTuple(overlayTuple)} for binding id ${id} is in the pending-mint state (no current registry assignment). Delivery returns a typed non-delivery; the beacon retries.`,
         );
+        featureEvidence.record('conversationIdentity.followThrough', { kind: 'error', reason: 'refused: binding-target-unresolved', context: { id, source: opts?.source ?? null } });
         return {
           delivered: false,
           outcome: 'not-delivered',
@@ -343,6 +346,7 @@ export function createConversationDelivery(deps: ConversationDeliveryDeps): Deli
           'A minted-conversation delivery was requested on a machine that cannot resolve it',
           `No local registry entry resolves ${id} (never minted on this machine, or id is 0). Heal paths: deliver from the owning machine (§5.0), or enable multiMachine.stateSync.conversations (§6.1 step 9) for multi-machine Slack follow-through.`,
         );
+        featureEvidence.record('conversationIdentity.followThrough', { kind: 'held', reason: 'stood down: unresolvable', context: { id, source: opts?.source ?? null } });
         return {
           delivered: false,
           outcome: 'not-delivered',
@@ -361,6 +365,7 @@ export function createConversationDelivery(deps: ConversationDeliveryDeps): Deli
         'A minted-conversation delivery was requested on a non-owning machine',
         `The entry for ${id} is replicated-only (advisory) — the owning machine delivers (§5.0). Heal paths: ownership adoption on first authenticated inbound, or the §11.2 owner/lease reconciliation.`,
       );
+      featureEvidence.record('conversationIdentity.followThrough', { kind: 'held', reason: 'stood down: replicated-only-origin', context: { id, source: opts?.source ?? null } });
       return {
         delivered: false,
         outcome: 'not-delivered',
@@ -371,6 +376,7 @@ export function createConversationDelivery(deps: ConversationDeliveryDeps): Deli
     }
 
     if (deps.isSystemChannel?.(resolved.channelId)) {
+      featureEvidence.record('conversationIdentity.followThrough', { kind: 'held', reason: 'suppressed: system-channel', context: { id, source: opts?.source ?? null } });
       return { delivered: false, outcome: 'not-delivered', reason: 'system-channel-suppressed' };
     }
 
@@ -391,6 +397,7 @@ export function createConversationDelivery(deps: ConversationDeliveryDeps): Deli
       } catch {
         /* audit is observability */
       }
+      featureEvidence.record('conversationIdentity.followThrough', { kind: 'fired', reason: 'would deliver (dry run)', context: { id, dryRun: true, chars: text.length, inThread: !!resolved.threadTs, source: opts?.source ?? null } });
       return { delivered: false, outcome: 'not-delivered', reason: 'follow-through-dry-run' };
     }
 
@@ -400,6 +407,7 @@ export function createConversationDelivery(deps: ConversationDeliveryDeps): Deli
         'A minted-conversation delivery was requested with no local Slack adapter',
         `No local Slack adapter — the owning machine delivers (§5.0). Heal paths: deliver from the machine holding the Slack socket.`,
       );
+      featureEvidence.record('conversationIdentity.followThrough', { kind: 'held', reason: 'stood down: no-slack-adapter', context: { id, source: opts?.source ?? null } });
       return {
         delivered: false,
         outcome: 'not-delivered',
@@ -426,6 +434,7 @@ export function createConversationDelivery(deps: ConversationDeliveryDeps): Deli
     }
 
     if (lane && sendId && !opts?.allowDuplicate && deps.registry.isSendSuppressed(id, sendId, lane)) {
+      featureEvidence.record('conversationIdentity.followThrough', { kind: 'held', reason: 'suppressed: already-delivered-recently', context: { id, lane, source: opts?.source ?? null } });
       return { delivered: false, outcome: 'already-delivered-recently' };
     }
 
@@ -463,9 +472,11 @@ export function createConversationDelivery(deps: ConversationDeliveryDeps): Deli
           /* @silent-fallback-ok — advisory metadata */
         }
       }
+      featureEvidence.recordAtMostEvery('conversationIdentity.followThrough', 'delivered', 10 * 60 * 1000, { kind: 'fired', reason: 'delivered', context: { id, dryRun: false, chars: text.length, inThread: !!resolved.threadTs, lane, source: opts?.source ?? null } });
       return { delivered: true, outcome: 'delivered' };
     } catch (err) {
       const cls = classifySlackSendError(err);
+      featureEvidence.record('conversationIdentity.followThrough', { kind: 'error', reason: `send failed: ${cls.kind}`, context: { id, failureClass: cls.kind, slackCode: 'code' in cls ? cls.code : null, lane, source: opts?.source ?? null } });
       if (cls.kind === 'permanent') {
         // §5.1: positive not-posted evidence — resolve the intent (no
         // suppressor), flip reachability idempotently, aggregate the

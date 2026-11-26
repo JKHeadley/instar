@@ -29,18 +29,32 @@ function makeDeps(overrides: {
   /** Topic the disk-backed reverse lookup resolves to. Omit to leave the
    *  method off the mock entirely (simulates an adapter build without it). */
   diskTopicId?: number | null;
+  /** Full session list (any status) — takes precedence over `stateSession`.
+   *  Records without a status count as running, like the legacy fixture. */
+  stateSessions?: Array<{ id: string; tmuxSession: string; name?: string; status?: string }>;
+  /** Per-name topic lookup — takes precedence over `topicId`. */
+  topicForSession?: (sessionName: string) => number | null;
+  /** What getSessionForTopic answers (the topic's CURRENT binding). */
+  sessionForTopic?: string | null;
 } = {}) {
   const topicId = overrides.topicId === undefined ? 9235 : overrides.topicId;
   const stateSession = overrides.stateSession === undefined
     ? { id: 'state-id-1', tmuxSession: 'echo-qalatra' }
     : overrides.stateSession;
+  const sessions: Array<{ id: string; tmuxSession: string; name?: string; status?: string }> =
+    overrides.stateSessions ?? (stateSession ? [stateSession] : []);
   const uuid = overrides.uuid === undefined ? 'uuid-abc-123' : overrides.uuid;
 
   const callOrder: string[] = [];
 
   const telegram: Partial<TelegramAdapter> = {
-    getTopicForSession: vi.fn().mockReturnValue(topicId),
+    getTopicForSession: overrides.topicForSession
+      ? vi.fn(overrides.topicForSession) as unknown as TelegramAdapter['getTopicForSession']
+      : vi.fn().mockReturnValue(topicId),
   };
+  if (overrides.sessionForTopic !== undefined) {
+    telegram.getSessionForTopic = vi.fn().mockReturnValue(overrides.sessionForTopic);
+  }
   if (overrides.diskTopicId !== undefined) {
     telegram.resolveTopicForSessionFromDisk = vi.fn().mockReturnValue(overrides.diskTopicId);
   }
@@ -56,9 +70,15 @@ function makeDeps(overrides: {
       callOrder.push('killSession');
       return true;
     }) as unknown as SessionManager['killSession'],
+    // Nothing in these fixtures is a live tmux session (deadBoundTopic consults it).
+    isSessionAlive: vi.fn(() => false) as unknown as SessionManager['isSessionAlive'],
   };
   const state: Partial<StateManager> = {
-    listSessions: vi.fn().mockReturnValue(stateSession ? [stateSession] : []) as unknown as StateManager['listSessions'],
+    // Honors the status filter the way StateManager does; a record with no
+    // status is treated as running (the legacy fixture shape).
+    listSessions: vi.fn((filter?: { status?: string }) =>
+      sessions.filter(s => !filter?.status || (s.status ?? 'running') === filter.status),
+    ) as unknown as StateManager['listSessions'],
   };
 
   const respawner = overrides.respawnerImpl
@@ -84,6 +104,107 @@ function makeDeps(overrides: {
 describe('SessionRefresh', () => {
   beforeEach(() => {
     vi.clearAllMocks();
+  });
+
+  describe('precheckRefusal (EVO-025 — refusals answered before the 202)', () => {
+    it('returns null for a bound, running, idle session', () => {
+      const { refresh } = makeDeps();
+      expect(refresh.precheckRefusal('echo-qalatra')).toBeNull();
+    });
+
+    it('refuses an unbound name with not_telegram_bound', () => {
+      const { refresh } = makeDeps({ topicId: null });
+      expect(refresh.precheckRefusal('echo-qalatra')).toMatchObject({ ok: false, code: 'not_telegram_bound' });
+    });
+
+    it('names the tmux session when given a display name, without remapping it', async () => {
+      const { refresh, sessionManager } = makeDeps({
+        topicId: null,
+        stateSession: { id: 'state-id-1', tmuxSession: 'echo-jev', name: 'Jev' } as { id: string; tmuxSession: string },
+      });
+      const refusal = refresh.precheckRefusal('Jev');
+      expect(refusal?.code).toBe('not_telegram_bound');
+      expect(refusal?.message).toContain('"echo-jev"');
+      expect(refusal?.message).toMatch(/display name/);
+      // The authoritative path gives the same answer and kills nothing.
+      const result = await refresh.refreshSession({ sessionName: 'Jev' });
+      expect(result).toMatchObject({ ok: false, code: 'not_telegram_bound' });
+      expect(sessionManager.killSession).not.toHaveBeenCalled();
+    });
+
+    it('adds no hint when the name matches no running session', () => {
+      const { refresh } = makeDeps({ topicId: null });
+      expect(refresh.precheckRefusal('nobody')?.message).not.toMatch(/display name/);
+    });
+
+    // 2026-10-22 Mama PC: a DEAD topic session refreshed by its display name
+    // came back not_telegram_bound with no hint, and the "checked in-memory +
+    // disk registry" wording was read as a lost binding. The binding was
+    // intact; the dead-bound respawn would have worked under the tmux name.
+    it('names a dead-but-still-bound tmux session when given its display name', async () => {
+      const { refresh, sessionManager } = makeDeps({
+        stateSessions: [
+          { id: 's-1', tmuxSession: 'echo-topic-127831', name: 'topic-127831', status: 'completed' },
+          { id: 's-2', tmuxSession: 'echo-topic-127831', name: 'topic-127831', status: 'completed' },
+        ],
+        topicForSession: (name) => (name === 'echo-topic-127831' ? 127831 : null),
+        sessionForTopic: 'echo-topic-127831',
+      });
+      const refusal = refresh.precheckRefusal('topic-127831');
+      expect(refusal?.code).toBe('not_telegram_bound');
+      expect(refusal?.message).toMatch(/display name/);
+      expect(refusal?.message).toContain('"echo-topic-127831"');
+      expect(refusal?.message).toMatch(/respawns from the saved conversation/);
+      // Named once, although two terminal records carry the name.
+      expect(refusal?.message.split('"echo-topic-127831"').length).toBe(2);
+      // Still a hint, never a remap: the authoritative path refuses the same way.
+      const result = await refresh.refreshSession({ sessionName: 'topic-127831' });
+      expect(result).toMatchObject({ ok: false, code: 'not_telegram_bound' });
+      expect(sessionManager.killSession).not.toHaveBeenCalled();
+      // And the hinted name is the one the dead-bound respawn accepts.
+      expect(refresh.deadBoundTopic('echo-topic-127831')).toBe(127831);
+    });
+
+    it('does not hint a dead tmux name whose topic is now bound to a different session', () => {
+      const { refresh } = makeDeps({
+        stateSessions: [
+          { id: 's-1', tmuxSession: 'echo-topic-127831', name: 'topic-127831', status: 'completed' },
+        ],
+        topicForSession: (name) => (name === 'echo-topic-127831' ? 127831 : null),
+        sessionForTopic: 'echo-topic-127831-run',
+      });
+      const refusal = refresh.precheckRefusal('topic-127831');
+      expect(refusal?.code).toBe('not_telegram_bound');
+      expect(refusal?.message).not.toMatch(/display name/);
+    });
+
+    it('lists a live match and a dead-bound match under one display name', () => {
+      const { refresh } = makeDeps({
+        stateSessions: [
+          { id: 's-1', tmuxSession: 'echo-topic-127831', name: 'topic-127831', status: 'completed' },
+          { id: 's-2', tmuxSession: 'echo-topic-127831-run', name: 'topic-127831', status: 'running' },
+        ],
+        topicForSession: (name) => (name === 'echo-topic-127831' ? 127831 : null),
+        sessionForTopic: 'echo-topic-127831',
+      });
+      const msg = refresh.precheckRefusal('topic-127831')?.message ?? '';
+      expect(msg).toMatch(/running: "echo-topic-127831-run"/);
+      expect(msg).toMatch(/saved conversation: "echo-topic-127831"/);
+    });
+
+    it('refuses a bound name with no running session as session_not_found', () => {
+      const { refresh } = makeDeps({ stateSession: null });
+      expect(refresh.precheckRefusal('echo-qalatra')?.code).toBe('session_not_found');
+    });
+
+    it('reports rate_limited without consuming rate budget', async () => {
+      const { refresh } = makeDeps({ rateLimit: { maxPerWindow: 1, windowMs: 60_000 } });
+      // Repeated prechecks record nothing: the one allowed refresh still runs.
+      expect(refresh.precheckRefusal('echo-qalatra')).toBeNull();
+      expect(refresh.precheckRefusal('echo-qalatra')).toBeNull();
+      expect((await refresh.refreshSession({ sessionName: 'echo-qalatra' })).ok).toBe(true);
+      expect(refresh.precheckRefusal('echo-qalatra')?.code).toBe('rate_limited');
+    });
   });
 
   describe('fresh mode (ContextWedgeSentinel re-wedge defense)', () => {
@@ -437,6 +558,68 @@ describe('SessionRefresh', () => {
       });
       expect(result.ok).toBe(true);
       expect(respawner).toHaveBeenCalled();
+    });
+  });
+  describe('respawnDeadBound — a mapped topic session whose process is gone', () => {
+    function deadDeps(opts: { mappedTo?: string | null; alive?: boolean; topicId?: number | null } = {}) {
+      const d = makeDeps({ stateSession: null, topicId: opts.topicId === undefined ? 52075 : opts.topicId });
+      (d.telegram as { getSessionForTopic?: unknown }).getSessionForTopic =
+        vi.fn().mockReturnValue(opts.mappedTo === undefined ? 'echo-desk' : opts.mappedTo);
+      (d.sessionManager as { isSessionAlive?: unknown }).isSessionAlive = vi.fn().mockReturnValue(opts.alive ?? false);
+      return d;
+    }
+
+    it('REPRO: refreshSession refuses a dead mapped session (session_not_found) — nothing to kill', async () => {
+      const { refresh, respawner } = deadDeps();
+      expect(await refresh.refreshSession({ sessionName: 'echo-desk' })).toMatchObject({ ok: false, code: 'session_not_found' });
+      expect(respawner).not.toHaveBeenCalled();
+    });
+
+    it('respawns it through the respawner without a kill, carrying the follow-up prompt', async () => {
+      const { refresh, respawner, sessionManager, callOrder } = deadDeps();
+      expect(refresh.deadBoundTopic('echo-desk')).toBe(52075);
+      const r = await refresh.respawnDeadBound({ sessionName: 'echo-desk', followUpPrompt: 'rebuild context' });
+      expect(r).toEqual({ ok: true, newSessionName: 'new-tmux-session', topicId: 52075 });
+      expect(respawner).toHaveBeenCalledWith('echo-desk', 52075, 'rebuild context');
+      expect(sessionManager.killSession).not.toHaveBeenCalled();
+      expect(callOrder).toEqual(['respawner']);
+    });
+
+    it('fresh clears the topic resume entry before the respawn', async () => {
+      const { refresh, callOrder } = deadDeps();
+      await refresh.respawnDeadBound({ sessionName: 'echo-desk', fresh: true });
+      expect(callOrder).toEqual(['removeResume', 'respawner']);
+    });
+
+    it('refuses when the tmux session is still alive, when the topic now maps elsewhere, or when unbound', async () => {
+      for (const d of [deadDeps({ alive: true }), deadDeps({ mappedTo: 'echo-newer-desk' }), deadDeps({ topicId: null })]) {
+        expect(d.refresh.deadBoundTopic('echo-desk')).toBeNull();
+        expect(await d.refresh.respawnDeadBound({ sessionName: 'echo-desk' })).toMatchObject({ ok: false, code: 'session_not_found' });
+        expect(d.respawner).not.toHaveBeenCalled();
+      }
+    });
+
+    it('refuses while a running state record carries the name (the normal refresh owns that case)', () => {
+      const d = makeDeps({ stateSession: { id: 's1', tmuxSession: 'echo-desk' }, topicId: 52075 });
+      (d.telegram as { getSessionForTopic?: unknown }).getSessionForTopic = vi.fn().mockReturnValue('echo-desk');
+      (d.sessionManager as { isSessionAlive?: unknown }).isSessionAlive = vi.fn().mockReturnValue(false);
+      expect(d.refresh.deadBoundTopic('echo-desk')).toBeNull();
+    });
+
+    it('does not respawn (and so never force-kills) a session that came back up after the eligibility check', async () => {
+      const { refresh, respawner, sessionManager } = deadDeps();
+      const alive = vi.fn().mockReturnValueOnce(false).mockReturnValue(true); // inbound respawned it meanwhile
+      (sessionManager as { isSessionAlive?: unknown }).isSessionAlive = alive;
+      expect(await refresh.respawnDeadBound({ sessionName: 'echo-desk' })).toMatchObject({ ok: false, code: 'session_not_found' });
+      expect(respawner).not.toHaveBeenCalled();
+    });
+
+    it('shares the refresh rate guard', async () => {
+      const d = makeDeps({ stateSession: null, topicId: 52075, rateLimit: { maxPerWindow: 1, windowMs: 60_000 } });
+      (d.telegram as { getSessionForTopic?: unknown }).getSessionForTopic = vi.fn().mockReturnValue('echo-desk');
+      (d.sessionManager as { isSessionAlive?: unknown }).isSessionAlive = vi.fn().mockReturnValue(false);
+      expect((await d.refresh.respawnDeadBound({ sessionName: 'echo-desk' })).ok).toBe(true);
+      expect(await d.refresh.respawnDeadBound({ sessionName: 'echo-desk' })).toMatchObject({ ok: false, code: 'rate_limited' });
     });
   });
 });

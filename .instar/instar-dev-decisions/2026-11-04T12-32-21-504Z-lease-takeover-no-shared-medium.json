@@ -1,0 +1,24 @@
+{
+  "ts": "2026-11-04T12:32:21.504Z",
+  "slug": "lease-takeover-no-shared-medium",
+  "suggestedTier": 2,
+  "declaredTier": null,
+  "riskFloor": 1,
+  "riskFloorReasons": [],
+  "belowFloor": false,
+  "files": 3,
+  "loc": 92,
+  "scope": {
+    "basis": "staged-in-scope-additions-plus-deletions",
+    "files": [
+      "src/commands/server.ts",
+      "src/core/GitLeaseStore.ts",
+      "src/core/LeaseCoordinator.ts"
+    ],
+    "addedLines": 87,
+    "deletedLines": 5
+  },
+  "causalAutopsy": null,
+  "classClosure": null,
+  "verdict": "pass"
+}

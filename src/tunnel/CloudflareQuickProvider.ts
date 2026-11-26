@@ -162,6 +162,32 @@ export class CloudflareQuickProvider implements TunnelProvider {
 
     tunnel.once('url', (url: string) => {
       if (resolved) return;
+
+      // A quick tunnel is only usable when cloudflared hands back an ASSIGNED
+      // hostname (`https://<words>.trycloudflare.com`). Under rate-limiting the
+      // wrapper can emit the API BASE it was talking to — `https://api.trycloudflare.com`
+      // — which is not a tunnel at all: every request to it answers 405 from
+      // Cloudflare's own API. Accepting it made the manager report
+      // `running: true, state: active` while holding a URL that could never
+      // serve a byte, so `tunnelUrl` handed to callers (private views, Secret
+      // Drop links) was a dead address the operator was asked to tap.
+      // (Found live 2026-10-21: two operator links in a row, one of them a
+      // credential form, pointed at api.trycloudflare.com while
+      // lastFailureReason already read 'rate-limited'.)
+      //
+      // Rejecting here lets the existing lifecycle do its job — classify the
+      // failure, back off, and fall back — instead of latching a false healthy.
+      if (!CloudflareQuickProvider.isAssignedQuickTunnelUrl(url)) {
+        resolved = true;
+        clearTimeout(timeout);
+        try { tunnel.stop(); } catch { /* may already be dead */ }
+        reject(this.classifyError(
+          `cloudflared emitted a non-tunnel URL (${url})`,
+          stderrTail,
+        ));
+        return;
+      }
+
       resolved = true;
       clearTimeout(timeout);
       urlEmitted = url;
@@ -200,6 +226,28 @@ export class CloudflareQuickProvider implements TunnelProvider {
     // urlEmitted is referenced only inside the closure above; this
     // suppresses an unused-variable lint while documenting intent.
     void urlEmitted;
+  }
+
+  /**
+   * True only for an ASSIGNED quick-tunnel hostname: a single label under
+   * `trycloudflare.com`, over https, with no path. `api.trycloudflare.com` is
+   * Cloudflare's API endpoint rather than a tunnel, so it is excluded by name —
+   * it is the exact value observed when a quick tunnel is rate-limited.
+   */
+  static isAssignedQuickTunnelUrl(raw: string): boolean {
+    let u: URL;
+    try {
+      u = new URL(raw);
+    } catch {
+      return false;
+    }
+    if (u.protocol !== 'https:') return false;
+    const host = u.hostname.toLowerCase();
+    if (!host.endsWith('.trycloudflare.com')) return false;
+    const label = host.slice(0, -'.trycloudflare.com'.length);
+    if (!label || label.includes('.')) return false;  // require exactly one label
+    if (label === 'api') return false;                 // the API base, not a tunnel
+    return true;
   }
 
   private classifyError(msg: string, stderr: string): Error {

@@ -14,6 +14,11 @@ gate: curl -sf http://localhost:${INSTAR_PORT:-4042}/health >/dev/null 2>&1
 toolAllowlist: "*"
 unrestrictedTools: true
 mcpAccess: none
+runner: script
+script: release-readiness-check.mjs
+scriptTimeoutMinutes: 3
+supervision: tier0
+scriptSupervision: deterministic
 ---
 Run the release-readiness check once. This is a mechanical, near-silent watchdog — do NOT message the user.
 

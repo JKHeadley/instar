@@ -1,0 +1,30 @@
+{
+  "ts": "2026-10-21T03:40:35.119Z",
+  "slug": "reap-notice-fallback-destination",
+  "suggestedTier": 2,
+  "declaredTier": 1,
+  "riskFloor": 1,
+  "riskFloorReasons": [],
+  "belowFloor": false,
+  "files": 2,
+  "loc": 83,
+  "scope": {
+    "basis": "staged-in-scope-additions-plus-deletions",
+    "files": [
+      "src/commands/server.ts",
+      "src/monitoring/ReapNotifier.ts"
+    ],
+    "addedLines": 81,
+    "deletedLines": 2
+  },
+  "causalAutopsy": {
+    "origin": "latent",
+    "notes": "The notifier was designed Telegram-first: 'lifelineTopic' is a Telegram concept and was the only destination resolver for unbound notices. Slack support arrived later as a separate adapter with its own attention channel, and the notifier was never taught about it. Latent for every Slack-only agent since Slack support landed; it surfaced only because indra's dropped notices were read directly out of its reap records."
+  },
+  "classClosure": {
+    "defectClass": "unbounded-self-action",
+    "closure": "n/a",
+    "reason": "No self-triggered loop added. The change runs inside the existing flush on a branch that was previously a drop; the one action added is a single attention item on a fixed id."
+  },
+  "verdict": "pass"
+}

@@ -1,0 +1,23 @@
+{
+  "version": 2,
+  "slug": "local-verify-conflict-peer-health",
+  "sessionId": "d5764837-1124-4ad2-a72f-c88ca8374046",
+  "timestamp": "2026-11-01T00:37:15.995Z",
+  "artifactPath": "upgrades/side-effects/local-verify-conflict-peer-health.md",
+  "artifactSha256": "9cfa4f7d3aade9e5377f74e53389ba7b9a68abbb5d8130a67e4953744cd2ee9a",
+  "coveredFiles": [
+    "docs/specs/local-verify-capacity.eli16.md",
+    "docs/specs/local-verify-capacity.md",
+    "src/localVerify/LocalVerifyService.ts",
+    "tests/unit/localVerify/peerVerifier.test.ts",
+    "upgrades/next/local-verify-conflict-peer-health.md",
+    "upgrades/side-effects/local-verify-conflict-peer-health.md"
+  ],
+  "phase": "complete",
+  "tier": 1,
+  "tierReasoning": "Narrow classification at an existing decision point; no schema, config, route, or merge-authority changes. Exact conflict input is validated before exemption, and bounded attempts remain enforced.",
+  "eli16Path": "docs/specs/local-verify-capacity.eli16.md",
+  "sideEffectsPath": "upgrades/side-effects/local-verify-conflict-peer-health.md",
+  "secondPass": "true",
+  "reviewerConcurred": true
+}

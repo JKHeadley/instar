@@ -26,6 +26,7 @@ import { Command } from 'commander';
 import { initProject } from './commands/init.js';
 import { SUPPORTED_FRAMEWORKS } from './core/TopicFrameworksStore.js';
 import { SafeFsExecutor } from './core/SafeFsExecutor.js';
+import { pinGlobalFetchToHttp1 } from './core/http1GlobalFetch.js';
 // setup.ts is imported dynamically — it depends on @inquirer/prompts which requires Node 20.12+
 import { startServer, stopServer, restartServer } from './commands/server.js';
 import { showStatus } from './commands/status.js';
@@ -33,6 +34,7 @@ import { addUser, listUsers } from './commands/user.js';
 import { addJob, listJobs } from './commands/job.js';
 import { listRelationships, importRelationships, exportRelationships } from './commands/relationship.js';
 import { listMachines, removeMachine, whoami, startPairing, joinMesh, leaveMesh, wakeup, doctor } from './commands/machine.js';
+import { identityAdopt, identityInit, identityStatus } from './commands/identity.js';
 import pc from 'picocolors';
 import { getInstarVersion } from './core/Config.js';
 import { resolveAgentDir } from './core/Config.js';
@@ -342,6 +344,44 @@ program
 // ── Setup (explicit alias) ────────────────────────────────────────
 
 program
+  .command('set-claude-key')
+  .description('Put a new Claude sign-in key in place. Reads it from stdin or a hidden prompt.')
+  .option('-d, --dir <path>', 'Agent directory')
+  .action(async (opts) => {
+    const { setClaudeKey } = await import('./commands/setClaudeKey.js');
+    await setClaudeKey(opts);
+  });
+
+const alwaysAvailableCmd = program
+  .command('always-available')
+  .description('For the Instar Mac app\'s Always available switch: the before-login Claude sign-in and status');
+alwaysAvailableCmd
+  .command('token')
+  .description('Store a claude setup-token code (from stdin) as this agent\'s Claude sign-in, after checking its email')
+  .option('-d, --dir <path>', 'Agent directory')
+  .option('--email <email>', 'The account the code must sign in as')
+  .action(async (opts) => {
+    const { alwaysAvailableTokenCommand } = await import('./commands/alwaysAvailable.js');
+    await alwaysAvailableTokenCommand(opts);
+  });
+alwaysAvailableCmd
+  .command('token-clear')
+  .description('Undo: put the earlier Claude sign-in back if the stored code is still the one set here')
+  .option('-d, --dir <path>', 'Agent directory')
+  .action(async (opts) => {
+    const { alwaysAvailableTokenClearCommand } = await import('./commands/alwaysAvailable.js');
+    alwaysAvailableTokenClearCommand(opts);
+  });
+alwaysAvailableCmd
+  .command('status')
+  .description('FileVault on/off/unknown and whether the Always available code is in use, as JSON')
+  .option('-d, --dir <path>', 'Agent directory')
+  .action(async (opts) => {
+    const { alwaysAvailableStatusCommand } = await import('./commands/alwaysAvailable.js');
+    alwaysAvailableStatusCommand(opts);
+  });
+
+program
   .command('setup')
   .description('Interactive setup wizard (same as running `instar` with no args)')
   .option('--non-interactive', 'Run setup without LLM wizard (requires all flags)')
@@ -391,11 +431,38 @@ program
 // ── Init ─────────────────────────────────────────────────────────
 
 program
+  .command('install')
+  .description('Install Instar and create your first agent: the path that needs the fewest choices')
+  .option('--resume', 'Continue an install that stopped or is waiting on you')
+  .option('--yes', 'Agree to what the installer lists, without asking')
+  .option('--answers <file>', 'A JSON file with name, purpose, door and autostart, for AI tools')
+  .option('--status', 'Print the install status as JSON')
+  .option('--restart', 'Begin again instead of continuing an unfinished install')
+  .option('--for-app', 'The Instar Mac app is running this install and will connect itself')
+  .option('--app-ticket', 'Write a fresh setup ticket for the Instar app (finished app installs only)')
+  .option('--key <publicKey>', 'The Instar app\'s device key, with --app-ticket')
+  .option('--replace-app-key', 'With --app-ticket: replace the key this Mac\'s own Instar app enrolled earlier (the app lost it)')
+  .action(async (opts) => {
+    const [major, minor] = process.versions.node.split('.').map(Number);
+    if (major < 20 || (major === 20 && minor < 12)) {
+      console.error(`\n  Instar needs Node.js 20.12 or later, and you're running ${process.versions.node}.`);
+      console.error(`  Upgrade: https://nodejs.org/en/download\n`);
+      process.exit(1);
+    }
+    const { runInstallCommand, INSTALL_EXIT_CODES } = await import('./commands/install.js');
+    const status = await runInstallCommand(opts);
+    process.exit(INSTALL_EXIT_CODES[status]);
+  });
+
+program
   .command('init [project-name]')
   .description('Initialize agent infrastructure (fresh project, existing, or standalone)')
   .option('-d, --dir <path>', 'Project directory (default: current directory)')
   .option('--port <port>', 'Server port (default: 4040)', (v: string) => parseInt(v, 10))
   .option('--standalone', 'Create a standalone agent at ~/.instar/agents/<name>/')
+  .option('--autostart', 'Allow the agent to install its own start-on-login job even though init runs without a terminal')
+  .option('--expires-in <duration>', 'Make this a throwaway agent that tears itself down after a duration (e.g. 30m, 6h, 2d)')
+  .option('--keep', 'Never expire this agent, even if it lives in a temporary folder')
   .option(
     '--framework <name>',
     `AI runtime to target: ${SUPPORTED_FRAMEWORKS.join(', ')}, or both (claude-code default)`,
@@ -496,6 +563,7 @@ addCmd
   .option('--phone-number-id <id>', 'Meta Phone Number ID (Business API)')
   .option('--access-token <token>', 'Meta access token (Business API)')
   .option('--webhook-verify-token <token>', 'Webhook verification token (Business API)')
+  .option('--app-secret <secret>', 'Meta app secret that signs webhook deliveries (Business API; or set WHATSAPP_APP_SECRET)')
   .option('--webhook-port <port>', 'Webhook port if different from server port (Business API)', parseInt)
   .action(async (opts) => {
     const { addWhatsApp } = await import('./commands/whatsapp.js');
@@ -521,6 +589,48 @@ addCmd
   .description('Add Claude API quota tracking')
   .option('--state-file <path>', 'Path to quota state file (default: .instar/state/quota.json)')
   .action((opts) => addQuota(opts));
+
+// ── Mobile: owner introducers (docs/specs/mobile-pairing-introducer.md) ──
+
+const mobileCmd = program
+  .command('mobile')
+  .description('Phone pairing settings for the Instar app');
+const introducerCmd = mobileCmd
+  .command('introducer')
+  .description('Agents whose owner phones may add this agent with Face ID');
+introducerCmd.command('show')
+  .description("Print this agent's own introducer entry, to add to an agent it creates")
+  .option('--dir <path>', 'Agent directory (default: detected)')
+  .option('--json', 'Print the entry as JSON')
+  .action(async (opts) => { const m = await import('./commands/mobileIntroducer.js'); m.showIntroducer(opts); });
+introducerCmd.command('add')
+  .description("Trust an introducer's owner phones on this agent (restart to apply)")
+  .requiredOption('--name <name>', 'The introducing agent\'s name')
+  .requiredOption('--key <publicKey>', 'Its introducer key (from `instar mobile introducer show` on it)')
+  .option('--dir <path>', 'Agent directory (default: detected)')
+  .action(async (opts) => { const m = await import('./commands/mobileIntroducer.js'); m.addIntroducer(opts); });
+introducerCmd.command('remove')
+  .description('Stop trusting an introducer (restart to apply)')
+  .requiredOption('--key <publicKey>', 'The introducer key to remove')
+  .option('--dir <path>', 'Agent directory (default: detected)')
+  .action(async (opts) => { const m = await import('./commands/mobileIntroducer.js'); m.removeIntroducer(opts); });
+mobileCmd.command('add-phone')
+  .description("Add your first phone at this computer: same Wi-Fi, no account (asks for the dashboard PIN)")
+  .option('--anywhere', 'Use the address that works away from home (Tailscale) instead of the home address')
+  .option('--json', 'Print the setup as JSON')
+  .option('--port <port>', 'The home-network port to use (default: the stored one, else the main port + 20000)', (v: string) => parseInt(v, 10))
+  .option('--dir <path>', 'Agent directory (default: detected)')
+  .action(async (opts) => { const m = await import('./commands/mobileAddPhone.js'); await m.addPhone(opts); });
+mobileCmd.command('ceremony-credential')
+  .description("For the Instar app on this computer: make a one-time credential for one phone setup (run as the agent's own user)")
+  .option('--for <ceremony>', 'The ceremony it is for', 'phone-setup')
+  .option('--json', 'Print it as JSON')
+  .option('--dir <path>', 'Agent directory (default: detected)')
+  .action(async (opts) => { const m = await import('./commands/mobileCeremonyCredential.js'); m.ceremonyCredential(opts); });
+introducerCmd.command('list')
+  .description('List the introducers this agent trusts')
+  .option('--dir <path>', 'Agent directory (default: detected)')
+  .action(async (opts) => { const m = await import('./commands/mobileIntroducer.js'); m.listIntroducers(opts); });
 
 // ── Remove ──────────────────────────────────────────────────────
 
@@ -597,6 +707,37 @@ worktreeCmd
     }
   });
 
+// ── Codex (hand-started Codex CLI) ────────────────────────────────
+
+const codexCmd = program
+  .command('codex')
+  .description(
+    'Tools for a Codex CLI the operator starts BY HAND. `connect <agent>` writes that ' +
+      "agent's Threadline MCP entry into the shared Codex user config " +
+      '($CODEX_HOME/config.toml, default ~/.codex/config.toml). Codex sessions Instar ' +
+      'launches never need this — each gets its own entry per session.',
+  );
+
+codexCmd
+  .command('connect <agent>')
+  .description(
+    "Point a hand-started Codex at ONE agent's Threadline MCP server by writing " +
+      '[mcp_servers."threadline"] into the shared Codex user config. The file is shared by ' +
+      'every Codex on this machine, so the entry names one agent at a time — the last one ' +
+      'connected. Honors CODEX_HOME.',
+  )
+  .option('--dry-run', 'Print the entry that would be written; write nothing')
+  .action(async (agent: string, opts: { dryRun?: boolean }) => {
+    const { connectCodex, formatConnectCodexReport } = await import('./commands/codex.js');
+    try {
+      const result = await connectCodex({ agent, dryRun: !!opts.dryRun });
+      console.log(formatConnectCodexReport(result));
+    } catch (err) {
+      console.error(pc.red(`codex connect failed: ${(err as Error).message}`));
+      process.exit(1);
+    }
+  });
+
 // ── Spec review (standards-conformance gate) ─────────────────────
 
 const specCmd = program
@@ -645,6 +786,40 @@ backupCmd
   .action(async (id, opts) => {
     const { restoreBackup } = await import('./commands/backup.js');
     return restoreBackup(id, opts);
+  });
+
+// ── Borrowed-machine helper (local-verify-borrowed-unit-slices) ──
+
+const helperCmd = program
+  .command('helper')
+  .description('Owner controls for this machine\'s borrowed-machine test helper (pause, resume, uninstall)');
+
+helperCmd
+  .command('pause')
+  .description('Pause the helper: it refuses new work and stops current work')
+  .option('-d, --dir <path>', 'Project directory')
+  .action(async (opts) => {
+    const { helperPause } = await import('./commands/helper.js');
+    return helperPause(opts, true);
+  });
+
+helperCmd
+  .command('resume')
+  .description('Resume the helper: it accepts new work again')
+  .option('-d, --dir <path>', 'Project directory')
+  .action(async (opts) => {
+    const { helperPause } = await import('./commands/helper.js');
+    return helperPause(opts, false);
+  });
+
+helperCmd
+  .command('uninstall')
+  .description('Remove the helper sandbox, its learned list and its setting (needs --yes)')
+  .option('-d, --dir <path>', 'Project directory')
+  .option('--yes', 'Actually remove (without it, only lists what would be removed)')
+  .action(async (opts) => {
+    const { helperUninstall } = await import('./commands/helper.js');
+    return helperUninstall(opts);
   });
 
 // ── Git State ────────────────────────────────────────────────────
@@ -1711,6 +1886,12 @@ lifelineCmd
   .option('-d, --dir <path>', 'Project directory')
   .action(async (opts) => {
     const { TelegramLifeline } = await import('./lifeline/TelegramLifeline.js');
+    // SEC-164: mask live credentials in the lifeline's own output before any log captures it.
+    {
+      const { installOutputScrub, credentialScrubEnabledReader } = await import('./core/outputCredentialScrub.js');
+      const { detectProjectDir } = await import('./core/Config.js');
+      installOutputScrub(credentialScrubEnabledReader(opts.dir ?? detectProjectDir()));
+    }
     try {
       const lifeline = new TelegramLifeline(opts.dir);
       await lifeline.start();
@@ -1759,7 +1940,7 @@ lifelineCmd
   .action(async (opts) => {
     const { loadConfig } = await import('./core/Config.js');
     const { readStartupMarker } = await import('./lifeline/startupMarker.js');
-    const { execFileSync, execSync } = await import('node:child_process');
+    const { execFileSync } = await import('node:child_process');
     const fs = await import('node:fs');
     const path = await import('node:path');
     const config = loadConfig(opts.dir);
@@ -1792,31 +1973,54 @@ lifelineCmd
     const baseline = readStartupMarker(config.stateDir);
     const baselinePid = baseline?.pid ?? null;
 
+    const { daemonRunsAgent } = await import('./core/alwaysAvailable.js');
     try {
+      // Always available: a system service runs the lifeline, so the per-user job isn't loaded. Signal
+      // the recorded lifeline below; the service's KeepAlive starts it again (no second copy).
+      if (process.platform === 'darwin' && daemonRunsAgent(config.projectName)) throw new Error('Always available is on: the system service restarts the lifeline');
       const uid = process.getuid?.() ?? 0;
       execFileSync('launchctl', ['kickstart', '-k', `gui/${uid}/${label}`], { stdio: 'inherit' });
     } catch (err) {
-      // Fallback: maybe running under tmux (dev). Try SIGTERM via pkill.
+      // Fallback: maybe running under tmux (dev). Try SIGTERM directly.
       // The b2lead incident showed that SIGTERM-only fallback leaves
       // sleeping lifeline processes holding lifeline.lock, blocking the
       // respawn loop indefinitely. Escalate to SIGKILL after a short
       // grace period so the lock is released and the new lifeline can
       // take over.
-      console.warn(pc.yellow(`launchctl kickstart failed (${err instanceof Error ? err.message : err}); falling back to pkill`));
-      const pattern = `${config.projectName}.*lifeline`;
-      try {
-        execSync(`pkill -TERM -f '${pattern}'`);
-      } catch {
-        /* no process to kill — escalation below is a no-op */
-      }
-      // Grace period for clean exit (signal handlers, queue flush, etc.).
-      // After this, anything still alive is stuck and holding the lock.
-      await new Promise(r => setTimeout(r, 3000));
-      try {
-        execSync(`pkill -KILL -f '${pattern}'`);
-        console.warn(pc.yellow(`escalated to SIGKILL — old lifeline did not exit on SIGTERM`));
-      } catch {
-        /* nothing left to kill — SIGTERM did its job */
+      // The fallback signals ONLY the lifeline's own recorded processes — the
+      // lock holder (`lifeline.lock`, the process actually wedging the respawn)
+      // and the startup-marker pid — and only while the live process at each pid
+      // is PROVEN to be the one that wrote the record (same process start time).
+      // It used to be `pkill -f '<projectName>.*lifeline'`, which matches ANY
+      // command line carrying both words — e.g. a `claude -p` builder whose
+      // prompt names the agent's home and mentions the lifeline — and SIGKILLed
+      // it. A keyword check on the command line is no better: a reused pid can
+      // belong to such a builder. Legacy records without a start time are
+      // never signalled.
+      const aaOn = err instanceof Error && err.message.startsWith('Always available is on');
+      console.warn(pc.yellow(aaOn
+        ? 'Always available is on: signalling the recorded lifeline processes; the system service starts the lifeline again'
+        : `launchctl kickstart failed (${err instanceof Error ? err.message : err}); falling back to signalling the recorded lifeline processes`));
+      const { provenLifelineRecords } = await import('./lifeline/lifelineLock.js');
+      const { checkRecordedProcess } = await import('./core/processIdentity.js');
+      const targets = provenLifelineRecords(path.join(config.stateDir, 'lifeline.lock'), baseline);
+      if (targets.length === 0) {
+        console.warn(pc.yellow('no lifeline process proven at the recorded pids — nothing to signal'));
+      } else {
+        for (const t of targets) {
+          try { process.kill(t.pid, 'SIGTERM'); } catch { /* already exited */ }
+        }
+        // Grace period for clean exit (signal handlers, queue flush, etc.).
+        // After this, anything still alive is stuck and holding the lock.
+        await new Promise(r => setTimeout(r, 3000));
+        // Re-prove identity before escalating — a pid freed during the grace
+        // window may already belong to another process.
+        for (const t of targets.filter(r => checkRecordedProcess(r) === 'same')) {
+          try {
+            process.kill(t.pid, 'SIGKILL');
+            console.warn(pc.yellow(`escalated to SIGKILL — old lifeline ${t.pid} did not exit on SIGTERM`));
+          } catch { /* exited in between */ }
+        }
       }
     }
 
@@ -1910,14 +2114,20 @@ autostartCmd
   .command('install')
   .description('Install auto-start so your agent starts on login')
   .option('-d, --dir <path>', 'Project directory')
+  .option('--force', 'Install even for a throwaway agent (temporary folder, sandboxed HOME, or expired)')
   .action(async (opts) => {
     const { loadConfig } = await import('./core/Config.js');
     const { installAutoStart, takeLastLingerOutcome, describeLingerOutcome, currentSystemdUser } =
       await import('./commands/setup.js');
+    const { markAutoStartExplicit, takeLastAutoStartRefusal } = await import('./core/ThrowawayAgentGuard.js');
     const config = loadConfig(opts.dir);
     const hasTelegram = config.messaging?.some((m: { type: string }) => m.type === 'telegram') ?? false;
-    const installed = installAutoStart(config.projectName, config.projectDir, hasTelegram);
+    const installed = installAutoStart(config.projectName, config.projectDir, hasTelegram, { force: opts.force === true });
+    const refusal = takeLastAutoStartRefusal();
     if (installed) {
+      // The explicit request: the startup self-heals may maintain it from now on.
+      markAutoStartExplicit(config.projectDir, { forced: opts.force === true });
+      if (opts.force === true) console.log(pc.yellow('Auto-start installed with --force (throwaway safeguards bypassed for this install).'));
       console.log(pc.green(`Auto-start installed for "${config.projectName}".`));
       // On Linux, "installed" and "starts at boot" are different facts: an
       // enabled user service only runs while that user holds a login session
@@ -1931,6 +2141,8 @@ autostartCmd
       } else {
         console.log(pc.dim('Your agent will start automatically when you log in.'));
       }
+    } else if (refusal) {
+      console.log(pc.yellow(`Auto-start not installed: ${refusal}`));
     } else {
       console.log(pc.red('Failed to install auto-start.'));
       console.log(pc.dim(`Platform: ${process.platform} — auto-start supports macOS and Linux.`));
@@ -2011,6 +2223,8 @@ const migrateCmd = program
         port: config.port,
         hasTelegram,
         projectName: config.projectName,
+        claudeCodePath: config.sessions?.frameworkBinaryPaths?.['claude-code'] ?? config.sessions?.claudePath ?? null,
+        host: config.host,
       });
       const result = await migrator.migrateAsync();
 
@@ -2130,6 +2344,46 @@ machineCmd
   .description('Revoke a machine from the mesh')
   .option('-d, --dir <path>', 'Project directory')
   .action(removeMachine);
+
+// ── Telegram message origin: reviewed browser re-enrollment ───────────
+// Local-only on purpose: the enrollment entrypoint is never an HTTP route.
+program
+  .command('telegram-origin')
+  .description('Telegram message-origin maintenance (trusted, local-only)')
+  .command('enroll-browser <profileId>')
+  .description('After a Telegram Web K update: run the read-only canary on the managed profile and enroll the build if it is on the reviewed list (keeps one prior reviewed build). Sends nothing.')
+  .option('-d, --dir <path>', 'Project directory')
+  .option('--evidence-out <file>', 'Write the canary result as JSON to this file')
+  .action(async (profileId: string, opts) => {
+    const { telegramOriginEnrollBrowser } = await import('./commands/telegramOrigin.js');
+    return telegramOriginEnrollBrowser(profileId, opts);
+  });
+
+// ── Agent identity (a2a-single-agent-identity §1.4) ──────────────────
+const identityCmd = program
+  .command('identity')
+  .description('This machine\'s AGENT identity: adopt it from a sibling, or mint a standalone one');
+
+identityCmd
+  .command('status')
+  .description('The on-disk posture + routing fingerprint (never key material)')
+  .option('-d, --dir <path>', 'Project directory')
+  .action(identityStatus);
+
+identityCmd
+  .command('adopt')
+  .description('Move this machine\'s existing identity aside and adopt the one a named sibling publishes (run ON the affected machine, after the operator\'s yes)')
+  .requiredOption('--from <machine-name-or-id>', 'The sibling to adopt the identity from')
+  .option('-d, --dir <path>', 'Project directory')
+  .action(identityAdopt);
+
+identityCmd
+  .command('init')
+  .description('Mint a NEW agent identity on a fleet with no usable candidate (peers must re-pin)')
+  .option('--standalone', 'Required: this is a standalone recovery mint')
+  .option('--i-understand-peers-must-repin', 'Required: acknowledge every peer must re-pin the new address')
+  .option('-d, --dir <path>', 'Project directory')
+  .action(identityInit);
 
 program
   .command('whoami')
@@ -2288,6 +2542,7 @@ program
   .option('--here', 'Remove the instar install in the current project directory (instead of a standalone agent)')
   .option('--yes', 'Skip confirmation prompts')
   .option('-d, --dir <path>', 'Project directory (with --here; defaults to cwd)')
+  .option('--also-stop <ids...>', 'Also stop these tmux session ids, which nuke listed because they match the agent\'s name but started outside every agent home')
   .action(async (name, opts) => {
     if (opts.here) {
       if (name) {
@@ -2296,7 +2551,7 @@ program
         process.exit(1);
       }
       const { nukeHere } = await import('./commands/nuke.js');
-      await nukeHere({ dir: opts.dir, skipConfirm: opts.yes });
+      await nukeHere({ dir: opts.dir, skipConfirm: opts.yes, alsoStop: opts.alsoStop });
       return;
     }
     if (!name) {
@@ -2306,7 +2561,7 @@ program
       process.exit(1);
     }
     const { nukeAgent } = await import('./commands/nuke.js');
-    await nukeAgent(name, { skipConfirm: opts.yes });
+    await nukeAgent(name, { skipConfirm: opts.yes, alsoStop: opts.alsoStop });
   });
 
 // ── Playbook (Context Engineering) ───────────────────────────────
@@ -2701,5 +2956,8 @@ program
     return route(taskPrompt, opts);
   });
 
+// Every instar process (server, lifeline, CLI) keeps Node's fetch on HTTP/1.1 — Node 26's
+// default HTTP/2 path ballooned the agent server to 10-37 GB (2026-11-20 post-mortem A3).
+await pinGlobalFetchToHttp1();
 rejectUnknownTopLevelCommand(program, process.argv);
 program.parse();

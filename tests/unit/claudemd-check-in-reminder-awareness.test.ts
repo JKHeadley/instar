@@ -1,3 +1,4 @@
+// safe-fs-allow: test file — SafeFsExecutor used for tmpdir cleanup.
 /**
  * Agent Awareness + Migration Parity for the dated check-in reminder (ACT-724).
  *
@@ -18,6 +19,9 @@
  * Parity failure mode the standard names.
  */
 import { describe, it, expect } from 'vitest';
+import os from 'node:os';
+import { PostUpdateMigrator } from '../../src/core/PostUpdateMigrator.js';
+import { SafeFsExecutor } from '../../src/core/SafeFsExecutor.js';
 import fs from 'node:fs';
 import path from 'node:path';
 import { fileURLToPath } from 'node:url';
@@ -96,5 +100,40 @@ describe('an EXISTING agent gets it too — the Migration Parity half', () => {
     const idx = migratorSrc.indexOf('added dated check-in reminder to Commitments section');
     const window = migratorSrc.slice(Math.max(0, idx - 1800), idx);
     expect(window).toMatch(/Append rather than skip|missing capability is worse/i);
+  });
+});
+
+describe('server tick wording reaches existing agents (CMT-1130)', () => {
+  const STALE = '  - Ships dark (`commitments.checkInReminder`, dryRun defaulting TRUE). **Honest scope:** while the reconciler runs, no dated commitment can slip past it — but nothing yet guarantees the reconciler runs, so "structurally impossible" is NOT true yet.';
+
+  function migrate(claudeMd: string): string {
+    const dir = fs.mkdtempSync(path.join(os.tmpdir(), 'check-in-tick-migrate-'));
+    try {
+      fs.mkdirSync(path.join(dir, '.instar'), { recursive: true });
+      const file = path.join(dir, 'CLAUDE.md');
+      fs.writeFileSync(file, claudeMd);
+      const migrator = new PostUpdateMigrator({
+        projectDir: dir,
+        stateDir: path.join(dir, '.instar'),
+      } as ConstructorParameters<typeof PostUpdateMigrator>[0]);
+      (migrator as unknown as { migrateClaudeMd(r: unknown): void }).migrateClaudeMd({ upgraded: [], skipped: [], errors: [] });
+      return fs.readFileSync(file, 'utf-8');
+    } finally {
+      SafeFsExecutor.safeRmSync(dir, { recursive: true, force: true, operation: 'tests/unit/claudemd-check-in-reminder-awareness.test.ts' });
+    }
+  }
+  const doc = (line: string) => `# Agent\n\n**Commitments & Follow-Through** — x\n- /commitments/check-in-reminder\n${line}\n`;
+
+  it('replaces the stale line and is idempotent', () => {
+    const once = migrate(doc(STALE));
+    expect(once).not.toContain('nothing yet guarantees the reconciler runs');
+    expect(once).toContain('with no session and no LLM');
+    expect(once).toContain('NOT true yet');
+    expect(migrate(once)).toBe(once);
+  });
+
+  it('leaves a customized line alone', () => {
+    const custom = '  - Ships dark, my own note.';
+    expect(migrate(doc(custom))).toContain(custom);
   });
 });

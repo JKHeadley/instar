@@ -1,0 +1,34 @@
+{
+  "ts": "2026-10-22T23:32:50.663Z",
+  "slug": "relogin-last-resort-model",
+  "suggestedTier": 2,
+  "declaredTier": 1,
+  "riskFloor": 2,
+  "riskFloorReasons": [
+    "irreversibility: src/core/PostUpdateMigrator.ts touches PostUpdateMigrator",
+    "migration / fleet-rollout surface: src/core/PostUpdateMigrator.ts touches PostUpdateMigrator (fleet migration machinery)",
+    "new capability: new exported class / subsystem added"
+  ],
+  "belowFloor": true,
+  "files": 9,
+  "loc": 488,
+  "scope": {
+    "basis": "staged-in-scope-additions-plus-deletions",
+    "files": [
+      "src/commands/server.ts",
+      "src/core/PostUpdateMigrator.ts",
+      "src/core/ReloginLastResortProvider.ts",
+      "src/core/SubscriptionReloginRuntime.ts",
+      "src/core/types.ts",
+      "src/providers/adapters/anthropic-headless/config.ts",
+      "src/providers/adapters/anthropic-headless/transport/oneShotCompletion.ts",
+      "src/scaffold/templates.ts",
+      "src/server/routes.ts"
+    ],
+    "addedLines": 464,
+    "deletedLines": 24
+  },
+  "causalAutopsy": null,
+  "classClosure": null,
+  "verdict": "pass"
+}

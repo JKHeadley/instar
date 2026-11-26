@@ -27,12 +27,15 @@
  * with a bug report back to Instar." — Justin, 2026-02-25
  */
 
+import { isStorageError, nameStorageError } from '../core/storageMachineName.js';
 import fs from 'node:fs';
 import path from 'node:path';
 import os from 'node:os';
 import { detectJargon } from '../core/JargonDetector.js';
 import type { MessagingToneGate } from '../core/MessagingToneGate.js';
 import { Redactor } from './Redactor.js';
+import { featureEvidence } from './FeatureEvidenceLog.js';
+import { healthChoiceStoreFor } from './healthChoices.js';
 import { ErrorCodeExtractor, type ErrorProvenance } from './ErrorCodeExtractor.js';
 import { SafeFsExecutor } from '../core/SafeFsExecutor.js';
 
@@ -53,6 +56,8 @@ export interface DegradationEvent {
   reported: boolean;
   /** Whether this was sent as a Telegram alert */
   alerted: boolean;
+  /** Internal observability only: never deliver to a user-facing alert path. */
+  internalOnly?: boolean;
 }
 
 /**
@@ -91,6 +96,8 @@ export interface NormalizedDegradationEvent {
    * (alert path, audit log) can recover the original quintuple.
    */
   legacy?: DegradationEvent;
+  /** Preserved across dispatch and durable queue replay. */
+  internalOnly?: boolean;
   /**
    * §A40 / §A52 probe-source binding. Optional; set by probe emit-sites
    * migrated to F-8-rest Tier-2 enforcement.
@@ -192,6 +199,32 @@ interface OpenDegradation {
   lastEscalatedAt: number | null;
 }
 
+/** The two answers the reporter needs from the person's choices. HealthChoiceStore is the real one. */
+export interface DegradationIssuePolicy {
+  isIgnored(feature: string): boolean;
+  hidesNow(feature: string): boolean;
+}
+
+/** SEC-125: longest feature pattern a caller may send to the mark-reported route. */
+export const FEATURE_PATTERN_MAX_CHARS = 128;
+
+/**
+ * SEC-125: compile a caller-supplied feature pattern only when it is in a safe
+ * subset that cannot backtrack badly: letters, digits, `_`, `-`, `.` (any one
+ * character), `\.` (a literal dot), the anchors `^` and `$`, and `|`
+ * alternation. No groups, classes, repeats or other escapes, so matching is
+ * linear in the feature name. Returns null (the caller answers 400) otherwise.
+ */
+export function compileFeaturePattern(source: unknown): RegExp | null {
+  if (typeof source !== 'string' || source.length === 0 || source.length > FEATURE_PATTERN_MAX_CHARS) return null;
+  if (!/^(?:[A-Za-z0-9_.\-^$|]|\\\.)+$/.test(source)) return null;
+  try {
+    return new RegExp(source);
+  } catch {
+    return null; // @silent-fallback-ok — an unparsable pattern is answered 400 by the caller
+  }
+}
+
 export class DegradationReporter {
   private static instance: DegradationReporter | null = null;
 
@@ -204,6 +237,8 @@ export class DegradationReporter {
   static readonly HEALTH_WINDOW_MS = 30 * 60 * 1000;
 
   private events: DegradationEvent[] = [];
+  private issuePolicy: DegradationIssuePolicy | null = null;
+  private readonly ignoredNoted = new Set<string>();
   /** Reentrancy guard for gateHealthAlert (event-loop WEDGE fix, 2026-06-21). */
   private _gatingHealthAlert = false;
   /**
@@ -295,6 +330,26 @@ export class DegradationReporter {
     this.stateDir = opts.stateDir;
     this.agentName = opts.agentName;
     this.instarVersion = opts.instarVersion;
+    // Before any feature can report: what the person chose survives a restart from the first event on.
+    this.issuePolicy = this.issuePolicy ?? healthChoiceStoreFor(opts.stateDir);
+  }
+
+  /**
+   * What the person chose to do about one problem (docs/specs/health-quick-actions.md). `isIgnored`: the agent
+   * stops tracking this exact feature. `hidesNow`: don't bring it to the person, but keep recording it.
+   */
+  setIssuePolicy(policy: DegradationIssuePolicy | null): void {
+    this.issuePolicy = policy;
+  }
+
+  /** A policy that fails is treated as no choice made, so a problem can only stay in view. */
+  isIgnored(feature: string): boolean {
+    try { return this.issuePolicy?.isIgnored(feature) === true; } catch { return false; } // @silent-fallback-ok — the event is recorded and reported as usual
+  }
+
+  /** While hidden, the daily digest must not raise it. Read-time, so it's raised normally once a snooze ends. */
+  isHidden(feature: string): boolean {
+    try { return this.issuePolicy?.hidesNow(feature) === true; } catch { return false; } // @silent-fallback-ok — the person is told as usual
   }
 
   /**
@@ -387,6 +442,7 @@ export class DegradationReporter {
     this.openDegradations.set(k, {
       component, framework, openedAt: this.neverSilentNow(), retryAttempts: 0, lastEscalatedAt: null,
     });
+    featureEvidence.record('intelligence.degradationLadder.neverSilent', { kind: 'fired', reason: 'degradation opened', context: { component, framework, openCount: this.openDegradations.size } });
   }
 
   /**
@@ -400,6 +456,7 @@ export class DegradationReporter {
     const d = this.openDegradations.get(k);
     if (!d) return null;
     this.openDegradations.delete(k);
+    featureEvidence.record('intelligence.degradationLadder.neverSilent', { kind: 'fired', reason: 'degradation resolved', context: { component, framework, durationMs: this.neverSilentNow() - d.openedAt, retryAttempts: d.retryAttempts, escalated: d.lastEscalatedAt !== null } });
     return this.neverSilentNow() - d.openedAt;
   }
 
@@ -422,12 +479,16 @@ export class DegradationReporter {
       const age = now - d.openedAt;
       if (d.retryAttempts === 0) {
         // Idle / run-once: degraded once, never retried → done, not stuck. Auto-close at the TTL.
-        if (age > this.neverSilentTtlMs) this.openDegradations.delete(k);
+        if (age > this.neverSilentTtlMs) {
+          this.openDegradations.delete(k);
+          featureEvidence.record('intelligence.degradationLadder.neverSilent', { kind: 'held', reason: 'closed at TTL: never retried, not stuck', context: { component: d.component, framework: d.framework, durationMs: age } });
+        }
         continue;
       }
       if (age > this.neverSilentEscalateMs &&
           (d.lastEscalatedAt === null || now - d.lastEscalatedAt > this.neverSilentEscalateMs)) {
         d.lastEscalatedAt = now;
+        featureEvidence.record('intelligence.degradationLadder.neverSilent', { kind: 'error', reason: 'persistent degradation escalated', context: { component: d.component, framework: d.framework, durationMs: age, retryAttempts: d.retryAttempts, notifyUser: this.notifyUser } });
         this.escalatePersistentDegradation(d, age);
       }
     }
@@ -473,6 +534,11 @@ export class DegradationReporter {
    * compat). RestartPending re-routes everything to the durable queue.
    */
   report(event: Omit<DegradationEvent, 'timestamp' | 'reported' | 'alerted'>): void {
+    // The person chose to stop tracking this: no record, no alert, no feedback, no remediation.
+    if (this.isIgnored(event.feature)) { this.noteIgnored(event.feature); return; }
+    if (isStorageError(`${event.reason} ${event.primary} ${event.fallback} ${event.impact}`)) {
+      event = { ...event, reason: nameStorageError(event.reason, this.stateDir ?? undefined) };
+    }
     const full: DegradationEvent = {
       ...event,
       timestamp: new Date().toISOString(),
@@ -504,7 +570,7 @@ export class DegradationReporter {
       return;
     }
 
-    if (this.remediator) {
+    if (this.remediator && !full.internalOnly) {
       // Fire-and-forget — dispatch errors land in console.error but never
       // crash the caller. The legacy `.report(...)` API is sync-shaped.
       this.remediator.dispatch(normalized).catch((err) => {
@@ -515,7 +581,7 @@ export class DegradationReporter {
       return;
     }
 
-    // No Remediator wired — legacy alert path runs unchanged.
+    // Internal-only events deliberately bypass remediation/attention dispatch.
     this.reportEvent(full);
   }
 
@@ -536,6 +602,13 @@ export class DegradationReporter {
    *   is intentional, since structured callers bypass the legacy alert path.
    */
   reportStructured(event: NormalizedDegradationEvent): void {
+    if (this.isIgnored(event.subsystem)) { this.noteIgnored(event.subsystem); return; }
+    if (isStorageError(`${event.errorCode} ${event.reason.full} ${event.reason.redacted}`)) {
+      event = { ...event, reason: {
+        full: nameStorageError(event.reason.full, this.stateDir ?? undefined),
+        redacted: nameStorageError(event.reason.redacted, this.stateDir ?? undefined),
+      } };
+    }
     const stamped: NormalizedDegradationEvent = {
       ...event,
       // Preserve caller-provided timestamp/monotonicTs if present; fill if not.
@@ -554,7 +627,7 @@ export class DegradationReporter {
       return;
     }
 
-    if (this.remediator) {
+    if (this.remediator && !stamped.internalOnly) {
       this.remediator.dispatch(stamped).catch((err) => {
         console.error(
           `[DEGRADATION] Remediator dispatch failed for ${stamped.subsystem}: ${err instanceof Error ? err.message : err}`
@@ -609,6 +682,7 @@ export class DegradationReporter {
       timestamp: legacy.timestamp,
       monotonicTs: monotonicNow(),
       legacy,
+      internalOnly: legacy.internalOnly === true,
     };
   }
 
@@ -665,7 +739,7 @@ export class DegradationReporter {
    * Get all degradation events (for health check API).
    */
   getEvents(): DegradationEvent[] {
-    return [...this.events];
+    return this.events.filter((e) => !this.isIgnored(e.feature));
   }
 
   /**
@@ -684,6 +758,7 @@ export class DegradationReporter {
   ): DegradationEvent[] {
     const cutoff = now - windowMs;
     return this.events.filter((e) => {
+      if (this.isIgnored(e.feature)) return false; // undoing an Ignore brings a still-recent event back
       const t = Date.parse(e.timestamp);
       return Number.isNaN(t) || t >= cutoff;
     });
@@ -724,7 +799,7 @@ export class DegradationReporter {
    * Get unreported events (for monitoring).
    */
   getUnreportedEvents(): DegradationEvent[] {
-    return this.events.filter(e => !e.reported);
+    return this.events.filter(e => !e.reported && !this.isHidden(e.feature));
   }
 
   /**
@@ -759,10 +834,17 @@ export class DegradationReporter {
    * Check if any degradations have occurred.
    */
   hasDegradations(): boolean {
-    return this.events.length > 0;
+    return this.events.some((e) => !this.isIgnored(e.feature));
   }
 
   // ── Internal ──────────────────────────────────────────────
+
+  /** The one trace of an ignored problem: a log line, the first time this run. */
+  private noteIgnored(feature: string): void {
+    if (this.ignoredNoted.has(feature)) return;
+    this.ignoredNoted.add(feature);
+    console.warn(`[DEGRADATION-IGNORED] ${feature}: the person chose to stop tracking this. Not recorded from now on.`);
+  }
 
   private async reportEvent(event: DegradationEvent): Promise<void> {
     // Submit to feedback system
@@ -803,7 +885,7 @@ export class DegradationReporter {
     // Send Telegram alert (with per-feature cooldown to avoid spam)
     // C1: user-facing degradation alerts are OFF by default. The record above
     // (feedback) and below (persistToDisk) is unaffected — only delivery stops.
-    if (this.telegramSender && this.alertTopicId && !event.alerted && this.notifyUser) {
+    if (this.telegramSender && this.alertTopicId && !event.alerted && this.notifyUser && !event.internalOnly) {
       const lastAlert = this.lastAlertTime.get(event.feature) ?? 0;
       const now = Date.now();
 
@@ -817,6 +899,9 @@ export class DegradationReporter {
           console.warn(
             `[DEGRADATION] ${event.feature}: self-heal succeeded after ${healResult.attempts} attempt(s); user alert suppressed.`
           );
+        } else if (this.isHidden(event.feature)) {
+          // Hidden by the person: still recorded, filed and repaired above, but not brought to them.
+          event.alerted = true;
         } else {
           // Compose the narrative, route it through the tone gate with
           // health-alert signals, fall back to the safe template if blocked.
@@ -1022,7 +1107,7 @@ export class DegradationReporter {
     }
 
     for (const event of queued) {
-      if (this.remediator) {
+      if (this.remediator && !event.internalOnly) {
         // Fire-and-forget; replay does not wait for individual dispatches.
         this.remediator.dispatch(event).catch((err) => {
           console.error(
@@ -1031,7 +1116,10 @@ export class DegradationReporter {
         });
       } else if (event.legacy) {
         // Fall back to the legacy alert path for legacy-shaped queued events.
-        this.reportEvent(event.legacy);
+        this.reportEvent({
+          ...event.legacy,
+          internalOnly: event.internalOnly === true || event.legacy.internalOnly === true,
+        });
       }
     }
 

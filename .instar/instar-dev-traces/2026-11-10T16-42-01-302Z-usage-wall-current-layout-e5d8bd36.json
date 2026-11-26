@@ -1,0 +1,19 @@
+{
+  "version": 2,
+  "slug": "usage-wall-current-layout",
+  "sessionId": "8d6a2926-13de-489c-8c9b-8365ea44255d",
+  "timestamp": "2026-11-10T16:42:01.302Z",
+  "artifactPath": "upgrades/side-effects/usage-wall-current-layout.md",
+  "artifactSha256": "277986dbbc3000ae6726490c72f2ea6336ade01ac64cbea04b7b71ac243cb3d2",
+  "coveredFiles": [
+    "src/core/SessionManager.ts",
+    "tests/integration/session-usage-limit-evidence.test.ts"
+  ],
+  "phase": "complete",
+  "tier": 1,
+  "tierReasoning": "Follow-up inside the same Tier-1 fix: the transcript lookup becomes a module function so SessionManager's evidence methods work on narrow stand-ins; no behavior change.",
+  "eli16Path": "docs/specs/usage-wall-current-layout.eli16.md",
+  "sideEffectsPath": "upgrades/side-effects/usage-wall-current-layout.md",
+  "secondPass": "true",
+  "reviewerConcurred": true
+}

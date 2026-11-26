@@ -1,0 +1,35 @@
+{
+  "ts": "2026-11-04T04:23:20.923Z",
+  "slug": "job-alert-capacity-episode",
+  "suggestedTier": 2,
+  "declaredTier": 1,
+  "riskFloor": 1,
+  "riskFloorReasons": [],
+  "belowFloor": false,
+  "files": 6,
+  "loc": 345,
+  "scope": {
+    "basis": "staged-in-scope-additions-plus-deletions",
+    "files": [
+      "src/core/SessionManager.ts",
+      "src/messaging/userNotices.ts",
+      "src/scheduler/JobClaimManager.ts",
+      "src/scheduler/JobLeaseClaimStore.ts",
+      "src/scheduler/JobScheduler.ts",
+      "src/testing/selfActionRegistry.ts"
+    ],
+    "addedLines": 261,
+    "deletedLines": 84
+  },
+  "causalAutopsy": null,
+  "classClosure": {
+    "defectClass": "unbounded-self-action",
+    "closure": "guard",
+    "guardEvidence": {
+      "enforcementType": "ratchet",
+      "citation": "tests/unit/self-action-convergence.test.ts",
+      "howCaught": "Under sustained saturation, polls launch zero jobs and one persisted episode alert at most; restart preserves the alert brake. When room opens, queue admission starts at most one job per 15-second poll."
+    }
+  },
+  "verdict": "pass"
+}

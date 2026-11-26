@@ -1,0 +1,26 @@
+{
+  "ts": "2026-11-02T20:46:29.821Z",
+  "slug": "green-pr-skip-unactionable-head",
+  "suggestedTier": 1,
+  "declaredTier": 1,
+  "riskFloor": 1,
+  "riskFloorReasons": [],
+  "belowFloor": false,
+  "files": 1,
+  "loc": 34,
+  "scope": {
+    "basis": "staged-in-scope-additions-plus-deletions",
+    "files": [
+      "src/monitoring/GreenPrAutoMerger.ts"
+    ],
+    "addedLines": 26,
+    "deletedLines": 8
+  },
+  "causalAutopsy": null,
+  "classClosure": {
+    "defectClass": "unbounded-self-action",
+    "closure": "n/a",
+    "reason": "bounded scan over the current eligible list within one tick; still at most one merge attempt per tick; no new loop or trigger"
+  },
+  "verdict": "pass"
+}

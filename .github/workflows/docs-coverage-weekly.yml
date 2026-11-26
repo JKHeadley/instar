@@ -55,10 +55,22 @@ jobs:
           fi
           # Find an open issue tagged with our marker label, or create one.
           ISSUE_NUMBER="$(gh issue list --label docs-coverage --state open --json number --jq '.[0].number // empty')"
+          # GitHub rejects issue/comment bodies over 65536 characters. Cap the
+          # embedded report well below that; the full report is in the artifact.
+          REPORT="$(node -e '
+            const fs = require("fs");
+            const max = 60000;
+            const text = fs.readFileSync(process.argv[1], "utf8");
+            const chars = Array.from(text);
+            if (chars.length <= max) { process.stdout.write(text); process.exit(0); }
+            process.stdout.write(chars.slice(0, max).join("") +
+              "\n\n_(Report truncated: " + chars.length + " characters, limit " + max +
+              ". Download the docs-coverage-weekly artifact for the full report.)_\n");
+          ' "$REPORT_PATH")"
           BODY=$(cat <<EOF
           ## Weekly docs coverage snapshot — $(date -u +"%Y-%m-%d")
 
-          $(cat "$REPORT_PATH")
+          $REPORT
 
           ---
 

@@ -151,3 +151,68 @@ Reshaping corrections folded in:
 - **Store backend** (integration) → JSON/existing files, not new SQLite.
 - **Sentinel wiring + ConfigDefaults + agent-awareness** (integration) → mirror RateLimitSentinel;
   ship dark.
+
+## Amendment 2026-10-14 — action-derived activity notes + verifiable sentinel (CMT-810)
+
+**Incident that forced it.** On 2026-10-14 two sessions of the same agent gave the
+operator opposite advice about the same Mac Studio restart on the same afternoon
+(topic 61449 at 12:29 said hold off; topic 102965 at 14:34 asked him to approve it;
+he approved at 14:41; at 16:19 the 61449 session said it did not know who had
+restarted the machine). Operator correction: "Instar agents should have very clear
+awareness of the activities of other parallel sessions/topics." Two defects were
+confirmed from live state:
+
+1. **The index was written from conversation only.** Part 1's rows derive from
+   `TopicIntentStore` refs, which come only from topic-intent extraction. A session's
+   ACTIONS never entered it — so topic 102965's row still read its 14:13 goal when the
+   restart was proposed at 14:34, and two hours later.
+2. **The Part 2 sentinel was unverifiable.** `GET /guards` graded
+   `monitoring.parallelWorkSentinel.enabled` as `on-unverified` / `not-instrumented`
+   forever: config said on, nothing confirmed a single tick.
+
+**Resolution (Structure > Willpower — written automatically at the moment of the action,
+never "the agent should remember to post an update").**
+
+- **Part 1a — `TopicActionNoteStore`** (`{stateDir}/topic-action-notes/<topicId>.json`).
+  A dedicated ACTION-derived write path, deliberately NOT folded into the intent refs:
+  a ref carries a confidence/decay model and feeds the session briefing; an action note
+  is a timestamped fact. Each note is `{ kind: action-claim | approval-request, verb,
+  excerpt (≤200 chars, secret-scrubbed), atMs, source }`; ≤20 per topic, identical notes
+  within 10 min dedupe (two Stop hooks can observe one turn). Never throws.
+- **The writer is the EXISTING detector.** The action-claim observe path
+  (`POST /action-claim/observe` and the completion-claim observer's
+  `registerUnifiedFutureClaims`) already classifies concrete future-action claims out of
+  every finished turn. It now ALSO classifies **operator-approval requests**
+  (`classifyApprovalRequest` — "may I restart the Studio?", "please approve the
+  restart", "want me to reboot it?") and records a note for either, FIRST and
+  INDEPENDENTLY of every commitment-lane outcome (disabled / no tracker / bind refused
+  / cap / dry-run). An approval request writes a note only — it never opens a
+  commitment.
+- **The index reads the notes.** `ParallelActivityIndex` unions note-bearing topics into
+  its topic list; a note NEWER than the latest goal/decision ref becomes `focus`
+  (`Asked the operator to approve: restart — "…"` / `Acting: push — "…"`); the verb and
+  the excerpt's high-specificity tokens join `tags`; `updatedAt` moves to the note;
+  every row carries `lastAction`. Notes stop shaping a row after
+  `parallelWork.actionNotes.windowHours` (default 24).
+- **Part 2 instrumentation.** `ParallelWorkSentinel` records `lastTickAt`, `tickCount`,
+  activities/nudges per tick, and the last thrown error; exposes `guardStatus()` and
+  `stats()`. `AgentServer` registers the getter in the `GuardRegistry` at construction,
+  the manifest declares `expectRuntime: true` + `expectedTickMs: 15 min`, and an early
+  first tick (`initialTickDelaySeconds`, default 30) keeps the row from reading
+  `on-stale` for a whole cadence after every boot. New read surface
+  `GET /parallel-work/sentinel` (503 when dark).
+- **Config / migration / awareness.** `parallelWork.actionNotes { enabled: true,
+  windowHours: 24 }` in `ConfigDefaults` + `migrateConfig` (add-missing-only; the code
+  default is ON, absent = on; `enabled:false` is the live kill switch). CLAUDE.md
+  template + `migrateClaudeMd` bullet (sniffed on `lastAction`).
+- **Fleet posture.** The note is written only when the observe route is reached, and the
+  Stop hook posts only when `actionClaim.enabled` is on — so an agent with the
+  action-claim sentinel dark sees no new behavior. The sentinel itself stays dev-gated.
+- **Signal vs authority.** Unchanged: detectors (two regex classifiers) write a note;
+  readers (the index, the councilor) surface it; nothing gates, blocks, or alters a reply.
+
+**What a second session would have seen at 14:34 on 2026-10-14 had this been live:**
+`GET /parallel-work/activities` → topic 102965: `focus: 'Asked the operator to approve:
+restart — "May I restart the Mac Studio …?"'`, `lastAction: { kind: 'approval-request',
+verb: 'restart', at: 14:34 }`, tags including `restart`, `studio` — instead of the 14:13
+idle-cleanup goal.

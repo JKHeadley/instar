@@ -1,0 +1,460 @@
+import { ACCOUNT_ACTION_SAFETY_HEADING } from '../../src/data/accountActionSafety.js';
+/**
+ * Normal-Chrome browser — Agent Awareness + Migration Parity
+ * (specs docs/specs/normal-chrome-builtin-skill.md, docs/specs/normal-chrome-cross-platform.md).
+ *
+ *  - generateClaudeMd carries the (macOS + Windows) section (new agents).
+ *  - migrateClaudeMd appends it to an existing CLAUDE.md, REPLACES the shipped v1 (macOS-only)
+ *    section in place, keeps an edited v1 section, removes a stale v1 copy beside the new one,
+ *    handles CRLF documents, and is idempotent.
+ *  - migrateScripts refreshes all five .instar/scripts/browser/ helpers.
+ *  - migrateNormalChromeBrowserSkill replaces a first-shipped skill copy, appends the Windows
+ *    appendix (with the shared rules) to an edited copy and writes the shipped text beside it.
+ *  - The framework-shadow pass strips an exact v1 section and keeps an edited one.
+ */
+import { describe, it, expect, beforeEach, afterEach } from 'vitest';
+import fs from 'node:fs';
+import os from 'node:os';
+import path from 'node:path';
+import { spawnSync } from 'node:child_process';
+import { createHash } from 'node:crypto';
+import {
+  PostUpdateMigrator,
+  NORMAL_CHROME_BROWSER_CLAUDEMD_SECTION,
+  NORMAL_CHROME_BROWSER_CLAUDEMD_SECTION_V1,
+  NORMAL_CHROME_BROWSER_CLAUDEMD_SECTION_V2,
+  NORMAL_CHROME_BROWSER_CLAUDEMD_HEADING_V2,
+  NORMAL_CHROME_BROWSER_SKILL_V2_SHA256,
+  NORMAL_CHROME_BROWSER_CLAUDEMD_HEADING,
+  NORMAL_CHROME_BROWSER_CLAUDEMD_HEADING_V1,
+  NORMAL_CHROME_BROWSER_SKILL_MARKER,
+  NORMAL_CHROME_BROWSER_SKILL_V1_SHA256,
+  markdownSectionBounds,
+  replaceOrAppendMarkdownSection,
+} from '../../src/core/PostUpdateMigrator.js';
+import { generateClaudeMd } from '../../src/scaffold/templates.js';
+import { BROWSER_SCRIPT_NAMES } from '../../src/commands/init.js';
+import { NORMAL_CHROME_BROWSER_SKILL_CONTENT, NORMAL_CHROME_BROWSER_SHARED_RULES, NORMAL_CHROME_BROWSER_WINDOWS_SECTION, NORMAL_CHROME_BROWSER_WINDOWS_BLANK_PAGE_HEADING, NORMAL_CHROME_BROWSER_WINDOWS_BLANK_PAGE_NOTE, NORMAL_CHROME_BROWSER_PAGE_NOT_RENDERING_ROW, NORMAL_CHROME_BROWSER_LAUNCH_ROW_ANCHOR, NORMAL_CHROME_BROWSER_LAUNCH_ROW_FLAG_SENTENCE } from '../../src/data/builtinSkillContent.js';
+import { SafeFsExecutor } from '../../src/core/SafeFsExecutor.js';
+
+type MigrationResult = { upgraded: string[]; skipped: string[]; errors: string[] };
+const HEADING = NORMAL_CHROME_BROWSER_CLAUDEMD_HEADING;
+const HEADING_V1 = NORMAL_CHROME_BROWSER_CLAUDEMD_HEADING_V1;
+const V1_FIXTURE = path.resolve(process.cwd(), 'tests/fixtures/skills/normal-chrome-browser-v1.md');
+
+function call(m: PostUpdateMigrator, method: 'migrateClaudeMd' | 'migrateScripts' | 'migrateNormalChromeBrowserSkill' | 'migrateNormalChromeWindowsBlankPageNote' | 'migrateAccountActionSafetySkill' | 'migrateFrameworkShadowCapabilities'): MigrationResult {
+  const result: MigrationResult = { upgraded: [], skipped: [], errors: [] };
+  (m as unknown as Record<string, (r: MigrationResult) => void>)[method](result);
+  return result;
+}
+const count = (text: string, needle: string) => text.split(needle).length - 1;
+
+describe('NORMAL_CHROME_BROWSER_CLAUDEMD_SECTION', () => {
+  it('names the skill, all five scripts, both platforms, the trigger, the safety rules and the Linux statement', () => {
+    const text = NORMAL_CHROME_BROWSER_CLAUDEMD_SECTION();
+    expect(text).toContain(HEADING);
+    expect(text).toContain('`/normal-chrome-browser`');
+    for (const name of BROWSER_SCRIPT_NAMES) expect(text).toContain(name);
+    expect(text).toContain('BEFORE ever telling the operator a browser task "can\'t be done"');
+    expect(text).toContain('only take actions the operator asked for');
+    expect(text).toContain('never for reaching actions the page does not offer this account');
+    expect(text).toContain('written by PP');
+    expect(text).toContain('an agent in WSL is on Windows for this');
+    expect(text).toContain('I always have a browser');
+    expect(text).toContain('GET /browser/state');
+    expect(text).not.toContain('secret-drop-retrieve.mjs'); // the Secret Drop rewrite sniffs that string
+    expect(text).toContain('never take focus or send input while the operator is using the machine');
+    expect(text).not.toContain('macOS only');
+    expect(text.slice(0, text.indexOf(ACCOUNT_ACTION_SAFETY_HEADING)).length).toBeLessThan(NORMAL_CHROME_BROWSER_CLAUDEMD_SECTION_V1().length * 2); // browser card stays compact; account safety is a separate section
+  });
+
+  it('generateClaudeMd carries the section verbatim and not the v1 heading (Agent Awareness)', () => {
+    const md = generateClaudeMd('fixture', 'Fixture', 4042, true);
+    expect(md).toContain(NORMAL_CHROME_BROWSER_CLAUDEMD_SECTION().trim());
+    expect(md).not.toContain(HEADING_V1 + '\n');
+  });
+
+  it('is on the framework-shadow marker list (by its constant)', () => {
+    const src = fs.readFileSync(path.resolve(process.cwd(), 'src/core/PostUpdateMigrator.ts'), 'utf-8');
+    const start = src.indexOf('const markers = [');
+    const block = src.slice(start, src.indexOf('];', start));
+    expect(block).toContain(`'${HEADING}'`);
+    expect(block).not.toContain(`'${HEADING_V1}'`);
+  });
+});
+
+describe('markdownSectionBounds / replaceOrAppendMarkdownSection', () => {
+  const V1 = NORMAL_CHROME_BROWSER_CLAUDEMD_SECTION_V1();
+  const NEW = NORMAL_CHROME_BROWSER_CLAUDEMD_SECTION();
+
+  it('bounds a section at the next heading of any level or a blank-line-led **Bold** block, and only at a line start', () => {
+    const doc = `# Top\n\nintro\n${V1}\n**Live-User-Channel Proof Before Done** — a bold-led section.\n\n### Later\n\nmore\n`;
+    const b = markdownSectionBounds(doc, HEADING_V1)!;
+    expect(doc.slice(b.start, b.end).trim()).toBe(V1.trim());
+    expect(doc.slice(b.end)).toMatch(/^\*\*Live-User-Channel/);
+    // A quoted mention is not the section; a demoted #### copy is not the section.
+    expect(markdownSectionBounds(`text that says ${HEADING_V1} inline\n`, HEADING_V1)).toBeNull();
+    expect(markdownSectionBounds(`#${HEADING_V1}\n\nbody\n`, HEADING_V1)).toBeNull();
+    // End of file.
+    const eof = `# Top\n${V1}`;
+    const be = markdownSectionBounds(eof, HEADING_V1)!;
+    expect(eof.slice(be.start, be.end).trim()).toBe(V1.trim());
+  });
+
+  it('replaces the exact shipped v1 section in place, keeping what follows', () => {
+    const doc = `# Top\n\nintro\n${V1}\n- **Claude sessions launch from a retained per-version copy** of the executable.\n\n### Later\n\nmore\n`;
+    const r = replaceOrAppendMarkdownSection(doc, HEADING_V1, HEADING, NEW, V1);
+    expect(r.action).toBe('replaced');
+    expect(r.content).toContain(NEW.trim());
+    expect(r.content).not.toContain(HEADING_V1);
+    expect(r.content).toContain('- **Claude sessions launch from a retained per-version copy**');
+    expect(r.content).toContain('### Later\n\nmore');
+    expect(r.content.indexOf(HEADING)).toBeLessThan(r.content.indexOf('- **Claude sessions'));
+  });
+
+  it('keeps an edited v1 section (or one with heading-less text after it) and appends the new section beside it', () => {
+    const edited = V1.replace('never touch the operator\'s own Chrome', 'never touch the operator\'s own Chrome (my note: or Safari)');
+    const r = replaceOrAppendMarkdownSection(`# Top\n${edited}`, HEADING_V1, HEADING, NEW, V1);
+    expect(r.action).toBe('appended-old-kept');
+    expect(r.content).toContain('my note: or Safari');
+    expect(r.content).toContain(NEW.trim());
+    const trailing = replaceOrAppendMarkdownSection(`# Top\n${V1}\nA paragraph the agent added right after, with no heading.\n`, HEADING_V1, HEADING, NEW, V1);
+    expect(trailing.action).toBe('appended-old-kept');
+    expect(trailing.content).toContain('A paragraph the agent added right after');
+  });
+
+  it('replaces the exact v1 copy in place even when an edited v1 copy precedes it (new heading absent)', () => {
+    const edited = V1.replace('list that folder instead', 'list that folder instead (my edit)');
+    const r = replaceOrAppendMarkdownSection(`# Top\n${edited}\n### Between\n\ntext\n${V1}`, HEADING_V1, HEADING, NEW, V1);
+    expect(r.action).toBe('replaced');
+    expect(r.content).toContain('(my edit)'); // the edited copy stays
+    expect(count(r.content, HEADING_V1)).toBe(1);
+    expect(count(r.content, HEADING)).toBe(1);
+    expect(r.content.indexOf('### Between')).toBeLessThan(r.content.indexOf(HEADING));
+  });
+
+  it('removes a stale exact v1 copy when the new section is already present; is a no-op otherwise', () => {
+    const both = `# Top\n${NEW}\n${V1}`;
+    const r = replaceOrAppendMarkdownSection(both, HEADING_V1, HEADING, NEW, V1);
+    expect(r.action).toBe('removed-stale');
+    expect(count(r.content, HEADING)).toBe(1);
+    expect(r.content).not.toContain(HEADING_V1);
+    const again = replaceOrAppendMarkdownSection(r.content, HEADING_V1, HEADING, NEW, V1);
+    expect(again.action).toBe('present');
+    expect(again.content).toBe(r.content);
+    expect(replaceOrAppendMarkdownSection('# Top\n', HEADING_V1, HEADING, NEW, V1).action).toBe('appended');
+  });
+
+  it('handles a CRLF document and writes it back in CRLF', () => {
+    const doc = `# Top\r\n\r\nintro\r\n${V1.replace(/\n/g, '\r\n')}\r\n### Later\r\n\r\nmore\r\n`;
+    const r = replaceOrAppendMarkdownSection(doc, HEADING_V1, HEADING, NEW, V1);
+    expect(r.action).toBe('replaced');
+    expect(r.content).not.toContain(HEADING_V1);
+    expect(r.content).toContain(HEADING + '\r\n');
+    expect(r.content).not.toMatch(/[^\r]\n/);
+    expect(r.content).toContain('### Later\r\n\r\nmore');
+  });
+});
+
+describe('PostUpdateMigrator — normal-Chrome browser', () => {
+  let projectDir: string;
+  let m: PostUpdateMigrator;
+  const skillPath = () => path.join(projectDir, '.claude', 'skills', 'normal-chrome-browser', 'SKILL.md');
+  const claudeMd = () => fs.readFileSync(path.join(projectDir, 'CLAUDE.md'), 'utf-8');
+
+  beforeEach(() => {
+    projectDir = fs.mkdtempSync(path.join(os.tmpdir(), 'instar-normal-chrome-mig-'));
+    fs.mkdirSync(path.join(projectDir, '.instar'), { recursive: true });
+    fs.writeFileSync(path.join(projectDir, 'CLAUDE.md'), '# CLAUDE.md — existing agent\n\nSome prior content.\n');
+    m = new PostUpdateMigrator({ projectDir, stateDir: path.join(projectDir, '.instar'), port: 4042, hasTelegram: false, projectName: 'test-agent' });
+  });
+  afterEach(() => {
+    SafeFsExecutor.safeRmSync(projectDir, { recursive: true, force: true, operation: 'tests/unit/PostUpdateMigrator-normalChromeBrowser.test.ts' });
+  });
+
+  it('migrateClaudeMd appends the section once', () => {
+    const first = call(m, 'migrateClaudeMd');
+    expect(first.upgraded).toContain('CLAUDE.md: added Normal-Chrome browser section');
+    const second = call(m, 'migrateClaudeMd');
+    expect(second.upgraded.filter(u => /Normal-Chrome/.test(u))).toEqual([]);
+    expect(count(claudeMd(), HEADING)).toBe(1);
+    expect(claudeMd()).toContain(NORMAL_CHROME_BROWSER_CLAUDEMD_SECTION().trim());
+  });
+
+  it('migrateClaudeMd replaces the shipped v1 section in place (the PR 2283 agent), keeping a heading-less block after it', () => {
+    fs.writeFileSync(path.join(projectDir, 'CLAUDE.md'), `# CLAUDE.md — agent on PR 2283\n${NORMAL_CHROME_BROWSER_CLAUDEMD_SECTION_V1()}\n**A2A cross-route copies are labelled:** one peer can reach me under more than one kind of identity.\n`);
+    const r = call(m, 'migrateClaudeMd');
+    expect(r.upgraded).toContain('CLAUDE.md: replaced Normal-Chrome browser section (macOS, Windows and Linux)');
+    const md = claudeMd();
+    expect(count(md, HEADING)).toBe(1);
+    expect(md).not.toContain(HEADING_V1);
+    expect(md).toContain('**A2A cross-route copies are labelled:**');
+    expect(call(m, 'migrateClaudeMd').upgraded.filter(u => /Normal-Chrome/.test(u))).toEqual([]);
+  });
+
+  it('migrateClaudeMd keeps an edited v1 section and removes a stale shipped v1 copy after a revert-then-upgrade', () => {
+    const edited = NORMAL_CHROME_BROWSER_CLAUDEMD_SECTION_V1().replace('list that folder instead', 'list that folder instead (my edit)');
+    fs.writeFileSync(path.join(projectDir, 'CLAUDE.md'), `# CLAUDE.md\n${edited}`);
+    const r = call(m, 'migrateClaudeMd');
+    expect(r.upgraded.some(u => u.includes('the edited older section was kept'))).toBe(true);
+    expect(claudeMd()).toContain('(my edit)');
+    expect(count(claudeMd(), HEADING)).toBe(1);
+    // A release revert re-appends the shipped v1; the next upgrade removes it.
+    fs.appendFileSync(path.join(projectDir, 'CLAUDE.md'), NORMAL_CHROME_BROWSER_CLAUDEMD_SECTION_V1());
+    const again = call(m, 'migrateClaudeMd');
+    expect(again.upgraded).toContain('CLAUDE.md: removed a stale older Normal-Chrome browser section');
+    expect(count(claudeMd(), HEADING_V1)).toBe(1); // only the edited copy remains
+    expect(claudeMd()).toContain('(my edit)');
+  });
+
+  it('migrateScripts installs all five helpers and refreshes a stale copy on every run', () => {
+    const dir = path.join(projectDir, '.instar', 'scripts', 'browser');
+    const first = call(m, 'migrateScripts');
+    for (const name of BROWSER_SCRIPT_NAMES) {
+      expect(first.upgraded).toContain(`scripts/browser/${name} (normal-Chrome helper)`);
+      expect(fs.statSync(path.join(dir, name)).mode & 0o777).toBe(0o755);
+    }
+    expect(first.errors.filter(e => e.startsWith('scripts/browser'))).toEqual([]);
+    fs.writeFileSync(path.join(dir, 'chrome-launch.sh'), 'stale');
+    fs.writeFileSync(path.join(dir, 'ndrive.sh'), 'stale');
+    call(m, 'migrateScripts');
+    expect(fs.readFileSync(path.join(dir, 'chrome-launch.sh'), 'utf-8')).toContain('open -g -na "Google Chrome"');
+    expect(fs.readFileSync(path.join(dir, 'ndrive.sh'), 'utf-8')).toContain('Register-ScheduledTask');
+  });
+
+  describe('migrateNormalChromeBrowserSkill', () => {
+    it('replaces a copy installed from the first shipped version (hash re-derived from the fixture, CRLF tolerated)', () => {
+      const v1 = fs.readFileSync(V1_FIXTURE, 'utf-8');
+      expect(createHash('sha256').update(v1).digest('hex')).toBe(NORMAL_CHROME_BROWSER_SKILL_V1_SHA256);
+      fs.mkdirSync(path.dirname(skillPath()), { recursive: true });
+      fs.writeFileSync(skillPath(), v1);
+      const r = call(m, 'migrateNormalChromeBrowserSkill');
+      expect(r.upgraded).toContain('skills/normal-chrome-browser/SKILL.md (macOS, Windows and Linux drivers)');
+      expect(fs.readFileSync(skillPath(), 'utf-8')).toBe(NORMAL_CHROME_BROWSER_SKILL_CONTENT);
+      expect(fs.existsSync(path.join(path.dirname(skillPath()), 'SKILL.shipped.md'))).toBe(false);
+      // Idempotent on the marker.
+      expect(call(m, 'migrateNormalChromeBrowserSkill').upgraded).toEqual([]);
+      // A CRLF copy of the shipped text is still recognized.
+      fs.writeFileSync(skillPath(), v1.replace(/\n/g, '\r\n'));
+      expect(call(m, 'migrateNormalChromeBrowserSkill').upgraded).toContain('skills/normal-chrome-browser/SKILL.md (macOS, Windows and Linux drivers)');
+    });
+
+    it('appends the Windows appendix once to an edited copy, keeps the edits, and writes the shipped text beside it', () => {
+      const edited = fs.readFileSync(V1_FIXTURE, 'utf-8') + '\n## My notes\n\nfire events that page code listens for\n';
+      fs.mkdirSync(path.dirname(skillPath()), { recursive: true });
+      fs.writeFileSync(skillPath(), edited);
+      const r = call(m, 'migrateNormalChromeBrowserSkill');
+      expect(r.upgraded).toContain('skills/normal-chrome-browser/SKILL.md (appended the Windows and Linux driver sections; local edits kept; shipped text in SKILL.shipped.md)');
+      const after = fs.readFileSync(skillPath(), 'utf-8');
+      expect(after.startsWith(edited.trimEnd())).toBe(true);
+      expect(after).toContain('fire events that page code listens for'); // the agent's text is never removed
+      expect(r.upgraded.some(u => u.includes('still describes dispatching synthetic focus/mouse/pointer events'))).toBe(true); // surfaced, not rewritten
+      expect(count(after, NORMAL_CHROME_BROWSER_SKILL_MARKER)).toBe(1);
+      expect(after).toContain(NORMAL_CHROME_BROWSER_SHARED_RULES.trim()); // the current rules are on disk
+      expect(after).toContain(NORMAL_CHROME_BROWSER_WINDOWS_SECTION.trim());
+      expect(after).toContain('win over any older instruction above that conflicts');
+      expect(fs.readFileSync(path.join(path.dirname(skillPath()), 'SKILL.shipped.md'), 'utf-8')).toBe(NORMAL_CHROME_BROWSER_SKILL_CONTENT);
+      expect(call(m, 'migrateNormalChromeBrowserSkill').upgraded).toEqual([]);
+      expect(count(fs.readFileSync(skillPath(), 'utf-8'), NORMAL_CHROME_BROWSER_SKILL_MARKER)).toBe(1);
+    });
+
+    it('a CRLF edited copy gets a CRLF appendix (no mixed line endings), and the shipped sibling is refreshed on later runs', () => {
+      const edited = (fs.readFileSync(V1_FIXTURE, 'utf-8') + '\n## My notes\n\nkeep\n').replace(/\n/g, '\r\n');
+      fs.mkdirSync(path.dirname(skillPath()), { recursive: true });
+      fs.writeFileSync(skillPath(), edited);
+      call(m, 'migrateNormalChromeBrowserSkill');
+      const after = fs.readFileSync(skillPath(), 'utf-8');
+      expect(after).not.toMatch(/[^\r]\n/); // every newline is CRLF
+      expect(after.replace(/\r\n/g, '\n')).toContain(NORMAL_CHROME_BROWSER_SKILL_MARKER);
+      // The sibling is never agent-edited: a stale one is refreshed even though SKILL.md already carries the marker.
+      const shipped = path.join(path.dirname(skillPath()), 'SKILL.shipped.md');
+      fs.writeFileSync(shipped, 'older shipped text');
+      const r = call(m, 'migrateNormalChromeBrowserSkill');
+      expect(r.upgraded).toContain('skills/normal-chrome-browser/SKILL.shipped.md (refreshed to the current shipped text)');
+      expect(fs.readFileSync(shipped, 'utf-8')).toBe(NORMAL_CHROME_BROWSER_SKILL_CONTENT);
+      expect(fs.readFileSync(skillPath(), 'utf-8')).toBe(after); // the agent's SKILL.md is untouched by the refresh
+    });
+
+    it('leaves a file that is not this skill alone and a missing file to installBuiltinSkills', () => {
+      fs.mkdirSync(path.dirname(skillPath()), { recursive: true });
+      fs.writeFileSync(skillPath(), '---\nname: something-else\n---\nmine');
+      const r = call(m, 'migrateNormalChromeBrowserSkill');
+      expect(r.upgraded).toEqual([]);
+      expect(r.skipped.some(s => s.includes('not the built-in skill'))).toBe(true);
+      expect(fs.readFileSync(skillPath(), 'utf-8')).toBe('---\nname: something-else\n---\nmine');
+      SafeFsExecutor.safeRmSync(skillPath(), { force: true, operation: 'tests/unit/PostUpdateMigrator-normalChromeBrowser.test.ts' });
+      expect(call(m, 'migrateNormalChromeBrowserSkill')).toEqual({ upgraded: [], skipped: [], errors: [] });
+    });
+  });
+
+  describe('migrateNormalChromeWindowsBlankPageNote (spec normal-chrome-windows-occlusion)', () => {
+    const NOTE_LABEL = 'skills/normal-chrome-browser/SKILL.md (Windows blank-page note: ERR page-not-rendering and the occlusion fix)';
+    /** The real shipped text from just before this change (origin/main at v1.3.1930), byte for byte. */
+    const V3_FIXTURE = path.resolve(process.cwd(), 'tests/fixtures/skills/normal-chrome-browser-v3.md');
+    const previous = () => fs.readFileSync(V3_FIXTURE, 'utf-8');
+
+    it('the fixture is the previous shipped text: no note, no row, no flag sentence', () => {
+      expect(createHash('sha256').update(previous()).digest('hex')).toBe('0eba71ec8c2eca715f5bcb3140743b75df8e1411f3ad2b6be4fdc6e0c86da457');
+      expect(previous()).not.toContain('page-not-rendering');
+      expect(previous()).not.toContain('CalculateNativeWinOcclusion');
+      expect(previous()).toContain(NORMAL_CHROME_BROWSER_SKILL_MARKER);
+    });
+
+    it('an untouched previous copy ends byte-identical to a fresh install (LF and CRLF), once', () => {
+      fs.mkdirSync(path.dirname(skillPath()), { recursive: true });
+      fs.writeFileSync(skillPath(), previous());
+      expect(call(m, 'migrateNormalChromeWindowsBlankPageNote').upgraded).toEqual([NOTE_LABEL]);
+      expect(fs.readFileSync(skillPath(), 'utf-8')).toBe(NORMAL_CHROME_BROWSER_SKILL_CONTENT);
+      expect(call(m, 'migrateNormalChromeWindowsBlankPageNote').upgraded).toEqual([]);
+      fs.writeFileSync(skillPath(), previous().replace(/\n/g, '\r\n'));
+      expect(call(m, 'migrateNormalChromeWindowsBlankPageNote').upgraded).toEqual([NOTE_LABEL]);
+      expect(fs.readFileSync(skillPath(), 'utf-8')).toBe(NORMAL_CHROME_BROWSER_SKILL_CONTENT.replace(/\n/g, '\r\n'));
+    });
+
+    it('an edited copy gets all three edits in place and keeps its own text', () => {
+      fs.mkdirSync(path.dirname(skillPath()), { recursive: true });
+      fs.writeFileSync(skillPath(), previous() + '\n## My notes\n\nkeep me\n');
+      expect(call(m, 'migrateNormalChromeWindowsBlankPageNote').upgraded).toEqual([NOTE_LABEL]);
+      const after = fs.readFileSync(skillPath(), 'utf-8');
+      expect(after).toBe(NORMAL_CHROME_BROWSER_SKILL_CONTENT + '\n## My notes\n\nkeep me\n');
+      expect(after.indexOf(NORMAL_CHROME_BROWSER_WINDOWS_BLANK_PAGE_HEADING)).toBeLessThan(after.indexOf(NORMAL_CHROME_BROWSER_SKILL_MARKER));
+      expect(count(after, NORMAL_CHROME_BROWSER_PAGE_NOT_RENDERING_ROW)).toBe(1);
+      expect(count(after, NORMAL_CHROME_BROWSER_LAUNCH_ROW_FLAG_SENTENCE)).toBe(1);
+    });
+
+    it('appends the note when an edited copy no longer has the Linux heading, and skips edits whose anchors are gone', () => {
+      const edited = previous().replace(NORMAL_CHROME_BROWSER_SKILL_MARKER, '### My Linux notes').replace(NORMAL_CHROME_BROWSER_LAUNCH_ROW_ANCHOR, '| My own launch text.');
+      fs.mkdirSync(path.dirname(skillPath()), { recursive: true });
+      fs.writeFileSync(skillPath(), edited);
+      expect(call(m, 'migrateNormalChromeWindowsBlankPageNote').upgraded).toEqual([NOTE_LABEL]);
+      const after = fs.readFileSync(skillPath(), 'utf-8');
+      expect(count(after, NORMAL_CHROME_BROWSER_PAGE_NOT_RENDERING_ROW)).toBe(1);
+      expect(after).not.toContain(NORMAL_CHROME_BROWSER_LAUNCH_ROW_FLAG_SENTENCE);
+      expect(after.replace(NORMAL_CHROME_BROWSER_PAGE_NOT_RENDERING_ROW + '\n', '').startsWith(edited.trimEnd())).toBe(true);
+      expect(after.trimEnd().endsWith(NORMAL_CHROME_BROWSER_WINDOWS_BLANK_PAGE_NOTE.trimEnd())).toBe(true);
+    });
+
+    it('is a no-op on the current shipped text, and leaves other or missing files alone', () => {
+      fs.mkdirSync(path.dirname(skillPath()), { recursive: true });
+      fs.writeFileSync(skillPath(), NORMAL_CHROME_BROWSER_SKILL_CONTENT);
+      expect(call(m, 'migrateNormalChromeWindowsBlankPageNote')).toEqual({ upgraded: [], skipped: [], errors: [] });
+      fs.writeFileSync(skillPath(), '---\nname: something-else\n---\nmine');
+      expect(call(m, 'migrateNormalChromeWindowsBlankPageNote').upgraded).toEqual([]);
+      expect(fs.readFileSync(skillPath(), 'utf-8')).toBe('---\nname: something-else\n---\nmine');
+      SafeFsExecutor.safeRmSync(skillPath(), { force: true, operation: 'tests/unit/PostUpdateMigrator-normalChromeBrowser.test.ts' });
+      expect(call(m, 'migrateNormalChromeWindowsBlankPageNote')).toEqual({ upgraded: [], skipped: [], errors: [] });
+    });
+
+    it('in the real order, a first-shipped copy is replaced whole and does not get the note twice', () => {
+      fs.mkdirSync(path.dirname(skillPath()), { recursive: true });
+      fs.writeFileSync(skillPath(), fs.readFileSync(V1_FIXTURE, 'utf-8'));
+      call(m, 'migrateNormalChromeBrowserSkill');
+      call(m, 'migrateAccountActionSafetySkill');
+      expect(call(m, 'migrateNormalChromeWindowsBlankPageNote').upgraded).toEqual([]);
+      expect(count(fs.readFileSync(skillPath(), 'utf-8'), NORMAL_CHROME_BROWSER_WINDOWS_BLANK_PAGE_HEADING)).toBe(1);
+    });
+  });
+
+  it('the shadow pass strips an exact shipped v1 section from AGENTS.md and mirrors the new one once; an edited v1 section is kept', () => {
+    call(m, 'migrateClaudeMd');
+    fs.writeFileSync(path.join(projectDir, 'AGENTS.md'), `# AGENTS.md\n${NORMAL_CHROME_BROWSER_CLAUDEMD_SECTION_V1().trimEnd()}\n`);
+    call(m, 'migrateFrameworkShadowCapabilities');
+    const agents = fs.readFileSync(path.join(projectDir, 'AGENTS.md'), 'utf-8');
+    expect(count(agents, HEADING)).toBe(1);
+    expect(agents).not.toContain(HEADING_V1);
+    call(m, 'migrateFrameworkShadowCapabilities');
+    expect(count(fs.readFileSync(path.join(projectDir, 'AGENTS.md'), 'utf-8'), HEADING)).toBe(1);
+
+    const edited = NORMAL_CHROME_BROWSER_CLAUDEMD_SECTION_V1().replace('list that folder instead', 'list that folder instead (my edit)');
+    fs.writeFileSync(path.join(projectDir, 'GEMINI.md'), `# GEMINI.md\n${edited}`);
+    call(m, 'migrateFrameworkShadowCapabilities');
+    const gemini = fs.readFileSync(path.join(projectDir, 'GEMINI.md'), 'utf-8');
+    expect(gemini).toContain('(my edit)');
+    expect(count(gemini, HEADING)).toBe(1);
+    // A CRLF shadow with the exact v1 section is stripped too, and stays CRLF.
+    fs.writeFileSync(path.join(projectDir, 'AGENTS.md'), `# AGENTS.md\n${NORMAL_CHROME_BROWSER_CLAUDEMD_SECTION_V1().trimEnd()}\n`.replace(/\n/g, '\r\n'));
+    call(m, 'migrateFrameworkShadowCapabilities');
+    const crlf = fs.readFileSync(path.join(projectDir, 'AGENTS.md'), 'utf-8');
+    expect(crlf).not.toContain(HEADING_V1);
+    expect(crlf).toContain(HEADING);
+    expect(crlf.split('\r\n').length).toBeGreaterThan(5);
+  });
+});
+
+describe('the Linux release reaches an existing agent', () => {
+  let dir: string;
+  let migrator: PostUpdateMigrator;
+  const V2 = fs.readFileSync(path.resolve('tests/fixtures/skills/normal-chrome-browser-v2.md'), 'utf8');
+  const run = (name: string) => (migrator as unknown as Record<string, (r: object) => void>)[name];
+  const migrate = (name: string) => { const r = { upgraded: [] as string[], skipped: [] as string[], errors: [] as string[] }; run(name).call(migrator, r); return r; };
+  const skillFile = () => path.join(dir, '.claude/skills/normal-chrome-browser/SKILL.md');
+
+  beforeEach(() => {
+    dir = fs.mkdtempSync(path.join(os.tmpdir(), 'ncb3-'));
+    fs.mkdirSync(path.join(dir, '.instar'), { recursive: true });
+    fs.mkdirSync(path.dirname(skillFile()), { recursive: true });
+    migrator = new PostUpdateMigrator({ projectDir: dir, stateDir: path.join(dir, '.instar'), port: 4040, hasTelegram: false, projectName: 't' });
+  });
+  afterEach(() => { SafeFsExecutor.safeRmSync(dir, { recursive: true, force: true, operation: 'test-cleanup' }); });
+
+  it('pins the v2 hash to the fixture', () => {
+    expect(createHash('sha256').update(V2.replace(/\r\n/g, '\n')).digest('hex')).toBe(NORMAL_CHROME_BROWSER_SKILL_V2_SHA256);
+  });
+
+  it('replaces the shipped v2 skill whole, once', () => {
+    fs.writeFileSync(skillFile(), V2);
+    expect(migrate('migrateNormalChromeBrowserSkill').upgraded).toContain('skills/normal-chrome-browser/SKILL.md (macOS, Windows and Linux drivers)');
+    expect(fs.readFileSync(skillFile(), 'utf8')).toBe(NORMAL_CHROME_BROWSER_SKILL_CONTENT);
+    expect(migrate('migrateNormalChromeBrowserSkill').upgraded).toEqual([]);
+  });
+
+  it('swaps only the Linux subsection of an edited copy, keeping the edits, CRLF included', () => {
+    for (const eol of ['\n', '\r\n']) {
+      fs.writeFileSync(skillFile(), (V2 + '\nMY LOCAL NOTE\n').replace(/\n/g, eol));
+      migrate('migrateNormalChromeBrowserSkill');
+      const after = fs.readFileSync(skillFile(), 'utf8');
+      expect(after).toContain('MY LOCAL NOTE');
+      expect(after.split(NORMAL_CHROME_BROWSER_SKILL_MARKER).length - 1).toBeGreaterThanOrEqual(1);
+      expect(after).not.toContain('Not built. Say so plainly');
+      expect(eol === '\n' || !/[^\r]\n/.test(after)).toBe(true);
+    }
+  });
+
+  it('replaces the shipped v2 card in place, adds the Registry First row once, and is idempotent', () => {
+    const md = path.join(dir, 'CLAUDE.md');
+    fs.writeFileSync(md, `# CLAUDE.md\n\n| What can I do? | x |\n${NORMAL_CHROME_BROWSER_CLAUDEMD_SECTION_V2()}\n## After\n`);
+    migrate('migrateClaudeMd');
+    const once = fs.readFileSync(md, 'utf8');
+    expect(once).toContain(NORMAL_CHROME_BROWSER_CLAUDEMD_HEADING);
+    expect(once).not.toContain(NORMAL_CHROME_BROWSER_CLAUDEMD_HEADING_V2);
+    expect(once.indexOf(NORMAL_CHROME_BROWSER_CLAUDEMD_HEADING)).toBeLessThan(once.indexOf('## After'));
+    expect(once.split('| Can I use a browser?').length - 1).toBe(1);
+    migrate('migrateClaudeMd');
+    expect(fs.readFileSync(md, 'utf8')).toBe(once);
+  });
+
+  it('prints the state in the session-start hook, run for real, and never "no browser"', () => {
+    const hook = (migrator as unknown as { getSessionStartHook(): string }).getSessionStartHook();
+    const block = hook.slice(hook.indexOf('# Browser awareness on a Linux server'), hook.indexOf('# TOPIC CONTEXT (loaded FIRST'));
+    const bin = path.join(dir, 'bin');
+    fs.mkdirSync(bin);
+    fs.writeFileSync(path.join(bin, 'uname'), '#!/bin/bash\necho Linux\n', { mode: 0o755 });
+    const script = path.join(dir, 'block.sh');
+    fs.writeFileSync(script, block.replace(/\$INSTAR_DIR/g, path.join(dir, '.instar')));
+    const stateFile = path.join(dir, '.instar/state/xdrive/provision.json');
+    fs.mkdirSync(path.dirname(stateFile), { recursive: true });
+    const line = (status: string | null) => {
+      if (status) fs.writeFileSync(stateFile, JSON.stringify({ status })); else SafeFsExecutor.safeRmSync(stateFile, { force: true, operation: 'test-cleanup' });
+      return spawnSync('bash', [script], { encoding: 'utf8', env: { PATH: `${bin}:/usr/bin:/bin` } }).stdout;
+    };
+    const expectedDefault = fs.existsSync('/opt/google/chrome/chrome') ? 'ready' : 'not-built';
+    expect(line(null)).toContain(`State: ${expectedDefault}.`);
+    expect(line('installing')).toContain('State: installing.');
+    expect(line('failed: key')).toContain('State: broken.');
+    expect(line(null)).toContain('GET /browser/state');
+    expect(line('failed: key').toLowerCase()).toContain('neither means no browser');
+    SafeFsExecutor.safeRmSync(path.join(bin, 'uname'), { operation: 'test-cleanup' });
+    fs.writeFileSync(path.join(bin, 'uname'), '#!/bin/bash\necho Darwin\n', { mode: 0o755 });
+    expect(line(null)).toBe('');
+  });
+});

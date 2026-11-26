@@ -1,0 +1,36 @@
+{
+  "ts": "2026-10-08T20:58:30.009Z",
+  "slug": "a2a-ack-never-acked",
+  "suggestedTier": 2,
+  "declaredTier": 2,
+  "riskFloor": 1,
+  "riskFloorReasons": [],
+  "belowFloor": false,
+  "files": 7,
+  "loc": 367,
+  "scope": {
+    "basis": "staged-in-scope-additions-plus-deletions",
+    "files": [
+      "src/commands/server.ts",
+      "src/server/routes.ts",
+      "src/threadline/ThreadlineBootstrap.ts",
+      "src/threadline/ThreadlineEndpoints.ts",
+      "src/threadline/WarrantsReplyGate.ts",
+      "src/threadline/autoAck.ts",
+      "src/threadline/client/ThreadlineClient.ts"
+    ],
+    "addedLines": 316,
+    "deletedLines": 51
+  },
+  "causalAutopsy": null,
+  "classClosure": {
+    "defectClass": "unbounded-self-action",
+    "closure": "guard",
+    "guardEvidence": {
+      "enforcementType": "ratchet",
+      "citation": "tests/integration/threadline/ack-never-acked.test.ts",
+      "howCaught": "Control-loop edge: agent A's auto-ack arriving at agent B's relay handler and back. Steady-state bound: a recognised ack is terminal at the receiver (runRelayAckStage returns before any send), so one message yields at most one ack per side and one session in total, independent of horizon. Settling brake: the per-sender ack limiter (5 per 60 s) still bounds acks for real messages. The test drives two handlers back to back until the wire is quiet and asserts two frames; the pre-fix pair produces eleven."
+    }
+  },
+  "verdict": "blocked"
+}

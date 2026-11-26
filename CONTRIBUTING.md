@@ -75,6 +75,27 @@ Open an [issue](https://github.com/JKHeadley/instar/issues) with:
 - Instar version (`instar --version`)
 - Node.js version, OS
 
+## Releasing (maintainers)
+
+A merge to `main` normally ships through `.github/workflows/publish.yml`: it folds the `upgrades/next/*.md` fragments into a versioned guide, bumps the version, publishes to npm, and commits `chore: release vX [skip ci]`.
+
+**When GitHub's runners are starved, release locally. That is the default, not a fallback** (maintainer ruling, 2026-10-20). One command runs the same publish job, in the same order, with the same scripts:
+
+```bash
+git fetch origin && git checkout --detach origin/main   # a clean tree at exactly origin/main
+npm run release:local -- --dry-run                       # everything except publish/commit/push; prints the version
+npm run release:local                                    # real release (npm auth from your npm config)
+npm run release:local -- --userconfig ~/.npmrc-instar    # or name the npmrc that holds the publish token
+```
+
+What differs from CI, and why:
+- **No npm provenance.** `--provenance` needs the GitHub Actions OIDC token, which only exists inside a CI run.
+- **The release commit runs the hooks.** CI commits with `HUSKY=0`; the local path commits and pushes with every hook on. The pre-push gate recognises a release cut (only version fields in `package.json` / `package-lock.json`, one added `upgrades/<version>.md`, and deleted `upgrades/next/*.md`) and lets it through without a new fragment.
+- **`npm view` failing stops the release.** CI falls back to `0.0.0`; locally that would let `package.json` alone pick the version.
+- Pushing to `main` needs the branch-protection bypass that CI's release token has.
+
+It refuses to start while any `publish.yml` run is queued or in progress, for any commit, because that run publishes whatever main is when it gets a runner. If `gh` can't answer, it stops rather than assume none. If your npm account needs a one-time password to publish, it says so before building anything: pass `--otp-command "<a command that prints a fresh code>"`, or use a granular or automation token and pass `--token-skips-otp`. If anything fails after publishing, finish with `npm run release:local -- --push-only`, which never publishes again.
+
 ## Code Style
 
 - TypeScript strict mode

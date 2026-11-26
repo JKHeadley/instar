@@ -1,0 +1,34 @@
+{
+  "ts": "2026-10-21T21:01:57.072Z",
+  "slug": "pairing-polling-agents",
+  "suggestedTier": 2,
+  "declaredTier": 2,
+  "riskFloor": 2,
+  "riskFloorReasons": [
+    "safety-invariant proximity: src/messaging/TelegramAdapter.ts matches Telegram adapter"
+  ],
+  "belowFloor": false,
+  "files": 4,
+  "loc": 43,
+  "scope": {
+    "basis": "staged-in-scope-additions-plus-deletions",
+    "files": [
+      "src/messaging/TelegramAdapter.ts",
+      "src/server/LifelineIngressGuard.ts",
+      "src/server/routes.ts",
+      "src/threadline/PairingInviteTelegram.ts"
+    ],
+    "addedLines": 40,
+    "deletedLines": 3
+  },
+  "causalAutopsy": {
+    "origin": "latent",
+    "relatedPrs": [
+      2181,
+      2276
+    ],
+    "notes": "Pairing's Telegram surface assumed a lifeline; Luna's read of PP (no lifeline, armedBy no-lifeline-ingress) showed polling agents could never get buttons."
+  },
+  "classClosure": null,
+  "verdict": "pass"
+}

@@ -7,6 +7,8 @@
  * wire-up depends on so a payload rename can't silently regress it.
  */
 
+import { boundedTail } from '../../src/core/boundedInput.js';
+import { HELPER_DEATH_SNIPPET_CHARS } from '../../src/commands/server.js';
 import { describe, it, expect } from 'vitest';
 import fs from 'node:fs';
 import path from 'node:path';
@@ -44,7 +46,7 @@ describe('HelperWatchdog wire-up contract', () => {
 
       // The server wire-up constructs a message like this — verify the
       // derived alert string is non-empty and includes the key fields.
-      const snippet = (e.record.lastMessage ?? '').slice(0, 160);
+      const snippet = boundedTail(e.record.lastMessage ?? '', HELPER_DEATH_SNIPPET_CHARS);
       const msg = `[helper-watchdog] Your ${e.record.agentType} helper (agent ${e.record.agentId}) died with reason=${e.reason}. Last message: ${snippet}`;
       expect(msg).toContain('Explore');
       expect(msg).toContain('agent-X');

@@ -1,0 +1,22 @@
+{
+  "ts": "2026-10-25T02:47:09.856Z",
+  "slug": "verifier-version-no-ambient-typescript",
+  "suggestedTier": 1,
+  "declaredTier": 1,
+  "riskFloor": 1,
+  "riskFloorReasons": [],
+  "belowFloor": false,
+  "files": 1,
+  "loc": 37,
+  "scope": {
+    "basis": "staged-in-scope-additions-plus-deletions",
+    "files": [
+      "src/localVerify/verifierVersion.ts"
+    ],
+    "addedLines": 17,
+    "deletedLines": 20
+  },
+  "causalAutopsy": null,
+  "classClosure": null,
+  "verdict": "pass"
+}

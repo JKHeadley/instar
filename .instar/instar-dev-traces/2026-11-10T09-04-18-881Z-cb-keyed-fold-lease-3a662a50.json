@@ -1,0 +1,18 @@
+{
+  "version": 2,
+  "slug": "cb-keyed-fold-lease",
+  "sessionId": "985461a5-eba2-47c0-8b7e-995dad7e3ada",
+  "timestamp": "2026-11-10T09:04:18.881Z",
+  "artifactPath": "upgrades/side-effects/cb-keyed-fold-lease.md",
+  "artifactSha256": "73a88d93b383ba42376b453f38714f82a1944ebd453613fb93762a077e8fbbc8",
+  "specPath": "docs/specs/context-budget-layered-summaries.md",
+  "coveredFiles": [
+    "src/core/foldLeaseFactory.ts",
+    "upgrades/side-effects/cb-keyed-fold-lease.md"
+  ],
+  "phase": "complete",
+  "tier": 2,
+  "tierReasoning": "Comment-only @silent-fallback-ok marker on the approved slice-7a lock's verify catch; no behaviour change.",
+  "secondPass": "not-required",
+  "reviewerConcurred": null
+}

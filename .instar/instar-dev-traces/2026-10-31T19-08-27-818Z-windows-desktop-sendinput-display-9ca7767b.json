@@ -1,0 +1,21 @@
+{
+  "version": 2,
+  "slug": "windows-desktop-sendinput-display",
+  "sessionId": "22931342-0ba2-4551-8807-182c3b8ae255",
+  "timestamp": "2026-10-31T19:08:27.818Z",
+  "artifactPath": "upgrades/side-effects/windows-desktop-sendinput-display.md",
+  "artifactSha256": "8f7110a910eb8dae86401cbf3a9310d0695999b7372cc58682e3a77848326a5c",
+  "coveredFiles": [
+    "docs/specs/native-remote-desktop-windows-input.eli16.md",
+    "src/native/remote-desktop/windows/InstarDesktopCompanion.cs",
+    "upgrades/next/windows-desktop-sendinput-display.md",
+    "upgrades/side-effects/windows-desktop-sendinput-display.md"
+  ],
+  "phase": "complete",
+  "tier": 1,
+  "tierReasoning": "Single-file Windows companion input/power change; no server authority; a revert and normal update fully undo it",
+  "eli16Path": "docs/specs/native-remote-desktop-windows-input.eli16.md",
+  "sideEffectsPath": "upgrades/side-effects/windows-desktop-sendinput-display.md",
+  "secondPass": "not-required",
+  "reviewerConcurred": null
+}

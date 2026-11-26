@@ -1,0 +1,22 @@
+{
+  "ts": "2026-10-21T14:26:13.705Z",
+  "slug": "pairing-both-sides-report",
+  "suggestedTier": 2,
+  "declaredTier": 2,
+  "riskFloor": 1,
+  "riskFloorReasons": [],
+  "belowFloor": false,
+  "files": 1,
+  "loc": 57,
+  "scope": {
+    "basis": "staged-in-scope-additions-plus-deletions",
+    "files": [
+      "src/threadline/pairingHandshake.ts"
+    ],
+    "addedLines": 49,
+    "deletedLines": 8
+  },
+  "causalAutopsy": null,
+  "classClosure": null,
+  "verdict": "pass"
+}

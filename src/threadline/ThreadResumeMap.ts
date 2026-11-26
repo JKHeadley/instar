@@ -46,6 +46,22 @@ export interface ThreadResumeEntry {
   spawnMode?: 'interactive' | 'pipe';
   originTopicId?: number;
   originSessionName?: string;
+  /** Memory privacy: the authenticated peer this thread is with (write-once). */
+  peerFingerprint?: string;
+  /** Memory privacy: when `peerFingerprint` was claimed. */
+  ownerClaimedAt?: string;
+  /** Memory privacy: the audience key the transcript was written under. */
+  audienceKey?: string;
+  /** Memory privacy: the owner was adopted from a pre-version record; it carries the id only. */
+  ownerAdopted?: boolean;
+}
+
+/** The outcome of claiming a thread for an authenticated sender (memory-privacy-agent-places §2). */
+export interface ThreadOwnerClaim {
+  /** The thread's owner after the claim, or null when the thread is unowned and cannot be claimed. */
+  owner: string | null;
+  /** True when this call wrote the owner (a new thread, or a legacy entry adopted). */
+  claimed: boolean;
 }
 
 export interface ThreadResumeSessionMatch {
@@ -81,6 +97,10 @@ function conversationToEntry(c: Conversation): ThreadResumeEntry {
     spawnMode: c.spawnMode,
     originTopicId: c.boundTopicId,
     originSessionName: c.originSessionName,
+    ...(c.peerFingerprint ? { peerFingerprint: c.peerFingerprint } : {}),
+    ...(c.ownerClaimedAt ? { ownerClaimedAt: c.ownerClaimedAt } : {}),
+    ...(c.audienceKey ? { audienceKey: c.audienceKey } : {}),
+    ...(c.ownerAdopted ? { ownerAdopted: true } : {}),
   };
 }
 
@@ -90,7 +110,7 @@ function conversationToEntry(c: Conversation): ThreadResumeEntry {
  * `turnCount`/`lastInboundHash`/`lastOutboundHash` are LEFT INTACT (convergence
  * finding — a legacy save must not wipe turn state).
  */
-function applyEntryToConversation(entry: ThreadResumeEntry, draft: Conversation): Conversation {
+export function applyEntryToConversation(entry: ThreadResumeEntry, draft: Conversation): Conversation {
   if (entry.uuid) draft.sessionUuid = entry.uuid;
   if (entry.sessionName) draft.boundSessionName = entry.sessionName;
   if (entry.remoteAgent) {
@@ -106,8 +126,25 @@ function applyEntryToConversation(entry: ThreadResumeEntry, draft: Conversation)
   if (entry.machineOrigin !== undefined) draft.machineOrigin = entry.machineOrigin;
   if (entry.migratedTo !== undefined) draft.migratedTo = entry.migratedTo;
   if (entry.spawnMode !== undefined) draft.spawnMode = entry.spawnMode;
-  if (entry.originTopicId !== undefined) draft.boundTopicId = entry.originTopicId;
+  if (entry.originTopicId !== undefined) {
+    // The write stays — other resume paths read `boundTopicId` — but it is now TAGGED as
+    // inherited, which is what makes the 2026-10-21 misdelivery fixable. Routing can prefer
+    // a peer's homebase over an `origin-inherited` binding while leaving an `operator` one
+    // (and an untagged legacy one) alone. Deleting the write instead would have changed a
+    // shared merge path for every conversation kind to fix one of them.
+    // An existing deliberate tag is never downgraded by a later merge.
+    if (draft.boundTopicSource !== 'operator' && draft.boundTopicSource !== 'peer-homebase') {
+      draft.boundTopicSource = 'origin-inherited';
+    }
+    draft.boundTopicId = entry.originTopicId;
+  }
   if (entry.originSessionName !== undefined) draft.originSessionName = entry.originSessionName;
+  // Memory privacy: the owner is write-once, so a later save can never re-own a thread.
+  if (entry.peerFingerprint && !draft.peerFingerprint) {
+    draft.peerFingerprint = entry.peerFingerprint;
+    draft.ownerClaimedAt = entry.ownerClaimedAt ?? new Date().toISOString();
+  }
+  if (entry.audienceKey !== undefined) draft.audienceKey = entry.audienceKey;
   if (entry.createdAt && draft.version === 0) draft.createdAt = entry.createdAt;
   draft.lastActivityAt = entry.lastAccessedAt || new Date().toISOString();
   // turnCount / lastInboundHash / lastOutboundHash: intentionally untouched.
@@ -122,17 +159,48 @@ const DEFAULT_INACTIVE_RETIRE_MS = 24 * 60 * 60 * 1000;
 
 // ── Implementation ──────────────────────────────────────────────
 
+/**
+ * Resolves the framework of the session bound to a thread (by tmux session
+ * name) so the transcript check runs in that framework's layout only.
+ * Returns undefined when unknown — the check then tries every layout.
+ */
+export type ThreadFrameworkResolver = (sessionName: string) => string | undefined;
+
 export class ThreadResumeMap {
   private store: ConversationStore;
   private legacyPath: string;
   private projectDir: string;
   private tmuxPath: string;
+  private frameworkResolver: ThreadFrameworkResolver | null;
 
-  constructor(stateDir: string, projectDir: string, tmuxPath?: string, store?: ConversationStore) {
+  constructor(
+    stateDir: string,
+    projectDir: string,
+    tmuxPath?: string,
+    store?: ConversationStore,
+    options?: { frameworkResolver?: ThreadFrameworkResolver },
+  ) {
     this.store = store ?? new ConversationStore(stateDir);
     this.legacyPath = path.join(stateDir, 'threadline', 'thread-resume-map.json');
     this.projectDir = projectDir;
     this.tmuxPath = tmuxPath || 'tmux';
+    this.frameworkResolver = options?.frameworkResolver ?? null;
+  }
+
+  /** Install (or replace) the framework resolver after construction. */
+  setFrameworkResolver(resolver: ThreadFrameworkResolver | null): void {
+    this.frameworkResolver = resolver;
+  }
+
+  private frameworkFor(sessionName: string): string | undefined {
+    if (!this.frameworkResolver || !sessionName) return undefined;
+    try {
+      return this.frameworkResolver(sessionName) ?? undefined;
+    } catch {
+      // @silent-fallback-ok: an unresolvable framework means "unknown"; the
+      // transcript check then tries every layout, which is today's behavior.
+      return undefined;
+    }
   }
 
   /**
@@ -159,7 +227,7 @@ export class ThreadResumeMap {
     // spawnNewThread (A1) and breaking threadline_history lookups (C). Dead
     // topic-linkage entries still expire via ConversationStore's TTL, and the
     // topic's real liveness is re-checked at route time (TopicLinkageHandler.topicActive).
-    if (!entry.pinned && entry.originTopicId === undefined && !this.jsonlExists(entry.uuid)) {
+    if (!entry.pinned && entry.originTopicId === undefined && !this.jsonlExists(entry.uuid, this.frameworkFor(entry.sessionName))) {
       // The session JSONL doesn't exist — usually because the uuid is still the
       // spawn-time placeholder that onSessionComplete / the resume heartbeat never
       // upgraded to a real transcript id (the production A2A continuity break: every
@@ -182,6 +250,79 @@ export class ThreadResumeMap {
   /** Save or update a thread resume mapping (MERGES — preserves gate turn state). */
   save(threadId: string, entry: ThreadResumeEntry): void {
     this.store.mutateSync(threadId, draft => applyEntryToConversation({ ...entry, savedAt: new Date().toISOString() }, draft));
+  }
+
+  /**
+   * Claim a thread for an authenticated sender, or read who owns it, in one
+   * atomic step (memory-privacy-agent-places §2). Reads ConversationStore
+   * directly, never `get()`, which returns null when a transcript file is missing.
+   *
+   * - Owned: returns the owner, writes nothing.
+   * - A legacy record (no owner) whose `remoteAgent` is exactly the sender's
+   *   fingerprint is adopted. Any other legacy record stays unowned.
+   * - No record: claimed for the sender, unless the thread already has stored
+   *   messages (`hasStoredMessages`), which leaves it unowned.
+   *
+   * The caller moves the message to a fresh thread id whenever the returned
+   * owner is not the sender.
+   */
+  claimOwner(threadId: string, senderFp: string, opts: { hasStoredMessages: boolean }): ThreadOwnerClaim {
+    if (!senderFp) return { owner: null, claimed: false };
+    const existing = this.store.get(threadId);
+    if (existing?.peerFingerprint) return { owner: existing.peerFingerprint, claimed: false };
+    // A record this version wrote without an owner (a send addressed by a name) is never adopted.
+    if (existing?.ownerless) return { owner: null, claimed: false };
+    // A bare record with nothing in it (no transcript, no bound session or topic, and no stored
+    // message but this one) is the inbound recorder's own write for this very message: claiming
+    // it carries nothing over, so the authenticated sender takes it.
+    const bare = (c: { sessionUuid?: string; boundSessionName?: string; boundTopicId?: number; originSessionName?: string }) =>
+      !c.sessionUuid && !c.boundSessionName && c.boundTopicId === undefined && !c.originSessionName;
+    const freshBare = !!existing && bare(existing) && !opts.hasStoredMessages;
+    if (existing && !freshBare && existing.remoteAgent !== senderFp) return { owner: null, claimed: false };
+    if (!existing && opts.hasStoredMessages) return { owner: null, claimed: false };
+    let claimed = false;
+    const committed = this.store.mutateSync(threadId, (draft) => {
+      if (draft.peerFingerprint) return draft; // lost a race: someone else claimed it
+      if (draft.ownerless) return draft;
+      const draftFreshBare = draft.version > 0 && bare(draft) && !opts.hasStoredMessages;
+      if (draft.version > 0 && !draftFreshBare && draft.remoteAgent !== senderFp) return draft;
+      // Adopting a legacy record carries the thread id only: no resume, no topic reach.
+      if (draft.version > 0 && !draftFreshBare) {
+        draft.ownerAdopted = true;
+        draft.sessionUuid = undefined;
+      }
+      draft.peerFingerprint = senderFp;
+      draft.ownerClaimedAt = new Date().toISOString();
+      if (!draft.remoteAgent) draft.remoteAgent = senderFp;
+      if (!draft.participants.peers.includes(senderFp)) draft.participants.peers.push(senderFp);
+      claimed = true;
+      return draft;
+    });
+    const owner = committed?.peerFingerprint ?? null;
+    return { owner, claimed: claimed && owner === senderFp };
+  }
+
+  /** The raw record's owner and claim time. Reads the store directly. */
+  ownership(threadId: string): { owner: string | null; claimedAt: string | null } {
+    const c = this.store.get(threadId);
+    return { owner: c?.peerFingerprint ?? null, claimedAt: c?.ownerClaimedAt ?? null };
+  }
+
+  /** Forget a thread's transcript id and audience, so it can only ever start fresh. */
+  clearTranscript(threadId: string): void {
+    if (!this.store.get(threadId)) return;
+    this.store.mutateSync(threadId, draft => { draft.sessionUuid = undefined; draft.audienceKey = undefined; return draft; });
+  }
+
+  /**
+   * Mark a thread this version created without an owner (a send addressed by a name, not a
+   * fingerprint), so the legacy adoption rule never applies to it. No-op when owned.
+   */
+  markOwnerless(threadId: string): void {
+    this.store.mutateSync(threadId, draft => {
+      if (!draft.peerFingerprint) draft.ownerless = true;
+      return draft;
+    });
   }
 
   /** Remove a thread entry (cross-process safe via ConversationStore). */
@@ -379,28 +520,40 @@ export class ThreadResumeMap {
     }
   }
 
-  /** Check if a JSONL file exists for the given session UUID. (protected so
-   *  tests can bypass the filesystem check via a subclass.) */
-  protected jsonlExists(uuid: string): boolean {
+  /** Check if a transcript exists for the given session UUID, in the layout
+   *  of `framework` when known ('claude-code' → Claude only, 'codex-cli' →
+   *  Codex only, 'gemini-cli' → Gemini only) and in every layout when not.
+   *  (protected so tests can bypass the filesystem check via a subclass.) */
+  protected jsonlExists(uuid: string, framework?: string): boolean {
     if (!uuid) return false;
-    // Claude: flat ~/.claude/projects/<encoded-cwd>/<uuid>.jsonl.
-    const claudeProjectsDir = path.join(os.homedir(), '.claude', 'projects');
-    if (fs.existsSync(claudeProjectsDir)) {
-      try {
-        for (const dir of fs.readdirSync(claudeProjectsDir)) {
-          if (fs.existsSync(path.join(claudeProjectsDir, dir, `${uuid}.jsonl`))) return true;
+    const known = framework === 'claude-code' || framework === 'codex-cli' || framework === 'gemini-cli';
+    if (!known || framework === 'claude-code') {
+      // Claude: flat ~/.claude/projects/<encoded-cwd>/<uuid>.jsonl.
+      const claudeProjectsDir = path.join(os.homedir(), '.claude', 'projects');
+      if (fs.existsSync(claudeProjectsDir)) {
+        try {
+          for (const dir of fs.readdirSync(claudeProjectsDir)) {
+            if (fs.existsSync(path.join(claudeProjectsDir, dir, `${uuid}.jsonl`))) return true;
+          }
+        } catch {
+          // Can't check the Claude layout — fall through to the codex layout.
         }
-      } catch {
-        // Can't check the Claude layout — fall through to the codex layout.
       }
+      // A thread known to run on Claude never enters the Codex or Gemini
+      // discovery (2026-10-13 server-loop freeze: a missing Claude id walked
+      // the whole Codex archive).
+      if (framework === 'claude-code') return false;
     }
-    // Codex: date-partitioned $CODEX_HOME/sessions/.../rollout-<ts>-<uuid>.jsonl.
-    // A codex thread has no Claude jsonl, so without this every codex session
-    // looks expired/missing and resume breaks fleet-wide (codex-compat root).
-    try {
-      if (findRolloutFileSync(uuid) !== null) return true;
-    } catch {
-      // Can't check the codex layout — treat as not found.
+    if (!known || framework === 'codex-cli') {
+      // Codex: date-partitioned $CODEX_HOME/sessions/.../rollout-<ts>-<uuid>.jsonl.
+      // A codex thread has no Claude jsonl, so without this every codex session
+      // looks expired/missing and resume breaks fleet-wide (codex-compat root).
+      try {
+        if (findRolloutFileSync(uuid) !== null) return true;
+      } catch {
+        // Can't check the codex layout — treat as not found.
+      }
+      if (framework === 'codex-cli') return false;
     }
     // Gemini: ~/.gemini/tmp/<projectHash>/chats/session-<ts>-<short8>.json[l].
     // A gemini session has neither a Claude jsonl nor a codex rollout, so

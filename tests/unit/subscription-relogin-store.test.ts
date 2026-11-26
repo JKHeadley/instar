@@ -6,7 +6,10 @@ import { SafeFsExecutor } from '../../src/core/SafeFsExecutor.js';
 import {
   SubscriptionReloginConflictError,
   SubscriptionReloginStore,
+  isSlowRetryEligible,
+  reloginReasonToken,
 } from '../../src/core/SubscriptionReloginStore.js';
+import Database from 'better-sqlite3';
 
 const dirs: string[] = [];
 afterEach(() => {
@@ -129,7 +132,7 @@ describe('SubscriptionReloginStore', () => {
     const episode = suggest();
     const [suggested] = store.claimNotifications();
     expect(suggested).toMatchObject({ episodeId: episode.id, kind: 'suggested', state: 'delivering', attemptCount: 1 });
-    expect(suggested.deliveryKey).toBe(`subscription-relogin:${episode.id}:suggested`);
+    expect(suggested.deliveryKey).toBe(`subscription-relogin:${episode.id}:suggested:0`);
     store.completeNotification(suggested.id);
     const approved = store.approve(episode.id, { inputDigest: episode.inputDigest });
     store.cancel(approved.id);
@@ -221,6 +224,161 @@ describe('SubscriptionReloginStore', () => {
     expect(retried).toMatchObject({ state: 'approved', attemptCount: 0, reissueCount: 0,
       startedAt: null, finishedAt: null, failureClass: null });
     expect(store.listEvents(failed.id).map((event) => event.eventClass)).toContain('operator-retry-approved');
+    store.close();
+  });
+  it('re-admits a suggested or cancelled row (never a failed one) for the same incident when its admitted inputs changed', () => {
+    const { store, suggest } = fixture();
+    const changed = { inputDigest: `sha256:${'b'.repeat(64)}`, mode: 'unattended' as const };
+    // Stale suggestion (the live 2026-09-23 case: account joined the unattended list after suggest).
+    const stale = suggest();
+    const readmitted = suggest(changed);
+    expect(readmitted).toMatchObject({ id: stale.id, state: 'suggested', mode: 'unattended',
+      inputDigest: changed.inputDigest, attemptCount: 0, reissueCount: 0 });
+    expect(store.approve(readmitted.id, { inputDigest: changed.inputDigest }).state).toBe('approved');
+    // A failed attempt is NOT re-admitted on changed inputs any more: every automatic restart of a
+    // failed repair goes through the paced slow retry (spec relogin-unattended-agent-session-and-slow-retry).
+    const approved = store.get(readmitted.id)!;
+    const starting = store.transition(approved.id, { expectedVersion: approved.version,
+      to: 'cli-starting', eventClass: 'cli-starting', incrementAttempt: true });
+    const failed = store.transition(starting.id, { expectedVersion: starting.version, to: 'failed',
+      eventClass: 'artifact-reissue-budget-exhausted', failureClass: 'attempt-budget-exhausted', incrementReissue: true });
+    expect(suggest(changed)).toMatchObject({ state: 'failed' }); // unchanged inputs: still waits for an operator retry
+    const third = { ...changed, inputDigest: `sha256:${'c'.repeat(64)}` };
+    expect(suggest(third)).toMatchObject({ id: failed.id, state: 'failed', failureClass: 'attempt-budget-exhausted' });
+    // A cancelled one is re-admitted, but only on changed inputs — and an operator cancel only as a re-offer.
+    const other = suggest({ sourceEpisodeId: 50 });
+    const cancelled = store.cancel(other.id);
+    expect(cancelled.state).toBe('cancelled');
+    expect(suggest({ ...changed, sourceEpisodeId: 50, inputDigest: other.inputDigest }).state).toBe('cancelled');
+    expect(suggest({ ...third, sourceEpisodeId: 50, inputDigest: `sha256:${'d'.repeat(64)}` })).toMatchObject({ state: 'suggested', mode: 'approval' });
+    store.close();
+  });
+
+  it('never re-admits a refused or succeeded row, and never steals the cell from another live repair', () => {
+    const { store, suggest } = fixture();
+    const first = suggest();
+    const refused = store.transition(first.id, { expectedVersion: first.version, to: 'refused',
+      eventClass: 'wrong-identity', failureClass: 'wrong-identity' });
+    expect(suggest({ inputDigest: `sha256:${'b'.repeat(64)}` })).toMatchObject({ id: refused.id, state: 'refused' });
+    const other = suggest({ sourceEpisodeId: 42 });
+    expect(other.state).toBe('suggested');
+    const cancelled = store.cancel(other.id);
+    const live = suggest({ sourceEpisodeId: 43 });
+    expect(live.state).toBe('suggested');
+    expect(() => suggest({ sourceEpisodeId: 42, inputDigest: `sha256:${'e'.repeat(64)}` }))
+      .toThrowError(SubscriptionReloginConflictError);
+    expect(store.get(cancelled.id)?.state).toBe('cancelled');
+    store.close();
+  });
+
+  it('keeps a security-class failure terminal so re-admission cannot erase breaker evidence', () => {
+    const { store, suggest } = fixture();
+    const first = suggest();
+    const approved = store.approve(first.id, { inputDigest: first.inputDigest });
+    const starting = store.transition(approved.id, { expectedVersion: approved.version,
+      to: 'cli-starting', eventClass: 'cli-starting', incrementAttempt: true });
+    store.transition(starting.id, { expectedVersion: starting.version, to: 'failed',
+      eventClass: 'captcha', failureClass: 'captcha' });
+    expect(suggest({ inputDigest: `sha256:${'b'.repeat(64)}` })).toMatchObject({ id: first.id, state: 'failed', failureClass: 'captcha' });
+    store.close();
+  });
+
+  it('re-queues the suggestion notification on an approval-mode re-admission', () => {
+    const { store, suggest } = fixture();
+    const first = suggest();
+    store.cancel(first.id);
+    suggest({ inputDigest: `sha256:${'b'.repeat(64)}` });
+    expect(store.claimNotifications(10).map((notification) => notification.kind)).toEqual(['suggested']);
+    store.close();
+  });
+
+  it('keeps only short machine reason tokens; free text or page content becomes "unclassified"', () => {
+    expect(reloginReasonToken('chrome-launch-timeout')).toBe('chrome-launch-timeout');
+    expect(reloginReasonToken('plain-browser-apple-event-error--1743')).toBe('plain-browser-apple-event-error--1743');
+    expect(reloginReasonToken('relogin-profile-in-use')).toBe('relogin-profile-in-use');
+    expect(reloginReasonToken('Wrong password for justin@example.com')).toBe('unclassified');
+    expect(reloginReasonToken('hunter2secret')).toBe('unclassified');
+    expect(reloginReasonToken(undefined)).toBeNull();
+  });
+
+  it('adds the reason column to an existing database and records reasons on events', () => {
+    const { store, suggest } = fixture();
+    const ep = suggest();
+    const approved = store.approve(ep.id, { inputDigest: ep.inputDigest });
+    const dbPath = (store as unknown as { dbPath: string }).dbPath;
+    const stateDir = path.dirname(path.dirname(path.dirname(dbPath)));
+    store.close();
+    // Simulate a database created before the column existed.
+    const raw = new Database(dbPath);
+    raw.exec('ALTER TABLE repair_events DROP COLUMN reason');
+    raw.close();
+    const reopened = new SubscriptionReloginStore({ stateDir, now: () => Date.parse('2026-08-28T07:00:00.000Z') });
+    const moved = reopened.transition(approved.id, { expectedVersion: approved.version, to: 'cli-starting',
+      eventClass: 'cli-starting', reason: 'chrome-launch-timeout' });
+    const events = reopened.listEvents(moved.id);
+    expect(events.find((e) => e.eventClass === 'cli-starting')?.reason).toBe('chrome-launch-timeout');
+    reopened.close();
+  });
+});
+
+describe('SubscriptionReloginStore: device-limit endings (codex-device-limit-tripwire §4)', () => {
+  function toDriving(store: SubscriptionReloginStore, id: string) {
+    const ep = store.get(id)!;
+    const approved = store.approve(ep.id, { inputDigest: ep.inputDigest });
+    const starting = store.transition(approved.id, { expectedVersion: approved.version, to: 'cli-starting', eventClass: 'cli-starting', incrementAttempt: true });
+    const ready = store.transition(starting.id, { expectedVersion: starting.version, to: 'artifact-ready', eventClass: 'artifact-ready' });
+    return store.transition(ready.id, { expectedVersion: ready.version, to: 'browser-driving', eventClass: 'browser-driving' });
+  }
+
+  it('accepts failureClass device-limit; a failed device-limit episode is slow-retry eligible (the service gate and admission hold a real lockout)', () => {
+    const { store, suggest } = fixture();
+    const driving = toDriving(store, suggest({ mode: 'unattended' }).id);
+    const failed = store.transition(driving.id, { expectedVersion: driving.version, to: 'failed',
+      eventClass: 'device-limit-stopped', failureClass: 'device-limit', reason: 'agent-reported-device-limit' });
+    expect(failed).toMatchObject({ state: 'failed', failureClass: 'device-limit' });
+    expect(isSlowRetryEligible(failed)).toBe(true);
+    // The operator's "don't retry" still wins.
+    expect(isSlowRetryEligible({ ...failed, slowRetryHeld: true })).toBe(false);
+    store.close();
+  });
+
+  it('enqueues no terminal notification for an episode ending device-limit (failed or refused)', () => {
+    const { store, suggest } = fixture();
+    const driving = toDriving(store, suggest({ mode: 'unattended', sourceEpisodeId: 1 }).id);
+    store.transition(driving.id, { expectedVersion: driving.version, to: 'failed',
+      eventClass: 'device-limit-stopped', failureClass: 'device-limit' });
+    const suggested = suggest({ mode: 'unattended', sourceEpisodeId: 2 });
+    store.transition(suggested.id, { expectedVersion: suggested.version, to: 'refused',
+      eventClass: 'device-limit-stopped', failureClass: 'device-limit', reason: 'device-limit-benched' });
+    expect(store.claimNotifications(10)).toEqual([]);
+    // Positive control: an ordinary failure on the same path does notify.
+    const other = toDriving(store, suggest({ mode: 'unattended', sourceEpisodeId: 3 }).id);
+    store.transition(other.id, { expectedVersion: other.version, to: 'failed',
+      eventClass: 'provider-rejected', failureClass: 'provider-rejected' });
+    expect(store.claimNotifications(10).map((n) => [n.episodeId, n.kind])).toEqual([[other.id, 'terminal']]);
+    store.close();
+  });
+
+  it('a device-limit ending is not counted in helperHardLines (unattended graduation untouched)', () => {
+    const { store, suggest } = fixture();
+    const driving = toDriving(store, suggest({ mode: 'unattended', sourceEpisodeId: 1 }).id);
+    store.transition(driving.id, { expectedVersion: driving.version, to: 'failed',
+      eventClass: 'device-limit-stopped', failureClass: 'device-limit', reason: 'agent-reported-device-limit' });
+    expect(store.getUnattendedEvidence('acct-1', 'machine-1', 'anthropic', 'claude-code').helperHardLines).toBe(0);
+    // Positive control: a real helper hard line on the same cell counts.
+    const hard = toDriving(store, suggest({ mode: 'unattended', sourceEpisodeId: 2 }).id);
+    store.transition(hard.id, { expectedVersion: hard.version, to: 'waiting-operator-only',
+      eventClass: 'operator-only', failureClass: 'agent-hard-line', reason: 'agent-hard-line-captcha' });
+    expect(store.getUnattendedEvidence('acct-1', 'machine-1', 'anthropic', 'claude-code').helperHardLines).toBe(1);
+    store.close();
+  });
+
+  it('does not open the security breaker on a single device-limit ending', () => {
+    const { store, suggest } = fixture();
+    const driving = toDriving(store, suggest({ mode: 'unattended' }).id);
+    store.transition(driving.id, { expectedVersion: driving.version, to: 'failed',
+      eventClass: 'device-limit-stopped', failureClass: 'device-limit' });
+    expect(store.isBreakerOpen('acct-1', 'anthropic')).toBe(false);
     store.close();
   });
 });

@@ -29,6 +29,7 @@
  */
 
 import { EventEmitter } from 'node:events';
+import { featureEvidence } from './FeatureEvidenceLog.js';
 import type { SessionOwnershipRecord } from '../core/SessionOwnership.js';
 import type { MachineCapacity } from '../core/types.js';
 import type { ChannelScope } from '../core/machineServesChannel.js';
@@ -62,6 +63,7 @@ const DEFAULT_CONFIG: Required<StrandedTopicSentinelConfig> = {
 
 /** The raise/update payload for the aggregated attention item. */
 export interface StrandAttentionItem {
+  contextTopicIds?: number[];
   id: string;
   title: string;
   summary: string;
@@ -108,6 +110,9 @@ export class StrandedTopicSentinel extends EventEmitter {
   private emptyTicks = new Map<string, number>();
   /** Per-owner open stranding-window id (the dwell-epoch of the first strand). */
   private windowId = new Map<string, number>();
+  /** Items update in place every tick; evidence is written when one changes shape. */
+  private lastOwnerEvidence = new Map<string, string>();
+  private lastCantAssessEvidence: number | null = null;
 
   constructor(
     private readonly deps: StrandedTopicSentinelDeps,
@@ -127,6 +132,11 @@ export class StrandedTopicSentinel extends EventEmitter {
         // propagate or degrade anything (it mutates nothing). The error is
         // surfaced as a 'tick-error' event for observability; swallowing the
         // throw IS the correct fail-closed behavior, not a hidden degradation.
+        featureEvidence.recordAtMostEvery('monitoring.strandedTopicSentinel', 'tick-error', 3_600_000, {
+          kind: 'error',
+          reason: 'tick-error',
+          context: { errorName: err instanceof Error ? err.name : 'unknown' },
+        });
         this.emit('tick-error', { err });
       }
     }, this.cfg.tickMs);
@@ -197,6 +207,7 @@ export class StrandedTopicSentinel extends EventEmitter {
       if (n >= this.cfg.clearAfterTicks) {
         this.windowId.delete(owner);
         this.emptyTicks.delete(owner);
+        this.lastOwnerEvidence.delete(owner);
         this.emit('window-closed', { owner });
       } else {
         this.emptyTicks.set(owner, n);
@@ -223,7 +234,10 @@ export class StrandedTopicSentinel extends EventEmitter {
     const nick = this.deps.nicknameOf?.(owner) ?? owner;
     const reasons = new Set<StrandReason>(topics.map((t) => t.reason));
     const reasonText = [...reasons].join(' / ');
-    const topicList = topics.map((t) => t.sessionKey).join(', ');
+    // app-conversations-in-the-pool §2.7: an app conversation says what it is and how to get it back.
+    const appCount = topics.filter((t) => t.sessionKey.startsWith('app:')).length;
+    const appLine = appCount > 0 ? ` ${appCount === 1 ? 'An app conversation is' : `${appCount} app conversations are`} among them: open it in the app and choose Bring it back here.` : '';
+    const topicList = topics.map((t) => (t.sessionKey.startsWith('app:') ? 'an app conversation' : t.sessionKey)).join(', ');
     const anyServable = topics.some((t) => t.servablePeerExists);
     const ageMs = Math.max(0, ...topics.map((t) => t.ownerBeatAgeMs ?? 0));
 
@@ -233,12 +247,13 @@ export class StrandedTopicSentinel extends EventEmitter {
 
     const item: StrandAttentionItem = {
       id: `stranded-topic:${owner}:${windowId}`,
+      contextTopicIds: topics.map(topic => /^telegram:(\d+)$/.exec(topic.sessionKey)).filter((match): match is RegExpExecArray => match !== null).map(match => Number(match[1])),
       title: `Inbound stranded on ${nick} (${topics.length} topic${topics.length === 1 ? '' : 's'})`,
       summary: `Topics owned by ${nick} (${reasonText}) — inbound can't reach a servable machine.`,
       description:
         `Inbound for topic(s) ${topicList} is going to ${nick}, which can't serve them ` +
         `(${reasonText}); ${serveLine} ` +
-        `Based on ${nick}'s last full heartbeat ${Math.round(ageMs / 1000)}s ago.`,
+        `Based on ${nick}'s last full heartbeat ${Math.round(ageMs / 1000)}s ago.${appLine}`,
       category: 'agent-health',
       priority: 'NORMAL',
       sourceContext: `stranded-topic:${owner}`,
@@ -247,8 +262,22 @@ export class StrandedTopicSentinel extends EventEmitter {
     };
     try {
       this.deps.raiseAttention(item);
+      const evidence = `${windowId}:${topics.length}:${reasonText}:${anyServable}`;
+      if (this.lastOwnerEvidence.get(owner) !== evidence) {
+        this.lastOwnerEvidence.set(owner, evidence);
+        featureEvidence.record('monitoring.strandedTopicSentinel', {
+          kind: 'fired',
+          reason: `stranded:${reasonText}`,
+          context: { ownerMachineId: owner, windowId, topics: topics.length, reasons: reasonText, servablePeerExists: anyServable, ownerBeatAgeSec: Math.round(ageMs / 1000) },
+        });
+      }
       this.emit('stranded', { owner, windowId, topics });
     } catch (err) {
+      featureEvidence.recordAtMostEvery('monitoring.strandedTopicSentinel', `raise-error:${owner}`, 3_600_000, {
+        kind: 'error',
+        reason: 'attention-raise-failed',
+        context: { ownerMachineId: owner, topics: topics.length, errorName: err instanceof Error ? err.name : 'unknown' },
+      });
       // @silent-fallback-ok — the attention raise is the sentinel's only output;
       // if it throws, the correct signal-only behavior is to surface a
       // 'raise-error' event and continue (no degradation, nothing to fall back
@@ -275,8 +304,17 @@ export class StrandedTopicSentinel extends EventEmitter {
     };
     try {
       this.deps.raiseAttention(item);
+      if (this.lastCantAssessEvidence !== count) {
+        this.lastCantAssessEvidence = count;
+        featureEvidence.record('monitoring.strandedTopicSentinel', { kind: 'held', reason: 'cant-assess-owner-heartbeat', context: { owners: count } });
+      }
       this.emit('cant-assess', { count });
     } catch (err) {
+      featureEvidence.recordAtMostEvery('monitoring.strandedTopicSentinel', 'raise-error:cant-assess', 3_600_000, {
+        kind: 'error',
+        reason: 'attention-raise-failed',
+        context: { owners: count, errorName: err instanceof Error ? err.name : 'unknown' },
+      });
       // @silent-fallback-ok — signal-only: surface a 'raise-error' event and
       // continue; a raise failure must never crash the monitoring tick.
       this.emit('raise-error', { err });

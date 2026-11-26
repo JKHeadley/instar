@@ -1,0 +1,79 @@
+{
+  "version": 3,
+  "slug": "relay-asof-holder-skew",
+  "sessionId": "001b460b-0345-40f9-bcd6-0c4ff28bec91",
+  "timestamp": "2026-11-22T00:01:18.727Z",
+  "artifactPath": "upgrades/side-effects/relay-asof-holder-skew.md",
+  "artifactSha256": "9c78ce05230f78ee7b19bfd168998210bf487db07c68cc612dc11459dd974a51",
+  "specPath": "docs/specs/relay-asof-holder-skew.md",
+  "coveredFiles": [
+    ".instar/instar-dev-decisions/2026-11-21T23-56-28-289Z-relay-asof-holder-skew.json",
+    ".instar/instar-dev-decisions/2026-11-21T23-57-34-207Z-relay-asof-holder-skew.json",
+    ".instar/instar-dev-decisions/2026-11-21T23-58-27-157Z-relay-asof-holder-skew.json",
+    "docs/specs/carriers/relay-asof-holder-skew.json",
+    "docs/specs/relay-asof-holder-skew.eli16.md",
+    "docs/specs/relay-asof-holder-skew.md",
+    "docs/specs/reports/relay-asof-holder-skew-convergence.md",
+    "docs/specs/reports/relay-asof-holder-skew-review-evidence.json",
+    "src/commands/server.ts",
+    "src/core/machineCoherenceManifest.ts",
+    "src/core/types.ts",
+    "src/data/awareness/messages-reach-renamed-sessions.md",
+    "src/data/feature-ladders.json",
+    "src/messaging/CrossMachineRelayQueue.ts",
+    "src/messaging/DeliveryRetryManager.ts",
+    "src/messaging/MessageDelivery.ts",
+    "src/messaging/MessageRouter.ts",
+    "src/messaging/SenderNotifier.ts",
+    "src/messaging/peerMessageTarget.ts",
+    "src/messaging/sessionAddressResolver.ts",
+    "src/messaging/types.ts",
+    "src/server/CapabilityIndex.ts",
+    "src/server/machineRoutes.ts",
+    "src/testing/selfActionRegistry.ts",
+    "tests/e2e/messages-reach-renamed-sessions-wiring.test.ts",
+    "tests/e2e/relay-holder-retry-lifecycle.test.ts",
+    "tests/integration/relay-asof-holder-skew.test.ts",
+    "tests/unit/message-generation-delivery.test.ts",
+    "tests/unit/messages-cross-machine-relay.test.ts",
+    "tests/unit/messages-reach-renamed-sessions.test.ts",
+    "tests/unit/peerMessageTarget.test.ts",
+    "tests/unit/sessionAddressResolver.test.ts",
+    "upgrades/next/relay-asof-holder-skew.md",
+    "upgrades/side-effects/relay-asof-holder-skew.md"
+  ],
+  "phase": "complete",
+  "tier": 2,
+  "tierReasoning": "Published machine-auth interface and durable recovery; root-approved reviewed source and plan, reserved full suite pending.",
+  "secondPass": "true",
+  "reviewerConcurred": true,
+  "toolchain": {
+    "buildSkill": {
+      "name": "build",
+      "version": null,
+      "verified": false
+    },
+    "reviewSkills": [
+      {
+        "name": "spec-converge",
+        "outcome": "converged",
+        "verified": false,
+        "iterations": 7
+      },
+      {
+        "name": "instar-dev",
+        "outcome": "source-concurred",
+        "verified": false
+      }
+    ],
+    "convergence": {
+      "reportPath": "docs/specs/reports/relay-asof-holder-skew-convergence.md",
+      "iterations": 7,
+      "verified": true
+    }
+  },
+  "causalAutopsy": {
+    "origin": "latent",
+    "notes": "Conservative receiver-arrival minus sender-age minus two signature windows rejects holders during their first ten minutes. Arithmetic relaxation cannot prove identity across transit; exact signed generation and physical uncertainty ownership are required."
+  }
+}

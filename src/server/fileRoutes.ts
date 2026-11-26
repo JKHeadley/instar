@@ -9,12 +9,15 @@
  * blocked filenames, never-editable enforcement.
  */
 
+import { storageErrorResponse } from '../core/storageMachineName.js';
 import { Router, type Request, type Response } from 'express';
 import fs from 'node:fs';
 import path from 'node:path';
 import { IDENTITY_AUTO_ACCEPT_PROTECTED_PATHS, isRemoteIdentityAuthorityPath } from '../core/IdentityStore.js';
+import { KEY_MATERIAL_DYNAMIC_DIRS, KEY_MATERIAL_FILES, KEY_MATERIAL_NEVER_SERVED_PREFIXES, KEY_MATERIAL_ROOT_NAME_PREFIXES } from '../core/keyMaterialPaths.js';
 import type { InstarConfig, FileViewerConfig } from '../core/types.js';
 import { mergeDefaults } from '../core/mergeDefaults.js';
+import { refuseUnsupportedFields } from './refuseUnsupportedFields.js';
 
 // ── Defaults ─────────────────────────────────────────────────────────
 
@@ -23,6 +26,7 @@ const DEFAULT_FILE_VIEWER_CONFIG: FileViewerConfig = {
   allowedPaths: ['./'],
   editablePaths: ['./'],
   maxFileSize: 1_048_576, // 1MB
+  maxDownloadSize: 1_073_741_824, // 1GB — downloads stream from the checked descriptor, so they get their own, larger cap
   maxEditableFileSize: 204_800, // 200KB
   blockedFilenames: [
     '.env', '.env.*', '*.key', '*.pem', '*.p12', 'secrets.*',
@@ -113,10 +117,31 @@ export const NEVER_SERVED_PREFIXES = [
   // path — it stays only as a legacy-layout regression pin.
   'state/judgment-provenance/',
   '.instar/state/judgment-provenance/',
+  // context-budget-layered-summaries §9.7: per-topic conversation layers and
+  // PostCompact summaries, and the transcript archive. Never served.
+  'state/context-layers/',
+  '.instar/state/context-layers/',
+  'state/context-archive/',
+  '.instar/state/context-archive/',
+  // Chrome profiles and the Linux driver's cookie, bindings and page reads (normal-chrome-linux).
+  // The trailing slash keeps state/playwright-profiles.json served.
+  'state/playwright-profiles/',
+  '.instar/state/playwright-profiles/',
+  'state/xdrive/',
+  '.instar/state/xdrive/',
+  // Codex device-limit judge provenance (codex-device-limit-tripwire §1): the prepared refusal
+  // text, machine-local only; the HTTP surface is the content-free log + GET /subscription-pool.
+  'state/codex-device-limit-provenance/',
+  '.instar/state/codex-device-limit-provenance/',
   // External-hog decision store: grading GROUND TRUTH (llm-decision-quality-
   // meter spec §5.3) — the dashboard file editor must not read or rewrite it
   // (serve-deny implies edit-deny via isNeverEditable).
   '.instar/state/external-hog-decisions.json',
+  // Hook telemetry (docs/specs/native-hook-events.md D1): per-session event
+  // records (paths, redacted message tails) and subagent records. Machine-local
+  // observability, read through /hooks/events/* — never served as files.
+  '.instar/hook-events/',
+  '.instar/subagent-tracking/',
   // Machine-bound subscription authority: active directory, witness,
   // candidates, rollbacks, and atomic temp siblings. Dual-root is required:
   // production paths include `.instar/`, legacy/test paths may not.
@@ -138,6 +163,13 @@ export const NEVER_SERVED_PREFIXES = [
   // download, link, list AND edit. A redacted read surface, if ever wanted,
   // belongs behind a route that strips the credentials — not the raw file.
   '.instar/config.json',
+  // Key material (a2a-single-agent-identity §5.1): the agent identity (and its
+  // superseded/invalid/temp siblings), the legacy routing mirror, the
+  // threadline HMAC/invitation/token files, the dedicated SSH keys, the
+  // headless key vault, origin-session credentials and the bind-token secret.
+  // ONE list (src/core/keyMaterialPaths.ts) also feeds backup, gitignore and
+  // the sync classifier, so the four surfaces cannot drift apart.
+  ...KEY_MATERIAL_NEVER_SERVED_PREFIXES,
 ];
 
 export function isNeverServed(relativePath: string): boolean {
@@ -169,6 +201,13 @@ interface PathValidationResult {
    * simply never got the same treatment.
    */
   relativeAfterResolve?: string;
+  /**
+   * `stat` of the resolved path taken AT validation time (§5.2). `read` and
+   * `download` open the file, `fstat` the descriptor, and refuse unless its
+   * device+inode equals THIS — the file that was checked is the file that is
+   * served, even if the symlink was swapped between the check and the open.
+   */
+  resolvedStat?: fs.Stats;
 }
 
 /**
@@ -268,12 +307,128 @@ async function validatePath(
     if (isNeverServed(relativAfterResolve)) {
       return { valid: false, error: 'Access to this path is not permitted', status: 403 };
     }
-    return { valid: true, resolvedPath: realPath, relativeAfterResolve: relativAfterResolve };
+    // Layer 5f: `blockedFilenames` on the RESOLVED name too (§5.2) — the
+    // requested-name check in each route sees only the alias; a symlink named
+    // `notes.md` pointing at `.env` was served before this.
+    const resolvedStat = await fs.promises.stat(realPath);
+    return { valid: true, resolvedPath: realPath, relativeAfterResolve: relativAfterResolve, resolvedStat };
   } catch (err: unknown) {
     if (err && typeof err === 'object' && 'code' in err && (err as NodeJS.ErrnoException).code === 'ENOENT') {
       return { valid: false, error: 'Path not found', status: 404 };
     }
-    return { valid: false, error: 'Path validation failed', status: 500 };
+    // A `realpath` that fails for any other reason (ELOOP, EACCES, a dangling
+    // link that lstat saw) REFUSES (§5.2) — never a 500 that invites a retry
+    // and never a fall-through to the requested path.
+    return { valid: false, error: 'Path could not be resolved', status: 403 };
+  }
+}
+
+/**
+ * Open the checked file and prove the descriptor IS the checked file (§5.2).
+ *
+ * `validatePath` resolves and denies on a PATH. Between that check and a
+ * by-path re-open, a symlink can be swapped at a key file (check-then-serve
+ * race). So the routes open FIRST, `fstat` the descriptor, and serve from that
+ * descriptor only when its device+inode equals the `stat` taken at validation.
+ *
+ * A hard link is the other way an inode escapes a prefix check: a link OUTSIDE
+ * `.instar/` carries a key's inode under an innocent name, and no path-based
+ * list can see it. When the descriptor reports `nlink > 1` its device+inode is
+ * compared against every listed key file (a dozen `stat` calls, per request —
+ * only on the rare multi-link file) and refused on a match.
+ *
+ * Returns the open handle (the caller closes it) or `null` with the refusal
+ * reason. Exported for the unit test that swaps the target between the check
+ * and the open — the only way to exercise the race deterministically.
+ */
+export async function openCheckedDescriptor(
+  realPath: string,
+  checkedStat: fs.Stats,
+  projectDir: string,
+): Promise<{ handle: fs.promises.FileHandle; stat: fs.Stats } | { handle: null; reason: string }> {
+  let handle: fs.promises.FileHandle;
+  try {
+    handle = await fs.promises.open(realPath, 'r');
+  } catch {
+    return { handle: null, reason: 'Path could not be opened' };
+  }
+  try {
+    const opened = await handle.stat();
+    if (opened.dev !== checkedStat.dev || opened.ino !== checkedStat.ino) {
+      await handle.close();
+      return { handle: null, reason: 'File changed between check and open' };
+    }
+    if (opened.nlink > 1) {
+      const stateDir = path.join(projectDir, '.instar');
+      for (const abs of await keyInodeCandidates(stateDir)) {
+        let keyStat: fs.Stats;
+        try {
+          keyStat = await fs.promises.stat(abs);
+        } catch {
+          continue; // that key file does not exist on this agent
+        }
+        if (keyStat.dev === opened.dev && keyStat.ino === opened.ino) {
+          await handle.close();
+          return { handle: null, reason: 'Access to this path is not permitted' };
+        }
+      }
+    }
+    return { handle, stat: opened };
+  } catch {
+    await handle.close().catch(() => { /* already failing */ });
+    return { handle: null, reason: 'Path could not be opened' };
+  }
+}
+
+/**
+ * The key files whose inode a hard link could carry (§5.2): the static list
+ * plus the generation-named keys under `machine-ssh/` and the
+ * `origin-sessions-<digest>` files at the stateDir root, which a static list
+ * cannot name. Two `readdir`s, only on the rare multi-link path.
+ */
+async function keyInodeCandidates(stateDir: string): Promise<string[]> {
+  const out = KEY_MATERIAL_FILES.map((rel) => path.join(stateDir, rel));
+  for (const dir of KEY_MATERIAL_DYNAMIC_DIRS) {
+    try {
+      for (const name of await fs.promises.readdir(path.join(stateDir, dir))) out.push(path.join(stateDir, dir, name));
+    } catch { /* directory absent on this agent — nothing to enumerate */ }
+  }
+  try {
+    for (const name of await fs.promises.readdir(stateDir)) {
+      if (KEY_MATERIAL_ROOT_NAME_PREFIXES.some((p) => name.startsWith(p))) out.push(path.join(stateDir, name));
+    }
+  } catch { /* stateDir absent — nothing to enumerate */ }
+  return out;
+}
+
+/**
+ * Per-entry admission for `list` (§5.2): an entry is OMITTED — never listed,
+ * never 403'd by name — when it is never-served by its requested path, when
+ * its `realpath` fails (a dangling symlink), when it resolves outside the
+ * project root, when its RESOLVED path is never-served, or when either the
+ * requested or the resolved basename matches `blockedFilenames`. A symlink
+ * with an innocent name pointing at a key file is therefore hidden, matching
+ * the route's existing skip-on-stat-failure shape.
+ */
+async function resolveListEntry(
+  dirAbs: string,
+  entryName: string,
+  entryRelPath: string,
+  realProjectDir: string,
+  config: FileViewerConfig,
+): Promise<{ realPath: string; stat: fs.Stats } | null> {
+  if (isNeverServed(entryRelPath)) return null;
+  if (isBlockedFilename(entryName, config.blockedFilenames)) return null;
+  try {
+    const realPath = await fs.promises.realpath(path.join(dirAbs, entryName));
+    if (!realPath.startsWith(realProjectDir + path.sep) && realPath !== realProjectDir) return null;
+    const resolvedRel = path.relative(realProjectDir, realPath);
+    if (isNeverServed(resolvedRel)) return null;
+    if (isBlockedFilename(path.basename(realPath), config.blockedFilenames)) return null;
+    const stat = await fs.promises.stat(realPath);
+    return { realPath, stat };
+  } catch {
+    return null;
   }
 }
 
@@ -283,6 +438,131 @@ function checkBlockedFilename(filePath: string, config: FileViewerConfig): strin
   if (isBlockedFilename(basename, config.blockedFilenames)) {
     return 'Access to this file is blocked for security reasons';
   }
+  return null;
+}
+
+// ── Name search (GET /api/files/search) ─────────────────────────────
+
+export const SEARCH_MAX_QUERY = 200;
+export const SEARCH_DEFAULT_RESULTS = 50;
+export const SEARCH_MAX_RESULTS = 200;
+export const SEARCH_MAX_SCANNED = 20_000;
+export const SEARCH_MAX_DEPTH = 12;
+export const SEARCH_MAX_MS = 2_000;
+/** Folders the walk never descends into (still matchable by name where they sit). */
+const SEARCH_SKIP_DESCENT = new Set(['.git', 'node_modules']);
+
+export interface FileSearchResult {
+  path: string;
+  name: string;
+  type: 'file' | 'directory';
+  size?: number;
+  modified?: string;
+}
+
+/** The allowed roots to walk, as project-relative paths ('' = the project root). */
+function searchRoots(config: FileViewerConfig): string[] {
+  const roots = new Set<string>();
+  for (const ap of config.allowedPaths) {
+    const n = path.normalize(ap).replace(/\/$/, '');
+    if (n === '.' || n === '') return [''];
+    if (path.isAbsolute(n) || n.includes('..')) continue;
+    roots.add(n);
+  }
+  // Drop a root nested under another root (it is walked through its parent).
+  return [...roots].filter((r) => ![...roots].some((o) => o !== r && r.startsWith(o + '/'))).sort();
+}
+
+/**
+ * Breadth-first name match over the allowed folders. Every entry is admitted by
+ * resolveListEntry plus the allowed-path pre-check on its requested AND resolved
+ * spelling; each matching entry is re-checked through validatePath (and blocked
+ * names on both spellings) before it is returned. Real directories are visited once
+ * (a symlink loop cannot recurse). Exported for the unit test.
+ */
+export async function searchByName(
+  query: string,
+  limit: number,
+  projectDir: string,
+  config: FileViewerConfig,
+  budget: { maxScanned?: number; maxDepth?: number; maxMs?: number; now?: () => number } = {},
+): Promise<{ results: FileSearchResult[]; truncated: boolean; scanned: number }> {
+  const needle = query.toLowerCase();
+  const maxScanned = budget.maxScanned ?? SEARCH_MAX_SCANNED;
+  const maxDepth = budget.maxDepth ?? SEARCH_MAX_DEPTH;
+  const maxMs = budget.maxMs ?? SEARCH_MAX_MS;
+  const now = budget.now ?? Date.now;
+  const started = now();
+  const realProjectDir = await fs.promises.realpath(projectDir);
+  const visited = new Set<string>();
+  const matches: FileSearchResult[] = [];
+  let scanned = 0;
+  let truncated = false;
+
+  const queue: Array<{ rel: string; depth: number }> = [];
+  for (const root of searchRoots(config)) {
+    if (root === '') { queue.push({ rel: '', depth: 0 }); continue; }
+    const v = await validatePath(root, projectDir, config);
+    if (v.valid && v.resolvedStat?.isDirectory()) queue.push({ rel: root, depth: 0 });
+  }
+
+  outer: while (queue.length) {
+    const { rel, depth } = queue.shift()!;
+    const dirAbs = rel ? path.resolve(projectDir, rel) : projectDir;
+    let realDir: string;
+    try { realDir = await fs.promises.realpath(dirAbs); } catch { continue; } // @silent-fallback-ok — a folder that vanished mid-walk has nothing to match; the walk goes on
+    if (visited.has(realDir)) continue;
+    visited.add(realDir);
+    let names: fs.Dirent[];
+    try { names = await fs.promises.readdir(dirAbs, { withFileTypes: true }); } catch { continue; } // @silent-fallback-ok — an unreadable folder is skipped exactly as the list route would refuse it
+    names.sort((a, b) => a.name.localeCompare(b.name));
+    for (const d of names) {
+      if (scanned >= maxScanned || now() - started > maxMs) { truncated = true; break outer; }
+      scanned++;
+      const entryRel = rel ? path.join(rel, d.name) : d.name;
+      if (!checkRelativePathAllowed(entryRel, config).ok) continue;
+      const resolved = await resolveListEntry(dirAbs, d.name, entryRel, realProjectDir, config);
+      if (!resolved) continue;
+      const resolvedRel = path.relative(realProjectDir, resolved.realPath);
+      if (resolvedRel && !checkRelativePathAllowed(resolvedRel, config).ok) continue;
+      const isDir = resolved.stat.isDirectory();
+      if (!isDir && !resolved.stat.isFile()) continue;
+      if (d.name.toLowerCase().includes(needle)) {
+        const v = await validatePath(entryRel, projectDir, config);
+        const blocked = !isDir && (checkBlockedFilename(entryRel, config) ?? (v.resolvedPath ? checkBlockedFilename(v.resolvedPath, config) : null));
+        if (v.valid && !blocked) {
+          matches.push(isDir
+            ? { path: entryRel.split(path.sep).join('/'), name: d.name, type: 'directory' }
+            : { path: entryRel.split(path.sep).join('/'), name: d.name, type: 'file', size: resolved.stat.size, modified: resolved.stat.mtime.toISOString() });
+          if (matches.length > limit) { truncated = true; break outer; }
+        }
+      }
+      if (isDir && depth + 1 <= maxDepth && !SEARCH_SKIP_DESCENT.has(d.name)) queue.push({ rel: entryRel, depth: depth + 1 });
+      else if (isDir && depth + 1 > maxDepth) truncated = true;
+    }
+  }
+
+  const depthOf = (p: string) => p.split('/').length;
+  matches.sort((a, b) => (a.type === b.type ? 0 : a.type === 'file' ? -1 : 1) || depthOf(a.path) - depthOf(b.path) || a.name.localeCompare(b.name) || a.path.localeCompare(b.path));
+  return { results: matches.slice(0, limit), truncated, scanned };
+}
+
+// ── Image preview (GET /api/files/image) ────────────────────────────
+
+/** Largest image the preview route serves (the viewer's maxFileSize may be lower). */
+export const IMAGE_PREVIEW_MAX = 5 * 1_048_576;
+
+/**
+ * The real raster type from a file's first bytes, or null. PNG, JPEG, GIF and WebP
+ * only: SVG is never previewed (it is markup that can carry script), and a file only
+ * named like an image is refused. Exported for the unit test.
+ */
+export function sniffImageType(b: Uint8Array): string | null {
+  const at = (i: number, ...v: number[]) => v.every((x, k) => b[i + k] === x);
+  if (b.length >= 8 && at(0, 0x89, 0x50, 0x4e, 0x47, 0x0d, 0x0a, 0x1a, 0x0a)) return 'image/png';
+  if (b.length >= 3 && at(0, 0xff, 0xd8, 0xff)) return 'image/jpeg';
+  if (b.length >= 6 && (at(0, 0x47, 0x49, 0x46, 0x38, 0x37, 0x61) || at(0, 0x47, 0x49, 0x46, 0x38, 0x39, 0x61))) return 'image/gif';
+  if (b.length >= 12 && at(0, 0x52, 0x49, 0x46, 0x46) && at(8, 0x57, 0x45, 0x42, 0x50)) return 'image/webp';
   return null;
 }
 
@@ -316,6 +596,9 @@ const NEVER_EDITABLE_PREFIXES = [
   // direct edits to instar/ would be overwritten on next update and risk
   // breaking the signed lock-file's body-hash verification.
   '.instar/jobs/instar/',
+  // claude-md-reference-layout spec: generated reference files are rewritten on
+  // every update, so a dashboard edit there would be silently lost.
+  '.instar/reference/',
   // Round-13 (security, grok-build spec §2.1): `.instar/config.json` selects
   // WHICH EXECUTABLE a session spawns (`sessions.frameworkBinaryPaths`), which
   // credentials a lane uses, and which features are enabled. `PATCH /config`
@@ -325,7 +608,65 @@ const NEVER_EDITABLE_PREFIXES = [
   // is a machine-local operator surface, not a document to edit from a phone;
   // the conversational config path and a raw file edit remain.
   '.instar/config.json',
+  // SEC-144: the rest of what decides what runs. `.claude/settings*.json` hold the hook command
+  // lines; `.instar/hooks/` holds the hook scripts that actually run (`.claude/hooks/` above is the
+  // older location); `.instar/scripts/` holds the scripts sessions and jobs call; `.instar/jobs.json`
+  // and `.instar/jobs/user/` define scheduled jobs (the dashboard's schedule editor saves them through
+  // `POST /jobs/:slug/save`, which the same token can still use, so this is defence in depth); `.mcp.json` names the MCP
+  // servers sessions launch. Viewing them is unchanged.
+  '.claude/settings.json',
+  '.claude/settings.local.json',
+  '.instar/hooks/',
+  '.instar/scripts/',
+  '.instar/jobs.json',
+  '.instar/jobs/user/',
+  // A job's manifest (`execute`, `enabled`, `schedule`) decides what the scheduler runs, so it is
+  // fenced with the job body.
+  '.instar/jobs/schedule/',
+  '.mcp.json',
+  // Other frameworks' project config names the commands their MCP servers and hooks start; Husky
+  // hook files run through `sh` on every commit and push the agent makes.
+  '.codex/',
+  '.gemini/',
+  '.husky/',
+  // SEC-173: the repository's own git folder. What it holds decides what git runs, and the agent runs
+  // git all the time (the hourly sync, session commits). The entry also covers a worktree's `.git`
+  // pointer file and a nested copy's `.git/` through the nested match below. `.gitmodules` names
+  // submodule sources git fetches. Viewing them is unchanged.
+  '.git/',
+  '.gitmodules',
+  // SEC-174: files a program runs without an execute bit. A development checkout under `.worktrees/` holds
+  // scripts its commit hook and test runs execute; nobody edits one from the phone. The boot wrapper
+  // (every extension) runs at each server start, and Windows has no execute bit to catch it.
+  '.worktrees/',
+  '.instar/instar-boot.',
+  // SEC-178: backup snapshots. Restoring one copies its files back over the live ones, including fenced
+  // ones such as `.instar/jobs.json`, so an edited snapshot copy would reach a fenced file at the next
+  // restore. Nobody edits a snapshot from the phone; viewing is unchanged.
+  '.instar/backups/',
 ];
+
+/**
+ * SEC-174: file names that are never editable at any depth, because a package manager runs what they name
+ * (`package.json` scripts and lifecycle hooks, `.npmrc` settings). Matched on the last path segment, any case.
+ */
+const NEVER_EDITABLE_NAMES = ['package.json', '.npmrc'];
+
+/** SEC-174: does the last segment of this (normalized, lower-cased, `/`-separated) path match a fenced name? */
+export function hasNeverEditableName(normalized: string): boolean {
+  const base = normalized.replace(/\/+$/, '').split('/').pop() ?? '';
+  return NEVER_EDITABLE_NAMES.includes(base);
+}
+
+/**
+ * SEC-173: a file with an execute bit is a script something may run, so the editor never saves one,
+ * wherever it sits. This closes the open-ended rest of the list above (a script outside the fenced
+ * folders, such as a worktree helper sessions call) without naming every place one can live.
+ * Windows has no execute bit, so the check applies only where the mode carries one.
+ */
+export function isExecutableFile(mode: number, platform: NodeJS.Platform = process.platform): boolean {
+  return platform !== 'win32' && (mode & 0o111) !== 0;
+}
 
 /**
  * Exported for the round-14 bypass tests: the case-folding and resolved-path
@@ -342,13 +683,19 @@ export function isNeverEditable(relativePath: string): boolean {
   // lower-cases both sides; this list did not, and the entries it guards are
   // the ones whose invariant is "a PIN compromise must never result in
   // arbitrary code execution" (`.claude/hooks/`, `.claude/scripts/`).
-  const normalized = path.normalize(relativePath).toLowerCase();
+  // SEC-144: Windows separators are folded to `/` so the `/`-based entries hold on win32 too.
+  const normalized = path.normalize(relativePath).replace(/\\/g, '/').toLowerCase();
   // A never-served path is never-editable by construction (spec §3.5): the
   // serve-deny implies the edit-deny at every chokepoint that consults this.
   if (isNeverServed(normalized)) return true;
+  if (hasNeverEditableName(normalized)) return true;
   return NEVER_EDITABLE_PREFIXES.some(prefix => {
     const p = prefix.toLowerCase();
-    return normalized.startsWith(p) || normalized === p.replace(/\/$/, '');
+    // SEC-144: also match the same path inside a nested project root, such as a worktree under
+    // `.worktrees/<name>/`, whose sessions load that copy's hooks and settings.
+    const nested = `/${p}`;
+    return normalized.startsWith(p) || normalized === p.replace(/\/$/, '')
+      || normalized.includes(nested) || normalized.endsWith(nested.replace(/\/$/, ''));
   });
 }
 
@@ -378,8 +725,15 @@ export function createFileRoutes(options: { config: InstarConfig; liveConfig?: {
 
   const liveConfig = options.liveConfig ?? null;
 
-  // If file viewer is disabled, return empty router
-  if (!config.enabled) return router;
+  // Disabled (at boot, or while running via PATCH /api/files/config {enabled:false}): every
+  // file route but the config route itself answers 404. The routes are mounted either way so
+  // the config route exists to turn the viewer back on — an empty router when off at boot
+  // left the feature switch's own enable target answering 404 forever
+  // (spec feature-transition-applies-action §2.7).
+  router.use('/api/files', (req: Request, res: Response, next) => {
+    if (config.enabled || req.path === '/config') { next(); return; }
+    res.status(404).json({ error: 'file viewer is disabled' });
+  });
 
   // ── GET /api/files/list ────────────────────────────────────────
 
@@ -407,16 +761,16 @@ export function createFileRoutes(options: { config: InstarConfig; liveConfig?: {
             return a.name.localeCompare(b.name);
           });
           const entries: Array<{ name: string; type: string; size?: number; modified?: string }> = [];
+          const realProjectDir = await fs.promises.realpath(projectDir);
           for (const entry of sorted.slice(0, 500)) {
-            if (isBlockedFilename(entry.name, config.blockedFilenames)) continue;
-            if (entry.isDirectory()) {
+            // §5.2: every entry (directories and symlinks included) is
+            // resolved and admitted by the same rules as a direct request.
+            const resolved = await resolveListEntry(projectDir, entry.name, entry.name, realProjectDir, config);
+            if (!resolved) continue;
+            if (resolved.stat.isDirectory()) {
               entries.push({ name: entry.name, type: 'directory' });
-            } else if (entry.isFile() || entry.isSymbolicLink()) {
-              try {
-                const entryAbsPath = path.join(projectDir, entry.name);
-                const entryStat = await fs.promises.stat(entryAbsPath);
-                entries.push({ name: entry.name, type: 'file', size: entryStat.size, modified: entryStat.mtime.toISOString() });
-              } catch { /* skip */ }
+            } else if (resolved.stat.isFile()) {
+              entries.push({ name: entry.name, type: 'file', size: resolved.stat.size, modified: resolved.stat.mtime.toISOString() });
             }
           }
           res.json({ path: '', entries });
@@ -479,29 +833,25 @@ export function createFileRoutes(options: { config: InstarConfig; liveConfig?: {
       // Limit to 500 entries
       const limited = sorted.slice(0, 500);
 
+      const realProjectDir = await fs.promises.realpath(projectDir);
       for (const entry of limited) {
-        // Skip blocked filenames
-        if (isBlockedFilename(entry.name, config.blockedFilenames)) continue;
-        // Skip hidden files starting with . (except specifically allowed like .claude)
-        // Actually, don't skip — let the user see what's there within allowed dirs
-
         const entryRelPath = path.join(path.normalize(requestedPath), entry.name);
+        // §5.2: resolve EACH entry and omit one whose realpath fails or is
+        // denied (requested OR resolved path never-served; requested OR
+        // resolved basename blocked). A symlink with an innocent name that
+        // points at a key file is hidden, not listed.
+        const resolved = await resolveListEntry(absPath, entry.name, entryRelPath, realProjectDir, config);
+        if (!resolved) continue;
 
-        if (entry.isDirectory()) {
+        if (resolved.stat.isDirectory()) {
           entries.push({ name: entry.name, type: 'directory' });
-        } else if (entry.isFile() || entry.isSymbolicLink()) {
-          try {
-            const entryAbsPath = path.join(absPath, entry.name);
-            const entryStat = await fs.promises.stat(entryAbsPath);
-            entries.push({
-              name: entry.name,
-              type: 'file',
-              size: entryStat.size,
-              modified: entryStat.mtime.toISOString(),
-            });
-          } catch {
-            // Skip entries we can't stat
-          }
+        } else if (resolved.stat.isFile()) {
+          entries.push({
+            name: entry.name,
+            type: 'file',
+            size: resolved.stat.size,
+            modified: resolved.stat.mtime.toISOString(),
+          });
         }
       }
 
@@ -518,6 +868,37 @@ export function createFileRoutes(options: { config: InstarConfig; liveConfig?: {
       res.json(result);
     } catch (err) {
       res.status(500).json({ error: 'Failed to list directory' });
+    }
+  });
+
+  // ── GET /api/files/search ──────────────────────────────────────
+  // Find a file by name across every allowed folder (people-settings.md, Files).
+  // Every directory descended into and every result goes through the same rules as
+  // the other file routes: resolveListEntry (never-served on the requested AND the
+  // resolved path, blocked names on both, realpath inside the project), the shared
+  // allowed-path pre-check on both spellings, and validatePath on each result — so a
+  // symlink or a never-served file never appears. Bounded: results, entries scanned,
+  // depth and wall time are capped; `truncated: true` says the walk stopped early.
+
+  router.get('/api/files/search', async (req: Request, res: Response) => {
+    res.setHeader('Cache-Control', 'no-store');
+    const q = typeof req.query.q === 'string' ? req.query.q.trim() : '';
+    if (!q) {
+      res.status(400).json({ error: 'Missing q parameter' });
+      return;
+    }
+    if (q.length > SEARCH_MAX_QUERY) {
+      res.status(400).json({ error: `q is longer than ${SEARCH_MAX_QUERY} characters` });
+      return;
+    }
+    const limitRaw = typeof req.query.limit === 'string' ? parseInt(req.query.limit, 10) : NaN;
+    const limit = Number.isFinite(limitRaw) && limitRaw > 0 ? Math.min(limitRaw, SEARCH_MAX_RESULTS) : SEARCH_DEFAULT_RESULTS;
+    try {
+      const out = await searchByName(q, limit, projectDir, config);
+      res.json({ query: q, ...out });
+    } catch {
+      // The caller gets an explicit 500 (nothing is hidden).
+      res.status(500).json({ error: 'Failed to search files' });
     }
   });
 
@@ -539,8 +920,8 @@ export function createFileRoutes(options: { config: InstarConfig; liveConfig?: {
       return;
     }
 
-    // Check blocked filenames
-    const blocked = checkBlockedFilename(requestedPath, config);
+    // Check blocked filenames — on the requested AND the resolved name (§5.2).
+    const blocked = checkBlockedFilename(requestedPath, config) ?? checkBlockedFilename(validation.resolvedPath!, config);
     if (blocked) {
       res.status(403).json({ error: blocked });
       return;
@@ -549,25 +930,38 @@ export function createFileRoutes(options: { config: InstarConfig; liveConfig?: {
     const absPath = validation.resolvedPath!;
 
     try {
-      const stat = await fs.promises.stat(absPath);
+      const checkedStat = validation.resolvedStat!;
 
-      if (stat.isDirectory()) {
+      if (checkedStat.isDirectory()) {
         res.status(400).json({ error: 'Path is a directory, use /api/files/list instead' });
         return;
       }
 
       // Size check
-      if (stat.size > config.maxFileSize) {
+      if (checkedStat.size > config.maxFileSize) {
         res.status(413).json({
           error: 'File too large',
-          size: stat.size,
+          size: checkedStat.size,
           maxSize: config.maxFileSize,
         });
         return;
       }
 
-      // Read initial bytes for binary detection
-      const buffer = await fs.promises.readFile(absPath);
+      // §5.2: open FIRST, prove the descriptor is the checked inode, then read
+      // FROM THAT DESCRIPTOR — a by-path re-open would reintroduce the
+      // check-then-serve race.
+      const opened = await openCheckedDescriptor(absPath, checkedStat, projectDir);
+      if (!opened.handle) {
+        res.status(403).json({ error: opened.reason });
+        return;
+      }
+      const stat = opened.stat;
+      let buffer: Buffer;
+      try {
+        buffer = await opened.handle.readFile();
+      } finally {
+        await opened.handle.close();
+      }
 
       if (isBinaryFile(absPath, buffer)) {
         res.json({
@@ -588,6 +982,7 @@ export function createFileRoutes(options: { config: InstarConfig; liveConfig?: {
       // in the listing and refused on write.
       const editable =
         isEditable(requestedPath, config) &&
+        !isExecutableFile(stat.mode) &&
         !isNeverEditable(requestedPath) &&
         !(validation.relativeAfterResolve && isNeverEditable(validation.relativeAfterResolve));
 
@@ -682,6 +1077,12 @@ export function createFileRoutes(options: { config: InstarConfig; liveConfig?: {
         return;
       }
 
+      // SEC-173: never rewrite a script (the stat follows a symlink to its target).
+      if (isExecutableFile(stat.mode)) {
+        res.status(403).json({ error: 'Scripts cannot be edited from the file editor' });
+        return;
+      }
+
       // Binary check
       if (isBinaryFile(absPath)) {
         res.status(400).json({ error: 'Cannot edit binary files' });
@@ -755,7 +1156,7 @@ export function createFileRoutes(options: { config: InstarConfig; liveConfig?: {
             size: contentSize,
             success: false,
           });
-          res.status(500).json({ error: 'Failed to save file' });
+          res.status(500).json(storageErrorResponse({ error: 'Failed to save file' }, options.config.stateDir));
         }
         return;
       }
@@ -766,7 +1167,7 @@ export function createFileRoutes(options: { config: InstarConfig; liveConfig?: {
         size: contentSize,
         success: false,
       });
-      res.status(500).json({ error: 'Failed to save file' });
+      res.status(500).json(storageErrorResponse({ error: 'Failed to save file' }, options.config.stateDir));
     }
   });
 
@@ -780,6 +1181,7 @@ export function createFileRoutes(options: { config: InstarConfig; liveConfig?: {
       editablePaths: config.editablePaths,
       maxFileSize: config.maxFileSize,
       maxEditableFileSize: config.maxEditableFileSize,
+      maxDownloadSize: Math.max(config.maxFileSize, Number.isFinite(config.maxDownloadSize) ? config.maxDownloadSize! : DEFAULT_FILE_VIEWER_CONFIG.maxDownloadSize!),
     });
   });
 
@@ -799,7 +1201,12 @@ export function createFileRoutes(options: { config: InstarConfig; liveConfig?: {
       return;
     }
 
-    const { allowedPaths, editablePaths } = req.body || {};
+    if (refuseUnsupportedFields(res, req.body, ['allowedPaths', 'editablePaths', 'enabled'])) return;
+    const { allowedPaths, editablePaths, enabled } = req.body || {};
+    if (enabled !== undefined && typeof enabled !== 'boolean') {
+      res.status(400).json({ error: 'enabled must be a boolean' });
+      return;
+    }
 
     // Validate allowedPaths
     if (allowedPaths !== undefined) {
@@ -847,7 +1254,13 @@ export function createFileRoutes(options: { config: InstarConfig; liveConfig?: {
       liveConfig.set('dashboard.fileViewer.editablePaths', editablePaths);
     }
 
+    if (enabled !== undefined) {
+      config.enabled = enabled;
+      liveConfig.set('dashboard.fileViewer.enabled', enabled);
+    }
+
     res.json({
+      enabled: config.enabled,
       allowedPaths: config.allowedPaths,
       editablePaths: config.editablePaths,
       updated: true,
@@ -869,7 +1282,8 @@ export function createFileRoutes(options: { config: InstarConfig; liveConfig?: {
       return;
     }
 
-    const blocked = checkBlockedFilename(requestedPath, config);
+    // Blocked filenames on the requested AND the resolved name (§5.2).
+    const blocked = checkBlockedFilename(requestedPath, config) ?? checkBlockedFilename(validation.resolvedPath!, config);
     if (blocked) {
       res.status(403).json({ error: blocked });
       return;
@@ -878,23 +1292,34 @@ export function createFileRoutes(options: { config: InstarConfig; liveConfig?: {
     const absPath = validation.resolvedPath!;
 
     try {
-      const stat = await fs.promises.stat(absPath);
-      if (stat.isDirectory()) {
+      const checkedStat = validation.resolvedStat!;
+      if (checkedStat.isDirectory()) {
         res.status(400).json({ error: 'Cannot download a directory' });
         return;
       }
 
-      if (stat.size > config.maxFileSize) {
-        res.status(413).json({ error: 'File too large', size: stat.size, maxSize: config.maxFileSize });
+      // Downloads have their own cap (CMT-1819): the 1 MB preview cap made bigger files undownloadable.
+      const downloadMax = Math.max(config.maxFileSize, Number.isFinite(config.maxDownloadSize) ? config.maxDownloadSize! : DEFAULT_FILE_VIEWER_CONFIG.maxDownloadSize!);
+      if (checkedStat.size > downloadMax) {
+        res.status(413).json({ error: 'File too large', size: checkedStat.size, maxSize: downloadMax });
         return;
       }
+
+      // §5.2: open first, prove the descriptor is the checked inode, stream
+      // FROM THAT DESCRIPTOR (never a by-path createReadStream).
+      const opened = await openCheckedDescriptor(absPath, checkedStat, projectDir);
+      if (!opened.handle) {
+        res.status(403).json({ error: opened.reason });
+        return;
+      }
+      const stat = opened.stat;
 
       const filename = path.basename(absPath);
       res.setHeader('Content-Disposition', `attachment; filename="${filename.replace(/"/g, '\\"')}"`);
       res.setHeader('Content-Type', 'application/octet-stream');
       res.setHeader('Content-Length', stat.size);
 
-      const stream = fs.createReadStream(absPath);
+      const stream = opened.handle.createReadStream({ autoClose: true });
       stream.pipe(res);
       stream.on('error', () => {
         if (!res.headersSent) {
@@ -906,10 +1331,85 @@ export function createFileRoutes(options: { config: InstarConfig; liveConfig?: {
     }
   });
 
+  // ── GET /api/files/image ────────────────────────────────────────
+  // Image preview for the console's Files page. The same admission as download
+  // (validatePath, blocked names on the requested AND resolved spelling, the
+  // checked-descriptor open), plus: the real type is read from the file's first
+  // bytes (PNG, JPEG, GIF, WebP only — never SVG, which can carry script, and never
+  // a file only NAMED like an image), the size is capped at IMAGE_PREVIEW_MAX and
+  // the viewer's own maxFileSize, and the answer is served inline with the sniffed
+  // Content-Type, nosniff, and a sandbox CSP so it can never run as a document.
+
+  router.get('/api/files/image', async (req: Request, res: Response) => {
+    res.setHeader('Cache-Control', 'no-store');
+    const requestedPath = typeof req.query.path === 'string' ? req.query.path : '';
+    if (!requestedPath) {
+      res.status(400).json({ error: 'Missing path parameter' });
+      return;
+    }
+    const validation = await validatePath(requestedPath, projectDir, config);
+    if (!validation.valid) {
+      res.status(validation.status || 403).json({ error: validation.error });
+      return;
+    }
+    const blocked = checkBlockedFilename(requestedPath, config) ?? checkBlockedFilename(validation.resolvedPath!, config);
+    if (blocked) {
+      res.status(403).json({ error: blocked });
+      return;
+    }
+    const checkedStat = validation.resolvedStat!;
+    if (checkedStat.isDirectory()) {
+      res.status(400).json({ error: 'Cannot preview a directory' });
+      return;
+    }
+    const maxSize = Math.min(IMAGE_PREVIEW_MAX, config.maxFileSize);
+    if (checkedStat.size > maxSize) {
+      res.status(413).json({ error: 'Image too large to preview', size: checkedStat.size, maxSize });
+      return;
+    }
+    const opened = await openCheckedDescriptor(validation.resolvedPath!, checkedStat, projectDir);
+    if (!opened.handle) {
+      res.status(403).json({ error: opened.reason });
+      return;
+    }
+    const handle = opened.handle;
+    try {
+      const size = opened.stat.size;
+      if (size > maxSize) {
+        await handle.close();
+        res.status(413).json({ error: 'Image too large to preview', size, maxSize });
+        return;
+      }
+      const bytes = Buffer.alloc(size);
+      let read = 0;
+      while (read < size) {
+        const { bytesRead } = await handle.read(bytes, read, size - read, read);
+        if (bytesRead === 0) break;
+        read += bytesRead;
+      }
+      await handle.close();
+      const body = bytes.subarray(0, read);
+      const mime = sniffImageType(body);
+      if (!mime) {
+        res.status(415).json({ error: 'Not a previewable image (PNG, JPEG, GIF or WebP only)' });
+        return;
+      }
+      res.setHeader('Content-Type', mime);
+      res.setHeader('Content-Length', body.length);
+      res.setHeader('Content-Disposition', 'inline');
+      res.setHeader('X-Content-Type-Options', 'nosniff');
+      res.setHeader('Content-Security-Policy', "default-src 'none'; sandbox");
+      res.end(body);
+    } catch {
+      await handle.close().catch(() => { /* already closed or failing */ });
+      if (!res.headersSent) res.status(500).json({ error: 'Failed to read image' });
+    }
+  });
+
   // ── GET /api/files/link ─────────────────────────────────────────
   // Phase 3: Generate a deep link URL for a file in the dashboard
 
-  router.get('/api/files/link', (req: Request, res: Response) => {
+  router.get('/api/files/link', async (req: Request, res: Response) => {
     res.setHeader('Cache-Control', 'no-store');
 
     const filePath = typeof req.query.path === 'string' ? req.query.path : '';
@@ -918,27 +1418,35 @@ export function createFileRoutes(options: { config: InstarConfig; liveConfig?: {
       return;
     }
 
-    // Layers 1–4 via the shared pre-check — the same policy validatePath
-    // applies (project-root convention, segment boundaries, traversal/
-    // absolute rejection, never-served deny). This route previously carried
-    // an inline duplicate that drifted and 403'd every link under the
-    // default `allowedPaths: ['./']`.
-    const pre = checkRelativePathAllowed(filePath, config);
-    if (!pre.ok) {
-      res.status(pre.status).json({ error: pre.error });
+    // §5.2: RESOLVE before minting — the full validatePath (lstat, realpath,
+    // post-dereference root/allowed/never-served checks), not just the
+    // pre-check on the requested spelling. A link to a symlink that
+    // dereferences into key material is refused; a realpath failure refuses.
+    const validation = await validatePath(filePath, projectDir, config);
+    if (!validation.valid) {
+      res.status(validation.status || 403).json({ error: validation.error });
       return;
     }
-    const normalized = pre.normalized;
+    const normalized = path.normalize(filePath);
+    const blocked = checkBlockedFilename(normalized, config) ?? checkBlockedFilename(validation.resolvedPath!, config);
+    if (blocked && !validation.resolvedStat!.isDirectory()) {
+      res.status(403).json({ error: blocked });
+      return;
+    }
 
     const encodedPath = encodeURIComponent(normalized);
-    const relativePath = `/dashboard?tab=files&path=${encodedPath}`;
+    // The new console's Files page (CMT-1819); it also reads the legacy ?tab=files&path= form.
+    const relativePath = `/dashboard/console/#/settings/files?path=${encodedPath}`;
 
     res.json({
       path: normalized,
       relative: relativePath,
       // Round-17 (security): same conjunction as the read route — a link must
       // not advertise an editor for a path whose save is fenced.
-      editable: isEditable(normalized, config) && !isNeverEditable(normalized),
+      editable:
+        isEditable(normalized, config) &&
+        !isNeverEditable(normalized) &&
+        !(validation.relativeAfterResolve && isNeverEditable(validation.relativeAfterResolve)),
     });
   });
 

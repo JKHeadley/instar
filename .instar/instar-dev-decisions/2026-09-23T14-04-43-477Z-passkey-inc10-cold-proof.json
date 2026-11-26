@@ -1,0 +1,36 @@
+{
+  "ts": "2026-09-23T14:04:43.477Z",
+  "slug": "passkey-inc10-cold-proof",
+  "suggestedTier": 2,
+  "declaredTier": 2,
+  "riskFloor": 2,
+  "riskFloorReasons": [
+    "new capability: new route (router.<verb>() added"
+  ],
+  "belowFloor": false,
+  "files": 9,
+  "loc": 420,
+  "scope": {
+    "basis": "staged-in-scope-additions-plus-deletions",
+    "files": [
+      "src/commands/server.ts",
+      "src/core/ChromeCdpReloginBrowser.ts",
+      "src/core/GooglePasskeyPageClasses.ts",
+      "src/core/PasskeyColdProof.ts",
+      "src/core/PasskeyWebAuthnFixture.ts",
+      "src/core/WriteDomainRegistry.ts",
+      "src/server/AgentServer.ts",
+      "src/server/CapabilityIndex.ts",
+      "src/server/routes.ts"
+    ],
+    "addedLines": 413,
+    "deletedLines": 7
+  },
+  "causalAutopsy": null,
+  "classClosure": {
+    "defectClass": "unbounded-self-action",
+    "closure": "n/a",
+    "reason": "the proof runs only on an operator PIN request, one at a time under the host-wide browser seat; it never retries, respawns or schedules itself — the cadenced watcher is a later increment and registers there"
+  },
+  "verdict": "pass"
+}

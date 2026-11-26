@@ -181,6 +181,18 @@ describe('SessionManager pending-inject wiring (finding 8d300555)', () => {
     expect(record.initialMessage).toBe('must remain queued');
   });
 
+  it('SEC-137: records the first message in the cleaned form rawInject types, so the match holds', async () => {
+    vi.spyOn(manager as unknown as { waitForClaudeReadyWithRetry(s: string, t: number): Promise<boolean> }, 'waitForClaudeReadyWithRetry')
+      .mockResolvedValue(true);
+    vi.spyOn(manager as unknown as { injectMessage(s: string, m: string): boolean }, 'injectMessage')
+      .mockReturnValue(false);
+    await expect(manager.spawnInteractiveSession('line one\r\nline\x15 two', 'cleaned-bootstrap', {
+      telegramTopicId: 2271, awaitInitialInjection: true,
+    })).rejects.toThrow('Initial message injection refused');
+    const record = JSON.parse(fs.readFileSync(path.join(pendingDir(), pendingFiles()[0]), 'utf8'));
+    expect(record.initialMessage).toBe('line one\nline two');
+  });
+
   it('marks only stale generationless Codex incarnations for a fresh respawn', () => {
     const activeManager = new SessionManager({
       tmuxPath: '/usr/bin/tmux', claudePath: '/usr/local/bin/claude', projectDir: tmpDir,
@@ -232,6 +244,20 @@ describe('SessionManager pending-inject wiring (finding 8d300555)', () => {
     expect(provenance).not.toHaveBeenCalled();
     expect(patterns).not.toHaveBeenCalled();
     expect(warning).not.toHaveBeenCalled();
+  });
+
+  it('accepts /clear through the same fenced control path (context-budget §9.2 rung 1)', () => {
+    const h = controlHarness();
+    const before = h.ledger.status().logicalRows;
+    expect(h.activeManager.injectInternalControlCommand(h.tmux, '2271', '/clear')).toBe(true);
+    expect(h.ledger.status().logicalRows).toBe(before);
+    expect(h.controlSync).toHaveBeenCalledOnce();
+  });
+
+  it('refuses any command outside the closed control set', () => {
+    const h = controlHarness();
+    expect(h.activeManager.injectInternalControlCommand(h.tmux, '2271', '/exit' as never)).toBe(false);
+    expect(h.controlSync).not.toHaveBeenCalled();
   });
 
   it('refuses /compact when the session dies at the action-time fence', () => {
@@ -374,7 +400,7 @@ describe('SessionManager pending-inject wiring (finding 8d300555)', () => {
   it('preserves Slack durable conversation authority across resume-failure fresh spawn', async () => {
     vi.spyOn(manager as unknown as { waitForClaudeReadyWithRetry(s: string, t: number): Promise<boolean> }, 'waitForClaudeReadyWithRetry')
       .mockResolvedValue(false);
-    const spawn = vi.spyOn(manager, 'spawnInteractiveSession').mockResolvedValue('fresh-slack');
+    const spawn = vi.spyOn(manager, 'spawnInteractiveSessionUnlocked').mockResolvedValue('fresh-slack');
 
     await (manager as unknown as {
       handleReadyAndInject(s: string, n: string, m: string, t: number, o: Record<string, unknown>): Promise<void>;

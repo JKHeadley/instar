@@ -1,0 +1,26 @@
+{
+  "ts": "2026-10-07T18:13:07.323Z",
+  "slug": "a2a-inbound-id-ledger",
+  "suggestedTier": 1,
+  "declaredTier": 2,
+  "riskFloor": 1,
+  "riskFloorReasons": [],
+  "belowFloor": false,
+  "files": 1,
+  "loc": 8,
+  "scope": {
+    "basis": "staged-in-scope-additions-plus-deletions",
+    "files": [
+      "src/threadline/ThreadlineRouter.ts"
+    ],
+    "addedLines": 7,
+    "deletedLines": 1
+  },
+  "causalAutopsy": null,
+  "classClosure": {
+    "defectClass": "unbounded-self-action",
+    "closure": "n/a",
+    "reason": "not a self-triggered loop: re-admission happens only when a sender's message arrives (bounded by the sender's own resend loop, per-key/sender/process waiter caps); the only timers delete expired rows (bounded batches, backoff, breaker) and flush counters — no restart/swap/respawn/spawn/notify/retry/re-drive/kill"
+  },
+  "verdict": "blocked"
+}

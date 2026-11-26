@@ -128,6 +128,81 @@ export function sessionBuildContextKeyFor(machineId: string | null | undefined):
   return `session-build-context-${id}`;
 }
 
+/**
+ * Machine-local stores written DIRECTLY (atomic temp + rename), outside
+ * `StateManager.guardWrite` and outside any mutating HTTP route — so they have
+ * no op/kv/route entry to carry their classification. They are registered here
+ * instead, under the SAME two-axis story schema (I9), and each path must also
+ * appear in FileClassifier's git-sync exclusions (asserted by test).
+ *
+ * Shape mirrors the external-hog arm marker: the logical story IS the
+ * file-level story — each machine's copy stands alone.
+ */
+export interface DirectWriteFileEntry {
+  /** Agent-root-relative path. */
+  path: string;
+  domain: 'machine-local';
+  /** machine-local-justification taxonomy key (spec §13). */
+  justification: 'hardware-bound-resource';
+  story: ConvergenceStory;
+}
+
+export const MACHINE_LOCAL_DIRECT_WRITE_FILES: ReadonlyArray<DirectWriteFileEntry> = [
+  // disk-steward §3.1: samples, level/cadence state, prune run records and child
+  // results describe THIS machine's disk and processes; a copy elsewhere would
+  // watch the wrong disk or recover the wrong process group. Pool-wide view is a
+  // live read (GET /disk-steward?scope=pool).
+  {
+    path: '.instar/state/disk-steward/',
+    domain: 'machine-local',
+    justification: 'hardware-bound-resource',
+    story: {
+      logical: 'pool-scope-read-merge',
+      onSharedGitSyncedPath: true,
+      fileLevel: 'git-sync-excluded',
+      note: 'per-machine disk samples, cadence and prune runs; read live pool-wide by GET /disk-steward?scope=pool; file-level arm in FileClassifier sync exclusions',
+    },
+  },
+  // job-cost-reduction §5.4/§13: an episode is a live observation of THIS
+  // machine's disk, sessions and server; a copy elsewhere describes the wrong
+  // hardware. Visible pool-wide through GET /jobs?scope=pool.
+  {
+    path: '.instar/state/job-anomaly-episodes.json',
+    domain: 'machine-local',
+    justification: 'hardware-bound-resource',
+    story: {
+      logical: 'pool-scope-read-merge',
+      onSharedGitSyncedPath: true,
+      fileLevel: 'git-sync-excluded',
+      note: 'episodes describe this machine\'s own disk/sessions/server; merged on read by GET /jobs?scope=pool; file-level arm in FileClassifier sync exclusions',
+    },
+  },
+  // job-cost-reduction §13: the triage caps bound sessions spawned into THIS
+  // host's process slots; the backup cursor points into this machine's own run
+  // history. Merged on read by GET /jobs/triage?scope=pool.
+  {
+    path: '.instar/state/job-triage-state.json',
+    domain: 'machine-local',
+    justification: 'hardware-bound-resource',
+    story: {
+      logical: 'pool-scope-read-merge',
+      onSharedGitSyncedPath: true,
+      fileLevel: 'git-sync-excluded',
+      note: 'caps/cooldown bound this host\'s own spawned sessions; merged on read by GET /jobs/triage?scope=pool; file-level arm in FileClassifier sync exclusions',
+    },
+  },
+];
+
+/** I9 check over the direct-write file list: entries whose story fails validation. */
+export function invalidDirectWriteFiles(
+  files: ReadonlyArray<DirectWriteFileEntry> = MACHINE_LOCAL_DIRECT_WRITE_FILES,
+): Array<{ path: string; reason: string }> {
+  return files
+    .map(f => ({ path: f.path, v: storyValid(f.story) }))
+    .filter(x => !x.v.ok)
+    .map(x => ({ path: x.path, reason: x.v.reason ?? 'invalid story' }));
+}
+
 export class WriteDomainRegistry {
   private readonly ops = new Map<string, OpEntry>();
   private readonly kv = new Map<string, KvEntry>();
@@ -216,6 +291,14 @@ export function buildWriteDomainRegistry(opts: { machineId: string | null }): Wr
   // Genuinely cluster-shared, single-writer = lease holder (byte-identical to today).
   reg.add({ kind: 'op', op: 'saveJobState', domain: 'cluster-shared' });
   reg.add({ kind: 'op', op: 'appendEvent', domain: 'cluster-shared' });
+  // Conversations v3 §7.2: shared graph/header/erasure writes require the
+  // admitted writer at the store seam as well as the HTTP boundary.
+  for (const op of ['conversationGraph.append', 'conversationGraph.certify', 'conversationGraph.header', 'conversationGraph.erase']) {
+    reg.add({ kind: 'op', op, domain: 'cluster-shared' });
+  }
+  for (const pathPrefix of ['/conversation-graph/changes', '/conversation-graph/forget', '/conversation-graph/decisions', '/mobile/conversation-graph/changes', '/mobile/conversation-graph/forget', '/mobile/conversation-graph/decisions']) {
+    reg.add({ kind: 'route', method: 'POST', pathPrefix, domain: 'cluster-shared' });
+  }
   // kv `set`/`delete` default cluster-shared for unclassified keys (I8) — no
   // op-level entry needed; exact-key entries below override per key.
 
@@ -268,13 +351,223 @@ export function buildWriteDomainRegistry(opts: { machineId: string | null }): Wr
   };
   // POST /standdown/evaluate — the hook's authoritative verdict + audit row for
   // a session running ON THIS machine (a peer's session can never be listed here).
+  // "Bring it back here" (app-conversations-in-the-pool §2.2): the lease holder's CAS, journaled to every
+  // machine. Shared, as /pool/transfer is by default.
+  reg.add({ kind: 'route', method: 'POST', pathPrefix: '/pool/bring-back', domain: 'cluster-shared' });
+  // Instar Documents (instar-document-viewer §5.1): machine-signed rows replicated by version-vector pull.
+  reg.add({ kind: 'route', method: 'POST', pathPrefix: '/docs', domain: 'cluster-shared' });
+  // The trust journey's account path (docs/specs/trust-journey.md decision 5): requests, acceptances and
+  // withdrawals are TrustJourneyStore records replicated through the coherence journal to every machine.
+  reg.add({ kind: 'route', method: 'POST', pathPrefix: '/trust/requests', domain: 'cluster-shared' });
+  // agent-work-cards-default §5: the agent withdraws an unanswered request it raised (the same replicated trust store).
+  reg.add({ kind: 'route', method: 'DELETE', pathPrefix: '/trust/requests/', domain: 'cluster-shared' });
+  reg.add({ kind: 'route', method: 'POST', pathPrefix: '/trust/acceptance/', domain: 'cluster-shared' });
+  // Approving from the Instar app (docs/specs/app-trust-approval.md): device acceptances, device approvals,
+  // consumptions and outcomes are the same TrustJourneyStore records, decided only on the serving-lease holder.
+  reg.add({ kind: 'route', method: 'POST', pathPrefix: '/mobile/trust/', domain: 'cluster-shared' });
+
   reg.add({ kind: 'route', method: 'POST', pathPrefix: '/standdown/', domain: 'machine-local', story: standDownStory });
+
+  // Desktop grants exist only in the target process. A restart destroys every
+  // grant and its keys; the redacted audit is written to this machine's logs.
+  reg.add({ kind: 'route', method: 'POST', pathPrefix: '/desktop/requests', domain: 'machine-local', story: {
+    logical: 'ephemeral-rebuildable',
+    onSharedGitSyncedPath: false,
+    fileLevel: 'git-sync-excluded',
+    note: 'requests, tickets and grants are process-local and never restored; only a redacted local audit survives',
+  } });
+  // Linux browser install: sets this machine's own flag and installs on this machine.
+  // Machine self-maintenance enrolment offer (CMT-1200): the offer and the enrolment record
+  // live in ~/.instar/host-maintenance on THIS machine; a peer offers for its own machine.
+  reg.add({ kind: 'route', method: 'POST', pathPrefix: '/machine-maintenance/enrol/offer', domain: 'machine-local', story: {
+    logical: 'per-machine-path',
+    onSharedGitSyncedPath: false,
+    fileLevel: 'git-sync-excluded',
+    note: 'writes ~/.instar/host-maintenance/enrol-offers.json for this physical machine; outside the agent home, never git-synced',
+  } });
+  // Restart now offer (CMT-1199): the card's nonce lives in ~/.instar/host-maintenance on THIS machine.
+  reg.add({ kind: 'route', method: 'POST', pathPrefix: '/machine-maintenance/restart-now/offer', domain: 'machine-local', story: {
+    logical: 'per-machine-path',
+    onSharedGitSyncedPath: false,
+    fileLevel: 'git-sync-excluded',
+    note: 'writes ~/.instar/host-maintenance/restart-now.<agent>.json for this physical machine; outside the agent home, never git-synced',
+  } });
+  // Off (Part F, CMT-1203): removes this machine's enrolment record and its reboot rule.
+  reg.add({ kind: 'route', method: 'POST', pathPrefix: '/machine-maintenance/remove', domain: 'machine-local', story: {
+    logical: 'per-machine-path',
+    onSharedGitSyncedPath: false,
+    fileLevel: 'git-sync-excluded',
+    note: 'moves ~/.instar/host-maintenance/enrolment.json aside and removes /etc/sudoers.d/instar-reboot on this physical machine; outside the agent home, never git-synced',
+  } });
+  // Machine care from the owner's phone (Part F, CMT-1203): Skip, Undo, window for THIS machine; restart only sends a card.
+  reg.add({ kind: 'route', method: 'POST', pathPrefix: '/mobile/machine-care/', domain: 'machine-local', story: {
+    logical: 'per-machine-path',
+    onSharedGitSyncedPath: false,
+    fileLevel: 'git-sync-excluded',
+    note: 'writes ~/.instar/host-maintenance/controls.json for this physical machine (refuses any other machine id); outside the agent home, never git-synced',
+  } });
+  // Operator controls (Part F, CMT-1203): Skip once and Change window for THIS machine.
+  for (const control of ['/machine-maintenance/skip', '/machine-maintenance/unskip', '/machine-maintenance/window']) {
+    reg.add({ kind: 'route', method: 'POST', pathPrefix: control, domain: 'machine-local', story: {
+      logical: 'per-machine-path',
+      onSharedGitSyncedPath: false,
+      fileLevel: 'git-sync-excluded',
+      note: 'writes ~/.instar/host-maintenance/controls.json for this physical machine; outside the agent home, never git-synced',
+    } });
+  }
+  reg.add({ kind: 'route', method: 'POST', pathPrefix: '/browser/linux/install', domain: 'machine-local', story: {
+    logical: 'per-machine-path',
+    onSharedGitSyncedPath: false,
+    fileLevel: 'git-sync-excluded',
+    note: 'writes state/xdrive/ for the packages on this machine; a peer answers for its own machine',
+  } });
+  // Console composer attachments: the file must sit on the disk of the machine
+  // running the session, which reads it by path. Never converges across machines.
+  reg.add({ kind: 'route', method: 'POST', pathPrefix: '/sessions/:name/attachments', domain: 'machine-local', story: {
+    logical: 'per-machine-path',
+    onSharedGitSyncedPath: false,
+    fileLevel: 'git-sync-excluded',
+    note: 'saved under the gitignored per-agent <stateDir>/state/dashboard-uploads/ for a session running on this machine; 30-day retention; another machine\'s session is refused',
+  } });
+  // Locked-screen setting and Disable: each Mac owns its own setting and helper
+  // marker; the front relays the change to the target over the mesh, never replicates it.
+  reg.add({ kind: 'route', method: 'POST', pathPrefix: '/desktop/locked/', domain: 'machine-local', story: {
+    logical: 'per-machine-path',
+    onSharedGitSyncedPath: false,
+    fileLevel: 'git-sync-excluded',
+    note: 'writes this Mac\'s own locked-screen settings and helper marker; a peer\'s setting is changed by relaying to that Mac, never by syncing files',
+  } });
+  reg.add({ kind: 'route', method: 'POST', pathPrefix: '/desktop/activate-config', domain: 'machine-local', story: {
+    logical: 'per-machine-path',
+    onSharedGitSyncedPath: false,
+    fileLevel: 'git-sync-excluded',
+    note: 'activation requests a supervised restart on this host; no grant or shared state is written',
+  } });
+  // Memory-privacy owner fix link: spends a process-local token and points THIS
+  // machine's sessions.claudePath at a Claude binary measured on this machine.
+  reg.add({ kind: 'route', method: 'POST', pathPrefix: '/memory-privacy/fix/', domain: 'machine-local', story: {
+    logical: 'per-machine-path',
+    onSharedGitSyncedPath: false,
+    fileLevel: 'git-sync-excluded',
+    note: 'the link token lives only in this process; the repair writes sessions.claudePath in .instar/config.json (sync-excluded in FileClassifier), a path to a binary on this machine\'s disk',
+  } });
+
+  // a2a-required-acknowledgment D4: closes a watch on the machine whose session has the
+  // message. A standby forwards the receipt to the relay holder over the mesh, so this
+  // must admit on every machine; the sender's health read merges across the pool.
+  // Topic history import (docs/specs/topic-history-import.md): restores a recovery file
+  // into THIS machine's topic-memory store; each machine imports its own copy, and boot
+  // re-applies the sealed batches. Batches live under the gitignored <stateDir>/state/.
+  reg.add({ kind: 'route', method: 'POST', pathPrefix: '/topic/import', domain: 'machine-local', story: {
+    logical: 'per-machine-path',
+    onSharedGitSyncedPath: false,
+    fileLevel: 'git-sync-excluded',
+    note: 'rows land in this machine\'s topic-memory.db and sealed batches under the gitignored <stateDir>/state/topic-history-imports/; each machine runs its own import; boot and /topic/rebuild re-apply the batches',
+  } });
+  reg.add({ kind: 'route', method: 'POST', pathPrefix: '/threadline/ack', domain: 'machine-local', story: {
+    logical: 'per-machine-path',
+    onSharedGitSyncedPath: false,
+    fileLevel: 'git-sync-excluded',
+    note: 'watch and pending rows live in this machine\'s delivery-tracker database; visible pool-wide through the merged ?scope=pool peer-health read',
+  } });
+
+  // memory-privacy-agent-places §5: a session in another agent's place replies on the machine
+  // that runs it (the one holding its mps_ token). It binds the thread to that live session and
+  // hands the text to relay-send, which keeps its own write-domain story.
+  reg.add({ kind: 'route', method: 'POST', pathPrefix: '/threadline/session-reply', domain: 'machine-local', story: {
+    logical: 'per-machine-path',
+    onSharedGitSyncedPath: false,
+    fileLevel: 'git-sync-excluded',
+    note: 'the session token map and the thread-to-session binding are this machine\'s; the send itself goes through relay-send',
+  } });
+
+  // owner-approved-action-stdio-transport (SEC-018c): the internal apply-once route the stdio
+  // delete funnels through after the device-signed owner approval. It deletes a thread from THIS
+  // machine's ConversationStore + ThreadResumeMap; the deletion executes on the machine holding
+  // the thread and is not relay-hosted or git-synced.
+  reg.add({ kind: 'route', method: 'POST', pathPrefix: '/threadline/approved-delete', domain: 'machine-local', story: {
+    logical: 'per-machine-path',
+    onSharedGitSyncedPath: false,
+    fileLevel: 'git-sync-excluded',
+    note: 'deletes a thread from this machine\'s ConversationStore ({stateDir}/threadline/conversations.json — git-sync-excluded per FileClassifier, not relay-hosted) and its ThreadResumeMap binding; the owner-approval gate is device-signed and the mutation is apply-once on the machine holding the thread',
+  } });
 
   reg.add({ kind: 'route', method: 'POST', pathPrefix: '/evolution/', domain: 'machine-local', story: evolutionStory });
 
+  // POST /hooks/native-events (docs/specs/native-hook-events.md): a Claude Code
+  // process reports to the server on the SAME host over loopback
+  // (machine-local-justification: hardware-bound-resource). The stored events
+  // are per-session telemetry, rebuildable and git-ignored; nothing replicates.
+  reg.add({
+    kind: 'route',
+    method: 'POST',
+    pathPrefix: '/hooks/native-events',
+    domain: 'machine-local',
+    story: {
+      logical: 'ephemeral-rebuildable',
+      onSharedGitSyncedPath: true,
+      fileLevel: 'git-sync-excluded',
+      note: 'per-session hook telemetry under .instar/hook-events/ + subagent-tracking/, git-ignored by the native-hook-events migration; loopback-only route',
+    },
+  });
+
+  // POST /hooks/post-compact (context-budget-layered-summaries §9.1, §14): the
+  // PostCompact hook reports from the session's own machine over loopback; the
+  // scrubbed summary lands under that machine's .instar/state/context-layers/,
+  // which is git-ignored. Observability only in Phase 0; nothing replicates.
+  reg.add({
+    kind: 'route',
+    method: 'POST',
+    pathPrefix: '/hooks/post-compact',
+    domain: 'machine-local',
+    story: {
+      logical: 'per-machine-path',
+      onSharedGitSyncedPath: true,
+      fileLevel: 'git-sync-excluded',
+      note: 'per-topic PostCompact records under .instar/state/context-layers/<topic>/post-compact/, git-ignored; written by the machine hosting the session',
+    },
+  });
+
+  // POST /context-budget/codex-seed and /ack (context-budget-layered-summaries §9.6,
+  // Phase 1 S17): the Codex next-prompt seed. The per-prompt hook calls its own
+  // machine's server over loopback; the offer restages the topic's standing packet
+  // and the ack writes the seeded marker, both under that machine's git-ignored
+  // .instar/state/context-layers/. The session and its rollout live on that machine.
+  reg.add({
+    kind: 'route',
+    method: 'POST',
+    pathPrefix: '/context-budget/codex-seed',
+    domain: 'machine-local',
+    story: {
+      logical: 'per-machine-path',
+      onSharedGitSyncedPath: true,
+      fileLevel: 'git-sync-excluded',
+      note: 'staged standing packets under .instar/state/context-layers/_standing/ and seeded markers under _seeded/, git-ignored; written by the machine hosting the Codex session',
+    },
+  });
+
+  // POST /agent-identity/reload — the a2a-single-agent-identity §1.2 reload lever: re-reads
+  // THIS machine's own identity file, rebuilds THIS process's relay client, appends one row
+  // to this machine's key-free audit log. Local effect only; carries no key; installs
+  // nothing. The identity itself is `unified` (one keypair, replicated by the sealed
+  // handover + adoption and verified equal by the §2 detector every 5 min); the pool read of
+  // the audit is GET /agent-identity/audit?scope=pool.
+  reg.add({
+    kind: 'route',
+    method: 'POST',
+    pathPrefix: '/agent-identity/',
+    domain: 'machine-local',
+    story: {
+      logical: 'pool-scope-read-merge',
+      onSharedGitSyncedPath: false,
+      fileLevel: 'git-sync-excluded',
+      note: 'the lever acts on the key COPY on this disk and this process\'s relay connection (physical-credential-locality); the identity is unified by adoption + the every-5-min coherence detector; audit rows merge at GET /agent-identity/audit?scope=pool',
+    },
+  });
+
   // POST /jev-audit/batch — the Jev job-completion audit batch
   // (jev-job-supervision spec). Writes ONLY this machine's evidence packs
-  // (state/jev-supervision-evidence), verdict rows (logs/) and retention
+  // (.instar/jev-supervision-evidence), verdict rows (logs/) and retention
   // sweep; each machine audits its own scheduler's runs by design.
   reg.add({
     kind: 'route',
@@ -288,7 +581,122 @@ export function buildWriteDomainRegistry(opts: { machineId: string | null }): Wr
       note: 'observe-only research rows about THIS machine\'s scheduler runs; nothing consumes them on any decision path, so no cross-machine convergence is needed',
     },
   });
+  // POST /memory-picker/session-context — the Jev memory picker
+  // (jev-memory-picker spec). Writes ONLY this machine's research rows
+  // (logs/jev-memory-picker.jsonl); each machine ranks its own Claude Code
+  // memory index for its own sessions by design.
+  reg.add({
+    kind: 'route',
+    method: 'POST',
+    pathPrefix: '/memory-picker/',
+    domain: 'machine-local',
+    story: {
+      logical: 'per-machine-path',
+      onSharedGitSyncedPath: false,
+      fileLevel: 'git-sync-excluded',
+      note: 'signal-only research rows about THIS machine\'s session starts; nothing consumes them on any decision path, so no cross-machine convergence is needed',
+    },
+  });
   reg.add({ kind: 'route', method: 'PATCH', pathPrefix: '/evolution/', domain: 'machine-local', story: evolutionStory });
+
+  // POST /chief-of-staff/* — the Chief of Staff owner routes (docs/specs/chief-of-staff-topic.md §4/§5):
+  // check-in, project bind, Unpark/Confirm-done taps, the one-shot triage view. Each writes a record to
+  // THIS machine's own chief-of-staff journal stream (origin = this machine, single writer), which
+  // journal sync replicates to every peer; every reader folds the union. The triage view id is holder
+  // bookkeeping (a standby that answers mints its own view; harmless, see the PR 5 artifact).
+  reg.add({
+    kind: 'route',
+    method: 'POST',
+    pathPrefix: '/chief-of-staff/',
+    domain: 'machine-local',
+    story: {
+      logical: 'ws2x-replicated',
+      onSharedGitSyncedPath: false,
+      note: 'per-origin coherence-journal stream (chief-of-staff-record kind), replicated by journal sync and folded from the union on every machine; dev-gated, dark on the fleet',
+    },
+  });
+
+  // POST /work-board/* and POST /mobile/work-board/* — the Work Board (docs/specs/work-board-asks.md §4/§7):
+  // card create, records (edit / waiting-on / evidence / claimed-done), the owner's taps and settings.
+  // Each writes an immutable record to THIS machine's own work-card journal stream, which journal sync
+  // replicates to every peer; every reader folds the union.
+  for (const pathPrefix of ['/work-board/', '/mobile/work-board/']) {
+    reg.add({
+      kind: 'route',
+      method: 'POST',
+      pathPrefix,
+      domain: 'machine-local',
+      story: {
+        logical: 'ws2x-replicated',
+        onSharedGitSyncedPath: false,
+        note: 'per-origin coherence-journal stream (work-card-record kind), replicated by journal sync and folded from the union on every machine; dev-gated, dark on the fleet',
+      },
+    });
+  }
+
+  // Project apps (docs/specs/project-apps.md §5): offers, owner answers and pin acts are journal
+  // records of the `project-app-record` kind, replicated to every peer and folded from the union.
+  reg.add({
+    kind: 'route',
+    method: 'POST',
+    pathPrefix: '/work/projects/',
+    domain: 'machine-local',
+    story: {
+      logical: 'ws2x-replicated',
+      onSharedGitSyncedPath: false,
+      note: 'per-origin coherence-journal streams (project-app-record kind for the project apps; chief-of-staff-record kind for POST /work/projects/check, docs/specs/work-door-project-rows.md §3.2), replicated by journal sync and folded from the union on every machine; dev-gated, dark on the fleet',
+    },
+  });
+
+  // The owner's project actions from the phone (docs/specs/work-door-project-rows.md §3.2–3.5): check requests, pauses,
+  // item checks and Finish are chief-of-staff-record journal records, replicated to every peer and folded from the union.
+  reg.add({
+    kind: 'route',
+    method: 'POST',
+    pathPrefix: '/mobile/work/projects/',
+    domain: 'machine-local',
+    story: {
+      logical: 'ws2x-replicated',
+      onSharedGitSyncedPath: false,
+      note: 'per-origin coherence-journal stream (chief-of-staff-record kind), replicated by journal sync and folded from the union on every machine; follows the Chief of Staff gate',
+    },
+  });
+
+  // Project apps part 2 (docs/specs/project-apps-sandbox.md §3.2, §5): creating a custom app, its source
+  // revisions, its data and summary writes are journal records (`project-app-record` and the encrypted
+  // `project-app-blob` kind), written on the lease holder only and folded from the union on every machine.
+  // The per-machine key file and the ciphertext disk store under state/ are caches of what the kinds hold
+  // (keys are fetched from the holder, never synced); the frame ticket is in-memory physical-credential-locality.
+  for (const method of ['POST', 'PUT'] as const) {
+    reg.add({
+      kind: 'route',
+      method,
+      pathPrefix: '/project-apps',
+      domain: 'machine-local',
+      story: {
+        logical: 'ws2x-replicated',
+        onSharedGitSyncedPath: false,
+        note: 'per-origin coherence-journal streams (project-app-record + project-app-blob kinds), lease-holder-only writes, replicated by journal sync; dev-gated, dark on the fleet',
+      },
+    });
+  }
+
+  // POST /topic-profile/new-topic-default — the "default for dashboard-created
+  // topics" record (docs/specs/dashboard-door-model-controls.md §3.2/§7).
+  // Machine-local in v1 by declared posture: migrating-to-unified, tracked in
+  // issue #2085 (expires 2027-03-25); the surface reports replication:"local-only".
+  reg.add({
+    kind: 'route',
+    method: 'POST',
+    pathPrefix: '/topic-profile/new-topic-default',
+    domain: 'machine-local',
+    story: {
+      logical: 'per-machine-path',
+      onSharedGitSyncedPath: false,
+      fileLevel: 'git-sync-excluded',
+      note: 'state/new-topic-default-profile.json is read only by THIS machine\'s /sessions/create; each machine keeps its own default until the replicated record (#2085) lands',
+    },
+  });
 
   // ── Jobs-as-agent.md mutation surface (dashboard Phase 4) ────────────────
   // A job DEFINITION is a markdown file under `.instar/jobs/`, which GitSync
@@ -308,6 +716,52 @@ export function buildWriteDomainRegistry(opts: { machineId: string | null }): Wr
   reg.add({ kind: 'route', method: 'POST', pathPrefix: '/jobs/:slug/enable', domain: 'cluster-shared' });
   reg.add({ kind: 'route', method: 'POST', pathPrefix: '/jobs/:slug/override', domain: 'cluster-shared' });
   reg.add({ kind: 'route', method: 'POST', pathPrefix: '/jobs/:slug/unfork', domain: 'cluster-shared' });
+  // CMT-1610: releasing a script-route supervision hold writes the scheduler's
+  // supervision ledger. Only the serving scheduler answers (a read-only standby
+  // gets 409), so the lease holder is its single writer.
+  reg.add({ kind: 'route', method: 'POST', pathPrefix: '/jobs/:slug/supervision-hold/release', domain: 'cluster-shared' });
+  // Portable export consent and bundle replay accounting belong to the source
+  // machine, which may be a standby. Their state is excluded from git-sync.
+  const portableSourceStory: ConvergenceStory = {
+    logical: 'per-machine-path', onSharedGitSyncedPath: true, fileLevel: 'git-sync-excluded',
+    note: 'exact-root export approval and nonce ledger stay on the source machine',
+  };
+  reg.add({ kind: 'route', method: 'POST', pathPrefix: '/jobs/portable-bundle', domain: 'machine-local', story: portableSourceStory });
+  reg.add({ kind: 'route', method: 'POST', pathPrefix: '/jobs/portable/export/', domain: 'machine-local', story: portableSourceStory });
+  // Import approval, rollback and rearm may change the runnable job manifest.
+  // The serving lease holder is their single writer.
+  reg.add({ kind: 'route', method: 'POST', pathPrefix: '/jobs/portable/import/', domain: 'cluster-shared' });
+  reg.add({ kind: 'route', method: 'POST', pathPrefix: '/jobs/portable/rollback', domain: 'cluster-shared' });
+  reg.add({ kind: 'route', method: 'POST', pathPrefix: '/jobs/portable/rearm', domain: 'cluster-shared' });
+  // Secure A2A verified pairing (docs/specs/secure-a2a-verified-pairing.md §3.2): starting a
+  // pairing writes the trust profile and the pending-words store. It only does anything on
+  // the machine that holds the Threadline relay identity (it answers 503 elsewhere), and the
+  // verified result replicates separately (ThreadlinePairingReplicatedStore). Classified
+  // cluster-shared (single writer = the lease holder): the conservative default, with no
+  // machine-local convergence claim to defend.
+  reg.add({ kind: 'route', method: 'POST', pathPrefix: '/threadline/pairing/:peerFp/start', domain: 'cluster-shared' });
+  // Pairing by invite (docs/specs/a2a-pairing-invite-link.md): the invite routes write the
+  // invite store and the trust profile, only on the machine holding the relay identity (503
+  // elsewhere); the verified result replicates through the same pairing replication. Same
+  // conservative classification as /start.
+  reg.add({ kind: 'route', method: 'POST', pathPrefix: '/threadline/pairing/invites', domain: 'cluster-shared' });
+  reg.add({ kind: 'route', method: 'DELETE', pathPrefix: '/threadline/pairing/invites', domain: 'cluster-shared' });
+  // Dismissing a restart notice writes the invite-marker store on the relay-holding machine; same
+  // conservative classification as the invite routes.
+  reg.add({ kind: 'route', method: 'DELETE', pathPrefix: '/threadline/pairing/restart-notices', domain: 'cluster-shared' });
+  // Switching pairing on (docs/specs/threadline-enable-without-restart.md): writes
+  // threadline.relayEnabled + threadline.verifiedPairing.enabled into this machine's
+  // config and raises its own supervised-restart flag. Both targets are per-machine
+  // paths, so machine-local is arguable — but the route already carries an
+  // `unavailable-here` state for the machine that does not hold the relay identity,
+  // exactly like /start and the invite routes above, and the documented flow routes
+  // the operation to the relay holder rather than enabling a standby in place. So it
+  // takes the same conservative cluster-shared classification as its siblings, with
+  // no machine-local convergence claim to defend. If the owner of this feature
+  // intends a standby to be able to switch itself on, this becomes machine-local
+  // with a per-machine-path story on both axes (I9) — a deliberate change, not this
+  // ratchet repair.
+  reg.add({ kind: 'route', method: 'POST', pathPrefix: '/threadline/pairing/enable', domain: 'cluster-shared' });
   reg.add({ kind: 'route', method: 'POST', pathPrefix: '/attention', domain: 'machine-local', story: attentionStory });
   reg.add({ kind: 'route', method: 'PATCH', pathPrefix: '/attention', domain: 'machine-local', story: attentionStory });
   const subscriptionReloginStory: ConvergenceStory = {
@@ -351,6 +805,13 @@ export function buildWriteDomainRegistry(opts: { machineId: string | null }): Wr
     fileLevel: 'git-sync-excluded',
     note: 'class-review rows live in a machine-local SQLite/WAL store under the .instar sync exclusion; own-origin shells/outcomes converge through the class-review-record replicated store and remote terminal state remains advisory',
   };
+  const failureCalloutStory: ConvergenceStory = {
+    logical: 'ws2x-replicated', onSharedGitSyncedPath: true, fileLevel: 'git-sync-excluded',
+    note: 'Correction analysis also writes the local ledger and journal-backed learned preferences; it retains its existing writer. Failure-case context and immutable episodes extend correction-ledger.db; failure-callout-chunk journal snapshots replicate through the existing peer streams. Pool summaries omit forensic detail; complete replica detail is marked stale and read-only. CAS mutations remain on the origin writer.',
+  };
+  for (const method of ['PATCH', 'POST'] as const) {
+    reg.add({ kind: 'route', method, pathPrefix: '/corrections/', domain: 'machine-local', story: failureCalloutStory });
+  }
   reg.add({ kind: 'route', method: 'POST', pathPrefix: '/class-reviews/', domain: 'machine-local', story: classReviewStory });
   reg.add({ kind: 'route', method: 'PATCH', pathPrefix: '/class-reviews/', domain: 'machine-local', story: classReviewStory });
   reg.add({
@@ -377,6 +838,55 @@ export function buildWriteDomainRegistry(opts: { machineId: string | null }): Wr
       note: 'the breaker describes this host physical provider route and lives in the machine-local StopGateDb under the git-sync-excluded .instar state jail',
     },
   });
+  // POST /internal/lifeline-proof — this machine's lifeline proving to this
+  // machine's server that it sends the ingress secret
+  // (docs/specs/telegram-internal-route-lifeline-secret.md). A standby's
+  // lifeline must be able to prove itself to its own server, so the write is
+  // admitted on every machine.
+  reg.add({
+    kind: 'route',
+    method: 'POST',
+    pathPrefix: '/internal/lifeline-proof',
+    domain: 'machine-local',
+    story: {
+      logical: 'per-machine-path',
+      onSharedGitSyncedPath: true,
+      fileLevel: 'git-sync-excluded',
+      note: 'the guard evidence (armed / graduated / counters) describes this disk\'s lifeline-to-server loopback hop and its own secret; it lives under the key-material prefix state/lifeline-ingress-secret*, which is gitignored, backup-excluded and never served',
+    },
+  });
+  // Legacy repair settles only the inbound row held on THIS machine. Normal
+  // replies carry a replicated marker; this route audits an exact historical
+  // reply and closes the local row without replaying the inbound.
+  reg.add({
+    kind: 'route',
+    method: 'POST',
+    pathPrefix: '/telegram/reconcile-stuck-ledger',
+    domain: 'machine-local',
+    story: {
+      logical: 'per-machine-path',
+      onSharedGitSyncedPath: true,
+      fileLevel: 'git-sync-excluded',
+      note: 'the ingress ledger and reconciliation audit live below this machine\'s git-sync-excluded stateDir; an owner reply is checked through pooled history before the local row is settled',
+    },
+  });
+  // POST /mcp/threadline — this machine's own sessions calling this machine's
+  // Threadline MCP tools over loopback (docs/specs/threadline-mcp-local-http.md).
+  // A standby's sessions are served by their own server, so it is admitted on
+  // every machine; its credential is this disk's local secret
+  // (state/local-mcp-secret, key material: gitignored, backup-excluded, never served).
+  reg.add({
+    kind: 'route',
+    method: 'POST',
+    pathPrefix: '/mcp/threadline',
+    domain: 'machine-local',
+    story: {
+      logical: 'per-machine-path',
+      onSharedGitSyncedPath: true,
+      fileLevel: 'git-sync-excluded',
+      note: 'a loopback call from a session to the server on the same host; the route writes no state of its own (tool calls go through the same loopback routes and admission as the stdio helper), and its secret lives under the key-material prefix state/local-mcp-secret',
+    },
+  });
   // Promotion writes the coherence-critical, git-synced session-pool stage.
   // Keep it behind the cluster lease holder; a standby must never create a
   // competing rollout history even when its local signed evidence is green.
@@ -385,6 +895,84 @@ export function buildWriteDomainRegistry(opts: { machineId: string | null }): Wr
     method: 'POST',
     pathPrefix: '/session-pool/promote',
     domain: 'cluster-shared',
+  });
+  // Each machine earns its own rebalance proof, so a standby must be able to run it.
+  reg.add({
+    kind: 'route',
+    method: 'POST',
+    pathPrefix: '/session-pool/rebalance-proof',
+    domain: 'machine-local',
+    story: {
+      logical: 'per-machine-path',
+      onSharedGitSyncedPath: false,
+      note: 'the proof result is this machine\'s own signed store; the one conversation it moves goes through the fenced ownership CAS, which is the shared write',
+    },
+  });
+  reg.add({
+    kind: 'route',
+    method: 'POST',
+    pathPrefix: '/ecosystem-ideas/',
+    domain: 'machine-local',
+    story: {
+      logical: 'per-machine-path',
+      onSharedGitSyncedPath: false,
+      note: 'the routes answer 409 naming the holder on any machine not holding the serving lease, and ledger writes are epoch-fenced; events then replicate as the ecosystemIdeas store (docs/specs/ecosystem-idea-pipeline.md)',
+    },
+  });
+  reg.add({
+    kind: 'route',
+    method: 'POST',
+    pathPrefix: '/app/session-reply',
+    domain: 'machine-local',
+    story: {
+      logical: 'per-machine-path',
+      onSharedGitSyncedPath: false,
+      note: 'the route accepts only a conversation THIS machine owns and holds a bind-app binding for (409 not-owner otherwise), then appends the agent reply to the machine-local app conversation store, which replicates through the appConversations kind; no git-synced store is mutated',
+    },
+  });
+  reg.add({
+    kind: 'route',
+    method: 'POST',
+    pathPrefix: '/mobile/team/',
+    domain: 'machine-local',
+    story: {
+      logical: 'per-machine-path',
+      onSharedGitSyncedPath: false,
+      note: 'step 2a of team-roles-and-access: one machine only, a second machine is refused at the join, so the signed access log is this machine\'s; replication is step 2b.',
+    },
+  });
+  reg.add({
+    kind: 'route',
+    method: 'POST',
+    pathPrefix: '/team/proposals',
+    domain: 'machine-local',
+    story: {
+      logical: 'per-machine-path',
+      onSharedGitSyncedPath: false,
+      note: 'a request waits on the machine the owner reads it on; it grants nothing, and step 2 keeps team access to one machine for now.',
+    },
+  });
+  reg.add({
+    kind: 'route',
+    method: 'POST',
+    pathPrefix: '/team/people/',
+    domain: 'machine-local',
+    story: {
+      logical: 'per-machine-path',
+      onSharedGitSyncedPath: false,
+      note: 'the agent lowering a person writes a machine-signed row to this machine\'s access log; same one-machine story as /mobile/team/.',
+    },
+  });
+  reg.add({
+    kind: 'route',
+    method: 'POST',
+    pathPrefix: '/mobile/media/',
+    domain: 'machine-local',
+    story: {
+      logical: 'per-machine-path',
+      onSharedGitSyncedPath: false,
+      note: 'a phone uploads to the machine holding its device record (mobile-device-keys §4); staged chunks and blobs live under this machine\'s state dir, and only the resulting events replicate, through the appConversations kind; no git-synced store is mutated',
+    },
   });
   reg.add({
     kind: 'route',
@@ -441,6 +1029,195 @@ export function buildWriteDomainRegistry(opts: { machineId: string | null }): Wr
       onSharedGitSyncedPath: true,
       fileLevel: 'git-sync-excluded',
       note: 'the PIN-scoped operation materializes browser cookies/user-data and the profile registry under this agent home; both are physical machine-local identity state excluded from project git sync, and peers may observe but never replay the provisioning write',
+    },
+  });
+  // PATCH /playwright-profiles/:id (spec windows-signin-repair: one profile's Windows Chrome folder)
+  // and PATCH /playwright-profiles/:id/accounts both rewrite this machine's profile registry.
+  reg.add({
+    kind: 'route',
+    method: 'PATCH',
+    pathPrefix: '/playwright-profiles/',
+    domain: 'machine-local',
+    story: {
+      logical: 'git-sync-excluded',
+      onSharedGitSyncedPath: true,
+      fileLevel: 'git-sync-excluded',
+      note: 'edits one row of this machine\'s profile registry (a Windows folder, or an account entry) (state/playwright-profiles.json, excluded from project git sync); a Windows Chrome folder exists on one machine only, so peers never replay the write',
+    },
+  });
+
+  // Agent-held Google passkeys (spec agent-held-google-passkey §3.4): the revert
+  // lever rewrites ONE account row in this machine's Playwright profile registry
+  // (loginMethod back to priorLoginMethod, passkey binding dropped). A passkey cell
+  // is (account × machine), so the write is machine-local by design (§12, FD2) and
+  // a peer reverts its own cell through its own route or a passkey-cell mandate.
+  reg.add({
+    kind: 'route',
+    method: 'POST',
+    pathPrefix: '/passkeys/revert-method',
+    domain: 'machine-local',
+    story: {
+      logical: 'git-sync-excluded',
+      onSharedGitSyncedPath: true,
+      fileLevel: 'git-sync-excluded',
+      note: 'the PIN-gated revert rewrites this machine\'s profile registry (state/playwright-profiles.json, excluded from project git sync); a passkey cell is per machine, so peers never replay the write — they revert their own cell',
+    },
+  });
+
+  reg.add({
+    kind: 'route',
+    method: 'POST',
+    pathPrefix: '/passkeys/grant',
+    domain: 'machine-local',
+    story: {
+      logical: 'git-sync-excluded',
+      onSharedGitSyncedPath: true,
+      fileLevel: 'git-sync-excluded',
+      note: 'writes a grant row into this machine\'s state/passkey-grants.json (or signs a mandate for a PEER, which writes on the peer); a passkey cell is per machine, so peers never replay the write',
+    },
+  });
+  reg.add({
+    kind: 'route',
+    method: 'POST',
+    pathPrefix: '/passkeys/revoke',
+    domain: 'machine-local',
+    story: {
+      logical: 'git-sync-excluded',
+      onSharedGitSyncedPath: true,
+      fileLevel: 'git-sync-excluded',
+      note: 'flips this machine\'s grant rows to revoked, raises the local revoke high-water mark under secrets/passkeys/, and drops the local binding/credential; per-machine authority, never replayed by peers',
+    },
+  });
+  reg.add({
+    kind: 'route',
+    method: 'POST',
+    pathPrefix: '/passkeys/issuer-add',
+    domain: 'machine-local',
+    story: {
+      logical: 'git-sync-excluded',
+      onSharedGitSyncedPath: true,
+      fileLevel: 'git-sync-excluded',
+      note: 'adds a machine id to this machine\'s state/passkey-issuers.json (the receiver\'s own expected-issuer set); each machine confirms its own issuers with a locally entered PIN',
+    },
+  });
+  reg.add({
+    kind: 'route',
+    method: 'POST',
+    pathPrefix: '/passkeys/issuer-remove',
+    domain: 'machine-local',
+    story: {
+      logical: 'git-sync-excluded',
+      onSharedGitSyncedPath: true,
+      fileLevel: 'git-sync-excluded',
+      note: 'removes a machine id from this machine\'s state/passkey-issuers.json; per-machine authority',
+    },
+  });
+  reg.add({
+    kind: 'route',
+    method: 'POST',
+    pathPrefix: '/passkeys/outbox/tick',
+    domain: 'machine-local',
+    story: {
+      logical: 'git-sync-excluded',
+      onSharedGitSyncedPath: true,
+      fileLevel: 'git-sync-excluded',
+      note: 'one re-delivery pass over this machine\'s own state/passkey-revoke-outbox.json (attempt counters, next-attempt times); each issuing machine owns its outbox, peers never replay it',
+    },
+  });
+  reg.add({
+    kind: 'route',
+    method: 'POST',
+    pathPrefix: '/passkeys/cell-action',
+    domain: 'machine-local',
+    story: {
+      logical: 'git-sync-excluded',
+      onSharedGitSyncedPath: true,
+      fileLevel: 'git-sync-excluded',
+      note: 'the mandate receiver applies a VERIFIED op to this machine\'s own grant/issuer/nonce files; the signature binds the op to THIS targetMachineId, so no other machine can replay it',
+    },
+  });
+  reg.add({
+    kind: 'route',
+    method: 'POST',
+    pathPrefix: '/passkeys/pool-state/tick',
+    domain: 'machine-local',
+    story: {
+      logical: 'git-sync-excluded',
+      onSharedGitSyncedPath: true,
+      fileLevel: 'git-sync-excluded',
+      note: 'one pool read pass: this machine queries its peers and rewrites its own state/passkey-pool-lastknown.json memo cache; peer rows are read, never written back',
+    },
+  });
+  reg.add({
+    kind: 'route',
+    method: 'POST',
+    pathPrefix: '/passkeys/exclude-peer',
+    domain: 'machine-local',
+    story: {
+      logical: 'git-sync-excluded',
+      onSharedGitSyncedPath: true,
+      fileLevel: 'git-sync-excluded',
+      note: 'adds a peer to THIS machine\'s own state/passkey-peer-exclusions.json (its pool checks treat that peer like peer-offline); per-machine authority, the dashboard sends the op to each machine',
+    },
+  });
+  reg.add({
+    kind: 'route',
+    method: 'POST',
+    pathPrefix: '/passkeys/include-peer',
+    domain: 'machine-local',
+    story: {
+      logical: 'git-sync-excluded',
+      onSharedGitSyncedPath: true,
+      fileLevel: 'git-sync-excluded',
+      note: 'removes a peer from THIS machine\'s own state/passkey-peer-exclusions.json; per-machine authority',
+    },
+  });
+  reg.add({
+    kind: 'route',
+    method: 'POST',
+    pathPrefix: '/passkeys/health/outcome',
+    domain: 'machine-local',
+    story: {
+      logical: 'git-sync-excluded',
+      onSharedGitSyncedPath: true,
+      fileLevel: 'git-sync-excluded',
+      note: 'records one proof outcome into THIS machine\'s own state/passkey-health.json (a LOCAL cell only) and appends the transition to logs/passkey-health.jsonl; health is per machine, peers only READ it through the pool state',
+    },
+  });
+  reg.add({
+    kind: 'route',
+    method: 'POST',
+    pathPrefix: '/passkeys/health/digest/refresh',
+    domain: 'machine-local',
+    story: {
+      logical: 'git-sync-excluded',
+      onSharedGitSyncedPath: true,
+      fileLevel: 'git-sync-excluded',
+      note: 'one digest pass: advances this machine\'s own health clocks and writes its own state/passkey-health-digest.json ledger; the attention item is keyed pool-wide and coalesced by key, and only the lease holder narrates peers',
+    },
+  });
+  reg.add({
+    kind: 'route',
+    method: 'POST',
+    pathPrefix: '/passkeys/attest-google-removed',
+    domain: 'machine-local',
+    story: {
+      logical: 'git-sync-excluded',
+      onSharedGitSyncedPath: true,
+      fileLevel: 'git-sync-excluded',
+      note: 'sets the Google-side state of THIS machine\'s own cell record to operator-attested (state/passkey-health.json); the signed mandate form is bound to the target machine like every passkey-cell op',
+    },
+  });
+  reg.add({
+    kind: 'route',
+    method: 'POST',
+    pathPrefix: '/passkeys/prove',
+    domain: 'machine-local',
+    story: {
+      logical: 'git-sync-excluded',
+      onSharedGitSyncedPath: true,
+      fileLevel: 'git-sync-excluded',
+      note: 'runs the cold proof of THIS machine\'s own cell in its own proof-only browser profile (secrets/passkeys/profiles/<key>-proof) and writes only local files: the attempt row + any risk/throttle pause (state/passkey-attempts.json) and the outcome (state/passkey-health.json); peers read those through the pool state. A peer target answers 501 on this build (it travels as a signed passkey-cell op later)',
     },
   });
 
@@ -606,6 +1383,27 @@ export function buildWriteDomainRegistry(opts: { machineId: string | null }): Wr
     },
   });
 
+  // ── Retained Claude executable prune (CMT-798) ──
+  // <agent>/.instar/state/claude-bin/<version>/claude is a per-machine copy of
+  // THIS machine's installed Claude Code (its version, its architecture);
+  // .instar/state/ is gitignored so it never git-syncs. POST /prune only removes
+  // version directories that are not current, idle past the grace window, and
+  // mapped by no live process on THIS machine — fully rebuildable (the next
+  // claude-code spawn re-copies whatever the machine has installed). Must never
+  // converge across machines: a peer's "unmapped" verdict says nothing about
+  // the processes on this one. The GET status route is a pure read.
+  reg.add({
+    kind: 'route',
+    method: 'POST',
+    pathPrefix: '/sessions/claude-binary/prune',
+    domain: 'machine-local',
+    story: {
+      logical: 'ephemeral-rebuildable',
+      onSharedGitSyncedPath: false,
+      note: 'retained claude copies live under the gitignored per-agent .instar/state/claude-bin (never git-synced); prune reclaims only non-current, idle, unmapped version dirs on this machine (live-mapper check is host-local by construction); the next spawn re-copies from the local install',
+    },
+  });
+
   // ── External-hog arm/disarm (external-hog-sentinel spec, arm gate) ──
   // Machine-local BY SAFETY DESIGN, not convenience: the PIN-gated arm marker
   // (state/external-hog-arm.json) is this machine's operator consent to LIVE
@@ -633,6 +1431,14 @@ export function buildWriteDomainRegistry(opts: { machineId: string | null }): Wr
   // even if that rule were violated: the CAS stamp makes a second writer a
   // no-op, so a duplicate reminder is impossible, only duplicated work.
   reg.add({ kind: 'route', method: 'POST', pathPrefix: '/commitments/check-in-reminder/pass', domain: 'cluster-shared' });
+  // The dashboard's Approve / Decline on a promise waiting on the operator: the same
+  // owner-routed commitment mutation as /transition and /withdraw (a replica forwards
+  // to the machine that holds the promise).
+  reg.add({ kind: 'route', method: 'POST', pathPrefix: '/commitments/:id/decide', domain: 'cluster-shared' });
+  // promise-review-and-priority: the review's bounded apply and its undo both
+  // mutate the commitment store, the same shared agent state as the routes above.
+  reg.add({ kind: 'route', method: 'POST', pathPrefix: '/commitments/review/apply', domain: 'cluster-shared' });
+  reg.add({ kind: 'route', method: 'POST', pathPrefix: '/commitments/:id/reopen', domain: 'cluster-shared' });
   reg.add({ kind: 'route', method: 'POST', pathPrefix: '/feedback-factory/process', domain: 'cluster-shared' });
   reg.add({ kind: 'route', method: 'POST', pathPrefix: '/feedback-factory/drain/tick', domain: 'cluster-shared' });
   reg.add({ kind: 'route', method: 'POST', pathPrefix: '/feedback-factory/drain/runs/', domain: 'cluster-shared' });
@@ -642,6 +1448,12 @@ export function buildWriteDomainRegistry(opts: { machineId: string | null }): Wr
   reg.add({ kind: 'route', method: 'POST', pathPrefix: '/feedback-factory/readiness/release', domain: 'cluster-shared' });
   reg.add({ kind: 'route', method: 'POST', pathPrefix: '/feedback-factory/consumer/promote', domain: 'cluster-shared' });
   reg.add({ kind: 'route', method: 'POST', pathPrefix: '/feedback-factory/consumer/revoke', domain: 'cluster-shared' });
+  // Feedback triage (tick, action-list, authority, PIN plan/commit) writes the same
+  // owner-fenced feedback-drain.db as the drain; a non-owner answers 409 naming the owner.
+  reg.add({ kind: 'route', method: 'POST', pathPrefix: '/feedback-factory/triage/', domain: 'cluster-shared' });
+  // Feedback executor (tick, operator stop/release): the same owner-fenced feedback-drain.db
+  // (execution table); a non-owner answers 409 naming the owner.
+  reg.add({ kind: 'route', method: 'POST', pathPrefix: '/feedback-factory/execute/', domain: 'cluster-shared' });
 
   // ── Decision-Quality deterministic grading pass (llm-decision-quality-meter §5.5, §Multi-machine) ──
   // Machine-local by construction: POST /decision-quality/grade-pass upserts grade

@@ -1,0 +1,22 @@
+{
+  "version": 2,
+  "slug": "confined-no-chrome",
+  "sessionId": "5ed396db-8c94-48c5-8c79-fe06b27ddac7",
+  "timestamp": "2026-10-26T02:21:13.257Z",
+  "artifactPath": "upgrades/side-effects/confined-no-chrome.md",
+  "artifactSha256": "e97299df49558658f9997414e872cccaed0ca01cecf9e2846e2d8a2a90e5ed87",
+  "coveredFiles": [
+    "docs/specs/confined-no-chrome.eli16.md",
+    "tests/e2e/subscription-relogin-lifecycle.test.ts",
+    "tests/integration/subscription-relogin-runtime.test.ts",
+    "upgrades/next/confined-no-chrome.md",
+    "upgrades/side-effects/confined-no-chrome.md"
+  ],
+  "phase": "complete",
+  "tier": 1,
+  "tierReasoning": "Test-only follow-up on the same PR: the two relogin tests that failed both verifies now use a private seat-lease file instead of the machine-wide one (cause reproduced with a fake HOME holding a busy seat: 7/8 fail before, 8/8 + 8/8 after). No production change.",
+  "eli16Path": "docs/specs/confined-no-chrome.eli16.md",
+  "sideEffectsPath": "upgrades/side-effects/confined-no-chrome.md",
+  "secondPass": "not-required",
+  "reviewerConcurred": null
+}

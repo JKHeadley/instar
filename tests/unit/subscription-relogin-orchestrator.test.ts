@@ -4,7 +4,7 @@ import path from 'node:path';
 import { afterEach, describe, expect, it, vi } from 'vitest';
 import { SafeFsExecutor } from '../../src/core/SafeFsExecutor.js';
 import { SubscriptionReloginOrchestrator } from '../../src/core/SubscriptionReloginOrchestrator.js';
-import { SubscriptionReloginStore } from '../../src/core/SubscriptionReloginStore.js';
+import { SubscriptionReloginStore, isSlowRetryEligible } from '../../src/core/SubscriptionReloginStore.js';
 
 const dirs: string[] = [];
 afterEach(() => {
@@ -150,6 +150,16 @@ describe('SubscriptionReloginOrchestrator', () => {
     store.close();
   });
 
+  it('a verified mismatch whose quarantine fails ends failed/wrong-identity (breaker evidence, never slow-retried)', async () => {
+    const { store, approved, ports } = fixture();
+    ports.verifyIdentity.mockResolvedValue('mismatch');
+    ports.quarantineIdentityMismatch.mockRejectedValue(new Error('pool write failed'));
+    const result = await new SubscriptionReloginOrchestrator(ports).tick(approved.id);
+    expect(result.episode).toMatchObject({ state: 'failed', failureClass: 'wrong-identity' });
+    expect(isSlowRetryEligible(result.episode)).toBe(false);
+    store.close();
+  });
+
   it('does not advance or schedule a retry after cancellation aborts an external action', async () => {
     const { store, approved, ports } = fixture();
     let release!: () => void;
@@ -171,6 +181,57 @@ describe('SubscriptionReloginOrchestrator', () => {
     expect(store.get(approved.id)?.version).toBe(cancelled.version);
     expect(store.listEvents(approved.id).map((event) => event.eventClass))
       .not.toContain('transient-retry-scheduled');
+    store.close();
+  });
+
+  it('a refused/device-limit drive ends failed with eventClass device-limit-stopped (codex-device-limit-tripwire §4)', async () => {
+    const { store, approved, ports } = fixture();
+    ports.driveBrowser.mockResolvedValue({ outcome: 'refused', failureClass: 'device-limit', reason: 'page-judged-device-limit' } as never);
+    const result = await new SubscriptionReloginOrchestrator(ports).tick(approved.id);
+    expect(result).toMatchObject({ outcome: 'terminal', episode: { state: 'failed', failureClass: 'device-limit' } });
+    expect(store.listEvents(approved.id)[0]).toMatchObject({ eventClass: 'device-limit-stopped', toState: 'failed' });
+    // Slow-retry eligible; the service defers it while the account is suspected/benched (§4).
+    expect(isSlowRetryEligible(result.episode)).toBe(true);
+    expect(ports.finishCli).not.toHaveBeenCalled();
+    expect(ports.finalizeSuccess).not.toHaveBeenCalled();
+    // No per-episode terminal notice.
+    expect(store.claimNotifications(10).filter((n) => n.kind === 'terminal')).toEqual([]);
+    store.close();
+  });
+
+  it('an aborted drive whose episode was already ended failed/device-limit reports terminal, not waiting', async () => {
+    const { store, approved, ports } = fixture();
+    let release!: () => void;
+    ports.driveBrowser.mockImplementation(async (_episode, _artifact, signal) => {
+      await new Promise<void>((resolve) => { release = resolve; signal.addEventListener('abort', resolve, { once: true }); });
+      const error = new Error('aborted'); error.name = 'AbortError'; throw error;
+    });
+    const controller = new AbortController();
+    const pending = new SubscriptionReloginOrchestrator(ports).tick(approved.id, controller.signal);
+    await vi.waitFor(() => expect(ports.driveBrowser).toHaveBeenCalledOnce());
+    // What endForDeviceLimit does: end the episode in the store first, then abort the drive.
+    const current = store.get(approved.id)!;
+    const ended = store.transition(current.id, { expectedVersion: current.version, to: 'failed',
+      eventClass: 'device-limit-stopped', failureClass: 'device-limit', reason: 'device-limit-benched' });
+    controller.abort();
+    release();
+    const result = await pending;
+    expect(result).toMatchObject({ outcome: 'terminal', episode: { state: 'failed', failureClass: 'device-limit' } });
+    expect(store.get(approved.id)?.version).toBe(ended.version); // nothing written after the ending
+    store.close();
+  });
+
+  it('an aborted drive on a still-live episode stays "waiting for cancel" (control for the device-limit branch)', async () => {
+    const { store, approved, ports } = fixture();
+    ports.driveBrowser.mockImplementation(async (_episode, _artifact, signal) => {
+      await new Promise<void>((resolve) => signal.addEventListener('abort', resolve, { once: true }));
+      const error = new Error('aborted'); error.name = 'AbortError'; throw error;
+    });
+    const controller = new AbortController();
+    const pending = new SubscriptionReloginOrchestrator(ports).tick(approved.id, controller.signal);
+    await vi.waitFor(() => expect(ports.driveBrowser).toHaveBeenCalledOnce());
+    controller.abort();
+    expect(await pending).toMatchObject({ outcome: 'waiting', reason: 'cancel-requested' });
     store.close();
   });
 
@@ -233,6 +294,29 @@ describe('SubscriptionReloginOrchestrator', () => {
     expect(ports.driveBrowser).not.toHaveBeenCalled();
     expect(store.listEvents(approved.id).map((event) => event.eventClass))
       .toContain('artifact-reissued');
+    store.close();
+  });
+
+  it('records WHY a browser attempt failed, and keeps that reason on the final budget-exhausted event', async () => {
+    const { store, approved, ports, advance } = fixture();
+    ports.driveBrowser.mockResolvedValue({ outcome: 'transient', failureClass: 'provider-transient', reason: 'chrome-launch-timeout' } as never);
+    const orchestrator = new SubscriptionReloginOrchestrator(ports);
+    let result = await orchestrator.tick(approved.id);
+    for (let i = 0; i < 5 && result.episode.state !== 'failed'; i++) { advance(60_000); result = await orchestrator.tick(approved.id); }
+    expect(result.episode).toMatchObject({ state: 'failed', failureClass: 'attempt-budget-exhausted' });
+    const events = store.listEvents(approved.id);
+    expect(events.filter((e) => e.eventClass === 'transient-retry-scheduled').every((e) => e.reason === 'chrome-launch-timeout')).toBe(true);
+    expect(events.find((e) => e.eventClass === 'attempt-budget-exhausted')?.reason).toBe('chrome-launch-timeout');
+    store.close();
+  });
+
+  it('a macOS automation-permission refusal pauses for the operator at once instead of burning retries', async () => {
+    const { store, approved, ports } = fixture();
+    ports.driveBrowser.mockResolvedValue({ outcome: 'operator-only', failureClass: 'automation-permission', reason: 'plain-browser-automation-not-permitted' } as never);
+    const result = await new SubscriptionReloginOrchestrator(ports).tick(approved.id);
+    expect(result.episode).toMatchObject({ state: 'waiting-operator-only', failureClass: 'automation-permission', attemptCount: 1 });
+    expect(store.listEvents(approved.id).find((e) => e.eventClass === 'operator-only-challenge')?.reason)
+      .toBe('plain-browser-automation-not-permitted');
     store.close();
   });
 });

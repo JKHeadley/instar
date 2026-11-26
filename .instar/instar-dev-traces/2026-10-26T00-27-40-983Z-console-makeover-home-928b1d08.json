@@ -1,0 +1,19 @@
+{
+  "version": 2,
+  "slug": "console-makeover-home",
+  "sessionId": "cd11bb25-38ff-4a31-becc-216173b7ad19",
+  "timestamp": "2026-10-26T00:27:40.983Z",
+  "artifactPath": "upgrades/side-effects/console-makeover-home.md",
+  "artifactSha256": "558fc05a259127723fea8b46142dda40f1d213d09015841cfc58b254ad41b1e4",
+  "coveredFiles": [
+    "dashboard/console/console.js",
+    "tests/unit/console-dom.test.ts"
+  ],
+  "phase": "complete",
+  "tier": 1,
+  "tierReasoning": "Adds a jsdom test of the shipped console and a CSS.escape fallback; static files only.",
+  "eli16Path": "docs/specs/console-makeover.eli16.md",
+  "sideEffectsPath": "upgrades/side-effects/console-makeover-home.md",
+  "secondPass": "true",
+  "reviewerConcurred": true
+}

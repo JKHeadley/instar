@@ -20,8 +20,11 @@ export interface OriginSendPolicyAuthority {
   review(record: TelegramOriginRecord, input: OriginSendPolicyInput): Promise<OriginSendPolicyDecision>;
   /** Synchronous live authority check, including after durable claim awaits. */
   authorizeDispatch(record: TelegramOriginRecord): OriginSendPolicyDecision;
-  reserveContent?(record: TelegramOriginRecord, input: OriginSendPolicyInput, deadlineAt: number): Promise<OriginSendPolicyDecision>;
+  /** `ownerToken` is the caller's exclusive outbox claim token; only that
+   * execution may later release the reservation. */
+  reserveContent?(record: TelegramOriginRecord, input: OriginSendPolicyInput, deadlineAt: number, ownerToken: string): Promise<OriginSendPolicyDecision>;
   completeContent?(record: TelegramOriginRecord, input: OriginSendPolicyInput): Promise<void>;
+  releaseContent?(record: TelegramOriginRecord, input: OriginSendPolicyInput, ownerToken: string): Promise<void>;
 }
 export class OriginSendPolicyRefusal extends TelegramOriginHoldError {
   constructor(readonly decision: Exclude<OriginSendPolicyDecision, { ok: true }>, operationId: string | null) {

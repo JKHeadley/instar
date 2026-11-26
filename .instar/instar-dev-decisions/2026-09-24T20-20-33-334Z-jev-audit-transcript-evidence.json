@@ -1,0 +1,23 @@
+{
+  "ts": "2026-09-24T20:20:33.334Z",
+  "slug": "jev-audit-transcript-evidence",
+  "suggestedTier": 2,
+  "declaredTier": 1,
+  "riskFloor": 1,
+  "riskFloorReasons": [],
+  "belowFloor": false,
+  "files": 2,
+  "loc": 159,
+  "scope": {
+    "basis": "staged-in-scope-additions-plus-deletions",
+    "files": [
+      "src/scheduler/JobScheduler.ts",
+      "src/scheduler/jobTranscriptEvidence.ts"
+    ],
+    "addedLines": 158,
+    "deletedLines": 1
+  },
+  "causalAutopsy": null,
+  "classClosure": null,
+  "verdict": "pass"
+}

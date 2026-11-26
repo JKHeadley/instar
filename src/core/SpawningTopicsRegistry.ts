@@ -75,6 +75,28 @@ export class SpawningTopicsRegistry {
     return Math.max(0, nowMs - e.startedAtMs);
   }
 
+  /**
+   * Wait until `topic` is no longer marked spawning, polling every `pollMs`, for
+   * at most `boundMs`. Resolves true when clear, false when the bound passed
+   * with the entry still present (a wedged spawn — the caller decides). Never
+   * clears the entry itself. ACT-091: a second topic-bound reply arriving
+   * while the first one's respawn is in flight waits here, then types itself
+   * into the now-live session instead of being dropped as spawn-in-progress.
+   */
+  async waitUntilClear(
+    topic: number,
+    opts: { boundMs: number; pollMs?: number; sleep?: (ms: number) => Promise<void> },
+  ): Promise<boolean> {
+    const pollMs = Math.max(1, opts.pollMs ?? 500);
+    const sleep = opts.sleep ?? ((ms: number) => new Promise<void>((r) => setTimeout(r, ms)));
+    const deadline = this.now() + Math.max(0, opts.boundMs);
+    while (this.map.has(topic)) {
+      if (this.now() >= deadline) return false;
+      await sleep(Math.min(pollMs, Math.max(1, deadline - this.now())));
+    }
+    return true;
+  }
+
   /** Snapshot of currently-spawning topics (for the verifier / status). */
   entries(): Array<{ topic: number; startedAtMs: number }> {
     return [...this.map.entries()].map(([topic, e]) => ({ topic, startedAtMs: e.startedAtMs }));

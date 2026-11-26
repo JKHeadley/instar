@@ -7,6 +7,8 @@
  * safe-merge / lease / latch / audit I/O.
  */
 
+import { latestPerName, runTimeMs } from '../../scripts/latest-run-per-check.mjs';
+
 /** One PR as returned by the `gh pr list` GraphQL projection. */
 export interface PrSummary {
   number: number;
@@ -15,9 +17,19 @@ export interface PrSummary {
   isDraft: boolean;
   headRefName: string;
   headRefOid: string;
+  /**
+   * The PR's base branch (local-verify-merge-authority §3: a local-floor
+   * candidate needs a record for (pr, head, baseRefName)). Optional — absent on
+   * a legacy projection, in which case no record can match.
+   */
+  baseRefName?: string;
+  /** GraphQL reviewDecision (APPROVED | CHANGES_REQUESTED | REVIEW_REQUIRED | ''); local-verify review precheck. */
+  reviewDecision?: string;
+  /** PR open time (ISO); local-verify "ready" time when no review is required. */
+  createdAt?: string;
   /** GraphQL mergeable enum: MERGEABLE | CONFLICTING | UNKNOWN. */
   mergeable: string;
-  /** Worst-case rollup of the head's checks: SUCCESS | PENDING | FAILURE | null. */
+  /** Worst-case rollup of the head's checks: SUCCESS | PENDING | FAILURE | NO_CHECKS | null. */
   statusRollup: string | null;
   /**
    * GitHub-side native-auto-merge state derived from the `autoMergeRequest`
@@ -36,6 +48,13 @@ export interface PrSummary {
    * projection. `completedAt:0` means the timestamp was unknown.
    */
   failingChecks?: { name: string; completedAt: number }[];
+  /**
+   * merge-line-author-eligibility: the PR author's login (`author.login`) and
+   * whether the head lives in another repository (a fork). Optional — absent on a
+   * legacy projection, in which case only the namespace rule can admit a PR.
+   */
+  authorLogin?: string;
+  isCrossRepository?: boolean;
 }
 
 /**
@@ -55,26 +74,20 @@ export interface NormalizedCheck {
 /** Conclusions that read as a failing (red) check. Kept in lockstep with deriveRollup's FAILURE set. */
 export const FAILING_CONCLUSIONS: ReadonlySet<string> = new Set(['FAILURE', 'ERROR', 'CANCELLED', 'TIMED_OUT']);
 
-/** Coerce a gh timestamp (ISO string or ms number) to ms; 0 when unparseable/absent. */
-function toMs(v: unknown): number {
-  if (typeof v === 'number' && Number.isFinite(v)) return v;
-  if (typeof v === 'string' && v) {
-    const t = Date.parse(v);
-    return Number.isFinite(t) ? t : 0;
-  }
-  return 0;
-}
+/** Coerce a gh timestamp (ISO string or ms number) to ms; 0 when unparseable/absent (the shared rule). */
+const toMs = runTimeMs;
 
 /**
- * Collapse a raw statusCheckRollup to the LATEST run per check name (group by
- * name, keep the entry with the max run-time). This is the dedup that fixes the
+ * Collapse a raw statusCheckRollup to the LATEST run per workflow + check name
+ * (group by `workflowName` + name, keep the entry with the max run-time; a
+ * same-named check in another workflow is never superseded). This is the dedup that fixes the
  * 2026-07-08 bug: a stale FAILED run superseded by a passing rerun must not read
  * as failure. Unnamed checks never collapse together (each kept as-is).
  */
 export function latestRunPerCheck(rollup: unknown): NormalizedCheck[] {
   if (!Array.isArray(rollup)) return [];
-  const byName = new Map<string, NormalizedCheck>();
-  const anon: NormalizedCheck[] = [];
+  type Run = { check: NormalizedCheck; workflow: string };
+  const normalized: Run[] = [];
   for (const raw of rollup as Array<Record<string, unknown>>) {
     if (!raw || typeof raw !== 'object') continue;
     const name = String(raw.name ?? raw.context ?? '').trim();
@@ -82,16 +95,21 @@ export function latestRunPerCheck(rollup: unknown): NormalizedCheck[] {
     const status = String(raw.status ?? '').toUpperCase();
     const startedAt = toMs(raw.startedAt);
     const completedAt = toMs(raw.completedAt) || toMs(raw.startedAt) || toMs((raw as { createdAt?: unknown }).createdAt);
-    const norm: NormalizedCheck = { name, conclusion, status, startedAt, completedAt };
-    if (!name) { anon.push(norm); continue; }
-    const prev = byName.get(name);
-    if (!prev) { byName.set(name, norm); continue; }
-    // Later run wins: order by best-available run time (startedAt, else completedAt).
-    const prevOrder = prev.startedAt || prev.completedAt;
-    const order = startedAt || completedAt;
-    if (order >= prevOrder) byName.set(name, norm);
+    // Workflow identity: GitHub supersedes a run only within the same workflow.
+    const suite = (raw as { checkSuite?: { workflowRun?: { workflow?: { name?: unknown } } } }).checkSuite;
+    const workflow = String(raw.workflowName ?? suite?.workflowRun?.workflow?.name ?? '').trim();
+    normalized.push({ check: { name, conclusion, status, startedAt, completedAt }, workflow });
   }
-  return [...byName.values(), ...anon];
+  // The shared rule (scripts/latest-run-per-check.mjs) — the same one safe-merge
+  // applies at act time: per workflow + name, later run time wins; a queued
+  // (untimed, open) rerun wins.
+  return latestPerName<Run>(normalized, {
+    name: (r) => r.check.name,
+    workflow: (r) => r.workflow,
+    // Most recently completed wins, as GitHub judges a required check; see latest-run-per-check.mjs.
+    order: (r) => (r.check.status === 'COMPLETED' || r.check.conclusion ? r.check.completedAt : 0) || r.check.startedAt,
+    open: (r) => (r.check.status !== '' && r.check.status !== 'COMPLETED') || r.check.conclusion === 'PENDING' || r.check.conclusion === 'EXPECTED',
+  }).map((r) => r.check);
 }
 
 /**
@@ -135,13 +153,19 @@ export function holdReasonOf(pr: Pick<PrSummary, 'isDraft' | 'title' | 'labels'>
   return null;
 }
 
+/** statusRollup value for a head where no GitHub Actions workflow produced a check. Never green. */
+export const NO_CHECKS_ROLLUP = 'NO_CHECKS';
+
 export type CandidateSkip =
   | 'not-agent-namespace'
+  | 'non-main-base'
+  | 'no-checks-ran'
   | 'held'
   | 'not-mergeable'
   | 'not-settled-green'
-  | 'protected-paths'
-  | 'protected-paths-unverifiable';
+  | 'no-verify-record'
+  | 'code-owner-review'
+  | 'code-owners-unverifiable';
 
 export interface CandidateVerdict {
   eligible: boolean;
@@ -150,25 +174,76 @@ export interface CandidateVerdict {
 }
 
 /**
- * First-pass candidacy from the list projection alone (cheap fields). Protected
+ * First-pass candidacy from the list projection alone (cheap fields). Code-owned
  * paths require a separate diff enumeration (handled by the caller and folded in
- * via `protectedPaths`), so this returns `eligible:true` only when the cheap
- * gates ALL pass; the caller still runs the protected-paths check before acting.
+ * via `codeOwnedPaths`), so this returns `eligible:true` only when the cheap
+ * gates ALL pass; the caller still runs the code-owner check before acting.
  */
+/**
+ * True when the PR's base is known and is not main (ACT-053). An absent base
+ * (legacy projection) is NOT treated as stacked: safe-merge re-reads the base
+ * and refuses a non-main one at act time either way.
+ */
+export function isStackedPr(pr: Pick<PrSummary, 'baseRefName'>): boolean {
+  return typeof pr.baseRefName === 'string' && pr.baseRefName !== '' && pr.baseRefName !== 'main';
+}
+
 export function classifyCandidate(
   pr: PrSummary,
   agentNamespace: string,
+  opts: { floor?: 'local' | 'actions'; hasRecord?: boolean; expectedGhLogin?: string } = {},
 ): CandidateVerdict {
-  if (!headInNamespace(pr.headRefName, agentNamespace)) {
+  if (!agentOwnership(pr, agentNamespace, opts.expectedGhLogin).owned) {
     return { eligible: false, skip: 'not-agent-namespace' };
   }
+  // A PR into a feature branch (a stacked PR) is never a landing: safe-merge
+  // refuses it (refused:non-main-base, ACT-053), so attempting it would only
+  // burn ladder attempts. It becomes a candidate once retargeted to main.
+  if (isStackedPr(pr)) return { eligible: false, skip: 'non-main-base' };
   const hold = holdReasonOf(pr);
   if (hold) return { eligible: false, skip: 'held', hold };
   if (pr.mergeable !== 'MERGEABLE') return { eligible: false, skip: 'not-mergeable' };
   // "Settled green" — the watcher NEVER invokes safe-merge into a pending wait
   // (keeps each attempt window seconds-long; timeout inversion impossible).
+  //
+  // Under the `local` floor (local-verify-merge-authority §3) the test is a
+  // record in the server index for the current (pr, head, baseRefName); the
+  // Actions rollup is NOT read — an unavailable Actions would hold it PENDING
+  // forever. The namespace filter, holds and mergeability are unchanged.
+  if (opts.floor === 'local') {
+    if (opts.hasRecord !== true) return { eligible: false, skip: 'no-verify-record' };
+    return { eligible: true };
+  }
+  if (pr.statusRollup === NO_CHECKS_ROLLUP) return { eligible: false, skip: 'no-checks-ran' };
   if (pr.statusRollup !== 'SUCCESS') return { eligible: false, skip: 'not-settled-green' };
   return { eligible: true };
+}
+
+export type OwnershipReason = 'namespace' | 'author' | 'fork' | 'author-mismatch' | 'ownership-unknown';
+
+/**
+ * Is this listed PR the agent's own (merge-line-author-eligibility)? A FILTER —
+ * every content gate and safe-merge still decide the merge.
+ *  1. GitHub reports the head as cross-repository → never owned (`fork`), checked
+ *     before either arm so a fork with a `<ns>/` branch is excluded too.
+ *  2. head in `<agentNamespace>/` → owned (`namespace`, the original rule).
+ *  3. author login equals `expectedGhLogin` (case-insensitive) on a same-repo head
+ *     → owned (`author`). This admits the agent's `fix/`, `chore/`, … branches.
+ *  4. otherwise not owned: `author-mismatch`, or `ownership-unknown` when the
+ *     author/repository fields are absent (legacy projection: only arm 2 admits).
+ */
+export function agentOwnership(
+  pr: Pick<PrSummary, 'headRefName' | 'authorLogin' | 'isCrossRepository'>,
+  agentNamespace: string,
+  expectedGhLogin?: string,
+): { owned: boolean; reason: OwnershipReason } {
+  if (pr.isCrossRepository === true) return { owned: false, reason: 'fork' };
+  if (headInNamespace(pr.headRefName, agentNamespace)) return { owned: true, reason: 'namespace' };
+  const login = (expectedGhLogin ?? '').trim().toLowerCase();
+  const author = (pr.authorLogin ?? '').trim().toLowerCase();
+  if (!author || pr.isCrossRepository !== false || !login) return { owned: false, reason: 'ownership-unknown' };
+  if (author === login) return { owned: true, reason: 'author' };
+  return { owned: false, reason: 'author-mismatch' };
 }
 
 /** A head branch `<agentName>/...` filter (a FILTER, not provenance — Decision 8). */
@@ -334,6 +409,17 @@ export function applyOutcome(
     next.lastOutcome = outcome;
     next.state = 'gave-up';
     return { ep: next, terminal: true, feedsBreaker: false };
+  }
+  // MAIN-RED (2026-11-08): the refusal is about main, not this PR. Counting it
+  // let a short red spell on main use up a PR's whole ladder: #2879 was green
+  // on one head from 11-06 23:08Z, gave up on 'refused:main-red' at 11-07 01:30Z,
+  // and waited about two days, since only a new head could re-arm it. Wait one base backoff and retry; never advance attempts,
+  // never feed the breaker.
+  if (outcome === 'refused:main-red') {
+    next.lastOutcome = outcome;
+    next.lastAttemptAt = nowMs;
+    next.nextEligibleAt = nowMs + cfg.backoffBaseMs;
+    return { ep: next, terminal: false, feedsBreaker: false };
   }
   // A real refusal/error: advance the ladder.
   next.attempts = ep.attempts + 1;

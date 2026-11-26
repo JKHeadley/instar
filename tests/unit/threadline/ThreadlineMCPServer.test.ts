@@ -198,14 +198,15 @@ describe('ThreadlineMCPServer', () => {
   // ── Server Lifecycle ─────────────────────────────────────────────
 
   describe('lifecycle', () => {
-    it('creates server and lists 9 tools', async () => {
+    it('creates server and lists 10 tools', async () => {
       const { client, close } = await connectClientServer({}, deps);
       try {
         const tools = await client.listTools();
-        expect(tools.tools).toHaveLength(9);
+        expect(tools.tools).toHaveLength(10);
 
         const names = tools.tools.map(t => t.name).sort();
         expect(names).toEqual([
+          'threadline_ack',
           'threadline_agents',
           'threadline_delete',
           'threadline_discover',
@@ -779,6 +780,100 @@ describe('ThreadlineMCPServer', () => {
         const text = (result.content as any)[0].text;
         expect(text).toContain('Agent offline');
         expect(result.isError).toBe(true);
+      } finally {
+        await close();
+      }
+    });
+
+    // ── A2A relay forward (docs/specs/a2a-cross-machine-route.md §4) — the MCP contract ──
+
+    it('a forwarded send renders deliveryPath, forwardedTo, replyArrivesIn, the real relayStatus and reply null', async () => {
+      (deps.sendMessage as any).mockResolvedValue({
+        success: true, threadId: 't-holder', messageId: 'msg-1', accepted: true, delivered: false,
+        deliveryPath: 'forwarded', forwardedTo: 'the mini', replyArrivesIn: 'topic-session',
+        relayStatus: 'delivered', deliveryOutcome: "handed to the peer's relay connection; not yet confirmed read",
+      });
+      const { client, close } = await connectClientServer({}, deps);
+      try {
+        const result = await client.callTool({ name: 'threadline_send', arguments: { agentId: 'Dawn', message: 'Hello' } });
+        expect(result.isError).toBeFalsy();
+        const parsed = JSON.parse((result.content as any)[0].text);
+        expect(parsed).toMatchObject({
+          accepted: true, delivered: false, deliveryPath: 'forwarded', forwardedTo: 'the mini',
+          replyArrivesIn: 'topic-session', relayStatus: 'delivered', reply: null, threadId: 't-holder', messageId: 'msg-1',
+        });
+        expect(parsed.note).toBeUndefined();
+      } finally {
+        await close();
+      }
+    });
+
+    it('a forwarded send with waitForReply says the wait is not honoured across machines and where the reply arrives', async () => {
+      (deps.sendMessage as any).mockResolvedValue({
+        success: true, threadId: 't', messageId: 'm', accepted: true, delivered: false,
+        deliveryPath: 'forwarded', forwardedTo: 'the mini', replyArrivesIn: 'holder-hub', relayStatus: 'queued',
+      });
+      const { client, close } = await connectClientServer({}, deps);
+      try {
+        const result = await client.callTool({ name: 'threadline_send', arguments: { agentId: 'Dawn', message: 'Hello', waitForReply: true } });
+        const parsed = JSON.parse((result.content as any)[0].text);
+        expect(parsed.reply).toBeNull();
+        expect(parsed.note).toContain('Sent through my machine "the mini"');
+        expect(parsed.note).toContain('waitForReply is not honoured across machines');
+        expect(parsed.note).toContain('Threadline hub on "the mini"');
+        expect(parsed.note).not.toContain('No reply received within timeout');
+      } finally {
+        await close();
+      }
+    });
+
+    it('a forwarded UNCONFIRMED send with waitForReply never says "Sent", and keeps an existing note', async () => {
+      (deps.sendMessage as any).mockResolvedValue({
+        success: true, threadId: 't', messageId: 'm', accepted: false, delivered: false, note: 'earlier note.',
+        deliveryPath: 'forwarded', forwardedTo: 'the mini', replyArrivesIn: 'topic-session', relayStatus: 'unconfirmed',
+      });
+      const { client, close } = await connectClientServer({}, deps);
+      try {
+        const result = await client.callTool({ name: 'threadline_send', arguments: { agentId: 'Dawn', message: 'Hello', waitForReply: true } });
+        const parsed = JSON.parse((result.content as any)[0].text);
+        expect(parsed.note).toContain('earlier note.');
+        expect(parsed.note).toContain('Handed to my machine "the mini"; delivery is unknown — do not resend.');
+        expect(parsed.note).not.toContain('Sent through');
+        expect(parsed.reply).toBeNull();
+      } finally {
+        await close();
+      }
+    });
+
+    it('a forwarded unconfirmed send is NOT rendered as delivered or accepted', async () => {
+      (deps.sendMessage as any).mockResolvedValue({
+        success: true, threadId: 't', messageId: 'm', accepted: false, delivered: false,
+        deliveryPath: 'forwarded', forwardedTo: 'the mini', replyArrivesIn: 'topic-session', relayStatus: 'unconfirmed',
+        deliveryOutcome: 'forwarded to the mini; no answer. Do not resend; check delivery on the mini.',
+      });
+      const { client, close } = await connectClientServer({}, deps);
+      try {
+        const result = await client.callTool({ name: 'threadline_send', arguments: { agentId: 'Dawn', message: 'Hello' } });
+        const parsed = JSON.parse((result.content as any)[0].text);
+        expect(parsed).toMatchObject({ accepted: false, delivered: false, relayStatus: 'unconfirmed', forwardedTo: 'the mini' });
+        expect(parsed.outcome).toContain('Do not resend');
+      } finally {
+        await close();
+      }
+    });
+
+    it('an ordinary relay send carries none of the forwarded fields', async () => {
+      (deps.sendMessage as any).mockResolvedValue({
+        success: true, threadId: 't', messageId: 'm', accepted: true, delivered: false, deliveryPath: 'relay', relayStatus: 'delivered',
+        forwardedTo: 'should-not-render',
+      });
+      const { client, close } = await connectClientServer({}, deps);
+      try {
+        const result = await client.callTool({ name: 'threadline_send', arguments: { agentId: 'Dawn', message: 'Hello' } });
+        const parsed = JSON.parse((result.content as any)[0].text);
+        expect(parsed).not.toHaveProperty('forwardedTo');
+        expect(parsed).not.toHaveProperty('replyArrivesIn');
+        expect(parsed).not.toHaveProperty('reply');
       } finally {
         await close();
       }

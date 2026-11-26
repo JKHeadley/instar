@@ -131,7 +131,13 @@ degrades to one direct send attempt + a loud degradation record — see R1.3. Ne
 quiet hours.)
 - R1.1 Per-topic delivery even in bursts: every topic that lost a session gets a notice in
   *that topic*; the lifeline gets unbound sessions + (when >1 topic affected) a one-line
-  cross-topic index. Never creates new topics. In a storm larger than the detail buffer,
+  cross-topic index. Never creates new topics. One exception: an unbound session reaped
+  as `sentinel-complete` that was not mid-work and has no queued resume is a normal job
+  finish, not an interruption. It gets no lifeline notice; its `reaped` row in the
+  reap-log is its record. (Added 2026-11-01: this spec never considered a job ending
+  normally, and a job on a 5-minute schedule produced a lifeline notice every few
+  minutes. A mid-work or resume-queued completion, any other unbound reason, and every
+  topic-bound reap still notify as above.) In a storm larger than the detail buffer,
   every affected topic still gets at least a correct count (affected-set tracked separately
   from per-event detail).
 - R1.2 The notice states the reason in plain English (reason-slug → plain-English map;
@@ -377,7 +383,8 @@ fixed-template escalation" precedent; its loop brakes are the store-backed backo
    counter). R1.1 holds in any storm size.
 2. On flush, group detail per topic; topics whose detail dropped get a count-only notice.
 3. Each affected topic gets ONE message: sessions (or count), plain-English reason(s),
-   mid-work tag, queued-resume line only when live. Lifeline gets unbound + cross-topic index.
+   mid-work tag, queued-resume line only when live. Lifeline gets unbound (minus routine
+   completions, R1.1) + cross-topic index.
 4. Delivery rows (the contract, per R1.3): `{ delivery_id: 'reap-notify:<noticeId>',
    topicId, body, next_attempt_at: releaseAt, attempts }` in PendingRelayStore (the prefix
    IS the origin tag and the PK gives dedupe). Release:

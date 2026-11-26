@@ -1,0 +1,24 @@
+{
+  "ts": "2026-10-20T12:35:47.576Z",
+  "slug": "release-local-never-published-hint",
+  "suggestedTier": 2,
+  "declaredTier": 2,
+  "riskFloor": 2,
+  "riskFloorReasons": [
+    "migration / fleet-rollout surface: scripts/lib/release-local-steps.mjs touches release script (fleet publish path)"
+  ],
+  "belowFloor": false,
+  "files": 1,
+  "loc": 4,
+  "scope": {
+    "basis": "staged-in-scope-additions-plus-deletions",
+    "files": [
+      "scripts/lib/release-local-steps.mjs"
+    ],
+    "addedLines": 3,
+    "deletedLines": 1
+  },
+  "causalAutopsy": null,
+  "classClosure": null,
+  "verdict": "pass"
+}

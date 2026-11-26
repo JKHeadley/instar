@@ -1,0 +1,75 @@
+<!doctype html><html lang="en"><head><meta charset="utf-8">
+<meta name="viewport" content="width=device-width,initial-scale=1,viewport-fit=cover">
+<meta name="color-scheme" content="dark">
+<title>What Dots, Muse and Grok Bot actually look like</title>
+<link rel="stylesheet" href="https://fonts.googleapis.com/css2?family=Archivo:wght@600;700&family=IBM+Plex+Sans:wght@400;500;600&display=swap">
+<style>
+:root{--ground:#0A0E17;--surface:#111827;--line:#243247;--text:#E2E8F0;--text-2:#94A3B8;--text-3:#64748B;--accent:#6EC6C8;--ok:#4ADE80;--warn:#F59E0B}
+*{box-sizing:border-box}
+body{margin:0;background:var(--ground);color:var(--text);font-family:'IBM Plex Sans',system-ui,sans-serif;line-height:1.55;font-size:15px}
+.wrap{max-width:760px;margin:0 auto;padding:28px 18px 64px}
+h1{font-family:'Archivo',sans-serif;font-size:25px;line-height:1.2;margin:0 0 8px;text-wrap:balance}
+.sub{color:var(--text-2);margin:0 0 26px;font-size:15px}
+h2{font-family:'Archivo',sans-serif;font-size:18px;margin:34px 0 4px}
+.src{font-size:12px;color:var(--text-3);margin:0 0 14px}
+.shots{display:grid;grid-template-columns:repeat(auto-fill,minmax(168px,1fr));gap:10px;margin:0 0 6px}
+.shots img{width:100%;border-radius:10px;border:1px solid var(--line);display:block;background:#fff}
+.read{background:var(--surface);border:1px solid var(--line);border-left:3px solid var(--accent);border-radius:8px;padding:13px 15px;margin:14px 0 0}
+.read b{color:var(--accent)}
+.verdict{background:var(--surface);border:1px solid var(--line);border-radius:10px;padding:17px;margin:30px 0 0}
+.verdict h3{font-family:'Archivo',sans-serif;margin:0 0 10px;font-size:17px}
+table{width:100%;border-collapse:collapse;margin:12px 0;font-size:14px}
+th,td{text-align:left;padding:7px 9px;border-bottom:1px solid var(--line);vertical-align:top}
+th{font-family:'Archivo',sans-serif;font-size:11px;letter-spacing:.09em;text-transform:uppercase;color:var(--text-3)}
+.bad{color:var(--warn)}.good{color:var(--ok)}
+.note{color:var(--text-3);font-size:13px;margin-top:26px;border-top:1px solid var(--line);padding-top:14px}
+</style></head><body><div class="wrap">
+
+<h1>What they actually look like</h1>
+<p class="sub">Real App Store screenshots, pulled today. I had not seen any of these when I built the console — I had only read descriptions of them. Justin was right to ask.</p>
+
+<h2>Grok Bot</h2>
+<p class="src">X Corp · App Store listing, 5 screenshots</p>
+<div class="shots">
+  <img src="grokbot-1.jpg" alt="Grok Bot agent list">
+  <img src="grokbot-2.jpg" alt="Grok Bot thread with inline approval">
+  <img src="grokbot-0.jpg" alt="Grok Bot sign-in">
+  <img src="grokbot-3.jpg" alt="Grok Bot">
+</div>
+<div class="read"><b>The main screen is a list of named agents</b> — Chief of Staff, EA, Inbox Manager — each one row carrying a name, <b>one plain sentence</b> of what happened, and a time. "Outreach drafts queued for approval." "12 tickets resolved, 2 escalated." No tabs, no counts, no status chips. It reads like a messages inbox.</div>
+
+<h2>Muse</h2>
+<p class="src">Meta Platforms · App Store listing, 8 screenshots</p>
+<div class="shots">
+  <img src="muse-0.jpg" alt="Muse conversation">
+  <img src="muse-1.jpg" alt="Muse purchase approval inline">
+  <img src="muse-2.jpg" alt="Muse">
+  <img src="muse-3.jpg" alt="Muse">
+</div>
+<div class="read"><b>There is no navigation at all</b> — one conversation, a hamburger, and a composer. The purchase approval is <b>a card inside the conversation</b>, showing the actual item, the actual card, the actual total, with Deny and Allow at the bottom. The approval lives where the work happened.</div>
+
+<h2>ChatGPT (where Dots live)</h2>
+<p class="src">OpenAI · App Store listing, 8 screenshots</p>
+<div class="shots">
+  <img src="chatgpt-1.jpg" alt="ChatGPT conversation">
+  <img src="chatgpt-0.jpg" alt="ChatGPT">
+  <img src="chatgpt-2.jpg" alt="ChatGPT">
+  <img src="chatgpt-3.jpg" alt="ChatGPT">
+</div>
+<div class="read">Same shape: a thread, a composer, almost no chrome. Controls appear <b>under the message they belong to</b>, not in a toolbar.</div>
+
+<div class="verdict">
+<h3>What I got wrong</h3>
+<p>None of the three is a dashboard. They are messaging apps in which an agent reports in plain sentences and asks permission inline. I built a better-organised dashboard and called it influenced by them.</p>
+<table>
+<tr><th>&nbsp;</th><th>Them</th><th>My console</th></tr>
+<tr><td>Per row</td><td>name · one sentence · time</td><td class="bad">title · chip · subtitle · reason · stripe · time · unread</td></tr>
+<tr><td>Navigation</td><td>agent names, or none</td><td class="bad">five invented categories</td></tr>
+<tr><td>Approvals</td><td>in the thread, under the work</td><td class="bad">separate queue behind a banner</td></tr>
+<tr><td>Counts &amp; badges</td><td>almost none</td><td class="bad">on every heading</td></tr>
+</table>
+<p>This is why it reads as busy, and why <b>Work</b> and <b>Capacity</b> mean nothing — they are categories I invented. Grok Bot never asks you to learn a word. Its nav is the names of your agents.</p>
+</div>
+
+<p class="note">Screenshots are Apple's public listing assets for each app, fetched from the iTunes lookup API today. Nothing here is a mockup or a reconstruction.</p>
+</div></body></html>

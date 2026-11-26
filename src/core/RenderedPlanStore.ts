@@ -37,7 +37,10 @@ export type PlanAction =
   | 'money-layer-enable'
   | 'money-layer-mirror-config'
   | 'money-layer-disable'
-  | 'money-layer-disable-store-only';
+  | 'money-layer-disable-store-only'
+  | 'gemini-payg-setup'
+  // docs/specs/ecosystem-idea-pipeline.md §9: operator decisions on ideas, same machinery.
+  | `ecosystem-${string}`;
 
 export interface RenderedPlan {
   planId: string;

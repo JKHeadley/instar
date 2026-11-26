@@ -1,0 +1,30 @@
+{
+  "ts": "2026-10-23T23:27:41.391Z",
+  "slug": "maturation-darkflag-inventory",
+  "suggestedTier": 2,
+  "declaredTier": 2,
+  "riskFloor": 2,
+  "riskFloorReasons": [
+    "new capability: new exported class / subsystem added"
+  ],
+  "belowFloor": false,
+  "files": 7,
+  "loc": 831,
+  "scope": {
+    "basis": "staged-in-scope-additions-plus-deletions",
+    "files": [
+      "src/config/ConfigDefaults.ts",
+      "src/core/types.ts",
+      "src/monitoring/DarkFlagMaturationRegistry.ts",
+      "src/monitoring/GrowthDigestPublisher.ts",
+      "src/monitoring/GrowthMilestoneAnalyst.ts",
+      "src/monitoring/guardManifest.ts",
+      "src/server/AgentServer.ts"
+    ],
+    "addedLines": 822,
+    "deletedLines": 9
+  },
+  "causalAutopsy": null,
+  "classClosure": null,
+  "verdict": "blocked"
+}

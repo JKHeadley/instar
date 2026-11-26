@@ -4,8 +4,8 @@
  * MULTI-MACHINE-SEAMLESSNESS-SPEC §WS4.3 — read-side). Migration Parity Standard:
  * a deployed agent only learns about pool-wide jobs visibility through this path.
  *
- * Content-sniff on 'jobs?scope=pool' keeps it idempotent and route-qualified (a
- * bare `scope=pool` sniff would falsely match other pool-scope routes).
+ * The scheduler bullet has its own marker: other coverage or registry URL
+ * references must not suppress this migration or count as duplicate bullets.
  */
 import { describe, it, expect, beforeEach, afterEach } from 'vitest';
 import * as fs from 'node:fs';
@@ -88,7 +88,7 @@ describe('PostUpdateMigrator — Job Scheduler pool-scope bullet (WS4.3)', () =>
 
     expect(result2.upgraded.some((u) => u.includes('Job Scheduler pool-scope'))).toBe(false);
     expect(afterSecond).toBe(afterFirst);
-    expect((afterSecond.match(/jobs\?scope=pool/g) ?? []).length).toBe(1);
+    expect((afterSecond.match(/- View the WHOLE POOL \(jobs across every machine\):/g) ?? []).length).toBe(1);
   });
 
   it('does NOT patch a CLAUDE.md with no Job Scheduler section', () => {
@@ -97,7 +97,8 @@ describe('PostUpdateMigrator — Job Scheduler pool-scope bullet (WS4.3)', () =>
     runClaudeMdMigration(newMigrator(projectDir));
     const after = fs.readFileSync(claudeMdPath, 'utf-8');
 
-    expect(after).not.toContain('jobs?scope=pool');
+    expect(after).not.toContain('- View the WHOLE POOL (jobs across every machine):');
+    expect(after).toContain('**Lease job coverage and catch-up**');
   });
 });
 

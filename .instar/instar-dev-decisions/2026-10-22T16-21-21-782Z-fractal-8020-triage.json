@@ -1,0 +1,27 @@
+{
+  "ts": "2026-10-22T16:21:21.782Z",
+  "slug": "fractal-8020-triage",
+  "suggestedTier": 2,
+  "declaredTier": 1,
+  "riskFloor": 2,
+  "riskFloorReasons": [
+    "irreversibility: src/core/PostUpdateMigrator.ts touches PostUpdateMigrator",
+    "migration / fleet-rollout surface: src/core/PostUpdateMigrator.ts touches PostUpdateMigrator (fleet migration machinery)"
+  ],
+  "belowFloor": true,
+  "files": 3,
+  "loc": 209,
+  "scope": {
+    "basis": "staged-in-scope-additions-plus-deletions",
+    "files": [
+      "skills/instar-dev/SKILL.md",
+      "skills/spec-converge/SKILL.md",
+      "src/core/PostUpdateMigrator.ts"
+    ],
+    "addedLines": 126,
+    "deletedLines": 83
+  },
+  "causalAutopsy": null,
+  "classClosure": null,
+  "verdict": "pass"
+}

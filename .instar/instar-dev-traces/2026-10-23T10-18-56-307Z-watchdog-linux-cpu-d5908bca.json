@@ -1,0 +1,27 @@
+{
+  "version": 2,
+  "slug": "watchdog-linux-cpu",
+  "sessionId": "902adf8c-2ca8-45c7-b4fe-683e5b064cf8",
+  "timestamp": "2026-10-23T10:18:56.307Z",
+  "artifactPath": "upgrades/side-effects/watchdog-linux-cpu.md",
+  "artifactSha256": "ed1e700446071e1a072c8efd118a788f3a4f99c77f056258af68d1485d68c635",
+  "coveredFiles": [
+    "tests/e2e/watchdog-test-runner-progress-alive.test.ts",
+    "tests/unit/session-watchdog-test-runner-floor.test.ts",
+    "upgrades/next/watchdog-linux-cpu.md",
+    "upgrades/side-effects/watchdog-linux-cpu.md",
+    "upgrades/watchdog-linux-cpu.eli16.md"
+  ],
+  "phase": "complete",
+  "tier": 1,
+  "tierReasoning": "test-only change",
+  "eli16Path": "upgrades/watchdog-linux-cpu.eli16.md",
+  "sideEffectsPath": "upgrades/side-effects/watchdog-linux-cpu.md",
+  "secondPass": "true",
+  "reviewerConcurred": true,
+  "classClosure": {
+    "defectClass": "none",
+    "closure": "n/a",
+    "reason": "test-only change; no producer class"
+  }
+}

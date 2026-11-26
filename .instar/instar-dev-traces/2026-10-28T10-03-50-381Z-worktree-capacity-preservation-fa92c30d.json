@@ -1,0 +1,20 @@
+{
+  "version": 2,
+  "slug": "worktree-capacity-preservation",
+  "sessionId": "71dde707-5cc5-4874-82e9-90badb3df899",
+  "timestamp": "2026-10-28T10:03:50.381Z",
+  "artifactPath": "upgrades/side-effects/worktree-capacity-preservation.md",
+  "artifactSha256": "0af27d6b7b625442d89fe12cefe78f780ecc71ef5ee0f445a1bb5873f5d53748",
+  "coveredFiles": [
+    "docs/specs/worktree-capacity-preservation.eli16.md",
+    "upgrades/next/worktree-capacity-preservation.md",
+    "upgrades/side-effects/worktree-capacity-preservation.md"
+  ],
+  "phase": "complete",
+  "tier": 1,
+  "tierReasoning": "Documentation-only test receipt update after the unchanged source passed the complete local suite; fully reversible.",
+  "eli16Path": "docs/specs/worktree-capacity-preservation.eli16.md",
+  "sideEffectsPath": "upgrades/side-effects/worktree-capacity-preservation.md",
+  "secondPass": "not-required",
+  "reviewerConcurred": null
+}

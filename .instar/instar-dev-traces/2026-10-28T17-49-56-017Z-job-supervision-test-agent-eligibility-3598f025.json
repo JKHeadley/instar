@@ -1,0 +1,20 @@
+{
+  "version": 2,
+  "slug": "job-supervision-test-agent-eligibility",
+  "sessionId": "d384ab47-df76-4f5e-98ea-d49268d23429",
+  "timestamp": "2026-10-28T17:49:56.017Z",
+  "artifactPath": "upgrades/side-effects/job-supervision-test-agent-eligibility.md",
+  "artifactSha256": "7b42de82f56e71321c1743d828c8dd49d2aec003e18e4748ed143df93fdcc3fe",
+  "specPath": "docs/specs/job-result-supervision-v2.md",
+  "coveredFiles": [
+    "src/scheduler/JobSupervisionRollout.ts",
+    "tests/unit/job-supervision-rollout-eligibility.test.ts",
+    "upgrades/next/job-supervision-test-agent-eligibility.md",
+    "upgrades/side-effects/job-supervision-test-agent-eligibility.md"
+  ],
+  "phase": "complete",
+  "tier": 2,
+  "tierReasoning": "This is a narrow reversible correction to the approved model-rollout gate, using the full reviewed spec path.",
+  "secondPass": "true",
+  "reviewerConcurred": true
+}

@@ -66,6 +66,7 @@ const NODE_KEYWORDS: Record<string, string[]> = {
   'capabilities.canonical_identity': ['identity', 'canonical id', 'fingerprint', 'ed25519', 'keypair', 'identity.json', 'recovery phrase', 'key rotation', 'revocation'],
   'capabilities.trust_model': ['trust', 'trust level', 'untrusted', 'verified', 'trusted', 'trust decay', 'trust evaluator', 'three-layer', 'trust baseline'],
   'capabilities.authorization': ['authorization', 'permission', 'grant', 'deny', 'allow', 'delegation', 'policy', 'scoped', 'time-bounded'],
+  'capabilities.agent_connect': ['connect with', 'talk to', 'pair with', 'pairing', 'connect to another agent', 'other agent', 'invite an agent', 'tlinv1', 'finish pairing'],
   'capabilities.invitations': ['invitation', 'invite', 'token', 'secure invitation', 'ed25519 invitation', 'recipient binding'],
   'capabilities.sybil_protection': ['sybil', 'proof of work', 'pow', 'ip rate limit', 'identity aging', 'anti-spam', 'relay protection'],
   'capabilities.discovery_waterfall': ['discovery', 'waterfall', 'discover agents', 'find agents', 'local discovery', 'relay discovery', 'moltbridge discovery'],

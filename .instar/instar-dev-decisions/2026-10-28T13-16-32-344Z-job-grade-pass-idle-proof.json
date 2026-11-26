@@ -1,0 +1,22 @@
+{
+  "ts": "2026-10-28T13:16:32.344Z",
+  "slug": "job-grade-pass-idle-proof",
+  "suggestedTier": 1,
+  "declaredTier": 2,
+  "riskFloor": 1,
+  "riskFloorReasons": [],
+  "belowFloor": false,
+  "files": 1,
+  "loc": 12,
+  "scope": {
+    "basis": "staged-in-scope-additions-plus-deletions",
+    "files": [
+      "src/core/JobGradePassIdleVerifier.ts"
+    ],
+    "addedLines": 10,
+    "deletedLines": 2
+  },
+  "causalAutopsy": null,
+  "classClosure": null,
+  "verdict": "pass"
+}

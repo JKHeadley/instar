@@ -1,4 +1,11 @@
 #!/usr/bin/env node
+// Governed by (docs/STANDARDS-REGISTRY.md cites this file as enforcement of):
+//   *Tiered Development*
+//   *Constitutional Traceability — No Unconstitutional Work*
+//   *Capacity Safety — No Unbounded Self-Action*
+//   *Iterative Audit to Convergence*
+//   *Operator-Surface Quality*
+
 /**
  * instar-dev-precommit.js — pre-commit gate enforcing /instar-dev skill usage.
  *
@@ -25,7 +32,6 @@
 
 import fs from 'node:fs';
 import path from 'node:path';
-import crypto from 'node:crypto';
 import { execSync, execFileSync } from 'node:child_process';
 import { fileURLToPath } from 'node:url';
 import { checkEli16Overview, MIN_ELI16_CHARS } from './eli16-overview-check.mjs';
@@ -37,6 +43,8 @@ import { selfActionDeclarationVerdict } from './lib/self-action-detect.mjs';
 import { isKnownInlineCodeEnumReference } from './lib/markdown-code-identifier.mjs';
 import { validateAuditReport, parseFrontmatter, responseChangedFromBase } from './write-audit-convergence.mjs';
 import { scanForSecrets } from './audit-secret-patterns.mjs';
+import { checkOpenPrOverlap } from './lib/open-pr-overlap.mjs';
+import { traceIsComplete, traceMissingCoverage, artifactSha256, MIN_ARTIFACT_CHARS as SHARED_MIN_ARTIFACT_CHARS } from './lib/instar-dev-trace.mjs';
 
 // Report-Backed Converging Audit (docs/specs/CONVERGING-AUDIT-DEFAULT.md, Part B).
 // The precommit reads NO config file and runs pre-compile, so it cannot import
@@ -77,7 +85,8 @@ process.on('exit', (code) => {
   } catch { /* best-effort — 'pending' is still more truthful than no verdict */ }
 });
 const WINDOW_MS = 60 * 60 * 1000; // 60 minutes
-const MIN_ARTIFACT_CHARS = 200;
+// One definition, shared with the local verifier's independent-review check.
+const MIN_ARTIFACT_CHARS = SHARED_MIN_ARTIFACT_CHARS;
 
 // ─── Step 0: skip gate for merge commits ─────────────────────────────────
 // Merge commits integrate already-reviewed code from another branch/machine.
@@ -125,10 +134,37 @@ const staged = stagedOutput
   .map((s) => s.trim())
   .filter(Boolean);
 
-if (staged.length === 0) {
+// Paths this commit removes (rename sources included) or changes the type of.
+// They have no staged content worth reading, so they stay out of `staged`,
+// which the content checks below read. They still belong in the decision
+// scope: the PR-boundary check (decision-audit-presence-check.mjs) takes every
+// changed path, and without them a PR deleting an in-scope file could never
+// pass it (PR #2821). --no-renames because a commit-level rename can read as a
+// plain delete across the whole PR once the new file drifts further.
+let scopeOnlyPaths = [];
+try {
+  scopeOnlyPaths = execSync('git diff --cached --name-only --no-renames --diff-filter=DT', {
+    cwd: ROOT,
+    encoding: 'utf8',
+  })
+    .split('\n')
+    .map((s) => s.trim())
+    .filter(Boolean);
+} catch {
+  // Same fail-open as the read above; that read just succeeded.
+}
+
+if (staged.length === 0 && scopeOnlyPaths.length === 0) {
   // No staged files — nothing to check.
   process.exit(0);
 }
+
+// ─── Step 1.2: open-PR overlap signal (Echo Bugs 10000002588) ────────────
+// Every commit, in or out of the gated scope (a plan-only docs commit counts),
+// is compared against other sessions' open PRs so cross-machine overlap is
+// seen without anyone remembering to run `instar dev:claim-check`. SIGNAL
+// ONLY: prints a notice, never blocks; fails open. Off: INSTAR_PR_OVERLAP_CHECK=off.
+checkOpenPrOverlap({ stagedFiles: [...staged, ...scopeOnlyPaths], cwd: ROOT });
 
 // ─── Step 1.5: audit-convergence gate ─────────────────────────────────────
 // (audit-convergence-enforcement §2). Placed BEFORE the in-scope early-exit so
@@ -242,7 +278,7 @@ function inScope(file) {
   return false;
 }
 
-const inScopeFiles = staged.filter(inScope);
+const inScopeFiles = [...new Set([...staged, ...scopeOnlyPaths])].filter(inScope);
 
 if (inScopeFiles.length === 0) {
   // Pure docs / release notes / config — pass through.
@@ -387,8 +423,7 @@ let freshestTraceEntry = null;
 for (const entry of traceEntries) {
   try {
     const candidate = JSON.parse(fs.readFileSync(entry.file, 'utf8'));
-    const covered = new Set(candidate?.coveredFiles || []);
-    if (candidate?.phase === 'complete' && inScopeFiles.every((f) => covered.has(f))) {
+    if (traceIsComplete(candidate) && traceMissingCoverage(candidate, inScopeFiles).length === 0) {
       freshestTrace = candidate;
       freshestTraceEntry = entry;
       break;
@@ -401,7 +436,7 @@ for (const entry of traceEntries) {
 if (!freshestTrace || !freshestTraceEntry) {
   blockCommit(
     inScopeFiles,
-    'No fresh complete trace covers this staged change. Run the /instar-dev skill for the files being committed.',
+    'No fresh complete trace covers this staged change, deleted and renamed-away paths included. Run the /instar-dev skill for the files being committed.',
   );
 }
 try {
@@ -567,13 +602,12 @@ for (const entry of traceEntries) {
     continue;
   }
 
-  if (trace.phase !== 'complete') {
+  if (!traceIsComplete(trace)) {
     attempts.push(`${path.basename(entry.file)}: trace phase is "${trace.phase}", expected "complete"`);
     continue;
   }
 
-  const covered = new Set(trace.coveredFiles || []);
-  const missing = inScopeFiles.filter((f) => !covered.has(f));
+  const missing = traceMissingCoverage(trace, inScopeFiles);
   if (missing.length > 0) {
     attempts.push(
       `${path.basename(entry.file)}: trace's coveredFiles does not include: ${missing.join(', ')}`,
@@ -595,7 +629,7 @@ for (const entry of traceEntries) {
     continue;
   }
 
-  const sha = crypto.createHash('sha256').update(artifactContent).digest('hex');
+  const sha = artifactSha256(artifactContent);
   if (trace.artifactSha256 && trace.artifactSha256 !== sha) {
     // Self-service fix: tell the author the EXACT sha to write, plus the
     // freeze-recipe. Without this, an agent (especially codex, which often
@@ -650,7 +684,7 @@ if (!spec) {
       'Trace does not reference a spec (trace.specPath is missing).',
       '',
       'Every in-scope change must be driven by a spec that has passed /spec-converge',
-      'and been approved by the user. Write the trace with --spec <path>.',
+      'and been approved (approved: true + approved-by). Write the trace with --spec <path>.',
     ].join('\n'),
   );
 }
@@ -714,8 +748,10 @@ if (!recognition.approved) {
     inScopeFiles,
     [
       `Spec ${spec} has review-convergence but no approved: true tag.`,
-      'The user must review the convergence report and apply the approved tag',
-      'before /instar-dev can ship this change.',
+      'The approver reads the convergence report and applies approved: true with an',
+      'approved-by line naming who approved and why (the agent for its own spec; the',
+      'operator only for a constitution or protected-list amendment, or what their',
+      'recorded instructions reserve) before /instar-dev can ship this change.',
     ].join('\n'),
   );
 }
@@ -1418,7 +1454,10 @@ function writeDecisionAudit({ slug, suggestedTier, declaredTier, riskFloor, risk
       files,
       loc,
       scope: {
-        basis: 'staged-in-scope-additions-plus-deletions',
+        // Any value but the old 'staged-in-scope-additions-plus-deletions':
+        // decision-audit-presence-check.mjs reads that one as a record written
+        // before deleted paths entered scope.
+        basis: 'staged-in-scope-paths-including-deleted',
         files: scopeFiles,
         addedLines,
         deletedLines,
@@ -1553,7 +1592,7 @@ function enforceTier1(trace, traceFile) {
   }
   // sha-match exactly as the existing artifact logic, when a sha is recorded.
   if (trace.artifactSha256) {
-    const sha = crypto.createHash('sha256').update(sideEffectsContent).digest('hex');
+    const sha = artifactSha256(sideEffectsContent);
     if (trace.artifactSha256 !== sha) {
       blockCommit(
         inScopeFiles,

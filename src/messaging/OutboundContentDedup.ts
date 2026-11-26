@@ -187,23 +187,38 @@ export class OutboundContentDedup {
   }
 
   /** Drop expired entries, then enforce the per-topic ring cap (oldest-first). */
-  reserveOrigin(topicId: number | string, text: string, operationId: string, deadlineAt: number): 'reserved' | 'duplicate' | 'unavailable' {
+  /** `preparedAt` bounds the look-back for a retry: any acceptance of this
+   * text since the operation was prepared supersedes it, even past the window
+   * (a released held operation retried after a fresh send must not duplicate it). */
+  reserveOrigin(topicId: number | string, text: string, operationId: string, ownerToken: string, deadlineAt: number, preparedAt?: number): import('./OutboundDedupStore.js').OriginReservation {
     const norm = normalizeForDedup(text);
     if (!this.cfg.enabled || norm.length < this.cfg.minLength) return 'reserved';
     const now = this.now(), fp = fingerprint(norm), reservedAt = this.reserved.get(topicId)?.get(fp);
-    if (reservedAt !== undefined && now - reservedAt < this.cfg.reserveTtlMs) return 'duplicate';
+    // A legacy send still in flight is not a delivery.
+    if (reservedAt !== undefined && now - reservedAt < this.cfg.reserveTtlMs) return 'pending';
     if (!Number.isSafeInteger(deadlineAt) || deadlineAt < now || deadlineAt - now > 24 * 60 * 60_000) return 'unavailable';
-    return this.store?.reserveOrigin?.({ topicId, fingerprint: fp, operationId, now,
-      expiresAt: deadlineAt + this.cfg.windowMs, sentSince: now - this.cfg.windowMs }) ?? 'unavailable';
+    const windowStart = now - this.cfg.windowMs;
+    const sentSince = preparedAt !== undefined && Number.isSafeInteger(preparedAt) && preparedAt < windowStart ? preparedAt : windowStart;
+    return this.store?.reserveOrigin?.({ topicId, fingerprint: fp, operationId, ownerToken, now,
+      expiresAt: deadlineAt + this.cfg.windowMs, sentSince }) ?? 'unavailable';
   }
 
-  /** Only a fully accepted operation settles its own reservation. Any failure
-   * retains suppression until its outbox deadline plus the ordinary window. */
+  /** Only a fully accepted operation records its content as sent. A failure
+   * with no platform acceptance releases its reservation (`releaseOrigin`). */
   completeOrigin(topicId: number | string, text: string, operationId: string): void {
     const norm = normalizeForDedup(text);
     if (!this.cfg.enabled || norm.length < this.cfg.minLength) return;
     const now = this.now();
     this.store?.completeOrigin?.({ topicId, fingerprint: fingerprint(norm), operationId, now, expiresAt: now + this.cfg.windowMs });
+  }
+
+  /** An execution that ended without platform acceptance releases its own
+   * reservation, so its content is never treated as delivered. Fenced to the
+   * operation and the claim token that reserved it. */
+  releaseOrigin(topicId: number | string, text: string, operationId: string, ownerToken: string): void {
+    const norm = normalizeForDedup(text);
+    if (!this.cfg.enabled || norm.length < this.cfg.minLength) return;
+    this.store?.releaseOrigin?.({ topicId, fingerprint: fingerprint(norm), operationId, ownerToken, now: this.now() });
   }
 
   private pruneTopic(topicMap: Map<string, number>): void {

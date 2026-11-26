@@ -29,6 +29,7 @@
  */
 
 import fs from 'node:fs';
+import os from 'node:os';
 import path from 'node:path';
 
 /**
@@ -51,6 +52,22 @@ export interface EnsureInteractiveReadyResult {
 }
 
 export interface EnsureInteractiveReadyOptions {
+  /**
+   * The agent directory a session will be launched in. When given, the
+   * per-project trust entry `projects[projectDir].hasTrustDialogAccepted` is
+   * seeded too.
+   *
+   * This is NOT the same acknowledgement as the top-level
+   * `hasTrustDialogAccepted` flag, and that distinction cost three dead
+   * sessions on 2026-10-20. Claude Code gates "Do you trust the files in this
+   * folder?" on the PER-PROJECT entry; the top-level flag does not answer it.
+   * A pool home can therefore hold all three top-level flags, be declared
+   * "already interactive-ready" here, and still kill every session it launches
+   * at a dialog whose default option is "No, exit" — which is exactly what the
+   * Mac Mini did, three times in 35 minutes, each session dead in 16 seconds,
+   * while the operator saw only delivery receipts.
+   */
+  projectDir?: string;
   /**
    * When true, a config home whose directory does not exist is left alone
    * (`patched: false`) instead of being created. Used by the one-time
@@ -117,7 +134,45 @@ export function ensureInteractiveReady(
     }
 
     const missing = INTERACTIVE_ONBOARDING_FLAGS.filter((f) => existing[f] !== true);
-    if (missing.length === 0) {
+
+    // The per-project folder-trust entry. Kept separate from `missing` because
+    // it lives under `projects`, not at the top level, and because its absence
+    // alone must be enough to patch a home whose top-level flags are already
+    // set — the state that used to read "already interactive-ready" while the
+    // folder-trust dialog still killed every session launched there.
+    const projectDir = (opts?.projectDir ?? '').trim();
+    let projectTrustMissing = false;
+    if (projectDir) {
+      const projects = existing.projects;
+      const projectsObj: Record<string, unknown> =
+        projects && typeof projects === 'object' && !Array.isArray(projects)
+          ? (projects as Record<string, unknown>)
+          : {};
+      const entry = projectsObj[projectDir];
+      const entryObj: Record<string, unknown> =
+        entry && typeof entry === 'object' && !Array.isArray(entry)
+          ? (entry as Record<string, unknown>)
+          : {};
+      // The project MCP picker ("New MCP servers found in .mcp.json") is a
+      // second first-run screen on the same entry: a fresh Linux server
+      // (Cirrus, 2026-11-02) stopped there after folder trust was answered.
+      projectTrustMissing = entryObj.hasTrustDialogAccepted !== true
+        || entryObj.enableAllProjectMcpServers !== true;
+      if (projectTrustMissing) {
+        entryObj.hasTrustDialogAccepted = true;
+        entryObj.enableAllProjectMcpServers = true;
+        // Shape the entry the way a real accepted folder carries it, so Claude
+        // Code reads a complete record rather than a lone flag.
+        if (!Array.isArray(entryObj.allowedTools)) entryObj.allowedTools = [];
+        if (!entryObj.mcpServers || typeof entryObj.mcpServers !== 'object') entryObj.mcpServers = {};
+        if (!Array.isArray(entryObj.enabledMcpjsonServers)) entryObj.enabledMcpjsonServers = [];
+        if (!Array.isArray(entryObj.disabledMcpjsonServers)) entryObj.disabledMcpjsonServers = [];
+        projectsObj[projectDir] = entryObj;
+        existing.projects = projectsObj;
+      }
+    }
+
+    if (missing.length === 0 && !projectTrustMissing) {
       return { patched: false, reason: 'already interactive-ready' };
     }
     for (const f of missing) existing[f] = true;
@@ -129,10 +184,77 @@ export function ensureInteractiveReady(
     const tmpPath = `${filePath}.${process.pid}.interactive-ready.tmp`;
     fs.writeFileSync(tmpPath, JSON.stringify(existing, null, 2) + '\n');
     fs.renameSync(tmpPath, filePath);
-    return { patched: true, reason: `seeded ${missing.join(', ')}` };
+    const seeded = [...missing, ...(projectTrustMissing ? [`folder trust for ${projectDir}`] : [])];
+    return { patched: true, reason: `seeded ${seeded.join(', ')}` };
   } catch (err) {
     // @silent-fallback-ok: fail-safe by contract — a launch path must never
     // crash on readiness seeding; the caller logs the reason.
     return { patched: false, reason: `ensureInteractiveReady failed: ${errMsg(err)}` };
   }
+}
+
+/**
+ * Pre-answer Claude Code's bypass-permissions warning ("Bypass Permissions
+ * mode ... No, exit" is the default) by setting
+ * `skipDangerousModePermissionPrompt: true` in `<settingsDir>/settings.json`.
+ * Newer Claude Code asks this from user settings, so the top-level
+ * `bypassPermissionsModeAccepted` flag alone no longer answers it (fresh
+ * Linux server, 2026-11-02). Writes only that key; never rewrites a file it
+ * cannot parse; never throws.
+ */
+export function ensureBypassPromptSkipped(settingsDir: string): EnsureInteractiveReadyResult {
+  try {
+    const dir = (settingsDir ?? '').trim();
+    if (!dir) return { patched: false, reason: 'empty settingsDir' };
+    const filePath = path.join(dir, 'settings.json');
+    let existing: Record<string, unknown> = {};
+    if (fs.existsSync(filePath)) {
+      let parsed: unknown;
+      try {
+        parsed = JSON.parse(fs.readFileSync(filePath, 'utf-8'));
+      } catch (err) {
+        return { patched: false, reason: `unparseable ${filePath} — refusing to rewrite: ${errMsg(err)}` };
+      }
+      if (!parsed || typeof parsed !== 'object' || Array.isArray(parsed)) {
+        return { patched: false, reason: `${filePath} is not a JSON object — refusing to rewrite` };
+      }
+      existing = parsed as Record<string, unknown>;
+    }
+    if (existing.skipDangerousModePermissionPrompt === true) {
+      return { patched: false, reason: 'already interactive-ready' };
+    }
+    existing.skipDangerousModePermissionPrompt = true;
+    fs.mkdirSync(dir, { recursive: true });
+    const tmpPath = `${filePath}.${process.pid}.interactive-ready.tmp`;
+    fs.writeFileSync(tmpPath, JSON.stringify(existing, null, 2) + '\n');
+    fs.renameSync(tmpPath, filePath);
+    return { patched: true, reason: 'seeded skipDangerousModePermissionPrompt' };
+  } catch (err) {
+    // @silent-fallback-ok: fail-safe by contract, like ensureInteractiveReady.
+    return { patched: false, reason: `ensureBypassPromptSkipped failed: ${errMsg(err)}` };
+  }
+}
+
+/**
+ * Pre-answer every Claude Code first-run screen for one config home: the
+ * welcome/onboarding flow, folder trust and the project MCP picker (in
+ * `.claude.json`), and the bypass-permissions warning (in `settings.json`).
+ *
+ * `configHome` is a CLAUDE_CONFIG_DIR, or null for the default home, where
+ * `.claude.json` sits in $HOME but settings live in `~/.claude/`.
+ */
+export function ensureClaudeFirstRunAnswered(
+  configHome: string | null,
+  projectDir: string,
+): EnsureInteractiveReadyResult {
+  const home = configHome && configHome.trim() ? configHome.trim() : null;
+  const jsonDir = home ?? os.homedir();
+  const settingsDir = home ?? path.join(os.homedir(), '.claude');
+  const json = ensureInteractiveReady(jsonDir, { projectDir });
+  const settings = ensureBypassPromptSkipped(settingsDir.startsWith('~')
+    ? path.join(os.homedir(), settingsDir.slice(1))
+    : settingsDir);
+  const patched = json.patched || settings.patched;
+  const reasons = [json, settings].filter((r) => r.reason !== 'already interactive-ready').map((r) => r.reason);
+  return { patched, reason: reasons.length ? reasons.join('; ') : 'already interactive-ready' };
 }

@@ -1,4 +1,5 @@
 import { describe, it, expect } from 'vitest';
+import path from 'node:path';
 import { isRawToken, validateTarget, validateBotTokenArg } from '../../src/commands/testAsSelfValidation.js';
 
 const CANONICAL = '/Users/justin/.instar/agents/echo';
@@ -39,6 +40,48 @@ describe('test-as-self validation guards (Track F)', () => {
     it('rejects an explicitly protected home path', () => {
       const r = validateTarget('/mini/home/x', { ...opts, protectedHomes: ['/mini/home/x'] });
       expect(r.code).toBe('target-is-protected');
+    });
+    it('rejects a target that CONTAINS the canonical or any agent home (teardown sweep would reach it)', () => {
+      expect(validateTarget(path.dirname(CANONICAL), opts).code).toBe('target-is-ancestor');
+      expect(validateTarget('/', opts).code).toBe('target-is-ancestor');
+      const r = validateTarget('/Users/x/.instar', { ...opts, agentHomes: ['/Users/x/.instar/agents/groky'] });
+      expect(r.code).toBe('target-is-ancestor');
+    });
+    it('rejects a target whose basename matches the canonical or a live agent home', () => {
+      expect(validateTarget('/tmp/x/' + path.basename(CANONICAL), opts).code).toBe('target-name-collides');
+      const r = validateTarget('/tmp/x/Groky', { ...opts, agentHomes: ['/Users/x/.instar/agents/groky'] });
+      expect(r.code).toBe('target-name-collides');
+    });
+    it('rejects a basename that overlaps an agent tmux prefix in either direction', () => {
+      const o = { ...opts, agentHomes: ['/Users/x/.instar/agents/groky'] };
+      // target sweep `groky-2-*` could hit groky's session `groky-2-...`
+      expect(validateTarget('/tmp/x/groky-2', o).code).toBe('target-name-collides');
+      // target sweep `ech-*`... and an agent `echo-desk` would be hit by target `echo`
+      expect(validateTarget('/tmp/x/echo', { ...opts, canonicalHome: '/a/b/echo-desk' }).code).toBe('target-name-collides');
+    });
+    it('accepts a name that only shares letters, not a dash-prefix', () => {
+      expect(validateTarget('/tmp/x/grokyy', { ...opts, agentHomes: ['/Users/x/.instar/agents/groky'] }).ok).toBe(true);
+    });
+    it('follows symlinks when checking for a contained agent home', () => {
+      const os = require('node:os') as typeof import('node:os');
+      const fs = require('node:fs') as typeof import('node:fs');
+      const real = fs.mkdtempSync(path.join(os.tmpdir(), 'tas-real-'));
+      const home = path.join(real, 'agents', 'zed');
+      fs.mkdirSync(home, { recursive: true });
+      const link = path.join(os.tmpdir(), `tas-link-${process.pid}`);
+      try { fs.unlinkSync(link); } catch { /* none */ }
+      fs.symlinkSync(real, link);
+      const homeLink = path.join(os.tmpdir(), `tas-homelink-${process.pid}`);
+      try { fs.unlinkSync(homeLink); } catch { /* none */ }
+      fs.symlinkSync(home, homeLink);
+      try {
+        expect(validateTarget(link, { ...opts, agentHomes: [home] }).code).toBe('target-is-ancestor');
+        // a symlink TO the agent home itself
+        expect(validateTarget(homeLink, { ...opts, agentHomes: [home] }).code).toBe('target-is-canonical');
+      } finally {
+        fs.unlinkSync(link);
+        fs.unlinkSync(homeLink);
+      }
     });
     it('accepts a clean throwaway target', () => {
       const r = validateTarget('/Users/justin/.instar/test-deploys/mmtest2', opts);

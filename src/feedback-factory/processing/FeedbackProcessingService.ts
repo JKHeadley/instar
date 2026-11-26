@@ -27,7 +27,7 @@ import { join } from 'node:path';
 import { JsonlFeedbackStore } from '../store/JsonlFeedbackStore.js';
 import { processUnprocessed } from '../processor/process.js';
 import type { ProcessResult } from '../processor/process.js';
-import type { Cluster } from '../processor/types.js';
+import type { Cluster, FeedbackItem } from '../processor/types.js';
 import type { FeedbackSourceGeneration, FeedbackSourceHandoff } from '../store/FeedbackSourceGenerations.js';
 
 export interface FeedbackProcessingStats {
@@ -66,6 +66,12 @@ export class FeedbackProcessingService {
   activeClusters(): Cluster[] {
     this.store.syncExternalAppends(500);
     return this.store.getActiveClusters().map((cluster) => ({ ...cluster }));
+  }
+
+  /** Read-only member reports per cluster, for the triage evidence packet. */
+  feedbackByCluster(): Map<string, FeedbackItem[]> {
+    this.store.syncExternalAppends(500);
+    return this.store.feedbackByCluster();
   }
 
   hasActiveCluster(clusterId: string): boolean {

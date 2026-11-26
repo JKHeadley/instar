@@ -1,0 +1,44 @@
+{
+  "ts": "2026-11-17T09:23:59.098Z",
+  "slug": "app-trust-approval",
+  "suggestedTier": 2,
+  "declaredTier": 2,
+  "riskFloor": 2,
+  "riskFloorReasons": [
+    "new capability: new route (router.<verb>() added",
+    "new capability: new config key added"
+  ],
+  "belowFloor": false,
+  "files": 16,
+  "loc": 1093,
+  "scope": {
+    "basis": "staged-in-scope-paths-including-deleted",
+    "files": [
+      "src/commands/install.ts",
+      "src/core/MobileDeviceKeys.ts",
+      "src/core/MobilePush.ts",
+      "src/core/TrustRaiseGuard.ts",
+      "src/core/WriteDomainRegistry.ts",
+      "src/core/trustJourney/AccountPathService.ts",
+      "src/core/trustJourney/TrustJourneyRuntime.ts",
+      "src/core/trustJourney/TrustJourneyStore.ts",
+      "src/core/trustJourney/accountPath.ts",
+      "src/core/types.ts",
+      "src/data/awareness/app-trust-approval.md",
+      "src/server/CapabilityIndex.ts",
+      "src/server/mobilePairingRoutes.ts",
+      "src/server/mobilePermissionsRoutes.ts",
+      "src/server/mobileTrustApproval.ts",
+      "src/server/routes.ts"
+    ],
+    "addedLines": 1036,
+    "deletedLines": 57
+  },
+  "causalAutopsy": null,
+  "classClosure": {
+    "defectClass": "unbounded-self-action",
+    "closure": "n/a",
+    "reason": "adds a person-approval route; no agent self-action"
+  },
+  "verdict": "pass"
+}

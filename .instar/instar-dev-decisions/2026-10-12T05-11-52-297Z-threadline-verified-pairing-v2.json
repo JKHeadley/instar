@@ -1,0 +1,31 @@
+{
+  "ts": "2026-10-12T05:11:52.297Z",
+  "slug": "threadline-verified-pairing-v2",
+  "suggestedTier": 2,
+  "declaredTier": 2,
+  "riskFloor": 1,
+  "riskFloorReasons": [],
+  "belowFloor": false,
+  "files": 4,
+  "loc": 120,
+  "scope": {
+    "basis": "staged-in-scope-additions-plus-deletions",
+    "files": [
+      "src/server/routes.ts",
+      "src/threadline/AgentTrustManager.ts",
+      "src/threadline/ThreadlineBootstrap.ts",
+      "src/threadline/client/ThreadlineClient.ts"
+    ],
+    "addedLines": 91,
+    "deletedLines": 29
+  },
+  "causalAutopsy": {
+    "origin": "new-code",
+    "relatedPrs": [
+      2173
+    ],
+    "notes": "Peer key held only in the in-memory client cache; Echo reproduced credential and receipt failure after a restart in review."
+  },
+  "classClosure": null,
+  "verdict": "pass"
+}

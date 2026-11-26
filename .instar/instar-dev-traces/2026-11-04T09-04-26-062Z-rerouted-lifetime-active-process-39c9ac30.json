@@ -1,0 +1,17 @@
+{
+  "version": 2,
+  "slug": "rerouted-lifetime-active-process",
+  "sessionId": "fd0699ed-7bf6-4340-bbdf-e97225114a49",
+  "timestamp": "2026-11-04T09:04:26.062Z",
+  "artifactPath": "upgrades/side-effects/rerouted-lifetime-active-process.md",
+  "artifactSha256": "d896d4b786e075b07ef80d5f9652913a68eff842b9b7ddb6ff2532e5fc8166c3",
+  "specPath": "docs/specs/june15-headless-spawn-reroute.md",
+  "coveredFiles": [
+    "upgrades/side-effects/rerouted-lifetime-active-process.md"
+  ],
+  "phase": "complete",
+  "tier": 2,
+  "tierReasoning": "This documentation-only verification update belongs to the existing safety-sensitive lifetime repair; it records the failed exact-head run and holds the merge gate until fresh verification.",
+  "secondPass": "true",
+  "reviewerConcurred": true
+}

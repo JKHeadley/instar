@@ -7,8 +7,12 @@ import { createHash, randomUUID } from 'node:crypto';
 import fs from 'node:fs';
 import path from 'node:path';
 import Database from 'better-sqlite3';
+import { SafeFsExecutor } from '../../core/SafeFsExecutor.js';
 import { PendingRelayStore } from '../pending-relay-store.js';
-import { snapshotLegacyOrigin } from './OriginLegacy.js';
+import { isBootBeaconBody, legacyAttributionValid, snapshotLegacyOrigin } from './OriginLegacy.js';
+import { receiptMessageIds, suppressionReason } from './OriginOperationOutcome.js';
+import { readPolicyVerdict } from './OriginPolicyVerdict.js';
+import { ORIGIN_LEASE_REFUSAL_REASONS, ORIGIN_LOCAL_REFUSAL_REASONS } from './OriginEgressCapacity.js';
 import type { OriginLegacySnapshot } from './OriginLegacy.js';
 import { advanceBrowserRecovery, type BrowserRecoveryState, type BrowserRecoveryAction, type BrowserRecoveryDecision } from './OriginBrowserRecovery.js';
 import type {
@@ -16,14 +20,35 @@ import type {
   DerivedMaterializationInput, EvidenceReceipt, NoticeReservation, NoticeReservationInput,
   OriginAdmission, OriginAuditRecord, OriginAcceptanceVerification, OriginListPage, OriginListQuery, OriginMetrics,
   OriginStoreOptions, OutcomeInput, OutcomeWriteResult, StoredChild, StoredMaterializationInput, StoredOriginInput,
+  HeldOperationRow,
 } from './StoreTypes.js';
 
 const SIX_HOURS = 6 * 60 * 60_000;
 const RECOVERY_REVIEW_INTERVAL_MS = 15 * 60_000;
+// The first recovery starts usually land in a brief local fault (a config read
+// or a connect that ran out of time). A flat 15 minutes after one of those left
+// a reply waiting 24 minutes while everything else was healthy. This paces the
+// same reservation; it changes neither eligibility, nor the claim fence, nor the
+// transport attempt budget, so an uncertain operation still never reaches here.
+const RECOVERY_REVIEW_LADDER_MS = [30_000, 60_000, 2 * 60_000, 5 * 60_000];
+// prepared_at comes from the machine that wrote the reply; acceptance time from
+// the one that recorded it. The window below tolerates this much disagreement.
+const OUT_OF_ORDER_CLOCK_SKEW_MS = 5 * 60_000;
 const MAX_LEASE_MS = 60_000;
 const MAX_ARCHIVE_BYTES = 32 * 1024 * 1024;
 const MAX_ARCHIVE_READ_BYTES = 64 * 1024 * 1024;
 const MAX_AUDIT_PAGE_BYTES = 2 * 1024 * 1024;
+// A merged file stays well inside MAX_ARCHIVE_BYTES, whatever its sources held.
+const MAX_MERGED_ARCHIVE_BYTES = 16 * 1024 * 1024;
+const ARCHIVE_WALK_ROWS = 2000;
+const FUTURE_SKEW_MS = 24 * 60 * 60_000;
+// The window must clear rows purge leaves in place; each one reads from disk when cold.
+const PURGE_WINDOW_SLACK = 20;
+const MAX_OWNER_ROWS = 2000;
+// Long enough to outlast one retention transaction in the other process, so that
+// a send waits for it instead of failing with SQLITE_BUSY.
+const STORE_BUSY_TIMEOUT_MS = 250;
+const RETAINED_STATES = "('accepted','suppressed','expired','known-failed','superseded')";
 const digest = (bytes: string | Buffer): string => createHash('sha256').update(bytes).digest('hex');
 const fail = (code: string): never => { throw new Error(`origin-store:${code}`); };
 function id(value: string): void { if (typeof value !== 'string' || !value.length || value.length > 256) fail('invalid-id'); }
@@ -37,12 +62,80 @@ function json(value: string, maxBytes: number): void {
 function seal(value: string, hash: string): void {
   if (!/^[a-f0-9]{64}$/.test(hash) || digest(value) !== hash) fail('digest-mismatch');
 }
+type DbArchive = { archive_id: string; filename: string; digest: string; count: number; first_sequence: number; last_sequence: number };
 type DbOrigin = { sequence: number; origin_id: string; machine_id: string; created_at: number; envelope_digest: string; record_json: string | null; archive_id: string | null };
-type DbOperation = { operation_id: string; origin_id: string; admission_digest: string; prepared_at: number; deadline_at: number; max_attempts: number; payload_bytes: number; state: string; kind: string };
+type DbOperation = { operation_id: string; origin_id: string; admission_digest: string; prepared_at: number; deadline_at: number; max_attempts: number; payload_bytes: number; state: string; kind: string; hold_reason?: string | null; hold_detail_json?: string | null; hold_expiry_reported_at?: number | null; first_prepared_at?: number | null; late_marked_at?: number | null; policy_verdict_json?: string | null };
 type DbChild = { child_id: string; operation_id: string; delivery_id: string; destination_json: string; content_digest: string; generation: number; state: string; allowed_derivations: string };
 type DbEntry = { state: string; claimed_by: string | null; attempts: number; next_attempt_at: string | null; entry_kind: string; owner_boot_id: string | null; lease_until: number | null };
+/** native-conversation-forwarded-advisory — rows whose recorded verdict is an advisory wait for
+ * their author: never recovered, never on the due ladder, never counted as "will be delivered". */
+const NOT_ADVISORY = "(o.policy_verdict_json IS NULL OR json_extract(o.policy_verdict_json,'$.class')!='advisory')";
+/** Counters kept as sums (seconds), not event counts. */
+const SUM_METRICS = new Set(['advisory-answer-delay-s']);
+function verdictClass(value: string | null | undefined): string | null {
+  if (!value) return null;
+  try { const parsed = JSON.parse(value) as { class?: unknown }; return typeof parsed.class === 'string' ? parsed.class : null; } catch { return null; }
+}
+/** The stored verdict: class, rule, the gate's decision reference and a cleaned suggestion; never `issue`. */
+function policyVerdictJson(value: Record<string, unknown>): string {
+  const verdict = readPolicyVerdict(value);
+  if (!verdict) return fail('invalid-policy-verdict');
+  const text = JSON.stringify(verdict); json(text, 4096);
+  return text;
+}
 type DbMaterialization = { materialization_id: string; child_id: string; generation: number; request_json: string | null; request_digest: string; dispatch_deadline: number | null };
+/** native-conversation-base §3a item 9 — a suppression's detail: ids (strings up to 256
+ * characters) are stored whole; longer free text is cut at 200 characters with a
+ * visible marker, never refused (a refused suppression would send what a caller
+ * chose not to send). The authored `text` of a held forward is kept whole. */
+function suppressionDetail(detail: Record<string, unknown>): Record<string, unknown> {
+  const out: Record<string, unknown> = {};
+  for (const [key, value] of Object.entries(detail)) {
+    out[key] = typeof value === 'string' && key !== 'text' && value.length > 256 ? `${value.slice(0, 200)}…[cut]` : value;
+  }
+  return out;
+}
+export type RetirementReason = 'stale-hold-handed-back' | 'retired-by-operator';
+export type RetireResult = { retired: true; priorLastAttempt: string | null; uncertain: boolean; ageMs: number; topicId: string | null; producerKind: string | null }
+  | { retired: false; refusal: 'unknown-operation' | 'already-retired' | 'not-held' | 'in-flight' | 'uncertain' | 'store-unavailable' };
+export interface RetirementRow { operationId: string; retiredAt: number; reason: RetirementReason; actor: string; note: string | null;
+  supersededBy: string | null; priorState: string; priorHoldReason: string | null; priorLastAttempt: string | null; cause: 'parked-at-startup' | 'queued-unsent' | 'held-lease' | null;
+  ageMs: number; topicId: string | null; reportedAt: number | null; reportAttempts: number; reportOutcome: string | null }
+function retirementRow(row: Record<string, unknown>): RetirementRow {
+  return { operationId: String(row.operation_id), retiredAt: Number(row.retired_at), reason: row.reason as RetirementReason, actor: String(row.actor),
+    note: (row.note as string | null) ?? null, supersededBy: (row.superseded_by as string | null) ?? null, priorState: String(row.prior_state),
+    priorHoldReason: (row.prior_hold_reason as string | null) ?? null, priorLastAttempt: (row.prior_last_attempt as string | null) ?? null,
+    cause: (row.cause as RetirementRow['cause']) ?? null, ageMs: Number(row.age_ms), topicId: (row.topic_id as string | null) ?? null,
+    reportedAt: (row.reported_at as number | null) ?? null, reportAttempts: Number(row.report_attempts ?? 0), reportOutcome: (row.report_outcome as string | null) ?? null };
+}
+/** The earliest authored time a row carries; a supersede chain never resets it. */
+function firstAuthored(op: { first_prepared_at?: number | null; prepared_at: number }, detail: Record<string, unknown>, now: number): number {
+  const values = [op.first_prepared_at, detail.authoredPreparedAt, op.prepared_at].filter((v): v is number => typeof v === 'number' && Number.isSafeInteger(v) && v > 0 && v <= now);
+  return values.length ? Math.min(...values) : now;
+}
 type DbAttempt = { attempt_id: string; child_id: string; materialization_id: string; claim_token: string; owner_boot_id: string; phase: string; outcome: string | null; receipt_json: string | null; created_at: number; resolved_at: number | null };
+
+/** Did a newer session reply reach this chat before this one? Message ids prove
+ * the order. A reply that landed first was written before this one was accepted,
+ * so only replies written in that window can answer yes. CROSS JOIN and the unary
+ * plus keep this walking outward from the one reply through child_id: left to
+ * choose, the planner read every receipt in the store (or in the topic) and one
+ * page took 39 s (2026-11-05), during which no reply could be recorded. */
+export const SESSION_REPLY_OUT_OF_ORDER_SQL = `SELECT 1 FROM telegram_origin_children c1
+  CROSS JOIN telegram_origin_platform_receipts r1 ON r1.child_id=c1.child_id
+  CROSS JOIN telegram_origin_operations o2 INDEXED BY telegram_origin_operation_prepared
+    ON o2.kind='ordinary' AND o2.prepared_at>? AND o2.prepared_at<=?
+  CROSS JOIN telegram_origin_children c2 ON c2.operation_id=o2.operation_id
+  CROSS JOIN telegram_origin_platform_receipts r2 ON r2.child_id=c2.child_id
+  CROSS JOIN telegram_origins t2 ON t2.origin_id=o2.origin_id
+  WHERE c1.operation_id=? AND o2.state='accepted'
+    AND +r1.transport='bot-api' AND r1.message_id NOT GLOB '*[^0-9]*'
+    AND +r2.transport=r1.transport AND +r2.account_id=r1.account_id AND +r2.chat_id=r1.chat_id AND +r2.topic_id=r1.topic_id
+    AND r2.message_id NOT GLOB '*[^0-9]*'
+    AND CAST(r2.message_id AS INTEGER)<CAST(r1.message_id AS INTEGER)
+    AND json_extract(json_extract(t2.record_json,'$.envelopeJson'),'$.producerKind')='session'
+    AND json_extract(json_extract(t2.record_json,'$.envelopeJson'),'$.operationKind')='sendMessage'
+  LIMIT 1`;
 
 export class OriginStoreBackend {
   private readonly queue: PendingRelayStore;
@@ -51,6 +144,14 @@ export class OriginStoreBackend {
   private readonly archiveDir: string;
   private archiveReadScope?: { handles: Map<string, Database.Database>; bytes: number };
   private readonly archiveReadStats = { filesVerified: 0, bytesHashed: 0 };
+  /** Damaged or missing sources stay as they are; they are not retried by this process. */
+  private readonly unmergeableArchives = new Set<string>();
+  /** Where the next purge looks. Rows it leaves in place never hide the rows behind them. */
+  private purgeAfterRowid = 0;
+  /** How far archive scanned past a row that has to wait. */
+  private archiveScanAfter = 0;
+  /** Where the next look for unreferenced archive files starts. */
+  private expiryScanAfter = 0;
 
   constructor(options: OriginStoreOptions) {
     if (isMainThread) fail('worker-required');
@@ -63,7 +164,7 @@ export class OriginStoreBackend {
     };
     for (const value of Object.values(this.options)) integer(value, 1, Number.MAX_SAFE_INTEGER);
     this.archiveDir = path.join(options.stateDir, 'state', 'telegram-origin-archives', options.agentId.replace(/[^A-Za-z0-9._-]/g, '_'));
-    this.queue = PendingRelayStore.open(options.agentId, options.stateDir, { durability: 'FULL', busyTimeoutMs: 25 });
+    this.queue = PendingRelayStore.open(options.agentId, options.stateDir, { durability: 'FULL', busyTimeoutMs: STORE_BUSY_TIMEOUT_MS });
     this.db = this.queue.rawDb();
     this.db.exec(`
       CREATE TABLE IF NOT EXISTS telegram_origins (
@@ -91,6 +192,7 @@ export class OriginStoreBackend {
         prepared_at INTEGER NOT NULL, deadline_at INTEGER NOT NULL, max_attempts INTEGER NOT NULL,
         payload_bytes INTEGER NOT NULL, state TEXT NOT NULL, kind TEXT NOT NULL);
       CREATE INDEX IF NOT EXISTS telegram_origin_operation_state ON telegram_origin_operations(kind,state,deadline_at);
+      CREATE INDEX IF NOT EXISTS telegram_origin_operation_prepared ON telegram_origin_operations(kind,prepared_at,operation_id);
       CREATE TABLE IF NOT EXISTS telegram_origin_payloads (
         payload_id TEXT PRIMARY KEY, operation_id TEXT NOT NULL, digest TEXT NOT NULL, size INTEGER NOT NULL, data BLOB);
       CREATE INDEX IF NOT EXISTS telegram_origin_payload_operation ON telegram_origin_payloads(operation_id);
@@ -121,6 +223,7 @@ export class OriginStoreBackend {
         child_id TEXT NOT NULL, origin_id TEXT NOT NULL, transport TEXT NOT NULL, account_id TEXT NOT NULL,
         chat_id TEXT NOT NULL, topic_id TEXT NOT NULL, message_id TEXT NOT NULL, PRIMARY KEY(child_id,message_id));
       CREATE INDEX IF NOT EXISTS telegram_origin_receipt_namespace ON telegram_origin_platform_receipts(transport,account_id,chat_id,topic_id,message_id,origin_id);
+      CREATE INDEX IF NOT EXISTS telegram_origin_receipt_message ON telegram_origin_platform_receipts(transport,chat_id,message_id,origin_id);
       CREATE TABLE IF NOT EXISTS telegram_origin_notices (
         child_id TEXT PRIMARY KEY, alert_destination_id TEXT NOT NULL, generation TEXT NOT NULL,
         owner_boot_id TEXT NOT NULL, claim_token TEXT NOT NULL UNIQUE, request_bytes INTEGER NOT NULL,
@@ -129,7 +232,136 @@ export class OriginStoreBackend {
         archive_id TEXT PRIMARY KEY, filename TEXT NOT NULL, digest TEXT NOT NULL, count INTEGER NOT NULL,
         first_sequence INTEGER NOT NULL, last_sequence INTEGER NOT NULL, committed_at INTEGER NOT NULL);
       CREATE INDEX IF NOT EXISTS telegram_origin_entries_lane ON entries(entry_kind,state,next_attempt_at);
+      CREATE TABLE IF NOT EXISTS telegram_origin_metric_rollups (
+        metric TEXT NOT NULL, machine_id TEXT NOT NULL, count INTEGER NOT NULL, PRIMARY KEY(metric,machine_id));
+      CREATE TABLE IF NOT EXISTS telegram_origin_retention (
+        id INTEGER PRIMARY KEY CHECK(id=1), archive_after_sequence INTEGER NOT NULL, expired_before INTEGER NOT NULL);
+      CREATE TABLE IF NOT EXISTS telegram_origin_operation_index (operation_id TEXT PRIMARY KEY, origin_id TEXT NOT NULL);
+      CREATE INDEX IF NOT EXISTS telegram_origin_operation_index_origin ON telegram_origin_operation_index(origin_id);
+      CREATE INDEX IF NOT EXISTS telegram_origin_operation_open ON telegram_origin_operations(kind,deadline_at,payload_bytes)
+        WHERE state NOT IN ('accepted','suppressed','expired','known-failed','superseded');
+      CREATE INDEX IF NOT EXISTS telegram_origin_entries_text ON entries(delivery_id) WHERE entry_kind='telegram-origin' AND length(text)>0;
+      CREATE INDEX IF NOT EXISTS telegram_origin_receipt_origin ON telegram_origin_platform_receipts(origin_id);
+      CREATE INDEX IF NOT EXISTS telegram_origin_archive_small ON telegram_origin_archives(first_sequence) WHERE count<100;
     `);
+    if (!this.db.prepare('SELECT 1 FROM telegram_origin_retention WHERE id=1').get()) this.db.prepare('INSERT OR IGNORE INTO telegram_origin_retention VALUES (1,0,0)').run();
+    // a2a-single-agent-identity §4.2 — additive hold columns. An older reader
+    // ignores them and treats a held row exactly as before (unknown reason ⇒
+    // the ordinary hold); a newer reader can name WHY a row is held.
+    const operationColumns = new Set((this.db.prepare('PRAGMA table_info(telegram_origin_operations)').all() as Array<{ name: string }>).map(column => column.name));
+    if (!operationColumns.has('hold_reason')) this.db.exec('ALTER TABLE telegram_origin_operations ADD COLUMN hold_reason TEXT');
+    if (!operationColumns.has('hold_detail_json')) this.db.exec('ALTER TABLE telegram_origin_operations ADD COLUMN hold_detail_json TEXT');
+    if (!operationColumns.has('hold_expiry_reported_at')) this.db.exec('ALTER TABLE telegram_origin_operations ADD COLUMN hold_expiry_reported_at INTEGER');
+    // native-conversation-base §3a item 2 — the late mark's carrier. Columns, not
+    // hold detail: moving a row from `held` to `admitted` clears the detail. A
+    // second process opens this database, so the add tolerates a duplicate column.
+    for (const column of ['first_prepared_at', 'late_marked_at']) {
+      if (operationColumns.has(column)) continue;
+      try { this.db.exec(`ALTER TABLE telegram_origin_operations ADD COLUMN ${column} INTEGER`); }
+      catch (error) { if (!/duplicate column/i.test(error instanceof Error ? error.message : String(error))) throw error; }
+    }
+    // native-conversation-forwarded-advisory item 2 — the outbound check's verdict on a reply in
+    // custody. Nullable, additive, and never cleared by a state change (an older reader ignores it).
+    if (!operationColumns.has('policy_verdict_json')) {
+      try { this.db.exec('ALTER TABLE telegram_origin_operations ADD COLUMN policy_verdict_json TEXT'); }
+      catch (error) { if (!/duplicate column/i.test(error instanceof Error ? error.message : String(error))) throw error; }
+    }
+    // held-and-startup-parked-send-release §3 — one audit row per retired held or
+    // startup-parked reply (automatic staleness hand-back or operator retire). Additive:
+    // an older reader never opens it.
+    this.db.exec(`
+      CREATE TABLE IF NOT EXISTS telegram_origin_retirements (
+        operation_id TEXT PRIMARY KEY, retired_at INTEGER NOT NULL, reason TEXT NOT NULL, actor TEXT NOT NULL,
+        note TEXT, superseded_by TEXT, prior_state TEXT NOT NULL, prior_hold_reason TEXT, prior_last_attempt TEXT,
+        cause TEXT, age_ms INTEGER NOT NULL, topic_id TEXT, reported_at INTEGER, report_attempts INTEGER NOT NULL DEFAULT 0,
+        next_report_at INTEGER NOT NULL DEFAULT 0, report_outcome TEXT);
+      CREATE INDEX IF NOT EXISTS telegram_origin_retirements_age ON telegram_origin_retirements(retired_at);
+      CREATE INDEX IF NOT EXISTS telegram_origin_retirements_unreported ON telegram_origin_retirements(next_report_at,retired_at) WHERE reported_at IS NULL;
+    `);
+  }
+  /** native-conversation-base §3a item 5/8 — a keyed operation event (`<operationId>:late-line`,
+   * `<operationId>:session-line`, …). True when this call recorded it; false when it already existed. */
+  recordOperationEvent(input: { eventId: string; metric: string }): boolean {
+    if (typeof input.eventId !== 'string' || !input.eventId || input.eventId.length > 400) fail('invalid-event-id');
+    if (typeof input.metric !== 'string' || !/^[a-z0-9:-]{1,64}$/.test(input.metric)) fail('invalid-event-metric');
+    const inserted = this.db.prepare('INSERT OR IGNORE INTO telegram_origin_metric_events(event_id,metric) VALUES (?,?)').run(input.eventId, input.metric);
+    if (inserted.changes) this.db.prepare('INSERT INTO telegram_origin_metrics(metric,count) VALUES (?,1) ON CONFLICT(metric) DO UPDATE SET count=count+1').run(input.metric);
+    return inserted.changes > 0;
+  }
+  /** native-conversation-forwarded-advisory item 7 — a summed counter (the advisory answer delay, in
+   * seconds), keyed once per event like every other counter. Held only in the counts table. */
+  recordOperationSum(input: { eventId: string; metric: string; amount: number }): boolean {
+    if (typeof input.eventId !== 'string' || !input.eventId || input.eventId.length > 400) fail('invalid-event-id');
+    if (!SUM_METRICS.has(input.metric)) fail('invalid-event-metric');
+    integer(input.amount, 0, 365 * 24 * 3600);
+    return this.db.transaction(() => {
+      const inserted = this.db.prepare('INSERT OR IGNORE INTO telegram_origin_metric_events(event_id,metric) VALUES (?,?)').run(input.eventId, `${input.metric}:event`);
+      if (!inserted.changes) return false;
+      this.db.prepare('INSERT INTO telegram_origin_metrics(metric,count) VALUES (?,?) ON CONFLICT(metric) DO UPDATE SET count=count+excluded.count').run(input.metric, input.amount);
+      return true;
+    }).immediate();
+  }
+  /** 3g item 3 — the author's forward row answered with an advisory: keep its text, record the
+   * verdict (the first one wins), mark it `outcome-unknown` at that holder and take it out of the
+   * due ladder. Refused unless the row is still a plainly held forward with no verdict. */
+  markForwardAdvisory(input: { operationId: string; verdict: Record<string, unknown> }): boolean {
+    id(input.operationId);
+    const verdictJson = policyVerdictJson(input.verdict);
+    return this.db.transaction(() => {
+      const op = this.operation(input.operationId);
+      if (!op || op.kind !== 'ordinary' || op.state !== 'held' || op.hold_reason !== 'lease-not-held' || op.policy_verdict_json) return false;
+      const detail = { ...(op.hold_detail_json ? JSON.parse(op.hold_detail_json) as Record<string, unknown> : {}) };
+      if (detail.ownerVerdict) return false;
+      const ladder = detail.ladder && typeof detail.ladder === 'object' ? detail.ladder as Record<string, unknown> : { attempts: 0 };
+      Object.assign(detail, { lastAttempt: 'outcome-unknown', machineId: input.verdict.machineId, ladder: { ...ladder, nextAt: null } });
+      const detailJson = JSON.stringify(detail); json(detailJson, 64 * 1024);
+      this.db.prepare('UPDATE telegram_origin_operations SET hold_detail_json=?,policy_verdict_json=? WHERE operation_id=?').run(detailJson, verdictJson, op.operation_id);
+      this.event(`${op.operation_id}:advisory-handed-back`, 'advisory-handed-back');
+      return true;
+    }).immediate();
+  }
+  /** 3g item 5 — this machine's verdict-bearing rows written by `sessionId` for `topicId`, newest
+   * first, in any state: the one lookup for local outbox rows and forward rows alike. */
+  listAdvisoryRows(input: { originMachineId: string; sessionId: string; topicId: string | null; limit?: number }): Array<{
+    operationId: string; state: string; holdReason: string | null; deadlineAt: number; preparedAt: number; firstPreparedAt: number;
+    executionOwnerMachineId: string | null; policyVerdict: Record<string, unknown> }> {
+    id(input.originMachineId); id(input.sessionId);
+    const limit = input.limit ?? 50; integer(limit, 1, 200);
+    const rows = this.db.prepare(`SELECT o.*,json_extract(json_extract(t.record_json,'$.envelopeJson'),'$.executionOwnerMachineId') execution_owner
+      FROM telegram_origin_operations o JOIN telegram_origins t ON t.origin_id=o.origin_id JOIN telegram_origin_destinations d ON d.origin_id=o.origin_id
+      WHERE o.kind='ordinary' AND o.policy_verdict_json IS NOT NULL
+        AND json_extract(json_extract(t.record_json,'$.envelopeJson'),'$.originMachineId')=@machine
+        AND json_extract(json_extract(t.record_json,'$.envelopeJson'),'$.sessionId')=@session
+        AND ((@topic IS NULL AND d.topic_id IS NULL) OR CAST(d.topic_id AS TEXT)=@topic)
+      ORDER BY o.prepared_at DESC,o.operation_id DESC LIMIT @limit`).all({ machine: input.originMachineId, session: input.sessionId, topic: input.topicId, limit }) as Array<DbOperation & { execution_owner: string | null }>;
+    return rows.map(row => ({ operationId: row.operation_id, state: row.state, holdReason: row.hold_reason ?? null, deadlineAt: row.deadline_at, preparedAt: row.prepared_at,
+      firstPreparedAt: row.first_prepared_at ?? row.prepared_at, executionOwnerMachineId: row.execution_owner ?? null,
+      policyVerdict: JSON.parse(row.policy_verdict_json!) as Record<string, unknown> }));
+  }
+  hasOperationEvent(input: { eventId: string; metric: string }): boolean {
+    if (typeof input.eventId !== 'string' || !input.eventId || input.eventId.length > 400) fail('invalid-event-id');
+    return !!this.db.prepare('SELECT 1 FROM telegram_origin_metric_events WHERE event_id=? AND metric=?').get(input.eventId, input.metric);
+  }
+  /** §3a item 7 — merge fields into a held forward's detail without erasing its
+   * text (the `held` writer replaces the whole detail). An `ownerVerdict` (and a
+   * settled `ownerUnstated`) also nulls `ladder.nextAt`, so the row leaves the
+   * due query and cannot hold a deliverable forward behind it. */
+  mergeHoldDetail(input: { operationId: string; patch: Record<string, unknown> }): boolean {
+    id(input.operationId);
+    const patchJson = JSON.stringify(input.patch); json(patchJson, 16 * 1024);
+    return this.db.transaction(() => {
+      const op = this.operation(input.operationId);
+      if (!op || op.kind !== 'ordinary' || op.state !== 'held' || op.hold_reason !== 'lease-not-held') return false;
+      const detail = { ...(op.hold_detail_json ? JSON.parse(op.hold_detail_json) as Record<string, unknown> : {}), ...input.patch };
+      const unstated = detail.ownerUnstated as { settled?: unknown } | undefined;
+      if (detail.ownerVerdict || unstated?.settled === true) {
+        const ladder = detail.ladder && typeof detail.ladder === 'object' ? detail.ladder as Record<string, unknown> : { attempts: 0 };
+        detail.ladder = { ...ladder, nextAt: null };
+      }
+      const detailJson = JSON.stringify(detail); json(detailJson, 64 * 1024);
+      this.db.prepare('UPDATE telegram_origin_operations SET hold_detail_json=? WHERE operation_id=?').run(detailJson, op.operation_id);
+      return true;
+    }).immediate();
   }
 
   private event(eventId: string, metric: string): void {
@@ -190,7 +422,7 @@ export class OriginStoreBackend {
     const evidenceJson = JSON.stringify(verification); json(evidenceJson, 4096);
     return this.db.transaction(() => {
       const receipt = this.putEvidence(record);
-      this.db.prepare('INSERT OR IGNORE INTO telegram_origin_verifications(origin_id,evidence_json) VALUES (?,?)').run(record.originId, evidenceJson);
+      if (this.db.prepare('SELECT 1 FROM telegram_origins WHERE origin_id=? AND archive_id IS NULL').get(record.originId)) this.db.prepare('INSERT OR IGNORE INTO telegram_origin_verifications(origin_id,evidence_json) VALUES (?,?)').run(record.originId, evidenceJson);
       return receipt;
     }).immediate();
   }
@@ -236,11 +468,11 @@ export class OriginStoreBackend {
   }
 
   admit(input: OriginAdmission): AdmissionResult { return this.admitInternal(input, false); }
-  getBrowserRecoveryStates(): Array<{ profileId: string; nextAllowedAt: number; failingSince: number | null; failures: number; attentionPending: boolean; publicTransportAlternative: boolean }> {
+  getBrowserRecoveryStates(): Array<{ profileId: string; nextAllowedAt: number; failingSince: number | null; failures: number; failedBuilds: string[]; attentionPending: boolean; publicTransportAlternative: boolean }> {
     const rows = this.db.prepare('SELECT profile_id,state_json FROM telegram_origin_browser_recovery ORDER BY profile_id LIMIT 256').all() as Array<{ profile_id: string; state_json: string }>;
     return rows.map(row => { const state = JSON.parse(row.state_json) as BrowserRecoveryState;
       return { profileId: row.profile_id, nextAllowedAt: state.nextAllowedAt, failingSince: state.latch.failingSince,
-        failures: state.latch.failures, attentionPending: state.attentionId !== null && !state.attentionAccepted,
+        failures: state.latch.failures, failedBuilds: [...state.failedBuilds], attentionPending: state.attentionId !== null && !state.attentionAccepted,
         publicTransportAlternative: state.failedBuilds.length >= 2 }; });
   }
   browserRecovery(input: { profileId: string; action: BrowserRecoveryAction; now?: number }): BrowserRecoveryDecision {
@@ -260,7 +492,8 @@ export class OriginStoreBackend {
   reserveDiagnostic(input: { originId: string; reason: string }): boolean {
     id(input.originId); id(input.reason);
     return this.db.transaction(() => {
-      if (!this.db.prepare('SELECT 1 FROM telegram_origins WHERE origin_id=?').get(input.originId)) return false;
+      // Detail for an archived origin would never be read back.
+      if (!this.db.prepare('SELECT 1 FROM telegram_origins WHERE origin_id=? AND archive_id IS NULL').get(input.originId)) return false;
       return this.db.prepare("INSERT OR IGNORE INTO telegram_origin_diagnostics VALUES (?,'pending',?,?,NULL,NULL)")
         .run(input.originId, input.reason, Date.now()).changes === 1;
     }).immediate();
@@ -287,8 +520,8 @@ export class OriginStoreBackend {
   }
   /** Reclassify the existing queue row inside the admission transaction. No
    * second executable copy, reset budget, or stale-snapshot takeover exists. */
-  importLegacy(input: { snapshot: OriginLegacySnapshot; admission: OriginAdmission }): boolean {
-    return this.db.transaction(() => {
+  importLegacy(input: { snapshot: OriginLegacySnapshot; admission: OriginAdmission; staleBefore?: number }): boolean | 'stale-retired' {
+    return this.db.transaction((): boolean | 'stale-retired' => {
       const row = this.queue.findByDeliveryId(input.snapshot.deliveryId);
       if (!row || row.entry_kind !== 'legacy' || !['queued', 'claimed', 'delivered-ambiguous'].includes(row.state)) return false;
       const snapshot = snapshotLegacyOrigin(row);
@@ -297,9 +530,36 @@ export class OriginStoreBackend {
         input.admission.children[0]?.deliveryId !== snapshot.deliveryId) fail('legacy-budget-or-identity-changed');
       const record = JSON.parse(input.admission.record.envelopeJson);
       if (record.producerKind !== 'imported-legacy' || record.legacySnapshotDigest !== snapshot.snapshotDigest ||
-        record.machine.status !== 'unknown' || record.model.status !== 'unknown' || record.harness.status !== 'unknown') fail('legacy-origin-required');
+        !legacyAttributionValid(record)) fail('legacy-origin-required');
       this.admitInternal(input.admission, false, snapshot);
       const terminal = !snapshot.replaySafe || snapshot.attempts >= input.admission.maxAttempts;
+      // held-and-startup-parked-send-release §2(a) — a provably unsent row older than the
+      // staleness bound is not queued: it is retired and handed back to its author.
+      if (!terminal && input.staleBefore !== undefined && snapshot.preparedAt < input.staleBefore) {
+        const child = input.admission.children[0];
+        this.db.prepare('UPDATE entries SET attempts=?,next_attempt_at=? WHERE delivery_id=?').run(snapshot.attempts, snapshot.nextAttemptAt, child.deliveryId);
+        this.event(input.admission.operationId, 'operation:imported-legacy');
+        // The cause names what the row proves: the boot beacon answered (server starting), or another
+        // pre-dispatch refusal (401/404, config unreadable) queued it before any send.
+        const cause = row.http_code === 503 && isBootBeaconBody(row.error_body) ? 'parked-at-startup' : 'queued-unsent';
+        const retired = this.retireHeldOperation({ operationId: input.admission.operationId, reason: 'stale-hold-handed-back', actor: 'system:stale-bound',
+          cause, now: Date.now() });
+        if (!retired.retired) {
+          // Never a send and never a retry loop: a refused retirement takes the existing terminal
+          // ending (never attempted again, outcome read as unknown) and the import moves on.
+          this.db.prepare("UPDATE entries SET state='delivered-ambiguous',claimed_by=NULL WHERE delivery_id=?").run(child.deliveryId);
+          this.db.prepare("UPDATE telegram_origin_children SET state='outcome-unknown' WHERE child_id=?").run(child.childId);
+          this.event(child.childId, 'child:outcome-unknown');
+          this.refreshOperation(input.admission.operationId);
+          this.event(`${input.admission.operationId}:legacy-stale-retire-refused`, 'legacy-stale-retire-refused');
+          return true;
+        }
+        // The detail carries the authored text for the author's text read.
+        this.db.prepare('UPDATE telegram_origin_operations SET hold_detail_json=json_set(hold_detail_json,\'$.text\',?,\'$.neverAttempted\',json(\'true\')) WHERE operation_id=?')
+          .run(snapshot.text, input.admission.operationId);
+        return 'stale-retired';
+      }
+      if (terminal && snapshot.attempts > 0 && row.http_code === 503) this.event(`${input.admission.operationId}:legacy-503-unproved`, 'legacy-503-unproved');
       for (const child of input.admission.children) {
         this.db.prepare('UPDATE entries SET attempts=?,next_attempt_at=? WHERE delivery_id=?').run(snapshot.attempts, snapshot.nextAttemptAt, child.deliveryId);
         if (terminal) {
@@ -339,12 +599,14 @@ export class OriginStoreBackend {
         if (existing.admission_digest !== admissionDigest || existing.kind !== (notice ? 'notice' : 'ordinary')) fail('operation-id-conflict');
         return { operationId: input.operationId, originId: input.record.originId, inserted: false };
       }
+      // A replay outlives the operation row: it is a conflict, never a fresh send.
+      if (this.db.prepare('SELECT 1 FROM telegram_origin_operation_index WHERE operation_id=?').get(input.operationId)) fail('operation-id-conflict');
       if (!notice) {
-        const active = this.db.prepare("SELECT count(*) n,coalesce(sum(payload_bytes),0) bytes FROM telegram_origin_operations WHERE kind='ordinary' AND state NOT IN ('accepted','suppressed','expired','known-failed')").get() as { n: number; bytes: number };
+        const active = this.db.prepare("SELECT count(*) n,coalesce(sum(payload_bytes),0) bytes FROM telegram_origin_operations WHERE kind='ordinary' AND state NOT IN ('accepted','suppressed','expired','known-failed','superseded')").get() as { n: number; bytes: number };
         if (active.n >= this.options.maxOperations || active.bytes + input.payloadBytes > this.options.maxPayloadBytes) fail('capacity-unavailable');
       }
       this.putEvidence(input.record);
-      this.db.prepare('INSERT INTO telegram_origin_operations VALUES (?,?,?,?,?,?,?,?,?)')
+      this.db.prepare('INSERT INTO telegram_origin_operations(operation_id,origin_id,admission_digest,prepared_at,deadline_at,max_attempts,payload_bytes,state,kind) VALUES (?,?,?,?,?,?,?,?,?)')
         .run(input.operationId, input.record.originId, admissionDigest, input.preparedAt, input.deadlineAt, input.maxAttempts, input.payloadBytes, 'admitted', notice ? 'notice' : 'ordinary');
       for (const payload of input.payloads ?? []) this.db.prepare('INSERT INTO telegram_origin_payloads VALUES (?,?,?,?,?)')
         .run(payload.payloadId, input.operationId, payload.digest, payload.size, Buffer.from(payload.data));
@@ -392,8 +654,10 @@ export class OriginStoreBackend {
     id(operationId);
     const op = this.operation(operationId);
     if (op) return this.getOrigin(op.origin_id);
+    const retained = this.db.prepare('SELECT origin_id FROM telegram_origin_operation_index WHERE operation_id=?').get(operationId) as { origin_id: string } | undefined;
+    if (retained) return this.getOrigin(retained.origin_id);
     // Tokenless sources retain an immutable envelope without an executable
-    // operation. Evidence-only rows are never archived by the operation join.
+    // operation. Archiving one moves it into the operation index above.
     const rows = this.db.prepare(`SELECT origin_id FROM telegram_origins WHERE record_json IS NOT NULL
       AND json_extract(json_extract(record_json,'$.envelopeJson'),'$.operationId')=? LIMIT 2`).all(operationId) as Array<{ origin_id: string }>;
     if (rows.length > 1) fail('evidence-operation-conflict');
@@ -423,10 +687,23 @@ export class OriginStoreBackend {
     id(input.operationId);
     const now = input.now ?? Date.now();
     integer(now, 0, Number.MAX_SAFE_INTEGER - RECOVERY_REVIEW_INTERVAL_MS);
+    // Another owner holding the store's write lock (e.g. winning the same
+    // reservation) answers "not reserved", exactly as an already-reserved
+    // operation does. BEGIN IMMEDIATE is refused before any statement runs, so
+    // nothing was spent; the operation stays eligible for a later pass. Before,
+    // the 25 ms busy timeout surfaced as a "database is locked" error instead.
+    try {
+      return this.reserveRecoveryAttemptLocked(input.operationId, now);
+    } catch (err) {
+      if (isSqliteBusy(err)) return false;
+      throw err;
+    }
+  }
+  private reserveRecoveryAttemptLocked(operationId: string, now: number): boolean {
     return this.db.transaction(() => {
       const eligible = this.db.prepare(`SELECT 1 FROM telegram_origin_operations o
         WHERE o.operation_id=? AND o.kind='ordinary' AND o.state IN ('admitted','held','partial')
-        AND o.prepared_at<=? AND o.deadline_at>?
+        AND o.prepared_at<=? AND o.deadline_at>? AND ${NOT_ADVISORY}
         AND NOT EXISTS (SELECT 1 FROM telegram_origin_recovery_schedule r
           WHERE r.operation_id=o.operation_id AND r.next_attempt_at>?)
         AND EXISTS (SELECT 1 FROM telegram_origin_children c JOIN entries e ON e.delivery_id=c.delivery_id
@@ -434,11 +711,13 @@ export class OriginStoreBackend {
           AND e.attempts<o.max_attempts AND (e.next_attempt_at IS NULL OR e.next_attempt_at<=?))
         AND NOT EXISTS (SELECT 1 FROM telegram_origin_children c WHERE c.operation_id=o.operation_id
           AND c.state NOT IN ('queued','accepted'))`)
-        .get(input.operationId, now, now, now, new Date(now).toISOString());
+        .get(operationId, now, now, now, new Date(now).toISOString());
       if (!eligible) return false;
+      const previous = this.db.prepare('SELECT attempts FROM telegram_origin_recovery_schedule WHERE operation_id=?').get(operationId) as { attempts: number } | undefined;
+      const interval = RECOVERY_REVIEW_LADDER_MS[previous?.attempts ?? 0] ?? RECOVERY_REVIEW_INTERVAL_MS;
       this.db.prepare(`INSERT INTO telegram_origin_recovery_schedule VALUES (?,1,?)
         ON CONFLICT(operation_id) DO UPDATE SET attempts=attempts+1,next_attempt_at=excluded.next_attempt_at`)
-        .run(input.operationId, now + RECOVERY_REVIEW_INTERVAL_MS);
+        .run(operationId, now + interval);
       return true;
     }).immediate();
   }
@@ -448,7 +727,7 @@ export class OriginStoreBackend {
     return this.db.transaction(() => {
       const after = advance ? (this.db.prepare('SELECT after_rowid FROM telegram_origin_recovery_cursor WHERE id=1').get() as { after_rowid: number } | undefined)?.after_rowid ?? 0 : 0;
       const operations = this.db.prepare(`SELECT o.*,o.rowid recovery_rowid FROM telegram_origin_operations o
-        WHERE o.kind='ordinary' AND o.state IN ('admitted','held','partial') AND o.deadline_at>?
+        WHERE o.kind='ordinary' AND o.state IN ('admitted','held','partial') AND o.deadline_at>? AND ${NOT_ADVISORY}
         AND NOT EXISTS (SELECT 1 FROM telegram_origin_recovery_schedule r
           WHERE r.operation_id=o.operation_id AND r.next_attempt_at>?)
         AND EXISTS (SELECT 1 FROM telegram_origin_children c JOIN entries e ON e.delivery_id=c.delivery_id
@@ -457,22 +736,113 @@ export class OriginStoreBackend {
         AND NOT EXISTS (SELECT 1 FROM telegram_origin_children c WHERE c.operation_id=o.operation_id
           AND c.state NOT IN ('queued','accepted'))
         ORDER BY CASE WHEN o.rowid>? THEN 0 ELSE 1 END,o.rowid LIMIT ?`).all(now, now, new Date(now).toISOString(), after, limit) as Array<DbOperation & { recovery_rowid: number }>;
-      const admissions = operations.map(op => {
-        const audit = this.getOrigin(op.origin_id);
-        if (!audit) return fail('recovery-origin-missing');
-        const children = this.db.prepare('SELECT * FROM telegram_origin_children WHERE operation_id=? ORDER BY rowid').all(op.operation_id) as DbChild[];
-        return { record: audit.record, operationId: op.operation_id, preparedAt: op.prepared_at,
-          deadlineAt: op.deadline_at, maxAttempts: op.max_attempts, payloadBytes: op.payload_bytes,
-          children: children.map(child => {
-            const rows = this.db.prepare('SELECT * FROM telegram_origin_materializations WHERE child_id=? AND generation=0 ORDER BY rowid').all(child.child_id) as DbMaterialization[];
-            if (!rows.length || rows.some(row => row.request_json === null)) return fail('recovery-payload-missing');
-            return { childId: child.child_id, deliveryId: child.delivery_id, destinationJson: child.destination_json,
-              canonicalContentDigest: child.content_digest, materializations: rows.map(row => this.materialization(row)),
-              allowedDerivations: JSON.parse(child.allowed_derivations) };
-          }) };
-      });
+      const admissions = operations.map(op => this.admissionOf(op));
       if (advance && operations.length) this.db.prepare('INSERT INTO telegram_origin_recovery_cursor VALUES (1,?) ON CONFLICT(id) DO UPDATE SET after_rowid=excluded.after_rowid').run(operations.at(-1)!.recovery_rowid);
       return admissions;
+    }).immediate();
+  }
+
+  private admissionOf(op: DbOperation): OriginAdmission {
+    const audit = this.getOrigin(op.origin_id);
+    if (!audit) return fail('recovery-origin-missing');
+    const children = this.db.prepare('SELECT * FROM telegram_origin_children WHERE operation_id=? ORDER BY rowid').all(op.operation_id) as DbChild[];
+    return { record: audit.record, operationId: op.operation_id, preparedAt: op.prepared_at,
+      deadlineAt: op.deadline_at, maxAttempts: op.max_attempts, payloadBytes: op.payload_bytes,
+      children: children.map(child => {
+        const rows = this.db.prepare('SELECT * FROM telegram_origin_materializations WHERE child_id=? AND generation=0 ORDER BY rowid').all(child.child_id) as DbMaterialization[];
+        if (!rows.length || rows.some(row => row.request_json === null)) return fail('recovery-payload-missing');
+        // Reproduce the SEALED shape exactly: `prepareBot` omits `allowedDerivations`
+        // for an ordinary child, and the admission digest covers that absence —
+        // an added empty array makes the holder refuse the replay (`origin-plan-invalid`).
+        const allowedDerivations = JSON.parse(child.allowed_derivations) as NonNullable<import('./StoreTypes.js').StoredChildInput['allowedDerivations']>;
+        return { childId: child.child_id, deliveryId: child.delivery_id, destinationJson: child.destination_json,
+          canonicalContentDigest: child.content_digest, materializations: rows.map(row => this.materialization(row)),
+          ...(allowedDerivations.length ? { allowedDerivations } : {}) };
+      }) };
+  }
+  /** a2a-single-agent-identity §4.2 — the quick retry ladder's candidates: held
+   * forwards whose recorded next ladder step is due. Scheduling state only;
+   * the 15-minute `reserveRecoveryAttempt` schedule is untouched by it. */
+  heldForwardAdmissions(input: { now?: number; limit?: number } = {}): Array<{ admission: OriginAdmission; row: HeldOperationRow }> {
+    const now = input.now ?? Date.now(), limit = input.limit ?? 10; integer(limit, 1, 100);
+    const operations = this.db.prepare(`SELECT o.* FROM telegram_origin_operations o
+      WHERE o.kind='ordinary' AND o.state='held' AND o.hold_reason='lease-not-held' AND o.deadline_at>?
+        AND json_extract(o.hold_detail_json,'$.ladder.nextAt') IS NOT NULL AND json_extract(o.hold_detail_json,'$.ladder.nextAt')<=?
+        AND json_extract(o.hold_detail_json,'$.ownerVerdict') IS NULL AND ${NOT_ADVISORY}
+        AND NOT EXISTS (SELECT 1 FROM telegram_origin_children c WHERE c.operation_id=o.operation_id AND c.state NOT IN ('queued','accepted'))
+      ORDER BY o.prepared_at,o.operation_id LIMIT ?`).all(now, now, limit) as DbOperation[];
+    // native-conversation-base §3a item 8 — each due row is read by id, never
+    // through the 500-row held listing: expired unreported rows (and rows with no
+    // delivery authority left) sit oldest-first there and could hide a due forward.
+    const rows = new Map(this.heldRows({ operationIds: operations.map(op => op.operation_id), limit: Math.max(1, operations.length) }).map(row => [row.operationId, row]));
+    return operations.flatMap(op => { const row = rows.get(op.operation_id); return row ? [{ admission: this.admissionOf(op), row }] : []; });
+  }
+  /** §4.2 — a held forward whose lease holder changed is SUPERSEDED by a new
+   * operation bound to the new owner: a terminal state linked by operation id
+   * (which lifts the unresolved-operation guard). Refused unless the row is
+   * still held/admitted with every child queued and nothing claimed — a row a
+   * holder may have accepted is never superseded blind. */
+  supersedeOperation(input: { operationId: string; supersededBy: string; now?: number }): boolean {
+    id(input.operationId); id(input.supersededBy);
+    if (input.operationId === input.supersededBy) fail('invalid-supersede');
+    return this.db.transaction(() => {
+      const op = this.operation(input.operationId); if (!op || op.kind !== 'ordinary' || !['admitted', 'held'].includes(op.state)) return false;
+      const children = this.db.prepare('SELECT * FROM telegram_origin_children WHERE operation_id=? ORDER BY rowid').all(op.operation_id) as DbChild[];
+      if (children.some(child => child.state !== 'queued')) return false;
+      const active = this.db.prepare("SELECT 1 FROM entries e JOIN telegram_origin_children c ON c.delivery_id=e.delivery_id WHERE c.operation_id=? AND e.state='claimed'").get(op.operation_id);
+      if (active) return false;
+      const detail = { ...(op.hold_detail_json ? JSON.parse(op.hold_detail_json) as Record<string, unknown> : {}), supersededBy: input.supersededBy, supersededAt: input.now ?? Date.now() };
+      this.db.prepare("UPDATE telegram_origin_operations SET state='superseded',hold_detail_json=? WHERE operation_id=?").run(JSON.stringify(detail), op.operation_id);
+      this.db.prepare("UPDATE telegram_origin_children SET state='superseded' WHERE operation_id=? AND state='queued'").run(op.operation_id);
+      this.db.prepare("UPDATE entries SET state='superseded',claimed_by=NULL,lease_until=NULL,next_attempt_at=NULL WHERE origin_child_id IN (SELECT child_id FROM telegram_origin_children WHERE operation_id=?) AND state='queued'").run(op.operation_id);
+      this.event(`${op.operation_id}:superseded`, 'operation:superseded');
+      return true;
+    }).immediate();
+  }
+
+  /** §4.2 — the crash-safe holder change: in ONE transaction, refuse unless the
+   * old row is still plainly held (every child queued, nothing claimed), admit
+   * the NEW sealed admission, record it `held` with its reason + detail, and
+   * mark the old row `superseded` linked to the new id. Either both rows move
+   * or neither does; the reply is never carried by zero or two live rows. */
+  supersedeWithAdmission(input: { operationId: string; admission: OriginAdmission; holdReason?: string | null; holdDetail: Record<string, unknown> | null; now?: number;
+    /** native-conversation-base §3a item 2 — `admitted` for a replacement the execution owner sends itself (direct recovery). */
+    replacementState?: 'held' | 'admitted';
+    /** §3a item 2 — set on the replacement; copied from the old row when omitted. */
+    firstPreparedAt?: number; lateMarkedAt?: number | null }): boolean {
+    id(input.operationId); id(input.admission.operationId);
+    if (input.operationId === input.admission.operationId) fail('invalid-supersede');
+    const replacementState = input.replacementState ?? 'held';
+    if (replacementState !== 'held' && replacementState !== 'admitted') fail('invalid-replacement-state');
+    if (replacementState === 'held' && (typeof input.holdReason !== 'string' || !/^[a-z0-9-]{1,64}$/.test(input.holdReason))) fail('invalid-hold-reason');
+    if (replacementState === 'admitted' && (input.holdReason != null || input.holdDetail !== null)) fail('invalid-hold-detail');
+    if (input.firstPreparedAt !== undefined) integer(input.firstPreparedAt, 0, Number.MAX_SAFE_INTEGER);
+    if (input.lateMarkedAt !== undefined && input.lateMarkedAt !== null) integer(input.lateMarkedAt, 0, Number.MAX_SAFE_INTEGER);
+    const holdDetailJson = input.holdDetail === null ? null : JSON.stringify(input.holdDetail);
+    if (holdDetailJson !== null) json(holdDetailJson, 64 * 1024);
+    const now = input.now ?? Date.now();
+    return this.db.transaction(() => {
+      const op = this.operation(input.operationId); if (!op || op.kind !== 'ordinary' || !['admitted', 'held'].includes(op.state)) return false;
+      const children = this.db.prepare('SELECT * FROM telegram_origin_children WHERE operation_id=? ORDER BY rowid').all(op.operation_id) as DbChild[];
+      if (children.some(child => child.state !== 'queued')) return false;
+      const active = this.db.prepare("SELECT 1 FROM entries e JOIN telegram_origin_children c ON c.delivery_id=e.delivery_id WHERE c.operation_id=? AND e.state='claimed'").get(op.operation_id);
+      if (active) return false;
+      this.admitInternal(input.admission, false);
+      if ((replacementState === 'held' && input.holdReason === 'lease-not-held') || op.hold_reason === 'lease-not-held' || this.wasLeaseHeld(op.operation_id)) this.markLeaseHeld(input.admission.operationId);
+      if (replacementState === 'held') {
+        this.db.prepare("UPDATE telegram_origin_operations SET state='held',hold_reason=?,hold_detail_json=? WHERE operation_id=?").run(input.holdReason, holdDetailJson, input.admission.operationId);
+        this.event(`${input.admission.operationId}:held`, 'operation:held');
+      }
+      // §3a item 2 — the late mark's carrier travels to every successor.
+      this.db.prepare('UPDATE telegram_origin_operations SET first_prepared_at=?,late_marked_at=? WHERE operation_id=?')
+        .run(input.firstPreparedAt ?? op.first_prepared_at ?? op.prepared_at,
+          input.lateMarkedAt !== undefined ? input.lateMarkedAt : op.late_marked_at ?? null, input.admission.operationId);
+      const detail = { ...(op.hold_detail_json ? JSON.parse(op.hold_detail_json) as Record<string, unknown> : {}), supersededBy: input.admission.operationId, supersededAt: now };
+      this.db.prepare("UPDATE telegram_origin_operations SET state='superseded',hold_detail_json=? WHERE operation_id=?").run(JSON.stringify(detail), op.operation_id);
+      this.db.prepare("UPDATE telegram_origin_children SET state='superseded' WHERE operation_id=? AND state='queued'").run(op.operation_id);
+      this.db.prepare("UPDATE entries SET state='superseded',claimed_by=NULL,lease_until=NULL,next_attempt_at=NULL WHERE origin_child_id IN (SELECT child_id FROM telegram_origin_children WHERE operation_id=?) AND state='queued'").run(op.operation_id);
+      this.event(`${op.operation_id}:superseded`, 'operation:superseded');
+      return true;
     }).immediate();
   }
 
@@ -502,8 +872,9 @@ export class OriginStoreBackend {
   /** Only the still-claimed phase may return its unused attempt budget. The
    * caller invalidates its private wire closure first; dispatched crash state
    * can never use this path. Retain the canceled attempt as audit evidence. */
-  releaseUndispatchedClaim(input: ClaimFence & { now?: number }): boolean {
+  releaseUndispatchedClaim(input: ClaimFence & { now?: number; detail?: 'content-reservation-held' }): boolean {
     const now = input.now ?? Date.now();
+    const detail = input.detail === 'content-reservation-held' ? input.detail : 'capacity-held-before-dispatch';
     return this.db.transaction(() => {
       const child = this.child(input.childId); if (!child) return false;
       const entry = this.entry(child.delivery_id)!;
@@ -511,10 +882,10 @@ export class OriginStoreBackend {
       if (!attempt || attempt.phase !== 'claimed' || attempt.outcome !== null || entry.entry_kind !== 'telegram-origin' ||
         entry.state !== 'claimed' || entry.claimed_by !== input.claimToken || entry.owner_boot_id !== attempt.owner_boot_id || (entry.lease_until ?? 0) <= now) return false;
       this.db.prepare("UPDATE telegram_origin_attempts SET outcome='known-failed',resolved_at=? WHERE attempt_id=? AND outcome IS NULL").run(now, attempt.attempt_id);
-      this.db.prepare('INSERT INTO telegram_origin_outcome_details VALUES (?,?,?)').run(attempt.attempt_id, 'capacity-held-before-dispatch', now);
+      this.db.prepare('INSERT INTO telegram_origin_outcome_details VALUES (?,?,?)').run(attempt.attempt_id, detail, now);
       this.db.prepare("UPDATE telegram_origin_children SET state='queued' WHERE child_id=?").run(child.child_id);
       this.db.prepare("UPDATE entries SET state='queued',claimed_by=NULL,owner_boot_id=NULL,lease_until=NULL,attempts=MAX(0,attempts-1),next_attempt_at=NULL WHERE delivery_id=? AND claimed_by=?").run(child.delivery_id, input.claimToken);
-      this.event(attempt.attempt_id, 'attempt:capacity-held-before-dispatch');
+      this.event(attempt.attempt_id, `attempt:${detail}`);
       this.refreshOperation(child.operation_id); return true;
     }).immediate();
   }
@@ -552,7 +923,7 @@ export class OriginStoreBackend {
     if (input.receiptJson !== undefined) json(input.receiptJson, 64 * 1024);
     if ((input.outcome === 'accepted' || input.outcome === 'scheduled') && !input.receiptJson) return { recorded: false, reason: 'receipt-required' };
     if (input.nextAttemptAt !== undefined && input.outcome !== 'known-failed') return { recorded: false, reason: 'invalid-transition' };
-    if (input.localRefusal && (input.outcome !== 'known-failed' || input.reason !== 'credential-capacity-unavailable' || input.receiptJson !== undefined)) return { recorded: false, reason: 'invalid-transition' };
+    if (input.localRefusal && (input.outcome !== 'known-failed' || !ORIGIN_LOCAL_REFUSAL_REASONS.includes(input.reason ?? '') || input.receiptJson !== undefined)) return { recorded: false, reason: 'invalid-transition' };
     const now = input.now ?? Date.now();
     return this.db.transaction((): OutcomeWriteResult => {
       const child = this.child(input.childId); if (!child) return { recorded: false, reason: 'stale-fence' };
@@ -576,6 +947,13 @@ export class OriginStoreBackend {
       if (input.localRefusal) {
         this.db.prepare('UPDATE entries SET attempts=MAX(0,attempts-1) WHERE delivery_id=?').run(child.delivery_id);
         this.event(attempt.attempt_id, 'attempt:local-refusal-not-charged');
+        // lease-freshness-lapse-retry — a replay refused at the boundary for the lease never reached the network, so
+        // the review-schedule row written before it (30 s rung) must not hold the reply either: it moves to the same
+        // next attempt, keeping its attempt count. Only an earlier-dated row is moved; a later one is left alone.
+        if (retry && ORIGIN_LEASE_REFUSAL_REASONS.includes(input.reason ?? '')) {
+          this.db.prepare('UPDATE telegram_origin_recovery_schedule SET next_attempt_at=? WHERE operation_id=? AND next_attempt_at>?')
+            .run(input.nextAttemptAt!, child.operation_id, input.nextAttemptAt!);
+        }
       }
       if (!retry) this.event(`${child.child_id}:${input.outcome}`, `child:${input.outcome}`);
       this.refreshOperation(op.operation_id);
@@ -627,18 +1005,62 @@ export class OriginStoreBackend {
     }).immediate();
   }
 
-  recordOperationState(input: { operationId: string; state: 'held' | 'suppressed' | 'expired' | 'admitted'; now?: number }): boolean {
+  recordOperationState(input: { operationId: string; state: 'held' | 'suppressed' | 'expired' | 'admitted'; now?: number;
+    holdReason?: string; holdDetail?: Record<string, unknown> | null;
+    /** native-conversation-forwarded-advisory item 2 — the verdict, written in the same transition.
+     * The first recorded verdict wins: a row that already has one refuses this write. */
+    policyVerdict?: Record<string, unknown> }): boolean {
+    // native-conversation-base §3a item 9 — a suppression always carries a reason
+    // from the closed set, and a null one is refused: an ending with no stated
+    // reason is never written. Free text in its detail is cut, never refused.
+    const suppressed = input.state === 'suppressed';
+    if (suppressed && !suppressionReason(input.holdReason)) fail('suppression-reason-required');
+    if (suppressed && input.holdReason === 'quiet-notification-recorded' &&
+      !(typeof input.holdDetail?.quietId === 'string' && input.holdDetail.quietId.length > 0 && input.holdDetail.quietId.length <= 256)) fail('invalid-hold-detail');
+    if (input.holdReason !== undefined && !suppressed) {
+      if (input.state !== 'held' || typeof input.holdReason !== 'string' || !/^[a-z0-9-]{1,64}$/.test(input.holdReason)) fail('invalid-hold-reason');
+    }
+    const detail = suppressed && input.holdDetail ? suppressionDetail(input.holdDetail) : input.holdDetail;
+    const holdDetailJson = detail === undefined || detail === null ? null : JSON.stringify(detail);
+    if (holdDetailJson !== null) { if (input.state !== 'held' && !suppressed) fail('invalid-hold-detail'); json(holdDetailJson, 64 * 1024); }
+    const verdictJson = input.policyVerdict === undefined ? null : policyVerdictJson(input.policyVerdict);
+    if (verdictJson !== null && input.state !== 'held' && !suppressed) fail('invalid-policy-verdict');
     return this.db.transaction(() => {
       const op = this.operation(input.operationId); if (!op) return false;
       if (input.state === 'expired') return this.expireOperation(input.operationId, input.now ?? Date.now());
       if (['accepted', 'expired', 'outcome-unknown', 'partial'].includes(op.state)) return false;
       if (input.state === 'admitted' && op.state !== 'held') return false;
+      // held-and-startup-parked-send-release §3 — no resurrection: a retired (suppressed) or
+      // superseded row is never held again, so a recovery pass that read it before the
+      // retirement cannot re-hold it with a send marker and then send it.
+      if (input.state === 'held' && (op.state === 'suppressed' || op.state === 'superseded')) return false;
+      // 3g item 2 — a reply handed back with an advisory is sent only by its author's replacement.
+      if (input.state === 'admitted' && verdictClass(op.policy_verdict_json) === 'advisory') return false;
       const active = this.db.prepare("SELECT 1 FROM entries e JOIN telegram_origin_children c ON c.delivery_id=e.delivery_id WHERE c.operation_id=? AND e.state='claimed'").get(input.operationId);
       if (active) return false;
-      this.db.prepare('UPDATE telegram_origin_operations SET state=? WHERE operation_id=?').run(input.state, input.operationId);
+      if (verdictJson !== null) {
+        // The verdict-and-end write is conditional: no claim (above), no unresolved dispatch, no
+        // accepted part, and no earlier verdict. A writer that loses answers custody, never "not sent".
+        if (op.policy_verdict_json || !['admitted', 'held'].includes(op.state)) return false;
+        const touched = this.db.prepare(`SELECT 1 FROM telegram_origin_children c WHERE c.operation_id=? AND (c.state!='queued'
+          OR EXISTS (SELECT 1 FROM telegram_origin_attempts a WHERE a.child_id=c.child_id AND a.phase='dispatched' AND (a.outcome IS NULL OR a.outcome IN ('outcome-unknown','accepted'))))`).get(input.operationId);
+        if (touched) return false;
+        this.db.prepare('UPDATE telegram_origin_operations SET policy_verdict_json=? WHERE operation_id=?').run(verdictJson, input.operationId);
+      }
+      if (input.state === 'held' && (input.holdReason ?? op.hold_reason) === 'lease-not-held') this.markLeaseHeld(input.operationId);
+      if (input.state === 'held') {
+        // A re-hold without a named reason keeps the reason already recorded.
+        this.db.prepare('UPDATE telegram_origin_operations SET state=?,hold_reason=coalesce(?,hold_reason),hold_detail_json=CASE WHEN ? IS NULL THEN hold_detail_json ELSE ? END WHERE operation_id=?')
+          .run(input.state, input.holdReason ?? null, holdDetailJson, holdDetailJson, input.operationId);
+      } else if (suppressed) {
+        this.db.prepare('UPDATE telegram_origin_operations SET state=?,hold_reason=?,hold_detail_json=? WHERE operation_id=?').run(input.state, input.holdReason, holdDetailJson, input.operationId);
+      } else if (input.state === 'admitted') {
+        this.db.prepare('UPDATE telegram_origin_operations SET state=?,hold_reason=NULL,hold_detail_json=NULL WHERE operation_id=?').run(input.state, input.operationId);
+      } else this.db.prepare('UPDATE telegram_origin_operations SET state=? WHERE operation_id=?').run(input.state, input.operationId);
       if (input.state === 'suppressed') {
         this.db.prepare("UPDATE telegram_origin_children SET state='suppressed' WHERE operation_id=? AND state='queued'").run(input.operationId);
-        this.db.prepare("UPDATE entries SET state='delivered-tone-gated' WHERE origin_child_id IN (SELECT child_id FROM telegram_origin_children WHERE operation_id=?) AND state='queued'").run(input.operationId);
+        // Nothing reached Telegram: the notice was recorded in the quiet feed.
+        this.db.prepare("UPDATE entries SET state='quiet-recorded' WHERE origin_child_id IN (SELECT child_id FROM telegram_origin_children WHERE operation_id=?) AND state='queued'").run(input.operationId);
       }
       this.event(`${input.operationId}:${input.state}`, `operation:${input.state}`);
       return true;
@@ -646,12 +1068,375 @@ export class OriginStoreBackend {
   }
 
   private expireOperation(operationId: string, now: number): boolean {
-    const op = this.operation(operationId); if (!op || op.deadline_at > now || ['accepted', 'suppressed', 'expired'].includes(op.state)) return false;
+    // native-conversation-forwarded-advisory item 5 — a superseded row is ended (its successor carries the reply):
+    // an expiry that loses the race with an answer never turns it back into "not delivered".
+    const op = this.operation(operationId); if (!op || op.deadline_at > now || ['accepted', 'suppressed', 'expired', 'superseded'].includes(op.state)) return false;
     this.db.prepare("UPDATE telegram_origin_operations SET state='expired' WHERE operation_id=?").run(operationId);
     this.db.prepare("UPDATE telegram_origin_children SET state='expired-unresolved' WHERE operation_id=? AND state NOT IN ('accepted','suppressed','known-failed')").run(operationId);
     this.db.prepare("UPDATE entries SET state='dead-letter',claimed_by=NULL,lease_until=NULL WHERE origin_child_id IN (SELECT child_id FROM telegram_origin_children WHERE operation_id=?) AND state IN ('queued','claimed')").run(operationId);
     this.event(`${operationId}:expired`, 'operation:expired');
     return true;
+  }
+
+  /** Session replies that are held, terminally failed, or uncertain.
+   * The recovery tick re-reads this durable evidence after a restart so an
+   * interrupted callback cannot make a missing reply silent. */
+  listSessionDeliveryExceptions(input: { afterPreparedAt?: number; afterOperationId?: string; limit?: number } = {}): Array<{
+    operationId: string; state: string; reason: string; uncertain: boolean; preparedAt: number;
+    acceptedAt: number | null; outOfOrder: boolean; chatId: string | null; threadId: number | null;
+    /** native-conversation-base §3a item 8 — the author binding (session lines go only to this machine's own replies). */
+    originMachineId: string | null; sessionId: string | null; harnessId: string | null;
+    /** §3a item 2 — the original draft time (the replaced reply's first `preparedAt`). */
+    firstPreparedAt: number;
+    /** §3a item 8 — the definite cause for a `known-failed` / `expired` row. */
+    failure: 'refused' | 'never-left' | 'deadline' | null;
+    /** §3a item 7 — a forwarded row the owner ended with no reason, settled (unresolved, not ended). */
+    ownerUnstated: boolean;
+    /** 3g items 4 and 6 — the outbound check's verdict on this row, when it has one. */
+    policyVerdict?: Record<string, unknown> | null; deadlineAt?: number;
+  }> {
+    const limit = input.limit ?? 100; integer(limit, 1, 500);
+    const after = input.afterPreparedAt ?? -1;
+    if (after !== -1) integer(after, 0, Number.MAX_SAFE_INTEGER);
+    const afterId = input.afterOperationId ?? '';
+    // A cursor, rather than a 24-hour window or newest-N snapshot, gives
+    // every unresolved operation a turn even after long outages or bursts.
+    // Read in index order: no sort of the whole candidate set, and the costly
+    // out-of-order lookup below runs only for rows on the returned page.
+    const rows = this.db.prepare(`SELECT o.operation_id operationId,o.state,o.hold_reason holdReason,
+        o.prepared_at preparedAt,d.chat_id chatId,d.topic_id topicId,o.first_prepared_at firstPreparedAt,
+        json_extract(json_extract(t.record_json,'$.envelopeJson'),'$.originMachineId') originMachineId,
+        json_extract(json_extract(t.record_json,'$.envelopeJson'),'$.sessionId') sessionId,
+        json_extract(json_extract(t.record_json,'$.envelopeJson'),'$.harnessId') harnessId,
+        (o.state='held' AND o.hold_reason='lease-not-held' AND json_extract(o.hold_detail_json,'$.ownerUnstated.settled')=1) ownerUnstated,
+        o.policy_verdict_json policyVerdictJson,o.deadline_at deadlineAt,
+        EXISTS(SELECT 1 FROM telegram_origin_attempts a JOIN telegram_origin_children c ON c.child_id=a.child_id
+          JOIN telegram_origin_outcome_details od ON od.attempt_id=a.attempt_id
+          WHERE c.operation_id=o.operation_id AND a.outcome='known-failed' AND od.reason GLOB 'telegram-4[0-9][0-9]' AND od.reason!='telegram-429') refused,
+        EXISTS(SELECT 1 FROM telegram_origin_attempts a JOIN telegram_origin_children c ON c.child_id=a.child_id
+          WHERE c.operation_id=o.operation_id AND a.outcome='outcome-unknown') uncertain,
+        (SELECT max(a.resolved_at) FROM telegram_origin_attempts a JOIN telegram_origin_children c ON c.child_id=a.child_id
+          WHERE c.operation_id=o.operation_id AND a.outcome='accepted') acceptedAt
+      FROM telegram_origin_operations o INDEXED BY telegram_origin_operation_prepared
+      JOIN telegram_origins t ON t.origin_id=o.origin_id
+      JOIN telegram_origin_destinations d ON d.origin_id=o.origin_id
+      WHERE o.kind='ordinary' AND (o.prepared_at>? OR (o.prepared_at=? AND o.operation_id>?))
+        AND (o.state IN ('held','known-failed','outcome-unknown','expired')
+          OR (o.state='admitted' AND o.prepared_at<=?
+            AND EXISTS(SELECT 1 FROM telegram_origin_children c JOIN entries e ON e.delivery_id=c.delivery_id
+              WHERE c.operation_id=o.operation_id AND e.state='queued'))
+          OR (o.state='accepted' AND o.prepared_at>=1793811600000)
+          OR (o.state='suppressed' AND o.hold_reason='policy-refused'))
+        AND (o.hold_reason IS NULL OR o.hold_reason!='lease-not-held'
+          OR (o.state='held' AND json_extract(o.hold_detail_json,'$.ownerUnstated.settled')=1))
+        AND json_extract(json_extract(t.record_json,'$.envelopeJson'),'$.producerKind')='session'
+        AND json_extract(json_extract(t.record_json,'$.envelopeJson'),'$.operationKind')='sendMessage'
+      ORDER BY o.prepared_at,o.operation_id LIMIT ?`).all(after, after, afterId, Date.now() - 60_000, limit) as Array<{
+        operationId: string; state: string; holdReason: string | null; preparedAt: number;
+        chatId: string | null; topicId: string | null; uncertain: number; acceptedAt: number | null;
+        firstPreparedAt: number | null; originMachineId: string | null; sessionId: string | null; harnessId: string | null;
+        ownerUnstated: number; refused: number; policyVerdictJson: string | null; deadlineAt: number;
+      }>;
+    const outOfOrder = this.db.prepare(SESSION_REPLY_OUT_OF_ORDER_SQL);
+    return rows.map(row => ({ operationId: row.operationId, state: row.state,
+      reason: row.holdReason ?? row.state, uncertain: row.uncertain !== 0,
+      preparedAt: row.preparedAt, acceptedAt: row.acceptedAt,
+      outOfOrder: row.state === 'accepted' && outOfOrder.get(row.preparedAt,
+        (row.acceptedAt ?? Date.now()) + OUT_OF_ORDER_CLOCK_SKEW_MS, row.operationId) !== undefined,
+      chatId: row.chatId, threadId: row.topicId === null ? null : Number(row.topicId),
+      originMachineId: row.originMachineId ?? null, sessionId: row.sessionId ?? null, harnessId: row.harnessId ?? null,
+      firstPreparedAt: row.firstPreparedAt ?? row.preparedAt,
+      failure: row.state === 'expired' ? 'deadline' as const : row.state === 'known-failed' ? (row.refused ? 'refused' as const : 'never-left' as const)
+        : row.state === 'suppressed' && row.holdReason === 'policy-refused' ? 'refused' as const : null,
+      ownerUnstated: row.ownerUnstated === 1,
+      policyVerdict: row.policyVerdictJson ? JSON.parse(row.policyVerdictJson) as Record<string, unknown> : null, deadlineAt: row.deadlineAt }));
+  }
+
+  /** a2a-single-agent-identity §4.2 — the durable held listing. Rows still
+   * `held` carry their reason; rows that EXPIRED while held with a reason are
+   * listed until their expiry has been reported once. Read-only. */
+  listHeldOperations(input: { limit?: number; holdReason?: string; now?: number;
+    /** 3g item 3 — `exclude`: leave out rows handed back with an advisory (the forward lookup);
+     * `only`: just those rows, held or expired-unreported (their own scan). Default: all. */
+    advisory?: 'include' | 'exclude' | 'only' } = {}): HeldOperationRow[] {
+    const limit = input.limit ?? 100; integer(limit, 1, 500);
+    if (input.holdReason !== undefined) id(input.holdReason);
+    const advisory = input.advisory ?? 'include';
+    if (!['include', 'exclude', 'only'].includes(advisory)) fail('invalid-advisory-filter');
+    return this.heldRows({ holdReason: input.holdReason, limit, advisory });
+  }
+  /** The held listing's row query; `operationIds` reads exactly those rows (the due ladder's lookup). */
+  private heldRows(input: { holdReason?: string; limit: number; operationIds?: string[]; advisory?: 'include' | 'exclude' | 'only' }): HeldOperationRow[] {
+    const limit = input.limit;
+    const ids = input.operationIds === undefined ? null : JSON.stringify(input.operationIds);
+    const advisory = input.advisory ?? 'include';
+    const rows = this.db.prepare(`SELECT o.*,d.chat_id,d.topic_id,d.account_id,
+        json_extract(json_extract(t.record_json,'$.envelopeJson'),'$.executionOwnerMachineId') execution_owner,
+        json_extract(json_extract(t.record_json,'$.envelopeJson'),'$.producerKind') producer_kind,
+        json_extract(json_extract(t.record_json,'$.envelopeJson'),'$.originMachineId') origin_machine,
+        json_extract(json_extract(t.record_json,'$.envelopeJson'),'$.sessionId') session_id,
+        json_extract(json_extract(t.record_json,'$.envelopeJson'),'$.harnessId') harness_id,
+        r.attempts recovery_attempts,r.next_attempt_at recovery_next
+      FROM telegram_origin_operations o
+      LEFT JOIN telegram_origin_destinations d ON d.origin_id=o.origin_id
+      LEFT JOIN telegram_origins t ON t.origin_id=o.origin_id
+      LEFT JOIN telegram_origin_recovery_schedule r ON r.operation_id=o.operation_id
+      WHERE o.kind='ordinary' AND (@reason IS NULL OR o.hold_reason=@reason)
+        AND (@ids IS NULL OR o.operation_id IN (SELECT value FROM json_each(@ids)))
+        AND ((o.state='held' AND o.hold_reason IS NOT NULL) OR (o.state='expired' AND o.hold_reason IS NOT NULL AND o.hold_expiry_reported_at IS NULL))
+        AND (@advisory='include' OR (@advisory='exclude' AND ${NOT_ADVISORY}) OR (@advisory='only' AND NOT ${NOT_ADVISORY}))
+      ORDER BY o.prepared_at,o.operation_id LIMIT @limit`).all({ reason: input.holdReason ?? null, ids, limit, advisory }) as Array<DbOperation & {
+        chat_id: string | null; topic_id: string | null; account_id: string | null; execution_owner: string | null; producer_kind: string | null; recovery_attempts: number | null; recovery_next: number | null;
+        origin_machine: string | null; session_id: string | null; harness_id: string | null }>;
+    return rows.map(row => ({ operationId: row.operation_id, originId: row.origin_id, state: row.state as 'held' | 'expired',
+      holdReason: row.hold_reason ?? null, holdDetail: row.hold_detail_json ? JSON.parse(row.hold_detail_json) as Record<string, unknown> : null,
+      preparedAt: row.prepared_at, deadlineAt: row.deadline_at, executionOwnerMachineId: row.execution_owner ?? null,
+      destination: { accountId: row.account_id ?? null, chatId: row.chat_id ?? null, topicId: row.topic_id ?? null },
+      recovery: row.recovery_attempts === null ? null : { attempts: row.recovery_attempts, nextAttemptAt: row.recovery_next! },
+      expiryReportedAt: row.hold_expiry_reported_at ?? null, producerKind: row.producer_kind ?? null,
+      firstPreparedAt: row.first_prepared_at ?? null, lateMarkedAt: row.late_marked_at ?? null,
+      originMachineId: row.origin_machine ?? null, sessionId: row.session_id ?? null, harnessId: row.harness_id ?? null,
+      ...(row.policy_verdict_json ? { policyVerdict: JSON.parse(row.policy_verdict_json) as Record<string, unknown> } : {}) }));
+  }
+  /** attention-lifecycle-close-on-cause §3.3 — how many of this topic's ordinary
+   * operations are still HELD for `lease-not-held`. The clear signal for the
+   * `telegram-origin-held:<topic>` attention condition: independent of retry
+   * due-time and of the held-listing page limit (both exist for other readers
+   * and must not be the signal). Read-only. */
+  unresolvedHeldOperationCount(topicId: string): number {
+    const row = this.db.prepare(`SELECT COUNT(*) n FROM telegram_origin_operations o
+      JOIN telegram_origin_destinations d ON d.origin_id=o.origin_id
+      WHERE o.kind='ordinary' AND o.state='held' AND o.hold_reason='lease-not-held' AND CAST(d.topic_id AS TEXT)=?
+        AND json_extract(o.hold_detail_json,'$.ownerVerdict') IS NULL AND ${NOT_ADVISORY}`).get(String(topicId)) as { n: number };
+    return Number(row?.n ?? 0);
+  }
+  /** held-and-startup-parked-send-release §3 — retire one held or startup-parked reply so it
+   * is never sent: `suppressed` with the reason, its text kept, its queue entries dead-lettered,
+   * and one audit row. Refused (nothing changes) unless the row is plainly in custody: held (or
+   * admitted after a lease hold / a startup import), every child still queued, nothing claimed,
+   * no dispatch left unresolved, and not a forward whose last attempt may have arrived (for either
+   * reason: the holder may still deliver its own copy). */
+  retireHeldOperation(input: { operationId: string; reason: RetirementReason; actor: string;
+    note?: string | null; supersededBy?: string | null; cause?: 'parked-at-startup' | 'queued-unsent' | 'held-lease' | null; now?: number }): RetireResult {
+    id(input.operationId); id(input.actor);
+    if (input.reason !== 'stale-hold-handed-back' && input.reason !== 'retired-by-operator') fail('invalid-retire-reason');
+    if (input.note != null && (typeof input.note !== 'string' || input.note.length > 500)) fail('invalid-retire-note');
+    if (input.supersededBy != null) id(input.supersededBy);
+    const now = input.now ?? Date.now();
+    return this.db.transaction((): RetireResult => {
+      const op = this.operation(input.operationId);
+      if (!op || op.kind !== 'ordinary') return { retired: false, refusal: 'unknown-operation' };
+      if (this.db.prepare('SELECT 1 FROM telegram_origin_retirements WHERE operation_id=?').get(op.operation_id)) return { retired: false, refusal: 'already-retired' };
+      const { producerKind, topicId } = this.recordFacts(op.origin_id);
+      const leaseMarked = !!this.db.prepare('SELECT 1 FROM telegram_origin_metric_events WHERE event_id=? AND metric=?').get(`${op.operation_id}:was-lease-held`, 'was-lease-held');
+      const custody = op.state === 'held' || (op.state === 'admitted' && (producerKind === 'imported-legacy' || leaseMarked));
+      if (!custody || op.policy_verdict_json) return { retired: false, refusal: 'not-held' };
+      const children = this.db.prepare('SELECT * FROM telegram_origin_children WHERE operation_id=?').all(op.operation_id) as DbChild[];
+      if (!children.length || children.some(child => child.state !== 'queued')) return { retired: false, refusal: 'in-flight' };
+      if (this.db.prepare("SELECT 1 FROM entries e JOIN telegram_origin_children c ON c.delivery_id=e.delivery_id WHERE c.operation_id=? AND e.state='claimed'").get(op.operation_id)) return { retired: false, refusal: 'in-flight' };
+      if (this.db.prepare(`SELECT 1 FROM telegram_origin_attempts a JOIN telegram_origin_children c ON c.child_id=a.child_id WHERE c.operation_id=?
+        AND a.phase='dispatched' AND (a.outcome IS NULL OR a.outcome IN ('outcome-unknown','accepted'))`).get(op.operation_id)) return { retired: false, refusal: 'in-flight' };
+      const detail = op.hold_detail_json ? JSON.parse(op.hold_detail_json) as Record<string, unknown> : {};
+      const priorLastAttempt = typeof detail.lastAttempt === 'string' ? detail.lastAttempt : null;
+      const uncertain = priorLastAttempt === 'outcome-unknown' || priorLastAttempt === 'local-sent' || (!!detail.ownerUnstated && typeof detail.ownerUnstated === 'object');
+      // A forward the holder may still deliver (or may have delivered) is never retired here: retiring
+      // this copy could not stop the holder's, and would hide a later delivery.
+      if (uncertain) return { retired: false, refusal: 'uncertain' };
+      const ageMs = Math.max(0, now - firstAuthored(op, detail, now));
+      // An imported row's cause is what its queue entry proves (beacon 503 → parked at startup).
+      let cause = input.cause ?? null;
+      if (producerKind === 'imported-legacy' && cause !== null && cause !== 'held-lease') {
+        const entry = this.db.prepare('SELECT http_code,error_body FROM entries WHERE delivery_id=?').get(children[0].delivery_id) as { http_code: number | null; error_body: string | null } | undefined;
+        cause = entry && entry.http_code === 503 && isBootBeaconBody(entry.error_body) ? 'parked-at-startup' : 'queued-unsent';
+      }
+      const next = { ...detail, retiredAt: now, retiredBy: input.actor, priorState: op.state, priorHoldReason: op.hold_reason ?? null,
+        priorLastAttempt, ...(cause ? { retireCause: cause } : {}), ...(input.note ? { retireNote: input.note } : {}),
+        ...(input.supersededBy ? { supersededBy: input.supersededBy } : {}) };
+      const nextJson = JSON.stringify(suppressionDetail(next)); json(nextJson, 64 * 1024);
+      this.db.prepare("UPDATE telegram_origin_operations SET state='suppressed',hold_reason=?,hold_detail_json=? WHERE operation_id=?").run(input.reason, nextJson, op.operation_id);
+      this.db.prepare("UPDATE telegram_origin_children SET state='suppressed' WHERE operation_id=? AND state='queued'").run(op.operation_id);
+      this.db.prepare("UPDATE entries SET state='dead-letter',claimed_by=NULL,next_attempt_at=NULL,error_body=? WHERE origin_child_id IN (SELECT child_id FROM telegram_origin_children WHERE operation_id=?) AND state='queued'")
+        .run(`retired: ${input.reason}`, op.operation_id);
+      this.insertRetirement({ operationId: op.operation_id, now, reason: input.reason, actor: input.actor, note: input.note ?? null, supersededBy: input.supersededBy ?? null,
+        priorState: op.state, priorHoldReason: op.hold_reason ?? null, priorLastAttempt, cause, ageMs, topicId });
+      return { retired: true, priorLastAttempt, uncertain, ageMs, topicId, producerKind };
+    }).immediate();
+  }
+  /** §4 — the machine that sends to Telegram retired a reply this machine forwarded (its receipt
+   * answered `owner-ended` with a retirement reason, recorded `suppressed-at-holder`). One audit row
+   * here too, so the author on THIS machine is told through the same report pass. Idempotent. */
+  recordHolderRetirement(input: { operationId: string; reason: RetirementReason; holderMachineId: string; detail?: Record<string, unknown> | null; now?: number }): boolean {
+    id(input.operationId); id(input.holderMachineId);
+    if (input.reason !== 'stale-hold-handed-back' && input.reason !== 'retired-by-operator') fail('invalid-retire-reason');
+    const now = input.now ?? Date.now();
+    return this.db.transaction(() => {
+      const op = this.operation(input.operationId);
+      if (!op || op.kind !== 'ordinary') return false;
+      if (this.db.prepare('SELECT 1 FROM telegram_origin_retirements WHERE operation_id=?').get(op.operation_id)) return false;
+      const detail = op.hold_detail_json ? JSON.parse(op.hold_detail_json) as Record<string, unknown> : {};
+      // One transaction with the `suppressed-at-holder` ending, so a crash can never leave the
+      // ending without the row that tells the author.
+      if (op.state === 'held' || op.state === 'admitted') {
+        if (this.db.prepare("SELECT 1 FROM entries e JOIN telegram_origin_children c ON c.delivery_id=e.delivery_id WHERE c.operation_id=? AND e.state='claimed'").get(op.operation_id)) return false;
+        // The holder retires only a copy it never dispatched, so its answer proves this reply was not
+        // delivered there: the author's earlier "unknown" attempt is settled by it.
+        const ending = suppressionDetail({ ...detail, ...(input.detail ?? {}), holderReason: input.reason, holderMachineId: input.holderMachineId,
+          priorLastAttempt: 'holder-confirmed-unsent' });
+        const endingJson = JSON.stringify(ending); json(endingJson, 64 * 1024);
+        this.db.prepare("UPDATE telegram_origin_operations SET state='suppressed',hold_reason='suppressed-at-holder',hold_detail_json=? WHERE operation_id=?").run(endingJson, op.operation_id);
+        this.db.prepare("UPDATE telegram_origin_children SET state='suppressed' WHERE operation_id=? AND state='queued'").run(op.operation_id);
+        this.db.prepare("UPDATE entries SET state='dead-letter',claimed_by=NULL,next_attempt_at=NULL,error_body=? WHERE origin_child_id IN (SELECT child_id FROM telegram_origin_children WHERE operation_id=?) AND state='queued'")
+          .run(`retired at holder: ${input.reason}`, op.operation_id);
+        this.event(`${op.operation_id}:suppressed`, 'operation:suppressed');
+      } else if (!(op.state === 'suppressed' && op.hold_reason === 'suppressed-at-holder')) return false;
+      const { topicId } = this.recordFacts(op.origin_id);
+      this.insertRetirement({ operationId: op.operation_id, now, reason: input.reason, actor: `holder:${input.holderMachineId}`, note: null, supersededBy: null,
+        priorState: op.state, priorHoldReason: op.hold_reason ?? null, priorLastAttempt: 'holder-confirmed-unsent',
+        cause: input.reason === 'stale-hold-handed-back' ? 'held-lease' : null, ageMs: Math.max(0, now - firstAuthored(op, detail, now)), topicId });
+      return true;
+    }).immediate();
+  }
+  /** §2 — re-admit a direct lease hold for replay, keeping the durable lease-hold marker. */
+  readmitLeaseHold(input: { operationId: string }): boolean {
+    id(input.operationId);
+    return this.db.transaction(() => {
+      const op = this.operation(input.operationId);
+      if (!op || op.kind !== 'ordinary' || op.state !== 'held' || op.hold_reason !== 'lease-not-held' || verdictClass(op.policy_verdict_json) === 'advisory') return false;
+      if (this.db.prepare("SELECT 1 FROM entries e JOIN telegram_origin_children c ON c.delivery_id=e.delivery_id WHERE c.operation_id=? AND e.state='claimed'").get(op.operation_id)) return false;
+      this.markLeaseHeld(op.operation_id);
+      this.db.prepare("UPDATE telegram_origin_operations SET state='admitted',hold_reason=NULL,hold_detail_json=NULL WHERE operation_id=?").run(op.operation_id);
+      this.event(`${op.operation_id}:admitted`, 'operation:admitted');
+      return true;
+    }).immediate();
+  }
+  /** §2 — the durable "this reply was held for lease-not-held" marker (survives re-admission). */
+  markLeaseHeld(operationId: string): void {
+    id(operationId);
+    this.event(`${operationId}:was-lease-held`, 'was-lease-held');
+  }
+  wasLeaseHeld(operationId: string): boolean {
+    id(operationId);
+    return !!this.db.prepare('SELECT 1 FROM telegram_origin_metric_events WHERE event_id=? AND metric=?').get(`${operationId}:was-lease-held`, 'was-lease-held');
+  }
+  private recordFacts(originId: string): { producerKind: string | null; topicId: string | null } {
+    const row = this.db.prepare('SELECT record_json FROM telegram_origins WHERE origin_id=?').get(originId) as { record_json: string | null } | undefined;
+    try {
+      const record = JSON.parse(row?.record_json ?? 'null') as { envelopeJson?: string } | null;
+      const env = JSON.parse(record?.envelopeJson ?? 'null') as { producerKind?: string; destination?: { topicId?: string | number | null } } | null;
+      const topic = env?.destination?.topicId;
+      return { producerKind: env?.producerKind ?? null, topicId: topic === undefined || topic === null ? null : String(topic) };
+    } catch { return { producerKind: null, topicId: null }; }
+  }
+  private insertRetirement(r: { operationId: string; now: number; reason: RetirementReason; actor: string; note: string | null; supersededBy: string | null;
+    priorState: string; priorHoldReason: string | null; priorLastAttempt: string | null; cause: string | null; ageMs: number; topicId: string | null }): void {
+    this.db.prepare(`INSERT INTO telegram_origin_retirements(operation_id,retired_at,reason,actor,note,superseded_by,prior_state,prior_hold_reason,prior_last_attempt,cause,age_ms,topic_id)
+      VALUES (?,?,?,?,?,?,?,?,?,?,?,?)`).run(r.operationId, r.now, r.reason, r.actor, r.note, r.supersededBy, r.priorState, r.priorHoldReason,
+      r.priorLastAttempt, r.cause, r.ageMs, r.topicId);
+    this.event(`${r.operationId}:retired`, `operation:retired:${r.reason}`);
+  }
+  /** §4 — retirements whose author has not been told yet, oldest first, due now. */
+  unreportedRetirements(input: { now?: number; limit?: number } = {}): RetirementRow[] {
+    const now = input.now ?? Date.now(), limit = input.limit ?? 20; integer(limit, 1, 100);
+    return (this.db.prepare('SELECT * FROM telegram_origin_retirements WHERE reported_at IS NULL AND next_report_at<=? ORDER BY retired_at,operation_id LIMIT ?')
+      .all(now, limit) as Array<Record<string, unknown>>).map(retirementRow);
+  }
+  /** §4 — the hand-back reached the author (`session-line`), the attention list (`attention-item`), or
+   * was given up (`given-up`). A failed try (`outcome: null`) backs off: 1 min doubling, at most 1 h. */
+  markRetirementReport(input: { operationId: string; outcome: 'session-line' | 'attention-item' | 'author-elsewhere' | 'given-up' | null; now?: number }): boolean {
+    id(input.operationId);
+    const now = input.now ?? Date.now();
+    if (input.outcome === null) {
+      return this.db.prepare(`UPDATE telegram_origin_retirements SET report_attempts=report_attempts+1,
+        next_report_at=?+min(3600000,60000*(1<<min(report_attempts,6))) WHERE operation_id=? AND reported_at IS NULL`).run(now, input.operationId).changes > 0;
+    }
+    return this.db.prepare('UPDATE telegram_origin_retirements SET reported_at=?,report_outcome=? WHERE operation_id=? AND reported_at IS NULL')
+      .run(now, input.outcome, input.operationId).changes > 0;
+  }
+  getRetirement(operationId: string): RetirementRow | null {
+    id(operationId);
+    const row = this.db.prepare('SELECT * FROM telegram_origin_retirements WHERE operation_id=?').get(operationId) as Record<string, unknown> | undefined;
+    return row ? retirementRow(row) : null;
+  }
+  /** Bounded accumulation: reported audit rows leave with the origin audit horizon; an unreported one stays until it is reported or given up. */
+  purgeRetirements(input: { before: number }): number {
+    integer(input.before, 0, Number.MAX_SAFE_INTEGER);
+    return this.db.prepare('DEL' + 'ETE FROM telegram_origin_retirements WHERE operation_id IN (SELECT operation_id FROM telegram_origin_retirements WHERE retired_at<? AND reported_at IS NOT NULL LIMIT 500)').run(input.before).changes;
+  }
+  markHoldExpiryReported(input: { operationId: string; now?: number }): boolean {
+    id(input.operationId);
+    return this.db.prepare("UPDATE telegram_origin_operations SET hold_expiry_reported_at=? WHERE operation_id=? AND state='expired' AND hold_expiry_reported_at IS NULL")
+      .run(input.now ?? Date.now(), input.operationId).changes > 0;
+  }
+  /** §4.2 — the lease holder accepted a forwarded operation (or confirmed a
+   * receipt for it). Resolves the standby's own held row so recovery stops and
+   * the audit names the machine that delivered. Refused for a row already
+   * claimed or resolved; never invents a receipt. */
+  /** The holder this operation was forwarded to answers that its OWN send ended
+   * outcome-unknown (Telegram may or may not have it). The forward is settled
+   * the same way: a dispatched attempt with an unknown outcome, so the row
+   * leaves the held set and every reader says "may have arrived, do not
+   * resend" instead of waiting out the deadline and then reading as never sent. */
+  recordForwardedOutcomeUnknown(input: { operationId: string; deliveryMachineId: string; now?: number }): boolean {
+    id(input.operationId); id(input.deliveryMachineId);
+    const now = input.now ?? Date.now();
+    return this.db.transaction(() => {
+      const op = this.operation(input.operationId); if (!op || op.kind !== 'ordinary' || op.state !== 'held') return false;
+      const children = this.db.prepare('SELECT * FROM telegram_origin_children WHERE operation_id=? ORDER BY rowid').all(op.operation_id) as DbChild[];
+      if (!children.length || children.some(child => child.state !== 'queued')) return false;
+      const active = this.db.prepare("SELECT 1 FROM entries e JOIN telegram_origin_children c ON c.delivery_id=e.delivery_id WHERE c.operation_id=? AND e.state='claimed'").get(op.operation_id);
+      if (active) return false;
+      const ownerBootId = `forwarded:${input.deliveryMachineId}`;
+      this.db.prepare('INSERT OR IGNORE INTO telegram_origin_owners VALUES (?,?)').run(ownerBootId, input.deliveryMachineId);
+      for (const child of children) {
+        const materialization = this.db.prepare('SELECT * FROM telegram_origin_materializations WHERE child_id=? AND generation=? ORDER BY rowid LIMIT 1').get(child.child_id, child.generation) as DbMaterialization | undefined;
+        if (!materialization) return false;
+        const attemptId = randomUUID(), claimToken = randomUUID();
+        this.db.prepare('INSERT INTO telegram_origin_attempts VALUES (?,?,?,?,?,?,?,?,?,?)')
+          .run(attemptId, child.child_id, materialization.materialization_id, claimToken, ownerBootId, 'dispatched', 'outcome-unknown', null, now, now);
+        this.db.prepare('INSERT INTO telegram_origin_outcome_details VALUES (?,?,?)').run(attemptId, 'forwarded-holder-outcome-unknown', null);
+        this.db.prepare("UPDATE telegram_origin_children SET state='outcome-unknown' WHERE child_id=?").run(child.child_id);
+        this.db.prepare("UPDATE entries SET state='delivered-ambiguous',claimed_by=NULL,owner_boot_id=NULL,lease_until=NULL,next_attempt_at=NULL WHERE delivery_id=?").run(child.delivery_id);
+        this.event(attemptId, 'attempt:outcome-unknown');
+        this.event(`${child.child_id}:outcome-unknown`, 'child:outcome-unknown');
+      }
+      this.db.prepare('UPDATE telegram_origin_operations SET hold_reason=NULL,hold_detail_json=NULL WHERE operation_id=?').run(op.operation_id);
+      this.refreshOperation(op.operation_id);
+      return true;
+    }).immediate();
+  }
+  recordForwardedAcceptance(input: { operationId: string; deliveryMachineId: string; receiptJson: string; now?: number }): boolean {
+    id(input.operationId); id(input.deliveryMachineId); json(input.receiptJson, 64 * 1024);
+    // A transport acknowledgement without Telegram's message id is not
+    // delivery evidence. Keep the hold for receipt recovery instead.
+    if (receiptMessageIds(input.receiptJson).length !== 1) return false;
+    const now = input.now ?? Date.now();
+    return this.db.transaction(() => {
+      const op = this.operation(input.operationId); if (!op || op.kind !== 'ordinary') return false;
+      if (!['admitted', 'held'].includes(op.state)) return false;
+      const children = this.db.prepare('SELECT * FROM telegram_origin_children WHERE operation_id=? ORDER BY rowid').all(op.operation_id) as DbChild[];
+      // The holder-forward protocol carries one Telegram id and cannot attest multiple children.
+      if (children.length !== 1 || children.some(child => child.state !== 'queued')) return false;
+      const active = this.db.prepare("SELECT 1 FROM entries e JOIN telegram_origin_children c ON c.delivery_id=e.delivery_id WHERE c.operation_id=? AND e.state='claimed'").get(op.operation_id);
+      if (active) return false;
+      const ownerBootId = `forwarded:${input.deliveryMachineId}`;
+      this.db.prepare('INSERT OR IGNORE INTO telegram_origin_owners VALUES (?,?)').run(ownerBootId, input.deliveryMachineId);
+      for (const child of children) {
+        const materialization = this.db.prepare('SELECT * FROM telegram_origin_materializations WHERE child_id=? AND generation=? ORDER BY rowid LIMIT 1').get(child.child_id, child.generation) as DbMaterialization | undefined;
+        if (!materialization) return false;
+        const attemptId = randomUUID(), claimToken = randomUUID();
+        this.db.prepare('INSERT INTO telegram_origin_attempts VALUES (?,?,?,?,?,?,?,?,?,?)')
+          .run(attemptId, child.child_id, materialization.materialization_id, claimToken, ownerBootId, 'dispatched', 'accepted', input.receiptJson, now, now);
+        this.db.prepare('INSERT INTO telegram_origin_outcome_details VALUES (?,?,?)').run(attemptId, 'forwarded-to-holder', null);
+        this.indexReceipt(child, input.receiptJson);
+        this.db.prepare("UPDATE telegram_origin_children SET state='accepted' WHERE child_id=?").run(child.child_id);
+        this.db.prepare("UPDATE entries SET state='delivered-recovered',claimed_by=NULL,owner_boot_id=NULL,lease_until=NULL,next_attempt_at=NULL WHERE delivery_id=?").run(child.delivery_id);
+        this.event(attemptId, 'attempt:accepted');
+        this.event(`${child.child_id}:accepted`, 'child:accepted');
+      }
+      this.db.prepare('UPDATE telegram_origin_operations SET hold_reason=NULL,hold_detail_json=NULL WHERE operation_id=?').run(op.operation_id);
+      this.refreshOperation(op.operation_id);
+      return true;
+    }).immediate();
   }
 
   reserveNotice(input: NoticeReservationInput): NoticeReservation {
@@ -741,15 +1526,22 @@ export class OriginStoreBackend {
     const row = this.db.prepare('SELECT * FROM telegram_origins WHERE origin_id=?').get(originId) as DbOrigin | undefined;
     if (!row) return null;
     const diagnostic = this.db.prepare('SELECT state,reason,created_at createdAt,resolved_at resolvedAt,diagnosis FROM telegram_origin_diagnostics WHERE origin_id=?').get(originId) as OriginAuditRecord['diagnostic'];
-    const storedRecord: StoredOriginInput = row.record_json === null && row.archive_id ? this.readArchive(row.archive_id, originId).record : JSON.parse(row.record_json!);
     const op = this.db.prepare('SELECT * FROM telegram_origin_operations WHERE origin_id=?').get(originId) as DbOperation | undefined;
+    // Purged detail was captured whole when it was archived.
+    if (!op && row.record_json === null && row.archive_id) return { ...this.readArchive(row.archive_id, originId), sequence: row.sequence };
+    const storedRecord: StoredOriginInput = row.record_json === null && row.archive_id ? this.readArchive(row.archive_id, originId).record : JSON.parse(row.record_json!);
     const children = op ? this.db.prepare('SELECT * FROM telegram_origin_children WHERE operation_id=? ORDER BY rowid').all(op.operation_id) as DbChild[] : [];
     const attempts = op ? this.db.prepare('SELECT a.* FROM telegram_origin_attempts a JOIN telegram_origin_children c ON c.child_id=a.child_id WHERE c.operation_id=? ORDER BY a.created_at,a.attempt_id').all(op.operation_id) as DbAttempt[] : [];
     const verification = this.db.prepare('SELECT evidence_json FROM telegram_origin_verifications WHERE origin_id=?').get(originId) as { evidence_json: string } | undefined;
     const recovery = op ? this.db.prepare('SELECT attempts,next_attempt_at nextAttemptAt FROM telegram_origin_recovery_schedule WHERE operation_id=?').get(op.operation_id) as OriginAuditRecord['recovery'] : undefined;
     return { sequence: row.sequence, record: storedRecord, ...(recovery ? { recovery } : {}), ...(verification ? { acceptanceVerification: JSON.parse(verification.evidence_json) } : {}), ...(diagnostic ? { diagnostic: {
       ...diagnostic, state: diagnostic.state === 'pending' && diagnostic.createdAt + 30_000 < Date.now() ? 'unavailable' : diagnostic.state,
-    } } : {}), operation: op ? { operationId: op.operation_id, preparedAt: op.prepared_at, deadlineAt: op.deadline_at, maxAttempts: op.max_attempts, state: op.state } : null,
+    } } : {}), operation: op ? { operationId: op.operation_id, preparedAt: op.prepared_at, deadlineAt: op.deadline_at, maxAttempts: op.max_attempts, state: op.state,
+      firstPreparedAt: op.first_prepared_at ?? null, lateMarkedAt: op.late_marked_at ?? null,
+      ...(op.policy_verdict_json ? { policyVerdict: JSON.parse(op.policy_verdict_json) as Record<string, unknown> } : {}),
+      ...(op.hold_reason ? { holdReason: op.hold_reason, holdDetail: op.hold_detail_json ? JSON.parse(op.hold_detail_json) as Record<string, unknown> : null }
+        // native-conversation-base §3b — a superseded row always names its successor, with or without a hold reason.
+        : op.state === 'superseded' && op.hold_detail_json ? { holdDetail: JSON.parse(op.hold_detail_json) as Record<string, unknown> } : {}) } : null,
       children: children.map(child => ({ childId: child.child_id, deliveryId: child.delivery_id, destinationJson: child.destination_json, generation: child.generation, state: child.state, attempts: this.entry(child.delivery_id)?.attempts ?? 0 })),
       attempts: attempts.map(a => ({ attemptId: a.attempt_id, childId: a.child_id, materializationId: a.materialization_id, ownerBootId: a.owner_boot_id,
         ...(this.db.prepare('SELECT reason,next_attempt_at nextAttemptAt FROM telegram_origin_outcome_details WHERE attempt_id=?').get(a.attempt_id) ?? {}),
@@ -757,6 +1549,36 @@ export class OriginStoreBackend {
         phase: a.phase, outcome: a.outcome, receiptJson: a.receipt_json, createdAt: a.created_at, resolvedAt: a.resolved_at })) };
   }
 
+  /** message-origin-all-platforms §4: the producer evidence behind a page of delivered Telegram
+   * messages, in one bounded read-only query. Never loads attempts, children or archives: a purged
+   * record answers `archived`. Two origins for one message answer `ambiguous`. */
+  lookupOriginEvidence(input: { transport: string; chatId: string; messageIds: string[] }): {
+    results: Array<{ messageId: string; state: 'found' | 'ambiguous' | 'archived'; producer?: Record<string, unknown> }> } {
+    id(input.transport); id(input.chatId);
+    if (!Array.isArray(input.messageIds) || input.messageIds.length > 100) fail('invalid-message-ids');
+    for (const messageId of input.messageIds) id(messageId);
+    if (!input.messageIds.length) return { results: [] };
+    const marks = input.messageIds.map(() => '?').join(',');
+    const rows = this.db.prepare(`SELECT DISTINCT r.message_id messageId, o.origin_id originId, o.record_json recordJson
+      FROM telegram_origin_platform_receipts r JOIN telegram_origins o ON o.origin_id=r.origin_id
+      WHERE r.transport=? AND r.chat_id=? AND r.message_id IN (${marks})`)
+      .all(input.transport, input.chatId, ...input.messageIds) as Array<{ messageId: string; originId: string; recordJson: string | null }>;
+    const byMessage = new Map<string, Array<{ originId: string; recordJson: string | null }>>();
+    for (const row of rows) byMessage.set(row.messageId, [...(byMessage.get(row.messageId) ?? []), row]);
+    const results: Array<{ messageId: string; state: 'found' | 'ambiguous' | 'archived'; producer?: Record<string, unknown> }> = [];
+    for (const [messageId, matches] of byMessage) {
+      if (new Set(matches.map(m => m.originId)).size > 1) { results.push({ messageId, state: 'ambiguous' }); continue; }
+      const recordJson = matches[0].recordJson;
+      if (recordJson === null) { results.push({ messageId, state: 'archived' }); continue; }
+      try {
+        const envelope = JSON.parse((JSON.parse(recordJson) as { envelopeJson: string }).envelopeJson) as Record<string, unknown>;
+        const producer: Record<string, unknown> = {};
+        for (const key of ['producerKind', 'originMachineId', 'originMachineName', 'harnessName', 'machine', 'harness', 'model']) producer[key] = envelope[key];
+        results.push({ messageId, state: 'found', producer });
+      } catch { results.push({ messageId, state: 'archived' }); }
+    }
+    return { results };
+  }
   listOrigins(query: OriginListQuery = {}): OriginListPage {
     return this.withArchiveReads(() => this.listOriginsInReadScope(query));
   }
@@ -805,7 +1627,9 @@ export class OriginStoreBackend {
       records.push(record); recordBytes += bytes;
     }
     const more = rows.length > records.length, last = rows[records.length - 1];
-    return { records, upperSequence, coverage: 'complete', cursor: more && last ? Buffer.from(JSON.stringify({ v: 1, upper: upperSequence, after: [last.created_at, last.machine_id, last.origin_id], filter })).toString('base64url') : null };
+    const { expired_before: expiredBefore } = this.db.prepare('SELECT expired_before FROM telegram_origin_retention WHERE id=1').get() as { expired_before: number };
+    return { records, upperSequence, coverage: 'complete', ...(expiredBefore ? { historyExpiredBefore: expiredBefore } : {}),
+      cursor: more && last ? Buffer.from(JSON.stringify({ v: 1, upper: upperSequence, after: [last.created_at, last.machine_id, last.origin_id], filter })).toString('base64url') : null };
   }
 
   getMetrics(): OriginMetrics {
@@ -817,47 +1641,264 @@ export class OriginStoreBackend {
     id(machineId);
     // Prepared/evidence events belong to the source shard; execution events
     // belong to the one outbox. Inert evidence copies cannot inflate a pool.
-    const rows = this.db.prepare(`SELECT e.metric,count(*) count FROM telegram_origin_metric_events e
-      LEFT JOIN telegram_origins o ON o.origin_id=e.event_id
-      WHERE (e.metric!='operation:prepared' AND e.metric NOT LIKE 'evidence:%')
-        OR o.machine_id=? OR (o.machine_id='legacy-unattributed' AND EXISTS
-          (SELECT 1 FROM telegram_origin_operations p WHERE p.origin_id=o.origin_id))
-      GROUP BY e.metric`).all(machineId) as Array<{ metric: string; count: number }>;
-    return { sampledAt: Date.now(), coverage: 'complete', stale: false,
-      counts: Object.fromEntries(rows.map(row => [row.metric, row.count])) };
+    return this.db.transaction(() => {
+      const rows = this.db.prepare(`SELECT e.metric,count(*) count FROM telegram_origin_metric_events e
+        LEFT JOIN telegram_origins o ON o.origin_id=e.event_id
+        WHERE (e.metric!='operation:prepared' AND e.metric NOT LIKE 'evidence:%')
+          OR o.machine_id=? OR (o.machine_id='legacy-unattributed' AND EXISTS
+            (SELECT 1 FROM telegram_origin_operations p WHERE p.origin_id=o.origin_id))
+        GROUP BY e.metric`).all(machineId) as Array<{ metric: string; count: number }>;
+      const counts: Record<string, number> = Object.fromEntries(rows.map(row => [row.metric, row.count]));
+      const folded = this.db.prepare("SELECT metric,sum(count) count FROM telegram_origin_metric_rollups WHERE machine_id IN ('',?) GROUP BY metric").all(machineId) as Array<{ metric: string; count: number }>;
+      for (const row of folded) counts[row.metric] = (counts[row.metric] ?? 0) + row.count;
+      // 3g item 7 — a summed counter is the counts-table value, not a count of its events.
+      for (const metric of SUM_METRICS) {
+        delete counts[`${metric}:event`];
+        const sum = this.db.prepare('SELECT count FROM telegram_origin_metrics WHERE metric=?').get(metric) as { count: number } | undefined;
+        if (sum) counts[metric] = sum.count;
+      }
+      return { sampledAt: Date.now(), coverage: 'complete' as const, stale: false as const, counts };
+    })();
   }
 
-  /** Archive at most 200 terminal origins/16 MiB per call; all index rows remain.
-   * Artifact is fsynced BEFORE the transactional manifest redirects any lookup.
+  /** Archive at most 200 terminal origins/16 MiB per call; the origin row stays as
+   * the searchable stub. Reads forward from a durable cursor, so the cost follows
+   * the batch, never the table. Artifact is fsynced BEFORE the transactional
+   * manifest redirects any lookup. A batch under minRecords writes nothing until
+   * its oldest row passes flushBefore.
    */
-  archive(input: { before: number; limit?: number }): ArchiveResult {
+  archive(input: { before: number; limit?: number; minRecords?: number; flushBefore?: number; now?: number; keepOperations?: string[] }): ArchiveResult {
     const limit = input.limit ?? 100; integer(limit, 1, 200);
-    const rows = this.db.prepare(`SELECT o.origin_id,o.sequence FROM telegram_origins o JOIN telegram_origin_operations p ON p.origin_id=o.origin_id
-      WHERE o.archive_id IS NULL AND o.created_at<? AND p.state IN ('accepted','suppressed','expired','known-failed') ORDER BY o.sequence LIMIT ?`).all(input.before, limit) as Array<{ origin_id: string; sequence: number }>;
-    if (!rows.length) return { archived: 0, archiveId: null, digest: null };
+    const minRecords = input.minRecords ?? 1; integer(minRecords, 1, limit);
+    const now = input.now ?? Date.now();
+    const { rows, skipped, through } = this.archiveCandidates(input.before, limit, now, new Set(input.keepOperations));
+    if (!rows.length || (rows.length < minRecords && !(input.flushBefore !== undefined && rows[0].created_at < input.flushBefore))) {
+      if (skipped !== null) this.db.prepare('UPDATE telegram_origin_retention SET archive_after_sequence=max(archive_after_sequence,?) WHERE id=1').run(skipped);
+      return { archived: 0, archiveId: null, digest: null };
+    }
     const records: OriginAuditRecord[] = []; let bytes = 0;
     for (const row of rows) { const record = this.getOrigin(row.origin_id)!; const size = Buffer.byteLength(JSON.stringify(record)); if (bytes + size > 16 * 1024 * 1024) break; records.push(record); bytes += size; }
     if (!records.length) fail('archive-record-too-large');
+    const { archiveId, filename, hash } = this.writeArchiveFile(records.map(record => ({ originId: record.record.originId, json: JSON.stringify(record) })));
+    const last = records.at(-1)!.sequence;
+    this.db.transaction(() => {
+      for (const record of records) {
+        const current = this.db.prepare('SELECT archive_id FROM telegram_origins WHERE origin_id=?').get(record.record.originId) as { archive_id: string | null };
+        if (current.archive_id !== null) fail('archive-race');
+      }
+      this.db.prepare('INSERT INTO telegram_origin_archives VALUES (?,?,?,?,?,?,?)').run(archiveId, filename, hash, records.length, records[0].sequence, last, Date.now());
+      for (const record of records) {
+        this.db.prepare('UPDATE telegram_origins SET record_json=NULL,archive_id=? WHERE origin_id=?').run(archiveId, record.record.originId);
+        // Evidence-only origins have no operation for purgeArchived to follow.
+        if (!record.operation) {
+          const operationId = (JSON.parse(record.record.envelopeJson) as { operationId?: unknown }).operationId;
+          if (typeof operationId === 'string') this.db.prepare('INSERT OR IGNORE INTO telegram_origin_operation_index VALUES (?,?)').run(operationId, record.record.originId);
+          this.deleteOriginDetail(record.record.originId);
+        }
+      }
+      this.db.prepare('UPDATE telegram_origin_retention SET archive_after_sequence=max(archive_after_sequence,?) WHERE id=1').run(rows.length === records.length ? through : Math.min(last, through));
+    }).immediate();
+    return { archived: records.length, archiveId, digest: hash };
+  }
+
+  /** `skipped` is how far the cursor may move with nothing archived, `through` how
+   * far once these rows are. A row that has to wait holds the durable cursor back but
+   * not the rows after it: the scan runs on past it and wraps round to it later. */
+  private archiveCandidates(before: number, limit: number, now: number, keep: Set<string>): { rows: Array<{ origin_id: string; created_at: number }>; skipped: number | null; through: number } {
+    const { archive_after_sequence: after } = this.db.prepare('SELECT archive_after_sequence FROM telegram_origin_retention WHERE id=1').get() as { archive_after_sequence: number };
+    const walk = this.db.prepare(`SELECT o.sequence,o.origin_id,o.created_at,o.archive_id,p.state,p.operation_id,
+        EXISTS (SELECT 1 FROM telegram_origin_children c JOIN telegram_origin_notices n ON n.child_id=c.child_id
+          WHERE c.operation_id=p.operation_id AND n.state='reserved') reserved FROM telegram_origins o
+      LEFT JOIN telegram_origin_operations p ON p.origin_id=o.origin_id WHERE o.sequence>? ORDER BY o.sequence LIMIT ?`);
+    const rows: Array<{ origin_id: string; created_at: number }> = [];
+    const from = Math.max(after, this.archiveScanAfter);
+    let skipped: number | null = null, through = after, blocked = from > after, scanned = from, walked = 0, ended = true;
+    for (const row of walk.iterate(from, ARCHIVE_WALK_ROWS) as Iterable<{ sequence: number; origin_id: string; created_at: number; archive_id: string | null; state: string | null; operation_id: string | null; reserved: number }>) {
+      walked++;
+      if (row.archive_id === null) {
+        const future = row.created_at > now + FUTURE_SKEW_MS; // A wrong clock must not pin retention.
+        if (row.created_at >= before && !future) break;
+        if ((row.state !== null && !RETAINED_STATES.includes(`'${row.state}'`)) || row.reserved || (row.operation_id !== null && keep.has(row.operation_id))) { blocked = true; scanned = row.sequence; continue; }
+        rows.push(row);
+      } else if (!blocked && !rows.length) skipped = row.sequence;
+      if (!blocked) through = row.sequence;
+      scanned = row.sequence;
+      if (rows.length >= limit) { ended = false; break; }
+    }
+    if (walked === ARCHIVE_WALK_ROWS) ended = false;
+    this.archiveScanAfter = blocked && !ended ? scanned : 0;
+    return { rows, skipped, through };
+  }
+
+  private writeArchiveFile(rows: Array<{ originId: string; json: string }>): { archiveId: string; filename: string; hash: string } {
     fs.mkdirSync(this.archiveDir, { recursive: true, mode: 0o700 });
     const archiveId = randomUUID(); const filename = `${archiveId}.sqlite`; const filenameAbsolute = path.join(this.archiveDir, filename);
     const archive = new Database(filenameAbsolute);
     try {
       fs.chmodSync(filenameAbsolute, 0o600); archive.pragma('synchronous = FULL');
       archive.exec('CREATE TABLE records(origin_id TEXT PRIMARY KEY,record_json TEXT NOT NULL)');
-      archive.transaction(() => { const insert = archive.prepare('INSERT INTO records VALUES (?,?)'); for (const record of records) insert.run(record.record.originId, JSON.stringify(record)); })();
+      archive.transaction(() => { const insert = archive.prepare('INSERT INTO records VALUES (?,?)'); for (const row of rows) insert.run(row.originId, row.json); })();
     } finally { archive.close(); }
     const fd = fs.openSync(filenameAbsolute, 'r'); try { fs.fsyncSync(fd); } finally { fs.closeSync(fd); }
     const dir = fs.openSync(this.archiveDir, 'r'); try { fs.fsyncSync(dir); } finally { fs.closeSync(dir); }
-    const hash = digest(fs.readFileSync(filenameAbsolute));
-    this.db.transaction(() => {
-      for (const record of records) {
-        const current = this.db.prepare('SELECT archive_id FROM telegram_origins WHERE origin_id=?').get(record.record.originId) as { archive_id: string | null };
-        if (current.archive_id !== null) fail('archive-race');
+    return { archiveId, filename, hash: digest(fs.readFileSync(filenameAbsolute)) };
+  }
+
+  /** Merge small archive files into one. Sources go only after the new manifest
+   * and every repointed stub commit; a crash before that leaves the sources in
+   * charge and at most one unreferenced file. */
+  compactArchives(input: { limit?: number } = {}): { merged: number; archiveId: string | null } {
+    const limit = input.limit ?? 256; integer(limit, 2, 256);
+    const candidates = this.db.prepare('SELECT * FROM telegram_origin_archives WHERE count<100 ORDER BY first_sequence LIMIT ?')
+      .all(limit + this.unmergeableArchives.size) as DbArchive[];
+    const sources: DbArchive[] = [], rows: Array<{ originId: string; json: string }> = []; let bytes = 0, examined = 0;
+    for (const source of candidates) {
+      if (sources.length >= limit || examined >= limit) break;
+      if (this.unmergeableArchives.has(source.archive_id)) continue;
+      examined++;
+      let records: Array<{ origin_id: string; record_json: string }>;
+      try { records = this.readArchiveRecords(source); }
+      catch { this.unmergeableArchives.add(source.archive_id); continue; }
+      const size = records.reduce((sum, record) => sum + Buffer.byteLength(record.record_json), 0);
+      if (size > MAX_MERGED_ARCHIVE_BYTES) { this.unmergeableArchives.add(source.archive_id); continue; }
+      if (bytes + size > MAX_MERGED_ARCHIVE_BYTES) {
+        // A file too big to pair with its neighbour must not stop every file behind it.
+        if (sources.length === 1) this.unmergeableArchives.add(sources[0].archive_id);
+        break;
       }
-      this.db.prepare('INSERT INTO telegram_origin_archives VALUES (?,?,?,?,?,?,?)').run(archiveId, filename, hash, records.length, records[0].sequence, records.at(-1)!.sequence, Date.now());
-      for (const record of records) this.db.prepare('UPDATE telegram_origins SET record_json=NULL,archive_id=? WHERE origin_id=?').run(archiveId, record.record.originId);
+      sources.push(source); bytes += size;
+      for (const record of records) rows.push({ originId: record.origin_id, json: record.record_json });
+    }
+    if (sources.length < 2) return { merged: 0, archiveId: null };
+    const { archiveId, filename, hash } = this.writeArchiveFile(rows);
+    const abandon = (): { merged: number; archiveId: null } => {
+      SafeFsExecutor.safeUnlinkSync(path.join(this.archiveDir, filename), { operation: 'telegram-origin-archive-compaction' });
+      return { merged: 0, archiveId: null };
+    };
+    let committed: boolean;
+    try {
+      committed = this.db.transaction(() => {
+        for (const source of sources) if (!this.db.prepare('SELECT 1 FROM telegram_origin_archives WHERE archive_id=?').get(source.archive_id)) return false;
+        this.db.prepare('INSERT INTO telegram_origin_archives VALUES (?,?,?,?,?,?,?)').run(archiveId, filename, hash, rows.length,
+          Math.min(...sources.map(source => source.first_sequence)), Math.max(...sources.map(source => source.last_sequence)), Date.now());
+        for (const source of sources) {
+          this.db.prepare('UPDATE telegram_origins SET archive_id=? WHERE sequence BETWEEN ? AND ? AND archive_id=?').run(archiveId, source.first_sequence, source.last_sequence, source.archive_id);
+          this.db.prepare('DELETE FROM telegram_origin_archives WHERE archive_id=?').run(source.archive_id);
+        }
+        return true;
+      }).immediate();
+    } catch (error) { abandon(); throw error; }
+    if (!committed) return abandon();
+    this.removeArchiveFiles(sources);
+    return { merged: sources.length, archiveId };
+  }
+
+  private removeArchiveFiles(archives: DbArchive[]): void {
+    for (const archive of archives) {
+      if (path.basename(archive.filename) !== archive.filename) continue;
+      try { SafeFsExecutor.safeUnlinkSync(path.join(this.archiveDir, archive.filename), { operation: 'telegram-origin-archive-retention' }); }
+      catch { /* Unreferenced now; a leftover file costs disk, never correctness. */ }
+    }
+  }
+
+  /** Full detail leaves the hot tables once its archive copy is committed. The
+   * stub, destination and receipts stay. Only the oldest operations are looked at,
+   * so nothing here scans. Kept: a reserved notice permit, a held expiry not yet
+   * reported once, and operations the caller names (a receipt still to fold in). */
+  purgeArchived(input: { before: number; limit?: number; keepOperations?: string[] }): number {
+    const limit = input.limit ?? 200; integer(limit, 1, 1000);
+    return this.db.transaction(() => {
+      const window = limit * 3 + PURGE_WINDOW_SLACK;
+      const { top, scanned } = this.db.prepare('SELECT max(rowid) top,count(*) scanned FROM (SELECT rowid FROM telegram_origin_operations WHERE rowid>? ORDER BY rowid LIMIT ?)').get(this.purgeAfterRowid, window) as { top: number | null; scanned: number };
+      const rows = this.db.prepare(`SELECT p.operation_id,p.origin_id FROM
+        (SELECT rowid scanned,operation_id,origin_id,state,hold_reason,hold_expiry_reported_at FROM telegram_origin_operations WHERE rowid>? ORDER BY rowid LIMIT ?) p
+        JOIN telegram_origins o ON o.origin_id=p.origin_id
+        WHERE o.archive_id IS NOT NULL AND o.created_at<? AND p.operation_id NOT IN (SELECT value FROM json_each(?))
+        AND NOT (p.state='expired' AND p.hold_reason IS 'lease-not-held' AND p.hold_expiry_reported_at IS NULL)
+        AND NOT EXISTS (SELECT 1 FROM telegram_origin_children c
+          JOIN telegram_origin_notices n ON n.child_id=c.child_id WHERE c.operation_id=p.operation_id AND n.state='reserved') LIMIT ?`)
+        .all(this.purgeAfterRowid, window, input.before, JSON.stringify(input.keepOperations ?? []), limit) as Array<{ operation_id: string; origin_id: string }>;
+      if (scanned < window) this.purgeAfterRowid = 0;
+      else if (rows.length < limit) this.purgeAfterRowid = top!;
+      for (const row of rows) {
+        const children = '(SELECT child_id FROM telegram_origin_children WHERE operation_id=?)';
+        this.db.prepare(`DELETE FROM telegram_origin_outcome_details WHERE attempt_id IN (SELECT attempt_id FROM telegram_origin_attempts WHERE child_id IN ${children})`).run(row.operation_id);
+        this.db.prepare(`DELETE FROM telegram_origin_attempts WHERE child_id IN ${children}`).run(row.operation_id);
+        this.db.prepare(`DELETE FROM telegram_origin_materializations WHERE child_id IN ${children}`).run(row.operation_id);
+        this.db.prepare(`DELETE FROM telegram_origin_notices WHERE child_id IN ${children}`).run(row.operation_id);
+        this.db.prepare('DELETE FROM entries WHERE delivery_id IN (SELECT delivery_id FROM telegram_origin_children WHERE operation_id=?)').run(row.operation_id);
+        this.db.prepare('DELETE FROM telegram_origin_children WHERE operation_id=?').run(row.operation_id);
+        this.db.prepare('DELETE FROM telegram_origin_payloads WHERE operation_id=?').run(row.operation_id);
+        this.db.prepare('DELETE FROM telegram_origin_recovery_schedule WHERE operation_id=?').run(row.operation_id);
+        this.db.prepare('DELETE FROM telegram_origin_operations WHERE operation_id=?').run(row.operation_id);
+        this.db.prepare('INSERT OR IGNORE INTO telegram_origin_operation_index VALUES (?,?)').run(row.operation_id, row.origin_id);
+        this.deleteOriginDetail(row.origin_id);
+      }
+      return rows.length;
     }).immediate();
-    return { archived: records.length, archiveId, digest: hash };
+  }
+  private deleteOriginDetail(originId: string): void {
+    this.db.prepare('DELETE FROM telegram_origin_diagnostics WHERE origin_id=?').run(originId);
+    this.db.prepare('DELETE FROM telegram_origin_verifications WHERE origin_id=?').run(originId);
+  }
+
+  /** Move old count-once keys into rollups; getMetrics' counters never change and
+   * getFederatedMetrics adds the rollups back. Event ids carry no time, so age comes
+   * from the first origin at or past `before`: its prepared event marks the line.
+   * With no newer origin, every event is old enough. Every event() writer needs a
+   * live row, gone with these same origins, so a dropped key cannot refire in practice. */
+  foldMetricEvents(input: { before: number; limit?: number }): { folded: number; more: boolean } {
+    const limit = input.limit ?? 5000; integer(limit, 1, 50_000);
+    return this.db.transaction(() => {
+      const newer = this.db.prepare('SELECT 1 FROM telegram_origins WHERE created_at>=? LIMIT 1').get(input.before);
+      const mark = newer ? this.db.prepare(`SELECT e.rowid FROM telegram_origins o JOIN telegram_origin_metric_events e ON e.event_id=o.origin_id AND e.metric='operation:prepared'
+        WHERE o.created_at>=? ORDER BY o.created_at LIMIT 1`).get(input.before) as { rowid: number } | undefined : { rowid: Number.MAX_SAFE_INTEGER };
+      if (!mark) return { folded: 0, more: false };
+      const { top, folded } = this.db.prepare('SELECT max(rowid) top,count(*) folded FROM (SELECT rowid FROM telegram_origin_metric_events WHERE rowid<? ORDER BY rowid LIMIT ?)').get(mark.rowid, limit) as { top: number | null; folded: number };
+      if (top === null) return { folded: 0, more: false };
+      this.db.prepare(`INSERT INTO telegram_origin_metric_rollups(metric,machine_id,count)
+        SELECT metric,scope,count(*) FROM (SELECT e.metric,CASE
+            WHEN e.metric!='operation:prepared' AND e.metric NOT LIKE 'evidence:%' THEN ''
+            WHEN o.machine_id='legacy-unattributed' THEN CASE WHEN EXISTS (SELECT 1 FROM telegram_origin_operations p WHERE p.origin_id=o.origin_id) THEN '' END
+            ELSE o.machine_id END scope
+          FROM telegram_origin_metric_events e LEFT JOIN telegram_origins o ON o.origin_id=e.event_id WHERE e.rowid<=?)
+        WHERE scope IS NOT NULL GROUP BY metric,scope
+        ON CONFLICT(metric,machine_id) DO UPDATE SET count=count+excluded.count`).run(top);
+      this.db.prepare('DELETE FROM telegram_origin_metric_events WHERE rowid<=?').run(top);
+      return { folded, more: folded === limit };
+    }).immediate();
+  }
+
+  /** The operator's audit horizon: stubs and their archives go, and readers are
+   * told how far back history now reaches. Files go after commit. */
+  expireAudit(input: { before: number; limit?: number }): number {
+    const limit = input.limit ?? 500; integer(limit, 1, 1000);
+    const { expired, archives } = this.db.transaction(() => {
+      const rows = this.db.prepare(`SELECT o.origin_id FROM telegram_origins o WHERE o.created_at<? AND o.archive_id IS NOT NULL
+        AND NOT EXISTS (SELECT 1 FROM telegram_origin_operations p WHERE p.origin_id=o.origin_id) ORDER BY o.created_at LIMIT ?`).all(input.before, limit) as Array<{ origin_id: string }>;
+      for (const row of rows) {
+        this.db.prepare('DELETE FROM telegram_origin_destinations WHERE origin_id=?').run(row.origin_id);
+        this.db.prepare('DELETE FROM telegram_origin_platform_receipts WHERE origin_id=?').run(row.origin_id);
+        this.db.prepare('DELETE FROM telegram_origin_operation_index WHERE origin_id=?').run(row.origin_id);
+        this.db.prepare('DELETE FROM telegram_origins WHERE origin_id=?').run(row.origin_id);
+        this.deleteOriginDetail(row.origin_id);
+      }
+      if (rows.length) this.db.prepare('UPDATE telegram_origin_retention SET expired_before=max(expired_before,?) WHERE id=1').run(input.before);
+      // `forwarded:<machine>` rows are reused for good, and there is one per machine.
+      const owners = (this.db.prepare("SELECT count(*) n FROM telegram_origin_owners WHERE owner_boot_id NOT LIKE 'forwarded:%'").get() as { n: number }).n;
+      if (owners > MAX_OWNER_ROWS) this.db.prepare("DELETE FROM telegram_origin_owners WHERE rowid IN (SELECT rowid FROM telegram_origin_owners WHERE owner_boot_id NOT LIKE 'forwarded:%' ORDER BY rowid LIMIT ?)").run(owners - MAX_OWNER_ROWS);
+      // Age is per stub, so a file goes once no stub in its own range points at it.
+      // Not tied to this batch: a quiet shard still finishes what an earlier one began.
+      const { expired_before: horizon } = this.db.prepare('SELECT expired_before FROM telegram_origin_retention WHERE id=1').get() as { expired_before: number };
+      const scan = horizon ? this.db.prepare('SELECT * FROM telegram_origin_archives WHERE first_sequence>? ORDER BY first_sequence LIMIT 64').all(this.expiryScanAfter) as DbArchive[] : [];
+      this.expiryScanAfter = scan.length === 64 ? scan[63].first_sequence : 0;
+      const stubOf = this.db.prepare('SELECT 1 FROM telegram_origins WHERE sequence BETWEEN ? AND ? AND archive_id=? LIMIT 1');
+      const archives = scan.filter(archive => !stubOf.get(archive.first_sequence, archive.last_sequence, archive.archive_id));
+      for (const archive of archives) this.db.prepare('DELETE FROM telegram_origin_archives WHERE archive_id=?').run(archive.archive_id);
+      return { expired: rows.length, archives };
+    }).immediate();
+    this.removeArchiveFiles(archives);
+    return expired;
   }
 
   private withArchiveReads<T>(read: () => T): T {
@@ -880,7 +1921,27 @@ export class OriginStoreBackend {
       return JSON.parse(row.record_json);
     }
     const manifest = this.db.prepare('SELECT filename,digest FROM telegram_origin_archives WHERE archive_id=?').get(archiveId) as { filename: string; digest: string } | undefined;
-    if (!manifest || path.basename(manifest.filename) !== manifest.filename) return fail('archive-unavailable');
+    if (!manifest) return fail('archive-unavailable');
+    const archive = this.openVerifiedArchive(manifest, scope);
+    if (scope.handles.size >= 16) {
+      const oldest = scope.handles.entries().next().value!;
+      oldest[1].close(); scope.handles.delete(oldest[0]);
+    }
+    scope.handles.set(archiveId, archive);
+    const record = archive.prepare('SELECT record_json FROM records WHERE origin_id=?').get(originId) as { record_json: string } | undefined;
+    if (!record) return fail('archive-incomplete');
+    return JSON.parse(record.record_json);
+  }
+  private readArchiveRecords(manifest: DbArchive): Array<{ origin_id: string; record_json: string }> {
+    const archive = this.openVerifiedArchive(manifest, { bytes: 0 });
+    try {
+      const records = archive.prepare('SELECT origin_id,record_json FROM records').all() as Array<{ origin_id: string; record_json: string }>;
+      if (records.length !== manifest.count) fail('archive-incomplete');
+      return records;
+    } finally { archive.close(); }
+  }
+  private openVerifiedArchive(manifest: { filename: string; digest: string }, scope: { bytes: number }): Database.Database {
+    if (path.basename(manifest.filename) !== manifest.filename) return fail('archive-unavailable');
     const filename = path.join(this.archiveDir, manifest.filename);
     const fd = fs.openSync(filename, 'r');
     let bytes: Buffer;
@@ -900,32 +1961,24 @@ export class OriginStoreBackend {
       this.archiveReadStats.filesVerified++; this.archiveReadStats.bytesHashed += bytes.length;
     } finally { fs.closeSync(fd); }
     if (digest(bytes) !== manifest.digest) return fail('archive-integrity');
-    const archive = new Database(filename, { readonly: true, fileMustExist: true });
-    if (scope.handles.size >= 16) {
-      const oldest = scope.handles.entries().next().value!;
-      oldest[1].close(); scope.handles.delete(oldest[0]);
-    }
-    scope.handles.set(archiveId, archive);
-    const record = archive.prepare('SELECT record_json FROM records WHERE origin_id=?').get(originId) as { record_json: string } | undefined;
-    if (!record) return fail('archive-incomplete');
-    return JSON.parse(record.record_json);
+    return new Database(filename, { readonly: true, fileMustExist: true });
   }
 
   cleanupPayloads(now = Date.now()): number {
     return this.db.transaction(() => {
-      const expired = this.db.prepare("SELECT operation_id FROM telegram_origin_operations WHERE deadline_at<=? AND state NOT IN ('accepted','suppressed','expired','known-failed') LIMIT 1000").all(now) as { operation_id: string }[];
+      const expired = this.db.prepare("SELECT operation_id FROM telegram_origin_operations WHERE deadline_at<=? AND state NOT IN ('accepted','suppressed','expired','known-failed','superseded') LIMIT 1000").all(now) as { operation_id: string }[];
       for (const op of expired) this.expireOperation(op.operation_id, now);
       this.db.prepare(`UPDATE entries SET text=X'' WHERE delivery_id IN
-        (SELECT e.delivery_id FROM entries e JOIN telegram_origin_children c ON c.delivery_id=e.delivery_id
-          JOIN telegram_origin_operations p ON p.operation_id=c.operation_id WHERE length(e.text)>0
-          AND e.entry_kind='telegram-origin' AND p.state IN ('accepted','suppressed','expired','known-failed') LIMIT 1000)`).run();
+        (SELECT e.delivery_id FROM entries e INDEXED BY telegram_origin_entries_text CROSS JOIN telegram_origin_children c ON c.delivery_id=e.delivery_id
+          CROSS JOIN telegram_origin_operations p ON p.operation_id=c.operation_id WHERE e.entry_kind='telegram-origin' AND length(e.text)>0
+          AND p.state IN ('accepted','suppressed','expired','known-failed','superseded') LIMIT 1000)`).run();
       this.db.prepare(`UPDATE telegram_origin_payloads SET data=NULL WHERE rowid IN
-        (SELECT b.rowid FROM telegram_origin_payloads b JOIN telegram_origin_operations p ON p.operation_id=b.operation_id
-          WHERE b.data IS NOT NULL AND p.state IN ('accepted','suppressed','expired','known-failed') AND p.kind='ordinary' LIMIT 1000)`).run();
+        (SELECT b.rowid FROM telegram_origin_payloads b INDEXED BY telegram_origin_payload_live CROSS JOIN telegram_origin_operations p ON p.operation_id=b.operation_id
+          WHERE b.data IS NOT NULL AND p.state IN ('accepted','suppressed','expired','known-failed','superseded') AND p.kind='ordinary' LIMIT 1000)`).run();
       return this.db.prepare(`UPDATE telegram_origin_materializations SET request_json=NULL WHERE rowid IN
-        (SELECT m.rowid FROM telegram_origin_materializations m JOIN telegram_origin_children c ON c.child_id=m.child_id
-          JOIN telegram_origin_operations p ON p.operation_id=c.operation_id WHERE m.request_json IS NOT NULL
-          AND p.state IN ('accepted','suppressed','expired','known-failed') AND p.kind='ordinary' LIMIT 1000)`).run().changes;
+        (SELECT m.rowid FROM telegram_origin_materializations m INDEXED BY telegram_origin_materialization_live CROSS JOIN telegram_origin_children c ON c.child_id=m.child_id
+          CROSS JOIN telegram_origin_operations p ON p.operation_id=c.operation_id WHERE m.request_json IS NOT NULL
+          AND p.state IN ('accepted','suppressed','expired','known-failed','superseded') AND p.kind='ordinary' LIMIT 1000)`).run().changes;
     }).immediate();
   }
 
@@ -955,4 +2008,10 @@ export class OriginStoreBackend {
     }).immediate();
   }
   close(): void { this.queue.close(); }
+}
+
+/** SQLite refused a lock (another connection holds it past the busy timeout). */
+function isSqliteBusy(err: unknown): boolean {
+  const code = (err as { code?: unknown } | null)?.code;
+  return typeof code === 'string' && code.startsWith('SQLITE_BUSY');
 }

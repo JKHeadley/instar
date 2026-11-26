@@ -1,0 +1,31 @@
+{
+  "ts": "2026-10-23T16:14:49.794Z",
+  "slug": "peer-homebase-name-and-backfill",
+  "suggestedTier": 2,
+  "declaredTier": 1,
+  "riskFloor": 2,
+  "riskFloorReasons": [
+    "safety-invariant proximity: src/messaging/TelegramAdapter.ts matches Telegram adapter",
+    "irreversibility: src/core/PostUpdateMigrator.ts touches PostUpdateMigrator",
+    "migration / fleet-rollout surface: src/core/PostUpdateMigrator.ts touches PostUpdateMigrator (fleet migration machinery)"
+  ],
+  "belowFloor": true,
+  "files": 6,
+  "loc": 266,
+  "scope": {
+    "basis": "staged-in-scope-additions-plus-deletions",
+    "files": [
+      "src/commands/server.ts",
+      "src/core/PostUpdateMigrator.ts",
+      "src/core/peerHomebaseAwareness.ts",
+      "src/messaging/TelegramAdapter.ts",
+      "src/server/routes.ts",
+      "src/threadline/peerHomebase.ts"
+    ],
+    "addedLines": 244,
+    "deletedLines": 22
+  },
+  "causalAutopsy": null,
+  "classClosure": null,
+  "verdict": "pass"
+}

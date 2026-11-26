@@ -94,7 +94,7 @@ describe('Slack session continuity (anti-amnesia)', () => {
       // The recovery path resolves the routing key into the raw API channel
       // (`slackApiChannel`) before fetching history — for a channel session this
       // equals the old slackChId; for a thread session it strips the thread_ts.
-      expect(serverSource).toContain('getChannelMessagesWithFallback(slackApiChannel, 30)');
+      expect(serverSource).toContain('getConversationMessagesWithFallback(slackChId, 30)');
     });
   });
 
@@ -136,7 +136,7 @@ describe('Slack session continuity (anti-amnesia)', () => {
     it('normal spawn writes inline context to message file for long messages', () => {
       const slackBlock = serverSource.slice(
         serverSource.indexOf('Build context for the session'),
-        serverSource.indexOf('Build context for the session') + 6000,
+        serverSource.indexOf('Build context for the session') + 10000,
       );
       // When message is long, the file must include the context data too
       expect(slackBlock).toContain('fullContent');
@@ -148,7 +148,7 @@ describe('Slack session continuity (anti-amnesia)', () => {
     it('normal spawn warns when history is empty', () => {
       const slackBlock = serverSource.slice(
         serverSource.indexOf('Build context for the session'),
-        serverSource.indexOf('Build context for the session') + 2000,
+        serverSource.indexOf('Build context for the session') + 10000,
       );
       expect(slackBlock).toContain('No history available for channel');
     });

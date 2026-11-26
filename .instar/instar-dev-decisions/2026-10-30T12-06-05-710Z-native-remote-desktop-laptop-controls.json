@@ -1,0 +1,22 @@
+{
+  "ts": "2026-10-30T12:06:05.710Z",
+  "slug": "native-remote-desktop-laptop-controls",
+  "suggestedTier": 1,
+  "declaredTier": 1,
+  "riskFloor": 1,
+  "riskFloorReasons": [],
+  "belowFloor": false,
+  "files": 1,
+  "loc": 31,
+  "scope": {
+    "basis": "staged-in-scope-additions-plus-deletions",
+    "files": [
+      "scripts/desktop-public-browser-smoke.mjs"
+    ],
+    "addedLines": 30,
+    "deletedLines": 1
+  },
+  "causalAutopsy": null,
+  "classClosure": null,
+  "verdict": "blocked"
+}

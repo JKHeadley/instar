@@ -18,9 +18,23 @@
 import crypto from 'node:crypto';
 import fs from 'node:fs';
 import path from 'node:path';
+import {durableStamp,isDurablyUnchanged,rememberDurable} from './GraphDurableFileMemo.js';
 import { execFileSync } from 'node:child_process';
 import { DegradationReporter } from '../monitoring/DegradationReporter.js';
 import { SafeFsExecutor } from './SafeFsExecutor.js';
+
+/** Opt-in durability barrier for callers that publish cryptographic receipts.
+ * It never creates a key, changes keychain enrollment or silently ignores I/O. */
+function syncSecretFileAndParents(file:string):void{
+ if(isDurablyUnchanged(file))return;
+ const stamp=durableStamp(file),before=fs.lstatSync(file);if(!before.isFile()||before.isSymbolicLink())throw new Error('secret-durability-file-invalid');
+ const descriptor=fs.openSync(file,fs.constants.O_RDONLY|(fs.constants.O_NOFOLLOW??0));
+ try{const opened=fs.fstatSync(descriptor);if(!opened.isFile()||opened.dev!==before.dev||opened.ino!==before.ino)throw new Error('secret-durability-file-changed');fs.fsyncSync(descriptor);}finally{fs.closeSync(descriptor);}
+ for(let directory=path.dirname(file);;directory=path.dirname(directory)){
+  const descriptor=fs.openSync(directory,'r');try{fs.fsyncSync(descriptor);}finally{fs.closeSync(descriptor);}if(path.dirname(directory)===directory)break;
+ }
+ rememberDurable(file,stamp);
+}
 
 // ── Constants ────────────────────────────────────────────────────────
 
@@ -70,6 +84,14 @@ export interface SecretStoreConfig {
   forceFileKey?: boolean;
   /** Test seam — see KeychainOps. Absent in production (real keychain used). */
   keychainOps?: KeychainOps;
+  /**
+   * Encrypted file path relative to `stateDir`. Defaults to the shared vault
+   * (`secrets/config.secrets.enc`). A different value gives a SEPARATE store
+   * with the same envelope and master key — used by the agent-held passkey
+   * store so passkeys never enter the shared vault (and so older builds, which
+   * only read the default path, never see them).
+   */
+  storeFile?: string;
 }
 
 /** The decrypted secrets object (flat key-value or nested) */
@@ -88,6 +110,32 @@ export interface EncryptedSecretPayload {
 }
 
 // ── Master Key Management ────────────────────────────────────────────
+
+/**
+ * On macOS a keychain read launches a child process and blocks the thread for
+ * tens of milliseconds, and every secret read asks for two accounts. A long
+ * operation reading secrets in a loop can block the agent for a minute. A found key
+ * and a genuine "not found" are remembered briefly in this process. A failure is
+ * never remembered, because acting on a false "no key" could overwrite a real one,
+ * and anything that might write re-reads the keychain first.
+ */
+const KEYCHAIN_READ_TTL_MS = 60_000;
+const KEYCHAIN_NOT_FOUND_EXIT = 44;
+const keychainReads = new Map<string, { value: Buffer | null; at: number }>();
+let keychainReadSaidNotFound = false;
+export function readKeychainMemoized(service: string, account: string, read: () => Buffer | null): Buffer | null {
+  const key = service + '\u0000' + account, now = Date.now(), known = keychainReads.get(key);
+  if (known && now - known.at >= 0 && now - known.at < KEYCHAIN_READ_TTL_MS) return known.value ? Buffer.from(known.value) : null;
+  if (known) { known.value?.fill(0); keychainReads.delete(key); }
+  keychainReadSaidNotFound = false;
+  const value = read();
+  if (value || keychainReadSaidNotFound) keychainReads.set(key, { value: value ? Buffer.from(value) : null, at: now });
+  return value;
+}
+/** Test seam: what the macOS read does when `security` says the item is absent. */
+export function noteKeychainNotFound(): void { keychainReadSaidNotFound = true; }
+/** Before anything that may write a key, and after any keychain write. */
+export function forgetKeychainReads(): void { for (const entry of keychainReads.values()) entry.value?.fill(0); keychainReads.clear(); }
 
 /**
  * Store/retrieve the master key from the OS keychain.
@@ -111,8 +159,8 @@ export class MasterKeyManager {
     this.forceFile = forceFile || inTestRun;
     this.keyFilePath = path.join(stateDir, 'machine', 'secrets-master.key');
     this.kc = keychainOps ?? (inTestRun ? { read: () => null, write: () => false } : {
-      read: (service, account) => this.readOsKeychain(service, account),
-      write: (service, account, key) => this.writeOsKeychain(service, account, key),
+      read: (service, account) => readKeychainMemoized(service, account, () => this.readOsKeychain(service, account)),
+      write: (service, account, key) => { forgetKeychainReads(); const written = this.writeOsKeychain(service, account, key); forgetKeychainReads(); return written; },
     });
   }
 
@@ -131,6 +179,10 @@ export class MasterKeyManager {
       const account = perAgentKeychainAccount(this.stateDir);
       const own = this.tryRead(account);
       if (own) return own;
+      // Everything below can write a key, so it must not act on a remembered answer.
+      forgetKeychainReads();
+      const fresh = this.tryRead(account);
+      if (fresh) return fresh;
       const legacy = this.tryRead(KEYCHAIN_ACCOUNT_LEGACY);
       if (legacy) {
         // Adoption: persist under the per-agent account so this agent's key
@@ -148,8 +200,12 @@ export class MasterKeyManager {
   /**
    * Every key this agent could plausibly have encrypted its store with, primary
    * first: [resolved primary, the OTHER source's key if it exists and differs].
-   * Read-only — alternates NEVER generate. Backs the dual-key read fallback
-   * (a v1 store written before the sources diverged stays readable, loudly).
+   * Read-only — this NEVER generates, adopts or writes key material (primary
+   * included): it backs SecretStore.read(), and a read that minted a key on a
+   * keychain miss orphaned the existing vault (feedback-1ddb71cc). An empty
+   * result means no key is reachable; read() then fails loudly. Backs the
+   * dual-key read fallback (a v1 store written before the sources diverged
+   * stays readable, loudly).
    */
   getCandidateKeys(): Array<{ key: Buffer; source: 'keychain' | 'file' }> {
     const out: Array<{ key: Buffer; source: 'keychain' | 'file' }> = [];
@@ -157,7 +213,7 @@ export class MasterKeyManager {
       if (key && !out.some((c) => c.key.equals(key))) out.push({ key, source });
     };
     if (this.forceFile) {
-      push(this.getFileKey(), 'file');
+      push(this.readExistingFileKey(), 'file');
       // Alternate: an existing keychain key (never generated) — covers a store
       // written under keychain resolution before forceFileKey was flipped on.
       push(this.tryRead(perAgentKeychainAccount(this.stateDir)), 'keychain');
@@ -167,14 +223,25 @@ export class MasterKeyManager {
     push(this.tryRead(perAgentKeychainAccount(this.stateDir)), 'keychain');
     push(this.tryRead(KEYCHAIN_ACCOUNT_LEGACY), 'keychain');
     // Existing file key as an alternate (do NOT generate one here — getFileKey
-    // generates; alternates must be read-only).
-    try {
-      if (fs.existsSync(this.keyFilePath)) {
-        push(Buffer.from(fs.readFileSync(this.keyFilePath, 'utf-8').trim(), 'hex'), 'file');
-      }
-    } catch { /* @silent-fallback-ok — unreadable alternate is simply absent */ }
-    if (out.length === 0) push(this.getMasterKey(), this.forceFile ? 'file' : 'keychain');
+    // generates; candidates must be read-only).
+    push(this.readExistingFileKey(), 'file');
     return out;
+  }
+
+  /** The existing file key, or null. Never generates. */
+  private readExistingFileKey(): Buffer | null {
+    try {
+      if (!fs.existsSync(this.keyFilePath)) return null;
+      const key = Buffer.from(fs.readFileSync(this.keyFilePath, 'utf-8').trim(), 'hex');
+      return key.length === MASTER_KEY_LENGTH ? key : null;
+    } catch { return null; /* @silent-fallback-ok — unreadable key is simply absent; read() fails loudly */ }
+  }
+
+  /** Flush an existing fallback key. A successful OS-keychain persistence/read
+   * uses that platform's durability contract; this method never enrolls a key. */
+  syncDurably():void {
+    if(fs.existsSync(this.keyFilePath)){syncSecretFileAndParents(this.keyFilePath);return;}
+    if(!this.isKeychainBacked)throw new Error('secret-durability-master-key-missing');
   }
 
   /** Whether the master key is stored in the OS keychain (vs file fallback). */
@@ -208,8 +275,9 @@ export class MasterKeyManager {
           '-w', // Print password only
         ], { encoding: 'utf-8', timeout: 5000, stdio: ['pipe', 'pipe', 'pipe'] }).trim();
         return Buffer.from(result, 'base64');
-      } catch {
+      } catch (error) {
         // @silent-fallback-ok — platform keychain read
+        if ((error as { status?: unknown }).status === KEYCHAIN_NOT_FOUND_EXIT) noteKeychainNotFound();
         return null;
       }
     } else if (process.platform === 'linux') {
@@ -248,13 +316,17 @@ export class MasterKeyManager {
           '-w', key.toString('base64'),
         ], { stdio: 'pipe', timeout: 5000 });
         return true;
-      } catch (err) {
+      } catch {
+        // Child-process errors can include credential-bearing arguments or output.
         DegradationReporter.getInstance().report({
           feature: 'SecretStore.writeMacOSKeychain',
           primary: 'Persist master key to macOS keychain',
-          fallback: 'Key only in memory — lost on restart',
-          reason: `Why: ${err instanceof Error ? err.message : String(err)}`,
-          impact: 'Master key not persisted, may be lost',
+          // Both callers fall back durably (fb-1e30d109-e50: this text claimed a memory-only key
+          // after an SSH join, which never happens): a new key goes to the owner-only key file, an
+          // adopted legacy key stays in its existing slot.
+          fallback: 'Key kept in the owner-only key file (or its existing keychain slot) instead',
+          reason: 'The OS keychain rejected the master-key write.',
+          impact: 'The master key is not in the OS keychain on this machine; it is still persisted',
         });
         return false;
       }
@@ -271,13 +343,17 @@ export class MasterKeyManager {
           stdio: ['pipe', 'pipe', 'pipe'],
         });
         return true;
-      } catch (err) {
+      } catch {
+        // Child-process errors can include credential-bearing arguments or output.
         DegradationReporter.getInstance().report({
           feature: 'SecretStore.writeLinuxKeychain',
           primary: 'Persist master key to Linux keychain',
-          fallback: 'Key only in memory — lost on restart',
-          reason: `Why: ${err instanceof Error ? err.message : String(err)}`,
-          impact: 'Master key not persisted, may be lost',
+          // Both callers fall back durably (fb-1e30d109-e50: this text claimed a memory-only key
+          // after an SSH join, which never happens): a new key goes to the owner-only key file, an
+          // adopted legacy key stays in its existing slot.
+          fallback: 'Key kept in the owner-only key file (or its existing keychain slot) instead',
+          reason: 'The OS keychain rejected the master-key write.',
+          impact: 'The master key is not in the OS keychain on this machine; it is still persisted',
         });
         return false;
       }
@@ -328,7 +404,7 @@ export class SecretStore {
   constructor(config: SecretStoreConfig) {
     this.stateDir = config.stateDir;
     this.keyManager = new MasterKeyManager(config.stateDir, config.forceFileKey, config.keychainOps);
-    this.encryptedPath = path.join(config.stateDir, 'secrets', 'config.secrets.enc');
+    this.encryptedPath = path.join(config.stateDir, config.storeFile ?? path.join('secrets', 'config.secrets.enc'));
   }
 
   /**
@@ -350,6 +426,15 @@ export class SecretStore {
 
     const raw = fs.readFileSync(this.encryptedPath);
     const candidates = this.keyManager.getCandidateKeys();
+    if (candidates.length === 0) {
+      // Reads never mint a key: on a keychain miss (locked keychain, SSH session
+      // without a login keychain) generating one would orphan this vault.
+      throw new Error(
+        'SecretStore: no master key is reachable (keychain entry unavailable and no key file). ' +
+        'The vault is NOT empty and was left untouched; no key was created. ' +
+        'Unlock the keychain (e.g. `security unlock-keychain` over SSH) and retry.',
+      );
+    }
 
     // ── v2 format: 'ISv2' | keyId(8) | iv | tag | ct — the keyId names the key ──
     if (raw.length > STORE_MAGIC_V2.length + KEY_ID_LENGTH && raw.subarray(0, STORE_MAGIC_V2.length).equals(STORE_MAGIC_V2)) {
@@ -411,10 +496,17 @@ export class SecretStore {
       fs.mkdirSync(dir, { recursive: true });
     }
 
-    // Atomic write via temp file
-    const tmpPath = this.encryptedPath + '.tmp';
+    // Atomic write via a unique temp file (two writers must never share one temp path)
+    const tmpPath = `${this.encryptedPath}.${process.pid}.${crypto.randomBytes(4).toString('hex')}.tmp`;
     fs.writeFileSync(tmpPath, encrypted, { mode: 0o600 });
     fs.renameSync(tmpPath, this.encryptedPath);
+  }
+
+  /** Explicit barrier for newly stored receipt/signing keys. Existing writes
+   * retain their behavior; receipt-producing callers must await this success. */
+  syncDurably():void {
+    // Verify existing ciphertext/key coherence before publishing any durability claim.
+    this.read();this.keyManager.syncDurably();syncSecretFileAndParents(this.encryptedPath);
   }
 
   /** Get a specific secret by dot-notation path (e.g., 'telegram.token'). */
@@ -435,6 +527,19 @@ export class SecretStore {
     const secrets = this.read();
     deleteNestedValue(secrets, keyPath);
     this.write(secrets);
+  }
+
+  /** Delete from an existing store without creating a vault or key when none exists.
+   * Only ENOENT proves absence; unreadable or corrupt storage must refuse the deletion.
+   */
+  deleteIfStoreExists(keyPath: string): void {
+    try {
+      fs.statSync(this.encryptedPath);
+    } catch (err) {
+      if ((err as NodeJS.ErrnoException).code === 'ENOENT') return;
+      throw err;
+    }
+    this.delete(keyPath);
   }
 
   /** Whether the secret store file exists. */
@@ -773,41 +878,67 @@ function buildX25519Spki(publicKeyRaw: Buffer): Buffer {
   return Buffer.concat([header, publicKeyRaw]);
 }
 
-/** Get nested value from object using dot notation. */
+/**
+ * Key-path segments that name JavaScript's object machinery rather than a stored key. A dotted
+ * path is caller-supplied (secret sync batches, setup flows), so a segment like `__proto__` must
+ * never be walked: it would reach the shared object prototype instead of the vault's own data.
+ * No real secret uses these names; a path containing one is refused on write and reads as absent.
+ */
+const RESERVED_KEY_SEGMENTS = new Set(['__proto__', 'prototype', 'constructor']);
+
+export function hasReservedKeySegment(keyPath: string): boolean {
+  return keyPath.split('.').some((part) => RESERVED_KEY_SEGMENTS.has(part));
+}
+
+/** A plain, non-null object stored as the vault's OWN property (never an inherited one). */
+function ownObjectChild(current: Record<string, unknown>, part: string): Record<string, unknown> | undefined {
+  if (!Object.prototype.hasOwnProperty.call(current, part)) return undefined;
+  const child = current[part];
+  return child !== null && typeof child === 'object' ? (child as Record<string, unknown>) : undefined;
+}
+
+/** Get nested value from object using dot notation. Only own properties are followed. */
 function getNestedValue(obj: Record<string, unknown>, keyPath: string): unknown {
+  if (hasReservedKeySegment(keyPath)) return undefined;
   const parts = keyPath.split('.');
   let current: unknown = obj;
   for (const part of parts) {
     if (current === null || current === undefined || typeof current !== 'object') {
       return undefined;
     }
+    if (!Object.prototype.hasOwnProperty.call(current, part)) return undefined;
     current = (current as Record<string, unknown>)[part];
   }
   return current;
 }
 
-/** Set nested value in object using dot notation. */
+/** Set nested value in object using dot notation. Throws on a reserved segment. */
 function setNestedValue(obj: Record<string, unknown>, keyPath: string, value: unknown): void {
+  if (hasReservedKeySegment(keyPath)) {
+    throw new Error('secret-key-path-reserved-segment: a secret key path may not contain __proto__, prototype or constructor');
+  }
   const parts = keyPath.split('.');
   let current: Record<string, unknown> = obj;
   for (let i = 0; i < parts.length - 1; i++) {
-    if (!(parts[i] in current) || typeof current[parts[i]] !== 'object') {
-      current[parts[i]] = {};
+    let child = ownObjectChild(current, parts[i]);
+    if (!child) {
+      child = {};
+      current[parts[i]] = child;
     }
-    current = current[parts[i]] as Record<string, unknown>;
+    current = child;
   }
   current[parts[parts.length - 1]] = value;
 }
 
-/** Delete nested value from object using dot notation. */
+/** Delete nested value from object using dot notation. A reserved segment is a no-op. */
 function deleteNestedValue(obj: Record<string, unknown>, keyPath: string): void {
+  if (hasReservedKeySegment(keyPath)) return;
   const parts = keyPath.split('.');
   let current: Record<string, unknown> = obj;
   for (let i = 0; i < parts.length - 1; i++) {
-    if (!(parts[i] in current) || typeof current[parts[i]] !== 'object') {
-      return; // Path doesn't exist
-    }
-    current = current[parts[i]] as Record<string, unknown>;
+    const child = ownObjectChild(current, parts[i]);
+    if (!child) return; // Path doesn't exist
+    current = child;
   }
   delete current[parts[parts.length - 1]];
 }

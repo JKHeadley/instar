@@ -1,0 +1,29 @@
+{
+  "version": 2,
+  "slug": "threadline-new-thread-honoured",
+  "sessionId": "764b2d9a-4d18-43a3-a73f-8e9e8737df02",
+  "timestamp": "2026-10-25T09:35:09.431Z",
+  "artifactPath": "upgrades/side-effects/threadline-new-thread-honoured.md",
+  "artifactSha256": "c3da06c309c263e6eed7f5d8e6eae9ad73896f81f47fff80c7fbe509d1b4f398",
+  "coveredFiles": [
+    "docs/specs/threadline-new-thread-honoured.eli16.md",
+    "src/core/PostUpdateMigrator.ts",
+    "src/scaffold/templates.ts",
+    "src/server/routes.ts",
+    "src/threadline/ThreadlineMCPServer.ts",
+    "src/threadline/mcp-http-client.ts",
+    "tests/integration/threadline/relay-send-new-thread.test.ts",
+    "tests/unit/PostUpdateMigrator-a2aNewThreadWithPeer.test.ts",
+    "tests/unit/feature-delivery-completeness.test.ts",
+    "tests/unit/mcp-http-client-new-thread.test.ts",
+    "upgrades/next/threadline-new-thread-honoured.md",
+    "upgrades/side-effects/threadline-new-thread-honoured.md"
+  ],
+  "phase": "complete",
+  "tier": 1,
+  "tierReasoning": "Narrow fix in one route plus a tool option and awareness text; a revert fully undoes it; no migration, auth or new blocking authority.",
+  "eli16Path": "docs/specs/threadline-new-thread-honoured.eli16.md",
+  "sideEffectsPath": "upgrades/side-effects/threadline-new-thread-honoured.md",
+  "secondPass": "true",
+  "reviewerConcurred": true
+}

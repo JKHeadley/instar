@@ -231,6 +231,7 @@ export function runAccretionSweep(record: AutonomousRunRecord, deps: SweepDeps):
     try {
       const startedMs = Date.parse(record.startedAt);
       for (const name of fs.readdirSync(deps.worktreesDir)) {
+        if (name === '.trash') continue; // the reaper's renamed-away checkouts, never a live worktree
         const p = path.join(deps.worktreesDir, name);
         let st: fs.Stats;
         try {

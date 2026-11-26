@@ -1,0 +1,27 @@
+{
+  "version": 2,
+  "slug": "witness-registry-client",
+  "sessionId": "16931423-497f-4a6c-af77-b1cfd4fac8c1",
+  "timestamp": "2026-10-25T21:28:26.654Z",
+  "artifactPath": "upgrades/side-effects/witness-registry-client.md",
+  "artifactSha256": "27885a556b06d2745bb236d68120a419435af4c7468b5db94248d67df66c5357",
+  "coveredFiles": [
+    "docs/specs/witness-registry-client.eli16.md",
+    "packages/witness/README.md",
+    "packages/witness/package.json",
+    "packages/witness/src/cli.ts",
+    "packages/witness/src/index.ts",
+    "packages/witness/src/localverify.ts",
+    "packages/witness/src/registry.ts",
+    "packages/witness/test/registry.test.mjs",
+    "upgrades/next/witness-registry-client.md",
+    "upgrades/side-effects/witness-registry-client.md"
+  ],
+  "phase": "complete",
+  "tier": 1,
+  "tierReasoning": "Additive client commands in the standalone instar-witness package: no gate, no authority over any agent, no Instar server code; a revert fully undoes it. Tested against the live registry.",
+  "eli16Path": "docs/specs/witness-registry-client.eli16.md",
+  "sideEffectsPath": "upgrades/side-effects/witness-registry-client.md",
+  "secondPass": "not-required",
+  "reviewerConcurred": null
+}

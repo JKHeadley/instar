@@ -28,6 +28,88 @@ contested-then-cleared: 2
 
 # Test-Runner Concurrency Bound — a host-wide vitest semaphore (Bounded Blast Radius)
 
+## 2026-10-26 operational extension — merge-gate priority
+
+Between about 20:47 and 23:42 PDT, Local Verify started no real runs while
+ad-hoc full suites repeatedly occupied the Studio's only suite slot. Local
+Verify correctly requeued on each overlap, but the limiter admitted the next
+ad-hoc waiter before the merge gate could start. The queue was full throughout.
+
+When a coordinator has a runnable Local Verify entry, it publishes a
+host-local, per-agent claim for the next full-suite slot before checking the
+current holder. It keeps renewing that claim while the child installs, builds,
+and lints. This closes the observed preparation race: an ad-hoc suite could
+otherwise take an idle slot after spawn and force the verifier to requeue. Just
+before the lane phase, the child also publishes its own claim and waits up to 45
+minutes for the current holder to finish. The coordinator observes the child's
+own suite holder on its 30-second tick, then clears its claim so a host with a
+suite cap above one can use spare slots. The child clears its own claim on
+acquisition or error. Claims renew while waiting and expire after two minutes without
+renewal; dead-owner, expired, corrupt, and foreign-host claims are ignored.
+When either the server or its scrubbed-environment verifier child resolves to
+one suite slot, if another local queue entry is runnable while the current
+verifier holds the only suite slot, the coordinator keeps its claim for that
+*next* entry. Otherwise a waiting ordinary suite can take the slot between
+two verifier runs. It rechecks the normal queue decision on every pump; an
+update pause, merge hold, main-red hold, remote reservation, empty queue, or
+changed verifier releases the claim. If both processes resolve to more than
+one slot, it still
+clears the claim after the current child acquires its slot, so an ordinary
+suite can use spare capacity. This extension repairs the production cap-one
+path; a multi-slot host's next-run reservation remains a separate capacity
+policy decision.
+An ordinary suite waits while a live claim exists, even if the current holder
+has just released. The Local Verify child is the only caller that requests
+`priority: 'merge-gate'`, so it can acquire that slot. Targeted tests keep
+their separate lane. A paused, held, stopped, or empty verifier clears its
+claim; shutdown clears it too. The 45-minute ordinary suite acquire budget
+and fail-open behavior on persistent limiter uncertainty remain in force.
+
+`GET /test-runner-limiter` reports `mergeGatePriority.active`, so a wait with
+zero holders has a visible reason. The claim store is bounded to 64 stable
+per-agent files under `~/.instar/host-test-runner-priority/`.
+
+## 2026-10-28 operational extension — fair turns for waiting suites
+
+On 2026-10-28 a live Mac desktop check for the remote-desktop work waited more
+than 50 minutes while three Local Verify suites in a row took the Studio's only
+full-suite slot. The Mac was idle. Later, the same work's end-to-end stage
+waited 32 minutes behind more verification runs and was stopped. The 10-26
+claim made an ordinary suite wait for as long as any live merge-gate claim
+existed, and the coordinator renews its claim for each next queued entry. A busy
+merge queue therefore had no limit on how long it could hold back an ordinary
+suite. Admission was also first-to-poll: nothing gave a long waiter its turn.
+
+This is the aging/waiter-ticket refinement that §2.6 pre-authorized. The suite cap
+stays at one and isolation is unchanged. Only the choice of who goes next
+changes:
+
+- A suite request that has to wait writes a ticket under
+  `~/.instar/host-test-runner-waiters/` (one file per waiter: id, pid, host,
+  priority, start time, and a 60-second lease renewed on every poll). It deletes
+  the ticket when it is admitted, gives up, or fails open. A dead, expired,
+  foreign-host, future-dated or corrupt ticket is ignored. The store is bounded
+  to 64 files.
+- When the slot frees, the order is: an ordinary suite that has waited 15 minutes
+  (`SUITE_WAITER_AGING_MS`), oldest first; then merge-gate work; then the other
+  ordinary suites in arrival order. Ties break by start time, then by id, so two
+  waiters never both step aside.
+- An ordinary suite that has waited 15 minutes no longer yields to the
+  coordinator's claim. A merge-gate child that finds such a waiter ahead keeps
+  waiting, and if its 45-minute budget runs out it requeues without using up
+  an attempt, as before.
+- A request is admitted when live holders plus waiters ahead of it are fewer
+  than the cap.
+
+Merge-gate work still gets the next slot ahead of any ordinary suite that has
+waited less than 15 minutes, so the 10-26 preparation race stays closed. The
+longest an ordinary suite now waits is about the current holder's remaining time
+plus 15 minutes, not an unbounded number of verifier runs. The tickets are new
+files, so the change is additive under the schema rule. An older checkout
+ignores them and keeps barging. `GET /test-runner-limiter` reports
+`suiteWaiters` (pid, priority, waitedMs, aged), next first, and the wait line
+names how many waiters are ahead.
+
 ## Constitutional fit
 
 This spec implements the **Bounded Blast Radius** constitutional standard (the same standard that mandates the fork-bomb LLM-spawn cap). An unbounded per-actor resource-spawn pattern whose host-wide aggregate is catastrophic is precisely what that standard exists to prevent; the test-runner storm is the second instance of that class (the first, LLM subprocesses, is already bounded). It also serves **Responsible Resource Usage** (OS resource hygiene) and directly closes the load-stall kill cascade documented in the 2026-07-02 respawn root-cause analysis.
@@ -163,7 +245,7 @@ The skip is therefore **corroborated, holder-scoped, and cross-checked** — the
 - **Watch / list exemption — kept, but NEVER quiet (round-4 adversarial HIGH).** Detect via the globalSetup context `config.watch` (vitest v2+ context arg) with an argv fallback; a watch session skips (a long-lived interactive tool must not hold a slot for hours — and having its lingering watcher HOLD a suite slot would wedge the cap-1 lane, the §1.1 false-BLOCK direction, so the exemption stands rather than an initial-run acquire). But round-4 review established two ways this was the cheapest remaining cap-dodge, both now surfaced: (1) **bare `vitest` in a TTY DEFAULTS into watch mode** — agent tmux panes have TTYs, so the incident population reaches the exemption *accidentally*. A run that defaulted into watch (no explicit `--watch`/`-w` in argv) always gets the loud stderr WARN + a "use `vitest run`" hint, never the quiet one-liner. (2) Adversarially, `--watch` is a labeled-innocent full-suite skip — so ANY watch skip in an agent-launched/non-interactive context (the `INSTAR_HOST_TEST_RUN_CLASS` hint, agent env markers) also escalates to the loud WARN, watch skips are a named soak-review metric (§4), and a SUSTAINED watch-skip pattern on a dev host is graded like `off` — `diverged`, same attention item, and the same `dev:preflight`/pre-push (WARN-only) ledger pattern check as (b) above. A deliberate human `--watch` in an interactive shell keeps its quiet skip line. A collect/list invocation (`vitest list`, used by `pre-push-smoke.mjs`) is no-op'd on the same seam so a mere listing doesn't wait for or consume a slot.
 - **Every skip prints one deterministic line** naming the reason (`off` / `CI` / `watch` / `list` / `reentrant` / `fail-open-admit`) AND the resolved posture (`dry-run` / `enforcing`), and appends the same to the event ledger — an inert bound is never silent (a fork-storm debugged with the guard off must be observable, and a mixed-posture host must be detectable per-run). **`targeted-run` is NOT a skip reason (round-4: three reviewers, converging):** a targeted run ACQUIRES a targeted-lane slot (§2.3) and is ledgered as an `acquire` event with run-class + file count (§2.8) — its per-run console line is the targeted-lane ACQUIRE announcement (mirroring the suite-lane acquire line), never a `skip` kind. Emitting both would double-count targeted activity in the skip histogram and pollute the §4 soak evidence.
 - **Distinct capacity-timeout signal.** The timeout throws a typed error with a DISTINCT exit code and an unmistakable message: "could not START within budget — this is NOT a test failure; N holders: [pid, age]; levers: INSTAR_HOST_TEST_SEMAPHORE=off, INSTAR_HOST_TEST_MAX". The per-minute wait line goes to STDERR and carries an active-work indicator recognized by the silence/load-stall sentinels (§2.10). CLAUDE.md tells agents a rejected push may be contention, not red tests — and that a `git push` run under an outer command timeout needs that timeout ≥ the pre-push acquire budget (a correctly-waiting push must not be killed by its own caller; see §2.9 budgets).
-- **Priority/timeout split.** Interactive- and pre-push-launched runs get the longer wait budget (user-blocking, few); background `/build` verification runs get the short fail-loud budget. The class is derived from the launching config (push config, or `INSTAR_HOST_TEST_RUN_CLASS=background` set by the server when it launches build tooling), never from user input. Defaults in §2.9. Admission remains barging (no FIFO claim, §3); the starvation risk this creates for the push class at cap=1 is a named soak-review item — the ledger's would-wait data (§2.8) is collected precisely so a starvation signature (push-class waits trending toward ceiling) is visible BEFORE the enforce flip, and the pre-authorized cheap mitigation is an aging/waiter-ticket refinement or push-class priority admission, buildable post-soak without a new convergence round.
+- **Priority/timeout split.** Interactive- and pre-push-launched runs get the longer wait budget (user-blocking, few); background `/build` verification runs get the short fail-loud budget. The class is derived from the launching config (push config, or `INSTAR_HOST_TEST_RUN_CLASS=background` set by the server when it launches build tooling), never from user input. Defaults in §2.9. Admission order now comes from the 2026-10-28 waiter tickets; before them it was barging, and the starvation risk this creates for the push class at cap=1 is a named soak-review item — the ledger's would-wait data (§2.8) is collected precisely so a starvation signature (push-class waits trending toward ceiling) is visible BEFORE the enforce flip, and the pre-authorized cheap mitigation is an aging/waiter-ticket refinement or push-class priority admission, buildable post-soak without a new convergence round.
 - **Recovery lever (the 2026-07-01 lesson).** `POST /test-runner-limiter/prune` forces a full reclaim pass — the surfaced action replacing hand-edits of JSON. Bearer-auth, POST-only, never on any unauthenticated allowlist, single-flight (concurrent calls coalesce), rate-limited (one forced pass per 5s), and its response enumerates what was reclaimed vs would-be-reclaimed. This route and the globalSetup acquire path are the ONLY two places persistent reclaim (row removal, corroborated signaling) happens — the GET route is pure (§2.7).
 
 ### 2.7 Observability route (parity + no-lie constraint)
@@ -189,7 +271,7 @@ This single ledger is simultaneously: (a) the **soak evidence** — "zero false 
 - `INSTAR_HOST_TEST_MAX` — suite-lane cap, per-process override; host-uniform authority is the tuning file; code-default **1** (ratified §4).
 - `INSTAR_HOST_TEST_TARGETED_MAX` — targeted-lane cap, per-process override; host-uniform authority is the tuning file; default **6** (§2.3).
 - *(`INSTAR_HOST_TEST_NESTED_MAX` was REMOVED in round 8 — nested children are now unconditionally clamped to ≤4 workers with no per-slot count, §2.5, so there is no nested cap to tune.)*
-- `INSTAR_HOST_TEST_ACQUIRE_MS` — background-class SUITE-lane wait budget, default **120000** (2 min, fail-loud). The interactive/pre-push budget resolves as: `INSTAR_HOST_TEST_ACQUIRE_MS_INTERACTIVE` if set, ELSE 5 × the resolved background budget (env or default; note 5×120000 already = the 600000 default — the third clause is a harmless floor). Queue-depth math: at cap=1 the expected wait is (queue depth) × (suite + prepended dist build); the interactive ceiling must cover a depth-1 queue of the p95 suite HOLD duration — an assumption §4 validates against real ledger data before the flip, not an assertion (round-2 scalability finding).
+- `INSTAR_HOST_TEST_ACQUIRE_MS` — background-class SUITE-lane wait budget. Resolution: env → tuning-file `acquireMs` (ms, honored in 10 s..4 h) → default **2700000** (45 min). The interactive/pre-push budget resolves as `INSTAR_HOST_TEST_ACQUIRE_MS_INTERACTIVE` → tuning-file `acquireMsInteractive` → the resolved background budget. (Amended 2026-10-22, CMT-908: the original 2 min / 10 min interactive defaults were below the measured p95 suite hold of ~41 min, so queued runs failed with exit 75 instead of waiting. The push config, which runs one worker, takes the targeted lane when its resolved pool bound is ≤4.)
 - `INSTAR_HOST_TEST_TARGETED_ACQUIRE_MS` — TARGETED-lane wait budget, default **60000** (1 min, fail-loud/THROW — §2.3; a targeted run whose lane is full throws the typed capacity-timeout, never fail-open-admits).
 - `INSTAR_HOST_TEST_TTL_MS` — max-hold ceiling, default 3600000; stamped per-row at acquire (§2.4).
 - `INSTAR_HOST_TEST_TTL_SIGNAL` — the signal arm, with an ASYMMETRIC env override (round-6 adversarial MEDIUM — the last quiet twin, closed structurally): **env can only DISARM, never ARM.** `INSTAR_HOST_TEST_TTL_SIGNAL=0` is honored per-process (the weaker direction is always available); `=1` against an authority (tuning file, else code-default) that is UNARMED is **IGNORED + loud stderr WARN + WARN ledger event** — arming the one lever that kills processes is tuning-file-only, so a leaked/inherited env context carrying `TTL_SIGNAL=1 ENFORCE=1` is structurally incapable of running kill-mode reclaim against an unarmed host (no surfacing race to lose — the dangerous direction does not exist per-process). The resolved arm is stamped into every ledger event alongside posture and caps; arm-divergence joins the preflight/pre-push (WARN-only) pattern list and the server-side diverged grading; §5 asserts env-armed-vs-unarmed-authority resolves to UNARMED + WARN; §6 row added. (Default remains OFF — the DEFAULT reclaim never signals; §2.4.)
@@ -233,7 +315,7 @@ While the resolved posture is dry-run (§2.9), the chokepoint performs **FULL bo
 - NOT a change to any test's content or vitest version (the §2.3 config-time maxWorkers clamp on targeted-lane runs is the sole pool-settings touch).
 - NOT a guarantee that the bound holds through a persistent lock wedge: fail-open admits multiple roots while a lock stays wedged (§2.4), so the bound is temporarily LOST in the safe direction until the 10s age-reclaim fires. Witness records make those admissions auditable (visible in `admittedOpen`), not re-counted. This is the deliberate trade — a wedged lock must never wedge the dev loop.
 - NOT an absolute "targeted runs cannot fork-storm": the per-run maxWorkers≤4 clamp bounds ONE run; the aggregate is bounded by the targeted LANE's atomic cap `INSTAR_HOST_TEST_TARGETED_MAX` (§2.3), so worst-case targeted-lane load is ~`TARGETED_MAX × 4` workers, not unlimited. The arithmetic (N slots × 4) is stated so the lane cap's value can be sized against core count.
-- NOT a scheduler with priorities/preemption. Admission is barging (whoever wins the lock when a slot frees), bounded by the wait ceiling — **the spec makes NO FIFO fairness claim** (the holder-set primitive has no arrival ordering). Push-class starvation under barging is a named soak-review item with a pre-authorized refinement path (§2.6). A monotonic arrival ticket is a possible future refinement, explicitly out of scope.
+- NOT a scheduler with preemption. A running suite is never stopped for a waiter. Waiting suites take turns through the waiter tickets of the 2026-10-28 extension (an aged ordinary suite, then merge-gate work, then arrival order), bounded by the wait ceiling. An actor on an older checkout has no tickets and still barges.
 - NOT cross-machine: holders file host-local by the `df -P` fail-closed contract. Multi-machine posture: **machine-local BY DESIGN** — a test run consumes THIS host's cores; the route needs no `?scope=pool` (nothing to aggregate). The flip file, df marker, ledger, and witness records are machine-local for the same reason. "Host-wide" means **across actors sharing one OS-user home** (`os.homedir()`); a multi-OS-user host (e.g. an operator's `git push` as `justin` vs an agent's `pnpm test` as `justin_instar_1`) is not bounded across users — stated, with single-user dev host as the covered case. The test cap and the LLM spawn cap are **additive, not jointly bounded** — and the combined worst case is stated as a BUDGET TABLE (round-4 codex) so the sum is a reviewed number, not an implication. Worst legal concurrent load at defaults on a 16-core host:
 
   | Term | Source | Worst case |

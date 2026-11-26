@@ -1,0 +1,120 @@
+name: Publish threadline-core
+
+# Publishes packages/threadline-core to npm as threadline-core: Threadline's agent-to-agent
+# fundamentals (identity, encrypted envelopes, pairing by invite, pinned keys, the credential
+# gate) with no framework attached (spec docs/specs/threadline-standalone-pairing.md). It must be
+# on npm BEFORE a threadline-mcp release that depends on it. Dependencies come from the
+# package's lockfile (`npm ci`); its tests and the protocol suite must pass before publishing.
+
+on:
+  workflow_dispatch:
+  push:
+    branches: [main]
+    paths:
+      - 'packages/threadline-core/**'
+
+concurrency:
+  group: publish-threadline-core
+  cancel-in-progress: false
+
+jobs:
+  # Build and every test, with NO secrets: dependency install scripts never run beside a token
+  # (Echo's review of #2192, SEC-2).
+  test:
+    name: Test threadline-core
+    runs-on: ubuntu-latest
+    if: "github.ref == 'refs/heads/main' && !contains(github.event.head_commit.message, '[skip ci]')"
+    permissions:
+      contents: read
+    steps:
+      - uses: actions/checkout@v4
+        with:
+          persist-credentials: false
+
+      - uses: actions/setup-node@v4
+        with:
+          node-version: 20
+
+      - name: Build and test the package
+        working-directory: packages/threadline-core
+        run: |
+          npm ci --no-audit --no-fund --ignore-scripts
+          npm test
+
+      # The protocol (invite, store, flow, pinned keys, the credential gate, the standalone module) is
+      # tested in this repo's suite, including byte-compatibility with Instar.
+      - name: Protocol suite
+        run: |
+          npm ci --no-audit --no-fund --ignore-scripts
+          npx vitest run tests/unit/threadline-core tests/unit/threadline/threadline-core-compat.test.ts
+
+  # Publishes only from main, only after the tests pass. The npm token is visible to the publish
+  # step alone; the release token only to the push of the version bump.
+  publish:
+    name: Publish threadline-core
+    needs: test
+    runs-on: ubuntu-latest
+    # Only main can deploy to this environment (repo setting), so a branch's edited copy of this
+    # workflow cannot reach what it holds (Echo's review of #2192, SEC-1).
+    environment: npm-publish
+    if: "github.ref == 'refs/heads/main' && !contains(github.event.head_commit.message, '[skip ci]')"
+    permissions:
+      contents: read
+      id-token: write
+    steps:
+      - uses: actions/checkout@v4
+        with:
+          persist-credentials: false
+
+      - uses: actions/setup-node@v4
+        with:
+          node-version: 20
+          registry-url: 'https://registry.npmjs.org'
+
+      - name: Install and build
+        working-directory: packages/threadline-core
+        run: |
+          npm ci --no-audit --no-fund --ignore-scripts
+          npm run build
+
+      - name: Check if version changed
+        id: check
+        working-directory: packages/threadline-core
+        run: |
+          LOCAL=$(node -p "require('./package.json').version")
+          REMOTE=$(npm view @sagemindai/threadline-core version 2>/dev/null || echo "0.0.0")
+          if [ "$LOCAL" = "$REMOTE" ]; then
+            npm version patch --no-git-tag-version
+            NEW=$(node -p "require('./package.json').version")
+            echo "bumped=true" >> "$GITHUB_OUTPUT"
+            echo "version=$NEW" >> "$GITHUB_OUTPUT"
+            echo "Bumped $LOCAL → $NEW"
+          else
+            echo "bumped=false" >> "$GITHUB_OUTPUT"
+            echo "version=$LOCAL" >> "$GITHUB_OUTPUT"
+            echo "Already at $LOCAL (remote: $REMOTE)"
+          fi
+
+      # npm trusted publishing (OIDC, no stored npm token) needs npm 11.5.1 or later. NPM_TOKEN stays
+      # only as the fallback for the first publish of a new package; remove it from the repo once the
+      # package's trusted publisher (this repo, this workflow, environment npm-publish) is set on npmjs.com.
+      - name: Use an npm that supports trusted publishing
+        run: npm install -g npm@^11.5.1
+
+      - name: Publish to npm
+        working-directory: packages/threadline-core
+        run: npm publish --provenance --access public --ignore-scripts
+        env:
+          NODE_AUTH_TOKEN: ${{ secrets.NPM_TOKEN }}
+
+      - name: Commit version bump
+        if: steps.check.outputs.bumped == 'true'
+        env:
+          HUSKY: '0'
+          RELEASE_TOKEN: ${{ secrets.RELEASE_TOKEN }}
+        run: |
+          git config user.name "github-actions[bot]"
+          git config user.email "github-actions[bot]@users.noreply.github.com"
+          git add packages/threadline-core/package.json
+          git commit -m "chore: release threadline-core v${{ steps.check.outputs.version }} [skip ci]"
+          git push "https://x-access-token:${RELEASE_TOKEN}@github.com/${GITHUB_REPOSITORY}.git" HEAD:main

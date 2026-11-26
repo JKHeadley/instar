@@ -1,0 +1,27 @@
+{
+  "ts": "2026-09-23T12:32:53.935Z",
+  "slug": "passkey-inc8-pool-read-path",
+  "suggestedTier": 1,
+  "declaredTier": 2,
+  "riskFloor": 1,
+  "riskFloorReasons": [],
+  "belowFloor": false,
+  "files": 2,
+  "loc": 5,
+  "scope": {
+    "basis": "staged-in-scope-additions-plus-deletions",
+    "files": [
+      "src/commands/server.ts",
+      "src/server/routes.ts"
+    ],
+    "addedLines": 5,
+    "deletedLines": 0
+  },
+  "causalAutopsy": null,
+  "classClosure": {
+    "defectClass": "unbounded-self-action",
+    "closure": "n/a",
+    "reason": "the pool reader is a bounded read poll — one GET per peer per 5-minute tick, no retry, no notify, no restart; no self-triggered corrective action is added"
+  },
+  "verdict": "blocked"
+}

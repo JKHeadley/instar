@@ -14,8 +14,11 @@ import fs from 'node:fs';
 import os from 'node:os';
 import path from 'node:path';
 import { validateManifest } from '../../src/scheduler/AgentMdJobLoader.js';
+import { installBuiltinJobs } from '../../src/scheduler/InstallBuiltinJobs.js';
 import { PostUpdateMigrator } from '../../src/core/PostUpdateMigrator.js';
 import { SafeFsExecutor } from '../../src/core/SafeFsExecutor.js';
+import { JEV_EVIDENCE_DIR_NAME, buildJevJobCompletionAudit } from '../../src/scheduler/JevJobCompletionAudit.js';
+import { jevJobCompletionAuditAwareness } from '../../src/scaffold/templates.js';
 
 type Result = { upgraded: string[]; skipped: string[]; errors: string[] };
 const dirs: string[] = [];
@@ -64,6 +67,36 @@ describe('the built-in batch job excludes itself (no self-audit recursion)', () 
     expect(tpl).toContain('completionAudit: excluded');
     expect(tpl).toContain('enabled: false');
     expect(tpl).toContain('/jev-audit/batch');
+  });
+});
+
+describe('the INSTALLED manifest carries the audit vocabulary (the loader reads the manifest, not the frontmatter)', () => {
+  it('buildPerSlugManifest carries completionAudit and declaredEffects', async () => {
+    const { buildPerSlugManifest } = await import('../../src/scheduler/buildPerSlugManifest.js');
+    const m = buildPerSlugManifest({
+      slug: 'x', origin: 'instar', schedule: '0 * * * *', priority: 'low',
+      expectedDurationMinutes: 5, enabled: true, execute: { type: 'agentmd' },
+      completionAudit: 'excluded', declaredEffects: ['out/a.md'],
+    } as never);
+    // Without these the batch job's own self-exclusion is silently inert.
+    expect(m.completionAudit).toBe('excluded');
+    expect(m.declaredEffects).toEqual(['out/a.md']);
+  });
+
+  it('installBuiltinJobs writes the batch job manifest with completionAudit: excluded', () => {
+    const dir = fs.mkdtempSync(path.join(os.tmpdir(), 'jev-audit-install-'));
+    dirs.push(dir);
+    fs.mkdirSync(path.join(dir, '.instar'), { recursive: true });
+    const report = installBuiltinJobs({
+      agentStateDir: path.join(dir, '.instar'),
+      packageRoot: path.resolve(__dirname, '../..'),
+      port: 4042,
+    });
+    expect(report.errors).toEqual([]);
+    const manifestPath = path.join(dir, '.instar', 'jobs', 'schedule', 'jev-completion-audit.json');
+    expect(fs.existsSync(manifestPath)).toBe(true);
+    const manifest = JSON.parse(fs.readFileSync(manifestPath, 'utf8'));
+    expect(manifest.completionAudit).toBe('excluded'); // the auditor never audits itself
   });
 });
 
@@ -117,7 +150,92 @@ describe('structural absence: the wake-reaper path never reaches the audit', () 
     const src = fs.readFileSync(path.resolve(__dirname, '../../src/scheduler/JobScheduler.ts'), 'utf8');
     const reaper = src.slice(src.indexOf('reapStuckRuns'), src.indexOf('reapStuckRuns') + 6000);
     expect(reaper).not.toContain('jevAudit');
-    // Both live-output callsites are wired:
-    expect(src.match(/this\.jevAudit\?\.capture\(/g)?.length).toBe(3); // model-session + script then/catch
+    // All live-output callsites are wired: model-session, legacy script
+    // then/catch, and the new protocol-script completion funnel.
+    expect(src.match(/this\.jevAudit\?\.capture\(/g)?.length).toBe(4);
+  });
+});
+
+describe('conditionalEffects reaches the INSTALLED manifest (the loader reads the manifest, not the frontmatter)', () => {
+  it('buildPerSlugManifest carries conditionalEffects', async () => {
+    const { buildPerSlugManifest } = await import('../../src/scheduler/buildPerSlugManifest.js');
+    const m = buildPerSlugManifest({
+      slug: 'x', origin: 'instar', schedule: '0 * * * *', priority: 'low',
+      expectedDurationMinutes: 5, enabled: true, execute: { type: 'agentmd' },
+      conditionalEffects: ['.instar/MEMORY.md'],
+    } as never);
+    expect(m.conditionalEffects).toEqual(['.instar/MEMORY.md']);
+  });
+
+  it('installBuiltinJobs writes the two declaring jobs with their conditional effects — read from the installed artifact', () => {
+    const dir = fs.mkdtempSync(path.join(os.tmpdir(), 'jev-cond-install-'));
+    dirs.push(dir);
+    fs.mkdirSync(path.join(dir, '.instar'), { recursive: true });
+    const report = installBuiltinJobs({
+      agentStateDir: path.join(dir, '.instar'),
+      packageRoot: path.resolve(__dirname, '../..'),
+      port: 4042,
+    });
+    expect(report.errors).toEqual([]);
+    const read = (slug: string) => JSON.parse(fs.readFileSync(path.join(dir, '.instar', 'jobs', 'schedule', `${slug}.json`), 'utf8'));
+    expect(read('reflection-trigger').conditionalEffects).toEqual(['.instar/MEMORY.md']);
+    expect(read('commitment-detection').conditionalEffects).toEqual(['.instar/state/commitment-detection-bookmark.json']);
+    // The templates instruct the run to print the claim marker for exactly those paths.
+    const tpl = (slug: string) => fs.readFileSync(path.resolve(__dirname, `../../src/scaffold/templates/jobs/instar/${slug}.md`), 'utf8');
+    expect(tpl('reflection-trigger')).toContain('EFFECT: .instar/MEMORY.md');
+    expect(tpl('commitment-detection')).toContain('EFFECT: .instar/state/commitment-detection-bookmark.json');
+  });
+});
+
+describe('conditionalEffects shares the declaredEffects jail at load', () => {
+  it('accepts a repo-relative entry and refuses traversal/absolute by name', () => {
+    const m = validateManifest(baseManifest({ conditionalEffects: ['.instar/MEMORY.md'] }));
+    expect(m.conditionalEffects).toEqual(['.instar/MEMORY.md']);
+    expect(() => validateManifest(baseManifest({ conditionalEffects: ['../escape.md'] }))).toThrow(/conditionalEffects.*repo-relative/);
+    expect(() => validateManifest(baseManifest({ conditionalEffects: ['/etc/passwd'] }))).toThrow(/conditionalEffects.*repo-relative/);
+    expect(() => validateManifest(baseManifest({ conditionalEffects: Array.from({ length: 9 }, (_, i) => `f${i}`) }))).toThrow(/at most 8/);
+  });
+});
+
+describe('documented evidence path matches the writer (EVO-027)', () => {
+  const documented = `.instar/${JEV_EVIDENCE_DIR_NAME}/`;
+  const stale = '.instar/state/jev-supervision-evidence/';
+
+  function migrateCard(existing: string): { after: string; result: Result } {
+    const dir = fs.mkdtempSync(path.join(os.tmpdir(), 'jev-path-'));
+    dirs.push(dir);
+    const claudeMd = path.join(dir, 'CLAUDE.md');
+    fs.writeFileSync(claudeMd, existing);
+    const stateDir = path.join(dir, '.instar');
+    fs.mkdirSync(stateDir);
+    const migrator = new PostUpdateMigrator({ projectDir: dir, stateDir, port: 4042, hasTelegram: false, projectName: 't' });
+    const result: Result = { upgraded: [], skipped: [], errors: [] };
+    (migrator as unknown as { migrateClaudeMd(r: Result): void }).migrateClaudeMd(result);
+    return { after: fs.readFileSync(claudeMd, 'utf8'), result };
+  }
+
+  it('the audit writes packs to the path the card and spec cite', () => {
+    const stateDir = path.join('/agent', '.instar');
+    const audit = buildJevJobCompletionAudit({
+      stateDir,
+      readLiveIntelligence: () => undefined,
+      readSecret: () => undefined,
+    } as unknown as Parameters<typeof buildJevJobCompletionAudit>[0]);
+    const written = (audit as unknown as { deps: { evidenceDir: string } }).deps.evidenceDir;
+    expect(written + '/').toBe(path.join('/agent', documented));
+
+    const spec = fs.readFileSync(path.join(process.cwd(), 'docs/specs/jev-job-supervision.md'), 'utf8');
+    for (const text of [jevJobCompletionAuditAwareness(), spec]) {
+      expect(text).toContain(documented);
+      expect(text).not.toMatch(/state\/jev-supervision-evidence/);
+    }
+  });
+
+  it('corrects the stale path in an existing card, once', () => {
+    const { after, result } = migrateCard(`### Jev Job-Completion Audit\npacks under \`${stale}\`\n`);
+    expect(after).not.toContain(stale);
+    expect(after).toContain(documented);
+    expect(result.upgraded.filter(u => u.includes('Jev evidence-pack path'))).toHaveLength(1);
+    expect(migrateCard(after).result.upgraded.filter(u => u.includes('Jev evidence-pack path'))).toHaveLength(0);
   });
 });

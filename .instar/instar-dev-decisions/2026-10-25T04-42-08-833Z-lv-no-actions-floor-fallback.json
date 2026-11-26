@@ -1,0 +1,25 @@
+{
+  "ts": "2026-10-25T04:42:08.833Z",
+  "slug": "lv-no-actions-floor-fallback",
+  "suggestedTier": 2,
+  "declaredTier": 1,
+  "riskFloor": 1,
+  "riskFloorReasons": [],
+  "belowFloor": false,
+  "files": 4,
+  "loc": 123,
+  "scope": {
+    "basis": "staged-in-scope-additions-plus-deletions",
+    "files": [
+      "src/commands/server.ts",
+      "src/localVerify/StatusReconciler.ts",
+      "src/localVerify/floorGate.ts",
+      "src/localVerify/statusProjection.ts"
+    ],
+    "addedLines": 111,
+    "deletedLines": 12
+  },
+  "causalAutopsy": null,
+  "classClosure": null,
+  "verdict": "pass"
+}

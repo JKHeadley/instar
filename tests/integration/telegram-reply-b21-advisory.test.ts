@@ -59,6 +59,7 @@ function buildApp(opts: {
     telegram: {
       sendToTopic: async (topicId: number, text: string) => {
         opts.sent.push({ topicId, text });
+        return { messageId: opts.sent.length, topicId };
       },
     },
     sessionManager: { clearInjectionTracker: () => {} },

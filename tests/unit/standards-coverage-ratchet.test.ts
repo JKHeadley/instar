@@ -418,6 +418,8 @@ describe('standards-coverage ratchet script', () => {
       '  standards-coverage:',
       '    name: Standards Enforcement Coverage',
       '    runs-on: ubuntu-latest',
+      // Pinned as of 2026-11-02 (ACT-059): every CI job declares timeout-minutes.
+      '    timeout-minutes: 15',
       // Pinned as of 2026-08-23: path B's token scope is declared, not inherited.
       '    permissions:',
       '      contents: read',
@@ -532,6 +534,17 @@ describe('standards-coverage ratchet script', () => {
     const reviewEventUnhandled = runFullCheck();
     expect(reviewEventUnhandled.code).toBe(1);
     expect(reviewEventUnhandled.out).toContain('requires dependency install plus full-history protected-base extraction');
+
+    // The job's timeout is pinned too (ACT-059): without one a hung run holds a PR
+    // for GitHub's 6-hour default.
+    write('.github/workflows/ci.yml', validWorkflow.replace('    timeout-minutes: 15\n', ''));
+    const untimed = runFullCheck();
+    expect(untimed.code).toBe(1);
+    expect(untimed.out).toContain('requires the standards-coverage CI job to invoke');
+    write('.github/workflows/ci.yml', validWorkflow.replace('    timeout-minutes: 15\n', '    timeout-minutes: 360\n'));
+    const sixHours = runFullCheck();
+    expect(sixHours.code).toBe(1);
+    expect(sixHours.out).toContain('requires the standards-coverage CI job to invoke');
 
     // And the token scope is pinned, not inherited: dropping the permissions block
     // returns the job to the repository default, which a tightened org policy can
@@ -1129,18 +1142,30 @@ describe('standards-coverage ratchet script', () => {
     expect(r.out).toContain('Mystery evidence');
   });
 
-  it('keeps parser scope compatible while the protected measurement supersedes existence classification', () => {
+  // Both live-checkout tests read the same protected measurement. Keep the
+  // expensive CLI invocation once per file, with fresh parsed data per test.
+  let liveRegistryJson: string | undefined;
+  function readLiveRegistryReport() {
     const realRoot = path.resolve(__dirname, '../..');
-    const cli = JSON.parse(execFileSync('node', [SCRIPT, '--json'], {
+    liveRegistryJson ??= execFileSync('node', [SCRIPT, '--json'], {
       cwd: realRoot,
       encoding: 'utf8',
       env: { ...process.env, STANDARDS_COVERAGE_ROOT: realRoot },
-    }));
+    });
+    return JSON.parse(liveRegistryJson);
+  }
+
+  it('keeps parser scope compatible while the protected measurement supersedes existence classification', () => {
+    const realRoot = path.resolve(__dirname, '../..');
+    const cli = readLiveRegistryReport();
     const library = computeCoverage({
       registryPath: path.join(realRoot, 'docs', 'STANDARDS-REGISTRY.md'),
       projectDir: realRoot,
     });
 
+    // Name the cause when the protected oracle is unavailable (ACT-075) instead
+    // of surfacing only a downstream null ratio.
+    expect(cli.measurement.status, `measurement errors: ${JSON.stringify(cli.measurement.errors)}`).toBe('proven');
     expect(cli.total).toBe(library.summary.total);
     expect(cli.danglingCount).toBe(library.summary.danglingCount);
     expect(cli.enforcementScope).toEqual(library.summary.registry.enforcementScope);
@@ -1176,14 +1201,10 @@ describe('standards-coverage ratchet script', () => {
   });
 
   it('the live registry closes all six family audits and includes the singleton Root at 1/1', () => {
-    const realRoot = path.resolve(__dirname, '../..');
-    const report = JSON.parse(execFileSync('node', [SCRIPT, '--json'], {
-      cwd: realRoot,
-      encoding: 'utf8',
-      env: { ...process.env, STANDARDS_COVERAGE_ROOT: realRoot },
-    })) as {
+    const report = readLiveRegistryReport() as {
       total: number;
       enforcedRatio: number;
+      measurement: { status: string; errors: string[] };
       areaAudit: { status: string; currentCount: number; totalAreas: number; errors: string[] };
       areaModelAudit: { status: string; currentAreaSetSha256: string; auditCurrent: boolean };
       areas: Record<string, {
@@ -1243,7 +1264,27 @@ describe('standards-coverage ratchet script', () => {
     // 2026-09-06: Justin explicitly requested the Telegram message-origin
     // standard (topic 69507). It adds one Interaction article; the content-bound
     // family audit must still pass below, without lowering its floor.
-    expect(report.total).toBe(91);
+    // 2026-09-24: 91 -> 92. Justin approved the Occam's Razor / Simplest Robust
+    // Route standard (Instar 2.0 Rule 116, topic 52075) and its mirror here. It
+    // adds one judgment-bound Building article; the Building area audit was
+    // refreshed by a review that genuinely accepts
+    // (docs/specs/reports/standards-building-occam-addition-2026-09-24.md),
+    // with its 34/40 floor unchanged.
+    // 2026-10-15: 92 -> 93. Operator mandate (Justin, 2026-10-14, after the
+    // ~/Documents TCC withdrawal killed two agents in the same second): *Avoid
+    // TCC-Protected Directories — No Agent State Under ~/Documents on macOS*,
+    // one enforced Building article (refusal at init + boot detector + /guards
+    // row + doctor + migrator). Re-derived from the live registry.
+    expect(report.measurement.status, `measurement errors: ${JSON.stringify(report.measurement.errors)}`).toBe('proven');
+    // 2026-11-04: 93 -> 94. Operator mandate (Justin, 2026-11-03): *One Constitution, Two Books Aligned*.
+    // 2026-11-04: 94 -> 95. Operator mandate (Justin, 2026-11-03): *The Person Decides; the Agent Does the Rest*, the counterpart of 2.0 Rule 120.
+    // 2026-11-05: 95 -> 96. Operator approval [source: telegram 136110/139199 2026-11-05]: *Attributed Statements Trace to Their Source*, the counterpart of 2.0 Rule 121.
+    // 2026-11-05: 96 -> 97. Operator approval [source: telegram 136110/139311 2026-11-05]: *No Feature May Require a Purchased Service*, the counterpart of 2.0 Rule 122.
+    // 2026-11-10: 97 -> 98. Operator approval [source: telegram 141014/141483 2026-11-10]: *An Instar Agent Always Serves a Team*, the counterpart of 2.0 Rule 123.
+    // 2026-11-15: 98 -> 99. Operator approval [source: telegram 141385/143443 2026-11-15, "approve"]: *Security Fixes Keep the Experience Whole*, a child of *The User Experience Is the Product* (security program).
+    // 2026-11-15: 99 -> 100. Operator approval [source: telegram 142440/4516843644856181 2026-11-16]: *Trust Is Earned by Work and Granted Only by the Person*, the counterpart of 2.0 Rule 104 and the purpose's role and suggestions rules.
+    // 2026-11-18: 100 -> 102. Operator approval [source: telegram 145097/145451 2026-11-18, "Yes, to all"]: *A Safeguard Must Leave a Benefit* (Building) and *Documents Stand on Their Own* (Interaction), both judgment-bound root articles.
+    expect(report.total).toBe(102);
     expect(report.enforcedRatio).toBe(0);
     expect(Object.keys(report.areas).sort()).toEqual([
       'Building', 'Interaction', 'Shipping', 'The Fractal', 'The Root', 'The Substrate',

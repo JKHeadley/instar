@@ -1,0 +1,25 @@
+{
+  "ts": "2026-09-23T17:39:00.990Z",
+  "slug": "codex-gpt6-tiers",
+  "suggestedTier": 2,
+  "declaredTier": 1,
+  "riskFloor": 1,
+  "riskFloorReasons": [],
+  "belowFloor": false,
+  "files": 4,
+  "loc": 65,
+  "scope": {
+    "basis": "staged-in-scope-additions-plus-deletions",
+    "files": [
+      "scripts/model-registry-freshness.manifest.json",
+      "src/core/ModelTierEscalation.ts",
+      "src/core/frameworkSessionLaunch.ts",
+      "src/providers/adapters/openai-codex/models.ts"
+    ],
+    "addedLines": 49,
+    "deletedLines": 16
+  },
+  "causalAutopsy": null,
+  "classClosure": null,
+  "verdict": "pass"
+}

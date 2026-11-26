@@ -17,6 +17,7 @@ import {
   parseDistillEnvelope,
   captureAndDistill,
   makeCaptureRateState,
+  windowEndingAt,
 } from '../../src/monitoring/CorrectionCaptureLoop.js';
 import { LlmQueue, LlmAbortedError } from '../../src/monitoring/LlmQueue.js';
 
@@ -215,5 +216,44 @@ describe('captureAndDistill — LlmQueue throw paths + over-apology', () => {
     });
     expect(decision).toBe('distill-dropped');
     expect(l.countRecords()).toBe(0);
+  });
+});
+
+describe('Jev live feed seam — pre-captured window (jev-correction-live.md)', () => {
+  let ledger: CorrectionLedger | null = null;
+  afterEach(() => { ledger?.close(); ledger = null; });
+
+  it('windowEndingAt cuts after the flagged user turn, dropping the reply that arrived meanwhile', () => {
+    const r = new CaptureRing({ captureContextTurns: 6, captureTopicMapMax: 10, topicTtlMs: 600_000 });
+    r.push(5, { text: 'I removed the PIN step.', fromUser: false, at: 1 });
+    r.push(5, { text: 'Quality before speed, always.', fromUser: true, at: 2 });
+    r.push(5, { text: 'Understood, slowing down.', fromUser: false, at: 3 });
+    const w = windowEndingAt(r, 5, 'Quality before speed, always.');
+    expect(w.map((t) => t.text)).toEqual(['I removed the PIN step.', 'Quality before speed, always.']);
+  });
+
+  it('windowEndingAt falls back to the one turn when the ring no longer holds it', () => {
+    const r = new CaptureRing({ captureContextTurns: 6, captureTopicMapMax: 10, topicTtlMs: 600_000 });
+    expect(windowEndingAt(r, 9, 'gone', 42)).toEqual([{ text: 'gone', fromUser: true, at: 42 }]);
+  });
+
+  it('a supplied window is distilled as-is and the ring is not pushed again', async () => {
+    ledger = new CorrectionLedger({ dbPath: ':memory:', machineId: 'test', maxOccurrencesPerKey: 200 });
+    const r = new CaptureRing({ captureContextTurns: 6, captureTopicMapMax: 10, topicTtlMs: 600_000 });
+    r.push(5, { text: 'Quality before speed, always.', fromUser: true, at: 1 });
+    let prompt = '';
+    const decision = await captureAndDistill({
+      ring: r,
+      ledger,
+      distill: async (p) => { prompt = p; return '{"learning":"prefer quality over speed","kind":"user-preference","llm_confidence":0.8,"scrubbed_summary":"quality first"}'; },
+    }, {
+      topicId: 5, text: 'Quality before speed, always.', fromUser: true,
+      deterministicWeight: 3, isLearningSignal: true,
+      window: windowEndingAt(r, 5, 'Quality before speed, always.'),
+    });
+    expect(decision).toBe('recorded');
+    expect(r.window(5)).toHaveLength(1); // not duplicated
+    expect(prompt.split('Quality before speed, always.').length - 1).toBe(1);
+    expect(ledger.list({ limit: 10 })[0]).toMatchObject({ deterministicWeight: 3 });
   });
 });

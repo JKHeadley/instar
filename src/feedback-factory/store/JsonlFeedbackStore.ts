@@ -197,6 +197,9 @@ export class JsonlFeedbackStore implements FeedbackStore {
     for (const record of records) {
       const id = pickId(record, 'feedbackId', 'feedback_id', 'id');
       if (!id) throw new Error('projected feedback record has no stable id');
+      // Only reports still unprocessed here are clustered: a processing update is its own source
+      // record, and a batch replayed after a crash mid-pass must not count a report twice.
+      if ((record.status ?? 'unprocessed') !== 'unprocessed' || (this.feedback.get(id)?.status ?? 'unprocessed') !== 'unprocessed') continue;
       if (exact.has(id)) throw new Error(`projected feedback batch duplicated id ${id}`);
       exact.set(id, { ...record, feedbackId: id } as FeedbackItem);
     }
@@ -260,9 +263,26 @@ export class JsonlFeedbackStore implements FeedbackStore {
       f.status = 'processing';
       f.clusterId = clusterId;
       this.feedback.set(feedbackId, f);
-      this.appendFeedback(f);
+      // An LWW update is a new source record: re-using the original sourceRecordId made the
+      // drain read every processed report as corruption (live 2026-10-01).
+      const { sourceRecordId: _original, ...update } = f as FeedbackItem & { sourceRecordId?: unknown };
+      this.appendFeedback(update as FeedbackItem);
     }
     this.counts.captured++;
+  }
+
+  /** Read-only: every clustered report grouped by its cluster id (oldest first). */
+  feedbackByCluster(): Map<string, FeedbackItem[]> {
+    const grouped = new Map<string, FeedbackItem[]>();
+    for (const item of this.feedback.values()) {
+      const clusterId = typeof item.clusterId === 'string' ? item.clusterId : '';
+      if (!clusterId) continue;
+      const list = grouped.get(clusterId) ?? [];
+      list.push({ ...item });
+      grouped.set(clusterId, list);
+    }
+    for (const list of grouped.values()) list.sort((a, b) => String(a.receivedAt ?? '').localeCompare(String(b.receivedAt ?? '')));
+    return grouped;
   }
 
   hasFeedback(feedbackId: string): boolean {

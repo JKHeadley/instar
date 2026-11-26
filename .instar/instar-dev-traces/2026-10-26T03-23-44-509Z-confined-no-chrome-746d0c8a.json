@@ -1,0 +1,20 @@
+{
+  "version": 2,
+  "slug": "confined-no-chrome",
+  "sessionId": "5ed396db-8c94-48c5-8c79-fe06b27ddac7",
+  "timestamp": "2026-10-26T03:23:44.509Z",
+  "artifactPath": "upgrades/side-effects/confined-no-chrome.md",
+  "artifactSha256": "6493b9ec132bebb1ced8ff9e83c026c619309949e0ffa92a72642d4c11260971",
+  "coveredFiles": [
+    "docs/specs/confined-no-chrome.eli16.md",
+    "upgrades/next/confined-no-chrome.md",
+    "upgrades/side-effects/confined-no-chrome.md"
+  ],
+  "phase": "complete",
+  "tier": 1,
+  "tierReasoning": "Merge of main into the PR branch: main independently landed the same model-registry review, so this branch takes main's manifest and drops its own registry notes. No runtime change.",
+  "eli16Path": "docs/specs/confined-no-chrome.eli16.md",
+  "sideEffectsPath": "upgrades/side-effects/confined-no-chrome.md",
+  "secondPass": "not-required",
+  "reviewerConcurred": null
+}

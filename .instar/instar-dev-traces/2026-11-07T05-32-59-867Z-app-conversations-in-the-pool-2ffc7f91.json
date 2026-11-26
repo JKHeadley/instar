@@ -1,0 +1,38 @@
+{
+  "version": 2,
+  "slug": "app-conversations-in-the-pool",
+  "sessionId": "492c49ae-b203-4810-b08b-f6f1c286526a",
+  "timestamp": "2026-11-07T05:32:59.867Z",
+  "artifactPath": "upgrades/side-effects/app-conversations-in-the-pool.md",
+  "artifactSha256": "98857ae4f91df43d1b133a33949c44c3a6beefc99e7ae0b6525ee0ee7d96f3c6",
+  "specPath": "docs/specs/app-conversations-in-the-pool.md",
+  "coveredFiles": [
+    ".instar/instar-dev-decisions/2026-11-07T05-31-29-965Z-app-conversations-in-the-pool.json",
+    "src/commands/server.ts",
+    "src/core/PostUpdateMigrator.ts",
+    "src/core/devGatedFeatures.ts",
+    "src/core/machineCoherenceManifest.ts",
+    "src/core/types.ts",
+    "src/server/mobileSessionControlsRoutes.ts",
+    "tests/e2e/app-conversations-pool-alive.test.ts",
+    "tests/unit/app-conversations-pool-consumers.test.ts",
+    "tests/unit/app-conversations-pool.test.ts",
+    "tests/unit/mobile-session-controls.test.ts",
+    "upgrades/next/app-conversations-in-the-pool.md",
+    "upgrades/side-effects/app-conversations-in-the-pool.md"
+  ],
+  "phase": "complete",
+  "tier": 2,
+  "tierReasoning": "Continues the Tier 2 change: the gate that holds it from the fleet.",
+  "secondPass": "true",
+  "reviewerConcurred": false,
+  "classClosure": {
+    "defectClass": "unbounded-self-action",
+    "closure": "guard",
+    "guardEvidence": {
+      "enforcementType": "ratchet",
+      "citation": "tests/unit/self-action-convergence.test.ts",
+      "howCaught": "app-pool-enforcer runs the real enforcer under an always-older machine and an always-refusing owner: one force-claim per record, one notice per episode, each refused drain home waits five minutes. The overdue-waiting sweep settles each send once."
+    }
+  }
+}

@@ -1,0 +1,46 @@
+{
+  "ts": "2026-10-21T02:10:59.712Z",
+  "slug": "threadline-enable-without-restart",
+  "suggestedTier": 2,
+  "declaredTier": 2,
+  "riskFloor": 2,
+  "riskFloorReasons": [
+    "irreversibility: src/core/PostUpdateMigrator.ts touches PostUpdateMigrator",
+    "migration / fleet-rollout surface: src/core/PostUpdateMigrator.ts touches PostUpdateMigrator (fleet migration machinery)",
+    "new capability: new route (router.<verb>() added",
+    "new capability: new exported class / subsystem added",
+    "new capability: new config key added"
+  ],
+  "belowFloor": false,
+  "files": 11,
+  "loc": 572,
+  "scope": {
+    "basis": "staged-in-scope-additions-plus-deletions",
+    "files": [
+      "src/commands/server.ts",
+      "src/core/AutoUpdater.ts",
+      "src/core/ForegroundRestartWatcher.ts",
+      "src/core/PostUpdateMigrator.ts",
+      "src/knowledge/TreeGenerator.ts",
+      "src/lifeline/ServerSupervisor.ts",
+      "src/scaffold/templates.ts",
+      "src/server/routes.ts",
+      "src/testing/selfActionRegistry.ts",
+      "src/threadline/ThreadlineMCPServer.ts",
+      "src/threadline/connectEnable.ts"
+    ],
+    "addedLines": 560,
+    "deletedLines": 12
+  },
+  "causalAutopsy": null,
+  "classClosure": {
+    "defectClass": "unbounded-self-action",
+    "closure": "guard",
+    "guardEvidence": {
+      "enforcementType": "ratchet",
+      "citation": "tests/unit/self-action-convergence.test.ts",
+      "howCaught": "threadline-connect-enable-restart drives the real decideConnectEnable: steady-state bound = one restart request per 10-minute persisted cooldown (record time+pid survives restarts), a waiting flag adds none, the deferred retry stops after 5 minutes; settling brake = the persisted cooldown record. Removing the cooldown fails the ratchet's rate-floor and reconstruction checks."
+    }
+  },
+  "verdict": "pass"
+}

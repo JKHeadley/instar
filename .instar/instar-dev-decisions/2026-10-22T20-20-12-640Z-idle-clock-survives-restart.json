@@ -1,0 +1,24 @@
+{
+  "ts": "2026-10-22T20:20:12.640Z",
+  "slug": "idle-clock-survives-restart",
+  "suggestedTier": 2,
+  "declaredTier": 1,
+  "riskFloor": 1,
+  "riskFloorReasons": [],
+  "belowFloor": false,
+  "files": 3,
+  "loc": 211,
+  "scope": {
+    "basis": "staged-in-scope-additions-plus-deletions",
+    "files": [
+      "src/core/SessionManager.ts",
+      "src/core/idleSincePersistence.ts",
+      "src/core/types.ts"
+    ],
+    "addedLines": 204,
+    "deletedLines": 7
+  },
+  "causalAutopsy": null,
+  "classClosure": null,
+  "verdict": "pass"
+}

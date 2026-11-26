@@ -1,0 +1,25 @@
+{
+  "version": 3,
+  "slug": "merge-gate-priority-preparation",
+  "sessionId": "2b2781fe-a0ae-4fac-96c1-86978e4139d8",
+  "timestamp": "2026-10-27T16:30:26.477Z",
+  "artifactPath": "upgrades/side-effects/merge-gate-priority-preparation.md",
+  "artifactSha256": "47c85dcdb6863e563896da2afc50966fb1e2f7b45ce1a2fe0817411fbcd86cfc",
+  "specPath": "docs/specs/test-runner-concurrency-bound.md",
+  "coveredFiles": [
+    "tests/integration/test-runner-bound-meta.test.ts",
+    "upgrades/side-effects/merge-gate-priority-preparation.md"
+  ],
+  "phase": "complete",
+  "tier": 2,
+  "tierReasoning": "High-impact merge-gate slot admission and full-suite scheduling behavior",
+  "secondPass": "true",
+  "reviewerConcurred": true,
+  "toolchain": {
+    "buildSkill": {
+      "name": "instar-dev",
+      "version": "9a75c36ba521",
+      "verified": true
+    }
+  }
+}

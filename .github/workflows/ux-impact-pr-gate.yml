@@ -104,4 +104,4 @@ jobs:
       - name: Install dependencies
         run: pnpm install --frozen-lockfile --config.blockExoticSubdeps=false
       - name: Run deterministic UX assertions in a real E2E scenario
-        run: pnpm exec vitest run tests/e2e/messaging-multi-agent.test.ts
+        run: pnpm exec vitest run --config vitest.e2e.config.ts tests/e2e/messaging-multi-agent.test.ts

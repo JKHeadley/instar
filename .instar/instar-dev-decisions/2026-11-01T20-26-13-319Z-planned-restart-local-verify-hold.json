@@ -1,0 +1,35 @@
+{
+  "ts": "2026-11-01T20:26:13.319Z",
+  "slug": "planned-restart-local-verify-hold",
+  "suggestedTier": 2,
+  "declaredTier": 1,
+  "riskFloor": 1,
+  "riskFloorReasons": [],
+  "belowFloor": false,
+  "files": 6,
+  "loc": 201,
+  "scope": {
+    "basis": "staged-in-scope-additions-plus-deletions",
+    "files": [
+      "src/core/AutoUpdater.ts",
+      "src/core/ForegroundRestartWatcher.ts",
+      "src/core/PlannedRestartVerifyGuard.ts",
+      "src/lifeline/ServerSupervisor.ts",
+      "src/localVerify/LocalVerifyService.ts",
+      "src/monitoring/guardManifest.ts"
+    ],
+    "addedLines": 193,
+    "deletedLines": 8
+  },
+  "causalAutopsy": null,
+  "classClosure": {
+    "defectClass": "unbounded-self-action",
+    "closure": "guard",
+    "guardEvidence": {
+      "enforcementType": "ratchet",
+      "citation": "tests/unit/planned-restart-verify-guard.test.ts",
+      "howCaught": "One unchanged restart request is rechecked only on existing ticks. Dead child or bounded request and run ages release the hold, and tests assert it is consumed once after the child exits or expires after the delivery window."
+    }
+  },
+  "verdict": "pass"
+}

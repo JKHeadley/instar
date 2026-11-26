@@ -1,0 +1,82 @@
+name: Publish instar-witness
+
+# Publishes packages/witness to npm as instar-witness, the same way
+# publish-threadline-mcp.yml publishes threadline-mcp. Agents that do not run
+# Instar (e.g. on threadline-mcp) install this package to get the `witness`
+# command. The package has no lockfile, so dependencies come from `npm install`.
+
+on:
+  workflow_dispatch:
+  push:
+    branches: [main]
+    paths:
+      - 'packages/witness/**'
+
+concurrency:
+  group: publish-witness
+  cancel-in-progress: false
+
+jobs:
+  publish:
+    name: Publish instar-witness
+    runs-on: ubuntu-latest
+    if: "!contains(github.event.head_commit.message, '[skip ci]')"
+    permissions:
+      contents: write
+      id-token: write
+    steps:
+      - uses: actions/checkout@v4
+        with:
+          # RELEASE_TOKEN is a PAT that can bypass branch protection for version bump commits.
+          token: ${{ secrets.RELEASE_TOKEN }}
+
+      - uses: actions/setup-node@v4
+        with:
+          node-version: 20
+          registry-url: 'https://registry.npmjs.org'
+
+      - name: Install dependencies
+        working-directory: packages/witness
+        run: npm install --no-audit --no-fund
+
+      - name: Build and test
+        working-directory: packages/witness
+        run: npm test
+
+      - name: Check if version changed
+        id: check
+        working-directory: packages/witness
+        run: |
+          LOCAL=$(node -p "require('./package.json').version")
+          REMOTE=$(npm view instar-witness version 2>/dev/null || echo "0.0.0")
+          if [ "$LOCAL" = "$REMOTE" ]; then
+            npm version patch --no-git-tag-version
+            NEW=$(node -p "require('./package.json').version")
+            echo "bumped=true" >> "$GITHUB_OUTPUT"
+            echo "version=$NEW" >> "$GITHUB_OUTPUT"
+            echo "Bumped $LOCAL → $NEW"
+          else
+            echo "bumped=false" >> "$GITHUB_OUTPUT"
+            echo "version=$LOCAL" >> "$GITHUB_OUTPUT"
+            echo "Already at $LOCAL (remote: $REMOTE)"
+          fi
+
+      # First publish of a scoped package: if NPM_TOKEN's user cannot publish to the
+      # @instar scope this step fails with 403/404 and nothing is published (the
+      # fallback is an unscoped name; see the PR).
+      - name: Publish to npm
+        working-directory: packages/witness
+        run: npm publish --provenance --access public
+        env:
+          NODE_AUTH_TOKEN: ${{ secrets.NPM_TOKEN }}
+
+      - name: Commit version bump
+        if: steps.check.outputs.bumped == 'true'
+        env:
+          HUSKY: '0'
+        run: |
+          git config user.name "github-actions[bot]"
+          git config user.email "github-actions[bot]@users.noreply.github.com"
+          git add packages/witness/package.json
+          git commit -m "chore: release instar-witness v${{ steps.check.outputs.version }} [skip ci]"
+          git push origin main

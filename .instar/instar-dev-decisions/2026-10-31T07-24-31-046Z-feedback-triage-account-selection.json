@@ -1,0 +1,49 @@
+{
+  "ts": "2026-10-31T07:24:31.046Z",
+  "slug": "feedback-triage-account-selection",
+  "suggestedTier": 2,
+  "declaredTier": 2,
+  "riskFloor": 2,
+  "riskFloorReasons": [
+    "irreversibility: src/core/PostUpdateMigrator.ts touches PostUpdateMigrator",
+    "migration / fleet-rollout surface: src/core/PostUpdateMigrator.ts touches PostUpdateMigrator (fleet migration machinery)",
+    "new capability: new exported class / subsystem added",
+    "new capability: new config key added"
+  ],
+  "belowFloor": false,
+  "files": 15,
+  "loc": 761,
+  "scope": {
+    "basis": "staged-in-scope-additions-plus-deletions",
+    "files": [
+      "src/config/ConfigDefaults.ts",
+      "src/core/CircuitBreakingIntelligenceProvider.ts",
+      "src/core/CodexCliIntelligenceProvider.ts",
+      "src/core/IntelligenceRouter.ts",
+      "src/core/PostUpdateMigrator.ts",
+      "src/core/SpawnCapIntelligenceProvider.ts",
+      "src/core/types.ts",
+      "src/feedback-factory/drain/FeedbackDrainStore.ts",
+      "src/feedback-factory/triage/FeedbackTriageAccountSelector.ts",
+      "src/feedback-factory/triage/FeedbackTriageArbiter.ts",
+      "src/feedback-factory/triage/FeedbackTriageService.ts",
+      "src/feedback-factory/triage/buildFeedbackTriage.ts",
+      "src/providers/adapters/openai-codex/observability/codexLiveRateLimitReader.ts",
+      "src/providers/adapters/openai-codex/transport/codexSpawn.ts",
+      "src/scaffold/templates.ts"
+    ],
+    "addedLines": 704,
+    "deletedLines": 57
+  },
+  "causalAutopsy": null,
+  "classClosure": {
+    "defectClass": "unbounded-self-action",
+    "closure": "guard",
+    "guardEvidence": {
+      "enforcementType": "ratchet",
+      "citation": "tests/unit/self-action-convergence.test.ts",
+      "howCaught": "The feedback-triage-tick fixture models the durable per-item 24-hour requeue throttle under sustained pressure and restart. The ratchet fails if the modeled controller repeats calls within that floor. It does not exercise the production reservation store or daily and per-kind caps; tests/unit/feedback-factory/triage-arbiter.test.ts separately tests those limits and transactional accounting. Quota refusal does not retry."
+    }
+  },
+  "verdict": "blocked"
+}

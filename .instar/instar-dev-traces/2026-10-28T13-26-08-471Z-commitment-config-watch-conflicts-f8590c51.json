@@ -1,0 +1,23 @@
+{
+  "version": 2,
+  "slug": "commitment-config-watch-conflicts",
+  "sessionId": "1a54a4b2-2e51-4416-bc30-1c4e508e39bb",
+  "timestamp": "2026-10-28T13:26:08.471Z",
+  "artifactPath": "upgrades/side-effects/commitment-config-watch-conflicts.md",
+  "artifactSha256": "b8623297e6f2a8906a485ee340867febdf4053b3c5450477a5f08bb6e344aced",
+  "coveredFiles": [
+    "docs/specs/commitment-config-watch-conflicts.eli16.md",
+    "src/monitoring/CommitmentSentinel.ts",
+    "src/monitoring/CommitmentTracker.ts",
+    "tests/unit/CommitmentTracker-config-watch-conflicts.test.ts",
+    "upgrades/next/commitment-config-watch-conflicts.md",
+    "upgrades/side-effects/commitment-config-watch-conflicts.md"
+  ],
+  "phase": "complete",
+  "tier": 1,
+  "tierReasoning": "Narrow bug fix in CommitmentTracker classification and alerting; a revert fully undoes it, no data migration",
+  "eli16Path": "docs/specs/commitment-config-watch-conflicts.eli16.md",
+  "sideEffectsPath": "upgrades/side-effects/commitment-config-watch-conflicts.md",
+  "secondPass": "true",
+  "reviewerConcurred": true
+}

@@ -1,0 +1,30 @@
+{
+  "version": 2,
+  "slug": "mobile-open-session",
+  "sessionId": "fbad3c4d-66be-4847-be50-4e9084534054",
+  "timestamp": "2026-11-03T20:38:39.463Z",
+  "artifactPath": "upgrades/side-effects/mobile-open-session.md",
+  "artifactSha256": "021d339d1441c049ca1cb896f78f02d49752f563b70383b274b5cb4aa00a2e89",
+  "coveredFiles": [
+    "dashboard/index.html",
+    "src/core/PostUpdateMigrator.ts",
+    "src/server/AgentServer.ts",
+    "src/server/CapabilityIndex.ts",
+    "src/server/mobilePairingRoutes.ts",
+    "src/server/mobileSessionRoutes.ts",
+    "tests/e2e/mobile-open-session-alive.test.ts",
+    "tests/integration/mobile-open-session.test.ts",
+    "tests/unit/mobile-app-people-roles.test.ts",
+    "tests/unit/mobile-open-session.test.ts",
+    "upgrades/next/mobile-open-session.md",
+    "upgrades/side-effects/mobile-open-session.eli16.md",
+    "upgrades/side-effects/mobile-open-session.md"
+  ],
+  "phase": "complete",
+  "tier": 1,
+  "tierReasoning": "Read-only device route behind the dev-gated mobilePairing gate, one allowlist entry, a dashboard wait tweak and an additive CLAUDE.md bullet; a revert removes it entirely",
+  "eli16Path": "upgrades/side-effects/mobile-open-session.eli16.md",
+  "sideEffectsPath": "upgrades/side-effects/mobile-open-session.md",
+  "secondPass": "true",
+  "reviewerConcurred": true
+}

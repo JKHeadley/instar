@@ -106,8 +106,8 @@ export function attachRelayObservability(
     if (terminal) {
       logError(
         `Threadline: relay DISPLACED by another connection using this identity — ${entry.reason}. `
-        + 'Reconnect is now disarmed for the life of this process; this agent cannot send or '
-        + 'receive until it restarts.',
+        + 'Automatic retry stops; this agent cannot send or receive over the relay until the '
+        + 'connection is reclaimed (after a pause, when this machine owns the relay) or it restarts.',
       );
     } else {
       log(`Threadline: relay disconnected — ${entry.reason}. Client will retry with backoff.`);
@@ -127,8 +127,14 @@ export function attachRelayObservability(
     }
   };
 
-  client.on('disconnected', (reason: unknown) => record('disconnected', reason, false));
+  client.on('disconnected', (reason: unknown) => {
+    // A terminal displacement must not be masked by a later plain disconnect:
+    // only a successful reconnect clears it.
+    if (lastEvent?.terminal) return;
+    record('disconnected', reason, false);
+  });
   client.on('displaced', (reason: unknown) => record('displaced', reason, true));
+  client.on('connected', () => { lastEvent = null; });
 
   return { getLastEvent: () => lastEvent };
 }

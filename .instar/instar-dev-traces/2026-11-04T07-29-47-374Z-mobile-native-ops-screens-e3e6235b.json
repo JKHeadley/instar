@@ -1,0 +1,29 @@
+{
+  "version": 2,
+  "slug": "mobile-native-ops-screens",
+  "sessionId": "fbad3c4d-66be-4847-be50-4e9084534054",
+  "timestamp": "2026-11-04T07:29:47.374Z",
+  "artifactPath": "upgrades/side-effects/mobile-native-ops-screens.md",
+  "artifactSha256": "854d309f7678a2cff03b323cb302e593efbe23dd47c264509498cb170b39ddaa",
+  "specPath": "docs/specs/mobile-native-ops-screens.md",
+  "coveredFiles": [
+    "docs/specs/mobile-native-ops-screens.eli16.md",
+    "docs/specs/mobile-native-ops-screens.md",
+    "docs/specs/reports/mobile-native-ops-screens-convergence.md",
+    "src/core/PostUpdateMigrator.ts",
+    "src/server/CapabilityIndex.ts",
+    "src/server/mobileOpsRoutes.ts",
+    "src/server/mobilePairingRoutes.ts",
+    "src/server/routes.ts",
+    "tests/e2e/mobile-native-ops-screens-alive.test.ts",
+    "tests/integration/mobile-native-ops-screens.test.ts",
+    "tests/unit/mobile-native-ops-screens.test.ts",
+    "upgrades/next/mobile-native-ops-screens.md",
+    "upgrades/side-effects/mobile-native-ops-screens.md"
+  ],
+  "phase": "complete",
+  "tier": 2,
+  "tierReasoning": "Widens device-key access with three read-only routes; security-sensitive, so the full converged-spec chain applies.",
+  "secondPass": "true",
+  "reviewerConcurred": true
+}

@@ -1,0 +1,27 @@
+{
+  "ts": "2026-10-31T08:36:01.921Z",
+  "slug": "native-remote-desktop-bootstrap-diagnostics",
+  "suggestedTier": 2,
+  "declaredTier": 1,
+  "riskFloor": 1,
+  "riskFloorReasons": [],
+  "belowFloor": false,
+  "files": 6,
+  "loc": 150,
+  "scope": {
+    "basis": "staged-in-scope-additions-plus-deletions",
+    "files": [
+      "scripts/install-windows-desktop-companion.mjs",
+      "src/commands/server.ts",
+      "src/core/DesktopProbeReadiness.ts",
+      "src/core/WindowsDesktopBootstrapStatus.ts",
+      "src/scaffold/templates.ts",
+      "src/server/AgentServer.ts"
+    ],
+    "addedLines": 131,
+    "deletedLines": 19
+  },
+  "causalAutopsy": null,
+  "classClosure": null,
+  "verdict": "pass"
+}

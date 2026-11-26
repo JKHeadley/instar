@@ -2,8 +2,16 @@
  * Express middleware — JSON parsing, CORS, auth, error handling.
  */
 
+import { isStorageFailure, storageMachineName, operatorError } from '../core/storageMachineName.js';
+import { memoryReplyChannel, memorySessionAllows } from './memorySessionGuard.js';
+import { featureEvidence } from '../monitoring/FeatureEvidenceLog.js';
+import type { SessionTokenRecord } from '../users/MemoryPrivacy.js';
+import { THREADLINE_MCP_DEADLINES } from '../core/threadlineMcpSpawn.js';
+import { answerBodyParseError } from './bodyBudget.js';
+import { PROJECT_APP_API_PATH, isProjectAppPublicRoute, isWrapperPagePath, wrapperCsp, APP_ID_RE } from './ProjectAppSandbox.js';
 import type { Request, Response, NextFunction } from 'express';
 import { createHash, createHmac, timingSafeEqual } from 'node:crypto';
+import { arrivalOf, isSameNetworkPublicRoute, mayBeLocalArrival } from '../core/requestArrival.js';
 
 const guardedResponses = new WeakSet<Response>();
 const GUARDED_RESPONSE_METHODS = ['json', 'send', 'sendStatus', 'redirect', 'download', 'sendFile'] as const;
@@ -48,13 +56,40 @@ export function duplicateResponseGuard(req: Request, res: Response, next: NextFu
   next();
 }
 
+/** The skill-driven sign-in helper's code route: token-authed, loopback-only, never CORS-enabled. */
+export const RELOGIN_HELPER_CODE_PATH = /^\/subscription-relogin\/[A-Za-z0-9._:-]{1,160}\/code$/;
+
 export function corsMiddleware(req: Request, res: Response, next: NextFunction): void {
+  // The sign-in helper's code route sends NO CORS headers, so no browser page can reach it
+  // cross-origin (spec skill-driven-signin-repair §5). A preflight gets a bare refusal.
+  if (RELOGIN_HELPER_CODE_PATH.test(req.path)) {
+    if (req.method === 'OPTIONS') { res.sendStatus(403); return; }
+    next();
+    return;
+  }
+  // Project app api paths (docs/specs/project-apps-sandbox.md §3.6): the sandboxed frame has an
+  // opaque origin, so its fetches carry `Origin: null`. Exactly these paths, ahead of the generic
+  // branch; no credentials, and the narrow key header is the only extra header allowed.
+  if (PROJECT_APP_API_PATH.test(req.path)) {
+    if (req.headers.origin === 'null') res.header('Access-Control-Allow-Origin', 'null');
+    res.header('Vary', 'Origin');
+    res.header('Access-Control-Allow-Methods', 'GET, PUT, OPTIONS');
+    res.header('Access-Control-Allow-Headers', 'X-Project-App-Key, Content-Type');
+    res.header('Access-Control-Max-Age', '600');
+    if (req.method === 'OPTIONS') { res.sendStatus(204); return; }
+    next();
+    return;
+  }
   // Restrict CORS to localhost origins only — this is a local management API
   const origin = req.headers.origin;
   if (origin && /^https?:\/\/(localhost|127\.0\.0\.1)(:\d+)?$/.test(origin)) {
     res.header('Access-Control-Allow-Origin', origin);
   }
   res.header('Access-Control-Allow-Methods', 'GET, POST, PATCH, DELETE, OPTIONS');
+  // SEC-135 (docs/specs/sec135-approval-link-guess-bound.md §3): X-Instar-Request must NEVER be added
+  // to this list. A recommended-services confirm GET counts as an owner open only when it carries
+  // X-Instar-Request: 1, and the reason a page on another origin cannot send it is that its preflight
+  // fails here. tests/unit/sec135-owner-open-cors.test.ts pins this.
   res.header('Access-Control-Allow-Headers', 'Content-Type, Authorization');
   if (req.method === 'OPTIONS') {
     res.sendStatus(204);
@@ -117,8 +152,152 @@ export function _resetDeprecationLogCache(): void {
  *   the backward-compatibility deprecation window with a deduped log
  *   line. See spec docs/specs/telegram-delivery-robustness.md § Layer 1b.
  */
-export function authMiddleware(authToken?: string | (() => string | undefined), agentId?: string) {
+/**
+ * Token-only Bearer compare, extracted from the authenticated branch of
+ * `GET /health` so both it and the `/threadline/peers/health?scope=pool` read
+ * use ONE comparison (copying auth logic is how comparisons drift). Reads ONLY
+ * the `Authorization` header — never a query-string token, which would land in
+ * fan-out URLs and logs. No `authToken` configured ⇒ true (an install with no
+ * token has no secret to guard — the same posture `/health` has always had).
+ * The `X-Instar-AgentId` mismatch rule is NOT part of this helper; callers that
+ * need it apply it separately (`/health` never did).
+ */
+/**
+ * The ONLY `/threadline/*` routes the bearer gate lets through. Each is a
+ * peer-protocol or self-mint surface that enforces its own authentication in
+ * the handler:
+ *   - GET  /threadline/health            — peer discovery probe (identity card)
+ *   - POST /threadline/handshake/hello   — Ed25519 handshake, step 1
+ *   - POST /threadline/handshake/confirm — Ed25519 handshake, step 2
+ *   - POST /threadline/messages/receive  — Threadline-Relay token + signature
+ *   - POST /threadline/threads/backfill  — Threadline-Relay token + signature
+ *   - GET  /threadline/blobs/:id         — Threadline-Relay token + signature
+ *   - POST /threadline/secrets/request   — loopback-only self-mint (sealed handoff)
+ * Matching is EXACT (method + full path), never a prefix: `/threadline/healthz`
+ * or `/threadline/health/anything` is NOT public. Exported so the template
+ * auth lint can mirror it without re-deriving it.
+ */
+export const THREADLINE_PUBLIC_ROUTES: ReadonlyArray<{ method: string; path: string }> = [
+  { method: 'GET', path: '/threadline/health' },
+  { method: 'POST', path: '/threadline/handshake/hello' },
+  { method: 'POST', path: '/threadline/handshake/confirm' },
+  { method: 'POST', path: '/threadline/messages/receive' },
+  { method: 'POST', path: '/threadline/threads/backfill' },
+  { method: 'POST', path: '/threadline/secrets/request' },
+];
+
+/** `/threadline/blobs/:id` — one path segment, nothing after it. */
+const THREADLINE_PUBLIC_BLOB_ROUTE = /^\/threadline\/blobs\/[^/]+$/;
+
+/** True iff this exact (method, path) is one of the public Threadline routes above. */
+export function isThreadlinePublicRoute(method: string, reqPath: string): boolean {
+  const m = method.toUpperCase();
+  if (m === 'GET' && THREADLINE_PUBLIC_BLOB_ROUTE.test(reqPath)) return true;
+  return THREADLINE_PUBLIC_ROUTES.some((r) => r.method === m && r.path === reqPath);
+}
+
+/**
+ * Credential-management routes that a dashboard SCOPED session token (dst_) may reach only with a
+ * fresh live-PIN STEP-UP (docs/specs/dashboard-scoped-session-token.md §5). These read or write a
+ * STANDING credential — the raw API token, the PIN, token rotation, credential swaps — so a thief
+ * holding only a stolen session token must not reach them without the owner re-proving the PIN.
+ *
+ * This is the KNOWN-direct-route deny-list; the complete deny-by-default allowlist is the tracked
+ * follow-up SEC-002c (a blocklist cannot be proven complete against indirect reach). The master
+ * token (API/CLI callers) is unaffected — it never takes this branch.
+ */
+const DST_CREDENTIAL_PREFIXES = ['/credentials/', '/secrets/pending', '/secrets/retrieve', '/secrets/sync-status', '/identity-recovery/rotate'];
+const DST_CREDENTIAL_EXACT = new Set<string>([
+  '/identity-recovery/rotate',
+  // SEC-045: "sign out all dashboard sessions on this agent" needs a fresh-PIN step-up. The route is
+  // registered pre-authMiddleware and self-gates (master OR step-up), so this entry is defense-in-
+  // depth: if the route is ever moved onto the authed router, it keeps its step-up requirement.
+  '/dashboard/session/revoke-all',
+]);
+export function isDashboardCredentialRoute(method: string, reqPath: string): boolean {
+  const p = reqPath.replace(/\/+$/, '').toLowerCase() || '/';
+  if (DST_CREDENTIAL_EXACT.has(p)) return true;
+  if (DST_CREDENTIAL_PREFIXES.some((pre) => p === pre || p.startsWith(pre))) return true;
+  // PIN / owner-policy mutation (change the dashboard PIN).
+  if (/^\/(dashboard\/)?(pin|owner-policy)\b/.test(p) && method.toUpperCase() !== 'GET') return true;
+  return false;
+}
+
+export function bearerMatches(req: { headers: Record<string, unknown> }, authToken: string | undefined): boolean {
+  if (!authToken) return true;
+  const header = req.headers.authorization;
+  if (typeof header !== 'string' || !header.startsWith('Bearer ')) return false;
+  const token = header.slice(7);
+  const ha = createHash('sha256').update(token).digest();
+  const hb = createHash('sha256').update(authToken).digest();
+  return timingSafeEqual(ha, hb);
+}
+
+export function authMiddleware(
+  authToken?: string | (() => string | undefined),
+  agentId?: string,
+  /**
+   * The `/mcp/threadline` admission (docs/specs/threadline-mcp-local-http.md D2):
+   * the per-agent local secret, loopback only, no Origin / forwarding headers.
+   * Writes its own refusal and returns false, or returns true to continue. When
+   * absent the route is refused (401) — fail closed, never the agent token.
+   */
+  localMcpGate?: (req: Request, res: Response) => boolean,
+  /**
+   * Mobile device keys (docs/specs/mobile-device-keys.md): a request carrying device headers
+   * is judged only by them. Returns 'none' (no device headers / gate off), 'ok' (authenticated,
+   * principal set) or 'refused' (already answered).
+   */
+  deviceAuth?: (req: Request, res: Response) => 'none' | 'ok' | 'refused',
+  /**
+   * Memory privacy (docs/specs/memory-privacy.md §5): looks up a session token. A
+   * session token never counts as the agent's token; it reaches only the routes in
+   * memorySessionGuard. When absent, session tokens are refused like any bad token.
+   */
+  memorySessionLookup?: (token: string) => SessionTokenRecord | null,
+  /** Told when a scoped session's reply went out. A record only, after the response. */
+  memorySessionReplied?: (session: SessionTokenRecord) => void,
+  /**
+   * Dashboard scoped session token (docs/specs/dashboard-scoped-session-token.md, SEC-002b): verifies
+   * a `Bearer dst_...` token against DashboardSessionStore. A valid scoped token authenticates the
+   * dashboard's ordinary reach, but NEVER counts as the master token and must pass a fresh-PIN
+   * step-up on credential routes. Absent → dst_ tokens are refused like any bad token.
+   */
+  dashboardSessionVerify?: (token: string) => boolean,
+  /** True iff THIS request carries a valid fresh-PIN step-up proof (for a credential route). */
+  dashboardStepUpOk?: (req: Request) => boolean,
+) {
   return (req: Request, res: Response, next: NextFunction): void => {
+    // Identity A4: a request that arrived on the same-network (home) listener is judged here, FIRST and
+    // on its own terms, whatever else is configured (no agent token included): the pairing redeem and
+    // ping pass unsigned (they carry their own one-time code); anything else needs a verified device
+    // signature. The listener's gate only matches the route list; this is where the signature is required.
+    if (arrivalOf(req) === 'same-network') {
+      if (req.headers['x-instar-device'] === undefined) {
+        if (isSameNetworkPublicRoute(req.method, req.path)) { next(); return; }
+        res.status(404).json({ error: 'not-found' });
+        return;
+      }
+      if (!deviceAuth || req.path.startsWith('/internal/')) { res.status(404).json({ error: 'not-found' }); return; }
+      const verdict = deviceAuth(req, res);
+      if (verdict === 'ok') { next(); return; }
+      if (verdict !== 'refused') res.status(401).json({ error: 'device-unauthorized' });
+      return;
+    }
+    // Threadline MCP over local HTTP — ONE exact-path rule, FIRST: before the
+    // no-token-configured skip (so an install with no agent token still protects
+    // it) and before the agent-id check (a mismatched id cannot change the
+    // outcome). On this path the local secret replaces the agent token; the
+    // agent token alone is refused. Never a prefix match.
+    if (req.path === '/mcp/threadline') {
+      if (!localMcpGate) {
+        res.status(401).json({ error: 'threadline-mcp-local-secret-required' });
+        return;
+      }
+      if (localMcpGate(req, res)) next();
+      return;
+    }
+
     // Resolve the token per-request so runtime rotation takes effect
     // immediately (a getter is re-read on every request).
     const resolvedToken = typeof authToken === 'function' ? authToken() : authToken;
@@ -153,6 +332,82 @@ export function authMiddleware(authToken?: string | (() => string | undefined), 
       return;
     }
 
+    // Console ticket redeem (docs/specs/mobile-console-device-signin.md §3.3): the single-use
+    // ticket in the body IS the auth, checked in the handler. Exact method + path only.
+    if (req.path === '/dashboard/console-ticket' && req.method === 'POST') {
+      next();
+      return;
+    }
+
+    // A recommended service's confirm page (docs/specs/recommended-services.md, Yes): a phone holds
+    // no token. Reading shows only public catalog text, and a yes needs the single-use token and
+    // the operator's PIN, both checked in the handler. Exact path shape and methods only.
+    if ((req.method === 'GET' || req.method === 'POST') && /^\/recommended-services\/[a-z][a-z0-9-]{0,63}\/confirm$/.test(req.path)) {
+      next();
+      return;
+    }
+
+    // The same page takes the email proof's code (docs/specs/backup-email-sending.md): the PIN is the auth, checked
+    // in the handler with the unlock route's limits, plus the code's own five-attempt cap. Exact path and method.
+    if (req.method === 'POST' && req.path === '/recommended-services/email/code') {
+      next();
+      return;
+    }
+
+    // Mobile pairing (docs/specs/mobile-pairing-link.md): the redeem and the self-probe
+    // ping are public by exact path+method; mint and devices stay behind the bearer gate.
+    if ((req.path === '/mobile/pairing-codes/redeem' && req.method === 'POST')
+      || (req.path === '/mobile/pairing-codes/ping' && req.method === 'GET')) {
+      next();
+      return;
+    }
+
+    // Instar Documents page (docs/specs/instar-document-viewer.md §3.6): the shell, its static files,
+    // the open-code/cookie exchange, cookie reads and device-signed writes carry their own auth in
+    // documentPageRoutes.ts. Exact shapes only; every other /docs route stays behind the bearer gate.
+    if (DOC_PAGE_PATH(req.method, req.path)) {
+      next();
+      return;
+    }
+
+    // Mobile device keys: device-signed requests are judged by their signature and an exact
+    // allowlist, never by a bearer token, and never reach /internal/*.
+    if (deviceAuth && req.headers['x-instar-device'] !== undefined) {
+      if (req.path.startsWith('/internal/')) { res.status(403).json({ error: 'device-not-allowed' }); return; }
+      const verdict = deviceAuth(req, res);
+      if (verdict === 'ok') { next(); return; }
+      if (verdict === 'refused') return;
+    }
+
+    // Local Verify's loopback proxy to a borrowed helper (docs/specs/local-verify-borrowed-slices-count.md,
+    // "Build decisions: the attempt token"): the verify child holds no Bearer credential, so on this ONE
+    // exact method + path the running verify's attempt token stands in for it. Loopback socket only, and
+    // nothing that came through the tunnel or any forwarder, both checked here before the route (which
+    // checks them again and then the token). Everything else under /local-verify stays behind the bearer gate.
+    if (req.method === 'POST' && req.path === '/local-verify/borrowed-proxy') {
+      const localArrival = mayBeLocalArrival(req);
+      const remote = req.socket.remoteAddress;
+      const loopback = remote === '127.0.0.1' || remote === '::1' || remote === '::ffff:127.0.0.1';
+      if (!localArrival || !loopback || req.headers['cf-connecting-ip'] !== undefined || req.headers['x-forwarded-for'] !== undefined) {
+        res.status(403).json({ ok: false, reason: 'loopback-only' });
+        return;
+      }
+      const attempt = req.headers['x-instar-attempt-token'];
+      if (typeof attempt !== 'string' || !/^[0-9a-f]{32}$/.test(attempt)) {
+        res.status(401).json({ ok: false, reason: 'attempt-token-required' });
+        return;
+      }
+      next();
+      return;
+    }
+
+    // Whether this connection may unlock: a yes/no the console asks before it
+    // shows a PIN box. Carries no credential and changes nothing.
+    if (req.path === '/dashboard/unlock-check' && req.method === 'GET') {
+      next();
+      return;
+    }
+
     // Message relay endpoints use their own auth (agent tokens / machine-HMAC),
     // not the general API bearer token. Auth is enforced in the route handlers.
     // /a2a/inbox is the same-machine a2a transport — callers hold the TARGET
@@ -160,7 +415,6 @@ export function authMiddleware(authToken?: string | (() => string | undefined), 
     // so the inbox route enforces `verifyAgentToken` in its handler.
     if (
       req.path === '/messages/relay-agent'
-      || req.path === '/messages/relay-machine'
       || req.path === '/a2a/inbox'
       || req.path === '/a2a/apprenticeship/cycles'
     ) {
@@ -182,10 +436,29 @@ export function authMiddleware(authToken?: string | (() => string | undefined), 
       return;
     }
 
-    // Threadline protocol endpoints use their own auth (relay tokens + Ed25519 signatures).
-    // Handshake and health endpoints are unauthenticated by design.
-    // Authenticated threadline endpoints enforce Threadline-Relay auth in route handlers.
-    if (req.path.startsWith('/threadline/')) {
+    // Threadline PEER-PROTOCOL endpoints carry their own auth (the Ed25519
+    // handshake, the Threadline-Relay token + signature, or loopback-only) and
+    // are reached by OTHER agents, which never hold this agent's bearer — so
+    // they are exempt here by EXACT route (method + path), never by prefix.
+    // Every other /threadline/* route is this agent's OWN control surface
+    // (send a message as me, discover, bind a hub topic, change bridge config,
+    // read my conversations) and needs the bearer like any other route. Until
+    // 2026-10-27 the whole prefix was exempt, so an unauthenticated POST over
+    // the public tunnel reached `/threadline/relay-send`'s field validation
+    // (fb-829a7161-942): anyone with the tunnel URL could send Threadline
+    // messages under the agent's identity. Prefix exemptions are how that
+    // happens; the allowlist below is the fix. Keep the lint in
+    // tests/unit/job-template-auth-lint.test.ts in step with it.
+    if (isThreadlinePublicRoute(req.method, req.path)) {
+      next();
+      return;
+    }
+
+    // Project apps (docs/specs/project-apps-sandbox.md §3.6): the sealed frame (single-use ticket,
+    // checked in the handler) and the app's own api (the narrow X-Project-App-Key, checked in the
+    // handler, the ONLY gate there). Exact method + path shapes, never a prefix; the ticket and key
+    // mint routes stay behind this gate.
+    if (isProjectAppPublicRoute(req.method, req.path)) {
       next();
       return;
     }
@@ -207,7 +480,7 @@ export function authMiddleware(authToken?: string | (() => string | undefined), 
     // internal paths to the LAN should not succeed).
     if (req.path.startsWith('/internal/')) {
       const remote = req.socket.remoteAddress;
-      if (remote !== '127.0.0.1' && remote !== '::1' && remote !== '::ffff:127.0.0.1') {
+      if (!mayBeLocalArrival(req) || (remote !== '127.0.0.1' && remote !== '::1' && remote !== '::ffff:127.0.0.1')) {
         res.status(403).json({ error: 'Internal routes are localhost-only' });
         return;
       }
@@ -218,9 +491,23 @@ export function authMiddleware(authToken?: string | (() => string | undefined), 
       // Fall through to the standard bearer check below.
     }
 
+    // Skill-driven sign-in helper code route: the per-episode token in X-Relogin-Helper-Token IS
+    // the auth, enforced (with loopback-only) in the route handler. POST only.
+    if (req.method === 'POST' && RELOGIN_HELPER_CODE_PATH.test(req.path)) {
+      next();
+      return;
+    }
+
     // Secret drop routes — the token in the URL IS the auth.
     // GET serves the form, POST receives the submission. Both are user-facing.
     if (req.path.startsWith('/secrets/drop/')) {
+      next();
+      return;
+    }
+
+    // Memory privacy owner recovery: the one-time token in the URL is the auth, and it
+    // can only point this agent at a Claude binary the server already measured.
+    if (/^\/memory-privacy\/fix\/[A-Za-z0-9_-]{43}$/.test(req.path)) {
       next();
       return;
     }
@@ -250,6 +537,51 @@ export function authMiddleware(authToken?: string | (() => string | undefined), 
     const header = req.headers.authorization;
     if (!header || !header.startsWith('Bearer ')) {
       res.status(401).json({ error: 'Missing or invalid Authorization header' });
+      return;
+    }
+    // A project app's narrow key is never a Bearer (project-apps-sandbox §3.7): a plain 401.
+    if (header.startsWith('Bearer pak_')) {
+      res.status(401).json({ error: 'Missing or invalid Authorization header' });
+      return;
+    }
+
+    // Dashboard scoped session token (SEC-002b): a `dst_` bearer is the dashboard's primary credential
+    // after unlock. It authenticates the dashboard's ordinary reach but is NEVER the master token, and
+    // a credential route additionally requires a fresh live-PIN step-up proof.
+    if (header.startsWith('Bearer dst_')) {
+      if (!dashboardSessionVerify || !dashboardSessionVerify(header.slice(7))) {
+        res.status(401).json({ error: 'Invalid or expired dashboard session' });
+        return;
+      }
+      if (isDashboardCredentialRoute(req.method, req.path) && !(dashboardStepUpOk && dashboardStepUpOk(req))) {
+        res.status(403).json({ error: 'step-up-required', reason: 'Re-enter your PIN to change credentials or security settings.' });
+        return;
+      }
+      res.locals.dashboardScopedSession = true;
+      next();
+      return;
+    }
+
+    if (header.startsWith('Bearer mps_')) {
+      const session = memorySessionLookup?.(header.slice(7)) ?? null;
+      if (!session) {
+        res.status(401).json({ error: 'Invalid session token' });
+        return;
+      }
+      if (!memorySessionAllows(req.method, req.path, session)) {
+        res.status(403).json({ error: 'not-available-to-this-session' });
+        return;
+      }
+      res.locals.memorySession = session;
+      const replyChannel = memoryReplyChannel(req.method, req.path);
+      if (replyChannel) {
+        res.once('finish', () => {
+          if (res.statusCode < 200 || res.statusCode >= 300) return;
+          featureEvidence.record('memoryPrivacy', { kind: 'fired', reason: 'reply delivered', context: { channel: replyChannel, audience: session.audience.kind } });
+          try { memorySessionReplied?.(session); } catch { /* @silent-fallback-ok — a lost note reads as no reply, which shows on the ladder */ }
+        });
+      }
+      next();
       return;
     }
 
@@ -403,6 +735,8 @@ export const OUTBOUND_GATE_REVIEW_BUDGET_MS = 20_000;
  * degrades fail-open (advisory empty report) instead of erroring at the client.
  */
 export const SPEC_REVIEW_TIMEOUT_MS = 180_000;
+/** POST /topic/import re-sequences every affected topic (topic-history-import spec); the default 30 s answers 408 mid-merge. */
+export const TOPIC_IMPORT_TIMEOUT_MS = 300_000;
 
 /**
  * Extended budget for the cutover-readiness parity-pass trigger
@@ -428,6 +762,39 @@ export const PARITY_PASS_TIMEOUT_MS = 360_000;
  * review concern #1). 75s clears the 50s remote cap + slack with margin.
  */
 export const POOL_TRANSFER_TIMEOUT_MS = 75_000;
+
+/**
+ * Route budget (ms) for the Gemini pay-per-use calls (gemini-payg-metered-lane §1, §6, §8):
+ * `/intelligence/gemini` (second opinion), `/intelligence/gemini/review` and
+ * `/routing-spend/release-proof`. A paid Gemini call may take up to the transport's
+ * GEMINI_API_MAX_TIMEOUT_MS (900 s, scaled to the reserved output), and a machine that is
+ * not the spender FORWARDS and waits for the holder's answer up to that plus 60 s. Under
+ * the 30 s default the caller got a 408 while the call kept running (and, on the holder,
+ * kept being paid for), and a forwarded call to a dead holder answered 408 instead of the
+ * honest `holder-unreachable` — found by the user-role live test's holder-death drill.
+ * Kept literal here (no provider import in the middleware); a test pins it above
+ * GEMINI_API_MAX_TIMEOUT_MS + 60 s.
+ */
+export const GEMINI_PAYG_ROUTE_TIMEOUT_MS = 990_000;
+
+/**
+ * The phone's session controls (docs/specs/mobile-native-session-controls.md) wait on a dashboard route
+ * called over loopback, so each budget has to outlast that route's own: a move reads the machines (up to
+ * 12 s) and then the transfer (75 s), and the rest get past the default 30 s a door switch, a close or a
+ * new session can take.
+ */
+export const MOBILE_SESSION_MOVE_TIMEOUT_MS = POOL_TRANSFER_TIMEOUT_MS + 15_000;
+export const MOBILE_SESSION_ACTION_TIMEOUT_MS = 45_000;
+
+/**
+ * `POST /corrections/analyze` awaits correction meaning grouping (one model
+ * call per uncached candidate pair, bounded by `DEFAULT_RUN_BUDGET_MS` = 240 s
+ * in JevCorrectionGrouping.ts, plus up to one 60 s referee call already in
+ * flight at the deadline) before routing. Under the 30 s default the job's
+ * request would 408 while the handler kept routing, and the job could never
+ * check what was routed. Budget = run budget + referee + slack.
+ */
+export const CORRECTIONS_ANALYZE_TIMEOUT_MS = 330_000;
 
 /**
  * Slack added on top of a configured parity-source TOTAL fetch budget when
@@ -526,6 +893,18 @@ export function resolveFollowMeBudgets(remoteScrapeTimeoutMs?: number): FollowMe
   return { scrapeMs, enrollStartRouteMs, relayFetchMs, startCellRouteMs };
 }
 
+/** Past HOLDER_MEDIA_DEADLINE_MS (300 s), so the stream's own limit always ends first. */
+export const MOBILE_MEDIA_TIMEOUT_MS = 330_000;
+
+/**
+ * POST /updates/apply awaits the whole install: up to three npm install (120 s) +
+ * native rebuild (60 s) attempts with 5 s and 15 s pauses, candidate validation,
+ * and the post-update migration. Under the 30 s default the middleware answered
+ * 408 while the handler kept going, and the handler's real answer was then a
+ * "Suppressed duplicate response send" (Echo Studio, 2026-11-21).
+ */
+export const UPDATE_APPLY_TIMEOUT_MS = 15 * 60_000;
+
 /**
  * The production per-path request-timeout overrides. Exported as the single
  * source of truth so wiring-integrity tests assert against the SAME map the
@@ -543,6 +922,7 @@ export function resolveFollowMeBudgets(remoteScrapeTimeoutMs?: number): FollowMe
 export function buildRequestTimeoutOverrides(opts?: {
   paritySourceTotalTimeoutMs?: number;
   followMeRemoteScrapeTimeoutMs?: number;
+  defaultTimeoutMs?: number;
 }): Record<string, number> {
   const configuredTotal = opts?.paritySourceTotalTimeoutMs;
   const followMe = resolveFollowMeBudgets(opts?.followMeRemoteScrapeTimeoutMs);
@@ -556,7 +936,15 @@ export function buildRequestTimeoutOverrides(opts?: {
     '/whatsapp/send': OUTBOUND_MESSAGING_TIMEOUT_MS,
     '/imessage/reply': OUTBOUND_MESSAGING_TIMEOUT_MS,
     '/imessage/validate-send': OUTBOUND_MESSAGING_TIMEOUT_MS,
+    // A file from another machine has its own 300 s limit, and a 408 under the stream would leave
+    // its slot held. Uploads and purge keep the agent's configured default.
+    '/mobile/media': Math.max(MOBILE_MEDIA_TIMEOUT_MS, opts?.defaultTimeoutMs ?? 30_000),
+    '/mobile/media/uploads': opts?.defaultTimeoutMs ?? 30_000,
+    '/mobile/media/purge': opts?.defaultTimeoutMs ?? 30_000,
     '/spec/conformance-check': SPEC_REVIEW_TIMEOUT_MS,
+    '/updates/apply': UPDATE_APPLY_TIMEOUT_MS,
+    '/topic/import': TOPIC_IMPORT_TIMEOUT_MS,
+    '/corrections/analyze': CORRECTIONS_ANALYZE_TIMEOUT_MS,
     '/cutover-readiness/parity-pass': parityBudgetMs,
     // The import dry-run does the same full live source fetch as a parity pass
     // (plus an in-memory import + gate, which is fast) — same budget.
@@ -567,6 +955,13 @@ export function buildRequestTimeoutOverrides(opts?: {
     // WS1.2: the deterministic transfer awaits the owner-side drain (≤ drain
     // bound + the 50s remote-call cap) synchronously — see POOL_TRANSFER_TIMEOUT_MS.
     '/pool/transfer': POOL_TRANSFER_TIMEOUT_MS,
+    '/intelligence/gemini': GEMINI_PAYG_ROUTE_TIMEOUT_MS,
+    '/routing-spend/release-proof': GEMINI_PAYG_ROUTE_TIMEOUT_MS,
+    '/mobile/sessions/move': MOBILE_SESSION_MOVE_TIMEOUT_MS,
+    '/mobile/sessions/door': MOBILE_SESSION_ACTION_TIMEOUT_MS,
+    '/mobile/sessions/close': MOBILE_SESSION_ACTION_TIMEOUT_MS,
+    '/mobile/sessions/new': MOBILE_SESSION_ACTION_TIMEOUT_MS,
+    '/mobile/sessions/default': MOBILE_SESSION_ACTION_TIMEOUT_MS,
     // Account-follow-me cross-machine sign-in chain — see the FollowMeBudgets
     // block above. These four entries are what stop the outermost budget from
     // being the smallest one in the stack.
@@ -579,8 +974,17 @@ export function buildRequestTimeoutOverrides(opts?: {
     // gate and must not 408 mid-add either.
     '/subscription-pool/follow-me/enroll': followMe.enrollStartRouteMs,
     '/subscription-pool/matrix/start-cell': followMe.startCellRouteMs,
+    // The owner phone's Face ID entry to the same start-cell core (account-sign-in-face-id).
+    '/mobile/accounts/sign-in/start': followMe.startCellRouteMs,
+    // Adding an account drives a local enroll start (account-add-face-id).
+    '/mobile/accounts/add': followMe.enrollStartRouteMs,
     '/subscription-pool/follow-me/submit-code': FOLLOWME_SIMPLE_RELAY_ROUTE_MS,
     '/subscription-pool/follow-me/cancel': FOLLOWME_SIMPLE_RELAY_ROUTE_MS,
+    // Threadline long waits (docs/specs/threadline-mcp-local-http.md "Bounds",
+    // deadline 4): relay-send's reply wait is capped at 300 s and the MCP route
+    // answers by 320 s; the generic 30 s cut-off 408'd every wait past it.
+    '/threadline/relay-send': THREADLINE_MCP_DEADLINES.middlewareMs,
+    '/mcp/threadline': THREADLINE_MCP_DEADLINES.middlewareMs,
   };
 }
 
@@ -651,48 +1055,110 @@ function verifyViewSignature(viewPath: string, sig: string, authToken: string): 
  * Security headers for dashboard paths — prevents clickjacking, MIME-sniffing,
  * and restricts resource loading to trusted sources.
  */
+/**
+ * The policy every /view response carries (dashboard-conversations-browser-device §4.12): an opaque
+ * origin with no script, no forms and no same-origin access, so agent-written markup (`marked` passes
+ * raw HTML through) can never reach the console's stored browser key, BroadcastChannel or tokens.
+ * Popups and downloads keep links and file downloads working.
+ */
+export const VIEW_SANDBOX_CSP = 'sandbox allow-popups allow-popups-to-escape-sandbox allow-downloads';
+
+/** SEC-124: path prefixes (lowercase) of the pre-auth capability pages given anti-framing,
+ * no-store and no-referrer headers by `dashboardSecurityHeaders`. */
+export const PRE_AUTH_PAGE_PREFIXES: readonly string[] = ['/mcp/approve/', '/memory-privacy/fix/', '/secrets/drop/'];
+
 export function dashboardSecurityHeaders(req: Request, res: Response, next: NextFunction): void {
-  if (req.path === '/dashboard' || req.path.startsWith('/dashboard/')) {
+  // Express routes match case-insensitively (`/Dashboard/legacy` reaches the legacy page), so the
+  // headers must too (dashboard-console-default-and-pair-page round 2).
+  const p = req.path.toLowerCase();
+  // Every response under /view — the PIN page, the rendered view, the ?sig= tunnel link, a view
+  // relayed from the machine that holds it, and every refusal — is sandboxed by the machine that
+  // answers the browser, whatever the holder sent (§4.12). Set before any route runs.
+  if (p === '/view' || p.startsWith('/view/')) {
+    res.header('Content-Security-Policy', VIEW_SANDBOX_CSP);
+    res.header('X-Content-Type-Options', 'nosniff');
+  }
+  // SEC-124: pages reachable WITHOUT the bearer that act on a capability carried in the
+  // URL (an approval request id, a one-time repair token, a Secret Drop token) and/or ask
+  // for the dashboard PIN. They must not be framed by another site (a click-jacked
+  // Approve), cached, or leak their URL through a Referer header. Only framing, caching
+  // and referrer are restricted: these pages keep their own inline script and style.
+  if (PRE_AUTH_PAGE_PREFIXES.some((prefix) => p.startsWith(prefix))) {
+    res.header('X-Frame-Options', 'DENY');
+    res.header('Content-Security-Policy', "frame-ancestors 'none'; base-uri 'none'; form-action 'self'");
+    res.header('X-Content-Type-Options', 'nosniff');
+    res.header('Cache-Control', 'no-store, no-cache, must-revalidate, private');
+    res.header('Pragma', 'no-cache');
+    res.header('Referrer-Policy', 'no-referrer');
+  }
+  if (p === '/dashboard' || p.startsWith('/dashboard/')) {
     res.header('X-Frame-Options', 'DENY');
     res.header('X-Content-Type-Options', 'nosniff');
-    res.header(
-      'Content-Security-Policy',
-      "default-src 'self'; script-src 'self' 'unsafe-inline' cdn.jsdelivr.net; style-src 'self' 'unsafe-inline' cdn.jsdelivr.net; connect-src 'self'",
-    );
+    const host = req.get('host') ?? '';
+    const desktopConnect = /^[A-Za-z0-9.:[\]-]+$/.test(host)
+      ? `connect-src 'self' ws://${host} wss://${host}` : "connect-src 'self'";
+    res.header('Content-Security-Policy',
+      p === '/dashboard/desktop.html' || p === '/dashboard/desktop.js'
+        ? `default-src 'none'; script-src 'self'; style-src 'self'; img-src blob: 'self'; ${desktopConnect}; base-uri 'none'; form-action 'none'; frame-ancestors 'none'`
+        : p.startsWith('/dashboard/console/')
+          // The console shows media it downloaded itself as blob: URLs (§4.11); data: stays blocked.
+          ? "default-src 'self'; script-src 'self' 'unsafe-inline' cdn.jsdelivr.net; style-src 'self' 'unsafe-inline' cdn.jsdelivr.net; connect-src 'self'; img-src 'self' blob:; media-src 'self' blob:"
+          : "default-src 'self'; script-src 'self' 'unsafe-inline' cdn.jsdelivr.net; style-src 'self' 'unsafe-inline' cdn.jsdelivr.net; connect-src 'self'");
     res.header('Referrer-Policy', 'no-referrer');
+    // The project app wrapper (project-apps-sandbox §3.6): its own policy, whose frame-src names the
+    // one frame path for this app on this request's own origin, so the frame cannot navigate itself
+    // anywhere else. The origin must be one of the agent's known addresses (the resolver AgentServer
+    // puts on app.locals); without one the page is refused rather than served with a looser policy.
+    if (isWrapperPagePath(p)) {
+      const appId = typeof req.query?.app === 'string' ? req.query.app : '';
+      const resolve = req.app?.locals?.projectAppOrigin as ((r: Request) => string | null) | undefined;
+      const origin = resolve ? resolve(req) : null;
+      if (!APP_ID_RE.test(appId) || !origin) {
+        res.status(400).type('text/plain').set('Cache-Control', 'no-store')
+          .send(!APP_ID_RE.test(appId) ? 'No such app.' : 'This address is not one of this agent\'s addresses.');
+        return;
+      }
+      res.header('Content-Security-Policy', wrapperCsp(origin, appId));
+    }
   }
   next();
 }
 
 /**
- * #1441 — dashboard static assets must never outlive a deploy. Stamp a
- * revalidate-always `Cache-Control: no-cache` on every dashboard response.
+ * #1441 — dashboard static assets must never outlive a deploy.
  *
- * Before this, express.static served `Cache-Control: public, max-age=0`, which
- * Cloudflare's edge silently overrode with its default multi-hour TTL for
- * .js/.css. A warm-cache browser then paired a FRESH index.html (sent each load)
- * with a STALE glance.js and threw `glance.blockersGlanceSpec is not a function`,
- * blanking a whole tab for up to 4h after every phase deploy. `no-cache` (not
- * `no-store`) keeps the ETag/Last-Modified revalidation express already generates,
- * so every asset — index.html AND its transitively-imported ES modules
- * (glance.js → subscriptions.js) — 304-revalidates on each load; a deploy can never
- * leave a skewed pair. `no-cache` is also a directive Cloudflare honors by NOT
- * edge-caching, so it kills the stale-edge-copy half of the skew too.
+ * Before #1441, express.static served `Cache-Control: public, max-age=0`, which
+ * Cloudflare's edge overrode with a multi-hour browser TTL for .js/.css, so a fresh
+ * index.html met a stale glance.js and a tab went blank for up to 4h after a deploy.
+ * #1441 switched everything to `no-cache`, believing Cloudflare honors it.
  *
- * This runs via `express.static({ setHeaders })` (below) so it wins over
- * serve-static's own default Cache-Control, and is called directly for the
- * index.html `res.sendFile` route.
+ * Measured 2026-10-30 through the named tunnel (echo-studio.dawn-tunnel.dev): it
+ * honors `no-cache` for HTML (passes through, `cf-cache-status: DYNAMIC`) but still
+ * REWRITES it to `max-age=14400` for .js and .css (`cf-cache-status: REVALIDATED`),
+ * while `no-store` passes through untouched (`BYPASS`). The operator's phone then
+ * kept a 4h-old console.css after a release and the new maturation board rendered
+ * unstyled. So scripts and stylesheets get `no-store`: every load re-downloads them
+ * (a few hundred KB over the agent's own tunnel), and a release reaches the screen
+ * at once. Pages keep `no-cache` with ETag revalidation. ES modules import each
+ * other by bare relative path, so a version query on the page's links alone could
+ * not reach them — the header has to be right on every module.
+ *
+ * Runs via `express.static({ setHeaders })` (it wins over serve-static's own
+ * header) and is called directly for the index.html `res.sendFile` routes.
  */
-export function dashboardCacheControl(res: Response): void {
-  res.setHeader('Cache-Control', 'no-cache');
+// E2E-PAIRING: EXEMPT — static header helper; covered by the unit and integration static-serving suites, no route added.
+const NO_STORE_ASSET_RE = /\.(?:m?js|css)$/i;
+
+export function dashboardCacheControl(res: Response, filePath?: string): void {
+  res.setHeader('Cache-Control', filePath && NO_STORE_ASSET_RE.test(filePath) ? 'no-store' : 'no-cache');
 }
 
 /**
  * The `express.static` options for the dashboard directory — exported so the
  * AgentServer wiring and its integration test exercise the SAME object (no drift).
- * `setHeaders` applies {@link dashboardCacheControl} after serve-static would set
- * its own header, so `no-cache` is the final Cache-Control; etag/lastModified stay
- * on for cheap 304 revalidation.
+ * `setHeaders` applies {@link dashboardCacheControl} (with the served file's path)
+ * after serve-static would set its own header, so it is the final Cache-Control;
+ * etag/lastModified stay on for cheap 304 revalidation of pages.
  */
 export const DASHBOARD_STATIC_OPTIONS = {
   etag: true,
@@ -701,7 +1167,9 @@ export const DASHBOARD_STATIC_OPTIONS = {
 } as const;
 
 export function errorHandler(err: unknown, req: Request, res: Response, _next: NextFunction): void {
-  const message = err instanceof Error ? err.message : String(err);
+  // SEC-103: a body the caller sent malformed or too large is a plain 400/413, never a 500.
+  if (answerBodyParseError(err, req, res)) return;
+  const message = operatorError(err, res.app?.locals?.stateDir);
   const stack = err instanceof Error ? err.stack : undefined;
   if (responseAlreadyCommitted(res)) {
     console.warn(
@@ -713,7 +1181,25 @@ export function errorHandler(err: unknown, req: Request, res: Response, _next: N
   console.error(`[server] Error: ${message}` + (stack ? `\n${stack}` : ''));
   // Never leak internal error details to clients
   res.status(500).json({
-    error: 'Internal server error',
+    error: isStorageFailure(err) ? `Storage error on ${storageMachineName(req.app?.locals?.stateDir)}. Please check available space and storage permissions.` : 'Internal server error',
     timestamp: new Date().toISOString(),
   });
+}
+
+const DOC_UUID = '[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12}';
+const DOC_PAGE_GET = new RegExp(`^/docs/(?:_assets/[a-z0-9-]+\\.(?:js|css)|${DOC_UUID}(?:/page-data|/page-compare)?)$`);
+// Page write ops are lower-case words joined by hyphens (`decide-on-phone`, document-decisions §3.3).
+const DOC_PAGE_POST = new RegExp(`^/docs/${DOC_UUID}/(?:session|w/[a-z]+(?:-[a-z]+){0,3})$`);
+/** The document page's self-authenticating routes (documentPageRoutes.ts). */
+export function DOC_PAGE_PATH(method: string, p: string): boolean {
+  // Linking a member's computer starts from a page with no credential yet (documentLinkRoutes.ts).
+  if (method === 'POST' && p === '/docs/_link/status') return true;
+  if (method === 'POST' && p === '/docs/_link/nonce') return true;
+  // A member's computer joining from a team invite, and any computer forgetting itself
+  // (member-browser-any-computer §3.3): self-authenticating, in documentJoinRoutes.ts.
+  if (method === 'GET' && (p === '/docs/_join' || p === '/docs/_join/addresses')) return true;
+  if (method === 'POST' && (p === '/docs/_join/redeem' || p === '/docs/_join/confirm' || p === '/docs/_link/forget-self')) return true;
+  if (method === 'GET') return DOC_PAGE_GET.test(p);
+  if (method === 'POST') return DOC_PAGE_POST.test(p);
+  return false;
 }

@@ -1,0 +1,29 @@
+{
+  "ts": "2026-10-22T16:50:14.799Z",
+  "slug": "pre-push-smoke-list-timeout",
+  "suggestedTier": 2,
+  "declaredTier": 1,
+  "riskFloor": 2,
+  "riskFloorReasons": [
+    "irreversibility: src/core/PostUpdateMigrator.ts touches PostUpdateMigrator",
+    "migration / fleet-rollout surface: src/core/PostUpdateMigrator.ts touches PostUpdateMigrator (fleet migration machinery)"
+  ],
+  "belowFloor": true,
+  "files": 5,
+  "loc": 145,
+  "scope": {
+    "basis": "staged-in-scope-additions-plus-deletions",
+    "files": [
+      "scripts/lib/pre-push-scope.mjs",
+      "scripts/pre-push-smoke.mjs",
+      "src/core/PostUpdateMigrator.ts",
+      "src/core/hostTestRunnerSemaphore.ts",
+      "src/scaffold/templates.ts"
+    ],
+    "addedLines": 115,
+    "deletedLines": 30
+  },
+  "causalAutopsy": null,
+  "classClosure": null,
+  "verdict": "pass"
+}

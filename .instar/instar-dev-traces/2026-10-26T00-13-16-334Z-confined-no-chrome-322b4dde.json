@@ -1,0 +1,20 @@
+{
+  "version": 2,
+  "slug": "confined-no-chrome",
+  "sessionId": "5ed396db-8c94-48c5-8c79-fe06b27ddac7",
+  "timestamp": "2026-10-26T00:13:16.334Z",
+  "artifactPath": "upgrades/side-effects/confined-no-chrome.md",
+  "artifactSha256": "30eed9fd013c4e562a4101dea9fbfedc8c4e4de9b138a3c88821f93d1e84ed94",
+  "coveredFiles": [
+    "docs/specs/confined-no-chrome.eli16.md",
+    "scripts/model-registry-freshness.manifest.json",
+    "upgrades/side-effects/confined-no-chrome.md"
+  ],
+  "phase": "complete",
+  "tier": 1,
+  "tierReasoning": "Follow-up on the same PR: the model-registry 45-day review (bump + live-probe note + two Claude 5.5 frontier rows, no pin moved; the expired window was refusing every commit in the repo) and the artifact correction from Codex finding 3. No runtime behavior change; revert fully undoes it.",
+  "eli16Path": "docs/specs/confined-no-chrome.eli16.md",
+  "sideEffectsPath": "upgrades/side-effects/confined-no-chrome.md",
+  "secondPass": "not-required",
+  "reviewerConcurred": null
+}

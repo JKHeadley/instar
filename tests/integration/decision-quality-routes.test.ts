@@ -3,11 +3,14 @@ import fs from 'node:fs';
 import { SafeFsExecutor } from '../../src/core/SafeFsExecutor.js';
 import os from 'node:os';
 import path from 'node:path';
+import crypto from 'node:crypto';
 import express from 'express';
 import request from 'supertest';
 import { createRoutes, type RouteContext } from '../../src/server/routes.js';
 import { authMiddleware } from '../../src/server/middleware.js';
 import { FeatureMetricsLedger } from '../../src/monitoring/FeatureMetricsLedger.js';
+import { JobSupervisionStore } from '../../src/scheduler/JobSupervisionStore.js';
+import { JobRunHistory } from '../../src/scheduler/JobRunHistory.js';
 import {
   ExternalHogDecisionStore,
   HOG_SUSTAINED_RIGHT_RULE_ID,
@@ -39,6 +42,8 @@ function ctxWith(opts: {
   developmentAgent?: boolean;
   peers?: Array<{ machineId: string; url: string }>;
   hogStore?: ExternalHogDecisionStore | null;
+  supervisionStore?: JobSupervisionStore;
+  runHistory?: JobRunHistory;
 }): RouteContext {
   return {
     config: {
@@ -50,6 +55,9 @@ function ctxWith(opts: {
     sessionManager: { listRunningSessions: () => [] } as any,
     state: { getJobState: () => null, getSession: () => null } as any,
     featureMetricsLedger: opts.ledger,
+    scheduler: opts.supervisionStore ? ({ isReadOnlyStandby: () => false,
+      getJobSupervisionStore: () => opts.supervisionStore,
+      getRunHistory: () => opts.runHistory } as any) : null,
     externalHogSentinel: opts.hogStore ? ({ decisionStoreRef: () => opts.hogStore } as any) : undefined,
     resolvePeerUrls: opts.peers ? () => opts.peers! : undefined,
     startTime: new Date(),
@@ -84,6 +92,66 @@ afterEach(() => {
 });
 
 describe('GET /decision-quality (integration)', () => {
+  it('shows direct job calls separately and strips hostile peer detail', async () => {
+    tmpDir = fs.mkdtempSync(path.join(os.tmpdir(), 'decision-quality-direct-'));
+    ledger = new FeatureMetricsLedger({ dbPath: ':memory:' });
+    const store = new JobSupervisionStore(tmpDir);
+    try {
+      const history = new JobRunHistory(tmpDir);
+      const runId = history.recordStart({ slug: 'health-check', sessionId: 'script',
+        trigger: 'scheduled', runner: 'script' });
+      const id = store.register({ runId, fireId: 'fire-1', slug: 'health-check',
+        decisionEligible: true, evidencePolicy: 'structured-v1' });
+      store.recordResult(id, { result: 'success', completedAt: new Date().toISOString(), evidenceHash: 'hash' });
+      expect(store.beginCall({ attemptId: id, provider: 'jev', decisionPoint: 'job-result-supervision-v2',
+        promptHash: 'prompt-v1', evidencePolicyHash: 'policy-v1', evidenceHash: 'hash',
+        intendedModel: 'jev-1.13.0', leaseMs: 1000 })).not.toBeNull();
+      vi.stubGlobal('fetch', async () => ({ ok: true, json: async () => ({ points: [],
+        directJobSupervision: { source: 'job-supervision-store', routerEnrollment: 'pending',
+          available: true, denominator: 3, missingRecords: 0, orphanAttempts: 0,
+          coverageIncomplete: false, callCount: 3, costUnknownCalls: 0,
+          gradeDistribution: { correct: 2, incorrect: 1, unknown: 0 },
+          callAudit: [{ slug: 'peer-job', calls: 3, contextFull: 'SECRET-PEER-CONTENT' }],
+          callDetails: [{ evidenceText: 'SECRET-PEER-CONTENT' }],
+          evidenceText: 'SECRET-PEER-CONTENT' } }) }));
+      const res = await request(appWith(ctxWith({ ledger, developmentAgent: true,
+        supervisionStore: store, runHistory: history,
+        peers: [{ machineId: 'peer-1', url: 'http://127.0.0.1:9099' }] })))
+        .get('/decision-quality?scope=pool').set('Authorization', `Bearer ${AUTH}`);
+      expect(res.status).toBe(200);
+      expect(res.body.directJobSupervision).toMatchObject({ source: 'job-supervision-store',
+        routerEnrollment: 'pending', denominator: 1, callCount: 1 });
+      expect(res.body.directJobSupervision.callDetails[0]).toMatchObject({ attemptId: id, epoch: 1 });
+      expect(res.body.points).not.toContainEqual(expect.objectContaining({ decisionPoint: 'job-result-session-v2' }));
+      expect(res.body.remoteDirectJobSupervision).toHaveLength(1);
+      expect(res.body.remoteDirectJobSupervision[0]).toMatchObject({ machineId: 'peer-1', denominator: 3 });
+      expect(JSON.stringify(res.body.remoteDirectJobSupervision)).not.toContain('SECRET-PEER-CONTENT');
+    } finally { store.close(); }
+  });
+
+  it('marks an incomplete peer audit as missing instead of reporting complete coverage', async () => {
+    ledger = new FeatureMetricsLedger({ dbPath: ':memory:' });
+    const base = { source: 'job-supervision-store', routerEnrollment: 'pending',
+      available: true, coverageIncomplete: false, denominator: 3, missingRecords: 0,
+      orphanAttempts: 0, callCount: 3, costUnknownCalls: 0,
+      gradeDistribution: { correct: 3, incorrect: 0, unknown: 0 } };
+    for (const invalid of [
+      { ...base, denominator: undefined },
+      { ...base, denominator: 3.5 },
+      { ...base, gradeDistribution: { correct: 0, incorrect: 0, unknown: 0 } },
+      { ...base, available: false },
+    ]) {
+      vi.stubGlobal('fetch', async () => ({ ok: true, json: async () => ({ points: [], directJobSupervision: invalid }) }));
+      const res = await request(appWith(ctxWith({ ledger, developmentAgent: true,
+        peers: [{ machineId: 'peer-1', url: 'http://127.0.0.1:9099' }] })))
+        .get('/decision-quality?scope=pool').set('Authorization', `Bearer ${AUTH}`);
+      expect(res.status).toBe(200);
+      expect(res.body.remoteDirectJobSupervision).toEqual([]);
+      expect(res.body.directJobSupervisionMissing).toEqual(['peer-1']);
+      expect(res.body.directJobSupervisionCoverageIncomplete).toBe(true);
+    }
+  });
+
   it('returns 401 without a bearer token', async () => {
     ledger = new FeatureMetricsLedger({ dbPath: ':memory:' });
     const res = await request(appWith(ctxWith({ ledger, developmentAgent: true }))).get('/decision-quality');
@@ -322,6 +390,102 @@ describe('GET /decision-quality censusDebt — pending-tracker adjudication', ()
 });
 
 describe('POST /decision-quality/grade-pass (integration)', () => {
+  it('writes a server receipt for a registered script run before reporting success', async () => {
+    tmpDir = fs.mkdtempSync(path.join(os.tmpdir(), 'dq-grade-pass-receipt-'));
+    ledger = new FeatureMetricsLedger({ dbPath: ':memory:' });
+    installDecisionQualityRecorder(new DecisionQualityRecorderImpl({
+      ledger, config: { developmentAgent: true, provenance: { uniformSeam: { enabled: true, dryRun: false } } },
+    }));
+    const supervisionStore = new JobSupervisionStore(tmpDir);
+    try {
+      const token = 'a'.repeat(64);
+      supervisionStore.register({ runId: 'grade-run', fireId: 'fire-1', slug: 'llm-decision-grading',
+        evidencePolicy: 'job-result-structured-v2',
+        receiptTokenHash: crypto.createHash('sha256').update(token).digest('hex') });
+      const app = appWith(ctxWith({ ledger, developmentAgent: true, supervisionStore }));
+      const forged = await request(app).post('/decision-quality/grade-pass')
+        .set('Authorization', `Bearer ${AUTH}`).set('X-Instar-Job-Run-Id', 'unknown-run')
+        .set('X-Instar-Job-Receipt-Token', token).send({});
+      expect(forged.status).toBe(409);
+      const wrongToken = await request(app).post('/decision-quality/grade-pass')
+        .set('Authorization', `Bearer ${AUTH}`).set('X-Instar-Job-Run-Id', 'grade-run')
+        .set('X-Instar-Job-Receipt-Token', 'b'.repeat(64)).send({});
+      expect(wrongToken.status).toBe(409);
+      const response = await request(app).post('/decision-quality/grade-pass')
+        .set('Authorization', `Bearer ${AUTH}`).set('X-Instar-Job-Run-Id', 'grade-run')
+        .set('X-Instar-Job-Receipt-Token', token).send({});
+      expect(response.status).toBe(200);
+      expect(supervisionStore.gradePassIdleProof('grade-run')?.ruleId).toBe('grade-pass-idle-effects-v1');
+      expect(supervisionStore.gradePassSignal('grade-run',
+        `graded=${response.body.graded} decision-points=${Object.keys(response.body.cursors).length}`))
+        .toMatchObject({ status: 'healthy' });
+      expect(supervisionStore.gradePassSignal('grade-run', 'graded=99 decision-points=99')).toBeNull();
+    } finally { supervisionStore.close(); }
+  });
+
+  it('does not mint an idle proof when the recording seam is missing', async () => {
+    tmpDir = fs.mkdtempSync(path.join(os.tmpdir(), 'dq-grade-pass-no-recorder-'));
+    ledger = new FeatureMetricsLedger({ dbPath: ':memory:' });
+    const supervisionStore = new JobSupervisionStore(tmpDir);
+    try {
+      const token = 'd'.repeat(64);
+      supervisionStore.register({ runId: 'no-recorder-run', fireId: 'fire-3', slug: 'llm-decision-grading',
+        evidencePolicy: 'job-result-structured-v2',
+        receiptTokenHash: crypto.createHash('sha256').update(token).digest('hex') });
+      const app = appWith(ctxWith({ ledger, developmentAgent: true, supervisionStore }));
+      const response = await request(app).post('/decision-quality/grade-pass')
+        .set('Authorization', `Bearer ${AUTH}`).set('X-Instar-Job-Run-Id', 'no-recorder-run')
+        .set('X-Instar-Job-Receipt-Token', token).send({});
+      expect(response.status).toBe(200);
+      expect(supervisionStore.gradePassSignal('no-recorder-run', 'graded=0 decision-points=6')).not.toBeNull();
+      expect(supervisionStore.gradePassIdleProof('no-recorder-run')).toBeNull();
+    } finally { supervisionStore.close(); }
+  });
+
+  it('does not mint an idle proof from a recorder wired to a different ledger', async () => {
+    tmpDir = fs.mkdtempSync(path.join(os.tmpdir(), 'dq-grade-pass-wrong-ledger-'));
+    ledger = new FeatureMetricsLedger({ dbPath: ':memory:' });
+    const otherLedger = new FeatureMetricsLedger({ dbPath: ':memory:' });
+    installDecisionQualityRecorder(new DecisionQualityRecorderImpl({
+      ledger: otherLedger,
+      config: { developmentAgent: true, provenance: { uniformSeam: { enabled: true, dryRun: false } } },
+    }));
+    const supervisionStore = new JobSupervisionStore(tmpDir);
+    try {
+      const token = 'e'.repeat(64);
+      supervisionStore.register({ runId: 'wrong-ledger-run', fireId: 'fire-4', slug: 'llm-decision-grading',
+        evidencePolicy: 'job-result-structured-v2',
+        receiptTokenHash: crypto.createHash('sha256').update(token).digest('hex') });
+      const response = await request(appWith(ctxWith({ ledger, developmentAgent: true, supervisionStore })))
+        .post('/decision-quality/grade-pass').set('Authorization', `Bearer ${AUTH}`)
+        .set('X-Instar-Job-Run-Id', 'wrong-ledger-run')
+        .set('X-Instar-Job-Receipt-Token', token).send({});
+      expect(response.status).toBe(200);
+      expect(supervisionStore.gradePassIdleProof('wrong-ledger-run')).toBeNull();
+    } finally { supervisionStore.close(); otherLedger.close(); }
+  });
+
+  it('keeps a scheduled nonempty grade pass ungraded even if its response count is zero', async () => {
+    tmpDir = fs.mkdtempSync(path.join(os.tmpdir(), 'dq-grade-pass-nonempty-'));
+    ledger = new FeatureMetricsLedger({ dbPath: ':memory:' });
+    ledger.recordDecision({ correlationId: 'pending-now', decisionPoint: DP_MESSAGING_TONE_GATE,
+      feature: 'MessagingToneGate', ts: Date.now() });
+    const supervisionStore = new JobSupervisionStore(tmpDir);
+    try {
+      const token = 'c'.repeat(64);
+      supervisionStore.register({ runId: 'nonempty-run', fireId: 'fire-2', slug: 'llm-decision-grading',
+        evidencePolicy: 'job-result-structured-v2',
+        receiptTokenHash: crypto.createHash('sha256').update(token).digest('hex') });
+      const app = appWith(ctxWith({ ledger, developmentAgent: true, supervisionStore }));
+      const response = await request(app).post('/decision-quality/grade-pass')
+        .set('Authorization', `Bearer ${AUTH}`).set('X-Instar-Job-Run-Id', 'nonempty-run')
+        .set('X-Instar-Job-Receipt-Token', token).send({});
+      expect(response.status).toBe(200);
+      expect(response.body.graded).toBe(0);
+      expect(supervisionStore.gradePassIdleProof('nonempty-run')).toBeNull();
+    } finally { supervisionStore.close(); }
+  });
+
   it('turns a matured Phase B backlog row into one visible known outcome through the real routes', async () => {
     ledger = new FeatureMetricsLedger({ dbPath: ':memory:' });
     installDecisionQualityRecorder(new DecisionQualityRecorderImpl({

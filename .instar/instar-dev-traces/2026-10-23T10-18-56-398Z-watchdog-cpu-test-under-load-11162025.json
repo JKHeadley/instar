@@ -1,0 +1,25 @@
+{
+  "version": 2,
+  "slug": "watchdog-cpu-test-under-load",
+  "sessionId": "902adf8c-2ca8-45c7-b4fe-683e5b064cf8",
+  "timestamp": "2026-10-23T10:18:56.398Z",
+  "artifactPath": "upgrades/side-effects/watchdog-cpu-test-under-load.md",
+  "artifactSha256": "24b7268c639058ac331fdb97f95e352de943df505c2dbefe434384e2797e30fd",
+  "coveredFiles": [
+    "tests/integration/session-watchdog-safe-wait.test.ts",
+    "upgrades/side-effects/watchdog-cpu-test-under-load.md",
+    "upgrades/watchdog-cpu-test-under-load.eli16.md"
+  ],
+  "phase": "complete",
+  "tier": 1,
+  "tierReasoning": "test-only change",
+  "eli16Path": "upgrades/watchdog-cpu-test-under-load.eli16.md",
+  "sideEffectsPath": "upgrades/side-effects/watchdog-cpu-test-under-load.md",
+  "secondPass": "true",
+  "reviewerConcurred": true,
+  "classClosure": {
+    "defectClass": "none",
+    "closure": "n/a",
+    "reason": "test-only change; no producer class"
+  }
+}

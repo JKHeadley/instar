@@ -1,0 +1,22 @@
+{
+  "version": 2,
+  "slug": "mobile-native-conversations-inc1",
+  "sessionId": "162ffdb7-e254-42e8-8d0e-d1d170f9713d",
+  "timestamp": "2026-11-01T08:10:27.893Z",
+  "artifactPath": "upgrades/side-effects/mobile-native-conversations-inc1.md",
+  "artifactSha256": "c8bff2340df433bee7d7d089aa7f69382f0e79ecd1674234ece6a1885a3e26e8",
+  "specPath": "docs/specs/mobile-native-conversations.md",
+  "coveredFiles": [
+    ".instar/instar-dev-decisions/2026-11-01T08-10-14-579Z-mobile-native-conversations-inc1.json",
+    "src/core/AppConversationService.ts",
+    "src/core/PostUpdateMigrator.ts",
+    "src/server/routes.ts",
+    "tests/unit/SqliteRegistry-wiring.test.ts",
+    "upgrades/side-effects/mobile-native-conversations-inc1.md"
+  ],
+  "phase": "complete",
+  "tier": 2,
+  "tierReasoning": "Follow-up to increment 1 fixing four unit gates (SQLite registry allowlist, silent-fallback marker, tone-advisory metadata on the app reply path, awareness wording); same dark feature, same converged spec.",
+  "secondPass": "true",
+  "reviewerConcurred": true
+}

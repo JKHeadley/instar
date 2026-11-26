@@ -1,0 +1,25 @@
+{
+  "ts": "2026-10-22T15:13:37.740Z",
+  "slug": "pool-rope-health-feedback",
+  "suggestedTier": 2,
+  "declaredTier": 2,
+  "riskFloor": 1,
+  "riskFloorReasons": [],
+  "belowFloor": false,
+  "files": 4,
+  "loc": 135,
+  "scope": {
+    "basis": "staged-in-scope-additions-plus-deletions",
+    "files": [
+      "src/commands/server.ts",
+      "src/server/AgentServer.ts",
+      "src/server/poolPeerFetch.ts",
+      "src/server/routes.ts"
+    ],
+    "addedLines": 119,
+    "deletedLines": 16
+  },
+  "causalAutopsy": null,
+  "classClosure": null,
+  "verdict": "pass"
+}

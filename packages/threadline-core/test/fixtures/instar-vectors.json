@@ -1,0 +1,77 @@
+{
+  "generatedBy": "instar src/threadline (MessageEncryptor, ThreadlineCrypto)",
+  "alice": {
+    "seed": "6941b6a8e434152937eca589c171385aa9736c63382a0eb97372f3c675917a59",
+    "pub": "b90f917c197d2b6210a7350fc90f7a84f45027e623de76588051e3081f315690",
+    "fp": "b90f917c197d2b6210a7350fc90f7a84",
+    "x25519FromSeed": "e8228b8f1c6b4fdd06a8a0ced4e1e3d548c3747023883b19ac9aa240260c1749",
+    "x25519FromPub": "e8228b8f1c6b4fdd06a8a0ced4e1e3d548c3747023883b19ac9aa240260c1749"
+  },
+  "bob": {
+    "seed": "6fec30ed2a79b57b198f41c6e27b8799d6fb122010ce8bec6586bf2a148411ad",
+    "pub": "7aefcfc2a42b73e2cf1ca32bb290e327a1fe5a3b542b8e78cc1535a13d9cb3b7",
+    "fp": "7aefcfc2a42b73e2cf1ca32bb290e327",
+    "x25519FromSeed": "784cf8f806fa66050e05bce11616d3453f84c4afa1ed6ac98623825b66e9b717",
+    "x25519FromPub": "784cf8f806fa66050e05bce11616d3453f84c4afa1ed6ac98623825b66e9b717"
+  },
+  "pairingId": "8584a89b9208a9542d176f527f10c6b8",
+  "envelopesAliceToBob": [
+    {
+      "message": {
+        "content": "hello from instar",
+        "type": "chat"
+      },
+      "envelope": {
+        "from": "b90f917c197d2b6210a7350fc90f7a84",
+        "to": "7aefcfc2a42b73e2cf1ca32bb290e327",
+        "threadId": "thread-0",
+        "messageId": "msg-0",
+        "timestamp": "2026-10-16T02:20:36.875Z",
+        "nonce": "cCCDw/c+EamyYc/qrO3IqGS7oYtLsmQh",
+        "ephemeralPubKey": "pMglr38bZdWpoyz1w41tCeK+QFL9gZFDTrAB00/yXT0=",
+        "salt": "SN12JkQ6nSeegEFZFHyZXxQbjh41UQ3eKa/WhKuMF64=",
+        "payload": "dvaWVDihvW1zdtPP1HBlv+uydRFUgq2lyXO2Ey4eKKvJourTlzIaGG7tMG816Y9a0HU2WlsTMRjAxoVPnQ==",
+        "signature": "rY//IkYhdfV2Ku5GBHLIpwjlqt3e/Ax8RtpKDk9lL307ZyHJ8LaA3RJdF/ZtNrghys1insaCRHjNslPeNEPFCw=="
+      }
+    },
+    {
+      "message": {
+        "content": "",
+        "type": "pair-invite-finish",
+        "metadata": {
+          "iid": "abababababababababababababababab"
+        }
+      },
+      "envelope": {
+        "from": "b90f917c197d2b6210a7350fc90f7a84",
+        "to": "7aefcfc2a42b73e2cf1ca32bb290e327",
+        "threadId": "thread-1",
+        "messageId": "msg-1",
+        "timestamp": "2026-10-16T02:20:36.879Z",
+        "nonce": "As1L2Wz3+1uSRn3piKj1PRZpRGQKrlxr",
+        "ephemeralPubKey": "4Qc1xYZlXemGMMhUGn5UnOFPcx3ePhytw5ZBG0M2+Xc=",
+        "salt": "mMtKS4qvFcoJlwLDW+UbBdu9Zl/eaenAXi4VP6ZS0q4=",
+        "payload": "Lb64WQkneWmDtA0oMAl7XnR6A6lEfREz4mTEPwEeD2nvcrhb+cXC1PIf31Id9jXAqAIUzemJCfehTKMePlJW0uzstQ6uvFKovT20r6kXPpmcgL4YhglLKQhSDivrm0erYVbeletoWddxTqatQ2W4jg==",
+        "signature": "Vm/veTKhyGFz5UQUHAYAZpvI7Jm5gUN3FNB/ES8ZLxehVJZR43+FHQ+aa9Yv+1AKvQEvvaTqTOcCWPB3GDuaDQ=="
+      }
+    },
+    {
+      "message": {
+        "content": "unicode ✓ – done",
+        "resend": true
+      },
+      "envelope": {
+        "from": "b90f917c197d2b6210a7350fc90f7a84",
+        "to": "7aefcfc2a42b73e2cf1ca32bb290e327",
+        "threadId": "thread-2",
+        "messageId": "msg-2",
+        "timestamp": "2026-10-16T02:20:36.880Z",
+        "nonce": "xl4LmHPK4NtOWilu/jnjqlscm+fJYml1",
+        "ephemeralPubKey": "c4PotSrc1TO+LpnMEO9WhF/S+aduXfVezwXDqM1pfDo=",
+        "salt": "Pmms3XFniWrGdapI+msp3Y1ZY5dAjfdXE9MSQvfOU4g=",
+        "payload": "BYhQIRWU+PNTDhtZRxnFhQXyLYn3QMFkeJoi34bs3Q+b9kSV/RQaLIcD/8Ik8wDj25CkV4Y9T/VwpYgLdBurow==",
+        "signature": "Kvpq5FettQmzA7IS3uoUsP5xLB71umRHMsSipDokBSU8lhkEI996WSsqHnJec+d1Hj9CPK3swnihdM20/gcuAw=="
+      }
+    }
+  ]
+}

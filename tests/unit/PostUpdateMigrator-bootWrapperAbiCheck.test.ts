@@ -37,6 +37,7 @@ function run(migrator: PostUpdateMigrator): MigrationResult {
 const MARKER = 'cannot load better-sqlite3 (ABI drift)';
 const MARKER_VMNODE = 'version-managed node candidates';
 const MARKER_INSTALLPATH = 'npm_config_scripts_prepend_node_path';
+const MARKER_UPDATE_RECOVERY = 'Restored previous install after interrupted update';
 
 describe('PostUpdateMigrator — boot-wrapper ABI-check regeneration', () => {
   let projectDir: string;
@@ -57,19 +58,40 @@ describe('PostUpdateMigrator — boot-wrapper ABI-check regeneration', () => {
     });
   });
 
-  it('skips when the boot wrapper has ALL THREE markers — ABI-check, version-managed-node, install-path (idempotent)', () => {
+  it('skips when the boot wrapper has all current markers, including interrupted-update recovery', () => {
     if (!isDarwin) {
       // On non-darwin the migration short-circuits; assert that instead.
       const result = run(newMigrator(projectDir));
       expect(result.skipped.some(s => s.includes('non-darwin'))).toBe(true);
       return;
     }
-    fs.writeFileSync(bootWrapperPath, `#!/usr/bin/env node\n// has markers: ${MARKER} + ${MARKER_VMNODE} + ${MARKER_INSTALLPATH}\n`);
+    fs.writeFileSync(bootWrapperPath, `#!/usr/bin/env node\n// has markers: ${MARKER} + ${MARKER_VMNODE} + ${MARKER_INSTALLPATH} + ${MARKER_UPDATE_RECOVERY}\n`);
     const result = run(newMigrator(projectDir));
     expect(result.errors).toEqual([]);
     expect(result.skipped.some(s => s.includes('already current'))).toBe(true);
     // Must NOT have rewritten it.
     expect(result.upgraded.some(u => u.includes('ABI-check'))).toBe(false);
+  });
+
+  it('regenerates an existing boot wrapper missing interrupted-update recovery', () => {
+    if (!isDarwin) return;
+    fs.writeFileSync(bootWrapperPath, `#!/usr/bin/env node\n// old markers: ${MARKER} + ${MARKER_VMNODE} + ${MARKER_INSTALLPATH}\n`);
+    const result = run(newMigrator(projectDir));
+    expect(result.errors).toEqual([]);
+    expect(result.upgraded.some((entry) => entry.includes('boot-wrapper ABI-check'))).toBe(true);
+    expect(fs.readFileSync(bootWrapperPath, 'utf-8')).toContain(MARKER_UPDATE_RECOVERY);
+  });
+
+  it('boots the previous CLI after promotion was interrupted between renames', () => {
+    const { js } = installBootWrapper(projectDir);
+    const backupCli = path.join(projectDir, '.instar', 'shadow-install.previous', 'node_modules', 'instar', 'dist', 'cli.js');
+    fs.mkdirSync(path.dirname(backupCli), { recursive: true });
+    fs.writeFileSync(backupCli, "console.log('previous install started');\n");
+    const { spawnSync } = require('node:child_process');
+    const boot = spawnSync(process.execPath, [js, '--version'], { encoding: 'utf-8', timeout: 10000 });
+    expect(boot.status).toBe(0);
+    expect(boot.stdout).toContain('previous install started');
+    expect(fs.existsSync(path.join(projectDir, '.instar', 'shadow-install', 'node_modules', 'instar', 'dist', 'cli.js'))).toBe(true);
   });
 
   it('REGENERATES when ABI-check + version-managed-node are present but the install-path marker is absent (the launchd "command not found" reinstall case)', () => {
@@ -120,6 +142,7 @@ describe('PostUpdateMigrator — boot-wrapper ABI-check regeneration', () => {
     expect(abiLoopIdx).toBeGreaterThan(whichIdx);
     // The prior ABI-check marker is still present (we ADD to, not replace, the heal).
     expect(js).toContain('cannot load better-sqlite3 (ABI drift)');
+    expect(js).toContain('Restored previous install after interrupted update');
   });
 
   it('the generated .cjs reinstall puts node on PATH + sets scripts-prepend-node-path, and is syntactically valid (cross-platform)', () => {

@@ -1,0 +1,23 @@
+{
+  "ts": "2026-11-21T19:53:21.897Z",
+  "slug": "ci-pr-skip-duplicate-heavy-jobs",
+  "suggestedTier": 2,
+  "declaredTier": 1,
+  "riskFloor": 1,
+  "riskFloorReasons": [],
+  "belowFloor": false,
+  "files": 2,
+  "loc": 84,
+  "scope": {
+    "basis": "staged-in-scope-paths-including-deleted",
+    "files": [
+      "scripts/safe-merge.mjs",
+      "src/feedback-factory/execute/FeedbackExecutorService.ts"
+    ],
+    "addedLines": 59,
+    "deletedLines": 25
+  },
+  "causalAutopsy": null,
+  "classClosure": null,
+  "verdict": "pass"
+}

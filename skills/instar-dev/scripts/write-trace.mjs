@@ -345,4 +345,16 @@ const trace = {
 
 fs.writeFileSync(traceFile, JSON.stringify(trace, null, 2) + '\n');
 
+// Stage the trace so it ships in the commit (the directory is gitignored).
+// The merge floor admits a flagged PR only when the PR itself carries its
+// concurring trace (local-verify-merge-authority, independent review), so an
+// unstaged trace would make every reviewed flagged PR unmergeable. `git add -f`
+// is additive (never touches the working tree); once tracked, later edits to
+// the trace (class-closure-declare --to-trace) are picked up by `git add -A`.
+try {
+  execFileSync('git', ['add', '-f', '--', path.relative(ROOT, traceFile)], { cwd: ROOT, stdio: 'ignore' });
+} catch {
+  console.error(`write-trace: could not stage ${path.relative(ROOT, traceFile)}; run git add -f on it, or the merge floor will not see this review.`);
+}
+
 console.log(path.relative(ROOT, traceFile));

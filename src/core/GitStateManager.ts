@@ -18,6 +18,7 @@ import fs from 'node:fs';
 import path from 'node:path';
 import type { GitStateConfig, GitLogEntry, GitStatus } from './types.js';
 import { mergeDefaults } from './mergeDefaults.js';
+import { IMPORTED_HISTORY_STATE_PATH } from './importedHistoryPaths.js';
 
 const ALLOWED_REMOTE_SCHEMES = [
   /^https:\/\//,
@@ -59,6 +60,8 @@ logs/
 
 # Secrets -- NEVER tracked
 config.json
+secrets/
+${IMPORTED_HISTORY_STATE_PATH}
 
 # Derived data -- reconstructable
 memory.db
@@ -141,6 +144,14 @@ export class GitStateManager {
     const gitignorePath = path.join(this.stateDir, '.gitignore');
     if (!fs.existsSync(gitignorePath)) {
       fs.writeFileSync(gitignorePath, DEFAULT_GITIGNORE);
+    } else {
+      // An existing .gitignore (one init path writes project-relative lines
+      // here) must still keep imported history out of the first `git add -A`.
+      const existing = fs.readFileSync(gitignorePath, 'utf-8');
+      const listed = existing.split('\n').some((line) => line.trim() === IMPORTED_HISTORY_STATE_PATH);
+      if (!listed) {
+        fs.writeFileSync(gitignorePath, existing + (existing.endsWith('\n') || existing.length === 0 ? '' : '\n') + IMPORTED_HISTORY_STATE_PATH + '\n');
+      }
     }
 
     // git init
@@ -339,10 +350,9 @@ export class GitStateManager {
       };
     }
 
-    // Force git to re-stat all files (without this, git may miss
-    // modifications that happen in the same second as the last commit)
-    try { this.git('update-index', '--refresh', '-q'); } catch { /* ignore */ }
-
+    // `status` refreshes the index itself and re-checks racily-clean entries
+    // by content. (An `update-index --refresh` that stood here never ran: the
+    // git funnel does not classify update-index — EVO-029.)
     const porcelain = this.git('status', '--porcelain');
     // Split into lines but preserve the 2-char status prefix (leading spaces are significant)
     const lines = porcelain.split('\n').filter(line => line.length >= 2);

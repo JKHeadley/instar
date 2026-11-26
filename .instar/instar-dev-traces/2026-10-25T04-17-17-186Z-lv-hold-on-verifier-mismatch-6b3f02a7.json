@@ -1,0 +1,24 @@
+{
+  "version": 2,
+  "slug": "lv-hold-on-verifier-mismatch",
+  "sessionId": "8da0775f-0138-4aed-a265-6b7c1634d695",
+  "timestamp": "2026-10-25T04:17:17.186Z",
+  "artifactPath": "upgrades/side-effects/lv-hold-on-verifier-mismatch.md",
+  "artifactSha256": "d0db0e409f41e5e39a71de7d165b0f130a0147251d1e4c84d40e9c45630301bc",
+  "coveredFiles": [
+    "docs/eli16/lv-hold-on-verifier-mismatch.eli16.md",
+    "src/localVerify/LocalVerifyService.ts",
+    "src/localVerify/localVerifyWiring.ts",
+    "tests/e2e/local-verify-lifecycle.test.ts",
+    "tests/unit/localVerify/LocalVerifyService.test.ts",
+    "upgrades/next/lv-hold-on-verifier-mismatch.md",
+    "upgrades/side-effects/lv-hold-on-verifier-mismatch.md"
+  ],
+  "phase": "complete",
+  "tier": 1,
+  "tierReasoning": "A crash-classification fix inside LocalVerifyService (a verifier-mismatch refusal is a hold-and-requeue, not an error record) plus one read-only pre-start seam; gates only the service's own child spawns, no new authority, no state or migration; a revert fully undoes it.",
+  "eli16Path": "docs/eli16/lv-hold-on-verifier-mismatch.eli16.md",
+  "sideEffectsPath": "upgrades/side-effects/lv-hold-on-verifier-mismatch.md",
+  "secondPass": "true",
+  "reviewerConcurred": true
+}

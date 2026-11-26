@@ -40,7 +40,7 @@ describe('normal non-development origin startup lease lifetime', () => {
     const telegram = new TelegramAdapter(telegramConfig, lease.stateDir, { suppressLifelineAutoCreate: true });
     const app = express(); app.use(express.json());
     app.use((req, res, next) => { if (req.get('Authorization') !== 'Bearer fixture-auth') { res.sendStatus(401); return; } next(); });
-    app.use(createRoutes({ config, telegramOrigin: boot.runtime, telegram, sessionManager: { clearInjectionTracker: () => undefined } } as never));
+    app.use(createRoutes({ state: { getSession: () => undefined }, config, telegramOrigin: boot.runtime, telegram, sessionManager: { clearInjectionTracker: () => undefined } } as never));
     const wire = vi.fn(async () => new Response(JSON.stringify({ ok: true, result: { message_id: 71, chat: { id: -100123 }, message_thread_id: 42 } })));
     vi.stubGlobal('fetch', wire);
     const renew = vi.spyOn(lease.lc, 'renew');

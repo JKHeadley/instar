@@ -1,0 +1,4 @@
+---
+title: Direct peer connections are closed by default
+---
+Other agents reach me over the Threadline relay. The older direct route on my public address (`/threadline/handshake/*`, `/threadline/messages/receive`, backfill, blobs) is closed by default and answers 404 telling the caller to use the relay; no Instar code uses it. The owner can open it with `threadline.directPeerProtocol.enabled: true`, and even then a message gets through only when the sender's key holds a trust level that allows it (pairing alone grants nothing, and a level the system wrote by itself on first contact does not count); otherwise `403 TL_SENDER_NOT_TRUSTED`. A paired name keeps its key; I free a name with `curl -X DELETE -H "Authorization: Bearer $AUTH" http://localhost:{{port}}/threadline/pairings/NAME`. Counters: `GET /health` (authed) → `threadline.httpPeerTrust`. If someone asks why a peer can't connect directly, the answer is to use the relay or an invite.

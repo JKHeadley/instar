@@ -1,3 +1,4 @@
+// safe-fs-allow: test file — SafeFsExecutor used for tmpdir cleanup.
 /**
  * Tier 3 (E2E "feature is alive") — Ownership Follows Live Work
  * (docs/specs/ownership-follows-live-work.md).
@@ -29,7 +30,16 @@ import {
 import {
   shouldReleaseOnComplete,
   ownershipNonce,
+  createClaimOwnershipOnSpawn,
 } from '../../src/core/ownershipFollowsLiveWork.js';
+import express from 'express';
+import fs from 'node:fs';
+import os from 'node:os';
+import path from 'node:path';
+import request from 'supertest';
+import { createRoutes } from '../../src/server/routes.js';
+import { SafeFsExecutor } from '../../src/core/SafeFsExecutor.js';
+import { createMockSessionManager } from '../helpers/setup.js';
 import { DEV_GATED_FEATURES } from '../../src/core/devGatedFeatures.js';
 
 const SELF = 'm_self';
@@ -130,5 +140,64 @@ describe('E2E: lifecycle regression — release-on-complete removes the stale re
     // state. A PEER's reaper still sees an elsewhere-owner (the compensated-for hazard).
     expect(reg.ownerOf('901')).toBe(SELF);
     expect(topicOwnerElsewhere(reg, '901', PEER)).toBe(true);
+  });
+});
+
+describe('E2E: a topic-bound POST /sessions/spawn is visible to the pool as owned (topic 10000001485)', () => {
+  // The 2026-11-03 incident: a direct topic-bound spawn left the record absent,
+  // so a peer's router (which reads ownerOf) saw "unowned" and started a second
+  // copy. Drive the REAL route with the claim built exactly as server.ts builds
+  // it (resolved flag + createClaimOwnershipOnSpawn + real registry).
+  function spawnApp(config: Record<string, unknown>, ownReg: SessionOwnershipRegistry, stateDir: string) {
+    const app = express();
+    app.use(express.json());
+    const ctx: any = {
+      config: { ...config, stateDir, authToken: 'x', port: 0 },
+      sessionManager: createMockSessionManager(),
+      startTime: new Date(),
+      claimTopicOwnershipOnSpawn: (topicId: number) => createClaimOwnershipOnSpawn({
+        enabled: resolveFlag(config as never),
+        selfMachineId: SELF,
+        ownReg,
+        emitPlacement: () => {},
+      })(topicId),
+    };
+    app.use(createRoutes(ctx));
+    return app;
+  }
+  function freshRegistry(): SessionOwnershipRegistry {
+    const seen = new Set<string>();
+    return new SessionOwnershipRegistry({ store: new InMemorySessionOwnershipStore(), seenNonce: (k) => seen.has(k), recordNonce: (k) => seen.add(k) });
+  }
+
+  it('dev agent: after the spawn a peer reading ownerOf sees THIS machine, not null', async () => {
+    const dir = fs.mkdtempSync(path.join(os.tmpdir(), 'ofw-spawn-e2e-'));
+    try {
+      const ownReg = freshRegistry();
+      const app = spawnApp(buildAgentConfig({ developmentAgent: true }), ownReg, dir);
+      expect(ownReg.ownerOf('136774')).toBeNull();
+      const res = await request(app).post('/sessions/spawn').set('Authorization', 'Bearer x')
+        .send({ name: 'echo-app-people-roles', prompt: 'build', topicId: 136774, requireTopicBinding: true });
+      expect(res.status).toBe(201);
+      expect(res.body.ownership).toBe('claimed');
+      expect(ownReg.ownerOf('136774')).toBe(SELF);
+    } finally {
+      SafeFsExecutor.safeRmSync(dir, { recursive: true, force: true, operation: 'tests/e2e/ownership-follows-live-work-lifecycle.test.ts' });
+    }
+  });
+
+  it('fleet agent (flag dark): spawn behaves as before and writes nothing', async () => {
+    const dir = fs.mkdtempSync(path.join(os.tmpdir(), 'ofw-spawn-e2e-'));
+    try {
+      const ownReg = freshRegistry();
+      const app = spawnApp(buildAgentConfig({}), ownReg, dir);
+      const res = await request(app).post('/sessions/spawn').set('Authorization', 'Bearer x')
+        .send({ name: 'fleet-spawn', prompt: 'go', topicId: 4242 });
+      expect(res.status).toBe(201);
+      expect(res.body.ownership).toBe('dark');
+      expect(ownReg.read('4242')).toBeNull();
+    } finally {
+      SafeFsExecutor.safeRmSync(dir, { recursive: true, force: true, operation: 'tests/e2e/ownership-follows-live-work-lifecycle.test.ts' });
+    }
   });
 });

@@ -68,6 +68,14 @@ afterEach(() => {
 });
 
 describe('worktree commit-identity CLAUDE.md migration parity', () => {
+  it('adds the capacity recovery instruction once to existing agents', () => {
+    fs.writeFileSync(path.join(projectDir, 'CLAUDE.md'), STALE_SECTION);
+    migrateClaudeMd(projectDir);
+    expect(claudeMd()).toContain('If creation reports `worktree-capacity`');
+    migrateClaudeMd(projectDir);
+    expect(claudeMd().split('If creation reports `worktree-capacity`')).toHaveLength(2);
+  });
+
   it('refreshes the stale identity paragraph on an agent that already has the section', () => {
     fs.writeFileSync(path.join(projectDir, 'CLAUDE.md'), STALE_SECTION);
 

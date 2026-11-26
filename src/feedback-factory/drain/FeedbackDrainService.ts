@@ -1,15 +1,57 @@
 import { createHash, randomUUID } from 'node:crypto';
 import type { Cluster } from '../processor/types.js';
 import type { FeedbackProcessingService } from '../processing/FeedbackProcessingService.js';
-import { FeedbackDrainStore } from './FeedbackDrainStore.js';
+import { FeedbackDrainStore, type AuthorityRecord, type ReadinessProjection } from './FeedbackDrainStore.js';
 import type { FeedbackInitiativeConsumer } from './FeedbackInitiativeConsumer.js';
-import type { FeedbackReadinessArbiter, ReadinessCandidate } from './FeedbackReadinessArbiter.js';
+import { FEEDBACK_READINESS_MODEL_TIMEOUT_MS, ReadinessContractViolation, ReadinessOutputRejected, outputExcerpt, type FeedbackReadinessArbiter, type ReadinessCallDiagnosis, type ReadinessCandidate, type ReadinessDecision } from './FeedbackReadinessArbiter.js';
 import { scrubForStore } from '../../core/durableSecretScrub.js';
+import { StageBudgetExceeded, unitsThatFit, withStageBudget } from './stageBudget.js';
+import { brakePlainWords } from './readinessAuthorityProposal.js';
+import type { ReadinessAccountAdmission, ReadinessAdmission, ReadinessAccountMode } from './readinessAccountAdmission.js';
+import type { VerifiedTriageAccount } from '../triage/FeedbackTriageAccountSelector.js';
+
+/** Which account served (or was refused for) the latest readiness call. Account id only, never credentials. */
+export type ReadinessAccountServing =
+  | { state: 'served'; accountId: string; pinned: boolean; verified: boolean; usedPercent: number; at: number }
+  | { state: 'shared'; reason: string; observedAccountId: string | null; at: number }
+  | { state: 'refused'; reason: string; pinned: boolean; at: number };
+
+export interface ReadinessAccountStatus {
+  mode: ReadinessAccountMode;
+  pinnedAccountId: string | null;
+  /** Null until this process makes its first readiness call. */
+  last: ReadinessAccountServing | null;
+}
 
 export const FEEDBACK_DRAIN_SERVICE_STAGE = {
   canonicalPipelineId: 'feedback-factory',
   stage: 'operated-drain',
 } as const;
+
+/**
+ * Ticks in a row with no usable readiness answer before ONE stall notice is raised: six ticks is
+ * about three hours at the 30-minute job cadence. Exposure only. Nothing is demoted on an
+ * invocation failure (a timeout, a provider error, a rate limit): the demotion list in
+ * docs/specs/feedback-factory-operating-drain.md line 121 is closed and does not include it, and
+ * the PIN restore path "is never the default throughput chokepoint". Nothing is retried out of
+ * cadence either (line 270: no feature-local retry workflow); the next tick retries as usual.
+ * Live 2026-10-14: eight HTTP 429s on the approved model's lane over twelve hours paused the
+ * sorter for four days under the earlier three-strike rule.
+ */
+export const READINESS_STALL_NOTICE_TICKS = 6;
+/**
+ * Least time left for a readiness call after the first. Live 2026-10-01 a call cost ~9 s of
+ * start-up plus ~2.4 s per candidate, which the pace estimate (no start-up term) only covers
+ * with ~23 s or more left.
+ */
+export const MIN_LATER_READINESS_CALL_MS = 25_000;
+/** Run note when readiness stopped for lack of tick time after reviewing some candidates; the rest stays due. */
+export const READINESS_TIME_EXHAUSTED = 'readiness-time-exhausted-rest-due';
+/**
+ * Candidates per readiness model call. Live 2026-10-01 (gpt-6-astra via codex-cli): about 3-4 s
+ * per candidate, so 10 finished in ~31 s while 50 hit the 60 s call budget twice in a row.
+ */
+export const READINESS_CHUNK_SIZE = 10;
 
 export interface FeedbackDrainServiceOptions {
   store: FeedbackDrainStore;
@@ -22,14 +64,38 @@ export interface FeedbackDrainServiceOptions {
   isCanonicalOwner: () => boolean;
   isConsumerLive: () => boolean;
   consumerBatchBound?: () => number;
+  /** The exact work ids the operator approved and when; the live consumer claims these before any other work. */
+  consumerApprovedWorkIds?: () => { ids: string[]; attemptBaselines: Record<string, number>; nonce: string } | null;
   estimatedReadinessBatchUsd?: number;
   maxReadyScansPerTick?: number;
   maxClaimsPerTick?: number;
   stageBudgetMs?: number;
+  /** Explicit ceiling for clustering and its durable status writes. Defaults to the general stage budget. */
+  clusteringStageBudgetMs?: number;
+  /** Budget for the model-backed readiness stage; defaults to the arbiter's model timeout plus margin. */
+  readinessStageBudgetMs?: number;
+  /** Candidates per readiness model call; a tick runs several calls up to the authority's maxBatch. */
+  readinessChunkSize?: number;
   maxWallClockMs?: number;
   sourceCompactionIntervalMs?: number;
   onRecoverableStall?: (reason: string) => void;
+  /**
+   * Durable attention enqueue (the same funnel triage uses). When wired, a paused readiness
+   * authority raises ONE item per (authority, generation) naming what stopped and what restores
+   * it. Signal only: it never restores, retries or changes the authority.
+   */
+  raiseAttention?: (item: ReadinessPauseAttention) => Promise<void>;
+  /**
+   * Chooses the subscription account each readiness call runs on (readinessAccountAdmission).
+   * Absent: every call uses the shared provider, as before.
+   */
+  readinessAccount?: ReadinessAccountAdmission | null;
   clock?: () => number;
+}
+
+export interface ReadinessPauseAttention {
+  id: string; title: string; summary: string; description: string;
+  category: string; priority: 'HIGH' | 'NORMAL'; sourceContext: string;
 }
 
 export interface FeedbackDrainTickResult {
@@ -44,6 +110,8 @@ export interface FeedbackDrainTickResult {
   wouldCreate: number;
   result: 'succeeded' | 'no-op' | 'degraded';
   reason?: string;
+  /** Informational only, never degrades the run: e.g. readiness ran out of tick time and the rest stays due. */
+  note?: string;
 }
 
 export interface FeedbackBacklogAnalysis {
@@ -78,20 +146,44 @@ function candidate(cluster: Cluster, now: number): ReadinessCandidate {
   };
 }
 
+/** The durable record of a failed readiness call: the arbiter's own diagnosis, or the error's name and message. */
+function diagnose(error: unknown, clusterIds: string[]): ReadinessCallDiagnosis {
+  const own = (error as { diagnosis?: ReadinessCallDiagnosis } | null)?.diagnosis;
+  if (own) return own;
+  const name = error instanceof Error ? error.name || 'Error' : 'unknown';
+  return {
+    check: error instanceof ReadinessContractViolation ? error.check : name,
+    message: outputExcerpt(error instanceof Error ? error.message : String(error), 300),
+    candidateIds: clusterIds.slice(0, 20).map((id) => id.slice(0, 120)),
+    candidateCount: clusterIds.length,
+  };
+}
+
 export class FeedbackDrainService {
   private readonly now: () => number;
+  /** Pause alarms already accepted by the attention store in this process (the store dedupes across restarts). */
+  private readonly pauseAlarmsRaised = new Set<string>();
+  private readonly stallAlarmsRaised = new Set<string>();
   private readonly maxReadyScans: number;
   private readonly maxClaims: number;
   private readonly stageBudgetMs: number;
+  private readonly clusteringStageBudgetMs: number;
+  private readonly readinessStageBudgetMs: number;
+  private readonly readinessChunkSize: number;
   private readonly maxWallClockMs: number;
   private readonly sourceCompactionIntervalMs: number;
+  private lastReadinessAccount: ReadinessAccountServing | null = null;
 
   constructor(private readonly opts: FeedbackDrainServiceOptions) {
     this.now = opts.clock ?? Date.now;
     this.maxReadyScans = Math.min(250, Math.max(1, opts.maxReadyScansPerTick ?? 250));
     this.maxClaims = Math.min(50, Math.max(1, opts.maxClaimsPerTick ?? 10));
     this.stageBudgetMs = Math.max(1, Math.min(20_000, opts.stageBudgetMs ?? 20_000));
-    this.maxWallClockMs = Math.max(this.stageBudgetMs, Math.min(90_000, opts.maxWallClockMs ?? 90_000));
+    this.clusteringStageBudgetMs = Math.max(1, Math.min(60_000, opts.clusteringStageBudgetMs ?? this.stageBudgetMs));
+    this.readinessStageBudgetMs = Math.max(1, Math.min(90_000, opts.readinessStageBudgetMs ?? FEEDBACK_READINESS_MODEL_TIMEOUT_MS + 5_000));
+    const chunkSize = Number(opts.readinessChunkSize ?? READINESS_CHUNK_SIZE);
+    this.readinessChunkSize = Number.isFinite(chunkSize) ? Math.min(50, Math.max(1, Math.trunc(chunkSize))) : READINESS_CHUNK_SIZE;
+    this.maxWallClockMs = Math.max(this.stageBudgetMs, this.clusteringStageBudgetMs, this.readinessStageBudgetMs, Math.min(115_000, Number.isFinite(opts.maxWallClockMs) ? opts.maxWallClockMs! : 115_000));
     this.sourceCompactionIntervalMs = Math.max(1, opts.sourceCompactionIntervalMs ?? 24 * 60 * 60 * 1000);
   }
 
@@ -99,15 +191,31 @@ export class FeedbackDrainService {
     const cursor = this.opts.store.sourceCursor();
     let generationLag = 0;
     try { generationLag = Math.max(0, this.opts.processing.sourceFeedbackGenerationPlan(cursor?.generationId).length - 1); } catch { generationLag = -1; }
-    return { processing: this.opts.processing.stats(), drain: { ...this.opts.store.metrics(), sourceGenerationLag: generationLag }, lastRun: this.opts.store.lastRun(), consumerLive: this.opts.isConsumerLive() };
+    return { processing: this.opts.processing.stats(), drain: { ...this.opts.store.metrics(), sourceGenerationLag: generationLag }, lastRun: this.opts.store.lastRun(), consumerLive: this.opts.isConsumerLive(), readinessAccount: this.readinessAccountStatus() };
+  }
+
+  /** The readiness serving account the operator checks before resuming readiness ticks. */
+  readinessAccountStatus(): ReadinessAccountStatus {
+    const config = this.opts.readinessAccount?.config() ?? { mode: 'off' as const, pinnedAccountId: null };
+    return { mode: config.mode, pinnedAccountId: config.pinnedAccountId, last: this.lastReadinessAccount };
   }
 
   sourceClusterPresent(clusterId: string): boolean { return this.opts.processing.hasActiveCluster(clusterId); }
 
+  /**
+   * Called by the tick gateway when it refuses a tick (a paused authority refuses every tick, so
+   * no tick body ever runs to notice the pause). Fire-and-forget; raises the deduped pause alarm.
+   */
+  notifyIfReadinessPaused(): void {
+    const authority = this.opts.store.getAuthority(this.opts.authorityId);
+    if (!authority || authority.revoked || !this.opts.isCanonicalOwner()) return;
+    void this.alarmIfPaused(authority);
+  }
+
   canAgentMutateReadiness(agentId: string): boolean {
     const authority = this.opts.store.getAuthority(this.opts.authorityId);
     return Boolean(authority && !authority.revoked && authority.agentId === agentId &&
-      authority.ownerMachineId === this.opts.ownerHost && authority.ownerEpoch === this.opts.ownerEpoch() &&
+      this.opts.store.authorityOwnerCurrent(authority, this.opts.ownerHost, this.opts.ownerEpoch()) &&
       this.opts.isCanonicalOwner() && this.opts.store.authorityPosture(authority.authorityId, authority.generation).mode === 'active');
   }
 
@@ -206,13 +314,14 @@ export class FeedbackDrainService {
         const projection = this.opts.store.projectSourceGeneration({
           filePath: source.filePath, generationId: source.generationId, limit: projectionBudget,
         });
-        projectionBudget -= projection.projected + projection.replayed;
+        projectionBudget -= projection.projected + projection.replayed + projection.superseded + projection.quarantined;
         if (source.handoffToNext) {
           if (projection.lagBytes > 0) break;
           this.opts.store.acceptSourceHandoff({
             fromGenerationId: source.handoffToNext.fromGenerationId,
             finalOffset: source.handoffToNext.finalOffset,
             toGenerationId: source.handoffToNext.toGenerationId,
+            startOffset: source.handoffToNext.startOffset,
           });
         }
       }
@@ -222,7 +331,7 @@ export class FeedbackDrainService {
       const projectedFeedback = this.opts.store.pendingProjectedFeedback(500);
       const processed = this.opts.processing.processProjected(projectedFeedback.map((row) => row.record));
       if (projectedFeedback.length > 0) this.opts.store.acknowledgeProcessedProjection(projectedFeedback.at(-1)!.ingestSequence);
-      this.assertStageBudget(clusteringStartedAt, 'clustering');
+      this.assertStageBudget(clusteringStartedAt, 'clustering', this.clusteringStageBudgetMs);
       this.opts.store.markClusteringSucceeded(this.now());
       stopIfCancelled();
       out.processed = processed.result.results.length;
@@ -234,46 +343,20 @@ export class FeedbackDrainService {
       const due = this.opts.store.dueReadiness(50, now);
       const authority = this.opts.store.getAuthority(this.opts.authorityId);
       if (due.length > 0 && authority && !authority.revoked && this.opts.arbiter &&
-        authority.ownerMachineId === this.opts.ownerHost && authority.ownerEpoch === ownerEpoch &&
+        this.opts.store.authorityOwnerCurrent(authority, this.opts.ownerHost, ownerEpoch) &&
         this.opts.store.authorityPosture(authority.authorityId, authority.generation).mode === 'active') {
         const liveDue = due.filter((row) => byId.has(row.clusterId)).slice(0, authority.maxBatch);
         for (const stale of due.filter((row) => !byId.has(row.clusterId))) this.opts.store.holdReadiness(stale.clusterId, 'source-cluster-missing');
         if (liveDue.length === 0) {
           out.reason = 'readiness-source-missing';
-        } else if (!this.opts.store.reserveAuthoritySpend(authority, this.opts.estimatedReadinessBatchUsd ?? 0.01, liveDue.length, now)) {
-          for (const row of liveDue) this.opts.store.recordCollectingEvaluation(row.clusterId, { reason: 'readiness-spend-brake', nextReviewAt: now + 24 * 60 * 60 * 1000 });
-          this.opts.store.demoteAuthority(authority.authorityId, authority.generation, 'readiness-spend-brake');
-          out.reason = 'readiness-spend-brake';
         } else {
-        try {
-          const decisionNonce = `decision:${randomUUID()}`;
-          const proposalSetHash = createHash('sha256').update(JSON.stringify(liveDue.map((row) => ({ clusterId: row.clusterId, epoch: row.epoch })).sort((a, b) => a.clusterId.localeCompare(b.clusterId)))).digest('hex');
-          const decisions = await this.withStageBudget('readiness-authority', () => this.opts.arbiter!.decideBatch(authority, liveDue.map((row) => candidate(byId.get(row.clusterId)!, now))));
-          stopIfCancelled();
-          out.reviewed = decisions.length;
-          for (const decision of decisions) {
-            if (decision.outcome === 'ready') {
-              const approvalKey = createHash('sha256').update(`${authority.authorityId}:${authority.generation}:${decision.clusterId}:${decision.evidenceHash}:${decisionNonce}:${proposalSetHash}`).digest('hex');
-              this.opts.store.approveReady({ clusterId: decision.clusterId, approvalKey, authorityId: authority.authorityId, authorityGeneration: authority.generation, evidenceHash: decision.evidenceHash, decisionNonce, proposalSetHash });
-              out.approved++;
-            } else {
-              this.opts.store.recordCollectingEvaluation(decision.clusterId, {
-                reason: decision.outcome === 'escalate-human' ? 'readiness-escalation' : decision.reasonCodes[0] ?? 'collecting',
-                nextReviewAt: now + 24 * 60 * 60 * 1000,
-              });
-            }
-          }
-        } catch {
-          for (const row of liveDue) this.opts.store.recordCollectingEvaluation(row.clusterId, {
-            reason: 'readiness-authority-failed', nextReviewAt: now + 15 * 60 * 1000,
-          });
-          out.reason = 'readiness-authority-failed';
-          this.opts.store.demoteAuthority(authority.authorityId, authority.generation, 'readiness-schema-provenance-or-routing-failure');
-        }
+          await this.reviewReadinessInChunks(authority, liveDue, byId, now, runStartedAt, stopIfCancelled, out);
         }
       } else if (due.length > 0) {
         for (const row of due) this.opts.store.recordCollectingEvaluation(row.clusterId, { reason: 'readiness-authority-unavailable', nextReviewAt: now + 15 * 60 * 1000 });
         out.reason = 'readiness-authority-unavailable';
+        // A pause that predates this process (or whose first alarm failed) is still told once.
+        if (authority && !authority.revoked) await this.alarmIfPaused(authority);
       }
 
       stopIfCancelled();
@@ -306,9 +389,23 @@ export class FeedbackDrainService {
         out.wouldCreate = this.opts.store.simulateClaims({ limit: this.maxClaims, ownerAuthorityEpoch: ownerEpoch, now });
       } else {
         const promotionBound = Math.min(50, Math.max(0, Math.trunc(this.opts.consumerBatchBound?.() ?? this.maxClaims)));
+        // Proposal-set bound: the batch the operator saw is claimed first, so no earlier
+        // or newly queued item takes its place in the first live run.
+        // Until every approved item has been attempted once, ONLY approved items are claimed
+        // (no fallback to unseen work in the same run); after that the promotion continues
+        // as the ongoing consumer at the approved per-run bound with no lasting priority.
+        const approved = this.opts.consumerApprovedWorkIds?.() ?? null;
+        const pendingApproval = approved ? this.opts.store.outstandingApprovedWork(approved.attemptBaselines, now) : { outstanding: [], claimable: [] };
         for (let i = 0; i < Math.min(this.maxClaims, promotionBound); i++) {
           stopIfCancelled();
-          const claim = this.opts.store.claimNext({ consumerId: 'initiative-tracker', ownerAuthorityEpoch: ownerEpoch, leaseMs: 30_000, now });
+          // A revoke, re-promotion or config change mid-run stops further claims at once.
+          if (!this.opts.isConsumerLive() || (this.opts.consumerApprovedWorkIds?.()?.nonce ?? null) !== (approved?.nonce ?? null)) break;
+          const claim = pendingApproval.outstanding.length > 0
+            // Approved batch outstanding: claim only from it, and nothing if none is claimable now.
+            ? (pendingApproval.claimable.length > 0
+              ? this.opts.store.claimNext({ consumerId: 'initiative-tracker', ownerAuthorityEpoch: ownerEpoch, leaseMs: 30_000, now, onlyWorkIds: pendingApproval.claimable })
+              : null)
+            : this.opts.store.claimNext({ consumerId: 'initiative-tracker', ownerAuthorityEpoch: ownerEpoch, leaseMs: 30_000, now });
           if (!claim) break;
           out.claimed++;
           try {
@@ -347,12 +444,15 @@ export class FeedbackDrainService {
         const compactionStartedAt = this.now();
         const handoff = this.opts.processing.compactFeedbackSource(this.now());
         this.assertStageBudget(compactionStartedAt, 'source-compaction');
-        if (handoff) this.opts.store.recordSourceCompaction(handoff.publishedAt);
+        // No handoff means the source was already compact; the interval restarts either way.
+        this.opts.store.recordSourceCompaction(handoff?.publishedAt ?? this.now());
       }
+      // A quarantined source line never stops the run, but every run reports it until repaired.
+      if (this.opts.store.quarantinedSourceRecords() > 0) out.reason ??= 'source-record-quarantined';
       const progressed = out.processed + out.reviewed + out.enqueued + out.completed;
       out.result = out.reason ? 'degraded' : progressed > 0 ? 'succeeded' : 'no-op';
       stopIfCancelled();
-      this.opts.store.transitionRun(run.runId, 'running', out.result, out.reason ?? '', fence);
+      this.opts.store.transitionRun(run.runId, 'running', out.result, out.reason ?? out.note ?? '', fence);
       if (out.result !== 'degraded') {
         this.opts.store.pruneOperationalHistory({ ownerHost: fence.ownerHost, ownerAuthorityEpoch: fence.ownerEpoch, now: this.now(), limit: 500 });
       }
@@ -372,22 +472,245 @@ export class FeedbackDrainService {
     }
   }
 
-  private assertStageBudget(startedAt: number, stage: string): void {
-    if (this.now() - startedAt > this.stageBudgetMs) throw new Error(`${stage} stage budget exceeded`);
+  /**
+   * Reviews the due candidates in sequential model calls of at most readinessChunkSize, applying
+   * each call's decisions as it returns. Stops before a call that would not fit the tick's
+   * wall clock (leaving the rest due for the next tick) and after any failed call. The
+   * transient-failure counter resets when any call in the tick succeeded and counts one
+   * failure only when none did; a contract violation still demotes at once.
+   */
+  private async reviewReadinessInChunks(authority: AuthorityRecord, liveDue: ReadinessProjection[], byId: Map<string, Cluster>, now: number,
+    runStartedAt: number, stopIfCancelled: () => void, out: FeedbackDrainTickResult): Promise<void> {
+    // The stages after readiness (enqueue, claims, reconcile, compaction) keep one stage budget.
+    const deadline = runStartedAt + this.maxWallClockMs - this.stageBudgetMs;
+    let pending = liveDue;
+    let succeededCalls = 0;
+    let reviewedMs = 0;
+    let reviewedCandidates = 0;
+    let transientFailure = false;
+    let contractViolation = false;
+    let served: VerifiedTriageAccount | null = null;
+    while (pending.length > 0) {
+      const remaining = deadline - this.now();
+      // Before the first call a full chunk is assumed to fit its call budget; after it, the
+      // chunk is sized from this tick's observed pace with a 25% margin.
+      const fits = unitsThatFit(remaining, reviewedMs, reviewedCandidates, this.readinessChunkSize);
+      const chunk = pending.slice(0, Math.min(this.readinessChunkSize, fits));
+      // A later call also needs MIN_LATER_READINESS_CALL_MS: every call pays a fixed start-up
+      // cost the per-candidate pace does not show (live: one-candidate calls given 7.6 s timed out).
+      if (remaining <= 0 || chunk.length === 0 || (succeededCalls > 0 && remaining < MIN_LATER_READINESS_CALL_MS)) {
+        if (succeededCalls > 0) out.note = READINESS_TIME_EXHAUSTED;
+        else if (!transientFailure) out.reason ??= 'readiness-wall-clock-exhausted';
+        break;
+      }
+      // The serving account is decided before any spend is reserved: a refusal costs nothing,
+      // defers the rows, and counts as a failed tick (never a demotion).
+      const admission = await this.admitReadinessAccount(authority, served, deadline);
+      if (admission.kind === 'refused') {
+        for (const row of pending) if (this.opts.store.getReadiness(row.clusterId)?.state === 'collecting') {
+          this.opts.store.recordCollectingEvaluation(row.clusterId, { reason: 'readiness-account-refused', nextReviewAt: now + 15 * 60 * 1000 });
+        }
+        this.opts.store.recordReadinessDiagnosis(out.runId, 'call-failed', {
+          check: 'readiness-account-refused', message: admission.reason,
+          candidateIds: pending.slice(0, 20).map((row) => row.clusterId.slice(0, 120)), candidateCount: pending.length,
+        });
+        this.lastReadinessAccount = { state: 'refused', reason: admission.reason, pinned: admission.pinned, at: this.now() };
+        out.reason = 'readiness-account-refused';
+        transientFailure = true;
+        break;
+      }
+      served = admission.kind === 'account' ? admission.account : null;
+      if (!this.opts.store.reserveAuthoritySpend(authority, this.opts.estimatedReadinessBatchUsd ?? 0.01, chunk.length, now)) {
+        for (const row of pending) this.opts.store.recordCollectingEvaluation(row.clusterId, { reason: 'readiness-spend-brake', nextReviewAt: now + 24 * 60 * 60 * 1000 });
+        this.opts.store.demoteAuthority(authority.authorityId, authority.generation, 'readiness-spend-brake');
+        await this.alarmIfPaused(authority);
+        out.reason = 'readiness-spend-brake';
+        break;
+      }
+      pending = pending.slice(chunk.length);
+      const startedAt = this.now();
+      // Only a decider that is not the approved one (model/framework/prompt/schema identity) or a
+      // call outside the approved envelope demotes at once. A rejected answer, a refused store
+      // write, a timeout, a rate limit or a provider error fails this call: its rows retry in
+      // 15 minutes, the tick counts toward READINESS_STALL_NOTICE_TICKS, and nothing is demoted.
+      // Every failure is diagnosed.
+      const failed = (error: unknown): void => {
+        const rejected = error instanceof ReadinessOutputRejected;
+        const rowReason = rejected ? 'readiness-output-rejected' : 'readiness-authority-failed';
+        // Rows this call already approved before a store error keep their decision.
+        for (const row of chunk) if (this.opts.store.getReadiness(row.clusterId)?.state === 'collecting') this.opts.store.recordCollectingEvaluation(row.clusterId, {
+          reason: rowReason, nextReviewAt: now + 15 * 60 * 1000,
+        });
+        out.reason = rowReason;
+        const violation = error instanceof ReadinessContractViolation;
+        this.opts.store.recordReadinessDiagnosis(out.runId, violation ? 'contract-violation' : rejected ? 'output-rejected' : 'call-failed',
+          diagnose(error, chunk.map((row) => row.clusterId)));
+        if (violation) {
+          this.opts.store.demoteAuthority(authority.authorityId, authority.generation, 'readiness-schema-provenance-or-routing-failure');
+          contractViolation = true;
+        } else {
+          transientFailure = true;
+        }
+      };
+      let decisions: ReadinessDecision[];
+      const callBudgetMs = Math.min(this.readinessStageBudgetMs, remaining);
+      try {
+        const account = served;
+        const admitter = this.opts.readinessAccount;
+        decisions = await this.withStageBudget('readiness-authority', () => this.opts.arbiter!.decideBatch(authority, chunk.map((row) => candidate(byId.get(row.clusterId)!, now)),
+          account && admitter ? { accountOverride: { accountId: account.accountId, configHome: account.configHome }, launchGuard: () => admitter.revalidate(account) } : {}),
+          callBudgetMs);
+        this.noteServedAccount(account);
+      } catch (error) {
+        this.noteServedAccount(served);
+        // Our own tick clock cut a later call short: out of time, not a provider failure. Its
+        // rows stay due, untouched, for the next tick.
+        if (error instanceof StageBudgetExceeded && succeededCalls > 0 && callBudgetMs < this.readinessStageBudgetMs) {
+          out.note = READINESS_TIME_EXHAUSTED;
+          break;
+        }
+        failed(error);
+        break;
+      }
+      // Cancellation, ownership loss or the wall clock end the run like any later stage would.
+      stopIfCancelled();
+      const decisionNonce = `decision:${randomUUID()}`;
+      const proposalSetHash = createHash('sha256').update(JSON.stringify(chunk.map((row) => ({ clusterId: row.clusterId, epoch: row.epoch })).sort((a, b) => a.clusterId.localeCompare(b.clusterId)))).digest('hex');
+      try {
+        for (const decision of decisions) {
+          if (decision.outcome === 'ready') {
+            const approvalKey = createHash('sha256').update(`${authority.authorityId}:${authority.generation}:${decision.clusterId}:${decision.evidenceHash}:${decisionNonce}:${proposalSetHash}`).digest('hex');
+            this.opts.store.approveReady({ clusterId: decision.clusterId, approvalKey, authorityId: authority.authorityId, authorityGeneration: authority.generation, evidenceHash: decision.evidenceHash, decisionNonce, proposalSetHash });
+            out.approved++;
+          } else {
+            this.opts.store.recordCollectingEvaluation(decision.clusterId, {
+              reason: decision.outcome === 'escalate-human' ? 'readiness-escalation' : decision.reasonCodes[0] ?? 'collecting',
+              nextReviewAt: now + 24 * 60 * 60 * 1000,
+            });
+          }
+          out.reviewed++;
+        }
+      } catch (error) {
+        failed(error);
+        break;
+      }
+      succeededCalls++;
+      reviewedMs += this.now() - startedAt;
+      reviewedCandidates += chunk.length;
+    }
+    if (contractViolation) {
+      await this.alarmIfPaused(authority);
+      return;
+    }
+    if (succeededCalls > 0) {
+      this.opts.store.clearAuthorityTransientFailures(authority.authorityId, authority.generation);
+    } else if (transientFailure) {
+      // Counted, exposed (GET /feedback-factory/drain/status → readinessProgress), never demoted.
+      const streak = this.opts.store.recordAuthorityTransientFailure(authority.authorityId, authority.generation);
+      if (streak >= READINESS_STALL_NOTICE_TICKS) await this.alarmIfStalled(authority, streak);
+    }
   }
 
-  private async withStageBudget<T>(stage: string, operation: () => Promise<T>): Promise<T> {
-    const startedAt = this.now();
-    let timer: ReturnType<typeof setTimeout> | undefined;
+  /**
+   * Reuse the account chosen for the previous chunk while its quota read is under a minute old and
+   * its credential is unchanged; otherwise ask the admission again. Without an admission every call
+   * is shared, exactly as before.
+   */
+  private async admitReadinessAccount(authority: AuthorityRecord, previous: VerifiedTriageAccount | null, deadline: number): Promise<ReadinessAdmission> {
+    const admitter = this.opts.readinessAccount;
+    if (!admitter) return { kind: 'shared', reason: 'selection-off', observedAccountId: null };
+    if (previous && admitter.revalidate(previous)) return { kind: 'account', account: previous, pinned: admitter.config().pinnedAccountId === previous.accountId };
+    const admission = await admitter.admit(authority.provider, Math.min(deadline, this.now() + 30_000));
+    if (admission.kind === 'shared') {
+      this.lastReadinessAccount = { state: 'shared', reason: admission.reason, observedAccountId: admission.observedAccountId, at: this.now() };
+    }
+    return admission;
+  }
+
+  private noteServedAccount(account: VerifiedTriageAccount | null): void {
+    const admitter = this.opts.readinessAccount;
+    if (!account || !admitter) return;
+    this.lastReadinessAccount = {
+      state: 'served', accountId: account.accountId, pinned: admitter.config().pinnedAccountId === account.accountId,
+      verified: admitter.verifyExecutionIdentity(account), usedPercent: account.usedPercent, at: this.now(),
+    };
+  }
+
+  /**
+   * Tell the operator, once per stall episode, that readiness has produced no usable answer for
+   * a long run of ticks: what is failing, that nothing is paused, and that nothing needs approval.
+   * An episode starts at the first failed tick after a success and ends at the next success, so a
+   * later outage gets its own notice. Signal only: it never retries, restores or demotes.
+   */
+  private async alarmIfStalled(authority: AuthorityRecord, streak: number): Promise<void> {
+    if (!this.opts.raiseAttention) return;
+    const progress = this.opts.store.readinessProgress(authority.authorityId, authority.generation);
+    const id = `feedback-drain:readiness-stalled:${authority.authorityId}:${authority.generation}:${progress.stalledSince ?? 0}`;
+    if (this.stallAlarmsRaised.has(id)) return;
+    const last = this.opts.store.lastReadinessDiagnosis();
+    const causeParts = [last?.diagnosis?.check, last?.diagnosis?.message].filter((part): part is string => typeof part === 'string' && part.length > 0);
+    // Scrub a wide window first, then cut, so a secret straddling the cut is still recognised whole.
+    const cause = scrubForStore((causeParts.length > 0 ? causeParts.join(': ') : last?.raw || 'no usable answer').replace(/\s+/g, ' ').slice(0, 3_000), { maxBytes: 8_192 }).text.slice(0, 200);
+    const hours = progress.stalledSince ? Math.max(1, Math.round((this.now() - progress.stalledSince) / 3_600_000)) : null;
     try {
-      const timeout = new Promise<never>((_, reject) => {
-        timer = setTimeout(() => reject(new Error(`${stage} stage budget exceeded`)), this.stageBudgetMs);
-        if (typeof timer.unref === 'function') timer.unref();
+      await this.opts.raiseAttention({
+        id,
+        title: 'Feedback sorting is not making progress',
+        summary: `The sorting model has given no usable answer for ${streak} runs in a row` +
+          `${hours ? ` (about ${hours} hour${hours === 1 ? '' : 's'})` : ''}. Last failure: ${cause}. ` +
+          'New feedback reports are waiting. Nothing is paused and nothing needs your approval.',
+        description: 'Every run asks the approved sorting model about the waiting feedback reports, and each run since ' +
+          `${new Date(progress.stalledSince ?? this.now()).toLocaleString('en-US', { dateStyle: 'medium', timeStyle: 'short', timeZone: 'UTC' })} UTC has failed. ` +
+          `The most recent failure: ${cause}. The drain keeps trying on its normal schedule and catches up by itself once the model answers again; ` +
+          'a rate limit or a short outage usually clears on its own. The approval has not been switched off, so there is nothing to approve. ' +
+          'If this keeps up, the exact error of the latest attempt is recorded in the drain status (lastReadinessFailure) and in the server log.',
+        category: 'monitoring',
+        priority: 'NORMAL',
+        sourceContext: 'feedback-drain:readiness-stalled',
       });
-      const result = await Promise.race([operation(), timeout]);
-      this.assertStageBudget(startedAt, stage);
-      return result;
-    } finally { if (timer) clearTimeout(timer); }
+      this.stallAlarmsRaised.add(id);
+    } catch {
+      /* @silent-fallback-ok: the next failed tick past the threshold tries again */
+    }
+  }
+
+  /**
+   * Tell the operator, once per (authority, generation), that the readiness authority is paused:
+   * what stopped, why, and that only their approval restores it. Deduped by item id in the durable
+   * attention store, so a re-raise on a later tick or after a restart is a no-op. Never throws.
+   */
+  private async alarmIfPaused(authority: AuthorityRecord): Promise<void> {
+    if (!this.opts.raiseAttention) return;
+    const posture = this.opts.store.authorityPosture(authority.authorityId, authority.generation);
+    if (posture.mode !== 'proposal-only') return;
+    const id = `feedback-drain:readiness-paused:${authority.authorityId}:${authority.generation}`;
+    if (this.pauseAlarmsRaised.has(id)) return;
+    try {
+      await this.opts.raiseAttention({
+        id,
+        title: 'Feedback sorting is paused',
+        summary: `${brakePlainWords(posture.reason)} New feedback reports are not becoming work items.`,
+        description: `${brakePlainWords(posture.reason)} The sorting model's approval was switched off on ` +
+          `${new Date(posture.updatedAt || this.now()).toLocaleString('en-US', { dateStyle: 'medium', timeStyle: 'short', timeZone: 'UTC' })} UTC. Reports keep arriving and are saved, but none ` +
+          'is turned into a work item until you approve the sorting model again on the dashboard Feedback Drain tab. ' +
+          'Nothing switches it back on automatically.',
+        category: 'monitoring',
+        priority: posture.reason === 'readiness-schema-provenance-or-routing-failure' ? 'HIGH' : 'NORMAL',
+        sourceContext: 'feedback-drain:readiness-paused',
+      });
+      this.pauseAlarmsRaised.add(id);
+    } catch {
+      /* @silent-fallback-ok: the next tick that finds the authority still paused tries again */
+    }
+  }
+
+  private assertStageBudget(startedAt: number, stage: string, budgetMs = this.stageBudgetMs): void {
+    const elapsedMs = this.now() - startedAt;
+    if (elapsedMs > budgetMs) throw new Error(`${stage} stage budget exceeded (${elapsedMs}ms > ${budgetMs}ms)`);
+  }
+
+  private withStageBudget<T>(stage: string, operation: () => Promise<T>, budgetMs = this.stageBudgetMs): Promise<T> {
+    return withStageBudget(stage, operation, budgetMs, this.now);
   }
 }
 

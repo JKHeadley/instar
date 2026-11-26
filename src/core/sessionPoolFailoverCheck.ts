@@ -21,6 +21,17 @@
  *                                        verdict; the runner records nothing so a
  *                                        transient infra failure never masquerades
  *                                        as a red demotion or a green promotion).
+ *   exited, but NO test executed      → THROW                 (INCONCLUSIVE — CMT-1117)
+ *     (exit 75, or the run's test report
+ *      is missing, or shows zero executed tests and zero failed suites)
+ *
+ * The last row exists because "the process exited" is not "the failover test
+ * ran". The host test-runner bound refuses a run it cannot admit with
+ * INSTAR_TEST_CAPACITY_TIMEOUT inside vitest's globalSetup; vitest then exits 1
+ * (it overwrites the semaphore's exit 75), the E2E never started, and the old
+ * mapping recorded that as a red — 25 of 29 reds on 2026-10-28 were these, and
+ * each one demoted the live sessionPool stage. A capacity refusal says the
+ * machine was busy, nothing about failover.
  *
  * ── Scope note ──
  * This check requires the instar SOURCE + a vitest runner on the executing
@@ -31,6 +42,13 @@
  */
 
 import type { FailoverCheckResult } from './SessionPoolFailoverRunner.js';
+
+/**
+ * EX_TEMPFAIL — the host test-runner bound's "could not start" exit code. Mirrors
+ * `TEST_RUNNER_CAPACITY_EXIT_CODE` in hostTestRunnerSemaphore.ts (kept local so
+ * this module stays pure; a unit test pins the two equal).
+ */
+export const FAILOVER_CHECK_CAPACITY_EXIT_CODE = 75;
 
 /** The default E2E the check runs — the merged #1551 real two-node failover. */
 export const DEFAULT_FAILOVER_E2E_PATH = 'tests/e2e/sessionpool-failover-two-node.test.ts';
@@ -44,6 +62,39 @@ export interface SubprocessRunResult {
   exitCode: number | null;
   /** A durable, human-traceable pointer to this run (a log path / run id). */
   evidenceRef: string;
+  /**
+   * What the run's test report says actually executed. `null` = no readable
+   * report — inconclusive. (A globalSetup capacity refusal writes an EMPTY
+   * report: zero executed tests, zero failed suites — also inconclusive.) Omitted = this runner does not report
+   * (legacy/injected runners), and only the exit code is consulted.
+   */
+  testReport?: FailoverTestReport | null;
+}
+
+/** The part of a vitest JSON report that says whether the E2E really ran. */
+export interface FailoverTestReport {
+  /** Tests that ran to a pass or a fail (skipped / todo / pending excluded). */
+  executedTests: number;
+  /** Suites that failed outright (a beforeAll throw, an import error in the file). */
+  failedSuites: number;
+}
+
+/**
+ * Parse a vitest `--reporter=json` output file. Returns null for anything that
+ * is not a recognisable report (absent, torn, wrong shape) — never a guess.
+ */
+export function parseVitestJsonReport(text: string | null | undefined): FailoverTestReport | null {
+  if (!text) return null;
+  let raw: unknown;
+  try { raw = JSON.parse(text); } catch { return null; }
+  if (!raw || typeof raw !== 'object') return null;
+  const r = raw as Record<string, unknown>;
+  const num = (v: unknown): number | null => (typeof v === 'number' && Number.isFinite(v) && v >= 0 ? v : null);
+  const passed = num(r.numPassedTests);
+  const failed = num(r.numFailedTests);
+  const failedSuites = num(r.numFailedTestSuites);
+  if (passed === null || failed === null || failedSuites === null) return null;
+  return { executedTests: passed + failed, failedSuites };
 }
 
 export interface SubprocessFailoverCheckDeps {
@@ -78,6 +129,25 @@ export function makeSubprocessFailoverCheck(
       throw new Error(
         `sessionPool failover check did not run to completion (evidence: ${r.evidenceRef})`,
       );
+    }
+    if (r.exitCode === FAILOVER_CHECK_CAPACITY_EXIT_CODE) {
+      // EX_TEMPFAIL from the host test-runner bound: the E2E never started.
+      throw new Error(
+        `sessionPool failover check inconclusive: the test runner refused to start (exit ${r.exitCode}, capacity) (evidence: ${r.evidenceRef})`,
+      );
+    }
+    if (r.testReport !== undefined) {
+      const rep = r.testReport;
+      if (rep === null || (rep.executedTests === 0 && rep.failedSuites === 0)) {
+        // Exited, but no failover test ran: a globalSetup refusal exits 1 with
+        // an empty report (verified against vitest 2.1.9); an all-skipped run
+        // exits 0 with nothing proven. Neither is a failover verdict — record
+        // nothing. A beforeAll throw or an import error in the E2E reports
+        // failed suites, so it stays a real red.
+        throw new Error(
+          `sessionPool failover check inconclusive: exit ${r.exitCode} but ${rep === null ? 'no test report was written' : 'no test executed'} (evidence: ${r.evidenceRef})`,
+        );
+      }
     }
     return {
       outcome: r.exitCode === 0 ? 'green' : 'red',

@@ -15,6 +15,7 @@ import fs from 'node:fs';
 import path from 'node:path';
 import { fileURLToPath } from 'node:url';
 import { registryAssetIsStale } from './registryAssetFreshness.js';
+import { analyzeVitestArgv } from '../../src/core/testRunnerRunClassifier.js';
 
 const ROOT = path.resolve(path.dirname(fileURLToPath(import.meta.url)), '..', '..');
 
@@ -53,6 +54,10 @@ function newestSrcMtime(dir: string): number {
  * constraint expressible instead of accidental.
  */
 export default function setup(): void {
+  // `vitest list` runs every globalSetup but executes no test, so it needs no dist.
+  // Building here made the pre-push smoke's affected-test listing run a full `tsc`
+  // and time out, which skipped the smoke tier on every push.
+  if (analyzeVitestArgv(process.argv).isList) return;
   ensureDistBuilt();
   ensureRegistryAsset();
 }
@@ -63,7 +68,9 @@ function ensureDistBuilt(): void {
     fs.statSync(distWorker).mtimeMs >= newestSrcMtime(path.join(ROOT, 'src'));
   if (fresh) return;
   // tsc only (skip manifest-gen/sign-lockfile from the full `build` — we just need dist).
-  execSync('npx tsc', { cwd: ROOT, stdio: 'inherit' });
+  // The same TypeScript 7 compiler `npm run build` uses, by path: `npx tsc` resolves
+  // whichever of the two installed TypeScript packages npm linked last.
+  execSync('node node_modules/typescript-native/bin/tsc', { cwd: ROOT, stdio: 'inherit' });
   // Restore the bin exec bit the full build script applies (tsc emits 0644) — the
   // package-completeness guard asserts every package.json bin ships executable.
   try { fs.chmodSync(path.join(ROOT, 'dist', 'cli.js'), 0o755); } catch { /* dist/cli.js absent in partial builds */ }

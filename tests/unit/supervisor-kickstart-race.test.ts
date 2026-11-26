@@ -81,15 +81,29 @@ describe('ServerSupervisor — P1 kickstart race', () => {
   });
 
   describe('start() decision boundary', () => {
-    it('respawns when a tmux session exists but the server is NOT responding (the race)', async () => {
+    it('respawns when a dying tmux session lingers at first but is gone once the probes fail (the race)', async () => {
       const s = makeSupervisor();
-      s.isServerSessionAlive = vi.fn().mockReturnValue(true);      // dying session lingers
-      s.verifyServerResponding = vi.fn().mockResolvedValue(false); // but server is dead
+      s.isServerSessionAlive = vi.fn().mockReturnValueOnce(true).mockReturnValue(false); // lingers, then gone
+      s.verifyServerResponding = vi.fn().mockResolvedValue(false); // the server is dead
       s.spawnServer = vi.fn().mockReturnValue(true);
 
       const result = await s.start();
 
       expect(s.spawnServer).toHaveBeenCalledTimes(1); // MUST respawn, not no-op
+      expect(result).toBe(true);
+    });
+
+    it('adopts (never kills) a session that is still alive after the probes fail — a busy server left running by a lifeline-only restart', async () => {
+      const s = makeSupervisor();
+      s.isServerSessionAlive = vi.fn().mockReturnValue(true);      // alive throughout
+      s.verifyServerResponding = vi.fn().mockResolvedValue(false); // not answering yet (event loop busy)
+      s.spawnServer = vi.fn().mockReturnValue(true);
+
+      const result = await s.start();
+
+      expect(s.spawnServer).not.toHaveBeenCalled(); // the health loop decides, start() never kills
+      expect(s.startHealthChecks).toHaveBeenCalledTimes(1);
+      expect(s.isRunning).toBe(true);
       expect(result).toBe(true);
     });
 
@@ -104,6 +118,25 @@ describe('ServerSupervisor — P1 kickstart race', () => {
       expect(s.spawnServer).not.toHaveBeenCalled(); // no-op branch is correct here
       expect(s.isRunning).toBe(true);
       expect(result).toBe(true);
+    });
+
+    it('adopting a running server does not forget a server restart the updater asked for (restart-requested.json stays the supervisor duty)', async () => {
+      const fs = await import('node:fs');
+      const os = await import('node:os');
+      const path = await import('node:path');
+      const stateDir = fs.mkdtempSync(path.join(os.tmpdir(), 'sup-adopt-'));
+      fs.mkdirSync(path.join(stateDir, 'state'));
+      fs.writeFileSync(path.join(stateDir, 'state', 'restart-requested.json'), JSON.stringify({ plannedRestart: true, targetVersion: '9.9.9' }));
+      const s: any = new ServerSupervisor({ projectDir: '/tmp/p1-test-project', projectName: 'p1-test', port: 59999, stateDir });
+      s.tmuxPath = 'tmux';
+      s.startHealthChecks = vi.fn();
+      s.isServerSessionAlive = vi.fn().mockReturnValue(true);
+      s.verifyServerResponding = vi.fn().mockResolvedValue(true);
+      s.spawnServer = vi.fn();
+      expect(await s.start()).toBe(true);
+      expect(s.spawnServer).not.toHaveBeenCalled();
+      expect(s.pendingUpdateVersion).toBe('9.9.9'); // the health loop's checkRestartRequest performs it
+      expect(fs.existsSync(path.join(stateDir, 'state', 'restart-requested.json'))).toBe(true); // not consumed by start()
     });
 
     it('spawns when no session exists at all', async () => {

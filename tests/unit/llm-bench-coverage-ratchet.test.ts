@@ -27,31 +27,55 @@ import { LLM_BENCH_COVERAGE } from '../../src/data/llmBenchCoverage.js';
 const PENDING_BASELINE = [
   // Wave-3 only — the wave-2 set graduated to covered/exempt on 2026-07-02
   // (INSTAR-Bench v2 wave-2 authoring: 19 task batteries + 5 argued exemptions).
-  'AlignmentReviewer', 'CartographerSweep', 'ContextualEvaluator', 'DiscoveryEvaluator',
+  'AttributionJudge', 'OrgPolicyJudge', 'AlignmentReviewer', 'CartographerSweep', 'ContextualEvaluator', 'DiscoveryEvaluator',
   'JobReflector', 'LLMConflictResolver', 'PipeSessionSpawner',
-  'PreCompactionFlush', 'ProfileIntentClassifier', 'RelationshipManager',
+  'PreCompactionFlush', 'RelationshipManager',
+  // spec-approval-constitution-check (Echo Bugs topic 10000002750, 2026-11-15): the B24 Work Board card judge.
+  // Low volume (agent card writes only); its verdict is graded by its route and contract tests until a
+  // bench battery is authored in the research tree, which does not live in this repo.
+  'WorkBoardSpecApprovalJudge',
+  // context-budget-layered-summaries §6.5 (Phase 1 S8, 2026-11-10): chunk/C2 summaries over an archived span;
+  // graded by the Phase 2 fold probes until a bench task lands.
+  'ContextLayerChunk',
+  // context-budget-layered-summaries §6 row H3 (Phase 1 S9, 2026-11-10): the long-term view from chunk/C2 summaries.
+  'ContextLayerH3',
+  // context-budget Phase 2 practice folds: pending a bench task.
+  'FoldAudit',
+  'FoldProbe',
   'SelfKnowledgeTree', 'GoalPriorityExtractor',
-  'StandardsConformanceReviewer', 'StandardsCoverageEnrichment',
+  'StandardsConformanceReviewer',
   'TopicSummarizer', 'TreeSynthesis', 'TreeTriage', 'a2a-checkin',
   'completion-claim-verify', 'correction-class-review', 'crossModelReviewer',
   'mentor-stage-b', 'openConversationBrief',
+  // feedback-triage-and-execution Phase 1 (2026-10-08): operator-approved per-deployment triage authority and its
+  // cross-family second opinion; graded triage-side (weekly cross-family sample + recurrence) until a bench task lands.
+  'FeedbackTriageArbiter', 'FeedbackTriageSecondOpinion',
+  // ecosystem-idea-pipeline (2026-11-01): advisory review graded by its monthly audit and adoption predictions.
+  'EcosystemIdeaReview',
+  // machine-self-maintenance Part E (CMT-1202): dry-run wedge proposal; the spec requires a 30-fixture benchmark before restart-now graduates.
+  'MachineWedgeJudge',
+  // job-cost-reduction §5.6.5 (2026-10-26): the daily script-job review; graded by its must-flag canary until a bench task lands.
+  'ScriptJobSupervisor',
+  'JobTriageBackupCheck', // outage-only sampled classifier pending a dedicated bench task
+  'ChiefOfStaffLoop', // chief-of-staff-topic.md §2.5 verdict judge; graded by its decision-quality seam until a bench battery lands
+  // skill-learning-sentinel slice 1 (2026-11-06): shadow-only arbiter/drafter + cross-family reviewer; graded by the
+  // rung-1 operator sample (agree/disagree taps on proposals) until a bench task lands.
+  'skillLearning.drafter', 'skillLearning.reviewer',
+  // conversation-graph-suggestions (2026-11-11): advice-only grouping proposals; graded by the owner's Accept/Reject taps until a bench task lands.
+  'ConversationGraphSuggestions',
+  'ConversationSilenceJudge', // never-silent-conversation §3.7: its benchmark IS the held-out pane corpus that gates its actions (tracked CMT-1781); actions ship off until then
 ].sort();
 
 const EXEMPT_BASELINE = [
   'telegram-origin-recovery', // advisory-only, no parsed decision or routing-nature claim; same posture as DashboardInsightEngine
+  'JobAnomalyNarrator', // job-cost-reduction §5.4: wording-only beside a verbatim evidence block; decides nothing
   'InteractivePoolCanaryJudge',
-  // MoveIntentClassifier (2026-07-04): ships its OWN dedicated discrimination
-  // benchmark (tests/unit/move-intent-discrimination.test.ts — deterministic
-  // corpus + opt-in INSTAR_LIVE_MOVE_INTENT real-model accuracy, the graduation
-  // gate). Same rationale as InteractivePoolCanaryJudge: the co-located
-  // benchmark IS the benchmark; a generic harness task would re-test it less
-  // precisely. Argued in src/data/llmBenchCoverage.ts.
-  'MoveIntentClassifier',
   // HubIntentClassifier (2026-07-04): ships its OWN dedicated discrimination
   // benchmark (tests/unit/hub-intent-discrimination.test.ts — deterministic
   // corpus + opt-in INSTAR_LIVE_HUB_INTENT real-model accuracy, the graduation
-  // gate). Same rationale as MoveIntentClassifier; argued in
-  // src/data/llmBenchCoverage.ts.
+  // gate). Same rationale as InteractivePoolCanaryJudge: the co-located
+  // benchmark IS the benchmark; a generic harness task would re-test it less
+  // precisely. Argued in src/data/llmBenchCoverage.ts.
   'HubIntentClassifier',
   // Wave-2 argued exemptions (2026-07-02) — each argues a real reason in
   // src/data/llmBenchCoverage.ts; evidence trail in the bench harness's

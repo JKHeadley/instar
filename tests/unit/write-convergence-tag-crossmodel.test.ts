@@ -58,6 +58,7 @@ Another thing.
 - **fleet:** after operator review
 - **graduation criterion:** stated
 - **dark-window:** 14d
+- **ladder:** monitoring.example
 `;
 
 // ELI16 companion must be >= 800 chars or the script refuses to tag.

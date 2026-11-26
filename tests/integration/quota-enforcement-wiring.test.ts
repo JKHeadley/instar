@@ -163,7 +163,30 @@ describe('QuotaManager → SessionMigrator notification wiring', () => {
     expect(msg).toContain('Killed 2 session(s)');
     expect(msg).toContain('alpha');
     expect(msg).toContain('beta');
-    expect(msg).toContain('Manual intervention required');
+    expect(msg).toContain('resumes on its own once quota recovers');
+  });
+
+  // ── 2b. the pause lifts through the REAL QuotaManager collection path ──
+
+  it('releases the enforcement pause on a recovered collection — even on estimated data — and notifies', async () => {
+    const deps = createMockDeps({ getAccountStatuses: vi.fn(() => []) });
+    migrator.setDeps(deps);
+    await migrator.checkAndMigrate({ percentUsed: 50, fiveHourPercent: 97, activeAccountEmail: 'a@test.io' });
+    expect(deps.pauseScheduler).toHaveBeenCalledTimes(1);
+    expect(migrator.isEnforcementPaused()).toBe(true);
+
+    // Still hot: no release.
+    await (quotaManager as any).postCollectionChecks({ usagePercent: 50, fiveHourPercent: 90 }, 'jsonl-fallback', 'estimated');
+    expect(deps.resumeScheduler).not.toHaveBeenCalled();
+
+    // Recovered, on ESTIMATED data (the case a stalled scheduler produces): released.
+    await (quotaManager as any).postCollectionChecks({ usagePercent: 63, fiveHourPercent: 20 }, 'jsonl-fallback', 'estimated');
+    expect(deps.resumeScheduler).toHaveBeenCalledTimes(1);
+    expect(migrator.isEnforcementPaused()).toBe(false);
+
+    await vi.waitFor(() => {
+      expect(notificationsSent.some(m => m.includes('Scheduler resumed'))).toBe(true);
+    });
   });
 
   // ── 3. migration_no_target notification ──

@@ -52,3 +52,31 @@ gets switched on only after it's proven quiet.
 - It only signals — it never blocks or changes any work.
 - It reuses existing storage, so there's no new data to migrate and nothing to roll back
   beyond deleting a config flag.
+
+## Addendum, 2026-10-14 — the index now sees what a topic is DOING, and the councilor can prove it is running
+
+**What went wrong.** The cross-topic view only knew what each conversation had *talked
+about*. It did not know what a session was *doing*. So on 2026-10-14 one session told the
+operator to hold off on restarting the Mac Studio, a different session asked him to
+approve that same restart two hours later, and the first session never knew — its view of
+the second topic still showed a goal written 21 minutes before the restart was proposed.
+Separately, the "are two topics overlapping?" watcher was switched on but nothing anywhere
+could confirm it had ever run.
+
+**What changes.** The moment one of the agent's replies says it is about to do something
+concrete ("I'll restart it", "pushing the fix") *or asks the operator to approve something*
+("may I restart the Studio?", "please approve the restart"), a small note is saved for that
+topic automatically — no session has to remember to post anything. The cross-topic view
+shows that note immediately as the topic's current focus and as a `lastAction` field. A
+sibling session that reads the view before advising on a restart now sees "topic 102965
+asked the operator to approve: restart, at 14:34" instead of a stale goal.
+
+The overlap watcher now counts its own runs and reports its last run time, so the guard
+inventory grades it "on, confirmed" from a real tick instead of "on, unverified" forever.
+There is also a small read-only status page for it.
+
+**What it does not do.** It never blocks a message, never opens a commitment for an
+approval request (asking is not promising), never changes what the operator sees, and
+never guesses: a note that is not newer than the latest conversational goal does not
+replace it, and notes fade out of the focus after a day. Off switch:
+`parallelWork.actionNotes.enabled: false`, read live.

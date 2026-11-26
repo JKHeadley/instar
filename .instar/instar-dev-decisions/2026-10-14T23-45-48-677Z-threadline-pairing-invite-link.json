@@ -1,0 +1,28 @@
+{
+  "ts": "2026-10-14T23:45:48.677Z",
+  "slug": "threadline-pairing-invite-link",
+  "suggestedTier": 2,
+  "declaredTier": 2,
+  "riskFloor": 1,
+  "riskFloorReasons": [],
+  "belowFloor": false,
+  "files": 3,
+  "loc": 52,
+  "scope": {
+    "basis": "staged-in-scope-additions-plus-deletions",
+    "files": [
+      "src/server/routes.ts",
+      "src/threadline/PairingInviteFlow.ts",
+      "src/threadline/PairingInviteStore.ts"
+    ],
+    "addedLines": 46,
+    "deletedLines": 6
+  },
+  "causalAutopsy": null,
+  "classClosure": {
+    "defectClass": "unbounded-self-action",
+    "closure": "n/a",
+    "reason": "fewer alarms (one per invite), an append-only bounded audit file; the finish retry stays operator-driven and hard-bounded"
+  },
+  "verdict": "pass"
+}

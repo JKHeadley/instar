@@ -1,0 +1,21 @@
+{
+  "version": 2,
+  "slug": "threadline-relay-inbound-canonical-history",
+  "sessionId": "8fca50f7-ccc8-4d27-9795-6855a8f65db9",
+  "timestamp": "2026-11-11T18:27:12.702Z",
+  "artifactPath": "upgrades/side-effects/threadline-relay-inbound-canonical-history.md",
+  "artifactSha256": "21ce5d00fef0adc7ed2b4cd59ea74639f6d0593fb790b9377bb9a55db1021c4b",
+  "coveredFiles": [
+    "docs/eli16/threadline-relay-inbound-canonical-history.eli16.md",
+    "src/messaging/MessageStore.ts",
+    "tests/unit/threadline/relayIngressHistory.test.ts",
+    "upgrades/side-effects/threadline-relay-inbound-canonical-history.md"
+  ],
+  "phase": "complete",
+  "tier": 1,
+  "tierReasoning": "Narrow existing canonical body read fallback correction: metadata-only degradation signal for corruption/read errors; preserve null return and admission/trust/routing. Real semantic regression and unchanged-limit guard pass on branch and reconstructed failed merge tree. Independent review concurs; fresh official full suite remains required.",
+  "eli16Path": "docs/eli16/threadline-relay-inbound-canonical-history.eli16.md",
+  "sideEffectsPath": "upgrades/side-effects/threadline-relay-inbound-canonical-history.md",
+  "secondPass": "true",
+  "reviewerConcurred": true
+}

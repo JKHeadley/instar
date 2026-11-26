@@ -1,0 +1,26 @@
+{
+  "version": 2,
+  "slug": "rebalance-proof-via-holder",
+  "sessionId": "0b1cf086-601b-4df3-9b64-491f85f91aeb",
+  "timestamp": "2026-11-04T13:55:31.028Z",
+  "artifactPath": "upgrades/side-effects/rebalance-proof-via-holder.md",
+  "artifactSha256": "7f765aecf290040b02e358bbd996c04b8f4147379679ef86edcc18c21de52d33",
+  "specPath": "docs/specs/session-pool-rebalancing-finish.md",
+  "coveredFiles": [
+    ".instar/instar-dev-decisions/2026-11-04T13-54-34-286Z-rebalance-proof-via-holder.json",
+    ".instar/instar-dev-decisions/2026-11-04T13-55-19-211Z-rebalance-proof-via-holder.json",
+    "docs/specs/session-pool-rebalancing-finish.eli16.md",
+    "docs/specs/session-pool-rebalancing-finish.md",
+    "src/commands/server.ts",
+    "src/core/rebalanceProof.ts",
+    "src/server/CapabilityIndex.ts",
+    "src/server/routes.ts",
+    "tests/integration/overload-shed-route.test.ts",
+    "tests/unit/rebalanceProof.test.ts",
+    "upgrades/next/rebalance-proof-via-holder.md",
+    "upgrades/side-effects/rebalance-proof-via-holder.md"
+  ],
+  "phase": "complete",
+  "secondPass": "true",
+  "reviewerConcurred": true
+}

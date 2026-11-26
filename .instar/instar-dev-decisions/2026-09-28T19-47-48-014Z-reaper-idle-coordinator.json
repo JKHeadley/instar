@@ -1,0 +1,29 @@
+{
+  "ts": "2026-09-28T19:47:48.014Z",
+  "slug": "reaper-idle-coordinator",
+  "suggestedTier": 2,
+  "declaredTier": 1,
+  "riskFloor": 2,
+  "riskFloorReasons": [
+    "safety-invariant proximity: src/monitoring/SessionReaper.ts matches session reaper"
+  ],
+  "belowFloor": true,
+  "files": 6,
+  "loc": 123,
+  "scope": {
+    "basis": "staged-in-scope-additions-plus-deletions",
+    "files": [
+      "src/commands/server.ts",
+      "src/core/SessionManager.ts",
+      "src/core/WorkEvidence.ts",
+      "src/core/baselineProcessPatterns.ts",
+      "src/monitoring/SessionReaper.ts",
+      "src/scaffold/templates.ts"
+    ],
+    "addedLines": 117,
+    "deletedLines": 6
+  },
+  "causalAutopsy": null,
+  "classClosure": null,
+  "verdict": "pass"
+}

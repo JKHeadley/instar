@@ -1,0 +1,29 @@
+{
+  "version": 2,
+  "slug": "verified-display-names",
+  "sessionId": "034b7f57-db4a-48a6-9b9b-d7e1bb4b0393",
+  "timestamp": "2026-10-31T03:31:52.523Z",
+  "artifactPath": "upgrades/side-effects/verified-display-names.md",
+  "artifactSha256": "45847edaa06978ff3a02db4c8a57b61cc50f87a7bfa709e5e84a738ea6c980f7",
+  "coveredFiles": [
+    "src/commands/server.ts",
+    "src/core/PostUpdateMigrator.ts",
+    "src/core/SessionManager.ts",
+    "src/core/types.ts",
+    "src/messaging/TelegramAdapter.ts",
+    "src/messaging/shared/channelIdentity.ts",
+    "src/messaging/slack/SlackAdapter.ts",
+    "src/scaffold/templates.ts",
+    "src/server/WebSocketManager.ts",
+    "src/server/routes.ts",
+    "src/server/sessionPlatform.ts",
+    "src/threadline/A2ADeliveryTracker.ts"
+  ],
+  "phase": "complete",
+  "tier": 1,
+  "tierReasoning": "Additive display identity validation and read-only pool route; migration only adds idempotent guidance; unique routing keys and existing persisted state remain intact, so a revert fully restores prior behavior.",
+  "eli16Path": "upgrades/verified-display-names.eli16.md",
+  "sideEffectsPath": "upgrades/side-effects/verified-display-names.md",
+  "secondPass": "true",
+  "reviewerConcurred": true
+}

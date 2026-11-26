@@ -224,6 +224,25 @@ describe('revival-loop lens — the resurrection cap halts an age-reap loop LOUD
     expect(capNotices).toHaveLength(1);
   });
 
+  it('an age kill of a session seen working past its age limit restarts the ledger and is revived (2026-09-30 18:14Z, topic 52075)', async () => {
+    writeRun(42, 86400, new Date().toISOString());
+    const h = harness();
+    expect(h.queue.considerEnqueue(candidate()).enqueued).toBe(true);
+    await warmCalm(h.drainer, 2);
+    expect((await h.drainer.tick()).resumed).toBe(true);
+    expect(h.queue.considerEnqueue(candidate()).enqueued).toBe(true);
+    expect((await h.drainer.tick()).resumed).toBe(true);
+    // Third reap: this time the session worked past its age limit before the kill.
+    expect(h.queue.considerEnqueue(candidate({ seenWorkingPastAgeLimit: true })).enqueued).toBe(true);
+    expect((await h.drainer.tick()).resumed).toBe(true);
+    expect(h.aggregated.filter((a) => a.kind === 'resurrection-cap')).toHaveLength(0);
+  });
+
+  it('server.ts passes the age gate\'s seen-working flag from sessionReaped into the resume candidate', () => {
+    const server = fs.readFileSync(path.join(__dirname, '../../src/commands/server.ts'), 'utf8');
+    expect(server).toMatch(/\.\.\.\(e\.seenWorkingPastAgeLimit \? \{ seenWorkingPastAgeLimit: true \} : \{\}\)/);
+  });
+
   it('the injected build-or-autonomous-active evidence CANNOT reset the tombstone', async () => {
     // The cap reads tombstoneFor(stableKey), never workEvidence — so the synthetic
     // evidence on an age-limit entry shares the topic's tombstone and is capped.

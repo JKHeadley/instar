@@ -82,6 +82,27 @@ export interface Conversation {
   boundSessionName?: string;
   /** Owning Telegram topic (formerly originTopicId). */
   boundTopicId?: number;
+  /**
+   * WHO chose `boundTopicId` — the field that makes an accidental binding
+   * distinguishable from a deliberate one (peer-conversation-homebase-topic §2.2).
+   *
+   * The 2026-10-21 incident: a notice about peer `pp` landed in a Claude-quota
+   * conversation because the peer conversation had silently inherited the topic its
+   * thread happened to start in, and nothing recorded that the binding was an accident.
+   * With no provenance, "preserve the operator's choice" and "fix the misdelivery" are
+   * the same write, so neither can be done safely.
+   *
+   *  - `operator`         — a deliberate bind (`hubCommands`). NEVER overridden.
+   *  - `origin-inherited` — adopted from the thread's originating topic. Provably
+   *                         accidental, so routing may prefer a peer homebase over it.
+   *  - `peer-homebase`    — bound to the peer's homebase topic.
+   *  - ABSENT             — a record predating this field. Treated as NOT
+   *                         operator-owned but also NOT safely overridable: it may be a
+   *                         deliberate bind made before provenance existed, and
+   *                         overwriting it would destroy the exact choice this field
+   *                         exists to protect.
+   */
+  boundTopicSource?: 'operator' | 'origin-inherited' | 'peer-homebase';
   /** Originating topic-session name at send time (fast-path resume cache). */
   originSessionName?: string;
   /** Spawn mode of the worker handling this conversation. */
@@ -97,6 +118,22 @@ export interface Conversation {
    * this reopens the session-smuggling vector ContextThreadMap defends.
    */
   agentIdentity?: string;
+
+  // ── Memory privacy: who this thread is with (memory-privacy-agent-places §2) ──
+  /**
+   * The authenticated fingerprint of the peer this thread is with. Written only
+   * from an authenticated sender (or a fingerprint/nickname-addressed send), and
+   * write-once: `applyEntryToConversation` never overwrites it.
+   */
+  peerFingerprint?: string;
+  /** When `peerFingerprint` was claimed. History before this is never loaded into a place. */
+  ownerClaimedAt?: string;
+  /** `audienceKey()` of the session that wrote this thread's transcript. A resume needs an exact match. */
+  audienceKey?: string;
+  /** The owner was adopted from a record from before this version: the thread id only. */
+  ownerAdopted?: boolean;
+  /** This version created the thread with no owner (addressed by a name): never adopted. */
+  ownerless?: boolean;
 
   // ── Bookkeeping ──
   pinned: boolean;

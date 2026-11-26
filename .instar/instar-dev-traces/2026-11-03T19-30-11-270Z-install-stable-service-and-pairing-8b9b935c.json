@@ -1,0 +1,23 @@
+{
+  "version": 2,
+  "slug": "install-stable-service-and-pairing",
+  "sessionId": "aa5fb5e1-36c1-42fe-bd65-8305d8971a17",
+  "timestamp": "2026-11-03T19:30:11.270Z",
+  "artifactPath": "upgrades/side-effects/install-stable-service-and-pairing.md",
+  "artifactSha256": "b9f4642d30382fa80862dfac7c8a3c63e855675f51ac4547d7c1df100359baa4",
+  "specPath": "docs/specs/install-experience.md",
+  "coveredFiles": [
+    "src/commands/install.ts",
+    "src/commands/setup.ts",
+    "src/core/PostUpdateMigrator.ts",
+    "tests/unit/install-flow.test.ts",
+    "tests/unit/systemd-killmode.test.ts",
+    "tests/unit/systemd-stable-start.test.ts",
+    "upgrades/side-effects/install-stable-service-and-pairing.md"
+  ],
+  "phase": "complete",
+  "tier": 2,
+  "tierReasoning": "Touches every Linux agent's service unit (writer + update migration) and the new-agent install path; reviewed and proven live on fresh Ubuntu with restart and reboot",
+  "secondPass": "independent subagent: concern (1 blocker + 5), all fixed, concurred",
+  "reviewerConcurred": true
+}

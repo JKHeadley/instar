@@ -4,7 +4,6 @@ description: "Drives ONE check-in reminder pass (ACT-724; docs/specs/dated-commi
 schedule: "*/5 * * * *"
 priority: medium
 expectedDurationMinutes: 1
-supervision: tier0
 enabled: false
 tags:
   - cat:commitments
@@ -14,6 +13,25 @@ gate: curl -sf http://localhost:${INSTAR_PORT:-4042}/health >/dev/null 2>&1
 toolAllowlist: "*"
 unrestrictedTools: true
 mcpAccess: none
+runner: script
+script: commitment-checkin-reminder.mjs
+scriptTimeoutMinutes: 2
+supervision: tier0
+scriptSupervision: triage
+triageEvidence: full
+triageFields:
+  - dry_run
+  - sent
+  - would_send
+  - failed
+  - gave_up
+triageBareOk:
+  - "idle"
+triageBareSkipped:
+  - feature-dark
+anomalies:
+  - kind: undelivered-reminders
+    class: critical
 ---
 Trigger one commitment check-in reminder pass. This is a mechanical cadence job — do NOT message the user yourself. The reminder message is composed and delivered server-side from a fixed template; your job is only to fire the pass and report the counts.
 

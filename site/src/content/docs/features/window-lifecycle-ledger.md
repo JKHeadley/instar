@@ -105,7 +105,20 @@ The authenticated surfaces are:
 - `POST /window-lifecycle/remediation/:obligationId/resolve` — resolve a live remediation
   episode only with fresh, re-queried Telegram evidence that semantically matches the duty.
 
+Both tick routes can be called while the server's own background tick is running. The
+liveness authority and the cadence executor each route their ticks through a
+`TickSerializer` (`src/core/TickSerializer.ts`): one evaluation runs at a time, one more
+may wait behind it, and a caller that overlaps a running tick receives the result of a
+fresh evaluation rather than a snapshot taken mid-flight. Before this, an overlapping
+`POST /window-run-liveness/cadence/tick` could read the state before its first save and
+answer a false "not registered" 404.
+
 These records are machine-local by design: they describe the executor and evidence visible on
 one machine and must not be merged with another machine's observations. At the window ceiling,
 the authority freezes a final snapshot and refuses later ticks or registrations from reviving
 the run.
+
+Overlapping ticks are serialized by `TickSerializer`: an explicit tick that arrives while a
+background tick is running waits for a fresh evaluation instead of receiving the stale
+mid-flight snapshot. At most one evaluation runs and one more is queued; later callers share
+the queued one.

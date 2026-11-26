@@ -41,7 +41,7 @@ BENCH_DIR="research/llm-pathway-bench/instar-bench-v2"
    - If a diff would move a CRITICAL gate (completion/stop/tone/external-op/sanitizer/coherence), it is ALWAYS operator-review — never auto-apply, never present it as "I changed the routing."
 
 5. **Raise the diff as ONE operator attention item (never auto-apply).** Only if step 4 found a real, above-noise diff (or a parity failure from step 2):
-   `curl -s -X POST -H "Authorization: Bearer $AUTH" -H "X-Instar-AgentId: $AGENT_ID" http://localhost:$PORT/attention -H 'Content-Type: application/json' -d '{"id":"bench-refresh:routing-diff","title":"<short>","body":"<the per-task old-chain → new-chain diff + the manifest reproduce command>","priority":"medium","source":"agent"}'`
+   `curl -s -X POST -H "Authorization: Bearer $AUTH" -H "X-Instar-AgentId: $AGENT_ID" http://localhost:$PORT/attention -H 'Content-Type: application/json' -d '{"id":"bench-refresh:routing-diff","title":"<short>","body":"<the per-task old-chain → new-chain diff + the manifest reproduce command>","priority":"medium","source":"bench-refresh"}'`
    Use a STABLE `id` (`bench-refresh:routing-diff`) so a re-run updates the one item instead of flooding. If step 4 found NO real diff, raise NOTHING and exit silently — a clean refresh is not news.
 
 6. Exit. This job produces a review artifact for the operator, not a running commentary. Do NOT relay progress to Telegram, do NOT summarize a clean run, and do NOT retry-flood a failed curl (the failure is recorded server-side). The routing defaults change only when the operator reviews the diff and acts — this job never touches config.

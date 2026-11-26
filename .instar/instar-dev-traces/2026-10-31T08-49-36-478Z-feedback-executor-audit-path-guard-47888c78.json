@@ -1,0 +1,20 @@
+{
+  "version": 2,
+  "slug": "feedback-executor-audit-path-guard",
+  "sessionId": "71dde707-5cc5-4874-82e9-90badb3df899",
+  "timestamp": "2026-10-31T08:49:36.478Z",
+  "artifactPath": "upgrades/side-effects/feedback-executor-audit-path-guard.md",
+  "artifactSha256": "df9f08ee1a06ec2b1ca812fc24f78a23d1c4e9212e404df67c0a3ae68e00c31a",
+  "specPath": "docs/specs/feedback-triage-and-execution.md",
+  "coveredFiles": [
+    "src/feedback-factory/execute/executePolicy.ts",
+    "tests/e2e/feedback-execute-lifecycle.test.ts",
+    "tests/unit/feedback-factory/execute-service.test.ts",
+    "tests/unit/feedback-factory/execute-units.test.ts"
+  ],
+  "phase": "complete",
+  "tier": 2,
+  "tierReasoning": "Closes a live publication confinement gap in the feedback executor; audit path blocking affects security and independent review.",
+  "secondPass": "true",
+  "reviewerConcurred": true
+}

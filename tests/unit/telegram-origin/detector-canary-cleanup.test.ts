@@ -102,10 +102,14 @@ it('accepts cleanup completed before its deadline when parent receipt is event-l
     const {workerData}=await import('node:worker_threads');
     parentPort.postMessage({type:'checks',passed:true,checks,checkedAt:performance.now()});
     setTimeout(async()=>{await rm(workerData.directory,{recursive:true,force:true});parentPort.postMessage({type:'cleanup',verified:true,fixtureRemoved:true,completedAt:performance.now()})},50);`,
-  { cleanupTimeoutMs: 100 });
+  // The worker finishes ~50 ms in; the deadline leaves it ~950 ms of room. With a 100 ms deadline the
+  // worker's own timer plus rm overran it on a busy machine (two verify runs, 2026-11-17) and the
+  // cleanup was honestly late, which is not what this case tests.
+  { cleanupTimeoutMs: 1000 });
   const run = canary.run();
   await vi.waitFor(() => expect(canary.getHealth().reason).toBe('canary-cleanup-running'), { interval: 1 });
-  const stalledUntil = performance.now() + 200;
+  // Stall the parent past the deadline, so the receipt is late while the completion was on time.
+  const stalledUntil = performance.now() + 1200;
   while (performance.now() < stalledUntil) { /* Deliberately stall only the parent thread. */ }
   await run;
   expect(canary.getHealth().state, JSON.stringify(report.mock.calls)).toBe('pass');
@@ -196,14 +200,31 @@ it.each([0, -1, 30_001, 1.5, Number.NaN])('rejects invalid cleanup bounds (%s)',
 });
 
 
-it.each([
-  ['worker-exit-nonzero', 'process.exitCode = 2;'],
-  ['worker-error', "setImmediate(() => { throw new Error('private worker detail'); });"],
-])('distinguishes %s after valid cleanup acknowledgement', async (fault, ending) => {
-  const canary = await fixture(`parentPort.postMessage({type:'checks',passed:true,checks});parentPort.postMessage({type:'cleanup',verified:true});${ending}`);
+it('distinguishes worker-exit-nonzero after valid cleanup acknowledgement', async () => {
+  const canary = await fixture("parentPort.postMessage({type:'checks',passed:true,checks});parentPort.postMessage({type:'cleanup',verified:true});process.exitCode = 2;");
   await canary.run();
   expect(canary.getHealth()).toMatchObject({ state: 'fail', attempts: 1, reason: 'canary-cleanup-unverified' });
-  expectFault(`cleanup:${fault}:awaiting-exit`);
+  expectFault('cleanup:worker-exit-nonzero:awaiting-exit');
+});
+
+it('distinguishes worker-error after the parent receives valid cleanup acknowledgement', async () => {
+  const canary = await fixture("parentPort.postMessage({type:'checks',passed:true,checks});parentPort.postMessage({type:'cleanup',verified:true});setInterval(()=>{},1000);");
+  let worker: Worker | undefined;
+  const acknowledged = gate();
+  const realEmit = Worker.prototype.emit;
+  vi.spyOn(Worker.prototype, 'emit').mockImplementation(function (this: Worker, event, ...args) {
+    if (event === 'online') worker = this;
+    const emitted = realEmit.call(this, event, ...args);
+    if (event === 'message' && args[0]?.type === 'cleanup') acknowledged.release();
+    return emitted;
+  });
+  const running = canary.run();
+  await acknowledged.promise;
+  expect(worker).toBeDefined();
+  worker!.emit('error', new Error('private worker detail'));
+  await running;
+  expect(canary.getHealth()).toMatchObject({ state: 'fail', attempts: 1, reason: 'canary-cleanup-unverified' });
+  expectFault('cleanup:worker-error:awaiting-exit');
   expect(JSON.stringify(report.mock.calls)).not.toContain('private worker detail');
 });
 

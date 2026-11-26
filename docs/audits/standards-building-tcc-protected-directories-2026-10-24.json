@@ -1,0 +1,20 @@
+{
+  "schemaVersion": 1,
+  "reviewedAt": "2026-10-25T00:28:51.000Z",
+  "reviewers": [
+    "echo:claude-code",
+    "independent-verifier:claude-code"
+  ],
+  "findingDisposition": {
+    "noUnresolvedDesign": true,
+    "resolvedFindings": 2
+  },
+  "convergenceReport": "docs/specs/reports/standards-building-tcc-protected-directories-2026-10-24.md",
+  "convergenceSha256": "b085a9a7c19524a28870260bf168f30f2eb30a826960f85f7096b3f311ee9165",
+  "areas": {
+    "Building": {
+      "areaSha256": "91a7fc1537a3060e83fd64b7827cd8812596578be4336affd5318cca69673e5c",
+      "verdict": "accepted"
+    }
+  }
+}

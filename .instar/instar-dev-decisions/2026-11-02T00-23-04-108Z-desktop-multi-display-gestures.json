@@ -1,0 +1,35 @@
+{
+  "ts": "2026-11-02T00:23:04.108Z",
+  "slug": "desktop-multi-display-gestures",
+  "suggestedTier": 2,
+  "declaredTier": 1,
+  "riskFloor": 2,
+  "riskFloorReasons": [
+    "new capability: new route (router.<verb>() added"
+  ],
+  "belowFloor": true,
+  "files": 12,
+  "loc": 405,
+  "scope": {
+    "basis": "staged-in-scope-additions-plus-deletions",
+    "files": [
+      "src/core/DesktopHost.ts",
+      "src/core/DirectDesktopAccess.ts",
+      "src/core/MacDesktopHost.ts",
+      "src/core/WindowsDesktopHost.ts",
+      "src/core/WindowsDesktopLocalTransport.ts",
+      "src/native/remote-desktop/macos/InstarDesktopHost.swift",
+      "src/native/remote-desktop/windows/InstarDesktopCompanion.cs",
+      "src/scaffold/templates.ts",
+      "src/server/AgentServer.ts",
+      "src/server/CapabilityIndex.ts",
+      "src/server/DesktopMeshBroker.ts",
+      "src/server/routes.ts"
+    ],
+    "addedLines": 366,
+    "deletedLines": 39
+  },
+  "causalAutopsy": null,
+  "classClosure": null,
+  "verdict": "blocked"
+}

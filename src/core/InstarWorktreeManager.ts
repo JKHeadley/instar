@@ -13,18 +13,25 @@
  */
 
 import crypto from 'node:crypto';
+import { withSyncOp } from './InFlightSyncOpMarker.js';
 import { execFileSync } from 'node:child_process';
 import fs from 'node:fs';
 import os from 'node:os';
 import path from 'node:path';
 import { loadRegistry } from './AgentRegistry.js';
 import { SafeGitExecutor } from './SafeGitExecutor.js';
+import { SafeFsExecutor } from './SafeFsExecutor.js';
 
 // ── Constants ────────────────────────────────────────────────────────────
 
 /** Default allowlist of remote-origin URLs for the canonical instar repo.
- *  Operators can extend via `worktree.repoUrlAllowlist` in `.instar/config.json`. */
+ *  `JKHeadley/instar` is where instar is developed and released; a checkout
+ *  cloned from it was refused until it was listed here (no config could be
+ *  assumed on a fresh machine). Operators can extend via
+ *  `worktree.repoUrlAllowlist` in `.instar/config.json`. */
 export const DEFAULT_INSTAR_REPO_URL_ALLOWLIST: ReadonlyArray<string> = [
+  'git@github.com:JKHeadley/instar.git',
+  'https://github.com/JKHeadley/instar.git',
   'git@github.com:instar-ai/instar.git',
   'https://github.com/instar-ai/instar.git',
 ];
@@ -95,6 +102,14 @@ export interface CreateWorktreeOptions {
   slug?: string;
   /** Default true (current bash-helper behavior). Pass false to skip the node_modules symlink. */
   shareNodeModules?: boolean;
+  /**
+   * How node_modules is shared when shareNodeModules is on. 'clone' makes an
+   * APFS copy-on-write clone (macOS `cp -cR`): the worktree owns its own folder,
+   * so an `npm ci` there cannot empty the shared source, and the clone costs
+   * almost no disk until changed. 'symlink' is the old behavior. Default: clone
+   * on macOS (falling back to symlink when cloning fails), symlink elsewhere.
+   */
+  nodeModulesShareMode?: 'clone' | 'symlink';
   /** Override agent-home resolution (mainly for tests). */
   resolveAgentHomeOpts?: ResolveAgentHomeOptions;
   /** Override instar-repo resolution (mainly for tests). */
@@ -114,6 +129,8 @@ export interface CreateWorktreeResult {
   instarRepo: string;
   instarRepoSha: string;
   shareNodeModules: boolean;
+  /** How node_modules ended up shared: an own clone, a symlink, or not at all. */
+  nodeModulesShared: 'clone' | 'symlink' | null;
   /** True if a new branch was created; false if an existing branch was checked out. */
   createdBranch: boolean;
 }
@@ -131,11 +148,12 @@ export interface CreateWorktreeResult {
  * skip `-C <dir>` prefixes; we always use `-C` here, so we route explicitly
  * rather than relying on the dispatcher.
  */
-function git(args: string[], cwd: string, operation: string, kind: 'read' | 'write'): string {
+function git(args: string[], cwd: string, operation: string, kind: 'read' | 'write', timeout?: number): string {
   const exec = kind === 'write' ? SafeGitExecutor.execSync : SafeGitExecutor.readSync;
   return exec(args, {
     cwd,
     operation,
+    timeout,
     stdio: ['ignore', 'pipe', 'pipe'],
     sourceTreeWorktreeManagerOk: true,
   }).trim();
@@ -146,9 +164,10 @@ function tryGit(
   cwd: string,
   operation: string,
   kind: 'read' | 'write',
+  timeout?: number,
 ): { ok: true; stdout: string } | { ok: false; error: string } {
   try {
-    return { ok: true, stdout: git(args, cwd, operation, kind) };
+    return { ok: true, stdout: git(args, cwd, operation, kind, timeout) };
   } catch (err) {
     const e = err as NodeJS.ErrnoException & { stderr?: Buffer | string };
     const msg = (e.stderr ? String(e.stderr) : e.message ?? 'unknown error').trim();
@@ -550,6 +569,9 @@ export async function createWorktree(opts: CreateWorktreeOptions): Promise<Creat
 
   const worktreesDir = path.join(agentHome, '.worktrees');
   ensureWorktreesDir(worktreesDir);
+  const createLock = acquireWorktreeCreateLock(agentHome);
+  try {
+  assertWorktreeCapacity(worktreesDir);
 
   const existingSlugsLower = new Set(
     fs.readdirSync(worktreesDir).map((entry) => entry.toLowerCase()),
@@ -597,7 +619,13 @@ export async function createWorktree(opts: CreateWorktreeOptions): Promise<Creat
   } else {
     addArgs.push(worktreePath, opts.branch);
   }
-  const addResult = tryGit(addArgs, instarRepo, createOp, 'write');
+  if (!isRealDirectory(worktreesDir) || fs.realpathSync(worktreesDir) !== worktreesReal) {
+    throw new Error(`path-containment: ${worktreesDir} changed before worktree add`);
+  }
+  assertWorktreeCapacity(worktreesDir);
+  // Checking out the whole repository can exceed the general 30-second Git
+  // budget on a busy disk. Keep a finite five-minute deadline only for add.
+  const addResult = tryGit(addArgs, instarRepo, createOp, 'write', 300_000);
   if (!addResult.ok) {
     throw new Error(classifyWorktreeAddError(addResult.error, worktreePath, instarRepo));
   }
@@ -606,11 +634,48 @@ export async function createWorktree(opts: CreateWorktreeOptions): Promise<Creat
   // configuration (user.signingkey, commit.gpgsign, gpg.format,
   // gpg.ssh.allowedSignersFile) is deliberately untouched.
   setLocalGitIdentity(worktreePath, instarRepo, opts.stateDir ?? path.join(agentHome, '.instar'));
-  ensureHuskyHooksActive(worktreePath);
 
+  // Share node_modules BEFORE activating hooks: the prepare script is `husky`, a
+  // node_modules binary, and a fresh worktree has none of its own. Activating first
+  // failed every real create with "husky: not found".
   const shareNodeModules = opts.shareNodeModules ?? true;
+  let nodeModulesShared: 'clone' | 'symlink' | null = null;
   if (shareNodeModules) {
-    maybeSymlinkNodeModules(instarRepo, worktreePath);
+    nodeModulesShared = maybeShareNodeModules(
+      instarRepo,
+      worktreePath,
+      opts.nodeModulesShareMode ?? (process.platform === 'darwin' ? 'clone' : 'symlink'),
+    );
+  }
+  const runtimeEnv = { ...process.env, PATH: [path.dirname(process.execPath), process.env.PATH].join(path.delimiter) };
+  const manifestPath = path.join(worktreePath, 'package.json');
+  const needsSqlite = fs.existsSync(manifestPath) &&
+    Boolean(JSON.parse(fs.readFileSync(manifestPath, 'utf8')).dependencies?.['better-sqlite3']);
+  if (needsSqlite && shareNodeModules && !fs.existsSync(path.join(worktreePath, 'node_modules'))) {
+    try {
+      withSyncOp(() => execFileSync('npm', ['ci'], { cwd: worktreePath, env: runtimeEnv, stdio: 'inherit', timeout: 300_000 }));
+    } catch (cause) {
+      throw new Error(`Dependency installation failed in ${worktreePath} using ${process.execPath}. Inspect the private checkout before retrying.`, { cause });
+    }
+  }
+  if (needsSqlite) {
+    const sqlitePackage = path.join(worktreePath, 'node_modules', 'better-sqlite3');
+    try {
+      const probe = [
+        "import { createRequire } from 'node:module';",
+        "const Database = createRequire(import.meta.url)(process.argv[1]);",
+        "new Database(':memory:').close();",
+      ].join('\n');
+      withSyncOp(() => execFileSync(process.execPath, ['--input-type=module', '-e', probe, sqlitePackage], {
+        cwd: worktreePath, env: runtimeEnv, stdio: 'inherit', timeout: 15_000,
+      }));
+    } catch (cause) {
+      throw new Error(`Worktree SQLite check failed in ${worktreePath} using ${process.execPath} (ABI ${process.versions.modules}).`, { cause });
+    }
+  }
+  ensureHuskyHooksActive(worktreePath, runtimeEnv);
+  if (needsSqlite && fs.existsSync(path.join(worktreePath, 'scripts/check-worktree-sqlite.cjs'))) {
+    fs.writeFileSync(path.join(worktreePath, '.husky', '_', 'instar-node'), process.execPath + '\n');
   }
 
   // Audit ledger — local and durable mirror.
@@ -638,8 +703,99 @@ export async function createWorktree(opts: CreateWorktreeOptions): Promise<Creat
     instarRepo,
     instarRepoSha: sha,
     shareNodeModules,
+    nodeModulesShared,
     createdBranch,
   };
+  } finally {
+    createLock.release();
+  }
+}
+
+/** Serialize the physical count and git add across CLI processes for one agent. */
+export function acquireWorktreeCreateLock(agentHome: string): { release: () => void } {
+  const runtimeDir = path.join(agentHome, '.instar');
+  const lockDir = path.join(runtimeDir, 'local');
+  for (const dir of [runtimeDir, lockDir]) {
+    if (!fs.existsSync(dir)) fs.mkdirSync(dir, { mode: 0o700 });
+    if (!fs.lstatSync(dir).isDirectory()) throw new Error(`worktree-create-lock: unsafe directory ${dir}`);
+  }
+  const lockPath = path.join(lockDir, 'worktree-create.lock');
+  let fd: number;
+  try {
+    fd = fs.openSync(lockPath,
+      fs.constants.O_CREAT | fs.constants.O_EXCL | fs.constants.O_WRONLY | (fs.constants.O_NOFOLLOW ?? 0), 0o600);
+  } catch (err) {
+    if ((err as NodeJS.ErrnoException).code === 'EEXIST') {
+      throw new Error(`worktree-create-busy: ${lockPath} exists; inspect its holder before clearing a stale lock`);
+    }
+    throw err;
+  }
+  let identity: fs.Stats;
+  try {
+    identity = fs.fstatSync(fd);
+    fs.writeSync(fd, JSON.stringify({ pid: process.pid, createdAt: new Date().toISOString() }));
+  } catch (err) {
+    try {
+      const current = fs.lstatSync(lockPath);
+      const opened = fs.fstatSync(fd);
+      if (current.dev === opened.dev && current.ino === opened.ino) {
+        SafeFsExecutor.safeUnlinkSync(lockPath, { operation: 'InstarWorktreeManager.failedCreateLock' });
+      }
+    } catch { /* Preserve the original lock setup error. */ }
+    fs.closeSync(fd);
+    throw err;
+  }
+  let released = false;
+  return {
+    release: () => {
+      if (released) return;
+      released = true;
+      try {
+        const current = fs.lstatSync(lockPath);
+        if (current.dev === identity.dev && current.ino === identity.ino) {
+          SafeFsExecutor.safeUnlinkSync(lockPath, { operation: 'InstarWorktreeManager.releaseCreateLock' });
+        }
+      } catch (err) {
+        if ((err as NodeJS.ErrnoException).code !== 'ENOENT') throw err;
+      } finally {
+        fs.closeSync(fd);
+      }
+    },
+  };
+}
+
+/** Keep full checkout growth bounded before git creates another source tree. */
+export function assertWorktreeCapacity(worktreesDir: string, limit = 500): void {
+  const directories = fs.readdirSync(worktreesDir, { withFileTypes: true })
+    // `.trash` holds the reaper's renamed-away checkouts, never a live worktree.
+    .filter((entry) => entry.isDirectory() && entry.name !== '.trash')
+    .map((entry) => entry.name);
+  if (directories.length >= limit) {
+    throw new Error(
+      `worktree-capacity: ${directories.length} directories under ${worktreesDir} (limit ${limit}): ` +
+      `${describeWorktreeFolder(worktreesDir, directories)}. ` +
+      'Everything listed counts toward the limit. Reclaim clean idle worktrees and preserve unique commits before creating another checkout',
+    );
+  }
+}
+
+/** What is filling the folder, in a form the reader can act on: checkouts vs other folders, grouped by name. */
+function describeWorktreeFolder(worktreesDir: string, directories: string[]): string {
+  const others = new Map<string, number>();
+  let checkouts = 0;
+  for (const name of directories) {
+    if (fs.existsSync(path.join(worktreesDir, name, '.git'))) { checkouts += 1; continue; }
+    const hyphen = name.indexOf('-', 1);
+    const group = hyphen === -1 ? name : `${name.slice(0, hyphen)}-*`;
+    others.set(group, (others.get(group) ?? 0) + 1);
+  }
+  const otherCount = directories.length - checkouts;
+  const summary = `${checkouts} git checkouts and ${otherCount} other folders`;
+  if (otherCount === 0) return summary;
+  const groups = [...others.entries()].sort((a, b) => b[1] - a[1] || a[0].localeCompare(b[0]));
+  const shown = groups.slice(0, 6).map(([group, count]) => `${group} ${count}`).join(', ');
+  const rest = groups.length > 6 ? `, and ${groups.length - 6} more kinds` : '';
+  return `${summary} (${shown}${rest})`;
 }
 
 export async function resolveBaseBranch(
@@ -763,19 +919,54 @@ function setLocalGitIdentity(worktreePath: string, instarRepo: string, stateDir:
   tryGit(['-C', worktreePath, 'config', 'user.email', identity.email], worktreePath, idOp, 'write');
 }
 
-function maybeSymlinkNodeModules(instarRepo: string, worktreePath: string): void {
+function maybeShareNodeModules(
+  instarRepo: string,
+  worktreePath: string,
+  mode: 'clone' | 'symlink',
+): 'clone' | 'symlink' | null {
   const source = path.join(instarRepo, 'node_modules');
   const target = path.join(worktreePath, 'node_modules');
-  if (!fs.existsSync(source)) return;
+  if (!fs.existsSync(source)) return null;
   // Source must be a REAL directory inside the validated repo (not a symlink),
   // matching the bash-helper invariant.
   const lst = fs.lstatSync(source);
-  if (!lst.isDirectory()) return;
-  if (fs.existsSync(target)) return;
+  if (!lst.isDirectory()) return null;
+  if (fs.existsSync(target)) return null;
+  if (mode === 'clone' && cloneNodeModules(source, target)) return 'clone';
   fs.symlinkSync(source, target);
+  return 'symlink';
 }
 
-export function ensureHuskyHooksActive(worktreePath: string): void {
+/**
+ * APFS copy-on-write clone of node_modules (measured 2026-11-17 on a loaded Mac
+ * Studio: ~16k files in ~19 s, no measurable disk cost). Why not a symlink: an
+ * `npm ci` run inside a worktree whose node_modules is a symlink empties the
+ * folder the link points to (npm 11, reproduced), breaking every other worktree
+ * that shares it; and sessions that found no usable link installed a full copy
+ * each (~0.64 GB, ~34 a day on one machine). The clone is staged beside the
+ * target and renamed into place, so a failed clone never leaves a half folder
+ * in the worktree; the caller then falls back to the symlink.
+ */
+function cloneNodeModules(source: string, target: string): boolean {
+  const staging = `${target}.clone-${process.pid}-${Date.now()}`;
+  try {
+    // lint-allow-sync-spawn: createAgentWorktree runs only from the `instar worktree create` CLI, never on the server event loop.
+    execFileSync('/bin/cp', ['-cR', source, staging], { stdio: 'ignore', timeout: 300_000 });
+    fs.renameSync(staging, target);
+    return true;
+  } catch {
+    // @silent-fallback-ok — no clone support (non-APFS volume, old cp) or a
+    // timeout: the caller falls back to the previous symlink behavior.
+    try {
+      if (fs.existsSync(staging)) {
+        SafeFsExecutor.safeRmSync(staging, { recursive: true, force: true, operation: 'src/core/InstarWorktreeManager.ts:cloneNodeModules' });
+      }
+    } catch { /* @silent-fallback-ok — leftover staging folder is inert */ }
+    return false;
+  }
+}
+
+export function ensureHuskyHooksActive(worktreePath: string, env = process.env): void {
   const packageJsonPath = path.join(worktreePath, 'package.json');
   const trackedHookPath = path.join(worktreePath, '.husky', 'pre-commit');
   const shimHookPath = path.join(worktreePath, '.husky', '_', 'pre-commit');
@@ -813,6 +1004,7 @@ export function ensureHuskyHooksActive(worktreePath: string): void {
   if (!hasRunnableHookShim(shimHookPath)) {
     try {
       execFileSync('npm', ['run', 'prepare'], {
+        env,
         cwd: worktreePath,
         stdio: ['ignore', 'pipe', 'pipe'],
       });
@@ -842,6 +1034,9 @@ export function hasRunnableHookShim(shimHookPath: string): boolean {
 
 function ensureWorktreesDir(worktreesDir: string): void {
   if (fs.existsSync(worktreesDir)) {
+    if (!fs.lstatSync(worktreesDir).isDirectory()) {
+      throw new Error(`path-containment: ${worktreesDir} is not a real directory (symlink?)`);
+    }
     // Re-assert 0700 every call to recover from drift.
     fs.chmodSync(worktreesDir, 0o700);
   } else {
@@ -923,7 +1118,7 @@ export function ensureClaudeTranscriptSpotlightExclusion(
  * None of these are usefully Spotlight-searchable (instar reads them via fs, not
  * mdfind), so excluding them is pure OS hygiene.
  */
-const AGENT_DATA_SPOTLIGHT_SUBDIRS = ['telegram-images', 'server-data', 'logs', 'state'];
+const AGENT_DATA_SPOTLIGHT_SUBDIRS = ['telegram-images', 'app-media', 'server-data', 'logs', 'state'];
 
 /**
  * Drop a `.metadata_never_index` marker in each high-churn subdir of the agent's

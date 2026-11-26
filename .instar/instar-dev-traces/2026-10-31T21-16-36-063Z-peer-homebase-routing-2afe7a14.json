@@ -1,0 +1,17 @@
+{
+  "version": 2,
+  "slug": "peer-homebase-routing",
+  "sessionId": "bc2c60e9-701a-4ead-9298-ca496c62ebd0",
+  "timestamp": "2026-10-31T21:16:36.063Z",
+  "artifactPath": "upgrades/side-effects/peer-homebase-routing.md",
+  "artifactSha256": "d5a4cb4f2cdf47ee7c1bc94af6625bcc7f2e5cf75b4ce8c28a63ebd85843e12f",
+  "specPath": "docs/specs/peer-conversation-homebase-topic.md",
+  "coveredFiles": [
+    "src/commands/server.ts"
+  ],
+  "phase": "complete",
+  "tier": 2,
+  "tierReasoning": "One-line follow-up to the homebase routing commit: the relay hub-fallback closure loses its bare early return so the ACT-091 ack-exit audit holds; behaviour unchanged.",
+  "secondPass": "not-required",
+  "reviewerConcurred": null
+}

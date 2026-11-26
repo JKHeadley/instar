@@ -55,6 +55,7 @@ import {
   type ValidatedProfilePatch,
 } from './topicProfileValidation.js';
 import type { IntelligenceFramework } from './intelligenceProviderFactory.js';
+import { CROSS_TOPIC_FIELDS } from './topicCreationProvenance.js';
 
 // ── locally-defined shared types (noted in the build report) ────────────────
 
@@ -120,6 +121,13 @@ export interface TopicProfileWriteSurfaceDeps {
   regime: () => ProfileWriteRegime;
   /** The topic's bound operator (§10.1) — null when none bound. */
   boundOperator: (topicKey: string) => { platform: string; uid: string } | null;
+  /**
+   * session-swap-any-conversation §3.4: may a TOKEN write (the dashboard, or the owner's phone
+   * through its Face ID route) change this app or Slack conversation? Telegram keys never reach it
+   * (their bound operator decides, as before). Absent ⇒ app and Slack token writes need a bound
+   * operator, which they never have: today's refusal.
+   */
+  tokenMayWrite?: (topicKey: string) => { ok: true } | { ok: false; reply: string };
   /** Active `/local-model` binding (§5.2 — refuses cloud model pins). */
   localModelBinding: (topicKey: string) => { provider: string } | null;
   /**
@@ -172,6 +180,11 @@ export class TopicProfileWriteSurface {
 
   // ── the main write path ───────────────────────────────────────────────────
 
+  /** The live write regime (read-only; dashboard-door-model-controls §3.1 `regime`). */
+  currentRegime(): ProfileWriteRegime {
+    return this.deps.regime();
+  }
+
   async applyWrite(req: {
     topicKey: string | number;
     patch: ProfilePatchInput;
@@ -183,12 +196,26 @@ export class TopicProfileWriteSurface {
     agentComposedPayload?: boolean;
     /** Trusted HTTP cosmetic compare-and-set; store checks under its lock. */
     expectedDisplayRevision?: string;
+    /**
+     * identity-security-creation-provenance v5: the owner confirmed this exact change in another
+     * conversation (the propose lane's `confirmIn`), and the caller re-checked that this topic is
+     * eligible (crossTopicEligible). Lets an operator principal write a topic with no bound operator.
+     */
+    crossTopicConfirm?: { sourceTopicId: number };
   }): Promise<ProfileWriteResult> {
     const topicKey = String(req.topicKey);
     const regime = this.deps.regime();
 
     // ── §10.1 principal / bound-operator gate ──────────────────────────────
-    const authRefusal = this.authorize(topicKey, req.principal, req.origin);
+    if (req.crossTopicConfirm) {
+      // Defense in depth: the route and write surface share the same owner-confirmable fields.
+      const outside = Object.keys(req.patch).filter((k) => !CROSS_TOPIC_FIELDS.includes(k));
+      if (outside.length) {
+        this.deps.audit({ type: 'write', outcome: 'refused', reason: 'cross-topic-field', topic: topicKey, fields: outside, origin: req.origin });
+        return { ok: false, reply: 'From another conversation I can change only the engine, model, model tier, thinking mode or effort.', refusal: { reason: 'cross-topic-field' } };
+      }
+    }
+    const authRefusal = this.authorize(topicKey, req.principal, req.origin, req.crossTopicConfirm);
     if (authRefusal) return authRefusal;
     const updatedBy = this.principalStamp(req.principal);
 
@@ -319,6 +346,7 @@ export class TopicProfileWriteSurface {
       principal: updatedBy,
       origin: req.origin,
       ...(req.agentComposedPayload ? { payloadProvenance: 'agent-composed' } : {}),
+      ...(req.crossTopicConfirm ? { crossTopic: true, authorizedBy: `owner-confirmed-in:${req.crossTopicConfirm.sourceTopicId}` } : {}),
       appliedLive: liveFields,
       shadowed: shadowFields,
       refusedFields,
@@ -710,18 +738,31 @@ export class TopicProfileWriteSurface {
     topicKey: string,
     principal: ProfileWritePrincipal,
     origin: ProfileWriteOrigin,
+    crossTopicConfirm?: { sourceTopicId: number },
   ): ProfileWriteResult | null {
     const bound = this.deps.boundOperator(topicKey);
     if (principal.kind === 'token') {
+      // session-swap-any-conversation §3.4: app and Slack conversations never get a bound operator;
+      // a token write there is the owner's dashboard or phone, decided by the conversation's own record.
+      if (!bound && !/^\d+$/.test(topicKey) && this.deps.tokenMayWrite) {
+        const may = this.deps.tokenMayWrite(topicKey);
+        if (may.ok) return null;
+        this.deps.audit({ type: 'write', outcome: 'refused', reason: 'no-bound-operator', topic: topicKey, principal: 'api-token', origin });
+        return { ok: false, reply: may.reply, refusal: { reason: 'no-bound-operator' } };
+      }
       // §10.1: token-trust still refuses writes to topics with no bound operator.
       if (!bound) {
         this.deps.audit({ type: 'write', outcome: 'refused', reason: 'no-bound-operator', topic: topicKey, principal: 'api-token', origin });
         return {
           ok: false,
-          reply: 'This topic has no bound operator yet — it gets one the first time its operator messages the topic.',
+          reply: 'Send one message in this topic first, then switch. The topic only learns who its operator is from that first message.',
           refusal: { reason: 'no-bound-operator' },
         };
       }
+      return null;
+    }
+    if (!bound && crossTopicConfirm && /^\d+$/.test(topicKey)) {
+      // The owner's live yes in the source conversation; eligibility re-checked by the caller.
       return null;
     }
     if (!bound) {

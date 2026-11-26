@@ -1,0 +1,23 @@
+{
+  "version": 2,
+  "slug": "team-requests",
+  "sessionId": "01d20012-6a42-483e-af23-beab1eb3aaad",
+  "timestamp": "2026-11-07T17:49:01.657Z",
+  "artifactPath": "upgrades/side-effects/team-requests.md",
+  "artifactSha256": "10a0e58d1dc960816d972202d9c24036c61b6250b23b68fff29456bf04d125a6",
+  "specPath": "docs/specs/team-roles-and-access.md",
+  "coveredFiles": [
+    "docs/specs/team-roles-and-access.eli16.md",
+    "docs/specs/team-roles-and-access.md",
+    "src/server/mobilePairingRoutes.ts",
+    "src/server/mobilePermissionsRoutes.ts",
+    "src/server/teamRoutes.ts",
+    "tests/e2e/team-access-alive.test.ts",
+    "tests/integration/team-access-guards.test.ts",
+    "tests/integration/team-access-routes.test.ts",
+    "upgrades/side-effects/team-requests.md"
+  ],
+  "phase": "complete",
+  "secondPass": "not-required",
+  "reviewerConcurred": null
+}

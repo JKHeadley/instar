@@ -1,0 +1,38 @@
+{
+  "version": 3,
+  "slug": "dashboard-capacity-needs",
+  "sessionId": "367e8dd8-cf97-4007-9553-7525198e960e",
+  "timestamp": "2026-11-18T03:46:57.074Z",
+  "artifactPath": "upgrades/side-effects/dashboard-capacity-needs.md",
+  "artifactSha256": "62820a4b15bf397a6b858694f1d0707316736ea6020b4c15320d6b066a789ee5",
+  "coveredFiles": [
+    "dashboard/console/agent-health-note.js",
+    "dashboard/console/console.js",
+    "dashboard/console/health-model.js",
+    "src/data/awareness/dashboard-capacity-needs.md",
+    "src/monitoring/healthIssues.ts",
+    "tests/e2e/needs-read-alive.test.ts",
+    "tests/integration/mobile-health-issues.test.ts",
+    "tests/unit/console-agent-health-note.test.ts",
+    "tests/unit/console-health.test.ts",
+    "tests/unit/mobile-health-issues.test.ts",
+    "tests/unit/needs-read.test.ts",
+    "upgrades/eli16/dashboard-capacity-needs.md",
+    "upgrades/next/dashboard-capacity-needs.md",
+    "upgrades/side-effects/dashboard-capacity-needs.md"
+  ],
+  "phase": "complete",
+  "tier": 1,
+  "tierReasoning": "Narrow reversible presentation correction to approved action versus status distinction",
+  "eli16Path": "upgrades/eli16/dashboard-capacity-needs.md",
+  "sideEffectsPath": "upgrades/side-effects/dashboard-capacity-needs.md",
+  "secondPass": "true",
+  "reviewerConcurred": true,
+  "toolchain": {
+    "buildSkill": {
+      "name": "build",
+      "version": null,
+      "verified": false
+    }
+  }
+}

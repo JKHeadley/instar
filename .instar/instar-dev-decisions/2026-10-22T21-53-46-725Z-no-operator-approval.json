@@ -1,0 +1,26 @@
+{
+  "ts": "2026-10-22T21:53:46.725Z",
+  "slug": "no-operator-approval",
+  "suggestedTier": 1,
+  "declaredTier": 2,
+  "riskFloor": 1,
+  "riskFloorReasons": [],
+  "belowFloor": false,
+  "files": 1,
+  "loc": 12,
+  "scope": {
+    "basis": "staged-in-scope-additions-plus-deletions",
+    "files": [
+      "skills/instar-dev/scripts/write-trace.mjs"
+    ],
+    "addedLines": 12,
+    "deletedLines": 0
+  },
+  "causalAutopsy": null,
+  "classClosure": {
+    "defectClass": "n/a",
+    "closure": "n/a",
+    "reason": "Operator-directed policy change (2026-10-22 08:58), not a defect fix; it adds no self-triggered loop — the watcher's existing tick is unchanged and the new refusal only reduces its merge attempts."
+  },
+  "verdict": "pass"
+}

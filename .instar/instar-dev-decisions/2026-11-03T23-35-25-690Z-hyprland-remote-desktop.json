@@ -1,0 +1,34 @@
+{
+  "ts": "2026-11-03T23:35:25.690Z",
+  "slug": "hyprland-remote-desktop",
+  "suggestedTier": 2,
+  "declaredTier": 1,
+  "riskFloor": 2,
+  "riskFloorReasons": [
+    "new capability: new exported class / subsystem added"
+  ],
+  "belowFloor": true,
+  "files": 7,
+  "loc": 760,
+  "scope": {
+    "basis": "staged-in-scope-additions-plus-deletions",
+    "files": [
+      "src/core/DesktopHost.ts",
+      "src/core/DesktopProbeReadiness.ts",
+      "src/core/HyprlandDesktopHost.ts",
+      "src/core/LinuxDesktopHost.ts",
+      "src/core/WaylandVirtualPointer.ts",
+      "src/scaffold/templates.ts",
+      "src/server/AgentServer.ts"
+    ],
+    "addedLines": 743,
+    "deletedLines": 17
+  },
+  "causalAutopsy": null,
+  "classClosure": {
+    "defectClass": "unbounded-self-action",
+    "closure": "n/a",
+    "reason": "The only timer is the 2 s heartbeat of an operator-started remote desktop session, the same as the X11 host; it stops on Stop, on a lost desktop, and at the session's ten-minute limit."
+  },
+  "verdict": "pass"
+}

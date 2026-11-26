@@ -1,0 +1,46 @@
+{
+  "ts": "2026-11-07T03:37:09.421Z",
+  "slug": "team-people-read",
+  "suggestedTier": 2,
+  "declaredTier": null,
+  "riskFloor": 2,
+  "riskFloorReasons": [
+    "irreversibility: src/core/PostUpdateMigrator.ts touches PostUpdateMigrator",
+    "migration / fleet-rollout surface: src/core/PostUpdateMigrator.ts touches PostUpdateMigrator (fleet migration machinery)",
+    "new capability: new route (router.<verb>() added",
+    "new capability: new exported class / subsystem added",
+    "new capability: new config key added"
+  ],
+  "belowFloor": false,
+  "files": 11,
+  "loc": 680,
+  "scope": {
+    "basis": "staged-in-scope-additions-plus-deletions",
+    "files": [
+      "src/commands/server.ts",
+      "src/core/PostUpdateMigrator.ts",
+      "src/scaffold/templates.ts",
+      "src/server/AgentServer.ts",
+      "src/server/CapabilityIndex.ts",
+      "src/server/routes.ts",
+      "src/server/teamPeople.ts",
+      "src/testing/selfActionRegistry.ts",
+      "src/users/MemoryInboundTracker.ts",
+      "src/users/ReachablePeople.ts",
+      "src/users/wireMemoryPrivacy.ts"
+    ],
+    "addedLines": 678,
+    "deletedLines": 2
+  },
+  "causalAutopsy": null,
+  "classClosure": {
+    "defectClass": "unbounded-self-action",
+    "closure": "guard",
+    "guardEvidence": {
+      "enforcementType": "ratchet",
+      "citation": "tests/unit/self-action-convergence.test.ts",
+      "howCaught": "held at the count last raised, on disk: under steady pressure it raises once, and passes are limited to one a minute"
+    }
+  },
+  "verdict": "pass"
+}

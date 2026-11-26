@@ -1,0 +1,22 @@
+{
+  "version": 2,
+  "slug": "native-remote-desktop-echo-mesh",
+  "sessionId": "e0a70e98-3933-416c-b0c6-3ded161084be",
+  "timestamp": "2026-10-30T19:44:44.558Z",
+  "artifactPath": "upgrades/side-effects/native-remote-desktop-echo-mesh.md",
+  "artifactSha256": "990cb9e2ad0ec1247e2d098a200eaee2de4ed5f883842a4196b869555ff8f812",
+  "specPath": "docs/specs/blocker-handoff-across-machines-and-surfaces.md",
+  "coveredFiles": [
+    "src/commands/server.ts",
+    "src/core/WriteDomainRegistry.ts",
+    "src/scaffold/templates.ts",
+    "src/server/DesktopPeerUrlGate.ts",
+    "src/server/machineRoutes.ts",
+    "upgrades/side-effects/native-remote-desktop-echo-mesh.md"
+  ],
+  "phase": "complete",
+  "tier": 2,
+  "tierReasoning": "Full-suite repair of machine-local activation classification, PIN-only awareness, and explicit denial annotations",
+  "secondPass": "true",
+  "reviewerConcurred": true
+}

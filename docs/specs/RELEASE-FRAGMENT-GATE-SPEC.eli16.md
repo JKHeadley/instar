@@ -60,3 +60,11 @@ constitution warns about.
 *Status (2026-06-27): approved by Justin and built. Ships in this PR — the Layer-1
 PR check starts in warn-only mode; flip to a required blocking check per the spec's
 D3 criterion.*
+
+*Update (2026-10-21): the check now **blocks**. The warn-only mode was supposed to
+end when a soak criterion was met — and that criterion read a log file nothing ever
+wrote, so it could never be met and the check would have reported-but-never-blocked
+indefinitely. What ended it was the failure itself: five finished fixes reached
+people's machines with no explanation attached, because a check that only reports
+stops nothing. Justin made the call to flip it. Turning the whole thing back into a
+warning is one line in the workflow if it turns out to be too strict.*

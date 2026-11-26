@@ -1,0 +1,9 @@
+# ELI16 — MacBook remote desktop controls
+
+Justin tried Echo's remote desktop from a MacBook Pro and found three practical problems. The white pointer was hard to see over a white window. A Direct/Trackpad switch suggested two different mouse behaviors, but it changes only finger input; a mouse works the same in both. His MacBook's two-finger scroll did nothing, even though clicking and dragging worked.
+
+This small fix gives the pointer a black outline and hides the touch-only switch on a laptop without a touch screen. On a touchscreen, the button says what each mode does: Trackpad moves the pointer as you swipe, while Direct puts it under your finger. The MacBook scroll gap came from the browser sending wheel events for its trackpad. The viewer now turns those events into remote scroll commands through the screen and input connection already protected by the dashboard PIN and the machine-specific access grant.
+
+The viewer combines rapid wheel events into one small command per display frame and caps its size. Pressing Stop cancels unsent scroll work and revokes the same grant as before. Pinch-wheel events stay in the browser, preserving browser zoom behavior. This change does not change who can connect, how long access lasts, or the rule that one controller owns a session. It only improves the controls for the first Mac target. Mama PC still needs a Windows display and input adapter before it can be controlled through Instar.
+
+The acceptance check is concrete: the pointer remains visible over a white window; a MacBook two-finger scroll over a scrollable remote window moves it; the touch-mode switch is absent on the MacBook; Stop immediately blanks the view and ends control. A focused browser test, a live public-link check, and a native Mac window test cover the input path. Justin can refresh the existing desktop link and use the same PIN to try it.

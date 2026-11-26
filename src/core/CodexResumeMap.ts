@@ -34,6 +34,7 @@ import path from 'node:path';
 import {
   codexHomeFromConfig,
   findRolloutFileSync,
+  invalidateRolloutLookup,
   listAllRollouts,
 } from '../providers/adapters/openai-codex/observability/sessionPaths.js';
 
@@ -154,6 +155,9 @@ export class CodexResumeMap {
       provenance: 'fence',
       parked: null,
     };
+    // The rollout was just fence-validated on disk: forget any remembered
+    // miss for it so the next get() reads the archive, not a stale cache.
+    invalidateRolloutLookup(rolloutId, this.codexHome);
     this.prune();
     this.persist();
   }

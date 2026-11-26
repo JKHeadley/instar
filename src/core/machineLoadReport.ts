@@ -1,0 +1,697 @@
+/**
+ * machineLoadReport — one cached, multi-signal load report per machine and the
+ * verdict table that turns it into ok / elevated / saturated / impaired / unknown
+ * (trustworthy-machine-load-and-mesh-floor spec, Part B1–B2).
+ *
+ * Why: the pool used to carry ONE raw load average that flickered (a coarse
+ * beat replaced it), compared it across machines with different core counts,
+ * and scored an unknown load as the best target. A busy machine, an overloaded
+ * one and a dead one all looked alike. This report measures several things on
+ * their own, keeps a missing measurement `null` (never a substitute), and
+ * carries its own identity + age so a receiver can tell a fresh report from a
+ * cached one.
+ *
+ * REPORTING ONLY (P1): nothing here gates, places or moves anything.
+ *
+ * Sampling is asynchronous and OUTSIDE the heartbeat path: the sampler refreshes
+ * every 15 s and caches; readers get the cache in O(1). The old synchronous
+ * `vm_stat` read would have inflated the very event-loop lag it sits next to.
+ */
+
+import os from 'node:os';
+import { execFile } from 'node:child_process';
+import { promises as fsp } from 'node:fs';
+import { parseProcMeminfo, parseVmStat } from '../monitoring/hostMemoryPressure.js';
+
+export type LoadVerdict = 'ok' | 'elevated' | 'saturated' | 'impaired' | 'unknown';
+export type NativeMemoryPressure = 'normal' | 'warn' | 'critical';
+export type LoadPlatform = 'darwin' | 'linux' | 'wsl' | 'other';
+
+/** The per-machine load report carried on every heartbeat (spec B1). */
+export interface MachineLoadReport {
+  /** Identity: a per-process boot id + monotonic sequence, so a cached copy is recognizable. */
+  bootId: string;
+  seq: number;
+  /** How old the underlying sample was when the report was SENT, ms. */
+  sampleAgeMs: number;
+  platform: LoadPlatform;
+  cores: number | null;
+  totalMemBytes: number | null;
+  /** 1-min load average divided by cores. */
+  loadPerCore: number | null;
+  /** CPU idle %, measured from `os.cpus()` deltas between samples (null on the first sample). */
+  cpuIdlePct: number | null;
+  /** Available memory % (free + inactive + purgeable on macOS; MemAvailable on Linux). */
+  memAvailablePct: number | null;
+  /** The OS's own memory-pressure level; null when unreadable. */
+  memPressureNative: NativeMemoryPressure | null;
+  /**
+   * Swap in use, bytes (macOS `vm.swapusage`, Linux SwapTotal − SwapFree). Omitted by
+   * older code; null when unreadable. The free-memory number alone misses a machine
+   * that is paging to disk (the M5, 2026-11-14: 17 of 18 GB swap while "memory fine").
+   */
+  swapUsedBytes?: number | null;
+  /**
+   * True when the machine wrote to swap at a sustained rate (≥ LOAD_THRESHOLDS.swapActiveBytesPerS)
+   * since the previous sample; null when unknown. A stray page is not "paging".
+   */
+  swapActive?: boolean | null;
+  /**
+   * The machine's own "short of memory" over its last samples (the verdict's memory row,
+   * 2 of 3). Omitted by older code. Local Verify keeps a machine showing it out of the test line.
+   */
+  memoryPressured?: boolean;
+  /** Event-loop lag p99 of this machine's agent server, ms; null when the gauge is absent. */
+  eventLoopLagP99Ms: number | null;
+  sessionsActive: number | null;
+  sessionsMax: number | null;
+  /** Existing limiter state: are the host LLM-spawn cap / test-runner cap saturated? */
+  spawnCapSaturated: boolean | null;
+  testRunnerSaturated: boolean | null;
+  /** The machine's OWN verdict over its last samples (B2), for the outside view to compare against. */
+  verdict: LoadVerdict;
+  /** Seconds since this machine's agent server started (B2 boot grace). */
+  uptimeS: number;
+  /**
+   * Admission (spec C1): false while this machine is closed to new work because it
+   * is overloaded. null when this machine runs no admission control (older code,
+   * or the feature is dark) — a reader treats null as "not refusing".
+   */
+  acceptingWork?: boolean | null;
+  /** True only when the machine ACTS on `acceptingWork` (enabled, not dry-run). */
+  admissionEnforced?: boolean;
+  /**
+   * The operator's per-machine heavy-work override (`multiMachine.placement.heavyWork`,
+   * docs/specs/resource-aware-placement.md §3). Omitted for `auto` and by older code;
+   * a reader treats absent as `auto` (the size floor decides).
+   */
+  heavyWork?: 'allow' | 'deny';
+  /**
+   * Heavy helper spawns this machine accepted in the last few minutes (resource-aware
+   * placement §1), so deciders count work its load average does not show yet.
+   * Omitted when zero and by older code.
+   */
+  heavyPending?: number;
+}
+
+/** A report older than this is `unknown` however fresh the transport contact (B1). */
+export const LOAD_REPORT_MAX_AGE_MS = 60_000;
+/** Sampler cadence (B1). */
+export const LOAD_SAMPLE_INTERVAL_MS = 15_000;
+/** Post-boot/wake grace during which lag alone cannot yield impaired/saturated (B2). */
+export const LOAD_BOOT_GRACE_MS = 2 * 60_000;
+/** Verdict window: a row matches when ≥2 of the last 3 samples meet it (B2). */
+export const VERDICT_WINDOW = 3;
+export const VERDICT_QUORUM = 2;
+
+export const LOAD_THRESHOLDS = {
+  impairedLagMs: 1000,
+  impairedMemAvailPct: 5,
+  saturatedCpuIdlePct: 10,
+  saturatedLoadPerCore: 1.5,
+  saturatedLagMs: 300,
+  saturatedMemAvailPct: 15,
+  /** Swap in use, as % of physical memory, that counts as memory pressure (with live evidence). */
+  elevatedSwapPctOfRam: 10,
+  impairedSwapPctOfRam: 25,
+  /** Swap-out at or above this many bytes per second between two samples is "paging out now". */
+  swapActiveBytesPerS: 1024 * 1024,
+} as const;
+
+/** The signals one sample contributes to the verdict (a subset of the report). */
+export interface LoadSample {
+  atMs: number;
+  loadPerCore: number | null;
+  cpuIdlePct: number | null;
+  memAvailablePct: number | null;
+  memPressureNative: NativeMemoryPressure | null;
+  eventLoopLagP99Ms: number | null;
+  sessionsActive: number | null;
+  sessionsMax: number | null;
+  /** Swap in use as % of physical memory; null/absent when unknown. */
+  swapUsedPctOfRam?: number | null;
+  /** Pages written to swap since the previous sample; null/absent when unknown. */
+  swapActive?: boolean | null;
+}
+
+/**
+ * Swap counts as memory pressure at `thresholdPct` of physical memory only with live
+ * evidence beside it: the machine is paging out now at a sustained rate, available memory
+ * is below the saturated floor, or the OS itself reports pressure. Swap merely left over
+ * from earlier (macOS keeps it until the pages are touched or the machine restarts) on a
+ * machine that is not paging is not pressure: a healthy Mac routinely reads ~25% available.
+ */
+export function swapPressure(s: Pick<LoadSample, 'swapUsedPctOfRam' | 'swapActive' | 'memAvailablePct' | 'memPressureNative'>, thresholdPct: number): boolean {
+  if (typeof s.swapUsedPctOfRam !== 'number' || s.swapUsedPctOfRam < thresholdPct) return false;
+  return s.swapActive === true
+    || (s.memAvailablePct !== null && s.memAvailablePct < LOAD_THRESHOLDS.saturatedMemAvailPct)
+    || s.memPressureNative === 'warn' || s.memPressureNative === 'critical';
+}
+
+/** Impaired by swap: a quarter of memory in swap AND still paging out at a sustained rate (thrashing). */
+function swapThrashing(s: LoadSample): boolean {
+  return typeof s.swapUsedPctOfRam === 'number' && s.swapUsedPctOfRam >= LOAD_THRESHOLDS.impairedSwapPctOfRam && s.swapActive === true;
+}
+
+/** The memory row of the `saturated` pair signals (also what "memory-pressured" means). */
+function memoryPairSignal(s: LoadSample): boolean {
+  return s.memPressureNative === 'warn' || s.memPressureNative === 'critical'
+    || (s.memAvailablePct !== null && s.memAvailablePct < LOAD_THRESHOLDS.saturatedMemAvailPct)
+    || swapPressure(s, LOAD_THRESHOLDS.elevatedSwapPctOfRam);
+}
+
+function memoryImpairedSignal(s: LoadSample): boolean {
+  return s.memPressureNative === 'critical'
+    || (s.memAvailablePct !== null && s.memAvailablePct < LOAD_THRESHOLDS.impairedMemAvailPct)
+    || swapThrashing(s);
+}
+
+/**
+ * Is this machine short of memory over its last samples (2 of 3)? The same memory row the
+ * verdict uses, alone: CPU and lag never make a machine "memory-pressured".
+ */
+export function isMemoryPressured(samples: LoadSample[]): boolean {
+  return samples.length >= VERDICT_QUORUM && quorum(samples, memoryPairSignal);
+}
+
+/**
+ * Plain words for why a report shows memory pressure, or null when it does not. One report
+ * (no quorum): for notices and audit rows, never a decision on its own.
+ */
+export function memoryPressureReason(r: Pick<MachineLoadReport, 'memAvailablePct' | 'memPressureNative' | 'swapUsedBytes' | 'swapActive' | 'totalMemBytes'> | null | undefined): string | null {
+  if (!r) return null;
+  const swapPct = typeof r.swapUsedBytes === 'number' && typeof r.totalMemBytes === 'number' && r.totalMemBytes > 0
+    ? (r.swapUsedBytes / r.totalMemBytes) * 100 : null;
+  const sample = { memAvailablePct: r.memAvailablePct, memPressureNative: r.memPressureNative, swapUsedPctOfRam: swapPct, swapActive: r.swapActive ?? null };
+  const parts: string[] = [];
+  if (swapPressure(sample, LOAD_THRESHOLDS.elevatedSwapPctOfRam) && typeof r.swapUsedBytes === 'number') {
+    parts.push(`${(r.swapUsedBytes / 1024 ** 3).toFixed(1)} GB of swap in use (${Math.round(swapPct!)}% of its memory)${r.swapActive ? ', still paging out' : ''}`);
+  }
+  if (r.memAvailablePct !== null && r.memAvailablePct < LOAD_THRESHOLDS.saturatedMemAvailPct) parts.push(`only ${Math.round(r.memAvailablePct)}% of memory available`);
+  if (r.memPressureNative === 'warn' || r.memPressureNative === 'critical') parts.push(`the operating system reports ${r.memPressureNative} memory pressure`);
+  return parts.length ? parts.join('; ') : null;
+}
+
+// ── Verdict table (B2, pure) ─────────────────────────────────────────────
+
+function quorum(samples: LoadSample[], pred: (s: LoadSample) => boolean): boolean {
+  const window = samples.slice(-VERDICT_WINDOW);
+  return window.filter(pred).length >= VERDICT_QUORUM;
+}
+
+/** The `saturated` pair-signals, each a predicate over one sample. */
+const PAIR_SIGNALS: Array<(s: LoadSample) => boolean> = [
+  (s) => s.cpuIdlePct !== null && s.cpuIdlePct < LOAD_THRESHOLDS.saturatedCpuIdlePct,
+  (s) => s.loadPerCore !== null && s.loadPerCore > LOAD_THRESHOLDS.saturatedLoadPerCore,
+  (s) => s.eventLoopLagP99Ms !== null && s.eventLoopLagP99Ms > LOAD_THRESHOLDS.saturatedLagMs,
+  memoryPairSignal,
+];
+
+/**
+ * Derive the verdict from the last samples (oldest first). Rows top to bottom:
+ * a known critical signal yields `impaired` even when other signals are missing;
+ * `unknown` applies only when no row matched AND a CPU or memory signal is
+ * missing. `inGrace` suppresses impaired/saturated caused ONLY by lag.
+ */
+export function deriveLoadVerdict(samples: LoadSample[], opts: { inGrace: boolean }): LoadVerdict {
+  // A row needs 2 of the last 3 samples (B2): ONE sample can never decide, so
+  // the awaited boot sample reports `unknown` rather than a one-reading verdict.
+  if (samples.length < VERDICT_QUORUM) return 'unknown';
+  const lagImpaired = quorum(samples, (s) => s.eventLoopLagP99Ms !== null && s.eventLoopLagP99Ms > LOAD_THRESHOLDS.impairedLagMs);
+  const memImpaired = quorum(samples, memoryImpairedSignal);
+  if (memImpaired || (lagImpaired && !opts.inGrace)) return 'impaired';
+
+  const sessionsFull = quorum(
+    samples,
+    (s) => s.sessionsActive !== null && s.sessionsMax !== null && s.sessionsMax > 0 && s.sessionsActive >= s.sessionsMax - 1,
+  );
+  const pairHits = PAIR_SIGNALS.map((p, idx) => ({ idx, hit: quorum(samples, p) })).filter((x) => x.hit);
+  // In grace, lag (index 2) does not count toward saturated on its own.
+  const effectivePairs = opts.inGrace ? pairHits.filter((x) => x.idx !== 2) : pairHits;
+  if (sessionsFull || effectivePairs.length >= 2) return 'saturated';
+  if (pairHits.length >= 1) return 'elevated';
+
+  const latest = samples[samples.length - 1];
+  const cpuPresent = latest.cpuIdlePct !== null || latest.loadPerCore !== null;
+  const memPresent = latest.memAvailablePct !== null || latest.memPressureNative !== null;
+  return cpuPresent && memPresent ? 'ok' : 'unknown';
+}
+
+// ── Receive clamp + freshness (pure) ─────────────────────────────────────
+
+const VERDICTS: ReadonlySet<string> = new Set(['ok', 'elevated', 'saturated', 'impaired', 'unknown']);
+const PRESSURES: ReadonlySet<string> = new Set(['normal', 'warn', 'critical']);
+const PLATFORMS: ReadonlySet<string> = new Set(['darwin', 'linux', 'wsl', 'other']);
+
+function numOrNull(v: unknown, min: number, max: number): number | null {
+  return typeof v === 'number' && Number.isFinite(v) && v >= min && v <= max ? v : null;
+}
+function boolOrNull(v: unknown): boolean | null {
+  return typeof v === 'boolean' ? v : null;
+}
+
+/**
+ * Clamp a peer's load report on receive. Every numeric field is range-checked
+ * and anything malformed becomes `null` (missing), never a substituted value.
+ * Returns null only when the block is not a usable report at all.
+ */
+export function clampLoadReport(raw: unknown): MachineLoadReport | null {
+  if (!raw || typeof raw !== 'object' || Array.isArray(raw)) return null;
+  const r = raw as Record<string, unknown>;
+  if (typeof r.bootId !== 'string' || r.bootId.length === 0 || r.bootId.length > 64) return null;
+  if (typeof r.seq !== 'number' || !Number.isFinite(r.seq) || r.seq < 0) return null;
+  const sampleAgeMs = numOrNull(r.sampleAgeMs, 0, 7 * 24 * 3600_000);
+  if (sampleAgeMs === null) return null;
+  return {
+    bootId: r.bootId,
+    seq: Math.floor(r.seq),
+    sampleAgeMs,
+    platform: typeof r.platform === 'string' && PLATFORMS.has(r.platform) ? (r.platform as LoadPlatform) : 'other',
+    cores: numOrNull(r.cores, 1, 4096),
+    totalMemBytes: numOrNull(r.totalMemBytes, 1, Number.MAX_SAFE_INTEGER),
+    loadPerCore: numOrNull(r.loadPerCore, 0, 10_000),
+    cpuIdlePct: numOrNull(r.cpuIdlePct, 0, 100),
+    memAvailablePct: numOrNull(r.memAvailablePct, 0, 100),
+    memPressureNative: typeof r.memPressureNative === 'string' && PRESSURES.has(r.memPressureNative) ? (r.memPressureNative as NativeMemoryPressure) : null,
+    // Swap (only when the sender carries it: a report from older code clamps byte-identical).
+    ...(r.swapUsedBytes !== undefined ? { swapUsedBytes: numOrNull(r.swapUsedBytes, 0, Number.MAX_SAFE_INTEGER) } : {}),
+    ...(r.swapActive !== undefined ? { swapActive: boolOrNull(r.swapActive) } : {}),
+    ...(r.memoryPressured !== undefined ? { memoryPressured: r.memoryPressured === true } : {}),
+    eventLoopLagP99Ms: numOrNull(r.eventLoopLagP99Ms, 0, 3600_000),
+    sessionsActive: numOrNull(r.sessionsActive, 0, 100_000),
+    sessionsMax: numOrNull(r.sessionsMax, 0, 100_000),
+    spawnCapSaturated: boolOrNull(r.spawnCapSaturated),
+    testRunnerSaturated: boolOrNull(r.testRunnerSaturated),
+    verdict: typeof r.verdict === 'string' && VERDICTS.has(r.verdict) ? (r.verdict as LoadVerdict) : 'unknown',
+    uptimeS: numOrNull(r.uptimeS, 0, Number.MAX_SAFE_INTEGER) ?? 0,
+    // Admission (P2): only when the sender carries the fields — a report from
+    // older code clamps byte-identical (absent ⇒ "not refusing", never a substitute).
+    ...(r.acceptingWork !== undefined ? { acceptingWork: boolOrNull(r.acceptingWork) } : {}),
+    ...(r.admissionEnforced !== undefined ? { admissionEnforced: r.admissionEnforced === true } : {}),
+    // Heavy-work override (resource-aware placement §3): only the two explicit values
+    // survive; anything else is dropped, which reads as `auto`.
+    ...(r.heavyWork === 'allow' || r.heavyWork === 'deny' ? { heavyWork: r.heavyWork } : {}),
+    ...(typeof r.heavyPending === 'number' && Number.isFinite(r.heavyPending) && r.heavyPending > 0
+      ? { heavyPending: Math.min(1000, Math.floor(r.heavyPending)) } : {}),
+  };
+}
+
+/**
+ * The receiver's evidence age for a report = its sampleAgeMs + time since
+ * receipt (transit is folded into the receipt stamp). Past the max age the
+ * report is `unknown` — fresh transport contact never renews stale load
+ * evidence (B1).
+ */
+export function loadReportAgeMs(report: MachineLoadReport, receivedAtMs: number, nowMs: number): number {
+  return report.sampleAgeMs + Math.max(0, nowMs - receivedAtMs);
+}
+export function isLoadReportFresh(report: MachineLoadReport, receivedAtMs: number, nowMs: number): boolean {
+  return loadReportAgeMs(report, receivedAtMs, nowMs) <= LOAD_REPORT_MAX_AGE_MS;
+}
+
+// ── Native memory pressure readers (async, injectable) ───────────────────
+
+/** macOS `sysctl kern.memorystatus_vm_pressure_level`: 1 normal, 2 warn, 4 critical. */
+export function parseDarwinPressureLevel(out: string): NativeMemoryPressure | null {
+  const m = out.match(/(\d+)\s*$/);
+  if (!m) return null;
+  const n = Number(m[1]);
+  if (n === 1) return 'normal';
+  if (n === 2) return 'warn';
+  if (n === 4) return 'critical';
+  return null;
+}
+
+/** Linux/WSL `/proc/pressure/memory`: `some avg10=…` / `full avg10=…` (percent of time stalled). */
+export function parseLinuxPressureFile(psiFile: string): NativeMemoryPressure | null {
+  const some = psiFile.match(/^some\s+avg10=([\d.]+)/m);
+  const full = psiFile.match(/^full\s+avg10=([\d.]+)/m);
+  if (!some && !full) return null;
+  const fullV = full ? Number(full[1]) : 0;
+  const someV = some ? Number(some[1]) : 0;
+  if (fullV >= 10) return 'critical';
+  if (someV >= 10) return 'warn';
+  return 'normal';
+}
+
+/** macOS `sysctl -n vm.swapusage`: `total = 18432.00M  used = 17408.00M  free = …`. Bytes used, or null. */
+export function parseDarwinSwapUsage(out: string): number | null {
+  const m = out.match(/used\s*=\s*([\d.]+)([KMGT])/);
+  if (!m) return null;
+  const mult = { K: 1024, M: 1024 ** 2, G: 1024 ** 3, T: 1024 ** 4 }[m[2] as 'K' | 'M' | 'G' | 'T'];
+  const v = Number(m[1]) * mult;
+  return Number.isFinite(v) && v >= 0 ? Math.round(v) : null;
+}
+
+/** macOS `vm_stat` cumulative `Swapouts:` page count, or null. */
+export function parseDarwinSwapouts(vmStat: string): number | null {
+  const m = vmStat.match(/^Swapouts:\s+(\d+)/m);
+  return m ? Number(m[1]) : null;
+}
+
+/** Linux `/proc/meminfo`: SwapTotal − SwapFree, bytes, or null. */
+export function parseLinuxSwapUsed(meminfo: string): number | null {
+  const t = meminfo.match(/^SwapTotal:\s+(\d+)\s*kB/m);
+  const f = meminfo.match(/^SwapFree:\s+(\d+)\s*kB/m);
+  if (!t || !f) return null;
+  return Math.max(0, Number(t[1]) - Number(f[1])) * 1024;
+}
+
+/** Linux `/proc/vmstat` cumulative `pswpout`, or null. */
+export function parseLinuxSwapouts(vmstat: string): number | null {
+  const m = vmstat.match(/^pswpout\s+(\d+)/m);
+  return m ? Number(m[1]) : null;
+}
+
+/** One swap reading: bytes in use and the cumulative bytes swapped out (either may be null). */
+export interface SwapReading { usedBytes: number | null; swapoutBytes: number | null }
+
+/** `vm_stat`'s page size (`page size of 16384 bytes`), or null. */
+export function parseVmStatPageSize(vmStat: string): number | null {
+  const m = vmStat.match(/page size of (\d+) bytes/);
+  return m ? Number(m[1]) : null;
+}
+
+/** Linux counts pswpout in pages of this size. */
+const LINUX_SWAP_PAGE_BYTES = 4096;
+
+function execText(cmd: string, args: string[], timeoutMs: number): Promise<string> {
+  return new Promise((resolve, reject) => {
+    execFile(cmd, args, { encoding: 'utf-8', timeout: timeoutMs }, (err, stdout) => {
+      if (err) reject(err);
+      else resolve(String(stdout ?? ''));
+    });
+  });
+}
+
+export function detectLoadPlatform(platform: string = process.platform, osRelease: string = os.release()): LoadPlatform {
+  if (platform === 'darwin') return 'darwin';
+  if (platform === 'linux') return /microsoft|wsl/i.test(osRelease) ? 'wsl' : 'linux';
+  return 'other';
+}
+
+// ── Sampler ──────────────────────────────────────────────────────────────
+
+export interface MachineLoadSamplerDeps {
+  /** Called once after every sample with the new verdict (spec C1 admission feeds on it). */
+  onSample?: (verdict: LoadVerdict) => void;
+  /** Current admission state, read at report time (spec C1). Absent ⇒ fields omitted. */
+  admission?: () => { acceptingWork: boolean; enforced: boolean } | null;
+  /** This machine's heavy-work override, read at report time (resource-aware placement §3). Absent ⇒ omitted (auto). */
+  heavyWork?: () => 'auto' | 'allow' | 'deny' | null | undefined;
+  /** Accepted heavy spawns in the pending window, read at report time. Absent ⇒ omitted. */
+  heavyPending?: () => number;
+  platform?: LoadPlatform;
+  cpus?: () => Array<{ times: { user: number; nice: number; sys: number; idle: number; irq: number } }>;
+  loadavg?: () => number[];
+  totalmem?: () => number;
+  /** Async available-memory % reader (null when unreadable). Defaults to the platform reader. */
+  readMemAvailablePct?: () => Promise<number | null>;
+  readNativePressure?: () => Promise<NativeMemoryPressure | null>;
+  /** Async swap reader (bytes in use + cumulative swap-outs). Defaults to the platform reader. */
+  readSwap?: () => Promise<SwapReading | null>;
+  /** Event-loop lag p99 (ms) from the existing WriteAdmission gauge; null when absent. */
+  eventLoopLagP99Ms?: () => number | null;
+  sessions?: () => { active: number | null; max: number | null };
+  spawnCapSaturated?: () => boolean | null;
+  testRunnerSaturated?: () => boolean | null;
+  now?: () => number;
+  /** Monotonic ms for sample age + uptime. */
+  monoNow?: () => number;
+  bootId?: string;
+  intervalMs?: number;
+  log?: (line: string) => void;
+}
+
+/**
+ * Samples the signals every `intervalMs` (15 s) and caches ONE report. `read()`
+ * is O(1) and never samples. The first sample runs at `start()`, before the
+ * first heartbeat (B1).
+ */
+export class MachineLoadSampler {
+  private readonly d: Required<Pick<MachineLoadSamplerDeps, 'platform' | 'cpus' | 'loadavg' | 'totalmem' | 'readMemAvailablePct' | 'readNativePressure' | 'readSwap' | 'eventLoopLagP99Ms' | 'sessions' | 'spawnCapSaturated' | 'testRunnerSaturated' | 'now' | 'monoNow' | 'bootId' | 'intervalMs'>> & { log?: (line: string) => void; onSample?: (verdict: LoadVerdict) => void; admission?: () => { acceptingWork: boolean; enforced: boolean } | null; heavyWork?: () => 'auto' | 'allow' | 'deny' | null | undefined; heavyPending?: () => number };
+  private samples: LoadSample[] = [];
+  private seq = 0;
+  private prevCpu: { idle: number; total: number } | null = null;
+  private prevSwapout: { bytes: number; atMs: number } | null = null;
+  private cached: { report: Omit<MachineLoadReport, 'sampleAgeMs' | 'uptimeS'>; sampledMono: number } | null = null;
+  private timer: ReturnType<typeof setInterval> | null = null;
+  private inFlight: Promise<void> | null = null;
+  private readonly startedMono: number;
+  private graceUntilMono: number;
+
+  constructor(deps: MachineLoadSamplerDeps = {}) {
+    const platform = deps.platform ?? detectLoadPlatform();
+    const mono = deps.monoNow ?? (() => Number(process.hrtime.bigint() / 1_000_000n));
+    this.d = {
+      platform,
+      cpus: deps.cpus ?? (() => os.cpus() as ReturnType<NonNullable<MachineLoadSamplerDeps['cpus']>>),
+      loadavg: deps.loadavg ?? (() => os.loadavg()),
+      totalmem: deps.totalmem ?? (() => os.totalmem()),
+      readMemAvailablePct: deps.readMemAvailablePct ?? (() => defaultReadMemAvailablePct(platform)),
+      readNativePressure: deps.readNativePressure ?? (() => defaultReadNativePressure(platform)),
+      readSwap: deps.readSwap ?? (() => defaultReadSwap(platform)),
+      eventLoopLagP99Ms: deps.eventLoopLagP99Ms ?? (() => null),
+      sessions: deps.sessions ?? (() => ({ active: null, max: null })),
+      spawnCapSaturated: deps.spawnCapSaturated ?? (() => null),
+      testRunnerSaturated: deps.testRunnerSaturated ?? (() => null),
+      now: deps.now ?? Date.now,
+      monoNow: mono,
+      bootId: deps.bootId ?? `${process.pid.toString(36)}-${Date.now().toString(36)}`,
+      intervalMs: deps.intervalMs ?? LOAD_SAMPLE_INTERVAL_MS,
+      log: deps.log,
+      onSample: deps.onSample,
+      admission: deps.admission,
+      heavyWork: deps.heavyWork,
+      heavyPending: deps.heavyPending,
+    };
+    this.startedMono = mono();
+    this.graceUntilMono = this.startedMono + LOAD_BOOT_GRACE_MS;
+  }
+
+  /** Take the first sample now, then on the cadence. Idempotent. */
+  async start(): Promise<void> {
+    await this.sampleOnce();
+    if (this.timer) return;
+    this.timer = setInterval(() => { void this.sampleOnce(); }, this.d.intervalMs);
+    if (typeof this.timer.unref === 'function') this.timer.unref();
+  }
+
+  stop(): void {
+    if (this.timer) clearInterval(this.timer);
+    this.timer = null;
+  }
+
+  /** Re-arm the boot grace (call on wake from sleep). */
+  noteWake(): void {
+    this.graceUntilMono = this.d.monoNow() + LOAD_BOOT_GRACE_MS;
+  }
+
+  private cpuIdleDelta(): number | null {
+    let idle = 0;
+    let total = 0;
+    for (const c of this.d.cpus()) {
+      const t = c.times;
+      idle += t.idle;
+      total += t.user + t.nice + t.sys + t.idle + t.irq;
+    }
+    const prev = this.prevCpu;
+    this.prevCpu = { idle, total };
+    if (!prev) return null;
+    const dTotal = total - prev.total;
+    if (dTotal <= 0) return null;
+    return Math.max(0, Math.min(100, ((idle - prev.idle) / dTotal) * 100));
+  }
+
+  /** One sample. Never throws; never overlaps itself. */
+  sampleOnce(): Promise<void> {
+    if (this.inFlight) return this.inFlight;
+    this.inFlight = this.doSample().catch((err) => {
+      // @silent-fallback-ok — NOT a swallow: the failure is logged with its message, and a
+      // missed load sample is reported honestly downstream as `loadVerdict: 'unknown'`
+      // (a report older than 60 s reads unknown) rather than as a fabricated healthy reading.
+      this.d.log?.(`load sample failed: ${err instanceof Error ? err.message : String(err)}`);
+    }).finally(() => { this.inFlight = null; });
+    return this.inFlight;
+  }
+
+  private async doSample(): Promise<void> {
+    const cpus = safe(() => this.d.cpus(), []);
+    const cores = cpus.length > 0 ? cpus.length : null;
+    const la = safe(() => this.d.loadavg(), [])[0];
+    const loadPerCore = cores && typeof la === 'number' && Number.isFinite(la) ? la / cores : null;
+    const cpuIdlePct = safe(() => this.cpuIdleDelta(), null);
+    const [memAvailablePct, memPressureNative, swap] = await Promise.all([
+      this.d.readMemAvailablePct().catch(() => null), // @silent-fallback-ok: an unreadable signal is reported as null (missing), never a substituted value
+      this.d.readNativePressure().catch(() => null), // @silent-fallback-ok: an unreadable signal is reported as null (missing), never a substituted value
+      this.d.readSwap().catch(() => null), // @silent-fallback-ok: an unreadable signal is reported as null (missing), never a substituted value
+    ]);
+    const totalMem = safe(() => this.d.totalmem(), null);
+    const swapUsedBytes = swap && typeof swap.usedBytes === 'number' && Number.isFinite(swap.usedBytes) && swap.usedBytes >= 0 ? swap.usedBytes : null;
+    const swapoutBytes = swap && typeof swap.swapoutBytes === 'number' && Number.isFinite(swap.swapoutBytes) ? swap.swapoutBytes : null;
+    // Paging out now = the cumulative counter grew at a sustained rate since the last sample
+    // (unknown on the first sample, after a counter reset, or with no time between samples).
+    const atNow = this.d.now();
+    const prev = this.prevSwapout;
+    let swapActive: boolean | null = null;
+    if (swapoutBytes !== null && prev && atNow > prev.atMs && swapoutBytes >= prev.bytes) {
+      swapActive = (swapoutBytes - prev.bytes) / ((atNow - prev.atMs) / 1000) >= LOAD_THRESHOLDS.swapActiveBytesPerS;
+    }
+    this.prevSwapout = swapoutBytes !== null ? { bytes: swapoutBytes, atMs: atNow } : null;
+    const swapUsedPctOfRam = swapUsedBytes !== null && typeof totalMem === 'number' && totalMem > 0 ? (swapUsedBytes / totalMem) * 100 : null;
+    const eventLoopLagP99Ms = safe(() => this.d.eventLoopLagP99Ms(), null);
+    const sess = safe(() => this.d.sessions(), { active: null, max: null });
+    const atMs = this.d.now();
+    const sample: LoadSample = {
+      atMs,
+      loadPerCore,
+      cpuIdlePct,
+      memAvailablePct: typeof memAvailablePct === 'number' && Number.isFinite(memAvailablePct) ? Math.max(0, Math.min(100, memAvailablePct)) : null,
+      memPressureNative,
+      eventLoopLagP99Ms: typeof eventLoopLagP99Ms === 'number' && Number.isFinite(eventLoopLagP99Ms) ? eventLoopLagP99Ms : null,
+      sessionsActive: sess.active,
+      sessionsMax: sess.max,
+      swapUsedPctOfRam,
+      swapActive,
+    };
+    this.samples = [...this.samples, sample].slice(-VERDICT_WINDOW);
+    const mono = this.d.monoNow();
+    const verdict = deriveLoadVerdict(this.samples, { inGrace: mono < this.graceUntilMono });
+    this.cached = {
+      sampledMono: mono,
+      report: {
+        bootId: this.d.bootId,
+        seq: this.seq++,
+        platform: this.d.platform,
+        cores,
+        totalMemBytes: totalMem,
+        loadPerCore,
+        cpuIdlePct: sample.cpuIdlePct,
+        memAvailablePct: sample.memAvailablePct,
+        memPressureNative,
+        swapUsedBytes,
+        swapActive,
+        memoryPressured: isMemoryPressured(this.samples),
+        eventLoopLagP99Ms: sample.eventLoopLagP99Ms,
+        sessionsActive: sess.active,
+        sessionsMax: sess.max,
+        spawnCapSaturated: safe(() => this.d.spawnCapSaturated(), null),
+        testRunnerSaturated: safe(() => this.d.testRunnerSaturated(), null),
+        verdict,
+      },
+    };
+    if (this.d.onSample) {
+      try { this.d.onSample(verdict); } catch (err) {
+        // @silent-fallback-ok (logged): an observer failure never breaks sampling — the report is still cached above.
+        this.d.log?.(`admission observer failed: ${err instanceof Error ? err.message : String(err)}`);
+      }
+    }
+  }
+
+  /** The cached report with its CURRENT sample age; null before the first sample. O(1). */
+  read(): MachineLoadReport | null {
+    if (!this.cached) return null;
+    const mono = this.d.monoNow();
+    return {
+      ...this.cached.report,
+      sampleAgeMs: Math.max(0, mono - this.cached.sampledMono),
+      uptimeS: Math.max(0, Math.floor((mono - this.startedMono) / 1000)),
+      ...this.admissionFields(),
+      ...this.heavyWorkField(),
+    };
+  }
+
+  private heavyWorkField(): { heavyWork?: 'allow' | 'deny'; heavyPending?: number } {
+    const out: { heavyWork?: 'allow' | 'deny'; heavyPending?: number } = {};
+    if (this.d.heavyWork) {
+      const v = safe(() => this.d.heavyWork!(), null);
+      if (v === 'allow' || v === 'deny') out.heavyWork = v;
+    }
+    if (this.d.heavyPending) {
+      const n = safe(() => this.d.heavyPending!(), 0);
+      if (typeof n === 'number' && Number.isFinite(n) && n > 0) out.heavyPending = Math.min(1000, Math.floor(n));
+    }
+    return out;
+  }
+
+  private admissionFields(): { acceptingWork?: boolean; admissionEnforced?: boolean } {
+    if (!this.d.admission) return {};
+    const a = safe(() => this.d.admission!(), null);
+    return a ? { acceptingWork: a.acceptingWork, admissionEnforced: a.enforced } : {};
+  }
+
+  /**
+   * Plain words for why this machine is short of memory over its last samples (the verdict's
+   * memory row, 2 of 3), or null when it is not (or before two samples). Local Verify holds
+   * its own starts on this, so the machine that coordinates tests protects itself too.
+   */
+  memoryPressure(): string | null {
+    if (!isMemoryPressured(this.samples)) return null;
+    return memoryPressureReason(this.cached?.report ?? null) ?? 'memory is short on most recent samples';
+  }
+
+  /** The machine's own current verdict (`unknown` before the first sample). */
+  verdict(): LoadVerdict {
+    return this.cached?.report.verdict ?? 'unknown';
+  }
+}
+
+function safe<T>(fn: () => T, fallback: T): T {
+  try { return fn(); } catch { return fallback; } // @silent-fallback-ok: a failed signal read is reported as MISSING (null/fallback), the spec's required behavior — never a substituted value
+}
+
+async function defaultReadMemAvailablePct(platform: LoadPlatform): Promise<number | null> {
+  try {
+    if (platform === 'darwin') {
+      const out = await execText('vm_stat', [], 5000);
+      return 100 - parseVmStat(out).pressurePercent;
+    }
+    if (platform === 'linux' || platform === 'wsl') {
+      const content = await fsp.readFile('/proc/meminfo', 'utf-8');
+      return 100 - parseProcMeminfo(content).pressurePercent;
+    }
+  } catch {
+    // @silent-fallback-ok: an unreadable memory signal is reported as null (missing),
+    // never the server-RSS estimate the older reader substituted (spec B1).
+  }
+  return null;
+}
+
+async function defaultReadSwap(platform: LoadPlatform): Promise<SwapReading | null> {
+  try {
+    if (platform === 'darwin') {
+      const [usage, vm] = await Promise.all([
+        execText('sysctl', ['-n', 'vm.swapusage'], 3000).catch(() => ''),
+        execText('vm_stat', [], 5000).catch(() => ''),
+      ]);
+      const outs = parseDarwinSwapouts(vm);
+      const page = parseVmStatPageSize(vm);
+      return { usedBytes: parseDarwinSwapUsage(usage), swapoutBytes: outs !== null && page !== null ? outs * page : null };
+    }
+    if (platform === 'linux' || platform === 'wsl') {
+      const [mem, vm] = await Promise.all([
+        fsp.readFile('/proc/meminfo', 'utf-8').catch(() => ''),
+        fsp.readFile('/proc/vmstat', 'utf-8').catch(() => ''),
+      ]);
+      const outs = parseLinuxSwapouts(vm);
+      return { usedBytes: parseLinuxSwapUsed(mem), swapoutBytes: outs !== null ? outs * LINUX_SWAP_PAGE_BYTES : null };
+    }
+  } catch {
+    // @silent-fallback-ok: an unreadable swap signal is reported as null (missing), never zero.
+  }
+  return null;
+}
+
+async function defaultReadNativePressure(platform: LoadPlatform): Promise<NativeMemoryPressure | null> {
+  try {
+    if (platform === 'darwin') {
+      return parseDarwinPressureLevel(await execText('sysctl', ['-n', 'kern.memorystatus_vm_pressure_level'], 3000));
+    }
+    if (platform === 'linux' || platform === 'wsl') {
+      return parseLinuxPressureFile(await fsp.readFile('/proc/pressure/memory', 'utf-8'));
+    }
+  } catch {
+    // @silent-fallback-ok: absent/unreadable native pressure is reported as null (missing).
+  }
+  return null;
+}

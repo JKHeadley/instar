@@ -1,0 +1,39 @@
+{
+  "version": 2,
+  "slug": "machine-restart-now",
+  "sessionId": "ca49562d-8438-4c10-9918-926f25d32e04",
+  "timestamp": "2026-11-16T22:02:49.426Z",
+  "artifactPath": "upgrades/side-effects/machine-restart-now.md",
+  "artifactSha256": "614e6b8427f98c8ce14236ce0b43e1caf7c8e176080946fdac5de0c55c47ef2a",
+  "specPath": "docs/specs/machine-self-maintenance.md",
+  "coveredFiles": [
+    ".instar/instar-dev-decisions/2026-11-16T22-00-38-329Z-machine-restart-now.json",
+    ".instar/instar-dev-decisions/2026-11-16T22-01-03-073Z-machine-restart-now.json",
+    ".instar/instar-dev-decisions/2026-11-16T22-01-23-947Z-machine-restart-now.json",
+    ".instar/instar-dev-decisions/2026-11-16T22-01-56-474Z-machine-restart-now.json",
+    ".instar/instar-dev-decisions/2026-11-16T22-02-28-471Z-machine-restart-now.json",
+    "src/commands/server.ts",
+    "src/core/WriteDomainRegistry.ts",
+    "src/data/awareness/machine-restart-now.md",
+    "src/monitoring/machineMaintenance/RestartNowController.ts",
+    "src/server/routes.ts",
+    "tests/integration/machine-maintenance-route.test.ts",
+    "tests/unit/machine-maintenance-watch-only.test.ts",
+    "tests/unit/machine-restart-now.test.ts",
+    "upgrades/next/machine-restart-now.md",
+    "upgrades/side-effects/machine-restart-now.md"
+  ],
+  "phase": "complete",
+  "tier": 2,
+  "secondPass": "not-required",
+  "reviewerConcurred": null,
+  "classClosure": {
+    "defectClass": "unbounded-self-action",
+    "closure": "guard",
+    "guardEvidence": {
+      "enforcementType": "ratchet",
+      "citation": "tests/unit/self-action-convergence.test.ts",
+      "howCaught": "Restart now dispatches at most rung 1 then rung 2 per owner tap, each through claimRung under the brakes already modelled by the machineRestart Eternal Sentinel; the ladder ends in a terminal outcome-unknown"
+    }
+  }
+}

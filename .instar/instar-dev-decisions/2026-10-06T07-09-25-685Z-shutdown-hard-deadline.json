@@ -1,0 +1,27 @@
+{
+  "ts": "2026-10-06T07:09:25.685Z",
+  "slug": "shutdown-hard-deadline",
+  "suggestedTier": 2,
+  "declaredTier": 1,
+  "riskFloor": 1,
+  "riskFloorReasons": [],
+  "belowFloor": false,
+  "files": 2,
+  "loc": 70,
+  "scope": {
+    "basis": "staged-in-scope-additions-plus-deletions",
+    "files": [
+      "src/commands/server.ts",
+      "src/core/shutdownDeadline.ts"
+    ],
+    "addedLines": 69,
+    "deletedLines": 1
+  },
+  "causalAutopsy": null,
+  "classClosure": {
+    "defectClass": "unbounded-self-action",
+    "closure": "n/a",
+    "reason": "no self-triggered action: a one-shot bound on an operator/supervisor-initiated shutdown; it fires at most once per process"
+  },
+  "verdict": "pass"
+}

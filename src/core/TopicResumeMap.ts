@@ -10,6 +10,7 @@
  * Entries auto-prune after 24 hours.
  */
 
+import { isSafeSessionRef } from './claudeResumeTranscript.js';
 import fs from 'node:fs';
 import path from 'node:path';
 import os from 'node:os';
@@ -142,8 +143,8 @@ export class TopicResumeMap {
    * contamination when multiple sessions are active — it always picks
    * the most recent JSONL file regardless of which session it belongs to.
    */
-  findUuidForSession(tmuxSession: string, claudeSessionId?: string): string | null {
-    if (claudeSessionId && this.jsonlExists(claudeSessionId)) {
+  findUuidForSession(tmuxSession: string, claudeSessionId?: string, framework?: string): string | null {
+    if (claudeSessionId && this.jsonlExists(claudeSessionId, framework)) {
       return claudeSessionId;
     }
 
@@ -180,6 +181,8 @@ export class TopicResumeMap {
    * is a silent no-op — the gate's caller owns disclosure.
    */
   save(topicId: number, uuid: string, sessionName: string, provenance: ResumeProvenance = 'hook'): void {
+    // It came from a hook event: never store what could become a flag or a path at the next launch.
+    if (!isSafeSessionRef(uuid)) { console.warn(`[TopicResumeMap] refused a resume id for topic ${topicId}`); return; }
     if (!this.gateAllows(topicId)) return;
     const map = this.load();
 
@@ -228,8 +231,11 @@ export class TopicResumeMap {
       return null;
     }
 
-    // Verify the JSONL file still exists
-    if (!this.jsonlExists(entry.uuid)) {
+    // Verify the transcript still exists — in the layout of the framework the
+    // entry was recorded for. Untagged legacy entries grandfather as
+    // 'claude-code' (this map has only ever captured Claude JSONL UUIDs), so a
+    // Claude entry is never sent into the Codex or Gemini archive discovery.
+    if (!this.jsonlExists(entry.uuid, entry.framework ?? 'claude-code')) {
       return null;
     }
 
@@ -317,6 +323,62 @@ export class TopicResumeMap {
   }
 
   /**
+   * The names of the tmux sessions whose active pane exists and is not dead,
+   * read with ONE tmux call for every session.
+   *
+   * This used to be one `display-message` per topic session, each a
+   * synchronous subprocess on the server's main thread, every minute: the
+   * largest single source of subprocess spawns in a profile of a loaded server
+   * (2026-11-13). `list-sessions` evaluates the same pane formats against each
+   * session's active pane, so the answer per session is the one
+   * `display-message -t =name:` gave: compared on 40 live single-window
+   * sessions, 4 of them with a dead pane, and on a throwaway server with a
+   * three-window session whose current window has two panes (both forms give
+   * the active pane of the current window), tmux 3.7c.
+   *
+   * The separator is `||`, as it was in the per-session probe, and NOT a tab:
+   * a tmux client that is not flagged UTF-8 (no TMUX and no UTF-8 locale in its
+   * environment, e.g. a server started by launchd directly) replaces
+   * non-printable characters in what it prints with `_`, which would turn every
+   * line into one field and every session into "not live" without any error.
+   * A line is read from the right, so a `||` inside a session name is harmless.
+   *
+   * Any failure (no tmux server, a timeout, a non-zero exit) reads as "no live
+   * panes": the heartbeat then writes nothing and every mapping is kept, the
+   * same direction a failed per-session probe took.
+   */
+  private readLivePanes(): Set<string> {
+    const live = new Set<string>();
+    const probe = withSyncOp(() => spawnSync(this.tmuxPath, ['list-sessions', '-F', '#{session_name}||#{pane_id}||#{pane_dead}'], {
+      encoding: 'utf-8',
+      timeout: 5000,
+    }));
+    if (probe.status !== 0) return live;
+    let lines = 0;
+    let parsed = 0;
+    for (const line of String(probe.stdout ?? '').split('\n')) {
+      if (!line.trim()) continue;
+      lines++;
+      const deadAt = line.lastIndexOf('||');
+      const paneAt = deadAt > 1 ? line.lastIndexOf('||', deadAt - 2) : -1;
+      if (paneAt <= 0) continue;
+      parsed++;
+      const name = line.slice(0, paneAt);
+      const paneId = line.slice(paneAt + 2, deadAt);
+      const paneDead = line.slice(deadAt + 2).trim();
+      if (paneId && paneDead !== '1') live.add(name);
+    }
+    if (lines > 0 && parsed === 0 && !this.warnedUnreadableTmuxList) {
+      // tmux answered, but in a shape this cannot read: without this line the
+      // heartbeat would stop refreshing mappings with nothing to show for it.
+      this.warnedUnreadableTmuxList = true;
+      console.warn(`[TopicResumeMap] tmux list-sessions returned ${lines} line(s) in an unreadable shape; no resume mapping will be refreshed. First line: ${JSON.stringify(String(probe.stdout).split('\n')[0].slice(0, 120))}`);
+    }
+    return live;
+  }
+  private warnedUnreadableTmuxList = false;
+
+  /**
    * Proactive resume heartbeat: update the topic→UUID mapping for all active
    * topic-linked sessions. Called periodically (e.g., every 60s).
    *
@@ -327,7 +389,7 @@ export class TopicResumeMap {
    *
    * @param topicSessions - Map of topicId → { sessionName, claudeSessionId? }
    */
-  refreshResumeMappings(topicSessions: Map<number, { sessionName: string; claudeSessionId?: string }>): void {
+  refreshResumeMappings(topicSessions: Map<number, { sessionName: string; claudeSessionId?: string; framework?: string }>): void {
     try {
       if (!topicSessions || topicSessions.size === 0) return;
 
@@ -335,26 +397,19 @@ export class TopicResumeMap {
       let updated = 0;
 
       // Count how many sessions have known UUIDs vs unknown
-      const activeSessions: Array<{ topicId: number; sessionName: string; claudeSessionId?: string }> = [];
+      const activeSessions: Array<{ topicId: number; sessionName: string; claudeSessionId?: string; framework?: string }> = [];
+      // Verify Claude is actually running in each pane. A crashed Claude keeps
+      // its tmux session (remain-on-exit failed), so existence alone counted
+      // dead panes as live: the pane must exist and not be dead.
+      const livePanes = this.readLivePanes();
       for (const [topicId, info] of topicSessions) {
-        // Verify Claude is actually running in the pane. A crashed Claude keeps
-        // its tmux session (remain-on-exit failed), so `has-session` alone
-        // counted dead panes as live. One display-message call reads both.
-        // Measured on tmux 3.6a: a MISSING session exits 0 with empty fields,
-        // so an empty pane id means gone; pane_dead `1` means the process exited.
-        const probe = withSyncOp(() => spawnSync(this.tmuxPath, ['display-message', '-t', `=${info.sessionName}:`, '-p', '#{pane_id}||#{pane_dead}'], {
-          encoding: 'utf-8',
-          timeout: 5000,
-        }));
-        if (probe.status !== 0) continue;
-        const [paneId, paneDead] = String(probe.stdout ?? '').trim().split('||');
-        if (!paneId || paneDead === '1') continue;
-        activeSessions.push({ topicId, sessionName: info.sessionName, claudeSessionId: info.claudeSessionId });
+        if (!livePanes.has(info.sessionName)) continue;
+        activeSessions.push({ topicId, sessionName: info.sessionName, claudeSessionId: info.claudeSessionId, framework: info.framework });
       }
 
       if (activeSessions.length === 0) return;
 
-      for (const { topicId, sessionName, claudeSessionId } of activeSessions) {
+      for (const { topicId, sessionName, claudeSessionId, framework } of activeSessions) {
         // §8 writer gate — the heartbeat MUST NOT write a Claude JSONL UUID
         // for a topic whose resolved profile framework is not claude-code,
         // or that is mid-framework-switch (TOPIC-PROFILE-SPEC §8: this is
@@ -363,8 +418,13 @@ export class TopicResumeMap {
         if (!this.gateAllows(topicId)) continue;
 
         // Authoritative only: Claude Code reported its own session ID via hooks
-        // and its transcript exists. No guess when it is missing.
-        if (!claudeSessionId || !this.jsonlExists(claudeSessionId)) continue;
+        // and its transcript exists. No guess when it is missing — the existing
+        // mapping is KEPT (never deleted, never replaced by the newest file).
+        // The check runs in the session's OWN framework layout: a session known
+        // to be claude-code looks at Claude transcripts only. Before this, a
+        // stale Claude id fell through into the Codex archive walk every minute
+        // (2026-10-13 server-loop freeze).
+        if (!claudeSessionId || !this.jsonlExists(claudeSessionId, framework)) continue;
         const uuid: string = claudeSessionId;
         const provenance: ResumeProvenance = 'hook';
 
@@ -420,40 +480,36 @@ export class TopicResumeMap {
    * Check if a JSONL file exists for the given UUID in this project's directory.
    * Public alias for use by the resume heartbeat (Slack channel resume writes).
    */
-  jsonlExistsPublic(uuid: string): boolean {
-    return this.jsonlExists(uuid);
+  jsonlExistsPublic(uuid: string, framework?: string): boolean {
+    return this.jsonlExists(uuid, framework);
   }
 
   /**
-   * Check if a JSONL file exists for the given UUID in this project's directory.
+   * Does a transcript exist for this id? `framework` selects the layout:
+   * 'claude-code' checks Claude transcripts ONLY, 'codex-cli' the Codex rollout
+   * archive only, 'gemini-cli' the Gemini session files only. With no framework
+   * (an untagged caller) every layout is tried in the legacy order — Claude,
+   * then the (now bounded, never-walking) Codex lookup, then Gemini.
+   * A miss is an honest miss: the caller keeps its mapping and never
+   * substitutes another transcript.
    */
-  private jsonlExists(uuid: string): boolean {
+  private jsonlExists(uuid: string, framework?: string): boolean {
     if (!uuid) return false;
-    // Claude: flat <project-jsonl-dir>/<uuid>.jsonl.
-    const jsonlPath = path.join(this.claudeProjectJsonlDir(), `${uuid}.jsonl`);
-    try {
-      if (fs.existsSync(jsonlPath)) return true;
-    } catch {
-      // Can't check the Claude layout — fall through to the codex layout.
+    const known = framework === 'claude-code' || framework === 'codex-cli' || framework === 'gemini-cli';
+    if (!known || framework === 'claude-code') {
+      if (this.claudeTranscriptExists(uuid)) return true;
+      if (framework === 'claude-code') return false;
     }
-    // Claude, pooled logins: a session launched under a subscription-pool account
-    // writes under ~/.claude-*/projects/<slug>/ (Resume Follows the Account §3.3).
-    // Checking only ~/.claude made every pooled session look missing and sent
-    // its id into the Codex archive walk below.
-    try {
-      for (const home of claudeConfigHomes()) {
-        if (fs.existsSync(path.join(home, 'projects', this.claudeProjectDirName(), `${uuid}.jsonl`))) return true;
+    if (!known || framework === 'codex-cli') {
+      // Codex: date-partitioned $CODEX_HOME/sessions/.../rollout-<ts>-<uuid>.jsonl.
+      // Without this every codex session looks expired/missing and resume breaks
+      // fleet-wide for codex agents (codex-compat root).
+      try {
+        if (findRolloutFileSync(uuid) !== null) return true;
+      } catch {
+        // Can't check the codex layout — treat as not found.
       }
-    } catch {
-      // Can't enumerate login folders — fall through to the codex layout.
-    }
-    // Codex: date-partitioned $CODEX_HOME/sessions/.../rollout-<ts>-<uuid>.jsonl.
-    // Without this every codex session looks expired/missing and resume breaks
-    // fleet-wide for codex agents (codex-compat root).
-    try {
-      if (findRolloutFileSync(uuid) !== null) return true;
-    } catch {
-      // Can't check the codex layout — treat as not found.
+      if (framework === 'codex-cli') return false;
     }
     // Gemini: ~/.gemini/tmp/<projectHash>/chats/session-<ts>-<short8>.json[l].
     // Without this every gemini session looks expired/missing and resume breaks
@@ -466,5 +522,53 @@ export class TopicResumeMap {
       // Can't check the gemini layout — treat as not found.
     }
     return false;
+  }
+
+  /** Claude layouts only: this project's ~/.claude transcript dir, then every pooled login home. */
+  private claudeTranscriptExists(uuid: string): boolean {
+    if (!isSafeSessionRef(uuid)) return false;
+    // Claude: flat <project-jsonl-dir>/<uuid>.jsonl.
+    const jsonlPath = path.join(this.claudeProjectJsonlDir(), `${uuid}.jsonl`);
+    try {
+      if (fs.existsSync(jsonlPath)) return true;
+    } catch (err) {
+      // Can't check the Claude layout — try the pooled homes, but say so: a
+      // transcript that exists yet reads as missing is how a live session's
+      // resume entry gets expired out from under it.
+      DegradationReporter.getInstance().report(
+        this.transcriptCheckFailure('this project\'s ~/.claude transcript dir', err),
+      );
+    }
+    // Claude, pooled logins: a session launched under a subscription-pool account
+    // writes under ~/.claude-*/projects/<slug>/ (Resume Follows the Account §3.3).
+    // Checking only ~/.claude made every pooled session look missing and sent
+    // its id into the Codex archive walk.
+    try {
+      for (const home of claudeConfigHomes()) {
+        if (fs.existsSync(path.join(home, 'projects', this.claudeProjectDirName(), `${uuid}.jsonl`))) return true;
+      }
+    } catch (err) {
+      // Can't enumerate login folders — not found, and reported (same risk as above).
+      DegradationReporter.getInstance().report(
+        this.transcriptCheckFailure('the pooled ~/.claude-* login homes', err),
+      );
+    }
+    return false;
+  }
+
+  /**
+   * The degradation event for a Claude transcript check that ERRORS (not merely
+   * misses): the caller reads the miss as "transcript gone" and may expire a live
+   * session's resume entry. DegradationReporter applies a per-feature alert
+   * cooldown, so a heartbeat-rate failure surfaces once an hour, never as a flood.
+   */
+  private transcriptCheckFailure(layout: string, err: unknown): Parameters<DegradationReporter['report']>[0] {
+    return {
+      feature: 'TopicResumeMap.claudeTranscriptExists',
+      primary: `Confirm a Claude session transcript exists by checking ${layout}`,
+      fallback: 'The check is treated as a miss (transcript not found)',
+      reason: `Transcript lookup failed: ${err instanceof Error ? err.message : String(err)}`,
+      impact: 'A live Claude session can read as missing — its resume entry may be expired, and the next spawn would start a fresh conversation instead of resuming',
+    };
   }
 }

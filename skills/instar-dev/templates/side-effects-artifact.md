@@ -148,6 +148,12 @@ Also answer explicitly: does it emit user-facing notices (one-voice gating neede
 hold durable state (does it strand on topic transfer?), or generate URLs (do they
 survive machine boundaries?).
 
+**Status surfaces:** Name every new or changed `/status`, `/health`, `/capabilities`,
+or `/channels` answer. For each, say whether the first verdict is for the whole
+agent or this machine, how a dark holder is shown as unknown, and where the
+machine-local detail lives. The existing posture lint checks that specs naming
+these routes also declare their scope in the Multi-machine posture section.
+
 [Specific. "Machine-local by design: the reap-log is a per-machine audit trail; the
 pool-wide question is answered by a proxied-on-read merged view." Not abstractions.]
 

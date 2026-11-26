@@ -1,0 +1,22 @@
+{
+  "ts": "2026-10-06T08:35:13.177Z",
+  "slug": "wakeup-targets-awake-machine",
+  "suggestedTier": 2,
+  "declaredTier": 1,
+  "riskFloor": 1,
+  "riskFloorReasons": [],
+  "belowFloor": false,
+  "files": 1,
+  "loc": 74,
+  "scope": {
+    "basis": "staged-in-scope-additions-plus-deletions",
+    "files": [
+      "src/commands/machine.ts"
+    ],
+    "addedLines": 59,
+    "deletedLines": 15
+  },
+  "causalAutopsy": null,
+  "classClosure": null,
+  "verdict": "pass"
+}

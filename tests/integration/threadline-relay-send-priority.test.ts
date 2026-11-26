@@ -12,7 +12,7 @@
  * 'low'), defaults to 'medium' when omitted, and rejects invalid values
  * with 400.
  *
- * canonical-migration-validator: threadline-inbound-canonical-store@1
+ * canonical-migration-validator: threadline-inbound-canonical-store@5
  */
 
 import { describe, it, expect, beforeAll, afterAll } from 'vitest';
@@ -115,7 +115,7 @@ describe('/threadline/relay-send caller-supplied priority', () => {
     const stubRelayClient = {
       connectionState: 'connected',
       resolveAgent: async () => null,
-      sendAuto: () => 'msg-stub',
+      sendAutoWithThread(r: string, m: string, t?: string) { return { messageId: (this as any).sendAuto(r, m, t), threadId: t ?? 'thread-stub' }; }, awaitRelayAck: async (_id: string, _ms: number) => null, banSuspected: false, noteUnconfirmedSettled() {}, sendAuto: () => 'msg-stub',
     };
 
     const app = express();

@@ -24,6 +24,15 @@ export const BASELINE_PROCESS_PATTERNS: readonly RegExp[] = [
   /\bmcp.*server\b/i,
   /\bcaffeinate\b/,
   /\bnpm exec\b.*mcp/,
+  // Any MCP server a session launched from its .mcp.json, whatever the binary
+  // is called: `workspace-mcp --tool-tier complete`, `@plaud-ai/mcp@latest`,
+  // `mcp-server-foo`. Every MCP binary carries the `mcp` token by convention,
+  // and the entries above only ever named the ones we happened to ship. The
+  // 2026-10-22 sagemind pile-up: the Google Workspace MCP matched none of them,
+  // so every conversation counted as working forever and nothing idle was ever
+  // closed. A tool shell is judged BEFORE this list (CLAUDE_TOOL_SHELL_PATTERN
+  // wins), so a command that merely mentions mcp inside a Bash call stays work.
+  /\bmcp\b/i,
 ];
 
 /**
@@ -36,3 +45,46 @@ export const BASELINE_PROCESS_PATTERNS: readonly RegExp[] = [
  */
 export const MCP_STACK_ROOT_PATTERNS: readonly RegExp[] =
   BASELINE_PROCESS_PATTERNS.filter((p) => !/caffeinate/.test(p.source));
+
+/**
+ * Claude Code runs every Bash tool call — foreground AND `run_in_background` —
+ * as `<shell> -c source <config-home>/shell-snapshots/snapshot-….sh … eval '…'`.
+ * A live process matching this is the agent's OWN in-flight command (a build,
+ * a test run, a watch loop waiting on other sessions), never resident noise.
+ * The session reaper uses it so a quiet session that is WAITING on its own
+ * background shells is not mistaken for an abandoned one.
+ */
+export const CLAUDE_TOOL_SHELL_PATTERN = /\/shell-snapshots\/snapshot-/;
+
+/**
+ * Framework-neutral tool shell: the `<shell> -c …` / `zsh -lc …` child a
+ * framework spawns to run ONE tool command (Claude's snapshot shell matches
+ * this too; Codex runs `/bin/zsh -lc '<cmd>'` with no snapshot token). A tool
+ * shell is the agent's own in-flight command and is judged BEFORE any baseline
+ * entry, so a command whose text merely mentions an MCP (`grep -rn mcp src/`,
+ * `vitest run tests/unit/mcp-stdio.test.ts`) is never mistaken for a resident
+ * helper. Added with the generic `mcp` baseline entry, whose review found that
+ * only Claude's shell had this precedence.
+ */
+export const TOOL_SHELL_PATTERN = /(?:^|[\s/])(?:ba|z|da|k)?sh\s+-(?:l?c|cl?)\b/;
+
+/** Either framework's tool shell. */
+export function isToolShellCommand(command: string): boolean {
+  return CLAUDE_TOOL_SHELL_PATTERN.test(command) || TOOL_SHELL_PATTERN.test(command);
+}
+
+/** `sh -c <one plain command naming an mcp binary>`: no quoting, no shell operators. */
+const MCP_LAUNCHER_SHELL_PATTERN = /^(?:\S*\/)?(?:ba|da)?sh -c [\w@./:-]*\bmcp\b[\w@./:-]*(?: [\w@./:=-]+)*$/;
+/** The package runner that starts one, anchored so `claude --mcp-config …` never qualifies. */
+const MCP_PACKAGE_RUNNER_PATTERN = /^(?:npm exec\b|(?:\S*\/)?npx\s|(?:\S*\/)?node\s+\S*npx-cli\.js\s).*\bmcp\b/;
+
+/**
+ * The one shell that is not the agent's command. On Linux `npm exec` starts an MCP
+ * through `sh -c playwright-mcp`, which reads as a tool shell, so every session looked
+ * busy forever (Mama PC, 2026-11-04); macOS has no such shell. Needs both the exact
+ * shape and the package runner as its direct parent, because a shell merely somewhere
+ * below an MCP, or below a framework launched with `--mcp-config`, can be real work.
+ */
+export function isMcpLauncherShell(command: string, parentCommand: string | undefined): boolean {
+  return MCP_LAUNCHER_SHELL_PATTERN.test(command) && MCP_PACKAGE_RUNNER_PATTERN.test(parentCommand ?? '');
+}

@@ -1,0 +1,33 @@
+{
+  "ts": "2026-10-14T19:19:03.412Z",
+  "slug": "threadline-pairing-invite-link",
+  "suggestedTier": 2,
+  "declaredTier": 2,
+  "riskFloor": 2,
+  "riskFloorReasons": [
+    "safety-invariant proximity: src/messaging/TelegramAdapter.ts matches Telegram adapter",
+    "new capability: new exported class / subsystem added"
+  ],
+  "belowFloor": false,
+  "files": 5,
+  "loc": 309,
+  "scope": {
+    "basis": "staged-in-scope-additions-plus-deletions",
+    "files": [
+      "src/lifeline/MessageQueue.ts",
+      "src/lifeline/TelegramLifeline.ts",
+      "src/messaging/TelegramAdapter.ts",
+      "src/server/routes.ts",
+      "src/threadline/PairingInviteTelegram.ts"
+    ],
+    "addedLines": 309,
+    "deletedLines": 0
+  },
+  "causalAutopsy": null,
+  "classClosure": {
+    "defectClass": "unbounded-self-action",
+    "closure": "n/a",
+    "reason": "operator-driven hard-bounded finish retry: at most 5 sends over ~10 min after an operator Finish, stops on ack, never self-triggered; step 7 adds no repeated action"
+  },
+  "verdict": "pass"
+}

@@ -1,0 +1,26 @@
+{
+  "ts": "2026-10-06T00:10:57.662Z",
+  "slug": "window-run-tick-serialize",
+  "suggestedTier": 2,
+  "declaredTier": 1,
+  "riskFloor": 2,
+  "riskFloorReasons": [
+    "new capability: new exported class / subsystem added"
+  ],
+  "belowFloor": true,
+  "files": 3,
+  "loc": 167,
+  "scope": {
+    "basis": "staged-in-scope-additions-plus-deletions",
+    "files": [
+      "src/core/TickSerializer.ts",
+      "src/core/WindowRunCadenceExecutor.ts",
+      "src/core/WindowRunLivenessAuthority.ts"
+    ],
+    "addedLines": 107,
+    "deletedLines": 60
+  },
+  "causalAutopsy": null,
+  "classClosure": null,
+  "verdict": "pass"
+}

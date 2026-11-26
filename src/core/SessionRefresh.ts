@@ -34,7 +34,8 @@
 import fs from 'node:fs';
 import { placeResumeTranscript } from './claudeResumeTranscript.js';
 import path from 'node:path';
-import { ensureInteractiveReady } from './ensureInteractiveReady.js';
+import os from 'node:os';
+import { ensureBypassPromptSkipped, ensureInteractiveReady } from './ensureInteractiveReady.js';
 import {
   slackConversationKey,
   slackRoutingKeySyntheticId,
@@ -43,6 +44,7 @@ import {
 } from './slackRefreshBinding.js';
 import type { SessionManager } from './SessionManager.js';
 import type { StateManager } from './StateManager.js';
+import type { Session } from './types.js';
 import type { TelegramAdapter } from '../messaging/TelegramAdapter.js';
 import type { TopicResumeMap } from './TopicResumeMap.js';
 import {
@@ -242,9 +244,12 @@ export type RefreshFailureCode =
   | 'refresh_in_progress'
   // swap-continuity-antithrash §4.5 — one spelling everywhere: the wire code
   // and the ledger reason are BOTH the hyphenated `session-busy`.
-  | 'session-busy';
+  | 'session-busy'
+  | 'refresh_intent_changed';
 
 export interface RefreshOptions {
+  /** Internal consistency veto only; never accepted from request JSON and never skips work/rate gates. */
+  beforeKill?: () => boolean;
   sessionName: string;
   followUpPrompt?: string;
   reason?: string;
@@ -325,26 +330,159 @@ export class SessionRefresh {
   }
 
   /**
-   * Refresh a session: kill its tmux session (which fires beforeSessionKill
-   * so the existing listener persists the Claude UUID via TopicResumeMap),
-   * then respawn via the injected respawner which spawns a fresh tmux that
-   * runs `claude --resume <uuid>` — picking up newly installed MCPs/skills
-   * while preserving the full conversation.
-   *
-   * Returns a structured result; never throws on the expected failure modes
-   * (rate-limit, session-not-found, non-Telegram-bound). Throws only on
-   * unexpected internal errors from the respawner callback.
+   * EVO-025: the synchronous refusals a caller can be told about BEFORE any
+   * acknowledgement — binding, session existence, in-flight, and the rate
+   * guard (read-only: nothing is recorded against the budget). The route
+   * answers these with a 409 instead of a 202 that is later refused only in
+   * the server log. refreshSession() re-runs every check authoritatively, so
+   * this is an early answer, never a substitute. The work gate is excluded —
+   * it has its own precheck (precheckInteractiveBusy).
    */
-  async refreshSession(opts: RefreshOptions): Promise<RefreshResult> {
-    const { sessionName, followUpPrompt, reason, fresh } = opts;
+  precheckRefusal(sessionName: string): Extract<RefreshResult, { ok: false }> | null {
+    const target = this.resolveTarget(sessionName);
+    if (!target.ok) return target.refusal;
+    if (this.inFlight.has(sessionName)) {
+      return {
+        ok: false,
+        code: 'refresh_in_progress',
+        message: `A refresh is already in progress for "${sessionName}".`,
+      };
+    }
+    if (!this.checkRateLimit(sessionName)) {
+      return {
+        ok: false,
+        code: 'rate_limited',
+        message: `Refresh rate limit exceeded (${this.maxPerWindow} per ${Math.round(this.windowMs / 60000)} minutes) for session "${sessionName}".`,
+      };
+    }
+    return null;
+  }
 
+  /**
+   * A Telegram-bound session whose process is GONE (reaped, crashed) while the
+   * topic still maps to it. `refreshSession` refuses it (`session_not_found`:
+   * there is nothing to kill), and inbound-only revival needs a user message —
+   * so a coordinator topic that gets few user messages stayed dead (2026-10-14,
+   * the 2.0 desk). Eligible only when ALL hold: the name resolves to a topic,
+   * the topic is not mapped to some OTHER session (never a duplicate beside a
+   * newer session), no running state record carries the name, and tmux has no
+   * live session by that name. Returns the topic id, or null.
+   */
+  deadBoundTopic(sessionName: string): number | null {
+    const tg = this.deps.telegram;
+    if (!tg) return null;
+    let topicId = tg.getTopicForSession(sessionName);
+    if (topicId === null) topicId = tg.resolveTopicForSessionFromDisk?.(sessionName) ?? null;
+    if (topicId === null) return null;
+    // A topic now mapped to a DIFFERENT session is never revived under the old
+    // name (that would create a duplicate). An unmapped topic (in-memory miss on a
+    // --no-telegram server) is fine: the disk binding named this session.
+    const current = tg.getSessionForTopic(topicId);
+    if (current && current !== sessionName) return null;
+    const running = this.deps.state.listSessions({ status: 'running' })
+      .some(s => s.tmuxSession === sessionName);
+    if (running) return null;
+    if (this.deps.sessionManager.isSessionAlive(sessionName)) return null;
+    return topicId;
+  }
+
+  /**
+   * Respawn a dead-but-still-mapped topic session (see `deadBoundTopic`) through
+   * the same respawner a refresh uses — `claude --resume` from the topic's saved
+   * UUID, topic binding re-registered. No kill (nothing is running) and no work
+   * gate (no live work to protect); the in-flight guard and the rate guard
+   * apply exactly as for a refresh. Called only from the explicit
+   * `POST /sessions/refresh` route — no automatic caller revives a session
+   * through this path.
+   */
+  async respawnDeadBound(opts: Pick<RefreshOptions, 'sessionName' | 'followUpPrompt' | 'reason' | 'fresh'>): Promise<RefreshResult> {
+    const { sessionName, followUpPrompt, reason, fresh } = opts;
+    const topicId = this.deadBoundTopic(sessionName);
+    if (topicId === null) {
+      return { ok: false, code: 'session_not_found', message: `No running or dead-but-mapped topic session found for tmux name "${sessionName}".${this.displayNameHint(sessionName)}` };
+    }
+    if (this.inFlight.has(sessionName)) {
+      return { ok: false, code: 'refresh_in_progress', message: `A refresh is already in progress for "${sessionName}".` };
+    }
+    if (!this.checkRateLimit(sessionName)) {
+      this.logRateLimit(sessionName, reason);
+      return {
+        ok: false,
+        code: 'rate_limited',
+        message: `Refresh rate limit exceeded (${this.maxPerWindow} per ${Math.round(this.windowMs / 60000)} minutes) for session "${sessionName}".`,
+      };
+    }
+    this.inFlight.add(sessionName);
+    try {
+      // Re-check at the last moment: an inbound message may have respawned the
+      // session since the eligibility check, and the respawner force-kills any
+      // tmux session by that name before spawning — never kill a fresh one.
+      if (this.deadBoundTopic(sessionName) !== topicId) {
+        return { ok: false, code: 'session_not_found', message: `Session "${sessionName}" came back up (or its topic was remapped) before the respawn; nothing to do.` };
+      }
+      this.recordRefresh(sessionName);
+      if (fresh) {
+        this.deps.topicResumeMap?.remove(topicId);
+        console.log(`[SessionRefresh] fresh respawn of dead session — cleared resume UUID for topic ${topicId} (sessionName=${sessionName})`);
+      }
+      const newSessionName = await this.deps.respawner(sessionName, topicId, followUpPrompt);
+      console.log(`[SessionRefresh] Respawned dead topic session "${sessionName}" → "${newSessionName}" (topic ${topicId})${reason ? ` reason="${reason}"` : ''}`);
+      return { ok: true, newSessionName, topicId };
+    } finally {
+      this.inFlight.delete(sessionName);
+    }
+  }
+
+  /**
+   * EVO-025: when a caller passed a session's display name (e.g. "Jev")
+   * rather than its tmux name ("echo-jev"), name the tmux name in the
+   * refusal. Deliberately a hint, not a silent remap: display names are not
+   * unique, and restarting the wrong session is worse than a clear refusal.
+   */
+  private displayNameHint(sessionName: string): string {
+    // One verdict per tmux name: a name with ANY non-terminal record is live;
+    // a name whose records are all terminal is named only when the topic still
+    // maps to it, so the hinted name actually works (the dead-bound respawn
+    // path). A dead name whose topic moved on is left out — hinting it would
+    // just trade one refusal for a session_not_found.
+    //
+    // The terminal arm is the 2026-10-22 Mama PC lesson: a dead topic session
+    // refreshed by its display name came back `not_telegram_bound` with no
+    // hint (only running sessions were matched), and the "checked in-memory +
+    // disk registry" wording was read as a LOST BINDING. The binding was fine;
+    // the name was wrong.
+    const liveByTmux = new Map<string, boolean>();
+    for (const s of this.deps.state.listSessions()) {
+      if (s.name !== sessionName || !s.tmuxSession || s.tmuxSession === sessionName) continue;
+      const terminal = s.status === 'completed' || s.status === 'failed' || s.status === 'killed';
+      liveByTmux.set(s.tmuxSession, (liveByTmux.get(s.tmuxSession) ?? false) || !terminal);
+    }
+    const live: string[] = [];
+    const deadBound: string[] = [];
+    for (const [tmux, isLive] of liveByTmux) {
+      if (isLive) live.push(tmux);
+      else if (this.deadBoundTopic(tmux) !== null) deadBound.push(tmux);
+    }
+    if (live.length === 0 && deadBound.length === 0) return '';
+    const q = (names: string[]) => names.map(m => `"${m}"`).join(', ');
+    if (deadBound.length === 0) {
+      return ` "${sessionName}" looks like a display name — pass the tmux session name instead (${q(live)}; see tmuxSession in GET /sessions).`;
+    }
+    const liveClause = live.length > 0 ? `running: ${q(live)}; ` : '';
+    return ` "${sessionName}" looks like a display name — pass the tmux session name instead (${liveClause}not running but still bound to its topic, so a refresh of it respawns from the saved conversation: ${q(deadBound)}; see tmuxSession in GET /sessions?include=all).`;
+  }
+
+  /** Detect phase shared by refreshSession() and precheckRefusal(). */
+  private resolveTarget(sessionName: string):
+    | { ok: false; refusal: Extract<RefreshResult, { ok: false }> }
+    | { ok: true; topicId: number | null; slackRoutingKey: string | null; stateSession: Session } {
     // ── detect ─────────────────────────────────────────────────────────
     if (!this.deps.telegram && !this.deps.slack) {
-      return {
+      return { ok: false, refusal: {
         ok: false,
         code: 'no_telegram_adapter',
         message: 'No Telegram adapter wired (and no Slack binding either) — self-refresh requires a platform-bound session.',
-      };
+      } };
     }
 
     let topicId: number | null = null;
@@ -383,11 +521,11 @@ export class SessionRefresh {
       // sessions remain a follow-up — the respawn path is built around
       // conversation-key → context routing. Code kept as 'not_telegram_bound'
       // for back-compat with existing consumers/log greps.
-      return {
+      return { ok: false, refusal: {
         ok: false,
         code: 'not_telegram_bound',
-        message: `Session "${sessionName}" is not bound to a Telegram topic${this.deps.slack ? ' or Slack conversation' : ''} (checked in-memory + disk registry); cannot self-refresh.`,
-      };
+        message: `Session "${sessionName}" is not bound to a Telegram topic${this.deps.slack ? ' or Slack conversation' : ''} (checked in-memory + disk registry); cannot self-refresh.${this.displayNameHint(sessionName)}`,
+      } };
     }
 
     if (topicId === null && slackRoutingKey !== null && !this.deps.slackRespawner) {
@@ -395,11 +533,11 @@ export class SessionRefresh {
       // Structured refusal (NOT a throw) so the caller can degrade honestly —
       // §10.5: "a respawn-requiring change on a Slack topic degrades to
       // CONTINUATION-on-next-message, disclosed honestly."
-      return {
+      return { ok: false, refusal: {
         ok: false,
         code: 'slack_respawner_unwired',
         message: `Session "${sessionName}" is Slack-bound (${slackConversationKey(slackRoutingKey)}) but no Slack respawner is wired — the session will resume via CONTINUATION on the next message instead of an immediate respawn.`,
-      };
+      } };
     }
 
     // Look up the state session by tmux name — needed for killSession,
@@ -407,12 +545,33 @@ export class SessionRefresh {
     const stateSession = this.deps.state.listSessions({ status: 'running' })
       .find(s => s.tmuxSession === sessionName);
     if (!stateSession) {
-      return {
+      return { ok: false, refusal: {
         ok: false,
         code: 'session_not_found',
-        message: `No running session found for tmux name "${sessionName}".`,
-      };
+        message: `No running session found for tmux name "${sessionName}".${this.displayNameHint(sessionName)}`,
+      } };
     }
+
+    return { ok: true, topicId, slackRoutingKey, stateSession };
+  }
+
+  /**
+   * Refresh a session: kill its tmux session (which fires beforeSessionKill
+   * so the existing listener persists the Claude UUID via TopicResumeMap),
+   * then respawn via the injected respawner which spawns a fresh tmux that
+   * runs `claude --resume <uuid>` — picking up newly installed MCPs/skills
+   * while preserving the full conversation.
+   *
+   * Returns a structured result; never throws on the expected failure modes
+   * (rate-limit, session-not-found, non-Telegram-bound). Throws only on
+   * unexpected internal errors from the respawner callback.
+   */
+  async refreshSession(opts: RefreshOptions): Promise<RefreshResult> {
+    const { sessionName, followUpPrompt, reason, fresh } = opts;
+
+    const target = this.resolveTarget(sessionName);
+    if (!target.ok) return target.refusal;
+    const { topicId, slackRoutingKey, stateSession } = target;
 
     // ── in-flight guard ────────────────────────────────────────────────
     if (this.inFlight.has(sessionName)) {
@@ -443,6 +602,14 @@ export class SessionRefresh {
             .filter((s): s is string => !!s && s.length > 0)
             .join('\n\n');
         }
+      }
+
+      // The work gate can await. A manual balance selection must still name the same
+      // source and eligible target at the last synchronous boundary before the kill.
+      if (opts.beforeKill) {
+        let current = false;
+        try { current = opts.beforeKill(); } catch { /* @silent-fallback-ok: an unreadable intent refuses refresh */ }
+        if (!current) return { ok: false, code: 'refresh_intent_changed', message: 'The account move changed while it was waiting; no session was stopped.' };
       }
 
       // ── rate guard ───────────────────────────────────────────────────
@@ -502,7 +669,35 @@ export class SessionRefresh {
       // Idempotent + fail-safe: a failure here is logged and the respawn
       // proceeds (worst case is the pre-fix behavior, not a dead refresh).
       if (accountSwap?.configHome) {
-        const ready = ensureInteractiveReady(accountSwap.configHome);
+        // Without the agent directory the folder-trust acknowledgement is not
+        // seeded, and the swapped-in home can read as ready while still killing
+        // the respawned session at the trust dialog.
+        //
+        // OPTIONAL CALL, deliberately. The declared type says SessionManager, so
+        // `tsc` accepts a direct call — but several callers (and every existing
+        // unit test of this path) inject a narrow stub that implements only the
+        // methods the refresh path used before today. A direct call threw
+        // `agentProjectDir is not a function` and took the whole refresh down
+        // with it, which is strictly worse than the bug being fixed. Absence
+        // degrades to the pre-fix behaviour and SAYS so, rather than silently
+        // skipping a safety seed.
+        const projectDir = this.deps.sessionManager.agentProjectDir?.();
+        if (!projectDir) {
+          console.warn(
+            `[SessionRefresh] account-swap onboarding-readiness: agent directory unavailable from this `
+            + `session manager — folder trust NOT seeded for ${accountSwap.configHome}; a respawn there `
+            + `may still die at the folder-trust dialog (sessionName=${sessionName}).`,
+          );
+        }
+        const ready = ensureInteractiveReady(accountSwap.configHome, {
+          ...(projectDir ? { projectDir } : {}),
+        });
+        // The bypass-permissions warning is answered in the login's settings.json, not
+        // .claude.json, and defaults to "No, exit" (fresh Linux server, 2026-11-02).
+        const bypass = ensureBypassPromptSkipped(accountSwap.configHome.startsWith('~')
+          ? path.join(os.homedir(), accountSwap.configHome.slice(1))
+          : accountSwap.configHome);
+        if (bypass.patched) console.log(`[SessionRefresh] account-swap: ${bypass.reason} in ${accountSwap.configHome}`);
         console.log(
           `[SessionRefresh] account-swap onboarding-readiness: ${accountSwap.configHome} ` +
           `${ready.patched ? `patched (${ready.reason})` : ready.reason} (sessionName=${sessionName})`,

@@ -1,0 +1,24 @@
+{
+  "version": 2,
+  "slug": "cb-layer-store",
+  "sessionId": "3117c024-d5c8-4ef5-948b-e8585a7dd39d",
+  "timestamp": "2026-11-10T21:23:25.330Z",
+  "artifactPath": "upgrades/side-effects/cb-layer-store.md",
+  "artifactSha256": "cdd995b2257408dd40f30a7c5d480ea8c246ce183adcf909da4287d05e03838d",
+  "coveredFiles": [
+    "tests/unit/context-layer-kind.test.ts",
+    "upgrades/side-effects/cb-layer-store.md"
+  ],
+  "phase": "complete",
+  "tier": 1,
+  "tierReasoning": "test assertion updated to name the sanctioned emitter",
+  "eli16Path": "docs/specs/context-budget-layered-summaries.eli16.md",
+  "sideEffectsPath": "upgrades/side-effects/cb-layer-store.md",
+  "secondPass": "not-required",
+  "reviewerConcurred": null,
+  "classClosure": {
+    "defectClass": "n/a",
+    "closure": "n/a",
+    "reason": "test update"
+  }
+}

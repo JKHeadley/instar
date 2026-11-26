@@ -25,6 +25,9 @@ import {
   HOST_TEST_TTL_DEFAULT_MS,
   HOST_TEST_TTL_MAX_MS,
   HOST_TEST_TTL_MIN_MS,
+  SUITE_WAITER_AGING_MS,
+  compareSuiteWaiters,
+  suiteWaiterTier,
   HostTestRunnerSemaphore,
   LOCK_WEDGE_AGE_MS,
   TEST_RUNNER_CAPACITY_EXIT_CODE,
@@ -297,6 +300,386 @@ describe('§2.3 cap enforcement — two symmetric lanes', () => {
     const acquires = eventsOf(paths, 'acquire');
     expect(acquires).toHaveLength(HOST_TEST_TARGETED_CAP_DEFAULT);
     for (const a of acquires) expect(a.fileCount).toBe(2);
+  });
+});
+
+describe('merge-gate suite priority', () => {
+  it('keeps the next free suite slot for Local Verify while targeted tests can run', async () => {
+    const paths = mkPaths();
+    enforcing(paths);
+    const { sem } = clockSem(paths);
+    sem.setMergeGatePriority('agent-a', true);
+    expect(sem.hasMergeGatePriority()).toBe(true);
+    await expect(sem.acquire({ lane: 'suite', runClass: 'background', budgetMs: 0 }))
+      .rejects.toBeInstanceOf(TestRunnerCapacityTimeoutError);
+    expect(eventsOf(paths, 'block')[0]?.priorityWait).toBe(true);
+    expect((await sem.acquire({ lane: 'targeted', runClass: 'background', budgetMs: 0 })).kind).toBe('acquired');
+    const verify = await sem.acquire({ lane: 'suite', runClass: 'background', priority: 'merge-gate', budgetMs: 0 });
+    expect(verify.kind).toBe('acquired');
+    if (verify.kind === 'acquired') sem.release(verify.id);
+    sem.setMergeGatePriority('agent-a', false);
+    expect(sem.hasMergeGatePriority()).toBe(false);
+    expect((await sem.acquire({ lane: 'suite', runClass: 'background', budgetMs: 0 })).kind).toBe('acquired');
+  });
+
+  it('ignores expired and dead claims and preserves another agent claim', async () => {
+    const paths = mkPaths();
+    enforcing(paths);
+    const clock = clockSem(paths);
+    clock.sem.setMergeGatePriority('agent-a', true);
+    clock.sem.setMergeGatePriority('agent-b', true);
+    clock.sem.setMergeGatePriority('agent-a', false);
+    expect(clock.sem.hasMergeGatePriority()).toBe(true);
+    clock.advance(120_001);
+    expect(clock.sem.hasMergeGatePriority()).toBe(false);
+    expect((await clock.sem.acquire({ lane: 'suite', runClass: 'background', budgetMs: 0 })).kind).toBe('acquired');
+    clock.sem.setMergeGatePriority('agent-b', true);
+    expect(clock.sem.hasMergeGatePriority()).toBe(true);
+    const dead = makeSem(paths, { now: clock.now, pidAlive: () => false });
+    expect(dead.hasMergeGatePriority()).toBe(false);
+  });
+
+  it('ignores corrupt and foreign-host claims', () => {
+    const paths = mkPaths();
+    const { sem, now } = clockSem(paths);
+    sem.setMergeGatePriority('agent-a', true);
+    const dir = path.join(paths.baseDir, 'host-test-runner-priority');
+    const file = path.join(dir, fs.readdirSync(dir)[0]);
+    fs.writeFileSync(file, '{broken');
+    expect(sem.hasMergeGatePriority()).toBe(false);
+    fs.writeFileSync(file, JSON.stringify({ v: 1, pid: process.pid, hostname: 'other-host', expiresAt: now() + 60_000 }));
+    expect(sem.hasMergeGatePriority()).toBe(false);
+  });
+});
+
+describe('suite waiter tickets — fair aging between merge-gate and ordinary suites', () => {
+  const waitersDir = (paths: TestRunnerPaths) => path.join(paths.baseDir, 'host-test-runner-waiters');
+  function writeTicket(paths: TestRunnerPaths, name: string, over: Record<string, unknown>): void {
+    fs.mkdirSync(waitersDir(paths), { recursive: true });
+    fs.writeFileSync(path.join(waitersDir(paths), `${name.padEnd(24, '0')}.json`), JSON.stringify({
+      v: 1, id: `waiter:${name}`, pid: 41_000, hostname: HOST, priority: 'ordinary', ...over,
+    }));
+  }
+
+  it('orders waiters: aged ordinary first, then merge-gate, then ordinary by arrival', () => {
+    const now = 10_000_000_000;
+    const aged = { id: 'a', pid: 1, priority: 'ordinary' as const, since: now - SUITE_WAITER_AGING_MS };
+    const gate = { id: 'b', pid: 1, priority: 'merge-gate' as const, since: now - 1000 };
+    const early = { id: 'c', pid: 1, priority: 'ordinary' as const, since: now - 5000 };
+    const late = { id: 'd', pid: 1, priority: 'ordinary' as const, since: now - 10 };
+    expect(suiteWaiterTier(aged, now)).toBe(0);
+    expect(suiteWaiterTier({ ...aged, since: aged.since + 1 }, now)).toBe(2);
+    expect([late, early, gate, aged].sort((x, y) => compareSuiteWaiters(x, y, now)).map((w) => w.id))
+      .toEqual(['a', 'b', 'c', 'd']);
+    // A total order: equal tier and arrival fall back to id, so two waiters never both yield.
+    expect(compareSuiteWaiters({ ...late, id: 'x' }, { ...late, id: 'y' }, now)).toBeLessThan(0);
+  });
+
+  it('a merge-gate request yields a free slot to an ordinary suite that has waited past the aging bound', async () => {
+    const paths = mkPaths();
+    enforcing(paths);
+    const { sem, now } = clockSem(paths);
+    writeTicket(paths, 'aa', { since: now() - SUITE_WAITER_AGING_MS - 1, expiresAt: now() + 30_000 });
+    await expect(sem.acquire({ lane: 'suite', runClass: 'background', priority: 'merge-gate', budgetMs: 0 }))
+      .rejects.toBeInstanceOf(TestRunnerCapacityTimeoutError);
+    expect(eventsOf(paths, 'block')[0]?.waitersAhead).toBe(1);
+  });
+
+  it('a merge-gate request still goes ahead of an ordinary suite that has not aged', async () => {
+    const paths = mkPaths();
+    enforcing(paths);
+    const { sem, now } = clockSem(paths);
+    writeTicket(paths, 'aa', { since: now() - 60_000, expiresAt: now() + 30_000 });
+    const out = await sem.acquire({ lane: 'suite', runClass: 'background', priority: 'merge-gate', budgetMs: 0 });
+    expect(out.kind).toBe('acquired');
+  });
+
+  it('ordinary suites are admitted in arrival order', async () => {
+    const paths = mkPaths();
+    enforcing(paths);
+    const { sem, now } = clockSem(paths);
+    writeTicket(paths, 'aa', { since: now() - 60_000, expiresAt: now() + 30_000 });
+    await expect(sem.acquire({ lane: 'suite', runClass: 'background', budgetMs: 0 }))
+      .rejects.toBeInstanceOf(TestRunnerCapacityTimeoutError);
+    expect(eventsOf(paths, 'block')[0]?.waitersAhead).toBe(1);
+    // Targeted runs never look at suite tickets.
+    expect((await sem.acquire({ lane: 'targeted', runClass: 'background', fileCount: 1, budgetMs: 0 })).kind).toBe('acquired');
+  });
+
+  it('ignores expired, dead, foreign-host, future-dated and corrupt tickets', async () => {
+    const paths = mkPaths();
+    enforcing(paths);
+    const { sem, now } = clockSem(paths, { pidAlive: (p) => p !== 41_001 });
+    writeTicket(paths, 'a1', { since: now() - 60_000, expiresAt: now() - 1 });
+    writeTicket(paths, 'a2', { pid: 41_001, since: now() - 60_000, expiresAt: now() + 30_000 });
+    writeTicket(paths, 'a3', { hostname: 'other-host', since: now() - 60_000, expiresAt: now() + 30_000 });
+    writeTicket(paths, 'a4', { since: now() + 3_600_000, expiresAt: now() + 30_000 });
+    writeTicket(paths, 'a5', { since: now() - 60_000, expiresAt: now() + 3_600_000 });
+    fs.writeFileSync(path.join(waitersDir(paths), `${'a6'.padEnd(24, '0')}.json`), '{broken');
+    expect(sem.listSuiteWaiters()).toEqual([]);
+    expect((await sem.acquire({ lane: 'suite', runClass: 'background', budgetMs: 0 })).kind).toBe('acquired');
+  });
+
+  it('a waiting suite holds a ticket while it waits and removes it when it gives up', async () => {
+    const paths = mkPaths();
+    enforcing(paths);
+    const { sem, now } = clockSem(paths);
+    writeRows(paths, [row({ pid: 40_900, acquiredAt: now() })]);
+    const seen: number[] = [];
+    await expect(sem.acquire({
+      lane: 'suite', runClass: 'background', budgetMs: 20_000,
+      onWaitTick: () => { seen.push(sem.listSuiteWaiters().length); },
+    })).rejects.toBeInstanceOf(TestRunnerCapacityTimeoutError);
+    expect(seen.length).toBeGreaterThan(0);
+    expect(seen.every((n) => n === 1)).toBe(true);
+    expect(sem.listSuiteWaiters()).toEqual([]);
+  });
+
+  it('the 2026-10-28 starvation: an ordinary suite waiting behind back-to-back merge-gate work gets the next slot once aged', async () => {
+    const paths = mkPaths();
+    enforcing(paths);
+    let t = 10_000_000_000;
+    const clock = { now: () => t };
+    // The Local Verify child: same host, same clock, waiting for the next slot.
+    const verifier = makeSem(paths, { now: clock.now });
+    const start = t;
+    let verifierRefused = false;
+    const sem = makeSem(paths, {
+      now: clock.now,
+      sleep: async (ms: number) => {
+        t += Math.max(1, ms);
+        // The coordinator keeps a live claim for its queued work the whole time.
+        verifier.setMergeGatePriority('coordinator', true);
+        if (t - start >= 20 * 60_000 && readRows(paths).some((r) => r.pid === 40_901)) {
+          // The running verify finishes 20 minutes in; the next verify asks first.
+          writeRows(paths, []);
+          await verifier.acquire({ lane: 'suite', runClass: 'background', priority: 'merge-gate', budgetMs: 0 })
+            .catch((e) => { verifierRefused = e instanceof TestRunnerCapacityTimeoutError; });
+        }
+      },
+    });
+    verifier.setMergeGatePriority('coordinator', true);
+    writeRows(paths, [row({ pid: 40_901, acquiredAt: t })]);
+    const out = await sem.acquire({ lane: 'suite', runClass: 'interactive', budgetMs: 45 * 60_000 });
+    expect(out.kind).toBe('acquired');
+    expect(verifierRefused).toBe(true);
+    expect(t - start).toBeLessThan(21 * 60_000);
+  });
+});
+
+describe('alternating suite turns — validated history and bounded offers', () => {
+  it('applies an off flip to a queued ordinary request before its 12-second offer expires', async () => {
+    const paths = mkPaths();
+    enforcing(paths, { alternatingSuiteTurns: 'enforce' });
+    let t = 10_000_000_000;
+    const now = () => t;
+    const seed = makeSem(paths, { now });
+    const first = await seed.acquire({ lane: 'suite', runClass: 'background', budgetMs: 0 });
+    expect(first.kind).toBe('acquired');
+    if (first.kind === 'acquired') seed.release(first.id);
+    const dir = path.join(paths.baseDir, 'host-test-runner-waiters');
+    fs.mkdirSync(dir, { recursive: true });
+    const mergeTicket = path.join(dir, `${'ad'.padEnd(24, '0')}.json`);
+    const refreshMerge = () => {
+      seed.setMergeGatePriority('paused-child', true);
+      fs.writeFileSync(mergeTicket, JSON.stringify({
+        v: 1, id: 'waiter:paused', pid: process.pid, hostname: HOST,
+        priority: 'merge-gate', since: 10_000_000_000, expiresAt: t + 60_000,
+      }));
+    };
+    refreshMerge();
+    let flipped = false;
+    const ordinary = makeSem(paths, { now, sleep: async () => {
+      if (t < 10_000_000_000 + SUITE_WAITER_AGING_MS) t += 30_000;
+      else if (!flipped) {
+        enforcing(paths, { alternatingSuiteTurns: 'off' });
+        flipped = true;
+        t += 1000;
+      } else t += 1000;
+      refreshMerge();
+    } });
+    const result = await ordinary.acquire({ lane: 'suite', runClass: 'background', budgetMs: 20 * 60_000 });
+    expect(result.kind).toBe('acquired');
+    expect(flipped).toBe(true);
+    expect(t).toBeLessThan(10_000_000_000 + SUITE_WAITER_AGING_MS + 12_000);
+    expect(ordinary.status().alternatingSuiteTurns).toBe('off');
+  });
+
+  it('marks history unknown while a live fail-open witness is visible', async () => {
+    const paths = mkPaths();
+    enforcing(paths, { alternatingSuiteTurns: 'enforce' });
+    const { sem, now } = clockSem(paths);
+    const admitted = await sem.acquire({ lane: 'suite', runClass: 'background', budgetMs: 0 });
+    expect(admitted.kind).toBe('acquired');
+    if (admitted.kind === 'acquired') sem.release(admitted.id);
+    expect(sem.status().suiteTurn.validity).toBe('valid');
+    const witness = (sem as unknown as { writeWitness(): string | null }).writeWitness();
+    expect(witness).not.toBeNull();
+    expect(sem.status().suiteTurn).toMatchObject({ validity: 'unknown', last: null });
+    SafeFsExecutor.safeUnlinkSync(witness!, { operation: 'host-test-runner-test:remove-witness' });
+    expect(sem.status().suiteTurn.validity).toBe('unknown');
+    const repaired = await sem.acquire({ lane: 'suite', runClass: 'background', budgetMs: 0 });
+    expect(repaired.kind).toBe('acquired');
+    expect(sem.status().suiteTurn.validity).toBe('valid');
+  });
+
+  it('rejects a future-version free-slot episode even when the file proof matches', async () => {
+    const paths = mkPaths();
+    enforcing(paths, { alternatingSuiteTurns: 'enforce' });
+    const { sem } = clockSem(paths);
+    const admitted = await sem.acquire({ lane: 'suite', runClass: 'background', budgetMs: 0 });
+    expect(admitted.kind).toBe('acquired');
+    if (admitted.kind === 'acquired') sem.release(admitted.id);
+    const turn = JSON.parse(fs.readFileSync(paths.holders, 'utf8')).suiteTurn;
+    const writer = sem as unknown as { writeHolders(rows: unknown[], turn: unknown, episode: unknown): void };
+    writer.writeHolders([], turn, { v: 2, id: 'future', startedAt: 10_000_000_000, offeredTicketId: null, handoffState: 'offered' });
+    expect(sem.status().suiteTurn).toMatchObject({ validity: 'unknown', last: null });
+  });
+
+  it('lets an aged ordinary requester take a free slot after one missed 12-second merge handoff', async () => {
+    const paths = mkPaths();
+    enforcing(paths, { alternatingSuiteTurns: 'enforce' });
+    let t = 10_000_000_000;
+    const now = () => t;
+    const seed = makeSem(paths, { now });
+    const first = await seed.acquire({ lane: 'suite', runClass: 'background', budgetMs: 0 });
+    expect(first.kind).toBe('acquired');
+    if (first.kind === 'acquired') seed.release(first.id);
+    seed.setMergeGatePriority('paused-child', true);
+    const dir = path.join(paths.baseDir, 'host-test-runner-waiters');
+    fs.mkdirSync(dir, { recursive: true });
+    const pausedTicket = path.join(dir, `${'ac'.padEnd(24, '0')}.json`);
+    const refreshPaused = () => {
+      seed.setMergeGatePriority('paused-child', true);
+      fs.writeFileSync(pausedTicket, JSON.stringify({
+        v: 1, id: 'waiter:paused', pid: process.pid, hostname: HOST,
+        priority: 'merge-gate', since: 10_000_000_000, expiresAt: t + 60_000,
+      }));
+    };
+    refreshPaused();
+    const ordinary = makeSem(paths, { now, sleep: async () => {
+      t += t < 10_000_000_000 + SUITE_WAITER_AGING_MS ? 30_000 : 13_000;
+      refreshPaused();
+    } });
+    const result = await ordinary.acquire({ lane: 'suite', runClass: 'background', budgetMs: 20 * 60_000 });
+    expect(result.kind).toBe('acquired');
+    expect(t).toBeGreaterThanOrEqual(10_000_000_000 + SUITE_WAITER_AGING_MS + 12_000);
+    expect(ordinary.status().suiteTurn.last).toBe('ordinary');
+    const offerOutcomes = readLedgerTail(paths, 50).filter((event) => event.kind === 'suite-turn-offer-outcome');
+    expect(offerOutcomes.map((event) => event.outcome)).toEqual(['expired']);
+  });
+
+  it('admits merge after ordinary, then an aged ordinary waiter ahead of another merge', async () => {
+    const paths = mkPaths();
+    enforcing(paths, { alternatingSuiteTurns: 'enforce' });
+    let t = 10_000_000_000;
+    const now = () => t;
+    const sem = makeSem(paths, { now });
+    const first = await sem.acquire({ lane: 'suite', runClass: 'background', budgetMs: 0 });
+    expect(first.kind).toBe('acquired');
+    if (first.kind !== 'acquired') return;
+    sem.release(first.id);
+
+    const dir = path.join(paths.baseDir, 'host-test-runner-waiters');
+    fs.mkdirSync(dir, { recursive: true });
+    const ordinaryTicket = path.join(dir, `${'aa'.padEnd(24, '0')}.json`);
+    fs.writeFileSync(ordinaryTicket, JSON.stringify({
+      v: 1, id: 'waiter:aa', pid: 41_000, hostname: HOST, priority: 'ordinary',
+      since: t - SUITE_WAITER_AGING_MS - 1, expiresAt: t + 60_000,
+    }));
+    sem.setMergeGatePriority('child', true);
+    const advisoryTicket = path.join(dir, `${'ab'.padEnd(24, '0')}.json`);
+    fs.writeFileSync(advisoryTicket, JSON.stringify({
+      v: 1, id: 'waiter:ab', pid: process.pid, hostname: HOST, priority: 'merge-gate',
+      since: t - 1, expiresAt: t + 60_000,
+    }));
+    expect(sem.status().suiteTurn.nextSuiteClass).toBe('merge-gate');
+    SafeFsExecutor.safeUnlinkSync(advisoryTicket, { operation: 'host-test-runner-test:remove-ticket' });
+    const merge = await sem.acquire({ lane: 'suite', runClass: 'background', priority: 'merge-gate', budgetMs: 0 });
+    expect(merge.kind).toBe('acquired');
+    expect(sem.status().suiteTurn.last).toBe('merge-gate');
+    if (merge.kind !== 'acquired') return;
+    SafeFsExecutor.safeUnlinkSync(ordinaryTicket, { operation: 'host-test-runner-test:remove-ticket' });
+
+    const mergeTicket = path.join(dir, `${'bb'.padEnd(24, '0')}.json`);
+    const ordinary = makeSem(paths, {
+      now,
+      sleep: async () => {
+        t += 60_000;
+        sem.setMergeGatePriority('child', true);
+        fs.writeFileSync(mergeTicket, JSON.stringify({
+          v: 1, id: 'waiter:bb', pid: process.pid, hostname: HOST, priority: 'merge-gate',
+          since: 10_000_000_000, expiresAt: t + 60_000,
+        }));
+        if (t >= 10_000_000_000 + SUITE_WAITER_AGING_MS + 60_000) sem.release(merge.id);
+      },
+    });
+    const next = await ordinary.acquire({ lane: 'suite', runClass: 'background', budgetMs: 20 * 60_000 });
+    expect(next.kind).toBe('acquired');
+    expect(ordinary.status().suiteTurn.last).toBe('ordinary');
+  });
+
+  it('rejects a legacy holders rewrite even when it preserves turn metadata, and does not launder it on targeted writes', async () => {
+    const paths = mkPaths();
+    enforcing(paths, { alternatingSuiteTurns: 'enforce' });
+    const { sem } = clockSem(paths);
+    const first = await sem.acquire({ lane: 'suite', runClass: 'background', budgetMs: 0 });
+    expect(first.kind).toBe('acquired');
+    if (first.kind !== 'acquired') return;
+    sem.release(first.id);
+    expect(sem.status().suiteTurn).toMatchObject({ validity: 'valid', last: 'ordinary' });
+
+    // The old writer preserves unknown top-level fields but atomically rewrites holders.
+    const raw = fs.readFileSync(paths.holders, 'utf-8');
+    const tmp = `${paths.holders}.legacy`;
+    fs.writeFileSync(tmp, raw);
+    fs.renameSync(tmp, paths.holders);
+    expect(sem.status().suiteTurn.validity).toBe('unknown');
+
+    const targeted = await sem.acquire({ lane: 'targeted', runClass: 'background', fileCount: 1, budgetMs: 0 });
+    expect(targeted.kind).toBe('acquired');
+    if (targeted.kind === 'acquired') sem.release(targeted.id);
+    expect(sem.status().suiteTurn.validity).toBe('unknown');
+
+    const repaired = await sem.acquire({ lane: 'suite', runClass: 'background', budgetMs: 0 });
+    expect(repaired.kind).toBe('acquired');
+    expect(sem.status().suiteTurn).toMatchObject({ validity: 'valid', last: 'ordinary' });
+  });
+
+  it('keeps a consumed offer tied to one free-slot episode when merge tickets churn', async () => {
+    const paths = mkPaths();
+    enforcing(paths, { alternatingSuiteTurns: 'enforce' });
+    const { sem, now, advance } = clockSem(paths);
+    const first = await sem.acquire({ lane: 'suite', runClass: 'background', budgetMs: 0 });
+    expect(first.kind).toBe('acquired');
+    if (first.kind !== 'acquired') return;
+    sem.release(first.id);
+    const dir = path.join(paths.baseDir, 'host-test-runner-waiters');
+    fs.mkdirSync(dir, { recursive: true });
+    const ticket = (name: string, priority: 'ordinary' | 'merge-gate', since: number) => {
+      fs.writeFileSync(path.join(dir, `${name.padEnd(24, '0')}.json`), JSON.stringify({
+        v: 1, id: `waiter:${name}`, pid: priority === 'merge-gate' ? process.pid : 41_000,
+        hostname: HOST, priority, since, expiresAt: now() + 60_000,
+      }));
+    };
+    ticket('aa', 'ordinary', now() - SUITE_WAITER_AGING_MS - 1);
+    ticket('bb', 'merge-gate', now() - 1000);
+    sem.setMergeGatePriority('child', true);
+    await expect(sem.acquire({ lane: 'suite', runClass: 'background', budgetMs: 0 }))
+      .rejects.toBeInstanceOf(TestRunnerCapacityTimeoutError);
+    const offered = JSON.parse(fs.readFileSync(paths.holders, 'utf-8')).suiteFreeEpisode;
+    expect(offered.handoffState).toBe('offered');
+    advance(12_001);
+    await expect(sem.acquire({ lane: 'suite', runClass: 'background', budgetMs: 0 }))
+      .rejects.toBeInstanceOf(TestRunnerCapacityTimeoutError);
+    const consumed = JSON.parse(fs.readFileSync(paths.holders, 'utf-8')).suiteFreeEpisode;
+    expect(consumed).toMatchObject({ id: offered.id, startedAt: offered.startedAt, handoffState: 'consumed' });
+    SafeFsExecutor.safeUnlinkSync(path.join(dir, `${'bb'.padEnd(24, '0')}.json`), { operation: 'host-test-runner-test:remove-ticket' });
+    ticket('cc', 'merge-gate', now() - 500);
+    await expect(sem.acquire({ lane: 'suite', runClass: 'background', budgetMs: 0 }))
+      .rejects.toBeInstanceOf(TestRunnerCapacityTimeoutError);
+    expect(JSON.parse(fs.readFileSync(paths.holders, 'utf-8')).suiteFreeEpisode)
+      .toMatchObject({ id: offered.id, startedAt: offered.startedAt, handoffState: 'consumed' });
   });
 });
 
@@ -1292,16 +1675,43 @@ describe('§2.9 resolution order (env → tuning file → code-default) for EVER
     });
   });
 
-  it('acquire budgets resolve per lane + run class: targeted env, background env, interactive = env || 5× background', () => {
+  it('acquire budgets resolve per lane + run class: env > tuning file > 45 min default; interactive defaults to the background budget', () => {
     expect(resolveAcquireBudgetMs('targeted', 'background', {})).toBe(60_000);
     expect(resolveAcquireBudgetMs('targeted', 'interactive', { INSTAR_HOST_TEST_TARGETED_ACQUIRE_MS: '5000' })).toBe(5000);
-    expect(resolveAcquireBudgetMs('suite', 'background', {})).toBe(120_000);
+    expect(resolveAcquireBudgetMs('suite', 'background', {})).toBe(2_700_000);
+    expect(resolveAcquireBudgetMs('suite', 'interactive', {})).toBe(2_700_000);
     expect(resolveAcquireBudgetMs('suite', 'background', { INSTAR_HOST_TEST_ACQUIRE_MS: '30000' })).toBe(30_000);
-    expect(resolveAcquireBudgetMs('suite', 'interactive', {})).toBe(600_000);
-    expect(resolveAcquireBudgetMs('suite', 'interactive', { INSTAR_HOST_TEST_ACQUIRE_MS: '30000' })).toBe(150_000);
+    expect(resolveAcquireBudgetMs('suite', 'interactive', { INSTAR_HOST_TEST_ACQUIRE_MS: '30000' })).toBe(30_000);
     expect(
       resolveAcquireBudgetMs('suite', 'interactive', { INSTAR_HOST_TEST_ACQUIRE_MS_INTERACTIVE: '99000' }),
     ).toBe(99_000);
+  });
+
+  it('acquire budgets: the host tuning file sets the suite-lane wait (CMT-908); env still wins; out-of-range values are ignored', () => {
+    const tuning = { v: 1 as const, acquireMs: 3_000_000, acquireMsInteractive: 3_600_000 };
+    expect(resolveAcquireBudgetMs('suite', 'background', {}, tuning)).toBe(3_000_000);
+    expect(resolveAcquireBudgetMs('suite', 'interactive', {}, tuning)).toBe(3_600_000);
+    expect(resolveAcquireBudgetMs('suite', 'interactive', {}, { v: 1, acquireMs: 3_000_000 })).toBe(3_000_000);
+    expect(resolveAcquireBudgetMs('suite', 'background', { INSTAR_HOST_TEST_ACQUIRE_MS: '30000' }, tuning)).toBe(30_000);
+    // Targeted lane is unaffected by the suite-lane fields.
+    expect(resolveAcquireBudgetMs('targeted', 'background', {}, tuning)).toBe(60_000);
+    // Out of range (below 10 s, above 4 h, non-number) → code default.
+    expect(resolveAcquireBudgetMs('suite', 'background', {}, { v: 1, acquireMs: 5 })).toBe(2_700_000);
+    expect(resolveAcquireBudgetMs('suite', 'background', {}, { v: 1, acquireMs: 99_000_000 })).toBe(2_700_000);
+    expect(resolveAcquireBudgetMs('suite', 'background', {}, { v: 1, acquireMs: '3000000' })).toBe(2_700_000);
+  });
+
+  it('acquire() reads the suite-lane wait budget from the tuning file when the caller passes none', async () => {
+    const paths = mkPaths();
+    fs.mkdirSync(paths.baseDir, { recursive: true });
+    fs.writeFileSync(paths.tuning, JSON.stringify({ v: 1, enforcing: true, acquireMs: 3_000_000 }));
+    const { sem, now } = clockSem(paths);
+    const first = await sem.acquire({ lane: 'suite', runClass: 'background' });
+    expect(first.kind).toBe('acquired');
+    const started = now();
+    await expect(sem.acquire({ lane: 'suite', runClass: 'background' })).rejects.toThrow(/3000000ms, suite lane/);
+    // Waited the tuned 50 min, not the 45 min default.
+    expect(now() - started).toBeGreaterThanOrEqual(3_000_000);
   });
 
   it('tuning-file corruption: quarantine ONLY after a confirming re-read; confirmed-corrupt resolves to code-defaults, never silent', () => {
@@ -2145,6 +2555,27 @@ describe('globalSetup chokepoint (§2.2/§2.5/§2.6 — skip reasons, lane routi
     expect(acq[0].lane).toBe('targeted');
     expect(acq[0].fileCount).toBe(2);
     await (t as () => Promise<void>)();
+  });
+
+  it('the one-worker push config acquires the TARGETED lane (a git push must not queue behind full suites); pool-shaping argv or a wider pool routes it to the suite lane', async () => {
+    process.env.__INSTAR_TRB_CONFIG = 'push';
+    process.argv = ['node', '/x/vitest', 'run', '--config', 'vitest.push.config.ts', '--changed', 'origin/main'];
+    const t = await globalSetupEntry(ctxOf({ include: ['tests/unit/**'], watch: false, fileParallelism: false }));
+    expect(typeof t).toBe('function');
+    expect(readRows(paths)[0].lane).toBe('targeted');
+    await (t as () => Promise<void>)();
+
+    delete (globalThis as Record<string, unknown>).__instarTestRunnerHeld;
+    process.argv = ['node', '/x/vitest', 'run', '--config', 'vitest.push.config.ts', '--maxWorkers=16'];
+    const t2 = await globalSetupEntry(ctxOf({ include: ['tests/unit/**'], watch: false, fileParallelism: false }));
+    expect(readRows(paths)[0].lane).toBe('suite');
+    await (t2 as () => Promise<void>)();
+
+    delete (globalThis as Record<string, unknown>).__instarTestRunnerHeld;
+    process.argv = ['node', '/x/vitest', 'run', '--config', 'vitest.push.config.ts'];
+    const t3 = await globalSetupEntry(ctxOf({ include: ['tests/unit/**'], watch: false, maxWorkers: 8 }));
+    expect(readRows(paths)[0].lane).toBe('suite');
+    await (t3 as () => Promise<void>)();
   });
 
   it('BIDIRECTIONAL posture-divergence WARN: ENFORCE=0 against an enforcing authority AND ENFORCE=1 against a dry-run authority (§2.9 round 8)', async () => {

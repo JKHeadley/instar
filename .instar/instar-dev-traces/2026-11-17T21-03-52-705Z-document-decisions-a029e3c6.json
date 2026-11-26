@@ -1,0 +1,22 @@
+{
+  "version": 2,
+  "slug": "document-decisions",
+  "sessionId": "3779854c-1b0a-4462-a013-b7f272eba2c2",
+  "timestamp": "2026-11-17T21:03:52.705Z",
+  "artifactPath": "upgrades/side-effects/document-decisions.md",
+  "artifactSha256": "8cb888af59aaa998c04d399810ee0b14f48398b822bf46556e8630f6b1e7a6f6",
+  "specPath": "docs/specs/document-decisions.md",
+  "coveredFiles": [
+    "dashboard/docs/doc-page.js",
+    "scripts/document-decisions-live-proof.ts",
+    "src/server/middleware.ts",
+    "tests/integration/documents-decisions.test.ts",
+    "upgrades/next/document-decisions.md",
+    "upgrades/side-effects/document-decisions.md"
+  ],
+  "phase": "complete",
+  "tier": 2,
+  "tierReasoning": "Follow-up inside the same feature: the live proof found the page-write path pattern refusing decide-on-phone; fixed with a test; proof runner added.",
+  "secondPass": "true",
+  "reviewerConcurred": true
+}

@@ -1,0 +1,26 @@
+{
+  "ts": "2026-11-19T22:11:56.010Z",
+  "slug": "reaper-registry-copy-hash",
+  "suggestedTier": 1,
+  "declaredTier": 1,
+  "riskFloor": 1,
+  "riskFloorReasons": [],
+  "belowFloor": false,
+  "files": 1,
+  "loc": 11,
+  "scope": {
+    "basis": "staged-in-scope-paths-including-deleted",
+    "files": [
+      "src/monitoring/agentWorktreeGit.ts"
+    ],
+    "addedLines": 9,
+    "deletedLines": 2
+  },
+  "causalAutopsy": null,
+  "classClosure": {
+    "defectClass": "unbounded-self-action",
+    "closure": "n/a",
+    "reason": "classification fix; adds no loop"
+  },
+  "verdict": "pass"
+}

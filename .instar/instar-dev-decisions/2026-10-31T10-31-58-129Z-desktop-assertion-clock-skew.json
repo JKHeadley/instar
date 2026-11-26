@@ -1,0 +1,23 @@
+{
+  "ts": "2026-10-31T10:31:58.129Z",
+  "slug": "desktop-assertion-clock-skew",
+  "suggestedTier": 1,
+  "declaredTier": 2,
+  "riskFloor": 1,
+  "riskFloorReasons": [],
+  "belowFloor": false,
+  "files": 2,
+  "loc": 15,
+  "scope": {
+    "basis": "staged-in-scope-additions-plus-deletions",
+    "files": [
+      "src/core/DesktopAssertionReplayStore.ts",
+      "src/core/DesktopOperatorAssertion.ts"
+    ],
+    "addedLines": 9,
+    "deletedLines": 6
+  },
+  "causalAutopsy": null,
+  "classClosure": null,
+  "verdict": "pass"
+}

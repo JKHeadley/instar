@@ -1,0 +1,24 @@
+{
+  "version": 2,
+  "slug": "desktop-mobile-touch-follow",
+  "sessionId": "22931342-0ba2-4551-8807-182c3b8ae255",
+  "timestamp": "2026-10-31T18:33:16.331Z",
+  "artifactPath": "upgrades/side-effects/desktop-mobile-touch-follow.md",
+  "artifactSha256": "ba7eab77a48fc2b1da9901333d2339413a782ee072a44332a8403de85c4c055f",
+  "coveredFiles": [
+    "dashboard/desktop.css",
+    "dashboard/desktop.js",
+    "docs/specs/native-remote-desktop-mobile-viewer.eli16.md",
+    "scripts/desktop-public-browser-smoke.mjs",
+    "tests/unit/desktop-touch-gestures.test.ts",
+    "upgrades/next/desktop-mobile-touch-follow.md",
+    "upgrades/side-effects/desktop-mobile-touch-follow.md"
+  ],
+  "phase": "complete",
+  "tier": 1,
+  "tierReasoning": "Browser-only viewer input mapping; no server authority, no state; a revert fully undoes it",
+  "eli16Path": "docs/specs/native-remote-desktop-mobile-viewer.eli16.md",
+  "sideEffectsPath": "upgrades/side-effects/desktop-mobile-touch-follow.md",
+  "secondPass": "not-required",
+  "reviewerConcurred": null
+}

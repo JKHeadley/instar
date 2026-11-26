@@ -13,10 +13,15 @@
 # rewrite the predicate to always-pass or execute its own code in the runner.
 # Untrusted PR title arrives via env, never shell-interpolated.
 #
-# ROLLOUT: ships WARN-ONLY (reports the verdict, never blocks) per spec D2/D3.
-# Flip to blocking + register as a REQUIRED status check on `main` per the D3
-# criterion (>=15 release-relevant instar-repo PRs, zero false-positive FAILs,
-# >=7 days). The verdict line is emitted for the rollout log.
+# ROLLOUT: BLOCKING since 2026-10-21 (operator decision, Justin, topic 61449).
+# It shipped WARN-ONLY per spec D2/D3, and the D3 criterion was NOT met when the
+# flip was made: the rollout log the criterion reads (logs/release-fragment-gate
+# -rollout.jsonl) was never written by anything, so the ">=15 PRs, zero
+# false-positive FAILs, >=7 days" bar could not be measured at all. The operator
+# flipped it on the evidence that actually existed instead: five merged fixes
+# reached users unannounced on 2026-10-21 because the warn-only verdict blocked
+# nothing. A gate whose graduation criterion is unmeasurable does not get to
+# soak forever — it gets decided. The verdict line is still emitted.
 
 name: release-fragment-gate
 
@@ -67,9 +72,6 @@ jobs:
           PR_AUTHOR_LOGIN: ${{ github.event.pull_request.user.login }}
           PR_AUTHOR_TYPE: ${{ github.event.pull_request.user.type }}
           PR_TITLE: ${{ github.event.pull_request.title }}
-          # Soak phase: report the verdict, never block. Remove (or set to 0)
-          # to flip to blocking once the D3 criterion is met.
-          WARN_ONLY: '1'
         run: |
           # Bootstrap no-op: the checker is loaded from the BASE ref (security:
           # a PR cannot alter the gate that gates it). The very PR that ADDS or

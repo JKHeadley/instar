@@ -1,0 +1,39 @@
+{
+  "ts": "2026-10-27T05:56:41.139Z",
+  "slug": "job-cost-reduction",
+  "suggestedTier": 2,
+  "declaredTier": 2,
+  "riskFloor": 1,
+  "riskFloorReasons": [],
+  "belowFloor": false,
+  "files": 10,
+  "loc": 50,
+  "scope": {
+    "basis": "staged-in-scope-additions-plus-deletions",
+    "files": [
+      "src/core/componentCategories.ts",
+      "src/data/llmBenchCoverage.ts",
+      "src/data/provenanceCoverage.ts",
+      "src/data/stageBCertifiedSet.ts",
+      "src/scheduler/JobAnomalyNarrator.ts",
+      "src/scheduler/JobAnomalyPusher.ts",
+      "src/scheduler/JobScheduler.ts",
+      "src/scheduler/ScriptCanaryRunner.ts",
+      "src/scheduler/ScriptJobSupervisor.ts",
+      "src/server/AgentServer.ts"
+    ],
+    "addedLines": 35,
+    "deletedLines": 15
+  },
+  "causalAutopsy": null,
+  "classClosure": {
+    "defectClass": "unbounded-self-action",
+    "closure": "guard",
+    "guardEvidence": {
+      "enforcementType": "ratchet",
+      "citation": "tests/unit/self-action-convergence.test.ts",
+      "howCaught": "One durable anomaly episode settles after one triage spawn across restarts; outage backup checks retain a durable six-hour interval and bounded sample under sustained Jev failure."
+    }
+  },
+  "verdict": "pass"
+}

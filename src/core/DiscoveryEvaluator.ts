@@ -26,6 +26,7 @@ import type {
   DiscoveryState,
 } from './FeatureRegistry.js';
 import { mergeDefaults } from './mergeDefaults.js';
+import { isRetiredLegacyOffer } from '../recommended/legacyDeclines.js';
 
 // ── Types ────────────────────────────────────────────────────────────
 
@@ -291,6 +292,9 @@ export class DiscoveryEvaluator {
 
     for (const info of allFeatures) {
       const { definition, state } = info;
+
+      // Retired offers: these now go through recommended services (docs/specs/recommended-services.md).
+      if (isRetiredLegacyOffer(definition.id)) continue;
 
       // Skip features in ineligible states
       if (INELIGIBLE_STATES.has(state.discoveryState)) continue;

@@ -13,6 +13,7 @@ import { SafeFsExecutor } from '../../src/core/SafeFsExecutor.js';
 import { PendingInboundStore } from '../../src/core/PendingInboundStore.js';
 import {
   QueueDrainLoop,
+  WORK_ADMISSION_REFUSAL_REASON,
   type QueueDrainLoopDeps,
   type DrainDispatchResult,
   type DrainHandover,
@@ -36,7 +37,7 @@ let deps: QueueDrainLoopDeps & {
   pisCleared: string[];
   dispatchResults: Map<string, DrainDispatchResult | ((h: DrainHandover) => Promise<DrainDispatchResult>)>;
   dispatchCalls: DrainMessage[];
-  forceReplaceResult: boolean;
+  forceReplaceResult: boolean | 'rejected' | 'local';
   forceReplaceCalls: DrainMessage[];
   verdicts: Map<string, 'hold' | 'failover' | 'deliver'>;
   stopped: Set<string>;
@@ -486,6 +487,100 @@ describe('maxAttempts → final forced re-place (§3.3)', () => {
   });
 });
 
+describe('admission-refused messages are re-placed on their first drain attempt', () => {
+  function enqueueRefused(messageId: string): number {
+    const out = loop.enqueueLive({ sessionKey: 's', messageId, payload: 'hi', senderEnvelope: { firstName: 'J' } }, WORK_ADMISSION_REFUSAL_REASON);
+    if (out.result !== 'queued') throw new Error(`enqueue failed: ${JSON.stringify(out)}`);
+    return out.seq;
+  }
+
+  it('placed on a peer at once: delivered, no local dispatch, counted', async () => {
+    const seq = enqueueRefused('m');
+    await loop.runDrainPass('test');
+    expect(deps.forceReplaceCalls).toHaveLength(1);
+    expect(deps.dispatchCalls).toHaveLength(0);
+    expect(store.getRow(seq)?.state).toBe('delivered');
+    expect(store.getCounter('admissionRefusalReplaced')).toBe(1);
+  });
+
+  it('placement chose this machine (recovered): dispatched locally, delivered', async () => {
+    deps.forceReplaceResult = 'local';
+    const seq = enqueueRefused('m');
+    await loop.runDrainPass('test');
+    expect(deps.dispatchCalls).toHaveLength(1);
+    expect(store.getRow(seq)?.state).toBe('delivered');
+  });
+
+  it('no machine can take it yet: released with backoff, never lost, retried later', async () => {
+    deps.forceReplaceResult = false;
+    const seq = enqueueRefused('m');
+    await loop.runDrainPass('test');
+    expect(store.getRow(seq)?.state).toBe('queued');
+    expect(store.getRow(seq)?.attempts).toBe(1);
+    expect(deps.lossReports).toHaveLength(0);
+    deps.forceReplaceResult = true;
+    advance(deps.qcfg.maxBackoffMs + 1000);
+    await loop.runDrainPass('test');
+    expect(store.getRow(seq)?.state).toBe('delivered');
+  });
+
+  it('a sender refusal on re-place is terminal with the unified notice', async () => {
+    deps.forceReplaceResult = 'rejected';
+    const seq = enqueueRefused('m');
+    await loop.runDrainPass('test');
+    expect(store.getRow(seq)?.state).toBe('expired');
+    expect(store.getRow(seq)?.terminal_reason).toBe('sender-deauthorized');
+    expect(deps.lossReports.some((r) => r.reason === 'sender-deauthorized')).toBe(true);
+  });
+
+  it('other reasons keep the normal local-first dispatch', async () => {
+    const seq = enqueue('s', 'm2');
+    await loop.runDrainPass('test');
+    expect(deps.forceReplaceCalls).toHaveLength(0);
+    expect(deps.dispatchCalls).toHaveLength(1);
+    expect(store.getRow(seq)?.state).toBe('delivered');
+  });
+});
+
+describe('maxAttempts → forced re-place lands on THIS machine (`local`)', () => {
+  function exhaust(seq: number): Promise<void> {
+    return (async () => {
+      for (let i = 0; i < deps.qcfg.maxAttempts; i++) {
+        advance(deps.qcfg.maxBackoffMs + 1000);
+        await loop.runDrainPass('test');
+      }
+      expect(store.getRow(seq)?.attempts).toBe(deps.qcfg.maxAttempts);
+    })();
+  }
+
+  it('runs ONE local dispatch under the held claim; delivered only when that dispatch delivers', async () => {
+    const seq = enqueue('s', 'm');
+    deps.dispatchResults.set('m', { kind: 'un-routable', reason: 'transferring' });
+    await exhaust(seq);
+    deps.forceReplaceResult = 'local';
+    deps.dispatchResults.set('m', { kind: 'local-delivered' });
+    const before = deps.dispatchCalls.length;
+    advance(deps.qcfg.maxBackoffMs + 1000);
+    await loop.runDrainPass('test');
+    expect(deps.forceReplaceCalls).toHaveLength(1);
+    expect(deps.dispatchCalls.length).toBe(before + 1);
+    expect(store.getRow(seq)?.state).toBe('delivered');
+  });
+
+  it('the local dispatch fails → terminal attempts-exhausted + loss notice (bounded, never silent)', async () => {
+    const seq = enqueue('s', 'm');
+    deps.dispatchResults.set('m', { kind: 'un-routable', reason: 'transferring' });
+    await exhaust(seq);
+    deps.forceReplaceResult = 'local';
+    deps.dispatchResults.set('m', { kind: 'failed', error: new Error('spawn failed') });
+    advance(deps.qcfg.maxBackoffMs + 1000);
+    await loop.runDrainPass('test');
+    expect(store.getRow(seq)?.state).toBe('expired');
+    expect(store.getRow(seq)?.terminal_reason).toBe('attempts-exhausted');
+    expect(deps.lossReports.some((r) => r.reason === 'attempts-exhausted')).toBe(true);
+  });
+});
+
 describe('tenure clamp (§3.5)', () => {
   it('cross-tenure rows older than staleCustodyTtlMs expire stale-custody', async () => {
     const seq = enqueue('s', 'm');
@@ -503,6 +598,39 @@ describe('tenure clamp (§3.5)', () => {
     await loop.onResume();
     await loop.runDrainPass('test');
     expect(store.getRow(seq)?.state).toBe('delivered'); // same tenure — no clamp
+  });
+
+  /** The same holder's process restarts: same store and holder, a new boot id. */
+  function rebootedLoop(): QueueDrainLoop {
+    const next = new QueueDrainLoop({ ...deps, bootSessionId: 'boot-2' });
+    next.onLeaseAcquired('mac-a');
+    return next;
+  }
+
+  it('an app message survives its own holder\'s reboot past the clamp and is delivered (pool-proof-1107 step 8)', async () => {
+    const seq = enqueue('app:3423321f-dd47-45f7-b70e-eeed826a5a47', 'nine-b');
+    advance(deps.qcfg.staleCustodyTtlMs + 60_000);
+    const next = rebootedLoop();
+    await next.runDrainPass('test');
+    expect(store.getRow(seq)?.state).toBe('delivered');
+    expect(deps.lossReports).toEqual([]);
+  });
+
+  it('a non-app message still takes the reboot clamp', async () => {
+    const seq = enqueue('13481', 'm');
+    advance(deps.qcfg.staleCustodyTtlMs + 60_000);
+    await rebootedLoop().runDrainPass('test');
+    expect(store.getRow(seq)?.state).toBe('expired');
+    expect(store.getRow(seq)?.terminal_reason).toBe('stale-custody-reboot');
+  });
+
+  it('an app message still ends at its TTL after a reboot, as ttl-expired', async () => {
+    const seq = enqueue('app:3423321f-dd47-45f7-b70e-eeed826a5a47', 'm');
+    advance(deps.qcfg.entryTtlMs + 60_000);
+    await rebootedLoop().tick(); // the server's backstop tick runs the TTL sweep, as for any row
+    expect(store.getRow(seq)?.state).toBe('expired');
+    expect(store.getRow(seq)?.terminal_reason).toBe('ttl-expired');
+    expect(deps.lossReports.some((r) => r.reason === 'ttl-expired')).toBe(true);
   });
 
   it('same-holder re-acquire does not clamp (tenure unchanged)', async () => {

@@ -71,6 +71,25 @@ describe('WindowRunCadenceExecutor', () => {
     expect(after?.intervals).toMatchObject([{ number: 1, outcome: 'passed', workSequence: 1 }]);
   });
 
+  // 2026-11-01 (topic 10000001256): liveness now holds one binding per topic,
+  // and each binding gets its own cadence clock.
+  it('keeps one cadence clock per topic', async () => {
+    project = createTempProject();
+    const a = liveness();
+    const b = { ...liveness(), windowId: 'w-other', topicId: 131439, autonomousRunId: 'run-other', lifecycleRunId: 'run-other', executorId: 'executor-other' };
+    const requested: string[] = [];
+    const store = new WindowRunCadenceStore(project.stateDir);
+    const executor = new WindowRunCadenceExecutor(store, {
+      now: () => new Date(BASE + 25 * 60_000).toISOString(), getLiveness: () => a, getLivenessAll: () => [a, b],
+      resolveFirstUnreceiptedTask: (state) => `task-${state.topicId}`,
+      requestCheckpoint: async ({ taskRef }) => { requested.push(taskRef); return { delivered: true, receipt: `delivery-${taskRef}` }; },
+    }, { enabled: true, dryRun: false });
+    await executor.tick();
+    expect(requested.sort()).toEqual(['task-131439', 'task-36966']);
+    expect(executor.status().states.map(state => [state.topicId, state.autonomousRunId])).toEqual([[36966, 'run-w32'], [131439, 'run-other']]);
+    expect(executor.status(131439).state?.executorId).toBe('executor-other');
+  });
+
   it('does not start clocks or actions during an arbitrarily long preparation', async () => {
     project = createTempProject();
     const state = liveness();
@@ -342,5 +361,76 @@ describe('WindowRunCadenceExecutor', () => {
     nowMs = BASE + 4 * 60 * 60_000;
     expect((await executor.tick())?.status).toBe('closed');
     expect(sends).toBe(0);
+  });
+  it('an overlapping tick waits for a fresh evaluation instead of returning the stale pre-save snapshot', async () => {
+    // Reproduces the e2e flake: the server's initial background tick is still
+    // in flight when the HTTP tick arrives. The old skip-guard returned
+    // store.load() — null before the first save — which the route turned into
+    // a false 404 "not registered".
+    project = createTempProject();
+    const nowMs = BASE + 25 * 60_000;
+    const state = liveness();
+    let firstEntered!: () => void;
+    const entered = new Promise<void>(resolve => { firstEntered = resolve; });
+    let releaseFirst!: () => void;
+    const released = new Promise<void>(resolve => { releaseFirst = resolve; });
+    // Each tick lists the bound topics, then each evaluation re-reads its
+    // binding under the lock; count evaluations, not reads.
+    let evaluations = 0;
+    const requested: string[] = [];
+    const executor = new WindowRunCadenceExecutor(new WindowRunCadenceStore(project.stateDir), {
+      now: () => new Date(nowMs).toISOString(),
+      getLiveness: () => state,
+      canAct: () => {
+        evaluations++;
+        if (evaluations === 1) firstEntered();
+        return true;
+      },
+      resolveFirstUnreceiptedTask: () => 'autonomous:run-w32:1',
+      requestCheckpoint: async ({ taskRef }) => { requested.push(taskRef); await released; return { delivered: true, receipt: 'tmux-delivery-1' }; },
+    }, { enabled: true, dryRun: false });
+
+    const background = executor.tick();
+    await entered;
+    const explicit = executor.tick();
+    const coalesced = executor.tick();
+    let explicitSettled = false;
+    void explicit.then(() => { explicitSettled = true; });
+    await new Promise(resolve => setTimeout(resolve, 20));
+    expect(explicitSettled).toBe(false);
+    releaseFirst();
+    const [first, second, third] = await Promise.all([background, explicit, coalesced]);
+    expect(first).not.toBeNull();
+    expect(second).not.toBeNull();
+    expect(second?.checkpoints).toMatchObject([{ outcome: 'delivered', attemptCount: 1 }]);
+    expect(third).toEqual(second);
+    expect(evaluations).toBe(2);
+    expect(requested).toEqual(['autonomous:run-w32:1']);
+  });
+});
+
+
+describe('quiet cadence outcomes', () => {
+  let project: TempProject;
+  afterEach(() => project?.cleanup());
+  it('advances a recorded synthesis without delivery fields or retry after restart', async () => {
+    project = createTempProject(); let sends = 0;
+    const state = liveness(Array.from({ length: 6 }, (_, i) => work(i + 1, BASE + (i + 1) * 30 * 60_000 - 1000)));
+    const now = BASE + 3 * 60 * 60_000; const store = new WindowRunCadenceStore(project.stateDir);
+    const make = () => new WindowRunCadenceExecutor(store, { now: () => new Date(now).toISOString(), getLiveness: () => state, resolveFirstUnreceiptedTask: () => null,
+      signSynthesis: () => 'producer-signature-1', deliverSynthesis: async () => { sends++; return { delivered: false, recorded: true, quietId: 'report-q' }; } }, { enabled: true, dryRun: false });
+    const first = await make().tick();
+    expect(first?.status).toBe('running'); expect(first?.reports[0]).toMatchObject({ status: 'quiet-recorded', quietId: 'report-q' });
+    expect(first?.reports[0].messageId).toBeUndefined(); expect(first?.reports[0].deliveredAt).toBeUndefined();
+    expect(first?.nextReportDueAt).toBe(new Date(BASE + 6 * 60 * 60_000).toISOString());
+    await make().tick(); expect(sends).toBe(1);
+  });
+  it('persists a quiet failure notice without claiming notified or retrying', async () => {
+    project = createTempProject(); let sends = 0; let now = BASE + 36 * 60_000;
+    const store = new WindowRunCadenceStore(project.stateDir); const state = liveness();
+    const make = () => new WindowRunCadenceExecutor(store, { now: () => new Date(now).toISOString(), getLiveness: () => state, resolveFirstUnreceiptedTask: () => null,
+      notifyFailure: async () => { sends++; return { delivered: false, recorded: true, quietId: 'failure-q' }; } }, { enabled: true, dryRun: false });
+    const result = await make().tick(); expect(result?.failure).toMatchObject({ notified: false, notificationQuietId: 'failure-q', notificationAttemptCount: 1 });
+    expect(result?.failure?.notificationMessageId).toBeUndefined(); now += 3600000; await make().tick(); expect(sends).toBe(1);
   });
 });

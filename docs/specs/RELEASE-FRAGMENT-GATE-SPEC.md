@@ -147,6 +147,29 @@ A workflow mirroring `eli16-pr-gate.yml`'s **shape and discipline**:
   is the property that matters. (A future enhancement could add a cheap base-ref-safe
   content sniff; out of scope here.)
 - **Rollout:** warn-only (non-blocking `neutral`) first; flip to required per D2/D3.
+
+### Flip record — 2026-10-21 (blocking)
+
+The gate went **blocking** on 2026-10-21 by operator decision (Justin, topic 61449),
+and the D3 criterion above was **not** satisfied when it did. Stated plainly, because
+the criterion is part of this spec:
+
+- D3 reads its evidence from `logs/release-fragment-gate-rollout.jsonl`. **Nothing ever
+  wrote that file.** The workflow emits the `::notice::release-fragment-gate verdict=…`
+  line, and no collector turns those lines into rows. So "≥15 release-relevant PRs,
+  zero false-positive FAILs, over ≥7 days" was never measurable, and the gate would
+  have soaked indefinitely while looking like it was graduating on schedule.
+- The flip was made on the evidence that did exist: on 2026-10-21 five merged fixes
+  reached users with no release note of their own, because a warn-only verdict blocks
+  nothing. That is exactly the failure the gate was built to prevent, observed in
+  production rather than inferred from a soak.
+- Rollback lever: re-add `WARN_ONLY: '1'` to the workflow's env block. `scripts/check-
+  release-fragment.mjs` is untouched by the flip, so its warn-only branch is still
+  there to receive it.
+
+The lesson worth keeping is narrower than the flip: a graduation criterion that reads a
+file nothing writes is not a criterion. Either build the collector with the gate, or
+pick a criterion from evidence that already accumulates.
   **Registering it as a required status check on `main` is an explicit deliverable**
   — without that registration the gate is cosmetic. And because a required-check
   registration can silently drift off (a ruleset edit, a renamed check, branch-

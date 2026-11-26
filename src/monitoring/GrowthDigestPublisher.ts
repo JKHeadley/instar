@@ -33,6 +33,7 @@
  */
 
 import { Cron } from 'croner';
+import { featureEvidence } from './FeatureEvidenceLog.js';
 import fs from 'node:fs';
 import path from 'node:path';
 import { scrubSecrets } from './scrubSecrets.js';
@@ -44,6 +45,7 @@ export type GrowthDigestTrigger = 'cron' | 'catchup' | 'manual';
 
 export interface DeliveryResult {
   ok: boolean;
+  recorded?: boolean;
   /** Why a non-send happened (dedup/budget/tone block, no-updates-topic, …). A
    *  block is a NORMAL outcome, never an error — the publisher never re-acts. */
   reason?: string;
@@ -53,6 +55,7 @@ export interface GrowthDigestAuditEntry {
   ts: string;
   action:
     | 'sent'
+    | 'quiet-recorded'
     | 'send-blocked'
     | 'dry-run'
     | 'skipped-standby'
@@ -477,7 +480,7 @@ export class GrowthDigestPublisher {
       if (result.ok) {
         const entry: GrowthDigestAuditEntry = {
           ts: now.toISOString(),
-          action: 'sent',
+          action: result.recorded ? 'quiet-recorded' : 'sent',
           trigger,
           window,
           reason: result.reason,
@@ -523,6 +526,21 @@ export class GrowthDigestPublisher {
       ...(e.supersedeConflict ? { supersedeConflict: true } : {}),
       ...(typeof e.attemptCount === 'number' ? { attemptCount: e.attemptCount } : {}),
     };
+    // skipped-off / skipped-standby / skipped-overlap are the scheduler's no-ops, not digest decisions.
+    if (!e.action.startsWith('skipped-') || e.action === 'skipped-calm') {
+      const failed = e.action === 'error' || e.action === 'send-blocked' || e.action === 'send-exhausted';
+      featureEvidence.record('monitoring.growthAnalyst', {
+        kind: failed ? 'error' : e.action === 'sent' || e.action === 'dry-run' ? 'fired' : 'held',
+        reason: `digest-${e.action}`,
+        context: {
+          action: e.action,
+          trigger: e.trigger ?? null,
+          auditReason: e.reason ?? null,
+          dryRun: e.action === 'dry-run',
+          attemptCount: e.attemptCount ?? null,
+        },
+      });
+    }
     try {
       this.deps.audit?.(entry);
     } catch (err) {
@@ -770,7 +788,12 @@ export interface FormatDigestOptions {
   detailCap?: number;
 }
 
-const RULE_ORDER: GrowthRuleId[] = ['R1', 'R6', 'R2', 'R3', 'R4', 'R5'];
+// Standard A: the maturity signal leads (R1 ready → R7 dark-flag maturity →
+// R6 dev-gate → R2 expired), and R3 (initiative-stalling) is DEMOTED to the
+// tail. R3's ~258-item flood is InitiativeTracker work-item noise, not feature
+// maturity — it stays computable and visible, but it no longer crowds out the
+// signal the engine exists to carry.
+const RULE_ORDER: GrowthRuleId[] = ['R1', 'R7', 'R6', 'R2', 'R4', 'R5', 'R3'];
 
 const RULE_HEADER: Record<GrowthRuleId, string> = {
   R1: '🔸 Ready to promote',
@@ -779,6 +802,7 @@ const RULE_HEADER: Record<GrowthRuleId, string> = {
   R4: '🔸 Spec patterns',
   R5: '🔸 Recurring corrections',
   R6: '🔸 Dev-gated features still dark',
+  R7: '🔸 Staged switches — owner, deadline, proof',
 };
 
 // C2 (maturation-followthrough-fix Standard C): the operator-facing footer must

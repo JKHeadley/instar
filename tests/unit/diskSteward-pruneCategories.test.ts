@@ -1,0 +1,194 @@
+/** Disk Steward cleanup categories (spec docs/specs/disk-steward.md §3.6). */
+import { describe, it, expect } from 'vitest';
+import type fs from 'node:fs';
+import { pruneNpmCache, pruneDerivedData, npmBusy, npmCacheWriting, xcodeBusy, parseElapsed, GiB, type PruneSeams, type ProcessRow } from '../../src/monitoring/diskSteward/pruneCategories.js';
+
+const HOME = '/Users/x';
+const DD = `${HOME}/Library/Developer/Xcode/DerivedData`;
+const NOW = 1_800_000_000_000;
+const st = (o: { dir?: boolean; link?: boolean; mtimeMs: number }) => ({
+  isDirectory: () => !!o.dir, isSymbolicLink: () => !!o.link, mtimeMs: o.mtimeMs,
+} as unknown as fs.Stats);
+
+function seams(o: {
+  npmRoot?: string | Error; cacheBytes?: number; cacheAfter?: number | null; cleanThrows?: Error; procs?: ProcessRow[] | null | Array<ProcessRow[] | null>;
+  dd?: Record<string, { mtimeMs: number; link?: boolean; realpath?: string; bytes?: number }>; dev?: Record<string, number>;
+}) {
+  const ran: string[][] = [];
+  const removed: string[] = [];
+  let procCall = 0;
+  let cleaned = false;
+  const s: PruneSeams = {
+    processes: async () => {
+      const p = o.procs;
+      if (Array.isArray(p) && p.length && (Array.isArray(p[0]) || p[0] === null)) return (p as Array<ProcessRow[] | null>)[Math.min(procCall++, p.length - 1)];
+      return (p as ProcessRow[] | null | undefined) === undefined ? [] : (p as ProcessRow[] | null);
+    },
+    run: async (cmd, args) => {
+      ran.push([cmd, ...args]);
+      if (args[0] === 'config') { if (o.npmRoot instanceof Error) throw o.npmRoot; return { stdout: (o.npmRoot ?? `${HOME}/.npm`) + '\n' }; }
+      if (args[0] === 'cache') { cleaned = true; if (o.cleanThrows) throw o.cleanThrows; }
+      return { stdout: '' };
+    },
+    sizeOf: async (p) => (p.endsWith('_cacache') ? (cleaned ? (o.cacheAfter === undefined ? 0 : o.cacheAfter) : (o.cacheBytes ?? 0)) : (o.dd?.[p.split('/').pop()!]?.bytes ?? GiB)),
+    devOf: (p) => o.dev?.[p] ?? 1,
+    readdir: (p) => (p === DD ? Object.keys(o.dd ?? {}) : null),
+    lstat: (p) => {
+      if (p.endsWith('_cacache')) return st({ dir: true, mtimeMs: 0 });
+      if (p === DD) return st({ dir: true, mtimeMs: 0 });
+      const name = p.slice(DD.length + 1).split('/')[0];
+      const e = o.dd?.[name];
+      if (!e) return null;
+      return p === `${DD}/${name}` ? st({ dir: !e.link, link: e.link, mtimeMs: e.mtimeMs }) : st({ dir: true, mtimeMs: e.mtimeMs });
+    },
+    realpath: (p) => { if (p === DD) return DD; const name = p.slice(DD.length + 1); return o.dd?.[name]?.realpath ?? p; },
+    remove: async (p) => { removed.push(p); },
+    now: () => NOW, home: HOME, platform: 'darwin',
+  };
+  return { s, ran, removed };
+}
+
+describe('process predicates', () => {
+  it('parses ps elapsed time', () => {
+    expect(parseElapsed('05:03')).toBe(303);
+    expect(parseElapsed('1:00:00')).toBe(3600);
+    expect(parseElapsed('2-00:00:00')).toBe(172800);
+  });
+  it('npm is busy while a recent install or npx runs, not for a long-lived MCP npm exec', () => {
+    expect(npmBusy([{ elapsedSec: 20, command: 'npm ci --no-audit' }])).toBe(true);
+    expect(npmBusy([{ elapsedSec: 20, command: 'node /opt/npm/bin/npx-cli.js vitest' }])).toBe(true);
+    expect(npmBusy([{ elapsedSec: 7200, command: 'npm exec @playwright/mcp@latest' }])).toBe(false);
+    expect(npmBusy([{ elapsedSec: 20, command: 'node server.js' }])).toBe(false);
+  });
+  it('xcode is busy while any build tool runs', () => {
+    expect(xcodeBusy([{ elapsedSec: 1, command: '/Applications/Xcode-26.6.0.app/Contents/MacOS/Xcode' }])).toBe(true);
+    expect(xcodeBusy([{ elapsedSec: 1, command: '/usr/bin/xcodebuild -scheme X' }])).toBe(true);
+    expect(xcodeBusy([{ elapsedSec: 1, command: '/bin/zsh' }])).toBe(false);
+  });
+  it('an npm exec counts only while it starts; installs count for 30 min (fb-eb8372d8-043)', () => {
+    // The Studio case: every session starts a Playwright MCP through npm exec.
+    expect(npmBusy([{ elapsedSec: 300, command: 'npm exec @playwright/mcp@latest' }])).toBe(false);
+    expect(npmBusy([{ elapsedSec: 90, command: 'npm exec @playwright/mcp@latest' }])).toBe(true);
+    expect(npmBusy([{ elapsedSec: 600, command: 'node /opt/npm/bin/npx-cli.js vitest' }])).toBe(false);
+    expect(npmBusy([{ elapsedSec: 1500, command: 'npm install' }])).toBe(true);
+    expect(npmBusy([{ elapsedSec: 1900, command: 'npm install' }])).toBe(false);
+  });
+  it('an idle SourceKit service is not an Xcode build (fb-eb8372d8-043)', () => {
+    const sk = '/Applications/Xcode-26.6.0.app/Contents/Developer/Toolchains/XcodeDefault.xctoolchain/usr/lib/sourcekitd.framework/Versions/A/XPCServices/SourceKitService.xpc/Contents/MacOS/SourceKitService';
+    expect(xcodeBusy([{ elapsedSec: 72000, command: sk }])).toBe(false);
+    expect(xcodeBusy([{ elapsedSec: 5, command: '/Applications/Xcode-26.6.0.app/Contents/SharedFrameworks/XCBuild.framework/PlugIns/XCBBuildService.bundle/Contents/MacOS/XCBBuildService' }])).toBe(true);
+  });
+  it('a recently changed _cacache/tmp entry means the cache is being written', () => {
+    const now = 1_000_000_000;
+    const files: Record<string, number> = {};
+    const seams = {
+      now: () => now,
+      readdir: (p: string) => (p.endsWith('/tmp') ? Object.keys(files) : null),
+      lstat: (p: string) => (p.endsWith('/tmp') ? ({ mtimeMs: now } as never) : (files[p.split('/').pop()!] !== undefined ? ({ mtimeMs: files[p.split('/').pop()!] } as never) : null)),
+    };
+    files['old'] = now - 3 * 86_400_000; // leftover from an interrupted fetch
+    expect(npmCacheWriting(seams, '/c/_cacache')).toBe(false);
+    files['live'] = now - 5_000;
+    expect(npmCacheWriting(seams, '/c/_cacache')).toBe(true);
+    expect(npmCacheWriting({ ...seams, readdir: () => null }, '/c/_cacache')).toBe(true); // unreadable => busy
+    expect(npmCacheWriting({ ...seams, lstat: () => null }, '/c/_cacache')).toBe(false); // no tmp folder
+  });
+});
+
+describe('npm cache', () => {
+  const base = { dryRun: false, maxGiB: 5, budgetMs: 600_000, agentHomeDev: 1 };
+  it('cleans only above the limit, bound to the measured root', async () => {
+    const { s, ran } = seams({ cacheBytes: 9 * GiB, npmRoot: '/custom/cache' });
+    const r = await pruneNpmCache(s, base);
+    expect(r.bytesFreed).toBe(9 * GiB);
+    expect(ran.at(-1)).toEqual(['npm', 'cache', 'clean', '--force', '--cache', '/custom/cache']);
+  });
+  it('measures what left when npm exits non-zero after deleting (fb-eecd4dde-608)', async () => {
+    const { s } = seams({ cacheBytes: 13 * GiB, cacheAfter: GiB / 2, cleanThrows: new Error('Command failed: npm cache clean') });
+    const r = await pruneNpmCache(s, base);
+    expect(r.bytesFreed).toBe(13 * GiB - GiB / 2);
+    expect(r.removedItems).toBe(1);
+    expect(r.error).toMatch(/Command failed/);
+  });
+  it('claims nothing when npm fails and nothing left', async () => {
+    const { s } = seams({ cacheBytes: 9 * GiB, cacheAfter: 9 * GiB, cleanThrows: new Error('EBUSY') });
+    const r = await pruneNpmCache(s, base);
+    expect(r.bytesFreed).toBe(0);
+    expect(r.removedItems).toBe(0);
+    expect(r.error).toBe('EBUSY');
+  });
+  it('claims nothing on an error when the size afterwards is unreadable', async () => {
+    const { s } = seams({ cacheBytes: 9 * GiB, cacheAfter: null, cleanThrows: new Error('EBUSY') });
+    const r = await pruneNpmCache(s, base);
+    expect(r.bytesFreed).toBe(0);
+    expect(r.error).toBe('EBUSY');
+  });
+  it('counts only what actually left after a clean exit', async () => {
+    const { s } = seams({ cacheBytes: 9 * GiB, cacheAfter: GiB });
+    expect((await pruneNpmCache(s, base)).bytesFreed).toBe(8 * GiB);
+  });
+  it('under the limit does nothing', async () => {
+    const { s, ran } = seams({ cacheBytes: 2 * GiB });
+    expect((await pruneNpmCache(s, base)).skipped).toBe('under-limit');
+    expect(ran.some((c) => c[1] === 'cache')).toBe(false);
+  });
+  it('skips while npm is busy, re-reading the process list right before cleaning', async () => {
+    const { s, ran } = seams({ cacheBytes: 9 * GiB, procs: [[], [{ elapsedSec: 3, command: 'npm ci' }]] });
+    expect((await pruneNpmCache(s, base)).skipped).toBe('npm-busy');
+    expect(ran.some((c) => c[1] === 'cache')).toBe(false);
+  });
+  it('an unreadable process list means busy', async () => {
+    const { s } = seams({ cacheBytes: 9 * GiB, procs: null });
+    expect((await pruneNpmCache(s, base)).skipped).toBe('process-list-unreadable');
+  });
+  it('a cache on another volume is skipped; npm missing is not-installed', async () => {
+    const other = seams({ cacheBytes: 9 * GiB, dev: { [`${HOME}/.npm/_cacache`]: 2 } });
+    expect((await pruneNpmCache(other.s, base)).skipped).toBe('other-volume');
+    const missing = seams({ npmRoot: Object.assign(new Error('spawn npm ENOENT'), { code: 'ENOENT' }) });
+    expect((await pruneNpmCache(missing.s, base)).skipped).toBe('not-installed');
+  });
+  it('a dry run plans without cleaning', async () => {
+    const { s, ran } = seams({ cacheBytes: 9 * GiB });
+    const r = await pruneNpmCache(s, { ...base, dryRun: true });
+    expect(r).toMatchObject({ plannedBytes: 9 * GiB, skipped: 'dry-run', bytesFreed: 0 });
+    expect(ran.some((c) => c[1] === 'cache')).toBe(false);
+  });
+});
+
+describe('Xcode DerivedData', () => {
+  const base = { dryRun: false, budgetMs: 600_000, agentHomeDev: 1 };
+  const old = NOW - 48 * 3_600_000;
+  const fresh = NOW - 2 * 3_600_000;
+  it('removes only entries older than 24 h, never a symlink or an escaping entry', async () => {
+    const { s, removed } = seams({ dd: {
+      'App-abcdefghijklmnopqrstuvwxyzab': { mtimeMs: old, bytes: 3 * GiB },
+      'App-bcdefghijklmnopqrstuvwxyzabc': { mtimeMs: fresh },
+      'Linked-cdefghijklmnopqrstuvwxyzabcd': { mtimeMs: old, link: true },
+      'Escapes-defghijklmnopqrstuvwxyzabcde': { mtimeMs: old, realpath: '/Users/x/Documents/precious' },
+    } });
+    const r = await pruneDerivedData(s, base);
+    expect(removed).toEqual([`${DD}/App-abcdefghijklmnopqrstuvwxyzab`]);
+    expect(r).toMatchObject({ plannedItems: 1, removedItems: 1, bytesFreed: 3 * GiB });
+  });
+  it('stops while an Xcode build tool runs', async () => {
+    const { s, removed } = seams({ dd: { 'App-abcdefghijklmnopqrstuvwxyzab': { mtimeMs: old } }, procs: [{ elapsedSec: 1, command: '/usr/bin/xcodebuild build' }] });
+    expect((await pruneDerivedData(s, base)).skipped).toBe('xcode-busy');
+    expect(removed).toEqual([]);
+  });
+  it('never touches a folder Xcode did not name, or a relocated (symlinked) DerivedData', async () => {
+    const odd = seams({ dd: { 'MyProject': { mtimeMs: old } } });
+    expect((await pruneDerivedData(odd.s, base)).plannedItems).toBe(0);
+    const relocated = seams({ dd: { 'App-abcdefghijklmnopqrstuvwxyzab': { mtimeMs: old } } });
+    const lstat = relocated.s.lstat;
+    relocated.s.lstat = (p) => (p === DD ? ({ isDirectory: () => false, isSymbolicLink: () => true, mtimeMs: 0 } as unknown as fs.Stats) : lstat(p));
+    expect((await pruneDerivedData(relocated.s, base)).skipped).toBe('derived-data-not-a-plain-folder');
+    expect(relocated.removed).toEqual([]);
+  });
+
+  it('skips off macOS and when Xcode is absent', async () => {
+    const lin = seams({}); lin.s.platform = 'linux';
+    expect((await pruneDerivedData(lin.s, base)).skipped).toBe('not-macos');
+    const none = seams({}); none.s.lstat = () => null;
+    expect((await pruneDerivedData(none.s, base)).skipped).toBe('not-installed');
+  });
+});

@@ -12,6 +12,8 @@
 // @ts-nocheck — exercises the browser-native ESM module.
 import { describe, it, expect, beforeEach, vi } from 'vitest';
 import { JSDOM } from 'jsdom';
+import { readFileSync } from 'node:fs';
+import { join } from 'node:path';
 import { createController } from '../../dashboard/subscriptions.js';
 
 const flush = () => new Promise((r) => setTimeout(r, 0));
@@ -125,24 +127,23 @@ describe('Subscriptions tab controller (integration)', () => {
     expect(fx.calls.some((call) => call.url.endsWith('/approve'))).toBe(false);
   });
 
-  it('creates a dedicated Google profile from the phone surface with recent PIN proof', async () => {
+  it('no longer renders the obsolete "Create a dedicated sign-in profile" form', async () => {
+    // The agent provisions + signs in dedicated profiles itself (POST /playwright-profiles/provision
+    // stays; its route tests live in playwright-profile-routes.test.ts). The panel must not render
+    // the old human form, even when a legacy container element is handed to the controller.
     fx.script['/subscription-pool'] = { body: ACCOUNTS_OK };
     fx.script['/subscription-pool/pending-logins?scope=pool'] = { body: { enabled: true, logins: [] } };
-    fx.script['/playwright-profiles/provision'] = { status: 201, body: { readyForAutomation: true } };
     const c = ctl({ getOperatorSessionToken: () => 'scoped-human-proof' });
     c._state.active = true;
     await c.tick();
-    els.profileProvision.querySelector('[aria-label="Google account email"]').value = 'echo@example.test';
-    els.profileProvision.querySelector('[aria-label="Profile name"]').value = 'echo-google';
-    els.profileProvision.querySelector('[aria-label="Sign-in method"]').value = 'password+totp';
-    els.profileProvision.querySelector('.sub-profile-create').click();
-    await flush();
-    const call = fx.calls.find((item) => item.url === '/playwright-profiles/provision');
-    expect(call.init.headers['X-Instar-Operator-Session']).toBe('scoped-human-proof');
-    expect(JSON.parse(call.init.body)).toEqual({
-      profileId: 'echo-google', identity: 'echo@example.test', loginMethod: 'password+totp',
-    });
-    expect(els.profileProvision.textContent).toContain('secure credential link');
+    expect(els.accounts.textContent).toContain('personal');
+    expect(els.profileProvision.childElementCount).toBe(0);
+    expect(doc.querySelector('.sub-profile-create')).toBeNull();
+    expect(doc.body.textContent).not.toContain('Create a dedicated sign-in profile');
+    expect(fx.calls.some((call) => call.url === '/playwright-profiles/provision')).toBe(false);
+    const html = readFileSync(join(__dirname, '../../dashboard/index.html'), 'utf-8');
+    expect(html).not.toContain('subProfileProvision');
+    expect(html).not.toContain('Dedicated browser profiles');
   });
 
   it('feature-dark (both enabled:false) → the disabled copy, no crash', async () => {

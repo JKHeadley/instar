@@ -1,0 +1,61 @@
+{
+  "ts": "2026-10-26T01:24:11.051Z",
+  "slug": "attention-lifecycle-close-on-cause",
+  "suggestedTier": 2,
+  "declaredTier": 2,
+  "riskFloor": 2,
+  "riskFloorReasons": [
+    "safety-invariant proximity: src/messaging/TelegramAdapter.ts matches Telegram adapter",
+    "safety-invariant proximity: src/monitoring/SessionReaper.ts matches session reaper",
+    "irreversibility: src/core/PostUpdateMigrator.ts touches PostUpdateMigrator",
+    "migration / fleet-rollout surface: src/core/PostUpdateMigrator.ts touches PostUpdateMigrator (fleet migration machinery)",
+    "new capability: new route (router.<verb>() added"
+  ],
+  "belowFloor": false,
+  "files": 26,
+  "loc": 1384,
+  "scope": {
+    "basis": "staged-in-scope-additions-plus-deletions",
+    "files": [
+      "scripts/model-registry-freshness.manifest.json",
+      "src/commands/init.ts",
+      "src/commands/server.ts",
+      "src/core/AccountFollowMeEmailGate.ts",
+      "src/core/AttentionConditionStore.ts",
+      "src/core/AttentionLifecycle.ts",
+      "src/core/EnrollmentWizard.ts",
+      "src/core/PostUpdateMigrator.ts",
+      "src/core/QuotaPoller.ts",
+      "src/core/SessionManager.ts",
+      "src/core/StandDownRegistry.ts",
+      "src/core/SubscriptionReloginAttention.ts",
+      "src/core/SwapAntiThrash.ts",
+      "src/core/types.ts",
+      "src/messaging/TelegramAdapter.ts",
+      "src/messaging/telegram-origin/OriginStore.ts",
+      "src/messaging/telegram-origin/OriginStore.worker.ts",
+      "src/messaging/telegram-origin/OriginStoreBackend.ts",
+      "src/monitoring/CommitmentTracker.ts",
+      "src/monitoring/DuplicateSessionReconciler.ts",
+      "src/monitoring/OrphanedWorkSentinel.ts",
+      "src/monitoring/SessionReaper.ts",
+      "src/scaffold/templates.ts",
+      "src/scaffold/templates/jobs/instar/evolution-overdue-check.md",
+      "src/server/routes.ts",
+      "src/testing/selfActionRegistry.ts"
+    ],
+    "addedLines": 1321,
+    "deletedLines": 63
+  },
+  "causalAutopsy": null,
+  "classClosure": {
+    "defectClass": "unbounded-self-action",
+    "closure": "guard",
+    "guardEvidence": {
+      "enforcementType": "ratchet",
+      "citation": "tests/unit/self-action-convergence.test.ts",
+      "howCaught": "Registry entry attention-lifecycle-pass drives the same pure planner/expiry functions the hourly pass runs: every action moves a row to terminal DONE that the pass never reopens, so under a never-touched backlog the total is one close per qualifying row (55 in the fixture) and zero from the second pass on — horizon-independent; the brake is the terminal state plus idempotent re-read, not a counter."
+    }
+  },
+  "verdict": "pass"
+}

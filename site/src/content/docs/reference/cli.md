@@ -64,6 +64,12 @@ instar slack-cli channels       # List authorized channels
 instar whatsapp                 # WhatsApp adapter management (QR pairing, status)
 ```
 
+## Contributor checks
+
+```bash
+instar dev:claim-check <paths...>   # Before a build: open and recent PRs touching these paths
+```
+
 ## Users
 
 ```bash
@@ -153,6 +159,9 @@ instar git commit [message]     # Create a commit
 instar machines                 # List all paired machines and their roles
 instar machines remove <name-or-id>  # Revoke a machine from the mesh
 instar whoami                   # Show this machine's identity and role
+instar identity status          # This machine's AGENT identity posture + routing fingerprint (never key material)
+instar identity adopt --from <sibling>  # Move this machine's identity aside and adopt the one a sibling publishes (after the operator's yes)
+instar identity init --standalone --i-understand-peers-must-repin  # Mint a NEW agent identity when no sibling can serve one
 instar pair                     # Generate a pairing code for a new machine
 instar join <url>               # Join an existing agent mesh (--code <code>, --name <name>)
 instar wakeup                   # Move the agent to this machine (transfer awake role)
@@ -207,10 +216,12 @@ instar playbook user-audit <userId>   # Audit user data footprint
 instar doctor                   # Run health diagnostics
 instar review                   # Review system state
 instar nuke <name>              # Remove an agent completely
+instar nuke --here              # Remove the project-local install in this folder
 instar migrate                  # Run pending migrations
 instar upgrade-ack              # Acknowledge an upgrade
 instar discovery                # Scan filesystem + registry + GitHub for existing agents
 instar gate                     # UnjustifiedStopGate operator tooling (enforcement mode, kill-switch, logs)
+instar telegram-origin enroll-browser <profileId>  # After a Telegram Web K update: read-only canary, enroll the build if reviewed (local-only, sends nothing)
 ```
 
 `instar gate status` shows the durable authority breaker and its next automatic
@@ -218,12 +229,22 @@ probe. After repairing the provider, `instar gate reset-breaker` invokes the
 authenticated `POST /internal/stop-gate/reset-breaker` operation so the next
 Stop event may probe immediately.
 
+`instar nuke` checks everything before it removes anything. It stops only the
+sessions that started inside the agent's own folder. A session whose name
+matches but that started in another agent's folder (for example `echo-wt-1`
+while removing `echo`) is left running. A matching session that started
+anywhere else makes nuke stop and list it with its id; run the command again
+with `--also-stop <id>...` if it belongs to the agent. The auto-start entry is
+removed first, and only when it points at the agent's folder. If any step
+fails, nuke names it and exits non-zero instead of reporting the agent removed.
+
 ## Multi-machine
 
 ```bash
 instar pair                     # Initiate pairing on a new machine
 instar join <code>              # Complete pairing using a code from `pair`
 instar whoami                   # Show local machine identity
+instar identity status          # The agent identity on this machine (posture + fingerprint)
 instar machines                 # List paired machines and their state
 instar wakeup [machine]         # Wake a paired machine (where supported)
 instar leave                    # Remove this machine from the multi-machine cluster
@@ -255,6 +276,10 @@ instar dev:ci-failures <pr>     # Print a PR's exact failing tests (file:line + 
 instar dev:post-drive-transcript-audit --topic <id> --start <time> --end <time>
                                 # Audit a supervised topic transcript for operator-seat UX findings and file framework-issue observations
 instar dev:profile-node [pid]   # CPU-profile a running node process (SIGUSR1 + inspector + CDP) and print its hottest JS functions
+instar dev:claim-check [paths...] --keywords <words...>
+                                # Before a build: list open and recently merged PRs touching those paths, and specs matching the keywords
+instar mobile introducer show|add|remove|list
+                                # Choose which agents' owner phones may add this agent with Face ID
 instar jobMigrate               # Migrate jobs between schema versions
 instar ledgerCleanup            # Token ledger cleanup
 instar memoryBackfillEvidence   # Backfill evidence rows into the memory index
@@ -268,3 +293,16 @@ Docs coverage tracks the post-drive auditor capability as `instar post-drive-tra
 ```bash
 instar feedback --type bug --title "Session timeout" --description "Details..."
 ```
+
+## Testing a build on a throwaway agent
+
+```bash
+instar test-as-self --no-roundtrip                 # deploy the running dist into a throwaway agent home, boot it, verify, tear down
+instar test-as-self --bot-token <secret-drop-id>   # add a real Telegram round-trip (token via Secret Drop, never raw)
+instar test-as-self --keep --target <dir>          # leave the throwaway running for inspection
+instar test-as-self --report-json <path>           # per-step JSON report
+```
+
+`instar test-as-self` deploys the `dist/cli.js` that is running it, so `node <worktree>/dist/cli.js test-as-self` tests a
+branch without a release. It refuses a raw bot token and refuses to target a real agent home. See the
+[throwaway-deploy guide](/guides/test-as-self/) for the steps and the report format.

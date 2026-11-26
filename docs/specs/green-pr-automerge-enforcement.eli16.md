@@ -64,7 +64,11 @@ Round 5 closed four more: a PR that touches the merge machinery
 itself (CI workflows, the verifier script, the watcher's own code) was already excluded
 from auto-merge — "those need human eyes" — but the session-exit nudge would have handed
 the agent an exact ready-to-run merge command for them, quietly defeating the human-eyes
-rule; now those PRs route to you instead, never to a command the agent can run. The
+rule; now those PRs route to you instead, never to a command the agent can run.
+(Changed on 2026-10-22, when you said you should only have to approve constitution
+changes: those PRs no longer come to you. They merge once a second, independent review
+of that exact code is written into the change; only a change to the constitution itself
+waits for your review on GitHub.) The
 watcher's safety timer now survives the server restarting mid-merge (which its own merges
 routinely cause). The "is our pinned list of required checks stale?" self-check got a
 real reference point (the newest commit that actually ran CI — the tip of main usually

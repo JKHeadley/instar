@@ -1,0 +1,47 @@
+{
+  "ts": "2026-10-22T21:43:21.790Z",
+  "slug": "no-operator-approval",
+  "suggestedTier": 2,
+  "declaredTier": 2,
+  "riskFloor": 2,
+  "riskFloorReasons": [
+    "irreversibility: src/core/PostUpdateMigrator.ts touches PostUpdateMigrator",
+    "migration / fleet-rollout surface: src/core/PostUpdateMigrator.ts touches PostUpdateMigrator (fleet migration machinery)"
+  ],
+  "belowFloor": false,
+  "files": 19,
+  "loc": 724,
+  "scope": {
+    "basis": "staged-in-scope-additions-plus-deletions",
+    "files": [
+      "scripts/instar-dev-precommit.js",
+      "scripts/lib/instar-dev-trace.d.mts",
+      "scripts/lib/instar-dev-trace.mjs",
+      "scripts/local-verify-floor.d.mts",
+      "scripts/local-verify-floor.mjs",
+      "scripts/safe-merge.mjs",
+      "src/commands/server.ts",
+      "src/core/PostUpdateMigrator.ts",
+      "src/localVerify/StatusReconciler.ts",
+      "src/localVerify/harnessClassifier.ts",
+      "src/localVerify/localVerifyWiring.ts",
+      "src/localVerify/orchestrator.ts",
+      "src/localVerify/reconcilerSeams.ts",
+      "src/localVerify/record.ts",
+      "src/localVerify/statusProjection.ts",
+      "src/monitoring/GreenPrAutoMerger.ts",
+      "src/monitoring/greenPrAutomergeWiring.ts",
+      "src/monitoring/greenPrLogic.ts",
+      "src/server/stopGate.ts"
+    ],
+    "addedLines": 529,
+    "deletedLines": 195
+  },
+  "causalAutopsy": null,
+  "classClosure": {
+    "defectClass": "n/a",
+    "closure": "n/a",
+    "reason": "Operator-directed policy change (2026-10-22 08:58), not a defect fix; it adds no self-triggered loop — the watcher's existing tick is unchanged and the new refusal only reduces its merge attempts."
+  },
+  "verdict": "pass"
+}

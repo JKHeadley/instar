@@ -335,3 +335,21 @@ describe('WorkingSetManifest — Source 3 interactive artifacts', () => {
     expect(matches).toHaveLength(1);
   });
 });
+
+describe('secrets tree is never carried (agent-held-google-passkey §3.1)', () => {
+  it('refuses journal and interactive-artifact paths under .instar/secrets/, counting them as jail rejections', () => {
+    const pkDir = path.join(tmpDir, 'secrets', 'passkeys');
+    fs.mkdirSync(path.join(pkDir, 'pending'), { recursive: true });
+    const store = path.join(pkDir, 'store.enc');
+    const pending = path.join(pkDir, 'pending', 'abc.enc');
+    const vault = path.join(tmpDir, 'secrets', 'config.secrets.enc');
+    for (const f of [store, pending, vault]) fs.writeFileSync(f, 'ciphertext');
+    const m = compute({
+      runs: noRuns({ artifactPaths: [store, vault] }),
+      interactiveArtifactRelPaths: ['secrets/passkeys/pending/abc.enc'],
+    });
+    const carried = m.entries.map((e) => e.relPath);
+    expect(carried.some((p) => String(p).includes('secrets'))).toBe(false);
+    expect(m.jailRejected).toBe(3);
+  });
+});

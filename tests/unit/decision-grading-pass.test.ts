@@ -12,7 +12,7 @@ import {
 import type { HogDecisionSeed } from '../../src/monitoring/ExternalHogScanTick.js';
 import {
   DP_COMPLETION_CLAIM_VERIFY, DP_CORRECTION_CLASS_REVIEW, DP_EXTERNAL_HOG_KILL_LEAVE,
-  DP_FEEDBACK_READINESS, DP_MESSAGING_TONE_GATE,
+  DP_FEEDBACK_READINESS, DP_FEEDBACK_TRIAGE, DP_MESSAGING_TONE_GATE,
 } from '../../src/data/provenanceCoverage.js';
 import {
   DecisionQualityRecorderImpl,
@@ -98,7 +98,7 @@ describe('runDecisionGradingPass — hog-sustained-right window-close grading', 
     const ledger = new FeatureMetricsLedger({ dbPath: ':memory:' });
     installLiveRecorder(ledger);
     const points = [DP_MESSAGING_TONE_GATE, DP_CORRECTION_CLASS_REVIEW,
-      DP_COMPLETION_CLAIM_VERIFY, DP_FEEDBACK_READINESS];
+      DP_COMPLETION_CLAIM_VERIFY, DP_FEEDBACK_READINESS, DP_FEEDBACK_TRIAGE];
     points.forEach((point, index) => ledger.recordDecision({
       correlationId: `d-phase-b-${index}`, decisionPoint: point, ts: T0,
     }));
@@ -108,7 +108,7 @@ describe('runDecisionGradingPass — hog-sustained-right window-close grading', 
       maxDecisionsPerPass: 200, evidenceWindowMs: WINDOW, now: () => T0 + WINDOW + 1,
     });
     const first = pass();
-    expect(first.graded).toBe(4);
+    expect(first.graded).toBe(5);
     for (let index = 0; index < points.length; index++) {
       expect(ledger.getWinningGrades([`d-phase-b-${index}`])[0]).toMatchObject({
         grade: 'unknown', evidenceStrength: 'negative-evidence',
@@ -287,8 +287,8 @@ describe('wiring integrity (P8/P9)', () => {
 describe('perPointSubBudget — §5.5 fairness sub-budget (the SUBBUDGET_IMPLEMENTED primitive)', () => {
   it('returns the FULL budget for a single point (byte-identical to the pre-sub-budget behavior)', () => {
     expect(perPointSubBudget(200, 1)).toBe(200);
-    expect(GRADE_PASS_POINTS).toHaveLength(5);
-    expect(perPointSubBudget(200, GRADE_PASS_POINTS.length)).toBe(40);
+    expect(GRADE_PASS_POINTS).toHaveLength(6);
+    expect(perPointSubBudget(200, GRADE_PASS_POINTS.length)).toBe(33);
   });
 
   it('divides the global budget evenly so no point can consume a whole pass (a second point → half each)', () => {

@@ -1,0 +1,29 @@
+{
+  "ts": "2026-10-21T12:53:56.781Z",
+  "slug": "feedback-fixscript-sibling",
+  "suggestedTier": 1,
+  "declaredTier": 1,
+  "riskFloor": 1,
+  "riskFloorReasons": [],
+  "belowFloor": false,
+  "files": 1,
+  "loc": 35,
+  "scope": {
+    "basis": "staged-in-scope-additions-plus-deletions",
+    "files": [
+      "src/feedback-factory/execute/depsCache.ts"
+    ],
+    "addedLines": 29,
+    "deletedLines": 6
+  },
+  "causalAutopsy": {
+    "origin": "latent",
+    "relatedPrs": [
+      2155,
+      2259
+    ],
+    "notes": "Latent since #2155 shipped buildNatives copying exactly one script file while that script required a sibling. It could not surface until the rebuild itself started succeeding, which only happened after the HOME fix in #2259 — so the first production run of #2259 revealed this next layer. Attempt 4 reported \"native rebuild failed (exit 1): rebuilt dependencies successfully\", which is also what exposed the tail heuristic preferring the succeeding half of a chained command."
+  },
+  "classClosure": null,
+  "verdict": "pass"
+}

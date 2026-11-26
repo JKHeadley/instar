@@ -9,17 +9,26 @@
  * Download validates paths to prevent traversal attacks.
  */
 
+// CONTRACT-EVIDENCE: EXEMPT — message-origin-all-platforms adds no Slack API method, parameter or response field: the origin ledger wraps the existing calls (reading only `ts`) and the footer is one more line of `text`. Echo's Slack bot token was revoked 2026-07-01, so no live contract run is available.
+import type { SlackOriginLedger } from './SlackOriginLedger.js';
 import fs from 'node:fs';
 import path from 'node:path';
 import type { SlackApiClient } from './SlackApiClient.js';
 import { validateSlackHostname } from './sanitize.js';
+
+// CONTRACT-EVIDENCE: EXEMPT — the v2 three-step upload flow is unchanged; this only adds Slack's documented
+// optional `thread_ts` and `initial_comment` fields to files.completeUploadExternal and lets a caller name the
+// file. No live run was possible: Echo's Slack bot token was revoked 2026-07-01 (config _teardownNote). Run
+// `npm run test:contract` when Slack is re-provisioned (docs/runbooks/slack-live-test-reprovision.md).
+/** Optional extras for an upload: a thread to post into, a message beside the file, and the file's name. */
+export interface SlackUploadOptions { threadTs?: string; initialComment?: string; filename?: string }
 
 export class FileHandler {
   private api: SlackApiClient;
   private botToken: string;
   private filesDir: string;
 
-  constructor(api: SlackApiClient, botToken: string, stateDir: string) {
+  constructor(api: SlackApiClient, botToken: string, stateDir: string, private readonly originLedger?: SlackOriginLedger) {
     this.api = api;
     this.botToken = botToken;
     this.filesDir = path.join(stateDir, 'slack-files');
@@ -30,9 +39,10 @@ export class FileHandler {
    * Upload a file to a Slack channel using the v2 three-step flow.
    * files.upload is deprecated and unavailable for new apps.
    */
-  async uploadFile(channelId: string, filePath: string, title?: string): Promise<void> {
+  async uploadFile(channelId: string, filePath: string, title?: string, options?: SlackUploadOptions): Promise<void> {
     const stats = await fs.promises.stat(filePath);
-    const fileName = path.basename(filePath);
+    // A caller may name the file (the app's display name for a stored blob, whose path is a hash).
+    const fileName = options?.filename ? options.filename.replace(/[\x00-\x1f\x7f/\\]/g, '').trim().slice(0, 200) || path.basename(filePath) : path.basename(filePath);
 
     // Step 1: Get upload URL
     const urlResponse = await this.api.call('files.getUploadURLExternal', {
@@ -59,10 +69,18 @@ export class FileHandler {
     }
 
     // Step 3: Complete upload and share to channel
+    // message-origin-all-platforms §3: the share puts a file (and its comment) in front of a user,
+    // so it records its origin first; a refused record refuses the share.
+    const intent = this.originLedger?.beginIntent('files.completeUploadExternal', channelId, options?.threadTs ?? null);
+    // (A refused share throws SlackOriginRecordingError here; the caller's mirror reports "failed".)
     await this.api.call('files.completeUploadExternal', {
       files: [{ id: urlResponse.file_id as string, title: title || fileName }],
       channel_id: channelId,
+      // Into a thread, and with a message beside the file, when the caller asks (both optional).
+      ...(options?.threadTs ? { thread_ts: options.threadTs } : {}),
+      ...(options?.initialComment ? { initial_comment: options.initialComment } : {}),
     });
+    if (intent) this.originLedger!.completeReceipt(intent, null);
   }
 
   /**

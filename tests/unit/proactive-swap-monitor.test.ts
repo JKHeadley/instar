@@ -3,8 +3,8 @@
  * injected accounts/sessions/default-login/swap — no sessions, no network, no
  * timers. Covers both sides of every decision boundary:
  *   - at-pressure → swap; below-threshold → no swap
- *   - TAGGED session swapped; UNTAGGED session resolved via the default login
- *     and swapped (the 2026-06-09 "session you actually use" failure)
+ *   - TAGGED session swapped; UNTAGGED session binding is never mutated (Q3)
+ *   - default-slot rescue chooses the freshest eligible same-framework account
  *   - no sub-threshold alternate → no swap (anti-thrash)
  *   - per-cycle cap, per-session cooldown, newest-first ordering
  *   - tick() refreshes the poll only inside the watch zone
@@ -101,17 +101,62 @@ describe('ProactiveSwapMonitor — the core swap decision', () => {
     expect(swap).not.toHaveBeenCalled();
   });
 
-  it('resolves an UNTAGGED session via the default login and swaps it (the session you actually use)', async () => {
-    // The interactive session carries no accountId; the default config is logged
-    // into "hot" which is at pressure. It must still be swapped.
+  it('never mutates an UNTAGGED live session binding (Q3)', async () => {
     const { monitor, swap } = makeMonitor({
       accounts: [acct('hot', 88), acct('cool', 5)],
       sessions: [sess('interactive', null)],
       defaultAccountId: 'hot',
     });
     const r = await monitor.evaluate();
-    expect(r.swapped).toEqual(['interactive']);
-    expect(swap).toHaveBeenCalledWith({ sessionName: 'interactive', exhaustedAccountId: 'hot', nowMs: NOW, callerClass: 'proactive-swap' });
+    expect(r.swapped).toEqual([]);
+    expect(swap).not.toHaveBeenCalled();
+  });
+
+  it('dry-runs the exact default-slot flip to the freshest eligible account without calling either actuator', async () => {
+    const setDefaultAccount = vi.fn(async () => ({ ok: true, outcome: 'swapped' }));
+    const audit = vi.fn();
+    const logs: string[] = [];
+    const { monitor, swap } = makeMonitor({
+      accounts: [acct('hot', 88), acct('drain-first', 25, '2026-06-09T12:05:00Z'), acct('freshest', 4, '2026-06-20T00:00:00Z')],
+      sessions: [sess('interactive', null)],
+      defaultAccountId: 'hot',
+      defaultSlotRepoint: { enabled: true, dryRun: true, setDefaultAccount, audit },
+      logger: { log: (m) => logs.push(m), warn: (m) => logs.push(m) },
+    });
+    expect((await monitor.evaluate()).swapped).toEqual([]);
+    expect(setDefaultAccount).not.toHaveBeenCalled();
+    expect(swap).not.toHaveBeenCalled();
+    expect(audit).toHaveBeenCalledWith(expect.objectContaining({
+      event: 'proactive-default-slot-would-repoint', fromAccountId: 'hot', toAccountId: 'freshest', dryRun: true,
+    }));
+    expect(logs.some((line) => line.includes('hot → freshest'))).toBe(true);
+  });
+
+  it('live arm re-points the default slot and still never session-swaps the untagged conversation', async () => {
+    const setDefaultAccount = vi.fn(async () => ({ ok: true, outcome: 'swapped' }));
+    const { monitor, swap } = makeMonitor({
+      accounts: [acct('hot', 88), acct('fresh', 3)],
+      sessions: [sess('interactive', null)],
+      defaultAccountId: 'hot',
+      defaultSlotRepoint: { enabled: true, dryRun: false, setDefaultAccount },
+    });
+    await monitor.evaluate();
+    expect(setDefaultAccount).toHaveBeenCalledWith('fresh');
+    expect(swap).not.toHaveBeenCalled();
+  });
+
+  it('holds when no eligible measured same-framework account is fresher', async () => {
+    const setDefaultAccount = vi.fn(async () => ({ ok: true, outcome: 'swapped' }));
+    const unknown = acct('unknown', null);
+    const wrongFramework = { ...acct('codex', 1), framework: 'codex' as const };
+    const { monitor } = makeMonitor({
+      accounts: [acct('hot', 88), acct('also-hot', 86), unknown, wrongFramework],
+      sessions: [sess('interactive', null)],
+      defaultAccountId: 'hot',
+      defaultSlotRepoint: { enabled: true, dryRun: false, setDefaultAccount },
+    });
+    await monitor.evaluate();
+    expect(setDefaultAccount).not.toHaveBeenCalled();
   });
 
   it('leaves an untagged session alone when the default login is NOT at pressure', async () => {

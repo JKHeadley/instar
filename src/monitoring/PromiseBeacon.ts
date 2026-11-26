@@ -29,7 +29,9 @@
  *  - `sendMessage(topicId, text, { source: 'promise-beacon', isProxy: true })`
  *    is what PresenceProxy's `isSystemOrProxyMessage` filters out.
  */
+import { topicRef } from '../messaging/shared/topicRef.js';
 import { TelegramOriginHoldError } from '../messaging/telegram-origin/types.js';
+import { featureEvidence } from './FeatureEvidenceLog.js';
 import * as fs from 'fs';
 import * as path from 'path';
 import * as crypto from 'crypto';
@@ -489,7 +491,7 @@ function humanizeMs(ms: number): string {
  */
 function redactSecrets(excerpt: string): string {
   if (!excerpt) return '';
-  const SECRET = /\b(sk-(?:proj|svcacct|admin|None|or-v1)-[A-Za-z0-9_-]{16,}|github_pat_[A-Za-z0-9_]{20,}|sk-[A-Za-z0-9]{12,}|ghp_[A-Za-z0-9]{20,}|xox[baprs]-[A-Za-z0-9-]{8,}|AKIA[0-9A-Z]{12,}|(?:secret|password|passwd|api[_-]?key|token|bearer)\b\s*[:=]?\s*\S{6,})/i;
+  const SECRET = /\b(sk-ant-[A-Za-z0-9_-]{20,}|sk-(?:proj|svcacct|admin|None|or-v1)-[A-Za-z0-9_-]{16,}|github_pat_[A-Za-z0-9_]{20,}|sk-[A-Za-z0-9]{12,}|ghp_[A-Za-z0-9]{20,}|xox[baprs]-[A-Za-z0-9-]{8,}|AKIA[0-9A-Z]{12,}|(?:secret|password|passwd|api[_-]?key|token|bearer)\b\s*[:=]?\s*\S{6,})/i;
   return SECRET.test(excerpt) ? '' : excerpt;
 }
 
@@ -1221,6 +1223,20 @@ export class PromiseBeacon extends EventEmitter {
 
   /** Emit one escalation-audit event (§6). Also covers dry-run "would" logging. */
   private auditEsc(c: Commitment, decision: string, extra: Record<string, unknown> = {}): void {
+    // A dry run or a hold repeats this decision on every beacon check, so one row per commitment and decision an hour.
+    featureEvidence.recordAtMostEvery('monitoring.promiseBeacon.escalation', `${c.id}|${decision}`, 3_600_000, {
+      kind: ['double-spawn-detected', 'revive-failed', 'rung2-send-failed'].includes(decision) ? 'error'
+        : ['backoff-hold', 'not-owner', 'rung2-floor-hold', 'rung2-quiet-hours'].includes(decision) ? 'held' : 'fired',
+      reason: decision,
+      context: {
+        commitmentId: c.id,
+        topicId: typeof c.topicId === 'number' ? c.topicId : null,
+        dryRun: !!this.esc?.dryRun,
+        attempts: c.escalationAttempts ?? 0,
+        rung: typeof extra.rung === 'number' ? extra.rung : null,
+        state: typeof extra.state === 'string' ? extra.state : null,
+      },
+    });
     this.emit('escalation', {
       id: c.id,
       topicId: c.topicId,
@@ -1311,6 +1327,11 @@ export class PromiseBeacon extends EventEmitter {
     if (!result.sessionName) {
       // Spawn refused — release the in-flight marker now (the attempt already
       // counted) and fall to Rung 2 with the state-specific recoverability.
+      featureEvidence.record('monitoring.promiseBeacon.escalation', {
+        kind: 'error',
+        reason: `revive-refused:${result.refusalReason ?? 'unknown'}`,
+        context: { commitmentId: c.id, topicId: typeof c.topicId === 'number' ? c.topicId : null, attempts: attempts + 1, refusalReason: result.refusalReason ?? null },
+      });
       this.escInFlightGlobal = Math.max(0, this.escInFlightGlobal - 1);
       await this.config.commitmentTracker.mutate(c.id, prev => ({
         ...prev,
@@ -1618,8 +1639,8 @@ export class PromiseBeacon extends EventEmitter {
         .find((item): item is Commitment => !!item && item.topicId === topicId);
     if (!representative) {
       const reason = state.retryingRepresentativeId
-        ? `The frozen aggregate representative ${state.retryingRepresentativeId} no longer resolves on topic ${topicId}`
-        : `No commitment record remains for ${batch.length} durable aggregate item(s) on topic ${topicId}`;
+        ? `The frozen aggregate representative ${state.retryingRepresentativeId} no longer resolves on ${topicRef(topicId)}`
+        : `No commitment record remains for ${batch.length} durable aggregate item(s) on ${topicRef(topicId)}`;
       this.reportAggregateDegradation('durable aggregate delivery', 'retain the batch for operator repair', reason);
       throw new Error(reason);
     }

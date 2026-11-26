@@ -1,5 +1,7 @@
 /**
  * Multi-machine CLI commands.
+ * Governed by: Avoid TCC-Protected Directories — No Agent State Under ~/Documents on macOS (docs/STANDARDS-REGISTRY.md) —
+ * `instar doctor` reports the "Project location" check.
  *
  * Commands:
  *   instar machines          — List paired machines and their roles
@@ -14,21 +16,30 @@
  * Part of Phase 1-6 of the multi-machine spec.
  */
 
+import { standInEverUsed } from '../server/throwawayOwnerChat.js';
+import { TEAM_ENFORCEMENT_VERSION } from '../core/TeamAccessSync.js';
+import { getInstarVersion } from '../core/Config.js';
 import fs from 'node:fs';
 import { installAgentIdentityFromPairing } from '../core/AgentIdentityHandover.js';
+import { describeMissingAgentIdentity, joinerAgentNameToAdopt } from '../core/firstPairAgentIdentity.js';
+import os from 'node:os';
 import path from 'node:path';
 import pc from 'picocolors';
 import { loadConfig } from '../core/Config.js';
+import { applyJoinerPairActivation, decideInviterPairActivation, requestPairActivationRestart, type InviterPairResponse } from '../core/sessionPoolPairActivation.js';
+import { LastingLinkLedger, lastingEndpoints, mergeEndpoints } from '../core/lastingLink.js';
 import { redactUrl, redactUrlsInText } from '../core/redactUrl.js';
 import { resolveJoinDir } from '../utils/joinDir.js';
-import { MachineIdentityManager } from '../core/MachineIdentity.js';
+import { gitLeaseHasNoRemote, selectLeaseMedium } from '../core/leaseMediumSelection.js';
+import { isInstarSourceTree } from '../core/SourceTreeGuard.js';
+import { MachineIdentityManager, isRegistryEntryActive } from '../core/MachineIdentity.js';
 import { HeartbeatManager } from '../core/HeartbeatManager.js';
 import { SecretStore } from '../core/SecretStore.js';
 import { GitSyncManager } from '../core/GitSync.js';
 import { SelfKnowledgeTree } from '../knowledge/SelfKnowledgeTree.js';
 import { CoverageAuditor } from '../knowledge/CoverageAuditor.js';
 import { SafeGitExecutor } from '../core/SafeGitExecutor.js';
-import type { MachineRole } from '../core/types.js';
+import type { MachineRole, MeshEndpoint } from '../core/types.js';
 import { resolveDevAgentGate } from '../core/devAgentGate.js';
 
 export async function establishPairingRecoveryRoot(
@@ -46,6 +57,53 @@ export async function establishPairingRecoveryRoot(
   const material = recovery.ensure(current.machineId, current.recoveryEpoch ?? 0, current.recoveryPublicKey);
   if (!material) return; // no OS-keychain backing: escrow is unavailable by design
   recovery.rememberIdentity(mgr.establishLocalRecoveryKey(material));
+}
+
+/** True when this machine holds the identity's private signing key (current or legacy file name). */
+function hasLocalSigningKey(mgr: MachineIdentityManager): boolean {
+  try {
+    return mgr.loadSigningKey().length > 0;
+  } catch {
+    // @silent-fallback-ok — a missing or unreadable key is exactly the "not made here" signal.
+    return false;
+  }
+}
+
+/**
+ * Give this machine's own keychain the chance to rebuild missing key files
+ * for its identity (the boot-time identity recovery path). True only when it
+ * did, which proves the identity belongs to this machine.
+ */
+async function recoversOwnKeys(config: ReturnType<typeof loadConfig>, mgr: MachineIdentityManager): Promise<boolean> {
+  try {
+    const { runMachineIdentityBootRecovery } = await import('../core/MachineIdentityBootRecovery.js');
+    const outcome = await runMachineIdentityBootRecovery({ config, manager: mgr });
+    return outcome === 'keys-recovered' && hasLocalSigningKey(mgr);
+  } catch {
+    // @silent-fallback-ok — recovery unavailable means it cannot vouch for the identity;
+    // the caller sets the copy aside (renamed, never deleted), which is reversible.
+    return false;
+  }
+}
+
+/**
+ * Move a copied machine identity (identity.json and any key files beside it)
+ * out of the way, never deleting it, so a fresh identity can be minted for
+ * this machine. Exported for tests.
+ */
+export function setAsideCopiedIdentity(mgr: MachineIdentityManager, why: string): string[] {
+  const stamp = new Date().toISOString().replace(/[:.]/g, '-');
+  const moved: string[] = [];
+  const machineDir = path.dirname(mgr.identityPath);
+  for (const file of [mgr.identityPath, mgr.signingKeyPath, mgr.encryptionKeyPath,
+    path.join(machineDir, 'signing-private.pem'), path.join(machineDir, 'encryption-private.pem')]) {
+    if (!fs.existsSync(file)) continue;
+    const target = `${file}.copied-${stamp}`;
+    fs.renameSync(file, target);
+    moved.push(target);
+  }
+  console.log(pc.yellow(`  The machine identity here was copied from another machine (${why}). Set it aside and creating this machine's own.`));
+  return moved;
 }
 
 async function prepareFreshRevokedPairingIdentity(
@@ -69,16 +127,16 @@ async function prepareFreshRevokedPairingIdentity(
 }
 
 /**
- * Claim the fenced lease for THIS machine and propagate it to the substrate.
+ * Claim the fenced lease for THIS machine in the local registry.
  *
  * `instar wakeup` (force path and the no-awake-machine path) used to only flip
  * the LOCAL registry role — but the lease, not the role, is the authority, and
  * the server's reconcileRoleToLease() OVERRIDES role back to match the lease on
  * startup. So a role-only flip was silently undone and never reached the peer
  * (verified live on a real two-machine mesh, 2026-05-28). Here we build a real
- * signed +1-epoch acquisition (the same record GitLeaseStore writes), persist it
- * into the registry with the holder's freshness fields, and best-effort push so
- * the peer sees the takeover immediately (the server's next sync re-pushes too).
+ * signed +1-epoch acquisition (the same record GitLeaseStore writes) and persist it
+ * into the local registry with the holder's freshness fields. The server shares
+ * it with the peer when it runs; this function makes no git commit or push.
  */
 export async function claimLeaseForSelf(
   mgr: MachineIdentityManager,
@@ -115,20 +173,14 @@ export async function claimLeaseForSelf(
   }
   mgr.saveRegistry(registry);
 
-  // Best-effort immediate propagation (gpgsign disabled so a stale signing
-  // config can't block the commit — see GitSync.configureCommitSigning).
-  try {
-    if (!fs.existsSync(path.join(config.projectDir, '.git'))) return;
-    const opts = { cwd: config.projectDir, encoding: 'utf-8' as const, stdio: 'pipe' as const, operation: 'src/commands/machine.ts:claimLeaseForSelf' };
-    SafeGitExecutor.run(['add', path.join(config.stateDir, 'machines', 'registry.json')], opts);
-    SafeGitExecutor.run(['-c', 'commit.gpgsign=false', 'commit', '-m', `chore(mesh): force-wakeup lease epoch ${candidate.epoch} → ${machineId.slice(0, 8)}`], opts);
-    let hasUpstream = false;
-    try { SafeGitExecutor.run(['rev-parse', '--abbrev-ref', '--symbolic-full-name', '@{u}'], opts); hasUpstream = true; } catch { /* none yet */ }
-    const branch = SafeGitExecutor.run(['rev-parse', '--abbrev-ref', 'HEAD'], opts).trim() || 'main';
-    SafeGitExecutor.run(hasUpstream ? ['push'] : ['push', '-u', 'origin', branch], opts);
-  } catch {
-    // @silent-fallback-ok — the server's next sync will push the claimed lease.
-  }
+  // The claim is saved locally only. Sharing it is the server's job: when this
+  // machine's server runs, its own lease and sync paths carry the higher epoch
+  // to the peer (git compare-and-swap, or the network lease transport), with
+  // their pull-first conflict handling. The hand-rolled commit + push that used
+  // to sit here never ran (SafeGitExecutor.run misrouted its pre-verb `-c`), and
+  // a CLI commit on a standby's stale base would conflict at the next sync, so
+  // it was removed rather than switched on (EVO-029,
+  // docs/specs/safe-git-read-surface-hardening.md).
 }
 
 // ── instar machines ──────────────────────────────────────────────
@@ -167,7 +219,7 @@ export async function listMachines(options: MachinesOptions): Promise<void> {
   for (const [machineId, entry] of machines) {
     const isLocal = machineId === localIdentity.machineId;
     const roleIcon = entry.role === 'awake' ? pc.green('▶') : pc.dim('○');
-    const statusIcon = entry.status === 'active' ? '' : pc.red(' [revoked]');
+    const statusIcon = isRegistryEntryActive(entry) ? '' : pc.red(' [revoked]');
     const localTag = isLocal ? pc.cyan(' (this machine)') : '';
 
     console.log(`  ${roleIcon} ${pc.bold(entry.name)}${localTag}${statusIcon}`);
@@ -233,7 +285,9 @@ export async function removeMachine(nameOrId: string, options: RemoveMachineOpti
   mgr.revokeMachine(machineId, localIdentity.machineId, 'Removed via CLI');
 
   console.log(pc.green(`Machine "${entry.name}" has been revoked.`));
-  console.log(pc.dim('Secrets should be rotated. The revoked machine can no longer authenticate.'));
+  console.log(pc.dim('Secrets should be rotated. The revoked machine can no longer authenticate to the mesh with its machine key.'));
+  // a2a-single-agent-identity §1.4: true of the MACHINE key, false of the AGENT key — say so.
+  console.log(pc.yellow(`${entry.name} is revoked for the mesh but still holds a copy of the agent identity and can sign as ${config.projectName} until the identity is rotated fleet-wide.`));
 }
 
 // ── instar whoami ────────────────────────────────────────────────
@@ -280,6 +334,99 @@ export async function whoami(options: WhoamiOptions): Promise<void> {
   console.log();
 }
 
+/**
+ * Exported for tests. Whether this agent's server keeps the lease in git, by the
+ * same facts its boot choice reads: git backup on, a `.git`, a home that is not
+ * an instar source tree (GitSyncManager refuses one), and a registry that is not
+ * git-ignored. Only then does the server share a lease claimed in registry.json.
+ */
+export function leaseKeptInGit(projectDir: string, gitBackupEnabled: boolean, registryAbsPath: string, mediumCheckEnabled?: boolean): boolean {
+  if (!gitBackupEnabled || !fs.existsSync(path.join(projectDir, '.git'))) return false;
+  if (isInstarSourceTree(projectDir)) return false;
+  return selectLeaseMedium({ projectDir, registryAbsPath, hasGitSyncManager: true, mediumCheckEnabled }).medium !== 'local';
+}
+
+/**
+ * Exported for tests. True when this machine's server only observes the lease and
+ * never acquires or renews it, by the same rule as
+ * MultiMachineCoordinator.resolvedLeaseRole: an explicit
+ * `leaseSelfHeal.leaseRole`, else `telegramPolling === false`.
+ */
+export function leaseObserveOnly(multiMachine: unknown): boolean {
+  const mm = (multiMachine ?? {}) as { telegramPolling?: unknown; leaseSelfHeal?: { leaseRole?: unknown } };
+  const explicit = mm.leaseSelfHeal?.leaseRole;
+  if (explicit === 'active' || explicit === 'observe-only' || explicit === 'deferential') return explicit === 'observe-only';
+  return mm.telegramPolling === false;
+}
+
+/** What happens to a forced claim next, as far as configuration can tell. */
+export type ForceClaimOutlook = 'git' | 'not-git' | 'observe-only' | 'unknown';
+
+/** The plain line `instar wakeup --force` prints after claiming the lease. Exported for tests. */
+export function forceClaimLine(outlook: ForceClaimOutlook): string {
+  switch (outlook) {
+    case 'git':
+      return 'Lease claimed on this machine. It is expected to be shared through git when the server here next starts and syncs; until then the other machine has not been told.';
+    case 'observe-only':
+      return 'Lease claimed in this machine\'s registry, but this machine is set to only observe the lease, so its server will not hold or renew this claim and the other machine is not told. While the other machine is reachable, run `instar wakeup` without --force to hand over.';
+    case 'unknown':
+      return 'Lease claimed in this machine\'s registry. Could not tell whether this agent keeps its lease in git, so the other machine may not be told. While the other machine is reachable, run `instar wakeup` without --force to hand over.';
+    default:
+      return 'Lease claimed in this machine\'s registry only. This agent does not keep its lease in git, so the other machine is not told and the server here will not take over from this claim. While the other machine is reachable, run `instar wakeup` without --force to hand over.';
+  }
+}
+
+/** Exported for tests. True only where the lease would use git and has nowhere to push. */
+export function noRemoteTakeoverApplies(projectDir: string, gitBackupEnabled: boolean, registryAbsPath: string, mediumCheckEnabled?: boolean): boolean {
+  if (!gitBackupEnabled || !fs.existsSync(path.join(projectDir, '.git'))) return false;
+  if (selectLeaseMedium({ projectDir, registryAbsPath, hasGitSyncManager: true, mediumCheckEnabled }).medium === 'local') return false;
+  return gitLeaseHasNoRemote(projectDir) === true;
+}
+
+function pairingWouldActivate(config: ReturnType<typeof loadConfig>): boolean {
+  const mgr = new MachineIdentityManager(config.stateDir);
+  const selfId = mgr.hasIdentity() ? mgr.loadIdentity().machineId : '';
+  return decideInviterPairActivation({
+    stateDir: config.stateDir,
+    otherMachineIds: Object.keys(mgr.loadRegistry().machines ?? {}).filter((id) => id !== selfId),
+    joinerMachineId: '',
+  })?.activate === true;
+}
+
+/**
+ * Exported for tests. Read from disk, not the loaded config: pairing writes the switch after
+ * this process loaded its config, and the note must not call a working takeover broken.
+ */
+export function takeoverSwitchOnDisk(stateDir: string): boolean {
+  try {
+    const heal = JSON.parse(fs.readFileSync(path.join(stateDir, 'config.json'), 'utf-8'))?.multiMachine?.leaseSelfHeal;
+    return heal?.soloCaptainHold?.enabled === true && !heal?.preferredAwakeMachineId;
+  } catch {
+    return false; // @silent-fallback-ok: an unreadable config keeps the older, more cautious note
+  }
+}
+
+async function ownLastingEndpoints(config: ReturnType<typeof loadConfig>): Promise<MeshEndpoint[]> {
+  try {
+    const { computeOwnLastingEndpoints } = await import('../core/MeshUrlAdvertiser.js');
+    return await computeOwnLastingEndpoints(config);
+  } catch (err) {
+    console.warn('[pair] could not work out this machine\'s addresses:', err);
+    return []; // @silent-fallback-ok: reported to the owner by the no-lasting-connection note.
+  }
+}
+
+function printNoRemoteTakeoverNote(config: ReturnType<typeof loadConfig>): void {
+  if (takeoverSwitchOnDisk(config.stateDir)) return;
+  // A first pairing writes the switch, so this note would be false for the pair it is about to make.
+  if (pairingWouldActivate(config)) return;
+  const registryPath = path.join(config.stateDir, 'machines', 'registry.json');
+  if (!noRemoteTakeoverApplies(config.projectDir, config.gitBackup?.enabled !== false, registryPath, config.multiMachine?.leaseFlapFix?.mediumCheck)) return;
+  console.log(pc.yellow('  Note: automatic takeover does not work yet on a pair with no git remote.'));
+  console.log(pc.dim('  If the other machine dies, this one will not step in. Adding a git remote avoids this.'));
+  console.log();
+}
+
 // ── instar pair ──────────────────────────────────────────────────
 
 interface PairOptions {
@@ -296,6 +443,10 @@ export async function startPairing(options: PairOptions): Promise<void> {
     process.exit(1);
   }
 
+  if (standInEverUsed(config.stateDir)) {
+    console.log(pc.red('This is a throwaway test agent that used a stand-in owner chat, so it is never paired with another machine.'));
+    process.exit(1);
+  }
   const mgr = new MachineIdentityManager(config.stateDir);
 
   if (!mgr.hasIdentity()) {
@@ -355,9 +506,25 @@ export async function startPairing(options: PairOptions): Promise<void> {
   }
 
   console.log();
+  printNoRemoteTakeoverNote(config);
   console.log(pc.dim('  This code expires in 10 minutes.'));
-  console.log(pc.dim('  After entering the code, verify the visual symbols match on both screens.'));
   console.log();
+}
+
+/** A plain-http join to anything but this machine (SEC-072): worth a warning, never a refusal. */
+export function isPlainHttpRemote(url: string): boolean {
+  try {
+    const u = new URL(url);
+    if (u.protocol !== 'http:') return false;
+    const h = u.hostname.replace(/^\[|\]$/g, '');
+    if (h === 'localhost' || h.endsWith('.localhost') || h === '::1' || /^127\./.test(h)) return false;
+    // Tailscale encrypts the link itself (100.64.0.0/10, MagicDNS *.ts.net).
+    const m = /^100\.(\d+)\./.exec(h);
+    if ((m && Number(m[1]) >= 64 && Number(m[1]) <= 127) || h.endsWith('.ts.net')) return false;
+    return true;
+  } catch {
+    return false; // @silent-fallback-ok — not a URL: the fetch below reports it
+  }
 }
 
 // ── instar join ─────────────────────────────────────────────────
@@ -427,6 +594,10 @@ export async function joinMesh(repoUrl: string, options: JoinOptions): Promise<v
   // resolveJoinDir honors --dir (incl. for git URLs — the §1.3 fix); without
   // --dir it falls back to the historical <cwd>/<repoName> for git URLs.
   const projectDir = resolveJoinDir(repoUrl, options);
+  if (standInEverUsed(path.join(projectDir, '.instar'))) {
+    console.log(pc.red('This is a throwaway test agent that used a stand-in owner chat, so it is never paired with another machine.'));
+    process.exit(1);
+  }
   const isGitUrl = repoUrl.includes('github.com') || repoUrl.includes('.git') || repoUrl.startsWith('git@');
 
   if (isGitUrl) {
@@ -464,6 +635,9 @@ export async function joinMesh(repoUrl: string, options: JoinOptions): Promise<v
   // the port live in config.json.
   const configFilePath = path.join(config.stateDir, 'config.json');
   if (!fs.existsSync(configFilePath)) {
+    // A --dir that does not exist yet (joining by URL, not clone) has no state folder
+    // (tests/unit/join-missing-dir.test.ts).
+    fs.mkdirSync(config.stateDir, { recursive: true });
     const { randomUUID } = await import('node:crypto');
     const scaffolded = buildJoinedConfig(config, options.port, randomUUID());
     fs.writeFileSync(configFilePath, JSON.stringify(scaffolded, null, 2));
@@ -495,7 +669,16 @@ export async function joinMesh(repoUrl: string, options: JoinOptions): Promise<v
   // the name happened to line up) enabling broken commit-signing. Verified live
   // on a real two-machine mesh, 2026-05-28. generateIdentity writes the
   // canonical filenames, the identity, and self-registers as standby.
-  if (mgr.hasIdentity()) {
+  if (mgr.hasIdentity() && !hasLocalSigningKey(mgr) && !(await recoversOwnKeys(config, mgr))) {
+    // An identity file whose private signing key is absent AND which this
+    // machine's keychain cannot rebuild was not made here: it came with a
+    // copied or cloned agent home. Using it would make this machine claim
+    // another machine's id (ACT-1302). A genuine identity that lost only its
+    // key files is rebuilt by recoversOwnKeys and keeps its id.
+    setAsideCopiedIdentity(mgr, 'its private signing key is not on this machine');
+    const identity = await mgr.generateIdentity({ name: options.name, role: 'standby', force: true });
+    console.log(pc.green(`  Identity created: ${identity.name} (${identity.machineId.slice(0, 12)}...)`));
+  } else if (mgr.hasIdentity()) {
     console.log(pc.yellow('  This machine already has an identity. Using existing.'));
   } else {
     const identity = await mgr.generateIdentity({ name: options.name, role: 'standby' });
@@ -505,7 +688,13 @@ export async function joinMesh(repoUrl: string, options: JoinOptions): Promise<v
 
   // Step 4: Contact the awake machine's pairing endpoint (if URL is a tunnel)
   const isTunnelUrl = repoUrl.startsWith('http://') || repoUrl.startsWith('https://');
+  // SEC-072: set when the agent-identity handover did not verify. Nothing from that reply is
+  // saved (no peer registration, no pairing keys, no Telegram handover) and the join stops.
+  let identityHandoverFailed = false;
   if (isTunnelUrl) {
+    if (isPlainHttpRemote(repoUrl)) {
+      console.log(pc.yellow('  This address uses plain http, so the pairing code and the reply travel unencrypted. Use the https address if the other machine has one.'));
+    }
     console.log(`  Contacting ${redactUrl(repoUrl)}...`);
     try {
       let identity = mgr.loadIdentity();
@@ -515,14 +704,19 @@ export async function joinMesh(repoUrl: string, options: JoinOptions): Promise<v
       // heartbeat URL field instead).
       const { resolveAdvertisedMeshUrl } = await import('../core/MeshUrlAdvertiser.js');
       const advertisedUrl = resolveAdvertisedMeshUrl(config.tunnel);
+      const ownLasting = await ownLastingEndpoints(config);
       const sendPairingRequest = () => fetch(`${repoUrl}/api/pair`, {
           method: 'POST',
           headers: { 'Content-Type': 'application/json' },
           body: JSON.stringify({
             pairingCode: options.code,
+            // identity-security piece 2c §4: the inviter refuses a joiner below the minimum build after enrolment.
+            instarVersion: getInstarVersion(),
             machineIdentity: identity,
             ephemeralPublicKey: identity.encryptionPublicKey,
+            teamEnforcement: TEAM_ENFORCEMENT_VERSION,
             ...(advertisedUrl ? { advertisedUrl } : {}),
+            ...(ownLasting.length > 0 ? { endpoints: ownLasting } : {}),
           }),
           signal: AbortSignal.timeout(10_000),
         });
@@ -530,7 +724,15 @@ export async function joinMesh(repoUrl: string, options: JoinOptions): Promise<v
 
       if (resp.status === 409) {
         const refusal = await resp.clone().json().catch(() => ({})) as { error?: string };
-        if (refusal.error === 'fresh-pairing-identity-required') {
+        if (refusal.error === 'joiner-identity-is-inviter') {
+          // The inviter recognised its own id: this home's identity file is a copy.
+          setAsideCopiedIdentity(mgr, 'the machine being joined reports it as its own');
+          await mgr.generateIdentity({ name: options.name, role: 'standby', force: true });
+          await establishPairingRecoveryRoot(config, mgr);
+          identity = mgr.loadIdentity();
+          console.log(pc.green(`  Identity created: ${identity.name} (${identity.machineId.slice(0, 12)}...)`));
+          resp = await sendPairingRequest();
+        } else if (refusal.error === 'fresh-pairing-identity-required') {
           await prepareFreshRevokedPairingIdentity(config, mgr);
           identity = mgr.loadIdentity();
           console.log(pc.yellow('  Revoked prior identity detected — generated fresh signing, encryption, and recovery keys for this pairing code.'));
@@ -540,28 +742,30 @@ export async function joinMesh(repoUrl: string, options: JoinOptions): Promise<v
 
       if (!resp.ok) {
         const body = await resp.json().catch(() => ({}));
-        console.log(pc.red(`  Pairing rejected: ${(body as any).error || resp.statusText}`));
+        // A refusal can carry a plain message (e.g. the minimum build this machine needs, identity piece 2c).
+        console.log(pc.red(`  Pairing rejected: ${(body as any).message || (body as any).error || resp.statusText}`));
         process.exit(1);
       }
 
       const result = await resp.json() as {
         machineIdentity?: any;
+        endpoints?: unknown;
         agentIdentityEnvelope?: any;
+        agentIdentityAbsent?: unknown;
         identityRecoveryBearerToken?: string;
         status?: string;
-      };
+      } & InviterPairResponse;
 
-      // The ordinary authToken is intentionally machine-local. Recovery routes
-      // use a distinct agent-wide bearer conveyed only inside this
-      // code-authenticated pairing response, so peers with different local API
-      // tokens can still perform the recovery protocol.
-      if (/^[a-f0-9]{64}$/i.test(result.identityRecoveryBearerToken ?? '')) {
+      // The agent's name comes from the machine that holds the agent, not from this folder's
+      // name (fb-1e30d109-e50: a folder named otherwise failed the handover below). It is
+      // bound now and written to this machine's config only once the handover verifies.
+      let adoptedAgentName: string | null = null;
+      try {
         const joinedConfig = JSON.parse(fs.readFileSync(configFilePath, 'utf8')) as Record<string, any>;
-        joinedConfig.multiMachine ??= {};
-        joinedConfig.multiMachine.identityReannounce ??= {};
-        joinedConfig.multiMachine.identityReannounce.sharedBearerToken = result.identityRecoveryBearerToken;
-        fs.writeFileSync(configFilePath, `${JSON.stringify(joinedConfig, null, 2)}\n`, { mode: 0o600 });
-        config = loadConfig(projectDir);
+        const adopt = joinerAgentNameToAdopt(joinedConfig, (result as { agentName?: unknown }).agentName);
+        if (adopt && adopt !== config.projectName) adoptedAgentName = adopt;
+      } catch (err) {
+        console.log(pc.yellow(`  Could not read this machine's config for the agent's name: ${err instanceof Error ? err.message : String(err)}.`));
       }
 
       // ── Install the AGENT identity carried by the pairing response ──────────────────
@@ -578,7 +782,7 @@ export async function joinMesh(repoUrl: string, options: JoinOptions): Promise<v
           pairingSessionId: String(options.code),
           joinerMachineId: identity.machineId,
           joinerEncryptionPublicKey: identity.encryptionPublicKey,
-          agentName: config.projectName,
+          agentName: adoptedAgentName ?? config.projectName,
           expiresAt: '',
         },
         encryptionPrivateKeyPem: (() => {
@@ -592,12 +796,57 @@ export async function joinMesh(repoUrl: string, options: JoinOptions): Promise<v
         })(),
         pinnedFingerprint: options.agentFingerprint ?? null,
       });
+      if (agentIdentityOutcome.ok && adoptedAgentName) {
+        try {
+          const joinedConfig = JSON.parse(fs.readFileSync(configFilePath, 'utf8')) as Record<string, any>;
+          joinedConfig.projectName = adoptedAgentName;
+          fs.writeFileSync(configFilePath, `${JSON.stringify(joinedConfig, null, 2)}\n`, { mode: 0o600 });
+          config = loadConfig(projectDir);
+          console.log(pc.dim(`  Agent name: ${adoptedAgentName} (from the machine you paired with).`));
+        } catch (err) {
+          console.log(pc.yellow(`  Could not record the agent's name ${adoptedAgentName}: ${err instanceof Error ? err.message : String(err)}.`));
+        }
+      }
       if (agentIdentityOutcome.ok) {
+        // SEC-072: these two fields sit outside the sealed identity envelope, so they are saved
+        // only once the envelope has verified. A join that fails the handover keeps neither.
+        // The ordinary authToken is intentionally machine-local. Recovery routes
+        // use a distinct agent-wide bearer conveyed only inside this
+        // code-authenticated pairing response, so peers with different local API
+        // tokens can still perform the recovery protocol.
+        // The agent's owner introducers travel with its identity (mobile-pairing-introducer §6).
+        if (Array.isArray((result as { ownerIntroducers?: unknown }).ownerIntroducers)) {
+          try {
+            const joinedConfig = JSON.parse(fs.readFileSync(configFilePath, 'utf8')) as Record<string, any>;
+            joinedConfig.mobilePairing ??= {};
+            if (!Array.isArray(joinedConfig.mobilePairing.ownerIntroducers)) {
+              joinedConfig.mobilePairing.ownerIntroducers = (result as { ownerIntroducers: Array<{ name: string; publicKey: string }> }).ownerIntroducers
+                .filter((e) => e && typeof e.name === 'string' && typeof e.publicKey === 'string').slice(0, 8);
+              fs.writeFileSync(configFilePath, `${JSON.stringify(joinedConfig, null, 2)}\n`, { mode: 0o600 });
+              config = loadConfig(projectDir);
+            }
+          } catch (err) {
+            console.log(pc.yellow(`  Could not copy the owner introducers: ${err instanceof Error ? err.message : String(err)}. Phones can still pair with the code.`));
+          }
+        }
+        if (/^[a-f0-9]{64}$/i.test(result.identityRecoveryBearerToken ?? '')) {
+          try {
+            const joinedConfig = JSON.parse(fs.readFileSync(configFilePath, 'utf8')) as Record<string, any>;
+            joinedConfig.multiMachine ??= {};
+            joinedConfig.multiMachine.identityReannounce ??= {};
+            joinedConfig.multiMachine.identityReannounce.sharedBearerToken = result.identityRecoveryBearerToken;
+            fs.writeFileSync(configFilePath, `${JSON.stringify(joinedConfig, null, 2)}\n`, { mode: 0o600 });
+            config = loadConfig(projectDir);
+          } catch (err) {
+            console.log(pc.yellow(`  Could not save the recovery key: ${err instanceof Error ? err.message : String(err)}. This machine fetches it from its peers after it starts.`));
+          }
+        }
+
         console.log(pc.green('  Agent identity received — this machine is the same agent.'));
       } else if (agentIdentityOutcome.reason === 'not-offered') {
         console.log(
           pc.red('  This mesh did not provide an agent identity.') +
-            '\n  The machine you paired with is likely on an older version. Update it and re-pair.' +
+            '\n' + describeMissingAgentIdentity(result.agentIdentityAbsent) +
             '\n  NOT minting an identity here: that would silently split the agent in two.',
         );
       } else {
@@ -608,18 +857,87 @@ export async function joinMesh(repoUrl: string, options: JoinOptions): Promise<v
         );
       }
 
-      if (result.machineIdentity) {
-        // Store the remote machine's identity
-        mgr.storeRemoteIdentity(result.machineIdentity);
-        mgr.registerMachine(result.machineIdentity, 'awake');
-        // Record the URL we connected THROUGH as the awake machine's reachable
-        // URL, so this (standby) machine can route mesh RPCs back to it without
-        // waiting for a registry sync. Cross-machine routing reads lastKnownUrl;
-        // the joiner is the one place that authoritatively knows this URL.
+      if (!agentIdentityOutcome.ok) {
+        identityHandoverFailed = true;
+      } else {
+        // ── Turn sharing on, on this side (docs/specs/session-pool-activation-at-pairing.md) ──
+        // Before the server first starts, so the boot finds the keys and the bot token.
         try {
-          mgr.updateMachineUrl(result.machineIdentity.machineId, repoUrl.replace(/\/+$/, ''));
-        } catch { /* best-effort — entry was just registered above */ }
-        console.log(pc.green(`  Paired with: ${result.machineIdentity.name}`));
+          const joined = applyJoinerPairActivation({
+            configPath: configFilePath,
+            stateDir: config.stateDir,
+            response: result,
+            inviterMachineId: result.machineIdentity?.machineId,
+            binding: { pairingSessionId: String(options.code), joinerMachineId: identity.machineId },
+            encryptionPrivateKeyPem: (() => {
+              try {
+                return mgr.loadEncryptionKey();
+              } catch {
+                // @silent-fallback-ok: reported below as `no-key`, and the pair stays dark.
+                return null;
+              }
+            })(),
+            now: new Date(),
+          });
+          if (joined.activated) {
+            config = loadConfig(projectDir);
+            if (joined.telegram === 'written') {
+              try {
+                const { installTelegramRelayForJoinedMachine } = await import('./init.js');
+                installTelegramRelayForJoinedMachine(config.projectDir, config.stateDir, config.port);
+              } catch (err) {
+                console.log(pc.red(`  Sessions on this machine cannot answer on Telegram until its next update: the reply script did not install (${err instanceof Error ? err.message : String(err)}).`));
+              }
+            }
+            if (joined.peopleFilled) {
+              // A server already running here keeps its old list, and starting the unit does nothing to it.
+              console.log(pc.green('  This machine now answers only the people the first machine answers.'));
+              try {
+                requestPairActivationRestart(config.stateDir, new Date());
+              } catch (err) {
+                console.log(pc.yellow(`  Its running server keeps the old list until it next restarts (${err instanceof Error ? err.message : String(err)}).`));
+              }
+            }
+            if (joined.peopleUnchecked) {
+              console.log(pc.yellow('  This machine could not check who it should answer on Telegram. Pair it again to retry.'));
+            }
+            console.log(pc.green('  Sharing is on: new conversations can start on either machine once the pair looks healthy.'));
+            if (!['written', 'not-offered', 'kept-existing'].includes(joined.telegram)) {
+              console.log(pc.red(`  The Telegram token did not arrive (${joined.telegram}). This machine cannot answer on Telegram.`) +
+                '\n  Sharing stays off until you pair this machine again.');
+            }
+          }
+        } catch (err) {
+          console.log(pc.red(`  Sharing was not turned on here: ${err instanceof Error ? err.message : String(err)}`));
+        }
+
+        if (result.machineIdentity) {
+          // Store the remote machine's identity
+          mgr.storeRemoteIdentity(result.machineIdentity);
+          mgr.registerMachine(result.machineIdentity, 'awake');
+          // Record the URL we connected THROUGH as the awake machine's reachable
+          // URL, so this (standby) machine can route mesh RPCs back to it without
+          // waiting for a registry sync. Cross-machine routing reads lastKnownUrl;
+          // the joiner is the one place that authoritatively knows this URL.
+          // A quick-tunnel address dies when that machine restarts, which the pairing itself
+          // can cause, so keep what else it sent. `lastKnownUrl` stays the tunnel: it is read as one.
+          const peerLasting = lastingEndpoints(result.endpoints);
+          try {
+            mgr.updateMachineUrl(result.machineIdentity.machineId, repoUrl.replace(/\/+$/, ''));
+            if (peerLasting.length > 0) {
+              mgr.updateMachineEndpoints(
+                result.machineIdentity.machineId,
+                mergeEndpoints(mgr.getMachineEndpoints(result.machineIdentity.machineId), peerLasting),
+              );
+            }
+          } catch { /* best-effort — entry was just registered above */ }
+          new LastingLinkLedger(config.stateDir).forget(result.machineIdentity.machineId);
+          if (takeoverSwitchOnDisk(config.stateDir) && (peerLasting.length === 0 || ownLasting.length === 0)) {
+            console.log(pc.yellow('  These machines have no lasting connection, so conversations stay on the first one and this one will not take over if it dies.'));
+            console.log(pc.yellow('  To fix it, put both on the same network or on Tailscale, then pair them again.'));
+          }
+          console.log(pc.green(`  Paired with: ${result.machineIdentity.name}`));
+        }
       }
     } catch (err) {
       console.log(pc.red(`  Failed to contact server: ${redactUrlsInText(err instanceof Error ? err.message : String(err))}`));
@@ -627,10 +945,19 @@ export async function joinMesh(repoUrl: string, options: JoinOptions): Promise<v
     }
   }
 
+  if (identityHandoverFailed) {
+    console.log();
+    console.log(pc.red('  Join not finished: the agent identity did not check out, so nothing from that reply was saved and this machine was not registered.'));
+    console.log('  Check the address, then run the join again with a fresh code from the first machine.');
+    process.exit(1);
+    return;
+  }
+
   // Step 5: Ensure gitignore protects secrets
   const { ensureGitignore } = await import('../core/MachineIdentity.js');
   ensureGitignore(config.projectDir);
 
+  let autoStarted = false;
   // Step 6: Install auto-start for THIS (the joined) home.
   // Without this, a joined agent has no LaunchAgent/systemd unit — the operator
   // must hand-start it, and worse: a stale `ai.instar.<projectName>` plist left
@@ -651,6 +978,10 @@ export async function joinMesh(repoUrl: string, options: JoinOptions): Promise<v
     ) ?? false;
     const installed = installAutoStart(config.projectName, config.projectDir, hasTelegram);
     if (installed) {
+      autoStarted = true;
+      // `instar join` is an explicit install: let the self-heals maintain it.
+      const { markAutoStartExplicit } = await import('../core/ThrowawayAgentGuard.js');
+      markAutoStartExplicit(config.projectDir);
       console.log(pc.dim(`  Auto-start installed for the joined home (${process.platform === 'darwin' ? 'LaunchAgent' : 'systemd service'}).`));
     }
   } catch (err) {
@@ -660,9 +991,17 @@ export async function joinMesh(repoUrl: string, options: JoinOptions): Promise<v
 
   console.log();
   console.log(pc.green(pc.bold(`  Joined ${config.projectName} mesh as standby.`)));
+  printNoRemoteTakeoverNote(config);
   console.log();
   console.log(`  Next steps:`);
-  console.log(`  1. Start the server: ${pc.cyan('instar server start')}`);
+  if (autoStarted) {
+    // Auto-start already launched the server under its supervisor. Telling the
+    // operator to `instar server start` here produced a second, unsupervised
+    // server fighting the first for the port (instar#2122).
+    console.log(`  1. The server is already starting under auto-start — do not start another one.`);
+  } else {
+    console.log(`  1. Start the server: ${pc.cyan('instar server start')}`);
+  }
   console.log(`  2. Check health:     ${pc.cyan('instar doctor')}`);
   console.log(`  3. Wake up agent:    ${pc.cyan('instar wakeup')} (when ready)`);
   console.log();
@@ -727,6 +1066,67 @@ interface WakeupOptions {
   force?: boolean;
 }
 
+/**
+ * The machine currently in charge: the live lease holder when this machine's
+ * own server answers, else the registry's awake role (which can lag).
+ *
+ * The read carries the agent's auth token: an unauthenticated /health omits the
+ * multiMachine block, so without it the live lease was never seen and the lookup
+ * always fell through to the registry (ACT-1306, instar#2122 step 5).
+ */
+export async function resolveAwakeMachine(
+  mgr: MachineIdentityManager,
+  port: number,
+  fetchFn: typeof fetch = fetch,
+  authToken?: string,
+): Promise<{ machineId: string; entry: import('../core/types.js').MachineRegistryEntry } | null> {
+  try {
+    const resp = await fetchFn(`http://localhost:${port}/health`, {
+      signal: AbortSignal.timeout(3000),
+      headers: typeof authToken === 'string' && authToken ? { Authorization: `Bearer ${authToken}` } : {},
+    });
+    if (resp.ok) {
+      const health = await resp.json() as { multiMachine?: { syncStatus?: { leaseHolder?: string | null } } };
+      const holder = health.multiMachine?.syncStatus?.leaseHolder;
+      if (authToken && !health.multiMachine) {
+        // A token was sent but the answer is the anonymous one: the token is
+        // stale (e.g. a literal in config.json while the server uses the vault).
+        // Say so, rather than silently falling back to the lagging registry.
+        console.log('  Live lease lookup was not authorized by the local server (auth token rejected or stale); using the registry instead.');
+      }
+      if (holder) {
+        const entry = mgr.loadRegistry().machines[holder];
+        if (entry && entry.status === 'active' && !entry.revokedAt) return { machineId: holder, entry };
+      }
+    }
+  } catch { /* @silent-fallback-ok — no local server; the registry answers below */ }
+  return mgr.getAwakeMachine();
+}
+
+/**
+ * A reachable base URL for `machineId`'s server: every advertised endpoint
+ * (tailscale, lan, cloudflare) and the last-known URL are probed with /health;
+ * the first that answers wins. Never this machine's own server.
+ */
+export async function resolveAwakeServerUrl(
+  mgr: MachineIdentityManager,
+  machineId: string,
+  fetchFn: typeof fetch = fetch,
+): Promise<string | null> {
+  const entry = mgr.loadRegistry().machines[machineId];
+  const candidates = [
+    ...(entry?.endpoints ?? []).map((e) => e.url),
+    ...(entry?.lastKnownUrl ? [entry.lastKnownUrl] : []),
+  ].map((u) => u.replace(/\/+$/, ''));
+  for (const url of [...new Set(candidates)]) {
+    try {
+      const resp = await fetchFn(`${url}/health`, { signal: AbortSignal.timeout(3000) });
+      if (resp.ok) return url;
+    } catch { /* try the next rope */ }
+  }
+  return null;
+}
+
 export async function wakeup(options: WakeupOptions): Promise<void> {
   let config;
   try {
@@ -752,8 +1152,11 @@ export async function wakeup(options: WakeupOptions): Promise<void> {
     return;
   }
 
-  // Find the currently awake machine
-  const awake = mgr.getAwakeMachine();
+  // Find the currently awake machine. The LIVE lease is the authority; the
+  // registry's role field can lag (and once held a removed identity — Luna's
+  // Studio reported "Current location: mac-studio" while the laptop held the
+  // lease, instar#2122). Ask the local server first; fall back to the registry.
+  const awake = await resolveAwakeMachine(mgr, config.port, fetch, config.authToken);
 
   // Signing key for claiming the lease (canonical MachineIdentity name).
   const wakeupSigningKeyPath = path.join(config.stateDir, 'machine', 'signing-key.pem');
@@ -778,9 +1181,9 @@ export async function wakeup(options: WakeupOptions): Promise<void> {
 
   if (options.force) {
     // Force-promote without contacting the current awake machine. Claim the
-    // LEASE (not just the role) at a higher epoch and push it — otherwise the
-    // server's reconcileRoleToLease() reverts our role on startup and the peer
-    // never learns of the takeover.
+    // LEASE (not just the role) at a higher epoch — otherwise the server's
+    // reconcileRoleToLease() reverts our role on startup. The claim is saved
+    // locally; only a git-kept lease is then shared by the server (EVO-029).
     console.log(pc.yellow(`Force-wakeup: bypassing contact with ${awake.entry.name}.`));
     mgr.updateRole(awake.machineId, 'standby');
     mgr.updateRole(identity.machineId, 'awake');
@@ -794,7 +1197,20 @@ export async function wakeup(options: WakeupOptions): Promise<void> {
     heartbeat.writeHeartbeat();
 
     console.log(pc.green(`${config.projectName} is now awake on ${identity.name} (forced).`));
-    console.log(pc.dim('Lease claimed + pushed; the old awake machine steps down when it sees the higher epoch.'));
+    const registryPath = path.join(config.stateDir, 'machines', 'registry.json');
+    let outlook: ForceClaimOutlook = 'unknown';
+    try {
+      if (leaseObserveOnly(config.multiMachine)) {
+        outlook = 'observe-only';
+      } else {
+        outlook = leaseKeptInGit(config.projectDir, config.gitBackup?.enabled !== false, registryPath, config.multiMachine?.leaseFlapFix?.mediumCheck)
+          ? 'git'
+          : 'not-git';
+      }
+    } catch {
+      // @silent-fallback-ok: unknown is printed as unknown (forceClaimLine('unknown')), never as a definite answer.
+    }
+    console.log(pc.dim(forceClaimLine(outlook)));
     return;
   }
 
@@ -802,23 +1218,17 @@ export async function wakeup(options: WakeupOptions): Promise<void> {
   console.log(`  Current location: ${pc.bold(awake.entry.name)}`);
   console.log('  Contacting for handoff...');
 
-  // Determine server URL — try tunnel first, fall back to localhost
-  let serverUrl = '';
-  try {
-    const healthResp = await fetch(`http://localhost:${config.port}/health`, {
-      signal: AbortSignal.timeout(3000),
-    });
-    if (healthResp.ok) {
-      const health = await healthResp.json() as { tunnelUrl?: string };
-      serverUrl = health.tunnelUrl || `http://localhost:${config.port}`;
-    }
-  } catch { /* server not reachable locally */ }
-
+  // The handoff challenge is signed for a RECEIVER machine id, so it must go to
+  // the AWAKE machine's server — not to this machine's own server (which used
+  // to happen, and answered "Invalid challenge signature" because it computed
+  // the message with itself as receiver; instar#2122).
+  const serverUrl = await resolveAwakeServerUrl(mgr, awake.machineId);
   if (!serverUrl) {
-    console.log(pc.red(`  Can't reach the server on port ${config.port}.`));
+    console.log(pc.red(`  Can't reach ${awake.entry.name} on any of its known addresses.`));
     console.log(pc.dim(`  The awake machine may be offline. Use --force to take over.`));
     process.exit(1);
   }
+  console.log(pc.dim(`  Reaching ${awake.entry.name} at ${redactUrl(serverUrl)}`));
 
   // Load signing key for challenge-response (canonical MachineIdentity name).
   const signingKeyPath = path.join(config.stateDir, 'machine', 'signing-key.pem');
@@ -928,7 +1338,7 @@ export async function doctor(options: DoctorOptions): Promise<void> {
   let registryAwakeCount: number | null = null;
   try {
     const registry = mgr.loadRegistry();
-    const active = Object.entries(registry.machines).filter(([, e]) => e.status === 'active');
+    const active = Object.entries(registry.machines).filter(([, e]) => isRegistryEntryActive(e));
     const awake = active.filter(([, e]) => e.role === 'awake');
     registryAwakeCount = awake.length;
 
@@ -1122,6 +1532,28 @@ export async function doctor(options: DoctorOptions): Promise<void> {
     }
   } catch (e) {
     checks.push({ name: 'Self-knowledge tree', status: 'warn', detail: e instanceof Error ? e.message : String(e) });
+  }
+
+  // 10. Project location — Avoid TCC-Protected Directories (docs/STANDARDS-REGISTRY.md).
+  //     On macOS an agent under ~/Documents, ~/Desktop, ~/Downloads or iCloud Drive
+  //     can lose its access grant at any moment, taking every agent in the process
+  //     tree down at once (2026-10-14). Report only; the doctor never moves anything.
+  try {
+    const { classifyTccProtectedPath, TCC_MOVE_RUNBOOK } = await import('../core/TccProtectedPathGuard.js');
+    const loc = classifyTccProtectedPath(config.projectDir);
+    if (loc.platform !== 'darwin') {
+      checks.push({ name: 'Project location', status: 'ok', detail: `${loc.realPath} (macOS protected-folder check not applicable on ${loc.platform})` });
+    } else if (loc.protected) {
+      checks.push({
+        name: 'Project location',
+        status: 'fail',
+        detail: `${loc.realPath} is under ~/${loc.zone} — macOS can withdraw access at any moment and every agent in this process tree dies at once. Move it: ${TCC_MOVE_RUNBOOK}`,
+      });
+    } else {
+      checks.push({ name: 'Project location', status: 'ok', detail: `${loc.realPath} (outside Documents/Desktop/Downloads/iCloud Drive)` });
+    }
+  } catch (e) {
+    checks.push({ name: 'Project location', status: 'warn', detail: `Could not classify: ${e instanceof Error ? e.message : String(e)}` });
   }
 
   // Print results

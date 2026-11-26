@@ -1,0 +1,25 @@
+{
+  "version": 2,
+  "slug": "lv-restart-gap-and-closed-skip",
+  "sessionId": "8da0775f-0138-4aed-a265-6b7c1634d695",
+  "timestamp": "2026-10-25T09:42:23.233Z",
+  "artifactPath": "upgrades/side-effects/lv-restart-gap-and-closed-skip.md",
+  "artifactSha256": "22d140ff1e3da85d128b61bafeca5903e3bb872ba71597d1617b155bdf184a2a",
+  "coveredFiles": [
+    "docs/eli16/lv-restart-gap-and-closed-skip.eli16.md",
+    "src/localVerify/LocalVerifyService.ts",
+    "src/localVerify/localVerifyRoutes.ts",
+    "src/localVerify/localVerifyWiring.ts",
+    "tests/unit/localVerify/LocalVerifyService.test.ts",
+    "tests/unit/localVerify/localVerifyRoutes.test.ts",
+    "upgrades/next/lv-restart-gap-and-closed-skip.md",
+    "upgrades/side-effects/lv-restart-gap-and-closed-skip.md"
+  ],
+  "phase": "complete",
+  "tier": 1,
+  "tierReasoning": "Two input fixes to existing local-verify rules (a deferred restart counts as a pending update; a definitely-closed PR is refused/dropped). No new authority over agents or messages, no persisted shape change, no migration; a revert fully undoes it. Second-pass review run because the change touches session-lifecycle-adjacent restart gating.",
+  "eli16Path": "docs/eli16/lv-restart-gap-and-closed-skip.eli16.md",
+  "sideEffectsPath": "upgrades/side-effects/lv-restart-gap-and-closed-skip.md",
+  "secondPass": "true",
+  "reviewerConcurred": true
+}

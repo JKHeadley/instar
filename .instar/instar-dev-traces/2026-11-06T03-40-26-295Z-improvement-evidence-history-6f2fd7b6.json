@@ -1,0 +1,29 @@
+{
+  "version": 3,
+  "slug": "improvement-evidence-history",
+  "sessionId": "30384209-0957-44f8-9037-d33d452ffbc6",
+  "timestamp": "2026-11-06T03:40:26.295Z",
+  "artifactPath": "upgrades/side-effects/improvement-evidence-history.md",
+  "artifactSha256": "d3c833a5f9678f093bda86f9f50c694c8ff1e97c7d618f29db581bad0d7d93dc",
+  "coveredFiles": [
+    "docs/audits/improvement-observability-building-2026-11-06.json",
+    "docs/specs/improvement-evidence-history.eli16.md",
+    "docs/specs/reports/improvement-observability-building-2026-11-06.md",
+    "docs/standards-registry-area-audits.json",
+    "upgrades/side-effects/improvement-evidence-history.md"
+  ],
+  "phase": "complete",
+  "tier": 1,
+  "tierReasoning": "Documentation-only content-bound semantic family audit for already reviewed Observability wording, preserving34/40 floor and requiring separate operator direction approval; no runtime change or authority.",
+  "eli16Path": "docs/specs/improvement-evidence-history.eli16.md",
+  "sideEffectsPath": "upgrades/side-effects/improvement-evidence-history.md",
+  "secondPass": "true",
+  "reviewerConcurred": true,
+  "toolchain": {
+    "buildSkill": {
+      "name": "instar-dev",
+      "version": "9a75c36ba521",
+      "verified": true
+    }
+  }
+}

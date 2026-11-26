@@ -527,22 +527,25 @@ describe('ContextThreadMap', () => {
     });
 
     it('preserves non-expired entries', () => {
-      const map = new ContextThreadMap({
-        stateDir: temp.stateDir,
-        ttlMs: SHORT_TTL_MS,
-      });
-      map.set('ctx-old', 'thread-old', 'agent-a');
+      vi.useFakeTimers({ toFake: ['Date'] });
+      try {
+        vi.setSystemTime(new Date('2026-01-01T00:00:00.000Z'));
+        const map = new ContextThreadMap({
+          stateDir: temp.stateDir,
+          ttlMs: SHORT_TTL_MS,
+        });
+        map.set('ctx-old', 'thread-old', 'agent-a');
 
-      const start = Date.now();
-      while (Date.now() - start < SHORT_TTL_MS + 50) { /* spin */ }
+        vi.setSystemTime(new Date('2026-01-01T00:00:00.151Z'));
+        map.set('ctx-new', 'thread-new', 'agent-a');
 
-      // Add a fresh entry after the old one expired
-      map.set('ctx-new', 'thread-new', 'agent-a');
-
-      const removed = map.cleanup();
-      expect(removed).toBe(1);
-      expect(map.size()).toBe(1);
-      expect(map.getThreadId('ctx-new', 'agent-a')).toBe('thread-new');
+        const removed = map.cleanup();
+        expect(removed).toBe(1);
+        expect(map.size()).toBe(1);
+        expect(map.getThreadId('ctx-new', 'agent-a')).toBe('thread-new');
+      } finally {
+        vi.useRealTimers();
+      }
     });
 
     it('returns 0 when nothing is expired', () => {

@@ -1,0 +1,39 @@
+{
+  "version": 2,
+  "slug": "recommended-services-bitwarden-recipe",
+  "sessionId": "71bb647f-1ddd-492f-b70b-b44e859aec50",
+  "timestamp": "2026-11-07T23:13:53.166Z",
+  "artifactPath": "upgrades/side-effects/recommended-services-bitwarden-recipe.md",
+  "artifactSha256": "62502603b8d856e729ffd8d495d40a82baed48bb4c2dca05280f624b463bf831",
+  "specPath": "docs/specs/recommended-services.md",
+  "coveredFiles": [
+    ".instar/instar-dev-decisions/2026-11-07T23-10-56-840Z-recommended-services-bitwarden-recipe.json",
+    ".instar/instar-dev-decisions/2026-11-07T23-11-18-415Z-recommended-services-bitwarden-recipe.json",
+    ".instar/instar-dev-decisions/2026-11-07T23-11-42-311Z-recommended-services-bitwarden-recipe.json",
+    ".instar/instar-dev-decisions/2026-11-07T23-12-38-247Z-recommended-services-bitwarden-recipe.json",
+    ".instar/instar-dev-decisions/2026-11-07T23-13-02-965Z-recommended-services-bitwarden-recipe.json",
+    ".instar/instar-dev-decisions/2026-11-07T23-13-32-121Z-recommended-services-bitwarden-recipe.json",
+    ".instar/instar-dev-traces/2026-11-07T23-10-41-444Z-recommended-services-bitwarden-recipe-b23b7616.json",
+    "docs/specs/recommended-services-bitwarden-recipe.eli16.md",
+    "src/recommended/bitwardenVault.ts",
+    "src/recommended/catalog.ts",
+    "src/server/routes.ts",
+    "tests/e2e/recommended-services-alive.test.ts",
+    "tests/integration/recommended-services-setup.test.ts",
+    "tests/unit/recommended-services-bitwarden-recipe.test.ts",
+    "tests/unit/recommended-services-catalog.test.ts",
+    "tests/unit/recommended-services-wiring.test.ts",
+    "upgrades/next/recommended-services-bitwarden-recipe.md",
+    "upgrades/side-effects/recommended-services-bitwarden-recipe.md"
+  ],
+  "phase": "complete",
+  "tier": 2,
+  "tierReasoning": "Opens the Bitwarden recipe to every agent after its live proof; same credential surface as the parent commits; four reviewer reads.",
+  "secondPass": "true",
+  "reviewerConcurred": true,
+  "classClosure": {
+    "defectClass": "unbounded-self-action",
+    "closure": "n/a",
+    "reason": "The staged routes.ts change relabels an existing one-message owner notice (tellOwner), which fires once per state change (a confirmed switch-off, a re-check failure) behind the setup state's stopRequestedAt/told-once guards; the recipe's refresh is a timer bounded to one try per 24 h, one per 6 h after a failure, and a single re-check after three failures, under hasGrant and a verified pass, never a self-triggered loop"
+  }
+}

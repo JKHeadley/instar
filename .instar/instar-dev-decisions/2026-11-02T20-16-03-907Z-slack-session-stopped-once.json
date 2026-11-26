@@ -1,0 +1,26 @@
+{
+  "ts": "2026-11-02T20:16:03.907Z",
+  "slug": "slack-session-stopped-once",
+  "suggestedTier": 2,
+  "declaredTier": 1,
+  "riskFloor": 1,
+  "riskFloorReasons": [],
+  "belowFloor": false,
+  "files": 5,
+  "loc": 153,
+  "scope": {
+    "basis": "staged-in-scope-additions-plus-deletions",
+    "files": [
+      "src/commands/server.ts",
+      "src/data/state-coherence-registry.json",
+      "src/messaging/slack/SlackAdapter.ts",
+      "src/messaging/slack/types.ts",
+      "src/monitoring/SessionMonitor.ts"
+    ],
+    "addedLines": 145,
+    "deletedLines": 8
+  },
+  "causalAutopsy": null,
+  "classClosure": null,
+  "verdict": "pass"
+}

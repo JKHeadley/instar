@@ -1,0 +1,23 @@
+{
+  "version": 2,
+  "slug": "ecosystem-idea-pipeline",
+  "sessionId": "18604a86-3b10-4658-ba57-581bcce3d6ca",
+  "timestamp": "2026-11-02T03:24:04.428Z",
+  "artifactPath": "upgrades/side-effects/ecosystem-idea-pipeline.md",
+  "artifactSha256": "e111f834c580c54779eb43e42f7228d6249520c4ea205735265ad6ce4c831d2d",
+  "specPath": "docs/specs/ecosystem-idea-pipeline.md",
+  "coveredFiles": [
+    "src/core/ClaudeCliIntelligenceProvider.ts",
+    "src/core/CodexCliIntelligenceProvider.ts",
+    "src/core/types.ts",
+    "tests/unit/claude-reviewer-inbound-safety.test.ts",
+    "tests/unit/codex-cli-provider-execjson.test.ts",
+    "upgrades/next/ecosystem-idea-pipeline.md",
+    "upgrades/side-effects/ecosystem-idea-pipeline.md"
+  ],
+  "phase": "complete",
+  "tier": 2,
+  "tierReasoning": "New dev-gated capability from a converged, approved spec; a revert removes it.",
+  "secondPass": "true",
+  "reviewerConcurred": true
+}

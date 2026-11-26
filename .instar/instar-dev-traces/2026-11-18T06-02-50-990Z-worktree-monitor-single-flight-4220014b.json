@@ -1,0 +1,18 @@
+{
+  "version": 2,
+  "slug": "worktree-monitor-single-flight",
+  "sessionId": "58065a80-c060-4b23-8a46-272f583db82b",
+  "timestamp": "2026-11-18T06:02:50.990Z",
+  "artifactPath": "upgrades/side-effects/worktree-monitor-single-flight.md",
+  "artifactSha256": "19253b4a750cfa3b1ecdd12b984cfdc6c351c83ea7cb1e12983f0f4967b26776",
+  "coveredFiles": [
+    "src/monitoring/WorktreeMonitor.ts"
+  ],
+  "phase": "complete",
+  "tier": 1,
+  "tierReasoning": "Follow-up to the same Tier-1 report-only monitor fix: serializes its announce decision; a revert fully undoes it.",
+  "eli16Path": "docs/specs/worktree-monitor-single-flight.eli16.md",
+  "sideEffectsPath": "upgrades/side-effects/worktree-monitor-single-flight.md",
+  "secondPass": "not-required",
+  "reviewerConcurred": null
+}

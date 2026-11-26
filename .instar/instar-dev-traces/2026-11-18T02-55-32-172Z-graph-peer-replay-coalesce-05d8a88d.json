@@ -1,0 +1,25 @@
+{
+  "version": 2,
+  "slug": "graph-peer-replay-coalesce",
+  "sessionId": "aa1b49be-3f0c-427d-aa72-75f60e57a9de",
+  "timestamp": "2026-11-18T02:55:32.172Z",
+  "artifactPath": "upgrades/side-effects/graph-peer-replay-coalesce.md",
+  "artifactSha256": "14966c45dd5f0bb53d5b2275cf32cfd5becf382140ccd6296d735135d9ff7455",
+  "coveredFiles": [
+    "docs/specs/graph-peer-replay-coalesce.eli16.md",
+    "src/server/ConversationGraphDefault.ts",
+    "src/server/ConversationGraphReplicationRuntime.ts",
+    "src/server/GraphPeerReplayGuard.ts",
+    "tests/integration/graph-peer-replay-coalesce.test.ts",
+    "tests/unit/graph-peer-replay-guard.test.ts",
+    "upgrades/next/graph-peer-replay-coalesce.md",
+    "upgrades/side-effects/graph-peer-replay-coalesce.md"
+  ],
+  "phase": "complete",
+  "tier": 1,
+  "tierReasoning": "Receiver-side peer transport fix: an exact repeat of a signed graph request shares the first answer instead of a replay refusal; senders unchanged; no route, wire format, auth or stored state change; a revert fully undoes it",
+  "eli16Path": "docs/specs/graph-peer-replay-coalesce.eli16.md",
+  "sideEffectsPath": "upgrades/side-effects/graph-peer-replay-coalesce.md",
+  "secondPass": "true",
+  "reviewerConcurred": true
+}

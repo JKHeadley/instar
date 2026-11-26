@@ -8,6 +8,7 @@
  * Instar's source.
  */
 
+import { applyClaudeChildAuth, configuredClaudeOauthKey } from '../../../../core/claudeChildAuth.js';
 import { execFile, type ExecFileException } from 'node:child_process';
 import { promisify } from 'node:util';
 import type {
@@ -60,8 +61,10 @@ class AnthropicHeadlessOneShotCompletion implements OneShotCompletion {
     delete childEnv['CLAUDECODE'];
     delete childEnv['CLAUDE_SESSION_ID'];
 
-    // Inject auth credential if configured
-    if (this.config.credential) {
+    // Inject auth credential if configured. The agent's configured key wins over one read from the
+    // server's env, matching session launch (spec cloud-key-internal-calls).
+    applyClaudeChildAuth(childEnv);
+    if (this.config.credential && !configuredClaudeOauthKey()) {
       if (this.config.credential.startsWith('sk-ant-oat')) {
         childEnv['CLAUDE_CODE_OAUTH_TOKEN'] = this.config.credential;
         delete childEnv['ANTHROPIC_API_KEY'];
@@ -72,6 +75,9 @@ class AnthropicHeadlessOneShotCompletion implements OneShotCompletion {
     }
     if (this.config.apiBaseUrl) {
       childEnv['ANTHROPIC_BASE_URL'] = this.config.apiBaseUrl;
+    }
+    if (this.config.configDir) {
+      childEnv['CLAUDE_CONFIG_DIR'] = this.config.configDir;
     }
 
     // Set up abort signal wiring

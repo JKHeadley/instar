@@ -1,0 +1,24 @@
+{
+  "ts": "2026-11-03T21:39:02.604Z",
+  "slug": "message-origin-all-platforms",
+  "suggestedTier": 1,
+  "declaredTier": 2,
+  "riskFloor": 1,
+  "riskFloorReasons": [],
+  "belowFloor": false,
+  "files": 3,
+  "loc": 3,
+  "scope": {
+    "basis": "staged-in-scope-additions-plus-deletions",
+    "files": [
+      "src/messaging/slack/FileHandler.ts",
+      "src/messaging/slack/SlackAdapter.ts",
+      "src/messaging/slack/SlackOriginLedger.ts"
+    ],
+    "addedLines": 3,
+    "deletedLines": 0
+  },
+  "causalAutopsy": null,
+  "classClosure": null,
+  "verdict": "pass"
+}

@@ -1,0 +1,24 @@
+{
+  "ts": "2026-10-23T00:23:42.056Z",
+  "slug": "mcp-children-are-baseline",
+  "suggestedTier": 2,
+  "declaredTier": 1,
+  "riskFloor": 1,
+  "riskFloorReasons": [],
+  "belowFloor": false,
+  "files": 3,
+  "loc": 47,
+  "scope": {
+    "basis": "staged-in-scope-additions-plus-deletions",
+    "files": [
+      "src/core/SessionManager.ts",
+      "src/core/baselineProcessPatterns.ts",
+      "src/core/standDownDrain.ts"
+    ],
+    "addedLines": 39,
+    "deletedLines": 8
+  },
+  "causalAutopsy": null,
+  "classClosure": null,
+  "verdict": "pass"
+}

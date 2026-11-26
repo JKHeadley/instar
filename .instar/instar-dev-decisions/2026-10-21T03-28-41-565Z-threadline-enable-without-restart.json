@@ -1,0 +1,36 @@
+{
+  "ts": "2026-10-21T03:28:41.565Z",
+  "slug": "threadline-enable-without-restart",
+  "suggestedTier": 2,
+  "declaredTier": 2,
+  "riskFloor": 2,
+  "riskFloorReasons": [
+    "new capability: new route (router.<verb>() added",
+    "new capability: new config key added"
+  ],
+  "belowFloor": false,
+  "files": 4,
+  "loc": 202,
+  "scope": {
+    "basis": "staged-in-scope-additions-plus-deletions",
+    "files": [
+      "src/core/AutoUpdater.ts",
+      "src/core/processIdentity.ts",
+      "src/server/routes.ts",
+      "src/threadline/connectEnable.ts"
+    ],
+    "addedLines": 158,
+    "deletedLines": 44
+  },
+  "causalAutopsy": null,
+  "classClosure": {
+    "defectClass": "unbounded-self-action",
+    "closure": "guard",
+    "guardEvidence": {
+      "enforcementType": "ratchet",
+      "citation": "tests/unit/self-action-convergence.test.ts",
+      "howCaught": "threadline-connect-enable-restart drives the real decideConnectEnable: one restart request per 10-minute persisted cooldown (time+pid survives restarts), none while a request is pending, none without a verified Instar lifeline; the deferred retry (now also waiting on #2242 restart holds) stops after 5 minutes and records gave-up. Removing the cooldown fails the ratchet's rate-floor and reconstruction checks."
+    }
+  },
+  "verdict": "pass"
+}

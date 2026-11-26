@@ -1,0 +1,25 @@
+{
+  "ts": "2026-11-05T09:04:34.563Z",
+  "slug": "lease-job-definition-replication",
+  "suggestedTier": 2,
+  "declaredTier": 2,
+  "riskFloor": 1,
+  "riskFloorReasons": [],
+  "belowFloor": false,
+  "files": 4,
+  "loc": 22,
+  "scope": {
+    "basis": "staged-in-scope-additions-plus-deletions",
+    "files": [
+      "src/core/FileClassifier.ts",
+      "src/core/JobDependency.ts",
+      "src/core/JobPortableIntegrity.ts",
+      "src/core/WriteDomainRegistry.ts"
+    ],
+    "addedLines": 19,
+    "deletedLines": 3
+  },
+  "causalAutopsy": null,
+  "classClosure": null,
+  "verdict": "pass"
+}

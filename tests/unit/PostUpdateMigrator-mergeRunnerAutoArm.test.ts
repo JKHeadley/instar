@@ -103,6 +103,20 @@ describe('migrateClaudeMd — Green-PR section REPLACE for already-armed agents 
     expect(after.match(/## Green-PR Auto-Merge/g)!.length).toBe(1);
   });
 
+  it('RE-SYNCS a current-looking section that predates agent stop release, and stays idempotent after', () => {
+    // Every earlier marker present: only the release route is missing.
+    const PRE = OLD_SECTION + '\nmergeStrategy approval-required needs-independent-review notAgentOwnedCount\n';
+    fs.writeFileSync(claudeMdPath, '# CLAUDE.md\n\nIntro.\n' + PRE + '\n## Next Section\n\nAfter.\n');
+    const result = runClaudeMdMigration(projectDir);
+    expect(result.upgraded.some((u) => /updated Green-PR Auto-Merge/.test(u))).toBe(true);
+    const after = fs.readFileSync(claudeMdPath, 'utf-8');
+    expect(after).toContain('/green-pr-automerge/release');
+    expect(after).toContain('A stop a person asked for NEVER carries the claim');
+    expect(after).toContain('## Next Section');
+    expect(after.match(/## Green-PR Auto-Merge/g)!.length).toBe(1);
+    expect(runClaudeMdMigration(projectDir).upgraded.some((u) => /Green-PR Auto-Merge/.test(u))).toBe(false);
+  });
+
   it('APPENDS the section for a brand-new agent that has no Green-PR section at all', () => {
     fs.writeFileSync(claudeMdPath, '# CLAUDE.md\n\nNo green-pr here.\n');
     const result = runClaudeMdMigration(projectDir);
@@ -123,6 +137,40 @@ describe('migrateClaudeMd — Green-PR section REPLACE for already-armed agents 
     const after = fs.readFileSync(claudeMdPath, 'utf-8');
     expect(after).toContain('approval-required');
     expect(after).toContain('Review changes');
+    expect(after).toContain('## Next Section');
+    expect(after.match(/## Green-PR Auto-Merge/g)!.length).toBe(1);
+    const second = runClaudeMdMigration(projectDir);
+    expect(second.upgraded.some((u) => /Green-PR Auto-Merge/.test(u))).toBe(false);
+  });
+
+  it('RE-SYNCS a section that has approval-required but still says protected paths route to the operator (2026-10-22) — idempotent after', () => {
+    // Directive 2026-10-22: the operator approves constitution changes only. An agent
+    // whose section predates it still believes protected-path PRs go to the operator.
+    const PRE = OLD_SECTION.replace('## Green-PR Auto-Merge (Phase 7 becomes machinery)',
+      '## Green-PR Auto-Merge (Phase 7 becomes machinery)\n\n- mergeStrategy auto; refused:approval-required. A PR touching protected paths routes to the operator.');
+    fs.writeFileSync(claudeMdPath, '# CLAUDE.md\n\nIntro.\n' + PRE + '\n## Next Section\n\nAfter.\n');
+    const result = runClaudeMdMigration(projectDir);
+    expect(result.upgraded.some((u) => /updated Green-PR Auto-Merge/.test(u))).toBe(true);
+    const after = fs.readFileSync(claudeMdPath, 'utf-8');
+    expect(after).toContain('needs-independent-review');
+    expect(after).toContain('constitution changes only');
+    expect(after).not.toContain('A PR touching protected paths routes to the operator');
+    expect(after.match(/## Green-PR Auto-Merge/g)!.length).toBe(1);
+    const second = runClaudeMdMigration(projectDir);
+    expect(second.upgraded.some((u) => /Green-PR Auto-Merge/.test(u))).toBe(false);
+  });
+
+  it('RE-SYNCS an up-to-date-before-this section that predates author ownership (2026-10-25) — idempotent after', () => {
+    // merge-line-author-eligibility: an agent whose section has every earlier marker
+    // still believes only echo/ branches are its own.
+    const PRE = OLD_SECTION.replace('## Green-PR Auto-Merge (Phase 7 becomes machinery)',
+      '## Green-PR Auto-Merge (Phase 7 becomes machinery)\n\n- mergeStrategy auto; refused:approval-required; needs-independent-review.');
+    fs.writeFileSync(claudeMdPath, '# CLAUDE.md\n\nIntro.\n' + PRE + '\n## Next Section\n\nAfter.\n');
+    const result = runClaudeMdMigration(projectDir);
+    expect(result.upgraded.some((u) => /updated Green-PR Auto-Merge.*author ownership/.test(u))).toBe(true);
+    const after = fs.readFileSync(claudeMdPath, 'utf-8');
+    expect(after).toContain('notAgentOwnedCount');
+    expect(after).toContain('A fork is never mine.');
     expect(after).toContain('## Next Section');
     expect(after.match(/## Green-PR Auto-Merge/g)!.length).toBe(1);
     const second = runClaudeMdMigration(projectDir);

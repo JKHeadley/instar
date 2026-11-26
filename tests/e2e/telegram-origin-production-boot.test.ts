@@ -1,6 +1,7 @@
 import { afterEach, beforeAll, describe, expect, it, vi } from 'vitest';
 import { mkdir, mkdtemp, writeFile } from 'node:fs/promises';
 import path from 'node:path';
+import { createHash } from 'node:crypto';
 import { fixtureOriginContentDedup } from '../helpers/originContentDedup.js';
 import { bootTelegramOrigin } from '../../src/messaging/telegram-origin/TelegramOriginBoot.js';
 import { telegramFetch } from '../../src/messaging/telegram-egress.js';
@@ -131,6 +132,39 @@ describe('Telegram origin production bootstrap', () => {
     expect(audit?.attempts).toEqual([]);
   });
 
+  it('a reply queued while the server was booting recovers with its real session label through the production boot', async () => {
+    const root = await mkdtemp('/tmp/origin-boot-');
+    cleanup.push(async () => { await SafeFsExecutor.safeRm(root, { recursive: true, force: true, operation: 'test:origin-production-boot:cleanup' }); });
+    const stateDir = path.join(root, '.instar'); await mkdir(path.join(stateDir, 'state'), { recursive: true });
+    const config = { projectDir: root, stateDir, projectName: 'echo', port: 0, authToken: 'fixture-auth',
+      messaging: [{ type: 'telegram', enabled: true, config: { token: '123:fixture', chatId: '-100123', lifelineTopicId: 7848 } }] };
+    await writeFile(path.join(stateDir, 'config.json'), JSON.stringify(config));
+    let lifecycle: OriginSessionLifecycle | undefined;
+    const boot = await bootTelegramOrigin({ config: config as never, token: '123:fixture', noticeOwner: true,
+      workerUrl: worker, holdsLease: () => true, isSessionLive: () => true,
+      attachSessionLifecycle: value => { lifecycle = value; },
+      diagnoseUnknown: vi.fn(async () => undefined), onNoticeState: vi.fn() });
+    cleanup.push(() => boot.close());
+    const launch = { sessionId: 'instar-app', harnessId: 'claude-code' as const, projectDir: root, configuredModel: 'claude-opus-5-5' };
+    const beforeRestart = await lifecycle!.issue(launch);
+    await lifecycle!.issue(launch); // boot re-enrollment hands the live session a fresh credential
+    // HTTP 0 keeps the row uncertain, so the recovery tick never sends it in this test.
+    const queue = PendingRelayStore.open('echo', stateDir);
+    queue.enqueue({ delivery_id: 'queued-while-booting', topic_id: 42, text: 'Sent while the server was starting', text_hash: 'boot-fixture',
+      http_code: 0, origin_session_digest: createHash('sha256').update(beforeRestart).digest('hex') });
+    queue.enqueue({ delivery_id: 'queued-by-old-script', topic_id: 42, text: 'Queued by an older script', text_hash: 'old-fixture', http_code: 0 });
+    queue.close();
+    expect(await boot.runtime.importLegacyQueue()).toBe(2);
+    const attributed = await boot.runtime.store.getOperation('legacy:queued-while-booting');
+    expect(JSON.parse(attributed!.record.envelopeJson)).toMatchObject({ producerKind: 'imported-legacy', sessionId: 'instar-app',
+      machine: { status: 'observed' }, harness: { status: 'observed', value: 'claude-code' },
+      model: { status: 'configured', value: 'claude-opus-5-5' } });
+    const machineOnly = await boot.runtime.store.getOperation('legacy:queued-by-old-script');
+    expect(JSON.parse(machineOnly!.record.envelopeJson)).toMatchObject({ sessionId: null, machine: { status: 'observed' },
+      harness: { status: 'unknown' }, model: { status: 'unknown' } });
+    expect(boot.runtime.auditVerification(attributed!).currentVerification).toMatchObject({ signatureValid: true });
+  });
+
   it('loads real config/identity authorities, attaches session lifecycle, and records a hidden internal reply through HTTP', async () => {
     const root = await mkdtemp('/tmp/origin-boot-');
     cleanup.push(async () => { await SafeFsExecutor.safeRm(root, { recursive: true, force: true, operation: 'test:origin-production-boot:cleanup' }); });
@@ -164,12 +198,13 @@ describe('Telegram origin production bootstrap', () => {
     const imported = await boot.runtime.store.getOperation('legacy:before-upgrade');
     expect(imported?.operation).toMatchObject({ state: 'expired', preparedAt: legacyPreparedAt,
       deadlineAt: legacyPreparedAt + 6 * 60 * 60_000 });
-    expect(JSON.parse(imported!.record.envelopeJson)).toMatchObject({ producerKind: 'imported-legacy', machine: { status: 'unknown' } });
+    expect(JSON.parse(imported!.record.envelopeJson)).toMatchObject({ producerKind: 'imported-legacy', sessionId: null,
+      machine: { status: 'observed' }, harness: { status: 'unknown' }, model: { status: 'unknown' } });
     const sessionToken = await lifecycle!.issue({ sessionId: 'native-session', harnessId: 'codex-cli', projectDir: root, configuredModel: 'selected-model' });
     expect(boot.runtime.sessions.verify(sessionToken).ok).toBe(true);
     const app = express(); app.use(express.json());
     app.use((req, res, next) => { if (req.get('Authorization') !== 'Bearer fixture-auth') { res.sendStatus(401); return; } next(); });
-    app.use(createRoutes({ config, telegramOrigin: boot.runtime, sessionManager: { clearInjectionTracker: () => undefined },
+    app.use(createRoutes({ state: { getSession: () => undefined }, config, telegramOrigin: boot.runtime, sessionManager: { clearInjectionTracker: () => undefined },
       telegram: { sendToTopic: async (topicId: number, text: string) => {
         const response = await telegramFetch('https://api.telegram.org/bot123:fixture/sendMessage', { method: 'POST',
           headers: { 'Content-Type': 'application/json' }, body: JSON.stringify({ chat_id: '-100123', message_thread_id: topicId, text }) });
@@ -269,6 +304,10 @@ describe('Telegram origin production bootstrap', () => {
     expect((await boot.runtime.store.getChild(old.children[0].childId))?.materializations).toEqual([]);
     expect((await boot.runtime.store.getOrigin(row.record.originId))?.attempts[0].receiptJson).toBe(row.attempts[0].receiptJson);
     expect((await boot.runtime.store.archive({ before: Date.now() + 1000 })).archived).toBeGreaterThan(0);
+    // Past the hot window full detail leaves the hot tables; the audit read does not change.
+    expect(await boot.runtime.store.purgeArchived({ before: Date.now() + 1000 })).toBeGreaterThan(0);
+    expect(await boot.runtime.store.getChild(old.children[0].childId)).toBeNull();
+    expect((await boot.runtime.store.getOrigin(old.record.originId))?.operation?.state).toBe('expired');
     const historical = JSON.parse(row.record.envelopeJson);
     new MachineIdentityManager(stateDir).removeLocalIdentity();
     expect(await boot.runtime.options.authorizeOrigin!(historical)).toBe(false);

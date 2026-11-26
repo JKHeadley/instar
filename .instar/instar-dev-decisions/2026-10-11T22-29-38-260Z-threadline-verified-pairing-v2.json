@@ -1,0 +1,24 @@
+{
+  "ts": "2026-10-11T22:29:38.260Z",
+  "slug": "threadline-verified-pairing-v2",
+  "suggestedTier": 1,
+  "declaredTier": 2,
+  "riskFloor": 1,
+  "riskFloorReasons": [],
+  "belowFloor": false,
+  "files": 3,
+  "loc": 10,
+  "scope": {
+    "basis": "staged-in-scope-additions-plus-deletions",
+    "files": [
+      "src/threadline/AgentTrustManager.ts",
+      "src/threadline/ThreadlineMCPServer.ts",
+      "src/threadline/mcp-stdio-entry.ts"
+    ],
+    "addedLines": 10,
+    "deletedLines": 0
+  },
+  "causalAutopsy": null,
+  "classClosure": null,
+  "verdict": "pass"
+}

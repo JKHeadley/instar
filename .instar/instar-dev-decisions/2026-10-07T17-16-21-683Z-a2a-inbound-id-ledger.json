@@ -1,0 +1,50 @@
+{
+  "ts": "2026-10-07T17:16:21.683Z",
+  "slug": "a2a-inbound-id-ledger",
+  "suggestedTier": 2,
+  "declaredTier": 2,
+  "riskFloor": 2,
+  "riskFloorReasons": [
+    "irreversibility: src/core/PostUpdateMigrator.ts touches PostUpdateMigrator",
+    "migration / fleet-rollout surface: src/core/PostUpdateMigrator.ts touches PostUpdateMigrator (fleet migration machinery)",
+    "new capability: new route (router.<verb>() added",
+    "new capability: new exported class / subsystem added"
+  ],
+  "belowFloor": false,
+  "files": 20,
+  "loc": 2024,
+  "scope": {
+    "basis": "staged-in-scope-additions-plus-deletions",
+    "files": [
+      "src/commands/server.ts",
+      "src/config/ConfigDefaults.ts",
+      "src/core/BackupManager.ts",
+      "src/core/PostUpdateMigrator.ts",
+      "src/core/devGatedFeatures.ts",
+      "src/core/types.ts",
+      "src/messaging/MessageRouter.ts",
+      "src/scaffold/templates.ts",
+      "src/server/AgentServer.ts",
+      "src/server/routes.ts",
+      "src/threadline/A2ADeliveryTracker.ts",
+      "src/threadline/InboundIdLedger.ts",
+      "src/threadline/InboundMessageGate.ts",
+      "src/threadline/ThreadlineBootstrap.ts",
+      "src/threadline/ThreadlineEndpoints.ts",
+      "src/threadline/ThreadlineRouter.ts",
+      "src/threadline/client/MessageEncryptor.ts",
+      "src/threadline/client/ThreadlineClient.ts",
+      "src/threadline/inboundIdLedgerWiring.ts",
+      "src/threadline/recordInboundAck.ts"
+    ],
+    "addedLines": 1963,
+    "deletedLines": 61
+  },
+  "causalAutopsy": null,
+  "classClosure": {
+    "defectClass": "unbounded-self-action",
+    "closure": "n/a",
+    "reason": "not a self-triggered loop: re-admission happens only when a sender's message arrives (bounded by the sender's own resend loop, per-key/sender/process waiter caps); the only timers delete expired rows (bounded batches, backoff, breaker) and flush counters — no restart/swap/respawn/spawn/notify/retry/re-drive/kill"
+  },
+  "verdict": "pass"
+}

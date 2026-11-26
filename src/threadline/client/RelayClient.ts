@@ -8,6 +8,8 @@
 import { WebSocket } from 'ws';
 import { EventEmitter } from 'node:events';
 import { sign } from '../ThreadlineCrypto.js';
+import { reportUnheardRelayError } from './relayErrorReport.js';
+import { isRelayChallengeNonce, reportRefusedChallenge } from './relayChallenge.js';
 import type {
   RelayClientConfig,
   AgentFingerprint,
@@ -184,18 +186,38 @@ export class RelayClient extends EventEmitter {
           return;
         }
 
+        // SEC-136: a relay frame must never throw out of this handler (it runs inside the socket's
+        // data callback, so a throw is process-wide). Refuse non-objects; catch anything else.
+        if (!frame || typeof frame !== 'object' || typeof (frame as { type?: unknown }).type !== 'string') {
+          reportUnheardRelayError({ code: 'malformed-frame' }, Date.now());
+          return;
+        }
+        try {
         switch (frame.type) {
           case 'challenge':
-            this.handleChallenge(frame.nonce);
+            if (!this.handleChallenge(frame.nonce)) {
+              // SEC-133: refused like a failed login. Settle connect(), back off (~32s, as for a
+              // rate-limited auth), close. Never an 'error' event: on the server path nothing
+              // listens for ThreadlineClient's 'error', and an unhandled one would exit the process.
+              const wasConnected = this.state === 'connected';
+              clearTimeout(connectTimeout);
+              this.state = 'disconnected';
+              this.reconnectAttempt = Math.max(this.reconnectAttempt, 5);
+              reject(new Error('Auth refused: the relay sent a login challenge that is not 32 random bytes'));
+              // A challenge after login: the close handler will no longer see 'connected', so say it here.
+              if (wasConnected) this.emit('disconnected', 'challenge-refused');
+              try { this.socket?.close(4000, 'challenge-refused'); } catch { /* @silent-fallback-ok — socket already closing */ }
+            }
             break;
 
           case 'auth_ok':
             clearTimeout(connectTimeout);
             this.state = 'connected';
-            this.sessionId = frame.sessionId;
+            // SEC-136: relay-supplied values are made text at this boundary.
+            this.sessionId = typeof frame.sessionId === 'string' ? frame.sessionId : String(frame.sessionId ?? '');
             this.heartbeatInterval = frame.heartbeatInterval;
-            this.emit('connected', frame.sessionId);
-            resolve(frame.sessionId);
+            this.emit('connected', this.sessionId);
+            resolve(this.sessionId);
             break;
 
           case 'auth_error':
@@ -206,6 +228,10 @@ export class RelayClient extends EventEmitter {
               this.reconnectAttempt = Math.max(this.reconnectAttempt, 5); // Start at ~32s backoff
             }
             reject(new Error(`Auth failed: ${frame.message}`));
+            // Some relay paths send auth_error WITHOUT closing the socket. Close it
+            // ourselves so the close handler schedules the retry; otherwise the
+            // client waits on an open, unauthenticated socket forever.
+            this.socket?.close(4000, 'auth_error');
             break;
 
           case 'message':
@@ -227,6 +253,13 @@ export class RelayClient extends EventEmitter {
             this.emit('error', frame);
             break;
 
+          case 'delivery_expired':
+            // A queued message's TTL elapsed on the relay (sent only while this
+            // identity holds a live socket). Surfaced so the sender can record
+            // "the peer provably never received it" instead of inferring it.
+            this.emit('delivery-expired', frame);
+            break;
+
           case 'discover_result':
             this.emit('discover-result', frame);
             break;
@@ -237,8 +270,16 @@ export class RelayClient extends EventEmitter {
 
           case 'displaced':
             this.shouldReconnect = false;
-            this.emit('displaced', frame.reason);
+            // Mark the state BEFORE the relay's follow-up 4001 close arrives, so the
+            // close handler does not emit a non-terminal 'disconnected' that would
+            // overwrite this terminal event and make health report "recoverable".
+            this.state = 'disconnected';
+            this.sessionId = null;
+            this.emit('displaced', typeof frame.reason === 'string' ? frame.reason : 'displaced');
             break;
+        }
+        } catch (err) {
+          reportUnheardRelayError({ code: `bad-${String((frame as { type?: unknown }).type).slice(0, 40)}-frame`, message: err instanceof Error ? err.message : String(err) }, Date.now());
         }
       });
 
@@ -268,7 +309,14 @@ export class RelayClient extends EventEmitter {
     });
   }
 
-  private handleChallenge(nonce: string): void {
+  /** Signs and sends the auth answer. Returns false (and signs nothing) for a refused challenge. */
+  private handleChallenge(nonce: string): boolean {
+    // SEC-133: never sign relay-chosen bytes of any other shape (see relayChallenge.ts).
+    if (!isRelayChallengeNonce(nonce)) {
+      reportRefusedChallenge('relay', this.config.relayUrl);
+      this.emit('challenge-refused', { relayUrl: this.config.relayUrl });
+      return false;
+    }
     const nonceBuffer = Buffer.from(nonce, 'utf-8');
     const signature = sign(this.identity.privateKey, nonceBuffer);
 
@@ -285,6 +333,7 @@ export class RelayClient extends EventEmitter {
       },
       visibility: this.config.visibility,
     }));
+    return true;
   }
 
   private scheduleReconnect(): void {

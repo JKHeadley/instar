@@ -1,0 +1,19 @@
+{
+  "version": 2,
+  "slug": "locked-store-prune-by-count",
+  "sessionId": "3ec30986-f965-43c5-a211-e68dbea1bcdd",
+  "timestamp": "2026-11-09T16:31:43.354Z",
+  "artifactPath": "upgrades/side-effects/locked-store-prune-by-count.md",
+  "artifactSha256": "8e0eaa0dc1651740f955d149abcad546c0fe818ec9e217a64db1da5d30293e78",
+  "coveredFiles": [
+    "src/native/remote-desktop/macos/InstarDesktopHost.swift",
+    "tests/unit/desktop-helper-state-op.test.ts"
+  ],
+  "phase": "complete",
+  "tier": 1,
+  "tierReasoning": "Narrow availability fix in the helper's store retention; a revert fully undoes it; no gate, auth, migration or fleet state.",
+  "eli16Path": "docs/specs/locked-store-prune-by-count.eli16.md",
+  "sideEffectsPath": "upgrades/side-effects/locked-store-prune-by-count.md",
+  "secondPass": "not-required",
+  "reviewerConcurred": null
+}

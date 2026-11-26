@@ -1,0 +1,47 @@
+{
+  "version": 3,
+  "slug": "job-grade-pass-receipt",
+  "sessionId": "d384ab47-df76-4f5e-98ea-d49268d23429",
+  "timestamp": "2026-10-28T10:41:04.551Z",
+  "artifactPath": "upgrades/side-effects/job-grade-pass-receipt.md",
+  "artifactSha256": "69742f58e6d73f00e416a81bf77155801623e8fa91e54fa3bd88ca02f095b1b8",
+  "specPath": "docs/specs/job-result-supervision-v2.md",
+  "coveredFiles": [
+    "src/scaffold/templates/jobs/instar/llm-decision-grading.md",
+    "src/scaffold/templates/jobs/instar/scripts/llm-decision-grading.mjs",
+    "src/scheduler/JobScheduler.ts",
+    "src/scheduler/JobSupervisionStore.ts",
+    "src/server/routes.ts",
+    "tests/e2e/job-cost-lifecycle.test.ts",
+    "tests/integration/decision-quality-routes.test.ts",
+    "tests/unit/job-scripts/llm-decision-grading.test.ts",
+    "tests/unit/job-supervision-store.test.ts",
+    "upgrades/next/job-grade-pass-receipt.md",
+    "upgrades/side-effects/job-grade-pass-receipt.md"
+  ],
+  "phase": "complete",
+  "tier": 2,
+  "tierReasoning": "Changes an authenticated endpoint, a per-run secret, and durable supervision evidence; additive migration and three-tier tests are required.",
+  "secondPass": "true",
+  "reviewerConcurred": true,
+  "toolchain": {
+    "buildSkill": {
+      "name": "instar-dev",
+      "version": "9a75c36ba521",
+      "verified": true
+    },
+    "reviewSkills": [
+      {
+        "name": "grade_receipt_review",
+        "outcome": "concur",
+        "verified": false,
+        "iterations": 3
+      }
+    ],
+    "convergence": {
+      "reportPath": "docs/specs/reports/job-result-supervision-v2-convergence.md",
+      "iterations": 6,
+      "verified": true
+    }
+  }
+}

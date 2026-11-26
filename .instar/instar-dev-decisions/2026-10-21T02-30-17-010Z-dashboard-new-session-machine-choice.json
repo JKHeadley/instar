@@ -1,0 +1,25 @@
+{
+  "ts": "2026-10-21T02:30:17.010Z",
+  "slug": "dashboard-new-session-machine-choice",
+  "suggestedTier": 2,
+  "declaredTier": 1,
+  "riskFloor": 1,
+  "riskFloorReasons": [],
+  "belowFloor": false,
+  "files": 4,
+  "loc": 9,
+  "scope": {
+    "basis": "staged-in-scope-additions-plus-deletions",
+    "files": [
+      "src/commands/server.ts",
+      "src/core/WriteDomainRegistry.ts",
+      "src/core/dashboardMachineChoice.ts",
+      "src/server/routes.ts"
+    ],
+    "addedLines": 7,
+    "deletedLines": 2
+  },
+  "causalAutopsy": null,
+  "classClosure": null,
+  "verdict": "blocked"
+}

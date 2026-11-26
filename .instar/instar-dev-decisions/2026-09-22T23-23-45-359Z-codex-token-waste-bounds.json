@@ -1,0 +1,23 @@
+{
+  "ts": "2026-09-22T23:23:45.359Z",
+  "slug": "codex-token-waste-bounds",
+  "suggestedTier": 2,
+  "declaredTier": 1,
+  "riskFloor": 1,
+  "riskFloorReasons": [],
+  "belowFloor": false,
+  "files": 2,
+  "loc": 54,
+  "scope": {
+    "basis": "staged-in-scope-additions-plus-deletions",
+    "files": [
+      "src/core/TopicIntentCapture.ts",
+      "src/monitoring/SessionActivitySentinel.ts"
+    ],
+    "addedLines": 51,
+    "deletedLines": 3
+  },
+  "causalAutopsy": null,
+  "classClosure": null,
+  "verdict": "pass"
+}

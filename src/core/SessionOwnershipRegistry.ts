@@ -21,7 +21,9 @@
  */
 
 import {
+  appRowWinsTie,
   applyOwnershipAction,
+  isAppOwnershipKey,
   ownershipNonceKey,
   type OwnershipAction,
   type OwnershipReason,
@@ -71,6 +73,63 @@ export class InMemorySessionOwnershipStore {
   all() {
     return [...this.recs.values()];
   }
+  /** See SessionOwnershipStore.correctMaterializedStatus. */
+  correctMaterializedStatus(candidate: import('./SessionOwnership.js').SessionOwnershipRecord): boolean {
+    const current = this.recs.get(candidate.sessionKey) ?? null;
+    if (!isApplierStatusCorrection(current, candidate)) return false;
+    this.recs.set(candidate.sessionKey, candidate);
+    try {
+      this.onCommit?.(candidate);
+    } catch {
+      /* @silent-fallback-ok — the commit hook is an observability consumer; a listener throw must never fail the correction. */
+    }
+    return true;
+  }
+  /** See SessionOwnershipStore.adoptAppTieWinner. */
+  adoptAppTieWinner(candidate: import('./SessionOwnership.js').SessionOwnershipRecord): boolean {
+    if (!isAppTieAdoption(this.recs.get(candidate.sessionKey) ?? null, candidate)) return false;
+    this.recs.set(candidate.sessionKey, candidate);
+    try {
+      this.onCommit?.(candidate);
+    } catch {
+      /* @silent-fallback-ok — the commit hook is an observability consumer; a listener throw must never fail the adoption. */
+    }
+    return true;
+  }
+}
+
+/**
+ * The ONE predicate both stores use for adopting an app row at an EQUAL epoch: an `app:` key, the
+ * same epoch, a different owner, and the candidate wins the tie rule. Numeric and Slack keys never pass.
+ */
+export function isAppTieAdoption(
+  current: import('./SessionOwnership.js').SessionOwnershipRecord | null,
+  candidate: import('./SessionOwnership.js').SessionOwnershipRecord,
+): boolean {
+  if (!current || !isAppOwnershipKey(candidate.sessionKey)) return false;
+  return current.ownershipEpoch === candidate.ownershipEpoch
+    && current.ownerMachineId !== candidate.ownerMachineId
+    && appRowWinsTie({ owner: candidate.ownerMachineId, takeover: candidate.takeover }, { owner: current.ownerMachineId, takeover: current.takeover });
+}
+
+/**
+ * The ONE predicate both stores use for a same-epoch status correction (keeps the
+ * two substrates from drifting): the current record must be the applier's own
+ * materialization of exactly this (owner, epoch) — nonce `applier:<owner>:<epoch>`
+ * on BOTH sides — currently `active`, and the candidate must be `released`.
+ */
+export function isApplierStatusCorrection(
+  current: import('./SessionOwnership.js').SessionOwnershipRecord | null,
+  candidate: import('./SessionOwnership.js').SessionOwnershipRecord,
+): boolean {
+  if (!current) return false;
+  const applierNonce = `applier:${candidate.ownerMachineId}:${candidate.ownershipEpoch}`;
+  return current.ownershipEpoch === candidate.ownershipEpoch
+    && current.ownerMachineId === candidate.ownerMachineId
+    && current.nonce === applierNonce
+    && candidate.nonce === applierNonce
+    && current.status === 'active'
+    && candidate.status === 'released';
 }
 
 /** Durable per-session CAS substrate (git single-ref fast-forward push). */
@@ -90,6 +149,25 @@ export interface SessionOwnershipStore {
    * implement it.
    */
   all?(): SessionOwnershipRecord[];
+  /**
+   * Bounded SAME-EPOCH status correction (2026-10-21 "a release replicates as a
+   * release"). The OwnershipApplier materializes a journal row into a local record
+   * stamped with its own nonce `applier:<owner>:<epoch>`. Before the fix, a
+   * `released` row was materialized as `active` — a record that is WRONG at the
+   * epoch it already holds, so the fast-forward CAS (strictly greater epoch) can
+   * never repair it. This lands `candidate` ONLY when the current record is the
+   * applier's own materialization of the same (owner, epoch) — same nonce, same
+   * owner, same epoch — currently `active`, and the candidate is `released`.
+   * Never a new authority: it corrects the applier's own earlier write from the
+   * same journal row. Returns true iff it landed.
+   */
+  correctMaterializedStatus?(candidate: SessionOwnershipRecord): boolean;
+  /**
+   * Equal-epoch adoption for an `app:` key only (app-conversations-in-the-pool §2.7): lands `candidate`
+   * when it wins the app tie rule, so two rows at one epoch converge to one owner on every machine.
+   * Its own method, never a looser `casWrite`. Returns true iff it landed.
+   */
+  adoptAppTieWinner?(candidate: SessionOwnershipRecord): boolean;
   /**
    * Interface-level commit hook (standby-write-reconciliation §3.2, round-2
    * S4): assignable listener each substrate fires at its OWN mutation point —
@@ -228,4 +306,23 @@ export function ownershipRetryDelayMs(
   // Lowest machineId retries first (shorter delay) — ordering hint, not arbitration.
   const yieldBias = selfMachineId > contenderMachineId ? backoff : Math.floor(backoff / 2);
   return Math.min(max, yieldBias);
+}
+
+/**
+ * fb-faa9d074-e09: take a peer's ACTIVE record for `selfId` when that peer cannot take the
+ * waiting message (gone, or alive without durable receive). A plain `place` never moves an
+ * active record, so without this the message waits until it expires. Guarded: only while
+ * `fromMachine` still holds the record active, so a concurrent move is never overwritten.
+ * Returns the CAS result, or null when the guard refused (nothing written).
+ */
+export function takeOverActiveRecord(
+  reg: Pick<SessionOwnershipRegistry, 'read' | 'cas'>,
+  sessionKey: string,
+  fromMachine: string,
+  selfId: string,
+  nonce: string,
+): CasResult | null {
+  const cur = reg.read(sessionKey);
+  if (!cur || cur.status !== 'active' || cur.ownerMachineId !== fromMachine || fromMachine === selfId) return null;
+  return reg.cas({ type: 'force-claim', machineId: selfId }, { sessionKey, sender: selfId, nonce });
 }

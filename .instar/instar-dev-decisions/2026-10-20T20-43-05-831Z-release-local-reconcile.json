@@ -1,0 +1,26 @@
+{
+  "ts": "2026-10-20T20:43:05.831Z",
+  "slug": "release-local-reconcile",
+  "suggestedTier": 2,
+  "declaredTier": 2,
+  "riskFloor": 2,
+  "riskFloorReasons": [
+    "migration / fleet-rollout surface: scripts/lib/release-local-steps.mjs touches release script (fleet publish path)",
+    "migration / fleet-rollout surface: scripts/release-local.mjs touches release script (fleet publish path)"
+  ],
+  "belowFloor": false,
+  "files": 2,
+  "loc": 161,
+  "scope": {
+    "basis": "staged-in-scope-additions-plus-deletions",
+    "files": [
+      "scripts/lib/release-local-steps.mjs",
+      "scripts/release-local.mjs"
+    ],
+    "addedLines": 150,
+    "deletedLines": 11
+  },
+  "causalAutopsy": null,
+  "classClosure": null,
+  "verdict": "pass"
+}

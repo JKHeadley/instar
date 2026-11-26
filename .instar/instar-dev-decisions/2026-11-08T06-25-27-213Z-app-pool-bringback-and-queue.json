@@ -1,0 +1,22 @@
+{
+  "ts": "2026-11-08T06:25:27.213Z",
+  "slug": "app-pool-bringback-and-queue",
+  "suggestedTier": 1,
+  "declaredTier": 1,
+  "riskFloor": 1,
+  "riskFloorReasons": [],
+  "belowFloor": false,
+  "files": 1,
+  "loc": 7,
+  "scope": {
+    "basis": "staged-in-scope-paths-including-deleted",
+    "files": [
+      "src/core/QueueDrainLoop.ts"
+    ],
+    "addedLines": 6,
+    "deletedLines": 1
+  },
+  "causalAutopsy": null,
+  "classClosure": null,
+  "verdict": "pass"
+}

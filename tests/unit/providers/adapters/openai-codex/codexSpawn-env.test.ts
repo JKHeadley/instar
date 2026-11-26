@@ -25,6 +25,9 @@ describe('buildCodexChildEnv — Rule 1a env-scrubbing', () => {
     killSwitch: process.env.INSTAR_DISABLE_RULE1_OPENAI,
     home: process.env.HOME,
     pathVar: process.env.PATH,
+    defaultProfile: process.env.CODEX_DEFAULT_PROFILE,
+    defaultModel: process.env.CODEX_DEFAULT_MODEL,
+    xdgConfigHome: process.env.XDG_CONFIG_HOME,
   };
 
   beforeEach(() => {
@@ -41,6 +44,9 @@ describe('buildCodexChildEnv — Rule 1a env-scrubbing', () => {
     restore('INSTAR_DISABLE_RULE1_OPENAI', saved.killSwitch);
     restore('HOME', saved.home);
     restore('PATH', saved.pathVar);
+    restore('CODEX_DEFAULT_PROFILE', saved.defaultProfile);
+    restore('CODEX_DEFAULT_MODEL', saved.defaultModel);
+    restore('XDG_CONFIG_HOME', saved.xdgConfigHome);
   });
 
   it('default: scrubs OPENAI_API_KEY from inherited env', () => {
@@ -116,6 +122,26 @@ describe('buildCodexChildEnv — Rule 1a env-scrubbing', () => {
     process.env.OPENAI_API_KEY = 'sk-FROM-PARENT';
     const env = buildCodexChildEnv({ apiKey: 'sk-FROM-OPTIONS' });
     expect(env.OPENAI_API_KEY).toBe('sk-FROM-OPTIONS');
+  });
+
+  it('subscription-only triage strips inherited and explicit billing overrides despite the global kill-switch', () => {
+    process.env.INSTAR_DISABLE_RULE1_OPENAI = '1';
+    process.env.OPENAI_API_KEY = 'sk-FROM-PARENT';
+    process.env.OPENAI_ORG_ID = 'org-parent';
+    process.env.OPENAI_PROJECT_ID = 'proj-parent';
+    process.env.CODEX_DEFAULT_PROFILE = 'custom-billing';
+    process.env.CODEX_DEFAULT_MODEL = 'other-model';
+    process.env.XDG_CONFIG_HOME = '/tmp/other-config';
+    const env = buildCodexChildEnv({ codexHome: '/tmp/verified-subscription', apiKey: 'sk-FROM-OPTIONS', subscriptionOnly: true });
+    expect(env.CODEX_HOME).toBe('/tmp/verified-subscription');
+    expect(env.OPENAI_API_KEY).toBeUndefined();
+    expect(env.OPENAI_ORG_ID).toBeUndefined();
+    expect(env.OPENAI_PROJECT_ID).toBeUndefined();
+    expect(env.OPENAI_BASE_URL).toBeUndefined();
+    expect(env.INSTAR_DISABLE_RULE1_OPENAI).toBeUndefined();
+    expect(env.CODEX_DEFAULT_PROFILE).toBeUndefined();
+    expect(env.CODEX_DEFAULT_MODEL).toBeUndefined();
+    expect(env.XDG_CONFIG_HOME).toBeUndefined();
   });
 });
 

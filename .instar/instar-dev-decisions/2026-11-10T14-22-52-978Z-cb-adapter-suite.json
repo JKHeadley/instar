@@ -1,0 +1,30 @@
+{
+  "ts": "2026-11-10T14:22:52.978Z",
+  "slug": "cb-adapter-suite",
+  "suggestedTier": 1,
+  "declaredTier": 2,
+  "riskFloor": 1,
+  "riskFloorReasons": [],
+  "belowFloor": false,
+  "files": 1,
+  "loc": 3,
+  "scope": {
+    "basis": "staged-in-scope-paths-including-deleted",
+    "files": [
+      "src/monitoring/contextBudgetSentinelBoot.ts"
+    ],
+    "addedLines": 2,
+    "deletedLines": 1
+  },
+  "causalAutopsy": null,
+  "classClosure": {
+    "defectClass": "unbounded-self-action",
+    "closure": "guard",
+    "guardEvidence": {
+      "enforcementType": "ratchet",
+      "citation": "tests/unit/self-action-convergence.test.ts",
+      "howCaught": "the suite trigger is registered in selfActionRegistry: at most 3 attempts per engine version with a 24h floor, one run at a time; this change only alters the spawned env"
+    }
+  },
+  "verdict": "pass"
+}

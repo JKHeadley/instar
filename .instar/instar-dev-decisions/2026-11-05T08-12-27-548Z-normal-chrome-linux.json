@@ -1,0 +1,24 @@
+{
+  "ts": "2026-11-05T08:12:27.548Z",
+  "slug": "normal-chrome-linux",
+  "suggestedTier": 1,
+  "declaredTier": 2,
+  "riskFloor": 1,
+  "riskFloorReasons": [],
+  "belowFloor": false,
+  "files": 3,
+  "loc": 13,
+  "scope": {
+    "basis": "staged-in-scope-additions-plus-deletions",
+    "files": [
+      "src/core/FileClassifier.ts",
+      "src/core/WriteDomainRegistry.ts",
+      "src/server/routes.ts"
+    ],
+    "addedLines": 12,
+    "deletedLines": 1
+  },
+  "causalAutopsy": null,
+  "classClosure": null,
+  "verdict": "pass"
+}

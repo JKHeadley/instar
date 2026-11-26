@@ -1,0 +1,7 @@
+{
+  "timestamp": "2026-11-16T10:31:16.000Z", "slug": "console-ticket-scoped-token-sec046",
+  "riskFloor": 1, "decision": "implement", "tier": 1,
+  "tierReasoning": "Small, dark (security.dashboardScopedToken default false), fully reversible completeness fix that MIRRORS the existing /dashboard/unlock scoped-token logic in the owner-phone console-ticket redeem. No new auth gate, no new decision authority — selects which already-minted token type to return. A revert fully undoes it.",
+  "scope": { "summary": "SEC-046: the owner-phone console-ticket redeem returned the MASTER token unconditionally even with the dashboard scoped-session feature on (a second sign-in path outside the scoped model). It now mints a scoped dst_ token via DashboardSessionStore.issue() when enabled, exactly like /dashboard/unlock; master (byte-identical) when dark.", "basis": "staged-in-scope-additions", "files": ["src/server/mobileConsoleTicket.ts","src/server/AgentServer.ts"] },
+  "evidence": { "incident": "security-review job Pass 2 (2026-11-15), SEC-046 (low-medium): console ticket redeem returns master unconditionally even with dashboardScopedToken on.", "test": "tests/integration/mobile-console-ticket-routes.test.ts — added: enabled -> redeem returns dst_ token + session expiries, not master; dark path (master) covered by the existing test.", "darkFlag": "security.dashboardScopedToken.enabled (default false)" }
+}

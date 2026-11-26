@@ -30,8 +30,11 @@
  * is a tracked follow-on (PlacementData does not yet carry leaseEpoch).
  */
 
-import type { SessionOwnershipRecord } from './SessionOwnership.js';
+import { topicRef } from '../messaging/shared/topicRef.js';
+import { appRowWinsTie, isAppOwnershipKey, type SessionOwnershipRecord } from './SessionOwnership.js';
 import type { SessionOwnershipStore } from './SessionOwnershipRegistry.js';
+import { featureEvidence } from '../monitoring/FeatureEvidenceLog.js';
+import { APP_PLACEMENT_KEY } from './CoherenceJournal.js';
 
 /** The minimal slice of CoherenceJournalReader the applier needs (for testability). */
 /** One entry as returned by the reader. `ts`/`seq` are the cursor key fields. */
@@ -129,6 +132,9 @@ export interface OwnershipApplyResult {
   pageCeilingHit?: boolean;
   /** True when the reader exposes no cursor, so only a single page could be read. */
   pagingUnavailable?: boolean;
+  /** Same-epoch records whose status was corrected active→released (the applier's own
+   *  earlier mis-materialization of a release row). Absent when zero. */
+  statusCorrected?: number;
 }
 
 export class OwnershipApplier {
@@ -160,6 +166,7 @@ export class OwnershipApplier {
   tick(): OwnershipApplyResult {
     let examined = 0;
     let materialized = 0;
+    let statusCorrected = 0;
     let pagesScanned = 0;
     let pageCeilingHit = false;
     let pagingUnavailable = false;
@@ -169,8 +176,8 @@ export class OwnershipApplier {
       // target materializes the `transferring` intermediate, not just `active`.
       type Best = {
         owner: string; epoch: number; streamOwner: string;
-        status: 'active' | 'transferring'; transferTo?: string;
-        timestamp?: number; drainInFlight?: boolean;
+        status: 'active' | 'transferring' | 'released'; transferTo?: string;
+        timestamp?: number; drainInFlight?: boolean; takeover?: boolean;
       };
       const bestByTopic = new Map<string, Best>();
 
@@ -230,21 +237,37 @@ export class OwnershipApplier {
         if (entries.length === 0) break;
 
         for (const e of entries) {
-          if (e.topic == null) continue;
+          // An app row carries its key in the data and has no numeric topic (app-conversations-in-the-pool §2.7).
+          const appKey = typeof e.data.sessionKey === 'string' && APP_PLACEMENT_KEY.test(e.data.sessionKey) ? e.data.sessionKey : null;
+          if (e.topic == null && !appKey) continue;
           const owner = typeof e.data.owner === 'string' ? e.data.owner : '';
           const epoch = typeof e.data.epoch === 'number' ? e.data.epoch : Number(e.data.epoch);
           if (!owner || !Number.isFinite(epoch) || epoch <= 0) continue;
-          const key = String(e.topic);
+          const key = appKey ?? String(e.topic);
           const cur = bestByTopic.get(key);
           const cand: Best = {
             owner, epoch, streamOwner: e.machine,
-            status: e.data.status === 'transferring' ? 'transferring' : 'active',
+            // A RELEASE must replicate as a release. Before this, a `released` placement
+            // (status absent, reason 'released') materialized on every peer as
+            // active(owner = the releasing machine) at the HIGHER epoch — so a topic a
+            // machine let go of looked, everywhere else, like that machine still owned
+            // it, and a pin to another machine could never actuate (observed live
+            // 2026-10-21: topic 127648 stuck owner=Mini active@3 on the Studio while the
+            // Mini's own record was released@3). `reason === 'released'` is honored too,
+            // so rows already in the journal (and rows from older peers that never carry
+            // `status`) converge without a re-emit.
+            status: (e.data.status === 'released' || e.data.reason === 'released') ? 'released'
+              : e.data.status === 'transferring' ? 'transferring' : 'active',
             transferTo: typeof e.data.transferTo === 'string' ? e.data.transferTo : undefined,
             timestamp: typeof e.data.timestamp === 'number' && Number.isFinite(e.data.timestamp) ? e.data.timestamp : undefined,
             drainInFlight: e.data.drainInFlight === true ? true : undefined,
+            takeover: e.data.takeover === true ? true : undefined,
           };
           if (!cur || epoch > cur.epoch) {
             bestByTopic.set(key, cand);
+          } else if (appKey) {
+            // App rows use their own deterministic tie rule (§2.2), so every machine picks the same row.
+            if (epoch === cur.epoch && appRowWinsTie(cand, cur)) bestByTopic.set(key, cand);
           } else if (epoch === cur.epoch && cur.streamOwner !== cur.owner && cand.streamOwner === cand.owner) {
             // Owner-anchored equal-epoch tie-break (Finding SE6): prefer the entry whose
             // stream-owner == entry.owner (a `transferring` from the true owner is canonical),
@@ -285,21 +308,61 @@ export class OwnershipApplier {
       for (const [sessionKey, best] of bestByTopic) {
         const local = this.d.store.read(sessionKey);
         const localEpoch = local?.ownershipEpoch ?? 0;
+        // Same-epoch status correction: a `released` row this applier ALREADY
+        // materialized — as `active`, before the release fix — is wrong at the epoch
+        // it holds, and no fresh higher-epoch row is coming (a released topic is
+        // quiet by definition). The store lands the correction ONLY when the local
+        // record is the applier's own write of this exact (owner, epoch) — never a
+        // local CAS decision (the store's predicate checks the nonce on both sides).
+        if (local && best.epoch === localEpoch && best.status === 'released' && local.status === 'active'
+          && typeof this.d.store.correctMaterializedStatus === 'function') {
+          const corrected: SessionOwnershipRecord = {
+            sessionKey,
+            ownerMachineId: best.owner,
+            ownershipEpoch: best.epoch,
+            status: 'released',
+            nonce: `applier:${best.owner}:${best.epoch}`,
+            timestamp: local.timestamp,
+            updatedAt: new Date(this.now()).toISOString(),
+          };
+          if (this.d.store.correctMaterializedStatus(corrected)) {
+            statusCorrected++;
+            this.log(`corrected ${topicRef(sessionKey)} @epoch ${best.epoch}: active(${best.owner}) → RELEASED (the applier's own earlier materialization of a release row)`);
+          }
+          continue;
+        }
+        // App rows only: an equal epoch still converges to one owner on every machine (§2.2), through
+        // the store's own method, never a looser casWrite.
+        if (local && best.epoch === localEpoch && isAppOwnershipKey(sessionKey) && local.ownerMachineId !== best.owner
+          && typeof this.d.store.adoptAppTieWinner === 'function') {
+          const adopted = this.d.store.adoptAppTieWinner({
+            sessionKey, ownerMachineId: best.owner, ownershipEpoch: best.epoch,
+            status: best.status === 'released' ? 'released' : 'active',
+            ...(best.takeover ? { takeover: true } : {}),
+            nonce: `applier:${best.owner}:${best.epoch}`,
+            timestamp: this.now(), updatedAt: new Date(this.now()).toISOString(),
+          });
+          if (adopted) { materialized++; this.log(`app tie at epoch ${best.epoch}: ${sessionKey} settled on ${best.owner}`); }
+          continue;
+        }
         if (best.epoch <= localEpoch) continue; // not newer → nothing to adopt (fast-forward only)
         // Epoch fence (Finding SE2): a corrupt huge epoch jump can't wedge a topic forever.
         if (best.epoch - localEpoch > maxEpochJump) {
-          this.log(`epoch-fence: refusing topic ${sessionKey} epoch ${best.epoch} (local ${localEpoch}, jump > ${maxEpochJump})`);
+          this.log(`epoch-fence: refusing ${topicRef(sessionKey)} epoch ${best.epoch} (local ${localEpoch}, jump > ${maxEpochJump})`);
+          featureEvidence.recordAtMostEvery('multiMachine.durableOwnership', `epoch-fence|${sessionKey}|${best.epoch}`, 60 * 60_000, { kind: 'error', reason: 'refused placement: epoch jump over the fence', context: { topic: sessionKey, epoch: best.epoch, localEpoch, maxEpochJump, owner: best.owner } });
           continue;
         }
         const now = this.now();
         // Resolve the materialized status. A `transferring` entry whose `transferTo` is
         // target-less / unknown / == owner is DOWNGRADED to active(owner) — never materialized
         // as an un-claimable permanently-stuck record (Findings AD3/SE1).
-        let status: 'active' | 'transferring' = 'active';
+        let status: 'active' | 'transferring' | 'released' = 'active';
         let transferTo: string | undefined;
         let drainInFlight: boolean | undefined;
         let timestamp = now;
-        if (best.status === 'transferring') {
+        if (best.status === 'released') {
+          status = 'released';
+        } else if (best.status === 'transferring') {
           const t = best.transferTo;
           const validTarget = !!t && t !== best.owner && (!known || known.has(t));
           if (validTarget) {
@@ -317,7 +380,7 @@ export class OwnershipApplier {
               else timestamp = carried;
             }
           } else {
-            this.log(`transferring→active downgrade for topic ${sessionKey}: invalid transferTo ${JSON.stringify(t)}`);
+            this.log(`transferring→active downgrade for ${topicRef(sessionKey)}: invalid transferTo ${JSON.stringify(t)}`);
           }
         }
         const rec: SessionOwnershipRecord = {
@@ -327,6 +390,7 @@ export class OwnershipApplier {
           status,
           ...(transferTo ? { transferTo } : {}),
           ...(drainInFlight ? { drainInFlight } : {}),
+          ...(best.takeover ? { takeover: true } : {}),
           // Adoption nonce keyed on (owner, epoch) — the same ordering identity the
           // journal uses; never a local action nonce.
           nonce: `applier:${best.owner}:${best.epoch}`,
@@ -338,24 +402,31 @@ export class OwnershipApplier {
           materialized++;
           const self = this.resolveSelf();
           this.log(
-            `materialized topic ${sessionKey} → owner ${best.owner} @epoch ${best.epoch}` +
-              (self && best.owner === self
+            `materialized ${topicRef(sessionKey)} → owner ${best.owner} @epoch ${best.epoch}` +
+              (status === 'released'
+                ? ' (RELEASED — no live owner; the next message or the pin target re-places it)'
+                : self && best.owner === self
                 ? ' (SELF — this machine now serves it)'
                 : self
                   ? ' (peer — route forwards there)'
                   : ''),
           );
+          featureEvidence.record('multiMachine.durableOwnership', { kind: 'fired', reason: 'adopted placement from the journal', context: { topic: sessionKey, owner: best.owner, epoch: best.epoch, localEpoch, status, ownedBySelf: !!self && best.owner === self } });
+        } else {
+          featureEvidence.recordAtMostEvery('multiMachine.durableOwnership', `cas|${sessionKey}|${best.epoch}`, 60 * 60_000, { kind: 'error', reason: 'placement apply refused by the store', context: { topic: sessionKey, owner: best.owner, epoch: best.epoch, localEpoch, status } });
         }
       }
     } catch (err) {
       // NOT silent: logged. The applier is best-effort replication; a failure means
       // this tick adopted fewer records — the next tick (or the reconciler) converges.
       this.log(`tick failed: ${err instanceof Error ? err.message : String(err)}`);
+      featureEvidence.recordAtMostEvery('multiMachine.durableOwnership', 'tick-failed', 60 * 60_000, { kind: 'error', reason: 'applier tick failed', context: { error: (err instanceof Error ? err.message : String(err)).slice(0, 80), materialized } });
     }
     return {
       examined,
       materialized,
       pagesScanned,
+      ...(statusCorrected ? { statusCorrected } : {}),
       ...(pageCeilingHit ? { pageCeilingHit: true } : {}),
       ...(pagingUnavailable ? { pagingUnavailable: true } : {}),
     };

@@ -1,0 +1,53 @@
+{
+  "version": 2,
+  "slug": "local-verify-import-related-rerun",
+  "sessionId": "47ece098-4d9b-4dba-b665-7b2dbb95fdc5",
+  "timestamp": "2026-11-19T02:18:30.572Z",
+  "artifactPath": "upgrades/side-effects/local-verify-import-related-rerun.md",
+  "artifactSha256": "576c0c3fb7c86eadda40715d4a675c4312ae8b971725e72e3f56b2ad44617558",
+  "specPath": "docs/specs/local-verify-import-related-rerun.md",
+  "coveredFiles": [
+    ".instar/instar-dev-decisions/2026-11-19T02-18-01-719Z-local-verify-import-related-rerun.json",
+    "docs/specs/local-verify-import-related-rerun.eli16.md",
+    "docs/specs/local-verify-import-related-rerun.md",
+    "docs/specs/local-verify-merge-authority.eli16.md",
+    "docs/specs/local-verify-merge-authority.md",
+    "scripts/local-verify-import-related-review.mjs",
+    "src/data/awareness/local-verify-import-related-rerun.md",
+    "src/data/feature-ladders.json",
+    "src/data/state-coherence-registry.json",
+    "src/localVerify/LocalVerifyService.ts",
+    "src/localVerify/laneReport.ts",
+    "src/localVerify/localVerifyWiring.ts",
+    "src/localVerify/orchestrator.ts",
+    "src/localVerify/peer.ts",
+    "src/localVerify/policy.ts",
+    "src/localVerify/record.ts",
+    "src/testing/selfActionRegistry.ts",
+    "tests/e2e/local-verify-lifecycle.test.ts",
+    "tests/integration/local-verify-peer-routes.test.ts",
+    "tests/integration/local-verify-routes.test.ts",
+    "tests/unit/localVerify/importRelatedReview.test.ts",
+    "tests/unit/localVerify/laneReport.test.ts",
+    "tests/unit/localVerify/mainHealth.test.ts",
+    "tests/unit/localVerify/orchestrator.test.ts",
+    "tests/unit/localVerify/peerVerifier.test.ts",
+    "tests/unit/localVerify/record.test.ts",
+    "upgrades/next/local-verify-import-related-rerun.md",
+    "upgrades/side-effects/local-verify-import-related-rerun.md"
+  ],
+  "phase": "complete",
+  "tier": 2,
+  "tierReasoning": "It loosens a merge-gate rule (which failed test files may be re-run) across the run child, the service and the peer wire, behind a switch that is off by default, under an approved converged spec.",
+  "secondPass": "true",
+  "reviewerConcurred": false,
+  "classClosure": {
+    "defectClass": "unbounded-self-action",
+    "closure": "guard",
+    "guardEvidence": {
+      "enforcementType": "ratchet",
+      "citation": "tests/unit/self-action-convergence.test.ts",
+      "howCaught": "The controller local-verify-flake-rerun is registered with boundK 9 and perTargetBoundK 3, both derived from LOCAL_VERIFY_LIMITS (3 files per verify x 3 runs per import-related file). Edge: a lane that ends with 1 to 3 failed files re-runs them. Steady-state bound: the cap counts files and is spent once per verify, so at most 3 files are re-run and each at most 3 times. Settling brake: a file's first solo run that does not pass ends its sequence, and after a final failure in a lane a further import-related file gets one detail-only run. The budget lives inside one verify, so the count does not grow with the horizon."
+    }
+  }
+}

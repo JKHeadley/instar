@@ -171,6 +171,7 @@ describe('ListenerSessionManager', () => {
   describe('shouldUseListener routing', () => {
     beforeEach(() => {
       manager.setState('listening');
+      manager.markReaderAlive();
     });
 
     it('allows trusted sender with short message', () => {
@@ -355,12 +356,76 @@ describe('ListenerSessionManager', () => {
   // ── State ─────────────────────────────────────────────────────────
 
   describe('state management', () => {
-    it('starts in listening state (ready to accept messages after construction)', () => {
+    it('starts with NO proven reader: state starting, not active, never chosen for routing', () => {
+      const st = manager.getState();
+      expect(st.state).toBe('starting');
+      expect(st.active).toBe(false);
+      expect(st.readerLive).toBe(false);
+      expect(st.lastReaderHeartbeatAt).toBeNull();
+      expect(manager.hasLiveReader()).toBe(false);
+      expect(manager.shouldUseListener('trusted', 50)).toBe(false);
+      expect(manager.shouldUseListener('autonomous', 50)).toBe(false);
+    });
+
+    it('state `listening` alone does not prove a reader (setState is not a heartbeat)', () => {
+      manager.setState('listening');
+      expect(manager.hasLiveReader()).toBe(false);
+      expect(manager.getState().active).toBe(false);
+      expect(manager.shouldUseListener('trusted', 50)).toBe(false);
+    });
+
+    it('a reader heartbeat opens the listener path and moves starting → listening', () => {
+      const t0 = 1_000_000;
+      manager.markReaderAlive(t0);
       expect(manager.getState().state).toBe('listening');
+      expect(manager.hasLiveReader(t0 + 1)).toBe(true);
+      expect(manager.shouldUseListener('trusted', 50, t0 + 1)).toBe(true);
+      // Trust and size rules still apply with a live reader.
+      expect(manager.shouldUseListener('verified', 50, t0 + 1)).toBe(false);
+    });
+
+    it('a heartbeat is fresh up to the bound (60 s default) and stale one ms past it', () => {
+      const t0 = 1_000_000;
+      manager.markReaderAlive(t0);
+      expect(manager.hasLiveReader(t0 + 60_000)).toBe(true);
+      expect(manager.shouldUseListener('trusted', 50, t0 + 60_000)).toBe(true);
+      expect(manager.hasLiveReader(t0 + 60_001)).toBe(false);
+      expect(manager.shouldUseListener('trusted', 50, t0 + 60_001)).toBe(false);
+      // A new heartbeat reopens it; a heartbeat stamped in the future proves nothing now.
+      manager.markReaderAlive(t0 + 70_000);
+      expect(manager.shouldUseListener('trusted', 50, t0 + 70_001)).toBe(true);
+      expect(manager.hasLiveReader(t0)).toBe(false);
+    });
+
+    it('the freshness bound is configurable (readerHeartbeatMaxAgeMs)', () => {
+      const m = new ListenerSessionManager(temp.dir, AUTH_TOKEN, { readerHeartbeatMaxAgeMs: 1_000 });
+      m.markReaderAlive(5_000);
+      expect(m.hasLiveReader(6_000)).toBe(true);
+      expect(m.hasLiveReader(6_001)).toBe(false);
+    });
+
+    it('a dead or rotating listener is not used even with a fresh heartbeat', () => {
+      manager.markReaderAlive();
+      manager.setState('dead');
+      expect(manager.shouldUseListener('trusted', 50)).toBe(false);
+      manager.setState('rotating');
+      expect(manager.shouldUseListener('trusted', 50)).toBe(false);
+    });
+
+    it('queue depth and reply claims do not depend on a reader being proven', () => {
+      const id = manager.writeToInbox({ from: 'fp-1', senderName: 'A', trustLevel: 'trusted', threadId: 't', text: 'queued' });
+      expect(manager.getQueueDepth()).toBe(1);
+      manager.acknowledgeEntry(id);
+      expect(manager.getQueueDepth()).toBe(0);
+      expect(manager.tryClaimReply('inbound-1', 'owner-a')).toBe(true);
+      expect(manager.tryClaimReply('inbound-1', 'owner-b')).toBe(false);
+      manager.releaseReplyClaim('inbound-1', 'owner-a');
+      expect(manager.hasReplyClaim('inbound-1')).toBe(false);
     });
 
     it('reports active when listening', () => {
       manager.setState('listening');
+      manager.markReaderAlive();
       expect(manager.getState().active).toBe(true);
     });
 

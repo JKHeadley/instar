@@ -1,0 +1,24 @@
+{
+  "version": 2,
+  "slug": "conversation-graph-pairing-after-genesis",
+  "sessionId": "f7388af1-08a7-4e6d-b54b-dc07d6afc31e",
+  "timestamp": "2026-11-07T03:45:27.367Z",
+  "artifactPath": "upgrades/side-effects/conversation-graph-pairing-after-genesis.md",
+  "artifactSha256": "456bd233685e63a104026b9f762f46b8f7ed2b6ff2807cdc305b7211b4242d31",
+  "specPath": "docs/specs/conversation-effort-hierarchy-v3.md",
+  "coveredFiles": [
+    "dashboard/console/conversations-model.js",
+    "dashboard/console/conversations.js",
+    "src/core/OwnedGraphCustody.ts",
+    "src/server/ConversationGraphDefault.ts",
+    "src/server/ConversationGraphDefaultSurface.ts",
+    "tests/integration/graph-default-peers.test.ts",
+    "tests/unit/console-conversations-v2-dom.test.ts",
+    "upgrades/side-effects/conversation-graph-pairing-after-genesis.md"
+  ],
+  "phase": "complete",
+  "tier": 2,
+  "tierReasoning": "Completes the pairing fix after review; feature stays off by default.",
+  "secondPass": "true",
+  "reviewerConcurred": false
+}

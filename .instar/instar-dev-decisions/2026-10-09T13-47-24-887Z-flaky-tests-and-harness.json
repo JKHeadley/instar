@@ -1,0 +1,32 @@
+{
+  "ts": "2026-10-09T13:47:24.887Z",
+  "slug": "flaky-tests-and-harness",
+  "suggestedTier": 2,
+  "declaredTier": 1,
+  "riskFloor": 2,
+  "riskFloorReasons": [
+    "new capability: new config key added"
+  ],
+  "belowFloor": true,
+  "files": 5,
+  "loc": 300,
+  "scope": {
+    "basis": "staged-in-scope-additions-plus-deletions",
+    "files": [
+      "scripts/lib/standards-enforcement-measurement.mjs",
+      "src/commands/test-as-self.ts",
+      "src/commands/testAsSelfValidation.ts",
+      "src/scheduler/JevJobCompletionAudit.ts",
+      "src/server/routes.ts"
+    ],
+    "addedLines": 274,
+    "deletedLines": 26
+  },
+  "causalAutopsy": null,
+  "classClosure": {
+    "defectClass": "unbounded-self-action",
+    "closure": "n/a",
+    "reason": "one-shot operator-invoked CLI teardown (instar test-as-self) acting only on its own validated throwaway target; a single bounded pass (20s wait) per run, not a self-triggered loop; the fetch fallback is one by-SHA fetch per measurement run"
+  },
+  "verdict": "pass"
+}

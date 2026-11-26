@@ -1,0 +1,20 @@
+{
+  "version": 2,
+  "slug": "internal-codex-reset-first",
+  "sessionId": "fa6f6527-b01e-426b-a83e-6c75395ee134",
+  "timestamp": "2026-11-23T11:00:14.670Z",
+  "artifactPath": "upgrades/side-effects/internal-codex-reset-first.md",
+  "artifactSha256": "f904225706147ae872840eafe848543eb285bb7ab64c90fe922a46edba131a91",
+  "coveredFiles": [
+    "docs/specs/internal-codex-reset-first.eli16.md",
+    "src/data/awareness/codex-weekly-reset-routing.md",
+    "upgrades/side-effects/internal-codex-reset-first.md"
+  ],
+  "phase": "complete",
+  "tier": 1,
+  "tierReasoning": "Awareness clarification and actual per-file audit after parent/base advancement. No runtime selection, assertion, lock or timing change; same approved reset-first behavior.",
+  "eli16Path": "docs/specs/internal-codex-reset-first.eli16.md",
+  "sideEffectsPath": "upgrades/side-effects/internal-codex-reset-first.md",
+  "secondPass": "true",
+  "reviewerConcurred": true
+}

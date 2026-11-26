@@ -19,6 +19,8 @@ import os from 'node:os';
 import path from 'node:path';
 import {
   DEFAULT_INSTAR_REPO_URL_ALLOWLIST,
+  assertWorktreeCapacity,
+  acquireWorktreeCreateLock,
   appendLedgerEntry,
   defaultSlugFor,
   ensureHuskyHooksActive,
@@ -31,6 +33,63 @@ import {
   worktreeDedupeKey,
   type LedgerEntry,
 } from '../../src/core/InstarWorktreeManager.js';
+
+describe('worktree capacity', () => {
+  let root: string;
+  beforeEach(() => { root = fs.mkdtempSync(path.join(os.tmpdir(), 'worktree-capacity-')); });
+  afterEach(() => fs.rmSync(root, { recursive: true, force: true }));
+
+  it('counts checkout directories while ignoring marker files and links', () => {
+    fs.mkdirSync(path.join(root, 'one'));
+    fs.writeFileSync(path.join(root, '.metadata_never_index'), '');
+    fs.symlinkSync(path.join(root, 'one'), path.join(root, 'shared-deps'));
+    expect(() => assertWorktreeCapacity(root, 2)).not.toThrow();
+    fs.mkdirSync(path.join(root, 'two'));
+    expect(() => assertWorktreeCapacity(root, 2)).toThrow(/worktree-capacity: 2 directories/);
+  });
+
+  it('keeps the bound on every directory and says plainly what is filling the folder', () => {
+    fs.mkdirSync(path.join(root, 'real-checkout'));
+    fs.writeFileSync(path.join(root, 'real-checkout', '.git'), 'gitdir: elsewhere');
+    for (const name of ['gate-train-1', 'gate-train-2', 'runner-frozen-a', '.verify']) fs.mkdirSync(path.join(root, name));
+    // Non-checkouts count: five directories refuse at a limit of five, not one.
+    expect(() => assertWorktreeCapacity(root, 6)).not.toThrow();
+    let message = '';
+    try { assertWorktreeCapacity(root, 5); } catch (err) { message = (err as Error).message; }
+    expect(message).toContain('worktree-capacity: 5 directories');
+    expect(message).toContain('(limit 5)');
+    expect(message).toContain('1 git checkouts and 4 other folders');
+    expect(message).toContain('gate-* 2');
+    expect(message).toContain('runner-* 1');
+    expect(message).toContain('.verify 1');
+    expect(message).toContain('counts toward the limit');
+  });
+});
+
+describe('worktree creation lock', () => {
+  it('refuses a second creator and releases only its own lock', () => {
+    const home = fs.mkdtempSync(path.join(os.tmpdir(), 'iwm-lock-'));
+    try {
+      const first = acquireWorktreeCreateLock(home);
+      expect(() => acquireWorktreeCreateLock(home)).toThrow(/worktree-create-busy/);
+      first.release();
+      first.release();
+      const next = acquireWorktreeCreateLock(home);
+      next.release();
+    } finally { fs.rmSync(home, { recursive: true, force: true }); }
+  });
+
+  it('leaves a crash-stale lock in place for inspection', () => {
+    const home = fs.mkdtempSync(path.join(os.tmpdir(), 'iwm-stale-lock-'));
+    try {
+      const local = path.join(home, '.instar', 'local');
+      fs.mkdirSync(local, { recursive: true });
+      fs.writeFileSync(path.join(local, 'worktree-create.lock'), '{"pid":999999}');
+      expect(() => acquireWorktreeCreateLock(home)).toThrow(/worktree-create-busy/);
+      expect(fs.readFileSync(path.join(local, 'worktree-create.lock'), 'utf8')).toBe('{"pid":999999}');
+    } finally { fs.rmSync(home, { recursive: true, force: true }); }
+  });
+});
 
 // ── Setup helpers ────────────────────────────────────────────────────────
 
@@ -416,6 +475,14 @@ describe('resolveInstarRepo', () => {
         urlAllowlist: DEFAULT_INSTAR_REPO_URL_ALLOWLIST,
       }),
     ).toThrow(/core.hooksPath .* resolves outside the repo/);
+  });
+
+  it('accepts a checkout of the canonical JKHeadley/instar repo by default (https and ssh)', () => {
+    for (const remote of ['https://github.com/JKHeadley/instar.git', 'git@github.com:JKHeadley/instar.git']) {
+      const repo = makeRepo({ remote });
+      const result = resolveInstarRepo({ env: { INSTAR_REPO: repo }, fallbackChain: [], urlAllowlist: DEFAULT_INSTAR_REPO_URL_ALLOWLIST });
+      expect(result.remoteUrl).toBe(remote);
+    }
   });
 
   it('accepts a repo with allowlisted origin and sane hooksPath', () => {

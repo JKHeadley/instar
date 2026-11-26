@@ -18,6 +18,7 @@ import {
   friendlyProvider,
   countdown,
   relativeAge,
+  slowRetryLabel,
   staleReadingAge,
   quotaBar,
   quotaSeverity,
@@ -30,6 +31,8 @@ import {
   groupMatrixRowsByProvider,
   buildMatrixModel,
   renderOutcomeCard,
+  providerClass,
+  isDeviceLimitBenched,
 } from '../../dashboard/subscriptions.js';
 
 let doc: Document;
@@ -329,6 +332,15 @@ describe('renderAccounts', () => {
     renderAccounts(doc, t, [{ id: 'gmail', nickname: 'Justin', provider: 'anthropic', framework: 'claude-code', status: 'active' }], NOW, null);
     expect(t.querySelector('.sub-account-inuse-badge')).toBeNull();
   });
+  it('withholds repair approval when two accounts have the same visible name', () => {
+    const t = el();
+    renderAccounts(doc, t, [
+      { id: 'a1', nickname: 'Personal', status: 'needs-reauth' },
+      { id: 'a2', nickname: 'Personal', status: 'needs-reauth' },
+    ], NOW, null, [{ id: 'repair-1', accountId: 'a1', state: 'suggested' }]);
+    expect(t.querySelector('.sub-account-repair-approve')).toBeNull();
+    expect(t.textContent).toContain('A unique account name is needed');
+  });
 });
 
 describe('relativeAge', () => {
@@ -368,7 +380,7 @@ describe('renderPendingLogins', () => {
   it('a url-code-paste login renders a code paste-back field + Submit (ws52-code-paste-back)', () => {
     const t = el();
     renderPendingLogins(doc, t, [{
-      id: 'adriana', label: 'adriana', kind: 'url-code-paste', machineId: 'm_mini', machineNickname: 'Mac Mini',
+      id: 'adriana', label: 'Adriana subscription', kind: 'url-code-paste', machineId: 'm_mini', machineNickname: 'Mac Mini',
       verificationUrl: 'https://claude.com/cai/oauth/authorize?code=true&client_id=x', ttlExpiresAt: '2026-06-07T00:12:00Z', reissueCount: 0,
     }], NOW);
     expect(t.querySelector('.sub-pending-codehint')!.textContent).toContain('paste the code');
@@ -390,6 +402,16 @@ describe('renderPendingLogins', () => {
     }], NOW);
     expect(t.querySelector('.sub-pending-code-input')).toBeNull();
     expect(t.querySelector('[data-submit-code]')).toBeNull();
+  });
+
+  it('withholds sign-in actions when the account label is its ID or duplicates another visible login', () => {
+    const t = el();
+    const login = { id: 'acct-1', label: 'acct-1', kind: 'url-code-paste', machineNickname: 'Mini', verificationUrl: 'https://claude.com/oauth/authorize?code=x' };
+    renderPendingLogins(doc, t, [login], NOW);
+    expect(t.querySelector('.sub-pending-signin')).toBeNull();
+    expect(t.querySelector('.sub-pending-code-submit')).toBeNull();
+    renderPendingLogins(doc, t, [{ ...login, label: 'Adriana' }, { ...login, id: 'acct-2', label: 'Adriana' }], NOW);
+    expect(t.querySelectorAll('.sub-pending-signin')).toHaveLength(0);
   });
 
   it('a javascript: URL renders as inert text, not an anchor', () => {
@@ -441,7 +463,7 @@ describe('renderAccountMatrix', () => {
     scope: 'pool',
   };
   // A pending login for (a2, m1) → that cell is in-progress.
-  const pendingScope = { enabled: true, logins: [{ id: 'a2', machineId: 'm1' }] };
+  const pendingScope = { enabled: true, logins: [{ id: 'a2', machineId: 'm1', expectedEmail: 'a2@x.com' }] };
 
   it('renders ✓ active for an (account,machine) with an active pool row', () => {
     const t = el();
@@ -480,7 +502,13 @@ describe('renderAccountMatrix', () => {
         { id: 'repair-1', accountId: 'a1', machineId: 'm1', state },
       ]);
       const cell = t.querySelector('[data-cell-key="a1::m1"]');
-      expect(cell!.querySelector('[data-matrix-setup]'), state).toBeNull();
+      if (state === 'waiting-operator-only') {
+        // A repair waiting on the operator also offers the one-tap phone Sign in
+        // (spec skill-driven-signin-repair, operator contact).
+        expect(cell!.querySelector('[data-matrix-setup]')!.textContent, state).toBe('Sign in');
+      } else {
+        expect(cell!.querySelector('[data-matrix-setup]'), state).toBeNull();
+      }
       const action = state === 'suggested' ? 'approve' : 'cancel';
       expect(cell!.querySelector(`[data-matrix-relogin][data-repair-action="${action}"]`), state).toBeTruthy();
       if (state !== 'suggested') expect(cell!.textContent, state).toMatch(/Repairing sign-in|needs your help/);
@@ -506,6 +534,41 @@ describe('renderAccountMatrix', () => {
     ]);
     expect(refused.querySelector('[data-matrix-relogin]')).toBeNull();
     expect(refused.querySelector('[data-matrix-setup]')!.textContent).toBe('Sign in');
+  });
+
+  it('shows when a failed repair will try again on its own (spec relogin-unattended-agent-session-and-slow-retry)', () => {
+    const pool = {
+      enabled: true,
+      accounts: [{ id: 'a1', email: 'a1@x.com', status: 'needs-reauth', machineId: 'm1', machineNickname: 'Laptop' }],
+      pool: { selfMachineId: 'm1', failed: [] }, scope: 'pool',
+    };
+    const scheduled = el();
+    renderAccountMatrix(doc, scheduled, pool, { enabled: true, logins: [] }, {}, [
+      { id: 'repair-1', accountId: 'a1', machineId: 'm1', state: 'failed', nextAttemptAt: new Date(Date.now() + 5.6 * 3_600_000).toISOString() },
+    ]);
+    expect(scheduled.textContent).toContain('Trying again on its own in about 6 h.');
+    expect(scheduled.querySelector('[data-repair-action="retry"]')!.textContent).toBe('Try repair again');
+    const hold = scheduled.querySelector('.sub-matrix-repair-hold')!;
+    expect(hold.textContent).toBe('Don’t retry on its own');
+    expect(hold.getAttribute('data-repair-action')).toBe('cancel');
+    const none = el();
+    renderAccountMatrix(doc, none, pool, { enabled: true, logins: [] }, {}, [
+      { id: 'repair-1', accountId: 'a1', machineId: 'm1', state: 'failed', nextAttemptAt: null },
+    ]);
+    expect(none.textContent).not.toContain('Trying again on its own');
+    expect(none.querySelector('.sub-matrix-repair-hold')).toBeNull();
+    const held = el();
+    renderAccountMatrix(doc, held, pool, { enabled: true, logins: [] }, {}, [
+      { id: 'repair-1', accountId: 'a1', machineId: 'm1', state: 'failed', nextAttemptAt: null, slowRetryHeld: true },
+    ]);
+    expect(held.textContent).toContain('Won’t try again on its own. Try repair again any time.');
+    const now = Date.parse('2026-10-14T10:00:00Z');
+    expect(slowRetryLabel({ state: 'failed', nextAttemptAt: '2026-10-14T10:00:30Z' }, now)).toBe('Trying again on its own shortly.');
+    expect(slowRetryLabel({ state: 'failed', nextAttemptAt: '2026-10-14T10:20:00Z' }, now)).toBe('Trying again on its own in 20 min.');
+    expect(slowRetryLabel({ state: 'failed', nextAttemptAt: '2026-10-17T10:00:00Z' }, now)).toBe('Trying again on its own in about 3 days.');
+    expect(slowRetryLabel({ state: 'refused', nextAttemptAt: '2026-10-14T12:00:00Z' }, now)).toBe('');
+    expect(slowRetryLabel({ state: 'failed', nextAttemptAt: 'not-a-date' }, now)).toBe('');
+    expect(slowRetryLabel({ state: 'failed', mode: 'approval', nextAttemptAt: '2026-10-14T16:00:00Z' }, now)).toBe('Will offer to try again in about 6 h.');
   });
 
   it('lets current Active truth suppress a stale failed repair episode', () => {
@@ -551,6 +614,30 @@ describe('renderAccountMatrix', () => {
     expect(cell!.querySelector('[data-matrix-setup]')).toBeNull();
   });
 
+  it('says in plain words why a needs-sign-in cell will not repair on its own, and keeps Sign in', () => {
+    const render = (status: string, blockers: unknown[]) => {
+      const t = el();
+      renderAccountMatrix(doc, t, {
+        enabled: true,
+        accounts: [{ id: 'a1', email: 'a1@x.com', status, machineId: 'm1', machineNickname: 'Mini' }],
+        pool: { selfMachineId: 'm1', failed: [] }, scope: 'pool',
+      }, { enabled: true, logins: [] }, {}, [], [], blockers);
+      return t.querySelector('[data-cell-key="a1::m1"]')!;
+    };
+    const noProfile = render('needs-reauth', [{ accountId: 'a1', machineId: 'm1', reason: 'profile-unresolved' }]);
+    expect(noProfile.textContent).toContain('no browser profile signed in to this account');
+    expect(noProfile.querySelector('[data-matrix-setup]')).toBeTruthy();
+    expect(render('needs-reauth', [{ accountId: '*', machineId: 'm1', reason: 'feature-unavailable' }]).textContent)
+      .toContain('Automatic repair isn’t running on this machine');
+    expect(render('needs-reauth', [{ accountId: 'a1', machineId: 'm1', reason: 'some-future-reason' }]).textContent)
+      .toContain('Won’t repair on its own on this machine');
+    // Another cell's blocker, or an active cell, adds nothing.
+    expect(render('needs-reauth', [{ accountId: 'a2', machineId: 'm1', reason: 'profile-unresolved' }]).textContent)
+      .not.toContain('Won’t repair');
+    expect(render('active', [{ accountId: 'a1', machineId: 'm1', reason: 'profile-unresolved' }]).textContent)
+      .not.toContain('Won’t repair');
+  });
+
   it('renders a "Set up" button for a genuinely-empty (reachable) cell', () => {
     // Two reachable machines m1, m1b; account a1 is active only on m1 → a1 × m1b is empty.
     const t = el();
@@ -568,6 +655,20 @@ describe('renderAccountMatrix', () => {
     const a1OnMini = Array.from(setupBtns).find((b) => b.getAttribute('data-account-id') === 'a1' && b.getAttribute('data-machine-id') === 'm1b');
     expect(a1OnMini).toBeTruthy();
     expect(a1OnMini!.textContent).toBe('Set up');
+  });
+
+  it('does not offer account actions when visible machine names are ambiguous', () => {
+    const t = el();
+    renderAccountMatrix(doc, t, {
+      enabled: true,
+      accounts: [
+        { id: 'a1', email: 'a1@x.com', status: 'needs-reauth', machineId: 'm1', machineNickname: 'Laptop' },
+        { id: 'a2', email: 'a2@x.com', status: 'needs-reauth', machineId: 'm2', machineNickname: 'Laptop' },
+      ],
+      pool: { selfMachineId: 'm1', failed: [] }, scope: 'pool',
+    }, { enabled: true, logins: [] }, {});
+    expect(t.querySelectorAll('[data-matrix-setup]')).toHaveLength(0);
+    expect(t.textContent).toContain('A unique account and machine name are needed');
   });
 
   it('renders an honest PIN-gated repair action for an email-less account record', () => {
@@ -739,7 +840,7 @@ describe('renderAccountMatrix', () => {
     const t = el();
     const pending = {
       enabled: true,
-      logins: [{ id: 'a2', machineId: 'm1', kind: 'url-code-paste', paneAlive: false, verificationUrl: 'https://claude.com/oauth' }],
+      logins: [{ id: 'a2', machineId: 'm1', kind: 'url-code-paste', paneAlive: false, verificationUrl: 'https://claude.com/oauth', expectedEmail: 'a2@x.com' }],
     };
     renderAccountMatrix(doc, t, poolScope, pending, {});
     const cell = t.querySelector('.sub-matrix-broken')!;
@@ -916,7 +1017,7 @@ describe('renderPendingLogins — expected-account, liveness, wording floors, ou
       kind: 'validated', accountId: '<img src=x onerror=alert(1)>', machineId: 'm1', at: NOW,
     });
     expect(card.querySelector('img')).toBeNull();
-    expect(card.textContent).toContain('<img');
+    expect(card.textContent).toContain('the account');
   });
 });
 
@@ -934,7 +1035,7 @@ function el(): HTMLElement {
  */
 describe('renderAccounts — provider grouping', () => {
   const acct = (id: string, provider: string) => ({
-    id, nickname: id, provider, framework: provider === 'openai' ? 'codex-cli' : 'claude-code',
+    id, nickname: `Account ${id}`, provider, framework: provider === 'openai' ? 'codex-cli' : 'claude-code',
     status: 'active', configHome: `/h/${id}`,
   });
 
@@ -948,7 +1049,25 @@ describe('renderAccounts — provider grouping', () => {
     renderAccounts(doc, t, [acct('a1', 'anthropic'), acct('c1', 'openai'), acct('a2', 'anthropic')], NOW);
     expect(headings(t)).toEqual(['Claude', 'Codex']);
     // Every Claude account sits under Claude; the Codex one does not get stranded.
-    expect(order(t)).toEqual(['Claude', 'a1', 'a2', 'Codex', 'c1']);
+    expect(order(t)).toEqual(['Claude', 'Account a1', 'Account a2', 'Codex', 'Account c1']);
+  });
+
+  it('colors each provider at a glance: heading and every card carry the provider class', () => {
+    const t = doc.createElement('div');
+    renderAccounts(doc, t, [acct('a1', 'anthropic'), acct('c1', 'openai')], NOW);
+    const hs = Array.from(t.querySelectorAll('.sub-provider-heading'));
+    expect(hs.map((h) => h.classList.contains('sub-prov-claude'))).toEqual([true, false]);
+    expect(hs.map((h) => h.classList.contains('sub-prov-codex'))).toEqual([false, true]);
+    const cards = Array.from(t.querySelectorAll('.sub-account'));
+    expect(cards.map((c) => [c.classList.contains('sub-prov-claude'), c.classList.contains('sub-prov-codex')]))
+      .toEqual([[true, false], [false, true]]);
+  });
+
+  it('providerClass is a closed mapping; an unknown or hostile provider never becomes a raw class', () => {
+    expect(providerClass('anthropic')).toBe('sub-prov-claude');
+    expect(providerClass('openai')).toBe('sub-prov-codex');
+    expect(providerClass('x" onmouseover="alert(1)')).toBe('sub-prov-other');
+    expect(providerClass(undefined)).toBe('sub-prov-other');
   });
 
   it('CONTROL: a single-provider list is UNCHANGED — no heading at all', () => {
@@ -957,7 +1076,7 @@ describe('renderAccounts — provider grouping', () => {
     const t = doc.createElement('div');
     renderAccounts(doc, t, [acct('a1', 'anthropic'), acct('a2', 'anthropic')], NOW);
     expect(headings(t)).toEqual([]);
-    expect(order(t)).toEqual(['a1', 'a2']);
+    expect(order(t)).toEqual(['Account a1', 'Account a2']);
   });
 
   it('accounts keep their ORDER within a group — grouping re-associates, it does not re-rank', () => {
@@ -965,7 +1084,7 @@ describe('renderAccounts — provider grouping', () => {
     // account is default). Sorting would silently discard it.
     const t = doc.createElement('div');
     renderAccounts(doc, t, [acct('zeta', 'anthropic'), acct('alpha', 'anthropic')], NOW);
-    expect(order(t)).toEqual(['zeta', 'alpha']);
+    expect(order(t)).toEqual(['Account zeta', 'Account alpha']);
   });
 
   it('groups appear in FIRST-APPEARANCE order, not alphabetical', () => {
@@ -979,7 +1098,7 @@ describe('renderAccounts — provider grouping', () => {
     const accounts = [acct('a1', 'anthropic'), acct('c1', 'openai'), acct('g1', 'google'), acct('a2', 'anthropic')];
     renderAccounts(doc, t, accounts, NOW);
     const nicks = Array.from(t.querySelectorAll('.sub-account-nick')).map((n) => n.textContent);
-    expect(nicks.sort()).toEqual(['a1', 'a2', 'c1', 'g1']);
+    expect(nicks.sort()).toEqual(['Account a1', 'Account a2', 'Account c1', 'Account g1']);
     expect(t.querySelectorAll('.sub-account').length).toBe(4);
   });
 
@@ -1015,7 +1134,7 @@ describe('renderAccounts — provider grouping', () => {
     renderAccounts(doc, t, [acct('a1', 'anthropic'), acct('c1', 'openai')], NOW, 'c1');
     const inUse = t.querySelector('.sub-account-inuse');
     expect(inUse).not.toBeNull();
-    expect(inUse!.textContent).toContain('c1');
+    expect(inUse!.textContent).toContain('Account c1');
   });
 });
 
@@ -1046,6 +1165,17 @@ describe('renderAccountMatrix — provider grouping', () => {
     const a2At = rowText.findIndex((x) => x.includes('a2@x.com'));
     expect(claudeAt).toBeLessThan(a2At);
     expect(a2At).toBeLessThan(codexAt);
+  });
+
+  it('colors the grid: each band and each account row carry their provider class', () => {
+    const t = el2();
+    renderAccountMatrix(doc, t, mixedPool, pending, {});
+    const bands = Array.from(t.querySelectorAll('.sub-matrix-group'));
+    expect(bands.map((b) => b.className)).toEqual(['sub-matrix-group sub-prov-claude', 'sub-matrix-group sub-prov-codex']);
+    const rows = Array.from(t.querySelectorAll('tbody tr')).filter((r) => r.querySelector('.sub-matrix-acct'));
+    const byEmail = Object.fromEntries(rows.map((r) => [r.querySelector('.sub-matrix-acct')!.textContent, r.className]));
+    expect(byEmail['a2@x.com']).toBe('sub-prov-claude');
+    expect(byEmail['c1@x.com']).toBe('sub-prov-codex');
   });
 
   it('the band spans the whole grid so it reads as a band, not a stray cell', () => {
@@ -1114,5 +1244,66 @@ describe('renderAccountMatrix — provider grouping', () => {
     const model = buildMatrixModel(mixedPool, pending, {});
     const grouped = groupMatrixRowsByProvider(model.rows);
     expect(grouped.filter((g) => g.__row).length).toBe(model.rows.length);
+  });
+});
+
+describe('Codex device-limit tripwire cell (spec codex-device-limit-tripwire §8)', () => {
+  const pool = (accounts) => ({ enabled: true, accounts, pool: { selfMachineId: 'm1', failed: [] }, scope: 'pool' });
+  const row = (extra) => ({ id: 'c1', email: 'c1@x.com', provider: 'openai', status: 'needs-reauth', machineId: 'm1', machineNickname: 'Laptop', ...extra });
+
+  it('isDeviceLimitBenched requires needs-reauth AND the exact cause', () => {
+    expect(isDeviceLimitBenched(row({ statusCause: 'codex-device-limit' }))).toBe(true);
+    expect(isDeviceLimitBenched(row({ statusCause: 'unknown' }))).toBe(false);
+    expect(isDeviceLimitBenched(row({}))).toBe(false);
+    expect(isDeviceLimitBenched(row({ status: 'active', statusCause: 'codex-device-limit' }))).toBe(false);
+    expect(isDeviceLimitBenched(null)).toBe(false);
+  });
+
+  it('a benched cell shows the bench and hides Sign in and every repair action, even with a repair episode', () => {
+    for (const state of ['suggested', 'failed', 'browser-driving', 'waiting-operator-only']) {
+      const t = el();
+      renderAccountMatrix(doc, t, pool([row({ statusCause: 'codex-device-limit' })]), { enabled: true, logins: [] }, {}, [
+        { id: 'r1', accountId: 'c1', machineId: 'm1', state },
+      ]);
+      const cell = t.querySelector('[data-cell-key="c1::m1"]');
+      expect(cell!.className, state).toContain('sub-matrix-device-limit');
+      expect(cell!.textContent, state).toContain('Suspected device limit: benched on this machine');
+      expect(cell!.querySelector('[data-matrix-setup]'), state).toBeNull();
+      expect(cell!.querySelector('[data-matrix-relogin]'), state).toBeNull();
+    }
+  });
+
+  it('a pending login or client transient does not turn a benched cell back into an action', () => {
+    const t = el();
+    renderAccountMatrix(doc, t, pool([row({ statusCause: 'codex-device-limit' })]),
+      { enabled: true, logins: [{ id: 'c1', machineId: 'm1', expectedEmail: 'c1@x.com', verificationUrl: 'https://auth.openai.com/x' }] },
+      { 'c1::m1': { state: 'held' } });
+    const cell = t.querySelector('[data-cell-key="c1::m1"]');
+    expect(cell!.className).toContain('sub-matrix-device-limit');
+    expect(cell!.querySelector('button')).toBeNull();
+  });
+
+  it("a remote row with statusCause 'unknown' is ordinary needs-sign-in, not benched", () => {
+    const t = el();
+    renderAccountMatrix(doc, t, pool([row({ statusCause: 'unknown', machineId: 'm2', machineNickname: 'Studio', remote: true })]), { enabled: true, logins: [] }, {});
+    const cell = t.querySelector('[data-cell-key="c1::m2"]');
+    expect(cell!.className).toContain('sub-matrix-needs-reauth');
+    expect(cell!.textContent).not.toContain('device limit');
+    expect(cell!.querySelector('[data-matrix-setup]')!.textContent).toBe('Sign in');
+  });
+
+  it('the account card shows the bench and no repair controls', () => {
+    const t = el();
+    renderAccounts(doc, t, [row({ statusCause: 'codex-device-limit' })], NOW, null, [
+      { id: 'r1', accountId: 'c1', state: 'suggested' },
+    ]);
+    expect(t.textContent).toContain('Suspected device limit: benched on this machine');
+    expect(t.querySelector('[data-relogin-action]')).toBeNull();
+    const plain = el();
+    renderAccounts(doc, plain, [row({ statusCause: 'unknown' })], NOW, null, [
+      { id: 'r1', accountId: 'c1', state: 'suggested' },
+    ]);
+    expect(plain.textContent).not.toContain('device limit');
+    expect(plain.querySelector('[data-relogin-action="approve"]')).toBeTruthy();
   });
 });

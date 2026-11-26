@@ -1,0 +1,32 @@
+{
+  "ts": "2026-10-31T19:36:11.350Z",
+  "slug": "console-held-replies-preview",
+  "suggestedTier": 2,
+  "declaredTier": 1,
+  "riskFloor": 2,
+  "riskFloorReasons": [
+    "irreversibility: src/core/PostUpdateMigrator.ts touches PostUpdateMigrator",
+    "migration / fleet-rollout surface: scripts/publish-dashboard-preview.mjs touches publish script (fleet publish path)",
+    "migration / fleet-rollout surface: src/core/PostUpdateMigrator.ts touches PostUpdateMigrator (fleet migration machinery)"
+  ],
+  "belowFloor": true,
+  "files": 7,
+  "loc": 182,
+  "scope": {
+    "basis": "staged-in-scope-additions-plus-deletions",
+    "files": [
+      "scripts/publish-dashboard-preview.mjs",
+      "src/core/PostUpdateMigrator.ts",
+      "src/core/desktopTransport.ts",
+      "src/scaffold/templates.ts",
+      "src/server/AgentServer.ts",
+      "src/server/dashboardPreview.ts",
+      "src/server/middleware.ts"
+    ],
+    "addedLines": 180,
+    "deletedLines": 2
+  },
+  "causalAutopsy": null,
+  "classClosure": null,
+  "verdict": "blocked"
+}

@@ -21,12 +21,13 @@ const MAX_NICKNAME_LEN = 40;
 
 /**
  * Validation: a non-empty string starting with a word char, then up to 40 word
- * chars / spaces / hyphens. Rejects control chars, leading separators, reserved
+ * chars / spaces / hyphens / apostrophes. Rejects control chars, leading separators, reserved
  * shapes, and over-length values. Used at the editable surface (PATCH) and as a
  * sanity gate on auto-derived values.
  */
 export function isValidNickname(value: unknown): value is string {
-  return typeof value === 'string' && /^[\w][\w \-]{0,40}$/.test(value.trim()) && value.trim().length > 0;
+  // Apostrophes are allowed so a Mac's own name ("Justin's MacBook Pro") is usable as-is.
+  return typeof value === 'string' && /^[\w][\w '\-]{0,40}$/.test(value.trim()) && value.trim().length > 0;
 }
 
 /** Title-case a space-separated phrase ("macbook pro" → "Macbook Pro"). */
@@ -86,8 +87,11 @@ export function assignNickname(opts: {
   identityName?: string;
   platform?: string;
   existingNicknames?: readonly string[];
+  /** `identityName` is already a person-given name (e.g. a Mac's ComputerName): use it verbatim. */
+  keepCase?: boolean;
 }): string {
-  const base = deriveBaseNickname(opts.identityName, opts.platform);
+  const verbatim = opts.keepCase && typeof opts.identityName === 'string' ? opts.identityName.trim().slice(0, MAX_NICKNAME_LEN).trim() : '';
+  const base = verbatim && isValidNickname(verbatim) ? verbatim : deriveBaseNickname(opts.identityName, opts.platform);
   const taken = new Set((opts.existingNicknames || []).map((n) => n.trim().toLowerCase()));
   if (!taken.has(base.toLowerCase())) return base;
   // Disambiguate with a numeric suffix, deterministically.

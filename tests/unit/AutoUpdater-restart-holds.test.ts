@@ -1,0 +1,396 @@
+/**
+ * Restart holds: the AutoUpdater holds an update restart while in-flight work a restart would
+ * LOSE exists (a pairing invite waiting for approval: its secret is in memory only), through the
+ * same durable deferral record and retry timer as session deferral, bounded by each hold's own
+ * end time (docs/specs/a2a-pairing-invite-link.md §8; live walk 2026-10-20).
+ */
+import { describe, it, expect, vi, beforeEach, afterEach } from 'vitest';
+import fs from 'node:fs';
+import os from 'node:os';
+import path from 'node:path';
+import { AutoUpdater } from '../../src/core/AutoUpdater.js';
+import { UpdateGate, type RestartHold } from '../../src/core/UpdateGate.js';
+import { ProcessIntegrity } from '../../src/core/ProcessIntegrity.js';
+import type { UpdateChecker } from '../../src/core/UpdateChecker.js';
+import type { StateManager } from '../../src/core/StateManager.js';
+import { SafeFsExecutor } from '../../src/core/SafeFsExecutor.js';
+import { AgentTrustManager } from '../../src/threadline/AgentTrustManager.js';
+import { PairingInviteStore } from '../../src/threadline/PairingInviteStore.js';
+import { PairingInviteFlow } from '../../src/threadline/PairingInviteFlow.js';
+import { MarkedPairingInviteFlow, PairingPendingAcceptMarkers } from '../../src/threadline/PairingPendingAcceptMarkers.js';
+import { generateIdentityKeyPair } from '../../src/threadline/ThreadlineCrypto.js';
+
+const checker = () => ({
+  getInstalledVersion: vi.fn().mockReturnValue('0.9.8'),
+  check: vi.fn(), applyUpdate: vi.fn(), getLastCheck: vi.fn().mockReturnValue(null),
+} as unknown as UpdateChecker);
+const state = () => ({ get: vi.fn().mockReturnValue(997), set: vi.fn() } as unknown as StateManager);
+
+describe('AutoUpdater restart holds', () => {
+  let tmpDir: string;
+  let log: ReturnType<typeof vi.spyOn>;
+  const restartFile = () => path.join(tmpDir, 'state', 'restart-requested.json');
+
+  beforeEach(() => {
+    tmpDir = fs.mkdtempSync(path.join(os.tmpdir(), 'auto-updater-holds-'));
+    fs.mkdirSync(path.join(tmpDir, 'state'), { recursive: true });
+    vi.useFakeTimers({ shouldAdvanceTime: true });
+    log = vi.spyOn(console, 'log');
+  });
+  afterEach(() => {
+    ProcessIntegrity.reset();
+    vi.useRealTimers();
+    vi.restoreAllMocks();
+    SafeFsExecutor.safeRmSync(tmpDir, { recursive: true, force: true, operation: 'tests/unit/AutoUpdater-restart-holds.test.ts' });
+  });
+
+  function updater(holds: () => RestartHold[]) {
+    const u = new AutoUpdater(checker(), state(), tmpDir, { preRestartDelaySecs: 0 });
+    u.setSessionDeps({ listRunningSessions: () => [] });
+    u.setRestartHold('pairing-invite', holds);
+    return u;
+  }
+  const gated = (u: AutoUpdater, bypassWindow = false, bypassHolds = false) =>
+    (u as unknown as { gatedRestart(v: string, w?: boolean, h?: boolean): Promise<void> })
+      .gatedRestart('0.9.9', bypassWindow, bypassHolds);
+
+  it('releases the admission fence when the first restart decision throws', async () => {
+    const u = updater(() => []);
+    u.setSessionDeps({ listRunningSessions: () => { throw new Error('session probe failed'); } });
+    await expect(gated(u)).rejects.toThrow('session probe failed');
+    expect(u.getStatus().updateActivationPendingSince).toBeNull();
+    expect(fs.existsSync(restartFile())).toBe(false);
+    u.stop();
+  });
+
+  it('releases the admission fence when a deferred restart retry throws', async () => {
+    let holds: RestartHold[] = [{ name: 'local-verify:pr-7', until: Date.now() + 60_000, reason: 'verify running' }];
+    const u = updater(() => holds);
+    await gated(u);
+    expect(u.getStatus().restartDeferral?.active).toBe(true);
+    holds = [];
+    u.setSessionDeps({ listRunningSessions: () => { throw new Error('retry probe failed'); } });
+    const internal = u as unknown as { retryDeferredRestart(v: string, generation: number): Promise<void>; deferralLifecycleGeneration: number };
+    await internal.retryDeferredRestart('0.9.9', internal.deferralLifecycleGeneration);
+    expect(u.getStatus().updateActivationPendingSince).toBeNull();
+    expect(u.getStatus().restartDeferral?.active).toBe(true);
+    expect(fs.existsSync(restartFile())).toBe(false);
+    u.stop();
+  });
+
+  it('holds while an invite waits, logs why, and records it on the existing durable deferral', async () => {
+    const until = Date.now() + 40 * 60_000;
+    const u = updater(() => [{ name: 'pairing-invite:abcd1234', until, reason: 'a pairing invite from "Scout" is waiting for the operator\'s approval' }]);
+    await gated(u);
+    await vi.advanceTimersByTimeAsync(3_000);
+    expect(fs.existsSync(restartFile())).toBe(false);
+    const d = u.getStatus().restartDeferral!;
+    expect(d).toMatchObject({ active: true, targetVersion: '0.9.9', currentBlockers: ['pairing-invite:abcd1234'] });
+    expect(u.getStatus().updateActivationPendingSince).toBeNull(); // durable deferral governs the wait
+    expect(d.reason).toContain('held for in-flight work: a pairing invite from "Scout"');
+    expect(d.reason).toContain(new Date(until).toISOString());
+    // Re-checked at the normal 5-minute cadence, not only at the invite's expiry.
+    expect(Date.parse(d.nextRetryAt!) - Date.now()).toBeLessThanOrEqual(5 * 60_000);
+    expect(log.mock.calls.some((c) => String(c[0]).includes('[AutoUpdater] Restart deferred for v0.9.9: held for in-flight work'))).toBe(true);
+    // Durable: the same row the session deferral uses.
+    const persisted = JSON.parse(fs.readFileSync(path.join(tmpDir, 'state', 'auto-updater.json'), 'utf8'));
+    expect(persisted.restartDeferral.currentBlockers).toEqual(['pairing-invite:abcd1234']);
+    u.stop();
+  });
+
+  it('a local-verify hold that ends triggers the restart within seconds, not at the 5-minute re-check', async () => {
+    let holds: RestartHold[] = [{ name: 'local-verify:pr-7', until: Date.now() + 60 * 60_000, reason: 'a local verify of PR #7 is running' }];
+    const u = updater(() => holds);
+    await gated(u);
+    expect(u.getStatus().restartDeferral).toMatchObject({ active: true, currentBlockers: ['local-verify:pr-7'] });
+    holds = []; // the verify finished
+    u.recheckRestartHolds();
+    await vi.advanceTimersByTimeAsync(3_000);
+    expect(fs.existsSync(restartFile())).toBe(true);
+    expect(u.getStatus().restartDeferral).toBeNull();
+    u.stop();
+  });
+
+  it('the recheck does nothing while a hold is still active, or when the deferral is not on a local-verify hold', async () => {
+    const lv: RestartHold[] = [{ name: 'local-verify:pr-7', until: Date.now() + 60 * 60_000, reason: 'verify running' }];
+    const u = updater(() => lv);
+    await gated(u);
+    u.recheckRestartHolds();
+    await vi.advanceTimersByTimeAsync(3_000);
+    expect(fs.existsSync(restartFile())).toBe(false);
+    u.stop();
+
+    let inv: RestartHold[] = [{ name: 'pairing-invite:abcd1234', until: Date.now() + 40 * 60_000, reason: 'invite waiting' }];
+    const v = updater(() => inv);
+    await gated(v);
+    inv = [];
+    v.recheckRestartHolds();
+    await vi.advanceTimersByTimeAsync(3_000);
+    expect(fs.existsSync(restartFile())).toBe(false); // waits for its own re-check, as before
+    v.stop();
+  });
+
+  it('a verify that starts again before the brought-forward retry runs defers the restart on the new hold', async () => {
+    let holds: RestartHold[] = [{ name: 'local-verify:pr-7', until: Date.now() + 60 * 60_000, reason: 'verify 7 running' }];
+    const u = updater(() => holds);
+    await gated(u);
+    holds = [];
+    u.recheckRestartHolds();
+    holds = [{ name: 'local-verify:pr-8', until: Date.now() + 60 * 60_000, reason: 'verify 8 running' }]; // rule (b) exception: the next verify started
+    await vi.advanceTimersByTimeAsync(3_000);
+    expect(fs.existsSync(restartFile())).toBe(false);
+    expect(u.getStatus().restartDeferral).toMatchObject({ active: true, currentBlockers: ['local-verify:pr-8'] });
+    u.stop();
+  });
+
+  it('after stop() the recheck arms nothing (no restart during shutdown)', async () => {
+    let holds: RestartHold[] = [{ name: 'local-verify:pr-7', until: Date.now() + 60 * 60_000, reason: 'verify running' }];
+    const u = updater(() => holds);
+    await gated(u);
+    u.stop();
+    holds = [];
+    u.recheckRestartHolds();
+    await vi.advanceTimersByTimeAsync(10_000);
+    expect(fs.existsSync(restartFile())).toBe(false);
+  });
+
+  it('releases once the accept finishes (the hold is gone at the next re-check)', async () => {
+    let holds: RestartHold[] = [{ name: 'pairing-invite:abcd1234', until: Date.now() + 40 * 60_000, reason: 'invite waiting' }];
+    const u = updater(() => holds);
+    await gated(u);
+    holds = []; // approved or declined
+    await vi.advanceTimersByTimeAsync(5 * 60_000 + 3_000);
+    expect(fs.existsSync(restartFile())).toBe(true);
+    expect(u.getStatus().restartDeferral).toBeNull();
+    u.stop();
+  });
+
+  it('is bounded by the invite\'s expiry: a hold past its end holds nothing, and the retry fires at the end', async () => {
+    const until = Date.now() + 2 * 60_000;
+    // A provider that keeps reporting the hold (as a stale one would) cannot extend it.
+    const u = updater(() => [{ name: 'pairing-invite:abcd1234', until, reason: 'invite waiting' }]);
+    await gated(u);
+    expect(Date.parse(u.getStatus().restartDeferral!.nextRetryAt!)).toBeLessThanOrEqual(until + 1_000);
+    await vi.advanceTimersByTimeAsync(60_000);
+    expect(fs.existsSync(restartFile())).toBe(false);
+    await vi.advanceTimersByTimeAsync(60_000 + 4_000);
+    expect(fs.existsSync(restartFile())).toBe(true);
+    u.stop();
+  });
+
+  it('respects maxDeferralHours (4 h): a hold that would last 20 h stops holding after 4 h', async () => {
+    const u = updater(() => [{ name: 'pairing-invite:abcd1234', until: Date.now() + 20 * 3_600_000, reason: 'invite waiting' }]);
+    await gated(u);
+    await vi.advanceTimersByTimeAsync(3 * 3_600_000 + 50 * 60_000);
+    expect(fs.existsSync(restartFile())).toBe(false);
+    await vi.advanceTimersByTimeAsync(20 * 60_000);
+    expect(fs.existsSync(restartFile())).toBe(true);
+    expect(JSON.parse(fs.readFileSync(restartFile(), 'utf8')).bypassHolds).toBe(true);
+    expect(log.mock.calls.some((c) => String(c[0]).includes('Restart holds for v0.9.9 ignored: max deferral (4h) reached'))).toBe(true);
+    u.stop();
+  });
+
+  it('the max-deferral clock is the durable first deferral: a server restart does not reset it', async () => {
+    const holds = () => [{ name: 'pairing-invite:abcd1234', until: Date.now() + 20 * 3_600_000, reason: 'invite waiting' }];
+    fs.writeFileSync(path.join(tmpDir, 'state', 'auto-updater.json'), JSON.stringify({
+      restartDeferral: {
+        active: true, targetVersion: '0.9.9', firstDeferredAt: new Date(Date.now() - 5 * 3_600_000).toISOString(),
+        reason: 'held', currentBlockers: ['pairing-invite:abcd1234'], nextRetryAt: new Date(Date.now() + 3_600_000).toISOString(), updatedAt: new Date().toISOString(),
+      },
+    }));
+    const u = updater(holds);
+    await gated(u);
+    await vi.advanceTimersByTimeAsync(3_000);
+    expect(fs.existsSync(restartFile())).toBe(true);
+    expect(JSON.parse(fs.readFileSync(restartFile(), 'utf8')).bypassHolds).toBe(true);
+    u.stop();
+  });
+
+  it('near the max-deferral ceiling the re-check lands at the ceiling, not a full 5 minutes later', async () => {
+    const holds = () => [{ name: 'pairing-invite:abcd1234', until: Date.now() + 20 * 3_600_000, reason: 'invite waiting' }];
+    const first = Date.now() - (4 * 3_600_000 - 2 * 60_000); // ceiling in 2 min
+    fs.writeFileSync(path.join(tmpDir, 'state', 'auto-updater.json'), JSON.stringify({
+      restartDeferral: {
+        active: true, targetVersion: '0.9.9', firstDeferredAt: new Date(first).toISOString(),
+        reason: 'held', currentBlockers: ['pairing-invite:abcd1234'], nextRetryAt: new Date(Date.now() + 3_600_000).toISOString(), updatedAt: new Date().toISOString(),
+      },
+    }));
+    const u = updater(holds);
+    await gated(u);
+    expect(Date.parse(u.getStatus().restartDeferral!.nextRetryAt!)).toBeLessThanOrEqual(first + 4 * 3_600_000 + 1_000);
+    u.stop();
+  });
+
+  it('a manual apply skips the restart window but preserves in-flight holds until explicitly forced', async () => {
+    const u = updater(() => [{ name: 'pairing-invite:abcd1234', until: Date.now() + 40 * 60_000, reason: 'invite waiting' }]);
+    await gated(u, true);
+    await vi.advanceTimersByTimeAsync(3_000);
+    expect(fs.existsSync(restartFile())).toBe(false);
+    expect(u.getStatus().restartDeferral?.currentBlockers).toEqual(['pairing-invite:abcd1234']);
+    await gated(u, true, true);
+    await vi.advanceTimersByTimeAsync(3_000);
+    expect(fs.existsSync(restartFile())).toBe(true);
+    u.stop();
+  });
+
+  it('keeps a manual window bypass across hold release, session retry, and durable recovery', async () => {
+    vi.setSystemTime(new Date('2026-10-31T19:00:00.000Z')); // noon PDT, outside 02:00–03:00
+    let holds: RestartHold[] = [{ name: 'local-verify:pr-7', until: Date.now() + 60 * 60_000, reason: 'verify running' }];
+    let sessions = [{ name: 'interactive-work', tmuxSession: 'interactive-work' }];
+    const create = () => {
+      const u = new AutoUpdater(checker(), state(), tmpDir, {
+        preRestartDelaySecs: 0,
+        restartWindow: { start: '02:00', end: '03:00' },
+      });
+      u.setSessionDeps({ listRunningSessions: () => sessions });
+      u.setRestartHold('local-verify', () => holds);
+      return u;
+    };
+
+    const first = create();
+    await gated(first, true);
+    expect(first.getStatus().restartDeferral).toMatchObject({ bypassWindow: true, currentBlockers: ['local-verify:pr-7'] });
+    first.stop();
+
+    const recovered = create();
+    recovered.start();
+    holds = [];
+    recovered.recheckRestartHolds();
+    await vi.advanceTimersByTimeAsync(3_000);
+    expect(recovered.getStatus().restartDeferral).toMatchObject({ bypassWindow: true, currentBlockers: ['interactive-work'] });
+    expect(recovered.getStatus().restartDeferral?.reason).not.toContain('outside restart window');
+
+    sessions = [];
+    await vi.advanceTimersByTimeAsync(5 * 60_000 + 3_000);
+    expect(fs.existsSync(restartFile())).toBe(true);
+    expect(recovered.getStatus().restartDeferral).toBeNull();
+    recovered.stop();
+  });
+
+  it('can force the deferred restart after the update has already been installed', async () => {
+    const u = updater(() => [{ name: 'local-verify:pr-7', until: Date.now() + 40 * 60_000, reason: 'verify running' }]);
+    await gated(u, true);
+    expect(u.getStatus().restartDeferral?.currentBlockers).toEqual(['local-verify:pr-7']);
+    await u.applyPendingUpdate({ bypassWindow: true, bypassHolds: true });
+    await vi.advanceTimersByTimeAsync(3_000);
+    expect(fs.existsSync(restartFile())).toBe(true);
+    expect(JSON.parse(fs.readFileSync(restartFile(), 'utf8')).bypassHolds).toBe(true);
+    expect(u.getStatus().restartDeferral).toBeNull();
+    u.stop();
+  });
+
+  it('no holds: restarts as before', async () => {
+    const u = updater(() => []);
+    await gated(u);
+    await vi.advanceTimersByTimeAsync(3_000);
+    expect(fs.existsSync(restartFile())).toBe(true);
+    expect(u.getStatus().updateActivationPendingSince).toBeTypeOf('string'); // old process stays fenced until exit
+    u.stop();
+  });
+
+  it('with the real invite engine: held while an invite waits, released after it is declined', async () => {
+    const kpA = generateIdentityKeyPair();
+    const kpB = generateIdentityKeyPair();
+    const dirA = fs.mkdtempSync(path.join(os.tmpdir(), 'holds-a-'));
+    const dirB = fs.mkdtempSync(path.join(os.tmpdir(), 'holds-b-'));
+    const base = (dir: string, kp: { publicKey: Buffer; privateKey: Buffer }, name: string) => ({
+      store: new PairingInviteStore(dir), trust: new AgentTrustManager({ stateDir: dir }),
+      identity: () => ({ fp: kp.publicKey.toString('hex').slice(0, 32), publicKeyHex: kp.publicKey.toString('hex'), privateKey: kp.privateKey }),
+      relayKeyFor: async () => null, sendPlaintext: () => {}, sendToKey: () => {}, notify: () => {},
+      ownName: () => ({ owner: `${name}-owner`, agent: name }), schedule: (fn: () => void) => fn(),
+    });
+    const inv = new PairingInviteFlow(base(dirA, kpA, 'Scout')).createInvite() as { ok: true; iid: string; message: string };
+    const flow = new MarkedPairingInviteFlow(base(dirB, kpB, 'Carl'), new PairingPendingAcceptMarkers(dirB));
+    const u = updater(() => flow.restartHolds());
+    await flow.receiveInvite(inv.message);
+    await gated(u);
+    await vi.advanceTimersByTimeAsync(3_000);
+    expect(fs.existsSync(restartFile())).toBe(false);
+    expect(u.getStatus().restartDeferral?.reason).toContain('"Scout"');
+    flow.declineAccept(inv.iid);
+    await vi.advanceTimersByTimeAsync(5 * 60_000 + 3_000);
+    expect(fs.existsSync(restartFile())).toBe(true);
+    u.stop();
+  });
+
+  describe('a deferral the running process already satisfies (2026-11-13: one update, two restarts)', () => {
+    const saveDeferral = (targetVersion: string) => fs.writeFileSync(path.join(tmpDir, 'state', 'auto-updater.json'), JSON.stringify({
+      lastAppliedVersion: targetVersion,
+      restartDeferral: {
+        active: true, targetVersion, firstDeferredAt: new Date(Date.now() - 20 * 60_000).toISOString(),
+        reason: 'held for in-flight work', currentBlockers: ['local-verify:pr-7'],
+        nextRetryAt: new Date(Date.now() - 1_000).toISOString(), updatedAt: new Date().toISOString(),
+      },
+    }));
+    const durable = () => JSON.parse(fs.readFileSync(path.join(tmpDir, 'state', 'auto-updater.json'), 'utf8')).restartDeferral;
+
+    it('is dropped at start when this process already runs the target version: no second restart, and the durable record is cleared', async () => {
+      saveDeferral('0.9.9');
+      ProcessIntegrity.initialize('0.9.9', null);
+      const u = updater(() => []);
+      u.start();
+      expect(u.getStatus().restartDeferral).toBeNull();
+      expect(durable()).toBeNull();
+      await vi.advanceTimersByTimeAsync(6 * 60_000);
+      expect(fs.existsSync(restartFile())).toBe(false);
+      expect(log.mock.calls.flat().join('\n')).toContain('Restart deferral for v0.9.9 dropped: this process already runs v0.9.9');
+      u.stop();
+    });
+
+    it('is dropped when the process runs a NEWER version than the target', async () => {
+      saveDeferral('0.9.9');
+      ProcessIntegrity.initialize('0.9.10', null);
+      const u = updater(() => []);
+      u.start();
+      expect(u.getStatus().restartDeferral).toBeNull();
+      await vi.advanceTimersByTimeAsync(6 * 60_000);
+      expect(fs.existsSync(restartFile())).toBe(false);
+      u.stop();
+    });
+
+    it('is kept, and still restarts, when the process runs an OLDER version than the target', async () => {
+      saveDeferral('0.9.9');
+      ProcessIntegrity.initialize('0.9.8', null);
+      const u = updater(() => []);
+      u.start();
+      expect(u.getStatus().restartDeferral).toMatchObject({ active: true, targetVersion: '0.9.9' });
+      await vi.advanceTimersByTimeAsync(3_000);
+      expect(fs.existsSync(restartFile())).toBe(true);
+      u.stop();
+    });
+
+    it('is kept when nothing recorded the version this process booted with, or a version does not parse', async () => {
+      saveDeferral('0.9.9');
+      const noRecord = updater(() => [{ name: 'local-verify:pr-7', until: Date.now() + 60 * 60_000, reason: 'verify running' }]);
+      noRecord.start();
+      expect(noRecord.getStatus().restartDeferral).toMatchObject({ active: true, targetVersion: '0.9.9' });
+      noRecord.stop();
+
+      saveDeferral('0.9.9');
+      ProcessIntegrity.initialize('unknown', null);
+      const unparsable = updater(() => [{ name: 'local-verify:pr-7', until: Date.now() + 60 * 60_000, reason: 'verify running' }]);
+      unparsable.start();
+      expect(unparsable.getStatus().restartDeferral).toMatchObject({ active: true, targetVersion: '0.9.9' });
+      unparsable.stop();
+    });
+  });
+});
+
+describe('UpdateGate.getActiveHolds', () => {
+  it('returns only holds still in force, soonest first; a throwing provider holds nothing', () => {
+    const g = new UpdateGate();
+    const now = 1_000_000;
+    g.setRestartHoldProvider('a', () => [{ name: 'late', until: now + 50, reason: 'r' }, { name: 'gone', until: now, reason: 'r' }]);
+    g.setRestartHoldProvider('b', () => [{ name: 'soon', until: now + 10, reason: 'r' }, { name: 'nan', until: Number.NaN, reason: 'r' }]);
+    g.setRestartHoldProvider('c', () => { throw new Error('boom'); });
+    vi.spyOn(console, 'warn').mockImplementation(() => {});
+    expect(g.getActiveHolds(now).map((h) => h.name)).toEqual(['soon', 'late']);
+  });
+
+  it('a provider registered again under the same key replaces the old one', () => {
+    const g = new UpdateGate();
+    g.setRestartHoldProvider('k', () => [{ name: 'old', until: 10, reason: 'r' }]);
+    g.setRestartHoldProvider('k', () => []);
+    expect(g.getActiveHolds(0)).toEqual([]);
+  });
+});

@@ -1,0 +1,28 @@
+{
+  "ts": "2026-10-20T04:48:02.042Z",
+  "slug": "local-release",
+  "suggestedTier": 2,
+  "declaredTier": 1,
+  "riskFloor": 2,
+  "riskFloorReasons": [
+    "migration / fleet-rollout surface: scripts/release-cut-diff.mjs touches release script (fleet publish path)",
+    "migration / fleet-rollout surface: scripts/release-local.mjs touches release script (fleet publish path)"
+  ],
+  "belowFloor": true,
+  "files": 4,
+  "loc": 572,
+  "scope": {
+    "basis": "staged-in-scope-additions-plus-deletions",
+    "files": [
+      "scripts/lint-no-direct-destructive.js",
+      "scripts/pre-push-gate.js",
+      "scripts/release-cut-diff.mjs",
+      "scripts/release-local.mjs"
+    ],
+    "addedLines": 568,
+    "deletedLines": 4
+  },
+  "causalAutopsy": null,
+  "classClosure": null,
+  "verdict": "pass"
+}

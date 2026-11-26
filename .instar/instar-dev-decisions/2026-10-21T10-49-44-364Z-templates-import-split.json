@@ -1,0 +1,32 @@
+{
+  "ts": "2026-10-21T10:49:44.364Z",
+  "slug": "templates-import-split",
+  "suggestedTier": 2,
+  "declaredTier": 1,
+  "riskFloor": 2,
+  "riskFloorReasons": [
+    "irreversibility: src/core/PostUpdateMigrator.ts touches PostUpdateMigrator",
+    "migration / fleet-rollout surface: src/core/PostUpdateMigrator.ts touches PostUpdateMigrator (fleet migration machinery)"
+  ],
+  "belowFloor": true,
+  "files": 1,
+  "loc": 34,
+  "scope": {
+    "basis": "staged-in-scope-additions-plus-deletions",
+    "files": [
+      "src/core/PostUpdateMigrator.ts"
+    ],
+    "addedLines": 33,
+    "deletedLines": 1
+  },
+  "causalAutopsy": {
+    "origin": "latent",
+    "relatedPrs": [
+      2201,
+      2261
+    ],
+    "notes": "Not a defect in any one PR: an accumulating shape problem. The awareness-marker convention means every such PR appends a symbol to one import line, so collisions were structural and grew with the symbol count (26 by now). Surfaced by resolving the same conflict five times in a single session on #2201/#2261 and their re-merges, and by the operator seeing conflicts on consecutive PRs. Fixed by changing the shape rather than continuing to resolve by hand."
+  },
+  "classClosure": null,
+  "verdict": "pass"
+}

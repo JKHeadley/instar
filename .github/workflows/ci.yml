@@ -23,10 +23,175 @@ on:
     types: [submitted, dismissed]
   workflow_dispatch:
 
+# Account-wide Actions concurrency is shared across EVERY repo this owner has, and
+# measurement on 2026-10-20 showed what that costs: instar-2 held 10 jobs running
+# and 25 queued while instar held 0 running and 21 queued, so this repo's CI crawled
+# at ~3 concurrent jobs against a 20-job allowance. A single PR here needs 8 unit
+# shards, so one PR took hours and a heavy run took 17-19h end to end.
+#
+# The avoidable half of that is supersession. Without this block every push to a
+# branch started a NEW 13-job run while the previous one kept consuming shared
+# slots — 126 stale runs had to be cancelled BY HAND in one night to let a
+# single-line test-config fix through. A superseded run is waste by definition:
+# nobody is waiting on its result.
+#
+# Keyed on the PR number AND the event name. The event name is load-bearing, not
+# decoration: `pull_request_review` is one of this workflow's triggers, so if a
+# review event shared a group with the push run, APPROVING a pull request would
+# CANCEL its in-flight required checks and restart them from zero. That trades
+# avoidable waste for a footgun. Scoping by event means push runs supersede push
+# runs (the 126-stale-run problem) while a review run can never cancel them.
+#
+# A review event still starts its own run. Since 2026-11-21 (the block below) the
+# heavy jobs skip on `pull_request_review` as well as `pull_request`, so that run is
+# the fast checks only, and a skipped job's "success" satisfies nothing: none of the
+# heavy jobs is a required status check (the main ruleset requires only
+# `instar/local-verify`), so a review-triggered run cannot paint a pull request green.
+#
+# PULL REQUESTS SKIP THE HEAVY JOBS (2026-11-21). Local Verify runs the full unit,
+# integration and e2e suite on our own machines before anything merges, and the
+# ruleset on main requires only `instar/local-verify`. Running the same suite here
+# on every pull request asked GitHub for about twenty jobs per push against an
+# account that runs about four at once, so the publish workflow waited hours for a
+# runner. The unit shards, integration, e2e and, through `needs`, contract and build
+# now run on push to main and on workflow_dispatch only. Pull requests keep native
+# desktop packaging and the fast checks Local Verify does not cover: Type Check,
+# Repo Invariants, Docs Coverage, Cartographer Freshness and Standards Enforcement
+# Coverage. Native package checks remain because suite results alone do not prove
+# platform compilation, packaging or Windows-local transport.
+# A job skipped by `if:` reports as success; that is safe here only because none of
+# these jobs is a required status check. To restore the old behaviour, revert this
+# commit.
+concurrency:
+  group: ci-${{ github.event.pull_request.number || github.ref }}-${{ github.event_name }}
+  # NEVER cancel main's post-merge run: that is the release gate and its record is
+  # the evidence a merge was sound. Only branch/PR runs supersede.
+  cancel-in-progress: ${{ github.ref != 'refs/heads/main' }}
+
+# EVERY JOB DECLARES timeout-minutes (ACT-059). Without one a job inherits
+# GitHub's 6-hour default, and on 2026-10-08 a hung unit shard held PR 2141
+# BLOCKED for 6h00m while every other check was green. Limits are about twice
+# the slowest run of that job across 79 runs measured 2026-11-02 (slowest:
+# unit shard 29.6 min, integration 24.4, e2e 34.9, desktop packages 3.9, every
+# other gate 2.3), so slow work still finishes and a hang fails within the hour.
+# Raise a limit when the job genuinely grows; tests/unit/ci-workflow-timeouts
+# fails if a job is added without one.
 jobs:
+  desktop-windows-package:
+    name: Desktop Windows package
+    runs-on: windows-latest
+    # Native packaging checks add coverage beyond the Mac test line's test suites.
+    if: github.event_name != 'pull_request_review'
+    timeout-minutes: 15
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-node@v4
+        with:
+          node-version: 20
+          cache: npm
+      - run: npm ci --ignore-scripts
+      - run: node scripts/build-native-desktop-host.mjs
+      - name: Compile interactive Windows companion with the installer toolchain
+        shell: powershell
+        run: |
+          Add-Type -Path 'dist/native/windows/InstarDesktopCompanion.cs' `
+            -ReferencedAssemblies @('System.Drawing', 'System.Windows.Forms', 'System.Web.Extensions') `
+            -OutputAssembly "$env:RUNNER_TEMP\InstarDesktopCompanion.exe" `
+            -OutputType ConsoleApplication -ErrorAction Stop
+          if (-not (Test-Path "$env:RUNNER_TEMP\InstarDesktopCompanion.exe")) {
+            throw 'Windows desktop companion did not compile'
+          }
+          & "$env:RUNNER_TEMP\InstarDesktopCompanion.exe" --self-test
+          if ($LASTEXITCODE -ne 0) { throw "Windows companion lease self-test failed: $LASTEXITCODE" }
+      - name: Verify Windows-local signed update handoff
+        shell: powershell
+        run: |
+          $root = Join-Path $env:LOCALAPPDATA 'InstarDesktop'
+          New-Item -ItemType Directory -Force -Path $root | Out-Null
+          $secret = Join-Path $root 'companion.secret'
+          $key = New-Object byte[] 32
+          $rng = [System.Security.Cryptography.RandomNumberGenerator]::Create()
+          try { $rng.GetBytes($key) } finally { $rng.Dispose() }
+          [System.IO.File]::WriteAllBytes($secret, $key)
+          $port = Get-Random -Minimum 45000 -Maximum 55000
+          $companion = Start-Process -FilePath "$env:RUNNER_TEMP\InstarDesktopCompanion.exe" `
+            -ArgumentList @('127.0.0.1', [string]$port, ('"' + $secret + '"')) -PassThru
+          try {
+            Start-Sleep -Seconds 1
+            # Exercise the packaged WSL-to-Windows local hop against a real
+            # companion process before the update handshake stops that process.
+            $env:INSTAR_DESKTOP_TEST_PORT = [string]$port
+            $env:INSTAR_DESKTOP_TEST_SECRET = $secret
+            node tests/e2e/windows-desktop-local-transport-smoke.mjs
+            if ($LASTEXITCODE -ne 0) { throw 'Windows-local desktop transport probe failed' }
+            $common = @('-NoProfile', '-NonInteractive', '-ExecutionPolicy', 'Bypass', '-File',
+              'scripts/install-windows-desktop-companion.ps1', '-Source',
+              'dist/native/windows/InstarDesktopCompanion.cs', '-BindAddress', '127.0.0.1',
+              '-Port', [string]$port, '-Phase', 'RequestUpdate', '-RequestAddress', '127.0.0.1')
+            $prepared = (& powershell.exe @common -Operation 'prepare-update' | Select-Object -Last 1) | ConvertFrom-Json
+            if (-not $prepared.ok -or $prepared.updateToken -notmatch '^[A-Za-z0-9_-]{32}$') {
+              throw 'Windows-local signed preparation did not return an update token'
+            }
+            $env:INSTAR_DESKTOP_UPDATE_TOKEN = $prepared.updateToken
+            $committed = $null
+            try {
+              $reply = & powershell.exe @common -Operation 'commit-update' 2>$null
+              if ($reply) { $committed = ($reply | Select-Object -Last 1) | ConvertFrom-Json }
+            } catch {
+              # A connection close during the companion's successful self-exit
+              # is checked by the exact process handle and exit code below.
+            }
+            # The companion can exit as it writes the final reply. A lost reply
+            # is acceptable only when the exact prepared process has exited.
+            $companion.WaitForExit(5000) | Out-Null
+            if (-not $companion.HasExited) { throw 'Companion did not exit after signed commit' }
+            if ($companion.ExitCode -ne 0) { throw 'Companion exited unsuccessfully after signed commit' }
+            if ($committed -and -not $committed.ok) { throw 'Windows-local signed commit was refused' }
+            # powershell.exe may return 1 for the lost final reply. Clear that
+            # native status only after the exact process passed every check.
+            $global:LASTEXITCODE = 0
+          } finally {
+            Remove-Item Env:INSTAR_DESKTOP_TEST_PORT -ErrorAction SilentlyContinue
+            Remove-Item Env:INSTAR_DESKTOP_TEST_SECRET -ErrorAction SilentlyContinue
+            Remove-Item Env:INSTAR_DESKTOP_UPDATE_TOKEN -ErrorAction SilentlyContinue
+            if (-not $companion.HasExited) { Stop-Process -Id $companion.Id -Force }
+          }
+      - name: Check npm package contents
+        shell: powershell
+        run: |
+          $pack = npm pack --dry-run --json --ignore-scripts | ConvertFrom-Json
+          if ($LASTEXITCODE -ne 0) { throw "npm package inventory failed: $LASTEXITCODE" }
+          $package = @($pack)[0]
+          foreach ($file in @('dist/native/windows/InstarDesktopCompanion.cs', 'scripts/install-windows-desktop-companion.mjs', 'scripts/install-windows-desktop-companion.ps1', 'scripts/windows-desktop-local-transport.ps1')) {
+            if (-not ($package.files | Where-Object { $_.path -eq $file })) {
+              throw "Missing $file"
+            }
+          }
+
+  desktop-macos-package:
+    name: Desktop Mac package
+    runs-on: macos-latest
+    # Native packaging checks add coverage beyond the Mac test line's test suites.
+    if: github.event_name != 'pull_request_review'
+    timeout-minutes: 15
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-node@v4
+        with:
+          node-version: 20
+          cache: npm
+      - run: npm ci
+      - run: INSTAR_RELEASE_BUILD=1 npm run build
+      - name: Verify guided desktop setup on macOS
+        run: npm run test:e2e -- tests/e2e/desktop-setup-boot-lifecycle.test.ts
+      - run: node scripts/check-native-desktop-release.mjs
+      - name: Check npm package contents
+        run: npm pack --dry-run --json --ignore-scripts | node -e 'let text=""; process.stdin.on("data", chunk => text += chunk).on("end", () => { const pack = JSON.parse(text)[0]; if (!pack.files.some(file => file.path === "dist/native/instar-desktop-host")) throw new Error("npm tarball omits native desktop host"); if (!pack.files.some(file => file.path === "dist/native/InstarWedgeCanary.app/Contents/MacOS/InstarWedgeCanary")) throw new Error("npm tarball omits the wedge canary app"); });'
+
   invariants:
     name: Repo Invariants
     runs-on: ubuntu-latest
+    timeout-minutes: 15
     steps:
       - uses: actions/checkout@v4
       - uses: actions/setup-node@v4
@@ -38,6 +203,7 @@ jobs:
   docs-coverage:
     name: Docs Coverage
     runs-on: ubuntu-latest
+    timeout-minutes: 15
     steps:
       - uses: actions/checkout@v4
       - uses: actions/setup-node@v4
@@ -59,6 +225,7 @@ jobs:
   cartographer-freshness:
     name: Cartographer Freshness
     runs-on: ubuntu-latest
+    timeout-minutes: 15
     steps:
       - uses: actions/checkout@v4
       - uses: actions/setup-node@v4
@@ -80,6 +247,7 @@ jobs:
   standards-coverage:
     name: Standards Enforcement Coverage
     runs-on: ubuntu-latest
+    timeout-minutes: 15
     # Least privilege, made EXPLICIT rather than inherited (second-pass finding 2):
     # path B calls GET /commits/{sha}/pulls, which needs pull-requests:read. With no
     # permissions block the job runs on the repository's DEFAULT workflow permission
@@ -258,6 +426,7 @@ jobs:
   lint:
     name: Type Check
     runs-on: ubuntu-latest
+    timeout-minutes: 15
     steps:
       - uses: actions/checkout@v4
         # ROUND-20: the deferral-carrier lint scopes its ratchet to the PR's
@@ -275,11 +444,15 @@ jobs:
           node-version: 20
           cache: npm
       - run: npm ci
-      - run: npm run lint
+      - run: npm run lint:parallel
 
   unit:
     name: Unit Tests (node ${{ matrix.node-version }}, shard ${{ matrix.shard }}/4)
     runs-on: ubuntu-latest
+    # Pull requests are tested in full by Local Verify (the only required check);
+    # this job runs on push to main and on workflow_dispatch. See the note above `concurrency`.
+    if: github.event_name != 'pull_request' && github.event_name != 'pull_request_review'
+    timeout-minutes: 60
     strategy:
       # Don't cancel other shards if one fails — we want the full picture.
       fail-fast: false
@@ -298,8 +471,8 @@ jobs:
         with:
           node-version: ${{ matrix.node-version }}
           cache: npm
-      - name: Install tmux
-        run: sudo apt-get update && sudo apt-get install -y tmux
+      - name: Ensure tmux
+        run: bash .github/scripts/setup-ci-tmux.sh
       - run: npm ci
       # vitest shard syntax: --shard=<index>/<total>. Each runner executes a
       # deterministic disjoint slice of the test files; union is the full suite.
@@ -324,15 +497,23 @@ jobs:
   integration:
     name: Integration Tests
     runs-on: ubuntu-latest
-    needs: unit
+    # Pull requests are tested in full by Local Verify (the only required check);
+    # this job runs on push to main and on workflow_dispatch. See the note above `concurrency`.
+    if: github.event_name != 'pull_request' && github.event_name != 'pull_request_review'
+    # 50 was cancelling green-in-progress runs: main itself was cancelled at 50 min on
+    # 2026-11-10 (run 42878286348), and the conversations release adds about 15 min of
+    # multi-machine graph suites. Same bound as the E2E job.
+    timeout-minutes: 70
+    # Independent checkout and runner: start alongside unit shards. Both
+    # results remain required branch checks before a PR can merge.
     steps:
       - uses: actions/checkout@v4
       - uses: actions/setup-node@v4
         with:
           node-version: 20
           cache: npm
-      - name: Install tmux
-        run: sudo apt-get update && sudo apt-get install -y tmux
+      - name: Ensure tmux
+        run: bash .github/scripts/setup-ci-tmux.sh
       - run: npm ci
       - run: npm run test:integration
       - name: Working-tree integrity check
@@ -347,7 +528,12 @@ jobs:
   e2e:
     name: E2E Tests
     runs-on: ubuntu-latest
-    needs: unit
+    # Pull requests are tested in full by Local Verify (the only required check);
+    # this job runs on push to main and on workflow_dispatch. See the note above `concurrency`.
+    if: github.event_name != 'pull_request' && github.event_name != 'pull_request_review'
+    timeout-minutes: 70
+    # Independent checkout and runner: start alongside unit shards. This
+    # removes a serial CI phase without weakening the merge gate.
     steps:
       - uses: actions/checkout@v4
         with:
@@ -358,8 +544,8 @@ jobs:
         with:
           node-version: 20
           cache: npm
-      - name: Install tmux
-        run: sudo apt-get update && sudo apt-get install -y tmux
+      - name: Ensure tmux
+        run: bash .github/scripts/setup-ci-tmux.sh
       - run: npm ci
       # E2E subprocesses exercise the compiled CLI and registry in this checkout.
       # The separate build job has its own filesystem and cannot supply dist/.
@@ -377,6 +563,7 @@ jobs:
   contract:
     name: Contract Tests (Live API)
     runs-on: ubuntu-latest
+    timeout-minutes: 15
     needs: unit
     # Only run when adapter source files or contract tests change
     if: >
@@ -403,6 +590,7 @@ jobs:
   build:
     name: Build
     runs-on: ubuntu-latest
+    timeout-minutes: 15
     needs: [lint, unit]
     steps:
       - uses: actions/checkout@v4

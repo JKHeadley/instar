@@ -66,8 +66,16 @@ export const HOST_TEST_TTL_MAX_MS = 14_400_000; // 4h = 4× default
 export const HOST_TEST_POISON_CEILING = 64;
 /** Lockless fail-open storm ceiling — O_EXCL witness slots (§2.4, pinned). */
 export const WEDGE_STORM_CEILING = 8;
-/** Background-class suite-lane wait budget default (2 min, fail-loud). */
-export const HOST_TEST_ACQUIRE_MS_DEFAULT = 120_000;
+/**
+ * Suite-lane wait budget default, both run classes (45 min, fail-loud). It must cover
+ * one full suite ahead in the queue: the measured p95 suite hold was ~41 min, so the
+ * old 2 min (10 min interactive) turned ordinary queueing into exit-75 failures.
+ * Host-tunable via the tuning file's `acquireMs` / `acquireMsInteractive` (CMT-908).
+ */
+export const HOST_TEST_ACQUIRE_MS_DEFAULT = 2_700_000;
+/** Sane range for a tuning-file wait budget (10 s .. 4 h). */
+export const HOST_TEST_ACQUIRE_MS_MIN = 10_000;
+export const HOST_TEST_ACQUIRE_MS_MAX = 14_400_000;
 /** Targeted-lane wait budget default (1 min, fail-loud THROW). */
 export const HOST_TEST_TARGETED_ACQUIRE_MS_DEFAULT = 60_000;
 /** A lock older than this is provably wedged (critical section is sub-ms). */
@@ -89,6 +97,19 @@ export const START_TIME_SKEW_MS = 120_000;
 export const TTL_WARN_FRACTION = 0.8;
 /** Targeted classification file-count limit K (§2.3). */
 export const TARGETED_FILE_LIMIT = 5;
+/** A coordinator renews its claim every 30s; a stalled server loses priority promptly. */
+export const MERGE_GATE_PRIORITY_LEASE_MS = 120_000;
+export const MERGE_GATE_PRIORITY_MAX_CLAIMS = 64;
+/**
+ * An ordinary suite that has waited this long takes the next suite slot ahead of
+ * merge-gate work, so a busy merge queue cannot starve a live host check (2026-10-28).
+ */
+export const SUITE_WAITER_AGING_MS = 900_000;
+/** One fixed offer per free suite-slot episode; longer than two 5±1s polls. */
+export const SUITE_MERGE_HANDOFF_MS = 12_000;
+/** A waiter renews its ticket on every poll; a killed or stalled waiter loses its place. */
+export const SUITE_WAITER_LEASE_MS = 60_000;
+export const SUITE_WAITER_MAX_TICKETS = 64;
 
 export type TestLane = 'suite' | 'targeted';
 export type TestPosture = 'off' | 'dry-run' | 'enforcing';
@@ -99,6 +120,8 @@ export type TestRunClass = 'interactive' | 'background';
 export interface TestRunnerPaths {
   baseDir: string;
   holders: string;
+  holdersProof: string;
+  turnInvalidationDir: string;
   lock: string;
   witnessDir: string;
   tuning: string;
@@ -119,6 +142,8 @@ export function resolveTestRunnerPaths(env: NodeJS.ProcessEnv = process.env): Te
   return {
     baseDir,
     holders: path.join(baseDir, 'host-test-runner-holders.json'),
+    holdersProof: path.join(baseDir, 'host-test-runner-holders-proof.json'),
+    turnInvalidationDir: path.join(baseDir, 'host-test-runner-turn-invalidations'),
     lock: path.join(baseDir, 'host-test-runner-holders.lock'),
     witnessDir: path.join(baseDir, 'host-test-runner-witness'),
     tuning: path.join(baseDir, 'host-test-runner-tuning.json'),
@@ -160,13 +185,23 @@ export interface TestRunnerHolderRow {
 export interface TestRunnerTuningFile {
   v: 1;
   enforcing?: boolean;
+  /** Independent of the host limiter's enforcing posture; dark by default and never a test verdict. */
+  alternatingSuiteTurns?: 'off' | 'observe' | 'enforce';
   clampActive?: boolean;
   maxConcurrent?: number;
   targetedMax?: number;
   ttlSignal?: boolean;
+  /** Suite-lane wait budget, ms (background class; interactive defaults to it). */
+  acquireMs?: number;
+  /** Suite-lane wait budget for interactive runs (pre-push, TTY), ms. */
+  acquireMsInteractive?: number;
   flippedAt?: string;
   by?: string;
   [k: string]: unknown;
+}
+
+export function resolveAlternatingSuiteTurns(raw: unknown): 'off' | 'observe' | 'enforce' {
+  return raw === 'observe' || raw === 'enforce' ? raw : 'off';
 }
 
 // ── Typed errors (§2.6) ───────────────────────────────────────────────────
@@ -345,6 +380,7 @@ export function resolveAcquireBudgetMs(
   lane: TestLane,
   runClass: TestRunClass,
   env: NodeJS.ProcessEnv = process.env,
+  tuning: TestRunnerTuningFile | null = null,
 ): number {
   const readMs = (key: string): number | null => {
     const raw = env[key];
@@ -352,12 +388,19 @@ export function resolveAcquireBudgetMs(
     const n = Number(raw);
     return Number.isFinite(n) && n >= 0 ? Math.floor(n) : null;
   };
+  // Tuning-file budgets (host-uniform, CMT-908): honored only inside a sane range;
+  // anything else falls through to the code default.
+  const tuningMs = (v: unknown): number | null =>
+    typeof v === 'number' && Number.isFinite(v) && v >= HOST_TEST_ACQUIRE_MS_MIN && v <= HOST_TEST_ACQUIRE_MS_MAX
+      ? Math.floor(v)
+      : null;
   if (lane === 'targeted') {
     return readMs('INSTAR_HOST_TEST_TARGETED_ACQUIRE_MS') ?? HOST_TEST_TARGETED_ACQUIRE_MS_DEFAULT;
   }
-  const background = readMs('INSTAR_HOST_TEST_ACQUIRE_MS') ?? HOST_TEST_ACQUIRE_MS_DEFAULT;
+  const background =
+    readMs('INSTAR_HOST_TEST_ACQUIRE_MS') ?? tuningMs(tuning?.acquireMs) ?? HOST_TEST_ACQUIRE_MS_DEFAULT;
   if (runClass === 'background') return background;
-  return readMs('INSTAR_HOST_TEST_ACQUIRE_MS_INTERACTIVE') ?? 5 * background;
+  return readMs('INSTAR_HOST_TEST_ACQUIRE_MS_INTERACTIVE') ?? tuningMs(tuning?.acquireMsInteractive) ?? background;
 }
 
 /** Stamped per-row ttl at acquire (env-read, sanity-ranged). */
@@ -832,12 +875,40 @@ export interface HostTestRunnerSemaphoreDeps {
 export interface AcquireRequest {
   lane: TestLane;
   runClass: TestRunClass;
+  /** Only the Local Verify runner uses this; ordinary suites yield to its live claim. */
+  priority?: 'merge-gate';
   /** Resolved MATCHED file count (targeted lane). */
   fileCount?: number;
   /** Override budget (default resolved per §2.9). */
   budgetMs?: number;
   /** Called about once per poll while waiting (the §2.10 wait-line hook). */
-  onWaitTick?: (elapsedMs: number, holders: Array<{ pid: number; ageMs: number }>) => void;
+  onWaitTick?: (
+    elapsedMs: number,
+    holders: Array<{ pid: number; ageMs: number }>,
+    priorityWait: boolean,
+    /** Live suite waiters ahead of this one for the next slot (fair aging). */
+    waitersAhead: number,
+  ) => void;
+}
+
+export interface SuiteWaiter {
+  id: string;
+  pid: number;
+  priority: 'merge-gate' | 'ordinary';
+  /** When this waiter's acquire started (ms epoch). */
+  since: number;
+}
+
+/** 0 = an aged ordinary waiter, 1 = merge-gate work, 2 = any other ordinary waiter. */
+export function suiteWaiterTier(w: Pick<SuiteWaiter, 'priority' | 'since'>, nowMs: number): number {
+  if (w.priority === 'merge-gate') return 1;
+  return nowMs - w.since >= SUITE_WAITER_AGING_MS ? 0 : 2;
+}
+
+/** Next-in-line order: tier, then arrival, then id (a total order, so no two waiters both yield). */
+export function compareSuiteWaiters(a: SuiteWaiter, b: SuiteWaiter, nowMs: number): number {
+  return suiteWaiterTier(a, nowMs) - suiteWaiterTier(b, nowMs) || a.since - b.since ||
+    (a.id < b.id ? -1 : a.id > b.id ? 1 : 0);
 }
 
 export type AcquireOutcome =
@@ -855,6 +926,36 @@ interface HoldersReadResult {
   rows: unknown[];
   status: 'ok' | 'missing' | 'unparseable' | 'poisoned';
   raw: string | null;
+  turn: SuiteTurnRecord | null;
+  episode: SuiteFreeEpisode | null;
+  proofValid: boolean;
+}
+
+interface SuiteTurnRecord {
+  v: 1;
+  hostname: string;
+  last: 'ordinary' | 'merge-gate';
+  grantedAt: number;
+  grantId: string;
+}
+
+interface SuiteFreeEpisode {
+  v: 1;
+  id: string;
+  startedAt: number;
+  offeredTicketId: string | null;
+  handoffState: 'unused' | 'offered' | 'consumed';
+}
+
+interface HoldersProof {
+  v: 1;
+  hostname: string;
+  dev: string;
+  ino: string;
+  ctimeNs: string;
+  mtimeNs: string;
+  size: string;
+  digest: string;
 }
 
 export class HostTestRunnerSemaphore {
@@ -878,6 +979,7 @@ export class HostTestRunnerSemaphore {
   private rendezvousUnwritable: string | null = null;
   private readonly pollIntervalMs: number;
   private readonly genId: () => string;
+  private lastTicketOverflowLogAt = Number.NEGATIVE_INFINITY;
 
   constructor(deps: HostTestRunnerSemaphoreDeps = {}) {
     this.env = deps.env ?? process.env;
@@ -941,7 +1043,317 @@ export class HostTestRunnerSemaphore {
     );
   }
 
+  /**
+   * The coordinator publishes a short lease while it has runnable merge-gate
+   * work. Each agent has its own file so two agents on one host cannot erase
+   * each other's claim. A dead or stalled coordinator cannot hold the lane.
+   */
+  setMergeGatePriority(ownerKey: string, active: boolean): void {
+    const dir = path.join(this.paths.baseDir, 'host-test-runner-priority');
+    const file = path.join(dir, `${crypto.createHash('sha256').update(ownerKey).digest('hex').slice(0, 24)}.json`);
+    if (!active) {
+      try {
+        const row = JSON.parse(fs.readFileSync(file, 'utf-8'));
+        // A retiring server must not erase its replacement's fresh claim.
+        if (row?.pid !== process.pid || row?.hostname !== this.host) return;
+        SafeFsExecutor.safeUnlinkSync(file, { operation: 'HostTestRunnerSemaphore.clearMergeGatePriority' });
+      } catch (err) {
+        if ((err as NodeJS.ErrnoException).code !== 'ENOENT') throw err;
+      }
+      return;
+    }
+    fs.mkdirSync(dir, { recursive: true, mode: 0o700 });
+    if (!fs.existsSync(file)) {
+      const names = fs.readdirSync(dir).filter((n) => /^[a-f0-9]{24}\.json$/.test(n));
+      if (names.length >= MERGE_GATE_PRIORITY_MAX_CLAIMS) {
+        for (const name of names) {
+          const stale = path.join(dir, name);
+          if (!this.livePriorityClaim(stale)) {
+            SafeFsExecutor.safeUnlinkSync(stale, { operation: 'HostTestRunnerSemaphore.pruneMergeGatePriority' });
+          }
+        }
+        if (fs.readdirSync(dir).filter((n) => /^[a-f0-9]{24}\.json$/.test(n)).length >= MERGE_GATE_PRIORITY_MAX_CLAIMS) {
+          throw new Error('merge-gate priority claim ceiling reached');
+        }
+      }
+    }
+    atomicWriteFileSync(file, JSON.stringify({
+      v: 1, pid: process.pid, hostname: this.host,
+      expiresAt: this.now() + MERGE_GATE_PRIORITY_LEASE_MS,
+    }), { mode: 0o600, operation: 'HostTestRunnerSemaphore.setMergeGatePriority' });
+  }
+
+  /** A corrupt, foreign-host, expired or dead claim never delays a suite. */
+  hasMergeGatePriority(): boolean {
+    const dir = path.join(this.paths.baseDir, 'host-test-runner-priority');
+    let names: string[];
+    try { names = fs.readdirSync(dir).filter((n) => /^[a-f0-9]{24}\.json$/.test(n)); }
+    catch { return false; }
+    // A poisoned directory cannot make admission unboundedly expensive.
+    for (const name of names.slice(0, MERGE_GATE_PRIORITY_MAX_CLAIMS)) {
+      if (this.livePriorityClaim(path.join(dir, name))) return true;
+    }
+    return false;
+  }
+
+  private livePriorityClaim(file: string): boolean {
+    try {
+      const row = JSON.parse(fs.readFileSync(file, 'utf-8'));
+      return row?.v === 1 && row.hostname === this.host &&
+        Number.isInteger(row.pid) && row.pid > 0 && this.pidAlive(row.pid) &&
+        typeof row.expiresAt === 'number' && row.expiresAt > this.now() &&
+        row.expiresAt <= this.now() + MERGE_GATE_PRIORITY_LEASE_MS;
+    } catch { return false; /* @silent-fallback-ok: a bad claim cannot block a suite. */ }
+  }
+
+  // ── Suite waiter tickets (fair aging, §2.6 pre-authorized refinement) ──
+  //
+  // A blocked suite request leaves a short-lease ticket so the NEXT free slot goes to
+  // the right waiter instead of whoever polls first. Order: an ordinary suite that has
+  // waited SUITE_WAITER_AGING_MS, oldest first; then merge-gate work; then the other
+  // ordinary suites in arrival order. The cap is unchanged — this only picks who is
+  // next. Tickets are separate files (additive under the §2.6 schema rule): an older
+  // actor ignores them and keeps barging. Every failure here falls back to barging.
+
+  private waiterDir(): string {
+    return path.join(this.paths.baseDir, 'host-test-runner-waiters');
+  }
+
+  private waiterFile(id: string): string {
+    return path.join(this.waiterDir(), `${crypto.createHash('sha256').update(id).digest('hex').slice(0, 24)}.json`);
+  }
+
+  private renewWaiterTicket(id: string, priority: 'merge-gate' | 'ordinary', since: number): void {
+    try {
+      const dir = this.waiterDir();
+      const file = this.waiterFile(id);
+      fs.mkdirSync(dir, { recursive: true, mode: 0o700 });
+      if (!fs.existsSync(file)) {
+        const names = fs.readdirSync(dir).filter((n) => /^[a-f0-9]{24}\.json$/.test(n));
+        if (names.length >= SUITE_WAITER_MAX_TICKETS) {
+          for (const name of names) {
+            if (this.readWaiterTicket(path.join(dir, name)) === null) {
+              SafeFsExecutor.safeUnlinkSync(path.join(dir, name), { operation: 'HostTestRunnerSemaphore.pruneWaiterTicket' });
+            }
+          }
+          if (fs.readdirSync(dir).filter((n) => /^[a-f0-9]{24}\.json$/.test(n)).length >= SUITE_WAITER_MAX_TICKETS) {
+            if (this.now() - this.lastTicketOverflowLogAt >= 60_000) {
+              this.lastTicketOverflowLogAt = this.now();
+              this.ledger('suite-turn-ticket-overflow', { cap: SUITE_WAITER_MAX_TICKETS });
+            }
+            return;
+          }
+        }
+      }
+      atomicWriteFileSync(file, JSON.stringify({
+        v: 1, id, pid: process.pid, hostname: this.host, priority, since,
+        expiresAt: this.now() + SUITE_WAITER_LEASE_MS,
+      }), { mode: 0o600, operation: 'HostTestRunnerSemaphore.renewWaiterTicket' });
+    } catch {
+      /* @silent-fallback-ok: without a ticket this waiter barges, the pre-ticket behavior. */
+    }
+  }
+
+  private clearWaiterTicket(id: string): void {
+    try {
+      SafeFsExecutor.safeUnlinkSync(this.waiterFile(id), { operation: 'HostTestRunnerSemaphore.clearWaiterTicket' });
+    } catch {
+      /* @silent-fallback-ok: a leftover ticket expires within SUITE_WAITER_LEASE_MS. */
+    }
+  }
+
+  /** A corrupt, foreign-host, expired or dead ticket is not a waiter. */
+  private readWaiterTicket(file: string): SuiteWaiter | null {
+    try {
+      const row = JSON.parse(fs.readFileSync(file, 'utf-8'));
+      const nowMs = this.now();
+      if (row?.v !== 1 || row.hostname !== this.host || typeof row.id !== 'string' ||
+        !Number.isInteger(row.pid) || row.pid <= 0 || !this.pidAlive(row.pid) ||
+        typeof row.since !== 'number' || row.since > nowMs + START_TIME_SKEW_MS ||
+        typeof row.expiresAt !== 'number' || row.expiresAt <= nowMs ||
+        row.expiresAt > nowMs + SUITE_WAITER_LEASE_MS) return null;
+      return { id: row.id, pid: row.pid, priority: row.priority === 'merge-gate' ? 'merge-gate' : 'ordinary', since: row.since };
+    } catch { return null; /* @silent-fallback-ok: a bad ticket cannot delay a suite. */ }
+  }
+
+  /** Live suite waiters on this host, next-in-line first. */
+  listSuiteWaiters(): SuiteWaiter[] {
+    let names: string[];
+    try { names = fs.readdirSync(this.waiterDir()).filter((n) => /^[a-f0-9]{24}\.json$/.test(n)); }
+    catch { return []; /* @silent-fallback-ok: no waiter dir means no waiters; admission barges. */ }
+    const out: SuiteWaiter[] = [];
+    for (const name of names.slice(0, SUITE_WAITER_MAX_TICKETS)) {
+      const w = this.readWaiterTicket(path.join(this.waiterDir(), name));
+      if (w) out.push(w);
+    }
+    const nowMs = this.now();
+    return out.sort((a, b) => compareSuiteWaiters(a, b, nowMs));
+  }
+
   // ── Holders IO ──────────────────────────────────────────────────────
+
+  /** A legacy atomic rewrite changes the file identity even if it preserves unknown fields. */
+  private holdersIdentity(raw: string): Omit<HoldersProof, 'v' | 'hostname'> {
+    const stat = fs.statSync(this.paths.holders, { bigint: true });
+    return {
+      dev: stat.dev.toString(), ino: stat.ino.toString(),
+      ctimeNs: stat.ctimeNs.toString(), mtimeNs: stat.mtimeNs.toString(),
+      size: stat.size.toString(), digest: crypto.createHash('sha256').update(raw).digest('hex'),
+    };
+  }
+
+  private validHoldersProof(raw: string): boolean {
+    try {
+      const proofRaw = fs.readFileSync(this.paths.holdersProof, 'utf-8');
+      if (proofRaw.length > 2048) return false;
+      const proof = JSON.parse(proofRaw) as HoldersProof;
+      if (proof.v !== 1 || proof.hostname !== this.host) return false;
+      const identity = this.holdersIdentity(raw);
+      return Object.entries(identity).every(([key, value]) => proof[key as keyof HoldersProof] === value);
+    } catch {
+      return false; // @silent-fallback-ok: absent/mismatched proof makes turn history unknown.
+    }
+  }
+
+  private invalidationFiles(): string[] | null {
+    try {
+      return fs.readdirSync(this.paths.turnInvalidationDir)
+        .filter((name) => /^[a-f0-9]{24}\.json$/.test(name));
+    } catch (err) {
+      return (err as NodeJS.ErrnoException).code === 'ENOENT' ? [] : null;
+    }
+  }
+
+  private turnInvalidated(): boolean {
+    const files = this.invalidationFiles();
+    return files === null || files.length > 0;
+  }
+
+  private markTurnInvalidated(witnessFile: string): void {
+    try {
+      fs.mkdirSync(this.paths.turnInvalidationDir, { recursive: true, mode: 0o700 });
+      const name = `${crypto.createHash('sha256').update(witnessFile).digest('hex').slice(0, 24)}.json`;
+      atomicWriteFileSync(path.join(this.paths.turnInvalidationDir, name),
+        JSON.stringify({ v: 1, at: this.now(), pid: process.pid }), {
+          mode: 0o600, operation: 'HostTestRunnerSemaphore.markTurnInvalidated',
+        });
+    } catch { /* @silent-fallback-ok: the visible witness still invalidates while readable. */ }
+  }
+
+  private clearTurnInvalidations(files: string[]): void {
+    for (const name of files) {
+      try {
+        SafeFsExecutor.safeUnlinkSync(path.join(this.paths.turnInvalidationDir, name), {
+          operation: 'HostTestRunnerSemaphore.clearTurnInvalidation',
+        });
+      } catch { /* @silent-fallback-ok: a retained marker conservatively keeps history unknown. */ }
+    }
+  }
+
+  /** A visible fail-open admission makes one-slot turn history unprovable. */
+  private hasVisibleBypassWitness(): boolean {
+    try {
+      const names = fs.readdirSync(this.paths.witnessDir).filter((name) => name.startsWith('w-'));
+      if (names.length > 64) return true; // too many to prove absence within the bounded scan
+      for (const name of names) {
+        try {
+          const row = JSON.parse(fs.readFileSync(path.join(this.paths.witnessDir, name), 'utf8')) as { pid?: unknown };
+          if (!Number.isInteger(row.pid) || this.pidAlive(row.pid as number)) return true;
+        } catch { return true; }
+      }
+    } catch (err) {
+      if ((err as NodeJS.ErrnoException).code !== 'ENOENT') return true;
+      /* @silent-fallback-ok: no witness directory is the normal state. */
+    }
+    return false;
+  }
+
+  private validTurn(raw: unknown): SuiteTurnRecord | null {
+    if (!raw || typeof raw !== 'object') return null;
+    const row = raw as SuiteTurnRecord;
+    if (row.v !== 1 || row.hostname !== this.host ||
+      (row.last !== 'ordinary' && row.last !== 'merge-gate') ||
+      !Number.isFinite(row.grantedAt) || row.grantedAt > this.now() + START_TIME_SKEW_MS ||
+      typeof row.grantId !== 'string' || row.grantId.length > 160) return null;
+    return row;
+  }
+
+  private validEpisode(raw: unknown): SuiteFreeEpisode | null {
+    if (!raw || typeof raw !== 'object') return null;
+    const row = raw as SuiteFreeEpisode;
+    if (row.v !== 1 || typeof row.id !== 'string' || row.id.length > 160 ||
+      !Number.isFinite(row.startedAt) || row.startedAt > this.now() + START_TIME_SKEW_MS ||
+      (row.offeredTicketId !== null && (typeof row.offeredTicketId !== 'string' || row.offeredTicketId.length > 160)) ||
+      !['unused', 'offered', 'consumed'].includes(row.handoffState)) return null;
+    return row;
+  }
+
+  private turnHistoryEligible(ctx: ReturnType<HostTestRunnerSemaphore['resolveContext']>): boolean {
+    return ctx.posture.posture === 'enforcing' && ctx.suiteCap.cap === 1;
+  }
+
+  private turnAfterAdmission(
+    req: AcquireRequest,
+    ctx: ReturnType<HostTestRunnerSemaphore['resolveContext']>,
+    row: TestRunnerHolderRow,
+    prior: SuiteTurnRecord | null,
+    claimPids: Set<number>,
+  ): SuiteTurnRecord | null {
+    if (!this.turnHistoryEligible(ctx) || this.hasVisibleBypassWitness()) return null;
+    if (req.lane !== 'suite') return prior;
+    return {
+      v: 1, hostname: this.host,
+      last: req.priority === 'merge-gate' && claimPids.has(process.pid) ? 'merge-gate' : 'ordinary',
+      grantedAt: this.now(), grantId: row.id,
+    };
+  }
+
+  private liveMergeClaimPids(): Set<number> {
+    const out = new Set<number>();
+    const dir = path.join(this.paths.baseDir, 'host-test-runner-priority');
+    try {
+      for (const name of fs.readdirSync(dir).filter((n) => /^[a-f0-9]{24}\.json$/.test(n)).slice(0, MERGE_GATE_PRIORITY_MAX_CLAIMS)) {
+        const file = path.join(dir, name);
+        if (!this.livePriorityClaim(file)) continue;
+        const row = JSON.parse(fs.readFileSync(file, 'utf-8')) as { pid?: unknown };
+        if (typeof row.pid === 'number') out.add(row.pid);
+      }
+    } catch { /* @silent-fallback-ok: no trusted claim means old admission order. */ }
+    return out;
+  }
+
+  /** Purely classifies one locked free-slot decision; the caller persists an episode change. */
+  private alternatingDecision(
+    self: SuiteWaiter,
+    turn: SuiteTurnRecord,
+    priorEpisode: SuiteFreeEpisode | null,
+    waiters: SuiteWaiter[],
+    claimPids: Set<number>,
+  ): { eligible: boolean; episode: SuiteFreeEpisode | null; reason: string } {
+    const nowMs = this.now();
+    const merge = waiters.filter((w) => w.priority === 'merge-gate' && claimPids.has(w.pid))
+      .sort((a, b) => a.since - b.since || a.id.localeCompare(b.id));
+    const aged = waiters.filter((w) => w.priority === 'ordinary' && nowMs - w.since >= SUITE_WAITER_AGING_MS)
+      .sort((a, b) => a.since - b.since || a.id.localeCompare(b.id));
+    if (!merge.length || !aged.length) return { eligible: false, episode: priorEpisode, reason: 'no-two-class-contention' };
+    if (turn.last === 'merge-gate') {
+      return { eligible: self.id === aged[0].id, episode: priorEpisode, reason: 'ordinary-turn' };
+    }
+    let episode = priorEpisode;
+    if (!episode) {
+      episode = { v: 1, id: this.genId(), startedAt: nowMs, offeredTicketId: merge[0].id, handoffState: 'offered' };
+    } else if (episode.handoffState === 'offered' &&
+      (nowMs - episode.startedAt >= SUITE_MERGE_HANDOFF_MS || !merge.some((w) => w.id === episode!.offeredTicketId))) {
+      episode = { ...episode, handoffState: 'consumed' };
+    }
+    if (episode.handoffState === 'offered') {
+      return { eligible: self.id === episode.offeredTicketId, episode, reason: 'merge-offer' };
+    }
+    return {
+      eligible: self.id === merge[0].id || self.id === aged[0].id,
+      episode, reason: 'offer-consumed-first-poll',
+    };
+  }
 
   private readHolders(): HoldersReadResult {
     let raw: string;
@@ -949,31 +1361,49 @@ export class HostTestRunnerSemaphore {
       raw = fs.readFileSync(this.paths.holders, 'utf-8');
     } catch {
       // @silent-fallback-ok: a missing holders file is an empty set.
-      return { rows: [], status: 'missing', raw: null };
+      return { rows: [], status: 'missing', raw: null, turn: null, episode: null, proofValid: false };
     }
     try {
       const obj = JSON.parse(raw);
       if (!obj || typeof obj !== 'object' || !Array.isArray(obj.holders)) {
-        return { rows: [], status: 'unparseable', raw };
+        return { rows: [], status: 'unparseable', raw, turn: null, episode: null, proofValid: false };
       }
+      const proofValid = this.validHoldersProof(raw);
+      const parsedEpisode = proofValid && obj.suiteFreeEpisode !== undefined
+        ? this.validEpisode(obj.suiteFreeEpisode) : null;
+      const metadataValid = proofValid && !this.turnInvalidated() &&
+        (obj.suiteTurn === undefined || !this.hasVisibleBypassWitness()) &&
+        (obj.suiteFreeEpisode === undefined || parsedEpisode !== null);
+      const turn = metadataValid ? this.validTurn(obj.suiteTurn) : null;
+      const episode = turn ? parsedEpisode : null;
       // §2.4/§5: a holders file AT HOST_TEST_POISON_CEILING (64) rows
       // quarantines; one below it does not (>=, not >).
       if (obj.holders.length >= HOST_TEST_POISON_CEILING) {
-        return { rows: obj.holders, status: 'poisoned', raw };
+        return { rows: obj.holders, status: 'poisoned', raw, turn: null, episode: null, proofValid };
       }
-      return { rows: obj.holders, status: 'ok', raw };
+      return { rows: obj.holders, status: 'ok', raw, turn, episode, proofValid };
     } catch {
       // @silent-fallback-ok: unparseable → the caller's quarantine+admit branch (§2.4 fail-OPEN).
-      return { rows: [], status: 'unparseable', raw };
+      return { rows: [], status: 'unparseable', raw, turn: null, episode: null, proofValid: false };
     }
   }
 
-  private writeHolders(rows: unknown[]): void {
+  private writeHolders(rows: unknown[], turn: SuiteTurnRecord | null = null, episode: SuiteFreeEpisode | null = null): void {
     ensureBaseDir(this.paths);
-    atomicWriteFileSync(this.paths.holders, JSON.stringify({ v: 1, holders: rows }), {
+    const raw = JSON.stringify({ v: 1, holders: rows, ...(turn ? { suiteTurn: turn } : {}), ...(episode ? { suiteFreeEpisode: episode } : {}) });
+    atomicWriteFileSync(this.paths.holders, raw, {
       mode: 0o600,
       operation: 'HostTestRunnerSemaphore.writeHolders',
     });
+    try {
+      const proof: HoldersProof = { v: 1, hostname: this.host, ...this.holdersIdentity(raw) };
+      atomicWriteFileSync(this.paths.holdersProof, JSON.stringify(proof), {
+        mode: 0o600, operation: 'HostTestRunnerSemaphore.writeHoldersProof',
+      });
+    } catch (err) {
+      // Holder mutation already succeeded. Tests continue; later readers reject turn history.
+      process.stderr.write(`[test-runner-bound] turn proof unavailable: ${err instanceof Error ? err.message : String(err)}\n`);
+    }
   }
 
   /**
@@ -1282,6 +1712,7 @@ export class HostTestRunnerSemaphore {
       fs.mkdirSync(this.paths.witnessDir, { recursive: true, mode: 0o700 });
       const file = path.join(this.paths.witnessDir, `w-${process.pid}-${Math.random().toString(36).slice(2, 8)}.json`);
       fs.writeFileSync(file, JSON.stringify({ v: 1, pid: process.pid, hostname: this.host, acquiredAt: this.now() }), { mode: 0o600 });
+      this.markTurnInvalidated(file);
       return file;
     } catch {
       // @silent-fallback-ok: the witness is best-effort observability.
@@ -1535,12 +1966,35 @@ export class HostTestRunnerSemaphore {
   // ── Acquire / release (§2.2–§2.4) ───────────────────────────────────
 
   async acquire(req: AcquireRequest): Promise<AcquireOutcome> {
-    const ctx = this.resolveContext();
-    const budgetMs = req.budgetMs ?? resolveAcquireBudgetMs(req.lane, req.runClass, this.env);
-    const startMs = this.now();
+    const waiter: SuiteWaiter = {
+      id: `waiter:${this.genId()}`,
+      pid: process.pid,
+      priority: req.priority === 'merge-gate' ? 'merge-gate' : 'ordinary',
+      since: this.now(),
+    };
+    try {
+      if (req.lane === 'suite') {
+        const ctx = this.resolveContext();
+        if (resolveAlternatingSuiteTurns(ctx.tuning.file?.alternatingSuiteTurns) !== 'off' &&
+          this.turnHistoryEligible(ctx)) {
+          this.renewWaiterTicket(waiter.id, waiter.priority, waiter.since);
+        }
+      }
+      return await this.acquireLoop(req, waiter);
+    } finally {
+      if (req.lane === 'suite') this.clearWaiterTicket(waiter.id);
+    }
+  }
+
+  private async acquireLoop(req: AcquireRequest, waiter: SuiteWaiter): Promise<AcquireOutcome> {
+    let ctx = this.resolveContext();
+    const budgetMs = req.budgetMs ?? resolveAcquireBudgetMs(req.lane, req.runClass, this.env, ctx.tuning.file);
+    const startMs = waiter.since;
     const deadline = startMs + budgetMs;
     let lockEverAcquired = false;
     let lastHolders: Array<{ pid: number; ageMs: number }> = [];
+    let priorityWait = false;
+    let waitersAhead = 0;
 
     // df determination — OUTSIDE the lock, marker-cached (§2.2 item 2).
     const df = resolveDfLocal(this.paths, this.dfProbe);
@@ -1559,6 +2013,8 @@ export class HostTestRunnerSemaphore {
     const selfPgid = this.gatherEvidence([process.pid]).pgid.get(process.pid) ?? null;
 
     for (;;) {
+      // A tuning flip must affect queued requests on their very next admission attempt.
+      ctx = this.resolveContext();
       // Evidence gathered OUTSIDE the lock (§2.4): snapshot pids, run ps on
       // the live ones; decisions re-validated under the lock.
       const preRead = this.readHolders();
@@ -1600,10 +2056,122 @@ export class HostTestRunnerSemaphore {
           this.flushEvents(events);
           const live = req.lane === 'suite' ? pass.report.liveSuite : pass.report.liveTargeted;
           const cap = req.lane === 'suite' ? ctx.suiteCap.cap : ctx.targetedCap.cap;
-          if (live < cap) {
+          const turnMode = resolveAlternatingSuiteTurns(ctx.tuning.file?.alternatingSuiteTurns);
+          const useTurn = req.lane === 'suite' && turnMode === 'enforce' && this.turnHistoryEligible(ctx) && read.turn !== null;
+          const claimPids = req.lane === 'suite' && this.turnHistoryEligible(ctx)
+            ? this.liveMergeClaimPids() : new Set<number>();
+          const suiteWaitersSnapshot = req.lane === 'suite' ? this.listSuiteWaiters() : [];
+          const waiters = useTurn ? suiteWaitersSnapshot.map((w) =>
+            w.priority === 'merge-gate' && !claimPids.has(w.pid) ? { ...w, priority: 'ordinary' as const } : w) : [];
+          const currentWaiter: SuiteWaiter = useTurn && waiter.priority === 'merge-gate' && !claimPids.has(waiter.pid)
+            ? { ...waiter, priority: 'ordinary' } : waiter;
+          // An aged ordinary suite stops yielding to the coordinator's claim; the
+          // tickets then put it ahead of merge-gate waiters (fair aging).
+          const aged = suiteWaiterTier(currentWaiter, this.now()) === 0;
+          priorityWait = req.lane === 'suite' && currentWaiter.priority !== 'merge-gate' && !aged &&
+            (this.turnHistoryEligible(ctx) ? claimPids.size > 0 : this.hasMergeGatePriority());
+          waitersAhead = req.lane !== 'suite' ? 0 : useTurn
+            ? waiters.filter((w) => w.id !== currentWaiter.id && compareSuiteWaiters(w, currentWaiter, this.now()) < 0).length
+            : suiteWaitersSnapshot.filter((w) => w.id !== waiter.id && compareSuiteWaiters(w, waiter, this.now()) < 0).length;
+          let episodeForWrite = read.episode;
+          let wroteEpisode = false;
+          if (useTurn && read.turn && live === 0) {
+            if (waiters.some((w) => w.id === waiter.id)) {
+              const decision = this.alternatingDecision(currentWaiter, read.turn, read.episode, waiters, claimPids);
+              if (decision.reason !== 'no-two-class-contention') {
+                episodeForWrite = decision.episode;
+                priorityWait = !decision.eligible;
+                waitersAhead = decision.eligible ? 0 : 1;
+                if (!decision.eligible && decision.episode !== read.episode) {
+                  try {
+                    this.writeHolders(pass.kept, read.turn, decision.episode);
+                    episodeForWrite = decision.episode;
+                    wroteEpisode = true;
+                    if (decision.episode && !read.episode) this.ledger('suite-turn-offer', {
+                      episodeId: decision.episode.id, priorClass: read.turn.last,
+                      selectedClass: 'merge-gate', contenderClasses: ['ordinary', 'merge-gate'],
+                      handoffMs: SUITE_MERGE_HANDOFF_MS,
+                    });
+                    if (decision.episode?.handoffState === 'consumed' && read.episode?.handoffState === 'offered') {
+                      this.ledger('suite-turn-offer-outcome', {
+                        episodeId: decision.episode.id,
+                        outcome: this.now() - read.episode.startedAt >= SUITE_MERGE_HANDOFF_MS ? 'expired' : 'claim-lost',
+                      });
+                    }
+                  }
+                  catch (err) {
+                    // @silent-fallback-ok: the warning ledger records why this admission uses the old ordering.
+                    this.ledger('warn', { warnType: 'suite-turn-episode-write-failed', detail: err instanceof Error ? err.message : String(err) });
+                    // A failed offer write cannot reserve the slot; use the old policy.
+                    episodeForWrite = read.episode;
+                    priorityWait = currentWaiter.priority !== 'merge-gate' && !aged && claimPids.size > 0;
+                    waitersAhead = waiters.filter((w) => w.id !== currentWaiter.id && compareSuiteWaiters(w, currentWaiter, this.now()) < 0).length;
+                  }
+                }
+              } else if (read.episode?.handoffState === 'offered' &&
+                !waiters.some((w) => w.id === read.episode!.offeredTicketId && w.priority === 'merge-gate' && claimPids.has(w.pid))) {
+                episodeForWrite = { ...read.episode, handoffState: 'consumed' };
+              }
+            }
+          }
+          if (live + waitersAhead < cap && !priorityWait) {
+            let turnObservation: { episodeId: string; priorClass: string; selectedClass: string; actualWinner: string } | null = null;
+            if (req.lane === 'suite' && turnMode === 'observe' && this.turnHistoryEligible(ctx) && read.turn) {
+              const nowMs = this.now();
+              const mergePresent = suiteWaitersSnapshot.some((w) => w.priority === 'merge-gate' && claimPids.has(w.pid));
+              const agedPresent = suiteWaitersSnapshot.some((w) => w.priority === 'ordinary' && nowMs - w.since >= SUITE_WAITER_AGING_MS);
+              if (mergePresent && agedPresent) {
+                const actual = req.priority === 'merge-gate' && claimPids.has(process.pid) ? 'merge-gate' : 'ordinary';
+                const selected = read.turn.last === 'merge-gate' ? 'ordinary' : 'merge-gate';
+                const episodeId = `observe:${this.genId()}`;
+                turnObservation = { episodeId, priorClass: read.turn.last, selectedClass: selected, actualWinner: actual };
+              }
+            }
+            // Under the lock, so no other waiter counts this one twice (holder + ticket).
+            if (req.lane === 'suite') this.clearWaiterTicket(waiter.id);
             const row = this.buildRow(req, ctx, selfFp, selfPgid);
             pass.kept.push(row);
-            this.writeHolders(pass.kept);
+            const newTurn = this.turnAfterAdmission(req, ctx, row, read.turn, claimPids);
+            const invalidationsBeforeAdmission = newTurn && req.lane === 'suite' ? this.invalidationFiles() : [];
+            this.writeHolders(pass.kept, newTurn,
+              req.lane === 'suite' || !this.turnHistoryEligible(ctx) ? null : read.episode);
+            if (newTurn && req.lane === 'suite' && invalidationsBeforeAdmission && !this.hasVisibleBypassWitness()) {
+              this.clearTurnInvalidations(invalidationsBeforeAdmission);
+            }
+            if (req.lane === 'suite' && turnMode === 'enforce' && this.turnHistoryEligible(ctx) && !read.turn) {
+              this.ledger('suite-turn-fallback', {
+                reason: read.proofValid ? 'no-valid-history' : 'proof-missing-or-mismatched',
+                actualWinner: req.priority === 'merge-gate' && claimPids.has(process.pid) ? 'merge-gate' : 'ordinary',
+              });
+            }
+            if (turnObservation) {
+              this.ledger('suite-turn-counterfactual', {
+                ...turnObservation, contenderClasses: ['ordinary', 'merge-gate'],
+                eligibilityReason: 'enforcing-cap-one-valid-history',
+              });
+              if (turnObservation.selectedClass === 'merge-gate') this.ledger('suite-turn-offer-outcome', {
+                episodeId: turnObservation.episodeId,
+                outcome: turnObservation.actualWinner === 'merge-gate' ? 'admitted' : 'not-applied-observe',
+              });
+              this.ledger('suite-turn-episode-outcome', {
+                episodeId: turnObservation.episodeId,
+                actualWinner: turnObservation.actualWinner, selectedClass: turnObservation.selectedClass,
+              });
+            }
+            if (req.lane === 'suite' && turnMode === 'enforce' && read.episode && episodeForWrite) {
+              if (read.episode.handoffState === 'offered') this.ledger('suite-turn-offer-outcome', {
+                episodeId: read.episode.id,
+                outcome: episodeForWrite.handoffState === 'consumed'
+                  ? this.now() - read.episode.startedAt >= SUITE_MERGE_HANDOFF_MS ? 'expired' : 'claim-lost'
+                  : req.priority === 'merge-gate' && claimPids.has(process.pid) ? 'admitted' : 'bypassed',
+              });
+              this.ledger('suite-turn-episode-outcome', {
+                episodeId: read.episode.id,
+                priorClass: read.turn?.last ?? 'unknown',
+                actualWinner: req.priority === 'merge-gate' && claimPids.has(process.pid) ? 'merge-gate' : 'ordinary',
+                handoffState: episodeForWrite.handoffState,
+              });
+            }
             this.ledger('acquire', this.acquireFields(req, row, false));
             this.armSelfTtlWarn(row);
             this.sweepWitnesses();
@@ -1616,8 +2184,8 @@ export class HostTestRunnerSemaphore {
             // logs `would-block` (with the live holder set) and ADMITS.
             const row = this.buildRow(req, ctx, selfFp, selfPgid);
             pass.kept.push(row);
-            this.writeHolders(pass.kept);
-            this.ledger('would-block', { lane: req.lane, holders: lastHolders, cap });
+            this.writeHolders(pass.kept, null, null);
+            this.ledger('would-block', { lane: req.lane, holders: lastHolders, cap, priorityWait, waitersAhead });
             this.ledger('acquire', this.acquireFields(req, row, true));
             this.armSelfTtlWarn(row);
             return { kind: 'acquired', id: row.id, wouldBlock: true, ttlMs: row.ttlMs };
@@ -1625,15 +2193,18 @@ export class HostTestRunnerSemaphore {
           // Enforcing: persist reclaim work — but ONLY when the pass actually
           // changed something (§2.2 item 3: skip the holders rewrite on a
           // failed acquire when prune removed nothing — no O(waiters) churn).
-          if (pass.changed) this.writeHolders(pass.kept);
+          if (pass.changed && !wroteEpisode) this.writeHolders(pass.kept,
+            this.turnHistoryEligible(ctx) ? read.turn : null,
+            this.turnHistoryEligible(ctx) ? episodeForWrite : null);
         } finally {
           releaseLock(this.paths.lock, fd, 'HostTestRunnerSemaphore.acquire:release');
         }
         if (this.now() >= deadline) {
-          this.ledger('block', { lane: req.lane, holders: lastHolders, budgetMs });
+          this.ledger('block', { lane: req.lane, holders: lastHolders, budgetMs, priorityWait, waitersAhead });
           throw new TestRunnerCapacityTimeoutError(req.lane, budgetMs, lastHolders);
         }
-        req.onWaitTick?.(this.now() - startMs, lastHolders);
+        if (req.lane === 'suite') this.renewWaiterTicket(waiter.id, waiter.priority, waiter.since);
+        req.onWaitTick?.(this.now() - startMs, lastHolders, priorityWait, waitersAhead);
         await this.sleep(this.jitteredPoll());
         continue;
       }
@@ -1696,7 +2267,8 @@ export class HostTestRunnerSemaphore {
         this.ledger('block', { lane: req.lane, holders: lastHolders, budgetMs });
         throw new TestRunnerCapacityTimeoutError(req.lane, budgetMs, lastHolders);
       }
-      req.onWaitTick?.(this.now() - startMs, lastHolders);
+      if (req.lane === 'suite') this.renewWaiterTicket(waiter.id, waiter.priority, waiter.since);
+      req.onWaitTick?.(this.now() - startMs, lastHolders, priorityWait, waitersAhead);
       await this.sleep(this.jitteredPoll());
     }
   }
@@ -1808,7 +2380,8 @@ export class HostTestRunnerSemaphore {
           const remaining = read.rows.filter(
             (r) => !(r && typeof r === 'object' && (r as TestRunnerHolderRow).id === id),
           );
-          this.writeHolders(remaining);
+          const keepHistory = this.turnHistoryEligible(this.resolveContext());
+          this.writeHolders(remaining, keepHistory ? read.turn : null, keepHistory ? read.episode : null);
         }
         this.ledger('release', { holderId: id });
         return;
@@ -1875,7 +2448,9 @@ export class HostTestRunnerSemaphore {
         this.flushEvents(events);
         // Write-only-on-change (§2.2 item 3) — a no-op prune pass never churns
         // the holders file.
-        if (pass.changed) this.writeHolders(pass.kept);
+        if (pass.changed) this.writeHolders(pass.kept,
+          this.turnHistoryEligible(ctx) ? read.turn : null,
+          this.turnHistoryEligible(ctx) ? read.episode : null);
         this.sweepWitnesses();
         return pass.report;
       } finally {
@@ -1892,6 +2467,8 @@ export class HostTestRunnerSemaphore {
     cap: number;
     targetedCap: number;
     posture: TestPosture;
+    alternatingSuiteTurns: 'off' | 'observe' | 'enforce';
+    suiteTurn: { validity: 'valid' | 'unknown'; last: 'ordinary' | 'merge-gate' | null; handoffState: 'unused' | 'offered' | 'consumed' | null; nextSuiteClass: 'ordinary' | 'merge-gate' | 'unknown' };
     clampActive: boolean;
     ttlSignalArmed: boolean;
     liveHolders: Array<{ pid: number; hostname: string; acquiredAt: number; ttlMs: number; state: string }>;
@@ -1930,6 +2507,17 @@ export class HostTestRunnerSemaphore {
       });
     }
     const recentEvents = readLedgerTail(this.paths, 50);
+    let nextSuiteClass: 'ordinary' | 'merge-gate' | 'unknown' = 'unknown';
+    if (this.turnHistoryEligible(ctx) && read.turn &&
+        resolveAlternatingSuiteTurns(ctx.tuning.file?.alternatingSuiteTurns) !== 'off') {
+      const claims = this.liveMergeClaimPids();
+      const waiters = this.listSuiteWaiters();
+      const mergeVisible = waiters.some((w) => w.priority === 'merge-gate' && claims.has(w.pid));
+      const agedVisible = waiters.some((w) => w.priority === 'ordinary' && nowMs - w.since >= SUITE_WAITER_AGING_MS);
+      if (mergeVisible && agedVisible && read.episode?.handoffState !== 'consumed') {
+        nextSuiteClass = read.turn.last === 'ordinary' ? 'merge-gate' : 'ordinary';
+      }
+    }
     const skipHistogram: Record<string, number> = {};
     for (const e of recentEvents) {
       if (e.kind === 'skip' && typeof e.reason === 'string') {
@@ -1940,6 +2528,13 @@ export class HostTestRunnerSemaphore {
       cap: ctx.suiteCap.cap,
       targetedCap: ctx.targetedCap.cap,
       posture: ctx.posture.posture,
+      alternatingSuiteTurns: resolveAlternatingSuiteTurns(ctx.tuning.file?.alternatingSuiteTurns),
+      suiteTurn: {
+        validity: this.turnHistoryEligible(ctx) && read.turn ? 'valid' : 'unknown',
+        last: this.turnHistoryEligible(ctx) ? read.turn?.last ?? null : null,
+        handoffState: this.turnHistoryEligible(ctx) ? read.episode?.handoffState ?? null : null,
+        nextSuiteClass,
+      },
       clampActive: ctx.clampActive,
       ttlSignalArmed: ctx.ttlSignal.armed,
       liveHolders: liveByLane.suite,

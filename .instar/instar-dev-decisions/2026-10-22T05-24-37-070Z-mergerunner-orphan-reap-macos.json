@@ -1,0 +1,24 @@
+{
+  "ts": "2026-10-22T05:24:37.070Z",
+  "slug": "mergerunner-orphan-reap-macos",
+  "suggestedTier": 2,
+  "declaredTier": 2,
+  "riskFloor": 1,
+  "riskFloorReasons": [],
+  "belowFloor": false,
+  "files": 3,
+  "loc": 242,
+  "scope": {
+    "basis": "staged-in-scope-additions-plus-deletions",
+    "files": [
+      "scripts/safe-merge.mjs",
+      "src/monitoring/GreenPrAutoMerger.ts",
+      "src/monitoring/MergeRunner.ts"
+    ],
+    "addedLines": 201,
+    "deletedLines": 41
+  },
+  "causalAutopsy": null,
+  "classClosure": null,
+  "verdict": "pass"
+}

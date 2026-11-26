@@ -1,0 +1,22 @@
+{
+  "ts": "2026-10-28T01:24:16.176Z",
+  "slug": "origin-store-reservation-busy",
+  "suggestedTier": 1,
+  "declaredTier": 1,
+  "riskFloor": 1,
+  "riskFloorReasons": [],
+  "belowFloor": false,
+  "files": 1,
+  "loc": 23,
+  "scope": {
+    "basis": "staged-in-scope-additions-plus-deletions",
+    "files": [
+      "src/messaging/telegram-origin/OriginStoreBackend.ts"
+    ],
+    "addedLines": 21,
+    "deletedLines": 2
+  },
+  "causalAutopsy": null,
+  "classClosure": null,
+  "verdict": "pass"
+}

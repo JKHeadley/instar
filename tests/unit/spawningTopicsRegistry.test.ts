@@ -61,3 +61,27 @@ describe('SpawningTopicsRegistry', () => {
     expect(r.size()).toBe(2);
   });
 });
+
+describe('SpawningTopicsRegistry.waitUntilClear (ACT-091)', () => {
+  it('resolves true immediately when nothing is spawning', async () => {
+    const r = new SpawningTopicsRegistry();
+    expect(await r.waitUntilClear(7, { boundMs: 1000, sleep: async () => { throw new Error('must not sleep'); } })).toBe(true);
+  });
+  it('waits while the entry is present and resolves true once it is cleared', async () => {
+    let t = 0;
+    const r = new SpawningTopicsRegistry({ now: () => t });
+    const tok = r.add(7);
+    let polls = 0;
+    const sleep = async (ms: number) => { t += ms; polls++; if (polls === 3) r.clear(7, tok); };
+    expect(await r.waitUntilClear(7, { boundMs: 10_000, pollMs: 500, sleep })).toBe(true);
+    expect(polls).toBe(3);
+  });
+  it('resolves false at the bound while the entry is still present, and never clears it', async () => {
+    let t = 0;
+    const r = new SpawningTopicsRegistry({ now: () => t });
+    r.add(7);
+    const sleep = async (ms: number) => { t += ms; };
+    expect(await r.waitUntilClear(7, { boundMs: 2000, pollMs: 500, sleep })).toBe(false);
+    expect(r.has(7)).toBe(true);
+  });
+});

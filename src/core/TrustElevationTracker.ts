@@ -32,6 +32,18 @@ export interface ApprovalEvent {
   modified: boolean;
   /** Time between proposed and decided, in milliseconds */
   latencyMs: number;
+  /**
+   * Reported through the agent's own token (POST /autonomy/elevation/record) rather than observed
+   * by the server: kept, never counted in acceptance stats (trust-journey section 6). Still counts
+   * toward the rubber-stamp caution, the conservative direction.
+   */
+  agentReported?: boolean;
+  /**
+   * Who wrote the row. `route`: POST /autonomy/elevation/record, a caller-supplied claim (latency
+   * included), which may only ADD rubber-stamp caution and is evicted first. `evolution-status`: the
+   * server's own record of a proposal status change (its latency is computed by the server).
+   */
+  source?: 'route' | 'evolution-status';
 }
 
 export interface RubberStampSignal {
@@ -132,9 +144,11 @@ export class TrustElevationTracker {
   recordApprovalEvent(event: ApprovalEvent): void {
     this.state.approvalEvents.push(event);
 
-    // Keep history manageable (last 200 events)
-    if (this.state.approvalEvents.length > 200) {
-      this.state.approvalEvents = this.state.approvalEvents.slice(-200);
+    // Keep history manageable (last 200 events). Route-reported events go first, so a flood of
+    // them can never push out rows the server wrote itself (trust-journey section 6).
+    while (this.state.approvalEvents.length > 200) {
+      const i = this.state.approvalEvents.findIndex(e => e.source === 'route');
+      this.state.approvalEvents.splice(i >= 0 ? i : 0, 1);
     }
 
     this.evaluate();
@@ -157,6 +171,10 @@ export class TrustElevationTracker {
       decision,
       modified,
       latencyMs,
+      // A proposal's status is set through the agent's own token, so its decision is the agent's
+      // report, not the person's verified approval (trust-journey section 6): kept, not counted.
+      agentReported: true,
+      source: 'evolution-status',
     });
   }
 
@@ -165,7 +183,7 @@ export class TrustElevationTracker {
    */
   getAcceptanceStats(): EvolutionAcceptanceStats {
     const windowSize = this.config.recentWindowSize ?? 20;
-    const events = this.state.approvalEvents.filter(e => e.decision !== 'deferred');
+    const events = this.state.approvalEvents.filter(e => e.decision !== 'deferred' && !e.agentReported);
 
     const approved = events.filter(e => e.decision === 'approved');
     const rejected = events.filter(e => e.decision === 'rejected');
@@ -420,10 +438,18 @@ export class TrustElevationTracker {
     const latencyThreshold = this.config.rubberStampLatencyMs ?? 5000;
     const consecutiveThreshold = this.config.rubberStampConsecutive ?? 10;
 
-    // Look at recent approval events (only approved ones)
-    const approved = this.state.approvalEvents
+    // Route-reported events may only ADD caution (trust-journey section 6): the signal is raised when
+    // either all recent events, or the server-written ones alone, show the pattern, so claimed rows
+    // can never clear it.
+    const window = (events: ApprovalEvent[]) => events
       .filter(e => e.decision === 'approved')
       .slice(-consecutiveThreshold);
+    const stamped = (approved: ApprovalEvent[]) => approved.length >= consecutiveThreshold
+      && approved.every(e => e.latencyMs < latencyThreshold)
+      && approved.every(e => !e.modified);
+    const allApproved = window(this.state.approvalEvents);
+    const observedApproved = window(this.state.approvalEvents.filter(e => e.source !== 'route'));
+    const approved = stamped(observedApproved) ? observedApproved : allApproved;
 
     if (approved.length < consecutiveThreshold) {
       this.state.rubberStamp.detected = false;
@@ -431,11 +457,7 @@ export class TrustElevationTracker {
       return;
     }
 
-    // Check if all are fast and unmodified
-    const allFast = approved.every(e => e.latencyMs < latencyThreshold);
-    const allUnmodified = approved.every(e => !e.modified);
-
-    if (allFast && allUnmodified) {
+    if (stamped(approved)) {
       const totalLatency = approved.reduce((sum, e) => sum + e.latencyMs, 0);
       this.state.rubberStamp = {
         detected: true,

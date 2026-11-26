@@ -14,6 +14,21 @@ export class ForwardTransientError extends Error {
   }
 }
 
+/**
+ * The server refused the forward because it did not carry a lifeline secret
+ * the server accepts, and re-reading the secret file did not help. This says
+ * nothing about the message and is not an outage: like a version skew it must
+ * re-queue WITHOUT burning any replay budget, so the message is never dropped
+ * as "server unreachable" while the two processes disagree about the secret.
+ */
+export class ForwardSecretRefusedError extends Error {
+  readonly kind = 'secret-refused' as const;
+  constructor() {
+    super('forward refused: lifeline-secret-required');
+    this.name = 'ForwardSecretRefusedError';
+  }
+}
+
 export class ForwardBadRequestError extends Error {
   readonly kind = 'bad-request' as const;
   constructor(public readonly body?: unknown) {
@@ -58,5 +73,5 @@ export type ForwardError =
 export function isTerminalForwardError(err: unknown): boolean {
   if (!err || typeof err !== 'object') return false;
   const kind = (err as { kind?: string }).kind;
-  return kind === 'version-skew' || kind === 'bad-request';
+  return kind === 'version-skew' || kind === 'bad-request' || kind === 'secret-refused';
 }

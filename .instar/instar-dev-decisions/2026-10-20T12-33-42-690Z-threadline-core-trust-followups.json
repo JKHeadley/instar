@@ -1,0 +1,22 @@
+{
+  "ts": "2026-10-20T12:33:42.690Z",
+  "slug": "threadline-core-trust-followups",
+  "suggestedTier": 1,
+  "declaredTier": 2,
+  "riskFloor": 1,
+  "riskFloorReasons": [],
+  "belowFloor": false,
+  "files": 1,
+  "loc": 6,
+  "scope": {
+    "basis": "staged-in-scope-additions-plus-deletions",
+    "files": [
+      "src/threadline/AgentTrustManager.ts"
+    ],
+    "addedLines": 6,
+    "deletedLines": 0
+  },
+  "causalAutopsy": null,
+  "classClosure": null,
+  "verdict": "pass"
+}

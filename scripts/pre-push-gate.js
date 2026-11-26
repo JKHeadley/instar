@@ -16,6 +16,7 @@ import { fileURLToPath } from 'node:url';
 import { validateGuideContent } from './upgrade-guide-validator.mjs';
 import { assembleNextMd, gatherFragmentInputs, hasInternalOnlyMarker } from './assemble-next-md.mjs';
 import { isReleaseRelevant } from './release-relevant-paths.mjs';
+import { detectReleaseCut } from './release-cut-diff.mjs';
 
 const __dirname = path.dirname(fileURLToPath(import.meta.url));
 const ROOT = path.resolve(__dirname, '..');
@@ -186,19 +187,45 @@ try {
   // A shippable src/ change MUST carry a release-note fragment. publish.yml
   // SILENTLY skips the release when there is no upgrades/next/<slug>.md fragment
   // (and no upgrades/NEXT.md) — so the fix merges but never ships, with no
-  // signal. Mirror of the src→tests check above. The "chore: release" cut commit
-  // touches upgrades/ but not src/, so it never trips this. Bypass genuine WIP
-  // with INSTAR_PRE_PUSH_SKIP=1.
-  const fragmentChanges = changedFiles.filter(f =>
-    f.startsWith('upgrades/next/') || f === 'upgrades/NEXT.md'
-  );
+  // signal. Mirror of the src→tests check above.
+  //
+  // The "chore: release vX" CUT commit is exempt, and only it. Once relevance
+  // moved to the shared predicate (which counts package.json + package-lock.json),
+  // every cut tripped this check: a cut bumps both files and CONSUMES the
+  // fragments rather than adding one. publish.yml never saw it (its commit step
+  // runs with HUSKY=0); a cut pushed from a workstation with hooks on was
+  // refused. The version must also INCREASE. scripts/release-cut-diff.mjs decides
+  // "is this a cut?" by parsing both sides of package.json / package-lock.json
+  // (only the version fields may differ) and requiring exactly one added
+  // upgrades/<newVersion>.md plus deletions under upgrades/next/ — any other
+  // file in the diff and the check below runs exactly as before.
+  // Only fragments this push ADDS or MODIFIES count, with rename detection off.
+  // `--name-only` alone listed a deleted fragment's path too, so deleting
+  // someone else's (already-released) fragment satisfied this check; and with
+  // renames on, a fragment renamed into upgrades/<version>.md vanished from the
+  // list. A release cut deletes fragments and adds none, so it passes ONLY via
+  // the release-cut exemption below.
+  const fragmentChanges = execSync(
+    `git diff --name-only --no-renames --diff-filter=AM ${remoteBranch}...HEAD 2>/dev/null || git diff --name-only --no-renames --diff-filter=AM HEAD~1 2>/dev/null`,
+    { encoding: 'utf-8' },
+  )
+    .trim()
+    .split('\n')
+    .filter(Boolean)
+    .filter(f => f.startsWith('upgrades/next/') || f === 'upgrades/NEXT.md');
   // Release-relevance is now the SHARED predicate (scripts/release-relevant-paths.mjs),
   // the same one the server-side Layer-1 PR gate uses — so "needs a release note?"
   // has one answer in both places. This BROADENS the old src/**.ts-only check to
   // also catch scripts/, .github/workflows/, package.json, and skill code/templates
   // (all of which ship behavior but previously slipped this local gate).
   const releaseRelevantChanges = changedFiles.filter(isReleaseRelevant);
-  if (releaseRelevantChanges.length > 0 && fragmentChanges.length === 0) {
+  const releaseCut = (releaseRelevantChanges.length > 0 && fragmentChanges.length === 0)
+    ? detectReleaseCut({ cwd: ROOT, baseRef: remoteBranch })
+    : null;
+  if (releaseCut && releaseCut.isCut) {
+    console.log(`  ✅ Release cut v${releaseCut.version} recognised (only version fields + the versioned guide + consumed fragments) — release-fragment check not applicable.`);
+  }
+  if (releaseRelevantChanges.length > 0 && fragmentChanges.length === 0 && !(releaseCut && releaseCut.isCut)) {
     errors.push(
       `${releaseRelevantChanges.length} release-relevant file(s) changed but no release-note fragment was added. ` +
       `Without upgrades/next/<slug>.md (or upgrades/NEXT.md), publish.yml SILENTLY SKIPS the ` +
@@ -379,23 +406,71 @@ if (!process.env.CI) {
       const sideEffectsDir = path.join(ROOT, 'upgrades', 'side-effects');
       let artifactFound = false;
 
-      if (fs.existsSync(sideEffectsDir)) {
-        const files = fs.readdirSync(sideEffectsDir).filter((f) => f.endsWith('.md'));
-        // Any fresh artifact from the last 24h counts — the in-flight notes name
-        // the change, the artifact reviews it, and the two are paired by the PR
-        // rather than by filename.
-        const recent = files.filter((f) => {
-          const stat = fs.statSync(path.join(sideEffectsDir, f));
-          return Date.now() - stat.mtimeMs < 24 * 60 * 60 * 1000;
-        });
-        artifactFound = recent.length > 0;
+      // Pair the review to the WORK, not to the wall clock.
+      //
+      // This used to be "any artifact modified in the last 24h counts". That
+      // asks the wrong question. The in-flight fragments accumulate across many
+      // already-reviewed PRs until a release cut folds them away, so a batch
+      // that was fully reviewed on Tuesday starts FAILING on Thursday for no
+      // reason but elapsed time — the review did not stop existing, the window
+      // moved. Observed 2026-08-21: nine in-flight fragments, nine matching
+      // slug-named artifacts written the same day, gate refusing every push
+      // (including docs-only ones) because the newest artifact was ~41h old.
+      //
+      // The only way to satisfy a decayed window is to write a NEW artifact for
+      // work that already has one — which is precisely the placeholder-writing
+      // this check's own history warns about (see the comment above). A gate
+      // whose sole remedy is to produce a redundant document is teaching the
+      // wrong habit twice over.
+      //
+      // Compare instead against the newest thing actually waiting to ship: is
+      // there a review at least as recent as the newest in-flight fragment?
+      // Nothing is weakened — add an unreviewed fragment and the newest
+      // fragment outruns the newest artifact, and this still refuses — but the
+      // verdict no longer rots on its own while the facts stay unchanged.
+      const newestMtime = (dir, filter) => {
+        if (!fs.existsSync(dir)) return null;
+        let newest = null;
+        for (const f of fs.readdirSync(dir)) {
+          if (!filter(f)) continue;
+          try {
+            const m = fs.statSync(path.join(dir, f)).mtimeMs;
+            if (newest === null || m > newest) newest = m;
+          } catch {
+            // Unreadable entry: skip it rather than let one bad stat decide.
+          }
+        }
+        return newest;
+      };
+
+      const newestArtifact = newestMtime(sideEffectsDir, (f) => f.endsWith('.md'));
+      const newestFragment = newestMtime(
+        path.join(ROOT, 'upgrades', 'next'),
+        (f) => f.endsWith('.md')
+      );
+
+      if (newestArtifact !== null) {
+        if (newestFragment === null) {
+          // Legacy NEXT.md-only state (no fragment dir): fall back to the
+          // original freshness rule rather than passing on no evidence.
+          artifactFound = Date.now() - newestArtifact < 24 * 60 * 60 * 1000;
+        } else {
+          // Tolerance absorbs checkout/clone mtime ordering, where every file
+          // lands within the same moment and their relative order is arbitrary.
+          // It is far shorter than the gap between authoring a fragment and
+          // neglecting its review, so it cannot mask a genuinely missing one.
+          const SKEW_MS = 10 * 60 * 1000;
+          artifactFound = newestArtifact >= newestFragment - SKEW_MS;
+        }
       }
 
       if (!artifactFound) {
         errors.push(
-          `Your release-note fragment claims a fix/feature but no side-effects review artifact was written in the last 24h. ` +
-          `Add upgrades/side-effects/<slug>.md for this change (produced via the /instar-dev skill) — ` +
-          `do NOT create a version-named file to satisfy this check. ` +
+          `Your release-note fragment claims a fix/feature but no side-effects review artifact is as recent as it. ` +
+          `The newest upgrades/next/ fragment is newer than every file in upgrades/side-effects/, ` +
+          `which means the most recently added work has not been reviewed. ` +
+          `Add upgrades/side-effects/<slug>.md for THAT change (produced via the /instar-dev skill) — ` +
+          `do NOT create a version-named file, and do NOT re-touch an existing artifact, to satisfy this check. ` +
           `See skills/instar-dev/SKILL.md and docs/signal-vs-authority.md.`
         );
       }
@@ -548,6 +623,29 @@ if (warnings.length > 0) {
     console.log(`  ⚠️  ${w}`);
   }
   console.log('');
+}
+
+// Class-closure evidence for the maturation ladder. A record, never a gate: the
+// lint runs report-only in CI, where no agent can hear it, so the machine that
+// pushes reports it. Runs only after the gate passed, and any failure is ignored.
+if (!process.env.VITEST && process.env.INSTAR_AUTH_TOKEN) {
+  try {
+    const { spawnSync } = await import('node:child_process');
+    const git = (args) => spawnSync('git', args, { cwd: ROOT, encoding: 'utf-8', timeout: 5000 }).stdout?.trim();
+    const branch = git(['rev-parse', '--abbrev-ref', 'HEAD']);
+    const base = git(['merge-base', 'origin/main', 'HEAD']);
+    if (base && branch && branch !== 'main' && branch !== 'HEAD') {
+      // The written bar counts fixes, so a feature that happens to touch a skill is not a miss.
+      const subjects = git(['log', '--format=%s', `${base}..HEAD`]) ?? '';
+      const isFix = /^fix\//.test(branch) || /^fix(\(|:)/m.test(subjects);
+      spawnSync(process.execPath, [path.join(ROOT, 'scripts/class-closure-lint.mjs'), '--report-evidence'], {
+        cwd: ROOT,
+        stdio: 'ignore',
+        timeout: 15000,
+        env: { ...process.env, BASE_SHA: base, HEAD_SHA: git(['rev-parse', 'HEAD']), CLASS_CLOSURE_PR_KEY: branch, CLASS_CLOSURE_IS_FIX: isFix ? '1' : '0' },
+      });
+    }
+  } catch { /* evidence must never stop a push */ }
 }
 
 // If we get here, gate passed — print nothing (let the test suite output take over)

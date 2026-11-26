@@ -6,6 +6,17 @@ import { OriginSourcePoller } from '../../../src/messaging/telegram-origin/Origi
 import { SafeFsExecutor } from '../../../src/core/SafeFsExecutor.js';
 
 const roots: string[] = [];
+// One source write can show the poller more than one metadata state: writeFile
+// truncates before it writes, and on APFS a rename updates ctime a moment after
+// the new file appears. Invalidation is an idempotent refresh, so the contract
+// is at least one callback per change and none after close, not exactly one
+// (Rule 37 repair, PR #2087 round 3).
+async function settled(changed: ReturnType<typeof vi.fn>): Promise<number> {
+  for (let count = -1; count !== changed.mock.calls.length;) {
+    count = changed.mock.calls.length; await new Promise(resolve => setTimeout(resolve, 100));
+  }
+  return changed.mock.calls.length;
+}
 afterEach(async () => {
   vi.useRealTimers();
   await Promise.all(roots.splice(0).map(root => SafeFsExecutor.safeRm(root, {
@@ -21,16 +32,18 @@ describe('OriginSourcePoller', () => {
     const poller = new OriginSourcePoller([filename], changed, 10);
     await poller.start();
     await writeFile(filename, '{"v":22}');
-    await vi.waitFor(() => expect(changed).toHaveBeenCalledOnce(), { timeout: 1000 });
+    await vi.waitFor(() => expect(changed).toHaveBeenCalled(), { timeout: 1000 });
+    const beforeDelete = await settled(changed);
     await SafeFsExecutor.safeRm(filename, {
       force: true, operation: 'test:origin-source-poller:delete-source',
     });
-    await vi.waitFor(() => expect(changed).toHaveBeenCalledTimes(2), { timeout: 1000 });
+    await vi.waitFor(() => expect(changed.mock.calls.length).toBeGreaterThan(beforeDelete), { timeout: 1000 });
     const started = performance.now(); poller.close();
     expect(performance.now() - started).toBeLessThan(50);
+    const atClose = changed.mock.calls.length;
     await writeFile(filename, '{"v":333}');
     await new Promise(resolve => setTimeout(resolve, 40));
-    expect(changed).toHaveBeenCalledTimes(2);
+    expect(changed).toHaveBeenCalledTimes(atClose);
   });
 
   it('observes a source created after startup', async () => {
@@ -40,7 +53,7 @@ describe('OriginSourcePoller', () => {
     const poller = new OriginSourcePoller([filename], changed, 10);
     await poller.start();
     await writeFile(filename, '{}');
-    await vi.waitFor(() => expect(changed).toHaveBeenCalledOnce(), { timeout: 1000 });
+    await vi.waitFor(() => expect(changed).toHaveBeenCalled(), { timeout: 1000 });
     poller.close();
   });
 });

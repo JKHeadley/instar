@@ -14,9 +14,20 @@ export interface ReloginArtifact {
 }
 export type BrowserRepairResult =
   | { outcome: 'approved'; pasteCode?: string }
-  | { outcome: 'operator-only'; failureClass: 'captcha' | 'phone-confirmation' | 'permission-expansion' }
-  | { outcome: 'transient'; failureClass: 'seat-busy' | 'target-unreachable' | 'artifact-expired' | 'provider-transient' }
-  | { outcome: 'refused'; failureClass: 'wrong-identity' | 'unexpected-origin' | 'vault-reference-missing' | 'provider-rejected' };
+  | { outcome: 'operator-only'; failureClass: 'captcha' | 'phone-confirmation' | 'permission-expansion' | 'automation-permission' | 'no-healthy-seat' | 'agent-hard-line'; reason?: string }
+  | { outcome: 'transient'; failureClass: 'seat-busy' | 'target-unreachable' | 'artifact-expired' | 'provider-transient'; reason?: string }
+  | { outcome: 'refused'; failureClass: 'wrong-identity' | 'unexpected-origin' | 'vault-reference-missing' | 'provider-rejected' | 'passkey-refused' | 'agent-sign-in-unfinished' | 'device-limit'; reason?: string };
+
+/**
+ * The agent-session pre-attempt verdict (spec skill-driven-signin-repair §2). `ok` means the
+ * machine's helper seat lease is held for this episode, there is session capacity, and a healthy
+ * helper account exists; `wait` means try again next tick WITHOUT spending an attempt; and
+ * `no-healthy-seat` means no other healthy account on this machine can run the helper.
+ */
+export type ReloginPreAttemptVerdict =
+  | { kind: 'ok' }
+  | { kind: 'wait'; reason: string }
+  | { kind: 'no-healthy-seat' };
 
 export interface SubscriptionReloginOrchestratorDeps {
   store: SubscriptionReloginStore;
@@ -29,6 +40,12 @@ export interface SubscriptionReloginOrchestratorDeps {
   /** Must be idempotent for episode.id and re-observe an existing pending attempt. */
   startOrRecoverLogin: (episode: SubscriptionReloginEpisode, signal: AbortSignal) => Promise<ReloginArtifact>;
   driveBrowser: (episode: SubscriptionReloginEpisode, artifact: ReloginArtifact, signal: AbortSignal) => Promise<BrowserRepairResult>;
+  /**
+   * The event class recorded when a drive starts. Lets the audit trail show WHICH driver ran
+   * (spec agent-driven-relogin: `agent-drive-started` when the agent navigates). Default
+   * `browser-drive-started`.
+   */
+  driveEventClass?: (episode: SubscriptionReloginEpisode) => string;
   /** Readiness-checks the pane and never blind-types. The code is memory-only. */
   finishCli: (episode: SubscriptionReloginEpisode, pasteCode: string | undefined, signal: AbortSignal) => Promise<'complete' | 'pending'>;
   verifyIdentity: (episode: SubscriptionReloginEpisode, signal: AbortSignal) => Promise<'match' | 'mismatch' | 'unavailable'>;
@@ -38,12 +55,22 @@ export interface SubscriptionReloginOrchestratorDeps {
   /** Applies the verified recovery to the existing pool/ledger authorities. Must be idempotent. */
   finalizeSuccess: (episode: SubscriptionReloginEpisode, signal: AbortSignal) => Promise<void>;
   accountActive: (episode: SubscriptionReloginEpisode) => boolean;
+  /**
+   * Optional pre-attempt check, run in the `approved` branch BEFORE the attempt is counted and
+   * before the approval-expiry check. Absent ⇒ today's behavior exactly.
+   */
+  preAttempt?: (episode: SubscriptionReloginEpisode, signal: AbortSignal) => Promise<ReloginPreAttemptVerdict>;
+  /** Releases whatever `preAttempt` acquired. Called once when the tick that acquired it ends. */
+  releaseAttempt?: (episode: SubscriptionReloginEpisode) => void;
   now?: () => number;
   maxAttempts?: number;
   retryBaseMs?: number;
   maxWallClockMs?: number;
   maxReissues?: number;
 }
+
+/** How far each queued tick pushes a waiting approval's expiry (the store caps it at 60 minutes). */
+const APPROVAL_WAIT_EXTENSION_MS = 5 * 60_000;
 
 export type SubscriptionReloginTickResult =
   | { outcome: 'advanced'; episode: SubscriptionReloginEpisode }
@@ -67,6 +94,18 @@ export class SubscriptionReloginOrchestrator {
   }
 
   async tick(id: string, signal: AbortSignal = new AbortController().signal): Promise<SubscriptionReloginTickResult> {
+    const held = { value: false, episode: null as SubscriptionReloginEpisode | null };
+    try {
+      return await this.tickInner(id, signal, held);
+    } finally {
+      if (held.value && held.episode) {
+        try { this.deps.releaseAttempt?.(held.episode); } catch { /* @silent-fallback-ok — release is best-effort; the lease TTL reclaims it */ }
+      }
+    }
+  }
+
+  private async tickInner(id: string, signal: AbortSignal,
+    held: { value: boolean; episode: SubscriptionReloginEpisode | null }): Promise<SubscriptionReloginTickResult> {
     let ep = this.mustGet(id);
     if (signal.aborted) return this.cancelledResult(ep);
     if (isTerminal(ep)) return { outcome: 'terminal', episode: ep };
@@ -81,10 +120,42 @@ export class SubscriptionReloginOrchestrator {
       return { outcome: 'terminal', episode: ep };
     }
     if (ep.state === 'approved') {
-      if (!ep.startedAt && (!ep.approvalExpiresAt || Date.parse(ep.approvalExpiresAt) <= this.now()))
-        return this.fail(ep, 'provider-rejected', 'approval-expired');
       if (ep.nextAttemptAt && Date.parse(ep.nextAttemptAt) > this.now())
         return { outcome: 'waiting', episode: ep, reason: 'retry-backoff' };
+      if (this.deps.preAttempt) {
+        // Runs before the expiry check so a repair queued behind another on the same machine keeps
+        // its approval (extended, capped at 60 minutes) instead of dying as approval-expired.
+        let verdict: ReloginPreAttemptVerdict;
+        try { verdict = await this.deps.preAttempt(ep, signal); }
+        catch (error) {
+          if (signal.aborted || isAbortError(error)) return this.cancelledResult(ep);
+          verdict = { kind: 'wait', reason: 'pre-attempt-check-failed' };
+        }
+        if (signal.aborted) {
+          if (verdict.kind === 'ok') { held.value = true; held.episode = ep; }
+          return this.cancelledResult(ep);
+        }
+        if (verdict.kind === 'no-healthy-seat') {
+          ep = this.deps.store.transition(ep.id, { expectedVersion: ep.version, to: 'waiting-operator-only',
+            eventClass: 'no-healthy-seat', failureClass: 'no-healthy-seat', at: this.isoNow() });
+          return { outcome: 'waiting', episode: ep, reason: 'no-healthy-seat' };
+        }
+        if (verdict.kind === 'wait') {
+          // An approval that already lapsed (e.g. across server downtime) is never revived.
+          if (!ep.startedAt && (!ep.approvalExpiresAt || Date.parse(ep.approvalExpiresAt) <= this.now()))
+            return this.fail(ep, 'provider-rejected', 'approval-expired');
+          if (!ep.startedAt && ep.approvalExpiresAt) {
+            ep = this.deps.store.extendApproval(ep.id, ep.version,
+              new Date(this.now() + APPROVAL_WAIT_EXTENSION_MS).toISOString(), this.isoNow());
+            if (Date.parse(ep.approvalExpiresAt ?? '') <= this.now())
+              return this.fail(ep, 'provider-rejected', 'approval-expired');
+          }
+          return { outcome: 'waiting', episode: ep, reason: verdict.reason };
+        }
+        held.value = true; held.episode = ep;
+      }
+      if (!ep.startedAt && (!ep.approvalExpiresAt || Date.parse(ep.approvalExpiresAt) <= this.now()))
+        return this.fail(ep, 'provider-rejected', 'approval-expired');
       ep = this.deps.store.transition(ep.id, { expectedVersion: ep.version, to: 'cli-starting',
         eventClass: 'cli-starting', incrementAttempt: true, at: this.isoNow() });
     }
@@ -127,7 +198,7 @@ export class SubscriptionReloginOrchestrator {
       if (ep.reissueCount > this.maxReissues)
         return this.fail(ep, 'attempt-budget-exhausted', 'artifact-reissue-budget-exhausted');
       ep = this.deps.store.transition(ep.id, {
-        expectedVersion: ep.version, to: 'browser-driving', eventClass: 'browser-drive-started', at: this.isoNow(),
+        expectedVersion: ep.version, to: 'browser-driving', eventClass: this.deps.driveEventClass?.(ep) ?? 'browser-drive-started', at: this.isoNow(),
       });
       let result: BrowserRepairResult;
       try { result = await this.deps.driveBrowser(ep, artifact, signal); }
@@ -135,14 +206,18 @@ export class SubscriptionReloginOrchestrator {
       if (signal.aborted) return this.cancelledResult(ep);
       if (result.outcome === 'operator-only') {
         ep = this.deps.store.transition(ep.id, { expectedVersion: ep.version, to: 'waiting-operator-only',
-          eventClass: 'operator-only-challenge', failureClass: result.failureClass, at: this.isoNow() });
+          eventClass: 'operator-only-challenge', failureClass: result.failureClass, reason: result.reason, at: this.isoNow() });
         return { outcome: 'waiting', episode: ep, reason: result.failureClass };
       }
-      if (result.outcome === 'transient') return this.retry(ep, result.failureClass);
+      if (result.outcome === 'transient') return this.retry(ep, result.failureClass, result.reason);
       if (result.outcome === 'refused') {
-        const to = result.failureClass === 'wrong-identity' || result.failureClass === 'unexpected-origin' ? 'refused' : 'failed';
+        // A named policy refusal (identity, origin, passkey) is a REFUSAL, not a failed attempt.
+        const to = result.failureClass === 'wrong-identity' || result.failureClass === 'unexpected-origin'
+          || result.failureClass === 'passkey-refused' ? 'refused' : 'failed';
         ep = this.deps.store.transition(ep.id, { expectedVersion: ep.version, to,
-          eventClass: 'browser-drive-refused', failureClass: result.failureClass, at: this.isoNow() });
+          eventClass: result.failureClass === 'agent-sign-in-unfinished' ? 'agent-sign-in-unfinished'
+            : result.failureClass === 'device-limit' ? 'device-limit-stopped' : 'browser-drive-refused',
+          failureClass: result.failureClass, reason: result.reason, at: this.isoNow() });
         return { outcome: 'terminal', episode: ep };
       }
       ep = this.deps.store.transition(ep.id, { expectedVersion: ep.version, to: 'cli-finishing',
@@ -192,7 +267,9 @@ export class SubscriptionReloginOrchestrator {
       if (identity === 'mismatch') {
         try { await this.deps.quarantineIdentityMismatch(ep, signal); }
         catch {
-          return this.fail(ep, 'authority-degraded', 'identity-quarantine-failed', 'failed');
+          // A VERIFIED wrong identity whose quarantine failed is still a wrong identity: record it as
+          // such so it is breaker evidence and never slow-retried.
+          return this.fail(ep, 'wrong-identity', 'identity-quarantine-failed', 'failed');
         }
         if (signal.aborted) return this.cancelledResult(ep);
         return this.fail(ep, 'wrong-identity', 'identity-mismatch-quarantined', 'refused');
@@ -225,20 +302,20 @@ export class SubscriptionReloginOrchestrator {
     return { outcome: 'advanced', episode: ep };
   }
 
-  private retry(ep: SubscriptionReloginEpisode, failure: SubscriptionReloginFailureClass): SubscriptionReloginTickResult {
+  private retry(ep: SubscriptionReloginEpisode, failure: SubscriptionReloginFailureClass, reason?: string): SubscriptionReloginTickResult {
     if (ep.attemptCount >= this.maxAttempts)
-      return this.fail(ep, 'attempt-budget-exhausted', 'attempt-budget-exhausted');
+      return this.fail(ep, 'attempt-budget-exhausted', 'attempt-budget-exhausted', 'failed', reason ?? failure);
     const delay = this.retryBaseMs * 2 ** Math.max(0, ep.attemptCount - 1);
     const next = new Date(this.now() + delay).toISOString();
     const updated = this.deps.store.transition(ep.id, { expectedVersion: ep.version, to: 'approved',
-      eventClass: 'transient-retry-scheduled', failureClass: failure, nextAttemptAt: next, at: this.isoNow() });
+      eventClass: 'transient-retry-scheduled', failureClass: failure, nextAttemptAt: next, reason: reason ?? failure, at: this.isoNow() });
     return { outcome: 'waiting', episode: updated, reason: failure };
   }
 
   private fail(ep: SubscriptionReloginEpisode, failure: SubscriptionReloginFailureClass,
-    eventClass: string, to: 'failed' | 'refused' = 'failed'): SubscriptionReloginTickResult {
+    eventClass: string, to: 'failed' | 'refused' = 'failed', reason?: string): SubscriptionReloginTickResult {
     const updated = this.deps.store.transition(ep.id, { expectedVersion: ep.version, to,
-      eventClass, failureClass: failure, at: this.isoNow() });
+      eventClass, failureClass: failure, reason, at: this.isoNow() });
     return { outcome: 'terminal', episode: updated };
   }
   private mustGet(id: string): SubscriptionReloginEpisode {
@@ -247,6 +324,11 @@ export class SubscriptionReloginOrchestrator {
   private cancelledResult(ep: SubscriptionReloginEpisode): SubscriptionReloginTickResult {
     const latest = this.mustGet(ep.id);
     if (latest.state === 'cancelled') return { outcome: 'terminal', episode: latest };
+    // codex-device-limit-tripwire §4: settleForDeviceLimit ends the episode in the store first and
+    // then aborts the drive; that ending is terminal, never "waiting for cancel".
+    if (latest.failureClass === 'device-limit' && (latest.state === 'failed' || latest.state === 'refused')) {
+      return { outcome: 'terminal', episode: latest };
+    }
     return { outcome: 'waiting', episode: latest, reason: 'cancel-requested' };
   }
   private recordArtifactReissues(ep: SubscriptionReloginEpisode, artifact: ReloginArtifact): SubscriptionReloginEpisode {

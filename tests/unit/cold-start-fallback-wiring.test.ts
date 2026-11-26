@@ -27,7 +27,8 @@ vi.mock('../../src/core/IdentityRenderer.js', async (importOriginal) => ({
   ensureFrameworkIdentityFile: vi.fn(() => null),
 }));
 const fixture = vi.hoisted(() => ({ inboundDir: '' }));
-vi.mock('../../src/messaging/shared/telegramInboundFiles.js', () => ({
+vi.mock('../../src/messaging/shared/telegramInboundFiles.js', async (importOriginal) => ({
+  ...(await importOriginal<typeof import('../../src/messaging/shared/telegramInboundFiles.js')>()),
   getTelegramInboundDir: () => {
     if (!fixture.inboundDir) throw new Error('test inbound fixture is not active');
     return fixture.inboundDir;

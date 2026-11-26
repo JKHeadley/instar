@@ -12,7 +12,6 @@ import { SessionManager } from '../../src/core/SessionManager.js';
 import {
   createTempProject,
   createMockClaude,
-  cleanupTmuxSessions,
   waitFor,
 } from '../helpers/setup.js';
 import type { TempProject } from '../helpers/setup.js';
@@ -30,6 +29,7 @@ describeMaybe('JobScheduler (integration)', () => {
   let mockClaudePath: string;
   let sm: SessionManager;
   let scheduler: JobScheduler;
+  const inFlight = new Set<Promise<unknown>>();
 
   beforeAll(() => {
     project = createTempProject();
@@ -46,13 +46,27 @@ describeMaybe('JobScheduler (integration)', () => {
       },
       project.state,
     );
+    // The every-second cron can have spawns in flight when the scheduler stops;
+    // one that lands after project.cleanup() leaks an
+    // `instar-test-*-job-fast-test-*` session (dead pane, temp dir gone). Track
+    // them so teardown waits for every spawn to settle before cleaning up.
+    const spawn = sm.spawnSession.bind(sm);
+    sm.spawnSession = (opts) => {
+      const p = spawn(opts);
+      inFlight.add(p);
+      p.catch(() => {}).finally(() => inFlight.delete(p));
+      return p;
+    };
   });
 
-  afterAll(() => {
-    scheduler?.stop();
-    sm.stopMonitoring();
-    cleanupTmuxSessions(TMUX_PREFIX);
-    project.cleanup();
+  afterAll(async () => {
+    try {
+      scheduler?.stop();
+      await Promise.allSettled([...inFlight]);
+      sm.stopMonitoring();
+    } finally {
+      project.cleanup();
+    }
   });
 
   it('triggers a job via cron and spawns a session', async () => {

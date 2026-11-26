@@ -19,6 +19,7 @@
  * deduped attention item the route used to raise inline (fail-closed for a
  * minted id; fail-open for a legacy token-less positive id).
  */
+import { topicRef } from '../messaging/shared/topicRef.js';
 import type { ConversationBindAuth } from './conversationBindToken.js';
 import { TOKENLESS_BIND_GRACE_DAYS } from './conversationBindToken.js';
 
@@ -103,7 +104,7 @@ export function verifyConversationBind(params: {
       return refuse('bind token invalid (MAC verification failed)');
     }
     if (!payload.bootstrapConversationIds.includes(numericTopicId)) {
-      return refuse(`topic ${numericTopicId} is not in the session's authenticated bootstrap context`);
+      return refuse(`${topicRef(numericTopicId)} is not in the session's authenticated bootstrap context`);
     }
     return { ok: true, boundBy: `session:${payload.sessionName}` };
   }

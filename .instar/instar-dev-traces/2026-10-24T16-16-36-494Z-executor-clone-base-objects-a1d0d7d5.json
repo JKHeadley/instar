@@ -1,0 +1,21 @@
+{
+  "version": 2,
+  "slug": "executor-clone-base-objects",
+  "sessionId": "7f2a8220-744b-4650-af3f-bfd06ec29ea8",
+  "timestamp": "2026-10-24T16:16:36.494Z",
+  "artifactPath": "upgrades/side-effects/executor-clone-base-objects.md",
+  "artifactSha256": "5f25cbb9c1ff5d279600a834a93d0b1656d73e66204bff95953dafd268bfc6cd",
+  "coveredFiles": [
+    "docs/specs/executor-clone-base-objects.eli16.md",
+    "src/feedback-factory/execute/confinementCanary.ts",
+    "tests/unit/feedback-factory/execute-units.test.ts",
+    "upgrades/side-effects/executor-clone-base-objects.md"
+  ],
+  "phase": "complete",
+  "tier": 1,
+  "tierReasoning": "Second-round review fix: scrub each full output stream before reshaping a diagnostic string; unit tests cover multiline label and PEM cases.",
+  "eli16Path": "docs/specs/executor-clone-base-objects.eli16.md",
+  "sideEffectsPath": "upgrades/side-effects/executor-clone-base-objects.md",
+  "secondPass": "not-required",
+  "reviewerConcurred": null
+}

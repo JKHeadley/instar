@@ -36,12 +36,13 @@ const RECENT_HARD_CAP = 200;
 const CHAIN_DEPTH_CAP = 16;
 const STATS_FLUSH_EVERY_N = 50;
 const NAME_MAX = 64;
-const SUBJECT_MAX = 200;
-const SUMMARY_MAX = 400;
+export const SUBJECT_MAX = 200;
+export const SUMMARY_MAX = 400;
 const INSTANCE_MAX = 64;
 const NAME_CHARSET = /^[a-zA-Z0-9\-_.:]+$/;
 const VALID_SUBSYSTEMS: readonly LedgerEntrySubsystem[] = [
   'threadline',
+  'work-board',
   'outbound-classifier',
   'session-manager',
   'compaction-sentinel',

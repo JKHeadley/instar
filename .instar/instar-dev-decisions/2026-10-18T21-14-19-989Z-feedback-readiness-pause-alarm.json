@@ -1,0 +1,29 @@
+{
+  "ts": "2026-10-18T21:14:19.989Z",
+  "slug": "feedback-readiness-pause-alarm",
+  "suggestedTier": 2,
+  "declaredTier": 1,
+  "riskFloor": 2,
+  "riskFloorReasons": [
+    "irreversibility: src/core/PostUpdateMigrator.ts touches PostUpdateMigrator",
+    "migration / fleet-rollout surface: src/core/PostUpdateMigrator.ts touches PostUpdateMigrator (fleet migration machinery)"
+  ],
+  "belowFloor": true,
+  "files": 5,
+  "loc": 96,
+  "scope": {
+    "basis": "staged-in-scope-additions-plus-deletions",
+    "files": [
+      "src/core/PostUpdateMigrator.ts",
+      "src/feedback-factory/drain/FeedbackDrainService.ts",
+      "src/feedback-factory/drain/FeedbackDrainTickProxy.ts",
+      "src/scaffold/templates.ts",
+      "src/server/AgentServer.ts"
+    ],
+    "addedLines": 93,
+    "deletedLines": 3
+  },
+  "causalAutopsy": null,
+  "classClosure": null,
+  "verdict": "pass"
+}

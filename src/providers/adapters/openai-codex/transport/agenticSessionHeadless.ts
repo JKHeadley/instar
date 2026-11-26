@@ -53,8 +53,10 @@ import type { SessionHandle } from '../../../types.js';
 import { sessionHandle } from '../../../types.js';
 import { CapabilityFlag } from '../../../capabilities.js';
 import { UnexpectedError } from '../../../errors.js';
+import { redactSpawnError } from '../../../../core/redactSpawnError.js';
 import { OPENAI_CODEX_ID } from '../errors.js';
 import { resolveCliModelFlag } from '../models.js';
+import { codexModelForCliAsync } from '../../../../core/codexCapabilities.js';
 import { normalizeCodexJsonlEvent } from '../observability/eventNormalizer.js';
 import { buildCodexChildEnv, buildCodexTmuxSessionEnv } from './codexSpawn.js';
 import type { OpenAiCodexConfig } from '../config.js';
@@ -68,7 +70,7 @@ class OpenAiCodexAgenticSession implements AgenticSessionHeadless {
     const sessionId = `ocs-${randomBytes(8).toString('hex')}`;
     const tmuxName = `instar-${sessionId}`;
     const cwd = options.workingDirectory ?? this.config.defaultWorkingDirectory ?? process.cwd();
-    const model = resolveCliModelFlag(options.model ?? this.config.defaultModel);
+    const model = await codexModelForCliAsync(resolveCliModelFlag(options.model ?? this.config.defaultModel), this.config.codexPath, 'keep');
     const sandbox = this.config.defaultSandboxMode ?? 'workspace-write';
 
     const codexArgs = [
@@ -122,10 +124,11 @@ class OpenAiCodexAgenticSession implements AgenticSessionHeadless {
         /* nice-to-have */
       }
     } catch (err) {
+      // #2184: the raw error quotes the tmux argv, credentials included, so
+      // neither its message nor the error itself travels on as the cause.
       throw new UnexpectedError(
-        `Failed to spawn codex tmux session: ${(err as Error).message}`,
+        `Failed to spawn codex tmux session: ${redactSpawnError(err)}`,
         OPENAI_CODEX_ID,
-        err,
       );
     }
 

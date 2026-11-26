@@ -1,0 +1,40 @@
+{
+  "ts": "2026-11-03T12:29:25.682Z",
+  "slug": "wedge-mac-f1-canary",
+  "suggestedTier": 2,
+  "declaredTier": 2,
+  "riskFloor": 2,
+  "riskFloorReasons": [
+    "irreversibility: src/core/PostUpdateMigrator.ts touches PostUpdateMigrator",
+    "migration / fleet-rollout surface: scripts/check-native-desktop-release.mjs touches release script (fleet publish path)",
+    "migration / fleet-rollout surface: scripts/release-local.mjs touches release script (fleet publish path)",
+    "migration / fleet-rollout surface: src/core/PostUpdateMigrator.ts touches PostUpdateMigrator (fleet migration machinery)"
+  ],
+  "belowFloor": false,
+  "files": 10,
+  "loc": 324,
+  "scope": {
+    "basis": "staged-in-scope-additions-plus-deletions",
+    "files": [
+      "scripts/build-native-desktop-host.mjs",
+      "scripts/check-native-desktop-release.mjs",
+      "scripts/release-local.mjs",
+      "src/commands/server.ts",
+      "src/core/PostUpdateMigrator.ts",
+      "src/monitoring/machineMaintenance/WedgeMonitor.ts",
+      "src/monitoring/machineMaintenance/readings.ts",
+      "src/monitoring/machineMaintenance/wedgeEvidence.ts",
+      "src/native/wedge-canary/macos/Info.plist",
+      "src/native/wedge-canary/macos/InstarWedgeCanary.swift"
+    ],
+    "addedLines": 281,
+    "deletedLines": 43
+  },
+  "causalAutopsy": null,
+  "classClosure": {
+    "defectClass": "unbounded-self-action",
+    "closure": "n/a",
+    "reason": "adds read-only probes inside the existing single-flight bounded wedge sampler; no new action, notice or loop"
+  },
+  "verdict": "pass"
+}

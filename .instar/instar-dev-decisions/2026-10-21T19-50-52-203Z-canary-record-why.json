@@ -1,0 +1,30 @@
+{
+  "ts": "2026-10-21T19:50:52.203Z",
+  "slug": "canary-record-why",
+  "suggestedTier": 1,
+  "declaredTier": 1,
+  "riskFloor": 1,
+  "riskFloorReasons": [],
+  "belowFloor": false,
+  "files": 2,
+  "loc": 19,
+  "scope": {
+    "basis": "staged-in-scope-additions-plus-deletions",
+    "files": [
+      "src/feedback-factory/execute/FeedbackExecutorService.ts",
+      "src/feedback-factory/execute/confinementCanary.ts"
+    ],
+    "addedLines": 17,
+    "deletedLines": 2
+  },
+  "causalAutopsy": {
+    "origin": "latent",
+    "relatedPrs": [
+      2155,
+      2266
+    ],
+    "notes": "Latent since #2155: the latch recorded probe names only while the explaining report is deleted with the attempt tree. It could not bite until the executor actually reached the canary, which first happened on 2026-10-21 after the three deps fixes (#2259/#2266/#2269) cleared the earlier wall. The latch then fired on session-git-status and the cause was unrecoverable, costing a full manual sandbox repro. Same lesson as rebuildFailureTail earlier the same day: the information needed to diagnose a self-imposed stop was being discarded at the moment of the stop."
+  },
+  "classClosure": null,
+  "verdict": "pass"
+}

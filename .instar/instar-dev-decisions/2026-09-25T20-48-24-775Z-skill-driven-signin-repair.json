@@ -1,0 +1,53 @@
+{
+  "ts": "2026-09-25T20:48:24.775Z",
+  "slug": "skill-driven-signin-repair",
+  "suggestedTier": 2,
+  "declaredTier": 2,
+  "riskFloor": 2,
+  "riskFloorReasons": [
+    "irreversibility: src/core/PostUpdateMigrator.ts touches PostUpdateMigrator",
+    "migration / fleet-rollout surface: src/core/PostUpdateMigrator.ts touches PostUpdateMigrator (fleet migration machinery)",
+    "new capability: new route (router.<verb>() added",
+    "new capability: new exported class / subsystem added"
+  ],
+  "belowFloor": false,
+  "files": 19,
+  "loc": 1367,
+  "scope": {
+    "basis": "staged-in-scope-additions-plus-deletions",
+    "files": [
+      "src/commands/server.ts",
+      "src/core/CliLoginStatus.ts",
+      "src/core/PostUpdateMigrator.ts",
+      "src/core/QuotaPoller.ts",
+      "src/core/SessionManager.ts",
+      "src/core/SubscriptionLoginLedger.ts",
+      "src/core/SubscriptionReloginHelper.ts",
+      "src/core/SubscriptionReloginOrchestrator.ts",
+      "src/core/SubscriptionReloginPolicy.ts",
+      "src/core/SubscriptionReloginRuntime.ts",
+      "src/core/SubscriptionReloginService.ts",
+      "src/core/SubscriptionReloginStore.ts",
+      "src/core/types.ts",
+      "src/data/builtinSkillContent.ts",
+      "src/providers/adapters/openai-codex/observability/codexLiveRateLimitReader.ts",
+      "src/scaffold/templates.ts",
+      "src/server/CapabilityIndex.ts",
+      "src/server/middleware.ts",
+      "src/server/routes.ts"
+    ],
+    "addedLines": 1296,
+    "deletedLines": 71
+  },
+  "causalAutopsy": null,
+  "classClosure": {
+    "defectClass": "unbounded-self-action",
+    "closure": "guard",
+    "guardEvidence": {
+      "enforcementType": "ratchet",
+      "citation": "tests/unit/self-action-convergence.test.ts",
+      "howCaught": "The helper spawn runs only inside a counted attempt of the registered subscription-relogin-redrive controller: durable maxAttempts 3 (steady-state bound ≤3 helper spawns per episode, one per machine via the seat lease and inFlight); a waiting episode spawns nothing and its approval is hard-capped at 60 min; settling brake = terminal failed + the existing 3-in-24h breaker. The resolved-elsewhere close is a one-way terminal transition per episode (idempotent)."
+    }
+  },
+  "verdict": "pass"
+}

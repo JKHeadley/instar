@@ -1,0 +1,29 @@
+{
+  "ts": "2026-10-19T17:59:03.455Z",
+  "slug": "write-routes-refuse-unsupported-fields",
+  "suggestedTier": 2,
+  "declaredTier": 1,
+  "riskFloor": 2,
+  "riskFloorReasons": [
+    "safety-invariant proximity: src/messaging/TelegramAdapter.ts matches Telegram adapter",
+    "new capability: new route (router.<verb>() added"
+  ],
+  "belowFloor": true,
+  "files": 5,
+  "loc": 101,
+  "scope": {
+    "basis": "staged-in-scope-additions-plus-deletions",
+    "files": [
+      "src/core/InitiativeTracker.ts",
+      "src/messaging/TelegramAdapter.ts",
+      "src/server/fileRoutes.ts",
+      "src/server/refuseUnsupportedFields.ts",
+      "src/server/routes.ts"
+    ],
+    "addedLines": 97,
+    "deletedLines": 4
+  },
+  "causalAutopsy": null,
+  "classClosure": null,
+  "verdict": "pass"
+}

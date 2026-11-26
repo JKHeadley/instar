@@ -1,0 +1,32 @@
+{
+  "ts": "2026-10-06T08:16:02.454Z",
+  "slug": "subscription-pool-legacy-migrate",
+  "suggestedTier": 2,
+  "declaredTier": 2,
+  "riskFloor": 2,
+  "riskFloorReasons": [
+    "irreversibility: src/core/PostUpdateMigrator.ts touches PostUpdateMigrator",
+    "migration / fleet-rollout surface: src/core/PostUpdateMigrator.ts touches PostUpdateMigrator (fleet migration machinery)"
+  ],
+  "belowFloor": false,
+  "files": 4,
+  "loc": 284,
+  "scope": {
+    "basis": "staged-in-scope-additions-plus-deletions",
+    "files": [
+      "src/core/MachineIdentity.ts",
+      "src/core/PostUpdateMigrator.ts",
+      "src/core/SubscriptionPool.ts",
+      "src/core/SubscriptionPoolAuthority.ts"
+    ],
+    "addedLines": 281,
+    "deletedLines": 3
+  },
+  "causalAutopsy": null,
+  "classClosure": {
+    "defectClass": "unbounded-self-action",
+    "closure": "n/a",
+    "reason": "no self-triggered action: a one-time, idempotent data migration run by the update path; the only removal is digest-gated and never on a peer"
+  },
+  "verdict": "pass"
+}

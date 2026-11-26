@@ -1,0 +1,38 @@
+{
+  "version": 2,
+  "slug": "job-alert-capacity-episode",
+  "sessionId": "960acda4-a670-45c1-839c-5359a41daab2",
+  "timestamp": "2026-11-04T04:19:02.488Z",
+  "artifactPath": "upgrades/side-effects/job-alert-capacity-episode.md",
+  "artifactSha256": "992c37e1b93e62bb170db8ce153f334bd7e816ed92e8be1678f2439aec5dc5da",
+  "coveredFiles": [
+    "src/core/SessionManager.ts",
+    "src/messaging/userNotices.ts",
+    "src/scheduler/JobClaimManager.ts",
+    "src/scheduler/JobLeaseClaimStore.ts",
+    "src/scheduler/JobScheduler.ts",
+    "src/testing/selfActionRegistry.ts",
+    "tests/unit/job-capacity-episode.test.ts",
+    "tests/unit/job-failure-alert-escalation.test.ts",
+    "tests/unit/session-manager-confined-reroute.test.ts",
+    "upgrades/job-alert-capacity-episode.eli16.md",
+    "upgrades/next/job-alert-capacity-episode.md",
+    "upgrades/side-effects/job-alert-capacity-episode.md"
+  ],
+  "phase": "complete",
+  "tier": 1,
+  "tierReasoning": "Reversible scheduler and notice fix with typed error handling, bounded retry and notification convergence, and focused regression coverage.",
+  "eli16Path": "upgrades/job-alert-capacity-episode.eli16.md",
+  "sideEffectsPath": "upgrades/side-effects/job-alert-capacity-episode.md",
+  "secondPass": "true",
+  "reviewerConcurred": true,
+  "classClosure": {
+    "defectClass": "unbounded-self-action",
+    "closure": "guard",
+    "guardEvidence": {
+      "enforcementType": "ratchet",
+      "citation": "tests/unit/self-action-convergence.test.ts",
+      "howCaught": "Under sustained saturation, polls launch zero jobs and one persisted episode alert at most; restart preserves the alert brake. When room opens, queue admission starts at most one job per 15-second poll."
+    }
+  }
+}

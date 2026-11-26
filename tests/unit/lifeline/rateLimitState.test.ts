@@ -123,9 +123,9 @@ describe('decide', () => {
     expect(r.reason).toBe('version-skew-daily-cap');
   });
 
-  it('storm detection: 6 restarts in 1h flags stormActive', () => {
+  it('storm detection: the restart being decided completes 6 in 1h and flags stormActive', () => {
     const oldEnough = new Date(now - WATCHDOG_COOLDOWN_MS - 1000).toISOString();
-    const history = Array.from({ length: RESTART_STORM_THRESHOLD }, (_, i) => ({
+    const history = Array.from({ length: RESTART_STORM_THRESHOLD - 1 }, (_, i) => ({
       at: new Date(now - (i + 1) * 5 * 60 * 1000).toISOString(),
       reason: 'noForwardStuck',
       bucket: 'watchdog' as const,
@@ -134,6 +134,18 @@ describe('decide', () => {
     const r = decide({ kind: 'ok', state }, 'watchdog', now);
     expect(r.allowed).toBe(true);
     expect(r.stormActive).toBe(true);
+  });
+
+  it('six earlier watchdog restarts inside 24h hit the daily cap instead', () => {
+    const oldEnough = new Date(now - WATCHDOG_COOLDOWN_MS - 1000).toISOString();
+    const history = Array.from({ length: RESTART_STORM_THRESHOLD }, (_, i) => ({
+      at: new Date(now - (i + 1) * 5 * 60 * 1000).toISOString(),
+      reason: 'noForwardStuck',
+      bucket: 'watchdog' as const,
+      exited: true,
+    }));
+    const state = { lastRestartAt: oldEnough, lastReason: 'x', history };
+    expect(decide({ kind: 'ok', state }, 'watchdog', now)).toEqual({ allowed: false, reason: 'watchdog-daily-cap' });
   });
 });
 

@@ -1,0 +1,30 @@
+{
+  "version": 2,
+  "slug": "mobile-native-capacity-screens",
+  "sessionId": "fbad3c4d-66be-4847-be50-4e9084534054",
+  "timestamp": "2026-11-04T09:57:56.621Z",
+  "artifactPath": "upgrades/side-effects/mobile-native-capacity-screens.md",
+  "artifactSha256": "da147a2754ef2ae49913998d50760a5441a3890be0c6f51702339a2c9d653a17",
+  "specPath": "docs/specs/mobile-native-capacity-screens.md",
+  "coveredFiles": [
+    "docs/specs/mobile-native-capacity-screens.eli16.md",
+    "docs/specs/mobile-native-capacity-screens.md",
+    "docs/specs/reports/mobile-native-capacity-screens-convergence.md",
+    "src/core/PostUpdateMigrator.ts",
+    "src/server/CapabilityIndex.ts",
+    "src/server/mobileCapacityRoutes.ts",
+    "src/server/mobilePairingRoutes.ts",
+    "src/server/routes.ts",
+    "tests/e2e/mobile-native-capacity-screens-alive.test.ts",
+    "tests/integration/mobile-native-capacity-screens.test.ts",
+    "tests/unit/mobile-native-capacity-screens-claudemd.test.ts",
+    "tests/unit/mobile-native-capacity-screens.test.ts",
+    "upgrades/next/mobile-native-capacity-screens.md",
+    "upgrades/side-effects/mobile-native-capacity-screens.md"
+  ],
+  "phase": "complete",
+  "tier": 2,
+  "tierReasoning": "Widens device-key read access (three owner-only read routes exposing account emails, usage and spend to paired phones); security-sensitive, so the full converged-spec chain.",
+  "secondPass": "true",
+  "reviewerConcurred": true
+}

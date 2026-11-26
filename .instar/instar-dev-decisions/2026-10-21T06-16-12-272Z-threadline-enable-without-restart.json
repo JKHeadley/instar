@@ -1,0 +1,30 @@
+{
+  "ts": "2026-10-21T06:16:12.272Z",
+  "slug": "threadline-enable-without-restart",
+  "suggestedTier": 1,
+  "declaredTier": 2,
+  "riskFloor": 1,
+  "riskFloorReasons": [],
+  "belowFloor": false,
+  "files": 1,
+  "loc": 29,
+  "scope": {
+    "basis": "staged-in-scope-additions-plus-deletions",
+    "files": [
+      "src/threadline/connectEnable.ts"
+    ],
+    "addedLines": 21,
+    "deletedLines": 8
+  },
+  "causalAutopsy": null,
+  "classClosure": {
+    "defectClass": "unbounded-self-action",
+    "closure": "guard",
+    "guardEvidence": {
+      "enforcementType": "ratchet",
+      "citation": "tests/unit/self-action-convergence.test.ts",
+      "howCaught": "threadline-connect-enable-restart drives the real decideConnectEnable: one restart request per 10-minute persisted cooldown, none while pending, none without a lifeline proven by start time and command line; the deferred retry stops after 5 minutes and records gave-up."
+    }
+  },
+  "verdict": "pass"
+}

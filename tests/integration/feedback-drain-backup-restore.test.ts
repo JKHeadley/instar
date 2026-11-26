@@ -6,6 +6,7 @@ import { afterEach, describe, expect, it } from 'vitest';
 import { BackupManager } from '../../src/core/BackupManager.js';
 import { SafeFsExecutor } from '../../src/core/SafeFsExecutor.js';
 import { FeedbackConsumerPromotionStore } from '../../src/feedback-factory/drain/FeedbackConsumerPromotionStore.js';
+import { consumerPromotionSetHash } from '../../src/feedback-factory/drain/consumerPromotionProposal.js';
 import { FeedbackDrainStore } from '../../src/feedback-factory/drain/FeedbackDrainStore.js';
 import { FeedbackSourceGenerations } from '../../src/feedback-factory/store/FeedbackSourceGenerations.js';
 import { InitiativeTracker } from '../../src/core/InitiativeTracker.js';
@@ -60,8 +61,10 @@ describe('feedback drain destructive backup/restore', () => {
     const checkpoint = store.checkpointForBackup(5);
     expect(store.restorePending()).toBe(false);
     store.close();
+    const approvedWorkIds = ['work-1', 'work-2', 'work-3', 'work-4', 'work-5'];
     new FeedbackConsumerPromotionStore(path.join(operatedDir, 'consumer-live.json')).promote({
-      approvedBatchBound: 5, evidenceHash: 'b'.repeat(64), operatorDecisionId: 'operator-promote',
+      approvedBatchBound: 5, evidenceHash: consumerPromotionSetHash(approvedWorkIds), operatorDecisionId: 'operator-promote', approvedWorkIds,
+      approvedAttempts: Object.fromEntries(approvedWorkIds.map((id) => [id, 0])),
     });
 
     const manager = new BackupManager(stateDir, undefined, () => false);
@@ -106,5 +109,44 @@ describe('feedback drain destructive backup/restore', () => {
       expect(restored.sourceCursor()?.generationId).toBe(handoff.toGenerationId);
     } finally { restored.close(); }
     expect(new FeedbackConsumerPromotionStore(path.join(operatedDir, 'consumer-live.json')).isLive()).toBe(true);
+  });
+
+  it('self-heals a recorded epoch left behind by the live lease epoch, and still detects a restore afterwards', () => {
+    const dir = fs.mkdtempSync(path.join(os.tmpdir(), 'feedback-drain-epoch-')); dirs.push(dir);
+    const dbPath = path.join(dir, 'feedback-drain.db');
+    const checkpointPath = path.join(dir, 'feedback-drain-checkpoint.json');
+    const savedDb = path.join(dir, 'saved.db');
+    const savedOldDb = path.join(dir, 'saved-old.db');
+    let store = new FeedbackDrainStore({ dbPath, tokenHmacKey: 'k'.repeat(32) });
+    // The live shape: an epoch-1 checkpoint from before the coordinator, then the drain at lease epoch 22677.
+    store.checkpointForBackup(1);
+    store.close(); fs.copyFileSync(dbPath, savedOldDb);
+    store = new FeedbackDrainStore({ dbPath, tokenHmacKey: 'k'.repeat(32) });
+    expect(store.restorePending()).toBe(false);
+    const healed = store.checkpointForBackup(22_677);
+    expect(healed.ownerAuthorityEpoch).toBe(22_677);
+    expect(store.pruneOperationalHistory({ ownerHost: 'host', ownerAuthorityEpoch: 22_677 }).checkpointed).toBe(true);
+    expect(() => store.checkpointForBackup(22_676)).toThrow(/stale/);
+    store.close();
+    fs.copyFileSync(dbPath, savedDb);
+
+    // Restoring the healed snapshot onto a new file is detected and admitted only through finalizeRestore.
+    SafeFsExecutor.safeRmSync(dbPath, { force: true, operation: 'feedback-drain epoch restore fixture' });
+    fs.copyFileSync(savedDb, dbPath);
+    store = new FeedbackDrainStore({ dbPath, tokenHmacKey: 'k'.repeat(32) });
+    try {
+      expect(store.restorePending()).toBe(true);
+      expect(store.finalizeRestore({ restoredOwnerAuthorityEpoch: 22_677, operatorDecisionRef: 'restore-epoch-fixture', snapshotId: healed.snapshotId,
+        manifestChecksum: healed.manifestChecksum, oldOwnerQuiesced: true }).ownerAuthorityEpoch).toBe(22_678);
+    } finally { store.close(); }
+
+    // Restoring the pre-heal (epoch 1) bytes under the newer checkpoint is refused, not silently advanced.
+    fs.writeFileSync(checkpointPath, JSON.stringify(healed));
+    SafeFsExecutor.safeRmSync(dbPath, { force: true, operation: 'feedback-drain epoch restore fixture' });
+    fs.copyFileSync(savedOldDb, dbPath);
+    store = new FeedbackDrainStore({ dbPath, tokenHmacKey: 'k'.repeat(32) });
+    try {
+      expect(() => store.restorePending()).toThrow(/does not match its checkpoint/);
+    } finally { store.close(); }
   });
 });

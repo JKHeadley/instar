@@ -47,6 +47,14 @@ export interface AttentionConditionStoreDeps {
   now?: () => number;
   logger?: (message: string) => void;
   maxRecords?: number;
+  /**
+   * Fired when a condition clears (`clear` / `clearSubject`). `baseKey` is the
+   * record key WITHOUT the `:ep-N` suffix, so the consumer can close every
+   * episode's attention item with the delimiter-bounded prefix `${baseKey}:ep-`.
+   * Clearing a condition used to only flip the record inactive — the item it
+   * minted stayed OPEN forever (attention-lifecycle-close-on-cause §3.2).
+   */
+  onClear?: (baseKey: string, itemId: string) => void;
 }
 
 const MAX_RECORDS = 2_000;
@@ -62,6 +70,11 @@ export function attentionConditionKey(identity: AttentionConditionIdentity): str
     segment(identity.subject),
     segment(identity.scope ?? 'global'),
   ].join(':');
+}
+
+/** `producer:type:subject:scope:ep-N` (or `:capacity`) → `producer:type:subject:scope`. */
+export function baseKeyOfItemId(itemId: string): string {
+  return itemId.replace(/:(?:ep-\d+|capacity)$/, '');
 }
 
 export class AttentionConditionStore {
@@ -118,20 +131,48 @@ export class AttentionConditionStore {
     current.active = false;
     current.clearedAt = new Date((this.d.now ?? Date.now)()).toISOString();
     this.persist();
+    this.fireClear(current);
     return true;
   }
 
   clearSubject(producer: string, subject: string): number {
     const now = new Date((this.d.now ?? Date.now)()).toISOString();
     let cleared = 0;
+    const fired: AttentionConditionRecord[] = [];
     for (const record of this.conditions.values()) {
       if (record.producer !== producer || record.subject !== subject || !record.active) continue;
       record.active = false;
       record.clearedAt = now;
       cleared++;
+      fired.push(record);
     }
     if (cleared > 0) this.persist();
+    for (const record of fired) this.fireClear(record);
     return cleared;
+  }
+
+  /** Is the condition that minted `itemId` (an `…:ep-N` id) still active? Unknown ids → false. */
+  isItemActive(itemId: string): boolean {
+    const record = this.conditions.get(baseKeyOfItemId(itemId));
+    return record?.active === true && record.itemId === itemId;
+  }
+
+  /**
+   * Base keys (`producer:type:subject:scope`) of every INACTIVE record — the
+   * reconciliation pass closes any attention item still open under
+   * `${baseKey}:ep-` for them (a crash between the record write and the item
+   * close, or a clear from before `onClear` existed, leaves such rows behind).
+   */
+  inactiveBaseKeys(): string[] {
+    return [...this.conditions.values()].filter((r) => !r.active).map((r) => r.key);
+  }
+
+  private fireClear(record: AttentionConditionRecord): void {
+    try {
+      this.d.onClear?.(record.key, record.itemId);
+    } catch (err) {
+      this.d.logger?.(`[AttentionConditionStore] onClear failed: ${err instanceof Error ? err.message : String(err)}`);
+    }
   }
 
   private load(): void {

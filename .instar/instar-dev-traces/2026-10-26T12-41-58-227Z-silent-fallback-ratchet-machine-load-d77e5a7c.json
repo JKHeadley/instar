@@ -1,0 +1,21 @@
+{
+  "version": 2,
+  "slug": "silent-fallback-ratchet-machine-load",
+  "sessionId": "34df2256-1e6c-404e-b426-bc3d374820e7",
+  "timestamp": "2026-10-26T12:41:58.227Z",
+  "artifactPath": "upgrades/side-effects/silent-fallback-ratchet-machine-load.md",
+  "artifactSha256": "223e85b0ca2123bf5ce156e5291d6b5db05ca46ee01f20f99b13ceb14eb7048c",
+  "coveredFiles": [
+    "docs/specs/silent-fallback-ratchet-machine-load.eli16.md",
+    "src/core/machineLoadReport.ts",
+    "upgrades/next/silent-fallback-ratchet-machine-load.md",
+    "upgrades/side-effects/silent-fallback-ratchet-machine-load.md"
+  ],
+  "phase": "complete",
+  "tier": 1,
+  "tierReasoning": "Tier 1: a single source COMMENT on a catch that already logs its error; zero behaviour change, no decision point, no runtime surface. The risk is in NOT doing it — main is failing its own ratchet at 495/494, and because Local Verify tests each PR as the merge with main, every queued PR inherits the failure (PR 2350 already gave up after 3 attempts). Measured with the same scanner across four trees rather than asserted.",
+  "eli16Path": "docs/specs/silent-fallback-ratchet-machine-load.eli16.md",
+  "sideEffectsPath": "upgrades/side-effects/silent-fallback-ratchet-machine-load.md",
+  "secondPass": "not-required",
+  "reviewerConcurred": null
+}

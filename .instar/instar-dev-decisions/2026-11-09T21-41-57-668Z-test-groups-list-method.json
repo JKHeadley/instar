@@ -1,0 +1,22 @@
+{
+  "ts": "2026-11-09T21:41:57.668Z",
+  "slug": "test-groups-list-method",
+  "suggestedTier": 1,
+  "declaredTier": 1,
+  "riskFloor": 1,
+  "riskFloorReasons": [],
+  "belowFloor": false,
+  "files": 1,
+  "loc": 11,
+  "scope": {
+    "basis": "staged-in-scope-paths-including-deleted",
+    "files": [
+      "src/messaging/telegram-origin/TelegramWebKDriver.ts"
+    ],
+    "addedLines": 9,
+    "deletedLines": 2
+  },
+  "causalAutopsy": null,
+  "classClosure": null,
+  "verdict": "pass"
+}

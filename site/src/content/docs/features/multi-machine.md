@@ -31,6 +31,10 @@ Agent state synchronized via git with commit signing. Secrets encrypted with AES
 
 Distributed heartbeat coordination with split-brain detection. If the primary machine goes offline, the standby takes over.
 
+## Remote desktop across machines
+
+The dashboard's desktop picker shows only machines that report a ready screen and input adapter. The dashboard on the designated front machine checks the existing PIN and issues a short-lived `DesktopOperatorAssertion` for one selected machine. `DesktopAssertionReplayStore` rejects reuse, while `DesktopDelegatedSessionStore` ties the granted stream to that machine and revokes it on Stop, expiry, or disconnect. `DirectDesktopAccess` enforces the local controller lock. On Windows, `WindowsDesktopHost` reaches the signed-in Windows session through its local companion; a WSL display is never presented as the Windows desktop. See the [remote desktop guide](/guides/remote-desktop/) for setup and limits.
+
 ## Lost-key identity recovery
 
 Pairing can establish a keychain-backed recovery root so a machine that loses its normal
@@ -50,12 +54,15 @@ Primary-machine-writes-only enforcement prevents conflicts. Secondary machines q
 
 ```bash
 instar whoami               # Show this machine's identity
+instar identity status      # The AGENT identity this machine holds (a joined machine adopts it from siblings, never mints one)
 instar machines             # List all paired machines
 instar wakeup               # Transfer awake role to this machine
 instar leave                # Remove this machine from the mesh
 ```
 
 Note: `whoami`, `pair`, `join`, `wakeup`, and `leave` are top-level commands, not subcommands of `machines`.
+
+One agent, one identity: every machine of an agent holds the same Threadline identity (one key, one routing fingerprint). A machine that joins or is rebuilt adopts that identity from its siblings over signed mesh messages and never mints a second one; if two machines ever publish different fingerprints, the lease holder raises one Attention item naming which machine has which. Replacing an existing identity is a deliberate step after the operator's yes: `instar identity adopt --from <sibling>` on the affected machine (the old files are moved aside, never deleted). `GET /threadline/health` carries the live comparison as `identityCoherence`.
 
 ## Capability Registry
 
@@ -211,3 +218,14 @@ Because materializing a whole store can be heavy, `StoreSnapshotEngine` runs the
 ## Account Follow-Me across machines
 
 A subscription account you logged into one machine becomes usable on the others the ToS-safe way: each machine re-mints its own login (you approve once), and no login token is copied. The security primitives — `AccountCredentialShare`, `CrossMachineMandate`, `PairingEpochManager`, `AccountFollowMeGrants`, and the credential-free `SubscriptionAccountMetaReplicatedStore` metadata kind — are detailed on the [Account Follow-Me](/features/account-follow-me/) page. The detection layer (`AccountFollowMeOrchestrator`, `AccountFollowMeDetector`, `AccountFollowMeService`, `AccountFollowMeEmailGate`) notices a machine with no usable account and surfaces a one-tap consent — it never self-enrolls. All dark behind `multiMachine.accountFollowMe`.
+
+### Read markers follow the person, not the machine
+
+What each person has read in each conversation (the app's unread counts, see
+[Unread Messages in the App](/features/unread-messages/)) is a replicated store:
+`ConversationReadMarkerStore` (`src/core/ConversationReadMarkers.ts`) emits every local advance as a
+`conversation-read-marker` record and lands peers' records with a forward-only merge,
+`wireReadMarkerStore` (`src/core/ConversationReadMarkersWiring.ts`) puts it on the replication path
+at boot, and `ConversationUnreadService` catches a machine up from any reachable peer through
+`GET /mobile/conversations/read-markers` when the journal window has moved on. Every machine holds
+the whole merged state, so any one reachable peer is enough and nothing strands on a topic transfer.

@@ -1,0 +1,17 @@
+{
+  "version": 2,
+  "slug": "recommended-services-github-recipe",
+  "sessionId": "71bb647f-1ddd-492f-b70b-b44e859aec50",
+  "timestamp": "2026-11-07T23:59:39.359Z",
+  "artifactPath": "upgrades/side-effects/recommended-services-github-recipe.md",
+  "artifactSha256": "3ab0a45d9290fc06fcd1eff7dae8109fe065768e0beaf4e7c1c165bcf1b4a58e",
+  "specPath": "docs/specs/recommended-services.md",
+  "coveredFiles": [
+    "upgrades/side-effects/recommended-services-github-recipe.md"
+  ],
+  "phase": "complete",
+  "tier": 2,
+  "tierReasoning": "Evidence-only addendum to the GitHub recipe's side-effects artifact: the delivered owner notices from the live proof.",
+  "secondPass": "true",
+  "reviewerConcurred": true
+}

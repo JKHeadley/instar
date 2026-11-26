@@ -1,0 +1,28 @@
+{
+  "version": 3,
+  "slug": "native-remote-desktop-publish-package",
+  "sessionId": "e0a70e98-3933-416c-b0c6-3ded161084be",
+  "timestamp": "2026-10-28T23:14:20.826Z",
+  "artifactPath": "upgrades/side-effects/native-remote-desktop-publish-package.md",
+  "artifactSha256": "98a0ce3a07b83a84c2187e4c90547bb7120f8f4938fb66d8b7e16890b365214b",
+  "specPath": "docs/specs/blocker-handoff-across-machines-and-surfaces.md",
+  "coveredFiles": [
+    ".github/workflows/ci.yml",
+    "docs/specs/native-remote-desktop-quality.md",
+    "package.json",
+    "scripts/build-native-desktop-host.mjs",
+    "upgrades/side-effects/native-remote-desktop-publish-package.md"
+  ],
+  "phase": "complete",
+  "tier": 2,
+  "tierReasoning": "npm prepublishOnly rebuilds after artifact checks; release mode must keep the universal Mac helper in the final tarball.",
+  "secondPass": "not-required",
+  "reviewerConcurred": null,
+  "toolchain": {
+    "buildSkill": {
+      "name": "instar-dev",
+      "version": "9a75c36ba521",
+      "verified": true
+    }
+  }
+}

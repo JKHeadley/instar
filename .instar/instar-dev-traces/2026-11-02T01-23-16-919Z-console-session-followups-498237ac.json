@@ -1,0 +1,19 @@
+{
+  "version": 2,
+  "slug": "console-session-followups",
+  "sessionId": "916956a4-f1bf-4a3b-89db-40a4ec492e50",
+  "timestamp": "2026-11-02T01:23:16.919Z",
+  "artifactPath": "upgrades/side-effects/console-session-followups.md",
+  "artifactSha256": "79050ee2542eb2b720c6b93db5eb3b390ddc3ef4fede0f5173f479e61c7c9928",
+  "coveredFiles": [
+    "src/core/WriteDomainRegistry.ts",
+    "src/server/routes.ts"
+  ],
+  "phase": "complete",
+  "tier": 1,
+  "tierReasoning": "Classify the new attachments route; move uploads to per-machine state dir",
+  "eli16Path": "upgrades/side-effects/console-session-followups.eli16.md",
+  "sideEffectsPath": "upgrades/side-effects/console-session-followups.md",
+  "secondPass": "not-required",
+  "reviewerConcurred": null
+}

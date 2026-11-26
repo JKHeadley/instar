@@ -1,0 +1,20 @@
+{
+  "version": 2,
+  "slug": "trustworthy-machine-load-p1",
+  "sessionId": "be9effda-b36f-4a49-9e04-a47f6c7fb2b0",
+  "timestamp": "2026-10-25T22:49:01.725Z",
+  "artifactPath": "upgrades/side-effects/trustworthy-machine-load-p1.md",
+  "artifactSha256": "d532b44267fe4391a3585986931b54833de4b1bf2365b8b494ada4d8d83f8f26",
+  "specPath": "docs/specs/trustworthy-machine-load-and-mesh-floor.md",
+  "coveredFiles": [
+    "src/commands/server.ts",
+    "src/core/machineLoadReport.ts",
+    "src/data/stageBCertifiedSet.ts",
+    "upgrades/side-effects/trustworthy-machine-load-p1.md"
+  ],
+  "phase": "complete",
+  "tier": 2,
+  "tierReasoning": "Follow-up to the P1 commit: three source-text ratchet fixes (no behaviour change) under the same converged+approved spec and side-effects artifact.",
+  "secondPass": "true",
+  "reviewerConcurred": true
+}

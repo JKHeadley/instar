@@ -1,0 +1,31 @@
+{
+  "ts": "2026-10-12T05:38:16.896Z",
+  "slug": "threadline-reaped-topic-respawn",
+  "suggestedTier": 2,
+  "declaredTier": 1,
+  "riskFloor": 1,
+  "riskFloorReasons": [],
+  "belowFloor": false,
+  "files": 6,
+  "loc": 380,
+  "scope": {
+    "basis": "staged-in-scope-additions-plus-deletions",
+    "files": [
+      "src/commands/server.ts",
+      "src/core/SpawningTopicsRegistry.ts",
+      "src/threadline/ThreadlineRouter.ts",
+      "src/threadline/TopicLinkageHandler.ts",
+      "src/threadline/autoAck.ts",
+      "src/threadline/topicRespawnHook.ts"
+    ],
+    "addedLines": 278,
+    "deletedLines": 102
+  },
+  "causalAutopsy": null,
+  "classClosure": {
+    "defectClass": "unbounded-self-action",
+    "closure": "n/a",
+    "reason": "one-shot inbound-driven action, not a self-triggered loop: one peer message yields at most one spawn attempt behind the per-topic spawningTopics guard; the only wait is a 150 s bounded wait on a spawn already in flight, then one paste or a surfaced refusal; nothing restarts, retries or re-drives on its own"
+  },
+  "verdict": "blocked"
+}

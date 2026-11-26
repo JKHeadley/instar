@@ -1,0 +1,28 @@
+{
+  "version": 2,
+  "slug": "canary-sandbox-e2big",
+  "sessionId": "5ed396db-8c94-48c5-8c79-fe06b27ddac7",
+  "timestamp": "2026-10-25T21:54:22.620Z",
+  "artifactPath": "upgrades/side-effects/canary-sandbox-e2big.md",
+  "artifactSha256": "6e717a08f6a2767d422d1fc7b74e75c8893de8e203edc9270e849679350e5381",
+  "coveredFiles": [
+    "docs/specs/canary-sandbox-e2big.eli16.md",
+    "src/feedback-factory/execute/FeedbackExecutorService.ts",
+    "src/feedback-factory/execute/attemptFs.ts",
+    "src/feedback-factory/execute/confinementCanary.ts",
+    "src/feedback-factory/execute/executePolicy.ts",
+    "tests/fixtures/feedbackExecuteHarness.ts",
+    "tests/unit/feedback-factory/execute-service.test.ts",
+    "tests/unit/feedback-factory/execute-short-attempt-tmpdir.test.ts",
+    "tests/unit/feedback-factory/execute-units.test.ts",
+    "upgrades/next/canary-sandbox-e2big.md",
+    "upgrades/side-effects/canary-sandbox-e2big.md"
+  ],
+  "phase": "complete",
+  "tier": 1,
+  "tierReasoning": "Second commit on the same change, answering the Codex independent review: the session canary now judges Write/Grep attempts and Grep answers from the transcript (a skipped step or a filename-only match no longer passes). Same subsystem, same revert; strictly stricter canary, no new authority.",
+  "eli16Path": "docs/specs/canary-sandbox-e2big.eli16.md",
+  "sideEffectsPath": "upgrades/side-effects/canary-sandbox-e2big.md",
+  "secondPass": "true",
+  "reviewerConcurred": true
+}

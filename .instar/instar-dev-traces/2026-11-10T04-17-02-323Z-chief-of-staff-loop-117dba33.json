@@ -1,0 +1,21 @@
+{
+  "version": 2,
+  "slug": "chief-of-staff-loop",
+  "sessionId": "6ee7a372-3ad7-4f0a-8c4a-49e4374f03ff",
+  "timestamp": "2026-11-10T04:17:02.323Z",
+  "artifactPath": "upgrades/side-effects/chief-of-staff-loop.md",
+  "artifactSha256": "32603cd81275ac4b2194e1296d302332b43874a93b7ffd43ad1087a56a3dd9da",
+  "specPath": "docs/specs/chief-of-staff-topic.md",
+  "coveredFiles": [
+    "src/commands/server.ts",
+    "src/core/SessionManager.ts",
+    "src/data/llmBenchCoverage.ts",
+    "tests/unit/chief-of-staff-loop-wiring.test.ts",
+    "tests/unit/parser-contract-classification-ratchet.test.ts"
+  ],
+  "phase": "complete",
+  "tier": 2,
+  "tierReasoning": "Parser-contract classification plus the lock-held spawn option (same behaviour) under the converged, approved spec.",
+  "secondPass": "true",
+  "reviewerConcurred": true
+}

@@ -4,14 +4,13 @@
  * Requires tmux to be installed. Skips if not available.
  */
 
-import { describe, it, expect, beforeAll, afterAll } from 'vitest';
+import { describe, it, expect, beforeAll, afterAll, afterEach } from 'vitest';
 import { execSync } from 'node:child_process';
 import { SessionManager } from '../../src/core/SessionManager.js';
 import { detectTmuxPath } from '../../src/core/Config.js';
 import {
   createTempProject,
   createMockClaude,
-  cleanupTmuxSessions,
   waitFor,
 } from '../helpers/setup.js';
 import type { TempProject } from '../helpers/setup.js';
@@ -44,9 +43,16 @@ describeMaybe('Session Lifecycle (integration)', () => {
     );
   });
 
+  // Each case owns its sessions. A slow or failed completion check must not
+  // consume the next case's capacity or change what its assertions exercise.
+  afterEach(() => {
+    for (const session of project.state.listSessions({ status: 'running' })) {
+      sm.killSession(session.id);
+    }
+  });
+
   afterAll(() => {
     sm.stopMonitoring();
-    cleanupTmuxSessions(TMUX_PREFIX);
     project.cleanup();
   });
 

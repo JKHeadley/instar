@@ -1,0 +1,39 @@
+{
+  "id": "false-review-wait-without-link-2026-11-05",
+  "topicId": 136110,
+  "learning": "Verify whether an approval is still needed, and provide the direct action link whenever claiming the user must review or act.",
+  "context": {
+    "turns": [
+      {
+        "text": "The first rule is already in Instar 2.0. Its copy in the current Instar is still open for your review.",
+        "fromUser": false,
+        "at": 1793900000000
+      },
+      {
+        "text": "This is an INSTAR violation. Never tell the user something is open for review or waiting on them without directly providing a link to what needs them.",
+        "fromUser": true,
+        "at": 1793900000001
+      },
+      {
+        "text": "You already approved it at 12:25, so nothing was waiting on you. It is waiting only for its test run before it merges.",
+        "fromUser": false,
+        "at": 1793900000002
+      }
+    ],
+    "instructions": [
+      "User had already approved the change.",
+      "Provide a direct link whenever user attention or approval is required."
+    ],
+    "decisions": [
+      "Expected: check actual approval and test state.",
+      "Actual: inferred user action was required from the open PR state, and omitted the direct link."
+    ],
+    "sourceRefs": [
+      "telegram:136110:139326",
+      "telegram:136110:139336",
+      "telegram:136110:139339"
+    ],
+    "missing": []
+  },
+  "note": "Sanitized regression fixture derived from logged source messages; does not claim the originating defect is fixed."
+}

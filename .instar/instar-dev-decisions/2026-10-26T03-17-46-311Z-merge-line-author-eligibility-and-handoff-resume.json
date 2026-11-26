@@ -1,0 +1,35 @@
+{
+  "ts": "2026-10-26T03:17:46.311Z",
+  "slug": "merge-line-author-eligibility-and-handoff-resume",
+  "suggestedTier": 2,
+  "declaredTier": 1,
+  "riskFloor": 2,
+  "riskFloorReasons": [
+    "irreversibility: src/core/PostUpdateMigrator.ts touches PostUpdateMigrator",
+    "migration / fleet-rollout surface: src/core/PostUpdateMigrator.ts touches PostUpdateMigrator (fleet migration machinery)"
+  ],
+  "belowFloor": true,
+  "files": 7,
+  "loc": 260,
+  "scope": {
+    "basis": "staged-in-scope-additions-plus-deletions",
+    "files": [
+      "src/commands/server.ts",
+      "src/core/PostUpdateMigrator.ts",
+      "src/core/handoffContinuation.ts",
+      "src/monitoring/GreenPrAutoMerger.ts",
+      "src/monitoring/greenPrAutomergeWiring.ts",
+      "src/monitoring/greenPrLogic.ts",
+      "src/server/routes.ts"
+    ],
+    "addedLines": 241,
+    "deletedLines": 19
+  },
+  "causalAutopsy": null,
+  "classClosure": {
+    "defectClass": "unbounded-self-action",
+    "closure": "n/a",
+    "reason": "no self-triggered controller is added or modified: D1 widens a candidacy filter on the existing watcher (cadence, breaker, single-flight unchanged); D2 changes the text of a respawn existing callers already trigger, adding no new restart/respawn/spawn/notify/retry emit"
+  },
+  "verdict": "pass"
+}

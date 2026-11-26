@@ -29,6 +29,12 @@ import crypto from 'node:crypto';
 import { fileURLToPath } from 'node:url';
 import { parseStandardsRegistryDetailed } from './StandardsRegistryParser.js';
 
+/** Generated source-tree artifacts; this module alone names the registry asset. */
+export const GENERATED_STANDARDS_REGISTRY_OUTPUTS = [
+  'src/data/standards-registry.md',
+  'src/data/standards-registry.meta.json',
+] as const;
+
 /**
  * The resolver's contract is a typed result — NOT a throw, and NOT a nullable
  * string.

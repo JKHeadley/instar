@@ -269,6 +269,15 @@ export default async function setup(ctx: GlobalSetupContext): Promise<(() => Pro
       if (targeted && argv.poolShaping.length === 0 && bound !== null && bound <= 4) {
         lane = 'targeted';
       }
+    } else if (configName === 'push') {
+      // The push config runs ONE worker (fileParallelism: false), so it is light by
+      // construction. In the cap-1 suite lane a `git push` queued behind full suites
+      // (p95 hold ~41 min) and failed with exit 75. Same state check as above: the
+      // RESOLVED pool bound decides, so pool-shaping flags still land in the suite lane.
+      const bound = resolvedPoolBound(ctx.config as Parameters<typeof resolvedPoolBound>[0]);
+      if (argv.poolShaping.length === 0 && bound !== null && bound <= 4) {
+        lane = 'targeted';
+      }
     }
 
     // ── Re-entrancy: lane-scoped ancestry+holders cross-check (§2.5) ──────
@@ -279,13 +288,17 @@ export default async function setup(ctx: GlobalSetupContext): Promise<(() => Pro
     }
     const nested = checkNestedUnderHolder(readHoldersRaw(sem), lane, {
       envMarker: process.env['INSTAR_TEST_SEMAPHORE_HELD'],
+      ownSuiteHolder: process.env['INSTAR_HOST_TEST_OWN_SUITE_HOLDER'],
     });
     if (nested.nested) {
       const helperRan = process.env['__INSTAR_TRB_CONFIG'] !== undefined;
       const clampStash = process.env['__INSTAR_TRB_CLAMPED'];
       const clampActive = context.clampActive;
       const bound = resolvedPoolBound(ctx.config as Parameters<typeof resolvedPoolBound>[0]);
-      const poolOverride = clampActive && helperRan && (bound === null || bound > 4);
+      // A Local Verify run's own lane under its own suite slot was deliberately left unclamped
+      // by config-eval ('own-suite'): a pool above 4 there is expected, not a novel pool flag.
+      const ownSuite = nested.ownSuiteOnly && clampStash === 'own-suite';
+      const poolOverride = clampActive && helperRan && !ownSuite && (bound === null || bound > 4);
       // `clamped` per §2.5 = "this child went through the GUARDED config-eval
       // path" (true) vs an unguarded config that skipped without the clamp
       // (false + WARN). It is NOT the "a reshape physically happened" dimension —
@@ -312,14 +325,14 @@ export default async function setup(ctx: GlobalSetupContext): Promise<(() => Pro
 
     // ── Acquire ───────────────────────────────────────────────────────────
     const runClass = deriveRunClass(configName);
-    const budgetMs = resolveAcquireBudgetMs(lane, runClass, process.env);
+    const budgetMs = resolveAcquireBudgetMs(lane, runClass, process.env, context.tuning.file);
     let lastWaitLineAt = 0;
     const outcome = await sem.acquire({
       lane,
       runClass,
       fileCount,
       budgetMs,
-      onWaitTick: (elapsedMs, holders) => {
+      onWaitTick: (elapsedMs, holders, priorityWait, waitersAhead) => {
         const now = Date.now();
         if (now - lastWaitLineAt < 60_000) return; // once a minute (§2.6)
         lastWaitLineAt = now;
@@ -328,7 +341,7 @@ export default async function setup(ctx: GlobalSetupContext): Promise<(() => Pro
         // hang (§2.10).
         line(
           `${WAIT_SPINNER} waiting for a ${lane}-lane test slot (${Math.round(elapsedMs / 60000)}m elapsed; ` +
-            `${holders.length} holder(s): ${holders.map((h) => `pid ${h.pid} age ${Math.round(h.ageMs / 1000)}s`).join(', ') || 'none visible'}) — active work, not a hang`,
+            `${holders.length} holder(s): ${holders.map((h) => `pid ${h.pid} age ${Math.round(h.ageMs / 1000)}s`).join(', ') || 'none visible'}${priorityWait ? '; merge-gate verify has the next slot' : ''}${waitersAhead > 0 ? `; ${waitersAhead} waiter(s) ahead in line` : ''}) — active work, not a hang`,
         );
       },
     });

@@ -1,0 +1,25 @@
+{
+  "version": 2,
+  "slug": "desktop-permission-target",
+  "sessionId": "03f51762-938f-4d63-ba6d-eb28aeb6941b",
+  "timestamp": "2026-11-01T22:16:50.415Z",
+  "artifactPath": "upgrades/side-effects/desktop-permission-target.md",
+  "artifactSha256": "ae6a4b3962d762283131767e1461d3349838707d0e2ed5d646b6acbe6c151eee",
+  "coveredFiles": [
+    "src/server/AgentServer.ts",
+    "src/server/desktopRouteContext.ts",
+    "src/server/routes.ts",
+    "tests/integration/desktop-routes.test.ts",
+    "tests/unit/desktop-route-context.test.ts",
+    "upgrades/desktop-permission-target.eli16.md",
+    "upgrades/next/desktop-permission-target.md",
+    "upgrades/side-effects/desktop-permission-target.md"
+  ],
+  "phase": "complete",
+  "tier": 1,
+  "tierReasoning": "One-route availability fix; a revert fully undoes it; the route grants nothing.",
+  "eli16Path": "upgrades/desktop-permission-target.eli16.md",
+  "sideEffectsPath": "upgrades/side-effects/desktop-permission-target.md",
+  "secondPass": "not-required",
+  "reviewerConcurred": null
+}

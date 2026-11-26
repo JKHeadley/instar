@@ -2,19 +2,21 @@
  * Tier-1 tests for the GreenPrAutoMerger orchestrator (green-pr-automerge R1–R11).
  * Fake deps exercise every gate on both sides: lease, single-flight busy-skip,
  * dual-latch disabled, warm-up observe-only, identity contract (4 states),
- * protected-paths routing, dry-run inertness, merge success/failure, the
+ * code-owner (constitution) routing, dry-run inertness, merge success/failure, the
  * timeout invariant boot refusal, and B10 unconfirmed-merge.
  */
 
 import { describe, it, expect, beforeEach } from 'vitest';
 import {
   GreenPrAutoMerger,
+  ORPHAN_UNRESOLVED_LINE,
   freshState,
   type GreenPrAutoMergerDeps,
   type GreenPrState,
   type MergeRunResult,
   type MergeAttempt,
-  type ProtectedPathsVerdict,
+  type CodeOwnedPathsVerdict,
+  type IndependentReviewVerdict,
 } from '../../src/monitoring/GreenPrAutoMerger.js';
 import type { PrSummary } from '../../src/monitoring/greenPrLogic.js';
 
@@ -40,7 +42,8 @@ function harness(over: Partial<{
   prs: PrSummary[];
   gateAllowed: boolean;
   ghLogin: string | null;
-  protectedFor: (n: number) => ProtectedPathsVerdict;
+  codeOwnedFor: (n: number) => CodeOwnedPathsVerdict;
+  reviewFor: (n: number, flagged: string[]) => IndependentReviewVerdict;
   runResult: MergeRunResult;
   refetchState: string;
   /** Full control of refetchPr per PR (overrides refetchState when set). */
@@ -60,7 +63,8 @@ function harness(over: Partial<{
     holdsLease: () => over.lease ?? true,
     leaseEpoch: () => over.epoch ?? 1,
     listOpenPrs: async () => over.prs ?? [pr()],
-    protectedPaths: async (p) => (over.protectedFor ? over.protectedFor(p.number) : { touches: false, unverifiable: false }),
+    codeOwnedPaths: async (p) => (over.codeOwnedFor ? over.codeOwnedFor(p.number) : { touches: false, files: [], unverifiable: false }),
+    ...(over.reviewFor ? { independentReviewAtHead: async (p: PrSummary, f: string[]) => over.reviewFor!(p.number, f) } : {}),
     refetchPr: async (n) => (over.refetch ? over.refetch(n) : { title: 'feat: x', labels: [], isDraft: false, headRefOid: 'sha100', state: over.refetchState ?? 'OPEN' }),
     disarmArmedEpisodes: async (n) => { disarmCalls.push(n); return over.disarmResult ? over.disarmResult(n) : true; },
     resolveGhLogin: async () => (over.ghLogin === undefined ? 'echo-bot' : over.ghLogin),
@@ -122,6 +126,100 @@ describe('GreenPrAutoMerger — acting (post warm-up)', () => {
     expect(h.state.episodes[100]).toBeUndefined(); // reaped on success
   });
 
+  it('queued CI does not spend the watcher merge ladder', async () => {
+    const h = harness({ runResult: { outcome: 'deferred:checks-pending', confirmedMerged: false } });
+    prime(h);
+    await new GreenPrAutoMerger(h.deps, cfg).tick();
+    expect(h.state.episodes[100]).toMatchObject({ state: 'active', attempts: 0, lastOutcome: 'deferred:checks-pending' });
+    expect(h.attentionLines).toHaveLength(0);
+  });
+
+  it('a partial green rollup awaiting Actions passes the turn to a younger ready PR', async () => {
+    const h = harness({
+      prs: [pr({ number: 100, headRefOid: 'sha100' }), pr({ number: 200, headRefOid: 'sha200' })],
+      refetch: (n) => ({ title: 'feat: x', labels: [], isDraft: false, headRefOid: `sha${n}`, state: 'OPEN' }),
+    });
+    h.deps.runner.run = async (attempt) => {
+      h.runCalls.push(attempt);
+      return attempt.pr === 100
+        ? { outcome: 'deferred:checks-pending', confirmedMerged: false }
+        : { outcome: 'merged', confirmedMerged: true };
+    };
+    prime(h);
+    const result = await new GreenPrAutoMerger(h.deps, cfg).tick();
+    expect(result.acted).toBe(true);
+    expect(h.runCalls.map((call) => call.pr)).toEqual([100, 200]);
+    expect(h.state.episodes[100]).toMatchObject({ state: 'active', attempts: 0, lastOutcome: 'deferred:checks-pending' });
+    expect(h.state.episodes[100]?.nextEligibleAt).toBeGreaterThan(1_000_000);
+  });
+
+  it('an older PR refused for a red main passes the turn to a newer PR verified on the current main head', async () => {
+    const h = harness({
+      prs: [pr({ number: 100, headRefOid: 'sha100' }), pr({ number: 200, headRefOid: 'sha200' })],
+      refetch: (n) => ({ title: 'feat: x', labels: [], isDraft: false, headRefOid: `sha${n}`, state: 'OPEN' }),
+    });
+    h.deps.runner.run = async (attempt) => {
+      h.runCalls.push(attempt);
+      return attempt.pr === 100
+        ? { outcome: 'refused:main-red', confirmedMerged: false }
+        : { outcome: 'merged', confirmedMerged: true };
+    };
+    prime(h);
+    const result = await new GreenPrAutoMerger(h.deps, cfg).tick();
+    expect(result.acted).toBe(true);
+    expect(h.runCalls.map((call) => call.pr)).toEqual([100, 200]);
+    expect(h.state.episodes[100]).toMatchObject({ state: 'active', attempts: 0, lastOutcome: 'refused:main-red' });
+    expect(h.attentionLines).toHaveLength(0);
+  });
+
+  it('an oldest PR whose episode gave up does not block the next one (2026-11-02 head-of-line stall)', async () => {
+    const h = harness({
+      prs: [pr({ number: 100, headRefOid: 'sha100' }), pr({ number: 200, headRefOid: 'sha200' })],
+      refetch: (n) => ({ title: 'feat: x', labels: [], isDraft: false, headRefOid: `sha${n}`, state: 'OPEN' }),
+    });
+    prime(h);
+    h.state.episodes[100] = { pr: 100, headRefOid: 'sha100', attempts: 3, rearmEpisodes: 0, state: 'gave-up', lastOutcome: 'refused:body-checks' } as GreenPrState['episodes'][number];
+    const r = await new GreenPrAutoMerger(h.deps, cfg).tick();
+    expect(r.acted).toBe(true);
+    expect(h.runCalls.map((c) => c.pr)).toEqual([200]);
+    expect(h.audits.some((a) => a.event === 'skipped:episode' && a.pr === 100)).toBe(true);
+  });
+
+  it('an oldest PR still backing off before a retry passes the turn too', async () => {
+    const h = harness({
+      prs: [pr({ number: 100, headRefOid: 'sha100' }), pr({ number: 200, headRefOid: 'sha200' })],
+      refetch: (n) => ({ title: 'feat: x', labels: [], isDraft: false, headRefOid: `sha${n}`, state: 'OPEN' }),
+    });
+    prime(h);
+    h.state.episodes[100] = { pr: 100, headRefOid: 'sha100', attempts: 1, rearmEpisodes: 0, state: 'active', lastOutcome: 'refused:verify-failed', nextEligibleAt: Number.MAX_SAFE_INTEGER } as GreenPrState['episodes'][number];
+    await new GreenPrAutoMerger(h.deps, cfg).tick();
+    expect(h.runCalls.map((c) => c.pr)).toEqual([200]);
+  });
+
+  it('a real attempt on the oldest still ends the tick (one merge attempt per tick)', async () => {
+    const h = harness({
+      prs: [pr({ number: 100, headRefOid: 'sha100' }), pr({ number: 200, headRefOid: 'sha200' })],
+      refetch: (n) => ({ title: 'feat: x', labels: [], isDraft: false, headRefOid: `sha${n}`, state: 'OPEN' }),
+      runResult: { outcome: 'refused:body-checks', confirmedMerged: false },
+    });
+    prime(h);
+    await new GreenPrAutoMerger(h.deps, cfg).tick();
+    expect(h.runCalls.map((c) => c.pr)).toEqual([100]);
+  });
+
+  it('a verified PR whose mergeability reads UNKNOWN is read directly so GitHub computes it (2026-11-02)', async () => {
+    const refetched: number[] = [];
+    const h = harness({
+      prs: [pr({ number: 100, mergeable: 'UNKNOWN' }), pr({ number: 200, mergeable: 'CONFLICTING' }), pr({ number: 300, mergeable: 'UNKNOWN', statusRollup: 'PENDING' })],
+      refetch: (n) => { refetched.push(n); return { title: 'feat: x', labels: [], isDraft: false, headRefOid: `sha${n}`, state: 'OPEN' }; },
+    });
+    prime(h);
+    await new GreenPrAutoMerger(h.deps, cfg).tick();
+    expect(refetched).toEqual([100]); // UNKNOWN + green is nudged; a real conflict or unfinished checks are not
+    expect(h.audits.some((a) => a.event === 'waiting' && a.class === 'mergeability-unknown' && a.pr === 100)).toBe(true);
+    expect(h.runCalls).toHaveLength(0);
+  });
+
   it('dry-run observes but never spawns', async () => {
     const h = harness();
     prime(h);
@@ -131,15 +229,64 @@ describe('GreenPrAutoMerger — acting (post warm-up)', () => {
     expect(h.audits.some(a => a.event === 'would-merge')).toBe(true);
   });
 
-  it('routes a protected-paths PR to the operator and never merges it', async () => {
-    const h = harness({ protectedFor: () => ({ touches: true, unverifiable: false }) });
+  it('a PR touching a CODEOWNERS-owned file waits for the code-owner review and never merges before it', async () => {
+    const h = harness({ codeOwnedFor: () => ({ touches: true, files: ['docs/STANDARDS-REGISTRY.md'], unverifiable: false }) });
     prime(h);
     const r = await new GreenPrAutoMerger(h.deps, cfg).tick();
     expect(r.acted).toBe(false);
     expect(h.runCalls.length).toBe(0);
-    expect(h.attentionLines.flat().some(l => /protected paths/.test(l))).toBe(true);
-    // Snapshot carries it as the operator-routed variant for Layer 2.
-    expect(h.state.snapshot.entries.some(e => e.kind === 'protected-paths')).toBe(true);
+    expect(h.attentionLines.flat().some(l => /docs\/STANDARDS-REGISTRY\.md — it waits for your code-owner review/.test(l))).toBe(true);
+    expect(h.state.snapshot.entries.some(e => e.kind === 'code-owner-review')).toBe(true);
+    expect(h.audits.some(a => a.event === 'waiting' && a.class === 'code-owner-review')).toBe(true);
+  });
+
+  it('a CODEOWNERS-owned PR merges once GitHub reports the code-owner review APPROVED', async () => {
+    const h = harness({
+      prs: [pr({ reviewDecision: 'APPROVED' })],
+      codeOwnedFor: () => ({ touches: true, files: ['docs/STANDARDS-REGISTRY.md'], unverifiable: false }),
+    });
+    prime(h);
+    const r = await new GreenPrAutoMerger(h.deps, cfg).tick();
+    expect(r.acted).toBe(true);
+    expect(h.runCalls.length).toBe(1);
+  });
+
+  it('a protected-path (non-constitution) PR is NOT routed to the operator: with a concurring review at its head it merges', async () => {
+    // e.g. scripts/safe-merge.mjs or the watcher's own source: CODEOWNERS does not own them.
+    const seen: string[][] = [];
+    const h = harness({
+      codeOwnedFor: () => ({ touches: false, files: [], protectedFiles: ['scripts/safe-merge.mjs'], unverifiable: false }),
+      reviewFor: (_n, f) => { seen.push(f); return { ok: true, unverifiable: false }; },
+    });
+    prime(h);
+    const r = await new GreenPrAutoMerger(h.deps, cfg).tick();
+    expect(r.acted).toBe(true);
+    expect(seen).toEqual([['scripts/safe-merge.mjs']]);
+    expect(h.attentionLines.flat().some(l => /protected paths|manual review|approv/.test(l))).toBe(false);
+  });
+
+  it('on the actions floor a protected-path PR without the independent review waits — still not routed to the operator', async () => {
+    for (const reviewFor of [() => ({ ok: false, unverifiable: false, problem: 'no-trace-in-pr' }), undefined]) {
+      const h = harness({
+        codeOwnedFor: () => ({ touches: false, files: [], protectedFiles: ['src/monitoring/GreenPrAutoMerger.ts'], unverifiable: false }),
+        ...(reviewFor ? { reviewFor } : {}),
+      });
+      prime(h);
+      const r = await new GreenPrAutoMerger(h.deps, cfg).tick();
+      expect(r.acted).toBe(false);
+      expect(h.runCalls.length).toBe(0);
+      expect(h.audits.some(a => a.class === 'needs-independent-review')).toBe(true);
+      expect(h.attentionLines.flat().length).toBe(0);
+    }
+  });
+
+  it('unreadable code ownership waits (never merges on a guess) and routes nothing', async () => {
+    const h = harness({ codeOwnedFor: () => ({ touches: false, files: [], unverifiable: true }) });
+    prime(h);
+    const r = await new GreenPrAutoMerger(h.deps, cfg).tick();
+    expect(h.runCalls.length).toBe(0);
+    expect(r.acted).toBe(false);
+    expect(h.audits.some(a => a.class === 'code-owners-unverifiable')).toBe(true);
   });
 
   it('a held PR is excluded', async () => {
@@ -515,6 +662,82 @@ describe('GreenPrAutoMerger — auto-merge-unavailable terminal-non-ladder', () 
     await new GreenPrAutoMerger(h.deps, cfg).tick();
     expect(h.state.episodes[100]?.attempts).toBe(1); // normal ladder advance
     expect(h.state.episodes[100]?.nextEligibleAt).toBeTruthy(); // backoff set
+  });
+});
+
+describe('GreenPrAutoMerger — unresolved merge-attempt orphan (ACT-141)', () => {
+  const prime = (h: Harness) => { h.state.lastActingEpoch = 1; };
+
+  it('skipped:orphan-unresolved never advances the ladder or the breaker, and posts its attention line ONCE across ticks', async () => {
+    const h = harness({ runResult: { outcome: 'skipped:orphan-unresolved', confirmedMerged: false } });
+    prime(h);
+    const m = new GreenPrAutoMerger(h.deps, cfg);
+    const r1 = await m.tick();
+    await m.tick();
+    await m.tick();
+    expect(r1.acted).toBe(false);
+    expect(h.runCalls.length).toBe(3); // re-tried each tick (resumes by itself once the orphan exits)
+    expect(h.state.episodes[100]?.attempts).toBe(0);
+    expect(h.state.episodes[100]?.state).toBe('active');
+    expect(h.state.episodes[100]?.nextEligibleAt).toBeUndefined();
+    expect(h.state.episodes[100]?.lastOutcome).toBe('skipped:orphan-unresolved');
+    expect(h.state.breaker.consecutiveDeadlineKills ?? 0).toBe(0);
+    expect(h.attentionLines.length).toBe(1);
+    expect(h.attentionLines[0]).toContain(ORPHAN_UNRESOLVED_LINE);
+  });
+
+  it('the paused line is dropped once a later attempt runs', async () => {
+    let outcome: MergeRunResult = { outcome: 'skipped:orphan-unresolved', confirmedMerged: false };
+    const h = harness();
+    h.deps.runner.run = async () => outcome;
+    prime(h);
+    const m = new GreenPrAutoMerger(h.deps, cfg);
+    await m.tick();
+    expect(h.state.attentionLines).toContain(ORPHAN_UNRESOLVED_LINE);
+    outcome = { outcome: 'refused:red-checks', confirmedMerged: false };
+    await m.tick();
+    expect(h.state.attentionLines ?? []).not.toContain(ORPHAN_UNRESOLVED_LINE);
+  });
+
+  it('clearing the paused line RE-POSTS the aggregate (the operator stops seeing it)', async () => {
+    let outcome: MergeRunResult = { outcome: 'skipped:orphan-unresolved', confirmedMerged: false };
+    const h = harness();
+    h.deps.runner.run = async () => outcome;
+    prime(h);
+    const m = new GreenPrAutoMerger(h.deps, cfg);
+    await m.tick();
+    expect(h.attentionLines.at(-1)).toContain(ORPHAN_UNRESOLVED_LINE);
+    outcome = { outcome: 'refused:red-checks', confirmedMerged: false };
+    await m.tick();
+    expect(h.attentionLines.at(-1)).not.toContain(ORPHAN_UNRESOLVED_LINE);
+  });
+
+  it('a successful warm-up reap clears and re-posts the paused line', async () => {
+    const h = harness();
+    h.state.attentionLines = [ORPHAN_UNRESOLVED_LINE];
+    h.deps.runner.reapOrphan = async () => ({ reaped: true, outcome: 'reaped-open' });
+    await new GreenPrAutoMerger(h.deps, cfg).tick(); // warm-up tick
+    expect(h.state.attentionLines).not.toContain(ORPHAN_UNRESOLVED_LINE);
+    expect(h.attentionLines.at(-1)).not.toContain(ORPHAN_UNRESOLVED_LINE);
+  });
+
+  it('a presumed-foreign record (warm-up or start of run) is audited orphan-presumed-foreign', async () => {
+    const h = harness({ runResult: { outcome: 'refused:red-checks', confirmedMerged: false, priorRecord: 'orphan-presumed-foreign' } });
+    h.deps.runner.reapOrphan = async () => ({ reaped: true, outcome: 'orphan-presumed-foreign' });
+    const m = new GreenPrAutoMerger(h.deps, cfg);
+    await m.tick(); // warm-up
+    expect(h.audits.filter(a => a.event === 'orphan-presumed-foreign').length).toBe(1);
+    prime(h);
+    await m.tick(); // acting tick — run() resolved a prior record
+    expect(h.audits.filter(a => a.event === 'orphan-presumed-foreign').length).toBe(2);
+  });
+
+  it('a kept (incomplete) warm-up reap is audited orphan-reap-incomplete, not orphan-reaped', async () => {
+    const h = harness();
+    h.deps.runner.reapOrphan = async () => ({ reaped: false, outcome: 'orphan-reap-incomplete' });
+    await new GreenPrAutoMerger(h.deps, cfg).tick(); // warm-up tick
+    expect(h.audits.some(a => a.event === 'orphan-reap-incomplete')).toBe(true);
+    expect(h.audits.some(a => a.event === 'orphan-reaped')).toBe(false);
   });
 });
 

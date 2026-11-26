@@ -1,0 +1,3 @@
+# Feedback design drafts get the right review question
+
+The feedback executor asks independent reviewers to check a pull request before merging it. A builder can submit either a working code fix or a draft design for a larger change. The reviewer prompt used to call both of them a fix and require an executable test. A real design draft was stopped for that reason even though implementation comes later. The prompt now names the kind of PR. A fix still needs a test that catches the bug. A draft design needs a clear plan for such a test, and reviewers still check safety, scope, and risky instructions. A draft that fails review remains open for repair.

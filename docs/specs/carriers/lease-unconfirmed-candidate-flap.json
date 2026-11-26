@@ -1,0 +1,12 @@
+{
+  "generatedAt": "2026-10-04T11:25:21.424Z",
+  "slug": "lease-unconfirmed-candidate-flap",
+  "carriers": {
+    "CMT-1226": {
+      "status": "pending",
+      "owner": "agent",
+      "blockedOn": "none",
+      "excerpt": "Hand Echo the deferred lease items with their notes: boot pull (window b), restart nonce watermark (window c), never-accepted lease detector, GitLeaseStore items (i), (ii), (v) and the rarer (iii),(iv),(vi),(vii), persist(), _staleOwnerSelfProof, join/pair issues; and spec + build window (d) reliable holding myself before moving topic 46908. Report status back in topic 47547 within 14 days of merg"
+    }
+  }
+}

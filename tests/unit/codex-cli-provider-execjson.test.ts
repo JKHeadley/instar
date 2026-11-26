@@ -121,6 +121,18 @@ exit 0
     ]);
   });
 
+  it('noLocalTools disables the local tools for that call only (docs/specs/ecosystem-idea-pipeline.md §1)', async () => {
+    const provider = new CodexCliIntelligenceProvider({ codexPath: writeFakeCodex() });
+    await provider.evaluate('plain call', { attribution: { component: 'test' } });
+    expect(readArgv()).not.toContain('--disable');
+    await provider.evaluate('outside text', { noLocalTools: true, attribution: { component: 'test' } });
+    const argv = readArgv();
+    expect(argv[argv.indexOf('--disable') + 1]).toBe('shell_tool');
+    expect(argv).toContain('unified_exec');
+    expect(argv).toContain('mcp_servers={}');
+    expect(argv).toContain('read-only');
+  });
+
   it('passes --json + absolute --output-last-message, keeps ALL hygiene args, moves the prompt to stdin', async () => {
     const provider = new CodexCliIntelligenceProvider({ codexPath: writeFakeCodex() });
     const usages: Array<{ inputTokens: number; outputTokens: number; cachedTokens?: number }> = [];
@@ -147,7 +159,8 @@ exit 0
     expect(argv).not.toContain('the json prompt');
     expect(fs.readFileSync(stdinFile(), 'utf-8')).toBe('the json prompt');
     // Per-call usage parsed from the event stream, cachedTokens included.
-    expect(usages).toEqual([{ inputTokens: 42, outputTokens: 7, cachedTokens: 12 }]);
+    // The unified usage ledger's `detail` is additive; the folded fields are unchanged.
+    expect(usages.map(({ detail: _d, ...u }) => u)).toEqual([{ inputTokens: 42, outputTokens: 7, cachedTokens: 12 }]);
   });
 
   it('result comes from the FILE only — never stdout events', async () => {
@@ -206,27 +219,44 @@ exit 0
     );
   });
 
+  // Live 2026-10-14: eight feedback-readiness calls failed as "Codex CLI error (exec --json,
+  // exit 1)" and nothing else — in --json mode codex reports the cause on STDOUT (an `error`
+  // event or `turn.failed`), and stderr is empty. The cause was only recoverable four days
+  // later from the rollout files. The thrown Error now carries the LAST such message, bounded.
+  it('carries the last error/turn.failed message from the event stream into the thrown Error, bounded', async () => {
+    const script = path.join(fixtureDir, 'ratelimited.sh');
+    const filler = 'x'.repeat(1_000);
+    fs.writeFileSync(
+      script,
+      `#!/bin/sh
+cat > /dev/null
+echo '{"type":"error","message":"Codex is ignoring 2 unrecognized configuration settings. Check for typos or deprecated settings."}'
+echo '{"type":"turn.started"}'
+echo '{"type":"turn.failed","error":{"message":"exceeded retry limit, last status: 429 Too Many Requests ${filler}"}}'
+exit 1
+`,
+      { mode: 0o755 },
+    );
+    const provider = new CodexCliIntelligenceProvider({ codexPath: script });
+    const err = await provider.evaluate('p').then(() => null, (e: Error) => e);
+    expect(err).toBeInstanceOf(Error);
+    expect(err!.message).toMatch(/^Codex CLI error \(exec --json, exit 1\) — last event: exceeded retry limit, last status: 429 Too Many Requests/);
+    expect(err!.message).not.toContain('unrecognized configuration'); // the LAST event, not the first warning
+    expect(err!.message.length).toBeLessThan(400); // bounded: the 1000-char tail is cut
+  });
+
   it('cleans up the per-call out-dir on success', async () => {
-    // Snapshot the PRE-EXISTING out-dirs first — other tests in this file (and
-    // other codex test files in the shared vitest pool) legitimately leave
-    // out-dirs on their error/timeout paths, and they share os.tmpdir(). The
-    // assertion must be scoped to the out-dir THIS call created, not the global
-    // population (the old <10s-mtime heuristic flaked when a sibling test ran
-    // within the window).
-    const listOutDirs = (): Set<string> =>
-      new Set(
-        fs
-          .readdirSync(os.tmpdir())
-          .filter((n) => n.startsWith('instar-codex-out-'))
-          .map((n) => path.join(os.tmpdir(), n)),
-      );
-    const before = listOutDirs();
     const provider = new CodexCliIntelligenceProvider({ codexPath: writeFakeCodex() });
     await provider.evaluate('p');
-    // Only NEW out-dirs (created by THIS call) must be gone — pre-existing ones
-    // from sibling tests are not this test's concern.
-    const newLeftovers = [...listOutDirs()].filter((p) => !before.has(p));
-    expect(newLeftovers).toEqual([]);
+    // The fake CLI records the exact output file this call received. Assert
+    // cleanup of that directory; concurrent processes also use os.tmpdir().
+    const argv = readArgv();
+    const outputFlag = argv.indexOf('--output-last-message');
+    expect(outputFlag).toBeGreaterThanOrEqual(0);
+    const outputFile = argv[outputFlag + 1];
+    expect(outputFile).toBeTruthy();
+    expect(path.basename(path.dirname(outputFile!))).toMatch(/^instar-codex-out-/);
+    expect(fs.existsSync(path.dirname(outputFile!))).toBe(false);
   });
 });
 
@@ -360,6 +390,8 @@ describe('codex 0.144 shutdown-linger — early terminal settle', () => {
     fs.writeFileSync(
       p,
       `#!/bin/sh
+# A real codex answers --version at once (the older-CLI model check reads it).
+if [ "$1" = "--version" ]; then echo "codex-cli 0.169.0"; exit 0; fi
 cat > /dev/null
 printf '%s\\n' '{"type":"item.completed","item":{"type":"agent_message","text":"${resultText}"}}'
 printf '%s\\n' '{"type":"turn.completed","usage":{"input_tokens":120,"cached_input_tokens":90,"output_tokens":8,"total_tokens":128}}'
@@ -386,7 +418,8 @@ exit 0
     expect(result).toBe('LINGER-OK');
     expect(elapsed).toBeLessThan(3000); // did NOT wait out the 30s linger
     // Usage from turn.completed was parsed and reported (success carries usage).
-    expect(usages).toEqual([{ inputTokens: 120, outputTokens: 8, cachedTokens: 90 }]);
+    // The unified usage ledger's `detail` is additive; the folded fields are unchanged.
+    expect(usages.map(({ detail: _d, ...u }) => u)).toEqual([{ inputTokens: 120, outputTokens: 8, cachedTokens: 90 }]);
   }, 15000);
 
   it('records a SUCCESS (unclassified) row WITH usage through the funnel — not an error', async () => {

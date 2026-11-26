@@ -1,0 +1,34 @@
+{
+  "ts": "2026-09-24T20:13:00.738Z",
+  "slug": "relogin-normal-browser",
+  "suggestedTier": 2,
+  "declaredTier": 2,
+  "riskFloor": 2,
+  "riskFloorReasons": [
+    "irreversibility: src/core/PostUpdateMigrator.ts touches PostUpdateMigrator",
+    "migration / fleet-rollout surface: src/core/PostUpdateMigrator.ts touches PostUpdateMigrator (fleet migration machinery)",
+    "new capability: new exported class / subsystem added"
+  ],
+  "belowFloor": false,
+  "files": 5,
+  "loc": 330,
+  "scope": {
+    "basis": "staged-in-scope-additions-plus-deletions",
+    "files": [
+      "src/commands/server.ts",
+      "src/core/ChromeCdpReloginBrowser.ts",
+      "src/core/PlainChromeReloginBrowser.ts",
+      "src/core/PostUpdateMigrator.ts",
+      "src/scaffold/templates.ts"
+    ],
+    "addedLines": 318,
+    "deletedLines": 12
+  },
+  "causalAutopsy": null,
+  "classClosure": {
+    "defectClass": "unbounded-self-action",
+    "closure": "n/a",
+    "reason": "no new self-triggered action; transport swap inside the existing bounded, leased, deadline-limited repair"
+  },
+  "verdict": "pass"
+}

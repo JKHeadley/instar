@@ -1,0 +1,28 @@
+{
+  "ts": "2026-10-27T02:28:51.189Z",
+  "slug": "local-verify-restart-recheck",
+  "suggestedTier": 1,
+  "declaredTier": 1,
+  "riskFloor": 1,
+  "riskFloorReasons": [],
+  "belowFloor": false,
+  "files": 3,
+  "loc": 29,
+  "scope": {
+    "basis": "staged-in-scope-additions-plus-deletions",
+    "files": [
+      "src/core/AutoUpdater.ts",
+      "src/localVerify/LocalVerifyService.ts",
+      "src/localVerify/localVerifyWiring.ts"
+    ],
+    "addedLines": 29,
+    "deletedLines": 0
+  },
+  "causalAutopsy": null,
+  "classClosure": {
+    "defectClass": "unbounded-self-action",
+    "closure": "n/a",
+    "reason": "fires at most once per verify run end and only moves the single existing deferred-restart timer earlier; the restart still passes the full gate; nothing re-triggers it"
+  },
+  "verdict": "pass"
+}

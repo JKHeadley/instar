@@ -1,0 +1,25 @@
+{
+  "version": 2,
+  "slug": "console-makeover-home",
+  "sessionId": "fedcf6c3-f298-46ec-ad0b-61bf76d96a91",
+  "timestamp": "2026-10-26T09:25:57.000Z",
+  "artifactPath": "upgrades/side-effects/console-makeover-home.md",
+  "artifactSha256": "558fc05a259127723fea8b46142dda40f1d213d09015841cfc58b254ad41b1e4",
+  "coveredFiles": [
+    "dashboard/console/console.css",
+    "dashboard/console/console.js",
+    "dashboard/console/inside-model.js",
+    "dashboard/console/inside.js",
+    "dashboard/console/learned.js",
+    "dashboard/console/nav-model.js",
+    "tests/e2e/console-home-lifecycle.test.ts",
+    "tests/integration/console-static-serving.test.ts",
+    "tests/unit/console-inside.test.ts",
+    "tests/unit/console-learned.test.ts"
+  ],
+  "phase": "complete",
+  "tier": 1,
+  "tierReasoning": "Native 'How I'm doing inside' console page over existing routes (/shared-state/*, /failures*, /completion-claim/audit, /class-reviews, /memory/*); the only write is the existing bearer + intent-header session-binding revoke; static dashboard files; no server change.",
+  "eli16Path": "docs/specs/console-makeover.eli16.md",
+  "sideEffectsPath": "upgrades/side-effects/console-makeover-home.md"
+}

@@ -1,0 +1,28 @@
+{
+  "version": 2,
+  "slug": "canary-sandbox-e2big",
+  "sessionId": "5ed396db-8c94-48c5-8c79-fe06b27ddac7",
+  "timestamp": "2026-10-25T21:31:20.166Z",
+  "artifactPath": "upgrades/side-effects/canary-sandbox-e2big.md",
+  "artifactSha256": "6578e67041dd34ff02b5c432eee15245287801e67734d60f161086ef1d34ba36",
+  "coveredFiles": [
+    "docs/specs/canary-sandbox-e2big.eli16.md",
+    "src/feedback-factory/execute/FeedbackExecutorService.ts",
+    "src/feedback-factory/execute/attemptFs.ts",
+    "src/feedback-factory/execute/confinementCanary.ts",
+    "src/feedback-factory/execute/executePolicy.ts",
+    "tests/fixtures/feedbackExecuteHarness.ts",
+    "tests/unit/feedback-factory/execute-service.test.ts",
+    "tests/unit/feedback-factory/execute-short-attempt-tmpdir.test.ts",
+    "tests/unit/feedback-factory/execute-units.test.ts",
+    "upgrades/next/canary-sandbox-e2big.md",
+    "upgrades/side-effects/canary-sandbox-e2big.md"
+  ],
+  "phase": "complete",
+  "tier": 1,
+  "tierReasoning": "Four source files in one subsystem (~90 source lines); a revert fully undoes it; the only persisted difference is one optional field on the latch row. Removes an unbounded deny-rule list from a confinement, so an independent second-pass review ran (concern raised, resolved with symlink/Grep/write probes, proven live and now canary-pinned every run).",
+  "eli16Path": "docs/specs/canary-sandbox-e2big.eli16.md",
+  "sideEffectsPath": "upgrades/side-effects/canary-sandbox-e2big.md",
+  "secondPass": "true",
+  "reviewerConcurred": true
+}

@@ -75,7 +75,15 @@ describe('Threadline keystone — wiring integrity (feature alive)', () => {
     // Widened from 12000 → 16000 after Robustness Phase 2 added the canonical-log
     // append funnel + threadSync honoring to this inbound path (the spawn moved to
     // ~13.2k); the gate-before-spawn ORDER this test guards is unchanged.
-    const route = routesSrc.slice(relayAgentIdx, relayAgentIdx + 16000);
+    // Widened 16000 → 22000 after the A2A inbound message-id ledger added its
+    // commit point + outcome recording to this route (spawn moved to ~17k).
+    // Widened 22000 → 27000 after local-route trust added its pre-admission
+    // check to the top of this route (spawn moved to ~21.9k).
+    // Widened 27000 → 32000 after the local-route signed-envelope check was
+    // added above the trust check (spawn moved to ~28.7k).
+    // Widened 32000 → 36000 after the reply-waiter sender check (only the routed peer
+    // resolves a send-and-wait) was added to this route (router call moved to ~32.2k).
+    const route = routesSrc.slice(relayAgentIdx, relayAgentIdx + 36000);
     const gateIdx = route.indexOf('evaluateAndRecordInbound(ctx.warrantsReplyGate, ctx.conversationStore');
     // Match the call by method+first-arg so the assertion survives formatting of
     // the `ctx.threadlineRouter` receiver AND extra args (the local-attribution fix

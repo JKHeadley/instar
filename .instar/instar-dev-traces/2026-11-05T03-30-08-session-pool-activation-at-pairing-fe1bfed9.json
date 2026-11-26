@@ -1,0 +1,21 @@
+{
+  "version": 2,
+  "slug": "session-pool-activation-at-pairing",
+  "sessionId": "f3f374fe-1740-4fac-8bbf-c32c8b60e738",
+  "timestamp": "2026-11-05T03:30:08.643882Z",
+  "artifactPath": "upgrades/side-effects/session-pool-activation-at-pairing.md",
+  "artifactSha256": "1c7ca250f8fdf495617bebec98cabbc93914724e9289e4d7ffffee4c8d502e04",
+  "specPath": "docs/specs/session-pool-activation-at-pairing.md",
+  "coveredFiles": [
+    "src/commands/server.ts",
+    "src/core/MeshRpc.ts",
+    "src/core/sessionLiveProbe.ts",
+    "tests/e2e/session-pool-pair-activation-alive.test.ts",
+    "tests/integration/session-live-probe-roundtrip.test.ts",
+    "tests/unit/session-live-probe.test.ts",
+    "upgrades/side-effects/session-pool-activation-at-pairing.md"
+  ],
+  "phase": "complete",
+  "secondPass": "true",
+  "reviewerConcurred": false
+}

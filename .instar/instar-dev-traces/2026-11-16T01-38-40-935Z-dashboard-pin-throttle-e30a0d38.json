@@ -1,0 +1,29 @@
+{
+  "version": 2,
+  "slug": "dashboard-pin-throttle",
+  "sessionId": "c010ec34-33a2-476c-a6af-4b438bdaa22b",
+  "timestamp": "2026-11-16T01:38:40.935Z",
+  "artifactPath": "upgrades/side-effects/dashboard-pin-throttle.md",
+  "artifactSha256": "4e4eaba24bd599b2be97cae94b1f410b46816136b8f8005169d2c97a74227211",
+  "specPath": "docs/specs/dashboard-pin-throttle.md",
+  "coveredFiles": [
+    "docs/specs/dashboard-pin-throttle.eli16.md",
+    "docs/specs/dashboard-pin-throttle.md",
+    "docs/specs/reports/dashboard-pin-throttle-convergence.md",
+    "src/core/PinThrottle.ts",
+    "src/core/types.ts",
+    "src/data/awareness/dashboard-pin-throttle.md",
+    "src/server/AgentServer.ts",
+    "src/server/pinUnlockMarker.ts",
+    "tests/e2e/dashboard-pin-throttle-alive.test.ts",
+    "tests/integration/dashboard-pin-throttle.test.ts",
+    "tests/unit/pin-throttle.test.ts",
+    "tests/unit/pin-unlock-marker.test.ts",
+    "upgrades/side-effects/dashboard-pin-throttle.md"
+  ],
+  "phase": "complete",
+  "tier": 2,
+  "tierReasoning": "auth/credentials surface (dashboard PIN door), fleet-wide rollout, new refusal authority — Tier 2+ by the risk floor",
+  "secondPass": "true",
+  "reviewerConcurred": true
+}

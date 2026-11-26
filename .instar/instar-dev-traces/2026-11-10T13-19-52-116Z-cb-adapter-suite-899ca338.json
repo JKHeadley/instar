@@ -1,0 +1,40 @@
+{
+  "version": 2,
+  "slug": "cb-adapter-suite",
+  "sessionId": "985461a5-eba2-47c0-8b7e-995dad7e3ada",
+  "timestamp": "2026-11-10T13:19:52.116Z",
+  "artifactPath": "upgrades/side-effects/cb-adapter-suite.md",
+  "artifactSha256": "f4fea31697ce7d6f59d082d4190706fd5a2d30e266666e2ce9a5f7f86dc50a89",
+  "specPath": "docs/specs/context-budget-layered-summaries.md",
+  "coveredFiles": [
+    "src/commands/server.ts",
+    "src/monitoring/ContextBudgetSentinel.ts",
+    "src/monitoring/adapterSuiteCli.ts",
+    "src/monitoring/adapterVerificationSuite.ts",
+    "src/monitoring/contextBudgetSentinelBoot.ts",
+    "src/server/CapabilityIndex.ts",
+    "src/testing/selfActionRegistry.ts",
+    "tests/e2e/adapter-suite-lifecycle.test.ts",
+    "tests/fixtures/fake-claude-headless.mjs",
+    "tests/integration/adapter-verification-suite-runner.test.ts",
+    "tests/integration/context-budget-sentinel-route.test.ts",
+    "tests/unit/ContextBudgetSentinel.test.ts",
+    "tests/unit/adapter-verification-suite.test.ts",
+    "upgrades/next/cb-adapter-suite.md",
+    "upgrades/side-effects/cb-adapter-suite.md"
+  ],
+  "phase": "complete",
+  "tier": 2,
+  "tierReasoning": "A self-triggered process that spends model calls (own switch, default off) and records engine capability evidence",
+  "secondPass": "true",
+  "reviewerConcurred": true,
+  "classClosure": {
+    "defectClass": "unbounded-self-action",
+    "closure": "guard",
+    "guardEvidence": {
+      "enforcementType": "ratchet",
+      "citation": "tests/unit/self-action-convergence.test.ts",
+      "howCaught": "context-budget-adapter-suite is registered in selfActionRegistry: at most 3 suite runs per engine version ever (durable attempt count stamped before each run, 24 h floor), one at a time; a recorded version never re-runs"
+    }
+  }
+}

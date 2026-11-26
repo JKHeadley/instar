@@ -33,10 +33,12 @@
 import fs from 'node:fs';
 import path from 'node:path';
 import yaml from 'js-yaml';
+import { Cron } from 'croner';
 import { SafeFsExecutor } from '../core/SafeFsExecutor.js';
 import { buildPerSlugManifest, coerceDurationMinutes, coerceBool } from './buildPerSlugManifest.js';
 import { validateManifest } from './AgentMdJobLoader.js';
 import type { JobPriority, ModelTier } from '../core/types.js';
+import { THINKING_MODES } from '../core/topicProfileValidation.js';
 
 export interface InstallBuiltinJobsOptions {
   /** Agent state directory root (typically `<projectDir>/.instar`). */
@@ -57,7 +59,89 @@ export interface InstallReport {
   errors: Array<{ slug?: string; reason: string }>;
 }
 
+/** Job Scheduler awareness bullet (CLAUDE.md template + migration). Marker: `shippedSchedule`. */
+export const BUILTIN_SCHEDULE_EDIT_AWARENESS =
+  '- **Changing a BUILT-IN job\'s schedule — edit `schedule` in `.instar/jobs/schedule/<slug>.json`.** ' +
+  'Updates keep it: each install records the shipped value as `shippedSchedule`, and a `schedule` that differs ' +
+  'from it is treated as yours. Set it back to the shipped value to follow future defaults again. A manifest ' +
+  'written before an update that adds `shippedSchedule` takes the shipped value once, so re-apply an earlier ' +
+  'edit after that update. Applies at the next server restart.\n';
+
+/**
+ * Job Scheduler awareness bullet for the per-job thinking mode (docs/specs/job-launch-intent-record.md,
+ * Migration parity): CLAUDE.md template + migrateClaudeMd insert, byte-identical. Content-sniff key:
+ * the phrase "a job can set `thinkingMode`" (the bare word already appears in the topic-profile line).
+ */
+export const JOB_THINKING_MODE_SNIFF = 'a job can set `thinkingMode`';
+export const JOB_THINKING_MODE_AWARENESS =
+  '- **Per-job thinking mode:** a job can set `thinkingMode` in its manifest to choose how hard the engine thinks ' +
+  '(`off`/`low`/`medium`/`high`/`max`; for a built-in or agentmd job that is `.instar/jobs/schedule/<slug>.json`). ' +
+  'Absent means the engine default. Each run row in `GET /jobs/SLUG/history` carries a `launch` record: what was ' +
+  'requested, what the launch actually sent (`applied`), what was dropped and why (`not-supported` on an engine with ' +
+  'no reasoning setting, `overridden-by-effort-pin`, `invalid`), and the CLI version (`unknown` until it is read). ' +
+  '`applied` means sent, not that it helped.\n';
+
 const PORT_SENTINEL = '4042';
+
+/** job-cost-reduction §5.1 — a shipped script's name is a bare filename. */
+export const SCRIPT_FILE_RE = /^[a-z0-9-]+\.mjs$/;
+
+/**
+ * Copy the shipped `scripts/*.mjs` into `.instar/jobs/instar/scripts/`.
+ * Always overwrites (built-ins are never install-if-missing) and prunes any
+ * `.mjs` no longer shipped. Copied byte-for-byte: the lock-file's scriptHash
+ * covers the raw bytes, so no port substitution is applied (scripts read
+ * INSTAR_PORT from their environment).
+ */
+function installBuiltinScripts(templatesDir: string, installedDir: string, report: InstallReport): Set<string> {
+  const srcDir = path.join(templatesDir, 'scripts');
+  const dstDir = path.join(installedDir, 'scripts');
+  const shipped = new Set<string>();
+  if (fs.existsSync(srcDir) && fs.statSync(srcDir).isDirectory()) {
+    fs.mkdirSync(dstDir, { recursive: true });
+    for (const f of fs.readdirSync(srcDir).sort()) {
+      if (!f.endsWith('.mjs')) continue;
+      if (!SCRIPT_FILE_RE.test(f)) {
+        report.errors.push({ reason: `shipped script "${f}" refused: name must match ${SCRIPT_FILE_RE}` });
+        continue;
+      }
+      const src = path.join(srcDir, f);
+      const st = fs.lstatSync(src);
+      if (!st.isFile() || st.isSymbolicLink()) {
+        report.errors.push({ reason: `shipped script "${f}" refused: not a regular file` });
+        continue;
+      }
+      const dst = path.join(dstDir, f);
+      // A symlink planted at the target would redirect the write; remove it first.
+      if (fs.existsSync(dst) && fs.lstatSync(dst).isSymbolicLink()) {
+        SafeFsExecutor.safeUnlinkSync(dst, { operation: 'installBuiltinJobs replace symlinked script' });
+      }
+      fs.copyFileSync(src, dst);
+      shipped.add(f);
+    }
+  }
+  if (fs.existsSync(dstDir)) {
+    for (const f of fs.readdirSync(dstDir)) {
+      if (!f.endsWith('.mjs') || shipped.has(f)) continue;
+      try {
+        SafeFsExecutor.safeUnlinkSync(path.join(dstDir, f), { operation: 'installBuiltinJobs prune stale script' });
+      } catch (err) {
+        report.errors.push({ reason: `Failed to prune stale script ${f}: ${err instanceof Error ? err.message : String(err)}` });
+      }
+    }
+  }
+  return shipped;
+}
+
+function isValidCron(expr: string): boolean {
+  try {
+    new Cron(expr, { paused: true }).stop();
+    return true;
+  } catch {
+    // @silent-fallback-ok — the caller reports the reset in InstallReport.errors.
+    return false;
+  }
+}
 
 export function installBuiltinJobs(opts: InstallBuiltinJobsOptions): InstallReport {
   const { agentStateDir, packageRoot, port } = opts;
@@ -110,6 +194,7 @@ export function installBuiltinJobs(opts: InstallBuiltinJobsOptions): InstallRepo
 
   const report: InstallReport = { installed: [], retired: [], errors: [] };
   const shippedSlugs = new Set<string>();
+  const shippedScripts = installBuiltinScripts(templatesDir, installedDir, report);
 
   for (const file of templateFiles) {
     const slug = path.basename(file, '.md');
@@ -132,12 +217,23 @@ export function installBuiltinJobs(opts: InstallBuiltinJobsOptions): InstallRepo
     const manifestPath = path.join(scheduleDir, `${slug}.json`);
     let existingEnabled: boolean | undefined;
     let existingDisabledAtBodyHash: string | undefined;
+    let existingSchedule: string | undefined;
+    let existingShippedSchedule: string | undefined;
+    // Operator-set thinking mode on an installed built-in (the awareness bullet tells
+    // agents to set it in this manifest) survives reinstall, like `enabled` does.
+    let existingThinkingMode: string | undefined;
     if (fs.existsSync(manifestPath)) {
       try {
         const existing = JSON.parse(fs.readFileSync(manifestPath, 'utf-8'));
         if (typeof existing.enabled === 'boolean') existingEnabled = existing.enabled;
         if (typeof existing.disabledAtBodyHash === 'string') {
           existingDisabledAtBodyHash = existing.disabledAtBodyHash;
+        }
+        if (typeof existing.schedule === 'string') existingSchedule = existing.schedule;
+        if (typeof existing.shippedSchedule === 'string') existingShippedSchedule = existing.shippedSchedule;
+        if (typeof existing.thinkingMode === 'string'
+          && (THINKING_MODES as readonly string[]).includes(existing.thinkingMode)) {
+          existingThinkingMode = existing.thinkingMode;
         }
       } catch {
         // malformed; we'll overwrite with a fresh one
@@ -169,19 +265,70 @@ export function installBuiltinJobs(opts: InstallBuiltinJobsOptions): InstallRepo
       continue;
     }
 
+    // job-cost-reduction §5.1: a `runner: script` template gets a script
+    // manifest whose value is a bare, validated filename — never a command.
+    let execute: { type: 'agentmd' } | { type: 'script'; value: string } = { type: 'agentmd' };
+    if (frontmatter.runner === 'script') {
+      const scriptFile = frontmatter.script;
+      if (typeof scriptFile !== 'string' || !SCRIPT_FILE_RE.test(scriptFile) || scriptFile !== `${slug}.mjs`) {
+        report.errors.push({ slug, reason: `runner: script needs script: ${slug}.mjs matching ${SCRIPT_FILE_RE} (got ${JSON.stringify(scriptFile)}) — refused` });
+        continue;
+      }
+      if (!shippedScripts.has(scriptFile)) {
+        report.errors.push({ slug, reason: `runner: script names ${scriptFile}, which is not shipped — refused` });
+        continue;
+      }
+      execute = { type: 'script', value: scriptFile };
+    } else if (frontmatter.runner !== undefined) {
+      report.errors.push({ slug, reason: `unknown runner ${JSON.stringify(frontmatter.runner)} — refused` });
+      continue;
+    }
+
     // Build the manifest through the single typed constructor — priority,
     // expectedDurationMinutes, model + pass-throughs are carried here (their
     // omission is the bug this fixes). The typed return means a dropped required
     // field is a compile error.
+    // An operator's schedule edit survives updates (CMT-1586, fb-d075a5c4-c4c).
+    // `shippedSchedule` records the template's schedule at each write, so a
+    // saved `schedule` that differs from it was changed on this agent and is
+    // kept; one that still matches follows a new shipped default. A manifest
+    // written before this field existed cannot be told apart and takes the
+    // shipped value once (today's behaviour), after which edits are kept.
+    const shippedSchedule = String(frontmatter.schedule ?? '');
+    let schedule = shippedSchedule;
+    if (existingSchedule !== undefined && existingShippedSchedule !== undefined
+      && existingSchedule.trim() && existingSchedule !== existingShippedSchedule) {
+      if (isValidCron(existingSchedule)) {
+        schedule = existingSchedule;
+      } else {
+        report.errors.push({ slug, reason: `saved schedule ${JSON.stringify(existingSchedule)} is not a valid cron expression; reset to the shipped ${JSON.stringify(shippedSchedule)}` });
+      }
+    }
+
     const manifest = buildPerSlugManifest({
       slug,
       origin: 'instar',
-      schedule: String(frontmatter.schedule ?? ''),
+      schedule,
+      shippedSchedule,
       priority: frontmatter.priority as JobPriority,
       expectedDurationMinutes: durationMinutes,
       enabled: existingEnabled !== undefined ? existingEnabled : frontmatter.enabled !== 'false',
-      execute: { type: 'agentmd' },
+      execute,
       model: frontmatter.model != null && String(frontmatter.model).trim() ? (String(frontmatter.model) as ModelTier) : undefined,
+      framework: typeof frontmatter.framework === 'string' && frontmatter.framework.trim()
+        ? frontmatter.framework as import('../core/intelligenceProviderFactory.js').IntelligenceFramework
+        : undefined,
+      frameworkModel: typeof frontmatter.frameworkModel === 'string' && frontmatter.frameworkModel.trim()
+        ? frontmatter.frameworkModel
+        : undefined,
+      leanContext: coerceBool(frontmatter.leanContext),
+      // Carried as written: the producer self-check below (validateManifest) refuses an
+      // out-of-enum value by name, so an invalid frontmatter value is reported, never installed.
+      thinkingMode: existingThinkingMode !== undefined
+        ? existingThinkingMode as import('./AgentMdJobLoader.js').PerSlugManifest['thinkingMode']
+        : frontmatter.thinkingMode != null
+        ? frontmatter.thinkingMode as import('./AgentMdJobLoader.js').PerSlugManifest['thinkingMode']
+        : undefined,
       tags: Array.isArray(frontmatter.tags) ? (frontmatter.tags as string[]) : undefined,
       unrestrictedTools: coerceBool(frontmatter.unrestrictedTools),
       gate: frontmatter.gate != null ? String(frontmatter.gate) : undefined,
@@ -200,6 +347,21 @@ export function installBuiltinJobs(opts: InstallBuiltinJobsOptions): InstallRepo
       // Spec §2.8/D11 — carry the per-machine-independent flag from frontmatter
       // (FAILSAFE_SCHEMA parses it as the string "true"/"false"; coerceBool handles both).
       perMachineIndependent: coerceBool(frontmatter.perMachineIndependent),
+      // Jev job-completion audit vocabulary (jev-job-supervision spec). The
+      // manifest is the loader's authority, so an un-carried value is inert —
+      // which would silently let the audit's own batch job audit itself.
+      completionAudit:
+        frontmatter.completionAudit === 'excluded'
+        || frontmatter.completionAudit === 'eligible'
+        || frontmatter.completionAudit === 'priority'
+          ? frontmatter.completionAudit
+          : undefined,
+      declaredEffects: Array.isArray(frontmatter.declaredEffects)
+        ? (frontmatter.declaredEffects as unknown[]).filter((e): e is string => typeof e === 'string')
+        : undefined,
+      conditionalEffects: Array.isArray(frontmatter.conditionalEffects)
+        ? (frontmatter.conditionalEffects as unknown[]).filter((e): e is string => typeof e === 'string')
+        : undefined,
       disabledAtBodyHash: existingDisabledAtBodyHash,
     });
 

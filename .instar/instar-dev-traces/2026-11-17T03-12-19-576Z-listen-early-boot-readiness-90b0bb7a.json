@@ -1,0 +1,26 @@
+{
+  "version": 2,
+  "slug": "listen-early-boot-readiness",
+  "sessionId": "5bf3a6ab-aa72-45e9-b512-b0919d02fc57",
+  "timestamp": "2026-11-17T03:12:19.576Z",
+  "artifactPath": "upgrades/side-effects/listen-early-boot-readiness.md",
+  "artifactSha256": "59c16572c531f21917894d823e0477e03955c5fdeef63c507606a9e5f138fc54",
+  "coveredFiles": [
+    "docs/specs/listen-early-boot-readiness.eli16.md",
+    "src/server/CapabilityIndex.ts",
+    "src/server/routes.ts",
+    "upgrades/side-effects/listen-early-boot-readiness.md"
+  ],
+  "phase": "complete",
+  "tier": 1,
+  "tierReasoning": "Follow-up for registry/ratchet tests on the same Tier-1 change: classify /server, declare the route write-domain, keep the /health ProcessIntegrity window.",
+  "eli16Path": "docs/specs/listen-early-boot-readiness.eli16.md",
+  "sideEffectsPath": "upgrades/side-effects/listen-early-boot-readiness.md",
+  "secondPass": "true",
+  "reviewerConcurred": true,
+  "classClosure": {
+    "defectClass": "unbounded-self-action",
+    "closure": "n/a",
+    "reason": "POST /server/restart writes one restart request per authenticated call made by a session or operator; it is a one-shot caller-driven action, not a self-triggered loop. Restart consumption is unchanged (supervisor restart-loop detection still applies)."
+  }
+}

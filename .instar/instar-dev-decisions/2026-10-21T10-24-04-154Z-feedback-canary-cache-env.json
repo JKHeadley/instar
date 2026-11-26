@@ -1,0 +1,28 @@
+{
+  "ts": "2026-10-21T10:24:04.154Z",
+  "slug": "feedback-canary-cache-env",
+  "suggestedTier": 1,
+  "declaredTier": 1,
+  "riskFloor": 1,
+  "riskFloorReasons": [],
+  "belowFloor": false,
+  "files": 1,
+  "loc": 13,
+  "scope": {
+    "basis": "staged-in-scope-additions-plus-deletions",
+    "files": [
+      "src/feedback-factory/execute/confinementCanary.ts"
+    ],
+    "addedLines": 12,
+    "deletedLines": 1
+  },
+  "causalAutopsy": {
+    "origin": "latent",
+    "relatedPrs": [
+      2155
+    ],
+    "notes": "Latent since #2155 introduced the canary. The executor s own check runs were given VITEST_CACHE_DIR/ESBUILD_CACHE_DIR, but runRunnerCanary was not, so the base-unit-smoke probe could never pass from an attempt workspace under the agent home. It never surfaced because the canary had never actually run in production: every attempt stopped earlier at deps-unavailable (fixed separately in #2259). Found by pre-verifying the canary before spending an executor start, specifically because a canary failure latches for 24h with no route to clear it."
+  },
+  "classClosure": null,
+  "verdict": "pass"
+}

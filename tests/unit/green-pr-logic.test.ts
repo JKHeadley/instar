@@ -75,9 +75,19 @@ describe('classifyCandidate', () => {
   it('skips a conflicting PR', () => {
     expect(classifyCandidate(basePr({ mergeable: 'CONFLICTING' }), 'echo').skip).toBe('not-mergeable');
   });
+  it('skips a stacked PR (base is a feature branch) on both floors — ACT-053', () => {
+    expect(classifyCandidate(basePr({ baseRefName: 'feat/a2a-inbound-id-ledger' }), 'echo').skip).toBe('non-main-base');
+    expect(classifyCandidate(basePr({ baseRefName: 'feat/x' }), 'echo', { floor: 'local', hasRecord: true }).skip).toBe('non-main-base');
+  });
+  it('a main base, or an absent one (legacy projection), is not treated as stacked', () => {
+    expect(classifyCandidate(basePr({ baseRefName: 'main' }), 'echo')).toEqual({ eligible: true });
+    expect(classifyCandidate(basePr({ baseRefName: undefined }), 'echo')).toEqual({ eligible: true });
+  });
   it('skips an unsettled / red PR', () => {
     expect(classifyCandidate(basePr({ statusRollup: 'PENDING' }), 'echo').skip).toBe('not-settled-green');
     expect(classifyCandidate(basePr({ statusRollup: 'FAILURE' }), 'echo').skip).toBe('not-settled-green');
+    // Zero GitHub Actions checks is its own, named skip — never green.
+    expect(classifyCandidate(basePr({ statusRollup: 'NO_CHECKS' }), 'echo').skip).toBe('no-checks-ran');
   });
 });
 
@@ -141,6 +151,25 @@ describe('applyOutcome — failure ladder', () => {
     let ep = ep0;
     for (let i = 0; i < 3; i++) ep = applyOutcome(ep, 'error:x', i * 10, cfg).ep;
     expect(ep.state).toBe('gave-up');
+  });
+  it('a main-red refusal waits and retries without using up the PR\'s attempts', () => {
+    let ep = ep0;
+    for (let i = 0; i < 10; i++) {
+      const r = applyOutcome(ep, 'refused:main-red', i * 5000, cfg);
+      expect(r.feedsBreaker).toBe(false);
+      expect(r.terminal).toBe(false);
+      ep = r.ep;
+    }
+    expect(ep.attempts).toBe(0);
+    expect(ep.state).toBe('active');
+    expect(ep.lastOutcome).toBe('refused:main-red');
+    expect(ep.nextEligibleAt).toBe(45_000 + 1000);
+  });
+  it('a real refusal after main-red spells still counts', () => {
+    const afterRed = applyOutcome(ep0, 'refused:main-red', 0, cfg).ep;
+    const r = applyOutcome(afterRed, 'refused:verify-failed', 2000, cfg);
+    expect(r.ep.attempts).toBe(1);
+    expect(r.feedsBreaker).toBe(true);
   });
 });
 
@@ -269,5 +298,24 @@ describe('validateTimeoutInvariant (B24)', () => {
     const r = validateTimeoutInvariant(2, 600_000, 1_500_000, 60_000);
     expect(r.ok).toBe(false);
     expect(r.reason).toMatch(/must exceed/);
+  });
+});
+
+describe('classifyCandidate — local floor (local-verify-merge-authority §3)', () => {
+  it('local + a record → eligible even while the Actions rollup is PENDING', () => {
+    expect(classifyCandidate(basePr({ statusRollup: 'PENDING' }), 'echo', { floor: 'local', hasRecord: true })).toEqual({ eligible: true });
+  });
+  it('local + no record → no-verify-record even when the rollup is SUCCESS', () => {
+    expect(classifyCandidate(basePr(), 'echo', { floor: 'local', hasRecord: false }).skip).toBe('no-verify-record');
+    expect(classifyCandidate(basePr(), 'echo', { floor: 'local' }).skip).toBe('no-verify-record');
+  });
+  it('local keeps the namespace filter, holds and mergeability', () => {
+    expect(classifyCandidate(basePr({ headRefName: 'dawn/x' }), 'echo', { floor: 'local', hasRecord: true }).skip).toBe('not-agent-namespace');
+    expect(classifyCandidate(basePr({ labels: ['hold'] }), 'echo', { floor: 'local', hasRecord: true }).skip).toBe('held');
+    expect(classifyCandidate(basePr({ mergeable: 'CONFLICTING' }), 'echo', { floor: 'local', hasRecord: true }).skip).toBe('not-mergeable');
+  });
+  it('actions floor ignores hasRecord and still needs a SUCCESS rollup', () => {
+    expect(classifyCandidate(basePr({ statusRollup: 'PENDING' }), 'echo', { floor: 'actions', hasRecord: true }).skip).toBe('not-settled-green');
+    expect(classifyCandidate(basePr(), 'echo', { floor: 'actions', hasRecord: false })).toEqual({ eligible: true });
   });
 });

@@ -114,14 +114,16 @@ describe('swap-continuity wiring integrity', () => {
     sessions: Array<{ sessionName: string; accountId: string | null; loginLossAccountId?: string | null; startedAt?: string; refreshable?: boolean }>;
     defaultAccountId?: string | null;
     probe?: (s: string) => Promise<WorkProbeResult>;
-    continuity?: Partial<{ enabled: boolean; dryRun: boolean; deferralCeilingMs: number }>;
+    continuity?: Partial<{ enabled: boolean; dryRun: boolean; deferralCeilingMs: number; wallEscalationPct: number }>;
     loginLoss?: { enabled: boolean; dryRun: boolean };
+    defaultSlotRepoint?: { enabled: boolean; dryRun: boolean };
     swapImpl?: (a: { sessionName: string; exhaustedAccountId: string; targetAccountId?: string }) => Promise<{ swapped: boolean; toAccountId: string | null; reason?: string }>;
   }) {
     const swap = vi.fn(
       over.swapImpl ??
         (async (a: { targetAccountId?: string }) => ({ swapped: true, toAccountId: a.targetAccountId ?? 'cool' })),
     );
+    const setDefaultAccount = vi.fn(async () => ({ ok: true, outcome: 'swapped' }));
     const monitor = new ProactiveSwapMonitor({
       listAccounts: () => over.accounts,
       listRunningSessions: () =>
@@ -137,6 +139,9 @@ describe('swap-continuity wiring integrity', () => {
       now: () => now,
       ...(over.engine ? { antiThrash: { engine: over.engine, getKnobs: knobs } } : {}),
       ...(over.loginLoss ? { loginLoss: over.loginLoss } : {}),
+      ...(over.defaultSlotRepoint
+        ? { defaultSlotRepoint: { ...over.defaultSlotRepoint, setDefaultAccount } }
+        : {}),
       ...(over.probe
         ? {
             workGate: {
@@ -153,7 +158,7 @@ describe('swap-continuity wiring integrity', () => {
           }
         : {}),
     });
-    return { monitor, swap };
+    return { monitor, swap, setDefaultAccount };
   }
 
   const idle: WorkProbeResult = { busy: false, turnLeg: 'idle', subagentLeg: 'ok', turnInFlight: false, subagents: [], reason: null };
@@ -224,42 +229,42 @@ describe('swap-continuity wiring integrity', () => {
       expect(second.swap).not.toHaveBeenCalled();
     });
 
-    it('bound untagged session swaps from the resolved default onto the freshest eligible account', async () => {
+    it('untagged session repoints the default slot to the freshest eligible account without mutating its binding', async () => {
       const engine = makeEngine();
       const soonReset = acct('soon-reset', 35);
       const freshest = acct('freshest', 7);
       if (soonReset.lastQuota?.sevenDay) soonReset.lastQuota.sevenDay.resetsAt = new Date(now + 60_000).toISOString();
       if (freshest.lastQuota?.sevenDay) freshest.lastQuota.sevenDay.resetsAt = new Date(now + 7 * 24 * 60 * 60_000).toISOString();
       expect(scoreAccount(soonReset, now)).toBeGreaterThan(scoreAccount(freshest, now));
-      const { monitor, swap } = makeMonitor({
+      const { monitor, swap, setDefaultAccount } = makeMonitor({
         engine,
         accounts: [acct('hot', 88), soonReset, freshest],
         sessions: [{ sessionName: 'untagged', accountId: null, refreshable: true }],
         defaultAccountId: 'hot',
         probe: async () => idle,
+        defaultSlotRepoint: { enabled: true, dryRun: false },
       });
       const r = await monitor.evaluate();
-      expect(r.swapped).toEqual(['untagged']);
-      expect(swap).toHaveBeenCalledWith(expect.objectContaining({
-        exhaustedAccountId: 'hot',
-        targetAccountId: 'freshest',
-        sourceWasUntagged: true,
-      }));
+      expect(r).toEqual({ swapped: [], considered: 0 });
+      expect(swap).not.toHaveBeenCalled();
+      expect(setDefaultAccount).toHaveBeenCalledWith('freshest');
     });
 
     it('untagged session holds when no fresher eligible target survives the existing floors', async () => {
       const engine = makeEngine();
-      const { monitor, swap } = makeMonitor({
+      const { monitor, swap, setDefaultAccount } = makeMonitor({
         engine,
-        accounts: [acct('hot', 88), acct('also-hot', 70)],
+        accounts: [acct('hot', 88), acct('also-hot', 85)],
         sessions: [{ sessionName: 'untagged', accountId: null, refreshable: true }],
         defaultAccountId: 'hot',
         probe: async () => idle,
+        defaultSlotRepoint: { enabled: true, dryRun: false },
       });
       const r = await monitor.evaluate();
       expect(r.swapped).toEqual([]);
-      expect(r.considered).toBe(1);
+      expect(r.considered).toBe(0);
       expect(swap).not.toHaveBeenCalled();
+      expect(setDefaultAccount).not.toHaveBeenCalled();
     });
 
     it('known-unrefreshable background session is excluded before execution', async () => {
@@ -315,7 +320,7 @@ describe('swap-continuity wiring integrity', () => {
       }));
     });
 
-    it('correlates an untagged missing-login session from its real config-home account when auth status is gone', async () => {
+    it('never mutates an untagged missing-login session binding when the default slot is unresolved', async () => {
       const engine = makeEngine();
       const { monitor, swap } = makeMonitor({
         engine,
@@ -330,12 +335,8 @@ describe('swap-continuity wiring integrity', () => {
         probe: async () => idle,
         loginLoss: { enabled: true, dryRun: false },
       });
-      expect(await monitor.evaluate()).toEqual({ swapped: ['default-session'], considered: 1 });
-      expect(swap).toHaveBeenCalledWith(expect.objectContaining({
-        exhaustedAccountId: 'lost',
-        sourceWasUntagged: true,
-        sourceTrigger: 'login-loss',
-      }));
+      expect(await monitor.evaluate()).toEqual({ swapped: [], considered: 0 });
+      expect(swap).not.toHaveBeenCalled();
     });
 
     it('dryRun keeps the LEGACY decision path (no targetAccountId funnel) while the engine shadows', async () => {
@@ -393,6 +394,158 @@ describe('swap-continuity wiring integrity', () => {
       // Both sides: backoff expires after dwellMs → the session may regenerate.
       now += 2_700_000;
       expect(engine.inReIntentBackoff('s1', now)).toBe(false);
+    });
+  });
+
+  // fb-f8b946ae-597: a session whose turn read busy for 10+ hours cycled
+  // defer → ceiling drop → backoff → defer at age 0 all night and walled.
+  describe('ProactiveSwapMonitor busy-deferral escalation at the wall-imminent threshold', () => {
+    const ledgerRows = () =>
+      fs.readFileSync(path.join(dir, 'state', 'swap-ledger.jsonl'), 'utf-8').trim().split('\n').map((l) => JSON.parse(l));
+
+    it('at/over the escalation threshold: escalates at the ceiling through the reactive-swap class', async () => {
+      const engine = makeEngine();
+      const accounts = [acct('hot', 97), acct('cool', 20)];
+      const { monitor, swap } = makeMonitor({
+        engine,
+        accounts,
+        sessions: [{ sessionName: 's1', accountId: 'hot' }],
+        probe: async () => busy,
+        continuity: { deferralCeilingMs: 300_000 },
+      });
+      await monitor.evaluate(); // defer (t=0)
+      expect(swap).not.toHaveBeenCalled();
+      now += 120_000;
+      await monitor.evaluate(); // still under the ceiling → keep deferring
+      expect(swap).not.toHaveBeenCalled();
+      now += 180_001;
+      accounts.splice(0, 2, acct('hot', 97), acct('cool', 20)); // fresh readings
+      const r = await monitor.evaluate(); // ceiling reached at 97% → escalate
+      expect(r.swapped).toEqual(['s1']);
+      expect(swap).toHaveBeenCalledOnce();
+      expect(swap.mock.calls[0][0]).toMatchObject({ callerClass: 'reactive-swap', targetAccountId: 'cool', exhaustedAccountId: 'hot' });
+      const executed = ledgerRows().find((row) => row.decision === 'swapped');
+      expect(executed).toMatchObject({ wallEscalated: true, deferralAgeMs: 300_001 });
+      expect(ledgerRows().some((row) => row.decision === 'dropped')).toBe(false);
+    });
+
+    it('below the escalation threshold: drops at the ceiling exactly as before', async () => {
+      const engine = makeEngine();
+      const { monitor, swap } = makeMonitor({
+        engine,
+        accounts: [acct('hot', 94), acct('cool', 20)],
+        sessions: [{ sessionName: 's1', accountId: 'hot' }],
+        probe: async () => busy,
+        continuity: { deferralCeilingMs: 300_000 },
+      });
+      await monitor.evaluate();
+      now += 300_001;
+      await monitor.evaluate();
+      expect(swap).not.toHaveBeenCalled();
+      expect(ledgerRows().some((row) => row.decision === 'dropped')).toBe(true);
+    });
+
+    it('the busy age accumulates across a ceiling drop: the next intent escalates without another full wait', async () => {
+      const engine = makeEngine();
+      const accounts = [acct('hot', 90), acct('cool', 20)];
+      const { monitor, swap } = makeMonitor({
+        engine,
+        accounts,
+        sessions: [{ sessionName: 's1', accountId: 'hot' }],
+        probe: async () => busy,
+        continuity: { deferralCeilingMs: 300_000 },
+      });
+      await monitor.evaluate(); // defer at 90%
+      now += 300_001;
+      await monitor.evaluate(); // ceiling at 90% → drop, backoff
+      expect(swap).not.toHaveBeenCalled();
+      now += 2_700_001; // re-intent backoff over; the account kept burning
+      accounts.splice(0, 2, acct('hot', 97), acct('cool', 20));
+      const r = await monitor.evaluate(); // first busy probe of the NEW intent
+      expect(r.swapped).toEqual(['s1']);
+      expect(swap.mock.calls[0][0]).toMatchObject({ callerClass: 'reactive-swap' });
+    });
+
+    it('escalates at most once per busy episode: a failed escalation falls back to the drop', async () => {
+      const engine = makeEngine();
+      const accounts = [acct('hot', 97), acct('cool', 20)];
+      const { monitor, swap } = makeMonitor({
+        engine,
+        accounts,
+        sessions: [{ sessionName: 's1', accountId: 'hot' }],
+        probe: async () => busy,
+        continuity: { deferralCeilingMs: 300_000 },
+        swapImpl: async () => ({ swapped: false, toAccountId: null, reason: 'refresh-failed' }),
+      });
+      await monitor.evaluate();
+      now += 300_001;
+      await monitor.evaluate(); // escalation attempt — fails
+      expect(swap).toHaveBeenCalledOnce();
+      now += 2_700_001; // past the existing exec-failure backoff
+      accounts.splice(0, 2, acct('hot', 97), acct('cool', 20));
+      await monitor.evaluate(); // no second escalation → the drop path
+      expect(swap).toHaveBeenCalledOnce();
+      expect(ledgerRows().some((row) => row.decision === 'dropped')).toBe(true);
+    });
+
+    it('an idle probe ends the busy episode: busy time is never counted across idle', async () => {
+      const engine = makeEngine();
+      const accounts = [acct('hot', 97), acct('cool', 20)];
+      let probeResult = busy;
+      let failNext = true;
+      const { monitor, swap } = makeMonitor({
+        engine,
+        accounts,
+        sessions: [{ sessionName: 's1', accountId: 'hot' }],
+        probe: async () => probeResult,
+        continuity: { deferralCeilingMs: 300_000 },
+        swapImpl: async (a) => {
+          if (failNext) { failNext = false; return { swapped: false, toAccountId: null, reason: 'refresh-failed' }; }
+          return { swapped: true, toAccountId: a.targetAccountId ?? 'cool' };
+        },
+      });
+      await monitor.evaluate(); // busy → defer, episode starts
+      probeResult = idle;
+      now += 60_000;
+      await monitor.evaluate(); // idle → ordinary swap attempt (fails); the episode ends
+      expect(swap.mock.calls[0][0]).toMatchObject({ callerClass: 'proactive-swap' });
+      probeResult = busy;
+      now += 2_700_001; // past the exec-failure backoff
+      accounts.splice(0, 2, acct('hot', 97), acct('cool', 20));
+      await monitor.evaluate(); // busy again: a NEW episode, so no escalation yet
+      expect(swap).toHaveBeenCalledOnce();
+    });
+
+    it('wallEscalationPct above 100 disables escalation', async () => {
+      const engine = makeEngine();
+      const { monitor, swap } = makeMonitor({
+        engine,
+        accounts: [acct('hot', 99), acct('cool', 20)],
+        sessions: [{ sessionName: 's1', accountId: 'hot' }],
+        probe: async () => busy,
+        continuity: { deferralCeilingMs: 300_000, wallEscalationPct: 101 },
+      });
+      await monitor.evaluate();
+      now += 300_001;
+      await monitor.evaluate();
+      expect(swap).not.toHaveBeenCalled();
+    });
+
+    it('a session that turns idle swaps the normal proactive way (no escalation needed)', async () => {
+      const engine = makeEngine();
+      let probeResult = busy;
+      const { monitor, swap } = makeMonitor({
+        engine,
+        accounts: [acct('hot', 97), acct('cool', 20)],
+        sessions: [{ sessionName: 's1', accountId: 'hot' }],
+        probe: async () => probeResult,
+        continuity: { deferralCeilingMs: 300_000 },
+      });
+      await monitor.evaluate();
+      probeResult = idle;
+      now += 60_000;
+      await monitor.evaluate();
+      expect(swap.mock.calls[0][0]).toMatchObject({ callerClass: 'proactive-swap' });
     });
   });
 

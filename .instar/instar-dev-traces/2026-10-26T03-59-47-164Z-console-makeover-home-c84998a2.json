@@ -1,0 +1,27 @@
+{
+  "version": 2,
+  "slug": "console-makeover-home",
+  "sessionId": "cd11bb25-38ff-4a31-becc-216173b7ad19",
+  "timestamp": "2026-10-26T03:59:47.164Z",
+  "artifactPath": "upgrades/side-effects/console-makeover-home.md",
+  "artifactSha256": "558fc05a259127723fea8b46142dda40f1d213d09015841cfc58b254ad41b1e4",
+  "coveredFiles": [
+    ".instar/instar-dev-traces/2026-10-26T03-40-00-705Z-console-makeover-home-b4b4bc29.json",
+    "dashboard/console/console.css",
+    "dashboard/console/console.js",
+    "dashboard/console/nav-model.js",
+    "dashboard/console/schedule-model.js",
+    "dashboard/console/schedule.js",
+    "docs/specs/console-features/README.md",
+    "tests/e2e/console-home-lifecycle.test.ts",
+    "tests/integration/console-static-serving.test.ts",
+    "tests/unit/console-schedule.test.ts"
+  ],
+  "phase": "complete",
+  "tier": 1,
+  "tierReasoning": "Merge of the native Schedule page branch; both sides' appends kept, the e2e setup unified on one server with every tracker; static files and tests only.",
+  "eli16Path": "docs/specs/console-makeover.eli16.md",
+  "sideEffectsPath": "upgrades/side-effects/console-makeover-home.md",
+  "secondPass": "true",
+  "reviewerConcurred": true
+}

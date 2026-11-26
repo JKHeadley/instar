@@ -1,0 +1,12 @@
+{
+  "generatedAt": "2026-10-22T02:42:19.346Z",
+  "slug": "local-verify-merge-authority",
+  "carriers": {
+    "CMT-903": {
+      "status": "pending",
+      "owner": "agent",
+      "blockedOn": "none",
+      "excerpt": "Carry the local-verify-merge-authority follow-ups to closure: (1) ACT-142 fix the integration-lane port-reuse race at the source, then run tests/integration in parallel after 10 clean parallel runs; (2) ACT-143 give each e2e run its own tmux socket, then run tests/e2e in parallel; (3) ACT-144 decide from measured npm ci time whether a shared node_modules cache is worth it; (4) ACT-145 evaluate Bor"
+    }
+  }
+}

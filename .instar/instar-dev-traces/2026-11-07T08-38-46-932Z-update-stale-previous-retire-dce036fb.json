@@ -1,0 +1,22 @@
+{
+  "version": 2,
+  "slug": "update-stale-previous-retire",
+  "sessionId": "318ed537-3e62-40ad-adf9-360871c3e705",
+  "timestamp": "2026-11-07T08:38:46.932Z",
+  "artifactPath": "upgrades/side-effects/update-stale-previous-retire.md",
+  "artifactSha256": "237d9406365238bcf53cb92d2043cae533049f4b96db3b72bd36fe39aa03f655",
+  "coveredFiles": [
+    "src/core/UpdateChecker.ts",
+    "tests/unit/UpdateChecker.test.ts",
+    "upgrades/eli16/update-stale-previous-retire.md",
+    "upgrades/next/update-stale-previous-retire.md",
+    "upgrades/side-effects/update-stale-previous-retire.md"
+  ],
+  "phase": "complete",
+  "tier": 1,
+  "tierReasoning": "A guarded cleanup at the start of existing update and rollback paths; a revert fully undoes it. Independent second pass raised concerns that are addressed.",
+  "eli16Path": "upgrades/eli16/update-stale-previous-retire.md",
+  "sideEffectsPath": "upgrades/side-effects/update-stale-previous-retire.md",
+  "secondPass": "true",
+  "reviewerConcurred": true
+}

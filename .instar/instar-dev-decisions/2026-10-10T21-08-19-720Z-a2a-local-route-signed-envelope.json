@@ -1,0 +1,38 @@
+{
+  "ts": "2026-10-10T21:08:19.720Z",
+  "slug": "a2a-local-route-signed-envelope",
+  "suggestedTier": 2,
+  "declaredTier": 2,
+  "riskFloor": 2,
+  "riskFloorReasons": [
+    "safety-invariant proximity: src/messaging/AgentTokenManager.ts matches token handling",
+    "irreversibility: src/core/PostUpdateMigrator.ts touches PostUpdateMigrator",
+    "migration / fleet-rollout surface: src/core/PostUpdateMigrator.ts touches PostUpdateMigrator (fleet migration machinery)",
+    "new capability: new exported class / subsystem added"
+  ],
+  "belowFloor": false,
+  "files": 12,
+  "loc": 1130,
+  "scope": {
+    "basis": "staged-in-scope-additions-plus-deletions",
+    "files": [
+      "src/commands/server.ts",
+      "src/core/PostUpdateMigrator.ts",
+      "src/core/devGatedFeatures.ts",
+      "src/core/types.ts",
+      "src/messaging/AgentTokenManager.ts",
+      "src/messaging/DropPickup.ts",
+      "src/messaging/MessageRouter.ts",
+      "src/messaging/types.ts",
+      "src/scaffold/templates.ts",
+      "src/server/routes.ts",
+      "src/threadline/ThreadlineEndpoints.ts",
+      "src/threadline/localEnvelopeSignature.ts"
+    ],
+    "addedLines": 1116,
+    "deletedLines": 14
+  },
+  "causalAutopsy": null,
+  "classClosure": null,
+  "verdict": "blocked"
+}

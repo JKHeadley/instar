@@ -1,0 +1,18 @@
+{
+  "version": 2,
+  "slug": "linux-desktop-host",
+  "sessionId": "cbaa6613-87c0-4eb5-9324-fa4a4f7dff8d",
+  "timestamp": "2026-11-03T06:47:17.548Z",
+  "artifactPath": "upgrades/side-effects/linux-desktop-host.md",
+  "artifactSha256": "a47eaede165d055ae58840a17e1ec3e07bc6fa6eb1770afa56a4e9350d280c17",
+  "specPath": "docs/specs/blocker-handoff-across-machines-and-surfaces.md",
+  "coveredFiles": [
+    "src/core/LinuxDesktopHost.ts",
+    "upgrades/side-effects/linux-desktop-host.md"
+  ],
+  "phase": "complete",
+  "tier": 2,
+  "tierReasoning": "marker comment on Linux host heartbeat catch for silent-fallback ratchet",
+  "secondPass": "true",
+  "reviewerConcurred": true
+}

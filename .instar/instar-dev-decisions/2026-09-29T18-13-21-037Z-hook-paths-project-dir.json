@@ -1,0 +1,32 @@
+{
+  "ts": "2026-09-29T18:13:21.037Z",
+  "slug": "hook-paths-project-dir",
+  "suggestedTier": 2,
+  "declaredTier": 1,
+  "riskFloor": 2,
+  "riskFloorReasons": [
+    "irreversibility: src/core/PostUpdateMigrator.ts touches PostUpdateMigrator",
+    "migration / fleet-rollout surface: src/core/PostUpdateMigrator.ts touches PostUpdateMigrator (fleet migration machinery)",
+    "migration / fleet-rollout surface: src/data/http-hook-templates.ts touches http-hook-templates (settings/hook migration source)",
+    "new capability: new config key added"
+  ],
+  "belowFloor": true,
+  "files": 6,
+  "loc": 163,
+  "scope": {
+    "basis": "staged-in-scope-additions-plus-deletions",
+    "files": [
+      "scripts/blocking-decision-surfaces-baseline.json",
+      "src/core/PostUpdateMigrator.ts",
+      "src/data/http-hook-templates.ts",
+      "src/templates/hooks/build-stop-hook.sh",
+      "src/templates/hooks/settings-template.json",
+      "src/templates/hooks/slack-channel-context.sh"
+    ],
+    "addedLines": 108,
+    "deletedLines": 55
+  },
+  "causalAutopsy": null,
+  "classClosure": null,
+  "verdict": "pass"
+}

@@ -1,0 +1,30 @@
+{
+  "version": 2,
+  "slug": "attention-names-not-ids",
+  "sessionId": "d18b0bbf-d233-4b55-a0c0-df85292c7c41",
+  "timestamp": "2026-11-02T20:05:35.860Z",
+  "artifactPath": "upgrades/side-effects/attention-names-not-ids.md",
+  "artifactSha256": "05dcc9d8d835fe219c3e4b72b9cbf895d411360137dae8a6098efa8b1f509ebd",
+  "coveredFiles": [
+    "src/commands/server.ts",
+    "src/messaging/TelegramAdapter.ts",
+    "src/messaging/shared/channelIdentity.ts",
+    "tests/unit/attention-lifecycle-store.test.ts",
+    "tests/unit/attention-names-not-ids.test.ts",
+    "upgrades/next/attention-names-not-ids.md",
+    "upgrades/side-effects/attention-names-not-ids.eli16.md",
+    "upgrades/side-effects/attention-names-not-ids.md"
+  ],
+  "phase": "complete",
+  "tier": 1,
+  "tierReasoning": "alert wording only, ids and dedup keys untouched; revert fully undoes it",
+  "eli16Path": "upgrades/side-effects/attention-names-not-ids.eli16.md",
+  "sideEffectsPath": "upgrades/side-effects/attention-names-not-ids.md",
+  "secondPass": "not-required",
+  "reviewerConcurred": null,
+  "classClosure": {
+    "defectClass": "unbounded-self-action",
+    "closure": "n/a",
+    "reason": "text-only change: alert wording is rewritten with names; no action is added, and naming-only differences now suppress a repost rather than cause one"
+  }
+}

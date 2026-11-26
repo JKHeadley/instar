@@ -28,6 +28,7 @@
  *    back into the commit / reconciler / route that observed the failure.
  */
 import Database from 'better-sqlite3';
+import { featureEvidence } from './FeatureEvidenceLog.js';
 import { registerSqliteHandle } from '../core/SqliteRegistry.js';
 import type { Database as BetterSqliteDatabase } from 'better-sqlite3';
 import fs from 'node:fs';
@@ -496,9 +497,33 @@ export class FailureLedger {
       });
 
       const id = txn();
-      return this.get(id);
+      const record = this.get(id);
+      // First sighting, then at each doubling: a repeating failure stays visible without a row per repeat.
+      const occurrences = record?.occurrenceCount ?? 0;
+      if (occurrences > 0 && (occurrences & (occurrences - 1)) === 0) {
+        featureEvidence.record('monitoring.failureLearning', {
+          kind: 'fired',
+          reason: `failure-recorded:${input.attribution}`,
+          context: {
+            source: input.source,
+            severity: input.severity,
+            category,
+            attribution: input.attribution,
+            attributionConfidence: input.attributionConfidence ?? 0,
+            provenance: input.provenance ?? 'unknown',
+            hasCauseCommit: Boolean(input.causeCommitOid),
+            occurrences,
+          },
+        });
+      }
+      return record;
     } catch (err) {
       this.onError('open', err);
+      featureEvidence.record('monitoring.failureLearning', {
+        kind: 'error',
+        reason: 'failure-write-failed',
+        context: { source: input.source, errorName: err instanceof Error ? err.name : 'unknown' },
+      });
       return null;
     }
   }
@@ -688,9 +713,21 @@ export class FailureLedger {
           ids: JSON.stringify(input.supportingFailureIds), ds: input.distinctSessions, dc: input.distinctCauseCommits,
           tc: input.targetCategory ?? null, br: input.baselineRate ?? null,
         });
+      featureEvidence.record('monitoring.failureLearning', {
+        kind: 'fired',
+        reason: 'pattern-surfaced',
+        context: {
+          insightId: id,
+          supportingFailures: input.supportingFailureIds.length,
+          distinctSessions: input.distinctSessions,
+          distinctCauseCommits: input.distinctCauseCommits,
+          targetCategory: input.targetCategory ?? null,
+        },
+      });
       return this.getInsight(id);
     } catch (err) {
       this.onError('upsertInsight', err);
+      featureEvidence.record('monitoring.failureLearning', { kind: 'error', reason: 'insight-write-failed', context: { errorName: err instanceof Error ? err.name : 'unknown' } });
       return null;
     }
   }

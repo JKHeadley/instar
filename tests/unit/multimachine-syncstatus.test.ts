@@ -56,4 +56,19 @@ describe('MultiMachineCoordinator.getSyncStatus — feature-alive surface', () =
     // Should not throw regardless of registry state.
     expect(() => coord.getSyncStatus()).not.toThrow();
   });
+
+  it('includes the attached lease medium, reason, and actual store', () => {
+    coord = new MultiMachineCoordinator(new StateManager(dir), { stateDir: dir });
+    coord.start();
+    coord.attachLeaseMediumProvider(() => ({
+      medium: 'local',
+      reason: 'ignored',
+      store: 'LocalLeaseStore',
+    }));
+    expect(coord.getSyncStatus().leaseMedium).toEqual({
+      medium: 'local',
+      reason: 'ignored',
+      store: 'LocalLeaseStore',
+    });
+  });
 });

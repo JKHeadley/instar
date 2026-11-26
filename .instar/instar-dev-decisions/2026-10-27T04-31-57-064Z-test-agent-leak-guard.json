@@ -1,0 +1,22 @@
+{
+  "ts": "2026-10-27T04:31:57.064Z",
+  "slug": "test-agent-leak-guard",
+  "suggestedTier": 1,
+  "declaredTier": 3,
+  "riskFloor": 1,
+  "riskFloorReasons": [],
+  "belowFloor": false,
+  "files": 1,
+  "loc": 2,
+  "scope": {
+    "basis": "staged-in-scope-additions-plus-deletions",
+    "files": [
+      "src/core/ThrowawayAgentGuard.ts"
+    ],
+    "addedLines": 1,
+    "deletedLines": 1
+  },
+  "causalAutopsy": null,
+  "classClosure": null,
+  "verdict": "pass"
+}

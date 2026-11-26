@@ -1,0 +1,30 @@
+{
+  "version": 2,
+  "slug": "stacked-pr-and-ci-timeouts",
+  "sessionId": "a5300ac7-2380-41bb-97a4-805fc7f19218",
+  "timestamp": "2026-11-02T21:28:15.573Z",
+  "artifactPath": "upgrades/side-effects/stacked-pr-and-ci-timeouts.md",
+  "artifactSha256": "9b131dba9696717c3b324769a6b35a807fe527c5dd361cd128741e8ef3f6d766",
+  "coveredFiles": [
+    ".github/workflows/ci.yml",
+    ".github/workflows/stacked-pr-guard.yml",
+    "docs/eli16/stacked-pr-and-ci-timeouts.eli16.md",
+    "scripts/safe-merge.mjs",
+    "src/monitoring/GreenPrAutoMerger.ts",
+    "src/monitoring/greenPrLogic.ts",
+    "tests/integration/safe-merge-non-main-base.test.ts",
+    "tests/unit/ci-workflow-timeouts.test.ts",
+    "tests/unit/green-pr-logic.test.ts",
+    "tests/unit/green-pr-red-watchdog.test.ts",
+    "tests/unit/safe-merge-non-main-base.test.ts",
+    "upgrades/next/stacked-pr-and-ci-timeouts.md",
+    "upgrades/side-effects/stacked-pr-and-ci-timeouts.md"
+  ],
+  "phase": "complete",
+  "tier": 1,
+  "tierReasoning": "Adds only refusals, skips and job time limits; one revert fully undoes it; no state, config or migration.",
+  "eli16Path": "docs/eli16/stacked-pr-and-ci-timeouts.eli16.md",
+  "sideEffectsPath": "upgrades/side-effects/stacked-pr-and-ci-timeouts.md",
+  "secondPass": "true",
+  "reviewerConcurred": true
+}

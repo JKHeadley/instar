@@ -1,0 +1,62 @@
+{
+  "ts": "2026-11-04T20:03:30.336Z",
+  "slug": "a2a-required-acknowledgment",
+  "suggestedTier": 2,
+  "declaredTier": 2,
+  "riskFloor": 2,
+  "riskFloorReasons": [
+    "irreversibility: src/core/PostUpdateMigrator.ts touches PostUpdateMigrator",
+    "migration / fleet-rollout surface: src/core/PostUpdateMigrator.ts touches PostUpdateMigrator (fleet migration machinery)",
+    "new capability: new route (router.<verb>() added",
+    "new capability: new exported class / subsystem added",
+    "new capability: new config key added"
+  ],
+  "belowFloor": false,
+  "files": 27,
+  "loc": 2106,
+  "scope": {
+    "basis": "staged-in-scope-additions-plus-deletions",
+    "files": [
+      "src/commands/server.ts",
+      "src/core/MeshRpc.ts",
+      "src/core/PostUpdateMigrator.ts",
+      "src/core/types.ts",
+      "src/data/feature-ladders.json",
+      "src/messaging/SpawnRequestManager.ts",
+      "src/scaffold/templates.ts",
+      "src/server/AgentServer.ts",
+      "src/server/routes.ts",
+      "src/testing/selfActionRegistry.ts",
+      "src/threadline/A2ADeliveryTracker.ts",
+      "src/threadline/InboundMessageGate.ts",
+      "src/threadline/ThreadlineBootstrap.ts",
+      "src/threadline/ThreadlineEndpoints.ts",
+      "src/threadline/ThreadlineMCPServer.ts",
+      "src/threadline/ThreadlineMcpHttpService.ts",
+      "src/threadline/ThreadlineRouter.ts",
+      "src/threadline/TopicLinkageHandler.ts",
+      "src/threadline/autoAck.ts",
+      "src/threadline/client/MessageEncryptor.ts",
+      "src/threadline/client/ThreadlineClient.ts",
+      "src/threadline/inboundIdLedgerWiring.ts",
+      "src/threadline/mcp-http-client.ts",
+      "src/threadline/mcp-stdio-entry.ts",
+      "src/threadline/requiredAck.ts",
+      "src/threadline/requiredAckService.ts",
+      "src/threadline/requiredAckStore.ts"
+    ],
+    "addedLines": 2054,
+    "deletedLines": 52
+  },
+  "causalAutopsy": null,
+  "classClosure": {
+    "defectClass": "unbounded-self-action",
+    "closure": "guard",
+    "guardEvidence": {
+      "enforcementType": "ratchet",
+      "citation": "tests/unit/self-action-convergence.test.ts",
+      "howCaught": "Pending receipts retry with doubling backoff to 10 minutes and expire after an hour, so a send that always fails settles at about 11 attempts; registered as required-ack-pending-retry. The watch timers fire at most one reminder and one notice per row."
+    }
+  },
+  "verdict": "blocked"
+}

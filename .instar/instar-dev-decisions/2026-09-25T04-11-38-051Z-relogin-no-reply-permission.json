@@ -1,0 +1,27 @@
+{
+  "ts": "2026-09-25T04:11:38.051Z",
+  "slug": "relogin-no-reply-permission",
+  "suggestedTier": 1,
+  "declaredTier": 1,
+  "riskFloor": 1,
+  "riskFloorReasons": [],
+  "belowFloor": false,
+  "files": 2,
+  "loc": 8,
+  "scope": {
+    "basis": "staged-in-scope-additions-plus-deletions",
+    "files": [
+      "src/commands/server.ts",
+      "src/core/AnthropicReloginBrowserDriver.ts"
+    ],
+    "addedLines": 6,
+    "deletedLines": 2
+  },
+  "causalAutopsy": null,
+  "classClosure": {
+    "defectClass": "unbounded-self-action",
+    "closure": "n/a",
+    "reason": "reduces retries only"
+  },
+  "verdict": "pass"
+}

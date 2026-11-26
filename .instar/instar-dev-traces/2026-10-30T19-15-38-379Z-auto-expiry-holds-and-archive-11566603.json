@@ -1,0 +1,23 @@
+{
+  "version": 2,
+  "slug": "auto-expiry-holds-and-archive",
+  "sessionId": "62a214f9-4182-47b0-b8d8-f43664e48c88",
+  "timestamp": "2026-10-30T19:15:38.379Z",
+  "artifactPath": "upgrades/side-effects/auto-expiry-holds-and-archive.md",
+  "artifactSha256": "4755d67166be72ad21c1b5e7554719de6fa5a9081c1dd2171f746f166356d306",
+  "coveredFiles": [
+    "docs/specs/auto-expiry-holds-and-archive.eli16.md",
+    "src/core/AutoExpiryLedger.ts",
+    "src/core/types.ts",
+    "src/monitoring/CommitmentTracker.ts",
+    "src/server/routes.ts",
+    "upgrades/side-effects/auto-expiry-holds-and-archive.md"
+  ],
+  "phase": "complete",
+  "tier": 1,
+  "tierReasoning": "Type move only; both sweeps stay dry-run.",
+  "eli16Path": "docs/specs/auto-expiry-holds-and-archive.eli16.md",
+  "sideEffectsPath": "upgrades/side-effects/auto-expiry-holds-and-archive.md",
+  "secondPass": "true",
+  "reviewerConcurred": true
+}

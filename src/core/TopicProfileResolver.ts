@@ -44,6 +44,8 @@ import {
 } from './topicProfileValidation.js';
 import { resolveTierModel, type TierEscalationConfig } from './ModelTierEscalation.js';
 import { SUPPORTED_FRAMEWORKS } from './TopicFrameworksStore.js';
+import { isIssuesTopicId } from '../messaging/telegramTopicSpace.js';
+import { CODEX_OLDER_CLI_FALLBACKS, codexSupportsNewerModels } from './codexCapabilities.js';
 
 export interface ResolvedTopicProfile {
   framework: IntelligenceFramework;
@@ -80,6 +82,10 @@ export interface TopicProfileResolverOptions {
   configTopicFrameworks: () => Record<string, string>;
   /** `topicProfiles.defaults` — per-topic config-default profiles (§12.5). */
   configProfileDefaults: () => Record<string, { model?: string; thinkingMode?: string; effort?: string }>;
+  /** A config-owned group policy, separate from per-topic operator pins. */
+  configGroupDefaults?: () => { issues?: { framework?: IntelligenceFramework; model?: string } };
+  /** Test seam; production probes the resolved Codex CLI version. */
+  codexModelSupported?: (binaryPath: string) => boolean;
   /** `frameworkDefaultModels` config layer. */
   frameworkDefaultModels: () => Partial<Record<IntelligenceFramework, string>>;
   /** Live tier-escalation config — resolves a modelTier pin to a concrete id. */
@@ -101,11 +107,25 @@ export interface TopicProfileResolverOptions {
 /** Launchability cache TTL — re-stat the binary at most this often. */
 const LAUNCHABILITY_TTL_MS = 60_000;
 
+/**
+ * Tri-state door availability (dashboard-door-model-controls §3.1).
+ * `verified` = the probe checked and the door is admissible; `assumed` = the
+ * probe errored or had nothing to check and the resolver FELL OPEN (never
+ * collapsed into `verified`); `unavailable` = provably not launchable here,
+ * or refused by a framework-specific gate.
+ */
+export type DoorAvailability = 'verified' | 'assumed' | 'unavailable';
+
+export interface DoorAdmissibility {
+  availability: DoorAvailability;
+  reason: 'framework-unlaunchable' | 'grok-interactive-ungated' | null;
+}
+
 export class TopicProfileResolver {
   private readonly opts: TopicProfileResolverOptions;
   /** (topic|pin|reason) keys already disclosed — once-per-transition dedupe. */
   private disclosedFallbacks = new Set<string>();
-  private launchabilityCache = new Map<string, { ok: boolean; at: number }>();
+  private launchabilityCache = new Map<string, { ok: boolean; availability: DoorAvailability; at: number }>();
 
   constructor(opts: TopicProfileResolverOptions) {
     this.opts = opts;
@@ -116,6 +136,9 @@ export class TopicProfileResolver {
     const key = String(topicKey);
     const pin: TopicProfile | null = this.opts.store.resolve(key);
     const notices: string[] = [];
+    const groupDefault = isIssuesTopicId(topicKey)
+      ? { framework: 'codex-cli' as IntelligenceFramework, model: 'gpt-6.2-sol', ...this.opts.configGroupDefaults?.().issues }
+      : undefined;
 
     // ── framework arm ────────────────────────────────────────────────────
     let framework: IntelligenceFramework | null = null;
@@ -149,6 +172,12 @@ export class TopicProfileResolver {
         framework = configFw as IntelligenceFramework;
         frameworkSource = 'config-default';
       }
+    }
+    if (!framework && groupDefault?.framework
+      && (SUPPORTED_FRAMEWORKS as readonly string[]).includes(groupDefault.framework)
+      && this.isAdmissible(groupDefault.framework)) {
+      framework = groupDefault.framework;
+      frameworkSource = 'group-config-default';
     }
     if (!framework) {
       framework = this.opts.defaultFramework();
@@ -211,10 +240,32 @@ export class TopicProfileResolver {
       }
     }
     if (model === undefined && modelSource === 'account-default') {
+      if (groupDefault?.model) {
+        const err = validateModelId(groupDefault.model, framework);
+        if (err === null) {
+          model = groupDefault.model;
+          modelSource = 'group-config-default';
+        }
+      }
+    }
+    if (model === undefined && modelSource === 'account-default') {
       const fwDefault = this.opts.frameworkDefaultModels()[framework];
       if (fwDefault) {
         model = fwDefault;
         modelSource = 'frameworkDefaultModels';
+      }
+    }
+    if (framework === 'codex-cli' && model !== undefined && CODEX_OLDER_CLI_FALLBACKS[model]) {
+      const binary = this.opts.frameworkBinaryPath(framework);
+      const supported = binary && (this.opts.codexModelSupported ?? codexSupportsNewerModels)(binary);
+      if (!supported) {
+        // Recorded, not announced (Near-Silent Notifications): the resolved
+        // source and the session's launch model carry the fallback, and the
+        // audit names the requested id. Nothing here needs the person to act.
+        const wanted = model;
+        model = CODEX_OLDER_CLI_FALLBACKS[wanted];
+        modelSource = 'older-codex-cli-fallback';
+        this.opts.audit?.({ type: 'fallback', reason: 'older-codex-cli', topic: key, failure: `cannot-run:${wanted}` });
       }
     }
 
@@ -331,41 +382,58 @@ export class TopicProfileResolver {
   private admissibility(
     framework: IntelligenceFramework,
   ): 'framework-unlaunchable' | 'grok-interactive-ungated' | null {
-    if (!this.isLaunchable(framework)) return 'framework-unlaunchable';
+    return this.doorAdmissibility(framework).reason;
+  }
+
+  /**
+   * PUBLIC tri-state wrapper over the same check (dashboard-door-model-controls
+   * §3.1). The two existing private callers keep binary semantics through
+   * `admissibility` above; the options route and the dashboard write
+   * validator read the tri-state. Same cache, same TTL.
+   */
+  doorAdmissibility(framework: IntelligenceFramework): DoorAdmissibility {
+    const launch = this.launchability(framework);
+    if (!launch.ok) return { availability: 'unavailable', reason: 'framework-unlaunchable' };
     if (framework === 'grok-build') {
       // Fail toward ADMISSIBLE when the gate cannot be read (no accessor
       // wired): this predicate only decides whether to disclose a fallback,
       // and a blind probe must never re-route a valid pin.
       const gate = this.opts.grokInteractiveOptIn?.();
-      if (gate === false) return 'grok-interactive-ungated';
+      if (gate === false) return { availability: 'unavailable', reason: 'grok-interactive-ungated' };
     }
-    return null;
+    return { availability: launch.availability, reason: null };
   }
 
   /**
    * §5.2 cheap/cached launchability: fs.existsSync on the resolved binary
    * path with a TTL — never an unconditional per-spawn subprocess.
    */
-  private isLaunchable(framework: IntelligenceFramework): boolean {
+  private launchability(framework: IntelligenceFramework): { ok: boolean; availability: DoorAvailability } {
     const cached = this.launchabilityCache.get(framework);
-    if (cached && Date.now() - cached.at < LAUNCHABILITY_TTL_MS) return cached.ok;
+    if (cached && Date.now() - cached.at < LAUNCHABILITY_TTL_MS) return cached;
     // Fail toward "launchable" whenever the check cannot actually verify
     // absence: this check is a cheap SIGNAL whose only job is to catch a
     // provably-missing binary before a dead pane; a pin must never be
     // re-routed on the checker's own blind spot (null path / unreadable
     // PATH). Genuinely broken CLIs are the §10.4 breaker's authority.
     let ok = true;
+    // WHY the answer is `ok` (§3.1): `assumed` whenever the probe fell open.
+    let verified = false;
     try {
       const bin = this.opts.frameworkBinaryPath(framework);
       if (bin !== null) {
         if (bin.includes('/')) {
           ok = fs.existsSync(bin);
+          verified = true;
         } else {
           // Bare command name (e.g. claudePath: 'claude') — resolve via PATH.
           const pathEntries = (process.env.PATH ?? '').split(':').filter(Boolean);
-          ok = pathEntries.length === 0
-            ? true
-            : pathEntries.some((dir) => fs.existsSync(`${dir}/${bin}`));
+          if (pathEntries.length === 0) {
+            ok = true;
+          } else {
+            ok = pathEntries.some((dir) => fs.existsSync(`${dir}/${bin}`));
+            verified = true;
+          }
         }
       }
     } catch {
@@ -375,9 +443,15 @@ export class TopicProfileResolver {
       // A genuinely broken CLI is the §10.4 breaker's authority, not this
       // check's — see the comment block above.
       ok = true;
+      verified = false;
     }
-    this.launchabilityCache.set(framework, { ok, at: Date.now() });
-    return ok;
+    const entry = {
+      ok,
+      availability: (!ok ? 'unavailable' : verified ? 'verified' : 'assumed') as DoorAvailability,
+      at: Date.now(),
+    };
+    this.launchabilityCache.set(framework, entry);
+    return entry;
   }
 
   /** Once-per-(topic,pin,reason) transition dedupe (§5.2 round-3). */

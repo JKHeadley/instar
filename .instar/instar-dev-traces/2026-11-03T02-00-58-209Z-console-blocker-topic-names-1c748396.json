@@ -1,0 +1,22 @@
+{
+  "version": 2,
+  "slug": "console-blocker-topic-names",
+  "sessionId": "d18b0bbf-d233-4b55-a0c0-df85292c7c41",
+  "timestamp": "2026-11-03T02:00:58.209Z",
+  "artifactPath": "upgrades/side-effects/console-blocker-topic-names.md",
+  "artifactSha256": "66eaf315a85ef8d2826b559b7158c3902ce750c5e5554c44eb90225a612cb0f9",
+  "coveredFiles": [
+    "dashboard/console/plans-model.js",
+    "tests/unit/deferral-detector-blocker-text.test.ts",
+    "upgrades/next/console-blocker-topic-names.md",
+    "upgrades/side-effects/console-blocker-topic-names.eli16.md",
+    "upgrades/side-effects/console-blocker-topic-names.md"
+  ],
+  "phase": "complete",
+  "tier": 1,
+  "tierReasoning": "console display only; revert fully undoes it",
+  "eli16Path": "upgrades/side-effects/console-blocker-topic-names.eli16.md",
+  "sideEffectsPath": "upgrades/side-effects/console-blocker-topic-names.md",
+  "secondPass": "not-required",
+  "reviewerConcurred": null
+}

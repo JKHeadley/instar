@@ -171,8 +171,12 @@ export function getDecisionQualityRecorder(): DecisionQualityRecorder | null {
 // injected beside the recorder singleton. Absent (single-machine install) ⇒ the
 // id segment is omitted. Shared by BOTH mint sites (router `d-`, breaker `b-`).
 let _machineId8: string | null = null;
+/** Same canonical origin segment for minting and measurement, never a guessed alias. */
+export function decisionQualityMachineSegment(machineId: string | null | undefined): string | null {
+  return typeof machineId === 'string' && machineId.length > 0 ? machineId.slice(0,8) : null;
+}
 export function setDecisionQualityMachineId(machineId: string | null | undefined): void {
-  _machineId8 = typeof machineId === 'string' && machineId.length > 0 ? machineId.slice(0, 8) : null;
+  _machineId8 = decisionQualityMachineSegment(machineId);
 }
 
 /** Router mint: `d-<machineId8>-<uuid>` on multi-machine installs, else `d-<uuid>` (FD1 — uuid-based, never time+seq). */

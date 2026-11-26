@@ -1,0 +1,47 @@
+{
+  "ts": "2026-10-30T17:47:44.339Z",
+  "slug": "native-remote-desktop-echo-mesh",
+  "suggestedTier": 2,
+  "declaredTier": 2,
+  "riskFloor": 2,
+  "riskFloorReasons": [
+    "safety-invariant proximity: src/server/DesktopMeshStreamRelay.ts matches relay / delivery path",
+    "new capability: new route (router.<verb>() added",
+    "new capability: new exported class / subsystem added"
+  ],
+  "belowFloor": false,
+  "files": 22,
+  "loc": 1990,
+  "scope": {
+    "basis": "staged-in-scope-additions-plus-deletions",
+    "files": [
+      "scripts/build-native-desktop-host.mjs",
+      "scripts/desktop-public-browser-smoke.mjs",
+      "scripts/install-windows-desktop-companion.mjs",
+      "scripts/install-windows-desktop-companion.ps1",
+      "src/commands/server.ts",
+      "src/core/DesktopAssertionReplayStore.ts",
+      "src/core/DesktopDelegatedSessionStore.ts",
+      "src/core/DesktopOperatorAssertion.ts",
+      "src/core/DirectDesktopAccess.ts",
+      "src/core/WindowsDesktopCompanionDiscovery.ts",
+      "src/core/WindowsDesktopHost.ts",
+      "src/core/types.ts",
+      "src/native/remote-desktop/macos/InstarDesktopHost.swift",
+      "src/native/remote-desktop/windows/InstarDesktopCompanion.cs",
+      "src/scaffold/templates.ts",
+      "src/server/AgentServer.ts",
+      "src/server/DesktopMeshBroker.ts",
+      "src/server/DesktopMeshStreamRelay.ts",
+      "src/server/DesktopPeerUrlGate.ts",
+      "src/server/WebSocketManager.ts",
+      "src/server/machineRoutes.ts",
+      "src/server/routes.ts"
+    ],
+    "addedLines": 1959,
+    "deletedLines": 31
+  },
+  "causalAutopsy": null,
+  "classClosure": null,
+  "verdict": "blocked"
+}

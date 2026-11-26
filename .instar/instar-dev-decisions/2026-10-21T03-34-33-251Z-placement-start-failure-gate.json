@@ -1,0 +1,35 @@
+{
+  "ts": "2026-10-21T03:34:33.251Z",
+  "slug": "placement-start-failure-gate",
+  "suggestedTier": 2,
+  "declaredTier": 1,
+  "riskFloor": 2,
+  "riskFloorReasons": [
+    "new capability: new exported class / subsystem added"
+  ],
+  "belowFloor": true,
+  "files": 5,
+  "loc": 178,
+  "scope": {
+    "basis": "staged-in-scope-additions-plus-deletions",
+    "files": [
+      "src/commands/server.ts",
+      "src/core/PlacementExecutor.ts",
+      "src/core/SessionManager.ts",
+      "src/core/selfQuotaState.ts",
+      "src/core/startFailureTracker.ts"
+    ],
+    "addedLines": 176,
+    "deletedLines": 2
+  },
+  "causalAutopsy": {
+    "origin": "latent",
+    "notes": "The eligibility signal was extended once before for exactly this class of incident (an open llm-circuit, after a session died on arrival on the Mini in June). Inability to START a session was never enumerated as a cause, and it is the one cause that makes a machine look BEST rather than worst: no load, no sessions, untouched quota. Latent since placement began scoring on load."
+  },
+  "classClosure": {
+    "defectClass": "unbounded-self-action",
+    "closure": "n/a",
+    "reason": "The tracker takes no action: it is a counter read by the existing capacity heartbeat. The only action is one attention item per episode, guarded by the state transition and deduped on a fixed id."
+  },
+  "verdict": "pass"
+}

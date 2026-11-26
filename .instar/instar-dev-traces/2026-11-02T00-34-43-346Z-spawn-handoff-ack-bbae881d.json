@@ -1,0 +1,30 @@
+{
+  "version": 2,
+  "slug": "spawn-handoff-ack",
+  "sessionId": "3f250801-df58-40d7-b8a8-6c6fed38e993",
+  "timestamp": "2026-11-02T00:34:43.346Z",
+  "artifactPath": "upgrades/side-effects/spawn-handoff-ack.md",
+  "artifactSha256": "ca12a48e1b6bae830f616d6f68642e85d2801bbf9aa6c8dcdcf7b2f80f141ea1",
+  "coveredFiles": [
+    "src/commands/server.ts",
+    "src/core/QueueDrainLoop.ts",
+    "src/core/SessionRouter.ts",
+    "tests/integration/session-router-dispatch.test.ts",
+    "tests/integration/silent-loss-refusal-conservation.integration.test.ts",
+    "tests/unit/OwnerSuspectBreaker.test.ts",
+    "tests/unit/SessionRouter.test.ts",
+    "tests/unit/queue-drain-loop.test.ts",
+    "tests/unit/session-router-spawn-ack-wiring.test.ts",
+    "tests/unit/silent-loss-route-outcome-ratchet.test.ts",
+    "upgrades/next/spawn-handoff-ack.md",
+    "upgrades/side-effects/spawn-handoff-ack.md",
+    "upgrades/spawn-handoff-ack.eli16.md"
+  ],
+  "phase": "complete",
+  "tier": 1,
+  "tierReasoning": "Narrow fix to the remote-placement ACK and the drain's forced re-place verdict; a revert fully undoes it; no state migration.",
+  "eli16Path": "upgrades/spawn-handoff-ack.eli16.md",
+  "sideEffectsPath": "upgrades/side-effects/spawn-handoff-ack.md",
+  "secondPass": "true",
+  "reviewerConcurred": true
+}

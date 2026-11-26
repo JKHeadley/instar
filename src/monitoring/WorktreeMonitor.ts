@@ -9,6 +9,12 @@
  *   1. Post-session scan: fires after each session completes, checks for new worktrees
  *   2. Periodic health scan: runs on interval, detects stale/orphan worktrees
  *
+ * Announce on change only: each alert kind remembers the fingerprint of the
+ * set it last announced (persisted, so a restart does not re-announce). An
+ * unchanged set is re-announced at most once per `reminderIntervalMs`. Before
+ * this, the same two notices about one unmerged branch went out ~550 times a
+ * day (docs/research/jev/field-notes/2026-09-30-idea4-notification-tiering.md).
+ *
  * Part of the Claude Code Feature Integration Audit (Item 1: Worktree Support).
  */
 
@@ -52,9 +58,18 @@ export interface WorktreeWithDiff {
   worktree: Worktree;
   /** Number of commits ahead of default branch */
   commitsAhead: number;
-  /** Files changed vs default branch */
+  /**
+   * Files changed vs default branch: the first FILES_CHANGED_KEPT names only.
+   * A long-lived branch far behind main can list tens of thousands of files;
+   * keeping them all made last-report.json 314 MB, rewritten every scan.
+   */
   filesChanged: string[];
+  /** Total number of files changed vs default branch (filesChanged may be truncated). */
+  filesChangedCount: number;
 }
+
+/** How many changed-file names a report keeps per worktree. The notice shows 5. */
+export const FILES_CHANGED_KEPT = 50;
 
 export interface WorktreeMonitorConfig {
   /** Project directory (git repo root) */
@@ -65,20 +80,52 @@ export interface WorktreeMonitorConfig {
   pollIntervalMs?: number;
   /** Max worktree age before flagging as stale (ms). Default: 86400000 (24h). */
   staleThresholdMs?: number;
+  /** Re-announce an unchanged, still-open finding at most this often (ms). Default: 86400000 (24h). */
+  reminderIntervalMs?: number;
   /** Callback for sending alerts */
   alertCallback?: (message: string) => Promise<void>;
+}
+
+/** Which notice a fingerprint belongs to. */
+type AlertKind = 'session' | 'stale';
+
+interface AnnouncedEntry {
+  /** Sorted item keys of the set last announced. */
+  fingerprint: string;
+  /** Epoch ms of that announcement. */
+  at: number;
 }
 
 // ── Implementation ─────────────────────────────────────────────────
 
 const DEFAULT_POLL_INTERVAL = 300_000;     // 5 minutes
 const DEFAULT_STALE_THRESHOLD = 86_400_000; // 24 hours
+const DEFAULT_REMINDER_INTERVAL = 86_400_000; // 24 hours
+
+/** A saved report larger than this is not parsed at boot (spec-free safety bound; see loadState). */
+export const MAX_SAVED_REPORT_BYTES = 16 * 1024 * 1024;
 
 export class WorktreeMonitor extends EventEmitter {
   private config: WorktreeMonitorConfig;
   private interval: ReturnType<typeof setInterval> | null = null;
   private stateFile: string;
   private lastReport: WorktreeReport | null = null;
+  /**
+   * Per-worktree results keyed by `<defaultBranchSha>:<head>` (fb-9f890bce-bd2). The scan
+   * started two git processes per worktree every 5 minutes (over 850 per scan on the
+   * Studio). A commit-count and changed-file list are pure functions of those two
+   * commits, so an unchanged pair is answered from here. Rebuilt each scan so entries
+   * for removed worktrees drop out.
+   */
+  private unmergedCache = new Map<string, WorktreeWithDiff | null>();
+  /** Commit timestamps by commit sha (a commit's time never changes). */
+  private commitTimeCache = new Map<string, number | null>();
+  private announcedFile: string;
+  private announced: Partial<Record<AlertKind, AnnouncedEntry>> = {};
+  /** The scan in progress, shared by every caller until it settles (single-flight). */
+  private scanInFlight: Promise<WorktreeReport> | null = null;
+  /** Session announce decisions run one at a time, so callers sharing a scan cannot all announce. */
+  private announceChain: Promise<void> = Promise.resolve();
 
   constructor(config: WorktreeMonitorConfig) {
     super();
@@ -88,6 +135,7 @@ export class WorktreeMonitor extends EventEmitter {
       fs.mkdirSync(stateDir, { recursive: true });
     }
     this.stateFile = path.join(stateDir, 'last-report.json');
+    this.announcedFile = path.join(stateDir, 'announced.json');
     this.loadState();
   }
 
@@ -116,7 +164,11 @@ export class WorktreeMonitor extends EventEmitter {
    * Called from the sessionComplete event handler.
    */
   async onSessionComplete(session: Session): Promise<WorktreeReport> {
-    const report = await this.scanWorktrees();
+    // Callers that overlap share one scan (single-flight); each gets its own copy of the
+    // report so their actions do not mix, and the announce decision below runs one caller
+    // at a time, so a burst of session ends announces an unchanged finding once.
+    const shared = await this.scanWorktrees();
+    const report: WorktreeReport = { ...shared, actions: [...shared.actions] };
 
     // Copy serendipity findings from worktrees before alerting
     for (const wt of report.worktrees) {
@@ -126,11 +178,26 @@ export class WorktreeMonitor extends EventEmitter {
       }
     }
 
-    if (report.withUnmergedWork.length > 0 || report.orphanBranches.length > 0) {
-      const message = this.formatSessionAlert(session, report);
-      report.actions.push(`Alert generated for session ${session.name}`);
-      await this.sendAlert(message);
-    }
+    const items = [
+      ...report.withUnmergedWork.map(d => `unmerged:${d.worktree.branch}`),
+      ...report.orphanBranches.map(b => `orphan:${b}`),
+    ];
+    const decide = async (): Promise<void> => {
+      if (items.length > 0) {
+        if (this.isAnnounceDue('session', items)) {
+          const message = this.formatSessionAlert(session, report);
+          report.actions.push(`Alert generated for session ${session.name}`);
+          if (await this.sendAlert(message)) this.markAnnounced('session', items);
+        } else {
+          report.actions.push('Alert suppressed: findings unchanged since last announcement');
+        }
+      } else {
+        this.markAnnounced('session', []);
+      }
+    };
+    const turn = this.announceChain.then(decide, decide);
+    this.announceChain = turn.then(() => undefined, () => undefined);
+    await turn;
 
     this.saveState(report);
     this.emit('scan', report);
@@ -224,10 +291,20 @@ export class WorktreeMonitor extends EventEmitter {
       return age !== null && age > staleThreshold;
     });
 
+    const items = [
+      ...staleWorktrees.map(wt => `stale:${wt.branch ?? wt.path}`),
+      ...report.orphanBranches.map(b => `orphan:${b}`),
+    ];
     if (staleWorktrees.length > 0) {
-      const message = await this.formatPeriodicAlert(report, staleWorktrees);
-      report.actions.push(`Stale worktree alert: ${staleWorktrees.length} worktree(s)`);
-      await this.sendAlert(message);
+      if (this.isAnnounceDue('stale', items)) {
+        const message = await this.formatPeriodicAlert(report, staleWorktrees);
+        report.actions.push(`Stale worktree alert: ${staleWorktrees.length} worktree(s)`);
+        if (await this.sendAlert(message)) this.markAnnounced('stale', items);
+      } else {
+        report.actions.push('Stale worktree alert suppressed: findings unchanged since last announcement');
+      }
+    } else {
+      this.markAnnounced('stale', []);
     }
 
     this.saveState(report);
@@ -237,8 +314,23 @@ export class WorktreeMonitor extends EventEmitter {
 
   /**
    * Core scan: list all worktrees and analyze their state.
+   *
+   * Single-flight: a scan runs two git commands per worktree, so on a home with
+   * hundreds of worktrees one scan can outlast the 5-minute interval, and every
+   * session end starts another. Overlapping scans then pile up (measured: about
+   * three at once per server on a busy Studio). A caller that arrives while a
+   * scan is running gets that scan's report instead of starting a second one.
    */
-  async scanWorktrees(): Promise<WorktreeReport> {
+  scanWorktrees(): Promise<WorktreeReport> {
+    if (this.scanInFlight) return this.scanInFlight;
+    const scan = this.runScan().finally(() => {
+      if (this.scanInFlight === scan) this.scanInFlight = null;
+    });
+    this.scanInFlight = scan;
+    return scan;
+  }
+
+  private async runScan(): Promise<WorktreeReport> {
     const report: WorktreeReport = {
       timestamp: new Date().toISOString(),
       worktrees: [],
@@ -253,15 +345,28 @@ export class WorktreeMonitor extends EventEmitter {
 
     // Get default branch for comparison
     const defaultBranch = await this.getDefaultBranch();
+    // One process per scan: the default branch's commit keys the per-worktree cache.
+    const defaultBranchSha = (await this.gitCommand(`rev-parse --verify --quiet ${defaultBranch}`)).trim() || undefined;
+    const previous = this.unmergedCache;
+    const seen = new Map<string, WorktreeWithDiff | null>();
 
     // Check each non-main worktree for unmerged work
     for (const wt of report.worktrees) {
       if (!wt.branch) continue;
 
-      const diff = await this.checkUnmergedWork(wt, defaultBranch);
+      const key = defaultBranchSha && wt.head ? `${defaultBranchSha}:${wt.head}` : null;
+      if (key && previous.has(key)) seen.set(key, previous.get(key)!);
+      this.unmergedCache = seen;
+      const diff = await this.checkUnmergedWork(wt, defaultBranch, defaultBranchSha);
       if (diff && diff.commitsAhead > 0) {
         report.withUnmergedWork.push(diff);
       }
+    }
+    // Entries for worktrees no longer present (or an older default-branch commit) drop out here.
+    this.unmergedCache = seen;
+    if (this.commitTimeCache.size > 4 * Math.max(64, report.worktrees.length)) {
+      const live = new Set(report.worktrees.map((w) => w.head).filter((h): h is string => !!h));
+      for (const k of [...this.commitTimeCache.keys()]) if (!live.has(k)) this.commitTimeCache.delete(k);
     }
 
     // Find orphan worktree branches (branches matching worktree-* pattern with no worktree)
@@ -323,7 +428,19 @@ export class WorktreeMonitor extends EventEmitter {
   /**
    * Check how many commits a worktree branch has ahead of the default branch.
    */
-  async checkUnmergedWork(wt: Worktree, defaultBranch: string): Promise<WorktreeWithDiff | null> {
+  async checkUnmergedWork(wt: Worktree, defaultBranch: string, defaultBranchSha?: string): Promise<WorktreeWithDiff | null> {
+    if (!wt.branch) return null;
+    const key = defaultBranchSha && wt.head ? `${defaultBranchSha}:${wt.head}` : null;
+    if (key && this.unmergedCache.has(key)) {
+      const hit = this.unmergedCache.get(key)!;
+      return hit ? { ...hit, worktree: wt } : null;
+    }
+    const result = await this.computeUnmergedWork(wt, defaultBranch);
+    if (key) this.unmergedCache.set(key, result);
+    return result;
+  }
+
+  private async computeUnmergedWork(wt: Worktree, defaultBranch: string): Promise<WorktreeWithDiff | null> {
     if (!wt.branch) return null;
 
     // Count commits ahead
@@ -338,9 +455,10 @@ export class WorktreeMonitor extends EventEmitter {
     const diffOutput = await this.gitCommand(
       `diff --name-only ${defaultBranch}...${wt.branch}`
     );
-    const filesChanged = diffOutput.trim().split('\n').filter(f => f.trim());
+    const allFiles = diffOutput.trim().split('\n').filter(f => f.trim());
+    const filesChanged = allFiles.slice(0, FILES_CHANGED_KEPT);
 
-    return { worktree: wt, commitsAhead, filesChanged };
+    return { worktree: wt, commitsAhead, filesChanged, filesChangedCount: allFiles.length };
   }
 
   /**
@@ -387,9 +505,14 @@ export class WorktreeMonitor extends EventEmitter {
    */
   async getWorktreeAge(wt: Worktree): Promise<number | null> {
     if (!wt.head) return null;
-    const timestamp = (await this.gitCommand(`show -s --format=%ct ${wt.head}`)).trim();
-    if (!timestamp) return null;
-    const commitTime = parseInt(timestamp, 10) * 1000;
+    let commitTime = this.commitTimeCache.get(wt.head);
+    if (commitTime === undefined) {
+      const timestamp = (await this.gitCommand(`show -s --format=%ct ${wt.head}`)).trim();
+      commitTime = timestamp ? parseInt(timestamp, 10) * 1000 : null;
+      // Only a real answer is cached; an empty read (timeout, missing object) is retried next time.
+      if (commitTime !== null) this.commitTimeCache.set(wt.head, commitTime);
+    }
+    if (commitTime === null) return null;
     return Date.now() - commitTime;
   }
 
@@ -404,7 +527,8 @@ export class WorktreeMonitor extends EventEmitter {
       for (const diff of report.withUnmergedWork) {
         lines.push(`  Branch: ${diff.worktree.branch}`);
         lines.push(`  Commits ahead: ${diff.commitsAhead}`);
-        lines.push(`  Files: ${diff.filesChanged.slice(0, 5).join(', ')}${diff.filesChanged.length > 5 ? ` (+${diff.filesChanged.length - 5} more)` : ''}`);
+        const total = diff.filesChangedCount ?? diff.filesChanged.length;
+        lines.push(`  Files: ${diff.filesChanged.slice(0, 5).join(', ')}${total > 5 ? ` (+${total - 5} more)` : ''}`);
         lines.push('');
       }
     }
@@ -469,23 +593,66 @@ export class WorktreeMonitor extends EventEmitter {
     }
   }
 
-  private async sendAlert(message: string): Promise<void> {
-    if (this.config.alertCallback) {
-      try {
-        await this.config.alertCallback(message);
-      } catch (err) {
-        this.emit('error', err);
-      }
+  /** True when `items` differ from the last announced set, or the reminder interval has passed. */
+  private isAnnounceDue(kind: AlertKind, items: string[]): boolean {
+    const prev = this.announced[kind];
+    if (!prev || prev.fingerprint !== fingerprintOf(items)) return true;
+    const reminder = this.config.reminderIntervalMs ?? DEFAULT_REMINDER_INTERVAL;
+    return Date.now() - prev.at >= reminder;
+  }
+
+  /** Record the announced set; an empty set clears it so a reappearance announces again. */
+  private markAnnounced(kind: AlertKind, items: string[]): void {
+    if (items.length === 0) {
+      if (!this.announced[kind]) return;
+      delete this.announced[kind];
+    } else {
+      this.announced[kind] = { fingerprint: fingerprintOf(items), at: Date.now() };
+    }
+    try {
+      fs.writeFileSync(this.announcedFile, JSON.stringify(this.announced, null, 2));
+    } catch {
+      // Non-fatal — worst case is one repeat announcement after a restart
+    }
+  }
+
+  /** Returns true when the alert was delivered (or there is no callback to deliver to). */
+  private async sendAlert(message: string): Promise<boolean> {
+    if (!this.config.alertCallback) return true;
+    try {
+      await this.config.alertCallback(message);
+      return true;
+    } catch (err) {
+      this.emit('error', err);
+      return false;
     }
   }
 
   private loadState(): void {
     try {
       if (fs.existsSync(this.stateFile)) {
-        this.lastReport = JSON.parse(fs.readFileSync(this.stateFile, 'utf-8'));
+        // A report saved before the 50-name cap could be hundreds of MB (340 MB with 427
+        // entries on the Studio); parsing it at boot took the server from 1.3 to 4 GB and
+        // it crashed out of memory (2026-11-19 08:11Z). A capped report is about 2 MB here.
+        // An oversize file is not parsed: the first scan rebuilds the report and overwrites it.
+        const bytes = fs.statSync(this.stateFile).size;
+        if (bytes > MAX_SAVED_REPORT_BYTES) {
+          console.warn(`[worktree-monitor] saved report is ${Math.round(bytes / 1048576)} MB (over ${MAX_SAVED_REPORT_BYTES / 1048576} MB): not loaded; the next scan replaces it`);
+          this.lastReport = null;
+        } else {
+          this.lastReport = JSON.parse(fs.readFileSync(this.stateFile, 'utf-8'));
+        }
       }
     } catch {
       this.lastReport = null;
+    }
+    try {
+      if (fs.existsSync(this.announcedFile)) {
+        const parsed = JSON.parse(fs.readFileSync(this.announcedFile, 'utf-8'));
+        this.announced = parsed && typeof parsed === 'object' ? parsed : {};
+      }
+    } catch {
+      this.announced = {};
     }
   }
 
@@ -497,4 +664,8 @@ export class WorktreeMonitor extends EventEmitter {
       // Non-fatal — state persistence is best-effort
     }
   }
+}
+
+function fingerprintOf(items: string[]): string {
+  return [...items].sort().join('\n');
 }

@@ -1,0 +1,25 @@
+{
+  "ts": "2026-10-22T08:16:58.407Z",
+  "slug": "convergence-check-operator-reachable-links",
+  "suggestedTier": 1,
+  "declaredTier": 1,
+  "riskFloor": 1,
+  "riskFloorReasons": [],
+  "belowFloor": false,
+  "files": 1,
+  "loc": 17,
+  "scope": {
+    "basis": "staged-in-scope-additions-plus-deletions",
+    "files": [
+      "src/templates/scripts/convergence-check.sh"
+    ],
+    "addedLines": 17,
+    "deletedLines": 0
+  },
+  "causalAutopsy": {
+    "origin": "latent",
+    "notes": "Not caused by a prior PR — caused by the ABSENCE of one. The guards were written and reviewed on a feature branch that never merged, so the shipped template never carried them. PostUpdateMigrator always overwrites built-in scripts from the shipped template (by design), which silently reverted every deployed agent on each update; re-applied locally four times before the cause was identified. The defect was latent in the shipped template from the start and invisible locally because the local copy did carry the fix. Separately, the CLAUDE_LINK rule as first written over-blocked the Claude OAuth sign-in link; an existing regression test caught it and the rule now subtracts the auth path family."
+  },
+  "classClosure": null,
+  "verdict": "pass"
+}

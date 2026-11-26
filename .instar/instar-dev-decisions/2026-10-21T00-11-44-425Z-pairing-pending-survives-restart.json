@@ -1,0 +1,23 @@
+{
+  "ts": "2026-10-21T00:11:44.425Z",
+  "slug": "pairing-pending-survives-restart",
+  "suggestedTier": 2,
+  "declaredTier": 2,
+  "riskFloor": 1,
+  "riskFloorReasons": [],
+  "belowFloor": false,
+  "files": 2,
+  "loc": 61,
+  "scope": {
+    "basis": "staged-in-scope-additions-plus-deletions",
+    "files": [
+      "src/core/AutoUpdater.ts",
+      "src/threadline/PairingPendingAcceptMarkers.ts"
+    ],
+    "addedLines": 56,
+    "deletedLines": 5
+  },
+  "causalAutopsy": null,
+  "classClosure": null,
+  "verdict": "pass"
+}

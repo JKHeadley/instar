@@ -1,0 +1,29 @@
+{
+  "ts": "2026-10-21T03:50:06.318Z",
+  "slug": "presence-proxy-slack-only-agent",
+  "suggestedTier": 2,
+  "declaredTier": 1,
+  "riskFloor": 1,
+  "riskFloorReasons": [],
+  "belowFloor": false,
+  "files": 1,
+  "loc": 45,
+  "scope": {
+    "basis": "staged-in-scope-additions-plus-deletions",
+    "files": [
+      "src/commands/server.ts"
+    ],
+    "addedLines": 27,
+    "deletedLines": 18
+  },
+  "causalAutopsy": {
+    "origin": "latent",
+    "notes": "PresenceProxy predates Slack support. When Slack arrived its arming was added INSIDE the existing Telegram-gated block rather than beside it, so the feature read as cross-platform in the source while being unreachable on a Slack-only agent. Latent since Slack support landed; invisible because the missing log line is itself inside the block that never runs."
+  },
+  "classClosure": {
+    "defectClass": "unbounded-self-action",
+    "closure": "n/a",
+    "reason": "No new self-triggered loop: an existing watcher with its own tier timers, speaker election and budgets is constructed on a platform where it previously was not. Cadence and brakes unchanged."
+  },
+  "verdict": "pass"
+}

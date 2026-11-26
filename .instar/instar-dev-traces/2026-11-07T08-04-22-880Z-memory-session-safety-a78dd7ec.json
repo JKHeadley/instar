@@ -1,0 +1,18 @@
+{
+  "version": 2,
+  "slug": "memory-session-safety",
+  "sessionId": "01d20012-6a42-483e-af23-beab1eb3aaad",
+  "timestamp": "2026-11-07T08:04:22.880Z",
+  "artifactPath": "upgrades/side-effects/memory-session-safety.md",
+  "artifactSha256": "f33dd3010c99cd9cd7f2d744d86bc085e580da399d7fc9057734be911a31db5c",
+  "specPath": "docs/specs/memory-privacy.md",
+  "coveredFiles": [
+    "src/core/memorySessionPolicy.ts",
+    "src/users/MemoryPrivacy.ts",
+    "tests/unit/memory-session-safety.test.ts",
+    "upgrades/side-effects/memory-session-safety.md"
+  ],
+  "phase": "complete",
+  "secondPass": "not-required",
+  "reviewerConcurred": null
+}

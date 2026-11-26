@@ -1,0 +1,986 @@
+# Under the hood — native rebuild plans
+
+Part of the console makeover (`docs/specs/console-makeover.md`). Covers the
+legacy tabs `insights`, `pr-pipeline`, `evidence`, `throughput`,
+`integrated-being`, `process-health` and `feedback-drain`. (`routing-map` and
+`llm-activity` belong to the Capacity plan; overlaps are noted where they occur.)
+
+## Overview
+
+**Who these are for.** Two very different readers, and today all seven tabs are
+shown to both:
+
+| Reader | Should see by default |
+|---|---|
+| An ordinary Instar user (one agent, no Instar source code) | One page, **How I'm doing inside**: what my other conversations have been doing, and (when switched on) problems I caught in my own work and checks on my own claims. |
+| An Instar maintainer (a development agent, or a machine with the Instar source checkout) | The same page, plus a **Development** area: shipping, pace, and the feedback factory. |
+
+Four of the seven are maintainer-only by construction: PR pipeline, Throughput
+and Feedback drain read the Instar repository or the operated feedback factory
+(Throughput is hard-coded to `JKHeadley/instar` and to two GitHub logins,
+`src/server/throughputRoutes.ts:71`, `:118`), and Evidence is a lookup tool that
+needs raw memory ids. An ordinary user who opens them today gets either a "not
+turned on" message or, worse for Throughput, a chart of somebody else's project.
+
+**Merges (decided, reasons in each section).**
+
+1. **Insights is retired as a page.** Only one page has an insight collector
+   (LLM Activity, `src/monitoring/dashboardInsightCollectors.ts:118`), the route is
+   dark on ordinary agents, and Home's headline already answers "what stands
+   out". Its one "plain read" line survives in one place: the top of the
+   Background checks section of *What thinking costs*, which replaced the LLM
+   activity page.
+2. **How I'm doing inside** = Integrated-Being (rebuilt as "What my other
+   conversations have been doing") + Process health ("Problems I caught in my own
+   work") + the two audit sections moving out of Preferences ("Checks on my own
+   claims": class reviews and claim-verification observations) + Evidence (a
+   maintainer lookup now; a "Why do I believe this?" drawer on records later). One
+   audit page, the research's "strongest material".
+
+   **Why one page, and how it stays findable.** The sections share one question: *"What
+   have I been doing on my own, and has it held up?"*: what other conversations agreed
+   and left open, what kept going wrong, and whether my claims checked out. It is one
+   reader (the operator auditing his agent) at one slow cadence (weekly, or after
+   something odd), which is what holds it together. The live cross-session coordination
+   detail that a maintainer needs at a faster cadence (ids, bindings, chain walks) sits
+   in each section's collapsed **Technical** fold, not on the page. To be findable, the
+   tile carries a subtitle naming what is inside: **"Conversation history, recurring
+   problems, checks on my claims"**, and the old names **Integrated-Being**, **Process
+   health** and **Evidence** stay as search aliases and as `?tab=` links that land on
+   their section. If use shows the page is still a drawer of unrelated things, the
+   fallback is to split *Problems I caught* and *Checks on my own claims* into a second
+   page, "Did my work hold up?"; that is recorded here, not built.
+3. **Development** (maintainer only) = PR pipeline rebuilt as **Shipping** +
+   Feedback drain as **Feedback** + Throughput as **Pace**. Three sections of one
+   area, each still deep-linkable, under a pending-approval card (see the end of this
+   file).
+
+**Where they live in navigation.**
+
+- *How I'm doing inside*: Settings → "Under the hood" section, first tile, for
+  everyone.
+- *Development*: a tile in the **Work** group ("What is being done"), shown only
+  when the console is in maintainer mode. A maintainer checks shipping most days;
+  two taps from Home, beside Sessions and Jobs, is the right distance. The
+  Capacity-owned hood tiles (Routing map, LLM activity) stay where that plan puts
+  them.
+
+**How the console knows it is a maintainer's.** Nothing on the client can tell
+today (no route exposes `developmentAgent`). Smallest addition: an authenticated
+field, `consoleProfile: { maintainer: boolean, basis: string[] }`, on an existing
+authed read (the authed `/health` block, beside `telegramOrigin`), where
+`maintainer` = `developmentAgent === true` or an Instar source checkout is
+present, and `basis` names which. Rules:
+
+- `maintainer: true` → Development tile and maintainer details shown.
+- `maintainer: false` → hidden. Settings carries one quiet row, "Show developer
+  tools", a per-viewer toggle (browser storage, a convenience only; every write
+  is still gated by the server).
+- Field unreadable → **can't tell**: tools hidden, and the Settings row reads
+  "Couldn't tell whether this is a development agent. Show developer tools?"
+  Never silently decided.
+
+Probing the feature routes instead is rejected: Throughput answers on any agent
+that holds a GitHub token, so a probe would show a maintainer chart to a user.
+
+**What an ordinary user sees.** Under Settings, one tile: *How I'm doing inside*,
+with its subtitle. On it, at most three sections (the second and third only when
+their sources are switched on). Nothing named "pipeline", "drain", "ledger",
+"chain", "binding" or "evidence row" anywhere at the glance.
+
+**Maintainer mode is visibility only.** It decides which pages are shown, never what
+is allowed: every write and every maintainer read (for example
+`/throughput/series`) keeps its server gate, and nothing relies on the console
+hiding it.
+
+**Shared rules for every page below** (on top of the makeover design rule):
+
+- **Slow, stuck and silently failed are separate states.** Every background
+  worker shown here (merge watcher, drain, triage, executor, failure ledger) shows
+  when it last did something and what its normal rhythm is. Past twice its
+  rhythm: "last checked 3 h ago, usually every 15 min" (amber, *quiet*). A
+  recorded failure: red, with the reason in plain words. Never a calm green over
+  an unknown.
+- **Disabled is not broken.** A 503/404 that the server marks as "off on this
+  agent" renders as one muted line "Off on this agent" with the reason, not as
+  can't-tell and not as an error.
+- **PIN only where the server demands operator proof, with the adapter each route
+  checks** (`00-patterns.md` §4a):
+
+  | Adapter | Routes on these pages |
+  |---|---|
+  | (a) Bearer only | Shipping (later): hold `POST /green-pr-automerge/hold`, stop auto-merging `POST /green-pr-automerge/rollback` (`src/server/routes.ts:16071`, `:16037`), test now `POST /local-verify` (`:15977`); conversation record: revoke a session binding `POST /shared-state/sessions/:sid/revoke` (`:40963`, with `X-Instar-Request`); Feedback: render a plan `POST /feedback-factory/triage/plan` (`:14887`) and read the proposals |
+  | (c) Body PIN, cleared after the one action | Feedback: approve, change limits, restore or revoke the sorting authority `POST /feedback-factory/readiness-authorities` (`:14653`) and the triage authority `POST /feedback-factory/triage/authority` (`:14848`), both through `checkMandatePin` (`:14594`); commit a rendered plan (turn ignores live / back to practice, let it run anyway, review and publish) `POST /feedback-factory/triage/commit` (`:14926`, PIN + the server's `planId` and `nonce`); Shipping (later): turn auto-merge back on `POST /green-pr-automerge/enable` (`:16058`) |
+
+  No adapter-(b) routes on these pages. Bearer-allowed writes get a confirmation
+  sheet, no PIN.
+- **No raw server error text at the glance.** Reasons are mapped to sentences;
+  the raw text sits in the record's "Technical detail" row.
+
+**Build order** (the one order in `README.md`; these pages sit at these steps):
+
+- Step 4: `consoleProfile` field + maintainer mode (S), then **Feedback approvals**
+  (M), beside *What I'm allowed to do*. The only page here that regularly needs the
+  operator's tap; its approvals are PIN-gated and currently buried in a drawer.
+- Step 5: retire the Insights tile when the costs page ships (its line lands in the
+  costs page's Background checks section). Then, among the remaining pages:
+  **How I'm doing inside** (M: conversation record, problems caught, checks on my own
+  claims, the maintainer lookup), **Shipping** read-only (M; replaces a tab that has
+  never shown data), **Pace** with the four plain numbers (S).
+- Later: the new Shipping controls (hold, test now, stop auto-merging, turn it back
+  on), the "Why do I believe this?" drawers on records, and any comparison charts for
+  Pace.
+
+---
+
+## Insights (legacy tab id: `insights`)
+
+**Who comes here, and the one question on arrival.** Anyone who wants a short
+plain read of the dashboard. The question: "What stands out right now?"
+
+**What it does today (inventory).**
+- One strip per registered page from `GET /insights` (503 when dark: friendly "not
+  turned on" note). Each strip: page title; source badge (`AI`, `AI · cached`,
+  `summary`, `paused`, `no data`); "as of" time; headline sentence; up to 3 lines
+  with a severity dot (watch/alert) and an optional action phrase; "Show the
+  data" disclosure of metric tiles; "Open <page>" button (`switchTab`).
+- Header stamp "updated HH:MM". No refresh control, no polling, no writes.
+- Unused by the tab: `GET /insights/status`, `GET /insights/:page`.
+
+**What is wrong with it today.**
+- One registered page (LLM Activity), so the "cross-dashboard" read is a single
+  card that repeats another tab (`dashboardInsightCollectors.ts:118`).
+- Dark on ordinary agents and `dryRun: true` on development agents
+  (`ConfigDefaults.ts:64`), so the "AI" read is in practice the deterministic
+  summary with a badge most people cannot decode.
+- Its role (one sentence over everything) is now Home's headline, which is
+  honest about coverage; Insights is not.
+- The error path prints the raw exception text into the page
+  (`dashboard/index.html`, `loadInsights`).
+
+**The new design.**
+- *Arrival (glance):* there is no Insights page. Its one line has **one
+  destination**: the **Background checks** section of *What thinking costs*
+  (`capacity.md`), the section that replaced the LLM activity page, which is the
+  only page with a collector (`src/monitoring/dashboardInsightCollectors.ts:118`).
+  It reads "Plain read: Three checks did most of the work today; none failed." with
+  a small stamp "written by AI · 4 min ago" or "summary · 4 min ago". If more
+  collectors are ever registered, each line goes on the page it describes.
+- *Layout:* the line sits under the page headline, never replaces it, one line
+  clamped, tap to expand the up-to-3 supporting lines and "Show the data".
+- *Primary action(s):* none; it is read-only. The old "Open <page>" button is
+  unnecessary because the line lives on that page.
+- *Secondary / destructive actions:* none.
+- *Honest states:* route dark (503) → line absent (it is an extra, and the page's
+  own headline already carries the truth). `source: paused` → "Plain read paused:
+  this page's data could not be read." Timeout (5 s) → line absent, no spinner
+  left behind. Stale (`asOf` older than its 5-minute TTL ×2) → stamp shows the age.
+- *Multi-machine:* this machine only; the stamp says so when the host page is a
+  pool view ("plain read of this machine").
+- *Rough sketch:* (in the Background checks section of What thinking costs)
+
+```
+┌──────────────────────────────────┐
+│ Background checks (AI calls)     │
+│ 14 checks ran 2,310 times today; │
+│ 3 calls failed.                  │
+│ ┄ Plain read: two checks did most│
+│   of the work.   AI · 4 min ago ▾│
+│ [tiles…]                         │
+└──────────────────────────────────┘
+```
+
+**Merge / split / cut.** Retire the page; fold into Home (cross-page) and into the
+Background checks section of *What thinking costs* (its one line). The
+Under-the-hood tile is removed once that section carries the line; until then the
+tile links to legacy as today.
+
+**Data.** `GET /insights/:page` (existing). No new route.
+
+**Effort and order.** S. README step 5, with the costs page.
+
+**Open questions for the operator.** None.
+
+---
+
+## PR pipeline (legacy tab id: `pr-pipeline`)
+
+**Who comes here, and the one question on arrival.** Maintainers only. "Is any of
+my work stuck on the way to merge or release, and does any of it need me?"
+
+**What it does today (inventory).**
+- Refresh button. `GET /pr-gate/metrics` → glance: headline "N of M open pull
+  requests are ready to merge"; tiles *Ready to merge* / *Not ready yet*; rows
+  "Pull request #n — ready/not ready"; record: number, ready, why, commit (8
+  chars), first seen (`dashboard/glance.js`, `buildPrPipelineGlance`).
+- 404 or `disabled: true` → "The auto-merge gate isn't turned on for this agent
+  yet." Other failure → "Could not load the merge gate right now". No writes (the
+  PR-review-hardening spec made it read-only).
+
+**What is wrong with it today.**
+- **The route was never built.** `src/server/routes.ts:3538` installs only the
+  phase-gate middleware for `/pr-gate`; no `/pr-gate/metrics` handler exists. With
+  the phase off the tab says "not turned on"; with it on, the request falls
+  through to a 404. The tab has never shown a pull request.
+- It calls itself the "auto-merge gate", which is the name operators use for the
+  green-PR auto-merge watcher, a different system that has no dashboard face at
+  all, nor do local verify or release readiness (none of `/green-pr-automerge`,
+  `/local-verify`, `/release-readiness` is read by any dashboard file).
+- Shown to every user, though it only means anything on the Instar repository.
+
+**The new design.** Rebuilt as **Shipping**, the first section of Development,
+from the three live systems.
+- *Arrival (glance):* "3 pull requests on their way. 1 needs your approval on
+  GitHub." Tiles (≤4): **Needs you** (code-owner review or approval-required),
+  **Testing** (local verify queue; position and "about 45 min each"), **Set to
+  merge** (armed, GitHub merges when checks pass; overdue past 24 h in amber),
+  **Stuck** (stuck-red PRs, failed verifies). Under the tiles one line from
+  the release watchdog: "Release watchdog: 1 unresolved episode · last checked 10
+  min ago", with **Open the item** when it carries an attention id, or "Release
+  watchdog: nothing unresolved · last checked 10 min ago". It never says how many
+  changes are unreleased or that everything is released: `/release-readiness`
+  returns the count of unresolved watchdog episodes, the oldest one's commit, the
+  tick time and an attention id (`src/server/routes.ts:15917`–`:15937`), and an
+  episode is keyed by the oldest unreleased commit, one per stall, not one per
+  change (`src/monitoring/ReleaseReadinessSentinel.ts:315`). Zero episodes is not
+  a release inventory.
+- *Layout:* phone: headline, tiles as a 2×2 grid, then one list of PRs ordered
+  needs-you → stuck → testing → armed, each row "#2391 · waiting for your review ·
+  2 h". Tap a row → a stage strip (queued → verifying → passed → set to merge →
+  merged) with the current stage lit, why it is held, last verify result and
+  time, and the commit in mono. Desktop: list left, record right.
+- *Primary action(s):* **Open on GitHub** on every needs-you row (direct link to
+  the PR's Files tab, per the operator's direct-link rule). One tap.
+- *Secondary / destructive actions (later, not in the first Shipping build):* the first
+  build is read-only plus **Open on GitHub**; these new controls come in a later step,
+  after the read-only page has been used. In the record: **Hold this pull request**
+  (`POST /green-pr-automerge/hold`, bearer, confirmation sheet with a reason
+  field; the response states whether the in-flight merge was actually disarmed,
+  and the sheet repeats that, never a blanket "held"); **Test it now**
+  (`POST /local-verify {pr}`). In the section footer, small and red-outlined:
+  **Stop auto-merging** (`POST /green-pr-automerge/rollback`, bearer, confirm
+  sheet listing every armed PR it will disarm and reporting any it could not).
+  **Turn auto-merge back on** (`POST /green-pr-automerge/enable`) asks for the PIN
+  because the server requires it. These are additions: the legacy tab had no
+  writes, and today these actions exist only conversationally.
+- *Honest states:* loading skeleton per tile. 503 (no source checkout, no
+  safe-merge) → "Shipping tools aren't set up on this machine" + the mapped
+  reason. Partial: one of the three sources failed → its tile is dashed with the
+  reason; the others render. Slow vs stuck: watcher `lastTickAt` past 2× its
+  cadence → "Merge watcher last checked 2 h ago"; breaker open → red "Merge
+  watcher paused itself after repeated failures"; `invariantOk: false` → red,
+  named. A zero is only "nothing waiting" when `lastSuccessfulListAt` is fresh.
+- *Multi-machine:* the watcher and local verify run on the lease holder; a
+  non-holder answers 409 `not-lease-holder` for local verify. The page then says
+  "Testing runs on Mac Studio; open the console there for the queue" (partial),
+  and labels every tile with the machine whose data it is.
+- *Rough sketch:*
+
+```
+┌──────────────────────────────────┐
+│ DEVELOPMENT · SHIPPING           │
+│ 3 pull requests on their way.    │
+│ 1 needs your approval on GitHub. │
+│ ┌──────────┐┌──────────┐         │
+│ │Needs you ││Testing   │         │
+│ │    1     ││ 1 · ~45m │         │
+│ └──────────┘└──────────┘         │
+│ ┌──────────┐┌──────────┐         │
+│ │Set to    ││Stuck     │         │
+│ │merge  1  ││    0     │         │
+│ └──────────┘└──────────┘         │
+│ Release watchdog: 1 open · 10m   │
+│ ─────────────────────────────    │
+│ #2391 your review · 2h   [Open ↗]│
+│ #2388 testing · 1st in line    › │
+│ #2380 set to merge · 40m       › │
+│ Watcher checked 3 min ago · Mini │
+└──────────────────────────────────┘
+```
+
+**Merge / split / cut.** Merge into Development as its first section. Cut the
+`/pr-gate/metrics` client code and the "auto-merge gate" wording; if the PR-gate
+phase ever ships a metrics route, it becomes one more source of the *Stuck* tile.
+
+**Data.** Existing: `GET /green-pr-automerge` (`episodes[]`, `armed[]`,
+`armedCount`, `stuckRed`, `snapshot`, `breaker`, `lastTickAt`,
+`lastSuccessfulListAt`, `invariantOk`), `GET /local-verify` (queue, merge line),
+`GET /local-verify/status`, `GET /local-verify/record?pr=&head=&base=` (one PR's
+last verify result, `src/localVerify/localVerifyRoutes.ts:104`; read only for a row
+whose three keys are known, which a queue entry carries as `pr`, `headSha`,
+`baseRefName`, `src/localVerify/LocalVerifyService.ts:185`–`:190`), `GET
+/release-readiness` (`openEpisodes`, `oldestOpenSha`, `openAttentionId`,
+`lastTickAt`). PR titles are not in these payloads; rows show the number and link
+to GitHub rather than adding a GitHub call. No new route.
+
+Which field drives which part of the page (pinned now; a contract test checks it at
+build time):
+
+| On the page | Field | Source |
+|---|---|---|
+| Needs you | `snapshot.entries[]` with `kind: 'code-owner-review'`; episodes whose `lastOutcome` is `refused:approval-required` | `/green-pr-automerge` (`src/monitoring/GreenPrAutoMerger.ts:230`–`:236`, `:1115`) |
+| Testing | `queue[]` and `inFlight` (position = index in `queue`) | `/local-verify` (`src/localVerify/LocalVerifyService.ts:572`) |
+| Set to merge | `armed[]` (`pr`, `armedAt`, `overdue`) | `/green-pr-automerge` (`src/server/routes.ts:16003`) |
+| Stuck | `stuckRed[]`; episodes with `state: 'gave-up'` | `/green-pr-automerge` (`src/monitoring/greenPrLogic.ts:267`–`:273`) |
+| A row's last verify result | the record for its `pr` + `headSha` + `baseRefName` | `/local-verify/record` |
+| Watcher health line | `lastTickAt`, `lastSuccessfulListAt`, `breaker`, `invariantOk` | `/green-pr-automerge` |
+| Release watchdog line | `openEpisodes`, `lastTickAt`, `openAttentionId` | `/release-readiness` |
+
+**Effort and order.** M, read-only, README step 5 (after maintainer mode). The new
+controls are later. The table above is checked by a contract test at build time.
+
+**Open questions for the operator.** Should **Stop auto-merging** be on the phone
+page at all, or only reachable by asking the agent? (It is bearer-allowed today,
+so a button adds no new authority; it adds a new place to tap it by accident.)
+
+---
+
+## Evidence (legacy tab id: `evidence`)
+
+**Who comes here, and the one question on arrival.** Maintainers debugging memory.
+"Why does the agent believe this, and what else relies on this source?"
+
+**What it does today (inventory).**
+- *Viewer scope* select: private (full) / shared-topic / shared-project
+  ("narrowing only").
+- *Evidence by entity*: text field for an entity id + Lookup →
+  `GET /memory/evidence/by-entity/:id?viewerScope=` → evidence rows.
+- *What cites this?*: kind select (feedback, commit, session, document, message,
+  job-run, ledger-entry, pattern-entity, external-url, supersedes-evidence) +
+  sourceId field + "Find citing entities" → `GET /memory/entities/by-evidence` →
+  entity rows, each with **Inspect evidence** (re-runs the first lookup).
+- Status lines for empty / count / error. No writes, no polling.
+
+**What is wrong with it today.**
+- It starts from an id the operator does not have. There is no list to pick from;
+  a person must already know `ent_…` or `fb_…` (`dashboard/index.html` evidence
+  panel). It is a developer's console, presented to everyone.
+- The purpose line uses "viewer-scope filtered by SemanticMemory".
+- Errors are printed raw in red.
+
+**The new design.** Two faces.
+- *Arrival (glance), everyone (later):* no page. Wherever the console shows something the
+  agent learned or remembers (a preference, a learned lesson, a commitment
+  record, an Integrated-Being entry that cites a memory), the record gets a
+  **Why do I believe this?** row. Tap → a sheet: "Based on 3 sources", each a
+  plain line ("A message from you, 12 Oct", "Commit a1b2c3d", "A job run, 9 Oct")
+  with its date and kind, and a link when it is a commit, URL or session.
+- *Maintainer:* the lookup tool, as the last section of *How I'm doing inside*
+  (collapsed, titled "Look up a memory's sources"). One search field that accepts
+  either an entity id or a source id (the kind inferred from its prefix, with the
+  kind picker shown only when ambiguous), and the scope picker labelled "See it
+  as: me / people in this topic / people in this project".
+- *Layout:* the sheet is a bottom sheet on phone, a side panel on desktop; rows
+  are two lines (what it is · when). "What else relies on this?" is a row inside
+  each source, so the two old panels become one walk: belief → sources → other
+  beliefs.
+- *Primary action(s):* open the sheet (one tap from any record).
+- *Secondary / destructive actions:* none; read-only.
+- *Honest states:* no sources → "No sources recorded for this, so I can't show
+  why." (amber, because a belief without sources is itself a finding). Narrowed
+  scope with nothing visible → "Nothing is visible to people in this topic" (not
+  "no sources"). Route failure → can't tell, with the mapped reason. Memory
+  disabled → the row is absent.
+- *Multi-machine:* memory is per machine; the sheet says "from this machine's
+  memory".
+- *Rough sketch:*
+
+```
+┌──────────────────────────────────┐
+│ Why do I believe this?        ✕  │
+│ "Justin prefers plain summaries" │
+│ Based on 3 sources               │
+│ ● A message from you · 12 Oct  › │
+│ ● A correction you made · 9 Oct › │
+│ ● Commit a1b2c3d · 2 Oct     ↗   │
+│ from this machine's memory       │
+└──────────────────────────────────┘
+```
+
+**Merge / split / cut.** Split: the lookup tool merges into *How I'm doing inside* for
+maintainers now; the everyday face becomes a drawer on records later. The tab tile is
+removed once the lookup ships, since the lookup carries every legacy control; "Evidence"
+stays a search alias.
+
+**Data.** Existing `GET /memory/evidence/by-entity/:id` and
+`GET /memory/entities/by-evidence`. The drawer needs the record to carry its
+memory entity id; where a record does not, the drawer is not offered (no new
+route; adding ids to those records is each owning plan's choice).
+
+**Effort and order.** M, spread out: lookup tool with *How I'm doing inside* (README step
+5); the drawers later, and only on record types that already carry a memory entity id.
+Most host records do not carry one today, which is why drawers are not part of the
+first builds.
+
+**Open questions for the operator.** None.
+
+---
+
+## Throughput (legacy tab id: `throughput`)
+
+**Who comes here, and the one question on arrival.** Maintainers only. "Are we
+shipping faster or slower than before, and is quality holding?"
+
+**What it does today (inventory).**
+- Author select: Team / Codey / Echo. Window select: 7 / 14 / 30 days.
+- `GET /throughput/series?days=` → seven bar charts: merges, median latency (h),
+  rework loops, reverts, median push iterations, changed lines, composite index
+  (full width). Each bar's tooltip is the day and value; "latest: N" under each.
+- Failure → "Throughput data is temporarily unavailable." No writes.
+
+**What is wrong with it today.**
+- Hard-coded to one repository and two people (`throughputRoutes.ts:71`, `:118`),
+  yet shown to every agent; on an ordinary agent with a GitHub token it renders
+  Instar's history as if it were theirs.
+- Seven equal charts, no headline: the operator has to compute "better or worse"
+  himself. The composite index (weights 40/20/25/15) is unexplained.
+- Bars are scaled per chart to their own maximum, with no axis, so a quiet week
+  and a busy week look the same.
+- 503 `github-auth-unavailable` collapses into the same "temporarily unavailable"
+  as a real outage.
+- "Latest" shows today's partial day as if it were complete.
+
+**The new design.** **Pace**, a section of Development (third in its order).
+- *Arrival (glance):* one plain sentence about the selected window, with no
+  comparison to an earlier one: "Last 14 days: 41 merges, 1 revert." Four plain
+  numbers: **Merged** (count), **Time to merge** ("a typical day's median: 5.8 h"),
+  **Redone** (rework loops + reverts), **Size** ("a typical day's median: 140
+  lines"). The medians are labelled as typical-day values on purpose: the route
+  returns one median per day (`src/server/throughputRoutes.ts:82`–`:90`), and a
+  median of the whole window cannot be recovered from daily medians, so the page
+  does not claim one. **Median push iterations** (`medianPushIters`, the legacy
+  chart at `dashboard/index.html:10681`) is kept, as a fifth number under "More".
+- *Layout:* phone: headline, the four numbers as a 2×2 grid, then one simple bar
+  chart at a time with a segmented control (Merged · Time · Redone · Size · Push
+  iterations · Index); each chart has a labelled y-axis and today drawn hollow ("so far
+  today"). Tap a bar → that day's numbers. Window picker (7/14/30) and person picker
+  (Everyone / per author) sit in one row under the headline. Desktop: the charts in a
+  grid. No previous-window line and no client-side comparison math; comparison
+  charts are a later step if they are wanted.
+- *Primary action(s):* change the window (one tap on the segmented control).
+- *Secondary / destructive actions:* none; read-only. The index chart carries an
+  "i" explaining the four weights in one sentence each.
+- *Honest states:* loading skeleton; `github-auth-unavailable` → "Can't reach
+  GitHub from this machine: no GitHub sign-in found" (can't tell, with the fix
+  named); other 503 → "GitHub didn't answer"; window with zero merges → "No merges
+  in this window" (a real zero, because the query ran); cached up to 60 s, shown
+  as "as of HH:MM"; more than 1,000 pull requests in the window → the route refuses
+  rather than truncating (`github-throughput-result-cap-exceeded`,
+  `src/server/throughputRoutes.ts:113`, answered as a 503 at `:206`), so the page says
+  "Too many pull requests in this window to count; try a shorter window" (can't tell),
+  never a partial figure.
+- *Multi-machine:* the data comes from GitHub, so every machine shows the same
+  numbers; no pool view needed.
+- *Rough sketch:*
+
+```
+┌──────────────────────────────────┐
+│ DEVELOPMENT · PACE   [7|14|30]   │
+│ Last 14 days: 41 merges,         │
+│ 1 revert.                        │
+│ ┌──────────┐┌──────────┐         │
+│ │Merged 41 ││To merge  │         │
+│ │          ││ 5.8h/day │         │
+│ └──────────┘└──────────┘         │
+│ ┌──────────┐┌──────────┐         │
+│ │Redone 3  ││Size 140  │         │
+│ └──────────┘└──────────┘         │
+│ (Merged·Time·Redone·Size·Index)  │
+│ ▁▃▅▂▇▅▃▆▄▅▇▆▃▢  so far today ▢   │
+└──────────────────────────────────┘
+```
+
+**Merge / split / cut.** Merge into Development. The hard-coded authors and repo
+are a server concern: until the route derives them from config, the page shows
+them as named ("Instar repository · Codey, Echo") and is maintainer-only.
+
+**Data.** Existing `GET /throughput/series` (`rows[].{day,team,authors}`,
+`weights`, `repo`, `generatedAt`), for the selected window only. Merges, rework loops
+and reverts are summed over the days; medians are shown per day. No new route and
+no extra fetch.
+
+**Effort and order.** S. README step 5, after Shipping.
+
+**Open questions for the operator.** Keep the composite index at all? It is a
+weighted blend nobody asked to read on a phone; the four tiles may be enough.
+
+---
+
+## Integrated-Being (legacy tab id: `integrated-being`)
+
+**Who comes here, and the one question on arrival.** Everyone (the ledger is on by
+default, `src/core/types.ts:5209`); maintainers for its internals. "What have my
+other conversations been doing, agreeing and leaving open?"
+
+**What it does today (inventory).**
+- Refresh button; 30 s poll while open.
+- Notice when more than one machine is paired: "this machine only".
+- Four count cards from `GET /shared-state/stats`: Total entries, Classifier
+  fires, Rotations, Unclosed > TTL.
+- Filters: Kind (commitment, agreement, thread-opened/-closed/-abandoned,
+  decision, note), Counterparty (user, agent, self, system), Limit (1–200).
+- Entries table from `GET /shared-state/recent`: id, time, kind (with commitment
+  mechanism, ref-status, expired/stranded/dispute badges), subject (deadline,
+  overdue, derived resolved/expired/stranded/cancelled status, "disputed × n"),
+  counterparty, provenance/source, supersedes/disputes pointer.
+- Chain explorer: 12-hex id + **Walk chain** → `GET /shared-state/chain/:id` →
+  raw JSON (`dashboard/index.html:3551`, `:10480`).
+- Bindings (only when v2 is on; `GET /shared-state/sessions`): session id,
+  label, registered, last active, TTL, status, **Revoke** →
+  `POST /shared-state/sessions/:sid/revoke` (bearer + `X-Instar-Request`, browser
+  `confirm()`; not PIN-gated).
+- Unused by the tab: `GET /shared-state/render`. The resolution route **does** exist:
+  `POST /shared-state/resolve/:id` (`src/server/routes.ts:40718`). It is off unless
+  `integratedBeing.resolutionEnabled` is true (503 otherwise), requires a registered
+  session binding (`x-instar-session-id` and `x-instar-session-token`), and implements
+  `self-assert` and `dispute`; `user-resolve` and `subsystem-verify` answer 501 as later
+  slices. No dashboard button calls it, and none is proposed: it is a session's tool,
+  and the human resolution path (`user-resolve`) is not built.
+
+**What is wrong with it today.**
+- The name is internal; nobody outside the project knows what "Integrated-Being"
+  means, and the purpose line has to explain it.
+- The front page is a seven-column table of ids, provenance and pointers, built
+  with `innerHTML` strings; on a phone it scrolls sideways.
+- The four cards are machinery counters ("Rotations", "Classifier fires"), not
+  answers.
+- Commitment entries look like Commitments-tab promises but are a different store:
+  they carry their own mechanism, deadline, resolution and dispute fields
+  (`src/core/types.ts:5356`, `:5405`), while the Commitments tab reads
+  `CommitmentTracker`. Nothing maps one to the other, so they cannot simply be
+  sent to the Promises page.
+- Chain explorer returns raw JSON.
+- The supersession status is derived only within the loaded page of entries, so
+  a commitment's resolution outside that page is silently missed. Walking the chain
+  does not fix this: `walkChain` follows `supersedes` **backwards** from the selected
+  entry (`src/core/SharedStateLedger.ts:579`), so it cannot find later entries that
+  superseded or resolved it.
+
+**The new design.** Section 1 of **How I'm doing inside**, titled **What my other
+conversations have been doing**.
+- *Arrival (glance):* the section is headed **Recent recorded activity**, and its line
+  counts only what is on the screen: "Among the 40 most recent records: 4 decisions,
+  2 agreements, 3 threads opened, 1 marked abandoned." Tiles: **Decisions**,
+  **Agreements**, **Thread events** (opened / closed / abandoned, as recorded) — each a
+  count within the displayed records, with "of the last 40" under them. No live
+  open-thread or quiet-thread total: the stats read has accumulated counts by kind,
+  classifier fires and rotations (`src/core/SharedStateLedger.ts:108`–`:116`, `:605`–`:612`),
+  not a current inventory of open threads, and `/shared-state/recent` returns at most 200
+  records (`src/server/routes.ts:40191`; a `since` filter narrows within that tail and does
+  not lift the cap, `SharedStateLedger.ts:479`–`:495`). A recorded `thread-abandoned` event
+  is shown as the event it is ("Thread with PP marked abandoned · 1 d"), never summed into
+  "N threads are quiet now". A live count waits for an authoritative read.
+- *Layout:* phone: a day-grouped timeline, newest first, each entry one plain
+  sentence plus who it was with and when: "Agreed with Dawn to hand off the
+  review · 2 h ago". Kind is an icon, not a badge wall. Filter chips above the
+  timeline (All · Decisions · Agreements · Threads · Commitments · With people · With
+  agents), then a compact **More filters** sheet that keeps every legacy value: Kind as
+  the seven values the legacy select offers — commitment, agreement, thread-opened,
+  thread-closed, thread-abandoned, decision, note (`dashboard/index.html:3500`–`:3510`) —
+  and Counterparty as user, agent, self, system (`:3513`–`:3519`), so Notes, Self and
+  System can be isolated and opened, closed and abandoned threads told apart; "Show
+  more" extends the window up to the route's 200. **Commitment entries keep their own detail sheet with their full status**:
+  what was committed, the mechanism in plain words, the deadline (and "overdue" when
+  past it), the derived status (open / resolved / expired / stranded / cancelled),
+  disputes ("disputed twice"), and the resolution when one is loaded. A link to the
+  Promises page appears only when an explicit, verified relationship to a
+  `CommitmentTracker` record exists; none does today, so no link is shown. Tap any
+  entry → record: full subject, what it replaced or disputes (the backwards chain,
+  rendered as a short history list, not JSON), provenance in plain words ("written by
+  the session in topic 4120" / "asserted by the system").
+- *Primary action(s):* tap a chip to filter; tap an entry to read its history.
+- *Secondary / destructive actions (maintainer details, collapsed "Technical"):*
+  ids, raw provenance, counters (rotations, classifier fires), **Look up an entry
+  by its id** (the legacy chain explorer: type an id, see its chain as a list), and
+  **Session bindings** with **Revoke** per session (bearer, confirmation sheet naming the
+  session and stating that its future writes will be refused; no PIN, matching
+  the server). Shown to ordinary users only if v2 is on, and then still behind
+  "Technical".
+- *Honest states:* 404/disabled → "This record is off on this agent." Recent read
+  fails, stats succeed → timeline can't-tell, tiles show. A commitment whose later
+  history cannot be established (no resolving or superseding entry is in the loaded
+  window, and the backwards chain cannot show one) → **"Status unknown: later history
+  isn't loaded"**, never "open" and never inferred from the chain. Empty → "Nothing
+  recorded recently."
+- *Multi-machine:* per machine only today. The section head says "This machine
+  only: other machines keep their own record" whenever the pool has more than
+  one machine (partial, not fine).
+- *Rough sketch:*
+
+```
+┌──────────────────────────────────┐
+│ HOW I'M DOING INSIDE             │
+│ Recent recorded activity         │
+│ Of the last 40 records: 4        │
+│ decisions, 2 agreements, 3       │
+│ threads opened, 1 abandoned.     │
+│ (All)(Decisions)(Agreements)(…)  │
+│ More filters ›                   │
+│ TODAY                            │
+│ ◆ Decided to retry on Codex · 2h │
+│ ⇄ Agreed with Dawn: hand off   › │
+│   review · 3h                    │
+│ ○ Thread with PP marked          │
+│   abandoned · 1d                 │
+│ This machine only                │
+└──────────────────────────────────┘
+```
+
+**Merge / split / cut.** Merge into *How I'm doing inside*. Rename. Commitment
+entries stay here with their own detail sheet; they are not shown or counted on the
+Promises page. "Integrated-Being" stays a search alias.
+
+**Data.** Existing `GET /shared-state/recent` (`limit` up to 200, `since`,
+`counterpartyType`), `/stats`, `/chain/:id`, `/sessions`,
+`POST /shared-state/sessions/:sid/revoke`. The stats counter
+`unclosedThreadsOverTtl` appears only under Technical, as the raw number it is: it has
+an increment method with no production caller (`src/core/SharedStateLedger.ts:632`; the
+abandonment sweep emits `thread-abandoned` ledger events instead,
+`src/threadline/ThreadlineRouter.ts:521`–`:539`), so a zero there proves nothing about
+quiet threads and it is never shown as a health signal. The windowed-status gap is shown
+as unknown, not solved: a forward lookup ("what superseded this entry?") would need a new
+ledger read and is not proposed now; so would a live open/quiet-thread count.
+
+**Effort and order.** M. First section of *How I'm doing inside* (README step 5).
+
+**Open questions for the operator.** None. (Human resolve / cancel / dispute buttons
+stay absent: the server's `user-resolve` is not built, and `self-assert`/`dispute`
+are a session's actions behind a session binding.)
+
+---
+
+## Process health (legacy tab id: `process-health`)
+
+**Who comes here, and the one question on arrival.** Whoever runs the
+failure-learning loop: maintainers always; ordinary users only when it is switched
+on (it is dark by default). "Is something going wrong repeatedly in my own work?"
+
+**What it does today (inventory).** (`dashboard/process-health.js`)
+- Stamp; headline "Keeping an eye out — N things noticed so far" with an
+  open/attributed subline; stale headline after refresh failures.
+- *Recurring patterns* from `GET /failures/insights?limit=50`: expandable cards
+  (status, times seen across changes/fixes, first noticed).
+- *Problems it's noticed lately* from `GET /failures?limit=10`: expandable items
+  (category sentence, "came up while building <feature>", status, where, times
+  seen, first noticed, cause confidence).
+- *How far the system is switched on*: four-stage rollout track
+  (`rollout.stage`).
+- *More detail* drawer from `GET /failures/analysis`: totals, attributed, no
+  feature link, per category, unknown-toolchain count.
+- Disabled (503) state with a "For whoever set this up" note. Visibility-gated
+  ETag polling. No writes. Unused by the page: `POST /failures`,
+  `POST /failures/analyze`, `GET /failures/:id`.
+
+**What is wrong with it today.**
+- Mostly right in tone (grandfathered as an exception in the UX standard), but:
+- The headline "Keeping an eye out — 9 things noticed" never says whether any of
+  it matters now; "noticed so far" has no time window.
+- The rollout track takes a whole section to say one fact (which stage).
+- Only the last 10 problems; no way to see more.
+- Its sanitizer strips symbol glyphs from all data (`process-health.js:43`), which
+  will also strip legitimate arrows or check marks in summaries; fine, but the
+  console must keep the same safety contract.
+
+**The new design.** Section 2 of **How I'm doing inside**, titled **Problems I
+caught in my own work**.
+- *Arrival (glance):* "One kind of problem keeps coming back: timing clashes,
+  across 4 changes." or "Nothing repeating. 3 one-off problems this week, all
+  explained." Tiles: **Repeating** (patterns, amber when any is *reopened*),
+  **This week** (the `total` from `GET /failures/analysis?sinceDays=7`, a whole-ledger
+  count, `src/server/routes.ts:16492`–`:16494`, `src/monitoring/FailureLedger.ts:613`–`:624`),
+  and **Still open**, worded "N still open among the records shown": the analysis
+  response carries no open-status total (`FailureLedger.ts:613`–`:619` returns total,
+  attributed, byCategory, byBuildSkill, unknown-toolchain and no-feature-link counts
+  only), so the open count is taken from the problem rows on screen and says so. A
+  whole-agent open count waits for a server read that has one.
+- *Layout:* patterns first (each a card: plain category sentence, "seen in 4
+  changes since 2 Oct", status word), then recent problems as one-line rows that
+  expand to the same fact sheet as today, with **Show older** paging past 10 by the
+  route's existing `before` parameter (an ISO timestamp; the next page asks for records
+  detected before the oldest one shown, `src/server/routes.ts:16476`–`:16484`,
+  `FailureLedger.ts:527`). The "Still open among shown" tile re-counts as pages load. The
+  rollout stage becomes a single line in the section head: "Watching quietly (no
+  alerts)" with an info tap for the four stages.
+- *Primary action(s):* tap a pattern to see the problems behind it.
+- *Secondary / destructive actions:* none on the page (it is awareness-only by
+  spec). Maintainer "Technical" drawer: the analysis counts and the per-tool
+  unknowns.
+- *Honest states:* 503 → for an ordinary user the section is omitted and the page
+  head says "Failure watching is off on this agent"; for a maintainer the same
+  line with the reason. Stale (no fresh 200 within the controller's limit) →
+  "Showing what I knew at 14:02; couldn't refresh since." Patterns read fails but
+  problems succeed → patterns can't-tell, rest renders. Zero patterns is "nothing
+  repeating" only when `/failures/insights` answered.
+- *Multi-machine:* the ledger is per machine; section says "this machine".
+- *Rough sketch:*
+
+```
+┌──────────────────────────────────┐
+│ Problems I caught in my own work │
+│ Watching quietly · this machine ⓘ│
+│ Nothing repeating. 3 one-offs    │
+│ this week, all explained.        │
+│ ┌────────┐┌────────┐┌────────┐   │
+│ │Repeat 0││Week 3  ││Open 0  │   │
+│ │        ││        ││of shown│   │
+│ └────────┘└────────┘└────────┘   │
+│ ● A settings problem · 2d      › │
+│ ● A timing clash · 4d          › │
+│ Show older                       │
+└──────────────────────────────────┘
+```
+
+**Merge / split / cut.** Merge into *How I'm doing inside*. Keep the ETag polling
+module's behavior (visibility-gated, abort-safe) and its sanitizer.
+
+**Data.** Existing `/failures?limit=10` with `before=<oldest shown detectedAt>` for
+each older page (the route already pages by timestamp; no offset API is added),
+`/failures/insights`, `/failures/analysis?sinceDays=7` for the week's total (and
+without `sinceDays` for the Technical drawer's all-time counts). None new.
+
+**Effort and order.** S–M. Second section of *How I'm doing inside*.
+
+**Open questions for the operator.** None.
+
+### Checks on my own claims (from the Preferences tab's audit sections)
+
+Section 3 of *How I'm doing inside*. These two sections move here from the
+Preferences tab (`people-settings.md`), so they are listed explicitly rather than
+assumed.
+
+- *What it does today (inventory):* on the Preferences tab, **Class reviews** from
+  `GET /class-reviews?limit=20` (verdicts and outcomes) and **Claim Verification
+  observations** from `GET /completion-claim/audit?limit=20`
+  (`dashboard/preferences-learning.js:333`–`:334`; routes `src/server/routes.ts:29636`,
+  `:29876`). Read-only.
+- *What the claim records are.* `GET /completion-claim/audit` limits audit records,
+  not distinct claims (`src/server/routes.ts:29876`–`:29878`), and its stream mixes
+  several kinds: general claim observations with `supported / refuted /
+  unverifiable` (`src/monitoring/ClaimObservation.ts:64`, `:420`), settlement events
+  (`:481`), coverage-gap and other events (`:486`), and older completion verdicts in
+  another vocabulary, `corroborated / uncorroborated-contradicted /
+  uncorroborated-unknown / not-eligible` (`src/monitoring/CompletionClaimVerifier.ts:24`,
+  `:269`). One message can add several records. So the section counts nothing as a
+  success rate until the record kinds and the de-duplication rule are written down.
+- *Arrival (glance):* titled **Recent claim observations**. One line, for example
+  "Of the last 20 observations, 1 contradicts what I said." (a contradiction leads),
+  or "Recent claim observations: none contradict what I said." Facts (at most two):
+  **Contradicted** (count, red when above zero) and **Class reviews** (count and the
+  last verdict).
+- *Layout:* the observations list, newest first, each row one plain sentence with its
+  date and one of four words: **Evidence supports it** (`supported`, `corroborated`),
+  **Evidence contradicts it** (`refuted`, `uncorroborated-contradicted`; red, shown
+  open), **Couldn't verify** (`unverifiable`, `uncorroborated-unknown`), **Not
+  evaluated** (`not-eligible`, or `evaluated: false`). Coverage-gap and settlement
+  events are a separate collapsed **Coverage notes** list, never mixed into the
+  verdicts. Every row and its record say **"Advisory only — nothing was blocked"**, as
+  the legacy detail does (`dashboard/preferences-learning.js:270`). Then the collapsed
+  class reviews list. Tap → the record with the raw verdict and ids under Technical.
+  "Show more" past 20.
+- *Primary / secondary actions:* none; read-only.
+- *Honest states:* each source on its own: 503 → that list's "Off on this agent"
+  line; failure → that list can't tell; empty → "No claims checked yet".
+- *Multi-machine:* this machine's records, labelled.
+- *Rough sketch:*
+
+```
+│ Checks on my own claims          │
+│ Of the last 20 observations, 1   │
+│ contradicts what I said.         │
+│ ✕ Said the fix was merged ·      │
+│   evidence contradicts it · 12 Oct│
+│ ▸ Recent claim observations (20) │
+│ ▸ Coverage notes (3)             │
+│ ▸ Class reviews (6)              │
+```
+
+- *Effort and order:* S, with *How I'm doing inside* (README step 5).
+
+---
+
+## Feedback drain (legacy tab id: `feedback-drain`)
+
+**Who comes here, and the one question on arrival.** Maintainers running the
+operated feedback factory (in practice, the operator, on his phone). "Does feedback
+need me, and is it actually being turned into fixes?"
+
+**What it does today (inventory).**
+- Stamp; 15 s poll of the headline and status.
+- **Decision headline** (`feedback-drain-headline.js`): one sentence + one button,
+  from five reads (`/feedback-factory/readiness-authorities/proposal`,
+  `/triage/summary`, `/triage/authority/proposal`, `/execute/status`,
+  `/triage/queue`). To-dos in order: approve the sorting model; approve the
+  triage model; one-time OK for the fix worker (approver not independent); fixes
+  held for a secret-shaped file; fixes waiting for GitHub approval (button opens
+  the PR). The reveal button opens the drawer, scrolls, focuses the PIN field and
+  may press the card's own preview button.
+- **Approvals and settings** drawer:
+  - *Readiness authority card* (`feedback-readiness-authority.js`): status line;
+    server summary sentence; blockers; "Adjust limits" (reports per batch 1–50,
+    daily spend cap USD, answer length tokens) with live re-preview via the
+    proposal route; bound-to line (agent, machine, epoch, model, provider); PIN
+    field; **Approve** / **Approve (restore)** / **Save new limits** / **Revoke** →
+    `POST /feedback-factory/readiness-authorities` — **PIN-gated**.
+  - *Triage section* (`feedback-triage.js`): summary paragraph (authority words,
+    counts, calls today of cap, quota pause, ignore brake, ignore live/practice,
+    recommendation); triage authority card with PIN, **Approve** / **Approve
+    (restore)** / **Revoke** → `POST /feedback-factory/triage/authority` —
+    **PIN-gated**; **Turn ignores live… / back to practice…** →
+    `POST /triage/plan {action:'ignore-live'}` then **Confirm with PIN** →
+    `POST /triage/commit` — **PIN-gated**; executor card (plain reason, live
+    attempts, PRs waiting, starts today) with **Let it run anyway…**
+    (`accept-approver-dependence`) and per held attempt **Review and publish…**
+    (`publish-secret-shape`), both plan → **Confirm with PIN** → commit —
+    **PIN-gated**; ranked work queue (top 25, "…and N more").
+- **More detail** drawer from `GET /feedback-factory/drain/status`: posture,
+  backlog counts, last run and oldest queued age, source byte/generation lag and
+  checksum conflicts.
+- Not on the page, reachable only by asking the agent (bearer +
+  `X-Instar-Request`): execute stop / release / revoke-acceptance / tick /
+  canary-retry, drain tick and run cancel, readiness hold/release, consumer
+  promote/revoke, triage tick and action list, failover finalize; reads
+  `/feedback-factory/stats`, `/backlog/analysis`.
+
+**What is wrong with it today.**
+- The decision headline (ACT-003) is good, but everything it points at is inside
+  a closed drawer, then a card, then a field; the path from "it needs you" to a
+  PIN is three moves and a scroll.
+- One PIN field per card (`fraPin`, `ftPin`), and the triage card's PIN is reused
+  by the executor card above it ("enter your PIN in the box above"), so it is easy
+  to type into the wrong one.
+- Two status lines say "Active (version 7)": "version" is an authority
+  generation the operator never chose.
+- The summary is a paragraph of seven clauses; the queue rows inline severity in
+  brackets.
+- "More detail" is raw counters ("byte lag 0; generation lag 0").
+- The page never answers "is it actually making progress?" in one line: stall
+  state (`readinessProgress`, `lastReadinessFailure`) is only reachable via the
+  API, although the agent memory says that is the first thing to read when
+  sorting looks stuck.
+- Five reads per 15 s; a failed read becomes `null` and the headline then says
+  "Nothing here needs you" (`feedback-drain-headline.js`, `calmLine`), which is
+  the "renders as fine" failure the console forbids.
+
+**The new design.** **Feedback**, a section of Development (second in its order).
+- *Arrival (glance):* the existing decision sentence, kept verbatim in logic, plus
+  a progress line: "Feedback is waiting on one approval from you." or "Nothing
+  needs you. 12 reports sorted today; 2 fixes waiting for GitHub approval." Tiles:
+  **Needs you** (to-dos count), **Being fixed** (live attempts + open PRs),
+  **Waiting to sort** (untriaged + queued), **Progress** ("last sorted 8 min
+  ago" / amber "no usable answer for 3 h" from `readinessProgress`).
+- *Layout:* phone: when there is a to-do, the approval card itself is the first
+  thing under the headline, open, with its sentence, its limits collapsed under
+  "Adjust limits", and **one** PIN field at the bottom of that card (the shared PIN
+  sheet's field, inline). Other to-dos
+  are a numbered list below ("2 more things need you") each opening its own card
+  in a bottom sheet with its own PIN field. Then the work queue as rows ("1 ·
+  Serious · Telegram replies lost on restart · fix waiting for your approval ›"),
+  severity as a small coloured word. Then **Settings** (collapsed): both
+  authorities' status in plain words ("Sorting model approved on 20 Oct, up to 50
+  reports a batch, $5 a day"), with **Change limits**, **Revoke**, and the ignore
+  practice/live switch. "Technical" (collapsed, last): the drain-status counters,
+  bound-to fields, generations.
+- *Primary action(s):* **Approve** on the open card: PIN, one tap. GitHub
+  approvals: **Open the fix ↗** directly to the PR.
+- *Secondary / destructive actions:* **Revoke** (either authority) and **Turn
+  ignores back to practice / live** live under Settings, red-outlined for revoke,
+  each opening a sheet that shows the server's exact rendered plan text (for
+  plan/commit actions) before the PIN; never a paraphrase in its place. The commit
+  sends the server's `planId` and `nonce` with the PIN. "Let it run anyway" and
+  "Review and publish" appear only as to-dos when the server says they are needed.
+  Every PIN here is adapter (c): it goes in that one request and is cleared as soon
+  as it settles, never kept for the next card; polling never rebuilds an open card
+  (F9).
+- *Honest states:* each of the five reads is tracked separately. Any read that
+  feeds the to-do list failing → headline "I can't tell whether feedback needs
+  you: the triage summary didn't answer" (dashed), never "Nothing needs you".
+  Drain posture `unavailable` / not the operated host → "The feedback factory
+  doesn't run on this machine" (off, muted). Stall: `readinessProgress` failed
+  runs ≥ 6 → amber "Sorting hasn't produced a usable answer since 11:40 (provider
+  problem; nothing is paused)"; paused by a brake → amber "Sorting is paused:
+  <pausedBecause>. Only your approval restarts it." with Approve. Quota pause and
+  ignore brake each a one-line amber note. Stale: last poll older than 1 min →
+  stamp shows age.
+- *Multi-machine:* the factory runs on one operated host. On any other machine:
+  "Feedback is handled on Mac Studio" with a direct link to that machine's
+  console when its tunnel URL is known; no controls rendered here (the server
+  would refuse them).
+- *Rough sketch:*
+
+```
+┌──────────────────────────────────┐
+│ DEVELOPMENT · FEEDBACK           │
+│ Feedback is waiting on one       │
+│ approval from you.               │
+│ ┌──────────────────────────────┐ │
+│ │ Approve which model sorts    │ │
+│ │ incoming reports.            │ │
+│ │ GPT-6 Luna · ≤50 a batch ·   │ │
+│ │ $5 a day        Adjust limits▾│ │
+│ │ [ PIN •••• ]   [  Approve  ] │ │
+│ └──────────────────────────────┘ │
+│ 1 more thing needs you         › │
+│ ┌────────┐┌────────┐┌────────┐   │
+│ │Fixing 2││Sort 14 ││8m ago  │   │
+│ └────────┘└────────┘└────────┘   │
+│ 1 Serious · replies lost…  ↗     │
+│ Settings ▾        Technical ▾    │
+└──────────────────────────────────┘
+```
+
+**Merge / split / cut.** Merge into Development as one of its sections. The
+pause/stall attention items the drain already raises reach Home's *What needs
+you*, so the operator need not open this page to learn it needs him; the page is
+where he acts. Nothing is dropped: every PIN action above has a home; the
+agent-only levers stay agent-only (they are documented as conversational
+instructions).
+
+**Data.** Existing routes listed in the inventory, plus `readinessProgress` and
+`lastReadinessFailure` from `GET /feedback-factory/drain/status` (already
+returned, not yet shown). No new route.
+
+**Effort and order.** M. README step 4, right after maintainer mode, because it is the
+one place here that asks the operator to act.
+
+**Open questions for the operator.** None. (Whether the triage model may ever be
+approved without a PIN is settled: the server requires operator proof.)
+
+---
+
+## The two combined pages, in one view
+
+```
+How I'm doing inside            Development  (maintainer only)
+(Settings → Under the hood)     (Work group tile)
+Conversation history, recurring
+problems, checks on my claims
+├ What my other conversations   ├ Shipping   ← pr-pipeline
+│   have been doing             │   (green-PR watcher, local verify,
+│   ← integrated-being          │    release readiness)
+├ Problems I caught in my own   ├ Feedback   ← feedback-drain
+│   work ← process-health       └ Pace       ← throughput
+│   (omitted when off, for an
+│    ordinary user)
+├ Checks on my own claims
+│   ← preferences (class reviews,
+│     claim verification)
+└ Look up a memory's sources
+    ← evidence (maintainer)
+```
+
+Each combined page opens on its own one-sentence headline built from its
+sections' headlines (the worst state first, coverage stated, same rules as Home),
+and each section is deep-linkable (`#shipping`, `#feedback`, …) so links the agent
+sends land on the right part.
+
+**Development's order on a phone.** Directly under the headline comes the one thing
+that needs him, as a concrete card with its button: a pending Feedback approval
+(the readiness or triage authority card with its PIN action) or a Shipping
+needs-you row with **Open on GitHub**. When several wait, the oldest is the card and
+the rest are a counted line under it. Then Shipping, Feedback and Pace as three
+collapsed one-line summaries ("Shipping: 3 on their way, 1 testing" / "Feedback: 12
+queued, sorting on" / "Pace: 14 merges in 7 days"), each opening in place; only one
+is open at a time on a phone. So no chart or healthy list ever sits between the
+operator and a PIN action. This page is composed from the three sections' own reads;
+no new cross-page logic is built for it. Legacy tabs stay reachable from Settings → "Legacy
+dashboard" until the makeover's inventory-gated removal.

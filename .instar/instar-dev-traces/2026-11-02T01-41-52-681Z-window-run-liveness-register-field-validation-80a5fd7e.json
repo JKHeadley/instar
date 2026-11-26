@@ -1,0 +1,26 @@
+{
+  "version": 2,
+  "slug": "window-run-liveness-register-field-validation",
+  "sessionId": "6c6a56f3-b399-4561-a450-b168a863e6d5",
+  "timestamp": "2026-11-02T01:41:52.681Z",
+  "artifactPath": "upgrades/side-effects/window-run-liveness-register-field-validation.md",
+  "artifactSha256": "87d095a46312bf7ccb33b0b16c1a0e7dd6a57e378b5f916a9e07ad1ef3491402",
+  "coveredFiles": [
+    "src/core/PostUpdateMigrator.ts",
+    "src/core/WindowRunLivenessAuthority.ts",
+    "src/server/routes.ts",
+    "tests/integration/window-run-liveness-routes.test.ts",
+    "tests/unit/PostUpdateMigrator-windowRunLiveness.test.ts",
+    "tests/unit/window-run-liveness-authority.test.ts",
+    "upgrades/next/window-run-liveness-register-field-validation.md",
+    "upgrades/side-effects/window-run-liveness-register-field-validation.eli16.md",
+    "upgrades/side-effects/window-run-liveness-register-field-validation.md"
+  ],
+  "phase": "complete",
+  "tier": 1,
+  "tierReasoning": "narrow input-validation bug fix; a revert fully restores prior behavior; no state format change",
+  "eli16Path": "upgrades/side-effects/window-run-liveness-register-field-validation.eli16.md",
+  "sideEffectsPath": "upgrades/side-effects/window-run-liveness-register-field-validation.md",
+  "secondPass": "true",
+  "reviewerConcurred": true
+}

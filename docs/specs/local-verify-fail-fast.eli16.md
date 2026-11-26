@@ -1,0 +1,9 @@
+# Stopping doomed test runs early, and giving flaky tests their retry — plain-English overview
+
+Before a pull request can merge, the Studio runs all of Instar's tests on it. The tests are split into three groups that run at the same time: quick unit tests (about 8 minutes) and two slower groups (about 16 minutes each). Only one pull request can be tested at a time, so every wasted minute delays every other pull request.
+
+**Stopping early.** If the quick group finds a real failure at minute 8, the pull request has already failed: nothing the slower groups find can change that. Until now they kept running anyway, for about 10 more minutes. Now, as soon as one group has a real failure, the other groups are stopped and the next pull request can start. A failure only counts as real after the existing "run it again on its own" check. Runs that would pass are never stopped. Tests of `main` itself always run every group, because the system that holds pull requests back while `main` is broken needs the full list of what failed. The cost: the author sees only the failures from the group that failed first, and sees any others on the next run.
+
+**Flaky tests get their retry.** A test that sometimes fails for no reason gets one retry on its own. A test that had needed that retry on `main` was excluded from the retry in pull requests. That made things worse: each time such a test flaked, the pull request failed even though it had nothing to do with that test. Last week this happened about 15 times. Now those tests get the same one retry as any other test. A test the pull request changed (or whose code the pull request changed) still never gets a retry, so a real break can't hide as a flake. Each flaky test still raises a tracked item so someone fixes it.
+
+What you need to decide: nothing. The early stop can be switched off with one setting (`monitoring.localVerify.failFast: false`); the retry change is undone by reverting this change.

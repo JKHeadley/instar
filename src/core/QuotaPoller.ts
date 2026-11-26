@@ -32,6 +32,12 @@
  * poller runs hermetically with zero credentials and zero network in tests.
  */
 
+import type { IdentityCheckLog } from '../monitoring/IdentityCheckLog.js';
+import { identityKey } from '../monitoring/quotaPacing.js';
+import { createHash } from 'node:crypto';
+import type { CodexDeviceLimitTripwire } from './CodexDeviceLimitTripwire.js';
+import type { FreshProbeScheduler, ProbeDisposition } from './FreshProbeScheduler.js';
+import type { QuotaHistorySink } from '../monitoring/QuotaHistoryLedger.js';
 import fs from 'node:fs';
 import path from 'node:path';
 import type {
@@ -51,6 +57,8 @@ import type {
   SubscriptionLoginCauseClass,
   SubscriptionLoginSettledOutcome,
 } from './SubscriptionLoginLedger.js';
+import type { CodexLiveRead } from '../providers/adapters/openai-codex/observability/codexLiveRateLimitReader.js';
+import type { CliLoginVerdict } from './CliLoginStatus.js';
 import {
   readLatestCodexUsage,
   type CodexUsageSnapshot,
@@ -117,6 +125,32 @@ export interface QuotaPollerConfig {
    * `codex` subprocess. Config lever: `subscriptionPool.codexLiveQuota: false`.
    */
   codexLiveUsageReader?: CodexUsageReader | null;
+  /**
+   * The live codex read with its failure KIND kept (spec skill-driven-signin-repair). When
+   * present it REPLACES `codexLiveUsageReader`: an app-server "authentication required"
+   * refusal is then told apart from a transport failure, and only a live `codex-app-server`
+   * read counts as proof of login — the rollout-file fallback is usage history only.
+   */
+  codexLiveUsageReaderDetailed?: ((opts?: { codexHome?: string; nowMs?: number }) => Promise<CodexLiveRead>) | null;
+  /**
+   * The Codex CLI's own login check for one config home (`codex login status`), proven able
+   * to fail by its canary. Required for the CLI-signed-out rule; absent ⇒ that rule never fires.
+   */
+  codexLoginStatus?: ((codexHome: string) => Promise<CliLoginVerdict>) | null;
+  /**
+   * The same CLI check, with its status text (codex-device-limit-tripwire §2 A′). When present it
+   * REPLACES `codexLoginStatus` for the signed-out rule (one process run) and its text is handed
+   * to the device-limit tripwire as a trigger.
+   */
+  codexLoginStatusWithText?: ((codexHome: string) => Promise<{ verdict: CliLoginVerdict; text: string }>) | null;
+  /**
+   * The engine's OWN signed-out answer for an account whose stored credential cannot be read at
+   * all (never-silent-conversation §3.6, the every-poll read). `true` = a trusted NO: the engine's
+   * check said signed out, that check has been proven able to say no on this machine, AND the
+   * engine's credential store is open (a locked macOS keychain makes a fine login read as absent).
+   * `false`/`null` = no signal. Absent ⇒ a missing credential stays `unavailable`, as before.
+   */
+  engineLoginSignedOut?: ((account: SubscriptionAccount) => Promise<boolean | null>) | null;
   /** Clock injection for Codex reset-boundary normalization. */
   now?: () => number;
   /** Logger (defaults to console). */
@@ -138,7 +172,7 @@ export interface QuotaPollerConfig {
   /** Reconcile confirmed live attribution into the durable location ledger. */
   locationLedger?: CredentialLocationLedger;
   /** One deduped attention item per drift episode (id is stable until self-close). */
-  emitIdentityDriftAttention?: (item: { id: string; title: string; summary: string }) => void | Promise<void>;
+  emitIdentityDriftAttention?: (item: { id: string; title: string; summary: string; conditionKey: string }) => void | Promise<void>;
   onIdentityRestored?: (accountId: string, attentionId: string) => void | Promise<void>;
   /** Passive evidence sink. It cannot select accounts, mutate pool authority, or trigger repair. */
   loginObservationSink?: (input: {
@@ -152,10 +186,67 @@ export interface QuotaPollerConfig {
   }>) => Set<string>;
 }
 
+/**
+ * The login signal behind an account's pool status (spec skill-driven-signin-repair). `ok` = the
+ * latest poll made an authenticated read (for Codex, a LIVE app-server read); `signed-out` = the
+ * provider refused the read as unauthenticated; `unavailable` = no measurable signal this poll
+ * (transport failure, check not runnable, not yet polled). `unavailable` never counts as a fresh
+ * `active`; it is shown next to the status so the gap is visible.
+ */
+export type PoolLoginCheck = 'ok' | 'signed-out' | 'unavailable';
+
+/**
+ * Claude Code's own "Login expired" screen, seen in this many DISTINCT sessions launched under
+ * the same config home within {@link CLI_LOGIN_EXPIRED_WINDOW_MS}, corroborates an unreadable
+ * stored credential into needs-reauth (2026-10-22: a dead login sat "active" for 8h while the
+ * session monitor ended 40+ sessions at that screen and the repair never started).
+ */
+export const CLI_LOGIN_EXPIRED_SESSIONS_REQUIRED = 2;
+export const CLI_LOGIN_EXPIRED_WINDOW_MS = 60 * 60_000;
+const CLI_LOGIN_EXPIRED_MAX_SIGHTINGS = 20;
+
+/**
+ * Pane authority over a READABLE credential (CMT-1008, 2026-10-25 sagemind "Luna"): the stored
+ * token still answered the OAuth usage endpoint, so the account stayed `active`, while every
+ * Claude Code session placed on it showed "Login expired · Please run /login" and did nothing.
+ * The CLI's own screen is the stronger evidence: once a session has shown it past the monitor's
+ * dwell, the account moves to needs-reauth and stays there while the stored credential is the
+ * SAME one the CLI refused. A changed credential (any fresh sign-in, assisted or by hand), a
+ * credential swap on the slot, or this ceiling releases the hold; a still-broken login is simply
+ * observed again by the next session that lands on it.
+ */
+export const CLI_LOGIN_EXPIRED_HOLD_MAX_MS = 12 * 60 * 60_000;
+
+/** quota-pacing step 2: consecutive failed out-of-cycle reads that open the re-read breaker. */
+export const OUT_OF_CYCLE_BREAKER_FAILURES = 6;
+
+/** codex-device-limit-tripwire §3: concurrent poller-family Codex live reads per process. */
+export const CODEX_LIVE_READ_CONCURRENCY = 2;
+/** A trigger-requested Codex read is skipped within this long of the account's last read. */
+export const CODEX_CHECK_FLOOR_MS = 10 * 60_000;
+export type CodexReadPriority = 'scheduled' | 'confirmation' | 'trigger';
+const CODEX_READ_PRIORITY_RANK: Record<CodexReadPriority, number> = { confirmation: 0, scheduled: 1, trigger: 2 };
+
+/** Two consecutive CLI-signed-out + auth-refused polls move a Codex account to needs-reauth. */
+const CLI_SIGNED_OUT_POLLS_REQUIRED = 2;
+/** The two agreeing polls must be at least this far apart (on-demand polls seconds apart don't count twice). */
+const CLI_SIGNED_OUT_MIN_GAP_MS = 5 * 60_000;
+
 /** Outcome of a single usage read (internal). */
 type UsageRead =
-  | { authFailed: false; body: Record<string, unknown> | null }
+  | { authFailed: false; body: Record<string, unknown> | null; status?: number }
   | { authFailed: true };
+
+/**
+ * The typed result of one read (docs/specs/quota-pacing-forecast.md §1). `snapshot` and `failed`
+ * are reads and go to the history ledger; `not-a-read` (the read gate dropped it, or the identity
+ * check attributed it to nothing) is never recorded. `attributedId` is the account the read
+ * belongs to after identity reconciliation.
+ */
+export type PollAccountResult =
+  | { kind: 'snapshot'; snap: AccountQuotaSnapshot; attributedId: string }
+  | { kind: 'failed'; attributedId: string; reason: 'auth-refused' | 'needs-reauth' | 'network' | 'http-error' | 'credential-busy' | 'credential-unreadable' | 'no-reading' }
+  | { kind: 'not-a-read'; attributedId: string | null; reason: 'read-gate-dropped' | 'identity-unattributed' };
 
 export interface BurnRate {
   /** Utilization points per hour on the binding (7-day) window. */
@@ -206,6 +297,33 @@ export async function defaultTokenResolver(
 }
 
 /**
+ * One read-only usage call as a login proof, for the installer: `ok`, `auth-failed` on 401/403, and
+ * `unknown` for anything that says nothing about the login (a rate limit, a 5xx, the network).
+ * NEVER logs the token.
+ */
+export async function probeClaudeUsage(
+  token: string,
+  fetchImpl: FetchImpl,
+  timeoutMs: number,
+): Promise<'ok' | 'auth-failed' | 'unknown'> {
+  try {
+    const res = await fetchImpl(USAGE_URL, {
+      headers: {
+        Authorization: `Bearer ${token}`,
+        'anthropic-beta': 'oauth-2025-04-20',
+        'anthropic-version': '2023-06-01',
+      },
+      signal: AbortSignal.timeout(timeoutMs),
+    } as Parameters<FetchImpl>[1]);
+    if (res.ok) return 'ok';
+    return res.status === 401 || res.status === 403 ? 'auth-failed' : 'unknown';
+  } catch {
+    // @silent-fallback-ok: a network failure says nothing about the login
+    return 'unknown';
+  }
+}
+
+/**
  * Read the account email (`oauthAccount.emailAddress`) Claude Code records for a
  * config home. This is a PUBLIC account identifier (not a secret) — it lets the
  * pool show WHICH account a slot actually authenticated as, so a login into the
@@ -247,9 +365,10 @@ export function mapUsageResponse(
   const win = (v: unknown): { utilizationPct: number; resetsAt: string } | undefined => {
     if (!v || typeof v !== 'object') return undefined;
     const o = v as Record<string, unknown>;
-    if (o.utilization === undefined && o.resets_at === undefined) return undefined;
+    // A reset timestamp alone cannot establish how much allowance remains.
+    if (o.utilization === undefined || o.utilization === null) return undefined;
     return {
-      utilizationPct: Number(o.utilization ?? 0),
+      utilizationPct: Number(o.utilization),
       resetsAt: String(o.resets_at ?? ''),
     };
   };
@@ -258,6 +377,12 @@ export function mapUsageResponse(
   if (five) snap.fiveHour = five;
   const seven = win(body['seven_day']);
   if (seven) snap.sevenDay = seven;
+  // quota-pacing step 2 (§1): an empty reset from the authenticated usage endpoint means the
+  // provider reports no window running (idle); from any other source it is history.
+  const emptyBasis = source === 'oauth-usage-endpoint-fallback' ? 'idle-live' : 'rolled-history';
+  const basis: NonNullable<AccountQuotaSnapshot['windowBasis']> = {};
+  if (five && five.resetsAt === '') basis.fiveHour = emptyBasis;
+  if (seven && seven.resetsAt === '') basis.sevenDay = emptyBasis;
 
   const perModel: Record<string, number | null> = {};
   for (const [key, label] of [
@@ -293,10 +418,22 @@ export function mapUsageResponse(
           utilizationPct: Number(l.percent ?? 0),
           resetsAt: String(l.resets_at ?? ''),
         };
+        // The provider sent no percentage: the 0 above is unchanged for existing readers, but the
+        // quota-pacing history stores the window as unknown, never as 0%.
+        if (l.percent === null) snap.fableUnknown = true;
+        if (snap.fable.resetsAt === '') basis.fable = emptyBasis;
         break;
       }
     }
+    // The provider's own list was parsed: record every window it listed (an object at the
+    // top-level key, or the Fable entry). A window it omits is not offered to this account.
+    const listed: NonNullable<AccountQuotaSnapshot['windowsListed']> = [];
+    if (body['five_hour'] && typeof body['five_hour'] === 'object') listed.push('fiveHour');
+    if (body['seven_day'] && typeof body['seven_day'] === 'object') listed.push('sevenDay');
+    if (snap.fable) listed.push('fable');
+    snap.windowsListed = listed;
   }
+  if (Object.keys(basis).length > 0) snap.windowBasis = basis;
 
   const extra = body['extra_usage'];
   if (extra && typeof extra === 'object') {
@@ -382,6 +519,43 @@ export class QuotaPoller {
   private readonly refresher: AccountRefresher;
   private readonly codexUsageReader: CodexUsageReader;
   private readonly codexLiveUsageReader: CodexUsageReader | null;
+  private readonly codexLiveUsageReaderDetailed: QuotaPollerConfig['codexLiveUsageReaderDetailed'];
+  private readonly codexLoginStatus: QuotaPollerConfig['codexLoginStatus'];
+  private readonly codexLoginStatusWithText: QuotaPollerConfig['codexLoginStatusWithText'];
+  /** codex-device-limit-tripwire: the per-machine state machine (set after construction). */
+  private deviceLimit: CodexDeviceLimitTripwire | null = null;
+  /** quota-pacing step 2: the out-of-cycle read gate's per-account state (in memory only). */
+  private readonly outOfCycle = new Map<string, { failures: number; lastAttemptAt: number | undefined; inFlight: boolean }>();
+  /** Fresh-login probe (spec stale-process-login-expired). Null = today's behaviour exactly. */
+  private freshProbe: FreshProbeScheduler | null = null;
+  /** The cause of each account's LATEST needs-reauth mark (only a pane-cause bench may be released by a probe). */
+  private readonly latestMarkCause = new Map<string, SubscriptionLoginCauseClass>();
+  /** Truncated hash of each account's stored credential at its last read (never the token). */
+  private readonly lastFingerprint = new Map<string, string>();
+  /** quota-pacing: the reading-history sink (set after construction; null = no history). */
+  private history: QuotaHistorySink | null = null;
+  private historyRecordFailures = 0;
+  /** CodexReadGate: one in-flight live read per resolved home, at most 2 at once, priority-queued. */
+  private readonly liveReadsByHome = new Map<string, Promise<CodexLiveRead | null>>();
+  private liveReadsRunning = 0;
+  private readonly liveReadWaiters: Array<{ priority: number; enqueuedAt: number; maxWaitMs: number; start: () => void; drop: () => void }> = [];
+  /** When each account was last read by any path (requestCodexCheck's 10-minute floor). */
+  private readonly lastCodexReadAt = new Map<string, number>();
+  /** Reads already handed to the tripwire: callers sharing one in-flight read hook it ONCE. */
+  private readonly hookedReads = new WeakSet<CodexLiveRead>();
+  private readonly loginChecks = new Map<string, PoolLoginCheck>();
+  private readonly cliSignedOutStreak = new Map<string, { count: number; lastAt: number }>();
+  private readonly engineLoginSignedOut: ((account: SubscriptionAccount) => Promise<boolean | null>) | null;
+  /** Consecutive trusted signed-out answers for an account with no readable credential (§3.6). */
+  private readonly credentialAbsentStreak = new Map<string, { count: number; lastAt: number }>();
+  /** Pane sightings of Claude Code's "Login expired" frame, keyed by resolved config home. */
+  private readonly cliLoginExpiredSightings = new Map<string, Array<{ session: string; at: number }>>();
+  /**
+   * Accounts held at needs-reauth by a pane-observed expired login over a readable credential,
+   * keyed by account id. `fingerprint` is a truncated hash of the credential the CLI refused
+   * (never the token itself); `home` is the resolved slot it was read from.
+   */
+  private readonly cliLoginExpiredHolds = new Map<string, { home: string; fingerprint: string; at: number; session: string }>();
   private readonly now: () => number;
   private readonly logger: { log: (m: string) => void; warn: (m: string) => void };
   private readonly locationGate?: CredentialLocationGate;
@@ -411,6 +585,10 @@ export class QuotaPoller {
       config.refresher ?? ((account) => refreshClaudeToken(expandHome(account.configHome)));
     this.codexUsageReader = config.codexUsageReader ?? readLatestCodexUsage;
     this.codexLiveUsageReader = config.codexLiveUsageReader ?? null;
+    this.codexLiveUsageReaderDetailed = config.codexLiveUsageReaderDetailed ?? null;
+    this.codexLoginStatus = config.codexLoginStatus ?? null;
+    this.codexLoginStatusWithText = config.codexLoginStatusWithText ?? null;
+    this.engineLoginSignedOut = config.engineLoginSignedOut ?? null;
     this.now = config.now ?? (() => Date.now());
     this.logger = config.logger ?? { log: () => {}, warn: () => {} };
     this.locationGate = config.locationGate;
@@ -433,9 +611,30 @@ export class QuotaPoller {
     return value;
   }
 
+  private identityCheckLog: IdentityCheckLog | null = null;
+
+  /**
+   * quota-pacing step 3 (docs/specs/quota-pacing-spend-by-account.md §1): record every identity
+   * check per slot so the usage ledger can judge, at a row's own time, which login the slot held.
+   */
+  setIdentityCheckLog(log: IdentityCheckLog | null): void { this.identityCheckLog = log; }
+
+  private noteIdentityCheck(slot: string, check: { result: 'confirmed' | 'drifted' | 'unavailable'; identity: string | null }): void {
+    try { this.identityCheckLog?.record(slot, check); } catch { /* @silent-fallback-ok: a measurement record; the poll result is unchanged */ }
+  }
+
   /** Credential mutations must invalidate observations made before the write. */
   invalidateIdentityCache(slots: string[]): void {
-    for (const slot of slots) this.identityCache.delete(slot);
+    for (const slot of slots) {
+      this.identityCache.delete(slot);
+      // A credential swap re-points the slot: sightings of the OLD login's dead screen must not
+      // corroborate against whatever credential now sits there.
+      const key = path.resolve(expandHome(slot));
+      this.cliLoginExpiredSightings.delete(key);
+      for (const [accountId, hold] of this.cliLoginExpiredHolds) {
+        if (hold.home === key) this.cliLoginExpiredHolds.delete(accountId);
+      }
+    }
   }
 
   /** Identity truth wins over a stale registry/ledger label. */
@@ -443,8 +642,14 @@ export class QuotaPoller {
     this.attributionByExpected.set(expected.id, expected.id);
     if (expected.framework !== 'claude-code') return expected;
     const identity = await this.identityForSlot(slot);
-    if (!identity || 'unavailable' in identity) return expected; // uncertainty never mutates truth
+    if (!identity || 'unavailable' in identity) {
+      this.noteIdentityCheck(slot, { result: 'unavailable', identity: null });
+      return expected; // uncertainty never mutates truth
+    }
     const actual = this.pool.get(identity.accountId);
+    this.noteIdentityCheck(slot, identity.accountId === expected.id
+      ? { result: 'confirmed', identity: identityKey(expected.provider, expected.email) }
+      : { result: 'drifted', identity: identityKey(actual?.provider ?? expected.provider, actual?.email ?? identity.email ?? null) });
     const nowIso = new Date(this.now()).toISOString();
     if (identity.accountId === expected.id) {
       if (expected.identityDrifted) {
@@ -487,6 +692,9 @@ export class QuotaPoller {
     try {
       void this.emitIdentityDriftAttention?.({
         id: `credential-identity-drift-${expected.id}-${detectedAt}`,
+        // attention-lifecycle-close-on-cause §3.3 — the stable condition identity; the
+        // restore path clears by it so the close cannot miss a re-timestamped id.
+        conditionKey: `credential-identity-drift:${expected.id}`,
         title: `Credential identity drift: ${expected.id}`,
         summary: `Slot ${slot} is labelled ${expected.id} but live identity is ${actualId}. ${actual ? `Quota was attributed to ${actualId}` : 'The confirmed identity is not enrolled in the registry'}; the slot is excluded from swaps pending audited repair.`,
       });
@@ -545,7 +753,7 @@ export class QuotaPoller {
         return { authFailed: false, body: (await res.json()) as Record<string, unknown> };
       }
       if (res.status === 401 || res.status === 403) return { authFailed: true };
-      return { authFailed: false, body: null }; // 5xx etc. → no snapshot, not auth
+      return { authFailed: false, body: null, status: res.status }; // 5xx etc. → no snapshot, not auth
     } catch {
       // @silent-fallback-ok: network failure → no snapshot this cycle (retry next)
       return null;
@@ -566,6 +774,10 @@ export class QuotaPoller {
   }
 
   private markNeedsReauth(account: SubscriptionAccount, reason: SubscriptionLoginCauseClass): void {
+    this.loginChecks.set(account.id, 'signed-out');
+    this.latestMarkCause.set(account.id, reason);
+    // A final authentication refusal of the stored credential is evidence against any cached probe `ok`.
+    if (reason !== 'cli-login-expired-observed') this.freshProbe?.noteContrary(account.id);
     try {
       this.pool.update(account.id, { status: 'needs-reauth' });
     } catch {
@@ -583,7 +795,44 @@ export class QuotaPoller {
    * a fresh token) yields needs-reauth. Returns null when the token is
    * unresolvable or the read fails. NEVER logs or returns the token.
    */
-  async pollAccount(account: SubscriptionAccount): Promise<AccountQuotaSnapshot | null> {
+  async pollAccount(
+    account: SubscriptionAccount,
+    opts: { scheduled?: boolean; priority?: CodexReadPriority; liveOnly?: boolean } = {},
+  ): Promise<AccountQuotaSnapshot | null> {
+    const result = await this.pollAccountInner(account, opts);
+    this.recordHistory(account, result);
+    return result.kind === 'snapshot' ? result.snap : null;
+  }
+
+  /**
+   * Hand one read outcome to the quota-history ledger (docs/specs/quota-pacing-forecast.md §1).
+   * Snapshots and failed reads are recorded; a gate-dropped read or an empty identity check is
+   * not a read and is never recorded. Never throws into the poll and never changes its result.
+   */
+  private recordHistory(account: SubscriptionAccount, result: PollAccountResult): void {
+    const history = this.history;
+    if (!history || result.kind === 'not-a-read') return;
+    try {
+      const id = result.attributedId ?? account.id;
+      const drifted = id !== account.id || this.pool.get(account.id)?.identityDrifted === true;
+      if (result.kind === 'snapshot') history.record(id, { kind: 'snapshot', snap: result.snap, drifted });
+      else history.record(id, { kind: 'failed', outcome: this.loginChecks.get(id) === 'signed-out' ? 'signed-out' : 'read-failing', drifted });
+    } catch (err) {
+      // @silent-fallback-ok: history is observational; the failure is counted and shown as reduced coverage
+      this.historyRecordFailures++;
+      try { history.noteRecordFailure?.(); } catch { /* @silent-fallback-ok: counted on the poller already */ }
+      void err;
+    }
+  }
+
+  /** Reads the history ledger could not take (record() threw). */
+  historyFailures(): number { return this.historyRecordFailures; }
+
+  /** The read itself, returning a typed result (see {@link PollAccountResult}). */
+  private async pollAccountInner(
+    account: SubscriptionAccount,
+    opts: { scheduled?: boolean; priority?: CodexReadPriority; liveOnly?: boolean },
+  ): Promise<PollAccountResult> {
     // Census #1/#2/#4: every per-account credential read (token resolve, 401-refresh, needs-reauth
     // attribution) targets the account's LIVE slot per the ledger gate — NOT its enrollment home —
     // so a swap mid-poll can't read/refresh/flag the wrong tenant. account.id is preserved (only
@@ -593,7 +842,7 @@ export class QuotaPoller {
     // the enrollment object here silently discarded census routing whenever
     // the optional identity oracle was absent or confirmed the expected id.
     const slotAccount = await this.reconcileIdentity(routedAccount, routedAccount.configHome);
-    if (!slotAccount) return null;
+    if (!slotAccount) return { kind: 'not-a-read', attributedId: null, reason: 'identity-unattributed' };
 
     if (account.provider === 'openai' && account.framework === 'codex-cli') {
       const nowMs = this.now();
@@ -605,44 +854,92 @@ export class QuotaPoller {
       // exactly the previous behaviour. The live reader never throws, but the
       // guard also catches an injected test reader that does.
       let usage: CodexUsageSnapshot | null = null;
-      if (this.codexLiveUsageReader) {
+      if (this.codexLiveUsageReaderDetailed) {
+        const live = await this.gatedLiveRead(slotAccount.configHome, nowMs, opts.priority ?? (opts.scheduled ? 'scheduled' : 'trigger'));
+        // codex-device-limit-tripwire §3: a gate-dropped read (null) is not a read at all: it
+        // changes no counter, no login signal, no snapshot, and does not start the 10-minute floor.
+        if (live === null) return { kind: 'not-a-read', attributedId: slotAccount.id, reason: 'read-gate-dropped' };
+        this.lastCodexReadAt.set(slotAccount.id, this.now());
+        // Every live read, on every path, passes through the tripwire first.
+        this.afterCodexRead(slotAccount, live, opts.scheduled === true);
+        if (live.kind === 'ok') {
+          usage = live.snapshot;
+          this.loginChecks.set(slotAccount.id, 'ok');
+          this.cliSignedOutStreak.delete(slotAccount.id);
+        } else if (live.kind === 'auth-failed') {
+          await this.onCodexAuthRefused(slotAccount);
+          return { kind: 'failed', attributedId: slotAccount.id, reason: 'auth-refused' };
+        } else {
+          // Transport failure: no login signal this poll, and it breaks a signed-out streak.
+          this.loginChecks.set(slotAccount.id, 'unavailable');
+          this.cliSignedOutStreak.delete(slotAccount.id);
+        }
+      } else if (this.codexLiveUsageReader) {
         try {
           usage = await this.codexLiveUsageReader({ codexHome: slotAccount.configHome, nowMs });
         } catch {
           usage = null; // @silent-fallback-ok: rollout tail below is the designed fallback
         }
+        this.loginChecks.set(slotAccount.id, usage?.source === 'codex-app-server' ? 'ok' : 'unavailable');
+      } else {
+        this.loginChecks.set(slotAccount.id, 'unavailable');
       }
-      if (!usage) usage = await this.codexUsageReader({ codexHome: slotAccount.configHome, nowMs });
-      if (!usage) return null;
-      const window = (value: CodexUsageSnapshot['primary']) => {
+      // An out-of-cycle read (quota-pacing step 2) is live-only: an idle account's rollout file
+      // only ever repeats the old reading.
+      if (!usage && !opts.liveOnly) usage = await this.codexUsageReader({ codexHome: slotAccount.configHome, nowMs });
+      if (!usage) return { kind: 'failed', attributedId: slotAccount.id, reason: 'no-reading' };
+      // quota-pacing step 2 (§1): remember which windows were blanked, and from which source.
+      const rewritten: Partial<Record<'fiveHour' | 'sevenDay', string>> = {};
+      const emptyKeys: Array<'fiveHour' | 'sevenDay'> = [];
+      const window = (value: CodexUsageSnapshot['primary'], key: 'fiveHour' | 'sevenDay') => {
         if (!value) return undefined;
         const resetMs = value.resetsAtIso ? Date.parse(value.resetsAtIso) : NaN;
         if (Number.isFinite(resetMs) && resetMs <= nowMs) {
+          rewritten[key] = value.resetsAtIso as string;
+          emptyKeys.push(key);
           return { utilizationPct: 0, resetsAt: '' };
         }
+        if (!value.resetsAtIso) emptyKeys.push(key);
         return { utilizationPct: value.usedPercent, resetsAt: value.resetsAtIso ?? '' };
       };
       // Route each window by the length IT reports, not by which key it arrived under
       // (see classifyCodexWindows) — a weekly window filed as `fiveHour` tells every
       // downstream swap/placement decision that a multi-day wall clears in hours.
       const { short: shortWindow, long: longWindow } = classifyCodexWindows(usage.primary, usage.secondary);
-      const fiveHour = window(shortWindow);
-      const sevenDay = window(longWindow);
+      const fiveHour = window(shortWindow, 'fiveHour');
+      const sevenDay = window(longWindow, 'sevenDay');
       const snap: AccountQuotaSnapshot = {
         source: usage.source,
         measuredAt: usage.capturedAt ?? nowIso,
       };
+      // No captured time: the reading's age is unknown (quota-pacing: never fresh, never in a rate).
+      if (!usage.capturedAt) snap.measuredAtSynthesized = true;
       if (fiveHour) snap.fiveHour = fiveHour;
       if (sevenDay) snap.sevenDay = sevenDay;
       // The account answered, but reported no usage window (entitlement/credits
       // only). Carry that through so the dashboard can say so plainly rather
       // than show "No quota reading yet", which reads as a pending poll.
       if (!fiveHour && !sevenDay && usage.windowsUnavailable) snap.noQuotaWindow = true;
+      if (emptyKeys.length > 0) {
+        // Codex idle premise unverified (spec §1 state 4 judgment-candidate, test-agent rung could
+        // not exercise an idle account): every Codex post-reset rewrite reads as rolled — even from
+        // codex-app-server — until a live read shows a new window. Claude's null reset from the
+        // usage endpoint stays idle-live.
+        snap.windowBasis = Object.fromEntries(emptyKeys.map((k) => [k, 'rolled-history' as const]));
+      }
+      if (Object.keys(rewritten).length > 0) snap.resetsAtBeforeRewrite = rewritten;
+      // A live read is the provider's own statement of which windows this account has.
+      if (usage.source === 'codex-app-server') {
+        const listed: NonNullable<AccountQuotaSnapshot['windowsListed']> = [];
+        if (fiveHour) listed.push('fiveHour');
+        if (sevenDay) listed.push('sevenDay');
+        snap.windowsListed = listed;
+      }
       const attributedId = slotAccount.id;
       const priorLast = this.lastByAccount.get(attributedId);
       if (priorLast) this.prevByAccount.set(attributedId, priorLast);
       this.lastByAccount.set(attributedId, snap);
-      return snap;
+      return { kind: 'snapshot', snap, attributedId };
     }
 
     const tokenResolution = await this.tokenResolver(slotAccount);
@@ -654,19 +951,51 @@ export class QuotaPoller {
           causeClass: tokenResolution.reason,
           corroboration: 'status-preexisting',
         });
-        return null;
+        return { kind: 'failed', attributedId: slotAccount.id, reason: 'needs-reauth' };
       }
       if (tokenResolution && 'observationOnly' in tokenResolution && tokenResolution.observationOnly) {
+        // A malformed credential alone is only an observation. The CLI itself refusing to run
+        // under this home ("Login expired", in more than one session) is the corroboration.
+        // `credential-absent-or-unreadable` is deliberately EXCLUDED: a locked keychain (post-reboot,
+        // launchd context) makes both the read AND the CLI fail on a login that is actually fine,
+        // and a repair would write into the same locked keychain. Only a credential that READ but
+        // is malformed (token shape / missing oauth block) corroborates.
+        if (tokenResolution.reason !== 'credential-absent-or-unreadable'
+          && this.cliLoginExpiredCorroborated(slotAccount.configHome)) {
+          this.cliLoginExpiredSightings.delete(path.resolve(expandHome(slotAccount.configHome)));
+          if (slotAccount.status !== 'needs-reauth') {
+            this.markNeedsReauth(slotAccount, 'cli-login-expired-observed');
+            this.observe(slotAccount.id, {
+              kind: 'transition-to-needs-reauth',
+              causeClass: 'cli-login-expired-observed',
+              corroboration: 'exchange-corroborated',
+            });
+          }
+          return { kind: 'failed', attributedId: slotAccount.id, reason: 'needs-reauth' };
+        }
+        // No credential at all: ask the engine itself (§3.6). A trusted NO on two polls in a row
+        // starts the repair; anything else keeps today's `unavailable`.
+        if (tokenResolution.reason === 'credential-absent-or-unreadable' && this.engineLoginSignedOut) {
+          if (await this.onCredentialAbsent(slotAccount)) return { kind: 'failed', attributedId: slotAccount.id, reason: 'credential-unreadable' };
+        } else {
+          this.credentialAbsentStreak.delete(slotAccount.id);
+        }
+        this.loginChecks.set(slotAccount.id, 'unavailable');
         this.observe(slotAccount.id, { kind: 'observation-absence', causeClass: tokenResolution.reason });
-        return null;
+        return { kind: 'failed', attributedId: slotAccount.id, reason: 'credential-unreadable' };
       }
+      this.loginChecks.set(slotAccount.id, 'unavailable');
       this.logger.warn(`[QuotaPoller] no resolvable token for account ${account.id} — skipping`);
-      return null;
+      return { kind: 'failed', attributedId: slotAccount.id, reason: 'credential-unreadable' };
     }
     const token = tokenResolution;
+    this.lastFingerprint.set(slotAccount.id, credentialFingerprint(token));
 
     const read = await this.readUsage(token);
-    if (read === null) return null; // network failure
+    if (read === null) { // network failure: no login signal this poll
+      this.loginChecks.set(slotAccount.id, 'unavailable');
+      return { kind: 'failed', attributedId: slotAccount.id, reason: 'network' };
+    }
 
     let body: Record<string, unknown> | null;
     if (read.authFailed) {
@@ -679,7 +1008,8 @@ export class QuotaPoller {
           this.logger.warn(
             `[QuotaPoller] account ${account.id} refresh-write skipped (slot busy) — no snapshot this cycle`,
           );
-          return null;
+          this.loginChecks.set(slotAccount.id, 'unavailable');
+          return { kind: 'failed', attributedId: slotAccount.id, reason: 'credential-busy' };
         }
         // No refresh token, or the exchange was rejected — genuine re-auth.
         const causeClass: SubscriptionLoginCauseClass = refreshed.reason === 'read-failed'
@@ -693,10 +1023,13 @@ export class QuotaPoller {
           causeClass,
           corroboration: 'exchange-corroborated',
         });
-        return null;
+        return { kind: 'failed', attributedId: slotAccount.id, reason: 'needs-reauth' };
       }
       const retry = await this.readUsage(refreshed.accessToken);
-      if (retry === null) return null; // network blip on the retry → next cycle
+      if (retry === null) { // network blip on the retry → next cycle
+        this.loginChecks.set(slotAccount.id, 'unavailable');
+        return { kind: 'failed', attributedId: slotAccount.id, reason: 'network' };
+      }
       if (retry.authFailed) {
         // Fresh token still rejected — treat as genuinely failed.
         this.markNeedsReauth(slotAccount, 'still-authfailed-after-refresh');
@@ -705,7 +1038,7 @@ export class QuotaPoller {
           causeClass: 'still-authfailed-after-refresh',
           corroboration: 'exchange-corroborated',
         });
-        return null;
+        return { kind: 'failed', attributedId: slotAccount.id, reason: 'needs-reauth' };
       }
       // Recovered silently — no operator action needed. Record for visibility.
       try {
@@ -721,23 +1054,68 @@ export class QuotaPoller {
       body = read.body;
     }
 
-    if (!body) return null;
+    if (!body) { // a non-auth error status: no login signal this poll
+      this.loginChecks.set(slotAccount.id, 'unavailable');
+      // Said once per cycle, never silent: an account that keeps answering this way looked
+      // simply "never read" (2026-11-10, gearfinity3d answered 429 on a stale credential).
+      const status = !read.authFailed ? read.status : undefined;
+      this.logger.warn(`[QuotaPoller] account ${account.id} usage read answered ${status ?? 'an error'} — no reading this cycle`);
+      return { kind: 'failed', attributedId: slotAccount.id, reason: 'http-error' };
+    }
 
     const snap = mapUsageResponse(body, 'oauth-usage-endpoint-fallback', new Date(this.now()).toISOString());
+    // A pane-observed expired login outranks this read while the stored credential is still the
+    // one the CLI refused (CMT-1008): keep the account out of placement instead of restoring it.
+    // The hold only ever stops the POLLER's own restore: anything else that set the account
+    // `active` again (the assisted repair's success, an operator) wins and releases it — a login
+    // still broken after that is simply seen again by the next session that lands on it.
+    if (slotAccount.status !== 'needs-reauth' && this.cliLoginExpiredHolds.has(slotAccount.id)) {
+      this.cliLoginExpiredHolds.delete(slotAccount.id);
+      this.logger.log(`[QuotaPoller] account ${slotAccount.id}: expired-login hold released (status was set ${slotAccount.status} outside the poller)`);
+    }
+    if (this.cliLoginExpiredHoldActive(slotAccount.id, slotAccount.configHome, token)) {
+      this.loginChecks.set(slotAccount.id, 'signed-out');
+      // Spec stale-process-login-expired D3: the poll never waits on a probe. A cached `ok` for this
+      // credential releases the hold now; otherwise one is started in the background and its landing
+      // releases the hold through applyFreshVerdict.
+      if (this.freshProbe) {
+        const cached = this.freshProbe.cached(slotAccount.id);
+        if (cached?.verdict === 'ok') {
+          const current = this.pool.get(slotAccount.id) ?? slotAccount;
+          this.releaseStaleHold(current, 'the stored login answered a real call');
+        } else if (!cached) {
+          void this.freshProbe.evaluate(slotAccount.id, { waitMs: 0, start: true }).catch(() => { /* @silent-fallback-ok: the next poll tries again */ });
+        }
+      }
+    } else {
+      // The OAuth usage endpoint answered with this account's token: an authenticated read.
+      this.loginChecks.set(slotAccount.id, 'ok');
+    }
     // Shift the prior "last" down to "prev" so burnRate has a distinct baseline.
     const attributedId = slotAccount.id;
     const priorLast = this.lastByAccount.get(attributedId);
     if (priorLast) this.prevByAccount.set(attributedId, priorLast);
     this.lastByAccount.set(attributedId, snap);
-    return snap;
+    return { kind: 'snapshot', snap, attributedId };
   }
 
   /**
    * Poll every supported claude-code/anthropic or codex-cli/openai account and persist each
    * account's latest snapshot (and a recovered status when a prior needs-reauth
-   * account now reads cleanly).
+   * or rate-limited account now reads cleanly).
    */
   async pollAll(): Promise<{ polled: number; failed: number }> {
+    // One pass at a time: an interval tick arriving while a slow pass runs shares it instead of
+    // starting an overlapping pass (spec stale-process-login-expired D3).
+    if (this.pollAllInFlight) return this.pollAllInFlight;
+    const run = this.pollAllOnce();
+    this.pollAllInFlight = run;
+    try { return await run; } finally { if (this.pollAllInFlight === run) this.pollAllInFlight = null; }
+  }
+
+  private pollAllInFlight: Promise<{ polled: number; failed: number }> | null = null;
+
+  private async pollAllOnce(): Promise<{ polled: number; failed: number }> {
     let polled = 0;
     let failed = 0;
     const scan = this.pool.scanAccountsBounded(4_096);
@@ -759,29 +1137,266 @@ export class QuotaPoller {
         this.observe(account.id, { kind: 'skipped-disabled' });
         continue;
       }
-      const snap = await this.pollAccount(account);
-      if (!snap) {
-        failed++;
-        continue;
-      }
-      polled++;
-      const attributedId = this.attributionByExpected.get(account.id) ?? account.id;
-      const patch: Parameters<SubscriptionPool['update']>[1] = { lastQuota: snap };
-      // A clean read on an account previously flagged needs-reauth restores it.
-      if (account.status === 'needs-reauth') patch.status = 'active';
-      // Email is provider-attested identity, not quota metadata. Quota polling
-      // must never mutate it; drift detection and the identity registrar own
-      // that authority.
-      try {
-        this.pool.update(attributedId, patch);
-      } catch {
-        // @silent-fallback-ok: persistence best-effort; snapshot retained in memory
-      }
-      this.observe(attributedId, account.status === 'needs-reauth'
-        ? { kind: 'transition-to-active' }
-        : { kind: 'resolved-clean' });
+      // codex-device-limit-tripwire §6: a benched account's scheduled read backs off (1 h → 6 h,
+      // breaker after ~2 days); trigger and confirmation reads still run.
+      if (this.deviceLimit?.skipScheduledRead(account)) continue;
+      const snap = await this.pollOne(account, { scheduled: true });
+      if (!snap) failed++;
+      else polled++;
+    }
+    try { this.deviceLimit?.tick(); }
+    catch (err) { // @silent-fallback-ok — logged; a failed upkeep pass is retried on the next poll
+      this.logger.warn(`[QuotaPoller] device-limit upkeep failed: ${err instanceof Error ? err.message : String(err)}`);
     }
     return { polled, failed };
+  }
+
+  /**
+   * Read one account and persist the result: the per-account body of {@link pollAll}, shared with
+   * {@link requestCodexCheck} so a triggered read restores, holds and observes exactly like the
+   * scheduled pass.
+   */
+  private async pollOne(
+    account: SubscriptionAccount,
+    opts: { scheduled: boolean; priority?: CodexReadPriority; liveOnly?: boolean },
+  ): Promise<AccountQuotaSnapshot | null> {
+    const snap = await this.pollAccount(account, opts);
+    if (!snap) return null;
+    // Any landed reading closes the out-of-cycle read gate's backoff and breaker for the account.
+    this.outOfCycle.delete(account.id);
+    const attributedId = this.attributionByExpected.get(account.id) ?? account.id;
+    const patch: Parameters<SubscriptionPool['update']>[1] = { lastQuota: snap };
+    // A clean AUTHENTICATED read on an account previously flagged needs-reauth restores it. A
+    // Codex rollout-file snapshot is usage history, not proof of login (spec
+    // skill-driven-signin-repair), so it never restores `active`.
+    // A pane-observed expired login on the same credential is never undone by a usage read, and a
+    // device-limit bench is released only by the tripwire's two clean reads (its own hold).
+    const current = this.pool.get(attributedId) ?? account;
+    const restores = current.status === 'needs-reauth' && snap.source !== 'codex-rollout'
+      && !this.cliLoginExpiredHolds.has(attributedId) && !this.cliLoginExpiredHolds.has(account.id)
+      && !this.deviceLimit?.holdsRestore(attributedId) && !this.deviceLimit?.holdsRestore(account.id);
+    const windows = [snap.fiveHour, snap.sevenDay, ...(snap.fable ? [snap.fable] : [])];
+    const priorLimitedWindows = [current.lastQuota?.fiveHour, current.lastQuota?.sevenDay, current.lastQuota?.fable]
+      .filter((window) => window && window.utilizationPct >= 100);
+    const rateLimitCleared = current.status === 'rate-limited'
+      && (snap.source === 'oauth-usage-endpoint-fallback' || snap.source === 'codex-app-server')
+      && snap.fiveHour !== undefined && snap.sevenDay !== undefined
+      && windows.every((window) => window && Number.isFinite(window.utilizationPct)
+        && window.utilizationPct >= 0 && window.utilizationPct < 100)
+      && priorLimitedWindows.every((window) => window && Number.isFinite(Date.parse(window.resetsAt))
+        && Date.parse(window.resetsAt) <= this.now());
+    if (restores || rateLimitCleared) patch.status = 'active';
+    // Email is provider-attested identity, not quota metadata. Quota polling
+    // must never mutate it; drift detection and the identity registrar own
+    // that authority.
+    try {
+      this.pool.update(attributedId, patch);
+    } catch {
+      // @silent-fallback-ok: persistence best-effort; snapshot retained in memory
+    }
+    if (current.status !== 'needs-reauth' || restores) {
+      this.observe(attributedId, restores || rateLimitCleared ? { kind: 'transition-to-active' } : { kind: 'resolved-clean' });
+    }
+    return snap;
+  }
+
+  /** Attach the quota-history ledger (quota-pacing; server composition while the feature is on). */
+  setHistoryLedger(sink: QuotaHistorySink | null): void {
+    this.history = sink;
+  }
+
+  /** Attach the device-limit tripwire (server composition; it needs this poller to read). */
+  setDeviceLimitTripwire(tripwire: CodexDeviceLimitTripwire | null): void {
+    this.deviceLimit = tripwire;
+  }
+
+  /** Contrary evidence against a cached probe `ok` (spec D4: a replacement process failed). */
+  noteFreshProbeContrary(accountId: string): void {
+    this.freshProbe?.noteContrary(accountId);
+  }
+
+  /** The stored-credential fingerprint seen at this account's last read (null before any read). */
+  lastCredentialFingerprint(accountId: string): string | null {
+    return this.lastFingerprint.get(accountId) ?? null;
+  }
+
+  /** The folder the poller actually reads this account's credential from (its routed slot). */
+  routedConfigHome(accountId: string): string | null {
+    const account = this.pool.get(accountId);
+    return account ? this.accountForReads(account).configHome : null;
+  }
+
+  /** Attach the fresh-login probe scheduler (spec stale-process-login-expired). Null detaches it. */
+  setFreshProbe(scheduler: FreshProbeScheduler | null): void {
+    this.freshProbe = scheduler;
+  }
+
+  /**
+   * A probe result that passed validation landed (the scheduler's onVerdict). An `ok` releases a
+   * bench whose LATEST cause is a pane-observed expired login; nothing else is ever released here.
+   */
+  applyFreshVerdict(accountId: string, verdict: 'ok' | 'refused'): void {
+    if (verdict !== 'ok') return;
+    const account = this.pool.get(accountId);
+    if (account) this.releaseStaleHold(account, 'the stored login answered a real call');
+  }
+
+  /** Release a pane-cause hold and restore the account. Returns true when it did. */
+  private releaseStaleHold(account: SubscriptionAccount, why: string): boolean {
+    if (account.status !== 'needs-reauth' || this.latestMarkCause.get(account.id) !== 'cli-login-expired-observed') return false;
+    for (const key of [...this.cliLoginExpiredHolds.keys()]) {
+      if (key === account.id || this.attributionByExpected.get(key) === account.id) this.cliLoginExpiredHolds.delete(key);
+    }
+    this.latestMarkCause.delete(account.id);
+    this.loginChecks.set(account.id, 'ok');
+    try { this.pool.update(account.id, { status: 'active' }); }
+    catch { return false; } // @silent-fallback-ok: the next authenticated poll restores it through the normal path
+    this.logger.log(`[QuotaPoller] account ${account.id}: expired-login hold released (${why})`);
+    return true;
+  }
+
+  /**
+   * Read one Codex account now (codex-device-limit-tripwire §3). Trigger requests (a session
+   * screen, a sign-in page, a judged initialize error or login-status text) honour a 10-minute
+   * floor per account; a confirmation read bypasses it and the benched-account backoff, and goes
+   * ahead of triggers in the read gate. Resolves true when the read was a clean live read.
+   */
+  async requestCodexCheck(accountId: string, opts: { confirmation?: boolean } = {}): Promise<boolean> {
+    const account = this.pool.get(accountId);
+    if (!account || account.framework !== 'codex-cli' || account.provider !== 'openai' || account.status === 'disabled') return false;
+    const last = this.lastCodexReadAt.get(accountId);
+    if (!opts.confirmation && last !== undefined && this.now() - last < CODEX_CHECK_FLOOR_MS) return false;
+    const snap = await this.pollOne(account, { scheduled: false, priority: opts.confirmation ? 'confirmation' : 'trigger' });
+    return snap?.source === 'codex-app-server';
+  }
+
+  /**
+   * quota-pacing step 2 (docs/specs/quota-pacing-account-choice.md §1): ask for an out-of-cycle
+   * reading of an account whose window rolled, is unknown or unread. Fire-and-forget: the caller
+   * never waits. One gate dedupes every caller: at most one read per account per poll interval,
+   * backing off to two and then four intervals while reads keep failing; after
+   * {@link OUT_OF_CYCLE_BREAKER_FAILURES} consecutive failures the breaker opens (in memory) and
+   * only a landed reading (any poll) closes it. Codex uses the live read only. Accounts that are
+   * `needs-reauth`, disabled or benched by the device-limit tripwire are skipped.
+   */
+  requestRead(accountId: string): void {
+    const account = this.pool.get(accountId);
+    if (!account || account.status === 'disabled' || account.status === 'needs-reauth') return;
+    if (!isQuotaPollSupportedAccount(account)) return;
+    if (this.deviceLimit?.skipScheduledRead(account)) return;
+    const st = this.outOfCycle.get(accountId) ?? { failures: 0, lastAttemptAt: undefined as number | undefined, inFlight: false };
+    if (st.inFlight || st.failures >= OUT_OF_CYCLE_BREAKER_FAILURES) return;
+    const nowMs = this.now();
+    const wait = this.pollIntervalMs * (st.failures === 0 ? 1 : st.failures === 1 ? 2 : 4);
+    if (st.lastAttemptAt !== undefined && nowMs - st.lastAttemptAt < wait) return;
+    st.lastAttemptAt = nowMs;
+    st.inFlight = true;
+    this.outOfCycle.set(accountId, st);
+    // A failure that lands after a landed reading cleared this entry must not restore the old
+    // count: it only counts against the entry it started from.
+    // liveOnly binds only on the Codex path (the Claude read is always a live endpoint read).
+    void this.pollOne(account, { scheduled: false, priority: 'trigger', liveOnly: true })
+      .then((snap) => {
+        const cur = this.outOfCycle.get(accountId);
+        if (snap) { this.outOfCycle.delete(accountId); return; }
+        if (cur !== st) return; // cleared (a reading landed) or replaced meanwhile: stale failure
+        st.inFlight = false;
+        st.failures += 1;
+        const next = st;
+        if (next.failures === OUT_OF_CYCLE_BREAKER_FAILURES) {
+          this.logger.warn(`[QuotaPoller] account ${accountId}: out-of-cycle reads failed ${next.failures} times — breaker open until the next landed reading`);
+        }
+      })
+      .catch(() => {
+        // @silent-fallback-ok: counted as a failed out-of-cycle read; the regular poll still runs
+        if (this.outOfCycle.get(accountId) !== st) return; // cleared meanwhile: stale failure
+        st.inFlight = false;
+        st.failures += 1;
+      });
+  }
+
+  /** Consecutive failed out-of-cycle reads for an account (0 when none or after a landed reading). */
+  outOfCycleFailures(accountId: string): number {
+    return this.outOfCycle.get(accountId)?.failures ?? 0;
+  }
+
+  /** The out-of-cycle read breaker is open for this account. */
+  rereadBreakerOpen(accountId: string): boolean {
+    return this.outOfCycleFailures(accountId) >= OUT_OF_CYCLE_BREAKER_FAILURES;
+  }
+
+  /** The poll cadence (the out-of-cycle gate and the 5-hour grace are measured in it). */
+  pollInterval(): number {
+    return this.pollIntervalMs;
+  }
+
+  /** The hand-off to the device-limit tripwire. Never throws into a read. */
+  private afterCodexRead(account: SubscriptionAccount, live: CodexLiveRead, scheduled: boolean): void {
+    if (!this.deviceLimit) return;
+    // A single-flight read shared by several callers is ONE observation: counting it twice could
+    // turn one clean read into a "two clean reads" release.
+    if (this.hookedReads.has(live)) return;
+    this.hookedReads.add(live);
+    try {
+      this.deviceLimit.afterCodexRead(account, {
+        kind: live.kind,
+        ...(live.kind !== 'ok' && live.refusal ? { refusal: live.refusal } : {}),
+        scheduled,
+      });
+    } catch (err) {
+      this.logger.warn(`[QuotaPoller] device-limit read hook failed for ${account.id}: ${err instanceof Error ? err.message : String(err)}`);
+    }
+  }
+
+  /**
+   * CodexReadGate (codex-device-limit-tripwire §3): one in-flight live read per resolved
+   * CODEX_HOME (a caller that finds one awaits it instead of spawning a second app-server on the
+   * same home), at most {@link CODEX_LIVE_READ_CONCURRENCY} at once per process, waiting reads
+   * ordered by priority (scheduled and confirmation reads ahead of triggers). A trigger read that
+   * would wait past its own floor is dropped (null). Never throws.
+   */
+  private async gatedLiveRead(home: string, nowMs: number, priority: CodexReadPriority): Promise<CodexLiveRead | null> {
+    const reader = this.codexLiveUsageReaderDetailed;
+    if (!reader) return { kind: 'unavailable' };
+    const key = path.resolve(expandHome(home));
+    // Registered at QUEUE time, not start time: a second caller for the same home while the first
+    // is still waiting for a slot shares that one read instead of queueing another.
+    const pending = this.liveReadsByHome.get(key);
+    if (pending) return pending;
+    const run = async (): Promise<CodexLiveRead> => {
+      try { return await reader({ codexHome: home, nowMs }); }
+      catch { return { kind: 'unavailable' }; } // @silent-fallback-ok: a throwing reader is a transport failure
+    };
+    const settled = new Promise<CodexLiveRead | null>((resolve) => {
+      const go = () => {
+        this.liveReadsRunning++;
+        void run().then((r) => {
+          this.liveReadsRunning--;
+          resolve(r);
+          this.releaseNextLiveRead();
+        });
+      };
+      if (this.liveReadsRunning < CODEX_LIVE_READ_CONCURRENCY) { go(); return; }
+      this.liveReadWaiters.push({
+        priority: CODEX_READ_PRIORITY_RANK[priority],
+        enqueuedAt: this.now(),
+        maxWaitMs: priority === 'trigger' ? CODEX_CHECK_FLOOR_MS : Number.POSITIVE_INFINITY,
+        start: go,
+        drop: () => resolve(null),
+      });
+      this.liveReadWaiters.sort((a, b) => a.priority - b.priority || a.enqueuedAt - b.enqueuedAt);
+    });
+    this.liveReadsByHome.set(key, settled);
+    void settled.then(() => { if (this.liveReadsByHome.get(key) === settled) this.liveReadsByHome.delete(key); });
+    return settled;
+  }
+
+  private releaseNextLiveRead(): void {
+    while (this.liveReadWaiters.length > 0 && this.liveReadsRunning < CODEX_LIVE_READ_CONCURRENCY) {
+      const next = this.liveReadWaiters.shift()!;
+      if (this.now() - next.enqueuedAt > next.maxWaitMs) { next.drop(); continue; }
+      next.start();
+    }
   }
 
   /**
@@ -810,10 +1425,213 @@ export class QuotaPoller {
     };
   }
 
+  /**
+   * The login signal behind an account's pool status (see {@link PoolLoginCheck}). An account
+   * this process has not polled reads `unavailable`.
+   */
+  loginCheck(accountId: string): PoolLoginCheck {
+    return this.loginChecks.get(accountId) ?? 'unavailable';
+  }
+
+  /**
+   * The CLI-signed-out rule (spec skill-driven-signin-repair). The live app-server read was
+   * refused as unauthenticated; ask the CLI itself. Only when BOTH say signed out on two
+   * consecutive polls does the account move to needs-reauth, through the explicit
+   * `transition-to-needs-reauth` outcome. A CLI that disagrees, or cannot answer, leaves the
+   * status unchanged and records `unavailable`.
+   */
+  private async onCodexAuthRefused(account: SubscriptionAccount): Promise<void> {
+    let cli: CliLoginVerdict = 'unavailable';
+    if (this.codexLoginStatusWithText) {
+      try {
+        const r = await this.codexLoginStatusWithText(account.configHome);
+        cli = r.verdict;
+        if (r.text && cli !== 'signed-in') this.deviceLimit?.afterLoginStatusText(account, r.text);
+      } catch { cli = 'unavailable'; } // @silent-fallback-ok — no signal; status kept
+    } else if (this.codexLoginStatus) {
+      try { cli = await this.codexLoginStatus(account.configHome); }
+      catch { cli = 'unavailable'; } // @silent-fallback-ok — no signal; status kept
+    }
+    if (cli !== 'signed-out') {
+      this.loginChecks.set(account.id, 'unavailable');
+      this.cliSignedOutStreak.delete(account.id);
+      return;
+    }
+    this.loginChecks.set(account.id, 'signed-out');
+    const nowMs = this.now();
+    const prior = this.cliSignedOutStreak.get(account.id);
+    if (prior && nowMs - prior.lastAt < CLI_SIGNED_OUT_MIN_GAP_MS) return; // too soon to count again
+    const streak = (prior?.count ?? 0) + 1;
+    this.cliSignedOutStreak.set(account.id, { count: streak, lastAt: nowMs });
+    if (streak < CLI_SIGNED_OUT_POLLS_REQUIRED) return;
+    if (account.status === 'needs-reauth') return;
+    this.markNeedsReauth(account, 'cli-signed-out-auth-refused');
+    this.observe(account.id, {
+      kind: 'transition-to-needs-reauth',
+      causeClass: 'cli-signed-out-auth-refused',
+      corroboration: 'exchange-corroborated',
+    });
+  }
+
+  /**
+   * The every-poll engine login read for an account whose credential cannot be read
+   * (never-silent-conversation §3.6). Returns true when it recorded a trusted signed-out answer
+   * (the caller stops there); false ⇒ no signal this poll, and the streak resets. Two trusted
+   * answers at least {@link CLI_SIGNED_OUT_MIN_GAP_MS} apart move the account to needs-reauth with
+   * cause `cli-auth-status-signed-out`, which the repair admits like any other signed-out cause.
+   */
+  private async onCredentialAbsent(account: SubscriptionAccount): Promise<boolean> {
+    let verdict: boolean | null = null;
+    try { verdict = await this.engineLoginSignedOut!(account); }
+    catch { verdict = null; } // @silent-fallback-ok — no signal; the caller records unavailable
+    if (verdict !== true) {
+      this.credentialAbsentStreak.delete(account.id);
+      return false;
+    }
+    this.loginChecks.set(account.id, 'signed-out');
+    const nowMs = this.now();
+    const prior = this.credentialAbsentStreak.get(account.id);
+    if (prior && nowMs - prior.lastAt < CLI_SIGNED_OUT_MIN_GAP_MS) return true; // too soon to count again
+    const streak = (prior?.count ?? 0) + 1;
+    this.credentialAbsentStreak.set(account.id, { count: streak, lastAt: nowMs });
+    if (streak < CLI_SIGNED_OUT_POLLS_REQUIRED || account.status === 'needs-reauth') return true;
+    this.logger.warn(`[QuotaPoller] account ${account.id}: no stored credential and the engine says signed out on ${streak} polls — needs sign-in`);
+    this.markNeedsReauth(account, 'cli-auth-status-signed-out');
+    this.observe(account.id, {
+      kind: 'transition-to-needs-reauth',
+      causeClass: 'cli-auth-status-signed-out',
+      corroboration: 'exchange-corroborated',
+    });
+    return true;
+  }
+
+  /**
+   * Record that a Claude Code session launched under `configHome` showed the CLI's own
+   * "Login expired" frame (SessionManager's live-tail classifier). A SIGNAL only: it changes no
+   * pool state by itself (server.ts calls {@link observeCliLoginExpired}, which records through
+   * here and then decides). The next poll of the account using that home consults it, and only
+   * when the stored credential is also unreadable does it corroborate needs-reauth.
+   */
+  noteCliLoginExpired(input: { configHome: string; session: string; at?: number }): void {
+    if (!input.configHome || !input.session) return;
+    const key = path.resolve(expandHome(input.configHome));
+    const at = input.at ?? this.now();
+    const kept = (this.cliLoginExpiredSightings.get(key) ?? [])
+      .filter((s) => at - s.at < CLI_LOGIN_EXPIRED_WINDOW_MS && s.session !== input.session);
+    kept.push({ session: input.session, at });
+    this.cliLoginExpiredSightings.set(key, kept.slice(-CLI_LOGIN_EXPIRED_MAX_SIGHTINGS));
+  }
+
+  /**
+   * A Claude Code session showed the CLI's own expired-login frame past the monitor's dwell
+   * (CMT-1008). Records the sighting (as {@link noteCliLoginExpired}) and, when the stored
+   * credential under that home READS, treats the screen as authoritative right away: the
+   * account moves to needs-reauth (cause `cli-login-expired-observed`, actionable, so the
+   * assisted sign-in repair can open) and is held there against later successful usage reads
+   * while the credential is unchanged. An unreadable credential is left to the corroborated
+   * two-session rule in {@link pollAccount}: a locked keychain fails the CLI AND the read on a
+   * login that is actually fine, and must never be flipped on one screen.
+   *
+   * Returns the pool account owning that home (null when none does) and whether this call moved
+   * it to needs-reauth. Never throws.
+   */
+  async observeCliLoginExpired(input: { configHome: string; session: string; at?: number }, opts: {
+    /** How long to wait for a fresh-login probe (spec stale-process-login-expired D2). 0 = cached/joined only. */
+    awaitProbeMs?: number;
+    /** False for a caller that must never mark while a probe is pending (NeverSilent). */
+    markWhilePending?: boolean;
+  } = {}): Promise<{
+    accountId: string | null;
+    marked: boolean;
+    reason: 'marked' | 'already-held' | 'no-account' | 'credential-unreadable' | 'stale-process' | 'probe-pending';
+    /** The account's pool status after this call (null when no account owns the home). */
+    accountStatus: SubscriptionAccount['status'] | null;
+    /** The fresh-login probe's disposition for this credential (absent when no probe is attached). */
+    probe?: ProbeDisposition;
+    /** True when the stored login answered a real call: the session, not the login, is stuck. */
+    staleProcess?: boolean;
+  }> {
+    this.noteCliLoginExpired(input);
+    const key = path.resolve(expandHome(input.configHome || ''));
+    let owner: SubscriptionAccount | null = null;
+    try {
+      for (const a of this.pool.list()) {
+        if (a.framework !== 'claude-code' || a.provider !== 'anthropic') continue;
+        const routed = this.accountForReads(a);
+        if (path.resolve(expandHome(routed.configHome)) === key) { owner = routed; break; }
+      }
+    } catch { owner = null; } // @silent-fallback-ok — an unreadable pool owns no account
+    if (!owner) return { accountId: null, marked: false, reason: 'no-account', accountStatus: null };
+    let token: TokenResolution;
+    try { token = await this.tokenResolver(owner); }
+    catch { token = null; } // @silent-fallback-ok — unreadable: left to the corroborated rule
+    if (typeof token !== 'string' || token.length === 0) {
+      return { accountId: owner.id, marked: false, reason: 'credential-unreadable', accountStatus: owner.status };
+    }
+    this.lastFingerprint.set(owner.id, credentialFingerprint(token));
+    // Fresh-login probe (spec stale-process-login-expired D2): test the stored login directly before
+    // letting one process's screen bench the account. Absent scheduler ⇒ today's behaviour exactly.
+    let probe: ProbeDisposition | undefined;
+    if (this.freshProbe) {
+      try {
+        probe = await this.freshProbe.evaluate(owner.id, { waitMs: Math.max(0, opts.awaitProbeMs ?? 0), start: true });
+      } catch { probe = 'inconclusive'; } // @silent-fallback-ok: an unanswerable probe keeps today's conservative path
+      const current = this.pool.get(owner.id) ?? owner;
+      if (probe === 'ok' && (current.status === 'active'
+        || (current.status === 'needs-reauth' && this.latestMarkCause.get(owner.id) === 'cli-login-expired-observed'))) {
+        if (current.status === 'needs-reauth') this.releaseStaleHold(current, 'the stored login answered a real call');
+        this.logger.log(`[QuotaPoller] account ${owner.id}: session ${input.session} showed an expired login; the stored login answered a real call — treating the session as holding a stale token (the stored login passed the probe; why the session failed is not proven)`);
+        return { accountId: owner.id, marked: false, reason: 'stale-process', accountStatus: this.pool.get(owner.id)?.status ?? current.status, probe, staleProcess: true };
+      }
+      if (probe === 'pending' && opts.markWhilePending === false) {
+        return { accountId: owner.id, marked: false, reason: 'probe-pending', accountStatus: current.status, probe };
+      }
+    }
+    const at = input.at ?? this.now();
+    const prior = this.cliLoginExpiredHolds.get(owner.id);
+    this.cliLoginExpiredHolds.set(owner.id, {
+      home: key, fingerprint: credentialFingerprint(token), at: prior && prior.home === key ? prior.at : at, session: input.session,
+    });
+    if (owner.status === 'needs-reauth') return { accountId: owner.id, marked: false, reason: 'already-held', accountStatus: 'needs-reauth', ...(probe ? { probe } : {}) };
+    this.markNeedsReauth(owner, 'cli-login-expired-observed');
+    this.observe(owner.id, {
+      kind: 'transition-to-needs-reauth',
+      causeClass: 'cli-login-expired-observed',
+      corroboration: 'exchange-corroborated',
+    });
+    return { accountId: owner.id, marked: true, reason: 'marked', accountStatus: this.pool.get(owner.id)?.status ?? 'needs-reauth', ...(probe ? { probe } : {}) };
+  }
+
+  /** True while a pane-observed expired-login hold still applies to this credential. */
+  private cliLoginExpiredHoldActive(accountId: string, configHome: string, token: string): boolean {
+    const hold = this.cliLoginExpiredHolds.get(accountId);
+    if (!hold) return false;
+    const fresh = this.now() - hold.at < CLI_LOGIN_EXPIRED_HOLD_MAX_MS;
+    const sameHome = hold.home === path.resolve(expandHome(configHome));
+    const sameCredential = hold.fingerprint === credentialFingerprint(token);
+    if (fresh && sameHome && sameCredential) return true;
+    this.cliLoginExpiredHolds.delete(accountId);
+    this.logger.log(`[QuotaPoller] account ${accountId}: expired-login hold released (${!fresh ? 'ceiling reached' : !sameHome ? 'credential moved to another slot' : 'credential changed'})`);
+    return false;
+  }
+
+  private cliLoginExpiredCorroborated(configHome: string): boolean {
+    const key = path.resolve(expandHome(configHome));
+    const nowMs = this.now();
+    const recent = (this.cliLoginExpiredSightings.get(key) ?? [])
+      .filter((s) => nowMs - s.at < CLI_LOGIN_EXPIRED_WINDOW_MS);
+    return new Set(recent.map((s) => s.session)).size >= CLI_LOGIN_EXPIRED_SESSIONS_REQUIRED;
+  }
+
   /** Expose the last in-memory snapshot for an account (test/diagnostic). */
   lastSnapshot(accountId: string): AccountQuotaSnapshot | null {
     return this.lastByAccount.get(accountId) ?? null;
   }
+}
+
+/** Truncated hash of a credential, for "is this still the same login?" — never the token itself. */
+function credentialFingerprint(token: string): string {
+  return createHash('sha256').update(token).digest('hex').slice(0, 16);
 }
 
 export function isQuotaPollSupportedAccount(account: SubscriptionAccount): boolean {

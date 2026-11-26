@@ -17,6 +17,7 @@ import path from 'node:path';
 import os from 'node:os';
 import express from 'express';
 import request from 'supertest';
+import { IdentityManager } from '../../../src/threadline/client/IdentityManager.js';
 import { HandshakeManager } from '../../../src/threadline/HandshakeManager.js';
 import {
   createThreadlineRoutes,
@@ -51,6 +52,22 @@ describe('resolveRelayHealth', () => {
     expect(r.status).toBe('ok');
     expect(r.report.state).toBe('connected');
     expect(r.report.recoverable).toBe(true);
+  });
+
+  it('reports standby (ok) when the machine released the relay to the lease holder, even with a stale loss event', () => {
+    const r = resolveRelayHealth((() => ({
+      connectionState: 'disconnected',
+      lastEvent: lossEvent(false),
+      standby: true,
+    })) as RelayStatus);
+    expect(r.status).toBe('ok');
+    expect(r.report.state).toBe('standby');
+    expect(r.report.recoverable).toBe(true);
+  });
+
+  it('a connected relay is never reported as standby', () => {
+    const r = resolveRelayHealth((() => ({ connectionState: 'connected', lastEvent: null, standby: true })) as RelayStatus);
+    expect(r.report.state).toBe('connected');
   });
 
   it('reports disconnected as DEGRADED and recoverable — backoff will retry', () => {
@@ -123,7 +140,7 @@ describe('GET /threadline/health — relay reporting', () => {
   let stateDir: string;
   let manager: HandshakeManager;
 
-  const appWith = (relayStatus?: RelayStatus): express.Express => {
+  const appWith = (relayStatus?: RelayStatus, agentRelayStatus?: () => Promise<import('../../../src/threadline/agentRelayStatus.js').AgentRelayStatus>, authToken: string | undefined = 'test-token'): express.Express => {
     const app = express();
     app.use(express.json());
     app.use(createThreadlineRoutes(manager, null, {
@@ -131,6 +148,8 @@ describe('GET /threadline/health — relay reporting', () => {
       version: '1.0',
       stateDir,
       relayStatus,
+      agentRelayStatus,
+      agentRelayAuthToken: authToken,
     }));
     return app;
   };
@@ -171,6 +190,7 @@ describe('GET /threadline/health — relay reporting', () => {
     // NEVER on `status`. If a degraded relay changed those, peers would silently
     // drop this agent from their registries — a far worse failure than the one
     // being fixed. This test pins the contract.
+    new IdentityManager(stateDir).getOrCreate(); // health reports an identity, never mints one
     const res = await request(appWith((() => ({
       connectionState: 'disconnected',
       lastEvent: lossEvent(true),
@@ -188,5 +208,24 @@ describe('GET /threadline/health — relay reporting', () => {
     })) as RelayStatus)).get('/threadline/health');
     expect(res.body.status).toBe('ok');
     expect(res.body.relay.state).toBe('connected');
+  });
+
+  it('leads with agent reachability while preserving the local relay probe for holder discovery', async () => {
+    const agentRelayStatus = async () => ({ state: 'reachable' as const, throughMachine: 'Studio', throughMachineId: 'studio',
+      reason: 'Verified holder', ifMachineAway: 'Another machine must acquire the lease.', peersChecked: 1, peersUnknown: 0 });
+    const app = appWith(() => ({ connectionState: 'disconnected', lastEvent: null }), agentRelayStatus);
+    const publicView = await request(app).get('/threadline/health');
+    expect(publicView.body.agentRelay.state).toBe('unknown');
+    expect(publicView.body.agentRelay.throughMachine).toBeNull();
+    const tokenless = await request(appWith(() => ({ connectionState: 'disconnected', lastEvent: null }), agentRelayStatus, ''))
+      .get('/threadline/health');
+    expect(tokenless.body.agentRelay.throughMachine).toBeNull();
+    const whole = await request(app).get('/threadline/health').set('Authorization', 'Bearer test-token');
+    expect(whole.body.agentRelay.state).toBe('reachable');
+    expect(whole.body.agentRelay.throughMachine).toBe('Studio');
+    expect(whole.body.relay.state).toBe('never-connected');
+    const local = await request(app).get('/threadline/health?scope=local');
+    expect(local.body).not.toHaveProperty('agentRelay');
+    expect(local.body.relay.state).toBe('never-connected');
   });
 });

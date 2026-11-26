@@ -23,6 +23,30 @@ import type { PeerEndpointResolver, ResolvedEndpoint } from './PeerEndpointResol
 import type { PeerEndpointRecorder } from './PeerEndpointRecorder.js';
 import type { LeaseTransport } from './LeaseCoordinator.js';
 import type { LeaseRecord, MeshEndpoint } from './types.js';
+import { createHash } from 'node:crypto';
+import {
+  INSTAR_MACHINE_HEADER,
+  endpointCarriesUnsignedAnswer,
+  isTunnelEdgeStatus,
+  type PeerProbeRecord,
+  type ProbeAnswer,
+  type ProbeSilenceCause,
+} from './BootClaimHold.js';
+
+/**
+ * Instar's response marker value for one machine (takeover-ready-pool R1): a fingerprint
+ * bound to the machine id, so a prober can tell "this peer's Instar answered" from any other
+ * server, without the header disclosing the machine id itself.
+ */
+export function instarMachineMarker(machineId: string): string {
+  return createHash('sha256').update(`x-instar-machine:v1:${machineId}`).digest('hex').slice(0, 16);
+}
+
+/** Probes kept per peer: the boot hold needs only the recent tail. */
+const PROBE_TAIL = 32;
+
+type DialOutcome = { confirmed: boolean; lease: LeaseRecord | null; answer: ProbeAnswer };
+const ANSWER_RANK: Record<ProbeAnswer, number> = { silent: 0, unsigned: 1, signed: 2 };
 
 export interface LeasePeer {
   machineId: string;
@@ -46,6 +70,8 @@ export interface LeasePeer {
 }
 
 export interface HttpLeaseTransportDeps {
+  /** The peer itself signed this answer on this address: a stranger on a look-alike network cannot. */
+  onSignedConfirmation?: (peerMachineId: string, kind: MeshEndpoint['kind'], url: string) => void;
   selfMachineId: string;
   signingKeyPem: string;
   /** Resolve the current set of reachable peers (excludes self). */
@@ -68,6 +94,17 @@ export interface HttpLeaseTransportDeps {
    * from leaseTtlMs (min(ttl/2, 30s)).
    */
   requestTimeoutMs?: number;
+  /**
+   * Overall deadline for one broadcast (lease-renew-unreachable-peers). broadcast()
+   * resolves true the moment ANY peer confirms, and false once this deadline passes
+   * with no confirmation — it never waits on the slowest peer. Without it, one
+   * permanently-unreachable peer (a rope that times out at requestTimeoutMs = 30s)
+   * held every renewal past the 20s tick await, so the holder's lease lapsed under
+   * load even while other peers were confirming (2026-09-27 Studio mute). Must sit
+   * well under the tick await so renew() always reaches its hold/grace decision.
+   * Default 8s. In-flight dials are not aborted; they settle on requestTimeoutMs.
+   */
+  broadcastDeadlineMs?: number;
   /**
    * Coarse-reminder interval for the per-peer failure log gate (P19 brake:
    * per-attempt logging is amplification — a down peer at a 5s cadence wrote
@@ -109,6 +146,7 @@ export class HttpLeaseTransport implements LeaseTransport {
   private readonly d: HttpLeaseTransportDeps;
   private lastObserved: LeaseRecord | null = null;
   private lastNonceByHolder: Record<string, number> = {};
+  private lastEpochByHolder: Record<string, number> = {};
   /**
    * Per-peer lease observations (machine-coherence-guard §5b — NEW retained
    * state): the pull loop's single `lastObserved` slot keeps only the most
@@ -122,10 +160,35 @@ export class HttpLeaseTransport implements LeaseTransport {
    * consumed by the §5b counting rule, never by demotion authority.
    */
   private lastPulledByPeer = new Map<string, { lease: LeaseRecord | null; observedAtMs: number }>();
+  /**
+   * takeover-ready-pool R1 — per-peer probe history of lease pulls: whether each pull got a
+   * signed answer, an unsigned Instar answer (the response marker on a machine-bound
+   * endpoint), or silence. Read by the boot hold; bounded to the recent tail per peer.
+   */
+  private probesByPeer = new Map<string, PeerProbeRecord>();
+  /**
+   * planned-restart-keeps-lead §2 — per peer, the last pull whose responder identity was VERIFIED
+   * (a signed ack bound to our request nonce), with the view it returned (`null` = an honest "no
+   * lease"). A qualifying answer for rule 1b is one of these from a live peer. Keyed on the dialed
+   * registry id, never a body field.
+   */
+  private verifiedAnswerByPeer = new Map<string, { lease: LeaseRecord | null; atMs: number; round: number }>();
+  /** planned-restart-keeps-lead §2 — pull rounds, so a boot can tell which round an outcome belongs to. */
+  private pullRound = 0;
+  private roundStartedAtMs = 0;
+  private probeListeners: Array<(peerId: string, answer: ProbeAnswer, round: number) => void> = [];
   private lastBroadcastOkAt = 0;
   private lastPullOkAt = 0;
+  /**
+   * lease-renew-unreachable-peers — the highest epoch any peer has reported in a
+   * VERIFIED (signed, challenge-bound) broadcast ack that was higher than the epoch
+   * we sent. A monotonic high-water mark: a later same-epoch ack from another peer
+   * never lowers it. The coordinator's fencing reads it (see LeaseCoordinator).
+   */
+  private higherEpochSeen = 0;
   private readonly windowMs: number;
   private readonly requestTimeoutMs: number;
+  private readonly broadcastDeadlineMs: number;
   /** State-change failure logging (first/Nth/recovery) — never per-attempt. */
   private readonly logGate: PeerFailureLogGate;
 
@@ -133,6 +196,7 @@ export class HttpLeaseTransport implements LeaseTransport {
     this.d = deps;
     this.windowMs = deps.reachabilityWindowMs ?? 60_000;
     this.requestTimeoutMs = deps.requestTimeoutMs ?? 30_000;
+    this.broadcastDeadlineMs = deps.broadcastDeadlineMs ?? 8_000;
     this.logGate = new PeerFailureLogGate(deps.failureLogEveryN ?? 360);
   }
 
@@ -155,22 +219,65 @@ export class HttpLeaseTransport implements LeaseTransport {
 
   /**
    * Broadcast our lease to every peer over the authenticated channel. Resolves
-   * true if at least one peer accepted (we have a live medium); false if none
-   * were reachable.
+   * true as soon as one peer confirms (we have a live medium); false if every
+   * peer settles unconfirmed or `broadcastDeadlineMs` passes first. The "any
+   * one peer confirms" rule is unchanged — only the wait on the slowest peer is cut.
+   *
+   * A slow-but-valid confirmation is NOT discarded at the deadline: when the
+   * broadcast already resolved false on the deadline and a peer confirms THIS
+   * lease afterward (still inside requestTimeoutMs), `onLateConfirm` fires once so
+   * the coordinator can adopt the renewal under its own epoch/freshness checks. A
+   * healthy peer that answers in ~10s therefore keeps the holder serving exactly as
+   * the old await-everyone broadcast did.
    */
-  async broadcast(lease: LeaseRecord): Promise<boolean> {
+  async broadcast(lease: LeaseRecord, onLateConfirm?: () => void): Promise<boolean> {
     const peers = this.d.peers();
     if (peers.length === 0) {
       // No peers → a single-machine mesh; treat as "reachable" (nothing to fail).
       this.lastBroadcastOkAt = this.now();
       return true;
     }
-    const results = await Promise.all(
-      peers.map((peer) => this.dialPeer(peer, '/api/lease', { lease }, lease.epoch)),
-    );
-    const anyOk = results.some((r) => r.confirmed);
-    if (anyOk) this.lastBroadcastOkAt = this.now();
-    return anyOk;
+    return new Promise<boolean>((resolve) => {
+      let pending = peers.length;
+      let settled = false;
+      let resolvedFalse = false;
+      let lateReported = false;
+      const sentAt = this.now();
+      const finish = (ok: boolean) => {
+        if (settled) return;
+        settled = true;
+        resolvedFalse = !ok;
+        clearTimeout(deadline);
+        resolve(ok);
+      };
+      const deadline = setTimeout(() => finish(false), this.broadcastDeadlineMs);
+      for (const peer of peers) {
+        this.dialPeer(peer, '/api/lease', { lease }, lease.epoch)
+          .then((r) => {
+            if (r.confirmed) {
+              this.lastBroadcastOkAt = this.now();
+              // Only inside the supported response window (requestTimeoutMs): a dial
+              // should have aborted by then, so a later answer is not a live confirmation.
+              const inWindow = this.now() - sentAt <= this.requestTimeoutMs;
+              if (resolvedFalse && !lateReported && onLateConfirm && inWindow) {
+                // The deadline already answered false; this is a genuine confirmation
+                // of the same signed lease, arriving late. Hand it to the coordinator.
+                lateReported = true;
+                onLateConfirm();
+              }
+              finish(true);
+            }
+          })
+          .catch(() => {
+            // @silent-fallback-ok: a dial that throws is an unconfirmed peer (dialPeer logs
+            // its own failures); it only counts toward `pending`, never toward confirmation.
+          })
+          .finally(() => {
+            pending -= 1;
+            if (pending === 0) finish(false);
+          });
+      }
+    });
   }
 
   private meshOn(): boolean {
@@ -191,7 +298,7 @@ export class HttpLeaseTransport implements LeaseTransport {
     path: '/api/lease' | '/api/lease/pull',
     bodyBase: Record<string, unknown>,
     sentEpoch: number | null,
-  ): Promise<{ confirmed: boolean; lease: LeaseRecord | null }> {
+  ): Promise<DialOutcome & { verified?: boolean; cause?: ProbeSilenceCause }> {
     const fetchImpl = this.d.fetchImpl ?? fetch;
     // mesh-endpoint-http-propagation — carry our own validated self-endpoints inside
     // the SIGNED body (covered by signRequest's body hash). Omit the field entirely
@@ -206,13 +313,24 @@ export class HttpLeaseTransport implements LeaseTransport {
       return this.legacyDial(peer, path, bodyBase, fetchImpl);
     }
     const resolved = this.d.resolver!.resolve(peer.machineId, peer.endpoints, peer.url);
-    if (resolved.length === 0) return { confirmed: false, lease: null };
+    if (resolved.length === 0) return { confirmed: false, lease: null, answer: 'silent', cause: 'no-route' };
+    // The best answer any rope got: a rope can carry Instar's unsigned answer while
+    // another times out, and the hedge resolves with whichever settles last.
+    let best: ProbeAnswer = 'silent';
+    const note = (a: ProbeAnswer) => { if (ANSWER_RANK[a] > ANSWER_RANK[best]) best = a; };
+    // planned-restart-keeps-lead §2 — every route (Tailscale, LAN, tunnel) is dialed by the hedge. When
+    // ALL of them fail on this machine's side (no route, permission) and no byte came back from any,
+    // the silence is ours, not the peer's, and the probe says so.
+    let attempts = 0;
+    let localRefusals = 0;
+    let anyResponse = false;
 
     const attempt = async (ep: ResolvedEndpoint, signal: AbortSignal) => {
       const reqNonce = newReqNonce();
       const body = { ...bodyBase, reqNonce };
       const headers = signRequest(this.d.selfMachineId, this.d.signingKeyPem, body, this.d.nextSequence());
       const started = this.now();
+      attempts += 1;
       try {
         const res = await fetchImpl(`${ep.url.replace(/\/$/, '')}${path}`, {
           method: 'POST',
@@ -220,10 +338,15 @@ export class HttpLeaseTransport implements LeaseTransport {
           body: JSON.stringify(body),
           signal: mergeSignals(signal, AbortSignal.timeout(this.requestTimeoutMs)),
         });
+        anyResponse = true;
         const httpOk = !!res && (res as Response).ok;
         const data = httpOk ? ((await (res as Response).json().catch(() => null)) as MeshAckResponse | null) : null;
         const outcome = this.interpretResponse(peer, path, reqNonce, sentEpoch, data, httpOk);
+        note(this.classifyAnswer(peer, ep, res as Response, outcome.confirmed));
         this.d.resolver!.recordResult(peer.machineId, ep.kind, outcome.confirmed, this.now() - started, ep.url);
+        if (outcome.confirmed && peer.meshAckCapable && peer.publicKeyPem) {
+          this.d.onSignedConfirmation?.(peer.machineId, ep.kind, ep.url);
+        }
         if (outcome.confirmed) this.logSuccess(`${path} ${peer.machineId}/${ep.kind}`);
         else this.logFailure(`${path} ${peer.machineId}/${ep.kind}`, 'unconfirmed');
         return outcome;
@@ -237,6 +360,8 @@ export class HttpLeaseTransport implements LeaseTransport {
         // failure (network error, or OUR per-attempt timeout — whose abort fires the
         // MERGED signal, not the hedge controller's) still records failure.
         const abortedByWinner = signal.aborted && isAbortShapedError(err);
+        if (abortedByWinner) attempts -= 1; // a loser the winner aborted says nothing either way
+        else if (isLocalRefusal(err)) localRefusals += 1;
         if (!abortedByWinner) {
           this.d.resolver!.recordResult(peer.machineId, ep.kind, false, this.now() - started, ep.url);
           this.logFailure(`${path} ${peer.machineId}/${ep.kind}`, err instanceof Error ? err.message : String(err));
@@ -245,38 +370,117 @@ export class HttpLeaseTransport implements LeaseTransport {
       }
     };
 
-    return this.hedge(resolved, attempt);
+    const r = await this.hedge(resolved, attempt);
+    const cause: ProbeSilenceCause | undefined = best === 'silent' && !anyResponse && attempts > 0 && localRefusals === attempts ? 'local-refusal' : undefined;
+    // On the mesh dial a confirmed pull from an ack-capable peer IS identity-verified (interpretResponse).
+    return { ...r, answer: best, verified: r.confirmed && !!peer.meshAckCapable && !!peer.publicKeyPem, ...(cause ? { cause } : {}) };
   }
 
-  /** Legacy single-`url` dial — byte-for-byte today (2xx = confirmed, no ack). */
+  /**
+   * One rope's answer for the boot hold. Signed: a verified accept-ack from the dialed peer.
+   * Unsigned: any reply (an error included, as a server still starting gives) that carries
+   * this peer's Instar marker, on a Tailscale or named-tunnel endpoint. A 52x/530 is the
+   * tunnel edge speaking for a dead origin, never the peer. Everything else is silence.
+   */
+  private classifyAnswer(peer: LeasePeer, ep: ResolvedEndpoint, res: Response | undefined, confirmed: boolean): ProbeAnswer {
+    if (confirmed && peer.meshAckCapable && peer.publicKeyPem) return 'signed';
+    if (!res) return 'silent';
+    if (typeof res.status === 'number' && isTunnelEdgeStatus(res.status)) return 'silent';
+    if (!endpointCarriesUnsignedAnswer(ep.kind, ep.url)) return 'silent';
+    let marker: string | null = null;
+    try {
+      marker = res.headers?.get?.(INSTAR_MACHINE_HEADER) ?? null;
+    } catch {
+      marker = null; // @silent-fallback-ok: a reply without readable headers carries no marker, so it is silence
+    }
+    return marker === instarMachineMarker(peer.machineId) ? 'unsigned' : 'silent';
+  }
+
+  private recordProbe(peerId: string, answer: ProbeAnswer, cause?: ProbeSilenceCause): void {
+    const at = this.now();
+    const rec = this.probesByPeer.get(peerId) ?? { probes: [], unsignedSinceMs: null, firstSignedAtMs: null };
+    rec.probes.push(cause && answer === 'silent' ? { atMs: at, answer, cause } : { atMs: at, answer });
+    if (rec.probes.length > PROBE_TAIL) rec.probes.splice(0, rec.probes.length - PROBE_TAIL);
+    if (answer === 'signed') {
+      rec.unsignedSinceMs = null;
+      if (rec.firstSignedAtMs == null) rec.firstSignedAtMs = at;
+    }
+    else if (answer === 'unsigned' && rec.unsignedSinceMs === null) rec.unsignedSinceMs = at;
+    this.probesByPeer.set(peerId, rec);
+    for (const l of this.probeListeners) {
+      try { l(peerId, answer, this.pullRound); } catch { /* @silent-fallback-ok: a listener fault must never break a pull */ }
+    }
+  }
+
+  /**
+   * planned-restart-keeps-lead §2 step 2 — be told when a probe lands (the moment a round may have
+   * become evaluable). Listeners are error-isolated. Returns a detach.
+   */
+  attachProbeListener(listener: (peerId: string, answer: ProbeAnswer, round: number) => void): () => void {
+    this.probeListeners.push(listener);
+    return () => { this.probeListeners = this.probeListeners.filter((l) => l !== listener); };
+  }
+
+  /** The current pull round and when it started (0 before the first round). */
+  currentPullRound(): { round: number; startedAtMs: number } {
+    return { round: this.pullRound, startedAtMs: this.roundStartedAtMs };
+  }
+
+  /** Per-peer identity-verified pull answers (copies). */
+  verifiedAnswers(): Map<string, { lease: LeaseRecord | null; atMs: number; round: number }> {
+    return new Map(this.verifiedAnswerByPeer);
+  }
+
+  /** takeover-ready-pool R1 — per-peer probe records (copies). */
+  probeHistory(): Map<string, PeerProbeRecord> {
+    const out = new Map<string, PeerProbeRecord>();
+    for (const [id, rec] of this.probesByPeer) out.set(id, { probes: rec.probes.map((p) => ({ ...p })), unsignedSinceMs: rec.unsignedSinceMs, firstSignedAtMs: rec.firstSignedAtMs ?? null });
+    return out;
+  }
+
+  /** The peers this transport can dial right now (excludes self). */
+  knownPeerIds(): string[] {
+    return this.d.peers().map((p) => p.machineId);
+  }
+
+  /**
+   * Legacy single-`url` dial — 2xx = confirmed, as today. planned-restart-keeps-lead: when the peer's
+   * key is known the pull carries a request nonce, and a reply whose identity ack verifies is recorded
+   * `signed` for the boot hold (today every legacy probe read as silence, so a mesh-off pool read its
+   * answering peers as silent). Broadcast confirmation on this dial stays a 2xx.
+   */
   private async legacyDial(
     peer: LeasePeer,
     path: '/api/lease' | '/api/lease/pull',
     bodyBase: Record<string, unknown>,
     fetchImpl: typeof fetch,
-  ): Promise<{ confirmed: boolean; lease: LeaseRecord | null }> {
+  ): Promise<DialOutcome & { verified?: boolean; cause?: ProbeSilenceCause }> {
     try {
-      const headers = signRequest(this.d.selfMachineId, this.d.signingKeyPem, bodyBase, this.d.nextSequence());
+      const canVerify = path === '/api/lease/pull' && !!peer.publicKeyPem;
+      const reqNonce = canVerify ? newReqNonce() : null;
+      const body = reqNonce ? { ...bodyBase, reqNonce } : bodyBase;
+      const headers = signRequest(this.d.selfMachineId, this.d.signingKeyPem, body, this.d.nextSequence());
       const res = await fetchImpl(`${peer.url.replace(/\/$/, '')}${path}`, {
         method: 'POST',
         headers: { 'Content-Type': 'application/json', ...headers },
-        body: JSON.stringify(bodyBase),
+        body: JSON.stringify(body),
         signal: AbortSignal.timeout(this.requestTimeoutMs),
       });
       const httpOk = !!res && (res as Response).ok;
       if (!httpOk) {
         this.logFailure(`${path} to ${peer.machineId}`, `status ${(res as Response)?.status}`);
-        return { confirmed: false, lease: null };
+        return { confirmed: false, lease: null, answer: 'silent' };
       }
       this.logSuccess(`${path} to ${peer.machineId}`);
       if (path === '/api/lease/pull') {
-        const data = (await (res as Response).json().catch(() => null)) as { lease?: LeaseRecord | null } | null;
-        return { confirmed: true, lease: data?.lease ?? null };
+        const data = (await (res as Response).json().catch(() => null)) as MeshAckResponse | null;
+        const verified = !!reqNonce && verifyLeaseAckIdentity(data?.ack, data?.sig, peer.machineId, reqNonce, peer.publicKeyPem as string);
+        return { confirmed: true, lease: data?.lease ?? null, answer: verified ? 'signed' : 'silent', verified };
       }
-      return { confirmed: true, lease: null };
+      return { confirmed: true, lease: null, answer: 'silent' };
     } catch (err) {
       this.logFailure(`${path} to ${peer.machineId}`, err instanceof Error ? err.message : String(err));
-      return { confirmed: false, lease: null };
+      return { confirmed: false, lease: null, answer: 'silent', ...(isLocalRefusal(err) ? { cause: 'local-refusal' as const } : {}) };
     }
   }
 
@@ -315,7 +519,11 @@ export class HttpLeaseTransport implements LeaseTransport {
       sentEpoch ?? -1,
       peer.publicKeyPem as string,
     );
-    // 'higher-epoch' is a real takeover signal — NOT a renewal confirmation.
+    // 'higher-epoch' is a real takeover signal — NOT a renewal confirmation. Keep the
+    // verified evidence (it fences our older epoch in LeaseCoordinator), and recover
+    // the signed holder lease through the existing pull path: the responder is not
+    // necessarily the holder, so we never fabricate a holder lease from the ack.
+    if (verdict === 'higher-epoch' && data?.ack) this.noteHigherEpoch(peer, data.ack.observedEpoch);
     return { confirmed: verdict === 'confirmed', lease: null };
   }
 
@@ -382,6 +590,21 @@ export class HttpLeaseTransport implements LeaseTransport {
     return { lease: this.lastObserved, lastNonceByHolder: { ...this.lastNonceByHolder } };
   }
 
+  /** Highest epoch a peer reported in a verified broadcast ack above what we sent (0 = none). */
+  higherEpochEvidence(): number {
+    return this.higherEpochSeen;
+  }
+
+  private noteHigherEpoch(peer: LeasePeer, epoch: number): void {
+    if (epoch <= this.higherEpochSeen) return;
+    this.higherEpochSeen = epoch;
+    this.log(`peer ${peer.machineId} reports verified epoch ${epoch} above ours — pulling its signed lease`);
+    this.pullPeer(peer).catch(() => {
+      // @silent-fallback-ok: the pull is best-effort recovery of the holder's signed
+      // lease; the verified epoch evidence already fences our older epoch without it.
+    });
+  }
+
   isReachable(): boolean {
     // Reachability is bidirectional: a successful broadcast (we pushed to a peer) OR
     // a successful pull (we reached a peer to read its lease) both prove a live
@@ -406,12 +629,15 @@ export class HttpLeaseTransport implements LeaseTransport {
    */
   recordObserved(lease: LeaseRecord): number | undefined {
     if (!lease || typeof lease.epoch !== 'number') return undefined;
+    const prevEpoch = this.lastEpochByHolder[lease.holder] ?? -1;
     const prevNonce = this.lastNonceByHolder[lease.holder] ?? -1;
-    // Only accept a strictly-newer nonce for this holder (drop replays here too).
-    if (lease.nonce <= prevNonce && this.lastObserved && this.lastObserved.epoch >= lease.epoch) {
+    // An older epoch cannot move either watermark. A higher epoch starts a new
+    // nonce sequence for this holder; within an epoch, nonces must advance.
+    if (lease.epoch < prevEpoch || (lease.epoch === prevEpoch && lease.nonce <= prevNonce)) {
       return this.lastObserved?.epoch;
     }
-    if (lease.nonce > prevNonce) this.lastNonceByHolder[lease.holder] = lease.nonce;
+    this.lastEpochByHolder[lease.holder] = lease.epoch;
+    this.lastNonceByHolder[lease.holder] = lease.nonce;
     if (!this.lastObserved || lease.epoch >= this.lastObserved.epoch) {
       this.lastObserved = lease;
     }
@@ -433,7 +659,13 @@ export class HttpLeaseTransport implements LeaseTransport {
    * returns no lease — proves reachability.
    */
   async pullPeer(peer: LeasePeer): Promise<LeaseRecord | null> {
+    const round = this.pullRound;
     const outcome = await this.dialPeer(peer, '/api/lease/pull', {}, null);
+    if (outcome.confirmed && outcome.verified) {
+      const lease = outcome.lease && typeof outcome.lease.epoch === 'number' ? outcome.lease : null;
+      this.verifiedAnswerByPeer.set(peer.machineId, { lease, atMs: this.now(), round });
+    }
+    this.recordProbe(peer.machineId, outcome.answer, outcome.cause);
     if (!outcome.confirmed) return null;
     // A confirmed pull (verified reachability) proves the medium is live.
     this.lastPullOkAt = this.now();
@@ -473,6 +705,14 @@ export class HttpLeaseTransport implements LeaseTransport {
     for (const id of this.lastPulledByPeer.keys()) {
       if (!current.has(id)) this.lastPulledByPeer.delete(id);
     }
+    for (const id of this.probesByPeer.keys()) {
+      if (!current.has(id)) this.probesByPeer.delete(id);
+    }
+    for (const id of this.verifiedAnswerByPeer.keys()) {
+      if (!current.has(id)) this.verifiedAnswerByPeer.delete(id);
+    }
+    this.pullRound += 1;
+    this.roundStartedAtMs = this.now();
     if (peers.length === 0) return;
     await Promise.all(peers.map((p) => this.pullPeer(p).catch(() => null)));
   }
@@ -496,6 +736,25 @@ interface MeshAckResponse {
  * hedge-controller `signal.aborted` check already excludes it unless a winner also
  * confirmed, in which case neutrality is the correct call anyway).
  */
+/**
+ * planned-restart-keeps-lead §2 — a dial that failed on THIS machine's side before any byte left:
+ * no route to the host, the network down, or the OS refusing the connection (macOS Local Network
+ * permission answers EHOSTUNREACH or EPERM for a home-network address). A refused port
+ * (ECONNREFUSED), a reset or a timeout is NOT local: the far side, or its absence, answered.
+ */
+export function isLocalRefusal(err: unknown): boolean {
+  const codes = new Set(['EHOSTUNREACH', 'ENETUNREACH', 'EPERM', 'EACCES', 'ENETDOWN', 'EADDRNOTAVAIL', 'EHOSTDOWN']);
+  let e: unknown = err;
+  for (let depth = 0; e && typeof e === 'object' && depth < 4; depth++) {
+    const code = (e as { code?: unknown }).code;
+    if (typeof code === 'string' && codes.has(code)) return true;
+    const errors = (e as { errors?: unknown }).errors; // AggregateError from a dual-stack connect
+    if (Array.isArray(errors) && errors.length > 0 && errors.every((x) => isLocalRefusal(x))) return true;
+    e = (e as { cause?: unknown }).cause;
+  }
+  return false;
+}
+
 export function isAbortShapedError(err: unknown): boolean {
   if (!err || typeof err !== 'object') return false;
   const name = (err as { name?: unknown }).name;

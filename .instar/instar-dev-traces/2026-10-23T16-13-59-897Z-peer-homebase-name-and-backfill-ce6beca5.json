@@ -1,0 +1,29 @@
+{
+  "version": 2,
+  "slug": "peer-homebase-name-and-backfill",
+  "sessionId": "c6f8c0f1-a213-47b9-ae3c-9b971e896918",
+  "timestamp": "2026-10-23T16:13:59.897Z",
+  "artifactPath": "upgrades/side-effects/peer-homebase-name-and-backfill.md",
+  "artifactSha256": "b90e878c962ebb3ef521001ddef47b3d4864e55de7a95cfa052ee6dc9315b7e9",
+  "coveredFiles": [
+    "docs/specs/peer-homebase-name-and-backfill.eli16.md",
+    "src/commands/server.ts",
+    "src/core/PostUpdateMigrator.ts",
+    "src/core/peerHomebaseAwareness.ts",
+    "src/messaging/TelegramAdapter.ts",
+    "src/server/routes.ts",
+    "src/threadline/peerHomebase.ts",
+    "tests/integration/peer-homebase-create-and-record.test.ts",
+    "tests/unit/peer-homebase-awareness-migration.test.ts",
+    "tests/unit/peer-homebase-decisions.test.ts",
+    "upgrades/next/peer-homebase-name-and-backfill.md",
+    "upgrades/side-effects/peer-homebase-name-and-backfill.md"
+  ],
+  "phase": "complete",
+  "tier": 1,
+  "tierReasoning": "Gated, revert-undoable naming change + bounded best-effort boot backfill reusing the existing ensurePeerHomebase guards",
+  "eli16Path": "docs/specs/peer-homebase-name-and-backfill.eli16.md",
+  "sideEffectsPath": "upgrades/side-effects/peer-homebase-name-and-backfill.md",
+  "secondPass": "not-required",
+  "reviewerConcurred": null
+}

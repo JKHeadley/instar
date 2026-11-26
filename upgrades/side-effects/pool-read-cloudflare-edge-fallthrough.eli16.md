@@ -1,0 +1,7 @@
+# Reading from another machine tries the next road when one is closed
+
+The agent runs on several computers, and each one can be reached in up to three ways ("ropes"): through Cloudflare over the internet, through Tailscale (a private network), or over the local network. When the dashboard needs a list from every machine, the computer it runs on asks each of the others, using the way that looked best last time.
+
+Two problems made that brittle. First, when the Cloudflare route to a machine is broken, Cloudflare itself answers on the machine's behalf with an error page (code 530, "could not reach it"). The code treated any answer as proof the route works, so it kept choosing the broken Cloudflare route for that machine forever, even though the private Tailscale route to the same machine was fine. Second, when a route failed, the request simply gave up instead of trying the machine's other routes.
+
+Now a Cloudflare "could not reach it" answer counts as a broken route, and a read-only request moves on to the machine's next route. It only uses routes that the existing safety check already allows for sending the agent's access key, so the key never goes anywhere new. Requests that change something on the other machine are never retried, and the total wait is never longer than before. The result: the dashboard says "part of the list could not be checked" only when a machine really cannot be reached at all.

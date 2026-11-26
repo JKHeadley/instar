@@ -1,0 +1,28 @@
+{
+  "version": 2,
+  "slug": "reach-aware-false-blocker",
+  "sessionId": "1085eac5-2091-446e-9173-09107ff386a4",
+  "timestamp": "2026-11-10T02:50:39.373Z",
+  "artifactPath": "upgrades/side-effects/reach-aware-false-blocker.md",
+  "artifactSha256": "988e623e4311ef00f61abcad98d92e3902ccb6093b90cf7be173060c25b9ea2b",
+  "coveredFiles": [
+    "docs/specs/reach-aware-false-blocker.eli16.md",
+    "src/core/MessagingToneGate.ts",
+    "src/core/PlaywrightProfileRegistry.ts",
+    "src/core/agent-reach.ts",
+    "src/core/operator-errand.ts",
+    "src/data/stageBCertifiedSet.ts",
+    "src/server/routes.ts",
+    "tests/unit/playwright-profile-registry.test.ts",
+    "tests/unit/reach-aware-false-blocker.test.ts",
+    "upgrades/next/reach-aware-false-blocker.md",
+    "upgrades/side-effects/reach-aware-false-blocker.md"
+  ],
+  "phase": "complete",
+  "tier": 1,
+  "tierReasoning": "Additive context and a signal-gated sub-clause on the existing B17 judge plus a session-start text and byte-cap change; a revert fully undoes it and it leaves no state.",
+  "eli16Path": "docs/specs/reach-aware-false-blocker.eli16.md",
+  "sideEffectsPath": "upgrades/side-effects/reach-aware-false-blocker.md",
+  "secondPass": "true",
+  "reviewerConcurred": true
+}

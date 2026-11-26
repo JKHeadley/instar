@@ -56,6 +56,41 @@ describe('/subscription-pool — E2E feature-alive', () => {
     expect(body.accounts).toEqual([]);
   });
 
+  it('LIVE: a legacy shared file is migrated to the per-machine authority on update, and the API serves only this machine\'s logins (instar#2122)', async () => {
+    dir = fs.mkdtempSync(path.join(os.tmpdir(), 'subpool-e2e-legacy-'));
+    const home = dir;
+    const stateDir = path.join(home, '.instar');
+    fs.mkdirSync(stateDir, { recursive: true });
+    const { MachineIdentityManager } = await import('../../src/core/MachineIdentity.js');
+    const identity = await new MachineIdentityManager(stateDir).generateIdentity({ name: 'studio' });
+    const hereHome = path.join(home, '.claude-here');
+    fs.mkdirSync(hereHome);
+    const row = (id: string, configHome: string) => ({ id, nickname: id, email: `${id}@example.test`, provider: 'anthropic', framework: 'claude-code', configHome, status: 'active', enrolledAt: '2026-01-01T00:00:00.000Z', version: 1 });
+    fs.writeFileSync(path.join(stateDir, 'subscription-pool.json'), JSON.stringify({ version: 1, accounts: [row('here', hereHome), row('laptop', '/Users/justin/.claude-laptop')] }, null, 2));
+
+    // The production update path (PostUpdateMigrator) runs the migration …
+    const { PostUpdateMigrator } = await import('../../src/core/PostUpdateMigrator.js');
+    const migrator = new PostUpdateMigrator({ projectDir: home, stateDir, port: 0, hasTelegram: false, projectName: 'e2e' });
+    const result = { upgraded: [] as string[], skipped: [] as string[], errors: [] as string[] };
+    (migrator as unknown as { migrateSubscriptionPoolToMachineLocal(r: typeof result): void }).migrateSubscriptionPoolToMachineLocal(result);
+    expect(result.errors).toEqual([]);
+    expect(fs.existsSync(path.join(stateDir, 'state', 'subscription-pool.initialized.json'))).toBe(true);
+
+    // … and the server boots the pool exactly as server.ts does (stateDir + persisted machineId).
+    const pool = new SubscriptionPool({ stateDir, machineId: identity.machineId });
+    server = await bootApp({
+      config: { authToken: 'test', stateDir, port: 0 },
+      startTime: new Date(),
+      subscriptionPool: pool,
+      subscriptionIdentityOracle: { resolveSlotTenant: async () => ({ email: 'here@example.test' }) },
+    });
+    const res = await fetch(server.url + '/subscription-pool');
+    expect(res.status).toBe(200);
+    const body = await res.json() as { enabled: boolean; accounts: Array<{ id: string }> };
+    expect(body.enabled).toBe(true);
+    expect(body.accounts.map((a) => a.id)).toEqual(['here']);
+  });
+
   it('LIVE: feature is alive — enroll an account and read it back over HTTP', async () => {
     dir = fs.mkdtempSync(path.join(os.tmpdir(), 'subpool-e2e-'));
     const pool = new SubscriptionPool({ stateDir: dir });

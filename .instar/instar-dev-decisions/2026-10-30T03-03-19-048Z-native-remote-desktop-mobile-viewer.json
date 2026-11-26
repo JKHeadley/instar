@@ -1,0 +1,22 @@
+{
+  "ts": "2026-10-30T03:03:19.048Z",
+  "slug": "native-remote-desktop-mobile-viewer",
+  "suggestedTier": 2,
+  "declaredTier": 2,
+  "riskFloor": 1,
+  "riskFloorReasons": [],
+  "belowFloor": false,
+  "files": 1,
+  "loc": 49,
+  "scope": {
+    "basis": "staged-in-scope-additions-plus-deletions",
+    "files": [
+      "scripts/desktop-public-browser-smoke.mjs"
+    ],
+    "addedLines": 48,
+    "deletedLines": 1
+  },
+  "causalAutopsy": null,
+  "classClosure": null,
+  "verdict": "pass"
+}

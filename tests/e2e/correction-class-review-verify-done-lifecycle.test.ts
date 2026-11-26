@@ -19,6 +19,7 @@ const auth = () => ({ Authorization: `Bearer ${AUTH}` });
 describe('Correction class review + Verify Before Done production lifecycle', () => {
   let dir: string;
   let server: AgentServer;
+  let sharedQueue: LlmQueue;
   const events: string[] = [];
   const initiatives: Array<Record<string, unknown>> = [];
   const actions: Array<Record<string, unknown>> = [];
@@ -48,7 +49,8 @@ describe('Correction class review + Verify Before Done production lifecycle', ()
         completionScope: 'this-turn', actionKind: 'pushed', target: 'ws1',
         corroborated: false, rationale: 'no matching push' }] })) } as any;
     const sessionManager = Object.assign(createMockSessionManager() as any, { on: vi.fn() });
-    server = new AgentServer({ config, intelligence, llmQueue: new LlmQueue({ maxDailyCents: 100 }), sessionManager,
+    sharedQueue = new LlmQueue({ maxDailyCents: 100 });
+    server = new AgentServer({ config, intelligence, llmQueue: sharedQueue, sessionManager,
       state: new StateManager(path.join(dir, '.instar')),
       initiativeTracker: { create: vi.fn(async (input: Record<string, unknown>) => {
         events.push('initiative'); initiatives.push(input); return { id: `INIT-${initiatives.length}` };
@@ -121,5 +123,13 @@ describe('Correction class review + Verify Before Done production lifecycle', ()
       expect(doc.getElementById('reviews')?.textContent).toContain('Needs a standard upgrade');
       expect(doc.getElementById('claims')?.textContent).toContain('No — advisory only');
     });
+  });
+
+  it('runs the verifier off the shared queue and serves its failure ledger live', async () => {
+    // The observe test above reached the model; none of that may be charged to the shared cap.
+    expect(sharedQueue.getDailySpendCents()).toBe(0);
+    const res = await request(server.getApp()).get('/completion-claim/failures').set(auth());
+    expect(res.status).toBe(200);
+    expect(res.body).toMatchObject({ observeOnly: true, scope: 'local', gate: { met: false, requiredDays: 7 } });
   });
 });

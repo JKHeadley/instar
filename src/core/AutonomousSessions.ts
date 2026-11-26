@@ -146,6 +146,19 @@ export function activeAutonomousJobs(stateDir: string): AutonomousJobSummary[] {
 }
 
 /**
+ * The goal of `topic`'s LIVE autonomous run (active, not paused), or null. Used
+ * by notify-on-stop to name the run in its stop notice; a file that exists but
+ * says `active: false` is not a live run and yields null.
+ */
+export function liveAutonomousRunGoal(stateDir: string, topic: string | number): string | null {
+  const t = String(topic).trim();
+  if (!/^[\w-]+$/.test(t)) return null;
+  const s = summarize(path.join(autonomousDir(stateDir), `${t}.local.md`), t);
+  if (!s || !s.active || s.paused) return null;
+  return s.goal || null;
+}
+
+/**
  * Honest-recycle helper (honest-session-recycle-spec): the ACTIVE autonomous run
  * for `topic` with the seconds remaining on its window — or null when there is no
  * active run for the topic, or its window is already over. This is the single
@@ -176,6 +189,37 @@ export function autonomousRunRemainingForTopic(
 }
 
 /**
+ * The ReapGuard's structural-long-work signal (`ReapGuardDeps.buildOrAutonomousActive`).
+ * A topic's autonomous / native-goal run counts only while it is ACTIVE and still
+ * inside its window — read through `autonomousRunRemainingForTopic`, never from the
+ * state file's mtime. A run's file is written once per iteration, so a run waiting
+ * at its prompt for more than 30 minutes used to lose KEEP while still active
+ * (age-limit kill, 2026-09-30 review). Inactive, paused, expired or absent ⇒ false.
+ * A /build run has no window of its own, so its state file keeps the 30-minute
+ * freshness rule. Unreadable ⇒ false (the other guards still apply).
+ */
+export function structuralLongWorkActive(
+  stateDir: string,
+  topicId: number | null,
+  nowMs: number = Date.now(),
+): boolean {
+  if (topicId != null) {
+    try {
+      if (autonomousRunRemainingForTopic(stateDir, topicId, nowMs) != null) return true;
+    } catch {
+      // @silent-fallback-ok — run state unreadable ⇒ no autonomous KEEP; the build check and other guards still run.
+    }
+  }
+  try {
+    const buildState = path.join(stateDir, 'state', 'build', 'build-state.json');
+    return fs.existsSync(buildState) && (nowMs - fs.statSync(buildState).mtimeMs) < 30 * 60_000;
+  } catch {
+    // @silent-fallback-ok — build state unreadable ⇒ no build KEEP (unchanged pre-fix behaviour).
+    return false;
+  }
+}
+
+/**
  * Run-state markers the AutonomousProgressHeartbeat reads for its cheap-first
  * predicates (autonomous-progress-heartbeat spec §predicates #2 + #3):
  *   - `movedTo` / `moveSuspendedAt`: a mid-handoff marker (predicate #2 — this
@@ -195,6 +239,8 @@ export interface AutonomousRunMarkers {
   movedTo: string | null;
   /** Whether a `move_suspended_at` breadcrumb is present (mid-handoff). */
   moveSuspended: boolean;
+  /** Explicit stop takes precedence over stale pause or move markers. */
+  stopped: boolean;
   /** started_at parsed to epoch ms, or null when absent/unparseable. */
   startedAtMs: number | null;
   /** Stable run identity shared with the autonomous-run journal scanner. */
@@ -222,11 +268,34 @@ export function readAutonomousRunMarkers(
   return {
     movedTo: movedTo && movedTo.length > 0 ? movedTo : null,
     moveSuspended: /^move_suspended_at:/m.test(content),
+    stopped: /^stopped_at:/m.test(content),
     startedAtMs: Number.isFinite(startedMs) ? startedMs : null,
     runId: startedAt && Number.isFinite(startedMs)
       ? autonomousRunId(startedAt, String(topic))
       : null,
   };
+}
+
+/** Local run records that still need a user-facing status, including an
+ * inactive record suspended for a machine move. A paused record remains
+ * reportable until explicitly stopped, even if its original timer elapsed. */
+export function reportableAutonomousJobs(stateDir: string, nowMs: number = Date.now()): Array<{
+  job: AutonomousJobSummary;
+  remainingSeconds: number;
+}> {
+  const result: Array<{ job: AutonomousJobSummary; remainingSeconds: number }> = [];
+  for (const job of listAutonomousJobs(stateDir)) {
+    if (job.topic == null || !job.startedAt) continue;
+    const markers = readAutonomousRunMarkers(stateDir, job.topic);
+    if (!markers || markers.stopped || !(job.active || markers.moveSuspended)) continue;
+    const startedAt = new Date(job.startedAt).getTime();
+    if (!Number.isFinite(startedAt)) continue;
+    const remainingSeconds = job.durationSeconds == null
+      ? 0 : Math.max(0, Math.round(job.durationSeconds - (nowMs - startedAt) / 1000));
+    if (job.durationSeconds != null && remainingSeconds <= 0 && !job.paused && !markers.moveSuspended) continue;
+    result.push({ job, remainingSeconds });
+  }
+  return result;
 }
 
 export interface CanStartDeps {

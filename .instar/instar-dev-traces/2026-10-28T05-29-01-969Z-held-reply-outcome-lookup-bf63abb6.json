@@ -1,0 +1,25 @@
+{
+  "version": 2,
+  "slug": "held-reply-outcome-lookup",
+  "sessionId": "cc172e56-ba01-4e56-818b-481f5b739b3b",
+  "timestamp": "2026-10-28T05:29:01.969Z",
+  "artifactPath": "upgrades/side-effects/held-reply-outcome-lookup.md",
+  "artifactSha256": "3475dd648ecaf53611b6403845475496a1efc04e648ad7fd3f390e68c746af36",
+  "coveredFiles": [
+    "src/core/PostUpdateMigrator.ts",
+    "src/messaging/telegram-origin/OriginAwareness.ts",
+    "src/server/telegramOriginRoutes.ts",
+    "src/templates/scripts/telegram-reply.sh",
+    "tests/unit/feature-delivery-completeness.test.ts",
+    "tests/unit/telegram-origin-held-outcome-migration.test.ts",
+    "upgrades/held-reply-outcome-lookup.eli16.md",
+    "upgrades/side-effects/held-reply-outcome-lookup.md"
+  ],
+  "phase": "complete",
+  "tier": 1,
+  "tierReasoning": "Gate-test follow-ups for the held-reply fix: register the new CLAUDE.md addendum in the delivery tracker, tag three explicit-status catch blocks, add the agent-id header to the printed check command; no behavior change",
+  "eli16Path": "upgrades/held-reply-outcome-lookup.eli16.md",
+  "sideEffectsPath": "upgrades/side-effects/held-reply-outcome-lookup.md",
+  "secondPass": "true",
+  "reviewerConcurred": true
+}

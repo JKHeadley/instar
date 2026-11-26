@@ -25,13 +25,16 @@ import { SafeFsExecutor } from '../../src/core/SafeFsExecutor.js';
 const __filename = fileURLToPath(import.meta.url);
 const __dirname = path.dirname(__filename);
 const REPO_ROOT = path.resolve(__dirname, '..', '..');
-const SCRIPT_PATH = path.join(REPO_ROOT, 'scripts', 'classify-default-drift.mjs');
+const SOURCE_SCRIPT_PATH = path.join(REPO_ROOT, 'scripts', 'classify-default-drift.mjs');
 
 describe('classify-default-drift script', () => {
   let workspace: string;
 
   beforeAll(() => {
     workspace = fs.mkdtempSync(path.join(os.tmpdir(), 'instar-drift-'));
+    const scriptsDir = path.join(workspace, 'scripts');
+    fs.mkdirSync(scriptsDir, { recursive: true });
+    fs.copyFileSync(SOURCE_SCRIPT_PATH, path.join(scriptsDir, 'classify-default-drift.mjs'));
   });
 
   afterAll(() => {
@@ -40,8 +43,8 @@ describe('classify-default-drift script', () => {
 
   function run(env: Record<string, string | undefined> = {}): { stdout: string; stderr: string; code: number } {
     try {
-      const stdout = execFileSync('node', [SCRIPT_PATH, '--quiet'], {
-        cwd: REPO_ROOT,
+      const stdout = execFileSync('node', [path.join(workspace, 'scripts', 'classify-default-drift.mjs'), '--quiet'], {
+        cwd: workspace,
         encoding: 'utf-8',
         env: { ...process.env, ...env, ANTHROPIC_API_KEY: env.ANTHROPIC_API_KEY ?? '' },
       });
@@ -95,10 +98,9 @@ describe('classify-default-drift script', () => {
 
   it('writes significantChanges:[] into the lock-file when no key + no changes', () => {
     // Set up a minimal lock-file in dist/jobs/.
-    const distJobs = path.join(REPO_ROOT, 'dist', 'jobs');
+    const distJobs = path.join(workspace, 'dist', 'jobs');
     fs.mkdirSync(distJobs, { recursive: true });
     const lockPath = path.join(distJobs, 'instar.lock.json');
-    const existing = fs.existsSync(lockPath) ? fs.readFileSync(lockPath, 'utf-8') : null;
 
     const minimal = {
       instarVersion: '0.0.0-test',
@@ -109,49 +111,20 @@ describe('classify-default-drift script', () => {
     };
     fs.writeFileSync(lockPath, JSON.stringify(minimal, null, 2), 'utf-8');
 
-    try {
-      const r = run({ ANTHROPIC_API_KEY: '' });
-      expect(r.code).toBe(0);
-      const updated = JSON.parse(fs.readFileSync(lockPath, 'utf-8'));
-      expect(Array.isArray(updated.significantChanges)).toBe(true);
-      expect(updated.significantChanges).toEqual([]);
-    } finally {
-      // Restore prior lock-file content.
-      if (existing !== null) fs.writeFileSync(lockPath, existing, 'utf-8');
-      // If no prior lock-file existed, we leave the synthetic one in place.
-      // SourceTreeGuard refuses to unlink files under the instar source tree;
-      // the placeholder is harmless and gets overwritten by the next build.
-    }
+    const r = run({ ANTHROPIC_API_KEY: '' });
+    expect(r.code).toBe(0);
+    const updated = JSON.parse(fs.readFileSync(lockPath, 'utf-8'));
+    expect(Array.isArray(updated.significantChanges)).toBe(true);
+    expect(updated.significantChanges).toEqual([]);
   });
 
-  it('exits 0 with a malformed lock-file (signer-prerequisite missed); script tolerates the missing file by skipping the write', () => {
-    // The SourceTreeGuard refuses to delete files under the source tree
-    // (correctly — that's the documented safety property). Test the
-    // equivalent path by writing a placeholder lock-file we can detect
-    // wasn't modified.
-    const distJobs = path.join(REPO_ROOT, 'dist', 'jobs');
+  it('exits 0 and leaves a malformed lock-file unchanged', () => {
+    const distJobs = path.join(workspace, 'dist', 'jobs');
     fs.mkdirSync(distJobs, { recursive: true });
     const lockPath = path.join(distJobs, 'instar.lock.json');
-    const existing = fs.existsSync(lockPath) ? fs.readFileSync(lockPath, 'utf-8') : null;
-
-    // Place a minimal, non-malformed lock-file so the parse succeeds
-    // and the post-classify write either no-ops (no changes since
-    // previous tag) or appends an empty significantChanges array.
-    // The contract under test is "exit 0 regardless."
-    const minimal = {
-      instarVersion: '0.0.0-test',
-      generatedAt: '2026-05-13T19:00:00.000Z',
-      entries: [],
-      keyId: 'test-key',
-      signature: 'test-sig',
-    };
-    fs.writeFileSync(lockPath, JSON.stringify(minimal, null, 2), 'utf-8');
-
-    try {
-      const r = run({ ANTHROPIC_API_KEY: '' });
-      expect(r.code).toBe(0);
-    } finally {
-      if (existing !== null) fs.writeFileSync(lockPath, existing, 'utf-8');
-    }
+    fs.writeFileSync(lockPath, '{ malformed json', 'utf-8');
+    const r = run({ ANTHROPIC_API_KEY: '' });
+    expect(r.code).toBe(0);
+    expect(fs.readFileSync(lockPath, 'utf-8')).toBe('{ malformed json');
   });
 });

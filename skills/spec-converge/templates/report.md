@@ -4,7 +4,7 @@
 **Slug:** `{{SPEC_SLUG}}`
 **Converged at:** {{CONVERGED_AT}}
 **Iterations:** {{ITERATION_COUNT}}
-**Final-round material findings:** 0
+**Final-round design findings:** 0
 
 ---
 
@@ -47,6 +47,17 @@ Example:
 The user reads this section to understand what convergence changed.
 -->
 
+## Experience fit
+
+<!-- The mandatory lessons-aware review's Q5, including abbreviated reviews.
+Record: the attributable user goal/source; the ordinary journey and contrasting
+cases; evidence and its limits; material findings and their disposition.
+For trust/approval surfaces, assess needless repeat asks and unsupported coverage,
+semantic task scope versus authority floors, and observed versus proposed ask-load
+measurements. A no-conflict table is not proof of the intended outcome.
+If the lens or its trust portion does not apply, give a surface-specific reason.
+No invented approval quota or new constitutional obligation. -->
+
 ## Iteration Summary
 
 | Iteration | Reviewers who flagged design issues | Design findings | Precision findings | Spec sections changed |
@@ -63,14 +74,25 @@ original finding text, resolution taken.
 
 {{FINDINGS_CATALOG}}
 
+## Proportion
+
+<!-- One line: change size (tier; files/LOC or spec lines), rounds used vs the
+tier cap (3 for Tier 1, 6 for Tier 2+). Flag plainly when out of line. Signal only. -->
+
+## Left behind
+
+<!-- Every PRECISION / long-tail finding not iterated on, one line each, plus any
+design finding accepted at the cap with its reason and the queue it went to. -->
+
 ## Convergence Verdict
 
 {{CONVERGENCE_VERDICT}}
 
 <!--
-Plain statement: "Converged at iteration N. The final review round
-produced zero material findings. Spec is ready for user review and
-approval. To approve: edit the spec's frontmatter to set approved: true
-(or run `instar spec approve {{SPEC_SLUG}}`), then /instar-dev can
+Plain statement: "Converged at round N. The final review round
+found nothing that changes what gets built; M items left behind. Spec is ready to approve and
+build. To approve: the approver (the agent for its own spec; the operator only for a constitution
+or protected-list amendment, or what their recorded instructions reserve) edits the spec's
+frontmatter to set approved: true with approved-by naming who and why, then /instar-dev can
 proceed with implementation."
 -->

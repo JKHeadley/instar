@@ -153,6 +153,44 @@ describe('Threadline Relay E2E', () => {
       client1.disconnect();
       client2.disconnect();
     });
+
+    it('a displaced client reports disconnected at once and emits no follow-up plain disconnect', async () => {
+      // The relay sends `displaced`, then closes with 4001. Before the fix the
+      // close handler still saw state 'connected' and emitted a non-terminal
+      // 'disconnected' that masked the terminal event (sagemind, 2026-10-05).
+      const identity = generateIdentityKeyPair();
+      const client1 = makeClient(identity, 'owner');
+      const client2 = makeClient(identity, 'intruder');
+      await client1.connect();
+      const plainDisconnects: string[] = [];
+      client1.on('disconnected', (r: string) => plainDisconnects.push(r));
+      const displaced = new Promise<void>(resolve => client1.once('displaced', () => resolve()));
+      await client2.connect();
+      await displaced;
+      expect(client1.connectionState).toBe('disconnected');
+      await new Promise(r => setTimeout(r, 300)); // let the 4001 close arrive
+      expect(plainDisconnects).toEqual([]);
+      client1.disconnect();
+      client2.disconnect();
+    });
+
+    it('a displaced client can reclaim the connection with connect()', async () => {
+      const identity = generateIdentityKeyPair();
+      const client1 = makeClient(identity, 'owner');
+      const client2 = makeClient(identity, 'intruder');
+      await client1.connect();
+      const firstDisplaced = new Promise<void>(resolve => client1.once('displaced', () => resolve()));
+      await client2.connect();
+      await firstDisplaced;
+
+      const intruderDisplaced = new Promise<void>(resolve => client2.once('displaced', () => resolve()));
+      await client1.connect();
+      await intruderDisplaced;
+      expect(client1.connectionState).toBe('connected');
+      expect(server.connections.size).toBe(1);
+      client1.disconnect();
+      client2.disconnect();
+    });
   });
 
   // ── Discovery ─────────────────────────────────────────────────────

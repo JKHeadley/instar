@@ -26,8 +26,6 @@ describe('Hook Event Templates', () => {
         'SubagentStart',
         'SubagentStop',
         'TaskCompleted',
-        'WorktreeCreate',
-        'WorktreeRemove',
       ]);
     });
 
@@ -66,8 +64,6 @@ describe('Hook Event Templates', () => {
         'SubagentStart',
         'SubagentStop',
         'TaskCompleted',
-        'WorktreeCreate',
-        'WorktreeRemove',
       ]);
     });
 

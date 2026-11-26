@@ -22,7 +22,9 @@ import { SafeFsExecutor } from '../../src/core/SafeFsExecutor.js';
 interface Server { url: string; close: () => Promise<void>; }
 async function listen(app: express.Express): Promise<Server> {
   return new Promise((resolve) => {
-    const srv = app.listen(0, () => {
+    // Bind the address we fetch: a wildcard bind lets another process's
+    // 127.0.0.1 listener on the same port answer (a 401 under the full suite).
+    const srv = app.listen(0, '127.0.0.1', () => {
       const port = (srv.address() as AddressInfo).port;
       resolve({ url: `http://127.0.0.1:${port}`, close: () => new Promise<void>((r) => srv.close(() => r())) });
     });

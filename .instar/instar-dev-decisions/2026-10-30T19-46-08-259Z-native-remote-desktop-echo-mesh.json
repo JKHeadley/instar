@@ -1,0 +1,26 @@
+{
+  "ts": "2026-10-30T19:46:08.259Z",
+  "slug": "native-remote-desktop-echo-mesh",
+  "suggestedTier": 2,
+  "declaredTier": 2,
+  "riskFloor": 1,
+  "riskFloorReasons": [],
+  "belowFloor": false,
+  "files": 5,
+  "loc": 27,
+  "scope": {
+    "basis": "staged-in-scope-additions-plus-deletions",
+    "files": [
+      "src/commands/server.ts",
+      "src/core/WriteDomainRegistry.ts",
+      "src/scaffold/templates.ts",
+      "src/server/DesktopPeerUrlGate.ts",
+      "src/server/machineRoutes.ts"
+    ],
+    "addedLines": 23,
+    "deletedLines": 4
+  },
+  "causalAutopsy": null,
+  "classClosure": null,
+  "verdict": "pass"
+}

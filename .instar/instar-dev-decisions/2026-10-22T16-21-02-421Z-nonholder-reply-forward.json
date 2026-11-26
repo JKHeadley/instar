@@ -1,0 +1,30 @@
+{
+  "ts": "2026-10-22T16:21:02.421Z",
+  "slug": "nonholder-reply-forward",
+  "suggestedTier": 2,
+  "declaredTier": 1,
+  "riskFloor": 2,
+  "riskFloorReasons": [
+    "safety-invariant proximity: src/messaging/TelegramAdapter.ts matches Telegram adapter"
+  ],
+  "belowFloor": true,
+  "files": 3,
+  "loc": 28,
+  "scope": {
+    "basis": "staged-in-scope-additions-plus-deletions",
+    "files": [
+      "src/commands/server.ts",
+      "src/messaging/TelegramAdapter.ts",
+      "src/messaging/telegram-origin/OriginForwardToHolder.ts"
+    ],
+    "addedLines": 22,
+    "deletedLines": 6
+  },
+  "causalAutopsy": null,
+  "classClosure": {
+    "defectClass": "unbounded-self-action",
+    "closure": "n/a",
+    "reason": "one-shot user-driven action, not a self-triggered loop: the change routes an existing reply to the lease holder, guards a name probe, and makes the post-respawn notice best-effort after an operator-requested respawn; no new self-triggered controller"
+  },
+  "verdict": "pass"
+}

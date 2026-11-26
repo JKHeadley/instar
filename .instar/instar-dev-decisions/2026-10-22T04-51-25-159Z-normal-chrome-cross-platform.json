@@ -1,0 +1,37 @@
+{
+  "ts": "2026-10-22T04:51:25.159Z",
+  "slug": "normal-chrome-cross-platform",
+  "suggestedTier": 2,
+  "declaredTier": 2,
+  "riskFloor": 2,
+  "riskFloorReasons": [
+    "irreversibility: src/core/PostUpdateMigrator.ts touches PostUpdateMigrator",
+    "migration / fleet-rollout surface: src/core/PostUpdateMigrator.ts touches PostUpdateMigrator (fleet migration machinery)",
+    "new capability: new config key added"
+  ],
+  "belowFloor": false,
+  "files": 8,
+  "loc": 2125,
+  "scope": {
+    "basis": "staged-in-scope-additions-plus-deletions",
+    "files": [
+      "scripts/blocking-decision-surfaces-baseline.json",
+      "scripts/lint-blocking-decisions-declared.mjs",
+      "src/commands/init.ts",
+      "src/core/PostUpdateMigrator.ts",
+      "src/data/builtinSkillContent.ts",
+      "src/templates/scripts/browser/chrome-launch.sh",
+      "src/templates/scripts/browser/native-drive.ps1",
+      "src/templates/scripts/browser/ndrive.sh"
+    ],
+    "addedLines": 2012,
+    "deletedLines": 113
+  },
+  "causalAutopsy": null,
+  "classClosure": {
+    "defectClass": "unbounded-self-action",
+    "closure": "n/a",
+    "reason": "one-shot user-driven action, not a self-triggered loop: every ndrive.sh call is one operator-asked driver command; its probe retries are one each, its waits are bounded by ND_LOCK_WAIT/ND_BRIDGE_TIMEOUT (wall time), and nothing in it re-triggers itself across calls"
+  },
+  "verdict": "pass"
+}

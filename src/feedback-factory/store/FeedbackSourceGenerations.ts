@@ -33,6 +33,10 @@ export interface FeedbackSourceGeneration {
 const sha = (value: string | Buffer): string => createHash('sha256').update(value).digest('hex');
 const checksumPayload = (payload: ManifestPayload): string => sha(JSON.stringify(payload));
 
+const APPEND_LOCK_WAIT_MS = 3_000;
+const appendLockWait = new Int32Array(new SharedArrayBuffer(4));
+class FeedbackSourceBusyError extends Error {}
+
 /**
  * Cross-process append/compaction authority for feedback.jsonl. The tiny lock is
  * deliberately exclusive for BOTH writers and compaction: publishing a new
@@ -92,7 +96,9 @@ export class FeedbackSourceGenerations {
   }
 
   append(record: Record<string, unknown>, crashPoint?: 'before-append' | 'after-append' | 'after-append-fsync'): void {
-    for (let attempt = 0; attempt < 100; attempt++) {
+    const deadline = performance.now() + APPEND_LOCK_WAIT_MS;
+    let backoffMs = 5;
+    for (;;) {
       try {
         this.withLock(() => {
           const current = this.current();
@@ -110,8 +116,12 @@ export class FeedbackSourceGenerations {
         });
         return;
       } catch (error) {
-        if (!(error instanceof Error) || !error.message.includes('busy') || attempt === 99) throw error;
-        Atomics.wait(new Int32Array(new SharedArrayBuffer(4)), 0, 0, 5);
+        if (!(error instanceof FeedbackSourceBusyError)) throw error;
+        const remainingMs = deadline - performance.now();
+        if (remainingMs <= 0) throw error;
+        // Independent writers should not repeatedly wake on the same fixed cadence.
+        Atomics.wait(appendLockWait, 0, 0, Math.min(remainingMs, backoffMs * (0.5 + Math.random())));
+        backoffMs = Math.min(backoffMs * 2, 40);
       }
     }
   }
@@ -131,6 +141,9 @@ export class FeedbackSourceGenerations {
         latest.set(id, { row, raw });
       }
       const nextBytes = Buffer.from([...latest.values()].map(({ raw }) => raw).join('\n') + (latest.size ? '\n' : ''));
+      // A compacted generation with no superseded rows since: a new one would be a byte-identical
+      // copy (one more full file per interval). The legacy file always moves to a generation.
+      if (this.readManifest() && nextBytes.equals(bytes)) return null;
       const nextId = `feedback-${now}-${sha(nextBytes).slice(0, 12)}`;
       fs.mkdirSync(this.generationDir, { recursive: true });
       const relative = path.join('feedback-generations', `${nextId}.jsonl`);
@@ -210,7 +223,7 @@ export class FeedbackSourceGenerations {
     let fd: number;
     try { fd = this.acquireLock(); }
     catch (error) {
-      if ((error as NodeJS.ErrnoException).code === 'EEXIST') throw new Error('feedback source generation is busy; retry later');
+      if ((error as NodeJS.ErrnoException).code === 'EEXIST') throw new FeedbackSourceBusyError('feedback source generation is busy; retry later');
       throw error;
     }
     try {

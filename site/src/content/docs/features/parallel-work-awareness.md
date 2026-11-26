@@ -54,4 +54,16 @@ and graduates only after it is shown to be quiet. When on, every transition (nud
 is audited to `logs/sentinel-events.jsonl`, and a nudge surfaces to the user as a calm
 councilor heads-up.
 
+To check that the councilor is genuinely ticking, call `GET /parallel-work/sentinel`. It
+returns the live counters plus `lastTickAtIso`, `tickAgeMs` and `cadenceMinutes` (default 15),
+or 503 when the sentinel is dark on this agent. It is read-only.
+
+## Where the hands actually work: one worktree per hand
+
+The index tells an agent what its hands are doing; `instar worktree create <branch> [slug]`
+is how each hand gets its own place to do it. Every parallel build runs in its own worktree
+under the agent home (`.worktrees/<slug>`), off a fresh `main`, so two topics can change the
+same files without stepping on each other, and the activity index can name the worktree a
+topic is in. The stale-worktree reclaim keeps forgotten ones from piling up.
+
 Spec: `docs/specs/parallel-activity-coherence.md`.

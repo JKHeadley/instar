@@ -10,13 +10,65 @@ concurrency:
   cancel-in-progress: false
 
 jobs:
-  # Note: no CI gate inside this workflow. ci.yml (lint + unit [node 20+22] +
-  # build + integration + e2e) runs on the same main push and is enforced as a
-  # required status check on PRs via branch protection. Duplicating it here
-  # added ~10 min per publish with no additional safety.
+  build-desktop-host:
+    name: Build universal macOS desktop host
+    runs-on: macos-latest
+    if: "!contains(github.event.head_commit.message, '[skip ci]')"
+    permissions:
+      contents: read
+    outputs:
+      source_sha: ${{ steps.source.outputs.sha }}
+    steps:
+      - uses: actions/checkout@v4
+        with:
+          ref: main
+      - name: Pin the release source
+        id: source
+        run: echo "sha=$(git rev-parse HEAD)" >> "$GITHUB_OUTPUT"
+      - uses: actions/setup-node@v4
+        with:
+          node-version: 20
+      - name: Import macOS signing identity
+        env:
+          MACOS_SIGNING_P12_BASE64: ${{ secrets.MACOS_SIGNING_P12_BASE64 }}
+          MACOS_SIGNING_P12_PASSWORD: ${{ secrets.MACOS_SIGNING_P12_PASSWORD }}
+          MACOS_SIGNING_IDENTITY: ${{ secrets.MACOS_SIGNING_IDENTITY }}
+        run: |
+          [ -n "$MACOS_SIGNING_P12_BASE64" ] || { echo "No macOS signing identity configured; the helper stays ad-hoc signed"; exit 0; }
+          [ -n "$MACOS_SIGNING_IDENTITY" ] || { echo "MACOS_SIGNING_IDENTITY is required with the signing certificate"; exit 1; }
+          keychain="$RUNNER_TEMP/instar-signing.keychain-db"
+          password="$(openssl rand -hex 24)"
+          security create-keychain -p "$password" "$keychain"
+          security set-keychain-settings -lut 1800 "$keychain"
+          security unlock-keychain -p "$password" "$keychain"
+          echo "$MACOS_SIGNING_P12_BASE64" | base64 --decode > "$RUNNER_TEMP/instar-signing.p12"
+          security import "$RUNNER_TEMP/instar-signing.p12" -k "$keychain" -P "$MACOS_SIGNING_P12_PASSWORD" -T /usr/bin/codesign
+          rm -f "$RUNNER_TEMP/instar-signing.p12"
+          security set-key-partition-list -S apple-tool:,apple: -s -k "$password" "$keychain" >/dev/null
+          security list-keychains -d user -s "$keychain" $(security list-keychains -d user | tr -d '"')
+          echo "INSTAR_MACOS_SIGNING_IDENTITY=$MACOS_SIGNING_IDENTITY" >> "$GITHUB_ENV"
+      - run: node scripts/build-native-desktop-host.mjs --release-universal
+      - run: node scripts/check-native-desktop-release.mjs
+      - uses: actions/upload-artifact@v4
+        with:
+          name: instar-desktop-host-universal
+          path: |
+            dist/native/instar-desktop-host
+            dist/native/InstarWedgeCanary.app
+          if-no-files-found: error
+          retention-days: 7
+
+  # Note: no CI gate inside this workflow. Every pull request is tested in full by
+  # Local Verify (the agent's own test line, on Node 24) before it merges; that is
+  # the only required status check on main. ci.yml's heavy jobs (unit on Node 20
+  # and 22, integration, e2e, build) run on the same push to main as this
+  # workflow and do not gate it, so a failure that shows up only on Node 20 or 22
+  # is caught by that run after the publish has started, not before it.
+  # Duplicating the suite here added ~10 min per publish with no additional safety.
   publish:
     name: Bump & Publish
     runs-on: ubuntu-latest
+    needs: build-desktop-host
     # Skip version-bump commits to prevent infinite loop
     if: "!contains(github.event.head_commit.message, '[skip ci]')"
     permissions:
@@ -25,9 +77,8 @@ jobs:
     steps:
       - uses: actions/checkout@v4
         with:
-          # Always fetch latest HEAD, not the triggering SHA — avoids version
-          # collisions when a prior queued run already bumped the version.
-          ref: main
+          # Use the native artifact's exact source revision for the release build.
+          ref: ${{ needs.build-desktop-host.outputs.source_sha }}
           # RELEASE_TOKEN is a PAT that can bypass branch protection for version bump commits.
           # Falls back to GITHUB_TOKEN but that will fail if branch protection is enabled.
           token: ${{ secrets.RELEASE_TOKEN }}
@@ -38,8 +89,33 @@ jobs:
           cache: npm
           registry-url: 'https://registry.npmjs.org'
 
-      - run: npm ci
+      - name: Install release dependencies (up to three attempts)
+        shell: bash
+        run: |
+          for attempt in 1 2 3; do
+            if npm ci; then
+              exit 0
+            else
+              status=$?
+            fi
+            if [ "$attempt" -eq 3 ]; then
+              echo "::error::Release dependency installation failed after three attempts."
+              exit "$status"
+            fi
+            delay=$((attempt * 15))
+            echo "::warning::Release dependency installation failed (attempt $attempt/3); retrying in ${delay}s."
+            sleep "$delay"
+          done
       - run: npm run build
+      - uses: actions/download-artifact@v4
+        with:
+          name: instar-desktop-host-universal
+          path: dist/native
+      - name: Verify release includes native desktop host
+        run: |
+          chmod 0755 dist/native/instar-desktop-host dist/native/InstarWedgeCanary.app/Contents/MacOS/InstarWedgeCanary
+          node scripts/check-native-desktop-release.mjs
+          npm pack --dry-run --json --ignore-scripts | node -e 'let text=""; process.stdin.on("data", chunk => text += chunk).on("end", () => { const pack = JSON.parse(text)[0]; if (!pack.files.some(file => file.path === "dist/native/instar-desktop-host")) throw new Error("npm tarball omits native desktop host"); if (!pack.files.some(file => file.path === "dist/native/InstarWedgeCanary.app/Contents/MacOS/InstarWedgeCanary")) throw new Error("npm tarball omits the wedge canary app"); });'
 
       - name: Assemble release-note fragments
         # Release notes are authored as per-PR FRAGMENTS in upgrades/next/<slug>.md
@@ -167,7 +243,12 @@ jobs:
           # Resolution policy lives in scripts/resolve-publish-version.mjs so it
           # is unit-tested (tests/unit/resolve-publish-version.test.ts) rather
           # than buried in inline bash.
-          NEXT=$(node scripts/resolve-publish-version.mjs "$LOCAL_VERSION" "$NPM_VERSION")
+          # npm can hold a fresh publish as "staged" (invisible to npm view)
+          # for close to an hour. Every publish pushes published/vX.Y.Z the
+          # moment npm accepts it; the resolver counts those tags and vX.Y.Z
+          # as consumed so a staged version is never resolved again
+          # (fb-354bb7b5-b5d: 1.3.1868 and 1.3.1873 hit E409 this way).
+          NEXT=$(node scripts/resolve-publish-version.mjs "$LOCAL_VERSION" "$NPM_VERSION" --tags-from-remote origin)
           echo "resolved:       $NEXT"
 
           # Apply to package.json
@@ -203,6 +284,17 @@ jobs:
         env:
           NODE_AUTH_TOKEN: ${{ secrets.NPM_TOKEN }}
 
+      - name: Mark the version as consumed (published/ tag)
+        if: steps.guide-check.outputs.skip != 'true' && steps.tier-gate.outputs.skip != 'true'
+        # Pushed before the smoke wait: npm may keep the version staged for
+        # up to an hour, and a later run must not resolve the same number.
+        # Best-effort: a failed push only loses the protection, never the release.
+        env:
+          HUSKY: '0'
+        run: |
+          git tag "published/v${{ steps.bump.outputs.version }}" HEAD
+          git push origin "published/v${{ steps.bump.outputs.version }}" || echo "::warning::could not push published/v${{ steps.bump.outputs.version }}"
+
       - name: Post-publish smoke test (clean install + --version)
         if: steps.guide-check.outputs.skip != 'true' && steps.tier-gate.outputs.skip != 'true'
         run: node scripts/post-publish-smoke.mjs "${{ steps.bump.outputs.version }}"
@@ -216,21 +308,22 @@ jobs:
           git config user.email "github-actions[bot]@users.noreply.github.com"
           git add package.json package-lock.json upgrades/
           git commit -m "chore: release v${{ steps.bump.outputs.version }} [skip ci]"
-          # Push the release commit, rebasing onto any PR MERGE that landed on
-          # main while this publish was running. Publishes are already serialized
-          # against each other by the workflow `concurrency` group, but a
-          # concurrent merge (a different workflow) can still move main between
-          # our fetch and our push, rejecting it. Concurrent merges are NOT
-          # releases — they never bump npm — so the version this run resolved
-          # stays valid: a clean rebase + re-push, no version re-resolution.
-          # The common path (push succeeds first try) is unchanged; the retry
-          # only runs on a rejected push.
+          # This commit is the release cut npm actually received. Keep the tag
+          # on it even if main moves while the publish is running: a rebased
+          # commit can contain code that was NOT in the published tarball.
+          git tag "v${{ steps.bump.outputs.version }}"
+          git push origin "v${{ steps.bump.outputs.version }}"
+          # Publishes are serialized, but a PR can still move main. Retry the
+          # release commit as a fast-forward on the new main; never force-push.
           pushed=false
           for attempt in 1 2 3 4 5; do
-            if git push origin main; then pushed=true; break; fi
+            if git push origin HEAD:main; then pushed=true; break; fi
             echo "push rejected — main moved (likely a concurrent merge); rebasing and retrying (attempt ${attempt})"
             git fetch origin main
-            if ! git rebase origin/main; then
+            # A release consumes upgrades/next/*.md while a concurrent PR can
+            # add another fragment. Disable Git's directory-rename inference
+            # for this rebase so the new fragment stays in upgrades/next/.
+            if ! git -c merge.renames=false rebase origin/main; then
               echo "::error::release commit could not be rebased cleanly onto main (conflict) — aborting rather than force-pushing"
               git rebase --abort || true
               exit 1
@@ -240,7 +333,5 @@ jobs:
             echo "::error::could not push the release commit after 5 rebase-retries"
             exit 1
           fi
-          # Tag the FINAL (possibly rebased) commit and push the tag separately,
-          # so the tag always points at the commit that actually landed on main.
-          git tag "v${{ steps.bump.outputs.version }}"
-          git push origin "v${{ steps.bump.outputs.version }}"
+          # The tag remains on the published cut; the rebased main commit can
+          # include a later PR's code and release-note fragments.

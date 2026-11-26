@@ -154,6 +154,28 @@ describe('Fix #3 — receive-side accepts cooperative-handoff (transferring) rec
     expect(applied.data).toMatchObject({ reason: 'reconcile', status: 'transferring', transferTo: OWN });
   });
 
+  it('accepts an explicit status:released record (a release replicates AS a release, 2026-10-21)', () => {
+    // Before this the receive-side validator schema-rejected `status: 'released'`
+    // (only active/transferring were legal), so a release could only ever travel as
+    // a bare `reason: 'released'` row — which every peer's OwnershipApplier then
+    // materialized as active(owner) at the higher epoch (the stuck-pin bug).
+    const a = newApplier();
+    const res = a.apply(PEER, [
+      {
+        kind: 'topic-placement',
+        incarnation: 'inc-1',
+        entries: [
+          placement(1, PEER, 127648, 2),
+          { ...placement(2, PEER, 127648, 3), data: { owner: PEER, epoch: 3, reason: 'released', status: 'released', prevOwner: PEER } },
+        ],
+      },
+    ]);
+    expect(res.applied).toBe(2);
+    expect(res.invalidEntries).toBe(0);
+    expect(a.getStreamStatus()[`${PEER}.topic-placement`]).toBe('current');
+    expect(readReplicaEntries(PEER, 'topic-placement')[1].data).toMatchObject({ reason: 'released', status: 'released' });
+  });
+
   it('accepts an explicit status:active record and an optional drainInFlight flag', () => {
     const a = newApplier();
     const res = a.apply(PEER, [

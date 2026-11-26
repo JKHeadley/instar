@@ -1,0 +1,24 @@
+{
+  "version": 2,
+  "slug": "transfer-drain-close-refused",
+  "sessionId": "37678437-a720-4594-ab10-56fab9bb5ff9",
+  "timestamp": "2026-10-23T17:00:29.751Z",
+  "artifactPath": "upgrades/side-effects/transfer-drain-close-refused.md",
+  "artifactSha256": "1eb59f4bc4f1913303366a4c2f07482e5263bb430a9d676dfc182780497424d3",
+  "coveredFiles": [
+    "src/commands/server.ts",
+    "src/core/SessionDrainRunner.ts",
+    "src/core/SessionManager.ts",
+    "src/server/routes.ts",
+    "tests/integration/pool-placement-transfer-routes.test.ts",
+    "tests/unit/SessionDrainRunner.test.ts",
+    "tests/unit/session-manager-terminate.test.ts"
+  ],
+  "phase": "complete",
+  "tier": 1,
+  "tierReasoning": "Small (~180 LOC, 7 files), fully reverted by one revert; no new blocking authority, no migration, no persisted state. Lifts two terminate refusals only for the runtime-private drain flag.",
+  "eli16Path": "upgrades/transfer-drain-close-refused.eli16.md",
+  "sideEffectsPath": "upgrades/side-effects/transfer-drain-close-refused.md",
+  "secondPass": "true",
+  "reviewerConcurred": true
+}

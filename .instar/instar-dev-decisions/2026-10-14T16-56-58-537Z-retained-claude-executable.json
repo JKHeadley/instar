@@ -1,0 +1,37 @@
+{
+  "ts": "2026-10-14T16:56:58.537Z",
+  "slug": "retained-claude-executable",
+  "suggestedTier": 2,
+  "declaredTier": 1,
+  "riskFloor": 2,
+  "riskFloorReasons": [
+    "irreversibility: src/core/PostUpdateMigrator.ts touches PostUpdateMigrator",
+    "migration / fleet-rollout surface: src/core/PostUpdateMigrator.ts touches PostUpdateMigrator (fleet migration machinery)",
+    "new capability: new route (router.<verb>() added",
+    "new capability: new exported class / subsystem added",
+    "new capability: new config key added"
+  ],
+  "belowFloor": true,
+  "files": 7,
+  "loc": 734,
+  "scope": {
+    "basis": "staged-in-scope-additions-plus-deletions",
+    "files": [
+      "src/core/ClaudeBinaryRetainer.ts",
+      "src/core/Config.ts",
+      "src/core/PostUpdateMigrator.ts",
+      "src/core/SessionManager.ts",
+      "src/core/types.ts",
+      "src/scaffold/templates.ts",
+      "src/server/routes.ts"
+    ],
+    "addedLines": 729,
+    "deletedLines": 5
+  },
+  "causalAutopsy": {
+    "origin": "environment-shift",
+    "notes": "Claude Code npm updates replace claude.exe in place; macOS EndpointSecurity path lookups on the unlinked executable of a still-running session leak kernel memory (data.kalloc.1024). Not a prior instar PR; the environment (installer + kernel) made every long-lived spawn a leak."
+  },
+  "classClosure": null,
+  "verdict": "pass"
+}

@@ -1,0 +1,23 @@
+{
+  "ts": "2026-09-22T19:58:27.776Z",
+  "slug": "jev-job-completion-audit",
+  "suggestedTier": 1,
+  "declaredTier": 1,
+  "riskFloor": 1,
+  "riskFloorReasons": [],
+  "belowFloor": false,
+  "files": 2,
+  "loc": 20,
+  "scope": {
+    "basis": "staged-in-scope-additions-plus-deletions",
+    "files": [
+      "src/scheduler/InstallBuiltinJobs.ts",
+      "src/scheduler/buildPerSlugManifest.ts"
+    ],
+    "addedLines": 20,
+    "deletedLines": 0
+  },
+  "causalAutopsy": null,
+  "classClosure": null,
+  "verdict": "blocked"
+}

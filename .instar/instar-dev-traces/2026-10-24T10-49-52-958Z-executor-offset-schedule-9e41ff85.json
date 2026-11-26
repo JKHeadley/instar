@@ -1,0 +1,19 @@
+{
+  "version": 2,
+  "slug": "executor-offset-schedule",
+  "sessionId": "7f2a8220-744b-4650-af3f-bfd06ec29ea8",
+  "timestamp": "2026-10-24T10:49:52.958Z",
+  "artifactPath": "upgrades/side-effects/executor-offset-schedule.md",
+  "artifactSha256": "a0e09ba0ca43cff3de5c7ef72f752536b5b7d8e6074d9d92e4b4371634abb548",
+  "coveredFiles": [
+    "src/scaffold/templates/jobs/instar/feedback-factory-execute.md",
+    "tests/unit/feedback-triage-job-templates.test.ts"
+  ],
+  "phase": "complete",
+  "tier": 1,
+  "tierReasoning": "Changes one built-in job's cron minutes; cadence, gates and limits unchanged.",
+  "eli16Path": "docs/specs/executor-offset-schedule.eli16.md",
+  "sideEffectsPath": "upgrades/side-effects/executor-offset-schedule.md",
+  "secondPass": "not-required",
+  "reviewerConcurred": null
+}

@@ -1,0 +1,26 @@
+{
+  "ts": "2026-10-21T17:44:12.809Z",
+  "slug": "commitment-checkinat-writer",
+  "suggestedTier": 2,
+  "declaredTier": 1,
+  "riskFloor": 1,
+  "riskFloorReasons": [],
+  "belowFloor": false,
+  "files": 2,
+  "loc": 48,
+  "scope": {
+    "basis": "staged-in-scope-additions-plus-deletions",
+    "files": [
+      "src/monitoring/CommitmentTracker.ts",
+      "src/server/routes.ts"
+    ],
+    "addedLines": 48,
+    "deletedLines": 0
+  },
+  "causalAutopsy": {
+    "origin": "latent",
+    "notes": "Latent since ACT-724 shipped the dated-reminder feature. The Commitment interface declared checkInAt with an unusually careful comment explaining why it must NOT be nextUpdateDueAt, four readers were written against it, and a reconciler was built to act on it — but CommitmentTracker.record()'s input type never declared it, so no caller could set it. The gap survived because every surface that would have exposed it reported a number that looked correct: GET /commitments/check-in-reminder answered datedCount: 0, which reads as 'no dated promises yet' rather than 'dated promises are impossible'. Same shape as the /health frozen-counter finding the same morning: the instrument could not distinguish an empty set from an unreachable mechanism. Surfaced only because I tried to USE the feature to make an 08:00 promise survive my session ending."
+  },
+  "classClosure": null,
+  "verdict": "pass"
+}

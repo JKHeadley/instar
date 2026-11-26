@@ -1,0 +1,44 @@
+{
+  "version": 2,
+  "slug": "mobile-native-chat-media-inc1",
+  "sessionId": "03f51762-938f-4d63-ba6d-eb28aeb6941b",
+  "timestamp": "2026-11-02T07:46:25.292Z",
+  "artifactPath": "upgrades/side-effects/mobile-native-chat-media-inc1.md",
+  "artifactSha256": "81606e003738688cd50e641d45a1ab3fbbe9a508dcd0de3fcf391c0f947d7b67",
+  "specPath": "docs/specs/mobile-native-chat-media.md",
+  "coveredFiles": [
+    "scripts/blocking-decision-surfaces-baseline.json",
+    "src/core/AppMediaStore.ts",
+    "src/core/PostUpdateMigrator.ts",
+    "src/core/appInboundDispatch.ts",
+    "src/core/appMediaReplyFiles.ts",
+    "src/core/appMediaTypes.ts",
+    "src/server/mobileConversationRoutes.ts",
+    "src/server/mobileMediaRoutes.ts",
+    "src/server/routes.ts",
+    "src/templates/scripts/app-reply.sh",
+    "tests/e2e/mobile-native-media-alive.test.ts",
+    "tests/integration/mobile-native-media.test.ts",
+    "tests/unit/PostUpdateMigrator-appMedia.test.ts",
+    "tests/unit/app-media-reply-files.test.ts",
+    "tests/unit/app-media-store.test.ts",
+    "tests/unit/app-media-types.test.ts",
+    "tests/unit/app-reply-script-files.test.ts",
+    "tests/unit/feature-delivery-completeness.test.ts",
+    "upgrades/side-effects/mobile-native-chat-media-inc1.md"
+  ],
+  "phase": "complete",
+  "tier": 2,
+  "tierReasoning": "Second-pass review fixes to the media increment: data-loss guard on purge, conditional upload completion, quarantine override, exact inline allowlist, file-name checks. Same Tier-2 surface as the feature.",
+  "secondPass": "false",
+  "reviewerConcurred": null,
+  "classClosure": {
+    "defectClass": "unbounded-self-action",
+    "closure": "guard",
+    "guardEvidence": {
+      "enforcementType": "ratchet",
+      "citation": "tests/unit/self-action-convergence.test.ts",
+      "howCaught": "app-media-capacity-notice: under a store that stays full forever the notice is raised once per episode; the raisedNotices latch refuses every later raise and only the condition clearing re-arms it, so the action count is 1 at any horizon."
+    }
+  }
+}

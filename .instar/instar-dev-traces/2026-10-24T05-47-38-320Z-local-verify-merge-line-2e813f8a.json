@@ -1,0 +1,43 @@
+{
+  "version": 2,
+  "slug": "local-verify-merge-line",
+  "sessionId": "d1a5c848-7625-4a9b-81ca-acb529a7d4c2",
+  "timestamp": "2026-10-24T05:47:38.320Z",
+  "artifactPath": "upgrades/side-effects/local-verify-merge-line.md",
+  "artifactSha256": "4b19ba506ccb07033d80aad7e34f86b237ea462283888374940222cfcf5f094c",
+  "specPath": "docs/specs/local-verify-merge-authority.md",
+  "coveredFiles": [
+    "docs/specs/local-verify-merge-authority.eli16.md",
+    "docs/specs/local-verify-merge-authority.md",
+    "src/commands/server.ts",
+    "src/core/PostUpdateMigrator.ts",
+    "src/localVerify/LocalVerifyService.ts",
+    "src/localVerify/StatusReconciler.ts",
+    "src/localVerify/localVerifyWiring.ts",
+    "src/monitoring/GreenPrAutoMerger.ts",
+    "src/scaffold/templates.ts",
+    "src/testing/selfActionRegistry.ts",
+    "tests/e2e/local-verify-lifecycle.test.ts",
+    "tests/integration/local-verify-routes.test.ts",
+    "tests/unit/green-pr-local-floor.test.ts",
+    "tests/unit/localVerify/LocalVerifyService.test.ts",
+    "tests/unit/localVerify/mergeLineWiring.test.ts",
+    "upgrades/next/local-verify-merge-line.md",
+    "upgrades/side-effects/local-verify-merge-line.md"
+  ],
+  "phase": "complete",
+  "tier": 2,
+  "tierReasoning": "Changes the merge authority path: the verifier's queue order and start inputs, and the watcher's merge selection and single-flight release; a hand-off merges a PR immediately through the existing gates.",
+  "secondPass": "true",
+  "reviewerConcurred": true,
+  "classClosure": {
+    "defectClass": "unbounded-self-action",
+    "closure": "guard",
+    "guardEvidence": {
+      "enforcementType": "ratchet",
+      "citation": "tests/unit/self-action-convergence.test.ts",
+      "howCaught": "the merge hand-off is one offer per green record (decideMergeHandoff; registry controller local-verify-merge-handoff, K=3 per 40 ticks, per-target 1); the hold is time-bounded (MERGE_LINE.handoffMaxMs) and the watcher's merge attempts stay under its episode ladder and breaker"
+    },
+    "component": "LocalVerifyService"
+  }
+}

@@ -1,0 +1,24 @@
+{
+  "version": 2,
+  "slug": "verifyfix-says-why",
+  "sessionId": "55e0f463-f29d-4d85-9f19-92a6a4d10aad",
+  "timestamp": "2026-10-25T19:09:49.505Z",
+  "artifactPath": "upgrades/side-effects/verifyfix-says-why.md",
+  "artifactSha256": "0443210c8da52c9ecb552c08b575e623ad01908e8d15596eee677dcf8d7e5378",
+  "coveredFiles": [
+    "docs/specs/verifyfix-says-why.eli16.md",
+    "src/feedback-factory/execute/FeedbackExecutorService.ts",
+    "src/feedback-factory/execute/confinementCanary.ts",
+    "src/feedback-factory/execute/executePolicy.ts",
+    "tests/unit/feedback-factory/execute-service.test.ts",
+    "upgrades/next/verifyfix-says-why.md",
+    "upgrades/side-effects/verifyfix-says-why.md"
+  ],
+  "phase": "complete",
+  "tier": 1,
+  "tierReasoning": "Observability on four existing failure paths plus one bounded-tail helper extracted so the canary and the real check runs share it instead of drifting (the exact defect class a reviewer caught in the predecessor). The four verdicts are byte-identical; the record is written after the decision, on the failure branch only, best-effort so it cannot mask the failure it describes. One additive meta row, no migration, revert fully undoes it. Design reasoning was settled across three adversarial rounds on the canary capture this mirrors, and the shared helper means its guards cover this path too.",
+  "eli16Path": "docs/specs/verifyfix-says-why.eli16.md",
+  "sideEffectsPath": "upgrades/side-effects/verifyfix-says-why.md",
+  "secondPass": "not-required",
+  "reviewerConcurred": null
+}

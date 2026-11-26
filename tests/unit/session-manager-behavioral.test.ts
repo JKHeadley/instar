@@ -20,12 +20,27 @@ import { SafeFsExecutor } from '../../src/core/SafeFsExecutor.js';
 
 // Track mock tmux sessions at module scope so the mock and tests share state
 const mockTmuxSessions = new Set<string>();
+// What a mocked `codex --version` prints (the older-CLI model fallback reads it).
+let mockCodexVersion = 'codex-cli 0.169.0';
 
 // Mock child_process to avoid needing real tmux
-vi.mock('node:child_process', () => {
+vi.mock('node:child_process', async () => {
+  const { EventEmitter } = await import('node:events');
   return {
+    // The Codex version probe (codexCapabilities.refreshCodexCliVersion).
+    spawn: vi.fn().mockImplementation((_cmd: string, args?: string[]) => {
+      const child = new EventEmitter() as EventEmitter & { stdout: EventEmitter; kill: () => boolean };
+      child.stdout = new EventEmitter();
+      child.kill = () => true;
+      setImmediate(() => {
+        if (args?.[0] === '--version') child.stdout.emit('data', Buffer.from(mockCodexVersion));
+        child.emit('close', 0);
+      });
+      return child;
+    }),
     execFileSync: vi.fn().mockImplementation((_cmd: string, args?: string[]) => {
       if (!args) return '';
+      if (args[0] === '--version') return mockCodexVersion;
 
       // tmux has-session
       if (args[0] === 'has-session') {
@@ -69,6 +84,11 @@ vi.mock('node:child_process', () => {
         if (typeof _opts === 'function') {
           cb = _opts as (err: Error | null, result: { stdout: string }) => void;
         }
+        if (args[0] === '--version') {
+          // Node's execFile callback receives stdout as the second argument.
+          if (cb) (cb as unknown as (err: Error | null, stdout: string) => void)(null, mockCodexVersion);
+          return;
+        }
         if (args[0] === 'has-session') {
           const target = args[2]?.replace(/^=/, '');
           if (!mockTmuxSessions.has(target)) {
@@ -91,6 +111,7 @@ vi.mock('node:child_process', () => {
 // Import after mock
 import { execFileSync } from 'node:child_process';
 import { SessionManager } from '../../src/core/SessionManager.js';
+import { __resetCodexCapabilityCache } from '../../src/core/codexCapabilities.js';
 import { StateManager } from '../../src/core/StateManager.js';
 import type { SessionManagerConfig, Session } from '../../src/core/types.js';
 import { resolveFrameworkTranscriptPath } from '../../src/core/FrameworkSessionStore.js';
@@ -192,6 +213,20 @@ describe('SessionManager behavioral tests', () => {
       expect(args).toContain('INSTAR_SENDER_CLASS=llm-session');
     });
 
+    // Spec feedback-inbox-vault-token §B: a job run gets its own declared-failure file.
+    it('a job spawn carries INSTAR_JOB_FAILURE_FILE named by its tmux session; a non-job spawn does not', async () => {
+      vi.mocked(execFileSync).mockClear();
+      const session = await manager.spawnSession({ name: 'fail-file-job', prompt: 'p', jobSlug: 'feedback-factory-process' });
+      const failArg = newSessionArgs().find((a) => typeof a === 'string' && a.startsWith('INSTAR_JOB_FAILURE_FILE='));
+      expect(failArg).toBeDefined();
+      expect(failArg).toMatch(/[\\/]state[\\/]job-declared-failures[\\/]/);
+      expect(failArg!.endsWith(`${session.tmuxSession}.txt`)).toBe(true);
+
+      vi.mocked(execFileSync).mockClear();
+      await manager.spawnSession({ name: 'fail-file-plain', prompt: 'p' });
+      expect(newSessionArgs().some((a) => typeof a === 'string' && a.startsWith('INSTAR_JOB_FAILURE_FILE='))).toBe(false);
+    });
+
     it('an interactive (jobSlug-less) spawn carries NONE of the kind env vars', async () => {
       vi.mocked(execFileSync).mockClear();
       await manager.spawnSession({ name: 'kindless-job', prompt: 'p' });
@@ -225,6 +260,83 @@ describe('SessionManager behavioral tests', () => {
       expect(session.framework).toBe('claude-code');
     });
 
+    it.each([
+      ['codex-cli', undefined, 'gpt-6-astra'],
+      ['claude-code', undefined, 'opus'],
+      ['codex-cli', 'gpt-6-luna', 'gpt-6-luna'],
+      ['codex-cli', 'balanced', 'gpt-6.2-sol'],
+      ['codex-cli', 'capable', 'gpt-6.2-astra'],
+    ] as const)('uses the saved default only for omitted models: %s / %s', async (framework, model, expected) => {
+      config.frameworkDefaultModels = { 'codex-cli': 'gpt-6-astra', 'claude-code': 'opus' };
+      vi.mocked(execFileSync).mockClear();
+      const session = await manager.spawnSession({ name: 'default-model', prompt: 'Do work', framework, model });
+      const argv = newSessionArgs();
+      const modelFlag = framework === 'codex-cli' ? '-m' : '--model';
+      expect(argv.slice(argv.indexOf(modelFlag), argv.indexOf(modelFlag) + 2)).toEqual([modelFlag, expected]);
+      expect(session.model).toBe(expected);
+      expect(state.getSession(session.id)?.model).toBe(expected);
+    });
+
+    it('uses the configured framework when the spawn omits framework and model', async () => {
+      config.framework = 'codex-cli';
+      config.frameworkDefaultModels = { 'codex-cli': 'gpt-6-astra', 'claude-code': 'opus' };
+      vi.mocked(execFileSync).mockClear();
+      const session = await manager.spawnSession({ name: 'configured-default', prompt: 'Do work' });
+      const argv = newSessionArgs();
+      expect(argv.slice(argv.indexOf('-m'), argv.indexOf('-m') + 2)).toEqual(['-m', 'gpt-6-astra']);
+      expect(session.framework).toBe('codex-cli');
+      expect(state.getSession(session.id)?.model).toBe('gpt-6-astra');
+    });
+
+    it('preserves launcher defaults when the selected framework has no saved model', async () => {
+      config.frameworkDefaultModels = { 'claude-code': 'opus' };
+      vi.mocked(execFileSync).mockClear();
+      const session = await manager.spawnSession({ name: 'no-default-model', prompt: 'Do work', framework: 'codex-cli' });
+      const argv = newSessionArgs();
+      expect(argv.slice(argv.indexOf('-m'), argv.indexOf('-m') + 2)).toEqual(['-m', 'gpt-6.2-sol']);
+      expect(session.model).toBeUndefined();
+    });
+
+    describe('older Codex CLI (below 0.166.0) takes the previous GPT-6 model', () => {
+      afterEach(() => { mockCodexVersion = 'codex-cli 0.169.0'; __resetCodexCapabilityCache(); });
+      it.each([
+        [undefined, 'gpt-6-sol'],          // tier default balanced -> gpt-6.2-sol -> fallback
+        ['balanced', 'gpt-6-sol'],
+        ['capable', 'gpt-6-astra'],
+        ['gpt-6.2-astra', 'gpt-6-astra'],
+        ['gpt-6.1-sol', 'gpt-6-sol'],
+        ['gpt-6-luna', 'gpt-6-luna'],      // no fallback needed
+      ] as const)('model %s launches as %s on CLI 0.165.0', async (model, expected) => {
+        mockCodexVersion = 'codex-cli 0.165.0';
+        __resetCodexCapabilityCache();
+        config.frameworkDefaultModels = {};
+        vi.mocked(execFileSync).mockClear();
+        await manager.spawnSession({ name: `old-cli-${model ?? 'unset'}`, prompt: 'Do work', framework: 'codex-cli', model });
+        const argv = newSessionArgs();
+        expect(argv.slice(argv.indexOf('-m'), argv.indexOf('-m') + 2)).toEqual(['-m', expected]);
+      });
+
+      it('a local-provider launch is never given a cloud model id, even on an old CLI', async () => {
+        mockCodexVersion = 'codex-cli 0.165.0';
+        __resetCodexCapabilityCache();
+        config.frameworkDefaultModels = {};
+        vi.mocked(execFileSync).mockClear();
+        await manager.spawnSession({ name: 'old-cli-local', prompt: 'Do work', framework: 'codex-cli', codexLocalProvider: 'ollama' });
+        const argv = newSessionArgs();
+        expect(argv.some((a) => /^gpt-/.test(a))).toBe(false);
+      });
+
+      it('an unreadable CLI version also takes the older model (session launches have no retry)', async () => {
+        mockCodexVersion = 'unknown';
+        __resetCodexCapabilityCache();
+        config.frameworkDefaultModels = {};
+        vi.mocked(execFileSync).mockClear();
+        await manager.spawnSession({ name: 'unknown-cli', prompt: 'Do work', framework: 'codex-cli', model: 'capable' });
+        const argv = newSessionArgs();
+        expect(argv.slice(argv.indexOf('-m'), argv.indexOf('-m') + 2)).toEqual(['-m', 'gpt-6-astra']);
+      });
+    });
+
     it('records the framework-RESOLVED model for a Codex session (not the raw tier)', async () => {
       // Regression for the dashboard model-badge gap: a Codex agent's session
       // showed "haiku"/"sonnet" (Claude tier aliases). It must store the real
@@ -237,13 +349,23 @@ describe('SessionManager behavioral tests', () => {
       });
 
       expect(session.framework).toBe('codex-cli');
-      expect(session.model).toBe('gpt-5.6-sol'); // haiku → light → gpt-5.6-sol on Codex (gpt-5.4-mini retired from ChatGPT-account Codex 2026-09-09)
+      expect(session.model).toBe('gpt-6-luna'); // haiku → light → gpt-6-luna on Codex (since 2026-09-23)
       // And it must NOT leak the Claude tier alias onto a Codex session.
       expect(session.model).not.toBe('haiku');
 
       const saved = state.getSession(session.id);
-      expect(saved!.model).toBe('gpt-5.6-sol');
+      expect(saved!.model).toBe('gpt-6-luna');
       expect(saved!.framework).toBe('codex-cli');
+    });
+
+    it('records the actual Codex launch model after a model swap', async () => {
+      vi.spyOn(manager as unknown as { resolveCodexLaunchModel: (framework: string, model?: string) => Promise<string | undefined> },
+        'resolveCodexLaunchModel').mockResolvedValue('gpt-6-sol');
+      const session = await manager.spawnSession({
+        name: 'codex-swapped-job', prompt: 'Do work', model: 'gpt-6-luna', framework: 'codex-cli',
+      });
+      expect(session.model).toBe('gpt-6-sol');
+      expect(state.getSession(session.id)?.model).toBe('gpt-6-sol');
     });
 
     it('includes jobSlug and triggeredBy when provided', async () => {
@@ -545,8 +667,8 @@ describe('SessionManager behavioral tests', () => {
  *
  * The method resolves the REAL per-framework transcript path (it does not take a
  * home/root override — that override exists only for the resolver's own tests),
- * so this test writes the fixture at the resolved path (a uniquely-named encoded
- * subfolder keyed on a unique tmpDir + UUID — no collision) and removes it after.
+ * so this test supplies a temporary session config home and writes the
+ * fixture at the same resolved path production reads, then removes it after.
  */
 describe('SessionManager.isTranscriptRecentlyActive', () => {
   const SESSION_UUID = 'eeeeeeee-1111-4000-8000-aaaaaaaaaaaa';
@@ -573,6 +695,7 @@ describe('SessionManager.isTranscriptRecentlyActive', () => {
       framework: 'claude-code',
       sessionId: SESSION_UUID,
       projectDir: tmpDir,
+      configHome: tmpDir,
     });
     expect(p).not.toBe('');
     fs.mkdirSync(path.dirname(p), { recursive: true });
@@ -596,11 +719,13 @@ describe('SessionManager.isTranscriptRecentlyActive', () => {
       framework: 'claude-code',
     };
     sm = new SessionManager(config, new StateManager(stateDir));
+    vi.spyOn(sm, 'configHomeForSession').mockReturnValue(tmpDir);
     writtenPath = null;
     mockTmuxSessions.clear();
   });
 
   afterEach(() => {
+    vi.restoreAllMocks();
     // Remove the fixture transcript + its unique encoded parent dir.
     const op = 'tests/unit/session-manager-behavioral.test.ts: isTranscriptRecentlyActive fixture cleanup';
     try {

@@ -1,0 +1,24 @@
+{
+  "ts": "2026-10-25T22:47:42.738Z",
+  "slug": "trustworthy-machine-load-p1",
+  "suggestedTier": 1,
+  "declaredTier": 2,
+  "riskFloor": 1,
+  "riskFloorReasons": [],
+  "belowFloor": false,
+  "files": 3,
+  "loc": 26,
+  "scope": {
+    "basis": "staged-in-scope-additions-plus-deletions",
+    "files": [
+      "src/commands/server.ts",
+      "src/core/machineLoadReport.ts",
+      "src/data/stageBCertifiedSet.ts"
+    ],
+    "addedLines": 19,
+    "deletedLines": 7
+  },
+  "causalAutopsy": null,
+  "classClosure": null,
+  "verdict": "blocked"
+}

@@ -33,6 +33,19 @@ export function meaningfulTail(text: string, n: number): string {
 }
 
 /**
+ * The last `n` NON-BLANK rows of `text`, joined. Unlike `meaningfulTail`, interior blank
+ * rows do not count toward `n`. Live 2026-10-19 (Mac Studio, session echo-canary-perm-prompt):
+ * Claude Code drew a blocking menu, 17 blank rows, then one status line at the pane bottom
+ * ("✻ Waiting for API response · will retry in 2m 40s"). A 5-row tail was four blanks plus that
+ * status line and a 16-row tail was fifteen blanks plus it, so the permission-prompt resolver
+ * never saw the menu and the session wedged in silence. An all-blank input returns ''.
+ */
+export function meaningfulNonBlankTail(text: string, n: number): string {
+  const rows = text.split('\n').filter((row) => row.trim() !== '');
+  return rows.slice(-n).join('\n');
+}
+
+/**
  * Extract the last completed Gemini assistant block from a live TUI pane.
  *
  * Gemini renders final prose as a block beginning with `✦`, then returns to an

@@ -1,0 +1,18 @@
+{
+  "version": 2,
+  "slug": "session-pool-activation-at-pairing",
+  "sessionId": "8892a2e9-ead6-4b97-98f0-ebda62082062",
+  "timestamp": "2026-11-05T06:15:57.619Z",
+  "artifactPath": "upgrades/side-effects/session-pool-activation-at-pairing.md",
+  "artifactSha256": "a60267c0ddf7aad0360252154d8dc520edb3b8bc8cc760917799863bc33812f7",
+  "specPath": "docs/specs/session-pool-activation-at-pairing.md",
+  "coveredFiles": [
+    "src/core/sessionPoolPairActivation.ts",
+    "tests/unit/inbound-queue-boot-order.test.ts",
+    "tests/unit/session-pool-activation-wiring.test.ts",
+    "tests/unit/session-pool-pair-activation.test.ts"
+  ],
+  "phase": "complete",
+  "secondPass": "not-required",
+  "reviewerConcurred": null
+}

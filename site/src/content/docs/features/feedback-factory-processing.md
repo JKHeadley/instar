@@ -24,6 +24,13 @@ deliberately enabled.
 - **The `feedback-factory-process` job** — a built-in `supervision: tier1` job on a recurring
   schedule that calls the process trigger and validates the pass against the post-pass stats.
   It ships `enabled: false` (fleet-dark) and is installed for every agent on update.
+- **The `feedback-factory-triage` job** — every 15 minutes it triggers one
+  `POST /feedback-factory/triage/tick`: the operator-approved triage authority decides
+  work / hold / ignore for feedback work items within deterministic floors. Inert until
+  the operator approves that authority; development-agent live, fleet dark.
+- **The `feedback-factory-action-list` job** — once a day it triggers
+  `POST /feedback-factory/triage/action-list`, which sends the operator only new items
+  that need them, each with a direct link, outside the 23:00–07:30 quiet window.
 
 ## Operating drain and readiness API
 
@@ -44,14 +51,101 @@ routes expose the bounded operator and agent surfaces:
   of agents allowed to make readiness decisions; this is an operator-rooted action.
 - **`POST /feedback-factory/readiness/hold`** and **`POST /feedback-factory/readiness/release`** —
   apply or clear integrity holds under their deterministic and operator authority rules.
+- **`GET /feedback-factory/consumer/promotion/proposal`** — the exact batch an operator would
+  approve: up to the per-run claim cap (at most 50) of queued work items in claim order, each
+  with id, title, priority and report count, plus a `proposalSetHash`. Non-pending answers name
+  the state (`configured-simulation`, `already-live`, `no-work`, `non-owner`, `restore`,
+  `unavailable`); `localAction` is true only on the canonical owner with a pending batch.
 - **`POST /feedback-factory/consumer/promote`** and **`POST /feedback-factory/consumer/revoke`** —
-  switch a proposal-set-bound consumer batch between simulation and live handoff.
+  switch a proposal-set-bound consumer batch between simulation and live handoff. Promote needs
+  the operator PIN, `evidenceHash` set to the proposal's `proposalSetHash`, and its
+  `approvedBatchBound`. The server re-derives the batch immediately before the write and
+  refuses a stale or invented hash. The approved items are claimed first, and while any of
+  them is still untried (including one that is held), no other work is claimed. If an approved
+  item is held, revoke and approve the fresh proposal to continue. After that
+  the promotion stays on, and each run claims at most `approvedBatchBound` items until revoked.
+  A record made before this check (not bound to an approved set) never turns the consumer
+  live and must be approved again.
 
 Development agents construct the drain by default while fleet agents remain dark. Work
 creation starts in simulation. Readiness decisions come from a registered frontier-model
 Instar agent under deterministic safety floors; human approval is reserved for escalation
 and break-glass cases. Every accepted work item has a stable key, so retries, crashes, and
 concurrent ticks converge on one Initiative link.
+
+## Triage and executor API
+
+Use these authenticated routes to inspect the path from a ready work item to a reviewed fix. Reads show the current canonical owner's state. Mutation routes also require their own intent, owner and approval checks; a successful read never grants permission to change a decision.
+
+| Route | Purpose |
+|---|---|
+| `GET /feedback-factory/readiness-authorities/proposal` | Preview a bounded readiness authority and any approval blockers. |
+| `GET /feedback-factory/triage/queue` | See ranked work items, priorities and execution states. |
+| `GET /feedback-factory/triage/summary` | See disposition counts, authority health and recent triage results. |
+| `GET /feedback-factory/triage/authority/proposal` | Preview the triage model authority and its blockers. |
+| `POST /feedback-factory/triage/authority` | Create, replace, revoke or restore the approved triage authority. |
+| `POST /feedback-factory/triage/plan` | Prepare a reviewable plan for live ignores, approver acceptance or publication of a held secret-shaped change. |
+| `POST /feedback-factory/triage/commit` | Apply one PIN-approved plan after its nonce and intent checks pass. |
+| `GET /feedback-factory/execute/status` | See executor availability, admission, attempts and recent tick results. |
+| `POST /feedback-factory/execute/stop` | Stop one Initiative's attempts and disarm any armed PR. |
+| `POST /feedback-factory/execute/revoke-acceptance` | Withdraw the recorded approver-dependence acceptance. |
+| `POST /feedback-factory/execute/release` | Return a parked Initiative to triage. |
+| `POST /feedback-factory/execute/canary-retry` | End the canary wait; the sandbox check must still pass on the next attempt. |
+
+## Which component owns each stage
+
+These components have distinct responsibilities when tracing a report from intake to a
+reviewed fix. The names below are useful when a stage is stalled: the upstream stage can
+be healthy while the next stage is paused or at capacity.
+
+| Component | Responsibility |
+|---|---|
+| `FeedbackManager` | Stores an agent's submitted feedback locally and forwards it to the configured canonical webhook with agent and version identification. |
+| `FeedbackAnomalyDetector` | Applies per-agent burst, interval, and daily submission limits at intake using pseudonyms; its counters reset on server restart. |
+| `InboxDrainer` | Brings durable incoming reports into the canonical local store, deduplicating by feedback ID. |
+| `FeedbackProcessingService` | Reloads that store and runs a bounded clustering pass. |
+| `FeedbackDrainService` | Advances operated readiness work through bounded owner-run ticks. |
+| `FeedbackReadinessArbiter` | Gets the registered model's readiness decision within the approved floors. |
+| `FeedbackDrainStore` | Persists work, owner fences, authority and call accounting across restarts. |
+| `FeedbackDrainTickProxy` | Forwards a non-owner's tick request to the canonical owner. |
+| `FeedbackInitiativeConsumer` | Hands accepted work to its linked Initiative. |
+| `FeedbackConsumerPromotionStore` | Records which consumer proposal set may hand off live work. |
+| `FeedbackDrainBackupCadence` | Schedules and records backups for the operated drain. |
+| `FeedbackTriageStore` | Holds triage decisions separately from report and cluster state. |
+| `FeedbackTriageArbiter` | Calls the registered model and checks the response contract. |
+| `FeedbackTriageService` | Runs the triage tick, applies decisions and quota pauses. |
+| `TriageOrigin` | Binds the producer and observed session author to Telegram messages sent by triage automation. |
+| `FeedbackExecutorService` | Starts bounded confined fix attempts and reconciles open PRs through review and merge. |
+
+Triage account selection must bind a verified subscription and a fresh quota reading to
+the model call before `FeedbackTriageArbiter` can return a disposition. A paused sorter
+does not imply that intake or clustering stopped; check each stage's status separately.
+
+## Capacity and queue diagnostics
+
+The feedback pipeline also depends on shared account, model, and queue services. These
+names identify the code responsible for each observation when a stage stops advancing:
+
+| Component | What to inspect |
+|---|---|
+| `SubscriptionPoolAuthority` | Whether a subscription pool record is valid and can be trusted. |
+| `SubscriptionLoginLedger` | The durable record of login and refresh outcomes. |
+| `SubscriptionReloginStore` | State held while a subscription login needs repair. |
+| `SubscriptionReloginService` | The supervised repair path for a subscription login. |
+| `IntelligenceRouter` | Which provider a component's model call actually uses. |
+| `SpawnCapIntelligenceProvider` | The per-call host capacity bound before a model process starts. |
+| `QueuePace` | The measured arrival and completion rates, and the resulting pace verdict. |
+| `QueuePaceAdapters` | How each queue's raw events become bounded pace observations. |
+| `QueuePaceLedger` | Durable cursors and evaluations for those observations. |
+| `QueuePaceTuner` | Optional extra triage ticks, subject to fresh quota and owner checks. |
+| `AutonomousThroughputFloor` | Whether autonomous work produced actual deliverables during its window. |
+| `CiFailurePoller` | CI failures that keep a fix PR from being accepted. |
+| `GreenPrAutoMerger` | The normal green-PR merge path; executor PRs have their own review path. |
+
+A healthy intake count only proves reports arrived. For an end-to-end pace claim, inspect
+the triage decisions, reviewed fixes merged, and their rate against new high-priority work.
+The [delivery checks](./feedback-delivery-checks/) show where to look when a report or fix
+is waiting between those stages.
 
 ## How it is gated
 

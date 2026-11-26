@@ -1,0 +1,5 @@
+# Dashboard without the PIN on your phone — plain English
+
+When you open the dashboard from the Instar iPhone app, the app has already checked your Face ID, but the dashboard still asked for its PIN. Now the phone proves it is you instead. It holds a second key in its secure chip that only works right after Face ID or your passcode. The app uses it to get a pass from the agent that works once, only for one minute, and only at the address it was issued for. The dashboard trades that pass for exactly what the PIN would have given it, and nothing more: approving or changing something important still asks for the PIN.
+
+A phone you have removed gets no pass, and a pass it got just before removal is refused. A copied request is useless because every pass needs a fresh challenge that the agent forgets after one use or a restart. The pass never appears in a web address, and the dashboard on the phone now keeps nothing on disk, which also clears an old sign-in an earlier PIN left there. Helpers' phones and phones without a passcode still see the PIN box, and whenever anything fails the dashboard simply shows the PIN box as before.

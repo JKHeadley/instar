@@ -53,7 +53,7 @@ describe('independent application outage-notice authority', () => {
   it('bounds a stalled secret worker while leaving the event loop responsive', async () => {
     const h = await harness(undefined, true);
     await expectReady(h);
-    const blocked = new OriginConfigReader(h.stateDir, new URL('data:text/javascript,import { parentPort } from "node:worker_threads"; parentPort.on("message", () => {});'));
+    const blocked = new OriginConfigReader(h.stateDir, new URL('data:text/javascript,import { parentPort } from "node:worker_threads"; parentPort.on("message", () => {});'), 500);
     readers.push(blocked);
     let responsive = false;
     const timer = setTimeout(() => { responsive = true; }, 20);

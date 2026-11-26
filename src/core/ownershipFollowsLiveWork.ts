@@ -17,6 +17,7 @@
 
 import { randomUUID } from 'node:crypto';
 import type { SessionOwnershipRecord } from './SessionOwnership.js';
+import { featureEvidence } from '../monitoring/FeatureEvidenceLog.js';
 
 /**
  * FD10 — the SINGLE nonce source for the three new ownership-CAS callsites (Part A
@@ -79,10 +80,23 @@ export function shouldReleaseOnComplete(p: {
   return true;
 }
 
+/**
+ * What a claim-on-spawn attempt actually did — returned by the server-side
+ * closure so the `POST /sessions/spawn` route can report it (never a silent
+ * unowned spawn). `dark` = flag off / single-machine; `lost` = a peer advanced
+ * the epoch first (the reconciler converges); `owned-elsewhere` = a peer owns
+ * it and the claim was withheld (FD3); `in-flight` = another path is mid-way
+ * through placing or transferring the topic ONTO this machine (no CAS — that
+ * path lands its own claim); `error` = registry unreadable or threw;
+ * `unwired` = the server never built the claim (no pool block).
+ */
+export type ClaimOnSpawnOutcome = 'claimed' | 'already-owned' | 'in-flight' | 'owned-elsewhere' | 'lost' | 'dark' | 'error' | 'unwired';
+
 /** Part B claim plan — the ordered CAS steps the autonomous spawn should perform. */
 export type ClaimOnSpawnPlan =
   | { action: 'place-then-claim' } // never-seen / released → place then claim onto self
   | { action: 'noop' } // already ours (active+self) → nothing to do
+  | { action: 'in-flight' } // placing@self or transferring→self: another path is landing it here
   | { action: 'audit-owned-elsewhere'; owner: string | null; status: string }; // peer-owned → withhold + audit
 
 /**
@@ -101,6 +115,87 @@ export function planClaimOnSpawn(p: {
   const rec = p.record;
   if (!rec || rec.status === 'released') return { action: 'place-then-claim' };
   if (rec.status === 'active' && rec.ownerMachineId === p.selfMachineId) return { action: 'noop' };
+  // Mid-way onto THIS machine (route() placed but has not claimed yet, or a
+  // transfer names self as the target): that path lands its own claim. Not
+  // "owned elsewhere" — and never a competing claim from here.
+  if (rec.status === 'placing' && rec.ownerMachineId === p.selfMachineId) return { action: 'in-flight' };
+  if (rec.status === 'transferring' && rec.transferTo === p.selfMachineId) return { action: 'in-flight' };
   // active/transferring/placing owned by a PEER → never force-claim.
   return { action: 'audit-owned-elsewhere', owner: rec.ownerMachineId ?? null, status: rec.status };
+}
+
+/**
+ * Part B — the claim-on-spawn ACTION, single-sourced so the two callers (the
+ * autonomous-respawn path and `POST /sessions/spawn`) cannot drift, and so the
+ * CAS + emitPlacement pairing is unit-testable against a real registry.
+ *
+ * 2026-11-03 (topic 10000001485): `POST /sessions/spawn` with a topicId bound
+ * the session locally but never called this, so the pool saw the topic as
+ * unowned and a peer's router placed the user's next message on itself —
+ * a second live copy of the conversation.
+ *
+ * Best-effort and fail-closed: a throw returns 'error' and never undoes the
+ * spawn; a peer-owned topic is never force-claimed (one audit row instead).
+ */
+export interface ClaimOnSpawnDeps {
+  enabled: boolean;
+  selfMachineId: string | null;
+  ownReg: {
+    read(sessionKey: string): SessionOwnershipRecord | null;
+    cas(
+      action: { type: 'place' | 'claim'; machineId: string },
+      ctx: { sessionKey: string; sender: string; nonce: string },
+    ): { ok: boolean };
+  };
+  emitPlacement(sessionKey: string, r: { ok: boolean }, reason: 'placed', prevOwner?: string): void;
+  auditOwnedElsewhere?(row: { topicId: number; owner: string | null; status: string }): void;
+}
+
+export function createClaimOwnershipOnSpawn(deps: ClaimOnSpawnDeps): (topicId: number) => ClaimOnSpawnOutcome {
+  return (topicId: number): ClaimOnSpawnOutcome => {
+    try {
+      const self = deps.selfMachineId;
+      if (!deps.enabled || !self) return 'dark'; // single-machine / dark = no-op
+      const { ownReg, emitPlacement } = deps;
+      const sk = String(topicId);
+      let cur: SessionOwnershipRecord | null;
+      try { cur = ownReg.read(sk); } catch {
+        featureEvidence.record('multiMachine.ownershipFollowsLiveWork', { kind: 'error', reason: 'claim-on-spawn: ownership registry unreadable', context: { topicId, part: 'claim-on-spawn' } });
+        return 'error'; /* @silent-fallback-ok — registry unreadable → withhold (fail-closed) */
+      }
+      const plan = planClaimOnSpawn({ enabled: deps.enabled, selfMachineId: self, record: cur });
+      if (plan.action === 'noop') return 'already-owned';
+      if (plan.action === 'in-flight') return 'in-flight';
+      if (plan.action === 'place-then-claim') {
+        const prev0 = cur?.ownerMachineId;
+        const rp = ownReg.cas(
+          { type: 'place', machineId: self },
+          { sessionKey: sk, sender: self, nonce: ownershipNonce(self, 'auto-place', sk) },
+        );
+        emitPlacement(sk, rp, 'placed', prev0);
+        if (!rp.ok) {
+          featureEvidence.record('multiMachine.ownershipFollowsLiveWork', { kind: 'error', reason: 'claim-on-spawn: place compare-and-set refused', context: { topicId, part: 'claim-on-spawn', step: 'place', prevOwner: prev0 ?? null, prevStatus: cur?.status ?? null } });
+          return 'lost'; // a peer advanced first → the reconciler converges (FD11)
+        }
+        const rc = ownReg.cas(
+          { type: 'claim', machineId: self },
+          { sessionKey: sk, sender: self, nonce: ownershipNonce(self, 'auto-claim', sk) },
+        );
+        emitPlacement(sk, rc, 'placed', self);
+        featureEvidence.record('multiMachine.ownershipFollowsLiveWork', rc.ok
+          ? { kind: 'fired', reason: 'claim-on-spawn: ownership claimed for the live session', context: { topicId, part: 'claim-on-spawn', prevOwner: prev0 ?? null, prevStatus: cur?.status ?? null } }
+          : { kind: 'error', reason: 'claim-on-spawn: claim compare-and-set refused', context: { topicId, part: 'claim-on-spawn', step: 'claim', prevOwner: prev0 ?? null, prevStatus: cur?.status ?? null } });
+        return rc.ok ? 'claimed' : 'lost';
+      }
+      // Owned by a PEER → never force-claim (FD3); one neutral audit row.
+      featureEvidence.record('multiMachine.ownershipFollowsLiveWork', { kind: 'held', reason: 'claim-on-spawn: topic owned by a peer, claim withheld', context: { topicId, part: 'claim-on-spawn', owner: plan.owner, status: plan.status } });
+      try { deps.auditOwnedElsewhere?.({ topicId, owner: plan.owner, status: plan.status }); } catch { /* @silent-fallback-ok — observational audit; never break the spawn */ }
+      return 'owned-elsewhere';
+    } catch {
+      // @silent-fallback-ok — best-effort (FD1/FD11): reported as 'error'; a throw
+      // must never undo the successful spawn.
+      featureEvidence.record('multiMachine.ownershipFollowsLiveWork', { kind: 'error', reason: 'claim-on-spawn: threw', context: { topicId, part: 'claim-on-spawn' } });
+      return 'error';
+    }
+  };
 }

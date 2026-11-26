@@ -22,6 +22,7 @@
  */
 
 import { EventEmitter } from 'node:events';
+import { featureEvidence } from './FeatureEvidenceLog.js';
 import { matchMcpSignature, type McpProcessSignature } from './mcpProcessSignatures.js';
 import { mergeDefaults } from '../core/mergeDefaults.js';
 
@@ -173,6 +174,8 @@ export class McpProcessReaper extends EventEmitter {
   private running = false;
   private lastPassAt = 0;
   private reapedLastPass = 0;
+  /** A pass writes evidence when its outcome differs from the last pass, or on a real kill. */
+  private lastPassEvidence: string | null = null;
 
   constructor(deps: McpProcessReaperDeps, cfg?: Partial<McpProcessReaperConfig>) {
     super();
@@ -226,6 +229,11 @@ export class McpProcessReaper extends EventEmitter {
         liveSessions = this.deps.getLiveSessions();
         instarSessions = this.deps.getInstarSessions();
       } catch (err) {
+        featureEvidence.recordAtMostEvery('monitoring.mcpProcessReaper', 'list-failed', 3_600_000, {
+          kind: 'error',
+          reason: 'process-listing-failed',
+          context: { errorName: err instanceof Error ? err.name : 'unknown', dryRun: !this.killsEnabled },
+        });
         this.emit('error', err);
         return { ts: this.now(), evaluations: [], reaped: [], dryRun: !this.killsEnabled };
       }
@@ -261,8 +269,32 @@ export class McpProcessReaper extends EventEmitter {
           this.writeAudit({ ts: this.now(), type: 'reaped', pid: proc.pid, signatureId: proc.signatureId, ageMs: proc.elapsedMs, owningSession: evaln.owningSession, reason: evaln.reason, dryRun: false });
           this.emit('reaped', proc);
         } catch (err) {
+          featureEvidence.record('monitoring.mcpProcessReaper', {
+            kind: 'error',
+            reason: 'kill-failed',
+            context: { signatureId: proc.signatureId, ageMs: proc.elapsedMs, verdictReason: evaln.reason, errorName: err instanceof Error ? err.name : 'unknown' },
+          });
           this.emit('error', err);
         }
+      }
+      const eligible = evaluations.filter((e) => e.verdict === 'reap-eligible');
+      const passContext = {
+        scanned: evaluations.length,
+        eligible: eligible.length,
+        reaped: reaped.length,
+        orphaned: eligible.filter((e) => e.reason === 'orphaned-no-session').length,
+        keptLive: evaluations.filter((e) => e.reason === 'session-live').length,
+        evalErrors: evaluations.filter((e) => e.reason === 'eval-error').length,
+        dryRun: !this.killsEnabled,
+      };
+      const passEvidence = JSON.stringify(passContext);
+      if (reaped.length > 0 || passEvidence !== this.lastPassEvidence) {
+        this.lastPassEvidence = passEvidence;
+        featureEvidence.record('monitoring.mcpProcessReaper', {
+          kind: eligible.length > 0 ? 'fired' : 'held',
+          reason: reaped.length > 0 ? 'reaped' : eligible.length > 0 ? 'would-reap' : 'nothing-eligible',
+          context: passContext,
+        });
       }
       this.lastPassAt = this.now();
       this.reapedLastPass = reaped.length;

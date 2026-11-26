@@ -186,7 +186,37 @@ export interface LeaseHandbackDeps {
   now?: () => number;
   monotonicNow?: () => number;
   logger?: (msg: string) => void;
+  /** CMT-1119: durable per-run record sink (the wiring appends it to
+   *  logs/lease-handback.jsonl). Called only while the feature is enabled, on
+   *  every state change, on each significant event, and at most once per
+   *  `heartbeatRecordMs` otherwise — so a dry-run soak leaves dated evidence
+   *  even on a machine that never needs to hand back (e.g. self-is-preferred). */
+  record?: (row: LeaseHandbackRunRecord) => void;
+  /** Heartbeat record cadence while the state is unchanged (default 1h). */
+  heartbeatRecordMs?: number;
 }
+
+export interface LeaseHandbackRunRecord {
+  at: string;
+  kind: 'transition' | 'heartbeat' | 'event';
+  event?: string;
+  state: LeaseHandbackStatus['state'];
+  prevState?: LeaseHandbackStatus['state'];
+  dryRun: boolean;
+  self: string | null;
+  preferred: string | null;
+  lastEpisode: LeaseHandbackStatus['lastEpisode'];
+  counters: Record<string, number>;
+}
+
+/** Events that are durable-record-worthy on their own (not per-tick noise
+ *  like 'deferral', which fires every tick while waiting for a quiet moment). */
+const RECORDED_EVENTS: ReadonlySet<string> = new Set([
+  'offer', 'claim', 'step-down', 'failure', 'canary-verify-ok', 'canary-verify-fail',
+  'episode-cap-trip', 'ceiling-relaxation', 'would-hand-back',
+]);
+
+export const HANDBACK_HEARTBEAT_RECORD_MS = 3_600_000;
 
 export interface LeaseHandbackStatus {
   enabled: boolean;
@@ -241,6 +271,9 @@ export class LeaseHandbackReconciler {
   private state: LeaseHandbackStatus['state'] = 'inactive';
   private wouldHandbackLogged = false;
   private readonly counters: Record<string, number> = {};
+  /** Wall-clock of the last observe() (guard runtime proof of life). */
+  private lastObserveWall = 0;
+  private lastRecordWall = 0;
 
   constructor(deps: LeaseHandbackDeps) {
     this.d = deps;
@@ -259,6 +292,29 @@ export class LeaseHandbackReconciler {
   private metric(event: Parameters<HandbackMetricSink>[0]): void {
     this.counters[event] = (this.counters[event] ?? 0) + 1;
     try { this.d.metric(event); } catch { /* @silent-fallback-ok — a metrics-sink fault must never gate the lease decision (the in-memory counter above already recorded it) */ }
+    if (RECORDED_EVENTS.has(event)) this.writeRecord('event', undefined, event);
+  }
+
+  private writeRecord(kind: LeaseHandbackRunRecord['kind'], prevState?: LeaseHandbackStatus['state'], event?: string): void {
+    if (!this.d.record) return;
+    try {
+      const cfg = this.d.config();
+      if (!cfg.enabled) return;
+      const nowWall = this.now();
+      this.lastRecordWall = nowWall;
+      this.d.record({
+        at: new Date(nowWall).toISOString(),
+        kind,
+        ...(event ? { event } : {}),
+        state: this.state,
+        ...(prevState !== undefined ? { prevState } : {}),
+        dryRun: cfg.dryRun,
+        self: this.d.selfMachineId(),
+        preferred: this.d.preferredAwakeMachineId(),
+        lastEpisode: this.lastEpisode,
+        counters: { ...this.counters },
+      });
+    } catch { /* @silent-fallback-ok — a record-sink fault must never gate the lease decision (observability only) */ }
   }
 
   private resetWindow(reason: 'unhealthy' | 'role-change' | 'suppressed'): void {
@@ -286,6 +342,23 @@ export class LeaseHandbackReconciler {
    * latch. Every gate fails toward HOLDING.
    */
   observe(): void {
+    const prevState = this.state;
+    this.lastObserveWall = this.now();
+    this.observeInner();
+    if (this.state !== prevState) {
+      this.writeRecord('transition', prevState);
+    } else if (this.lastObserveWall - this.lastRecordWall >= (this.d.heartbeatRecordMs ?? HANDBACK_HEARTBEAT_RECORD_MS)) {
+      this.writeRecord('heartbeat');
+    }
+  }
+
+  /** GET /guards runtime getter: lastTickAt is the last real observation. */
+  guardStatus(): { enabled: boolean; dryRun: boolean; lastTickAt: number } {
+    const cfg = this.d.config();
+    return { enabled: cfg.enabled, dryRun: cfg.dryRun, lastTickAt: this.lastObserveWall };
+  }
+
+  private observeInner(): void {
     const cfg = this.d.config();
     if (!cfg.enabled) {
       this.state = 'inactive';
@@ -309,9 +382,9 @@ export class LeaseHandbackReconciler {
       // the step-down landed — count the flip + close the episode.
       if (this.lastOfferAccepted) {
         this.lastOfferAccepted = false;
+        this.lastEpisode = { at: new Date(this.now()).toISOString(), outcome: 'handed-back', target: preferred };
         this.metric('step-down');
         try { this.d.recordChurnFlip(); } catch { /* breaker feed is best-effort */ }
-        this.lastEpisode = { at: new Date(this.now()).toISOString(), outcome: 'handed-back', target: preferred };
         this.episodeEvents.push({ atMono: this.mono(), kind: 'handback' });
         this.state = 'handed-back';
         this.log(`hand-back to ${preferred} completed (higher epoch observed — stepped down)`);
@@ -443,9 +516,10 @@ export class LeaseHandbackReconciler {
     if (cfg.dryRun) {
       if (!this.wouldHandbackLogged) {
         this.wouldHandbackLogged = true;
+        // Episode first so the durable 'would-hand-back' record carries it.
+        this.lastEpisode = { at: new Date(nowWall).toISOString(), outcome: 'would-hand-back (dry-run)', target: preferred };
         this.metric('would-hand-back');
         this.log(`DRY-RUN would hand back the lease to ${preferred} at a clean boundary`);
-        this.lastEpisode = { at: new Date(nowWall).toISOString(), outcome: 'would-hand-back (dry-run)', target: preferred };
       }
       return;
     }
@@ -454,8 +528,8 @@ export class LeaseHandbackReconciler {
     if (!token) return; // not actually holding / mint refused — hold
     this.offerInFlight = true;
     this.episodeEvents.push({ atMono: nowMono, kind: 'offer' });
-    this.metric('offer');
     this.lastEpisode = { at: new Date(nowWall).toISOString(), outcome: 'offer-sent', target: preferred };
+    this.metric('offer');
     void this.d
       .sendOffer(preferred, { proposedEpoch: this.d.currentEpoch() + 1, consentToken: token, expiresAt: token.expiresAt })
       .then((resp) => {
@@ -463,19 +537,19 @@ export class LeaseHandbackReconciler {
         const monoNow = this.mono();
         if (resp === 'accept') {
           this.lastOfferAccepted = true;
-          this.metric('claim');
           this.lastEpisode = { at: new Date(this.now()).toISOString(), outcome: 'offer-accepted (claim pending)', target: preferred };
+          this.metric('claim');
           this.log(`hand-back offer accepted by ${preferred} — awaiting its fenced claim (holder keeps holding until the higher epoch lands)`);
           // The step-down is observed on a later tick via holdsLease() —
           // claim-before-release; a silent claim leaves us holding.
           this.nextOfferAtMono = monoNow + HANDBACK_CONSENT_TTL_MS * 2;
           return;
         }
+        this.lastEpisode = { at: new Date(this.now()).toISOString(), outcome: resp, target: preferred };
         this.metric('failure');
         this.offerFailures++;
         // Widening backoff on decline/timeout (R-r2-3).
         this.nextOfferAtMono = monoNow + Math.min(6, this.offerFailures) * 5 * 60_000;
-        this.lastEpisode = { at: new Date(this.now()).toISOString(), outcome: resp, target: preferred };
         if (resp === 'declined:legacy-peer') {
           // Version skew: peer-cannot-hand-back — STOP re-offering for the
           // episode (degrade to today's sticky behavior).

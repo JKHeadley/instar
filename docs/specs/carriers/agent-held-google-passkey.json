@@ -1,0 +1,12 @@
+{
+  "generatedAt": "2026-09-23T04:51:51.217Z",
+  "slug": "agent-held-google-passkey",
+  "carriers": {
+    "CMT-544": {
+      "status": "pending",
+      "owner": "agent",
+      "blockedOn": "none",
+      "excerpt": "Confirmed: spec -> converge review -> build/test -> PR (operator approval) -> release -> fleet deploy, replacing standalone scripts; checkpoint messages at each stage"
+    }
+  }
+}

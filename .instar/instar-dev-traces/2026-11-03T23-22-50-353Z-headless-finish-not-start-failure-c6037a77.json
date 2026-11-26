@@ -1,0 +1,20 @@
+{
+  "version": 2,
+  "slug": "headless-finish-not-start-failure",
+  "sessionId": "69e02116-7a51-4709-aee8-ec7bcc7ed7b9",
+  "timestamp": "2026-11-03T23:22:50.353Z",
+  "artifactPath": "upgrades/side-effects/headless-finish-not-start-failure.md",
+  "artifactSha256": "c9de85af5a1f2815a5c160077f280f0186ab0a51841ac9a32b22d26a781a6c8f",
+  "coveredFiles": [
+    "src/core/SessionManager.ts",
+    "tests/unit/session-manager-is-session-alive-async-tristate.test.ts",
+    "upgrades/side-effects/headless-finish-not-start-failure.md"
+  ],
+  "phase": "complete",
+  "tier": 1,
+  "tierReasoning": "Narrow classification fix in the self-exit branch: removes false startup-death labels for headless one-shots; a revert fully undoes it",
+  "eli16Path": "docs/specs/headless-finish-not-start-failure.eli16.md",
+  "sideEffectsPath": "upgrades/side-effects/headless-finish-not-start-failure.md",
+  "secondPass": "not-required",
+  "reviewerConcurred": null
+}

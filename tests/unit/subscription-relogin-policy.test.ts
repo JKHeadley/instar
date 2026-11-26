@@ -43,6 +43,27 @@ describe('evaluateSubscriptionReloginAdmission', () => {
     }))).toEqual({ admitted: false, reason: 'source-episode-closed' });
   });
 
+  it('refuses a device-limit bench on the pool record before reading the ledger cause (codex-device-limit-tripwire §4)', () => {
+    const benched = { ...valid().account, statusCause: 'codex-device-limit' };
+    // Even with an actionable, corroborated, directly observed source cause the bench wins.
+    expect(evaluateSubscriptionReloginAdmission(valid({ account: benched })))
+      .toEqual({ admitted: false, reason: 'device-limit-benched' });
+    // And it is checked before the source-episode and cause checks.
+    expect(evaluateSubscriptionReloginAdmission(valid({ account: benched,
+      sourceEpisode: { ...valid().sourceEpisode, closedAt: '2026-08-28T01:00:00Z', causeClass: 'refresh-read-failed' } })))
+      .toEqual({ admitted: false, reason: 'device-limit-benched' });
+    // But after the needs-reauth check: a restored account reports that, not the bench.
+    expect(evaluateSubscriptionReloginAdmission(valid({ account: { ...benched, status: 'active' } })))
+      .toEqual({ admitted: false, reason: 'account-not-needs-reauth' });
+  });
+
+  it('admits as before when statusCause is absent, null or another cause', () => {
+    for (const statusCause of [undefined, null, 'cli-login-expired-observed', 'codex-device-limit-suspected', '']) {
+      expect(evaluateSubscriptionReloginAdmission(valid({ account: { ...valid().account, statusCause } })))
+        .toMatchObject({ admitted: true });
+    }
+  });
+
   it.each([
     ['credential-absent-or-unreadable'], ['credential-missing-oauth-block'],
     ['credential-token-shape-invalid'], ['unparseable-credential-blob'],
@@ -114,6 +135,17 @@ describe('evaluateSubscriptionReloginAdmission', () => {
         minimumSuccessfulRepairs: 0, minimumEvidenceDays: 0 },
     }));
     expect(unsafeHistory).toMatchObject({ admitted: true, mode: 'approval', unattendedHeld: true });
+
+    // Spec relogin-unattended-agent-session-and-slow-retry: a helper-reported hard line since the
+    // last success, or a nearly empty backup-code entry, holds the repair at approval.
+    const floor = { explicitlyEnabled: true, successfulRepairs: 0, evidenceDays: 0, identityMismatches: 0,
+      unexpectedOrigins: 0, minimumSuccessfulRepairs: 0, minimumEvidenceDays: 0 };
+    expect(evaluateSubscriptionReloginAdmission(valid({ configuredMode: 'unattended',
+      unattended: { ...floor, helperHardLines: 1 } }))).toMatchObject({ mode: 'approval', unattendedHeld: true });
+    expect(evaluateSubscriptionReloginAdmission(valid({ configuredMode: 'unattended',
+      unattended: { ...floor, backupCodesLow: true } }))).toMatchObject({ mode: 'approval', unattendedHeld: true });
+    expect(evaluateSubscriptionReloginAdmission(valid({ configuredMode: 'unattended',
+      unattended: { ...floor, helperHardLines: 0, backupCodesLow: false } }))).toMatchObject({ mode: 'unattended', unattendedHeld: false });
   });
 
   it('binds the approval digest to every action-authority coordinate', () => {

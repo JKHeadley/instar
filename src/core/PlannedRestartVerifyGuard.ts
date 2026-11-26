@@ -1,0 +1,297 @@
+/**
+ * Cross-process guard for planned server restarts while Local Verify owns a
+ * full-suite child. Both consumers read the same durable in-flight marker;
+ * a deferred request gets a bounded machine-local proof sidecar, and a run whose
+ * child has exited but whose marker is still present gets a short settle window
+ * (see EXIT_SETTLE_RESTART_HOLD_MS).
+ */
+import fs from 'node:fs';
+import path from 'node:path';
+import crypto from 'node:crypto';
+import { SafeFsExecutor } from './SafeFsExecutor.js';
+
+export const VERIFY_RESTART_HOLD_MS = 3 * 60 * 60_000;
+// Keep the request deliverable for one additional hour after the maximum hold.
+// A consumer that wakes at the boundary must restart, not discard maintenance.
+export const PLANNED_RESTART_DELIVERY_MS = VERIFY_RESTART_HOLD_MS + 60 * 60_000;
+const PRE_SPAWN_HOLD_MS = 30_000;
+const FUTURE_CLOCK_SKEW_MS = 5_000;
+/**
+ * How long a planned restart keeps waiting after the run child's pid is gone while the in-flight
+ * marker is still there. The server acts only when its event loop handles the child's exit; then,
+ * in one uninterrupted step, it writes the `settling` merge hold, clears the in-flight marker and
+ * records the result. The window covers the time until that step starts (the marker goes at the
+ * start of the step, and the settling hold is already on disk when it does). Measured gaps were
+ * well under a second, but a restart consumer
+ * that polled inside one saw a dead pid, took the restart, and a finished 39.6-minute run was
+ * thrown away (2026-11-19 01:18Z). 60 seconds is generous for that work on a busy event loop,
+ * and it is the bound that stops a marker left behind by a server that died from holding a
+ * restart: the window is counted from the moment a consumer first sees the pid gone, never
+ * renewed, and it ends at once when the marker is cleared.
+ */
+export const EXIT_SETTLE_RESTART_HOLD_MS = 60_000;
+/**
+ * An accepted peer attempt holds until sentAt + this: the peer run ceiling (PEER_LIMITS.maxRunMs,
+ * 60 min) plus one poll to import. It was 21 min, from an audit in which runs took 13 min; runs
+ * grew to 22-25 min and the hold then expired one to four minutes before the result was imported
+ * (2026-11-15, PR 3198: 22 peer-minutes lost). This bound is only the backstop for a peer that
+ * answers polls but never finishes; a run that ends, a quiet peer (two polls) and a stale
+ * heartbeat (90 s) each release the hold long before it. A unit test keeps it at or above the
+ * run ceiling so the two cannot drift apart again.
+ */
+export const PEER_RESTART_HOLD_MS = 61 * 60_000;
+/** The verifier ticks every 30 s; three missed ticks means it is not speaking for its attempts. */
+export const PEER_HOLD_HEARTBEAT_MAX_AGE_MS = 90_000;
+
+export interface PlannedRestartFlag {
+  requestedAt?: string;
+  plannedRestart?: boolean;
+  /** Explicit operator forceRestart already bypasses the updater's own holds. */
+  bypassHolds?: boolean;
+  expiresAt?: string;
+}
+
+export interface PlannedRestartVerifyState {
+  pending: boolean;
+  pendingSinceMs: number | null;
+  hold: boolean;
+  holdUntilMs: number | null;
+  /** This exact request actually waited for a verify and remains deliverable. */
+  deferredDelivery?: boolean;
+}
+
+const deferredMarkerPath = (stateDir: string) => path.join(stateDir, 'state', 'restart-local-verify-deferred.json');
+export const peerHoldPath = (stateDir: string) => path.join(stateDir, 'state', 'local-verify', 'peer-hold.json');
+/**
+ * A green run's merge is in progress. `settling` covers the moment between the run child exiting
+ * and the hand-off being offered; `handoff` covers the watcher's merge attempt itself.
+ */
+export const mergeHoldPath = (stateDir: string) => path.join(stateDir, 'state', 'local-verify', 'merge-hold.json');
+export const MERGE_SETTLE_RESTART_HOLD_MS = 60_000;
+export const MERGE_HANDOFF_RESTART_HOLD_MS = 10 * 60_000;
+/**
+ * "The pid of this run was first seen gone at T." Written by whichever restart consumer sees it
+ * first (the lifeline's supervisor and the server's own watcher are separate processes, so the
+ * moment has to live in a file, not in memory), keyed by the run's attempt token so it never
+ * applies to another run.
+ */
+export const exitSeenPath = (stateDir: string) => path.join(stateDir, 'state', 'local-verify', 'inflight-exit-seen.json');
+const requestKey = (request: PlannedRestartFlag) => crypto.createHash('sha256').update(JSON.stringify(request)).digest('hex');
+
+function processExists(pid: number): boolean {
+  try {
+    process.kill(pid, 0);
+    return true;
+  } catch (error) {
+    // @silent-fallback-ok — ESRCH releases; EPERM/unknown preserves only the bounded hold.
+    // EPERM means a live process we cannot signal. An unknown probe failure
+    // also errs toward a bounded hold, never an unbounded one.
+    return (error as NodeJS.ErrnoException).code !== 'ESRCH';
+  }
+}
+
+/**
+ * The decision on a caller-read request. It never consumes the request. Its one write is the
+ * exit-seen marker, the first time a planned (not bypassed) request finds the run's pid gone
+ * with the in-flight marker still present.
+ */
+export function plannedRestartVerifyState(
+  stateDir: string,
+  request: PlannedRestartFlag | null,
+  now: number = Date.now(),
+  pidExists: (pid: number) => boolean = processExists,
+): PlannedRestartVerifyState {
+  if (!request || typeof request !== 'object' || request.plannedRestart !== true) return { pending: false, pendingSinceMs: null, hold: false, holdUntilMs: null };
+  const requestedAt = typeof request.requestedAt === 'string' ? Date.parse(request.requestedAt) : Number.NaN;
+  const pendingSinceMs = Number.isFinite(requestedAt) && requestedAt <= now + FUTURE_CLOCK_SKEW_MS ? requestedAt : null;
+  const fallback = { pending: true, pendingSinceMs, hold: false, holdUntilMs: null };
+  if (request.bypassHolds === true) return fallback;
+  // Both the request and the child marker must be recent. Otherwise a stale
+  // request could keep deferring behind a succession of fresh children.
+  if (pendingSinceMs === null || now - pendingSinceMs >= VERIFY_RESTART_HOLD_MS) return fallback;
+  const localUntil = localVerifyHoldUntil(stateDir, now, pidExists);
+  const peerUntil = peerAttemptHoldUntil(stateDir, now);
+  const mergeUntil = mergeHandoffHoldUntil(stateDir, now);
+  const afterRunUntil = peerUntil === null ? mergeUntil : mergeUntil === null ? peerUntil : Math.max(peerUntil, mergeUntil);
+  if (localUntil === null && afterRunUntil === null) return fallback;
+  // A local child alone keeps its own bound. Once a peer attempt or a merge in progress is
+  // involved the later bound wins, and neither reaches past the request's own three-hour ceiling.
+  const holdUntilMs = afterRunUntil === null
+    ? localUntil!
+    : Math.min(Math.max(localUntil ?? 0, afterRunUntil), pendingSinceMs + VERIFY_RESTART_HOLD_MS);
+  return { pending: true, pendingSinceMs, hold: true, holdUntilMs };
+}
+
+/**
+ * When a local verify run stops holding a restart; null = no hold. A live child holds until
+ * startedAt + 3 h. A child that is gone while its marker is still present holds for the settle
+ * window, so the server can record the result and write the merge hold that takes over.
+ */
+function localVerifyHoldUntil(stateDir: string, now: number, pidExists: (pid: number) => boolean): number | null {
+  let marker: Record<string, unknown>;
+  try {
+    marker = JSON.parse(fs.readFileSync(path.join(stateDir, 'state', 'local-verify', 'inflight.json'), 'utf8')) as Record<string, unknown>;
+  } catch {
+    // @silent-fallback-ok — no readable in-flight marker means no live-run hold.
+    return null;
+  }
+  if (!marker || typeof marker !== 'object') return null;
+  const startedAt = marker.startedAt;
+  if (typeof startedAt !== 'number' || !Number.isFinite(startedAt) || startedAt > now + FUTURE_CLOCK_SKEW_MS) return null;
+  const age = Math.max(0, now - startedAt);
+  if (age >= VERIFY_RESTART_HOLD_MS || typeof marker.attemptToken !== 'string' || !marker.attemptToken) return null;
+  const pid = marker.pid;
+  const bound = startedAt + VERIFY_RESTART_HOLD_MS;
+  if (pid === null) return age < PRE_SPAWN_HOLD_MS ? bound : null;
+  if (typeof pid !== 'number' || !Number.isSafeInteger(pid) || pid <= 0) return null;
+  if (pidExists(pid)) return bound;
+  const settleUntil = exitSettleHoldUntil(stateDir, marker.attemptToken, now);
+  return settleUntil === null ? null : Math.min(settleUntil, bound);
+}
+
+/**
+ * The end of the settle window for a run whose pid is gone; null = the window is over (or could
+ * not be bounded). The first sighting is written to a file both consumers read. A sighting that
+ * cannot be written never holds: an unrecorded window would start again at every poll.
+ */
+function exitSettleHoldUntil(stateDir: string, attemptToken: string, now: number): number | null {
+  try {
+    const seen = JSON.parse(fs.readFileSync(exitSeenPath(stateDir), 'utf8')) as { v?: unknown; attemptToken?: unknown; seenAt?: unknown } | null;
+    if (seen && typeof seen === 'object' && seen.v === 1 && seen.attemptToken === attemptToken) {
+      const seenAt = seen.seenAt;
+      // A sighting for this run already exists: its clock decides, and it is never restarted.
+      if (typeof seenAt !== 'number' || !Number.isFinite(seenAt) || seenAt > now + FUTURE_CLOCK_SKEW_MS) return null;
+      const until = seenAt + EXIT_SETTLE_RESTART_HOLD_MS;
+      return until > now ? until : null;
+    }
+  } catch {
+    // @silent-fallback-ok — no readable sighting yet: this is the first one, written below.
+  }
+  try {
+    SafeFsExecutor.atomicWriteJsonSync(exitSeenPath(stateDir), { v: 1, attemptToken, seenAt: now },
+      { operation: 'src/core/PlannedRestartVerifyGuard.ts:exitSettleHoldUntil', mode: 0o600 });
+    return now + EXIT_SETTLE_RESTART_HOLD_MS;
+  } catch {
+    // @silent-fallback-ok — fail open to the restart, as before this window existed, and say so.
+    console.warn('[PlannedRestartVerifyGuard] Could not record the exit sighting; not holding the restart for the settle window');
+    return null;
+  }
+}
+
+/**
+ * When the verifier's heartbeat stops holding a restart for its accepted peer attempts; null = no
+ * peer hold. A missing, unreadable, stale, future or malformed heartbeat never defers: the restart
+ * then proceeds exactly as it would without peer work.
+ */
+function peerAttemptHoldUntil(stateDir: string, now: number): number | null {
+  let beat: { v?: unknown; writtenAt?: unknown; attempts?: unknown };
+  try {
+    beat = JSON.parse(fs.readFileSync(peerHoldPath(stateDir), 'utf8')) as typeof beat;
+  } catch {
+    // @silent-fallback-ok — no readable heartbeat means no peer hold.
+    return null;
+  }
+  if (!beat || typeof beat !== 'object' || beat.v !== 1 || !Array.isArray(beat.attempts)) return null;
+  const writtenAt = beat.writtenAt;
+  if (typeof writtenAt !== 'number' || !Number.isFinite(writtenAt) || writtenAt > now + FUTURE_CLOCK_SKEW_MS) return null;
+  if (now - writtenAt > PEER_HOLD_HEARTBEAT_MAX_AGE_MS) return null;
+  let until: number | null = null;
+  for (const attempt of beat.attempts as Array<{ sentAt?: unknown } | null>) {
+    const sentAt = attempt?.sentAt;
+    if (typeof sentAt !== 'number' || !Number.isFinite(sentAt) || sentAt > now + FUTURE_CLOCK_SKEW_MS) continue;
+    const bound = sentAt + PEER_RESTART_HOLD_MS;
+    if (bound > now && (until === null || bound > until)) until = bound;
+  }
+  return until;
+}
+
+/**
+ * When a green run's merge in progress stops holding a restart; null = no merge hold. A restart
+ * between "tests passed" and "merged" loses the merge: the hand-off fails while the server stops,
+ * and a restart that loads a changed verifier no longer counts the green record (2026-11-12,
+ * PR 3109). A missing, unreadable, future or malformed marker never defers, and the bound is
+ * short, so a marker left behind by a crash cannot hold a restart for long.
+ */
+function mergeHandoffHoldUntil(stateDir: string, now: number): number | null {
+  let marker: { v?: unknown; phase?: unknown; since?: unknown };
+  try {
+    marker = JSON.parse(fs.readFileSync(mergeHoldPath(stateDir), 'utf8')) as typeof marker;
+  } catch {
+    // @silent-fallback-ok — no readable marker means no merge hold.
+    return null;
+  }
+  if (!marker || typeof marker !== 'object' || marker.v !== 1) return null;
+  if (marker.phase !== 'settling' && marker.phase !== 'handoff') return null;
+  const since = marker.since;
+  if (typeof since !== 'number' || !Number.isFinite(since) || since > now + FUTURE_CLOCK_SKEW_MS) return null;
+  const bound = since + (marker.phase === 'handoff' ? MERGE_HANDOFF_RESTART_HOLD_MS : MERGE_SETTLE_RESTART_HOLD_MS);
+  return bound > now ? bound : null;
+}
+
+/** The pending request's explicit hold bypass (operator force, or the updater's ceiling); false when there is no request. */
+export function plannedRestartBypassesHolds(stateDir: string): boolean {
+  try {
+    const request = JSON.parse(fs.readFileSync(path.join(stateDir, 'state', 'restart-requested.json'), 'utf8')) as PlannedRestartFlag;
+    return request?.plannedRestart === true && request.bypassHolds === true;
+  } catch {
+    // @silent-fallback-ok — absent or unreadable flag means no bypass to report.
+    return false;
+  }
+}
+
+/** The verifier uses this to leave the slot free for a pending restart. */
+export function readPlannedRestartVerifyState(
+  stateDir: string,
+  now: number = Date.now(),
+  pidExists: (pid: number) => boolean = processExists,
+): PlannedRestartVerifyState {
+  let request: PlannedRestartFlag;
+  try {
+    request = JSON.parse(fs.readFileSync(path.join(stateDir, 'state', 'restart-requested.json'), 'utf8')) as PlannedRestartFlag;
+  } catch {
+    // @silent-fallback-ok — absent or unreadable flag means no planned restart is pending.
+    return { pending: false, pendingSinceMs: null, hold: false, holdUntilMs: null };
+  }
+  return {
+    ...plannedRestartVerifyState(stateDir, request, now, pidExists),
+    deferredDelivery: recentlyRequestedPlannedRestart(stateDir, request, now),
+  };
+}
+
+/** Persist proof that this particular request actually encountered a live verify. */
+export function markPlannedRestartDeferred(stateDir: string, request: PlannedRestartFlag, now: number = Date.now()): boolean {
+  if (!plannedRestartVerifyState(stateDir, request, now).hold) return false;
+  if (recentlyRequestedPlannedRestart(stateDir, request, now)) return true;
+  // A newly observed run cannot retroactively make an already-expired flag
+  // "deferred". Only proof written while the original TTL was live may extend it.
+  const expiresAt = typeof request.expiresAt === 'string' ? Date.parse(request.expiresAt) : Number.NaN;
+  if (Number.isFinite(expiresAt) && now > expiresAt) return false;
+  try {
+    SafeFsExecutor.atomicWriteJsonSync(deferredMarkerPath(stateDir), {
+      requestKey: requestKey(request), deferredAt: now,
+    }, { operation: 'src/core/PlannedRestartVerifyGuard.ts:markPlannedRestartDeferred', mode: 0o600 });
+    return true;
+  } catch {
+    // A failed persistence must not risk losing the maintenance request after
+    // its original TTL. The consumer proceeds with the old restart behavior.
+    console.warn('[PlannedRestartVerifyGuard] Could not persist restart deferral; proceeding with restart');
+    // @silent-fallback-ok — fail open to the existing restart path and log the loss of the hold.
+    return false;
+  }
+}
+
+/** Only a request actually deferred for verification gets the extended TTL. */
+export function recentlyRequestedPlannedRestart(stateDir: string, request: PlannedRestartFlag | null, now: number = Date.now()): boolean {
+  if (!request || typeof request !== 'object' || request.plannedRestart !== true || typeof request.requestedAt !== 'string') return false;
+  const at = Date.parse(request.requestedAt);
+  if (!Number.isFinite(at) || at > now + FUTURE_CLOCK_SKEW_MS || now - at > PLANNED_RESTART_DELIVERY_MS) return false;
+  try {
+    const marker = JSON.parse(fs.readFileSync(deferredMarkerPath(stateDir), 'utf8')) as Record<string, unknown>;
+    return marker?.requestKey === requestKey(request)
+      && typeof marker.deferredAt === 'number' && Number.isFinite(marker.deferredAt)
+      && marker.deferredAt >= at - FUTURE_CLOCK_SKEW_MS && marker.deferredAt <= now + FUTURE_CLOCK_SKEW_MS;
+  } catch {
+    // @silent-fallback-ok — no readable proof means the original one-hour TTL applies.
+    return false;
+  }
+}

@@ -106,6 +106,9 @@ describe('HandoffManager', () => {
     SafeGitExecutor.execSync(['init', '-b', 'main'], { cwd: tmpDir, operation: 'tests/unit/handoff-manager.test.ts:108' });
     SafeGitExecutor.execSync(['config', 'user.email', 'test@test.com'], { cwd: tmpDir, operation: 'tests/unit/handoff-manager.test.ts:110' });
     SafeGitExecutor.execSync(['config', 'user.name', 'Test'], { cwd: tmpDir, operation: 'tests/unit/handoff-manager.test.ts:112' });
+    // A background Git maintenance writer can race teardown of this short-lived repo.
+    SafeGitExecutor.execSync(['config', 'gc.auto', '0'], { cwd: tmpDir, operation: 'tests/unit/handoff-manager.test.ts:fixture-gc' });
+    SafeGitExecutor.execSync(['config', 'maintenance.auto', 'false'], { cwd: tmpDir, operation: 'tests/unit/handoff-manager.test.ts:fixture-maintenance' });
     fs.writeFileSync(path.join(tmpDir, 'README.md'), '# Test\n');
     SafeGitExecutor.execSync(['add', '.'], { cwd: tmpDir, operation: 'tests/unit/handoff-manager.test.ts:115' });
     SafeGitExecutor.execSync(['commit', '-m', 'init'], { cwd: tmpDir, operation: 'tests/unit/handoff-manager.test.ts:117' });

@@ -150,19 +150,28 @@ describe('SessionManager.currentMemoryPressure — macos-memory-pressure-metric 
       .toThrow(/memory pressure is critical/);
   });
 
+  it('a refusal names its numbers, so it cannot be misread against another memory figure', () => {
+    const manager = makeManager(tmpDir);
+    const text = (manager as unknown as { memoryPressureEvidence: (d: unknown) => string })
+      .memoryPressureEvidence(macDeps(VM_STAT_GENUINELY_EXHAUSTED));
+    expect(text).toMatch(/^\d+% used, i\.e\. 100 minus free\+inactive\+purgeable, read just after the check; thresholds high 75%, critical 90%$/);
+    expect(Number(text.split('%')[0])).toBeGreaterThanOrEqual(90);
+  });
+
   it('diagnostics percentage and tier cannot contradict each other', () => {
     // Pre-fix, getSessionDiagnostics computed usedPercent from os.freemem() while
     // taking the TIER from currentMemoryPressure() — so once the tier was fixed the
     // surface could report "97% used" beside tier 'low'. Both now read one source.
     const manager = makeManager(tmpDir);
     const diag = (manager as unknown as {
-      getSessionDiagnostics: () => { memoryPressure: string; usedPercent: number };
+      getSessionDiagnostics: () => { memoryPressure: string; memoryUsedPercent: number };
     }).getSessionDiagnostics();
+    expect(Number.isFinite(diag.memoryUsedPercent)).toBe(true);
 
     const tierForPercent =
-      diag.usedPercent >= 90 ? 'critical'
-      : diag.usedPercent >= 75 ? 'high'
-      : diag.usedPercent >= 60 ? 'moderate'
+      diag.memoryUsedPercent >= 90 ? 'critical'
+      : diag.memoryUsedPercent >= 75 ? 'high'
+      : diag.memoryUsedPercent >= 60 ? 'moderate'
       : 'low';
     expect(diag.memoryPressure).toBe(tierForPercent);
   });

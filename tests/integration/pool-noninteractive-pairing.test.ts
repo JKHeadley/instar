@@ -148,6 +148,23 @@ describe('non-interactive code-authenticated pool join (POST /api/pair)', () => 
     expect(res.status).toBe(403);
   });
 
+  it('refuses a joiner presenting the awake machine\'s own id (409) without spending a code attempt (ACT-1302)', async () => {
+    // A copied/cloned agent home carries the inviter's identity.json; the
+    // sagemind Studio booted as the laptop this way.
+    const { app, identityManager, awake, pairingStore } = makeApp(dir);
+    pairingStore.save(createPairingSession({ code: 'CLONE-CHECK-0001', expiryMs: 600000 }));
+    const before = identityManager.loadRegistry().machines[awake.machineId];
+    const res = await request(app).post('/api/pair').send({
+      pairingCode: 'CLONE-CHECK-0001', machineIdentity: awake, ephemeralPublicKey: awake.encryptionPublicKey,
+    });
+    expect(res.status).toBe(409);
+    expect(res.body.error).toBe('joiner-identity-is-inviter');
+    const session = pairingStore.load()!;
+    expect(session.failedAttempts ?? 0).toBe(0);
+    expect(session.consumed).toBeFalsy();
+    expect(identityManager.loadRegistry().machines[awake.machineId]).toEqual(before);
+  });
+
   it('rejects a malformed machineIdentity (400) before persisting anything', async () => {
     const { app, pairingStore } = makeApp(dir);
     pairingStore.save(createPairingSession({ code: 'GOOD-CODE-0001', expiryMs: 600000 }));

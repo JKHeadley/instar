@@ -47,7 +47,7 @@ function build(opts: { enabled: boolean; selfViolationSignal?: boolean }): Built
     stateDir: path.join(dir, '.instar'), port: 0, authToken: AUTH,
     ...(opts.enabled
       ? { monitoring: { correctionLearning: { enabled: true, selfViolationSignal: opts.selfViolationSignal ?? false } } }
-      : {}),
+      : { monitoring: { correctionLearning: { enabled: false }, failureCallouts: { enabled: false } } }),
   } as InstarConfig;
   const sm = createMockSessionManager() as any;
   sm.clearInjectionTracker = () => {};

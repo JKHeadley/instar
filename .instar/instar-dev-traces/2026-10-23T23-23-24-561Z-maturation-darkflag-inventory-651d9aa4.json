@@ -1,0 +1,31 @@
+{
+  "version": 2,
+  "slug": "maturation-darkflag-inventory",
+  "sessionId": "fb32cc9f-6900-4e9a-b806-fd27ef2156b9",
+  "timestamp": "2026-10-23T23:23:24.561Z",
+  "artifactPath": "upgrades/side-effects/maturation-darkflag-inventory.md",
+  "artifactSha256": "6c35c8ca068d8f5ed42a568a22f3df9c1b44357ee8197f27773cabf110383313",
+  "specPath": "docs/specs/maturation-followthrough-fix.md",
+  "coveredFiles": [
+    "docs/specs/maturation-followthrough-fix.md",
+    "src/config/ConfigDefaults.ts",
+    "src/core/types.ts",
+    "src/monitoring/DarkFlagMaturationRegistry.ts",
+    "src/monitoring/GrowthDigestPublisher.ts",
+    "src/monitoring/GrowthMilestoneAnalyst.ts",
+    "src/monitoring/guardManifest.ts",
+    "src/server/AgentServer.ts",
+    "tests/e2e/growth-darkflag-maturation-lifecycle.test.ts",
+    "tests/integration/growth-analyst-darkflag-routes.test.ts",
+    "tests/unit/DarkFlagMaturationRegistry.test.ts",
+    "tests/unit/growth-analyst-darkflag-r7.test.ts",
+    "tests/unit/lint-dev-agent-dark-gate.test.ts",
+    "upgrades/next/maturation-darkflag-inventory.md",
+    "upgrades/side-effects/maturation-darkflag-inventory.md"
+  ],
+  "phase": "complete",
+  "tier": 2,
+  "tierReasoning": "New durable state file plus a new analyst rule and a new guard-manifest entry: a new capability with its own persistence, so it clears the Tier-1 bar even though it is flag-gated and a revert fully undoes it. Driven by a pre-converged, now-approved spec, so the full chain is available and cheap to honor.",
+  "secondPass": "true",
+  "reviewerConcurred": true
+}

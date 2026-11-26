@@ -35,9 +35,12 @@ const COPY_FILES = [
   'scripts/eli16-overview-check.mjs',
   'scripts/lib/classify-tier.mjs',
   'scripts/lib/convergence-recognition.mjs',
+  // The precommit's trace checks (shared with the local verifier).
+  'scripts/lib/instar-dev-trace.mjs',
   'scripts/lib/markdown-code-identifier.mjs',
   'scripts/lib/operator-surface.mjs',
   'scripts/lib/self-action-detect.mjs',
+  'scripts/lib/open-pr-overlap.mjs',
   'skills/instar-dev/scripts/verify-proposal-derived-runbook.mjs',
   // audit-convergence-enforcement §2: the precommit now imports these two sibling
   // scripts (Step 1.5 audit gate) — copy them so the fixture hook resolves imports.

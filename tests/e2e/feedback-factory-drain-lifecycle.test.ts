@@ -11,6 +11,7 @@ import { InitiativeTracker } from '../../src/core/InitiativeTracker.js';
 import { SafeFsExecutor } from '../../src/core/SafeFsExecutor.js';
 import type { InstarConfig, IntelligenceProvider } from '../../src/core/types.js';
 import { validateCanonicalPipelineRuntimeEvidence } from '../../src/core/canonicalPipelineRuntimeEvidence.js';
+import { promoteConsumerFromProposal } from '../helpers/feedbackConsumerPromotion.js';
 import { handleFeedbackSubmit } from '../../src/feedback-factory/receiver/handlers.js';
 import { BlobInboxStore } from '../../src/feedback-factory/receiver/BlobInboxStore.js';
 import { BlobInboxClient } from '../../src/feedback-factory/inbox/BlobInboxClient.js';
@@ -126,14 +127,30 @@ describe('feedback factory drain — real production-adapter lifecycle', () => {
     expect(backlog.body).toMatchObject({ boundedBatchSize: 50, counts: { clusters: expect.any(Number), reports: expect.any(Number) }, estimatedWorkItemVolume: expect.any(Number) });
     expect(backlog.body).not.toHaveProperty('title');
 
-    const promotion = await request(app)
-      .post('/feedback-factory/consumer/promote')
+    // Promotion is proposal-set bound: the route is alive, an invented hash is refused,
+    // and only the exact server-proposed batch promotes.
+    const before = await request(app).get('/feedback-factory/consumer/promotion/proposal').set({ Authorization: `Bearer ${AUTH}` });
+    expect(before.status).toBe(200);
+    expect(before.body).toMatchObject({ state: 'no-work', localAction: false, promotionRecord: { present: false } });
+    expect((await request(app).post('/feedback-factory/consumer/promote')
       .set({ Authorization: `Bearer ${AUTH}`, 'X-Instar-Request': '1' })
-      .send({ pin: PIN, approvedBatchBound: 10, evidenceHash: 'a'.repeat(64), operatorDecisionId: 'operator-approved-spec' });
-    expect(promotion.status).toBe(200);
+      .send({ pin: PIN, approvedBatchBound: 10, evidenceHash: 'a'.repeat(64), operatorDecisionId: 'invented' })).body)
+      .toMatchObject({ error: 'promotion-not-pending:no-work' });
     expect((await request(app).post('/feedback-factory/consumer/promote')
       .set({ Authorization: `Bearer ${AUTH}`, 'X-Instar-Request': '1' })
       .send({ approvedBatchBound: 10, evidenceHash: 'a'.repeat(64), operatorDecisionId: 'self' })).status).toBe(403);
+    const { proposal, promote: promotion } = await promoteConsumerFromProposal(app, {
+      auth: AUTH, pin: PIN, agentId: 'e2e', operatorDecisionId: 'operator-approved-spec', noncePrefix: 'feedback-e2e-sim',
+    });
+    expect(proposal).toMatchObject({ state: 'pending', localAction: true, approvedBatchBound: 1, proposalSetHash: expect.stringMatching(/^[a-f0-9]{64}$/) });
+    expect((proposal.items as unknown[])[0]).toEqual({ workId: expect.any(String), title: expect.any(String), priority: expect.any(String), reportCount: expect.any(Number) });
+    expect(promotion.status, JSON.stringify(promotion.body)).toBe(200);
+    expect((await request(app).get('/feedback-factory/consumer/promotion/proposal').set({ Authorization: `Bearer ${AUTH}` })).body)
+      .toMatchObject({ state: 'already-live', localAction: false, promotionRecord: { present: true, revoked: false, approvedBatchBound: 1 } });
+    // Replaying the same approval after promotion is refused.
+    expect((await request(app).post('/feedback-factory/consumer/promote')
+      .set({ Authorization: `Bearer ${AUTH}`, 'X-Instar-Request': '1' })
+      .send({ pin: PIN, approvedBatchBound: proposal.approvedBatchBound, evidenceHash: proposal.proposalSetHash, operatorDecisionId: 'replay' })).status).toBe(409);
 
     // No PIN in the operated tick: the registered frontier-model agent is the
     // default readiness authority, and human input is not the throughput gate.
@@ -189,6 +206,14 @@ describe('feedback factory drain — real production-adapter lifecycle', () => {
     expect((await request(app).post('/feedback-factory/readiness-authorities')
       .set({ Authorization: `Bearer ${AUTH}`, 'X-Instar-Request': '1' })
       .send({ action: 'restore', authorityId: 'feedback-readiness-default' })).status).toBe(403);
+  });
+
+  it('the readiness serving account is reported on the production path; unconfigured readiness stays on the shared provider', async () => {
+    const status = await request(server.getApp()).get('/feedback-factory/drain/status').set({ Authorization: `Bearer ${AUTH}` });
+    expect(status.status).toBe(200);
+    expect(status.body.readinessAccount).toMatchObject({ mode: 'off', pinnedAccountId: null });
+    // The first test made a readiness call: with no pin and selection off it ran shared, as before.
+    expect(status.body.readinessAccount.last).toMatchObject({ state: 'shared', reason: 'selection-off' });
   });
 
   it('authenticates cancellation and durably fences the active run', async () => {
@@ -270,5 +295,44 @@ describe('feedback factory drain — real production-adapter lifecycle', () => {
       .set({ Authorization: `Bearer ${AUTH}`, 'X-Instar-Request': '1', 'X-Instar-AgentId': 'e2e', 'X-Instar-Request-Nonce': 'feedback-restored-live-0001' });
     expect(resumedTick.status).toBe(202);
     expect((await request(app).get('/feedback-factory/drain/status').set({ Authorization: `Bearer ${AUTH}` })).body.restorePending).toBe(false);
+  });
+
+  it('the dashboard proposal is alive on the production path and tracks the live owner binding', async () => {
+    const app = server.getApp();
+    const res = await request(app).get('/feedback-factory/readiness-authorities/proposal').set({ Authorization: `Bearer ${AUTH}` });
+    expect(res.status).toBe(200);
+    // The failover above moved the owner epoch to 2 and rebound the authority to it.
+    expect(res.body).toMatchObject({ status: 'active', current: { agentId: 'e2e', ownerMachineId: 'e2e', ownerEpoch: 2 } });
+    // This fixture's intelligence is a bare provider, not the router, so there is no
+    // routed model to bind — the card must say so and offer no Approve rather than guess.
+    expect(res.body.proposal).toBeNull();
+    expect(res.body.blockers.join(' ')).toMatch(/No model is currently available/);
+    expect(res.body.approveAction).toBeNull();
+    // The new approve path is PIN-gated like every other authority mutation.
+    expect((await request(app).post('/feedback-factory/readiness-authorities')
+      .set({ Authorization: `Bearer ${AUTH}`, 'X-Instar-Request': '1' })
+      .send({ action: 'replace', useProposal: true, operatorDecisionRef: 'agent-self-attempt' })).status).toBe(403);
+    const refused = await request(app).post('/feedback-factory/readiness-authorities')
+      .set({ Authorization: `Bearer ${AUTH}`, 'X-Instar-Request': '1' })
+      .send({ action: 'replace', useProposal: true, pin: PIN, operatorDecisionRef: 'operator-no-route' });
+    expect(refused.status).toBe(409);
+    expect(refused.body.error).toMatch(/not approvable/);
+  });
+
+  it('a restart after the restore bump resumes at the recorded owner epoch, so backup checkpoints keep working', async () => {
+    await server.stop();
+    tracker = new InitiativeTracker(stateDir);
+    server = new AgentServer({ config, state: new StateManager(stateDir), initiativeTracker: tracker, intelligence,
+      sessionManager: { listRunningSessions: () => [], getSession: () => null, getRunningSessionPanePids: () => [], on: () => undefined } as never });
+    await server.start();
+    const drain = (server as unknown as { feedbackDrain: { authorityBinding(): { ownerEpoch: number }; checkpointBackup(trigger: 'promotion' | 'failover'): void;
+      store: { ownerAuthorityEpoch(): number | null } } }).feedbackDrain;
+    // Before this fix a single-machine restart presented epoch 1 against the recorded 2.
+    expect(drain.store.ownerAuthorityEpoch()).toBe(2);
+    expect(drain.authorityBinding().ownerEpoch).toBe(2);
+    expect(() => drain.checkpointBackup('failover')).not.toThrow();
+    const manifest = JSON.parse(fs.readFileSync(path.join(stateDir, 'state', 'feedback-factory', 'store', 'feedback-drain-checkpoint.json'), 'utf8'));
+    expect(manifest.ownerAuthorityEpoch).toBe(2);
+    expect((await request(server.getApp()).get('/feedback-factory/drain/status').set({ Authorization: `Bearer ${AUTH}` })).body.restorePending).toBe(false);
   });
 });

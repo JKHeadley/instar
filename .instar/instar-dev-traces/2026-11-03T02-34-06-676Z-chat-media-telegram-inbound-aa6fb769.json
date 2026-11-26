@@ -1,0 +1,32 @@
+{
+  "version": 2,
+  "slug": "chat-media-telegram-inbound",
+  "sessionId": "fbad3c4d-66be-4847-be50-4e9084534054",
+  "timestamp": "2026-11-03T02:34:06.676Z",
+  "artifactPath": "upgrades/side-effects/chat-media-telegram-inbound.md",
+  "artifactSha256": "96d719d4d57ffbea4d575f95933e91c94b60c72f5f423e408778b4c7d7460f91",
+  "specPath": "docs/specs/mobile-native-chat-media.md",
+  "coveredFiles": [
+    "src/core/AppConversationService.ts",
+    "src/core/AppConversationStore.ts",
+    "src/core/AppConversationsReplicatedStore.ts",
+    "src/core/appMediaReplyFiles.ts",
+    "src/core/appPlatformMedia.ts",
+    "src/messaging/TelegramAdapter.ts",
+    "src/server/AgentServer.ts",
+    "src/server/mobileConversationRoutes.ts",
+    "src/server/mobileMediaRoutes.ts",
+    "src/server/routes.ts",
+    "tests/e2e/mobile-native-media-alive.test.ts",
+    "tests/integration/telegram-platform-media.test.ts",
+    "tests/unit/app-platform-media.test.ts",
+    "upgrades/next/chat-media-telegram-inbound.md",
+    "upgrades/side-effects/chat-media-telegram-inbound.eli16.md",
+    "upgrades/side-effects/chat-media-telegram-inbound.md"
+  ],
+  "phase": "complete",
+  "tier": 2,
+  "tierReasoning": "Spec increment: new replicated event kind, download authorization by platform reference, device history rewrite",
+  "secondPass": "true",
+  "reviewerConcurred": true
+}

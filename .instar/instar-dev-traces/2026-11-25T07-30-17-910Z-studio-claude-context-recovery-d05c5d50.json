@@ -1,0 +1,21 @@
+{
+  "version": 2,
+  "slug": "studio-claude-context-recovery",
+  "sessionId": "79673ec9-ff9b-4e49-beab-ea9ff8ee8f93",
+  "timestamp": "2026-11-25T07:30:17.910Z",
+  "artifactPath": "upgrades/side-effects/studio-claude-context-recovery.md",
+  "artifactSha256": "4d06b3a7358c8d7f6107acb4c6ee3aae5c5fd2d85b34fde9e31924fc886ca59d",
+  "coveredFiles": [
+    "src/commands/init.ts",
+    "src/core/PostUpdateMigrator.ts",
+    "src/templates/hooks/settings-template.json",
+    "tests/integration/context-budget-claude-recovery-timeout.test.ts"
+  ],
+  "phase": "complete",
+  "tier": 1,
+  "tierReasoning": "Reversible deadline repair for the existing compact hook, with bounded local calls and no eligibility changes.",
+  "eli16Path": "docs/eli16/studio-claude-context-recovery.eli16.md",
+  "sideEffectsPath": "upgrades/side-effects/studio-claude-context-recovery.md",
+  "secondPass": "true",
+  "reviewerConcurred": true
+}

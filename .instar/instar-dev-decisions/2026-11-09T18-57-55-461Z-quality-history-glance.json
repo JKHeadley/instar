@@ -1,0 +1,22 @@
+{
+  "ts": "2026-11-09T18:57:55.461Z",
+  "slug": "quality-history-glance",
+  "suggestedTier": 1,
+  "declaredTier": 1,
+  "riskFloor": 1,
+  "riskFloorReasons": [],
+  "belowFloor": false,
+  "files": 1,
+  "loc": 21,
+  "scope": {
+    "basis": "staged-in-scope-paths-including-deleted",
+    "files": [
+      "src/server/maturationBoardRoutes.ts"
+    ],
+    "addedLines": 14,
+    "deletedLines": 7
+  },
+  "causalAutopsy": null,
+  "classClosure": null,
+  "verdict": "blocked"
+}

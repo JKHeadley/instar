@@ -24,6 +24,150 @@ export const STAGE_B_CERTIFIED_SET = {
   ],
   "excluded": [
     {
+      "file": "src/core/importedHistoryPaths.ts",
+      "reason": "Three string constants naming the imported-history folder (no I/O, no state, no delivery logic), reached through FileClassifier and the gitignore lists; outside the Stage-B canaried delivery path."
+    },
+    {
+      "file": "src/core/boundedInput.ts",
+      "reason": "Pure string helpers (boundedHead/boundedTail) with no imports, I/O or state; reached through the excluded MessagingToneGate to bound prompt context, outside the Stage-B canaried delivery path, certified by tests/unit/bounded-judgment-input.test.ts."
+    },
+    {
+      "file": "src/core/standing-authorization.ts",
+      "reason": "Deterministic resolver for the tone gate's B17 standing-grant context (reads injected operator history, no I/O of its own, no delivery logic); reached through the excluded MessagingToneGate, outside the Stage-B canaried delivery path, certified by tests/unit/standing-authorization.test.ts."
+    },
+    {
+      "file": "src/core/GraphDurableFileMemo.ts",
+      "reason": "Process-local memo of files already flushed, reached through SecretStore. It only skips a repeat fsync of unchanged content and holds no inbound-delivery or lifecycle logic."
+    },
+    {
+      "file": "src/core/GraphMembershipTypes.ts",
+      "reason": "Type-only graph membership shapes named by shared config types. Erased at runtime with no imports."
+    },
+    {
+      "file": "src/core/AppRecordSignatures.ts",
+      "reason": "Reached through team access on the mobile pairing service (team-roles-and-access step 2a). It is identity, phone or access-record code that runs only when a phone connects, not code the Stage-B canary exercises."
+    },
+    {
+      "file": "src/core/IdentityStore.ts",
+      "reason": "Reached through team access on the mobile pairing service (team-roles-and-access step 2a). It is identity, phone or access-record code that runs only when a phone connects, not code the Stage-B canary exercises."
+    },
+    {
+      "file": "src/core/MachineIdentity.ts",
+      "reason": "Reached through team access on the mobile pairing service (team-roles-and-access step 2a). It is identity, phone or access-record code that runs only when a phone connects, not code the Stage-B canary exercises."
+    },
+    {
+      "file": "src/core/MobileDeviceKeys.ts",
+      "reason": "Reached through team access on the mobile pairing service (team-roles-and-access step 2a). It is identity, phone or access-record code that runs only when a phone connects, not code the Stage-B canary exercises."
+    },
+    {
+      "file": "src/core/friendlyMachineName.ts",
+      "reason": "Reached through MachineIdentity (nickname assignment). It reads this computer's own name for the machine nickname; identity metadata only, no inbound-delivery or lifecycle logic, not code the Stage-B canary exercises."
+    },
+    {
+      "file": "src/core/NicknameAssigner.ts",
+      "reason": "Reached through team access on the mobile pairing service (team-roles-and-access step 2a). It is identity, phone or access-record code that runs only when a phone connects, not code the Stage-B canary exercises."
+    },
+    {
+      "file": "src/core/TeamAccessEvents.ts",
+      "reason": "Reached through team access on the mobile pairing service (team-roles-and-access step 2a). It is identity, phone or access-record code that runs only when a phone connects, not code the Stage-B canary exercises."
+    },
+    {
+      "file": "src/core/TeamAccessMerge.ts",
+      "reason": "Reached through team access on the mobile pairing service (team-roles-and-access step 2b). Pure rules for how machines agree on access, run only when a team exists, not code the Stage-B canary exercises."
+    },
+    {
+      "file": "src/core/TeamAccessLog.ts",
+      "reason": "Reached through team access on the mobile pairing service (team-roles-and-access step 2a). It is identity, phone or access-record code that runs only when a phone connects, not code the Stage-B canary exercises."
+    },
+    {
+      "file": "src/core/appConversationText.ts",
+      "reason": "Reached through team access on the mobile pairing service (team-roles-and-access step 2a). It is identity, phone or access-record code that runs only when a phone connects, not code the Stage-B canary exercises."
+    },
+    {
+      "file": "src/core/appMediaTypes.ts",
+      "reason": "Reached through team access on the mobile pairing service (team-roles-and-access step 2a). It is identity, phone or access-record code that runs only when a phone connects, not code the Stage-B canary exercises."
+    },
+    {
+      "file": "src/core/keyMaterialPaths.ts",
+      "reason": "Reached through team access on the mobile pairing service (team-roles-and-access step 2a). It is identity, phone or access-record code that runs only when a phone connects, not code the Stage-B canary exercises."
+    },
+    {
+      "file": "src/core/pairingWords.ts",
+      "reason": "Reached through team access on the mobile pairing service (team-roles-and-access step 2a). It is identity, phone or access-record code that runs only when a phone connects, not code the Stage-B canary exercises."
+    },
+    {
+      "file": "src/messaging/inboundCredentialMask.ts",
+      "reason": "SEC-164 inbound key mask: pure text helpers over the excluded outbound credential guard (no I/O, no state, no delivery decision); it only replaces a live key with a fixed marker and never holds or drops a message, outside the Stage-B canaried delivery path, certified by tests/unit/sec164-inbound-mask.test.ts."
+    },
+    {
+      "file": "src/messaging/outbound-credential-guard.ts",
+      "reason": "Reached through team access on the mobile pairing service (team-roles-and-access step 2a). It is identity, phone or access-record code that runs only when a phone connects, not code the Stage-B canary exercises."
+    },
+    {
+      "file": "src/permissions/TeamAccess.ts",
+      "reason": "Reached through team access on the mobile pairing service (team-roles-and-access step 2a). It is identity, phone or access-record code that runs only when a phone connects, not code the Stage-B canary exercises."
+    },
+    {
+      "file": "src/users/TeamConfinement.ts",
+      "reason": "Reached through team access on the mobile pairing service (team-roles-and-access step 2a). It is identity, phone or access-record code that runs only when a phone connects, not code the Stage-B canary exercises."
+    },
+    {
+      "file": "src/core/pipeErrorGuard.ts",
+      "reason": "Stream error listener reached through the excluded ClaudeCliIntelligenceProvider; it only stops a closed pipe becoming an uncaught exception, and has no part in the certified Codex Stage-B delivery path."
+    },
+    {
+      "file": "src/core/claudeChildAuth.ts",
+      "reason": "Claude-only helper that passes the sign-in key to claude children; a Codex launch never reads it, so it cannot change the behaviour the Stage-B evidence certifies."
+    },
+    {
+      "file": "src/monitoring/healthChoices.ts",
+      "reason": "The person's hide and ignore choices on a health problem, reached through DegradationReporter; it decides only whether a degradation is recorded or shown, and has no part in the certified Codex Stage-B delivery path."
+    },
+    {
+      "file": "src/monitoring/scrubSecrets.ts",
+      "reason": "Text scrubber reached through healthChoices for a saved problem title; pure, and no part of the certified Codex Stage-B delivery path."
+    },
+    {
+      "file": "src/monitoring/FeatureEvidenceLog.ts",
+      "reason": "Write-only evidence log reached through DegradationReporter; its calls never throw, return nothing the caller reads, and do not alter the certified Codex Stage-B delivery path."
+    },
+    {
+      "file": "src/utils/jsonl-rotation.ts",
+      "reason": "Size-based log rotation used only by the evidence log in this closure; it never throws and does not alter the certified Codex Stage-B delivery path."
+    },
+    {
+      "file": "src/permissions/SlackPrincipalResolver.ts",
+      "reason": "Slack identity lookup reached only through memory privacy from the excluded SessionManager; no delivery logic, outside the Stage-B canaried path."
+    },
+    {
+      "file": "src/permissions/types.ts",
+      "reason": "Role type declarations reached through SlackPrincipalResolver; types and constants only, outside the Stage-B canaried path."
+    },
+    {
+      "file": "src/users/MemoryAudience.ts",
+      "reason": "Pure audience rules reached through the excluded SessionManager; no delivery logic, outside the Stage-B canaried path."
+    },
+    {
+      "file": "src/users/MemoryPrivacy.ts",
+      "reason": "Memory audience state reached through the excluded SessionManager; decides a session's memory folder, not message delivery, outside the Stage-B canaried path."
+    },
+    {
+      "file": "src/scheduler/jobScriptProtocol.ts",
+      "reason": "Shared deterministic script-job output parser reached through scheduler imports; it does not alter the certified Codex Stage-B delivery path and has separate script protocol unit and lifecycle coverage"
+    },
+    {
+      "file": "src/core/machineLiveness.ts",
+      "reason": "Display-only machine-evidence derivation (trustworthy-machine-load P1) reached through MachinePoolRegistry; it gates nothing in Stage-B canaried delivery and is certified by its own suites (tests/unit/machine-liveness*.test.ts, tests/integration/machine-liveness-pool.test.ts)"
+    },
+    {
+      "file": "src/core/machineLoadReport.ts",
+      "reason": "Reporting-only load sampler + verdict table (trustworthy-machine-load P1) reached through MachinePoolRegistry; it gates nothing in Stage-B canaried delivery and is certified by its own suites (tests/unit/machine-load-report.test.ts, tests/e2e/machine-load-report-lifecycle.test.ts)"
+    },
+    {
+      "file": "src/monitoring/hostMemoryPressure.ts",
+      "reason": "cross-cutting host-memory reader shared far beyond Codex delivery (reaper, revival, load report), certified by its own suite; binding it would re-freeze releases on unrelated churn"
+    },
+    {
       "file": "src/core/mergeDefaults.ts",
       "reason": "Pure shallow defaults-merge helper (no I/O, no state, no delivery logic) reached only through the excluded SessionLivenessOracle.ts; outside Stage-B canaried delivery behavior and covered by its own unit tests (tests/unit/core/mergeDefaults.test.ts)"
     },
@@ -76,6 +220,14 @@ export const STAGE_B_CERTIFIED_SET = {
       "reason": "LLM-provider plumbing reached through a dynamic import in a certified module; shared across every internal LLM feature and certified by its own suites — binding it would re-freeze releases on unrelated provider churn"
     },
     {
+      "file": "src/core/codexCapabilities.ts",
+      "reason": "Codex CLI version and flag probes, reached through the excluded CodexCliIntelligenceProvider since 2026-11-17 (it picks gpt-6-sol / gpt-6-astra on a CLI below 0.166.0). Model selection only; no inbound-delivery or lifecycle logic, outside the Stage-B canaried path."
+    },
+    {
+      "file": "src/core/codexToolFreeProfile.ts",
+      "reason": "The tool-free argv for Codex calls holding outside text (SEC-175), reached through the excluded CodexCliIntelligenceProvider since 2026-11-22. Launch flags only; no inbound-delivery or lifecycle logic, outside the Stage-B canaried path."
+    },
+    {
       "file": "src/core/InFlightSyncOpMarker.ts",
       "reason": "cross-cutting utility shared far beyond Codex delivery, certified by its own suite; binding it would re-freeze releases on unrelated churn"
     },
@@ -94,6 +246,10 @@ export const STAGE_B_CERTIFIED_SET = {
     {
       "file": "src/core/JudgmentProvenanceLog.ts",
       "reason": "cross-cutting utility shared far beyond Codex delivery, certified by its own suite; binding it would re-freeze releases on unrelated churn"
+    },
+    {
+      "file": "src/core/llmErrorClass.ts",
+      "reason": "LLM-provider plumbing reached through a dynamic import in a certified module; shared across every internal LLM feature and certified by its own suites — binding it would re-freeze releases on unrelated provider churn"
     },
     {
       "file": "src/core/LlmCircuitBreaker.ts",
@@ -206,6 +362,18 @@ export const STAGE_B_CERTIFIED_SET = {
     {
       "file": "src/core/intelligenceProviderFactory.ts",
       "reason": "LLM-provider plumbing reached through a dynamic import in a certified module; shared across every internal LLM feature and certified by its own suites — binding it would re-freeze releases on unrelated provider churn"
+    },
+    {
+      "file": "src/core/specConstitutionCheckLedger.ts",
+      "reason": "Constitution-check record store and the B25 rule text for the tone gate (one small JSON file, a peer-merge cache fed by an injected fetch, and a prompt renderer; no delivery logic); reached through MessagingToneGate, outside the Stage-B canaried delivery path, certified by its own suite"
+    },
+    {
+      "file": "src/core/agent-reach.ts",
+      "reason": "Pure reach-record builder/renderer for the tone gate's B17 context (no I/O beyond the injected registry read, no delivery logic); reached through MessagingToneGate, outside the Stage-B canaried delivery path, certified by its own suite"
+    },
+    {
+      "file": "src/core/sibling-holdings.ts",
+      "reason": "Memory-only cache of what the agent's other machines hold, feeding the tone gate's OTHER MACHINES context through agent-reach (injected fetch and roster, no delivery logic, no I/O of its own); reached through the excluded MessagingToneGate, outside the Stage-B canaried delivery path, certified by tests/unit/sibling-machine-reach.test.ts"
     },
     {
       "file": "src/core/internal-id-leak.ts",
@@ -354,6 +522,90 @@ export const STAGE_B_CERTIFIED_SET = {
     {
       "file": "src/providers/types.ts",
       "reason": "LLM-provider plumbing reached through a dynamic import in a certified module; shared across every internal LLM feature and certified by its own suites — binding it would re-freeze releases on unrelated provider churn"
+    },
+    {
+      "file": "src/messaging/NotificationPreferences.ts",
+      "reason": "Confirmed Telegram notification preference replication, reached through the notification gate; it cannot change Codex composer admission, inbound delivery observation, or recovery acknowledgment certified by Stage-B."
+    },
+    {
+      "file": "src/messaging/NotificationSelectivityGate.ts",
+      "reason": "Outbound Telegram notification routing only, reached through excluded TelegramAdapter; it does not admit, observe, or acknowledge inbound Codex composer deliveries covered by the Stage-B canary."
+    },
+    {
+      "file": "src/messaging/QuietNotificationStore.ts",
+      "reason": "Local outbound Telegram quiet-feed persistence only, reached through the notification gate; it has no effect on the certified inbound Codex delivery state machine."
+    },
+    {
+      "file": "src/messaging/notificationCategories.ts",
+      "reason": "Closed outbound Telegram notification category declarations only, reached through the notification gate; no Codex composer or inbound delivery behavior."
+    },
+    {
+      "file": "src/core/upgradeAnnouncement.ts",
+      "reason": "Existing outbound release announcement front-matter parser, reached through notification category promotion; does not admit or observe inbound Codex composer deliveries certified by Stage-B."
+    },
+    {
+      "file": "src/core/SigninProfileGuard.ts",
+      "reason": "Stateless Google browser-profile ownership validation and generated native hook text, reached through the shared MCP/registry dependency graph; it does not implement the certified Codex delivery observer, composer, ledger, or recovery protocol. Its browser capability boundary is verified by dedicated unit, HTTP, and installed-hook lifecycle tests."
+    },
+    {
+      "file": "src/core/storageMachineName.ts",
+      "reason": "Read-only machine nickname lookup and diagnostic error formatting reached through existing storage notices. It changes no Stage-B dispatch, receipt, delivery, admission or recovery decisions; it is outside the certified protocol canary surface."
+    },
+    {
+      "file": "src/messaging/shared/channelIdentity.ts",
+      "reason": "Pure human-facing display-name validation used by storage diagnostic labels. It changes no Stage-B protocol state, receipt validation, dispatch or recovery decisions."
+    },
+    {
+      "file": "src/core/routineCodexPlacement.ts",
+      "reason": "Optional finite account selection for new routine Sol helpers and outbound source reviews, reached through the shared config type and excluded MessagingToneGate. It does not implement Stage-B inbound composer admission, delivery observation, receipt storage or recovery acknowledgment; covered separately by routine placement HTTP and real-child lifecycle tests."
+    },
+    {
+      "file": "src/core/windowAwareChoice.ts",
+      "reason": "Pure quota-window validity and account-ranking functions reached through routine helper placement and the shared config type. They govern where new work runs, not Stage-B inbound composer admission, delivery observation or recovery acknowledgment; covered separately by window-aware choice and routine Codex placement tests."
+    },
+    {
+      "file": "src/core/SubscriptionPool.ts",
+      "reason": "Account roster, local credential-home eligibility and quota state reached through the routine-placement config dependency. This is the new-work account and metadata path, not the Stage-B inbound-delivery implementation; pool and placement behavior have separate tests."
+    },
+    {
+      "file": "src/core/SubscriptionPoolAuthority.ts",
+      "reason": "Bounded account-pool snapshot validation and persistence, reached through SubscriptionPool on the excluded routine-placement/config path. It does not implement the inbound message store, composer observer or recovery acknowledgment certified by Stage-B."
+    },
+    {
+      "file": "src/core/CredentialLocationGate.ts",
+      "reason": "Current account-to-login-slot lookup reached through the excluded account-pool metadata path. It supplies a new-work credential home, not Stage-B inbound delivery admission, observation or receipt state; credential placement is tested separately."
+    },
+    {
+      "file": "src/core/CredentialLocationLedger.ts",
+      "reason": "Credential-location custody state reached through the excluded account pool and its slot gate. Its subject is which local login home serves an account, not the Stage-B composer, inbound delivery ledger or recovery acknowledgment."
+    },
+    {
+      "file": "src/core/InUseAccountResolver.ts",
+      "reason": "Read-only account identity and dashboard in-use reporting reached through the excluded SubscriptionPool path. It does not select or deliver inbound Codex messages and is outside the Stage-B canaried delivery subject."
+    },
+    {
+      "file": "src/core/SubscriptionAccountMetaReplicatedStore.ts",
+      "reason": "Redacted subscription account metadata schema and replication helpers reached through the excluded account pool. It transports account metadata rather than conversations or Codex inbound delivery receipts; outside the Stage-B canaried subject."
+    },
+    {
+      "file": "src/core/ReplicatedRecordEnvelope.ts",
+      "reason": "Generic envelope validation and identity helpers reached through excluded subscription-account metadata replication. This new closure edge is account metadata, not Stage-B inbound delivery storage or acknowledgment; no certified delivery source imports changed."
+    },
+    {
+      "file": "src/core/UnionReader.ts",
+      "reason": "Pure replicated-record union and witness comparison reached through excluded subscription-account metadata. It folds account metadata on this dependency path, not Stage-B composer deliveries or recovery receipts."
+    },
+    {
+      "file": "src/core/HybridLogicalClock.ts",
+      "reason": "Generic hybrid-clock primitive reached through excluded account-metadata replication and union reading. No Stage-B certified delivery module changed or gained a direct clock dependency; this path is outside the canary subject."
+    },
+    {
+      "file": "src/core/stableJson.ts",
+      "reason": "Pure stable JSON representation helper reached through the excluded subscription-account metadata and authority path. It is not the Stage-B signed-artifact canonicalizer or inbound delivery implementation."
+    },
+    {
+      "file": "src/core/subscriptionEnums.ts",
+      "reason": "Subscription provider, framework and account-status enum definitions reached through the excluded account pool. Constants and type vocabulary only; no Stage-B composer, observation, receipt or recovery logic."
     }
   ],
   "fingerprint": "f1aacb47b41db1f9385f30b67cd53dfe1febac2ea1e555dbd61f5002ac55512f",
@@ -367,9 +619,9 @@ export const STAGE_B_CERTIFIED_SET = {
     "src/core/SessionRecoveryConsumer.ts": "6a00ca4993d188f1c95eaa7d156795804f00f7e10e600ea12fa2e8cd40423268",
     "src/core/StageBStartupReadiness.ts": "92275608368d44abc98802f9a445acc6419fd57bddb8c2e4935f32961d401183"
   },
-  "boundAt": "2026-09-05",
+  "boundAt": "2026-11-23",
   "boundBy": "echo (fresh exact-candidate certification, topic 59199, 2026-09-04)",
-  "note": "Fresh binding after the first candidate correctly failed closed on three busy-session false-unknown outcomes. Candidate cfe468dc5 then passed 50/50 deliveries over 7,213,141 ms, the full required case matrix, 30/30 responsiveness samples, and zero forbidden outcomes; its signed evidence digest is bound here."
+  "note": "Fresh binding after the first candidate correctly failed closed on three busy-session false-unknown outcomes. Candidate cfe468dc5 then passed 50/50 deliveries over 7,213,141 ms, the full required case matrix, 30/30 responsiveness samples, and zero forbidden outcomes; its signed evidence digest is bound here. On 2026-10-27 the unrelated shared script protocol was classified as excluded; certified hashes and signed evidence are unchanged. On 2026-11-07, storageMachineName and channelIdentity were classified as diagnostic-only exclusions; certified hashes and signed evidence remain unchanged. On 2026-11-17, codexCapabilities (Codex CLI model probe, newly reached through the excluded Codex provider) was classified as an exclusion; certified hashes and signed evidence remain unchanged. On 2026-11-23, the routine Sol quota/account/config dependency closure (13 modules, reached through erased shared-type imports) was explicitly classified outside the Stage-B inbound-delivery subject under Chief directive 5ed1e0b9. The seven certified hashes, fingerprint and signed artifact remain unchanged; no fresh canary result is claimed."
 } as const;
 
 export type StageBCertifiedSet = typeof STAGE_B_CERTIFIED_SET;

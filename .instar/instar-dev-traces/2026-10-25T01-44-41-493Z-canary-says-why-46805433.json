@@ -1,0 +1,26 @@
+{
+  "version": 2,
+  "slug": "canary-says-why",
+  "sessionId": "55e0f463-f29d-4d85-9f19-92a6a4d10aad",
+  "timestamp": "2026-10-25T01:44:41.493Z",
+  "artifactPath": "upgrades/side-effects/canary-says-why.md",
+  "artifactSha256": "05df90572e4875bd76ebc679c284b796048d86b349c0e8f433d4525feba41b7a",
+  "coveredFiles": [
+    "docs/specs/canary-says-why.eli16.md",
+    "src/feedback-factory/execute/FeedbackExecutorService.ts",
+    "src/feedback-factory/execute/confinementCanary.ts",
+    "src/feedback-factory/execute/executePolicy.ts",
+    "src/server/routes.ts",
+    "tests/unit/feedback-factory/execute-service.test.ts",
+    "tests/unit/feedback-factory/execute-units.test.ts",
+    "upgrades/next/canary-says-why.md",
+    "upgrades/side-effects/canary-says-why.md"
+  ],
+  "phase": "complete",
+  "tier": 1,
+  "tierReasoning": "Observability on an existing failure path, one cache-env redirect shared by two call sites matching a precedent already in the same function, and a lever that clears a self-imposed wait without removing the check it protects. The canary verdict expression is byte-identical; no block/allow authority is added. A revert fully undoes it; the only persistent change is a longer string plus additive fields in a meta row that already existed, and one new meta row. DECLARED BELOW THE RISK FLOOR DELIBERATELY: the gate raises the floor to 2 for 'new route added', but this route grants nothing a passing canary would not, and folding the lever into an unrelated existing route to dodge the signal would game the gate rather than reduce risk. Three adversarial second-pass rounds (CONCERN, CONCERN, CONCUR); every mutation-testable guard is verified and the two that are not are labelled as reasoned rather than proven.",
+  "eli16Path": "docs/specs/canary-says-why.eli16.md",
+  "sideEffectsPath": "upgrades/side-effects/canary-says-why.md",
+  "secondPass": "true",
+  "reviewerConcurred": true
+}

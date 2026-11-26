@@ -130,7 +130,7 @@ describe('remote-close — WIRED source guards (the via plumb cannot silently di
     ['DELETE route sanitizes the via header', 'src/server/routes.ts', "x-instar-close-via"],
     ['relay route exists', 'src/server/routes.ts', "/sessions/:name/remote-close"],
     ['relay sends the via claim', 'src/server/routes.ts', "'X-Instar-Close-Via': 'remote-dashboard'"],
-    ['relay checks the URL allowlist', 'src/server/routes.ts', 'isPeerUrlAllowedForCredentials(machine.lastKnownUrl'],
+    ['relay checks the URL allowlist', 'src/server/routes.ts', "isPeerUrlAllowedForCredentials({ url: machine.lastKnownUrl"],
   ])('%s', (_name, file, needle) => {
     expect(read(file)).toContain(needle);
   });

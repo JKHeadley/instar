@@ -12,6 +12,30 @@ The Instar server exposes a REST API on `localhost:4040` (configurable). All end
 | GET | `/health` | Health check (public, no auth). Returns version, session count, scheduler status, memory usage |
 | GET | `/status` | Running sessions + scheduler status |
 
+## Machine Maintenance (Development Agent)
+
+These authenticated reads are watch-only when machine maintenance is enabled on a development agent. They return 503 while the feature is dark; reading them cannot restart the machine, stop work, or close a browser.
+
+| Method | Path | Description |
+|--------|------|-------------|
+| GET | `/machine-maintenance` | Uptime, next possible window, safety holds, a recorded paper rehearsal, and which agent-owned browsers a dry-run sweep would keep or close |
+| GET | `/machine-maintenance/lock-state` | The Mac's lock reading with the underlying signals and reason; `unknown` is not treated as locked, and Linux is `not-applicable` |
+
+## Remote Desktop
+
+The dashboard uses these authenticated endpoints after the operator enters the existing dashboard PIN. The [Remote Desktop guide](/guides/remote-desktop/) explains target readiness, the Mac permissions, mobile controls, and revocation. A stream ticket is short lived and scoped to one target and controller.
+
+| Method | Path | Description |
+|--------|------|-------------|
+| GET | `/desktop/availability` | Report whether this installation can offer desktop access |
+| GET | `/desktop/targets` | List installed machine targets and readiness |
+| POST | `/desktop/requests` | Request access to one target under the operator's dashboard session |
+| GET | `/desktop/requests/:id` | Read the request and grant state |
+| POST | `/desktop/requests/:id/resume` | Resume a disconnected stream while its grant remains valid |
+| GET | `/desktop/requests/:id/cursor` | Read pointer position for viewer feedback |
+| POST | `/desktop/requests/:id/ticket` | Issue a short-lived ticket for the encrypted stream |
+| POST | `/desktop/requests/:id/revoke` | Revoke the grant and end screen capture and input |
+
 ## Sessions
 
 | Method | Path | Description |
@@ -36,6 +60,69 @@ The Instar server exposes a REST API on `localhost:4040` (configurable). All end
 | POST | `/jobs/:slug/override` | Fork an instar default into the user namespace (idempotent) |
 | POST | `/jobs/:slug/unfork` | Archive the user copy to `.unfork-backups/<slug>-<ts>.md`, then restore the instar default |
 | GET | `/jobs/:slug/unfork-backups` | List retained unfork backups for a slug (30 days OR last 10, whichever is more generous) |
+| GET | `/jobs/:slug/supervision-hold` | Read a job's script-route supervision hold (or `null`) and its last 20 release records |
+| POST | `/jobs/:slug/supervision-hold/release` | Release a script-route supervision hold with a required reason; refused while the hold's cause is still unsettled |
+
+### Script-route supervision holds
+
+A scheduled script job normally runs its script directly. When the scheduler's restart check finds that the job's run history and its supervision journal disagree about a run, it writes a hold for that job. While a job is held, it runs as a session instead (the prior runner) until the hold is lifted. A script run cut off by a server restart or crash is recorded as a failed, interrupted run and does not by itself hold the job. A hold that the restart check wrote is lifted by that same check once its cause is settled; other holds stay until released.
+
+Both routes need the normal `Authorization: Bearer TOKEN` header. The slug must match `^[a-z0-9-]+$`.
+
+**Read a hold** — `GET /jobs/:slug/supervision-hold`
+
+```bash
+curl -H "Authorization: Bearer $AUTH" http://localhost:4040/jobs/health-check/supervision-hold
+```
+
+Returns `{ slug, hold, releases }`. `hold` is `{ slug, reason, heldAt }` when the job is held, or `null` when it is not. `releases` is the job's release history, newest first, at most 20 entries, each `{ slug, holdReason, heldAt, releasedAt, releasedBy, releaseReason }`. Reading changes nothing. Use it first, to see why a job is running as a session and whether it has been released before.
+
+**Release a hold** — `POST /jobs/:slug/supervision-hold/release`
+
+```bash
+curl -X POST -H "Authorization: Bearer $AUTH" -H 'Content-Type: application/json' \
+  http://localhost:4040/jobs/health-check/supervision-hold/release \
+  -d '{"reason":"Inspected run history; the mismatched run was settled after the restart"}'
+```
+
+The body is `{ "reason": "..." }`. The reason is required, is trimmed, and must be 1–500 characters; say why the hold's cause is settled. The release is not automatic and is never retried for you. Before releasing, the scheduler runs the same run-history check again for that job:
+
+- If the check still finds runs that disagree between the run history and the supervision journal, or a run too recent to judge yet, the release is refused and the hold stays.
+- Otherwise the hold is removed and an audit row is kept (who released it, why, and the original hold reason and time). The release is also logged as a `job_supervision_hold_released` activity event.
+
+The recorded releaser is always `agent` — the holder of the bearer token. A name in the request body is never used.
+
+| Status | Body | Meaning |
+|--------|------|---------|
+| 200 | `{ released: true, slug, hold, releasedBy: "agent" }` | Released; `hold` is the hold that was removed |
+| 400 | `{ error: "Invalid job slug" }` or a `reason is required (1-500 characters)…` error | Bad slug, or missing, empty or too-long reason |
+| 404 | `{ error: "not-held", slug }` | The job has no hold |
+| 409 | `{ error: "cause-unsettled", slug, runIds, detail }` | Runs still disagree; `runIds` lists up to 20 of them (empty when a run is only too recent to judge) |
+| 409 | `{ error: "read-only-standby" }` | This server is a read-only standby; the supervision journal is not available here |
+| 503 | `{ error: "Scheduler not running" }` or `{ error: "census-unavailable", slug, detail }` | No scheduler, or run history could not be read completely |
+| 500 | `{ error }` | Unexpected failure |
+
+The read route returns the same 400, 409 `read-only-standby`, 503 `Scheduler not running` and 500 errors. On a 409 `cause-unsettled`, inspect the listed runs instead of retrying with a different reason; the release will keep being refused until the check passes.
+
+## Work Board
+
+A card for every decision, answer or sign-off the agent needs from a person. Off unless `workBoard.enabled` is on (on by default for a development agent); when off every route answers `503 work-board-disabled`. See [Work Board](/architecture/work-board/).
+
+| Method | Path | Description |
+|--------|------|-------------|
+| GET | `/work-board` | The lanes, each card's derived status and what is needed, pending pickups and `behind`. |
+| GET | `/work-board/cards/:id` | One card. A card a person may not read answers 404. |
+| POST | `/work-board/cards` | Create a card: `title`, `need`, at least one `doneWhen` item, `outward`. With the dashboard `pin` the card is the owner's; without it, the agent's. |
+| POST | `/work-board/cards/:id/records` | `kind`: `edited`, `waiting-on`, `evidence` or `claimed-done`. A `waiting-on` names who must act: `principal: "owner"` (the server resolves the team owner) with a `question`, or `"agent"`. Pickup, policy and tap records are refused here. |
+| POST | `/work-board/cards/:id/tap` | A person's tap (`action` plus what it binds to, and the dashboard `pin`). The agent's token alone is refused `person-required`. |
+| POST | `/work-board/settings` | The owner's limits and the approval `policy`, with the dashboard `pin`. `{ preview: true, policy }` says how many waiting cards would start. |
+| GET | `/work-board/graduation` | The pilot's measurement from the card records, and which day-7 / day-14 records are due. |
+| POST | `/work-board/graduation/pass` | Write each due graduation record (the lease holder only). |
+| POST | `/work-board/cards/:id/notes` | `{ text }`: a progress note from the agent (Bearer) or the scoped session bound to the card's conversation or to the conversation that recorded the request. It lands in the card's conversation at once; `503 rate-limited` means nothing was written, write it again. A `not-started` card refuses it. |
+| POST | `/work-board/not-started/approve` | Owner, with the dashboard `pin`: `{ cards: [{ id, materialHash, titleHash }] }` approves each shown not-started internal card, one signed tap each; per-card results, `stale-card` for a card that changed. |
+| POST | `/work-board/not-started/approve-and-widen` | Owner, with the dashboard `pin`: the same approvals, then the `board-policy` trust request is raised with the record it rests on; the response says where to answer it or why it could not be raised. |
+| GET | `/mobile/work-board` | The cards a paired phone's person may see. |
+| POST | `/mobile/work-board/cards/:id/tap` | A tap from the owner's phone, signed with Face ID over the exact action line. |
 
 ## Relationships
 
@@ -53,7 +140,8 @@ The Instar server exposes a REST API on `localhost:4040` (configurable). All end
 |--------|------|-------------|
 | GET | `/telegram/topics` | List topic-session mappings |
 | POST | `/telegram/topics` | Programmatic topic creation |
-| POST | `/telegram/reply/:topicId` | Send message to a topic |
+| POST | `/telegram/reply/:topicId` | Send message to a topic. The answer carries `messageId` and, when the chat has message links, `messageLink` |
+| GET | `/messages/link` | Build the link to a message, a card or a conversation from ids: `?platform=telegram&topicId=N&messageId=M`, `?platform=slack&channel=C&ts=T`, `?platform=card&cardId=ID`, `?platform=app&conversationKey=UUID`. Telegram answers say whether this machine's log holds that message (`verified`, `matched`); `409 not-linkable` names why a link cannot be built |
 | GET | `/telegram/topics/:topicId/messages` | Topic message history (`?limit=20`) |
 
 ## Evolution
@@ -168,6 +256,20 @@ These tools are registered as an MCP server and called by Claude Code (or any MC
 | GET | `/messages/outbox` | Inter-agent outbox |
 | GET | `/messages/dead-letter` | Dead letter queue |
 | POST | `/messages/send` | Send a message (used internally by MCP tools) |
+| POST | `/threadline/pairing/invites` | Make a pairing invite (`ttlMinutes`, optional `bindFp`) |
+| GET | `/threadline/pairing/invites` | List own invites, pending accepts and known peers |
+| DELETE | `/threadline/pairing/invites/:iid` | Revoke an open invite |
+| POST | `/threadline/pairing/invites/inspect` | Recipient: check and hold a received invite |
+| POST | `/threadline/pairing/invites/:iid/approve` | Recipient approves (PIN) |
+| POST | `/threadline/pairing/invites/:iid/decline` | Recipient declines |
+| POST | `/threadline/pairing/invites/:iid/finish` | Inviter confirms the acceptor (PIN) |
+| POST | `/threadline/pairing/invites/:iid/not-them` | Inviter rejects the acceptor (PIN) |
+
+## Parallel-Work Awareness
+
+| Method | Path | Description |
+|--------|------|-------------|
+| GET | `/parallel-work/sentinel` | Is the overlap sentinel ticking? Live counters, `tickAgeMs`, `cadenceMinutes`; 503 when dark |
 
 ## Serendipity Protocol
 
@@ -224,12 +326,26 @@ Rich profiles let agents present meaningful, differentiated identities -- not ju
 | POST | `/feedback` | Submit feedback |
 | GET | `/feedback` | List feedback |
 | POST | `/feedback/retry` | Retry un-forwarded feedback |
+| GET | `/feedback-factory/readiness-authorities/proposal` | Preview readiness authority and blockers |
+| GET | `/feedback-factory/triage/queue` | List ranked work items and execution states |
+| GET | `/feedback-factory/triage/summary` | Read triage counts and authority health |
+| GET | `/feedback-factory/triage/authority/proposal` | Preview triage authority and blockers |
+| POST | `/feedback-factory/triage/authority` | Governed create, replace, revoke or restore of triage authority |
+| POST | `/feedback-factory/triage/plan` | Prepare a reviewable operator plan |
+| POST | `/feedback-factory/triage/commit` | Apply a PIN-approved plan |
+| GET | `/feedback-factory/execute/status` | Read executor availability, admission and attempts |
+| POST | `/feedback-factory/execute/stop` | Stop an Initiative's attempts and disarm its PR |
+| POST | `/feedback-factory/execute/revoke-acceptance` | Withdraw approver-dependence acceptance |
+| POST | `/feedback-factory/execute/release` | Return a parked Initiative to triage |
+| POST | `/feedback-factory/execute/canary-retry` | Retry the sandbox canary after its wait; the canary must still pass |
+
+The feedback factory's mutation routes require their own operator-intent and owner checks in addition to normal API authentication. See [Feedback-Factory Processing](/features/feedback-factory-processing/) for the path from intake to a reviewed fix.
 
 ---
 
 ## Full route inventory
 
-The sections above describe the most commonly-used endpoints with curl examples and parameter notes. The full registered route surface is much larger — 460 routes across roughly 80 prefixes. This inventory lists every route by category so you can find the right endpoint when you need it. For curl examples on routes not detailed above, the route name is usually enough to guess the shape — `GET /resource` lists, `GET /resource/:id` reads, `POST /resource` creates, `PATCH /resource/:id` updates, `DELETE /resource/:id` removes.
+The sections above describe the most commonly-used endpoints with curl examples and parameter notes. The full registered route surface is much larger. This inventory lists routes by category so you can find the right endpoint when you need it. For curl examples on routes not detailed above, consult the feature guide or route contract before sending a mutation.
 
 ## /.well-known
 - `GET /.well-known/instar.json`
@@ -268,11 +384,33 @@ with respect to behavior; the ratio is a signal, never a gate.
 - `GET /attention/_remote-ack/pending` — list still-pending durable remote-acks (observability).
 - `POST /attention/_remote-ack/drain` — manually drain pending durable remote-acks to their owning machines.
 
+## /authorization-requests
+
+Operator authorization requests: an agent proposes a time-boxed floor-action grant for a registered Slack user; nothing is granted until the operator approves with the PIN. See the Blocker, authorization, failure and framework-issue routes reference page for request bodies, switches and errors.
+
+- `POST /authorization-requests` — propose a grant (inert until approved)
+- `GET /authorization-requests` — list requests (`?status=`), each with its server-written card
+- `GET /authorization-requests/:id` — one request
+- `POST /authorization-requests/:id/approve` — PIN-gated approval; issues the signed grant mandate
+- `POST /authorization-requests/:id/deny` — PIN-gated decline (`denyReason` required)
+- `POST /authorization-requests/:id/withdraw` — the proposing agent withdraws its pending request
+
 ## /autonomous
 - `POST /autonomous/register` — server-side start snapshot for an autonomous run (scope-accretion R30): the server mints the runId, snapshots the `scopeAccretion` config + sweep base-root start-SHAs, and clamps `endAt` to `now + maxDurationMs`. One registration per active run (409 while the existing record is active).
 - `POST /autonomous/:topic/run-end` — every exit surface reports here (scope-accretion R44): runs the non-blocking advisory sweep and enumerates any unbuilt accreted work loudly; marks the run record ended.
 - `POST /autonomous/:topic/ratify-deferral` — dashboard-PIN-gated operator ratification of deferred accreted artifacts (`{"artifacts": [...]}` or `{"all": true}`; the response echoes exactly what was ratified).
 - `POST /autonomous/:topic/scope-accretion-override` — dashboard-PIN-gated live mid-run lever (`{"enabled": false, "reason": "…"}`): overrides the registration-time snapshot for the running session; audited.
+
+## Codex task continuation
+
+These authenticated endpoints manage the bounded, per-topic Codex checklist. The server caps each generation's duration and continuation count; they do not activate an autonomous run on their own.
+
+| Method | Path | Description |
+|--------|------|-------------|
+| GET | `/continuation/:topic/status` | Show whether the ledger is enabled and active, its expiry, and the number of open tasks. |
+| POST | `/continuation/start` | Start a new checklist with `topicId`, `tasks`, and optional `sessionId`, `durationSeconds`, and `maxContinuations`. |
+| POST | `/continuation/:topic/renew` | Mint a fresh bounded generation for an existing checklist with open tasks after its prior duration expires; the tasks are preserved. This is not an operator-stop override. |
+| POST | `/continuation/:topic/complete` | Mark one task complete with its one-based `ordinal`. |
 
 ## /autonomy
 - `GET /autonomy`
@@ -298,6 +436,18 @@ with respect to behavior; the ratio is a signal, never a gate.
 - `GET /backups`
 - `POST /backups`
 - `POST /backups/:id/restore`
+
+## /blockers
+
+Blocker Ledger and Self-Unblock checklist runs (signal-only; 503 while the ledger is off; writes need `X-Instar-Request: 1`). See the Blocker, authorization, failure and framework-issue routes reference page for request bodies, switches and errors.
+
+- `GET /blockers` — list entries (`?limit`, `?offset`, `?includeArchived=1`)
+- `GET /blockers/:id` — one entry with its history and evidence
+- `POST /blockers` — open an entry (`detectedText`, `origin`)
+- `POST /blockers/:id/advance` — move one pipeline step with that step's evidence
+- `POST /blockers/:id/settle` — settle as `resolved` or `true-blocker`
+- `POST /blockers/self-unblock-run` — run the Self-Unblock checklist against a `service:scope` target and store the run
+- `GET /blockers/self-unblock-runs` — recent checklist runs with per-probe results
 
 ## /build
 - `POST /build/heartbeat`
@@ -359,6 +509,19 @@ itself is the operator's manual click; there is no fire-cutover route by design.
 - `GET /context/dispatch`
 - `GET /context/working-memory`
 
+## /context-budget (context layers, dev-gated)
+- `GET /context-budget/sentinel` — the Context Budget sentinel: the compaction canary per machine, engine and version, quarantined folds, and the adapter verification suite's recorded results
+- `GET /context-budget/layers` — the context layers' status (store, archive, budget, builders)
+- `GET /context-budget/metrics` — the measurement backend (tokens per request, live context size, rework, layer spend)
+- `POST /context-budget/codex-seed` — the Codex next-prompt seed: the first Codex prompt after a compaction gets the topic's verified standing packet
+- `POST /context-budget/codex-seed/ack` — the hook's acknowledgement; writes the seeded marker for that compaction epoch
+- `GET /context-budget/codex-seed` — the seed's counts
+- `GET /topic/:id/standing-packet` — what a topic's session is re-seeded with after a compaction (sizes and verdicts only)
+- `GET /topic/:id/user-corpus` — the operator's own messages for a topic (sizes and labels only)
+- `GET /topic/:id/anchor` — the topic's Anchor and decisions ledger (references and statuses only)
+- `GET /topic/:id/chunks` — the topic's chunk and range summaries
+- `GET /topic/:id/chunks/:k` — one chunk
+
 ## /decision-quality
 - `GET /decision-quality`
 - `POST /decision-quality/grade-pass`
@@ -416,6 +579,14 @@ itself is the operator's manual click; there is no fire-cutover route by design.
 - `POST /evolution/learnings`
 - `POST /evolution/proposals`
 
+## /failures
+
+Failure-Learning Loop reads (503 while failure learning is off). See the Blocker, authorization, failure and framework-issue routes reference page for request bodies, switches and errors.
+
+- `GET /failures/analysis` — ledger analysis plus the rollout stage (`?sinceDays=`)
+- `GET /failures/insights` — analyzer insights (`?status`, `?before`, `?limit`)
+- `GET /failures/:id` — one failure record
+
 ## /features
 - `DELETE /features/discovery-data`
 - `GET /features`
@@ -450,6 +621,17 @@ itself is the operator's manual click; there is no fire-cutover route by design.
 - `POST /flows/:flowId/resume`
 - `POST /flows/:flowId/start-step`
 - `POST /flows/:flowId/wait`
+
+## /framework-issues
+
+The framework-issue ledger from framework onboarding (observability only, never gates). See the Blocker, authorization, failure and framework-issue routes reference page for request bodies, switches and errors.
+
+- `GET /framework-issues` — list issues (`?framework`, `?bucket`, `?status`, `?limit`)
+- `GET /framework-issues/playbook` — carry-over lessons for `?targetFramework=`
+- `GET /framework-issues/capture-stats` — mentor runs against observations written
+- `GET /framework-issues/observability` — bucket spread, leak and loop counts
+- `POST /framework-issues/observe` — record an engineering-discovered issue
+- `POST /framework-issues/:id/promote` — change playbook status (`extracted` needs a non-Echo attester)
 
 ## /git
 - `GET /git/log`
@@ -529,6 +711,7 @@ itself is the operator's manual click; there is no fire-cutover route by design.
 - `GET /internal/stop-gate/kill-switch`
 - `GET /internal/stop-gate/log`
 - `POST /internal/compaction-resume`
+- `POST /internal/lifeline-proof` — the lifeline proves to its own server that it sends the ingress secret (Bearer + `X-Instar-Lifeline-Secret`); carries no Telegram input.
 - `POST /internal/prompt-recall`
 - `POST /internal/slack-forward`
 - `POST /internal/stop-gate/annotations`
@@ -536,8 +719,8 @@ itself is the operator's manual click; there is no fire-cutover route by design.
 - `POST /internal/stop-gate/kill-switch`
 - `POST /internal/stop-gate/mode`
 - `POST /internal/stop-gate/reset-breaker` — clear the authenticated authority breaker after provider repair.
-- `POST /internal/telegram-callback`
-- `POST /internal/telegram-forward`
+- `POST /internal/telegram-callback` — lifeline only: requires the `X-Instar-Lifeline-Secret` header as well as the Bearer token.
+- `POST /internal/telegram-forward` — lifeline only: requires the `X-Instar-Lifeline-Secret` header as well as the Bearer token.
 
 ## /jobs
 - `GET /jobs`
@@ -978,6 +1161,9 @@ Verified per-topic operator binding (Know Your Principal). The operator is estab
 - `GET /trust/elevations`
 - `GET /trust/summary`
 - `POST /trust/grant`
+- `POST /trust/requests` — open the person's approval request for a raise (the card goes to their own direct chat or paired device)
+- `GET /trust/requests` — open and past approval requests
+- `DELETE /trust/requests/:id` — withdraw a request the agent raised that no person has answered; its code approves nothing after that, and the same change cannot be asked again until the card would have expired. A `board-policy` request cannot be withdrawn.
 
 ## /tunnel
 - `GET /tunnel`
@@ -1047,6 +1233,7 @@ Cross-machine account setup from the dashboard's Subscriptions-tab grid. Dark be
 | POST | `/subscription-relogin/:episodeId/approve-with-mandate` | Target-local point-of-use route for a signed exact-bounds repair mandate. Intended for the fronting repair-cell orchestrator, not direct dashboard use. |
 | POST | `/subscription-relogin/:episodeId/cancel` | Cancel an active repair episode. Cancellation is durable and checked again before every side effect. |
 | POST | `/subscription-relogin/:episodeId/retry` | Retry an eligible failed episode within its durable attempt, reissue, and wall-clock budgets. Uncertain non-idempotent outcomes remain operator-only. |
+| POST | `/subscription-relogin/:episodeId/code` | Loopback-only door for a skill-driven sign-in helper (macOS, `navigation: agent-session`). Authenticated by the per-episode `X-Relogin-Helper-Token` held in memory by `SubscriptionReloginHelper`, not the API bearer token. The body is exactly one of `{"code"}`, `{"notify":"phone-tap"}` or `{"notify":"macos-permission","permission"}`, capped at 1 KB, with no CORS. Answers 409 when no live helper holds the episode and 503 when the path is off. |
 
 ### Window lifecycle obligation ledger (Echo-local)
 
@@ -1074,6 +1261,26 @@ The enforcement plane behind governance windows (`core/WindowLifecycleObligation
 | Method | Route | Description |
 |---|---|---|
 | POST | `/playwright-profiles/provision` | Recent-dashboard-PIN route that creates a jailed, machine-local Chrome profile for one Google identity. The request accepts vault secret **names**, never secret values, and returns a phone-complete next step when password or MFA help is needed. |
+| GET | `/passkeys/grants` | Agent-held Google passkeys (⚗️ dark, dev-gated `passkeys.enabled`): this machine's per-account passkey **grants**, the non-secret copies of grants it issued to peers, its confirmed **issuers** (machines whose signed passkey instructions it accepts), the revoke high-water mark, and whether the first grant is still blocked on issuer bootstrap. |
+| POST | `/passkeys/grant` | Dashboard-PIN route (rate-limited like the mandate PIN routes). Body `{pin, email, googleCreatedAt?, targetMachineId?}`. Writes one grant for (account × THIS machine); with `targetMachineId` it signs a `passkey-cell` mandate with this machine's identity key and delivers it to the peer's `/passkeys/cell-action`. On a multi-machine agent the first grant answers `409 issuer-bootstrap-required` until a peer issuer is confirmed here. |
+| POST | `/passkeys/revoke` | Dashboard-PIN route. Body `{pin, email, revokesGrantSeq?, targetMachineId?}`. Revokes the cell's grant instances up to a sequence (a later re-grant survives an older revoke), raises the local revoke high-water mark, drops the profile's passkey binding and — if a credential store exists — the stored credential. Stops THIS agent's passkey path only; live sessions and stored passwords remain. |
+| POST | `/passkeys/issuer-add` | Dashboard-PIN route. Body `{pin, machineId, targetMachineId?}`. Confirms a paired, ACTIVE machine as a trusted issuer of passkey instructions on THIS machine (no trust-on-first-use; the peer is named from this machine's own registry). |
+| POST | `/passkeys/issuer-remove` | Dashboard-PIN route. Body `{pin, machineId, targetMachineId?}`. Removes a machine from this machine's trusted-issuer set. |
+| GET | `/passkeys/outbox` | This machine's durable **revoke outbox**: every peer revoke it issued with state (`pending` / `applied` / `escalated` / `closed`), attempt count, next attempt time and last result — never the signed bundle itself. |
+| POST | `/passkeys/outbox/tick` | Run one re-delivery pass now (the server timer does this every 10 minutes): due entries are re-sent UNCHANGED on 1h → 6h → daily backoff, a peer seen online is pulled forward (never below a 15-minute floor), entries 30 days past issue escalate to one aggregated attention item per machine and stop, apart from one attempt when that machine is next online. |
+| POST | `/passkeys/cell-action` | The signed-instruction receiver (Bearer transport; the Ed25519 signature, the expected-issuer set and the nonce ledger are the authority). Accepts a `passkey-cell` bundle only from a confirmed issuer, addressed to this machine, within 15 minutes (revokes never expire), once per nonce; refuses `account-follow-me` bundles. |
+| POST | `/passkeys/revert-method` | Dashboard-PIN route. Body `{pin, accounts?}`. Restores a browser-profile account to the login method its passkey enrollment replaced; accounts with none are listed as `noPriorMethod`, never guessed. |
+| GET | `/passkeys` | Per-cell view of THIS machine (granted, custody state, attempt rows, pauses, grant echoes, outbox rows, whether it is the secret-sync push authority) plus its peer exclusions. `?scope=pool` merges every peer through the pool reader's memo (marked with `ageMs`): each peer's condition — `observed`, `peer-offline` (rows still count), `excluded`, or `partitioned` (blocks enrollment and proofs) — its current-or-last-known rows, `degraded` + `degradedReasons`, and `singleMachine`. |
+| GET | `/passkeys/pool-state` | What a peer reads (Bearer transport): this machine's publishable passkey state — canonical emails only, never a credential, entry key or signed bundle. A caller naming itself with `X-Instar-Machine-Id` must be an ACTIVE paired machine in this machine's registry (revoked, pending, de-paired and unknown machines answer 403). |
+| POST | `/passkeys/pool-state/tick` | Run one pool read pass now (the server timer does this every 5 minutes): every peer queried once in parallel (5 s per peer, 5 s overall), classified with rope health, last-known rows persisted, one memo produced. |
+| GET | `/passkeys/admission` | Read-only: `?action=enroll|prove|canary|repair|revoke&email=…` evaluates the pool-wide table (partitioned peer ⇒ no enroll/prove; suspended ⇒ canary only; stopped/kill switch ⇒ repair by degraded override only), the enrollment rate limit (one per cell per 30 min, three per account per day pool-wide), the same-account proof gap (6 h across machines) and any active throttle/risk pause. Honest about its inputs: the suspension record and lease-holder state are not published on this build and are reported as such. |
+| POST | `/passkeys/exclude-peer` | Dashboard-PIN route. Body `{pin, machineId, targetMachineId?}`. Excludes a long-unobserved peer from THIS machine's pool checks (treated like `peer-offline`: its last-known rows still count); clears automatically when the peer is observed again. Also a `passkey-cell` mandate op for another machine. |
+| POST | `/passkeys/include-peer` | Dashboard-PIN route. Body `{pin, machineId, targetMachineId?}`. Re-includes an excluded peer. |
+| GET | `/passkeys/health` | This machine's per-cell **health** records (`healthy` / `degraded` / `breaker-open` / `unverified` / `unverified-stopped` / `rejected` / `security`, the next proof due time, the unknown backoff rung, the flapping flag, the Google-side removal state) plus the digest ledger (last buzz, last upsert, resolved). |
+| POST | `/passkeys/health/outcome` | Bearer. Body `{email, outcome, origin?, reenrolled?, pin?}`. Records one proof outcome (`ready` / `failed` / `unknown` / `credential-rejected` / `removed-on-google` / `security`) for a LOCAL cell with an active grant (404 otherwise) and moves it through the health table; the two permissive provenances — `origin: "operator"` and `reenrolled: true` — additionally require the dashboard PIN: a `failed` arms one confirming proof an hour later; three confirmed weekly failures open the breaker; three unknowns make the cell unverified with a 7 → 14 → 28-day backoff and three more at the cap stop it; `security` is terminal until re-enrollment. Every transition is audited as states only. |
+| POST | `/passkeys/health/digest/refresh` | Bearer. Run one digest pass now (the server timer does this every 5 minutes): advance the clocks (paused while the pool read path is degraded), build the ONE digest under `passkey-health:digest`, and upsert it when its ledger says so — a buzz at most once per 24 hours, security and suspension once per tick, peer-list changes silently; nothing left to report resolves the episode. Only the serving-lease holder narrates the pool; a non-holder narrates its own machine. |
+| POST | `/passkeys/attest-google-removed` | Dashboard-PIN route. Body `{pin, email, targetMachineId?}`. Records the operator's attestation that the passkey was removed on Google when the read-only list check cannot run — shown as **attested**, never as removed; applies only to a cell that has a health record on the target machine (`no-cell-record` otherwise). Also a `passkey-cell` mandate op. |
+| POST | `/passkeys/prove` | Dashboard-PIN route. Body `{pin, email}`. Runs the **cold proof** of THIS machine's cell for the account now: admission first (the pool-wide table, the 6 h same-account gap across machines, any active risk/throttle pause — a refusal is 409 `proof-refused` naming the reason; a peer that cannot be read refuses before any browser opens), then the host-wide browser seat (409 `seat-busy`), then the proof in the cell's own proof-only Chrome profile: cleared, confirmed signed out, the stored credential added to a virtual authenticator, the identifier filled, the passkey prompt's Continue pressed, the signed-in identity read, the credential removed and the profile signed out. `ready` needs all three: an observed assertion for the stored id, a single credential, the expected identity signed in; otherwise `failed` / `credential-rejected` (`removed-on-google` while a removal is pending/attested) / `security` (a different identity) / `unknown` (transport, risk page, throttled). The outcome is recorded into the cell's health with `origin: "operator"`; a risk page pauses the account for 7 days, a throttled prompt pauses the account for 24 h and the machine for 1 h. 404 without an active grant; 409 `no-credential` without a stored key (never creates a store); 501 for a `targetMachineId` other than this machine on this build; 503 without a proof browser. |
 
 The quota-aware scheduler picks accounts reset-date-optimally ("use before reset")
 and guarantees a long-lived session that hits its account's quota resumes on

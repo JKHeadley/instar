@@ -1,0 +1,22 @@
+{
+  "ts": "2026-11-11T07:48:30.902Z",
+  "slug": "pr-link-review-request",
+  "suggestedTier": 1,
+  "declaredTier": 1,
+  "riskFloor": 1,
+  "riskFloorReasons": [],
+  "belowFloor": false,
+  "files": 1,
+  "loc": 25,
+  "scope": {
+    "basis": "staged-in-scope-paths-including-deleted",
+    "files": [
+      "src/messaging/prLinkReviewRequest.ts"
+    ],
+    "addedLines": 15,
+    "deletedLines": 10
+  },
+  "causalAutopsy": null,
+  "classClosure": null,
+  "verdict": "blocked"
+}

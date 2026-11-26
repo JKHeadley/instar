@@ -1,0 +1,358 @@
+// Accounts page — pure view-model (docs/specs/console-features/capacity.md, "Accounts").
+//
+// /subscription-pool?scope=pool returns one row per account per machine. The page
+// shows each account once (its freshest reading), the machines it works on as
+// chips, and every account×machine cell that needs a sign-in as one "Needs you" item.
+
+import { ago } from './home-model.js';
+import { verifiedDisplayName } from './display-identity.js';
+import { unreachableSentence, poolMachine } from './unreachable-model.js';
+
+export const READING_STALE_MS = 60 * 60 * 1000;
+const NEEDS_SIGN_IN = new Set(['needs-reauth', 'signed-out', 'expired', 'broken']);
+const FRAMEWORK_WORDS = { 'claude-code': 'Claude', 'codex-cli': 'Codex', 'gemini-cli': 'Gemini', 'grok-build': 'Grok', 'pi-cli': 'Pi' };
+
+export function frameworkName(f) { return FRAMEWORK_WORDS[f] || f || 'Other'; }
+
+/** The one blocker that is a decision only the operator can make (which accounts live on this machine). */
+const OPERATOR_BLOCKERS = new Set(['device-limit-benched']);
+
+// A wrong login can correct itself on a later poll; after a day it has stopped doing that.
+export const WRONG_LOGIN_SETTLE_MS = 24 * 60 * 60 * 1000;
+
+/**
+ * A slot proven to hold another account's login: 'sign-in' is an owner re-login (the login is gone
+ * here), 'settling' may still correct itself, and 'stuck' will not without a new sign-in.
+ */
+function wrongLogin(row, now) {
+  if (row.identityDrifted !== true) return null;
+  const drift = row.identityDrift || {};
+  if (drift.actualAccountId === 'missing-local-login' || drift.repairState === 'owner-relogin-required') return { kind: 'sign-in' };
+  const at = Date.parse(drift.detectedAt);
+  const settling = drift.repairState === 'repairing' || (Number.isFinite(at) && now - at < WRONG_LOGIN_SETTLE_MS);
+  return { kind: settling ? 'settling' : 'stuck', who: verifiedDisplayName(drift.actualEmail, drift.actualAccountId) || null };
+}
+
+/**
+ * A cell's state in words, from the pool row, its repair episode and its repair blocker (when any).
+ * `waiting` means a warning with nothing only the operator can do: it is shown, but it is not "needs you".
+ */
+export function cellState(row, episode, blocker, now = Date.now()) {
+  if (episode && ['approved', 'starting', 'running', 'in-progress', 'navigating', 'awaiting-code'].includes(episode.state)) return { state: 'working', label: 'signing in' };
+  const wrong = wrongLogin(row, now);
+  if (wrong && wrong.kind === 'settling') return { state: 'waiting', label: "holds another account's login; checking if it corrects itself" };
+  // warning-path: row
+  if (wrong && wrong.kind === 'stuck') return { state: 'attn', label: wrong.who ? `holds ${wrong.who}'s login` : "holds another account's login", wrongLogin: true, wrongLoginWho: wrong.who };
+  // warning-path: row
+  if (wrong) return { state: 'attn', label: 'needs sign-in' };
+  if (NEEDS_SIGN_IN.has(row.status) && blocker && !OPERATOR_BLOCKERS.has(blocker.reason)) {
+    return blocker.reason === 'no-open-incident'
+      ? { state: 'waiting', label: 'sign-in not confirmed; still checking' }
+      : { state: 'waiting', label: "automatic repair can't start yet" };
+  }
+  // warning-path: row
+  if (NEEDS_SIGN_IN.has(row.status)) return { state: 'attn', label: 'needs sign-in' };
+  if (row.status === 'active' && row.loginCheck === 'ok') return { state: 'ok', label: 'signed in' };
+  if (row.status === 'active') return { state: 'ok', label: 'signed in (not re-checked)' };
+  return { state: 'unknown', label: String(row.status || 'unknown').replace(/-/g, ' ') };
+}
+
+const WINDOW_KEYS = [['fiveHour', '5-hour'], ['sevenDay', 'weekly'], ['fable', 'Fable weekly'], ['primary', '5-hour'], ['secondary', 'weekly']];
+
+/**
+ * Every usage window on a reading, in a fixed order (5-hour, weekly, Fable weekly), each with its own
+ * reset. A window shows only when the reading has it: the 5-hour limit applies to some accounts some of
+ * the time. A window whose reset time has passed rolled over after the reading: it is kept as `rolledOver`
+ * (its old share is no longer true) and never counts as the tightest.
+ */
+export function usageWindows(q, now = Date.now()) {
+  if (!q) return [];
+  const seen = new Set();
+  const out = [];
+  for (const [k, label] of WINDOW_KEYS) {
+    const w = q[k];
+    if (!w || seen.has(label)) continue;
+    const pct = Number(w.utilizationPct ?? w.usedPercent);
+    if (!Number.isFinite(pct)) continue;
+    seen.add(label);
+    const resetsAt = w.resetsAt || w.resetsAtIso || null;
+    const t = Date.parse(resetsAt);
+    out.push({ key: label === '5-hour' ? 'five-hour' : label === 'weekly' ? 'weekly' : 'fable', label, pct, resetsAt, rolledOver: Number.isFinite(t) && t <= now });
+  }
+  return out;
+}
+
+/** Future weekly reset only; short-window and specialist limits do not reorder the account list. */
+export function nextWeeklyReset(q, now = Date.now()) {
+  const times = usageWindows(q, now).filter((w) => w.key === 'weekly').map((w) => Date.parse(w.resetsAt)).filter((t) => Number.isFinite(t) && t > now);
+  return times.length ? Math.min(...times) : null;
+}
+
+/** The tightest usage window on a reading: { pct, label, resetsAt, second }. */
+export function tightest(q, now = Date.now()) {
+  const wins = usageWindows(q, now).filter((w) => !w.rolledOver).map(({ pct, label, resetsAt }) => ({ pct, label, resetsAt }));
+  if (!wins.length) return null;
+  wins.sort((a, b) => b.pct - a.pct);
+  return { ...wins[0], second: wins[1] || null };
+}
+
+/** How long until a time, in words: "in 3h 10m", "in 25m"; null past a day or when not in the future. */
+export function untilWords(ts, now = Date.now()) {
+  const ms = Date.parse(ts) - now;
+  if (!Number.isFinite(ms) || ms <= 0 || ms >= 24 * 60 * 60 * 1000) return null;
+  const m = Math.max(1, Math.round(ms / 60000));
+  return m < 60 ? `in ${m}m` : `in ${Math.floor(m / 60)}h${m % 60 ? ` ${m % 60}m` : ''}`;
+}
+
+/** A window's row: what share is used, and which reset it is. */
+export function windowRow(w, now = Date.now()) {
+  if (w.rolledOver) return { ...w, name: w.label.charAt(0).toUpperCase() + w.label.slice(1), pctText: '—', reset: 'reset since the last reading', tone: null };
+  const when = resetWords(w.resetsAt, now);
+  const until = untilWords(w.resetsAt, now);
+  return {
+    ...w,
+    name: w.label.charAt(0).toUpperCase() + w.label.slice(1),
+    pctText: `${Math.round(w.pct)}%`,
+    reset: when ? `${when}${until ? ` (${until})` : ''}` : null,
+    // warning-path: row
+    tone: usageTone(w.pct),
+  };
+}
+
+export function resetWords(ts, now = Date.now()) {
+  const t = Date.parse(ts);
+  if (!Number.isFinite(t) || t <= now) return null;
+  const d = new Date(t);
+  const sameDay = new Date(now).toDateString() === d.toDateString();
+  // A weekday alone is ambiguous a week out ("Tue" read on a Tuesday), so past 6 days add the date.
+  const day = sameDay ? '' : t - now > 6 * 24 * 60 * 60 * 1000
+    ? d.toLocaleDateString([], { weekday: 'short', month: 'short', day: 'numeric' }) + ' '
+    : d.toLocaleDateString([], { weekday: 'short' }) + ' ';
+  return `resets ${day}${d.toLocaleTimeString([], { hour: 'numeric', minute: '2-digit' })}`;
+}
+
+/** A usage window at or over this share is "nearly out" (the rows' red tone uses the same line). */
+export const NEAR_OUT_PCT = 90;
+/** At or over this share a limit is coloured as needing attention. */
+export const USAGE_TONE_ATTN_PCT = 75;
+
+/**
+ * The colour for a limit or an account, from the rounded percentage that is displayed (so 89.6%,
+ * shown as "90%", is red), and none for a limit that has reset. The server holds the same rule in
+ * src/server/mobileCapacityRoutes.ts; src/data/design/usage-tone-vectors.json pins both sides.
+ */
+export function usageTone(pct, rolledOver = false) {
+  if (rolledOver || !Number.isFinite(Number(pct))) return null;
+  const shown = Math.round(Number(pct));
+  return shown >= NEAR_OUT_PCT ? 'bad' : shown >= USAGE_TONE_ATTN_PCT ? 'attn' : null;
+}
+
+/** Every live usage window on a reading: [{ pct, resetsAt }]. */
+function windowsOf(q, now = Date.now()) {
+  return usageWindows(q, now).filter((w) => !w.rolledOver).map(({ pct, resetsAt }) => ({ pct, resetsAt }));
+}
+
+/**
+ * The page's notice spot: only what needs the person or changes what they can do, and nothing at all
+ * otherwise. Same rules as the phone's (src/server/mobileCapacityRoutes.ts accountNotices). Sign-ins are
+ * the "Needs you" card and its count, so they are not repeated here. One account full while others have
+ * room is on its row and is never a notice.
+ *  - a machine with no signed-in account, where a sign-in would fix it;
+ *  - every usable account, or every usable account of one kind, at or over the line, with when room returns.
+ * Returns [{ key, tone, title, returnsAt, action: { kind: 'sign-in' } | { kind: 'ask', about } }].
+ * Reads each cell's `actionable` (set by buildAccountsPage) to choose the machine notice's action.
+ */
+export function accountNotices(accounts, { partial = false, now = Date.now() } = {}) {
+  const scope = partial ? ' (on the machines that answered)' : '';
+  const byMachine = new Map();
+  for (const a of accounts) for (const c of a.cells) {
+    if (c.missing) continue; // an account a machine never held does not make that machine empty
+    const g = byMachine.get(c.machineId) || { name: c.machine, states: [], canSignIn: false };
+    g.states.push(c.state);
+    if (c.state === 'attn' && c.actionable) g.canSignIn = true;
+    byMachine.set(c.machineId, g);
+  }
+  const machine = [];
+  for (const [id, g] of byMachine) {
+    if (g.states.some((s) => s === 'ok' || s === 'working') || !g.states.includes('attn')) continue;
+    const title = `${g.name} has no signed-in account, so nothing can run there.`;
+    // The sign-in is on the "Needs you" card when it can be started from here; otherwise ask the agent.
+    // warning-path: inline
+    machine.push({ key: `machine:${id}`, tone: 'bad', title, returnsAt: null, action: g.canSignIn ? { kind: 'sign-in' } : { kind: 'ask', about: title } });
+  }
+  const usable = accounts.filter((a) => a.cells.some((c) => c.state === 'ok'));
+  const kinds = [...new Set(usable.map((a) => frameworkName(a.framework)))].sort();
+  const outKinds = [];
+  for (const kind of kinds) {
+    const list = usable.filter((a) => frameworkName(a.framework) === kind);
+    if (list.some((a) => !a.tight)) continue; // one we can't read may have room
+    if (list.every((a) => a.tight.pct >= NEAR_OUT_PCT)) outKinds.push({ kind, list });
+  }
+  const returnsAt = (a) => {
+    let latest = 0;
+    for (const w of windowsOf(a.reading, now).filter((x) => x.pct >= NEAR_OUT_PCT)) {
+      const t = Date.parse(w.resetsAt);
+      if (!Number.isFinite(t) || t <= now) return null;
+      latest = Math.max(latest, t);
+    }
+    return latest || null;
+  };
+  const room = (list, kind) => {
+    const usedUp = list.every((a) => a.tight.pct >= 100);
+    const state = usedUp ? 'used up' : 'nearly out';
+    const noun = kind ? `${kind} account` : 'account';
+    const title = list.length === 1 ? `The only ${noun} is ${state}${scope}.` : `All ${list.length} ${noun}s are ${state}${scope}.`;
+    const times = list.map(returnsAt).filter((t) => t !== null);
+    // warning-path: inline
+    return { key: `room:${kind || '*'}`, tone: usedUp ? 'bad' : 'attn', title, returnsAt: times.length ? new Date(Math.min(...times)).toISOString() : null, action: { kind: 'ask', about: title } };
+  };
+  const rooms = outKinds.length && outKinds.length === kinds.length
+    ? [room(outKinds.flatMap((k) => k.list), kinds.length === 1 ? kinds[0] : null)]
+    : outKinds.map((k) => room(k.list, k.kind));
+  return [...machine, ...rooms].sort((a, b) => Number(b.tone === 'bad') - Number(a.tone === 'bad'));
+}
+
+/**
+ * The header's account counts, from the same cell states as the rows. An account is ready when it
+ * is signed in on every machine that holds it; it needs a sign-in when any machine shows "needs
+ * sign-in" (or holds another account's login); the rest (signing in now, still being checked, other states) are
+ * not ready yet with nothing for the person to do. ready + needSignIn + inProgress = total.
+ */
+export function accountCounts(accounts) {
+  const list = Array.isArray(accounts) ? accounts : [];
+  let ready = 0, needSignIn = 0, inProgress = 0;
+  for (const a of list) {
+    // A machine that does not hold the account says nothing about whether the account is ready.
+    const cells = (Array.isArray(a && a.cells) ? a.cells : []).filter((c) => !c.missing);
+    if (cells.some((c) => c.state === 'attn')) needSignIn++;
+    else if (cells.length && cells.every((c) => c.state === 'ok')) ready++;
+    else inProgress++;
+  }
+  return { total: list.length, ready, needSignIn, inProgress };
+}
+
+/**
+ * Build the page. episodes: /subscription-relogin?scope=pool episodes (optional).
+ * Returns { ok, needs, notices, accounts, headline, sub, facts, partial, tone }.
+ */
+export function buildAccountsPage(res, now = Date.now(), { episodes = [], blockers = [], inUse = null, names: extraNames = {}, poolMachines = null } = {}) {
+  if (!res.ok) return { ok: false, reason: `Couldn't read accounts: ${res.reason}.` };
+  if (res.data && res.data.enabled === false) return { ok: false, reason: 'The account pool is not set up on this agent.' };
+  const rows = Array.isArray(res.data && res.data.accounts) ? res.data.accounts : null;
+  if (!rows) return { ok: false, reason: 'The account pool answered without accounts.' };
+  const failed = res.data.pool && Array.isArray(res.data.pool.failed) ? res.data.pool.failed : [];
+
+  const epFor = (accountId, machineId) => episodes
+    .filter((e) => e.accountId === accountId && e.machineId === machineId)
+    .sort((a, b) => Date.parse(b.updatedAt) - Date.parse(a.updatedAt))[0] || null;
+
+  const byId = new Map();
+  for (const r of rows) {
+    if (!r || !r.id) continue;
+    const email = verifiedDisplayName(r.email, r.id);
+    const g = byId.get(r.id) || { id: r.id, name: verifiedDisplayName(r.nickname, r.id) || email || 'Account name unavailable', email, framework: r.framework, cells: [], reading: null, readingAt: 0 };
+    if (g.name === 'Account name unavailable') g.name = verifiedDisplayName(r.nickname, r.id) || email || g.name;
+    if (!g.email && email) g.email = email;
+    const ep = epFor(r.id, r.machineId);
+    const blocker = blockers.find((b) => b && b.accountId === r.id && b.machineId === r.machineId) || null;
+    g.cells.push({ machineId: r.machineId, machine: verifiedDisplayName(r.machineNickname, r.machineId) || 'Machine name unavailable', ...cellState(r, ep, blocker, now), episode: ep, row: r });
+    const at = Date.parse(r.lastQuota && r.lastQuota.measuredAt);
+    if (r.lastQuota && Number.isFinite(at) && at > g.readingAt) { g.reading = r.lastQuota; g.readingAt = at; }
+    byId.set(r.id, g);
+  }
+  // A machine that answered but does not hold an account gets a "missing" cell, so a machine that
+  // was offline (or rebuilt) when an account was added elsewhere shows the gap and can be set up from
+  // here. A machine that did not answer is left out: its accounts are unknown, not missing. A missing
+  // cell is never "needs you" — not every account belongs on every machine — it is a quiet Set up.
+  const failedIds = new Set(failed.map((f) => f && f.machineId).filter(Boolean));
+  const answered = new Map();
+  for (const r of rows) if (r && r.machineId && !failedIds.has(r.machineId) && !answered.has(r.machineId)) {
+    answered.set(r.machineId, verifiedDisplayName(r.machineNickname, r.machineId) || 'Machine name unavailable');
+  }
+  for (const g of byId.values()) {
+    const held = new Set(g.cells.map((c) => c.machineId));
+    for (const [machineId, machine] of answered) {
+      if (held.has(machineId)) continue;
+      const ep = epFor(g.id, machineId);
+      const working = ep && cellState({}, ep, null, now).state === 'working';
+      g.cells.push({ machineId, machine, ...(working ? { state: 'working', label: 'signing in' } : { state: 'missing', label: 'not on this machine' }), missing: true, episode: ep, row: {} });
+    }
+  }
+  const accounts = [...byId.values()].map((g) => {
+    const t = tightest(g.reading, now);
+    const windows = usageWindows(g.reading, now).map((w) => windowRow(w, now));
+    const stale = g.readingAt && now - g.readingAt > READING_STALE_MS;
+    return {
+      ...g, tight: t, stale, windows, weeklyResetAt: nextWeeklyReset(g.reading, now),
+      inUse: Boolean(inUse && inUse.activeAccountId === g.id),
+      readingAge: g.readingAt ? ago(g.readingAt, now) : null,
+      line: !t ? (g.framework === 'grok-build' ? "Usage isn't readable for this kind of account." : 'No reading yet.')
+        : `${Math.round(t.pct)}% of ${t.label}${resetWords(t.resetsAt, now) ? ' · ' + resetWords(t.resetsAt, now) : ''}`,
+      second: t && t.second ? `${t.second.label} ${Math.round(t.second.pct)}%` : null,
+      // One plain sentence per window, for the details sheet: "5-hour: 100% used, resets 5:59 PM (in 3m)".
+      windowsText: windows.map((w) => `${w.label}: ${w.rolledOver ? w.reset : `${w.pctText} used${w.reset ? `, ${w.reset}` : ''}`}`),
+      // warning-path: row
+      tone: t ? usageTone(t.pct) : null,
+    };
+  }).sort((a, b) => (a.weeklyResetAt ?? Infinity) - (b.weeklyResetAt ?? Infinity)
+    // Stable ties keep equally timed or unknown accounts from moving between refreshes.
+    || String(a.name || '').localeCompare(String(b.name || '')) || String(a.id).localeCompare(String(b.id)));
+
+  const accountKeys = accounts.map((a) => verifiedDisplayName(a.name, a.id)
+    ? `${a.name.toLocaleLowerCase()}\u0000${(a.email || '').toLocaleLowerCase()}` : null);
+  const machineById = new Map();
+  for (const a of accounts) for (const c of a.cells) machineById.set(c.machineId, c.machine);
+  const machineCounts = new Map();
+  for (const [id, name] of machineById) if (verifiedDisplayName(name, id)) {
+    const key = name.toLocaleLowerCase();
+    machineCounts.set(key, (machineCounts.get(key) || 0) + 1);
+  }
+  for (let i = 0; i < accounts.length; i++) for (const c of accounts[i].cells) {
+    const accountKey = accountKeys[i];
+    c.actionable = Boolean(accountKey && accountKeys.indexOf(accountKey) === accountKeys.lastIndexOf(accountKey)
+      && verifiedDisplayName(c.machine, c.machineId) && machineCounts.get(c.machine.toLocaleLowerCase()) === 1);
+  }
+
+  const needs = [];
+  for (const a of accounts) for (const c of a.cells) {
+    if (c.state !== 'attn' || !c.actionable) continue;
+    const ep = c.episode;
+    const repairable = !c.wrongLogin && ep && (ep.state === 'suggested' || ep.state === 'failed');
+    needs.push({
+      key: `${a.id}::${c.machineId}`, accountId: a.id, machineId: c.machineId, machine: c.machine,
+      title: `Sign in ${frameworkName(a.framework)} (${a.email || a.name}) on ${c.machine}`,
+      label: `${frameworkName(a.framework)} · ${a.email || a.name}`,
+      sub: !c.actionable ? 'A unique account and machine name are needed before you can act here.' : c.wrongLogin ? `This slot holds ${c.wrongLoginWho || "another account"}'s login, so this account can't run on ${c.machine}.` : repairable ? (ep.state === 'failed' ? 'The last automatic repair stopped safely; you can try again.' : 'An automatic repair is ready to run.') : 'Its sign-in has expired.',
+      actionable: c.actionable,
+      action: repairable ? (ep.state === 'failed' ? 'retry' : 'approve') : 'start',
+      episodeId: ep ? ep.id : null,
+      remote: Boolean(c.row.remote),
+    });
+  }
+  // A waiting sign-in (unconfirmed, or repair the agent owns) shows on its row only: a line saying
+  // there is nothing to do is not worth the space (operator rule 2026-11-06, topic 134088).
+  const counts = accountCounts(accounts);
+  const busiest = accounts.filter((a) => a.tight).sort((a, b) => b.tight.pct - a.tight.pct)[0];
+  const notices = accountNotices(accounts, { partial: failed.length > 0, now });
+  // The title says what needs the person; otherwise it is just the page name and the notices
+  // (each with its own action) sit under it.
+  const headline = needs.length ? (needs.length === 1 ? '1 sign-in needs you.' : `${needs.length} sign-ins need you.`) : 'Accounts';
+  const facts = [
+    // The header agrees with the rows: how many accounts are ready everywhere, and how many need a sign-in.
+    { n: `${counts.ready} of ${counts.total}`, label: 'ready' },
+    // warning-path: inline
+    counts.needSignIn ? { n: counts.needSignIn, label: counts.needSignIn === 1 ? 'needs you to sign in' : 'need you to sign in', tone: 'attn', href: '#/capacity/accounts?s=needs' } : null,
+    counts.inProgress ? { n: counts.inProgress, label: 'not ready yet, nothing for you to do' } : null,
+    // A routine number: one full account among others with room is not a warning (the notices say when it is).
+    busiest ? { n: `${Math.round(busiest.tight.pct)}%`, label: `most used · ${busiest.name}` } : null,
+    inUse && inUse.activeAccountId ? { n: (byId.get(inUse.activeAccountId) || {}).name || 'Account name unavailable', label: 'in use here' } : null,
+  ].filter(Boolean);
+  const machineNames = {};
+  for (const r of rows) if (r && r.machineId && r.machineNickname) machineNames[r.machineId] = verifiedDisplayName(r.machineNickname, r.machineId) || machineNames[r.machineId];
+  for (const [k, v] of Object.entries(extraNames || {})) if (!machineNames[k]) machineNames[k] = verifiedDisplayName(v, k);
+  // Each unreachable machine says how long and whether anything is fixing it (CMT-1541).
+  const partial = failed.length ? `${failed.map((f) => unreachableSentence(verifiedDisplayName(f.nickname, f.machineId) || verifiedDisplayName(f.machineNickname, f.machineId) || machineNames[f.machineId] || null,
+    poolMachine(poolMachines, f.machineId), f, now)).join(' ')} ${failed.length === 1 ? 'Its accounts' : 'Their accounts'} may be out of date.` : null;
+  // warning-path: pageHead
+  return { ok: true, needs, notices, accounts, headline, sub: '', facts, partial, tone: needs.length ? 'attn' : 'ok' };
+}

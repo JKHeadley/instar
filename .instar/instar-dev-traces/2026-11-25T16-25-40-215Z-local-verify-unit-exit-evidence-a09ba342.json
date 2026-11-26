@@ -1,0 +1,20 @@
+{
+  "version": 2,
+  "slug": "local-verify-unit-exit-evidence",
+  "sessionId": "ed99de61-509a-4e0d-908f-801b299fef73",
+  "timestamp": "2026-11-25T16:25:40.215Z",
+  "artifactPath": "upgrades/side-effects/local-verify-unit-exit-evidence.md",
+  "artifactSha256": "fa4fc2169a82992613ea99baa8b4833f031210e36251f4a054db58336c0a1925",
+  "coveredFiles": [
+    "src/data/awareness/failed-verification-evidence.md",
+    "src/localVerify/failureEvidence.ts",
+    "src/localVerify/orchestrator.ts"
+  ],
+  "phase": "complete",
+  "tier": 1,
+  "tierReasoning": "Small reversible change to retained verifier diagnostics only.",
+  "eli16Path": "docs/specs/local-verify-unit-exit-evidence.eli16.md",
+  "sideEffectsPath": "upgrades/side-effects/local-verify-unit-exit-evidence.md",
+  "secondPass": "true",
+  "reviewerConcurred": true
+}

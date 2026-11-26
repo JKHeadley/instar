@@ -20,6 +20,7 @@ import { MessageProcessingLedger, computeReplyIdempotencyKey } from '../../src/m
 import { dedupeKeyFor } from '../../src/messaging/ingressDedup.js';
 import { signRequest } from '../../src/server/machineAuth.js';
 import { ProcessIntegrity } from '../../src/core/ProcessIntegrity.js';
+import { ensureLifelineIngressSecret, LIFELINE_SECRET_HEADER } from '../../src/core/LifelineIngressSecret.js';
 import { SafeFsExecutor } from '../../src/core/SafeFsExecutor.js';
 import { boundAgentServerBase } from '../helpers/boundAgentServerBase.js';
 import type { InstarConfig } from '../../src/core/types.js';
@@ -126,7 +127,8 @@ describe('Cross-machine reply-marker → dedup (real HTTP + machine-auth)', () =
     // A provider redelivery of the SAME inbound now hits this machine → deduped.
     const fwd = await fetch(`${base}/internal/telegram-forward`, {
       method: 'POST',
-      headers: { 'Content-Type': 'application/json', Authorization: `Bearer ${AUTH}` },
+      // The forward route requires the lifeline ingress secret; this request stands in for the lifeline.
+      headers: { 'Content-Type': 'application/json', Authorization: `Bearer ${AUTH}`, [LIFELINE_SECRET_HEADER]: ensureLifelineIngressSecret(recv.stateDir) },
       body: JSON.stringify({ topicId: TOPIC, text: 'redelivered after handoff', fromUserId: 1, fromUsername: 't', fromFirstName: 'T', messageId: MSG_ID }),
     });
     expect(fwd.status).toBe(200);

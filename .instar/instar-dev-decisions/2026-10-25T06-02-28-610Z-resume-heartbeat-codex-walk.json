@@ -1,0 +1,22 @@
+{
+  "ts": "2026-10-25T06:02:28.610Z",
+  "slug": "resume-heartbeat-codex-walk",
+  "suggestedTier": 1,
+  "declaredTier": 1,
+  "riskFloor": 1,
+  "riskFloorReasons": [],
+  "belowFloor": false,
+  "files": 1,
+  "loc": 32,
+  "scope": {
+    "basis": "staged-in-scope-additions-plus-deletions",
+    "files": [
+      "src/core/TopicResumeMap.ts"
+    ],
+    "addedLines": 28,
+    "deletedLines": 4
+  },
+  "causalAutopsy": null,
+  "classClosure": null,
+  "verdict": "pass"
+}

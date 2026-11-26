@@ -1,0 +1,58 @@
+{
+  "ts": "2026-11-02T03:34:29.968Z",
+  "slug": "ecosystem-idea-pipeline",
+  "suggestedTier": 2,
+  "declaredTier": 2,
+  "riskFloor": 2,
+  "riskFloorReasons": [
+    "new capability: new route (router.<verb>() added",
+    "new capability: new exported class / subsystem added",
+    "new capability: new config key added"
+  ],
+  "belowFloor": false,
+  "files": 25,
+  "loc": 2525,
+  "scope": {
+    "basis": "staged-in-scope-additions-plus-deletions",
+    "files": [
+      "src/commands/server.ts",
+      "src/core/CoherenceJournal.ts",
+      "src/core/RenderedPlanStore.ts",
+      "src/core/ReplicatedStoreReconcilerWiring.ts",
+      "src/core/WriteDomainRegistry.ts",
+      "src/core/componentCategories.ts",
+      "src/core/devGatedFeatures.ts",
+      "src/data/llmBenchCoverage.ts",
+      "src/data/provenanceCoverage.ts",
+      "src/data/state-coherence-registry.json",
+      "src/ecosystem/EcosystemIdeaService.ts",
+      "src/ecosystem/EcosystemIdeasReplicatedStore.ts",
+      "src/ecosystem/EcosystemLedger.ts",
+      "src/ecosystem/buildEcosystemIdeas.ts",
+      "src/ecosystem/frameworkAdmission.ts",
+      "src/ecosystem/ideaBands.ts",
+      "src/ecosystem/ideaPrompts.ts",
+      "src/ecosystem/projectFetch.ts",
+      "src/ecosystem/sourceSearch.ts",
+      "src/ecosystem/types.ts",
+      "src/server/AgentServer.ts",
+      "src/server/CapabilityIndex.ts",
+      "src/server/ecosystemIdeaRoutes.ts",
+      "src/server/routes.ts",
+      "src/testing/selfActionRegistry.ts"
+    ],
+    "addedLines": 2520,
+    "deletedLines": 5
+  },
+  "causalAutopsy": null,
+  "classClosure": {
+    "defectClass": "unbounded-self-action",
+    "closure": "guard",
+    "guardEvidence": {
+      "enforcementType": "ratchet",
+      "citation": "tests/unit/self-action-convergence.test.ts",
+      "howCaught": "A failing project gets at most 3 attempts per cycle with backoff, then a durable week, then a breaker after 3 cycles: nine attempts in total, then silence until a person retries. Registered as ecosystem-idea-review."
+    }
+  },
+  "verdict": "pass"
+}

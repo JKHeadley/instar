@@ -1,0 +1,53 @@
+{
+  "version": 3,
+  "slug": "session-pool-rebalancing-finish",
+  "sessionId": "8e0c1528-9488-488c-a3a8-1ad4d9052387",
+  "timestamp": "2026-11-04T06:17:01.760Z",
+  "artifactPath": "upgrades/side-effects/session-pool-rebalancing-finish.md",
+  "artifactSha256": "90f5ce58c344b61478d7531653751e0bf26aabcf2cb852c4f8c92cf82e41650d",
+  "specPath": "docs/specs/session-pool-rebalancing-finish.md",
+  "coveredFiles": [
+    "docs/specs/reports/session-pool-rebalancing-finish-convergence.md",
+    "docs/specs/session-pool-rebalancing-finish.eli16.md",
+    "docs/specs/session-pool-rebalancing-finish.md",
+    "src/commands/server.ts",
+    "src/config/ConfigDefaults.ts",
+    "src/core/MachinePoolRegistry.ts",
+    "src/core/OverloadShedPlanner.ts",
+    "src/core/OwnershipReconciler.ts",
+    "src/core/PostUpdateMigrator.ts",
+    "src/core/RebalancePlanner.ts",
+    "src/core/SessionDrainRunner.ts",
+    "src/core/StageAdvancer.ts",
+    "src/core/quietTopicScanner.ts",
+    "src/core/rebalanceProof.ts",
+    "src/core/types.ts",
+    "src/scaffold/templates.ts",
+    "src/server/AgentServer.ts",
+    "src/server/CapabilityIndex.ts",
+    "src/server/routes.ts",
+    "src/testing/selfActionRegistry.ts",
+    "tests/e2e/overload-shed-lifecycle.test.ts",
+    "tests/integration/overload-shed-route.test.ts",
+    "tests/unit/PostUpdateMigrator-overloadShedLine.test.ts",
+    "tests/unit/SessionDrainRunner.test.ts",
+    "tests/unit/StageAdvancer.test.ts",
+    "tests/unit/machine-pool-evidence.test.ts",
+    "tests/unit/overload-shed.test.ts",
+    "tests/unit/quietTopicScanner.test.ts",
+    "tests/unit/rebalanceProof.test.ts",
+    "tests/unit/session-pool-failover-runner-wiring.test.ts",
+    "upgrades/next/session-pool-rebalancing-finish.md",
+    "upgrades/side-effects/session-pool-rebalancing-finish.md"
+  ],
+  "phase": "complete",
+  "secondPass": "true",
+  "reviewerConcurred": true,
+  "toolchain": {
+    "convergence": {
+      "reportPath": "docs/specs/reports/session-pool-rebalancing-finish-convergence.md",
+      "iterations": 3,
+      "verified": true
+    }
+  }
+}

@@ -1,0 +1,32 @@
+{
+  "ts": "2026-10-01T08:28:49.087Z",
+  "slug": "feedback-readiness-demotion",
+  "suggestedTier": 2,
+  "declaredTier": 2,
+  "riskFloor": 2,
+  "riskFloorReasons": [
+    "irreversibility: src/core/PostUpdateMigrator.ts touches PostUpdateMigrator",
+    "migration / fleet-rollout surface: src/core/PostUpdateMigrator.ts touches PostUpdateMigrator (fleet migration machinery)",
+    "new capability: new exported class / subsystem added"
+  ],
+  "belowFloor": false,
+  "files": 7,
+  "loc": 188,
+  "scope": {
+    "basis": "staged-in-scope-additions-plus-deletions",
+    "files": [
+      "src/core/PostUpdateMigrator.ts",
+      "src/feedback-factory/drain/FeedbackDrainService.ts",
+      "src/feedback-factory/drain/FeedbackDrainStore.ts",
+      "src/feedback-factory/drain/FeedbackReadinessArbiter.ts",
+      "src/feedback-factory/drain/readinessAuthorityProposal.ts",
+      "src/scaffold/templates.ts",
+      "src/server/routes.ts"
+    ],
+    "addedLines": 148,
+    "deletedLines": 40
+  },
+  "causalAutopsy": null,
+  "classClosure": null,
+  "verdict": "pass"
+}

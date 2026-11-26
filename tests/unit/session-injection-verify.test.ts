@@ -15,6 +15,23 @@ import path from 'node:path';
 
 const SESSION_MANAGER_SRC = path.join(process.cwd(), 'src/core/SessionManager.ts');
 
+const VERIFY_RE = /private\s+(verifyInjection|verifySubmission|ensureSubmitted)\s*\(/;
+
+/**
+ * The FULL text of a method, from its definition to the next sibling doc
+ * comment. A fixed-size window (the previous `slice(start, start + 5000)`)
+ * silently stops measuring the method as soon as it grows: adding ~20 lines of
+ * comment to verifyInjection on 2026-10-21 pushed `fireStuckInputRecovery(`
+ * past the 5,000-character mark and failed a contract the code still honoured.
+ * A contract test must be bounded by the thing it describes, not by a number.
+ */
+function methodBlock(source: string, re: RegExp): string {
+  const start = source.search(re);
+  if (start < 0) throw new Error(`method not found for ${re}`);
+  const end = source.indexOf('\n  /**', start + 1);
+  return source.slice(start, end > -1 ? end : undefined);
+}
+
 describe('SessionManager — submission verification', () => {
   const source = fs.readFileSync(SESSION_MANAGER_SRC, 'utf-8');
 
@@ -33,21 +50,18 @@ describe('SessionManager — submission verification', () => {
   it('uses a marker extracted from the injected text (not a fixed string)', () => {
     // The verifier should look for a distinguishing snippet of the original text,
     // not something generic like "typed" or "❯" alone.
-    const fnStart = source.search(/private\s+(verifyInjection|verifySubmission|ensureSubmitted)\s*\(/);
-    const fnBlock = source.slice(fnStart, fnStart + 3000);
+    const fnBlock = methodBlock(source, VERIFY_RE);
     // Must reference something derived from the injected text (substring/slice)
     expect(fnBlock).toMatch(/marker|slice|substring|first\s+\d+\s+chars/);
   });
 
   it('looks for the prompt indicator ❯ in captured pane', () => {
-    const fnStart = source.search(/private\s+(verifyInjection|verifySubmission|ensureSubmitted)\s*\(/);
-    const fnBlock = source.slice(fnStart, fnStart + 3000);
+    const fnBlock = methodBlock(source, VERIFY_RE);
     expect(fnBlock).toContain('❯');
   });
 
   it('resends Enter via bounded retries — no infinite loop', () => {
-    const fnStart = source.search(/private\s+(verifyInjection|verifySubmission|ensureSubmitted)\s*\(/);
-    const fnBlock = source.slice(fnStart, fnStart + 5000);
+    const fnBlock = methodBlock(source, VERIFY_RE);
     // Must recover through the bounded recovery helper. The physical tmux call
     // now lives behind the tracked-effect dispatcher, so this contract should
     // assert delegation rather than require a raw side effect in the verifier.
@@ -63,8 +77,7 @@ describe('SessionManager — submission verification', () => {
   });
 
   it('polls multiple times with backoff (not single-shot)', () => {
-    const fnStart = source.search(/private\s+(verifyInjection|verifySubmission|ensureSubmitted)\s*\(/);
-    const fnBlock = source.slice(fnStart, fnStart + 5000);
+    const fnBlock = methodBlock(source, VERIFY_RE);
     // Must reference multiple poll intervals — the schedule should contain at least 3 distinct ms values
     const scheduleMatch = fnBlock.match(/markerCheckSchedule\s*=\s*\[([^\]]+)\]/);
     if (!scheduleMatch) {
@@ -97,23 +110,20 @@ describe('SessionManager — submission verification', () => {
   });
 
   it('stops polling as soon as the marker has cleared the prompt', () => {
-    const fnStart = source.search(/private\s+(verifyInjection|verifySubmission|ensureSubmitted)\s*\(/);
-    const fnBlock = source.slice(fnStart, fnStart + 5000);
+    const fnBlock = methodBlock(source, VERIFY_RE);
     // Must contain an early-return when the stuck check is false
     expect(fnBlock).toMatch(/if\s*\(\s*!\s*this\.isMarkerStuckAtPrompt|isMarkerStuckAtPrompt[\s\S]{0,80}return/);
   });
 
   it('waits at least 1 second before checking submission (TUI render stabilization)', () => {
     // Must pause to let the TUI process the paste-end + Enter before declaring stuck
-    const fnStart = source.search(/private\s+(verifyInjection|verifySubmission|ensureSubmitted)\s*\(/);
-    const fnBlock = source.slice(fnStart, fnStart + 3000);
+    const fnBlock = methodBlock(source, VERIFY_RE);
     // Either a setTimeout/sleep/delay of >=1000ms or a configurable delay with a >=1000 default
     expect(fnBlock).toMatch(/1000|1500|2000|verifyDelayMs|markerCheckMs/);
   });
 
   it('does not double-submit when the text is absent (normal case)', () => {
-    const fnStart = source.search(/private\s+(verifyInjection|verifySubmission|ensureSubmitted)\s*\(/);
-    const fnBlock = source.slice(fnStart, fnStart + 3000);
+    const fnBlock = methodBlock(source, VERIFY_RE);
     // Resend must be inside a conditional (only when marker still present)
     expect(fnBlock).toMatch(/if\s*\(/);
   });

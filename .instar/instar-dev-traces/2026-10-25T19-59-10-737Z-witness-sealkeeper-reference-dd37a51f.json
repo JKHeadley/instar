@@ -1,0 +1,34 @@
+{
+  "version": 3,
+  "slug": "witness-sealkeeper-reference",
+  "sessionId": "6fc71c56-8e23-49cf-bca5-5dc3a6e2ef53",
+  "timestamp": "2026-10-25T19:59:10.737Z",
+  "artifactPath": "upgrades/side-effects/witness-sealkeeper-reference.md",
+  "artifactSha256": "2e29d390b3bd472ac2c8ba33dc21138697bbdb54a753f8d736142f87029b37eb",
+  "coveredFiles": [
+    "docs/specs/witness-sealkeeper-reference.eli16.md",
+    "packages/witness/README.md",
+    "packages/witness/package.json",
+    "packages/witness/src/cli.ts",
+    "packages/witness/src/index.ts",
+    "packages/witness/src/seal.ts",
+    "packages/witness/test/cli.test.mjs",
+    "packages/witness/test/witness.test.mjs",
+    "upgrades/next/witness-sealkeeper-reference.md",
+    "upgrades/side-effects/witness-sealkeeper-reference.md"
+  ],
+  "phase": "complete",
+  "tier": 1,
+  "tierReasoning": "Standalone instar-witness CLI data-format addition with no agent-behavior authority; a revert fully undoes it; old form still accepted.",
+  "eli16Path": "docs/specs/witness-sealkeeper-reference.eli16.md",
+  "sideEffectsPath": "upgrades/side-effects/witness-sealkeeper-reference.md",
+  "secondPass": "not-required",
+  "reviewerConcurred": null,
+  "toolchain": {
+    "buildSkill": {
+      "name": "instar-dev",
+      "version": "9a75c36ba521",
+      "verified": true
+    }
+  }
+}

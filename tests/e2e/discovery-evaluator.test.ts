@@ -131,17 +131,18 @@ describe('E2E: Discovery Evaluator', () => {
       // Enable one feature and check it's excluded
       registry.transition('threadline-relay', 'default', 'aware', { trigger: 'test' });
       registry.transition('threadline-relay', 'default', 'interested');
-      registry.transition('threadline-relay', 'default', 'enabled', {
+      const enabled = registry.transition('threadline-relay', 'default', 'enabled', {
         consentRecord: {
           id: 'test-consent-1',
           userId: 'default',
           featureId: 'threadline-relay',
           consentTier: 'network',
-          dataImplications: [],
+          dataImplications: [{ dataType: 'agent identity', destination: 'custom', description: 'Shared with relay' }],
           consentedAt: new Date().toISOString(),
           mechanism: 'explicit-verbal',
         },
       });
+      expect(enabled.success).toBe(true);
       const afterEnable = evaluator.preFilter(makeContext(), 'default');
       const enabledFeature = afterEnable.find(f => f.id === 'threadline-relay');
       expect(enabledFeature).toBeUndefined();

@@ -1,3 +1,4 @@
+import { isSigninProfile } from './SigninProfileGuard.js';
 /**
  * PlaywrightProfileRegistry — the durable per-agent map of which Playwright
  * browser PROFILE holds which logged-in ACCOUNT, plus the compact boot-awareness
@@ -31,6 +32,7 @@ import os from 'node:os';
 // Reuse the EXACT boot-block sanitizer (control-char/ANSI strip + angle-bracket escape
 // + backtick neutralize) so the two boot surfaces can never drift (D16).
 import { sanitizeForBlock } from './BootSelfKnowledge.js';
+import { isWindowsProfileDir, windowsDirToWslPath } from './wslPlatform.js';
 import { validWebKBuildEnrollment } from '../messaging/telegram-origin/TelegramWebKDriver.js';
 
 // ── Types (D-model) ──────────────────────────────────────────────────────────
@@ -42,7 +44,18 @@ export type PlaywrightLoginMethod =
   | 'password+totp'
   | 'password+phone-2fa'
   | 'oauth-token'
+  | 'google-passkey'
   | 'unknown';
+
+/**
+ * Role bindings. `password` / `totp` are VAULT secret names (must appear in vaultRefs).
+ * `passkey` is the entry KEY in the machine-local PasskeyCredentialStore (spec
+ * agent-held-google-passkey §3.4) — never a vault name, never material; it is validated
+ * against the store through the injected `passkeyEntryExists`.
+ */
+export interface PlaywrightVaultBindings { password?: string; totp?: string; passkey?: string;
+  /** Vault entry holding this account's unused Google backup codes (single-use; the repair removes each one it spends). */
+  backupCode?: string }
 
 /** Who owns the account — Know Your Principal (D12). Advisory self-assertion, audited. */
 export type PlaywrightAccountOwner = 'agent' | 'operator';
@@ -59,9 +72,15 @@ export interface PlaywrightAccount {
   vaultRefs: string[];
   /** Secret-name role bindings for deterministic browser automation. Values are
    * names from vaultRefs, never secret values. Optional for registry v1 rows. */
-  vaultBindings?: { password?: string; totp?: string };
+  vaultBindings?: PlaywrightVaultBindings;
   /** Login method enum. */
   loginMethod: PlaywrightLoginMethod;
+  /**
+   * The method `google-passkey` REPLACED when it was assigned (spec §3.4). Only ever set
+   * by the registry itself, only while loginMethod is `google-passkey`; consumed by
+   * `revertLoginMethod`. Absent on every other account.
+   */
+  priorLoginMethod?: PlaywrightLoginMethod;
   /** Last-KNOWN session state — advisory, NOT a guarantee (D11). */
   lastAsserted: boolean;
   /** ISO timestamp or null; the block renders its AGE, never a bare "logged-in" (D11). */
@@ -76,6 +95,11 @@ export interface PlaywrightProfile {
   id: string;
   /** null = Playwright MCP's built-in default location; else an ABSOLUTE path jailed to the agent home (D2/D9). */
   userDataDir: string | null;
+  /**
+   * WSL only: the Chrome folder this profile really lives in, as a Windows path. WSL's userDataDir
+   * is then metadata, since Windows Chrome cannot use a folder inside the Linux filesystem.
+   */
+  windowsUserDataDir?: string;
   /** Clamped 256, sanitized on render. */
   description: string;
   isDefault: boolean;
@@ -158,9 +182,24 @@ export interface PlaywrightProfileRegistryOptions {
    * Injected so this module NEVER touches a secret value (D3) and tests stay hermetic.
    */
   listVaultNames: () => string[] | null;
+  /**
+   * Whether a passkey store entry KEY exists on this machine (spec §3.4: the `passkey`
+   * binding is validated by `PasskeyCredentialStore.has()`). Returns null when the store is
+   * unreadable so validation fails CLOSED. When NOT injected, a `passkey` binding is refused
+   * outright — no caller can assign `google-passkey` without the store wired in.
+   */
+  passkeyEntryExists?: (key: string) => boolean | null;
   /** Optional override for os.hostname() in the block header (tests). */
   hostname?: string;
+  /** Optional override for whether a Windows profile folder exists (tests). */
+  windowsDirExists?: (dir: string) => boolean;
 }
+
+export type PlaywrightRevertLoginMethodResult =
+  | { profileId: string; service: string; identity: string; reverted: true; from: 'google-passkey'; to: PlaywrightLoginMethod;
+      /** True when the restored method needs a password/TOTP binding the enrollment overwrote — re-bind before relying on it. */
+      bindingMissing: boolean }
+  | { profileId: string; service: string; identity: string; reverted: false; reason: 'not-passkey' | 'no-prior-method' };
 
 /** Thrown when the registry file exists but is unparseable — writes fail CLOSED (D15). */
 export class PlaywrightRegistryCorruptError extends Error {
@@ -189,7 +228,10 @@ export const MAX_IDENTITY_CHARS = 128;
 export const MAX_NOTE_CHARS = 256;
 const PROFILE_ID_RE = /^[a-z0-9-]{1,64}$/;
 const MUTATE_CAS_MAX_RETRIES = 5;
-export const DEFAULT_BLOCK_MAX_BYTES = 800;
+// 2400 (was 800): at 800 a machine with a dozen profiles showed only the first 3 at session
+// start, hiding the operator accounts an agent most needs to know it can act through
+// (Echo Bugs topic 10000002506). Still a hard cap; `full` bypasses it.
+export const DEFAULT_BLOCK_MAX_BYTES = 2400;
 
 const LOGIN_METHODS: readonly PlaywrightLoginMethod[] = [
   'session-cookie',
@@ -197,19 +239,24 @@ const LOGIN_METHODS: readonly PlaywrightLoginMethod[] = [
   'password+totp',
   'password+phone-2fa',
   'oauth-token',
+  'google-passkey',
   'unknown',
 ];
 
 export class PlaywrightProfileRegistry {
   private readonly stateDir: string;
   private readonly projectDir: string;
+  private readonly windowsDirExists: ((dir: string) => boolean) | null;
   private readonly listVaultNames: () => string[] | null;
+  private readonly passkeyEntryExists: ((key: string) => boolean | null) | null;
   private readonly hostname: string;
 
   constructor(opts: PlaywrightProfileRegistryOptions) {
+    this.windowsDirExists = opts.windowsDirExists ?? null;
     this.stateDir = opts.stateDir;
     this.projectDir = path.resolve(opts.projectDir);
     this.listVaultNames = opts.listVaultNames;
+    this.passkeyEntryExists = opts.passkeyEntryExists ?? null;
     this.hostname = opts.hostname ?? os.hostname();
   }
 
@@ -366,13 +413,36 @@ export class PlaywrightProfileRegistry {
 
   // ── Reads ─────────────────────────────────────────────────────────────────────
 
+  /**
+   * The LIGHT accounts view (sibling-machine-reach §3.2): each profile's accounts with
+   * service, identity, owner and the last-asserted login state ONLY. Reads the registry
+   * file and nothing else: NO vault read (no keychain call), NO seeding, NO write. An
+   * absent file answers []. A corrupt file throws like every other read.
+   */
+  listAccountsLight(): Array<{
+    id: string;
+    accounts: Array<{ service: string; identity: string; owner: PlaywrightAccountOwner; lastAsserted: boolean; lastVerifiedAt: string | null }>;
+  }> {
+    if (!fs.existsSync(this.filePath())) return [];
+    return this.read().profiles.map((p) => ({
+      id: p.id,
+      accounts: p.accounts.map((a) => ({
+        service: a.service,
+        identity: a.identity,
+        owner: a.owner,
+        lastAsserted: a.lastAsserted === true,
+        lastVerifiedAt: a.lastVerifiedAt ?? null,
+      })),
+    }));
+  }
+
   /** The FULL detail surface (GET-only): every account, vault NAMES, dangling-ref flags (D17). */
   listProfiles(): PlaywrightProfileDetail[] {
     const store = this.ensureSeeded();
     const liveNames = this.safeVaultNames();
     return store.profiles.map((p) => ({
       ...p,
-      dirExists: this.dirExists(p.userDataDir),
+      dirExists: this.profileDirExists(p),
       accounts: p.accounts.map((a) => ({
         ...a,
         danglingRefs:
@@ -398,13 +468,13 @@ export class PlaywrightProfileRegistry {
       const exact = store.profiles.find((p) =>
         p.accounts.some((a) => a.service === svc && a.identity === id),
       );
-      if (exact) return { profile: exact, dirExists: this.dirExists(exact.userDataDir) };
+      if (exact) return { profile: exact, dirExists: this.profileDirExists(exact) };
       // fall through to service-only
     }
 
     const svcMatches = store.profiles.filter((p) => p.accounts.some((a) => a.service === svc));
     if (svcMatches.length === 1) {
-      return { profile: svcMatches[0], dirExists: this.dirExists(svcMatches[0].userDataDir) };
+      return { profile: svcMatches[0], dirExists: this.profileDirExists(svcMatches[0]) };
     }
     if (svcMatches.length > 1) {
       return {
@@ -483,6 +553,21 @@ export class PlaywrightProfileRegistry {
     return { profileId, userDataDir, created };
   }
 
+  /** Record (or, with null, clear) the Windows Chrome folder of a WSL profile. */
+  setWindowsUserDataDir(profileId: string, windowsUserDataDir: string | null): PlaywrightProfile {
+    if (windowsUserDataDir !== null && !isWindowsProfileDir(windowsUserDataDir)) {
+      throw new PlaywrightRegistryError('windowsUserDataDir must be a local absolute Windows path (C:\\...)', 400);
+    }
+    return this.mutate<PlaywrightProfile>((store) => {
+      const profile = store.profiles.find((p) => p.id === profileId);
+      if (!profile) throw new PlaywrightRegistryError(`profile '${profileId}' not found`, 404);
+      if (profile.executionOwner) throw new PlaywrightRegistryError('managed profile is available through typed broker operations only', 409);
+      if (windowsUserDataDir === null) delete profile.windowsUserDataDir;
+      else profile.windowsUserDataDir = windowsUserDataDir;
+      return { next: store, result: profile };
+    });
+  }
+
   assignAccount(
     profileId: string,
     input: {
@@ -490,7 +575,7 @@ export class PlaywrightProfileRegistry {
       identity: string;
       owner: PlaywrightAccountOwner;
       vaultRefs?: string[];
-      vaultBindings?: { password?: string; totp?: string };
+      vaultBindings?: PlaywrightVaultBindings;
       loginMethod?: PlaywrightLoginMethod;
       note?: string;
     },
@@ -507,17 +592,37 @@ export class PlaywrightProfileRegistry {
       : 'unknown';
     const note = sanitizeStored(input.note ?? '', MAX_NOTE_CHARS);
     const vaultRefs = Array.isArray(input.vaultRefs) ? input.vaultRefs.map((r) => String(r)) : [];
-    let vaultBindings: { password?: string; totp?: string } | undefined;
+    let vaultBindings: PlaywrightVaultBindings | undefined;
     if (input.vaultBindings !== undefined) {
       if (!input.vaultBindings || typeof input.vaultBindings !== 'object' || Array.isArray(input.vaultBindings)) {
         throw new PlaywrightRegistryError('vaultBindings must be an object', 400);
       }
       const entries = Object.entries(input.vaultBindings);
-      if (entries.some(([role, ref]) => (role !== 'password' && role !== 'totp')
+      if (entries.some(([role, ref]) => (role !== 'password' && role !== 'totp' && role !== 'passkey' && role !== 'backupCode')
         || typeof ref !== 'string' || ref.length === 0)) {
-        throw new PlaywrightRegistryError('vaultBindings accepts only non-empty password/totp vault names', 400);
+        throw new PlaywrightRegistryError('vaultBindings accepts only non-empty password/totp/backupCode vault names or a passkey entry key', 400);
       }
       vaultBindings = Object.fromEntries(entries);
+    }
+    // The passkey method and the passkey binding are one thing (spec §3.4): neither without the other.
+    if (loginMethod === 'google-passkey' && !vaultBindings?.passkey) {
+      throw new PlaywrightRegistryError("loginMethod 'google-passkey' requires vaultBindings.passkey", 400);
+    }
+    if (loginMethod !== 'google-passkey' && vaultBindings?.passkey) {
+      throw new PlaywrightRegistryError("vaultBindings.passkey is only valid with loginMethod 'google-passkey'", 400);
+    }
+    if (vaultBindings?.passkey) {
+      if (typeof vaultBindings.passkey !== 'string' || vaultBindings.passkey.length > MAX_IDENTITY_CHARS) {
+        throw new PlaywrightRegistryError('vaultBindings.passkey must be a passkey store entry key', 400);
+      }
+      if (!this.passkeyEntryExists) {
+        throw new PlaywrightRegistryError('passkey store not available on this machine — refusing to assign a passkey binding', 409);
+      }
+      const present = this.passkeyEntryExists(vaultBindings.passkey);
+      if (present === null) {
+        throw new PlaywrightRegistryError('passkey store unreadable — refusing to assign a passkey binding', 409);
+      }
+      if (!present) throw new PlaywrightRegistryError('unknown passkey entry key', 409);
     }
 
     // Ref-validation FAILS CLOSED if vault names are unreadable (D17).
@@ -532,7 +637,8 @@ export class PlaywrightProfileRegistry {
     if (unknown.length > 0) {
       throw new PlaywrightRegistryError(`unknown vault ref(s): ${unknown.join(', ')}`, 409);
     }
-    const unlistedBindings = Object.values(vaultBindings ?? {}).filter((ref) => !vaultRefs.includes(ref));
+    const { passkey: _passkeyBinding, ...secretBindings } = vaultBindings ?? {};
+    const unlistedBindings = Object.values(secretBindings).filter((ref) => !vaultRefs.includes(ref));
     if (unlistedBindings.length > 0) {
       throw new PlaywrightRegistryError('vaultBindings must reference names present in vaultRefs', 409);
     }
@@ -542,6 +648,13 @@ export class PlaywrightProfileRegistry {
       if (!profile) throw new PlaywrightRegistryError(`profile '${profileId}' not found`, 404);
 
       const existing = profile.accounts.find((a) => a.service === service && a.identity === identity);
+      // Record the method the passkey REPLACED so `revertLoginMethod` has a target (spec §3.4).
+      // Derived only — never caller-supplied. Kept across a passkey→passkey re-assign; an
+      // 'unknown' prior is not worth restoring.
+      const priorLoginMethod: PlaywrightLoginMethod | undefined = loginMethod !== 'google-passkey' ? undefined
+        : existing?.loginMethod === 'google-passkey' ? existing.priorLoginMethod
+        : existing && existing.loginMethod !== 'unknown' ? existing.loginMethod
+        : undefined;
       const account: PlaywrightAccount = {
         service,
         identity,
@@ -549,6 +662,7 @@ export class PlaywrightProfileRegistry {
         vaultRefs,
         ...(vaultBindings && Object.keys(vaultBindings).length > 0 ? { vaultBindings } : {}),
         loginMethod,
+        ...(priorLoginMethod ? { priorLoginMethod } : {}),
         lastAsserted: existing?.lastAsserted ?? false,
         lastVerifiedAt: existing?.lastVerifiedAt ?? null,
         note,
@@ -565,6 +679,56 @@ export class PlaywrightProfileRegistry {
       }
       return { next: store, result: account };
     });
+  }
+
+  /**
+   * Restore the method a `google-passkey` assignment replaced (spec §3.4 rollback lever;
+   * `POST /passkeys/revert-method`). Drops the passkey binding and `priorLoginMethod`. An
+   * account that is not on the passkey method, or has no recorded prior, is left UNCHANGED
+   * and named in the result — never guessed into a method.
+   */
+  revertLoginMethod(profileId: string, service: string, identity: string): PlaywrightRevertLoginMethodResult {
+    return this.mutate<PlaywrightRevertLoginMethodResult>((store) => {
+      const profile = store.profiles.find((p) => p.id === profileId);
+      if (!profile) throw new PlaywrightRegistryError(`profile '${profileId}' not found`, 404);
+      const account = profile.accounts.find((a) => a.service === service && a.identity === identity);
+      if (!account) throw new PlaywrightRegistryError(`account (${service}, ${identity}) not found`, 404);
+      const ref = { profileId, service: account.service, identity: account.identity };
+      if (account.loginMethod !== 'google-passkey') return { next: store, result: { ...ref, reverted: false, reason: 'not-passkey' } };
+      const prior = account.priorLoginMethod;
+      if (!prior || prior === 'google-passkey' || !LOGIN_METHODS.includes(prior)) {
+        return { next: store, result: { ...ref, reverted: false, reason: 'no-prior-method' } };
+      }
+      account.loginMethod = prior;
+      delete account.priorLoginMethod;
+      if (account.vaultBindings) {
+        delete account.vaultBindings.passkey;
+        if (Object.keys(account.vaultBindings).length === 0) delete account.vaultBindings;
+      }
+      // The enrollment replaced the old bindings; nothing is invented back. Say so.
+      const bindingMissing = (prior === 'password' || prior === 'password+totp') && !account.vaultBindings?.password
+        || prior === 'password+totp' && !account.vaultBindings?.totp;
+      return { next: store, result: { ...ref, reverted: true, from: 'google-passkey', to: prior, bindingMissing } };
+    });
+  }
+
+  /** Whether an account row exists (read-only) — lets a batch caller validate every target before mutating any. */
+  hasAccount(profileId: string, service: string, identity: string): boolean {
+    const profile = this.ensureSeeded().profiles.find((p) => p.id === profileId);
+    return !!profile?.accounts.some((a) => a.service === service && a.identity === identity);
+  }
+
+  /** Every (profile, account) currently on the `google-passkey` method — the revert route's default set. */
+  listPasskeyAccounts(): Array<{ profileId: string; service: string; identity: string; priorLoginMethod: PlaywrightLoginMethod | null }> {
+    const out: Array<{ profileId: string; service: string; identity: string; priorLoginMethod: PlaywrightLoginMethod | null }> = [];
+    for (const p of this.ensureSeeded().profiles) {
+      for (const a of p.accounts) {
+        if (a.loginMethod === 'google-passkey') {
+          out.push({ profileId: p.id, service: a.service, identity: a.identity, priorLoginMethod: a.priorLoginMethod ?? null });
+        }
+      }
+    }
+    return out;
   }
 
   patchAccount(
@@ -679,6 +843,7 @@ export class PlaywrightProfileRegistry {
     const store = this.ensureSeeded();
     const profile = store.profiles.find((p) => p.id === profileId);
     if (!profile) throw new PlaywrightRegistryError(`profile '${profileId}' not found`, 404);
+    if (isSigninProfile(profile) || (profile.userDataDir && store.profiles.some(other => isSigninProfile(other) && other.userDataDir && canonicalProfileDirectory(other.userDataDir) === canonicalProfileDirectory(profile.userDataDir!)))) throw new PlaywrightRegistryError('registered sign-in profile refuses automation; use normal Chrome and subscription-signin', 409);
     if (profile.executionOwner === 'telegram-origin-broker') throw new PlaywrightRegistryError('managed Telegram profile is available through typed broker operations only', 409);
     if (profile.userDataDir) this.assertDirectoryNotManaged(store, profile.userDataDir);
 
@@ -772,6 +937,8 @@ export class PlaywrightProfileRegistry {
       'Profiles live on THIS machine only. Login state is LAST-ASSERTED, never a guarantee —',
       're-verify in-browser before any privileged action, especially operator-owned accounts.',
       'Full detail + vault key names: GET /playwright-profiles · pick one: GET /playwright-profiles/resolve',
+      'Before asking the operator to look at or check something: if an account below or your own server',
+      'key reaches it, look yourself. Mark anything you send as the operator: [Sent by <agent> on <operator>\'s behalf].',
       '',
     ];
     const footer = [
@@ -820,6 +987,15 @@ export class PlaywrightProfileRegistry {
 
   // ── Helpers ─────────────────────────────────────────────────────────────────────
 
+  /**
+   * The live vault secret NAMES (never values), best-effort: null when the vault is
+   * unreadable. Read by the agent-reach builder so the outbound gate can see what the
+   * agent already holds (Echo Bugs topic 10000002770).
+   */
+  vaultNames(): string[] | null {
+    return this.safeVaultNames();
+  }
+
   /** Best-effort vault names for READ paths — swallows the unreadable case to null. */
   private safeVaultNames(): string[] | null {
     try {
@@ -828,6 +1004,13 @@ export class PlaywrightProfileRegistry {
       // @silent-fallback-ok — READ-path dangling-ref check is best-effort; null = "don't assert dangling" (D17).
       return null;
     }
+  }
+
+  /** The folder the profile really lives in: its Windows folder when it has one. */
+  private profileDirExists(profile: PlaywrightProfile): boolean {
+    if (!profile.windowsUserDataDir) return this.dirExists(profile.userDataDir);
+    if (this.windowsDirExists) return this.windowsDirExists(profile.windowsUserDataDir);
+    return this.dirExists(windowsDirToWslPath(profile.windowsUserDataDir) ?? '');
   }
 
   /** fs.existsSync on a userDataDir; null userDataDir → built-in profile present (true). */

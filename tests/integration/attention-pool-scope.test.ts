@@ -121,6 +121,20 @@ describe('GET /attention — pool-wide aggregation (WS4.1)', () => {
     expect(remote.remote).toBe(true);
   });
 
+  it('a peer that names itself differently is shown under THIS machine\'s name, title prefix included (2026-11-02)', async () => {
+    // The peer reports itself as "Mac Mini" (its own registry); the registry here says "Mac M5 Pro".
+    const peerUrl = await listenPeer([item({ id: 'p1', title: 'Mac Mini: Remote Desktop needs its Mac permission again', sourceContext: 'rd' }), item({ id: 'p2', title: 'Another notice', sourceContext: 'n' })], 'm_b');
+    const app = mount(tmpDir, {
+      items: [],
+      meshSelfId: 'm_a', capacities: { m_a: { nickname: 'Laptop', online: true }, m_b: { nickname: 'Mac M5 Pro', online: true } },
+      peers: [{ machineId: 'm_b', url: peerUrl }],
+    });
+    const res = await request(app).get('/attention').query({ scope: 'pool' }).set(auth());
+    const rows = res.body.items.filter((i: { machineId: string }) => i.machineId === 'm_b');
+    expect(rows.map((r: { machineNickname: string }) => r.machineNickname)).toEqual(['Mac M5 Pro', 'Mac M5 Pro']);
+    expect(rows.map((r: { title: string }) => r.title).sort()).toEqual(['Another notice', 'Mac M5 Pro: Remote Desktop needs its Mac permission again']);
+  });
+
   it('P17: same-key NORMAL items across machines coalesce into ONE row (machines listed)', async () => {
     // Both machines raised the SAME episode (same sourceContext).
     const peerUrl = await listenPeer([item({ id: 'p', sourceContext: 'guard-tripwire-X' })], 'm_b');

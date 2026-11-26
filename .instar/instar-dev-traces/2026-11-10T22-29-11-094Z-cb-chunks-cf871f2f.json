@@ -1,0 +1,43 @@
+{
+  "version": 2,
+  "slug": "cb-chunks",
+  "sessionId": "3117c024-d5c8-4ef5-948b-e8585a7dd39d",
+  "timestamp": "2026-11-10T22:29:11.094Z",
+  "artifactPath": "upgrades/side-effects/cb-chunks.md",
+  "artifactSha256": "8ee14b29a6b2d2f44f13bfd34eaf5f027d42782a65e8416586245b8b7384427a",
+  "specPath": "docs/specs/context-budget-layered-summaries.md",
+  "coveredFiles": [
+    "docs/LLM-ROUTING-REGISTRY.md",
+    "src/commands/server.ts",
+    "src/core/componentCategories.ts",
+    "src/data/llmBenchCoverage.ts",
+    "src/data/provenanceCoverage.ts",
+    "src/monitoring/contextLayers/LayerStore.ts",
+    "src/monitoring/contextLayers/chunkBuilder.ts",
+    "src/monitoring/contextLayers/chunkLookup.ts",
+    "src/monitoring/contextLayers/spanSampler.ts",
+    "src/monitoring/diskSteward/pruneContextArchive.ts",
+    "src/server/AgentServer.ts",
+    "src/server/CapabilityIndex.ts",
+    "src/server/routes.ts",
+    "tests/e2e/context-layer-chunks-alive.test.ts",
+    "tests/fixtures/context-budget/claude-transcript-compacted.jsonl",
+    "tests/integration/context-layer-chunks.test.ts",
+    "tests/unit/context-layer-chunks.test.ts",
+    "tests/unit/llm-bench-coverage-ratchet.test.ts",
+    "tests/unit/parser-contract-classification-ratchet.test.ts",
+    "tests/unit/provenance-coverage-ratchet.test.ts",
+    "upgrades/next/cb-chunks.md",
+    "upgrades/side-effects/cb-chunks.md"
+  ],
+  "phase": "complete",
+  "tier": 2,
+  "tierReasoning": "New derived-layer builder, sampler and two read routes behind the dev-gated layers switch and the compaction-recovery switch; touches the PostCompact route only after its response",
+  "secondPass": "true",
+  "reviewerConcurred": true,
+  "classClosure": {
+    "defectClass": "n/a",
+    "closure": "n/a",
+    "reason": "Not a defect fix: a new Phase 1 capability (chunk and range summaries, the span sampler, lookup routes) from an approved spec"
+  }
+}

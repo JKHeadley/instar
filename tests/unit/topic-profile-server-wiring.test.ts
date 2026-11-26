@@ -66,15 +66,44 @@ describe('server-boot wiring: Topic Profile orchestrator + carrier (TOPIC-PROFIL
 
     it('spawn port drives the real spawnSessionForTopic (not a stub)', () => {
       expect(depsBlock()).toMatch(/await spawnSessionForTopic\([\s\S]*?sessionManager,[\s\S]*?telegram,/);
-      expect(depsBlock()).toContain('{ awaitInitialInjection: true }');
+      expect(depsBlock()).toContain('{ awaitInitialInjection: true, ...(carriedBrief ? { carriedBrief } : {}) }');
     });
 
-    it('a history-only framework handoff waits silently instead of fabricating a latest message', () => {
+    it('spawn port carries the replaced session\'s direct-spawn brief into a CONTINUATION respawn only', () => {
+      const block = depsBlock();
+      expect(block).toContain("directive.method === 'continuation'");
+      expect(block).toContain('_topicSpawnBriefs.getForSession(n, directive.replacedSessionName)');
+      expect(block).toContain('_topicSpawnBriefs.rebind(n, directive.replacedSessionName, spawnedName)');
+      // The brief store is the SAME instance the routes record into.
+      expect(src).toContain('spawnBriefs: _topicSpawnBriefs,');
+      expect(src).toContain('const _topicSpawnBriefs = new TopicSpawnBriefStore(config.stateDir);');
+      expect(src).toContain('_topicSpawnBriefsRef = _topicSpawnBriefs;');
+    });
+
+    it('a spawn the orchestrator did not start clears the topic brief (no stale task on a reused session name)', () => {
+      expect(src).toMatch(/if \(_topicSpawnBriefsRef && !_orchestratorSpawnInFlight\.has\(String\(topicId\)\)\) \{\s*try \{ _topicSpawnBriefsRef\.clear\(topicId\); \}/);
+    });
+
+    it('a history-only handoff never fabricates a latest message, and resumes in-flight work via the shared helper', () => {
       expect(src).toContain('if (hasLatestMessage)');
-      expect(src).toContain('HANDOFF ONLY: No new user message accompanies this framework switch.');
-      const handoffBranch = src.match(/else \{\s*parts\.push\(\s*`HANDOFF ONLY:[\s\S]*?\);\s*\}/)?.[0];
-      expect(handoffBranch).toBeTruthy();
-      expect(handoffBranch).not.toContain("The user's latest message:");
+      // merge-line-author-eligibility-and-handoff-resume D2: the no-message branch
+      // no longer says "wait silently" unconditionally; it uses the pure helper.
+      expect(src).not.toContain('HANDOFF ONLY: No new user message accompanies this framework switch.');
+      const start = src.indexOf('// D2: resume in-flight work');
+      expect(start).toBeGreaterThan(0);
+      const branch = src.slice(start, src.indexOf('bootstrapMessage = parts.join', start));
+      expect(branch).toContain('parts.push(buildHandoffContinuationInstruction(openCommitments));');
+      expect(branch).not.toContain("The user's latest message:");
+      // Unreadable commitments are 'unavailable', never an empty list.
+      expect(branch).toContain("let openCommitments: HandoffCommitment[] | 'unavailable' = 'unavailable';");
+    });
+
+    it('the open-commitments reader is late-bound to the REAL CommitmentTracker (not a stub)', () => {
+      expect(src).toContain('_activeCommitmentsForTopic = (topicId) => commitmentTracker.getActiveByTopicId(topicId);');
+      const ctor = src.indexOf('const commitmentTracker = new CommitmentTracker({');
+      const bind = src.indexOf('_activeCommitmentsForTopic = (topicId) => commitmentTracker.getActiveByTopicId(topicId);');
+      expect(ctor).toBeGreaterThan(0);
+      expect(bind).toBeGreaterThan(ctor);
     });
 
     it('claudeResume delegates to the real resume map', () => {

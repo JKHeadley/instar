@@ -24,10 +24,11 @@ fi
 PORT="${INSTAR_PORT:-}"
 AUTH=""
 AGENT_ID="${INSTAR_AGENT_ID:-}"
+CONFIG_FILE="${CLAUDE_PROJECT_DIR:-.}/.instar/config.json"
 
-if [ -f ".instar/config.json" ]; then
+if [ -f "$CONFIG_FILE" ]; then
   if [ -z "$PORT" ]; then
-    CONFIG_PORT=$(python3 -c "import json; print(json.load(open('.instar/config.json')).get('port',''))" 2>/dev/null)
+    CONFIG_PORT=$(python3 -c "import json, sys; print(json.load(open(sys.argv[1])).get('port',''))" "$CONFIG_FILE" 2>/dev/null)
     [ -n "$CONFIG_PORT" ] && PORT="$CONFIG_PORT"
   fi
   # Auth resolution: INSTAR_AUTH_TOKEN env first (SessionManager injects it per
@@ -36,10 +37,10 @@ if [ -f ".instar/config.json" ]; then
   # produced by SecretMigrator cannot leak through as a bogus Bearer.
   AUTH="${INSTAR_AUTH_TOKEN:-}"
   if [ -z "$AUTH" ]; then
-    AUTH=$(python3 -c "import json; v=json.load(open('.instar/config.json')).get('authToken',''); print(v if isinstance(v, str) else '')" 2>/dev/null)
+    AUTH=$(python3 -c "import json, sys; v=json.load(open(sys.argv[1])).get('authToken',''); print(v if isinstance(v, str) else '')" "$CONFIG_FILE" 2>/dev/null)
   fi
   if [ -z "$AGENT_ID" ]; then
-    AGENT_ID=$(python3 -c "import json; print(json.load(open('.instar/config.json')).get('projectName',''))" 2>/dev/null)
+    AGENT_ID=$(python3 -c "import json, sys; print(json.load(open(sys.argv[1])).get('projectName',''))" "$CONFIG_FILE" 2>/dev/null)
   fi
 fi
 

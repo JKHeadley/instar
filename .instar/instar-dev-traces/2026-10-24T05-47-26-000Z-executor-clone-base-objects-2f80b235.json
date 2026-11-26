@@ -1,0 +1,26 @@
+{
+  "version": 2,
+  "slug": "executor-clone-base-objects",
+  "sessionId": "7f2a8220-744b-4650-af3f-bfd06ec29ea8",
+  "timestamp": "2026-10-24T05:47:26.000Z",
+  "artifactPath": "upgrades/side-effects/executor-clone-base-objects.md",
+  "artifactSha256": "3d2511b2a931e722fd33241007d5818e4ec4ee9233274af5c462823306fb528d",
+  "coveredFiles": [
+    "src/feedback-factory/execute/buildFeedbackExecutor.ts",
+    "src/feedback-factory/execute/confinementCanary.ts",
+    "src/server/AgentServer.ts",
+    "tests/unit/feedback-factory/execute-units.test.ts",
+    "tests/unit/feedback-factory/execute-wiring.test.ts"
+  ],
+  "phase": "complete",
+  "tier": 1,
+  "tierReasoning": "Adds the output tail to a failing canary probe's detail (observability only; verdicts unchanged).",
+  "eli16Path": "docs/specs/executor-clone-base-objects.eli16.md",
+  "sideEffectsPath": "upgrades/side-effects/executor-clone-base-objects.md",
+  "secondPass": "not-required",
+  "reviewerConcurred": null,
+  "causalAutopsy": {
+    "origin": "latent",
+    "notes": "executor admission read AutoUpdater.pendingUpdate (set on detection) without checking config.autoApply; surfaced when auto-apply was paused on 2026-10-23"
+  }
+}

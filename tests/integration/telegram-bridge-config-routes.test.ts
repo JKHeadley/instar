@@ -118,14 +118,17 @@ describe('Threadline → Telegram bridge config routes', () => {
       expect(res.status).toBe(503);
     });
 
-    it('ignores unknown fields without throwing', async () => {
+    it('refuses an unknown field instead of applying the rest and answering 200', async () => {
+      const before = (await request(app).get('/threadline/telegram-bridge/config')).body;
       const res = await request(app)
         .patch('/threadline/telegram-bridge/config')
-        .send({ enabled: true, futureToggle: 'should-be-ignored' });
-      expect(res.status).toBe(200);
-      expect(res.body.enabled).toBe(true);
-      // The unknown field was not persisted — getSettings returns the documented shape only
-      expect(res.body).not.toHaveProperty('futureToggle');
+        .send({ enabled: !before.enabled, futureToggle: 'should-be-refused' });
+      expect(res.status).toBe(400);
+      expect(res.body.unsupportedFields).toEqual(['futureToggle']);
+      // Nothing was applied: a partial write is refused whole.
+      const after = (await request(app).get('/threadline/telegram-bridge/config')).body;
+      expect(after.enabled).toBe(before.enabled);
     });
+
   });
 });

@@ -44,7 +44,7 @@ describe('E2E: topic-intent capture loop lifecycle', () => {
   let store: TopicIntentStore;
 
   // Live-callback chain bookkeeping (mirrors server.ts onMessageLogged chaining).
-  let onMessageLogged: ((entry: { messageId: string; topicId: number; text: string; fromUser: boolean }) => void) | undefined;
+  let onMessageLogged: ((entry: { messageId: string; topicId: number; text: string; fromUser: boolean; provenance?: 'user' | 'agent' | 'automation' }) => void) | undefined;
   let priorCallbackFired = 0;
   const enqueueLanes: string[] = [];
   let providerCalls = 0;
@@ -89,6 +89,7 @@ describe('E2E: topic-intent capture loop lifecycle', () => {
         topicId: entry.topicId,
         text: entry.text,
         fromUser: entry.fromUser,
+        provenance: entry.provenance,
       } as CaptureTurnEntry);
     };
   });
@@ -128,6 +129,27 @@ describe('E2E: topic-intent capture loop lifecycle', () => {
     expect(m.body.funnel.refs_created).toBeGreaterThanOrEqual(1);
   });
 
+  it('an automation-provenance notice on the live callback is not extracted', async () => {
+    const AUTO_TOPIC = TOPIC + 1;
+    const callsBefore = providerCalls;
+    onMessageLogged!({
+      messageId: 'srv-msg-auto',
+      topicId: AUTO_TOPIC,
+      // The real top template; no sentinel prefix, so only provenance can skip it.
+      text: '⚠️ Worktree activity detected after session "job-x" completed:\n\nUNMERGED WORK:\n  Branch: fix/codex-session-reliability\n  Commits ahead: 40',
+      fromUser: false,
+      provenance: 'automation',
+    });
+    await new Promise(r => setTimeout(r, 50));
+
+    expect(providerCalls).toBe(callsBefore);
+    const m = await request(server).get(`/topic-intent/${AUTO_TOPIC}/capture-metrics`);
+    expect(m.status).toBe(200);
+    expect(m.body.funnel.turns_seen).toBe(1);
+    expect(m.body.funnel.prefilter_skipped).toBe(1);
+    expect(m.body.funnel.extractions_attempted).toBe(0);
+  });
+
   it('TRANSPORT: the extraction went through the queue background lane + the injected provider (never raw API)', () => {
     expect(providerCalls).toBeGreaterThanOrEqual(1);          // delegated to the subscription provider
     expect(enqueueLanes).toContain('background');             // admitted through the shared queue, background lane
@@ -141,5 +163,7 @@ describe('E2E: topic-intent capture loop lifecycle', () => {
     expect(serverSrc).toContain('__instarTopicIntentCaptureWired');
     // The chain must be attached to the inbound message callback.
     expect(serverSrc).toMatch(/telegram\.onMessageLogged\s*=\s*\(entry\)\s*=>\s*\{[\s\S]*captureLoop\(/);
+    // Provenance must reach the loop, or automated notices are extracted again.
+    expect(serverSrc).toMatch(/void captureLoop\(\{[^}]*provenance: entry\.provenance,/);
   });
 });

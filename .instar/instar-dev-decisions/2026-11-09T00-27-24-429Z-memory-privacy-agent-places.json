@@ -1,0 +1,23 @@
+{
+  "ts": "2026-11-09T00:27:24.429Z",
+  "slug": "memory-privacy-agent-places",
+  "suggestedTier": 1,
+  "declaredTier": 2,
+  "riskFloor": 1,
+  "riskFloorReasons": [],
+  "belowFloor": false,
+  "files": 2,
+  "loc": 21,
+  "scope": {
+    "basis": "staged-in-scope-paths-including-deleted",
+    "files": [
+      "src/core/SessionManager.ts",
+      "src/messaging/MessageDelivery.ts"
+    ],
+    "addedLines": 13,
+    "deletedLines": 8
+  },
+  "causalAutopsy": null,
+  "classClosure": null,
+  "verdict": "pass"
+}

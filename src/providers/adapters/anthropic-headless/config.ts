@@ -19,6 +19,13 @@ export interface AnthropicHeadlessConfig {
   /** Optional Anthropic API base URL (for proxies / Meridian). */
   apiBaseUrl?: string;
   /**
+   * Optional `CLAUDE_CONFIG_DIR` for the one-shot child. A caller that supplies an API-key
+   * credential and must NOT pick up the ambient subscription login (spec
+   * relogin-last-resort-model: the ambient login is the dead one) points this at a dedicated
+   * empty home. Unset ⇒ the ambient config dir, as before.
+   */
+  configDir?: string;
+  /**
    * Model id for the credential-probe validation ping (a 4-token
    * Messages-API "ping" that verifies a credential works). Threaded from
    * `intelligence.pinnedModels.anthropicCredentialProbe` at server boot

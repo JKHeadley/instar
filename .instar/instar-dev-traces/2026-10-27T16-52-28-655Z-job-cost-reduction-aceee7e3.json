@@ -1,0 +1,40 @@
+{
+  "version": 3,
+  "slug": "job-cost-reduction",
+  "sessionId": "151db862-f0e5-4985-9614-540e5687e3fe",
+  "timestamp": "2026-10-27T16:52:28.655Z",
+  "artifactPath": "upgrades/side-effects/job-cost-reduction.md",
+  "artifactSha256": "e3dc54c61b13cd5f9538d1c519ec800788ecf008cfaab5773c53987e072da88c",
+  "specPath": "docs/specs/job-cost-reduction.md",
+  "coveredFiles": [
+    "tests/unit/ConfigDefaults.test.ts",
+    "tests/unit/PostUpdateMigrator-scriptJobs.test.ts",
+    "tests/unit/lint-dev-agent-dark-gate.test.ts",
+    "upgrades/side-effects/job-cost-reduction.md"
+  ],
+  "phase": "complete",
+  "tier": 2,
+  "tierReasoning": "GitHub CI found stale first-wave test expectations after narrowing correction-class backfill to session; the affected 72 tests pass on the corrected assertions.",
+  "secondPass": "true",
+  "reviewerConcurred": true,
+  "toolchain": {
+    "buildSkill": {
+      "name": "instar-dev",
+      "version": "9a75c36ba521",
+      "verified": true
+    },
+    "reviewSkills": [
+      {
+        "name": "gpt-6-astra",
+        "outcome": "concurred",
+        "verified": false,
+        "iterations": 1
+      }
+    ],
+    "convergence": {
+      "reportPath": "docs/specs/reports/job-cost-reduction-convergence.md",
+      "iterations": 6,
+      "verified": true
+    }
+  }
+}

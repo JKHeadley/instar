@@ -23,7 +23,7 @@ The purpose is to catch architectural, security, adversarial, scalability, and i
 Before `/instar-dev` touches any instar source, the change's spec must pass through this skill. `/instar-dev`'s pre-commit hook refuses work unless:
 
 1. The spec file has a `review-convergence: <timestamp>` entry in its frontmatter, written by this skill on successful convergence.
-2. The spec file has an `approved: true` entry in its frontmatter, written by the user after reading the convergence report.
+2. The spec file has an `approved: true` entry in its frontmatter, with `approved-by` naming who approved it and on what basis, written after reading the convergence report. The agent approves its own converged spec; the operator approves only a spec that amends the constitution or the protected list (the paths `.github/CODEOWNERS` assigns to an owner), or one their recorded instructions reserve to them.
 
 Both tags must be present. Without them, `/instar-dev` is blocked.
 
@@ -88,6 +88,12 @@ The skill spawns reviewers in parallel:
 
 **Internal reviewers (Claude subagents):**
 
+**Weighing the lenses.** Wherever a lens below says "MATERIAL FINDING", it means the finding is
+DESIGN-class *if the change actually touches that lens's surface* (Phase 3, criterion 1). A lens
+that does not apply to this change says so in one line and raises nothing. Each finding is weighed
+by likelihood and cost against the size of the change; a lens is a question to ask, not a quota to
+fill.
+
 - **Security.** Attack surfaces, leaks, privilege escalation, auth on endpoints, prompt injection vectors, rotation races.
 - **Scalability/performance.** Hot-path cost, concurrent writes, memory churn, fail-open semantics, hook latency.
 - **Adversarial.** Misbehaving-session scenarios — bad-entry poisoning, self-reinforcing loops, stale claims, authority ambiguity, kind gaming.
@@ -97,6 +103,10 @@ The skill spawns reviewers in parallel:
 - **Verify the State, Not Its Symbol — evidentiary review-check (P20).** For EVERY detector, metric, or gate the spec introduces, the spec MUST DECLARE: (a) the **SYMBOL** it reads (including a string, file presence, count, or rate); (b) the real-world **STATE** it claims that symbol proves; (c) the **independent corroboration** that is causally tied to that state and isolated from incidental writes by the subject; and (d) the explicit result when the symbol is **unmeasurable**, including the least-harmful action for that decision point. The reviewer then INDEPENDENTLY CONTESTS the declaration **BIDIRECTIONALLY**: can the symbol be present while the claimed state is absent, and can the claimed state be present while the symbol is absent, stale, invalid, or unavailable? A spec that treats a string, file presence, count, or rate as PROOF without naming both the corroboration and the unmeasurable case has a **MATERIAL FINDING**. A second proxy is not corroboration merely because it is different, and an unmeasurable value must remain explicit `unknown` rather than collapse to a flattering or alarming fabricated value. This is deliberately a full-context reviewer judgment, NOT a deterministic lint: mechanical searches may produce useful signals, but they do not hold blocking authority.
 - **Decision-Completeness.** (Autonomy Principle 2 — `docs/specs/AUTONOMY-PRINCIPLES-ENFORCEMENT-SPEC.md` Piece 2.) Enumerates every point where the building agent would have to **stop mid-run and ask the user**. Each must be either **frontloaded** into a `## Frontloaded Decisions` section or explicitly tagged **cheap-to-change-after** because the work ships behind a named dark/dry-run/read-only phase. The reviewer **CONTESTS every cheap tag** — it independently asserts reversibility, and a closed non-cheap taxonomy overrides any tag: anything touching **durable external side-effects, money, identity, or a published/user-visible interface is NEVER cheap**, regardless of a "ships dark" label. A contested tag the reviewer rejects is a **material finding that blocks convergence**. Prompt: `templates/reviewer-decision-completeness.md`. Applies to ALL specs through this skill (D7) — no size gate, no per-spec override (D11; the rejected `disposition: override` escape hatch would reopen the exact skip-hatch Principle 2 closes).
 - **Lessons-aware.** Loads the canonical Instar Design Principles + Lessons Learned index (`docs/INSTAR-DESIGN-PRINCIPLES-AND-LESSONS.md`) plus the running agent's local `.instar/memory/feedback_*.md` entries, then checks the spec for (a) direct contradictions of documented principles/lessons, (b) applicable lessons the spec fails to engage with, (c) behavioral lessons violated by agent-facing surfaces the spec proposes, and **(d) FOUNDATION/SUBSYSTEM AUDIT — the design the spec TESTS, EXTENDS, or BUILDS ON, not just the spec's own surface: does that foundation violate a known standard or repeat a known mistake?** The audit MUST reach one layer below the spec boundary. A spec can be internally clean while faithfully testing or extending a flawed foundation — e.g. a test-harness spec that correctly proves a permission gate which *itself* holds brittle blocking authority in violation of Signal-vs-Authority, or an extension spec built on a subsystem with an unaddressed gap. Taking the underlying subsystem "as given" is exactly how a standards violation survives review: the spec passes, the foundation's flaw is never weighed. When the foundation is flawed, the finding is "this spec is sound but the subsystem it depends on violates standard X / repeats mistake Y — surface it before building on/around it." Catches the "Phase 2" anti-pattern, the spec-converge-pre-auth-circular failure mode (see `feedback_spec_converge_pre_auth_circular`), and the foundation-not-audited gap (the Slack-permission-gate brittle-enum-as-authority that the harness convergence cleared because it audited only the harness, 2026-06-09).
+
+<!-- INSTAR:SPEC_EXPERIENCE_REVIEW -->
+**Experience fit is part of the mandatory Lessons-aware review**, including abbreviated rounds. Use Q5 in `templates/reviewer-lessons-aware.md`: independently compare the proposed ordinary journey with the person's stated outcome, and, where approvals or trust are involved, contest both needless repeat asks and coverage the record does not support. Record the source, contrasting cases, evidence limits and disposition in the report's **Experience fit** section. This is a contextual reviewer judgment under the existing convergence process, not a new numerical gate or permission rule. A rule-by-rule no-conflict result alone does not establish that the design delivers the person's goal.
+<!-- /INSTAR:SPEC_EXPERIENCE_REVIEW -->
 
 **External reviewers (cross-model, via the agent's own installed CLIs — one pass PER AVAILABLE FAMILY):**
 
@@ -132,13 +142,16 @@ Each internal reviewer receives the spec, the architectural context docs referen
 
 The **six internal reviewers + the cross-model external passes** run in parallel (one external read per available supported family — the honest mechanism, not three phantom API models). Their findings are collected.
 
+<!-- FIXED_LIMIT_CONTEST -->
+**Fixed limits require an independent contest, every round.** The decision-completeness and lessons-aware reviewers inventory every fixed behavioral limit throughout the spec (rates, counts, sizes, growth ceilings, retirement thresholds and qualitative quotas), treating each as a judgment-candidate by default. Their reports state the location/boundary, claimed basis, independent evidence, a legitimate counterexample it rejects (or "no legitimate counterexample found" for a genuine floor), and a verdict, or `fixed-limits: none`. An invariant needs `basis: irreversible-consequence`, `basis: enumerable-domain`, or `basis: external-constraint`, plus `; evidence: <specific consequence, domain or source>` on the same decision row. In tables, classification is the second cell; in bullets, write `- decision — classification; basis: ...; evidence: ...`. The tag writer refuses missing declarations; reviewers contest whether the evidence actually establishes a floor AND why this exact boundary follows. A label or a circular reason such as "deterministic counts", "fixed cap", or repeating the rule is MATERIAL / DESIGN and prevents convergence until resolved. A populated field is not proof. Keep genuine evidenced floors; otherwise require intelligent assessment within a complete deterministic floor and named arbiter, not a replacement arbitrary cap. The live Standards-Conformance Gate checks the same failure class as an advisory signal. No deterministic numeric detector is given semantic blocking authority.
+
 **Code-backed reviewer — the Standards-Conformance Gate (auto-invoked).** Alongside the internal reviewers + the cross-model external pass, call the live gate: `POST /spec/conformance-check` with the spec (body `{ "specPath": "<path-within-specsDir>" }`, or `{ "markdown": "<spec text>" }`). Unlike the prompt-driven reviewers, the gate is *code that reads the living constitution* (`docs/STANDARDS-REGISTRY.md`) and returns a per-standard report — `ok` / `at-risk` / `n/a` + a reason for every standing standard. Fold its `at-risk` entries into the round's findings. It is the structural complement to the Lessons-aware reviewer: lessons-aware reads the lessons doc + local memory (prompt-driven); the gate reads the constitution itself (code), so a registry edit can never be silently missed. **Signal-only:** advisory — it surfaces violations, it does not block (blocking authority is the separate, later `scg-blocking-authority` follow-up, per *Signal vs. Authority*). **Fail-open:** if the gate is disabled/unreachable (503) or returns `degraded: true`, note that the constitutional pass was not authoritative and continue — a down gate must never stall spec review. (This auto-invocation is the dogfood-to-ship enforcement of the **Self-Hosting** standard — the gate now *runs* at spec-review rather than being a step the author must remember.)
 
 **The lessons-aware reviewer is not optional**, even in pattern-instance abbreviated convergence. Abbreviated convergence may skip external models (one round instead of multiple) but must NOT skip the lessons-aware pass — that's the only defense against the circular self-verify problem documented at `feedback_spec_converge_pre_auth_circular`. When a spec author runs convergence on their own spec, the lessons-aware reviewer is the structural check that catches what the author missed.
 
 ### Phase 2 — Spec update
 
-The skill reads all findings, groups duplicates, prioritizes by severity, and rewrites the spec to address each substantive finding. Trivial/cosmetic findings are noted but may be batched.
+The skill reads all findings, groups duplicates, prioritizes by severity, and rewrites the spec to address each DESIGN-class finding. PRECISION-class findings go to `## Left behind` and are not worked into the spec (a one-line fix in passing is fine).
 
 The spec update is ONE coherent edit of the spec document — not one patch per reviewer. The agent treats the findings as a single synthesis input.
 
@@ -167,22 +180,14 @@ The external passes are **NON-SKIPPABLE** whenever a non-Claude framework was **
 - A **mid-converge deactivation** (frameworks available at round 1, gone at round N) is logged in the iteration log and **fails report validation**.
 - The advisory "externals unavailable" floor (Phase 5's `unavailable` flag) is legitimate ONLY for an agent that has been genuinely single-framework across the whole lookback — a recorded standing fact, not a 30-second-old flip.
 
+<!-- FRACTAL_8020_TRIAGE (CMT-917) -->
 Convergence criteria (BOTH must hold — additive, per Autonomy Principle 2):
 
-1. **No DESIGN-class findings for TWO consecutive rounds.**
+1. **Fractal 80/20 convergence: a round finds nothing that would change what gets BUILT.**
 
-   **Why this replaced "no material new issues" (2026-07-27).** "Material" was defined as *any finding
-   that would require a spec change if unaddressed* — and a contract-precision or naming finding DOES
-   require a spec edit, so it counted. **On a spec that appends its own review history, the reviewable
-   surface grows every round, and a diligent reviewer will always find precision to add on a larger
-   surface. So the loop could not terminate BY CONSTRUCTION for that document shape**, and the 10-round
-   cap fired for a reason unrelated to whether the design was sound.
-   That is not a hypothesis. `standards-registry-ships-with-code` recorded 4–5 findings under a column
-   headed "Material findings" in *every one* of its ten rounds, while its own report observed that
-   rounds 5–10 *"produced no design defects at all — they produced contract precision, naming, and
-   scope-bound findings."* A second spec on the same problem hit the cap identically. A verdict that
-   does not measure its subject is this project's signature failure; here it lived in the stop
-   criterion itself.
+   Convergence means the review has stopped changing the build. It does NOT mean every long-tail
+   issue is resolved (operator ruling, 2026-10-22, topic 127831: one requested feature spent 18
+   rounds here and was still unbuilt 14 hours in).
 
    **Each reviewer CLASSIFIES every finding it raises — the class is declared, never inferred by the
    comparator from wording:**
@@ -190,38 +195,42 @@ Convergence criteria (BOTH must hold — additive, per Autonomy Principle 2):
    - **DESIGN-class** — changes what would be BUILT or how it would BEHAVE. Architecture; a safety,
      security, scalability, or integration property; a decision point's classification or floor; a
      multi-machine posture; a missing failure mode; **or a statement in the spec that is factually
-     WRONG about the system** (round 10 of that spec caught a false rollback claim — that is
-     design-class, not precision, and must keep resetting the counter).
+     WRONG about the system** (a false rollback claim is design-class, not precision).
    - **PRECISION-class** — improves the DOCUMENT without changing what would be built: contract
-     wording, naming, scope-bound phrasing, an added caveat, a clarified example.
+     wording, naming, scope-bound phrasing, an added caveat, a clarified example, a long-tail edge
+     case whose cost is out of proportion to its likelihood.
 
-   **Precision findings are still addressed** — they are genuinely valuable and several changed
-   production code — but they do not reset the counter. Only a DESIGN-class finding does.
+   **Precision findings are NOT iterated on.** They are listed in the report's `## Left behind`
+   section (one line each). Fix one in passing only if it is a one-line edit; never re-run a round
+   for it. Only a DESIGN-class finding sends the spec back to Phase 2.
 
-   **Two consecutive rounds, not one**, because a single quiet round is weak evidence on a spec whose
-   surface keeps growing; requiring two makes the terminating condition harder to reach by luck while
-   still reachable at all. Under this rule the spec above converges at round 7 on its merits.
+   **One quiet round is enough.** Because precision findings no longer grow the spec, the surface
+   stops growing and a single round with zero DESIGN-class findings converges.
+
+   **Round cap by size** (the `/instar-dev` tier): **Tier 1 (small, reversible): 3 rounds.**
+   **Tier 2+ (large, irreversible, or security-sensitive): 6 rounds.** At the cap, stop: if the
+   remaining design findings are about safety, security or data loss, exit `convergence-failed`
+   and ask the operator; otherwise record them in `## Left behind` as accepted risks with one line
+   of reasoning each, and converge.
 
    (A cheap-to-change-after tag the Decision-Completeness reviewer contested and rejected is
    DESIGN-class — it asserts reversibility the reviewer denies, which is a claim about behaviour.)
 
-   **Honest limit:** the classification is made by a reviewer, so this trades one judgment for a
-   better-specified one rather than removing judgment. A reviewer that mislabels a design defect as
-   precision can end the loop early — which is why the taxonomy names the wrong-about-the-system case
-   explicitly, and why the report must record each round's class counts so a suspiciously quiet
-   round is visible rather than merely accepted.
+   **Honest limit:** the classification is a reviewer's judgment. A reviewer that mislabels a design
+   defect as precision can end the loop early, which is why the report records each round's class
+   counts and lists every left-behind item, so a suspiciously quiet round is visible.
 2. **Zero unresolved user-decisions remain in `## Open questions`.** A spec cannot converge while a live decision is still parked on the user — every open question must be resolved into a `## Frontloaded Decisions` entry (or a contested-and-surviving cheap-to-change-after tag) before convergence. This is enforced STRUCTURALLY: `write-convergence-tag.mjs` refuses to stamp the tag while `## Open questions` contains unresolved entries, so the criterion cannot be skipped by prose (Structure > Willpower).
 
 A lightweight LLM (Haiku-class) compares the new round's findings to the prior round's findings and emits a
 boolean `converged: true|false` with reasoning. It consumes each finding's DECLARED class — it must not
 re-classify from wording, because the reviewer that raised a finding is the one that knows whether it changes
 what would be built. It also emits `designFindings` and `precisionFindings` counts per round so the
-consecutive-quiet-round count is auditable rather than asserted. Human-readable comparison log is retained.
+quiet-round verdict is auditable rather than asserted. Human-readable comparison log is retained.
 
 **Not converged** → back to Phase 2.
 **Converged** → Phase 4.
 
-Hard cap: 10 iterations. If the skill hits 10 iterations without convergence, it exits with a `convergence-failed` status and a report explaining why. Human input is required before retry.
+Hard cap: 3 rounds for Tier 1, 6 for Tier 2+ (see criterion 1 for what happens at the cap).
 
 #### Aggregating per-round cross-model outcomes into ONE spec-level flag
 
@@ -249,8 +258,8 @@ Produce a final report at `docs/specs/reports/<slug>-convergence.md` with the fo
 
 - `## Cross-model review: codex-cli:<model>` — RAN. A real GPT-tier external pass ran through the agent's codex CLI in at least one round. The ONLY state with no ⚠ (it is the clean pass).
 - `## ⚠ Cross-model review: codex-cli:<model> (degraded: <reason>)` — codex is installed but THIS round's call failed (timeout / error / rate-limited); the external pass was partial. State the reason. (Per-round status; if some OTHER round succeeded, the spec-level flag is the clean `codex-cli:<model>` instead.)
-- `## ⚠ Cross-model review: DEGRADED — ALL ROUNDS (degraded-all-rounds)` — codex was present every round but **ZERO rounds succeeded** (every attempt degraded). The spec converged having **never once received a real external opinion** — as loud as UNAVAILABLE. State the last round's reason. The user reads THIS before applying `approved: true`.
-- `## ⚠ Cross-model review: UNAVAILABLE` — no supported external (non-Claude) reviewer was installed/authed. Convergence ran on the internal Claude reviewers + the constitutional gate ONLY. State the specific reason (`codex-not-installed` / `codex-not-authed` / `codex-auth-apikey-forbidden`) and the one-line remediation (`codex login`, or install `@openai/codex`). The user reads THIS before applying `approved: true`, so the reduced-assurance state is an informed choice, not a silent one.
+- `## ⚠ Cross-model review: DEGRADED — ALL ROUNDS (degraded-all-rounds)` — codex was present every round but **ZERO rounds succeeded** (every attempt degraded). The spec converged having **never once received a real external opinion** — as loud as UNAVAILABLE. State the last round's reason. The approver reads THIS before applying `approved: true`.
+- `## ⚠ Cross-model review: UNAVAILABLE` — no supported external (non-Claude) reviewer was installed/authed. Convergence ran on the internal Claude reviewers + the constitutional gate ONLY. State the specific reason (`codex-not-installed` / `codex-not-authed` / `codex-auth-apikey-forbidden`) and the one-line remediation (`codex login`, or install `@openai/codex`). The approver reads THIS before applying `approved: true`, so the reduced-assurance state is an informed choice, not a silent one.
 - `## ⚠ Cross-model review: SKIPPED (abbreviated convergence)` — the author chose the fast path; the framework may be present but was deliberately skipped (the lessons-aware reviewer still ran). This is a **non-ran** state, so it carries the ⚠ too — "I skipped the outside opinion to save cost" must be as visible as "I had no outside opinion available," not a quiet footnote.]
 
 ## ELI10 Overview
@@ -263,11 +272,22 @@ Produce a final report at `docs/specs/reports/<slug>-convergence.md` with the fo
 
 ## Iteration Summary
 
-| Iteration | Reviewers who flagged | Material findings | Spec changes |
-|-----------|-----------------------|-------------------|--------------|
-| 1         | security, adversarial | 14                | ... |
-| 2         | scalability           | 3                 | ... |
-| 3         | (converged)           | 0                 | none |
+| Iteration | Reviewers who flagged | Design findings | Left behind | Spec changes |
+|-----------|-----------------------|-----------------|-------------|--------------|
+| 1         | security, adversarial | 4               | 9           | ... |
+| 2         | (converged)           | 0               | 3           | none |
+
+## Proportion
+
+[One line: change size (tier; files/LOC or spec lines), rounds used vs the tier cap. Flag it plainly
+when the effort is out of line, e.g. "⚠ 3 rounds on a 40-line Tier-1 change". A signal for the
+reader and the retrospective, never a gate.]
+
+## Left behind
+
+[Every precision/long-tail finding not iterated on, one line each, plus any design finding accepted
+at the cap with its one-line reason. Where an item is worth doing later, name the queue it went to
+(see the triage rule in `/instar-dev`).]
 
 ## Full Findings Catalog
 
@@ -275,7 +295,7 @@ Produce a final report at `docs/specs/reports/<slug>-convergence.md` with the fo
 
 ## Convergence verdict
 
-[Plain statement: "Converged at iteration N. No material findings in the final round. Spec is ready for user review and approval."]
+[Plain statement: "Converged at round N. The final round found nothing that changes what gets built; M items left behind. Spec is ready to approve and build."]
 ```
 
 ### Phase 5 — Frontmatter tag
@@ -309,15 +329,15 @@ node skills/spec-converge/scripts/write-convergence-tag.mjs \
 
 (Specs converged BEFORE the Decision-Completeness reviewer shipped carry no `single-run-completable` field — that is honest, not a defect; the field binds only specs converged after it. A spec that modifies spec-converge itself runs under the old spec-converge, per the documented bootstrap exception extended in spirit.)
 
-This is **DISCLOSURE, not a gate** — it does NOT change `/instar-dev`'s `review-convergence` + `approved: true` enforcement. An `unavailable` spec can still be approved (the user reads the report banner and makes an informed choice).
+This is **DISCLOSURE, not a gate** — it does NOT change `/instar-dev`'s `review-convergence` + `approved: true` enforcement. An `unavailable` spec can still be approved (the approver reads the report banner and makes an informed choice).
 
 **Structural prerequisite — ELI16 overview.** Before the convergence tag is written, `skills/spec-converge/scripts/write-convergence-tag.mjs` verifies the spec ships with a plain-English ELI16 companion at `docs/specs/<slug>.eli16.md` (or the path declared via `eli16-overview:` frontmatter). The companion must be at least 800 characters. If the overview is missing or stub-length, convergence is refused — no tag is written. The dense technical spec is for reviewers; the ELI16 overview is the entry point for any reader who has to make a real decision. See `skills/instar-dev/templates/eli16-overview.md` for the expected shape.
 
-The `approved: true` tag is NOT written by this skill. That's the user's step.
+The `approved: true` tag is NOT written by this skill. It is the approver's separate, recorded step: the agent's for its own spec, the operator's for a constitution or protected-list amendment (see "When it runs").
 
 ### Phase 6 — User handoff
 
-When a spec is handed to the user for review, it MUST go out with a **rendered, verified ELI16 tunnel link** the user can tap and read — never a bare filename or a PR they have to dig through. This is the required delivery step, enforced structurally (not by memory):
+A spec goes to the operator for approval only when it amends the constitution or the protected list, or their recorded instructions reserve it; any other converged spec gets no handoff message (it reaches them in the regular status update and the merged PR). When a spec IS handed to the operator for review, it MUST go out with a **rendered, verified ELI16 tunnel link** the user can tap and read — never a bare filename or a PR they have to dig through. This is the required delivery step, enforced structurally (not by memory):
 
 ```bash
 node skills/spec-converge/scripts/publish-spec-review.mjs \
@@ -330,14 +350,14 @@ node skills/spec-converge/scripts/publish-spec-review.mjs \
 
 Backstop (Structure > Willpower): the pre-messaging gate (`convergence-check.sh`, criterion 8) **blocks** any hand-sent spec-review message that lacks a rendered `/view/` link, so the requirement cannot be silently skipped even if the script is bypassed.
 
-The skill does NOT auto-apply `approved: true`. That requires explicit human action — editing the frontmatter or running `instar spec approve <path>` (follow-on CLI command).
+The skill does NOT auto-apply `approved: true`. The approver applies it explicitly by editing the frontmatter, with `approved-by` recording who approved and why.
 
 ## What this skill does NOT do
 
 - It does not build code. That's `/instar-dev`'s job, after both tags are present.
-- It does not relax convergence criteria to avoid iteration. 10-iteration cap exists to surface "this design is too confused to review" rather than to force false convergence.
+- It does not iterate on wording. Convergence is fractal 80/20: stop when a round would not change the build. The round cap exists to stop review costing more than the change is worth.
 - It does not skip reviewer perspectives. The six internal reviewers + the cross-model external pass run on every round (subject to the abbreviated-convergence exception, which still runs the non-skippable lessons-aware and decision-completeness reviewers).
-- It does not auto-approve on behalf of the user. Approval is the user's structural contribution to the process.
+- It does not auto-approve. Approval is a separate, recorded step by the approver: the agent for its own spec, the operator for a constitution or protected-list amendment.
 
 ## Bootstrap exception
 
@@ -348,10 +368,10 @@ Documented bootstrap exception: the first commit introducing `/spec-converge` is
 ## Anti-patterns the enforcement will catch
 
 ### "Just one more iteration"
-The convergence check is structural. If the LLM comparator finds new material issues, iteration is required. The agent does not get to overrule this.
+A round that would only polish wording or chase a long-tail edge case is not run. If the last round found nothing that changes the build, the spec has converged; list what is left and stop.
 
-### "Convergence" with shrinking findings but not zero
-A smaller finding count is NOT convergence. Convergence is zero material findings in a new round.
+### "Convergence" while design findings remain
+A round with a DESIGN-class finding has not converged, however few findings it has. Fix it, or at the round cap accept it in `## Left behind` with a reason (safety, security and data-loss findings go to the operator instead).
 
 ### Skipping a reviewer perspective to ship faster
 All six internal reviewers (security, scalability, adversarial, integration, decision-completeness, lessons-aware) AND the cross-model external passes run on every round (subject to Phase 3's delta-gating — an unchanged-body round delta-skips with a logged note, which is NOT a skip of the perspective). Skipping is visible in the iteration log and fails the report validation. **Abbreviated convergence may NO LONGER skip the external pass when the 7-day activation history shows a non-Claude framework** (`wasNonClaudeFrameworkActiveWithin` — see Phase 3's mandatory-check): a framework that was active at any point in the lookback makes externals mandatory, and a just-before-converge deactivation does not exempt the spec. `cross-model-review: skipped-abbreviated` remains a legitimate record ONLY for genuinely single-framework agents (no non-Claude framework anywhere in the lookback; distinct from `unavailable`). In ALL abbreviated runs the lessons-aware AND decision-completeness reviewers MUST still run; lessons-aware is the only structural defense against the spec-converge-pre-auth-circular failure mode.

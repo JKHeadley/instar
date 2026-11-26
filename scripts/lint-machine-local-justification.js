@@ -459,6 +459,18 @@ export function gradeMachineLocalMarkers(text, today = new Date()) {
   const findings = [];
   const markers = parseMarkers(text);
   const posture = findPostureSection(text);
+  // Status endpoints teach sessions what the whole agent can do. When a spec
+  // introduces one, require the existing posture section to name that route's
+  // scope. This remains a report-first signal; semantic review decides whether
+  // the declared scope is actually correct.
+  const statusRoutes = [...new Set([...text.matchAll(/\b(?:GET|POST)\s+(\/[\w/:.-]*(?:status|health|capabilities|channels)(?:\?[\w=&.-]*)?)/gi)]
+    .map(match => match[1].split('?')[0]))];
+  for (const route of statusRoutes) {
+    if (!posture || !text.slice(posture.start, posture.end).includes(route)) {
+      findings.push({ rule: 'A4-status-surface-posture-missing',
+        message: `${route} must declare its agent or machine scope in the Multi-machine posture section.` });
+    }
+  }
 
   // ── A2 — spurious / malformed markers (both directions, §170) ──
   for (const marker of markers) {

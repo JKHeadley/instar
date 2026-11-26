@@ -1,0 +1,39 @@
+{
+  "ts": "2026-10-21T00:24:10.830Z",
+  "slug": "proactive-default-slot-repoint",
+  "suggestedTier": 2,
+  "declaredTier": 1,
+  "riskFloor": 1,
+  "riskFloorReasons": [],
+  "belowFloor": false,
+  "files": 7,
+  "loc": 234,
+  "scope": {
+    "basis": "staged-in-scope-additions-plus-deletions",
+    "files": [
+      "src/commands/server.ts",
+      "src/config/ConfigDefaults.ts",
+      "src/core/CredentialSetDefault.ts",
+      "src/core/ProactiveSwapMonitor.ts",
+      "src/core/devGatedFeatures.ts",
+      "src/core/types.ts",
+      "src/server/routes.ts"
+    ],
+    "addedLines": 194,
+    "deletedLines": 40
+  },
+  "causalAutopsy": {
+    "origin": "latent",
+    "notes": "The original pre-limit rescue conflated an untagged default-login session with a mutable session binding. The existing set-default credential exchange was present but not composed into ProactiveSwapMonitor."
+  },
+  "classClosure": {
+    "defectClass": "unbounded-self-action",
+    "closure": "guard",
+    "guardEvidence": {
+      "enforcementType": "ratchet",
+      "citation": "tests/unit/self-action-convergence.test.ts",
+      "howCaught": "The registered proactive-swap-monitor controller settles after one default-slot repoint because the default resolver then observes the fresh account below pressure; the existing convergence ratchet also proves its anti-thrash brakes under sustained pressure."
+    }
+  },
+  "verdict": "pass"
+}

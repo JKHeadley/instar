@@ -64,3 +64,65 @@ describe('formatWatchdogUserMessage', () => {
     expect(msg).not.toContain('/opt/homebrew');
   });
 });
+
+/**
+ * Interrupting a test run is not routine, however gently it is done: a Ctrl+C
+ * discards everything the run had completed, and the harness that launched it
+ * can still report a clean exit — so without this the person who asked for the
+ * run never learns it was cut short (2026-10-20: a full suite was interrupted
+ * at 61 minutes and reported as finished).
+ */
+describe('a test run interrupted by the watchdog is announced', () => {
+  function testRunEvent(over: Record<string, unknown> = {}) {
+    return {
+      ...event(EscalationLevel.CtrlC),
+      stuckCommand: 'npm test',
+      stuckCommandKind: 'test-runner' as const,
+      stuckElapsedMs: 61 * 60_000,
+      stuckRetryCount: 0,
+      ...over,
+    };
+  }
+
+  it('speaks at Ctrl+C level, which is silent for every other command', () => {
+    const msg = formatWatchdogUserMessage(testRunEvent());
+    expect(msg).not.toBeNull();
+    expect(msg).toMatch(/test run/i);
+    expect(msg).toMatch(/61 minutes/);
+    expect(msg).toMatch(/run again/i);
+  });
+
+  it('says plainly that the work is gone, rather than implying recovery', () => {
+    const msg = formatWatchdogUserMessage(testRunEvent())!;
+    expect(msg).toMatch(/nothing it had finished is kept/i);
+    expect(msg).not.toMatch(/recovered|picking back up/i);
+  });
+
+  it('names a wrapper honestly when the runner was below another command', () => {
+    const msg = formatWatchdogUserMessage(testRunEvent({
+      stuckCommand: '/usr/bin/git push origin HEAD',
+      stuckCommandKind: 'test-runner-ancestor' as const,
+    }))!;
+    expect(msg).toMatch(/running tests/i);
+    expect(msg).not.toContain('git push');
+  });
+
+  it('speaks once per episode, not once per escalation step', () => {
+    expect(formatWatchdogUserMessage(testRunEvent({ stuckRetryCount: 1 }))).toBeNull();
+    expect(formatWatchdogUserMessage(testRunEvent({ level: EscalationLevel.SigTerm }))).toBeNull();
+  });
+
+  it('leaves an ordinary stuck command silent at Ctrl+C', () => {
+    expect(formatWatchdogUserMessage(testRunEvent({ stuckCommandKind: undefined }))).toBeNull();
+  });
+
+  it('carries no jargon and no raw command', () => {
+    const msg = formatWatchdogUserMessage(testRunEvent())!;
+    expect(msg).not.toMatch(/SIGINT|SIGKILL|Ctrl\+C|escalation|watchdog|npm test/i);
+  });
+
+  it('reports at least a minute for a run interrupted sooner than that', () => {
+    const msg = formatWatchdogUserMessage(testRunEvent({ stuckElapsedMs: 4_000 }))!;
+    expect(msg).toMatch(/1 minutes/);
+  });
+});

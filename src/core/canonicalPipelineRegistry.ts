@@ -1,3 +1,6 @@
+// Governed by (docs/STANDARDS-REGISTRY.md cites this file as enforcement of):
+//   *Canonical Pipeline Operational Completeness — Accepted Intake Must Drain*
+
 /**
  * Closed structural registry for canonical accepted-intake pipelines.
  *
@@ -69,6 +72,36 @@ export const CANONICAL_INTAKE_SURFACES = [
     sourcePath: 'src/server/routes.ts',
     method: 'POST',
     route: '/feedback-factory/drain/tick',
+    canonicalPipelineId: 'feedback-factory',
+  },
+  {
+    id: 'feedback-factory-triage-route',
+    kind: 'route',
+    sourcePath: 'src/server/routes.ts',
+    method: 'POST',
+    route: '/feedback-factory/triage/tick',
+    canonicalPipelineId: 'feedback-factory',
+  },
+  {
+    id: 'feedback-factory-triage-job',
+    kind: 'job',
+    sourcePath: 'src/scaffold/templates/jobs/instar/feedback-factory-triage.md',
+    jobSlug: 'Feedback-Factory Triage',
+    canonicalPipelineId: 'feedback-factory',
+  },
+  {
+    id: 'feedback-factory-execute-route',
+    kind: 'route',
+    sourcePath: 'src/server/routes.ts',
+    method: 'POST',
+    route: '/feedback-factory/execute/tick',
+    canonicalPipelineId: 'feedback-factory',
+  },
+  {
+    id: 'feedback-factory-execute-job',
+    kind: 'job',
+    sourcePath: 'src/scaffold/templates/jobs/instar/feedback-factory-execute.md',
+    jobSlug: 'Feedback-Factory Execute',
     canonicalPipelineId: 'feedback-factory',
   },
 ] as const satisfies readonly IntakeSurfaceDeclaration[];

@@ -1,0 +1,23 @@
+{
+  "version": 2,
+  "slug": "executor-clone-base-objects",
+  "sessionId": "7f2a8220-744b-4650-af3f-bfd06ec29ea8",
+  "timestamp": "2026-10-24T16:09:12.825Z",
+  "artifactPath": "upgrades/side-effects/executor-clone-base-objects.md",
+  "artifactSha256": "0b6c4bc2be35c3630da8a8143b128392933189ee7235ad85bdfcbc6ed3582114",
+  "coveredFiles": [
+    "src/feedback-factory/execute/buildFeedbackExecutor.ts",
+    "src/feedback-factory/execute/confinementCanary.ts",
+    "tests/unit/feedback-factory/execute-units.test.ts",
+    "tests/unit/feedback-factory/execute-wiring.test.ts",
+    "upgrades/next/executor-clone-base-objects.md",
+    "upgrades/side-effects/executor-clone-base-objects.md"
+  ],
+  "phase": "complete",
+  "tier": 1,
+  "tierReasoning": "Two bounded fixes from the second-pass review: scrub-before-truncate in a diagnostic string, and an age bound on an admission brake; both covered by unit tests.",
+  "eli16Path": "docs/specs/executor-clone-base-objects.eli16.md",
+  "sideEffectsPath": "upgrades/side-effects/executor-clone-base-objects.md",
+  "secondPass": "not-required",
+  "reviewerConcurred": null
+}

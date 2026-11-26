@@ -1,0 +1,20 @@
+{
+  "version": 2,
+  "slug": "agent-health-quiet-default",
+  "sessionId": "c246e283-38c2-4ed4-808d-f5bbdce2da8e",
+  "timestamp": "2026-11-05T01:05:41.706Z",
+  "artifactPath": "upgrades/side-effects/agent-health-quiet-default.md",
+  "artifactSha256": "46d6fb8442fcee858a68f6186fc3f7e815b92990d186dda0c5d8f44a0e596da9",
+  "coveredFiles": [
+    "docs/eli16/agent-health-quiet-default.eli16.md",
+    "tests/unit/desktop-locked-proof-fixes.test.ts",
+    "upgrades/side-effects/agent-health-quiet-default.md"
+  ],
+  "phase": "complete",
+  "tier": 1,
+  "tierReasoning": "A test-only cleanup correction reproducible on main and unrelated PRs; it moves only test-created helper files to a temporary directory before deletion.",
+  "eli16Path": "docs/eli16/agent-health-quiet-default.eli16.md",
+  "sideEffectsPath": "upgrades/side-effects/agent-health-quiet-default.md",
+  "secondPass": "not-required",
+  "reviewerConcurred": false
+}

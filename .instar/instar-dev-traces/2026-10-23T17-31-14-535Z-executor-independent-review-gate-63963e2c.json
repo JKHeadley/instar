@@ -1,0 +1,27 @@
+{
+  "version": 2,
+  "slug": "executor-independent-review-gate",
+  "sessionId": "7f2a8220-744b-4650-af3f-bfd06ec29ea8",
+  "timestamp": "2026-10-23T17:31:14.535Z",
+  "artifactPath": "upgrades/side-effects/executor-independent-review-gate.md",
+  "artifactSha256": "75d962cdedb4db3e5e4f772dc966ee83c216db964225651bb31c301f517c6d04",
+  "specPath": "docs/specs/feedback-triage-and-execution.md",
+  "coveredFiles": [
+    "src/feedback-factory/execute/FeedbackExecuteStore.ts",
+    "src/feedback-factory/execute/FeedbackExecutorService.ts",
+    "src/feedback-factory/execute/buildFeedbackExecutor.ts",
+    "src/feedback-factory/execute/executePolicy.ts",
+    "src/feedback-factory/execute/executorPorts.ts",
+    "src/feedback-factory/execute/independentReview.ts",
+    "src/feedback-factory/execute/reviewGate.ts",
+    "tests/fixtures/feedbackExecuteHarness.ts",
+    "tests/unit/feedback-factory/execute-independent-review.test.ts",
+    "tests/unit/feedback-factory/execute-service.test.ts",
+    "tests/unit/feedback-factory/execute-store-migration.test.ts"
+  ],
+  "phase": "complete",
+  "tier": 2,
+  "tierReasoning": "Replaces the executor's merge authority (operator approval) with an independent two-family review; a merge-authority change is never Tier 1.",
+  "secondPass": "true",
+  "reviewerConcurred": true
+}

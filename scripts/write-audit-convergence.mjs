@@ -1,4 +1,7 @@
 #!/usr/bin/env node
+// Governed by (docs/STANDARDS-REGISTRY.md cites this file as enforcement of):
+//   *Iterative Audit to Convergence*
+
 /**
  * write-audit-convergence.mjs — stamp an audit report's frontmatter with the
  * `converged:` claim, but ONLY when the ledger earns it (audit-convergence-enforcement

@@ -1,0 +1,38 @@
+{
+  "version": 3,
+  "slug": "feedback-confined-vitest-direct",
+  "sessionId": "fd0699ed-7bf6-4340-bbdf-e97225114a49",
+  "timestamp": "2026-11-04T03:33:34.651Z",
+  "artifactPath": "upgrades/side-effects/feedback-confined-vitest-direct.md",
+  "artifactSha256": "68bcc566cef2e0b70a63aa3198f71de9056f5aee713ba6eec5976a56c0a20352",
+  "specPath": "docs/specs/feedback-triage-and-execution.md",
+  "coveredFiles": [
+    "src/feedback-factory/execute/FeedbackExecutorService.ts",
+    "src/feedback-factory/execute/confinementCanary.ts",
+    "src/feedback-factory/execute/executePolicy.ts",
+    "tests/unit/feedback-factory/execute-service.test.ts",
+    "tests/unit/feedback-factory/execute-units.test.ts",
+    "upgrades/next/feedback-confined-vitest-direct.md",
+    "upgrades/side-effects/feedback-confined-vitest-direct.md"
+  ],
+  "phase": "complete",
+  "tier": 2,
+  "tierReasoning": "Trusted executor command launch path changes; canary version and bounded verification need full review and three-tier tests.",
+  "secondPass": "true",
+  "reviewerConcurred": true,
+  "toolchain": {
+    "buildSkill": {
+      "name": "instar-dev",
+      "version": "9a75c36ba521",
+      "verified": true
+    },
+    "reviewSkills": [
+      {
+        "name": "feedback_direct_vitest_review",
+        "outcome": "concurred",
+        "verified": false,
+        "iterations": 1
+      }
+    ]
+  }
+}

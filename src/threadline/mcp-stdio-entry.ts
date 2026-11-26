@@ -29,9 +29,10 @@ import { ThreadResumeMap } from './ThreadResumeMap.js';
 import { AgentTrustManager } from './AgentTrustManager.js';
 import { IdentityManager } from './client/IdentityManager.js';
 import { RegistryRestClient } from './client/RegistryRestClient.js';
-import type { RegistryClient, RelayDiscoverer } from './ThreadlineMCPServer.js';
-import { sendMessageViaHttp, getThreadHistoryViaHttp, requestSecretViaHttp } from './mcp-http-client.js';
+import type { RegistryClient } from './ThreadlineMCPServer.js';
+import { sendMessageViaHttp, getThreadHistoryViaHttp, acknowledgeViaHttp, getThreadReceiptsViaHttp, requestSecretViaHttp, startPairingViaHttp, createPairingInviteViaHttp, createHttpRelayDiscoverer, approvedDeleteViaHttp } from './mcp-http-client.js';
 import { DEFAULT_RELAY_URL } from './constants.js';
+import { resolveMcpAuthToken } from './mcpAuthToken.js';
 
 // ── Parse CLI args ───────────────────────────────────────────────────
 
@@ -101,62 +102,8 @@ async function setupRegistryClient(
 }
 
 // ── Relay discovery proxy (HTTP → agent server's relay client) ──────
-
-/**
- * RelayDiscoverer implementation that proxies through the agent server's
- * /threadline/relay-discover endpoint. The MCP stdio subprocess has no
- * relay WebSocket of its own — the agent server is what holds the
- * persistent connection, so discover queries go through it.
- *
- * connectionState is cached briefly from the last /threadline/status read.
- * On every discover() call we re-check status first so cache fallback in
- * the MCP server's discover handler reflects the live relay state, not a
- * stale snapshot from MCP-process start.
- */
-function createHttpRelayDiscoverer(serverPort: number, agentToken: string): RelayDiscoverer {
-  let lastState = 'unknown';
-  const refreshState = async (): Promise<string> => {
-    try {
-      const res = await fetch(`http://localhost:${serverPort}/threadline/status`);
-      if (!res.ok) return (lastState = 'unavailable');
-      const body = await res.json() as { relay?: { connected?: boolean } };
-      lastState = body.relay?.connected ? 'connected' : 'disconnected';
-      return lastState;
-    } catch {
-      return (lastState = 'unavailable');
-    }
-  };
-  return {
-    get connectionState(): string { return lastState; },
-    async discover(filter) {
-      // Refresh status before discovering so the MCP server's connectionState
-      // check (which decides cache fallback) sees a live read, not a stale one.
-      const state = await refreshState();
-      if (state !== 'connected') return [];
-      try {
-        const res = await fetch(`http://localhost:${serverPort}/threadline/relay-discover`, {
-          method: 'POST',
-          headers: {
-            'Content-Type': 'application/json',
-            'Authorization': `Bearer ${agentToken}`,
-          },
-          body: JSON.stringify({ filter }),
-        });
-        if (!res.ok) return [];
-        const body = await res.json() as {
-          success?: boolean;
-          agents?: Array<{
-            agentId: string; name: string; publicKey?: string;
-            framework?: string; capabilities?: string[]; lastSeen?: string;
-          }>;
-        };
-        return body.success && Array.isArray(body.agents) ? body.agents : [];
-      } catch {
-        return [];
-      }
-    },
-  };
-}
+// Shared with the in-server HTTP route: see createHttpRelayDiscoverer in
+// mcp-http-client.ts.
 
 // ── Main ─────────────────────────────────────────────────────────────
 
@@ -168,22 +115,16 @@ async function main(): Promise<void> {
     fs.mkdirSync(threadlineDir, { recursive: true });
   }
 
-  // Read server port and auth token. Token: INSTAR_AUTH_TOKEN env first
-  // (survives the secret-externalization refactor that moved authToken out of
-  // config.json into the encrypted store), legacy plaintext-config fallback with
-  // a string-type guard so the { "secret": true } placeholder produced by
-  // SecretMigrator cannot leak through as a bogus Bearer.
-  const configPath = path.join(stateDir, 'config.json');
-  let serverPort = 4040;
-  let agentToken = process.env.INSTAR_AUTH_TOKEN || '';
-  if (fs.existsSync(configPath)) {
-    try {
-      const config = JSON.parse(fs.readFileSync(configPath, 'utf-8'));
-      serverPort = config.port ?? 4040;
-      if (!agentToken && typeof config.authToken === 'string') agentToken = config.authToken;
-    } catch {
-      // Use defaults
-    }
+  // Read server port and auth token: INSTAR_AUTH_TOKEN env first (SessionManager
+  // injects it per spawned session), legacy plaintext config second, the
+  // encrypted vault third (a hand-started Codex on a secret-externalized install
+  // has neither of the first two). See mcpAuthToken.ts for the full rationale —
+  // every /threadline/* route this process drives is bearer-gated.
+  const resolvedAuth = resolveMcpAuthToken(stateDir, process.env);
+  const serverPort = resolvedAuth.port;
+  const agentToken = resolvedAuth.token;
+  if (!agentToken) {
+    console.error('[threadline-mcp] no agent API token found (env INSTAR_AUTH_TOKEN, config.json authToken, or the vault) — sends/discover will be refused by the agent server (401)');
   }
 
   // Instantiate dependencies from disk state
@@ -212,14 +153,35 @@ async function main(): Promise<void> {
       threadResumeMap,
       trustManager,
       auth: null, // No auth for stdio
-      sendMessage: (params) => sendMessageViaHttp(params, serverPort, agentToken),
+      // The helper's own environment carries the session name (stdio behaviour unchanged).
+      sendMessage: (params) => sendMessageViaHttp(params, serverPort, agentToken, process.env.INSTAR_SESSION_NAME || undefined),
       getThreadHistory: (threadId, limit, before) =>
         getThreadHistoryViaHttp(threadId, limit, serverPort, agentToken, before),
-      // Sealed-handoff keystone: self-mint over the loopback route (no bearer —
-      // the on-disk authToken is vault-externalized).
-      requestSecret: (params) => requestSecretViaHttp(params, serverPort),
+      // SEC-018 companion: route the GATED delete through the server so the consume + the
+      // irreversible mutation happen at the authority (this helper holds no owner-approval gate).
+      // A transport failure throws → OUTCOME-UNKNOWN in the handler; never a local delete.
+      approvedDelete: (threadId) => approvedDeleteViaHttp(threadId, serverPort, agentToken),
+      // a2a-required-acknowledgment D4/D6: this subprocess has no tracker; the server does.
+      acknowledge: (params) => acknowledgeViaHttp(params, serverPort, agentToken),
+      getThreadReceipts: (threadId) => getThreadReceiptsViaHttp(threadId, serverPort, agentToken),
+      // Sealed-handoff keystone: mint with the agent's key (key-gated route) so the
+      // receipt message can reach this conversation; falls back to the keyless route.
+      requestSecret: (params) => requestSecretViaHttp(params, serverPort, agentToken),
+      // Verified pairing v2: start a pending static-key pairing on the server (spec §3.2).
+      startPairing: (peerFp) => startPairingViaHttp(peerFp, serverPort, agentToken),
+      // Pairing by invite: make an invite on the server (a2a-pairing-invite-link).
+      createInvite: (opts) => createPairingInviteViaHttp(opts, serverPort, agentToken),
+      // This process holds its own trust-manager copy; re-read it before pairing status reads.
+      reloadTrustBeforePairingRead: true,
       registry: registryClient,
       relayClient: createHttpRelayDiscoverer(serverPort, agentToken),
+      agentRelayStatus: async () => {
+        const response = await fetch(`http://127.0.0.1:${serverPort}/threadline/status`, {
+          headers: { Authorization: `Bearer ${agentToken}` }, signal: AbortSignal.timeout(4000),
+        });
+        if (!response.ok) throw new Error(`status-${response.status}`);
+        return ((await response.json()) as { agent?: unknown }).agent;
+      },
     },
   );
 

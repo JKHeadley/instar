@@ -1,0 +1,32 @@
+{
+  "version": 2,
+  "slug": "trustworthy-machine-load-p2",
+  "sessionId": "2ec314b8-48fb-456a-9d9a-4641c5b6298e",
+  "timestamp": "2026-10-26T11:46:44.484Z",
+  "artifactPath": "upgrades/side-effects/trustworthy-machine-load-p2.md",
+  "artifactSha256": "d9c636385503a1bf1006a805e9c2618f288e7faf1a5f30bb041579fd6f5cbf84",
+  "specPath": "docs/specs/trustworthy-machine-load-and-mesh-floor.md",
+  "coveredFiles": [
+    "src/commands/server.ts",
+    "src/core/machineLoadReport.ts",
+    "src/core/workAdmission.ts",
+    "src/server/CapabilityIndex.ts",
+    "tests/unit/session-pool-activation-wiring.test.ts",
+    "upgrades/side-effects/trustworthy-machine-load-p2.md"
+  ],
+  "phase": "complete",
+  "tier": 2,
+  "tierReasoning": "Follow-up to the P2 commit: classify the new route, annotate logged catches, keep ratchet windows; no behaviour change",
+  "secondPass": "true",
+  "reviewerConcurred": true,
+  "classClosure": {
+    "defectClass": "unbounded-self-action",
+    "closure": "guard",
+    "guardEvidence": {
+      "enforcementType": "ratchet",
+      "citation": "tests/unit/self-action-convergence.test.ts",
+      "howCaught": "WorkAdmission is registered as overload-admission-self-help in src/testing/selfActionRegistry.ts: under the pinned always-saturated fixture it closes once, emits the self-help notice once per closed episode (boundK 1, horizon-independent) and never reopens; the all-refusing notice is once per topic per 30 min"
+    },
+    "component": "WorkAdmission"
+  }
+}

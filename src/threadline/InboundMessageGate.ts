@@ -7,10 +7,13 @@
  * Part of PROP-relay-auto-connect.
  */
 
+import { AUTO_ACK_TYPE } from './autoAck.js';
+import { parseKindedAck } from './requiredAck.js';
 import { CREDENTIAL_SHARE_OP, type AgentTrustManager, type AgentTrustLevel } from './AgentTrustManager.js';
 import type { ThreadlineRouter } from './ThreadlineRouter.js';
 import type { ReceivedMessage } from './client/ThreadlineClient.js';
 import { PAIR_VERIFY_OP, processPairVerifyReceipt } from './PairVerifyReceipt.js';
+import { ALL_PAIRING_OPS as INVITE_OPS, HANDSHAKE_OPS } from './pairingHandshake.js';
 import { mergeDefaults } from '../core/mergeDefaults.js';
 
 // ── Types ────────────────────────────────────────────────────────────
@@ -46,6 +49,11 @@ export interface InboundGateConfig {
    * live). When absent/returns enabled:false, verified-pairing is a pass-through.
    */
   getVerifiedPairingConfig?: () => VerifiedPairingGateConfig;
+  /**
+   * Invite pairing (docs/specs/a2a-pairing-invite-link.md): receives the four invite control
+   * ops. Fire-and-forget; the engine validates everything (MAC, signatures, keys).
+   */
+  onInviteControl?: (op: string, fromFp: string, payload: Record<string, unknown>) => void;
 }
 
 export interface GateDecision {
@@ -60,6 +68,9 @@ export interface GateDecision {
    */
   controlPlane?: boolean;
 }
+
+/** The inbound-id ledger's gate lookup (docs/specs/a2a-inbound-id-ledger.md §1). */
+export type InboundLedgerLookup = (senderKey: string, messageId: string) => 'terminal' | 'retryable' | 'unavailable';
 
 /** Operations that are probes (don't spawn sessions) */
 const PROBE_OPS = new Set(['ping', 'health']);
@@ -150,6 +161,13 @@ export class InboundMessageGate {
   /** Seen messageId cache for replay protection */
   private readonly seenMessageIds = new Map<string, number>();
 
+  /**
+   * Inbound-id ledger lookup (docs/specs/a2a-inbound-id-ledger.md §1). Absent
+   * ⇒ every lookup answers `unavailable` and the gate behaves exactly as before.
+   */
+  private ledgerLookup: InboundLedgerLookup | null = null;
+  private onLedgerDuplicate: ((fingerprint: string, messageId: string) => void) | null = null;
+
   // Metrics
   private metrics = {
     passed: 0,
@@ -159,11 +177,22 @@ export class InboundMessageGate {
     blockedBySize: 0,
     blockedByReplay: 0,
     probesHandled: 0,
+    replayDropped: 0,
     pairVerifyProcessed: 0,
     pairVerifyDropped: 0,
     credentialBlocked: 0,
     credentialDryRunWouldBlock: 0,
   };
+
+  /**
+   * Rebind this agent's own routing fingerprint after the identity reload lever ran
+   * (a2a-single-agent-identity §1.2). The value is captured at construction; without this an
+   * adopted or replaced identity would leave the pair-verify receipt check and the self-pair
+   * guard running against a stale (or absent) fingerprint until the next restart.
+   */
+  setOwnFingerprint(fingerprint: string | undefined): void {
+    (this.config as InboundGateConfig).ownFingerprint = fingerprint;
+  }
 
   constructor(
     trustManager: AgentTrustManager,
@@ -193,6 +222,48 @@ export class InboundMessageGate {
   }
 
   /**
+   * Late-bind the inbound-id ledger lookup (same pattern as setRouter). For a
+   * data message the gate consults it AFTER the operation-permission check and
+   * BEFORE the rate limiter counts it: a `terminal` row is dropped and handed to
+   * `onDuplicate` (so a replay never spends the sender's budget), a `retryable`
+   * row or no row continues WITHOUT the seenMessageIds check, and `unavailable`
+   * (ledger dark or degraded) falls back to the seenMessageIds check as today.
+   */
+  setLedgerLookup(fn: InboundLedgerLookup | null, onDuplicate?: (fingerprint: string, messageId: string) => void): void {
+    this.ledgerLookup = fn;
+    this.onLedgerDuplicate = onDuplicate ?? null;
+  }
+
+  /** Static form of the id extraction the ledger keys on (envelope messageId, else content.messageId). */
+  static extractMessageId(message: ReceivedMessage): string | null {
+    if (message.messageId) return message.messageId;
+    if (typeof message.content === 'object' && message.content !== null) {
+      const c = message.content as unknown as Record<string, unknown>;
+      if (typeof c.messageId === 'string') return c.messageId;
+    }
+    return null;
+  }
+
+  private lookupLedger(fingerprint: string, messageId: string | null): 'terminal' | 'retryable' | 'unavailable' {
+    if (!this.ledgerLookup || !messageId) return 'unavailable';
+    try {
+      return this.ledgerLookup(fingerprint, messageId);
+    } catch {
+      return 'unavailable';
+    }
+  }
+
+  private isReplay(messageId: string | null, fingerprint: string): GateDecision | null {
+    if (messageId && this.seenMessageIds.has(messageId)) {
+      this.metrics.blocked++;
+      this.metrics.blockedByReplay++;
+      this.logBlock('replay_detected', fingerprint);
+      return { action: 'block', reason: 'replay_detected', fingerprint };
+    }
+    return null;
+  }
+
+  /**
    * Evaluate an inbound relay message.
    * Returns 'pass' to route to ThreadlineRouter/AutonomyGate,
    * or 'block' with reason.
@@ -200,14 +271,10 @@ export class InboundMessageGate {
   async evaluate(message: ReceivedMessage): Promise<GateDecision> {
     const fingerprint = message.from;
 
-    // 0a. Replay protection — check seen-messageId cache
+    // 0a. Replay protection moved after classifyOperation (inbound-id ledger
+    // §1): probes and pair-verify receipts check seenMessageIds as before; a
+    // data message checks it only while the ledger lookup is unavailable.
     const messageId = this.extractMessageId(message);
-    if (messageId && this.seenMessageIds.has(messageId)) {
-      this.metrics.blocked++;
-      this.metrics.blockedByReplay++;
-      this.logBlock('replay_detected', fingerprint);
-      return { action: 'block', reason: 'replay_detected', fingerprint };
-    }
 
     // 0b. Payload size check
     const payloadSize = this.estimatePayloadSize(message);
@@ -219,8 +286,15 @@ export class InboundMessageGate {
     }
 
     // 1. Determine operation type
-    const opType = this.classifyOperation(message);
+    // `let`: a credential-share that is not authorized as a credential is judged below
+    // as an ordinary message (step 2a), never waved past the trust and rate checks.
+    let opType = this.classifyOperation(message);
     const isProbe = PROBE_OPS.has(opType);
+
+    if (isProbe || opType === PAIR_VERIFY_OP || INVITE_OPS.has(opType)) {
+      const replay = this.isReplay(messageId, fingerprint);
+      if (replay) return replay;
+    }
 
     // Resolve the verified-pairing config ONCE (read live so credentialShareEnforced
     // takes effect without a restart, §3.10). enabled:false ⇒ complete pass-through.
@@ -248,6 +322,26 @@ export class InboundMessageGate {
       return { action: 'block', reason: 'pair-verify', fingerprint, controlPlane: true };
     }
 
+    // 1b. Invite-pairing control ops (docs/specs/a2a-pairing-invite-link.md §4): gate-exempt for
+    // the trust level (a brand-new peer is untrusted), never routed onward. The engine validates
+    // the MAC, signatures and keys and rate-limits accepts per sender.
+    if (vp.enabled && INVITE_OPS.has(opType)) {
+      const payload = InboundMessageGate.extractInvitePayload(message);
+      if (messageId) this.seenMessageIds.set(messageId, Date.now());
+      if (payload && this.config.onInviteControl) {
+        try { this.config.onInviteControl(opType, fingerprint, payload); } catch { /* engine errors never break the gate */ }
+      }
+      return { action: 'block', reason: opType, fingerprint, controlPlane: true };
+    }
+
+    // 1c. The pairing handshake's own ops (spec a2a-pairing-invite-link §11.2) are control messages
+    // whatever the verified-pairing switch says: with pairing off they are dropped here, never routed
+    // to a session as ordinary text. (The four original ops keep their behaviour when it is off.)
+    if (!vp.enabled && HANDSHAKE_OPS.has(opType)) {
+      if (messageId) this.seenMessageIds.set(messageId, Date.now());
+      return { action: 'block', reason: opType, fingerprint, controlPlane: true };
+    }
+
     // 2. Trust check (keyed by fingerprint)
     const trust = this.trustManager.getTrustLevelByFingerprint(fingerprint);
     const limits = this.getRateLimits(trust);
@@ -258,14 +352,21 @@ export class InboundMessageGate {
     // courtesy ONLY — it is NOT the security boundary (FD5). When enforcement is armed
     // (credentialShareEnforced), an inbound that would be acted on AS a credential from a
     // non-mutual-verified sender is REFUSED (fail-closed, FD9). dryRun governs THIS side's
-    // observability ONLY — it LOGS the verdict it WOULD apply but still passes (FD10);
-    // the OUTBOUND refusal (the relay-send funnel) is always live regardless of dryRun.
-    // When verified-pairing is enabled, the credential gate is the AUTHORITATIVE
-    // decision for the credential op — it short-circuits the generic step-4 op check
-    // (which would also reject `credential-share` for a non-mutual-verified peer). This
-    // is what makes dryRun's "observe, don't enforce" semantics actually observable
-    // (FD10): under dryRun the verdict is logged but the message still passes onward.
+    // observability ONLY — it LOGS the credential verdict it WOULD apply instead of
+    // enforcing it (FD10); the OUTBOUND refusal (the relay-send funnel) is always live
+    // regardless of dryRun. When verified-pairing is enabled, the credential gate decides
+    // the credential op for a mutual-verified sender (a pass inside its rate budget). For
+    // anyone else under dryRun / not-yet-armed, the message is then judged exactly as an
+    // ordinary message from that sender (steps 4–5): the declared kind never grants a pass
+    // the sender's trust level would refuse.
     if (vp.enabled && opType === CREDENTIAL_SHARE_OP) {
+      // The credential branch skips the ledger's terminal drop (the consumer's
+      // commit still dedups it); the in-memory replay map still guards it while
+      // the ledger is unavailable.
+      if (this.lookupLedger(fingerprint, messageId) === 'unavailable') {
+        const replay = this.isReplay(messageId, fingerprint);
+        if (replay) return replay;
+      }
       let allowed = false;
       try {
         allowed = this.trustManager.isCredentialShareAllowedByFingerprint(fingerprint);
@@ -273,7 +374,10 @@ export class InboundMessageGate {
         allowed = false; // FD9 — any uncertainty fails closed.
       }
       if (allowed) {
-        // Mutual-verified sender: record + pass (the only inbound credential PASS path).
+        // Mutual-verified sender: record + pass (the only inbound credential PASS path),
+        // still inside the sender's per-peer rate budget.
+        const rateBlock = this.messageRateBlock(fingerprint, trust, limits);
+        if (rateBlock) return rateBlock;
         this.trustManager.recordMessageReceivedByFingerprint(fingerprint);
         if (messageId) this.seenMessageIds.set(messageId, Date.now());
         this.metrics.passed++;
@@ -287,14 +391,14 @@ export class InboundMessageGate {
         this.logBlock('credential_not_mutually_verified', fingerprint, `trust=${trust}`);
         return { action: 'block', reason: 'credential_not_mutually_verified', fingerprint };
       }
-      // dryRun (or not-yet-armed): observe only — log the verdict it WOULD apply, then
-      // PASS (FD10 — inbound observability never enforces; the outbound gate is live).
+      // dryRun (or not-yet-armed): observe only — log the verdict it WOULD apply (FD10),
+      // then judge the message as what it is for this sender: an ordinary message. It
+      // passes only if an ordinary message from this sender would (step 4 operation
+      // permission, the inbound-id ledger, step 5 rate limits). The self-declared kind
+      // never grants a pass the sender's trust level would refuse (FD5).
       this.metrics.credentialDryRunWouldBlock++;
-      this.trustManager.recordMessageReceivedByFingerprint(fingerprint);
-      if (messageId) this.seenMessageIds.set(messageId, Date.now());
-      this.metrics.passed++;
-      console.log(`[inbound-gate] credential WOULD-BLOCK (dryRun/observe) from=${fingerprint.slice(0, 12)} trust=${trust} enforced=${vp.credentialShareEnforced} — passing`);
-      return { action: 'pass', message, trustLevel: trust };
+      console.log(`[inbound-gate] credential WOULD-BLOCK (dryRun/observe) from=${fingerprint.slice(0, 12)} trust=${trust} enforced=${vp.credentialShareEnforced} — judging as an ordinary message`);
+      opType = 'message';
     }
 
     // Observability: every inbound evaluation is logged with the RESOLVED trust
@@ -318,6 +422,17 @@ export class InboundMessageGate {
       return { action: 'pass', message, trustLevel: trust, reason: 'probe' };
     }
 
+    // 3a. A kinded ack is a receipt, not an operation (a2a-required-acknowledgment D1).
+    // It passes before the trust-operation and rate-budget steps, uncounted:
+    // otherwise every ENCRYPTED kinded ack dies here as `insufficient_trust`, and
+    // counting them would squeeze out real messages. Its own per-peer limiter sits
+    // in the ack stage, which both plaintext and encrypted acks reach. It starts
+    // nothing, and a kinded ack changes state only for a row sent to this fingerprint.
+    if (opType === AUTO_ACK_TYPE && parseKindedAck(message.content)) {
+      this.metrics.passed++;
+      return { action: 'pass', message, trustLevel: trust };
+    }
+
     // 4. Message permission check
     const allowedOps = this.trustManager.getAllowedOperationsByFingerprint(fingerprint);
     if (!allowedOps.includes(opType)) {
@@ -327,18 +442,28 @@ export class InboundMessageGate {
       return { action: 'block', reason: 'insufficient_trust', fingerprint };
     }
 
-    // 5. Rate limit check (per-sender, trust-level-aware)
-    if (this.rateLimiter.isMessageHourLimited(fingerprint, limits.messagesPerHour)) {
-      this.metrics.blocked++;
-      this.metrics.blockedByRate++;
-      this.logBlock('rate_limited_hourly', fingerprint, `trust=${trust} limit=${limits.messagesPerHour}`);
-      return { action: 'block', reason: 'rate_limited_hourly', fingerprint };
+    // 4a. Inbound-id ledger (spec §1): a terminal-row replay is dropped here,
+    // AFTER a revoked sender is refused (step 4) and BEFORE the rate limiter
+    // counts it (step 5), so replays never push a later new message over the limit.
+    {
+      const verdict = this.lookupLedger(fingerprint, messageId);
+      if (verdict === 'terminal' && messageId) {
+        this.metrics.blocked++;
+        this.metrics.replayDropped++;
+        this.logBlock('duplicate_id', fingerprint);
+        try { this.onLedgerDuplicate?.(fingerprint, messageId); } catch { /* @silent-fallback-ok — duplicate bookkeeping never breaks the gate */ }
+        return { action: 'block', reason: 'duplicate_id', fingerprint };
+      }
+      if (verdict === 'unavailable') {
+        const replay = this.isReplay(messageId, fingerprint);
+        if (replay) return replay;
+      }
     }
-    if (this.rateLimiter.isMessageDayLimited(fingerprint, limits.messagesPerDay)) {
-      this.metrics.blocked++;
-      this.metrics.blockedByRate++;
-      this.logBlock('rate_limited_daily', fingerprint, `trust=${trust} limit=${limits.messagesPerDay}`);
-      return { action: 'block', reason: 'rate_limited_daily', fingerprint };
+
+    // 5. Rate limit check (per-sender, trust-level-aware)
+    {
+      const rateBlock = this.messageRateBlock(fingerprint, trust, limits);
+      if (rateBlock) return rateBlock;
     }
 
     // 6. Record interaction (debounced)
@@ -353,6 +478,27 @@ export class InboundMessageGate {
     this.metrics.passed++;
     console.log(`[inbound-gate] PASS from=${fingerprint.slice(0, 12)} trust=${trust} op=${opType}`);
     return { action: 'pass', message, trustLevel: trust };
+  }
+
+  /** Step 5 (per-sender, trust-level-aware message budget). Null = within budget. */
+  private messageRateBlock(
+    fingerprint: string,
+    trust: string,
+    limits: { messagesPerHour: number; messagesPerDay: number },
+  ): GateDecision | null {
+    if (this.rateLimiter.isMessageHourLimited(fingerprint, limits.messagesPerHour)) {
+      this.metrics.blocked++;
+      this.metrics.blockedByRate++;
+      this.logBlock('rate_limited_hourly', fingerprint, `trust=${trust} limit=${limits.messagesPerHour}`);
+      return { action: 'block', reason: 'rate_limited_hourly', fingerprint };
+    }
+    if (this.rateLimiter.isMessageDayLimited(fingerprint, limits.messagesPerDay)) {
+      this.metrics.blocked++;
+      this.metrics.blockedByRate++;
+      this.logBlock('rate_limited_daily', fingerprint, `trust=${trust} limit=${limits.messagesPerDay}`);
+      return { action: 'block', reason: 'rate_limited_daily', fingerprint };
+    }
+    return null;
   }
 
   /**
@@ -413,6 +559,24 @@ export class InboundMessageGate {
    * Extract the control-plane payload object (e.g. a pair-verify receipt) from an
    * inbound message. The receipt fields ride alongside `type` on the content object.
    */
+  /**
+   * An invite op's fields: on the message content itself (encrypted path), or as JSON in
+   * `content.content` (plaintext path, which arrives via unknown-sender as `{content, type}`).
+   */
+  static extractInvitePayload(message: ReceivedMessage): Record<string, unknown> | null {
+    const c = message.content as unknown;
+    if (!c || typeof c !== 'object') return null;
+    const obj = c as Record<string, unknown>;
+    if (typeof obj.iid === 'string') return obj;
+    if (typeof obj.content === 'string' && obj.content.trim().startsWith('{')) {
+      try {
+        const parsed = JSON.parse(obj.content) as unknown;
+        return parsed && typeof parsed === 'object' ? (parsed as Record<string, unknown>) : null;
+      } catch { return null; }
+    }
+    return null;
+  }
+
   private extractControlPayload(message: ReceivedMessage): unknown {
     const content = message.content;
     if (typeof content === 'object' && content !== null) return content;
@@ -435,14 +599,7 @@ export class InboundMessageGate {
    * Extract messageId from a ReceivedMessage.
    */
   private extractMessageId(message: ReceivedMessage): string | null {
-    // ReceivedMessage has a messageId field directly
-    if (message.messageId) return message.messageId;
-    // Also check content for a messageId field
-    if (typeof message.content === 'object' && message.content !== null) {
-      const c = message.content as unknown as Record<string, unknown>;
-      if (typeof c.messageId === 'string') return c.messageId;
-    }
-    return null;
+    return InboundMessageGate.extractMessageId(message);
   }
 
   /**

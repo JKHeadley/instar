@@ -17,6 +17,7 @@ import type {
   AgentFingerprint,
   PresenceChangeFrame,
 } from './types.js';
+import { resolveClientAddress } from './clientAddress.js';
 import { RELAY_ERROR_CODES } from './types.js';
 import { PresenceRegistry } from './PresenceRegistry.js';
 import { RelayRateLimiter } from './RelayRateLimiter.js';
@@ -31,6 +32,7 @@ import { RegistryStore } from './RegistryStore.js';
 import { RegistryAuth } from './RegistryAuth.js';
 import type { RegistryEntry, RegistrySearchParams } from './RegistryStore.js';
 import type { MessageEnvelope } from './types.js';
+import { RecoveryControlPlane, type RecoveryAuthorityConfig } from '../../recovery/RecoveryControlPlane.js';
 import { mergeDefaults } from '../../core/mergeDefaults.js';
 
 type ResolvedRelayServerConfig = Omit<Required<RelayServerConfig>, 'rateLimitConfig' | 'a2aRateLimitConfig' | 'offlineQueueConfig' | 'abuseDetectorConfig'> & {
@@ -51,6 +53,7 @@ const DEFAULTS: ResolvedRelayServerConfig = {
   missedPongsBeforeDisconnect: 3,
   registryDataDir: './data',
   relayId: 'relay-threadline-default',
+  clientAddressHeader: '',
 };
 
 export class RelayServer {
@@ -65,6 +68,7 @@ export class RelayServer {
   readonly metrics: RelayMetrics;
   readonly registry: RegistryStore;
   readonly registryAuth: RegistryAuth;
+  private recovery: RecoveryControlPlane | null = null;
   private httpServer: http.Server | null = null;
   private wss: WebSocketServer | null = null;
   private running = false;
@@ -73,6 +77,9 @@ export class RelayServer {
   private readonly registryRateLimits = new Map<string, { count: number; resetAt: number }>();
   /** Per-agent rate limit tracking for authenticated registry requests */
   private readonly registryAgentRateLimits = new Map<string, { count: number; resetAt: number }>();
+  private registryRateSweepAt = 0;
+  /** SEC-139: hard ceiling on tracked registry rate-limit keys per map. */
+  static readonly MAX_REGISTRY_RATE_KEYS = 50_000;
 
   constructor(config?: Partial<RelayServerConfig>) {
     this.config = mergeDefaults(DEFAULTS, config);
@@ -112,6 +119,7 @@ export class RelayServer {
     this.a2aBridge = new A2ABridge(
       {
         baseUrl: `http://${this.config.host}:${this.config.port}`,
+        clientAddressHeader: this.config.clientAddressHeader,
       },
       {
         presence: this.presence,
@@ -187,6 +195,12 @@ export class RelayServer {
   /**
    * Start the relay server.
    */
+  /** Host provisions per-agent secret-manager signers; no request can enable this. */
+  configureRecovery(authorities: ReadonlyMap<string, RecoveryAuthorityConfig>): void {
+    if (this.running) throw new Error('recovery-configure-before-start');
+    this.recovery = new RecoveryControlPlane(this.registry, authorities);
+  }
+
   async start(): Promise<void> {
     if (this.running) return;
 
@@ -194,6 +208,8 @@ export class RelayServer {
       this.httpServer = http.createServer(async (req, res) => {
         const url = new URL(req.url ?? '/', `http://${req.headers.host}`);
         const pathname = url.pathname;
+
+        if (this.recovery && await this.recovery.handle(req, res, pathname)) return;
 
         // CORS headers for registry API
         if (pathname.startsWith('/v1/registry')) {
@@ -216,6 +232,8 @@ export class RelayServer {
           res.writeHead(200, { 'Content-Type': 'application/json' });
           res.end(JSON.stringify({
             status: 'ok',
+            buildRevision: /^[0-9a-f]{40}$/.test(process.env.RELAY_BUILD_REVISION ?? '')
+              ? process.env.RELAY_BUILD_REVISION : null,
             agents: this.presence.size,
             connections: this.connections.size,
             offlineQueue: queueStats,
@@ -289,9 +307,8 @@ export class RelayServer {
       });
 
       this.wss.on('connection', (socket, req) => {
-        const ip = (req.headers['x-forwarded-for'] as string)?.split(',')[0]?.trim()
-          ?? req.socket.remoteAddress
-          ?? 'unknown';
+        // SEC-139: caller-written forwarding headers are never trusted unless the deployment names one.
+        const ip = resolveClientAddress(req, this.config.clientAddressHeader);
 
         this.connections.handleConnection(socket, ip);
 
@@ -378,8 +395,7 @@ export class RelayServer {
     const method = req.method ?? 'GET';
 
     // Extract IP for rate limiting
-    const ip = (req.headers['x-forwarded-for'] as string)?.split(',')[0]?.trim()
-      ?? req.socket.remoteAddress ?? 'unknown';
+    const ip = resolveClientAddress(req, this.config.clientAddressHeader);
 
     // Extract auth token
     const token = this.registryAuth.extractToken(req.headers.authorization as string | undefined);
@@ -728,9 +744,22 @@ export class RelayServer {
     const key = isAuthenticated && agentPublicKey ? agentPublicKey : ip;
     const map = isAuthenticated ? this.registryAgentRateLimits : this.registryRateLimits;
 
+    // SEC-139: expired entries are swept at most once a minute and the map is capped, so callers
+    // that never return (or rotate addresses) do not grow it without limit.
+    if (now - this.registryRateSweepAt >= windowMs) {
+      this.registryRateSweepAt = now;
+      for (const m of [this.registryRateLimits, this.registryAgentRateLimits]) {
+        for (const [k, e] of m) if (now > e.resetAt) m.delete(k);
+      }
+    }
     const entry = map.get(key);
     if (!entry || now > entry.resetAt) {
+      map.delete(key);
       map.set(key, { count: 1, resetAt: now + windowMs });
+      for (const k of map.keys()) {
+        if (map.size <= RelayServer.MAX_REGISTRY_RATE_KEYS) break;
+        map.delete(k);
+      }
       return true;
     }
 

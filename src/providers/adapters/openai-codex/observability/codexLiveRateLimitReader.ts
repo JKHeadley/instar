@@ -33,10 +33,16 @@
 import { spawn } from 'node:child_process';
 import type { ChildProcessWithoutNullStreams } from 'node:child_process';
 import type { CodexRateWindow, CodexUsageSnapshot } from './codexRateLimitReader.js';
+import { buildCodexChildEnv } from '../transport/codexSpawn.js';
+import { guardChildStdin } from '../../../../core/pipeErrorGuard.js';
 
 export interface ReadLiveCodexRateLimitsOptions {
   /** Override $CODEX_HOME (defaults to the process env / ~/.codex). */
   codexHome?: string;
+  /** Require the same subscription-only authentication environment as a fenced triage model child. */
+  subscriptionOnly?: boolean;
+  /** Cancels an account probe and terminates its app-server child. */
+  signal?: AbortSignal;
   /** Hard deadline for the whole exchange (spawn → answer). Default 10s. */
   timeoutMs?: number;
   /** Clock for deriving `resetsInSeconds` + `capturedAt` (defaults to Date.now()). */
@@ -50,6 +56,12 @@ export interface ReadLiveCodexRateLimitsOptions {
 }
 
 const DEFAULT_TIMEOUT_MS = 10_000;
+/** A fresh `unavailable` result per call, so a `refusal` can never leak between results. */
+const unavailable = (refusal?: CodexReadRefusal): CodexLiveRead =>
+  refusal ? { kind: 'unavailable', refusal } : { kind: 'unavailable' };
+/** Cap on a carried refusal text (spec codex-device-limit-tripwire §1: 2 KiB). */
+export const CODEX_REFUSAL_TEXT_MAX_BYTES = 2048;
+const strictChildren = new Set<ChildProcessWithoutNullStreams>();
 
 /** The subset of the app-server v2 `RateLimitSnapshot` this reader consumes. */
 interface LiveRateLimitSnapshot {
@@ -67,6 +79,59 @@ interface LiveRateWindow {
 }
 
 /**
+ * The live read with its failure KIND kept (spec skill-driven-signin-repair): `auth-failed`
+ * is the app-server's own "authentication required" refusal — the only failure that says
+ * anything about the login. Every other failure (binary missing, spawn error, timeout,
+ * protocol drift) is `unavailable`: a transport problem, never evidence of sign-out.
+ */
+export type CodexLiveRead =
+  | { kind: 'ok'; snapshot: CodexUsageSnapshot }
+  | { kind: 'auth-failed'; refusal?: CodexReadRefusal }
+  | { kind: 'unavailable'; refusal?: CodexReadRefusal };
+
+/**
+ * The app-server's own JSON-RPC error text for one exchange (spec codex-device-limit-tripwire §2,
+ * sources A and A-init), held in memory only. `stage: 'initialize'` is the id-1 handshake error,
+ * `stage: 'read'` the id-2 `account/rateLimits/read` error. Only `error.message` (plus `error.data`
+ * when it is a string) is carried, capped at {@link CODEX_REFUSAL_TEXT_MAX_BYTES}; stderr is never read.
+ */
+export interface CodexReadRefusal {
+  stage: 'initialize' | 'read';
+  text: string;
+}
+
+/** Truncate to at most `maxBytes` of UTF-8 without splitting a character. Exported for tests. */
+export function capUtf8(text: string, maxBytes: number): string {
+  if (Buffer.byteLength(text, 'utf8') <= maxBytes) return text;
+  let out = '';
+  let bytes = 0;
+  for (const ch of text) {
+    const n = Buffer.byteLength(ch, 'utf8');
+    if (bytes + n > maxBytes) break;
+    out += ch;
+    bytes += n;
+  }
+  return out;
+}
+
+/** The refusal text of a JSON-RPC error object: its message, plus `data` when that is a string. */
+function refusalText(error: unknown): string {
+  if (!error || typeof error !== 'object') return '';
+  const { message, data } = error as { message?: unknown; data?: unknown };
+  const parts = [typeof message === 'string' ? message : '', typeof data === 'string' ? data : '']
+    .filter((p) => p.length > 0);
+  return capUtf8(parts.join('\n'), CODEX_REFUSAL_TEXT_MAX_BYTES);
+}
+
+/** True when an app-server JSON-RPC error names missing/invalid authentication. Exported for tests. */
+export function isCodexAuthError(error: unknown): boolean {
+  const message = error && typeof error === 'object' && typeof (error as { message?: unknown }).message === 'string'
+    ? (error as { message: string }).message : '';
+  return /authenticat|not logged in|log ?in required|login required|unauthori[sz]ed|invalid.*(token|auth)|auth.*(expired|invalid|required)/i
+    .test(message);
+}
+
+/**
  * Read the account's LIVE rate limits through `codex app-server` — zero quota
  * spend. Returns null on any failure so the caller can fall back to the
  * rollout-tail reader; never throws.
@@ -74,57 +139,108 @@ interface LiveRateWindow {
 export async function readLiveCodexRateLimits(
   opts: ReadLiveCodexRateLimitsOptions = {},
 ): Promise<CodexUsageSnapshot | null> {
+  const read = await readLiveCodexRateLimitsDetailed(opts);
+  return read.kind === 'ok' ? read.snapshot : null;
+}
+
+/** As {@link readLiveCodexRateLimits}, but keeps WHY a read failed. Never throws. */
+export async function readLiveCodexRateLimitsDetailed(
+  opts: ReadLiveCodexRateLimitsOptions = {},
+): Promise<CodexLiveRead> {
   const nowMs = opts.nowMs ?? Date.now();
   const timeoutMs = opts.timeoutMs ?? DEFAULT_TIMEOUT_MS;
   const spawnImpl = opts.spawnImpl ?? ((cmd, args, o) => spawn(cmd, args, { ...o, stdio: 'pipe' }));
 
+  if (opts.signal?.aborted || (opts.subscriptionOnly && strictChildren.size >= 2)) return unavailable();
+
   let child: ChildProcessWithoutNullStreams;
   try {
-    child = spawnImpl('codex', ['app-server'], {
-      env: {
-        ...process.env,
-        ...(opts.codexHome ? { CODEX_HOME: opts.codexHome } : {}),
-      },
+    // A quota read used for account admission must consult the same auth.json
+    // that the selector fingerprints. `auto` may silently prefer keyring.
+    child = spawnImpl('codex', opts.subscriptionOnly
+      ? ['app-server', '-c', 'cli_auth_credentials_store="file"']
+      : ['app-server'], {
+      env: opts.subscriptionOnly
+        ? buildCodexChildEnv({ codexHome: opts.codexHome, subscriptionOnly: true })
+        : { ...process.env, ...(opts.codexHome ? { CODEX_HOME: opts.codexHome } : {}) },
     });
   } catch {
-    return null;
+    return unavailable();
   }
 
-  return new Promise<CodexUsageSnapshot | null>((resolve) => {
+  if (opts.subscriptionOnly) {
+    strictChildren.add(child);
+    const reaped = () => strictChildren.delete(child);
+    child.once('exit', reaped);
+    child.once('close', reaped);
+  }
+
+  return new Promise<CodexLiveRead>((resolve) => {
     let settled = false;
     let stdoutBuf = '';
 
-    const finish = (value: CodexUsageSnapshot | null): void => {
+    const finish = (value: CodexLiveRead): void => {
       if (settled) return;
       settled = true;
       clearTimeout(deadline);
+      opts.signal?.removeEventListener('abort', onAbort);
       try {
-        child.kill();
+        child.kill('SIGTERM');
       } catch {
         // @silent-fallback-ok: child already gone — nothing to clean up
+      }
+      if (opts.subscriptionOnly && strictChildren.has(child)) {
+        let force: ReturnType<typeof setTimeout>;
+        const onExit = () => {
+          clearTimeout(force);
+          clearTimeout(reapDeadline);
+          resolve(value);
+        };
+        child.once('exit', onExit);
+        force = setTimeout(() => {
+          if (strictChildren.has(child)) {
+            try { child.kill('SIGKILL'); } catch { /* @silent-fallback-ok: already reaped */ }
+          }
+        }, 200);
+        force.unref?.();
+        const reapDeadline = setTimeout(() => {
+          child.removeListener('exit', onExit);
+          resolve(unavailable());
+        }, 700);
+        reapDeadline.unref?.();
+        return;
       }
       resolve(value);
     };
 
-    const deadline = setTimeout(() => finish(null), timeoutMs);
+    const onAbort = () => finish(unavailable());
+    opts.signal?.addEventListener('abort', onAbort, { once: true });
+
+    const deadline = setTimeout(() => finish(unavailable()), timeoutMs);
     // The exchange must never outlive its caller because the timer forgot to
     // fire (e.g. a fake timer environment): unref so a leaked child cannot pin
     // the event loop either way.
     deadline.unref?.();
+    // Cancellation can arrive between the pre-spawn check and registration.
+    if (opts.signal?.aborted) { onAbort(); return; }
 
     const send = (payload: Record<string, unknown>): void => {
       try {
         child.stdin.write(`${JSON.stringify(payload)}\n`);
       } catch {
-        finish(null);
+        finish(unavailable());
       }
     };
 
-    child.on('error', () => finish(null));
-    child.on('exit', () => finish(null));
+    // The try/catch in send() cannot see a closed pipe: that failure arrives later,
+    // on the stream. The 'exit' line below still ends the read.
+    guardChildStdin(child.stdin, 'codex-rate-limit-reader');
+    child.on('error', () => finish(unavailable()));
+    child.on('exit', () => finish(unavailable()));
     child.stderr?.on('data', () => {
       // Drained so the child can never block on a full stderr pipe. Content is
-      // deliberately ignored: any protocol failure surfaces as a null result.
+      // deliberately ignored and never retained (spec codex-device-limit-tripwire §2):
+      // only the JSON-RPC error object on stdout is ever carried as refusal text.
     });
 
     child.stdout.on('data', (chunk: Buffer) => {
@@ -142,17 +258,24 @@ export async function readLiveCodexRateLimits(
         }
         if (msg.id === 1) {
           if (msg.error) {
-            finish(null);
+            // A-init: carried as a trigger only; no new auth detection on the handshake.
+            finish(unavailable({ stage: 'initialize', text: refusalText(msg.error) }));
             return;
           }
           send({ jsonrpc: '2.0', method: 'initialized' });
           send({ jsonrpc: '2.0', id: 2, method: 'account/rateLimits/read', params: {} });
         } else if (msg.id === 2) {
-          if (msg.error || !msg.result) {
-            finish(null);
+          if (msg.error) {
+            const refusal: CodexReadRefusal = { stage: 'read', text: refusalText(msg.error) };
+            finish(isCodexAuthError(msg.error) ? { kind: 'auth-failed', refusal } : unavailable(refusal));
             return;
           }
-          finish(mapLiveResponse(msg.result as Record<string, unknown>, nowMs));
+          if (!msg.result) {
+            finish(unavailable());
+            return;
+          }
+          const snapshot = mapLiveResponse(msg.result as Record<string, unknown>, nowMs);
+          finish(snapshot ? { kind: 'ok', snapshot } : unavailable());
           return;
         }
       }
@@ -180,9 +303,23 @@ export async function readLiveCodexRateLimits(
  */
 export function buildCodexLiveUsageReader(
   subscriptionPool?: { codexLiveQuota?: boolean },
-): ((opts?: { codexHome?: string; nowMs?: number }) => Promise<CodexUsageSnapshot | null>) | null {
+): ((opts?: { codexHome?: string; nowMs?: number; timeoutMs?: number; subscriptionOnly?: boolean; signal?: AbortSignal }) => Promise<CodexUsageSnapshot | null>) | null {
   if (subscriptionPool?.codexLiveQuota === false) return null;
-  return (opts) => readLiveCodexRateLimits({ codexHome: opts?.codexHome, nowMs: opts?.nowMs });
+  return (opts) => readLiveCodexRateLimits({ codexHome: opts?.codexHome, nowMs: opts?.nowMs,
+    timeoutMs: opts?.timeoutMs, subscriptionOnly: opts?.subscriptionOnly, signal: opts?.signal });
+}
+
+/**
+ * The same composition-root factory for the DETAILED live read (spec skill-driven-signin-repair):
+ * the quota poller uses it so an app-server "authentication required" refusal is told apart
+ * from a transport failure. Honors the same `codexLiveQuota: false` rollback lever.
+ */
+export function buildCodexLiveUsageReaderDetailed(
+  subscriptionPool?: { codexLiveQuota?: boolean },
+): ((opts?: { codexHome?: string; nowMs?: number; timeoutMs?: number; subscriptionOnly?: boolean; signal?: AbortSignal }) => Promise<CodexLiveRead>) | null {
+  if (subscriptionPool?.codexLiveQuota === false) return null;
+  return (opts) => readLiveCodexRateLimitsDetailed({ codexHome: opts?.codexHome, nowMs: opts?.nowMs,
+    timeoutMs: opts?.timeoutMs, subscriptionOnly: opts?.subscriptionOnly, signal: opts?.signal });
 }
 
 /**
@@ -213,6 +350,9 @@ export function mapLiveResponse(
 
   const primary = mapWindow(bucket.primary, nowMs);
   const secondary = mapWindow(bucket.secondary, nowMs);
+  // A reported but malformed window cannot be silently dropped when the other
+  // window is favorable; it may hide an exhausted weekly or five-hour budget.
+  if ((bucket.primary != null && !primary) || (bucket.secondary != null && !secondary)) return null;
   const snapshot: CodexUsageSnapshot = {
     source: 'codex-app-server',
     rolloutPath: '',
@@ -234,8 +374,11 @@ function mapWindow(raw: LiveRateWindow | null | undefined, nowMs: number): Codex
   const usedPercent = typeof raw.usedPercent === 'number' ? raw.usedPercent : null;
   const windowMinutes = typeof raw.windowDurationMins === 'number' ? raw.windowDurationMins : null;
   const resetsAt = typeof raw.resetsAt === 'number' ? raw.resetsAt : null;
-  if (usedPercent === null || windowMinutes === null || resetsAt === null) return null;
-  const validReset = Number.isFinite(resetsAt) && resetsAt > 0;
+  if (usedPercent === null || windowMinutes === null || resetsAt === null ||
+    !Number.isFinite(usedPercent) || usedPercent < 0 || usedPercent > 100 ||
+    !Number.isFinite(windowMinutes) || windowMinutes <= 0 ||
+    !Number.isFinite(resetsAt) || resetsAt <= 0) return null;
+  const validReset = true;
   return {
     usedPercent,
     remainingPercent: Math.min(100, Math.max(0, 100 - usedPercent)),

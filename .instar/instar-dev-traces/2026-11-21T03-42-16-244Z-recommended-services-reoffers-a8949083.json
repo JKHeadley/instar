@@ -1,0 +1,27 @@
+{
+  "version": 2,
+  "slug": "recommended-services-reoffers",
+  "sessionId": "3ecbfd9a-27d9-4dd2-a52f-7dd9341e50e9",
+  "timestamp": "2026-11-21T03:42:16.244Z",
+  "artifactPath": "upgrades/side-effects/recommended-services-reoffers.md",
+  "artifactSha256": "18ee96850f0ec9623586c52ed768b6ddbe2ee39603d8f0dbe067fc7526e0bcc1",
+  "specPath": "docs/specs/recommended-services.md",
+  "coveredFiles": [
+    "src/core/VoiceTranscription.ts",
+    "src/core/types.ts",
+    "src/data/awareness/recommended-services-reoffers.md",
+    "src/messaging/TelegramAdapter.ts",
+    "src/messaging/backends/BaileysBackend.ts",
+    "src/recommended/RecommendedServicesLedger.ts",
+    "src/recommended/reoffers.ts",
+    "src/server/AgentServer.ts",
+    "src/server/CapabilityIndex.ts",
+    "src/server/recommendedServiceRoutes.ts",
+    "src/server/routes.ts"
+  ],
+  "phase": "complete",
+  "tier": 2,
+  "tierReasoning": "Rollout step 4 slice A re-committed through the gate (the original commits bypassed it in a worktree without the husky shim); content identical",
+  "secondPass": "not-required",
+  "reviewerConcurred": null
+}

@@ -201,6 +201,14 @@ export interface ResumeCandidateInput {
   disposition: 'terminal' | 'recovery-bounce';
   origin: 'operator' | 'autonomous';
   workEvidence: string[];
+  /**
+   * Age-limit kill only: the session was seen working after it passed its age
+   * limit. It lived and worked a full lifetime since any earlier resume, so this
+   * re-reap is not a kill-resume-kill loop: the resurrection ledger restarts
+   * instead of counting it (2026-09-30 18:14Z, topic 52075: a coordinator that
+   * worked five hours after its last revival was refused by the cap).
+   */
+  seenWorkingPastAgeLimit?: boolean;
 }
 
 export interface ResumeQueueDeps {
@@ -672,7 +680,13 @@ export class ResumeQueue {
     const tombstone = this.tombstoneFor(stableKey);
     if (tombstone?.lastResumeAt) {
       const windowFresh = this.now() - Date.parse(tombstone.windowStartAt) < RESURRECTION_WINDOW_MS;
-      if (!windowFresh) {
+      if (input.seenWorkingPastAgeLimit) {
+        // The revived session worked past its whole age limit — not a loop.
+        // Restart the ledger; later re-reaps are counted from here.
+        tombstone.resurrections = 0;
+        tombstone.windowStartAt = new Date(this.now()).toISOString();
+        this.audit({ event: 'resurrection-ledger-reset', why: 'worked-past-age-limit', stableKey, source: opts?.source });
+      } else if (!windowFresh) {
         // The prior resume is outside the 24h window — stale history, not a
         // kill-resume-kill loop. Reset the ledger; this re-reap starts fresh.
         tombstone.resurrections = 0;

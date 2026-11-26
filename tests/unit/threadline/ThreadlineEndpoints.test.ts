@@ -5,6 +5,7 @@ import os from 'node:os';
 import crypto from 'node:crypto';
 import express from 'express';
 import request from 'supertest';
+import { IdentityManager } from '../../../src/threadline/client/IdentityManager.js';
 import { HandshakeManager } from '../../../src/threadline/HandshakeManager.js';
 import { createThreadlineRoutes } from '../../../src/threadline/ThreadlineEndpoints.js';
 import { sign, generateIdentityKeyPair } from '../../../src/threadline/ThreadlineCrypto.js';
@@ -47,6 +48,8 @@ describe('ThreadlineEndpoints', () => {
     appA = express();
     appA.use(express.json());
     appA.use(createThreadlineRoutes(managerA, null, {
+      directPeerProtocol: () => true, // these tests exercise the opened protocol (threadline-http-peer-trust §0)
+      httpPeerTrust: { resolve: () => ({ level: 'trusted' as const, operation: 'message', allowed: true, hasProfile: true }) }, // granted peers (threadline-http-peer-trust §1-§2)
       localAgent: 'agent-a',
       version: '1.0',
       stateDir: stateDirA,
@@ -55,6 +58,8 @@ describe('ThreadlineEndpoints', () => {
     appB = express();
     appB.use(express.json());
     appB.use(createThreadlineRoutes(managerB, null, {
+      directPeerProtocol: () => true, // these tests exercise the opened protocol (threadline-http-peer-trust §0)
+      httpPeerTrust: { resolve: () => ({ level: 'trusted' as const, operation: 'message', allowed: true, hasProfile: true }) }, // granted peers (threadline-http-peer-trust §1-§2)
       localAgent: 'agent-b',
       version: '1.0',
       stateDir: stateDirB,
@@ -67,6 +72,8 @@ describe('ThreadlineEndpoints', () => {
 
   describe('GET /threadline/health', () => {
     it('returns health status', async () => {
+      // Health reports the routing identity; it never creates one.
+      new IdentityManager(stateDirA).getOrCreate();
       const res = await request(appA).get('/threadline/health');
 
       expect(res.status).toBe(200);
@@ -107,16 +114,17 @@ describe('ThreadlineEndpoints', () => {
       expect(computeFingerprint(Buffer.from(res.body.identityPub, 'hex'))).toBe(res.body.fingerprint);
     });
 
-    // No-fabrication boundary: no canonical identity → fall back to the
-    // handshake key and OMIT the fingerprint (never invent a dead address).
-    it('omits fingerprint and falls back to the handshake key when no routing identity exists', async () => {
-      // appA's stateDirA has no canonical identity.json (only the handshake manager key).
+    // No-fabrication boundary: no routing identity → OMIT identityPub and
+    // fingerprint, and create nothing on disk. Health is polled by every other
+    // local agent's discovery; an identity minted here is how ACT-062 began.
+    it('omits identityPub and fingerprint and writes no identity file when no routing identity exists', async () => {
       const res = await request(appA).get('/threadline/health');
       expect(res.status).toBe(200);
-      expect(res.body.fingerprint).toBeUndefined();
-      // Falls back to the handshake-layer key so existing behavior is preserved.
-      expect(res.body.identityPub).toBeDefined();
-      expect(res.body.identityPub).toHaveLength(64);
+      expect(res.body.protocol).toBe('threadline');
+      expect(res.body).not.toHaveProperty('fingerprint');
+      expect(res.body).not.toHaveProperty('identityPub');
+      expect(fs.existsSync(path.join(stateDirA, 'threadline', 'identity.json'))).toBe(false);
+      expect(fs.existsSync(path.join(stateDirA, 'identity.json'))).toBe(false);
     });
   });
 
@@ -361,6 +369,8 @@ describe('ThreadlineEndpoints', () => {
       const app = express();
       app.use(express.json());
       app.use(createThreadlineRoutes(abB, router as never, {
+      directPeerProtocol: () => true, // these tests exercise the opened protocol (threadline-http-peer-trust §0)
+        httpPeerTrust: { resolve: () => ({ level: 'trusted' as const, operation: 'message', allowed: true, hasProfile: true }) }, // sender is a granted peer (threadline-http-peer-trust)
         localAgent: 'agent-b',
         version: '1.0',
         stateDir: abDirB,

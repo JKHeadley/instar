@@ -97,6 +97,9 @@ describe('parked-test re-check', () => {
       ].join('\n'));
       fs.mkdirSync(path.join(dir, 'scripts'), { recursive: true });
       fs.copyFileSync(SCRIPT, path.join(dir, 'scripts/recheck-parked-tests.mjs'));
+      // The script imports its lane helper; ship it alongside.
+      fs.mkdirSync(path.join(dir, 'scripts/lib'), { recursive: true });
+      fs.copyFileSync(path.join(path.dirname(SCRIPT), 'lib', 'vitest-lane.mjs'), path.join(dir, 'scripts/lib/vitest-lane.mjs'));
 
       const res = spawnSync(process.execPath, ['scripts/recheck-parked-tests.mjs', '--missing-only', '--json'], {
         cwd: dir, encoding: 'utf-8', timeout: 60_000,

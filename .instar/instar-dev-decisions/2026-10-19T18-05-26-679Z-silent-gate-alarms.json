@@ -1,0 +1,26 @@
+{
+  "ts": "2026-10-19T18:05:26.679Z",
+  "slug": "silent-gate-alarms",
+  "suggestedTier": 2,
+  "declaredTier": 1,
+  "riskFloor": 1,
+  "riskFloorReasons": [],
+  "belowFloor": false,
+  "files": 5,
+  "loc": 111,
+  "scope": {
+    "basis": "staged-in-scope-additions-plus-deletions",
+    "files": [
+      "src/commands/server.ts",
+      "src/feedback-factory/triage/FeedbackTriageService.ts",
+      "src/messaging/telegram-origin/OriginForwardToHolder.ts",
+      "src/monitoring/SessionWatchdog.ts",
+      "src/monitoring/watchdog-notifications.ts"
+    ],
+    "addedLines": 102,
+    "deletedLines": 9
+  },
+  "causalAutopsy": null,
+  "classClosure": null,
+  "verdict": "blocked"
+}

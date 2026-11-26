@@ -1,0 +1,24 @@
+{
+  "ts": "2026-11-18T18:04:47.758Z",
+  "slug": "work-board-my-board",
+  "suggestedTier": 2,
+  "declaredTier": 1,
+  "riskFloor": 1,
+  "riskFloorReasons": [],
+  "belowFloor": false,
+  "files": 3,
+  "loc": 77,
+  "scope": {
+    "basis": "staged-in-scope-paths-including-deleted",
+    "files": [
+      "src/core/workBoardViews.ts",
+      "src/data/awareness/work-board-my-board.md",
+      "src/server/CapabilityIndex.ts"
+    ],
+    "addedLines": 75,
+    "deletedLines": 2
+  },
+  "causalAutopsy": null,
+  "classClosure": null,
+  "verdict": "pass"
+}

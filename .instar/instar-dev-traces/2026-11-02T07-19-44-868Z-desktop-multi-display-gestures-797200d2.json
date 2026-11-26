@@ -1,0 +1,25 @@
+{
+  "version": 2,
+  "slug": "desktop-multi-display-gestures",
+  "sessionId": "03f51762-938f-4d63-ba6d-eb28aeb6941b",
+  "timestamp": "2026-11-02T07:19:44.868Z",
+  "artifactPath": "upgrades/side-effects/desktop-multi-display-gestures.md",
+  "artifactSha256": "4f22110071c2279217b81ec58d0dcfca92d593d52e0ce9a820f9509c97c8109e",
+  "coveredFiles": [
+    "tests/e2e/desktop-displays-boot-lifecycle.test.ts",
+    "tests/integration/desktop-routes.test.ts",
+    "tests/unit/desktop-anydesk-gestures.test.ts",
+    "tests/unit/desktop-displays.test.ts",
+    "tests/unit/desktop-mesh-broker.test.ts",
+    "tests/unit/desktop-three-finger-gestures.test.ts",
+    "tests/unit/desktop-touch-gestures.test.ts",
+    "tests/unit/windows-desktop-local-transport.test.ts"
+  ],
+  "phase": "complete",
+  "tier": 1,
+  "tierReasoning": "Records that the independent second pass, which read the whole diff, covers every changed test file.",
+  "eli16Path": "docs/specs/desktop-multi-display-gestures.eli16.md",
+  "sideEffectsPath": "upgrades/side-effects/desktop-multi-display-gestures.md",
+  "secondPass": "true",
+  "reviewerConcurred": true
+}

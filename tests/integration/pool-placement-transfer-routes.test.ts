@@ -434,6 +434,46 @@ describe('Pool placement + transfer routes (multi-machine robustness)', () => {
       expect(sendDrainCalls).toHaveLength(0);
     });
 
+    it('a live run on the TARGET machine needs no consent and is never suspended (2026-11-03, topic 136774)', async () => {
+      // The 136774 shape: the peer owns the topic (it started a second copy),
+      // while THIS machine runs the topic's autonomous build. Moving the topic
+      // back here must not ask to pause — or actually pause — that build.
+      own('314', PEER);
+      registry.recordHeartbeat({
+        machineId: PEER,
+        selfReportedLastSeen: new Date().toISOString(),
+        loadAvg: 1,
+        seamlessnessFlags: { ws12DrainReceive: true },
+      });
+      const autonomousDir = path.join(dir, 'autonomous');
+      fs.mkdirSync(autonomousDir, { recursive: true });
+      const runFile = path.join(autonomousDir, '314.local.md');
+      fs.writeFileSync(runFile, '---\nactive: true\npaused: false\nreport_topic: "314"\ngoal: "build on the target"\nstarted_at: "2026-11-03T18:06:28Z"\nduration_seconds: 7200\n---\n');
+      sendDrainImpl = () => ({ ok: true, status: 'drained', claimLanded: true });
+
+      const r = await api('/pool/transfer', { method: 'POST', body: JSON.stringify({ topic: 314, to: 'Mac Mini' }) });
+      expect(r.status).toBe(200);
+      expect(r.body.needsConfirmation).toBeUndefined();
+      expect(r.body.autonomousRunSuspended).toBe(false);
+      // The peer's stray copy is still drained…
+      expect(sendDrainCalls).toEqual([expect.objectContaining({ owner: PEER, sk: '314', target: SELF })]);
+      // …and the build's state file is untouched (still active, no move marker).
+      const after = fs.readFileSync(runFile, 'utf-8');
+      expect(after).toContain('active: true');
+      expect(after).not.toContain('moved_to');
+    });
+
+    it('a live run on the LEAVING machine still requires consent (control for the target-run case)', async () => {
+      own('315', SELF);
+      const autonomousDir = path.join(dir, 'autonomous');
+      fs.mkdirSync(autonomousDir, { recursive: true });
+      fs.writeFileSync(path.join(autonomousDir, '315.local.md'), '---\nactive: true\npaused: false\nreport_topic: "315"\ngoal: "build here"\nstarted_at: "2026-11-03T18:06:28Z"\nduration_seconds: 7200\n---\n');
+      const r = await api('/pool/transfer', { method: 'POST', body: JSON.stringify({ topic: 315, to: 'Laptop' }) });
+      expect(r.status).toBe(409);
+      expect(r.body.needsConfirmation).toBe(true);
+      expect(r.body.detail).toContain('autonomous-run-in-flight');
+    });
+
     it('SELF-owned topic → drain ordered on the local owner BEFORE the pin, outcome in the response', async () => {
       own('300', SELF);
       const epochBefore = ownReg.read('300')!.ownershipEpoch;
@@ -513,6 +553,31 @@ describe('Pool placement + transfer routes (multi-machine robustness)', () => {
       expect(pinStore.get('303')).toBeNull();
       expect(ownReg.read('303')!.ownerMachineId).toBe(SELF);
       expect(ownReg.read('303')!.ownershipEpoch).toBe(epochBefore);
+    });
+
+    // 2026-10-23: the remote owner could not close its session (lease gate), the
+    // claim landed anyway and two sessions served one conversation. The owner now
+    // aborts; the route must not set the pin either, or the next message would
+    // re-place the topic on the target while the old session is still running.
+    it('refused-close-failed (REMOTE owner) → 409 failedNeedsRetry, NO pin, ownership untouched', async () => {
+      own('3909', PEER);
+      registry.recordHeartbeat({
+        machineId: PEER,
+        selfReportedLastSeen: new Date().toISOString(),
+        loadAvg: 1,
+        seamlessnessFlags: { ws12DrainReceive: true },
+      });
+      sendDrainImpl = () => ({ ok: false, status: 'refused-close-failed', reason: 'close-refused:not-lease-holder', runSuspended: true });
+      const epochBefore = ownReg.read('3909')!.ownershipEpoch;
+      const r = await api('/pool/transfer', { method: 'POST', body: JSON.stringify({ topic: 3909, to: 'Mac Mini' }) });
+      expect(r.status).toBe(409);
+      expect(r.body.failedNeedsRetry).toBe(true);
+      expect(String(r.body.error)).toContain('could not close its session');
+      expect(String(r.body.error)).toContain('close-refused:not-lease-holder');
+      expect(r.body.autonomousRunSuspended).toBe(true);
+      expect(pinStore.get('3909')).toBeNull();
+      expect(ownReg.read('3909')!.ownerMachineId).toBe(PEER);
+      expect(ownReg.read('3909')!.ownershipEpoch).toBe(epochBefore);
     });
 
     it('a drain failure that is NOT an abort degrades to today\'s pin path (recorded, never blocking)', async () => {

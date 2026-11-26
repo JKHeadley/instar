@@ -195,10 +195,10 @@ Not required for:
 
 ```bash
 # Run all E2E tests
-npx vitest run tests/e2e/
+npx vitest run --config vitest.e2e.config.ts
 
 # Run a specific E2E test
-npx vitest run tests/e2e/semantic-memory-lifecycle.test.ts
+npx vitest run --config vitest.e2e.config.ts tests/e2e/semantic-memory-lifecycle.test.ts
 
 # Run all tests (unit + integration + e2e)
 npx vitest run

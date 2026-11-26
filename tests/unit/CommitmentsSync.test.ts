@@ -141,6 +141,24 @@ describe('CommitmentReplicaStore — receive side (§3.2)', () => {
     expect(b.allReplicas()[0].records[0].id).toBe('CMT-001');
   });
 
+  it('an idle peer confirmed current by its advert reads as fresh, not hours stale (operator 2026-10-31)', () => {
+    let t = Date.parse('2026-10-31T12:00:00Z');
+    const store = new CommitmentReplicaStore({ stateDir: tmpDir, now: () => new Date(t) });
+    store.applyPage('m_peer', { incarnation: 'inc-1', replicationSeq: 5, records: [servedRow()], nextSinceSeq: 5, done: true });
+    t += 2 * 60 * 60 * 1000; // two quiet hours: nothing new to pull
+    expect(store.allReplicas()[0].receivedAt).toBe('2026-10-31T12:00:00.000Z');
+    expect(store.confirmCurrent('m_peer', { incarnation: 'inc-1', replicationSeq: 5 })).toBe(true);
+    expect(store.allReplicas()[0].receivedAt).toBe('2026-10-31T14:00:00.000Z');
+  });
+
+  it('confirmCurrent refuses when the advert is ahead, the incarnation changed, or the replica is unknown', () => {
+    const store = new CommitmentReplicaStore({ stateDir: tmpDir });
+    store.applyPage('m_peer', { incarnation: 'inc-1', replicationSeq: 5, records: [servedRow()], nextSinceSeq: 5, done: true });
+    expect(store.confirmCurrent('m_peer', { incarnation: 'inc-1', replicationSeq: 6 })).toBe(false);
+    expect(store.confirmCurrent('m_peer', { incarnation: 'inc-2', replicationSeq: 5 })).toBe(false);
+    expect(store.confirmCurrent('m_other', { incarnation: 'inc-1', replicationSeq: 0 })).toBe(false);
+  });
+
   it('C1+C2: clamps out-of-enum owner/blockedOn on receive (untrusted-peer hardening, §4.1)', () => {
     const store = new CommitmentReplicaStore({ stateDir: tmpDir });
     // A peer (or corrupted row) sends garbage in the routing-significant enums.
@@ -215,6 +233,55 @@ describe('mergeCommitmentViews + resolveBareId (§3.1/§3.3)', () => {
     const resolved = resolveBareId(rows, 'CMT-007', 'm_b');
     expect(resolved).not.toBe('ambiguous');
     expect((resolved as { originMachineId: string }).originMachineId).toBe('m_b');
+  });
+
+  describe('same-origin collapse (fb-6a8328a1 — restored copies are not a collision)', () => {
+    const peerCopy = (id: string, origin: string) => ({ ...fakeCommitment({ id }), originMachineId: origin } as ReplicatedCommitment);
+
+    it('restored OWN copy + the ORIGIN\'s replica (both origin m_b): ?origin=m_b resolves to the origin replica, not ambiguous', () => {
+      const rows = mergeCommitmentViews({
+        ownMachineId: 'm_a',
+        own: [fakeCommitment({ id: 'CMT-2056', originMachineId: 'm_b' })],
+        replicas: [{ ownerMachineId: 'm_b', receivedAt: new Date().toISOString(), records: [peerCopy('CMT-2056', 'm_b')] }],
+      });
+      expect(rows).toHaveLength(2); // still two rows in the merged VIEW
+      // Today's call shape (no ownMachineId) keeps its old verdict.
+      expect(resolveBareId(rows, 'CMT-2056', 'm_b')).toBe('ambiguous');
+      const r = resolveBareId(rows, 'CMT-2056', 'm_b', 'm_a');
+      expect(r).not.toBe('ambiguous');
+      expect((r as { viewSource: string }).viewSource).toBe('replica');
+      expect((r as { replicaOwnerMachineId: string }).replicaOwnerMachineId).toBe('m_b');
+      // Bare id (no origin) collapses too: every match names one origin.
+      expect((resolveBareId(rows, 'CMT-2056', undefined, 'm_a') as { viewSource: string }).viewSource).toBe('replica');
+    });
+
+    it('origin is US + a peer holds a copy of our record: resolves to our OWN row', () => {
+      const rows = mergeCommitmentViews({
+        ownMachineId: 'm_b',
+        own: [fakeCommitment({ id: 'CMT-2056', originMachineId: 'm_b' })],
+        replicas: [{ ownerMachineId: 'm_a', receivedAt: new Date().toISOString(), records: [peerCopy('CMT-2056', 'm_b')] }],
+      });
+      const r = resolveBareId(rows, 'CMT-2056', 'm_b', 'm_b');
+      expect((r as { viewSource: string }).viewSource).toBe('own');
+    });
+
+    it('distinct origins stay ambiguous without ?origin (the round-1 collision guarantee holds)', () => {
+      const rows = mergeCommitmentViews({
+        ownMachineId: 'm_a',
+        own: [fakeCommitment({ id: 'CMT-007', originMachineId: 'm_a' })],
+        replicas: [{ ownerMachineId: 'm_b', receivedAt: new Date().toISOString(), records: [peerCopy('CMT-007', 'm_b')] }],
+      });
+      expect(resolveBareId(rows, 'CMT-007', undefined, 'm_a')).toBe('ambiguous');
+    });
+
+    it('copies held only by third parties (no row published by the origin) stay ambiguous — never guessed between', () => {
+      const rows = mergeCommitmentViews({
+        ownMachineId: 'm_a',
+        own: [fakeCommitment({ id: 'CMT-9', originMachineId: 'm_gone' })],
+        replicas: [{ ownerMachineId: 'm_c', receivedAt: new Date().toISOString(), records: [peerCopy('CMT-9', 'm_gone')] }],
+      });
+      expect(resolveBareId(rows, 'CMT-9', 'm_gone', 'm_a')).toBe('ambiguous');
+    });
   });
 
   it('replica rows carry viewSource + stalenessMs; pendingMutation is COMPUTED from the ledger join', () => {

@@ -1,0 +1,9 @@
+# Echo Bugs reply recovery visibility — ELI16
+
+When a session sends a Telegram reply, the server first stores the exact message it intends to send. If the connection fails before any request reaches Telegram, the server keeps that message and safely tries it again. The Mac Studio showed this happen to an Echo Bugs reply. Another Echo Bugs reply did eventually reach Telegram on a later recovery attempt, but its topic's message history never showed it. That made the incident look like a group-wide delivery failure even after Telegram had accepted some replies.
+
+The retry path goes straight through the origin transport. The normal send path goes through the Telegram adapter, which writes the topic history. This change lets the recovery path hand the adapter a confirmed Telegram receipt, the text, and the destination. The adapter converts the real Echo Bugs thread number back to Instar's internal topic number and writes one history row. Its existing duplicate protection keeps repeated observations from adding a second row. This does not send the message again.
+
+When Telegram cannot be reached before the request starts, a session reply now also creates an operator attention item in the main hub. Repeated failures for that same reply update one item, and a confirmed recovery closes it. The advisory log now labels its early checks as preflight with delivery unconfirmed. A clean advisory means the text passed that check; it says nothing about whether Telegram received it. The server still owns retries and keeps the original operation id, so an agent does not need to resend by hand.
+
+If this change behaves badly, a code revert removes the new history and attention behavior without changing the stored reply or retry rules. The test checks that one recovered Echo Bugs receipt produces exactly one agent reply row under the right internal topic id.

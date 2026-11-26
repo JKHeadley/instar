@@ -4,6 +4,7 @@ import {
   ForwardBadRequestError,
   ForwardServerBootError,
   ForwardVersionSkewError,
+  ForwardSecretRefusedError,
   isTerminalForwardError,
 } from '../../../src/lifeline/forwardErrors.js';
 
@@ -29,6 +30,14 @@ describe('forwardErrors', () => {
     });
     expect(err.body.serverVersion).toBe('1.2.3');
     expect(err.kind).toBe('version-skew');
+  });
+
+  it('a lifeline-secret refusal (after a re-read) is terminal for the retry loop and is its own kind', () => {
+    const err = new ForwardSecretRefusedError();
+    expect(err.kind).toBe('secret-refused');
+    expect(isTerminalForwardError(err)).toBe(true);
+    // A plain 401 (for example a Bearer failure) stays a retryable transient.
+    expect(isTerminalForwardError(new ForwardTransientError(401))).toBe(false);
   });
 
   it('ForwardServerBootError carries retryAfterMs', () => {

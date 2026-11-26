@@ -1,0 +1,26 @@
+{
+  "ts": "2026-11-06T08:49:24.582Z",
+  "slug": "model-settings-notices",
+  "suggestedTier": 2,
+  "declaredTier": 1,
+  "riskFloor": 1,
+  "riskFloorReasons": [],
+  "belowFloor": false,
+  "files": 5,
+  "loc": 161,
+  "scope": {
+    "basis": "staged-in-scope-additions-plus-deletions",
+    "files": [
+      "src/commands/server.ts",
+      "src/core/TopicProfileOrchestrator.ts",
+      "src/server/routes.ts",
+      "src/server/sessionSpawnTopicBinding.ts",
+      "src/testing/selfActionRegistry.ts"
+    ],
+    "addedLines": 143,
+    "deletedLines": 18
+  },
+  "causalAutopsy": null,
+  "classClosure": null,
+  "verdict": "pass"
+}

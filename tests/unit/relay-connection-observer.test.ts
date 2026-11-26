@@ -90,7 +90,7 @@ describe('relay connection observability', () => {
     expect(recorded[0].terminal).toBe(true);
   });
 
-  it('a displacement is reported as an ERROR and says reconnect is disarmed', () => {
+  it('a displacement is reported as an ERROR and says automatic retry stops', () => {
     // The load-bearing distinction: a plain disconnect retries, a displacement
     // never does. If the message does not say so, a reader cannot tell whether
     // waiting will help.
@@ -100,7 +100,7 @@ describe('relay connection observability', () => {
 
     const text = errors.join('\n');
     expect(text).toContain('DISPLACED');
-    expect(text.toLowerCase()).toContain('disarmed');
+    expect(text.toLowerCase()).toContain('automatic retry stops');
     expect(logs.join('\n')).not.toContain('DISPLACED');
   });
 
@@ -127,6 +127,28 @@ describe('relay connection observability', () => {
     client.emit('displaced', 'second');
     expect(obs.getLastEvent()?.reason).toBe('second');
     expect(obs.getLastEvent()?.terminal).toBe(true);
+  });
+
+  it('REGRESSION: a plain disconnect after a displacement does not mask it (sagemind, 2026-10-05)', () => {
+    // Health read "disconnected, recoverable" for 40 h on an agent that would
+    // never reconnect, because the relay's 4001 close followed the displacement.
+    const client = new FakeRelayClient();
+    const obs = attach(client);
+    client.emit('displaced', 'Another device connected with the same identity key');
+    client.emit('disconnected', 'Displaced by new connection');
+    expect(obs.getLastEvent()?.event).toBe('displaced');
+    expect(obs.getLastEvent()?.terminal).toBe(true);
+    expect(readRecorded().map(r => r.event)).toEqual(['displaced']);
+  });
+
+  it('a successful reconnect clears the terminal state', () => {
+    const client = new FakeRelayClient();
+    const obs = attach(client);
+    client.emit('displaced', 'identity taken');
+    client.emit('connected', 'session-2');
+    expect(obs.getLastEvent()).toBeNull();
+    client.emit('disconnected', 'later drop');
+    expect(obs.getLastEvent()?.event).toBe('disconnected');
   });
 
   it('records every occurrence — later events never overwrite earlier ones', () => {

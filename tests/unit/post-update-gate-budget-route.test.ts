@@ -57,6 +57,7 @@ function buildApp(opts: {
     telegram: {
       sendToTopic: async (topicId: number, text: string) => {
         opts.sends.push({ topicId, text });
+        return { messageId: opts.sends.length, topicId };
       },
     },
   };

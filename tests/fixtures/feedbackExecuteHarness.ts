@@ -1,0 +1,349 @@
+// safe-fs-allow: test fixture — SafeFsExecutor used for tmpdir cleanup.
+/**
+ * Shared harness for feedback executor tests (docs/specs/feedback-triage-and-execution.md §4):
+ * the real triage harness (drain store, triage store, InitiativeTracker) plus the real execute
+ * store and FeedbackExecutorService; only the external boundaries (trusted git, GitHub, the
+ * sandbox runtime, the dependency cache and confined sessions) are scripted fakes.
+ */
+import fs from 'node:fs';
+import path from 'node:path';
+import { createHarness, type Harness } from './feedbackTriageHarness.js';
+import { FeedbackExecuteStore } from '../../src/feedback-factory/execute/FeedbackExecuteStore.js';
+import { FeedbackExecutorService, type ConfinedSessionPort } from '../../src/feedback-factory/execute/FeedbackExecutorService.js';
+import { RESULT_FILE, type ExecuteLiveConfig } from '../../src/feedback-factory/execute/executePolicy.js';
+import type { ConfinedCommand, ConfinedResult, ConfinedRunner } from '../../src/feedback-factory/execute/ConfinedRunner.js';
+import { SESSION_CANARY_STEPS } from '../../src/feedback-factory/execute/confinementCanary.js';
+import type { AttemptGit, GitHubGateway } from '../../src/feedback-factory/execute/executorPorts.js';
+import type { DepsCachePort } from '../../src/feedback-factory/execute/depsCache.js';
+import type { PrReview, RepoInfo } from '../../src/feedback-factory/execute/reviewGate.js';
+import type { ReviewerOutcome } from '../../src/feedback-factory/execute/independentReview.js';
+import type { AttentionInput } from '../../src/feedback-factory/triage/FeedbackTriageService.js';
+
+export const BASE_SHA = 'a'.repeat(40);
+export const HEAD_SHA = 'b'.repeat(40);
+
+export interface PushRecord { branch: string; message: string; remoteUrl: string; files: Record<string, string>; credentialHelper: string | null }
+
+export interface ExecHarness extends Harness {
+  exec: FeedbackExecutorService;
+  execStore: FeedbackExecuteStore;
+  agentHome: string;
+  sourceRepo: string;
+  cfg: ExecuteLiveConfig;
+  enabled: { value: boolean };
+  epoch: { value: number };
+  canonical: { value: boolean };
+  repo: { createdBodies: string[]; info: RepoInfo | null; viewer: string | null; accounts: string[] | null };
+  identity: { profileAccounts: Array<{ service: string; identity: string; vaultRefs: string[] }>; ownedIdentities: Array<{ service: string; identity: string }>; vaultNames: string[] | null };
+  admission: { saturated: boolean; shedding: boolean; updatePending: boolean; rerouteSaturated?: boolean };
+  /** Local Verify's answer to "does queued work need a restart?" (the attempt hold yields while true). */
+  localVerifyNeedsRestart: { fn: () => boolean };
+  /** Called inside the publish push (the attempt is `verifying` / `publishing` at that moment). */
+  onPush: { fn: () => void };
+  /** When set, the next confined spawns throw this (e.g. a RerouteRefusedError from a full reroute lane). */
+  spawnError: { value: Error | null };
+  pushes: PushRecord[];
+  /** `createHead` is the `--head` createPr was given (`owner:branch` for a fork PR); `headRefName` is the branch, as GitHub reports it. */
+  prs: Map<number, { state: string; mergedAt: string | null; headRefOid: string; mergeCommit: string | null; author: string | null; headRefName: string; createHead: string; labels: string[]; title: string; body: string }>;
+  reviews: Map<number, PrReview[]>;
+  /** The diff `prDiff` answers (null = gh error) and every comment left on a PR. */
+  prDiff: { value: string | null };
+  prFiles: { value: string[] | null };
+  comments: Array<{ pr: number; body: string }>;
+  /** PRs closed through `closePr`, and whether the next closes fail (a gh error). */
+  closed: number[];
+  closeFails: { value: number };
+  commentFails: { value: number };
+  /** The independent reviewers' outcomes (default: none installed → the owner-approval route alone, as before) and each prompt they were asked. */
+  /** `verbatim`: bodies are returned as written; otherwise a body's leading `Verdict:` is written the
+   *  way the prompt asks, with this review's verdict code (SEC-097), as a reviewer following it would. */
+  review: { outcomes: ReviewerOutcome[] | null; calls: string[]; leads: Array<'astra' | 'opus' | undefined>; verbatim?: boolean };
+  disarmed: number[];
+  merges: Array<{ pr: number; sha: string }>;
+  safeMergeExit: { code: number | null; stdout: string };
+  release: { value: { tag: string; taggedAt: number } | 'none' | null };
+  /** The git port's commitInBase answer for a claimed commit (default: never in base). */
+  commitInBase: { fn: (commit: string, baseSha: string) => { sha: string; committedAt: number } | null };
+  runs: ConfinedCommand[];
+  runScript: { fn: (cmd: ConfinedCommand) => Partial<ConfinedResult> | null };
+  runnerAvailable: { value: boolean };
+  deps: { ok: boolean; ensureCalls: number };
+  sessions: { alive: Set<string>; spawned: Array<{ name: string; prompt: string; cwd: string; settingsPath?: string; trusted: boolean }>; behavior: { fn: (workspace: string, prompt: string) => void }; stopped: string[]; remoteStops: Array<{ machine: string; name: string }>; canaryReport: { fn: ((reportPath: string, workspace: string, prompt: string) => void) | null }; canaryTail: { value: string | null };
+    /** The canary session's transcript lines (default: one tool result per step plus the report, no nonce). */
+    canaryTranscript: { fn: ((prompt: string) => string[] | null) | null }; claudeHome: string };
+  attentionExec: AttentionInput[];
+  /** Make a triage work item ready for the executor. */
+  workItem(id: string, opts?: { reports?: number; needsSpec?: boolean; userFacing?: boolean }): Promise<string>;
+  /** A finished build session that fixed the problem with the given files. */
+  fixWith(files: Record<string, string>, result?: Record<string, unknown>): void;
+}
+
+/** True when a confined run's tree is the (a) base-check clone: the base source plus only the changed tests. */
+export function isBaseState(cwd: string): boolean {
+  if (!/-base$/.test(cwd)) return false;
+  try { return fs.readFileSync(path.join(cwd, 'src', 'thing.ts'), 'utf8') === 'export const thing = 1;\n' && !fs.existsSync(path.join(cwd, 'src', 'newfn.ts')); } catch { return false; }
+}
+
+/** Default scripted confined runs: canary must-fail probes fail, must-succeed probes and gates pass, the base check fails with an assertion. */
+export function defaultRun(cmd: ConfinedCommand): Partial<ConfinedResult> {
+  const c = cmd.command;
+  if (/better-sqlite3/.test(c)) return { exitCode: 0, stdout: 'sqlite-ok' };
+  if (/^git /.test(c)) return { exitCode: 0 };
+  if (/^(cat |ls |echo |security |ln )/.test(c) || /^node -e/.test(c)) return { exitCode: 1, stderr: 'Operation not permitted' };
+  if (/vitest run/.test(c) && isBaseState(cmd.cwd)) return { exitCode: 1, stdout: ' FAIL  tests/fix.test.ts > fixes it\nAssertionError: expected 1 to be 2\n Test Files  1 failed (1)' };
+  if (/vitest run/.test(c)) return { exitCode: 0, stdout: ' Test Files  1 passed (1)\n      Tests  1 passed (1)' };
+  return { exitCode: 0, stdout: 'ok' };
+}
+
+export async function createExecHarness(opts: { config?: Partial<ExecuteLiveConfig>; paceTicks?: { append(row: { source: 'executor'; kind: 'admission'; admission: string | null }): void } } = {}): Promise<ExecHarness> {
+  const base = await createHarness();
+  const h = base as ExecHarness;
+  h.agentHome = path.join(base.dir, 'agent');
+  h.sourceRepo = path.join(base.dir, 'source');
+  fs.mkdirSync(path.join(h.agentHome, '.instar'), { recursive: true });
+  fs.mkdirSync(path.join(h.agentHome, '.worktrees'), { recursive: true });
+  fs.writeFileSync(path.join(h.agentHome, '.instar', 'config.json'), JSON.stringify({ authToken: 'real-token-never-read' }));
+  fs.mkdirSync(path.join(h.sourceRepo, '.git'), { recursive: true });
+  fs.mkdirSync(path.join(h.sourceRepo, 'src'), { recursive: true });
+  fs.mkdirSync(path.join(h.sourceRepo, 'tests'), { recursive: true });
+  fs.mkdirSync(path.join(h.sourceRepo, '.claude'), { recursive: true });
+  fs.writeFileSync(path.join(h.sourceRepo, 'package.json'), '{"name":"fixture"}\n');
+  fs.writeFileSync(path.join(h.sourceRepo, 'src', 'thing.ts'), 'export const thing = 1;\n');
+  fs.writeFileSync(path.join(h.sourceRepo, '.claude', 'settings.json'), '{"hooks":{"Stop":[{"hooks":[{"type":"command","command":"evil"}]}]}}');
+  h.cfg = { dryRun: false, sourceRepoPath: h.sourceRepo, maxConcurrent: 2, maxStartsPerDay: 6, maxOpenPrs: 4, lintCommand: 'npm run lint', baseSmokeTests: ['tests/unit/smoke.test.ts'], maxDurationMinutes: 300, publishRepo: 'agent-bot/repo', reviewGate: 'independent', reviewFailedGraceHours: 24, ...(opts.config ?? {}) };
+  h.enabled = { value: true };
+  h.epoch = { value: 1 }; h.canonical = { value: true };
+  h.repo = { createdBodies: [], info: { ownerLogin: 'Owner', ownerType: 'User', allowAutoMerge: true }, viewer: 'agent-bot', accounts: ['agent-bot'] };
+  h.identity = { profileAccounts: [], ownedIdentities: [], vaultNames: [] };
+  h.admission = { saturated: false, shedding: false, updatePending: false, rerouteSaturated: false };
+  h.localVerifyNeedsRestart = { fn: () => false };
+  h.onPush = { fn: () => {} };
+  h.spawnError = { value: null };
+  h.pushes = [];
+  h.prs = new Map();
+  h.reviews = new Map();
+  h.prDiff = { value: 'diff --git a/src/thing.ts b/src/thing.ts\n+++ b/src/thing.ts\n+x\n' };
+  h.prFiles = { value: ['src/thing.ts', 'tests/fix.test.ts'] };
+  h.comments = [];
+  h.closed = [];
+  h.closeFails = { value: 0 };
+  h.commentFails = { value: 0 };
+  h.review = { outcomes: [], calls: [], leads: [] };
+  h.disarmed = [];
+  h.merges = [];
+  h.safeMergeExit = { code: 5, stdout: 'safe-merge-result: {"result":"armed"}' };
+  h.release = { value: 'none' };
+  h.commitInBase = { fn: () => null };
+  h.runs = [];
+  h.runScript = { fn: () => null };
+  h.runnerAvailable = { value: true };
+  h.deps = { ok: true, ensureCalls: 0 };
+  h.attentionExec = [];
+  h.sessions = { alive: new Set(), spawned: [], behavior: { fn: () => {} }, stopped: [], remoteStops: [], canaryReport: { fn: null }, canaryTail: { value: null }, canaryTranscript: { fn: null }, claudeHome: path.join(base.dir, 'claude-home') };
+
+  const git: AttemptGit = {
+    fetchBase: async () => BASE_SHA,
+    createClone: async (src, dest) => {
+      if (fs.existsSync(dest)) throw new Error('clone destination exists');
+      fs.cpSync(src, dest, { recursive: true });
+      fs.mkdirSync(path.join(dest, '.git'), { recursive: true });
+      fs.writeFileSync(path.join(dest, '.git', 'config'), '[core]\n\trepositoryformatversion = 0\n');
+    },
+    commitAndPush: async (clone, input) => {
+      const files: Record<string, string> = {};
+      const walk = (dir: string, rel = '') => {
+        for (const name of fs.readdirSync(dir)) {
+          if (!rel && (name === '.git' || name === 'node_modules')) continue;
+          const full = path.join(dir, name);
+          const r = rel ? `${rel}/${name}` : name;
+          if (fs.lstatSync(full).isDirectory()) walk(full, r); else files[r] = fs.readFileSync(full, 'utf8');
+        }
+      };
+      walk(clone);
+      h.onPush.fn();
+      h.pushes.push({ branch: input.branch, message: input.message, remoteUrl: input.remoteUrl, files, credentialHelper: input.credentialHelper });
+      return HEAD_SHA;
+    },
+    githubRemote: async () => ({ slug: 'owner/repo', url: 'https://github.com/owner/repo.git' }),
+    firstReleaseContaining: async () => h.release.value,
+    commitInBase: async (_src, commit, baseSha) => h.commitInBase.fn(commit, baseSha),
+  };
+  let nextPr = 100;
+  const github: GitHubGateway = {
+    repoInfo: async () => h.repo.info,
+    viewerLogin: async () => h.repo.viewer,
+    authAccounts: async () => h.repo.accounts,
+    createPr: async (input) => {
+      h.repo.createdBodies.push(input.body);
+      const number = nextPr++;
+      h.prs.set(number, { state: 'OPEN', mergedAt: null, headRefOid: HEAD_SHA, mergeCommit: null, author: 'agent-bot', headRefName: input.head.replace(/^[^:]+:/, ''), createHead: input.head, labels: [input.label], title: input.title, body: input.body });
+      return { number };
+    },
+    prState: async (_slug, pr) => { const p = h.prs.get(pr); if (!p) return null; const { createHead: _head, ...view } = p; return view; },
+    reviews: async (_slug, pr) => h.reviews.get(pr) ?? [],
+    removeLabel: async (_slug, pr, label) => { const p = h.prs.get(pr); if (p) p.labels = p.labels.filter((l) => l !== label); return true; },
+    disableAuto: async (_slug, pr) => { h.disarmed.push(pr); return true; },
+    safeMerge: async (_slug, pr, sha) => { h.merges.push({ pr, sha }); return { exitCode: h.safeMergeExit.code, stdout: h.safeMergeExit.stdout }; },
+    prDiff: async () => h.prDiff.value,
+    prFiles: async () => h.prFiles.value,
+    comment: async (_slug, pr, body) => { if (h.commentFails.value > 0) { h.commentFails.value--; return false; } h.comments.push({ pr, body }); return true; },
+    closePr: async (_slug, pr) => {
+      if (h.closeFails.value > 0) { h.closeFails.value--; return 'failed'; }
+      const p = h.prs.get(pr);
+      if (p && p.state === 'MERGED') return 'merged';
+      if (p && p.state === 'OPEN') p.state = 'CLOSED';
+      h.closed.push(pr);
+      return 'closed';
+    },
+  };
+  const runner: ConfinedRunner = {
+    available: () => (h.runnerAvailable.value ? { ok: true, version: '0.0.77' } : { ok: false, reason: 'sandbox-runtime-not-installed' }),
+    run: async (cmd) => {
+      h.runs.push(cmd);
+      const scripted = h.runScript.fn(cmd) ?? defaultRun(cmd);
+      return { exitCode: 0, signal: null, stdout: '', stderr: '', timedOut: false, outputCapped: false, ...scripted };
+    },
+  };
+  const depsPort: DepsCachePort = {
+    ensure: async () => {
+      h.deps.ensureCalls++;
+      if (!h.deps.ok) return { ok: false, reason: 'deps-install-failed: registry down' };
+      const dir = path.join(h.agentHome, '.worktrees', '.feedback-deps', 'abcdefabcdefabcdefab');
+      fs.mkdirSync(path.join(dir, 'node_modules'), { recursive: true });
+      return { ok: true, dir, hash: 'abcdefabcdefabcdefab' };
+    },
+    evict: () => 0,
+    sizeBytes: () => 1234,
+  };
+  const sessions: ConfinedSessionPort = {
+    spawnConfined: async (input) => {
+      if (h.spawnError.value) throw h.spawnError.value;
+      h.sessions.spawned.push({ name: input.name, prompt: input.prompt, cwd: input.cwd, settingsPath: input.settingsPath, trusted: false });
+      if (input.name.startsWith('feedback-canary-')) {
+        const reportPath = /write (\S+canary-report-[0-9a-f]+\.json) as JSON/.exec(input.prompt)?.[1];
+        if (h.sessions.canaryReport.fn) h.sessions.canaryReport.fn(reportPath!, input.cwd, input.prompt);
+        else {
+          const okFile = /create (\S+\.feedback-canary-ok-[0-9a-f]+)/.exec(input.prompt)![1];
+          const bashFile = /echo ok > (\S+\.feedback-canary-bash-[0-9a-f]+)/.exec(input.prompt)![1];
+          fs.writeFileSync(okFile, 'ok');
+          fs.writeFileSync(bashFile, 'ok');
+          fs.writeFileSync(reportPath!, JSON.stringify({ attempted: CANARY_STEPS, outputs: { 1: 'Operation not permitted', 8: 'Operation not permitted', 9: 'exit 0: ?? node_modules' } }));
+        }
+        const sessionUuid = canaryUuid(input.name);
+        const lines = h.sessions.canaryTranscript.fn ? h.sessions.canaryTranscript.fn(input.prompt) : defaultCanaryTranscript(input.prompt);
+        if (lines) {
+          const dir = path.join(h.sessions.claudeHome, 'projects', input.cwd.replace(/[/.]/g, '-'));
+          fs.mkdirSync(dir, { recursive: true });
+          fs.writeFileSync(path.join(dir, `${sessionUuid}.jsonl`), `${lines.join('\n')}\n`);
+        }
+        // A canary session that shows a screen stays alive for one poll, then ends (captureTail below).
+        if (h.sessions.canaryTail.value !== null) h.sessions.alive.add(`tmux-${input.name}`);
+        return { sessionName: `tmux-${input.name}`, sessionId: `uuid-${input.name}`, transcript: { configHome: h.sessions.claudeHome, sessionUuid } };
+      }
+      h.sessions.alive.add(`tmux-${input.name}`);
+      h.sessions.behavior.fn(input.cwd, input.prompt);
+      return { sessionName: `tmux-${input.name}`, sessionId: `uuid-${input.name}` };
+    },
+    spawnTrusted: async (input) => {
+      h.sessions.spawned.push({ name: input.name, prompt: input.prompt, cwd: '', trusted: true });
+      h.sessions.alive.add(`tmux-${input.name}`);
+      return { sessionName: `tmux-${input.name}`, sessionId: `uuid-${input.name}` };
+    },
+    isAlive: (name) => h.sessions.alive.has(name),
+    stop: async (name) => { h.sessions.stopped.push(name); h.sessions.alive.delete(name); return true; },
+    remoteStop: async (machine, name) => { h.sessions.remoteStops.push({ machine, name }); return true; },
+    frameworkVersion: async () => '2.1.295 (Claude Code)',
+    captureTail: async (name) => {
+      if (!name.startsWith('tmux-feedback-canary-')) return null;
+      h.sessions.alive.delete(name);
+      return h.sessions.canaryTail.value;
+    },
+  };
+  h.execStore = new FeedbackExecuteStore(h.drain, h.store, { clock: () => h.now.value });
+  h.exec = new FeedbackExecutorService({
+    triageStore: h.store, store: h.execStore, audit: h.audit,
+    review: { run: async ({ prompt, lead }) => {
+      h.review.calls.push(prompt); h.review.leads.push(lead);
+      if (h.review.outcomes === null) throw new Error('reviewers-down');
+      const code = /VERDICT ([0-9a-f]{16}): CLEAN/.exec(prompt)?.[1];
+      if (h.review.verbatim || !code) return h.review.outcomes;
+      return h.review.outcomes.map((o) => (o.body ? { ...o, body: o.body.replace(/^Verdict:/, `VERDICT ${code}:`) } : o));
+    } },
+    processing: { activeClusters: () => [...h.clusters.values()], feedbackByCluster: () => new Map([...h.reports].map(([k, v]) => [k, v.map((r) => ({ ...r }))])) },
+    initiatives: h.tracker, git, github, runner, deps: depsPort, sessions,
+    admission: { spawnLimiterSaturated: () => h.admission.saturated, quotaShedding: () => h.admission.shedding, updatePending: () => h.admission.updatePending, rerouteSaturated: () => h.admission.rerouteSaturated === true },
+    localVerifyNeedsRestart: () => h.localVerifyNeedsRestart.fn(),
+    identityFacts: () => ({ profileAccounts: h.identity.profileAccounts, ownedIdentities: h.identity.ownedIdentities, vaultNames: h.identity.vaultNames }),
+    rankedWork: () => h.service.queue().map((i) => ({ initiativeId: String(i.initiativeId), clusterId: String(i.clusterId) })),
+    enabled: () => h.enabled.value,
+    config: () => h.cfg,
+    paths: { agentHome: h.agentHome, stateDir: path.join(h.agentHome, '.instar'), configPath: path.join(h.agentHome, '.instar', 'config.json'), testRunnerHoldersFile: path.join(base.dir, 'holders.json'), homeDir: base.dir },
+    selfMachineId: 'm1', ownerMachineId: () => 'm1', ownerEpoch: () => h.epoch.value, isCanonicalOwner: () => h.canonical.value,
+    commitIdentity: () => ({ name: 'Echo', email: 'echo@example.com' }),
+    ghCredentialHelper: '!gh auth git-credential',
+    raiseAttention: async (item) => { h.attentionExec.push(item); },
+    reportDegradation: (event) => { h.degradations.push(event.feature); },
+    dashboardLink: () => 'https://agent.example/dashboard?tab=feedback-drain',
+    sleep: async () => {}, sessionWaitMs: 1_000,
+    ...(opts.paceTicks ? { paceTicks: opts.paceTicks } : {}),
+    clock: () => h.now.value,
+  });
+  h.service.attachExecutor({ status: () => h.exec.status(), executionStateFor: (id) => h.exec.executionStateFor(id), actionItems: () => h.exec.actionItems(), holdsItem: (id) => h.exec.holdsItem(id) });
+  h.workItem = async (id, o = {}) => {
+    const initiativeId = await h.addItem(id, { reports: o.reports ?? 2 });
+    const prev = h.decide.fn;
+    h.decide.fn = (packets) => packets.map((p) => ({ clusterId: p.clusterId, disposition: 'work', reason: 'actionable', duplicateOf: null, fixedBy: null, severity: 'high', effort: 'm',
+      needsSpec: o.needsSpec === true, userFacing: o.userFacing === true, priority: 80, confidence: 0.95, summary: `summary for ${p.clusterId}`,
+      brief: { component: 'scheduler', symptom: 'crash', expected: 'no crash', reproduction: 'run the job' } }));
+    h.now.value += 60_000;
+    await h.service.tick();
+    h.decide.fn = prev;
+    return initiativeId;
+  };
+  h.fixWith = (files, result = {}) => {
+    h.sessions.behavior.fn = (workspace) => {
+      for (const [rel, text] of Object.entries(files)) {
+        fs.mkdirSync(path.dirname(path.join(workspace, rel)), { recursive: true });
+        fs.writeFileSync(path.join(workspace, rel), text);
+      }
+      fs.writeFileSync(path.join(workspace, RESULT_FILE), JSON.stringify({ outcome: 'fixed', testFiles: ['tests/fix.test.ts'], testName: 'fixes it', notes: 'fixed the crash', ...result }));
+    };
+  };
+  return h;
+}
+
+export const CANARY_STEPS = Array.from({ length: SESSION_CANARY_STEPS }, (_, i) => i + 1);
+
+/** A stable uuid-shaped id per canary session name. */
+export function canaryUuid(name: string): string {
+  const hex = Buffer.from(name).toString('hex').padEnd(32, '0').slice(-32);
+  return `${hex.slice(0, 8)}-${hex.slice(8, 12)}-${hex.slice(12, 16)}-${hex.slice(16, 20)}-${hex.slice(20, 32)}`;
+}
+
+/** A tool call and its (refused) result, in the shape Claude Code writes them. */
+export function toolCallLines(id: string, name: string, input: Record<string, unknown>, result = 'File is in a directory that is denied by your permission settings.'): string[] {
+  return [
+    JSON.stringify({ type: 'assistant', message: { role: 'assistant', content: [{ type: 'tool_use', id, name, input }] } }),
+    JSON.stringify({ type: 'user', message: { role: 'user', content: [{ type: 'tool_result', tool_use_id: id, content: result, is_error: true }] } }),
+  ];
+}
+
+/** A Read tool call and its (refused) result. */
+export function readCallLines(id: string, filePath: string, result?: string): string[] {
+  return toolCallLines(id, 'Read', { file_path: filePath }, result);
+}
+
+/** Every Read, Write and Grep the canary prompt asks for, each attempted and refused. */
+export function defaultCanaryTranscript(prompt: string): string[] {
+  const reads = [...prompt.matchAll(/Use the Read tool to read (\S+)/g)].map((m) => m[1]);
+  const writes = [...prompt.matchAll(/Use the Write tool to create (\S+)/g)].map((m) => m[1]);
+  const greps = [...prompt.matchAll(/Use the Grep tool with pattern \S+ in (\S+)/g)].map((m) => m[1]);
+  return [
+    ...reads.flatMap((t, i) => readCallLines(`toolu_r${i}`, t)),
+    ...writes.flatMap((t, i) => toolCallLines(`toolu_w${i}`, 'Write', { file_path: t, content: 'x' }, 'Permission to use Write has been denied because Claude Code is running in don\'t ask mode.')),
+    ...greps.flatMap((t, i) => toolCallLines(`toolu_g${i}`, 'Grep', { pattern: 'canary-secret', path: t }, 'Permission to use Grep has been denied because Claude Code is running in don\'t ask mode.')),
+  ];
+}
+
+/** End the running build session (as if claude -p exited). */
+export function finishSessions(h: ExecHarness): void { h.sessions.alive.clear(); }

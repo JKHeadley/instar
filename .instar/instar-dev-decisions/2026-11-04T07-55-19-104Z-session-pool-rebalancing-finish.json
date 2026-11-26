@@ -1,0 +1,23 @@
+{
+  "ts": "2026-11-04T07:55:19.104Z",
+  "slug": "session-pool-rebalancing-finish",
+  "suggestedTier": 1,
+  "declaredTier": null,
+  "riskFloor": 1,
+  "riskFloorReasons": [],
+  "belowFloor": false,
+  "files": 2,
+  "loc": 14,
+  "scope": {
+    "basis": "staged-in-scope-additions-plus-deletions",
+    "files": [
+      "src/core/WriteDomainRegistry.ts",
+      "src/server/CapabilityIndex.ts"
+    ],
+    "addedLines": 13,
+    "deletedLines": 1
+  },
+  "causalAutopsy": null,
+  "classClosure": null,
+  "verdict": "pass"
+}

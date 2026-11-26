@@ -1,0 +1,18 @@
+{
+  "version": 2,
+  "slug": "job-supervision-replacement-audit",
+  "sessionId": "d384ab47-df76-4f5e-98ea-d49268d23429",
+  "timestamp": "2026-10-31T00:02:50.933Z",
+  "artifactPath": "upgrades/side-effects/job-supervision-replacement-audit.md",
+  "artifactSha256": "592a24add99a9acefd4413f7b0686dca0590045d3cdfae5de30a362c52fc1643",
+  "specPath": "docs/specs/job-result-supervision-v2.md",
+  "coveredFiles": [
+    "docs/specs/job-result-supervision-v2-benchmark-evidence.md",
+    "upgrades/side-effects/job-supervision-replacement-audit.md"
+  ],
+  "phase": "complete",
+  "tier": 2,
+  "tierReasoning": "Documentation-only reconciliation of an audited synthetic benchmark; no runtime behavior changes.",
+  "secondPass": "not-required",
+  "reviewerConcurred": null
+}

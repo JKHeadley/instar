@@ -1,0 +1,434 @@
+/**
+ * Console Home view-models (docs/specs/console-makeover.md §1, "Design rule").
+ *
+ * The rule under test: a value that could not be read says so; it never renders
+ * as fine. Each builder is exercised on both sides of every decision boundary:
+ * HTTP failure, timeout, a 200 with the feature disabled, a 200 with fields
+ * missing, partial pool coverage, stale evidence, and the healthy case.
+ */
+import { describe, it, expect } from 'vitest';
+import {
+  failure, ago, buildReach, buildNeeds, buildDoing, buildPromised, buildRunning, buildAllowed,
+  machineState, headline, needsOperator, isActiveCommitment, sessionLabel, MAX_ROWS,
+  combineNeeds, machineNames, machineLabel,
+  needAction,
+  fillPartial, PARTIAL_GRACE_MS,
+} from '../../dashboard/console/home-model.js';
+import { topicNameMap } from '../../dashboard/console/topic-names.js';
+
+const NOW = Date.parse('2026-10-25T23:30:00Z');
+const ok = (data: unknown) => ({ ok: true, data });
+const minsAgo = (m: number) => new Date(NOW - m * 60_000).toISOString();
+
+describe('topic names across machines', () => {
+  it('uses a real pooled name in Home and never treats topic-N as a title', () => {
+    const names = topicNameMap(ok({ topics: [{ topicId: 127504, topicName: 'topic-127504' }, { topicId: 128732, topicName: 'Feature maturation' }, { topicId: 133072, topicName: '133072' }] }));
+    expect(names).toEqual({ '128732': 'Feature maturation' });
+    expect(sessionLabel({ platform: 'telegram', platformId: 128732, name: 'topic-128732' }, names)).toBe('Feature maturation');
+    expect(sessionLabel({ platform: 'telegram', platformId: 127504, name: 'topic-127504' }, names)).toBe('Conversation name unavailable');
+  });
+});
+
+describe('ago()', () => {
+  it('formats minutes, hours and days, and refuses junk', () => {
+    expect(ago(minsAgo(0.2), NOW)).toBe('just now');
+    expect(ago(minsAgo(7), NOW)).toBe('7 min ago');
+    expect(ago(minsAgo(180), NOW)).toBe('3 h ago');
+    expect(ago(minsAgo(60 * 24 * 5), NOW)).toBe('5 d ago');
+    expect(ago('not a date', NOW)).toBeNull();
+  });
+});
+
+describe('Can I reach you', () => {
+  const hf = (over: Record<string, unknown>) => ok({ telegramOrigin: { heldForward: { count: 0, oldestSince: null, observedAt: NOW - 1000, expiredUnreported: 0, ...over } } });
+
+  it('says it cannot tell on a failed request', () => {
+    const m = buildReach(failure('no answer within 5 seconds'), NOW);
+    expect(m.state).toBe('unknown');
+    expect(m.value).toBe("Can't tell");
+    expect(m.line).toContain('no answer within 5 seconds');
+  });
+  it('a zero with a null observedAt is not "all delivered"', () => {
+    expect(buildReach(hf({ observedAt: null }), NOW).state).toBe('unknown');
+  });
+  it('a missing block is not "all delivered"', () => {
+    expect(buildReach(ok({ status: 'ok' }), NOW).state).toBe('unknown');
+  });
+  it('an old observation is stale, not fine', () => {
+    const m = buildReach(hf({ observedAt: NOW - 10 * 60_000 }), NOW);
+    expect(m.state).toBe('stale');
+    expect(m.line).toContain('10 min ago');
+  });
+  it('held messages are a delivery problem; expired ones are failing', () => {
+    expect(buildReach(hf({ count: 2, oldestSince: minsAgo(30) }), NOW).state).toBe('attn');
+    const split = buildReach(hf({ count: 24, sessionReplies: 1, automaticMessages: 23, otherMessages: 0 }), NOW);
+    expect(split.rows[0].main).toBe('1 reply and 23 automatic messages held on this machine');
+    expect(buildReach(hf({ expiredUnreported: 1 }), NOW).state).toBe('bad');
+  });
+  it('a fresh zero is the healthy case', () => {
+    const m = buildReach(hf({}), NOW);
+    expect(m.state).toBe('ok');
+    expect(m.value).toBe('No messages held');
+  });
+});
+
+describe('What needs you', () => {
+  const item = (over: Record<string, unknown>) => ({ id: Math.random().toString(36), title: 'T', status: 'OPEN', priority: 'HIGH', createdAt: minsAgo(5), ...over });
+
+  it('fails honestly', () => {
+    expect(buildNeeds(failure('the server answered 500'), NOW).state).toBe('unknown');
+    expect(buildNeeds(ok({ count: 3 }), NOW).state).toBe('unknown');
+  });
+  it('separates what needs the operator from routine automated notices', () => {
+    expect(needsOperator(item({ priority: 'URGENT' }))).toBe(true);
+    expect(needsOperator(item({ source: 'agent' }))).toBe(true);
+    expect(needsOperator(item({ category: 'telegram-origin' }))).toBe(false);
+    const m = buildNeeds(ok({ items: [item({ priority: 'URGENT' }), item({}), item({}), item({ status: 'DONE', priority: 'URGENT' })], pool: { failed: [] } }), NOW);
+    expect(m.state).toBe('attn');
+    expect(m.value).toBe('1 thing');
+    expect(m.line).not.toMatch(/notice/); // routine items ask nothing of the operator: not on the front page
+  });
+  it('shows at most three rows but keeps the full list for See all, newest first', () => {
+    const items = [1, 2, 3, 4, 5].map((n) => item({ priority: 'URGENT', title: `i${n}`, createdAt: minsAgo(n * 10) }));
+    const m = buildNeeds(ok({ items, pool: { failed: [] } }), NOW);
+    expect(m.rows).toHaveLength(MAX_ROWS);
+    expect(m.all).toHaveLength(5);
+    expect(m.rows[0].main).toBe('i1');
+  });
+  it('a pool read with a dark peer is partial and names the peer', () => {
+    const m = buildNeeds(ok({ items: [], pool: { failed: [{ machineId: 'm1', nickname: 'Mama PC' }] } }), NOW);
+    expect(m.state).toBe('partial');
+    expect(m.line).toContain('Mama PC');
+  });
+  it('the same notice raised many times, on several machines, is one thing to do', () => {
+    const items = [1, 2, 3].map((n) => item({ title: 'Claude Code sign-in repair', category: 'subscription-relogin', source: 'agent', machineNickname: n === 1 ? 'Mac Mini' : 'Mac Studio' }));
+    const m = buildNeeds(ok({ items, pool: { failed: [] } }), NOW);
+    expect(m.count).toBe(1);
+    expect(m.rows[0].sub).toContain('3 copies');
+  });
+  it('an item untouched for 14+ days is not counted as needing you, but stays listed', () => {
+    const m = buildNeeds(ok({ items: [item({ priority: 'URGENT', title: 'old', createdAt: minsAgo(60 * 24 * 20) }), item({ priority: 'URGENT', title: 'new' })], pool: { failed: [] } }), NOW);
+    expect(m.count).toBe(1);
+    expect(m.all).toHaveLength(2);
+    expect(m.all[1].main).toBe('old');
+    expect(m.line).not.toMatch(/14\+ days/);
+  });
+  it('a security item never ages out', () => {
+    const m = buildNeeds(ok({ items: [item({ category: 'security', source: 'agent', title: 'Rotate token', createdAt: minsAgo(60 * 24 * 40) })], pool: { failed: [] } }), NOW);
+    expect(m.count).toBe(1);
+  });
+  it('an empty, complete queue is fine', () => {
+    expect(buildNeeds(ok({ items: [], pool: { failed: [] } }), NOW).state).toBe('ok');
+  });
+});
+
+describe('What I am doing', () => {
+  const s = (over: Record<string, unknown>) => ({ name: 'Fix the dashboard', status: 'running', startedAt: minsAgo(20), machineNickname: 'Mac Studio', ...over });
+
+  it('fails honestly', () => {
+    expect(buildDoing(failure('x'), NOW).state).toBe('unknown');
+    expect(buildDoing(ok({}), NOW).state).toBe('unknown');
+  });
+  it('never presents the initial prompt as the latest action', () => {
+    const m = buildDoing(ok({ sessions: [s({ prompt: '[IMPORTANT: Read /path/bootstrap.txt]', telemetry: { lastActivity: minsAgo(2) } })], pool: { failed: [] } }), NOW);
+    expect(JSON.stringify(m.rows)).not.toContain('bootstrap');
+    expect(m.rows[0].end).toBe('active 2 min ago');
+  });
+  it('names an unreachable peer instead of dropping it', () => {
+    const m = buildDoing(ok({ sessions: [s({})], pool: { failed: [{ nickname: 'Laptop' }] } }), NOW);
+    expect(m.state).toBe('partial');
+    expect(m.line).toContain('Laptop');
+  });
+  it('ignores finished sessions and counts machines', () => {
+    const m = buildDoing(ok({ sessions: [s({}), s({ machineNickname: 'Mac Mini' }), s({ status: 'completed' })], pool: { failed: [] } }), NOW);
+    expect(m.value).toBe('2 sessions');
+    expect(m.line).toContain('2 machines');
+  });
+  it('cleans a bracketed prefix from a session name', () => {
+    expect(sessionLabel({ name: '[auto] Nightly digest' })).toBe('Nightly digest');
+  });
+});
+
+describe('What I have promised', () => {
+  const c = (over: Record<string, unknown>) => ({ id: 'CMT-1', status: 'pending', owner: 'agent', blockedOn: 'none', createdAt: minsAgo(60), agentResponse: 'Do X', ...over });
+
+  it('fails honestly, including a disabled tracker', () => {
+    expect(buildPromised(failure('x'), NOW).state).toBe('unknown');
+    expect(buildPromised(ok({ enabled: false, commitments: [] }), NOW).state).toBe('unknown');
+  });
+  it('applies the tracker active rule to every row, including replicas', () => {
+    expect(isActiveCommitment(c({ status: 'violated' }), NOW)).toBe(true);
+    expect(isActiveCommitment(c({ status: 'delivered' }), NOW)).toBe(false);
+    expect(isActiveCommitment(c({ expiresAt: minsAgo(1) }), NOW)).toBe(false);
+  });
+  it('a remote violated Echo-owned promise is not an operator alert', () => {
+    const m = buildPromised(ok({ enabled: true, scope: 'mesh', commitments: [c({ status: 'violated', viewSource: 'replica', originMachineId: 'm2', stalenessMs: 60_000 })] }), NOW);
+    expect(m.state).not.toBe('bad');
+    expect(m.rows).toHaveLength(0);
+  });
+  it('an old due date does not become a fresh Home failure when a heartbeat updates it', () => {
+    const m = buildPromised(ok({ enabled: true, scope: 'mesh', commitments: [c({
+      status: 'violated', hardDeadlineAt: minsAgo(60 * 24 * 70),
+      lastHeartbeatAt: minsAgo(1), viewSource: 'replica', originMachineId: 'm2', stalenessMs: 1000,
+    })] }), NOW, 1);
+    expect(m.missedCount).toBe(0);
+    expect(m.rows.some((r: { tone: string }) => r.tone === 'bad')).toBe(false);
+  });
+  it('a genuine operator dependency remains visible after 14 days', () => {
+    const m = buildPromised(ok({ enabled: true, scope: 'mesh', commitments: [c({ blockedOn: 'user-input', createdAt: minsAgo(60 * 24 * 30), hardDeadlineAt: minsAgo(60) })] }), NOW, 0);
+    expect(m.count).toBe(1);
+    expect(m.line).toBe('1 promise waiting on you.');
+  });
+  it('promises waiting on the operator lead', () => {
+    const m = buildPromised(ok({ enabled: true, scope: 'mesh', commitments: [c({}), c({ blockedOn: 'user-authorization', hardDeadlineAt: minsAgo(-60 * 12) }), c({ owner: 'user', blockedOn: 'user-input', hardDeadlineAt: minsAgo(30) })] }), NOW);
+    expect(m.state).toBe('attn');
+    expect(m.value).toBe('2 waiting on you');
+  });
+  it('a promise waiting on the operator reaches Home only near or past its due date (Justin 2026-11-02)', () => {
+    const noDate = c({ owner: 'user', blockedOn: 'user-authorization' });
+    const later = c({ owner: 'user', blockedOn: 'user-input', hardDeadlineAt: minsAgo(-60 * 24 * 3) });
+    const m = buildPromised(ok({ enabled: true, scope: 'mesh', commitments: [noDate, later] }), NOW, 0);
+    expect(m.count).toBe(0);
+    expect(m.line).toBe('I’m handling the open work.');
+    expect(buildPromised(ok({ enabled: true, scope: 'mesh', commitments: [later, c({ owner: 'user', blockedOn: 'user-input', hardDeadlineAt: minsAgo(-60 * 23) })] }), NOW, 0).count).toBe(1);
+  });
+  it('without replica rows it says only this machine is visible', () => {
+    const m = buildPromised(ok({ enabled: true, scope: 'mesh', commitments: [c({ viewSource: 'own' })] }), NOW);
+    expect(m.state).toBe('partial');
+    expect(m.note).toContain('Only this machine');
+  });
+  it('one machine behind or of unknown age is named in the note, not a "part could not be checked" on Home (operator 2026-10-31)', () => {
+    const m = buildPromised(ok({ enabled: true, scope: 'mesh', commitments: [c({ viewSource: 'replica', originMachineId: 'm2' })] }), NOW, 1);
+    expect(m.coverage).toBeNull();
+    expect(m.note).toContain('out of date');
+  });
+  it('a blind read (no other machine\'s promises at all, while other machines exist) is still partial', () => {
+    const m = buildPromised(ok({ enabled: true, scope: 'mesh', commitments: [c({})] }), NOW, 2);
+    expect(m.coverage).toBe('partial view');
+  });
+  it('coverage is verified only when every other machine is represented', () => {
+    const rows = [c({ viewSource: 'replica', originMachineId: 'm2', stalenessMs: 1000 })];
+    expect(buildPromised(ok({ enabled: true, scope: 'mesh', commitments: rows }), NOW, 3).note).toContain('2 machines not represented');
+    expect(buildPromised(ok({ enabled: true, scope: 'mesh', commitments: rows }), NOW, null).note).toContain('unverified');
+    const full = buildPromised(ok({ enabled: true, scope: 'mesh', commitments: rows }), NOW, 1);
+    expect(full.coverage).toBeNull();
+    expect(full.state).toBe('ok');
+  });
+  it('an old replica is flagged out of date', () => {
+    const m = buildPromised(ok({ enabled: true, scope: 'mesh', commitments: [c({ viewSource: 'replica', originMachineId: 'm2', stalenessMs: 60 * 60_000 })] }), NOW);
+    expect(m.note).toContain('out of date');
+  });
+});
+
+describe('Where I am running: machineState precedence', () => {
+  const base = { nickname: 'Mama PC', online: true, routerReceivedAt: minsAgo(0.5), loadAvg: 4, hardware: { cpuCores: 16 } };
+
+  it('an explicit peer-offline rope signal beats a recent heartbeat', () => {
+    expect(machineState({ ...base, ropeCondition: 'peer-offline' }, NOW).label).toBe('unreachable');
+  });
+  it('no timestamp at all is no reading, never live', () => {
+    expect(machineState({ ...base, routerReceivedAt: undefined }, NOW).state).toBe('unknown');
+  });
+  it('silence over 15 min is not answering; over 2 min is quiet', () => {
+    expect(machineState({ ...base, routerReceivedAt: minsAgo(16) }, NOW).label).toBe('not answering');
+    expect(machineState({ ...base, routerReceivedAt: minsAgo(3) }, NOW).label).toBe('quiet');
+  });
+  it('stale evidence never supports a present-tense overload diagnosis', () => {
+    expect(machineState({ ...base, routerReceivedAt: minsAgo(3), loadAvg: 64 }, NOW).label).toBe('quiet');
+  });
+  it('fresh heavy load is struggling, not dead and not fine', () => {
+    expect(machineState({ ...base, loadAvg: 64 }, NOW).label).toBe('struggling');
+    expect(machineState({ ...base, ropeCondition: 'degraded' }, NOW).label).toBe('struggling');
+  });
+  it('fresh and calm is live', () => {
+    expect(machineState(base, NOW).label).toBe('live');
+  });
+  it('the card counts states and fails honestly', () => {
+    expect(buildRunning(failure('x'), NOW).state).toBe('unknown');
+    const m = buildRunning(ok({ machines: [base, { ...base, nickname: 'Laptop', loadAvg: 64 }] }), NOW);
+    expect(m.value).toBe('1 of 2 live');
+    expect(m.state).toBe('attn');
+  });
+});
+
+describe('What I am allowed to do', () => {
+  const summary = { onConfirmed: 20, onUnverified: 50, onStale: 0, onBlind: 0, onDryRun: 7, off: 19, offDeviant: 7, offDarkDefault: 12, offRuntimeDivergent: 0, errored: 0, missing: 1, loadBearingGapKeys: ['a', 'b'] };
+  const guards = [
+    { key: 'a.enabled', effective: 'off', offClass: 'diverged-from-default' },
+    { key: 'b.enabled', effective: 'off', offClass: 'dark-default' },
+    { key: 'c.enabled', effective: 'on-confirmed' },
+  ];
+
+  it('reads the server summary, never recomputes it from string fields', () => {
+    const m = buildAllowed(ok({ summary, guards }), ok({ mandates: [] }), NOW);
+    expect(m.value).toBe('70 of 97 on');
+    expect(m.state).toBe('attn');
+  });
+  it('lists the guards that are not on, deviants before by-design', () => {
+    const m = buildAllowed(ok({ summary, guards }), ok({ mandates: [] }), NOW);
+    expect(m.all.map((r: { sub?: string; main: string }) => r.main)).toEqual(['a.enabled', 'b.enabled']);
+    expect(m.all[1].end).toBe('off by design');
+  });
+  it('a failed mandate read is partial, not zero', () => {
+    const m = buildAllowed(ok({ summary, guards }), failure('x'), NOW);
+    expect(JSON.stringify(m.rows)).toContain("Can't tell which permission slips");
+  });
+  it('a summary missing its counts is not "0 of 0 on"', () => {
+    expect(buildAllowed(ok({ summary: {} }), ok({}), NOW).state).toBe('unknown');
+  });
+  it('a failed mandate read makes the card a partial view when nothing else needs you', () => {
+    const calm = { onConfirmed: 9, onUnverified: 0, onStale: 0, onBlind: 0, onDryRun: 0, offDeviant: 0, offDarkDefault: 1, offRuntimeDivergent: 0, errored: 0, missing: 0 };
+    const m = buildAllowed(ok({ summary: calm, guards: [] }), failure('x'), NOW);
+    expect(m.state).toBe('partial');
+    expect(m.coverage).toBe('partial view');
+  });
+  it('every field used in the total is required', () => {
+    const { onStale, ...partialSummary } = summary;
+    void onStale;
+    expect(buildAllowed(ok({ summary: partialSummary, guards }), ok({ mandates: [] }), NOW).state).toBe('unknown');
+  });
+  it('a failed guard read keeps the mandate reading', () => {
+    const m = buildAllowed(failure('x'), ok({ mandates: [] }), NOW);
+    expect(m.state).toBe('unknown');
+    expect(m.rows[0].main).toBe('0 permission slips active');
+  });
+  it('fails honestly without a summary', () => {
+    expect(buildAllowed(failure('x'), ok({}), NOW).state).toBe('unknown');
+    expect(buildAllowed(ok({ guards: [] }), ok({}), NOW).state).toBe('unknown');
+  });
+});
+
+describe('headline()', () => {
+  const card = (state: string, value = '', count?: number) => ({ state, value, count });
+
+  it('waits for both counting cards before announcing anything', () => {
+    expect(headline({ needs: card('loading'), promised: card('attn', '3 need you', 3), reach: card('ok') }).text).toBe('Checking in…');
+  });
+  it('sums what needs the operator', () => {
+    expect(headline({ needs: card('attn', '2 things', 2), promised: card('attn', '1 need you', 1), reach: card('ok') }).text).toBe('Open what needs your attention');
+  });
+  it('never says all quiet while a card cannot tell; my own areas stay off the headline', () => {
+    const h = headline({ needs: card('ok'), promised: card('ok'), doing: card('unknown') });
+    expect(h).toMatchObject({ text: 'Nothing needs you.', tone: 'ok' });
+    expect(h.sub).toContain('See agent status');
+  });
+  it('a failed read of what needs you is the operator\'s headline; a failed promise read is not', () => {
+    expect(headline({ needs: card('unknown'), promised: card('ok') })).toMatchObject({ text: "Couldn't check what needs you." });
+    expect(headline({ needs: card('ok', '', 0), promised: card('unknown') }).text).toBe('Nothing needs you.');
+  });
+  it('a partial-coverage card blocks "all quiet" even when its state is ok', () => {
+    expect(headline({ needs: card('ok'), promised: { state: 'ok', value: '', coverage: 'partial view' } }).text).not.toBe('All quiet.');
+  });
+  it('my own safety settings never take the operator headline (operator 2026-10-31: nothing he cannot act on)', () => {
+    expect(headline({ needs: card('ok'), promised: card('ok'), allowed: {
+      state: 'attn', rows: [{ main: '2 safety checks off that should be on', tone: 'attn' }],
+    } })).toMatchObject({ text: 'Nothing needs you.', tone: 'ok' });
+  });
+  it('does not turn an Echo-owned missed date into an operator headline', () => {
+    const promised = buildPromised(ok({ enabled: true, scope: 'mesh', commitments: [
+      { id: 'CMT-MISS', status: 'violated', owner: 'agent', blockedOn: 'none', createdAt: minsAgo(3), hardDeadlineAt: minsAgo(1),
+        agentResponse: 'Changing the schedule now', originMachineId: 'm1' },
+    ] }), NOW, 0);
+    const h = headline({ needs: card('ok', '', 0), promised, allowed: card('attn') });
+    expect(h.text).toBe('Nothing needs you.');
+    expect(h.action).not.toEqual({ kind: 'promise', id: 'CMT-MISS', origin: 'm1' });
+    expect(h.sub).not.toContain('other area');
+    // Held or lost replies never reach Home (operator decision); delivery details live on Messages.
+    expect(headline({ needs: card('ok', '', 0), promised: card('ok'), reach: card('bad') }).text).toBe('All quiet.');
+  });
+  it('keeps an Echo-owned login follow-up off the operator headline', () => {
+    const promised = buildPromised(ok({ enabled: true, scope: 'mesh', commitments: [{
+      id: 'CMT-LOGIN', status: 'violated', owner: 'agent', blockedOn: 'none', createdAt: minsAgo(3), hardDeadlineAt: minsAgo(1),
+      agentResponse: 'Echo desk will check the held Adriana login after its reset, verify fresh quota and confirm the fallback.',
+    }] }), NOW, 0);
+    const h = headline({ needs: card('ok', '', 0), promised });
+    expect(['Nothing needs you.', 'All quiet.']).toContain(h.text);
+    expect(h.tone).toBe('ok');
+  });
+  it('a known request keeps unrelated coverage out of its explanation', () => {
+    expect(headline({ needs: card('attn', '2 things', 2), promised: card('unknown') }).sub).not.toMatch(/can't fully check/i);
+  });
+  it('a partial queue keeps its known urgency in the headline (round-4 blocker)', () => {
+    const n = buildNeeds(ok({ items: [{ id: 'a', title: 'T', status: 'OPEN', priority: 'URGENT', createdAt: minsAgo(1) }], pool: { failed: [{ nickname: 'Laptop' }] } }), NOW);
+    expect(n.state).toBe('partial');
+    const h = headline({ needs: n, promised: card('ok', '', 0), reach: card('ok') });
+    expect(h.text).toBe('T');
+    expect(h.sub).not.toMatch(/can't fully check/i);
+    expect(n.note).toBeNull();
+    expect(n.statusNote).toContain("Couldn't reach Laptop");
+  });
+  it('held replies never shape the headline: they are the agent\'s to retry', () => {
+    expect(headline({ needs: card('ok'), promised: card('ok'), reach: card('attn', '3 held') }).text).toBe('All quiet.');
+    expect(headline({ needs: card('ok'), promised: card('ok'), reach: card('bad', '2 lost') }).text).toBe('All quiet.');
+    expect(headline({ needs: card('ok'), promised: card('ok'), reach: card('unknown') }).text).toBe('All quiet.');
+  });
+  it('several things: the headline names the first and says how many more are below', () => {
+    const n = buildNeeds(ok({ items: [
+      { id: 'a', title: 'Approve the deploy', status: 'OPEN', priority: 'URGENT', createdAt: minsAgo(1) },
+      { id: 'b', title: 'Review the plan', status: 'OPEN', priority: 'HIGH', source: 'agent', createdAt: minsAgo(2) },
+      { id: 'c', title: 'Rotate the key', status: 'OPEN', priority: 'HIGH', category: 'approval', createdAt: minsAgo(3) },
+    ], pool: { failed: [] } }), NOW);
+    const h = headline({ needs: n, promised: card('ok', '', 0) });
+    expect(h.text).toBe('Approve the deploy');
+    expect(h.sub).toBe('Tap to review and respond. 2 more things need you.');
+  });
+  it('all quiet only when everything is known and fine', () => {
+    expect(headline({ needs: card('ok'), promised: card('ok'), reach: card('ok') }).text).toBe('All quiet.');
+  });
+});
+
+describe('every "needs you" row has somewhere to act', () => {
+  const open = (i: Record<string, unknown>) => ({ status: 'OPEN', source: 'agent', priority: 'HIGH', title: 'T', ...i });
+  it('a conversation item opens its conversation', () => {
+    expect(needAction(open({ topicId: 127504 }))).toEqual({ kind: 'topic', topicId: 127504 });
+  });
+  it('a desktop item opens the Desktop page for its machine', () => {
+    expect(needAction(open({ category: 'desktop', machineId: 'm_ab' }))).toEqual({ kind: 'href', href: '/dashboard/desktop.html?machineId=m_ab' });
+  });
+  it('a sign-in item opens Accounts', () => {
+    expect(needAction(open({ category: 'sign-in' }))).toEqual({ kind: 'href', href: '#/capacity/accounts' });
+  });
+  it('anything else opens the Attention topic, never nothing', () => {
+    expect(needAction(open({ category: 'general' }))).toEqual({ kind: 'attention' });
+  });
+  it('buildNeeds gives every row an action', () => {
+    const items = [open({ category: 'desktop', machineId: 'm1', title: 'A' }), open({ category: 'general', title: 'B' }), open({ topicId: 5, title: 'C' })];
+    const card = buildNeeds({ ok: true, data: { items } }, Date.now());
+    expect(card.all.every((r: { action: unknown }) => r.action)).toBe(true);
+  });
+});
+
+describe('a machine that misses one pooled read', () => {
+  const T = 1_000_000;
+  const prev = { ok: true, data: { items: [{ id: 'a1', machineId: 'A' }, { id: 'b1', machineId: 'B' }], pool: { failed: [] } } };
+  const fresh = { ok: true, data: { items: [{ id: 'a2', machineId: 'A' }], pool: { failed: [{ machineId: 'B', reason: 'peer-unreachable' }] } } };
+  it('keeps fresh rows from machines that answered and the missing machine\'s last rows, and stays retrying', () => {
+    const r = fillPartial(fresh, prev, 'items', T + 30_000, T)!;
+    expect(r.data.items.map((i: { id: string }) => i.id)).toEqual(['a2', 'b1']);
+    expect(r.data.pool.failed).toEqual([]);
+    expect(r.retrying).toBe(true);
+    // The merged answer is a full view: Home does not say part could not be checked.
+    expect(buildNeeds(r, T).state).not.toBe('partial');
+  });
+  it('shows the partial answer once the last complete one is older than the grace period', () => {
+    expect(fillPartial(fresh, prev, 'items', T + PARTIAL_GRACE_MS + 1, T)).toBeNull();
+  });
+  it('shows the partial answer when there is no earlier complete one, or a failure names no machine', () => {
+    expect(fillPartial(fresh, null, 'items', T, T)).toBeNull();
+    const anon = { ok: true, data: { items: [], pool: { failed: [{ reason: 'deadline' }] } } };
+    expect(fillPartial(anon, prev, 'items', T, T)).toBeNull();
+  });
+});
+
+describe('needs-you rows say each thing once', () => {
+  it('drops the machine when the title already names it, and never shows the priority word', () => {
+    const items = [
+      { id: 'a', status: 'OPEN', source: 'agent', priority: 'HIGH', title: 'Mac Lan: Remote Desktop needs its Mac permission again', machineNickname: 'Mac Lan', createdAt: new Date().toISOString() },
+      { id: 'b', status: 'OPEN', source: 'agent', priority: 'HIGH', title: 'Approve the schedule change', machineNickname: 'Laptop', createdAt: new Date().toISOString() },
+    ];
+    const card = buildNeeds({ ok: true, data: { items } }, Date.now());
+    const byTitle = Object.fromEntries(card.all.map((r: { main: string; sub: string }) => [r.main, r.sub]));
+    expect(byTitle['Mac Lan: Remote Desktop needs its Mac permission again']).toBe('');
+    expect(byTitle['Approve the schedule change']).toBe('Laptop');
+  });
+});

@@ -940,6 +940,7 @@ Once the user is logged in, automate the entire setup. **Take a snapshot before 
 6. Wait 2-3 seconds, take a snapshot to see BotFather's response
 7. Type `/newbot` and submit
 8. Wait 2-3 seconds, take a snapshot — BotFather asks for a display name
+   - **If BotFather instead says the account can't create more bots** (Telegram allows 20 per account): stop the Telegram setup. Tell the user in one sentence that their Telegram account already has the most bots Telegram allows, so their agent is set up without Telegram for now and works from its dashboard and the Instar app. Skip the remaining Telegram steps and the manual fallback (it would hit the same limit), and continue setup. Never delete one of the user's bots yourself.
 9. Type the bot display name (e.g., "My Project Agent") and submit
 10. Wait 2-3 seconds, take a snapshot — BotFather asks for a username
 11. Type the bot username (e.g., `myproject_agent_bot` — must end in "bot", lowercase + underscores) and submit
@@ -1030,7 +1031,7 @@ Close the browser:
 
 Walk the user through each step with clear instructions:
 
-1. **Create a bot** — Open https://web.telegram.org, search for @BotFather, send `/newbot`, follow prompts, copy the token
+1. **Create a bot** — Open https://web.telegram.org, search for @BotFather, send `/newbot`, follow prompts, copy the token. If BotFather says the account can't create more bots (the limit is 20), continue setup without Telegram: the agent works from its dashboard and the Instar app.
 2. **Create a group** — New Group, add the bot, give it a name
 3. **Enable Topics** — Group info > Edit > turn on Topics
 4. **Make bot admin** — Group info > Edit > Administrators > Add bot

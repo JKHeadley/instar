@@ -1,0 +1,24 @@
+{
+  "ts": "2026-10-20T22:19:25.739Z",
+  "slug": "threadline-encryption-ships-on",
+  "suggestedTier": 1,
+  "declaredTier": 2,
+  "riskFloor": 1,
+  "riskFloorReasons": [],
+  "belowFloor": false,
+  "files": 3,
+  "loc": 35,
+  "scope": {
+    "basis": "staged-in-scope-additions-plus-deletions",
+    "files": [
+      "src/threadline/ThreadlineBootstrap.ts",
+      "src/threadline/encryptToPinned.ts",
+      "src/threadline/refuseDowngrade.ts"
+    ],
+    "addedLines": 23,
+    "deletedLines": 12
+  },
+  "causalAutopsy": null,
+  "classClosure": null,
+  "verdict": "pass"
+}

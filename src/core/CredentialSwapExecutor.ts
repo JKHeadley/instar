@@ -64,10 +64,11 @@
  */
 
 import { execFile } from 'node:child_process';
-import { credentialSlotKey, claudeCredentialService, expandHome, type ClaudeOauth } from './OAuthRefresher.js';
+import { credentialSlotKey, claudeCredentialService, claudeKeychainAccount, readClaudeKeychainItem, expandHome, type ClaudeOauth } from './OAuthRefresher.js';
 import type { CredentialWriteFunnel } from './CredentialWriteFunnel.js';
 import type { CredentialLocationLedger } from './CredentialLocationLedger.js';
 import { redactToken } from '../monitoring/CredentialProvider.js';
+import { featureEvidence } from '../monitoring/FeatureEvidenceLog.js';
 
 const SECURITY_CALL_TIMEOUT_MS = 10_000;
 /** Disjoint from every `claudeCredentialService(home)` output (`Claude Code-credentials[-<8hex>]`). */
@@ -98,32 +99,17 @@ export interface KeychainCredentialExec {
 /** Default macOS keychain exec — async `execFile`, 10s timeout. Non-darwin: a per-service file. */
 export const defaultKeychainExec: KeychainCredentialExec = {
   readService(service: string): Promise<string | null> {
-    return new Promise((resolve) => {
-      try {
-        execFile(
-          'security',
-          ['find-generic-password', '-s', service, '-w'],
-          { timeout: SECURITY_CALL_TIMEOUT_MS, maxBuffer: 1024 * 1024 },
-          (err, stdout) => {
-            if (err) {
-              resolve(null); // @silent-fallback-ok: no keychain entry (or timeout) → treated as absent; the caller's CAS/precondition decides, never a guess
-              return;
-            }
-            const raw = (stdout ?? '').toString().trim();
-            resolve(raw || null);
-          },
-        );
-      } catch {
-        resolve(null); // @silent-fallback-ok: spawn failed → absent; never throws into the swap loop
-      }
-    });
+    // Same item the Claude CLI reads (its keychain account first): a service can hold a stale
+    // second item under another account attribute, and a bare `-s` read returns whichever is
+    // listed first. Never throws; null = absent → the caller's CAS/precondition decides.
+    return readClaudeKeychainItem(service, SECURITY_CALL_TIMEOUT_MS);
   },
   writeService(service: string, rawJson: string): Promise<void> {
     return new Promise((resolve, reject) => {
       try {
         execFile(
           'security',
-          ['add-generic-password', '-U', '-a', process.env.USER ?? 'instar', '-s', service, '-w', rawJson],
+          ['add-generic-password', '-U', '-a', claudeKeychainAccount(), '-s', service, '-w', rawJson],
           { timeout: SECURITY_CALL_TIMEOUT_MS },
           (err) => (err ? reject(err) : resolve()),
         );
@@ -401,12 +387,14 @@ export class CredentialSwapExecutor {
         if ('unavailable' in impostorIdentity || 'unavailable' in retainedIdentity ||
             impostorIdentity.accountId !== accountId || retainedIdentity.accountId !== accountId) {
           this.ledger.quarantineSlot(impostorSlot, 'duplicate vacate live identity pre-flight refused');
+          featureEvidence.record('subscriptionPool.credentialRepointing', { kind: 'error', reason: 'duplicate-vacate-preflight-refused', context: { swapId, slotA: impostorSlot, slotB: retainedSlot } });
           return { outcome: 'precondition-failed', reason: 'duplicate vacate identity pre-flight refused', swapId, quarantinedSlots: [impostorSlot] } as SwapResult;
         }
         const blob = await this.readBlob(impostorSlot);
         if (!blob) return { outcome: 'precondition-failed', reason: 'duplicate impostor blob unreadable', swapId } as SwapResult;
         if (this.config.dryRun) {
           this.audit(swapId, 'duplicate-vacate-dry-run', impostorSlot, retainedSlot, `account=${accountId}`);
+          featureEvidence.recordAtMostEvery('subscriptionPool.credentialRepointing', `vacate-dry-run|${impostorSlot}|${retainedSlot}`, 60 * 60 * 1000, { kind: 'fired', reason: 'would-vacate-duplicate', context: { swapId, slotA: impostorSlot, slotB: retainedSlot, dryRun: true } });
           return { outcome: 'dry-run', reason: 'dry-run — duplicate impostor would be staged then vacated', swapId } as SwapResult;
         }
         const staging = this.stagingService(swapId);
@@ -427,6 +415,7 @@ export class CredentialSwapExecutor {
         await this.keychain.deleteService(staging);
         this.notifySlotsChanged([impostorSlot, retainedSlot]);
         this.audit(swapId, 'duplicate-vacated', impostorSlot, retainedSlot, `account=${accountId}`);
+        featureEvidence.record('subscriptionPool.credentialRepointing', { kind: 'fired', reason: 'duplicate-vacated', context: { swapId, slotA: impostorSlot, slotB: retainedSlot, dryRun: false } });
         return { outcome: 'swapped', reason: 'duplicate impostor credential vacated; retained home identity-confirmed', swapId } as SwapResult;
       }),
     );
@@ -447,6 +436,8 @@ export class CredentialSwapExecutor {
       const identity = await this.resolveIdentity(slot);
       if ('unavailable' in identity) {
         this.audit(swapId, 'preflight-refused', slotA, slotB, `slot=${slot} identity unavailable`);
+        // The balancer retries this on its cadence, so one row per slot pair and cause per hour.
+        featureEvidence.recordAtMostEvery('subscriptionPool.credentialRepointing', `preflight-unavailable|${slotA}|${slotB}`, 60 * 60 * 1000, { kind: 'error', reason: 'preflight-refused: identity-unavailable', context: { swapId, slotA, slotB, slot, dryRun: this.config.dryRun } });
         return {
           outcome: 'precondition-failed',
           reason: `live identity pre-flight unavailable for '${slot}' — swap refused`,
@@ -455,6 +446,7 @@ export class CredentialSwapExecutor {
       }
       if (!expected || identity.accountId !== expected) {
         this.audit(swapId, 'preflight-refused', slotA, slotB, `slot=${slot} ledger=${expected || 'none'} live=${identity.accountId}`);
+        featureEvidence.record('subscriptionPool.credentialRepointing', { kind: 'error', reason: 'preflight-refused: identity-mismatch', context: { swapId, slotA, slotB, slot, dryRun: this.config.dryRun } });
         this.ledger.quarantineSlot(slot, `swap pre-flight identity mismatch (ledger=${expected || 'none'}, live=${identity.accountId})`);
         return {
           outcome: 'precondition-failed',
@@ -486,6 +478,7 @@ export class CredentialSwapExecutor {
     // dryRun: full decision loop ran, ZERO writes. Audit the WOULD-swap and stop before step 2.
     if (this.config.dryRun) {
       this.audit(swapId, 'dry-run', slotA, slotB, `would exchange ${expectA}<->${expectB}`);
+      featureEvidence.recordAtMostEvery('subscriptionPool.credentialRepointing', `dry-run|${slotA}|${slotB}`, 60 * 60 * 1000, { kind: 'fired', reason: 'would-swap', context: { swapId, slotA, slotB, dryRun: true } });
       return { outcome: 'dry-run', reason: 'dry-run — decision computed, zero credential writes', swapId };
     }
 
@@ -515,6 +508,7 @@ export class CredentialSwapExecutor {
     // in slotB must be expectA's.
     const verify = await this.verifyAndHeal(slotA, slotB, expectB, expectA, staging, blobB, blobA, swapId);
     if (verify.quarantined) {
+      featureEvidence.record('subscriptionPool.credentialRepointing', { kind: 'error', reason: 'swap-verify-quarantined', context: { swapId, slotA, slotB, quarantinedSlots: verify.quarantinedSlots?.length ?? 0 } });
       return { outcome: 'quarantined', reason: verify.reason, swapId, quarantinedSlots: verify.quarantinedSlots };
     }
 
@@ -523,6 +517,7 @@ export class CredentialSwapExecutor {
     this.ledger.recordAssignment(slotA, expectB, { verifiedAt: this.nowIso(), op: 'swap' });
     this.ledger.recordAssignment(slotB, expectA, { verifiedAt: this.nowIso(), op: 'swap' });
     this.audit(swapId, 'committed', slotA, slotB, `tenants exchanged (staging retained)`);
+    featureEvidence.record('subscriptionPool.credentialRepointing', { kind: 'fired', reason: 'swap-committed', context: { swapId, slotA, slotB, dryRun: false } });
     // Census #8: the slot tenants just changed — bust any in-use badge cache so a default-slot
     // (`~/.claude`) swap doesn't leave the dashboard showing the pre-swap tenant for a full TTL.
     this.notifySlotsChanged([slotA, slotB]);

@@ -54,6 +54,7 @@
  */
 
 import { EventEmitter } from 'node:events';
+import { featureEvidence } from '../monitoring/FeatureEvidenceLog.js';
 import os from 'node:os';
 import { readSyncOpMarker } from './InFlightSyncOpMarker.js';
 
@@ -314,7 +315,15 @@ export class SleepWakeDetector extends EventEmitter {
       // branch is skipped and behavior is byte-for-byte today's.
       if (this.inFlightMarkerEnabled) {
         const marker = this.readMarkerSafely();
+        if (marker.inFlight && marker.stale) {
+          featureEvidence.record('monitoring.tmuxResilience.inFlightMarker', { kind: 'error', reason: 'stale-marker-ignored', context: { driftSeconds: sleepDuration, depth: marker.depth } });
+        }
         if (marker.inFlight && !marker.stale) {
+          featureEvidence.record('monitoring.tmuxResilience.inFlightMarker', {
+            kind: 'fired',
+            reason: 'drift-reclassified-as-stall',
+            context: { driftSeconds: sleepDuration, depth: marker.depth, cpuBusyPct: Math.round(cpuBusyRatio * 100), loadRatio: Math.round(loadRatio * 100) / 100 },
+          });
           this.recordSuppression('event-loop-block', sleepDuration, loadRatio, now);
           console.warn(
             `[SleepWakeDetector] Drift ~${sleepDuration}s while ${marker.depth} sync subprocess ` +
@@ -437,6 +446,7 @@ export class SleepWakeDetector extends EventEmitter {
     try {
       return this.syncOpMarker();
     } catch {
+      featureEvidence.record('monitoring.tmuxResilience.inFlightMarker', { kind: 'error', reason: 'marker-read-failed' });
       return { inFlight: false, depth: 0, stale: false };
     }
   }

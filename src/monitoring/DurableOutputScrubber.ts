@@ -38,6 +38,7 @@ import {
   type StructuredRedactionSpan,
   type DurableSecretKind,
 } from '../core/durableSecretScrub.js';
+import { featureEvidence } from './FeatureEvidenceLog.js';
 
 /** Minimal metrics sink — the real FeatureMetricsLedger satisfies this. */
 export interface DurableScrubMetricsSink {
@@ -153,6 +154,11 @@ export class DurableOutputScrubber {
       } catch { // @silent-fallback-ok — observability must never break the persist path; a metrics sink throw is dropped so the store write still completes.
         /* metrics are best-effort — never break a durable write */
       }
+    }
+    if (result.error) {
+      featureEvidence.recordAtMostEvery('monitoring.durableOutputScrub', `${store}|error`, 60_000, { kind: 'error', reason: 'scrub failed: field withheld', context: { store, dryRun: this.dryRun } });
+    } else if (result.redactions.length > 0) {
+      featureEvidence.recordAtMostEvery('monitoring.durableOutputScrub', `${store}|fired`, 60_000, { kind: 'fired', reason: this.dryRun ? 'would redact (dry run)' : 'redacted', context: { store, dryRun: this.dryRun, spans: result.redactions.length, kinds: [...new Set(kinds)].join(','), oversize: result.redactions.some((r) => r.kind === 'oversize') } });
     }
     if (result.redactions.length === 0) return;
     this.maybeAlarm(store, kinds);

@@ -21,6 +21,9 @@ import fs from 'node:fs';
 import path from 'node:path';
 import os from 'node:os';
 import { SafeFsExecutor } from '../../src/core/SafeFsExecutor.js';
+import { JobScheduler } from '../../src/scheduler/JobScheduler.js';
+import { QuotaManager } from '../../src/monitoring/QuotaManager.js';
+import { createTempProject, createMockSessionManager, createSampleJobsFile } from '../helpers/setup.js';
 
 // ── Helpers ──────────────────────────────────────────────────────────
 
@@ -451,5 +454,43 @@ describe('Quota Enforcement Lifecycle (E2E)', () => {
     expect(killEvents).toHaveLength(0);
     expect(deps.switchAccount).toHaveBeenCalledWith('backup@test.io');
     expect(deps.respawnJob).toHaveBeenCalledWith('worker');
+  });
+
+  it('a REAL scheduler paused by enforcement runs jobs again once quota recovers (no restart needed)', async () => {
+    const project = createTempProject();
+    try {
+      const jobsFile = createSampleJobsFile(project.stateDir);
+      for (const slug of ['health-check', 'email-check']) {
+        project.state.saveJobState({ slug, lastRun: new Date().toISOString(), lastResult: 'success', runCount: 1, consecutiveFailures: 0 });
+      }
+      const sm = createMockSessionManager();
+      const scheduler = new JobScheduler(
+        { jobsFile, enabled: true, maxParallelJobs: 2, quotaThresholds: { normal: 50, elevated: 70, critical: 85, shutdown: 95 } },
+        sm as any, project.state, project.stateDir,
+      );
+      scheduler.start();
+      const migrator = new SessionMigrator({ stateDir: tmpDir, thresholds: { gracePeriodMs: 10 } });
+      migrator.setDeps(createMockDeps({
+        getAccountStatuses: vi.fn(() => []),
+        pauseScheduler: () => scheduler.pause(),
+        resumeScheduler: () => scheduler.resume(),
+      }));
+      const tracker = { getState: vi.fn(() => null), shouldSpawnSession: vi.fn(() => ({ allowed: true, reason: 'ok' })) } as any;
+      const qm = new QuotaManager({ stateDir: tmpDir }, { tracker, notifier: { checkAndNotify: vi.fn(async () => {}) } as any, migrator });
+
+      await migrator.checkAndMigrate({ percentUsed: 50, fiveHourPercent: 100, activeAccountEmail: 'a@test.io' });
+      expect(scheduler.getStatus().paused).toBe(true);
+      expect(await scheduler.triggerJob('health-check', 'test')).toBe('skipped');
+
+      // A later quota collection shows recovery (the 2026-09-24 case: 63% weekly, 5-hour reset).
+      await (qm as any).postCollectionChecks({ usagePercent: 63, fiveHourPercent: 12 }, 'oauth', 'authoritative');
+      expect(scheduler.getStatus().paused).toBe(false);
+      expect(await scheduler.triggerJob('health-check', 'test')).not.toBe('skipped');
+
+      qm.stop();
+      scheduler.stop();
+    } finally {
+      project.cleanup();
+    }
   });
 });

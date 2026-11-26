@@ -1,0 +1,25 @@
+{
+  "ts": "2026-10-28T18:45:13.398Z",
+  "slug": "guard-evidence-records",
+  "suggestedTier": 2,
+  "declaredTier": 1,
+  "riskFloor": 1,
+  "riskFloorReasons": [],
+  "belowFloor": false,
+  "files": 4,
+  "loc": 194,
+  "scope": {
+    "basis": "staged-in-scope-additions-plus-deletions",
+    "files": [
+      "src/commands/server.ts",
+      "src/core/IdentityDivergenceMonitor.ts",
+      "src/core/LeaseHandbackReconciler.ts",
+      "src/core/guardEvidenceLog.ts"
+    ],
+    "addedLines": 184,
+    "deletedLines": 10
+  },
+  "causalAutopsy": null,
+  "classClosure": null,
+  "verdict": "pass"
+}

@@ -17,6 +17,20 @@ export const SUBSCRIPTION_LOGIN_CAUSE_CLASSES = [
   'malformed-response',
   'write-failed',
   'still-authfailed-after-refresh',
+  // The Codex CLI's own login check AND the live authenticated read both said signed out, on two
+  // consecutive polls (spec skill-driven-signin-repair).
+  'cli-signed-out-auth-refused',
+  // Claude Code itself showed its expired-login screen under that config home: either the stored
+  // credential was unreadable AND two separate sessions showed it within an hour, or (CMT-1008)
+  // the credential reads and one session showed it past the monitor's dwell.
+  'cli-login-expired-observed',
+  // The stored credential is gone (no readable credential at all), and the engine's own login check
+  // said signed out on two polls in a row while its credential store was open (never-silent §3.6).
+  'cli-auth-status-signed-out',
+  // A Codex account's live reads were refused twice, 5-60 minutes apart, with what Jev judged to be
+  // OpenAI's per-device limit (spec codex-device-limit-tripwire). Deliberately NOT actionable: a
+  // sign-in cannot free a device slot, so repair admission refuses it.
+  'codex-device-limit',
   'unrecognized-reason',
 ] as const;
 
@@ -159,6 +173,12 @@ export class SubscriptionLoginLedger {
       this.db.pragma('synchronous = NORMAL');
       this.db.pragma('busy_timeout = 5000');
       this.db.exec(SCHEMA);
+      // Additive column for `cause-superseded` events (spec codex-device-limit-tripwire §5): the
+      // prior cause. Guarded so an existing ledger gains it once; older code ignores it.
+      const eventColumns = this.db.prepare('PRAGMA table_info(events)').all() as Array<{ name: string }>;
+      if (!eventColumns.some((column) => column.name === 'fromCauseClass')) {
+        this.db.exec('ALTER TABLE events ADD COLUMN fromCauseClass TEXT');
+      }
       for (const suffix of ['', '-wal', '-shm']) {
         const file = `${this.dbPath}${suffix}`;
         if (fs.existsSync(file)) fs.chmodSync(file, 0o600);
@@ -217,6 +237,38 @@ export class SubscriptionLoginLedger {
     return result;
   }
 
+  /**
+   * Re-label the cause of the OPEN episode for (account, this machine) in place (spec
+   * codex-device-limit-tripwire §5). One transaction: the episode keeps its id and openedAt, and a
+   * `cause-superseded` event `{ from, to, at }` is appended. This is not a re-login: no
+   * `relogin-resolved` event is written and no episode is opened or closed, so login-history counts
+   * (which count episodes) are unchanged.
+   */
+  supersedeCause(
+    accountId: string,
+    causeClass: SubscriptionLoginCauseClass,
+    at: string = new Date().toISOString(),
+  ): 'superseded' | 'unchanged' | 'no-open-episode' {
+    this.assertWritable();
+    const cell = normalizeCellId(accountId);
+    if (!SUBSCRIPTION_LOGIN_CAUSE_CLASSES.includes(causeClass)) throw new Error('invalid-cause-class');
+    const result = this.db.transaction((): 'superseded' | 'unchanged' | 'no-open-episode' => {
+      const open = this.db.prepare(
+        'SELECT id,causeClass,corroboration FROM episodes WHERE accountId=? AND machineId=? AND closedAt IS NULL',
+      ).get(cell, this.machineId) as { id: number; causeClass: string; corroboration: string } | undefined;
+      if (!open) return 'no-open-episode';
+      if (open.causeClass === causeClass) return 'unchanged';
+      this.db.prepare('UPDATE episodes SET causeClass=? WHERE id=?').run(causeClass, open.id);
+      this.db.prepare(`
+        INSERT INTO events(ts,kind,accountId,machineId,machineIdSource,episodeId,causeClass,fromCauseClass,corroboration)
+        VALUES(?,'cause-superseded',?,?, 'stable',?,?,?,?)
+      `).run(at, cell, this.machineId, open.id, causeClass, open.causeClass, open.corroboration);
+      return 'superseded';
+    })();
+    if (result === 'superseded') this.noteWrite(at);
+    return result;
+  }
+
   recordObservation(input: {
     accountId: string;
     at: string;
@@ -261,10 +313,15 @@ export class SubscriptionLoginLedger {
         authResult = 'clean';
         const clearAccumulatorSql = `D${'ELETE'} FROM absence_accumulators WHERE accountId=? AND machineId=?`;
         this.db.prepare(clearAccumulatorSql).run(accountId, this.machineId);
+        // An open provisional read window closes either because the read came clean
+        // ('resolved-read-window') or because the absence was CORROBORATED into needs-reauth
+        // ('escalated-to-needs-reauth') — the history route must not count the latter as resolved.
+        const windowOutcome = outcome.kind === 'transition-to-needs-reauth'
+          ? 'escalated-to-needs-reauth' : 'resolved-read-window';
         this.db.prepare(`
-          UPDATE credential_read_windows SET closedAt=?,outcome='resolved-read-window'
+          UPDATE credential_read_windows SET closedAt=?,outcome=?
           WHERE accountId=? AND machineId=? AND closedAt IS NULL
-        `).run(input.at, accountId, this.machineId);
+        `).run(input.at, windowOutcome, accountId, this.machineId);
         if (outcome.kind === 'transition-to-needs-reauth') {
           this.recordStatusInTransaction(accountId, input.at, 'needs-reauth', outcome.causeClass, outcome.corroboration);
         } else if (outcome.kind === 'transition-to-active') {

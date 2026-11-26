@@ -10,17 +10,47 @@ const ACTIONABLE_CAUSES = new Set<SubscriptionLoginCauseClass>([
   'exchange-failed',
   'malformed-response',
   'still-authfailed-after-refresh',
+  'cli-signed-out-auth-refused',
+  'cli-login-expired-observed',
+  'cli-auth-status-signed-out',
 ]);
 const SUPPORTED_PROVIDER_PATHS = new Set(['anthropic:claude-code', 'openai:codex-cli']);
-const SUPPORTED_LOGIN_METHODS = new Set(['session-cookie', 'password', 'password+totp']);
+/** Whether the automatic repair supports this provider × framework at all. */
+export function isReloginSupportedPath(provider: string, framework: string): boolean {
+  return SUPPORTED_PROVIDER_PATHS.has(`${provider}:${framework}`);
+}
+const SUPPORTED_LOGIN_METHODS = new Set(['session-cookie', 'password', 'password+totp', 'google-passkey']);
+
+/**
+ * The (account × machine) passkey cell's state as the admission input sees it (spec
+ * agent-held-google-passkey §3.4 / §4). Only `ready` admits; every other value maps to a
+ * NAMED refusal. `unknown` = the state has not been computed on this machine (no store, no
+ * proof yet) and is refused too — a passkey repair never runs on an unproven cell.
+ */
+export type PasskeyCellAdmissionState =
+  | 'ready' | 'security' | 'breaker-open' | 'unverified-stopped' | 'quarantined' | 'rejected'
+  | 'suspended' | 'chrome-unverified' | 'unknown';
+
+const PASSKEY_CELL_REFUSALS: Record<Exclude<PasskeyCellAdmissionState, 'ready'>, SubscriptionReloginRefusal> = {
+  'security': 'passkey-cell-security',
+  'breaker-open': 'passkey-cell-breaker-open',
+  'unverified-stopped': 'passkey-cell-unverified-stopped',
+  'quarantined': 'passkey-cell-quarantined',
+  'rejected': 'passkey-cell-rejected',
+  'suspended': 'passkey-suspended',
+  'chrome-unverified': 'passkey-chrome-unverified',
+  'unknown': 'passkey-cell-state-unknown',
+};
 
 export type SubscriptionReloginRefusal =
   | 'feature-off'
   | 'pool-authority-not-ready'
   | 'account-not-needs-reauth'
+  | 'device-limit-benched'
   | 'source-episode-closed'
   | 'source-episode-wrong-cell'
   | 'source-not-exchange-corroborated'
+  | 'codex-live-read-disabled'
   | 'source-not-directly-observed'
   | 'cause-not-actionable'
   | 'repair-already-live'
@@ -33,7 +63,16 @@ export type SubscriptionReloginRefusal =
   | 'vault-reference-missing'
   | 'login-method-not-autonomous'
   | 'framework-not-supported'
-  | 'breaker-open';
+  | 'breaker-open'
+  | 'passkey-binding-missing'
+  | 'passkey-cell-security'
+  | 'passkey-cell-breaker-open'
+  | 'passkey-cell-unverified-stopped'
+  | 'passkey-suspended'
+  | 'passkey-chrome-unverified'
+  | 'passkey-cell-quarantined'
+  | 'passkey-cell-rejected'
+  | 'passkey-cell-state-unknown';
 
 export interface SubscriptionReloginAdmissionInput {
   configuredMode: 'off' | SubscriptionReloginMode;
@@ -45,6 +84,8 @@ export interface SubscriptionReloginAdmissionInput {
     framework: string;
     provider: string;
     identityHash: string;
+    /** codex-device-limit-tripwire §4: the pool record's cause (the authority for a bench). */
+    statusCause?: string | null;
   };
   sourceEpisode: SubscriptionLoginEpisode;
   hasLiveRepair: boolean;
@@ -57,6 +98,10 @@ export interface SubscriptionReloginAdmissionInput {
     identityHash: string;
     loginMethod: string;
     danglingRefs: string[];
+    /** The passkey store entry key bound to this account (google-passkey only). */
+    passkeyEntryKey?: string | null;
+    /** The cell's passkey state; null/undefined = not computed (treated as `unknown`). */
+    passkeyCell?: PasskeyCellAdmissionState | null;
   };
   breakerOpen: boolean;
   unattended?: {
@@ -67,6 +112,10 @@ export interface SubscriptionReloginAdmissionInput {
     unexpectedOrigins: number;
     minimumSuccessfulRepairs?: number;
     minimumEvidenceDays?: number;
+    /** Helper-reported hard-line stops since the last success (any ⇒ held at approval). */
+    helperHardLines?: number;
+    /** The bound backup-code vault entry holds fewer than the unattended floor (⇒ held at approval). */
+    backupCodesLow?: boolean;
   };
 }
 
@@ -87,6 +136,9 @@ export function evaluateSubscriptionReloginAdmission(
   if (input.configuredMode === 'off') return refuse('feature-off');
   if (input.poolAuthority !== 'ready') return refuse('pool-authority-not-ready');
   if (input.account.status !== 'needs-reauth') return refuse('account-not-needs-reauth');
+  // A bench on the pool record refuses repair before the ledger cause is even read: the ledger
+  // write is best-effort, so the pool record is the authority (codex-device-limit-tripwire §4).
+  if (input.account.statusCause === 'codex-device-limit') return refuse('device-limit-benched');
   if (input.sourceEpisode.closedAt !== null) return refuse('source-episode-closed');
   if (input.sourceEpisode.accountId !== input.account.id || input.sourceEpisode.machineId !== input.account.machineId)
     return refuse('source-episode-wrong-cell');
@@ -105,6 +157,12 @@ export function evaluateSubscriptionReloginAdmission(
   if (input.profile.identityHash !== input.account.identityHash) return refuse('profile-identity-mismatch');
   if (input.profile.danglingRefs.length > 0) return refuse('vault-reference-missing');
   if (!SUPPORTED_LOGIN_METHODS.has(input.profile.loginMethod)) return refuse('login-method-not-autonomous');
+  const passkeyEntryKey = input.profile.loginMethod === 'google-passkey' ? (input.profile.passkeyEntryKey ?? null) : null;
+  if (input.profile.loginMethod === 'google-passkey') {
+    if (!passkeyEntryKey) return refuse('passkey-binding-missing');
+    const cell = input.profile.passkeyCell ?? 'unknown';
+    if (cell !== 'ready') return refuse(PASSKEY_CELL_REFUSALS[cell]);
+  }
   if (input.breakerOpen) return refuse('breaker-open');
 
   let mode: SubscriptionReloginMode = input.configuredMode;
@@ -126,6 +184,11 @@ export function evaluateSubscriptionReloginAdmission(
       provider: input.account.provider,
       identityHash: input.account.identityHash,
       profileId: input.profile.id,
+      // The passkey method and its entry key are part of the approved input (spec §3.4): an
+      // approval for the password path can never authorize the passkey path, and vice versa.
+      // Added ONLY for the passkey method so every legacy digest stays byte-stable across the
+      // upgrade (an in-flight suggested episode is not invalidated by the release itself).
+      ...(passkeyEntryKey ? { loginMethod: input.profile.loginMethod, passkeyEntryKey } : {}),
       mode,
     }),
   };
@@ -138,7 +201,9 @@ function unattendedGraduated(value: SubscriptionReloginAdmissionInput['unattende
     && value.successfulRepairs >= minimumSuccessfulRepairs
     && value.evidenceDays >= minimumEvidenceDays
     && value.identityMismatches === 0
-    && value.unexpectedOrigins === 0;
+    && value.unexpectedOrigins === 0
+    && (value.helperHardLines ?? 0) === 0
+    && value.backupCodesLow !== true;
 }
 
 function refuse(reason: SubscriptionReloginRefusal): SubscriptionReloginAdmission {

@@ -1,0 +1,23 @@
+{
+  "version": 2,
+  "slug": "native-hook-events",
+  "sessionId": "8b47a2d8-ea43-49f8-ac6f-dcca2b81fb9c",
+  "timestamp": "2026-10-31T23:16:05.854Z",
+  "artifactPath": "upgrades/side-effects/native-hook-events.md",
+  "artifactSha256": "9d819ab7e25914ab75a5dcb40ba9f253b2ecea61f44e3ed4044cf51046541e62",
+  "specPath": "docs/specs/native-hook-events.md",
+  "coveredFiles": [
+    "tests/unit/native-hook-events-settings.test.ts",
+    "upgrades/side-effects/native-hook-events.md"
+  ],
+  "phase": "complete",
+  "tier": 2,
+  "tierReasoning": "Follow-up on native-hook-events: test fake updated after rebase onto #2510",
+  "secondPass": "true",
+  "reviewerConcurred": true,
+  "classClosure": {
+    "defectClass": "unbounded-self-action",
+    "closure": "n/a",
+    "reason": "one-shot event handling, not a self-triggered loop: the drain worker only processes events Claude Code posted (queue capped at 1,000), and the settings reconcile is an idempotent write at boot, before a spawn and on update; nothing retries, respawns, kills, notifies or re-drives on its own"
+  }
+}

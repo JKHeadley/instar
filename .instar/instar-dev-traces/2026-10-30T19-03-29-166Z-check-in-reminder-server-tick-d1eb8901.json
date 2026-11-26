@@ -1,0 +1,50 @@
+{
+  "version": 3,
+  "slug": "check-in-reminder-server-tick",
+  "sessionId": "1bdd6d94-beb0-4bd5-92d4-43424d34f94f",
+  "timestamp": "2026-10-30T19:03:29.166Z",
+  "artifactPath": "upgrades/side-effects/check-in-reminder-server-tick.md",
+  "artifactSha256": "4a12ce9e441a28635ee051e35a0621a797de3a593ce84944b667783678a13b47",
+  "coveredFiles": [
+    "docs/specs/check-in-reminder-server-tick.eli16.md",
+    "docs/specs/check-in-reminder-server-tick.md",
+    "docs/specs/reports/check-in-reminder-server-tick-convergence.md",
+    "src/core/PostUpdateMigrator.ts",
+    "src/monitoring/CheckInReminderReconciler.ts",
+    "src/monitoring/CheckInReminderTicker.ts",
+    "src/monitoring/checkInReminderCore.ts",
+    "src/scaffold/templates.ts",
+    "src/server/AgentServer.ts",
+    "src/server/routes.ts",
+    "tests/e2e/check-in-reminder-tick-exactly-once.test.ts",
+    "tests/integration/check-in-reminder-routes.test.ts",
+    "tests/unit/check-in-reminder-core.test.ts",
+    "tests/unit/check-in-reminder-ticker.test.ts",
+    "tests/unit/claudemd-check-in-reminder-awareness.test.ts",
+    "upgrades/next/check-in-reminder-server-tick.md",
+    "upgrades/side-effects/check-in-reminder-server-tick.md"
+  ],
+  "phase": "complete",
+  "tier": 1,
+  "tierReasoning": "Dry-run default, dev-gated, no new blocking authority, a revert fully removes it",
+  "eli16Path": "docs/specs/check-in-reminder-server-tick.eli16.md",
+  "sideEffectsPath": "upgrades/side-effects/check-in-reminder-server-tick.md",
+  "secondPass": "true",
+  "reviewerConcurred": true,
+  "toolchain": {
+    "convergence": {
+      "reportPath": "docs/specs/reports/check-in-reminder-server-tick-convergence.md",
+      "iterations": 2,
+      "verified": true
+    }
+  },
+  "classClosure": {
+    "defectClass": "unbounded-self-action",
+    "closure": "guard",
+    "guardEvidence": {
+      "enforcementType": "ratchet",
+      "citation": "tests/unit/self-action-convergence.test.ts",
+      "howCaught": "check-in-reminder-pass is registered: the tick only drives that pass. Steady-state bound is the durable sent stamp; the settling brake is CHECK_IN_MAX_ATTEMPTS, persisted before each send, so total emits per commitment are bounded by attempts, not elapsed time."
+    }
+  }
+}

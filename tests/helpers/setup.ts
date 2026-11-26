@@ -38,7 +38,14 @@ export function createTempProject(): TempProject {
     dir,
     stateDir,
     state,
-    cleanup: () => SafeFsExecutor.safeRmSync(dir, { recursive: true, force: true, operation: 'tests/helpers/setup.ts:40' }),
+    cleanup: () => {
+      // A SessionManager names its tmux sessions `<basename(projectDir)>-…`, and
+      // mkdtemp makes that basename unique, so this removes exactly the sessions
+      // this project spawned — nothing else on the host. Callers that cleaned up
+      // by their own name prefix leaked these (`instar-test-*-job-fast-test-*`).
+      cleanupTmuxSessions(`${path.basename(dir)}-`);
+      SafeFsExecutor.safeRmSync(dir, { recursive: true, force: true, operation: 'tests/helpers/setup.ts:40' });
+    },
   };
 }
 

@@ -1,0 +1,19 @@
+{
+  "version": 2,
+  "slug": "chief-of-staff-protocol",
+  "sessionId": "6ee7a372-3ad7-4f0a-8c4a-49e4374f03ff",
+  "timestamp": "2026-11-09T22:03:12.195Z",
+  "artifactPath": "upgrades/side-effects/chief-of-staff-protocol.md",
+  "artifactSha256": "3c30d7882d4065837e5e65dcea9cbd5247d9fbc54a17f3a19d1886257bd71f2f",
+  "coveredFiles": [
+    "site/src/content/docs/architecture/chief-of-staff.md",
+    "site/src/content/docs/architecture/under-the-hood.md"
+  ],
+  "phase": "complete",
+  "tier": 1,
+  "tierReasoning": "Documentation-only: names the substrate classes the Chief of Staff pages already describe, for the docs-coverage class floor; no runtime surface.",
+  "eli16Path": "docs/specs/chief-of-staff-topic.eli16.md",
+  "sideEffectsPath": "upgrades/side-effects/chief-of-staff-protocol.md",
+  "secondPass": "not-required",
+  "reviewerConcurred": null
+}

@@ -1,0 +1,30 @@
+{
+  "ts": "2026-10-19T19:01:59.489Z",
+  "slug": "confined-spawn-subscription-reroute",
+  "suggestedTier": 2,
+  "declaredTier": 2,
+  "riskFloor": 2,
+  "riskFloorReasons": [
+    "new capability: new exported class / subsystem added"
+  ],
+  "belowFloor": false,
+  "files": 7,
+  "loc": 572,
+  "scope": {
+    "basis": "staged-in-scope-additions-plus-deletions",
+    "files": [
+      "src/core/SessionManager.ts",
+      "src/core/confinedStartupDialogs.ts",
+      "src/core/rerouteRefusedError.ts",
+      "src/core/types.ts",
+      "src/feedback-factory/execute/FeedbackExecuteStore.ts",
+      "src/feedback-factory/execute/FeedbackExecutorService.ts",
+      "src/feedback-factory/execute/buildFeedbackExecutor.ts"
+    ],
+    "addedLines": 537,
+    "deletedLines": 35
+  },
+  "causalAutopsy": null,
+  "classClosure": null,
+  "verdict": "blocked"
+}

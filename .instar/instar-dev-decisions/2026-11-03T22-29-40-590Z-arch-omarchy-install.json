@@ -1,0 +1,26 @@
+{
+  "ts": "2026-11-03T22:29:40.590Z",
+  "slug": "arch-omarchy-install",
+  "suggestedTier": 2,
+  "declaredTier": 1,
+  "riskFloor": 1,
+  "riskFloorReasons": [],
+  "belowFloor": false,
+  "files": 5,
+  "loc": 97,
+  "scope": {
+    "basis": "staged-in-scope-additions-plus-deletions",
+    "files": [
+      "src/commands/init.ts",
+      "src/commands/install.ts",
+      "src/core/Config.ts",
+      "src/core/Prerequisites.ts",
+      "src/core/packageInstall.ts"
+    ],
+    "addedLines": 68,
+    "deletedLines": 29
+  },
+  "causalAutopsy": null,
+  "classClosure": null,
+  "verdict": "pass"
+}

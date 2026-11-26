@@ -1,0 +1,24 @@
+{
+  "ts": "2026-11-04T21:45:35.282Z",
+  "slug": "desktop-locked-proof-fixes",
+  "suggestedTier": 1,
+  "declaredTier": 2,
+  "riskFloor": 1,
+  "riskFloorReasons": [],
+  "belowFloor": false,
+  "files": 3,
+  "loc": 30,
+  "scope": {
+    "basis": "staged-in-scope-additions-plus-deletions",
+    "files": [
+      "src/core/DesktopAccessAudit.ts",
+      "src/core/DirectDesktopAccess.ts",
+      "src/native/remote-desktop/macos/InstarDesktopHost.swift"
+    ],
+    "addedLines": 26,
+    "deletedLines": 4
+  },
+  "causalAutopsy": null,
+  "classClosure": null,
+  "verdict": "pass"
+}

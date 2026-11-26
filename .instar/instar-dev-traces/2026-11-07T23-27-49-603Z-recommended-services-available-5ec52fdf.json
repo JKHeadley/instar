@@ -1,0 +1,18 @@
+{
+  "version": 2,
+  "slug": "recommended-services-available",
+  "sessionId": "71bb647f-1ddd-492f-b70b-b44e859aec50",
+  "timestamp": "2026-11-07T23:27:49.603Z",
+  "artifactPath": "upgrades/side-effects/recommended-services-available.md",
+  "artifactSha256": "9acb74f26d752588e4e98a3a9198ed3e8d9a0dce5c6d590ee08367bf882e4f55",
+  "specPath": "docs/specs/recommended-services.md",
+  "coveredFiles": [
+    "site/src/content/docs/features/parallel-work-awareness.md",
+    "upgrades/side-effects/recommended-services-available.md"
+  ],
+  "phase": "complete",
+  "tier": 2,
+  "tierReasoning": "Docs-only addendum on the Tier-2 recommended-services change: a site doc paragraph so the docs-coverage ratchet passes; no runtime surface.",
+  "secondPass": "true",
+  "reviewerConcurred": true
+}

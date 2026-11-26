@@ -81,13 +81,16 @@ describe('A2A peer-health E2E lifecycle (feature is alive)', () => {
     expect(fs.existsSync(path.join(stateDir, 'state', 'a2a-delivery.e2e.sqlite'))).toBe(true);
   });
 
-  it('lives under the /threadline/ local-observability prefix (bearer-exempt by design, like its sibling /threadline/observability/* routes)', async () => {
-    // /threadline/* is intentionally exempt from the bearer gate (middleware.ts):
-    // these are local read-only observability surfaces carrying no secrets
-    // (public routing fingerprints, timestamps, counts). The route must answer
-    // without a bearer, consistent with /threadline/observability/*.
-    const res = await request(app).get('/threadline/peers/health');
-    expect(res.status).toBe(200);
-    expect(Array.isArray(res.body.peers)).toBe(true);
+  it('is bearer-gated like every other own-surface /threadline route (fb-829a7161-942)', async () => {
+    // Until 2026-10-27 the whole /threadline/ prefix was exempt from the bearer
+    // gate, which is how an unauthenticated tunnel request reached
+    // /threadline/relay-send. Only the six peer-protocol routes stay public
+    // (middleware.ts THREADLINE_PUBLIC_ROUTES); this own-surface read now
+    // refuses a token-less request before the handler runs.
+    const bare = await request(app).get('/threadline/peers/health');
+    expect(bare.status).toBe(401);
+    const authed = await request(app).get('/threadline/peers/health').set(auth());
+    expect(authed.status).toBe(200);
+    expect(Array.isArray(authed.body.peers)).toBe(true);
   });
 });

@@ -1,0 +1,28 @@
+{
+  "purpose": "Mandatory scoped E2E fixture verification, not a new agent or production service",
+  "featureArchiveHead": "ac00f3331801c56ed312007329362ba9a16be904",
+  "fixtureOverrides": {
+    "tests/e2e/threadline/inbound-id-cross-namespace-alive.test.ts": "c1585808f7948f99487c05e972260b8b2a6e4274b211a798b9365b45baa1e2d1",
+    "tests/e2e/threadline/pairing-enable-without-restart.test.ts": "98a480ec4fa53ec51ea59ec6817eff4643ee7afa304ede3ad5aa4dbbbc0cbb43"
+  },
+  "restrictedStudio": {
+    "files": 2,
+    "passed": 2,
+    "supervisorPath": "OS denies process identity; real controller returns503, preserves running server and writes no restart request"
+  },
+  "m5RealOS": {
+    "node": "v24.14.1",
+    "files": 2,
+    "passed": 2,
+    "exitCode": 0,
+    "durationSeconds": 13.07,
+    "supervisorPath": [
+      "actual /bin/ps read succeeds",
+      "202 supervised restart",
+      "ForegroundRestartWatcher consumes threadline-connect-enable request",
+      "pairing ready"
+    ],
+    "logSha256": "b962ff9a732fc4421b5b399aaddd49bf939be119f4b0547c6455a4cc0b2d3837"
+  },
+  "isolation": "Real-home token fixture moved to existing hermetic-home helper; no production behavior changed. Capability probe does not call the production identity helper or accept a wrong readable command as unsupported."
+}

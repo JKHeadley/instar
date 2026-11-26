@@ -1,0 +1,21 @@
+{
+  "version": 2,
+  "slug": "attention-lifecycle-close-on-cause",
+  "sessionId": "56f304c0-397c-48b5-a063-a29a48e9f94a",
+  "timestamp": "2026-10-26T10:32:14.354Z",
+  "artifactPath": "upgrades/side-effects/attention-lifecycle-close-on-cause.md",
+  "artifactSha256": "73d028043516cc9da406833552ac92d291a1e398bf964e0ffc5adcd98a0275f2",
+  "specPath": "docs/specs/attention-lifecycle-close-on-cause.md",
+  "coveredFiles": [
+    "src/messaging/TelegramAdapter.ts"
+  ],
+  "phase": "complete",
+  "tier": 2,
+  "secondPass": "not-required",
+  "reviewerConcurred": null,
+  "classClosure": {
+    "defectClass": "unbounded-self-action",
+    "closure": "n/a",
+    "reason": "fix-only commit: a failed hourly lifecycle pass is now reported to DegradationReporter; adds no self-triggered action"
+  }
+}

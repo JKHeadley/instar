@@ -1,0 +1,24 @@
+{
+  "ts": "2026-10-11T23:14:57.811Z",
+  "slug": "threadline-verified-pairing-v2",
+  "suggestedTier": 2,
+  "declaredTier": 2,
+  "riskFloor": 1,
+  "riskFloorReasons": [],
+  "belowFloor": false,
+  "files": 3,
+  "loc": 113,
+  "scope": {
+    "basis": "staged-in-scope-additions-plus-deletions",
+    "files": [
+      "src/server/routes.ts",
+      "src/threadline/CredentialShareGate.ts",
+      "src/threadline/client/ThreadlineClient.ts"
+    ],
+    "addedLines": 94,
+    "deletedLines": 19
+  },
+  "causalAutopsy": null,
+  "classClosure": null,
+  "verdict": "blocked"
+}

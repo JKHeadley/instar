@@ -1,0 +1,40 @@
+{
+  "version": 3,
+  "slug": "manual-update-verification-hold",
+  "sessionId": "d5764837-1124-4ad2-a72f-c88ca8374046",
+  "timestamp": "2026-10-31T19:08:16.856Z",
+  "artifactPath": "upgrades/side-effects/manual-update-verification-hold.md",
+  "artifactSha256": "357f1d2cf2291fb34e654e19fcd4d02eee27ffdb0dfc6c560f8059f9d54712aa",
+  "coveredFiles": [
+    "docs/specs/local-verify-merge-authority.md",
+    "docs/specs/manual-update-verification-hold.eli16.md",
+    "docs/specs/manual-update-verification-hold.md",
+    "src/core/AutoUpdater.ts",
+    "src/core/PostUpdateMigrator.ts",
+    "src/localVerify/LocalVerifyService.ts",
+    "src/localVerify/localVerifyWiring.ts",
+    "src/scaffold/templates.ts",
+    "src/server/routes.ts",
+    "tests/e2e/update-apply-verification-hold-lifecycle.test.ts",
+    "tests/integration/update-apply.test.ts",
+    "tests/unit/AutoUpdater-restart-holds.test.ts",
+    "tests/unit/PostUpdateMigrator-updateApplyHold.test.ts",
+    "tests/unit/localVerify/LocalVerifyService.test.ts",
+    "upgrades/next/manual-update-verification-hold.md",
+    "upgrades/side-effects/manual-update-verification-hold.md"
+  ],
+  "phase": "complete",
+  "tier": 1,
+  "tierReasoning": "Narrow reversible correction to the existing bounded restart hold; independent restart review and all three full test tiers passed.",
+  "eli16Path": "docs/specs/manual-update-verification-hold.eli16.md",
+  "sideEffectsPath": "upgrades/side-effects/manual-update-verification-hold.md",
+  "secondPass": "true",
+  "reviewerConcurred": true,
+  "toolchain": {
+    "buildSkill": {
+      "name": "instar-dev",
+      "version": "9a75c36ba521",
+      "verified": true
+    }
+  }
+}

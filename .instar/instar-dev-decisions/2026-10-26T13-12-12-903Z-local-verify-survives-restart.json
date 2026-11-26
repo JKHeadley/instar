@@ -1,0 +1,30 @@
+{
+  "ts": "2026-10-26T13:12:12.903Z",
+  "slug": "local-verify-survives-restart",
+  "suggestedTier": 1,
+  "declaredTier": 1,
+  "riskFloor": 1,
+  "riskFloorReasons": [],
+  "belowFloor": false,
+  "files": 1,
+  "loc": 4,
+  "scope": {
+    "basis": "staged-in-scope-additions-plus-deletions",
+    "files": [
+      "src/lifeline/TelegramLifeline.ts"
+    ],
+    "addedLines": 2,
+    "deletedLines": 2
+  },
+  "causalAutopsy": null,
+  "classClosure": {
+    "defectClass": "unbounded-self-action",
+    "closure": "guard",
+    "guardEvidence": {
+      "enforcementType": "ratchet",
+      "citation": "tests/unit/self-action-convergence.test.ts",
+      "howCaught": "same declaration as 3d03cc967: registry entry local-verify-interrupted-resume proves <= 1 starved notify per entry and attempts never decremented under 48 modelled restarts; this commit only adds silent-fallback markers to the quiesce teardown and removes an e2e skipIf"
+    }
+  },
+  "verdict": "blocked"
+}

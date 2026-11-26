@@ -1,8 +1,17 @@
 import { defineConfig } from 'vitest/config';
 
+import { supertestRetryAlias } from './tests/setup/supertest-alias.js';
+
 import { withTestRunnerBound } from './tests/setup/test-runner-bound.config-eval.js';
 
 export default defineConfig(withTestRunnerBound('integration', {
+  ...(process.env.VITEST_CACHE_DIR ? { cacheDir: process.env.VITEST_CACHE_DIR } : {}),
+  // Inline (empty) PostCSS config: without it Vite searches parent directories for one and
+  // aborts on the first unreadable package.json (EPERM). The feedback executor's sandbox
+  // read-denies the agent home around its workspace, so every confined vitest run failed.
+  css: { postcss: {} },
+  // Test files that import Supertest get it with the suite-wide connect retry installed.
+  resolve: { alias: [supertestRetryAlias] },
   test: {
     include: ['tests/integration/**/*.test.ts'],
     environment: 'node',
@@ -14,7 +23,7 @@ export default defineConfig(withTestRunnerBound('integration', {
     // The test-runner semaphore globalSetup is PREPENDED by withTestRunnerBound
     // so setup() acquires BEFORE the dist build and teardown() releases after
     // it (globalSetup teardown runs in reverse — spec §2.2).
-    globalSetup: ['tests/setup/build-dist.globalSetup.ts'],
+    globalSetup: ['tests/setup/build-dist.globalSetup.ts', 'tests/setup/real-embedding-model.globalSetup.ts'],
     // Integration tests spawn shipped scripts and framework-shaped sessions;
     // strip ambient live-agent routing/auth variables before each file.
     setupFiles: ['./tests/vitest-setup.ts'],

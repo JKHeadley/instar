@@ -28,7 +28,8 @@ import type { AgentTrustManager } from './AgentTrustManager.js';
 
 export type CredentialShareRefusalReason =
   | 'peer-not-mutually-verified'
-  | 'credential-requires-encrypted-path';
+  | 'credential-requires-encrypted-path'
+  | 'encryption-key-not-bound';
 
 export interface CredentialShareDecision {
   /** True = the sanctioned credential path is authorized for this peer. */
@@ -38,13 +39,29 @@ export interface CredentialShareDecision {
 }
 
 /**
- * Minimal read surface the outbound chokepoint needs to decide whether the
- * encrypted+signed send path is available to a recipient (never plaintext for a
- * credential, spec §3.5). Implemented by ThreadlineClient.hasEncryptedSendPath.
+ * Minimal read surface the outbound chokepoint needs (spec §3.5). Implemented by
+ * ThreadlineClient.
  */
 export interface EncryptedPathProbe {
-  /** True iff this recipient's keys are known so MessageEncryptor.encrypt is used. */
-  hasEncryptedSendPath(recipientFp: string): boolean;
+  /**
+   * True iff the recipient's keys are cached so `sendAuto` would encrypt. No longer
+   * consulted by the gate: a credential travels only the pinned send below.
+   */
+  hasEncryptedSendPath?(recipientFp: string): boolean;
+  /**
+   * True iff the channel is bound to the verified pairing: the peer's current identity key
+   * is the pinned one, its encryption key is derived from it, and the pairingId still
+   * matches our current key (FD4 v2). Implemented by ThreadlineClient.isChannelBoundToPairing.
+   * Optional so older probes compile; an absent method REFUSES (fail-closed).
+   */
+  isChannelBoundToPairing?(recipientFp: string, pinnedIdentityPubHex: string, pairingId: string | null): boolean;
+  /**
+   * The pinned credential send (FD4 v2): encrypts to the verified identity key and the
+   * X25519 key derived from it, never to a cached encryption key. A credential may only
+   * travel this way, so a probe without it REFUSES (fail-closed). Implemented by
+   * ThreadlineClient.sendCredentialToPinned.
+   */
+  sendCredentialToPinned?(recipientFp: string, pinnedIdentityPubHex: string, content: string, threadId?: string, messageId?: string, resend?: boolean): { messageId: string; threadId: string };
 }
 
 // ── Agent-facing READ helper (the guarantee lives at the funnel) ──────
@@ -81,17 +98,19 @@ export function assertCanShareCredential(
  * the feature flag is enabled; NOT gated by dryRun (FD10 — a leak gate has no
  * allow-by-default soak).
  *
- * Refuses unless BOTH hold:
+ * Refuses unless ALL hold:
  *   1. the recipient peer is `mutual-verified` (peer-not-mutually-verified), AND
- *   2. the encrypted+signed send path is available for that recipient — a credential
- *      must NEVER traverse the plaintext fallback (credential-requires-encrypted-path).
+ *   2. the pinned encrypted+signed send is available (sendCredentialToPinned) — a
+ *      credential must NEVER traverse the plaintext fallback (credential-requires-encrypted-path), AND
+ *   3. that path's encryption key is derived from the pinned, human-verified identity key
+ *      and the pairing still matches our current key (encryption-key-not-bound, FD4 v2).
  *
  * Fail-closed (FD9): any thrown error → refuse with peer-not-mutually-verified.
  *
  * @param recipientFp the peer's RESOLVED full routing fingerprint (never a name).
  */
 export function evaluateOutboundCredentialShare(
-  trustManager: Pick<AgentTrustManager, 'isCredentialShareAllowedByFingerprint'>,
+  trustManager: Pick<AgentTrustManager, 'isCredentialShareAllowedByFingerprint' | 'getProfileByFingerprint'>,
   encryptedPath: EncryptedPathProbe | null | undefined,
   recipientFp: string,
 ): CredentialShareDecision {
@@ -105,9 +124,31 @@ export function evaluateOutboundCredentialShare(
 
     // (2) The credential must go encrypted+signed only — never sendPlaintext.
     // If we cannot probe the path, or the path is plaintext-only, fail closed.
-    if (!encryptedPath || !encryptedPath.hasEncryptedSendPath(recipientFp)) {
+    // (2) The only route a credential takes is the pinned encrypted send; a client that
+    // cannot do it would fall back to plaintext, so it is refused.
+    if (!encryptedPath || typeof encryptedPath.sendCredentialToPinned !== 'function') {
       return { allow: false, reason: 'credential-requires-encrypted-path' };
     }
+
+    // (3) The encryption key must be bound to the identity key the human verified
+    // (FD4 v2, issue #2117 gap I). The SAS proves the Ed25519 identity key only; if the
+    // X25519 key were whatever the relay handed over, a relay could pass the SAS check
+    // and then read the credential.
+    let bound = false;
+    try {
+      const profile = trustManager.getProfileByFingerprint(recipientFp);
+      // Inherited (identity-verified, §3.8) pairings have no local pairingId and bind on the
+      // pinned key alone; mutual-verified pairings also check our current key (pairingId).
+      const pairingId = profile?.pairingState === 'identity-verified' ? null : (profile?.pairingId ?? null);
+      bound =
+        !!profile?.peerIdentityPub &&
+        (profile.pairingState === 'identity-verified' || !!pairingId) &&
+        typeof encryptedPath.isChannelBoundToPairing === 'function' &&
+        encryptedPath.isChannelBoundToPairing(recipientFp, profile.peerIdentityPub, pairingId);
+    } catch {
+      bound = false; // a throw while checking the binding names the binding, not the peer (spec §3.5)
+    }
+    if (!bound) return { allow: false, reason: 'encryption-key-not-bound' };
 
     return { allow: true };
   } catch {

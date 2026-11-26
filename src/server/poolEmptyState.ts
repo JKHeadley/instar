@@ -24,8 +24,15 @@
  * (server-side, authoritative) and the dashboard render against its output.
  */
 
-/** The discrete empty-state kind for a machine with zero active sessions. */
-export type MachineEmptyStateKind = 'online' | 'offline' | 'unreachable';
+import { formatAge, formatLivenessLine, type MachineLiveness } from '../core/machineLiveness.js';
+
+/**
+ * The discrete empty-state kind for a machine with zero active sessions.
+ * `stale` / `unknown` arrive with the honest-evidence path (trustworthy-machine-
+ * load A5): `offline` is now said ONLY by the legacy path (no liveness supplied),
+ * never from the evidence-derived classifier.
+ */
+export type MachineEmptyStateKind = 'online' | 'offline' | 'unreachable' | 'stale' | 'unknown';
 
 /** Per-machine inputs the classifier needs — all from REAL registry/fan-out state. */
 export interface MachineStateInput {
@@ -44,6 +51,15 @@ export interface MachineStateInput {
   routerReceivedAt?: string;
   /** The machine's self-reported last-heartbeat time, ISO (fallback for display). */
   selfReportedLastSeen?: string;
+  /**
+   * Honest evidence-derived liveness (trustworthy-machine-load A2). When
+   * supplied, it DECIDES the state: live / unreachable (with its shape) / stale
+   * (saved or relayed, with the original age) / unknown — and "offline" is never
+   * said, because this layer holds no positive offline evidence.
+   */
+  liveness?: MachineLiveness;
+  /** Nickname lookup for the "<observer> reached it N ago" suffix. */
+  nicknameOf?: (machineId: string) => string;
 }
 
 /** Classified per-machine empty-state. */
@@ -99,6 +115,28 @@ export function formatLastSeen(lastSeen: string | null, now: number): string {
  */
 export function classifyMachineEmptyState(input: MachineStateInput, now: number): MachineEmptyState {
   const lastSeen = input.routerReceivedAt ?? input.selfReportedLastSeen ?? null;
+
+  // Honest-evidence path (A5): one template everywhere —
+  // `<liveness>, last evidence <age> ago from <source>`.
+  if (input.liveness) {
+    const l = input.liveness;
+    const evidenceAt = l.evidenceAt ?? lastSeen;
+    if (l.state === 'live' && input.failedReason === null) {
+      return { kind: 'online', text: 'online — no active sessions', lastSeen: evidenceAt };
+    }
+    if (input.failedReason === 'no-known-url') {
+      return { kind: 'unknown', text: 'no known address for this machine', lastSeen: evidenceAt };
+    }
+    if (l.state === 'live') {
+      // Registry says live but THIS request's fetch failed: the honest reading
+      // is "answering the presence pull, not this request" — name both.
+      // 'offline' is the registry-derived label, not a fetch outcome — never echo it.
+      const why = input.failedReason && input.failedReason !== 'offline' ? ` (${input.failedReason})` : '';
+      return { kind: 'unreachable', text: `did not answer this request${why}; last reached ${formatAge(l.evidenceAgeMs)} ago`, lastSeen: evidenceAt };
+    }
+    const kind: MachineEmptyStateKind = l.state === 'unreachable' ? 'unreachable' : l.state === 'stale' ? 'stale' : 'unknown';
+    return { kind, text: formatLivenessLine(l, input.nicknameOf), lastSeen: evidenceAt };
+  }
 
   // Healthy + idle: heartbeat-fresh AND the live fetch (if attempted) succeeded.
   if (input.online && input.failedReason === null) {

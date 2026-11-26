@@ -1,0 +1,23 @@
+{
+  "version": 2,
+  "slug": "confined-no-chrome",
+  "sessionId": "5ed396db-8c94-48c5-8c79-fe06b27ddac7",
+  "timestamp": "2026-10-25T22:59:49.632Z",
+  "artifactPath": "upgrades/side-effects/confined-no-chrome.md",
+  "artifactSha256": "6577fe92741b3823ba39726116410a1f1fe19e75e5616e91b835829fbb49df11",
+  "coveredFiles": [
+    "docs/specs/confined-no-chrome.eli16.md",
+    "src/core/credentialEnvNames.ts",
+    "tests/unit/session-manager-confined-reroute.test.ts",
+    "tests/unit/session-manager-confined-spawn.test.ts",
+    "upgrades/next/confined-no-chrome.md",
+    "upgrades/side-effects/confined-no-chrome.md"
+  ],
+  "phase": "complete",
+  "tier": 1,
+  "tierReasoning": "One constant CLI flag (--no-chrome) added to the confined launch arguments; nothing a confined session may do changes, a revert fully undoes it, no persisted state. Proven live under the failing login.",
+  "eli16Path": "docs/specs/confined-no-chrome.eli16.md",
+  "sideEffectsPath": "upgrades/side-effects/confined-no-chrome.md",
+  "secondPass": "not-required",
+  "reviewerConcurred": null
+}

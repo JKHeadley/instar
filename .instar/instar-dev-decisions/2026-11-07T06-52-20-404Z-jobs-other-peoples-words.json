@@ -1,0 +1,23 @@
+{
+  "ts": "2026-11-07T06:52:20.404Z",
+  "slug": "jobs-other-peoples-words",
+  "suggestedTier": 1,
+  "declaredTier": null,
+  "riskFloor": 1,
+  "riskFloorReasons": [],
+  "belowFloor": false,
+  "files": 2,
+  "loc": 19,
+  "scope": {
+    "basis": "staged-in-scope-additions-plus-deletions",
+    "files": [
+      "src/commands/server.ts",
+      "src/scheduler/JobScheduler.ts"
+    ],
+    "addedLines": 19,
+    "deletedLines": 0
+  },
+  "causalAutopsy": null,
+  "classClosure": null,
+  "verdict": "pass"
+}

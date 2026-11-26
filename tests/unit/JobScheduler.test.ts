@@ -6,6 +6,7 @@ import type { JobSchedulerConfig, JobDefinition } from '../../src/core/types.js'
 import fs from 'node:fs';
 import path from 'node:path';
 import { buildSyntheticAgent, mkAgentMd, mkManifest } from './scheduler/agentmd-helpers.js';
+import { jobDeclaredFailurePath, jobDeclaredSkipPath } from '../../src/scheduler/jobDeclaredFailure.js';
 
 describe('JobScheduler', () => {
   let project: TempProject;
@@ -240,6 +241,24 @@ describe('JobScheduler', () => {
   });
 
   describe('gate auth context injection', () => {
+    it('binds canonical agent home, state dir and configured port instead of inherited routing', async () => {
+      const capturePath = path.join(project.stateDir, 'gate-routing-context.json');
+      fs.writeFileSync(path.join(project.stateDir, 'config.json'), JSON.stringify({ port: 48765 }));
+      const oldPort = process.env.INSTAR_PORT, oldHome = process.env.INSTAR_AGENT_HOME, oldState = process.env.INSTAR_STATE_DIR;
+      process.env.INSTAR_PORT = '49999'; process.env.INSTAR_AGENT_HOME = '/wrong-agent'; process.env.INSTAR_STATE_DIR = '/wrong-state';
+      try {
+        createScheduler();
+        const passed = await (scheduler as any).runGateAsync({ slug: 'canonical-context',
+          gate: `node -e 'require("fs").writeFileSync(process.argv[1],JSON.stringify({port:process.env.INSTAR_PORT,home:process.env.INSTAR_AGENT_HOME,state:process.env.INSTAR_STATE_DIR}))' '${capturePath}'` });
+        expect(passed).toBe(true);
+        expect(JSON.parse(fs.readFileSync(capturePath, 'utf8'))).toEqual({ port: '48765', home: path.dirname(project.stateDir), state: project.stateDir });
+      } finally {
+        for (const [key, value] of [['INSTAR_PORT', oldPort], ['INSTAR_AGENT_HOME', oldHome], ['INSTAR_STATE_DIR', oldState]]) {
+          if (value === undefined) delete process.env[key!]; else process.env[key!] = value;
+        }
+      }
+    });
+
     it('exposes authToken and projectName to gate shell', async () => {
       const fs = await import('node:fs');
       const path = await import('node:path');
@@ -335,7 +354,7 @@ describe('JobScheduler', () => {
 
       // Process the queue
       scheduler.processQueue();
-      expect(mockSM._spawnCount).toBe(2);
+      await vi.waitFor(() => expect(mockSM._spawnCount).toBe(2));
       expect(scheduler.getStatus().queueLength).toBe(0);
     });
 
@@ -381,7 +400,7 @@ describe('JobScheduler', () => {
       mockSM._aliveSet.delete(mockSM._sessions[0].tmuxSession);
 
       scheduler.resume();
-      expect(mockSM._spawnCount).toBe(2);
+      await vi.waitFor(() => expect(mockSM._spawnCount).toBe(2));
     });
 
     it('getStatus reflects paused state', () => {
@@ -626,6 +645,99 @@ describe('JobScheduler', () => {
   });
 
   describe('notifyJobComplete', () => {
+    // Spec feedback-inbox-vault-token §B: a prompt job declares its run failed.
+    async function completeWithDeclaredFailure(reason: string | null, status: 'completed' | 'killed' = 'completed') {
+      createScheduler();
+      scheduler.start();
+      await scheduler.triggerJob('health-check', 'test');
+      await new Promise(r => setTimeout(r, 50));
+      const session = mockSM._sessions[mockSM._sessions.length - 1];
+      session.status = status;
+      project.state.saveSession(session);
+      const file = jobDeclaredFailurePath(project.stateDir, session.tmuxSession);
+      if (reason !== null) {
+        fs.mkdirSync(path.dirname(file), { recursive: true });
+        fs.writeFileSync(file, reason);
+      }
+      await scheduler.notifyJobComplete(session.id, session.tmuxSession);
+      return { file, state: project.state.getJobState('health-check') };
+    }
+
+    it('a declared-failure file records the run as failure with the reason, and is removed', async () => {
+      const { file, state } = await completeWithDeclaredFailure('drain posture unavailable: enabled-missing-operated-host-owner\n');
+      expect(state?.lastResult).toBe('failure');
+      expect(state?.lastError).toBe('Declared failure: drain posture unavailable: enabled-missing-operated-host-owner');
+      expect(state?.consecutiveFailures).toBe(1);
+      expect(fs.existsSync(file)).toBe(false);
+    });
+
+    it('no declared-failure file keeps a normal completion a success', async () => {
+      const { state } = await completeWithDeclaredFailure(null);
+      expect(state?.lastResult).toBe('success');
+      expect(state?.lastError).toBeUndefined();
+    });
+
+    it('a killed session keeps timeout precedence and carries the declared reason', async () => {
+      const { file, state } = await completeWithDeclaredFailure('drain status unreadable: HTTP 401', 'killed');
+      expect(state?.lastResult).toBe('failure');
+      expect(state?.lastError).toContain('Session killed');
+      expect(state?.lastError).toContain('declared failure: drain status unreadable: HTTP 401');
+      expect(fs.existsSync(file)).toBe(false);
+    });
+
+    // CMT-1613: a run that could not start its work because its own server was too busy is
+    // recorded skipped — neither a success nor a failure — and leaves the failure streak alone.
+    async function completeWithDeclaredSkipKeepingError(skip: string, lastError: string, beforeNotify: () => void) {
+      return completeWithDeclaredSkip(skip, null, lastError, beforeNotify);
+    }
+    async function completeWithDeclaredSkip(skip: string, failure: string | null = null, lastError?: string, beforeNotify?: () => void) {
+      createScheduler();
+      scheduler.start();
+      await scheduler.triggerJob('health-check', 'test');
+      await new Promise(r => setTimeout(r, 50));
+      const session = mockSM._sessions[mockSM._sessions.length - 1];
+      session.status = 'completed';
+      project.state.saveSession(session);
+      project.state.saveJobState({ ...project.state.getJobState('health-check')!, slug: 'health-check', lastResult: 'failure', consecutiveFailures: 2, ...(lastError ? { lastError } : {}) });
+      const skipFile = jobDeclaredSkipPath(project.stateDir, session.tmuxSession);
+      fs.mkdirSync(path.dirname(skipFile), { recursive: true });
+      fs.writeFileSync(skipFile, skip);
+      if (failure !== null) fs.writeFileSync(jobDeclaredFailurePath(project.stateDir, session.tmuxSession), failure);
+      beforeNotify?.();
+      await scheduler.notifyJobComplete(session.id, session.tmuxSession);
+      const runs = scheduler.getRunHistory().query({ slug: 'health-check' }).runs;
+      return { skipFile, state: project.state.getJobState('health-check'), run: runs[0] };
+    }
+
+    it('a declared-skip file records the run skipped, keeps the failure streak, and is removed', async () => {
+      const { skipFile, state, run } = await completeWithDeclaredSkip('server too busy to answer its drain status (3 tries)');
+      expect(state?.lastResult).toBe('skipped');
+      expect(state?.lastError).toBeUndefined();
+      expect(state?.consecutiveFailures).toBe(2);
+      expect(run?.result).toBe('skipped');
+      expect(run?.error).toBe('Declared skip: server too busy to answer its drain status (3 tries)');
+      expect(fs.existsSync(skipFile)).toBe(false);
+    });
+
+    it('a declared skip keeps the last error and never clears failure alerts or feeds the silence watch', async () => {
+      const clear = vi.spyOn(JobScheduler.prototype as any, 'clearFailureAlertState');
+      const cont = vi.spyOn(JobScheduler.prototype as any, 'noteContinuitySuccess');
+      try {
+        const { state } = await completeWithDeclaredSkipKeepingError('server too busy', 'Declared failure: earlier', () => { clear.mockClear(); cont.mockClear(); });
+        expect(state?.lastError).toBe('Declared failure: earlier');
+        expect(clear).not.toHaveBeenCalledWith('health-check');
+        expect(cont).not.toHaveBeenCalledWith('health-check');
+      } finally { clear.mockRestore(); cont.mockRestore(); }
+    });
+
+    it('a declared failure wins over a declared skip, and both files are consumed', async () => {
+      const { skipFile, state, run } = await completeWithDeclaredSkip('busy', 'drain run degraded: x');
+      expect(state?.lastResult).toBe('failure');
+      expect(state?.consecutiveFailures).toBe(3);
+      expect(run?.result).toBe('failure');
+      expect(fs.existsSync(skipFile)).toBe(false);
+    });
+
     it('saves the job state before recording terminal completion', async () => {
       createScheduler();
       scheduler.start();

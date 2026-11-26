@@ -1,0 +1,28 @@
+{
+  "ts": "2026-09-28T06:58:22.149Z",
+  "slug": "window-run-liveness-register-lock-retry",
+  "suggestedTier": 2,
+  "declaredTier": 1,
+  "riskFloor": 2,
+  "riskFloorReasons": [
+    "new capability: new route (router.<verb>() added"
+  ],
+  "belowFloor": true,
+  "files": 1,
+  "loc": 30,
+  "scope": {
+    "basis": "staged-in-scope-additions-plus-deletions",
+    "files": [
+      "src/server/routes.ts"
+    ],
+    "addedLines": 22,
+    "deletedLines": 8
+  },
+  "causalAutopsy": null,
+  "classClosure": {
+    "defectClass": "unbounded-self-action",
+    "closure": "n/a",
+    "reason": "bounded retry inside a single HTTP request (max 100 attempts, ~2s), triggered only by that request; no timer or re-trigger"
+  },
+  "verdict": "pass"
+}

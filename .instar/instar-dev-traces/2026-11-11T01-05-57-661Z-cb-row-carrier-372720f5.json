@@ -1,0 +1,24 @@
+{
+  "version": 2,
+  "slug": "cb-row-carrier",
+  "sessionId": "3117c024-d5c8-4ef5-948b-e8585a7dd39d",
+  "timestamp": "2026-11-11T01:05:57.661Z",
+  "artifactPath": "upgrades/side-effects/cb-row-carrier.md",
+  "artifactSha256": "34a41759426167e4a2fa777d2e6e6cc2cb8b9e0099fa4c4b673f037ee59c291a",
+  "coveredFiles": [
+    "tests/unit/SqliteRegistry-wiring.test.ts",
+    "upgrades/side-effects/cb-row-carrier.md"
+  ],
+  "phase": "complete",
+  "tier": 1,
+  "tierReasoning": "test allowlist entry for an already-registered store; no runtime change",
+  "eli16Path": "docs/specs/context-budget-layered-summaries.eli16.md",
+  "sideEffectsPath": "upgrades/side-effects/cb-row-carrier.md",
+  "secondPass": "not-required",
+  "reviewerConcurred": true,
+  "classClosure": {
+    "defectClass": "n/a",
+    "closure": "n/a",
+    "reason": "test allowlist completeness; the store already registered its handle"
+  }
+}

@@ -1,0 +1,30 @@
+{
+  "ts": "2026-10-22T05:31:52.742Z",
+  "slug": "parallel-test-lanes",
+  "suggestedTier": 2,
+  "declaredTier": 2,
+  "riskFloor": 1,
+  "riskFloorReasons": [],
+  "belowFloor": false,
+  "files": 5,
+  "loc": 57,
+  "scope": {
+    "basis": "staged-in-scope-additions-plus-deletions",
+    "files": [
+      "scripts/lib/vitest-lane.mjs",
+      "scripts/recheck-parked-tests.mjs",
+      "src/commands/server.ts",
+      "src/feedback-factory/execute/FeedbackExecutorService.ts",
+      "src/localVerify/inventory.ts"
+    ],
+    "addedLines": 54,
+    "deletedLines": 3
+  },
+  "causalAutopsy": null,
+  "classClosure": {
+    "defectClass": "unbounded-self-action",
+    "closure": "n/a",
+    "reason": "No self-triggered action added: only the lane --config argument is added to two existing command lines (feedback executor fix check, failover check); their triggers and frequency are unchanged."
+  },
+  "verdict": "pass"
+}

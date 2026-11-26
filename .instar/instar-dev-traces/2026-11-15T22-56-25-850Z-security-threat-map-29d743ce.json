@@ -1,0 +1,21 @@
+{
+  "version": 2,
+  "slug": "security-threat-map",
+  "sessionId": "c010ec34-33a2-476c-a6af-4b438bdaa22b",
+  "timestamp": "2026-11-15T22:56:25.850Z",
+  "artifactPath": "upgrades/side-effects/security-threat-map.md",
+  "artifactSha256": "606af78a650631970d0feeffe57ca2640b59752ebbc71cf340a7525dda67ee8f",
+  "coveredFiles": [
+    "docs/security/threat-map.md",
+    "docs/specs/security-threat-map.eli16.md",
+    "upgrades/next/security-threat-map.md",
+    "upgrades/side-effects/security-threat-map.md"
+  ],
+  "phase": "complete",
+  "tier": 1,
+  "tierReasoning": "Docs only: one attack-surface document for the security program, no runtime surface; a revert fully undoes it.",
+  "eli16Path": "docs/specs/security-threat-map.eli16.md",
+  "sideEffectsPath": "upgrades/side-effects/security-threat-map.md",
+  "secondPass": "not-required",
+  "reviewerConcurred": null
+}

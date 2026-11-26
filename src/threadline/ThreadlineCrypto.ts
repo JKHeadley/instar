@@ -21,50 +21,21 @@ export interface KeyPair {
   privateKey: Buffer;  // 64 bytes (Ed25519) or 32 bytes (X25519)
 }
 
-// ── Key Generation ───────────────────────────────────────────────────
+// ── From threadline-core ─────────────────────────────────────────────
+//
+// Key generation, Ed25519 signing, X25519 key exchange and the Ed25519→X25519 public-key map are
+// the same code in `@sagemindai/threadline-core` (spec threadline-standalone-pairing D1, rollout
+// step 3), so they come from there, as does the v2 pairing id (core's `derivePairingId`, the same
+// length check, key order and HKDF info). `verify` stays here: core's returns false on a malformed
+// key where Instar's throws, so it is not the same behaviour.
 
-/**
- * Generate an Ed25519 identity key pair for an agent.
- * The identity key is long-lived — generated once and persisted.
- */
-export function generateIdentityKeyPair(): KeyPair {
-  const { publicKey, privateKey } = crypto.generateKeyPairSync('ed25519');
-  return {
-    publicKey: publicKey.export({ type: 'spki', format: 'der' }).subarray(-32),
-    privateKey: privateKey.export({ type: 'pkcs8', format: 'der' }).subarray(-32),
-  };
-}
-
-/**
- * Generate an ephemeral X25519 key pair for Diffie-Hellman exchange.
- * Ephemeral keys are single-use per handshake.
- */
-export function generateEphemeralKeyPair(): KeyPair {
-  const { publicKey, privateKey } = crypto.generateKeyPairSync('x25519');
-  return {
-    publicKey: publicKey.export({ type: 'spki', format: 'der' }).subarray(-32),
-    privateKey: privateKey.export({ type: 'pkcs8', format: 'der' }).subarray(-32),
-  };
-}
+import {
+  generateIdentityKeyPair, generateEphemeralKeyPair, sign, ecdh, edPublicToX25519, isX25519BoundToIdentity,
+  derivePairingId as coreDerivePairingIdV2,
+} from '@sagemindai/threadline-core';
+export { generateIdentityKeyPair, generateEphemeralKeyPair, sign, ecdh, edPublicToX25519, isX25519BoundToIdentity };
 
 // ── Signing & Verification ───────────────────────────────────────────
-
-/**
- * Ed25519 sign a message.
- * Returns a 64-byte signature.
- */
-export function sign(privateKeyRaw: Buffer, message: Buffer): Buffer {
-  const privateKey = crypto.createPrivateKey({
-    key: Buffer.concat([
-      // Ed25519 PKCS#8 prefix (16 bytes) + 2 bytes (octet string tag + length)
-      Buffer.from('302e020100300506032b657004220420', 'hex'),
-      privateKeyRaw,
-    ]),
-    format: 'der',
-    type: 'pkcs8',
-  });
-  return Buffer.from(crypto.sign(null, message, privateKey));
-}
 
 /**
  * Ed25519 verify a signature.
@@ -80,37 +51,6 @@ export function verify(publicKeyRaw: Buffer, message: Buffer, signature: Buffer)
     type: 'spki',
   });
   return crypto.verify(null, message, publicKey, signature);
-}
-
-// ── Key Exchange ─────────────────────────────────────────────────────
-
-/**
- * X25519 Diffie-Hellman key exchange.
- * Returns a 32-byte shared secret.
- */
-export function ecdh(privateKeyRaw: Buffer, publicKeyRaw: Buffer): Buffer {
-  const privateKey = crypto.createPrivateKey({
-    key: Buffer.concat([
-      // X25519 PKCS#8 prefix
-      Buffer.from('302e020100300506032b656e04220420', 'hex'),
-      privateKeyRaw,
-    ]),
-    format: 'der',
-    type: 'pkcs8',
-  });
-  const publicKey = crypto.createPublicKey({
-    key: Buffer.concat([
-      // X25519 SPKI prefix
-      Buffer.from('302a300506032b656e032100', 'hex'),
-      publicKeyRaw,
-    ]),
-    format: 'der',
-    type: 'spki',
-  });
-  return Buffer.from(crypto.diffieHellman({
-    privateKey,
-    publicKey,
-  }));
 }
 
 // ── Key Derivation ───────────────────────────────────────────────────
@@ -226,6 +166,74 @@ export function derivePairingId(sharedSecret: Buffer, identityPubA: Buffer, iden
     crypto.hkdfSync('sha256', sharedSecret, sasSalt(identityPubA, identityPubB), 'threadline-pairing-id-v1', 16),
   ).toString('hex');
 }
+
+// ── Verified pairing v2: static identity-key SAS (spec §3.1 / FD2 / FD4, amended 2026-10-10) ──
+//
+// v1 derived the SAS from a per-handshake ephemeral shared secret, but no live path ever
+// ran that handshake between relay agents (issue #2117 gap G). v2 derives the words from
+// the two Ed25519 IDENTITY keys alone, so both sides compute them independently with no
+// round trip. The words are therefore PUBLIC values: anyone who knows both keys can
+// compute them. Security rests on the human comparison (§3.9) and on the LENGTH of the
+// compared value: a relay substituting keys controls both substitutes and can search
+// offline for a pair whose words collide, which costs about 2^(bits/2) key generations.
+// 6 words (66 bits) → ~2^33, hours of compute. 12 words (132 bits) → ~2^66, out of reach.
+
+const SAS_V2_WORDS = 12;
+
+/** Sorted raw 32-byte keys concatenated — the order-independent pair identity (FD2 v2). */
+function sortedPair(identityPubA: Buffer, identityPubB: Buffer): Buffer {
+  if (identityPubA.length !== 32 || identityPubB.length !== 32) {
+    throw new Error('identity public keys must be 32 raw bytes');
+  }
+  return sasSalt(identityPubA, identityPubB);
+}
+
+/** 17 bytes (136 bits ≥ 132) of v2 SAS material: HKDF-SHA256(ikm = sorted keys, info = "threadline-sas-v2"). */
+export function deriveSasBitsV2(identityPubA: Buffer, identityPubB: Buffer): Buffer {
+  return Buffer.from(
+    crypto.hkdfSync('sha256', sortedPair(identityPubA, identityPubB), Buffer.alloc(0), 'threadline-sas-v2', 17),
+  );
+}
+
+/** The 12-word v2 SAS: the leading 132 bits, big-endian, as 12 × 11-bit wordlist indices. */
+export function deriveSASv2(identityPubA: Buffer, identityPubB: Buffer): string[] {
+  const bits = deriveSasBitsV2(identityPubA, identityPubB);
+  const words = loadSasWordlist();
+  let acc = 0n;
+  for (let i = 0; i < 17; i++) acc = (acc << 8n) | BigInt(bits[i]);
+  acc >>= 4n; // 136 bits → keep the leading 132
+  const out: string[] = [];
+  for (let i = SAS_V2_WORDS - 1; i >= 0; i--) {
+    out.push(words[Number((acc >> BigInt(i * 11)) & 0x7ffn)]);
+  }
+  return out;
+}
+
+/** v2 sasFingerprint = first 8 bytes (hex) of SHA-256("threadline-sas-fp-v2" ‖ sasBits). */
+export function deriveSasFingerprintV2(sasBitsV2: Buffer): string {
+  return crypto
+    .createHash('sha256')
+    .update(Buffer.concat([Buffer.from('threadline-sas-fp-v2', 'utf-8'), sasBitsV2]))
+    .digest('hex')
+    .slice(0, 16);
+}
+
+/**
+ * v2 pairingId: identifies the KEY PAIR, not a handshake. It changes exactly when either
+ * identity key rotates, which is when a pairing must reset to pending (FD4 v2).
+ */
+export function derivePairingIdV2(identityPubA: Buffer, identityPubB: Buffer): string {
+  return coreDerivePairingIdV2(identityPubA, identityPubB);
+}
+
+// ── Ed25519 public key → X25519 public key (RFC 7748 birational map) ──
+//
+// Our X25519 private key is the clamped first half of SHA-512(Ed25519 seed)
+// (MessageEncryptor.edPrivateToX25519), the standard conversion, so the X25519 public key
+// is a fixed function of the Ed25519 public key: u = (1 + y) / (1 - y) mod p. A receiver
+// can therefore compute a peer's encryption key from the PINNED identity key instead of
+// trusting whatever X25519 key the relay handed over (issue #2117 gap I).
+// `edPublicToX25519` and `isX25519BoundToIdentity` are imported from threadline-core above.
 
 // ── Challenge Response ───────────────────────────────────────────────
 

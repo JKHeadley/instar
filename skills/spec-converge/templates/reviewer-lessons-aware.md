@@ -20,11 +20,11 @@ Your job: load the canonical Instar lessons catalog, then check this spec agains
 4. **The project's CLAUDE.md** (if reviewing an instar-source spec, this is `CLAUDE.md` at instar root; if reviewing a downstream consumer spec, it's the consumer's CLAUDE.md). For the "Standards" + "Anti-Patterns" + "Key Patterns from Dawn" sections.
 5. **Any specific lesson sources the spec already engages with** under `lessons-engaged:` in its frontmatter. Verify the engagement is real, not just citation.
 
-## Your perspective — four structural questions
+## Your perspective — six structural questions
 
 ### Q1. Contradictions (CRITICAL severity)
 
-For each Part 1 principle (P1-P23) and Part 2 architectural lesson (L1-L17) in the index, ask:
+For each Part 1 principle (P1-P26) and Part 2 architectural lesson (L1-L17) in the index, ask:
 - Does the spec CONTRADICT this principle/lesson?
 - Specifically: does the spec propose something the lesson was written to prevent?
 
@@ -99,6 +99,56 @@ mode, and the foundation-not-audited gap — the Slack-permission-gate
 brittle-enum-as-authority that a harness convergence cleared because it audited
 only the harness, 2026-06-09.)
 
+<!-- FIXED_LIMIT_CONTEST -->
+**Fixed-limit contest (Judgment Within Floors).** Inventory EVERY fixed limit on
+what/how much an agent may do, anywhere in the spec: rates, counts, sizes, growth
+ceilings, retirement thresholds and qualitative quotas. Each is a
+**judgment-candidate by default**. For each, report: location + boundary, claimed
+basis, independent evidence, a legitimate counterexample it rejects (or explicitly
+"no legitimate counterexample found" for a genuine floor), and verdict.
+An `invariant` row must declare `basis: irreversible-consequence`,
+`basis: enumerable-domain`, or `basis: external-constraint`, followed by
+`; evidence: <specific consequence, domain or source>`. Independently verify why
+this exact boundary follows from that evidence. The fields alone prove nothing.
+"Deterministic counts", "fixed cap", "bounded by design", or repeating the limit
+is a circular justification: REJECT it as **MATERIAL / DESIGN**, blocking
+convergence until resolved. If evidence does not establish a real floor, require
+intelligent assessment inside a deterministic floor (bounded action space,
+conservative default, fallback ladder ending deterministically), with the arbiter
+named. Do not invent replacement caps. Preserve evidenced safety/protocol/type
+constraints; measurements, examples and advisory defaults are not caps unless
+they actually gate behavior. Explicitly report `fixed-limits: none` when absent.
+
+### Q5. EXPERIENCE FIT — the intended outcome, not only absence of rule conflicts
+
+Load the person's attributable request and the current applicable articles in `docs/STANDARDS-REGISTRY.md`: *The User Experience Is the Product — Reachability, Responsiveness, and Coherence Are Sacred*, *Trust Is Earned by Work and Granted Only by the Person*, and *Intelligence Infers, Keywords Only Guard*. Read their current text; do not infer their requirements from titles or the author's summary. If a source is missing, say what cannot be established rather than inventing the person's goal.
+
+Independently walk the ordinary journey from the person's need through the proposed result. Where must the person notice, decide, approve, repeat information or recover? Does the journey deliver the stated outcome, including the person's chosen level of involvement? A design can conflict with no enumerated rule and still fail that outcome. Distinguish a missing constitutional obligation from a failure to apply an existing one; propose any genuinely new obligation for ratification, never silently add it as a review rule.
+
+For an approval or trust surface, test BOTH **needless repeat asks** and **coverage the record does not support**. Include contrasting examples: the same task in different words, different tasks with the same service/operation label, and a changed audience, limit or consequence. The fixed action/account/audience tuple is an authority floor, not a semantic task classifier. The current trust article requires an evidence-sized offer; a particular spec may additionally require the narrowest supported category. Cite which source requires which property rather than making that spec's strategy a universal rule. An offer grants nothing, and existing sign-off conditions still apply.
+
+Distinguish measured ask burden from a hypothesis or proposed measurement. Identify what evidence would reveal repeated asks, changed/declined approvals, unsupported coverage and whether the user reached their goal. Do not invent an acceptable ask-count target, a universal category size, or a new approval requirement. Missing measurements are unknown, not zero; an unmeasured improvement is not a proven improvement.
+
+Record an **Experience fit** assessment: attributable goal/source; ordinary journey and contrasting cases; evidence and limits; finding/disposition. When this lens or its trust portion is **not applicable**, give the reason grounded in the change's surface. Classify material findings through the existing DESIGN/PRECISION process; do not create an automatic blocker based on a keyword, count or missing quota.
+
+### Q6. BENEFIT SURVIVES THE WALLS, AND THE DOCUMENTS STAND ON THEIR OWN (P25, P26)
+
+**Benefit.** List every restriction the spec adds beyond the constitution's floors: gates, sandbox rules, allowlists, practice-only or shadow phases, staged ladders, caps. For each one, state what it protects, what benefit it costs, and whether another restriction in the same design already gives that protection. Then answer plainly: once all of them are in place, what real benefit is left, as a number where one exists?
+
+These are DESIGN-class findings:
+- a design whose restrictions together leave no meaningful benefit;
+- a practice-only or shadow phase with no stated end (runs, days, or evidence);
+- a narrow restriction made redundant by a stronger one in the same design that still costs benefit.
+
+Do not weaken a constitutional floor (security, data loss, the owner's machine, the operator channel) to recover benefit. Say when the honest benefit is near zero because of the design's target rather than its walls, and recommend changing the target.
+
+**Self-contained documents.** Read the spec's ELI16 overview as a reader with no context. It must explain:
+- what the system is;
+- what exists today;
+- what changes and why, before any detail.
+
+It must also define each term the first time, and not rely on the session's history or internal names. A decision-facing overview that does not stand on its own is a DESIGN-class finding when it would mislead the decider. Otherwise it is PRECISION.
+
 ## Output format
 
 Produce a structured finding list. For each finding:
@@ -136,3 +186,5 @@ If the spec is structurally fine but doesn't engage with applicable lessons, you
 If you're uncertain whether something is a real backtrack vs. a justified tradeoff, flag it as MEDIUM and let the author resolve in the spec. Do not pad findings — only flag what's substantive.
 
 If you find zero findings, your report says "Lessons-aware review: no contradictions or missing engagements found. Spec respects all applicable principles + lessons." (Don't pad with affirmations of every passed check.)
+
+**Classify every finding (required).** Label each finding `DESIGN` (changes what would be built or how it behaves, or the spec is factually wrong about the system) or `PRECISION` (wording, naming, caveats, examples, or a long-tail edge case whose cost is out of proportion to its likelihood). Only DESIGN findings send the spec back for another round; PRECISION findings are listed as left behind. If your lens does not apply to this change, say so in one line and raise nothing.
