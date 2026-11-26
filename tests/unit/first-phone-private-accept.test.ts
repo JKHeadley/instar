@@ -1,4 +1,9 @@
 import { createHash } from 'node:crypto';
+import fs from 'node:fs';
+import os from 'node:os';
+import path from 'node:path';
+import { SafeFsExecutor } from '../../src/core/SafeFsExecutor.js';
+import { FirstPhonePrivateOfferStore } from '../../src/core/trustJourney/FirstPhonePrivateOfferStore.js';
 import Database from 'better-sqlite3';
 import { FirstPhonePrivateAcceptService } from '../../src/core/trustJourney/FirstPhonePrivateAcceptService.js';
 import { TrustJourneyStore } from '../../src/core/trustJourney/TrustJourneyStore.js';
@@ -197,4 +202,34 @@ it('resolves only an exact durable offer for an unexpired committed local holder
   liveHolder = { ...holder, expiresAt: 500 };
   now = offer.expiresAt;
   expect(resolve(callbackData)).toBeNull();
+});
+
+it('recovers the immutable acknowledged offer from disk without saving the button token', () => {
+  const dir = fs.mkdtempSync(path.join(os.tmpdir(), 'first-phone-offer-'));
+  const dbPath = path.join(dir, 'offers.sqlite');
+  let db = new Database(dbPath);
+  try {
+    const { callbackData, ...fields } = offer;
+    const expected = { offer: fields, deviceId: proposal.deviceId, holderMachineId: 'holder-machine' };
+    const store = new FirstPhonePrivateOfferStore(db);
+    expect(store.saveAcknowledged(callbackData, { ...expected, offer: { ...fields, disclosureMessageId: 0 } })).toBe(false);
+    expect(store.saveAcknowledged(callbackData, expected)).toBe(true);
+    expect(store.saveAcknowledged(callbackData, { ...expected, deviceId: 'another-phone' })).toBe(false);
+    expect(store.saveAcknowledged('first-phone:another_fixture_token_123', expected)).toBe(false);
+    const callbackHash = createHash('sha256').update(callbackData).digest('hex');
+    expect(db.prepare('SELECT callback_hash FROM first_phone_private_offers').all()).toEqual([{ callback_hash: callbackHash }]);
+    db.close();
+
+    db = new Database(dbPath);
+    const reopened = new FirstPhonePrivateOfferStore(db);
+    expect(reopened.lookup(callbackHash)).toEqual(expected);
+    expect(reopened.lookup(callbackData)).toBeNull();
+    db.transaction(() => {
+      expect(reopened.lookup(callbackHash)).toBeNull();
+      expect(reopened.saveAcknowledged('first-phone:third_fixture_token_123', expected)).toBe(false);
+    })();
+  } finally {
+    db.close();
+    SafeFsExecutor.safeRmSync(dir, { recursive: true, force: true, operation: 'test first-phone offer store' });
+  }
 });

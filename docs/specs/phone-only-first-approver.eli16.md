@@ -35,3 +35,5 @@ The Telegram adapter now recognizes the private enrollment button and refuses fo
 The test nomination handler now checks that the exact private Telegram approval account was accepted before it offered enrollment and is still active when the owner taps.
 
 The enrollment fixture now compares the saved offer with the current holder and exact phone. It refuses to continue when the holder, keys, address, disclosure, or slot has changed.
+
+The test store can now recover the acknowledged private enrollment offer after restart. It keeps a digest of the button token and refuses attempts to change the offer or reuse the disclosure message.

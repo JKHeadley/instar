@@ -1,6 +1,7 @@
 import { createHash } from 'node:crypto';
 import type { CurrentFirstPhoneOffer } from './FirstPhonePrivateAcceptService.js';
-import { FIRST_PHONE_PRIVATE_CALLBACK, type FirstPhonePrivateOffer } from './firstPhonePrivateAccept.js';
+import type { StoredFirstPhoneOffer } from './FirstPhonePrivateOfferStore.js';
+import { FIRST_PHONE_PRIVATE_CALLBACK } from './firstPhonePrivateAccept.js';
 import { firstPhoneProposalHash, type FirstPhoneProposal } from './firstPhoneProposal.js';
 
 interface VerifiedHolder {
@@ -19,7 +20,7 @@ interface VerifiedDeviceProposal {
  * No callback or locator fields can stand in for any of that evidence.
  */
 export function createFirstPhoneOfferResolver(deps: {
-  readStoredOffer: (callbackHash: string) => { offer: Omit<FirstPhonePrivateOffer, 'callbackData'>; deviceId: string; holderMachineId: string } | null;
+  readStoredOffer: (callbackHash: string) => StoredFirstPhoneOffer | null;
   readVerifiedHolder: () => VerifiedHolder | null;
   readVerifiedDeviceProposal: (deviceId: string) => VerifiedDeviceProposal | null;
   now: () => number;
