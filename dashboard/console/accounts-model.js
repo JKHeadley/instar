@@ -260,6 +260,7 @@ export function accountCounts(accounts) {
  * Returns { ok, needs, notices, accounts, headline, sub, facts, partial, tone }.
  */
 function repairStatus(cell) {
+  if (cell.state === 'ok') return 'Waiting for the agent to recheck the sign-in';
   if (cell.state === 'working') return 'Signing in';
   if (cell.episode?.state === 'failed') return 'Last repair stopped. Waiting for the agent to review it.';
   if (cell.episode?.state === 'suggested') return 'Ready for the agent to repair';
@@ -351,7 +352,14 @@ export function buildAccountsPage(res, now = Date.now(), { episodes = [], blocke
   const needs = [];
   const repairGroups = new Map();
   for (const account of accounts) for (const cell of account.cells) {
-    if (cell.state === 'ok' || failedIds.has(cell.machineId)) continue;
+    if (failedIds.has(cell.machineId)) continue;
+    const machineKey = cell.machineId ?? cell.machine;
+    if (!repairGroups.has(machineKey)) repairGroups.set(machineKey, { key: machineKey, machine: cell.machine, cells: new Map() });
+    const machine = repairGroups.get(machineKey);
+    if (cell.state === 'ok' && cell.row.loginCheck === 'ok') {
+      machine.cells.set(account.id, null);
+      continue;
+    }
     const episode = cell.episode;
     const ownerStep = cell.actionable && ['attn', 'waiting'].includes(cell.state) && (
       episode?.state === 'waiting-operator-only' || cell.blocker?.reason === 'device-limit-benched'
@@ -370,12 +378,14 @@ export function buildAccountsPage(res, now = Date.now(), { episodes = [], blocke
     } : null;
     if (ownerAction) needs.push(ownerAction);
     const status = ownerAction?.sub || repairStatus(cell);
-    const key = cell.machineId ?? cell.machine;
-    if (!repairGroups.has(key)) repairGroups.set(key, { machine: cell.machine, rows: new Map() });
-    repairGroups.get(key).rows.set(account.id, { ...row, status, ownerAction });
+    machine.cells.set(account.id, { ...row, status, ownerAction });
   }
-  const repairs = [...repairGroups.values()].sort((a, b) => compareNames(a.machine, b.machine))
-    .map(group => ({ machine: group.machine, rows: [...group.rows.values()].sort((a, b) => compareNames(a.label, b.label)) }));
+  const signInMachines = [...repairGroups.values()].sort((a, b) => compareNames(a.machine, b.machine)).map(group => {
+    const rows = [...group.cells.values()].filter(Boolean).sort((a, b) => compareNames(a.label, b.label));
+    return { key: group.key, machine: group.machine, total: group.cells.size, signedIn: group.cells.size - rows.length, rows };
+  });
+  const repairs = signInMachines.filter(machine => machine.rows.length);
+  const signedInMachines = signInMachines.filter(machine => !machine.rows.length).map(machine => machine.machine);
   const usageAccounts = accounts.filter(account => account.windows.length > 0);
   const busiest = [...usageAccounts].filter(account => account.tight).sort(compareUsage)[0];
   const notices = accountNotices(accounts, { partial: failed.length > 0, now });
@@ -393,5 +403,5 @@ export function buildAccountsPage(res, now = Date.now(), { episodes = [], blocke
   const partial = failed.length ? `${failed.map((f) => unreachableSentence(verifiedDisplayName(f.nickname, f.machineId) || verifiedDisplayName(f.machineNickname, f.machineId) || machineNames[f.machineId] || null,
     poolMachine(poolMachines, f.machineId), f, now)).join(' ')} ${failed.length === 1 ? 'Its accounts' : 'Their accounts'} may be out of date.` : null;
   // warning-path: pageHead
-  return { ok: true, needs, notices, accounts, usageAccounts, repairs, headline, sub, facts, partial, tone: 'ok' };
+  return { ok: true, needs, notices, accounts, usageAccounts, repairs, signedInMachines, headline, sub, facts, partial, tone: 'ok' };
 }

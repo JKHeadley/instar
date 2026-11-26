@@ -53,6 +53,23 @@ describe('accounts page model', () => {
     expect(p.partial).toContain('Offline Laptop');
     expect(p.needs).toEqual([]);
   });
+  it('summarizes a large machine roster and collects all-ready machines', () => {
+    const accounts = Array.from({ length: 14 }, (_, index) => {
+      const account = { id: `fixture-${index}`, nickname: `Account ${index}` };
+      const ready = ['Studio', 'Laptop', 'Spare', 'Bench'].map(machine => row({ ...account, machineId: `fixture-${machine.toLowerCase()}`, machineNickname: machine }));
+      return index < 10 ? [...ready, row({ ...account, machineId: 'mini', machineNickname: 'Mini' })] : ready;
+    }).flat();
+    const p = buildAccountsPage(ok({ accounts }), NOW);
+    expect(p.repairs).toEqual([expect.objectContaining({ machine: 'Mini', total: 14, signedIn: 10, rows: expect.any(Array) })]);
+    expect(p.repairs[0].rows).toHaveLength(4);
+    expect(p.signedInMachines).toEqual(['Bench', 'Laptop', 'Spare', 'Studio']);
+  });
+  it('keeps an active but unchecked login outside the all-signed-in summary', () => {
+    const p = buildAccountsPage(ok({ accounts: [row({ loginCheck: 'unavailable' })] }), NOW);
+    expect(p.signedInMachines).toEqual([]);
+    expect(p.repairs[0]).toMatchObject({ total: 1, signedIn: 0,
+      rows: [{ status: 'Waiting for the agent to recheck the sign-in', ownerAction: null }] });
+  });
   it('an unconfirmed or blocked sign-in is shown but is not "needs you"', () => {
     const noIncident = buildAccountsPage(ok({ accounts: [row({ status: 'needs-reauth', loginCheck: 'unavailable' })] }), NOW, {
       blockers: [{ accountId: 'luna', machineId: 'm1', reason: 'no-open-incident' }],

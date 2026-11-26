@@ -1818,7 +1818,9 @@ a.needs-row:hover { background: var(--surface-raised); }
 .acct-repairs { display: grid; gap: var(--s-3); }
 .acct-repairs h2, .acct-repairs h3, .acct-repairs p { margin: 0; }
 .acct-repair-machine { min-width: 0; border: 1px solid var(--hairline); border-radius: var(--r-md); padding: var(--s-3); background: var(--surface-raised); }
-.acct-repair-machine-name { color: var(--text-strong); font-size: 14px; }
+.acct-repair-summary { min-height: 44px; display: list-item; cursor: pointer; color: var(--text-muted); line-height: 1.5; padding-block: 10px; }
+.acct-repair-summary strong { color: var(--text-strong); margin-inline-end: var(--s-2); }
+.acct-repair-summary span { overflow-wrap: anywhere; }
 .acct-repair-rows { list-style: none; padding: 0; margin: var(--s-2) 0 0; }
 .acct-repair-row { display: flex; flex-wrap: wrap; align-items: center; justify-content: space-between; gap: var(--s-2); padding-block: var(--s-2); }
 .acct-repair-row + .acct-repair-row { border-top: 1px solid var(--hairline); }
