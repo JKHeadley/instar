@@ -37,6 +37,8 @@ export interface GraphReadSource {
   /** The flat conversation inventory: exact list id and machine. */
   conversations(): ConversationSource[];
   unavailableConversations?(): ConversationRef[];
+  /** Exact project assignment for each visible conversation, including affirmative nulls. */
+  treeProjectMembership?(): ReadonlyMap<string, string | null> | null;
   /** Effort titles (EffortHeaderStore); null when absent or forgotten. */
   effortTitle(effort: EffortRef): string | null;
   headerMetadata?(effort: EffortRef): {version:number;forgotten:boolean}|null;
@@ -86,6 +88,7 @@ export interface TreeNode {
   frontDoor?: ConversationRef;
   /** Efforts only, when the projects could be read and this effort holds a tracked project's conversation. */
   project?: { title: string; conversationKey: string };
+  projectConversationKey?: string;
   children?: TreeNode[];
   /** False when the children shown are not all of them (depth, per-node or response limit): open the node for the rest. */
   childrenComplete?: boolean;
@@ -331,8 +334,59 @@ export class ConversationGraphReadModel {
     // The Chief of Staff conversation heads the tree, as it heads the Overview (first page only).
     const rootRef = (q.cursor ?? '') === '' ? this.rootRef() : null;
     const rootItem = rootRef ? projection.item(rootRef) : null;
+    const groups = items.filter((item) => item.kind === 'effort');
+    const projects: TreeNode[] = [];
+    const ungrouped: TreeNode[] = [];
+    const membership = this.source.treeProjectMembership?.();
+    let placementComplete = false;
+    if (membership && q.projects && !q.cursor && !page.nextCursor && partialReasons.length === 0) {
+      const refs = projection.list('all', null).filter((ref) => ref.kind === 'conversation');
+      const projectRows = new Map<string, TreeNode>();
+      const wholeBranch = (row: TreeNode): boolean => row.childrenComplete !== false && row.proposedComplete !== false
+        && (row.children?.every(wholeBranch) ?? true);
+      placementComplete = groups.every(wholeBranch) && refs.length <= TREE_NODE_BUDGET
+        && graph.conflicts.length === 0 && refs.every((ref) => membership.has(nodeKey(ref)));
+      for (const project of q.projects) {
+        const item = projection.item(project.ref);
+        if (!item || budget <= 0 || projectRows.has(project.conversationKey)) { placementComplete = false; continue; }
+        const row = flat(item);
+        row.project = { title: project.title, conversationKey: project.conversationKey };
+        row.projectConversationKey = project.conversationKey;
+        row.children = [];
+        row.childrenComplete = true;
+        projects.push(row);
+        projectRows.set(project.conversationKey, row);
+      }
+      for (const ref of refs) {
+        if (rootRef && nodeKey(ref) === nodeKey(rootRef)) continue;
+        const item = projection.item(ref);
+        const key = membership.get(nodeKey(ref));
+        const grouped = graph.parentOf.get(nodeKey(ref));
+        if (!item || item.state === 'unavailable' || key === undefined || (key && grouped)) {
+          placementComplete = false;
+          continue;
+        }
+        if (key) {
+          const project = projectRows.get(key);
+          if (!project || !project.children) { placementComplete = false; continue; }
+          if (nodeKey(project.ref) !== nodeKey(ref)) {
+            if (project.children.length >= TREE_CHILD_LIMIT || budget <= 0) {
+              project.childrenComplete = false;
+              placementComplete = false;
+              continue;
+            }
+            project.children.push({ ...flat(item), projectConversationKey: key });
+            project.visibleChildCount = project.children.length;
+          }
+        } else if (!grouped) {
+          if (budget <= 0) { placementComplete = false; continue; }
+          ungrouped.push(flat(item));
+        }
+      }
+    }
     return { status: 200, body: { ...this.envelope(revision, partialReasons), ...(rootItem ? { root: flat(rootItem) } : {}),
       items, nextCursor: page.nextCursor, projects: q.projects ? 'known' : 'unknown',
+      sections: { projects, groups, ungrouped: placementComplete ? ungrouped : [] }, placementComplete,
       limits: { depth: TREE_MAX_DEPTH, childrenPerNode: TREE_CHILD_LIMIT, nodes: TREE_NODE_BUDGET } } };
   }
 

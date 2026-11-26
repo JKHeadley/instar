@@ -45,6 +45,12 @@ it('keeps all three conversation-tree routes open for a simulator-signed owner',
     const projects = await read('/mobile/work/projects');
     expect(projects.projects).toContainEqual(expect.objectContaining({ key: 'telegram:42' }));
     const tree = await read('/mobile/conversation-graph/tree');
+    expect(tree.placementComplete).toBe(true);
+    expect(tree.sections.projects).toEqual([expect.objectContaining({
+      projectConversationKey: 'telegram:42', children: [expect.objectContaining({ title: 'Generated Project Chat' })],
+    })]);
+    expect(tree.sections.ungrouped).toEqual([expect.objectContaining({ title: 'Ordinary Chat' })]);
+    expect(tree.sections.groups[0].children[0]).toMatchObject({ title: 'Nested Group' });
     expect(tree.items[0].children[0]).toMatchObject({ title: 'Nested Group' });
     expect((await fetch(`http://${host}/mobile/conversation-graph/tree`)).status).toBe(401);
   } finally {

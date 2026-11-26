@@ -9,6 +9,7 @@ import express from 'express';
 import { AppConversationService } from '../dist/core/AppConversationService.js';
 import { identityKeyLookup, loadMachineSigner } from '../dist/core/AppRecordSignatures.js';
 import { ConversationRegistry } from '../dist/core/ConversationRegistry.js';
+import { nodeKey } from '../dist/core/conversationGraph.js';
 import { ConversationGraphReadModel } from '../dist/core/conversationGraphRead.js';
 import { MachineIdentityManager } from '../dist/core/MachineIdentity.js';
 import { MobileDeviceKeyLedger } from '../dist/core/MobileDeviceKeyLedger.js';
@@ -80,9 +81,15 @@ try {
     projectScope: [], headerId: `hdr-${subject.id.replaceAll('-', '')}` }));
   events.push(event(3, { subject: nested, op: 'set-primary-placement', parent: group, relation: 'contains', replacesPlacementEventIds: [] }));
   events.push(event(4, { subject: telegram(43), op: 'set-primary-placement', parent: nested, relation: 'coordinates', replacesPlacementEventIds: [] }));
+  const generatedRef = { kind: 'conversation', platform: 'app', conversationKey: child };
   const model = new ConversationGraphReadModel({
     readiness: () => ({ ready: true }), certifiedEvents: () => events, verify: () => true,
-    conversations: () => topics.map(([id, title]) => ({ ref: telegram(id), conversationId: id, title, lastActivity: at })),
+    conversations: () => [...topics.map(([id, title]) => ({ ref: telegram(id), conversationId: id, title, lastActivity: at })),
+      { ref: generatedRef, conversationId: child, title: 'Generated Project Chat', lastActivity: at }],
+    treeProjectMembership: () => new Map([
+      ...topics.map(([id]) => [nodeKey(telegram(id)), id === 42 ? 'telegram:42' : null]),
+      [nodeKey(generatedRef), 'telegram:42'],
+    ]),
     effortTitle: (ref) => ref.id === group.id ? 'Fixture Group' : 'Nested Group',
     replication: () => ({ replicaLag: false, eventGap: false, evidenceMissing: false }), now: () => new Date(),
   }, { rootConversation: () => telegram(41) });
