@@ -1,0 +1,19 @@
+{
+  "version": 2,
+  "slug": "mac-keychain-master-key-private-input",
+  "sessionId": "fc3d3191-842f-463d-af54-a2abbc40e3f2",
+  "timestamp": "2026-11-26T17:37:09.763Z",
+  "artifactPath": "upgrades/side-effects/mac-keychain-master-key-private-input.md",
+  "artifactSha256": "53ae9c9c5f300dc1d2560d57e2fae9e13c1f79e9a6e5b64eb17e0f58ca78db66",
+  "coveredFiles": [
+    "docs/specs/mac-keychain-master-key-private-input.eli16.md",
+    "upgrades/side-effects/mac-keychain-master-key-private-input.md"
+  ],
+  "phase": "complete",
+  "tier": 1,
+  "tierReasoning": "Records the live macOS process-table check for the keychain stdin change; documentation only",
+  "eli16Path": "docs/specs/mac-keychain-master-key-private-input.eli16.md",
+  "sideEffectsPath": "upgrades/side-effects/mac-keychain-master-key-private-input.md",
+  "secondPass": "true",
+  "reviewerConcurred": false
+}

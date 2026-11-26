@@ -22,3 +22,14 @@ This change moved off PR 3900 (its base branch closed with 3898) onto 3928's bra
 No code change was made in response; the concerns are answered above for the reviewer of this PR.
 
 - Stage-B manifest: `src/core/macKeychainWrite.ts` is excluded with a reason (reached only through the already-excluded SecretStore and GlobalSecretStore), so the release fingerprint check classifies it.
+
+## Live macOS check (2026-11-26, Studio, before merge)
+
+The Chief of Staff asked for proof beyond the stub runner, since the reviewer did not concur. A throwaway check ran on the Studio. It used a synthetic random 32-byte key and its own uniquely named keychain item (`instar-livecheck-3931-<random>`, account `synthetic-throwaway`), deleted afterwards. Echo's real keychain items were never read or written. The key manager was not run against the real keychain, because its legacy-slot adoption could copy a real key into a test item. A separate sampler process ran `ps -axo args` in a loop and recorded any line containing the key (base64 or hex).
+
+- Positive control, the old way (key as a command-line argument to `security add-generic-password -w`): 124 writes in 15 s. The key appeared in **52 of 166** process-table samples, so the sampler can catch it.
+- New path (`writeMacKeychainKey`, real `/usr/bin/security -i` on stdin plus a real read-back): 88 writes in 15 s, all 88 confirmed by read-back. The key appeared in **0 of 220** samples. An earlier 30-write run also stored and read back the exact key, with 0 hits.
+- Owner-only file fallback: a temporary state folder with a keychain stand-in that always rejects writes. `getMasterKey()` wrote `machine/secrets-master.key` with mode **600**, holding the exact key, and a fresh manager reloaded the same key. The temp folder was removed.
+- Every test keychain item was confirmed deleted.
+
+Result: the master key does not appear in another process's argv on the new path; the old path demonstrably did. The fallback file behaves as described.
