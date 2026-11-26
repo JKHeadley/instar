@@ -34,6 +34,10 @@ export function firstPhoneProposalHash(proposal: FirstPhoneProposal): string {
   ])).digest('hex');
 }
 
+const NOMINATION_ID_PATTERN = '[a-f0-9]{8}-[a-f0-9]{4}-4[a-f0-9]{3}-[89ab][a-f0-9]{3}-[a-f0-9]{12}';
+export const FIRST_PHONE_NOMINATION_ID = new RegExp(`^${NOMINATION_ID_PATTERN}$`);
+export const FIRST_PHONE_ENROLLMENT_LOOKUP_PATH = new RegExp(`^/mobile/trust/first-phone-enrollment/${NOMINATION_ID_PATTERN}$`);
+
 /** Exact first-phone action for the existing permission presence envelope. */
 export function firstPhoneEnrollmentLine(
   nominationId: unknown,
@@ -41,7 +45,7 @@ export function firstPhoneEnrollmentLine(
   disclosureHash: unknown,
 ): string | null {
   const digest = /^[a-f0-9]{64}$/;
-  if (typeof nominationId !== 'string' || !/^[a-f0-9]{8}-[a-f0-9]{4}-4[a-f0-9]{3}-[89ab][a-f0-9]{3}-[a-f0-9]{12}$/.test(nominationId)
+  if (typeof nominationId !== 'string' || !FIRST_PHONE_NOMINATION_ID.test(nominationId)
     || typeof proposalHash !== 'string' || !digest.test(proposalHash)
     || typeof disclosureHash !== 'string' || !digest.test(disclosureHash)) return null;
   return `first-phone-enrollment-v1 ${nominationId} ${proposalHash} ${disclosureHash}`;

@@ -57,7 +57,7 @@ import { maybeRotateJsonl } from '../utils/jsonl-rotation.js';
 import { isTeamSwitchSetting, type TeamSwitchSetting } from '../core/TeamSwitches.js';
 import { isNewAccountKind, type NewAccountKind } from '../core/newSubscriptionAccountId.js';
 import { keyHashOf, parseDevicePublicKey } from '../core/MobileDeviceKeys.js';
-import { firstPhoneEnrollmentLine } from '../core/trustJourney/firstPhoneProposal.js';
+import { FIRST_PHONE_ENROLLMENT_LOOKUP_PATH, firstPhoneEnrollmentLine } from '../core/trustJourney/firstPhoneProposal.js';
 import { arrivedLocallyUnforwarded, trustAnswerStatus, type MobileTrustPort } from './mobileTrustApproval.js';
 
 export const MOBILE_PERMISSIONS_SCHEMA_VERSION = 1;
@@ -747,6 +747,8 @@ export function summarizePeerFeatures(peers: Array<PeerSlips | PeerUnreached>, o
 
 export interface ActionResult { status: number; body: unknown }
 
+type FirstPhoneCaller = { deviceId: string; host: string; deviceKeyHash: string; presenceKeyHash: string };
+
 export interface MobilePermissionsDeps {
   pairing: () => MobilePairingService | null;
   config: () => InstarConfig;
@@ -781,10 +783,12 @@ export interface MobilePermissionsDeps {
     action: Extract<PermissionAction, { kind: 'first-phone-enrollment-v1' }>,
     caller: { deviceId: string; host: string },
   ) => Refusal | null;
+  /** Test-only resolver for the exact nomination or historical receipt. */
+  firstPhoneEnrollmentRead?: (nominationId: string, caller: FirstPhoneCaller) => Promise<ActionResult>;
   /** Test-only authority for the durable decision. It revalidates current authority at commit. */
   firstPhoneEnrollmentSubmit?: (
     action: Extract<PermissionAction, { kind: 'first-phone-enrollment-v1' }>,
-    proof: { deviceId: string; host: string; deviceKeyHash: string; presenceKeyHash: string; challengeExpiresAt: number },
+    proof: FirstPhoneCaller & { challengeExpiresAt: number },
   ) => Promise<ActionResult>;
   /** Team access's Face ID actions (team-roles-and-access §3.6, §4.1). */
   teamAction?: (kind: TeamActionKind, req: Request, deviceId: string, target?: string) => Promise<ActionResult>;
@@ -1379,6 +1383,25 @@ export function mountMobilePermissionsRoutes(router: Router, deps: MobilePermiss
     finish(res, 'trust-approved', a, g, r);
   });
 
+  const firstPhoneCaller = (req: Request, g: { deviceId: string; host: string; presenceKey: string }): FirstPhoneCaller | null => {
+    const identity = deviceAdmissionIdentity(req);
+    if (identity?.role !== 'owner' || !parseDevicePublicKey(g.presenceKey)) return null;
+    return { deviceId: g.deviceId, host: g.host, deviceKeyHash: identity.keyHash, presenceKeyHash: keyHashOf(g.presenceKey) };
+  };
+
+  router.get('/mobile/trust/first-phone-enrollment/:id', guarded('read first-phone enrollment', async (req, res) => {
+    res.set('Cache-Control', 'no-store');
+    const g = writeGate(req, res, 'first-phone');
+    if (!g) return;
+    const id = String(req.params.id);
+    if (!FIRST_PHONE_ENROLLMENT_LOOKUP_PATH.test(req.originalUrl)) { refuse400(req, res, g, 'bad-enrollment-binding'); return; }
+    const caller = firstPhoneCaller(req, g);
+    if (!caller) { res.status(403).json({ error: 'first-phone-proof-unavailable' }); return; }
+    if (!deps.firstPhoneEnrollmentRead) { res.status(503).json({ error: 'first-phone-enrollment-unavailable' }); return; }
+    const result = await deps.firstPhoneEnrollmentRead(id, caller);
+    res.status(result.status).json(result.body);
+  }));
+
   router.post('/mobile/trust/first-phone-enrollment', guarded('record first-phone enrollment', async (req, res) => {
     res.set('Cache-Control', 'no-store');
     const g = writeGate(req, res, 'first-phone');
@@ -1387,9 +1410,8 @@ export function mountMobilePermissionsRoutes(router: Router, deps: MobilePermiss
     const built = buildAction('first-phone-enrollment-v1', b.target, actionExtras(b));
     if (!built.ok) { refuse400(req, res, g, built.error); return; }
     const action = built.action as Extract<PermissionAction, { kind: 'first-phone-enrollment-v1' }>;
-    const identity = deviceAdmissionIdentity(req);
-    const presenceKey = parseDevicePublicKey(g.presenceKey);
-    if (!identity || identity.role !== 'owner' || !presenceKey) {
+    const caller = firstPhoneCaller(req, g);
+    if (!caller) {
       finish(res, 'trust-acceptance', action, g, { status: 403, body: { error: 'first-phone-proof-unavailable' } });
       return;
     }
@@ -1400,8 +1422,7 @@ export function mountMobilePermissionsRoutes(router: Router, deps: MobilePermiss
     const proof = provenDetail(req, res, g, action);
     if (!proof) return;
     const result = await deps.firstPhoneEnrollmentSubmit(action, {
-      deviceId: g.deviceId, host: g.host, deviceKeyHash: identity.keyHash,
-      presenceKeyHash: keyHashOf(g.presenceKey), challengeExpiresAt: proof.expiresAt,
+      ...caller, challengeExpiresAt: proof.expiresAt,
     });
     finish(res, 'trust-acceptance', action, g, result);
   }));

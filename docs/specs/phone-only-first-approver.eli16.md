@@ -27,3 +27,5 @@ The server and iPhone simulator use the same test bytes for the enrollment confi
 The existing mobile permission route can now ask a disposable iPhone to sign the separate enrollment confirmation after the test authority checks the exact nomination. The live agent still cannot issue that challenge.
 
 The test server can now verify the signed enrollment response and pass the verified phone keys to its enrollment authority. The live agent still keeps enrollment off.
+
+The disposable server now gives the exact paired phone its enrollment disclosure and lets it recover the earlier receipt. It reports separately whether approvals are still on.

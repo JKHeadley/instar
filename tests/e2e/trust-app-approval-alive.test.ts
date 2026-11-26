@@ -62,6 +62,9 @@ describe('App trust approval E2E (feature is alive)', () => {
     });
     expect(submit.status).toBe(503);
     expect(submit.body).toEqual({ error: 'first-phone-enrollment-unavailable' });
+    const read = await phone.signed('GET', '/mobile/trust/first-phone-enrollment/01234567-89ab-4cde-8fab-012345678901');
+    expect(read.status).toBe(503);
+    expect(read.body).toEqual({ error: 'first-phone-enrollment-unavailable' });
   });
 
   it('a configured but unopened Telegram chat never blocks an app setup request and exact signed approval', async () => {
