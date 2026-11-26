@@ -66,6 +66,18 @@ This creates persistent browser data, so a whole historical binary rollback is n
 
 ## Second-pass review
 
+**Reviewer:** independent second-pass reviewer, Claude Fable 5.2 helper for the Echo Chief of Staff session, not the author
+
+Concur for head `8517256b13b3da7e83ee51d34b68aa42161320dd`, limited to the paths that flag this change. Local Verify flags it because the test files gain one conditional skip net (`describe.skipIf(!HAS_CHROME)` in `tests/integration/console-chat-outbox-browser.test.ts`), which makes all fourteen changed test files the flagged set. I read that file in full, every removed line and every modified hunk in the seven edited test files, and scanned the seven new test files for vacuous or loosened checks. I did not review the product code under `dashboard/` and `src/` (the six-lens convergence and the full Local Verify run cover it), and I did not rerun any tests.
+
+- **The added skip does not hide coverage.** It is the same real-Chrome capability gate that three browser fixture tests on main already use. The same durability claims are also made by `tests/e2e/web-chat-durable-outbox-alive.test.ts`, which asserts in `beforeAll` that a Chrome executable exists and so fails, not skips, on a machine without one.
+- **No existing check is weakened.** Across the fourteen files no `expect` line is removed and no test registration is removed (90 added, 0 removed). The edits to existing tests are fixture changes the new behaviour needs: the status fixture gains the outbox capability block and a live server clock, one Slack test moves its stored device record to the machine that holds the conversation, routers receive the new status dependency, and one `afterEach` additionally restores mocks.
+- **The new tests assert real behaviour.** The integration and e2e files drive the shipped modules in an isolated Chrome profile and over the production HTTP routers and compare exact stored and returned values; the runner unit test stubs only the store and the network.
+
+Non-blocking notes: the new browser tests carry per-test time limits of 60 to 150 seconds, which bound a hang and loosen nothing that existed; on a machine without Chrome the six integration cases skip without a line saying so, as the three existing fixture tests do; several new tests poll with wall-clock deadlines of 10 to 15 seconds, which can be slow under load.
+
+Author's earlier account of the build-time review rounds (written by the author, not by the reviewer above):
+
 Five independent caller perspectives identified real regressions in legacy cleanup, hold broadcasting, stale signing-key deletion, draft replacement, request-budget selection and local recovery controls. Each was reproduced and corrected. The final file-export guard also rechecks sign-in synchronously after the last asynchronous storage read; the regression previously returned plaintext after disposal. Final review receipts and source hashes are under .instar/state/build/code-review-*.md. Final combined real-Chrome execution passes all six cases with zero skipped in server-chrome-six-final.log; source-start/end hashes are preserved. Individual earlier cases are not substituted for that combined result.
 
 ## Evidence pointers
