@@ -38,7 +38,7 @@ export interface GraphReadSource {
   conversations(): ConversationSource[];
   unavailableConversations?(): ConversationRef[];
   /** Exact project assignment for each visible conversation, including affirmative nulls. */
-  treeProjectMembership?(): ReadonlyMap<string, string | null> | null;
+  treeProjectMembership?(refs: readonly ConversationRef[]): ReadonlyMap<string, string | null> | null;
   /** Effort titles (EffortHeaderStore); null when absent or forgotten. */
   effortTitle(effort: EffortRef): string | null;
   headerMetadata?(effort: EffortRef): {version:number;forgotten:boolean}|null;
@@ -337,10 +337,10 @@ export class ConversationGraphReadModel {
     const groups = items.filter((item) => item.kind === 'effort');
     const projects: TreeNode[] = [];
     const ungrouped: TreeNode[] = [];
-    const membership = this.source.treeProjectMembership?.();
+    const refs = projection.list('all', null).filter((ref) => ref.kind === 'conversation');
+    const membership = this.source.treeProjectMembership?.(refs);
     let placementComplete = false;
     if (membership && q.projects && !q.cursor && !page.nextCursor && partialReasons.length === 0) {
-      const refs = projection.list('all', null).filter((ref) => ref.kind === 'conversation');
       const projectRows = new Map<string, TreeNode>();
       const wholeBranch = (row: TreeNode): boolean => row.childrenComplete !== false && row.proposedComplete !== false
         && (row.children?.every(wholeBranch) ?? true);

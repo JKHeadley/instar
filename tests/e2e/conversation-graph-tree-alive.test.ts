@@ -81,6 +81,9 @@ describe('phone tree on the production AgentServer',()=>{
    expect(webTree.status,JSON.stringify(webTree.body)).toBe(200);
    expect(webTree.body.items).toEqual(tree.body.items);
    expect(webTree.body.projects).toBe(tree.body.projects);
+   expect(tree.body.placementComplete).toBe(false);
+   expect(tree.body.sections.ungrouped).toEqual([]);
+   expect(webTree.body.placementComplete).toBe(false);
    // The nested node opens with the existing node read, by the routeRef the tree gave.
    const opened=await get(`/mobile/conversation-graph/nodes/${top.children[0].routeRef}`);
    expect(opened.status).toBe(200);expect(opened.body.path.map((p:{title:string})=>p.title)).toEqual(['Synthetic parent group']);

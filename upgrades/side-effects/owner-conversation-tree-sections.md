@@ -23,3 +23,9 @@ The signed fixture also seeds a project descendant pin through the real pin stor
 The fixture joins a visible card to the exact same conversation across signed list, Projects and tree reads.
 
 The disposable launcher serves signed read-only board and exact card detail data with a conversation backlink.
+
+The production tree now reads project membership from the Chief placement
+snapshot for conversations visible in the certified graph. It recognizes
+confirmed project chats, direct children and explicit roots. Unknown ancestry,
+invisible parents, and deeper project paths that this renderer cannot yet
+preserve withhold completeness. This is a partial integration checkpoint.

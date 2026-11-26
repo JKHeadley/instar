@@ -13,7 +13,11 @@ export class ConversationGraphRuntimeReadSource implements GraphReadSource {
  private inventorySnapshot:ReturnType<ConversationGraphReplicationRuntime['inventory']>|null=null;
  constructor(private readonly runtime:ConversationGraphReplicationRuntime,private readonly headers:ConversationGraphHeaderCustody,
   private readonly options:{correctionsEnabled?:boolean;erasureEnabled?:boolean;localIntentsEnabled?:boolean;
+   treeProjectMembership?:GraphReadSource['treeProjectMembership'];
    cardPlacements?:()=>Array<{card:import('../core/conversationGraph.js').ConversationRef;project:import('../core/conversationGraph.js').ConversationRef}>}={}){}
+ treeProjectMembership(refs:Parameters<NonNullable<GraphReadSource['treeProjectMembership']>>[0]){
+  return this.options.treeProjectMembership?.(refs)??null;
+ }
  cardPlacements(){try{return this.options.cardPlacements?.()??[];}catch{
   // A failed card read must not look like "no cards": it is reported, and nothing is proposed this read.
   DegradationReporter.getInstance().report({feature:'Conversations.proposedCards',primary:'Show work cards under their project in Conversations',
