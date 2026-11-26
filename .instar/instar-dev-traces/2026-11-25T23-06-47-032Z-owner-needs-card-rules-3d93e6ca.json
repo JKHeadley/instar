@@ -1,0 +1,23 @@
+{
+  "version": 2,
+  "slug": "owner-needs-card-rules",
+  "sessionId": "8e84229b-531e-4493-9069-98980bbef193",
+  "timestamp": "2026-11-25T23:06:47.032Z",
+  "artifactPath": "upgrades/side-effects/owner-needs-card-rules.md",
+  "artifactSha256": "47ad2af1aac10bb01f7ad1001d936fe2c5e1c646220c2d5ec6d15a33c67459b7",
+  "specPath": "docs/specs/owner-needs-card-rules.md",
+  "coveredFiles": [
+    "dashboard/console/health-model.js",
+    "dashboard/console/needs-model.js",
+    "src/core/WorkCardStore.ts",
+    "src/server/needsRoutes.ts",
+    "tests/unit/console-context.test.ts",
+    "tests/unit/internal-work-owner-surfaces.test.ts",
+    "tests/unit/needs-read.test.ts",
+    "upgrades/side-effects/owner-needs-card-rules.md"
+  ],
+  "phase": "complete",
+  "tier": 2,
+  "secondPass": "true",
+  "reviewerConcurred": true
+}

@@ -7,8 +7,8 @@
  * CoherenceJournal, the real ReplicatedRecordEmitter and peer-stream reader, a real CommitmentTracker, and the gate
  * attached with fake durable-row lookups. Then, over HTTP: an owner's commitment appears as a workable card in
  * GET /work-board (with the agent, never waiting on him) and under GET /work/projects; a note appears in the card's
- * conversation; a member's commitment under the strict policy appears in GET /needs as ONE aggregated row and never
- * as a per-card row; a second boot over the same journal shows the same cards and writes the team's enabled-at once.
+ * conversation; a member's commitment under the strict policy appears in GET /needs as a genuine per-card approval and never
+ * as an aggregate; a second boot over the same journal shows the same cards and writes the team's enabled-at once.
  */
 import { describe, it, expect, afterAll } from 'vitest';
 import request from 'supertest';
@@ -44,7 +44,7 @@ function mkConfig(): { config: InstarConfig; stateDir: string } {
   fs.writeFileSync(path.join(stateDir, 'config.json'), JSON.stringify({ port: 0, projectName: 'e2e', agentName: 'E2E' }));
   const config = {
     projectName: 'e2e', projectDir: tmpDir, stateDir, port: 0, authToken: AUTH, dashboardPin: PIN, requestTimeoutMs: 10000, version: '0.0.0',
-    workBoard: { enabled: true },
+    workBoard: { enabled: true }, developmentAgent: true, mobilePairing: { multiRoute: { enabled: false } },
     sessions: { claudePath: '/usr/bin/echo', maxSessions: 3, defaultMaxDurationMinutes: 30, protectedSessions: [], monitorIntervalMs: 5000 },
     scheduler: { enabled: false, jobsFile: '', maxParallelJobs: 1 }, messaging: [], monitoring: {}, updates: {},
   } as unknown as InstarConfig;
@@ -102,7 +102,7 @@ function mkRig(stateDir: string, telegramRows: Map<string, TelegramRow>, noteEve
 }
 
 describe('Agent work cards E2E (feature is alive)', () => {
-  it('an owner\'s request recorded over HTTP is a card with the agent, under the projects read, with a note in its conversation; a member\'s is one aggregated Needs-you row; a second boot writes enabled-at once', async () => {
+  it('an owner\'s request recorded over HTTP is a card with the agent, under the projects read, with a note in its conversation; a member\'s is one genuine approval; a second boot writes enabled-at once', async () => {
     const { config, stateDir } = mkConfig();
     const telegramRows = new Map<string, TelegramRow>();
     telegramRows.set('42:1001', { text: OWNER_TEXT, fromUser: true, forwarded: false, telegramUserId: 777 });
@@ -111,7 +111,8 @@ describe('Agent work cards E2E (feature is alive)', () => {
     const rig = mkRig(stateDir, telegramRows, noteEvents);
     rig.runtime.start();
     const late = { ledgerNote: null, ownerPersonKey: null, displayName: null };
-    const server = new AgentServer({ config, sessionManager: sm(), state: new StateManager(stateDir), workBoard: () => rig.runtime, workBoardLate: late, commitmentTracker: rig.tracker });
+    let ready = true;
+    const server = new AgentServer({ config, sessionManager: sm(), state: new StateManager(stateDir), workBoard: () => ready ? rig.runtime : null, workBoardLate: late, commitmentTracker: rig.tracker });
     await server.start();
     const app = server.getApp();
     try {
@@ -139,7 +140,7 @@ describe('Agent work cards E2E (feature is alive)', () => {
       expect(note.status, JSON.stringify(note.body)).toBe(201);
       const ck = rig.runtime.svc.view(ownerCard)!.card.conversationKey;
       expect(noteEvents.get(ck)!.map((e) => e.text)).toEqual(['Work board: the agent noted: Started on the list']);
-      // A member's request is not-started: one aggregated Needs-you row, never a per-card row.
+      // A verified member request really needs owner approval; internal work never creates an aggregate.
       const m = await request(app).post('/commitments').set(auth()).send({ type: 'one-time-action', userRequest: 'sort the venue list', agentResponse: 'I will sort it', topicId: 42, source: 'agent', sourceMessageId: '2002', followThroughOptOutReason: 'tracked on the work board' });
       expect(m.status).toBe(201);
       await tick();
@@ -154,9 +155,36 @@ describe('Agent work cards E2E (feature is alive)', () => {
       expect(b2.body.notStartedCards).toMatchObject({ count: 1, cardIds: [memberCard] });
       const { workBoardNeedRows } = await import(pathToFileURL(path.join(process.cwd(), 'dashboard', 'console', 'work-model.js')).href) as { workBoardNeedRows: (wb: unknown) => Array<{ key: string; main: string }> | null };
       const rows = workBoardNeedRows({ ok: true, data: b2.body })!;
-      expect(rows.map((r) => r.key)).toEqual(['work:not-started']);
-      expect(rows[0].main).toBe('1 internal card is waiting for your approval or board setting');
-      expect(rows.some((r) => r.key === `work:${memberCard}` || r.key === `work:${ownerCard}`)).toBe(false);
+      expect(rows.map((r) => r.key)).toEqual(['work:'+memberCard]);
+      expect(rows[0].main).toBe('sort the venue list');
+      expect(rows.some((r) => r.key === 'work:not-started' || r.key === 'work:'+ownerCard)).toBe(false);
+      // Production initialization binds the actual App store to the late-bound board runtime.
+      expect(server.appConversations).not.toBeNull();
+      const internal = rig.runtime.svc.createCard({ kind: 'agent' }, {
+        title: 'Maintain the registry', need: 'Keep the registry current', carrier: 'agent', outward: false,
+        doneWhen: [{ id: 'checked', text: 'Registry checked', certify: 'agent-may-certify' }],
+      });
+      expect(internal.ok).toBe(true);
+      if (!internal.ok) throw Error(internal.error);
+      const internalKey = rig.runtime.svc.view(internal.cardId)!.card.conversationKey;
+      rig.runtime.ensureConversation(internal.cardId);
+      expect(rig.runtime.conversationAvailable(internal.cardId)).toBe(false);
+      // Simulate a durable empty chat left by the older eager-creation path, without deleting its history.
+      const store = server.appConversations!.store;
+      store.append({ eventId: 'old-internal-created', kind: 'created', conversationKey: internalKey,
+        title: 'Maintain the registry', at: new Date().toISOString(), machineId: 'm1' });
+      expect(store.isHiddenConversation(internalKey)).toBe(true);
+      ready = false;
+      expect(() => store.listConversations({ limit: 100 })).toThrow('work-card-visibility-unavailable');
+      ready = true;
+      expect(store.isHiddenConversation(internalKey)).toBe(true);
+      expect(store.getConversation(internalKey)).not.toBeNull();
+      expect(store.listConversations({ limit: 100 }).conversations.some(c => c.conversationKey === internalKey)).toBe(false);
+      expect((await request(app).get('/work-board').set(auth())).body.lanes.flatMap((l: { cards: Array<{ id: string }> }) => l.cards).some((c: { id: string }) => c.id === internal.cardId)).toBe(false);
+      const explicit = await request(app).get('/work-board?view=agent').set(auth());
+      expect(explicit.status).toBe(200);
+      expect(explicit.body.waitingOnYou).toBe(0);
+      expect(explicit.body.lanes.flatMap((l: { cards: Array<{ id: string }> }) => l.cards).map((c: { id: string }) => c.id)).toEqual([internal.cardId]);
       // The holder's first pass wrote the team's enabled-at once.
       expect(rig.runtime.svc.enabledAt('owner')).not.toBeNull();
       const enabledAt = rig.runtime.svc.enabledAt('owner')!.at;
@@ -168,7 +196,7 @@ describe('Agent work cards E2E (feature is alive)', () => {
       await server2.start();
       try {
         await rig2.runtime.controller.tick();
-        expect(rig2.runtime.svc.cardIds().sort()).toEqual([ownerCard, memberCard].sort());
+        expect(rig2.runtime.svc.cardIds().sort()).toEqual([ownerCard, memberCard, internal.cardId].sort());
         expect(rig2.runtime.svc.enabledAt('owner')!.at).toBe(enabledAt);
         expect(rig2.runtime.gate!.needsCard()).toEqual([]);
         const b2 = await request(server2.getApp()).get('/work-board').set(auth());

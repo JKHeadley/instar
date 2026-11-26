@@ -30,6 +30,8 @@ import type { StoreFieldSchema, StoreValidateContext, ReplicatedOp } from './Rep
 import type { HlcTimestamp } from './HybridLogicalClock.js';
 import crypto from 'node:crypto';
 import { compareHlc } from './TopicPinReplicatedStore.js';
+import { decodeOwnerNeedsAskIdentity, decodeOwnerNeedsWithdrawal, ownerNeedsAskKey, type OwnerNeedsAskIdentity, type OwnerNeedsWithdrawal } from './OwnerNeedsWithdrawal.js';
+import { canonicalHash } from './GraphWitnessTypes.js';
 import { resolveDevAgentGate } from './devAgentGate.js';
 
 export { compareHlc };
@@ -52,8 +54,10 @@ export function chiefOfStaffStoreEnabled(config: { developmentAgent?: boolean; c
   return resolveDevAgentGate(config?.chiefOfStaff?.enabled, config);
 }
 
+const WITHDRAWAL_RECORD_PREFIX = 'owner-ask-withdrawal:';
+
 export const COS_RECORD_TYPES = [
-  'tree', 'binding', 'project-priority', 'binding-lifecycle', 'check-event', 'intent', 'outcome', 'renewal', 'graduation', 'last-tick', 'note',
+  'tree', 'binding', 'project-priority', 'binding-lifecycle', 'check-event', 'intent', 'outcome', 'renewal', 'graduation', 'last-tick', 'note', 'owner-ask-withdrawal',
 ] as const;
 export type CosRecordType = typeof COS_RECORD_TYPES[number];
 
@@ -100,7 +104,7 @@ export function isLegalTransition(from: CosTransition, to: CosTransition): boole
   return LEGAL_TRANSITIONS[from]?.includes(to) ?? false;
 }
 
-export const COS_LIFECYCLE_EVENTS = ['closed', 'reopened', 'unpark', 'owner-pause', 'owner-resume', 'owner-item-check', 'check-requested'] as const;
+export const COS_LIFECYCLE_EVENTS = ['closed', 'reopened', 'unpark', 'owner-pause', 'owner-resume', 'owner-item-check', 'check-requested', 'owner-ask-completed'] as const;
 export type CosLifecycleEvent = typeof COS_LIFECYCLE_EVENTS[number];
 /** The owner's pause on a project (docs/specs/cos-owner-pause-record.md). */
 export interface OwnerPauseRecord { who: string; at: string; quote: string; messageRef: string }
@@ -162,7 +166,7 @@ const KNOWN_FIELDS = [
   'action', 'leaseEpoch', 'sequence', 'claimedAt', 'holderSignature', 'intentKey', 'transition', 'writer', 'runId', 'injectId', 'reason',
   'renewedAt', 'renewedVia', 'principal', 'eventRef', 'machineSignature',
   'date', 'metrics', 'decision',
-  'tickAt',
+  'tickAt', 'withdrawal', 'completionAsk',
 ] as const;
 
 /** A lifecycle event name a later build may add: one or more lower-case words joined by '-'. */
@@ -217,6 +221,15 @@ export const chiefOfStaffRecordStoreSchema: StoreFieldSchema = {
   knownFields: KNOWN_FIELDS as unknown as ReadonlyArray<string>,
   pathSensitiveFields: ['machine', 'by', 'writer', 'principal', 'role', 'renewedVia'],
   validate(raw: Readonly<Record<string, unknown>>, ctx: StoreValidateContext): Record<string, unknown> | null {
+    const withdrawalKey = typeof raw.recordKey === 'string' && raw.recordKey.startsWith(WITHDRAWAL_RECORD_PREFIX);
+    if (withdrawalKey || raw.recordType === 'owner-ask-withdrawal') {
+      if (!withdrawalKey || raw.recordType !== 'owner-ask-withdrawal' || raw.op !== 'put') return null;
+      const withdrawal = decodeOwnerNeedsWithdrawal(raw.withdrawal);
+      if (!withdrawal || raw.recordKey !== WITHDRAWAL_RECORD_PREFIX + withdrawal.key) return null;
+      return { recordType: 'owner-ask-withdrawal', withdrawal };
+    }
+    const completionKey = typeof raw.recordKey === 'string' && raw.recordKey.startsWith('owner-ask-completion:');
+    if (completionKey && (raw.recordType !== 'binding-lifecycle' || raw.event !== 'owner-ask-completed' || raw.op !== 'put')) return null;
     if (raw.op === 'delete') {
       // Only `tree` is ever tombstoned (unparent). Everything else is immutable.
       const deletedAt = isIso(raw.deletedAt) ? raw.deletedAt : undefined;
@@ -271,6 +284,18 @@ export const chiefOfStaffRecordStoreSchema: StoreFieldSchema = {
         if (!(COS_LIFECYCLE_EVENTS as ReadonlyArray<string>).includes(raw.event)) {
           if (raw.event.length > 200 || !UNKNOWN_EVENT_RE.test(raw.event) || !isShortText(raw.by, 200)) return null;
           return { recordType: type, conversationKey: ck, event: raw.event, bindingHlc: raw.bindingHlc, by: raw.by, at: raw.at };
+        }
+        if (raw.event === 'owner-ask-completed') {
+          const ask = decodeOwnerNeedsAskIdentity(raw.completionAsk);
+          const epoch = raw.leaseEpoch;
+          if (raw.by !== 'owner-tap' || !ask || ask.project !== ck || ask.bindingVersion !== hlcKey(raw.bindingHlc)) return null;
+          if (typeof epoch !== 'number' || !Number.isSafeInteger(epoch) || epoch < 1) return null;
+          if (raw.op !== 'put' || raw.recordKey !== ownerNeedsCompletionRecordKey(ask)) return null;
+          const check = chiefOfStaffRecordStoreSchema.validate({
+            ...raw, recordKey: undefined, recordType: 'check-event', verdict: 'done-verified', progressSeen: false, note: 'owner-confirmed',
+          }, ctx);
+          if (!check) return null;
+          return { ...check, recordType: type, event: raw.event, bindingHlc: raw.bindingHlc, by: raw.by, completionAsk: ask, leaseEpoch: epoch };
         }
         if (raw.event === 'owner-pause' || raw.event === 'owner-resume') {
           // Only the owner's own tap pauses or resumes (spec cos-owner-pause-record §3.1): never the Chief of Staff.
@@ -389,6 +414,16 @@ function envelope(recordKey: string, hlc: HlcTimestamp, origin: string, observed
   return { ...fields, recordKey, hlc, op, origin, ...(observed !== undefined ? { observed } : {}) };
 }
 
+/** Build a separate record after the source writer has authorized and fenced the withdrawal. */
+export function buildOwnerNeedsWithdrawal(record: OwnerNeedsWithdrawal): Build {
+  const withdrawal = decodeOwnerNeedsWithdrawal(record);
+  return (hlc, origin, observed) => withdrawal
+    ? envelope(WITHDRAWAL_RECORD_PREFIX + withdrawal.key, hlc, origin, observed, 'put', {
+      recordType: 'owner-ask-withdrawal', withdrawal,
+    })
+    : null;
+}
+
 export function buildTreePut(conversationKey: string, parentConversationKey: string | null, role?: 'chief-of-staff' | 'project' | 'sub-topic'): Build {
   return (hlc, origin, observed) => {
     if (!isValidConversationKey(conversationKey)) return null;
@@ -485,6 +520,29 @@ export function buildCheckEvent(c: CheckEventInput): Build {
   };
 }
 
+export function ownerNeedsCompletionRecordKey(ask: OwnerNeedsAskIdentity): string {
+  return 'owner-ask-completion:' + ownerNeedsAskKey(ask);
+}
+
+/** One durable entry carries both verification and the binding transition. */
+export function buildOwnerNeedsCompletion(
+  ask: OwnerNeedsAskIdentity,
+  bindingHlc: HlcTimestamp,
+  leaseEpoch: number,
+  check: Pick<CheckEventInput, 'evidenceHash' | 'evidenceIds' | 'netDiffHighWater' | 'machine' | 'at' | 'doneItems'>,
+): Build {
+  return (hlc, origin, observed) => envelope(ownerNeedsCompletionRecordKey(ask), hlc, origin, observed, 'put', {
+    ...check,
+    recordType: 'binding-lifecycle',
+    conversationKey: ask.project,
+    event: 'owner-ask-completed',
+    by: 'owner-tap',
+    bindingHlc,
+    completionAsk: ask,
+    leaseEpoch,
+  });
+}
+
 export interface IntentInput { conversationKey: string; action: CosAction; leaseEpoch: number; sequence: number; claimedAt: string; machine: string; holderSignature: string }
 
 export function buildIntent(i: IntentInput): Build {
@@ -567,6 +625,79 @@ export function latestPerKey(entries: UnionEntry[]): Map<string, { data: Record<
     if (!cur || compareHlc(hlc, cur.hlc) > 0) winner.set(key, { data: e.data, origin: e.origin, hlc });
   }
   return winner;
+}
+
+/** Resolve the exact withdrawal from a complete authenticated journal union. */
+export function findOwnerNeedsWithdrawal(entries: UnionEntry[], ask: OwnerNeedsAskIdentity): OwnerNeedsWithdrawal | null {
+  const key = ownerNeedsAskKey(ask);
+  const recordKey = WITHDRAWAL_RECORD_PREFIX + key;
+  const matching = entries.filter(({ data }) => data.recordKey === recordKey);
+  if (!matching.length) return null;
+  const winner = latestPerKey(matching).get(recordKey)?.data;
+  const withdrawal = decodeOwnerNeedsWithdrawal(winner?.withdrawal);
+  if (winner?.recordType !== 'owner-ask-withdrawal' || winner.op !== 'put' || withdrawal?.key !== key) {
+    throw new Error('invalid owner request withdrawal record');
+  }
+  return withdrawal;
+}
+
+export interface OwnerNeedsCompletionReceipt {
+  recordKey: string;
+  recordedAt: string;
+  evidenceHash: string;
+  leaseEpoch: number;
+}
+
+/** Recover an exact receipt from the authenticated journal. Conflicting records require reconciliation. */
+export function findOwnerNeedsCompletion(entries: UnionEntry[], ask: OwnerNeedsAskIdentity): OwnerNeedsCompletionReceipt | null {
+  const recordKey = ownerNeedsCompletionRecordKey(ask);
+  let receipt: OwnerNeedsCompletionReceipt | null = null;
+  let digest: string | null = null;
+  for (const { data, origin } of entries) {
+    if (data.recordKey !== recordKey) continue;
+    const check = chiefOfStaffRecordStoreSchema.validate(data, {
+      countDroppedField() {}, countJailReject() {},
+    });
+    if (!check || !isHlc(data.hlc) || typeof check.leaseEpoch !== 'number' ||
+      typeof check.at !== 'string' || typeof check.evidenceHash !== 'string') {
+      throw new Error('invalid owner request completion record');
+    }
+
+    const candidate = canonicalHash({ check, origin, hlc: data.hlc });
+    if (digest !== null && digest !== candidate) throw new Error('conflicting owner request completion records');
+    digest = candidate;
+    receipt = { recordKey, recordedAt: check.at, evidenceHash: check.evidenceHash, leaseEpoch: check.leaseEpoch };
+  }
+  return receipt;
+}
+
+/** Used only by the journal's fenced reconciliation callback. */
+export function confirmsOwnerNeedsDecision(
+  intent: UnionEntry, verifiedLocal: readonly UnionEntry[], completePeers: readonly UnionEntry[] | null,
+): boolean {
+  if (!completePeers) return false;
+  const context = { countDroppedField() {}, countJailReject() {} };
+  const fingerprint = ({ data, origin }: UnionEntry) => {
+    const fields = chiefOfStaffRecordStoreSchema.validate(data, context);
+    return fields && isHlc(data.hlc) ? canonicalHash({ fields, origin, hlc: data.hlc }) : null;
+  };
+  const { data } = intent;
+  const withdrawal = decodeOwnerNeedsWithdrawal(data.withdrawal);
+  const ask = withdrawal?.ask ?? decodeOwnerNeedsAskIdentity(data.completionAsk);
+  if (!ask || typeof data.recordKey !== 'string') return false;
+
+  const withdrawalKey = WITHDRAWAL_RECORD_PREFIX + ownerNeedsAskKey(ask);
+  const completionKey = ownerNeedsCompletionRecordKey(ask);
+  const expectedKey = withdrawal ? withdrawalKey : completionKey;
+  if (data.recordKey !== expectedKey) return false;
+  const oppositeKey = withdrawal ? completionKey : withdrawalKey;
+  const expected = fingerprint(intent);
+  if (!expected || !verifiedLocal.some(entry => entry.data.recordKey === expectedKey && fingerprint(entry) === expected)) return false;
+
+  return [...verifiedLocal, ...completePeers].every(entry => {
+    const key = entry.data.recordKey;
+    return key !== oppositeKey && (key !== expectedKey || fingerprint(entry) === expected);
+  });
 }
 
 export interface TreeNode { conversationKey: string; parentConversationKey: string | null; role?: 'chief-of-staff' | 'project' | 'sub-topic' }
@@ -680,11 +811,12 @@ export function foldBindingState(entries: UnionEntry[]): Map<string, BindingStat
       st.ownerChecks[itemId] = { at: d.at as string, who: typeof d.who === 'string' ? d.who : 'owner' };
     }
     for (const ev of events) {
+      const closesBinding = ev.data.event === 'closed' || ev.data.event === 'owner-ask-completed';
       const valid =
-        (ev.data.event === 'closed' && isHlc(ev.data.bindingHlc) && compareHlc(ev.data.bindingHlc as HlcTimestamp, st.bindingHlc) === 0) ||
+        (closesBinding && isHlc(ev.data.bindingHlc) && compareHlc(ev.data.bindingHlc as HlcTimestamp, st.bindingHlc) === 0) ||
         ((ev.data.event === 'reopened' || ev.data.event === 'unpark') && ev.data.by === 'owner-tap');
       if (!valid) continue;
-      if (ev.data.event === 'closed') st.closed = true;
+      if (closesBinding) st.closed = true;
       else if (ev.data.event === 'reopened') st.closed = false;
       else if (ev.data.event === 'unpark' && isIso(ev.data.at) && (!st.lastUnparkAt || (ev.data.at as string) > st.lastUnparkAt)) st.lastUnparkAt = ev.data.at as string;
     }
@@ -828,8 +960,11 @@ const WEEK_MS = 7 * 24 * 60 * 60 * 1000;
  */
 export function foldProjectCheckState(entries: UnionEntry[], conversationKey: string, cfg: CheckStateConfig, now: Date, bindingState?: BindingState): ProjectCheckState {
   const checks: Array<Record<string, unknown>> = [];
-  for (const e of entries) {
-    if (e.data.recordType === 'check-event' && e.data.conversationKey === conversationKey && isIso(e.data.at)) checks.push(e.data);
+  for (const { data } of entries) {
+    if (data.conversationKey !== conversationKey || !isIso(data.at)) continue;
+    const requestCompletion = data.recordType === 'binding-lifecycle' && data.event === 'owner-ask-completed' &&
+      bindingState?.bindingHlc && isHlc(data.bindingHlc) && compareHlc(data.bindingHlc, bindingState.bindingHlc) === 0;
+    if (data.recordType === 'check-event' || requestCompletion) checks.push(data);
   }
   checks.sort((a, b) => String(a.at).localeCompare(String(b.at)));
   const intents = foldIntentState(entries);

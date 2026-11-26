@@ -50,6 +50,8 @@ export interface LaunchdSpawnOpts {
   dir: string;
   /** Label prefix, unique per agent (e.g. `ai.instar.lv-run.<hash>`). */
   labelPrefix: string;
+  /** Already reserved by TrialExecutionScope.prepare for a gated trial runner. */
+  trialLabel?: string;
   cwd: string;
   /** How long to wait for the started process to record its pid (default 3000 ms). */
   pidWaitMs?: number;
@@ -154,8 +156,8 @@ export function spawnViaLaunchd(
 ): ChildHandle {
   const s: LaunchdSpawnSeams = { ...realLaunchdSeams(), ...opts.seams };
   fs.mkdirSync(opts.dir, { recursive: true, mode: 0o700 });
-  sweepStale(opts.labelPrefix, opts.dir, s);
-  const label = `${opts.labelPrefix}.${s.now()}.${crypto.randomBytes(3).toString('hex')}`;
+  if (!opts.trialLabel) sweepStale(opts.labelPrefix, opts.dir, s);
+  const label = opts.trialLabel ?? `${opts.labelPrefix}.${s.now()}.${crypto.randomBytes(3).toString('hex')}`;
   const plistPath = path.join(opts.dir, label + '.plist');
   const pidPath = path.join(opts.dir, label + '.pid');
   const env: Record<string, string> = {};
@@ -199,7 +201,7 @@ export function spawnViaLaunchd(
       timer.stop();
       let print = '';
       try { print = s.launchctl(['print', `${domain}/${label}`]); } catch { /* @silent-fallback-ok: unknown exit */ }
-      cleanup();
+      if (!opts.trialLabel) cleanup(); // TrialExecutionScope owns bootout before proving that the coalition is empty.
       resolve(parseExit(print));
     });
   });

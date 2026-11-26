@@ -51,8 +51,21 @@ routes expose the bounded operator and agent surfaces:
   of agents allowed to make readiness decisions; this is an operator-rooted action.
 - **`POST /feedback-factory/readiness/hold`** and **`POST /feedback-factory/readiness/release`** —
   apply or clear integrity holds under their deterministic and operator authority rules.
+- **`GET /feedback-factory/consumer/promotion/proposal`** — the exact batch an operator would
+  approve: up to the per-run claim cap (at most 50) of queued work items in claim order, each
+  with id, title, priority and report count, plus a `proposalSetHash`. Non-pending answers name
+  the state (`configured-simulation`, `already-live`, `no-work`, `non-owner`, `restore`,
+  `unavailable`); `localAction` is true only on the canonical owner with a pending batch.
 - **`POST /feedback-factory/consumer/promote`** and **`POST /feedback-factory/consumer/revoke`** —
-  switch a proposal-set-bound consumer batch between simulation and live handoff.
+  switch a proposal-set-bound consumer batch between simulation and live handoff. Promote needs
+  the operator PIN, `evidenceHash` set to the proposal's `proposalSetHash`, and its
+  `approvedBatchBound`. The server re-derives the batch immediately before the write and
+  refuses a stale or invented hash. The approved items are claimed first, and while any of
+  them is still untried (including one that is held), no other work is claimed. If an approved
+  item is held, revoke and approve the fresh proposal to continue. After that
+  the promotion stays on, and each run claims at most `approvedBatchBound` items until revoked.
+  A record made before this check (not bound to an approved set) never turns the consumer
+  live and must be approved again.
 
 Development agents construct the drain by default while fleet agents remain dark. Work
 creation starts in simulation. Readiness decisions come from a registered frontier-model

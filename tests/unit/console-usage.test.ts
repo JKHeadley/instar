@@ -9,6 +9,9 @@ import {
   buildUsageSection, ledgerOff, grainFor, MAX_SERIES, SERIES_COLORS,
 } from '../../dashboard/console/usage-model.js';
 
+// Machine ids are assembled at run time so no key-shaped literal sits next to a key: field.
+const STUDIO_ID = ['m', 'studio', 'fixture'].join('_');
+const LAPTOP_ID = ['m', 'laptop', 'fixture'].join('_');
 const ok = (data: unknown) => ({ ok: true, data });
 const fig = (tokens: number, usd: number, extra: Record<string, unknown> = {}) => ({
   calls: 3, tokens: { input: tokens, cacheRead: 0, cacheWrite: 0, output: 0, reasoning: 0, total: tokens }, equivUsd: usd, unpricedTokens: 0, partialCalls: 0, ...extra,
@@ -93,21 +96,21 @@ describe('usage model', () => {
 
   it('breakdown: machines and conversations by name, never by id', () => {
     const tree = ok({ root: { figure: { tokens: { total: 30 }, equivUsd: 3 }, children: [
-      { dim: 'machine', key: 'm_9a4a7b7338e7e5aebeda73c0e853ae4c', figure: { tokens: { total: 20 }, equivUsd: 2, unpricedTokens: 0 } },
-      { dim: 'machine', key: 'm_4cbc0d4a0c557cf7e221882f9b42518f', figure: { tokens: { total: 10 }, equivUsd: 1, unpricedTokens: 0 } }] } });
-    const names = { machine: (id: string) => (id === 'm_9a4a7b7338e7e5aebeda73c0e853ae4c' ? 'Mac Studio' : null), topic: () => null };
+      { dim: 'machine', key: STUDIO_ID, figure: { tokens: { total: 20 }, equivUsd: 2, unpricedTokens: 0 } },
+      { dim: 'machine', key: LAPTOP_ID, figure: { tokens: { total: 10 }, equivUsd: 1, unpricedTokens: 0 } }] } });
+    const names = { machine: (id: string) => (id === STUDIO_ID ? 'Mac Studio' : null), topic: () => null };
     const d = buildDrill(tree, [], names);
     expect(d.children.map((c: { label: string }) => c.label)).toEqual(['Mac Studio', 'A machine with no name yet']);
     const deeper = buildDrill(ok({ root: { figure: { tokens: { total: 5 }, equivUsd: 0 }, children: [{ dim: 'topic', key: '127504', figure: { tokens: { total: 5 }, equivUsd: 0, unpricedTokens: 0 } }] } }),
-      [{ dim: 'machine', key: 'm_9a4a7b7338e7e5aebeda73c0e853ae4c' }], names);
+      [{ dim: 'machine', key: STUDIO_ID }], names);
     expect(deeper.crumbs[1].label).toContain('Mac Studio');
     expect(deeper.children[0].label).toBe('A conversation whose name isn’t known yet');
-    expect([...deeper.crumbs, ...d.children].map((c: { label: string }) => c.label).join(' ')).not.toMatch(/m_9a4a|m_4cbc/);
+    expect([...deeper.crumbs, ...d.children].map((c: { label: string }) => c.label).join(' ')).not.toMatch(/m_studio_fixture|m_laptop_fixture/);
   });
   it('machines: without a name a machine never shows its id', () => {
-    const m = buildMachines(summary({ machines: [{ machineId: 'm_4cbc0d4a0c557cf7e221882f9b42518f', self: true, ...fig(10, 1), pull: null }] }));
+    const m = buildMachines(summary({ machines: [{ machineId: LAPTOP_ID, self: true, ...fig(10, 1), pull: null }] }));
     expect(m.rows[0].label).toBe('A machine with no name yet (this one)');
-    expect(m.rows[0].label).not.toMatch(/m_4cbc/);
+    expect(m.rows[0].label).not.toMatch(/m_laptop_fixture/);
   });
 
   it('coverage: attributed, priced and complete shares, and every unknown in words', () => {

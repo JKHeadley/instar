@@ -1,0 +1,22 @@
+{
+  "version": 2,
+  "slug": "notification-navigation",
+  "sessionId": "f89a20e9-05d7-4a9b-ab75-327a8400d64f",
+  "timestamp": "2026-11-23T18:24:50.610Z",
+  "artifactPath": "upgrades/side-effects/notification-navigation.md",
+  "artifactSha256": "94f66a4544aff1f8750ee278e68be108d5013a98a94807c01c4d9658c496d072",
+  "coveredFiles": [
+    "dashboard/console/notifications.js",
+    "docs/specs/notification-navigation.eli16.md",
+    "tests/unit/console-notifications.test.ts",
+    "upgrades/next/notification-navigation.md",
+    "upgrades/side-effects/notification-navigation.md"
+  ],
+  "phase": "complete",
+  "tier": 1,
+  "tierReasoning": "Reversible renderer lifecycle fix; structural view identity preserves navigation without changing writes, permissions or routes",
+  "eli16Path": "docs/specs/notification-navigation.eli16.md",
+  "sideEffectsPath": "upgrades/side-effects/notification-navigation.md",
+  "secondPass": "not-required",
+  "reviewerConcurred": null
+}

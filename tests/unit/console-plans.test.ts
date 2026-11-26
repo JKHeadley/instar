@@ -7,7 +7,7 @@
 import { describe, it, expect, beforeEach, afterEach, vi } from 'vitest';
 import { JSDOM } from 'jsdom';
 import {
-  buildPlansPage, buildInTheWay, buildAutonomousRuns, projectNeedsOk, currentRoundIndex, projectLine, initiativeLine, needsYouWords, roundNameSuffix,
+  buildPlansPage, buildInTheWay, buildAutonomousRuns, projectNeedsOk, currentRoundIndex, projectLine, initiativeLine, needsYouWords, roundNameSuffix, planRow,
   roundWord, roundsTrack, projectActions, resultWords, refusalWords, driftSentence, blockerRow, blockerStory, linkChips, stepList, autonomousRow, OLDER_MS, MOVING_MS,
 } from '../../dashboard/console/plans-model.js';
 import { NATIVE_PAGES, tabHref } from '../../dashboard/console/nav-model.js';
@@ -66,7 +66,7 @@ describe('plans page model — sorting', () => {
     const needs = page.sections.needsYou.map((r: { needs: string }) => r.needs);
     expect(needs).toContain('Waiting on you: approve the copy');
     expect(needs).toContain('Waiting on you');
-    expect(needs).toContain('Waiting for your OK on round 2: Work group');
+    expect(needs).toContain('Review and approve: Work group');
     expect(needs).toContain('I need access to continue');
     expect(page.headline).toBe('4 plans in flight. 4 need you.'); // the blocker is counted as needing you, not as a plan
     expect(page.tone).toBe('attn');
@@ -125,12 +125,32 @@ describe('project decisions', () => {
     expect(projectNeedsOk(project({ firstLaunchAckAt: undefined, rounds: [round(), round()] }))).toBe(true);
     expect(projectNeedsOk(project())).toBe(false);
     expect(projectNeedsOk(project({ status: 'completed', unacknowledgedAdvanceCount: 1 }))).toBe(false);
-    expect(needsYouWords(project({ firstLaunchAckAt: undefined, rounds: [round({ name: '' }), round()] }), null)).toBe('Waiting for your OK on round 1');
+    expect(needsYouWords(project({ firstLaunchAckAt: undefined, rounds: [round({ name: '' }), round()] }), null)).toBe('Review and approve step 1');
     // A named round says what the OK is for.
     expect(needsYouWords(project({ firstLaunchAckAt: undefined, rounds: [{ ...round(), name: 'Tier 1 - stop silent loss of local fixes' }, round()] }), null))
-      .toBe('Waiting for your OK on round 1: Tier 1 - stop silent loss of local fixes');
+      .toBe('Review and approve: Tier 1 - stop silent loss of local fixes');
     expect(roundNameSuffix({ rounds: [{ name: 'word '.repeat(40) }] }, 0)).toMatch(/^: (word )*word…$/);
     expect(roundNameSuffix({ rounds: [{ name: '   ' }] }, 0)).toBe('');
+  });
+
+  it('keeps failed-detail warnings and non-approval subtitles honest', () => {
+    const awaiting = project({ unacknowledgedAdvanceCount: 1 });
+    const failed = planRow(awaiting, { failed: 'the server answered 503' }, NOW);
+    expect(failed.sub).toContain('Review and approve: Work group');
+    expect(failed.sub).toContain("Couldn't load its rounds: the server answered 503");
+    const tracking = project({ autoAdvance: false, firstLaunchAckAt: undefined });
+    expect(planRow(tracking, null, NOW).sub).toBe(projectLine(tracking, [], NOW));
+    expect(planRow(tracking, null, NOW).needs).toBeNull();
+  });
+
+  it('keeps tracking-only projects out of approval requests, preserving scheduled launches and explicit asks', () => {
+    const tracking = project({ autoAdvance: false, firstLaunchAckAt: undefined, rounds: [round()] });
+    expect(projectNeedsOk(tracking)).toBe(false);
+    expect(needsYouWords(tracking, null)).toBeNull();
+    expect(projectNeedsOk({ ...tracking, unacknowledgedAdvanceCount: 1 })).toBe(true);
+    expect(projectNeedsOk({ ...tracking, rounds: [round({ autoAdvanceAt: daysAgo(1) })] })).toBe(true);
+    expect(projectNeedsOk({ ...tracking, autoAdvance: true })).toBe(true);
+    expect(needsYouWords({ ...tracking, needsUser: true, needsUserReason: 'Choose the layout' }, null)).toBe('Waiting on you: Choose the layout');
   });
 
   it('the current round is the first not done; the line reads in words', () => {
@@ -260,6 +280,37 @@ describe('plans page in a DOM', () => {
   // page's setTimeout/rAF still run on real timers.
   beforeEach(() => vi.useFakeTimers({ toFake: ['Date'], now: NOW }));
   afterEach(() => { vi.useRealTimers(); dom?.window.close(); });
+
+  it('names the work before approval and sends only the selected step permission', async () => {
+    dom = new JSDOM('<!doctype html><html><body><main></main></body></html>', { url: 'http://localhost:4040/dashboard/console/#/work/plans' });
+    Object.assign(globalThis, { window: dom.window, document: dom.window.document, location: dom.window.location,
+      history: dom.window.history, requestAnimationFrame: (f: () => void) => setTimeout(f, 0) });
+    dom.window.scrollTo = () => {};
+    const p = project({ firstLaunchAckAt: undefined, rounds: [round({ name: 'Restore lost conversation names' })] });
+    const posted: Array<[string, unknown]> = [];
+    const table: Record<string, unknown> = {
+      '/initiatives': { items: [p] }, '/initiatives/digest': { items: [] }, '/projects': { items: [p] },
+      '/projects/console-makeover?reconcile=false': { project: p, children: [] }, '/blockers': { entries: [] },
+      '/autonomous/throughput-floor': { runs: [] }, '/pool': { machines: [] }, '/telegram/topics?scope=pool': { topics: [] },
+    };
+    vi.resetModules();
+    const { renderPlans } = await import('../../dashboard/console/plans.js');
+    await renderPlans(dom.window.document.querySelector('main'), {
+      get: async (url: string) => table[url] ? ok(table[url]) : { ok: false, reason: 'not available' },
+      post: async (url: string, body: unknown) => { posted.push([url, body]); return ok({}); },
+    });
+    const doc = dom.window.document;
+    expect(doc.querySelector('#sec-needsYou .row-sub')?.textContent).toContain('Review and approve: Restore lost conversation names');
+    (doc.querySelector('#sec-needsYou button.row') as HTMLButtonElement).click();
+    expect(doc.querySelector('.sheet .need-title')?.textContent).toBe('Review and approve: Restore lost conversation names');
+    expect(doc.querySelector('.sheet .need-sub')?.textContent).toContain('does not start work by itself');
+    expect(posted).toEqual([]);
+    const approve = [...doc.querySelectorAll('.sheet button')].find((b) => b.textContent === 'Approve step 1') as HTMLButtonElement;
+    expect(approve).toBeTruthy();
+    approve.click();
+    await new Promise((r) => setTimeout(r, 20));
+    expect(posted).toEqual([['/projects/console-makeover/ack', { forRoundIndex: 0 }]]);
+  });
 
   it('renders In the way above In flight, opens the project sheet, and stops the round through its confirm; Resume sends that round’s index', async () => {
     const posted: Array<[string, unknown]> = [];

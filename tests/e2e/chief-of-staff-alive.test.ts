@@ -11,7 +11,7 @@
  * CoherenceJournal (200 with the real shape; a bound project appears in the summary
  * and its detail; an unknown key is 404).
  */
-import { describe, it, expect, afterAll } from 'vitest';
+import { describe, it, expect, afterAll, vi } from 'vitest';
 import request from 'supertest';
 import fs from 'node:fs';
 import path from 'node:path';
@@ -57,6 +57,7 @@ describe('Chief of Staff E2E (feature is alive)', () => {
     try {
       const r = await request(server.getApp()).get('/chief-of-staff').set(auth());
       expect(r.status).toBe(503); expect(r.body.error).toMatch(/not enabled/);
+      await request(server.getApp()).get('/chief-of-staff/pr-search?q=instar.sh').set(auth()).expect(503);
       const d = await request(server.getApp()).get(`/chief-of-staff/projects/${encodeURIComponent(CK)}`).set(auth());
       expect(d.status).toBe(503);
       const ask = await request(server.getApp()).post(`/chief-of-staff/projects/${encodeURIComponent(CK)}/pause-ask`).set(auth()).send({ action: 'pause', marker: '[source: telegram 1/2 2026-11-13]' });
@@ -84,6 +85,7 @@ describe('Chief of Staff E2E (feature is alive)', () => {
     emitter.emit(CHIEF_OF_STAFF_STORE_KEY, `binding:${CK}`, buildBindingPut({ conversationKey: CK, goal: 'Ship the thing', doneDefinition: [{ id: 'd1', kind: 'judgment', text: 'owner says done' }], checkCadenceHours: 24, linked: { repos: [], branches: [], domains: [] }, confirmedBy: 'owner', confirmedAt: new Date().toISOString() } as never));
     journal.flush();
 
+    config.developmentAgent = true;
     const server = new AgentServer({ config, sessionManager: sm(), state: new StateManager(stateDir), chiefOfStaffLoop: loop });
     await server.start();
     try {
@@ -119,6 +121,42 @@ describe('Chief of Staff E2E (feature is alive)', () => {
 
       const nf = await request(server.getApp()).get('/chief-of-staff/projects/telegram:1').set(auth());
       expect(nf.status).toBe(404);
+
+      // Incident replay at the HTTP seam: the link lives beyond the first 100 open
+      // PRs and only its body says instar.sh. The fresh agent has no topic history
+      // or memory to consult and the server uses GitHub directly.
+      const originalFetch = globalThis.fetch;
+      vi.stubEnv('GITHUB_TOKEN', 'e2e-fixture');
+      const github = vi.fn(async (url: Parameters<typeof fetch>[0], init?: RequestInit) => {
+        if (url !== 'https://api.github.com/graphql') return originalFetch(url, init);
+        const { variables } = JSON.parse(String(init?.body)) as { variables: { states: string[]; cursor: string | null } };
+        const cursorStep = Number(variables.cursor ?? 0);
+        const nextCursor = variables.states[0] === 'OPEN' && cursorStep < 2 ? String(cursorStep + 1) : null;
+        const results = variables.states[0] === 'MERGED' ? [] : nextCursor
+          ? Array.from({ length: 50 }, (_, index) => cursorStep * 50 + index + 1)
+          : [3342];
+        const nodes = results.map(number => ({
+          number, title: `Existing feature ${number}`, body: number === 3342 ? 'Permanent agent addresses on instar.sh' : '',
+          headRefName: `topic/fixture-${number}`, baseRefName: 'main', state: 'OPEN',
+          updatedAt: '2026-11-23T00:00:00.000Z', mergedAt: null,
+        }));
+        return new Response(JSON.stringify({
+          data: { repository: { isPrivate: false, pullRequests: { nodes, pageInfo: { hasNextPage: nextCursor !== null, endCursor: nextCursor } } } },
+        }));
+      });
+      vi.stubGlobal('fetch', github);
+      try {
+        const priorWork = await request(server.getApp()).get('/chief-of-staff/pr-search?q=instar.sh').set(auth()).expect(200);
+        expect(priorWork.body).toMatchObject({
+          coverage: { open: { status: 'fresh' }, merged: { status: 'fresh' } },
+          matchCount: 1,
+          items: [{ number: 3342, url: 'https://github.com/JKHeadley/instar/pull/3342' }],
+        });
+        expect(github).toHaveBeenCalledTimes(4);
+      } finally {
+        vi.unstubAllGlobals();
+        vi.unstubAllEnvs();
+      }
 
       const noAuth = await request(server.getApp()).get('/chief-of-staff');
       expect(noAuth.status).toBe(401);

@@ -56,7 +56,8 @@ export interface DuePost {
   nextAttemptAt: number;
 }
 
-export type SendOutcome = 'posted' | 'failed';
+/** `not-delivered`: the notice was held quietly, so no person saw it (no-data-loss-on-machine-death.md §6.2). */
+export type SendOutcome = 'posted' | 'failed' | 'not-delivered';
 
 export interface PeerHandle {
   machineId: string;
@@ -457,12 +458,18 @@ export class DiskSteward {
       this.state.due = null;
       this.sendFailureReported = false;
     } else {
+      // Only a person-reachable delivery resets the repeat clock or advances the doubling
+      // backoff (no-data-loss-on-machine-death.md §6.2). A quiet hold retries on the send
+      // backoff like a failure, but it is the owner's choice, not a broken send, so it is
+      // logged rather than reported as a degradation.
+      const quiet = outcome === 'not-delivered';
+      if (quiet) this.deps.log({ event: 'post-not-delivered', postId, machineId: due.machineId });
       due.failures += 1;
       due.nextAttemptAt = now + sendRetryDelay(due.failures);
       // A critical retry gets the next stage, so the gate's pre-delivery episode
       // reservation cannot answer it with episode-dedup (§3.5).
       if (due.critical) due.stage += 1;
-      if (due.failures === 4 && !this.sendFailureReported) {
+      if (!quiet && due.failures === 4 && !this.sendFailureReported) {
         this.deps.degrade('DiskSteward.post', `The disk-space notice for ${due.machineName} could not be sent after 4 tries; retrying hourly.`);
         this.sendFailureReported = true;
       }
@@ -494,7 +501,9 @@ export class DiskSteward {
       const due = st.body.duePost;
       if (!due || due.machineId !== peer.machineId || now < due.nextAttemptAt) continue;
       const outcome = await this.safeSend(due);
-      await peer.ack(due.postId, outcome).catch(() => false);
+      const acked = await peer.ack(due.postId, outcome).catch(() => false);
+      // A peer on an older version knows only posted / failed: a quiet hold is, for its clock, a failure.
+      if (!acked && outcome === 'not-delivered') await peer.ack(due.postId, 'failed').catch(() => false);
     }
   }
 

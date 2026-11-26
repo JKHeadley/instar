@@ -1,0 +1,55 @@
+{
+  "version": 3,
+  "slug": "chief-of-staff-pr-discovery",
+  "sessionId": "5591f135-974d-45ff-afdb-df56f5dbd35e",
+  "timestamp": "2026-11-24T04:01:17.543Z",
+  "artifactPath": "upgrades/side-effects/chief-of-staff-pr-discovery.md",
+  "artifactSha256": "588bbbb5eb816c2bfad1addbb4f4e64997d8a272c31e5efeedd27f6485ec2a9c",
+  "specPath": "docs/specs/chief-of-staff-pr-discovery.md",
+  "coveredFiles": [
+    ".instar/instar-dev-decisions/2026-11-24T03-57-32-660Z-chief-of-staff-pr-discovery.json",
+    ".instar/instar-dev-decisions/2026-11-24T03-59-53-849Z-chief-of-staff-pr-discovery.json",
+    "docs/specs/chief-of-staff-pr-discovery.eli16.md",
+    "docs/specs/chief-of-staff-pr-discovery.md",
+    "docs/specs/reports/chief-of-staff-pr-discovery-convergence.md",
+    "src/core/ChiefOfStaffPrSearch.ts",
+    "src/core/githubRuntime.ts",
+    "src/data/awareness/chief-of-staff-find-prior-work.md",
+    "src/server/chiefOfStaffPrSearchRoutes.ts",
+    "src/server/routes.ts",
+    "tests/e2e/chief-of-staff-alive.test.ts",
+    "tests/fixtures/captured/github-pr-search/open-pr-3342.meta.json",
+    "tests/fixtures/captured/github-pr-search/open-pr-3342.txt",
+    "tests/integration/chief-of-staff-pr-search.test.ts",
+    "tests/unit/chief-of-staff-pr-search.test.ts",
+    "tests/unit/github-runtime.test.ts",
+    "upgrades/next/chief-of-staff-pr-discovery.md",
+    "upgrades/side-effects/chief-of-staff-pr-discovery.md"
+  ],
+  "phase": "complete",
+  "tier": 2,
+  "tierReasoning": "The new bearer-gated, public-repository read crosses server and provider visibility boundaries. Independent review and production routing tests cover authorization and partial coverage.",
+  "secondPass": "true",
+  "reviewerConcurred": true,
+  "toolchain": {
+    "reviewSkills": [
+      {
+        "name": "spec-converge",
+        "outcome": "capped",
+        "verified": false,
+        "iterations": 6
+      },
+      {
+        "name": "independent-side-effects-review",
+        "outcome": "concurred",
+        "verified": false,
+        "iterations": 1
+      }
+    ],
+    "convergence": {
+      "reportPath": "docs/specs/reports/chief-of-staff-pr-discovery-convergence.md",
+      "iterations": 6,
+      "verified": true
+    }
+  }
+}

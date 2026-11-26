@@ -192,6 +192,8 @@ describe('hostSemaphoreCore — extraction', () => {
     const lockPath = path.join(dir, 'x.lock');
     const a = tryTakeLockOnce(lockPath, '{"pid":1}');
     expect(a.ok).toBe(true);
+    expect(fs.readFileSync(lockPath, 'utf8')).toBe('{"pid":1}');
+    expect(fs.readdirSync(dir)).toEqual(['x.lock']);
     const b = tryTakeLockOnce(lockPath, '{"pid":2}');
     expect(b).toEqual({ ok: false, reason: 'held' });
     releaseLock(lockPath, a.ok ? a.fd : null, 'test');
@@ -209,6 +211,16 @@ describe('hostSemaphoreCore — extraction', () => {
     expect(fs.existsSync(lockPath)).toBe(true);
     expect(legacyPidDeathLockReclaim(lockPath, () => false)).toBe(true); // dead — reclaimed
     expect(fs.existsSync(lockPath)).toBe(false);
+  });
+
+  it('keeps an unreadable or unstamped lock so a legacy writer can finish', () => {
+    const lockPath = path.join(tmpDir(), 'initializing.lock');
+    for (const record of ['', '{', '{}', '{"pid":0}']) {
+      fs.writeFileSync(lockPath, record);
+      expect(legacyPidDeathLockReclaim(lockPath, () => false)).toBe(false);
+      expect(tryTakeLockOnce(lockPath, '{"pid":2}')).toEqual({ ok: false, reason: 'held' });
+      expect(fs.readFileSync(lockPath, 'utf8')).toBe(record);
+    }
   });
 
   // ── df classifier + detailed probe ──────────────────────────────────────

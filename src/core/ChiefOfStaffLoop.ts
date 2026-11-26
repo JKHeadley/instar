@@ -17,11 +17,13 @@ import { CreationPlacementSnapshot, type CreationPlacementView } from './Creatio
  * invariants hold the authority. The judge can never start a run or close a project on its own.
  */
 
+import { ownerNeedsAskKey, type OwnerNeedsAskIdentity, type OwnerNeedsWithdrawal } from './OwnerNeedsWithdrawal.js';
+import { resolveOwnerNeedsWaitIdentity } from './ChiefOfStaffWaitCards.js';
 import crypto from 'node:crypto';
 import {
   foldProjectPriorities, buildProjectPriorityPut, isProjectPriority, type ProjectPriority,
   foldBindingState, foldProjectCheckState, deriveLeaseExpiry, foldIntentState, latestPerKey,
-  buildCheckEvent, buildLastTick, buildLifecycleEvent, buildOwnerPauseEvent, buildOwnerItemCheckEvent, buildCheckRequestedEvent, doneItemCheckRef, hlcKey, compareHlc, ownerPauseEventForAsk, unknownLifecycleEvents, buildRenewal,
+  buildOwnerNeedsCompletion, buildOwnerNeedsWithdrawal, findOwnerNeedsCompletion, findOwnerNeedsWithdrawal, ownerNeedsCompletionRecordKey, type OwnerNeedsCompletionReceipt, type CheckEventInput, buildCheckEvent, buildLastTick, buildLifecycleEvent, buildOwnerPauseEvent, buildOwnerItemCheckEvent, buildCheckRequestedEvent, doneItemCheckRef, hlcKey, compareHlc, ownerPauseEventForAsk, unknownLifecycleEvents, buildRenewal,
   type BindingState, type OwnerPauseRecord, OWNER_PAUSE_FIELD_MAX, OWNER_PAUSE_QUOTE_MAX, type ProjectCheckState, type CosVerdict, type UnionEntry, type IntentState, foldLastTicks, foldTreeState, type TreeNode, buildTreePut, foldNoteState, buildNoteSent, trailingUnknownChecks, noteRecordKey, buildBindingPut } from './ChiefOfStaffStore.js';
 import type { HlcTimestamp } from './HybridLogicalClock.js';
 import { composePauseAsk, type OwnerPauseSource } from './cosOwnerPauseSource.js';
@@ -320,6 +322,12 @@ export function composeNote(items: NoteItem[], cap: number, statusUrl: string | 
 
 // ── deps ─────────────────────────────────────────────────────────────────────
 
+type OwnerNeedsDecisionWrite =
+  | { kind: 'withdrawal'; record: OwnerNeedsWithdrawal }
+  | { kind: 'completion'; bindingHlc: HlcTimestamp; check: Pick<CheckEventInput, 'evidenceHash' | 'evidenceIds' | 'netDiffHighWater' | 'machine' | 'at' | 'doneItems'> };
+
+type OwnerNeedsRecordBuilder = Parameters<ChiefOfStaffLoopDeps['journal']['emit']>[1];
+
 export interface ChiefOfStaffLoopDeps {
   now: () => number;
   machineId: string;
@@ -337,6 +345,8 @@ export interface ChiefOfStaffLoopDeps {
     loadUnionComplete?(): UnionEntry[] | null;
     /** Non-flushing creation projection read and strict current source signature. */
     loadUnionCompleteReadOnly?(): UnionEntry[] | null;
+    /** Hold the coordinator writer fence through the durable append. Invoke prepare inside that fence. */
+    appendOwnerNeedsDecision?(leaseEpoch: number, prepare: () => { key: string; build: OwnerNeedsRecordBuilder } | null): Promise<boolean>;
     creationSourceVersion?(): string | null;
     /** Resolve once `seq` is fsynced (CoherenceJournal.awaitDurableSeq). The loop awaits the check-event before it claims, so the owner's action gate reads a fresh fold (§2.4 step 2c). */
     awaitDurable?(seq: number): Promise<void>;
@@ -594,6 +604,67 @@ export class ChiefOfStaffLoop {
     try { union = this.d.journal.loadUnionComplete?.() ?? null; } catch { /* @silent-fallback-ok: null IS the reported answer; the caller refuses with could-not-check */ return null; }
     if (!union) return null;
     return new Map(boundProjects(union).map((p) => [p.conversationKey, { goal: p.goal, doneDefinition: p.doneDefinition, repos: p.linked?.repos ?? [] }]));
+  }
+
+  ownerNeedsWithdrawal(ask: OwnerNeedsAskIdentity) {
+    return this.readOwnerNeedsRecord<OwnerNeedsWithdrawal>(union => findOwnerNeedsWithdrawal(union, ask));
+  }
+
+  ownerNeedsCompletion(ask: OwnerNeedsAskIdentity) {
+    return this.readOwnerNeedsRecord<OwnerNeedsCompletionReceipt>(union => findOwnerNeedsCompletion(union, ask));
+  }
+
+  /** Read the exact request and its outcome from one complete coordinator snapshot. */
+  ownerNeedsDecision(
+    ask: OwnerNeedsAskIdentity, disclosure: Parameters<typeof resolveOwnerNeedsWaitIdentity>[2],
+  ) {
+    return this.readOwnerNeedsRecord(union => {
+      const withdrawal = findOwnerNeedsWithdrawal(union, ask);
+      const completion = findOwnerNeedsCompletion(union, ask);
+      if (withdrawal && completion) throw new Error('conflicting owner request decisions');
+      if (withdrawal) return { status: 'withdrawn', withdrawal } as const;
+      if (completion) return { status: 'completed', completion } as const;
+      const current = resolveOwnerNeedsWaitIdentity(union, ask.project, disclosure);
+      return current && ownerNeedsAskKey(current) === ownerNeedsAskKey(ask)
+        ? { status: 'pending', ask: current } as const
+        : { status: 'stale' } as const;
+    });
+  }
+
+  /** Called by an authenticated decision transaction after evidence collection. */
+  appendOwnerNeedsDecision(
+    ask: OwnerNeedsAskIdentity, leaseEpoch: number,
+    disclosure: () => Parameters<typeof resolveOwnerNeedsWaitIdentity>[2] | null,
+    decision: OwnerNeedsDecisionWrite,
+  ): Promise<boolean> {
+    const journal = this.d.journal;
+    if (!journal.appendOwnerNeedsDecision || !Number.isSafeInteger(leaseEpoch) || leaseEpoch < 1) return Promise.resolve(false);
+    return journal.appendOwnerNeedsDecision(leaseEpoch, () => {
+      if (!this.checksHere()) return null;
+      const currentDisclosure = disclosure();
+      if (!currentDisclosure) return null;
+      const current = this.ownerNeedsDecision(ask, currentDisclosure);
+      if (!current.available || current.record?.status !== 'pending') return null;
+      if (decision.kind === 'completion') {
+        if (hlcKey(decision.bindingHlc) !== ask.bindingVersion) return null;
+        return { key: ownerNeedsCompletionRecordKey(ask), build: buildOwnerNeedsCompletion(ask, decision.bindingHlc, leaseEpoch, decision.check) };
+      }
+      const { record } = decision;
+      if (record.leaseEpoch !== leaseEpoch || record.key !== ownerNeedsAskKey(ask) || ownerNeedsAskKey(record.ask) !== record.key) return null;
+      return { key: 'owner-ask-withdrawal:' + record.key, build: buildOwnerNeedsWithdrawal(record) };
+    });
+  }
+
+  /** Absence is meaningful only after reading the complete authenticated journal. */
+  private readOwnerNeedsRecord<T>(lookup: (union: UnionEntry[]) => T | null):
+    { available: true; record: T | null } | { available: false } {
+    try {
+      const union = this.d.journal.loadUnionCompleteReadOnly?.();
+      return union ? { available: true, record: lookup(union) } : { available: false };
+    } catch {
+      // @silent-fallback-ok: the consumer receives explicit unavailability.
+      return { available: false };
+    }
   }
 
   /** §5: one row per bound project (no evidence text; titles are the owner's). */

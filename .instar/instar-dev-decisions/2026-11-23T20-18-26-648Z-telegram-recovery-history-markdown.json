@@ -1,0 +1,34 @@
+{
+  "ts": "2026-11-23T20:18:26.648Z",
+  "slug": "telegram-recovery-history-markdown",
+  "suggestedTier": 2,
+  "declaredTier": 1,
+  "riskFloor": 2,
+  "riskFloorReasons": [
+    "safety-invariant proximity: src/messaging/TelegramAdapter.ts matches Telegram adapter"
+  ],
+  "belowFloor": true,
+  "files": 7,
+  "loc": 78,
+  "scope": {
+    "basis": "staged-in-scope-paths-including-deleted",
+    "files": [
+      "src/lifeline/TelegramLifeline.ts",
+      "src/messaging/TelegramAdapter.ts",
+      "src/messaging/telegram-origin/ForwardedDeliveryHistory.ts",
+      "src/messaging/telegram-origin/OriginBotEgress.ts",
+      "src/messaging/telegram-origin/TelegramOriginRuntime.ts",
+      "src/messaging/telegram-origin/TelegramOriginService.ts",
+      "src/server/telegramOriginRoutes.ts"
+    ],
+    "addedLines": 66,
+    "deletedLines": 12
+  },
+  "causalAutopsy": null,
+  "classClosure": {
+    "defectClass": "unbounded-self-action",
+    "closure": "n/a",
+    "reason": "Only repairs representation inside existing bounded outbox execution; no new trigger, controller, cadence, retry budget or permission. Actual unit, HTTP and production restart lifecycle tests prove one accepted network send and no duplicate on another recovery pass."
+  },
+  "verdict": "pass"
+}
