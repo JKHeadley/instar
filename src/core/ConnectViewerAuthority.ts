@@ -1,5 +1,7 @@
-import type { ConnectConsentHostHandle } from './ConnectConsentHost.js';
-import { verify } from 'node:crypto';
+import { connectConsentInteger, connectConsentText } from './ConnectConsentConnection.js';
+import { ConnectConsentLifecycle, type PendingConnectConsent } from './ConnectConsentLifecycle.js';
+import { isConnectConsentHostHandle, type ConnectConsentHostHandle } from './ConnectConsentHost.js';
+import { createHash, randomBytes, verify, type KeyObject } from 'node:crypto';
 import { isStrictLowSDer, parseDevicePublicKey } from './MobileDeviceKeys.js';
 import { ConnectViewerEnrollment, type ConnectViewerBinding } from './ConnectViewerEnrollment.js';
 import { ConnectViewerSession, type ConnectViewerConsent } from './ConnectViewerSession.js';
@@ -19,6 +21,7 @@ export class ConnectViewerAuthority {
   #challenges = new Map<string, ConnectViewerEnrollment>();
   #viewers = new Map<string, { binding: ConnectViewerBinding; publicKey: string }>();
   #sessions = new Map<string, ConnectViewerSession>();
+  #issued = new WeakMap<ConnectConsentHostHandle, number>();
 
   approveEnrollment(binding: ConnectViewerBinding): ConnectViewerEnrollment['challenge'] | undefined {
     const now = Date.now();
@@ -48,9 +51,58 @@ export class ConnectViewerAuthority {
     return viewer && Object.freeze({ ...viewer });
   }
 
-  /** Only the trusted local consent surface calls this after showing the exact viewer and display. */
-  grant(consent: ConnectViewerConsent, pending: { sessionId: string; generation: string },
-      connection: ConnectConsentHostHandle): ConnectViewerSession | undefined {
+  /** Create one exchange from the verified request retained by the trusted connection owner. */
+  beginConsent(consent: ConnectViewerConsent, connection: ConnectConsentHostHandle,
+      agent: KeyObject, displayStillCurrent: () => boolean) {
+    const retained = Object.freeze({ ...consent });
+    const viewer = this.#viewers.get(retained.keyDigest);
+    if (!isConnectConsentHostHandle(connection) || !viewer ||
+        connection.agentId !== retained.agentId || connection.targetId !== retained.targetMachineId ||
+        viewer.binding.agentId !== retained.agentId || viewer.binding.targetMachineId !== retained.targetMachineId ||
+        !/^[a-f0-9]{64}$/.test(retained.keyDigest)) return;
+    const remaining = retained.expiresAt - Date.now();
+    if (!Number.isSafeInteger(retained.expiresAt) || remaining <= 0 || remaining > 15 * 60_000) return;
+    const current = () => connection.current() && displayStillCurrent() &&
+      !connection.signal.aborted && this.#viewers.get(retained.keyDigest) === viewer;
+    if (!current()) return;
+    const issued = this.#issued.get(connection) ?? 0;
+    if (issued >= 128) return;
+    const session = randomBytes(16);
+    const nonce = randomBytes(32);
+    const transcript = Buffer.concat([
+      connectConsentText('instar-connect-consent-request-v1'), connectConsentText(retained.agentId),
+      Buffer.from(connection.companionKeyDigest, 'hex'), connectConsentInteger(connection.revision),
+      Buffer.from(connection.generation, 'hex'), Buffer.from(retained.keyDigest, 'hex'),
+      connectConsentText(retained.targetMachineId), connectConsentText(retained.displayId),
+      session, nonce, connectConsentInteger(retained.expiresAt), connectConsentText('look-only'),
+    ]);
+    const pending: PendingConnectConsent = {
+      sessionId: session.toString('hex'), generation: connection.generation, nonce: nonce.toString('hex'),
+      requestDigest: createHash('sha256').update(transcript).digest('hex'), expiresAt: retained.expiresAt,
+    };
+    this.#issued.set(connection, issued + 1);
+    const exchange = new ConnectConsentLifecycle(pending, connection.companionKey, agent, current);
+    connection.signal.addEventListener('abort', () => exchange.cancel(), { once: true });
+    return {
+      request: exchange.request,
+      requestTranscript: Buffer.from(transcript),
+      decide: (frame: Buffer) => exchange.decide(frame),
+      prepare: (frame: Buffer) => exchange.prepare(frame),
+      confirm: (frame: Buffer): ConnectViewerSession | undefined => {
+        let grant: ConnectViewerSession | undefined;
+        exchange.confirm(frame, request => {
+          grant = this.#publish(retained, request, connection, current);
+          return grant !== undefined;
+        });
+        return grant;
+      },
+      cancel: () => exchange.cancel(),
+    };
+  }
+
+  #publish(consent: ConnectViewerConsent, pending: PendingConnectConsent, connection: ConnectConsentHostHandle,
+      current: () => boolean): ConnectViewerSession | undefined {
+    if (!current()) return;
     const viewer = this.#viewers.get(consent.keyDigest);
     if (connection.generation !== pending.generation || !/^[a-f0-9]{32}$/.test(pending.sessionId) ||
         connection.signal.aborted || !connection.current() || connection.signal.aborted ||

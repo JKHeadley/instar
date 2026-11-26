@@ -3,10 +3,21 @@ import { ConnectConsentConnection, type ConnectCompanionPairing } from './Connec
 
 export interface ConnectConsentHostHandle {
   readonly generation: string;
+  readonly agentId: string;
+  readonly targetId: string;
+  readonly companionKey: KeyObject;
+  readonly companionKeyDigest: string;
+  readonly revision: number;
   readonly challenge: Buffer;
   readonly signal: AbortSignal;
   admit(proof: Buffer): boolean;
   current(): boolean;
+}
+
+const issuedHandles = new WeakSet<ConnectConsentHostHandle>();
+
+export function isConnectConsentHostHandle(handle: ConnectConsentHostHandle): boolean {
+  return issuedHandles.has(handle);
 }
 
 interface ConnectionSlot {
@@ -44,8 +55,13 @@ export class ConnectConsentHost {
     const expiry = setTimeout(onClose, 10_000).unref();
     lifetime.signal.addEventListener('abort', () => clearTimeout(expiry), { once: true });
     const ownsSlot = () => !this.#replacing && this.#slot === slot && !lifetime.signal.aborted;
-    return {
+    const handle: ConnectConsentHostHandle = {
       generation: connection.generation,
+      agentId: pairing.agentId,
+      targetId: pairing.targetId,
+      companionKey: key,
+      companionKeyDigest: pairing.companionKeyDigest,
+      revision: pairing.revision,
       challenge: connection.challengeTranscript(),
       signal: lifetime.signal,
       admit: proof => {
@@ -74,6 +90,8 @@ export class ConnectConsentHost {
         return false;
       },
     };
+    issuedHandles.add(handle);
+    return Object.freeze(handle);
   }
 
   close(): void {

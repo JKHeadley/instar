@@ -8,7 +8,7 @@ export interface ConnectCompanionPairing {
   readonly revision: number;
 }
 
-function text(value: string): Buffer {
+export function connectConsentText(value: string): Buffer {
   const bytes = Buffer.from(value);
   if (!bytes.length || bytes.length > 128 || bytes.toString('utf8') !== value) throw new RangeError('Invalid Connect identifier');
   const length = Buffer.alloc(2);
@@ -16,7 +16,7 @@ function text(value: string): Buffer {
   return Buffer.concat([length, bytes]);
 }
 
-function positiveSafeInteger(value: number): Buffer {
+export function connectConsentInteger(value: number): Buffer {
   if (!Number.isSafeInteger(value) || value <= 0) throw new RangeError('Invalid Connect integer');
   const bytes = Buffer.alloc(8);
   bytes.writeBigUInt64BE(BigInt(value));
@@ -52,9 +52,9 @@ export class ConnectConsentConnection {
     this.#deadline = now + 10_000;
     this.#monotonicDeadline = monotonic + 10_000;
     this.#challenge = Buffer.concat([
-      text('instar-connect-connection-challenge-v1'), text(pairing.agentId),
-      Buffer.from(pairing.companionKeyDigest, 'hex'), text(pairing.targetId), positiveSafeInteger(pairing.revision),
-      Buffer.from(this.generation, 'hex'), this.#nonce, positiveSafeInteger(this.#deadline),
+      connectConsentText('instar-connect-connection-challenge-v1'), connectConsentText(pairing.agentId),
+      Buffer.from(pairing.companionKeyDigest, 'hex'), connectConsentText(pairing.targetId), connectConsentInteger(pairing.revision),
+      Buffer.from(this.generation, 'hex'), this.#nonce, connectConsentInteger(this.#deadline),
     ]);
     if (transport.aborted) this.close();
     else transport.addEventListener('abort', this.#onTransportClose, { once: true });
@@ -80,7 +80,7 @@ export class ConnectConsentConnection {
     }
     const proof = verifyConnectConsentFrame(frame, this.companion);
     const expected = Buffer.concat([
-      text('instar-connect-connection-proof-v1'), createHash('sha256').update(this.#challenge).digest(),
+      connectConsentText('instar-connect-connection-proof-v1'), createHash('sha256').update(this.#challenge).digest(),
       Buffer.from(this.generation, 'hex'), this.#nonce,
     ]);
     if (!proof?.equals(expected) || !this.pairingStillCurrent() || !this.pendingWithinDeadline()) {
