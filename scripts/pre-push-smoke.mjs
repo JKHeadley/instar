@@ -60,7 +60,9 @@ function listAffectedTests(baseRef, { filesOnly = false } = {}) {
       baseRef,
       `--json=${reportFile}`,
     ], {
-      timeout: Number.parseInt(process.env.INSTAR_PRE_PUSH_SMOKE_LIST_TIMEOUT_MS ?? '', 10) || 120_000,
+      // A 21-file change needed nearly five minutes to enumerate affected files on Studio.
+      // Keep discovery fail-closed while the test selection work reduces that cost.
+      timeout: Number.parseInt(process.env.INSTAR_PRE_PUSH_SMOKE_LIST_TIMEOUT_MS ?? '', 10) || 360_000,
     });
 
     if (result.status !== 0) return { result };
