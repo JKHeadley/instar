@@ -7,6 +7,8 @@ import { spawnSync } from 'node:child_process';
 import {
   changedFilesSince,
   classifyVitestListRun,
+  directSmokeCheckoutClean,
+  directSmokeReportMatches,
   evaluateAffectedSmokeSelection,
   evaluateSmokeBreadth,
   failedTestFilesFromVitestJson,
@@ -14,7 +16,23 @@ import {
   resolvePrePushBase,
   summarizeVitestFilesOnlyJson,
   summarizeVitestListJson,
+  supportsDirectSmoke,
+  trackedDirectSmokeTests,
 } from './lib/pre-push-scope.mjs';
+
+const listingStarted = performance.now();
+let listingMode = 'affected';
+let candidateFiles = null;
+let listingReported = false;
+
+function reportListing(outcome, selectedFiles = 0, selectedCases = 0) {
+  if (listingReported) return;
+  listingReported = true;
+  const elapsedMs = Math.round(performance.now() - listingStarted);
+  console.log(`PRE_PUSH_SMOKE_LISTING mode=${listingMode} outcome=${outcome} elapsed_ms=${elapsedMs} candidates=${candidateFiles ?? 'unknown'} files=${selectedFiles} cases=${selectedCases}`);
+}
+
+process.once('exit', code => reportListing(code ? 'incomplete' : 'not-selected'));
 
 function run(command, args, opts = {}) {
   return spawnSync(command, args, {
@@ -27,6 +45,7 @@ function run(command, args, opts = {}) {
 }
 
 function printSkip(reason) {
+  reportListing('shared-verify');
   console.log(`⏭️  Local smoke too broad; CI is the authority. ${reason}.`);
   console.log('   The PR test matrix still runs the full suite before merge.');
 }
@@ -46,7 +65,7 @@ function readFailedFiles(reportFile) {
   }
 }
 
-function listAffectedTests(baseRef, { filesOnly = false } = {}) {
+function listAffectedTests(baseRef, { filesOnly = false, selectedFiles } = {}) {
   const reportDir = fs.mkdtempSync(path.join(os.tmpdir(), 'instar-pre-push-list-'));
   const reportFile = path.join(reportDir, 'vitest-list.json');
   try {
@@ -56,8 +75,7 @@ function listAffectedTests(baseRef, { filesOnly = false } = {}) {
       ...(filesOnly ? ['--filesOnly'] : []),
       '--config',
       'vitest.push.config.ts',
-      '--changed',
-      baseRef,
+      ...(selectedFiles ? selectedFiles : ['--changed', baseRef]),
       `--json=${reportFile}`,
     ], {
       timeout: Number.parseInt(process.env.INSTAR_PRE_PUSH_SMOKE_LIST_TIMEOUT_MS ?? '', 10) || 120_000,
@@ -67,7 +85,8 @@ function listAffectedTests(baseRef, { filesOnly = false } = {}) {
 
     try {
       const text = fs.readFileSync(reportFile, 'utf-8');
-      const selected = filesOnly ? summarizeVitestFilesOnlyJson(text) : summarizeVitestListJson(text);
+      const parse = filesOnly ? summarizeVitestFilesOnlyJson : summarizeVitestListJson;
+      const selected = parse(text, { includePaths: selectedFiles !== undefined });
       return { result, selected };
     } catch (err) {
       return { result, selectionError: err };
@@ -102,7 +121,15 @@ function exitOnUnusableListing(listed) {
   }
 }
 
-function runAffectedSmoke(baseRef) {
+function directReportMatches(reportFile, expectedCounts) {
+  try {
+    return directSmokeReportMatches(fs.readFileSync(reportFile, 'utf8'), expectedCounts);
+  } catch {
+    return false;
+  }
+}
+
+function runAffectedSmoke(baseRef, selectedFiles, expectedCounts) {
   const reportDir = fs.mkdtempSync(path.join(os.tmpdir(), 'instar-pre-push-smoke-'));
   const reportFile = path.join(reportDir, 'vitest-results.json');
   try {
@@ -111,8 +138,7 @@ function runAffectedSmoke(baseRef) {
       'run',
       '--config',
       'vitest.push.config.ts',
-      '--changed',
-      baseRef,
+      ...(selectedFiles ? selectedFiles : ['--changed', baseRef]),
       '--reporter=default',
       '--reporter=json',
       `--outputFile.json=${reportFile}`,
@@ -120,6 +146,10 @@ function runAffectedSmoke(baseRef) {
       stdio: 'inherit',
     });
 
+    if (selectedFiles && (result.signal || result.error || !directReportMatches(reportFile, expectedCounts))) {
+      console.error('Direct smoke results did not contain the expected files and case counts.');
+      return 1;
+    }
     if ((result.status ?? 1) === 0) return 0;
 
     const failedFiles = readFailedFiles(reportFile);
@@ -133,9 +163,18 @@ function runAffectedSmoke(baseRef) {
     for (const file of failedFiles) console.log(`   - ${file}`);
     console.log('');
 
-    const retry = run('npx', ['vitest', 'run', '--config', 'vitest.push.config.ts', ...failedFiles], {
-      stdio: 'inherit',
-    });
+    const retryReport = path.join(reportDir, 'vitest-retry-results.json');
+    const retryFiles = selectedFiles ? failedFiles.map(file => path.resolve(file)) : failedFiles;
+    const retry = run('npx', ['vitest', 'run', '--config', 'vitest.push.config.ts',
+      ...(selectedFiles ? ['--reporter=default', '--reporter=json', `--outputFile.json=${retryReport}`] : []),
+      ...retryFiles], { stdio: 'inherit' });
+    if (selectedFiles) {
+      const retryCounts = new Map(retryFiles.map(file => [file, { ...expectedCounts.get(file), mustExecute: true }]));
+      if (retry.signal || retry.error || !directReportMatches(retryReport, retryCounts)) {
+        console.error('Direct smoke retry did not contain the expected files and case counts.');
+        return 1;
+      }
+    }
     return retry.status ?? 1;
   } finally {
     fs.rmSync(reportDir, { recursive: true, force: true });
@@ -156,6 +195,7 @@ try {
 console.log(`🧪 Running smoke tier against ${base.ref} (${base.reason}); changed files: ${changed.length}.`);
 
 if (changed.length === 0) {
+  reportListing('no-changes');
   console.log('✅ No changed files relative to smoke base; skipping local smoke.');
   process.exit(0);
 }
@@ -169,30 +209,64 @@ if (breadth.skip) {
 // Stage 1: file names only. It imports no test file, so a change that reaches
 // hundreds of tests is found too broad in seconds instead of timing out the
 // full listing (which then skipped the smoke tier with tests_run=0).
-const filesListed = listAffectedTests(base.ref, { filesOnly: true });
-exitOnUnusableListing(filesListed);
+let directFiles;
+let selector;
+if (supportsDirectSmoke(changed) && directSmokeCheckoutClean()) {
+  try { selector = await import('./lib/pre-push-direct.mjs'); }
+  catch { console.warn('Direct smoke selection unavailable. Using affected-test discovery.'); }
+  if (selector) {
+    listingMode = 'direct';
+    const inventory = listAffectedTests(base.ref, { filesOnly: true, selectedFiles: [] });
+    exitOnUnusableListing(inventory);
+    directFiles = selector.selectDirectSmokeFiles(changed, inventory.selected.files, process.cwd(), trackedDirectSmokeTests()) ?? undefined;
+    if (directFiles) console.log(`Direct Local Verify smoke includes ${directFiles.length} files. Full shared coverage still applies.`);
+  }
+}
+let testFileCount = directFiles?.length;
+if (testFileCount === undefined) {
+  listingMode = 'affected';
+  const filesListed = listAffectedTests(base.ref, { filesOnly: true });
+  exitOnUnusableListing(filesListed);
+  testFileCount = filesListed.selected.testFileCount;
+}
+candidateFiles = testFileCount;
 breadth = evaluateSmokeBreadth(
-  { changedFileCount: changed.length, testFileCount: filesListed.selected.testFileCount, testCaseCount: 0 },
+  { changedFileCount: changed.length, testFileCount, testCaseCount: 0 },
   limits,
 );
 if (breadth.skip) {
   printSkip(breadth.reason);
   process.exit(0);
 }
-if (filesListed.selected.testFileCount === 0) {
+if (testFileCount === 0) {
+  reportListing('no-tests');
   console.log('✅ No affected tests selected by Vitest.');
   process.exit(0);
 }
 
 // Stage 2: collect test cases, now bounded by the file cap.
-const listed = listAffectedTests(base.ref);
+const listed = listAffectedTests(base.ref, { selectedFiles: directFiles });
 exitOnUnusableListing(listed);
 
 const selected = listed.selected;
+if (directFiles && selected.files.join('\n') !== directFiles.join('\n')) {
+  printIndeterminateFailure('direct smoke case discovery did not match the selected files');
+  process.exit(1);
+}
 console.log(`🧪 Smoke affected set: ${selected.testFileCount} test files / ${selected.testCaseCount} test cases.`);
 
+let selectedCases = selected.testCaseCount;
+if (directFiles) {
+  const bounded = selector.boundDirectSmokeCases(changed, selected.casesByFile, process.cwd(), limits.maxTestCases);
+  if (bounded) {
+    directFiles = bounded.files;
+    selectedCases = bounded.cases;
+    console.log(`Direct smoke will run ${selectedCases} cases across ${directFiles.length} files within the local budget.`);
+  }
+}
+
 const selection = evaluateAffectedSmokeSelection(
-  { changedFileCount: changed.length, testFileCount: selected.testFileCount, testCaseCount: selected.testCaseCount },
+  { changedFileCount: changed.length, testFileCount: directFiles?.length ?? selected.testFileCount, testCaseCount: selectedCases },
   limits,
 );
 if (selection.action === 'skip') {
@@ -201,8 +275,16 @@ if (selection.action === 'skip') {
 }
 
 if (selection.action === 'no-tests') {
+  reportListing('no-tests');
   console.log('✅ No affected tests selected by Vitest.');
   process.exit(0);
 }
 
-process.exit(runAffectedSmoke(base.ref));
+const requiredFiles = directFiles
+  ? new Set(selector.mandatoryDirectSmokeFiles(changed).map(file => path.resolve(file)))
+  : null;
+const expectedCounts = directFiles
+  ? new Map(directFiles.map(file => [file, { cases: selected.casesByFile[file], mustExecute: requiredFiles.has(file) }]))
+  : null;
+reportListing('selected', directFiles?.length ?? selected.testFileCount, selectedCases);
+process.exit(runAffectedSmoke(base.ref, directFiles, expectedCounts));

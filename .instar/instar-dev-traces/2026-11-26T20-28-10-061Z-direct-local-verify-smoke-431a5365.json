@@ -1,0 +1,34 @@
+{
+  "version": 3,
+  "slug": "direct-local-verify-smoke",
+  "sessionId": "1f52ddfa-542b-4f86-9d54-e7d5d9f38c43",
+  "timestamp": "2026-11-26T20:28:10.061Z",
+  "artifactPath": "upgrades/side-effects/direct-local-verify-smoke.md",
+  "artifactSha256": "29928c9a0d4fee6015e0f8c08ec776aae16410833ba4a865d3fc7491ac132be1",
+  "specPath": "docs/specs/direct-local-verify-smoke.md",
+  "coveredFiles": [
+    "docs/specs/direct-local-verify-smoke.eli16.md",
+    "docs/specs/direct-local-verify-smoke.md",
+    "docs/specs/reports/direct-local-verify-smoke-convergence.md",
+    "scripts/lib/pre-push-direct.mjs",
+    "scripts/lib/pre-push-scope.mjs",
+    "scripts/pre-push-smoke.mjs",
+    "src/data/feature-ladders.json",
+    "tests/unit/scripts/pre-push-direct.test.ts",
+    "tests/unit/scripts/worktree-runtime-readiness.test.ts",
+    "upgrades/next/direct-local-verify-smoke.md",
+    "upgrades/side-effects/direct-local-verify-smoke.md"
+  ],
+  "phase": "complete",
+  "tier": 2,
+  "tierReasoning": "A bounded developer-facing smoke policy changes. Full shared verification remains authoritative, and the local selection and retry are independently reviewed.",
+  "secondPass": "true",
+  "reviewerConcurred": true,
+  "toolchain": {
+    "buildSkill": {
+      "name": "build",
+      "version": null,
+      "verified": false
+    }
+  }
+}
