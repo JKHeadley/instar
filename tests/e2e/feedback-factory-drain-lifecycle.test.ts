@@ -11,6 +11,7 @@ import { InitiativeTracker } from '../../src/core/InitiativeTracker.js';
 import { SafeFsExecutor } from '../../src/core/SafeFsExecutor.js';
 import type { InstarConfig, IntelligenceProvider } from '../../src/core/types.js';
 import { validateCanonicalPipelineRuntimeEvidence } from '../../src/core/canonicalPipelineRuntimeEvidence.js';
+import { promoteConsumerFromProposal } from '../helpers/feedbackConsumerPromotion.js';
 import { handleFeedbackSubmit } from '../../src/feedback-factory/receiver/handlers.js';
 import { BlobInboxStore } from '../../src/feedback-factory/receiver/BlobInboxStore.js';
 import { BlobInboxClient } from '../../src/feedback-factory/inbox/BlobInboxClient.js';
@@ -126,14 +127,30 @@ describe('feedback factory drain — real production-adapter lifecycle', () => {
     expect(backlog.body).toMatchObject({ boundedBatchSize: 50, counts: { clusters: expect.any(Number), reports: expect.any(Number) }, estimatedWorkItemVolume: expect.any(Number) });
     expect(backlog.body).not.toHaveProperty('title');
 
-    const promotion = await request(app)
-      .post('/feedback-factory/consumer/promote')
+    // Promotion is proposal-set bound: the route is alive, an invented hash is refused,
+    // and only the exact server-proposed batch promotes.
+    const before = await request(app).get('/feedback-factory/consumer/promotion/proposal').set({ Authorization: `Bearer ${AUTH}` });
+    expect(before.status).toBe(200);
+    expect(before.body).toMatchObject({ state: 'no-work', localAction: false, promotionRecord: { present: false } });
+    expect((await request(app).post('/feedback-factory/consumer/promote')
       .set({ Authorization: `Bearer ${AUTH}`, 'X-Instar-Request': '1' })
-      .send({ pin: PIN, approvedBatchBound: 10, evidenceHash: 'a'.repeat(64), operatorDecisionId: 'operator-approved-spec' });
-    expect(promotion.status).toBe(200);
+      .send({ pin: PIN, approvedBatchBound: 10, evidenceHash: 'a'.repeat(64), operatorDecisionId: 'invented' })).body)
+      .toMatchObject({ error: 'promotion-not-pending:no-work' });
     expect((await request(app).post('/feedback-factory/consumer/promote')
       .set({ Authorization: `Bearer ${AUTH}`, 'X-Instar-Request': '1' })
       .send({ approvedBatchBound: 10, evidenceHash: 'a'.repeat(64), operatorDecisionId: 'self' })).status).toBe(403);
+    const { proposal, promote: promotion } = await promoteConsumerFromProposal(app, {
+      auth: AUTH, pin: PIN, agentId: 'e2e', operatorDecisionId: 'operator-approved-spec', noncePrefix: 'feedback-e2e-sim',
+    });
+    expect(proposal).toMatchObject({ state: 'pending', localAction: true, approvedBatchBound: 1, proposalSetHash: expect.stringMatching(/^[a-f0-9]{64}$/) });
+    expect((proposal.items as unknown[])[0]).toEqual({ workId: expect.any(String), title: expect.any(String), priority: expect.any(String), reportCount: expect.any(Number) });
+    expect(promotion.status, JSON.stringify(promotion.body)).toBe(200);
+    expect((await request(app).get('/feedback-factory/consumer/promotion/proposal').set({ Authorization: `Bearer ${AUTH}` })).body)
+      .toMatchObject({ state: 'already-live', localAction: false, promotionRecord: { present: true, revoked: false, approvedBatchBound: 1 } });
+    // Replaying the same approval after promotion is refused.
+    expect((await request(app).post('/feedback-factory/consumer/promote')
+      .set({ Authorization: `Bearer ${AUTH}`, 'X-Instar-Request': '1' })
+      .send({ pin: PIN, approvedBatchBound: proposal.approvedBatchBound, evidenceHash: proposal.proposalSetHash, operatorDecisionId: 'replay' })).status).toBe(409);
 
     // No PIN in the operated tick: the registered frontier-model agent is the
     // default readiness authority, and human input is not the throughput gate.
@@ -189,6 +206,14 @@ describe('feedback factory drain — real production-adapter lifecycle', () => {
     expect((await request(app).post('/feedback-factory/readiness-authorities')
       .set({ Authorization: `Bearer ${AUTH}`, 'X-Instar-Request': '1' })
       .send({ action: 'restore', authorityId: 'feedback-readiness-default' })).status).toBe(403);
+  });
+
+  it('the readiness serving account is reported on the production path; unconfigured readiness stays on the shared provider', async () => {
+    const status = await request(server.getApp()).get('/feedback-factory/drain/status').set({ Authorization: `Bearer ${AUTH}` });
+    expect(status.status).toBe(200);
+    expect(status.body.readinessAccount).toMatchObject({ mode: 'off', pinnedAccountId: null });
+    // The first test made a readiness call: with no pin and selection off it ran shared, as before.
+    expect(status.body.readinessAccount.last).toMatchObject({ state: 'shared', reason: 'selection-off' });
   });
 
   it('authenticates cancellation and durably fences the active run', async () => {

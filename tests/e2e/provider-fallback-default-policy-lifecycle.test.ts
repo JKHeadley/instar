@@ -24,7 +24,12 @@ import os from 'node:os';
 import { AgentServer } from '../../src/server/AgentServer.js';
 import { StateManager } from '../../src/core/StateManager.js';
 import { IntelligenceRouter } from '../../src/core/IntelligenceRouter.js';
-import { resolveInternalFrameworkDefault } from '../../src/core/internalFrameworkDefault.js';
+import {
+  INTERNAL_FRAMEWORK_PREFERENCE,
+  resolveInternalFrameworkDefault,
+  selectActiveInternalFrameworks,
+} from '../../src/core/internalFrameworkDefault.js';
+import { hasUsableInternalLogin } from '../../src/core/frameworkLoginPresence.js';
 import { MessagingToneGate } from '../../src/core/MessagingToneGate.js';
 import type { IntelligenceFramework } from '../../src/core/intelligenceProviderFactory.js';
 import type { InstarConfig, IntelligenceProvider, IntelligenceOptions } from '../../src/core/types.js';
@@ -187,5 +192,62 @@ describe('Wiring-integrity (M11): a gating CALLER receives the router re-throw w
       }
     };
     await expect(failClosedGate(router)).resolves.toBe('block');
+  });
+});
+
+describe('CMT-2289: an installed-but-signed-out gemini-cli never receives the gate category (feature is alive)', () => {
+  let tmpDir: string;
+  let server: AgentServer;
+  const AUTH = 'test-e2e-signed-out-gemini';
+
+  beforeAll(async () => {
+    tmpDir = fs.mkdtempSync(path.join(os.tmpdir(), 'signed-out-gemini-e2e-'));
+    const stateDir = path.join(tmpDir, '.instar');
+    fs.mkdirSync(path.join(stateDir, 'state', 'sessions'), { recursive: true });
+    fs.mkdirSync(path.join(stateDir, 'logs'), { recursive: true });
+    fs.writeFileSync(path.join(stateDir, 'config.json'), JSON.stringify({ port: 0, projectName: 'e2e', agentName: 'E2E' }));
+    const config: InstarConfig = {
+      projectName: 'e2e', projectDir: tmpDir, stateDir, port: 0, authToken: AUTH,
+      requestTimeoutMs: 10000, version: '0.0.0',
+      sessions: { claudePath: '/usr/bin/echo', maxSessions: 3, defaultMaxDurationMinutes: 30, protectedSessions: [], monitorIntervalMs: 5000 },
+      scheduler: { enabled: false, jobsFile: '', maxParallelJobs: 1 },
+      messaging: [], monitoring: {}, updates: {},
+    } as InstarConfig;
+
+    // The server.ts construction path: the SAME active-set filter it runs at boot,
+    // on a machine where codex and gemini binaries both build but gemini has no login
+    // (Bob's shape: 51/51 gate errors on gemini-cli).
+    const built: Partial<Record<IntelligenceFramework, IntelligenceProvider | null>> = {
+      'codex-cli': fakeProvider('codex'),
+      'gemini-cli': fakeProvider('gemini'),
+    };
+    const activeSet = selectActiveInternalFrameworks(
+      INTERNAL_FRAMEWORK_PREFERENCE, 'claude-code',
+      (fw) => built[fw] ?? null,
+      (fw) => hasUsableInternalLogin(fw, { geminiAuthed: () => false }),
+    );
+    const router = routerWithComputedDefault(activeSet, built, fakeProvider('claude'));
+    server = new AgentServer({
+      config,
+      sessionManager: createMockSessionManager() as any,
+      state: new StateManager(stateDir),
+      intelligence: router,
+    });
+    await server.start();
+  });
+
+  afterAll(async () => {
+    await server.stop();
+    SafeFsExecutor.safeRmSync(tmpDir, { recursive: true, force: true, operation: 'tests/e2e/provider-fallback-default-policy-lifecycle.test.ts' });
+  });
+
+  it('GET /intelligence/routing is alive and routes the gates to codex, never the signed-out gemini', async () => {
+    const res = await request(server.getApp()).get('/intelligence/routing').set({ Authorization: `Bearer ${AUTH}` });
+    expect(res.status).toBe(200);
+    for (const name of ['PromptGate', 'MessagingToneGate']) {
+      const c = res.body.components.find((x: any) => x.component === name);
+      expect(c).toMatchObject({ category: 'gate', framework: 'codex-cli' });
+    }
+    expect(JSON.stringify(res.body.components)).not.toContain('"framework":"gemini-cli"');
   });
 });

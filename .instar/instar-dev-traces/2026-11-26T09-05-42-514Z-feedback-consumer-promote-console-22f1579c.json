@@ -1,0 +1,23 @@
+{
+  "version": 2,
+  "slug": "feedback-consumer-promote-console",
+  "sessionId": "b5892410-5874-4620-9f7b-5e54791d9a9e",
+  "timestamp": "2026-11-26T09:05:42.514Z",
+  "artifactPath": "upgrades/side-effects/feedback-consumer-promote-console.md",
+  "artifactSha256": "8b30ef62048084545df12bb3772f4607f384655fdb14ba73b21e976bc5a96710",
+  "coveredFiles": [
+    "dashboard/console/development-model.js",
+    "dashboard/console/development.js",
+    "docs/specs/feedback-consumer-promote-console.eli16.md",
+    "tests/unit/console-development.test.ts",
+    "upgrades/next/feedback-consumer-promote-console.md",
+    "upgrades/side-effects/feedback-consumer-promote-console.md"
+  ],
+  "phase": "complete",
+  "tier": 1,
+  "tierReasoning": "Explain the published server contract without changing approval, mutation, or authority behavior.",
+  "eli16Path": "docs/specs/feedback-consumer-promote-console.eli16.md",
+  "sideEffectsPath": "upgrades/side-effects/feedback-consumer-promote-console.md",
+  "secondPass": "not-required",
+  "reviewerConcurred": null
+}

@@ -1,0 +1,38 @@
+{
+  "version": 3,
+  "slug": "feedback-readiness-account",
+  "sessionId": "fc3d3191-842f-463d-af54-a2abbc40e3f2",
+  "timestamp": "2026-11-26T09:34:46.877Z",
+  "artifactPath": "upgrades/side-effects/feedback-readiness-account.md",
+  "artifactSha256": "44a4b8ed7c8e5ee5372743dd6161c39c256ac15e6f38f5e5d708708b3a140996",
+  "coveredFiles": [
+    "docs/specs/feedback-readiness-account.eli16.md",
+    "src/core/types.ts",
+    "src/data/awareness/feedback-readiness-account.md",
+    "src/feedback-factory/drain/FeedbackDrainService.ts",
+    "src/feedback-factory/drain/FeedbackReadinessArbiter.ts",
+    "src/feedback-factory/drain/readinessAccountAdmission.ts",
+    "src/feedback-factory/triage/FeedbackTriageAccountSelector.ts",
+    "src/server/AgentServer.ts",
+    "tests/e2e/feedback-factory-drain-lifecycle.test.ts",
+    "tests/integration/feedback-drain-readiness-account.test.ts",
+    "tests/unit/feedback-factory/drain-readiness-account.test.ts",
+    "tests/unit/feedback-factory/readiness-account-admission.test.ts",
+    "upgrades/next/feedback-readiness-account.md",
+    "upgrades/side-effects/feedback-readiness-account.md"
+  ],
+  "phase": "complete",
+  "tier": 1,
+  "tierReasoning": "Opt-in and reversible: with no readiness.account pin and triage.accountSelectionMode off (the fleet default) readiness is unchanged; a revert or unsetting the pin fully undoes it; no durable state, migration or new authority (admission can only defer a call).",
+  "eli16Path": "docs/specs/feedback-readiness-account.eli16.md",
+  "sideEffectsPath": "upgrades/side-effects/feedback-readiness-account.md",
+  "secondPass": "not-required",
+  "reviewerConcurred": null,
+  "toolchain": {
+    "buildSkill": {
+      "name": "instar-dev",
+      "version": "21a45a5a5f03",
+      "verified": true
+    }
+  }
+}

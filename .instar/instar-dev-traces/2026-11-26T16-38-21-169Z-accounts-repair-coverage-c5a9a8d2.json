@@ -1,0 +1,30 @@
+{
+  "version": 2,
+  "slug": "accounts-repair-coverage",
+  "sessionId": "b5892410-5874-4620-9f7b-5e54791d9a9e",
+  "timestamp": "2026-11-26T16:38:21.169Z",
+  "artifactPath": "upgrades/side-effects/accounts-repair-coverage.md",
+  "artifactSha256": "613d80a2008dd06eb14cf3665b3b1c1ad2d29d883ef787cec488267657ad627b",
+  "coveredFiles": [
+    ".instar/instar-dev-decisions/2026-11-26T16-37-22-482Z-accounts-repair-coverage.json",
+    ".instar/instar-dev-decisions/2026-11-26T16-38-10-637Z-accounts-repair-coverage.json",
+    "dashboard/console/accounts.js",
+    "dashboard/console/auto-repair-model.js",
+    "docs/specs/accounts-repair-coverage.eli16.md",
+    "src/server/routes.ts",
+    "tests/e2e/subscription-relogin-one-tap-lifecycle.test.ts",
+    "tests/integration/subscription-relogin-routes.test.ts",
+    "tests/unit/console-accounts.test.ts",
+    "tests/unit/console-auto-repair-model.test.ts",
+    "tests/unit/console-quota-forecast.test.ts",
+    "upgrades/next/accounts-repair-coverage.md",
+    "upgrades/side-effects/accounts-repair-coverage.md"
+  ],
+  "phase": "complete",
+  "tier": 1,
+  "tierReasoning": "Reversible timeout recovery and coverage feedback in the existing Accounts approval UI. Existing PIN and write authority stay in place.",
+  "eli16Path": "docs/specs/accounts-repair-coverage.eli16.md",
+  "sideEffectsPath": "upgrades/side-effects/accounts-repair-coverage.md",
+  "secondPass": "not-required",
+  "reviewerConcurred": null
+}

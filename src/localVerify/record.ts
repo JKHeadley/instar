@@ -186,6 +186,8 @@ export interface FlakyRetry {
   lane: string;
   /** The first run's failure (first failing test + message), bounded. */
   firstMessage: string;
+  /** The verifier reran these named assertions, retaining the original file inventory. */
+  namedRetry?: true;
   /** Shared: full names of the tests that failed in the lane run, at most 20, each whole (a longer name is left out). */
   failedTests?: string[];
   /** Shared: the true number of failed tests, so a shorter list is disclosed. */
@@ -220,6 +222,9 @@ function flakyNameFieldsOk(r: Record<string, unknown>): boolean {
   }
   if (r.testSetHash !== undefined && !(typeof r.testSetHash === 'string' && /^[0-9a-f]{64}$/.test(r.testSetHash))) return false;
   const clearance = r.soloPasses !== undefined || r.soloSeconds !== undefined || r.evidence !== undefined;
+  if (r.namedRetry !== undefined && (r.namedRetry !== true || r.importRelated !== undefined || list.length < 1 || list.length > 3
+    || typeof r.testSetHash !== 'string' || r.failedTestsTotal !== list.length || new Set(list).size !== list.length || !Array.isArray(r.soloPassedByName)
+    || r.soloPassedByName.length !== list.length || !list.every((name, index) => name === (r.soloPassedByName as string[])[index]))) return false;
   if (r.importRelated === undefined) return !clearance;
   if (r.importRelated !== true) return false;
   if (r.soloPasses !== 3) return false;
@@ -307,7 +312,7 @@ export function validateRecord(r: unknown): { ok: true; record: LocalVerifyRecor
       return !!r && typeof r.file === 'string' && r.file.length > 0 && r.file.length <= 300 && typeof r.lane === 'string'
         && typeof r.firstMessage === 'string' && r.firstMessage.length <= 2000 && flakyNameFieldsOk(r);
     });
-    if (!ok) errors.push('flakyRetried');
+    if (!ok || (x.flakyRetried as FlakyRetry[]).reduce((sum, r) => sum + (r.namedRetry ? (r.failedTests?.length ?? 0) : 0), 0) > 3) errors.push('flakyRetried');
   }
   if (x.failedFiles !== undefined) {
     if (!isBoundedFailedFileSet(x.failedFiles) || x.outcome !== 'failure' || x.kind === 'main') errors.push('failedFiles');
