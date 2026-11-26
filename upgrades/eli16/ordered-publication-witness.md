@@ -25,3 +25,5 @@ First-phone enrollment can accept only one result for a given attempt. The witne
 First-phone enrollment and a competing key replacement now check the same slot. Both compare the slot generation and the exact previously recorded key. If one decision changes the slot first, requests prepared against its old state cannot make a second change. The original receipt can still be recovered after a machine change.
 
 The witness observer saves a copy of the exact proposal it saw. Saving a proposal does not approve it. If a success response goes missing, the authority can look up the original proposal using the accepted receipt and recover the same result.
+
+The observer can load the original proposal directly from the witness's Git mirror. It looks up the proposal at the exact commit, even if the mirror's working files show something else.

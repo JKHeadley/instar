@@ -28,3 +28,5 @@ The dark witness can permanently reserve one ordered result per first-phone atte
 The dark first-phone authority now compares and records the exact slot generation and key lineage for enrollment and replacement in one transaction. It preserves the exact receipt across holder changes.
 
 The default-off witness observer retains exact first-phone candidate bytes before the authority can accept them. An accepted receipt can recover those bytes after restart.
+
+The first-phone observer can read the canonical candidate blob at the exact observed commit from a preconfigured witness Git mirror.

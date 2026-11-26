@@ -21,7 +21,7 @@ const digest = /^[a-f0-9]{64}$/;
 const id = /^[a-zA-Z0-9_.:-]{1,256}$/;
 
 export function validFirstPhoneSlot(state: FirstPhoneSlotState): boolean {
-  return id.test(state.slotKey) && Number.isSafeInteger(state.generation) && state.generation >= 0 &&
+  return typeof state?.slotKey === 'string' && id.test(state.slotKey) && Number.isSafeInteger(state.generation) && state.generation >= 0 &&
     (state.keyDigest === null || digest.test(state.keyDigest)) &&
     (state.reservedBy === null || (state.keyDigest !== null && digest.test(state.reservedBy)));
 }
@@ -39,7 +39,8 @@ export function firstPhoneSlotOperationKey(decision: FirstPhoneSlotDecision): st
 /** The handler validates caller, challenge and key policy before submitting the witnessed decision. */
 export function firstPhoneSlotSuccessor(decision: FirstPhoneSlotDecision): FirstPhoneSlotState | null {
   const { prior, action } = decision;
-  if (!validFirstPhoneSlot(prior) || !id.test(decision.operationId) || !digest.test(decision.requestDigest)) return null;
+  if (!action || (action.kind !== 'consume' && action.kind !== 'cancel' && action.kind !== 'replace')) return null;
+  if (!validFirstPhoneSlot(prior) || typeof decision.operationId !== 'string' || !id.test(decision.operationId) || !digest.test(decision.requestDigest)) return null;
   if (action.kind !== 'replace' && (!digest.test(action.challengeKey) || !digest.test(action.challengeDigest))) return null;
   if (action.kind === 'cancel') return { ...prior };
   if (prior.generation === Number.MAX_SAFE_INTEGER || !digest.test(action.keyDigest) ||

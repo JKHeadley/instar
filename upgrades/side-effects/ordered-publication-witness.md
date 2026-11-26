@@ -75,3 +75,7 @@ Compound decisions compare the full current slot state and append the operation,
 ## Observe and retain exact first-phone evidence
 
 The default-off observer has only the staging operation and checks the pinned Git ref again after loading candidate evidence. The immutable candidate row keys on scope and commit and preserves the original bytes. Compound first-phone acceptance checks those exact bytes inside its transaction. Recovery requires the corresponding historical operation receipt and exact digest. Tests use real disposable Git refs and an injected immutable-object reader. No witness service loop, production object reader, or route is enabled by this change.
+
+## First-phone Git candidate reader
+
+The dark reader accepts only full object IDs and a fixed blob path in a receiver-configured witness mirror. It checks canonical bytes and decision shape before staging. The integration exercises real Git objects, including a malformed blob, and verifies staging produces no acceptance. Mirror fetch and the observer service loop remain separate.
