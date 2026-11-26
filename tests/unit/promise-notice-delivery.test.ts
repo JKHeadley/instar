@@ -81,29 +81,31 @@ describe('promise-notice category', () => {
 });
 
 describe('a held send is not counted as told', () => {
-  it('late notice: a quiet receipt leaves the row unstamped, counts a failure, and hands nothing to the session', async () => {
-    const now = Date.parse('2026-11-18T15:44:49.000Z');
+  it('last-resort message (no session could take it): a quiet receipt leaves the row unstamped and counts a failure', async () => {
+    // Three hours past the time with no session ever taking it: the last resort is due.
+    const now = Date.parse('2026-11-18T18:44:49.000Z');
     const tracker = fakeTracker([{
       id: 'CMT-1951', userRequest: 'TEST', agentResponse: 'Test: a short summary', status: 'pending', topicId: 144400,
       owner: 'agent', blockedOn: 'none', ownerMachineId: 'm_self', originMachineId: 'm_self',
       softDeadlineAt: '2026-11-18T15:42:45Z', createdAt: '2026-11-18T15:34:45.191Z',
+      // Restarts were attempted and held since 15:45, so the last resort is due now.
+      attemptsFor: '2026-11-18T15:42:45Z', heldCounts: { capacity: 5 }, firstHeldAt: '2026-11-18T15:45:00.000Z',
     } as Commitment]);
-    const handOffPromise = vi.fn(async () => true);
+    // Attempts were held for longer than one re-check interval: the last resort is due.
     const send = vi.fn(async () => QUIET);
     const r = new CheckInReminderReconciler(
       { tracker: tracker as any, send, now: () => now, log: () => {}, timeZone: 'UTC',
-        lateEpoch: { read: () => now - 3_600_000, writeOnce: (ms: number) => ms }, handOffPromise },
+        lateEpoch: { read: () => now - 3_600_000, writeOnce: (ms: number) => ms } },
       { enabled: true, dryRun: false, selfMachineId: 'm_self' },
     );
     const rep = await r.runPass();
     expect(send).toHaveBeenCalledTimes(1);
-    expect(rep.late.topicsSent).toBe(0);
-    expect(rep.late.failed).toBe(1);
-    expect(rep.errors.some((e) => /held-not-delivered/.test(e.error))).toBe(true);
+    expect(rep.late.keeping.lastResortTopics).toBe(0);
+    expect(rep.late.keeping.errors.some((e) => /held-not-delivered/.test(e.error))).toBe(true);
     const row = tracker._rows.get('CMT-1951')!;
     expect(row.lateNoticeSentAt).toBeUndefined();
     expect(row.lateAttempts).toBe(1);
-    expect(handOffPromise).not.toHaveBeenCalled();
+    expect(row.lateNoticeFor).toBeUndefined();
   });
 
   it('check-in reminder: a quiet receipt leaves checkInReminderSentAt unset', async () => {

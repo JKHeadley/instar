@@ -35,6 +35,7 @@ import fs from 'node:fs';
 import path from 'node:path';
 
 import type { Commitment, CommitmentTracker } from '../monitoring/CommitmentTracker.js';
+import { hasGivenTime, isOnOverduePath } from '../monitoring/promiseKeepingCore.js';
 
 export const DEFAULT_OPKEY_TTL_DAYS = 7;
 export const DEFAULT_MAX_PENDING_PER_COMMITMENT = 4;
@@ -82,6 +83,12 @@ const TERMINAL = new Set(['verified', 'violated', 'expired', 'withdrawn', 'deliv
 export async function applyOwnerMutation(
   tracker: CommitmentTracker,
   payload: CommitmentMutatePayload,
+  /** Promise keeping (docs/specs/promise-keeping-before-the-deadline.md §3.4): the record rules apply only where the check-in gate is live. */
+  opts: {
+    promiseKeepingLive?: () => boolean;
+    /** The same check the local deliver route makes: an agent message in the row's topic since C. Absent → refused while live. */
+    verifyDeliveryMessage?: (row: Commitment, messageId: number) => boolean;
+  } = {},
 ): Promise<MutateOutcome> {
   const existing = tracker.getAll().find((c) => c.id === payload.id);
   if (!existing) return { verdict: 'not-found' };
@@ -95,9 +102,17 @@ export async function applyOwnerMutation(
       if (TERMINAL.has(existing.status)) {
         return { verdict: 'invalid-transition', status: existing.status, ...(stale ? { staleObservation: true } : {}) };
       }
+      if (opts.promiseKeepingLive?.() && isOnOverduePath(existing, Date.now())) {
+        const raw = payload.args?.deliveryMessageId;
+        const mid = typeof raw === 'number' ? raw : typeof raw === 'string' ? Number(raw) : NaN;
+        if (!Number.isFinite(mid) || !opts.verifyDeliveryMessage?.(existing, mid)) {
+          return { verdict: 'invalid-transition', status: existing.status };
+        }
+      }
       const r = tracker.deliver(
         payload.id,
-        typeof payload.args?.deliveryMessageId === 'string' ? payload.args.deliveryMessageId : undefined,
+        typeof payload.args?.deliveryMessageId === 'string' ? payload.args.deliveryMessageId
+          : typeof payload.args?.deliveryMessageId === 'number' ? String(payload.args.deliveryMessageId) : undefined,
         typeof payload.args?.evidence === 'string' ? payload.args.evidence : undefined,
       );
       return r
@@ -147,6 +162,11 @@ export async function applyOwnerMutation(
         if (!Object.keys(patch).length) return { verdict: 'applied', status: r.status, ...(stale ? { staleObservation: true } : {}) };
       }
       if (!Object.keys(patch).length) return { verdict: 'idempotent-noop', status: existing.status };
+      // promise-keeping §3.4: a given time moves only through reschedule (never a forwarded PATCH).
+      if ('softDeadlineAt' in patch && opts.promiseKeepingLive?.() && hasGivenTime(existing)) {
+        return { verdict: 'invalid-transition', status: existing.status };
+      }
+      if (typeof patch.softDeadlineAt === 'string' && patch.softDeadlineAt && !existing.firstPromisedAt) patch.firstPromisedAt = patch.softDeadlineAt;
       // overdue-promise-follow-through §3.5: a promised time IS follow-through, so the opt-out goes.
       if (typeof patch.softDeadlineAt === 'string' && patch.softDeadlineAt) patch.followThroughOptOutReason = undefined;
       const r = await tracker.mutate(payload.id, (c) => ({ ...c, ...patch } as Commitment));

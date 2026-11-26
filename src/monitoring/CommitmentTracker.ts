@@ -344,24 +344,72 @@ export interface Commitment {
   /**
    * Late notice (docs/specs/overdue-promise-follow-through.md). Each stamp
    * names the promised time (`softDeadlineAt`) it belongs to, so moving the
-   * time re-arms exactly one new notice and a fresh retry budget.
+   * time re-arms exactly one new notice and a fresh retry budget. Under
+   * docs/specs/promise-keeping-before-the-deadline.md these record only the
+   * LAST-RESORT message to the person; the work pickup has its own fields below.
    */
   /** The promised time the person was told had passed (set only after a successful send). */
   lateNoticeFor?: string;
-  /** When the last late notice was sent (ISO) — also drives the per-topic cooldown. */
+  /** When the last late (last-resort) message was sent (ISO) — also drives the per-topic cooldown. */
   lateNoticeSentAt?: string;
-  /** Late notices sent for this promise across all its times (capped). */
+  /** Late (last-resort) messages sent for this promise across all its times. */
   lateNoticeCount?: number;
   /** The promised time `lateAttempts` counts against. */
   lateAttemptsFor?: string;
-  /** Send attempts for `lateAttemptsFor` (counted before each send). */
+  /** Last-resort send attempts for `lateAttemptsFor` (counted before each send). */
   lateAttempts?: number;
-  /** Set when every attempt for a time failed: the late notice is UNDELIVERED. */
+  /** Set when every last-resort send attempt for a time failed: the message is UNDELIVERED. */
   lateNoticeFailedAt?: string;
-  /** The promised time whose session handoff was accepted by a running session. */
+  /** Legacy: the promised time whose session handoff was accepted by a running session. */
   lateHandoffFor?: string;
-  /** The promised time whose due-soon session nudge was attempted. */
+  /** The promised time whose due-soon check a session took. */
   dueSoonNudgeFor?: string;
+
+  // ── Promise keeping (docs/specs/promise-keeping-before-the-deadline.md) ──
+  /** The first promised time ever set; never changed after. */
+  firstPromisedAt?: string;
+  /** When the promised time was last moved (the anchor C for checks after a move). */
+  lastTimeMoveAt?: string;
+  /** Moves made after a time had already passed (grace included); never reset. */
+  timeMovesAfterMiss?: number;
+  /** The one-off grace (≤ 15 min, no message) after a miss: re-checks wait until then. */
+  graceUntil?: string;
+  /** Whether the one-off grace has been used. */
+  graceUsed?: boolean;
+  /** An in-flight reschedule: written before the send, cleared once resolved. */
+  rescheduleIntent?: { id: string; newTime: string; at: string; body: string };
+  /** The message id that told the person the current time (set by a reschedule). */
+  toldMessageId?: number;
+  /** The promised time whose midpoint check a session took. */
+  midpointCheckFor?: string;
+  /** The time (promised time, or pickupRequestedAt) the current pickup ladder belongs to. */
+  pickupFor?: string;
+  /** When the last pickup was taken (ISO). */
+  pickedUpAt?: string;
+  /** Pickups taken for `pickupFor`. */
+  pickups?: number;
+  /** Set by the promise review's `pick-up` action: owed work with no promised time. */
+  pickupRequestedAt?: string;
+  /** Where the promised time came from; 'review' = set by the promise review from the conversation. */
+  timeSource?: 'session' | 'review';
+  /** An attempt in flight (written before a start). `gen` is the time it was made for. */
+  pendingAttempt?: { id: string; stage: string; gen: string; at: string; timedOutAt?: string };
+  /** Attempt outcomes for `pickupFor` (or the current check), written only when they change. */
+  attemptsFor?: string;
+  failedAttempts?: number;
+  heldCounts?: Record<string, number>;
+  firstHeldAt?: string;
+  /** Earliest time the next attempt may run (backoff). */
+  nextAttemptAt?: string;
+  /** Backoff steps taken after the last resort (0..3, then daily). */
+  backoffStep?: number;
+  /** When the row moved to the daily cadence. */
+  parkedAt?: string;
+  /** When the parked row was handed to the promise review. */
+  parkReviewHandedAt?: string;
+  /** No-time lane: how many times a running session was asked to add a time, and when last. */
+  timeAskedCount?: number;
+  timeAskedAt?: string;
   /** Soft deadline — past it, cadence doubles (no terminal transition). */
   softDeadlineAt?: string;
   /** Hard deadline — past it, commitment transitions to `expired`. */
@@ -1348,6 +1396,26 @@ export class CommitmentTracker extends EventEmitter {
    * refused). Synchronous: Node runs it without interleaving, so it can never
    * race a concurrent close. Returns null when the row is no longer pending.
    */
+  /**
+   * Promise review's non-closing promise-keeping actions
+   * (docs/specs/promise-keeping-before-the-deadline.md §3.7): give an untimed
+   * row the time its conversation shows (`set-time`), or mark owed work for
+   * pickup (`pick-up`). Synchronous so it runs inside the review's save batch.
+   * Refused (null) unless the row is still pending and still has no time.
+   */
+  stampPromiseKeeping(id: string, stamp: { softDeadlineAt?: string; pickupRequestedAt?: string; at: string; runId: string }): Commitment | null {
+    const existing = this.store.commitments.find(c => c.id === id);
+    if (!existing || existing.status !== 'pending' || existing.softDeadlineAt || existing.firstPromisedAt) return null;
+    return this.mutateSync(id, c => ({
+      ...c,
+      ...(stamp.softDeadlineAt ? { softDeadlineAt: stamp.softDeadlineAt, firstPromisedAt: stamp.softDeadlineAt, timeSource: 'review' as const, followThroughOptOutReason: undefined } : {}),
+      ...(stamp.pickupRequestedAt ? { pickupRequestedAt: stamp.pickupRequestedAt } : {}),
+      lastReviewedAt: stamp.at,
+      reviewCount: (c.reviewCount ?? 0) + 1,
+      reviewRunId: stamp.runId,
+    }));
+  }
+
   stampReview(id: string, stamp: {
     runId: string;
     at: string;
