@@ -1,0 +1,25 @@
+{
+  "version": 2,
+  "slug": "relay-error-no-crash",
+  "sessionId": "4f93898c-7d72-4a33-b581-3e0933a84bf4",
+  "timestamp": "2026-11-21T02:53:19.542Z",
+  "artifactPath": "upgrades/side-effects/relay-error-no-crash.md",
+  "artifactSha256": "1e5b160f1930edb1cf2d8c13ebe9c10c4633d763f6f43960c6667b48310bc022",
+  "coveredFiles": [
+    "docs/specs/relay-error-no-crash.eli16.md",
+    "src/threadline/ThreadlineBootstrap.ts",
+    "src/threadline/client/RelayClient.ts",
+    "src/threadline/client/ThreadlineClient.ts",
+    "src/threadline/client/relayErrorReport.ts",
+    "tests/unit/relay-error-frame-no-crash.test.ts",
+    "upgrades/next/relay-error-no-crash.md",
+    "upgrades/side-effects/relay-error-no-crash.md"
+  ],
+  "phase": "complete",
+  "tier": 1,
+  "tierReasoning": "SEC-136: relay frames can no longer crash the agent server (unheard error events, malformed frames, malformed envelopes, failing async relay listeners); defensive guards and reporting in the relay client path, no protocol or state change, reversible by revert; independent review concurred after three rounds.",
+  "eli16Path": "docs/specs/relay-error-no-crash.eli16.md",
+  "sideEffectsPath": "upgrades/side-effects/relay-error-no-crash.md",
+  "secondPass": "true",
+  "reviewerConcurred": true
+}

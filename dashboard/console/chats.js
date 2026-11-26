@@ -10,7 +10,7 @@
 // parameter: each needs an action in the page. Only the media types in chats-model.js VIEWABLE_TYPES
 // become a viewable blob:; everything else is a download.
 
-import { el, setKids, sheet, closeSheet, askPin, forgetOperatorSession } from './ui.js';
+import { el, setKids, sheet, closeSheet, askPin, forgetOperatorSession, operatorSession } from './ui.js';
 import {
   createBrowserDevice, consolePathAllowed, secureContextOk, newRequestId, sha256Hex, DELETED_REASON, refusalWords, readRecord, readAllRecords, deleteRecord,
 } from './browser-device.js';
@@ -21,6 +21,8 @@ import {
   setupRefusal, approvalWords, privateChatWords, blobTypeFor, listPinned, orderWithTree,
   pinsFrom, pinBarText, nextPinIndex, pinIdOf, pinsPathOf, pinOutcomeWords,
   listPinnedRows, listPinRefOf, splitPinned, listPinOutcomeWords, messageTime, messagePieces,
+  LIST_VIEW_KEY, listViewFrom, HIERARCHY_MAX_PAGES, hierarchyIndex, groupRows, groupCountWords,
+  effortMembers, trackedProjects, projectsForGroups, groupSections, rebuildQuickPage,
 } from './chats-model.js';
 
 /**
@@ -37,7 +39,7 @@ export function messageTextNode(text) {
     return n;
   }));
 }
-import { chiefOfStaffNeedRows } from './needs-model.js';
+import { chiefOfStaffNeedRows, chiefOfStaffCardRows } from './needs-model.js';
 import { appStripFor, appPath, appNavigation } from './projects-model.js';
 import { detectCredentialShape, CREDENTIAL_QUESTION } from './credential-shape.js';
 
@@ -46,6 +48,8 @@ const POLL_LOCK = 'instar-chat-poll';
 const CHANNEL = 'instar-chat';
 const OWN_KEY = 'instar_chat_own:';
 const OFF_TEXT = 'Conversations in the dashboard are switched off on this agent.';
+// The hierarchy is read again at most this often (the list itself refreshes every 30 s).
+const HIERARCHY_TTL_MS = 60000;
 
 const bearer = () => { try { return localStorage.getItem(TOKEN_KEY) || ''; } catch { return ''; } };
 const now = () => Date.now();
@@ -90,10 +94,18 @@ class ChatsPage {
     this.focusedAt = document.hasFocus && document.hasFocus() ? now() : 0;
     this.announcements = new Map();
     this.cursors = new Map();   // ref → events cursor (shared by broadcast so a new leader carries on)
+    this.quickPages = new Map(); // ref → complete quick-page rows and their server-issued hashes
     this.leader = false;
     this.union = [];
     this.scheduler = createScheduler();
     this.retries401 = 0;
+    // The list grouped by the conversation hierarchy: null until (and unless) the hierarchy read answers.
+    this.hierarchy = null;
+    this.hierarchyAt = 0;
+    this.hierarchyLoading = false;
+    this.groupProjects = new Map(); // effort key → the tracked project it is (Chief of Staff projects); empty → plain groups
+    this.listView = (() => { try { return listViewFrom(localStorage.getItem(LIST_VIEW_KEY)); } catch { return 'grouped'; } })();
+    this.openGroups = new Set();
   }
 
   // ── lifecycle ──
@@ -188,9 +200,12 @@ class ChatsPage {
   }
   refreshNeedCard() {
     if (!this.needSlot) return;
-    if (!this.cosNeeds || !this.cosNeeds.length) { setKids(this.needSlot); return; }
-    const lead = this.cosNeeds[0];
-    const more = this.cosNeeds.length - 1;
+    // The Needs-you list above this page already shows each project's wait; then only the check-in stays here.
+    const stripShown = typeof document !== 'undefined' && !!document.querySelector('#needsStrip:not([hidden])');
+    const rows = chiefOfStaffCardRows(this.cosNeeds, { stripShown });
+    if (!rows.length) { setKids(this.needSlot); return; }
+    const lead = rows[0];
+    const more = rows.length - 1;
     const open = el('a', { class: 'btn-primary', href: this.cosRef ? hashFor(this.cosRef) : '#/work/chats', text: `Open ${this.cosName || 'Chief of Staff'}` });
     const checkIn = el('button', { class: 'btn-quiet', type: 'button', text: 'Check in' });
     checkIn.addEventListener('click', () => this.checkInWithChiefOfStaff(checkIn));
@@ -372,6 +387,10 @@ class ChatsPage {
     this.moreBtn.addEventListener('click', () => this.loadList(true));
     this.failedEl = el('p', { class: 'card-line chat-muted', hidden: true });
     this.listPinNoteEl = el('p', { class: 'unlock-error chat-list-pin-note', role: 'alert', hidden: true });
+    // Grouped | All: shown only once the hierarchy has answered; the choice is remembered in this browser.
+    this.viewChips = { grouped: el('button', { class: 'chip', type: 'button', text: 'Grouped' }), all: el('button', { class: 'chip', type: 'button', text: 'All' }) };
+    for (const [view, chip] of Object.entries(this.viewChips)) chip.addEventListener('click', () => this.setListView(view));
+    this.viewToggleEl = el('div', { class: 'chat-view-toggle', role: 'group', 'aria-label': 'Show conversations', hidden: true }, this.viewChips.grouped, this.viewChips.all);
     const newBtn = el('button', { class: 'btn-primary chat-new', type: 'button', text: 'New conversation' });
     newBtn.addEventListener('click', () => this.newConversation());
     const forget = el('button', { class: 'btn-quiet chat-forget', type: 'button', text: 'Forget this browser' });
@@ -383,7 +402,7 @@ class ChatsPage {
         el('section', { class: 'hero page-hero' }, el('div', { class: 'eyebrow', text: 'Work · Conversations' }), el('h1', { class: 'page-title', text: 'Conversations' })),
         skew ? el('p', { class: 'card-line chat-note', text: `Your computer's clock is ${Math.abs(skew)} minutes off.` }) : null,
         el('div', { class: 'chat-list-actions' }, newBtn, forget),
-        this.listPinNoteEl, this.listEl, this.moreBtn, this.failedEl),
+        this.viewToggleEl, this.listPinNoteEl, this.listEl, this.moreBtn, this.failedEl),
       this.viewEl);
     setKids(this.main, this.pageEl);
     this.startPolling();
@@ -416,6 +435,56 @@ class ChatsPage {
     const meta = listMeta(data);
     this.meta = more || !this.pagedMore ? meta : { ...meta, nextCursor: this.meta.nextCursor };
     this.paintList();
+    if (!more) void this.loadHierarchy();
+  }
+
+  /**
+   * The conversation hierarchy behind the grouped list: every node (view=all), read signed by this
+   * browser; with a PIN unlock already in this page, the dashboard route is tried when the signed read
+   * is refused. Refused / missing / off (403, 404, 503) → no hierarchy: the list is flat, exactly as
+   * before. Any other failure keeps the last answer, so a blip never reshuffles the list.
+   */
+  async loadHierarchy(force = false) {
+    if (this.hierarchyLoading || (!force && now() - this.hierarchyAt < HIERARCHY_TTL_MS)) return;
+    this.hierarchyLoading = true;
+    try {
+      let r = await this.readHierarchy((path) => this.call('GET', `/mobile${path}`));
+      if (!this.live || r.gone) return;
+      if (!r.ok && r.status === 403 && operatorSession()) r = await this.readHierarchy((path) => dashboardRead(path));
+      if (!this.live) return;
+      this.hierarchyAt = now();
+      if (r.ok) {
+        this.hierarchy = hierarchyIndex(r.pages);
+        // Which groups are tracked projects: a failed projects read leaves every group plain.
+        const projects = this.hierarchy ? trackedProjects(await projectsForStrip()) : null;
+        if (!this.live) return;
+        this.groupProjects = projectsForGroups(this.hierarchy ? effortMembers(r.pages) : null, projects);
+      } else if ([403, 404, 503].includes(r.status)) { this.hierarchy = null; this.groupProjects = new Map(); }
+      this.paintList();
+    } finally { this.hierarchyLoading = false; }
+  }
+  async readHierarchy(get) {
+    this.spent();
+    const pages = [];
+    let cursor = null;
+    for (let i = 0; i < HIERARCHY_MAX_PAGES; i++) {
+      const r = await get(`/conversation-graph/roots?view=all${cursor ? `&cursor=${encodeURIComponent(cursor)}` : ''}`);
+      if (!this.live || r.gone) return { ok: false, gone: true };
+      if (!r.ok) return { ok: false, status: r.status };
+      pages.push(r.data);
+      cursor = r.data && typeof r.data.nextCursor === 'string' && r.data.nextCursor ? r.data.nextCursor : null;
+      if (!cursor) break;
+    }
+    return { ok: true, pages };
+  }
+  setListView(view) {
+    this.listView = listViewFrom(view);
+    try { localStorage.setItem(LIST_VIEW_KEY, this.listView); } catch { /* blocked: the choice lasts for this page */ }
+    this.paintList();
+  }
+  toggleGroup(key) {
+    if (this.openGroups.has(key)) this.openGroups.delete(key); else this.openGroups.add(key);
+    this.paintList();
   }
   paintList() {
     if (!this.listEl) return;
@@ -423,6 +492,12 @@ class ChatsPage {
     if (this.view && this.view.titleEl) {
       const row = this.rows.find((r) => r.key === open);
       if (row) { this.view.titleEl.textContent = row.title; this.view.titleEl = null; }
+    }
+    // Grouped | All: the toggle shows only when the hierarchy answered; without it the list is the full flat list.
+    const grouped = Boolean(this.hierarchy) && this.listView === 'grouped';
+    if (this.viewToggleEl) {
+      this.viewToggleEl.hidden = !this.hierarchy;
+      for (const [view, chip] of Object.entries(this.viewChips)) chip.setAttribute('aria-pressed', String(view === (grouped ? 'grouped' : 'all')));
     }
     if (!this.rows.length) { setKids(this.listEl, el('p', { class: 'card-line chat-muted', text: 'No conversations yet.' })); }
     else {
@@ -446,9 +521,49 @@ class ChatsPage {
       if (pinned.length) {
         kids.push(el('div', { class: 'chat-group-label chat-pinned-group', text: 'Pinned' }));
         for (const r of pinned) kids.push(rowEl(r, true));
-        kids.push(el('div', { class: 'chat-group-label', text: 'All conversations' }));
+        if (!grouped) kids.push(el('div', { class: 'chat-group-label', text: 'All conversations' }));
       }
-      for (const r of orderWithTree(rest, this.pinnedKey)) kids.push(rowEl(r, false));
+      if (grouped) {
+        const { lead, groups, ungrouped } = groupRows(rest, this.hierarchy, this.pinnedKey);
+        if (lead) kids.push(rowEl(lead, false));
+        // Two sections, as on the iPhone: "Projects" (groups linked to a tracked project) and "Groups" (plain groups).
+        // A group with no conversations is never shown; an empty section has no header.
+        const sections = groupSections(groups, this.groupProjects);
+        const groupEl = (g) => {
+          // The group holding the open conversation stays open, so the row on screen is never hidden.
+          const expanded = this.openGroups.has(g.key) || g.rows.some((r) => r.key === open);
+          // A tracked project (Chief of Staff) gets the project mark and its status chip; a plain group keeps the folder and count.
+          const project = g.project;
+          const label = [project ? `Project ${g.displayTitle}` : `Group ${g.displayTitle}`, project && project.status ? project.status.label : null, groupCountWords(g.count), g.unread > 0 ? `${g.unread} unread` : null].filter(Boolean).join(', ');
+          const head = el('button', { class: `chat-effort-row${project ? ' chat-project-row' : ''}${expanded ? ' expanded' : ''}`, type: 'button', 'aria-expanded': expanded ? 'true' : 'false', 'aria-label': label },
+            el('span', { class: `chat-group-icon${project ? ' chat-group-icon-project' : ''}`, icon: project ? 'flag' : 'folder' }),
+            el('span', { class: 'chat-row-main' },
+              el('span', { class: 'chat-row-top' },
+                el('span', { class: 'chat-row-title', text: g.displayTitle }),
+                project && project.status ? el('span', { class: `chat-project-status tone-${project.status.tone}`, text: project.status.label }) : null),
+              el('span', { class: 'chat-row-preview', text: groupCountWords(g.count) })),
+            el('span', { class: 'chat-row-side' },
+              g.lastActivity ? el('span', { class: 'chat-row-time', text: shortTime(g.lastActivity) }) : null,
+              g.unread > 0 ? el('span', { class: 'chat-unread', text: String(g.unread), 'aria-label': `${g.unread} unread` }) : null),
+            el('span', { class: 'chat-effort-chev', 'aria-hidden': 'true', text: '›' }));
+          head.addEventListener('click', () => this.toggleGroup(g.key));
+          kids.push(head);
+          if (expanded) {
+            if (project) kids.push(el('a', { class: 'link-btn chat-open-project', href: project.href, text: 'Open project' }));
+            for (const r of g.rows) kids.push(rowEl(r, false));
+          }
+        };
+        if (sections.projects.length) kids.push(el('div', { class: 'chat-group-label chat-projects-label', text: 'Projects' }));
+        for (const g of sections.projects) groupEl(g);
+        if (sections.groups.length) kids.push(el('div', { class: 'chat-group-label chat-groups-label', text: 'Groups' }));
+        for (const g of sections.groups) groupEl(g);
+        if (ungrouped.length) {
+          kids.push(el('div', { class: 'chat-group-label chat-ungrouped-label' },
+            el('span', { text: 'Not in a group yet' }),
+            el('a', { class: 'chat-review-suggestions', href: '#/work/conversations?view=suggestions', text: 'Review suggestions' })));
+          for (const r of ungrouped) kids.push(rowEl(r, false));
+        }
+      } else for (const r of orderWithTree(rest, this.pinnedKey)) kids.push(rowEl(r, false));
       setKids(this.listEl, kids);
     }
     this.moreBtn.hidden = !this.meta.nextCursor;
@@ -535,6 +650,7 @@ class ChatsPage {
     this.view = null;
     if (!v) return;
     v.live = false;
+    if (v.historyWaitTimer) { clearTimeout(v.historyWaitTimer); this.timers.delete(v.historyWaitTimer); }
     if (v.abort) { try { v.abort.abort(); } catch { /* done */ } }
     this.revokeBlobs();
     if (this.observer) { try { this.observer.disconnect(); } catch { /* gone */ } this.observer = null; }
@@ -557,6 +673,11 @@ class ChatsPage {
       menu.append(rename, del);
     }
     v.msgs = el('div', { class: 'chat-messages', role: 'log', 'aria-live': 'polite' });
+    v.historyWords = el('p', { class: 'card-line chat-muted' });
+    v.historyRetry = el('button', { class: 'btn-quiet chat-history-retry', type: 'button', text: 'Try again', hidden: true });
+    v.historyRetry.addEventListener('click', () => this.loadFirst(v));
+    v.historyNotice = el('div', { class: 'chat-history-state', role: 'status' }, v.historyWords, v.historyRetry);
+    v.msgs.append(v.historyNotice);
     v.earlier = el('button', { class: 'btn-quiet chat-earlier', type: 'button', text: 'Earlier messages', hidden: true });
     v.earlier.addEventListener('click', () => { this.pauseSource(v); this.loadEarlier(v); });
     v.paused = el('p', { class: 'card-line chat-muted chat-paused', hidden: true, text: 'Live updates paused here — this conversation refreshes when you click into this window.' });
@@ -573,7 +694,7 @@ class ChatsPage {
       v.appStrip, v.pinBar, v.paused, v.sourceNotice, v.earlier, v.msgs, this.composer(v), v.statusLine));
     this.pageEl.classList.add('has-open');
     this.paintList();
-    this.loadFirst(v);
+    this.loadFirst(v, { recoverUnfinished: true });
     this.loadAppStrip(v);
     this.announce();
   }
@@ -601,11 +722,20 @@ class ChatsPage {
     }).catch(() => {});
   }
 
-  historyPath(v, { pool, before } = {}) {
+  historyPath(v, { pool, before, knownRows } = {}) {
     const { kind, id } = v.ref;
     if (kind === 'app') return `/mobile/chat/app/${encodeURIComponent(id)}/messages?limit=50${pool ? '&scope=pool' : ''}${before ? `&before=${encodeURIComponent(before)}` : ''}`;
-    if (kind === 'telegram') return `/telegram/topics/${encodeURIComponent(id)}/messages?limit=50${pool ? '&scope=pool' : ''}${before ? `&before=${encodeURIComponent(before)}` : ''}`;
-    return `/mobile/chat/slack/${encodeURIComponent(id)}/messages?limit=50&machine=${encodeURIComponent(this.slackMachine(v.ref) || '')}${before ? `&before=${encodeURIComponent(before)}` : ''}`;
+    // Hashes describe rows we actually hold, not a time boundary that could skip late messages.
+    const since = knownRows !== undefined && !before ? `&knownRows=${encodeURIComponent(knownRows)}` : '';
+    if (kind === 'telegram') return `/telegram/topics/${encodeURIComponent(id)}/messages?limit=50${pool ? '&scope=pool' : ''}${before ? `&before=${encodeURIComponent(before)}` : ''}${since}`;
+    return `/mobile/chat/slack/${encodeURIComponent(id)}/messages?limit=50&machine=${encodeURIComponent(this.slackMachine(v.ref) || '')}${before ? `&before=${encodeURIComponent(before)}` : ''}${since}`;
+  }
+  /** Keep full quick pages for every tab; a leader change never inherits hashes without rows. */
+  rememberQuickPage(ref, cache) {
+    this.quickPages.delete(ref);
+    if (cache) this.quickPages.set(ref, cache);
+    // Bounded recent-page memory. An evicted reference simply requests a full page next time.
+    while (this.quickPages.size > 16) this.quickPages.delete(this.quickPages.keys().next().value);
   }
   /**
    * The machine a Slack conversation was listed from (a Slack id is local to it; the routes require it).
@@ -620,21 +750,71 @@ class ChatsPage {
     return (row) => Boolean(row && ((rec && row.originDeviceId && row.originDeviceId === rec.deviceId) || (row.messageId && this.ownIds.has(String(row.messageId)))));
   }
 
-  async loadFirst(v) {
+  async loadFirst(v, { recoverUnfinished = false } = {}) {
+    if (!this.live || !v.live || this.view !== v || v.historyPending) return;
+    v.historyPending = true;
+    v.historyError = null;
+    v.historyWaiting = false;
+    this.paintHistoryState(v);
+    v.historyWaitTimer = this.later(() => {
+      if (!v.live || this.view !== v || !v.historyPending) return;
+      v.historyWaiting = true;
+      this.paintHistoryState(v);
+    }, 10_000);
     this.spent();
-    const r = await this.call('GET', this.historyPath(v, { pool: true }));
-    if (!v.live || r.gone) return;
-    if (r.status === 404) { v.sourceNotice.hidden = true; v.statusLine.textContent = 'This conversation is not here any more.'; return; }
-    if (!r.ok) { v.sourceNotice.hidden = true; v.statusLine.textContent = r.status === 503 ? OFF_TEXT : 'Couldn\'t load this conversation right now.'; return; }
-    this.applyHistory(v, r.data, { replace: true });
-    this.resumeUnfinished(v);
-    this.scrollToEnd(v, true);
-    v.historyReady = true;
-    this.findSource(v);
+    try {
+      const r = await this.readHistory(v, this.historyPath(v, { pool: true }));
+      if (!this.live || !v.live || this.view !== v || r.gone) return;
+      if (!r.ok) {
+        v.sourceNotice.hidden = true;
+        v.historyError = r.status === 404 ? 'This conversation is not here any more.' : 'Couldn\'t load this conversation right now.';
+        return;
+      }
+      v.historyReady = true;
+      this.applyHistory(v, r.data, { replace: true });
+      // Preserve the existing open-time recovery; a history retry never resumes a send.
+      if (recoverUnfinished) this.resumeUnfinished(v);
+      this.scrollToEnd(v, true);
+      this.findSource(v);
+    } catch {
+      // A failed history read changes only its explanation, never messages or a draft.
+      if (this.live && v.live && this.view === v) v.historyError = 'Couldn\'t load this conversation right now.';
+    } finally {
+      v.historyPending = false;
+      clearTimeout(v.historyWaitTimer); this.timers.delete(v.historyWaitTimer);
+      v.historyWaitTimer = null;
+      if (this.live && v.live && this.view === v) this.paintHistoryState(v);
+    }
+  }
+
+  /** Initial, retry, focus and scheduled reads of one view/path share one signed request. */
+  readHistory(v, path) {
+    if (!v.historyReads) v.historyReads = new Map();
+    const current = v.historyReads.get(path);
+    if (current) return current;
+    const pending = this.call('GET', path).finally(() => {
+      if (v.historyReads.get(path) === pending) v.historyReads.delete(path);
+    });
+    v.historyReads.set(path, pending);
+    return pending;
+  }
+
+  paintHistoryState(v) {
+    if (!v.historyNotice) return;
+    const hasMessages = v.list.length > 0;
+    v.historyNotice.hidden = hasMessages && !v.historyError;
+    v.historyRetry.hidden = v.historyPending || (!v.historyError && hasMessages);
+    v.historyRetry.disabled = Boolean(v.historyPending);
+    if (v.historyError) v.historyWords.textContent = hasMessages
+      ? 'Couldn\'t refresh this conversation. Messages already loaded are still shown.' : v.historyError;
+    else if (v.historyPending) v.historyWords.textContent = v.historyWaiting
+      ? 'Waiting for the agent to return this conversation\'s messages. Your draft is unchanged.' : 'Loading messages…';
+    else v.historyWords.textContent = 'No messages were returned for this conversation. Try again to check its history.';
   }
 
   applyHistory(v, data, { replace = false, earlier = false } = {}) {
     if (!data) return;
+    v.historyError = null;
     if (v.ref.kind === 'slack' && typeof data.conversationKey === 'string') v.slackKey = data.conversationKey;
     const pins = pinsFrom(data);
     if (pins) this.setPins(v, pins);
@@ -707,6 +887,7 @@ class ChatsPage {
       }
       prev = n;
     }
+    this.paintHistoryState(v);
     if (atEnd) this.scrollToEnd(v);
   }
   scrollToEnd(v, force) {
@@ -975,19 +1156,31 @@ class ChatsPage {
       if (ev.key === 'Enter' && !ev.shiftKey && !ev.isComposing) { ev.preventDefault(); if (!send.disabled) send.click(); }
     });
     attach.addEventListener('click', () => pick.click());
-    pick.addEventListener('change', () => {
-      const files = Array.from(pick.files || []);
-      pick.value = '';
+    // One way in for every file: the Attach picker, a paste and a drop (Telegram parity M6/M7).
+    const addFiles = (files) => {
       const all = [...v.files, ...files];
       const ok = checkFiles(all, this.status && this.status.limits);
       if (!ok.ok) { v.statusLine.textContent = ok.reason; return; }
       v.files = all;
       setKids(chosen, v.files.map((f, i) => {
         const x = el('button', { class: 'btn-quiet chat-unpick', type: 'button', text: '×', 'aria-label': `Remove ${f.name}` });
-        x.addEventListener('click', () => { v.files.splice(i, 1); pick.dispatchEvent(new Event('change')); });
+        x.addEventListener('click', () => { v.files.splice(i, 1); addFiles([]); });
         return el('span', { class: 'chat-file-chip' }, el('span', { text: `${f.name} · ${humanSize(f.size)}` }), x);
       }));
       refresh();
+    };
+    pick.addEventListener('change', () => {
+      const files = Array.from(pick.files || []);
+      pick.value = '';
+      addFiles(files);
+    });
+    // A pasted screenshot or copied file joins the tray; pasted text stays ordinary text.
+    text.addEventListener('paste', (ev) => {
+      const pasted = pastedFiles(ev.clipboardData);
+      if (!pasted.length) return;
+      ev.preventDefault();
+      addFiles(pasted);
+      text.focus();
     });
     send.addEventListener('click', async () => {
       const body = text.value.trim();
@@ -1002,6 +1195,20 @@ class ChatsPage {
       this.send(v, body, files, progress, box);
     });
     const box = el('div', { class: 'chat-composer' }, chosen, progress, el('div', { class: 'chat-compose-row' }, attach, pick, text, send));
+    // Files dropped anywhere on the open conversation (its messages or the composer) join the tray.
+    let depth = 0;
+    const over = (on) => box.classList.toggle('dropping', on);
+    for (const t of [box, v.msgs].filter(Boolean)) {
+      t.addEventListener('dragenter', (ev) => { if (!carriesFiles(ev.dataTransfer)) return; ev.preventDefault(); depth++; over(true); });
+      t.addEventListener('dragover', (ev) => { if (!carriesFiles(ev.dataTransfer)) return; ev.preventDefault(); ev.dataTransfer.dropEffect = 'copy'; over(true); });
+      t.addEventListener('dragleave', () => { depth = Math.max(0, depth - 1); if (!depth) over(false); });
+      t.addEventListener('drop', (ev) => {
+        if (!carriesFiles(ev.dataTransfer)) return;
+        ev.preventDefault(); depth = 0; over(false);
+        const files = Array.from(ev.dataTransfer.files || []);
+        if (files.length) { addFiles(files); text.focus(); }
+      });
+    }
     return box;
   }
 
@@ -1291,14 +1498,21 @@ class ChatsPage {
     const v = { ref };
     if (task.mode === 'fallback') return this.historyPath(v, { pool: true });
     if (task.mode === 'pool') return this.historyPath(v, { pool: ref.kind === 'telegram' });
-    return this.historyPath(v, { pool: false });
+    // Quick reads send the hashes of a complete cached page. Pool reads above stay full.
+    return this.historyPath(v, { pool: false, ...(task.mode === 'newest' ? { knownRows: (this.quickPages.get(task.ref)?.hashes || []).join(',') } : {}) });
   }
 
   async runTask(task) {
     const t0 = now();
     this.scheduler.start(task, t0);
+    // Snapshot the exact baseline sent: another tab's result may arrive while this read waits.
+    const previous = task.mode === 'newest' ? this.quickPages.get(task.ref) || null : null;
     let r;
-    try { r = await this.call('GET', this.taskPath(task)); } catch { r = { ok: false, status: 0 }; }
+    try {
+      const path = this.taskPath(task);
+      const v = this.view;
+      r = v?.live && task.ref === refString(v.ref) ? await this.readHistory(v, path) : await this.call('GET', path);
+    } catch { r = { ok: false, status: 0 }; }
     if (!this.live) return;
     this.scheduler.finish(task, now(), { status: r.status, retryAfterMs: r.retryAfterMs });
     if (r.gone) return;
@@ -1312,6 +1526,13 @@ class ChatsPage {
     }
     if (r.ok) {
       const msg = { type: 'result', mode: task.mode, ref: task.ref, data: r.data, backoff: this.scheduler.snapshot(), union: this.union };
+      if (task.mode === 'newest') {
+        const page = rebuildQuickPage(previous, r.data);
+        this.rememberQuickPage(task.ref, page.cache);
+        msg.data = page.data;
+        msg.quickFullPage = Boolean(page.data);
+        msg.resetQuickPage = !page.data;
+      }
       if (task.mode === 'events' && r.data && typeof r.data.cursor === 'string') {
         this.cursors.set(task.ref, r.data.cursor);
         msg.cursor = r.data.cursor;
@@ -1328,8 +1549,16 @@ class ChatsPage {
     if (Array.isArray(m.backoff)) this.lastBackoff = m.backoff;
     if (Array.isArray(m.union)) { this.union = m.union; this.markPaused(); }
     if (m.cursor && m.ref) this.cursors.set(m.ref, m.cursor);
+    if (m.resetQuickPage && m.ref) this.rememberQuickPage(m.ref, null);
     if (!m.mode || !m.data) return;
     if (m.mode === 'list') { this.applyList(m.data, false); return; }
+    // Broadcasts carry full reconstructed pages. Even an unfocused tab/new leader learns rows
+    // and hashes together, never an unseen hash that would suppress a missing message.
+    if (m.mode === 'newest' && m.ref && m.quickFullPage) {
+      const page = rebuildQuickPage(null, m.data);
+      this.rememberQuickPage(m.ref, page.cache);
+      if (!page.data) return;
+    }
     const v = this.view;
     if (!v || refString(v.ref) !== m.ref || !v.live) return;
     if (m.mode === 'events') {
@@ -1342,16 +1571,25 @@ class ChatsPage {
 
   /** The focused tab's conversation: read now (an operator-caused read, counted in the budget). */
   async pollNow(v) {
-    if (!v || !v.live) return;
+    if (!v || !v.live || v.historyPending) return;
     const ref = refString(v.ref);
     if (this.leader && this.scheduler.tasks().some((t) => t.ref === ref && t.mode !== 'pool')) { this.scheduler.bump(ref, now()); this.loop(); return; }
     this.spent();
-    const r = await this.call('GET', this.historyPath(v, { pool: v.ref.kind !== 'slack' }));
+    const r = await this.readHistory(v, this.historyPath(v, { pool: v.ref.kind !== 'slack' }));
     if (r.ok && v.live) this.applyHistory(v, r.data);
   }
 }
 
 // ── small helpers ──
+/** A hierarchy read on the dashboard route with this page's PIN unlock (never asks for the PIN). */
+async function dashboardRead(path) {
+  const proof = operatorSession();
+  if (!proof) return { ok: false, status: 403 };
+  try {
+    const r = await fetch(path, { headers: { Authorization: `Bearer ${bearer()}`, 'X-Instar-Operator-Session': proof }, cache: 'no-store' });
+    return { ok: r.ok, status: r.status, data: await r.json().catch(() => ({})) };
+  } catch { return { ok: false, status: 0 }; }
+}
 function shortTime(isoText) {
   const t = Date.parse(isoText);
   if (!Number.isFinite(t)) return '';
@@ -1370,6 +1608,28 @@ function credentialChoice() {
     send.addEventListener('click', () => finish('send'));
     sheet({ title: 'This looks like a password or key', onClose: () => { if (!done) { done = true; resolve('cancel'); } } },
       el('div', { class: 'pin-form' }, el('p', { class: 'confirm-text', text: CREDENTIAL_QUESTION }), el('div', { class: 'confirm-row' }, drop, send)));
+  });
+}
+
+/** True while a drag carries files (not a text or link drag, which the browser handles as usual). */
+export function carriesFiles(dt) {
+  return !!dt && Array.from(dt.types || []).includes('Files');
+}
+
+/**
+ * The files on a paste, or []. A copied screenshot arrives as a nameless "image.png", so it gets a
+ * name that tells two pastes apart ("Pasted image 14.32.07.png").
+ */
+export function pastedFiles(cd, at = new Date()) {
+  if (!cd) return [];
+  let files = Array.from(cd.files || []);
+  if (!files.length && cd.items) files = Array.from(cd.items).filter((i) => i.kind === 'file').map((i) => i.getAsFile()).filter(Boolean);
+  const stamp = [at.getHours(), at.getMinutes(), at.getSeconds()].map((n) => String(n).padStart(2, '0')).join('.');
+  return files.map((f, i) => {
+    if (f.name && f.name !== 'image.png') return f;
+    const ext = (String(f.type || '').split('/')[1] || 'png').replace('jpeg', 'jpg').replace(/[^a-z0-9]/gi, '');
+    const name = `Pasted image ${stamp}${files.length > 1 ? `-${i + 1}` : ''}.${ext || 'png'}`;
+    try { return new File([f], name, { type: f.type, lastModified: f.lastModified }); } catch { return f; } // @silent-fallback-ok: no File constructor keeps the original name
   });
 }
 

@@ -69,13 +69,14 @@ export interface SessionRegistryEntry {
   lastOutputAt: number;
   /** Optional flag — if true, sentinel skips this session (e.g. operator paused). */
   paused?: boolean;
+  observationUnavailable?: boolean;
   /** Optional flag — true if another sentinel/restart is in flight; skip. */
   recoveryInFlight?: boolean;
 }
 
 export interface ActiveWorkSilenceSentinelDeps {
   /** List every session the registry knows about (topic-bound or not). */
-  listSessions: () => SessionRegistryEntry[];
+  listSessions: () => SessionRegistryEntry[] | Promise<SessionRegistryEntry[]>;
   /** Send an empty send-keys to wake the pane. Returns whether it was accepted. */
   nudgeFn: (sessionName: string) => Promise<boolean>;
   /** Route a user-facing message; server.ts owns topic routing (→ the stalled
@@ -91,7 +92,7 @@ export interface ActiveWorkSilenceSentinelDeps {
    *  A1/A2). Used to corroborate a wedge before escalating. When absent, the
    *  sentinel keeps its legacy behavior (escalate on threshold+nudge, no
    *  corroboration) — back-compat for callers that don't wire it. */
-  captureFrame?: (sessionName: string) => string | null;
+  captureFrame?: (sessionName: string) => string | null | Promise<string | null>;
   /** Does this live frame still show an active-work indicator (spinner / "esc to
    *  interrupt" / "(running)")? Wired to looksActivelyWorking(). A1: if true, the
    *  session is in an active turn — suppress, never escalate. */
@@ -173,6 +174,7 @@ export class ActiveWorkSilenceSentinel extends EventEmitter {
   }
 
   stop(): void {
+    this.scanGeneration++;
     if (this.tickHandle) {
       clearInterval(this.tickHandle);
       this.tickHandle = null;
@@ -182,13 +184,35 @@ export class ActiveWorkSilenceSentinel extends EventEmitter {
     this.states.clear();
   }
 
-  /** Public for tests. Walk the registry and act on silence findings. */
+  private tickInFlight = false;
+  private scanGeneration = 0;
+
+  /** Walk the registry once. Ignore timer ticks while a capture pass is active. */
   tick(): void {
+    if (this.tickInFlight) return;
     this.lastTickAt = Date.now();
-    const now = (this.deps.now ?? Date.now)();
     const sessions = this.deps.listSessions();
+    if (Array.isArray(sessions)) {
+      this.evaluateSessions(sessions);
+      return;
+    }
+    this.tickInFlight = true;
+    const generation = this.scanGeneration;
+    void sessions.then((rows) => {
+      if (this.scanGeneration === generation) this.evaluateSessions(rows);
+    }).catch((error: unknown) => {
+      console.warn('[ActiveWorkSilenceSentinel] Capture pass failed:', error);
+    }).finally(() => { this.tickInFlight = false; });
+  }
+
+  private evaluateSessions(sessions: SessionRegistryEntry[]): void {
+    const now = (this.deps.now ?? Date.now)();
     const pastThreshold = new Set<string>();
     for (const s of sessions) {
+      if (s.observationUnavailable) {
+        pastThreshold.add(s.sessionName);
+        continue;
+      }
       if (s.paused || s.recoveryInFlight) continue;
       if (!s.lastOutputAt || s.lastOutputAt <= 0) continue;
       // Session is in the registry but never produced output → not "actively working then stopped"; skip.
@@ -279,11 +303,28 @@ export class ActiveWorkSilenceSentinel extends EventEmitter {
     const state = this.states.get(sessionName);
     if (!state) return;
     // Re-poll the registry — has lastOutputAt advanced past detection point?
-    const fresh = this.deps.listSessions().find(s => s.sessionName === sessionName);
+    const sessions = this.deps.listSessions();
+    if (!Array.isArray(sessions)) {
+      void sessions.then((rows) => this.verifyOutput(sessionName, state, rows)).catch((error: unknown) => {
+        console.warn('[ActiveWorkSilenceSentinel] Verification capture failed:', error);
+        if (this.states.get(sessionName) === state) this.markSuppressedActive(state, undefined);
+      });
+      return;
+    }
+    this.verifyOutput(sessionName, state, sessions);
+  }
+
+  private verifyOutput(sessionName: string, state: SilenceState, sessions: SessionRegistryEntry[]): void {
+    if (this.states.get(sessionName) !== state) return;
+    const fresh = sessions.find(s => s.sessionName === sessionName);
     if (!fresh) {
       // Session vanished from registry — treat as recovered (probably ended cleanly).
       state.status = 'recovered';
       this.clear(sessionName);
+      return;
+    }
+    if (fresh.observationUnavailable) {
+      this.markSuppressedActive(state, undefined);
       return;
     }
     if (fresh.lastOutputAt > state.lastOutputAtAtDetection) {
@@ -317,7 +358,9 @@ export class ActiveWorkSilenceSentinel extends EventEmitter {
 
     let frame: string | null;
     try {
-      frame = this.deps.captureFrame(sessionName);
+      const captured = this.deps.captureFrame(sessionName);
+      frame = typeof captured === 'string' || captured === null ? captured : await captured;
+      if (this.states.get(sessionName) !== state) return;
     } catch (err) {
       // FD-6 — capture threw: unreliable evidence, suppress + re-arm.
       this.deps.recordEvent?.('suppressed_corroborate_error', sessionName, String(err));

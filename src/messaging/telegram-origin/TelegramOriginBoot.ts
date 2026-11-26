@@ -67,6 +67,8 @@ export async function bootTelegramOrigin(options: {
    * sends. This process still expires due operations, so a server outage cannot pin them. */
   skipRetention?: boolean;
   holdsLease: () => boolean;
+  /** lease-freshness-lapse-retry — the lease coordinator's one-snapshot verdict and renewal gap (server only). */
+  leaseFreshness?: import('./TelegramOriginRuntime.js').TelegramOriginRuntimeOptions['leaseFreshness'];
   isSessionLive?: (binding: OriginSessionBinding) => boolean;
   attachSessionLifecycle?: (lifecycle: OriginSessionLifecycle) => void;
   diagnoseUnknown: (originId: string, reason: string) => Promise<string | void>;
@@ -243,6 +245,7 @@ export async function bootTelegramOrigin(options: {
     },
     onNoticeState: options.onNoticeState,
     ownsCapacityLease: options.holdsLease,
+    leaseFreshness: options.leaseFreshness,
     holdsLease: options.holdsLease,
     noticeProcess: { role: options.noticeOwner ? 'owner' : 'client', socketPath: path.join(config.stateDir, 'origin-notice.sock') },
   }).catch(error => { noticePolicyObserver?.close(); configReader.close(); throw error; });

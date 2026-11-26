@@ -1,0 +1,70 @@
+{
+  "ts": "2026-11-21T14:45:29.888Z",
+  "slug": "planned-restart-keeps-lead",
+  "suggestedTier": 2,
+  "declaredTier": 2,
+  "riskFloor": 2,
+  "riskFloorReasons": [
+    "new capability: new exported class / subsystem added"
+  ],
+  "belowFloor": false,
+  "files": 31,
+  "loc": 1910,
+  "scope": {
+    "basis": "staged-in-scope-paths-including-deleted",
+    "files": [
+      "src/commands/server.ts",
+      "src/core/AutoUpdater.ts",
+      "src/core/BackupManager.ts",
+      "src/core/BootClaimHold.ts",
+      "src/core/FencedLease.ts",
+      "src/core/ForegroundRestartWatcher.ts",
+      "src/core/HttpLeaseTransport.ts",
+      "src/core/LeaseContinuity.ts",
+      "src/core/LeaseCoordinator.ts",
+      "src/core/LocalLeaseStore.ts",
+      "src/core/MultiMachineCoordinator.ts",
+      "src/core/SubscriptionReloginOperatorConfig.ts",
+      "src/core/devGatedFeatures.ts",
+      "src/core/machineCoherenceManifest.ts",
+      "src/core/restartRequestAttribution.ts",
+      "src/core/restartRequestSignal.ts",
+      "src/core/roleFollowRestart.ts",
+      "src/core/sessionPoolPairActivation.ts",
+      "src/core/types.ts",
+      "src/data/awareness/server-restart-and-boot-readiness.md",
+      "src/data/feature-ladders.json",
+      "src/data/state-coherence-registry.json",
+      "src/feedback-factory/drain/FeedbackFactoryDefaultsSelfHeal.ts",
+      "src/recommended/cloudflareDomain.ts",
+      "src/recommended/recipes.ts",
+      "src/recommended/telegramSetup.ts",
+      "src/server/AgentServer.ts",
+      "src/server/recommendedServiceRoutes.ts",
+      "src/server/routes.ts",
+      "src/testing/selfActionRegistry.ts",
+      "src/threadline/connectEnable.ts"
+    ],
+    "addedLines": 1845,
+    "deletedLines": 65
+  },
+  "causalAutopsy": {
+    "origin": "prior-pr",
+    "relatedPrs": [
+      2783,
+      3541
+    ],
+    "notes": "PR #2783 widened the role-restart condition to scheduler.enabled (a holder on a pool with a named preferred machine restarts for a role change); PR #3541 (boot claim safety) made a restarted holder ask its peers first. With a boot longer than the lease TTL and the hand-back reconciler that was the Studio's hand-back/restart loop of 2026-11-21 (fb-135e3043-add). Neither PR is reverted: this change keeps the lead through the planned restart."
+  },
+  "classClosure": {
+    "defectClass": "unbounded-self-action",
+    "closure": "guard",
+    "guardEvidence": {
+      "enforcementType": "ratchet",
+      "citation": "tests/unit/self-action-convergence.test.ts",
+      "howCaught": "The pending window renewal (one per pending cadence while an episode is open, stopping at the four-hour cap) and the 2 s request-file poll (doubling to 60 s on read errors) are registered as planned-restart-lease-continuity in src/testing/selfActionRegistry.ts with pure decisions pendingRenewalDue and nextRequestPollMs; the ratchet drives four hours of a never-consumed request and proves the emits keep their rate floor and stop at the cap."
+    },
+    "component": "LeaseCoordinator"
+  },
+  "verdict": "pass"
+}

@@ -1,0 +1,30 @@
+{
+  "ts": "2026-11-21T05:37:58.891Z",
+  "slug": "gemini-payg-go-live",
+  "suggestedTier": 2,
+  "declaredTier": 2,
+  "riskFloor": 2,
+  "riskFloorReasons": [
+    "new capability: new config key added"
+  ],
+  "belowFloor": false,
+  "files": 7,
+  "loc": 38,
+  "scope": {
+    "basis": "staged-in-scope-paths-including-deleted",
+    "files": [
+      "src/core/geminiPaygGoLive.ts",
+      "src/core/geminiPaygNotices.ts",
+      "src/core/geminiPaygReleaseRecorder.ts",
+      "src/scaffold/templates/jobs/instar/gemini-payg-reconcile.md",
+      "src/server/AgentServer.ts",
+      "src/server/geminiPaygGoLiveWiring.ts",
+      "src/server/routes.ts"
+    ],
+    "addedLines": 20,
+    "deletedLines": 18
+  },
+  "causalAutopsy": null,
+  "classClosure": null,
+  "verdict": "pass"
+}

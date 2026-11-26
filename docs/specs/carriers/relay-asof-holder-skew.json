@@ -1,0 +1,18 @@
+{
+  "generatedAt": "2026-11-21T23:55:13.867Z",
+  "slug": "relay-asof-holder-skew",
+  "carriers": {
+    "CMT-2183": {
+      "status": "pending",
+      "owner": "agent",
+      "blockedOn": "none",
+      "excerpt": "Messaging reliability / takeover-ready pool owns fb-cf81617c-e91: add a stable client submission id before preflight, atomically map it to one immutable envelope, and have retrying clients reuse it. Prove lost send response followed by resubmission produces one message and one injection. N73 covers one immutable envelope only."
+    },
+    "CMT-2184": {
+      "status": "pending",
+      "owner": "agent",
+      "blockedOn": "none",
+      "excerpt": "Messaging reliability / takeover-ready pool owns fb-292ec9c9-9d3: atomically persist terminal notice intent with delivery outcome; recover after crash before notice persistence and while origin is offline; never retype payload. Prove one logical outcome-notice obligation after restart. Proactive notice display remains best-effort until fixed."
+    }
+  }
+}

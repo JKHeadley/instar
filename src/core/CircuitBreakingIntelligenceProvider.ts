@@ -39,6 +39,7 @@ import {
   bumpProvenanceStrippedAtBreaker,
   bumpInboundCorrelationIdDiscarded,
 } from './decisionQualityTypes.js';
+import { classifyLlmError } from './llmErrorClass.js';
 
 /**
  * Minimal structural recorder the funnel writes per-call metrics to. Kept as a
@@ -77,6 +78,8 @@ export interface FeatureMetricsRecorder {
     framework?: string;
     /** Correlates a 'fired' verdict to a downstream record (e.g. a commitment id). */
     verdictId?: string;
+    /** CMT-2289: fixed error class on an 'error' row (llmErrorClass.ts). Never message text. */
+    errorClass?: string;
     /** Job-cost attribution (job-cost-reduction §9.1), passed through from options.attribution. */
     jobSlug?: string;
     machineId?: string;
@@ -194,6 +197,7 @@ export class CircuitBreakingIntelligenceProvider implements IntelligenceProvider
       model?: string;
       framework?: string;
       verdictId?: string;
+      errorClass?: string;
     },
     job?: { jobSlug?: string; machineId?: string; runId?: string },
   ): void {
@@ -210,6 +214,7 @@ export class CircuitBreakingIntelligenceProvider implements IntelligenceProvider
         tokensCached: extra?.tokensCached,
         model: extra?.model, framework: extra?.framework,
         verdictId: extra?.verdictId,
+        ...(extra?.errorClass ? { errorClass: extra.errorClass } : {}),
         ...(job?.jobSlug ? { jobSlug: job.jobSlug, machineId: job.machineId, runId: job.runId } : {}),
       });
     } catch {
@@ -365,6 +370,8 @@ export class CircuitBreakingIntelligenceProvider implements IntelligenceProvider
         model: resolved?.model,
         framework: resolved?.framework,
         verdictId: correlationId,
+        // CMT-2289: WHY it failed, as a fixed label — the message itself is never stored.
+        errorClass: classifyLlmError(err),
       }, options?.attribution);
       emitUsageInvocation({
         feature, framework: resolved?.framework ?? this.inner.frameworkId ?? null, model: resolved?.model ?? null,

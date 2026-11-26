@@ -359,6 +359,8 @@ export function buildWriteDomainRegistry(opts: { machineId: string | null }): Wr
   // The trust journey's account path (docs/specs/trust-journey.md decision 5): requests, acceptances and
   // withdrawals are TrustJourneyStore records replicated through the coherence journal to every machine.
   reg.add({ kind: 'route', method: 'POST', pathPrefix: '/trust/requests', domain: 'cluster-shared' });
+  // agent-work-cards-default §5: the agent withdraws an unanswered request it raised (the same replicated trust store).
+  reg.add({ kind: 'route', method: 'DELETE', pathPrefix: '/trust/requests/', domain: 'cluster-shared' });
   reg.add({ kind: 'route', method: 'POST', pathPrefix: '/trust/acceptance/', domain: 'cluster-shared' });
   // Approving from the Instar app (docs/specs/app-trust-approval.md): device acceptances, device approvals,
   // consumptions and outcomes are the same TrustJourneyStore records, decided only on the serving-lease holder.
@@ -453,6 +455,15 @@ export function buildWriteDomainRegistry(opts: { machineId: string | null }): Wr
   // a2a-required-acknowledgment D4: closes a watch on the machine whose session has the
   // message. A standby forwards the receipt to the relay holder over the mesh, so this
   // must admit on every machine; the sender's health read merges across the pool.
+  // Topic history import (docs/specs/topic-history-import.md): restores a recovery file
+  // into THIS machine's topic-memory store; each machine imports its own copy, and boot
+  // re-applies the sealed batches. Batches live under the gitignored <stateDir>/state/.
+  reg.add({ kind: 'route', method: 'POST', pathPrefix: '/topic/import', domain: 'machine-local', story: {
+    logical: 'per-machine-path',
+    onSharedGitSyncedPath: false,
+    fileLevel: 'git-sync-excluded',
+    note: 'rows land in this machine\'s topic-memory.db and sealed batches under the gitignored <stateDir>/state/topic-history-imports/; each machine runs its own import; boot and /topic/rebuild re-apply the batches',
+  } });
   reg.add({ kind: 'route', method: 'POST', pathPrefix: '/threadline/ack', domain: 'machine-local', story: {
     logical: 'per-machine-path',
     onSharedGitSyncedPath: false,
@@ -633,7 +644,21 @@ export function buildWriteDomainRegistry(opts: { machineId: string | null }): Wr
     story: {
       logical: 'ws2x-replicated',
       onSharedGitSyncedPath: false,
-      note: 'per-origin coherence-journal stream (project-app-record kind), replicated by journal sync and folded from the union on every machine; dev-gated, dark on the fleet',
+      note: 'per-origin coherence-journal streams (project-app-record kind for the project apps; chief-of-staff-record kind for POST /work/projects/check, docs/specs/work-door-project-rows.md §3.2), replicated by journal sync and folded from the union on every machine; dev-gated, dark on the fleet',
+    },
+  });
+
+  // The owner's project actions from the phone (docs/specs/work-door-project-rows.md §3.2–3.5): check requests, pauses,
+  // item checks and Finish are chief-of-staff-record journal records, replicated to every peer and folded from the union.
+  reg.add({
+    kind: 'route',
+    method: 'POST',
+    pathPrefix: '/mobile/work/projects/',
+    domain: 'machine-local',
+    story: {
+      logical: 'ws2x-replicated',
+      onSharedGitSyncedPath: false,
+      note: 'per-origin coherence-journal stream (chief-of-staff-record kind), replicated by journal sync and folded from the union on every machine; follows the Chief of Staff gate',
     },
   });
 

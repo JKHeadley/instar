@@ -1,7 +1,11 @@
+import { SQL_COMMAND_CONTEXT_CHECK } from './sqlCommandContext.js';
 // Governed by (docs/STANDARDS-REGISTRY.md cites this file as enforcement of):
 //   *Avoid TCC-Protected Directories — No Agent State Under ~/Documents on macOS*
 //   *Maturation Path — Test Agent → Development Agent → Fleet*
 
+import { migrateConversationSearchGuidance } from '../scaffold/conversationSearchGuidance.js';
+import { APPROVAL_WHERE_REQUIRED_SKILL_TEXT, applySkillSentenceChanges } from './approvalWhereRequiredSkillText.js';
+import { OrgPolicyGateHooks } from './OrgPolicyGateHooks.js';
 import { beginRecoveryAutostartUpdate } from '../recovery/RecoveryAutostartUpdate.js';
 import { beginRecoveryFleetUpdate } from '../recovery/RecoveryFleetUpdate.js';
 import { recoveryAwareness } from '../recovery/RecoveryAwareness.js';
@@ -123,6 +127,7 @@ import {
   REROUTED_LOGIN_EXPIRED_POOL_SENTENCE,
   REROUTED_LOGIN_EXPIRED_POOL_SENTENCE_V1,
   INTERACTIVE_LOGIN_EXPIRED_BULLET,
+  INTERACTIVE_LOGIN_EXPIRED_BULLET_V1,
   INTERACTIVE_LOGIN_EXPIRED_MARKER,
   CLAUDE_KEY_HEALTH_BULLET,
   CLAUDE_KEY_HEALTH_MARKER,
@@ -144,7 +149,7 @@ import {
   APPROVAL_NOT_CHORE_TRAP,
   APPROVAL_NOT_CHORE_TRAP_MARKER,
 } from '../scaffold/templates.js';
-import { generateClaudeMd } from '../scaffold/templates.js';
+import { generateClaudeMd, RETIRED_DOC_DELIVERY_ROWS, RETIRED_AGENT_PRINCIPLE_WORDING, PRIVATE_VIEWS_SENTENCE } from '../scaffold/templates.js';
 import {
   CLAUDE_MD_DIFFERING_LINES_REL,
   CLAUDE_MD_LEGACY_BACKUP_REL,
@@ -217,9 +222,10 @@ import {
 import { readRegistryHighWater, setRegistryHighWater } from './registryHighWater.js';
 import { ITERATIVE_CONVERGING_AUDIT_SKILL_CONTENT } from '../data/builtinSkillContent.js';
 import { SUBSCRIPTION_SIGNIN_SKILL_CONTENT } from '../data/builtinSkillContent.js';
-import { NORMAL_CHROME_BROWSER_LINUX_SECTION, NORMAL_CHROME_BROWSER_SKILL_CONTENT, NORMAL_CHROME_BROWSER_SKILL_WINDOWS_APPENDIX } from '../data/builtinSkillContent.js';
+import { NORMAL_CHROME_BROWSER_LINUX_SECTION, NORMAL_CHROME_BROWSER_SKILL_CONTENT, NORMAL_CHROME_BROWSER_SKILL_WINDOWS_APPENDIX, NORMAL_CHROME_BROWSER_WINDOWS_BLANK_PAGE_HEADING, NORMAL_CHROME_BROWSER_WINDOWS_BLANK_PAGE_NOTE, NORMAL_CHROME_BROWSER_PAGE_NOT_RENDERING_ROW, NORMAL_CHROME_BROWSER_PAGE_NOT_RENDERING_ROW_ANCHOR, NORMAL_CHROME_BROWSER_LAUNCH_ROW_ANCHOR, NORMAL_CHROME_BROWSER_LAUNCH_ROW_FLAG_SENTENCE } from '../data/builtinSkillContent.js';
 import { ensureAgentOwnedMemoryAllHomes } from './AgentOwnedMemory.js';
 import { migrateStageBReleaseConfig, verifyBundledStageBReleaseEvidence } from './StageBActivationGate.js';
+import { IMPORTED_HISTORY_PROJECT_PATH, IMPORTED_HISTORY_STATE_PATH } from './importedHistoryPaths.js';
 
 const __dirname = path.dirname(fileURLToPath(import.meta.url));
 
@@ -296,6 +302,10 @@ export function raiseLaunchdProcessCeilings(plistXml: string, floor: number): st
     return `${lead}${floor}${tail}`;
   });
 }
+
+// The compact hook collects identity and recovery context before printing.
+// Its local HTTP reads can spend up to 36 seconds in sequence.
+export const COMPACT_SESSION_START_TIMEOUT_SECONDS = 45;
 
 /**
  * The PostCompact hook's settings entry (context-budget-layered-summaries §9.1).
@@ -730,7 +740,10 @@ export const LOCAL_VERIFY_MAIN_RED_HOLD_CLAUDEMD_LINE = '- Local Verify main-red
  * Local Verify peer verifiers — the awareness line appended to an existing CLAUDE.md's Local Verify
  * section (`migrateClaudeMd`, content-sniffed on the config key).
  */
-export const LOCAL_VERIFY_PEERS_CLAUDEMD_LINE = '- Local Verify peer verifiers: a second machine can run single PR verifies the serving-lease holder hands it, and the holder imports the record only if it answers exactly that hand-off (same attempt id, PR, head, base, verifier version, policy and lease epoch). Turn a machine into a peer with `monitoring.localVerify.enabled: true` + `monitoring.localVerify.peer.enabled: true` (a peer needs no source checkout and never merges); list it on the holder in `monitoring.localVerify.peers` (`[{"machineId": "…", "url": "http://…:4042"}]`, at most 2). Before activation, confirm GET /local-verify/peer-status accepts the coordinator API token; paired machines can use different local tokens, so a 401 or 403 means this peer cannot be enabled. `GET /local-verify` → `peers` (configured peers, breaker state, reserved entries); on the peer `GET /local-verify/peer-status`. A peer that fails 3 times in a row is skipped for 30 min (one `local-verify:peer-breaker:<machineId>` item). When the user asks "why did that PR\'s verify run on the other machine?" or "is the second verifier working?" → read `peers` and the audit (`peer-dispatch`, `peer-imported`, `peer-record-rejected`).';
+/** docs/specs/local-verify-peer-works-through-restart.md Visibility: the phrase `migrateClaudeMd` rewrites in existing agents. */
+export const LOCAL_VERIFY_PEERS_OLD_EPOCH_PHRASE = '(same attempt id, PR, head, base, verifier version, policy and lease epoch).';
+export const LOCAL_VERIFY_PEERS_NEW_EPOCH_PHRASE = '(same attempt id, PR, head, base, verifier version, policy and lease epoch, or, when `monitoring.localVerify.peerWorksThroughRestart.enabled` is on, a later epoch of this machine\'s unbroken holding; that setting is also the off switch).';
+export const LOCAL_VERIFY_PEERS_CLAUDEMD_LINE = '- Local Verify peer verifiers: a second machine can run single PR verifies the serving-lease holder hands it, and the holder imports the record only if it answers exactly that hand-off (same attempt id, PR, head, base, verifier version, policy and lease epoch, or, when `monitoring.localVerify.peerWorksThroughRestart.enabled` is on, a later epoch of this machine\'s unbroken holding; that setting is also the off switch). Turn a machine into a peer with `monitoring.localVerify.enabled: true` + `monitoring.localVerify.peer.enabled: true` (a peer needs no source checkout and never merges); list it on the holder in `monitoring.localVerify.peers` (`[{"machineId": "…", "url": "http://…:4042"}]`, at most 2). Before activation, confirm GET /local-verify/peer-status accepts the coordinator API token; paired machines can use different local tokens, so a 401 or 403 means this peer cannot be enabled. `GET /local-verify` → `peers` (configured peers, breaker state, reserved entries); on the peer `GET /local-verify/peer-status`. A peer that fails 3 times in a row is skipped for 30 min (one `local-verify:peer-breaker:<machineId>` item). When the user asks "why did that PR\'s verify run on the other machine?" or "is the second verifier working?" → read `peers` and the audit (`peer-dispatch`, `peer-imported`, `peer-record-rejected`).';
 /**
  * Local Verify merge-throughput overflow — the awareness line appended to an existing CLAUDE.md's
  * Local Verify section (`migrateClaudeMd`, content-sniffed on its own phrase).
@@ -748,7 +761,7 @@ export const LOCAL_VERIFY_WAITING_LIST_CLAUDEMD_LINE = '- Local Verify waiting l
  * Local Verify balanced shards — the awareness line appended to an existing CLAUDE.md's Local
  * Verify section (`migrateClaudeMd`, content-sniffed on the config key).
  */
-export const LOCAL_VERIFY_LANE_SHARDS_CLAUDEMD_LINE = '- Local Verify balanced shards: the integration lane runs as 2 processes and the e2e lane as 3, each given files planned from the per-file times of earlier runs on this machine (`<verifyRoot>/file-durations.json`, ignored above 2 MB) so the processes finish together; with too little history the lanes use vitest `--shard`. The history decides only which process runs a file, never whether it runs. Live setting `monitoring.localVerify.laneShards` (e.g. `{"integration": 1, "e2e": 2}` restores the old split; 1..4 each; read at each start). When the user asks "why is each verify faster / why are there more test processes?" → this; if runs get slower or flaky under load, lower the counts.';
+export const LOCAL_VERIFY_LANE_SHARDS_CLAUDEMD_LINE = '- Local Verify balanced shards: the integration lane runs as 2 processes and the e2e lane as 3, each given files planned from the per-file times of earlier runs on this machine (`<verifyRoot>/file-durations.json`, ignored above 2 MB) so the processes finish together; with too little history the lanes use vitest `--shard`. The history decides only which process runs a file, never whether it runs. Live setting `monitoring.localVerify.laneShards` (e.g. `{"integration": 1, "e2e": 2}` restores the old split; integration 1..5 and e2e 1..4; read at each start). When the user asks "why is each verify faster / why are there more test processes?" → this; if runs get slower or flaky under load, lower the counts.';
 export const LOCAL_VERIFY_PREFLIGHT_CLAUDEMD_LINE = '- Local Verify focused PR preflight: optional `monitoring.localVerify.preflightMode: off|observe|enforce` (default off) runs bounded changed tests after build/lint and before the full suite; `main` never uses it. Observe records a diagnostic and always continues. Enforce can stop an automatically rediscoverable PR on a repeated assertion failure, then schedules a full-suite replay without preflight; only the complete full-suite record can authorize a green merge. A skipped preflight is not a passed check. `GET /local-verify` → `preflight` shows mode and replay obligations. When a PR is red with `preflight-red` or appears to be waiting on a replay, read this status and its exact-head record before describing the result.';
 export const LOCAL_VERIFY_FAILED_FILE_DIAGNOSIS_CLAUDEMD_LINE = '- Local Verify failed-file diagnosis: optional `monitoring.localVerify.failedFileDiagnosis: off|observe|auto` (default off) asks one idle peer to run one to three failed test files on the exact PR merge and base. It is advisory: `GET /local-verify/record?pr=&head=&base=` includes a separate `diagnosis` projection, and `GET /local-verify/diagnosis?pr=&head=&base=` reads it directly. `pr-reproducible`, `machine-or-flake`, `base-or-shared`, and `inconclusive` describe file-level evidence only; no diagnosis changes the red record, merge gate, or main health. When a PR failure has named files and the user asks whether it reproduces elsewhere, read that projection before explaining. A full verify preempts any peer diagnosis.';
 
@@ -1163,6 +1176,16 @@ Anything I credit to a person, in my memory, notes, rules or messages, either po
 - **Modes:** \`record\` (the default where it is live) refuses nothing, and its verdicts measure what enforcement would hold. \`enforce\` refuses note writes and turns on the send nudge \`B23_UNSOURCED_ATTRIBUTION\`, which also catches a refusal resting on an unsourced rule whether or not it names anyone ("that's a standing rule, so no"). React to that nudge like any other: revise with \`--tone-complied B23_UNSOURCED_ATTRIBUTION\`, or \`--tone-ack\` with the reason; if the rule is mine, say so.
 - **The daily report writes nothing to any note.** Fixing one is a normal edit that passes the same check. **When to use** (PROACTIVE): before I say "you told me", "your rule" or "we agreed", or refuse work on a rule, I find the source or say it is my own. When someone asks "did I say that?" or "where did that rule come from?", I run the trace and show the chain.`;
 
+/** First version of the PR-link section body (Echo Bugs 10000002537); reworded in place by migrateClaudeMd. */
+export const PR_LINK_REVIEW_SECTION_BODY_V1 = `When a reply I send (Telegram, Slack, app) links an open pull request that my own GitHub account opened, the server first makes sure the reviewer is requested on it — the configured \`prLinkReviewRequest.reviewer\`, else the repository owner when that owner is a person — and reads the request back from GitHub before the reply goes out. A review that was dismissed by a later push leaves no request behind on GitHub, so this re-requests it. If it cannot be confirmed, the reply still goes out with one line saying so.
+- **When to use** (PROACTIVE): just send the link — never tell the user "I've requested your review" from memory. If the reply came back with "could not confirm … as a reviewer", fix the cause (GitHub login, repo access) before asking again. Turn it off with \`prLinkReviewRequest.enabled: false\` in \`.instar/config.json\`.`;
+/**
+ * The PR-link section body (Echo Bugs 10000002791: a review request only where an
+ * approval may be needed). src/scaffold/templates.ts emits the same text; a test pins them equal.
+ */
+export const PR_LINK_REVIEW_SECTION_BODY = `When a reply I send (Telegram, Slack, app) links an open pull request that my own GitHub account opened, the server first makes sure the reviewer is requested on it — the configured \`prLinkReviewRequest.reviewer\`, else the repository owner when that owner is a person — and reads the request back from GitHub before the reply goes out. A review that was dismissed by a later push leaves no request behind on GitHub, so this re-requests it. If it cannot be confirmed, the reply still goes out with one line saying so. It asks only where an approval may be needed: when the repository's rules name a code-owner review and show that nobody's approval is required for that PR (no rule requires a review, no code-owned file touched), no review is requested, because a review request is itself an ask.
+- **When to use** (PROACTIVE): just send the link — never tell the user "I've requested your review" from memory, and never ask them to approve a PR nothing requires them to approve. If the reply came back with "could not confirm … as a reviewer", fix the cause (GitHub login, repo access) before asking again. Turn it off with \`prLinkReviewRequest.enabled: false\` in \`.instar/config.json\`; \`prLinkReviewRequest.requestWhenNotRequired: true\` requests on every PR again.`;
+
 /**
  * "Every ask carries its links." — named clause under Agent Proposes, Operator
  * Approves (ratified by Justin, topic 141868, 2026-11-11). Emitted in the CLAUDE.md
@@ -1448,7 +1471,9 @@ export const MOBILE_CHAT_CONTENT_LINE = '- With native app conversations on, not
 /** Pool reads and the approval method on app history rows; inserted after the history bullet on update. */
 /** The pool line before linked computers (instar-document-viewer §3.6a); replaced on update. */
 export const APP_CONVERSATIONS_POOL_STALE_LINE = '- Add `scope=pool` to the list or history read to merge every machine (a machine that did not answer is listed in `pool.failed`; a row only another machine holds reads `originVerified: "unknown"` here). The list pages every kind with one `nextCursor`. A row with a good verdict also carries `originApprovedVia` (`telegram-dm` or `dashboard-pin`): how that phone was approved.';
-export const APP_CONVERSATIONS_POOL_LINE = '- Add `scope=pool` to the list or history read to merge every machine (a machine that did not answer is listed in `pool.failed`; a row only another machine holds reads `originVerified: "unknown"` here). The list pages every kind with one `nextCursor`. A row with a good verdict also carries `originApprovedVia` (`telegram-dm`, `dashboard-pin`, or `person-phone` for a member\'s computer their own phone linked): how that device was approved.';
+/** The line before member-browser-any-computer added `team-invite`; replaced in place on update. */
+export const APP_CONVERSATIONS_POOL_PERSON_PHONE_LINE = '- Add `scope=pool` to the list or history read to merge every machine (a machine that did not answer is listed in `pool.failed`; a row only another machine holds reads `originVerified: "unknown"` here). The list pages every kind with one `nextCursor`. A row with a good verdict also carries `originApprovedVia` (`telegram-dm`, `dashboard-pin`, or `person-phone` for a member\'s computer their own phone linked): how that device was approved.';
+export const APP_CONVERSATIONS_POOL_LINE = '- Add `scope=pool` to the list or history read to merge every machine (a machine that did not answer is listed in `pool.failed`; a row only another machine holds reads `originVerified: "unknown"` here). The list pages every kind with one `nextCursor`. A row with a good verdict also carries `originApprovedVia` (`telegram-dm`, `dashboard-pin`, `person-phone` for a member\'s computer their own phone linked, or `team-invite` for a member\'s computer that joined from the owner\'s team invite): how that device was approved.';
 
 /** The "Open session" bullet (GET /mobile/conversations/session), inserted after the pool line on update. */
 export const APP_CONVERSATIONS_OPEN_SESSION_LINE = '- The app\'s "Open session" button asks `GET /mobile/conversations/session?ref=<app:<uuid> | telegram:<topicId> | Slack conversationKey>` (phone-signed only; my token gets 403). It answers the session driving that chat on this machine with a dashboard link focused on it (`/dashboard?session=<name>`; the dashboard still asks for its PIN), or `active: false` with a plain `reason`: no session yet (the next message starts one), or `ownerMachine`, the machine that runs it. When the operator asks "which session is answering this chat?" or "why does Open session say nothing is running?", read `GET /sessions` here: the button reads the same running sessions.';
@@ -2308,6 +2333,27 @@ export function rewriteUsageWallRescueAwareness(content: string): { content: str
  * Existence-checked per field and idempotent: an operator value is never
  * overwritten, and re-running adds nothing.
  */
+/** SEC-153: the dispatch address every agent was given at init, an unsigned channel. */
+export const LEGACY_DISPATCH_URLS: ReadonlyArray<string> = ['https://dawn.bot-me.ai/api/instar/dispatches'];
+
+/**
+ * SEC-153: turn off polling of the old, unsigned dispatch address. Exactly that address is removed and
+ * polling is switched off; an operator's own dispatch server is never touched. Loss-free: the local
+ * dispatch record (dispatchFile) is kept, and the old address is noted so it can be put back by hand.
+ * Idempotent: once the address is gone, nothing matches.
+ */
+export function migrateConfigLegacyDispatchUrl(config: Record<string, unknown>): string | null {
+  const d = config.dispatches;
+  if (!d || typeof d !== 'object' || Array.isArray(d)) return null;
+  const disp = d as Record<string, unknown>;
+  if (typeof disp.dispatchUrl !== 'string' || !LEGACY_DISPATCH_URLS.includes(disp.dispatchUrl)) return null;
+  const was = disp.dispatchUrl;
+  disp.legacyDispatchUrlRemoved = { url: was, wasEnabled: disp.enabled === true, at: new Date().toISOString(), reason: 'SEC-153' };
+  disp.dispatchUrl = '';
+  disp.enabled = false;
+  return was;
+}
+
 export function migrateConfigBoundedNotificationSurface(config: Record<string, unknown>): boolean {
   let changed = false;
 
@@ -2937,6 +2983,31 @@ const STATE_SYNC_DEV_GATED_STORES = [
 ] as const;
 
 /**
+ * Pure half of migrateReaperHourlyCadence: moves exactly the old 24 h default
+ * `monitoring.agentWorktreeReaper.reapIntervalMs: 86400000` to 1 h, once.
+ * Returns 'already' when the run-once marker is present (nothing changed),
+ * 'moved' when the old default was replaced, 'none' otherwise (marker added). The marker is written even when nothing moved, so
+ * a later run never overrides an operator who sets 24 h on purpose.
+ */
+export function migrateConfigReaperHourlyCadence(config: Record<string, unknown>): 'already' | 'moved' | 'none' {
+  const migrations = (Array.isArray(config._instar_migrations) ? config._instar_migrations : []) as string[];
+  const marker = 'reaper-hourly-cadence';
+  if (migrations.some((m) => typeof m === 'string' && m.startsWith(marker))) return 'already';
+  let moved = false;
+  const mon = config.monitoring;
+  if (mon && typeof mon === 'object' && !Array.isArray(mon)) {
+    const r = (mon as Record<string, unknown>).agentWorktreeReaper;
+    if (r && typeof r === 'object' && !Array.isArray(r) && (r as Record<string, unknown>).reapIntervalMs === 86_400_000) {
+      (r as Record<string, unknown>).reapIntervalMs = 3_600_000;
+      moved = true;
+    }
+  }
+  migrations.push(`${marker}-${new Date().toISOString()}`);
+  config._instar_migrations = migrations;
+  return moved ? 'moved' : 'none';
+}
+
+/**
  * The 7 multiMachine.stateSync.* memory stores (preferences, relationships, learnings,
  * knowledge, evolutionActions, userRegistry, topicOperator) were re-gated from
  * DARK_GATE_EXCLUSIONS (off for everyone) to the developmentAgent gate (live-on-dev,
@@ -3304,6 +3375,7 @@ export class PostUpdateMigrator {
 
     this.migrateHooks(result);
     this.migrateClaudeMd(result);
+    this.migrateAgentMdReportDelivery(result);
     this.migrateFrameworkShadowCapabilities(result);
     this.migrateScripts(result);
     this.migrateSecretExternalizationSurvivability(result);
@@ -3323,6 +3395,7 @@ export class PostUpdateMigrator {
     this.migrateLegacyDefaultJobs(result);
     this.autoMigrateLegacyJobsJson(result);
     this.migrateSkillPortHardcoding(result);
+    this.migrateFeedbackSkillSource(result);
     this.migrateSchedulerSkillReportChoice(result);
     this.migrateBuildSkillMethodology(result);
     this.migrateSubscriptionSigninByHand(result);
@@ -3334,6 +3407,7 @@ export class PostUpdateMigrator {
     this.migrateSubscriptionSigninDeviceLimit(result);
     this.migrateNormalChromeBrowserSkill(result);
     this.migrateAccountActionSafetySkill(result);
+    this.migrateNormalChromeWindowsBlankPageNote(result);
     this.migrateAgentOwnedMemory(result);
     this.migrateTestAsSelfSkill(result);
     this.migrateInstarDevBuildLocationRegrounding(result);
@@ -3371,6 +3445,7 @@ export class PostUpdateMigrator {
     this.migrateCartographerDevGate(result);
     this.migrateDevGateTeethStrip(result);
     this.migrateBootBeaconFleetGraduation(result);
+    this.migrateReaperHourlyCadence(result);
     this.migrateThreeStandardsReviewChecks(result);
     this.migrateSymbolStateReviewCheck(result);
     this.migrateDispatchWithholdsAnswer(result);
@@ -3380,24 +3455,157 @@ export class PostUpdateMigrator {
     this.migrateMultiMachinePostureReviewDimension(result);
     this.migrateConformanceGateAutoInvoke(result);
     this.migrateFractalEightyTwentyTriage(result);
+    this.migrateApprovalWhereRequired(result);
     this.migrateJudgmentWithinFloorsReviewQuestions(result);
     this.migrateJudgmentProvenanceGitignore(result);
     this.migrateHookTelemetryGitignore(result);
     this.migrateDeviceLimitProvenanceGitignore(result);
     this.migrateSkillLearningGitignore(result);
     this.migrateUsageLedgerGitignore(result);
+    this.migrateImportedHistoryGitignore(result);
     this.migrateSubscriptionPoolToMachineLocal(result);
     this.migrateHonestProgressMessagingDefaults(result);
     this.migrateAutonomousHeartbeatDefaults(result);
     this.migrateFixtureIdentityQuarantine(result);
     this.migrateStallGateInstallProvenance(result);
     this.migrateFeatureMaturationGate(result);
+    this.migrateSpecExperienceReview(result);
     this.migrateRetireStaleReleaseReadinessEvalFailureAttention(result);
     // LAST: every step above that patches CLAUDE.md has run, so the legacy
     // file is complete before it is split (docs/specs/claude-md-reference-layout.md).
     this.migrateClaudeMdReferenceLayout(result);
 
     return result;
+  }
+
+  /** Deliver the promised experience-fit lens without replacing surrounding skill prose. */
+  private migrateSpecExperienceReview(result: MigrationResult): void {
+    const marker = '<!-- INSTAR:SPEC_EXPERIENCE_REVIEW -->';
+    let block: string;
+    try {
+      const bundled = fs.readFileSync(path.join(__dirname, '..', '..', 'skills', 'spec-converge', 'SKILL.md'), 'utf8');
+      const blocks = bundled.match(/<!-- INSTAR:SPEC_EXPERIENCE_REVIEW -->[\s\S]*?<!-- \/INSTAR:SPEC_EXPERIENCE_REVIEW -->/g);
+      if (blocks?.length !== 1 || !blocks[0].includes('templates/reviewer-lessons-aware.md') || !blocks[0].includes('needless repeat asks')) {
+        result.errors.push('spec-converge experience review: bundled lens is missing or incomplete');
+        return;
+      }
+      block = blocks[0];
+    } catch (err) {
+      // @silent-fallback-ok: migration failure is returned explicitly in result.errors; no fallback lens is installed.
+      result.errors.push(`spec-converge experience review: ${err instanceof Error ? err.message : String(err)}`);
+      return;
+    }
+    const root = fs.realpathSync(this.config.projectDir);
+    const canonical = path.join(root, '.instar', 'skills', 'spec-converge', 'SKILL.md');
+    let canonicalHash: string | null = null;
+    const previousCanonicalHashes = new Set<string>();
+    try {
+      if (fs.existsSync(canonical)) {
+        if (fs.lstatSync(canonical).isSymbolicLink() || !fs.realpathSync(canonical).startsWith(`${root}${path.sep}`)) {
+          result.skipped.push('spec-converge experience review: external canonical target — left untouched');
+          return;
+        }
+        const raw = fs.readFileSync(canonical, 'utf8');
+        canonicalHash = skillBodyHash(raw);
+        if (canonicalHash) previousCanonicalHashes.add(canonicalHash);
+        // Also recognize a retry after canonical was written but a rendering was not.
+        const beforeLens = skillBodyHash(raw.replace(`${block}\n\n`, ''));
+        if (beforeLens) previousCanonicalHashes.add(beforeLens);
+      }
+    } catch (err) {
+      result.errors.push(`spec-converge experience review: canonical read failed: ${err instanceof Error ? err.message : String(err)}`);
+      return;
+    }
+    // Hold this skill's body migration when a rendering has local edits against
+    // the current canonical version. Advancing canonical first would turn that
+    // protected conflict into ordinary stale drift if the rendering later fails.
+    if (canonicalHash) {
+      for (const skillRoot of ['.claude', '.agents']) {
+        const file = path.join(root, skillRoot, 'skills', 'spec-converge', 'SKILL.md');
+        try {
+          if (!fs.existsSync(file)) continue;
+          if (fs.lstatSync(file).isSymbolicLink() || !fs.realpathSync(file).startsWith(`${root}${path.sep}`)) {
+            result.skipped.push(`spec-converge experience review: ${skillRoot} external rendering — migration held`);
+            return;
+          }
+          const raw = fs.readFileSync(file, 'utf8');
+          const stamp = raw.match(SKILL_FRONTMATTER_RE)?.[1].match(SKILL_STAMP_LINE_RE)?.[1];
+          if (stamp === canonicalHash && skillBodyHash(raw) !== canonicalHash) {
+            result.skipped.push(`spec-converge experience review: ${skillRoot} user-edit conflict — body migration held`);
+            return;
+          }
+        } catch (err) {
+          result.errors.push(`spec-converge experience review: rendering preflight failed: ${err instanceof Error ? err.message : String(err)}`);
+          return;
+        }
+      }
+    }
+    for (const skillRoot of ['.instar', '.claude', '.agents']) {
+      const file = path.join(this.config.projectDir, skillRoot, 'skills', 'spec-converge', 'SKILL.md');
+      const label = `spec-converge experience review (${skillRoot})`;
+      try {
+        if (!fs.existsSync(file)) continue; // the fresh-install path ships the bundled lens
+        if (fs.lstatSync(file).isSymbolicLink() || !fs.realpathSync(file).startsWith(`${root}${path.sep}`)) {
+          result.skipped.push(`${label}: symlink or external target — left untouched`);
+          if (skillRoot === '.instar') return;
+          continue;
+        }
+        const current = fs.readFileSync(file, 'utf8');
+        if (!current.includes('# /spec-converge') || !current.includes('**Internal reviewers (Claude subagents):**') || current.includes('instar-learned-origin')) {
+          result.skipped.push(`${label}: custom or learned skill — left untouched`);
+          if (skillRoot === '.instar') return;
+          continue;
+        }
+        const markers = current.split(marker).length - 1;
+        let next = current;
+        if (!(markers === 1 && current.includes(block))) {
+          if (markers > 0 || current.includes('<!-- /INSTAR:SPEC_EXPERIENCE_REVIEW -->')) {
+            result.skipped.push(`${label}: existing lens differs or is incomplete — left untouched`);
+            if (skillRoot === '.instar') return;
+            continue;
+          }
+          const anchors = [...current.matchAll(/^\*\*External reviewers[^\n]*$/gm)];
+          if (anchors.length !== 1) {
+            result.skipped.push(`${label}: missing or ambiguous anchor — left untouched`);
+            if (skillRoot === '.instar') return;
+            continue;
+          }
+          const at = anchors[0].index!;
+          next = `${current.slice(0, at)}${block}\n\n${current.slice(at)}`; // bounded-input-reviewed: insertion joins both complete halves; no source content is truncated or withheld.
+        }
+        const oldBodyHash = skillBodyHash(current);
+        const stamp = current.match(SKILL_FRONTMATTER_RE)?.[1].match(SKILL_STAMP_LINE_RE)?.[1];
+        const knownPrior = (hash: string) => previousCanonicalHashes.has(hash) || (!canonicalHash && hash === oldBodyHash);
+        const newStamp = canonicalHash ?? skillBodyHash(next);
+        // Advance provenance to the new canonical version, not to a customized
+        // rendering's own hash: its body difference must remain a user-edit conflict.
+        if (stamp && newStamp && knownPrior(stamp)) next = next.replace(SKILL_STAMP_LINE_RE, `${SKILL_STAMP_KEY}: ${newStamp}`);
+        if (next !== current) {
+          SafeFsExecutor.atomicWriteFileSync(file, next, { operation: 'PostUpdateMigrator.specExperienceReview', mode: fs.statSync(file).mode & 0o777 });
+          result.upgraded.push(label);
+        }
+        // Publish canonical provenance only after the canonical write succeeds.
+        if (skillRoot === '.instar') canonicalHash = skillBodyHash(next);
+        if (skillRoot === '.agents' && newStamp) {
+          const sibling = path.join(path.dirname(file), 'agents', 'openai.yaml');
+          if (fs.existsSync(sibling)) {
+            if (fs.lstatSync(sibling).isSymbolicLink() || !fs.realpathSync(sibling).startsWith(`${root}${path.sep}`)) {
+              result.skipped.push(`${label}: external metadata target — left untouched`);
+              continue;
+            }
+            const yaml = fs.readFileSync(sibling, 'utf8');
+            const oldStamp = yaml.match(SKILL_STAMP_LINE_RE)?.[1];
+            if (oldStamp && knownPrior(oldStamp) && oldStamp !== newStamp) {
+              SafeFsExecutor.atomicWriteFileSync(sibling, yaml.replace(/^x-instar-stamp:[ \t]*[a-f0-9]{64}[ \t]*$/m, `${SKILL_STAMP_KEY}: ${newStamp}`), { operation: 'PostUpdateMigrator.specExperienceReview.metadata', mode: fs.statSync(sibling).mode & 0o777 });
+              result.upgraded.push(`${label}: Codex metadata stamp`);
+            }
+          }
+        }
+      } catch (err) {
+        result.errors.push(`${label}: ${err instanceof Error ? err.message : String(err)}`);
+        if (skillRoot === '.instar') return;
+      }
+    }
   }
 
   /** Deliver the v1 maturation WARN detector without overwriting customized files. */
@@ -3407,6 +3615,27 @@ export class PostUpdateMigrator {
     ]);
     const root = path.resolve(this.config.projectDir);
     const bundledRoot = path.resolve(__dirname, '..', '..');
+    // Reviewer templates remain shipped-owned files. Also refresh installed
+    // canonical/Codex copies, so those readers do not keep the old review lens.
+    // Never create template-only skill directories or touch another skill name.
+    const templateRoots = ['.claude'];
+    for (const skillRoot of ['.instar', '.agents']) {
+      const skill = path.join(root, skillRoot, 'skills', 'spec-converge', 'SKILL.md');
+      try {
+        if (!fs.existsSync(skill)) continue;
+        const realRoot = fs.realpathSync(root);
+        const templates = path.join(path.dirname(skill), 'templates');
+        if (fs.lstatSync(skill).isSymbolicLink() || !fs.realpathSync(skill).startsWith(`${realRoot}${path.sep}`) || (fs.existsSync(templates) && !fs.realpathSync(templates).startsWith(`${realRoot}${path.sep}`))) {
+          result.skipped.push(`spec-converge experience templates (${skillRoot}): symlink or external target — left untouched`);
+          continue;
+        }
+        const text = fs.readFileSync(skill, 'utf8');
+        if (!text.includes('# /spec-converge') || !text.includes('**Internal reviewers (Claude subagents):**') || text.includes('instar-learned-origin')) continue;
+        templateRoots.push(skillRoot);
+      } catch (err) {
+        result.errors.push(`spec-converge experience templates (${skillRoot}): ${err instanceof Error ? err.message : String(err)}`);
+      }
+    }
     const files = [
       {
         label: 'feature maturation plan detector',
@@ -3472,7 +3701,7 @@ export class PostUpdateMigrator {
         prior: new Set<string>(),
         alwaysOverwrite: true,
       },
-      {
+      ...templateRoots.map((skillRoot) => ({
         // grok-build reviewer-door plumbing (grok-build spec §8/§11): the
         // wrapper must plumb enabledFrameworks into detection on EXISTING
         // agents too — installBuiltinSkills never overwrites, so this sync
@@ -3481,12 +3710,12 @@ export class PostUpdateMigrator {
         // shipped-content entries: a prior-hash gate over a shipped script
         // classifies ordinary drift as customization and stops refreshing
         // forever (the constitution-mirror lesson).
-        label: 'spec-converge cross-model-review enabledFrameworks plumbing',
+        label: `spec-converge cross-model-review enabledFrameworks plumbing${skillRoot === '.claude' ? '' : ` (${skillRoot})`}`,
         bundled: path.join(bundledRoot, 'skills', 'spec-converge', 'scripts', 'cross-model-review.mjs'),
-        target: path.join(root, '.claude', 'skills', 'spec-converge', 'scripts', 'cross-model-review.mjs'),
+        target: path.join(root, skillRoot, 'skills', 'spec-converge', 'scripts', 'cross-model-review.mjs'),
         prior: new Set<string>(),
         alwaysOverwrite: true,
-      },
+      })),
       // spec-converge REVIEWER TEMPLATES (round-10, integration+lessons).
       // `installBuiltinSkills` writes a skill's files only when the skill is
       // MISSING, so an existing agent's templates freeze at whatever version
@@ -3506,13 +3735,13 @@ export class PostUpdateMigrator {
         'reviewer-scalability.md',
         'reviewer-security.md',
         'report.md',
-      ].map((name) => ({
-        label: `spec-converge reviewer template ${name}`,
+      ].flatMap((name) => templateRoots.map((skillRoot) => ({
+        label: `spec-converge reviewer template ${name}${skillRoot === '.claude' ? '' : ` (${skillRoot})`}`,
         bundled: path.join(bundledRoot, 'skills', 'spec-converge', 'templates', name),
-        target: path.join(root, '.claude', 'skills', 'spec-converge', 'templates', name),
+        target: path.join(root, skillRoot, 'skills', 'spec-converge', 'templates', name),
         prior: new Set<string>(),
         alwaysOverwrite: true,
-      })),
+      }))),
       {
         // RESTORED 2026-07-28, repointed and un-gated. The previous entry read
         // `<bundledRoot>/docs/STANDARDS-REGISTRY.md` — a path present in NO published
@@ -3853,6 +4082,60 @@ export class PostUpdateMigrator {
     }
   }
 
+  // Approval only where required (Echo Bugs topic 10000002791, spec
+  // docs/specs/approval-asks-only-where-required.md): the instar-dev and spec-converge
+  // skills told build sessions the repository needed a human approval for every merge
+  // and that approval was "the user's step". Replace ONLY those exact sentences
+  // (APPROVAL_WHERE_REQUIRED_SKILL_TEXT) in the canonical copy and both renderings, so
+  // an agent's own edits elsewhere survive. A rendering whose stamp matched the old
+  // canonical body is re-stamped with the new one, so the parity rule sees no drift.
+  // A sentence found in neither form (customized) is left alone and reported.
+  // Idempotent: once replaced, no prior sentence remains.
+  private migrateApprovalWhereRequired(result: MigrationResult): void {
+    const root = this.config.projectDir;
+    for (const entry of APPROVAL_WHERE_REQUIRED_SKILL_TEXT) {
+      const canonical = path.join(root, '.instar', 'skills', entry.skill, 'SKILL.md');
+      const renderings = [
+        path.join(root, '.claude', 'skills', entry.skill, 'SKILL.md'),
+        path.join(root, '.agents', 'skills', entry.skill, 'SKILL.md'),
+      ];
+      try {
+        const canonicalRaw = readUtf8OrNull(canonical);
+        const oldHash = canonicalRaw === null ? null : skillBodyHash(canonicalRaw);
+        let newHash: string | null = null;
+        if (canonicalRaw !== null) {
+          const r = applySkillSentenceChanges(canonicalRaw, entry.changes);
+          if (r.changed > 0) {
+            fs.writeFileSync(canonical, r.text);
+            result.upgraded.push(`${entry.skill} skill (canonical): approval only where required (${r.changed} sentence(s))`);
+          }
+          if (r.missing.length) result.skipped.push(`${entry.skill} skill (canonical): customized, ${r.missing.length} approval sentence(s) left untouched`);
+          newHash = skillBodyHash(r.text);
+        }
+        for (const file of renderings) {
+          const raw = readUtf8OrNull(file);
+          if (raw === null) continue;
+          const r = applySkillSentenceChanges(raw, entry.changes);
+          let next = r.text;
+          const stamp = next.match(SKILL_STAMP_LINE_RE)?.[1] ?? null;
+          // Re-stamp whenever the stamp named the old canonical body: an in-sync rendering stays in
+          // sync, and a user-edited one still reads as user-edit-conflict (body != stamp), which the
+          // parity rule refuses to overwrite. A stale stamp would instead invite a re-render.
+          if (stamp && oldHash && newHash && stamp === oldHash && newHash !== oldHash) {
+            next = next.replace(SKILL_STAMP_LINE_RE, `${SKILL_STAMP_KEY}: ${newHash}`);
+          }
+          if (next !== raw) {
+            fs.writeFileSync(file, next);
+            result.upgraded.push(`${path.relative(root, file)}: approval only where required (${r.changed} sentence(s))`);
+          }
+          if (r.missing.length) result.skipped.push(`${path.relative(root, file)}: customized, ${r.missing.length} approval sentence(s) left untouched`);
+        }
+      } catch (err) {
+        result.errors.push(`${entry.skill} skill approval wording: ${err instanceof Error ? err.message : String(err)}`);
+      }
+    }
+  }
+
   // Deliver fractal 80/20 convergence, plain size tiers, the found-problem triage
   // rule and the proportion signal (CMT-917, operator-approved 2026-10-22, topic
   // 127831) to already-installed agents (Migration Parity, "updating existing skill
@@ -4184,6 +4467,25 @@ export class PostUpdateMigrator {
   // Fresh installs get both via MachineIdentity GITIGNORE_ENTRIES; existing agents
   // only here (the judgment-provenance precedent: existing files only, idempotent).
   // A legacy file git already tracks stays tracked — this never runs `git rm`.
+  /**
+   * Imported Claude/ChatGPT history (SEC-110): keep the folder out of git on
+   * existing agents, in the project .gitignore and the internal state repo's
+   * .instar/.gitignore, where each file exists. Fresh installs get it through
+   * MachineIdentity GITIGNORE_ENTRIES and GitStateManager DEFAULT_GITIGNORE;
+   * git sync refuses it independently through FileClassifier never-sync.
+   * Idempotent (addGitignoreEntry no-ops when the line is present).
+   */
+  private migrateImportedHistoryGitignore(result: MigrationResult): void {
+    const projectGitignore = path.join(this.config.projectDir, '.gitignore');
+    if (fs.existsSync(projectGitignore)) {
+      this.addGitignoreEntry(projectGitignore, IMPORTED_HISTORY_PROJECT_PATH, result, 'project .gitignore');
+    }
+    const instarGitignore = path.join(this.config.stateDir, '.gitignore');
+    if (fs.existsSync(instarGitignore)) {
+      this.addGitignoreEntry(instarGitignore, IMPORTED_HISTORY_STATE_PATH, result, '.instar/.gitignore');
+    }
+  }
+
   /** Unified usage ledger (docs/specs/unified-usage-ledger.md): keep its databases out of git, where an ignore file exists. Idempotent. */
   private migrateUsageLedgerGitignore(result: MigrationResult): void {
     const projectGitignore = path.join(this.config.projectDir, '.gitignore');
@@ -4537,6 +4839,8 @@ export class PostUpdateMigrator {
           );
           continue;
         }
+// bounded-input-reviewed: a string SPLICE (head up to the anchor + inserted line + the rest), not a bound;
+// nothing is dropped. Matches the detector by shape only.
         const next =
           `${current.slice(0, anchorIndex)}\n${questionLine}` +
           current.slice(anchorIndex);
@@ -4896,6 +5200,43 @@ export class PostUpdateMigrator {
       result.upgraded.push('boot-beacon-graduation: stripped the stale dark-default `monitoring.bootHealthBeacon.enabled: false` so the boot beacon runs (it is on for every agent now; re-add `enabled: false` to keep it off — it will not be re-stripped)');
     } else {
       result.skipped.push('boot-beacon-graduation: nothing to strip (marker set)');
+    }
+  }
+
+  // ── REAPER HOURLY CADENCE (docs/specs/reaper-removal-out-of-process.md §4) ──
+  // The worktree reaper's pass interval became 1 h. applyDefaults is add-missing-
+  // only, and existing agents persisted the old default `reapIntervalMs: 86400000`,
+  // so they would keep the 24 h cadence forever. Exactly the old default value is
+  // moved, once (run-once marker): any other value is an operator choice and kept,
+  // and a later operator-set 24 h is never touched. dryRun is left alone.
+  private migrateReaperHourlyCadence(result: MigrationResult): void {
+    const configPath = path.join(this.config.stateDir, 'config.json');
+    if (!fs.existsSync(configPath)) {
+      result.skipped.push('reaper-hourly-cadence: config.json not found');
+      return;
+    }
+    let config: Record<string, unknown>;
+    try {
+      config = JSON.parse(fs.readFileSync(configPath, 'utf-8'));
+    } catch (err) {
+      result.errors.push(`reaper-hourly-cadence: config.json read failed: ${err instanceof Error ? err.message : String(err)}`);
+      return;
+    }
+    const changed = migrateConfigReaperHourlyCadence(config);
+    if (changed === 'already') {
+      result.skipped.push('reaper-hourly-cadence: already migrated');
+      return;
+    }
+    try {
+      fs.writeFileSync(configPath, JSON.stringify(config, null, 2));
+    } catch (err) {
+      result.errors.push(`reaper-hourly-cadence: config.json write failed: ${err instanceof Error ? err.message : String(err)}`);
+      return;
+    }
+    if (changed === 'moved') {
+      result.upgraded.push('reaper-hourly-cadence: moved monitoring.agentWorktreeReaper.reapIntervalMs from the old 24 h default to 1 h (the pass is off the main thread; removal stays dry-run unless turned on)');
+    } else {
+      result.skipped.push('reaper-hourly-cadence: no old default to move (marker set)');
     }
   }
 
@@ -6790,6 +7131,30 @@ export class PostUpdateMigrator {
     }
   }
 
+  /**
+   * agent-work-cards-default §3 "Feedback is not a trigger": `POST /feedback` requires a `source` from Bearer callers when
+   * the board is on. The built-in /feedback skill is existing content (installBuiltinSkills never overwrites), so this
+   * dedicated idempotent step adds `"source": {"kind": "agent"}` to its Quick Submit body once. A customized skill whose
+   * body no longer has the stock description line is left untouched.
+   */
+  private migrateFeedbackSkillSource(result: MigrationResult): void {
+    const skillFile = path.join(this.config.projectDir, '.claude', 'skills', 'feedback', 'SKILL.md');
+    if (!fs.existsSync(skillFile)) return;
+    try {
+      const original = fs.readFileSync(skillFile, 'utf8');
+      if (original.includes('"source"')) return;
+      const stock = '"description": "Full context: what happened, what you expected, error messages, steps to reproduce"\n  }\'';
+      if (!original.includes(stock)) return;
+      const updated = original.replace(stock, '"description": "Full context: what happened, what you expected, error messages, steps to reproduce",\n    "source": {"kind": "agent"}\n  }\'');
+      if (updated !== original) {
+        fs.writeFileSync(skillFile, updated);
+        result.upgraded.push('skills/feedback/SKILL.md (POST /feedback body carries source: {kind: agent})');
+      }
+    } catch (err) {
+      result.errors.push(`skills/feedback/SKILL.md source migration: ${err instanceof Error ? err.message : String(err)}`);
+    }
+  }
+
   private migrateSkillPortHardcoding(result: MigrationResult): void {
     const defaultSkills = [
       'evolve', 'learn', 'gaps', 'commit-action', 'feedback',
@@ -7116,6 +7481,55 @@ export class PostUpdateMigrator {
       result.upgraded.push('skills/normal-chrome-browser/SKILL.md (account-action safety)');
     } catch (err) {
       result.errors.push(`account-action safety skill: ${err instanceof Error ? err.message : String(err)}`);
+    }
+  }
+
+  /**
+   * Add the Windows blank-page note (ERR page-not-rendering, the occlusion fix; spec
+   * normal-chrome-windows-occlusion) once to an installed /normal-chrome-browser skill that lacks it:
+   * the note before the Linux section heading (appended if that heading is gone), its row in the recovery
+   * quick list and the flag sentence in the `launch` row (each only when its anchor is still there), edits
+   * kept, in the file's own line endings. An untouched copy of the previous shipped text ends byte-identical
+   * to a fresh install (tested against tests/fixtures/skills/normal-chrome-browser-v3.md). Runs after migrateNormalChromeBrowserSkill, so a copy that step replaced
+   * whole already carries the note and is left alone.
+   * Idempotent on the note's heading; scoped to the built-in skill; a missing file is left to
+   * installBuiltinSkills.
+   */
+  private migrateNormalChromeWindowsBlankPageNote(result: MigrationResult): void {
+    const file = path.join(this.config.projectDir, '.claude', 'skills', 'normal-chrome-browser', 'SKILL.md');
+    try {
+      if (!fs.existsSync(file)) return;
+      const current = fs.readFileSync(file, 'utf8');
+      if (!current.includes('name: normal-chrome-browser') || current.includes(NORMAL_CHROME_BROWSER_WINDOWS_BLANK_PAGE_HEADING)) return;
+      const crlf = current.includes('\r\n');
+      const lf = crlf ? current.replace(/\r\n/g, '\n') : current;
+      // Three guarded edits, each placed where the shipped text has it, so an untouched copy of the previous
+      // shipped text (tests/fixtures/skills/normal-chrome-browser-v3.md) ends byte-identical to a fresh install
+      // and an edited copy keeps every edit.
+      // 1. The note, at the end of the Windows section (just before the Linux section heading), or at the end
+      //    of the file when that heading is gone; one blank line before it, the original gap after it.
+      const linuxAt = lf.indexOf('\n' + NORMAL_CHROME_BROWSER_SKILL_MARKER);
+      let next: string;
+      if (linuxAt >= 0) {
+        const before = lf.slice(0, linuxAt + 1).replace(/\n+$/, '');
+        const gap = lf.slice(before.length, linuxAt + 1);
+        next = before + '\n\n' + NORMAL_CHROME_BROWSER_WINDOWS_BLANK_PAGE_NOTE + gap.slice(1) + lf.slice(linuxAt + 1);
+      } else {
+        next = lf.replace(/\n*$/, '') + '\n\n' + NORMAL_CHROME_BROWSER_WINDOWS_BLANK_PAGE_NOTE;
+      }
+      // 2. The recovery quick list row, just above the existing "page document not found" row.
+      const rowAt = next.indexOf('\n' + NORMAL_CHROME_BROWSER_PAGE_NOT_RENDERING_ROW_ANCHOR);
+      if (rowAt >= 0 && !next.includes(NORMAL_CHROME_BROWSER_PAGE_NOT_RENDERING_ROW)) {
+        next = next.slice(0, rowAt + 1) + NORMAL_CHROME_BROWSER_PAGE_NOT_RENDERING_ROW + '\n' + next.slice(rowAt + 1);
+      }
+      // 3. The flag sentence in the Windows `launch` row.
+      if (!next.includes(NORMAL_CHROME_BROWSER_LAUNCH_ROW_FLAG_SENTENCE) && next.includes(NORMAL_CHROME_BROWSER_LAUNCH_ROW_ANCHOR)) {
+        next = next.replace(NORMAL_CHROME_BROWSER_LAUNCH_ROW_ANCHOR, NORMAL_CHROME_BROWSER_LAUNCH_ROW_ANCHOR + NORMAL_CHROME_BROWSER_LAUNCH_ROW_FLAG_SENTENCE);
+      }
+      fs.writeFileSync(file, crlf ? next.replace(/\n/g, '\r\n') : next);
+      result.upgraded.push('skills/normal-chrome-browser/SKILL.md (Windows blank-page note: ERR page-not-rendering and the occlusion fix)');
+    } catch (err) {
+      result.errors.push(`skills/normal-chrome-browser/SKILL.md blank-page note: ${err instanceof Error ? err.message : String(err)}`);
     }
   }
 
@@ -8300,6 +8714,15 @@ if [[ "$ACTIVE" != "true" ]]; then`;
     }
 
     try {
+      // Organization never rules checking actions (docs/specs/org-never-actions.md §A): always overwritten.
+      fs.writeFileSync(path.join(instarHooksDir, 'org-policy-gate.sh'), OrgPolicyGateHooks.wrapper(), { mode: 0o755 });
+      fs.writeFileSync(path.join(instarHooksDir, 'org-policy-gate.js'), OrgPolicyGateHooks.script(), { mode: 0o755 });
+      result.upgraded.push('hooks/instar/org-policy-gate.sh + .js (organization never rules check)');
+    } catch (err) {
+      result.errors.push(`org-policy-gate: ${err instanceof Error ? err.message : String(err)}`);
+    }
+
+    try {
       fs.writeFileSync(path.join(instarHooksDir, 'action-claim-followthrough.js'), this.getActionClaimFollowthroughHook(), { mode: 0o755 });
       result.upgraded.push('hooks/instar/action-claim-followthrough.js (action-claim follow-through sentinel, signal-only)');
     } catch (err) {
@@ -9330,7 +9753,9 @@ if [[ "$ACTIVE" != "true" ]]; then`;
 
 const serverUrl = process.env.INSTAR_SERVER_URL || 'http://localhost:4042';
 const authToken = process.env.INSTAR_AUTH_TOKEN || '';
-const instarSid = process.env.INSTAR_SESSION_ID || '';
+// Validated once: an id that fails the pattern is sent in neither the query nor the body (the hook exits).
+const rawSid = process.env.INSTAR_SESSION_ID || '';
+const instarSid = /^[A-Za-z0-9._:-]{1,128}$/.test(rawSid) ? rawSid : '';
 
 if (!authToken || !instarSid) {
   process.exit(0);
@@ -9342,8 +9767,32 @@ process.stdin.on('end', async () => {
   try {
     const { request } = await import('node:http');
     const input = JSON.parse(data);
+    // Bound the forwarded identifying fields here too: an older server stores a payload as received.
+    const str = (v, max) => (typeof v === 'string' && v.length > 0 && v.length <= max ? v : undefined);
+    const id = (v) => (typeof v === 'string' && /^[A-Za-z0-9._:-]{1,128}$/.test(v) ? v : undefined);
+    const absPath = (v) => (typeof v === 'string' && v.startsWith('/') && v.length <= 1024 ? v : undefined);
     const payload = JSON.stringify({
-      event: input.hook_event || (input.tool_name ? 'PostToolUse' : 'Unknown'),
+      // Claude Code names the event in hook_event_name (hook_event is the old
+      // spelling, kept as a fallback). Without it every Stop, SubagentStart,
+      // SubagentStop, TaskCompleted, SessionEnd and PreCompact event arrived as
+      // \"Unknown\" and no consumer of those events ever ran (2026-11-21).
+      event: input.hook_event_name || input.hook_event || (input.tool_name ? 'PostToolUse' : 'Unknown'),
+      // The instar session this hook ran in, so consumers keyed on it (the
+      // practice-fold runner, the subagent tracker) can find the session.
+      instar_session_id: id(instarSid),
+      // The tmux session name, which Compaction Trigger 1 checks against the session id.
+      instar_session: str(process.env.INSTAR_SESSION_NAME, 128),
+      // Short identifying fields the native reporter also forwards (docs/specs/native-hook-events.md
+      // D1); the server bounds them the same way. Message text (last_assistant_message,
+      // task_subject) is deliberately NOT sent from here: an older server stores payloads as
+      // received, so raw text could reach storage during a version mismatch.
+      agent_id: id(input.agent_id),
+      agent_type: str(input.agent_type, 128),
+      agent_transcript_path: absPath(input.agent_transcript_path),
+      task_id: id(input.task_id),
+      reason: str(input.reason, 64),
+      trigger: str(input.trigger, 64),
+
       session_id: input.session_id || '',
       tool_name: input.tool_name || '',
       // green-pr-automerge Layer 2: forward the session cwd so the server can
@@ -9400,6 +9849,32 @@ setTimeout(() => process.exit(0), 2000);
    * Patch CLAUDE.md with any new sections that don't exist yet.
    * Only adds — never modifies or removes existing content.
    */
+  /**
+   * fb-3bc8a879-2c7: AGENT.md principles 6 and 9 and the Private Viewing line sent
+   * reports to the Private Viewer only. Replace each retired wording verbatim;
+   * wording the agent rewrote is left alone. Idempotent.
+   */
+  private migrateAgentMdReportDelivery(result: MigrationResult): void {
+    const agentMdPath = path.join(this.config.stateDir, 'AGENT.md');
+    if (!fs.existsSync(agentMdPath)) return;
+    try {
+      let content = fs.readFileSync(agentMdPath, 'utf-8');
+      let changed = false;
+      for (const [retired, current] of [...RETIRED_AGENT_PRINCIPLE_WORDING, ...RETIRED_DOC_DELIVERY_ROWS]) {
+        if (content.includes(retired)) {
+          content = content.replace(retired, () => current);
+          changed = true;
+        }
+      }
+      if (changed) {
+        fs.writeFileSync(agentMdPath, content);
+        result.upgraded.push('AGENT.md: reports for a person go to a document, not a GitHub link');
+      }
+    } catch (err) {
+      result.errors.push(`AGENT.md report delivery: ${err instanceof Error ? err.message : String(err)}`);
+    }
+  }
+
   private migrateClaudeMd(result: MigrationResult): void {
     const claudeMdPath = path.join(this.config.projectDir, 'CLAUDE.md');
     if (!fs.existsSync(claudeMdPath)) {
@@ -9736,8 +10211,9 @@ setTimeout(() => process.exit(0), 2000);
     // The marked feature-notes block is held out while the chain runs (a one-line stand-in keeps
     // its place), so entry text never takes part in the `content.includes(marker)` guards below.
     const heldFeatureNotes = holdRegistryBlock(input);
-    let content = heldFeatureNotes.text;
-    let patched = false;
+    let content = migrateConversationSearchGuidance(heldFeatureNotes.text);
+    let patched = content !== heldFeatureNotes.text;
+    if (patched) result.upgraded.push('CLAUDE.md: replaced legacy memory search pointers with conversation search');
     // Gravity well "Someone Else's Work" (topic 10000002523): a deferral dressed
     // as a scope fact. Inserted after the "Ask Permission" trap when that
     // paragraph is present, else appended to the end of the file.
@@ -9835,6 +10311,14 @@ setTimeout(() => process.exit(0), 2000);
       content += `\n\n- **Memory privacy recovery**: when \`sandboxReady\` is false, \`GET /memory-privacy\` gives \`blocker\` and \`fix\`, the real cause in plain words, and the owner also gets a private link to the solution, with a one-time repair link when one click can fix it. Owner reports "I can't reply here yet: private memory isn't set up" → read \`fix\` and tell them exactly that. Never set \`memoryPrivacy.enabled\` false to get past it unless the owner asks: that reopens the leak.`;
       patched = true;
       result.upgraded.push('CLAUDE.md: added Memory privacy recovery');
+    }
+
+    // Registry First: metered spend is a question with a place to look (gemini-payg §10).
+    if (!content.includes('| How much have we spent on Gemini') && content.includes('| What jobs do I have?')) {
+      const row = `| How much have we spent on Gemini / metered models? | \`GET /routing-spend/caps\` (answer in dollars from it; on any machine it reads the spending machine's figures). NEVER from memory |`;
+      content = content.replace(/^(\| What jobs do I have\?.*)$/m, `$1\n${row}`);
+      patched = true;
+      result.upgraded.push('CLAUDE.md: added metered spend to Registry First');
     }
 
     // Registry First: the browser's state is a question with a place to look (normal-chrome-linux).
@@ -10397,6 +10881,17 @@ setTimeout(() => process.exit(0), 2000);
         content = content.replace(marker, `${paragraph}\n\n${marker}`);
         patched = true;
         result.upgraded.push('CLAUDE.md: added held script route guidance');
+      }
+    }
+    // fb-3bc8a879-2c7: the shipped report-delivery rows pointed only at the
+    // Private Viewer (which refuses while documents serve), so a session wrote a
+    // repo file and sent a GitHub link. Replace each retired row verbatim; a row
+    // the agent has edited is left alone.
+    for (const [retired, current] of RETIRED_DOC_DELIVERY_ROWS) {
+      if (content.includes(retired)) {
+        content = content.replace(retired, () => current);
+        patched = true;
+        result.upgraded.push('CLAUDE.md: reports for a person go to a document, not a GitHub link');
       }
     }
     const oldTriageLine = '- **After their audit gate opens**, the triage jobs (health-check, commitment-checkin-reminder, the three feedback-factory jobs) can use Jev to check whether a non-routine result needs a real session. An uncertain answer requests a bounded investigator session; only during a Jev outage does Luna or Haiku sample routine results. Until benchmark and outcome-audit coverage is verified, those jobs stay on their existing session path and the model-backed daily review is inactive. Active scripts still get a daily must-fail canary.';
@@ -11209,6 +11704,11 @@ setTimeout(() => process.exit(0), 2000);
       patched = true;
       result.upgraded.push('CLAUDE.md: app conversations pool line names person-phone');
     }
+    if (content.includes(APP_CONVERSATIONS_POOL_PERSON_PHONE_LINE)) {
+      content = content.replace(APP_CONVERSATIONS_POOL_PERSON_PHONE_LINE, APP_CONVERSATIONS_POOL_LINE);
+      patched = true;
+      result.upgraded.push('CLAUDE.md: app conversations pool line names team-invite');
+    }
     if (content.includes('Native app conversations') && !content.includes(APP_CONVERSATIONS_POOL_LINE)) {
       const lines = content.split('\n');
       const at = lines.findIndex((l) => l.includes('/mobile/chat/app/CONVERSATION_KEY/messages'));
@@ -11291,28 +11791,22 @@ setTimeout(() => process.exit(0), 2000);
       }
     }
 
-    // Keyword search over conversations (docs/specs/conversation-search.md): the bullet after the pinned messages line.
-    if (content.includes(APP_CONVERSATIONS_PINS_LINE) && !content.includes('/mobile/conversations/search')) {
+    // Mobile app search guidance has its own bullet. The Registry First link does not replace it.
+    const keywordSearchLine = APP_CONVERSATIONS_SEARCH_LINE_KEYWORD_ONLY.replace('PORT', String(port));
+    const fullSearchLine = APP_CONVERSATIONS_SEARCH_LINE.replace('PORT', String(port));
+    if (content.includes(keywordSearchLine)) {
+      content = content.replace(keywordSearchLine, fullSearchLine);
+      patched = true;
+      result.upgraded.push('CLAUDE.md: the conversation search line now mentions meaning search');
+    } else if (content.includes(APP_CONVERSATIONS_PINS_LINE) && !/^- Search conversations by keyword[^\n]*\/mobile\/conversations\/search/m.test(content)) {
       const lines = content.split('\n');
-      const listPinsAt = lines.findIndex((l) => l === APP_CONVERSATIONS_LIST_PINS_LINE);
-      const at = listPinsAt >= 0 ? listPinsAt : lines.findIndex((l) => l === APP_CONVERSATIONS_PINS_LINE);
+      const listPinsAt = lines.indexOf(APP_CONVERSATIONS_LIST_PINS_LINE);
+      const at = listPinsAt >= 0 ? listPinsAt : lines.indexOf(APP_CONVERSATIONS_PINS_LINE);
       if (at >= 0) {
-        lines.splice(at + 1, 0, APP_CONVERSATIONS_SEARCH_LINE.replace('PORT', String(port)));
+        lines.splice(at + 1, 0, fullSearchLine);
         content = lines.join('\n');
         patched = true;
         result.upgraded.push('CLAUDE.md: added the conversation search line');
-      }
-    }
-
-    // Meaning search (conversation-search §4): the keyword-only search line becomes the keyword-and-meaning line.
-    if (content.includes('/mobile/conversations/search') && !content.includes('mode=meaning')) {
-      const lines = content.split('\n');
-      const at = lines.findIndex((l) => l === APP_CONVERSATIONS_SEARCH_LINE_KEYWORD_ONLY.replace('PORT', String(port)));
-      if (at >= 0) {
-        lines[at] = APP_CONVERSATIONS_SEARCH_LINE.replace('PORT', String(port));
-        content = lines.join('\n');
-        patched = true;
-        result.upgraded.push('CLAUDE.md: the conversation search line now mentions meaning search');
       }
     }
 
@@ -13558,6 +14052,23 @@ The server runs the full test suite on the exact code a pull request would merge
       patched = true;
       result.upgraded.push('CLAUDE.md: added Local Verify peer-verifier awareness');
     }
+    // local-verify-peer-works-through-restart (Visibility): the peer line in existing agents still says a
+    // record needs "the same … lease epoch". Rewrite that one phrase; content-sniffed on the setting key.
+    if (content.includes(LOCAL_VERIFY_PEERS_OLD_EPOCH_PHRASE) && !content.includes('monitoring.localVerify.peerWorksThroughRestart.enabled')) {
+      content = content.replace(LOCAL_VERIFY_PEERS_OLD_EPOCH_PHRASE, LOCAL_VERIFY_PEERS_NEW_EPOCH_PHRASE);
+      patched = true;
+      result.upgraded.push('CLAUDE.md: Local Verify peer line names the works-through-restart setting');
+    }
+    if (content.includes('/local-verify') && !content.includes('monitoring.localVerify.smallPeerTrial')) {
+      content += '\n- Local Verify can give one normal pull request to a calibrated small Mac with one or two unit workers and one worker for each remaining suite. The coordinator and peer must share the measured monitoring.localVerify.smallPeerTrial policy. The peer stops when available memory reaches the floor or telemetry expires. Read its signed attempt receipt for elapsed time, peak memory and the reason it stopped.\n';
+      patched = true;
+      result.upgraded.push('CLAUDE.md: added small Mac verification trial awareness');
+    }
+    if (content.includes('calibrated small Mac with two unit workers and one worker for each remaining suite')) {
+      content = content.replace('calibrated small Mac with two unit workers', 'calibrated small Mac with one or two unit workers');
+      patched = true;
+      result.upgraded.push('CLAUDE.md: small Mac verification awareness names both worker settings');
+    }
     // local-verify merge-throughput overflow: a labelled PR is admitted past a full queue.
     if (content.includes('/local-verify') && !content.includes('Local Verify throughput overflow')) {
       content += '\n' + LOCAL_VERIFY_THROUGHPUT_OVERFLOW_CLAUDEMD_LINE + '\n';
@@ -13581,6 +14092,13 @@ The server runs the full test suite on the exact code a pull request would merge
       content += '\n' + LOCAL_VERIFY_LANE_SHARDS_CLAUDEMD_LINE + '\n';
       patched = true;
       result.upgraded.push('CLAUDE.md: added Local Verify balanced-shards awareness');
+    }
+    const oldLaneShardsAwareness = /^(.*monitoring\.localVerify\.laneShards.*)1\.\.4 each(; read at each start.*)$/gm;
+    const updatedLaneShardsAwareness = content.replace(oldLaneShardsAwareness, '$1integration 1..5 and e2e 1..4$2');
+    if (updatedLaneShardsAwareness !== content) {
+      content = updatedLaneShardsAwareness;
+      patched = true;
+      result.upgraded.push('CLAUDE.md: updated Local Verify integration shard limit');
     }
     if (content.includes('/local-verify') && !content.includes('monitoring.localVerify.preflightMode')) {
       content += '\n' + LOCAL_VERIFY_PREFLIGHT_CLAUDEMD_LINE + '\n';
@@ -15181,6 +15699,13 @@ A silent **decision audit** records every keep/kill decision *change* (logged on
       patched = true;
       result.upgraded.push('CLAUDE.md: rerouted-job expired-login bullet names the readable-credential rule');
     }
+    // Spec stale-process-login-expired: the interactive bullet now describes the stored-login check.
+    // Replaced in place (before the key-health block anchors on it); a hand-edited copy is left alone.
+    if (content.includes(INTERACTIVE_LOGIN_EXPIRED_BULLET_V1)) {
+      content = content.replace(INTERACTIVE_LOGIN_EXPIRED_BULLET_V1, INTERACTIVE_LOGIN_EXPIRED_BULLET);
+      patched = true;
+      result.upgraded.push('CLAUDE.md: interactive expired-login bullet describes the stored-login check');
+    }
     // CMT-1008: interactive (topic) sessions stuck at an expired login — placed right after the
     // rerouted-job bullet when present, else appended. Idempotent via its marker.
     if (!content.includes(INTERACTIVE_LOGIN_EXPIRED_MARKER)) {
@@ -15583,7 +16108,7 @@ Strip the \`[telegram:N]\` prefix before interpreting the message. Respond natur
 - Update: \`curl -X PUT http://localhost:${port}/view/VIEW_ID -H 'Content-Type: application/json' -d '{"title":"Updated","markdown":"# New content"}'\`
 - Delete: \`curl -X DELETE http://localhost:${port}/view/VIEW_ID\`
 
-**Use private views for sensitive content. Use Telegraph for public content.**
+${PRIVATE_VIEWS_SENTENCE}
 
 **Cloudflare Tunnel** — Expose the local server to the internet via Cloudflare. Enables remote access to private views, the API, and file serving.
 - Status: \`curl http://localhost:${port}/tunnel\`
@@ -17155,13 +17680,16 @@ An agent created in a temporary folder (\`/tmp\`, \`/private/tmp\`, \`/var/folde
     // PR-link reviewer check (src/messaging/prLinkReviewRequest.ts, Echo Bugs 10000002537).
     // OWN sniff key; the template emits the same section for new agents.
     if (!content.includes('## PR links ask for the review on GitHub too')) {
-      content += '\n\n' + `## PR links ask for the review on GitHub too
-
-When a reply I send (Telegram, Slack, app) links an open pull request that my own GitHub account opened, the server first makes sure the reviewer is requested on it — the configured \`prLinkReviewRequest.reviewer\`, else the repository owner when that owner is a person — and reads the request back from GitHub before the reply goes out. A review that was dismissed by a later push leaves no request behind on GitHub, so this re-requests it. If it cannot be confirmed, the reply still goes out with one line saying so.
-- **When to use** (PROACTIVE): just send the link — never tell the user "I've requested your review" from memory. If the reply came back with "could not confirm … as a reviewer", fix the cause (GitHub login, repo access) before asking again. Turn it off with \`prLinkReviewRequest.enabled: false\` in \`.instar/config.json\`.
-`;
+      content += '\n\n' + `## PR links ask for the review on GitHub too\n\n${PR_LINK_REVIEW_SECTION_BODY}\n`;
       patched = true;
       result.upgraded.push('CLAUDE.md: added PR links ask for the review section');
+    }
+    // Only where an approval may be needed (Echo Bugs 10000002791): reword the first
+    // version in place. Idempotent: the old body is gone once replaced.
+    if (content.includes(PR_LINK_REVIEW_SECTION_BODY_V1)) {
+      content = content.split(PR_LINK_REVIEW_SECTION_BODY_V1).join(PR_LINK_REVIEW_SECTION_BODY);
+      patched = true;
+      result.upgraded.push('CLAUDE.md: PR links request a review only where an approval may be needed');
     }
 
     // MUST STAY THE LAST STEP (docs/specs/awareness-entry-registry.md). New awareness text is
@@ -18055,6 +18583,23 @@ When a reply I send (Telegram, Slack, app) links an open pull request that my ow
       result.errors.push(`secret-get.mjs: ${err instanceof Error ? err.message : String(err)}`);
     }
 
+    // Vault WRITE helper — always overwrite (sibling of secret-get.mjs). The no-echo
+    // transfer target named by docs/specs/gemini-payg-metered-lane.md §4: the value
+    // goes Secret Drop → stdin → vault and is never printed to a session.
+    try {
+      const secretSetContent = this.loadRelayTemplate('secret-set.mjs');
+      if (secretSetContent) {
+        fs.writeFileSync(
+          path.join(instarScriptsDir, 'secret-set.mjs'),
+          secretSetContent,
+          { mode: 0o755 },
+        );
+        result.upgraded.push('scripts/secret-set.mjs (no-echo vault write)');
+      }
+    } catch (err) {
+      result.errors.push(`secret-set.mjs: ${err instanceof Error ? err.message : String(err)}`);
+    }
+
     // Machine-load assessment helper — always overwrite (CMT-1703, spec
     // robust-load-assessment-fleet). The go-to method for evaluating machine load
     // (real CPU idle% + time-windowed ResourceLedger + a verdict), so an agent
@@ -18263,13 +18808,24 @@ When a reply I send (Telegram, Slack, app) links an open pull request that my ow
       hooks.SessionStart = [
         { matcher: 'startup', hooks: [sessionStartHook] },
         { matcher: 'resume', hooks: [sessionStartHook] },
-        { matcher: 'compact', hooks: [sessionStartHook] },
+        { matcher: 'compact', hooks: [{ ...sessionStartHook, timeout: COMPACT_SESSION_START_TIMEOUT_SECONDS }] },
       ];
       patched = true;
       result.upgraded.push('.claude/settings.json: added SessionStart hooks (startup/resume/compact)');
     } else {
       // Migrate existing session-start paths from flat to instar/ subdirectory
       this.migrateSettingsHookPaths(hooks.SessionStart as unknown[], result);
+      const groups = hooks.SessionStart as Array<{ matcher?: string; hooks?: Array<{ command?: string; timeout?: number }> }>;
+      for (const group of groups) {
+        if (group.matcher !== 'compact') continue;
+        for (const hook of group.hooks ?? []) {
+          if (hook.command === sessionStartHook.command && hook.timeout === sessionStartHook.timeout) {
+            hook.timeout = COMPACT_SESSION_START_TIMEOUT_SECONDS;
+            patched = true;
+            result.upgraded.push('.claude/settings.json: extended compaction recovery hook timeout');
+          }
+        }
+      }
     }
     {
       // context-budget-layered-summaries §9.2 rung 1: a `clear` matcher running
@@ -18345,6 +18901,20 @@ When a reply I send (Telegram, Slack, app) links an open pull request that my ow
       result.upgraded.push('.claude/settings.json: added PreToolUse MCP matcher (external operation gate)');
     } else {
       result.skipped.push('.claude/settings.json: PreToolUse MCP matcher already present');
+    }
+
+    // Organization never rules check (org-never-actions §A): its own entries, found by command content,
+    // not by matcher (the external-operation gate already owns an mcp__.* entry).
+    for (const matcher of ['Bash', 'mcp__.*']) {
+      const has = preToolUse.some(e => e.matcher === matcher && JSON.stringify(e.hooks ?? []).includes('org-policy-gate'));
+      if (!has) {
+        preToolUse.push({
+          matcher,
+          hooks: [{ type: 'command', command: 'bash "${CLAUDE_PROJECT_DIR}/.instar/hooks/instar/org-policy-gate.sh"', blocking: true, timeout: 12 }],
+        });
+        patched = true;
+        result.upgraded.push(`.claude/settings.json: added PreToolUse ${matcher} organization policy check`);
+      }
     }
 
     // Add PostToolUse Write/Edit matcher for the working-set artifact recorder
@@ -18947,10 +19517,14 @@ When a reply I send (Telegram, Slack, app) links an open pull request that my ow
     // dev-agent gate (live on a development agent, dark on the fleet).
     {
       const wb = (config.workBoard && typeof config.workBoard === 'object' && !Array.isArray(config.workBoard)) ? config.workBoard as Record<string, unknown> : {};
+      // agent-work-cards-default §Migration: the request-to-card and notes defaults join the block, each added only when
+      // missing. `requestCards.enabled` is deliberately NOT written (omitted ⇒ on where the board is on).
       const defaults: Record<string, unknown> = {
         softOpenCards: 30, maxAgentCardsPerDay: 200, quietAfterHours: 24,
-        limits: { recordBytes: 32768, title: 300, need: 4000, recommendation: 2000, doneItemText: 500, optionText: 200 },
+        limits: { recordBytes: 32768, title: 300, need: 4000, recommendation: 2000, doneItemText: 500, optionText: 200, noteText: 4000 },
         pickup: { tickSeconds: 60, freeCheckMinSeconds: 60, freeCheckMaxSeconds: 1800, maxSpendingAttempts: 3, surfaceAfterHours: 24, ownerCatchUpSeconds: 600 },
+        requestCards: { duplicateHintHours: 24, backfillMaxAgeDays: 14, sweepPerTick: 25, unrecordedWorkMinutes: 10, floorRecentHours: 72 },
+        maxNotesPerCardPerDay: 50, noteCoalesceMinutes: 60, noteDrainPerTick: 25, softOpenBlockers: 10, maxOpenAsksPerCard: 5,
       };
       let added = false;
       for (const [k, v] of Object.entries(defaults)) {
@@ -19109,6 +19683,14 @@ When a reply I send (Telegram, Slack, app) links an open pull request that my ow
       feedbackCfg.webhookUrl = CANONICAL_FEEDBACK_URL;
       patched = true;
       result.upgraded.push(`config.json: feedback.webhookUrl repointed to the canonical front (was ${fromUrl})`);
+    }
+
+    // SEC-153: the old dispatch address was an unsigned channel that could run actions and change
+    // configuration. Polling it stops; an operator's own dispatch server is left alone.
+    const legacyDispatch = migrateConfigLegacyDispatchUrl(config as Record<string, unknown>);
+    if (legacyDispatch) {
+      patched = true;
+      result.upgraded.push(`config.json: dispatch polling of the old unsigned address turned off (was ${legacyDispatch}); the dispatch record is kept`);
     }
 
     // Disk Steward cleanup (docs/specs/disk-steward.md): on for development agents
@@ -21533,6 +22115,16 @@ for pattern in "rm -rf /" "rm -rf ~" "> /dev/sda" "mkfs\\." "dd if=" ":(){:|:&};
   fi
 done
 
+# A literal credential on a command line is readable by every process on this machine through ps for
+# as long as the command runs, and process samplers (diagnostics, crash captures) record it
+# (argv-token incident, 2026-11-17). Read the secret inside the command instead; the shell expands it
+# and it never reaches the command line. Always blocked, regardless of safety level.
+if echo "$INPUT" | grep -qE -e '(gh[pousr]_[A-Za-z0-9]{36}|github_pat_[A-Za-z0-9_]{60,}|sk-ant-[A-Za-z0-9_-]{20,}|xox[abprs]-[0-9A-Za-z-]{20,}|[0-9]{8,10}:AA[A-Za-z0-9_-]{33})'; then
+  echo 'BLOCKED: this command carries a literal credential (a token, an API key or a bot token).' >&2
+  echo 'A command line is visible to every process on this machine while it runs. Read the secret inside the command instead, for example GH_TOKEN="$(gh auth token)" or "$(node .instar/scripts/secret-get.mjs NAME)". To write a file that holds a fixture, use the Write tool.' >&2
+  exit 2
+fi
+
 # Deployment/push commands — check coherence gate first
 for pattern in "vercel deploy" "vercel --prod" "git push" "npm publish" "npx wrangler deploy" "fly deploy" "railway up"; do
   if echo "$INPUT" | grep -qi -e "$pattern"; then
@@ -21599,6 +22191,7 @@ for pattern in "rm -rf \\." "git push --force" "git push -f" "git reset --hard" 
   fi
 done
 
+${SQL_COMMAND_CONTEXT_CHECK}
 # SQL must look like a statement, not prose that merely names a keyword. Match
 # at input/statement start or immediately after a SQL-bearing quote/separator,
 # and require the following table/database identifier. Ambiguous statement
@@ -21612,6 +22205,10 @@ for sql_spec in \\
   pattern="\${sql_spec%%|*}"
   sql_pattern="\${sql_spec#*|}"
   if echo "\$INPUT" | grep -qE "\$sql_pattern"; then
+    if [ -z "\$SQL_LITERAL_DATA" ]; then
+      if sql_command_is_literal_data; then SQL_LITERAL_DATA=1; else SQL_LITERAL_DATA=0; fi
+    fi
+    if [ "\$SQL_LITERAL_DATA" = "1" ]; then continue; fi
     if [ "\$SAFETY_LEVEL" -eq 1 ]; then
       echo "BLOCKED: Potentially destructive command detected: \$pattern" >&2
       echo "Authorization required: Ask the user whether to proceed with this operation." >&2
@@ -22148,8 +22745,6 @@ if [ "\$PC_OK" = "1" ] && [ "\$PC_MODE" = "suppressed" ]; then
   exit 3
 fi
 
-if [ "\$PC_OK" != "1" ]; then
-# Older server: the two calls the hook always made.
 # Codex next-prompt seed (context-budget-layered-summaries §9.6): Codex has no
 # post-compaction seed hook, so on the first prompt after a detected compaction
 # the server returns the topic's verified standing packet, in its disclosure
@@ -22203,6 +22798,8 @@ if [ -n "\$CB_SEED_SHOWN" ]; then
   exit 0
 fi
 
+if [ "\$PC_OK" != "1" ]; then
+# Older server: the two calls the hook always made.
 # Fetch recent messages for this topic
 if [ -n "\$AUTH_TOKEN" ]; then
   RECENT_MSGS=\$(curl -s \\
@@ -22681,11 +23278,11 @@ fi
 CONFIG_FILE="\$INSTAR_DIR/config.json"
 if [ -f "\$CONFIG_FILE" ]; then
   PORT=\$(python3 -c "import json; print(json.load(open('\$CONFIG_FILE')).get('port', 4040))" 2>/dev/null || echo "4040")
-  HEALTH=\$(curl -s -o /dev/null -w "%{http_code}" "http://localhost:\${PORT}/health" 2>/dev/null)
+  HEALTH=\$(curl -s --max-time 2 -o /dev/null -w "%{http_code}" "http://localhost:\${PORT}/health" 2>/dev/null)
   if [ "\$HEALTH" = "200" ]; then
     echo ""
     echo "Instar server: RUNNING on port \${PORT}"
-    CAPS=\$(curl -s "http://localhost:\${PORT}/capabilities" 2>/dev/null)
+    CAPS=\$(curl -s --max-time 2 "http://localhost:\${PORT}/capabilities" 2>/dev/null)
     if echo "\$CAPS" | grep -q '"featureGuide"' 2>/dev/null; then
       echo ""
       echo "--- YOUR CAPABILITIES ---"
@@ -22732,10 +23329,10 @@ if [ -f "$INSTAR_DIR/config.json" ]; then
     if [ -z "\$AUTH_TOKEN" ]; then
       AUTH_TOKEN=\$(python3 -c "import json; v=json.load(open('$INSTAR_DIR/config.json')).get('authToken',''); print(v if isinstance(v, str) else '')" 2>/dev/null)
     fi
-    HEALTH=\$(curl -s -o /dev/null -w "%{http_code}" "http://localhost:\${PORT}/health" 2>/dev/null)
+    HEALTH=\$(curl -s --max-time 2 -o /dev/null -w "%{http_code}" "http://localhost:\${PORT}/health" 2>/dev/null)
     if [ "\$HEALTH" = "200" ]; then
       WM_QUERY=\$(python3 -c "import urllib.parse; print(urllib.parse.quote('compaction-recovery context-restoration'))" 2>/dev/null)
-      WORKING_MEM=\$(curl -s -H "Authorization: Bearer \${AUTH_TOKEN}" \
+      WORKING_MEM=\$(curl -s --max-time 2 -H "Authorization: Bearer \${AUTH_TOKEN}" \
         "http://localhost:\${PORT}/context/working-memory?prompt=\${WM_QUERY}&limit=6" 2>/dev/null)
       if [ -n "\$WORKING_MEM" ]; then
         WM_CONTEXT=\$(echo "\$WORKING_MEM" | python3 -c "
@@ -23858,11 +24455,20 @@ process.stdin.on('end', async () => {
     if (!rawMessage || !topicRaw) process.exit(0);
     const topicId = parseInt(topicRaw, 10);
     if (!Number.isFinite(topicId)) process.exit(0);
-    // Clamp the payload (§4.4): a pathological multi-MB reply would exceed the
-    // server body-parser limit → a silent non-registration; the classifiers only
-    // need the first 16KB. NO length floor — the high-precision classifiers are the
-    // semantic filter, so terse promises ("I'll fix it") must not be dropped.
-    const message = rawMessage.slice(0, 16384);
+    // Clamp the payload (§4.4) so a pathological multi-MB reply cannot become a
+    // slow classifier pass. The FIRST 16384 characters are kept byte-for-byte:
+    // the route dedups against the completion-claim path by fingerprinting
+    // exactly that prefix (CompletionClaimVerifier messageFingerprint), so the
+    // prefix must not change. A longer reply then gets a disclosure and its last
+    // 8000 characters appended, because a promise ("I'll follow up in an hour")
+    // usually CLOSES a reply and the old head-only cut dropped it. ~25KB worst
+    // case, far under the route's 12MB JSON limit. NO length floor — the
+    // high-precision classifiers are the semantic filter, so terse promises
+    // ("I'll fix it") must not be dropped.
+    const ACTION_CLAIM_HEAD_CHARS = 16384;
+    const ACTION_CLAIM_TAIL_CHARS = 8000;
+    // bounded-input-reviewed: this is emitted hook JS and cannot import src/core/boundedInput.ts; it keeps the dedup prefix + tail and discloses the cut in-band in that helper's wording.
+    const message = rawMessage.length <= ACTION_CLAIM_HEAD_CHARS + ACTION_CLAIM_TAIL_CHARS ? rawMessage : rawMessage.slice(0, ACTION_CLAIM_HEAD_CHARS) + '\\n[BOUNDED INPUT: ' + (rawMessage.length - ACTION_CLAIM_HEAD_CHARS - ACTION_CLAIM_TAIL_CHARS) + ' characters removed from the MIDDLE to fit a size limit. Your view of this section is PARTIAL; do not treat its absence of something as evidence that it is absent.]\\n' + rawMessage.slice(-ACTION_CLAIM_TAIL_CHARS);
     const bindToken = process.env.INSTAR_BIND_TOKEN;
     const controller = new AbortController();
     const timeout = setTimeout(() => controller.abort(), 5000);
@@ -24259,6 +24865,9 @@ var SAFE_ID = /^[A-Za-z0-9_-]{1,128}$/;
 var TERMINAL = ['committed', 'rolled-back', 'aborted'];
 // Mediated, logged lookups (spec §6 L0): what a probe's 'retrievable' grade counts.
 var LOOKUP_PREFIXES = ['/topic/search', '/memory/search', '/context-layers/lookup'];
+// Exact lookup paths (§7.6, §10): a topic's chunk list and one chunk. A pattern,
+// not a prefix, so the topic's other routes (user-corpus, anchor…) stay denied.
+var LOOKUP_PATHS = [/^\/topic\/-?\d{1,15}\/chunks$/, /^\/topic\/-?\d{1,15}\/chunks\/[A-Za-z0-9_.-]{1,128}$/];
 // The URL MUST be double-quoted (both quotes), so '&', ';' and '|' inside it are
 // literal. Nothing in the quoted URL may expand or escape: no '$', backtick,
 // backslash or quote (the character classes below exclude them).
@@ -24277,6 +24886,7 @@ function isLookupCommand(cmd, port) {
     var pre = LOOKUP_PREFIXES[i];
     if (p === pre || p.indexOf(pre + '/') === 0) return true;
   }
+  for (var j = 0; j < LOOKUP_PATHS.length; j++) if (LOOKUP_PATHS[j].test(p)) return true;
   return false;
 }
 
@@ -24292,7 +24902,7 @@ function deny(reason) {
 }
 
 if (typeof module !== 'undefined' && module.exports && require.main !== module) {
-  module.exports = { isLookupCommand: isLookupCommand, LOOKUP_PREFIXES: LOOKUP_PREFIXES };
+  module.exports = { isLookupCommand: isLookupCommand, LOOKUP_PREFIXES: LOOKUP_PREFIXES, LOOKUP_PATHS: LOOKUP_PATHS };
 } else {
   var iid = process.env.INSTAR_SESSION_ID || '';
   // No Instar session id: outside this hook's reach. Exit before reading stdin.
@@ -24770,9 +25380,17 @@ process.stdin.on('end', async () => {
     // only explicitly unambiguous reads bypass the API; an unknown verb must
     // reach the gate for the authoritative decision.
     const actionTokens = action.split('_').filter(Boolean);
-    const hasMutatingTail = actionTokens.slice(1).some(token =>
-      /^(delete|remove|trash|purge|destroy|drop|clear|send|create|post|write|add|insert|new|compose|publish|update|modify|edit|replace|patch|rename|move|change|set|toggle|enable|disable|revoke|archive|flush|wipe|expunge)$/.test(token)
+    // The actual verb may follow connector namespaces, in either __ or _ form.
+    // Whole-token matches are engine-neutral; compound mutations and execution stay governed.
+    // Only the observed GitHub alias has a flattened namespace; unknown direct verbs stay governed.
+    const hasMutatingPart = actionTokens.some(token =>
+      /^(delete|remove|trash|purge|destroy|drop|clear|send|create|post|write|add|insert|new|compose|publish|update|modify|edit|replace|patch|rename|move|change|set|toggle|enable|disable|revoke|archive|flush|wipe|expunge|push|comment|merge|execute|run|call|invoke|eval|evaluate)$/.test(token)
     );
+    const toolSegments = parts.slice(2);
+    const toolTokens = toolSegments[toolSegments.length - 1].split('_').filter(Boolean);
+    const readVerb = /^(get|list|search|fetch|check|read|view|describe|show|count|query|find|status)$/;
+    const hasReadVerb = readVerb.test(toolTokens[0] || '')
+      || (toolSegments.length === 1 && toolTokens[0] === 'github' && readVerb.test(toolTokens[1] || ''));
     let mutability = 'modify';
     if (/^(delete|remove|trash|purge|destroy|drop|clear)/.test(action)) {
       mutability = 'delete';
@@ -24780,7 +25398,7 @@ process.stdin.on('end', async () => {
       mutability = 'write';
     } else if (/^(update|modify|edit|patch|rename|move|change|set|toggle|enable|disable)/.test(action)) {
       mutability = 'modify';
-    } else if (!hasMutatingTail && /^(get|list|search|fetch|check|read|view|describe|show|count|query|find|status)(?:_|$)/.test(action)) {
+    } else if (!hasMutatingPart && hasReadVerb) {
       mutability = 'read';
     }
 
@@ -25022,6 +25640,11 @@ process.stdin.on('end', async () => {
    */
   // eslint-disable-next-line @typescript-eslint/naming-convention
   public static readonly TELEGRAM_REPLY_PRIOR_SHIPPED_SHAS: ReadonlySet<string> = new Set([
+    // Org-policy 422 branch version (#3275), before the success line printed the
+    // message id and link (waiting-on-you-links).
+    '090634134636c179672490acdedd57697a25f94dea9470154725ec98f0dd60ef',
+    // Token-less standby hold-and-retry version (#3095), before the org-policy 422 branch (org-never-actions).
+    '1636ee1ed4eb4441843383d8085b7489d61add84ebf3f154f81448ac37cac295',
     // Native-conversation-base 3b version (PR #3092), before this PR's token-less
     // forward change. Shipped through v1.3.1795.
     '9d389203455b5d2b662f11b258cd47a7b52e1532a7a7afb4fa4e0a373281ea79',
@@ -26465,13 +27088,22 @@ if (!reviewEnabled) {
     // green-pr-automerge Layer 2 (MODE-INDEPENDENT — the UnjustifiedStopGate mode
     // ships 'off', so this must act on the hot-path field BEFORE the mode gate,
     // exactly like the stated-continuation guard above). One-shot per session+PR
-    // via a tmp marker so the agent is never trapped. NO runnable merge command.
+    // via a marker under .instar/state/stop-gate-markers so the agent is never trapped. NO runnable merge command.
     if (hot && hot.greenPrBlock && hot.greenPrBlock.pr && !hot.killSwitch && !hot.compactionInFlight) {
       try {
-        const os = await import('node:os');
-        const marker = path.join(os.tmpdir(), 'instar-greenpr-block-' + encodeURIComponent(sessionId) + '-' + hot.greenPrBlock.pr);
-        if (!fs.existsSync(marker)) {
-          try { fs.writeFileSync(marker, String(Date.now())); } catch {}
+        // SEC-131: the one-shot marker lives in the agent's own state dir (never the shared
+        // temp dir, where another local user could pre-plant the name or a symlink), and is
+        // created exclusively ('wx', 0600): an existing file or link counts as already fired
+        // and is never written through.
+        const markerDir = path.join(projectDir, '.instar', 'state', 'stop-gate-markers');
+        const marker = path.join(markerDir, 'greenpr-block-' + encodeURIComponent(sessionId) + '-' + encodeURIComponent(String(hot.greenPrBlock.pr)));
+        let firstTime = false;
+        try {
+          fs.mkdirSync(markerDir, { recursive: true, mode: 0o700 });
+          fs.closeSync(fs.openSync(marker, 'wx', 0o600));
+          firstTime = true;
+        } catch {}
+        if (firstTime) {
           process.stdout.write(JSON.stringify({ decision: 'block', reason: 'STOP-GATE (green-pr): ' + String(hot.greenPrBlock.message) }));
           process.exit(2);
           return;

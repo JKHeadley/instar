@@ -1,0 +1,7 @@
+# A crafted search pattern can no longer freeze the agent (ELI16)
+
+The agent keeps a list of things that went wrong inside it, called degradations. A daily health check reads the list, tells the owner about anything new, and then marks those entries as reported, so they don't come up again. Marking can be done by exact name, or with a search pattern that matches many names at once, for example "every name that starts with GitSync".
+
+Those search patterns were full regular expressions, a powerful pattern language, with no limit on what they could contain. Some regular expressions take an enormous amount of time to check against even a short piece of text. In a test, one well-known bad pattern took a third of a second on a 26-letter name, four times longer for every two letters added. On a 40-letter name it would take hours. While the agent is stuck checking, it can't answer anything else, until its watchdog restarts it. Reaching this needed the agent's key or a signed-in dashboard session, so it was not open to strangers. But a dashboard session is meant to view things, not to freeze the agent.
+
+Now a pattern may only be up to 128 characters long and use a small, safe set of symbols: letters, digits, dashes, underscores, dots, "starts with", "ends with" and "or". That covers what the health check and its tests actually use. Patterns like that are always checked quickly. Anything else gets a clear "invalid pattern" answer. Marking by exact name, which is what the shipped health check uses, is unchanged.

@@ -26,6 +26,7 @@ import path from 'node:path';
 import os from 'node:os';
 import { TopicMemory, type TopicMessage } from '../../src/memory/TopicMemory.js';
 import { SafeFsExecutor } from '../../src/core/SafeFsExecutor.js';
+import { SESSION_HISTORY_MESSAGE_CHARS } from '../../src/memory/TopicMemory.js';
 
 describe('TopicMemory', () => {
   let tmpDir: string;
@@ -331,6 +332,25 @@ describe('TopicMemory', () => {
     });
   });
 
+  describe('formatContextForSession per-message bound (bounded-input review)', () => {
+    it('passes a long Telegram-sized operator message whole (the old 2000 cut it in half)', () => {
+      const instruction = `Plan: ${'step and its reason; '.repeat(150)}FINAL: deploy only after the canary passes.`;
+      expect(instruction.length).toBeGreaterThan(2000);
+      expect(instruction.length).toBeLessThanOrEqual(4096);
+      topicMemory.insertMessage({ messageId: 1, topicId: 100, text: instruction, fromUser: true, timestamp: '2026-03-01T12:00:00Z', sessionName: null });
+      const context = topicMemory.formatContextForSession(100);
+      expect(context).toContain('FINAL: deploy only after the canary passes.');
+      expect(context).not.toContain('[BOUNDED INPUT:');
+    });
+
+    it('a message past the bound is cut AND says so', () => {
+      topicMemory.insertMessage({ messageId: 1, topicId: 100, text: 'x'.repeat(9000), fromUser: true, timestamp: '2026-03-01T12:00:00Z', sessionName: null });
+      const context = topicMemory.formatContextForSession(100);
+      expect(context).toContain('LATER content was omitted');
+      expect(context).not.toContain('x'.repeat(SESSION_HISTORY_MESSAGE_CHARS));
+    });
+  });
+
   describe('formatContextForSession with sender names', () => {
     it('uses sender name instead of generic "User"', () => {
       topicMemory.insertMessage({
@@ -552,6 +572,17 @@ describe('TopicMemory', () => {
     it('returns empty for no matches', () => {
       const results = topicMemory.search('zebra');
       expect(results).toHaveLength(0);
+    });
+
+    it('matches dotted names and hyphenated IDs as literal phrases', () => {
+      topicMemory.insertMessage({
+        messageId: 4, topicId: 100, text: 'Prior work on instar.sh belongs to SEC-123.',
+        fromUser: true, timestamp: '2026-02-24T12:03:00Z', sessionName: null,
+      });
+      expect(topicMemory.search('instar.sh')).toHaveLength(1);
+      expect(topicMemory.search('SEC-123')).toHaveLength(1);
+      expect(topicMemory.search('instarsh')).toHaveLength(0);
+      expect(topicMemory.search('SEC-124')).toHaveLength(0);
     });
 
     it('sanitizes FTS5 special syntax', () => {

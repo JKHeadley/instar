@@ -1,0 +1,25 @@
+{
+  "ts": "2026-11-20T20:47:05.717Z",
+  "slug": "cb-rework-baseline",
+  "suggestedTier": 2,
+  "declaredTier": 2,
+  "riskFloor": 1,
+  "riskFloorReasons": [],
+  "belowFloor": false,
+  "files": 4,
+  "loc": 90,
+  "scope": {
+    "basis": "staged-in-scope-paths-including-deleted",
+    "files": [
+      "src/monitoring/contextBudgetMetrics.ts",
+      "src/monitoring/contextLayers/promptContext.ts",
+      "src/server/AgentServer.ts",
+      "src/server/promptContextRoutes.ts"
+    ],
+    "addedLines": 84,
+    "deletedLines": 6
+  },
+  "causalAutopsy": null,
+  "classClosure": null,
+  "verdict": "pass"
+}

@@ -2,25 +2,31 @@
 // content: each row links out to the document's own page at /docs/<id>. Text is set with textContent via el().
 
 import { el, pageHead, cantTell, setKids } from './ui.js';
+import { topicNameMap } from './topic-names.js';
 
-/** "telegram:123" → "Telegram topic 123"; "app:<uuid>" → "App conversation". */
-export function conversationWords(ref) {
+/** "telegram:123" → its conversation name ("the “Dashboard makeover” conversation"), never the topic id; "app:<uuid>" → "App conversation". */
+export function conversationWords(ref, topicNames = {}) {
   if (typeof ref !== 'string') return 'No conversation';
-  if (ref.startsWith('telegram:')) return `Telegram topic ${ref.slice(9)}`;
+  if (ref.startsWith('telegram:')) {
+    const name = topicNames[ref.slice(9)];
+    return name ? `Telegram: ${name}` : 'A Telegram conversation';
+  }
   if (ref.startsWith('app:')) return 'App conversation';
   return 'Conversation';
 }
 
-export function rowWords(d) {
+export function rowWords(d, topicNames = {}) {
   const title = d.title || 'A shared document (only its conversation can read it)';
   const bits = [];
   if (d.version) bits.push(`version ${d.version}`);
   bits.push(d.openComments === 1 ? '1 open comment' : `${d.openComments} open comments`);
-  return { title, sub: `${bits.join(', ')} · ${conversationWords(d.primary)}` };
+  return { title, sub: `${bits.join(', ')} · ${conversationWords(d.primary, topicNames)}` };
 }
 
 export async function renderDocuments(main, api) {
-  const [r, w] = await Promise.all([api.get('/docs', 12_000), api.get('/docs/decisions/waiting', 12_000)]);
+  // Topic names come from every machine in the pool (a name may be known only elsewhere); unknown → plain words, never the id.
+  const [r, w, t] = await Promise.all([api.get('/docs', 12_000), api.get('/docs/decisions/waiting', 12_000), api.get('/telegram/topics?scope=pool', 25_000)]);
+  const topicNames = topicNameMap(t);
   if (!r.ok) {
     setKids(main, r.reason === 'switched off on this agent'
       ? el('section', {}, el('div', { class: 'eyebrow', text: 'Documents' }), el('h1', { text: 'Documents are not switched on for this agent.' }))
@@ -35,7 +41,7 @@ export async function renderDocuments(main, api) {
     sub: 'Longer writing people comment on. Each opens on its own page, where comments are signed by the person’s own phone or computer.',
   });
   const list = el('div', { class: 'need-list' }, ...docs.map((d) => {
-    const w = rowWords(d);
+    const w = rowWords(d, topicNames);
     return el('a', { class: 'need-card', href: `/docs/${encodeURIComponent(d.id)}`, target: '_blank', rel: 'noopener noreferrer' },
       el('span', { class: 'need-title', text: w.title }),
       el('p', { class: 'need-sub', text: w.sub }));

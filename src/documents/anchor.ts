@@ -24,6 +24,13 @@ export interface ReanchorResult { state: AnchorState; start?: number; end?: numb
 /** Proximity's weight in the exact-match score, and the distance at which it reaches zero. */
 const PROXIMITY_MAX = FORMAT.contextChars;
 const PROXIMITY_RANGE = 2000;
+/**
+ * An exact match counts as the same passage only if it starts within MAPPED_SLACK characters of
+ * where the version diff moved the old position, or at least MIN_CONTEXT_AGREE characters of the
+ * stored prefix and suffix still sit right next to it.
+ */
+const MAPPED_SLACK = 8;
+const MIN_CONTEXT_AGREE = 12;
 /** Fuzzy search: ±window around the mapped position, Bitap chunk size, acceptance. */
 const FUZZY_WINDOW = 2000;
 const FUZZY_MIN_CHARS = 20;
@@ -214,6 +221,26 @@ export function fuzzyLocate(text: string, pattern: string, expectedStart: number
 
 // ── Re-anchoring ─────────────────────────────────────────────────────────────
 
+/** Most characters a fuzzy match's edge may grow by to reach a whole word. */
+const WORD_SNAP_MAX = 64;
+const WORD_CHAR = /[\p{L}\p{N}\p{M}_]/u;
+const isWordAt = (text: string, i: number): boolean => i >= 0 && i < text.length && WORD_CHAR.test(text[i]);
+
+/**
+ * A fuzzy match can start or end inside a word: the edit distance from "first" to "econd" is
+ * smaller than to "second", so a reworded passage once read "econd business day". When the
+ * original selection began (or ended) on a word edge, grow the match to the edge of the word it
+ * landed in, so the new wording is shown in whole words. Deterministic, bounded.
+ */
+function snapToWords(oldText: string, anchor: Anchor, newText: string, start: number, end: number): { start: number; end: number } {
+  let s = start, e = end;
+  const startedOnEdge = !(isWordAt(oldText, anchor.start - 1) && isWordAt(oldText, anchor.start));
+  const endedOnEdge = !(isWordAt(oldText, anchor.end - 1) && isWordAt(oldText, anchor.end));
+  if (startedOnEdge) for (let n = 0; n < WORD_SNAP_MAX && isWordAt(newText, s - 1) && isWordAt(newText, s); n++) s--;
+  if (endedOnEdge) for (let n = 0; n < WORD_SNAP_MAX && isWordAt(newText, e - 1) && isWordAt(newText, e); n++) e++;
+  return { start: s, end: e };
+}
+
 function reanchorUnsafe(oldText: string, newText: string, anchor: Anchor, diffOps?: readonly DiffOp[]): ReanchorResult {
   const q = anchor.quote;
   if (!q.exact) return { state: 'orphaned' };
@@ -223,8 +250,15 @@ function reanchorUnsafe(oldText: string, newText: string, anchor: Anchor, diffOp
   // 1. Exact with context.
   const occ = occurrences(newText, q);
   if (occ.length) {
+    // A match must look like the same passage: it sits where the edits moved the passage to, or
+    // real surrounding text agrees. The same words alone, elsewhere in the document, are a
+    // different passage (a comment once jumped to an unrelated appendix that way, topic 141469).
+    const plausible = occ.filter((o) => Math.abs(o.start - mapped) <= MAPPED_SLACK || contextScore(newText, q, o.start, o.end) >= MIN_CONTEXT_AGREE);
+    // The words survive only where they don't look like the passage: a fuzzy search would land on
+    // those same words, so the passage counts as removed.
+    if (!plausible.length) return { state: 'orphaned' };
     const maxScore = q.prefix.length + q.suffix.length + PROXIMITY_MAX;
-    const scored = occ.map((o) => ({
+    const scored = plausible.map((o) => ({
       ...o,
       score: contextScore(newText, q, o.start, o.end) + PROXIMITY_MAX * Math.max(0, 1 - Math.abs(o.start - mapped) / PROXIMITY_RANGE),
     }));
@@ -239,8 +273,9 @@ function reanchorUnsafe(oldText: string, newText: string, anchor: Anchor, diffOp
     if (q.exact.length >= FUZZY_MIN_CHARS) {
       const f = fuzzyLocate(newText, q.exact, mapped);
       if (f && f.similarity >= FUZZY_ACCEPT && f.end > f.start) {
-        const exact = newText.slice(f.start, f.end);
-        return { state: exact === q.exact ? 'ok' : 'edited', start: f.start, end: f.end, exact };
+        const w = snapToWords(oldText, anchor, newText, f.start, f.end);
+        const exact = newText.slice(w.start, w.end);
+        return { state: exact === q.exact ? 'ok' : 'edited', start: w.start, end: w.end, exact };
       }
     }
     return { state: 'orphaned' };
@@ -249,7 +284,8 @@ function reanchorUnsafe(oldText: string, newText: string, anchor: Anchor, diffOp
   const mappedTail = Math.max(0, map(anchor.end) - q.exactTail.length);
   const t = fuzzyLocate(newText, q.exactTail, mappedTail);
   if (h && t && h.similarity >= FUZZY_ACCEPT && t.similarity >= FUZZY_ACCEPT && t.end > h.start && t.start >= h.start) {
-    return { state: 'edited', start: h.start, end: t.end, exact: newText.slice(h.start, t.end) };
+    const w = snapToWords(oldText, anchor, newText, h.start, t.end);
+    return { state: 'edited', start: w.start, end: w.end, exact: newText.slice(w.start, w.end) };
   }
   return { state: 'orphaned' };
 }

@@ -1,0 +1,22 @@
+{
+  "ts": "2026-11-24T13:42:33.913Z",
+  "slug": "watchdog-git-prepush-wait",
+  "suggestedTier": 2,
+  "declaredTier": 2,
+  "riskFloor": 1,
+  "riskFloorReasons": [],
+  "belowFloor": false,
+  "files": 1,
+  "loc": 62,
+  "scope": {
+    "basis": "staged-in-scope-paths-including-deleted",
+    "files": [
+      "src/monitoring/SessionWatchdog.ts"
+    ],
+    "addedLines": 62,
+    "deletedLines": 0
+  },
+  "causalAutopsy": null,
+  "classClosure": null,
+  "verdict": "pass"
+}

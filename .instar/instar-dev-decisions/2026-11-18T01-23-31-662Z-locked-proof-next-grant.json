@@ -1,0 +1,23 @@
+{
+  "ts": "2026-11-18T01:23:31.662Z",
+  "slug": "locked-proof-next-grant",
+  "suggestedTier": 1,
+  "declaredTier": 1,
+  "riskFloor": 1,
+  "riskFloorReasons": [],
+  "belowFloor": false,
+  "files": 2,
+  "loc": 9,
+  "scope": {
+    "basis": "staged-in-scope-paths-including-deleted",
+    "files": [
+      "scripts/locked-proof/driver.mjs",
+      "scripts/locked-proof/lib.mjs"
+    ],
+    "addedLines": 7,
+    "deletedLines": 2
+  },
+  "causalAutopsy": null,
+  "classClosure": null,
+  "verdict": "pass"
+}

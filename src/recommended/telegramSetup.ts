@@ -26,7 +26,7 @@ export interface TelegramSetupSurface {
   /** Switches this agent's Telegram entry off, keeping it in the config so the person's bot and group are not lost. */
   disable(): void;
   /** Asks the supervisor for a planned restart, so the new channel starts polling. True when the request was written. */
-  requestRestart(reason: string): boolean;
+  requestRestart(reason: string): Promise<boolean>;
 }
 
 const API = 'https://api.telegram.org';

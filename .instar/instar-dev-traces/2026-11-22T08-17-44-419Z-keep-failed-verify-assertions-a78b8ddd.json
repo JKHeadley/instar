@@ -1,0 +1,21 @@
+{
+  "version": 2,
+  "slug": "keep-failed-verify-assertions",
+  "sessionId": "1f8f1eef-9aae-4b54-82e0-4f42c80d8806",
+  "timestamp": "2026-11-22T08:17:44.419Z",
+  "artifactPath": "upgrades/side-effects/keep-failed-verify-assertions.md",
+  "artifactSha256": "5ee126ef13824927cbdfbf9e38eb09f5e3894497b0aa51a211b7df4ab5f6c598",
+  "coveredFiles": [
+    "src/localVerify/failureEvidence.ts",
+    "src/localVerify/orchestrator.ts",
+    "src/localVerify/orchestratorSeams.ts",
+    "upgrades/side-effects/keep-failed-verify-assertions.md"
+  ],
+  "phase": "complete",
+  "tier": 1,
+  "tierReasoning": "Metadata-only correction names the genuine independent reviewer under the exact required heading; reviewed verifier code is unchanged.",
+  "eli16Path": "docs/specs/keep-failed-verify-assertions.eli16.md",
+  "sideEffectsPath": "upgrades/side-effects/keep-failed-verify-assertions.md",
+  "secondPass": "true",
+  "reviewerConcurred": true
+}

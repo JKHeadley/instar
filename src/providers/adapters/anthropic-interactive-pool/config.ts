@@ -11,7 +11,11 @@ export interface InteractivePoolConfig {
   tmuxPath: string;
   /** Pool size (number of warm REPL sessions kept available). */
   poolSize: number;
-  /** Auto-retire a session after this many messages (defends context window). */
+  /**
+   * @deprecated SEC-172 — no longer consulted. Every pool session now serves
+   * exactly one prompt and is retired, so no judgment can read an earlier
+   * judgment's text. Kept so existing configs still type-check.
+   */
   maxMessagesPerSession: number;
   /** Auto-retire a session after this many minutes idle. */
   maxIdleMinutes: number;

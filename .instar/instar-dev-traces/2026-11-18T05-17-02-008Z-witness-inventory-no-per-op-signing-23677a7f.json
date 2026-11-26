@@ -1,0 +1,22 @@
+{
+  "version": 2,
+  "slug": "witness-inventory-no-per-op-signing",
+  "sessionId": "9e47895f-85f4-4695-8f17-b2c0f7538915",
+  "timestamp": "2026-11-18T05:17:02.008Z",
+  "artifactPath": "upgrades/side-effects/witness-inventory-no-per-op-signing.md",
+  "artifactSha256": "fd966983ce193de3f7bec6c2ece4886bee7573a924a824e6bd5002606885d54c",
+  "coveredFiles": [
+    "docs/specs/witness-inventory-no-per-op-signing.eli16.md",
+    "src/core/GraphWitnessService.ts",
+    "tests/unit/graph-witness.test.ts",
+    "upgrades/next/witness-inventory-no-per-op-signing.md",
+    "upgrades/side-effects/witness-inventory-no-per-op-signing.md"
+  ],
+  "phase": "complete",
+  "tier": 1,
+  "tierReasoning": "Manifest reads the same verified state without building a discarded signature; operation() unchanged; revert undoes it",
+  "eli16Path": "docs/specs/witness-inventory-no-per-op-signing.eli16.md",
+  "sideEffectsPath": "upgrades/side-effects/witness-inventory-no-per-op-signing.md",
+  "secondPass": "true",
+  "reviewerConcurred": true
+}

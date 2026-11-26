@@ -1,0 +1,31 @@
+{
+  "ts": "2026-11-24T03:36:59.336Z",
+  "slug": "conversation-search-pointers",
+  "suggestedTier": 2,
+  "declaredTier": 1,
+  "riskFloor": 2,
+  "riskFloorReasons": [
+    "irreversibility: src/core/PostUpdateMigrator.ts touches PostUpdateMigrator",
+    "migration / fleet-rollout surface: src/core/PostUpdateMigrator.ts touches PostUpdateMigrator (fleet migration machinery)"
+  ],
+  "belowFloor": true,
+  "files": 7,
+  "loc": 190,
+  "scope": {
+    "basis": "staged-in-scope-paths-including-deleted",
+    "files": [
+      "src/core/PostUpdateMigrator.ts",
+      "src/memory/MemoryIndex.ts",
+      "src/memory/SemanticMemory.ts",
+      "src/memory/TopicMemory.ts",
+      "src/memory/ftsQueryTerms.ts",
+      "src/scaffold/conversationSearchGuidance.ts",
+      "src/scaffold/templates.ts"
+    ],
+    "addedLines": 99,
+    "deletedLines": 91
+  },
+  "causalAutopsy": null,
+  "classClosure": null,
+  "verdict": "pass"
+}

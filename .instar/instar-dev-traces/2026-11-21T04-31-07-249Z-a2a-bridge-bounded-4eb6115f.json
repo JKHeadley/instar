@@ -1,0 +1,22 @@
+{
+  "version": 2,
+  "slug": "a2a-bridge-bounded",
+  "sessionId": "4f93898c-7d72-4a33-b581-3e0933a84bf4",
+  "timestamp": "2026-11-21T04:31:07.249Z",
+  "artifactPath": "upgrades/side-effects/a2a-bridge-bounded.md",
+  "artifactSha256": "9639564a6cf2158f371a979e3284bd88caebfc679491e1f6c0edb7731fe0ff07",
+  "coveredFiles": [
+    "docs/specs/a2a-bridge-bounded.eli16.md",
+    "src/threadline/relay/A2ABridge.ts",
+    "tests/unit/threadline/relay/A2ABridge.test.ts",
+    "upgrades/next/a2a-bridge-bounded.md",
+    "upgrades/side-effects/a2a-bridge-bounded.md"
+  ],
+  "phase": "complete",
+  "tier": 1,
+  "tierReasoning": "Resource bounds and caller scoping on existing relay bridge state; refuses only oversized or non-text contextIds; revert-and-redeploy rollback",
+  "eli16Path": "docs/specs/a2a-bridge-bounded.eli16.md",
+  "sideEffectsPath": "upgrades/side-effects/a2a-bridge-bounded.md",
+  "secondPass": "true",
+  "reviewerConcurred": true
+}
