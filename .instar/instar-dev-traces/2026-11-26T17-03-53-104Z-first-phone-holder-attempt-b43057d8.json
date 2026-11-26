@@ -1,0 +1,22 @@
+{
+  "version": 2,
+  "slug": "first-phone-holder-attempt",
+  "sessionId": "b3d2cf8a-9b5d-468b-a50b-70ebf11e9e5c",
+  "timestamp": "2026-11-26T17:03:53.104Z",
+  "artifactPath": "upgrades/side-effects/first-phone-holder-attempt.md",
+  "artifactSha256": "204c349cf61f6b40bc0d2fa124454b31596fb495459a644f386dc283ef213b83",
+  "coveredFiles": [
+    "docs/specs/phone-only-first-approver.eli16.md",
+    "src/core/trustJourney/firstPhoneHolderAttempt.ts",
+    "tests/unit/first-phone-holder-attempt.test.ts",
+    "upgrades/next/phone-only-first-approver.md",
+    "upgrades/side-effects/first-phone-holder-attempt.md"
+  ],
+  "phase": "complete",
+  "tier": 1,
+  "tierReasoning": "Unmounted holder lifecycle using injected durable issuance and witness ports, with no production routing or registry changes",
+  "eli16Path": "docs/specs/phone-only-first-approver.eli16.md",
+  "sideEffectsPath": "upgrades/side-effects/first-phone-holder-attempt.md",
+  "secondPass": "true",
+  "reviewerConcurred": true
+}

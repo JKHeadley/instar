@@ -1,0 +1,22 @@
+{
+  "ts": "2026-11-26T17:06:06.096Z",
+  "slug": "first-phone-holder-attempt",
+  "suggestedTier": 2,
+  "declaredTier": 1,
+  "riskFloor": 1,
+  "riskFloorReasons": [],
+  "belowFloor": false,
+  "files": 1,
+  "loc": 98,
+  "scope": {
+    "basis": "staged-in-scope-paths-including-deleted",
+    "files": [
+      "src/core/trustJourney/firstPhoneHolderAttempt.ts"
+    ],
+    "addedLines": 98,
+    "deletedLines": 0
+  },
+  "causalAutopsy": null,
+  "classClosure": null,
+  "verdict": "pass"
+}

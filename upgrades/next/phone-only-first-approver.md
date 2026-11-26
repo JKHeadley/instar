@@ -25,3 +25,5 @@ The first-phone version 2 handler now exercises the compound witness reservation
 The dedicated Face ID proof verifier matches the Swift and Node test vector. It remains unmounted.
 
 The unmounted first-phone decision handler now checks dedicated Face ID proof and key eligibility at the witness boundary.
+
+The dark first-phone holder now gates new attempts on a witnessed outcome and predecessor reconciliation.
