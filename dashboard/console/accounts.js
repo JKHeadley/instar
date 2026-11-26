@@ -1,5 +1,5 @@
 // Accounts page (docs/specs/console-features/capacity.md, "Accounts").
-// Needs-you sign-ins first, then allowance, with each account's machines as chips.
+// Usage by account and a separate sign-in repair status by machine.
 // Actions per the PIN adapters (00-patterns.md §4):
 //   start a cell's sign-in    POST /subscription-pool/matrix/start-cell   body PIN, once
 //   submit the sign-in code   POST /subscription-pool/follow-me/submit-code  bearer
@@ -88,21 +88,18 @@ export async function renderAccounts(main, ctx) {
     return;
   }
 
-  // One card per machine: "Mac Mini — 5 accounts need signing in", one row and button each.
-  const byMachine = new Map();
-  for (const n of page.needs) { if (!byMachine.has(n.machineId)) byMachine.set(n.machineId, []); byMachine.get(n.machineId).push(n); }
-  const needs = page.needs.length ? el('section', { class: 'page-sections', id: 'sec-needs' },
-    el('h2', { class: 'eyebrow', text: 'Needs you' }),
-    [...byMachine.entries()].map(([, items]) => el('div', { class: 'need-card' },
-      el('span', { class: 'need-title', text: items.length === 1 ? `${items[0].machine}: 1 account needs signing in` : `${items[0].machine}: ${items.length} accounts need signing in` }),
-      el('div', { class: 'rows' }, items.map((n) => el('div', { class: 'row' },
-        el('span', { class: 'dot attn' }),
-        el('span', { class: 'row-main' }, el('span', { class: 'row-title', text: n.label }), el('span', { class: 'row-sub', text: n.sub })),
-        el('span', { class: 'row-end' }, n.actionable ? el('button', { class: 'btn-quiet btn-small', type: 'button', text: n.action === 'start' ? 'Sign in' : n.action === 'retry' ? 'Try again' : 'Repair', onclick: () => startNeed(n, currentVisit()) }) : null))))))) : null;
+  const repairs = page.repairs.length ? el('section', { class: 'page-sections acct-repairs', id: 'sec-needs', 'aria-labelledby': 'account-repair-title' },
+    el('h2', { class: 'section-heading', id: 'account-repair-title', text: 'Sign-in repair' }),
+    el('p', { class: 'row-sub', text: 'The agent handles sign-ins automatically. This list shows progress and gaps by machine.' }),
+    page.repairs.map(group => el('section', { class: 'acct-repair-machine' },
+      el('h3', { class: 'acct-repair-machine-name', text: group.machine }),
+      el('ul', { class: 'acct-repair-rows' }, group.rows.map(row => el('li', { class: 'acct-repair-row' },
+        el('div', {}, el('span', { class: 'row-title', text: row.label }), el('span', { class: 'row-sub', text: row.status })),
+        row.ownerAction ? el('button', { class: 'btn-quiet', type: 'button', text: 'Sign in', onclick: () => startNeed(row.ownerAction, currentVisit()) }) : null)))))) : null;
 
   const rows = el('div', { class: 'acct-groups' });
   let preferences = readAccountLayout();
-  const repaint = () => rows.replaceChildren(...layoutAccounts(page.accounts, preferences).map(group =>
+  const repaint = () => rows.replaceChildren(...layoutAccounts(page.usageAccounts, preferences).map(group =>
     el('section', { class: 'list-section', 'aria-label': group.name || 'All accounts' },
       group.name ? el('div', { class: 'list-head' }, el('h3', { class: 'eyebrow', text: group.name }),
         el('span', { class: 'list-count', text: String(group.accounts.length) })) : null,
@@ -112,12 +109,12 @@ export async function renderAccounts(main, ctx) {
     try { localStorage.setItem(ACCOUNT_LAYOUT_KEY, JSON.stringify(preferences)); } catch { /* Keep the in-memory choice. */ }
     repaint();
   };
-  const list = el('section', { class: 'page-sections acct-list', 'aria-label': 'Accounts' },
+  const list = page.usageAccounts.length ? el('section', { class: 'page-sections acct-list', 'aria-label': 'Account usage readings' },
     el('div', { class: 'acct-layout' },
       layoutSelect('Group by', ACCOUNT_GROUPS, preferences.group, value => changeLayout('group', value)),
       layoutSelect('Sort by', ACCOUNT_SORTS, preferences.sort, value => changeLayout('sort', value))),
-    rows);
-  repaint();
+    rows) : null;
+  if (list) repaint();
 
   function renderAccountRow(a, machineGroup) {
     const pct = a.tight ? Math.round(a.tight.pct) : null;
@@ -136,9 +133,8 @@ export async function renderAccounts(main, ctx) {
       el('span', { class: 'acct-name' }, document.createTextNode(a.name), el('span', { class: 'acct-kind', text: frameworkName(a.framework) }), a.inUse && !machineGroup ? el('span', { class: 'acct-tag', text: 'in use here' }) : null),
       el('span', { class: `acct-pct${a.tone ? ' ' + a.tone : ''}`, text: pct === null ? '—' : `${pct}%` }),
       wins,
-      !wins || a.stale ? el('span', { class: 'acct-line', text: [!wins ? a.line : null, a.stale ? `reading from ${a.readingAge}` : null].filter(Boolean).join(' · ') }) : null,
-      el('span', { class: 'chips' }, a.cells.map((c) => el('span', { class: `mchip ${c.state}`, text: c.machine }))));
-    row.addEventListener('click', () => openAccount(a, currentVisit()));
+      a.stale ? el('span', { class: 'acct-line', text: `reading from ${a.readingAge}` }) : null);
+    row.addEventListener('click', () => openAccount(a, currentVisit(), page.needs));
     return row;
   }
 
@@ -147,16 +143,17 @@ export async function renderAccounts(main, ctx) {
     page.notices.map((n) => el('div', { class: 'need-card', 'data-tone': n.tone },
       el('span', { class: 'need-title', text: n.title }),
       n.returnsAt && resetWords(n.returnsAt) ? el('span', { class: 'row-sub', text: `Room returns: ${resetWords(n.returnsAt).replace(/^resets /, '')}` }) : null,
-      el('p', { class: 'hero-ask' }, n.action.kind === 'sign-in' ? el('a', { href: '#/capacity/accounts?s=needs', text: 'Sign in' }) : askLink(n.action.about))))) : null;
+      el('p', { class: 'hero-ask' }, askLink(n.action.about))))) : null;
 
-  markNeed(needs, 'accounts');
+  if (page.needs.length) markNeed(repairs, 'accounts');
   setKids(main,
     pageHead({ eyebrow: 'Capacity · Accounts', headline: page.headline, sub: page.sub, tone: page.tone, facts: page.facts }),
     page.partial ? note(page.partial) : null,
     !relogin.ok ? note(`Couldn't read sign-in repairs: ${relogin.reason}.`) : null,
-    notices, needs, autoRepairSection(autoRepair, currentVisit), list, quotaForecastCard(get, page.accounts), legacyLink());
+    page.needs.length ? repairs : null, notices, list, page.needs.length ? null : repairs,
+    autoRepairSection(autoRepair, currentVisit), quotaForecastCard(get, page.accounts), legacyLink());
   const want = new URLSearchParams((location.hash.split('?')[1] || '')).get('s');
-  if (want === 'needs') arrivalScroll(needs);
+  if (want === 'needs') arrivalScroll(repairs);
   if (want === 'auto-repair') arrivalScroll(main.querySelector('#sec-auto-repair'));
 }
 
@@ -164,25 +161,37 @@ function legacyLink() {
   return el('p', { class: 'foot-note' }, el('a', { href: legacyHref('subscriptions'), text: 'Letting another machine use an account, and identity repair, are in the legacy Subscriptions tab' }));
 }
 
-function openAccount(a, visit) {
+function openAccount(a, visit, ownerNeeds) {
   if (!visit.isCurrent()) return;
+  const hosts = [...new Set(a.cells.filter(c => !c.missing).map(c => c.machine))];
   const lines = [
     { label: 'Kind', text: frameworkName(a.framework) },
+    hosts.length ? { label: hosts.length === 1 ? 'Machine' : 'Machines', text: hosts.join(', ') } : null,
     a.email ? { label: 'Email', text: a.email } : null,
     { label: 'Usage', text: a.windowsText && a.windowsText.length ? a.windowsText.join('; ') : a.line },
     { label: 'Reading', text: a.readingAge ? `from ${a.readingAge}` : 'none yet' },
   ].filter(Boolean);
-  const machines = el('div', { class: 'rows' }, a.cells.map((c) => {
-    const r = el('div', { class: 'row' },
-      el('span', { class: c.state === 'attn' ? 'dot attn' : c.state === 'ok' ? 'dot live' : 'dot unknown' }),
-      el('span', { class: 'row-main' }, el('span', { class: 'row-title', text: c.machine }), el('span', { class: 'row-sub', text: c.state === 'attn' && !c.actionable ? 'Needs sign-in; a unique account and machine name are needed first.' : c.label })),
-      el('span', { class: 'row-end' }));
-    // A machine that does not hold this account: a quiet Set up that starts a fresh sign-in there.
-    if (c.state === 'missing' && c.actionable) r.querySelector('.row-end').append(el('button', { class: 'btn-quiet', type: 'button', text: 'Set up', onclick: () => startNeed({ accountId: a.id, machineId: c.machineId, machine: c.machine, title: `Set up ${a.email || a.name} on ${c.machine}`, action: 'start', episodeId: null }, visit) }));
-    if ((c.state === 'attn' || c.state === 'waiting') && c.actionable) r.querySelector('.row-end').append(el('button', { class: 'btn-quiet', type: 'button', text: 'Sign in', onclick: () => startNeed({ accountId: a.id, machineId: c.machineId, machine: c.machine, title: `Sign in ${a.email || a.name} on ${c.machine}`, action: c.episode && (c.episode.state === 'failed' || c.episode.state === 'suggested') ? (c.episode.state === 'failed' ? 'retry' : 'approve') : 'start', episodeId: c.episode ? c.episode.id : null }, visit) }));
-    return r;
-  }));
-  sheet({ title: a.name }, story(lines), el('section', { class: 'sheet-block' }, el('h3', { class: 'eyebrow', text: 'On each machine' }), machines),
+  // This is deliberate account management. The page's repair area owns the status copy.
+  const machineActions = a.cells.flatMap((c) => {
+    if (!c.actionable) return [];
+    const ownerAction = ownerNeeds.find(n => n.accountId === a.id && n.machineId === c.machineId);
+    let label, action;
+    if (ownerAction) { label = 'Sign in'; action = 'start'; }
+    else if (c.state === 'missing') { label = 'Set up'; action = 'start'; }
+    else if (c.state === 'attn' && !c.wrongLogin && ['failed', 'suggested'].includes(c.episode?.state)) {
+      action = c.episode.state === 'failed' ? 'retry' : 'approve';
+      label = action === 'retry' ? 'Try again' : 'Repair';
+    } else return [];
+    const request = ownerAction || {
+      accountId: a.id, machineId: c.machineId, machine: c.machine,
+      title: `${label} ${a.email || a.name} on ${c.machine}`, action, episodeId: c.episode?.id ?? null,
+    };
+    return [el('div', { class: 'row' },
+      el('span', { class: 'row-main' }, el('span', { class: 'row-title', text: c.machine })),
+      el('button', { class: 'btn-quiet', type: 'button', text: label, onclick: () => startNeed(request, visit) }))];
+  });
+  sheet({ title: a.name }, story(lines), machineActions.length ? el('section', { class: 'sheet-block' },
+    el('h3', { class: 'eyebrow', text: 'Manage sign-in' }), el('div', { class: 'rows' }, machineActions)) : null,
     details(a.cells[0] ? a.cells[0].row : {}, ['id', 'nickname', 'email', 'provider', 'framework', 'status', 'loginCheck', 'enrolledAt', 'lastRefreshAt', 'identityDrifted']));
 }
 
@@ -316,7 +325,7 @@ function autoRepairTicked(row) {
 function autoRepairSection(model, currentVisit) {
   if (model.rows.length === 0 && !model.unresolved) return null;
   const section = el('section', { class: 'page-sections', id: 'sec-auto-repair' },
-    el('h2', { class: 'eyebrow', text: 'Automatic sign-in repair' }),
+    el('h2', { class: 'eyebrow', text: 'Sign-in repair settings' }),
     el('p', { class: 'row-sub', text: 'When an account gets signed out, the agent signs it back in by itself on the machines ticked here. You can switch any of this agent’s machines on or back to asking first from this page, whichever machine is showing it.' }));
   const held = () => { const changed = [...autoRepairTicks.keys()].length > 0; if (changed) section.setAttribute('data-interaction-open', '1'); else section.removeAttribute('data-interaction-open'); };
   const lastResult = (id) => autoRepairResults && autoRepairResults.results.find((r) => r.machineId === id);

@@ -201,34 +201,9 @@ function windowsOf(q, now = Date.now()) {
   return usageWindows(q, now).filter((w) => !w.rolledOver).map(({ pct, resetsAt }) => ({ pct, resetsAt }));
 }
 
-/**
- * The page's notice spot: only what needs the person or changes what they can do, and nothing at all
- * otherwise. Same rules as the phone's (src/server/mobileCapacityRoutes.ts accountNotices). Sign-ins are
- * the "Needs you" card and its count, so they are not repeated here. One account full while others have
- * room is on its row and is never a notice.
- *  - a machine with no signed-in account, where a sign-in would fix it;
- *  - every usable account, or every usable account of one kind, at or over the line, with when room returns.
- * Returns [{ key, tone, title, returnsAt, action: { kind: 'sign-in' } | { kind: 'ask', about } }].
- * Reads each cell's `actionable` (set by buildAccountsPage) to choose the machine notice's action.
- */
+/** Usage notices describe exhausted capacity. Sign-in gaps have their own machine status section. */
 export function accountNotices(accounts, { partial = false, now = Date.now() } = {}) {
   const scope = partial ? ' (on the machines that answered)' : '';
-  const byMachine = new Map();
-  for (const a of accounts) for (const c of a.cells) {
-    if (c.missing) continue; // an account a machine never held does not make that machine empty
-    const g = byMachine.get(c.machineId) || { name: c.machine, states: [], canSignIn: false };
-    g.states.push(c.state);
-    if (c.state === 'attn' && c.actionable) g.canSignIn = true;
-    byMachine.set(c.machineId, g);
-  }
-  const machine = [];
-  for (const [id, g] of byMachine) {
-    if (g.states.some((s) => s === 'ok' || s === 'working') || !g.states.includes('attn')) continue;
-    const title = `${g.name} has no signed-in account, so nothing can run there.`;
-    // The sign-in is on the "Needs you" card when it can be started from here; otherwise ask the agent.
-    // warning-path: inline
-    machine.push({ key: `machine:${id}`, tone: 'bad', title, returnsAt: null, action: g.canSignIn ? { kind: 'sign-in' } : { kind: 'ask', about: title } });
-  }
   const usable = accounts.filter((a) => a.cells.some((c) => c.state === 'ok'));
   const kinds = [...new Set(usable.map((a) => frameworkName(a.framework)))].sort();
   const outKinds = [];
@@ -258,7 +233,7 @@ export function accountNotices(accounts, { partial = false, now = Date.now() } =
   const rooms = outKinds.length && outKinds.length === kinds.length
     ? [room(outKinds.flatMap((k) => k.list), kinds.length === 1 ? kinds[0] : null)]
     : outKinds.map((k) => room(k.list, k.kind));
-  return [...machine, ...rooms].sort((a, b) => Number(b.tone === 'bad') - Number(a.tone === 'bad'));
+  return rooms.sort((a, b) => Number(b.tone === 'bad') - Number(a.tone === 'bad'));
 }
 
 /**
@@ -284,6 +259,16 @@ export function accountCounts(accounts) {
  * Build the page. episodes: /subscription-relogin?scope=pool episodes (optional).
  * Returns { ok, needs, notices, accounts, headline, sub, facts, partial, tone }.
  */
+function repairStatus(cell) {
+  if (cell.state === 'working') return 'Signing in';
+  if (cell.episode?.state === 'failed') return 'Last repair stopped. Waiting for the agent to review it.';
+  if (cell.episode?.state === 'suggested') return 'Ready for the agent to repair';
+  if (cell.state === 'missing') return 'Waiting for the agent to set up this account';
+  if (cell.row.status === 'disabled') return 'Sign-in disabled. Waiting for agent follow-up.';
+  if (cell.state === 'waiting') return 'Waiting for the agent to confirm the sign-in';
+  return 'Sign-in needs checking by the agent';
+}
+
 export function buildAccountsPage(res, now = Date.now(), { episodes = [], blockers = [], inUse = null, names: extraNames = {}, poolMachines = null } = {}) {
   if (!res.ok) return { ok: false, reason: `Couldn't read accounts: ${res.reason}.` };
   if (res.data && res.data.enabled === false) return { ok: false, reason: 'The account pool is not set up on this agent.' };
@@ -304,17 +289,20 @@ export function buildAccountsPage(res, now = Date.now(), { episodes = [], blocke
     if (!g.email && email) g.email = email;
     const ep = epFor(r.id, r.machineId);
     const blocker = blockers.find((b) => b && b.accountId === r.id && b.machineId === r.machineId) || null;
-    g.cells.push({ machineId: r.machineId, machine: verifiedDisplayName(r.machineNickname, r.machineId) || 'Machine name unavailable', ...cellState(r, ep, blocker, now), episode: ep, row: r });
+    g.cells.push({ machineId: r.machineId, machine: verifiedDisplayName(r.machineNickname, r.machineId) || 'Machine name unavailable', ...cellState(r, ep, blocker, now), episode: ep, blocker, row: r });
     const at = Date.parse(r.lastQuota && r.lastQuota.measuredAt);
     if (r.lastQuota && Number.isFinite(at) && at > g.readingAt) { g.reading = r.lastQuota; g.readingAt = at; }
     byId.set(r.id, g);
   }
-  // A machine that answered but does not hold an account gets a "missing" cell, so a machine that
-  // was offline (or rebuilt) when an account was added elsewhere shows the gap and can be set up from
-  // here. A machine that did not answer is left out: its accounts are unknown, not missing. A missing
-  // cell is never "needs you" — not every account belongs on every machine — it is a quiet Set up.
+  // Only successful account reads prove that a slot is missing. An offline
+  // machine stays unknown even if the registry still lists it.
   const failedIds = new Set(failed.map((f) => f && f.machineId).filter(Boolean));
   const answered = new Map();
+  const answeredMachines = res.data.pool?.answeredMachines;
+  if (Array.isArray(answeredMachines)) for (const machine of answeredMachines) {
+    if (typeof machine?.machineId !== 'string' || failedIds.has(machine.machineId)) continue;
+    answered.set(machine.machineId, verifiedDisplayName(machine.nickname || extraNames?.[machine.machineId], machine.machineId) || 'Machine name unavailable');
+  }
   for (const r of rows) if (r && r.machineId && !failedIds.has(r.machineId) && !answered.has(r.machineId)) {
     answered.set(r.machineId, verifiedDisplayName(r.machineNickname, r.machineId) || 'Machine name unavailable');
   }
@@ -361,36 +349,40 @@ export function buildAccountsPage(res, now = Date.now(), { episodes = [], blocke
   }
 
   const needs = [];
-  for (const a of accounts) for (const c of a.cells) {
-    if (c.state !== 'attn' || !c.actionable) continue;
-    const ep = c.episode;
-    const repairable = !c.wrongLogin && ep && (ep.state === 'suggested' || ep.state === 'failed');
-    needs.push({
-      key: `${a.id}::${c.machineId}`, accountId: a.id, machineId: c.machineId, machine: c.machine,
-      title: `Sign in ${frameworkName(a.framework)} (${a.email || a.name}) on ${c.machine}`,
-      label: `${frameworkName(a.framework)} · ${a.email || a.name}`,
-      sub: !c.actionable ? 'A unique account and machine name are needed before you can act here.' : c.wrongLogin ? `This slot holds ${c.wrongLoginWho || "another account"}'s login, so this account can't run on ${c.machine}.` : repairable ? (ep.state === 'failed' ? 'The last automatic repair stopped safely; you can try again.' : 'An automatic repair is ready to run.') : 'Its sign-in has expired.',
-      actionable: c.actionable,
-      action: repairable ? (ep.state === 'failed' ? 'retry' : 'approve') : 'start',
-      episodeId: ep ? ep.id : null,
-      remote: Boolean(c.row.remote),
-    });
+  const repairGroups = new Map();
+  for (const account of accounts) for (const cell of account.cells) {
+    if (cell.state === 'ok' || failedIds.has(cell.machineId)) continue;
+    const episode = cell.episode;
+    const ownerStep = cell.actionable && ['attn', 'waiting'].includes(cell.state) && (
+      episode?.state === 'waiting-operator-only' || cell.blocker?.reason === 'device-limit-benched'
+      || cell.row.identityDrift?.repairState === 'owner-relogin-required');
+    const row = {
+      key: `${account.id}::${cell.machineId}`, accountId: account.id, machineId: cell.machineId, machine: cell.machine,
+      title: `Sign in ${frameworkName(account.framework)} (${account.email || account.name}) on ${cell.machine}`,
+      label: `${account.name} · ${frameworkName(account.framework)}`,
+      remote: Boolean(cell.row.remote),
+    };
+    const ownerAction = ownerStep ? {
+      ...row, actionable: true, action: 'start', episodeId: episode?.id ?? null,
+      sub: cell.blocker?.reason === 'device-limit-benched'
+        ? 'This machine has reached its sign-in limit.'
+        : 'This repair needs you to complete sign-in.',
+    } : null;
+    if (ownerAction) needs.push(ownerAction);
+    const status = ownerAction?.sub || repairStatus(cell);
+    const key = cell.machineId ?? cell.machine;
+    if (!repairGroups.has(key)) repairGroups.set(key, { machine: cell.machine, rows: new Map() });
+    repairGroups.get(key).rows.set(account.id, { ...row, status, ownerAction });
   }
-  // A waiting sign-in (unconfirmed, or repair the agent owns) shows on its row only: a line saying
-  // there is nothing to do is not worth the space (operator rule 2026-11-06, topic 134088).
-  const counts = accountCounts(accounts);
-  const busiest = accounts.filter((a) => a.tight).sort((a, b) => b.tight.pct - a.tight.pct)[0];
+  const repairs = [...repairGroups.values()].sort((a, b) => compareNames(a.machine, b.machine))
+    .map(group => ({ machine: group.machine, rows: [...group.rows.values()].sort((a, b) => compareNames(a.label, b.label)) }));
+  const usageAccounts = accounts.filter(account => account.windows.length > 0);
+  const busiest = [...usageAccounts].filter(account => account.tight).sort(compareUsage)[0];
   const notices = accountNotices(accounts, { partial: failed.length > 0, now });
-  // The title says what needs the person; otherwise it is just the page name and the notices
-  // (each with its own action) sit under it.
-  const headline = needs.length ? (needs.length === 1 ? '1 sign-in needs you.' : `${needs.length} sign-ins need you.`) : 'Accounts';
+  const headline = 'Account usage';
+  const sub = usageAccounts.length ? 'See how much of each account’s limit has been used and when it resets.' : 'No usage readings are available.';
   const facts = [
-    // The header agrees with the rows: how many accounts are ready everywhere, and how many need a sign-in.
-    { n: `${counts.ready} of ${counts.total}`, label: 'ready' },
-    // warning-path: inline
-    counts.needSignIn ? { n: counts.needSignIn, label: counts.needSignIn === 1 ? 'needs you to sign in' : 'need you to sign in', tone: 'attn', href: '#/capacity/accounts?s=needs' } : null,
-    counts.inProgress ? { n: counts.inProgress, label: 'not ready yet, nothing for you to do' } : null,
-    // A routine number: one full account among others with room is not a warning (the notices say when it is).
+    { n: String(usageAccounts.length), label: usageAccounts.length === 1 ? 'account with usage data' : 'accounts with usage data' },
     busiest ? { n: `${Math.round(busiest.tight.pct)}%`, label: `most used · ${busiest.name}` } : null,
     inUse && inUse.activeAccountId ? { n: (byId.get(inUse.activeAccountId) || {}).name || 'Account name unavailable', label: 'in use here' } : null,
   ].filter(Boolean);
@@ -401,5 +393,5 @@ export function buildAccountsPage(res, now = Date.now(), { episodes = [], blocke
   const partial = failed.length ? `${failed.map((f) => unreachableSentence(verifiedDisplayName(f.nickname, f.machineId) || verifiedDisplayName(f.machineNickname, f.machineId) || machineNames[f.machineId] || null,
     poolMachine(poolMachines, f.machineId), f, now)).join(' ')} ${failed.length === 1 ? 'Its accounts' : 'Their accounts'} may be out of date.` : null;
   // warning-path: pageHead
-  return { ok: true, needs, notices, accounts, headline, sub: '', facts, partial, tone: needs.length ? 'attn' : 'ok' };
+  return { ok: true, needs, notices, accounts, usageAccounts, repairs, headline, sub, facts, partial, tone: 'ok' };
 }
