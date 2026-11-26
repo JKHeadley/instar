@@ -394,6 +394,15 @@ describe('native app conversations — production wiring', () => {
     });
 
     expect((await send('GET', `/mobile/chat/app/${key}/messages`)).body.epoch).toBe(acceptedHistory.body.epoch);
+    for (const query of ['', '?scope=pool']) {
+      const list = await send('GET', `/mobile/conversations${query}`);
+      expect(list.status).toBe(200);
+      expect(list.body.conversations).toEqual(expect.arrayContaining([
+        expect.objectContaining({ id: key, lastPreview: null }),
+        expect.objectContaining({ id: dest, lastPreview: 'An ordinary new message' }),
+      ]));
+    }
+
 
     server.appConversations!.store.append({
       kind: 'message', conversationKey: key, eventId: 'surviving-notification-event', messageId: 'surviving-notification',
@@ -493,6 +502,10 @@ describe('native app conversations — production wiring', () => {
       const unavailableHistory = await send('GET', `/mobile/chat/app/${key}/messages`);
       expect(unavailableHistory.status).toBe(503);
       expect(unavailableHistory.body).not.toHaveProperty('messages');
+      const list = await send('GET', '/mobile/conversations?scope=pool');
+      expect(list.status).toBe(200);
+      expect(list.body.conversations).toContainEqual(expect.objectContaining({ id: key, lastPreview: null }));
+
     } finally { fs.writeFileSync(custodyFile, retained); }
 
     // A ledger revocation alone refuses the phone at once on the production auth path, even if

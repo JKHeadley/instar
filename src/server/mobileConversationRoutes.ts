@@ -781,7 +781,13 @@ export function createMobileConversationRouter(deps: MobileConversationRouteDeps
     /** A team phone's list line is the newest message it may read, so a held one is not shown there. */
     const messageLinkSupport = exactLinksOn() ? { messageLinkSupport: { exactContext: true } } : {};
     const shownPreview = (r: ConversationListRow): ConversationListRow => {
-      if (person?.role !== 'team' || r.platform !== 'app') return r;
+      if (r.platform !== 'app') return r;
+      try {
+        if (removalReads?.enrolled(String(r.id))) return { ...r, lastPreview: null };
+      } catch {
+        return { ...r, lastPreview: null }; // @silent-fallback-ok — uncertain enrollment cannot expose a cached preview
+      }
+      if (person?.role !== 'team') return r;
       const newest = svc!.store.browseMessages(String(r.id), null, 100).messages.filter((m) => deps.pairing.mayReadStored(person, String(r.id), m)).pop();
       return { ...r, lastPreview: newest ? messagePreview(newest) : null };
     };
