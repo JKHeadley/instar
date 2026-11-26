@@ -1,0 +1,23 @@
+{
+  "version": 2,
+  "slug": "telegram-capacity-hold-incidents",
+  "sessionId": "dd2f336e-e8f7-40b3-97e3-09d19139bfa6",
+  "timestamp": "2026-11-26T17:59:21.918Z",
+  "artifactPath": "upgrades/side-effects/telegram-capacity-hold-incidents.md",
+  "artifactSha256": "37e3cae9bbc2e6ae433d3bc30a9f8f831ab3808b6a5efbb5b18cd796473267d8",
+  "coveredFiles": [
+    "src/messaging/telegram-origin/TelegramOriginRuntime.ts",
+    "src/monitoring/neverSilent/NeverSilentStore.ts",
+    "tests/unit/telegram-origin/lease-freshness-lapse.test.ts",
+    "upgrades/eli16/telegram-capacity-hold-incidents.md",
+    "upgrades/next/telegram-capacity-hold-incidents.md",
+    "upgrades/side-effects/telegram-capacity-hold-incidents.md"
+  ],
+  "phase": "complete",
+  "tier": 1,
+  "tierReasoning": "Existing hold incident accounting. No retry policy change.",
+  "eli16Path": "upgrades/eli16/telegram-capacity-hold-incidents.md",
+  "sideEffectsPath": "upgrades/side-effects/telegram-capacity-hold-incidents.md",
+  "secondPass": "not-required",
+  "reviewerConcurred": null
+}
