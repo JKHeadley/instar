@@ -115,11 +115,11 @@ const audits = (stateDir: string, event: string) => {
 };
 
 describe('local-verify peer works through restart (production wiring, lifecycle)', () => {
-  it('routes a reduced PR only when a configured small peer confirms the same contract', async () => {
+  it.each([1, 2] as const)('routes a reduced PR with %i unit workers only when the peer confirms the contract', async (unitWorkers) => {
     const { home, stateDir } = sourceCheckout();
     const machineId = 'm_' + '3'.repeat(32);
     const trial = { version: 1 as const, machineId, collector: 'darwin-vm-stat-native-pressure-v1' as const,
-      floorBytes: 8192, reserveBytes: 4096, recoveryMs: 3000, unitWorkers: 2 as const, integration: 1 as const, e2e: 1 as const };
+      floorBytes: 8192, reserveBytes: 4096, recoveryMs: 3000, unitWorkers, integration: 1 as const, e2e: 1 as const };
     const values = { 'monitoring.localVerify.smallPeerTrial': trial,
       'monitoring.localVerify.peers': [{ machineId, url: 'http://127.0.0.1:1' }] };
     const c = buildCoordinator({ home, stateDir, values, lease: { holds: true, epoch: 7, holder: 'm_coord' } });

@@ -53,7 +53,9 @@ describe('bounded trial policy and observation identity', () => {
     floorBytes: 8192, reserveBytes: 4096, recoveryMs: 2000, unitWorkers: 2, integration: 1, e2e: 1 };
   it('accepts only an exact calibrated contract', () => {
     expect(parseSmallPeerTrialPolicy(policy)).toEqual(policy);
-    for (const bad of [null, { ...policy, e2e: 2 }, { ...policy, future: true }, { ...policy, reserveBytes: 8192 },
+    const oneWorker = { ...policy, unitWorkers: 1 };
+    expect(parseSmallPeerTrialPolicy(oneWorker)).toEqual(oneWorker);
+    for (const bad of [null, { ...policy, e2e: 2 }, { ...policy, unitWorkers: 0 }, { ...policy, unitWorkers: 3 }, { ...policy, future: true }, { ...policy, reserveBytes: 8192 },
       { ...policy, machineId: 'any' }, { ...policy, collector: 'unknown' }]) expect(parseSmallPeerTrialPolicy(bad)).toBeNull();
   });
   it('a heartbeat cannot mask a stale, repeated or foreign sample', () => {
