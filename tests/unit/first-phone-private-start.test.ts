@@ -4,7 +4,7 @@ import type { Receipt } from '../../src/core/trustJourney/accountPath.js';
 
 const issuedAt = Date.parse('2026-11-25T20:00:00Z');
 const start = {
-  token: 'synthetic_No-live-link_123', ownerAccountId: '7001', holderEpoch: 'epoch-2',
+  token: 'fp1_synthetic_No-live-link_123', ownerAccountId: '7001', holderEpoch: 'epoch-2',
   holderMachineId: 'fixture-holder', issuedAt, expiresAt: issuedAt + 60_000,
 };
 const receipt: Receipt = {

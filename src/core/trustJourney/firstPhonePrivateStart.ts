@@ -1,5 +1,7 @@
 import type { Receipt } from './accountPath.js';
 
+export const FIRST_PHONE_PRIVATE_START = /^\/start fp1_[A-Za-z0-9_-]{22,60}$/;
+
 interface FirstPhoneStart {
   token: string;
   ownerAccountId: string;
@@ -20,7 +22,7 @@ export function matchesFirstPhonePrivateStart(
   now: number,
 ): boolean {
   const receivedAt = Date.parse(receipt.receivedAt);
-  return /^[A-Za-z0-9_-]{22,64}$/.test(start.token)
+  return FIRST_PHONE_PRIVATE_START.test(`/start ${start.token}`)
     && start.ownerAccountId === currentOwnerAccountId
     && start.holderEpoch === currentHolderEpoch
     && receipt.receivedBy === start.holderMachineId

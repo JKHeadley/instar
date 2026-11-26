@@ -1,3 +1,5 @@
+import type { Receipt } from '../core/trustJourney/accountPath.js';
+import { FIRST_PHONE_PRIVATE_START } from '../core/trustJourney/firstPhonePrivateStart.js';
 import { FIRST_PHONE_PRIVATE_CALLBACK, type AuthenticatedPrivateTap } from '../core/trustJourney/firstPhonePrivateAccept.js';
 import { categoryForAttention } from './notificationCategories.js';
 import { notificationStamper, responseNotificationStamper, withNotificationEnvelope } from './notificationStampers.js';
@@ -6715,7 +6717,36 @@ export class TelegramAdapter implements MessagingAdapter {
     return { mainChatId: this.config.chatId, issuesChatId: this.config.issuesChatId };
   }
 
+  /** Private, direct-poll Start evidence. The receiver resolves and checks the current holder. */
+  onFirstPhonePrivateStart: ((receipt: Omit<Receipt, 'receivedBy'>) => Promise<void>) | null = null;
+
+  private async processFirstPhonePrivateStart(update: TelegramUpdate): Promise<boolean> {
+    const msg = update.message;
+    if (!msg || typeof msg.text !== 'string' || !msg.text.startsWith('/start fp1_')) return false;
+    if (!FIRST_PHONE_PRIVATE_START.test(msg.text)) return true;
+    const owner = this.getVerifiedOwner();
+    const handle = this.onFirstPhonePrivateStart;
+    if (!handle || !owner || msg.from?.id !== owner || msg.from.is_bot !== false ||
+        msg.chat?.type !== 'private' || msg.chat.id !== owner ||
+        ['forward_origin', 'forward_from', 'forward_date', 'is_automatic_forward', 'sender_chat', 'via_bot'].some(field => field in msg) ||
+        !Number.isSafeInteger(msg.message_id) || msg.message_id <= 0 ||
+        !Number.isSafeInteger(update.update_id) || update.update_id < 0 ||
+        !Number.isSafeInteger(msg.date) || msg.date <= 0) return true;
+    try {
+      await handle({
+        receiptId: `tg-${update.update_id}`, adapter: 'telegram', senderId: String(owner), chatId: String(owner),
+        chatType: 'private', messageId: String(msg.message_id), text: msg.text, senderIsBot: false,
+        forwarded: false, uniqueKey: `tg-update:${update.update_id}`, receivedAt: new Date().toISOString(),
+      });
+    } catch {
+      // The Start token stays out of the ordinary message path, including on failure.
+      console.warn('[trust-journey] first-phone private Start could not be processed');
+    }
+    return true;
+  }
+
   private async processUpdate(update: TelegramUpdate): Promise<void> {
+    if (update.message && await this.processFirstPhonePrivateStart(update)) return;
     const msg = update.message;
     if (msg?.from && !msg.from.is_bot && this.isAuthorized(msg.from.id) && this.selectivity) {
       const topicId = inboundTopicId(String(msg.chat.id), msg.message_thread_id ?? 1, this.topicSpace()) ?? 1;

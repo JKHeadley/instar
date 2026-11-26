@@ -103,3 +103,40 @@ it('accepts only acknowledgement of the exact disclosure in the verified private
     SafeFsExecutor.safeRmSync(stateDir, { recursive: true, force: true, operation: 'test first-phone sender' });
   }
 });
+
+it('keeps reserved first-phone Start messages private and forwards only direct owner evidence', async () => {
+  const stateDir = fs.mkdtempSync(path.join(os.tmpdir(), 'first-phone-start-'));
+  const adapter = new TelegramAdapter({ token: 'test-token', chatId: '-100999' }, stateDir);
+  vi.spyOn(adapter, 'getVerifiedOwner').mockReturnValue(7001);
+  const privateStart = vi.fn<NonNullable<TelegramAdapter['onFirstPhonePrivateStart']>>().mockResolvedValue();
+  const ordinary = vi.spyOn(adapter as unknown as {
+    processUpdateDelivered(update: unknown): Promise<void>;
+  }, 'processUpdateDelivered').mockResolvedValue();
+  const text = '/start fp1_synthetic_No-live-link_123';
+  const message = { text, message_id: 15, date: 1, from: { id: 7001, is_bot: false }, chat: { id: 7001, type: 'private' } };
+  const direct = (patch: Partial<typeof message> = {}) => (adapter as unknown as {
+    processUpdate(update: unknown): Promise<void>;
+  }).processUpdate({ update_id: 12, message: { ...message, ...patch } });
+  try {
+    await direct();
+    expect(ordinary).not.toHaveBeenCalled();
+    adapter.onFirstPhonePrivateStart = privateStart;
+    for (const patch of [
+      { from: { id: 8001, is_bot: false } }, { chat: { id: 7001, type: 'group' } },
+      { via_bot: { id: 8001 } }, { forward_date: 1 },
+      { text: text + ' extra' },
+    ]) await direct(patch as Partial<typeof message>);
+    expect(privateStart).not.toHaveBeenCalled();
+    expect(ordinary).not.toHaveBeenCalled();
+    await direct();
+    expect(privateStart).toHaveBeenCalledWith({
+      receiptId: 'tg-12', uniqueKey: 'tg-update:12', adapter: 'telegram', senderId: '7001',
+      chatId: '7001', chatType: 'private', messageId: '15', text, senderIsBot: false,
+      forwarded: false, receivedAt: expect.any(String),
+    });
+    await direct({ text: '/start unrelated' });
+    expect(ordinary).toHaveBeenCalledTimes(1);
+  } finally {
+    SafeFsExecutor.safeRmSync(stateDir, { recursive: true, force: true, operation: 'test first-phone Start ingress' });
+  }
+});

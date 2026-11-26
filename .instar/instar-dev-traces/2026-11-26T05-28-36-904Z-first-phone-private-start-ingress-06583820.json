@@ -1,0 +1,21 @@
+{
+  "version": 2,
+  "slug": "first-phone-private-start-ingress",
+  "sessionId": "b3d2cf8a-9b5d-468b-a50b-70ebf11e9e5c",
+  "timestamp": "2026-11-26T05:28:36.904Z",
+  "artifactPath": "upgrades/side-effects/first-phone-private-start-ingress.md",
+  "artifactSha256": "547e0bea8720a1cafc4ee279a3151213fad7e000306f76ec27aa22c3bdf47cbe",
+  "coveredFiles": [
+    "src/core/trustJourney/firstPhonePrivateStart.ts",
+    "src/messaging/TelegramAdapter.ts",
+    "tests/unit/first-phone-private-start.test.ts",
+    "tests/unit/first-phone-telegram-ingress.test.ts"
+  ],
+  "phase": "complete",
+  "tier": 1,
+  "tierReasoning": "Reserved direct-poll input with no production handler",
+  "eli16Path": "docs/specs/phone-only-first-approver.eli16.md",
+  "sideEffectsPath": "upgrades/side-effects/first-phone-private-start-ingress.md",
+  "secondPass": "true",
+  "reviewerConcurred": true
+}

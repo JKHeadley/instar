@@ -41,3 +41,5 @@ The test store can now recover the acknowledged private enrollment offer after r
 The test flow now saves the offer only after Telegram acknowledges the exact private message and the offer is still current. A button sent just before the authority changes cannot start enrollment.
 
 The private offer sender checks that Telegram accepted the exact enrollment message in the verified owner's private chat. This check does not activate delivery or enroll a phone.
+
+The bot keeps the one-time Start command out of ordinary conversation. Only a direct message in the verified owner's private chat can reach the enrollment handler.
