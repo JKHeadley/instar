@@ -438,9 +438,9 @@ function paintCard(def, model, repaint = false) {
   if (model.note) body.append(el('p', { class: 'card-note', text: model.note }));
   const foot = card.querySelector('.card-foot');
   foot.replaceChildren();
-  const extra = listed.all ? listed.all.length - listed.rows.length : (model.more || 0);
-  if (listed.all && extra > 0) {
-    const b = el('button', { class: 'link-btn', type: 'button', 'data-focus-key': `${def.id}:see-all`, 'aria-expanded': expandedNow ? 'true' : 'false', text: expandedNow ? 'Show fewer' : `See all ${listed.all.length}` });
+  const extra = model.all ? model.all.length - (model.rows?.length || 0) : (model.more || 0);
+  if (model.all && extra > 0) {
+    const b = el('button', { class: 'link-btn', type: 'button', 'data-focus-key': `${def.id}:see-all`, 'aria-expanded': expandedNow ? 'true' : 'false', text: expandedNow ? 'Show fewer' : `See all ${model.all.length}` });
     b.addEventListener('click', () => { if (expanded.has(def.id)) expanded.delete(def.id); else expanded.add(def.id); paintCard(def, model, true); });
     foot.append(b);
   } else foot.append(el('span', { class: 'card-age', text: extra > 0 ? `and ${extra} more` : '' }));

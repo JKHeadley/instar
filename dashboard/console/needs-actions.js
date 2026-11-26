@@ -12,7 +12,7 @@ const references = {
 };
 
 export function readStrictAction(row) {
-  if (!row || row.card != null || row.alsoOpens != null) return null;
+  if (!row || row.localAction === false || row.card != null || row.alsoOpens != null) return null;
   const { action } = row;
   if (!action || typeof action !== 'object' || Array.isArray(action)) return null;
   const keys = Object.keys(action);

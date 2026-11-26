@@ -38,10 +38,14 @@ export function stripModel(res, { expanded = false } = {}) {
   const missed = Array.isArray(d.couldNotCheck) ? d.couldNotCheck.filter((x) => typeof x === 'string') : [];
   const strict = d.schemaVersion === 2;
   const notes = strict && Array.isArray(d.notes) ? d.notes.filter((note) => typeof note === 'string' && note.trim()) : [];
+  const diverted = strict && Number.isSafeInteger(d.divertedCount) && d.divertedCount > 0
+    ? d.divertedCount : 0;
+  const divertNote = diverted === 1 ? '1 item was left out because it had no verified owner action.'
+    : diverted ? `${diverted} items were left out because they had no verified owner action.` : '';
   const complete = d.complete === true && missed.length === 0 && notes.length === 0;
   const truncated = !page && (d.truncated === true || count > items.length);
   const omitted = Math.max(0, count - items.length);
-  if (count === 0 && complete && !truncated) return { show: false, state: 'ok', badge: '0', incomplete: false, title: '', rows: [], more: 0, line: '' };
+  if (count === 0 && complete && !truncated) return { show: false, state: 'ok', badge: '0', incomplete: false, title: '', rows: [], more: 0, line: divertNote };
   // Expand only rows actually received. The server bounds each answer; name any omitted rows.
   const rows = expanded ? items : items.slice(0, STRIP_ROWS);
   return {
@@ -60,6 +64,7 @@ export function stripModel(res, { expanded = false } = {}) {
     line: [
       missed.length ? `Could not check ${list(missed)}.` : '',
       ...notes,
+      divertNote,
       !complete && !missed.length && !notes.length ? 'Some checks did not finish.' : '',
       truncated ? `This list has ${items.length} of ${count} needs.${omitted > 0 ? ` ${omitted} more ${omitted === 1 ? 'is' : 'are'} not shown.` : ' Some needs may not be shown.'}` : '',
     ].filter(Boolean).join(' '),
@@ -140,6 +145,7 @@ export function mountNeedsStrip(host, { get, hrefFor, open: startOpen, home = fa
     host.hidden = !m.show && !home && !actionStatus;
     if (!m.show && (home || actionStatus)) {
       host.replaceChildren(el('p', { class: 'needs-line', role: 'status', text: actionStatus || 'Nothing needs you right now.' }));
+      if (home && m.line) host.append(el('p', { class: 'needs-line', text: m.line }));
       return;
     }
     host.dataset.state = m.state;

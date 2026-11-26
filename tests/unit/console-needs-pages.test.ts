@@ -65,18 +65,20 @@ describe('paging the Needs-you strip', () => {
     await Promise.resolve();
   }
   it('uses the server count while showing only supported strict actions', async () => {
-    const response = { ok: true, data: { schemaVersion: 2, count: 3, complete: false,
+    const response = { ok: true, data: { schemaVersion: 2, count: 4, complete: false, divertedCount: 2,
       couldNotCheck: ['one source'], items: [
         { title: 'Physical step', action: { kind: 'instructions', steps: ['First', 'Second'] } },
-        { title: 'Unavailable credential', action: { kind: 'credential', requestId: 'opaque' } },
+        { title: 'Nonlocal step', localAction: false, action: { kind: 'instructions', steps: ['Do not display'] } },
+        { title: 'Unavailable credential', localAction: true, action: { kind: 'credential', requestId: 'opaque' } },
         { title: 'Old referral', action: { kind: 'href', href: '#/work' } },
       ] } };
     await mount(vi.fn().mockResolvedValue(response));
-    expect(homeNeedsModel(stripModel(response))).toMatchObject({ count: 3, state: 'partial', authoritative: true });
+    expect(homeNeedsModel(stripModel(response))).toMatchObject({ count: 4, state: 'partial', authoritative: true });
     expect([...host.querySelectorAll('ol li')].map((item) => item.textContent)).toEqual(['First', 'Second']);
     expect(host.querySelector('a, .needs-consent')).toBeNull();
-    expect(host.textContent).not.toMatch(/Old referral|Unavailable credential/);
+    expect(host.textContent).not.toMatch(/Old referral|Unavailable credential|Nonlocal step/);
     expect(host.textContent).toContain('Could not check one source.');
+    expect(host.textContent).toContain('2 items were left out because they had no verified owner action.');
     expect(host.textContent).toContain('Some requests cannot be completed on this device.');
   });
 
