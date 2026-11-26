@@ -1,0 +1,23 @@
+{
+  "ts": "2026-11-26T06:33:09.907Z",
+  "slug": "app-message-delete-peer-custody-import",
+  "suggestedTier": 2,
+  "declaredTier": 2,
+  "riskFloor": 1,
+  "riskFloorReasons": [],
+  "belowFloor": false,
+  "files": 2,
+  "loc": 44,
+  "scope": {
+    "basis": "staged-in-scope-paths-including-deleted",
+    "files": [
+      "src/core/AppRemovalReadCustody.ts",
+      "src/core/AppRemovalReadCustodyImport.ts"
+    ],
+    "addedLines": 40,
+    "deletedLines": 4
+  },
+  "causalAutopsy": null,
+  "classClosure": null,
+  "verdict": "pass"
+}

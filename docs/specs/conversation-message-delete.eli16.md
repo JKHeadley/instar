@@ -89,3 +89,5 @@ The native test can now keep a temporary server running on the same Mac while it
 The isolated history server now accepts the same first-page size the native app requests.
 
 The fleet routing check can now tell whether the current server has the verified assignment and build needed to serve protected history. It is still disconnected from normal routing.
+
+The receiving server can check that a protected-history assignment matches both the original conversation creation and the machine that sent it. The checks are ready for later integration with fleet transport.

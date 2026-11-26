@@ -5,7 +5,7 @@ import { isAppConversationKey } from './appConversationText.js';
 import { MACHINE_ID_PATTERN } from './IdentityStore.js';
 import { SafeFsExecutor } from './SafeFsExecutor.js';
 
-interface CustodyRecord {
+export interface CustodyRecord {
   version: 1;
   conversationKey: string;
   creationEventId: string;
@@ -16,7 +16,7 @@ type CustodyObservation = { kind: 'recorded'; record: CustodyRecord }
   | { kind: 'unrecorded' }
   | { kind: 'unavailable' };
 
-function custodyRecord(value: unknown, key: string): value is CustodyRecord {
+export function isAppRemovalReadCustodyRecord(value: unknown, key: string): value is CustodyRecord {
   if (!value || typeof value !== 'object') return false;
   const row = value as Partial<CustodyRecord>;
   return row.version === 1 && row.conversationKey === key
@@ -48,7 +48,7 @@ export class AppRemovalReadCustody {
     const input: CustodyRecord = {
       version: 1, conversationKey, creationEventId: creation.eventId, custodianMachineId: creation.machineId,
     };
-    if (!isAppConversationKey(conversationKey) || !custodyRecord(input, conversationKey)) return false;
+    if (!isAppConversationKey(conversationKey) || !isAppRemovalReadCustodyRecord(input, conversationKey)) return false;
     const file = this.file(conversationKey);
     const pending = path.join(this.directory, `.${crypto.randomUUID()}.pending`);
     let createdPending = false;
@@ -132,7 +132,7 @@ export class AppRemovalReadCustody {
       if (count !== stat.size || current.ino !== stat.ino || current.dev !== stat.dev
         || current.size !== stat.size || current.ctimeMs !== stat.ctimeMs) throw new Error('custody record changed');
       const record: unknown = JSON.parse(bytes.toString('utf8', 0, count));
-      if (!custodyRecord(record, key)) throw new Error('custody record invalid');
+      if (!isAppRemovalReadCustodyRecord(record, key)) throw new Error('custody record invalid');
       return record;
     } finally {
       fs.closeSync(handle);

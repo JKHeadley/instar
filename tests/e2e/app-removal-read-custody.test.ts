@@ -36,3 +36,32 @@ it('retains one immutable removal-read custodian across competing and restarted 
     SafeFsExecutor.safeRmSync(stateDir, { recursive: true, force: true, operation: 'app-removal-read-custody-e2e:cleanup' });
   }
 });
+
+it('can reopen an authenticated peer assignment while refusing a different envelope origin', async () => {
+  const stateDir = fs.mkdtempSync(path.join(os.tmpdir(), 'app-removal-custody-import-process-'));
+  const importer = pathToFileURL(path.resolve('dist/core/AppRemovalReadCustodyImport.js')).href;
+  const worker = `
+    import { AppRemovalReadCustody } from ${JSON.stringify(moduleUrl)};
+    import { retainPeerRemovalReadCustody } from ${JSON.stringify(importer)};
+    const [dir, key, origin] = process.argv.slice(1);
+    const local = new AppRemovalReadCustody(dir);
+    const result = origin ? retainPeerRemovalReadCustody({
+      conversationKey: key, authenticatedOrigin: origin, local,
+      payload: { version: 1, conversationKey: key, creationEventId: 'creation', custodianMachineId: 'm1' },
+      creation: { kind: 'verified', conversationKey: key, eventId: 'creation', authenticatedOrigin: 'm1' },
+    }) : local.observe(key);
+    process.stdout.write(JSON.stringify(result));
+  `;
+  const invoke = async (...args: string[]) => {
+    const result = await run(process.execPath, ['--input-type=module', '-e', worker, stateDir, conversationKey, ...args]);
+    return JSON.parse(result.stdout);
+  };
+  try {
+    expect(await invoke('peer')).toBe('refused');
+    expect(await invoke()).toEqual({ kind: 'unrecorded' });
+    expect(await invoke('m1')).toBe('retained');
+    expect(await invoke()).toMatchObject({ kind: 'recorded', record: { creationEventId: 'creation', custodianMachineId: 'm1' } });
+  } finally {
+    SafeFsExecutor.safeRmSync(stateDir, { recursive: true, force: true, operation: 'app-removal-read-custody-e2e:import-cleanup' });
+  }
+});
