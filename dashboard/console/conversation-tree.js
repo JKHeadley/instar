@@ -53,6 +53,10 @@ export function treePage(data) {
   } catch { return null; }
 }
 
+export function hasAuthoritativeSections(page) {
+  return page?.placementComplete === true && Boolean(page.sections);
+}
+
 function timestamp(value) {
   return typeof value === 'string' ? Date.parse(value) || 0 : 0;
 }

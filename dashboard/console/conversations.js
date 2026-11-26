@@ -1,6 +1,6 @@
 // Native console Conversations. Owner-only reads use the existing PIN proof.
 // UI is a projection consumer: no inferred grouping, routing, or decision state.
-import { compareConversationActivity, conversationTreePreferences, renderOwnerTree, treePage } from './conversation-tree.js';
+import { compareConversationActivity, conversationTreePreferences, hasAuthoritativeSections, renderOwnerTree, treePage } from './conversation-tree.js';
 import { el, pageHead, setKids, note, askPin, operatorSession, forgetOperatorSession, arrivalScrollPosition } from './ui.js';
 import { listModel, nodeModel, pageQuery, graphHistoryRoute, historyModel, encodeNodeRef, localOnlyEnvelope, localOnlyWords } from './conversations-model.js';
 import { mountPending } from './conversation-pending.js';
@@ -346,7 +346,7 @@ export async function renderConversations(main, ctx) {
     if (!current()) return;
     if (treeResult.needsUnlock) { unlock(main, retry); return; }
     const page = treeResult.ok ? treePage(treeResult.data) : null;
-    if (page?.sections) {
+    if (hasAuthoritativeSections(page)) {
       const preferences = conversationTreePreferences();
       const pages = [page];
       const groupRows = el('div', { class: 'rows conversation-rows' });
@@ -365,7 +365,7 @@ export async function renderConversations(main, ctx) {
         if (!current()) return;
         if (next.needsUnlock) { unlock(main, retry); return; }
         const model = next.ok ? treePage(next.data) : null;
-        if (!model?.sections || model.nextCursor === cursor) {
+        if (!hasAuthoritativeSections(model) || model.nextCursor === cursor) {
           status.textContent = next.status === 409 ? 'This list changed. Refresh to see the latest conversations.' : 'More groups could not be loaded.';
           if (next.status === 409) status.append(' ', el('button', { type: 'button', class: 'link-btn', text: 'Refresh', onclick: retry }));
         } else {

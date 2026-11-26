@@ -10,7 +10,7 @@
 // parameter: each needs an action in the page. Only the media types in chats-model.js VIEWABLE_TYPES
 // become a viewable blob:; everything else is a download.
 
-import { compareConversationActivity, conversationRefKey, conversationTreePreferences, renderOwnerTree, treePage } from './conversation-tree.js';
+import { compareConversationActivity, conversationRefKey, conversationTreePreferences, hasAuthoritativeSections, renderOwnerTree, treePage } from './conversation-tree.js';
 import { el, setKids, sheet, closeSheet, askPin, forgetOperatorSession, operatorSession } from './ui.js';
 import {
   createBrowserDevice, consolePathAllowed, secureContextOk, newRequestId, sha256Hex, DELETED_REASON, refusalWords, readRecord, readAllRecords, deleteRecord,
@@ -460,7 +460,7 @@ class ChatsPage {
       const treeResult = await this.call('GET', `/mobile/conversation-graph/tree${requested ? `?cursor=${encodeURIComponent(requested)}` : ''}`);
       if (!this.live || treeResult.gone) return;
       const tree = treeResult.ok ? treePage(treeResult.data) : null;
-      if (tree?.sections) {
+      if (hasAuthoritativeSections(tree)) {
         if (tree.nextCursor === requested && requested) tree.nextCursor = null;
         this.ownerTree = moreTree ? [...this.ownerTree, tree] : [tree];
         this.hierarchyAt = now();

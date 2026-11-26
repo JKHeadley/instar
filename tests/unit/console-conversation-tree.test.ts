@@ -1,7 +1,7 @@
 import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest';
 import { JSDOM } from 'jsdom';
 // @ts-expect-error Console runs as native ESM in the browser.
-import { conversationTreePreferences, renderOwnerTree, treePage } from '../../dashboard/console/conversation-tree.js';
+import { conversationTreePreferences, hasAuthoritativeSections, renderOwnerTree, treePage } from '../../dashboard/console/conversation-tree.js';
 
 const chat = (id: number, title: string, more = {}) => ({
   ref: { kind: 'conversation', platform: 'telegram', chatId: '-1001', topicId: id },
@@ -66,6 +66,13 @@ describe('shared Conversations tree', () => {
     expect(host.textContent).toContain('Some conversation placements could not be checked.');
   });
 
+  it('only activates when all explicit sections decode and placement is complete', () => {
+    const sections = { projects: [], groups: [], ungrouped: [] };
+    expect(hasAuthoritativeSections(treePage({ partial: true, sections, placementComplete: false }))).toBe(false);
+    expect(hasAuthoritativeSections(treePage({ partial: false, sections }))).toBe(false);
+    expect(hasAuthoritativeSections(treePage({ partial: false, items: [], placementComplete: true }))).toBe(false);
+    expect(hasAuthoritativeSections(treePage({ partial: false, sections, placementComplete: true }))).toBe(true);
+  });
   it('rejects malformed children and section payloads', () => {
     expect(treePage({ partial: false, items: [group('one', 'One', [null])] })).toBeNull();
     expect(treePage({ partial: false, sections: { projects: [], ungrouped: [] } })).toBeNull();

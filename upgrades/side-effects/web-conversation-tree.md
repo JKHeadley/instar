@@ -6,7 +6,7 @@
 
 ## Summary of the change
 
-The two web entry points can draw the same server-projected owner tree once the full sections are present. Display preferences are stored in the browser. The existing view remains compatible with a server that lacks the sections.
+The two web entry points can draw the same server-projected owner tree once all three sections decode and the server affirms complete placement. Display preferences are stored in the browser. The existing view remains compatible with a server that lacks the sections.
 
 ## Decision-point inventory
 
