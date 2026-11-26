@@ -1,0 +1,19 @@
+{
+  "version": 2,
+  "slug": "telegram-signed-history-boundary",
+  "sessionId": "633bd330-201e-4dc8-8fd9-72b89116167e",
+  "timestamp": "2026-11-26T18:50:48.238Z",
+  "artifactPath": "upgrades/side-effects/telegram-signed-history-boundary.md",
+  "artifactSha256": "1160340d3ac663741465cea9c66502240f8abb41767011f60688335ccbb0cd18",
+  "specPath": "docs/specs/mobile-native-conversations.md",
+  "coveredFiles": [
+    "src/server/mobileConversationRoutes.ts",
+    "src/server/routes.ts",
+    "tests/integration/mobile-native-conversations-gaps.test.ts",
+    "upgrades/next/telegram-signed-history-boundary.md",
+    "upgrades/side-effects/telegram-signed-history-boundary.md"
+  ],
+  "phase": "complete",
+  "secondPass": "not-required",
+  "reviewerConcurred": null
+}

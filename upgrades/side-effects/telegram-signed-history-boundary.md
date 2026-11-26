@@ -22,3 +22,8 @@ log row rotated out from reappearing on an older page.
 
 Scrolling back in a Telegram conversation keeps moving into older messages
 even when the cloud copy of a recent App message has rotated out.
+
+For a truncated peer page, recovered App rows also respect the pool's
+existing oldest-covered timestamp. This preserves the cursor boundary
+between the two pages while the peer catches up. The same rows can still
+appear when the next page covers them.

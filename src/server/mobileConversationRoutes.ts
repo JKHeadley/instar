@@ -1443,7 +1443,8 @@ export function appOwnerName(config: InstarConfig): string {
  * has rotated away are returned from the store, merged by eventId. Never throws.
  */
 export function joinTelegramHistory(
-  app: AppConversationService, topicId: number, rows: ReadonlyArray<Record<string, unknown>>, limit: number, beforeMs: number | null = null,
+  app: AppConversationService, topicId: number, rows: ReadonlyArray<Record<string, unknown>>, limit: number,
+  { beforeMs = null, notBeforeMs = null }: { beforeMs?: number | null; notBeforeMs?: number | null } = {},
 ): Array<Record<string, unknown>> {
   const key = `telegram:${topicId}`;
   const out: Array<Record<string, unknown>> = rows.map((row) => {
@@ -1480,6 +1481,9 @@ export function joinTelegramHistory(
     stored = app.store.browseMessages(key, before, Math.max(1, Math.min(100, limit))).messages;
   } catch { /* @silent-fallback-ok — the Telegram rows are still returned */ }
   for (const m of stored) {
+    // A truncated peer still has rows below this time. Adding an older local
+    // row would move the caller's next cursor past those unserved peer rows.
+    if (notBeforeMs !== null && Date.parse(m.at) < notBeforeMs) continue;
     // A message refused before it reached the agent, or still in flight, is not Telegram history.
     if (seen.has(m.eventId) || m.role !== 'operator' || (m.deliveryState !== 'delivered' && m.deliveryState !== 'intercepted' && m.deliveryState !== 'unknown')) continue;
     out.push({ deliveryState: m.deliveryState,

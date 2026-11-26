@@ -23846,8 +23846,8 @@ document.getElementById('mcpForm').addEventListener('submit', async function (e)
     // conversation store by eventId and returns `originVerified` computed there.
     // Telegram media (mobile-native-chat-media §4.9): a device gets each recorded file as
     // `attachments`, and never a server path in the text.
-    const joinForDevice = (rows: ReadonlyArray<Record<string, unknown>>) =>
-      (isDevice ? withTelegramMediaForDevice(ctx.appConversations ?? null, topicId, ctx.appConversations ? joinTelegramHistory(ctx.appConversations, topicId, rows, limit, beforeMs) : rows) : rows);
+    const joinForDevice = (rows: ReadonlyArray<Record<string, unknown>>, notBeforeMs: number | null = null) =>
+      (isDevice ? withTelegramMediaForDevice(ctx.appConversations ?? null, topicId, ctx.appConversations ? joinTelegramHistory(ctx.appConversations, topicId, rows, limit, { beforeMs, notBeforeMs }) : rows) : rows);
     // message-origin-all-platforms §4: agent rows carry `origin` for a device, and for a Bearer read
     // that asks (`includeOrigin=1`, set by the pool fan-out so each peer answers with its own join).
     const withOrigin = isDevice || req.query.includeOrigin === '1';
@@ -23978,8 +23978,8 @@ document.getElementById('mcpForm').addEventListener('submit', async function (e)
     // older than that from other machines are left for the next page, so a caller paging by the
     // oldest row it received cannot skip the rows that machine still holds.
     const cutoffs = truncatedBy.map((t) => Number((t.oldest as { before?: unknown } | undefined)?.before)).filter((n) => Number.isFinite(n));
-    if (cutoffs.length) {
-      const cutoff = Math.max(...cutoffs);
+    const cutoff = cutoffs.length ? Math.max(...cutoffs) : null;
+    if (cutoff !== null) {
       for (let i = rows.length - 1; i >= 0; i--) if (Date.parse(String(rows[i].timestamp)) < cutoff) rows.splice(i, 1);
     }
     const merged = rows
@@ -23994,7 +23994,7 @@ document.getElementById('mcpForm').addEventListener('submit', async function (e)
       })
       .slice(-limit);
     // After the merge, own-row-wins dedupe and the device join, never before (same reason as above).
-    const joinedPool = joinForDevice(merged);
+    const joinedPool = joinForDevice(merged, cutoff);
     res.json({ topicId, ...filterKnownRows(isDevice ? stripViewSignatures(joinedPool) : joinedPool, knownRows), historyCursorVersion: 2, pool: { failed, queried: peers.map(p => p.machineId), via, asleepOrUnreachable, ...(truncatedBy.length ? { truncated: truncatedBy } : {}) }, ...readUpToField(), ...pinsField() });
   });
 
