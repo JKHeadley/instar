@@ -58,3 +58,9 @@ The opt-in uses the registered Needs You owner admission ladder. The registry li
 A paired owner can see an unavailable approval count for an exact pending request when the original private chat delivery and the currently configured chat owner match. The response carries no chat identifiers, request ID or action. The original chat still owns consent and execution. Rotated or missing owner identity, missing delivery evidence and stale requests contribute no count.
 
 The fleet migration and remaining source adapter work have separate acceptance. This checkpoint leaves runtime activation opt-in.
+
+## Fleet draft startup and update defaults
+
+The canonical configuration defaults enable owner admission for new agents and fill the same missing value during an existing agent update. Startup also uses the default when the value is absent, including on agents that have not persisted the new configuration. An explicit false restores the legacy list after a restart. Malformed settings stay inactive. An update exclusion leaves the file alone while startup defaults still apply when the setting is absent.
+
+The server checks the negotiated request before returning the new schema. Legacy owner clients receive an update-required response. Older native clients can retain cached legacy rows, so the draft must stay out of a release until supported clients are deployed. Production credential, batch and physical sources also need acceptance before fleet activation. The draft changes no deployed config.

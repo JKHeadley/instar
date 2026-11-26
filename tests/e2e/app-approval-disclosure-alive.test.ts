@@ -65,7 +65,7 @@ describe('App approval disclosure E2E', () => {
     expect(actual.externalOperations).toEqual(patch.externalOperations);
   });
   it('uses the configured server provider for a signed board-policy request across device approval enrollment', async () => {
-    const s = await bootTrustAppServer('needs-production-provider-e2e-', undefined, null, undefined, true);
+    const s = await bootTrustAppServer('needs-production-provider-e2e-', undefined, null, undefined, 'default');
     const listener = s.app.listen(0, '127.0.0.1');
     listeners.push(listener);
     if (!listener.listening) await new Promise<void>(resolve => listener.once('listening', resolve));
