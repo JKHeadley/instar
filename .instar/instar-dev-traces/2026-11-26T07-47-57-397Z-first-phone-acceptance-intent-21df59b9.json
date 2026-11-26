@@ -1,0 +1,19 @@
+{
+  "version": 2,
+  "slug": "first-phone-acceptance-intent",
+  "sessionId": "b3d2cf8a-9b5d-468b-a50b-70ebf11e9e5c",
+  "timestamp": "2026-11-26T07:47:57.397Z",
+  "artifactPath": "upgrades/side-effects/first-phone-acceptance-intent.md",
+  "artifactSha256": "44a67fe6ee654811ffcd39cb0aaf1a0e09f94164ad93c6bacd352df5a9bb7267",
+  "coveredFiles": [
+    "src/core/trustJourney/FirstApproverWriteReservationStore.ts",
+    "tests/unit/first-approver-write-reservation.test.ts"
+  ],
+  "phase": "complete",
+  "tier": 1,
+  "tierReasoning": "Dormant exact local intent tied to existing first-approver reservation",
+  "eli16Path": "docs/specs/phone-only-first-approver.eli16.md",
+  "sideEffectsPath": "upgrades/side-effects/first-phone-acceptance-intent.md",
+  "secondPass": "true",
+  "reviewerConcurred": true
+}

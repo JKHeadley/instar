@@ -1,4 +1,4 @@
-import { FIRST_APPROVER_SLOT_KEY } from './firstPhoneProposal.js';
+import { FIRST_APPROVER_SLOT_KEY, FIRST_PHONE_NOMINATION_ID } from './firstPhoneProposal.js';
 import { createHash } from 'node:crypto';
 import type { DeviceRegistry, FirstApproverKeyWrite } from '../MobileDeviceKeys.js';
 import type { Database, Statement } from 'better-sqlite3';
@@ -12,6 +12,25 @@ interface Reservation {
   holderEpoch: string;
   kind: 'phone-enrollment' | 'local-key-replacement';
   intentHash: string;
+}
+
+export interface FirstPhoneAcceptanceCommit {
+  nominationId: string;
+  proposalHash: string;
+  slotKey: string;
+  holderMachineId: string;
+  holderEpoch: string;
+}
+
+export function firstPhoneAcceptanceReservation(commit: Readonly<FirstPhoneAcceptanceCommit>): Reservation {
+  const { nominationId, proposalHash, slotKey, holderMachineId, holderEpoch } = commit;
+  return {
+    operationId: nominationId, slotKey, holderMachineId, holderEpoch,
+    kind: 'phone-enrollment',
+    intentHash: createHash('sha256').update(JSON.stringify([
+      'instar.first-phone-acceptance-commit.v1', nominationId, proposalHash,
+    ])).digest('hex'),
+  };
 }
 
 export function firstApproverReplacementReservation(deviceId: string, write: Readonly<FirstApproverKeyWrite>): Reservation {
@@ -29,6 +48,8 @@ export function firstApproverReplacementReservation(deviceId: string, write: Rea
 export class FirstApproverWriteReservationStore {
   private readonly insert: Statement;
   private readonly find: Statement<[string], Reservation>;
+  private readonly insertPhoneCommit: Statement;
+  private readonly findPhoneCommit: Statement<[string], FirstPhoneAcceptanceCommit>;
   private readonly runReserved: (reservation: Reservation, apply: () => KeyWriteResult) => KeyWriteResult | null;
 
   constructor(private readonly db: Database, private readonly isCurrent: (reservation: Readonly<Reservation>) => boolean) {
@@ -43,6 +64,13 @@ export class FirstApproverWriteReservationStore {
         holderEpoch TEXT NOT NULL,
         kind TEXT NOT NULL,
         intentHash TEXT NOT NULL
+      );
+      CREATE TABLE IF NOT EXISTS first_phone_acceptance_commits (
+        slotKey TEXT PRIMARY KEY,
+        nominationId TEXT NOT NULL UNIQUE,
+        proposalHash TEXT NOT NULL,
+        holderMachineId TEXT NOT NULL,
+        holderEpoch TEXT NOT NULL
       )
     `);
     this.insert = db.prepare(`
@@ -52,6 +80,11 @@ export class FirstApproverWriteReservationStore {
       ON CONFLICT DO NOTHING
     `);
     this.find = db.prepare('SELECT * FROM first_approver_write_reservations WHERE slotKey = ?');
+    this.insertPhoneCommit = db.prepare(`
+      INSERT INTO first_phone_acceptance_commits (slotKey, nominationId, proposalHash, holderMachineId, holderEpoch)
+      VALUES (@slotKey, @nominationId, @proposalHash, @holderMachineId, @holderEpoch) ON CONFLICT DO NOTHING
+    `);
+    this.findPhoneCommit = db.prepare('SELECT * FROM first_phone_acceptance_commits WHERE nominationId = ?');
     this.runReserved = db.transaction((reservation: Reservation, apply: () => KeyWriteResult): KeyWriteResult | null => {
       if (!this.matches(reservation) || !this.isCurrent(reservation)) return null;
       return apply();
@@ -84,6 +117,28 @@ export class FirstApproverWriteReservationStore {
     const write = Object.freeze({ ...input });
     const reservation = Object.freeze(firstApproverReplacementReservation(deviceId, write));
     return this.runReserved(reservation, () => registry.replaceFirstApproverPresenceKey(deviceId, newKey, write));
+  }
+
+  /** Record exact phone acceptance intent under the shared slot transaction.
+   * Only the trust journal can turn this checkpoint into effective device acceptance.
+   */
+  commitPhoneAcceptanceIntent(input: Readonly<FirstPhoneAcceptanceCommit>): boolean {
+    const commit = Object.freeze({ ...input });
+    if (this.db.inTransaction || !this.durable() || !FIRST_PHONE_NOMINATION_ID.test(commit.nominationId)
+      || !/^[a-f0-9]{64}$/.test(commit.proposalHash)) return false;
+    const reservation = Object.freeze(firstPhoneAcceptanceReservation(commit));
+    return this.db.transaction(() => {
+      if (!this.matches(reservation) || !this.isCurrent(reservation)) return false;
+      if (this.insertPhoneCommit.run(commit).changes === 1) return true;
+      const existing = this.findPhoneCommit.get(commit.nominationId);
+      return !!existing && existing.slotKey === commit.slotKey && existing.proposalHash === commit.proposalHash
+        && existing.holderMachineId === commit.holderMachineId && existing.holderEpoch === commit.holderEpoch;
+    }).immediate();
+  }
+
+  phoneAcceptanceIntent(nominationId: string): FirstPhoneAcceptanceCommit | null {
+    return this.db.inTransaction || !FIRST_PHONE_NOMINATION_ID.test(nominationId)
+      ? null : this.findPhoneCommit.get(nominationId) ?? null;
   }
 
   private durable(): boolean {

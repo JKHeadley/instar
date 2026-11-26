@@ -6,7 +6,7 @@ import { expect, it, vi } from 'vitest';
 import { DeviceRegistry, keyHashOf } from '../../src/core/MobileDeviceKeys.js';
 import { makeDevice } from '../helpers/mobileDevice.js';
 import { SafeFsExecutor } from '../../src/core/SafeFsExecutor.js';
-import { FirstApproverWriteReservationStore, firstApproverReplacementReservation } from '../../src/core/trustJourney/FirstApproverWriteReservationStore.js';
+import { FirstApproverWriteReservationStore, firstApproverReplacementReservation, firstPhoneAcceptanceReservation } from '../../src/core/trustJourney/FirstApproverWriteReservationStore.js';
 
 const deviceKey = makeDevice().publicKey;
 const newKey = makeDevice().publicKey;
@@ -16,10 +16,11 @@ const write = {
   deviceKeyHash: keyHashOf(deviceKey), priorPresenceKeyHash: null, newPresenceKeyHash: keyHashOf(newKey),
 };
 const replacement = firstApproverReplacementReservation('local-owner-device', write);
-const enrollment = {
-  ...replacement, operationId: 'phone-enrollment-1',
-  kind: 'phone-enrollment' as const, intentHash: 'b'.repeat(64),
+const phone = {
+  nominationId: '00000000-0000-4000-8000-000000000000', proposalHash: 'b'.repeat(64),
+  slotKey: write.slotKey, holderMachineId: write.holderMachineId, holderEpoch: write.holderEpoch,
 };
+const enrollment = firstPhoneAcceptanceReservation(phone);
 
 it.each([replacement, enrollment])('recovers the durable $kind winner and refuses the other write', winner => {
   const dir = fs.mkdtempSync(path.join(os.tmpdir(), 'first-approver-reservation-'));
@@ -40,6 +41,8 @@ it.each([replacement, enrollment])('recovers the durable $kind winner and refuse
       expect(store.reserve({ ...winner, slotKey: 'tj:device-acceptance:first:00' })).toBe(false);
       expect(store.reserve(winner)).toBe(true);
       expect(store.reserve(loser)).toBe(false);
+      expect(store.commitPhoneAcceptanceIntent({ ...phone, proposalHash: 'f'.repeat(64) })).toBe(false);
+      expect(store.commitPhoneAcceptanceIntent(phone)).toBe(winner.kind === 'phone-enrollment');
       expect(store.applyLocalKeyReplacement(registry, 'other-device', newKey, write)).toBeNull();
       expect(apply).not.toHaveBeenCalled();
     } finally {
@@ -51,7 +54,10 @@ it.each([replacement, enrollment])('recovers the durable $kind winner and refuse
       expect(store.reserve(winner)).toBe(true);
       expect(store.reserve(loser)).toBe(false);
       expect(store.applyLocalKeyReplacement(registry, 'local-owner-device', newKey, write)).toBe(winner.kind === 'local-key-replacement' ? 'replaced' : null);
+      expect(store.phoneAcceptanceIntent(phone.nominationId)).toEqual(winner.kind === 'phone-enrollment' ? phone : null);
+      expect(store.commitPhoneAcceptanceIntent(phone)).toBe(winner.kind === 'phone-enrollment');
       holder = 'epoch-2';
+      expect(store.commitPhoneAcceptanceIntent(phone)).toBe(false);
       expect(store.applyLocalKeyReplacement(registry, 'local-owner-device', newKey, write)).toBeNull();
       expect(store.reserve({ ...loser, holderEpoch: holder })).toBe(false);
       expect(apply).toHaveBeenCalledTimes(winner.kind === 'local-key-replacement' ? 1 : 0);

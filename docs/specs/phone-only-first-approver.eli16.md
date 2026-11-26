@@ -51,3 +51,5 @@ The server checks the owner and the machine responsible for enrollment before sh
 The registry can now check the exact old key and retain evidence of the operation that replaced it. A later retry can recover that evidence from disk. Turning this on still requires both enrollment paths to share one durable reservation.
 
 The two ways to set up a first approval device can share a reservation that survives a restart. Once one operation reserves the slot, a different operation must wait for recovery or a new slot. Production still needs to guarantee that the host has exclusive access to these writes.
+
+The phone writer can now record which approved nomination belongs to the reserved slot. It can recover that exact record after a restart. The trust journal must still confirm the final acceptance before the phone can approve changes.
