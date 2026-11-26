@@ -6,6 +6,7 @@ import { join } from 'node:path';
 import { expect, it } from 'vitest';
 import { createOrderedGitFloorReader } from '../../src/core/OrderedPublicationGitRead.js';
 import { createOrderedFloorResponder } from '../../src/core/OrderedPublicationWitness.js';
+import { createOrderedWitnessObserver } from '../../src/core/OrderedWitnessObserver.js';
 import { OrderedWitnessSnapshotStore } from '../../src/core/OrderedWitnessSnapshotStore.js';
 import { SafeFsExecutor } from '../../src/core/SafeFsExecutor.js';
 
@@ -51,6 +52,20 @@ it('reads the pinned ref of a bare Git repository before verifying its witness',
     expect(read(scope)).toBeNull();
     expect(requests).toBe(0);
     git(['update-ref', ref, commit]);
+    const target = { repository, ref, scope, audience: 'disposable' };
+    const observerDeps = {
+      target, store,
+      readCandidateAtCommit(oid: string) {
+        expect(oid).toBe(commit);
+        return { operation: 'observed-operation', payload: Buffer.from('candidate bytes') };
+      },
+    };
+    expect(createOrderedWitnessObserver(observerDeps)(scope)).toBe('pending');
+    const observe = createOrderedWitnessObserver({ ...observerDeps, enabled: true });
+    expect(observe(scope)).toBe('staged');
+    expect(observe(scope)).toBe('existing');
+    expect(store.read(scope)).toBeNull();
+    expect(store.readOperation(scope, 'observed-operation')).toBeNull();
     expect(read({ ...scope, namespace: 'delete' })).toBeNull();
     expect(read(scope)).toBeNull();
     const old = { commit: 'f'.repeat(40), floor };

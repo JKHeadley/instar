@@ -50,8 +50,10 @@ for (const winningAction of ['consume', 'replace'] as const) {
         payloadDigest: createHash('sha256').update(payload).digest('hex'),
       };
       const signature = sign(null, orderedDecisionBytes(decision), privateKey);
-      return (connection: OrderedWitnessSnapshotStore) =>
-        connection.acceptFirstPhoneSlotDecision(expected, commit, decision, slotDecision, signature, pins);
+      return (connection: OrderedWitnessSnapshotStore, stage = true) => {
+        if (stage) connection.stageCandidate(scope, commit, decision.operationKey, Buffer.from(payload));
+        return connection.acceptFirstPhoneSlotDecision(expected, commit, decision, slotDecision, signature, pins);
+      };
     }
 
     try {
@@ -60,6 +62,7 @@ for (const winningAction of ['consume', 'replace'] as const) {
       const candidates = [prepare(first, 'b'.repeat(40)), prepare(second, 'c'.repeat(40)), prepare(replace, 'd'.repeat(40))];
       const winnerIndex = winningAction === 'consume' ? 0 : 2;
       const winner = [first, second, replace][winnerIndex];
+      expect(candidates[winnerIndex](store, false)).toBe('mismatch');
       // Deliberately discard the success acknowledgement.
       candidates[winnerIndex](store);
       candidates.forEach((commit, index) => {
@@ -72,7 +75,17 @@ for (const winningAction of ['consume', 'replace'] as const) {
       const next = { commit: 'e'.repeat(40), floor: verifiedHolderSuccessor(move.floor, move, signature, pins)! };
       expect(concurrent.recordAccepted(accepted, next)).toBe('recorded');
 
-      expect(candidates[winnerIndex](concurrent)).toBe('existing');
+      expect(candidates[winnerIndex](concurrent, false)).toBe('existing');
+      const operation = firstPhoneSlotOperationKey(winner);
+      const exact = Buffer.from(firstPhoneSlotDecisionPayload(winner));
+      const digest = createHash('sha256').update(exact).digest('hex');
+      const reopened = OrderedWitnessSnapshotStore.open(filename);
+      try {
+        expect(reopened.recoverAcceptedCandidate(scope, operation, digest)).toEqual(exact);
+        expect(reopened.recoverAcceptedCandidate(scope, operation, '0'.repeat(64))).toBeNull();
+      } finally {
+        reopened.close();
+      }
       expect(concurrent.readFirstPhoneReceipt(scope.agentId, winner)).toMatchObject({
         decision: winner, commit: accepted.commit, floor: accepted.floor, decisionDigest: accepted.floor.head,
       });

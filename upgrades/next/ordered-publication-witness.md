@@ -26,3 +26,5 @@ The dark witness readback can use a durable snapshot of the accepted commit and 
 The dark witness can permanently reserve one ordered result per first-phone attempt key alongside its accepted floor. Integration checks cover consume winning, cancel winning, holder handover and a stale restored receiver.
 
 The dark first-phone authority now compares and records the exact slot generation and key lineage for enrollment and replacement in one transaction. It preserves the exact receipt across holder changes.
+
+The default-off witness observer retains exact first-phone candidate bytes before the authority can accept them. An accepted receipt can recover those bytes after restart.

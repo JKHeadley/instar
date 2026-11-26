@@ -23,3 +23,5 @@ The witness now has a local store for the Git commit and journal position it alr
 First-phone enrollment can accept only one result for a given attempt. The witness saves the first accepted consume or cancel with its journal position in one transaction. A different result using the same attempt key cannot take over after a holder change.
 
 First-phone enrollment and a competing key replacement now check the same slot. Both compare the slot generation and the exact previously recorded key. If one decision changes the slot first, requests prepared against its old state cannot make a second change. The original receipt can still be recovered after a machine change.
+
+The witness observer saves a copy of the exact proposal it saw. Saving a proposal does not approve it. If a success response goes missing, the authority can look up the original proposal using the accepted receipt and recover the same result.

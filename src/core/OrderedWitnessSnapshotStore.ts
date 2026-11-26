@@ -1,3 +1,4 @@
+import { createHash } from 'node:crypto';
 import Database from 'better-sqlite3';
 import fs from 'node:fs';
 import path from 'node:path';
@@ -52,6 +53,11 @@ export class OrderedWitnessSnapshotStore {
           payload_digest TEXT NOT NULL, commit_oid TEXT NOT NULL,
           PRIMARY KEY (agent, namespace, operation)
         );
+        CREATE TABLE IF NOT EXISTS ordered_witness_candidate (
+          agent TEXT NOT NULL, namespace TEXT NOT NULL, commit_oid TEXT NOT NULL,
+          operation TEXT NOT NULL, payload_digest TEXT NOT NULL, bytes BLOB NOT NULL,
+          PRIMARY KEY (agent, namespace, commit_oid)
+        );
         CREATE TABLE IF NOT EXISTS first_phone_slot (
           agent TEXT NOT NULL, slot TEXT NOT NULL, state TEXT NOT NULL, PRIMARY KEY (agent, slot)
         );
@@ -73,6 +79,39 @@ export class OrderedWitnessSnapshotStore {
       SELECT commit_oid AS commitOid, floor FROM ordered_witness_snapshot WHERE agent=? AND namespace=?
     `).get(scope.agentId, scope.namespace) as { commitOid: string; floor: string } | undefined;
     return row ? { commit: row.commitOid, floor: JSON.parse(row.floor) as PublicationFloor } : null;
+  }
+
+  stageCandidate(scope: PublicationScope, commit: string, operation: string, payload: Buffer):
+    'staged' | 'existing' | 'conflict' {
+    if (!validCommit(commit) || !/^[A-Za-z0-9_.:-]{1,256}$/.test(operation) ||
+        payload.length === 0 || payload.length > 256 * 1024) return 'conflict';
+    const digest = createHash('sha256').update(payload).digest('hex');
+    return this.db.transaction(() => {
+      const saved = this.db.prepare(`
+        SELECT operation, payload_digest AS digest, bytes FROM ordered_witness_candidate
+        WHERE agent=? AND namespace=? AND commit_oid=?
+      `).get(scope.agentId, scope.namespace, commit) as { operation: string; digest: string; bytes: Buffer } | undefined;
+      if (saved) return saved.operation === operation && saved.digest === digest && saved.bytes.equals(payload)
+        ? 'existing' : 'conflict';
+      this.db.prepare('INSERT INTO ordered_witness_candidate VALUES (?, ?, ?, ?, ?, ?)')
+        .run(scope.agentId, scope.namespace, commit, operation, digest, payload);
+      return 'staged';
+    }).immediate();
+  }
+
+  /** Read only the original candidate named by an exact historical acceptance. */
+  recoverAcceptedCandidate(scope: PublicationScope, operation: string, expectedPayloadDigest: string): Buffer | null {
+    const receipt = this.readOperation(scope, operation);
+    if (!receipt || receipt.payloadDigest !== expectedPayloadDigest) return null;
+    return this.readExactCandidate(scope, receipt.commit, operation, expectedPayloadDigest);
+  }
+
+  private readExactCandidate(scope: PublicationScope, commit: string, operation: string, expectedPayloadDigest: string): Buffer | null {
+    const row = this.db.prepare(`
+      SELECT bytes FROM ordered_witness_candidate
+      WHERE agent=? AND namespace=? AND commit_oid=? AND operation=? AND payload_digest=?
+    `).get(scope.agentId, scope.namespace, commit, operation, expectedPayloadDigest) as { bytes: Buffer } | undefined;
+    return row && createHash('sha256').update(row.bytes).digest('hex') === expectedPayloadDigest ? row.bytes : null;
   }
 
   readOperation(scope: PublicationScope, operationKey: string): { payloadDigest: string; commit: string } | null {
@@ -153,6 +192,9 @@ export class OrderedWitnessSnapshotStore {
       }
       const current = this.readFirstPhoneSlot(floor.agentId, next.slotKey);
       if (!current || canonicalJson(current) !== canonicalJson(slotDecision.prior)) return 'conflict';
+      if (!this.readExactCandidate(floor, commit, decision.operationKey, decision.payloadDigest)?.equals(Buffer.from(payload))) {
+        return 'mismatch';
+      }
       const accepted = this.recordOrderedDecision(expected, commit, decision, payload, signature, pins);
       if (accepted !== 'recorded') return accepted;
       this.db.prepare('UPDATE first_phone_slot SET state=? WHERE agent=? AND slot=?')
