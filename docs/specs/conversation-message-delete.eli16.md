@@ -69,3 +69,5 @@ The server can now check whether a file is still attached to another readable me
 On the isolated server, a shared file still downloads if another readable message contains it. If the last readable attachment is deleted while the server opens the file, the download stops before sending any bytes.
 
 The file store can now recheck permission just before it makes a new copy available to a session. The session route still needs to supply that permission check.
+
+The server can now preserve which machine owns protected history across a restart. The app stays unchanged while the routing and recovery checks are being connected.
