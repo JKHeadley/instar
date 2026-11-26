@@ -33,3 +33,5 @@ preserve withhold completeness. This is a partial integration checkpoint.
 The tree preserves the exact parent of a generated descendant within the
 same project. The signed test places a linked card under the generated
 parent. Missing, cyclic, or out-of-budget edges withhold completeness.
+
+Complete project branches expose a visible descendant conversation count excluding the project chat itself.

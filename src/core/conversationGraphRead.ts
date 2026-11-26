@@ -90,6 +90,8 @@ export interface TreeNode {
   frontDoor?: ConversationRef;
   /** Efforts only, when the projects could be read and this effort holds a tracked project's conversation. */
   project?: { title: string; conversationKey: string };
+  /** Visible conversations below this project node, excluding its own conversation. */
+  descendantConversationCount?: number;
   projectConversationKey?: string;
   children?: TreeNode[];
   /** False when the children shown are not all of them (depth, per-node or response limit): open the node for the rest. */
@@ -408,6 +410,13 @@ export class ConversationGraphReadModel {
       };
       for (const project of projects) attach(project, 1, new Set());
       if (childrenByParent.size) placementComplete = false;
+      if (placementComplete) {
+        const count = (row: TreeNode): number => (row.kind === 'conversation' ? 1 : 0)
+          + (row.children?.reduce((total, child) => total + count(child), 0) ?? 0);
+        for (const project of projects) {
+          project.descendantConversationCount = count(project) - 1;
+        }
+      }
 
     }
     return { status: 200, body: { ...this.envelope(revision, partialReasons), ...(rootItem ? { root: flat(rootItem) } : {}),

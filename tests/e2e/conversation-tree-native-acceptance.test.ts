@@ -54,7 +54,7 @@ it('keeps conversation tree and card reads open for a simulator-signed owner', a
     const tree = await read('/mobile/conversation-graph/tree');
     expect(tree.placementComplete).toBe(true);
     expect(tree.sections.projects).toEqual([expect.objectContaining({
-      projectConversationKey: 'telegram:42', children: [expect.objectContaining({ title: 'Generated Project Chat', children: [
+      projectConversationKey: 'telegram:42', visibleChildCount: 1, descendantConversationCount: 2, children: [expect.objectContaining({ title: 'Generated Project Chat', children: [
         expect.objectContaining({ ref: expect.objectContaining({ conversationKey: linked.conversationKey }) }),
       ] })],
     })]);
