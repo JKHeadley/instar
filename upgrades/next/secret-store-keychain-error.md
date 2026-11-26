@@ -1,0 +1,19 @@
+# Upgrade Guide — vNEXT
+
+<!-- bump: patch -->
+
+## What Changed
+
+Vault keychain write failures now use a fixed diagnostic. The fallback still saves the vault key in its protected location.
+
+## What to Tell Your User
+
+A failed keychain write no longer includes the operating-system command or its output in the diagnostic.
+
+## Summary of New Capabilities
+
+Keychain failure reports identify the unavailable backend with a fixed reason.
+
+## Evidence
+
+Mocked macOS and Linux keychain failures passed a regression test that checks the reported diagnostic for synthetic key material and child-process output.
