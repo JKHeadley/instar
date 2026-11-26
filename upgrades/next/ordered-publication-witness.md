@@ -34,3 +34,5 @@ The first-phone observer can read the canonical candidate blob at the exact obse
 The default-off first-phone observation cycle refreshes its isolated Git mirror before staging the exact candidate. It leaves the mirror's refs and accepted witness state untouched.
 
 A default-off dedicated witness loop can repeat first-phone observation cycles, report failures, and stop promptly between cycles.
+
+The witness observation loop has a dedicated, default-off process entry point. It requires an isolated bare mirror and shuts down cleanly on SIGTERM or SIGINT.

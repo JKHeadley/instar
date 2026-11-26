@@ -1,0 +1,22 @@
+{
+  "ts": "2026-11-26T17:04:59.297Z",
+  "slug": "ordered-publication-witness",
+  "suggestedTier": 2,
+  "declaredTier": 1,
+  "riskFloor": 1,
+  "riskFloorReasons": [],
+  "belowFloor": false,
+  "files": 1,
+  "loc": 59,
+  "scope": {
+    "basis": "staged-in-scope-paths-including-deleted",
+    "files": [
+      "src/witness/firstPhoneMain.ts"
+    ],
+    "addedLines": 59,
+    "deletedLines": 0
+  },
+  "causalAutopsy": null,
+  "classClosure": null,
+  "verdict": "pass"
+}

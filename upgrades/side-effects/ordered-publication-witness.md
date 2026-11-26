@@ -87,3 +87,7 @@ The default-off one-shot composition uses the audited Git executor with a bounde
 ## Witness observation loop
 
 The default-off loop runs one observation at a time, reports results without candidate data, and observes cancellation between cycles and during sleep. Each already-running synchronous Git operation is bounded by its existing timeout. The loop is intended for a dedicated witness process. No server startup, scheduler, service registration or production flag is changed.
+
+## Dedicated witness process
+
+The compiled entry point is `node dist/witness/firstPhoneMain.js /absolute/path/to/witness-config.json`. Explicit enablement requires an absolute witness home with a provisioned bare `mirror.git`, agent and repository scope, and bounded interval. The process creates or opens its private `witness.sqlite`, reports observation status only, and closes storage after SIGTERM or SIGINT. The subprocess integration verifies off-by-default startup and enabled shutdown. Service registration and actual machine custody remain deployment steps.

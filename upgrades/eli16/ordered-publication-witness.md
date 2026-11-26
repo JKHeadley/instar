@@ -31,3 +31,5 @@ The observer can load the original proposal directly from the witness's Git mirr
 A witness can now refresh its isolated Git mirror before checking for a proposal. If the refresh fails, it waits. A successful check can save the proposal as evidence without moving a branch or recording a decision.
 
 The witness can repeat that check at a fixed interval and report failures before retrying. It stops when asked, with no new check after shutdown. The loop is intended for a dedicated process.
+
+For rehearsal, the witness loop can run in its own process. It requires an explicit setting and a separate bare Git mirror. Stopping the process closes its local database.
