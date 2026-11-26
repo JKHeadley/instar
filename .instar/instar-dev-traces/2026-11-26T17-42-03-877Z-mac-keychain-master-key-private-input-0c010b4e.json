@@ -1,0 +1,29 @@
+{
+  "version": 3,
+  "slug": "mac-keychain-master-key-private-input",
+  "sessionId": "fc3d3191-842f-463d-af54-a2abbc40e3f2",
+  "timestamp": "2026-11-26T17:42:03.877Z",
+  "artifactPath": "upgrades/side-effects/mac-keychain-master-key-private-input.md",
+  "artifactSha256": "5dba71a6a5bb357a487dde2752925fdd786a90ced5548337aa53c24bb2d1afb0",
+  "coveredFiles": [
+    "docs/specs/mac-keychain-master-key-private-input.eli16.md",
+    "upgrades/side-effects/mac-keychain-master-key-private-input.md"
+  ],
+  "phase": "complete",
+  "tier": 1,
+  "tierReasoning": "Records the independent reviewer's final concurrence; documentation only",
+  "eli16Path": "docs/specs/mac-keychain-master-key-private-input.eli16.md",
+  "sideEffectsPath": "upgrades/side-effects/mac-keychain-master-key-private-input.md",
+  "secondPass": "true",
+  "reviewerConcurred": true,
+  "toolchain": {
+    "reviewSkills": [
+      {
+        "name": "codex-independent-review",
+        "outcome": "concur",
+        "verified": false,
+        "iterations": 3
+      }
+    ]
+  }
+}

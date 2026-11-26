@@ -1,0 +1,36 @@
+{
+  "version": 3,
+  "slug": "mac-keychain-master-key-private-input",
+  "sessionId": "fc3d3191-842f-463d-af54-a2abbc40e3f2",
+  "timestamp": "2026-11-26T17:27:58.674Z",
+  "artifactPath": "upgrades/side-effects/mac-keychain-master-key-private-input.md",
+  "artifactSha256": "828377f95db1247f70e96e185fcdd5ca3322f956c65c915e0f54b28b26aad93e",
+  "coveredFiles": [
+    "docs/specs/mac-keychain-master-key-private-input.eli16.md",
+    "src/core/GlobalSecretStore.ts",
+    "src/core/SecretStore.ts",
+    "src/core/macKeychainWrite.ts",
+    "tests/unit/global-secret-store.test.ts",
+    "tests/unit/mac-keychain-write.test.ts",
+    "tests/unit/secret-store-keychain-output.test.ts",
+    "upgrades/next/mac-keychain-master-key-private-input.md",
+    "upgrades/side-effects/mac-keychain-master-key-private-input.md"
+  ],
+  "phase": "complete",
+  "tier": 1,
+  "tierReasoning": "Passes the vault master key to the Security tool on private stdin instead of argv; fallback unchanged; rebuilt from PR 3900 onto 3928 with an independent Codex review recorded",
+  "eli16Path": "docs/specs/mac-keychain-master-key-private-input.eli16.md",
+  "sideEffectsPath": "upgrades/side-effects/mac-keychain-master-key-private-input.md",
+  "secondPass": "true",
+  "reviewerConcurred": false,
+  "toolchain": {
+    "reviewSkills": [
+      {
+        "name": "codex-independent-review",
+        "outcome": "concern-answered",
+        "verified": false,
+        "iterations": 1
+      }
+    ]
+  }
+}

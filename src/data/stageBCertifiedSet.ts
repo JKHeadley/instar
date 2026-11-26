@@ -292,6 +292,10 @@ export const STAGE_B_CERTIFIED_SET = {
       "reason": "LLM-provider plumbing reached through a dynamic import in a certified module; shared across every internal LLM feature and certified by its own suites — binding it would re-freeze releases on unrelated provider churn"
     },
     {
+      "file": "src/core/macKeychainWrite.ts",
+      "reason": "macOS keychain write helper reached only through the excluded SecretStore and GlobalSecretStore. It passes the master key on private stdin; no inbound-delivery or lifecycle logic, outside the Stage-B canaried path."
+    },
+    {
       "file": "src/core/SecretStore.ts",
       "reason": "cross-cutting utility shared far beyond Codex delivery, certified by its own suite; binding it would re-freeze releases on unrelated churn"
     },
