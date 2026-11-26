@@ -276,6 +276,11 @@ export class LiveConfig extends EventEmitter {
       const newConfig = JSON.parse(content) as Record<string, unknown>;
 
       const stat = fs.statSync(this.configPath);
+      // config.json carries credentials: repair a file that group or others
+      // can read (an older install, a hand edit, a copy) to owner-only.
+      if (process.platform !== 'win32' && (stat.mode & 0o077) !== 0) {
+        try { fs.chmodSync(this.configPath, 0o600); } catch { /* @silent-fallback-ok: a read-only mount keeps its mode; the read still succeeds */ }
+      }
       this.lastMtime = stat.mtimeMs;
       this.lastReadAt = Date.now();
 

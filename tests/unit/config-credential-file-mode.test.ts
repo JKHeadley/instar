@@ -54,4 +54,36 @@ describe('config credential protection', () => {
     const store = new SecretStore({ stateDir: tmpDir, forceFileKey: true });
     expect(store.get('sessions.credentials.anthropic.value')).toBe(placeholderValue);
   });
+  it('loading a group/world-readable config.json (0664) repairs it to 0600', () => {
+    if (process.platform === 'win32') return;
+    const configPath = path.join(tmpDir, 'config.json');
+    fs.writeFileSync(configPath, JSON.stringify({ projectName: 'open-file' }, null, 2));
+    fs.chmodSync(configPath, 0o664);
+
+    const live = new LiveConfig(tmpDir, { checkIntervalMs: 60_000 });
+
+    expect(live.get('projectName', '')).toBe('open-file');
+    expect(fs.statSync(configPath).mode & 0o777).toBe(0o600);
+  });
+
+  it('LiveConfig.set on a config.json that started at 0664 leaves it at 0600', () => {
+    if (process.platform === 'win32') return;
+    const configPath = path.join(tmpDir, 'config.json');
+    fs.writeFileSync(configPath, JSON.stringify({ projectName: 'open-then-set' }, null, 2));
+    fs.chmodSync(configPath, 0o664);
+
+    const live = new LiveConfig(tmpDir, { checkIntervalMs: 60_000 });
+    live.set('scheduler.enabled', true);
+
+    expect(fs.statSync(configPath).mode & 0o777).toBe(0o600);
+  });
+
+  it('an owner-only config.json is left unchanged on load', () => {
+    if (process.platform === 'win32') return;
+    const configPath = path.join(tmpDir, 'config.json');
+    fs.writeFileSync(configPath, JSON.stringify({ projectName: 'closed' }, null, 2), { mode: 0o600 });
+    fs.chmodSync(configPath, 0o600);
+    new LiveConfig(tmpDir, { checkIntervalMs: 60_000 });
+    expect(fs.statSync(configPath).mode & 0o777).toBe(0o600);
+  });
 });

@@ -1196,7 +1196,7 @@ async function initStandaloneAgent(agentName: string, options: InitOptions): Pro
     },
     enabledFrameworks: [...resolveEnabledFrameworks(options.framework)],
   };
-  fs.writeFileSync(path.join(stateDir, 'config.json'), JSON.stringify(config, null, 2));
+  fs.writeFileSync(path.join(stateDir, 'config.json'), JSON.stringify(config, null, 2), { mode: 0o600 });
   console.log(`  ${pc.green('✓')} Created config.json`);
 
   // Write empty jobs and users
@@ -1435,7 +1435,7 @@ async function setupCloudBackup(projectDir: string, stateDir: string, agentName:
   // Update config with gitBackup enabled
   const configObj = JSON.parse(fs.readFileSync(path.join(stateDir, 'config.json'), 'utf-8'));
   configObj.gitBackup = { enabled: true, autoPush: true };
-  fs.writeFileSync(path.join(stateDir, 'config.json'), JSON.stringify(configObj, null, 2));
+  fs.writeFileSync(path.join(stateDir, 'config.json'), JSON.stringify(configObj, null, 2), { mode: 0o600 });
   console.log(`  ${pc.green('✓')} Initialized local backup`);
 
   // Step 3: Ensure gh CLI is available
