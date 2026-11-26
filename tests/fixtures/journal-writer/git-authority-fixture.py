@@ -7,6 +7,7 @@ from pathlib import Path
 import subprocess
 import sys
 import tempfile
+import time
 import unittest
 
 REF = "refs/heads/journal-authority"
@@ -91,6 +92,32 @@ def prepared_receiver(repository, lines):
             raise ValueError("unknown command")
 
 
+def check_recovered_tip(repository, tip, witness_path):
+    """Fixture recovery fence. An unavailable or disagreeing witness closes ingress."""
+    try:
+        witness = json.loads(witness_path.read_bytes())
+        state = read_state(repository, tip)
+        return state["phase"] == "active" and witness == {
+            "generation": state["generation"], "tip": tip,
+        }
+    except (OSError, ValueError, KeyError, subprocess.CalledProcessError):
+        return False
+
+
+def publish_floor(path, generation, tip):
+    staged = path.with_suffix(".tmp")
+    with staged.open("xb") as output:
+        output.write(json.dumps({"generation": generation, "tip": tip}).encode())
+        output.flush()
+        os.fsync(output.fileno())
+    staged.replace(path)
+    fd = os.open(path.parent, os.O_RDONLY)
+    try:
+        os.fsync(fd)
+    finally:
+        os.close(fd)
+
+
 def genesis():
     return {"command": "genesis", "phase": "active", "generation": 1,
             "writer": "old", "expires": 10, "intent": None}
@@ -101,6 +128,7 @@ class GitAuthorityFixture(unittest.TestCase):
         temp = tempfile.TemporaryDirectory(prefix="journal-git-authority-")
         self.addCleanup(temp.cleanup)
         root = Path(temp.name)
+        self.root = root
         self.remote = root / "authority.git"
         self.local = root / "client"
         self.remote.mkdir()
@@ -186,6 +214,51 @@ class GitAuthorityFixture(unittest.TestCase):
         self.assertIn(b"unauthorized", self.push(self.append_candidate(activation), "old").stderr)
         self.assertEqual(self.tip(), activation)
 
+    def test_receiver_stall_after_expiry_check_exposes_commit_gap(self):
+        candidate = self.append_candidate(self.initial)
+        # The sidecar barrier holds the prepared hook after validation. Git
+        # cannot check wall time and update the ref as one indivisible action.
+        barrier = self.remote / "fixture-after-check"
+        barrier.mkdir()
+        import concurrent.futures
+        with concurrent.futures.ThreadPoolExecutor(max_workers=1) as executor:
+            push = executor.submit(self.push, candidate, "old")
+            try:
+                deadline = time.monotonic() + 10
+                while not (barrier / "validated").exists():
+                    if push.done() or time.monotonic() >= deadline:
+                        self.fail("receiver did not reach the post-validation barrier")
+                    time.sleep(0.01)
+                self.clock(10)
+            finally:
+                (barrier / "resume").touch()
+            result = push.result(timeout=10)
+
+        self.assertEqual(result.returncode, 0, result.stderr.decode())
+        self.assertEqual(self.tip(), candidate)
+
+    def test_restored_backup_and_missing_witness_keep_ingress_closed(self):
+        backup = self.root / "backup.git"
+        git(self.root, "clone", "--bare", str(self.remote), str(backup))
+        witness = self.root / "witness" / "floor.json"
+        witness.parent.mkdir()
+        publish_floor(witness, 1, self.initial)
+        self.assertTrue(check_recovered_tip(backup, self.initial, witness))
+
+        pending = self.begin(self.initial)
+        state = read_state(self.local, pending)
+        self.assertFalse(check_recovered_tip(self.remote, pending, witness))
+        activation = self.candidate({**state, "command": "activate", "phase": "active",
+                                     "generation": 2, "writer": "next", "expires": 20}, pending)
+        (self.remote / "fixture-witness").write_text(pending)
+        self.assertEqual(self.push(activation, "publisher").returncode, 0)
+        self.assertFalse(check_recovered_tip(self.remote, activation, witness))
+        publish_floor(witness, 2, activation)
+
+        self.assertTrue(check_recovered_tip(self.remote, activation, witness))
+        self.assertFalse(check_recovered_tip(backup, self.initial, witness))
+        self.assertFalse(check_recovered_tip(self.remote, activation, witness.with_name("unavailable.json")))
+
     def test_recover_push_ack_from_exact_remote_tip_and_bytes(self):
         candidate = self.append_candidate(self.initial)
         self.push(candidate, "old")  # Discard the client outcome.
@@ -202,7 +275,16 @@ class GitAuthorityFixture(unittest.TestCase):
 if __name__ == "__main__":
     if sys.argv[1:] == ["--receiver"]:
         try:
-            prepared_receiver(Path.cwd(), sys.stdin)
+            repository = Path.cwd()
+            prepared_receiver(repository, sys.stdin)
+            barrier = repository / "fixture-after-check"
+            if barrier.is_dir():
+                (barrier / "validated").touch()
+                deadline = time.monotonic() + 15
+                while not (barrier / "resume").exists():
+                    if time.monotonic() >= deadline:
+                        raise ValueError("fixture barrier timed out")
+                    time.sleep(0.01)
         except (KeyError, ValueError, subprocess.CalledProcessError) as error:
             sys.exit(str(error))
     else:
