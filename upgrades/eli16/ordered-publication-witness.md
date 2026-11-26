@@ -29,3 +29,5 @@ The witness observer saves a copy of the exact proposal it saw. Saving a proposa
 The observer can load the original proposal directly from the witness's Git mirror. It looks up the proposal at the exact commit, even if the mirror's working files show something else.
 
 A witness can now refresh its isolated Git mirror before checking for a proposal. If the refresh fails, it waits. A successful check can save the proposal as evidence without moving a branch or recording a decision.
+
+The witness can repeat that check at a fixed interval and report failures before retrying. It stops when asked, with no new check after shutdown. The loop is intended for a dedicated process.

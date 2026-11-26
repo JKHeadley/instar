@@ -1,3 +1,4 @@
+import { setTimeout as delay } from 'node:timers/promises';
 import type { PublicationScope } from './FencedPublicationStore.js';
 import { createFirstPhoneGitCandidateReader } from './FirstPhoneGitCandidateReader.js';
 import type { PinnedGitDestination } from './OrderedPublicationGitRead.js';
@@ -33,4 +34,39 @@ export function createFirstPhoneWitnessObservation(deps: {
     }
     return observe(target.scope);
   };
+}
+
+type ObservationResult = ReturnType<ReturnType<typeof createFirstPhoneWitnessObservation>>;
+
+/**
+ * Run in the dedicated witness process. Each cycle can do bounded synchronous
+ * Git I/O, so it must stay off the HTTP server event loop.
+ */
+export async function runFirstPhoneWitnessObservation(deps: {
+  enabled?: boolean;
+  observe: () => ObservationResult;
+  intervalMs: number;
+  signal: AbortSignal;
+  report: (result: ObservationResult | 'error') => void;
+}): Promise<void> {
+  if (deps.enabled !== true || deps.signal.aborted) return;
+  if (!Number.isSafeInteger(deps.intervalMs) || deps.intervalMs < 1000 || deps.intervalMs > 2_147_483_647) {
+    throw new Error('Invalid first-phone witness observation interval');
+  }
+
+  while (!deps.signal.aborted) {
+    let result: ObservationResult | 'error';
+    try {
+      result = deps.observe();
+    } catch {
+      result = 'error';
+    }
+    deps.report(result);
+    if (deps.signal.aborted) return;
+    try {
+      await delay(deps.intervalMs, undefined, { signal: deps.signal });
+    } catch (error) {
+      if (!deps.signal.aborted) throw error;
+    }
+  }
 }

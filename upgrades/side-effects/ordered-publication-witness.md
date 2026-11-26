@@ -83,3 +83,7 @@ The dark reader accepts only full object IDs and a fixed blob path in a receiver
 ## Witness mirror refresh
 
 The default-off one-shot composition uses the audited Git executor with a bounded fetch into a dedicated receiver-owned mirror. It fetches the pinned ref without a destination refspec, disables tags and submodules, and does not write FETCH_HEAD. The staging path then re-observes the authoritative tip around the immutable blob read. A failed refresh prevents staging. The disposable integration starts with an empty isolated mirror and verifies no local refs or accepted state were created. No deployed timer or route calls the cycle.
+
+## Witness observation loop
+
+The default-off loop runs one observation at a time, reports results without candidate data, and observes cancellation between cycles and during sleep. Each already-running synchronous Git operation is bounded by its existing timeout. The loop is intended for a dedicated witness process. No server startup, scheduler, service registration or production flag is changed.
