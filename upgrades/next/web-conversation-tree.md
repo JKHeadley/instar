@@ -2,7 +2,7 @@
 
 ## What Changed
 
-The web conversation views can render the shared owner conversation tree when the server provides the Projects, Groups, and Not in a group yet sections. The Chief of Staff has a pinned card at the top of Grouped view. Sections start open and remember what you collapse. Flat view provides an activity or name sort.
+The web conversation views can render the shared owner conversation tree when the server provides the Projects, Groups, and Not in a group yet sections. The Chief of Staff has a pinned card at the top of Grouped view. Projects and Groups start open and remember when you fold the whole section. A project or group with one confirmed conversation shows one row that opens the chat. Flat view provides an activity or name sort.
 
 ## What to Tell Your User
 

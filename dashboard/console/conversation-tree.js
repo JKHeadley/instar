@@ -36,6 +36,7 @@ export function treePage(data) {
       count: Number.isSafeInteger(raw.visibleChildCount) && raw.visibleChildCount >= 0 ? raw.visibleChildCount : null,
       descendantCount: data.placementComplete === true && Number.isSafeInteger(raw.descendantConversationCount) &&
         raw.descendantConversationCount >= 0 ? raw.descendantConversationCount : null,
+      childrenComplete: raw.childrenComplete === true,
       incomplete: raw.childrenComplete === false || raw.proposedComplete === false,
       children, proposed,
     };
@@ -99,10 +100,16 @@ export function conversationTreePreferences() {
   };
 }
 
-export function treeConversationRow(row, title, activity) {
+export function treeConversationRow(row, title, activity, affiliation) {
   const words = title.match(/[\p{L}\p{N}]+/gu) || [];
   const initials = words.slice(0, 2).map(word => Array.from(word)[0]).join('').toUpperCase();
-  row.prepend(el('span', { class: 'conversation-tree-avatar', 'aria-hidden': 'true', text: initials || '?' }));
+  row.prepend(affiliation
+    ? el('span', { class: `chat-group-icon${affiliation.project ? ' chat-group-icon-project' : ''}`,
+        icon: affiliation.project ? 'flag' : 'folder', 'aria-hidden': 'true' })
+    : el('span', { class: 'conversation-tree-avatar', 'aria-hidden': 'true', text: initials || '?' }));
+  if (affiliation?.status) row.querySelector('.chat-row-title, .row-title')?.after(el('span', {
+    class: `chat-project-status tone-${affiliation.status.tone}`, text: affiliation.status.label,
+  }));
   const at = timestamp(activity);
   if (at) {
     const date = new Date(at);
@@ -122,7 +129,7 @@ function countedTitle(title, count) {
 }
 
 /** Draw only the placement the owner projection supplied. No flat row becomes Ungrouped by omission. */
-export function renderOwnerTree(pages, { preferences, conversationRow, groupDetails, linkedCard }) {
+export function renderOwnerTree(pages, { preferences, conversationRow, groupDetails, linkedCard, projectStatus }) {
   const root = pages[0]?.root;
   const roots = pages.flatMap(page => page.items);
   const seen = new Set(root ? [root.key] : []);
@@ -135,16 +142,27 @@ export function renderOwnerTree(pages, { preferences, conversationRow, groupDeta
     details.addEventListener('toggle', () => preferences.saveExpanded(key, details.open));
     return details;
   }
-  function branch(n) {
+  function isSingleConversation(n) {
+    if (n.incomplete || n.proposed.length) return false;
+    if (n.kind === 'conversation') return n.children.length === 0 && (n.descendantCount ?? n.count) === 0;
+    return n.childrenComplete && n.count === 1 && n.children.length === 1 && isSingleConversation(n.children[0]);
+  }
+  function branch(n, affiliation = null) {
     if (seen.has(n.key)) return null;
     seen.add(n.key);
-    const children = sorted(n.children).map(branch).filter(Boolean);
+    const project = n.project && { project: true, title: n.project.title, status: projectStatus?.(n.projectKey) };
+    const single = isSingleConversation(n);
+    if (n.kind === 'effort' && single) {
+      return branch(n.children[0], project || affiliation || { project: false });
+    }
+    const children = sorted(n.children).map(child => branch(child)).filter(Boolean);
     // Proposed card placement is rendered only inside the server-chosen branch.
-    const proposed = sorted(n.proposed).map(branch).filter(Boolean);
+    const proposed = sorted(n.proposed).map(child => branch(child)).filter(Boolean);
     if (n.kind === 'conversation') {
-      const row = conversationRow(n);
+      const projectRoot = project && n.projectKey === conversationRefKey(n.ref);
+      const row = conversationRow(n, single && projectRoot && n.childrenComplete ? project : affiliation);
       const card = linkedCard?.(n);
-      if (n.project && n.projectKey === conversationRefKey(n.ref)) {
+      if (projectRoot && !(single && n.childrenComplete)) {
         const count = n.descendantCount ?? n.count;
         // A confirmed project can use its own conversation as the branch
         // identity even when no saved effort exists.
@@ -161,7 +179,7 @@ export function renderOwnerTree(pages, { preferences, conversationRow, groupDeta
   }
   const output = [];
   if (root) output.push(el('div', { class: 'conversation-tree-chief' },
-    el('span', { class: 'conversation-tree-pinned-label', text: 'Pinned' }), conversationRow(root, true),
+    el('span', { class: 'conversation-tree-pinned-label', text: 'Pinned' }), conversationRow(root),
     el('p', { class: 'conversation-tree-chief-subtitle', text: 'Ask about any of your work here.' })));
   const hasSections = pages.every(page => page.sections);
   const sectionItems = (name) => pages.flatMap(page => page.sections?.[name] || []);
@@ -169,7 +187,7 @@ export function renderOwnerTree(pages, { preferences, conversationRow, groupDeta
   const groupRoots = hasSections ? sectionItems('groups') : roots.filter(n => n.kind === 'effort' && !n.project);
   const ungrouped = hasSections ? sectionItems('ungrouped').filter(node => !node.projectKey) : [];
   for (const [name, rows] of [['Projects', projectRoots], ['Groups', groupRoots], ['Not in a group yet', ungrouped]]) {
-    const children = sorted(rows).map(branch).filter(Boolean);
+    const children = sorted(rows).map(child => branch(child)).filter(Boolean);
     if (children.length) output.push(disclosure(`section:${name === 'Not in a group yet' ? 'Ungrouped' : name}`, name, children, 'conversation-tree-section'));
   }
   if (pages.some(page => page.partial || !page.projectsKnown || !page.placementComplete)) {

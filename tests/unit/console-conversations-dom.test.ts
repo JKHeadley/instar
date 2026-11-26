@@ -454,7 +454,7 @@ describe('native console Conversations', () => {
     expect(intents).toHaveLength(2);expect(intents[0].body).toBe(intents[1].body);
     expect(dom.window.document.querySelector('[role=dialog]')?.textContent).toContain('Placement updated.');
   });
-  it('reads the shared tree with dashboard owner proof and preserves supplied branches', async () => {
+  it('reads the shared tree with dashboard owner proof and renders a single-chat branch as one row', async () => {
     const chat = (topicId: number, title: string) => ({
       ref: { kind: 'conversation', platform: 'telegram', chatId: '-100', topicId },
       title, kind: 'conversation', visibleChildCount: 0,
@@ -471,7 +471,8 @@ describe('native console Conversations', () => {
       Authorization: 'Bearer bearer', 'X-Instar-Operator-Session': 'human-proof',
     });
     expect(main.querySelector('.conversation-tree-chief')?.textContent).toContain('Chief of Staff');
-    expect(main.querySelector('details details')?.textContent).toContain('Project conversation');
+    expect(main.querySelector('details details')).toBeNull();
+    expect(main.querySelector('details > a')?.textContent).toBe('Project conversation');
     expect(main.querySelector('a[href$="view=flat"]')?.textContent).toBe('Flat');
     expect(requests.some(r => r.url.startsWith('/conversation-graph/roots'))).toBe(false);
   });

@@ -465,6 +465,12 @@ class ChatsPage {
         this.ownerTree = moreTree ? [...this.ownerTree, tree] : [tree];
         this.hierarchyAt = now();
         this.paintList();
+        if (!moreTree && tree.sections.projects.length) {
+          const projects = await this.call('GET', '/mobile/work/projects');
+          if (!this.live || projects.gone) return;
+          this.ownerTreeProjects = projects.ok ? trackedProjects(projects.data) : null;
+          this.paintList();
+        }
         return;
       }
       if (moreTree) {
@@ -547,16 +553,18 @@ class ChatsPage {
       const details = (node) => el('a', { class: 'link-btn', href: `#/work/conversations?node=${encodeURIComponent(node.key)}`, text: 'See more in this group' });
       const nodes = renderOwnerTree(this.ownerTree, {
         preferences: this.treePreferences,
-        conversationRow: (node) => {
+        conversationRow: (node, affiliation) => {
           const ref = parseConversationRef(conversationRefKey(node.ref));
           if (!ref) return el('a', { class: 'row chat-row', href: `#/work/conversations?node=${encodeURIComponent(node.key)}`, text: node.title });
           const row = byKey.get(refString(ref));
+          const title = affiliation?.title || row?.title || node.title;
           return treeConversationRow(el('a', { class: `row chat-row${refString(ref) === open ? ' open' : ''}`, href: hashFor(ref) },
             el('span', { class: 'chat-row-main' },
-              el('span', { class: 'chat-row-title', text: row?.title || node.title }),
+              el('span', { class: 'chat-row-top' }, el('span', { class: 'chat-row-title', text: title })),
               row?.preview ? el('span', { class: 'chat-row-preview', text: row.preview }) : null),
-            row?.unread > 0 && refString(ref) !== open ? el('span', { class: 'chat-unread', text: String(row.unread), 'aria-label': `${row.unread} unread` }) : null), row?.title || node.title, row?.lastActivity || node.freshness);
+            row?.unread > 0 && refString(ref) !== open ? el('span', { class: 'chat-unread', text: String(row.unread), 'aria-label': `${row.unread} unread` }) : null), title, row?.lastActivity || node.freshness, affiliation);
         },
+        projectStatus: key => this.ownerTreeProjects?.get(key)?.status,
         linkedCard: (node) => treeCardLink(byKey.get(conversationRefKey(node.ref))?.cardId),
         groupDetails: details,
       });

@@ -1,3 +1,4 @@
+import { trackedProjects } from './chats-model.js';
 // Native console Conversations. Owner-only reads use the existing PIN proof.
 // UI is a projection consumer: no inferred grouping, routing, or decision state.
 import { compareConversationActivity, conversationTreePreferences, hasAuthoritativeSections, renderOwnerTree, treeConversationRow, treePage } from './conversation-tree.js';
@@ -349,11 +350,22 @@ export async function renderConversations(main, ctx) {
     if (hasAuthoritativeSections(page)) {
       const preferences = conversationTreePreferences();
       const pages = [page];
+      let projects = null;
       const groupRows = el('div', { class: 'rows conversation-rows' });
       const paint = () => setKids(groupRows, renderOwnerTree(pages, {
-        preferences, conversationRow: (node) => treeConversationRow(itemRow(node, state, false), node.title, node.freshness),
+        preferences,
+        conversationRow: (node, affiliation) => {
+          const title = affiliation?.title || node.title;
+          return treeConversationRow(itemRow({ ...node, title }, state, false), title, node.freshness, affiliation);
+        },
+        projectStatus: key => projects?.get(key)?.status,
         groupDetails: (node) => nav('See more in this group', href({ ...state, ref: node.key })),
       }));
+      if (page.sections.projects.length) void read('/work/projects', controller.signal).then(result => {
+        if (!current() || !result.ok) return;
+        projects = trackedProjects(result.data);
+        if (projects) paint();
+      });
       const status = el('p', { class: 'need-sub', role: 'status' });
       const more = el('button', { class: 'btn-quiet btn-inline', type: 'button', text: 'Show more', hidden: !page.nextCursor });
       const seen = new Set();

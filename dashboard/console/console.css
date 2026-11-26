@@ -1849,5 +1849,7 @@ a.needs-row:hover { background: var(--surface-raised); }
   font-size: 11px;
   font-weight: 700;
 }
-.conversation-tree-avatar + span { flex: 1; min-width: 0; }
+.conversation-tree-avatar + span,
+.conversation-tree-section .chat-group-icon + span { flex: 1; min-width: 0; }
+.conversation-tree-section .row-main .chat-project-status { margin-inline-start: var(--s-2); }
 .chat-view-toggle select { min-width: 0; max-width: 100%; }

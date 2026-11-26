@@ -53,3 +53,5 @@ The conversation tree is read from the same authorized server projection as the 
 ## 8. Rollback cost
 
 Revert the web change. There is no data migration or server setting to restore.
+
+Complete single-conversation branches become a direct row. The row uses the existing conversation link and unread badge, with project status from the existing Projects read when it is available. Incomplete branches retain their disclosure. Chromium verified that Projects and Groups fold together independently and retain those choices across reload at 390 and 1280 pixels.

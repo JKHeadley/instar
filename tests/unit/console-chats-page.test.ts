@@ -525,17 +525,21 @@ describe('Conversations page', () => {
     const linked = { id: linkedId, platform: 'app', title: 'Linked conversation',
       creationSource: { kind: 'work-board-card', cardId } };
     const linkedNode = { ...worker(5), ref: { kind: 'conversation', platform: 'app', conversationKey: linkedId }, title: linked.title };
+    const projectRow = { id: 5, platform: 'telegram', title: 'Single project chat', unreadCount: 4 };
+    const projectNode = { ...worker(5), title: projectRow.title, childrenComplete: true, descendantConversationCount: 0,
+      project: { title: 'Single project', conversationKey: 'telegram:5' }, projectConversationKey: 'telegram:5' };
     const tree = { partial: false, placementComplete: true, projects: 'known',
       root: { ...worker(1), title: 'Chief of Staff' },
       sections: { projects: [{ ref: effort, kind: 'effort', title: 'Dashboard project', visibleChildCount: 3,
         project: { title: 'Dashboard project', conversationKey: 'telegram:2' },
-        children: [worker(2), worker(4), linkedNode], childrenComplete: true }], groups: [], ungrouped: [worker(3)] },
+        children: [worker(2), worker(4), linkedNode], childrenComplete: true }, projectNode], groups: [], ungrouped: [worker(3)] },
       nextCursor: null };
     let resolveTree!: (result: { status: number; body: unknown }) => void;
     const waitingTree = new Promise<{ status: number; body: unknown }>(resolve => { resolveTree = resolve; });
     const { doc } = await boot((c) => {
       if (c.url.startsWith('/mobile/browser-devices/status')) return { status: 200, body: STATUS };
-      if (c.url.startsWith('/mobile/conversations?scope=pool')) return { status: 200, body: { ...LIST(), conversations: [...LIST().conversations, linked], pinnedRows: [LIST().conversations[3]], pinnedRefs: [] } };
+      if (c.url.startsWith('/mobile/conversations?scope=pool')) return { status: 200, body: { ...LIST(), conversations: [...LIST().conversations, linked, projectRow], pinnedRows: [LIST().conversations[3]], pinnedRefs: [] } };
+      if (c.url === '/mobile/work/projects') return { status: 200, body: { projects: [{ key: 'telegram:5', state: 'moving' }] } };
       if (c.url === '/mobile/conversation-graph/tree') return waitingTree;
       return undefined;
     }, '#/work/chats', idb);
@@ -550,6 +554,11 @@ describe('Conversations page', () => {
     expect(doc.querySelector<HTMLDetailsElement>('.conversation-tree-section .chat-project-row')?.open).toBe(true);
     expect(doc.querySelector('.chat-project-row')?.textContent).toContain('Deep');
     expect([...doc.querySelectorAll('.chat-row-title')].map(node => node.textContent).filter(title => title === 'Deep')).toHaveLength(1);
+    const single = [...doc.querySelectorAll('.chat-row')].find(row => row.querySelector('.chat-row-title')?.textContent === 'Single project');
+    expect(single?.getAttribute('href')).toBe('#/work/chats?c=telegram%3A5');
+    expect(single?.querySelector('.chat-group-icon-project svg')).toBeTruthy();
+    expect(single?.querySelector('.chat-project-status')?.textContent).toBe('Moving');
+    expect(single?.querySelector('.chat-unread')?.getAttribute('aria-label')).toBe('4 unread');
     const card = doc.querySelector('.chat-project-row a[href="#/work/board?card=wc_0000000000000042"]');
     expect(card?.textContent).toBe('Open linked work card');
     expect(card?.closest('.conversation-tree-conversation')?.querySelector('.chat-row-title')?.textContent).toBe(linked.title);
