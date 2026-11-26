@@ -57,3 +57,14 @@ it('refuses confirmation after pairing revocation or cancellation', () => {
     expect(flow.confirm(bytes(confirmation), accept)).toBe(false);
   }
 });
+
+it('rechecks pairing and display authority immediately before publication', () => {
+  let checks = 0;
+  const flow = new ConnectConsentLifecycle(request, companion, agent, () => ++checks !== 4, clock());
+  expect(flow.decide(bytes(decision))).toBe('allow');
+  expect(flow.prepare(bytes(ack))).toBe(true);
+  let published = false;
+  expect(flow.confirm(bytes(confirmation), () => { published = true; return true; })).toBe(false);
+  expect(published).toBe(false);
+  expect(flow.confirm(bytes(confirmation), accept)).toBe(false);
+});

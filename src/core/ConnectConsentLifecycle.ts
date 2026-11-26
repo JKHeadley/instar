@@ -78,8 +78,10 @@ export class ConnectConsentLifecycle {
     }
     const confirmation = verifyConsentActivation(frame, this.companion, 'confirm');
     if (!confirmation || !this.matches(confirmation) || confirmation.digest !== this.#ackDigest) return false;
+    const deadline = this.#activationDeadline;
+    const monoDeadline = this.#activationMono;
     this.cancel();
-    if (!this.live()) return false;
+    if (!this.live() || this.clock.wall() >= deadline || this.clock.monotonic() >= monoDeadline) return false;
     return publish(this.request);
   }
 
