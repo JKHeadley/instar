@@ -1,0 +1,95 @@
+import { createHash, createPublicKey, verify } from 'node:crypto';
+import type { PublicationScope } from './FencedPublicationStore.js';
+
+export interface PublicationFloor extends PublicationScope {
+  epoch: number;
+  holder: string;
+  head: string;
+  position: number;
+  witnessGeneration: number;
+  witness: string;
+}
+
+export interface OrderedPublicationDecision extends PublicationFloor {
+  operationKey: string;
+  payloadDigest: string;
+}
+
+export interface WitnessTransfer {
+  floor: PublicationFloor;
+  nextWitness: string;
+  nextWitnessGeneration: number;
+}
+
+export type WitnessPins = ReadonlyMap<string, string>;
+
+const hash = (bytes: string | Buffer) => createHash('sha256').update(bytes).digest('hex');
+const digestPattern = /^[a-f0-9]{64}$/;
+const idPattern = /^[A-Za-z0-9_.:-]{1,256}$/;
+const orderedNamespaces = new Set(['needs-you', 'mobile-ingress']);
+
+function fields(floor: PublicationFloor) {
+  return [floor.agentId, floor.namespace, floor.epoch, floor.holder, floor.head,
+    floor.position, floor.witnessGeneration, floor.witness];
+}
+
+function validFloor(floor: PublicationFloor): boolean {
+  return idPattern.test(floor.agentId) && idPattern.test(floor.holder) &&
+    idPattern.test(floor.witness) && floor.holder !== floor.witness &&
+    digestPattern.test(floor.head) && Number.isSafeInteger(floor.position) && floor.position >= 0 &&
+    Number.isSafeInteger(floor.epoch) && floor.epoch > 0 &&
+    Number.isSafeInteger(floor.witnessGeneration) && floor.witnessGeneration > 0;
+}
+
+export function samePublicationFloor(left: PublicationFloor, right: PublicationFloor): boolean {
+  return JSON.stringify(fields(left)) === JSON.stringify(fields(right));
+}
+
+export function orderedDecisionBytes(decision: OrderedPublicationDecision): Buffer {
+  return Buffer.from(JSON.stringify(['instar-ordered-publication-v1', ...fields(decision),
+    decision.operationKey, decision.payloadDigest]));
+}
+
+export function witnessTransferBytes(transfer: WitnessTransfer, role: 'offer' | 'receipt'): Buffer {
+  return Buffer.from(JSON.stringify(['instar-publication-witness-transfer-v1', role,
+    ...fields(transfer.floor), transfer.nextWitnessGeneration, transfer.nextWitness]));
+}
+
+function verifies(pins: WitnessPins, signer: string, bytes: Buffer, signature: Buffer): boolean {
+  const pin = pins.get(signer);
+  if (!pin || signature.length !== 64) return false;
+  try {
+    const der = Buffer.from(pin, 'base64');
+    if (der.toString('base64') !== pin) return false;
+    const key = createPublicKey({ key: der, type: 'spki', format: 'der' });
+    return key.asymmetricKeyType === 'ed25519' &&
+      key.export({ type: 'spki', format: 'der' }).equals(der) && verify(null, bytes, key, signature);
+  } catch {
+    return false;
+  }
+}
+
+/** Validate evidence against an authority-owned floor. The caller must serialize its effect with that floor. */
+export function verifiedOrderedSuccessor(
+  current: PublicationFloor, decision: OrderedPublicationDecision, exactPayload: string,
+  signature: Buffer, pins: WitnessPins,
+): PublicationFloor | null {
+  if (!validFloor(current) || !orderedNamespaces.has(current.namespace) ||
+      !samePublicationFloor(current, decision) || !idPattern.test(decision.operationKey) ||
+      hash(exactPayload) !== decision.payloadDigest || current.position >= Number.MAX_SAFE_INTEGER) return null;
+  const bytes = orderedDecisionBytes(decision);
+  if (!verifies(pins, current.witness, bytes, signature)) return null;
+  return { ...current, position: current.position + 1, head: hash(bytes) };
+}
+
+export function verifiedWitnessSuccessor(
+  current: PublicationFloor, transfer: WitnessTransfer, offer: Buffer, receipt: Buffer, pins: WitnessPins,
+): PublicationFloor | null {
+  if (!validFloor(current) || !samePublicationFloor(current, transfer.floor) ||
+      !idPattern.test(transfer.nextWitness) || transfer.nextWitness === current.holder ||
+      transfer.nextWitness === current.witness || !Number.isSafeInteger(transfer.nextWitnessGeneration) ||
+      transfer.nextWitnessGeneration !== current.witnessGeneration + 1 ||
+      !verifies(pins, current.witness, witnessTransferBytes(transfer, 'offer'), offer) ||
+      !verifies(pins, transfer.nextWitness, witnessTransferBytes(transfer, 'receipt'), receipt)) return null;
+  return { ...current, witness: transfer.nextWitness, witnessGeneration: transfer.nextWitnessGeneration };
+}

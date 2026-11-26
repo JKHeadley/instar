@@ -1,6 +1,17 @@
 import Database from 'better-sqlite3';
 import fs from 'node:fs';
 import path from 'node:path';
+import {
+  samePublicationFloor, verifiedOrderedSuccessor, verifiedWitnessSuccessor,
+  type OrderedPublicationDecision, type PublicationFloor, type WitnessPins, type WitnessTransfer,
+} from './OrderedPublicationWitness.js';
+
+/** Receiver-owned dependencies. A cached floor or one restored with this database is insufficient. */
+export interface OrderedPublicationOptions {
+  enabled?: boolean;
+  readIndependentFloor(scope: PublicationScope): PublicationFloor | null;
+  pins: WitnessPins;
+}
 
 export type PublicationNamespace = 'needs-you' | 'machine-key-history' | 'delete' | 'mobile-ingress';
 export interface PublicationScope { agentId: string; namespace: PublicationNamespace }
@@ -26,9 +37,9 @@ const validGeneration = ({ epoch, holder }: PublicationGeneration) =>
  * Opening local stores on different machines does not form a shared medium.
  */
 export class FencedPublicationStore {
-  private constructor(private readonly db: Database.Database) {}
+  private constructor(private readonly db: Database.Database, private readonly ordered?: OrderedPublicationOptions) {}
 
-  static open(filename: string): FencedPublicationStore {
+  static open(filename: string, ordered?: OrderedPublicationOptions): FencedPublicationStore {
     fs.mkdirSync(path.dirname(filename), { recursive: true, mode: 0o700 });
     const fd = fs.openSync(filename, 'a', 0o600);
     fs.closeSync(fd);
@@ -51,13 +62,17 @@ export class FencedPublicationStore {
           digest TEXT NOT NULL, payload TEXT NOT NULL,
           PRIMARY KEY (agent, namespace, operation)
         );
+        CREATE TABLE IF NOT EXISTS publication_witness_floor (
+          agent TEXT NOT NULL, namespace TEXT NOT NULL, floor TEXT NOT NULL,
+          PRIMARY KEY (agent, namespace)
+        );
         CREATE TABLE IF NOT EXISTS publication_claim (
           agent TEXT NOT NULL, namespace TEXT NOT NULL, operation TEXT NOT NULL,
           digest TEXT NOT NULL, epoch INTEGER NOT NULL, holder TEXT NOT NULL,
           PRIMARY KEY (agent, namespace, operation)
         );
       `);
-      return new FencedPublicationStore(db);
+      return new FencedPublicationStore(db, ordered?.enabled === true ? ordered : undefined);
     } catch (error) {
       db.close();
       throw error;
@@ -84,12 +99,15 @@ export class FencedPublicationStore {
   /** Called after verification of the exact candidate and predecessor seal. */
   activateHandover(scope: PublicationScope, prior: PublicationGeneration, next: PublicationGeneration, digest: string): boolean {
     if (!validScope(scope) || !validGeneration(prior) || !validGeneration(next) || next.epoch <= prior.epoch || !DIGEST.test(digest)) return false;
-    return this.db.prepare(`
+    return this.db.transaction(() => {
+      if (this.localFloor(scope)) return false;
+      return this.db.prepare(`
       UPDATE publication_generation SET epoch=pending_epoch, holder=pending_holder,
         pending_epoch=NULL, pending_holder=NULL, candidate_digest=NULL
       WHERE agent=? AND namespace=? AND epoch=? AND holder=?
         AND pending_epoch=? AND pending_holder=? AND candidate_digest=?
     `).run(scope.agentId, scope.namespace, prior.epoch, prior.holder, next.epoch, next.holder, digest).changes === 1;
+    }).immediate();
   }
 
   /** Durable ingress custody. A pending handover does not prevent staging. */
@@ -123,6 +141,11 @@ export class FencedPublicationStore {
   }
 
   claim(scope: PublicationScope, generation: PublicationGeneration, operationKey: string, digest: string): PublicationClaimResult {
+    return this.db.transaction(() => this.localFloor(scope) ? { kind: 'fenced' } as const :
+      this.recordClaim(scope, generation, operationKey, digest)).immediate();
+  }
+
+  private recordClaim(scope: PublicationScope, generation: PublicationGeneration, operationKey: string, digest: string): PublicationClaimResult {
     if (!validScope(scope) || !validGeneration(generation) ||
         typeof operationKey !== 'string' || !/^[A-Za-z0-9_.:-]{1,256}$/.test(operationKey) ||
         typeof digest !== 'string' || !DIGEST.test(digest)) return { kind: 'conflict' };
@@ -138,7 +161,80 @@ export class FencedPublicationStore {
       this.db.prepare(`
         INSERT INTO publication_claim(agent, namespace, operation, digest, epoch, holder) VALUES (?, ?, ?, ?, ?, ?)
       `).run(scope.agentId, scope.namespace, operationKey, digest, generation.epoch, generation.holder);
-      return { kind: 'claimed', claim: { operationKey, digest, generation: { ...generation } } };
+      return { kind: 'claimed', claim: { operationKey, digest, generation: { epoch: generation.epoch, holder: generation.holder } } };
+    }).immediate();
+  }
+
+  /**
+   * Provision an empty ordered scope from the independent floor. Existing claims
+   * require reconciliation before they can be moved under witnessed publication.
+   */
+  provisionOrdered(scope: PublicationScope): boolean {
+    return this.db.transaction(() => {
+      const floor = this.independentFloor(scope);
+      if (!floor || floor.position !== 0 || floor.agentId !== scope.agentId ||
+          floor.namespace !== scope.namespace || floor.holder === floor.witness) return false;
+      if (!this.provision(scope, floor)) return false;
+      this.db.prepare('INSERT INTO publication_witness_floor VALUES (?, ?, ?)')
+        .run(scope.agentId, scope.namespace, JSON.stringify(floor));
+      return true;
+    }).immediate();
+  }
+
+  private independentFloor(scope: PublicationScope): PublicationFloor | null {
+    try {
+      return this.ordered?.readIndependentFloor(scope) ?? null;
+    } catch {
+      return null; // An unavailable independent witness cannot authorize effects.
+    }
+  }
+
+  private localFloor(scope: PublicationScope): PublicationFloor | null {
+    const row = this.db.prepare('SELECT floor FROM publication_witness_floor WHERE agent=? AND namespace=?')
+      .get(scope.agentId, scope.namespace) as { floor: string } | undefined;
+    return row ? JSON.parse(row.floor) as PublicationFloor : null;
+  }
+
+  private saveFloor(floor: PublicationFloor): void {
+    this.db.prepare('UPDATE publication_witness_floor SET floor=? WHERE agent=? AND namespace=?')
+      .run(JSON.stringify(floor), floor.agentId, floor.namespace);
+  }
+
+  /**
+   * Record a local claim for an exact independently accepted successor.
+   * A local claim is historical evidence and gives no external dispatch permission.
+   */
+  claimOrdered(scope: PublicationScope, decision: OrderedPublicationDecision, signature: Buffer): PublicationClaimResult {
+    const ordered = this.ordered;
+    if (!ordered) return { kind: 'unavailable' };
+    return this.db.transaction((): PublicationClaimResult => {
+      const local = this.localFloor(scope);
+      const independent = this.independentFloor(scope);
+      if (!local || !independent) return { kind: 'pending' };
+      const staged = this.getStage(scope, decision.operationKey);
+      if (!staged) return { kind: 'unavailable' };
+      const next = verifiedOrderedSuccessor(local, decision, staged.payload, signature, ordered.pins);
+      if (!next) return { kind: 'fenced' };
+      if (!samePublicationFloor(next, independent)) return { kind: 'pending' };
+      const claim = this.recordClaim(scope, decision, decision.operationKey, staged.digest);
+      if (claim.kind === 'claimed') this.saveFloor(next);
+      return claim;
+    }).immediate();
+  }
+
+  transferWitness(scope: PublicationScope, transfer: WitnessTransfer, offer: Buffer, receipt: Buffer): boolean {
+    const ordered = this.ordered;
+    if (!ordered) return false;
+    return this.db.transaction(() => {
+      const local = this.localFloor(scope);
+      const independent = this.independentFloor(scope);
+      if (!local || !independent || this.db.prepare(`
+        SELECT 1 FROM publication_generation WHERE agent=? AND namespace=? AND pending_epoch IS NOT NULL
+      `).get(scope.agentId, scope.namespace)) return false;
+      const next = verifiedWitnessSuccessor(local, transfer, offer, receipt, ordered.pins);
+      if (!next || !samePublicationFloor(next, independent)) return false;
+      this.saveFloor(next);
+      return true;
     }).immediate();
   }
 

@@ -1,0 +1,10 @@
+<!-- bump: patch -->
+<!-- internal-only -->
+
+## What Changed
+
+Added a default-off source checkpoint for independently witnessed Needs-you and app message handover records. It verifies the exact operation and witness transfer against the independent journal floor and leaves mismatched restoration evidence pending. No app or Needs-you route uses this checkpoint.
+
+## Evidence
+
+Focused unit and integration checks cover signature binding, disabled behavior, independent acceptance, witness transfer, replay, and restored journal mismatch using disposable files and keys.
