@@ -373,3 +373,20 @@ Do not reuse the borrowed-unit sandbox instance for this acceptance. Its
 Lima profile disables forwards and host mounts, and its production image
 digest is unpinned. It demonstrates a candidate isolation mechanism but
 does not supply an application ingress or a protected data boundary.
+
+### Older listener containment evidence on macOS
+
+A disposable probe used the installed 1.3.1942 release's
+`AgentServer.prototype.start` with a minimal listener adapter that calls
+the real Node TCP listener. It attempted a loopback bind on an ephemeral
+port and read a synthetic custody file. The baseline allowed both. Under
+a macOS sandbox that denied network operations and reads of the synthetic
+custody directory, both returned `EPERM`. The profile also limited writes
+to the disposable directory.
+
+The full 1.3.1942 CLI started in the same disposable home but stopped
+before binding because it lacked a subscription-pool machine identity.
+That result supplies no evidence of full rollback. The successful probe
+exercises the old listener method and operating-system restrictions.
+Supervisor boot and restore, auxiliary ingress, protected storage
+mounting, and generation-bound cancellation still require acceptance.
