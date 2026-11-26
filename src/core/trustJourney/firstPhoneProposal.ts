@@ -33,3 +33,16 @@ export function firstPhoneProposalHash(proposal: FirstPhoneProposal): string {
     proposal.expiresAt,
   ])).digest('hex');
 }
+
+/** Exact first-phone action for the existing permission presence envelope. */
+export function firstPhoneEnrollmentLine(
+  nominationId: unknown,
+  proposalHash: unknown,
+  disclosureHash: unknown,
+): string | null {
+  const digest = /^[a-f0-9]{64}$/;
+  if (typeof nominationId !== 'string' || !/^[a-f0-9]{8}-[a-f0-9]{4}-4[a-f0-9]{3}-[89ab][a-f0-9]{3}-[a-f0-9]{12}$/.test(nominationId)
+    || typeof proposalHash !== 'string' || !digest.test(proposalHash)
+    || typeof disclosureHash !== 'string' || !digest.test(disclosureHash)) return null;
+  return `first-phone-enrollment-v1 ${nominationId} ${proposalHash} ${disclosureHash}`;
+}

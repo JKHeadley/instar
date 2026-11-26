@@ -21,3 +21,5 @@ The private Telegram Accept check now refuses an offer for an earlier first-appr
 The private nomination now saves the exact first-approver slot with the proposal. An old nomination saved without a slot cannot be used to finish enrollment.
 
 The enrollment fixture now checks that changing any part of the owner, phone, or approval request changes the proposal the owner would confirm.
+
+The server and iPhone simulator use the same test bytes for the enrollment confirmation. The test signature is specific to the exact nomination, disclosure, device and paired address.
