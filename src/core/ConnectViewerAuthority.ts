@@ -52,10 +52,13 @@ export class ConnectViewerAuthority {
     const viewer = this.#viewers.get(consent.keyDigest);
     if (!viewer || viewer.binding.agentId !== consent.agentId ||
         viewer.binding.targetMachineId !== consent.targetMachineId) return;
-    this.#sessions.get(consent.keyDigest)?.stop();
     const session = new ConnectViewerSession(consent);
-    this.#sessions.set(consent.keyDigest, session);
-    return session;
+    const keyDigest = session.consent.keyDigest;
+    const previous = this.#sessions.get(keyDigest);
+    // Abort listeners run synchronously and may revoke this viewer or replace this grant.
+    this.#sessions.set(keyDigest, session);
+    previous?.stop();
+    return this.#viewers.get(keyDigest) === viewer && this.#sessions.get(keyDigest) === session ? session : undefined;
   }
 
   attach(keyDigest: string, sessionId: string, signature: string): AbortSignal | undefined {
@@ -74,7 +77,8 @@ export class ConnectViewerAuthority {
     for (const [nonce, approved] of this.#challenges) {
       if (approved.challenge.keyDigest === keyDigest) this.#challenges.delete(nonce);
     }
-    this.#sessions.get(keyDigest)?.stop();
+    const session = this.#sessions.get(keyDigest);
     this.#sessions.delete(keyDigest);
+    session?.stop();
   }
 }

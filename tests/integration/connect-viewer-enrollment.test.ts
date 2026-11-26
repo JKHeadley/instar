@@ -43,7 +43,11 @@ it('keeps the route dark and enrollment scoped to the issuing process', async ()
   const stream = authority.attach(keyDigest, grant!.id, attachSignature.toString('base64url'));
   expect(authority.attach(keyDigest, grant!.id, attachSignature.toString('base64url'))).toBeUndefined();
   expect(stream?.aborted).toBe(false);
-  authority.revoke(keyDigest);
+  expect(() => authority.grant({ ...binding, displayId: 'primary', expiresAt: 0 })).toThrow(RangeError);
+  expect(stream?.aborted).toBe(false);
+  stream!.addEventListener('abort', () => authority.revoke(keyDigest), { once: true });
+  expect(authority.grant({ ...binding, displayId: 'replacement', expiresAt: Date.now() + 10_000 })).toBeUndefined();
+  expect(authority.grant({ ...binding, displayId: 'replacement', expiresAt: Date.now() + 10_000 })).toBeUndefined();
   expect(stream?.aborted).toBe(true);
   expect(authority.viewer(keyDigest)).toBeUndefined();
 });
