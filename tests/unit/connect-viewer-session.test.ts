@@ -71,7 +71,8 @@ it('drops queued frames on abort and checks expiry at the final write', () => {
     const connection = new AbortController();
     const consent = { ...viewer, displayId: 'display', expiresAt: now + 1000 };
     const session = new ConnectViewerSession(consent, connection.signal);
-    const queue = new ConnectViewerFrameQueue(session, session.attach(viewer, 'display')!);
+    session.attach(viewer, 'display');
+    const queue = new ConnectViewerFrameQueue(session);
     const write = vi.fn();
     expect(queue.offer(Buffer.from('first'))).toBe(true);
     expect(queue.offer(Buffer.from('latest'))).toBe(true);
@@ -83,12 +84,22 @@ it('drops queued frames on abort and checks expiry at the final write', () => {
     queue.close();
 
     const later = new ConnectViewerSession(consent);
-    const expiring = new ConnectViewerFrameQueue(later, later.attach(viewer, 'display')!);
+    later.attach(viewer, 'display');
+    const expiring = new ConnectViewerFrameQueue(later);
     expect(expiring.offer(Buffer.from('expires'))).toBe(true);
     vi.setSystemTime(now + 1000);
     expect(expiring.flush(write)).toBe(false);
     expect(write).toHaveBeenCalledTimes(1);
     expiring.close();
+    expect(expiring.offer(Buffer.from('after close'))).toBe(false);
+
+    const stopped = new ConnectViewerSession({ ...consent, expiresAt: Date.now() + 1000 });
+    stopped.attach(viewer, 'display');
+    const stopping = new ConnectViewerFrameQueue(stopped);
+    expect(stopping.offer(Buffer.from('pending at Stop'))).toBe(true);
+    stopped.stop();
+    expect(stopping.flush(write)).toBe(false);
+    expect(stopping.offer(Buffer.from('after Stop'))).toBe(false);
   } finally {
     vi.useRealTimers();
   }

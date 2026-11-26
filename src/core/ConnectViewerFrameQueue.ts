@@ -5,12 +5,12 @@ export class ConnectViewerFrameQueue {
   #frame?: Buffer;
   readonly #discard = () => { this.#frame = undefined; };
 
-  constructor(private readonly session: ConnectViewerSession, private readonly lifetime: AbortSignal) {
-    lifetime.addEventListener('abort', this.#discard, { once: true });
+  constructor(private readonly session: ConnectViewerSession) {
+    session.signal.addEventListener('abort', this.#discard, { once: true });
   }
 
   offer(frame: Buffer): boolean {
-    if (this.lifetime.aborted || frame.length === 0 || frame.length > 1024 * 1024) return false;
+    if (this.session.signal.aborted || frame.length === 0 || frame.length > 1024 * 1024) return false;
     this.#frame = Buffer.from(frame);
     return true;
   }
@@ -18,13 +18,13 @@ export class ConnectViewerFrameQueue {
   flush(write: (frame: Buffer) => void): boolean {
     const frame = this.#frame;
     this.#frame = undefined;
-    if (!frame || this.lifetime.aborted) return false;
+    if (!frame || this.session.signal.aborted) return false;
     return this.session.dispatchFrame(() => write(frame));
   }
 
   close(): void {
     this.#discard();
-    this.lifetime.removeEventListener('abort', this.#discard);
+    this.session.signal.removeEventListener('abort', this.#discard);
     this.session.stop();
   }
 }

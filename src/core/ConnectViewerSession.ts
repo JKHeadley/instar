@@ -46,6 +46,8 @@ export class ConnectViewerSession {
     return true;
   }
 
+  get signal(): AbortSignal { return this.#controller.signal; }
+
   stop(): void {
     clearTimeout(this.#timer);
     this.connection?.removeEventListener('abort', this.#onConnectionClose);
