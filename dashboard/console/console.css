@@ -1788,6 +1788,11 @@ a.needs-row:hover { background: var(--surface-raised); }
   .wc-tile-foot .work-actions > button { flex: 1 1 auto; }
 }
 
+/* Suggestions still under review do not bury the useful next step. */
+.ideas-unranked { min-width: 0; margin: var(--s-4) 0; }
+.ideas-unranked > summary { min-height: 44px; padding: 12px 0; cursor: pointer; font-weight: 600; overflow-wrap: anywhere; }
+
+
 /* A long approval inbox stays within the screen; all received actions remain reachable. */
 .needs-groups { max-height: min(52vh, 28rem); overflow-y: auto; overscroll-behavior: contain; border: 1px solid var(--strip-line); border-top: 0; background: var(--surface); scrollbar-gutter: stable; }
 .needs-group-heading { margin: 0; padding: 10px 14px 4px; font-size: 12px; font-weight: 650; color: var(--text-muted); }

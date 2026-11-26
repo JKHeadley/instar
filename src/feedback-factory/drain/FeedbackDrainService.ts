@@ -53,6 +53,8 @@ export interface FeedbackDrainServiceOptions {
   maxReadyScansPerTick?: number;
   maxClaimsPerTick?: number;
   stageBudgetMs?: number;
+  /** Explicit ceiling for clustering and its durable status writes. Defaults to the general stage budget. */
+  clusteringStageBudgetMs?: number;
   /** Budget for the model-backed readiness stage; defaults to the arbiter's model timeout plus margin. */
   readinessStageBudgetMs?: number;
   /** Candidates per readiness model call; a tick runs several calls up to the authority's maxBatch. */
@@ -143,6 +145,7 @@ export class FeedbackDrainService {
   private readonly maxReadyScans: number;
   private readonly maxClaims: number;
   private readonly stageBudgetMs: number;
+  private readonly clusteringStageBudgetMs: number;
   private readonly readinessStageBudgetMs: number;
   private readonly readinessChunkSize: number;
   private readonly maxWallClockMs: number;
@@ -153,10 +156,11 @@ export class FeedbackDrainService {
     this.maxReadyScans = Math.min(250, Math.max(1, opts.maxReadyScansPerTick ?? 250));
     this.maxClaims = Math.min(50, Math.max(1, opts.maxClaimsPerTick ?? 10));
     this.stageBudgetMs = Math.max(1, Math.min(20_000, opts.stageBudgetMs ?? 20_000));
+    this.clusteringStageBudgetMs = Math.max(1, Math.min(60_000, opts.clusteringStageBudgetMs ?? this.stageBudgetMs));
     this.readinessStageBudgetMs = Math.max(1, Math.min(90_000, opts.readinessStageBudgetMs ?? FEEDBACK_READINESS_MODEL_TIMEOUT_MS + 5_000));
     const chunkSize = Number(opts.readinessChunkSize ?? READINESS_CHUNK_SIZE);
     this.readinessChunkSize = Number.isFinite(chunkSize) ? Math.min(50, Math.max(1, Math.trunc(chunkSize))) : READINESS_CHUNK_SIZE;
-    this.maxWallClockMs = Math.max(this.stageBudgetMs, this.readinessStageBudgetMs, Math.min(115_000, Number.isFinite(opts.maxWallClockMs) ? opts.maxWallClockMs! : 115_000));
+    this.maxWallClockMs = Math.max(this.stageBudgetMs, this.clusteringStageBudgetMs, this.readinessStageBudgetMs, Math.min(115_000, Number.isFinite(opts.maxWallClockMs) ? opts.maxWallClockMs! : 115_000));
     this.sourceCompactionIntervalMs = Math.max(1, opts.sourceCompactionIntervalMs ?? 24 * 60 * 60 * 1000);
   }
 
@@ -298,7 +302,7 @@ export class FeedbackDrainService {
       const projectedFeedback = this.opts.store.pendingProjectedFeedback(500);
       const processed = this.opts.processing.processProjected(projectedFeedback.map((row) => row.record));
       if (projectedFeedback.length > 0) this.opts.store.acknowledgeProcessedProjection(projectedFeedback.at(-1)!.ingestSequence);
-      this.assertStageBudget(clusteringStartedAt, 'clustering');
+      this.assertStageBudget(clusteringStartedAt, 'clustering', this.clusteringStageBudgetMs);
       this.opts.store.markClusteringSucceeded(this.now());
       stopIfCancelled();
       out.processed = processed.result.results.length;
@@ -609,8 +613,9 @@ export class FeedbackDrainService {
     }
   }
 
-  private assertStageBudget(startedAt: number, stage: string): void {
-    if (this.now() - startedAt > this.stageBudgetMs) throw new Error(`${stage} stage budget exceeded`);
+  private assertStageBudget(startedAt: number, stage: string, budgetMs = this.stageBudgetMs): void {
+    const elapsedMs = this.now() - startedAt;
+    if (elapsedMs > budgetMs) throw new Error(`${stage} stage budget exceeded (${elapsedMs}ms > ${budgetMs}ms)`);
   }
 
   private withStageBudget<T>(stage: string, operation: () => Promise<T>, budgetMs = this.stageBudgetMs): Promise<T> {

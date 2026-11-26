@@ -91,6 +91,7 @@ import { isPhoneOnlyCard } from './ProjectAppCustomSource.js';
 import { customProjectAppsEnabled } from './ProjectAppSandbox.js';
 import { projectAppsEnabled } from '../core/ProjectAppStore.js';
 import { projectAppsLog, projectAppsOpens } from './projectAppsLog.js';
+import { createOwnerNeedsSourceProvider } from './ownerNeedsSources.js';
 import { mountNeedsRoutes, NeedsCanary, NEEDS_READ_TIMEOUT_MS, NEEDS_CANARY_INTERVAL_MS, NEEDS_CANARY_FIRST_DELAY_MS, NEEDS_CANARY_READ_TIMEOUT_MS } from './needsRoutes.js';
 import { workBoardEnabled, requestCardId as requestCardIdFor } from '../core/WorkCardStore.js';
 import { resolveWorkBoardSettings } from '../core/WorkBoardService.js';
@@ -1307,6 +1308,8 @@ export function parseTrustChange(raw: unknown): import('../core/trustJourney/Tru
 }
 
 export interface RouteContext {
+  ownerNeedsCandidate?: import('./needsRoutes.js').NeedsDeps['ownerCardCandidate'];
+  ownerNeedsWithdrawalJournalFor?: import('./needsRoutes.js').NeedsDeps['withdrawalJournalFor'];
   /** Actual signed post-spawn capture; absent until graph storage is configured. */
   conversationGraphDelegationRuntime?: import('./ConversationGraphDelegationRuntime.js').ConversationGraphDelegationRuntime | null;
   conversationGraphDelegationRemoteRuntime?: import('./ConversationGraphDelegationRemoteRuntime.js').ConversationGraphDelegationRemoteRuntime | null;
@@ -3450,12 +3453,19 @@ export function createRoutes(ctx: RouteContext): Router {
     read: (p) => needsSelfRead(p, NEEDS_CANARY_READ_TIMEOUT_MS),
     notice: (why) => DegradationReporter.getInstance().report({ feature: 'NeedsYou.canary', primary: 'Show everything that needs the person in one list', fallback: 'Each page still shows its own needs; the list may be missing some.', reason: `The Needs-you canary missed twice: ${why}.`, impact: 'The Needs-you list on the console and the apps may be incomplete or failing.' }),
   });
-  setTimeout(() => {
-    void needsCanary.tick();
-    setInterval(() => { void needsCanary.tick(); }, NEEDS_CANARY_INTERVAL_MS).unref();
-  }, NEEDS_CANARY_FIRST_DELAY_MS).unref();
+  const ownerNeedsCandidate = ctx.ownerNeedsCandidate ?? (ctx.config.needsYou?.ownerAdmission?.enabled === true
+    ? createOwnerNeedsSourceProvider(ctx.trustAccountPath) : undefined);
+  // The legacy canary can't inject a typed owner action or negotiate the strict client contract.
+  if (!ownerNeedsCandidate) {
+    setTimeout(() => {
+      void needsCanary.tick();
+      setInterval(() => { void needsCanary.tick(); }, NEEDS_CANARY_INTERVAL_MS).unref();
+    }, NEEDS_CANARY_FIRST_DELAY_MS).unref();
+  }
   mountNeedsRoutes(router, {
-    canary: needsCanary,
+    ownerCardCandidate: ownerNeedsCandidate,
+    withdrawalJournalFor: ctx.ownerNeedsWithdrawalJournalFor,
+    canary: ownerNeedsCandidate ? undefined : needsCanary,
     read: (p) => needsSelfRead(p),
     bearerOk: (req) => bearerMatches(req, ctx.config.authToken),
     boardFor: (req) => (workBoardReadAs ? workBoardReadAs(req) : { status: 503, body: { error: 'work-board-starting' } }),
@@ -42313,6 +42323,27 @@ document.getElementById('mcpForm').addEventListener('submit', async function (e)
       scope: 'pool',
     };
   }
+
+  // Read-only account lease for standalone Sol source reviewers. No model is started here.
+  router.get('/subscription-pool/routine-codex-placement', (req, res) => {
+    if (!ctx.usageWallRescue) {
+      if (ctx.config.subscriptionPool?.routineCodexPlacement?.enabled === true) {
+        res.status(503).json({ error: 'routine-codex-placement-unavailable' });
+      } else res.json({ mode: 'inactive' });
+      return;
+    }
+    const model = typeof req.query.model === 'string' ? req.query.model : null;
+    const pick = ctx.usageWallRescue.routineCodexPlacement({ routine: true, model });
+    if (pick.kind === 'refused') { res.status(409).json({ error: pick.reason }); return; }
+    if (pick.kind === 'inactive') { res.json({ mode: 'inactive' }); return; }
+    const configHome = ctx.sessionManager.resolvePinnedSpawnHome(pick);
+    try {
+      if (!path.isAbsolute(configHome) || !fs.statSync(configHome).isDirectory()) throw new Error('home-unavailable');
+    } catch {
+      res.status(409).json({ error: 'routine-codex-placement-home-unavailable' }); return;
+    }
+    res.json({ mode: 'selected', accountOverride: { accountId: pick.accountId, configHome }, validUntil: pick.validUntil });
+  });
 
   router.get('/subscription-pool', async (req, res) => {
     // sibling-machine-reach §3.1: every plain response names the machine that answered, so a

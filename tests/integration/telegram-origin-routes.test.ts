@@ -23,6 +23,8 @@ import { originToolGuardDigest } from '../../src/messaging/telegram-origin/Origi
 import { listenOriginNotices, originCapacityClient } from '../../src/messaging/telegram-origin/OriginNoticeIpc.js';
 import { CommitmentTracker } from '../../src/monitoring/CommitmentTracker.js';
 import { LiveConfig } from '../../src/config/LiveConfig.js';
+import { recordRecoveredSessionDelivery } from '../../src/messaging/telegram-origin/SessionDeliveryReporter.js';
+import { setTimeout as delay } from 'node:timers/promises';
 
 let worker: URL;
 const runtimes: TelegramOriginRuntime[] = [];
@@ -78,6 +80,56 @@ async function browserHarness(extra: Record<string, unknown> = {}) {
   return { ...h, invoke, executor, send };
 }
 describe('Telegram origin through the complete reply HTTP pipeline', () => {
+  it.each([
+    ['session', false], ['session', true], ['automation', false], ['automation', true],
+  ] as const)('keeps authored Markdown in App history and HTML on Telegram for %s replies (held=%s)', async (producer, held) => {
+    let adapter: TelegramAdapter;
+    const h = await appHarness({ telegram: {
+      sendToTopic: (...args: Parameters<TelegramAdapter['sendToTopic']>) => adapter.sendToTopic(...args),
+      getTopicHistory: (topicId: number, limit?: number) => adapter.getTopicHistory(topicId, limit),
+    } });
+    adapter = new TelegramAdapter({ token: h.botToken, chatId: '-100123' }, h.stateDir, { suppressLifelineAutoCreate: true });
+    h.runtime.options.onRecoveredMessage = entry => recordRecoveredSessionDelivery(entry, adapter);
+    const text = 'The GitHub *read* action is ready. Reply **"approve GitHub reads"**. Literal code: `<b>example</b>`.';
+    const body = { text };
+    const capacity = held ? vi.spyOn(h.runtime.service.options.capacity!, 'reserveExplained')
+      .mockResolvedValue({ grant: null, refusal: { cause: 'rate-window-full', leaseFreshness: null } }) : null;
+    try {
+      const credential = producer === 'session' ? h.sessionToken
+        : h.runtime.service.issueAutomationReply('telegram-server', 42, body);
+      const sent = await request(h.app).post('/telegram/reply/42').set('Authorization', 'Bearer agent-test')
+        .set(producer === 'session' ? 'X-Instar-Origin-Session' : 'X-Instar-Origin-Automation', credential).send(body);
+      expect(sent.status).toBe(held ? 409 : 200);
+      if (held) {
+        expect(sent.body).toMatchObject({ reason: 'credential-capacity-unavailable', retryable: false });
+        expect(h.network).not.toHaveBeenCalled();
+        expect(adapter.getTopicHistory(42, 10)).toEqual([]);
+        capacity!.mockRestore();
+        // The durable worker uses its own clock. Respect its actual retry pacing.
+        const row = (await h.runtime.store.listOrigins()).records[0];
+        const nextAt = row.attempts.find(attempt => attempt.reason === 'credential-capacity-unavailable')?.nextAttemptAt;
+        expect(Number.isSafeInteger(nextAt)).toBe(true);
+        const waitMs = Math.max(0, nextAt! - Date.now() + 10);
+        expect(waitMs).toBeLessThanOrEqual(31_000);
+        if (waitMs) await delay(waitMs);
+        expect(await h.runtime.recoverHeld()).toMatchObject({ recovered: 1 });
+      }
+      expect(h.network).toHaveBeenCalledOnce();
+      const wire = JSON.parse(h.network.mock.calls[0][1].body as string);
+      expect(wire.parse_mode).toBe('HTML');
+      expect(wire.text).toContain('<i>read</i>');
+      expect(wire.text).toContain('<b>"approve GitHub reads"</b>');
+      const history = await request(h.app).get('/telegram/topics/42/messages').set('Authorization', 'Bearer agent-test');
+      expect(history.status).toBe(200);
+      expect(history.body.messages).toHaveLength(1);
+      expect(history.body.messages[0].text).toBe(text);
+      expect(history.body.messages[0].text).not.toContain('<i>read</i>');
+      expect(await h.runtime.recoverHeld()).toMatchObject({ recovered: 0 });
+      expect(adapter.getTopicHistory(42, 10)).toHaveLength(1);
+      expect(h.network).toHaveBeenCalledOnce();
+    } finally { capacity?.mockRestore(); await adapter.stop(); }
+  });
+
   it('starts the real adapter network deadline after the HTTP policy and origin claim', async () => {
     let adapter: TelegramAdapter;
     const h = await appHarness({ telegram: { sendToTopic: (...args: Parameters<TelegramAdapter['sendToTopic']>) => adapter.sendToTopic(...args) } });

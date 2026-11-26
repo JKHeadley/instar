@@ -1,3 +1,5 @@
+import { CODEX_CLI_FRAMEWORK } from './frameworkFacts.js';
+import { routineCodexReviewLease, type RoutineCodexPlacementConfig } from './routineCodexPlacement.js';
 /**
  * crossModelReviewer — Step B of the tiered development process.
  *
@@ -1349,6 +1351,8 @@ export interface ReviewerResult {
  * fleet (byte-identical `[codex, gemini]`) and LIVE on a development agent.
  */
 export interface ReviewerConfig {
+  port?: number;
+  subscriptionPool?: { routineCodexPlacement?: RoutineCodexPlacementConfig };
   developmentAgent?: boolean;
   specConverge?: {
     reviewers?: {
@@ -1548,7 +1552,10 @@ const codexReviewer: SupportedReviewerFramework = {
 
     let raw: string;
     try {
+      const lease = await routineCodexReviewLease(args.reviewerConfig, model);
       raw = await provider.evaluate(args.promptText, {
+        ...(lease ? { accountOverride: lease.accountOverride, launchGuard: lease.launchGuard,
+          requiredRoute: { framework: CODEX_CLI_FRAMEWORK as typeof CODEX_CLI_FRAMEWORK, modelId: model } } : {}),
         // The concrete id the canary checked and the outcome reports, so the
         // strictly pinned call runs exactly the model this review is recorded as.
         model: model as typeof tier,

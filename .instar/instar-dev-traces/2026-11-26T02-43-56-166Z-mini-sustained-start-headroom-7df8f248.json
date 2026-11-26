@@ -1,0 +1,19 @@
+{
+  "version": 2,
+  "slug": "mini-sustained-start-headroom",
+  "sessionId": "ed99de61-509a-4e0d-908f-801b299fef73",
+  "timestamp": "2026-11-26T02:43:56.166Z",
+  "artifactPath": "upgrades/side-effects/mini-sustained-start-headroom.md",
+  "artifactSha256": "151c3dcf2163ce22349cab230c9c66a930e5b7e45a6d090ec6f2ea47fe6f2520",
+  "coveredFiles": [
+    "src/localVerify/LocalVerifyService.ts",
+    "tests/unit/localVerify/peerVerifier.test.ts"
+  ],
+  "phase": "complete",
+  "tier": 1,
+  "tierReasoning": "Narrow reservation interlock for the optional Mini admission check.",
+  "eli16Path": "upgrades/next/mini-sustained-start-headroom.md",
+  "sideEffectsPath": "upgrades/side-effects/mini-sustained-start-headroom.md",
+  "secondPass": "not-required",
+  "reviewerConcurred": null
+}

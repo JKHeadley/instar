@@ -14,6 +14,9 @@ import {
   verifyRecordedOrigin, signReceipt, signRedaction, signerKeyHashOf, deviceKeyHashOf, identityKeyLookup, loadMachineSigner,
   type LedgerKey, type MachineKeyLookup, type MachineSigner, type StoredDeviceOrigin, type VerifiableRecord,
 } from '../../src/core/AppRecordSignatures.js';
+import { signMobileChatHandover, verifyMobileChatHandover } from '../../src/core/MobileChatHandoverEnvelope.js';
+import { derivedEventId } from '../../src/core/appConversationText.js';
+import { payloadHash } from '../../src/core/MobileChatRequests.js';
 import { canonicalString } from '../../src/core/MobileDeviceKeys.js';
 import { generateSigningKeyPair, pemToBase64, sign as edSign, MachineIdentityManager } from '../../src/core/MachineIdentity.js';
 import { makeDevice } from '../helpers/mobileDevice.js';
@@ -43,14 +46,14 @@ const T0 = Date.parse('2026-10-31T12:00:00.000Z');
 
 function build(opts: {
   dev?: ReturnType<typeof makeDevice>; machine?: ReturnType<typeof fakeMachine>; text?: string; key?: string; receivedMs?: number;
-  phoneMs?: number; redact?: string[]; storedText?: string; host?: string;
+  phoneMs?: number; redact?: string[]; storedText?: string; host?: string; topicId?: number; requestId?: string;
 } = {}) {
   const dev = opts.dev ?? makeDevice();
   const machine = opts.machine ?? fakeMachine();
-  const key = opts.key ?? KEY;
+  const key = opts.topicId ? `telegram:${opts.topicId}` : opts.key ?? KEY;
   const text = opts.text ?? 'What is on for Saturday?';
-  const raw = Buffer.from(JSON.stringify({ text, requestId: `${T0}-abc` }));
-  const p = `/mobile/chat/app/${key}`;
+  const raw = Buffer.from(JSON.stringify({ text, requestId: opts.requestId ?? `${T0}-abc` }));
+  const p = opts.topicId ? `/mobile/chat/${opts.topicId}` : `/mobile/chat/app/${key}`;
   const receivedMs = opts.receivedMs ?? T0 + 5_000;
   const time = String(opts.phoneMs ?? receivedMs);
   const signedHost = opts.host ?? HOST;
@@ -67,6 +70,39 @@ function build(opts: {
   const ledger = new Map([[`${base.keyHash}|${DEVICE_ID}`, entry]]);
   return { record, ledger, entry, machine, dev, raw };
 }
+
+describe('held mobile chat handover evidence', () => {
+  it.each([false, true])('binds exact request, topic and event for a signed receipt (redacted=%s)', (redacted) => {
+    const topicId = 145097;
+    const requestId = `${T0}-${crypto.randomUUID()}`;
+    const text = 'Check the handover.';
+    const signed = build({ topicId, requestId, text, ...(redacted ? { redact: ['masked-token'] } : {}) });
+    const hash = payloadHash(topicId, text);
+    const seed = `${DEVICE_ID}\u0000${requestId}\u0000${hash}`;
+    const event = {
+      ...signed.record,
+      kind: 'message' as const, role: 'operator' as const,
+      eventId: derivedEventId('op', seed), messageId: derivedEventId('msg', seed),
+      at: signed.record.receivedAt!, machineId: signed.machine.signer.machineId(),
+    };
+    const envelope = signMobileChatHandover({
+      deviceId: DEVICE_ID, requestId, payloadHash: hash, topicId, event,
+    }, signed.machine.signer);
+    expect(envelope).not.toBeNull();
+    expect(verifyMobileChatHandover(envelope!, signed.ledger, signed.machine.lookup)).toBe(true);
+    expect(verifyMobileChatHandover({ ...envelope!, topicId: topicId + 1 }, signed.ledger, signed.machine.lookup)).toBe(false);
+    expect(verifyMobileChatHandover({ ...envelope!, event: { ...event, text: 'substitution' } }, signed.ledger, signed.machine.lookup)).toBe(false);
+    expect(verifyMobileChatHandover(envelope!, signed.ledger, () => ({ status: 'unknown' }))).toBe(false);
+    if (!redacted) {
+      const alternateHash = payloadHash(topicId, 'different fingerprint');
+      const alternateSeed = `${DEVICE_ID}\u0000${requestId}\u0000${alternateHash}`;
+      expect(signMobileChatHandover({
+        deviceId: DEVICE_ID, requestId, payloadHash: alternateHash, topicId,
+        event: { ...event, eventId: derivedEventId('op', alternateSeed), messageId: derivedEventId('msg', alternateSeed) },
+      }, signed.machine.signer)).toBeNull();
+    }
+  });
+});
 
 describe('verifyRecordedOrigin — the five verdicts', () => {
   it('another of the machine\'s routes (multi-route): verified only when this machine\'s receipt vouches for it', () => {

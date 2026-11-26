@@ -1,0 +1,25 @@
+{
+  "ts": "2026-11-26T10:27:29.722Z",
+  "slug": "shared-fenced-publication-storage",
+  "suggestedTier": 2,
+  "declaredTier": 1,
+  "riskFloor": 2,
+  "riskFloorReasons": [
+    "new capability: new exported class / subsystem added"
+  ],
+  "belowFloor": true,
+  "files": 2,
+  "loc": 144,
+  "scope": {
+    "basis": "staged-in-scope-paths-including-deleted",
+    "files": [
+      "src/core/FencedPublicationStore.ts",
+      "src/core/MobileIngressPublication.ts"
+    ],
+    "addedLines": 144,
+    "deletedLines": 0
+  },
+  "causalAutopsy": null,
+  "classClosure": null,
+  "verdict": "pass"
+}

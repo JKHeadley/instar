@@ -217,6 +217,14 @@ export function canonicalJson(value: unknown): string {
 }
 
 /** The per-attachment fields a redacted media record signs and a verifier compares (§4.13). */
+/** The existing request-id hash projection used by the mobile send routes. */
+export function signedFileHashParts(files: ReadonlyArray<AttachmentProjection>): string[] {
+  return files.map((file) => {
+    const transcriptHash = crypto.createHash('sha256').update(file.transcript ?? '').digest('hex');
+    return `${file.sha256}:${file.size}:${file.declaredKind}:${file.declaredType}:${file.filename}:${transcriptHash}`;
+  });
+}
+
 export interface AttachmentProjection { sha256: string; size: number; declaredKind: string; declaredType: string; filename: string; transcript?: string }
 export function attachmentProjection(a: AttachmentProjection): AttachmentProjection {
   return { sha256: a.sha256, size: a.size, declaredKind: a.declaredKind, declaredType: a.declaredType, filename: a.filename, ...(a.transcript !== undefined ? { transcript: a.transcript } : {}) };

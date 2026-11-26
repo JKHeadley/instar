@@ -30,6 +30,25 @@ describe('MobileChatRequestStore', () => {
     expect(payloadHash(1, 'hi')).not.toBe(payloadHash(2, 'hi'));
   });
 
+  it('atomically records waiting custody for a signed Telegram event and reloads it after restart', () => {
+    const dir = tmp();
+    const id = rid();
+    const hash = payloadHash(145097, 'exact original');
+    const waiting = new MobileChatRequestStore(dir).holdTelegramMessage('device', id, hash, 145097, {
+      eventId: 'op-1', messageId: 'msg-1',
+    });
+    expect(waiting).toEqual({ kind: 'done', status: 202, body: {
+      ok: true, outcome: 'waiting', eventId: 'op-1', messageId: 'msg-1',
+    } });
+    const reopened = new MobileChatRequestStore(dir);
+    expect(reopened.lookup('device', id, hash)).toEqual(waiting);
+    expect(reopened.lookup('device', id, payloadHash(145097, 'substituted'))).toEqual({ kind: 'request-id-reused' });
+    expect(reopened.stranded(0)).toEqual([]);
+    expect(reopened.get('device', id)?.extra).toEqual({
+      op: 'telegram-handover-send', conversationKey: 'telegram:145097', eventId: 'op-1', messageId: 'msg-1',
+    });
+  });
+
   it('done repeat returns the stored response; in-flight repeat is in-progress; reuse is refused', () => {
     const s = new MobileChatRequestStore(tmp());
     const id = rid(); const h = payloadHash(1, 'a');

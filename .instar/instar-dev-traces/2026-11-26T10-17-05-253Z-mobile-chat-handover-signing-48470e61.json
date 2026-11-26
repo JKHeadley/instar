@@ -1,0 +1,23 @@
+{
+  "version": 2,
+  "slug": "mobile-chat-handover-signing",
+  "sessionId": "dd2f336e-e8f7-40b3-97e3-09d19139bfa6",
+  "timestamp": "2026-11-26T10:17:05.253Z",
+  "artifactPath": "upgrades/side-effects/mobile-chat-handover-signing.md",
+  "artifactSha256": "398c40f3ad7e2f5408640f57c2b693559733c7a0104383e3c80bd697a1dec293",
+  "coveredFiles": [
+    "src/core/MobileChatHandoverEnvelope.ts",
+    "src/core/appMediaTypes.ts",
+    "src/server/mobileMediaSend.ts",
+    "tests/unit/app-record-signatures.test.ts",
+    "upgrades/eli16/mobile-chat-handover-signing.md",
+    "upgrades/side-effects/mobile-chat-handover-signing.md"
+  ],
+  "phase": "complete",
+  "tier": 1,
+  "tierReasoning": "Adds an unwired verifier for stored handover evidence using the existing device signature and receipt checks. No inbound authority or dispatch behavior changes.",
+  "eli16Path": "upgrades/eli16/mobile-chat-handover-signing.md",
+  "sideEffectsPath": "upgrades/side-effects/mobile-chat-handover-signing.md",
+  "secondPass": "true",
+  "reviewerConcurred": true
+}
