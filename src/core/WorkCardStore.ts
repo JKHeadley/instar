@@ -1032,12 +1032,16 @@ export function isAgentInternalCard(f: CardFold): boolean {
 }
 
 /** The lane for a viewer. Phase 1: only the team owner acts, so only the owner has "Waiting on you". */
-export function laneFor(status: CardStatus, viewerIsOwner: boolean, f: CardFold, viewerPersonKey: string | null, capacityWaitSurfaced = false): Lane {
+export function laneFor(status: CardStatus, viewerIsOwner: boolean, f: CardFold, viewerPersonKey: string | null, capacityWaitSurfaced = false, ownerStartDecision?: 'current' | 'absent'): Lane {
   if (status === 'removed') return 'archived';
   // A person's "Done" close shows with the done cards; "Not important" and a plain archive stay archived.
   if (status === 'archived') return f.closeout?.as === 'done' ? 'done' : 'archived';
   if (status === 'done') return 'done';
   if (viewerIsOwner) {
+    // The staged projection carries a verified current decision or an explicit absence.
+    // An omitted result preserves the legacy view until the checked owner projection is active.
+    if (ownerStartDecision === 'absent' && f.waitingOn === 'agent' && !f.openQuestion
+      && (status === 'needs-approval' || (status === 'with-person' && f.mirror))) return 'with-agent';
     // Execution state belongs to the agent. Only a structured person action can put it on the owner's list.
     if (f.carrier === 'agent') {
       const question = f.openQuestion && typeof f.openQuestion.principal === 'object' ? f.openQuestion.principal.personKey : null;

@@ -1,0 +1,25 @@
+{
+  "version": 2,
+  "slug": "owner-needs-work-board-approval",
+  "sessionId": "8e84229b-531e-4493-9069-98980bbef193",
+  "timestamp": "2026-11-26T03:37:02.453Z",
+  "artifactPath": "upgrades/side-effects/owner-needs-work-board-approval.md",
+  "artifactSha256": "16d1eca8d2e98f473751f89af354c76f3f014a287288af0ad8edc473e7e40dd1",
+  "coveredFiles": [
+    "docs/specs/owner-needs-work-board-approval.eli16.md",
+    "docs/specs/owner-needs-work-board-approval.md",
+    "src/core/WorkBoardService.ts",
+    "src/core/WorkCardStore.ts",
+    "src/core/workBoardViews.ts",
+    "tests/unit/agent-work-cards-store.test.ts",
+    "upgrades/next/owner-needs-work-board-approval.md",
+    "upgrades/side-effects/owner-needs-work-board-approval.md"
+  ],
+  "phase": "complete",
+  "tier": 1,
+  "tierReasoning": "Dark projection only. No runtime caller, activation, journal or approval authority changes.",
+  "eli16Path": "docs/specs/owner-needs-work-board-approval.eli16.md",
+  "sideEffectsPath": "upgrades/side-effects/owner-needs-work-board-approval.md",
+  "secondPass": "not-required",
+  "reviewerConcurred": null
+}

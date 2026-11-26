@@ -348,10 +348,10 @@ export class WorkBoardService {
     return !recs.some((r) => r.d.recordType === 'dispatched' && r.d.recovery === true && (r.d.outcome === 'injected' || r.d.outcome === 'spawned') && compareHlc(r.hlc, mark) > 0);
   }
 
-  lane(v: CardView, viewer: { isOwner: boolean; personKey: string | null }): Lane {
+  lane(v: CardView, viewer: { isOwner: boolean; personKey: string | null }, ownerStartDecision?: 'current' | 'absent'): Lane {
     // A stopped project app's serve card has nothing left to do in this build: it is settled, not waiting.
     if (!v.card.redacted && v.card.archives.length === 0 && this.isStoppedAppCard(v.card.cardId)) return 'done';
-    return laneFor(v.status, viewer.isOwner, v.card, viewer.personKey, v.capacityWaitSurfaced);
+    return laneFor(v.status, viewer.isOwner, v.card, viewer.personKey, v.capacityWaitSurfaced, ownerStartDecision);
   }
 
   /**

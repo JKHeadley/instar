@@ -114,9 +114,9 @@ export function conversationRef(conversationKey: string): Record<string, string>
   return { kind: 'app', key: conversationKey, ref: `app:${conversationKey}`, messagesPath: `/mobile/chat/app/${k}/messages`, sendPath: `/mobile/chat/app/${k}` };
 }
 
-export function cardJson(svc: WorkBoardService, v: CardView, viewer: Viewer, name: (k: string) => string, extra?: { behind?: BehindInfo | null; lastWrittenOn?: string | null; repliedAfterQuestion?: boolean; capacity?: { reason: string; nextCheckAt: number; since: number } | null; brokenAttachments?: string[]; /** A server-owned card the server refuses console taps on (project-apps-sandbox §3.4), except withdraw-approval. */ phoneOnly?: boolean; /** Materialized history, never an empty internal placeholder. */ conversationAvailable?: boolean; /** agent-work-cards-default §2: the card's last progress note, or `pending` when its event has not replicated here. */ lastNote?: { text: string; at: string; eventId: string } | { pending: true; eventId: string } | null; /** The request's own time (the durable row's), for "asked <n> days ago"; falls back to the card's creation. */ askedAt?: string | null; now?: number }): Record<string, unknown> {
+export function cardJson(svc: WorkBoardService, v: CardView, viewer: Viewer, name: (k: string) => string, extra?: { behind?: BehindInfo | null; lastWrittenOn?: string | null; repliedAfterQuestion?: boolean; capacity?: { reason: string; nextCheckAt: number; since: number } | null; brokenAttachments?: string[]; /** A server-owned card the server refuses console taps on (project-apps-sandbox §3.4), except withdraw-approval. */ phoneOnly?: boolean; /** Materialized history, never an empty internal placeholder. */ conversationAvailable?: boolean; /** agent-work-cards-default §2: the card's last progress note, or `pending` when its event has not replicated here. */ lastNote?: { text: string; at: string; eventId: string } | { pending: true; eventId: string } | null; /** The request's own time (the durable row's), for "asked <n> days ago"; falls back to the card's creation. */ askedAt?: string | null; now?: number; ownerStartDecision?: 'current' | 'absent' }): Record<string, unknown> {
   const c = v.card;
-  const lane: Lane = svc.lane(v, { isOwner: viewer.isOwner || viewer.isAgent, personKey: viewer.personKey });
+  const lane: Lane = svc.lane(v, { isOwner: viewer.isOwner || viewer.isAgent, personKey: viewer.personKey }, extra?.ownerStartDecision);
   const phoneOnly = extra?.phoneOnly === true;
   const appStopped = phoneOnly && svc.isStoppedAppCard(c.cardId);
   const startedAt = svc.startedAt(c.cardId);
@@ -204,14 +204,15 @@ export interface LaneListing { lane: Lane; cards: Record<string, unknown>[]; mor
  * "With the agent", "Waiting on others", "Done" (20 newest; `donePage` pages 50), "Archived".
  */
 export function boardJson(svc: WorkBoardService, viewer: Viewer, mayRead: (conversationKey: string) => boolean, name: (k: string) => string, opts: { softOpenCards: number; donePage?: number; extraFor?: (v: CardView) => Parameters<typeof cardJson>[4]; /** Uncut owner projection for Projects; never implicitly includes internal work. */ full?: boolean; /** Explicit agent-cards view only, never inherited from a shared request query. */ agentCardsOnly?: boolean }): Record<string, unknown> {
-  const lanes: Record<Lane, Array<{ v: CardView; json: Record<string, unknown> }>> = { 'waiting-on-you': [], 'with-agent': [], 'waiting-on-others': [], done: [], archived: [] };
+  const lanes: Record<Lane, Array<{ v: CardView; json: Record<string, unknown>; checkedOwnerLane?: boolean }>> = { 'waiting-on-you': [], 'with-agent': [], 'waiting-on-others': [], done: [], archived: [] };
   for (const id of svc.cardIds()) {
     const v = svc.view(id); if (!v || !v.card.created) continue;
     if (!viewer.isAgent && !viewer.isOwner && !mayRead(v.card.conversationKey)) continue; // not visible: the card does not exist for them
     const internal = isAgentInternalCard(v.card);
     if (opts.agentCardsOnly ? !internal : internal) continue;
-    const json = cardJson(svc, v, viewer, name, opts.extraFor?.(v));
-    lanes[json.lane as Lane].push({ v, json });
+    const extra = opts.extraFor?.(v);
+    const json = cardJson(svc, v, viewer, name, extra);
+    lanes[json.lane as Lane].push({ v, json, checkedOwnerLane: extra?.ownerStartDecision !== undefined });
   }
   // The lanes keep their own order; within what is shown, untouched cards come first (Luna's board, a display
   // order only: which waiting cards survive the soft cut is still decided oldest first, as before).
@@ -279,7 +280,7 @@ export const MY_BOARD_WORDS: Readonly<Record<MyBoardReason, string>> = {
  * you" lane; only the owner approves in this phase. A member sees only cards whose conversation was shared with
  * them (the board's existing viewer filter): such a card is one they were added to.
  */
-export function myBoardReason(v: CardView, viewer: Viewer, lane: Lane): MyBoardReason | null {
+export function myBoardReason(v: CardView, viewer: Viewer, lane: Lane, checkedOwnerLane = false): MyBoardReason | null {
   if (lane === 'done' || lane === 'archived') return null;
   const c = v.card;
   const me = viewer.personKey;
@@ -289,7 +290,7 @@ export function myBoardReason(v: CardView, viewer: Viewer, lane: Lane): MyBoardR
   const carrierPerson = typeof c.carrier === 'object' ? (c.carrier as { personKey?: string }).personKey ?? null : null;
   if (v.status === 'held') return 'held';
   if (ownerish) {
-    if (v.status === 'needs-approval' || v.status === 'claims-done') return 'approval';
+    if ((!checkedOwnerLane || lane === 'waiting-on-you') && (v.status === 'needs-approval' || v.status === 'claims-done')) return 'approval';
     // A solo agent with no team record has no owner personKey: the owner is then the only person a question can be put to.
     if (v.status === 'waiting-on-person' && qPerson && (me === null || qPerson === me)) return 'reply';
     // Every other card in the owner's "Waiting on you" lane, including the cards he carries himself (always in that lane while open).
@@ -301,10 +302,10 @@ export function myBoardReason(v: CardView, viewer: Viewer, lane: Lane): MyBoardR
 }
 
 /** The viewer's board: every section in order (clients hide empty ones); within one, untouched first, then newest activity first. */
-export function myBoardJson(viewer: Viewer, open: Array<{ v: CardView; json: Record<string, unknown> }>, shownIds: Set<string>): { sections: Array<{ reason: MyBoardReason; words: string; cardIds: string[]; notStarted: number; more?: number }> } {
+export function myBoardJson(viewer: Viewer, open: Array<{ v: CardView; json: Record<string, unknown>; checkedOwnerLane?: boolean }>, shownIds: Set<string>): { sections: Array<{ reason: MyBoardReason; words: string; cardIds: string[]; notStarted: number; more?: number }> } {
   const by: Record<MyBoardReason, Array<{ v: CardView; json: Record<string, unknown> }>> = { approval: [], reply: [], own: [], added: [], held: [] };
   for (const x of open) {
-    const r = myBoardReason(x.v, viewer, x.json.lane as Lane);
+    const r = myBoardReason(x.v, viewer, x.json.lane as Lane, x.checkedOwnerLane);
     if (r) by[r].push(x);
   }
   return {

@@ -13,6 +13,7 @@ import {
   workCardRecordStoreSchema, foldCard, toFoldRecords, deriveStatus, laneFor, derivePickupCauses, requestCardId, commitmentRefId, requestTextHashOf, normalizeRequestText, cutAtWord,
   SCHEMA_MAX, NOTE_EVENT_PREFIX, QUIET_CLOCK_GRACE_MS, WAITING_STATUSES, WORK_RECORD_TYPES, GENERAL_PROJECT_KEY, isRecordId, type UnionEntry,
 } from '../../src/core/WorkCardStore.js';
+import { cardJson, myBoardReason } from '../../src/core/workBoardViews.js';
 import { MAX_STORED_TEXT } from '../../src/core/AppConversationStore.js';
 
 const OWNER: WorkPrincipal = { kind: 'person', personKey: 'justin', proof: 'pin', isOwner: true };
@@ -356,5 +357,43 @@ describe('settings', () => {
     expect(validateSettingsPatch({ requestCards: { sweepPerTick: 10 }, noteDrainPerTick: 5, maxNotesPerCardPerDay: 10 })).toEqual({ ok: true });
     expect(validateSettingsPatch({ limits: { noteText: SCHEMA_MAX.noteText + 1 } })).toMatchObject({ ok: false, field: 'limits.noteText' });
     expect(validateSettingsPatch({ requestCards: { backfillMaxAgeDay: 1 } })).toMatchObject({ ok: false, field: 'requestCards.backfillMaxAgeDay' });
+  });
+});
+
+describe('checked owner start decision projection', () => {
+  it('keeps approval state while separating a bound owner decision from a policy-only wait', () => {
+    const { svc, journal } = makeService();
+    const created = svc.createCard(AGENT, {
+      ...work, outward: true, whyYou: 'An approval is required.',
+      recommendation: 'Review the proposal.',
+      doneWhen: [{ id: 'd1', text: 'Owner verifies the result', certify: 'owner-confirms' }],
+    });
+    if (!created.ok) throw new Error(created.error);
+    const view = svc.view(created.cardId)!;
+    const viewer = { isOwner: true, isAgent: false, personKey: 'justin' };
+    const render = (ownerStartDecision?: 'current' | 'absent') =>
+      cardJson(svc, view, viewer, key => key, { ownerStartDecision });
+    const initialRecords = journal.length;
+    const legacy = render();
+    expect(legacy).toMatchObject({ status: 'needs-approval', lane: 'waiting-on-you', turn: 'you' });
+    expect(render('current')).toEqual(legacy);
+    const agent = render('absent');
+    expect(agent).toMatchObject({
+      status: legacy.status, lane: 'with-agent', turn: 'agent', approvalRequired: true,
+      approved: false, workable: false, materialHash: legacy.materialHash, pickups: legacy.pickups,
+    });
+    expect(myBoardReason(view, viewer, 'with-agent', true)).toBeNull();
+    expect(myBoardReason(view, viewer, 'with-agent')).toBe('approval');
+    expect(journal).toHaveLength(initialRecords);
+  });
+
+  it('moves the agent-waiting mirror but preserves a live owner question', () => {
+    const card = foldCard('wc_0123456789abcdef', [], []);
+    card.carrier = { personKey: 'justin' };
+    card.mirror = { ref: 'project:feedback', hlc: { physical: 1, logical: 0, node: 'm_a' } };
+    expect(laneFor('with-person', true, card, 'justin')).toBe('waiting-on-you');
+    expect(laneFor('with-person', true, card, 'justin', false, 'absent')).toBe('with-agent');
+    card.waitingOn = { personKey: 'justin' };
+    expect(laneFor('with-person', true, card, 'justin', false, 'absent')).toBe('waiting-on-you');
   });
 });
