@@ -1,4 +1,5 @@
 import { ManualQuotaBalance } from '../core/ManualQuotaBalance.js';
+import { promotionMismatchReason, unavailableConsumerPromotionProposal } from '../feedback-factory/drain/consumerPromotionProposal.js';
 import { normalizeCreationParentRef, type AppCreationContext } from '../core/AppCreationContext.js';
 // Governed by (docs/STANDARDS-REGISTRY.md cites this file as enforcement of):
 //   *Recall Over Our Own Material Is by Meaning, Not by Word-Match*
@@ -2041,6 +2042,8 @@ export interface RouteContext {
     service: import('../feedback-factory/drain/FeedbackDrainService.js').FeedbackDrainService;
     store: import('../feedback-factory/drain/FeedbackDrainStore.js').FeedbackDrainStore;
     promotion: import('../feedback-factory/drain/FeedbackConsumerPromotionStore.js').FeedbackConsumerPromotionStore;
+    /** Current consumer-promotion proposal, derived fresh on every call. */
+    promotionProposal: () => import('../feedback-factory/drain/consumerPromotionProposal.js').PromotionProposal;
     tickProxy: import('../feedback-factory/drain/FeedbackDrainTickProxy.js').FeedbackDrainTickProxy;
     checkpointBackup: (trigger: 'promotion' | 'failover') => void;
     finalizeFailoverRestore: (input: { restoredOwnerAuthorityEpoch: number; operatorDecisionRef: string; snapshotId: string; manifestChecksum: string;
@@ -18559,15 +18562,55 @@ document.getElementById('mcpForm').addEventListener('submit', async function (e)
     } catch (error) { res.status(409).json({ error: error instanceof Error ? operatorError(error, res.app?.locals?.stateDir) : 'release failed' }); }
   });
 
+  // The exact batch the operator would approve by promoting the consumer
+  // (docs/specs/feedback-factory-operating-drain.md, "Batch promotion is proposal-set bound").
+  // Read-only. A non-owner reads through the canonical owner; a PIN is never proxied.
+  router.get('/feedback-factory/consumer/promotion/proposal', async (_req, res) => {
+    if (!ctx.feedbackDrain) { res.json(unavailableConsumerPromotionProposal()); return; }
+    try {
+      const local = ctx.feedbackDrain.promotionProposal();
+      if (local.state !== 'non-owner') { res.json(local); return; }
+      if (!ctx.feedbackTriage) {
+        // No owner transport here: name the owner, never look actionable.
+        res.json({ ...local, localAction: false, owner: ctx.feedbackDrain.authorityBinding?.().ownerMachineId ?? null });
+        return;
+      }
+      const owner = ctx.feedbackTriage.ownerMachineId();
+      const fetched = await ctx.feedbackTriage.fetchFromOwner('/feedback-factory/consumer/promotion/proposal');
+      if (fetched && fetched.status === 200 && fetched.body && typeof fetched.body === 'object') {
+        // A proxied read is never actionable here: the PIN must be entered on the owner.
+        res.json({ ...(fetched.body as Record<string, unknown>), localAction: false, servedBy: owner });
+        return;
+      }
+      res.json({ ...local, localAction: false, servedBy: owner, stale: true });
+    } catch (error) { // @silent-fallback-ok: not silent — the error is returned to the caller as an HTTP error status
+      res.status(500).json({ error: error instanceof Error ? error.message.slice(0, 200) : 'promotion proposal failed' });
+    }
+  });
+
   router.post('/feedback-factory/consumer/promote', (req, res) => {
     if (!ctx.feedbackDrain) { res.status(503).json({ error: 'feedback-factory drain unavailable' }); return; }
     if (feedbackRestorePendingGate(res)) return;
     if (!feedbackMutationIntentValid(req, res)) return;
     try {
+      const approvedBatchBound = Number(req.body?.approvedBatchBound);
+      const evidenceHash = String(req.body?.evidenceHash ?? '');
+      // Proposal-set bound: the hash must name the exact batch the server would
+      // propose RIGHT NOW. A stale, replayed or invented hash never promotes.
+      const fresh = ctx.feedbackDrain.promotionProposal();
+      const mismatch = promotionMismatchReason(fresh, { evidenceHash, approvedBatchBound });
+      if (mismatch) {
+        res.status(409).json({ error: mismatch, state: fresh.state, ...(fresh.state === 'pending' ? {} : { reason: fresh.reason }) });
+        return;
+      }
       const record = ctx.feedbackDrain.promotion.promote({
-        approvedBatchBound: Number(req.body?.approvedBatchBound),
-        evidenceHash: String(req.body?.evidenceHash ?? ''),
+        approvedBatchBound,
+        evidenceHash,
         operatorDecisionId: String(req.body?.operatorDecisionId ?? ''),
+        approvedWorkIds: fresh.state === 'pending' ? fresh.items.map((item) => item.workId) : [],
+        approvedAttempts: fresh.state === 'pending'
+          ? Object.fromEntries(fresh.items.map((item) => [item.workId, ctx.feedbackDrain!.store.workById(item.workId)?.attempts ?? 0]))
+          : {},
       });
       try { ctx.feedbackDrain.checkpointBackup('promotion'); }
       catch (backupError) {

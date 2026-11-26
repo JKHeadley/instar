@@ -119,6 +119,7 @@ import { FeedbackDrainService } from '../feedback-factory/drain/FeedbackDrainSer
 import { FeedbackDrainTickProxy, resolveFeedbackDrainOwnerMachineId, type DrainTickGatewayResult } from '../feedback-factory/drain/FeedbackDrainTickProxy.js';
 import { runFeedbackFactoryDefaultsSelfHeal } from '../feedback-factory/drain/FeedbackFactoryDefaultsSelfHeal.js';
 import { FeedbackConsumerPromotionStore } from '../feedback-factory/drain/FeedbackConsumerPromotionStore.js';
+import { deriveConsumerPromotionProposal, effectiveClaimsPerRun, promotionRecordMarker, type PromotionProposal } from '../feedback-factory/drain/consumerPromotionProposal.js';
 import { resolveFeedbackDrainPosture, type FeedbackDrainPosture } from '../feedback-factory/drain/FeedbackDrainPosture.js';
 import { FeedbackDrainBackupCadence } from '../feedback-factory/drain/FeedbackDrainBackupCadence.js';
 import { createBackupSnapshotInWorker } from '../core/backupSnapshotJob.js';
@@ -1146,6 +1147,8 @@ export class AgentServer {
     service: FeedbackDrainService;
     store: FeedbackDrainStore;
     promotion: FeedbackConsumerPromotionStore;
+    /** The current consumer-promotion proposal (state + hashed batch), derived fresh on every call. */
+    promotionProposal: () => PromotionProposal;
     tickProxy: FeedbackDrainTickProxy;
     checkpointBackup: (trigger: 'promotion' | 'failover') => void;
     finalizeFailoverRestore: (input: { restoredOwnerAuthorityEpoch: number; operatorDecisionRef: string; snapshotId: string; manifestChecksum: string;
@@ -4913,6 +4916,7 @@ export class AgentServer {
           isCanonicalOwner,
           isConsumerLive: () => consumerEnabled && options.config.feedbackFactory?.consumer?.dryRun === false && promotion.isLive(),
           consumerBatchBound: () => promotion.read()?.approvedBatchBound ?? 0,
+          consumerApprovedWorkIds: () => promotion.approvedWorkIds(),
           maxReadyScansPerTick: options.config.feedbackFactory?.drain?.maxReadyScansPerTick,
           maxClaimsPerTick: options.config.feedbackFactory?.consumer?.maxClaimsPerTick,
           maxWallClockMs: options.config.feedbackFactory?.drain?.maxWallClockMs,
@@ -4980,7 +4984,24 @@ export class AgentServer {
           restorePending = false;
           return { ...finalized, reconciliation };
         };
-        this.feedbackDrain = { service, store, promotion, tickProxy, checkpointBackup, finalizeFailoverRestore, isRestorePending: () => restorePending,
+        // The exact batch the operator approves on consumer promotion (proposal-set bound):
+        // re-derived on every read and again immediately before the promote write.
+        const promotionProposal = (): PromotionProposal => {
+          const claimsPerRun = effectiveClaimsPerRun(options.config.feedbackFactory?.consumer?.maxClaimsPerTick);
+          const currentRecord = promotion.read();
+          return deriveConsumerPromotionProposal({
+            available: true,
+            restorePending,
+            isCanonicalOwner: holdsCanonicalLease(),
+            consumerEnabled,
+            configuredDryRun: options.config.feedbackFactory?.consumer?.dryRun,
+            promotionRecord: currentRecord ? { approvedBatchBound: currentRecord.approvedBatchBound, revokedAt: currentRecord.revokedAt, proposalBound: FeedbackConsumerPromotionStore.isProposalBound(currentRecord) } : null,
+            priorRecordMarker: promotionRecordMarker(currentRecord),
+            claimsPerRun,
+            claimable: store.claimableWork(claimsPerRun),
+          });
+        };
+        this.feedbackDrain = { service, store, promotion, promotionProposal, tickProxy, checkpointBackup, finalizeFailoverRestore, isRestorePending: () => restorePending,
           // The exact owner binding canAgentMutateReadiness compares, for the operator's authority proposal.
           authorityBinding: () => ({ ownerMachineId: ownerHost, ownerEpoch: options.coordinator?.enabled ? options.coordinator.getLeaseEpoch() : localOwnerEpoch }) };
         // Feedback triage (docs/specs/feedback-triage-and-execution.md, Phase 1). Same owner

@@ -49,6 +49,8 @@ export interface FeedbackDrainServiceOptions {
   isCanonicalOwner: () => boolean;
   isConsumerLive: () => boolean;
   consumerBatchBound?: () => number;
+  /** The exact work ids the operator approved and when; the live consumer claims these before any other work. */
+  consumerApprovedWorkIds?: () => { ids: string[]; attemptBaselines: Record<string, number>; nonce: string } | null;
   estimatedReadinessBatchUsd?: number;
   maxReadyScansPerTick?: number;
   maxClaimsPerTick?: number;
@@ -360,9 +362,23 @@ export class FeedbackDrainService {
         out.wouldCreate = this.opts.store.simulateClaims({ limit: this.maxClaims, ownerAuthorityEpoch: ownerEpoch, now });
       } else {
         const promotionBound = Math.min(50, Math.max(0, Math.trunc(this.opts.consumerBatchBound?.() ?? this.maxClaims)));
+        // Proposal-set bound: the batch the operator saw is claimed first, so no earlier
+        // or newly queued item takes its place in the first live run.
+        // Until every approved item has been attempted once, ONLY approved items are claimed
+        // (no fallback to unseen work in the same run); after that the promotion continues
+        // as the ongoing consumer at the approved per-run bound with no lasting priority.
+        const approved = this.opts.consumerApprovedWorkIds?.() ?? null;
+        const pendingApproval = approved ? this.opts.store.outstandingApprovedWork(approved.attemptBaselines, now) : { outstanding: [], claimable: [] };
         for (let i = 0; i < Math.min(this.maxClaims, promotionBound); i++) {
           stopIfCancelled();
-          const claim = this.opts.store.claimNext({ consumerId: 'initiative-tracker', ownerAuthorityEpoch: ownerEpoch, leaseMs: 30_000, now });
+          // A revoke, re-promotion or config change mid-run stops further claims at once.
+          if (!this.opts.isConsumerLive() || (this.opts.consumerApprovedWorkIds?.()?.nonce ?? null) !== (approved?.nonce ?? null)) break;
+          const claim = pendingApproval.outstanding.length > 0
+            // Approved batch outstanding: claim only from it, and nothing if none is claimable now.
+            ? (pendingApproval.claimable.length > 0
+              ? this.opts.store.claimNext({ consumerId: 'initiative-tracker', ownerAuthorityEpoch: ownerEpoch, leaseMs: 30_000, now, onlyWorkIds: pendingApproval.claimable })
+              : null)
+            : this.opts.store.claimNext({ consumerId: 'initiative-tracker', ownerAuthorityEpoch: ownerEpoch, leaseMs: 30_000, now });
           if (!claim) break;
           out.claimed++;
           try {
