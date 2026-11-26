@@ -1316,6 +1316,7 @@ class ChatsPage {
     for (const e of entries) {
       list = mergeBubbles(list, [{ id: `local:${e.requestId}`, messageId: null, side: 'right', who: null, text: e.text,
         at: new Date(e.firstSentAt).toISOString(), attachments: (e.files || []).map((f) => ({ sha256: '', filename: f.filename, size: f.size, blobType: 'application/octet-stream', display: 'file' })),
+        // warning-exempt: the bubble has no control of its own; a held send is acted on with the Resume and Use text buttons in this page's saved-messages panel
         delivery: { label: e.phase === 'held' ? e.reason || 'Saved here — needs review' : 'Saved here — waiting for acceptance', tone: e.phase === 'held' ? 'attn' : 'plain' },
         mark: null, outboxPending: true, final: false }]);
     }
@@ -1334,7 +1335,7 @@ class ChatsPage {
     if (!rows.length) { setKids(this.pendingEl); return; }
     const heading = el('p', { class: 'card-line', text: `${rows.length} saved ${rows.length === 1 ? 'message' : 'messages'} for this browser identity` });
     const noLock = !this.outbox?.locks?.request;
-    const limit = noLock ? el('p', { class: 'card-line', text: 'Automatic recovery needs a browser update. You can resume an original request below.' }) : null;
+    const limit = noLock ? el('p', { class: 'card-line', text: 'Automatic recovery needs a browser update. To send a saved message now, use its Resume original request button.' }) : null;
     const visible = this.pendingVisible || 25; // Presentation window only; all saved rows remain in the store.
     const cards = rows.slice(0, visible).map((entry) => {
       const ref = parseConversationRef(entry.ref);
