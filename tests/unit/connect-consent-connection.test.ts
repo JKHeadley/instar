@@ -59,3 +59,37 @@ it('does not reopen an expired challenge when the wall clock rolls back', () => 
   mono = 0;
   expect(connection.admit(frame)).toBe(false);
 });
+
+it('refuses admission when the final pairing check closes transport or crosses either deadline', () => {
+  for (const boundary of ['transport', 'wall', 'monotonic']) {
+    const transport = new AbortController();
+    let checks = 0, wall = 100, mono = 0;
+    const connection = new ConnectConsentConnection(pairing, keys.publicKey, () => {
+      if (++checks === 2) {
+        if (boundary === 'transport') transport.abort();
+        if (boundary === 'wall') wall = 10100;
+        if (boundary === 'monotonic') mono = 10000;
+      }
+      return true;
+    }, transport.signal, { wall: () => wall, monotonic: () => mono });
+    const frame = proof(connection);
+    expect(connection.admit(frame)).toBe(false);
+    wall = 100;
+    mono = 0;
+    expect(connection.current()).toBe(false);
+    expect(connection.admit(frame)).toBe(false);
+  }
+});
+
+it('reports no current authority when pairing check synchronously closes admitted transport', () => {
+  const transport = new AbortController();
+  let closeOnCheck = false;
+  const connection = new ConnectConsentConnection(pairing, keys.publicKey, () => {
+    if (closeOnCheck) transport.abort();
+    return true;
+  }, transport.signal);
+  expect(connection.admit(proof(connection))).toBe(true);
+  closeOnCheck = true;
+  expect(connection.current()).toBe(false);
+  expect(connection.current()).toBe(false);
+});

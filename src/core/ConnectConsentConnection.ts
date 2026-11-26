@@ -64,13 +64,17 @@ export class ConnectConsentConnection {
     return Buffer.from(this.#challenge);
   }
 
-  admit(frame: Buffer): boolean {
-    if (this.#state !== 'pending') return false;
+  private pendingWithinDeadline(): boolean {
     const now = this.clock.wall();
     const monotonic = this.clock.monotonic();
-    if (!Number.isSafeInteger(now) || now < this.#deadline - 10_000 || now >= this.#deadline ||
-        !Number.isFinite(monotonic) || monotonic >= this.#monotonicDeadline ||
-        this.transport.aborted || !this.pairingStillCurrent()) {
+    return this.#state === 'pending' && !this.transport.aborted &&
+      Number.isSafeInteger(now) && now >= this.#deadline - 10_000 && now < this.#deadline &&
+      Number.isFinite(monotonic) && monotonic < this.#monotonicDeadline;
+  }
+
+  admit(frame: Buffer): boolean {
+    if (this.#state !== 'pending') return false;
+    if (!this.pendingWithinDeadline() || !this.pairingStillCurrent() || !this.pendingWithinDeadline()) {
       this.close();
       return false;
     }
@@ -79,7 +83,7 @@ export class ConnectConsentConnection {
       text('instar-connect-connection-proof-v1'), createHash('sha256').update(this.#challenge).digest(),
       Buffer.from(this.generation, 'hex'), this.#nonce,
     ]);
-    if (!proof?.equals(expected) || this.transport.aborted || !this.pairingStillCurrent()) {
+    if (!proof?.equals(expected) || !this.pairingStillCurrent() || !this.pendingWithinDeadline()) {
       this.close();
       return false;
     }
@@ -93,7 +97,7 @@ export class ConnectConsentConnection {
       this.close();
       return false;
     }
-    return true;
+    return this.#state === 'admitted' && !this.transport.aborted;
   }
 
   close(): void {
