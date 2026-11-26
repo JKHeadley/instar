@@ -42,7 +42,8 @@ it('boots only on opt-in, enforces TLS and exact routing, and closes', async () 
       await expect(post(route + '/')).resolves.toBe(404);
       await expect(post(route.toUpperCase())).resolves.toBe(404);
       await expect(post('/health')).resolves.toBe(404);
-      for (let i = 0; i < 26; i++) await expect(post(route)).resolves.toBe(400);
+      await expect(post(route + '?extra=1')).resolves.toBe(404);
+      for (let i = 0; i < 25; i++) await expect(post(route)).resolves.toBe(400);
       await expect(post(route)).resolves.toBe(429);
     } finally {
       await new Promise<void>((resolve, reject) => server.close(error => error ? reject(error) : resolve()));
