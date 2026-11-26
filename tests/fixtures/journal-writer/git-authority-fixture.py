@@ -1,11 +1,13 @@
 """Dark Git authority baseline. Only touches disposable local Git repositories."""
 
+import base64
 import hashlib
 import json
 import os
 from pathlib import Path
 import subprocess
 import sys
+import uuid
 import tempfile
 import time
 import unittest
@@ -34,14 +36,39 @@ def read_state(repository, oid):
     return json.loads(git(repository, "show", f"{oid}:authority.json").stdout)
 
 
-def prepared_receiver(repository, lines):
-    # The principal is supplied by this fixture's local transport driver.
-    # A real receiver must obtain it from authenticated server context.
+def authorization_bytes(audience, actor, old_oid, new_oid, ref):
+    return json.dumps({
+        "audience": audience, "principal": actor, "previous": old_oid,
+        "candidate": new_oid, "ref": ref,
+    }, sort_keys=True, separators=(",", ":")).encode()
+
+
+def authenticate(repository, old_oid, new_oid, ref):
     actor = os.environ.get("FIXTURE_PRINCIPAL")
+    if actor not in {"publisher", "old", "next", "intruder"}:
+        raise ValueError("missing receiver principal")
+    signature = base64.b64decode(os.environ.get("FIXTURE_SIGNATURE", ""), validate=True)
+    if not signature or len(signature) > 4096:
+        raise ValueError("missing or invalid receiver signature")
+    audience = (repository / "fixture-audience").read_text()
+    with tempfile.NamedTemporaryFile() as signed:
+        signed.write(signature)
+        signed.flush()
+        verified = subprocess.run([
+            "ssh-keygen", "-Y", "verify", "-f", str(repository / "fixture-allowed-signers"),
+            "-I", actor, "-n", "instar-journal-authority-fixture", "-s", signed.name,
+        ], input=authorization_bytes(audience, actor, old_oid, new_oid, ref), capture_output=True)
+    if verified.returncode:
+        raise ValueError("receiver signature did not verify")
+    return actor
+
+
+def prepared_receiver(repository, lines):
     for line in lines:
         old_oid, new_oid, ref = line.split()
         if ref != REF or new_oid == ZERO:
             raise ValueError("unexpected ref or deletion")
+        actor = authenticate(repository, old_oid, new_oid, ref)
         parents = git(repository, "rev-list", "--parents", "-n", "1", new_oid).stdout.decode().split()[1:]
         new = read_state(repository, new_oid)
         if old_oid == ZERO:
@@ -136,6 +163,19 @@ class GitAuthorityFixture(unittest.TestCase):
         git(self.remote, "init", "--bare", "--object-format=sha1")
         git(self.local, "init", "--object-format=sha1")
         git(self.remote, "config", "receive.denyNonFastForwards", "true")
+        self.audience = uuid.uuid4().hex
+        (self.remote / "fixture-audience").write_text(self.audience)
+        keys_dir = root / "fixture-keys"
+        keys_dir.mkdir()
+        self.keys = {}
+        allowed_signers = []
+        for actor in ("publisher", "old", "next", "intruder"):
+            key = keys_dir / actor
+            subprocess.run(["ssh-keygen", "-q", "-t", "ed25519", "-f", str(key), "-N", ""],
+                           check=True, capture_output=True)
+            self.keys[actor] = key
+            allowed_signers.append(f"{actor} {key.with_suffix('.pub').read_text()}")
+        (self.remote / "fixture-allowed-signers").write_text("".join(allowed_signers))
         self.clock(1)
         (self.remote / "fixture-witness").write_text("")
         hook = self.remote / "hooks/reference-transaction"
@@ -159,9 +199,21 @@ class GitAuthorityFixture(unittest.TestCase):
         parents = ["-p", parent] if parent else []
         return git(self.local, "commit-tree", tree, *parents, "-m", state["command"]).stdout.decode().strip()
 
-    def push(self, oid, actor):
+    def token(self, oid, actor, signer=None, audience=None):
+        parents = git(self.local, "rev-list", "--parents", "-n", "1", oid).stdout.decode().split()[1:]
+        previous = parents[0] if parents else ZERO
+        signed = subprocess.run([
+            "ssh-keygen", "-Y", "sign", "-f", str(self.keys[signer or actor]),
+            "-n", "instar-journal-authority-fixture",
+        ], input=authorization_bytes(audience or self.audience, actor, previous, oid, REF),
+           check=True, capture_output=True)
+        return base64.b64encode(signed.stdout).decode()
+
+    def push(self, oid, actor, signature=None):
+        if signature is None:
+            signature = self.token(oid, actor)
         return git(self.local, "push", str(self.remote), f"{oid}:{REF}",
-                   extra_env={"FIXTURE_PRINCIPAL": actor}, check=False)
+                   extra_env={"FIXTURE_PRINCIPAL": actor, "FIXTURE_SIGNATURE": signature}, check=False)
 
     def tip(self):
         return git(self.local, "ls-remote", "--refs", str(self.remote), REF).stdout.decode().split()[0]
@@ -180,6 +232,20 @@ class GitAuthorityFixture(unittest.TestCase):
                                   "candidate": "next-cutover"}, base)
         self.assertEqual(self.push(pending, "publisher").returncode, 0)
         return pending
+
+    def test_receiver_binds_signature_to_principal_audience_and_exact_candidate(self):
+        candidate = self.append_candidate(self.initial)
+        altered = self.append_candidate(self.initial, generation=2)
+        for attempted, signature in (
+            (candidate, ""),
+            (candidate, self.token(candidate, "old", signer="intruder")),
+            (candidate, self.token(candidate, "old", audience="different-receiver")),
+            (altered, self.token(candidate, "old")),
+        ):
+            self.assertIn(b"signature", self.push(attempted, "old", signature).stderr)
+            self.assertEqual(self.tip(), self.initial)
+        self.assertEqual(self.push(candidate, "old").returncode, 0)
+        self.assertEqual(self.tip(), candidate)
 
     def test_expired_writer_refused_on_unchanged_tip(self):
         candidate = self.append_candidate(self.initial)
