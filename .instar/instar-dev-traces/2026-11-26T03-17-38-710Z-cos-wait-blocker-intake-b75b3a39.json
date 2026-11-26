@@ -1,0 +1,27 @@
+{
+  "version": 2,
+  "slug": "cos-wait-blocker-intake",
+  "sessionId": "017c26ed-5596-4576-9c20-20af13e4c1f8",
+  "timestamp": "2026-11-26T03:17:38.710Z",
+  "artifactPath": "upgrades/side-effects/cos-wait-blocker-intake.md",
+  "artifactSha256": "6258c535ff6a6b002927c7ce59d78d9f3d043aed565a547351741e064f959d0a",
+  "coveredFiles": [
+    "docs/specs/chief-of-staff-verified-closeout.md",
+    "src/commands/server.ts",
+    "src/core/ChiefDecisionFrontier.ts",
+    "src/core/ChiefOfStaffLoop.ts",
+    "tests/e2e/chief-of-staff-alive.test.ts",
+    "tests/e2e/chief-of-staff-store-lifecycle.test.ts",
+    "tests/unit/ChiefDecisionFrontier.test.ts",
+    "tests/unit/ChiefOfStaffLoop.test.ts",
+    "upgrades/cos-wait-blocker-intake.eli16.md",
+    "upgrades/side-effects/cos-wait-blocker-intake.md"
+  ],
+  "phase": "complete",
+  "tier": 1,
+  "tierReasoning": "Default-off successor scaffolding; production cannot mutate candidate records without a verified snapshot provider.",
+  "eli16Path": "upgrades/cos-wait-blocker-intake.eli16.md",
+  "sideEffectsPath": "upgrades/side-effects/cos-wait-blocker-intake.md",
+  "secondPass": "true",
+  "reviewerConcurred": true
+}

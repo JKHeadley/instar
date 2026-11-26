@@ -1,0 +1,26 @@
+{
+  "ts": "2026-11-26T00:14:06.110Z",
+  "slug": "cos-wait-blocker-intake",
+  "suggestedTier": 2,
+  "declaredTier": 1,
+  "riskFloor": 1,
+  "riskFloorReasons": [],
+  "belowFloor": false,
+  "files": 5,
+  "loc": 30,
+  "scope": {
+    "basis": "staged-in-scope-paths-including-deleted",
+    "files": [
+      "src/commands/server.ts",
+      "src/core/ChiefOfStaffLoop.ts",
+      "src/core/ChiefOfStaffStore.ts",
+      "src/monitoring/BlockerLedger.ts",
+      "src/server/AgentServer.ts"
+    ],
+    "addedLines": 27,
+    "deletedLines": 3
+  },
+  "causalAutopsy": null,
+  "classClosure": null,
+  "verdict": "pass"
+}

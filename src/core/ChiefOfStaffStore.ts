@@ -293,6 +293,8 @@ export const chiefOfStaffRecordStoreSchema: StoreFieldSchema = {
         if (!isMachine(raw.machine)) return null;
         if (!isIso(raw.at)) return null;
         if (raw.note !== undefined && !isShortText(raw.note, 500)) return null;
+        if (raw.bindingHlc !== undefined && !isHlc(raw.bindingHlc)) return null;
+        if (raw.waitEvidenceBound !== undefined && ((raw.waitEvidenceBound !== 'fresh' && raw.waitEvidenceBound !== 'carried') || !isHlc(raw.bindingHlc) || raw.verdict !== 'waiting-on-user')) return null;
         let doneItems: Record<string, 'pass' | 'fail' | 'unknown'> | undefined;
         if (raw.doneItems !== undefined) {
           if (!raw.doneItems || typeof raw.doneItems !== 'object' || Array.isArray(raw.doneItems)) return null;
@@ -305,6 +307,8 @@ export const chiefOfStaffRecordStoreSchema: StoreFieldSchema = {
           progressSeen: raw.progressSeen, machine: raw.machine, at: raw.at,
           ...(raw.netDiffHighWater !== undefined ? { netDiffHighWater: raw.netDiffHighWater } : {}),
           ...(raw.note !== undefined ? { note: raw.note } : {}),
+          ...(raw.bindingHlc !== undefined ? { bindingHlc: raw.bindingHlc } : {}),
+          ...(raw.waitEvidenceBound !== undefined ? { waitEvidenceBound: raw.waitEvidenceBound } : {}),
           ...(doneItems !== undefined ? { doneItems } : {}),
         };
       }
@@ -444,6 +448,9 @@ export function buildCheckRequestedEvent(conversationKey: string, bindingHlc: Hl
 
 export interface CheckEventInput {
   conversationKey: string; verdict: CosVerdict; evidenceHash: string; evidenceIds: string[]; progressSeen: boolean; netDiffHighWater?: number; machine: string; at: string; note?: string;
+  /** Exact project binding evaluated by this check. Older checks may omit it. */
+  bindingHlc?: HlcTimestamp;
+  waitEvidenceBound?: 'fresh' | 'carried';
   /** The deterministic done-item results at this check — the DURABLE baseline the next check's progress detection compares against (never an in-memory map). */
   doneItems?: Record<string, 'pass' | 'fail' | 'unknown'>;
 }
@@ -781,6 +788,8 @@ export interface ProjectCheckState {
   lastDoneItems: Record<string, 'pass' | 'fail' | 'unknown'> | null;
   /** The newest check-event's record HLC (null when none or unreadable). */
   lastCheckHlc: HlcTimestamp | null;
+  lastCheckBindingHlc?: HlcTimestamp;
+  lastWaitEvidenceBound?: boolean;
 }
 
 const ACTION_ATTEMPT_ACTIONS: ReadonlySet<CosAction> = new Set<CosAction>(['restart-inject', 'restart-run', 'redirect']);
@@ -851,6 +860,8 @@ export function foldProjectCheckState(entries: UnionEntry[], conversationKey: st
     nextActionAllowedAt,
     lastDoneItems: last && last.doneItems && typeof last.doneItems === 'object' ? (last.doneItems as Record<string, 'pass' | 'fail' | 'unknown'>) : null,
     lastCheckHlc: last ? hlcOf(last) : null,
+    ...(last?.waitEvidenceBound === 'fresh' || last?.waitEvidenceBound === 'carried' ? { lastWaitEvidenceBound: true } : {}),
+    ...(isHlc(last?.bindingHlc) ? { lastCheckBindingHlc: last.bindingHlc } : {}),
   };
 }
 

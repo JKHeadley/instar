@@ -58,6 +58,49 @@ async function peerEntries(dir: string, reg: ReplicatedKindRegistry, selfId: str
 }
 
 describe('E2E: Chief of Staff store — production replication path + concurrent-write convergence', () => {
+  it('reads a complete peer copy while an accepted checklist update is still in transit', async () => {
+    const root = fs.mkdtempSync(path.join(os.tmpdir(), 'cos-delayed-peer-e2e-'));
+    const registry = new ReplicatedKindRegistry();
+    registry.register(CHIEF_OF_STAFF_KIND_REGISTRATION);
+    const prior = machine(root, 'm_a', registry, true);
+    const next = machine(root, 'm_b', registry, true);
+    try {
+      const binding = {
+        conversationKey: CK, goal: 'Original goal', checkCadenceHours: 24,
+        doneDefinition: [{ id: 'pr', kind: 'deterministic' as const, text: 'PR merged' }],
+        linked: {}, confirmedBy: 'owner' as const, confirmedAt: iso(T0),
+      };
+      const applier = new JournalSyncApplier({ stateDir: next.dir, replicatedRegistry: registry });
+      const replicate = () => applier.apply(prior.id, [{
+        kind: CHIEF_OF_STAFF_RECORD_KIND, incarnation: 'a-1',
+        entries: prior.journal.readTail(CHIEF_OF_STAFF_RECORD_KIND, 1000).entries.sort((a, b) => a.seq - b.seq),
+      }]);
+      const reader = new ReplicatedPeerStreamReader({
+        stateDir: next.dir, registry, selfMachineId: next.id, autoRebuild: false,
+      });
+      expect(prior.emitter.emit(CHIEF_OF_STAFF_STORE_KEY, `binding:${CK}`, buildBindingPut(binding)).outcome).toBe('emitted');
+      prior.journal.flush();
+      expect(replicate().applied).toBe(1);
+      const original = foldBindingState(await peerEntries(next.dir, registry, next.id)).get(CK)?.bindingHlc;
+      expect(original).toBeDefined();
+
+      expect(prior.emitter.emit(CHIEF_OF_STAFF_STORE_KEY, `binding:${CK}`,
+        buildBindingPut({ ...binding, goal: 'Revised goal' })).outcome).toBe('emitted');
+      prior.journal.flush();
+      expect(foldBindingState(ownEntries(prior.journal)).get(CK)?.bindingHlc).not.toEqual(original);
+      expect(reader.peerStreamsReadComplete(CHIEF_OF_STAFF_STORE_KEY)).toBe(true);
+      expect(foldBindingState(await peerEntries(next.dir, registry, next.id)).get(CK)?.bindingHlc).toEqual(original);
+
+      expect(replicate().applied).toBe(1);
+      expect(reader.peerStreamsReadComplete(CHIEF_OF_STAFF_STORE_KEY)).toBe(true);
+      expect(foldBindingState(await peerEntries(next.dir, registry, next.id)).get(CK)?.binding?.goal).toBe('Revised goal');
+    } finally {
+      prior.journal.close();
+      next.journal.close();
+      SafeFsExecutor.safeRmSync(root, { recursive: true, force: true, operation: 'tests/e2e/chief-of-staff-store-lifecycle.test.ts:delayed-peer' });
+    }
+  });
+
   it('A emits → B applies → both fold identically; then concurrent writes on A and B converge', async () => {
     const root = fs.mkdtempSync(path.join(os.tmpdir(), 'cos-lifecycle-e2e-'));
     const reg = new ReplicatedKindRegistry(); reg.register(CHIEF_OF_STAFF_KIND_REGISTRATION);

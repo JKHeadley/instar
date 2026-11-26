@@ -89,6 +89,15 @@ describe('ChiefOfStaffStore — schema (both sides of each boundary)', () => {
     expect(chiefOfStaffRecordStoreSchema.validate({ ...ok, evidenceHash: 'nope' }, ctx())).toBeNull();
     expect(chiefOfStaffRecordStoreSchema.validate({ ...ok, verdict: 'fine' }, ctx())).toBeNull();
   });
+  it('preserves a check’s evaluated binding and still accepts legacy checks', () => {
+    const check = buildCheckEvent({ conversationKey: CK, verdict: 'waiting-on-user',
+      evidenceHash: SHA, evidenceIds: [], progressSeen: false, machine: 'm_a', at: iso(T0) })(hlc(2), 'm_a')!;
+    const bindingHlc = hlc(1);
+
+    expect(chiefOfStaffRecordStoreSchema.validate(check, ctx())).not.toHaveProperty('bindingHlc');
+    expect(chiefOfStaffRecordStoreSchema.validate({ ...check, bindingHlc }, ctx())).toHaveProperty('bindingHlc', bindingHlc);
+    expect(chiefOfStaffRecordStoreSchema.validate({ ...check, bindingHlc: 'invalid' }, ctx())).toBeNull();
+  });
   it('a tree tombstone carries only deletedAt', () => {
     const d = buildTreeTombstone(CK, iso(T0))(hlc(1), 'm_a')!;
     expect(d.op).toBe('delete');

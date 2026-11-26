@@ -1,0 +1,5 @@
+# Let the Chief of Staff finish work it has verified
+
+Needs-you should tell you when a project genuinely needs something only you can do. The Chief of Staff already checks the finish checklist for projects it follows. When every required check succeeds and the checklist calls for no further judgment, the Chief of Staff can finish the project through its own verified path. The project history will show which checklist it checked and what evidence it used. If it finished the wrong thing, you can undo that specific close. The same checklist will stay open after undo so it does not immediately close again.
+
+A project that says it is waiting will still be visible to the Chief of Staff. The wait first goes into the existing blocker ledger, where the agent has to establish what it tried and what authority or decision is actually missing. Once the blocker is verified, the shared Needs-you rules decide whether there is an action for you. Existing controls for approving work or changing a project's binding keep their authentication.
