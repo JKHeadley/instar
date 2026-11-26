@@ -142,11 +142,23 @@ describe('Home: every source reaches the count and the headline', () => {
     expect(result.failed).not.toContain('context');
   });
 
-  it('preserves sign-in repairs that still require owner approval', async () => {
+  it.each([
+    ['suggested', 'approval', 'Approve sign-in repair'],
+    ['failed', 'approval', 'Retry sign-in repair'],
+    ['suggested', 'unattended', null],
+    ['failed', 'unattended', null],
+  ])('surfaces %s sign-in repair in %s mode only when the owner needs to act', async (state, mode, title) => {
     const { surfacedNeeds } = await import(path.join(CONSOLE, 'needs-model.js'));
     const pool = FIXTURES.accounts.reads['/subscription-pool?scope=pool'];
-    const relogin = ok({ episodes: [{ id: 'repair-1', accountId: 'luna', machineId: 'm1', state: 'waiting-operator-only' }] });
-    expect(surfacedNeeds({ accounts: { results: { pool, relogin } } }, NOW).rows).toHaveLength(1);
+    const relogin = ok({ episodes: [{ id: 'repair-1', accountId: 'luna', machineId: 'm1', state, mode }] });
+    const rows = surfacedNeeds({ accounts: { results: { pool, relogin } } }, NOW).rows;
+    if (title) {
+      expect(rows).toHaveLength(1);
+      expect(rows[0].main).toContain(title);
+      expect(rows[0].action).toEqual({ kind: 'href', href: '#/capacity/accounts?s=needs' });
+    } else {
+      expect(rows).toEqual([]);
+    }
   });
 
   it('a stopped merge names itself in the headline, with a link to act on it', async () => {
