@@ -1070,7 +1070,7 @@ export class AppConversationStore {
   }
 
   /** Select a readable media occurrence under the same proof as protected message history. */
-  readPreparedRemovalMedia(conversationKey: string, sha256: string, mayRead: (row: BrowsedMessage) => boolean) {
+  readPreparedRemovalMedia(conversationKey: string, sha256: string, mayRead: (row: BrowsedMessage) => boolean, attachmentId?: string) {
     const key = canonicalConversationKey(conversationKey);
     return this.withRemovalHistory(conversationKey, (custodian, proof) => {
       if (this.isTombstoned(key)) return { occurrence: null, proof };
@@ -1078,11 +1078,12 @@ export class AppConversationStore {
         SELECT m.eventId, m.at, f.attachmentId, f.messageId, f.idx, f.size
         FROM media_refs f JOIN messages m ON m.canonicalKey = f.canonicalKey AND m.messageId = f.messageId
         WHERE f.canonicalKey = ? AND f.sha256 = ? AND f.purged = 0
+          ${attachmentId !== undefined ? 'AND f.attachmentId = ?' : ''}
           AND NOT EXISTS (SELECT 1 FROM message_removals r
             WHERE r.canonicalKey = f.canonicalKey AND r.targetEventId = m.eventId
             AND r.targetMessageId = f.messageId AND r.machineId = ?)
         ORDER BY f.attachmentId LIMIT 101
-      `).all(key, sha256, custodian) as Array<{ eventId: string; at: string; attachmentId: string; messageId: string; idx: number; size: number }>;
+      `).all(key, sha256, ...(attachmentId !== undefined ? [attachmentId] : []), custodian) as Array<{ eventId: string; at: string; attachmentId: string; messageId: string; idx: number; size: number }>;
       for (const row of rows.slice(0, 100)) {
         const message = this.readIndexedMessage(key, row);
         const attachment = message.attachments?.[row.idx];

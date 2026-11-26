@@ -1,0 +1,23 @@
+{
+  "version": 2,
+  "slug": "app-message-delete-bound-session-copy",
+  "sessionId": "633bd330-201e-4dc8-8fd9-72b89116167e",
+  "timestamp": "2026-11-26T04:11:58.042Z",
+  "artifactPath": "upgrades/side-effects/app-message-delete-bound-session-copy.md",
+  "artifactSha256": "fbf3d1f5d976e9e111e5e23eb1ee2f46073222841151135d6504e3e480a43375",
+  "specPath": "docs/specs/conversation-message-delete.md",
+  "coveredFiles": [
+    "docs/specs/conversation-message-delete.eli16.md",
+    "docs/specs/conversation-message-delete.md",
+    "src/core/AppConversationStore.ts",
+    "src/server/AgentServer.ts",
+    "src/server/routes.ts",
+    "tests/e2e/mobile-native-conversations-alive.test.ts",
+    "upgrades/side-effects/app-message-delete-bound-session-copy.md"
+  ],
+  "phase": "complete",
+  "tier": 2,
+  "tierReasoning": "Apply exact attachment removal proof at protected session-copy delivery",
+  "secondPass": "true",
+  "reviewerConcurred": true
+}

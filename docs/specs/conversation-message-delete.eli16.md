@@ -73,3 +73,5 @@ The file store can now recheck permission just before it makes a new copy availa
 The server can now preserve which machine owns protected history across a restart. The app stays unchanged while the routing and recovery checks are being connected.
 
 The isolated server now uses the saved machine assignment when reading protected chats. If it cannot verify a saved assignment, it withholds history.
+
+On the isolated server, a session can open a surviving attachment. An exact request for a deleted attachment gets no file path, even when another message contains the same file.

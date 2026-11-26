@@ -434,13 +434,15 @@ describe('native app conversations — production wiring', () => {
     const blob = path.join(server.appConversations!.media.root, 'blobs', sha.slice(0, 2), sha);
     fs.mkdirSync(path.dirname(blob), { recursive: true });
     fs.writeFileSync(blob, bytes);
-    for (const id of ['removed-media', 'surviving-media']) {
+    const addMedia = (id: string) => {
       store.append({ kind: 'media-message', conversationKey: key, eventId: `event-${id}`, messageId: id,
         role: 'agent', text: '', machineId: server.appConversations!.deps.machineId(), at: new Date().toISOString(),
         attachments: [{ attachmentId: attachmentIdFor(id, 0), index: 0, sha256: sha, size: bytes.length, filename: 'fixture.bin',
           kind: 'file', declaredKind: 'file', mediaType: 'application/octet-stream', declaredType: 'application/octet-stream' }],
       });
-    }
+    };
+    addMedia('removed-media');
+    addMedia('surviving-media');
     const removeMedia = (id: string) => store.append({ kind: 'message-removed', conversationKey: key, eventId: `delete-${id}`,
       targetEventId: `event-${id}`, targetMessageId: id, machineId: server.appConversations!.deps.machineId(), at: new Date().toISOString() });
     removeMedia('removed-media');
@@ -448,6 +450,14 @@ describe('native app conversations — production wiring', () => {
     const sharedDownload = await send('GET', mediaPath).set('Range', 'bytes=0-7');
     expect(sharedDownload.status).toBe(206);
     expect(sharedDownload.body).toEqual(bytes.subarray(0, 8));
+    const openForSession = (id: string) =>
+      auth(request(app).get(`/app/media-path/${attachmentIdFor(id, 0)}?conversationId=${alias}`))
+        .set('X-Instar-Bind-Token', token);
+    expect((await openForSession('removed-media')).status).toBe(404);
+    const sessionCopy = await openForSession('surviving-media');
+    expect(sessionCopy.status, JSON.stringify(sessionCopy.body)).toBe(200);
+    expect(fs.readFileSync(sessionCopy.body.path)).toEqual(bytes);
+
     const openFile = fs.promises.open.bind(fs.promises);
     const mediaRace = vi.spyOn(fs.promises, 'open').mockImplementation(async (...args) => {
       const handle = await openFile(...args);
@@ -460,6 +470,21 @@ describe('native app conversations — production wiring', () => {
       expect(raced.body).toEqual({ error: 'not-found' });
     } finally { mediaRace.mockRestore(); }
     expect((await send('GET', mediaPath)).status).toBe(404);
+    expect((await openForSession('surviving-media')).status).toBe(404);
+    addMedia('session-race-media');
+    const copyFile = fs.promises.copyFile.bind(fs.promises);
+    const stagingRace = vi.spyOn(fs.promises, 'copyFile').mockImplementation(async (...args) => {
+      await copyFile(...args);
+      if (args[0] === blob) removeMedia('session-race-media');
+    });
+    try {
+      const refusedCopy = await openForSession('session-race-media');
+      expect(refusedCopy.status).toBe(404);
+      expect(refusedCopy.body).not.toHaveProperty('path');
+      const copiesDir = path.join(server.appConversations!.media.root, 'session-files', 'session-race-media');
+      expect(fs.readdirSync(copiesDir)).toEqual([]);
+    } finally { stagingRace.mockRestore(); }
+
 
     const custodyFile = path.join(stateDir, 'state', 'app-removal-read-custody', `${key}.json`);
     const retained = fs.readFileSync(custodyFile);

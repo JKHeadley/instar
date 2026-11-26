@@ -8228,6 +8228,7 @@ export class AgentServer {
         protectedAcceptanceKeys.add(normalized);
         return true;
       } : undefined;
+      routeCtx.appRemovalReadAcceptance = removalEnrollment;
       const removalTrust = removalEnrollment ? createAppMachineTrustEvidence(options.config.stateDir) : null;
       const removalTeamLog = removalEnrollment ? this.mobilePairing.teamLog() : null;
       const conversationFlatDeps: import('./mobileConversationRoutes.js').MobileConversationRouteDeps = {
