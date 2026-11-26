@@ -73,12 +73,12 @@ describe('WaitingList', () => {
     expect(w.list.list()[0].live).toBe(false);
   });
 
-  it('stays bounded: past maxWaiters the longest-idle waiters are removed', () => {
+  it('refuses new requests at capacity without evicting an existing waiter', () => {
     const w = make();
-    for (let pr = 1; pr <= WAITING_LIST_LIMITS.maxWaiters + 3; pr++) { w.list.refused(pr); w.advance(1); }
+    for (let pr = 1; pr <= WAITING_LIST_LIMITS.maxWaiters; pr++) w.list.refused(pr);
+    expect(w.list.refused(WAITING_LIST_LIMITS.maxWaiters + 1)).toBeNull();
     expect(w.list.size()).toBe(WAITING_LIST_LIMITS.maxWaiters);
-    expect(w.list.get(1)).toBeNull();
-    expect(w.audits.filter((a) => a.reason === 'over-cap')).toHaveLength(3);
+    expect(w.list.get(1)).not.toBeNull();
   });
 
   it('restores with downtime added back; a stale waiter stays stale after a restart', () => {

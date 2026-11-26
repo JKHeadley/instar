@@ -1,0 +1,26 @@
+{
+  "version": 2,
+  "slug": "local-verify-durable-waiters",
+  "sessionId": "ed99de61-509a-4e0d-908f-801b299fef73",
+  "timestamp": "2026-11-26T18:36:16.301Z",
+  "artifactPath": "upgrades/side-effects/local-verify-durable-waiters.md",
+  "artifactSha256": "55b54b2d3a583e8d7ea6b9ed21cbf2e9a0af54dcd5cef6a095e63eb26733dd16",
+  "coveredFiles": [
+    "docs/specs/local-verify-durable-waiters.eli16.md",
+    "src/localVerify/LocalVerifyService.ts",
+    "src/localVerify/operatorQueue.ts",
+    "src/localVerify/serviceSeams.ts",
+    "src/localVerify/waitingList.ts",
+    "tests/unit/localVerify/waitingList.test.ts",
+    "tests/unit/localVerify/waitingListService.test.ts",
+    "upgrades/next/local-verify-durable-waiters.md",
+    "upgrades/side-effects/local-verify-durable-waiters.md"
+  ],
+  "phase": "complete",
+  "tier": 1,
+  "tierReasoning": "Reversible queue durability repair through the existing admission checks. Adds no merge or launch authority.",
+  "eli16Path": "docs/specs/local-verify-durable-waiters.eli16.md",
+  "sideEffectsPath": "upgrades/side-effects/local-verify-durable-waiters.md",
+  "secondPass": "not-required",
+  "reviewerConcurred": true
+}

@@ -66,6 +66,8 @@ export interface SavedQueueEntry {
 
 /** The waiting-list place a hold took out. */
 export interface SavedWaiter {
+  explicit?: true;
+  head?: { headSha: string; baseRefName: string };
   firstRefusedAt: number;
   lastOfferedAt: number;
   refusals: number;
@@ -244,7 +246,12 @@ function parseWaiter(w: unknown): SavedWaiter | null {
   const x = w as Record<string, unknown> | null;
   if (!x || typeof x !== 'object' || Array.isArray(x)) return null;
   if (!isValidTime(x.firstRefusedAt) || !isValidTime(x.lastOfferedAt) || !count(x.refusals) || (x.refusals as number) < 1) return null;
-  return { firstRefusedAt: x.firstRefusedAt, lastOfferedAt: x.lastOfferedAt, refusals: x.refusals as number };
+  const revision = x.head as Record<string, unknown> | undefined;
+  const head = revision && typeof revision.headSha === 'string' && typeof revision.baseRefName === 'string'
+    ? { headSha: revision.headSha, baseRefName: revision.baseRefName }
+    : undefined;
+  return { firstRefusedAt: x.firstRefusedAt, lastOfferedAt: x.lastOfferedAt, refusals: x.refusals as number,
+    ...(head ? { head } : {}), ...(x.explicit === true ? { explicit: true as const } : {}) };
 }
 
 /** What re-validation left out of a stored record: a whole hold or front mark, or only what a hold had saved. */
