@@ -14,6 +14,7 @@ import os from 'node:os';
 import path from 'node:path';
 import type express from 'express';
 import { AgentServer } from '../../src/server/AgentServer.js';
+import { ensureLifelineIngressSecret, LIFELINE_SECRET_HEADER } from '../../src/core/LifelineIngressSecret.js';
 import { StateManager } from '../../src/core/StateManager.js';
 import { SafeFsExecutor } from '../../src/core/SafeFsExecutor.js';
 import type { InstarConfig } from '../../src/core/types.js';
@@ -45,6 +46,7 @@ describe('POST /server/restart + /health bootReadiness (integration)', () => {
     } as unknown as InstarConfig;
     server = new AgentServer({
       config,
+      plannedRestartLeaseAdmission: request => request.requestedBy === 'fixture' ? 'ready' : 'wait',
       sessionManager: { listRunningSessions: () => [], getSession: () => null, getCachedRunningSessions: () => ({ count: 0, sessions: [] }) } as never,
       state: new StateManager(stateDir),
     });
@@ -57,6 +59,19 @@ describe('POST /server/restart + /health bootReadiness (integration)', () => {
   });
 
   const post = (body: unknown) => request(app).post('/server/restart').set('Authorization', `Bearer ${TOKEN}`).send(body as object);
+
+  it('requires bearer and local Lifeline proof for read-only restart admission', async () => {
+    const secret = ensureLifelineIngressSecret(stateDir);
+    const body = { requestedBy: 'fixture', requestedAt: new Date().toISOString() };
+    const endpoint = '/internal/planned-restart-lease-admission';
+    expect((await request(app).post(endpoint).set(LIFELINE_SECRET_HEADER, secret).send(body)).status).toBe(401);
+    expect((await request(app).post(endpoint).set('Authorization', `Bearer ${TOKEN}`).send(body)).status).toBe(403);
+    const accepted = await request(app).post(endpoint).set('Authorization', `Bearer ${TOKEN}`)
+      .set(LIFELINE_SECRET_HEADER, secret).send(body);
+    expect(accepted.status).toBe(200);
+    expect(accepted.body).toEqual({ ...body, admission: 'ready' });
+    expect(fs.existsSync(flagPath())).toBe(false);
+  });
 
   it('requires the bearer token', async () => {
     const res = await request(app).post('/server/restart').send({ requestedBy: 'x', reason: 'y' });

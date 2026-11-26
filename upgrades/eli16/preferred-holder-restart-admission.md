@@ -7,3 +7,5 @@ This checkpoint gives the existing lease authority a way to answer that question
 The new check starts off. It does not change how crashes or explicit role loss work, and it gives no machine permission to take the lead.
 
 The supervisor can now wait for this evidence before it consumes a planned restart request. A decision about an earlier request cannot clear a newer request. The installed supervisor still needs a trusted connection to the running server before this is enabled.
+
+The supervisor asks the running server through a local authenticated connection. It checks that the same restart request is still on disk when the answer arrives. If the preferred holder has too little confirmed lease time or the answer is unavailable, the request stays pending. This requires explicit enablement on the fixture or installed agent.

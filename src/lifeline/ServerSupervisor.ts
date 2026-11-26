@@ -309,7 +309,7 @@ export class ServerSupervisor extends EventEmitter {
   private deferredRestartRequestedAt: string | null = null;
   private deferredLeaseRequest: string | null = null;
   private readonly plannedLeaseAdmission?: (request: { requestedBy: string; requestedAt: string }) =>
-    'ready' | 'wait' | 'not-applicable';
+    'ready' | 'wait' | 'not-applicable' | Promise<'ready' | 'wait' | 'not-applicable'>;
 
   // Agent hard-sleep (Stage B mechanism; docs/specs/agent-hard-sleep-mechanism.md).
   // When `slept` is true the server was INTENTIONALLY stopped to save resources —
@@ -384,7 +384,7 @@ export class ServerSupervisor extends EventEmitter {
     inflightDeferEnabled?: boolean;
     /** Default off. The trusted provider checks the live preferred holder and exact confirmed window. */
     plannedLeaseAdmission?: (request: { requestedBy: string; requestedAt: string }) =>
-      'ready' | 'wait' | 'not-applicable';
+      'ready' | 'wait' | 'not-applicable' | Promise<'ready' | 'wait' | 'not-applicable'>;
   }) {
     super();
     this.projectDir = options.projectDir;
@@ -1448,7 +1448,7 @@ export class ServerSupervisor extends EventEmitter {
       // TelegramLifeline can forward messages immediately instead of queuing them for
       // the entire grace period. Failures are ignored — the server is still booting.
       if (!graceCeilingExceeded && this.spawnedAt > 0 && (now - this.spawnedAt) < this.startupGraceMs) {
-        this.checkRestartRequest();
+        await this.checkRestartRequest();
         // Optimistic health probe — update lastHealthy on success, ignore failures
         try {
           const alive = await this.checkHealth();
@@ -1488,7 +1488,7 @@ export class ServerSupervisor extends EventEmitter {
           const anchor = this.firstSpawnedAt > 0 ? Math.min(this.firstSpawnedAt, this.bootingSince) : this.bootingSince;
           if (!graceCeilingExceeded && now - anchor < this.startupGraceMs * this.graceCeilingMultiplier) {
             this.consecutiveFailures = 0;
-            this.checkRestartRequest();
+            await this.checkRestartRequest();
             return;
           }
         }
@@ -1543,7 +1543,7 @@ export class ServerSupervisor extends EventEmitter {
       }
 
       // Check for restart requests from the server (e.g., auto-updater)
-      this.checkRestartRequest();
+      await this.checkRestartRequest();
       // Check for debug restart requests from doctor sessions
       this.checkDebugRestartRequest();
       // Agent hard-sleep: honor a sleep-request written by the live SleepController
@@ -1705,7 +1705,7 @@ export class ServerSupervisor extends EventEmitter {
    * Called during the health check loop. If a valid request exists,
    * initiate a graceful restart of the server tmux session.
    */
-  private checkRestartRequest(): void {
+  private async checkRestartRequest(): Promise<void> {
     if (this.detached) return; // the lifeline let go of the server
     if (!this.stateDir) return;
     const flagPath = path.join(this.stateDir, 'state', 'restart-requested.json');
@@ -1716,7 +1716,8 @@ export class ServerSupervisor extends EventEmitter {
         this.deferredLeaseRequest = null;
         return;
       }
-      const data = JSON.parse(fs.readFileSync(flagPath, 'utf-8'));
+      const raw = fs.readFileSync(flagPath, 'utf-8');
+      const data = JSON.parse(raw);
 
       // Every planned restart writer uses this file, while only AutoUpdater
       // consults its in-process Local Verify hold. The verifier's durable
@@ -1746,8 +1747,13 @@ export class ServerSupervisor extends EventEmitter {
           data.requestedBy !== 'role-change') {
         let admission: 'ready' | 'wait' | 'not-applicable' = 'wait';
         if (requester.attributed && typeof data.requestedAt === 'string') {
-          try { admission = this.plannedLeaseAdmission({ requestedBy: requester.label, requestedAt: data.requestedAt }); }
+          try { admission = await this.plannedLeaseAdmission({ requestedBy: requester.label, requestedAt: data.requestedAt }); }
           catch { /* @silent-fallback-ok — the deferral below is visible */ }
+        }
+        try {
+          if (this.detached || fs.readFileSync(flagPath, 'utf-8') !== raw) return;
+        } catch {
+          return; // The exact request was withdrawn or cannot still be read.
         }
         if (admission !== 'ready' && admission !== 'not-applicable') {
           const key = JSON.stringify([requester.label, data.requestedAt]);

@@ -411,7 +411,7 @@ import { PairingInviteTelegram, CALLBACK_PREFIX as PAIRING_CALLBACK_PREFIX, reso
 import { PairingTopicStore } from '../threadline/PairingTopicStore.js';
 import { ConnectEnableController, readConnectEnableStatus } from '../threadline/connectEnable.js';
 import { shouldOwnTelegramPoll } from '../lifeline/telegramPollOwnership.js';
-import { sharedLifelineIngressSecretHolder, readLifelineIngressSecret, LIFELINE_INGRESS_CALLER_HEADER, LIFELINE_INGRESS_CALLER_SERVER_SELF } from '../core/LifelineIngressSecret.js';
+import { lifelineSecretMatches, LIFELINE_SECRET_HEADER, sharedLifelineIngressSecretHolder, readLifelineIngressSecret, LIFELINE_INGRESS_CALLER_HEADER, LIFELINE_INGRESS_CALLER_SERVER_SELF } from '../core/LifelineIngressSecret.js';
 import { TelegramCallbackDedupe } from './TelegramCallbackDedupe.js';
 import { readSessionClocks } from '../core/SessionClockReader.js';
 import { P13_PROTOCOL_VERSION } from '../core/CompletionEvaluator.js';
@@ -1309,6 +1309,8 @@ export function parseTrustChange(raw: unknown): import('../core/trustJourney/Tru
 }
 
 export interface RouteContext {
+  plannedRestartLeaseAdmission?: (request: { requestedBy: string; requestedAt: string }) => 'ready' | 'wait' | 'not-applicable';
+
   ownerNeedsCandidate?: import('./needsRoutes.js').NeedsDeps['ownerCardCandidate'];
   ownerNeedsWithdrawalJournalFor?: import('./needsRoutes.js').NeedsDeps['withdrawalJournalFor'];
   /** Actual signed post-spawn capture; absent until graph storage is configured. */
@@ -3355,6 +3357,25 @@ export function createRoutes(ctx: RouteContext): Router {
     };
     for (const route of PR_LINK_REPLY_ROUTES) router.use(route.path, prLinkReviewMiddleware(prLinkDeps, route.maxLength));
   }
+  router.post('/internal/planned-restart-lease-admission', (req, res) => {
+    const address = req.socket.remoteAddress;
+    const local = address === '127.0.0.1' || address === '::1' || address === '::ffff:127.0.0.1';
+    if (!local || !lifelineSecretMatches(req.headers[LIFELINE_SECRET_HEADER],
+      sharedLifelineIngressSecretHolder(ctx.config.stateDir).get())) {
+      res.sendStatus(403);
+      return;
+    }
+    const { requestedBy, requestedAt } = req.body ?? {};
+    if (typeof requestedBy !== 'string' || !requestedBy || requestedBy.length > 200 ||
+        typeof requestedAt !== 'string' || requestedAt.length > 40 || !Number.isFinite(Date.parse(requestedAt))) {
+      res.sendStatus(400);
+      return;
+    }
+    res.set('Cache-Control', 'no-store').json({
+      admission: ctx.plannedRestartLeaseAdmission?.({ requestedBy, requestedAt }) ?? 'wait',
+      requestedBy, requestedAt,
+    });
+  });
   mountNotificationRoutes(router, ctx, headers => lifelineIngressGuard.evaluate(headers as import('node:http').IncomingHttpHeaders, 'telegram-forward').verified);
   mountDiskStewardRoutes(router, () => ctx.diskSteward?.() ?? null);
   mountOwnedRepoRoutes(router, () => ctx.ownedRepos?.() ?? null);
