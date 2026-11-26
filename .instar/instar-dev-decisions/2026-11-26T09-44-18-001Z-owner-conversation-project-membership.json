@@ -1,0 +1,23 @@
+{
+  "ts": "2026-11-26T09:44:18.001Z",
+  "slug": "owner-conversation-project-membership",
+  "suggestedTier": 1,
+  "declaredTier": 2,
+  "riskFloor": 1,
+  "riskFloorReasons": [],
+  "belowFloor": false,
+  "files": 2,
+  "loc": 31,
+  "scope": {
+    "basis": "staged-in-scope-paths-including-deleted",
+    "files": [
+      "src/server/appCreationHierarchy.ts",
+      "src/server/mobileConversationRoutes.ts"
+    ],
+    "addedLines": 26,
+    "deletedLines": 5
+  },
+  "causalAutopsy": null,
+  "classClosure": null,
+  "verdict": "pass"
+}

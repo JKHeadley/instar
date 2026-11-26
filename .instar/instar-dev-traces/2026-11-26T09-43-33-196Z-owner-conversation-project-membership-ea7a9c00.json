@@ -1,0 +1,20 @@
+{
+  "version": 2,
+  "slug": "owner-conversation-project-membership",
+  "sessionId": "633bd330-201e-4dc8-8fd9-72b89116167e",
+  "timestamp": "2026-11-26T09:43:33.196Z",
+  "artifactPath": "upgrades/side-effects/owner-conversation-project-membership.md",
+  "artifactSha256": "d337f5ae74b9251b32cdc74520a3288640421d9b32f69054d8b10a989a8d20c3",
+  "specPath": "docs/specs/work-front-doors.md",
+  "coveredFiles": [
+    "src/server/appCreationHierarchy.ts",
+    "src/server/mobileConversationRoutes.ts",
+    "tests/integration/app-creation-hierarchy.test.ts",
+    "upgrades/side-effects/owner-conversation-project-membership.md"
+  ],
+  "phase": "complete",
+  "tier": 2,
+  "tierReasoning": "Owner-scoped additive confirmed project metadata",
+  "secondPass": "not-required",
+  "reviewerConcurred": null
+}

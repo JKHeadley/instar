@@ -155,3 +155,22 @@ describe('App creation parent metadata HTTP contract', () => {
     expect((await e.bearer('/mobile/conversations/parent-preview?cursor[]=x')).status).toBe(400);
   });
 });
+
+it('projects confirmed membership through readable ancestry independently of graph groups', async () => {
+  const e = setup();
+  const parent = e.add(sessionContext('telegram:7'));
+  const child = e.add(sessionContext(`app:${parent}`));
+  e.setSource({ ...e.source(), version: 'confirmed-project', confirmedProjects: new Set(['telegram:7']),
+    parents: new Map([[`app:${parent}`, 'telegram:7'], [`app:${child}`, `app:${parent}`]]) });
+  const reply = await e.sign('GET', '/mobile/conversations');
+  expect(reply.status).toBe(200);
+  expect(reply.body.conversations).toEqual(expect.arrayContaining([
+    expect.objectContaining({ platform: 'telegram', projectConversationKey: 'telegram:7' }),
+    expect.objectContaining({ id: parent, projectConversationKey: 'telegram:7' }),
+    expect.objectContaining({ id: child, projectConversationKey: 'telegram:7' }),
+  ]));
+  e.setSource({ ...e.source(), version: 'incomplete-projects', complete: false });
+  const partial = await e.sign('GET', '/mobile/conversations');
+  expect(partial.status).toBe(200);
+  expect(partial.body.conversations.every((row: { projectConversationKey?: string }) => row.projectConversationKey === undefined)).toBe(true);
+});

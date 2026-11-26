@@ -49,6 +49,20 @@ export interface CreationHierarchyScope {
   /** Current existence and authorization, not historical permission. */
   mayRead: (ref: string) => boolean;
 }
+/** Follow current readable ancestry to the nearest confirmed project. */
+export function confirmedProjectFor(ref: string, scope: CreationHierarchyScope, parent?: string | null): string | undefined {
+  const source = scope.source;
+  if (!source?.complete) return undefined;
+  const seen = new Set<string>();
+  let current: string | null | undefined = ref;
+  while (current && !seen.has(current) && scope.mayRead(current)) {
+    if (source.confirmedProjects.has(current)) return current;
+    seen.add(current);
+    current = current === ref && parent !== undefined ? parent : source.parents.get(current);
+  }
+  return undefined;
+}
+
 interface Entry {
   context: AppCreationContext | null;
   generated: boolean;
