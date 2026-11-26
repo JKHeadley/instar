@@ -1,11 +1,10 @@
-// Disposable Needs You adapter. It has no route or production authority of its own.
+// Shared credential consent logic. Callers supply the verified signer and protected submission handling.
 import { createHmac, randomBytes, timingSafeEqual } from 'node:crypto';
 import type { Request } from 'express';
-import type { SecretDrop, SecretRequest } from './SecretDrop.js';
+import { ownerNeedsCredentialFieldEligible, type SecretDrop, type SecretRequest, type SecretSubmission } from './SecretDrop.js';
 import { mintIsUnverified } from './secretDropMintPolicy.js';
 
 const REQUEST_ID = /^[A-Za-z0-9_.:-]{1,200}$/;
-const FIELD_NAME = /^[A-Za-z][A-Za-z0-9_-]{0,79}$/;
 const MAX_VALUE_LENGTH = 10_000;
 
 export interface CredentialRequestBinding {
@@ -22,6 +21,7 @@ interface CredentialConsentDependencies {
   /** The source's exact binding for this opaque Needs request, resolved on every action. */
   bindingFor: (requestId: string) => CredentialRequestBinding | null;
   /** Returns the current owner from verified signed request authority, not from the body or query. */
+  persist?: (token: string, submission: SecretSubmission) => boolean;
   signedOwnerFor: (request: Request) => { id: string } | null;
 }
 
@@ -33,7 +33,7 @@ function reviewedPresentation(binding: CredentialRequestBinding) {
 function ordinarySingleField(request: SecretRequest | null): request is SecretRequest {
   if (!request || mintIsUnverified(request.mintAuth) || request.browserHost || request.senderVerification || request.fields.length !== 1) return false;
   const name = request.fields[0].name;
-  return FIELD_NAME.test(name) && !Object.hasOwn(Object.prototype, name);
+  return ownerNeedsCredentialFieldEligible(name);
 }
 
 export function createOwnerNeedsCredentialConsent(deps: CredentialConsentDependencies) {
@@ -86,7 +86,7 @@ export function createOwnerNeedsCredentialConsent(deps: CredentialConsentDepende
       } : null;
     },
 
-    submit(req: Request, requestId: string, disclosureId: unknown, value: unknown): 'applied' | 'invalid' | 'stale' {
+    submit(req: Request, requestId: string, disclosureId: unknown, value: unknown): 'applied' | 'invalid' | 'stale' | 'unavailable' {
       // Production plumbing must supply the request whose path and raw JSON were signed.
       const body: unknown = req.body;
       if (req.method !== 'POST' || req.params.requestId !== requestId || !body || typeof body !== 'object'
@@ -100,8 +100,11 @@ export function createOwnerNeedsCredentialConsent(deps: CredentialConsentDepende
       if (typeof value !== 'string' || !value.trim() || value.length > MAX_VALUE_LENGTH) return 'invalid';
       // The verified device signature is the request proof. The source's existing one-time
       // store remains responsible for exact field validation and consuming the pending request.
-      const result = deps.drop.submitWithReason(binding.dropToken, pending.csrfToken, { [pending.fields[0].name]: value });
-      return 'submission' in result ? 'applied' : 'stale';
+      const persist = deps.persist;
+      const result = deps.drop.submitWithReason(binding.dropToken, pending.csrfToken, { [pending.fields[0].name]: value },
+        persist ? submission => persist(binding.dropToken, submission) : undefined);
+      if (!('submission' in result)) return result.refused === 'storage-unavailable' ? 'unavailable' : 'stale';
+      return 'applied';
     },
   };
 }

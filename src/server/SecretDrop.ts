@@ -214,7 +214,7 @@ export function buildSignedSubmission(
 }
 
 /** Why a submit was refused, when the caller can be told something useful. */
-export type SubmitRefusal = 'signature-format-outdated' | 'signature-format-unknown' | 'rejected';
+export type SubmitRefusal = 'storage-unavailable' | 'signature-format-outdated' | 'signature-format-unknown' | 'rejected';
 
 /**
  * Event emitted when a submission has been sitting in `received` for longer
@@ -239,8 +239,19 @@ export interface StuckConsumerEvent {
   minutesUntilCleanup: number;
 }
 
+export function ownerNeedsCredentialFieldEligible(name: string): boolean {
+  return /^[A-Za-z][A-Za-z0-9_-]{0,79}$/.test(name) && !Object.hasOwn(Object.prototype, name);
+}
+
+interface SecretDropOwnerBinding {
+  requestId: string;
+  ownerId: string;
+  revision: number;
+}
+
 export class SecretDrop {
   private pending = new Map<string, SecretRequest>();
+  private ownerNeedsBindings = new WeakMap<SecretRequest, SecretDropOwnerBinding>();
   private received = new Map<string, SecretSubmission>();
   private receivedTimers = new Map<string, NodeJS.Timeout>();
   /** Absolute cleanup deadline (ms-since-epoch) per stored submission — the
@@ -339,6 +350,46 @@ export class SecretDrop {
     return request;
   }
 
+  /** Bind an ordinary pending request to a verified owner selected by its source. */
+  bindOwnerNeedsRequest(token: string, ownerId: string): string | null {
+    const pending = this.getPending(token);
+    if (!pending || !ownerId || mintIsUnverified(pending.mintAuth) ||
+      pending.browserHost || pending.senderVerification || pending.topicId !== undefined || pending.onReceive || pending.fields.length !== 1 ||
+      !ownerNeedsCredentialFieldEligible(pending.fields[0].name)) return null;
+    const previous = this.ownerNeedsBindings.get(pending);
+    if (previous?.ownerId === ownerId) return previous.requestId;
+    const revision = (previous?.revision ?? 0) + 1;
+    if (!Number.isSafeInteger(revision)) return null;
+    const requestId = previous?.requestId ?? `cr-${crypto.randomBytes(16).toString('hex')}`;
+    this.ownerNeedsBindings.set(pending, { requestId, ownerId, revision });
+    return requestId;
+  }
+
+  isOwnerBoundPending(token: string): boolean {
+    const pending = this.getPending(token);
+    return !!pending && this.ownerNeedsBindings.has(pending);
+  }
+
+  ownerNeedsRequestIds(ownerId: string): string[] {
+    const ids: string[] = [];
+    for (const pending of this.pending.values()) {
+      const binding = this.ownerNeedsBindings.get(pending);
+      if (binding?.ownerId === ownerId && this.getPending(pending.token)) ids.push(binding.requestId);
+    }
+    return ids;
+  }
+
+  /** Internal source lookup. Keep the private token inside the credential adapter. */
+  ownerNeedsBinding(requestId: string): { ownerId: string; revision: number; dropToken: string } | null {
+    for (const pending of this.pending.values()) {
+      const binding = this.ownerNeedsBindings.get(pending);
+      if (binding?.requestId === requestId && this.getPending(pending.token)) {
+        return { ownerId: binding.ownerId, revision: binding.revision, dropToken: pending.token };
+      }
+    }
+    return null;
+  }
+
   /**
    * Submit a secret. Validates CSRF, consumes the request (one-time use),
    * fires the callback, and stores the submission for retrieval.
@@ -350,7 +401,7 @@ export class SecretDrop {
   }
 
   /** Same as {@link submit}, but says why a submission was refused. A refused submit never consumes the token. */
-  submitWithReason(token: string, csrfToken: string, values: Record<string, string>): { submission: SecretSubmission } | { refused: SubmitRefusal } {
+  submitWithReason(token: string, csrfToken: string, values: Record<string, string>, persist?: (submission: SecretSubmission) => boolean): { submission: SecretSubmission } | { refused: SubmitRefusal } {
     const reject = (refused: SubmitRefusal): { refused: SubmitRefusal } => ({ refused });
     const request = this.getPending(token);
     if (!request) return reject('rejected');
@@ -425,9 +476,6 @@ export class SecretDrop {
       if (!verified) return reject('rejected');
     }
 
-    // Consume the request (one-time use)
-    this.pending.delete(token);
-
     const submission: SecretSubmission = {
       mintAuth: request.mintAuth,
       values: cleanValues,
@@ -436,6 +484,9 @@ export class SecretDrop {
       topicId: request.topicId,
       browserHost: request.browserHost,
     };
+
+    if (persist && !persist(submission)) return reject('storage-unavailable');
+    this.pending.delete(token);
 
     // Store submission for retrieval behind a SLIDING idle window.
     // The submission is NOT removed on first retrieve — callers must either

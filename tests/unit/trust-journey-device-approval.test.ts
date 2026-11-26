@@ -52,11 +52,11 @@ let now = new Date('2026-11-17T10:00:00Z');
 function mkStore(sink?: TrustRecordSink) {
   return new TrustJourneyStore(sink ?? new LocalFileTrustSink(path.join(dir, 'trust-journey.jsonl')), () => now);
 }
-function mkService(store: TrustJourneyStore, chat?: FakeChat) {
+function mkService(store: TrustJourneyStore, chat?: FakeChat, telegramOwner: () => string | null = () => '777') {
   return new AccountPathService({
     store,
     adapters: chat ? { telegram: chat } : {},
-    ownerPlatformId: (a) => (chat && a === 'telegram' ? '777' : null),
+    ownerPlatformId: (a) => (chat && a === 'telegram' ? telegramOwner() : null),
     installationId: 'inst-1',
     raisesOf: (c) => (c.kind === 'trust-grant' ? ['wider'] : []),
     summarize: () => ['Change: write actions on "gmail": just do it'],
@@ -88,6 +88,28 @@ async function acceptMac(svc: AccountPathService) {
 const auth = (requestId: string, over: Record<string, string> = {}) => ({ deviceId: 'mac', keyFingerprint: devices.get('mac')!.keyFingerprint!, host: 'localhost:4040', requestId, proposalHash: HASH, challengeId: `ch${Math.random().toString(16).slice(2, 10)}`, ...over });
 
 describe('app-first publication', () => {
+  it('recognizes the owner’s delivered chat request without creating a native disclosure', async () => {
+    const store = mkStore();
+    const chat = new FakeChat();
+    let telegramOwner: string | null = '777';
+    const svc = mkService(store, chat, () => telegramOwner);
+    await store.write('acceptance', { acceptanceId: 'chat-acc', principal: 'owner', adapter: 'telegram', accountId: '777', acceptedAt: now.toISOString(), messageId: 'old' });
+    const opened = await svc.propose(change);
+    if (opened.status !== 'sent') throw new Error('Expected the request to be delivered through chat');
+    expect(opened.via).toBe('chat');
+    expect(store.request(opened.requestId)?.adapter).toBe('telegram');
+    const mac = await acceptMac(svc);
+    expect(svc.hasPendingApprovalForOwnerDevice(mac.deviceId, opened.requestId, HASH)).toBe(true);
+    expect(svc.hasPendingApprovalForOwnerDevice('unpaired', opened.requestId, HASH)).toBe(false);
+    expect(svc.hasPendingApprovalForOwnerDevice(mac.deviceId, opened.requestId, H('0'))).toBe(false);
+    expect(svc.openDeviceApprovalDisclosure(mac.deviceId, opened.requestId)).toBeNull();
+    telegramOwner = '888';
+    expect(svc.hasPendingApprovalForOwnerDevice(mac.deviceId, opened.requestId, HASH)).toBe(false);
+    telegramOwner = null;
+    expect(svc.hasPendingApprovalForOwnerDevice(mac.deviceId, opened.requestId, HASH)).toBe(false);
+    expect(store.request(opened.requestId)?.status).toBe('open');
+  });
+
   it('reserves capacity across the durability await against an independent acceptance flush', async () => {
     const store = mkStore();
     const chat = new FakeChat();

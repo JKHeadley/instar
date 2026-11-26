@@ -4,7 +4,7 @@ import type { AccountPathService } from '../core/trustJourney/AccountPathService
 
 /** Project an exact trust request after device authentication. Execution remains on the signed trust route. */
 export function ownerNeedsTrustApprovalCandidate(
-  service: Pick<AccountPathService, 'openDeviceApprovalDisclosure' | 'hasPendingOwnerDeviceApproval'>,
+  service: Pick<AccountPathService, 'openDeviceApprovalDisclosure' | 'hasPendingApprovalForOwnerDevice'>,
   req: Request | undefined,
   source: { requestId: string; proposalHash: string },
 ): OwnerNeedsCandidate | null {
@@ -13,7 +13,7 @@ export function ownerNeedsTrustApprovalCandidate(
   const deviceId = principal.deviceId;
   const { requestId, proposalHash } = source;
   const current = () => service.openDeviceApprovalDisclosure(deviceId, requestId)?.proposalHash === proposalHash;
-  if (!service.hasPendingOwnerDeviceApproval(deviceId, requestId, proposalHash)) return null;
+  if (!service.hasPendingApprovalForOwnerDevice(deviceId, requestId, proposalHash)) return null;
 
   return {
     responsibility: 'owner-required',
@@ -24,7 +24,7 @@ export function ownerNeedsTrustApprovalCandidate(
     verifiesCurrentOwnerRequest: action => {
       if (action.kind !== 'approval' || action.requestId !== requestId) return false;
       if (current()) return true;
-      if (service.hasPendingOwnerDeviceApproval(deviceId, requestId, proposalHash)) {
+      if (service.hasPendingApprovalForOwnerDevice(deviceId, requestId, proposalHash)) {
         throw new Error('Owner approval consent is temporarily unavailable');
       }
       return false;

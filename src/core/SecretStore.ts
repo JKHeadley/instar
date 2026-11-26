@@ -507,6 +507,17 @@ export class SecretStore {
     this.read();this.keyManager.syncDurably();syncSecretFileAndParents(this.encryptedPath);
   }
 
+  /** Confirm an existing vault image without creating a vault for an absent key. */
+  syncDurablyIfStoreExists(): void {
+    try {
+      fs.statSync(this.encryptedPath);
+    } catch (err) {
+      if ((err as NodeJS.ErrnoException).code === 'ENOENT') return;
+      throw err;
+    }
+    this.syncDurably();
+  }
+
   /** Get a specific secret by dot-notation path (e.g., 'telegram.token'). */
   get(keyPath: string): unknown {
     const secrets = this.read();

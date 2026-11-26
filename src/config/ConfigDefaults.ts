@@ -53,6 +53,7 @@ export const SKILL_LEARNING_DEFAULTS = Object.freeze({
 } as const);
 
 const SHARED_DEFAULTS: Record<string, unknown> = {
+  needsYou: { ownerAdmission: { enabled: true } },
   notifications: {
     selectivity: {
       dryRun: true,

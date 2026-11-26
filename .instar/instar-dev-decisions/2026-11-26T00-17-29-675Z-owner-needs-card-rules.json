@@ -1,0 +1,27 @@
+{
+  "ts": "2026-11-26T00:17:29.675Z",
+  "slug": "owner-needs-card-rules",
+  "suggestedTier": 2,
+  "declaredTier": 2,
+  "riskFloor": 2,
+  "riskFloorReasons": [
+    "safety-invariant proximity: src/server/SecretDrop.ts matches SecretDrop / never-on-disk invariant"
+  ],
+  "belowFloor": false,
+  "files": 4,
+  "loc": 67,
+  "scope": {
+    "basis": "staged-in-scope-paths-including-deleted",
+    "files": [
+      "src/server/SecretDrop.ts",
+      "src/server/mobilePairingRoutes.ts",
+      "src/server/ownerNeedsCredentialConsent.ts",
+      "src/server/routes.ts"
+    ],
+    "addedLines": 64,
+    "deletedLines": 3
+  },
+  "causalAutopsy": null,
+  "classClosure": null,
+  "verdict": "pass"
+}

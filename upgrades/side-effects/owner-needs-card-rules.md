@@ -52,3 +52,32 @@ One-off operations still need verified source triage. The opt-in provider does n
 ## Maturation registry
 
 The opt-in uses the registered Needs You owner admission ladder. The registry links release criteria to the flag and preserves the existing source and client checks. Tracking stays marked needed until the release evidence exists. Registering the ladder changes no live setting.
+
+## Private chat approvals during fleet preparation
+
+A paired owner can see an unavailable approval count for an exact pending request when the original private chat delivery and the currently configured chat owner match. The response carries no chat identifiers, request ID or action. The original chat still owns consent and execution. Rotated or missing owner identity, missing delivery evidence and stale requests contribute no count.
+
+The fleet migration and remaining source adapter work have separate acceptance. This checkpoint leaves runtime activation opt-in.
+
+## Fleet draft startup and update defaults
+
+The canonical configuration defaults enable owner admission for new agents and fill the same missing value during an existing agent update. Startup also uses the default when the value is absent, including on agents that have not persisted the new configuration. An explicit false restores the legacy list after a restart. Malformed settings stay inactive. An update exclusion leaves the file alone while startup defaults still apply when the setting is absent.
+
+The server checks the negotiated request before returning the new schema. Legacy owner clients receive an update-required response. Older native clients can retain cached legacy rows, so the draft must stay out of a release until supported clients are deployed. Production credential, batch and physical sources also need acceptance before fleet activation. The draft changes no deployed config.
+
+## Credential request mint and owner binding
+
+An authenticated agent mint can name one current native owner device for an ordinary single-field Secret Drop. The target is resolved using the paired device registry, current role, device key and revocation ledger. The existing private link still works. The optional response reference is independent of the Secret Drop token, and private bindings do not appear in the pending list.
+
+Reassignment changes the binding revision and invalidates previously reviewed consent. Unsupported requests are refused and the tentative request is canceled before any response. The signed fixture checks the same binding store. Production Needs You disclosure and submission remain unwired, so this slice adds no credential submission authority.
+
+## Signed native credential requests
+
+An eligible native device gets only the opaque reference and vetted prompt in the negotiated list. Signed disclosure and submission bind the exact path, body, pending request, field and current device assignment. Changing the assigned person or role invalidates the old binding even if the previous role is restored. Other devices, browser principals and bearer reads receive no credential card or disclosure.
+
+The signed path consumes the existing one-time Secret Drop and shares its encrypted storage. Topic delivery and callbacks remain on the legacy path. The signed path requires encrypted persistence before consuming the request. A storage failure or opt-out leaves it pending. The encrypted record carries a reader fence until the value is durably stored. An uncertain write accepts an exact retry and refuses a different value through either submission path. The disclosure names the credential, the source’s stated purpose and the protected destination. Legacy protected links keep their existing behavior. Fleet release remains held for client and source acceptance.
+
+A canceled, expired or restarted request can leave an encrypted fenced record inaccessible. The rollout needs a reviewed recovery or purge path for those records. The tests reproduce a cancellation after uncertain sync and verify that retrieval cannot expose or consume the fenced value.
+
+
+An authenticated agent can explicitly purge an abandoned fenced request by its exact private token. The cleanup route refuses live requests and published credentials. It returns success only after the encrypted deletion has synced. No background sweeper or live purge was run.

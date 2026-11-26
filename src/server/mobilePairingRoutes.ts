@@ -838,6 +838,17 @@ export class MobilePairingService {
     });
   }
 
+  /** Current native owner assignment for an explicitly targeted protected credential request. */
+  ownerCredentialDeviceIdentity(deviceId: string, expectedKeyHash?: string): string | null {
+    if (this.contested.has(deviceId) || !activeOwnerPhone(this, deviceId)) return null;
+    const device = this.devices.get(deviceId);
+    if (!device?.publicKey) return null;
+    const keyHash = deviceKeyHashOf(device.publicKey);
+    if (expectedKeyHash !== undefined && expectedKeyHash !== keyHash) return null;
+    const revision = device.personRevision ?? 0;
+    return Number.isSafeInteger(revision) && revision >= 0 ? `${deviceId}:${keyHash}:${revision}` : null;
+  }
+
   /** The shared check by device id (push recipients): an unknown device or person ⇒ no. */
   deviceMayUseConversation(deviceId: string, ref: string): boolean {
     const d = this.devices.get(deviceId);
@@ -3051,6 +3062,8 @@ export const DEVICE_ALLOWLIST: DeviceRule[] = (() => {
     { method: 'POST', re: /^\/mobile\/trust\/device-acceptance(\/withdraw)?$/, statuses: active, body: 'json', ownerOnly: true, ownBucket: 12, bucket: 'permission-actions' },
     // Ask for a password or key, and cancel a request (docs/specs/mobile-native-secrets-writes.md): the same
     // Face ID-confirmed path and bucket. Neither answers a token or a Secret Drop link.
+    { method: 'GET', re: /^\/mobile\/needs\/credentials\/cr-[a-f0-9]{32}$/, statuses: active, body: 'none', ownerOnly: true, ownBucket: 20, bucket: 'secrets-reads' },
+    { method: 'POST', re: /^\/mobile\/needs\/credentials\/cr-[a-f0-9]{32}$/, statuses: active, body: 'json', ownerOnly: true, ownBucket: 12, bucket: 'permission-actions' },
     { method: 'POST', re: /^\/mobile\/secrets\/requests$/, statuses: active, body: 'json', ownerOnly: true, ownBucket: 12, bucket: 'permission-actions' },
     { method: 'POST', re: /^\/mobile\/secrets\/requests\/[0-9a-f]{16}\/cancel$/, statuses: active, body: 'json', ownerOnly: true, ownBucket: 12, bucket: 'permission-actions' },
     // The session screen's controls (docs/specs/mobile-native-session-controls.md). Owner phones only.

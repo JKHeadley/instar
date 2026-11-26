@@ -7,6 +7,17 @@ const OWNER_TRUST_CHANGES = new Set<TrustChange['kind']>([
   'autonomy-profile', 'board-policy', 'config-patch', 'slack-role', 'trust-grant', 'trust-recovery',
 ]);
 
+/** Match the defaults registry, leaving an explicit rollback or malformed config inactive. */
+export function ownerNeedsAdmissionEnabled(settings: unknown): boolean {
+  if (settings === undefined) return true;
+  if (!settings || typeof settings !== 'object' || Array.isArray(settings)) return false;
+  const admission = (settings as { ownerAdmission?: unknown }).ownerAdmission;
+  if (admission === undefined) return true;
+  if (!admission || typeof admission !== 'object' || Array.isArray(admission)) return false;
+  const flag = (admission as { enabled?: unknown }).enabled;
+  return flag === undefined || flag === true;
+}
+
 /** Only server-side source facts can authorize an owner action. */
 export function createOwnerNeedsSourceProvider(trust: TrustAccountPathRuntime | null | undefined): NonNullable<NeedsDeps['ownerCardCandidate']> {
   return (item, request) => {

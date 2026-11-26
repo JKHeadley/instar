@@ -13,13 +13,14 @@
  * copy can serve the value. Exactly the auto-update-restart churn that kept
  * losing operator secrets (topic 13481, "MANY MANY TIMES").
  */
-import { describe, it, expect, beforeAll, afterAll } from 'vitest';
+import { describe, it, expect, beforeAll, afterAll, vi } from 'vitest';
 import express from 'express';
 import request from 'supertest';
 import fs from 'node:fs';
 import path from 'node:path';
 import os from 'node:os';
 import { AgentServer } from '../../src/server/AgentServer.js';
+import { SecretStore } from '../../src/core/SecretStore.js';
 import { StateManager } from '../../src/core/StateManager.js';
 import type { InstarConfig } from '../../src/core/types.js';
 import { SafeFsExecutor } from '../../src/core/SafeFsExecutor.js';
@@ -124,6 +125,51 @@ describe('Secret Drop store-first E2E lifecycle (survives a real server restart)
       await second.server.stop();
     }
   }, 60_000); // two real AgentServer boots + stops
+
+  it('keeps an uncertain owner credential fenced across restart for both peek and consume', async () => {
+    const token = 'a'.repeat(64);
+    const key = `secretDrops.${token}`;
+    const first = await bootServer();
+    try {
+      // Model the encrypted image left by interruption before the reader fence is cleared.
+      const store = new SecretStore({ stateDir, forceFileKey: true });
+      store.set(key, { label: 'Fenced test credential', values: { secret: 'disposable fixture value' }, ownerCommitPending: true });
+      store.syncDurably();
+    } finally {
+      await first.server.stop();
+    }
+    const restarted = await bootServer();
+    try {
+      for (const query of ['', '?consume=true']) {
+        const refused = await request(restarted.app).post(`/secrets/retrieve/${token}${query}`).set(auth());
+        expect(refused.status).toBe(409);
+        expect(refused.body).toEqual({ error: 'credential-request-pending' });
+      }
+      const store = new SecretStore({ stateDir, forceFileKey: true });
+      expect(store.get(key)).toMatchObject({ ownerCommitPending: true });
+
+      const publishedToken = 'b'.repeat(64);
+      const publishedKey = `secretDrops.${publishedToken}`;
+      store.set(publishedKey, { label: 'Published test credential', values: { secret: 'published fixture value' } });
+      await request(restarted.app).delete(`/secrets/fenced/${token}`).expect(401);
+      await request(restarted.app).delete(`/secrets/fenced/${publishedToken}`).set(auth()).expect(404);
+      expect(store.get(publishedKey)).toMatchObject({ label: 'Published test credential' });
+      const sync = vi.spyOn(SecretStore.prototype, 'syncDurably').mockImplementationOnce(() => {
+        throw new Error('fixture sync unavailable');
+      });
+      try {
+        await request(restarted.app).delete(`/secrets/fenced/${token}`).set(auth()).expect(503);
+        await request(restarted.app).delete(`/secrets/fenced/${token}`).set(auth()).expect(204);
+        expect(sync).toHaveBeenCalledTimes(2);
+      } finally {
+        sync.mockRestore();
+      }
+      expect(store.get(key)).toBeUndefined();
+      await request(restarted.app).post(`/secrets/retrieve/${token}`).set(auth()).expect(404);
+    } finally {
+      await restarted.server.stop();
+    }
+  }, 60_000);
 
   it('consume while persistence is off cannot resurrect after re-enabling and restart', async () => {
     const first = await bootServer();

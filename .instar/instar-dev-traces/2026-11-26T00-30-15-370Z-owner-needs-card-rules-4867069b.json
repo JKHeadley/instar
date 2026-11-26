@@ -1,0 +1,23 @@
+{
+  "version": 2,
+  "slug": "owner-needs-card-rules",
+  "sessionId": "8e84229b-531e-4493-9069-98980bbef193",
+  "timestamp": "2026-11-26T00:30:15.370Z",
+  "artifactPath": "upgrades/side-effects/owner-needs-card-rules.md",
+  "artifactSha256": "da5d011e6538f6c487523e3c935d31f403c225244be715e6b2264550adf58763",
+  "specPath": "docs/specs/owner-needs-card-rules.md",
+  "coveredFiles": [
+    "src/core/MobileDeviceKeys.ts",
+    "src/server/SecretDrop.ts",
+    "src/server/mobilePairingRoutes.ts",
+    "src/server/needsRoutes.ts",
+    "src/server/ownerNeedsCredentialConsent.ts",
+    "src/server/routes.ts",
+    "tests/e2e/app-approval-disclosure-alive.test.ts",
+    "upgrades/side-effects/owner-needs-card-rules.md"
+  ],
+  "phase": "complete",
+  "tier": 2,
+  "secondPass": "true",
+  "reviewerConcurred": true
+}

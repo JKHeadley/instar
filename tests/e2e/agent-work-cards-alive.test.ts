@@ -44,6 +44,7 @@ function mkConfig(): { config: InstarConfig; stateDir: string } {
   fs.writeFileSync(path.join(stateDir, 'config.json'), JSON.stringify({ port: 0, projectName: 'e2e', agentName: 'E2E' }));
   const config = {
     projectName: 'e2e', projectDir: tmpDir, stateDir, port: 0, authToken: AUTH, dashboardPin: PIN, requestTimeoutMs: 10000, version: '0.0.0',
+    needsYou: { ownerAdmission: { enabled: false } },
     workBoard: { enabled: true }, developmentAgent: true, mobilePairing: { multiRoute: { enabled: false } },
     sessions: { claudePath: '/usr/bin/echo', maxSessions: 3, defaultMaxDurationMinutes: 30, protectedSessions: [], monitorIntervalMs: 5000 },
     scheduler: { enabled: false, jobsFile: '', maxParallelJobs: 1 }, messaging: [], monitoring: {}, updates: {},
