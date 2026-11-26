@@ -1,0 +1,12 @@
+<!-- internal-only -->
+
+## What Changed
+
+The Telegram origin route tests count Telegram API calls separately from
+background Needs You checks and clear each fixture router's canary timer.
+
+## Evidence
+
+A retained main verification receipt identified the unexpected request as a
+Needs You canary read. The no-redrive assertion still checks for Telegram
+delivery calls.
