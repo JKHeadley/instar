@@ -119,6 +119,13 @@ export function renderOwnerTree(pages, { preferences, conversationRow, groupDeta
     const proposed = sorted(n.proposed).map(branch).filter(Boolean);
     if (n.kind === 'conversation') {
       const row = conversationRow(n);
+      if (n.project && n.projectKey === conversationRefKey(n.ref)) {
+        // A confirmed project can use its own conversation as the branch
+        // identity even when no saved effort exists.
+        const count = n.count === null ? '' : ` · ${n.count + 1}`;
+        return disclosure(`project:${n.projectKey}`, `${n.project.title}${count}`,
+          [row, children, proposed, n.incomplete ? groupDetails(n) : null], 'chat-project-row');
+      }
       return children.length || proposed.length || n.incomplete
         ? el('div', { class: 'conversation-tree-conversation' }, row,
           disclosure(`children:${n.key}`, 'Related conversations', [children, proposed, n.incomplete ? groupDetails(n) : null]))

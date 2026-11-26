@@ -57,6 +57,19 @@ describe('shared Conversations tree', () => {
     ]);
   });
 
+  it('renders the project conversation as a counted section without a saved group', () => {
+    const project = chat(12, 'Project front door', {
+      project: { title: 'Web Dashboard', conversationKey: 'telegram:12' },
+      projectConversationKey: 'telegram:12', visibleChildCount: 1, children: [chat(14, 'Generated child')],
+    });
+    const host = draw({ partial: false, placementComplete: true, projects: 'known',
+      sections: { projects: [project], groups: [], ungrouped: [] } });
+    const section = host.querySelector<HTMLDetailsElement>('.chat-project-row');
+    expect(section?.open).toBe(true);
+    expect(section?.querySelector('summary')?.textContent).toBe('Web Dashboard · 2');
+    expect([...section!.querySelectorAll('a')].map(a => a.textContent)).toEqual(['Project front door', 'Generated child']);
+  });
+
   it('restores a collapsed group and does not put unresolved legacy rows in Ungrouped', () => {
     conversationTreePreferences().saveExpanded('section:Groups', false);
     const host = draw({ partial: true, projects: 'unknown', items: [group('two', 'Group two', []), chat(6, 'Unknown placement')] });
