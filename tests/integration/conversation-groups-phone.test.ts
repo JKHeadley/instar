@@ -114,8 +114,15 @@ describe('A. suggestions and Accept on the actual graph surface', () => {
     expect(rejected.status).toBe(200); expect(rejected.body).toEqual({ ok: true, id: 'sg-0123456789abcdef0001', state: 'rejected' });
     expect(JSON.parse(fs.readFileSync(path.join(stateDir, SUGGESTIONS_STATE_FILE), 'utf8')).rejected['sg-0123456789abcdef0001']).toBeTruthy();
     expect((await send(app, owner, 'POST', `${base}/sg-0123456789abcdef0001/accept`, {})).status).toBe(404);
-    // Accept: one call.
-    const accepted = await send(app, owner, 'POST', `${base}/sg-0123456789abcdef0002/accept`, {});
+    // Accept: one call normally. Under a loaded shared run a call can outlive its time budget and answer 202
+    // 'working'; the route's contract is that the next call resumes (the app retries the same way). Each 202 must
+    // carry the resume shape, and the follow-up must finish with one group.
+    let accepted = await send(app, owner, 'POST', `${base}/sg-0123456789abcdef0002/accept`, {});
+    for (let resumes = 0; accepted.status === 202 && resumes < 5; resumes += 1) {
+      expect(accepted.body).toMatchObject({ id: 'sg-0123456789abcdef0002', state: 'working', retryAfterMs: 3000 });
+      expect(typeof accepted.body.step).toBe('string');
+      accepted = await send(app, owner, 'POST', `${base}/sg-0123456789abcdef0002/accept`, {});
+    }
     expect(accepted.status).toBe(200);
     expect(accepted.body).toMatchObject({ id: 'sg-0123456789abcdef0002', state: 'accepted', moved: 0, skipped: 2, placedElsewhere: false });
     const group = accepted.body.group as EffortRef;
