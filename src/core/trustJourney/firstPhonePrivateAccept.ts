@@ -1,6 +1,6 @@
 export const FIRST_PHONE_PRIVATE_CALLBACK = /^first-phone:[A-Za-z0-9_-]{22,52}$/;
 
-interface FirstPhonePrivateOffer {
+export interface FirstPhonePrivateOffer {
   callbackData: string;
   chatId: string;
   disclosureMessageId: number;

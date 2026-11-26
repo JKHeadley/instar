@@ -1,5 +1,7 @@
 import { createHash } from 'node:crypto';
 import Database from 'better-sqlite3';
+import { FirstPhonePrivateAcceptService } from '../../src/core/trustJourney/FirstPhonePrivateAcceptService.js';
+import { TrustJourneyStore } from '../../src/core/trustJourney/TrustJourneyStore.js';
 import { FirstPhonePrivateNominationStore } from '../../src/core/trustJourney/FirstPhonePrivateNominationStore.js';
 import { expect, it } from 'vitest';
 import { matchesFirstPhonePrivateAccept } from '../../src/core/trustJourney/firstPhonePrivateAccept.js';
@@ -113,5 +115,49 @@ it('changes the proposal digest for every bound authorization input', () => {
   for (const [key, value] of Object.entries(proposal)) {
     const changed = typeof value === 'number' ? value + 1 : value + '-changed';
     expect(firstPhoneProposalHash({ ...proposal, [key]: changed }), key).not.toBe(offer.proposalHash);
+  }
+});
+
+it('resolves the current private approval account and holder before recording the tap', async () => {
+  const db = new Database(':memory:');
+  try {
+    const trust = new TrustJourneyStore({ description: 'fixture', loadAll: () => [], append: async () => true });
+    const nominations = new FirstPhonePrivateNominationStore(db);
+    const resolved = { offer, ownerId: current.ownerId, principal: 'owner', holderEpoch: offer.holderEpoch, proposalHash: offer.proposalHash };
+    let decision: typeof resolved | null = resolved;
+    const service = new FirstPhonePrivateAcceptService({
+      trust, nominations, resolveCurrentOffer: () => decision, now: () => 210,
+    });
+    const recordAcceptance = (fields: Record<string, unknown> = {}) => trust.write('acceptance', {
+      acceptanceId: offer.accountAcceptanceId, principal: 'owner', adapter: 'telegram',
+      accountId: current.ownerId, acceptedAt: new Date(90).toISOString(), ...fields,
+    });
+
+    expect(service.record('receipt-1', tap)).toEqual({ status: 'refused' });
+    await recordAcceptance({ acceptedAt: new Date(offer.issuedAt).toISOString() });
+    expect(service.record('receipt-1', tap)).toEqual({ status: 'refused' });
+    await recordAcceptance();
+    decision = null;
+    expect(service.record('receipt-1', tap)).toEqual({ status: 'refused' });
+    decision = { ...resolved, holderEpoch: 'changed' };
+    expect(service.record('receipt-1', tap)).toEqual({ status: 'refused' });
+    decision = { ...resolved, proposalHash: 'f'.repeat(64) };
+    expect(service.record('receipt-1', tap)).toEqual({ status: 'refused' });
+
+    decision = resolved;
+    expect(service.record('receipt-1', tap).status).toBe('recorded');
+    expect(service.record('receipt-1', tap).status).toBe('already-recorded');
+    await trust.write('device-acceptance', {
+      acceptanceId: 'fixture-current-approver', principal: 'owner', deviceId: 'existing-phone',
+      via: 'local-install', keyPolicy: 'biometryCurrentSet', acceptedAt: new Date(205).toISOString(),
+    });
+    expect(service.record('receipt-1', tap)).toEqual({ status: 'refused' });
+    await trust.write('device-acceptance-withdrawn', { acceptanceId: 'fixture-current-approver' });
+    expect(service.record('receipt-1', tap)).toEqual({ status: 'refused' });
+    await trust.write('acceptance-withdrawn', { acceptanceId: offer.accountAcceptanceId });
+    expect(service.record('receipt-1', tap)).toEqual({ status: 'refused' });
+    expect(trust.currentDeviceAcceptances()).toEqual([]);
+  } finally {
+    db.close();
   }
 });

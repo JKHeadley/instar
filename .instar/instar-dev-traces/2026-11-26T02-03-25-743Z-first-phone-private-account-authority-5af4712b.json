@@ -1,0 +1,20 @@
+{
+  "version": 2,
+  "slug": "first-phone-private-account-authority",
+  "sessionId": "b3d2cf8a-9b5d-468b-a50b-70ebf11e9e5c",
+  "timestamp": "2026-11-26T02:03:25.743Z",
+  "artifactPath": "upgrades/side-effects/first-phone-private-account-authority.md",
+  "artifactSha256": "ffc973988e3fbb81f225dc2506637fc4b66b995d5c84eb3049a735d2ba32e138",
+  "coveredFiles": [
+    "src/core/trustJourney/FirstPhonePrivateAcceptService.ts",
+    "src/core/trustJourney/firstPhonePrivateAccept.ts",
+    "tests/unit/first-phone-private-accept.test.ts"
+  ],
+  "phase": "complete",
+  "tier": 1,
+  "tierReasoning": "Dormant nomination-only helper, no production enrollment authority or caller.",
+  "eli16Path": "docs/specs/phone-only-first-approver.eli16.md",
+  "sideEffectsPath": "upgrades/side-effects/first-phone-private-account-authority.md",
+  "secondPass": "true",
+  "reviewerConcurred": true
+}
