@@ -1,0 +1,24 @@
+{
+  "version": 2,
+  "slug": "dashboard-tunnel-restart-continuity",
+  "sessionId": "dd2f336e-e8f7-40b3-97e3-09d19139bfa6",
+  "timestamp": "2026-11-26T19:01:07.595Z",
+  "artifactPath": "upgrades/side-effects/dashboard-tunnel-restart-continuity.md",
+  "artifactSha256": "750b9d0d169af11f7af40a5dd202549a3d0570e812ced4e6939838db1e5a6a44",
+  "coveredFiles": [
+    "src/tunnel/CloudflareNamedProvider.ts",
+    "src/tunnel/DashboardRestartIngress.ts",
+    "src/tunnel/dashboardConnectorMain.ts",
+    "tests/integration/dashboard-restart-ingress.test.ts",
+    "upgrades/eli16/dashboard-tunnel-restart-continuity.md",
+    "upgrades/next/dashboard-tunnel-restart-continuity.md",
+    "upgrades/side-effects/dashboard-tunnel-restart-continuity.md"
+  ],
+  "phase": "complete",
+  "tier": 1,
+  "tierReasoning": "Default-off independent connector, without service or host configuration changes.",
+  "eli16Path": "upgrades/eli16/dashboard-tunnel-restart-continuity.md",
+  "sideEffectsPath": "upgrades/side-effects/dashboard-tunnel-restart-continuity.md",
+  "secondPass": "not-required",
+  "reviewerConcurred": null
+}

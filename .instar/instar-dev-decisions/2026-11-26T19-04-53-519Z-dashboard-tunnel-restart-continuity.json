@@ -1,0 +1,28 @@
+{
+  "ts": "2026-11-26T19:04:53.519Z",
+  "slug": "dashboard-tunnel-restart-continuity",
+  "suggestedTier": 2,
+  "declaredTier": 1,
+  "riskFloor": 1,
+  "riskFloorReasons": [],
+  "belowFloor": false,
+  "files": 3,
+  "loc": 149,
+  "scope": {
+    "basis": "staged-in-scope-paths-including-deleted",
+    "files": [
+      "src/tunnel/CloudflareNamedProvider.ts",
+      "src/tunnel/DashboardRestartIngress.ts",
+      "src/tunnel/dashboardConnectorMain.ts"
+    ],
+    "addedLines": 148,
+    "deletedLines": 1
+  },
+  "causalAutopsy": null,
+  "classClosure": {
+    "defectClass": "unbounded-self-action",
+    "closure": "n/a",
+    "reason": "One explicitly invoked connector start and request-driven proxying. No self-triggered restart or page refresh."
+  },
+  "verdict": "blocked"
+}
