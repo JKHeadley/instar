@@ -3,6 +3,7 @@ import { describe, expect, it } from 'vitest';
 import { TelegramAdapter } from '../../src/messaging/TelegramAdapter.js';
 import { TelegramOriginService } from '../../src/messaging/telegram-origin/TelegramOriginService.js';
 import { TelegramOriginHoldError } from '../../src/messaging/telegram-origin/types.js';
+import { ORIGIN_LOCAL_REFUSAL_REASONS, ORIGIN_LEASE_REFUSAL_REASONS } from '../../src/messaging/telegram-origin/OriginEgressCapacity.js';
 
 const HELD = TelegramAdapter.OWNER_DM_HELD;
 
@@ -26,5 +27,13 @@ describe('TelegramAdapter.ownerDMOutcome', () => {
   });
   it('covers every reason the origin service retries', () => {
     for (const r of TelegramOriginService.RECOVERABLE_HOLD_REASONS) expect(TelegramAdapter.OWNER_DM_RETRIED_HOLDS).toContain(r);
+    // lease-freshness-lapse-retry — every request-bound local refusal is retried from its durable row too.
+    for (const r of ORIGIN_LOCAL_REFUSAL_REASONS) expect(TelegramAdapter.OWNER_DM_RETRIED_HOLDS).toContain(r);
+    for (const r of ORIGIN_LEASE_REFUSAL_REASONS) expect(ORIGIN_LOCAL_REFUSAL_REASONS).toContain(r);
+    expect(ORIGIN_LOCAL_REFUSAL_REASONS).toContain('credential-capacity-unavailable');
+  });
+  it('a reply held for the lease at the send boundary may still land', () => {
+    expect(TelegramAdapter.ownerDMOutcome(new TelegramOriginHoldError('lease-freshness-lapsed', 'op-8'))).toBe(HELD);
+    expect(TelegramAdapter.ownerDMOutcome(new TelegramOriginHoldError('lease-not-held-at-send', 'op-9'))).toBe(HELD);
   });
 });

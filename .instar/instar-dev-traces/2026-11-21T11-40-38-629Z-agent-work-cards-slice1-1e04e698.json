@@ -1,0 +1,18 @@
+{
+  "version": 2,
+  "slug": "agent-work-cards-slice1",
+  "sessionId": "61e5c2a0-e245-4cf7-92a9-e660c912a3ec",
+  "timestamp": "2026-11-21T11:40:38.629Z",
+  "artifactPath": "upgrades/side-effects/agent-work-cards-slice1.md",
+  "artifactSha256": "cec275daf3b2cd1a3c932820ff1d5a911a91a1eca97745b6a6d481795cdcb7c5",
+  "specPath": "docs/specs/agent-work-cards-default.md",
+  "coveredFiles": [
+    "src/server/routes.ts",
+    "upgrades/side-effects/agent-work-cards-slice1.md"
+  ],
+  "phase": "complete",
+  "tier": 2,
+  "tierReasoning": "Part of the converged spec's slice one; one optional call on a display field",
+  "secondPass": "not-required",
+  "reviewerConcurred": null
+}

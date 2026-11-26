@@ -28,11 +28,11 @@ export interface BoardCardsReader {
  * proposed list. Done, archived and removed cards drop off; a card with no project, or a project key with no
  * graph ref, is left out.
  */
-export function cardPlacementsFromBoard(board: BoardCardsReader, telegramChatId: string): Array<{ card: ConversationRef; project: ConversationRef }> {
+export function cardPlacementsFromBoard(board: BoardCardsReader, telegramChatId: string, mayPresent: (conversationKey: string) => boolean = () => true): Array<{ card: ConversationRef; project: ConversationRef }> {
   const out: Array<{ card: ConversationRef; project: ConversationRef }> = [];
   for (const id of board.cardIds()) {
     const v = board.view(id);
-    if (!v || !v.card.created || !v.card.projectKey) continue;
+    if (!v || !v.card.created || !v.card.projectKey || !mayPresent(v.card.conversationKey)) continue;
     if (v.status === 'done' || v.status === 'archived' || v.status === 'removed') continue;
     const project = cosConversationRef(v.card.projectKey, telegramChatId);
     if (!project) continue;
@@ -61,6 +61,22 @@ export function projectSuggestionSources(loop: ProjectsReader, telegramChatId: s
       if (c) children.push({ key: nodeKey(c), ref: c, title: 'Conversation' });
     }
     out.push({ key: nodeKey(ref), ref, title: p.title, children });
+  }
+  return out;
+}
+
+/**
+ * The Chief of Staff projects as the phone tree's Project labels (work-front-doors stage 2, "Mobile hierarchy
+ * routes"): each project's conversation, title, and the conversation key the Work page uses ("telegram:<topic>",
+ * "app:<key>"). A project whose conversation has no such key is left out.
+ */
+export function treeProjects(sources: Array<{ ref: ConversationRef; title: string }>): Array<{ ref: ConversationRef; title: string; conversationKey: string }> {
+  const out: Array<{ ref: ConversationRef; title: string; conversationKey: string }> = [];
+  for (const s of sources) {
+    const r = s?.ref;
+    const key = r?.platform === 'telegram' && Number.isSafeInteger(r.topicId) && r.topicId > 0 ? `telegram:${r.topicId}`
+      : r?.platform === 'app' && typeof r.conversationKey === 'string' && r.conversationKey ? `app:${r.conversationKey}` : null;
+    if (key && typeof s.title === 'string') out.push({ ref: r, title: s.title, conversationKey: key });
   }
   return out;
 }

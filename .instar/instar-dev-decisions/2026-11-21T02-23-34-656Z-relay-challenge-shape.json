@@ -1,0 +1,27 @@
+{
+  "ts": "2026-11-21T02:23:34.656Z",
+  "slug": "relay-challenge-shape",
+  "suggestedTier": 2,
+  "declaredTier": 1,
+  "riskFloor": 2,
+  "riskFloorReasons": [
+    "safety-invariant proximity: src/threadline/client/RelayClient.ts matches relay / delivery path",
+    "safety-invariant proximity: src/threadline/client/relayChallenge.ts matches relay / delivery path"
+  ],
+  "belowFloor": true,
+  "files": 3,
+  "loc": 79,
+  "scope": {
+    "basis": "staged-in-scope-paths-including-deleted",
+    "files": [
+      "src/threadline/client/RegistryRestClient.ts",
+      "src/threadline/client/RelayClient.ts",
+      "src/threadline/client/relayChallenge.ts"
+    ],
+    "addedLines": 77,
+    "deletedLines": 2
+  },
+  "causalAutopsy": null,
+  "classClosure": null,
+  "verdict": "pass"
+}

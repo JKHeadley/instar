@@ -1,0 +1,21 @@
+{
+  "version": 2,
+  "slug": "cb-p2-probe-gen",
+  "sessionId": "f07b47ce-bcaf-4d4f-840a-ab8e2c9c1a1e",
+  "timestamp": "2026-11-20T21:13:12.616Z",
+  "artifactPath": "upgrades/side-effects/cb-p2-probe-gen.md",
+  "artifactSha256": "e6cb792793404ae1335e72b57fff77d44a8d35b258722326956f6ba0a0081a4f",
+  "specPath": "docs/specs/context-budget-layered-summaries.md",
+  "coveredFiles": [
+    "src/monitoring/foldProbe.ts",
+    "tests/integration/fold-probe-material.test.ts",
+    "tests/unit/fold-probe.test.ts",
+    "upgrades/next/cb-p2-probe-gen.md",
+    "upgrades/side-effects/cb-p2-probe-gen.md"
+  ],
+  "phase": "complete",
+  "tier": 2,
+  "tierReasoning": "Spec-driven Phase 2 slice; library LLM judgement step, no live call site; second-pass reviewed.",
+  "secondPass": "true",
+  "reviewerConcurred": true
+}

@@ -1,4 +1,5 @@
 import { inboundTopicId } from '../telegramTopicSpace.js';
+import { readFileSync } from 'node:fs';
 import { readFile } from 'node:fs/promises';
 import path from 'node:path';
 import os from 'node:os';
@@ -66,6 +67,8 @@ export async function bootTelegramOrigin(options: {
    * sends. This process still expires due operations, so a server outage cannot pin them. */
   skipRetention?: boolean;
   holdsLease: () => boolean;
+  /** lease-freshness-lapse-retry — the lease coordinator's one-snapshot verdict and renewal gap (server only). */
+  leaseFreshness?: import('./TelegramOriginRuntime.js').TelegramOriginRuntimeOptions['leaseFreshness'];
   isSessionLive?: (binding: OriginSessionBinding) => boolean;
   attachSessionLifecycle?: (lifecycle: OriginSessionLifecycle) => void;
   diagnoseUnknown: (originId: string, reason: string) => Promise<string | void>;
@@ -121,13 +124,15 @@ export async function bootTelegramOrigin(options: {
       }
       let hub: string | null = null;
       try {
-        const value = JSON.parse(await readFile(path.join(config.stateDir, 'state', 'agent-attention-topic.json'), 'utf8'));
+        // Two tiny local files, read synchronously: each async read was four event-loop hops,
+        // and under a busy loop every hop delays the fresh snapshot replies wait on.
+        const value = JSON.parse(readFileSync(path.join(config.stateDir, 'state', 'agent-attention-topic.json'), 'utf8'));
         if (Number.isSafeInteger(value) && value > 0) hub = String(value);
       } catch (error) { if ((error as NodeJS.ErrnoException).code !== 'ENOENT') throw new OriginSnapshotRefusal('origin-attention-topic-unreadable'); }
       const display = resolveOriginDisplay(telegram.config.messageOrigin?.display);
       const conversationDisplays: Record<string, Partial<OriginDisplaySettings>> = {};
       try {
-        const profiles = JSON.parse(await readFile(path.join(config.stateDir, 'state', 'topic-profiles.json'), 'utf8'));
+        const profiles = JSON.parse(readFileSync(path.join(config.stateDir, 'state', 'topic-profiles.json'), 'utf8'));
         for (const [topic, entry] of Object.entries(profiles.topics ?? {})) {
           const raw = (entry as { current?: { messageOriginDisplay?: Partial<OriginDisplaySettings> } })?.current?.messageOriginDisplay;
           if (raw == null) continue;
@@ -240,6 +245,7 @@ export async function bootTelegramOrigin(options: {
     },
     onNoticeState: options.onNoticeState,
     ownsCapacityLease: options.holdsLease,
+    leaseFreshness: options.leaseFreshness,
     holdsLease: options.holdsLease,
     noticeProcess: { role: options.noticeOwner ? 'owner' : 'client', socketPath: path.join(config.stateDir, 'origin-notice.sock') },
   }).catch(error => { noticePolicyObserver?.close(); configReader.close(); throw error; });

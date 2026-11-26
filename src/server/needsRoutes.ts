@@ -22,15 +22,18 @@
  * This route is a signal, not an authority: it reads and lists; it never approves, hides or changes
  * anything. Every row's action opens the source's own page, where the existing authorization applies.
  */
+import { createHash, createHmac, randomBytes, timingSafeEqual } from 'node:crypto';
 import path from 'node:path';
 import fs from 'node:fs';
 import { fileURLToPath, pathToFileURL } from 'node:url';
 import type { Request, Response, Router } from 'express';
 import { ownerOrBearer } from './mobileCapacityRoutes.js';
-import { devicePersonOf, DEVICE_ALLOWLIST } from './mobilePairingRoutes.js';
+import { deviceAdmissionIdentity, devicePersonOf, DEVICE_ALLOWLIST } from './mobilePairingRoutes.js';
 import { tierAtLeast } from '../permissions/TeamAccess.js';
 import { scrubSecrets } from '../monitoring/scrubSecrets.js';
 import { operatorError } from '../core/storageMachineName.js';
+import { withdrawOwnerNeedsAsk, type OwnerNeedsWithdrawalJournal } from '../core/OwnerNeedsWithdrawal.js';
+import { admitOwnerNeedsCard, ownerNeedsPresentation, type OwnerNeedsAction, type OwnerNeedsActionKind, type OwnerNeedsCandidate } from '../core/OwnerNeedsCardAdmission.js';
 
 export const NEEDS_SCHEMA_VERSION = 1;
 /** One answer is shared by every caller for this long (the phones, the console and the Mac app poll). */
@@ -55,12 +58,14 @@ export const NEED_SOURCE_LABELS: Record<string, string> = {
   attention: 'the attention queue',
   promises: 'promises waiting on you',
   health: 'the agent’s health',
+  repos: 'repositories with no copy anywhere else',
   merging: 'pull request merging',
   'shipping-approvals': 'pull requests waiting for approval',
   feedback: 'the feedback queue',
   accounts: 'accounts and sign-ins',
   agents: 'other agents',
   approvals: 'permission requests',
+  'trust-requests': 'changes waiting for approval',
   plans: 'plans',
   'chief-of-staff': 'the Chief of Staff',
   workBoard: 'the work board',
@@ -69,6 +74,7 @@ export const NEED_SOURCE_LABELS: Record<string, string> = {
   'skill-learning-proposals': 'learned skills',
   'learned-pending': 'skills waiting for your OK',
   context: 'conversation summaries',
+  'document-decisions': 'documents waiting for your decision',
 };
 
 /**
@@ -79,12 +85,14 @@ export const NEED_SOURCE_LABELS: Record<string, string> = {
 export const NEED_SOURCE_POSTURE: Record<string, { posture: 'replicated' | 'pool-merged' | 'lease-holder' | 'machine-local'; why: string }> = {
   attention: { posture: 'pool-merged', why: 'read with scope=pool: every online machine answers, and one that did not is named.' },
   promises: { posture: 'replicated', why: 'CommitmentsSync replicas merged on read (scope=mesh), each with its age.' },
+  repos: { posture: 'pool-merged', why: 'read with scope=pool: each machine answers live, an unreachable one from its replicated owned-repo records, else it is named unknown.' },
   health: { posture: 'machine-local', why: 'by design: the health of the machine answering (mobile-health-issues.md); the phone asks every machine it can reach.' },
   merging: { posture: 'machine-local', why: 'the merge watcher works on the lease holder; a non-holder shows its own snapshot (green-pr-automerge-enforcement.md).' },
   'shipping-approvals': { posture: 'machine-local', why: 'as merging.' },
   feedback: { posture: 'machine-local', why: 'read only where the merge watcher answers (maintainer agents), exactly as Home; the two authority proposals read the local drain copy.' },
   accounts: { posture: 'pool-merged', why: 'read with scope=pool; sign-in repair stays on the machine with the browser (hardware-bound).' },
   agents: { posture: 'machine-local', why: 'pending pairings and invites are tied to the relay holder and its in-memory secret (threadline-standalone-pairing.md).' },
+  'trust-requests': { posture: 'replicated', why: 'trustJourney request records replicate to every machine; current app eligibility is read only on the serving holder and is unknown elsewhere.' },
   approvals: { posture: 'machine-local', why: 'by design (OPERATOR-AUTHORIZATION-REQUEST-SPEC FD-6): the grant lands on the holder; its pending-approval item reaches every machine through the pooled attention read.' },
   plans: { posture: 'machine-local', why: 'initiatives replicate only where git-sync carries them; blockers are local until their replicated store is built.' },
   'chief-of-staff': { posture: 'replicated', why: 'chief-of-staff-record journal replicates to every peer.' },
@@ -94,6 +102,7 @@ export const NEED_SOURCE_POSTURE: Record<string, { posture: 'replicated' | 'pool
   'skill-learning-proposals': { posture: 'replicated', why: 'git-synced skills and ledgers; each machine builds its own status from them.' },
   'learned-pending': { posture: 'replicated', why: 'as skill-learning-proposals.' },
   context: { posture: 'machine-local', why: 'by design: one watcher per machine, acting on the topics that machine owns.' },
+  'document-decisions': { posture: 'replicated', why: 'document rows replicate to every machine; a machine that is behind on a document shows its own fold (document-decisions §6).' },
 };
 
 export type NeedsViewerRole = 'owner' | 'member' | 'guest' | 'team' | 'msp';
@@ -108,8 +117,21 @@ export interface NeedItem {
   source: string;
   sourceLabel: string;
   /** href = a console hash (or /dashboard path); topic = a conversation; attention = the attention topic; promise = a promise. */
-  action: { kind: 'href'; href: string } | { kind: 'topic'; topicId: number } | { kind: 'attention' } | { kind: 'promise'; id: string; origin: string | null };
+  action: { kind: 'href'; href: string } | { kind: 'topic'; topicId: number } | { kind: 'attention' } | { kind: 'promise'; id: string; origin: string | null } | OwnerNeedsAction;
+  /** Present only for admitted in-place owner requests. */
+  ownerAction?: OwnerNeedsActionKind;
   refs: string[];
+  /**
+   * The work-board card that stands in for this item (docs/specs/work-board-cards-appear.md §3): the row keeps its
+   * own words and action; the card is one tap away. Additive and optional: a reader that does not know it shows the row.
+   */
+  card?: { id: string; href: string; label: string };
+  /**
+   * When the item IS its card (the Chief of Staff's wait card, needs-one-list), `action` opens the card and this is the
+   * source's own page (the project conversation), one tap away. Additive and optional: a reader that does not know it
+   * opens the card, which links on to the project.
+   */
+  alsoOpens?: { href: string; label: string };
 }
 
 export interface NeedsAnswer {
@@ -119,9 +141,14 @@ export interface NeedsAnswer {
   agent: { name: string | null };
   viewer: { role: NeedsViewerRole };
   count: number;
+  /** Agent work or rows without a declared owner action, before pagination. */
+  divertedCount?: number;
+  /** Known owner approvals whose source could not confirm whether they can still be acted on. */
+  couldNotCheckApprovalCount?: number;
   complete: boolean;
   items: NeedItem[];
   truncated: boolean;
+  continuation?: { start: number; previousCursor: string | null; nextCursor: string | null };
   /** posture: where this source's answer comes from when the agent runs on several machines (spec §4.5). */
   sources: Array<{ id: string; label: string; state: 'ok' | 'off' | 'failed' | 'not-for-viewer'; posture?: string }>;
   couldNotCheck: string[];
@@ -139,6 +166,11 @@ export interface NeedsDeps {
   agentName: () => string | null;
   machineId: () => string | null;
   now?: () => number;
+  /** Absent until this agent's clients and sources support in-place actions. */
+  // undefined: audience-authorized row lacks a declaration. null: no verified audience or current ask.
+  ownerCardCandidate?: (item: NeedItem, request?: Request) => OwnerNeedsCandidate | null | undefined | Promise<OwnerNeedsCandidate | null | undefined>;
+  /** Must resolve strict coordinator authority from the request, never from submitted fields. */
+  withdrawalJournalFor?: (req: Request) => Promise<OwnerNeedsWithdrawalJournal | null>;
 }
 
 /** The console directory next to this file, in both the source and the built layout. */
@@ -203,6 +235,7 @@ const DEFAULT_WHY: Record<string, string> = {
   attention: 'Raised for you in the attention queue.',
   promises: 'A promise that waits on you and is due soon.',
   workBoard: 'This card is waiting on you.',
+  'document-decisions': 'A document asks for your decision. Decide on your phone.',
 };
 
 function toItem(row: Rec, source: string): NeedItem {
@@ -210,7 +243,7 @@ function toItem(row: Rec, source: string): NeedItem {
   let action: NeedItem['action'];
   if (a.kind === 'topic' && Number.isFinite(Number(a.topicId))) action = { kind: 'topic', topicId: Number(a.topicId) };
   else if (a.kind === 'promise' && typeof a.id === 'string') action = { kind: 'promise', id: a.id, origin: typeof a.origin === 'string' ? a.origin : null };
-  else if (a.kind === 'href' && typeof a.href === 'string' && /^(#\/|\/dashboard\/)/.test(a.href)) action = { kind: 'href', href: a.href };
+  else if (a.kind === 'href' && typeof a.href === 'string' && /^(#\/|\/dashboard\/|\/docs\/[0-9a-f-]{36}$)/.test(a.href)) action = { kind: 'href', href: a.href };
   else action = { kind: 'attention' };
   const sub = clean(row.sub, DETAIL_MAX);
   const detail = clean(row.detail, DETAIL_MAX);
@@ -224,39 +257,126 @@ function toItem(row: Rec, source: string): NeedItem {
     sourceLabel: NEED_SOURCE_LABELS[source] || source,
     action,
     refs: Array.isArray(row.refs) ? row.refs.filter((x): x is string => typeof x === 'string').slice(0, 8).map((x) => clean(x, 80)) : [],
+    ...cardOf(row.card),
+    ...alsoOpensOf(row.alsoOpens),
   };
+}
+
+/** The same href rule as an item's own action (a console hash or a dashboard path), so it can never point outside. */
+function alsoOpensOf(a: unknown): { alsoOpens?: NeedItem['alsoOpens'] } {
+  if (!a || typeof a !== 'object') return {};
+  const r = a as Rec;
+  if (typeof r.href !== 'string' || !/^(#\/|\/dashboard\/)/.test(r.href)) return {};
+  return { alsoOpens: { href: r.href, label: clean(r.label, 80) || 'Open the project conversation' } };
+}
+
+function cardOf(c: unknown): { card?: NeedItem['card'] } {
+  if (!c || typeof c !== 'object') return {};
+  const r = c as Rec;
+  if (typeof r.id !== 'string' || !/^wc_[0-9a-f]{16}$/.test(r.id) || typeof r.href !== 'string' || !/^#\/work\/board\?card=/.test(r.href)) return {};
+  return { card: { id: r.id, href: r.href, label: clean(r.label, 80) || 'Has a card on the work board' } };
 }
 
 export interface NeedsComposer {
   /** The owner's full list (every source). */
-  owner: () => Promise<Omit<NeedsAnswer, 'viewer'>>;
+  owner: (request?: Request) => Promise<Omit<NeedsAnswer, 'viewer'>>;
   /** A team person's list: their work board only. */
   team: (board: NeedsSelfRead | null) => Promise<Omit<NeedsAnswer, 'viewer'>>;
 }
 
-/** The composition, separate from HTTP so tests drive it with fixture reads. */
-export function createNeedsComposer(deps: Pick<NeedsDeps, 'read' | 'consoleDir' | 'agentName' | 'machineId' | 'now'>): NeedsComposer {
+type Composed = Omit<NeedsAnswer, 'viewer'>;
+type ComposerDeps = Pick<NeedsDeps, 'read' | 'consoleDir' | 'agentName' | 'machineId' | 'now' | 'ownerCardCandidate'>;
+
+function page(answer: Composed, start: number): Composed {
+  return { ...answer, items: answer.items.slice(start, start + NEEDS_MAX_ITEMS) };
+}
+
+/** Direct callers receive the same bounded first page as before. */
+export function createNeedsComposer(deps: ComposerDeps): NeedsComposer {
+  const full = createFullComposer(deps);
+  return {
+    owner: async request => page(await full.owner(request), 0),
+    team: async (board) => page(await full.team(board), 0),
+  };
+}
+
+function createFullComposer(deps: ComposerDeps): NeedsComposer {
   const now = () => (deps.now ? deps.now() : Date.now());
   const dir = deps.consoleDir ?? resolveConsoleDir();
   // Kept across reads so a failed source keeps its last good rows for the grace period (needs-model.js).
-  const known: Record<string, Rec> = {};
+  const legacyKnown: Record<string, Rec> = {};
   const base = () => ({ schemaVersion: NEEDS_SCHEMA_VERSION, generatedAt: new Date(now()).toISOString(), machineId: deps.machineId(), agent: { name: deps.agentName() } });
 
-  const finish = (rows: Array<{ row: Rec; source: string }>, sources: NeedsAnswer['sources'], notes: string[]) => {
+  const finish = async (rows: Array<{ row: Rec; source: string }>, sources: NeedsAnswer['sources'], notes: string[], ownerView = false, request?: Request) => {
     const seen = new Set<string>();
     const items: NeedItem[] = [];
+    const heldRows = new Set<string>();
+    const divertedRows = new Set<string>();
+    const unavailableApprovals = new Set<string>();
+    const failedProviders = new Set<string>();
     for (const { row, source } of rows) {
       const it = toItem(row, source);
-      if (seen.has(it.id)) continue; // each item once
-      seen.add(it.id);
-      items.push(it);
+      const rowKey = ownerView && deps.ownerCardCandidate ? JSON.stringify([source, it.id]) : it.id;
+      if (seen.has(rowKey)) continue;
+      if (ownerView && deps.ownerCardCandidate) {
+        if ((source === 'workBoard' || source === 'repos' || source === 'context' || source === 'health') && row.ownerAction === false) {
+          divertedRows.add(rowKey);
+          continue;
+        }
+        let candidate: OwnerNeedsCandidate | null | undefined;
+        try { candidate = await deps.ownerCardCandidate(it, request); }
+        catch {
+          failedProviders.add(source);
+          continue;
+        }
+        if (!candidate) {
+          if (candidate === undefined) divertedRows.add(rowKey);
+          continue;
+        }
+        const admitted = admitOwnerNeedsCard(candidate);
+        if (admitted.disposition === 'hold') {
+          if (!candidate.ownerAction && admitted.reason !== 'source-unavailable') divertedRows.add(rowKey);
+          if (admitted.reason === 'source-unavailable' && candidate.ownerAction === 'approve') unavailableApprovals.add(rowKey);
+          if (admitted.reason !== 'request-unavailable' && candidate.responsibility === 'owner-required') heldRows.add(rowKey);
+          continue;
+        }
+        if (admitted.disposition === 'route-to-agent') {
+          divertedRows.add(rowKey);
+          continue;
+        }
+        if (admitted.disposition !== 'show') continue;
+        const presentation = ownerNeedsPresentation(candidate.presentation, admitted.action.kind);
+        if (!presentation) {
+          heldRows.add(rowKey);
+          continue;
+        }
+        divertedRows.delete(rowKey);
+        unavailableApprovals.delete(rowKey);
+        heldRows.delete(rowKey);
+        const { card: _card, alsoOpens: _alsoOpens, ...plain } = it;
+        const { action, ownerAction } = admitted;
+        items.push({ ...plain, title: presentation.title, why: presentation.why, detail: presentation.detail, ownerAction, action });
+      } else {
+        items.push(it);
+      }
+      seen.add(rowKey);
     }
+    sources = sources.map(s => failedProviders.has(s.id) ? { ...s, state: 'failed' } : s);
     const couldNotCheck = sources.filter((s) => s.state === 'failed').map((s) => s.label);
+    const held = heldRows.size > 0;
+    const divertedCount = divertedRows.size;
+    const couldNotCheckApprovalCount = unavailableApprovals.size;
+    if (held) couldNotCheck.push('some requests that are temporarily unavailable');
+    const ownerNotes = [...notes];
+    if (held) ownerNotes.push('Some requests are temporarily unavailable.');
+    if (couldNotCheckApprovalCount) ownerNotes.push(couldNotCheckApprovalCount === 1
+      ? "Couldn't check one approval." : `Couldn't check ${couldNotCheckApprovalCount} approvals.`);
     const withPosture = sources.map((s) => (NEED_SOURCE_POSTURE[s.id] ? { ...s, posture: NEED_SOURCE_POSTURE[s.id].posture } : s));
-    return { ...base(), count: items.length, complete: couldNotCheck.length === 0, items: items.slice(0, NEEDS_MAX_ITEMS), truncated: items.length > NEEDS_MAX_ITEMS, sources: withPosture, couldNotCheck, notes };
+    return { ...base(), ...(ownerView && deps.ownerCardCandidate ? { schemaVersion: 2, divertedCount, couldNotCheckApprovalCount } : {}), count: items.length, complete: couldNotCheck.length === 0, items, truncated: items.length > NEEDS_MAX_ITEMS, sources: withPosture, couldNotCheck, notes: ownerNotes };
   };
 
-  const owner = async () => {
+  const owner = async (request?: Request) => {
+    const known = deps.ownerCardCandidate ? {} as Record<string, Rec> : legacyKnown;
     const { needs: N, home: H } = await loadModels(dir);
     const t = now();
     const cache = new Map<string, Promise<Rec>>();
@@ -276,7 +396,7 @@ export function createNeedsComposer(deps: Pick<NeedsDeps, 'read' | 'consoleDir' 
     await boundedAll(later.map((s) => () => readSource(s)), NEEDS_MAX_CONCURRENT_READS);
     for (const s of all) if (s.when && !later.includes(s)) delete known[s.id as string]; // not read here (not a maintainer's agent): not a source
 
-    const surfaced = N.surfacedNeeds(known, t, NEEDS_GRACE_MS) as { rows: Rec[]; pending: string[]; failed: string[] };
+    const surfaced = N.surfacedNeeds(known, t, NEEDS_GRACE_MS, { raw: !!deps.ownerCardCandidate }) as { rows: Rec[]; pending: string[]; failed: string[] };
     const attention = await get(homeReads[0]);
     const commitments = await get(homeReads[1]);
     const pool = await get(homeReads[2]);
@@ -285,16 +405,21 @@ export function createNeedsComposer(deps: Pick<NeedsDeps, 'read' | 'consoleDir' 
     const peers = pd && Array.isArray(pd.machines) ? (pd.machines as Rec[]).filter((m) => m && !m.isSelf && m.machineId !== pd.selfMachineId).length : null;
     const queue = H.buildNeeds(attention, t, names);
     const promised = H.buildPromised(commitments, t, peers);
-    const combined = H.combineNeeds(queue, promised, surfaced) as Rec;
+    const combined = (deps.ownerCardCandidate ? {} : H.combineNeeds(queue, promised, surfaced)) as Rec;
 
     // Which source each surfaced row came from: the rows each source produced on this read.
     const rowSource = new Map<string, string>();
     for (const s of all) { const k = known[s.id as string]; if (k && Array.isArray(k.rows)) for (const r of k.rows as Rec[]) rowSource.set(String(r.key), s.id as string); }
     const queueKeys = new Set(((queue && (queue.all as Rec[])) || []).map((r: Rec) => String(r.key)));
-    const rows = (Array.isArray(combined.all) ? (combined.all as Rec[]) : []).filter((r) => r.tone !== 'unknown').map((row) => ({
+    const legacyRows = (Array.isArray(combined.all) ? (combined.all as Rec[]) : []).filter((r) => r.tone !== 'unknown').map((row) => ({
       row,
       source: rowSource.get(String(row.key)) ?? (queueKeys.has(String(row.key)) ? 'attention' : 'promises'),
     }));
+    const rows = deps.ownerCardCandidate ? [
+      ...((queue.all as Rec[] | undefined) ?? []).filter(row => !row.stale && row.tone !== 'unknown').map(row => ({ row, source: 'attention' })),
+      ...surfaced.rows.filter(row => row.tone !== 'unknown').map(row => ({ row, source: String(row.source) })),
+      ...((promised.all as Rec[] | undefined) ?? []).filter(row => row.tone === 'attn').map(row => ({ row, source: 'promises' })),
+    ] : legacyRows;
 
     const sources: NeedsAnswer['sources'] = [
       { id: 'attention', label: NEED_SOURCE_LABELS.attention, state: attention.ok && Number.isFinite(queue.count) ? 'ok' : 'failed' },
@@ -328,12 +453,12 @@ export function createNeedsComposer(deps: Pick<NeedsDeps, 'read' | 'consoleDir' 
       const i = sources.findIndex((x) => x.id === id);
       if (i >= 0 && sources[i].state === 'ok') sources[i] = { ...sources[i], state: 'failed', label };
     }
-    if (combined.coverage === 'partial view' && promised && promised.coverage === 'partial view') {
+    if (promised?.coverage === 'partial view' && (deps.ownerCardCandidate || combined.coverage === 'partial view')) {
       const i = sources.findIndex((x) => x.id === 'promises');
       if (i >= 0 && sources[i].state === 'ok') sources[i] = { ...sources[i], state: 'failed', label: 'promises on other machines' };
     }
-    const notes = [combined.statusNote, queue && queue.statusNote].filter((x): x is string => typeof x === 'string' && x.length > 0).map((x) => clean(x, 300));
-    return finish(rows, sources, [...new Set(notes)]);
+    const notes = (deps.ownerCardCandidate ? [] : [combined.statusNote, queue && queue.statusNote]).filter((x): x is string => typeof x === 'string' && x.length > 0).map((x) => clean(x, 300));
+    return finish(rows, sources, [...new Set(notes)], true, request);
   };
 
   const team = async (board: NeedsSelfRead | null) => {
@@ -443,36 +568,106 @@ export function teamMayReadBoard(req: Request): boolean {
 }
 
 export function mountNeedsRoutes(router: Router, deps: NeedsDeps & { canary?: NeedsCanary }): void {
-  const composer = createNeedsComposer(deps);
+  const composer = createFullComposer(deps);
   const now = () => (deps.now ? deps.now() : Date.now());
-  // One build at a time; its answer is shared for NEEDS_CACHE_MS after it finishes (never overlapping builds).
-  let inFlight: Promise<Omit<NeedsAnswer, 'viewer'>> | null = null;
-  let last: { at: number; answer: Omit<NeedsAnswer, 'viewer'> } | null = null;
-  const ownerCached = (_key: string, f: () => Promise<Omit<NeedsAnswer, 'viewer'>>): Promise<Omit<NeedsAnswer, 'viewer'>> => {
-    if (last && now() - last.at < NEEDS_CACHE_MS) return Promise.resolve(last.answer);
-    if (inFlight) return inFlight;
-    const p = f().then((answer) => { last = { at: now(), answer }; return answer; }).finally(() => { if (inFlight === p) inFlight = null; });
-    inFlight = p;
-    return p;
+  const signingKey = randomBytes(32);
+  const snapshot = (answer: Composed) => {
+    const hash = createHash('sha256');
+    for (const item of answer.items) hash.update(JSON.stringify([item.id, item.action]));
+    return { answer, digest: hash.digest('base64url') };
+  };
+  type Snapshot = ReturnType<typeof snapshot>;
+  // Keep only the first page and its digest after a build. Concurrent fresh reads share the build.
+  let inFlight: Promise<Snapshot> | null = null;
+  let last: { at: number; first: Snapshot } | null = null;
+  const ownerFresh = () => {
+    if (!inFlight) {
+      inFlight = composer.owner().then(snapshot).then((full) => {
+        last = { at: now(), first: { ...full, answer: page(full.answer, 0) } };
+        return full;
+      }).finally(() => { inFlight = null; });
+    }
+    return inFlight;
   };
   const handle = async (req: Request, res: Response) => {
     res.set('Cache-Control', 'no-store');
     const role = needsViewer(req, deps.bearerOk);
     if (!role) { res.status(403).json({ error: 'needs-viewer-unknown', detail: 'This phone is not linked to a person on this agent.' }); return; }
+    if (role === 'owner' && deps.ownerCardCandidate && req.get('X-Instar-Needs-Contract') !== 'in-place-v1') {
+      res.status(426).json({ error: 'needs-client-update-required', detail: 'Update Instar to see requests you can finish here.' });
+      return;
+    }
     try {
-      // The canary's single-use request (owner bearer only) is composed fresh and carries its synthetic row.
-      const canaryRow = role === 'owner' && deps.canary && typeof req.query.canary === 'string' ? deps.canary.synthetic(req.query.canary) : null;
-      // The canary's own answer is composed fresh, but never alongside another build (it waits for one in flight).
-      const answer = role === 'owner'
-        ? (canaryRow ? await (inFlight ?? Promise.resolve()).catch(() => undefined).then(() => composer.owner()) : await ownerCached('owner', composer.owner))
-        : await composer.team(teamMayReadBoard(req) ? deps.boardFor(req) : null);
-      const withCanary = canaryRow ? { ...answer, items: [...answer.items, canaryRow], count: answer.count + 1 } : answer;
-      res.json({ ...withCanary, viewer: { role } } satisfies NeedsAnswer);
+      const cursor = req.query.cursor;
+      // Four bytes of page position plus a 32-byte signature, encoded without padding.
+      const cursorBytes = typeof cursor === 'string' && /^[A-Za-z0-9_-]{48}$/.test(cursor) ? Buffer.from(cursor, 'base64url') : null;
+      const start = cursorBytes?.readUInt32BE(0) ?? 0;
+      if (cursor !== undefined && (!cursorBytes || start % NEEDS_MAX_ITEMS !== 0)) {
+        res.status(400).json({ error: 'needs-cursor-invalid' }); return;
+      }
+      const canaryRow = cursor === undefined && role === 'owner' && deps.canary && !deps.ownerCardCandidate ? deps.canary.synthetic(req.query.canary) : null;
+      const full = role === 'owner'
+        ? deps.ownerCardCandidate
+          ? snapshot(await composer.owner(req))
+          : (!cursorBytes && !canaryRow && last && now() - last.at < NEEDS_CACHE_MS ? last.first : await ownerFresh())
+        : snapshot(await composer.team(teamMayReadBoard(req) ? deps.boardFor(req) : null));
+      const device = deviceAdmissionIdentity(req);
+      const principal = [role, device?.keyHash ?? null, devicePersonOf(req)?.userId ?? null];
+      const token = (offset: number) => {
+        const position = Buffer.alloc(4);
+        position.writeUInt32BE(offset);
+        const signature = createHmac('sha256', signingKey).update(JSON.stringify([principal, full.digest, offset])).digest();
+        return Buffer.concat([position, signature]);
+      };
+      if (cursorBytes && (full.answer.count <= NEEDS_MAX_ITEMS || start >= full.answer.count || !timingSafeEqual(cursorBytes, token(start)))) {
+        res.status(409).json({ error: 'needs-cursor-stale' }); return;
+      }
+      const answer = page(full.answer, start);
+      if (canaryRow) {
+        answer.items = [...answer.items.slice(0, NEEDS_MAX_ITEMS - 1), canaryRow];
+        answer.count += 1;
+        answer.truncated = answer.count > answer.items.length;
+      } else if (answer.count > NEEDS_MAX_ITEMS) {
+        answer.continuation = {
+          start, previousCursor: start ? token(start - NEEDS_MAX_ITEMS).toString('base64url') : null,
+          nextCursor: start + NEEDS_MAX_ITEMS < answer.count ? token(start + NEEDS_MAX_ITEMS).toString('base64url') : null,
+        };
+      }
+      res.json({ ...answer, viewer: { role } } satisfies NeedsAnswer);
     } catch (err) {
       // The list could not be built at all: say so; a surface shows "could not check" and keeps the strip.
       res.status(500).json({ error: 'needs-read-failed', detail: clean(operatorError(err), 200) });
     }
   };
+  router.post('/needs/withdrawals', async (req, res) => {
+    if (!deps.withdrawalJournalFor) { res.status(503).json({ error: 'needs-withdrawal-unavailable' }); return; }
+    try {
+      const journal = await deps.withdrawalJournalFor(req);
+      if (!journal) { res.status(403).json({ error: 'needs-coordinator-required' }); return; }
+      const result = await withdrawOwnerNeedsAsk(journal, req.body);
+      switch (result.status) {
+        case 'withdrawn':
+          res.json({ status: result.status });
+          return;
+        case 'invalid':
+          res.status(400).json({ error: 'needs-invalid-ask-identity' });
+          return;
+        case 'forbidden':
+          res.status(403).json({ error: 'needs-coordinator-required' });
+          return;
+        case 'stale':
+          res.status(409).json({ error: 'needs-ask-changed' });
+          return;
+        case 'unavailable':
+          res.status(503).json({ error: 'needs-withdrawal-unavailable' });
+          return;
+      }
+    } catch {
+      // @silent-fallback-ok: no success is reported if source authority or durability is unavailable.
+      res.status(503).json({ error: 'needs-withdrawal-unavailable' });
+    }
+  });
+
   router.get('/needs/canary', (req, res) => {
     res.set('Cache-Control', 'no-store');
     if (!deps.bearerOk(req)) { res.status(403).json({ error: 'bearer-required' }); return; }

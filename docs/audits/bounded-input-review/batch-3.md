@@ -1,0 +1,21 @@
+# Bounded-input derivation review — batch 3
+
+One row per baselined site. "Converted" means the site now bounds through `src/core/boundedInput.ts` with its number derived beside it. "Refuses" means the decision is not made on a partial input. "Exempt" means a `bounded-input-reviewed: <why>` reason on the line. Each row records the reading (who consumes the value and whether a cut can change their answer), not only the outcome.
+
+`server/routes.ts:histText` moved to batch 2: it is the same session-history cut and shares that batch's constant.
+
+## server/routes.ts and monitoring/ — 10 baseline entries
+
+| Site | Reading | Outcome |
+|---|---|---|
+| `monitoring/SessionWatchdog.ts:commandSlice` | **Load-bearing, so it refuses.** A "stuck" verdict leads to Ctrl+C, and the part of a command that makes it legitimate is often at the end (`cd <long worktree path> && … && npm test`). The old 200-character head could show only the `cd`. Commands up to `WATCHDOG_JUDGE_COMMAND_MAX_CHARS` (2000) now go to the judge whole; a longer one is not judged. **The second pass found that the fallback was unreachable.** The caller excluded a PID for good on ANY not-stuck answer, so an undecided command (no judge, judge error, too long) was never polled again and never reached the hard ceiling. The judge now returns a three-way verdict. Only a real "legitimate" excludes the PID. An "undecided" PID is deferred until the ceiling (skipped by the search, so a stuck sibling is still reached), then picked again and interrupted. The stdin-consumer guard now refuses any ceiling-only "stuck", not only the no-judge case. This also fixes the same latent defect on the no-judge and judge-error paths. | refuses (+ fallback repaired) |
+| `monitoring/CollaborationRedriveEngine.ts:ask` | A re-drive nudge to a peer agent quotes the original ask, and the peer decides from it what is still owed. A bare "…" can read as the whole request. 240 characters kept plus disclosure room. | converted |
+| `monitoring/PromptGate.ts:rejectedCommand` | The safe-reject is unconditional. This text reaches only a log line and a degradation report. | exempt |
+| `routes.ts:disputeReason` | **Load-bearing, so it refuses.** The second pass traced it: the ledger note is rendered into every session's context (`GET /shared-state/render` via the session-start hook), and the reason was cut to 200 twice with no sign. A reason longer than the ledger's summary field (400) is now refused with a 400 for the calling session to shorten. The whole reason is stored in `summary`, and the subject is a label ending in "…" when cut. No shipped skill or hook calls this route. | refuses |
+| `routes.ts:subject` | The resolved/cancelled note subject is a label rendered into session context. The ledger refuses a subject over `SUBJECT_MAX` (200), and `supersedes` links the full commitment. A cut now ends in "…". | exempt (label, cut marked) |
+| `routes.ts:reason` (job trigger) | The second pass traced it into the Jev completion-audit prompt as a trigger label (`triggeredBy` → `JevJobCompletionAudit`). Converted: 500 characters kept plus a disclosure. | converted |
+| `routes.ts:reason` (4 other decls) | The run-end reason is stored and shown to the operator ("run-end: <reason>" in the topic and an attention item). The spend-cap freeze, auto-merge hold and lease hand-back reasons are audit or display text. None is a judgment's input. | exempt |
+| `routes.ts:clampPathList` | Caps an array of paths and already discloses the rest ("— and N more"). Its readers (the operator notice, the attention item, the session's hold reason) are all told the list continues. | exempt |
+| `routes.ts:result` (3 decls) | The slices inside these calls clamp identifiers (an idempotency key, a test fixture id) and a stored display note. | exempt |
+| `routes.ts:metadataJobSlug` | An identifier clamp on message metadata. | exempt |
+| `routes.ts:normalizedPromiseText` | A dedup key. The hash is fixed-length anyway, so the slice's real effect is that two time-promises in one topic that open alike collapse into one. That coarse dedup is deliberate (the same promise re-stated), mirroring Lane A's topic+verb key, and is now stated as such. | exempt |

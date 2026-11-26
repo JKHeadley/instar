@@ -41,7 +41,7 @@ export interface CloudflareSurface {
   restoreTunnel(previous: PreviousTunnel | null): void;
   /** One public read of this agent through the host name: `GET https://<hostname>/health` answers 200. */
   reachable(hostname: string): Promise<'ok' | 'unreachable' | 'unknown'>;
-  requestRestart(reason: string): boolean;
+  requestRestart(reason: string): Promise<boolean>;
   /** This server's own port, for the tunnel's ingress. */
   port: number;
 }

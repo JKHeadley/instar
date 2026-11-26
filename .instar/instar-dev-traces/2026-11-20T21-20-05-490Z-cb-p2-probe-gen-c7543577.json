@@ -1,0 +1,19 @@
+{
+  "version": 2,
+  "slug": "cb-p2-probe-gen",
+  "sessionId": "f07b47ce-bcaf-4d4f-840a-ab8e2c9c1a1e",
+  "timestamp": "2026-11-20T21:20:05.490Z",
+  "artifactPath": "upgrades/side-effects/cb-p2-probe-gen.md",
+  "artifactSha256": "9234a977f28c78c8058efe92e70eb6d1806196461ab95485219570b5131c4bc1",
+  "specPath": "docs/specs/context-budget-layered-summaries.md",
+  "coveredFiles": [
+    "src/monitoring/foldProbe.ts",
+    "tests/unit/fold-probe.test.ts",
+    "upgrades/side-effects/cb-p2-probe-gen.md"
+  ],
+  "phase": "complete",
+  "tier": 2,
+  "tierReasoning": "Hardening the P2-2 fence helper after a reviewer found two bypasses.",
+  "secondPass": "true",
+  "reviewerConcurred": true
+}

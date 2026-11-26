@@ -74,7 +74,7 @@ async function settle(...ms: Machine[]) { for (let i = 0; i < 3; i++) for (const
 describe('two machines', () => {
   it('a card created on the standby gets one conversation on each machine, under the same derived key', async () => {
     const owner = machine('m_owner', { serves: true }); const standby = machine('m_standby', { serves: false });
-    const c = standby.rt.svc.createCard(AGENT, CARD); if (!c.ok) throw new Error('c');
+    const c = standby.rt.svc.createCard(AGENT, { ...CARD, outward: true }); if (!c.ok) throw new Error('c');
     standby.rt.ensureConversation(c.cardId); standby.rt.ensureConversation(c.cardId);
     expect(standby.conversations.size).toBe(1);
     sync(standby, owner, { n: 0 });

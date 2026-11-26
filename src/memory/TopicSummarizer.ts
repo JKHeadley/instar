@@ -20,7 +20,18 @@ import type { TopicMemory, TopicMessage } from './TopicMemory.js';
 import { buildBoundedContext, buildStructuredSha256Identity } from '../core/JudgmentProvenanceLog.js';
 import { DP_TOPIC_SUMMARIZE } from '../data/provenanceCoverage.js';
 import { mergeDefaults } from '../core/mergeDefaults.js';
+import { boundedHead, BOUNDED_INPUT_MIN_CHARS } from '../core/boundedInput.js';
 import { TopicSummaryTable } from './TopicSummaryTable.js';
+
+/**
+ * Per-message bound in the summarization prompt. The summary becomes the topic's
+ * standing context, and the prompt asks it to preserve specific details, so a
+ * silent cut could drop a detail from the summary for good. Derived: up to 200
+ * messages go into one prompt (maxMessagesPerPrompt), so the 1000 characters of
+ * content per message stay; disclosure room is added so a cut message says so
+ * and the summary can note it, rather than read the fragment as the whole.
+ */
+const SUMMARIZER_MESSAGE_CHARS = 1000 + BOUNDED_INPUT_MIN_CHARS;
 
 export const TOPIC_SUMMARIZER_PROMPT_ID = 'topic-summarize-v1';
 
@@ -124,8 +135,7 @@ function buildSummaryPrompt(
   for (const m of messages) {
     const sender = m.fromUser ? 'User' : 'Agent';
     const ts = m.timestamp ? new Date(m.timestamp).toISOString().slice(0, 16).replace('T', ' ') : '';
-    // Truncate very long messages to keep prompt manageable
-    const text = m.text.length > 1000 ? m.text.slice(0, 1000) + '...' : m.text;
+    const text = boundedHead(m.text, SUMMARIZER_MESSAGE_CHARS);
     lines.push(`[${ts}] ${sender}: ${text}`);
   }
 

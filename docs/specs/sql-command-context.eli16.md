@@ -1,0 +1,13 @@
+# Let the safety hook distinguish commands from their data
+
+The command safety hook was treating SQL-looking words inside a search pattern or source file as though they were being sent to a database. That blocked read-only searches and ordinary editing work. Requiring the words to look more like a SQL statement did not solve the problem: a quoted search pattern can look exactly like a statement.
+
+This repair adds a conservative context check before the existing SQL rule acts. It recognizes common literal search and output commands, simple shell wrappers with literal command text, quoted source-writing heredocs, and a small subset of Python programs that only use known Path objects and strings to read or write file text. The Python check follows the kinds of values being used; a method merely named write_text is not enough. Rebinding the constructor or importing an unknown module prevents that exemption.
+
+The check does not simply ignore quoted text or trust a command because its first word is rg. A variable, wildcard, command substitution or process substitution can change what a command runs. Those cases keep the existing protection. So do rg preprocessing and hostname-program flags, explicit environment overrides, an inherited ripgrep configuration, unknown programs, unsupported Python statements and malformed syntax. SQL sent to a database tool, including through a pipe or a mixed command, continues through the original matcher and safety level.
+
+Only a command recognized as literal data handling avoids the SQL rule. If recognition fails or Python is unavailable, the original SQL check still runs. Other checks, including catastrophic operations, credentials and non-SQL risky commands, remain separate and unchanged. The existing SQL patterns are also preserved for each writer; this change does not replace the standalone template's older matching policy.
+
+New agents and updated agents receive the same shared context classifier. The standalone template carries an identical copy, checked by tests. Existing built-in hooks are already overwritten on normal refresh, so this repair uses that update path and leaves custom hooks alone. No running hook is edited as part of preparing the pull request.
+
+This is bounded recognition, not a complete shell interpreter or a database sandbox. Unrecognized but harmless commands can still be refused by the existing SQL rules. Tests inspect commands without executing their contents and cover literal data, execution, substitutions, variables, mixed commands, key input formats, classifier failure and updating an existing installation. A normal revert restores the earlier behavior. Complete coordinator verification remains required before release.

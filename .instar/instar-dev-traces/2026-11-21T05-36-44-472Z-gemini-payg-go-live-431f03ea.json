@@ -1,0 +1,25 @@
+{
+  "version": 2,
+  "slug": "gemini-payg-go-live",
+  "sessionId": "c0c50b75-193a-4caa-8d3a-61a093d92b5c",
+  "timestamp": "2026-11-21T05:36:44.472Z",
+  "artifactPath": "upgrades/side-effects/gemini-payg-go-live.md",
+  "artifactSha256": "843d0f4a2b943ce2f4c8e730a6b71b2da0f41634dffd35cb213c4ebcc8440ed9",
+  "specPath": "docs/specs/gemini-payg-metered-lane.md",
+  "coveredFiles": [
+    "src/core/geminiPaygGoLive.ts",
+    "src/core/geminiPaygNotices.ts",
+    "src/core/geminiPaygReleaseRecorder.ts",
+    "src/scaffold/templates/jobs/instar/gemini-payg-reconcile.md",
+    "src/server/AgentServer.ts",
+    "src/server/geminiPaygGoLiveWiring.ts",
+    "src/server/routes.ts",
+    "tests/unit/feature-delivery-completeness.test.ts",
+    "upgrades/side-effects/gemini-payg-go-live.md"
+  ],
+  "phase": "complete",
+  "tier": 2,
+  "tierReasoning": "mechanical ratchet conformance after Local Verify: error-text qualification, fallback markers, job-template header, test tracking list",
+  "secondPass": "not-required",
+  "reviewerConcurred": null
+}

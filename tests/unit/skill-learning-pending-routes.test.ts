@@ -3,9 +3,10 @@
  *
  * Spec: docs/specs/skill-learning-sentinel.md §3.10; integration map deviations (w)/(x)/(y).
  * The PIN-lockout bucket must never be attacker-chosen: a bearer holder inventing a fresh
- * `X-Instar-Forwarded-From` per request gets the IP bucket, not a fresh 5-attempt bucket each time.
- * Only a header naming a MESH-ROSTER machine, on a request that did not arrive over loopback, earns
- * an additional bucket — and both buckets are checked and charged. Also: an unknown pending name is
+ * `X-Instar-Forwarded-From` (or address) per request gets the signed-in source's bucket
+ * (identity-security-piece1c: `agent-bearer` here), not a fresh 5-attempt bucket each time.
+ * Only a header naming a MESH-ROSTER machine, on a request that did not arrive over loopback, is
+ * keyed on that machine (`forwarded:<machine>`) instead. Also: an unknown pending name is
  * 404 (`pending-not-found`), a real conflict stays 409.
  */
 import { describe, it, expect } from 'vitest';
@@ -48,37 +49,41 @@ const tap = (a: express.Express, name: string, pin: string, headers: Record<stri
   request(a).post(`/skills/learned/pending/${name}/confirm`).set(headers).send({ pin });
 
 describe('pending taps — PIN lockout buckets are never attacker-chosen', () => {
-  it('20 wrong PINs across 20 invented forwarded-from headers share the IP bucket: 429 by the sixth', async () => {
-    const a = app();
+  // identity-security-piece1c: the budget is keyed on the SIGNED-IN source (docs/specs/identity-security-piece1c-pin-policy.md
+  // section 1 and the table row for skillLearningRoutes.ts), never the socket or X-Forwarded-For address — every tunnel
+  // caller is 127.0.0.1, so a per-address bucket was no budget at all. These requests carry no dashboard session or
+  // marked-browser cookie, so they share the `agent-bearer` source whatever address they claim.
+  it('20 wrong PINs across 20 invented forwarded-from headers and 20 addresses share the agent-bearer bucket: 429 by the sixth', async () => {
+    const a = app({ roster: ['m_beta'] });
     for (let i = 1; i <= 20; i++) {
-      const res = await tap(a, 'known-skill', 'wrong', { 'X-Forwarded-For': '10.0.0.9', [FORWARDED_FROM_HEADER]: `m_fake_${i}` });
+      const res = await tap(a, 'known-skill', 'wrong', { 'X-Forwarded-For': `10.0.0.${i}`, [FORWARDED_FROM_HEADER]: `m_fake_${i}` });
       if (i <= 5) expect(res.status, `attempt ${i}`).toBe(403);
       else expect(res.status, `attempt ${i}`).toBe(429);
     }
-    // Even the right PIN from that address is locked out now.
+    // Even the right PIN from that source is locked out now — and a fresh address earns nothing.
     expect((await tap(a, 'known-skill', PIN, { 'X-Forwarded-For': '10.0.0.9', [FORWARDED_FROM_HEADER]: 'm_fake_99' })).status).toBe(429);
-    // Another address is untouched.
-    expect((await tap(a, 'known-skill', PIN, { 'X-Forwarded-For': '10.0.0.10' })).status).toBe(200);
+    expect((await tap(a, 'known-skill', PIN, { 'X-Forwarded-For': '10.0.0.200' })).status).toBe(429);
+    // A different verified source (a roster machine forwarding over the network) is untouched.
+    expect((await tap(a, 'known-skill', PIN, { 'X-Forwarded-For': '10.0.0.10', [FORWARDED_FROM_HEADER]: 'm_beta' })).status).toBe(200);
   });
 
-  it('a roster machine\'s forwarded bucket is its own AND shared across the addresses it forwards from; a lockout on either bucket refuses', async () => {
+  it('a roster machine\'s forwarded bucket is its own, shared across the addresses it forwards from, and separate from the agent-bearer bucket', async () => {
     const a = app({ roster: ['m_beta'] });
-    // Three wrong from each of two addresses, both naming the roster machine: the forwarded bucket
-    // reaches 5 while each IP bucket holds only 3 — the sixth is refused by the forwarded bucket.
+    // Three wrong from each of two addresses, both naming the roster machine: one `forwarded:m_beta` bucket reaches 5.
     for (let i = 0; i < 3; i++) expect((await tap(a, 'known-skill', 'wrong', { 'X-Forwarded-For': '10.0.0.5', [FORWARDED_FROM_HEADER]: 'm_beta' })).status).toBe(403);
     for (let i = 0; i < 2; i++) expect((await tap(a, 'known-skill', 'wrong', { 'X-Forwarded-For': '10.0.0.6', [FORWARDED_FROM_HEADER]: 'm_beta' })).status).toBe(403);
     expect((await tap(a, 'known-skill', PIN, { 'X-Forwarded-For': '10.0.0.6', [FORWARDED_FROM_HEADER]: 'm_beta' })).status).toBe(429);
-    // The second address, WITHOUT the forwarded header, still has its own IP budget (2 used of 5).
+    // Without the forwarded header the caller is the agent-bearer source, which the forwarded taps never charged.
     expect((await tap(a, 'known-skill', PIN, { 'X-Forwarded-For': '10.0.0.6' })).status).toBe(200);
-    // And the IP bucket is charged too: the first address has 3 used; two more wrong direct taps lock it.
-    for (let i = 0; i < 2; i++) expect((await tap(a, 'known-skill', 'wrong', { 'X-Forwarded-For': '10.0.0.5' })).status).toBe(403);
+    // Five wrong agent-bearer taps lock that source too.
+    for (let i = 0; i < 5; i++) expect((await tap(a, 'known-skill', 'wrong', { 'X-Forwarded-For': '10.0.0.5' })).status).toBe(403);
     expect((await tap(a, 'known-skill', PIN, { 'X-Forwarded-For': '10.0.0.5' })).status).toBe(429);
   });
 
   it('a roster header over LOOPBACK earns no extra bucket (self cannot forward to self); a correct forwarded tap records forwardedFromMachine', async () => {
     const a = app({ roster: ['m_beta'] });
     for (let i = 0; i < 5; i++) expect((await tap(a, 'known-skill', 'wrong', { [FORWARDED_FROM_HEADER]: 'm_beta' })).status).toBe(403);
-    expect((await tap(a, 'known-skill', PIN, { [FORWARDED_FROM_HEADER]: 'm_beta' })).status).toBe(429); // loopback IP bucket locked
+    expect((await tap(a, 'known-skill', PIN, { [FORWARDED_FROM_HEADER]: 'm_beta' })).status).toBe(429); // loopback: no forwarded key, the agent-bearer bucket is locked
     const b = app({ roster: ['m_beta'] });
     const ok = await tap(b, 'known-skill', PIN, { 'X-Forwarded-For': '10.0.0.5', [FORWARDED_FROM_HEADER]: 'm_beta' });
     expect(ok.status).toBe(200);

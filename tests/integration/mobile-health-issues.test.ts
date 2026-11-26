@@ -135,3 +135,22 @@ describe('GET /mobile/health-issues', () => {
     expect((await request(app).get(PATH).set('Authorization', 'Bearer tok-1')).status).toBe(200);
   });
 });
+
+it('an owner phone receives the explicit capacity-wait marker without losing the Health warning', async () => {
+ const {app,pair} = setup(async()=>({status:200,body:{status:'degraded',sessions:{current:25,max:25}}}));
+ const r = await signedGet(app,pair());
+ expect(r.status).toBe(200);
+ expect(r.body.verdict).toBe('attention');
+ expect(r.body.issues).toContainEqual(expect.objectContaining({id:'health:sessions-full',requiresUserAction:false,impact:'user-affecting'}));
+});
+
+
+it('keeps an unsubmitted message visible in Health without asking the owner to act', async () => {
+  const feature = 'SessionManager.verifyInjection.unsubmitted';
+  const { app, pair } = setup(async () => ({ status: 200, body: { status: 'degraded' } }), [{ feature }]);
+  const response = await signedGet(app, pair());
+  expect(response.status).toBe(200);
+  expect(response.body.issues).toContainEqual(expect.objectContaining({
+    id: feature, requiresUserAction: false, impact: 'user-affecting',
+  }));
+});

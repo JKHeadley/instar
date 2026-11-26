@@ -1,0 +1,33 @@
+{
+  "version": 3,
+  "slug": "updater-native-rebuild-runtime-node",
+  "sessionId": "85b75b50-7b57-4497-9f82-c664d5533ee7",
+  "timestamp": "2026-11-21T13:04:01.369Z",
+  "artifactPath": "upgrades/side-effects/updater-native-rebuild-runtime-node.md",
+  "artifactSha256": "e31ab29e14dbe55664aeff32793182092a8a0611a66ac796f7a9dbfd42678cc8",
+  "coveredFiles": [
+    "docs/specs/updater-native-rebuild-runtime-node.eli16.md",
+    "src/core/UpdateChecker.ts",
+    "src/server/middleware.ts",
+    "tests/integration/native-update-preflight.test.ts",
+    "tests/unit/AgentServer-outbound-timeout.test.ts",
+    "tests/unit/UpdateChecker.test.ts",
+    "tests/unit/update-checker-apply.test.ts",
+    "upgrades/next/updater-native-rebuild-runtime-node.md",
+    "upgrades/side-effects/updater-native-rebuild-runtime-node.md"
+  ],
+  "phase": "complete",
+  "tier": 1,
+  "tierReasoning": "Narrow bug fix in the updater's child-process invocation plus one request-timeout override; no new authority, no state, no migration; a revert fully undoes it.",
+  "eli16Path": "docs/specs/updater-native-rebuild-runtime-node.eli16.md",
+  "sideEffectsPath": "upgrades/side-effects/updater-native-rebuild-runtime-node.md",
+  "secondPass": "not-required",
+  "reviewerConcurred": null,
+  "toolchain": {
+    "buildSkill": {
+      "name": "instar-dev",
+      "version": "21a45a5a5f03",
+      "verified": true
+    }
+  }
+}

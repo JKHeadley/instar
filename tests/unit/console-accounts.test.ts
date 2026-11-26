@@ -79,6 +79,43 @@ describe('accounts page model', () => {
     const owner = buildAccountsPage(ok({ accounts: [row({ identityDrifted: true, identityDrift: { actualAccountId: 'x', repairState: 'owner-relogin-required', detectedAt: iso(-1) } })] }), NOW);
     expect(owner.needs).toHaveLength(1);
   });
+  describe('a machine that answered but lacks an account (rebuilt or offline when it was added)', () => {
+    const two = (over: Record<string, unknown> = {}) => [
+      row({}),
+      row({ machineId: 'm2', machineNickname: 'Mac Mini' }),
+      row({ id: 'gear', nickname: 'Gear', email: 'gear@x.io', machineId: 'm2', machineNickname: 'Mac Mini', ...over }),
+    ];
+    it('shows a missing cell with a quiet Set up, never as needs-you', () => {
+      const p = buildAccountsPage(ok({ accounts: two(), pool: { failed: [] } }), NOW);
+      const gear = p.accounts.find((a: any) => a.id === 'gear');
+      const studio = gear.cells.find((c: any) => c.machineId === 'm1');
+      expect(studio).toMatchObject({ state: 'missing', label: 'not on this machine', missing: true, machine: 'Mac Studio', actionable: true });
+      expect(p.needs).toHaveLength(0);
+      expect(p.headline).toBe('Accounts');
+    });
+    it('a missing cell does not make an account "not ready" or a machine "empty"', () => {
+      const p = buildAccountsPage(ok({ accounts: two(), pool: { failed: [] } }), NOW);
+      expect(p.facts[0]).toEqual({ n: '2 of 2', label: 'ready' });
+      expect(p.notices).toEqual([]);
+    });
+    it('a machine that did not answer is unknown, not missing', () => {
+      const p = buildAccountsPage(ok({ accounts: two(), pool: { failed: [{ machineId: 'm1' }] } }), NOW);
+      const gear = p.accounts.find((a: any) => a.id === 'gear');
+      expect(gear.cells.map((c: any) => c.machineId)).toEqual(['m2']);
+    });
+    it('a sign-in already running for the missing machine shows as signing in', () => {
+      const p = buildAccountsPage(ok({ accounts: two(), pool: { failed: [] } }), NOW, {
+        episodes: [{ id: 'e1', accountId: 'gear', machineId: 'm1', state: 'running', updatedAt: iso(-1) }],
+      });
+      const studio = p.accounts.find((a: any) => a.id === 'gear').cells.find((c: any) => c.machineId === 'm1');
+      expect(studio).toMatchObject({ state: 'working', label: 'signing in', missing: true });
+    });
+    it('no missing cell when every answered machine holds the account', () => {
+      const p = buildAccountsPage(ok({ accounts: [row({}), row({ machineId: 'm2', machineNickname: 'Mac Mini' })], pool: { failed: [] } }), NOW);
+      expect(p.accounts[0].cells.every((c: any) => !c.missing)).toBe(true);
+    });
+  });
+
   it('withholds sign-in actions when account or machine names cannot identify one target', () => {
     const unnamed = buildAccountsPage(ok({ accounts: [row({ id: 'acct1', nickname: 'acct1', email: null, status: 'needs-reauth' })] }), NOW);
     expect(unnamed.needs).toHaveLength(0);
@@ -177,6 +214,50 @@ describe('accounts page model', () => {
 describe('accounts page in a DOM', () => {
   let dom: JSDOM;
   afterEach(() => dom?.window.close());
+  it('sets up an account on a machine that lacks it: the sheet offers Set up, which asks the PIN and starts that cell', async () => {
+    const posts: Array<{ url: string; body: Record<string, unknown> }> = [];
+    dom = new JSDOM('<!doctype html><html><body></body></html>', { url: 'http://localhost:4040/dashboard/console/#/capacity/accounts' });
+    const g = globalThis as Record<string, unknown>;
+    Object.assign(g, { window: dom.window, document: dom.window.document, location: dom.window.location, history: dom.window.history, localStorage: dom.window.localStorage, requestAnimationFrame: (f: () => void) => setTimeout(f, 0) });
+    dom.window.localStorage.setItem('instar_token', 't');
+    const table: Record<string, unknown> = {
+      '/sessions': { sessions: [] }, '/health': { project: { name: 'echo' } },
+      '/subscription-pool?scope=pool': { enabled: true, accounts: [
+        row({}),
+        row({ machineId: 'm2', machineNickname: 'Mac Mini' }),
+        row({ id: 'gear', nickname: 'Gear', email: 'gear@x.io', machineId: 'm2', machineNickname: 'Mac Mini' }),
+      ], pool: { failed: [] } },
+      '/subscription-relogin?scope=pool&retryTimeout=1': { enabled: true, episodes: [] },
+      '/subscription-pool/in-use': { enabled: true, activeAccountId: 'luna' },
+      '/pool': { machines: [] },
+    };
+    g.fetch = async (url: string, opts?: { method?: string; body?: string }) => {
+      if (opts && opts.method === 'POST') {
+        posts.push({ url, body: JSON.parse(opts.body || '{}') });
+        if (url === '/subscription-pool/matrix/start-cell') return { ok: true, status: 200, json: async () => ({ verificationUrl: 'https://claude.ai/oauth/x', loginId: 'L1', expectedEmail: 'gear@x.io' }) };
+      }
+      const b = table[url];
+      return b === undefined ? { ok: false, status: 404, json: async () => ({}) } : { ok: true, status: 200, json: async () => JSON.parse(JSON.stringify(b)) };
+    };
+    vi.resetModules();
+    await import('../../dashboard/console/console.js');
+    const tick = async (n = 10) => { for (let i = 0; i < n; i++) await new Promise((r) => setTimeout(r, 15)); };
+    await tick(15);
+    const doc = dom.window.document;
+    expect(doc.querySelector('.page-title')!.textContent).toBe('Accounts'); // a missing cell is not "needs you"
+    expect([...doc.querySelectorAll('.mchip.missing')].map((c) => c.textContent)).toEqual(['Mac Studio']);
+    const gearRow = [...doc.querySelectorAll('button.acct-row')].find((b) => b.textContent!.includes('Gear')) as HTMLButtonElement;
+    gearRow.click();
+    await tick(3);
+    const setUp = [...doc.querySelectorAll('button.btn-quiet')].find((b) => b.textContent === 'Set up') as HTMLButtonElement;
+    expect(setUp).toBeTruthy();
+    setUp.click();
+    await tick(3);
+    (doc.querySelector('.pin-input') as HTMLInputElement).value = '123456';
+    (doc.querySelector('.pin-form') as HTMLFormElement).dispatchEvent(new dom.window.Event('submit', { cancelable: true }));
+    await tick(5);
+    expect(posts[0]).toEqual({ url: '/subscription-pool/matrix/start-cell', body: { accountId: 'gear', machineId: 'm1', pin: '123456' } });
+  });
   it('signs in a cell: asks the PIN, sends it once, shows the sign-in page link, sends the code', async () => {
     const posts: Array<{ url: string; body: Record<string, unknown> }> = [];
     dom = new JSDOM('<!doctype html><html><body></body></html>', { url: 'http://localhost:4040/dashboard/console/#/capacity/accounts' });
@@ -186,7 +267,7 @@ describe('accounts page in a DOM', () => {
     const table: Record<string, unknown> = {
       '/sessions': { sessions: [] }, '/health': { project: { name: 'echo' } },
       '/subscription-pool?scope=pool': { enabled: true, accounts: [row({ status: 'needs-reauth', machineId: 'm2', machineNickname: 'Mac Mini' })], pool: { failed: [] } },
-      '/subscription-relogin?scope=pool': { enabled: true, episodes: [] },
+      '/subscription-relogin?scope=pool&retryTimeout=1': { enabled: true, episodes: [] },
       '/subscription-pool/in-use': { enabled: true, activeAccountId: 'luna' },
       '/pool': { machines: [] },
     };
@@ -241,7 +322,7 @@ describe('accounts page in a DOM', () => {
     const table: Record<string, unknown> = {
       '/sessions': { sessions: [] }, '/health': { project: { name: 'echo' } },
       '/subscription-pool?scope=pool': { enabled: true, accounts: [row({ status: 'needs-reauth', machineId: 'm2', machineNickname: 'Mac Studio' })], pool: { failed: [] } },
-      '/subscription-relogin?scope=pool': { enabled: true, episodes: [] }, '/subscription-pool/in-use': { enabled: true }, '/pool': { machines: [] },
+      '/subscription-relogin?scope=pool&retryTimeout=1': { enabled: true, episodes: [] }, '/subscription-pool/in-use': { enabled: true }, '/pool': { machines: [] },
     };
     g.fetch = async (url: string, opts?: { method?: string; body?: string }) => {
       if (opts && opts.method === 'POST') {
@@ -315,7 +396,7 @@ describe('accounts page in a DOM', () => {
     const table: Record<string, unknown> = {
       '/sessions': { sessions: [] }, '/health': { project: { name: 'echo' } },
       '/subscription-pool?scope=pool': { enabled: true, accounts, pool: { failed: [] } },
-      '/subscription-relogin?scope=pool': { enabled: true, episodes: [] }, '/subscription-pool/in-use': { enabled: true }, '/pool': { machines: [] },
+      '/subscription-relogin?scope=pool&retryTimeout=1': { enabled: true, episodes: [] }, '/subscription-pool/in-use': { enabled: true }, '/pool': { machines: [] },
     };
     dom.window.localStorage.setItem('instar_token', 't');
     g.fetch = async (url: string) => (table[url] === undefined ? { ok: false, status: 404, json: async () => ({}) } : { ok: true, status: 200, json: async () => JSON.parse(JSON.stringify(table[url])) });

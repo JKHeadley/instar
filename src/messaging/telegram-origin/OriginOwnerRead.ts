@@ -315,7 +315,9 @@ async function readOne(deps: OutcomeReadDeps, operationId: string, deadlineAt: n
   const author = envelope?.originMachineId && MACHINE.test(envelope.originMachineId) ? envelope.originMachineId : null;
   const remoteOwner = owner && owner !== self ? owner : null;
   const isOwner = owner === self && !!audit?.operation;
-  const isAuthor = author === self;
+  // held-and-startup-parked-send-release §4 — an imported startup-queue reply has no machine author in
+  // its record ('legacy-unattributed'); the machine that imported it from its own queue is its author.
+  const isAuthor = author === self || (envelope?.producerKind === 'imported-legacy' && envelope.importedByMachineId === self);
   const answer = (a: ResolvedOutcome, notFound = false): OneStep => ({ kind: 'answer', answer: a, notFound, executionOwnerMachineId: remoteOwner });
   const reader = deps.reader;
   const readerOn = !!reader && reader.enabled();

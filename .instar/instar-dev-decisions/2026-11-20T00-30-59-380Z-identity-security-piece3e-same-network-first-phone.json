@@ -1,0 +1,52 @@
+{
+  "ts": "2026-11-20T00:30:59.380Z",
+  "slug": "identity-security-piece3e-same-network-first-phone",
+  "suggestedTier": 2,
+  "declaredTier": 2,
+  "riskFloor": 2,
+  "riskFloorReasons": [
+    "new capability: new route (router.<verb>() added",
+    "new capability: new exported class / subsystem added"
+  ],
+  "belowFloor": false,
+  "files": 19,
+  "loc": 1596,
+  "scope": {
+    "basis": "staged-in-scope-paths-including-deleted",
+    "files": [
+      "src/cli.ts",
+      "src/commands/mobileAddPhone.ts",
+      "src/core/MobileDeviceKeys.ts",
+      "src/core/MobilePairing.ts",
+      "src/core/SameNetworkCert.ts",
+      "src/core/SameNetworkNetwork.ts",
+      "src/core/keyMaterialPaths.ts",
+      "src/core/requestArrival.ts",
+      "src/data/awareness/same-network-first-phone.md",
+      "src/server/AgentServer.ts",
+      "src/server/documentPageRoutes.ts",
+      "src/server/middleware.ts",
+      "src/server/mobileBrowserDevices.ts",
+      "src/server/mobileConsoleTicket.ts",
+      "src/server/mobileLocalOwnerDevice.ts",
+      "src/server/mobilePairingRoutes.ts",
+      "src/server/mobileTrustApproval.ts",
+      "src/server/phoneSetupRoutes.ts",
+      "src/server/sameNetworkListener.ts"
+    ],
+    "addedLines": 1576,
+    "deletedLines": 20
+  },
+  "causalAutopsy": null,
+  "classClosure": {
+    "defectClass": "unbounded-self-action",
+    "closure": "guard",
+    "guardEvidence": {
+      "enforcementType": "test",
+      "citation": "tests/integration/same-network-first-phone.test.ts",
+      "howCaught": "Steady-state bound: one reconcile per 15 s fixed interval, serialized (a tick while one runs returns the running one). Each tick converges the listener to one of two states from the stored wish and the observed network: open or closed. No retries, no spawns, no backoff loop, no notices; a tick that finds the state already right does nothing. Tested: closed on another network, reopened on an allowed one, closed itself when unused, after a restart."
+    },
+    "component": "src/server/sameNetworkListener.ts"
+  },
+  "verdict": "blocked"
+}

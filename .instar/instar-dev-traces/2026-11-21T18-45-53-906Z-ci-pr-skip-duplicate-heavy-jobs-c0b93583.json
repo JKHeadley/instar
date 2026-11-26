@@ -1,0 +1,21 @@
+{
+  "version": 2,
+  "slug": "ci-pr-skip-duplicate-heavy-jobs",
+  "sessionId": "97bf6cca-cafa-44cd-9758-d86b29341a43",
+  "timestamp": "2026-11-21T18:45:53.906Z",
+  "artifactPath": "upgrades/side-effects/ci-pr-skip-duplicate-heavy-jobs.md",
+  "artifactSha256": "5fa9745b288fe6fa4ff701fd3819a826653637af0a478856c3d26e3da5799eec",
+  "coveredFiles": [
+    ".github/workflows/ci.yml",
+    "docs/specs/ci-pr-skip-duplicate-heavy-jobs.eli16.md",
+    "upgrades/next/ci-pr-skip-duplicate-heavy-jobs.md",
+    "upgrades/side-effects/ci-pr-skip-duplicate-heavy-jobs.md"
+  ],
+  "phase": "complete",
+  "tier": 1,
+  "tierReasoning": "One CI workflow file, 27 added lines, no runtime source; a revert fully undoes it and no required status check changes.",
+  "eli16Path": "docs/specs/ci-pr-skip-duplicate-heavy-jobs.eli16.md",
+  "sideEffectsPath": "upgrades/side-effects/ci-pr-skip-duplicate-heavy-jobs.md",
+  "secondPass": "not-required",
+  "reviewerConcurred": null
+}

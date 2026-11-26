@@ -1,0 +1,38 @@
+{
+  "ts": "2026-11-18T04:10:43.072Z",
+  "slug": "desktop-peer-check-result",
+  "suggestedTier": 1,
+  "declaredTier": 1,
+  "riskFloor": 1,
+  "riskFloorReasons": [],
+  "belowFloor": false,
+  "files": 3,
+  "loc": 13,
+  "scope": {
+    "basis": "staged-in-scope-paths-including-deleted",
+    "files": [
+      "src/core/DesktopProbeReadiness.ts",
+      "src/server/AgentServer.ts",
+      "src/server/routes.ts"
+    ],
+    "addedLines": 7,
+    "deletedLines": 6
+  },
+  "causalAutopsy": {
+    "origin": "prior-pr",
+    "relatedPrs": [
+      2471
+    ],
+    "notes": "The mesh rollout returned a definitive not-ready explanation for exceptions. The picker also hid the retry control when another host answered."
+  },
+  "classClosure": {
+    "defectClass": "claim-vs-evidence",
+    "closure": "guard",
+    "guardEvidence": {
+      "enforcementType": "ratchet",
+      "citation": "tests/integration/desktop-routes.test.ts",
+      "howCaught": "The route fixture rejects a peer probe, checks its reason, then returns a ready peer and verifies the stale reason cleared."
+    }
+  },
+  "verdict": "blocked"
+}

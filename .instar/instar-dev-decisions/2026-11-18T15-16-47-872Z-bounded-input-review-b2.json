@@ -1,0 +1,29 @@
+{
+  "ts": "2026-11-18T15:16:47.872Z",
+  "slug": "bounded-input-review-b2",
+  "suggestedTier": 2,
+  "declaredTier": 1,
+  "riskFloor": 1,
+  "riskFloorReasons": [],
+  "belowFloor": false,
+  "files": 8,
+  "loc": 147,
+  "scope": {
+    "basis": "staged-in-scope-paths-including-deleted",
+    "files": [
+      "src/commands/server.ts",
+      "src/core/ResumeValidator.ts",
+      "src/core/SeamlessOrchestratorEngine.ts",
+      "src/core/TemporalCoherenceChecker.ts",
+      "src/core/boundedInput.ts",
+      "src/memory/TopicMemory.ts",
+      "src/memory/TopicSummarizer.ts",
+      "src/server/routes.ts"
+    ],
+    "addedLines": 128,
+    "deletedLines": 19
+  },
+  "causalAutopsy": null,
+  "classClosure": null,
+  "verdict": "pass"
+}

@@ -523,5 +523,35 @@ describe('SwapAntiThrashEngine (brake pipeline)', () => {
       e2.beginTick(mixed, now, true);
       expect(attention.filter((a) => a.title.includes('measurement-blind'))).toHaveLength(0);
     });
+
+    it('window-aware (quota pacing step 2): a pool-wide reset is not blindness until two out-of-cycle reads fail', () => {
+      const failures = new Map<string, number>();
+      const ledger = new SwapLedger({ filePath: path.join(dir, 'state', 'wa-ledger.jsonl'), windowMs: () => retentionBoundMs(resolvedKnobs()), now: () => now });
+      const engine = new SwapAntiThrashEngine({
+        ledger, getKnobs: resolvedKnobs, now: () => now,
+        raiseAttention: (id, title) => attention.push({ id, title }),
+        windowAware: () => true,
+        outOfCycleFailures: (id) => failures.get(id) ?? 0,
+      });
+      engine.hydrate();
+      const justReset = () => [
+        acct('a', 92, { resetsAt: new Date(now - 60_000).toISOString() }),
+        acct('b', 88, { resetsAt: new Date(now - 120_000).toISOString() }),
+      ];
+      engine.beginTick(justReset(), now, true);
+      engine.endTick(now);
+      now += 1_800_001;
+      engine.beginTick(justReset(), now, true);
+      engine.endTick(now);
+      expect(attention.filter((a) => a.title.includes('measurement-blind'))).toHaveLength(0);
+      // Both accounts' out-of-cycle reads have now failed twice → blind.
+      failures.set('a', 2); failures.set('b', 2);
+      engine.beginTick(justReset(), now, true);
+      engine.endTick(now);
+      now += 1_800_001;
+      engine.beginTick(justReset(), now, true);
+      engine.endTick(now);
+      expect(attention.filter((a) => a.title.includes('measurement-blind'))).toHaveLength(1);
+    });
   });
 });

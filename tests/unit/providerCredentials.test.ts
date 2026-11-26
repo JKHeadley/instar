@@ -160,10 +160,19 @@ describe('buildProviderEnvFlags', () => {
     }
   });
 
-  it('emits GOOGLE_API_KEY for google api-key', () => {
-    const cred: ProviderCredential = { kind: 'api-key', value: 'AIza-test' };
-    const flags = buildProviderEnvFlags('google', cred);
-    expect(flags).toContain('GOOGLE_API_KEY=AIza-test');
+  it('REFUSES a google api-key credential (gemini-payg §4.5: paid keys never enter a child env)', () => {
+    const cred: ProviderCredential = { kind: 'api-key', value: 'AIza-SECRET-VALUE' };
+    expect(() => buildProviderEnvFlags('google', cred)).toThrow(/refuses google api-key/);
+    try {
+      buildProviderEnvFlags('google', cred);
+    } catch (err) {
+      expect((err as Error).message).not.toContain('AIza-SECRET-VALUE');
+    }
+  });
+
+  it('still emits GEMINI_BASE_URL for a non-key google credential', () => {
+    const cred = { kind: 'oauth-token', value: 'x', baseUrl: 'https://proxy.example' } as unknown as ProviderCredential;
+    expect(buildProviderEnvFlags('google', cred)).toContain('GEMINI_BASE_URL=https://proxy.example');
   });
 
   it('returns empty array for unknown providers (safe-no-op)', () => {

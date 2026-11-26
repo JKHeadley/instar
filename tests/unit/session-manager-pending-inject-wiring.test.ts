@@ -181,6 +181,18 @@ describe('SessionManager pending-inject wiring (finding 8d300555)', () => {
     expect(record.initialMessage).toBe('must remain queued');
   });
 
+  it('SEC-137: records the first message in the cleaned form rawInject types, so the match holds', async () => {
+    vi.spyOn(manager as unknown as { waitForClaudeReadyWithRetry(s: string, t: number): Promise<boolean> }, 'waitForClaudeReadyWithRetry')
+      .mockResolvedValue(true);
+    vi.spyOn(manager as unknown as { injectMessage(s: string, m: string): boolean }, 'injectMessage')
+      .mockReturnValue(false);
+    await expect(manager.spawnInteractiveSession('line one\r\nline\x15 two', 'cleaned-bootstrap', {
+      telegramTopicId: 2271, awaitInitialInjection: true,
+    })).rejects.toThrow('Initial message injection refused');
+    const record = JSON.parse(fs.readFileSync(path.join(pendingDir(), pendingFiles()[0]), 'utf8'));
+    expect(record.initialMessage).toBe('line one\nline two');
+  });
+
   it('marks only stale generationless Codex incarnations for a fresh respawn', () => {
     const activeManager = new SessionManager({
       tmuxPath: '/usr/bin/tmux', claudePath: '/usr/local/bin/claude', projectDir: tmpDir,

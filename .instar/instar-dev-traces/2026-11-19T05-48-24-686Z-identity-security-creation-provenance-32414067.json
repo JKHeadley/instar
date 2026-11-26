@@ -1,0 +1,20 @@
+{
+  "version": 2,
+  "slug": "identity-security-creation-provenance",
+  "sessionId": "2f010dce-ecf3-404e-b88a-b952c212e86e",
+  "timestamp": "2026-11-19T05:48:24.686Z",
+  "artifactPath": "upgrades/side-effects/identity-security-creation-provenance.md",
+  "artifactSha256": "3569d145e22b7b99afa5fe835e50422f271a0fce716ed51ffe34dcc259331756",
+  "specPath": "docs/specs/identity-security-creation-provenance.md",
+  "coveredFiles": [
+    "src/data/awareness/dashboard-scoped-session-revocation.md",
+    "src/data/awareness/dashboard-scoped-session-token.md",
+    "src/data/awareness/owner-request-citations.md",
+    "upgrades/side-effects/identity-security-creation-provenance.md"
+  ],
+  "phase": "complete",
+  "tier": 2,
+  "tierReasoning": "Instruction-file size fix on the approved change: shorter awareness titles so the core file stays under its budget; bodies unchanged.",
+  "secondPass": "not-required",
+  "reviewerConcurred": null
+}

@@ -1,3 +1,5 @@
+import { CODEX_CLI_FRAMEWORK } from './frameworkFacts.js';
+import { routineCodexReviewLease, type RoutineCodexPlacementConfig } from './routineCodexPlacement.js';
 /**
  * crossModelReviewer — Step B of the tiered development process.
  *
@@ -55,6 +57,7 @@
  */
 
 import { SafeFsExecutor } from './SafeFsExecutor.js';
+import { defaultGeminiOauthCredsPath, geminiOauthCredsAuthed } from './frameworkLoginPresence.js';
 import { frameworkBinaryExists } from './frameworkSessionLaunch.js';
 import { resolveGrokBinaryPath } from '../providers/adapters/grok-build/config.js';
 import { execFileSync } from 'node:child_process';
@@ -76,6 +79,7 @@ import {
 } from '../providers/adapters/grok-build/policy.js';
 import { validateRule1 } from '../providers/adapters/openai-codex/credentials.js';
 import { resolveCliModelFlag } from '../providers/adapters/openai-codex/models.js';
+import { codexModelForCli, codexModelForCliAsync } from './codexCapabilities.js';
 import { resolveCliModelFlag as resolveGeminiModelFlag } from '../providers/adapters/gemini-cli/models.js';
 import { resolveDevAgentGate } from './devAgentGate.js';
 import { ClaudeForbiddenError } from './claudeForbiddenGuard.js';
@@ -256,6 +260,14 @@ const REVIEW_MODEL_TIER = 'capable' as const;
  * Rule-1 / auth-probe vocabulary so a report can render a specific
  * remediation.
  */
+/**
+ * A reviewer family id: an IntelligenceFramework, or the metered `gemini-api` DOOR
+ * (gemini-payg-metered-lane §2 "Reviewer family accounting"). The door is deliberately
+ * NOT an IntelligenceFramework (FD-G3), so no automatic framework choice can ever pick
+ * it; only this registry names it.
+ */
+export type ReviewerFrameworkId = IntelligenceFramework | 'gemini-api';
+
 export type CrossModelUnavailableReason =
   | 'codex-not-installed'
   | 'codex-not-authed'
@@ -273,6 +285,11 @@ export type CrossModelUnavailableReason =
   | 'claude-not-installed'
   | 'claude-config-missing'
   | 'claude-forbidden'
+  // gemini-api metered door (gemini-payg §2): money off / not armed, or a CLI that this
+  // agent's review policy has replaced with the API door.
+  | 'gemini-api-not-configured'
+  | 'gemini-api-not-ready'
+  | 'gemini-cli-replaced-by-gemini-api'
   | 'no-supported-framework';
 
 export interface CrossModelDetectionResult {
@@ -285,9 +302,11 @@ export interface CrossModelDetectionResult {
    */
   binaryPath?: string;
   /** Present when available; the framework id that will run the review. */
-  framework?: IntelligenceFramework;
+  framework?: ReviewerFrameworkId;
   /** Present when available; the concrete model the review resolves to. */
   model?: string;
+  /** gemini-api only: the LOCAL server origin the review is sent to (never a secret). */
+  endpointUrl?: string;
   /** Present when unavailable; a specific machine-readable reason. */
   reason?: CrossModelUnavailableReason;
   /**
@@ -364,6 +383,14 @@ export interface CrossModelDetectInputs {
    * treated as allowed (the dominant claude-agent case).
    */
   enabledFrameworks?: string[];
+  /**
+   * The local server's answer about the metered `gemini-api` review door
+   * (`GET /intelligence/gemini/status`), fetched by the review driver. Absent ⇒ the
+   * door is treated as not configured (fleet default: byte-identical behaviour).
+   * `configured` ⇒ this agent's review policy uses the API door for Gemini and
+   * EXCLUDES the gemini CLI entirely (its sign-in may be a personal account).
+   */
+  geminiApiDoor?: { configured: boolean; ready: boolean; reason?: string; baseUrl?: string };
 }
 
 /** Resolve the default codex auth.json path (CODEX_HOME-aware). */
@@ -426,43 +453,12 @@ export function detectCodexReviewer(
   return {
     available: true,
     framework: 'codex-cli',
-    model: resolveCliModelFlag(REVIEW_MODEL_TIER),
+    // A CLI known to be below 0.166.0 reviews on gpt-6-astra (the review call is
+    // strictly pinned, so the provider never swaps it later).
+    model: codexModelForCli(resolveCliModelFlag(REVIEW_MODEL_TIER), codexPath, 'keep'),
+    binaryPath: codexPath,
     crossFamily: true,
   };
-}
-
-/**
- * Resolve the default gemini oauth_creds.json path. DELIBERATELY no env-var
- * override: the gemini CLI (verified v0.25.2) resolves creds at
- * `~/.gemini/oauth_creds.json` UNCONDITIONALLY — there is no GEMINI_HOME.
- * Honoring one here would make detection probe a path the CLI never reads
- * (false-unavailable on an authed host -> the gemini pass silently skipped AND
- * a false `gemini-cli:false` recorded into the activation baseline — the exact
- * suppression Piece 3 exists to prevent). Tests inject `geminiOauthCredsPath`.
- */
-function defaultGeminiOauthCredsPath(): string {
-  return path.join(os.homedir(), '.gemini', 'oauth_creds.json');
-}
-
-/**
- * Is the gemini CLI's cached OAuth credentials file an authed shape? Authed
- * iff the file parses as JSON with a non-empty string `access_token` OR
- * `refresh_token` (the CLI refreshes an expired access token from the refresh
- * token, so either is a usable seat). A missing / unreadable / malformed file
- * → false (not authed). Never throws.
- */
-function geminiOauthCredsAuthed(credsPath: string): boolean {
-  try {
-    const raw = fs.readFileSync(credsPath, 'utf-8');
-    const parsed = JSON.parse(raw) as { access_token?: unknown; refresh_token?: unknown };
-    const nonEmptyString = (v: unknown): boolean => typeof v === 'string' && v.length > 0;
-    return nonEmptyString(parsed?.access_token) || nonEmptyString(parsed?.refresh_token);
-  } catch {
-    // @silent-fallback-ok — deny-safe: missing/unreadable/malformed creds mean
-    // "not authed" (the reviewer is reported unavailable with a named reason);
-    // mirrors the codex auth probe above.
-    return false;
-  }
 }
 
 /**
@@ -482,6 +478,13 @@ export function detectGeminiReviewer(
   const geminiPath =
     inputs.geminiPathDetected !== undefined ? inputs.geminiPathDetected : detectGeminiPath();
   const credsPath = inputs.geminiOauthCredsPath ?? defaultGeminiOauthCredsPath();
+
+  // 0. gemini-payg §2: an agent whose metered gemini-api door is configured reviews
+  //    Gemini through the API ONLY — never a CLI fallback (the CLI's sign-in may be a
+  //    personal Google account, which stays out of autonomous work).
+  if (inputs.geminiApiDoor?.configured === true) {
+    return { available: false, reason: 'gemini-cli-replaced-by-gemini-api' };
+  }
 
   // 1. Binary present?
   if (!geminiPath) {
@@ -1285,7 +1288,7 @@ export interface ReviewerResult {
   /** Outcome class for the cross-model pass. */
   status: 'ok' | 'degraded' | 'unavailable';
   /** The framework that ran (or would have run). */
-  framework?: IntelligenceFramework;
+  framework?: ReviewerFrameworkId;
   /** Concrete model used. */
   model?: string;
   /** Parsed verdict, when the review returned. */
@@ -1315,6 +1318,8 @@ export interface ReviewerResult {
  * fleet (byte-identical `[codex, gemini]`) and LIVE on a development agent.
  */
 export interface ReviewerConfig {
+  port?: number;
+  subscriptionPool?: { routineCodexPlacement?: RoutineCodexPlacementConfig };
   developmentAgent?: boolean;
   specConverge?: {
     reviewers?: {
@@ -1360,7 +1365,12 @@ export interface ReviewFinding {
 
 interface SupportedReviewerFramework {
   /** Extend this union (in the type below) to add a framework. */
-  id: IntelligenceFramework;
+  id: ReviewerFrameworkId;
+  /**
+   * Model-family key for diversity accounting (gemini-payg §2): `gemini-cli` and
+   * `gemini-api` share `gemini`, so a round counts Gemini once. Absent ⇒ the id.
+   */
+  familyKey?: string;
   /**
    * Is this a CROSS-MODEL (non-Claude) reviewer family (REVIEWER-DOOR-REWIRING
    * §5.1)? A REQUIRED field with NO default: a future reviewer provider/door
@@ -1420,6 +1430,23 @@ export interface ReviewerInvokeArgs {
    * A `providerOverride` still short-circuits this (no construction at all).
    */
   claudeProviderFactory?: () => { evaluate(prompt: string, options?: IntelligenceOptions): Promise<string> } | null;
+  /**
+   * gemini-api only (gemini-payg §2): binds the review to a real spec on disk. The
+   * local server re-validates every field and books the (spec hash, round) pass.
+   */
+  specBinding?: GeminiApiSpecBinding;
+  /** Test-only fetch override for the gemini-api entry's call to the local server. */
+  geminiApiFetch?: typeof fetch;
+}
+
+/** The E1 binding the driver sends with a gemini-api review (§2 "The spec must be real"). */
+export interface GeminiApiSpecBinding {
+  /** Absolute path of the spec file. */
+  specPath: string;
+  specSha256: string;
+  round: number;
+  /** Random per driver run; reused on a retry of the same round so no second call mints. */
+  runNonce: string;
 }
 
 /**
@@ -1451,12 +1478,15 @@ const codexReviewer: SupportedReviewerFramework = {
   review: async (args) => {
     const detection = args.detectionOverride ?? detectCodexReviewer();
     const tier = args.codexModelOverride === 'sol' ? 'balanced' : REVIEW_MODEL_TIER;
-    const model = args.codexModelOverride ? resolveCliModelFlag(tier) : detection.model ?? resolveCliModelFlag(REVIEW_MODEL_TIER);
+    // The feedback override also takes the older-CLI model on a CLI known to be
+    // below 0.166.0; judgeRoutedFeedbackReview accepts either id of that size.
+    const baseModel = args.codexModelOverride ? resolveCliModelFlag(tier) : detection.model ?? resolveCliModelFlag(REVIEW_MODEL_TIER);
+    const model = detection.binaryPath ? await codexModelForCliAsync(baseModel, detection.binaryPath, 'keep') : baseModel;
     const tag = `cross-model:codex-cli:${model}`;
 
     // Fail-loud model canary (Piece 3): NEVER silently review with a
     // tier-word model — a fall-through 'capable' is a dead reviewer.
-    if (!isConcreteReviewerModel(model) || (args.codexModelOverride && model !== (args.codexModelOverride === 'sol' ? 'gpt-6-sol' : 'gpt-6-astra'))) {
+    if (!isConcreteReviewerModel(model) || (args.codexModelOverride && !(args.codexModelOverride === 'sol' ? ['gpt-6.2-sol', 'gpt-6-sol'] : ['gpt-6.2-astra', 'gpt-6-astra']).includes(model))) {
       return {
         status: 'degraded',
         framework: 'codex-cli',
@@ -1489,8 +1519,13 @@ const codexReviewer: SupportedReviewerFramework = {
 
     let raw: string;
     try {
+      const lease = await routineCodexReviewLease(args.reviewerConfig, model);
       raw = await provider.evaluate(args.promptText, {
-        model: tier,
+        ...(lease ? { accountOverride: lease.accountOverride, launchGuard: lease.launchGuard,
+          requiredRoute: { framework: CODEX_CLI_FRAMEWORK as typeof CODEX_CLI_FRAMEWORK, modelId: model } } : {}),
+        // The concrete id the canary checked and the outcome reports, so the
+        // strictly pinned call runs exactly the model this review is recorded as.
+        model: model as typeof tier,
         strictModelPin: true,
         timeoutMs: args.timeoutMs,
         attribution: { component: 'crossModelReviewer' }, // attribution for /metrics/features
@@ -1992,6 +2027,81 @@ const grokReviewer: SupportedReviewerFramework = {
  * registry entries. NOTE: the registry only ever carries first-party OAuth
  * CLI adapters — see `TRUSTED_REVIEWER_FRAMEWORKS` below.
  */
+/**
+ * Detect the metered gemini-api review door (gemini-payg §2). Pure: it reads only the
+ * status the driver fetched from the local server. Absent ⇒ not configured.
+ */
+export function detectGeminiApiReviewer(inputs: CrossModelDetectInputs = {}): CrossModelDetectionResult {
+  const door = inputs.geminiApiDoor;
+  if (!door || door.configured !== true) return { available: false, reason: 'gemini-api-not-configured' };
+  if (door.ready !== true || !door.baseUrl) return { available: false, reason: 'gemini-api-not-ready' };
+  if (!/^http:\/\/(127\.0\.0\.1|localhost):\d{2,5}$/.test(door.baseUrl)) return { available: false, reason: 'gemini-api-not-ready' };
+  return { available: true, framework: 'gemini-api', model: 'gemini-4-neon', crossFamily: true, endpointUrl: door.baseUrl };
+}
+
+/**
+ * The gemini-api reviewer entry (gemini-payg §2). It NEVER builds the provider: it is
+ * a thin client of the LOCAL server's `POST /intelligence/gemini/review`, which
+ * validates the spec, books the pass under the money lock and calls Google — so the
+ * ledger has one writer and the key has one reader. No fallback to the gemini CLI.
+ */
+const geminiApiReviewer: SupportedReviewerFramework = {
+  id: 'gemini-api',
+  familyKey: 'gemini',
+  crossFamily: true,
+  detect: (inputs) => detectGeminiApiReviewer(inputs),
+  review: async (args) => {
+    const fail = (status: 'degraded' | 'unavailable', reason: string, model = 'gemini-4-neon'): ReviewerResult => ({
+      status,
+      framework: 'gemini-api',
+      model,
+      reason,
+      flag: `cross-model-review: gemini-api:${model} (${status}: ${reason})`,
+      crossFamily: true,
+    });
+    const binding = args.specBinding;
+    if (!binding) return fail('degraded', 'spec-binding-missing');
+    // The review goes ONLY to this machine's own server (loopback), never elsewhere.
+    const baseUrl = args.detectionOverride?.endpointUrl;
+    const token = process.env.INSTAR_AUTH_TOKEN;
+    if (!baseUrl || !token) return fail('unavailable', 'gemini-api-not-ready');
+    const doFetch = args.geminiApiFetch ?? fetch;
+    let res: Response;
+    try {
+      res = await doFetch(`${baseUrl.replace(/\/$/, '')}/intelligence/gemini/review`, {
+        method: 'POST',
+        headers: { 'content-type': 'application/json', authorization: `Bearer ${token}` },
+        body: JSON.stringify({ ...binding, promptText: args.promptText }),
+        signal: AbortSignal.timeout(Math.max(30_000, args.timeoutMs)),
+      });
+    } catch (err) { // @silent-fallback-ok: degraded posture recorded for the round, never a clean pass
+      return fail('degraded', `server-unreachable: ${err instanceof Error ? err.message.slice(0, 120) : 'error'}`); // bounded-input-reviewed: an error label for the round posture, never prompt content
+    }
+    let body: { status?: string; reason?: string; text?: string; model?: string; incomplete?: boolean } = {};
+    try { body = (await res.json()) as typeof body; } catch { /* @silent-fallback-ok: degraded posture, never a clean pass */ return fail('degraded', `bad-response-${res.status}`); }
+    if (!res.ok || body.status !== 'ok' || typeof body.text !== 'string') {
+      // The exact refusal reason is the round's posture: no step-down here (the server
+      // already did the only allowed one), no gemini-cli fallback.
+      return fail('unavailable', body.reason ?? `http-${res.status}`);
+    }
+    const model = body.model ?? 'gemini-4-neon';
+    if (body.incomplete) {
+      // A truncated review never folds in as a clean "no findings" (§1).
+      return fail('degraded', 'incomplete-response', model);
+    }
+    const parsed = parseReviewerReply(body.text, `cross-model:gemini-api:${model}`);
+    return {
+      status: 'ok',
+      framework: 'gemini-api',
+      model,
+      verdict: parsed.verdict,
+      findings: [parsed],
+      flag: `cross-model-review: gemini-api:${model}`,
+      crossFamily: true,
+    };
+  },
+};
+
 export const SUPPORTED_REVIEWER_FRAMEWORKS: SupportedReviewerFramework[] = [
   codexReviewer,
   geminiReviewer,
@@ -2004,6 +2114,11 @@ export const SUPPORTED_REVIEWER_FRAMEWORKS: SupportedReviewerFramework[] = [
   // ACTIVE set filters it by the developmentAgent config gate
   // (`resolveActiveReviewerFrameworks`) — dark on the fleet, live on a dev agent.
   claudeReviewer,
+  // gemini-payg §2: the metered gemini-api DOOR. ACTIVE only when the agent's door is
+  // configured (resolveActiveReviewerFrameworks), so the fleet's active set is
+  // byte-identical. When it is active the gemini CLI's detection steps aside (same
+  // familyKey: Gemini counts once, and never a CLI fallback).
+  geminiApiReviewer,
 ];
 
 /**
@@ -2026,10 +2141,13 @@ export function isAnthropicReviewerEnabled(config?: ReviewerConfig): boolean {
  */
 export function resolveActiveReviewerFrameworks(
   config?: ReviewerConfig,
+  inputs?: Pick<CrossModelDetectInputs, 'geminiApiDoor'>,
 ): SupportedReviewerFramework[] {
-  return SUPPORTED_REVIEWER_FRAMEWORKS.filter((f) =>
-    f.id === 'claude-code' ? isAnthropicReviewerEnabled(config) : true,
-  );
+  return SUPPORTED_REVIEWER_FRAMEWORKS.filter((f) => {
+    if (f.id === 'claude-code') return isAnthropicReviewerEnabled(config);
+    if (f.id === 'gemini-api') return inputs?.geminiApiDoor?.configured === true;
+    return true;
+  });
 }
 
 /**
@@ -2078,6 +2196,10 @@ export const TRUSTED_REVIEWER_FRAMEWORKS: readonly string[] = [
   // with tools denied + web search off + prompt via file. Same first-party
   // posture as the other three; no third-party aggregator involved.
   'grok-build',
+  // gemini-payg §2: the metered gemini-api DOOR (not a framework). Trusted because its
+  // host is a code constant in its transport (no base-URL override)
+  // and the review travels only through the local server's validated route.
+  'gemini-api',
 ];
 
 /** Is `id` on the trusted first-party reviewer allowlist? */
@@ -2100,7 +2222,7 @@ export function detectCrossModelReviewer(
   inputs: CrossModelDetectInputs = {},
   config?: ReviewerConfig,
 ): CrossModelDetectionResult {
-  const active = resolveActiveReviewerFrameworks(config);
+  const active = resolveActiveReviewerFrameworks(config, inputs);
   for (const framework of active) {
     const result = framework.detect(inputs);
     if (result.available) return result;
@@ -2124,7 +2246,7 @@ export function detectAllCrossModelReviewers(
   config?: ReviewerConfig,
 ): CrossModelDetectionResult[] {
   const available: CrossModelDetectionResult[] = [];
-  for (const framework of resolveActiveReviewerFrameworks(config)) {
+  for (const framework of resolveActiveReviewerFrameworks(config, inputs)) {
     const result = framework.detect(inputs);
     if (result.available) available.push(result);
   }
@@ -2250,21 +2372,121 @@ export function parseReviewerReply(raw: string, reviewerTag: string): ReviewFind
 }
 
 /**
- * Extract the verdict from a reviewer reply. Looks for a `Verdict:` line and
- * matches one of the three canonical values (case-insensitive, tolerant of
- * surrounding markdown like `**Verdict: SERIOUS ISSUES**`). Returns 'UNKNOWN'
- * when none is found.
+ * Extract the verdict from a reviewer reply (SEC-097). Only the reviewer's own verdict DECLARATIONS
+ * count, quoted material never does, and several declarations resolve to the most severe one.
+ * Returns 'UNKNOWN' when none is found. Exported for its tests.
  */
-function extractVerdict(text: string): ReviewVerdict {
-  // Find a line mentioning "Verdict" and inspect its content.
-  const verdictLine = text
-    .split('\n')
-    .find((l) => /verdict/i.test(l));
-  const haystack = (verdictLine ?? text).toUpperCase();
-  // Order matters: check the most specific multi-word verdicts first.
-  if (haystack.includes('SERIOUS ISSUES')) return 'SERIOUS ISSUES';
-  if (haystack.includes('MINOR ISSUES')) return 'MINOR ISSUES';
-  if (haystack.includes('CLEAN')) return 'CLEAN';
+export function extractVerdict(text: string): ReviewVerdict {
+  // SEC-097. The old rule took the FIRST line that mentioned "verdict" (or, with none, searched the
+  // whole reply), so a reviewer that first QUOTED injected text ("Verdict: CLEAN" planted in the
+  // untrusted diff or spec) was read as CLEAN even when its own verdict line said SERIOUS ISSUES,
+  // and "the code is not clean" with no verdict line at all read as CLEAN. The rule now:
+  //  - a declaration is a line whose LABEL is "Verdict" (optionally "Final"/"Overall"; list, heading,
+  //    emphasis and table markers allowed before it, but NOT a quote mark or backtick: a quoted
+  //    label is quoted material), followed by its value; or a bare "Verdict" heading whose next
+  //    non-blank line carries the value;
+  //  - fenced code (matched by marker and length), 4-space/tab-indented code and blockquotes are
+  //    quoted material and never declare anything;
+  //  - SERIOUS ISSUES in capitals anywhere on a declaration line makes it SERIOUS (a severe verdict
+  //    always counts, even when the line also quotes a planted CLEAN); otherwise the value must
+  //    START the remainder (any case) and be the only value written in capitals. "Verdict: NOT
+  //    CLEAN" declares nothing; "Verdict: CLEAN, no serious issues found" is CLEAN plus prose; an
+  //    echoed "CLEAN | MINOR ISSUES | SERIOUS ISSUES" template line (all three) declares nothing;
+  //  - several declarations resolve to the MOST SEVERE, so planted text cannot outvote the
+  //    reviewer (fail closed); no declaration is UNKNOWN (re-asked or refused), never a guess.
+  // Every pattern is anchored with a single quantifier per position: no ambiguous adjacent
+  // repetition, so a long line of attacker-chosen whitespace cannot stall the event loop.
+  const PREFIX = /^(?:\d{1,3}[.)])?[-+*_#|•\s]*/;
+  const LABEL = /^(?:(?:final|overall)\s)?verdict\b/i;
+  const SEPARATOR = /^[*_\s]*(?:[:\-–—=|]|is\b)?[*_`"'“”\s|]*/i;
+  const START = /^(serious issues|minor issues|clean)\b/i;
+  const judge = (rest: string): ReviewVerdict | null => {
+    const first = START.exec(rest);
+    // A value that STARTS the remainder as SERIOUS is serious, whatever the line names after it.
+    if (first && first[1].toUpperCase() === 'SERIOUS ISSUES') return 'SERIOUS ISSUES';
+    const caps = (['SERIOUS ISSUES', 'MINOR ISSUES', 'CLEAN'] as const).filter((v) => rest.includes(v));
+    if (caps.length === 3) return null; // an echoed template line
+    if (caps.includes('SERIOUS ISSUES')) return 'SERIOUS ISSUES';
+    if (!first) return null;
+    const value = first[1].toUpperCase() as ReviewVerdict;
+    if (value === 'SERIOUS ISSUES') return value;
+    return caps.every((v) => v === value) ? value : null;
+  };
+  const declared: ReviewVerdict[] = [];
+  // Severity SIGNALS: a line outside any declaration that pairs "verdict" (on it, or on the line
+  // before it) with "serious" or "minor", in ANY region (fenced, indented, quoted, HTML). The parse
+  // only sees the shapes it knows, so a reviewer's real verdict in another shape ("My verdict:
+  // SERIOUS ISSUES", "<summary>Verdict: SERIOUS ISSUES</summary>", "## Verdict" then "> SERIOUS
+  // ISSUES") would otherwise leave a planted bare "Verdict: CLEAN" as the only declaration: a
+  // downgrade (second review round, 2026-11-17). A signal never PRODUCES a verdict; it only keeps a
+  // milder one from being read (UNKNOWN: re-asked, then refused).
+  const signals = { serious: false, minor: false };
+  let prevHadVerdict = false;
+  const signal = (written: string, isDeclaration: boolean): void => {
+    const line = written.replace(/[*_`]/g, '');
+    const hasVerdict = /verdict/i.test(line);
+    // An echoed answer template names every value and signals nothing.
+    // Only the exact echoed instruction ("CLEAN, MINOR ISSUES, or SERIOUS ISSUES") is exempt; a
+    // verdict line that merely names all three values still signals.
+    const template = /CLEAN,\s?MINOR ISSUES,?\s?or\s?SERIOUS ISSUES/.test(line);
+    if (!isDeclaration && !template && (hasVerdict || prevHadVerdict)) {
+      if (/serious/i.test(line)) signals.serious = true;
+      if (/minor/i.test(line)) signals.minor = true;
+    }
+    // Only a verdict line that declared nothing (a heading, an unknown shape) carries over to the
+    // next line: "Verdict: CLEAN" followed by "No serious issues found." stays CLEAN.
+    if (line.trim()) prevHadVerdict = hasVerdict && !isDeclaration && !template;
+  };
+  let fence: { ch: string; len: number } | null = null;
+  let htmlComment = false;
+  let headingPending = false;
+  for (const raw of text.replace(/\r/g, '').replace(/\u00a0/g, ' ').split('\n')) {
+    const line = raw.trim();
+    const marker = /^(`{3,}|~{3,})/.exec(line);
+    if (fence) {
+      signal(raw, false);
+      if (marker && marker[1][0] === fence.ch && marker[1].length >= fence.len && line.slice(marker[1].length).trim() === '') fence = null;
+      continue;
+    }
+    if (htmlComment) { signal(raw, false); if (line.includes('-->')) htmlComment = false; continue; }
+    if (marker) { signal(raw, false); fence = { ch: marker[1][0], len: marker[1].length }; headingPending = false; continue; }
+    if (line.startsWith('<!--')) { signal(raw, false); if (!line.includes('-->')) htmlComment = true; headingPending = false; continue; }
+    // Indented code, blockquotes and HTML are quoted material: never a declaration.
+    if (/^( {4}|\t)/.test(raw) || line.startsWith('>') || line.startsWith('<')) { signal(raw, false); headingPending = false; continue; }
+    if (!line) continue;
+    // Emphasis and code marks are removed before a line is judged ("SERI**OUS** ISSUES"); the fence,
+    // indent and quote checks above read the line as written.
+    // A line that opens (after list and emphasis marks) with a quote mark or backtick is quoting.
+    if (/^[`"'\u201c\u2018]/.test(line.slice(PREFIX.exec(line)![0].length))) { signal(raw, false); headingPending = false; continue; }
+    const plain = line.replace(/[*_`]/g, '');
+    const body = plain.slice(PREFIX.exec(plain)![0].length);
+    const label = LABEL.exec(body);
+    if (label) {
+      const after = body.slice(label[0].length);
+      const rest = after.slice(SEPARATOR.exec(after)![0].length);
+      const v = judge(rest);
+      signal(raw, v !== null);
+      if (v) { declared.push(v); headingPending = false; continue; }
+      // A bare label (nothing but decoration after it) is a heading: the value is on the next line.
+      headingPending = /^[*_:\s#|]*$/.test(after);
+      continue;
+    }
+    if (headingPending) {
+      const v = judge(body.replace(/^[*_`"'\s]*/, ''));
+      signal(raw, v !== null);
+      if (v) declared.push(v);
+      headingPending = false;
+      continue;
+    }
+    signal(raw, false);
+  }
+  // A fence or comment still open at the end may have swallowed the reviewer's real verdict.
+  const ambiguous = fence !== null || htmlComment;
+  if (declared.includes('SERIOUS ISSUES')) return 'SERIOUS ISSUES';
+  if (ambiguous || signals.serious) return 'UNKNOWN';
+  if (declared.includes('MINOR ISSUES')) return 'MINOR ISSUES';
+  if (signals.minor) return 'UNKNOWN';
+  if (declared.includes('CLEAN')) return 'CLEAN';
   return 'UNKNOWN';
 }
 
@@ -2617,6 +2839,8 @@ async function invokeReviewerWithContextGuard(
     providerOverride?: ReviewerInvokeArgs['providerOverride'];
     codexModelOverride?: ReviewerInvokeArgs['codexModelOverride'];
     config?: ReviewerConfig;
+    specBinding?: GeminiApiSpecBinding;
+    geminiApiFetch?: typeof fetch;
   },
 ): Promise<ReviewerResult> {
 
@@ -2670,6 +2894,8 @@ async function invokeReviewerWithContextGuard(
     ...(args.codexModelOverride ? { codexModelOverride: args.codexModelOverride } : {}),
     ...(args.config ? { reviewerConfig: args.config } : {}),
     ...(args.providerOverride ? { providerOverride: args.providerOverride } : {}),
+    ...(args.specBinding ? { specBinding: args.specBinding } : {}),
+    ...(args.geminiApiFetch ? { geminiApiFetch: args.geminiApiFetch } : {}),
   });
 }
 
@@ -2699,6 +2925,10 @@ export async function runCrossModelReview(args: {
    * enters here and meets the same guard.
    */
   family?: string;
+  /** gemini-api E1 binding (gemini-payg §2); ignored by every other family. */
+  specBinding?: GeminiApiSpecBinding;
+  /** Test-only fetch override for the gemini-api entry. */
+  geminiApiFetch?: typeof fetch;
   /**
    * A detection the caller already computed (the driver detects before
    * assembling). Skips re-probing the host; MUST still be `available`.
@@ -2720,7 +2950,7 @@ export async function runCrossModelReview(args: {
   // codex without being told.
   const requestedFamily = args.family;
   if (requestedFamily !== undefined) {
-    const entry = resolveActiveReviewerFrameworks(args.config).find(
+    const entry = resolveActiveReviewerFrameworks(args.config, effectiveDetectInputs).find(
       (f) => f.id === requestedFamily,
     );
     if (!entry) {
@@ -2756,7 +2986,7 @@ export async function runCrossModelReview(args: {
     };
   }
 
-  const framework = resolveActiveReviewerFrameworks(args.config).find(
+  const framework = resolveActiveReviewerFrameworks(args.config, effectiveDetectInputs).find(
     (f) => f.id === detection.framework,
   );
   if (!framework) {

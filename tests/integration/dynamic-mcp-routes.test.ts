@@ -266,13 +266,15 @@ describe('/mcp/* routes', () => {
       expect(pins.failures).toEqual([]);
     });
 
-    it('a real requestId with a WRONG pin ⇒ 403, charged to the global PIN bucket too', async () => {
+    it('a real requestId with a WRONG pin ⇒ 403, charged to that request (identity-security-piece1c) and the alert-only count, never the strangers\' cap', async () => {
       const pins = fakePinStore();
       const app = appWith(makeService({}, true, false), path.join(dir, '.instar'), { pinAttemptStore: pins.store });
       const requestId = await pendingRequestId(app, 21);
       const r = await request(app).post(`/mcp/approve/${requestId}`).send({ pin: '000000' });
       expect(r.status).toBe(403);
-      expect(pins.failures).toContain(GLOBAL_PIN_KEY);
+      expect(pins.failures.some((k) => k.startsWith('req:'))).toBe(true);
+      expect(pins.failures).toContain('__pin_alert_only__');
+      expect(pins.failures).not.toContain(GLOBAL_PIN_KEY);
       // a wrong PIN never uses up the request: the operator can still approve it
       expect((await request(app).get(`/mcp/approve/${requestId}`)).status).toBe(200);
     });
@@ -287,10 +289,18 @@ describe('/mcp/* routes', () => {
       expect(restarts).toBe(before);
     });
 
-    it('the global PIN cap applies (429) even from a fresh address', async () => {
+    it('strangers draining the global PIN cap never refuse a live approval link (identity-security-piece1c)', async () => {
       const pins = fakePinStore([GLOBAL_PIN_KEY]);
       const app = appWith(makeService({}, true, false), path.join(dir, '.instar'), { pinAttemptStore: pins.store });
       const requestId = await pendingRequestId(app, 25);
+      const r = await request(app).post(`/mcp/approve/${requestId}`).send({ pin: PIN });
+      expect(r.status).not.toBe(429);
+    });
+
+    it('a live approval link is limited on its own (429 once its own count is full)', async () => {
+      const pins = { failures: [] as string[], store: { blocked: (key: string) => key.startsWith('req:'), recordFailure: () => 0, recordSuccess: () => {} } };
+      const app = appWith(makeService({}, true, false), path.join(dir, '.instar'), { pinAttemptStore: pins.store });
+      const requestId = await pendingRequestId(app, 27);
       const before = restarts;
       const r = await request(app).post(`/mcp/approve/${requestId}`).send({ pin: PIN });
       expect(r.status).toBe(429);

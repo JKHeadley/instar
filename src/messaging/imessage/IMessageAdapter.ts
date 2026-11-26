@@ -30,6 +30,7 @@
  * - 2026-04-02: Attempted typing indicator, reverted due to imsg limitations
  */
 
+import { rowMayActAsContact, UnprovenTextNotice } from './smsProvenance.js';
 import path from 'node:path';
 import crypto from 'node:crypto';
 import fs from 'node:fs';
@@ -111,6 +112,9 @@ export class IMessageAdapter implements MessagingAdapter {
   private lastInboundFrom = new Map<string, number>();  // normalized contact → timestamp
   private pendingSendTokens = new Map<string, SendToken>();
   private lastAckTime = new Map<string, number>();  // normalized contact → last ack timestamp
+  private unprovenNotice = new UnprovenTextNotice();
+  /** identity-security-piece1eb: raise or refresh the owner's daily notice (wired by server.ts). */
+  onUnprovenText: ((notice: { title: string; body: string }) => void) | null = null;
 
   // Callbacks (wired by server.ts)
   onMessageLogged: ((entry: LogEntry) => void) | null = null;
@@ -219,6 +223,7 @@ export class IMessageAdapter implements MessagingAdapter {
     this.started = false;
     this.connectedAtIso = null;
     this.stallDetector.stop();
+    if (this.unprovenRefreshTimer) { clearTimeout(this.unprovenRefreshTimer); this.unprovenRefreshTimer = null; }
     await this.backend.disconnect();
     console.log('[imessage] Adapter stopped');
   }
@@ -277,7 +282,8 @@ export class IMessageAdapter implements MessagingAdapter {
   // ── Context & History ──
 
   getConversationContext(sender: string, limit = 20): string {
-    return this.backend.getConversationContext(sender, limit);
+    // identity-security-piece1eb: rows that can't prove their sender stay out of the context.
+    return this.backend.getConversationContext(sender, limit, (row) => rowMayActAsContact(row));
   }
 
   listChats(limit = 20): unknown {
@@ -603,9 +609,22 @@ export class IMessageAdapter implements MessagingAdapter {
    * Requires FDA on the calling process to create the hardlinks the first
    * time; subsequent startups read through the existing hardlinks without
    * needing FDA.
+   *
+   * `messagesDir` defaults to the real `~/Library/Messages`, EXCEPT under the
+   * test runner (`VITEST` set): there it defaults to a directory inside
+   * `stateDir` that does not exist, so a test that builds an adapter without a
+   * `dbPath` never touches the machine's real Messages database. Linking that
+   * TCC-protected file can park the syscall in the kernel waiting for a Full
+   * Disk Access approval nobody answers, which froze test workers forever
+   * (Studio, 2026-11-20). A test that wants the real directory passes it.
    */
-  static ensureChatDbHardlink(stateDir: string): string {
-    const messagesDir = path.join(os.homedir(), 'Library', 'Messages');
+  /** The Messages directory the adapter links from: the real one, or (under the test runner) a never-created stand-in inside `stateDir`. */
+  static defaultMessagesDir(stateDir: string): string {
+    if (process.env.VITEST) return path.join(stateDir, 'imessage', 'test-runner-no-real-messages');
+    return path.join(os.homedir(), 'Library', 'Messages');
+  }
+
+  static ensureChatDbHardlink(stateDir: string, messagesDir: string = IMessageAdapter.defaultMessagesDir(stateDir)): string {
     const srcDb = path.join(messagesDir, 'chat.db');
     const linkDir = path.join(stateDir, 'imessage');
     const linkDb = path.join(linkDir, 'chat.db');
@@ -704,6 +723,17 @@ export class IMessageAdapter implements MessagingAdapter {
     }
   }
 
+  /**
+   * SEC-164 part 1 §3.5: masks a live key in an incoming message before it is logged, emitted or
+   * routed. Returns the text to use; null or a throw leaves it unchanged (fails toward delivery).
+   */
+  public inboundCredentialMasker: ((text: string) => string | null) | null = null;
+
+  private maskIncomingCredential(text: string): string {
+    if (!this.inboundCredentialMasker || typeof text !== 'string' || !text) return text;
+    try { return this.inboundCredentialMasker(text) ?? text; } catch { return text; } // @silent-fallback-ok — the masker reports its own failures
+  }
+
   private async _handleIncomingMessage(msg: IMessageIncoming): Promise<void> {
     // Skip own outbound messages
     if (msg.isFromMe) return;
@@ -718,6 +748,21 @@ export class IMessageAdapter implements MessagingAdapter {
       console.log(`[imessage] Rejected message from unauthorized sender: ${IMessageAdapter.maskIdentifier(msg.sender)}`);
       return;
     }
+
+    // identity-security-piece1eb: an SMS/RCS row can't prove it came from the contact it names. Set it
+    // aside before it can act: no route, session, ack, event, log, or reply window. The owner already
+    // has it in Messages and gets a daily count (never the text).
+    if (!rowMayActAsContact(msg)) {
+      const masked = IMessageAdapter.maskIdentifier(msg.sender);
+      console.log(`[imessage] Set aside a ${msg.service || 'unknown-service'} message claiming ${masked}: the service can't prove its sender`);
+      const notice = this.unprovenNotice.note(masked);
+      if (notice) { try { this.onUnprovenText?.(notice); } catch { /* @silent-fallback-ok: the notice retries on the next set-aside text */ } }
+      else this._scheduleUnprovenRefresh();
+      return;
+    }
+
+    // SEC-164 §3.5: mask live keys before the log, the event bus or the session see the text.
+    if (typeof msg.text === 'string' && msg.text) msg = { ...msg, text: this.maskIncomingCredential(msg.text) };
 
     // Track last inbound time for reactive window
     this.lastInboundFrom.set(senderNormalized, Date.now());
@@ -792,6 +837,28 @@ export class IMessageAdapter implements MessagingAdapter {
         console.error(`[imessage] Message handler error: ${(err as Error).message}`);
       }
     }
+  }
+
+  /**
+   * CONTRACT-EVIDENCE: EXEMPT — identity-security-piece1eb (iMessage SMS provenance). No request or
+   * response shape crosses the Messages boundary differently: the only database change selects
+   * `message.service`, a column the backend already reads in its new-message and history queries.
+   * The change decides locally what to do with a row it already read. No iMessage contract suite
+   * exists to run (the contract runner covers Slack only), and a live run could not falsify a local
+   * routing decision; the unit suite drives the real reader on a chat.db-schema database.
+   */
+  private unprovenRefreshTimer: ReturnType<typeof setTimeout> | null = null;
+  /** identity-security-piece1eb: one trailing refresh after the 10-minute limit, so the count stays exact. */
+  private _scheduleUnprovenRefresh(): void {
+    if (this.unprovenRefreshTimer) return;
+    const inMs = this.unprovenNotice.pendingRefreshInMs();
+    if (inMs === null) return;
+    this.unprovenRefreshTimer = setTimeout(() => {
+      this.unprovenRefreshTimer = null;
+      const notice = this.unprovenNotice.flush();
+      if (notice) { try { this.onUnprovenText?.(notice); } catch { /* @silent-fallback-ok: refreshed on the next set-aside text */ } }
+    }, inMs);
+    this.unprovenRefreshTimer.unref?.();
   }
 
   private _sendImmediateAck(sender: string): void {

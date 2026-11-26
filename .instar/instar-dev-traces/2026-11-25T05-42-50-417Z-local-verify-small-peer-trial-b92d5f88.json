@@ -1,0 +1,28 @@
+{
+  "version": 2,
+  "slug": "local-verify-small-peer-trial",
+  "sessionId": "ed99de61-509a-4e0d-908f-801b299fef73",
+  "timestamp": "2026-11-25T05:42:50.417Z",
+  "artifactPath": "upgrades/side-effects/local-verify-small-peer-trial.md",
+  "artifactSha256": "b4bf638d6b6bdc5575e738074b542742d7ce6cae8bb8ca64da9b99d4b23500b2",
+  "specPath": "docs/specs/local-verify-small-peer-trial.md",
+  "coveredFiles": [
+    "src/localVerify/LocalVerifyService.ts",
+    "src/localVerify/launchdSpawn.ts",
+    "src/localVerify/localVerifyRoutes.ts",
+    "src/localVerify/localVerifyWiring.ts",
+    "src/localVerify/peer.ts",
+    "src/localVerify/record.ts",
+    "src/localVerify/runSmallPeerWatchdog.ts",
+    "src/localVerify/smallPeerMemory.ts",
+    "src/localVerify/smallPeerReceipts.ts",
+    "src/localVerify/smallPeerSupervisor.ts",
+    "src/localVerify/smallPeerWatchdog.ts",
+    "src/localVerify/trialExecutionScope.ts",
+    "tests/unit/localVerify/smallPeerMemory.test.ts",
+    "tests/unit/localVerify/smallPeerReceipts.test.ts"
+  ],
+  "phase": "complete",
+  "secondPass": "true",
+  "reviewerConcurred": true
+}

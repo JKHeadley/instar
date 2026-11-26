@@ -112,7 +112,7 @@ describe('GET /api/files/link under the DEFAULT config (the live regression)', (
     const res = await request(app).get('/api/files/link').query({ path: '.claude/CLAUDE.md' });
     expect(res.status).toBe(200);
     expect(res.body.path).toBe('.claude/CLAUDE.md');
-    expect(res.body.relative).toContain('tab=files');
+    expect(res.body.relative).toContain('/dashboard/console/#/settings/files?path=');
     expect(res.body.relative).toContain(encodeURIComponent('.claude/CLAUDE.md'));
   });
 

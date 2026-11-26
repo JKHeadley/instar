@@ -16,6 +16,9 @@
  *  - `engine-checkpoint`: the byte-exact pre-fold transcript (engineCheckpoint.ts);
  *    deleted on commit or abort, kept for the grace period after a rollback.
  *
+ *  - `staged-fold-packet`: the verified resume packet staged under the fold's
+ *    id (foldPacket.ts), single-use, deleted by the terminal transition.
+ *
  * The fold hold registers its carrier at boot (it lives in the routes).
  */
 import fs from 'node:fs';
@@ -28,6 +31,7 @@ import { SafeFsExecutor } from '../core/SafeFsExecutor.js';
 import { foldMarkerCarrier } from './foldMarker.js';
 import { engineCheckpointCarrier } from './engineCheckpoint.js';
 import { FoldRecordStore } from './FoldCoordinator.js';
+import { stagedFoldPacketCarrier } from './foldPacket.js';
 
 /** The keep-instructions source string for a fold's staged steering text. */
 export function foldKeepSource(topicKey: string, foldId: string): string {
@@ -119,5 +123,6 @@ export function defaultFoldCarriers(stateDir: string): FoldCarrier[] {
       const seen = new FoldRecordStore(stateDir).inspect(topicKey, foldId);
       return seen.kind === 'ok' ? seen.record.state : seen.kind === 'torn' ? 'unreadable' : null;
     }),
+    stagedFoldPacketCarrier(stateDir),
   ];
 }

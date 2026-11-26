@@ -16,7 +16,7 @@ import {
   normPath, baseName, parentOf, crumbs, folderWords, fileHash, pathFromHash, sizeWords,
   buildListing, buildFile, saveBody, saveResult, conflictWords, stashFor, readStash,
   parseRecent, pushRecent, recentRows, pinnedFrom, searchLoaded, buildConfig, folderInput,
-  configPatch, configResultWords, filesHeadline, refusalWords,
+  configPatch, configResultWords, filesHeadline, refusalWords, downloadTooLargeWords,
   searchUrl, buildSearch, imageUrl, previewPlan, previewResult,
 } from './files-model.js';
 import { el, setKids, pageHead, sheet, closeSheet, sheetIsOpen, note } from './ui.js';
@@ -103,7 +103,11 @@ async function download(p, status) {
   status.textContent = 'Downloading…';
   try {
     const r = await fetch(`/api/files/download?path=${encodeURIComponent(p)}`, { headers: { Authorization: `Bearer ${bearer()}` }, cache: 'no-store' });
-    if (!r.ok) { status.textContent = refusalWords(r.status, await r.json().catch(() => ({}))).text; return; }
+    if (!r.ok) {
+      const data = await r.json().catch(() => ({}));
+      status.textContent = r.status === 413 ? downloadTooLargeWords(data) : refusalWords(r.status, data).text;
+      return;
+    }
     const url = URL.createObjectURL(await r.blob());
     const a = el('a', { href: url, download: baseName(p) });
     document.body.append(a); a.click(); a.remove();
@@ -308,7 +312,9 @@ function viewer() {
     body.append(el('section', { class: 'card files-refused', 'data-state': 'unknown', 'data-refused': f.refusal },
       el('div', { class: 'card-head' }, el('span', { class: 'dot unknown' }), el('h2', { class: 'card-title', text: f.title })),
       el('p', { class: 'card-line', text: f.text }),
-      f.refusal === 'signin' ? el('button', { class: 'btn-primary btn-inline', type: 'button', text: 'Sign in again', onclick: signInAgain }) : null));
+      f.refusal === 'signin' ? el('button', { class: 'btn-primary btn-inline', type: 'button', text: 'Sign in again', onclick: signInAgain }) : null,
+      // Too big to show is not too big to download (CMT-1819): downloads have their own, larger limit.
+      f.refusal === 'too-large' ? el('div', { class: 'sheet-actions' }, el('button', { class: 'btn-primary btn-inline', type: 'button', text: 'Download', 'data-download': '1', onclick: () => download(f.path, status) })) : null));
   } else if (f.kind === 'binary') {
     const plan = previewPlan(f, S.config && S.config.ok ? S.config : {});
     const card = el('section', { class: 'card' });

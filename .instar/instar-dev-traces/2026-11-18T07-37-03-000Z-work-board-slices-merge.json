@@ -1,0 +1,43 @@
+{
+  "version": 2,
+  "slug": "work-board-slices-merge",
+  "sessionId": "c00c00f3-2c12-42b0-adcf-30525408067c",
+  "timestamp": "2026-11-18T07:37:03.561Z",
+  "artifactPath": "upgrades/side-effects/work-board-slices-merge.md",
+  "artifactSha256": "ae9db3933524038eb2857a0cd00473cb64a19836d6b237f097497c2781fde5cb",
+  "specPaths": [
+    "docs/specs/work-door-project-rows.md",
+    "docs/specs/work-board-cards-appear.md",
+    "docs/specs/work-front-doors.md"
+  ],
+  "specPath": "docs/specs/work-board-cards-appear.md",
+  "mergeOf": [
+    {
+      "pr": 3396,
+      "head": "434250eff44c04fa735506bd750d7ec233a35e46"
+    },
+    {
+      "pr": 3400,
+      "head": "6946474192562349345c1607e1bdc138b1e1db46"
+    },
+    {
+      "pr": 3394,
+      "head": "91989f24ba49557dfd4ed6a16c2a808b419d4e35"
+    }
+  ],
+  "conflictsResolved": {
+    "src/core/WorkCardStore.ts": "SCHEMA_MAX union (whyYou, coverKeys + closeNote); CLOSE_AS kept",
+    "src/server/mobilePermissionsRoutes.ts": "buildAction extras + actionExtras union (itemId/checkRef/bindingRef/noteHash + closeAs)"
+  },
+  "coveredFiles": [
+    "src/core/WorkCardStore.ts",
+    "src/server/mobilePermissionsRoutes.ts",
+    "tests/unit/mobile-session-terminal.test.ts",
+    "upgrades/side-effects/work-board-slices-merge.md"
+  ],
+  "phase": "complete",
+  "tier": 2,
+  "tierReasoning": "Merge of three individually reviewed tier-2 slices; conflict resolution is a pure union, plus a guard-test entry for slice 1 owner-only routes.",
+  "behaviorBeyondUnion": false,
+  "secondPass": "not-required: merge adds no behavior beyond keeping both sides; each slice carries its own concurring reviewer trace"
+}
