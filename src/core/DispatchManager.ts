@@ -38,7 +38,38 @@ export interface Dispatch {
   evaluation?: DispatchEvaluation;
   /** Feedback on dispatch effectiveness (Phase 3) */
   feedback?: DispatchFeedback;
+  /**
+   * SEC-153: the origin signature as the dispatch server sent it, kept verbatim so the pinned-key
+   * check (DispatchVerifier) can run on the stored record. Absent on an unsigned dispatch.
+   */
+  signature?: string;
+  signedAt?: string;
+  expiresAt?: string;
+  keyId?: string;
+  /** SEC-153: set once the signature verified under a pinned key. Only such a dispatch is auto-applied or executed. */
+  signatureVerified?: boolean;
+  /** SEC-153: recorded on an install's first poll (the server's history), so never acted on or announced. */
+  historical?: boolean;
 }
+
+/** SEC-153: a dispatch title as one short line, for any text a session or the owner reads (the raw title stays in the record, where the signature covers it). */
+export function cleanTitle(t: unknown): string {
+  return String(t ?? '').replace(/[\u0000-\u001f\u007f]+/g, ' ').slice(0, 120);
+}
+
+/** SEC-153: the signature fields of a polled dispatch, kept only when each is a bounded string. */
+function signatureFieldsOf(d: Record<string, unknown>): Pick<Dispatch, 'signature' | 'signedAt' | 'expiresAt' | 'keyId'> {
+  const ok = (v: unknown, max: number): v is string => typeof v === 'string' && v.length > 0 && v.length <= max;
+  return ok(d.signature, 512) && ok(d.signedAt, 64) && ok(d.expiresAt, 64) && ok(d.keyId, 128)
+    ? { signature: d.signature, signedAt: d.signedAt, expiresAt: d.expiresAt, keyId: d.keyId }
+    : {};
+}
+
+/**
+ * SEC-153: the dispatch types whose text may be loaded into agent sessions through the context file.
+ * Configuration and action dispatches are instructions to execute, never session text.
+ */
+const CONTEXT_FILE_TYPES: ReadonlySet<Dispatch['type']> = new Set(['security', 'behavioral', 'strategy', 'lesson']);
 
 export type EvaluationDecision = 'accepted' | 'rejected' | 'deferred';
 
@@ -90,6 +121,8 @@ export interface DispatchCheckResult {
   autoApplied?: number;
   /** Any error that occurred */
   error?: string;
+  /** SEC-153: on an install's first poll, how many existing dispatches were recorded as history (not new). */
+  historical?: number;
 }
 
 /** Types that are safe for auto-apply (no security risk from automated integration) */
@@ -116,8 +149,20 @@ export class DispatchManager {
     this.config = config;
     this.dispatchFile = config.dispatchFile;
     this.version = config.version || '0.0.0';
-    this.lastCheckFile = config.dispatchFile.replace('.json', '-last-check.json');
-    this.contextFile = config.dispatchFile.replace('dispatches.json', 'dispatch-context.md');
+    // Beside the record and never the record itself (a record not ending in `.json` used to make them the same path).
+    this.lastCheckFile = /\.json$/.test(config.dispatchFile)
+      ? config.dispatchFile.replace(/\.json$/, '-last-check.json')
+      : `${config.dispatchFile}-last-check.json`;
+    // The context file sits beside the record and is never the record itself (a record not named
+    // `dispatches.json` used to make the two the same path, so a rebuild overwrote the record).
+    this.contextFile = path.basename(config.dispatchFile) === 'dispatches.json'
+      ? config.dispatchFile.replace(/dispatches\.json$/, 'dispatch-context.md')
+      : path.join(path.dirname(config.dispatchFile), 'dispatch-context.md');
+    // SEC-153: rebuild the session context file at start, so text it may no longer carry (configuration
+    // and action dispatches, unsigned automatic applies) leaves sessions now, not at the next apply.
+    if (this.contextFile !== this.dispatchFile && fs.existsSync(this.contextFile)) {
+      try { this.rebuildContextFile(); } catch (err) { console.error(`[DispatchManager] Could not rebuild ${this.contextFile}: ${err instanceof Error ? err.message : String(err)}`); } // @silent-fallback-ok — logged; the file is rebuilt again at the next apply
+    }
   }
 
   /** Validate dispatch URL is HTTPS and not internal. */
@@ -198,6 +243,11 @@ export class DispatchManager {
       // Filter out dispatches we already have
       const existing = this.loadDispatches();
       const existingIds = new Set(existing.map(d => d.dispatchId));
+      // SEC-153: a fresh or rebuilt install has never polled, so the server sends its whole history
+      // (the rebuilt Studio re-ran six months-old dispatches on its first poll, 2026-11-20). The first
+      // poll only records what already exists, as history: kept in the record, never acted on, never
+      // announced. Only dispatches that arrive after it are new.
+      const baseline = lastCheck === null;
 
       const newDispatches: Dispatch[] = data.dispatches
         .filter(d => !existingIds.has(d.dispatchId))
@@ -212,6 +262,8 @@ export class DispatchManager {
           createdAt: d.createdAt,
           receivedAt: now,
           applied: false,
+          ...signatureFieldsOf(d as unknown as Record<string, unknown>),
+          ...(baseline ? { historical: true } : {}),
         }));
 
       // Append new dispatches
@@ -221,6 +273,10 @@ export class DispatchManager {
 
       // Save last check time
       this.saveLastCheckTime(now);
+
+      if (baseline) {
+        return { newCount: 0, dispatches: [], checkedAt: now, historical: newDispatches.length };
+      }
 
       return {
         newCount: newDispatches.length,
@@ -355,10 +411,10 @@ export class DispatchManager {
     for (const d of pending) {
       const priorityTag = d.priority === 'critical' ? ' [CRITICAL]' :
                            d.priority === 'high' ? ' [HIGH]' : '';
-      lines.push(`### ${d.title}${priorityTag}`);
-      lines.push(`Type: ${d.type} | ID: ${d.dispatchId}`);
-      lines.push('');
-      lines.push(d.content);
+      // SEC-153: this text is read by sessions, so it names what is waiting and never carries the
+      // remote content. A person reads the content on review; applying an unsigned one needs the PIN.
+      lines.push(`### ${cleanTitle(d.title)}${priorityTag}`);
+      lines.push(`Type: ${d.type} | ID: ${d.dispatchId} | ${d.signatureVerified === true ? 'signed' : 'not signed: waiting for the owner'}`);
       lines.push('');
     }
 
@@ -420,9 +476,11 @@ export class DispatchManager {
    *   - security dispatches are NEVER auto-applied (need agent review)
    *   - behavioral/configuration dispatches need agent review
    */
-  async checkAndAutoApply(): Promise<DispatchCheckResult> {
+  async checkAndAutoApply(isTrusted?: (d: Dispatch) => boolean): Promise<DispatchCheckResult> {
     const result = await this.check();
-    if (result.newCount === 0 || !this.config.autoApply) {
+    // SEC-153: only a dispatch whose signature verified under a pinned key is applied without review.
+    // With no check given, nothing is auto-applied; every new dispatch stays pending for review.
+    if (result.newCount === 0 || !this.config.autoApply || !isTrusted) {
       return result;
     }
 
@@ -433,8 +491,9 @@ export class DispatchManager {
       const stored = dispatches.find(d => d.dispatchId === newDispatch.dispatchId);
       if (!stored || stored.applied) continue;
 
-      if (this.isSafeForAutoApply(stored)) {
+      if (this.isSafeForAutoApply(stored) && isTrusted(stored)) {
         stored.applied = true;
+        stored.signatureVerified = true;
         stored.evaluation = {
           decision: 'accepted',
           reason: `Auto-applied: ${stored.type} dispatch with ${stored.priority} priority`,
@@ -562,8 +621,22 @@ export class DispatchManager {
    * Rebuild the persistent context file from all applied dispatches.
    * This is the file that agents load at session start.
    */
+  /** SEC-153: record that this dispatch's signature verified under a pinned key. */
+  markSignatureVerified(dispatchId: string): boolean {
+    const dispatches = this.loadDispatches();
+    const dispatch = dispatches.find(d => d.dispatchId === dispatchId);
+    if (!dispatch) return false;
+    dispatch.signatureVerified = true;
+    this.saveDispatches(dispatches);
+    return true;
+  }
+
   private rebuildContextFile(): void {
-    const applied = this.loadDispatches().filter(d => d.applied);
+    // SEC-153: the context file is loaded into agent sessions, so it carries only guidance types, and
+    // never a dispatch applied automatically without a verified signature (one applied before signatures
+    // were checked stays in the dispatch record, out of sessions, until a person accepts it again).
+    const applied = this.loadDispatches().filter(d => d.applied && CONTEXT_FILE_TYPES.has(d.type)
+      && !(d.evaluation?.auto === true && d.signatureVerified !== true));
     if (applied.length === 0) {
       // Remove context file if no applied dispatches
       if (fs.existsSync(this.contextFile)) {

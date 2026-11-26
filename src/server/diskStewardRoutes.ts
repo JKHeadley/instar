@@ -53,8 +53,8 @@ export function mountDiskStewardRoutes(router: Router, get: () => DiskStewardRou
     const d = get();
     if (!d) { res.status(503).json({ error: 'The disk watcher is turned off on this machine' }); return; }
     const postId = typeof req.body?.postId === 'string' ? req.body.postId : '';
-    const outcome = req.body?.outcome === 'posted' || req.body?.outcome === 'failed' ? req.body.outcome : null;
-    if (!postId || !outcome) { res.status(400).json({ error: 'postId and outcome (posted or failed) are required' }); return; }
+    const outcome = req.body?.outcome === 'posted' || req.body?.outcome === 'failed' || req.body?.outcome === 'not-delivered' ? req.body.outcome : null;
+    if (!postId || !outcome) { res.status(400).json({ error: 'postId and outcome (posted, failed or not-delivered) are required' }); return; }
     if (!d.steward.applyAck(postId, outcome)) { res.status(409).json({ error: 'That is not this machine\'s current due post' }); return; }
     res.json({ ok: true });
   });

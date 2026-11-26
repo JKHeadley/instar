@@ -1,7 +1,7 @@
 /** Disk Steward cleanup categories (spec docs/specs/disk-steward.md §3.6). */
 import { describe, it, expect } from 'vitest';
 import type fs from 'node:fs';
-import { pruneNpmCache, pruneDerivedData, npmBusy, xcodeBusy, parseElapsed, GiB, type PruneSeams, type ProcessRow } from '../../src/monitoring/diskSteward/pruneCategories.js';
+import { pruneNpmCache, pruneDerivedData, npmBusy, npmCacheWriting, xcodeBusy, parseElapsed, GiB, type PruneSeams, type ProcessRow } from '../../src/monitoring/diskSteward/pruneCategories.js';
 
 const HOME = '/Users/x';
 const DD = `${HOME}/Library/Developer/Xcode/DerivedData`;
@@ -11,12 +11,13 @@ const st = (o: { dir?: boolean; link?: boolean; mtimeMs: number }) => ({
 } as unknown as fs.Stats);
 
 function seams(o: {
-  npmRoot?: string | Error; cacheBytes?: number; procs?: ProcessRow[] | null | Array<ProcessRow[] | null>;
+  npmRoot?: string | Error; cacheBytes?: number; cacheAfter?: number | null; cleanThrows?: Error; procs?: ProcessRow[] | null | Array<ProcessRow[] | null>;
   dd?: Record<string, { mtimeMs: number; link?: boolean; realpath?: string; bytes?: number }>; dev?: Record<string, number>;
 }) {
   const ran: string[][] = [];
   const removed: string[] = [];
   let procCall = 0;
+  let cleaned = false;
   const s: PruneSeams = {
     processes: async () => {
       const p = o.procs;
@@ -26,9 +27,10 @@ function seams(o: {
     run: async (cmd, args) => {
       ran.push([cmd, ...args]);
       if (args[0] === 'config') { if (o.npmRoot instanceof Error) throw o.npmRoot; return { stdout: (o.npmRoot ?? `${HOME}/.npm`) + '\n' }; }
+      if (args[0] === 'cache') { cleaned = true; if (o.cleanThrows) throw o.cleanThrows; }
       return { stdout: '' };
     },
-    sizeOf: async (p) => (p.endsWith('_cacache') ? (o.cacheBytes ?? 0) : (o.dd?.[p.split('/').pop()!]?.bytes ?? GiB)),
+    sizeOf: async (p) => (p.endsWith('_cacache') ? (cleaned ? (o.cacheAfter === undefined ? 0 : o.cacheAfter) : (o.cacheBytes ?? 0)) : (o.dd?.[p.split('/').pop()!]?.bytes ?? GiB)),
     devOf: (p) => o.dev?.[p] ?? 1,
     readdir: (p) => (p === DD ? Object.keys(o.dd ?? {}) : null),
     lstat: (p) => {
@@ -63,6 +65,34 @@ describe('process predicates', () => {
     expect(xcodeBusy([{ elapsedSec: 1, command: '/usr/bin/xcodebuild -scheme X' }])).toBe(true);
     expect(xcodeBusy([{ elapsedSec: 1, command: '/bin/zsh' }])).toBe(false);
   });
+  it('an npm exec counts only while it starts; installs count for 30 min (fb-eb8372d8-043)', () => {
+    // The Studio case: every session starts a Playwright MCP through npm exec.
+    expect(npmBusy([{ elapsedSec: 300, command: 'npm exec @playwright/mcp@latest' }])).toBe(false);
+    expect(npmBusy([{ elapsedSec: 90, command: 'npm exec @playwright/mcp@latest' }])).toBe(true);
+    expect(npmBusy([{ elapsedSec: 600, command: 'node /opt/npm/bin/npx-cli.js vitest' }])).toBe(false);
+    expect(npmBusy([{ elapsedSec: 1500, command: 'npm install' }])).toBe(true);
+    expect(npmBusy([{ elapsedSec: 1900, command: 'npm install' }])).toBe(false);
+  });
+  it('an idle SourceKit service is not an Xcode build (fb-eb8372d8-043)', () => {
+    const sk = '/Applications/Xcode-26.6.0.app/Contents/Developer/Toolchains/XcodeDefault.xctoolchain/usr/lib/sourcekitd.framework/Versions/A/XPCServices/SourceKitService.xpc/Contents/MacOS/SourceKitService';
+    expect(xcodeBusy([{ elapsedSec: 72000, command: sk }])).toBe(false);
+    expect(xcodeBusy([{ elapsedSec: 5, command: '/Applications/Xcode-26.6.0.app/Contents/SharedFrameworks/XCBuild.framework/PlugIns/XCBBuildService.bundle/Contents/MacOS/XCBBuildService' }])).toBe(true);
+  });
+  it('a recently changed _cacache/tmp entry means the cache is being written', () => {
+    const now = 1_000_000_000;
+    const files: Record<string, number> = {};
+    const seams = {
+      now: () => now,
+      readdir: (p: string) => (p.endsWith('/tmp') ? Object.keys(files) : null),
+      lstat: (p: string) => (p.endsWith('/tmp') ? ({ mtimeMs: now } as never) : (files[p.split('/').pop()!] !== undefined ? ({ mtimeMs: files[p.split('/').pop()!] } as never) : null)),
+    };
+    files['old'] = now - 3 * 86_400_000; // leftover from an interrupted fetch
+    expect(npmCacheWriting(seams, '/c/_cacache')).toBe(false);
+    files['live'] = now - 5_000;
+    expect(npmCacheWriting(seams, '/c/_cacache')).toBe(true);
+    expect(npmCacheWriting({ ...seams, readdir: () => null }, '/c/_cacache')).toBe(true); // unreadable => busy
+    expect(npmCacheWriting({ ...seams, lstat: () => null }, '/c/_cacache')).toBe(false); // no tmp folder
+  });
 });
 
 describe('npm cache', () => {
@@ -72,6 +102,30 @@ describe('npm cache', () => {
     const r = await pruneNpmCache(s, base);
     expect(r.bytesFreed).toBe(9 * GiB);
     expect(ran.at(-1)).toEqual(['npm', 'cache', 'clean', '--force', '--cache', '/custom/cache']);
+  });
+  it('measures what left when npm exits non-zero after deleting (fb-eecd4dde-608)', async () => {
+    const { s } = seams({ cacheBytes: 13 * GiB, cacheAfter: GiB / 2, cleanThrows: new Error('Command failed: npm cache clean') });
+    const r = await pruneNpmCache(s, base);
+    expect(r.bytesFreed).toBe(13 * GiB - GiB / 2);
+    expect(r.removedItems).toBe(1);
+    expect(r.error).toMatch(/Command failed/);
+  });
+  it('claims nothing when npm fails and nothing left', async () => {
+    const { s } = seams({ cacheBytes: 9 * GiB, cacheAfter: 9 * GiB, cleanThrows: new Error('EBUSY') });
+    const r = await pruneNpmCache(s, base);
+    expect(r.bytesFreed).toBe(0);
+    expect(r.removedItems).toBe(0);
+    expect(r.error).toBe('EBUSY');
+  });
+  it('claims nothing on an error when the size afterwards is unreadable', async () => {
+    const { s } = seams({ cacheBytes: 9 * GiB, cacheAfter: null, cleanThrows: new Error('EBUSY') });
+    const r = await pruneNpmCache(s, base);
+    expect(r.bytesFreed).toBe(0);
+    expect(r.error).toBe('EBUSY');
+  });
+  it('counts only what actually left after a clean exit', async () => {
+    const { s } = seams({ cacheBytes: 9 * GiB, cacheAfter: GiB });
+    expect((await pruneNpmCache(s, base)).bytesFreed).toBe(8 * GiB);
   });
   it('under the limit does nothing', async () => {
     const { s, ran } = seams({ cacheBytes: 2 * GiB });

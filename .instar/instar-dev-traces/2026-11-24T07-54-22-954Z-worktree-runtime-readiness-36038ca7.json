@@ -1,0 +1,29 @@
+{
+  "version": 2,
+  "slug": "worktree-runtime-readiness",
+  "sessionId": "dd2f336e-e8f7-40b3-97e3-09d19139bfa6",
+  "timestamp": "2026-11-24T07:54:22.954Z",
+  "artifactPath": "upgrades/side-effects/worktree-runtime-readiness.md",
+  "artifactSha256": "64633f6e1e559c713335c736c86e55af8254805b327529e5b7375429d33e3961",
+  "coveredFiles": [
+    ".husky/instar-runtime.sh",
+    ".husky/pre-commit",
+    ".husky/pre-push",
+    "docs/specs/worktree-runtime-readiness.eli16.md",
+    "scripts/check-worktree-sqlite.cjs",
+    "scripts/lib/pre-push-scope.mjs",
+    "scripts/pre-push-smoke.mjs",
+    "src/core/InstarWorktreeManager.ts",
+    "tests/unit/scripts/pre-push-scope.test.ts",
+    "tests/unit/scripts/worktree-runtime-readiness.test.ts",
+    "upgrades/next/worktree-runtime-readiness.md",
+    "upgrades/side-effects/worktree-runtime-readiness.md"
+  ],
+  "phase": "complete",
+  "tier": 1,
+  "tierReasoning": "Local development readiness checks for a private worktree; no deployed agent or product state changes.",
+  "eli16Path": "docs/specs/worktree-runtime-readiness.eli16.md",
+  "sideEffectsPath": "upgrades/side-effects/worktree-runtime-readiness.md",
+  "secondPass": "true",
+  "reviewerConcurred": true
+}

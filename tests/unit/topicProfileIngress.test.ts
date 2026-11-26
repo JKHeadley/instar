@@ -86,6 +86,47 @@ describe('ProfileConfirmSlots — the ONE armed slot per topic (§10.1/§10.4)',
     });
   }
 
+  it('identity-security-creation-provenance v5: a slot armed in A can carry B as its target; same-topic slots carry none', () => {
+    const now = { t: 1000 };
+    const s = slots(now);
+    expect(s.arm('130715', 'propose-confirm', { model: 'opus' }, 'echo', 'agent-composed', '145097').ok).toBe(true);
+    s.recordEchoMessageId('130715', 500);
+    const m = s.matchConfirm('130715', { platformMessageId: 501, forwarded: false });
+    expect(m.ok && m.armed.targetTopicKey).toBe('145097');
+    s.arm('23', 'propose-confirm', { model: 'opus' }, 'echo', 'agent-composed', '23');
+    expect(s.peek('23')?.targetTopicKey).toBeUndefined();
+  });
+
+  it('identity-security-creation-provenance v5: any later message into A disarms a cross-topic slot; the echo itself and same-topic slots are untouched', () => {
+    const now = { t: 1000 };
+    const s = slots(now);
+    s.arm('130715', 'propose-confirm', { model: 'opus' }, 'echo', 'agent-composed', '145097');
+    s.noteOutbound('130715', 499); // the echo being sent: its id is not recorded yet
+    expect(s.peek('130715')).not.toBeNull();
+    s.recordEchoMessageId('130715', 500);
+    s.noteOutbound('130715', 500); // the echo's own id
+    expect(s.peek('130715')).not.toBeNull();
+    s.noteOutbound('130715', 501); // the agent posts something else after the echo
+    expect(s.peek('130715')).toBeNull();
+    s.arm('23', 'propose-confirm', { model: 'opus' }, 'echo', 'agent-composed');
+    s.recordEchoMessageId('23', 600);
+    s.noteOutbound('23', 601);
+    expect(s.peek('23')).not.toBeNull(); // the same-topic lane keeps today's behaviour
+  });
+
+  it('identity-security-creation-provenance v5: a re-sent echo ("Please confirm this version") does not disarm its own cross-topic slot', () => {
+    const now = { t: 1000 };
+    const s = slots(now);
+    s.arm('130715', 'propose-confirm', { model: 'opus' }, 'echo', 'agent-composed', '145097');
+    s.recordEchoMessageId('130715', 500);
+    s.clearEchoMessageId('130715'); // before the re-send
+    s.noteOutbound('130715', 510); // the re-sent echo itself
+    expect(s.peek('130715')).not.toBeNull();
+    s.recordEchoMessageId('130715', 510);
+    const m = s.matchConfirm('130715', { platformMessageId: 511, forwarded: false });
+    expect(m.ok && m.armed.targetTopicKey).toBe('145097');
+  });
+
   it('arms, records the echo id, and fires on a postdating confirm', () => {
     const now = { t: 1000 };
     const s = slots(now);

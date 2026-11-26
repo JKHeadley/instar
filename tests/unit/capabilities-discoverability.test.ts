@@ -42,6 +42,7 @@ const ROUTE_SOURCE_FILES = [
   'src/server/specReviewRoutes.ts',
   'src/server/usherRoutes.ts',
   'src/server/queuePaceRoutes.ts',
+  'src/server/quotaPacingRoutes.ts',
   'src/server/maturationLadderRoutes.ts',
   'src/server/neverSilentRoutes.ts',
   'src/server/mobilePairingRoutes.ts',
@@ -57,6 +58,7 @@ const ROUTE_SOURCE_FILES = [
   'src/server/workProjectsRoutes.ts',
   'src/server/projectAppCustomRoutes.ts',
   'src/server/projectAppSandboxRoutes.ts',
+  'src/server/ownedRepoRoutes.ts',
 ];
 const routesSource = ROUTE_SOURCE_FILES
   .map((rel) => fs.readFileSync(path.join(process.cwd(), rel), 'utf-8'))

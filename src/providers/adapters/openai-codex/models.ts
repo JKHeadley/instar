@@ -65,6 +65,13 @@ import type { ModelTier } from '../../types.js';
  * all answer on the ChatGPT account; on CLI 0.153.4 gpt-6-luna and gpt-6-sol are
  * refused ("not supported when using Codex with a ChatGPT account"). The tier map
  * moved to the GPT-6 family (fast=luna, balanced=sol, capable=astra).
+ *
+ * MOVED 2026-11-17 to the GPT-6.2 family on the operator's directive ("move all
+ * codex usage to these models"): balanced=gpt-6.2-sol, capable=gpt-6.2-astra.
+ * Both answered on every Codex account on CLI 0.169.0, and on 0.166.0/0.168.0;
+ * 0.165.0 and older refuse them, so launchers on an older CLI take the
+ * CODEX_OLDER_CLI_FALLBACKS model (gpt-6-sol / gpt-6-astra) from
+ * src/core/codexCapabilities.ts. There is no gpt-6.2-luna, so fast stays gpt-6-luna.
  * This was the THIRD retirement in this class (2026-04-14 `-codex` suffix, 2026-06-03
  * gpt-5.2) and the first where the SAFETY FLOOR itself was dead — so the self-heal in
  * CodexCliIntelligenceProvider retried onto another rejected model and the fleet stayed
@@ -128,10 +135,12 @@ const TIER_TO_MODEL: Record<ModelTier, string> = {
   fast: 'gpt-6-luna',
   // medium — everyday light work / worker subagents. gpt-6-sol since 2026-09-23
   // (same live probe, same old-CLI self-heal as `fast`).
-  balanced: 'gpt-6-sol',
+  // 2026-11-17: gpt-6.2-sol (older CLIs fall back to gpt-6-sol).
+  balanced: 'gpt-6.2-sol',
   // heavy — frontier reasoning model; hard problems + the user's main chat.
   // gpt-5.5 was retired 2026-09-09 (404s); gpt-6-astra is the live frontier id.
-  capable: 'gpt-6-astra',
+  // 2026-11-17: gpt-6.2-astra (older CLIs fall back to gpt-6-astra).
+  capable: 'gpt-6.2-astra',
 };
 
 /**

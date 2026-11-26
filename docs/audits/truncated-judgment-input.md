@@ -129,3 +129,11 @@ not claim the detector is complete: it reads a syntactic shape, so a truncation
 written in a form it has never seen is outside the population by construction —
 the same class of blind spot this audit was created by. That is why the standard
 registers as PARTIALLY enforced, and why the honest number is on the article.
+
+## Derivation review (STD-SUBCOUNTDOWN-bounded-input-derivation-review)
+
+The per-site readings that drive the baseline to zero live in
+`docs/audits/bounded-input-review/`, one file per batch, so batches reviewed in
+parallel do not collide in this ledger. Each row records the reading (who
+consumes the value and whether a cut can change their answer), not only the
+outcome.

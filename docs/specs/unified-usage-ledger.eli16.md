@@ -28,3 +28,8 @@ Tests make sure each engine and each kind of conversation produces exactly one r
 2. Per-call detail is kept for 90 days (less if a machine passes about 2 GB of it). Hourly totals and per-conversation totals are kept for about 13 months. Daily totals are kept forever, so no day's total is ever lost; only the finer detail ages out.
 3. Only the owner's phone can see usage, and it never shows account or session ids.
 4. The old usage pages and the runaway-usage alerts are left exactly as they are. The bug where the old page reads the wrong folder gets its own small fix, so alerts don't suddenly change.
+
+
+## How can I tell whether a separate account folder was checked?
+
+On a machine that has the ledger turned on, the next scan picks up newly enrolled Claude or Codex account folders. An old account can still contain work that belongs in the totals. The usage coverage report names the machine and folders it examined. It also shows when a folder could only be partly read, when the account list was unavailable, and how many files are waiting. Reading a folder tells the ledger where to look. A matching project or session tells it which requests belong to this agent, and a recorded session binding supplies the account identity when one is known. A backup copy and its original count once.

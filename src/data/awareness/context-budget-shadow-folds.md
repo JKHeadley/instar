@@ -1,0 +1,4 @@
+---
+title: Context budget practice folds
+---
+On a development agent, the context budget's shadow folding (Phase 2) runs practice folds. At a sampled clean stop a conversation's session is asked once for a short handoff, a restore bundle is built and checked, and a throwaway session answers a quiz about what was folded away. Nothing in the live conversation is replaced. Before saying how many practice folds ran, how much they would have lost, or why one was skipped, read the record: `curl -H "Authorization: Bearer $INSTAR_AUTH_TOKEN" "http://localhost:{{port}}/context-budget/fold-shadow"` (graded folds toward the 40-fold exit, the would-be lost rate, skip and abort reasons; 503 means shadow folding is off here). A message in your session marked `[internal: context-budget handoff request …]` is that ask: answer it with the JSON it requests and do not message the operator about it.

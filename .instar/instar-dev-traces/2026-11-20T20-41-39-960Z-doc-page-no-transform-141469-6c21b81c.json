@@ -1,0 +1,22 @@
+{
+  "version": 2,
+  "slug": "doc-page-no-transform-141469",
+  "sessionId": "b749abd3-5fd1-4c75-bc50-0d4da6ed788d",
+  "timestamp": "2026-11-20T20:41:39.960Z",
+  "artifactPath": "upgrades/side-effects/doc-page-no-transform-141469.md",
+  "artifactSha256": "63fa4f8ecfc5a624324ddde0157cae704ce255bd4eb3002f6676130dd8ac5b45",
+  "coveredFiles": [
+    "src/server/documentPageRoutes.ts",
+    "tests/integration/documents-page.test.ts",
+    "upgrades/next/doc-page-no-transform-141469.md",
+    "upgrades/side-effects/doc-page-no-transform-141469.eli16.md",
+    "upgrades/side-effects/doc-page-no-transform-141469.md"
+  ],
+  "phase": "complete",
+  "tier": 1,
+  "tierReasoning": "one response header on one HTML route; no authority, no state; revert undoes it",
+  "eli16Path": "upgrades/side-effects/doc-page-no-transform-141469.eli16.md",
+  "sideEffectsPath": "upgrades/side-effects/doc-page-no-transform-141469.md",
+  "secondPass": "not-required",
+  "reviewerConcurred": null
+}

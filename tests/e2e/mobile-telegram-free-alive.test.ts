@@ -66,6 +66,27 @@ async function boot(telegram?: Record<string, unknown>) {
 }
 
 describe('pairing and push without Telegram — production wiring', () => {
+  it('the Telegram page diff is alive through production authentication and preserves late arrivals', async () => {
+    const rows = [{ messageId: 1, topicId: 7, text: 'future-dated row', timestamp: '2099-01-01T00:00:00Z', fromUser: true, sessionName: null }];
+    const { server } = await boot({ getOwnerUserId: () => 4242, getTopicHistory: () => rows });
+    const read = (query: string) => request(server.getApp()).get(`/telegram/topics/7/messages?limit=50${query}`)
+      .set('Authorization', 'Bearer e2e-token').set('X-Instar-AgentId', 'notg-e2e');
+    const baseline = await read('&knownRows=');
+    expect(baseline.status).toBe(200);
+    expect(baseline.body.messages).toHaveLength(1);
+    expect(baseline.body.changeFeed.rowHashes).toHaveLength(1);
+    const known = encodeURIComponent(baseline.body.changeFeed.rowHashes.join(','));
+    const idle = await read(`&knownRows=${known}`);
+    expect(idle.status).toBe(200);
+    expect(idle.body.messages).toEqual([]);
+    rows.push({ messageId: 2, topicId: 7, text: 'late arrival', timestamp: '2020-01-01T00:00:00Z', fromUser: true, sessionName: null });
+    const changed = await read(`&knownRows=${known}`);
+    expect(changed.status).toBe(200);
+    expect(changed.body.messages.map((m: { text: string }) => m.text)).toEqual(['late arrival']);
+    expect(changed.body.changeFeed.rowHashes).toHaveLength(2);
+    expect((await request(server.getApp()).get('/telegram/topics/7/messages?knownRows=')).status).toBe(401);
+  });
+
   it('pairs through the dashboard, chats, and pushes the reply on an agent with no Telegram', async () => {
     const { server, stateDir, spawned } = await boot();
     const app = server.getApp();

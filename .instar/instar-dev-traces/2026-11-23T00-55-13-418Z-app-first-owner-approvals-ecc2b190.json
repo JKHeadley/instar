@@ -1,0 +1,23 @@
+{
+  "version": 2,
+  "slug": "app-first-owner-approvals",
+  "sessionId": "2489beca-6bce-4817-b1fb-9ba4ff1d41b2",
+  "timestamp": "2026-11-23T00:55:13.418Z",
+  "artifactPath": "upgrades/side-effects/app-first-owner-approvals.md",
+  "artifactSha256": "9ce505d3064f1d356ba138c0411c1be29d35bc78033b5c55e3bb26e696bbdb41",
+  "specPath": "docs/specs/app-first-owner-approvals.md",
+  "coveredFiles": [
+    "docs/specs/app-first-owner-approvals.eli16.md",
+    "docs/specs/app-first-owner-approvals.md",
+    "src/core/trustJourney/AccountPathService.ts",
+    "tests/e2e/app-approval-disclosure-alive.test.ts",
+    "tests/integration/app-approval-disclosure-routes.test.ts",
+    "tests/unit/app-approval-disclosure-boundaries.test.ts",
+    "upgrades/side-effects/app-first-owner-approvals.md"
+  ],
+  "phase": "complete",
+  "tier": 2,
+  "tierReasoning": "Security correction to existing native approval full-disclosure invariant; unchanged proof authority, fail-closed refusal.",
+  "secondPass": "true",
+  "reviewerConcurred": true
+}

@@ -1,0 +1,19 @@
+{
+  "version": 2,
+  "slug": "lv-peer-works-through-restart",
+  "sessionId": "557df37c-91a0-4ec9-a265-bebbdf05b55e",
+  "timestamp": "2026-11-19T05:41:29.285Z",
+  "artifactPath": "upgrades/side-effects/lv-peer-works-through-restart.md",
+  "artifactSha256": "3c63e38a1ea00043b35093361f15e1ec1830038f28251b8f56b4f8b4259795e2",
+  "specPath": "docs/specs/local-verify-peer-works-through-restart.md",
+  "coveredFiles": [
+    "src/data/awareness/local-verify-main-on-peers.md",
+    "src/data/awareness/local-verify-peer-restart.md",
+    "upgrades/side-effects/lv-peer-works-through-restart.md"
+  ],
+  "phase": "complete",
+  "tier": 2,
+  "tierReasoning": "awareness text of the approved spec moved into the existing helper-machine entry so the core instruction file does not grow; wording only",
+  "secondPass": "not-required",
+  "reviewerConcurred": null
+}

@@ -28,7 +28,7 @@ function genKey() {
     privateKeyEncoding: { type: 'pkcs8', format: 'pem' },
   });
 }
-const KEYS: Record<string, { publicKey: string; privateKey: string }> = { A: genKey() };
+const KEYS: Record<string, { publicKey: string; privateKey: string }> = { A: genKey(), m_studio: genKey() };
 function crypt(self: string): LeaseCrypto {
   return {
     selfMachineId: self,
@@ -52,14 +52,14 @@ function seedIdentity(stateDir: string, machineId: string) {
   return identity;
 }
 
-function makeCoord(dir: string, leaseSelfHeal: Record<string, unknown>) {
+function makeCoord(dir: string, leaseSelfHeal: Record<string, unknown>, clock = { now: 2_000 }, observed: LeaseTransport['observed'] = () => ({ lease: null, lastNonceByHolder: {} })) {
   const machineId = `m_${crypto.randomBytes(8).toString('hex')}`;
   const identity = seedIdentity(dir, machineId);
   const mgr = new MachineIdentityManager(dir);
   mgr.registerMachine(identity as any, 'awake');
   const tunnel: LeaseTransport = {
     broadcast: async () => true,
-    observed: () => ({ lease: null, lastNonceByHolder: {} }),
+    observed,
     isReachable: () => true,
     pullAllPeers: async () => {},
   };
@@ -68,7 +68,7 @@ function makeCoord(dir: string, leaseSelfHeal: Record<string, unknown>) {
     store: new LocalLeaseStore({ filePath: path.join(dir, 'lease-local.json') }),
     tunnel,
     presumedDeadHolders: () => new Set(),
-    now: () => 2_000,
+    now: () => clock.now,
   });
   const state = new StateManager(dir);
   const coord = new MultiMachineCoordinator(state, {
@@ -191,6 +191,31 @@ describe('MultiMachineCoordinator F1 — tick self-heal', () => {
   });
 
   describe('F4 — preferred-awake deferral (opt-in)', () => {
+    it('does not attempt a competing claim when the preferred captain has a verified epoch 23813 lease', async () => {
+      const preferred = 'm_studio';
+      const clock = { now: 2_000 };
+      const expiresAt = clock.now + TTL;
+      const captain = new FencedLease(crypt(preferred), { leaseTtlMs: TTL, failoverThresholdMs: 15 * 60_000 });
+      const signed = captain.signLease(23813, new Date(clock.now).toISOString(), new Date(expiresAt).toISOString(), 1);
+      const coord = makeCoord(dir, { preferredAwakeMachineId: preferred }, clock,
+        () => ({ lease: signed, lastNonceByHolder: { [preferred]: signed.nonce } }));
+      const coordinator = coord as unknown as { leaseCoordinator: LeaseCoordinator; tickLease(): Promise<void> };
+      const lease = coordinator.leaseCoordinator;
+      const acquire = vi.spyOn(lease, 'acquireIfEligible').mockResolvedValue(false);
+      try {
+        expect(lease.currentEpoch()).toBe(23813);
+        expect(lease.isHolderHealthy(preferred)).toBe(true);
+        await coordinator.tickLease();
+        expect(acquire).not.toHaveBeenCalled();
+
+        clock.now = expiresAt + 1;
+        await coordinator.tickLease();
+        expect(acquire).toHaveBeenCalledOnce();
+      } finally {
+        coord.stop();
+      }
+    });
+
     it('F4 off (no preferredAwakeMachineId) ⇒ never defers', () => {
       const coord = makeCoord(dir, {});
       const c = coord as any;

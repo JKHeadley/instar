@@ -1371,6 +1371,15 @@ export class IntelligenceRouter implements IntelligenceProvider {
         extra: { model: modelId as IntelligenceOptions['model'], strictModelPin: true },
       });
     }
+    // Family-pinned content (context-budget §9): no routing, no swap, never another vendor.
+    if (options?.pinnedFramework) {
+      const framework = options.pinnedFramework;
+      const provider = this.resolveProvider(framework);
+      if (!provider) throw new Error(`IntelligenceRouter: pinned framework '${framework}' unavailable`);
+      // The default slot can hold a fallback from another vendor, so identity is checked there too.
+      if (provider.frameworkId !== framework) throw new Error('IntelligenceRouter: pinned provider identity unverified');
+      return this.runAttempt(provider, prompt, decision, {});
+    }
     const component = options?.attribution?.component;
     const explicitCategory = (options?.attribution as { category?: unknown } | undefined)?.category;
     const category: ComponentCategory = isComponentCategory(explicitCategory)

@@ -167,9 +167,13 @@ export function segmentBlock(block, ranges) {
   return out;
 }
 
-/** Comment ranges to highlight: only on the latest version, only placed and open comments. */
+/**
+ * Comment ranges to highlight on the version being read: open comments the server placed on it.
+ * A comment sits where it was made on its own version; on another version the server places it
+ * only where the same passage clearly still is.
+ */
 export function highlightRanges(page) {
-  if (!page || !page.version || !page.version.latest) return [];
+  if (!page || !page.version) return [];
   return (page.comments || [])
     .filter((c) => !c.resolved && c.anchorState !== 'orphaned' && Number.isInteger(c.start) && Number.isInteger(c.end) && c.end > c.start)
     .map((c) => ({ key: c.key, start: c.start, end: c.end }));
@@ -253,9 +257,14 @@ export function versionWords(page) {
   return i >= 0 ? `Version ${i + 1} of ${list.length}` : `Version ${page.version.label}`;
 }
 
-export function anchorNote(state) {
-  if (state === 'edited') return 'The passage changed since this comment';
-  if (state === 'orphaned') return 'The passage this comment was on was removed';
+/** The note under a comment's quote, for the version being read (`c` is the comment). */
+export function anchorNote(state, c, page) {
+  const label = c && c.onVersionLabel != null ? c.onVersionLabel : null;
+  const other = !!(c && page && page.version && c.onVersion && c.onVersion !== page.version.id);
+  const made = other && label !== null ? `Made on version ${label}. ` : '';
+  if (state === 'edited') return `${made}The passage changed since this comment`;
+  if (state === 'orphaned') return other ? `${made}This passage isn't in the version you're reading` : 'The passage this comment was on was removed';
+  if (other && label !== null) return `Made on version ${label}`;
   return null;
 }
 
@@ -325,6 +334,8 @@ export function errorWords(status, body, ctx = {}) {
 
 // ── drafts ──────────────────────────────────────────────────────────────────────────────────────
 
+/** Every comment draft's localStorage key starts with this (Forget this computer clears them all). */
+export const DRAFT_PREFIX = 'instar-doc-draft:';
 export const draftKey = (docId, kind, a, b) => `instar-doc-draft:${docId}:${kind}:${a}${b === undefined ? '' : `-${b}`}`;
 
 /** A stored draft, or null for anything unreadable. Shape: {text, id, salt?}. */
@@ -541,4 +552,81 @@ export function decisionPollDelays(totalMs = 10 * 60_000) {
   let d = 5000; let sum = 0;
   while (sum + d <= totalMs) { out.push(d); sum += d; d = Math.min(d * 2, 60_000); }
   return out;
+}
+
+// ── Joining a computer from a team invite (docs/specs/member-browser-any-computer.md) ──────────
+
+/** The join page's fragment `#v=1&c=<code>[&d=<docId>]`: the code and the document the member came for. */
+export function parseJoinFragment(hash) {
+  const q = new Map();
+  for (const kv of String(hash || '').replace(/^#/, '').split('&')) {
+    const i = kv.indexOf('=');
+    if (i > 0 && !q.has(kv.slice(0, i))) { try { q.set(kv.slice(0, i), decodeURIComponent(kv.slice(i + 1))); } catch { return null; } }
+  }
+  if (q.get('v') !== '1') return null;
+  const code = q.get('c') || '';
+  if (!/^[A-Za-z0-9_-]{22}$/.test(code)) return null;
+  const d = q.get('d') || '';
+  return { code, docId: /^[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12}$/.test(d) ? d : null };
+}
+
+/** What a joining computer signs to confirm (server: documentJoinRoutes.joinConfirmString). */
+export const joinConfirmString = ({ deviceId, host, timeMs, code }) => `instar-join-v1\nconfirm\n${deviceId}\n${String(host).toLowerCase()}\n${timeMs}\n${code}`;
+/** What a computer signs to forget itself (server: documentJoinRoutes.joinForgetString). */
+export const joinForgetString = ({ deviceId, host, timeMs }) => `instar-join-v1\nforget\n${deviceId}\n${String(host).toLowerCase()}\n${timeMs}`;
+
+/** A typed code: digits only, spaces allowed (`123 456`). */
+export function cleanJoinCode(text) {
+  const c = String(text || '').replace(/\s+/g, '');
+  return /^\d{6}$/.test(c) ? c : null;
+}
+
+/** The plain line a page shows near a joined computer's end (§3.1 step 8): only in the last 7 days. */
+export function computerEndLine(endsAtIso, ownerName, nowMs = Date.now()) {
+  const t = Date.parse(endsAtIso || '');
+  if (!Number.isFinite(t)) return null;
+  if (t - nowMs > 7 * 86_400_000) return null;
+  const day = new Date(t).toLocaleDateString([], { day: 'numeric', month: 'short' });
+  return `This computer can open documents until ${day}. After that, ask ${ownerName || 'the owner'} for a new link.`;
+}
+
+/** The words for a join refusal (never a raw error code). */
+export function joinErrorWords(status, data, ownerName) {
+  const owner = ownerName || 'the owner';
+  const detail = data && typeof data.detail === 'string' ? data.detail : null;
+  if (detail) return detail;
+  if (data && data.error === 'wrong-code') return `That code isn't right. ${data.attemptsLeft === 1 ? 'One try left.' : `${data.attemptsLeft ?? 2} tries left.`}`;
+  if (status === 403) return `This link has expired or was already used. Ask ${owner} for a new link.`;
+  if (status === 503) return 'Computers can\'t open documents on this agent right now. Try again later.';
+  if (status === 0) return 'The agent couldn\'t be reached. Check your connection and try again.';
+  return 'Something went wrong. Try again in a moment.';
+}
+
+// ── the "Link this computer" page's words (Justin 2026-11-18: more explicit, easier to follow) ────
+// The button and screen words are the iPhone app's own (apps/instar-ios ComputerLinkEntry and
+// ComputerLinkSheet, build 112): People → "Link a computer", "Link for 30 days", then Face ID.
+// 30 days is the server's own cap (src/server/documentLinkRoutes.ts LINK_MAX_DAYS).
+export const LINK_WORDS = Object.freeze({
+  title: 'Link this computer to your phone',
+  lead: 'Linking lets this computer open your documents, read them and comment, for 30 days, without signing in again.',
+  limits: 'It only sees documents you can see. You can remove it from your phone at any time, under People → Linked computers.',
+  stepsTitle: 'On your iPhone',
+  steps: Object.freeze([
+    Object.freeze({ text: 'Open Instar on your iPhone.' }),
+    Object.freeze({ text: 'Tap Agents, select this agent, then scroll down to ', button: 'People', after: '.' }),
+    Object.freeze({ text: 'Tap ', button: 'Link a computer', after: '.' }),
+    Object.freeze({ text: 'Scan the code on this screen.' }),
+    Object.freeze({ text: 'Check that the code on your phone matches the one here, tap ', button: 'Link for 30 days', after: ', then confirm with Face ID.' }),
+  ]),
+  fallback: 'No “Link a computer” in People yet? Update the app, or open any document in the app and tap “Open on a computer”.',
+  codeLabel: 'Check code',
+  codeHint: 'Your phone shows this same code after it scans.',
+  qrLabel: 'Code to scan with the Instar app',
+  waiting: 'Waiting for your phone…',
+});
+
+/** One step as plain text (for a screen reader label and tests): the button words in quotes. */
+export function linkStepText(step) {
+  if (!step || typeof step.text !== 'string') return '';
+  return step.button ? `${step.text}“${step.button}”${step.after || ''}` : step.text;
 }
