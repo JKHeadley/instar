@@ -1,11 +1,10 @@
 // Disposable Needs You adapter. It has no route or production authority of its own.
 import { createHmac, randomBytes, timingSafeEqual } from 'node:crypto';
 import type { Request } from 'express';
-import type { SecretDrop, SecretRequest } from './SecretDrop.js';
+import { ownerNeedsCredentialFieldEligible, type SecretDrop, type SecretRequest } from './SecretDrop.js';
 import { mintIsUnverified } from './secretDropMintPolicy.js';
 
 const REQUEST_ID = /^[A-Za-z0-9_.:-]{1,200}$/;
-const FIELD_NAME = /^[A-Za-z][A-Za-z0-9_-]{0,79}$/;
 const MAX_VALUE_LENGTH = 10_000;
 
 export interface CredentialRequestBinding {
@@ -33,7 +32,7 @@ function reviewedPresentation(binding: CredentialRequestBinding) {
 function ordinarySingleField(request: SecretRequest | null): request is SecretRequest {
   if (!request || mintIsUnverified(request.mintAuth) || request.browserHost || request.senderVerification || request.fields.length !== 1) return false;
   const name = request.fields[0].name;
-  return FIELD_NAME.test(name) && !Object.hasOwn(Object.prototype, name);
+  return ownerNeedsCredentialFieldEligible(name);
 }
 
 export function createOwnerNeedsCredentialConsent(deps: CredentialConsentDependencies) {

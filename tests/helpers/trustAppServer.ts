@@ -64,7 +64,7 @@ export async function bootTrustAppServer(
   });
   const sessionManager = createMockSessionManager() as never as { on: () => void };
   sessionManager.on = () => undefined;
-  const tunnel = { lifecycleState: { lastState: 'active', activeProvider: 'cloudflare-named' }, url: `https://${HOST}`, on: () => undefined } as never;
+  const tunnel = { lifecycleState: { lastState: 'active', activeProvider: 'cloudflare-named' }, url: `https://${HOST}`, getExternalUrl: (pathname: string) => `https://${HOST}${pathname}`, on: () => undefined } as never;
   const server = new AgentServer({ config, sessionManager, state: new StateManager(stateDir), tunnel, adaptiveTrust: trust, trustAccountPath: runtime, ownerNeedsCandidate: ownerNeeds?.(runtime) } as never);
   servers.push(server);
   const app = server.getApp();

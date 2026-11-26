@@ -239,8 +239,19 @@ export interface StuckConsumerEvent {
   minutesUntilCleanup: number;
 }
 
+export function ownerNeedsCredentialFieldEligible(name: string): boolean {
+  return /^[A-Za-z][A-Za-z0-9_-]{0,79}$/.test(name) && !Object.hasOwn(Object.prototype, name);
+}
+
+interface SecretDropOwnerBinding {
+  requestId: string;
+  ownerId: string;
+  revision: number;
+}
+
 export class SecretDrop {
   private pending = new Map<string, SecretRequest>();
+  private ownerNeedsBindings = new WeakMap<SecretRequest, SecretDropOwnerBinding>();
   private received = new Map<string, SecretSubmission>();
   private receivedTimers = new Map<string, NodeJS.Timeout>();
   /** Absolute cleanup deadline (ms-since-epoch) per stored submission — the
@@ -337,6 +348,32 @@ export class SecretDrop {
       return null;
     }
     return request;
+  }
+
+  /** Bind an ordinary pending request to a verified owner selected by its source. */
+  bindOwnerNeedsRequest(token: string, ownerId: string): string | null {
+    const pending = this.getPending(token);
+    if (!pending || !ownerId || mintIsUnverified(pending.mintAuth) ||
+      pending.browserHost || pending.senderVerification || pending.fields.length !== 1 ||
+      !ownerNeedsCredentialFieldEligible(pending.fields[0].name)) return null;
+    const previous = this.ownerNeedsBindings.get(pending);
+    if (previous?.ownerId === ownerId) return previous.requestId;
+    const revision = (previous?.revision ?? 0) + 1;
+    if (!Number.isSafeInteger(revision)) return null;
+    const requestId = previous?.requestId ?? `cr-${crypto.randomBytes(16).toString('hex')}`;
+    this.ownerNeedsBindings.set(pending, { requestId, ownerId, revision });
+    return requestId;
+  }
+
+  /** Internal source lookup. Keep the private token inside the credential adapter. */
+  ownerNeedsBinding(requestId: string): { ownerId: string; revision: number; dropToken: string } | null {
+    for (const pending of this.pending.values()) {
+      const binding = this.ownerNeedsBindings.get(pending);
+      if (binding?.requestId === requestId && this.getPending(pending.token)) {
+        return { ownerId: binding.ownerId, revision: binding.revision, dropToken: pending.token };
+      }
+    }
+    return null;
   }
 
   /**

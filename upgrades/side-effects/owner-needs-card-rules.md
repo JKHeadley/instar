@@ -64,3 +64,9 @@ The fleet migration and remaining source adapter work have separate acceptance. 
 The canonical configuration defaults enable owner admission for new agents and fill the same missing value during an existing agent update. Startup also uses the default when the value is absent, including on agents that have not persisted the new configuration. An explicit false restores the legacy list after a restart. Malformed settings stay inactive. An update exclusion leaves the file alone while startup defaults still apply when the setting is absent.
 
 The server checks the negotiated request before returning the new schema. Legacy owner clients receive an update-required response. Older native clients can retain cached legacy rows, so the draft must stay out of a release until supported clients are deployed. Production credential, batch and physical sources also need acceptance before fleet activation. The draft changes no deployed config.
+
+## Credential request mint and owner binding
+
+An authenticated agent mint can name one current native owner device for an ordinary single-field Secret Drop. The target is resolved using the paired device registry, current role, device key and revocation ledger. The existing private link still works. The optional response reference is independent of the Secret Drop token, and private bindings do not appear in the pending list.
+
+Reassignment changes the binding revision and invalidates previously reviewed consent. Unsupported requests are refused and the tentative request is canceled before any response. The signed fixture checks the same binding store. Production Needs You disclosure and submission remain unwired, so this slice adds no credential submission authority.

@@ -31735,6 +31735,17 @@ document.getElementById('mcpForm').addEventListener('submit', async function (e)
   router.post('/secrets/request', (req, res) => {
     // Who is asking decides what the request may reach (secret-drop-self-mint-hardening).
     const mintAuth = classifyGatedMint(req.headers as Record<string, unknown>, ctx.config.authToken, res.locals?.dashboardScopedSession === true);
+    const target = req.body?.needsOwnerDeviceId;
+    let ownerId: string | null = null;
+    if (target !== undefined) {
+      if (mintAuth !== 'master') { res.status(403).json({ error: 'owner-credential-mint-requires-agent' }); return; }
+      if (typeof target !== 'string' || !/^[a-zA-Z0-9._:-]{1,128}$/.test(target)) {
+        res.status(400).json({ error: 'invalid-owner-device' });
+        return;
+      }
+      ownerId = ctx.mobilePairingService?.ownerCredentialDeviceIdentity(target) ?? null;
+      if (!ownerId) { res.status(404).json({ error: 'owner-device-unavailable' }); return; }
+    }
     const validated = validateSecretRequestBody(req.body, mintAuth);
     if ('error' in validated) {
       res.status(400).json({ error: validated.error });
@@ -31742,9 +31753,16 @@ document.getElementById('mcpForm').addEventListener('submit', async function (e)
     }
     try {
       const { token } = secretDrop.create(validated.opts);
+      const needsRequestId = ownerId ? secretDrop.bindOwnerNeedsRequest(token, ownerId) : null;
+      if (ownerId && !needsRequestId) {
+        secretDrop.cancel(token);
+        res.status(400).json({ error: 'unsupported-owner-credential-request' });
+        return;
+      }
       const urls = secretDropUrl(token);
       res.status(201).json({
         token,
+        ...(needsRequestId ? { needsRequestId } : {}),
         ...urls,
         expiresIn: validated.opts.ttlMs || 15 * 60 * 1000,
         ...mintAnswerExtras(mintAuth, validated.opts.topicId !== undefined),

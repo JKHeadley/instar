@@ -123,4 +123,27 @@ describe('App approval disclosure E2E', () => {
     expect(s.runtime.store.request(proposed.body.requestId)).toMatchObject({ status: 'open', adapter: 'telegram' });
   });
 
+  it('binds an explicitly addressed secret request only to a current native owner device', async () => {
+    const s = await bootTrustAppServer('needs-credential-mint-e2e-');
+    const mac = await s.pair({ local: true, name: 'Credential test Mac' });
+    const mint = (body: Record<string, unknown>) => s.bearer(request(s.app).post('/secrets/request')).send({ label: 'Fixture key', ...body });
+    const ordinary = await mint({});
+    expect(ordinary.status, ordinary.body.error).toBe(201);
+    expect(ordinary.body).not.toHaveProperty('needsRequestId');
+    await mint({ needsOwnerDeviceId: 'unknown' }).expect(404);
+    await mint({ needsOwnerDeviceId: mac.id, browserHost: 'example.test' }).expect(400);
+    await mint({ needsOwnerDeviceId: mac.id, fields: [{ name: 'api key', label: 'Key' }] }).expect(400);
+    const bound = await mint({ needsOwnerDeviceId: mac.id });
+    expect(bound.status, bound.body.error).toBe(201);
+    expect(bound.body.needsRequestId).toMatch(/^cr-[a-f0-9]{32}$/);
+    expect(bound.body.needsRequestId).not.toBe(bound.body.token);
+    const pending = await s.bearer(request(s.app).get('/secrets/pending')).expect(200);
+    expect(pending.body.pending).toHaveLength(2);
+    expect(JSON.stringify(pending.body)).not.toContain(bound.body.needsRequestId);
+    expect(s.server.mobilePairing!.devices.setPerson(mac.id, { userId: 'member', role: 'msp' })).not.toBeNull();
+    await mint({ needsOwnerDeviceId: mac.id }).expect(404);
+    expect(s.server.mobilePairing!.devices.revoke(mac.id)).toBe(true);
+    await mint({ needsOwnerDeviceId: mac.id }).expect(404);
+  });
+
 });

@@ -2,7 +2,7 @@ import express, { type Request } from 'express';
 import request from 'supertest';
 import { afterEach, describe, expect, it, vi } from 'vitest';
 import { canonicalString, ReplayGuard, verifyDeviceRequest } from '../../src/core/MobileDeviceKeys.js';
-import { createOwnerNeedsCredentialConsent, type CredentialRequestBinding } from '../../src/server/ownerNeedsCredentialConsent.js';
+import { createOwnerNeedsCredentialConsent } from '../../src/server/ownerNeedsCredentialConsent.js';
 import { SecretDrop, type CreateSecretRequestOptions } from '../../src/server/SecretDrop.js';
 import { makeDevice } from '../helpers/mobileDevice.js';
 
@@ -25,13 +25,17 @@ function setup(options: Partial<CreateSecretRequestOptions> = {}) {
   const mint = () => drop.create({ label: 'Sample credential', mintAuth: 'owner-phone', ...options }).token;
   const token = mint();
   const presentation = { title: 'Enter sample credential', why: 'The test workflow needs one value.', detail: null };
-  let binding: CredentialRequestBinding | null = { ownerId: 'fixture-owner', revision: 1, dropToken: token, presentation };
+  let boundId = drop.bindOwnerNeedsRequest(token, 'fixture-owner');
   let ownerActive = true;
   const owner = makeDevice(), team = makeDevice();
   const admitted = new WeakMap<Request, string>();
   const replay = new ReplayGuard();
   const adapter = createOwnerNeedsCredentialConsent({
-    drop, bindingFor: id => id === REQUEST_ID ? binding : null,
+    drop,
+    bindingFor: id => {
+      const binding = id === REQUEST_ID && boundId ? drop.ownerNeedsBinding(boundId) : null;
+      return binding ? { ...binding, presentation } : null;
+    },
     signedOwnerFor: req => admitted.get(req) === OWNER_DEVICE && ownerActive ? { id: 'fixture-owner' } : null,
   });
 
@@ -82,9 +86,9 @@ function setup(options: Partial<CreateSecretRequestOptions> = {}) {
     };
   }
   return { app, drop, token, signed, presentation,
-    replace: () => { const replacement = mint(); binding = { ownerId: 'fixture-owner', revision: 2, dropToken: replacement, presentation }; return replacement; },
-    reassign: () => { binding = { ownerId: 'other-owner', revision: 2, dropToken: token, presentation }; },
-    restore: () => { binding = { ownerId: 'fixture-owner', revision: 3, dropToken: token, presentation }; },
+    replace: () => { const replacement = mint(); boundId = drop.bindOwnerNeedsRequest(replacement, 'fixture-owner'); return replacement; },
+    reassign: () => { drop.bindOwnerNeedsRequest(token, 'other-owner'); },
+    restore: () => { drop.bindOwnerNeedsRequest(token, 'fixture-owner'); },
     revoke: () => { ownerActive = false; },
   };
 }

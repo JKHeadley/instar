@@ -80,6 +80,33 @@ describe('SecretDrop', () => {
     });
   });
 
+  describe('owner Needs You binding', () => {
+    it('uses an opaque ID and advances the revision on each reassignment', () => {
+      const { token } = drop.create({ label: 'Key', mintAuth: 'master' });
+      const id = drop.bindOwnerNeedsRequest(token, 'owner-a')!;
+      expect(id).toMatch(/^cr-[a-f0-9]{32}$/);
+      expect(id).not.toBe(token);
+      expect(drop.bindOwnerNeedsRequest(token, 'owner-a')).toBe(id);
+      expect(drop.ownerNeedsBinding(id)).toEqual({ ownerId: 'owner-a', revision: 1, dropToken: token });
+      expect(drop.bindOwnerNeedsRequest(token, 'owner-b')).toBe(id);
+      expect(drop.bindOwnerNeedsRequest(token, 'owner-a')).toBe(id);
+      expect(drop.ownerNeedsBinding(id)?.revision).toBe(3);
+      expect(drop.listPending()[0]).not.toHaveProperty('ownerId');
+      expect(drop.cancel(token)).toBe(true);
+      expect(drop.ownerNeedsBinding(id)).toBeNull();
+    });
+
+    it('refuses unverified, browser-host, peer and multi-field drops', () => {
+      const cases = [
+        drop.create({ label: 'Key' }),
+        drop.create({ label: 'Password', mintAuth: 'master', browserHost: 'example.test' }),
+        drop.create({ label: 'Peer key', mintAuth: 'master', senderVerification: { senderPubKeyHex: 'a'.repeat(64) } }),
+        drop.create({ label: 'Login', mintAuth: 'master', fields: [{ name: 'user', label: 'User' }, { name: 'password', label: 'Password' }] }),
+      ];
+      for (const { token } of cases) expect(drop.bindOwnerNeedsRequest(token, 'owner-a')).toBeNull();
+    });
+  });
+
   describe('getPending', () => {
     it('returns null for unknown token', () => {
       expect(drop.getPending('nonexistent')).toBeNull();

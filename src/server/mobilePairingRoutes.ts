@@ -838,6 +838,13 @@ export class MobilePairingService {
     });
   }
 
+  /** Current native owner assignment for an explicitly targeted protected credential request. */
+  ownerCredentialDeviceIdentity(deviceId: string): string | null {
+    if (this.contested.has(deviceId) || !activeOwnerPhone(this, deviceId)) return null;
+    const key = this.devices.get(deviceId)?.publicKey;
+    return key ? `${deviceId}:${deviceKeyHashOf(key)}` : null;
+  }
+
   /** The shared check by device id (push recipients): an unknown device or person ⇒ no. */
   deviceMayUseConversation(deviceId: string, ref: string): boolean {
     const d = this.devices.get(deviceId);
