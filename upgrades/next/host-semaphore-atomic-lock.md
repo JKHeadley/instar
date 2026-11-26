@@ -1,0 +1,15 @@
+# Upgrade Guide — vNEXT
+
+<!-- bump: patch -->
+
+## What Changed
+
+The host spawn limit now publishes the lock and its complete owner record together. Concurrent starts can no longer exceed the limit by mistaking a partially written lock for an abandoned one.
+
+## What to Tell Your User
+
+The host is better protected against bursts of jobs starting at the same time.
+
+## Summary of New Capabilities
+
+None. This update repairs the existing host spawn limit.
