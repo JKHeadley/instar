@@ -12,38 +12,48 @@ const request = {
   expiresAt: 1795665601000,
 };
 const now = 1795665596000;
+function clock() {
+  return { wallTime: now, monoTime: 0, wall() { return this.wallTime; }, monotonic() { return this.monoTime; } };
+}
+const accept = () => true;
 const bytes = (frame: { frameHex: string }) => Buffer.from(frame.frameHex, 'hex');
 const companion = createPublicKey(vectors.publicKeys.companion);
 const agent = createPublicKey(vectors.publicKeys.agent);
 
 it('consumes one correctly chained activation and refuses replay', () => {
-  const flow = new ConnectConsentLifecycle(request, companion, agent, () => true);
-  expect(flow.confirm(bytes(confirmation), now)).toBeUndefined();
-  expect(flow.decide(bytes(decision), now)).toBe('allow');
-  expect(flow.prepare(bytes(ack), now)).toBe(true);
-  expect(flow.confirm(bytes(confirmation), now)).toEqual(request);
-  expect(flow.confirm(bytes(confirmation), now)).toBeUndefined();
+  const flow = new ConnectConsentLifecycle(request, companion, agent, () => true, clock());
+  expect(flow.confirm(bytes(confirmation), accept)).toBe(false);
+  expect(flow.decide(bytes(decision))).toBe('allow');
+  expect(flow.prepare(bytes(ack))).toBe(true);
+  expect(flow.confirm(bytes(confirmation), value => value === flow.request)).toBe(true);
+  expect(flow.confirm(bytes(confirmation), accept)).toBe(false);
 });
 
 it('refuses the wrong connection, request digest, or lost activation deadline', () => {
   for (const pending of [{ ...request, generation: '00'.repeat(32) }, { ...request, requestDigest: '00'.repeat(32) }]) {
-    const flow = new ConnectConsentLifecycle(pending, companion, agent, () => true);
-    expect(flow.decide(bytes(decision), now)).toBeUndefined();
+    const flow = new ConnectConsentLifecycle(pending, companion, agent, () => true, clock());
+    expect(flow.decide(bytes(decision))).toBeUndefined();
   }
-  const flow = new ConnectConsentLifecycle(request, companion, agent, () => true);
-  expect(flow.decide(bytes(decision), now)).toBe('allow');
-  expect(flow.prepare(bytes(ack), now)).toBe(true);
-  expect(flow.confirm(bytes(confirmation), now + 4000)).toBeUndefined();
+  const time = clock();
+  const flow = new ConnectConsentLifecycle(request, companion, agent, () => true, time);
+  expect(flow.decide(bytes(decision))).toBe('allow');
+  expect(flow.prepare(bytes(ack))).toBe(true);
+  time.monoTime = 4000;
+  expect(flow.confirm(bytes(confirmation), accept)).toBe(false);
+  time.monoTime = 0;
+  expect(flow.confirm(bytes(confirmation), accept)).toBe(false);
 });
 
 it('refuses confirmation after pairing revocation or cancellation', () => {
   for (const invalidate of ['revoke', 'cancel']) {
     let current = true;
-    const flow = new ConnectConsentLifecycle(request, companion, agent, () => current);
-    expect(flow.decide(bytes(decision), now)).toBe('allow');
-    expect(flow.prepare(bytes(ack), now)).toBe(true);
+    const flow = new ConnectConsentLifecycle(request, companion, agent, () => current, clock());
+    expect(flow.decide(bytes(decision))).toBe('allow');
+    expect(flow.prepare(bytes(ack))).toBe(true);
     if (invalidate === 'revoke') current = false;
     else flow.cancel();
-    expect(flow.confirm(bytes(confirmation), now)).toBeUndefined();
+    expect(flow.confirm(bytes(confirmation), accept)).toBe(false);
+    current = true;
+    expect(flow.confirm(bytes(confirmation), accept)).toBe(false);
   }
 });
