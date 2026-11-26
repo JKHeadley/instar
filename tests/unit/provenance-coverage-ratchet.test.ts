@@ -95,6 +95,17 @@ function walkSrc(): string[] {
   return out;
 }
 
+let sourceFiles: string[] | undefined;
+const getSourceFiles = () => sourceFiles ??= walkSrc();
+const sourceText = new Map<string, string>();
+function sourceWithoutComments(file: string): string {
+  const cached = sourceText.get(file);
+  if (cached !== undefined) return cached;
+  const text = stripComments(fs.readFileSync(file, 'utf-8'));
+  sourceText.set(file, text);
+  return text;
+}
+
 const baseOf = (component: string): string => component.split('/')[0].replace(/^server:/, '').trim();
 
 // ── Pinned baselines (2026-07-11, the census seed). SHRINK-ONLY: wiring an
@@ -872,20 +883,21 @@ describe('wired verification — static half (§5.6: typed registration, not tru
   });
 
   it('wired points not in WIRED_AWAITING_ENROLLMENT have an enrolling source importing the DP_* constant + referencing provenance enrollment', () => {
-    const files = walkSrc().filter((f) => path.relative(ROOT, f) !== CENSUS_REL);
+    const files = getSourceFiles().filter((f) => path.relative(ROOT, f) !== CENSUS_REL);
     for (const e of wiredEntries) {
       if (WIRED_AWAITING_ENROLLMENT.includes(e.decisionPoint)) continue;
       const constName = constNameFor(e.decisionPoint);
-      const enrolling = files.filter((f) => {
-        const text = stripComments(fs.readFileSync(f, 'utf-8'));
-        return new RegExp(`\\b${constName}\\b`).test(text) && /provenance\s*:/.test(text);
+      const reference = new RegExp(`\\b${constName}\\b`);
+      const enrolling = files.some((f) => {
+        const text = sourceWithoutComments(f);
+        return reference.test(text) && /provenance\s*:/.test(text);
       });
       expect(
-        enrolling.length,
+        enrolling,
         `${e.decisionPoint} is declared wired but NO src file imports ${constName} and references ` +
           "an options.provenance enrollment — a wired declaration is verified, not trusted (§5.6). " +
           'Either wire the callsite or move the point back to pending.',
-      ).toBeGreaterThan(0);
+      ).toBe(true);
     }
   });
 
@@ -897,11 +909,12 @@ describe('wired verification — static half (§5.6: typed registration, not tru
     // …and must still be genuinely un-enrolled: once the enrolling source lands
     // (build phases P7/P8), REMOVE the point from WIRED_AWAITING_ENROLLMENT so
     // the typed-import verification above starts enforcing for it.
-    const files = walkSrc().filter((f) => path.relative(ROOT, f) !== CENSUS_REL);
+    const files = getSourceFiles().filter((f) => path.relative(ROOT, f) !== CENSUS_REL);
     const stale: string[] = [];
     for (const dp of WIRED_AWAITING_ENROLLMENT) {
       const constName = constNameFor(dp);
-      const referenced = files.some((f) => new RegExp(`\\b${constName}\\b`).test(stripComments(fs.readFileSync(f, 'utf-8'))));
+      const reference = new RegExp(`\\b${constName}\\b`);
+      const referenced = files.some((f) => reference.test(sourceWithoutComments(f)));
       if (referenced) stale.push(dp);
     }
     expect(
@@ -918,10 +931,10 @@ describe('wired verification — static half (§5.6: typed registration, not tru
     // DuplicateSessionReconciler — direct provenance(...) CALLS, not router
     // enrollment) stay out of scope by construction.
     const offenders: string[] = [];
-    for (const f of walkSrc()) {
+    for (const f of getSourceFiles()) {
       const rel = path.relative(ROOT, f).split(path.sep).join('/');
       if (rel === CENSUS_REL || isOutOfScope(rel)) continue;
-      const text = stripComments(fs.readFileSync(f, 'utf-8'));
+      const text = sourceWithoutComments(f);
       const re = /provenance\s*:\s*\{[\s\S]{0,300}?decisionPoint\s*:\s*(['"`])([^'"`]+)\1/g;
       let m: RegExpExecArray | null;
       while ((m = re.exec(text)) !== null) offenders.push(`${rel}: '${m[2]}'`);
@@ -937,10 +950,10 @@ describe('wired verification — static half (§5.6: typed registration, not tru
 describe('informational — declared points vs discovered attribution callsites (codex r7: a drift hint for review, never a gate)', () => {
   it('logs per-component callsite-count vs declared-decision-point mismatches (non-blocking)', () => {
     const counts = new Map<string, number>();
-    for (const f of walkSrc()) {
+    for (const f of getSourceFiles()) {
       const rel = path.relative(ROOT, f).split(path.sep).join('/');
       if (isOutOfScope(rel)) continue;
-      const text = stripComments(fs.readFileSync(f, 'utf-8'));
+      const text = sourceWithoutComments(f);
       const re = /attribution[\s\S]{0,160}?component\s*:\s*(['"`])([^'"`]+)\1/g;
       let m: RegExpExecArray | null;
       while ((m = re.exec(text)) !== null) {

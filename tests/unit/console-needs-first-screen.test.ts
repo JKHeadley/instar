@@ -24,6 +24,8 @@ const watcher = (over: Record<string, unknown> = {}) => ({ lastTickAt: minsAgo(1
 
 /** source id → the page, and the reads that put it in the state that needs the operator. */
 const FIXTURES: Record<string, { render: [string, string]; reads: Record<string, unknown> }> = {
+  // Owned repositories (no-data-loss-on-machine-death.md §1.4): a repository with no remote, past the grace window; the Repositories page leads with it.
+  repos: { render: ['repos.js', 'renderRepos'], reads: { '/repos?scope=pool': ok({ scope: 'pool', machineId: 'm1', machineName: 'Mac Studio', scan: { state: 'complete' }, repos: [], machines: [{ machineId: 'm1', machineName: 'Mac Studio', source: 'self', repos: [{ displayPath: '~/.instar/agents/echo/apps/instar-ios', class: 'candidate', state: 'ok', hasOffMachineRemote: false, pastGrace: true, remotes: [], singleCopy: { commits: 40, branches: 1, oldestAt: iso(-60 * 72) }, uncommitted: { files: 0 } }] }], defects: [{ key: 'repos:no-remote:m1', kind: 'no-remote', machineId: 'm1', machineName: 'Mac Studio', title: 'A repository on Mac Studio exists only on that machine', detail: '~/.instar/agents/echo/apps/instar-ios has no copy anywhere else (no remote).', count: 1, repos: ['~/.instar/agents/echo/apps/instar-ios'], oldestAt: iso(-60 * 72) }] }) } },
   merging: { render: ['development.js', 'renderDevelopment'], reads: { '/green-pr-automerge': ok(watcher({ gate: { rollback: [{ by: 'agent', at: minsAgo(9) }] } })) } },
   'shipping-approvals': { render: ['development.js', 'renderDevelopment'], reads: { '/green-pr-automerge': ok(watcher({ snapshot: { at: minsAgo(1), entries: [{ pr: 2391, headRefName: 'x', headRefOid: 'abc', kind: 'code-owner-review' }] } })) } },
   feedback: { render: ['development.js', 'renderDevelopment'], reads: { '/green-pr-automerge': ok(watcher()), '/feedback-factory/execute/status': ok({ reason: 'approver-not-independent', attempts: [] }) } },
@@ -116,7 +118,7 @@ describe('Home: every source reaches the count and the headline', () => {
   const quietQueue = { count: 0, rows: [], all: [], state: 'ok', line: 'The queue is clear.' };
   const noPromises = { state: 'ok', count: 0, all: [], rows: [] };
 
-  it.each(Object.keys(FIXTURES))('%s', async (id: string) => {
+  it.each(Object.keys(FIXTURES).filter(id => id !== 'context'))('%s', async (id: string) => {
     const { NEED_SOURCES, surfacedNeeds } = await import(path.join(CONSOLE, 'needs-model.js'));
     const { combineNeeds, headline } = await import(path.join(CONSOLE, 'home-model.js'));
     const known: any = {};
@@ -130,6 +132,21 @@ describe('Home: every source reaches the count and the headline', () => {
     expect(h.tone).toBe('attn');
     expect(h.text).not.toMatch(/quiet|nothing needs/i);
   }, 30000);
+
+  it('keeps context recovery failures out of the owner queue', async () => {
+    const { surfacedNeeds } = await import(path.join(CONSOLE, 'needs-model.js'));
+    const sentinel = FIXTURES.context.reads['/context-budget/sentinel'];
+    const result = surfacedNeeds({ context: { results: { sentinel } } }, NOW);
+    expect(result.rows).toEqual([]);
+    expect(result.failed).not.toContain('context');
+  });
+
+  it('preserves sign-in repairs that still require owner approval', async () => {
+    const { surfacedNeeds } = await import(path.join(CONSOLE, 'needs-model.js'));
+    const pool = FIXTURES.accounts.reads['/subscription-pool?scope=pool'];
+    const relogin = ok({ episodes: [{ id: 'repair-1', accountId: 'luna', machineId: 'm1', state: 'suggested' }] });
+    expect(surfacedNeeds({ accounts: { results: { pool, relogin } } }, NOW).rows).toHaveLength(1);
+  });
 
   it('a stopped merge names itself in the headline, with a link to act on it', async () => {
     const { surfacedNeeds } = await import(path.join(CONSOLE, 'needs-model.js'));
@@ -254,7 +271,7 @@ describe('population floors', () => {
   it('a file that says "needs you" is registered, or names its exact phrase and reason', async () => {
     const { NEED_SOURCES, NEED_EXEMPT } = await import(path.join(CONSOLE, 'needs-model.js'));
     const own = new Set<string>(['needs-model.js']);
-    const pageFile: Record<string, string> = { 'work/development': 'development', 'capacity/health': 'health', 'capacity/accounts': 'accounts', 'people/agents': 'agents', 'people/mandates': 'mandates', 'work/plans': 'plans', 'people/secrets': 'secrets', 'work/chats': 'chats', 'capacity/costs': 'costs', 'settings/allowed': 'allowed', 'settings/learned': 'learned', 'settings/context': 'context', 'work/board': 'work', 'work/documents': 'documents' };
+    const pageFile: Record<string, string> = { 'work/development': 'development', 'capacity/health': 'health', 'capacity/accounts': 'accounts', 'people/agents': 'agents', 'people/mandates': 'mandates', 'work/plans': 'plans', 'people/secrets': 'secrets', 'work/chats': 'chats', 'capacity/costs': 'costs', 'settings/allowed': 'allowed', 'settings/learned': 'learned', 'settings/context': 'context', 'work/board': 'work', 'work/documents': 'documents', 'capacity/repos': 'repos' };
     for (const s of NEED_SOURCES) { own.add(`${pageFile[s.page]}.js`); own.add(`${pageFile[s.page]}-model.js`); }
     const bad = consoleFiles().flatMap((f) => unregisteredNeedLines(f, fs.readFileSync(path.join(CONSOLE, f), 'utf8'), own, NEED_EXEMPT).map((l) => `${f}: ${l.trim().slice(0, 110)}`));
     expect(bad).toEqual([]);

@@ -121,6 +121,7 @@ const TRANSIENT_SKIP: Record<string, string> = {
   'src/messaging/telegram-origin/OriginStore.ts': 'parent-thread addon hold: opens one :memory: database and closes it at once, only to keep better-sqlite3 loaded while store workers exit',
   'src/server/routes.ts': 'readonly per-request open — closed per request, not process-lifetime',
   'src/memory/NativeModuleHealer.ts': 'generic ABI-heal helper — owns no handle (a comment mentions new Database)',
+  'src/core/InstarWorktreeManager.ts': 'The checkout probe opens an in-memory database in a child process and immediately closes it. The parent owns no handle.',
   'src/core/UpdateChecker.ts': 'candidate startup probe opens an in-memory database in a child process and closes it in finally',
   'src/recovery/RecoveryRuntimeSlot.ts': 'bounded copied-runtime qualification opens only an in-memory database in its isolated child process, closes it before success, and the parent owns no handle',
 };

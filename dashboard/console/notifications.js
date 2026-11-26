@@ -37,7 +37,13 @@ export async function renderNotifications(main, ctx, view) {
     const topicNames = topicNameMap(topics);
     const machineNames = Object.fromEntries((Array.isArray(pool?.machines) ? pool.machines : [])
       .filter((m) => m && typeof m.machineId === 'string' && typeof m.nickname === 'string').map((m) => [m.machineId, m.nickname]));
-    const refresh = () => renderNotifications(main, ctx, { unread: notificationView.unread, cursors: undefined });
+    // A completed save belongs to this rendered view. Navigation or a newer filter
+    // detaches its root; the server write still completes, but must not replace that page.
+    const refresh = () => {
+      if (root.isConnected && root.parentNode === main) {
+        return renderNotifications(main, ctx, { unread: notificationView.unread, cursors: undefined });
+      }
+    };
     const filter = el('input', { type: 'checkbox', 'aria-label': 'Only unread notices' }); filter.checked = notificationView.unread;
     filter.addEventListener('change', () => renderNotifications(main, ctx, { unread: filter.checked, cursors: undefined }));
     root.append(el('label', { style: 'display:flex;align-items:center;gap:12px;min-height:48px' }, filter, 'Only unread notices'));

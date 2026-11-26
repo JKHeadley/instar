@@ -168,7 +168,9 @@ describe('local access link — switch on', () => {
   it('a verified link unlocks with the right PIN while the loopback budget is exhausted, and charges only its own budget', async () => {
     // drain today's local budget from an unverified local caller
     for (let i = 0; i < 10; i++) await unlock({ pin: '000000' });
-    expect((await unlock({ pin: PIN })).status).toBe(429);
+    const blocked = await unlock({ pin: PIN });
+    expect(blocked.status).toBe(429);
+    expect(blocked.body.error).toContain('At this computer, ask your agent to open the dashboard for you');
     const { k, credentialId } = await redeem();
     const ok = await unlock({ pin: PIN, localAccess: await localAccessProof(k, credentialId) });
     expect(ok.status).toBe(200);

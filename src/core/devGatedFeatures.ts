@@ -44,6 +44,12 @@ export interface DevGatedFeature {
 
 export const DEV_GATED_FEATURES: DevGatedFeature[] = [
   {
+    name: 'noDataLossRepos',
+    configPath: 'noDataLoss.repos.enabled',
+    description: 'The owned-repository registry (docs/specs/no-data-loss-on-machine-death.md increment 1): every repository this agent works in on each machine, its remotes, single-copy work and age, at GET /repos[?scope=pool]; a repository with no remote, or unpushed work past the grace window, is a Needs-you row; omitted => live on a development agent, dark on the fleet.',
+    justification: 'Read-only: every git call is a read through SafeGitExecutor.readStream (no optional locks, no fsmonitor), so it never fetches, pushes, creates a remote or touches a working tree. The scan has a 60 s and 200,000-entry budget per 15-minute tick, runs in async child processes and never walks the whole home folder. Its only outputs are its own state file, owned-repo journal records (state changes only) and a Needs-you row. enabled:false stops it and leaves nothing behind that acts.',
+  },
+  {
     name: 'agentSessionPlacement',
     configPath: 'multiMachine.placement.agentSessions.enabled',
     description: 'Agent-started sessions placed by load (docs/specs/agent-sessions-placed-by-load.md Step 1): every POST /sessions/spawn writes where it would have gone to logs/agent-session-placement.jsonl, and a topicless helper that asks with placement:"auto" starts on a peer with room when this machine is busy (load, verdict or memory); omitted => live on a development agent, dark on the fleet.',
@@ -54,6 +60,12 @@ export const DEV_GATED_FEATURES: DevGatedFeature[] = [
     configPath: 'security.crossTopicConfirm.enabled',
     description: 'A change to one conversation confirmed by the owner in another (identity-security-creation-provenance v5: the topic-profile propose lane\'s confirmIn); omitted ⇒ live on a development agent, dark on the fleet.',
     justification: 'Adds no automatic action: a change is applied only on the configured owner\'s live, authenticated "yes" to a server-rendered proposal, for an eligible conversation re-checked at the yes. Off, the propose lane works exactly as before and confirmIn is refused.',
+  },
+  {
+    name: 'approvalLinks',
+    configPath: 'security.approvalLinks.enabled',
+    description: 'SEC-135 (docs/specs/sec135-approval-link-guess-bound.md): a recommended-services confirm-page answer from a browser that never unlocked the dashboard, away from the machine, is admitted and charged by sign-in\'s own public PIN limits; owner opens (a marked browser or the machine itself, with the page\'s header) get their own mint allowance and protected tokens; confirmStats counters; omitted ⇒ live on a development agent, dark on the fleet.',
+    justification: 'Adds no new limit and no outward action: every number is sign-in\'s shipped piece 1c policy, applied through the same counters, so a stranger gets no more guesses than at sign-in and the owner\'s marked browser and the machine keep their own budgets. The counters write one small file at most once a minute. enabled:false restores piece 1c\'s per-token behaviour exactly; token rows written while on carry an extra field older code ignores, and expire within 30 minutes.',
   },
   {
     name: 'usageLedger',

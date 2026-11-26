@@ -9,7 +9,7 @@
  * login while other enrolled Codex accounts had room.
  */
 
-import { describe, it, expect, beforeAll, afterAll, afterEach } from 'vitest';
+import { describe, it, expect, beforeAll, afterAll, afterEach, vi } from 'vitest';
 import fs from 'node:fs';
 import os from 'node:os';
 import path from 'node:path';
@@ -19,6 +19,7 @@ import {
   resolveInternalCodexAccount,
   setInternalCodexAccountSource,
 } from '../../src/core/internalCodexAccount.js';
+import { getHostSpawnSemaphore, _resetHostSpawnSemaphoreForTest } from '../../src/core/hostSpawnSemaphore.js';
 import { SafeFsExecutor } from '../../src/core/SafeFsExecutor.js';
 
 const FUTURE = new Date(Date.now() + 3 * 24 * 3600_000).toISOString();
@@ -33,6 +34,9 @@ describe('internal Codex reset-first routing survives pool restart', () => {
 
   beforeAll(() => {
     dir = fs.mkdtempSync(path.join(os.tmpdir(), 'codex-room-int-'));
+    // The real factory wrapper must use an owned ledger for the fake child.
+    vi.spyOn(os, 'homedir').mockReturnValue(dir);
+    _resetHostSpawnSemaphoreForTest();
     record = path.join(dir, 'codex-home.txt');
     codexBin = path.join(dir, 'codex');
     // Stand-in codex: records which login home it ran under, answers like a judgment call.
@@ -54,6 +58,8 @@ describe('internal Codex reset-first routing survives pool restart', () => {
   afterEach(() => setInternalCodexAccountSource(null));
 
   afterAll(() => {
+    _resetHostSpawnSemaphoreForTest();
+    vi.restoreAllMocks();
     if (savedExecJson === undefined) delete process.env.INSTAR_CODEX_EXEC_JSON;
     else process.env.INSTAR_CODEX_EXEC_JSON = savedExecJson;
     if (savedHome === undefined) delete process.env.CODEX_HOME;
@@ -73,6 +79,7 @@ describe('internal Codex reset-first routing survives pool restart', () => {
   }
 
   it('passes the soonest-reset home to the actual child, then moves on when it is full', async () => {
+    expect(getHostSpawnSemaphore().status().holdersPath).toBe(path.join(dir, '.instar', 'host-spawn-holders.json'));
     const measuredAt = new Date().toISOString();
     const soon = new Date(Date.now() + 3600_000).toISOString();
     setInternalCodexAccountSource(() => pickInternalCallAccount(pool.list(), 'codex-cli'));

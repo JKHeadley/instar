@@ -1,0 +1,41 @@
+{
+  "version": 3,
+  "slug": "stale-login-probe-test-isolation",
+  "sessionId": "f414bf47-4211-4e9c-8eda-ff49e33893ff",
+  "timestamp": "2026-11-23T21:01:24.242Z",
+  "artifactPath": "upgrades/side-effects/stale-login-probe-test-isolation.md",
+  "artifactSha256": "da60ef50b5f8149f0313f7f573f431de999a5532422c5dbe532df1e278f2a0b8",
+  "coveredFiles": [
+    "tests/e2e/stale-process-login-expired-alive.test.ts",
+    "tests/integration/stale-process-login-expired.test.ts",
+    "upgrades/eli16/stale-login-probe-test-isolation.md",
+    "upgrades/next/stale-login-probe-test-isolation.md",
+    "upgrades/side-effects/stale-login-probe-test-isolation.md"
+  ],
+  "phase": "complete",
+  "tier": 1,
+  "tierReasoning": "Test-only temporary semaphore isolation; no runtime decision or account routing changes, fully reversible.",
+  "eli16Path": "upgrades/eli16/stale-login-probe-test-isolation.md",
+  "sideEffectsPath": "upgrades/side-effects/stale-login-probe-test-isolation.md",
+  "secondPass": "true",
+  "reviewerConcurred": true,
+  "toolchain": {
+    "buildSkill": {
+      "name": "build",
+      "version": null,
+      "verified": false
+    },
+    "reviewSkills": [
+      {
+        "name": "systematic-debugging",
+        "outcome": "passed",
+        "verified": false
+      },
+      {
+        "name": "instar-dev",
+        "outcome": "passed",
+        "verified": false
+      }
+    ]
+  }
+}

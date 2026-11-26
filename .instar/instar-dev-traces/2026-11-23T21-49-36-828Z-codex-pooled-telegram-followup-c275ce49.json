@@ -1,0 +1,50 @@
+{
+  "version": 3,
+  "slug": "codex-pooled-telegram-followup",
+  "sessionId": "fb2d9241-bc5a-479b-9443-bbce50a353bc",
+  "timestamp": "2026-11-23T21:49:36.828Z",
+  "artifactPath": "upgrades/side-effects/codex-pooled-telegram-followup.md",
+  "artifactSha256": "6226e1d1f244d5f3eec268489e4dacc81912d57e166164d2dbccfbd7cb198151",
+  "coveredFiles": [
+    "docs/specs/codex-pooled-telegram-followup.eli16.md",
+    "src/core/SessionManager.ts",
+    "src/scaffold/templates.ts",
+    "tests/e2e/codex-pooled-followup-alive.test.ts",
+    "tests/helpers/codexFollowupFixture.ts",
+    "tests/integration/codex-pooled-followup-http.test.ts",
+    "tests/unit/codex-pooled-followup.test.ts",
+    "upgrades/next/codex-pooled-telegram-followup.md",
+    "upgrades/side-effects/codex-pooled-telegram-followup.md"
+  ],
+  "phase": "complete",
+  "tier": 1,
+  "tierReasoning": "Narrow reversible transcript-location correction; no schema, migration, new authorization, queue or retry mechanism. Existing journal and owner/physical-effect fences are unchanged.",
+  "eli16Path": "docs/specs/codex-pooled-telegram-followup.eli16.md",
+  "sideEffectsPath": "upgrades/side-effects/codex-pooled-telegram-followup.md",
+  "secondPass": "true",
+  "reviewerConcurred": true,
+  "toolchain": {
+    "buildSkill": {
+      "name": "build",
+      "version": null,
+      "verified": false
+    },
+    "reviewSkills": [
+      {
+        "name": "systematic-debugging",
+        "outcome": "completed",
+        "verified": false
+      },
+      {
+        "name": "codex_followup_review",
+        "outcome": "concurred",
+        "verified": false
+      }
+    ]
+  },
+  "classClosure": {
+    "defectClass": "unbounded-self-action",
+    "closure": "n/a",
+    "reason": "This repair corrects one exact transcript location input; it adds no autonomous retry, recovery loop or unbounded self action."
+  }
+}

@@ -1,0 +1,55 @@
+{
+  "version": 3,
+  "slug": "routine-sol-account-placement",
+  "sessionId": "f414bf47-4211-4e9c-8eda-ff49e33893ff",
+  "timestamp": "2026-11-23T22:30:25.628Z",
+  "artifactPath": "upgrades/side-effects/routine-sol-account-placement.md",
+  "artifactSha256": "977c95d5c4ba4bc3305d7869aab43e2d6fe4a62032724df16669c4d48c1253a0",
+  "coveredFiles": [
+    "skills/spec-converge/scripts/cross-model-review.mjs",
+    "src/commands/server.ts",
+    "src/core/CodexCliIntelligenceProvider.ts",
+    "src/core/PostUpdateMigrator.ts",
+    "src/core/SessionManager.ts",
+    "src/core/UsageWallRescue.ts",
+    "src/core/crossModelReviewer.ts",
+    "src/core/routineCodexPlacement.ts",
+    "src/core/types.ts",
+    "src/data/awareness/routine-codex-placement.md",
+    "src/server/routes.ts",
+    "tests/e2e/codex-spawn-wall-placement-alive.test.ts",
+    "tests/e2e/routine-codex-review-alive.test.ts",
+    "tests/integration/codex-spawn-wall-placement.test.ts",
+    "tests/unit/routine-codex-placement.test.ts",
+    "tests/unit/spec-review-experience-migration.test.ts",
+    "upgrades/eli16/routine-sol-account-placement.md",
+    "upgrades/next/routine-sol-account-placement.md",
+    "upgrades/side-effects/routine-sol-account-placement.md"
+  ],
+  "phase": "complete",
+  "tier": 1,
+  "tierReasoning": "Optional expiring owner-approved account preference within existing model execution authority; no default activation, credential writes, persistent moves, or new spending trigger. Complete rollback is disabling the block or reverting the patch. Independent review and three automated tiers cover the money/routing risk.",
+  "eli16Path": "upgrades/eli16/routine-sol-account-placement.md",
+  "sideEffectsPath": "upgrades/side-effects/routine-sol-account-placement.md",
+  "secondPass": "true",
+  "reviewerConcurred": true,
+  "toolchain": {
+    "buildSkill": {
+      "name": "build",
+      "version": null,
+      "verified": false
+    },
+    "reviewSkills": [
+      {
+        "name": "instar-dev",
+        "outcome": "passed",
+        "verified": false
+      },
+      {
+        "name": "systematic-debugging",
+        "outcome": "passed",
+        "verified": false
+      }
+    ]
+  }
+}

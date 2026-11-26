@@ -81,7 +81,7 @@ async function setup() {
   app.use(express.json({ verify: (req, _res, buf) => { (req as unknown as { rawBody: Buffer }).rawBody = buf; } }));
   app.use(authMiddleware(() => 'tok-1', 'echo', undefined, deviceAuthenticator(pairing)));
   app.use(createRoutes(ctx));
-  app.use(createMobileConversationRouter({ config: config as never, pairing, service: svc, machineId: () => 'm1' }));
+  app.use(createMobileConversationRouter({ config: config as never, pairing, service: svc, machineId: () => 'm1', credentialNotice: (i) => ctx.appCredentialNotice?.(i) }));
   app.use(createMobilePairingRouter(pairing, deps, ctx));
   // The inbound core stand-in (installed after createRoutes, which installs the real one): it
   // writes the Telegram history row with the eventId the route hands it, as logInboundMessage does.
@@ -187,6 +187,11 @@ describe('signed records — native conversations', () => {
     expect(hist.body.messages[0]).toMatchObject({ text: 'use [credential removed] for the build', originVerified: 'redacted' });
     expect(JSON.stringify(e.dispatched)).not.toContain(ghToken);
     for (const f of allFiles(e.dir)) expect(fs.readFileSync(f).includes(Buffer.from(ghToken)), f).toBe(false);
+    // The owner is told once, in the same conversation, and the session sees the one-line note.
+    const after = await signed(e, 'GET', `/mobile/chat/app/${key}/messages`);
+    const notices = (after.body.messages as Array<{ role: string; text: string }>).filter((m) => m.role === 'agent' && m.text.startsWith('I removed a key from your message'));
+    expect(notices).toHaveLength(1);
+    expect(JSON.stringify(e.dispatched)).toContain('A key was removed from this message for safety');
   });
 
   it('a revocation is written ledger-first and earlier messages stay verified', async () => {
