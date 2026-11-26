@@ -4139,6 +4139,15 @@ export interface InstarConfig {
       /** Candidates per readiness model call (default 10); a tick makes several calls up to the authority's maxBatch. */
       readinessChunkSize?: number;
     };
+    /**
+     * Which subscription account serves feedback readiness calls. Without `account`, readiness
+     * follows `triage.accountSelectionMode` (off = the shared provider, as before). With `account`
+     * (a subscription pool account id), readiness runs on exactly that verified account or is
+     * refused with a named reason, never on another account. Read live per readiness call.
+     */
+    readiness?: {
+      account?: string;
+    };
     /** Initiative handoff consumer. Dev-live in simulation until promoted. */
     consumer?: {
       enabled?: boolean;

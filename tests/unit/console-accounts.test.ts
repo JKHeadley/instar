@@ -227,7 +227,7 @@ describe('accounts page in a DOM', () => {
         row({ machineId: 'm2', machineNickname: 'Mac Mini' }),
         row({ id: 'gear', nickname: 'Gear', email: 'gear@x.io', machineId: 'm2', machineNickname: 'Mac Mini' }),
       ], pool: { failed: [] } },
-      '/subscription-relogin?scope=pool': { enabled: true, episodes: [] },
+      '/subscription-relogin?scope=pool&retryTimeout=1': { enabled: true, episodes: [] },
       '/subscription-pool/in-use': { enabled: true, activeAccountId: 'luna' },
       '/pool': { machines: [] },
     };
@@ -267,7 +267,7 @@ describe('accounts page in a DOM', () => {
     const table: Record<string, unknown> = {
       '/sessions': { sessions: [] }, '/health': { project: { name: 'echo' } },
       '/subscription-pool?scope=pool': { enabled: true, accounts: [row({ status: 'needs-reauth', machineId: 'm2', machineNickname: 'Mac Mini' })], pool: { failed: [] } },
-      '/subscription-relogin?scope=pool': { enabled: true, episodes: [] },
+      '/subscription-relogin?scope=pool&retryTimeout=1': { enabled: true, episodes: [] },
       '/subscription-pool/in-use': { enabled: true, activeAccountId: 'luna' },
       '/pool': { machines: [] },
     };
@@ -322,7 +322,7 @@ describe('accounts page in a DOM', () => {
     const table: Record<string, unknown> = {
       '/sessions': { sessions: [] }, '/health': { project: { name: 'echo' } },
       '/subscription-pool?scope=pool': { enabled: true, accounts: [row({ status: 'needs-reauth', machineId: 'm2', machineNickname: 'Mac Studio' })], pool: { failed: [] } },
-      '/subscription-relogin?scope=pool': { enabled: true, episodes: [] }, '/subscription-pool/in-use': { enabled: true }, '/pool': { machines: [] },
+      '/subscription-relogin?scope=pool&retryTimeout=1': { enabled: true, episodes: [] }, '/subscription-pool/in-use': { enabled: true }, '/pool': { machines: [] },
     };
     g.fetch = async (url: string, opts?: { method?: string; body?: string }) => {
       if (opts && opts.method === 'POST') {
@@ -396,7 +396,7 @@ describe('accounts page in a DOM', () => {
     const table: Record<string, unknown> = {
       '/sessions': { sessions: [] }, '/health': { project: { name: 'echo' } },
       '/subscription-pool?scope=pool': { enabled: true, accounts, pool: { failed: [] } },
-      '/subscription-relogin?scope=pool': { enabled: true, episodes: [] }, '/subscription-pool/in-use': { enabled: true }, '/pool': { machines: [] },
+      '/subscription-relogin?scope=pool&retryTimeout=1': { enabled: true, episodes: [] }, '/subscription-pool/in-use': { enabled: true }, '/pool': { machines: [] },
     };
     dom.window.localStorage.setItem('instar_token', 't');
     g.fetch = async (url: string) => (table[url] === undefined ? { ok: false, status: 404, json: async () => ({}) } : { ok: true, status: 200, json: async () => JSON.parse(JSON.stringify(table[url])) });

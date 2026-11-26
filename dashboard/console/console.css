@@ -366,6 +366,13 @@ details.more[open] summary .chev { transform: rotate(90deg); }
 a.btn-primary { display: inline-flex; align-items: center; justify-content: center; text-align: center; text-decoration: none; padding: 10px 16px; box-sizing: border-box; }
 .btn-primary:hover { filter: brightness(1.06); }
 .btn-primary:disabled { opacity: .55; cursor: default; }
+#sec-auto-repair .btn-primary:disabled {
+  opacity: 1;
+  background: var(--surface-raised);
+  border: 1px solid var(--hairline);
+  color: var(--text-muted);
+  filter: none;
+}
 .unlock-error { min-height: 20px; margin-top: var(--s-3); color: var(--bad); font-size: 13px; }
 
 .foot-note { margin-top: var(--s-10); text-align: center; font-size: 12.5px; color: var(--text-faint); }
@@ -1853,3 +1860,5 @@ a.needs-row:hover { background: var(--surface-raised); }
 .conversation-tree-section .chat-group-icon + span { flex: 1; min-width: 0; }
 .conversation-tree-section .row-main .chat-project-status { margin-inline-start: var(--s-2); }
 .chat-view-toggle select { min-width: 0; max-width: 100%; }
+.needs-row .needs-instructions { margin: var(--s-2) 0 0; padding-inline-start: 1.5em; }
+.needs-row .needs-consent { align-self: flex-start; min-height: 44px; margin-top: var(--s-2); }

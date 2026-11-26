@@ -8845,7 +8845,9 @@ export async function startServer(options: StartOptions): Promise<void> {
         const {
           INTERNAL_FRAMEWORK_PREFERENCE,
           resolveInternalFrameworkDefault,
+          selectActiveInternalFrameworks,
         } = await import('../core/internalFrameworkDefault.js');
+        const { hasUsableInternalLogin } = await import('../core/frameworkLoginPresence.js');
         const defaultFw = resolvedFramework;
         const rawDefault = sharedIntelligence;
 
@@ -8899,8 +8901,13 @@ export async function startServer(options: StartOptions): Promise<void> {
         // so it's never dropped from the tail; off-default frameworks are probed.
         // Memoize ONLY this SET (§4.6 — never a frozen config object). Machine-local
         // by design (§5): each machine probes its own installed CLIs.
-        const activeFrameworkSet: IFw[] = INTERNAL_FRAMEWORK_PREFERENCE.filter(
-          (fw) => fw === defaultFw || cachedBuild(fw) !== null,
+        // CMT-2289: an off-default framework must also have a usable SIGN-IN, not just
+        // a binary — gemini-cli installed without a Gemini login used to win the `gate`
+        // category (pi → gemini → codex → claude) and fail every PromptGate /
+        // UnjustifiedStopGate call. Without a login it is not active; the policy falls
+        // through to the next framework (and finally the agent default).
+        const activeFrameworkSet: IFw[] = selectActiveInternalFrameworks(
+          INTERNAL_FRAMEWORK_PREFERENCE, defaultFw, cachedBuild, (fw) => hasUsableInternalLogin(fw),
         );
 
         // §4.4 boot snapshot — load-bearing & mutation-proof: capture WHETHER the
@@ -25124,7 +25131,7 @@ export async function startServer(options: StartOptions): Promise<void> {
     // ship-dark feature relies on anyone remembering to register it. Runs once
     // at boot + on a bounded cadence. Observation-only w.r.t. config flags.
     const { FeatureRolloutReconciler } = await import('../core/FeatureRolloutReconciler.js');
-    const { scanSpecArtifactsWithCanonical, makeFlagObserver } = await import('../core/featureRolloutScan.js');
+    const { scanSpecArtifactsWithCanonicalAsync, makeFlagObserver } = await import('../core/featureRolloutScan.js');
     const { getInitDefaults: _getRolloutDefaults } = await import('../config/ConfigDefaults.js');
     const _shippedDefaults = _getRolloutDefaults(
       (config as { agentType?: string }).agentType === 'standalone' ? 'standalone' : 'managed-project',
@@ -25136,22 +25143,25 @@ export async function startServer(options: StartOptions): Promise<void> {
     const _frCfg = config.featureRollout;
     const featureRolloutReconciler = new FeatureRolloutReconciler({
       tracker: initiativeTracker,
-      listSpecArtifacts: () =>
-        scanSpecArtifactsWithCanonical(config.projectDir, {
+      listSpecArtifacts: (signal) =>
+        scanSpecArtifactsWithCanonicalAsync(config.projectDir, {
           canonicalRefScanEnabled: _frCfg?.canonicalRefScan === true,
           canonicalRemote: _frCfg?.canonicalRemote,
           fetchTimeoutMs: _frCfg?.fetchTimeoutMs,
           onDegradation: (reason) =>
             console.warn(`[instar] feature-rollout canonical scan degraded: ${reason}`),
-        }),
+        }, Date.now, signal),
+      onError: (error) => console.warn('[instar] feature-rollout stop failed:', error instanceof Error ? error.message : String(error)),
       observeFlag: makeFlagObserver(config, _shippedDefaults),
     });
-    void featureRolloutReconciler.reconcile().catch(err =>
-      console.warn('[instar] feature-rollout reconcile failed (non-fatal):', err instanceof Error ? err.message : String(err)));
-    const _rolloutReconcileTimer = setInterval(() => {
-      void featureRolloutReconciler.reconcile().catch(() => { /* non-fatal */ });
-    }, 6 * 60 * 60 * 1000);
-    if (typeof _rolloutReconcileTimer.unref === 'function') _rolloutReconcileTimer.unref();
+    // Start only after the existing shutdown handlers own its command lifetime.
+    let _rolloutReconcileTimer: ReturnType<typeof setInterval> | null = null;
+    const runRolloutReconcile = (): void => {
+      void featureRolloutReconciler.reconcile().catch((error: unknown) => {
+        if (error instanceof Error && error.name === 'AbortError') return;
+        console.warn('[instar] feature-rollout reconcile failed (non-fatal):', error instanceof Error ? error.message : String(error));
+      });
+    };
 
     // Project-scope Phase 1b PR 3 — round runner (single chokepoint for
     // /advance, /halt, /ack, /accept-partial; lock-protected; future
@@ -38734,6 +38744,8 @@ export async function startServer(options: StartOptions): Promise<void> {
         process.exit(1);
       }
       _shuttingDown = true;
+      if (_rolloutReconcileTimer) { clearInterval(_rolloutReconcileTimer); _rolloutReconcileTimer = null; }
+      const rolloutStop = featureRolloutReconciler.stop(); // marks stopped/aborts without awaiting before the deadline
       // planned-restart-keeps-lead §1 step 5 — the one synchronous action before anything else: stamp
       // the exit time into this machine's continuity record so the next boot can measure itself.
       try { leaseCoordinatorRef?.stampContinuityExit(); } catch { /* @silent-fallback-ok: a missing stamp costs only the boot measurement */ }
@@ -38760,6 +38772,8 @@ export async function startServer(options: StartOptions): Promise<void> {
           process.exit(1);
         },
       });
+      shutdownStep = 'feature-rollout';
+      await rolloutStop;
       shutdownStep = 'telegram-origin';
       try { await telegramOriginBoot?.close(); }
       catch (error) { console.error('[telegram-origin] shutdown cleanup incomplete', error); }
@@ -38937,6 +38951,11 @@ export async function startServer(options: StartOptions): Promise<void> {
     // This ensures auto-update restarts close all resources (especially SQLite
     // databases) before exiting, preventing the "mutex lock failed" crash.
     restartWatcher.on('restartDetected', shutdown);
+    // The normal shutdown owner is installed before observations can launch Git.
+    runRolloutReconcile();
+    _rolloutReconcileTimer = setInterval(runRolloutReconcile, 6 * 60 * 60 * 1000);
+    _rolloutReconcileTimer.unref?.();
+
 
     // Test-agent leak guard: a running throwaway re-checks its expiry every 5
     // minutes (machine-local, so also on a read-only standby). On expiry it
