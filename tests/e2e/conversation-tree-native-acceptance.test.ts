@@ -37,8 +37,9 @@ it('keeps all three conversation-tree routes open for a simulator-signed owner',
       expect(response.status).toBe(200);
       return response.json();
     };
-    const list = await read('/mobile/conversations');
-    expect(list.conversations).toContainEqual(expect.objectContaining({ id: child, projectConversationKey: 'telegram:42' }));
+    const list = await read('/mobile/conversations?scope=pool&limit=50');
+    expect(list.conversations).toContainEqual(expect.objectContaining({ id: child, projectConversationKey: 'telegram:42',
+      parentConversationKey: 'telegram:42', hierarchyState: 'child' }));
     expect(list.conversations).not.toContainEqual(expect.objectContaining({ id: hidden }));
     expect(list.pinned.id).toBe(41);
     const projects = await read('/mobile/work/projects');

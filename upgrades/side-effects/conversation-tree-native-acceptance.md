@@ -16,3 +16,8 @@ production or real-owner acceptance result.
 
 Any client that implements the existing signed request format can use the
 loopback fixture with a disposable key.
+
+The launcher primes the existing asynchronous creation projection for its
+single disposable owner before announcing readiness. The first signed pool
+read now exercises the generated child's exact parent. Live router cache
+behavior is untouched.

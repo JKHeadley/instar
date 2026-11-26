@@ -13,6 +13,7 @@ import { ConversationGraphReadModel } from '../dist/core/conversationGraphRead.j
 import { MachineIdentityManager } from '../dist/core/MachineIdentity.js';
 import { MobileDeviceKeyLedger } from '../dist/core/MobileDeviceKeyLedger.js';
 import { SafeFsExecutor } from '../dist/core/SafeFsExecutor.js';
+import { AppCreationHierarchyProjection } from '../dist/server/appCreationHierarchy.js';
 import { createConversationGraphRouter } from '../dist/server/conversationGraphRoutes.js';
 import { createConversationGraphViewerResolver } from '../dist/server/conversationGraphViewer.js';
 import { authMiddleware } from '../dist/server/middleware.js';
@@ -86,14 +87,17 @@ try {
     replication: () => ({ replicaLag: false, eventGap: false, evidenceMissing: false }), now: () => new Date(),
   }, { rootConversation: () => telegram(41) });
 
+  const source = { version: 'fixture', complete: true, parents, confirmedProjects: new Set(['telegram:42']),
+    cardEvidence: [], resolveRef: (ref) => parents.has(ref) || topics.some(([id]) => ref === `telegram:${id}`) ? ref : null };
+  const creationProjection = new AppCreationHierarchyProjection(service.store, () => source);
+  const authorizationVersion = 'disposable-single-owner';
   const app = express();
   app.use(authMiddleware(() => config.authToken, config.projectName, undefined, deviceAuthenticator(pairing)));
   app.use(createMobileConversationRouter({ config, pairing, service, machineId,
     chiefOfStaff: () => ({ pinnedKey: 'telegram:41', parents }),
     telegramTopics: () => topics.map(([topicId, topicName]) => ({ topicId, topicName, lastActivity: at })),
-    creationHierarchySource: () => ({ version: 'fixture', complete: true, parents,
-      confirmedProjects: new Set(['telegram:42']), cardEvidence: [],
-      resolveRef: (ref) => parents.has(ref) || topics.some(([id]) => ref === `telegram:${id}`) ? ref : null }),
+    creationHierarchySource: () => source, creationHierarchyProjection: creationProjection,
+    creationAuthorizationVersion: () => authorizationVersion,
   }));
   const projects = express.Router();
   mountProjectsRoutes(projects, { bearerOk: () => false, projects: () => [project], boardFor: () => null });
@@ -114,6 +118,10 @@ try {
   const device = pairing.devices.applyConfirm(pending.device.id, { ok: true, approvedVia: 'telegram-dm' });
   if (!device) throw new Error('Cannot confirm disposable device');
   pairing.keyLedger.recordActivation(device, 'telegram-dm', new Date().toISOString());
+  // Make the first simulator read deterministic. The single fixture owner
+  // can read all seeded topics; the hidden worker is excluded from discovery.
+  await creationProjection.settled({ key: `device:${device.id}`, source, authorizationVersion,
+    mayRead: (ref) => source.resolveRef(ref) !== null && ref !== `app:${hidden}` });
   process.once('SIGTERM', clean);
   process.once('SIGINT', clean);
   ready = true;

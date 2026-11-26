@@ -1,0 +1,19 @@
+{
+  "version": 2,
+  "slug": "conversation-tree-native-acceptance",
+  "sessionId": "633bd330-201e-4dc8-8fd9-72b89116167e",
+  "timestamp": "2026-11-26T10:05:43.089Z",
+  "artifactPath": "upgrades/side-effects/conversation-tree-native-acceptance.md",
+  "artifactSha256": "b8111fee164e15068aa7366c342cbf17056e945abd0c7c27ec744cc0f0587f77",
+  "specPath": "docs/specs/work-front-doors.md",
+  "coveredFiles": [
+    "scripts/conversation-tree-native-acceptance.mjs",
+    "tests/e2e/conversation-tree-native-acceptance.test.ts",
+    "upgrades/side-effects/conversation-tree-native-acceptance.md"
+  ],
+  "phase": "complete",
+  "tier": 2,
+  "tierReasoning": "Prime disposable signed fixture ancestry before readiness",
+  "secondPass": "not-required",
+  "reviewerConcurred": null
+}
