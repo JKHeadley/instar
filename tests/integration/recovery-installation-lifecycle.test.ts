@@ -1,3 +1,5 @@
+// This suite and recovery-installation-update-lifecycle.test.ts intentionally own
+// independent hoisted mocks and fresh per-case runtimes. Keep fixture setup identical.
 import {afterEach,beforeEach,describe,expect,it,vi} from 'vitest';
 import fs from 'node:fs';import os from 'node:os';import path from 'node:path';import crypto from 'node:crypto';import {pathToFileURL} from 'node:url';
 
@@ -111,15 +113,6 @@ describe('production recovery enrollment and persistent installation lifecycle',
   const store=admission();try{store.beginHold(hold);}finally{store.close();}
   fs.writeFileSync(host.holdFile,JSON.stringify({version:1,label:config.serviceLabel,scriptDigest:config.watchdog!.scriptDigest,plistDigest:config.watchdog!.ownershipDigest,deadline:hold.deadline,monotonicDeadline:hold.monotonicDeadline,bootId:hold.bootId}),{mode:0o600});
  };
- it('runs real enrollment, installs persistent independent services, reloads a new binary and preserves operator SSH lines',async()=>{
-  await expect(enrollment.install(certificate,checkpoint,[advert])).resolves.toEqual({state:'awaiting-peer-proofs'});
-  expect(grantLines()).toContain(operatorLine);expect(grantLines()).toContain('instar-recovery-access');expect(grantLines()).toContain('command=');expect(fs.existsSync(path.join(enrollment.directory,'runtime.json'))).toBe(true);
-  for(const label of [sidecar,restorer]){expect(host.loaded.has(label)).toBe(true);expect(fs.statSync(planFile(label)).mode&0o077).toBe(0);expect(fs.readFileSync(planFile(label),'utf8')).toContain(loadRecoveryConfig(configFile).runtimeSlot!.entrypoint);}
-  const before=host.calls.filter(c=>c.args[0]==='bootstrap').length;await installRecoveryServices(loadRecoveryConfig(configFile),configFile,entrypoint);expect(host.calls.filter(c=>c.args[0]==='bootstrap')).toHaveLength(before);
-  const next=stageRuntime('updated');await prepareNext(next);await installRecoveryServices(config,configFile,next);
-  for(const label of [sidecar,restorer])expect(host.loaded.get(label)!.content).toContain(config.runtimeSlot!.entrypoint);
-  expect(host.calls.filter(c=>c.args[0]==='bootout')).toHaveLength(2);expect(grantLines()).toContain(operatorLine);
- });
  it('retries only the exact own bootstrap when launchd is still removing that job',async()=>{
   await enrollment.install(certificate,checkpoint,[advert]);const next=stageRuntime('launchd-removal-race');await prepareNext(next);host.calls=[];host.eioBootstrap=sidecar;
   await installRecoveryServices(config,configFile,next);
@@ -147,31 +140,6 @@ describe('production recovery enrollment and persistent installation lifecycle',
   await control.start();expect(host.loaded.get(config.serviceLabel)).toEqual({file:config.mainService!.plist,content});
   expect(host.calls.some(call=>call.args.some(arg=>arg.endsWith('/ai.instar.watchdog')))).toBe(false);
  });
- it('preserves the supervisor intentional sleep authority in signed diagnostics and refuses autonomous start or hold',async()=>{
-  await enrollment.install(certificate,checkpoint,[advert]);config=loadRecoveryConfig(configFile);
-  const state=path.join(config.mainStateDir!,'state');fs.mkdirSync(state,{recursive:true,mode:0o700});
-  const marker=path.join(state,'slept-marker.json');fs.writeFileSync(marker,JSON.stringify({sleptAt:new Date().toISOString(),reason:'deep-idle'}),{mode:0o600});
-  const control=new LaunchdRecoveryControl(config);host.calls=[];
-  expect(await control.repairDisposition()).toEqual({allowed:false,reason:'intentional-sleep'});
-  await expect(control.start()).rejects.toThrow('recovery-intentional-stop');
-  await expect(control.holdWatchdog()).rejects.toThrow('recovery-intentional-stop');
-  expect(host.calls).toHaveLength(0);expect(fs.existsSync(marker)).toBe(true);
-  const store=admission(),now=Date.now();
-  try {
-   const engine=new RecoveryEngine(config,store,'installation-host-boot',control);
-   const request=signRecovery<RecoveryEnvelope>({domain:'instar-recovery-operation-v1',agentId,sourceMachineId:'peer',targetMachineId:machineId,targetBootId:'installation-host-boot',pairingEpoch:42,generation:1,route:'ssh',operationId:crypto.randomUUID(),nonce:crypto.randomBytes(32).toString('hex'),issuedAt:now,expiresAt:now+30000,fencingEpoch:1,verb:'status'},peerSsh.privateKey);
-   const response=await engine.execute(request,'ssh') as {payload:{result:string;detail:Record<string,unknown>}};
-   expect(response.payload.result).toBe('ok');expect(response.payload.detail).toMatchObject({serverHealthy:false,repairSuppressed:true,repairSuppressionReason:'intentional-sleep'});
-  } finally {store.close();}
-  SafeFsExecutor.safeUnlinkSync(marker,{operation:'recovery-lifecycle.test:supervisor-wake-fixture'});
-  const pending=path.join(state,'sleep-requested.json');
-  fs.writeFileSync(pending,JSON.stringify({requestedBy:'SleepController',expiresAt:new Date(Date.now()+60000).toISOString()}),{mode:0o600});
-  expect(await control.repairDisposition()).toEqual({allowed:false,reason:'sleep-request-pending'});
-  await expect(control.start()).rejects.toThrow('recovery-intentional-stop');
-  fs.writeFileSync(pending,JSON.stringify({expiresAt:new Date(Date.now()-1).toISOString()}));
-  expect(await control.repairDisposition()).toEqual({allowed:true,reason:null});
-  await control.start();expect(host.loaded.has(config.serviceLabel)).toBe(true);
- });
  it('refuses a changed main policy or an uncertain launchctl inspection without bootstrapping anything',async()=>{
   await enrollment.install(certificate,checkpoint,[advert]);config=loadRecoveryConfig(configFile);
   const control=new LaunchdRecoveryControl(config),original=fs.readFileSync(config.mainService!.plist,'utf8');host.calls=[];
@@ -183,19 +151,6 @@ describe('production recovery enrollment and persistent installation lifecycle',
   await expect(control.start()).rejects.toThrow('recovery-main-inspection-unverified');
   expect(host.calls.some(call=>call.args[0]==='bootstrap'||call.args[0]==='kickstart')).toBe(false);
  });
- it.each([
-  {name:'authentication refusal',response:()=>new Response('{}',{status:401}),reason:'main-identity-authentication-failed'},
-  {name:'foreign identity',response:()=>new Response(JSON.stringify({agentId:'another-agent'}),{status:200}),reason:'main-identity-mismatch'},
-  {name:'unreadable identity',response:()=>new Response('not JSON',{status:200}),reason:'main-identity-unavailable'},
- ])('treats $name as unverifiable rather than a down main server',async({response,reason})=>{
-  await enrollment.install(certificate,checkpoint,[advert]);config=loadRecoveryConfig(configFile);
-  host.loaded.set(config.serviceLabel,{file:config.mainService!.plist,content:fs.readFileSync(config.mainService!.plist,'utf8')});
-  vi.spyOn(globalThis,'fetch').mockImplementation(async()=>response());
-  const control=new LaunchdRecoveryControl(config);expect(await control.status()).toBe(false);
-  expect(await control.repairDisposition()).toEqual({allowed:false,reason});host.calls=[];
-  await expect(control.start()).rejects.toThrow('recovery-main-inspection-unverified');
-  expect(host.calls.some(call=>['bootout','bootstrap','kickstart'].includes(call.args[0]))).toBe(false);
- });
  it('does not infer a down main server from a missing credential and authenticates its own health read',async()=>{
   await enrollment.install(certificate,checkpoint,[advert]);config=loadRecoveryConfig(configFile);
   host.loaded.set(config.serviceLabel,{file:config.mainService!.plist,content:fs.readFileSync(config.mainService!.plist,'utf8')});
@@ -206,17 +161,6 @@ describe('production recovery enrollment and persistent installation lifecycle',
    return new Response(JSON.stringify(String(url).endsWith('/whoami')?{agentId}:{status:'ok'}),{status:200});
   });
   const control=new LaunchdRecoveryControl(config);expect(await control.status()).toBe(true);expect(fetchMock).toHaveBeenCalledTimes(2);
- });
- it('refreshes only the trusted local main binding and reloads the sidecar when that protected config changes',async()=>{
-  await enrollment.install(certificate,checkpoint,[advert]);const old=fs.readFileSync(planFile(sidecar),'utf8');host.calls=[];
-  const refreshed=new RecoveryEnrollment({...((enrollment as unknown as {o:ConstructorParameters<typeof RecoveryEnrollment>[0]}).o),mainAuthToken:'rotated-own-main-token',mainHealthPort:4456});
-  await refreshed.prepare();config=loadRecoveryConfig(configFile);
-  expect(config.mainAuthToken).toBe('rotated-own-main-token');expect(config.healthPort).toBe(4456);
-  await installRecoveryServices(config,configFile,entrypoint);
-  expect(host.loaded.get(sidecar)!.content).not.toBe(old);
-  expect(host.loaded.get(sidecar)!.content).toContain('INSTAR_RECOVERY_CONFIG_REVISION');
-  expect(host.loaded.get(sidecar)!.content).not.toContain('rotated-own-main-token');
-  expect(host.calls.filter(call=>call.args[0]==='bootout')).toHaveLength(2);
  });
  it('re-arms an exhausted sidecar only for an actual installed build or protected configuration change',async()=>{
   await enrollment.install(certificate,checkpoint,[advert]);config=loadRecoveryConfig(configFile);
@@ -237,11 +181,6 @@ describe('production recovery enrollment and persistent installation lifecycle',
   const manifest=path.join(path.dirname(entrypoint),'..','package.json'),pkg=JSON.parse(fs.readFileSync(manifest,'utf8'));pkg.version+='-next';fs.writeFileSync(manifest,JSON.stringify(pkg));
   expect(recoveryRuntimeRevision(entrypoint)).not.toBe(updated);
  });
- it('rolls the exact previous owned plan back when launchctl rejects a changed executable',async()=>{
-  await enrollment.install(certificate,checkpoint,[advert]);const old=fs.readFileSync(planFile(sidecar),'utf8'),other=fs.readFileSync(planFile(restorer),'utf8');host.failBootstrap=sidecar;
-  const next=stageRuntime('broken-update');await prepareNext(next);await expect(installRecoveryServices(config,configFile,next)).rejects.toThrow('injected launchctl');
-  expect(fs.readFileSync(planFile(sidecar),'utf8')).toBe(old);expect(host.loaded.get(sidecar)!.content).toBe(old);expect(fs.readFileSync(planFile(restorer),'utf8')).toBe(other);expect(host.loaded.get(restorer)!.content).toBe(other);expect(grantLines()).toContain(operatorLine);
- });
  it('restores a durable owned hold before reloading either service and completes uninstall without touching operator keys',async()=>{
   await enrollment.install(certificate,checkpoint,[advert]);activeHold();host.calls=[];
   const next=stageRuntime('updated-entry');await prepareNext(next);await installRecoveryServices(config,configFile,next);expect(fs.existsSync(host.holdFile)).toBe(false);expect(host.calls.filter(c=>c.args[0]==='bootout').every(c=>!c.holdPresent)).toBe(true);
@@ -253,23 +192,10 @@ describe('production recovery enrollment and persistent installation lifecycle',
   const now=Date.now(),request=signRecovery<RecoveryEnvelope>({domain:'instar-recovery-operation-v1',agentId,sourceMachineId:'peer',targetMachineId:machineId,targetBootId:'installation-host-boot',pairingEpoch:42,generation:1,route:'ssh',operationId:crypto.randomUUID(),nonce:crypto.randomBytes(32).toString('hex'),issuedAt:now,expiresAt:now+30000,fencingEpoch:1,verb:'status'},peerSsh.privateKey);
   const uninstalled=admission();try{expect(()=>uninstalled.admit(request,'ssh')).toThrow();}finally{uninstalled.close();}
  });
- it('keeps the persistent independent restorer when uninstall cannot compensate a hold, then resumes safely',async()=>{
-  await enrollment.install(certificate,checkpoint,[advert]);activeHold();const marker=fs.readFileSync(host.holdFile,'utf8');fs.writeFileSync(host.holdFile,JSON.stringify({...JSON.parse(marker),label:'ai.instar.other'}));
-  await expect(stopRecoveryServices(agentId,machineId,{configFile})).rejects.toThrow('recovery-watchdog-ownership-invalid');
-  expect(host.loaded.has(restorer)).toBe(true);expect(fs.existsSync(planFile(restorer))).toBe(true);expect(host.loaded.has(sidecar)).toBe(false);expect(grantLines()).toBe(operatorLine+'\n');
-  const store=admission();try{expect(store.hold()).not.toBe(null);}finally{store.close();}
-  fs.writeFileSync(host.holdFile,marker);await stopRecoveryServices(agentId,machineId,{configFile});expect(host.loaded.has(restorer)).toBe(false);expect(fs.existsSync(host.holdFile)).toBe(false);
- });
  it('never opens first enrollment when the restorer bootstrap fails after the sidecar and SSH grants exist',async()=>{
   host.failBootstrap=restorer;
   await expect(enrollment.install(certificate,checkpoint,[advert])).rejects.toThrow();
   expect(host.loaded.has(sidecar)).toBe(true);expect(host.loaded.has(restorer)).toBe(false);expect(grantLines()).toContain('instar-recovery-access');
   const closed=admission();try{expect(closed.locallyActive()).toBe(false);expect(closed.lease().ready).toBe(false);expect(()=>closed.verifyDiscovery({} as never,'ssh')).toThrow('locally-deactivated');expect(()=>closed.verifyDiscovery({} as never,'relay')).toThrow('locally-deactivated');}finally{closed.close();}
- });
- it('refuses an untrusted root or forged MachineAuth advert before changing any SSH admission or host service',async()=>{
-  const forgedRoot=signRecovery(certificate.payload,foreignRoot.privateKey);
-  await expect(enrollment.install(forgedRoot,checkpoint,[advert])).rejects.toThrow('recovery-certificate-invalid');
-  expect(grantLines()).toBe(operatorLine+'\n');expect(host.calls).toHaveLength(0);expect(fs.existsSync(path.join(enrollment.directory,'runtime.json'))).toBe(false);
-  await expect(enrollment.install(certificate,checkpoint,[signRecovery(advert.payload,machine.privateKey)])).rejects.toThrow('recovery-peer-advert-invalid');expect(grantLines()).toBe(operatorLine+'\n');expect(host.loaded.size).toBe(0);
  });
 });

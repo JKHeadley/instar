@@ -1,0 +1,36 @@
+{
+  "version": 3,
+  "slug": "recovery-installation-test-split",
+  "sessionId": "fb2d9241-bc5a-479b-9443-bbce50a353bc",
+  "timestamp": "2026-11-24T02:00:27.618Z",
+  "artifactPath": "upgrades/side-effects/recovery-installation-test-split.md",
+  "artifactSha256": "decb9de99301530a9feb2e85ef46e94d710b5d1407a883408491f453b766859d",
+  "coveredFiles": [
+    "docs/specs/recovery-installation-test-split.eli16.md",
+    "tests/integration/recovery-installation-lifecycle.test.ts",
+    "tests/integration/recovery-installation-update-lifecycle.test.ts",
+    "upgrades/next/recovery-installation-test-split.md",
+    "upgrades/side-effects/recovery-installation-test-split.md"
+  ],
+  "phase": "complete",
+  "tier": 1,
+  "tierReasoning": "A reversible test-only file split preserves all seventeen case bodies and production runtime qualification; no runtime or verifier policy changes.",
+  "eli16Path": "docs/specs/recovery-installation-test-split.eli16.md",
+  "sideEffectsPath": "upgrades/side-effects/recovery-installation-test-split.md",
+  "secondPass": "true",
+  "reviewerConcurred": true,
+  "toolchain": {
+    "buildSkill": {
+      "name": "build",
+      "version": null,
+      "verified": false
+    },
+    "reviewSkills": [
+      {
+        "name": "instar-dev",
+        "outcome": "concur",
+        "verified": false
+      }
+    ]
+  }
+}
