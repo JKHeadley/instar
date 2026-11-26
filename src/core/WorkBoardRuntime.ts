@@ -15,7 +15,7 @@ import {
 } from './WorkBoardService.js';
 import { WorkBoardPickupController, type DeliverOutcome } from './WorkBoardPickupController.js';
 import { WorkBoardRequestGate, type RequestGateDeps } from './WorkBoardRequestGate.js';
-import { WORK_CARD_RECORD_KIND, cardConversationKey, workCardRecordStoreSchema, type UnionEntry, type WorkRecordType, type Build } from './WorkCardStore.js';
+import { WORK_CARD_RECORD_KIND, cardConversationKey, workCardRecordStoreSchema, isAgentInternalCard, type UnionEntry, type WorkRecordType, type Build } from './WorkCardStore.js';
 import type { AppCreationContext } from './AppCreationContext.js';
 import type { HlcTimestamp } from './HybridLogicalClock.js';
 import { createHash } from 'node:crypto';
@@ -147,6 +147,8 @@ export class WorkBoardRuntime {
       appendLine: async (ck, id, text) => { this.appendLine(ck, id, text); },
       deliver: async (ck, brief, title) => {
         // The conversation may not be bound here yet (created on a standby): create is idempotent.
+        const cardId = this.svc.cardIdForConversation(ck);
+        if (cardId) this.ensureConversation(cardId, true);
         const alias = seams.conversation.aliasFor(ck);
         if (alias === null) return { outcome: 'refused', reason: 'the card\'s chat is not open on this machine yet' };
         return seams.conversation.dispatchSystem({ conversationKey: ck, alias, title, text: brief, messageId: `wb-brief-${this.now()}` });
@@ -190,7 +192,7 @@ export class WorkBoardRuntime {
     const t = this.svc.checkNoteText(text); if (!t.ok) return t;
     const v = this.svc.view(cardId)!;
     if (!this.seams.conversation.appendNoteEvent) return { ok: false, status: 503, error: 'notes-unavailable', detail: { message: 'Progress notes are not wired on this machine yet.' } };
-    this.ensureConversation(cardId);
+    this.ensureConversation(cardId, true);
     const eventId = `wbn-${createHash('sha256').update(`${cardId}:${this.seams.machineId}:${this.now()}:${t.text}`).digest('hex').slice(0, 24)}`;
     const out = this.seams.conversation.appendNoteEvent(v.card.conversationKey, eventId, t.text, writerBinding.slice(0, 200));
     if (out === 'rate-limited') return { ok: false, status: 503, error: 'rate-limited', detail: { retryable: true, message: 'The replicated journal refused the note just now (rate cap). Nothing was written; write it again in a moment.' } };
@@ -427,6 +429,9 @@ export class WorkBoardRuntime {
   /** After any record lands (local write, or a peer's record applied live). */
   private afterWrite(cardId: string, type: WorkRecordType, data: Record<string, unknown>, local: boolean): void {
     if (type === 'created' || type === 'tap') this.refreshCreationEvidence(cardId);
+    // A real person-facing transition must be readable even when this began as private agent work.
+    const view = this.svc.view(cardId);
+    if (view && !isAgentInternalCard(view.card)) this.ensureConversation(cardId);
     if (type === 'dispatched' && (data.outcome === 'injected' || data.outcome === 'spawned')) {
       // Every machine writes its own note from the same replicated record (§6 "Other sessions can see it").
       if (!local) { try { this.seams.ledgerNote(cardId, String(data.for)); } catch { /* @silent-fallback-ok: best-effort note; the pickup is unaffected */ } }
@@ -451,10 +456,12 @@ export class WorkBoardRuntime {
     this.seams.conversation.appendSystemLine(conversationKey, lineId, text);
   }
 
-  ensureConversation(cardId: string): void {
+  ensureConversation(cardId: string, forExecution = false): void {
     const v = this.svc.view(cardId);
     if (!v || !v.card.created || v.card.redacted) return;
     this.refreshCreationEvidence(cardId);
+    // Internal cards are not empty owner chats. Actual dispatch or progress may open worker history later.
+    if (isAgentInternalCard(v.card) && !forExecution) return;
     if (this.seams.conversation.exists(v.card.conversationKey)) return;
     const evidence = this.creationEvidence.get(v.card.conversationKey);
     try { this.seams.conversation.create(cardId, v.card.conversationKey, v.card.title, evidence?.creationContext); }
@@ -525,7 +532,14 @@ export class WorkBoardRuntime {
   removeConversation(conversationKey: string): void { this.seams.conversation.remove(conversationKey); }
 
   /** The conversations the lists leave out (§2); none while the feature is switched off. */
-  hiddenConversationKeys(): Set<string> { return this.seams.enabled() ? this.svc.hiddenConversationKeys() : new Set(); }
+  /** An old empty placeholder is not a human conversation to open. Reads never create one. */
+  conversationAvailable(cardId: string): boolean {
+    const v = this.svc.view(cardId);
+    if (!v || !this.seams.conversation.exists(v.card.conversationKey)) return false;
+    return !isAgentInternalCard(v.card) || this.svc.startedAt(cardId) !== null || v.card.notes.some(note => note.eventIds.length > 0) || this.pendingNotes.has(v.card.conversationKey);
+  }
+
+  hiddenConversationKeys(): Set<string> { return this.svc.hiddenConversationKeys(); }
 
   private checkJournalGrowth(): void {
     if (this.journalSignalled) return;

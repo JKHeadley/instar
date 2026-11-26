@@ -13,6 +13,7 @@ import type { OutageNoticeState, OutagePolicyProjection } from './TelegramOrigin
 import { prepareOriginOutageNotice } from './OriginOutagePreparation.js';
 import { registerOriginBot, requirePreparedOriginEgress } from './OriginBotEgress.js';
 import { telegramFetch } from '../telegram-egress.js';
+import { originMessageHistoryText } from './ForwardedDeliveryHistory.js';
 import type { OriginStoreOptions } from './StoreTypes.js';
 import { callOriginNotice, listenOriginNotices, originCapacityClient } from './OriginNoticeIpc.js';
 import { OriginEgressCapacity, ORIGIN_CAPACITY_WINDOW_MS, ORIGIN_LEASE_REFUSAL_REASONS } from './OriginEgressCapacity.js';
@@ -36,7 +37,7 @@ import { forwardExpiryArm } from './OriginForwardToHolder.js';
 import type { HeldForwardDetail } from './OriginForwardToHolder.js';
 import { escapeOriginFooter, originFooter } from './OriginPresentation.js';
 import type { HeldOperationRow } from './StoreTypes.js';
-import { OriginSendPolicyRefusal } from './OriginSendPolicy.js';
+import { OriginSendPolicyRefusal, originSendPolicyInput } from './OriginSendPolicy.js';
 import type { OriginSendPolicyDecision } from './OriginSendPolicy.js';
 import { classifyPolicyRefusal } from './OriginPolicyClassifier.js';
 import { advisoryReference, advisorySessionLine, readPolicyVerdict } from './OriginPolicyVerdict.js';
@@ -760,7 +761,7 @@ export class TelegramOriginRuntime {
       const text = `${lateLineForParseMode(line, params.parse_mode)}\n\n${authored}`;
       const next = this.service.runAsRecordedProducer(record, () => this.service.prepareBot({ method: 'sendMessage', accountId: record.destination.accountId,
         params: { ...params, text }, executionOwnerMachineId: this.options.identity.originMachineId,
-        ...(request.policy ? { policyInput: request.policy } : {}), replacement: { firstPreparedAt: first, deadlineAt: op.deadlineAt } }));
+        policyInput: request.policy ?? originSendPolicyInput(authored), replacement: { firstPreparedAt: first, deadlineAt: op.deadlineAt } }));
       if (next.admission.children.length !== 1) throw new Error('late-mark-part-limit');
       this.service.authorizeSendPolicyDispatch(next.record);
       await this.service.recordIntent(next);
@@ -1085,7 +1086,9 @@ export class TelegramOriginRuntime {
               const acceptedAt = Number.isSafeInteger(receipt.result?.date) ? receipt.result!.date! * 1000 : Date.now();
               await this.options.onRecoveredMessage?.({ operationId: sending.record.operationId,
                 chatId: String(body.chat_id), threadId: body.message_thread_id ?? null,
-                messageId: receipt.result!.message_id!, text: body.text,
+                messageId: receipt.result!.message_id!,
+                text: originMessageHistoryText(request, { firstPreparedAt, lateMarkedAt,
+                  footer: originFooter(sending.record, sending.record.display) }) ?? body.text,
                 acceptedAt,
                 preparedAt: sending.admission.preparedAt, producerKind: sending.record.producerKind, firstPreparedAt, lateMarkedAt });
               await this.noteRecoveredDelivery({ operationId: sending.record.operationId, reportedId: operation.record.operationId, record: sending.record,

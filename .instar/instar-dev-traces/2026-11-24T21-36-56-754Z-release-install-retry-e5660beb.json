@@ -1,0 +1,19 @@
+{
+  "version": 2,
+  "slug": "release-install-retry",
+  "sessionId": "ed99de61-509a-4e0d-908f-801b299fef73",
+  "timestamp": "2026-11-24T21:36:56.754Z",
+  "artifactPath": "upgrades/side-effects/release-install-retry.md",
+  "artifactSha256": "593a8614abf489bf86d1504dfc0ff5e53ddadd16868fed085dc379c8466483e2",
+  "coveredFiles": [
+    ".github/workflows/publish.yml",
+    "upgrades/side-effects/release-install-retry.md"
+  ],
+  "phase": "complete",
+  "tier": 1,
+  "tierReasoning": "Record independent second pass of the protected publish workflow. Documentation and trace only.",
+  "eli16Path": "docs/specs/release-install-retry.eli16.md",
+  "sideEffectsPath": "upgrades/side-effects/release-install-retry.md",
+  "secondPass": "true",
+  "reviewerConcurred": true
+}

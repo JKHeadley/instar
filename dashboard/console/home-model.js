@@ -638,7 +638,7 @@ export function headline(allCards) {
   const otherAttn = attention.length;
   const loading = list.filter((c) => c.state === 'loading').length;
   // Never announce a count, or "all quiet", before both counting cards answered.
-  if (loading === list.length || (cards.needs && cards.needs.state === 'loading' && !Number.isFinite(cards.needs.count)) || (cards.promised && cards.promised.state === 'loading' && !(cards.needs && cards.needs.surfacedCount > 0)) || (cards.needs && cards.needs.surfacedPending && !(cards.needs.count > 0))) return { text: 'Checking in…', tone: 'muted' };
+  if (loading === list.length || (cards.needs && cards.needs.state === 'loading' && !Number.isFinite(cards.needs.count)) || (cards.promised && cards.promised.state === 'loading' && !(cards.needs && (cards.needs.authoritative || cards.needs.surfacedCount > 0))) || (cards.needs && cards.needs.surfacedPending && !(cards.needs.count > 0))) return { text: 'Checking in…', tone: 'muted' };
   // A known action survives incomplete coverage. Coverage belongs under agent
   // status, not in the sentence describing the action.
   const count = cards.needs && cards.needs.combined ? known(cards.needs) : known(cards.needs) + known(cards.promised);
@@ -654,7 +654,7 @@ export function headline(allCards) {
     const title = withContext ? withContext[1] : action;
     const context = withContext ? `${withContext[2].replace(/,\s*/g, ' · ')}.` : null;
     // warning-path: inline
-    return { text: title || 'Open what needs your attention', tone: 'attn',
+    return { text: title || (cards.needs?.authoritative ? `${plural(count, 'request')} ${count === 1 ? 'needs' : 'need'} your attention` : 'Open what needs your attention'), tone: 'attn',
       sub: [context, first?.action ? 'Tap to review and respond.' : null,
         count > 1 ? `${count - 1 === 1 ? 'One more thing needs' : `${count - 1} more things need`} you.` : null].filter(Boolean).join(' '),
       action: first?.action || null };

@@ -1,0 +1,45 @@
+{
+  "ts": "2026-11-24T18:41:53.581Z",
+  "slug": "local-verify-small-peer-trial",
+  "suggestedTier": 2,
+  "declaredTier": 2,
+  "riskFloor": 2,
+  "riskFloorReasons": [
+    "irreversibility: src/core/PostUpdateMigrator.ts touches PostUpdateMigrator",
+    "migration / fleet-rollout surface: src/core/PostUpdateMigrator.ts touches PostUpdateMigrator (fleet migration machinery)",
+    "new capability: new route (router.<verb>() added",
+    "new capability: new exported class / subsystem added"
+  ],
+  "belowFloor": false,
+  "files": 19,
+  "loc": 1429,
+  "scope": {
+    "basis": "staged-in-scope-paths-including-deleted",
+    "files": [
+      "scripts/local-verify/probe-trial-scope.mjs",
+      "scripts/local-verify/probe-trial-watchdog.mjs",
+      "scripts/local-verify/trial-coalition.py",
+      "src/commands/server.ts",
+      "src/core/PostUpdateMigrator.ts",
+      "src/data/awareness/local-verify-main-on-peers.md",
+      "src/localVerify/LocalVerifyService.ts",
+      "src/localVerify/launchdSpawn.ts",
+      "src/localVerify/localVerifyRoutes.ts",
+      "src/localVerify/localVerifyWiring.ts",
+      "src/localVerify/peer.ts",
+      "src/localVerify/record.ts",
+      "src/localVerify/runSmallPeerWatchdog.ts",
+      "src/localVerify/smallPeerMemory.ts",
+      "src/localVerify/smallPeerReceipts.ts",
+      "src/localVerify/smallPeerSupervisor.ts",
+      "src/localVerify/smallPeerWatchdog.ts",
+      "src/localVerify/trialExecutionScope.ts",
+      "src/scaffold/templates.ts"
+    ],
+    "addedLines": 1410,
+    "deletedLines": 19
+  },
+  "causalAutopsy": null,
+  "classClosure": null,
+  "verdict": "blocked"
+}

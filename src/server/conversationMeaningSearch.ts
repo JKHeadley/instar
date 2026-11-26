@@ -123,7 +123,7 @@ export function searchMeaningLocal(
     if (only) {
       const key = only.slice(4);
       const c = svc.store.getConversation(key);
-      if (c && svc.liveConversation(key) && access.may(key)) titles.set(`app:${key.toLowerCase()}`, c.title ?? null);
+      if (c && !svc.store.isHiddenConversation?.(key) && svc.liveConversation(key) && access.may(key)) titles.set(`app:${key.toLowerCase()}`, c.title ?? null);
     } else {
       let cursor: string | null = null;
       let n = 0;
@@ -161,6 +161,7 @@ export function searchMeaningLocal(
   const out: ConversationSearchHit[] = [];
   const slackRows = new Map<number, Map<string, { ts: string; text: string; fromUser: boolean; at: string; eventId?: string }>>();
   for (const row of rows) {
+    if (!titles.has(row.ref)) continue; // a stale index cannot reintroduce a conversation absent from this projection
     if (row.similarity < MIN_SIMILARITY) break;
     const title = titles.get(row.ref) ?? null;
     let found: { text: string; at: string; fromUser: boolean; messageId: string; platform: SearchPlatform; machine?: string } | null = null;

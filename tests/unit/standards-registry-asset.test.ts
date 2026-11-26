@@ -172,6 +172,9 @@ describe('standards registry ships as a build artifact', () => {
         // tarball, not a manifest of it — so pack quietly and read what landed.
         execFileSync('npm', ['pack', '--pack-destination', tmp], {
           cwd: ROOT, stdio: ['ignore', 'ignore', 'ignore'],
+          // Packing an already-built artifact needs no checkout hook installation.
+          // Borrowed dependency trees can copy a read-only hook launcher into a worktree.
+          env: { ...process.env, HUSKY: '0' },
         });
         const filename = fs.readdirSync(tmp).find((f) => f.endsWith('.tgz'));
         expect(filename, 'npm pack produced no tarball').toBeTruthy();
@@ -477,6 +480,33 @@ describe('wiring integrity — no reader may rebuild the path', () => {
   });
 });
 
+let productionFiles: string[] | undefined;
+function registrySourceFiles(): string[] {
+  if (productionFiles) return productionFiles;
+  const files: string[] = [];
+  const walk = (dir: string) => {
+    for (const e of fs.readdirSync(dir, { withFileTypes: true })) {
+      const full = path.join(dir, e.name);
+      if (e.isDirectory()) walk(full);
+      else if (/\.ts$/.test(e.name)) files.push(full);
+    }
+  };
+  walk(path.join(ROOT, 'src'));
+  productionFiles = files;
+  return files;
+}
+
+const registrySourceCode = new Map<string, string>();
+function registryCode(file: string): string {
+  const cached = registrySourceCode.get(file);
+  if (cached !== undefined) return cached;
+  const code = fs.readFileSync(file, 'utf-8')
+    .replace(/\/\*[\s\S]*?\*\//g, (m) => '\n'.repeat((m.match(/\n/g) ?? []).length))
+    .split('\n').map((l) => l.replace(/\/\/.*$/, '')).join('\n');
+  registrySourceCode.set(file, code);
+  return code;
+}
+
 describe('the test-only override cannot become a production path', () => {
   /**
    * Cross-model review round 1, finding 2: `resolveStandardsRegistry(explicitPath?)`
@@ -492,9 +522,7 @@ describe('the test-only override cannot become a production path', () => {
     // the server. If the server ever populates it, an operator-reachable config path
     // could point a deployed agent at an arbitrary registry.
     for (const rel of ['src/server/AgentServer.ts', 'src/commands/server.ts']) {
-      const code = fs.readFileSync(path.join(ROOT, rel), 'utf-8')
-        .replace(/\/\*[\s\S]*?\*\//g, (m) => '\n'.repeat((m.match(/\n/g) ?? []).length))
-        .split('\n').map((l) => l.replace(/\/\/.*$/, '')).join('\n');
+      const code = registryCode(path.join(ROOT, rel));
       expect(
         code,
         `${rel} sets standardsRegistryResolutionOverride. That field is TEST-ONLY: populating it from ` +
@@ -505,19 +533,9 @@ describe('the test-only override cannot become a production path', () => {
   });
 
   it('the override is never fed from config or env anywhere in src/', () => {
-    const files: string[] = [];
-    const walk = (dir: string) => {
-      for (const e of fs.readdirSync(dir, { withFileTypes: true })) {
-        const full = path.join(dir, e.name);
-        if (e.isDirectory()) walk(full);
-        else if (/\.ts$/.test(e.name)) files.push(full);
-      }
-    };
-    walk(path.join(ROOT, 'src'));
+    const files = registrySourceFiles();
     for (const f of files) {
-      const code = fs.readFileSync(f, 'utf-8')
-        .replace(/\/\*[\s\S]*?\*\//g, (m) => '\n'.repeat((m.match(/\n/g) ?? []).length))
-        .split('\n').map((l) => l.replace(/\/\/.*$/, '')).join('\n');
+      const code = registryCode(f);
       // An override derived from config/env is the reachable-from-production shape.
       expect(
         code,
@@ -535,9 +553,7 @@ describe('the override is structurally unreachable in production', () => {
     // test runner sets that variable and nothing in production does, so a deployed
     // agent cannot be pointed at an arbitrary constitution even if the RouteContext
     // field were somehow populated.
-    const code = fs.readFileSync(path.join(ROOT, 'src/server/routes.ts'), 'utf-8')
-      .replace(/\/\*[\s\S]*?\*\//g, (m) => '\n'.repeat((m.match(/\n/g) ?? []).length))
-      .split('\n').map((l) => l.replace(/\/\/.*$/, '')).join('\n');
+    const code = registryCode(path.join(ROOT, 'src/server/routes.ts'));
     expect(
       code,
       'The conformance route no longer gates standardsRegistryResolutionOverride behind process.env.VITEST. ' +
@@ -570,20 +586,10 @@ describe('the test-only resolver API has zero production callers', () => {
     // regardless of who currently passes it, because the next caller can. The
     // production entry point now takes no argument at all, and fixture resolution
     // lives behind a separately-named export. This asserts that separation holds.
-    const files: string[] = [];
-    const walk = (dir: string) => {
-      for (const e of fs.readdirSync(dir, { withFileTypes: true })) {
-        const full = path.join(dir, e.name);
-        if (e.isDirectory()) walk(full);
-        else if (/\.ts$/.test(e.name)) files.push(full);
-      }
-    };
-    walk(path.join(ROOT, 'src'));
+    const files = registrySourceFiles();
     for (const f of files) {
       if (f.endsWith('standardsRegistryPath.ts')) continue; // the definition itself
-      const code = fs.readFileSync(f, 'utf-8')
-        .replace(/\/\*[\s\S]*?\*\//g, (m) => '\n'.repeat((m.match(/\n/g) ?? []).length))
-        .split('\n').map((l) => l.replace(/\/\/.*$/, '')).join('\n');
+      const code = registryCode(f);
       expect(
         code,
         `${path.relative(ROOT, f)} imports the TEST-ONLY resolveStandardsRegistryFromPath. ` +
@@ -660,20 +666,10 @@ describe('import boundary — registry access is centralized', () => {
     // Round-6 finding: the regex lint is a smoke alarm, not the mechanism. The real
     // enforcement is that exactly ONE module owns registry location. This asserts the
     // boundary directly rather than trusting the text scan.
-    const files: string[] = [];
-    const walk = (dir: string) => {
-      for (const e of fs.readdirSync(dir, { withFileTypes: true })) {
-        const full = path.join(dir, e.name);
-        if (e.isDirectory()) walk(full);
-        else if (/\.ts$/.test(e.name)) files.push(full);
-      }
-    };
-    walk(path.join(ROOT, 'src'));
+    const files = registrySourceFiles();
     const owners = files.filter((f) => {
       if (f.endsWith('standardsRegistryPath.ts')) return false;
-      const code = fs.readFileSync(f, 'utf-8')
-        .replace(/\/\*[\s\S]*?\*\//g, (m) => '\n'.repeat((m.match(/\n/g) ?? []).length))
-        .split('\n').map((l) => l.replace(/\/\/.*$/, '')).join('\n');
+      const code = registryCode(f);
       // A production file may READ the registry only via a path the resolver handed it.
       return /standards-registry\.(md|meta\.json)/.test(code)
           || /['"`]STANDARDS-REGISTRY\.md['"`]/.test(code);
@@ -769,29 +765,49 @@ describe('a REAL resolution earns verified end-to-end — no hand-built literals
     // article count, same package version — and the AUTHORED constitution has moved on.
     // Every operand written by the build that wrote the asset still agrees.
     const original = fs.readFileSync(AUTHORED, 'utf-8');
-    const fixture = fs.mkdtempSync(path.join(os.tmpdir(), 'registry-authored-drift-'));
+    const fixture = fs.mkdtempSync(path.join(os.tmpdir(), 'registry-authored-mismatch-'));
+    const authored = path.join(fixture, 'docs', 'STANDARDS-REGISTRY.md');
     try {
-      // Guard evidence stays identical and read-only, but the authored document
-      // belongs to this fixture. Parallel readers never observe a temporary
-      // extra article in the actual checkout.
-      // Only these directories contain the packed guard references. Projecting
-      // package/source-identity markers would turn this synthetic fixture into
-      // a protected source checkout that the normal cleanup guard must retain.
-      for (const name of ['src', 'scripts', 'tests']) {
-        fs.symlinkSync(path.join(ROOT, name), path.join(fixture, name));
+      // Preserve the real source inputs used by marker and route discovery,
+      // plus the packed index's file refs. Copy no working-tree or home state.
+      fs.mkdirSync(path.join(fixture, '.git'));
+      fs.mkdirSync(path.join(fixture, 'docs', 'specs'), { recursive: true });
+      fs.cpSync(path.join(ROOT, 'src'), path.join(fixture, 'src'), { recursive: true });
+      const index = JSON.parse(fs.readFileSync(GUARD_INDEX, 'utf-8')) as {
+        guards: Array<{ kind: string; ref: string }>;
+      };
+      for (const guard of index.guards) {
+        if (guard.kind !== 'file' || guard.ref.startsWith('src/')) continue;
+        const source = path.resolve(ROOT, guard.ref);
+        const target = path.resolve(fixture, guard.ref);
+        // Registry refs are inputs, never authority to copy outside the fixture.
+        expect(source.startsWith(ROOT + path.sep)).toBe(true);
+        expect(target.startsWith(fixture + path.sep)).toBe(true);
+        if (!fs.existsSync(source)) continue;
+        fs.mkdirSync(path.dirname(target), { recursive: true });
+        fs.copyFileSync(source, target);
       }
-      fs.writeFileSync(path.join(fixture, '.git'), 'fixture source-tree marker\n');
-      fs.mkdirSync(path.join(fixture, 'docs'));
-      for (const name of fs.readdirSync(path.join(ROOT, 'docs'))) {
-        if (name !== 'STANDARDS-REGISTRY.md') fs.symlinkSync(path.join(ROOT, 'docs', name), path.join(fixture, 'docs', name));
-      }
-      const authored = path.join(fixture, 'docs', 'STANDARDS-REGISTRY.md');
+      fs.writeFileSync(authored, original);
+      expect(holdsAuthoredConstitution(fixture)).toBe(true);
+      const before = computeCoverage({
+        registryPath: res.path,
+        projectDir: fixture,
+        registryMarkdown: res.markdown,
+        integrity: res.integrity,
+      });
+      expect(before.summary.guards.projectDir).toBe(fs.realpathSync(fixture));
+      expect(before.summary.assessmentConfidence).toBe('verified');
+
       fs.writeFileSync(authored, `${original}\n### A Standard Added After The Build\n**Rule.** r.\n`);
+      expect(countRegistryArticles(fs.readFileSync(authored, 'utf-8')))
+        .toBe(countRegistryArticles(original) + 1);
+      // A concurrent live-registry reader must keep seeing the real constitution.
       expect(fs.readFileSync(AUTHORED, 'utf-8')).toBe(original);
 
       // Confirm the other three operands are UNMOVED — otherwise this test proves nothing.
       const stillFine = resolveStandardsRegistry();
       if (!stillFine.usable) throw new Error('resolver went unusable — wrong precondition');
+      expect(stillFine).toEqual(res);
       expect(earnsVerified(stillFine.integrity).verified).toBe(true);
 
       const report = computeCoverage({
@@ -801,12 +817,15 @@ describe('a REAL resolution earns verified end-to-end — no hand-built literals
         integrity: stillFine.integrity,
       });
       expect(report.summary.guards.projectDir).toBe(fs.realpathSync(fixture));
-      expect(report.summary.guards.basis).toBe('source-tree-index-match');
+      expect(report.summary.total).toBe(before.summary.total);
       expect(report.summary.assessmentConfidence).toBe('unverified');
       expect(report.summary.confidenceReason).toMatch(/does NOT match the authored/);
       expect(fs.readFileSync(AUTHORED, 'utf-8')).toBe(original);
     } finally {
-      SafeFsExecutor.safeRmSync(fixture, { recursive: true, force: true, operation: 'isolated authored registry drift fixture' });
+      SafeFsExecutor.safeRmSync(fixture, {
+        recursive: true, force: true,
+        operation: 'tests/unit/standards-registry-asset.test.ts:authored-mismatch-fixture',
+      });
     }
   });
 

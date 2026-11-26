@@ -16,6 +16,12 @@ describe('cardPlacementsFromBoard', () => {
   const card = (status: string, projectKey: string | null, created = true) => ({ status, card: { created, projectKey, conversationKey: `conv-${status}-${projectKey ?? 'none'}` } });
   const board = (views: Record<string, ReturnType<typeof card> | null>) => ({ cardIds: () => Object.keys(views), view: (id: string) => views[id] ?? null });
 
+  it('excludes hidden internal card placements without changing the stored cards',()=>{
+    const data=board({a:card('with-agent','telegram:5'),b:card('held','telegram:5')});
+    const result=cardPlacementsFromBoard(data,'-1001',key=>key!=='conv-with-agent-telegram:5');
+    expect(result.map(x=>x.card)).toEqual([{kind:'conversation',platform:'app',conversationKey:'conv-held-telegram:5'}]);
+    expect(data.cardIds()).toEqual(['a','b']);
+  });
   it('lists each open card with a project; done, archived, removed, uncreated and projectless cards drop off', () => {
     const out = cardPlacementsFromBoard(board({
       a: card('needs-approval', 'telegram:5'), b: card('done', 'telegram:5'), c: card('archived', 'telegram:5'), d: card('removed', 'telegram:5'),

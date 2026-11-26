@@ -16,8 +16,10 @@
  * under test — the commands, the pids, the parent links and the CPU readings
  * all come from the live process table.
  */
-import { spawn } from 'node:child_process';
+import { execFileSync, spawn } from 'node:child_process';
 import fs from 'node:fs';
+import https from 'node:https';
+import type { AddressInfo } from 'node:net';
 import os from 'node:os';
 import path from 'node:path';
 import { setTimeout as delay } from 'node:timers/promises';
@@ -29,6 +31,7 @@ import {
   SessionWatchdog,
 } from '../../src/monitoring/SessionWatchdog.js';
 import { formatWatchdogUserMessage } from '../../src/monitoring/watchdog-notifications.js';
+import { SafeGitExecutor } from '../../src/core/SafeGitExecutor.js';
 import { SafeFsExecutor } from '../../src/core/SafeFsExecutor.js';
 
 const AGED_MS = MAX_TEST_RUNNER_PROTECTION_MS + 60_000; // 61 minutes
@@ -217,3 +220,95 @@ describe('E2E: a real test run past the floor is spared while it is still workin
     expect(msg).toMatch(/run again/i);
   }, 90_000);
 });
+
+it('spares the real HTTPS transport while a local git push runs its pre-push test hook', async () => {
+  const dir = fs.mkdtempSync(path.join(os.tmpdir(), 'watchdog-git-push-'));
+  // The fixture supplies a private Git config and a loopback receive-pack advertisement.
+  // Reject the push in the hook so no receive-pack upload can take place.
+  const env = Object.fromEntries(Object.entries(process.env).filter(([name]) => !name.startsWith('GIT_')));
+  Object.assign(env, {
+    HOME: dir, XDG_CONFIG_HOME: dir, GIT_CONFIG_NOSYSTEM: '1', GIT_CONFIG_GLOBAL: '/dev/null',
+    GIT_TERMINAL_PROMPT: '0', NO_PROXY: '127.0.0.1', no_proxy: '127.0.0.1',
+  });
+  const operation = 'watchdog pre-push lifecycle fixture';
+  const git = (...args: string[]) => SafeGitExecutor.run(args, { cwd: dir, env, timeout: 10_000, operation });
+  const marker = path.join(dir, 'release-hook');
+  let server: https.Server | undefined;
+  let joined: Promise<number | null> | undefined;
+  try {
+    git('init', '--quiet');
+    git('-c', 'user.name=Watchdog Fixture', '-c', 'user.email=fixture@example.invalid',
+      'commit', '--quiet', '--allow-empty', '-m', 'fixture');
+    // Smart HTTP packet lines for an empty remote advertising push support.
+    const packet = (line: string) => (4 + Buffer.byteLength(line)).toString(16).padStart(4, '0') + line;
+    const advertisement = packet('0'.repeat(40) + ' capabilities^{}\0report-status\n') + '0000';
+    const key = path.join(dir, 'tls-key.pem');
+    const cert = path.join(dir, 'tls-cert.pem');
+    const tlsConfig = path.join(dir, 'openssl.cnf');
+    fs.writeFileSync(tlsConfig, '[req]\nprompt=no\ndistinguished_name=dn\nx509_extensions=cert\n[dn]\nCN=127.0.0.1\n[cert]\nsubjectAltName=IP:127.0.0.1\nbasicConstraints=CA:TRUE\n');
+    execFileSync('openssl', ['req', '-x509', '-newkey', 'rsa:2048', '-nodes', '-keyout', key,
+      '-out', cert, '-config', tlsConfig, '-days', '1'],
+      { cwd: dir, stdio: 'ignore', timeout: 10_000 });
+    env.GIT_SSL_CAINFO = cert;
+    let uploads = 0;
+    server = https.createServer({ key: fs.readFileSync(key), cert: fs.readFileSync(cert) }, (req, res) => {
+      if (req.method !== 'GET' || req.url !== '/repo.git/info/refs?service=git-receive-pack') {
+        if (req.method === 'POST') uploads++;
+        res.writeHead(403).end();
+        return;
+      }
+      const service = '# service=git-receive-pack\n';
+      res.writeHead(200, { 'Content-Type': 'application/x-git-receive-pack-advertisement' });
+      res.end(packet(service) + '0000' + advertisement);
+    });
+    await new Promise<void>((resolve, reject) => {
+      server!.once('error', reject);
+      server!.listen(0, '127.0.0.1', resolve);
+    });
+    git('remote', 'add', 'origin', `https://127.0.0.1:${(server.address() as AddressInfo).port}/repo.git`);
+    const runner = path.join(dir, 'vitest');
+    fs.writeFileSync(runner, [
+      "const fs = require('node:fs');",
+      "fs.writeFileSync('hook-ready', 'ready');",
+      "const deadline = Date.now() + 20_000;",
+      "setInterval(() => { if (Date.now() >= deadline || fs.existsSync('release-hook')) process.exit(1); }, 25);",
+    ].join('\n'));
+    fs.writeFileSync(path.join(dir, '.git/hooks/pre-push'), '#!/bin/sh\n"$WATCHDOG_NODE" ./vitest\nexit $?\n', { mode: 0o755 });
+    const child = SafeGitExecutor.spawn(['push', 'origin', 'HEAD:refs/heads/fixture'], {
+      cwd: dir, env: { ...env, WATCHDOG_NODE: process.execPath }, stdio: 'ignore', operation,
+    });
+    joined = new Promise((resolve, reject) => { child.once('error', reject); child.once('close', resolve); });
+    const until = performance.now() + 15_000;
+    while (!fs.existsSync(path.join(dir, 'hook-ready')) && child.exitCode === null && performance.now() < until) await delay(50);
+    expect(fs.existsSync(path.join(dir, 'hook-ready')), 'the private HTTPS push reached its own Git hook').toBe(true);
+    const wd = new SessionWatchdog({
+      stateDir: dir, sessions: { tmuxPath: 'tmux' }, monitoring: { watchdog: { enabled: true, stuckCommandSec: 180 } },
+    } as any, { isSessionAlive: () => true, captureOutput: () => '' } as any, {} as any);
+    const probe = wd as any;
+    const snapshot = await probe.getChildProcesses(process.pid) as Row[];
+    const push = snapshot.find(row => row.pid === child.pid)!;
+    expect(push).toBeDefined();
+    const descendants = await probe.getChildProcesses(push.pid) as Row[];
+    expect(descendants.some(row => row.parentPid === push.pid && /git(?:\s+|-)remote-https\s/.test(row.command))).toBe(true);
+    expect(descendants.some(row => row.parentPid === push.pid && /hooks\/pre-push\s/.test(row.command))).toBe(true);
+    expect(descendants.some(row => classifyTestRunnerCommand(row.command) && typeof row.cpuMs === 'number')).toBe(true);
+    probe.getClaudePid = async () => process.pid;
+    probe.getChildProcesses = async () => [push, ...descendants].map(row => ({ ...row, elapsedMs: 757_000 }));
+    probe.signalIfIdentityMatches = vi.fn(async () => true);
+    const evaluate = vi.fn(async () => 'stuck');
+    wd.intelligence = { evaluate } as any;
+    await probe.checkSession('fixture-git-push');
+    expect(evaluate).not.toHaveBeenCalled();
+    expect(probe.signalIfIdentityMatches).not.toHaveBeenCalled();
+    fs.writeFileSync(marker, '');
+    expect(await joined).toBe(1);
+    expect(uploads).toBe(0);
+  } finally {
+    fs.writeFileSync(marker, '');
+    try { await joined; }
+    finally {
+      if (server?.listening) await new Promise<void>(resolve => server!.close(() => resolve()));
+      SafeFsExecutor.safeRmSync(dir, { recursive: true, force: true, operation: 'tests/e2e/watchdog-test-runner-progress-alive.test.ts' });
+    }
+  }
+}, 60_000);

@@ -1,0 +1,31 @@
+{
+  "ts": "2026-11-25T23:40:40.341Z",
+  "slug": "async-monitoring-ticks",
+  "suggestedTier": 2,
+  "declaredTier": 1,
+  "riskFloor": 2,
+  "riskFloorReasons": [
+    "safety-invariant proximity: src/monitoring/OrphanProcessReaper.ts matches session reaper"
+  ],
+  "belowFloor": true,
+  "files": 8,
+  "loc": 622,
+  "scope": {
+    "basis": "staged-in-scope-paths-including-deleted",
+    "files": [
+      "src/commands/server.ts",
+      "src/core/SessionManager.ts",
+      "src/core/processIdentity.ts",
+      "src/messaging/SessionSummarySentinel.ts",
+      "src/monitoring/ActiveWorkSilenceSentinel.ts",
+      "src/monitoring/ContextWedgeSentinel.ts",
+      "src/monitoring/OrphanProcessReaper.ts",
+      "src/monitoring/sentinelWiring.ts"
+    ],
+    "addedLines": 428,
+    "deletedLines": 194
+  },
+  "causalAutopsy": null,
+  "classClosure": null,
+  "verdict": "pass"
+}

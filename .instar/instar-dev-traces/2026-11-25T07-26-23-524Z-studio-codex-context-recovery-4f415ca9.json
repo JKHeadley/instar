@@ -1,0 +1,23 @@
+{
+  "version": 2,
+  "slug": "studio-codex-context-recovery",
+  "sessionId": "79673ec9-ff9b-4e49-beab-ea9ff8ee8f93",
+  "timestamp": "2026-11-25T07:26:23.524Z",
+  "artifactPath": "upgrades/side-effects/studio-codex-context-recovery.md",
+  "artifactSha256": "645b43c6247e6d963a12099a5d3528968e442d477872ada4a46d96dee0364c8f",
+  "coveredFiles": [
+    "src/commands/init.ts",
+    "src/core/PostUpdateMigrator.ts",
+    "src/core/installCodexHooks.ts",
+    "tests/e2e/context-budget-codex-seed-alive.test.ts",
+    "tests/integration/context-budget-delta-hook.test.ts",
+    "tests/unit/migration-parity-hooks.test.ts"
+  ],
+  "phase": "complete",
+  "tier": 1,
+  "tierReasoning": "Reversible repair restoring an existing bounded recovery hook path and installation parity.",
+  "eli16Path": "docs/eli16/studio-codex-context-recovery.eli16.md",
+  "sideEffectsPath": "upgrades/side-effects/studio-codex-context-recovery.md",
+  "secondPass": "true",
+  "reviewerConcurred": true
+}

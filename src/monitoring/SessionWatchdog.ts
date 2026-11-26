@@ -402,6 +402,26 @@ export function classifyTestRunnerCommand(
   return null;
 }
 
+// Git starts its HTTPS helper before it invokes pre-push. The hook and helper
+// are siblings, so looking below the idle helper alone misses the active work.
+function isGitHttpsTransport(command: string): boolean {
+  return /^(?:\S*\/)?(?:git\s+remote-https|git-remote-https)(?:\s|$)/.test(command.trim());
+}
+
+function prePushHookForTransport(rows: readonly ChildProcessInfo[], transport: ChildProcessInfo): ChildProcessInfo | undefined {
+  if (!isGitHttpsTransport(transport.command)) return undefined;
+  let parent = rows.find(row => row.pid === transport.parentPid);
+  // Some Git installs dispatch the dashed executable through "git remote-https".
+  if (parent && isGitHttpsTransport(parent.command)) {
+    const pushPid = parent.parentPid;
+    parent = rows.find(row => row.pid === pushPid);
+  }
+  if (!parent || !/^(?:\S*\/)?git\s+(?:(?:-C|-c)\s+\S+\s+)*push(?:\s|$)/.test(parent.command.trim())) return undefined;
+  const pushPid = parent.pid;
+  return rows.find(row => row.parentPid === pushPid &&
+    /^(?:(?:\S*\/)?(?:sh|bash|dash|zsh)\s+(?:-[aefux]+\s+)?)?(?:\S*\/)?pre-push(?:\s|$)/.test(row.command.trim()));
+}
+
 /** Commands of every process below `rootPid` in an already-captured snapshot. */
 function descendantCommands(rows: readonly ChildProcessInfo[], rootPid: number): string[] {
   const below = new Set([rootPid]);
@@ -912,7 +932,9 @@ export class SessionWatchdog extends EventEmitter {
     // alone but NOT pruned, so its other children are still checked: a test run
     // cannot hide an unrelated stuck command, even under a shared parent.
     const protectedSubtrees = new Set<number>();
+    const pushWaits = this.activePushWaits(children);
     for (const c of children) {
+      if (pushWaits.has(c.pid)) continue;
       if (protectedSubtrees.has(c.parentPid)) { protectedSubtrees.add(c.pid); continue; }
       const infrastructure = classifyFrameworkInfrastructureProcess(c.command, framework);
       if (infrastructure.protected) {
@@ -1033,6 +1055,8 @@ export class SessionWatchdog extends EventEmitter {
         this.temporaryExclusions.add(stuckChild.pid);
         return;
       }
+
+      if (await this.liveTransportWait(tmuxSession, stuckChild)) return;
 
       // Decided here, where the live descendant snapshot is still in hand: an
       // ancestor of a test runner (a shell wrapper, a `git push` running a
@@ -1277,6 +1301,11 @@ export class SessionWatchdog extends EventEmitter {
     if (!this.isProcessAlive(state.stuckChildPid)) {
       console.log(`[Watchdog] "${tmuxSession}": stuck process ${state.stuckChildPid} died — recovered`);
       this.emit('recovery', tmuxSession, state.level);
+      this.escalationState.delete(tmuxSession);
+      return;
+    }
+
+    if (await this.liveTransportWait(tmuxSession, { pid: state.stuckChildPid, command: state.stuckCommand })) {
       this.escalationState.delete(tmuxSession);
       return;
     }
@@ -1626,6 +1655,39 @@ export class SessionWatchdog extends EventEmitter {
     candidate: ChildProcessInfo,
   ): TestRunnerProgress {
     return this.testRunnerProgress.observe(candidate.pid, subtreeCpuMs(children, candidate.pid));
+  }
+
+  private activePushWaits(rows: readonly ChildProcessInfo[]): Set<number> {
+    const waiting = new Set<number>();
+    const hookSubtrees = new Set<number>();
+    const samples = new Map<number, TestRunnerProgress>();
+    for (const row of rows) {
+      if (row.elapsedMs > MAX_TEST_RUNNER_ABSOLUTE_MS) continue;
+      const hook = prePushHookForTransport(rows, row);
+      if (!hook) continue;
+      const progress = samples.get(hook.pid) ?? this.observeTestRunnerProgress(rows, hook);
+      samples.set(hook.pid, progress);
+      if (progress !== 'baseline' && progress !== 'progressed') continue;
+      hookSubtrees.add(hook.pid);
+      waiting.add(row.pid);
+      waiting.add(row.parentPid);
+      waiting.add(hook.parentPid);
+    }
+    // Process snapshots are breadth-first. Protect only the hook's children,
+    // so another command under the same push is still evaluated independently.
+    for (const row of rows) {
+      if (hookSubtrees.has(row.parentPid)) hookSubtrees.add(row.pid);
+      if (hookSubtrees.has(row.pid)) waiting.add(row.pid);
+    }
+    return waiting;
+  }
+
+  private async liveTransportWait(session: string, target: Pick<ChildProcessInfo, 'pid' | 'command'>): Promise<boolean> {
+    const root = await this.getClaudePid(session);
+    if (!root) return false;
+    const rows = await this.getChildProcesses(root);
+    return rows.some(row => row.pid === target.pid && row.command === target.command)
+      && this.activePushWaits(rows).has(target.pid);
   }
 
   private async getChildProcesses(pid: number): Promise<ChildProcessInfo[]> {

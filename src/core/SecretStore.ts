@@ -316,7 +316,8 @@ export class MasterKeyManager {
           '-w', key.toString('base64'),
         ], { stdio: 'pipe', timeout: 5000 });
         return true;
-      } catch (err) {
+      } catch {
+        // Child-process errors can include credential-bearing arguments or output.
         DegradationReporter.getInstance().report({
           feature: 'SecretStore.writeMacOSKeychain',
           primary: 'Persist master key to macOS keychain',
@@ -324,7 +325,7 @@ export class MasterKeyManager {
           // after an SSH join, which never happens): a new key goes to the owner-only key file, an
           // adopted legacy key stays in its existing slot.
           fallback: 'Key kept in the owner-only key file (or its existing keychain slot) instead',
-          reason: `Why: ${err instanceof Error ? err.message : String(err)}`,
+          reason: 'The OS keychain rejected the master-key write.',
           impact: 'The master key is not in the OS keychain on this machine; it is still persisted',
         });
         return false;
@@ -342,7 +343,8 @@ export class MasterKeyManager {
           stdio: ['pipe', 'pipe', 'pipe'],
         });
         return true;
-      } catch (err) {
+      } catch {
+        // Child-process errors can include credential-bearing arguments or output.
         DegradationReporter.getInstance().report({
           feature: 'SecretStore.writeLinuxKeychain',
           primary: 'Persist master key to Linux keychain',
@@ -350,7 +352,7 @@ export class MasterKeyManager {
           // after an SSH join, which never happens): a new key goes to the owner-only key file, an
           // adopted legacy key stays in its existing slot.
           fallback: 'Key kept in the owner-only key file (or its existing keychain slot) instead',
-          reason: `Why: ${err instanceof Error ? err.message : String(err)}`,
+          reason: 'The OS keychain rejected the master-key write.',
           impact: 'The master key is not in the OS keychain on this machine; it is still persisted',
         });
         return false;
@@ -525,6 +527,19 @@ export class SecretStore {
     const secrets = this.read();
     deleteNestedValue(secrets, keyPath);
     this.write(secrets);
+  }
+
+  /** Delete from an existing store without creating a vault or key when none exists.
+   * Only ENOENT proves absence; unreadable or corrupt storage must refuse the deletion.
+   */
+  deleteIfStoreExists(keyPath: string): void {
+    try {
+      fs.statSync(this.encryptedPath);
+    } catch (err) {
+      if ((err as NodeJS.ErrnoException).code === 'ENOENT') return;
+      throw err;
+    }
+    this.delete(keyPath);
   }
 
   /** Whether the secret store file exists. */

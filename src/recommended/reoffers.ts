@@ -46,16 +46,39 @@ export interface ProblemKind {
 }
 
 /**
- * The real-problem table. Each kind is called only from its named source. Slice A wires `voice-unreadable`;
- * the other kinds in the spec's table (`address-repeatedly-down`, `provider-exhausted`, `secret-lost`,
- * `state-loss-risk`) join with their sources.
+ * The real-problem table. Each kind is called only from its named source: `voice-unreadable` from the shared
+ * transcription wrapper, `secret-lost` from the boot check over the loaded config. The other kinds in the spec's
+ * table (`address-repeatedly-down`, `provider-exhausted`, `state-loss-risk`) join with their sources.
  */
 export const PROBLEM_KINDS: Readonly<Record<string, ProblemKind>> = {
   'voice-unreadable': {
     service: 'voice-transcription',
     why: "A voice note came in that I couldn't turn into text, because nothing on this machine can transcribe voice yet.",
   },
+  'secret-lost': {
+    service: 'bitwarden',
+    why: "One of my saved passwords or keys is missing on this machine, and there's no vault holding a copy I could restore it from.",
+  },
 };
+
+/**
+ * The `secret-lost` boot check: where the loaded config still holds a `{ "secret": true }` placeholder after the
+ * encrypted store was merged in, a secret the config refers to is missing. Returns the dotted paths (for tests
+ * and logs; the paths never reach a message or the ledger). Bounded depth, so a strange config can't stall boot.
+ */
+export function findUnresolvedSecrets(config: unknown, maxDepth = 8): string[] {
+  const found: string[] = [];
+  const walk = (v: unknown, at: string, depth: number): void => {
+    if (depth > maxDepth || v === null || typeof v !== 'object') return;
+    if (!Array.isArray(v) && (v as Record<string, unknown>)['secret'] === true) {
+      found.push(at || '(root)');
+      return;
+    }
+    for (const [k, child] of Object.entries(v as Record<string, unknown>)) walk(child, at ? `${at}.${k}` : k, depth + 1);
+  };
+  walk(config, '', 0);
+  return found;
+}
 
 export function isProblemKind(kind: string): boolean {
   return Object.prototype.hasOwnProperty.call(PROBLEM_KINDS, kind);
