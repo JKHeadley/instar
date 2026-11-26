@@ -1818,3 +1818,22 @@ a.needs-row:hover { background: var(--surface-raised); }
 
 .needs-row .needs-instructions { margin: var(--s-2) 0 0; padding-inline-start: 1.5em; }
 .needs-row .needs-consent { align-self: flex-start; min-height: 44px; margin-top: var(--s-2); }
+.accounts-page .acct-layout { display: flex; flex-wrap: wrap; gap: 10px 16px; margin-bottom: 12px; }
+.accounts-page .acct-layout-field { display: flex; flex: 0 1 13rem; flex-direction: column; gap: 4px; min-width: min(100%, 10rem); }
+.accounts-page .acct-layout-field select { width: 100%; }
+.accounts-page .acct-groups { display: flex; flex-direction: column; gap: 12px; min-width: 0; }
+
+/* Sign-in status is independent of account usage order and grouping. */
+.acct-repairs { display: grid; gap: var(--s-3); }
+.acct-repairs h2, .acct-repairs h3, .acct-repairs p { margin: 0; }
+.acct-repair-machine { min-width: 0; border: 1px solid var(--hairline); border-radius: var(--r-md); padding: var(--s-3); background: var(--surface-raised); }
+.acct-repair-summary { min-height: 44px; display: list-item; cursor: pointer; color: var(--text-muted); line-height: 1.5; padding-block: 10px; }
+.acct-repair-summary strong { color: var(--text-strong); margin-inline-end: var(--s-2); }
+.acct-repair-summary span { overflow-wrap: anywhere; }
+.acct-repair-rows { list-style: none; padding: 0; margin: var(--s-2) 0 0; }
+.acct-repair-row { display: flex; flex-wrap: wrap; align-items: center; justify-content: space-between; gap: var(--s-2); padding-block: var(--s-2); }
+.acct-repair-row + .acct-repair-row { border-top: 1px solid var(--hairline); }
+.acct-repair-row .row-title, .acct-repair-row .row-sub { display: block; white-space: normal; overflow-wrap: anywhere; }
+.acct-repair-row .btn-quiet { min-height: 44px; }
+.acct-repair-row .row-title { font-weight: 600; }
+.acct-repair-row .row-sub { color: var(--text-muted); }

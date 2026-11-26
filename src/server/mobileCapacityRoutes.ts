@@ -168,7 +168,15 @@ export function kindWord(framework: unknown): string { return (typeof framework 
  */
 export interface MobileAccountWindow { label: string; name: string; pct: number; resetsAt: string | null; tone: UsageTone; rolledOver: boolean }
 export type UsageTone = 'bad' | 'attn' | null;
-export interface MobileAccountMachine { name: string; isSelf: boolean; state: 'ok' | 'attn' | 'working' | 'unknown'; label: string }
+export interface MobileAccountMachine {
+  name: string;
+  isSelf: boolean;
+  state: 'ok' | 'attn' | 'working' | 'unknown';
+  label: string;
+  /** Stable identity for grouping only, never an action target. */
+  machineKey: string | null;
+  present: true;
+}
 export interface MobileAccount {
   key: string;
   name: string;
@@ -441,11 +449,13 @@ export function summarizeAccounts(
   const accounts = [...groups.values()].map((g): MobileAccount & { _pct: number } => {
     const machines = g.cells.map((c) => {
       const mid = String(c.row.machineId ?? '');
+      const sourceId = str(c.row.machineId);
+      const stableId = sourceId && sourceId !== 'self' ? sourceId : c.isSelf && selfId !== 'self' ? selfId : null;
       // Latest repair for this account on THIS machine (self rows may carry no machineId: match self).
       const latest = (opts.repairs ?? [])
         .filter((r) => r.accountId === g.id && (r.machineId === mid || (c.isSelf && (!mid || r.machineId === selfId))))
         .sort((a, b) => Date.parse(String(b.updatedAt ?? '')) - Date.parse(String(a.updatedAt ?? '')))[0] ?? null;
-      return { name: c.machine, isSelf: c.isSelf, ...accountCellState(c.row, opts.repairs ? !!latest && REPAIR_WORKING.has(latest.state) : c.isSelf && repairing.has(g.id), (opts.blockers ?? []).find((b) => b.accountId === g.id && b.machineId === mid)?.reason ?? null, opts.now, latest) };
+      return { name: c.machine, isSelf: c.isSelf, machineKey: stableId ? rowKey('account-machine', stableId) : null, present: true as const, ...accountCellState(c.row, opts.repairs ? !!latest && REPAIR_WORKING.has(latest.state) : c.isSelf && repairing.has(g.id), (opts.blockers ?? []).find((b) => b.accountId === g.id && b.machineId === mid)?.reason ?? null, opts.now, latest) };
     });
     const windows = usageWindows(g.reading, opts.now);
     const top = topWindow(windows);
