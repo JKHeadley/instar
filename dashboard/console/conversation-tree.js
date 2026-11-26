@@ -34,6 +34,8 @@ export function treePage(data) {
       project: typeof raw.project?.conversationKey === 'string' && typeof raw.project.title === 'string' ? raw.project : null,
       projectKey: typeof raw.projectConversationKey === 'string' ? raw.projectConversationKey : raw.project?.conversationKey,
       count: Number.isSafeInteger(raw.visibleChildCount) && raw.visibleChildCount >= 0 ? raw.visibleChildCount : null,
+      descendantCount: data.placementComplete === true && Number.isSafeInteger(raw.descendantConversationCount) &&
+        raw.descendantConversationCount >= 0 ? raw.descendantConversationCount : null,
       incomplete: raw.childrenComplete === false || raw.proposedComplete === false,
       children, proposed,
     };
@@ -143,9 +145,10 @@ export function renderOwnerTree(pages, { preferences, conversationRow, groupDeta
       const row = conversationRow(n);
       const card = linkedCard?.(n);
       if (n.project && n.projectKey === conversationRefKey(n.ref)) {
+        const count = n.descendantCount ?? n.count;
         // A confirmed project can use its own conversation as the branch
         // identity even when no saved effort exists.
-        return disclosure(`project:${n.projectKey}`, countedTitle(n.project.title, n.count === null ? null : n.count + 1),
+        return disclosure(`project:${n.projectKey}`, countedTitle(n.project.title, count === null ? null : count + 1),
           [row, card, children, proposed, n.incomplete ? groupDetails(n) : null], 'chat-project-row');
       }
       return children.length || proposed.length || n.incomplete || card
@@ -153,7 +156,7 @@ export function renderOwnerTree(pages, { preferences, conversationRow, groupDeta
           disclosure(`children:${n.key}`, card && !children.length && !proposed.length && !n.incomplete ? 'Linked work card' : 'Related conversations', [card, children, proposed, n.incomplete ? groupDetails(n) : null]))
         : row;
     }
-    return disclosure(n.projectKey ? `project:${n.projectKey}` : n.key, countedTitle(n.project?.title || n.title, n.count),
+    return disclosure(n.projectKey ? `project:${n.projectKey}` : n.key, countedTitle(n.project?.title || n.title, n.descendantCount ?? n.count),
       [children, proposed, n.incomplete ? groupDetails(n) : null], n.project ? 'chat-project-row' : '');
   }
   const output = [];

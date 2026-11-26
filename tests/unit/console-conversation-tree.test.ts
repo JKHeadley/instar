@@ -71,14 +71,15 @@ describe('shared Conversations tree', () => {
   it('renders the project conversation as a counted section without a saved group', () => {
     const project = chat(12, 'Project front door', {
       project: { title: 'Web Dashboard', conversationKey: 'telegram:12' },
-      projectConversationKey: 'telegram:12', visibleChildCount: 1, children: [chat(14, 'Generated child')],
+      projectConversationKey: 'telegram:12', visibleChildCount: 1, descendantConversationCount: 2,
+      children: [chat(14, 'Generated child', { children: [chat(15, 'Nested card conversation')] })],
     });
     const host = draw({ partial: false, placementComplete: true, projects: 'known',
       sections: { projects: [project], groups: [], ungrouped: [] } });
     const section = host.querySelector<HTMLDetailsElement>('.chat-project-row');
     expect(section?.open).toBe(true);
-    expect(section?.querySelector('summary')?.textContent).toBe('Web Dashboard · 2 conversations');
-    expect([...section!.querySelectorAll('a')].map(a => a.textContent)).toEqual(['Project front door', 'Generated child']);
+    expect(section?.querySelector('summary')?.textContent).toBe('Web Dashboard · 3 conversations');
+    expect([...section!.querySelectorAll('a')].map(a => a.textContent)).toEqual(['Project front door', 'Generated child', 'Nested card conversation']);
   });
 
   it('restores a collapsed group and does not put unresolved legacy rows in Ungrouped', () => {
