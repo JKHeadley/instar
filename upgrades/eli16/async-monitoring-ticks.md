@@ -5,3 +5,5 @@ The Studio stopped answering health checks for about five minutes. A profile aft
 The monitors now wait for their child processes without blocking other requests. Each monitor runs one pass at a time, skips a timer tick when its last pass is still running, and gives each child a deadline. A failed read is treated as unavailable evidence. The orphan monitor also checks again that a session has not become tracked before it signals the process.
 
 The regression starts a deliberately slow monitoring child, then checks that the real HTTP health endpoint responds before that child is released. The change applies automatically on upgrade.
+
+The process scan keeps the larger output buffer busy computers need. Its call now declares that limit explicitly so the existing repository check can verify it.

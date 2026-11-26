@@ -16,3 +16,5 @@ Tier 1. The affected reads keep their interfaces and can be rolled back by rever
 The independent first review identified action-time tracking, stop invalidation, unavailable captures, and summary privacy as required corrections. The follow-up review covers the corrected diff.
 
 Concur with the reviewed action guards. Automatic SIGTERM, delayed SIGKILL, and direct tmux cleanup check poll generation and current registry tracking after the last awaited proof. The new cases exercise resumed tracking during ownership verification, cleanup, and the escalation grace period.
+
+The shared process-table buffer check flagged the new helper call because the buffer was set only inside the helper. The full-table call now passes the 4 MiB limit explicitly and the helper forwards it to execFile. The independent reviewer confirmed that the buffer, deadlines, and signal handling are unchanged.

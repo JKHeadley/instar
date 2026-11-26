@@ -37,9 +37,13 @@ function shellExec(cmd: string, timeout = 5000): string {
 
 const execFileAsync = promisify(execFile);
 
-async function readCommand(file: string, args: string[], timeout = 5000): Promise<string> {
+async function readCommand(
+  file: string,
+  args: string[],
+  { timeout = 5000, maxBuffer = 4 * 1024 * 1024 }: { timeout?: number; maxBuffer?: number } = {},
+): Promise<string> {
   const { stdout } = await execFileAsync(file, args, {
-    encoding: 'utf8', timeout, killSignal: 'SIGKILL', maxBuffer: 4 * 1024 * 1024,
+    encoding: 'utf8', timeout, killSignal: 'SIGKILL', maxBuffer,
   });
   return stdout;
 }
@@ -354,7 +358,7 @@ export class OrphanProcessReaper extends EventEmitter {
 
     try {
       const uid = process.getuid?.() ?? 0;
-      const output = (await readCommand('ps', ['-u', String(uid), '-o', 'pid=,ppid=,rss=,etime=,command='], 10_000)).trim();
+      const output = (await readCommand('ps', ['-u', String(uid), '-o', 'pid=,ppid=,rss=,etime=,command='], { timeout: 10_000 })).trim();
 
       if (!output) return [];
 
@@ -470,7 +474,9 @@ export class OrphanProcessReaper extends EventEmitter {
 
   private async readPsSnapshot(): Promise<Map<number, { ppid: number; command: string }> | null> {
     try {
-      const output = await readCommand('ps', ['-A', '-o', 'pid=,ppid=,command='], 10_000);
+      const output = await readCommand('ps', ['-A', '-o', 'pid=,ppid=,command='], {
+        timeout: 10_000, maxBuffer: 4 * 1024 * 1024,
+      });
       const rows = new Map<number, { ppid: number; command: string }>();
       for (const line of output.split('\n')) {
         const match = line.trim().match(/^(\d+)\s+(\d+)\s+(.*)$/);
