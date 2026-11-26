@@ -1272,8 +1272,8 @@ export interface IntelligenceOptions {
    * to another vendor (context-budget §9: conversation content stays on its family).
    */
   pinnedFramework?: IntelligenceFramework;
-  /** Checked immediately before a fenced model child is spawned. False refuses the launch. */
-  launchGuard?: () => boolean;
+  /** Codex: awaited immediately before the child is spawned. Pair with requiredRoute for strict routing. */
+  launchGuard?: () => boolean | Promise<boolean>;
   /** Maximum tokens for the response */
   maxTokens?: number;
   /** Temperature (0-1, lower = more deterministic) */
@@ -3833,6 +3833,10 @@ export interface ExternalServicePermissions {
 // ── Server Configuration ────────────────────────────────────────────
 
 export interface InstarConfig {
+  /** Allows the ordered publication receiver when an independent authority is configured. Off by default. */
+  fencedPublication?: { enabled?: boolean };
+  /** Owner-only Needs You projection. Enabled explicitly during acceptance. */
+  needsYou?: { ownerAdmission?: { enabled?: boolean } };
   /**
    * Voice transcription (docs/specs/backup-on-machine-voice.md). `local: false` turns off the free
    * on-machine transcriber (whisper.cpp); absent means on. Read on every transcription.
@@ -5314,6 +5318,8 @@ export interface InstarConfig {
    * All optional; absence preserves today's single-account behaviour.
    */
   subscriptionPool?: {
+    /** Optional expiring ordered placement for new headless Sol helpers and Sol reviews. */
+    routineCodexPlacement?: import('./routineCodexPlacement.js').RoutineCodexPlacementConfig;
     /** Bounded autonomous repair for corroborated Claude Code and Codex sign-in failures.
      *  Absent/off stays dark. `unattended` requires exact identity opt-in. */
     assistedRelogin?: {

@@ -1,0 +1,25 @@
+{
+  "version": 2,
+  "slug": "ordered-publication-witness",
+  "sessionId": "dd2f336e-e8f7-40b3-97e3-09d19139bfa6",
+  "timestamp": "2026-11-26T13:14:04.157Z",
+  "artifactPath": "upgrades/side-effects/ordered-publication-witness.md",
+  "artifactSha256": "896bf5c85be5e13fb508054106b484be4e81e0b2866c40c5ff5c3c54dab766c5",
+  "coveredFiles": [
+    "src/core/FencedPublicationStore.ts",
+    "src/core/OrderedPublicationWitness.ts",
+    "src/core/types.ts",
+    "tests/integration/ordered-publication-witness.test.ts",
+    "tests/unit/OrderedPublicationWitness.test.ts",
+    "upgrades/eli16/ordered-publication-witness.md",
+    "upgrades/next/ordered-publication-witness.md",
+    "upgrades/side-effects/ordered-publication-witness.md"
+  ],
+  "phase": "complete",
+  "tier": 1,
+  "tierReasoning": "Reversible dark receiver source. No active route, external effect or trust enrollment.",
+  "eli16Path": "upgrades/eli16/ordered-publication-witness.md",
+  "sideEffectsPath": "upgrades/side-effects/ordered-publication-witness.md",
+  "secondPass": "not-required",
+  "reviewerConcurred": null
+}

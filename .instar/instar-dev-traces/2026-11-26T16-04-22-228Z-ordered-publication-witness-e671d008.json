@@ -1,0 +1,23 @@
+{
+  "version": 2,
+  "slug": "ordered-publication-witness",
+  "sessionId": "dd2f336e-e8f7-40b3-97e3-09d19139bfa6",
+  "timestamp": "2026-11-26T16:04:22.228Z",
+  "artifactPath": "upgrades/side-effects/ordered-publication-witness.md",
+  "artifactSha256": "a393944a761103b2523acb2fc2bee8ad0b78b843f1efd8c44eb5d27374f27829",
+  "coveredFiles": [
+    "src/core/FirstPhoneSlotDecision.ts",
+    "src/core/OrderedWitnessSnapshotStore.ts",
+    "tests/integration/first-phone-slot-fence.test.ts",
+    "upgrades/eli16/ordered-publication-witness.md",
+    "upgrades/next/ordered-publication-witness.md",
+    "upgrades/side-effects/ordered-publication-witness.md"
+  ],
+  "phase": "complete",
+  "tier": 1,
+  "tierReasoning": "Dark compound slot fixture and local witness store implementation with no active registry writer.",
+  "eli16Path": "upgrades/eli16/ordered-publication-witness.md",
+  "sideEffectsPath": "upgrades/side-effects/ordered-publication-witness.md",
+  "secondPass": "not-required",
+  "reviewerConcurred": null
+}

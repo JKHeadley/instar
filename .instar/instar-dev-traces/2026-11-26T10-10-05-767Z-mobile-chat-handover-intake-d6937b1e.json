@@ -1,0 +1,21 @@
+{
+  "version": 2,
+  "slug": "mobile-chat-handover-intake",
+  "sessionId": "dd2f336e-e8f7-40b3-97e3-09d19139bfa6",
+  "timestamp": "2026-11-26T10:10:05.767Z",
+  "artifactPath": "upgrades/side-effects/mobile-chat-handover-intake.md",
+  "artifactSha256": "6b3e517ec1db9f2d432930ea2edd7f21f11c4f18398518b8ad0c908baeaf4a34",
+  "coveredFiles": [
+    "src/core/MobileChatRequests.ts",
+    "tests/unit/mobile-chat-requests.test.ts",
+    "upgrades/eli16/mobile-chat-handover-intake.md",
+    "upgrades/side-effects/mobile-chat-handover-intake.md"
+  ],
+  "phase": "complete",
+  "tier": 1,
+  "tierReasoning": "Adds an internal local waiting receipt to the existing request store. This checkpoint has no routing or dispatch effect.",
+  "eli16Path": "upgrades/eli16/mobile-chat-handover-intake.md",
+  "sideEffectsPath": "upgrades/side-effects/mobile-chat-handover-intake.md",
+  "secondPass": "not-required",
+  "reviewerConcurred": null
+}

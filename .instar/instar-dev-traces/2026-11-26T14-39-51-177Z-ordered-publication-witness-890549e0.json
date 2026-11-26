@@ -1,0 +1,22 @@
+{
+  "version": 2,
+  "slug": "ordered-publication-witness",
+  "sessionId": "dd2f336e-e8f7-40b3-97e3-09d19139bfa6",
+  "timestamp": "2026-11-26T14:39:51.177Z",
+  "artifactPath": "upgrades/side-effects/ordered-publication-witness.md",
+  "artifactSha256": "f6fa62fdb9c80cf89ec082c51fa0cef93db1844682917e44f24fdb123f34b64d",
+  "coveredFiles": [
+    "src/core/OrderedPublicationWitness.ts",
+    "tests/unit/OrderedPublicationWitness.test.ts",
+    "upgrades/eli16/ordered-publication-witness.md",
+    "upgrades/next/ordered-publication-witness.md",
+    "upgrades/side-effects/ordered-publication-witness.md"
+  ],
+  "phase": "complete",
+  "tier": 1,
+  "tierReasoning": "Dark readback evidence boundary, with injected observations and no production transport.",
+  "eli16Path": "upgrades/eli16/ordered-publication-witness.md",
+  "sideEffectsPath": "upgrades/side-effects/ordered-publication-witness.md",
+  "secondPass": "not-required",
+  "reviewerConcurred": null
+}

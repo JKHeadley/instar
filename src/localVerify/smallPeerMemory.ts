@@ -1,5 +1,6 @@
 import { execFile } from 'node:child_process';
 import { performance } from 'node:perf_hooks';
+import { setTimeout as delay } from 'node:timers/promises';
 import { promisify } from 'node:util';
 
 const exec = promisify(execFile);
@@ -59,12 +60,39 @@ export function smallPeerMemoryAllows(sample: SmallPeerMemorySample | null, floo
   return smallPeerMemoryStopReason(sample, floorBytes, now) === null;
 }
 
+/** Hold the admission margin across three one-second intervals before launching. */
+export async function smallPeerStartHasHeadroom(
+  policy: SmallPeerTrialPolicy,
+  sample = readSmallPeerMemory,
+  now = () => performance.now(),
+  wait: (ms: number) => Promise<void> = delay,
+): Promise<boolean> {
+  if (policy.startFloorBytes === undefined) {
+    const value = await sample();
+    return smallPeerMemoryAllows(value, policy.floorBytes, now());
+  }
+
+  let previousSampleAt: number | undefined;
+  for (let index = 0; index < 4; index++) {
+    if (index > 0) await wait(SAMPLE_INTERVAL_MS);
+    const value = await sample();
+    if (!value || !smallPeerMemoryAllows(value, policy.startFloorBytes, now())) return false;
+    if (previousSampleAt !== undefined) {
+      const interval = value.sampledAt - previousSampleAt;
+      if (interval <= 0 || interval >= SAMPLE_DEADLINE_MS) return false;
+    }
+    previousSampleAt = value.sampledAt;
+  }
+  return true;
+}
+
 /** The full policy travels in the request so the signed digest binds the measured floor. */
 export interface SmallPeerTrialPolicy {
   version: 1;
   machineId: string;
   collector: typeof SMALL_PEER_COLLECTOR;
   floorBytes: number;
+  startFloorBytes?: number;
   reserveBytes: number;
   recoveryMs: number;
   unitWorkers: 1 | 2;
@@ -75,16 +103,21 @@ export interface SmallPeerTrialPolicy {
 export function parseSmallPeerTrialPolicy(raw: unknown): SmallPeerTrialPolicy | null {
   if (!raw || typeof raw !== 'object' || Array.isArray(raw)) return null;
   const p = raw as Partial<SmallPeerTrialPolicy>;
-  if (Object.keys(p).length !== 9 || p.version !== 1 || typeof p.machineId !== 'string'
+  const hasStartFloor = Object.hasOwn(p, 'startFloorBytes');
+  if (Object.keys(p).length !== (hasStartFloor ? 10 : 9) || p.version !== 1 || typeof p.machineId !== 'string'
     || !/^m_[a-f0-9]{32}$/.test(p.machineId) || p.collector !== SMALL_PEER_COLLECTOR
     || typeof p.floorBytes !== 'number' || !Number.isSafeInteger(p.floorBytes)
     || typeof p.reserveBytes !== 'number' || !Number.isSafeInteger(p.reserveBytes)
     || p.reserveBytes <= 0 || p.floorBytes <= p.reserveBytes
+    || (hasStartFloor && (typeof p.startFloorBytes !== 'number'
+      || !Number.isSafeInteger(p.startFloorBytes) || p.startFloorBytes <= p.floorBytes))
     || typeof p.recoveryMs !== 'number' || !Number.isSafeInteger(p.recoveryMs) || p.recoveryMs < 2 * SAMPLE_INTERVAL_MS
     || (p.unitWorkers !== 1 && p.unitWorkers !== 2) || p.integration !== 1 || p.e2e !== 1) return null;
   return {
     version: 1, machineId: p.machineId, collector: SMALL_PEER_COLLECTOR,
-    floorBytes: p.floorBytes, reserveBytes: p.reserveBytes, recoveryMs: p.recoveryMs,
+    floorBytes: p.floorBytes,
+    ...(hasStartFloor ? { startFloorBytes: p.startFloorBytes } : {}),
+    reserveBytes: p.reserveBytes, recoveryMs: p.recoveryMs,
     unitWorkers: p.unitWorkers, integration: 1, e2e: 1,
   };
 }

@@ -1,0 +1,23 @@
+{
+  "version": 2,
+  "slug": "ordered-publication-witness",
+  "sessionId": "dd2f336e-e8f7-40b3-97e3-09d19139bfa6",
+  "timestamp": "2026-11-26T14:18:22.052Z",
+  "artifactPath": "upgrades/side-effects/ordered-publication-witness.md",
+  "artifactSha256": "c8dd70714442202e2835041c5c87f914a4cc46396e1d20923b12de9203269c71",
+  "coveredFiles": [
+    "src/core/SealedAppendReconciliation.ts",
+    "tests/fixtures/sealed-append-reconciliation.json",
+    "tests/integration/sealed-append-reconciliation.test.ts",
+    "upgrades/eli16/ordered-publication-witness.md",
+    "upgrades/next/ordered-publication-witness.md",
+    "upgrades/side-effects/ordered-publication-witness.md"
+  ],
+  "phase": "complete",
+  "tier": 1,
+  "tierReasoning": "Dark exact evidence verifier, without runtime wiring or side effects.",
+  "eli16Path": "upgrades/eli16/ordered-publication-witness.md",
+  "sideEffectsPath": "upgrades/side-effects/ordered-publication-witness.md",
+  "secondPass": "not-required",
+  "reviewerConcurred": null
+}

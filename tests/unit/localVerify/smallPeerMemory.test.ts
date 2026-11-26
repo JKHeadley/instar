@@ -47,7 +47,7 @@ describe('small peer memory measurement', () => {
   });
 });
 
-import { SMALL_PEER_COLLECTOR, parseSmallPeerTrialPolicy, validSmallPeerHeartbeat } from '../../../src/localVerify/smallPeerMemory.js';
+import { SMALL_PEER_COLLECTOR, parseSmallPeerTrialPolicy, smallPeerStartHasHeadroom, validSmallPeerHeartbeat } from '../../../src/localVerify/smallPeerMemory.js';
 describe('bounded trial policy and observation identity', () => {
   const policy = { version: 1, machineId: 'm_' + 'a'.repeat(32), collector: SMALL_PEER_COLLECTOR,
     floorBytes: 8192, reserveBytes: 4096, recoveryMs: 2000, unitWorkers: 2, integration: 1, e2e: 1 };
@@ -58,6 +58,33 @@ describe('bounded trial policy and observation identity', () => {
     for (const bad of [null, { ...policy, e2e: 2 }, { ...policy, unitWorkers: 0 }, { ...policy, unitWorkers: 3 }, { ...policy, future: true }, { ...policy, reserveBytes: 8192 },
       { ...policy, machineId: 'any' }, { ...policy, collector: 'unknown' }]) expect(parseSmallPeerTrialPolicy(bad)).toBeNull();
   });
+  it('binds the optional admission floor without changing the runtime floor', () => {
+    const gated = { ...policy, startFloorBytes: 7500000000 };
+    expect(parseSmallPeerTrialPolicy(gated)).toEqual(gated);
+    for (const startFloorBytes of [policy.floorBytes, -1, undefined, '7500000000']) {
+      expect(parseSmallPeerTrialPolicy({ ...policy, startFloorBytes })).toBeNull();
+    }
+  });
+
+  it.each([
+    { label: 'sustained margin', dip: false, gap: false, allowed: true },
+    { label: 'brief dip', dip: true, gap: false, allowed: false },
+    { label: 'stale interval', dip: false, gap: true, allowed: false },
+  ])('checks $label before launch', async ({ dip, gap, allowed }) => {
+    let tick = 0;
+    const gated = parseSmallPeerTrialPolicy({ ...policy, startFloorBytes: 7500000000 })!;
+    const read = vi.fn(async () => ({
+      collector: SMALL_PEER_COLLECTOR,
+      sampledAt: tick,
+      pressureLevel: 1,
+      availableBytes: dip && tick === 1000 ? 7499999999 : 7600000000,
+    }));
+    const wait = vi.fn(async () => { tick += gap ? 2000 : 1000; });
+    expect(await smallPeerStartHasHeadroom(gated, read, () => tick, wait)).toBe(allowed);
+    expect(read).toHaveBeenCalledTimes(allowed ? 4 : 2);
+    expect(tick).toBe(allowed ? 3000 : gap ? 2000 : 1000);
+  });
+
   it('a heartbeat cannot mask a stale, repeated or foreign sample', () => {
     const sample = { attemptId: 'abc', sequence: 1, requestedAt: 1000 };
     expect(validSmallPeerHeartbeat('abc', null, sample, 2999)).toBe(true);

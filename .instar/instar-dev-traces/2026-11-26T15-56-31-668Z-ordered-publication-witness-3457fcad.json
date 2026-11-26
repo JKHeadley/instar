@@ -1,0 +1,24 @@
+{
+  "version": 2,
+  "slug": "ordered-publication-witness",
+  "sessionId": "dd2f336e-e8f7-40b3-97e3-09d19139bfa6",
+  "timestamp": "2026-11-26T15:56:31.668Z",
+  "artifactPath": "upgrades/side-effects/ordered-publication-witness.md",
+  "artifactSha256": "4d811d1d376c09c2eaeed1844c5e8724765a1f89befdeec632cbb26d60324ee3",
+  "coveredFiles": [
+    "src/core/OrderedPublicationWitness.ts",
+    "src/core/OrderedWitnessSnapshotStore.ts",
+    "tests/fixtures/first-phone/ordered-challenge-v2.json",
+    "tests/integration/first-phone-witness-winner.test.ts",
+    "upgrades/eli16/ordered-publication-witness.md",
+    "upgrades/next/ordered-publication-witness.md",
+    "upgrades/side-effects/ordered-publication-witness.md"
+  ],
+  "phase": "complete",
+  "tier": 1,
+  "tierReasoning": "Dark witness reservation and synthetic first-phone fixture; no live caller or registry changes.",
+  "eli16Path": "upgrades/eli16/ordered-publication-witness.md",
+  "sideEffectsPath": "upgrades/side-effects/ordered-publication-witness.md",
+  "secondPass": "not-required",
+  "reviewerConcurred": null
+}

@@ -272,6 +272,12 @@ export class TelegramOriginService {
     return producer;
   }
   hasProducerContext(): boolean { return this.#scope.getStore() !== undefined; }
+  /** Pre-format adapter source fills only a missing policy input. An admitted
+   * route's original text, reactions and reviewed state always take precedence. */
+  runWithSendPolicyFallback<T>(text: string, fn: () => T): T {
+    if (this.#scope.getStore()?.policy) return fn();
+    return this.runWithSendPolicyInput(text, undefined, fn);
+  }
   runWithSendPolicyInput<T>(text: string, metadata: unknown, fn: () => T): T {
     const scope = this.#scope.getStore();
     if (!scope) throw new TelegramOriginHoldError('producer-context-required');
@@ -445,6 +451,7 @@ export class TelegramOriginService {
       : formatForTelegram(safeText, snapshot.format === 'plain' ? 'plain' : 'markdown');
     const operation = this.#scope.run({ producer, operations: [] }, () => this.prepareBot({
       method: 'sendMessage', accountId, operationId: `legacy:${snapshot.deliveryId}`,
+      policyInput: originSendPolicyInput(safeText),
       params: { chat_id: chatId, message_thread_id: snapshot.topicId, text: formatted.text,
         ...(formatted.parseMode ? { parse_mode: formatted.parseMode } : {}) },
     }));

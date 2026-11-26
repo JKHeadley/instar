@@ -1,0 +1,22 @@
+{
+  "version": 2,
+  "slug": "shared-fenced-publication-storage",
+  "sessionId": "dd2f336e-e8f7-40b3-97e3-09d19139bfa6",
+  "timestamp": "2026-11-26T10:25:00.333Z",
+  "artifactPath": "upgrades/side-effects/shared-fenced-publication-storage.md",
+  "artifactSha256": "ac55ab893d6accf124b392ce2a638f79ddceac6bf919e822ca6c9ab3bfa778e2",
+  "coveredFiles": [
+    "src/core/FencedPublicationStore.ts",
+    "src/core/MobileIngressPublication.ts",
+    "tests/unit/FencedPublicationStore.test.ts",
+    "upgrades/eli16/shared-fenced-publication-storage.md",
+    "upgrades/side-effects/shared-fenced-publication-storage.md"
+  ],
+  "phase": "complete",
+  "tier": 1,
+  "tierReasoning": "Adds isolated storage and tests for a shared claim. The checkpoint has no runtime receiver, routing or dispatch effect.",
+  "eli16Path": "upgrades/eli16/shared-fenced-publication-storage.md",
+  "sideEffectsPath": "upgrades/side-effects/shared-fenced-publication-storage.md",
+  "secondPass": "true",
+  "reviewerConcurred": true
+}

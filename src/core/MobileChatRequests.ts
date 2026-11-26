@@ -90,10 +90,34 @@ export class MobileChatRequestStore {
   }
 
   /**
+   * Record waiting custody only after the caller has committed the signed
+   * conversation event. The reservation and its waiting receipt are one write.
+   */
+  holdTelegramMessage(
+    deviceId: string, requestId: string, hash: string, topicId: number,
+    event: { eventId: string; messageId: string },
+  ): { kind: 'full' } | ChatLookup {
+    const result = { status: 202, body: { ok: true, outcome: 'waiting', eventId: event.eventId, messageId: event.messageId } };
+    const hold = this.reserveWithResult(deviceId, requestId, hash, topicId, {
+      op: 'telegram-handover-send',
+      conversationKey: `telegram:${topicId}`,
+      ...event,
+    }, result);
+    return hold.kind === 'reserved' ? { kind: 'done', ...result } : hold;
+  }
+
+  /**
    * The decisive lookup and the reservation in one synchronous step (no await between them).
    * Returns `reserved`, `full` (2,000 live records for this device), or the existing answer.
    */
   reserve(deviceId: string, requestId: string, hash: string, topicId: number, extra?: Record<string, string>): { kind: 'reserved' } | { kind: 'full' } | ChatLookup {
+    return this.reserveWithResult(deviceId, requestId, hash, topicId, extra);
+  }
+
+  private reserveWithResult(
+    deviceId: string, requestId: string, hash: string, topicId: number,
+    extra?: Record<string, string>, result?: ChatRecord['result'],
+  ): { kind: 'reserved' } | { kind: 'full' } | ChatLookup {
     const existing = this.lookup(deviceId, requestId, hash);
     if (existing.kind !== 'none') return existing;
     let count = 0;
@@ -101,13 +125,14 @@ export class MobileChatRequestStore {
     if (count >= MAX_PER_DEVICE) return { kind: 'full' };
     const k = key(deviceId, requestId);
     const rec: ChatRecord = {
-      deviceId, requestId, state: 'entered', payloadHash: hash, topicId, bootId: this.bootId,
+      deviceId, requestId, state: result ? 'done' : 'entered', payloadHash: hash, topicId, bootId: this.bootId,
       at: new Date(this.now()).toISOString(), keepUntil: (requestIdTime(requestId) ?? this.now()) + PAST_MS + FUTURE_MS,
       ...(extra ? { extra: { ...extra } } : {}),
+      ...(result ? { result } : {}),
     };
     this.records.set(k, rec);
     try { this.persist(); } catch (err) { this.records.delete(k); throw err; }
-    this.active.add(k);
+    if (!result) this.active.add(k);
     return { kind: 'reserved' };
   }
 

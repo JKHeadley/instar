@@ -7,6 +7,7 @@
  */
 
 import fs from 'node:fs';
+import * as smallPeerMemory from '../../../src/localVerify/smallPeerMemory.js';
 import os from 'node:os';
 import path from 'node:path';
 import { afterEach, describe, expect, it, vi } from 'vitest';
@@ -1182,6 +1183,46 @@ describe('peer — accepting and running', () => {
     return h;
   }
   const notHolder = { holdsLease: false, holderMachineId: 'coord' };
+
+  it('reserves diagnosis capacity during trial sampling and checks it again before launch', async () => {
+    const policy = smallPeerMemory.parseSmallPeerTrialPolicy({
+      version: 1, machineId: 'm_' + 'a'.repeat(32), collector: smallPeerMemory.SMALL_PEER_COLLECTOR,
+      floorBytes: 5500000000, startFloorBytes: 7500000000, reserveBytes: 4294967296,
+      recoveryMs: 3000, unitWorkers: 1, integration: 1, e2e: 1,
+    })!;
+    const h = harness({ peerOnly: true, machineId: policy.machineId });
+    h.svc.setPeerWiring({
+      peerRoleEnabled: () => true, smallPeerTrial: () => policy,
+      lease: { holdsLease: () => false, leaseEpoch: () => 7, holderMachineId: () => 'coord' },
+    });
+    const peer = h.svc as unknown as {
+      trialPolicyCurrent: () => boolean;
+      failedFileDiagnosisPeer: { busy: () => boolean };
+    };
+    // This admission interleaving is independent of the host's OS or telemetry.
+    const policyCurrent = vi.spyOn(peer, 'trialPolicyCurrent').mockReturnValue(true);
+    let diagnosisBusy = false;
+    peer.failedFileDiagnosisPeer = { busy: () => diagnosisBusy };
+    let finishSampling!: (ready: boolean) => void;
+    const sample = vi.spyOn(smallPeerMemory, 'smallPeerStartHasHeadroom').mockImplementation(
+      () => new Promise<boolean>((resolve) => { finishSampling = resolve; }),
+    );
+    try {
+      const result = h.svc.peerRun(runReq({ smallPeerTrial: policy }), notHolder);
+      await h.flush();
+      expect(sample).toHaveBeenCalledOnce();
+      expect(h.svc.isDiagnosisCapacityBusy()).toBe(true);
+      // Simulate work that was already being admitted when the reservation was taken.
+      diagnosisBusy = true;
+      finishSampling(true);
+      expect(await result).toEqual({ ok: false, reason: 'peer-busy' });
+      expect(h.svc.isDiagnosisCapacityBusy()).toBe(false);
+      expect(h.spawned).toHaveLength(0);
+    } finally {
+      sample.mockRestore();
+      policyCurrent.mockRestore();
+    }
+  });
 
   it('refuses each condition with its reason', async () => {
     const h = peerSide();
