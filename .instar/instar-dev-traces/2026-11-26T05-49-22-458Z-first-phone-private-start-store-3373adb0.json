@@ -1,0 +1,20 @@
+{
+  "version": 2,
+  "slug": "first-phone-private-start-store",
+  "sessionId": "b3d2cf8a-9b5d-468b-a50b-70ebf11e9e5c",
+  "timestamp": "2026-11-26T05:49:22.458Z",
+  "artifactPath": "upgrades/side-effects/first-phone-private-start-store.md",
+  "artifactSha256": "18329fb9cd351d77ba8013315ac42bc7c43c87d9eb2fe891e511849633a721de",
+  "coveredFiles": [
+    "src/core/trustJourney/FirstPhonePrivateStartStore.ts",
+    "src/core/trustJourney/firstPhonePrivateStart.ts",
+    "tests/unit/first-phone-private-start.test.ts"
+  ],
+  "phase": "complete",
+  "tier": 1,
+  "tierReasoning": "Dormant exact proposal locator store with no production caller",
+  "eli16Path": "docs/specs/phone-only-first-approver.eli16.md",
+  "sideEffectsPath": "upgrades/side-effects/first-phone-private-start-store.md",
+  "secondPass": "true",
+  "reviewerConcurred": true
+}

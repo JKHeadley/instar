@@ -43,3 +43,5 @@ The test flow now saves the offer only after Telegram acknowledges the exact pri
 The private offer sender checks that Telegram accepted the exact enrollment message in the verified owner's private chat. This check does not activate delivery or enroll a phone.
 
 The bot keeps the one-time Start command out of ordinary conversation. Only a direct message in the verified owner's private chat can reach the enrollment handler.
+
+The server stores a fingerprint of the temporary Start token. A matching Start can open the exact offer once, and the token expires within ten minutes.

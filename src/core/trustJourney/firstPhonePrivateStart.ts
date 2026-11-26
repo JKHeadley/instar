@@ -2,7 +2,7 @@ import type { Receipt } from './accountPath.js';
 
 export const FIRST_PHONE_PRIVATE_START = /^\/start fp1_[A-Za-z0-9_-]{22,60}$/;
 
-interface FirstPhoneStart {
+export interface FirstPhoneStart {
   token: string;
   ownerAccountId: string;
   holderEpoch: string;
