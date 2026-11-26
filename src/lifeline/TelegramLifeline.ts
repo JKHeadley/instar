@@ -112,6 +112,7 @@ import type { FormatMode } from '../messaging/TelegramMarkdownFormatter.js';
 import { recordFormatFallbackPlainRetry } from '../messaging/telegramFormatMetrics.js';
 import { assertTelegramPayloadVisible, InvisiblePayloadRefusedError } from '../messaging/invisible-payload.js';
 import { telegramFetch } from '../messaging/telegram-egress.js';
+import { withOriginBotAuthoredText } from '../messaging/telegram-origin/OriginBotEgress.js';
 import { inboundTopicId, normalizeInboundThread, toWireParams } from '../messaging/telegramTopicSpace.js';
 import { formatLocalTimestamp } from '../utils/localTime.js';
 import { INVITE_PREFIX } from '../threadline/PairingInvite.js';
@@ -1982,6 +1983,8 @@ export class TelegramLifeline {
      * reads only a tag at position 0, as for an older lifeline.
      */
     media?: LifelineForwardMedia[],
+    /** SEC-164 §3.5: a queued entry's removed-key kinds (never values), so the server sends the notice. */
+    credentialRemovedKinds?: string[],
   ): Promise<ForwardOutcome> {
     // a2a spoof-defense fields (MENTOR-LIVE-READINESS-SPEC §Recipient side). The
     // server's /internal/telegram-forward handler passes these to
@@ -2035,6 +2038,7 @@ export class TelegramLifeline {
           : {}),
         ...(isForwarded ? { forwarded: true } : {}),
         ...(media ? { media } : {}),
+        ...(credentialRemovedKinds && credentialRemovedKinds.length > 0 ? { credentialRemovedKinds } : {}),
         ...(senderChatId !== undefined ? { senderChatId } : {}),
         ...(senderBotId !== undefined ? { senderBotId } : {}),
         ...(includeVersion ? { lifelineVersion: this.lifelineVersion } : {}),
@@ -2489,7 +2493,7 @@ export class TelegramLifeline {
         message_thread_id: msg.topicId,
         text: msg.text,
         date: Math.floor(new Date(msg.timestamp).getTime() / 1000),
-      }, replayAck);
+      }, replayAck, undefined, msg.credentialRemovedKinds);
 
       const decision = decideReplay(outcome, {
         poisonFailures: msg.replayFailures ?? 0,
@@ -3479,12 +3483,12 @@ export class TelegramLifeline {
     const url = `https://api.telegram.org/bot${this.config.token}/${method}`;
     const timeoutMs = method === 'getUpdates' ? 60_000 : 15_000;
     // Origin review/storage/capacity must finish before this request's clock starts.
-    const response = await telegramFetch(url, {
+    const response = await withOriginBotAuthoredText(this.config.token, params.text, () => telegramFetch(url, {
       method: 'POST',
       headers: { 'Content-Type': 'application/json' },
       body: JSON.stringify(sendParams.outgoingParams),
       networkTimeoutMs: timeoutMs,
-    });
+    }));
 
     if (!response.ok) {
       // Handle 429 Too Many Requests — respect Telegram's retry_after

@@ -1,0 +1,22 @@
+{
+  "ts": "2026-11-23T06:18:09.127Z",
+  "slug": "quota-pacing-dashboard",
+  "suggestedTier": 1,
+  "declaredTier": 1,
+  "riskFloor": 1,
+  "riskFloorReasons": [],
+  "belowFloor": false,
+  "files": 1,
+  "loc": 2,
+  "scope": {
+    "basis": "staged-in-scope-paths-including-deleted",
+    "files": [
+      "src/data/awareness/quota-pacing.md"
+    ],
+    "addedLines": 2,
+    "deletedLines": 0
+  },
+  "causalAutopsy": null,
+  "classClosure": null,
+  "verdict": "pass"
+}

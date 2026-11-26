@@ -1,0 +1,24 @@
+{
+  "ts": "2026-11-21T04:05:16.359Z",
+  "slug": "inbound-control-bytes",
+  "suggestedTier": 2,
+  "declaredTier": 1,
+  "riskFloor": 1,
+  "riskFloorReasons": [],
+  "belowFloor": false,
+  "files": 3,
+  "loc": 45,
+  "scope": {
+    "basis": "staged-in-scope-paths-including-deleted",
+    "files": [
+      "src/commands/server.ts",
+      "src/core/SessionManager.ts",
+      "src/core/terminalControlBytes.ts"
+    ],
+    "addedLines": 42,
+    "deletedLines": 3
+  },
+  "causalAutopsy": null,
+  "classClosure": null,
+  "verdict": "pass"
+}

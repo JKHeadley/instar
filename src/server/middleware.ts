@@ -86,6 +86,10 @@ export function corsMiddleware(req: Request, res: Response, next: NextFunction):
     res.header('Access-Control-Allow-Origin', origin);
   }
   res.header('Access-Control-Allow-Methods', 'GET, POST, PATCH, DELETE, OPTIONS');
+  // SEC-135 (docs/specs/sec135-approval-link-guess-bound.md §3): X-Instar-Request must NEVER be added
+  // to this list. A recommended-services confirm GET counts as an owner open only when it carries
+  // X-Instar-Request: 1, and the reason a page on another origin cannot send it is that its preflight
+  // fails here. tests/unit/sec135-owner-open-cors.test.ts pins this.
   res.header('Access-Control-Allow-Headers', 'Content-Type, Authorization');
   if (req.method === 'OPTIONS') {
     res.sendStatus(204);
@@ -373,6 +377,28 @@ export function authMiddleware(
       const verdict = deviceAuth(req, res);
       if (verdict === 'ok') { next(); return; }
       if (verdict === 'refused') return;
+    }
+
+    // Local Verify's loopback proxy to a borrowed helper (docs/specs/local-verify-borrowed-slices-count.md,
+    // "Build decisions: the attempt token"): the verify child holds no Bearer credential, so on this ONE
+    // exact method + path the running verify's attempt token stands in for it. Loopback socket only, and
+    // nothing that came through the tunnel or any forwarder, both checked here before the route (which
+    // checks them again and then the token). Everything else under /local-verify stays behind the bearer gate.
+    if (req.method === 'POST' && req.path === '/local-verify/borrowed-proxy') {
+      const localArrival = mayBeLocalArrival(req);
+      const remote = req.socket.remoteAddress;
+      const loopback = remote === '127.0.0.1' || remote === '::1' || remote === '::ffff:127.0.0.1';
+      if (!localArrival || !loopback || req.headers['cf-connecting-ip'] !== undefined || req.headers['x-forwarded-for'] !== undefined) {
+        res.status(403).json({ ok: false, reason: 'loopback-only' });
+        return;
+      }
+      const attempt = req.headers['x-instar-attempt-token'];
+      if (typeof attempt !== 'string' || !/^[0-9a-f]{32}$/.test(attempt)) {
+        res.status(401).json({ ok: false, reason: 'attempt-token-required' });
+        return;
+      }
+      next();
+      return;
     }
 
     // Whether this connection may unlock: a yes/no the console asks before it
@@ -1037,6 +1063,10 @@ function verifyViewSignature(viewPath: string, sig: string, authToken: string): 
  */
 export const VIEW_SANDBOX_CSP = 'sandbox allow-popups allow-popups-to-escape-sandbox allow-downloads';
 
+/** SEC-124: path prefixes (lowercase) of the pre-auth capability pages given anti-framing,
+ * no-store and no-referrer headers by `dashboardSecurityHeaders`. */
+export const PRE_AUTH_PAGE_PREFIXES: readonly string[] = ['/mcp/approve/', '/memory-privacy/fix/', '/secrets/drop/'];
+
 export function dashboardSecurityHeaders(req: Request, res: Response, next: NextFunction): void {
   // Express routes match case-insensitively (`/Dashboard/legacy` reaches the legacy page), so the
   // headers must too (dashboard-console-default-and-pair-page round 2).
@@ -1047,6 +1077,19 @@ export function dashboardSecurityHeaders(req: Request, res: Response, next: Next
   if (p === '/view' || p.startsWith('/view/')) {
     res.header('Content-Security-Policy', VIEW_SANDBOX_CSP);
     res.header('X-Content-Type-Options', 'nosniff');
+  }
+  // SEC-124: pages reachable WITHOUT the bearer that act on a capability carried in the
+  // URL (an approval request id, a one-time repair token, a Secret Drop token) and/or ask
+  // for the dashboard PIN. They must not be framed by another site (a click-jacked
+  // Approve), cached, or leak their URL through a Referer header. Only framing, caching
+  // and referrer are restricted: these pages keep their own inline script and style.
+  if (PRE_AUTH_PAGE_PREFIXES.some((prefix) => p.startsWith(prefix))) {
+    res.header('X-Frame-Options', 'DENY');
+    res.header('Content-Security-Policy', "frame-ancestors 'none'; base-uri 'none'; form-action 'self'");
+    res.header('X-Content-Type-Options', 'nosniff');
+    res.header('Cache-Control', 'no-store, no-cache, must-revalidate, private');
+    res.header('Pragma', 'no-cache');
+    res.header('Referrer-Policy', 'no-referrer');
   }
   if (p === '/dashboard' || p.startsWith('/dashboard/')) {
     res.header('X-Frame-Options', 'DENY');
@@ -1152,6 +1195,10 @@ export function DOC_PAGE_PATH(method: string, p: string): boolean {
   // Linking a member's computer starts from a page with no credential yet (documentLinkRoutes.ts).
   if (method === 'POST' && p === '/docs/_link/status') return true;
   if (method === 'POST' && p === '/docs/_link/nonce') return true;
+  // A member's computer joining from a team invite, and any computer forgetting itself
+  // (member-browser-any-computer §3.3): self-authenticating, in documentJoinRoutes.ts.
+  if (method === 'GET' && (p === '/docs/_join' || p === '/docs/_join/addresses')) return true;
+  if (method === 'POST' && (p === '/docs/_join/redeem' || p === '/docs/_join/confirm' || p === '/docs/_link/forget-self')) return true;
   if (method === 'GET') return DOC_PAGE_GET.test(p);
   if (method === 'POST') return DOC_PAGE_POST.test(p);
   return false;

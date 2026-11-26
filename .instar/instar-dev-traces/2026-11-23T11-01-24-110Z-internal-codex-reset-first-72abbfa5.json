@@ -1,0 +1,21 @@
+{
+  "version": 2,
+  "slug": "internal-codex-reset-first",
+  "sessionId": "fa6f6527-b01e-426b-a83e-6c75395ee134",
+  "timestamp": "2026-11-23T11:01:24.110Z",
+  "artifactPath": "upgrades/side-effects/internal-codex-reset-first.md",
+  "artifactSha256": "38b48aad9a0b231e091ad5f5ad61ea17b15554d6db0f06caa56271c056fa6fd8",
+  "coveredFiles": [
+    ".instar/instar-dev-traces/2026-11-23T11-00-14-670Z-internal-codex-reset-first-2af30288.json",
+    "docs/specs/internal-codex-reset-first.eli16.md",
+    "src/data/awareness/codex-weekly-reset-routing.md",
+    "upgrades/side-effects/internal-codex-reset-first.md"
+  ],
+  "phase": "complete",
+  "tier": 1,
+  "tierReasoning": "Reviewed awareness clarification and real per-path audit after parent comparison-base advancement; no runtime, assertion, lock or timing changes.",
+  "eli16Path": "docs/specs/internal-codex-reset-first.eli16.md",
+  "sideEffectsPath": "upgrades/side-effects/internal-codex-reset-first.md",
+  "secondPass": "true",
+  "reviewerConcurred": true
+}

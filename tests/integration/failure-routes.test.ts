@@ -11,6 +11,7 @@
  *    stamps filedBy, stays one-tap (§4.2 #B / B6)
  */
 import { describe, it, expect, beforeEach, afterEach, vi } from 'vitest';
+import { createTempProject, type TempProject } from '../helpers/setup.js';
 import express from 'express';
 import request from 'supertest';
 import { createRoutes } from '../../src/server/routes.js';
@@ -18,9 +19,16 @@ import type { RouteContext } from '../../src/server/routes.js';
 import { FailureLedger } from '../../src/monitoring/FailureLedger.js';
 import { FailureAttributionEngine } from '../../src/monitoring/FailureAttributionEngine.js';
 
+const routeProjects: TempProject[] = [];
+afterEach(() => {
+  for (const project of routeProjects.splice(0)) project.cleanup();
+});
+
 function minimalCtx(extra: Partial<RouteContext>): RouteContext {
+  const project = createTempProject();
+  routeProjects.push(project);
   return {
-    config: { projectName: 'test', projectDir: '/tmp', stateDir: '/tmp/.instar', port: 0, sessions: {} as any, scheduler: {} as any } as any,
+    config: { projectName: 'test', projectDir: project.dir, stateDir: project.stateDir, port: 0, sessions: {} as any, scheduler: {} as any } as any,
     sessionManager: { listRunningSessions: () => [] } as any,
     state: { getJobState: () => null, getSession: () => null } as any,
     scheduler: null, telegram: null, relationships: null, feedback: null,

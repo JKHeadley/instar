@@ -41,11 +41,15 @@ export function plainReferenceText(text, { topicNames = {}, machineNames = {} } 
   // Ids inside brackets that hold nothing else go entirely: "(CMT-056)", "(ACT-12, CMT-9)".
   t = t.replace(/\s*\((?:\s*(?:CMT|ACT|BLK|EVO)-\d+\s*[,;/]?\s*)+\)/g, '');
   t = t.replace(/\b(CMT|ACT|BLK|EVO)-\d+\b/g, (_, k) => CODE_WORDS[k]);
+  // A one- or two-digit topic the sender could not name (a held reply can say "topic 0"). Longer ids use the name lookup below.
+  t = t.replace(/\b(?:telegram\s+)?topic\s*#?\d{1,2}\s*\((?:name unresolved|name unavailable)\)/gi, 'a conversation');
   // Conversations: "topic 1234", "topic #1234", "Telegram topic 1234".
   t = t.replace(/\b(?:telegram\s+)?topic\s*#?(\d{3,})\b/gi, (_, id) => {
     const name = verifiedDisplayName(topicNames[id], id);
     return name ? `the “${name}” conversation` : 'a conversation';
   });
+  // "a conversation (name unresolved)" says the same thing twice.
+  t = t.replace(/(\ba conversation)\s*\((?:name unresolved|name unavailable)\)/gi, '$1');
   // Agent-to-agent threads and their message ids.
   t = t.replace(/\b(?:(?:canonical|threadline|A2A)\s+)*thread[\s-]+(?:\d{10,}-[0-9a-z]+|[0-9a-f]{6,}(?:-[0-9a-f]{3,})*)\b/gi, 'an agent thread');
   t = t.replace(/\bmsg-\d{10,}-[0-9a-z]+\b/gi, 'a message');

@@ -1,0 +1,71 @@
+{
+  "version": 3,
+  "slug": "boot-independent-rollout-scan",
+  "sessionId": "dd749eae-9567-435e-9e95-a9679df8aaea",
+  "timestamp": "2026-11-22T23:32:38.044Z",
+  "artifactPath": "upgrades/side-effects/boot-independent-rollout-scan.md",
+  "artifactSha256": "05b903cebd4ccde7d13c6c0703d7ecbd15e7a8c309f04e38729454c270ecd5ea",
+  "specPath": "docs/specs/boot-independent-rollout-scan.md",
+  "coveredFiles": [
+    "docs/specs/boot-independent-rollout-scan.eli16.md",
+    "docs/specs/boot-independent-rollout-scan.md",
+    "docs/specs/reports/boot-independent-rollout-scan-convergence.md",
+    "src/commands/server.ts",
+    "src/core/FeatureRolloutReconciler.ts",
+    "src/core/featureRolloutGitAsync.ts",
+    "src/core/featureRolloutScan.ts",
+    "src/data/awareness/rollout-scan-responsiveness.md",
+    "tests/e2e/rollout-async-lifecycle.test.ts",
+    "tests/fixtures/rollout-scan-responsive-server.mjs",
+    "tests/helpers/rolloutScanFixture.ts",
+    "tests/integration/rollout-scan-responsiveness.test.ts",
+    "tests/unit/feature-rollout-async.test.ts",
+    "tests/unit/feature-rollout-git-async.test.ts",
+    "upgrades/next/boot-independent-rollout-scan.md",
+    "upgrades/side-effects/boot-independent-rollout-scan.md"
+  ],
+  "phase": "complete",
+  "tier": 2,
+  "tierReasoning": "Server observation lifecycle and asynchronous safe Git I/O; existing lease and restart authority unchanged. Chief-authorized bounded closure and real three-tier verification apply.",
+  "secondPass": "true",
+  "reviewerConcurred": true,
+  "toolchain": {
+    "buildSkill": {
+      "name": "instar-dev",
+      "version": "21a45a5a5f03",
+      "verified": true
+    },
+    "reviewSkills": [
+      {
+        "name": "spec-converge",
+        "outcome": "operator-authorized-bounded-closure",
+        "verified": false,
+        "iterations": 6
+      },
+      {
+        "name": "instar-dev",
+        "outcome": "concur",
+        "verified": false
+      },
+      {
+        "name": "test-as-self",
+        "outcome": "pass",
+        "verified": false
+      }
+    ],
+    "convergence": {
+      "reportPath": "docs/specs/reports/boot-independent-rollout-scan-convergence.md",
+      "iterations": 6,
+      "verified": true
+    }
+  },
+  "classClosure": {
+    "defectClass": "unbounded-self-action",
+    "closure": "guard",
+    "guardEvidence": {
+      "enforcementType": "gate",
+      "citation": "src/core/FeatureRolloutReconciler.ts#reconcile",
+      "howCaught": "The existing cadence shares one whole reconciliation promise. Stop aborts owned discovery and prevents subsequent tracker writes. Application yields each artifact and every Git command retains its finite deadline. No automatic queued retry or new cadence is introduced."
+    }
+  }
+}

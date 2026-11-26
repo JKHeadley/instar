@@ -127,6 +127,39 @@ export function projectNativeHookEvent(raw: unknown, headers: NativeProjectionHe
   return { event: out, malformedFields: malformed };
 }
 
+/**
+ * The command reporter (`hook-event-reporter.js`, `/hooks/events`) forwards the native reporter's
+ * optional fields. Apply the native bounds to exactly those fields in place: ids, names and short
+ * strings are checked, a long text is redacted then cut to its last 200 characters, and a field that
+ * fails its bound is dropped. (Fields the command path always sent are left as before; this is
+ * parity for the newly forwarded fields, not a whole-event projection.) The
+ * instar session id is set from the route's own value (a scoped session speaks only for itself) and
+ * returned, validated, for the dispatcher. Fields this function does not name are left as they were.
+ */
+export function boundCommandReporterPayload(payload: Record<string, unknown>, instarSid: string): string {
+  // Validate the route-selected id once; the caller uses the returned value for both storage and dispatch.
+  const sid = instarSid && asId(instarSid) ? instarSid : '';
+  if (sid) payload.instar_session_id = sid;
+  else delete payload.instar_session_id;
+  const bound = (key: string, check: (v: unknown) => unknown): void => {
+    const v = payload[key];
+    if (v === undefined) return;
+    const ok = v === null ? undefined : check(v);
+    if (ok === undefined) delete payload[key];
+    else payload[key] = ok;
+  };
+  bound('instar_session', asName);
+  bound('agent_type', asName);
+  bound('agent_id', asId);
+  bound('task_id', asId);
+  bound('agent_transcript_path', asPath);
+  bound('reason', asShort);
+  bound('trigger', asShort);
+  bound('last_assistant_message', (v) => (typeof v === 'string' ? redactThenTail(v) : undefined));
+  bound('task_subject', (v) => (typeof v === 'string' ? redactThenTail(v) : undefined));
+  return sid;
+}
+
 // ── Counters ────────────────────────────────────────────────────────
 
 export interface NativeHookCounters {

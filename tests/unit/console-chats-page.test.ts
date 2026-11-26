@@ -71,6 +71,13 @@ const flush = (ms = 20) => new Promise((r) => setTimeout(r, ms));
 const bootContext = new AsyncLocalStorage<number>();
 let bootGeneration = 0;
 const pageChannels = new Set<BroadcastChannel>();
+const pageLifecycles = new Set<{ dispose: () => void }>();
+
+function disposePage() {
+  // Run the router's real registered page cleanup before removing its browser window.
+  for (const lifecycle of pageLifecycles) lifecycle.dispose();
+  pageLifecycles.clear();
+}
 const RealBroadcastChannel = globalThis.BroadcastChannel;
 if (RealBroadcastChannel) {
   // Node's BroadcastChannel outlives the window too: an earlier page would keep hearing this one.
@@ -83,6 +90,8 @@ async function boot(handler: (c: Call) => { status: number; body?: unknown } | u
 }
 
 async function bootPage(handler: (c: Call) => { status: number; body?: unknown } | undefined | Promise<{ status: number; body?: unknown } | undefined>, hash: string, idb: ReturnType<typeof fakeIndexedDB>) {
+  disposePage();
+  dom?.window.close();
   dom = new JSDOM('<!doctype html><html><body></body></html>', { url: `http://localhost:4040/dashboard/console/${hash}`, pretendToBeVisual: true });
   const g = globalThis as Record<string, unknown>;
   Object.assign(g, { window: dom.window, document: dom.window.document, location: dom.window.location, history: dom.window.history, localStorage: dom.window.localStorage, sessionStorage: dom.window.sessionStorage, indexedDB: idb, isSecureContext: true });
@@ -101,12 +110,20 @@ async function bootPage(handler: (c: Call) => { status: number; body?: unknown }
     return { ok: out.status >= 200 && out.status < 300, status: out.status, json: async () => JSON.parse(JSON.stringify(out.body ?? {})), headers: new dom.window.Headers() } as unknown as Response;
   };
   vi.resetModules();
+  const lifecycleModule = await import('../../dashboard/console/page-lifecycle.js');
+  const createLifecycle = lifecycleModule.createLifecycle;
+  vi.spyOn(lifecycleModule, 'createLifecycle').mockImplementation((options) => {
+    const lifecycle = createLifecycle(options);
+    pageLifecycles.add(lifecycle);
+    return lifecycle;
+  });
   await import('../../dashboard/console/console.js');
   for (let i = 0; i < 10; i++) await flush();
   return { doc: dom.window.document, idb };
 }
 
 afterEach(() => {
+  disposePage();
   for (const c of pageChannels) { try { c.close(); } catch { /* already closed */ } }
   pageChannels.clear();
   dom?.window.close();
@@ -332,6 +349,73 @@ describe('Conversations page', () => {
     for (let i = 0; i < 60 && doc.querySelector('.chat-title')?.textContent !== 'Plans for Saturday'; i++) await flush(100);
     expect(doc.querySelector('.chat-title')?.textContent).toBe('Plans for Saturday');
   }, 15_000);
+
+  it('change feed: quick reads send known row hashes and reconstruct unchanged rows; pool reads stay full (telegram-slack-change-feed)', async () => {
+    const idb = fakeIndexedDB();
+    const bd = await import('../../dashboard/console/browser-device.js');
+    const { keyPair, publicKey } = await bd.generateDeviceKey();
+    idb.stores.set('device', new Map([['m1', { machineId: 'm1', deviceId: 'dev-b1234567', host: 'localhost:4040', status: 'active', keyPair, publicKey, keyHash: await bd.keyHashOf(publicKey) }]]));
+    const newest = new Date(Date.now() - 1000).toISOString();
+    const older = new Date(Date.now() - 600_000).toISOString();
+    const quick: string[] = [];
+    const pool: string[] = [];
+    const rows = [
+      { messageId: 1, text: 'older', timestamp: older, fromUser: true },
+      { messageId: 2, text: 'newest', timestamp: newest, fromUser: false },
+    ];
+    const hashes = rows.map((row) => crypto.createHash('sha256').update(JSON.stringify(row)).digest('hex'));
+    const broadcasts: Array<{ mode?: string; quickFullPage?: boolean; data?: { messages?: unknown[] } }> = [];
+    const observer = RealBroadcastChannel ? new BroadcastChannel('instar-chat') : null;
+    if (observer) observer.onmessage = (ev) => broadcasts.push(ev.data);
+    let reopened = false;
+    let emptyDeltas = 0;
+    const { doc } = await boot((c) => {
+      if (c.url.startsWith('/mobile/browser-devices/status')) return { status: 200, body: STATUS };
+      if (c.url.startsWith('/mobile/conversations?scope=pool')) return { status: 200, body: { conversations: [{ id: 145738, platform: 'telegram', title: 'Parity', lastActivity: newest, lastPreview: 'hi' }], nextCursor: null } };
+      if (c.url.startsWith('/telegram/topics/145738/messages')) {
+        (c.url.includes('scope=pool') ? pool : quick).push(c.url);
+        if (c.url.includes('scope=pool')) return { status: 200, body: { topicId: 145738, historyCursorVersion: 2, messages: reopened ? [] : rows } };
+        const known = new URL(c.url, 'http://localhost').searchParams.get('knownRows') || '';
+        const changed = rows.filter((_, i) => !known.split(',').includes(hashes[i]));
+        if (!changed.length) emptyDeltas++;
+        return { status: 200, body: { topicId: 145738, historyCursorVersion: 2, messages: changed, changeFeed: { rowHashes: hashes } } };
+      }
+      return undefined;
+    }, `#/work/chats?c=${encodeURIComponent('telegram:145738')}`, idb);
+    // Signing and IndexedDB completion share the worker pool with other test files. Wait
+    // for observed quick reads rather than assuming boot completed within fixed short sleeps.
+    await vi.waitFor(() => {
+      bootContext.run(bootGeneration, () => dom.window.dispatchEvent(new dom.window.Event('focus')));
+      expect(quick.length).toBeGreaterThanOrEqual(2);
+    }, { timeout: 10_000, interval: 200 });
+    expect(new URL(quick[0], 'http://localhost').searchParams.get('knownRows')).toBe('');
+    expect(new URL(quick[1], 'http://localhost').searchParams.get('knownRows')).toBe(hashes.join(','));
+    expect(quick.every((u) => !u.includes('after='))).toBe(true);
+    expect(pool.length).toBeGreaterThan(0);
+    expect(pool.every((u) => !u.includes('knownRows=') && !u.includes('after='))).toBe(true);
+    expect([...doc.querySelectorAll('.chat-bubble .chat-text')].map((n) => n.textContent)).toEqual(['older', 'newest']);
+    expect(emptyDeltas).toBeGreaterThan(0);
+    if (observer) {
+      const result = broadcasts.filter((m) => m.mode === 'newest').at(-1);
+      expect(result?.quickFullPage).toBe(true);
+      expect(result?.data?.messages).toEqual(rows); // another tab gets rows, not an empty network delta
+    }
+
+    // Reopening creates an empty view. Even if its pool snapshot has no local copies, an
+    // unchanged quick read must repopulate it from the complete cache instead of hiding rows.
+    reopened = true;
+    dom.window.location.hash = '#/work/chats';
+    for (let i = 0; i < 5; i++) await flush();
+    dom.window.location.hash = `#/work/chats?c=${encodeURIComponent('telegram:145738')}`;
+    for (let i = 0; i < 10; i++) await flush();
+    const beforeReopen = quick.length;
+    await vi.waitFor(() => {
+      bootContext.run(bootGeneration, () => dom.window.dispatchEvent(new dom.window.Event('focus')));
+      expect(quick.length).toBeGreaterThan(beforeReopen);
+      expect([...doc.querySelectorAll('.chat-bubble .chat-text')].map((n) => n.textContent)).toEqual(['older', 'newest']);
+    }, { timeout: 10_000, interval: 200 });
+    expect([...doc.querySelectorAll('.chat-bubble .chat-text')].map((n) => n.textContent)).toEqual(['older', 'newest']);
+  }, 25_000);
 
   it('a Slack conversation names its machine on the history read and the send (live proof finding)', async () => {
     const idb = fakeIndexedDB();
@@ -754,5 +838,131 @@ describe('card source message navigation', () => {
     // Removing a chip keeps the other.
     (doc.querySelector('.chat-unpick') as HTMLButtonElement).click();
     expect(chips().map((c) => c.split(' · ')[0])).toEqual(['notes.pdf']);
+  });
+});
+
+
+describe('interactive chat history explanations', () => {
+  async function openHistory(history: (call: Call) => Promise<{ status: number; body?: unknown }> | { status: number; body?: unknown }) {
+    const idb = fakeIndexedDB();
+    const bd = await import('../../dashboard/console/browser-device.js');
+    const { keyPair, publicKey } = await bd.generateDeviceKey();
+    idb.stores.set('device', new Map([['m1', { machineId: 'm1', deviceId: 'dev-b1234567', host: 'localhost:4040', status: 'active', keyPair, publicKey, keyHash: await bd.keyHashOf(publicKey) }]]));
+    return boot(c => {
+      if (c.url.startsWith('/mobile/browser-devices/status')) return { status: 200, body: STATUS };
+      if (c.url.startsWith('/mobile/conversations?scope=pool')) return { status: 200, body: { conversations: [{ id: UUID, platform: 'app', title: 'Plans', lastActivity: new Date().toISOString(), lastPreview: '' }], nextCursor: null } };
+      if (c.url.startsWith(`/mobile/chat/app/${UUID}/messages`)) return history(c);
+      if (c.url.includes('/events')) return { status: 200, body: { events: [], cursor: 'c1' } };
+      return undefined;
+    }, `#/work/chats?c=${encodeURIComponent(`app:${UUID}`)}`, idb);
+  }
+
+  it('explains a pending first read, names the wait after ten seconds, then explains an empty result', async () => {
+    let finish!: (value: { status: number; body: unknown }) => void;
+    const pending = new Promise<{ status: number; body: unknown }>(resolve => { finish = resolve; });
+    let reads = 0;
+    const { doc } = await openHistory(() => { reads++; return pending; });
+    expect(doc.querySelector('.chat-history-state')?.textContent).toContain('Loading messages');
+    window.dispatchEvent(new dom.window.Event('focus'));
+    window.dispatchEvent(new dom.window.Event('focus'));
+    await flush(100);
+    expect(reads).toBe(1);
+    await flush(10_100);
+    expect(doc.querySelector('.chat-history-state')?.textContent).toContain('Waiting for the agent to return this conversation');
+    finish({ status: 200, body: { messages: [], nextBefore: null } });
+    await flush(100);
+    expect(doc.querySelector('.chat-history-state')?.textContent).toContain('No messages were returned');
+    expect(doc.querySelector('.chat-history-state')?.textContent).not.toContain('Loading');
+  }, 20_000);
+
+  it('explains successful empty history without claiming a populated conversation has no history', async () => {
+    const { doc } = await openHistory(() => ({ status: 200, body: { messages: [], nextBefore: null } }));
+    expect(doc.querySelector('.chat-messages')?.textContent).toContain('No messages were returned');
+    expect(doc.querySelector('.chat-history-retry')).not.toBeNull();
+    expect(calls.some(c => c.method === 'POST' && /mobile\/chat.*$/.test(c.url))).toBe(false);
+  });
+
+  it('retries a failed history read once without changing typed text or sending a message', async () => {
+    let reads = 0;
+    let finish!: (value: { status: number; body: unknown }) => void;
+    const pending = new Promise<{ status: number; body: unknown }>(resolve => { finish = resolve; });
+    const { doc } = await openHistory(() => ++reads === 1 ? { status: 503 } : pending);
+    const retry = doc.querySelector('.chat-history-retry') as HTMLButtonElement;
+    expect(retry).not.toBeNull();
+    const compose = doc.querySelector('.chat-compose') as HTMLTextAreaElement;
+    compose.value = 'Keep this draft';
+    sessionStorage.setItem('instar_chat_unfinished', JSON.stringify([{ ref: `app:${UUID}`, requestId: `${Date.now()}-unfinished`, deviceId: 'dev-b1234567', machineId: 'm1', text: 'Earlier unfinished send', uploads: [], firstSentAt: Date.now() }]));
+    retry.click(); retry.click();
+    await flush(100);
+    expect(reads).toBe(2);
+    expect(compose.value).toBe('Keep this draft');
+    finish({ status: 200, body: { messages: [{ eventId: 'e1', messageId: 'm1', role: 'agent', text: 'Saved history', at: new Date().toISOString() }], nextBefore: null } });
+    await flush(100);
+    expect(doc.querySelector('.chat-messages')?.textContent).toContain('Saved history');
+    expect((doc.querySelector('.chat-history-state') as HTMLElement).hidden).toBe(true);
+    expect(compose.value).toBe('Keep this draft');
+    expect(calls.some(c => c.method === 'POST' && /mobile\/chat.*$/.test(c.url))).toBe(false);
+  });
+
+  it('keeps messages received from another tab visible while the first history read is pending or empty', async () => {
+    let finish!: (value: { status: number; body: unknown }) => void;
+    const pending = new Promise<{ status: number; body: unknown }>(resolve => { finish = resolve; });
+    const { doc } = await openHistory(() => pending);
+    const otherTab = new BroadcastChannel('instar-chat');
+    otherTab.postMessage({ type: 'result', mode: 'events', ref: `app:${UUID}`, data: { events: [{ kind: 'message', eventId: 'live-e1', messageId: 'live-m1', role: 'agent', text: 'Already received', at: new Date().toISOString() }] } });
+    await flush(100);
+    expect(doc.querySelector('.chat-messages')?.textContent).toContain('Already received');
+    expect((doc.querySelector('.chat-history-state') as HTMLElement).hidden).toBe(true);
+    finish({ status: 200, body: { messages: [], nextBefore: null } });
+    await flush(100);
+    expect(doc.querySelector('.chat-messages')?.textContent).toContain('Already received');
+    expect((doc.querySelector('.chat-history-state') as HTMLElement).hidden).toBe(true);
+    otherTab.close();
+  });
+
+  it('clears a failed-history notice when a successful background history read recovers', async () => {
+    const { doc } = await openHistory(() => ({ status: 503 }));
+    expect(doc.querySelector('.chat-history-state')?.textContent).toContain("Couldn't load");
+    const otherTab = new BroadcastChannel('instar-chat');
+    otherTab.postMessage({ type: 'result', mode: 'pool', ref: `app:${UUID}`, data: { messages: [{ eventId: 'recovered', messageId: 'recovered', role: 'agent', text: 'Recovered messages', at: new Date().toISOString() }], nextBefore: null } });
+    await flush(100);
+    expect(doc.querySelector('.chat-messages')?.textContent).toContain('Recovered messages');
+    expect((doc.querySelector('.chat-history-state') as HTMLElement).hidden).toBe(true);
+    otherTab.close();
+  });
+
+  it('shares a follower focus read that starts before the retry, without a second signed history request', async () => {
+    const originalNavigator = globalThis.navigator;
+    vi.stubGlobal('navigator', { userAgent: originalNavigator?.userAgent || 'fixture', locks: { request: () => new Promise(() => {}) } });
+    try {
+      let reads = 0;
+      let finish!: (value: { status: number; body: unknown }) => void;
+      const pending = new Promise<{ status: number; body: unknown }>(resolve => { finish = resolve; });
+      const { doc } = await openHistory(() => ++reads === 1 ? { status: 503 } : pending);
+      window.dispatchEvent(new dom.window.Event('focus'));
+      await flush(100);
+      expect(reads).toBe(2);
+      (doc.querySelector('.chat-history-retry') as HTMLButtonElement).click();
+      window.dispatchEvent(new dom.window.Event('focus'));
+      await flush(100);
+      expect(reads).toBe(2);
+      finish({ status: 200, body: { messages: [{ eventId: 'shared', messageId: 'shared', role: 'agent', text: 'One shared history result', at: new Date().toISOString() }], nextBefore: null } });
+      await flush(100);
+      expect(doc.querySelector('.chat-messages')?.textContent).toContain('One shared history result');
+      expect((doc.querySelector('.chat-history-state') as HTMLElement).hidden).toBe(true);
+    } finally { vi.unstubAllGlobals(); }
+  });
+
+  it('does not apply an old pending history result after leaving the conversation', async () => {
+    let finish!: (value: { status: number; body: unknown }) => void;
+    const pending = new Promise<{ status: number; body: unknown }>(resolve => { finish = resolve; });
+    const { doc } = await openHistory(() => pending);
+    location.hash = '#/work/chats';
+    window.dispatchEvent(new dom.window.HashChangeEvent('hashchange'));
+    await flush(100);
+    finish({ status: 200, body: { messages: [{ eventId: 'old', messageId: 'old', role: 'agent', text: 'Old conversation response', at: new Date().toISOString() }] } });
+    await flush(100);
+    expect(doc.querySelector('.chat-view')?.textContent).not.toContain('Old conversation response');
+    expect(doc.querySelector('.chat-history-state')).toBeNull();
   });
 });

@@ -47,6 +47,8 @@ export interface DiskStewardWiringInput {
   findTopicIdByName?: (name: string) => number | undefined;
   findOrCreateTopic?: (name: string) => Promise<number>;
   sendToTopic?: (topicId: number, text: string) => Promise<unknown>;
+  /** The owner explicitly quieted disk notices in notification selectivity (the post then says so). */
+  ownerQuietedDisk?: () => boolean;
 }
 
 function num(v: unknown, d: number): number { return typeof v === 'number' && Number.isFinite(v) && v > 0 ? v : d; }
@@ -86,7 +88,7 @@ export function createDiskSteward(input: DiskStewardWiringInput): { steward: Dis
   };
 
   const send: (post: DuePost) => Promise<SendOutcome> = input.sendToTopic
-    ? makeDiskStewardSender({ resolveTopicId, sendToTopic: input.sendToTopic, log: audit })
+    ? makeDiskStewardSender({ resolveTopicId, sendToTopic: input.sendToTopic, log: audit, ownerQuieted: input.ownerQuietedDisk })
     : async () => 'posted'; // no Telegram: the route and the degradation report are the surfaces (§3.5)
 
   const headers = (): Record<string, string> => ({ 'Content-Type': 'application/json', ...(input.authToken ? { Authorization: `Bearer ${input.authToken}` } : {}) });

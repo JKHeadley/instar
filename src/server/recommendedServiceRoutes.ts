@@ -10,11 +10,16 @@ import { storageErrorResponse } from '../core/storageMachineName.js';
 import type { Request, Response, Router } from 'express';
 import { parseCloudflareSecret } from '../recommended/cloudflareDomain.js';
 import { DegradationReporter } from '../monitoring/DegradationReporter.js';
-import { NO_REASONS, OFFER_LIST_EVERY_MS, type NoReason, type RecommendedServicesLedger } from '../recommended/RecommendedServicesLedger.js';
+import { NO_REASONS, OFFER_LIST_EVERY_MS, type NoReason, type RecommendedServicesLedger, type ReofferRow } from '../recommended/RecommendedServicesLedger.js';
+import { PROBLEM_KINDS, isDuplicateEvent, isProblemKind, nextReoffer, renderReoffer, type ReofferFacts } from '../recommended/reoffers.js';
 import { newListId, offerCandidates, renderOfferList } from '../recommended/offerList.js';
 import { OfferTapStore } from '../recommended/offerTaps.js';
 import { RECOMMENDED_SERVICE_CATALOG, isServiceAvailable, offerTextHash, type CatalogRow } from '../recommended/catalog.js';
-import { ConfirmTokenStore } from '../recommended/confirmTokens.js';
+import { ConfirmTokenStore, ConfirmTokensFullError } from '../recommended/confirmTokens.js';
+import { ConfirmStats } from '../recommended/confirmStats.js';
+import { featureEvidence } from '../monitoring/FeatureEvidenceLog.js';
+import { MANDATE_PIN_DEFAULT_MESSAGE } from './mandatePin.js';
+import type { PublicPinVerdict } from './publicPinHook.js';
 import { recipeFor, type EmailRecipeSurface, type RecipeDeps, type StopDeps, type VerifyResult } from '../recommended/recipes.js';
 import { EMAIL_RECIPIENT_SECRET, normalizeRecipient, readEmailCredential, EMAIL_SECRET } from '../email/emailCore.js';
 import type { BitwardenSurface } from '../recommended/bitwardenVault.js';
@@ -24,12 +29,26 @@ import { decideSetupRestart } from '../recommended/setupRestart.js';
 import { isMigrationComplete, markMigrationComplete, readDeliveredFirstResult } from '../recommended/offerPrerequisites.js';
 import { RECOMMENDED_SERVICE_IDS } from '../recommended/serviceIds.js';
 
+/** SEC-135: the confirm page's one refusal wording on the public path (every refusing limit). */
+export const PUBLIC_PAUSED_MESSAGE = 'Too many wrong PINs have been tried, so this page is paused for a few minutes. If you are the owner, open it in a browser that still remembers your dashboard sign-in, or on the computer I run on, or try again in a few minutes.';
+/** SEC-135: the refusal on the marker and local paths, which reveal nothing to a stranger. */
+export const OWN_PAUSED_MESSAGE = 'Too many wrong PINs from this browser. Wait a few minutes and try again.';
+
 export interface RecommendedServiceRouteDeps {
   ledger: () => RecommendedServicesLedger | null;
   stateDir: string;
   checkPin: (req: Request, res: Response) => boolean;
   /** The PIN check for the confirm route, which has no bearer token in front of it. */
   checkConfirmPin: (req: Request, res: Response) => boolean;
+  /**
+   * SEC-135: the confirm answer on sign-in's own public limits (ctx.publicPin.verify). Returns null
+   * when the switch is off or the hook is absent, and checkConfirmPin is used exactly as before.
+   */
+  verifyConfirmPin?: (req: Request) => PublicPinVerdict | null;
+  /** SEC-135: a page open from a marked browser or the machine itself, with the page's own header. */
+  ownerOpen?: (req: Request) => boolean;
+  /** SEC-135: the approval-links switch (owner opens, protected tokens, confirmStats). Absent = off. */
+  approvalLinksEnabled?: () => boolean;
   /** The dashboard unlock's rule: this connection may not carry a PIN. */
   pinEntryRefused?: (req: Request) => boolean;
   /** The one verified owner, or null when none can be told. */
@@ -97,6 +116,13 @@ export interface RecommendedServiceRouteDeps {
   now?: () => number;
   /** The kill switch for the first list (`recommendedServices.offers.enabled`). Off means no offer is ever sent. */
   offersEnabled?: () => boolean;
+  /** Rollout step 4 (`recommendedServices.reoffers.enabled`): asking again after a no when a real problem shows up. Off records and sends nothing. */
+  reoffersEnabled?: () => boolean;
+  /**
+   * The `secret-lost` source: the config paths that still hold a `{ "secret": true }` placeholder after the
+   * encrypted store was merged (a secret the config refers to is missing). Read once per server start.
+   */
+  unresolvedSecrets?: () => readonly string[];
   /** Rollout step 5: when true, an existing agent's owner is admitted to the first list (migration marked complete at the offer tick). */
   existingAgentsEnabled?: () => boolean;
   /** Sends one list with its buttons to the owner's conversation and returns the platform's message id, or null when it did not go. */
@@ -128,12 +154,50 @@ function setupView(state: ServiceSetupState | undefined): { verified: ServiceSet
 /** What the routes hand back to the server: a way to ask for a recipe's re-check now. */
 export interface RecommendedServiceRoutesHandle {
   requestRecheck: (service: string) => void;
+  /**
+   * A real problem a service would fix (spec, Real-problem events), called only from the kind's named source.
+   * Signal only: never throws, never blocks the caller, and records nothing while re-offers are off.
+   */
+  recordProblem: (kind: string, evidenceRef: string) => void;
 }
 
 export function registerRecommendedServiceRoutes(router: Router, deps: RecommendedServiceRouteDeps): RecommendedServiceRoutesHandle {
-  const handle: RecommendedServiceRoutesHandle = { requestRecheck: () => {} };
+  const handle: RecommendedServiceRoutesHandle = { requestRecheck: () => {}, recordProblem: () => {} };
   const catalog = deps.catalog ?? RECOMMENDED_SERVICE_CATALOG;
   const tokens = new ConfirmTokenStore({ stateDir: deps.stateDir, now: deps.now });
+  // SEC-135 Observability: per-machine confirm counters, flushed at most once a minute.
+  const confirmStats = new ConfirmStats({ stateDir: deps.stateDir, now: deps.now,
+    onWriteError: (reason) => { featureEvidence.record('security.approvalLinks', { kind: 'error', reason: `confirm-stats write failed: ${reason}` }); } });
+  const approvalLinksOn = (): boolean => deps.approvalLinksEnabled?.() === true;
+  /**
+   * The confirm answer's PIN check. With SEC-135 on, sign-in's public limits decide through the
+   * shared verifier and this route renders the answer; otherwise piece 1c's check, unchanged.
+   * True when the PIN is right; otherwise the response is already sent.
+   */
+  const confirmPinPasses = (req: Request, res: Response): boolean => {
+    const verdict = deps.verifyConfirmPin?.(req) ?? null;
+    if (!verdict) return deps.checkConfirmPin(req, res);
+    if (verdict.ok) {
+      confirmStats.recordAnswer(verdict.path, verdict.aggregateFull);
+      // Graduation evidence (spec, Rollout): an exempt-path answer completed while the public aggregate was full.
+      // Rare by construction (one per owner answer), so it can never flood the log.
+      if (verdict.aggregateFull && verdict.path !== 'public') {
+        featureEvidence.record('security.approvalLinks', { kind: 'fired', reason: `${verdict.path}-answer-while-aggregate-full`, context: { service: String(req.params.id ?? '') } });
+      }
+      return true;
+    }
+    switch (verdict.reason) {
+      case 'insecure-connection': res.status(403).json({ error: 'insecure-connection' }); return false;
+      case 'unavailable': res.status(503).json({ error: 'PIN authentication not available (no dashboardPin configured)' }); return false;
+      case 'missing': res.status(403).json({ error: MANDATE_PIN_DEFAULT_MESSAGE }); return false;
+      case 'wrong-pin': res.status(403).json({ error: 'Incorrect PIN' }); return false;
+      case 'paused':
+        if (verdict.path === 'public') confirmStats.recordPublicRefused();
+        // One fixed wording for every refusing public limit, so it reveals nothing about which one fired.
+        res.status(429).json({ error: 'pin-paused', message: verdict.path === 'public' ? PUBLIC_PAUSED_MESSAGE : OWN_PAUSED_MESSAGE, retryAfterSeconds: verdict.retryAfterSeconds });
+        return false;
+    }
+  };
   const taps = new OfferTapStore({ stateDir: deps.stateDir, now: deps.now });
   // The Cloudflare recipe's own work, kept in the setup state so its switch-off undoes exactly that.
   const cloudflareWork = {
@@ -167,9 +231,9 @@ export function registerRecommendedServiceRoutes(router: Router, deps: Recommend
   /** After this many failed refreshes in a row the check is re-run: its fail restarts setup, which asks the person for what changed. */
   const SYNC_FAILURES_BEFORE_RECHECK = 3;
   const nowIso = (): string => new Date(deps.now?.() ?? Date.now()).toISOString();
-  const report = (primary: string, err: unknown, impact: string): void => {
+  const report = (primary: string, err: unknown, impact: string, feature = 'RecommendedServices.setup', fallback = 'The choice is saved. This step did not happen.'): void => {
     DegradationReporter.getInstance().report({
-      feature: 'RecommendedServices.setup', primary, fallback: 'The choice is saved. This step did not happen.',
+      feature, primary, fallback,
       reason: err instanceof Error ? err.message : String(err), impact,
     });
   };
@@ -626,11 +690,97 @@ export function registerRecommendedServiceRoutes(router: Router, deps: Recommend
     if (!deps.existingAgentsEnabled?.() || owner === null || isMigrationComplete(deps.stateDir, owner)) return;
     try { markMigrationComplete(deps.stateDir, owner, () => new Date(deps.now?.() ?? Date.now())); } catch (err) { report('Admit this owner to the first offer list', err, 'The first list waits for the next tick.'); }
   };
+  // Rollout step 4, reason 1 (spec, Re-offering after a no): deterministic, from the real-problem table only.
+  // Any machine records a problem; only a machine that can reach the person (it holds the lease) reserves and sends.
+  handle.recordProblem = (kind: string, evidenceRef: string): void => {
+    try {
+      if (!deps.reoffersEnabled?.() || !isProblemKind(kind)) return;
+      const ledger = deps.ledger();
+      const owner = deps.owner();
+      if (!ledger || owner === null) return;
+      const nowMs = deps.now?.() ?? Date.now();
+      if (isDuplicateEvent(ledger.reofferRows(owner), kind, nowMs)) return;
+      ledger.recordReofferEvent({ service: PROBLEM_KINDS[kind]!.service, owner, kind, evidenceRef });
+    } catch (err) { // @silent-fallback-ok — reported through report(); a problem signal never breaks its source
+      report(`Record the ${kind} problem`, err, 'This sighting is not counted; the next one is.', 'RecommendedServices.reoffer', 'No re-offer goes out on this path; the choice is unchanged.');
+    }
+  };
+  // `secret-lost` (Real-problem events): a boot check, once per server start, as soon as there is a ledger and an
+  // owner to record against. A no on Bitwarden (or an unanswered offer) is what the floor then requires.
+  let secretCheckDone = false;
+  const checkSecretsOnce = (): void => {
+    if (secretCheckDone || !deps.reoffersEnabled?.() || !deps.unresolvedSecrets) return;
+    if (!deps.ledger() || deps.owner() === null) return;
+    secretCheckDone = true;
+    let missing: readonly string[];
+    try {
+      missing = deps.unresolvedSecrets();
+    } catch (err) { // @silent-fallback-ok — reported through report(); the check simply doesn't count this start
+      report('Check for missing secrets at start', err, 'This start is not checked; the next start is.', 'RecommendedServices.reoffer', 'No re-offer goes out on this path; the choice is unchanged.');
+      return;
+    }
+    if (missing.length) handle.recordProblem('secret-lost', 'boot');
+  };
+  let lastReofferAttemptAt = 0;
+  let reoffering = false;
+  const maybeReoffer = async (ledger: RecommendedServicesLedger, nowMs: number): Promise<void> => {
+    if (reoffering || !deps.reoffersEnabled?.() || !deps.sendOfferList || !reach()) return;
+    const owner = deps.owner();
+    if (owner === null) return;
+    if (nowMs - lastReofferAttemptAt < OFFER_RESEND_AFTER_MS) return;
+    reoffering = true;
+    try {
+      const rows = ledger.reofferRows(owner);
+      const facts: ReofferFacts = {
+        choice: (service) => ledger.effective(service),
+        offer: (service) => ledger.offerState(service, owner, nowMs),
+        offeredAt: (service) => {
+          const ats = ledger.offerRows(owner).filter((r) => r.service === service && r.state === 'offered').map((r) => Date.parse(r.at));
+          return ats.length ? Math.max(...ats) : null;
+        },
+      };
+      const decision = nextReoffer(rows, catalog, facts, nowMs);
+      if (decision.action === 'none') return;
+      lastReofferAttemptAt = nowMs;
+      let pending: ReofferRow;
+      if (decision.action === 'resume') {
+        pending = decision.pending;
+      } else {
+        try {
+          pending = ledger.recordReofferPending(decision.event);
+        } catch (err) { // @silent-fallback-ok — reported through report(), and nothing is sent on this path
+          report('Reserve the re-offer', err, 'Nothing was sent; the next check tries again.', 'RecommendedServices.reoffer', 'No re-offer goes out on this path; the choice is unchanged.');
+          return;
+        }
+      }
+      const row = catalog.find((r) => r.id === pending.service);
+      if (!row) return;
+      const deliveredBefore = rows.filter((r) => r.state === 'offered' && r.kind === pending.kind && r.service === pending.service).length;
+      const text = renderReoffer(pending.kind, row, { linkBase: deps.linkBase?.() ?? null, choice: ledger.effective(row.id).choice, deliveredBefore });
+      let messageId: string | number | null = null;
+      try {
+        messageId = await deps.sendOfferList(text, []);
+      } catch (err) {
+        report(`Re-offer ${row.name}`, err, 'The re-offer stays reserved and is sent again later.', 'RecommendedServices.reoffer', 'No re-offer goes out on this path; the choice is unchanged.');
+        return;
+      }
+      if (messageId === null || messageId === undefined || messageId === '') return;
+      try {
+        ledger.recordReofferDelivered(pending, messageId);
+      } catch (err) {
+        report('Record the delivered re-offer', err, 'The re-offer was sent; the record is missing, so one repeat is possible.', 'RecommendedServices.reoffer', 'No re-offer goes out on this path; the choice is unchanged.');
+      }
+    } finally {
+      reoffering = false;
+    }
+  };
   const reconcileAndOffer = async (): Promise<void> => {
     await reconcile();
     admitExistingOwner();
+    checkSecretsOnce();
     const ledger = deps.ledger();
     if (ledger) await maybeOfferList(ledger, deps.now?.() ?? Date.now());
+    if (ledger) await maybeReoffer(ledger, deps.now?.() ?? Date.now());
   };
   deps.onReady?.(reconcileAndOffer);
   // A sender that saw its credential refused asks for the re-check now (Self-Heal Before Notify), not tomorrow.
@@ -656,7 +806,7 @@ export function registerRecommendedServiceRoutes(router: Router, deps: Recommend
       return { ...text, ...ledger.effective(id), available: isServiceAvailable(row), grantedHere: ledger.activeGrant(id, ledger.machineId()) !== null, ...setupView(state),
         offered: owner !== null && ledger.offerState(id, owner) === 'offered', inUse: !!state?.inUse };
     });
-    res.json({ services, offersLive: offersLive(), migrationComplete: isMigrationComplete(deps.stateDir, owner ?? undefined), firstResult: readDeliveredFirstResult(deps.stateDir), replicating: ledger.isReplicating() });
+    res.json({ services, offersLive: offersLive(), migrationComplete: isMigrationComplete(deps.stateDir, owner ?? undefined), firstResult: readDeliveredFirstResult(deps.stateDir), replicating: ledger.isReplicating(), ...(approvalLinksOn() ? { confirmStats: confirmStats.report() } : {}) });
   });
 
   /** Asks for nothing and grants nothing: it only stops this session being restarted, so it needs no PIN. */
@@ -736,7 +886,13 @@ export function registerRecommendedServiceRoutes(router: Router, deps: Recommend
       res.status(409).json({ error: 'no-owner' });
       return;
     }
-    if (!tokens.mayMint()) {
+    // SEC-135: an owner open has its own allowance and a protected token; everyone else's open is unchanged.
+    const ownerOpen = approvalLinksOn() && deps.ownerOpen?.(req) === true;
+    if (ownerOpen && !tokens.mayMint({ protected: true })) {
+      res.status(429).json({ error: 'too-many-pages', retryAfterSeconds: tokens.mintRefillSeconds({ protected: true }) });
+      return;
+    }
+    if (!ownerOpen && !tokens.mayMint()) {
       if (!mintLimitReported) {
         mintLimitReported = true;
         DegradationReporter.getInstance().report({
@@ -747,15 +903,23 @@ export function registerRecommendedServiceRoutes(router: Router, deps: Recommend
           impact: 'While this lasts, the owner cannot open the page to say yes or no.',
         });
       }
-      res.status(429).json({ error: 'too-many-pages' });
+      res.status(429).json(approvalLinksOn() ? { error: 'too-many-pages', retryAfterSeconds: tokens.mintRefillSeconds() } : { error: 'too-many-pages' });
       return;
     }
     let minted: { token: string; expiresAt: number };
     try {
       // A page opened for a service the owner was offered, and has not answered, answers that offer.
       const origin = ledger.effective(row.id).choice === 'unset' && ledger.offerState(row.id, owner) === 'offered' ? 'first-offer' : 'person-asked';
-      minted = tokens.mint({ service: row.id, owner, targetMachine: ledger.machineId(), offerTextHash: offerTextHash(row), origin, nosAtOpen: ledger.knownNoIds(row.id) });
-    } catch {
+      const binding: import('../recommended/confirmTokens.js').ConfirmBinding = { service: row.id, owner, targetMachine: ledger.machineId(), offerTextHash: offerTextHash(row), origin, nosAtOpen: ledger.knownNoIds(row.id) };
+      minted = approvalLinksOn() ? tokens.mint(binding, { protected: ownerOpen }) : tokens.mint(binding);
+      if (ownerOpen) confirmStats.recordOwnerOpen();
+    } catch (err) {
+      if (err instanceof ConfirmTokensFullError) {
+        // Every live page for this service is an owner page: refuse rather than push one out. Only an
+        // owner open is told why (its page shows the "still active" message); anyone else gets the plain refusal.
+        res.status(429).json(ownerOpen ? { error: 'too-many-pages', allProtected: true } : { error: 'too-many-pages' });
+        return;
+      }
       res.status(503).json({ error: 'recommended-services-unavailable' });
       return;
     }
@@ -823,7 +987,7 @@ export function registerRecommendedServiceRoutes(router: Router, deps: Recommend
         res.status(409).json({ error: 'token-refused' });
         return;
       }
-      if (!deps.checkConfirmPin(req, res)) return;
+      if (!confirmPinPasses(req, res)) return;
       res.setHeader('Cache-Control', 'no-store');
       res.json({ copies: deps.readSecretNames?.() ?? [] });
       return;
@@ -851,7 +1015,7 @@ export function registerRecommendedServiceRoutes(router: Router, deps: Recommend
       res.status(409).json({ error: 'token-refused' });
       return;
     }
-    if (!deps.checkConfirmPin(req, res)) return;
+    if (!confirmPinPasses(req, res)) return;
     const binding = tokens.consume(token, row.id);
     if (!binding) {
       res.status(409).json({ error: 'token-refused' });
