@@ -352,7 +352,13 @@ export class ChromeCdpReloginBrowser implements ReloginBrowserPort {
       if (s && !s.authenticatorId && typeof params.url === 'string' && params.url !== 'about:blank') this.navigationBeforeAttach = true;
     });
 
-    await this.send('Target.setAutoAttach', { autoAttach: true, waitForDebuggerOnStart: true, flatten: true });
+    // This is the FIRST command Chrome receives after spawn, so its answer is the launch
+    // handshake: until Chrome replies, a slow answer is a slow launch, not a slow operation.
+    // It gets launchTimeoutMs. On a loaded CI runner the first cold Chrome start of a test
+    // file took 20-41s and failed here with cdp-timeout:Target.setAutoAttach under the 20s
+    // operation timeout, while every later launch in the same file took 1.5-5s (instar CI,
+    // 13 shard failures 2026-11-19..24, always the file's first test).
+    await this.send('Target.setAutoAttach', { autoAttach: true, waitForDebuggerOnStart: true, flatten: true }, undefined, this.launchTimeoutMs);
     await Promise.race([
       promise,
       new Promise<never>((_, reject) => setTimeout(() => reject(new Error('chrome-launch-timeout')), this.launchTimeoutMs)),
@@ -1155,12 +1161,12 @@ export class ChromeCdpReloginBrowser implements ReloginBrowserPort {
     this.eventHandlers.set(method, list);
   }
 
-  private send(method: string, params: Record<string, unknown> = {}, sessionId?: string): Promise<Record<string, unknown>> {
+  private send(method: string, params: Record<string, unknown> = {}, sessionId?: string, timeoutMs: number = this.operationTimeoutMs): Promise<Record<string, unknown>> {
     const transport = this.transport;
     if (!transport || !transport.open) return Promise.reject(new Error('cdp-not-connected'));
     const id = ++this.requestId;
     return new Promise((resolve, reject) => {
-      const timer = setTimeout(() => { this.pending.delete(id); reject(new Error(`cdp-timeout:${method}`)); }, this.operationTimeoutMs);
+      const timer = setTimeout(() => { this.pending.delete(id); reject(new Error(`cdp-timeout:${method}`)); }, timeoutMs);
       this.pending.set(id, { resolve, reject, timer });
       try {
         transport.send(JSON.stringify(sessionId ? { id, method, params, sessionId } : { id, method, params }));

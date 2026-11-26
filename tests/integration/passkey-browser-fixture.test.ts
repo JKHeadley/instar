@@ -40,7 +40,17 @@ describe.skipIf(!HAS_CHROME)('ChromeCdpReloginBrowser — passkey mode against t
     return creds[0];
   };
 
-  beforeAll(async () => { fixture = await startPasskeyFixture(); });
+  beforeAll(async () => {
+    fixture = await startPasskeyFixture();
+    // Warm-up: the first Chrome start in a CI worker is cold (binary, profile and font caches
+    // unpaged) and, under a full shard, took 20-41s, so whichever test ran first timed out at
+    // Target.setAutoAttach while every later launch took 1.5-5s. Pay that cost here, once,
+    // so no case's verdict depends on running first. A failed warm-up is not a test result:
+    // the cases below launch their own browsers and fail on their own if Chrome is broken.
+    const warm = new ChromeCdpReloginBrowser({ userDataDir: profile(), passkeyMode: true, originPolicy: fixture.policy, ...LAUNCH });
+    try { await warm.open('about:blank'); } catch { /* @silent-fallback-ok — warm-up only; real failures surface in the cases */ }
+    await warm.close().catch(() => {});
+  }, 90_000);
   afterAll(async () => { await fixture.close(); });
   afterEach(async () => {
     for (const b of browsers.splice(0)) await b.close().catch(() => {});
