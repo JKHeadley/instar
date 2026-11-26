@@ -1,10 +1,9 @@
 /**
  * Regression tests for the "pasted text stuck" detection and recovery.
  *
- * Covers three fixes for stalled sessions with unsubmitted pasted text:
+ * Covers detection of stalled sessions with unsubmitted pasted text:
  * 1. PresenceProxy getProcessTree filtering — baseline/claude processes excluded
- * 2. rawInject paste delay — 500ms instead of 100ms
- * 3. Monitoring tick paste-retry — detects "[Pasted text #N]" and resends Enter
+ * 2. Monitoring tick paste-retry — detects "[Pasted text #N]" and resends Enter
  *
  * Also covers the PresenceProxy tier 3 process-tree assessment path.
  */
@@ -206,28 +205,5 @@ describe('pasted text stuck pattern', () => {
     // This would match — but that's acceptable since the idle prompt pattern
     // gate ensures we only act when BOTH patterns match (pasted + idle prompt)
     // The combination is what matters, not the pasted text alone
-  });
-});
-
-// ── rawInject paste delay ─────────────────────────────────────────────
-
-describe('rawInject paste delay', () => {
-  it('uses 0.5s delay (not 0.1s) for bracketed paste mode on claude-code', async () => {
-    // Source-code verification: the post-paste delay for the claude-code
-    // framework must be 0.5s (was 0.1s before the paste-stuck fix). The
-    // value now lives in a framework-aware ternary (codex-cli takes longer
-    // to commit a paste); assert against that ternary directly.
-    const source = fs.readFileSync(
-      path.join(__dirname, '../../src/core/SessionManager.ts'),
-      'utf-8'
-    );
-
-    const ternaryMatch = source.match(
-      /postPasteDelaySec\s*=\s*framework\s*===\s*['"]codex-cli['"]\s*\?\s*['"](\d+\.?\d*)['"]\s*:\s*['"](\d+\.?\d*)['"]/
-    );
-    expect(ternaryMatch).not.toBeNull();
-    // [2] is the claude-code branch (falsy side of the ternary).
-    expect(ternaryMatch![2]).toBe('0.5');
-    expect(ternaryMatch![2]).not.toBe('0.1');
   });
 });

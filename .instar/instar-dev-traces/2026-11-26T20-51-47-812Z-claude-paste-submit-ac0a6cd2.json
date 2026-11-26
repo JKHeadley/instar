@@ -1,0 +1,18 @@
+{
+  "version": 2,
+  "slug": "claude-paste-submit",
+  "sessionId": "d7f96c30-4845-47ec-b4de-501dc0c26e94",
+  "timestamp": "2026-11-26T20:51:47.812Z",
+  "artifactPath": "upgrades/side-effects/claude-paste-submit.md",
+  "artifactSha256": "e411361e0ffdcfcd9d53ad4f18c1fb2ba99222ae57a6895e6daf1593b3af94eb",
+  "coveredFiles": [
+    "src/core/SessionManager.ts"
+  ],
+  "phase": "complete",
+  "tier": 1,
+  "tierReasoning": "Use established framework constants with identical runtime values; no behavior change in this follow-up.",
+  "eli16Path": "docs/specs/claude-paste-submit.eli16.md",
+  "sideEffectsPath": "upgrades/side-effects/claude-paste-submit.md",
+  "secondPass": "not-required",
+  "reviewerConcurred": null
+}
