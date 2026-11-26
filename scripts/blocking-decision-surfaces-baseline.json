@@ -156,8 +156,8 @@
     },
     {
       "path": "src/templates/scripts/browser/ndrive.sh",
-      "sha256": "d14c4fb79764308e26413b439214ffd9334df5823bfb6f4bbc8da74543266265",
-      "reason": "normal-chrome-cross-platform: the WSL wrapper for native-drive.ps1 (the Instar entry point on Windows); it refuses only its own bad arguments (no powershell.exe, the operator's Chrome profile folder, a non-local or malformed profile path, a non-URL in a url slot, a non-chrome.exe executable, an unattended-machine override with no operator record) or an unsafe moment (canfocus before invoke), and gates no message, session or other agent action"
+      "sha256": "da5e4d3fee609dff1418956d00cb65684eff713fa8fc901fbca9486b38244fc8",
+      "reason": "normal-chrome-cross-platform: the WSL wrapper for native-drive.ps1 (the Instar entry point on Windows); it refuses only its own bad arguments (no powershell.exe, the operator's Chrome profile folder, a non-local or malformed profile path, a non-URL in a url slot, a non-chrome.exe executable, an unattended-machine override with no operator record, secret input outside the transport bounds) or an unsafe moment (canfocus before invoke), and gates no message, session or other agent action"
     },
     {
       "path": "src/templates/scripts/emit-session-clock.sh",

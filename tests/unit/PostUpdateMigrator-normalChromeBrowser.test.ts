@@ -42,7 +42,7 @@ const HEADING = NORMAL_CHROME_BROWSER_CLAUDEMD_HEADING;
 const HEADING_V1 = NORMAL_CHROME_BROWSER_CLAUDEMD_HEADING_V1;
 const V1_FIXTURE = path.resolve(process.cwd(), 'tests/fixtures/skills/normal-chrome-browser-v1.md');
 
-function call(m: PostUpdateMigrator, method: 'migrateClaudeMd' | 'migrateScripts' | 'migrateNormalChromeBrowserSkill' | 'migrateNormalChromeWindowsBlankPageNote' | 'migrateAccountActionSafetySkill' | 'migrateFrameworkShadowCapabilities'): MigrationResult {
+function call(m: PostUpdateMigrator, method: 'migrateClaudeMd' | 'migrateScripts' | 'migrateNormalChromeBrowserSkill' | 'migrateNormalChromeWindowsBlankPageNote' | 'migrateWindowsBrowserSecretPipeSkills' | 'migrateAccountActionSafetySkill' | 'migrateFrameworkShadowCapabilities'): MigrationResult {
   const result: MigrationResult = { upgraded: [], skipped: [], errors: [] };
   (m as unknown as Record<string, (r: MigrationResult) => void>)[method](result);
   return result;
@@ -304,10 +304,12 @@ describe('PostUpdateMigrator — normal-Chrome browser', () => {
       fs.mkdirSync(path.dirname(skillPath()), { recursive: true });
       fs.writeFileSync(skillPath(), previous());
       expect(call(m, 'migrateNormalChromeWindowsBlankPageNote').upgraded).toEqual([NOTE_LABEL]);
+      call(m, 'migrateWindowsBrowserSecretPipeSkills');
       expect(fs.readFileSync(skillPath(), 'utf-8')).toBe(NORMAL_CHROME_BROWSER_SKILL_CONTENT);
       expect(call(m, 'migrateNormalChromeWindowsBlankPageNote').upgraded).toEqual([]);
       fs.writeFileSync(skillPath(), previous().replace(/\n/g, '\r\n'));
       expect(call(m, 'migrateNormalChromeWindowsBlankPageNote').upgraded).toEqual([NOTE_LABEL]);
+      call(m, 'migrateWindowsBrowserSecretPipeSkills');
       expect(fs.readFileSync(skillPath(), 'utf-8')).toBe(NORMAL_CHROME_BROWSER_SKILL_CONTENT.replace(/\n/g, '\r\n'));
     });
 
@@ -315,11 +317,30 @@ describe('PostUpdateMigrator — normal-Chrome browser', () => {
       fs.mkdirSync(path.dirname(skillPath()), { recursive: true });
       fs.writeFileSync(skillPath(), previous() + '\n## My notes\n\nkeep me\n');
       expect(call(m, 'migrateNormalChromeWindowsBlankPageNote').upgraded).toEqual([NOTE_LABEL]);
+      call(m, 'migrateWindowsBrowserSecretPipeSkills');
       const after = fs.readFileSync(skillPath(), 'utf-8');
       expect(after).toBe(NORMAL_CHROME_BROWSER_SKILL_CONTENT + '\n## My notes\n\nkeep me\n');
       expect(after.indexOf(NORMAL_CHROME_BROWSER_WINDOWS_BLANK_PAGE_HEADING)).toBeLessThan(after.indexOf(NORMAL_CHROME_BROWSER_SKILL_MARKER));
       expect(count(after, NORMAL_CHROME_BROWSER_PAGE_NOT_RENDERING_ROW)).toBe(1);
       expect(count(after, NORMAL_CHROME_BROWSER_LAUNCH_ROW_FLAG_SENTENCE)).toBe(1);
+    });
+
+    it('replaces the old OAuth file instructions in every installed skill rendering once', () => {
+      const old = 'Keep it off every command line: save it to a private file with your file tool, run `ndrive.sh ctrl l`, then `ndrive.sh typesecret < <file>`, and delete the file.';
+      const skills = ['.instar', '.agents', '.claude'].map(root =>
+        path.join(projectDir, root, 'skills', 'subscription-signin', 'SKILL.md'));
+      for (const file of skills) {
+        fs.mkdirSync(path.dirname(file), { recursive: true });
+        fs.writeFileSync(file, '---\r\nname: subscription-signin\r\n---\r\n' + old + '\r\nMy notes.\r\n');
+      }
+      expect(call(m, 'migrateWindowsBrowserSecretPipeSkills').upgraded).toHaveLength(3);
+      for (const file of skills) {
+        const migrated = fs.readFileSync(file, 'utf8');
+        expect(migrated).toContain('feed it directly into `ndrive.sh typesecret` over stdin');
+        expect(migrated).not.toContain('save it to a private file');
+        expect(migrated).toContain('\r\nMy notes.\r\n');
+      }
+      expect(call(m, 'migrateWindowsBrowserSecretPipeSkills').upgraded).toEqual([]);
     });
 
     it('appends the note when an edited copy no longer has the Linux heading, and skips edits whose anchors are gone', () => {

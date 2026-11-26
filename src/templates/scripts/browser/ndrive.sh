@@ -173,10 +173,12 @@ set -- "$CMDNAME" "${@:2}"
 # The two secret-reading commands take exactly ONE non-empty line on stdin, read here once for both
 # routes: an empty line or nothing at all is refused before anything is sent (the driver would clear the
 # field and type ""), and the value is never echoed. The direct route feeds the line to the driver's
-# stdin; the bridge carries it in the per-call stdin file.
+# stdin; the bridge carries it through a per-call pipe.
+unset SECRET_LINE
 SECRET_LINE=""
 case "$CMDNAME" in
   typesecret|typesecretedit)
+    set +x # A caller may have enabled shell tracing. Never trace a secret.
     IFS= read -r SECRET_LINE || true
     SECRET_LINE="${SECRET_LINE%$'\r'}"
     # Measured on the Mama PC (2026-10-21): a non-ASCII secret reaches the driver as its UTF-8 bytes and is
@@ -184,6 +186,7 @@ case "$CMDNAME" in
     if printf '%s' "$SECRET_LINE" | LC_ALL=C grep -q '[^ -~]'; then
       refuse 64 "ERR bad-argument: the secret line carries a character outside printable ASCII; through this wrapper it would be typed as its UTF-8 bytes (measured), so it is refused rather than typed wrong. Nothing was typed."
     fi
+    [ "${#SECRET_LINE}" -le 8192 ] || refuse 64 "ERR bad-argument: secret input exceeds the bridge limit"
     [ -n "$SECRET_LINE" ] || refuse 64 "ERR bad-argument: $CMDNAME needs one non-empty line on stdin (pipe the secret with printf '%s\\n'); nothing was typed" ;;
 esac
 TIMEOUT="${ND_BRIDGE_TIMEOUT:-120}"
@@ -362,7 +365,7 @@ done
 BRIDGE_WDIR_U=""
 cleanup() {
   if [ -n "$BRIDGE_WDIR_U" ] && [ -d "$BRIDGE_WDIR_U" ]; then
-    [ -f "$BRIDGE_WDIR_U/stdin.txt" ] && : > "$BRIDGE_WDIR_U/stdin.txt"
+    [ -f "$BRIDGE_WDIR_U/stdin.txt" ] && rm -f -- "$BRIDGE_WDIR_U/stdin.txt"
     # Removed only when the call is known finished (rc.txt) or the driver was never launched (no pid and
     # no launch marker); anything else may still have a driver behind it.
     if [ -f "$BRIDGE_WDIR_U/rc.txt" ] || { [ ! -f "$BRIDGE_WDIR_U/pid.txt" ] && [ ! -f "$BRIDGE_WDIR_U/launching.txt" ]; }; then
@@ -466,7 +469,7 @@ sweep_stale() {
       fi
       age=$(( now - $(stat -c %Y "$d" 2>/dev/null || stat -f %m "$d" 2>/dev/null || echo "$now") ))
       if [ "$age" -gt 1200 ]; then
-        [ -f "$d/stdin.txt" ] && : > "$d/stdin.txt"
+        [ -f "$d/stdin.txt" ] && rm -f -- "$d/stdin.txt"
         rm -rf -- "$d" 2>/dev/null && SWEPT=$((SWEPT + 1))
       fi
     done
@@ -538,7 +541,7 @@ guard_orphans() {
 guard_orphans
 
 # drive <args...>: run one driver command, direct or through the bridge; the driver's stdout and stderr
-# go to this wrapper's stdout and stderr; stdin is passed through (direct) or carried in the stdin file
+# go to this wrapper's stdout and stderr; stdin is passed through (direct) or forwarded through a named pipe
 # (bridge) for the two secret-reading commands only. Returns the driver's exit code.
 # The direct route runs the driver under coreutils `timeout` (present in WSL) for the same bound as the
 # bridge, so a hung driver cannot hold the per-agent lock forever; where `timeout` is missing the wait is
@@ -609,12 +612,41 @@ drive() {
       WRAPPER_REFUSED=1; return 1
     fi
   fi
-  # stdin: a file is always present (the runner redirects from it); it carries exactly one line for the
-  # two secret-reading commands (the driver reads one line; a final line with no newline is kept) and is
-  # empty otherwise.
+  # Secret input crosses the Windows session boundary in a per-call named pipe.
+  # Only the opaque pipe name appears in the runner or controller command.
+  local secret_pipe="" pipe_setup="" pipe_send="" pipe_cleanup="" controller
   case "${1:-}" in
-    typesecret|typesecretedit) printf '%s\r\n' "$SECRET_LINE" > "$wdir_u/stdin.txt" ;; # read and checked non-empty at the top
-    *) : > "$wdir_u/stdin.txt" ;;
+    typesecret|typesecretedit)
+      secret_pipe="$(cat /proc/sys/kernel/random/uuid 2>/dev/null)"
+      case "$secret_pipe" in
+        ''|*[!a-f0-9-]*) refuse 1 "ERR bridge-unavailable: cannot create a private input pipe name" ;;
+      esac
+      secret_pipe="instar-ndrive-input-$secret_pipe"
+      pipe_setup=$(cat <<'PS'
+$secretLine = [Console]::In.ReadLine()
+if ([string]::IsNullOrEmpty($secretLine) -or $secretLine.Length -gt 8192) { throw 'Invalid secret input' }
+$security = [IO.Pipes.PipeSecurity]::new()
+$security.SetAccessRuleProtection($true, $false)
+$sid = [Security.Principal.WindowsIdentity]::GetCurrent().User
+$security.AddAccessRule([IO.Pipes.PipeAccessRule]::new($sid, 'FullControl', 'Allow'))
+$secretPipe = [IO.Pipes.NamedPipeServerStream]::new($pipeName, 'Out', 1, 'Byte', 'Asynchronous', 0, 16384, $security)
+PS
+)
+      pipe_send=$(cat <<'PS'
+  $connection = $secretPipe.BeginWaitForConnection($null, $null)
+  try {
+    if (-not $connection.AsyncWaitHandle.WaitOne([TimeSpan]::FromMilliseconds([Math]::Max(0, [Math]::Min(20000, ($deadline - (Get-Date)).TotalMilliseconds))))) { throw 'Secret input pipe connection timed out' }
+    $secretPipe.EndWaitForConnection($connection)
+    $writer = [IO.StreamWriter]::new($secretPipe, [Text.UTF8Encoding]::new($false))
+    try { $writer.WriteLine($secretLine); $writer.Flush() } finally { $writer.Dispose() }
+  } finally {
+    $connection.AsyncWaitHandle.Dispose()
+    $secretLine = $null
+  }
+PS
+)
+      pipe_cleanup='if ($secretPipe) { $secretPipe.Dispose() }; $secretLine = $null'
+      ;;
   esac
   # The driver's argument list for Start-Process (PS 5.1 does not quote: each value is wrapped in double
   # quotes by the MSVCRT rules: a backslash run before a quote is doubled and the quote escaped; a
@@ -628,23 +660,54 @@ drive() {
     [ -n "$val" ] && envlines="$envlines\$env:$v = $(psq "$val")
 "
   done
-  # The runner records the driver's pid first (so a timeout can end THAT process, never Chrome), then
-  # waits for it and records its exit code.
+  # Record the driver PID and start time for the existing timeout/orphan guard.
+  # The secret branch feeds its child via an anonymous stdin pipe. Its output is
+  # drained in memory so a driver error cannot persist input in the bridge spool.
   cat > "$wdir_u/runner.ps1" <<EOF
 \$ErrorActionPreference = 'Stop'
 $envlines
+\$secretPipeName = $(psq "$secret_pipe")
+\$driverArgs = @($arglist)
+\$secretLine = \$null
+if (\$secretPipeName) {
+  \$client = [IO.Pipes.NamedPipeClientStream]::new('.', \$secretPipeName, 'In')
+  try {
+    \$client.Connect(15000)
+    \$reader = [IO.StreamReader]::new(\$client)
+    try { \$secretLine = \$reader.ReadLine() } finally { \$reader.Dispose() }
+  } finally { \$client.Dispose() }
+  if ([string]::IsNullOrEmpty(\$secretLine) -or \$secretLine.Length -gt 8192) { throw 'Invalid secret input' }
+}
 Set-Content -LiteralPath $(psq "$wdir_w\\launching.txt") -Value 1 -Encoding ASCII
-\$p = Start-Process -FilePath 'powershell.exe' -ArgumentList @($arglist) -WindowStyle Hidden -PassThru -RedirectStandardInput $(psq "$wdir_w\\stdin.txt") -RedirectStandardOutput $(psq "$wdir_w\\out.txt") -RedirectStandardError $(psq "$wdir_w\\err.txt")
-\$null = \$p.Handle
-# A pid record that fails (disk full, a DrvFs hiccup) would leave a running driver the poll reports as
-# "never started": end it right here instead, so that report is true by construction.
+if (\$secretPipeName) {
+  \$start = [Diagnostics.ProcessStartInfo]::new('powershell.exe', (\$driverArgs -join ' '))
+  \$start.UseShellExecute = \$false
+  \$start.CreateNoWindow = \$true
+  \$start.RedirectStandardInput = \$true
+  \$start.RedirectStandardOutput = \$true
+  \$start.RedirectStandardError = \$true
+  \$p = [Diagnostics.Process]::Start(\$start)
+} else {
+  \$p = Start-Process -FilePath 'powershell.exe' -ArgumentList \$driverArgs -WindowStyle Hidden -PassThru -RedirectStandardOutput $(psq "$wdir_w\\out.txt") -RedirectStandardError $(psq "$wdir_w\\err.txt")
+}
 trap { try { Stop-Process -Id \$p.Id -Force -ErrorAction SilentlyContinue } catch {}; throw }
-# ^ PowerShell 5.1: a -PassThru process object without a cached handle reads ExitCode as null once the
-# process has exited (the second live run measured rc.txt at 0 bytes on every bridged call); touching
-# Handle keeps it open so ExitCode survives WaitForExit.
+\$null = \$p.Handle
 Set-Content -LiteralPath $(psq "$wdir_w\\pid.txt") -Value \$p.Id -Encoding ASCII
 try { Set-Content -LiteralPath $(psq "$wdir_w\\pidstart.txt") -Value ([string]\$p.StartTime.ToFileTimeUtc()) -Encoding ASCII } catch {}
+if (\$secretPipeName) {
+  \$childOut = \$p.StandardOutput.ReadToEndAsync()
+  \$childErr = \$p.StandardError.ReadToEndAsync()
+  try { \$p.StandardInput.WriteLine(\$secretLine) } finally {
+    \$secretLine = \$null
+    \$p.StandardInput.Dispose()
+  }
+}
 \$p.WaitForExit()
+if (\$secretPipeName) {
+  \$null = \$childOut.GetAwaiter().GetResult()
+  \$null = \$childErr.GetAwaiter().GetResult()
+  if (\$p.ExitCode -eq 0) { Set-Content -LiteralPath $(psq "$wdir_w\\out.txt") -Value 'typed secret' -Encoding ASCII }
+}
 Set-Content -LiteralPath $(psq "$wdir_w\\rc.txt") -Value \$p.ExitCode -Encoding ASCII
 EOF
   cat > "$wdir_u/run.vbs" <<EOF
@@ -652,17 +715,20 @@ Set sh = CreateObject("WScript.Shell")
 sh.Run "powershell.exe -NoProfile -ExecutionPolicy Bypass -File ""$wdir_w\\runner.ps1""", 0, True
 EOF
   task="instar-ndrive-$AGENT_TAG-$run_id"
-  "$PS" -NoProfile -NonInteractive -ExecutionPolicy Bypass -Command "
+  controller="
 \$ErrorActionPreference = 'Stop'
 \$me = [System.Security.Principal.WindowsIdentity]::GetCurrent().Name
+\$pipeName = $(psq "$secret_pipe")
+$pipe_setup
 \$pr = New-ScheduledTaskPrincipal -UserId \$me -LogonType Interactive -RunLevel Limited
 \$act = New-ScheduledTaskAction -Execute 'wscript.exe' -Argument $(psq "//B //Nologo \"$wdir_w\\run.vbs\"")
 \$set = New-ScheduledTaskSettingsSet -AllowStartIfOnBatteries -DontStopIfGoingOnBatteries -MultipleInstances IgnoreNew -ExecutionTimeLimit (New-TimeSpan -Seconds $((TIMEOUT + 60)))
 Register-ScheduledTask -TaskName $(psq "$task") -Action \$act -Principal \$pr -Settings \$set -Force | Out-Null
 try {
   Start-ScheduledTask -TaskName $(psq "$task")
-  \$deadline = (Get-Date).AddSeconds($TIMEOUT)
   \$started = Get-Date
+  \$deadline = \$started.AddSeconds($TIMEOUT)
+$pipe_send
   while (-not (Test-Path -LiteralPath $(psq "$wdir_w\\rc.txt")) -and (Get-Date) -lt \$deadline) {
     Start-Sleep -Milliseconds 250
     # A task that has already ENDED without the runner recording a pid never started the driver: stop
@@ -674,6 +740,7 @@ try {
     }
   }
 } finally {
+$pipe_cleanup
   if (-not (Test-Path -LiteralPath $(psq "$wdir_w\\rc.txt"))) {
     if (Test-Path -LiteralPath $(psq "$wdir_w\\pid.txt")) {
       try {
@@ -700,12 +767,17 @@ try {
   }
   Unregister-ScheduledTask -TaskName $(psq "$task") -Confirm:\$false
 }
-" </dev/null >"$wdir_u/bridge.out" 2>"$wdir_u/bridge.err"
+"
+  if [ -n "$secret_pipe" ]; then
+    printf '%s\n' "$SECRET_LINE" | "$PS" -NoProfile -NonInteractive -ExecutionPolicy Bypass -Command "$controller" >"$wdir_u/bridge.out" 2>"$wdir_u/bridge.err"
+  else
+    "$PS" -NoProfile -NonInteractive -ExecutionPolicy Bypass -Command "$controller" </dev/null >"$wdir_u/bridge.out" 2>"$wdir_u/bridge.err"
+  fi
   brc=$?
   if [ ! -f "$wdir_u/rc.txt" ]; then
     local elapsed=$(( $(date +%s) - ${run_id%%-*} ))
     first="$(tr -d '\r' 2>/dev/null < "$wdir_u/bridge.err" | grep -v '^\s*$' | head -1)"
-    if [ "$brc" -ne 0 ] && [ ! -f "$wdir_u/pid.txt" ]; then
+    if [ "$brc" -ne 0 ] && [ ! -f "$wdir_u/pid.txt" ] && [ ! -f "$wdir_u/launching.txt" ]; then
       echo "ERR bridge-unavailable: the interactive-session task could not be registered or started (exit $brc after ${elapsed}s)${first:+: $first}" >&2
       return 1   # nothing was sent: no latch
     elif grep -q runner-ended-no-driver "$wdir_u/bridge.out" 2>/dev/null && [ ! -f "$wdir_u/launching.txt" ]; then
@@ -770,7 +842,7 @@ drive_once() {
     UNKNOWN_OUTCOME=0; SURVIVOR_WRITE_FAILED=0
   fi
   if [ -n "$BRIDGE_WDIR_U" ] && [ -d "$BRIDGE_WDIR_U" ]; then
-    [ -f "$BRIDGE_WDIR_U/stdin.txt" ] && : > "$BRIDGE_WDIR_U/stdin.txt"
+    [ -f "$BRIDGE_WDIR_U/stdin.txt" ] && rm -f -- "$BRIDGE_WDIR_U/stdin.txt"
     [ "$keep" = 1 ] || rm -rf -- "$BRIDGE_WDIR_U" 2>/dev/null
   fi
   BRIDGE_WDIR_U=""
