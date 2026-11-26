@@ -9,7 +9,7 @@
  * legacy timestamp / message-id fallbacks.
  */
 
-// canonical-migration-validator: threadline-inbound-canonical-store@4
+// canonical-migration-validator: threadline-inbound-canonical-store@5
 import { describe, it, expect, beforeEach, afterEach, vi } from 'vitest';
 import fs from 'node:fs';
 import os from 'node:os';

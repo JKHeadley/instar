@@ -200,7 +200,7 @@ describe('the Needs-you strip', () => {
     expect(m.rows.map((r) => r.title)).toEqual(['a', 'b', 'c']);
     expect(m.more).toBe(2);
     expect(m.state).toBe('bad');
-    expect(m.title).toBe('Needs you · 5');
+    expect(m.title).toBe('Needs you');
     expect(m.badge).toBe('5');
   });
 });

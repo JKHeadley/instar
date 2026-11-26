@@ -1,0 +1,28 @@
+{
+  "version": 2,
+  "slug": "sec147-machine-auth-binding-stage1",
+  "sessionId": "4f93898c-7d72-4a33-b581-3e0933a84bf4",
+  "timestamp": "2026-11-21T15:35:17.112Z",
+  "artifactPath": "upgrades/side-effects/sec147-machine-auth-binding-stage1.md",
+  "artifactSha256": "56c48a32417bac1d8ec02f20681fd0600fbff58a9c9ccd69533966d954a4ff05",
+  "specPath": "docs/specs/sec147-machine-auth-binding.md",
+  "coveredFiles": [
+    "docs/specs/reports/sec147-machine-auth-binding-convergence.md",
+    "docs/specs/sec147-machine-auth-binding.eli16.md",
+    "docs/specs/sec147-machine-auth-binding.md",
+    "src/core/NonceStore.ts",
+    "src/server/AgentServer.ts",
+    "src/server/WebSocketManager.ts",
+    "src/server/machineAuth.ts",
+    "tests/e2e/multi-machine-http.test.ts",
+    "tests/unit/WebSocketManager.test.ts",
+    "tests/unit/machine-auth-binding.test.ts",
+    "upgrades/next/sec147-machine-auth-binding-stage1.md",
+    "upgrades/side-effects/sec147-machine-auth-binding-stage1.md"
+  ],
+  "phase": "complete",
+  "tier": 2,
+  "tierReasoning": "Adds an optional check to machine-to-machine authentication; refuses only requests carrying the new header that fails to verify, which no sender sends yet.",
+  "secondPass": "true",
+  "reviewerConcurred": true
+}

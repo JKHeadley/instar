@@ -1,3 +1,4 @@
+import type { RoutineCodexPlacementContext } from './routineCodexPlacement.js';
 import { neutralizeTerminalControls, sanitizeTypedText } from './terminalControlBytes.js';
 import { assertBrowserMcpProfilesSafe } from './BrowserMcpProfileGuard.js';
 /**
@@ -134,7 +135,7 @@ import {
 import { StateManager } from './StateManager.js';
 import { buildInjectionTag } from '../types/pipeline.js';
 import { sanitizeSenderName, sanitizeTopicName } from '../utils/sanitize.js';
-import { getTelegramInboundDir } from '../messaging/shared/telegramInboundFiles.js';
+import { getTelegramInboundDir, writePrivateInboundFile, ensurePrivateDir } from '../messaging/shared/telegramInboundFiles.js';
 import { SessionBuildContextStore } from './SessionBuildContextStore.js';
 import { PendingInjectStore, sweepPendingInjects } from './PendingInjectStore.js';
 import { SafeFsExecutor } from './SafeFsExecutor.js';
@@ -1256,7 +1257,7 @@ export class SessionManager extends EventEmitter {
    * account with room to launch under, a refusal when every pool Codex account
    * is at its wall, or null for the default login as before. Unset → today.
    */
-  private codexSpawnAccountResolver?: () => { configHome: string; accountId: string } | { refused: string } | null;
+  private codexSpawnAccountResolver?: (context?: RoutineCodexPlacementContext) => { configHome: string; accountId: string; validUntil?: number } | { refused: string } | null;
   /** Every Codex account home the pool knows. A Codex conversation relaunched under one
    *  account's home is looked for in these (and the default home) first. Unset → default home only. */
   private codexAccountHomesResolver?: () => string[];
@@ -1534,9 +1535,37 @@ export class SessionManager extends EventEmitter {
     this.ownerEpochForConversation = opts.ownerEpochForConversation ?? (() => 0);
     this.codexRolloutPathForSession = opts.codexRolloutPathForSession ?? ((session) => {
       if (!session.claudeSessionId) return null;
+      // The live incarnation may use a pooled account home. Looking only in
+      // ~/.codex makes a real rollout appear missing and refuses owner input
+      // before the durable FIFO can accept it. Never search another account
+      // after an explicit pin or an uncertain environment read.
+      let codexHome = path.join(os.homedir(), '.codex');
+      try {
+        const output = withSyncOp(() => execFileSync(
+          this.config.tmuxPath,
+          ['show-environment', '-t', `=${session.tmuxSession}`, 'CODEX_HOME'],
+          { encoding: 'utf-8', timeout: 2000, stdio: ['ignore', 'pipe', 'pipe'] },
+        )).replace(/\n$/, '');
+        if (output !== '-CODEX_HOME') {
+          if (!output.startsWith('CODEX_HOME=')) return null;
+          const value = output.slice('CODEX_HOME='.length);
+          // An empty or explicitly removed variable uses Codex's normal home.
+          if (value) {
+            if (!path.isAbsolute(value) || /[\r\n\0]/.test(value)) return null;
+            codexHome = value;
+          }
+        }
+      } catch (error) {
+        // @silent-fallback-ok: only tmux's named missing-key outcome permits
+        // the documented default. A dead pane, timeout or other query error
+        // supplies no authority to use a different account's transcript.
+        const e = error as { status?: number; stderr?: unknown };
+        if (e.status !== 1 || !/unknown variable: CODEX_HOME\s*$/.test(String(e.stderr ?? ''))) return null;
+      }
       return resolveFrameworkTranscriptPath({
         framework: 'codex-cli', sessionId: session.claudeSessionId,
         projectDir: session.cwd ?? this.config.projectDir,
+        rootOverride: path.join(codexHome, 'sessions'),
       });
     });
     this.stageCRecoveryEnabled = opts.stageCRecoveryEnabled === true;
@@ -2298,7 +2327,7 @@ rm()  { "${shimRunner}" rm  "$@"; }
     return this.spawnAccountResolver(ctx);
   }
 
-  setCodexSpawnAccountResolver(resolver: () => { configHome: string; accountId: string } | { refused: string } | null): void {
+  setCodexSpawnAccountResolver(resolver: (context?: RoutineCodexPlacementContext) => { configHome: string; accountId: string; validUntil?: number } | { refused: string } | null): void {
     this.codexSpawnAccountResolver = resolver;
   }
 
@@ -2312,8 +2341,8 @@ rm()  { "${shimRunner}" rm  "$@"; }
    * login. Throws a `codex-accounts-walled` refusal — before any tmux session
    * exists — when every pool Codex account is at its wall.
    */
-  private codexHeadlessPlacement(): { configHome: string; accountId: string } | null {
-    const decision = this.codexSpawnAccountResolver?.() ?? null;
+  private codexHeadlessPlacement(context?: RoutineCodexPlacementContext): { configHome: string; accountId: string; validUntil?: number } | null {
+    const decision = this.codexSpawnAccountResolver?.(context) ?? null;
     if (decision && 'refused' in decision) {
       const err = new Error(decision.refused) as Error & { code?: string };
       err.code = 'codex-accounts-walled';
@@ -2335,7 +2364,7 @@ rm()  { "${shimRunner}" rm  "$@"; }
    * account's current slot when re-pointing is enabled AND the ledger knows it; otherwise the
    * enrollment `configHome` unchanged (today's behavior). Sync + fail-open (the gate never throws).
    */
-  private resolvePinnedSpawnHome(pinned: { configHome: string; accountId: string }): string {
+  resolvePinnedSpawnHome(pinned: { configHome: string; accountId: string }): string {
     if (!this.credentialLocationGate) return pinned.configHome;
     return this.credentialLocationGate.slotForAccount(pinned.accountId, pinned.configHome);
   }
@@ -5119,6 +5148,10 @@ rm()  { "${shimRunner}" rm  "$@"; }
     // claude-code session under a chosen pool account's config home and tag it,
     // so auto-swap can move it when that account walls. No-op unless the resolver
     // is wired (pinSessionsToPool enabled) and returns an account.
+    const codexPlacementContext = {
+      model: resolveModelForFramework(headlessFramework, launchModel ?? 'balanced'),
+      routine: !options.jobSlug && !options.sessionId && !options.resumeSessionId && !options.codexAllowMcpTools,
+    };
     const pinnedAccount = options.accountPin
       ? options.accountPin
       : headlessFramework === 'claude-code'
@@ -5127,14 +5160,18 @@ rm()  { "${shimRunner}" rm  "$@"; }
             modelSource: options.model ? 'explicit' : requestedModel ? 'config-default' : 'unknown',
             sessionName: tmuxSession,
           }) ?? null)
-        : headlessFramework === 'codex-cli'
-          ? this.codexHeadlessPlacement()
+        : headlessFramework === 'codex-cli' && !options.codexLocalProvider
+          ? this.codexHeadlessPlacement(codexPlacementContext)
           : null;
     if (pinnedAccount) {
       // Census #6: pin to the account's CURRENT slot per the ledger gate, not its enrollment home.
       const pinnedHome = this.resolvePinnedSpawnHome(pinnedAccount);
       if (headlessFramework === 'codex-cli') {
         headlessSpec.envOverrides.CODEX_HOME = pinnedHome;
+        if ('validUntil' in pinnedAccount) {
+          headlessSpec.argv.splice(2, 0, '-c', 'cli_auth_credentials_store="file"');
+          for (const key of ['OPENAI_API_KEY', 'OPENAI_BASE_URL', 'OPENAI_ORG_ID', 'OPENAI_PROJECT_ID', 'INSTAR_DISABLE_RULE1_OPENAI']) headlessSpec.envOverrides[key] = '';
+        }
       } else {
         headlessSpec.envOverrides.CLAUDE_CONFIG_DIR = pinnedHome;
         this.ensurePinnedHomeInteractiveReady(pinnedHome, 'headless pin');
@@ -5183,6 +5220,19 @@ rm()  { "${shimRunner}" rm  "$@"; }
         headlessSpec.envOverrides.CLAUDE_CONFIG_DIR ?? process.env.CLAUDE_CONFIG_DIR));
     }
     try {
+      // Origin-token preparation above can await. Recheck the LIVE policy/account/home
+      // after it, immediately before the synchronous launch; a queued choice is not authority.
+      if (pinnedAccount && 'validUntil' in pinnedAccount) {
+        const current = this.codexHeadlessPlacement(codexPlacementContext);
+        if (!current || !current.validUntil || Date.now() >= current.validUntil
+          || typeof pinnedAccount.validUntil !== 'number' || Date.now() >= pinnedAccount.validUntil
+          || current.accountId !== pinnedAccount.accountId
+          || this.resolvePinnedSpawnHome(current) !== headlessSpec.envOverrides.CODEX_HOME) {
+          const error = new Error('routine-codex-placement: account placement changed before launch') as Error & { code?: string };
+          error.code = 'codex-accounts-walled';
+          throw error;
+        }
+      }
       // §B in-flight marker: this spawn is EXCLUDED from §A async conversion
       // (its synchronous timing is part of the spawn contract) but still funnels
       // through withSyncOp so a drift during the blocking spawn is classed as an
@@ -5278,6 +5328,7 @@ rm()  { "${shimRunner}" rm  "$@"; }
       }
     } catch (err) {
       this.revokeOriginSession(sessionId);
+      if ((err as { code?: string } | null)?.code === 'codex-accounts-walled') throw err;
       throw new Error(`Failed to create tmux session: ${this.originSpawnError(err)}`);
     }
 
@@ -7743,6 +7794,11 @@ rm()  { "${shimRunner}" rm  "$@"; }
     return alive;
   }
 
+  /** Current registry state without a subprocess. Unverified rows remain tracked. */
+  listRecordedRunningSessions(): Session[] {
+    return this.state.listSessions({ status: 'running' });
+  }
+
   /**
    * Every tmuxSession name SessionManager has ever known (any status — running,
    * completed, failed, killed). Backs the OrphanProcessReaper's exact-id orphan
@@ -8458,6 +8514,10 @@ rm()  { "${shimRunner}" rm  "$@"; }
     // only by taking the one host-wide recovery slot.
     this.checkAdmission(options?.admissionKind ?? 'operator', tmuxSession);
 
+    // Every refusal after acquiring admission, including account selection or
+    // resume placement before tmux exists, must give the recovery slot back.
+    let interactiveTmuxCreated = false;
+    try {
     // Generate session ID before tmux spawn so we can pass it as env var
     const interactiveSessionId = this.generateId();
 
@@ -8525,18 +8585,25 @@ rm()  { "${shimRunner}" rm  "$@"; }
     //   • An explicit caller-supplied configHome ALWAYS wins (the account-swap
     //     path, SessionRefresh, passes one) — the resolver is only consulted when
     //     the caller didn't pin a home itself.
-    //   • claude-code only: the pool holds claude logins; a pool configHome is
-    //     meaningless for a codex/pi launch.
+    //   • Codex cloud sessions use their own resolver, never a Claude home.
+    //     Local models keep their local provider and do not select a paid login.
     //   • No-op unless the resolver is wired (pinSessionsToPool) and returns an
     //     account → default-login behavior is exactly unchanged when off.
     const explicitConfigHome = options?.configHome;
-    const pinnedAccount = (!explicitConfigHome && framework === 'claude-code')
-      ? (this.poolAccountForSpawn({
+    if (framework === CODEX_CLI_FRAMEWORK && options?.subscriptionAccountId && !explicitConfigHome) {
+      throw new Error('A Codex account pin requires its config home; refusing a tag without a matching launch home.');
+    }
+    const pinnedAccount = explicitConfigHome
+      ? null
+      : framework === 'claude-code'
+        ? (this.poolAccountForSpawn({
           model: launchDefaultModel ?? null,
           modelSource: options?.defaultModel ? 'explicit' : launchDefaultModel ? 'config-default' : 'unknown',
           sessionName: tmuxSession,
         }) ?? null)
-      : null;
+        : framework === CODEX_CLI_FRAMEWORK && !options?.codexLocalProvider
+          ? this.codexHeadlessPlacement()
+          : null;
     // Census #6: when the home comes from a pinned pool account, resolve its LIVE slot through the
     // ledger gate (an explicit caller-supplied home — the account-swap / SessionRefresh path — is a
     // deliberate pin and always wins, unchanged).
@@ -8606,14 +8673,14 @@ rm()  { "${shimRunner}" rm  "$@"; }
     // every turn taken on the account. There, a conversation found nowhere keeps
     // today's behaviour (the default home is where it was always looked for).
     const defaultCodexHome = process.env.CODEX_HOME || path.join(os.homedir(), '.codex');
-    const codexPlacementHome = explicitConfigHome ?? defaultCodexHome;
+    const codexPlacementHome = effectiveConfigHome ?? defaultCodexHome;
     // The thread id names a file copied between homes, so it is checked here too. This is
     // a file-copy guard, not a launch flag: the --resume flag keeps its own guard in the builder.
     const codexThreadToPlace = options?.resumeSessionId;
     if (
       codexThreadToPlace &&
       framework === CODEX_CLI_FRAMEWORK &&
-      (explicitConfigHome || this.codexAccountHomesResolver) &&
+      (effectiveConfigHome || this.codexAccountHomesResolver) &&
       isSafeSessionRef(codexThreadToPlace)
     ) {
       let outcome: CodexRolloutPlacement | 'error';
@@ -8626,6 +8693,9 @@ rm()  { "${shimRunner}" rm  "$@"; }
         outcome = 'error';
       }
       console.log(`[SessionManager] Codex resume placement for "${tmuxSession}": ${outcome} (thread=${codexThreadToPlace}, home=${codexPlacementHome})`);
+      if (pinnedAccount && (outcome === 'not-found' || outcome === 'error')) {
+        throw new Error('codex-account-resume-unavailable: the saved conversation could not be placed in the selected account; no fresh conversation was started.');
+      }
       if (explicitConfigHome && (outcome === 'not-found' || outcome === 'error')) {
         resumeReopenFailed = true;
         options = { ...options, resumeSessionId: undefined };
@@ -8643,7 +8713,7 @@ rm()  { "${shimRunner}" rm  "$@"; }
     }
     assertBrowserMcpProfilesSafe(options?.cwd ?? this.config.projectDir, framework, effectiveConfigHome, this.config.projectDir);
     const { plan: interactiveThreadline, mcpFlags: interactiveMcpFlags, tag: interactiveTransportTag } =
-      this.planInteractiveThreadlineMcp(framework, binaryPath, options); // threadline-mcp-local-http D3
+      this.planInteractiveThreadlineMcp(framework, binaryPath, { ...options, configHome: effectiveConfigHome }); // threadline-mcp-local-http D3
     const launchSpec = buildInteractiveLaunch(framework, {
       binaryPath,
       ...(options?.resumeSessionId ? { resumeSessionId: options.resumeSessionId } : {}),
@@ -8840,6 +8910,7 @@ rm()  { "${shimRunner}" rm  "$@"; }
       }
 
       withSyncOp(() => execFileSync(this.config.tmuxPath, tmuxArgs, { encoding: 'utf-8' }));
+      interactiveTmuxCreated = true;
       this.retainFailedExitStatus(tmuxSession);
 
       // Increase tmux scrollback buffer for dashboard history support
@@ -8926,7 +8997,10 @@ rm()  { "${shimRunner}" rm  "$@"; }
         // binaries remain fail-closed even if session state is incomplete.
         freshPreRolloutBootstrap: framework === 'codex-cli' && !options?.resumeSessionId,
       });
-      const injection = this.handleReadyAndInject(tmuxSession, name, effectiveInitialMessage, readyTimeout, options);
+      const injection = this.handleReadyAndInject(tmuxSession, name, effectiveInitialMessage, readyTimeout,
+        framework === CODEX_CLI_FRAMEWORK && pinnedAccount && options?.resumeSessionId
+          ? { ...options, strictCodexResume: true }
+          : options);
       if (options?.awaitInitialInjection) {
         await injection;
       } else injection.catch((err) => {
@@ -8935,6 +9009,10 @@ rm()  { "${shimRunner}" rm  "$@"; }
     }
 
     return tmuxSession;
+    } catch (err) {
+      if (!interactiveTmuxCreated) this.releaseAdmissionFor(tmuxSession);
+      throw err;
+    }
   }
 
   /**
@@ -8960,6 +9038,8 @@ rm()  { "${shimRunner}" rm  "$@"; }
       telegramTopicId?: number; slackChannelId?: string; slackThreadTs?: string; resumeSessionId?: string; bootstrapConversationIds?: number[];
       // Carried into the single fresh-spawn retry so it relaunches the same session shape (spec §3.2).
       framework?: IntelligenceFramework; cwd?: string; defaultModel?: string; thinkingMode?: import('./topicProfileValidation.js').ThinkingMode; effort?: import('./topicProfileValidation.js').EffortLevel; configHome?: string; subscriptionAccountId?: string;
+      /** An automatic account move must not discard its saved conversation. */
+      strictCodexResume?: boolean;
     },
   ): Promise<void> {
     const ready = await this.waitForClaudeReadyWithRetry(tmuxSession, readyTimeout);
@@ -9005,7 +9085,9 @@ rm()  { "${shimRunner}" rm  "$@"; }
     }
     const stillAlive = sessionExists && !paneDead;
     if (!stillAlive && options?.resumeSessionId) {
-      console.warn(`[SessionManager] Resume failed for "${tmuxSession}" (UUID ${options.resumeSessionId}) — tmux died during startup. Falling back to fresh spawn.`);
+      console.warn(options.strictCodexResume
+        ? `[SessionManager] Codex resume failed for "${tmuxSession}" — saved conversation retained for recovery.`
+        : `[SessionManager] Resume failed for "${tmuxSession}" (UUID ${options.resumeSessionId}) — tmux died during startup. Falling back to fresh spawn.`);
 
       // Mark the failed session BEFORE emitting the event. A concurrent
       // monitor tick that reads state in between would otherwise see a dead
@@ -9013,7 +9095,7 @@ rm()  { "${shimRunner}" rm  "$@"; }
       // resumeFailed listeners may consult listRunningSessions to confirm
       // the failure shape.
       try {
-        const failed = this.listRunningSessions().find(s => s.tmuxSession === tmuxSession);
+        const failed = this.state.listSessions({ status: 'running' }).find(s => s.tmuxSession === tmuxSession);
         if (failed) {
           failed.status = 'failed';
           failed.endedAt = new Date().toISOString();
@@ -9021,6 +9103,12 @@ rm()  { "${shimRunner}" rm  "$@"; }
         }
       } catch { /* state cleanup is best-effort */ }
       this.releaseAdmissionFor(tmuxSession); // the fresh respawn below re-admits on its own
+
+      if (options.strictCodexResume) {
+        // Do not emit resumeFailed: its consumer removes the saved resume id.
+        // The pending bootstrap and rollout remain available for recovery.
+        throw new Error('codex-account-resume-failed: the resumed conversation exited; saved rollouts were preserved and no fresh conversation was started.');
+      }
 
       this.emit('resumeFailed', {
         tmuxSession,
@@ -9475,9 +9563,16 @@ rm()  { "${shimRunner}" rm  "$@"; }
    */
   injectPasteNotification(tmuxSession: string, notification: string): string {
     const FILE_THRESHOLD = 500;
+    const inject = (text: string): void => {
+      if (this.injectMessage(tmuxSession, text) === false) {
+        // Marker absence is not submission evidence when nothing was pasted.
+        // The observed wrapper already maps a thrown refusal to `stuck`.
+        throw new Error('Notification input was refused');
+      }
+    };
 
     if (notification.length <= FILE_THRESHOLD) {
-      this.injectMessage(tmuxSession, notification);
+      inject(notification);
       return notification;
     }
 
@@ -9487,11 +9582,11 @@ rm()  { "${shimRunner}" rm  "$@"; }
     // notification must never be lost.
     const filepath = writePrivatePasteFile(notification);
     if (!filepath) {
-      this.injectMessage(tmuxSession, notification);
+      inject(notification);
       return notification;
     }
     const ref = `[paste] Content notification saved to ${filepath} — read it to see the details.`;
-    this.injectMessage(tmuxSession, ref);
+    inject(ref);
     return ref;
   }
 
@@ -9720,8 +9815,8 @@ rm()  { "${shimRunner}" rm  "$@"; }
     }
 
     // Write full message to a project-local inbound file readable by sandboxed agents.
-    const tmpDir = getTelegramInboundDir(this.config.projectDir);
-    fs.mkdirSync(tmpDir, { recursive: true });
+    // SEC-138: owner-only folder (tightened if an older build left it at the default mode).
+    const tmpDir = ensurePrivateDir(getTelegramInboundDir(this.config.projectDir));
     const filename = `msg-${topicId}-${Date.now()}-${randomUUID().slice(0, 8)}.txt`;
     const filepath = path.join(tmpDir, filename);
     fs.writeFileSync(filepath, taggedText);
@@ -9772,12 +9867,8 @@ rm()  { "${shimRunner}" rm  "$@"; }
       return;
     }
 
-    // Write full message to temp file
-    const tmpDir = path.join('/tmp', 'instar-whatsapp');
-    fs.mkdirSync(tmpDir, { recursive: true });
-    const filename = `msg-${jid.split('@')[0]}-${Date.now()}.txt`;
-    const filepath = path.join(tmpDir, filename);
-    fs.writeFileSync(filepath, taggedText);
+    // SEC-138: the agent's own inbound folder, owner-only, never a fixed shared /tmp folder.
+    const filepath = writePrivateInboundFile(this.config.projectDir, `wa-${jid.split('@')[0]}`, taggedText);
 
     const ref = `${tag} [Long message saved to ${filepath} — read it to see the full message]`;
     this.injectMessage(tmuxSession, ref);
@@ -9813,13 +9904,10 @@ rm()  { "${shimRunner}" rm  "$@"; }
       return;
     }
 
-    // Write full message to temp file with restricted permissions
-    const tmpDir = path.join('/tmp', 'instar-imessage');
-    fs.mkdirSync(tmpDir, { recursive: true, mode: 0o700 });
+    // SEC-138: the agent's own inbound folder, owner-only, never a fixed shared /tmp folder (a
+    // pre-created /tmp folder kept another account's ownership despite the mode).
     const senderSlug = sender.replace(/[^a-zA-Z0-9]/g, '').slice(-8);
-    const filename = `msg-${senderSlug}-${Date.now()}.txt`;
-    const filepath = path.join(tmpDir, filename);
-    fs.writeFileSync(filepath, taggedText, { mode: 0o600 });
+    const filepath = writePrivateInboundFile(this.config.projectDir, `im-${senderSlug}`, taggedText);
 
     const ref = `${tag} [Long message saved to ${filepath} — read it to see the full message]`;
     this.injectMessage(tmuxSession, ref);
@@ -10845,6 +10933,17 @@ rm()  { "${shimRunner}" rm  "$@"; }
       // @silent-fallback-ok — no session / no id means ownership is unproven
       return false;
     }
+    return this.matchesOwnedTmuxSession(name, out);
+  }
+
+  async ownsLiveTmuxSessionAsync(name: string): Promise<boolean> {
+    const result = await this.tmuxExecCoalesced('verify-owned-session', name, [
+      'show-environment', '-t', `=${name}`, 'INSTAR_SESSION_ID',
+    ]);
+    return result.state === 'success' && this.matchesOwnedTmuxSession(name, result.stdout.trim());
+  }
+
+  private matchesOwnedTmuxSession(name: string, out: string): boolean {
     if (!out.startsWith('INSTAR_SESSION_ID=')) return false;
     const id = out.slice('INSTAR_SESSION_ID='.length);
     return /^[a-zA-Z0-9_-]+$/.test(id) && this.state.getSession(id)?.tmuxSession === name;

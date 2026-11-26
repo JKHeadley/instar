@@ -316,6 +316,8 @@ function loadReviewerConfig(explicitPath) {
     if (typeof cfg.developmentAgent === 'boolean') out.developmentAgent = cfg.developmentAgent;
     // gemini-payg §2: the local server port, for the loopback gemini-api door probe.
     if (Number.isInteger(cfg.port) && cfg.port > 0) out.port = cfg.port;
+    // Routine Sol placement is opt-in; disabled reviews retain their independent path.
+    if (cfg.subscriptionPool?.routineCodexPlacement) out.subscriptionPool = { routineCodexPlacement: cfg.subscriptionPool.routineCodexPlacement };
     if (cfg.specConverge && typeof cfg.specConverge === 'object') out.specConverge = cfg.specConverge;
     // grok-build reviewer dark-ship gate (grok-build spec §8 round-7): the
     // enabledFrameworks opt-in must reach detection through THIS loader —

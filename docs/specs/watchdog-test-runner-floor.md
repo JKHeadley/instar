@@ -224,3 +224,9 @@ Unified, unchanged. This change adds no state and no new config surface.
 ## Open questions
 
 *(none)*
+
+### HTTPS transport during pre-push
+
+Attribute the remote helper to the pre-push hook under the same push. Observe
+the hook subtree between polls and check the relationship again before
+interrupting the transport. Apply the existing absolute protection ceiling.

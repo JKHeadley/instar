@@ -72,6 +72,20 @@ function makeMigrator(stateDir: string): PostUpdateMigrator {
   });
 }
 
+type MigrationResult = ReturnType<PostUpdateMigrator['migrate']>;
+type SpotlightMigration =
+  | 'migrateWorktreeSpotlightExclusion'
+  | 'migrateNodeModulesSpotlightExclusion'
+  | 'migrateClaudeTranscriptSpotlightExclusion'
+  | 'migrateAgentDataSpotlightExclusion';
+
+function runSpotlightMigration(stateDir: string, step: SpotlightMigration): MigrationResult {
+  const result: MigrationResult = { upgraded: [], skipped: [], errors: [] };
+  const migrator = makeMigrator(stateDir) as unknown as Record<SpotlightMigration, (result: MigrationResult) => void>;
+  migrator[step](result);
+  return result;
+}
+
 describe('PostUpdateMigrator.migrateWorktreeSpotlightExclusion', () => {
   beforeEach(() => {
     tmpHome = fs.mkdtempSync(path.join(os.tmpdir(), 'wt-spotlight-mig-'));
@@ -95,8 +109,9 @@ describe('PostUpdateMigrator.migrateWorktreeSpotlightExclusion', () => {
 
   it('is idempotent — second run reports already-present, no error', () => {
     const { agentHome } = setupAgentHome('echo-spotlight-idem');
-    makeMigrator(path.join(agentHome, '.instar')).migrate();
-    const result2 = makeMigrator(path.join(agentHome, '.instar')).migrate();
+    fs.mkdirSync(path.join(agentHome, '.worktrees'));
+    runSpotlightMigration(path.join(agentHome, '.instar'), 'migrateWorktreeSpotlightExclusion');
+    const result2 = runSpotlightMigration(path.join(agentHome, '.instar'), 'migrateWorktreeSpotlightExclusion');
     expect(result2.errors).toEqual([]);
     expect(result2.skipped.some((s) => s.includes('worktree-spotlight-exclusion: marker already present'))).toBe(true);
   });
@@ -128,7 +143,7 @@ describe('PostUpdateMigrator.migrateNodeModulesSpotlightExclusion', () => {
 
   it('skips missing node_modules dirs without error (no node_modules present)', () => {
     const { stateDir } = setupAgentHome('echo-nm-none');
-    const result = makeMigrator(stateDir).migrate();
+    const result = runSpotlightMigration(stateDir, 'migrateNodeModulesSpotlightExclusion');
     expect(result.errors).toEqual([]);
     expect(result.upgraded.some((s) => s.includes('node-modules-spotlight-exclusion'))).toBe(false);
   });
@@ -136,8 +151,8 @@ describe('PostUpdateMigrator.migrateNodeModulesSpotlightExclusion', () => {
   it('is idempotent — second run does not re-report the exclusion', () => {
     const { agentHome, stateDir } = setupAgentHome('echo-nm-idem');
     fs.mkdirSync(path.join(agentHome, 'node_modules'), { recursive: true });
-    makeMigrator(stateDir).migrate();
-    const result2 = makeMigrator(stateDir).migrate();
+    runSpotlightMigration(stateDir, 'migrateNodeModulesSpotlightExclusion');
+    const result2 = runSpotlightMigration(stateDir, 'migrateNodeModulesSpotlightExclusion');
     expect(result2.errors).toEqual([]);
     expect(result2.upgraded.some((s) => s.includes('node-modules-spotlight-exclusion'))).toBe(false);
   });
@@ -216,7 +231,7 @@ describe('PostUpdateMigrator.migrateClaudeTranscriptSpotlightExclusion', () => {
 
   it('skips without error when the transcript dir is absent (brand-new agent)', () => {
     const { agentHome } = setupAgentHome('echo-transcript-none');
-    const result = makeMigrator(path.join(agentHome, '.instar')).migrate();
+    const result = runSpotlightMigration(path.join(agentHome, '.instar'), 'migrateClaudeTranscriptSpotlightExclusion');
     expect(result.errors).toEqual([]);
     expect(result.upgraded.some((s) => s.includes('claude-transcript-spotlight-exclusion'))).toBe(false);
   });
@@ -225,8 +240,8 @@ describe('PostUpdateMigrator.migrateClaudeTranscriptSpotlightExclusion', () => {
     const { agentHome } = setupAgentHome('echo-transcript-idem');
     const encoded = agentHome.replace(/[^a-zA-Z0-9]/g, '-');
     fs.mkdirSync(path.join(tmpHome, '.claude', 'projects', encoded), { recursive: true });
-    makeMigrator(path.join(agentHome, '.instar')).migrate();
-    const result2 = makeMigrator(path.join(agentHome, '.instar')).migrate();
+    runSpotlightMigration(path.join(agentHome, '.instar'), 'migrateClaudeTranscriptSpotlightExclusion');
+    const result2 = runSpotlightMigration(path.join(agentHome, '.instar'), 'migrateClaudeTranscriptSpotlightExclusion');
     expect(result2.errors).toEqual([]);
     expect(result2.upgraded.some((s) => s.includes('claude-transcript-spotlight-exclusion'))).toBe(false);
   });
@@ -294,7 +309,7 @@ describe('PostUpdateMigrator.migrateAgentDataSpotlightExclusion', () => {
 
   it('skips without error when no churn subdirs exist (brand-new agent)', () => {
     const { stateDir } = setupAgentHome('echo-agent-data-none');
-    const result = makeMigrator(stateDir).migrate();
+    const result = runSpotlightMigration(stateDir, 'migrateAgentDataSpotlightExclusion');
     expect(result.errors).toEqual([]);
     expect(result.upgraded.some((s) => s.includes('agent-data-spotlight-exclusion'))).toBe(false);
   });
@@ -302,8 +317,8 @@ describe('PostUpdateMigrator.migrateAgentDataSpotlightExclusion', () => {
   it('is idempotent — second run does not re-report the exclusion', () => {
     const { stateDir } = setupAgentHome('echo-agent-data-idem');
     fs.mkdirSync(path.join(stateDir, 'logs'), { recursive: true });
-    makeMigrator(stateDir).migrate();
-    const result2 = makeMigrator(stateDir).migrate();
+    runSpotlightMigration(stateDir, 'migrateAgentDataSpotlightExclusion');
+    const result2 = runSpotlightMigration(stateDir, 'migrateAgentDataSpotlightExclusion');
     expect(result2.errors).toEqual([]);
     expect(result2.upgraded.some((s) => s.includes('agent-data-spotlight-exclusion'))).toBe(false);
   });

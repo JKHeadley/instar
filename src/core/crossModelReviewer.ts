@@ -1,3 +1,5 @@
+import { CODEX_CLI_FRAMEWORK } from './frameworkFacts.js';
+import { routineCodexReviewLease, type RoutineCodexPlacementConfig } from './routineCodexPlacement.js';
 /**
  * crossModelReviewer — Step B of the tiered development process.
  *
@@ -55,6 +57,7 @@
  */
 
 import { SafeFsExecutor } from './SafeFsExecutor.js';
+import { defaultGeminiOauthCredsPath, geminiOauthCredsAuthed } from './frameworkLoginPresence.js';
 import { frameworkBinaryExists } from './frameworkSessionLaunch.js';
 import { resolveGrokBinaryPath } from '../providers/adapters/grok-build/config.js';
 import { execFileSync } from 'node:child_process';
@@ -456,40 +459,6 @@ export function detectCodexReviewer(
     binaryPath: codexPath,
     crossFamily: true,
   };
-}
-
-/**
- * Resolve the default gemini oauth_creds.json path. DELIBERATELY no env-var
- * override: the gemini CLI (verified v0.25.2) resolves creds at
- * `~/.gemini/oauth_creds.json` UNCONDITIONALLY — there is no GEMINI_HOME.
- * Honoring one here would make detection probe a path the CLI never reads
- * (false-unavailable on an authed host -> the gemini pass silently skipped AND
- * a false `gemini-cli:false` recorded into the activation baseline — the exact
- * suppression Piece 3 exists to prevent). Tests inject `geminiOauthCredsPath`.
- */
-function defaultGeminiOauthCredsPath(): string {
-  return path.join(os.homedir(), '.gemini', 'oauth_creds.json');
-}
-
-/**
- * Is the gemini CLI's cached OAuth credentials file an authed shape? Authed
- * iff the file parses as JSON with a non-empty string `access_token` OR
- * `refresh_token` (the CLI refreshes an expired access token from the refresh
- * token, so either is a usable seat). A missing / unreadable / malformed file
- * → false (not authed). Never throws.
- */
-function geminiOauthCredsAuthed(credsPath: string): boolean {
-  try {
-    const raw = fs.readFileSync(credsPath, 'utf-8');
-    const parsed = JSON.parse(raw) as { access_token?: unknown; refresh_token?: unknown };
-    const nonEmptyString = (v: unknown): boolean => typeof v === 'string' && v.length > 0;
-    return nonEmptyString(parsed?.access_token) || nonEmptyString(parsed?.refresh_token);
-  } catch {
-    // @silent-fallback-ok — deny-safe: missing/unreadable/malformed creds mean
-    // "not authed" (the reviewer is reported unavailable with a named reason);
-    // mirrors the codex auth probe above.
-    return false;
-  }
 }
 
 /**
@@ -1349,6 +1318,8 @@ export interface ReviewerResult {
  * fleet (byte-identical `[codex, gemini]`) and LIVE on a development agent.
  */
 export interface ReviewerConfig {
+  port?: number;
+  subscriptionPool?: { routineCodexPlacement?: RoutineCodexPlacementConfig };
   developmentAgent?: boolean;
   specConverge?: {
     reviewers?: {
@@ -1548,7 +1519,10 @@ const codexReviewer: SupportedReviewerFramework = {
 
     let raw: string;
     try {
+      const lease = await routineCodexReviewLease(args.reviewerConfig, model);
       raw = await provider.evaluate(args.promptText, {
+        ...(lease ? { accountOverride: lease.accountOverride, launchGuard: lease.launchGuard,
+          requiredRoute: { framework: CODEX_CLI_FRAMEWORK as typeof CODEX_CLI_FRAMEWORK, modelId: model } } : {}),
         // The concrete id the canary checked and the outcome reports, so the
         // strictly pinned call runs exactly the model this review is recorded as.
         model: model as typeof tier,
