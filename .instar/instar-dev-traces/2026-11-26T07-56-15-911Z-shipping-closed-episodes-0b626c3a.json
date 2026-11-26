@@ -1,0 +1,22 @@
+{
+  "version": 2,
+  "slug": "shipping-closed-episodes",
+  "sessionId": "ed99de61-509a-4e0d-908f-801b299fef73",
+  "timestamp": "2026-11-26T07:56:15.911Z",
+  "artifactPath": "upgrades/side-effects/shipping-closed-episodes.md",
+  "artifactSha256": "7fa1d5e49175b1c20a9d237cdee38c73e0e294f7f28456f5793141bc9cb7c224",
+  "coveredFiles": [
+    "docs/specs/shipping-closed-episodes.eli16.md",
+    "src/monitoring/GreenPrAutoMerger.ts",
+    "tests/unit/green-pr-automerger.test.ts",
+    "upgrades/next/shipping-closed-episodes.md",
+    "upgrades/side-effects/shipping-closed-episodes.md"
+  ],
+  "phase": "complete",
+  "tier": 1,
+  "tierReasoning": "Bounded reconciliation of terminal display records, with exact GitHub confirmation and no new merge authority.",
+  "eli16Path": "docs/specs/shipping-closed-episodes.eli16.md",
+  "sideEffectsPath": "upgrades/side-effects/shipping-closed-episodes.md",
+  "secondPass": "not-required",
+  "reviewerConcurred": true
+}

@@ -412,6 +412,7 @@ export class GreenPrAutoMerger extends EventEmitter {
   /** The longest a hand-off waits on an attempt in flight (its deadline + kill grace + margin). */
   private handoffWaitMaxMs(): number { return this.cfg.mergeTimeoutMs + this.cfg.mergeKillGraceMs + 60_000; }
   private tickCount = 0;
+  private lastTerminalEpisodeProbe = 0;
   private localVerify: LocalVerifyHook | null = null;
   /** Resolved at boot: does the timeout invariant hold? */
   readonly invariantOk: boolean;
@@ -607,6 +608,21 @@ export class GreenPrAutoMerger extends EventEmitter {
    * mergeability read for the same head before candidate evaluation.
    */
   async tick(opts: { manual?: boolean; handoff?: { pr: number; head: string } } = {}): Promise<{ acted: boolean; reason: string }> {
+    const discovery: { candidates?: PrSummary[]; leaseCurrent?: () => boolean } = {};
+    const result = await this.runTick(opts, (candidates, leaseCurrent) => {
+      discovery.candidates = candidates;
+      discovery.leaseCurrent = leaseCurrent;
+    });
+    if (discovery.candidates && discovery.leaseCurrent) {
+      await this.reconcileGaveUpEpisodes(discovery.candidates, discovery.leaseCurrent);
+    }
+    return result;
+  }
+
+  private async runTick(
+    opts: { manual?: boolean; handoff?: { pr: number; head: string } },
+    onDiscovery: (candidates: PrSummary[], leaseCurrent: () => boolean) => void,
+  ): Promise<{ acted: boolean; reason: string }> {
     this.tickCount += 1;
     let state = this.deps.loadState();
     state.lastTickAt = this.deps.now();
@@ -753,7 +769,10 @@ export class GreenPrAutoMerger extends EventEmitter {
     // attention (mutations here are persisted by the saveState below, whichever
     // branch returns). Placed AFTER the merge-candidate gather so a stuck-red PR
     // is surfaced even on a lease-flap warm-up tenure.
-    if (!exactHandoffRead) this.redPrWatchdogPass(candidates, state);
+    if (!exactHandoffRead) {
+      this.redPrWatchdogPass(candidates, state);
+      onDiscovery(candidates, leaseCurrent);
+    }
 
     if (isWarmup) {
       // Seed hold memory + snapshot + reap any orphan; begin merges next tick.
@@ -1489,6 +1508,44 @@ export class GreenPrAutoMerger extends EventEmitter {
     try {
       await this.deps.postAttentionAggregate(state.attentionLines);
     } catch { /* @silent-fallback-ok: green-pr-automerge fail-safe — skip/refuse, never over-merge; safe-merge is the act-time authority */ /* attention delivery failure is non-fatal to the tick */ }
+  }
+
+  /** Discovery is capped and scoped, so only a direct terminal read clears an episode. */
+  private async reconcileGaveUpEpisodes(
+    candidates: PrSummary[],
+    leaseCurrent: () => boolean,
+  ): Promise<void> {
+    if (!leaseCurrent()) return;
+    const state = this.deps.loadState();
+    const listed = new Set(candidates.map((pr) => pr.number));
+    const missing = Object.values(state.episodes)
+      .filter((episode) => episode.state === 'gave-up' && episode.armedAt == null && !listed.has(episode.pr))
+      .sort((a, b) => a.pr - b.pr);
+    // Probe a few episodes per discovery tick so older open PRs cannot starve later entries.
+    const next = missing.findIndex((episode) => episode.pr > this.lastTerminalEpisodeProbe);
+    const start = next < 0 ? 0 : next;
+    const batch = [...missing.slice(start), ...missing.slice(0, start)].slice(0, 4);
+    if (batch.length === 0) return;
+    this.lastTerminalEpisodeProbe = batch[batch.length - 1].pr;
+    const results = await Promise.allSettled(batch.map((episode) => this.deps.refetchPr(episode.pr)));
+    if (!leaseCurrent()) return;
+    // A handoff can finish during the probes. Preserve its newly saved state.
+    const latest = this.deps.loadState();
+    let changed = false;
+    for (const [index, result] of results.entries()) {
+      if (result.status !== 'fulfilled') continue;
+      const terminal = result.value?.state;
+      if (terminal !== 'CLOSED' && terminal !== 'MERGED') continue;
+      const observed = batch[index];
+      const pr = observed.pr;
+      const current = latest.episodes[pr];
+      if (!current || current.state !== 'gave-up' || current.armedAt != null
+        || current.headRefOid !== observed.headRefOid || current.lastAttemptAt !== observed.lastAttemptAt) continue;
+      delete latest.episodes[pr];
+      changed = true;
+      this.deps.audit({ kind: 'green-pr-automerge', event: 'gave-up-episode-cleared', pr, state: terminal });
+    }
+    if (changed) this.deps.saveState(latest);
   }
 
   // ---- red-PR watchdog (red-pr-watchdog) ----------------------------------

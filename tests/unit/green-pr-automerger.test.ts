@@ -116,6 +116,27 @@ describe('GreenPrAutoMerger — gates', () => {
 describe('GreenPrAutoMerger — acting (post warm-up)', () => {
   const prime = (h: Harness) => { h.state.lastActingEpoch = 1; };
 
+  it('clears gave-up episodes only after a direct closed or merged result', async () => {
+    const h = harness({ prs: [pr()], refetch: (number) => {
+      if (number === 104) return null;
+      return {
+        title: 'feat: x', labels: [], isDraft: false, headRefOid: 'abc',
+        state: number === 101 ? 'CLOSED' : number === 102 ? 'MERGED' : 'OPEN',
+      };
+    } });
+    for (const number of [100, 101, 102, 103, 104]) {
+      h.state.episodes[number] = {
+        pr: number, headRefOid: 'sha100', attempts: 3, rearmEpisodes: 0,
+        state: 'gave-up', lastOutcome: 'refused:body-checks',
+      } as GreenPrState['episodes'][number];
+    }
+    await new GreenPrAutoMerger(h.deps, cfg).tick();
+    expect(Object.keys(h.state.episodes)).toEqual(['100', '103', '104']);
+    expect(h.audits.filter((event) => event.event === 'gave-up-episode-cleared').map((event) => event.pr))
+      .toEqual([101, 102]);
+    expect(h.runCalls).toEqual([]);
+  });
+
   it('merges the oldest eligible candidate and reaps the episode', async () => {
     const h = harness({ prs: [pr({ number: 200 }), pr({ number: 100 })] });
     prime(h);
