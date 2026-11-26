@@ -1,0 +1,17 @@
+{
+  "version": 2,
+  "slug": "app-message-delete-dispatch-fence",
+  "sessionId": "633bd330-201e-4dc8-8fd9-72b89116167e",
+  "timestamp": "2026-11-26T15:02:10.248Z",
+  "artifactPath": "upgrades/side-effects/app-message-delete-dispatch-fence.md",
+  "artifactSha256": "8324a5790a6f4539465f0dcb8dece1efd351d025106b02e0564123236cfea219",
+  "specPath": "docs/specs/conversation-message-delete.md",
+  "coveredFiles": [
+    "src/lifeline/AppRemovalDispatchFence.ts",
+    "tests/unit/app-removal-dispatch-fence.test.ts",
+    "upgrades/side-effects/app-message-delete-dispatch-fence.md"
+  ],
+  "phase": "complete",
+  "secondPass": "true",
+  "reviewerConcurred": true
+}
