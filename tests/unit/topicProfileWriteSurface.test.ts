@@ -538,3 +538,41 @@ describe('model undo and recovery leave cosmetic preferences independent', () =>
     expect(h.store.resolve(42)?.model).toBeNull(); expect(h.store.resolve(42)?.messageOriginDisplay).toEqual({ enabled: false });
   });
 });
+
+describe('identity-security-creation-provenance v5: a change the owner confirmed in another conversation', () => {
+  it('an operator write to an UNBOUND topic is accepted only with crossTopicConfirm, and the accepted audit names the source', async () => {
+    const h = harness({ enabled: true, dryRun: false }, { boundUid: null });
+    const refused = await h.surface.applyWrite({ topicKey: 24, patch: { framework: 'codex-cli' }, principal: OPERATOR, origin: 'propose-confirm' });
+    expect(refused.ok).toBe(false);
+    expect(refused.refusal?.reason).toBe('no-bound-operator');
+    const ok = await h.surface.applyWrite({ topicKey: 24, patch: { model: 'opus' }, principal: OPERATOR, origin: 'propose-confirm', crossTopicConfirm: { sourceTopicId: 130715 } });
+    expect(ok.ok, JSON.stringify(ok)).toBe(true);
+    const framework = await h.surface.applyWrite({ topicKey: 24, patch: { framework: 'codex-cli' }, principal: OPERATOR, origin: 'propose-confirm', crossTopicConfirm: { sourceTopicId: 130715 } });
+    expect(framework.ok, JSON.stringify(framework)).toBe(true);
+    expect(h.store.resolve(24)?.framework).toBe('codex-cli');
+    expect(h.store.resolve(24)?.updatedBy).toBe('telegram:777');
+    expect(h.respawns).toEqual(['24']);
+    const outside = await h.surface.applyWrite({ topicKey: 24, patch: { escalationOverride: 'suppress' }, principal: OPERATOR, origin: 'propose-confirm', crossTopicConfirm: { sourceTopicId: 130715 } });
+    expect(outside.refusal?.reason).toBe('cross-topic-field');
+    expect(h.audits.some(a => a.outcome === 'accepted' && a.authorizedBy === 'owner-confirmed-in:130715')).toBe(true);
+  });
+  it('a topic bound to SOMEONE ELSE still refuses, crossTopicConfirm or not', async () => {
+    const h = harness(FLEET_REGIME, { boundUid: '7000001' });
+    const r = await h.surface.applyWrite({ topicKey: 24, patch: { framework: 'codex-cli' }, principal: OPERATOR, origin: 'propose-confirm', crossTopicConfirm: { sourceTopicId: 130715 } });
+    expect(r.ok).toBe(false);
+    expect(r.refusal?.reason).toBe('not-bound-operator');
+    expect(h.store.resolve(24)).toBeNull();
+    expect(h.respawns).toEqual([]);
+  });
+  it('a non-Telegram key never takes the cross-conversation path', async () => {
+    const h = harness(FLEET_REGIME, { boundUid: null });
+    const r = await h.surface.applyWrite({ topicKey: 'app:abc', patch: { model: 'opus' }, principal: OPERATOR, origin: 'propose-confirm', crossTopicConfirm: { sourceTopicId: 130715 } });
+    expect(r.ok).toBe(false);
+  });
+  it('the token principal is unchanged: an unbound topic still refuses an agent-token write', async () => {
+    const h = harness(FLEET_REGIME, { boundUid: null });
+    const r = await h.surface.applyWrite({ topicKey: 24, patch: { framework: 'codex-cli' }, principal: { kind: 'token' }, origin: 'http' });
+    expect(r.refusal?.reason).toBe('no-bound-operator');
+  });
+});
+

@@ -1,0 +1,7 @@
+# Let the Scanner Repair Carry Its Complete Review
+
+The scanner repair has already completed a full verification run successfully, but its pull request is still a draft. A separate safety gate cannot find one review record covering every changed test file. The first record covers the new scanner tests, and the later record covers the two tests corrected after the first full run failed. Both records exist, but the gate deliberately requires complete coverage in one record.
+
+This small change records a fresh independent read of all six files and writes the normal trace that connects that review to the exact committed head. The reviewer checked the real scanner behavior and both earlier review artifacts. No server or test code changes. The Windows-only conditional skip remains exactly as it was: that particular test checks POSIX process-group cleanup, while Windows uses direct-child cleanup. Other command, timeout and buffer checks stay enabled.
+
+The earlier passing counts remain evidence for their original head. They are not copied into a new success claim. Once these review documents are committed and pushed, the verification coordinator will evaluate the new exact head through its supported route. Its current rules decide whether the previous results can be revalidated or a complete new run is required. The draft stays open until that normal gate passes. No one edits the old verification record or marks a status green by hand. The running machines, scanner stopgap, message queues, credentials and restart policy are untouched.

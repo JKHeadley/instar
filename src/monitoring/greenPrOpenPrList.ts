@@ -26,12 +26,7 @@ export const OPEN_PR_LIST_MAX_PAGES = 40;
 /** At most this many authored PRs, oldest first: the `--limit 100` the single call carried. */
 export const OPEN_PR_LIST_LIMIT = 100;
 
-export const OPEN_PR_LIST_QUERY = `query($owner: String!, $name: String!, $endCursor: String) {
-  viewer { login }
-  repository(owner: $owner, name: $name) {
-    pullRequests(first: ${OPEN_PR_LIST_PAGE_SIZE}, after: $endCursor, states: OPEN, baseRefName: "main", orderBy: {field: CREATED_AT, direction: ASC}) {
-      pageInfo { hasNextPage endCursor }
-      nodes {
+const OPEN_PR_NODE_FIELDS = `
         number title isDraft headRefName headRefOid baseRefName mergeable reviewDecision createdAt isCrossRepository
         labels(first: 50) { nodes { name } }
         author { __typename login }
@@ -43,8 +38,26 @@ export const OPEN_PR_LIST_QUERY = `query($owner: String!, $name: String!, $endCu
             ... on CheckRun { name status conclusion startedAt completedAt checkSuite { workflowRun { workflow { name } } } }
           }
         } } } } }
+`;
+
+export const OPEN_PR_LIST_QUERY = `query($owner: String!, $name: String!, $endCursor: String) {
+  viewer { login }
+  repository(owner: $owner, name: $name) {
+    pullRequests(first: ${OPEN_PR_LIST_PAGE_SIZE}, after: $endCursor, states: OPEN, baseRefName: "main", orderBy: {field: CREATED_AT, direction: ASC}) {
+      pageInfo { hasNextPage endCursor }
+      nodes {
+${OPEN_PR_NODE_FIELDS}
       }
     }
+  }
+}`;
+
+
+/** Exact green handoffs are not discovery: read one current target beyond the bounded list. */
+export const HANDOFF_PR_QUERY = `query($owner: String!, $name: String!, $number: Int!) {
+  viewer { login }
+  repository(owner: $owner, name: $name) {
+    pullRequest(number: $number) { state ${OPEN_PR_NODE_FIELDS} }
   }
 }`;
 
@@ -146,4 +159,23 @@ export async function listOpenPrRowsPaged(exec: GhExecFn, repo: string): Promise
     cursor = next;
   }
   throw new Error(`gh pr list failed: more than ${OPEN_PR_LIST_MAX_PAGES} pages of open PRs`);
+}
+
+
+/** Same authenticated-author scope as discovery, with current open/main state proven directly. */
+export async function readHandoffPrRow(exec: GhExecFn, repo: string, pr: number): Promise<Record<string, unknown> | null> {
+  const parts = String(repo).split('/');
+  if (parts.length !== 2 || !parts[0] || !parts[1] || !Number.isSafeInteger(pr) || pr < 1) throw new Error('handoff PR read: invalid target');
+  const r = await exec(['api', 'graphql', '-F', `owner=${parts[0]}`, '-F', `name=${parts[1]}`, '-F', `number=${pr}`, '-f', `query=${HANDOFF_PR_QUERY}`]);
+  if (r.code !== 0) throw new Error('handoff PR read failed');
+  const data = JSON.parse(r.stdout) as { errors?: unknown[]; data?: { viewer?: { login?: unknown }; repository?: { pullRequest?: (GqlOpenPrListNode & { state?: unknown }) | null } | null } };
+  const viewer = data.data?.viewer?.login;
+  if (data.errors?.length || typeof viewer !== 'string' || !viewer || !data.data?.repository) throw new Error('handoff PR read: unreadable response');
+  const node = data.data.repository.pullRequest;
+  if (!node) return null;
+  if (node.number !== pr || node.state !== 'OPEN' || node.baseRefName !== 'main' || node.author?.login !== viewer
+    || node.isCrossRepository !== false || typeof node.isDraft !== 'boolean' || typeof node.title !== 'string'
+    || typeof node.headRefName !== 'string' || !node.headRefName || typeof node.headRefOid !== 'string' || !node.headRefOid
+    || !Array.isArray(node.labels?.nodes) || node.labels.nodes.some((label) => !label || typeof label.name !== 'string')) return null;
+  return ghRowFromGraphqlPr(node);
 }

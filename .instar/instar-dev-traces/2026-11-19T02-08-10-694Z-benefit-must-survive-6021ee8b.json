@@ -1,0 +1,20 @@
+{
+  "version": 2,
+  "slug": "benefit-must-survive",
+  "sessionId": "cff5be70-b3a4-4015-afa9-248b5a32dedc",
+  "timestamp": "2026-11-19T02:08:10.694Z",
+  "artifactPath": "upgrades/side-effects/benefit-must-survive.md",
+  "artifactSha256": "df62d90989671696c517ce97063928127b7a9348224489b994d06fa74557c0e1",
+  "coveredFiles": [
+    "docs/STANDARDS-REGISTRY.md",
+    "docs/specs/benefit-must-survive.eli16.md",
+    "upgrades/side-effects/benefit-must-survive.md"
+  ],
+  "phase": "complete",
+  "tier": 1,
+  "tierReasoning": "proposed (pending) constitution articles at the operator's request; advisory until he ratifies",
+  "eli16Path": "docs/specs/benefit-must-survive.eli16.md",
+  "sideEffectsPath": "upgrades/side-effects/benefit-must-survive.md",
+  "secondPass": "not-required",
+  "reviewerConcurred": null
+}

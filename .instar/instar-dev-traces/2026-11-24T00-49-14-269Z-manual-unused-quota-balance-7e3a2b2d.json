@@ -1,0 +1,50 @@
+{
+  "version": 3,
+  "slug": "manual-unused-quota-balance",
+  "sessionId": "f414bf47-4211-4e9c-8eda-ff49e33893ff",
+  "timestamp": "2026-11-24T00:49:14.269Z",
+  "artifactPath": "upgrades/side-effects/manual-unused-quota-balance.md",
+  "artifactSha256": "ea84a220d4732af008c20e69ec58fa43f90142d262152c04740244f2e2fdebb9",
+  "coveredFiles": [
+    "src/commands/server.ts",
+    "src/core/ManualQuotaBalance.ts",
+    "src/core/QuotaAwareScheduler.ts",
+    "src/core/SessionRefresh.ts",
+    "src/data/awareness/manual-unused-quota-balance.md",
+    "src/server/AgentServer.ts",
+    "src/server/routes.ts",
+    "tests/e2e/manual-quota-balance-alive.test.ts",
+    "tests/integration/manual-quota-balance.test.ts",
+    "tests/unit/manual-quota-balance.test.ts",
+    "tests/unit/session-refresh-work-gate.test.ts",
+    "upgrades/eli16/manual-unused-quota-balance.md",
+    "upgrades/next/manual-unused-quota-balance.md",
+    "upgrades/side-effects/manual-unused-quota-balance.md"
+  ],
+  "phase": "complete",
+  "tier": 1,
+  "tierReasoning": "Explicit optional refinement of existing authorized manual account move; no automated movement, new paid-work trigger or permission expansion. Reversible selector change, with conservative durable uncertainty custody and unchanged ordinary selectors.",
+  "eli16Path": "upgrades/eli16/manual-unused-quota-balance.md",
+  "sideEffectsPath": "upgrades/side-effects/manual-unused-quota-balance.md",
+  "secondPass": "true",
+  "reviewerConcurred": true,
+  "toolchain": {
+    "buildSkill": {
+      "name": "build",
+      "version": null,
+      "verified": false
+    },
+    "reviewSkills": [
+      {
+        "name": "instar-dev",
+        "outcome": "passed",
+        "verified": false
+      },
+      {
+        "name": "systematic-debugging",
+        "outcome": "passed",
+        "verified": false
+      }
+    ]
+  }
+}

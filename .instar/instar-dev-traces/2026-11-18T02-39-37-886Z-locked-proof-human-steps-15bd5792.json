@@ -1,0 +1,25 @@
+{
+  "version": 3,
+  "slug": "locked-proof-human-steps",
+  "sessionId": "c0a8f9d3-a0e4-4a67-a7bf-12d6a18f1eaf",
+  "timestamp": "2026-11-18T02:39:37.886Z",
+  "artifactPath": "upgrades/side-effects/locked-proof-human-steps.md",
+  "artifactSha256": "f160653f899d11568f5084e10a9de7c5e3725b946a8f25f11082935ca0b03790",
+  "coveredFiles": [
+    "upgrades/next/locked-proof-human-steps.md"
+  ],
+  "phase": "complete",
+  "tier": 1,
+  "tierReasoning": "Complete the existing release fragment after main consumed other fragments; documentation-only correction to standalone required sections.",
+  "eli16Path": "docs/specs/locked-proof-human-steps.eli16.md",
+  "sideEffectsPath": "upgrades/side-effects/locked-proof-human-steps.md",
+  "secondPass": "not-required",
+  "reviewerConcurred": null,
+  "toolchain": {
+    "buildSkill": {
+      "name": "build",
+      "version": null,
+      "verified": false
+    }
+  }
+}

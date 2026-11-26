@@ -152,7 +152,9 @@ export function buildInstarCodexHookGroups(
       { matcher: '', hooks: [sh('session-start.sh')] },
     ],
     UserPromptSubmit: [
-      { matcher: '', hooks: [sh('telegram-topic-context.sh'), node('hook-event-reporter.js')] },
+      // The optional clock, context read, recovery offer and acknowledgement can
+      // run in sequence (3s + 4s + 3s + 1s), before rendering the output.
+      { matcher: '', hooks: [{ ...sh('telegram-topic-context.sh'), timeout: 15000 }, node('hook-event-reporter.js')] },
     ],
   };
 }

@@ -1,0 +1,12 @@
+{
+  "generatedAt": "2026-11-19T02:49:51.251Z",
+  "slug": "waiting-on-you-links",
+  "carriers": {
+    "CMT-1422": {
+      "status": "pending",
+      "owner": "agent",
+      "blockedOn": "none",
+      "excerpt": "Bring reminders built by code (not written by a session) under the waiting-ask standard: each templated producer that tells the person something is waiting on them builds the link and the restatement in code, using src/core/messageLinks.ts. Candidates: ChiefOfStaffTriage, ChiefOfStaffWaitCards, SubscriptionReloginApprovalReminder, AutoDispatcher, InitiativeTracker, WorkBoardService. Feedback item "
+    }
+  }
+}

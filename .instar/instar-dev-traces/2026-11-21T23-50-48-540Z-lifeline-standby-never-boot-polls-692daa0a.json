@@ -1,0 +1,45 @@
+{
+  "version": 3,
+  "slug": "lifeline-standby-never-boot-polls",
+  "sessionId": "001b460b-0345-40f9-bcd6-0c4ff28bec91",
+  "timestamp": "2026-11-21T23:50:48.540Z",
+  "artifactPath": "upgrades/side-effects/lifeline-standby-never-boot-polls.md",
+  "artifactSha256": "a3a9bfb0e71faec476c25d0f93b2a0215f29e6b31def9f9a94253234a31e72e7",
+  "coveredFiles": [
+    "docs/specs/lifeline-standby-never-boot-polls.eli16.md",
+    "docs/specs/lifeline-standby-never-boot-polls.md",
+    "docs/specs/reports/lifeline-standby-never-boot-polls-convergence.md",
+    "src/data/awareness/lifeline-standby-never-boot-polls.md",
+    "src/lifeline/TelegramLifeline.ts",
+    "src/lifeline/pollDecision.ts",
+    "tests/e2e/lifeline-standby-boot-lifecycle.test.ts",
+    "upgrades/next/lifeline-standby-never-boot-polls.md",
+    "upgrades/side-effects/lifeline-standby-never-boot-polls.md"
+  ],
+  "phase": "complete",
+  "tier": 1,
+  "tierReasoning": "Small reversible correction restoring the original bounded emergency fallback for unmuted roles; explicit mute and fresh standby intent remain enforced, no new ownership authority.",
+  "eli16Path": "docs/specs/lifeline-standby-never-boot-polls.eli16.md",
+  "sideEffectsPath": "upgrades/side-effects/lifeline-standby-never-boot-polls.md",
+  "secondPass": "true",
+  "reviewerConcurred": true,
+  "toolchain": {
+    "buildSkill": {
+      "name": "instar-dev",
+      "version": "21a45a5a5f03",
+      "verified": true
+    },
+    "reviewSkills": [
+      {
+        "name": "focused-code-review",
+        "outcome": "concurred",
+        "verified": false
+      }
+    ],
+    "convergence": {
+      "reportPath": "docs/specs/reports/lifeline-standby-never-boot-polls-convergence.md",
+      "iterations": 3,
+      "verified": true
+    }
+  }
+}

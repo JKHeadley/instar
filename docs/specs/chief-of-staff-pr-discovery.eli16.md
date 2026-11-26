@@ -1,0 +1,7 @@
+# Find work GitHub already knows about
+
+Justin asked whether permanent Instar agent addresses had already been planned. An open pull request contained the design, but the search the Chief of Staff used only covered its own memory. The older conversation could only be partly recovered across the tools that held it. Someone could have spent time designing the addresses again even though GitHub still had the original design.
+
+This change gives the Chief of Staff a way to search the Instar repository before answering a question about past work or sending someone a new assignment. It checks every page of open pull requests, including drafts and work that has been quiet for a long time. It also checks a stated period of recent merges. It looks inside titles, descriptions, and branch names, so searching for a detail such as `instar.sh` can turn up a design even if the title uses different words. The result links back to the pull request so the agent can read it and decide how closely it matches.
+
+If GitHub is down or some pages could not be read, the search says so and identifies any older results. The Chief of Staff can still respond and explain what it was able to check. GitHub continues to own the pull requests. Instar keeps a short-lived copy in memory to make repeat searches faster. This first change supplies the lookup and teaches the Chief of Staff when to use it. The larger work discovery spec will cover how the same check becomes a regular part of starting work across conversations, specs, and other sources.

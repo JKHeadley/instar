@@ -56,7 +56,8 @@ export interface DuePost {
   nextAttemptAt: number;
 }
 
-export type SendOutcome = 'posted' | 'failed';
+/** `not-delivered`: the notice was held quietly, so no person saw it (no-data-loss-on-machine-death.md §6.2). */
+export type SendOutcome = 'posted' | 'failed' | 'not-delivered';
 
 export interface PeerHandle {
   machineId: string;
@@ -157,6 +158,13 @@ function emptyState(): PersistedState {
     cadence: { lastPostAt: null, stage: 0, warnBackoff: 1 },
     lastPruneAt: null, lastPrune: null, breaker: 0, due: null, lastPost: null,
   };
+}
+
+/** True when every category that planned bytes was cut short because its tool was busy (a deferral, not a failure). */
+export function onlyBusyDeferred(categories: ReadonlyArray<{ plannedBytes: number; bytesFreed: number; skipped?: string }>): boolean {
+  const planned = categories.filter((c) => c.plannedBytes > 0);
+  if (planned.length === 0) return false;
+  return planned.every((c) => typeof c.skipped === 'string' && c.skipped.endsWith('-busy'));
 }
 
 export class DiskSteward {
@@ -383,7 +391,10 @@ export class DiskSteward {
         const last = this.state.samples[this.state.samples.length - 1];
         last.recovered = (last.recovered ?? 0) + observed;
       }
-      if (r.trigger === 'auto') this.state.breaker = total > 0 && r.bytesFreed < 0.01 * total ? this.state.breaker + 1 : 0;
+      // A run whose only planned work was deferred because a tool was busy (npm, Xcode) did not
+      // fail: it never tried. Leave the breaker as it is, or a machine that is always busy trips it
+      // after three deferrals and auto cleanup stays off through the next episode (fb-58754ac0-5e8).
+      if (r.trigger === 'auto' && !onlyBusyDeferred(r.categories)) this.state.breaker = total > 0 && r.bytesFreed < 0.01 * total ? this.state.breaker + 1 : 0;
     }
     if (r.sizes) this.state.sizes = r.sizes;
     if (r.worktrees) this.state.worktrees = r.worktrees;
@@ -447,12 +458,18 @@ export class DiskSteward {
       this.state.due = null;
       this.sendFailureReported = false;
     } else {
+      // Only a person-reachable delivery resets the repeat clock or advances the doubling
+      // backoff (no-data-loss-on-machine-death.md §6.2). A quiet hold retries on the send
+      // backoff like a failure, but it is the owner's choice, not a broken send, so it is
+      // logged rather than reported as a degradation.
+      const quiet = outcome === 'not-delivered';
+      if (quiet) this.deps.log({ event: 'post-not-delivered', postId, machineId: due.machineId });
       due.failures += 1;
       due.nextAttemptAt = now + sendRetryDelay(due.failures);
       // A critical retry gets the next stage, so the gate's pre-delivery episode
       // reservation cannot answer it with episode-dedup (§3.5).
       if (due.critical) due.stage += 1;
-      if (due.failures === 4 && !this.sendFailureReported) {
+      if (!quiet && due.failures === 4 && !this.sendFailureReported) {
         this.deps.degrade('DiskSteward.post', `The disk-space notice for ${due.machineName} could not be sent after 4 tries; retrying hourly.`);
         this.sendFailureReported = true;
       }
@@ -484,7 +501,9 @@ export class DiskSteward {
       const due = st.body.duePost;
       if (!due || due.machineId !== peer.machineId || now < due.nextAttemptAt) continue;
       const outcome = await this.safeSend(due);
-      await peer.ack(due.postId, outcome).catch(() => false);
+      const acked = await peer.ack(due.postId, outcome).catch(() => false);
+      // A peer on an older version knows only posted / failed: a quiet hold is, for its clock, a failure.
+      if (!acked && outcome === 'not-delivered') await peer.ack(due.postId, 'failed').catch(() => false);
     }
   }
 

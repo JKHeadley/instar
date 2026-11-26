@@ -38,7 +38,7 @@ function setup(tier: 'member' | 'guest' = 'member') {
   const state = { bindings: new Map<string, string>([[deviceKeyHashOf(phoneKey), 'mara']]), browserLinks: new Map<string, Record<string, unknown>>() };
   const revoked = new Set<string>();
   const activations: string[] = [];
-  const log = { health: 'ok' as 'ok' | 'unreadable', removed: new Set<string>(), failAppend: false };
+  const log = { health: 'ok' as 'ok' | 'absent' | 'unreadable', removed: new Set<string>(), failAppend: false };
   const faults: string[] = [];
   const svc = {
     devices,
@@ -85,6 +85,23 @@ async function link(s: ReturnType<typeof setup>, key = rawKey(), over: Record<st
 }
 
 describe('linking a member computer', () => {
+  it('directs a paired owner to browser approval even when no team log exists', async () => {
+    const s = setup();
+    s.log.health = 'absent';
+    const owner = s.devices.createPending({ deviceName: 'Owner iPhone', label: null, publicKey: rawKey(), host: HOST });
+    if (!owner.ok) throw new Error('owner setup failed');
+    s.devices.applyConfirm(owner.device.id, { ok: true });
+    for (const path of ['/mobile/browsers/link/lookup', '/mobile/browsers/link']) {
+      const result = await request(s.a).post(path).set('x-test-device', owner.device.id).send({});
+      expect(result.status).toBe(403);
+      expect(result.body).toMatchObject({ error: 'member-phone-required', detail: expect.stringContaining('browser approval') });
+    }
+    const member = await request(s.a).post('/mobile/browsers/link').set('x-test-device', s.phone.id).send({});
+    expect(member.status).toBe(503);
+    expect(member.body.error).toBe('team-log-unavailable');
+    expect(s.events).toEqual([]);
+  });
+
   it('the page gets a nonce for its key; the phone links it; the page sees it linked', async () => {
     const s = setup();
     const { r, nonce, key } = await link(s);

@@ -15,6 +15,8 @@ import {
   mergeHoldPath,
   MERGE_HANDOFF_RESTART_HOLD_MS,
   MERGE_SETTLE_RESTART_HOLD_MS,
+  EXIT_SETTLE_RESTART_HOLD_MS,
+  exitSeenPath,
 } from '../../src/core/PlannedRestartVerifyGuard.js';
 import { ForegroundRestartWatcher } from '../../src/core/ForegroundRestartWatcher.js';
 import { PEER_LIMITS } from '../../src/localVerify/peer.js';
@@ -45,7 +47,6 @@ describe('planned restart / local verify coordination', () => {
     marker(now - 10_000);
     fs.writeFileSync(flagPath(), JSON.stringify(flag(now)));
     expect(readPlannedRestartVerifyState(dir, now)).toMatchObject({ pending: true, hold: true, pendingSinceMs: now });
-    expect(plannedRestartVerifyState(dir, flag(now), now, () => false).hold).toBe(false);
     expect(plannedRestartVerifyState(dir, flag(now, false), now).hold).toBe(false);
     expect(plannedRestartVerifyState(dir, { ...flag(now), bypassHolds: true }, now)).toMatchObject({ pending: true, hold: false });
     expect(plannedRestartVerifyState(dir, flag(now - VERIFY_RESTART_HOLD_MS), now).hold).toBe(false);
@@ -54,6 +55,194 @@ describe('planned restart / local verify coordination', () => {
     fs.writeFileSync(flagPath(), 'null');
     expect(readPlannedRestartVerifyState(dir, now).pending).toBe(false);
     expect(recentlyRequestedPlannedRestart(dir, null, now)).toBe(false);
+  });
+
+  describe('the exit gap: the child is gone and the server has not handled its exit yet (2026-11-19: a finished 39.6-minute run was cancelled)', () => {
+    const gone = () => false;
+    const alive = () => true;
+    const seen = () => JSON.parse(fs.readFileSync(exitSeenPath(dir), 'utf8')) as { v: number; attemptToken: string; seenAt: number };
+
+    it('a live pid holds for the run bound and writes no sighting (unchanged)', () => {
+      const now = Date.now();
+      marker(now - 10_000, 4242);
+      expect(plannedRestartVerifyState(dir, flag(now), now, alive)).toMatchObject({ hold: true, holdUntilMs: now - 10_000 + VERIFY_RESTART_HOLD_MS });
+      expect(fs.existsSync(exitSeenPath(dir))).toBe(false);
+    });
+
+    it('pid gone with the marker still present holds for the settle window, counted from the first sighting', () => {
+      const now = Date.now();
+      marker(now - 40 * 60_000, 4242);
+      expect(plannedRestartVerifyState(dir, flag(now), now, gone)).toMatchObject({ pending: true, hold: true, holdUntilMs: now + EXIT_SETTLE_RESTART_HOLD_MS });
+      expect(seen()).toEqual({ v: 1, attemptToken: 'token', seenAt: now });
+      // A later look (the other consumer, another process) reads the same sighting: the window is not renewed.
+      expect(plannedRestartVerifyState(dir, flag(now), now + 30_000, gone)).toMatchObject({ hold: true, holdUntilMs: now + EXIT_SETTLE_RESTART_HOLD_MS });
+      expect(seen().seenAt).toBe(now);
+    });
+
+    it('the window ends at its bound: one millisecond before holds, the bound itself does not', () => {
+      const now = Date.now();
+      marker(now - 40 * 60_000, 4242);
+      expect(plannedRestartVerifyState(dir, flag(now), now, gone).hold).toBe(true);
+      expect(plannedRestartVerifyState(dir, flag(now), now + EXIT_SETTLE_RESTART_HOLD_MS - 1, gone).hold).toBe(true);
+      expect(plannedRestartVerifyState(dir, flag(now), now + EXIT_SETTLE_RESTART_HOLD_MS, gone).hold).toBe(false);
+      expect(plannedRestartVerifyState(dir, flag(now), now + 10 * EXIT_SETTLE_RESTART_HOLD_MS, gone).hold).toBe(false);
+    });
+
+    it('a stale marker left by a server that died stops holding at the bound and never starts a second window', () => {
+      const now = Date.now();
+      marker(now - 2 * 60 * 60_000, 4242); // the server died two hours ago; nothing will ever clear this marker
+      const request = flag(now);
+      expect(plannedRestartVerifyState(dir, request, now, gone).hold).toBe(true);
+      for (const later of [EXIT_SETTLE_RESTART_HOLD_MS, EXIT_SETTLE_RESTART_HOLD_MS + 10_000, 5 * 60_000, 30 * 60_000]) {
+        expect(plannedRestartVerifyState(dir, request, now + later, gone).hold, String(later)).toBe(false);
+      }
+      // A second request half an hour later meets the same marker: the sighting is spent, it is not held at all.
+      expect(plannedRestartVerifyState(dir, flag(now + 30 * 60_000), now + 30 * 60_000, gone).hold).toBe(false);
+    });
+
+    it('the marker being cleared ends the hold at once, inside the window', () => {
+      const now = Date.now();
+      marker(now - 40 * 60_000, 4242);
+      expect(plannedRestartVerifyState(dir, flag(now), now, gone).hold).toBe(true);
+      SafeFsExecutor.safeUnlinkSync(markerPath(), { operation: 'planned-restart-verify-guard.test.ts:exit-gap-clear' });
+      expect(plannedRestartVerifyState(dir, flag(now), now + 1, gone).hold).toBe(false);
+    });
+
+    it('once the marker is cleared the settling merge hold takes over, and nothing holds without it', () => {
+      const now = Date.now();
+      marker(now - 40 * 60_000, 4242);
+      expect(plannedRestartVerifyState(dir, flag(now), now, gone).hold).toBe(true);
+      // What the exit handler does: the settling marker first, then the in-flight marker goes.
+      fs.writeFileSync(mergeHoldPath(dir), JSON.stringify({ v: 1, phase: 'settling', since: now + 200 }));
+      SafeFsExecutor.safeUnlinkSync(markerPath(), { operation: 'planned-restart-verify-guard.test.ts:exit-gap-settling' });
+      expect(plannedRestartVerifyState(dir, flag(now), now + 300, gone)).toMatchObject({ hold: true, holdUntilMs: now + 200 + MERGE_SETTLE_RESTART_HOLD_MS });
+    });
+
+    it('bypassHolds skips the settle window and writes no sighting', () => {
+      const now = Date.now();
+      marker(now - 40 * 60_000, 4242);
+      expect(plannedRestartVerifyState(dir, { ...flag(now), bypassHolds: true }, now, gone)).toMatchObject({ pending: true, hold: false });
+      expect(fs.existsSync(exitSeenPath(dir))).toBe(false);
+    });
+
+    it('a request that is not a planned restart, or is three hours old, never waits for it', () => {
+      const now = Date.now();
+      marker(now - 40 * 60_000, 4242);
+      expect(plannedRestartVerifyState(dir, flag(now, false), now, gone).hold).toBe(false);
+      expect(plannedRestartVerifyState(dir, flag(now - VERIFY_RESTART_HOLD_MS), now, gone).hold).toBe(false);
+      expect(fs.existsSync(exitSeenPath(dir))).toBe(false);
+      // One millisecond younger than three hours still waits.
+      expect(plannedRestartVerifyState(dir, flag(now - VERIFY_RESTART_HOLD_MS + 1), now, gone).hold).toBe(true);
+    });
+
+    it('the window never reaches past the run\'s own three-hour bound, and a marker past it does not hold', () => {
+      const now = Date.now();
+      const startedAt = now - VERIFY_RESTART_HOLD_MS + 20_000;
+      marker(startedAt, 4242);
+      expect(plannedRestartVerifyState(dir, flag(now), now, gone)).toMatchObject({ hold: true, holdUntilMs: startedAt + VERIFY_RESTART_HOLD_MS });
+      marker(now - VERIFY_RESTART_HOLD_MS, 4242);
+      expect(plannedRestartVerifyState(dir, flag(now), now, gone).hold).toBe(false);
+    });
+
+    it('a sighting belongs to one run: the next run\'s exit gets its own window', () => {
+      const now = Date.now();
+      marker(now - 40 * 60_000, 4242);
+      expect(plannedRestartVerifyState(dir, flag(now), now, gone).hold).toBe(true);
+      const later = now + 30 * 60_000;
+      fs.writeFileSync(markerPath(), JSON.stringify({ pr: 2, headSha: 'c'.repeat(40), attemptToken: 'token-2', startedAt: later - 25 * 60_000, pid: 4343, pgid: 4343 }));
+      expect(plannedRestartVerifyState(dir, flag(later), later, gone)).toMatchObject({ hold: true, holdUntilMs: later + EXIT_SETTLE_RESTART_HOLD_MS });
+      expect(seen()).toEqual({ v: 1, attemptToken: 'token-2', seenAt: later });
+    });
+
+    it('a sighting that cannot be written does not hold (an unrecorded window would restart at every poll)', () => {
+      const now = Date.now();
+      marker(now - 40 * 60_000, 4242);
+      vi.spyOn(SafeFsExecutor, 'atomicWriteJsonSync').mockImplementation(() => { throw new Error('disk unavailable'); });
+      const warning = vi.spyOn(console, 'warn').mockImplementation(() => {});
+      expect(plannedRestartVerifyState(dir, flag(now), now, gone).hold).toBe(false);
+      expect(warning).toHaveBeenCalledWith('[PlannedRestartVerifyGuard] Could not record the exit sighting; not holding the restart for the settle window');
+    });
+
+    it('a sighting for this run with an unusable time does not hold', () => {
+      const now = Date.now();
+      marker(now - 40 * 60_000, 4242);
+      for (const seenAt of [now + 60_000, 'soon', null]) {
+        fs.writeFileSync(exitSeenPath(dir), JSON.stringify({ v: 1, attemptToken: 'token', seenAt }));
+        expect(plannedRestartVerifyState(dir, flag(now), now, gone).hold, String(seenAt)).toBe(false);
+      }
+    });
+
+    it('a pre-spawn marker (no pid yet) keeps its own 30-second rule and gets no settle window', () => {
+      const now = Date.now();
+      marker(now - 31_000, null);
+      expect(plannedRestartVerifyState(dir, flag(now), now, gone).hold).toBe(false);
+      expect(fs.existsSync(exitSeenPath(dir))).toBe(false);
+    });
+
+    // A pid that no process has: the largest pid is far below this on macOS and Linux.
+    const DEAD_PID = 2_000_000_000;
+
+    it('foreground watcher does not consume the request in the gap, and consumes it once the marker is cleared', async () => {
+      const now = Date.now();
+      marker(now - 40 * 60_000, DEAD_PID);
+      fs.writeFileSync(flagPath(), JSON.stringify(flag(now)));
+      const watcher = new ForegroundRestartWatcher({ stateDir: dir, exitOnRestart: false });
+      const detected = vi.fn();
+      watcher.on('restartDetected', detected);
+      const check = () => (watcher as unknown as { check(): Promise<void> }).check();
+      await check();
+      await check();
+      expect(detected).not.toHaveBeenCalled();
+      expect(fs.existsSync(flagPath())).toBe(true);
+      SafeFsExecutor.safeUnlinkSync(markerPath(), { operation: 'planned-restart-verify-guard.test.ts:gap-foreground' });
+      await check();
+      expect(detected).toHaveBeenCalledOnce();
+      expect(fs.existsSync(flagPath())).toBe(false);
+    });
+
+    it('foreground watcher consumes the request when the window has run out on a marker nobody cleared', async () => {
+      const now = Date.now();
+      marker(now - 40 * 60_000, DEAD_PID);
+      fs.writeFileSync(exitSeenPath(dir), JSON.stringify({ v: 1, attemptToken: 'token', seenAt: now - EXIT_SETTLE_RESTART_HOLD_MS - 1 }));
+      fs.writeFileSync(flagPath(), JSON.stringify(flag(now)));
+      const watcher = new ForegroundRestartWatcher({ stateDir: dir, exitOnRestart: false });
+      const detected = vi.fn();
+      watcher.on('restartDetected', detected);
+      await (watcher as unknown as { check(): Promise<void> }).check();
+      expect(detected).toHaveBeenCalledOnce();
+      expect(fs.existsSync(flagPath())).toBe(false);
+    });
+
+    it('supervisor does not restart in the gap, sees the sighting the watcher wrote, and restarts once the marker is cleared', async () => {
+      const now = Date.now();
+      marker(now - 40 * 60_000, DEAD_PID);
+      fs.writeFileSync(flagPath(), JSON.stringify(flag(now)));
+      // The server's own watcher looks first and writes the sighting; the supervisor is another process reading the same file.
+      const watcher = new ForegroundRestartWatcher({ stateDir: dir, exitOnRestart: false });
+      await (watcher as unknown as { check(): Promise<void> }).check();
+      const first = seen().seenAt;
+      const supervisor = new ServerSupervisor({ projectDir: dir, projectName: 'test', port: 9876, stateDir: dir });
+      const restart = vi.spyOn(supervisor, 'performGracefulRestart').mockResolvedValue(true);
+      const check = () => (supervisor as unknown as { checkRestartRequest(): void }).checkRestartRequest();
+      check();
+      expect(restart).not.toHaveBeenCalled();
+      expect(fs.existsSync(flagPath())).toBe(true);
+      expect(seen().seenAt).toBe(first);
+      SafeFsExecutor.safeUnlinkSync(markerPath(), { operation: 'planned-restart-verify-guard.test.ts:gap-supervisor' });
+      check();
+      expect(restart).toHaveBeenCalledOnce();
+      expect(fs.existsSync(flagPath())).toBe(false);
+    });
+
+    it('supervisor restarts through a bypassed request in the gap', () => {
+      const now = Date.now();
+      marker(now - 40 * 60_000, DEAD_PID);
+      fs.writeFileSync(flagPath(), JSON.stringify({ ...flag(now), bypassHolds: true }));
+      const supervisor = new ServerSupervisor({ projectDir: dir, projectName: 'test', port: 9876, stateDir: dir });
+      const restart = vi.spyOn(supervisor, 'performGracefulRestart').mockResolvedValue(true);
+      (supervisor as unknown as { checkRestartRequest(): void }).checkRestartRequest();
+      expect(restart).toHaveBeenCalledOnce();
+    });
   });
 
   it('protects the pre-spawn intent briefly, then releases an orphan with no child', () => {

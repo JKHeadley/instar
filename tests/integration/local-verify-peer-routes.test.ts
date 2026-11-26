@@ -17,6 +17,8 @@ import express from 'express';
 import request from 'supertest';
 import { afterEach, describe, expect, it } from 'vitest';
 
+import { bindTrial, importTrialPacket, receivedTrial } from '../../src/localVerify/smallPeerReceipts.js';
+import { trialDirectory } from '../../src/localVerify/smallPeerWatchdog.js';
 import { SafeFsExecutor } from '../../src/core/SafeFsExecutor.js';
 import { LocalVerifyService, type PrView } from '../../src/localVerify/LocalVerifyService.js';
 import { computePolicyHash } from '../../src/localVerify/policy.js';
@@ -51,7 +53,7 @@ function ctx(stateDir: string, svc: LocalVerifyService, holdsLease: boolean): Ro
   } as never;
 }
 
-function peerService(prRead?: (pr: number) => Promise<PrView | null>) {
+function peerService(prRead?: (pr: number) => Promise<PrView | null>, machineId = 'peer1') {
   const stateDir = fs.realpathSync(fs.mkdtempSync(path.join(os.tmpdir(), 'lvpeerroutes-')));
   dirs.push(stateDir);
   const views: Record<number, PrView> = { 3: { author: { login: 'EchoOfDawn' }, isCrossRepository: false, headRefName: 'echo/x', headRefOid: sha('a'), baseRefName: 'main', baseRefOid: sha('b') } };
@@ -59,7 +61,7 @@ function peerService(prRead?: (pr: number) => Promise<PrView | null>) {
   const svc = new LocalVerifyService({
     repo: REPO, stateDir, agentHome: '/agents/echo', expectedGhLogin: 'EchoOfDawn', operatorGhLogin: 'JKHeadley',
     verifierVersion: '1.0.0', nodePath: '/usr/bin/node', mainEntry: '/opt/instar/dist/localVerify/runVerifyMain.js',
-    remoteUrl: 'https://github.com/JKHeadley/instar.git', machineId: 'peer1', nodeVersion: 'v24',
+    remoteUrl: 'https://github.com/JKHeadley/instar.git', machineId, nodeVersion: 'v24',
     protectedList: ['.github/'], baseEnv: { PATH: '/usr/bin' }, nice: false, peerOnly: true,
   }, {
     prView: (pr) => prRead ? prRead(pr) : Promise.resolve(views[pr] ?? null),
@@ -102,6 +104,59 @@ const TEST_PEER_SIGNER: MachineSigner = {
 const TEST_PEER_PINS: MachineKeyLookup = (_m, hash) => (hash === TEST_PEER_HASH ? { status: 'ok', publicKeyPem: TEST_PEER_KEYS.publicKey } : { status: 'unknown' });
 
 describe('peer verifier routes (integration, real HTTP)', () => {
+  it('redelivers a signed capacity receipt after disconnect and accepts a repeated acknowledgement', async () => {
+    const p = peerService();
+    const coordinator = peerService(undefined, 'coord');
+    const ck = generateSigningKeyPair();
+    const hash = signerKeyHashOf(ck.publicKey);
+    const signer: MachineSigner = {machineId: ()=>'coord', signerKeyHash:()=>hash,
+      sign: payload=>({machineId:'coord',signerKeyHash:hash,sig:edSign(payload,ck.privateKey)})};
+    p.svc.setPeerWiring({signer:TEST_PEER_SIGNER,keyLookupFactory:()=> (machineId,key)=>
+      machineId==='coord' && key===hash ? {status:'ok',publicKeyPem:ck.publicKey} : {status:'unknown'}});
+    const url = await listen(appFor(ctx(p.stateDir,p.svc,false)));
+    const client = makePeerClient(AUTH,'echo');
+    const target = {machineId:'peer1',url};
+    bindTrial(p.stateDir,runBody(),'peer1');
+    bindTrial(coordinator.stateDir,runBody(),'peer1',true);
+    const receipt = {attemptId:ATT, outcome:'capacity', reason:'memory', elapsedMs:487,
+      minimumAvailableBytes:3200, peakRssBytes:1200, samples:1, cleanupProven:true, reserveBreached:false};
+    fs.writeFileSync(path.join(trialDirectory(p.stateDir, ATT),'receipt.json'),JSON.stringify(receipt));
+    expect((await request(url).get('/local-verify/trial-receipts?coordinator=coord')).status).toBe(401);
+    const first = (await client.trialReceipts!(target,'coord',[ATT]))[0];
+    const {ack} = importTrialPacket(coordinator.stateDir,first,'peer1',Date.now(),TEST_PEER_PINS,signer);
+    expect((await client.trialReceipts!(target,'coord',[ATT]))[0].receipt).toEqual(receipt);
+    expect(await client.acknowledgeTrial!(target,{...ack,packetDigest:'d'.repeat(64)})).toBe(false);
+    expect(await client.acknowledgeTrial!(target,ack)).toBe(true);
+    expect(await client.acknowledgeTrial!(target,ack)).toBe(true);
+    expect(await client.trialReceipts!(target,'coord',[ATT])).toEqual([]);
+    expect(receivedTrial(coordinator.stateDir,ATT)?.receipt).toEqual(receipt);
+    p.svc.shutdown();
+    coordinator.svc.shutdown();
+  });
+  it('a small verifier refuses unmarked work, main arbitration and unsupported trial policies over HTTP', async () => {
+    const machineId = 'm_' + '3'.repeat(32);
+    const p = peerService(undefined, machineId);
+    const policy = { version: 1, machineId, collector: 'darwin-vm-stat-native-pressure-v1',
+      floorBytes: 8192, reserveBytes: 4096, recoveryMs: 3000, unitWorkers: 2, integration: 1, e2e: 1 };
+    p.svc.setPeerWiring({ smallPeerTrial: () => policy });
+    p.svc.setLaneShards(() => ({ unitWorkers: 2, integration: 1, e2e: 1 }));
+    const url = await listen(appFor(ctx(p.stateDir, p.svc, false)));
+    const headers = { Authorization: `Bearer ${AUTH}` };
+    const run = (b: object) => request(url).post('/local-verify/peer-run').set(headers).send(b);
+    expect((await run(runBody())).body.reason).toBe('peer-disabled');
+    expect((await run({ ...runBody(), kind: 'main-arbitration', pr: 0, headSha: sha('b'), smallPeerTrial: policy })).status).toBe(400);
+    expect((await run({ ...runBody(), smallPeerTrial: { ...policy, e2e: 3 } })).status).toBe(400);
+    expect((await run({ ...runBody(), smallPeerTrial: { ...policy, unitWorkers: 1 } })).body.reason).toBe('peer-disabled');
+    expect((await run({ ...runBody(), smallPeerTrial: { ...policy, floorBytes: 9999 } })).body.reason).toBe('peer-disabled');
+    expect((await request(url).post('/local-verify/peer-trial-lease').set(headers).send({
+      attemptId: ATT, leaseEpoch: 7, coordinatorMachineId: 'coord',
+    })).status).toBe(409);
+    p.svc.setPeerWiring({ smallPeerTrial: () => null });
+    expect((await run(runBody())).body.reason).toBe('peer-disabled');
+    expect(p.children).toHaveLength(0);
+    p.svc.shutdown();
+  });
+
   it('refuses a new peer attempt over HTTP while installed bytes still await a restart', async () => {
     const p = peerService();
     let activation: string | null = new Date().toISOString();

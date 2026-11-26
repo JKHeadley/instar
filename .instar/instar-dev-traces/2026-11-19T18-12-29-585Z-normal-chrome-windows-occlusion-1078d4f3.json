@@ -1,0 +1,29 @@
+{
+  "version": 2,
+  "slug": "normal-chrome-windows-occlusion",
+  "sessionId": "5944ef23-adef-4288-95fe-e3994d4e38a1",
+  "timestamp": "2026-11-19T18:12:29.585Z",
+  "artifactPath": "upgrades/side-effects/normal-chrome-windows-occlusion.md",
+  "artifactSha256": "150e7d5f04d60c5473d101ebbc375a053397f923321a994e7bf37a10102cf7c3",
+  "coveredFiles": [
+    "docs/specs/normal-chrome-windows-occlusion.eli16.md",
+    "docs/specs/normal-chrome-windows-occlusion.md",
+    "docs/specs/reports/normal-chrome-windows-occlusion-convergence.md",
+    "scripts/blocking-decision-surfaces-baseline.json",
+    "src/core/PostUpdateMigrator.ts",
+    "src/data/builtinSkillContent.ts",
+    "src/templates/scripts/browser/native-drive.ps1",
+    "tests/fixtures/skills/normal-chrome-browser-v3.md",
+    "tests/unit/PostUpdateMigrator-normalChromeBrowser.test.ts",
+    "tests/unit/normal-chrome-browser-skill.test.ts",
+    "upgrades/next/normal-chrome-windows-occlusion.md",
+    "upgrades/side-effects/normal-chrome-windows-occlusion.md"
+  ],
+  "phase": "complete",
+  "tier": 1,
+  "tierReasoning": "One helper script's launch flag and read-failure message, a skill-text addition with an anchored idempotent migration; a revert plus the documented text-removal migration fully undoes it; no credentials, auth, money, identity or new blocking authority.",
+  "eli16Path": "docs/specs/normal-chrome-windows-occlusion.eli16.md",
+  "sideEffectsPath": "upgrades/side-effects/normal-chrome-windows-occlusion.md",
+  "secondPass": "not-required",
+  "reviewerConcurred": null
+}

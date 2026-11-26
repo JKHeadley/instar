@@ -52,7 +52,7 @@ describe('holding continuity (lease epoch rises on every boot)', () => {
     expect(r.anchor).toBeNull();
     expect(r.quarantine).toEqual({});
     expect(r.durations).toEqual([5 * MIN]);
-    expect(r.holding).toEqual({ holder: self, epoch: 9 });
+    expect(r.holding).toEqual({ holder: self, epoch: 9, since: 9 }); // a new holding starts at its own epoch (local-verify-peer-works-through-restart C.1)
   });
 });
 

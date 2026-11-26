@@ -12,6 +12,9 @@ primary_region = "sjc"
   RELAY_HOST = "0.0.0.0"
   RELAY_ADMIN_PORT = "9091"
   RELAY_DATA_DIR = "/data"
+  # SEC-139: the caller address comes from the header Fly's proxy sets; without it every caller
+  # would share Fly's own address as one rate-limit bucket.
+  RELAY_CLIENT_IP_HEADER = "fly-client-ip"
 
 # RELAY_ADMIN_KEY set via: fly secrets set RELAY_ADMIN_KEY=<key>
 

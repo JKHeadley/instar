@@ -11,7 +11,7 @@ import {
   maintainerMode, sourceState, buildShipping, watcherLine, releaseLine, holdWords, verifyWords, rollbackWords,
   buildPace, paceFailure, pacificDay, buildFeedback, operatorTodos, authorityCard, authorityStatusLine, progressLine, queueRow,
   readinessAuthorityRequest, triageAuthorityRequest, commitRequest, authorityResultWords, commitResultWords, developmentHeadline, stoppedLead, foldFromHash,
-  WATCHER_CADENCE_MS, STALL_TICKS, DEV_TOOLS_KEY,
+  WATCHER_CADENCE_MS, STALL_TICKS, DEV_TOOLS_KEY, borrowedSummary, borrowedLaneWords,
 } from '../../dashboard/console/development-model.js';
 import { NATIVE_PAGES, tabHref, GROUPS, MERGED } from '../../dashboard/console/nav-model.js';
 
@@ -29,6 +29,16 @@ const proposal = (over: Record<string, unknown> = {}) => ({
   summary: 'Let GPT-6 Luna (via Codex) decide which of up to 50 incoming reports a batch become work items, spending at most $5 a day.',
   pausedBecause: null, ...over,
 });
+const consumerProposal = {
+  state: 'pending',
+  localAction: true,
+  proposalSetHash: 'a'.repeat(64),
+  approvedBatchBound: 2,
+  items: [
+    { workId: 'work-1', title: 'Keep messages in view', priority: 'high', reportCount: 3 },
+    { workId: 'work-2', title: 'Show the active device', priority: 'normal', reportCount: 1 },
+  ],
+};
 const watcher = (over: Record<string, unknown> = {}) => ({
   lastTickAt: minsAgo(3), lastSuccessfulListAt: minsAgo(3), breaker: { open: false }, invariantOk: true, gate: { rollback: [], emergencyPause: [], poolArmed: true, mergeAllowed: true },
   snapshot: { at: minsAgo(3), entries: [{ pr: 2391, headRefName: 'echo/x', headRefOid: 'abc', kind: 'code-owner-review' }, { pr: 2380, headRefName: 'echo/y', headRefOid: 'def', kind: 'mergeable' }] },
@@ -237,6 +247,26 @@ describe('Feedback', () => {
     expect(authorityStatusLine('triage', { status: 'none' })).toContain('No triage model is approved yet');
     for (const line of [authorityStatusLine('readiness', paused), authorityStatusLine('readiness', revoked), authorityStatusLine('readiness', active)]) expect(line).not.toMatch(/version/i);
   });
+  it('counts only an exact pending promotion as one owner approval', () => {
+    const feedback = (data: unknown) => buildFeedback(feedbackOk({ queue: ok({ items: [] }), consumerPromotion: ok(data) }), NOW);
+    const pending = feedback(consumerProposal);
+    expect(pending.todos.map((todo) => todo.kind)).toEqual(['consumer-promotion']);
+    expect(pending.tiles.find((tile) => tile.key === 'needs')?.n).toBe(1);
+    expect(pending.headline).toBe('Feedback needs your approval to create work items.');
+    expect(pending.line).toContain('1 thing needs you');
+    const previous = feedback({ ...consumerProposal, promotionRecord: { requiresReapproval: true } });
+    expect(previous.todos[0].detail).toContain('previous approval needs to be renewed');
+    for (const state of ['already-live', 'configured-simulation', 'no-work', 'non-owner', 'restore', 'unavailable']) {
+      expect(feedback({ state }).todos).toEqual([]);
+    }
+    const proxied = feedback({ ...consumerProposal, localAction: false, servedBy: 'studio' });
+    expect(proxied.todos).toEqual([]);
+    expect(proxied.notes).toContain('Feedback promotion is available from the machine that runs feedback processing.');
+    const malformed = feedback({ ...consumerProposal, approvedBatchBound: 3 });
+    expect(malformed.todos).toEqual([]);
+    expect(malformed.state).toBe('cant-tell');
+    expect(feedback({ ...consumerProposal, localAction: undefined }).state).toBe('cant-tell');
+  });
   it('the fix worker’s one-time OK and a held secret-shaped fix are plan to-dos with their attempt id', () => {
     const f = buildFeedback(feedbackOk({ execute: ok({ reason: 'approver-not-independent', live: 0, openPrs: 0, attempts: [{ attemptId: 'at-1', state: 'held', reason: 'needs-review-secret-shape', secretFiles: ['.env.example'] }] }) }), NOW);
     expect(f.todos.map((t) => [t.kind, t.action])).toEqual([['plan', 'accept-approver-dependence'], ['plan', 'publish-secret-shape'], ['link', undefined]]);
@@ -420,7 +450,15 @@ describe('development page in a DOM', () => {
       '/feedback-factory/drain/status': { body: feedbackOk().drain.data }, '/throughput/series?days=14': { status: 503, body: { error: 'github-auth-unavailable' } }, ...over,
     };
     g.fetch = async (url: string, opts?: { method?: string; body?: string }) => {
-      if (opts && opts.method === 'POST') { posted.push({ url, body: JSON.parse(opts.body || '{}') }); return { ok: true, status: 200, json: async () => ({ ok: true }) }; }
+      if (opts && opts.method === 'POST') {
+        const body = JSON.parse(opts.body || '{}');
+        posted.push({ url, body });
+        if (url === '/feedback-factory/consumer/promote') {
+          table['/feedback-factory/consumer/promotion/proposal'] = { body: { state: 'already-live' } };
+          return { ok: true, status: 200, json: async () => ({ promoted: true, approvedBatchBound: body.approvedBatchBound }) };
+        }
+        return { ok: true, status: 200, json: async () => ({ ok: true }) };
+      }
       const hit = table[url];
       if (!hit) return { ok: false, status: 404, json: async () => ({ error: 'no such route in the test' }) };
       const status = hit.status || 200;
@@ -435,6 +473,37 @@ describe('development page in a DOM', () => {
   const expanded = (doc: Document, id: string) => doc.querySelector(`#sec-${id} .list-head`)!.getAttribute('aria-expanded');
   const stoppedGate = { gate: { rollback: ['L1', 'L2'], emergencyPause: [], poolArmed: true, mergeAllowed: false } };
 
+  it('reviews every item and sends one PIN-bound exact promotion before refreshing the count', async () => {
+    const { doc, posted } = await bootPage('#/work/development?s=feedback', {
+      '/feedback-factory/readiness-authorities/proposal': { body: proposal({ status: 'active', approveAction: null }) },
+      '/feedback-factory/consumer/promotion/proposal': { body: consumerProposal },
+    });
+    const button = (label: string, scope: ParentNode = doc) =>
+      [...scope.querySelectorAll('button')].find((element) => element.textContent === label)!;
+    expect(doc.querySelector('#sec-feedback .fold-line')!.textContent).toContain('1 thing needs you');
+    button('Promote').click();
+    const review = doc.querySelector('.sheet')!;
+    expect(review.textContent).toContain('starts with this batch');
+    expect(review.textContent).toContain('up to 2 work items per run');
+    expect(review.textContent).toContain('until you revoke the approval and approve a new batch');
+    expect(review.textContent).toContain('Keep messages in view');
+    expect(review.textContent).toContain('normal priority · 1 report · work-2');
+    expect(posted).toHaveLength(0);
+    button('Confirm with PIN', review).click();
+    await settle();
+    const pin = doc.querySelector('.sheet .pin-input') as HTMLInputElement;
+    pin.value = '246810';
+    pin.form!.dispatchEvent(new dom.window.Event('submit', { bubbles: true, cancelable: true }));
+    await settle();
+    expect(posted).toHaveLength(1);
+    expect(posted[0]).toMatchObject({
+      url: '/feedback-factory/consumer/promote',
+      body: { pin: '246810', approvedBatchBound: 2, evidenceHash: consumerProposal.proposalSetHash, operatorDecisionId: expect.stringMatching(/^console-consumer-promotion:/) },
+    });
+    expect(doc.querySelector('.pin-input')).toBeNull();
+    expect(doc.querySelector('.sheet .action-status')!.textContent).toContain('Feedback processing is approved.');
+    expect(doc.querySelector('#sec-feedback .fold-line')!.textContent).toContain('nothing needs you');
+  });
   it('stopped: the card leads the page, above a Feedback approval, and both buttons take the same PIN path to the same route', async () => {
     const { doc, posted } = await bootPage('#/work/development', { '/green-pr-automerge': { body: watcher(stoppedGate) } });
     const page = doc.querySelector('.dev-page')!;
@@ -511,6 +580,25 @@ describe('development page in a DOM', () => {
     dom.window.location.hash = '#/work/development?s=nonsense';
     await settle();
     expect(expanded(doc, 'shipping')).toBe('true');
+  });
+
+  it('a run machine with a borrowed helper shows one quiet card with each lane in plain words; none without a helper', async () => {
+    const lane = (o: Record<string, unknown>) => ({ state: 'practice', mayCount: false, proven: true, evidence: { coverage: { complete: true }, spread: { complete: true }, failingDirection: { complete: false }, checkSlice: { complete: true }, wrongPassWindow: { complete: true } }, lastVerify: null, ...o });
+    const borrowed = { mode: 'count', helpers: [{ machineId: 'm_laptop', dryRunRunning: false, dryRunIntent: null, lanes: {
+      unit: lane({ state: 'counting', lastVerify: { at: '2026-10-25T23:00:00.000Z', sent: 40, finished: 32 } }), integration: lane({}), e2e: { state: 'practice', mayCount: false, evidence: null },
+    } }] };
+    const { doc } = await bootPage('#/work/development', { '/local-verify': { body: verify({ borrowed }) } });
+    const card = doc.querySelector('[data-borrowed-run]')!;
+    expect(card).not.toBeNull();
+    expect(card.textContent).toContain('Borrowed machines help the test line');
+    expect(card.textContent).toContain('quick tests: its passing results count');
+    expect(card.textContent).toContain('integration tests: practising (4 of 5 checks met)');
+    expect(card.textContent).toContain('end-to-end tests: not tried yet (no dry run)');
+    expect(card.textContent).toContain('it was given 40 files and finished 32');
+    // Not a need: nothing on it asks the operator anything.
+    expect(card.querySelector('button')).toBeNull();
+    const none = await bootPage('#/work/development', { '/local-verify': { body: verify({ borrowed: { mode: 'off', helpers: [] } }) } });
+    expect(none.doc.querySelector('[data-borrowed-run]')).toBeNull();
   });
 
   it('notes under the Feedback tiles arrive as notes, never "[object HTMLParagraphElement]"', async () => {
@@ -606,5 +694,24 @@ describe('development page in a DOM', () => {
     (doc.querySelector('#sec-pace .list-head') as HTMLButtonElement).click();
     expect(doc.querySelector('#sec-pace .card[data-state="unknown"] .card-line')!.textContent).toBe('Can’t reach GitHub from this machine: no GitHub sign-in found.');
     expect(doc.querySelectorAll('#sec-pace .fchip[aria-pressed="true"]')).toHaveLength(2);
+  });
+});
+
+describe('borrowed helpers on the run machine, in plain words', () => {
+  it('each lane state reads as words, never a code', () => {
+    expect(borrowedLaneWords({ state: 'counting', proven: true, evidence: {} })).toBe('its passing results count');
+    expect(borrowedLaneWords({ state: 'suspended', proven: true, evidence: {} })).toBe('paused after many disagreements in one run');
+    expect(borrowedLaneWords({ state: 'lapsed: image-changed', proven: true, evidence: {} })).toBe('back to practice after a problem');
+    expect(borrowedLaneWords({ state: 'practice', proven: false, evidence: {} })).toBe('not tried yet (no dry run)');
+    expect(borrowedLaneWords(undefined)).toBe('not tried yet (no dry run)');
+    expect(borrowedLaneWords({ state: 'practice', proven: true, evidence: { coverage: { complete: true } } })).toBe('practising (1 of 5 checks met)');
+  });
+  it('a summary only while a helper is set up; a dry run in progress is said', () => {
+    expect(borrowedSummary(null)).toBeNull();
+    expect(borrowedSummary({ mode: 'off', helpers: [{ machineId: 'm' }] })).toBeNull();
+    expect(borrowedSummary({ mode: 'practice', helpers: [] })).toBeNull();
+    const s = borrowedSummary({ mode: 'practice', helpers: [{ machineId: 'm_laptop', dryRunRunning: true, lanes: {} }] })!;
+    expect(s.title).toBe('Borrowed machines practise for the test line');
+    expect(s.rows[0]).toMatchObject({ machine: 'm_laptop', dry: 'A dry run is going on.', last: 'It has not been given any work yet.' });
   });
 });

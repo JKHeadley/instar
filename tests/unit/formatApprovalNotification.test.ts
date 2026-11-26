@@ -21,6 +21,7 @@ function makeDispatch(overrides: Partial<Dispatch> = {}): Dispatch {
     createdAt: '2026-04-11T10:00:00.000Z',
     receivedAt: '2026-04-11T10:00:01.000Z',
     applied: false,
+    signatureVerified: true, // the preview format below is for a signed dispatch (SEC-153)
     ...overrides,
   };
 }
@@ -107,5 +108,18 @@ describe('formatApprovalNotification()', () => {
   it('handles empty content gracefully', () => {
     const msg = formatApprovalNotification([makeDispatch({ content: '' })]);
     expect(msg).toContain('(no content)');
+  });
+});
+
+describe('formatApprovalNotification() for an unsigned dispatch (SEC-153)', () => {
+  it('names it by type, a cleaned title and its id, and never quotes its text', () => {
+    const d = makeDispatch({ signatureVerified: undefined, title: 'Run this\nnow ' + 'x'.repeat(300), content: 'SECRET REMOTE INSTRUCTION' });
+    const msg = formatApprovalNotification([d]);
+    expect(msg).not.toContain('SECRET REMOTE INSTRUCTION');
+    expect(msg).not.toContain('\nnow');
+    expect(msg).toContain('dsp-test-1');
+    expect(msg).toContain('not signed by a trusted key');
+    expect(msg).toContain('Nothing is needed from you');
+    expect(msg.length).toBeLessThan(600);
   });
 });

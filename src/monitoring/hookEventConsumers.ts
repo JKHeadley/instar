@@ -54,6 +54,21 @@ export function wireCompactionTrigger1(receiver: HookEventReceiver, deps: Compac
   });
 }
 
+/**
+ * The shadow fold runner's trigger: a session's turn end. Returns the unsubscribe.
+ * A throw is contained, so it can never skip the hook's other consumers.
+ */
+export function wireShadowFoldStop(
+  receiver: HookEventReceiver,
+  onStop: (payload: { instar_session_id?: string; session_id?: string; last_assistant_message?: string }) => void,
+): () => void {
+  const listener = (payload: HookEventPayload): void => {
+    try { onStop(payload as never); } catch (e) { console.warn(`[fold-shadow] Stop trigger failed: ${e instanceof Error ? e.name : 'error'}`); } // @silent-fallback-ok — a skipped practice fold, logged
+  };
+  receiver.on('Stop', listener);
+  return () => { receiver.off('Stop', listener); };
+}
+
 /** Pre-compaction memory flush (off by default; its own flag). */
 export function wirePreCompactionFlush(
   receiver: HookEventReceiver,

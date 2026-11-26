@@ -1,0 +1,23 @@
+{
+  "version": 2,
+  "slug": "desktop-first-grant-wording",
+  "sessionId": "9525d99a-d6de-4412-abf1-0f88b04d1f5c",
+  "timestamp": "2026-11-20T19:44:06.128Z",
+  "artifactPath": "upgrades/side-effects/desktop-first-grant-wording.md",
+  "artifactSha256": "7fc851bbe533e9fc76d6ba35edbd44132b5e024963a0484967f67ec227e98e02",
+  "coveredFiles": [
+    "docs/specs/desktop-first-grant-wording.eli16.md",
+    "src/core/DesktopHelperPermissionNotice.ts",
+    "src/core/DesktopProbeReadiness.ts",
+    "tests/unit/DesktopHelperPermissionNotice.test.ts",
+    "upgrades/next/desktop-first-grant-wording.md",
+    "upgrades/side-effects/desktop-first-grant-wording.md"
+  ],
+  "phase": "complete",
+  "tier": 1,
+  "tierReasoning": "Wording-only fix: the first-grant Remote Desktop permission reason and Attention title no longer claim an update or 'again' on a Mac that never allowed the helper. No readiness, route or state change; a revert fully undoes it.",
+  "eli16Path": "docs/specs/desktop-first-grant-wording.eli16.md",
+  "sideEffectsPath": "upgrades/side-effects/desktop-first-grant-wording.md",
+  "secondPass": "not-required",
+  "reviewerConcurred": null
+}

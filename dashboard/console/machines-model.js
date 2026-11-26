@@ -156,7 +156,8 @@ export function poolUsageOf(res) {
   if (!Array.isArray(d.machines)) {
     if (typeof d.headline !== 'string') return { ok: false, reason: 'the resource answer had no headline' };
     const rows = [d.server ? rowOf(d.server) : null, ...(Array.isArray(d.sessions) ? d.sessions.slice(0, 5).map(rowOf) : [])].filter(Boolean);
-    return { ok: true, pooled: false, summary: d.headline, busiest: null, byName: d.machine ? { [d.machine]: { line: d.headline, state: d.enabled ? 'answering' : 'off', rows } } : {} };
+    const self = { line: d.headline, state: d.enabled ? 'answering' : 'off', rows };
+    return { ok: true, pooled: false, summary: d.headline, busiest: null, self, byName: d.machine ? { [d.machine]: self } : {} };
   }
   const byName = {};
   for (const m of d.machines) {

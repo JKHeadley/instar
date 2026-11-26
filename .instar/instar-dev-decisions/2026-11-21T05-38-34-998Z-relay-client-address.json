@@ -1,0 +1,34 @@
+{
+  "ts": "2026-11-21T05:38:34.998Z",
+  "slug": "relay-client-address",
+  "suggestedTier": 2,
+  "declaredTier": 1,
+  "riskFloor": 2,
+  "riskFloorReasons": [
+    "safety-invariant proximity: src/commands/relay.ts matches relay / delivery path",
+    "safety-invariant proximity: src/threadline/relay/A2ABridge.ts matches relay / delivery path",
+    "safety-invariant proximity: src/threadline/relay/RelayRateLimiter.ts matches relay / delivery path",
+    "safety-invariant proximity: src/threadline/relay/RelayServer.ts matches relay / delivery path",
+    "safety-invariant proximity: src/threadline/relay/clientAddress.ts matches relay / delivery path",
+    "safety-invariant proximity: src/threadline/relay/types.ts matches relay / delivery path"
+  ],
+  "belowFloor": true,
+  "files": 6,
+  "loc": 195,
+  "scope": {
+    "basis": "staged-in-scope-paths-including-deleted",
+    "files": [
+      "src/commands/relay.ts",
+      "src/threadline/relay/A2ABridge.ts",
+      "src/threadline/relay/RelayRateLimiter.ts",
+      "src/threadline/relay/RelayServer.ts",
+      "src/threadline/relay/clientAddress.ts",
+      "src/threadline/relay/types.ts"
+    ],
+    "addedLines": 176,
+    "deletedLines": 19
+  },
+  "causalAutopsy": null,
+  "classClosure": null,
+  "verdict": "pass"
+}
