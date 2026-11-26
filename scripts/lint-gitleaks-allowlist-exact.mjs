@@ -280,12 +280,46 @@ export function shadowedByDefaultPaths(paths) {
   return (paths ?? []).filter((p) => !NEVER_SHADOWED.has(p) && DEFAULT_PATH_ALLOWLIST.some((re) => re.test(p)));
 }
 
+const COMMIT_ID = /^(?:[a-f0-9]{40}|[a-f0-9]{64})$/;
+
+export function secretScanRange(base, head, event, repoRoot = process.cwd()) {
+  if (!COMMIT_ID.test(head) || !['push', 'pull_request'].includes(event)
+      || (base && !COMMIT_ID.test(base))) throw new Error('invalid commit IDs or event');
+  const exists = id => {
+    try {
+      execFileSync('git', ['cat-file', '-e', id + '^{commit}'], { cwd: repoRoot, stdio: 'ignore' });
+      return true;
+    } catch (error) {
+      if (error?.status === 1 || error?.status === 128) return false;
+      throw error;
+    }
+  };
+  if (!exists(head)) throw new Error('head commit is unavailable');
+  if (!base || /^0+$/.test(base) || !exists(base)) {
+    if (event !== 'push') throw new Error('pull request base commit is unavailable');
+    return head;
+  }
+  if (event === 'push') {
+    try {
+      execFileSync('git', ['merge-base', '--is-ancestor', base, head], { cwd: repoRoot, stdio: 'ignore' });
+    } catch (error) {
+      if (error?.status !== 1) throw error;
+      return head;
+    }
+  }
+  return base + '..' + head;
+}
+
 /**
  * Files added or modified in `range` (git `base..head`) that the default path
  * allowlist shadows, read from the repository the command runs in (the workflow's
  * checkout), not from wherever this script happens to live.
  */
 export function shadowedChangedPaths(range, repoRoot = process.cwd()) {
+  if (COMMIT_ID.test(range)) {
+    const tree = execFileSync('git', ['ls-tree', '-rz', '--name-only', range], { cwd: repoRoot, encoding: 'utf8' });
+    return shadowedByDefaultPaths(tree.split('\0').filter(Boolean));
+  }
   // Every change but a deletion (adds, modifications, renames, copies, type changes),
   // from the merge base so main's own movement is not re-scanned; NUL-separated so a
   // path with spaces, quotes or non-ASCII survives (core.quotePath would mangle it).
@@ -310,12 +344,26 @@ function main(argv) {
     process.stdout.write(canonicalText(parsed));
     return 0;
   }
+  if (argv[0] === '--ci-range') {
+    try {
+      process.stdout.write(secretScanRange(argv[1], argv[2], argv[3]) + '\n');
+      return 0;
+    } catch {
+      console.error('Secret scan could not establish the commit range for this event.');
+      return 2;
+    }
+  }
   if (argv[0] === '--shadowed-paths') {
     const range = argv[1];
-    if (!range || !range.includes('..')) { console.error('usage: --shadowed-paths <base>..<head>'); return 2; }
+    if (!range || (!range.includes('..') && !COMMIT_ID.test(range))) { console.error('usage: --shadowed-paths <base>..<head> | <head>'); return 2; }
     // NUL-separated, for `while IFS= read -r -d '' p` in the workflow.
-    for (const p of shadowedChangedPaths(range)) process.stdout.write(p + '\0');
-    return 0;
+    try {
+      for (const p of shadowedChangedPaths(range)) process.stdout.write(p + '\0');
+      return 0;
+    } catch {
+      console.error('Secret scan could not enumerate the paths for this commit range.');
+      return 2;
+    }
   }
   const file = argv[0] ? path.resolve(argv[0]) : DEFAULT_FILE;
   const r = checkFile(file);
