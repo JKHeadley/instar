@@ -21,6 +21,7 @@ Evidence from one affected agent (Bob) showed every failing call had gone to Gem
 - Nothing is blocked that was allowed before. The change only stops sending checks to a service that cannot answer, and adds information.
 - Removing this change is a plain revert. The new database column is optional, and older versions simply ignore it.
 - The sign-in test reads one local file and never prints or stores its contents.
+- Instar's release check keeps a list of which code its release evidence covers. The new error-labelling helper is added to that list as shared AI-call plumbing, the same way the code around it is listed. Nothing the evidence covers changed.
 
 ## What you need to decide
 

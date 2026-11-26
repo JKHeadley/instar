@@ -49,6 +49,7 @@ Compliant (`docs/signal-vs-authority.md`). The error class and degradation repor
 - `/health` hot path: `reliability()` stays one grouped query, now grouped by `(feature, errorClass)` and folded in JS; same index, row count bounded by features × classes.
 - `byFeatureCore` adds one grouped query over error rows only, inside a try/catch.
 - The spend rollup and decision-quality tables are untouched.
+- Stage-B certified-set manifest (`src/data/stageBCertifiedSet.ts`): `llmErrorClass.ts` joins the import closure through `CircuitBreakingIntelligenceProvider.ts`, so it is listed as excluded with the same reason as the provider plumbing around it. No certified file changed and the evidence binding is unchanged (`stage-b-certified-fingerprint --check` OK).
 - Sentinel/reflector categories use the same active set, so a signed-out Gemini no longer appears in their `failureSwap` tail either (it would have failed there too).
 
 ## 6. External surfaces
