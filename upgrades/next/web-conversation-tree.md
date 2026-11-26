@@ -14,4 +14,4 @@ The web can display nested shared conversation sections using the existing owner
 
 ## Evidence
 
-Focused console tests exercise both authorization paths, nested placement, pinned project chats and stored collapse preferences. Chromium checks at 390 and 1280 pixels use the response from a signed disposable server. Real owner pairing and combined linked-card acceptance remain pending.
+Focused console tests exercise both authorization paths, nested placement, pinned project chats and stored collapse preferences. Chromium checks at 390 and 1280 pixels use the response from a signed disposable server. The signed fixture also confirms a card conversation stays in its project and links back to its work card. Real owner pairing remains pending.

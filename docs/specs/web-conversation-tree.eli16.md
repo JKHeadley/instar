@@ -10,4 +10,4 @@ On the first load, the tree waits for the placement response so a pinned project
 
 The new view takes over when the server confirms that placement is complete and supplies all three sections.
 
-A signed disposable server supplied the project, nested group, and ungrouped chat used in the phone and desktop browser checks. The checks verify that the generated conversation stays inside its project, the hidden chat stays out of the list, and Grouped and Flat can be switched. Production owner pairing and combined linked-card acceptance still need their own checks.
+A signed disposable server supplied the project, nested group, and ungrouped chat used in the phone and desktop browser checks. The checks verify that the generated conversation stays inside its project, the hidden chat stays out of the list, and Grouped and Flat can be switched. The linked-card fixture also confirms that a work card’s conversation appears in its project and offers a link back to the exact card in the Work Board. Production owner pairing still needs its own check.

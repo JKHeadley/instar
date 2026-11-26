@@ -1,0 +1,23 @@
+{
+  "version": 2,
+  "slug": "web-conversation-tree",
+  "sessionId": "b5892410-5874-4620-9f7b-5e54791d9a9e",
+  "timestamp": "2026-11-26T11:27:21.799Z",
+  "artifactPath": "upgrades/side-effects/web-conversation-tree.md",
+  "artifactSha256": "a084990722cb5d50279f03af280df2ca469199c9c326ea81ac78905508a7415d",
+  "coveredFiles": [
+    "dashboard/console/chats-model.js",
+    "dashboard/console/chats.js",
+    "dashboard/console/conversation-tree.js",
+    "docs/specs/web-conversation-tree.eli16.md",
+    "tests/unit/console-chats-page.test.ts",
+    "upgrades/next/web-conversation-tree.md"
+  ],
+  "phase": "complete",
+  "tier": 1,
+  "tierReasoning": "Read-only work card navigation using the exact reference from the signed conversation list.",
+  "eli16Path": "docs/specs/web-conversation-tree.eli16.md",
+  "sideEffectsPath": "upgrades/side-effects/web-conversation-tree.md",
+  "secondPass": "not-required",
+  "reviewerConcurred": null
+}

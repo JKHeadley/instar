@@ -520,17 +520,22 @@ describe('Conversations page', () => {
 
   it('uses the signed shared tree without lifting a pinned project child out of its project', async () => {
     const { idb, publicKey } = await seeded();
+    const linkedId = '11111111-1111-4111-8111-111111111111';
+    const cardId = 'wc_0000000000000042';
+    const linked = { id: linkedId, platform: 'app', title: 'Linked conversation',
+      creationSource: { kind: 'work-board-card', cardId } };
+    const linkedNode = { ...worker(5), ref: { kind: 'conversation', platform: 'app', conversationKey: linkedId }, title: linked.title };
     const tree = { partial: false, placementComplete: true, projects: 'known',
       root: { ...worker(1), title: 'Chief of Staff' },
-      sections: { projects: [{ ref: effort, kind: 'effort', title: 'Dashboard project', visibleChildCount: 2,
+      sections: { projects: [{ ref: effort, kind: 'effort', title: 'Dashboard project', visibleChildCount: 3,
         project: { title: 'Dashboard project', conversationKey: 'telegram:2' },
-        children: [worker(2), worker(4)], childrenComplete: true }], groups: [], ungrouped: [worker(3)] },
+        children: [worker(2), worker(4), linkedNode], childrenComplete: true }], groups: [], ungrouped: [worker(3)] },
       nextCursor: null };
     let resolveTree!: (result: { status: number; body: unknown }) => void;
     const waitingTree = new Promise<{ status: number; body: unknown }>(resolve => { resolveTree = resolve; });
     const { doc } = await boot((c) => {
       if (c.url.startsWith('/mobile/browser-devices/status')) return { status: 200, body: STATUS };
-      if (c.url.startsWith('/mobile/conversations?scope=pool')) return { status: 200, body: { ...LIST(), pinnedRows: [LIST().conversations[3]], pinnedRefs: [] } };
+      if (c.url.startsWith('/mobile/conversations?scope=pool')) return { status: 200, body: { ...LIST(), conversations: [...LIST().conversations, linked], pinnedRows: [LIST().conversations[3]], pinnedRefs: [] } };
       if (c.url === '/mobile/conversation-graph/tree') return waitingTree;
       return undefined;
     }, '#/work/chats', idb);
@@ -545,6 +550,9 @@ describe('Conversations page', () => {
     expect(doc.querySelector<HTMLDetailsElement>('.conversation-tree-section .chat-project-row')?.open).toBe(true);
     expect(doc.querySelector('.chat-project-row')?.textContent).toContain('Deep');
     expect([...doc.querySelectorAll('.chat-row-title')].map(node => node.textContent).filter(title => title === 'Deep')).toHaveLength(1);
+    const card = doc.querySelector('.chat-project-row a[href="#/work/board?card=wc_0000000000000042"]');
+    expect(card?.textContent).toBe('Open linked work card');
+    expect(card?.closest('.conversation-tree-conversation')?.querySelector('.chat-row-title')?.textContent).toBe(linked.title);
     const toggles = [...doc.querySelectorAll<HTMLButtonElement>('.chat-view-toggle button')];
     expect(toggles.map(node => node.textContent)).toEqual(['Grouped', 'Flat']);
     toggles[1].click();

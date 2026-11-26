@@ -10,7 +10,7 @@
 // parameter: each needs an action in the page. Only the media types in chats-model.js VIEWABLE_TYPES
 // become a viewable blob:; everything else is a download.
 
-import { compareConversationActivity, conversationRefKey, conversationTreePreferences, hasAuthoritativeSections, renderOwnerTree, treeConversationRow, treePage } from './conversation-tree.js';
+import { compareConversationActivity, conversationRefKey, conversationTreePreferences, hasAuthoritativeSections, renderOwnerTree, treeCardLink, treeConversationRow, treePage } from './conversation-tree.js';
 import { el, setKids, sheet, closeSheet, askPin, forgetOperatorSession, operatorSession } from './ui.js';
 import {
   createBrowserDevice, consolePathAllowed, secureContextOk, newRequestId, sha256Hex, DELETED_REASON, refusalWords, readRecord, readAllRecords, deleteRecord,
@@ -557,6 +557,7 @@ class ChatsPage {
               row?.preview ? el('span', { class: 'chat-row-preview', text: row.preview }) : null),
             row?.unread > 0 && refString(ref) !== open ? el('span', { class: 'chat-unread', text: String(row.unread), 'aria-label': `${row.unread} unread` }) : null), row?.title || node.title, row?.lastActivity || node.freshness);
         },
+        linkedCard: (node) => treeCardLink(byKey.get(conversationRefKey(node.ref))?.cardId),
         groupDetails: details,
       });
       setKids(this.listEl, nodes.length ? nodes : el('p', { class: 'card-line chat-muted', text: 'No conversations yet.' }));

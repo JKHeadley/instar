@@ -111,12 +111,16 @@ export function treeConversationRow(row, title, activity) {
   return row;
 }
 
+export function treeCardLink(cardId) {
+  return cardId ? el('a', { class: 'link-btn', href: `#/work/board?card=${encodeURIComponent(cardId)}`, text: 'Open linked work card' }) : null;
+}
+
 function countedTitle(title, count) {
   return count === null ? title : `${title} · ${count} ${count === 1 ? 'conversation' : 'conversations'}`;
 }
 
 /** Draw only the placement the owner projection supplied. No flat row becomes Ungrouped by omission. */
-export function renderOwnerTree(pages, { preferences, conversationRow, groupDetails }) {
+export function renderOwnerTree(pages, { preferences, conversationRow, groupDetails, linkedCard }) {
   const root = pages[0]?.root;
   const roots = pages.flatMap(page => page.items);
   const seen = new Set(root ? [root.key] : []);
@@ -137,15 +141,16 @@ export function renderOwnerTree(pages, { preferences, conversationRow, groupDeta
     const proposed = sorted(n.proposed).map(branch).filter(Boolean);
     if (n.kind === 'conversation') {
       const row = conversationRow(n);
+      const card = linkedCard?.(n);
       if (n.project && n.projectKey === conversationRefKey(n.ref)) {
         // A confirmed project can use its own conversation as the branch
         // identity even when no saved effort exists.
         return disclosure(`project:${n.projectKey}`, countedTitle(n.project.title, n.count === null ? null : n.count + 1),
-          [row, children, proposed, n.incomplete ? groupDetails(n) : null], 'chat-project-row');
+          [row, card, children, proposed, n.incomplete ? groupDetails(n) : null], 'chat-project-row');
       }
-      return children.length || proposed.length || n.incomplete
+      return children.length || proposed.length || n.incomplete || card
         ? el('div', { class: 'conversation-tree-conversation' }, row,
-          disclosure(`children:${n.key}`, 'Related conversations', [children, proposed, n.incomplete ? groupDetails(n) : null]))
+          disclosure(`children:${n.key}`, card && !children.length && !proposed.length && !n.incomplete ? 'Linked work card' : 'Related conversations', [card, children, proposed, n.incomplete ? groupDetails(n) : null]))
         : row;
     }
     return disclosure(n.projectKey ? `project:${n.projectKey}` : n.key, countedTitle(n.project?.title || n.title, n.count),
