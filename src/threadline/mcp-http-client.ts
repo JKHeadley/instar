@@ -39,6 +39,37 @@ function relaySendDispatcher(): Agent {
   return relaySendAgent;
 }
 
+/**
+ * The agent above comes from the `undici` package, but `fetch` is Node's own, which bundles its own
+ * undici. When the two disagree on the dispatch handler interface (Node 26 with undici 6.x), Node's
+ * fetch rejects the dispatcher with `UND_ERR_INVALID_ARG` ("invalid onError method") before any
+ * connection opens, so every threadline_send reported "Failed to reach agent server" with the server
+ * up. Same answer as telegram-egress.ts: resend once with Node's default dispatcher and remember it for
+ * this process. Nothing was sent on the rejected attempt, so the resend cannot duplicate a message;
+ * only the 325 s wait is lost (Node's default is 300 s, which then reads as outcome-unknown).
+ */
+let relaySendDispatcherRejected = false;
+
+function isDispatcherRejection(error: unknown): boolean {
+  const cause = (error as { cause?: { code?: unknown } } | null)?.cause;
+  return error instanceof TypeError && !!cause && cause.code === 'UND_ERR_INVALID_ARG';
+}
+
+/** For tests: forget a recorded rejection. */
+export function resetRelaySendDispatcherRejection(): void { relaySendDispatcherRejected = false; }
+
+async function fetchRelaySend(url: string, init: RequestInit): Promise<Response> {
+  if (relaySendDispatcherRejected) return fetch(url, init);
+  try {
+    return await fetch(url, { ...init, dispatcher: relaySendDispatcher() } as RequestInit);
+  } catch (error) {
+    if (!isDispatcherRejection(error)) throw error;
+    relaySendDispatcherRejected = true;
+    console.warn('[threadline-mcp] Node\'s fetch refused the undici package dispatcher (UND_ERR_INVALID_ARG); using Node\'s default dispatcher for relay-send in this process.');
+    return fetch(url, init);
+  }
+}
+
 /** The fixed text for a send whose outcome cannot be known (timeout, abort, 408). */
 export const OUTCOME_UNKNOWN_ERROR =
   'Outcome unknown: the send did not answer in time, and the message may already have been sent. ' +
@@ -96,9 +127,8 @@ export async function sendMessageViaHttp(
   originSessionName?: string,
 ): Promise<SendMessageResult> {
   try {
-    const response = await fetch(`http://localhost:${serverPort}/threadline/relay-send`, {
-      // Deadline 3 of the chain: 325 s for headers and body (Node's default is 300 s).
-      ...({ dispatcher: relaySendDispatcher() } as Record<string, unknown>),
+    // Deadline 3 of the chain: 325 s for headers and body (Node's default is 300 s).
+    const response = await fetchRelaySend(`http://localhost:${serverPort}/threadline/relay-send`, {
       method: 'POST',
       headers: {
         'Content-Type': 'application/json',
