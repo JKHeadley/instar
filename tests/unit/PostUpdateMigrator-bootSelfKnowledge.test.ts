@@ -134,7 +134,7 @@ describe('PostUpdateMigrator — Session Boot Self-Knowledge migration parity', 
     // Always-overwrite: stomp it, re-run, restored.
     fs.writeFileSync(scriptPath, '// stale fork\n');
     callPrivate(newMigrator(projectDir), 'migrateScripts');
-    expect(fs.readFileSync(scriptPath, 'utf8')).toContain('Containment contract');
+    expect(fs.readFileSync(scriptPath, 'utf8')).toContain('A bare lookup refuses before opening the vault');
   });
 
   it('last-writer-wins pinning: fact-add then migrateConfig keeps BOTH the fact and the migration fields', () => {

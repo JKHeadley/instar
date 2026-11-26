@@ -288,8 +288,8 @@ export class BootSelfKnowledge {
       const hidden = collapsed.length - shown.length;
       lines.push(
         '**Vault secrets available (NAMES only — values never appear here):** a secret named below is ' +
-          'already in your vault. Retrieve it with `node .instar/scripts/secret-get.mjs <name>` (pipe ' +
-          'stdout straight into the consuming command — never echo it) rather than asking the user to ' +
+          'already in your vault. Retrieve it with `node .instar/scripts/secret-get.mjs <name> --run -- <command>` to pass it ' +
+          'to the consuming command on stdin rather than asking the user to ' +
           're-send it, unless you have evidence it is invalid (expired, revoked, or decrypt-failed).',
       );
       lines.push('');

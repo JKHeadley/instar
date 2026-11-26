@@ -181,8 +181,8 @@
     },
     {
       "path": "src/templates/scripts/load-assess.sh",
-      "sha256": "0d8c335b167a7e46099b8636692849a48d4c0ca5722853a453d1a963427c9b88",
-      "reason": "Re-reviewed 2026-09-29 (hook-paths-project-dir): the change only anchors the config read on CLAUDE_PROJECT_DIR; the hook injects context and makes no blocking decision"
+      "sha256": "79209f35b4e8f44a4cdd1dbea194b15a77bcdcd6d1c14574a58d47499fff8b77",
+      "reason": "Re-reviewed 2026-11-25: the auth token uses a dedicated pipe. The script reports machine load and makes no blocking decision"
     },
     {
       "path": "src/templates/scripts/secret-drop-retrieve.mjs",

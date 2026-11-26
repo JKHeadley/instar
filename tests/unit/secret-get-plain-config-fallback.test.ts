@@ -26,21 +26,57 @@ describe('secret-get.mjs — plain config.json fallback', () => {
     SafeFsExecutor.safeRmSync(tmpDir, { recursive: true, force: true, operation: 'tests/unit/secret-get-plain-config-fallback.test.ts:afterEach' });
   });
 
-  const run = (args: string[]) => spawnSync(process.execPath, [scriptSrc, ...args], {
-    cwd: tmpDir, encoding: 'utf8', env: { ...process.env, VITEST: '1' },
+  const run = (args: string[]) => spawnSync(process.execPath, [scriptSrc, ...args, '--pipe-fd3'], {
+    cwd: tmpDir, encoding: 'utf8', stdio: ['ignore', 'pipe', 'pipe', 'pipe'], env: { ...process.env, VITEST: '1' },
   });
   const writeConfig = (cfg: unknown) => fs.writeFileSync(path.join(stateDir, 'config.json'), JSON.stringify(cfg));
+
+  it('refuses bare reads and transfers only one array leaf through a private channel', () => {
+    writeConfig({ messaging: [{ config: { token: 'synthetic-array-token', appToken: 'synthetic-other-token' } }] });
+    const bare = spawnSync(process.execPath, [scriptSrc, 'messaging'], { cwd: tmpDir, encoding: 'utf8' });
+    expect(bare.status).toBe(2);
+    expect(bare.stdout).toBe('');
+    expect(bare.stderr).not.toContain('synthetic-array-token');
+    const leaf = run(['messaging[0].config.token']);
+    expect(leaf.status).toBe(0);
+    expect(leaf.stdout).toBe('');
+    expect(leaf.output[3]).toBe('synthetic-array-token');
+    expect(run(['messaging']).status).toBe(1);
+  });
+
+  it('refuses an internal pipe aliased to stdout or stderr', () => {
+    if (process.platform === 'win32') return;
+    writeConfig({ authToken: 'synthetic-aliased-token' });
+    for (const destination of ['3>&1', '3>&2']) {
+      const refused = spawnSync('/bin/sh', ['-c', '"$1" "$2" authToken --pipe-fd3 ' + destination, 'fixture', process.execPath, scriptSrc],
+        { cwd: tmpDir, encoding: 'utf8' });
+      expect(refused.status).toBe(2);
+      expect(refused.stdout).toBe('');
+      expect(refused.stderr).not.toContain('synthetic-aliased-token');
+    }
+  });
+
+  it('drops both streams from an explicit child, including when a child echoes stdin', () => {
+    writeConfig({ authToken: 'synthetic-child-token' });
+    const consuming = spawnSync(process.execPath, [
+      scriptSrc, 'authToken', '--run', '--', process.execPath, '-e',
+      "const value = require('node:fs').readFileSync(0, 'utf8'); process.stdout.write(value); process.stderr.write(value); process.exit(value === 'synthetic-child-token' ? 0 : 9)",
+    ], { cwd: tmpDir, encoding: 'utf8' });
+    expect(consuming.status).toBe(0);
+    expect(consuming.stdout).toBe('');
+    expect(consuming.stderr).not.toContain('synthetic-child-token');
+  });
 
   it('with no vault, returns a plain config value and names the source on stderr only', () => {
     writeConfig({ authToken: 'plain-token-123', messaging: { slack: { botToken: 'xoxb-plain' } } });
     const r = run(['authToken']);
     expect(r.status).toBe(0);
-    expect(r.stdout).toBe('plain-token-123');
+    expect(r.output[3]).toBe('plain-token-123');
     expect(r.stderr).toContain('config.json');
     expect(r.stderr).not.toContain('plain-token-123');
     const nested = run(['messaging.slack.botToken']);
     expect(nested.status).toBe(0);
-    expect(nested.stdout).toBe('xoxb-plain');
+    expect(nested.output[3]).toBe('xoxb-plain');
   });
 
   it('with a vault lacking the key, falls back to the plain config value', () => {
@@ -48,7 +84,7 @@ describe('secret-get.mjs — plain config.json fallback', () => {
     writeConfig({ authToken: 'plain-token-456' });
     const r = run(['authToken']);
     expect(r.status).toBe(0);
-    expect(r.stdout).toBe('plain-token-456');
+    expect(r.output[3]).toBe('plain-token-456');
     expect(r.stderr).toContain('not in the vault');
   });
 
@@ -57,7 +93,7 @@ describe('secret-get.mjs — plain config.json fallback', () => {
     writeConfig({ authToken: 'stale-plain-token' });
     const r = run(['authToken']);
     expect(r.status).toBe(0);
-    expect(r.stdout).toBe('vault-token');
+    expect(r.output[3]).toBe('vault-token');
     expect(r.stderr).toBe('');
   });
 

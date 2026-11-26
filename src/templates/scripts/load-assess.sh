@@ -64,7 +64,7 @@ LOAD_PER_CORE=$(awk -v l="${L5:-0}" -v c="${CORES:-0}" 'BEGIN{if(c+0>0)printf "%
 
 # --- instar ResourceLedger: time-windowed agent-attributed CPU (the durable signal) ---
 LEDGER="unavailable"
-AUTH=$(node .instar/scripts/secret-get.mjs authToken 2>/dev/null || echo "")
+AUTH=$(node .instar/scripts/secret-get.mjs authToken --pipe-fd3 3>&1 >/dev/null 2>/dev/null || echo "")
 PORT=$(node -pe "require('./.instar/config.json').port" 2>/dev/null || echo 4042)
 AGENT_ID="${INSTAR_AGENT_ID:-$(node -pe "require('./.instar/config.json').projectName" 2>/dev/null || echo "")}"
 if [ -n "$AUTH" ]; then

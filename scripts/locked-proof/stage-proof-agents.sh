@@ -43,7 +43,13 @@ as_user() { sudo -n -u "$PROOF_USER" -H "$@"; }
 # Reads the proof agents' dashboard PIN from the operator's vault into PIN. Never printed.
 read_pin() {
   [ -n "$AGENT_HOME" ] || { echo "--agent-home is required: the proof agents' dashboard PIN comes from its vault ($PIN_KEY)" >&2; exit 2; }
-  PIN="$(cd "$AGENT_HOME" && node .instar/scripts/secret-get.mjs "$PIN_KEY" 2>/dev/null || true)"
+  PIN="$(cd "$AGENT_HOME" && node -e '
+    const { spawnSync } = require("node:child_process");
+    const r = spawnSync(process.execPath, [".instar/scripts/secret-get.mjs", process.argv[1], "--pipe-fd3"], {
+      encoding: "utf8", stdio: ["ignore", "pipe", "ignore", "pipe"],
+    });
+    if (r.status === 0) process.stdout.write(r.output?.[3] || r.stdout || "");
+  ' "$PIN_KEY" 2>/dev/null || true)"
   [ -n "$PIN" ] || { echo "vault key $PIN_KEY is empty in $AGENT_HOME: store a 6-digit PIN there first (credential-store.mjs)" >&2; exit 1; }
 }
 # configure-proof-agent.mjs as the proof user, with the PIN on stdin.

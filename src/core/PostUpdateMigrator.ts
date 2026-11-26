@@ -7541,7 +7541,17 @@ export class PostUpdateMigrator {
         fs.writeFileSync(shipped, NORMAL_CHROME_BROWSER_SKILL_CONTENT);
         result.upgraded.push('skills/normal-chrome-browser/SKILL.shipped.md (refreshed to the current shipped text)');
       }
-      if (current.includes(NORMAL_CHROME_BROWSER_SKILL_MARKER)) return;
+      if (current.includes(NORMAL_CHROME_BROWSER_SKILL_MARKER)) {
+        const updated = current.replaceAll(
+          '`node .instar/scripts/secret-get.mjs authToken`',
+          '`node .instar/scripts/secret-get.mjs authToken --run -- <api-client>`',
+        );
+        if (updated !== current) {
+          fs.writeFileSync(skillFile, updated);
+          result.upgraded.push('skills/normal-chrome-browser/SKILL.md (private vault input)');
+        }
+        return;
+      }
       if (!current.includes('name: normal-chrome-browser')) {
         result.skipped.push('skills/normal-chrome-browser/SKILL.md: not the built-in skill — left untouched');
         return;
@@ -12349,11 +12359,23 @@ setTimeout(() => process.exit(0), 2000);
       `.get('authToken',''))" 2>/dev/null)`,
     ].join('');
     if (content.includes(oldAuthRead)) {
-      const newAuthRead = 'AUTH="${INSTAR_AUTH_TOKEN:-$(node .instar/scripts/secret-get.mjs authToken 2>/dev/null)}"\n'
+      const newAuthRead = 'AUTH="${INSTAR_AUTH_TOKEN:-$(node .instar/scripts/secret-get.mjs authToken --pipe-fd3 3>&1 >/dev/null 2>/dev/null)}"\n'
         + `AUTH="\${AUTH:-$(python3 -c "import json; v=json.load(open('.instar/config.json')).get('authToken',''); print(v if isinstance(v, str) else '')" 2>/dev/null)}"`;
       content = content.split(oldAuthRead).join(newAuthRead);
       patched = true;
       result.upgraded.push('CLAUDE.md: API auth read survives secret externalization');
+    }
+    const priorVaultAuthRead = 'secret-get.mjs authToken 2>/dev/null';
+    if (content.includes(priorVaultAuthRead)) {
+      content = content.split(priorVaultAuthRead).join('secret-get.mjs authToken --pipe-fd3 3>&1 >/dev/null 2>/dev/null');
+      patched = true;
+      result.upgraded.push('CLAUDE.md: use a private pipe for vault-backed API auth');
+    }
+    const priorVaultLookup = 'secret-get.mjs <name>' + '` (pipe stdout straight into the consuming command, e.g. `... github_token | gh auth login --with-token';
+    if (content.includes(priorVaultLookup)) {
+      content = content.split(priorVaultLookup).join('secret-get.mjs <name> --run -- <command>` (for example `... github_token --run -- gh auth login --with-token');
+      patched = true;
+      result.upgraded.push('CLAUDE.md: use explicit vault delivery');
     }
     // Agent-owned memory (2026-09-25): the auto-memory folder is linked to the agent, not a login.
     const oldAutoMemoryLine = "It's per-machine, not synced by Instar, and you don't control what goes in it.";
@@ -13250,7 +13272,7 @@ Rule: I do not state that work landed inside another agent's state unless I have
     if (!content.includes('**Session Boot Self-Knowledge**')) {
       const bootSelfKnowledgeSection = `
 **Session Boot Self-Knowledge** — Your session-start context includes an auto-injected \`<session-self-knowledge>\` block: the NAMES of secrets in your encrypted vault (never values) + self-asserted operational facts about this agent/machine. (Rides the developmentAgent gate until the fleet flip.)
-- **The rule**: a secret named in your boot block is ALREADY in your vault — retrieve it with \`node .instar/scripts/secret-get.mjs <name>\` (pipe stdout straight into the consuming command, e.g. \`... github_token | gh auth login --with-token\` — NEVER echo the value into chat/transcripts) instead of asking the user to re-send it. Only re-ask if you have evidence it is invalid (expired/revoked/decrypt-failed).
+- **The rule**: a secret named in your boot block is ALREADY in your vault — retrieve it with \`node .instar/scripts/secret-get.mjs <name> --run -- <command>\` (for example \`... github_token --run -- gh auth login --with-token\` — NEVER echo the value into chat/transcripts) instead of asking the user to re-send it. Only re-ask if you have evidence it is invalid (expired/revoked/decrypt-failed).
 - Discover vault key names anytime: \`node .instar/scripts/secret-get.mjs --names\` (names+lengths to stderr) or \`curl -H "Authorization: Bearer $AUTH" "http://localhost:${port}/self-knowledge/session-context?full=1"\`.
 - **Record a durable operational fact** (a channel path, a logged-in seat, a machine-specific truth worth knowing at every boot): \`curl -X POST -H "Authorization: Bearer $AUTH" http://localhost:${port}/self-knowledge/facts -H 'Content-Type: application/json' -d '{"fact":"..."}'\` (auto-stamped with date+machine). Remove: \`curl -X DELETE -H "Authorization: Bearer $AUTH" http://localhost:${port}/self-knowledge/facts -H 'Content-Type: application/json' -d '{"match":"substring"}'\`. Facts are per-machine and appear at the next session start.
 - **When to use** (PROACTIVE — this is the trigger): the moment you discover an operational fact future sessions will need (where a tool lives, which machine owns a seat, a non-obvious path), record it as a fact — never leave it to session memory.
@@ -22106,7 +22128,7 @@ done
 # and it never reaches the command line. Always blocked, regardless of safety level.
 if echo "$INPUT" | grep -qE -e '(gh[pousr]_[A-Za-z0-9]{36}|github_pat_[A-Za-z0-9_]{60,}|sk-ant-[A-Za-z0-9_-]{20,}|xox[abprs]-[0-9A-Za-z-]{20,}|[0-9]{8,10}:AA[A-Za-z0-9_-]{33})'; then
   echo 'BLOCKED: this command carries a literal credential (a token, an API key or a bot token).' >&2
-  echo 'A command line is visible to every process on this machine while it runs. Read the secret inside the command instead, for example GH_TOKEN="$(gh auth token)" or "$(node .instar/scripts/secret-get.mjs NAME)". To write a file that holds a fixture, use the Write tool.' >&2
+  echo 'A command line is visible to every process on this machine while it runs. Read the secret inside the command instead, for example GH_TOKEN="$(gh auth token)" or pass a vault value with secret-get.mjs NAME --run -- COMMAND. To write a file that holds a fixture, use the Write tool.' >&2
   exit 2
 fi
 
