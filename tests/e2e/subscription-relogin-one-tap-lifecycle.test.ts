@@ -42,6 +42,8 @@ describe('one-tap repair setting through the production AgentServer', () => {
     servers.push(server);
     await server.start();
     const app = server.getApp();
+    const nativeApproval = await request(app).get('/mobile/owner-approvals').set('Authorization', 'Bearer one-tap-token');
+    expect(nativeApproval.status).toBe(404);
 
     // The read: runtime absent here, so 503 — but the body carries this machine's setting.
     const read = await request(app).get('/subscription-relogin').set('Authorization', 'Bearer one-tap-token');
@@ -64,6 +66,11 @@ describe('one-tap repair setting through the production AgentServer', () => {
     const unlock = await request(app).post('/dashboard/unlock').send({ pin: '123456' });
     expect(unlock.status).toBe(200);
     const selfId = read.body.config.machineId as string;
+    const invalid = await request(app).post('/subscription-relogin/configure-pool').set('Authorization', 'Bearer one-tap-token')
+      .set('X-Instar-Operator-Session', unlock.body.operatorSessionToken)
+      .send({ mode: 'approval', targets: [{ machineId: selfId, expectedRevision: 'unversioned' }] });
+    expect(invalid.status).toBe(400);
+    expect(invalid.body.error).toBe('each target needs the expectedRevision it was read at');
     const back = await request(app).post('/subscription-relogin/configure-pool').set('Authorization', 'Bearer one-tap-token')
       .set('X-Instar-Operator-Session', unlock.body.operatorSessionToken)
       .send({ mode: 'approval', targets: [{ machineId: selfId, expectedRevision: revision, identities: ['echo@sagemindai.io'], minimumSuccessfulRepairs: 0, minimumEvidenceDays: 0 }] });
