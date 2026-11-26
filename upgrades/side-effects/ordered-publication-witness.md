@@ -71,3 +71,11 @@ The dark witness records the exact payload digest and observed commit beside the
 ## Shared first-phone slot and key lineage
 
 Compound decisions compare the full current slot state and append the operation, receipt, slot update and floor in one transaction. Both enrollment and replacement use the same storage lock. Generic machine-key-history decisions fail closed for agents with a provisioned compound slot until other key operations have explicit shared projections. Historical recovery accepts only an exact canonical decision. Final live registry mutation must independently compare the current generation and accepted head and use the exact accepted projection. This checkpoint installs no registry writer or mobile route.
+
+## Observe and retain exact first-phone evidence
+
+The default-off observer has only the staging operation and checks the pinned Git ref again after loading candidate evidence. The immutable candidate row keys on scope and commit and preserves the original bytes. Compound first-phone acceptance checks those exact bytes inside its transaction. Recovery requires the corresponding historical operation receipt and exact digest. Tests use real disposable Git refs and an injected immutable-object reader. No witness service loop, production object reader, or route is enabled by this change.
+
+## First-phone Git candidate reader
+
+The dark reader accepts only full object IDs and a fixed blob path in a receiver-configured witness mirror. It checks canonical bytes and decision shape before staging. The integration exercises real Git objects, including a malformed blob, and verifies staging produces no acceptance. Mirror fetch and the observer service loop remain separate.
