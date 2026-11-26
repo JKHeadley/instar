@@ -67,3 +67,7 @@ One SQLite WAL/FULL transaction stores the exact commit and floor after a truste
 ## First-phone attempt reservation
 
 The dark witness records the exact payload digest and observed commit beside the ordered floor update in one transaction, keyed by agent, namespace and attempt. A historical retry of the exact winner returns existing. Competing outcomes remain conflicts after holder handover. The synthetic Identity fixture exercises both arrival orders and an older reopened receiver. The trusted adapter still owns the exact Git observation and first-phone semantics. No registry or app effect is wired.
+
+## Shared first-phone slot and key lineage
+
+Compound decisions compare the full current slot state and append the operation, receipt, slot update and floor in one transaction. Both enrollment and replacement use the same storage lock. Generic machine-key-history decisions fail closed for agents with a provisioned compound slot until other key operations have explicit shared projections. Historical recovery accepts only an exact canonical decision. Final live registry mutation must independently compare the current generation and accepted head and use the exact accepted projection. This checkpoint installs no registry writer or mobile route.

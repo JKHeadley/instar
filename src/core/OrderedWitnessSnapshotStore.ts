@@ -1,6 +1,11 @@
 import Database from 'better-sqlite3';
 import fs from 'node:fs';
 import path from 'node:path';
+import { canonicalJson } from './appMediaTypes.js';
+import {
+  firstPhoneSlotDecisionPayload, firstPhoneSlotOperationKey, firstPhoneSlotSuccessor, validFirstPhoneSlot,
+  type FirstPhoneSlotDecision, type FirstPhoneSlotState,
+} from './FirstPhoneSlotDecision.js';
 import type { PublicationScope } from './FencedPublicationStore.js';
 import { samePublicationFloor, validPublicationFloor, verifiedOrderedSuccessor,
   type OrderedPublicationDecision, type PublicationFloor, type WitnessPins } from './OrderedPublicationWitness.js';
@@ -8,6 +13,13 @@ import { samePublicationFloor, validPublicationFloor, verifiedOrderedSuccessor,
 export interface AcceptedWitnessSnapshot {
   commit: string;
   floor: PublicationFloor;
+}
+
+interface FirstPhoneSlotReceipt {
+  decision: FirstPhoneSlotDecision;
+  commit: string;
+  floor: PublicationFloor;
+  decisionDigest: string;
 }
 
 const validCommit = (commit: string) => /^(?:[a-f0-9]{40}|[a-f0-9]{64})$/.test(commit);
@@ -39,6 +51,12 @@ export class OrderedWitnessSnapshotStore {
           agent TEXT NOT NULL, namespace TEXT NOT NULL, operation TEXT NOT NULL,
           payload_digest TEXT NOT NULL, commit_oid TEXT NOT NULL,
           PRIMARY KEY (agent, namespace, operation)
+        );
+        CREATE TABLE IF NOT EXISTS first_phone_slot (
+          agent TEXT NOT NULL, slot TEXT NOT NULL, state TEXT NOT NULL, PRIMARY KEY (agent, slot)
+        );
+        CREATE TABLE IF NOT EXISTS first_phone_slot_receipt (
+          agent TEXT NOT NULL, operation TEXT NOT NULL, receipt TEXT NOT NULL, PRIMARY KEY (agent, operation)
         )
       `);
       return new OrderedWitnessSnapshotStore(db);
@@ -70,6 +88,18 @@ export class OrderedWitnessSnapshotStore {
     expected: AcceptedWitnessSnapshot, commit: string, decision: OrderedPublicationDecision,
     payload: string, signature: Buffer, pins: WitnessPins,
   ): 'recorded' | 'existing' | 'conflict' | 'mismatch' {
+    return this.db.transaction(() => {
+      if (decision.namespace === 'machine-key-history' && this.db.prepare(
+        'SELECT 1 FROM first_phone_slot WHERE agent=? LIMIT 1',
+      ).get(decision.agentId)) return 'mismatch';
+      return this.recordOrderedDecision(expected, commit, decision, payload, signature, pins);
+    }).immediate();
+  }
+
+  private recordOrderedDecision(
+    expected: AcceptedWitnessSnapshot, commit: string, decision: OrderedPublicationDecision,
+    payload: string, signature: Buffer, pins: WitnessPins,
+  ): 'recorded' | 'existing' | 'conflict' | 'mismatch' {
     const floor = verifiedOrderedSuccessor(expected.floor, decision, payload, signature, pins);
     if (!floor) return 'mismatch';
     return this.db.transaction(() => {
@@ -79,6 +109,58 @@ export class OrderedWitnessSnapshotStore {
       this.db.prepare(`
         INSERT INTO ordered_witness_operation VALUES (?, ?, ?, ?, ?)
       `).run(floor.agentId, floor.namespace, decision.operationKey, decision.payloadDigest, commit);
+      return 'recorded';
+    }).immediate();
+  }
+
+  provisionFirstPhoneSlot(agentId: string, slot: FirstPhoneSlotState): boolean {
+    if (!validFirstPhoneSlot(slot) || slot.reservedBy !== null) return false;
+    return this.db.prepare('INSERT OR IGNORE INTO first_phone_slot VALUES (?, ?, ?)')
+      .run(agentId, slot.slotKey, canonicalJson(slot)).changes === 1;
+  }
+
+  readFirstPhoneSlot(agentId: string, slotKey: string): FirstPhoneSlotState | null {
+    const row = this.db.prepare('SELECT state FROM first_phone_slot WHERE agent=? AND slot=?')
+      .pluck().get(agentId, slotKey) as string | undefined;
+    return row ? JSON.parse(row) as FirstPhoneSlotState : null;
+  }
+
+  readFirstPhoneReceipt(agentId: string, decision: FirstPhoneSlotDecision): FirstPhoneSlotReceipt | null {
+    const operation = firstPhoneSlotOperationKey(decision);
+    const row = this.db.prepare('SELECT receipt FROM first_phone_slot_receipt WHERE agent=? AND operation=?')
+      .pluck().get(agentId, operation) as string | undefined;
+    if (!row) return null;
+    const receipt = JSON.parse(row) as FirstPhoneSlotReceipt;
+    return firstPhoneSlotDecisionPayload(receipt.decision) === firstPhoneSlotDecisionPayload(decision) ? receipt : null;
+  }
+
+  /** Record verified acceptance and the exact slot transition in one transaction. */
+  acceptFirstPhoneSlotDecision(
+    expected: AcceptedWitnessSnapshot, commit: string, decision: OrderedPublicationDecision,
+    slotDecision: FirstPhoneSlotDecision, signature: Buffer, pins: WitnessPins,
+  ): 'recorded' | 'existing' | 'conflict' | 'mismatch' {
+    const next = firstPhoneSlotSuccessor(slotDecision);
+    if (!next || decision.namespace !== 'machine-key-history' ||
+        decision.operationKey !== firstPhoneSlotOperationKey(slotDecision)) return 'mismatch';
+    const payload = firstPhoneSlotDecisionPayload(slotDecision);
+    const floor = verifiedOrderedSuccessor(expected.floor, decision, payload, signature, pins);
+    if (!floor) return 'mismatch';
+
+    return this.db.transaction(() => {
+      if (this.readOperation(floor, decision.operationKey)) {
+        const receipt = this.readFirstPhoneReceipt(floor.agentId, slotDecision);
+        return receipt?.commit === commit ? 'existing' : 'conflict';
+      }
+      const current = this.readFirstPhoneSlot(floor.agentId, next.slotKey);
+      if (!current || canonicalJson(current) !== canonicalJson(slotDecision.prior)) return 'conflict';
+      const accepted = this.recordOrderedDecision(expected, commit, decision, payload, signature, pins);
+      if (accepted !== 'recorded') return accepted;
+      this.db.prepare('UPDATE first_phone_slot SET state=? WHERE agent=? AND slot=?')
+        .run(canonicalJson(next), floor.agentId, next.slotKey);
+      this.db.prepare('INSERT INTO first_phone_slot_receipt VALUES (?, ?, ?)')
+        .run(floor.agentId, decision.operationKey, canonicalJson({
+          decision: slotDecision, commit, floor, decisionDigest: floor.head,
+        }));
       return 'recorded';
     }).immediate();
   }

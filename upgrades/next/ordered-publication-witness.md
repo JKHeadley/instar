@@ -24,3 +24,5 @@ The dark witness can answer an authenticated peer only after its independent sna
 The dark witness readback can use a durable snapshot of the accepted commit and journal floor. Reopening the witness store preserves the exact accepted pair.
 
 The dark witness can permanently reserve one ordered result per first-phone attempt key alongside its accepted floor. Integration checks cover consume winning, cancel winning, holder handover and a stale restored receiver.
+
+The dark first-phone authority now compares and records the exact slot generation and key lineage for enrollment and replacement in one transaction. It preserves the exact receipt across holder changes.
