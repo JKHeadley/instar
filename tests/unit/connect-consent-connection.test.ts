@@ -12,11 +12,11 @@ const pairing = {
   companionKeyDigest: digest(keys.publicKey.export({ type: 'spki', format: 'der' })).toString('hex'),
 };
 
-function proof(connection: ConnectConsentConnection, key = keys.privateKey): Buffer {
+function proof(connection: Buffer | ConnectConsentConnection, key = keys.privateKey): Buffer {
   const domain = Buffer.from('instar-connect-connection-proof-v1');
-  const challenge = connection.challengeTranscript();
+  const challenge = Buffer.isBuffer(connection) ? connection : connection.challengeTranscript();
   const transcript = Buffer.concat([Buffer.from([0, domain.length]), domain, digest(challenge),
-    Buffer.from(connection.generation, 'hex'), challenge.subarray(-40, -8)]);
+    challenge.subarray(-72, -40), challenge.subarray(-40, -8)]);
   for (let i = 0; i < 100; i++) {
     const signature = sign('sha256', transcript, key);
     if (!isStrictLowSDer(signature)) continue;
@@ -98,6 +98,7 @@ it('reports no current authority when pairing check synchronously closes admitte
 it('retires prompt, grant and queue before returning a replacement challenge', () => {
   const host = new ConnectConsentHost();
   const first = host.open(pairing, keys.publicKey, new AbortController().signal, () => true)!;
+  expect(first.admit(proof(first.challenge))).toBe(true);
   const resources = new Set(['prompt', 'grant', 'queue']);
   let reentrant;
   first.signal.addEventListener('abort', () => {
@@ -105,11 +106,18 @@ it('retires prompt, grant and queue before returning a replacement challenge', (
     resources.clear();
   });
   const second = host.open(pairing, keys.publicKey, new AbortController().signal, () => true)!;
+  expect(first.current()).toBe(true);
+  expect(second.current()).toBe(false);
+  expect(host.open(pairing, keys.publicKey, new AbortController().signal, () => true)).toBeUndefined();
+  expect(second.admit(proof(second.challenge, other.privateKey))).toBe(false);
+  expect(first.current()).toBe(true);
+  const verified = host.open(pairing, keys.publicKey, new AbortController().signal, () => true)!;
+  expect(verified.admit(proof(verified.challenge))).toBe(true);
   expect(first.signal.aborted).toBe(true);
   expect(first.current()).toBe(false);
   expect(reentrant).toBeUndefined();
   expect(resources.size).toBe(0);
-  expect(second.signal.aborted).toBe(false);
+  expect(verified.signal.aborted).toBe(false);
   host.close();
-  expect(second.signal.aborted).toBe(true);
+  expect(verified.signal.aborted).toBe(true);
 });

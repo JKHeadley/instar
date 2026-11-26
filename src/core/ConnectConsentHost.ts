@@ -9,6 +9,7 @@ interface ConnectionSlot {
 /** One companion connection per trusted target. No listener or capture starts here. */
 export class ConnectConsentHost {
   #slot?: ConnectionSlot;
+  #pending?: ConnectionSlot;
   #closed = false;
   #replacing = false;
 
@@ -19,45 +20,48 @@ export class ConnectConsentHost {
     admit(proof: Buffer): boolean;
     current(): boolean;
   } | undefined {
-    if (this.#closed || this.#replacing || transport.aborted) return;
+    if (this.#closed || this.#replacing || this.#pending || transport.aborted) return;
     const lifetime = new AbortController();
     const connection = new ConnectConsentConnection(pairing, key, pairingStillCurrent, lifetime.signal);
     const slot = { lifetime, connection };
     const onClose = () => {
       if (this.#slot === slot) this.#slot = undefined;
+      if (this.#pending === slot) this.#pending = undefined;
       lifetime.abort();
     };
     transport.addEventListener('abort', onClose, { once: true });
     lifetime.signal.addEventListener('abort', () => transport.removeEventListener('abort', onClose), { once: true });
 
-    const previous = this.#slot;
-    this.#slot = slot;
-    this.#replacing = true;
-    try { previous?.lifetime.abort(); }
-    finally { this.#replacing = false; }
-    if (this.#closed || this.#slot !== slot || transport.aborted) {
-      onClose();
-      return;
-    }
-
+    this.#pending = slot;
+    const expiry = setTimeout(onClose, 10_000).unref();
+    lifetime.signal.addEventListener('abort', () => clearTimeout(expiry), { once: true });
     const ownsSlot = () => this.#slot === slot && !lifetime.signal.aborted;
-    let admitted = false;
     return {
       challenge: connection.challengeTranscript(),
       signal: lifetime.signal,
       admit: proof => {
-        if (!ownsSlot()) return false;
-        if (!connection.admit(proof) || !ownsSlot()) {
+        if (this.#pending !== slot || lifetime.signal.aborted) return false;
+        if (!connection.admit(proof) || this.#pending !== slot || lifetime.signal.aborted) {
           onClose();
           return false;
         }
-        admitted = true;
-        return true;
+        clearTimeout(expiry);
+        const previous = this.#slot;
+        this.#pending = undefined;
+        this.#slot = slot;
+        this.#replacing = true;
+        try { previous?.lifetime.abort(); }
+        finally { this.#replacing = false; }
+        if (!ownsSlot() || !connection.current()) {
+          onClose();
+          return false;
+        }
+        return ownsSlot();
       },
       current: () => {
         if (!ownsSlot()) return false;
         if (connection.current() && ownsSlot()) return true;
-        if (admitted) onClose();
+        onClose();
         return false;
       },
     };
@@ -66,7 +70,10 @@ export class ConnectConsentHost {
   close(): void {
     this.#closed = true;
     const previous = this.#slot;
+    const pending = this.#pending;
     this.#slot = undefined;
+    this.#pending = undefined;
+    pending?.lifetime.abort();
     previous?.lifetime.abort();
   }
 }
