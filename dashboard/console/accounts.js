@@ -37,17 +37,23 @@ async function getJson(path) {
   } catch { return { ok: false, status: 0, data: {} }; }
 }
 
-export async function renderAccounts(main, ctx) {
+export async function renderAccounts(main, ctx, current = () => true) {
   const { get } = ctx;
+  main.classList.add('accounts-page');
   firstPaint(main, el('section', { class: 'hero page-hero' }, el('div', { class: 'eyebrow', text: 'Capacity · Accounts' }), el('h1', { class: 'page-title skeleton', text: 'Loading accounts' })));
-  const [pool, relogin, inUse, machines] = await Promise.all([get('/subscription-pool?scope=pool', 8000), get('/subscription-relogin?scope=pool', 8000), get('/subscription-pool/in-use'), get('/pool')]);
+  const [pool, relogin, inUse, machines] = await Promise.all([get('/subscription-pool?scope=pool', 8000), get('/subscription-relogin?scope=pool&retryTimeout=1', 16000), get('/subscription-pool/in-use'), get('/pool')]);
+  if (!current()) return;
   const names = machines.ok && Array.isArray(machines.data && machines.data.machines) ? Object.fromEntries(machines.data.machines.map((m) => [m.machineId, m.nickname])) : {};
   const episodes = relogin.ok && Array.isArray(relogin.data && relogin.data.episodes) ? relogin.data.episodes : [];
   const blockers = relogin.ok && Array.isArray(relogin.data && relogin.data.blockers) ? relogin.data.blockers : [];
   const autoRepair = buildAutoRepair(relogin, { names, blockers, poolMachines: machines });
   const page = buildAccountsPage(pool, Date.now(), { episodes, blockers, inUse: inUse.ok ? inUse.data : null, names, poolMachines: machines });
-  if (!page.ok) { setKids(main, pageHead({ eyebrow: 'Capacity · Accounts', headline: 'Accounts', tone: 'muted' }), cantTell(page.reason), legacyLink()); return; }
-  const refresh = () => renderAccounts(main, ctx);
+  const refresh = (stillCurrent) => renderAccounts(main, ctx, stillCurrent);
+  if (!page.ok) {
+    setKids(main, pageHead({ eyebrow: 'Capacity · Accounts', headline: 'Accounts', tone: 'muted' }),
+      cantTell(page.reason), autoRepairSection(autoRepair, refresh), legacyLink());
+    return;
+  }
 
   // One card per machine: "Mac Mini — 5 accounts need signing in", one row and button each.
   const byMachine = new Map();
@@ -61,11 +67,9 @@ export async function renderAccounts(main, ctx) {
         el('span', { class: 'row-main' }, el('span', { class: 'row-title', text: n.label }), el('span', { class: 'row-sub', text: n.sub })),
         el('span', { class: 'row-end' }, n.actionable ? el('button', { class: 'btn-quiet btn-small', type: 'button', text: n.action === 'start' ? 'Sign in' : n.action === 'retry' ? 'Try again' : 'Repair', onclick: () => startNeed(n, refresh) }) : null))))))) : null;
 
-  const groups = new Map();
-  for (const a of page.accounts) { const k = frameworkName(a.framework); if (!groups.has(k)) groups.set(k, []); groups.get(k).push(a); }
-  const list = el('div', { class: 'page-sections acct-list' }, [...groups.entries()].map(([name, accts]) => el('section', { class: 'list-section' },
-    el('div', { class: 'list-head' }, el('h2', { class: 'eyebrow', text: name }), el('span', { class: 'list-count', text: String(accts.length) })),
-    el('div', { class: 'list-rows' }, accts.map((a) => {
+  const list = el('div', { class: 'page-sections acct-list' }, el('section', { class: 'list-section' },
+    el('div', { class: 'list-head' }, el('h2', { class: 'eyebrow', text: 'Weekly reset, soonest first' }), el('span', { class: 'list-count', text: String(page.accounts.length) })),
+    el('div', { class: 'list-rows' }, page.accounts.map((a) => {
       const pct = a.tight ? Math.round(a.tight.pct) : null;
       // One labelled line per limit that applies (5-hour only when the account has one), each with
       // its own bar and its own reset, so a full 5-hour window never reads as the weekly one.
@@ -79,14 +83,14 @@ export async function renderAccounts(main, ctx) {
           el('span', { class: 'acct-win-reset', text: w.reset || '' }));
       })) : null;
       const row = el('button', { class: 'acct-row', type: 'button', 'data-focus-key': `a:${a.id}` },
-        el('span', { class: 'acct-name' }, document.createTextNode(a.name), a.inUse ? el('span', { class: 'acct-tag', text: 'in use here' }) : null),
+        el('span', { class: 'acct-name' }, document.createTextNode(a.name), el('span', { class: 'acct-kind', text: frameworkName(a.framework) }), a.inUse ? el('span', { class: 'acct-tag', text: 'in use here' }) : null),
         el('span', { class: `acct-pct${a.tone ? ' ' + a.tone : ''}`, text: pct === null ? '—' : `${pct}%` }),
         wins,
         !wins || a.stale ? el('span', { class: 'acct-line', text: [!wins ? a.line : null, a.stale ? `reading from ${a.readingAge}` : null].filter(Boolean).join(' · ') }) : null,
         el('span', { class: 'chips' }, a.cells.map((c) => el('span', { class: `mchip ${c.state}`, text: c.machine }))));
       row.addEventListener('click', () => openAccount(a, refresh));
       return row;
-    })))));
+    }))));
 
   // The notice spot: nothing unless something needs the person; each notice carries its action.
   const notices = page.notices.length ? el('section', { class: 'page-sections', id: 'sec-notices' },
@@ -242,15 +246,27 @@ function autoRepairTicked(row) {
 }
 
 function autoRepairSection(model, refresh) {
-  if (!model.ok || model.rows.length === 0) return null;
+  if (model.rows.length === 0 && !model.unresolved) return null;
   const section = el('section', { class: 'page-sections', id: 'sec-auto-repair' },
     el('h2', { class: 'eyebrow', text: 'Automatic sign-in repair' }),
     el('p', { class: 'row-sub', text: 'When an account gets signed out, the agent signs it back in by itself on the machines ticked here. You can switch any of this agent’s machines on or back to asking first from this page, whichever machine is showing it.' }));
   const held = () => { const changed = [...autoRepairTicks.keys()].length > 0; if (changed) section.setAttribute('data-interaction-open', '1'); else section.removeAttribute('data-interaction-open'); };
   const lastResult = (id) => autoRepairResults && autoRepairResults.results.find((r) => r.machineId === id);
+  const retry = (label) => el('button', { class: 'btn-quiet', type: 'button', text: 'Retry', 'aria-label': label,
+    onclick: async event => {
+      const button = event.currentTarget;
+      for (const control of section.querySelectorAll('button[data-repair-retry]')) control.disabled = true;
+      button.textContent = 'Checking…';
+      try { await refresh(() => section.isConnected); }
+      finally {
+        for (const control of section.querySelectorAll('button[data-repair-retry]')) control.disabled = false;
+        button.textContent = 'Retry';
+      }
+    }, 'data-repair-retry': '1' });
   const rows = el('div', { class: 'rows' }, model.rows.map((row) => {
     if (row.unreadable) return el('div', { class: 'row' }, el('span', { class: 'dot unknown' }),
-      el('span', { class: 'row-main' }, el('span', { class: 'row-title', text: row.name }), el('span', { class: 'row-sub', text: row.unreadable })));
+      el('span', { class: 'row-main' }, el('span', { class: 'row-title', text: row.name }), el('span', { class: 'row-sub', text: row.unreadable })),
+      row.retryable ? retry(`Retry checking ${row.name}`) : null);
     // A row this page cannot change shows no tick box at all: a greyed-out box looks offered here
     // (operator 2026-11-09). Its reason line says why and where it can be changed.
     const box = row.canTurnOn || row.canSwitchBack ? el('input', { type: 'checkbox', 'aria-label': `Include ${row.name}` }) : null;
@@ -287,16 +303,22 @@ function autoRepairSection(model, refresh) {
   const turnOn = el('button', { class: 'btn-primary btn-inline', type: 'button', text: 'Turn on for ticked machines' });
   const back = el('button', { class: 'btn-quiet', type: 'button', text: 'Switch ticked machines back to asking first' });
   const ticked = () => model.rows.filter((r) => !r.unreadable && autoRepairTicked(r));
-  const sync = () => { const t = ticked(); turnOn.disabled = !t.some((r) => r.canTurnOn); back.disabled = t.length === 0 || !t.every((r) => r.canSwitchBack); };
+  const sync = () => { const t = ticked(); turnOn.disabled = model.unresolved || !t.some((r) => r.canTurnOn); back.disabled = t.length === 0 || !t.every((r) => r.canSwitchBack); };
   section.addEventListener('change', sync);
-  turnOn.addEventListener('click', () => autoRepairTap('unattended', model.rows, refresh));
+  turnOn.addEventListener('click', () => {
+    if (!model.unresolved) void autoRepairTap('unattended', model.rows, refresh, () => section.isConnected);
+  });
   back.addEventListener('click', () => autoRepairTap('approval', model.rows, refresh));
   sync(); held();
-  section.append(rows, el('div', { class: 'sheet-actions' }, turnOn, back));
+  section.append(rows);
+  if (model.unresolved) section.append(el('div', { class: 'row' },
+    el('p', { class: 'row-sub', role: 'status', text: 'Check every machine before turning on.' }),
+    model.rows.some(row => row.retryable) ? null : retry('Retry checking machines')));
+  section.append(el('div', { class: 'sheet-actions' }, turnOn, back));
   return section;
 }
 
-async function autoRepairTap(mode, rows, refresh) {
+async function autoRepairTap(mode, rows, refresh, current = () => true) {
   const finish = mode === 'finish-restart';
   const tickedIds = new Set(finish ? rows.map((r) => r.machineId) : rows.filter((r) => !r.unreadable && autoRepairTicked(r)).map((r) => r.machineId));
   const body = finish
@@ -305,7 +327,7 @@ async function autoRepairTap(mode, rows, refresh) {
   if (body.targets.length === 0) return;
   const title = finish ? 'Finish restarting' : mode === 'unattended' ? 'Turn on automatic sign-in repair' : 'Switch back to asking first';
   const auth = await askPin({ title, explain: 'This needs a recent PIN unlock. It is kept in this page only until it expires.', adapter: 'session' });
-  if (!auth) return;
+  if (!auth || !current()) return;
   const status = el('p', { class: 'action-status', role: 'status', text: 'Working…' });
   sheet({ title }, status);
   const r = await postJson('/subscription-relogin/configure-pool', body, { 'X-Instar-Operator-Session': auth.session });

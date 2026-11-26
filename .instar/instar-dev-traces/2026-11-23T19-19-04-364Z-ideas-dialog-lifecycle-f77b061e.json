@@ -1,0 +1,37 @@
+{
+  "version": 3,
+  "slug": "ideas-dialog-lifecycle",
+  "sessionId": "2298638c-0f8f-48bb-8203-4470cf1831bf",
+  "timestamp": "2026-11-23T19:19:04.364Z",
+  "artifactPath": "upgrades/side-effects/ideas-dialog-lifecycle.md",
+  "artifactSha256": "451e77bc72d85d221d51f25de72445637f4ea749cc3c02b7a54eb9130d9a3e19",
+  "coveredFiles": [
+    "dashboard/console/ideas.js",
+    "dashboard/console/ui.js",
+    "tests/unit/console-ideas-navigation.test.ts",
+    "upgrades/eli16/ideas-dialog-lifecycle.md",
+    "upgrades/next/ideas-dialog-lifecycle.md",
+    "upgrades/side-effects/ideas-dialog-lifecycle.md"
+  ],
+  "phase": "complete",
+  "tier": 1,
+  "tierReasoning": "Narrow reversible display lifetime repair; preserves server plans, PIN authority and submitted commits. Optional callback defaults to existing behavior.",
+  "eli16Path": "upgrades/eli16/ideas-dialog-lifecycle.md",
+  "sideEffectsPath": "upgrades/side-effects/ideas-dialog-lifecycle.md",
+  "secondPass": "not-required",
+  "reviewerConcurred": true,
+  "toolchain": {
+    "buildSkill": {
+      "name": "build",
+      "version": null,
+      "verified": false
+    },
+    "reviewSkills": [
+      {
+        "name": "review_ideas_dialog",
+        "outcome": "concurred",
+        "verified": false
+      }
+    ]
+  }
+}

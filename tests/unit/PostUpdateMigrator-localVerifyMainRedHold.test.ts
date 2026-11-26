@@ -161,6 +161,17 @@ describe('Local Verify balanced-shards awareness', () => {
     expect(fs.readFileSync(claudeMd, 'utf-8')).toContain(LOCAL_VERIFY_LANE_SHARDS_CLAUDEMD_LINE);
     expect(runMigrateClaudeMd(m).upgraded).not.toContain('CLAUDE.md: added Local Verify balanced-shards awareness');
   });
+  it('refreshes the old shard limits in an existing generated agent guide once', () => {
+    const oldGuide = generateClaudeMd('fixture', 'Fixture', 4042, true)
+      .replace('integration 1..5 and e2e 1..4', '1..4 each');
+    const { projectDir, claudeMd } = project(oldGuide);
+    const migrator = new PostUpdateMigrator({ projectDir, stateDir: path.join(projectDir, '.instar'), port: 4042, hasTelegram: true, projectName: 'test-agent' });
+    const receipt = 'CLAUDE.md: updated Local Verify integration shard limit';
+
+    expect(runMigrateClaudeMd(migrator).upgraded).toContain(receipt);
+    expect(fs.readFileSync(claudeMd, 'utf-8')).toContain('integration 1..5 and e2e 1..4');
+    expect(runMigrateClaudeMd(migrator).upgraded).not.toContain(receipt);
+  });
 });
 
 describe('Local Verify focused-preflight awareness', () => {

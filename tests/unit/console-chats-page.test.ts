@@ -843,3 +843,129 @@ describe('card source message navigation', () => {
     expect(chips().map((c) => c.split(' · ')[0])).toEqual(['notes.pdf']);
   });
 });
+
+
+describe('interactive chat history explanations', () => {
+  async function openHistory(history: (call: Call) => Promise<{ status: number; body?: unknown }> | { status: number; body?: unknown }) {
+    const idb = fakeIndexedDB();
+    const bd = await import('../../dashboard/console/browser-device.js');
+    const { keyPair, publicKey } = await bd.generateDeviceKey();
+    idb.stores.set('device', new Map([['m1', { machineId: 'm1', deviceId: 'dev-b1234567', host: 'localhost:4040', status: 'active', keyPair, publicKey, keyHash: await bd.keyHashOf(publicKey) }]]));
+    return boot(c => {
+      if (c.url.startsWith('/mobile/browser-devices/status')) return { status: 200, body: STATUS };
+      if (c.url.startsWith('/mobile/conversations?scope=pool')) return { status: 200, body: { conversations: [{ id: UUID, platform: 'app', title: 'Plans', lastActivity: new Date().toISOString(), lastPreview: '' }], nextCursor: null } };
+      if (c.url.startsWith(`/mobile/chat/app/${UUID}/messages`)) return history(c);
+      if (c.url.includes('/events')) return { status: 200, body: { events: [], cursor: 'c1' } };
+      return undefined;
+    }, `#/work/chats?c=${encodeURIComponent(`app:${UUID}`)}`, idb);
+  }
+
+  it('explains a pending first read, names the wait after ten seconds, then explains an empty result', async () => {
+    let finish!: (value: { status: number; body: unknown }) => void;
+    const pending = new Promise<{ status: number; body: unknown }>(resolve => { finish = resolve; });
+    let reads = 0;
+    const { doc } = await openHistory(() => { reads++; return pending; });
+    expect(doc.querySelector('.chat-history-state')?.textContent).toContain('Loading messages');
+    window.dispatchEvent(new dom.window.Event('focus'));
+    window.dispatchEvent(new dom.window.Event('focus'));
+    await flush(100);
+    expect(reads).toBe(1);
+    await flush(10_100);
+    expect(doc.querySelector('.chat-history-state')?.textContent).toContain('Waiting for the agent to return this conversation');
+    finish({ status: 200, body: { messages: [], nextBefore: null } });
+    await flush(100);
+    expect(doc.querySelector('.chat-history-state')?.textContent).toContain('No messages were returned');
+    expect(doc.querySelector('.chat-history-state')?.textContent).not.toContain('Loading');
+  }, 20_000);
+
+  it('explains successful empty history without claiming a populated conversation has no history', async () => {
+    const { doc } = await openHistory(() => ({ status: 200, body: { messages: [], nextBefore: null } }));
+    expect(doc.querySelector('.chat-messages')?.textContent).toContain('No messages were returned');
+    expect(doc.querySelector('.chat-history-retry')).not.toBeNull();
+    expect(calls.some(c => c.method === 'POST' && /mobile\/chat.*$/.test(c.url))).toBe(false);
+  });
+
+  it('retries a failed history read once without changing typed text or sending a message', async () => {
+    let reads = 0;
+    let finish!: (value: { status: number; body: unknown }) => void;
+    const pending = new Promise<{ status: number; body: unknown }>(resolve => { finish = resolve; });
+    const { doc } = await openHistory(() => ++reads === 1 ? { status: 503 } : pending);
+    const retry = doc.querySelector('.chat-history-retry') as HTMLButtonElement;
+    expect(retry).not.toBeNull();
+    const compose = doc.querySelector('.chat-compose') as HTMLTextAreaElement;
+    compose.value = 'Keep this draft';
+    sessionStorage.setItem('instar_chat_unfinished', JSON.stringify([{ ref: `app:${UUID}`, requestId: `${Date.now()}-unfinished`, deviceId: 'dev-b1234567', machineId: 'm1', text: 'Earlier unfinished send', uploads: [], firstSentAt: Date.now() }]));
+    retry.click(); retry.click();
+    await flush(100);
+    expect(reads).toBe(2);
+    expect(compose.value).toBe('Keep this draft');
+    finish({ status: 200, body: { messages: [{ eventId: 'e1', messageId: 'm1', role: 'agent', text: 'Saved history', at: new Date().toISOString() }], nextBefore: null } });
+    await flush(100);
+    expect(doc.querySelector('.chat-messages')?.textContent).toContain('Saved history');
+    expect((doc.querySelector('.chat-history-state') as HTMLElement).hidden).toBe(true);
+    expect(compose.value).toBe('Keep this draft');
+    expect(calls.some(c => c.method === 'POST' && /mobile\/chat.*$/.test(c.url))).toBe(false);
+  });
+
+  it('keeps messages received from another tab visible while the first history read is pending or empty', async () => {
+    let finish!: (value: { status: number; body: unknown }) => void;
+    const pending = new Promise<{ status: number; body: unknown }>(resolve => { finish = resolve; });
+    const { doc } = await openHistory(() => pending);
+    const otherTab = new BroadcastChannel('instar-chat');
+    otherTab.postMessage({ type: 'result', mode: 'events', ref: `app:${UUID}`, data: { events: [{ kind: 'message', eventId: 'live-e1', messageId: 'live-m1', role: 'agent', text: 'Already received', at: new Date().toISOString() }] } });
+    await flush(100);
+    expect(doc.querySelector('.chat-messages')?.textContent).toContain('Already received');
+    expect((doc.querySelector('.chat-history-state') as HTMLElement).hidden).toBe(true);
+    finish({ status: 200, body: { messages: [], nextBefore: null } });
+    await flush(100);
+    expect(doc.querySelector('.chat-messages')?.textContent).toContain('Already received');
+    expect((doc.querySelector('.chat-history-state') as HTMLElement).hidden).toBe(true);
+    otherTab.close();
+  });
+
+  it('clears a failed-history notice when a successful background history read recovers', async () => {
+    const { doc } = await openHistory(() => ({ status: 503 }));
+    expect(doc.querySelector('.chat-history-state')?.textContent).toContain("Couldn't load");
+    const otherTab = new BroadcastChannel('instar-chat');
+    otherTab.postMessage({ type: 'result', mode: 'pool', ref: `app:${UUID}`, data: { messages: [{ eventId: 'recovered', messageId: 'recovered', role: 'agent', text: 'Recovered messages', at: new Date().toISOString() }], nextBefore: null } });
+    await flush(100);
+    expect(doc.querySelector('.chat-messages')?.textContent).toContain('Recovered messages');
+    expect((doc.querySelector('.chat-history-state') as HTMLElement).hidden).toBe(true);
+    otherTab.close();
+  });
+
+  it('shares a follower focus read that starts before the retry, without a second signed history request', async () => {
+    const originalNavigator = globalThis.navigator;
+    vi.stubGlobal('navigator', { userAgent: originalNavigator?.userAgent || 'fixture', locks: { request: () => new Promise(() => {}) } });
+    try {
+      let reads = 0;
+      let finish!: (value: { status: number; body: unknown }) => void;
+      const pending = new Promise<{ status: number; body: unknown }>(resolve => { finish = resolve; });
+      const { doc } = await openHistory(() => ++reads === 1 ? { status: 503 } : pending);
+      window.dispatchEvent(new dom.window.Event('focus'));
+      await flush(100);
+      expect(reads).toBe(2);
+      (doc.querySelector('.chat-history-retry') as HTMLButtonElement).click();
+      window.dispatchEvent(new dom.window.Event('focus'));
+      await flush(100);
+      expect(reads).toBe(2);
+      finish({ status: 200, body: { messages: [{ eventId: 'shared', messageId: 'shared', role: 'agent', text: 'One shared history result', at: new Date().toISOString() }], nextBefore: null } });
+      await flush(100);
+      expect(doc.querySelector('.chat-messages')?.textContent).toContain('One shared history result');
+      expect((doc.querySelector('.chat-history-state') as HTMLElement).hidden).toBe(true);
+    } finally { vi.unstubAllGlobals(); }
+  });
+
+  it('does not apply an old pending history result after leaving the conversation', async () => {
+    let finish!: (value: { status: number; body: unknown }) => void;
+    const pending = new Promise<{ status: number; body: unknown }>(resolve => { finish = resolve; });
+    const { doc } = await openHistory(() => pending);
+    location.hash = '#/work/chats';
+    window.dispatchEvent(new dom.window.HashChangeEvent('hashchange'));
+    await flush(100);
+    finish({ status: 200, body: { messages: [{ eventId: 'old', messageId: 'old', role: 'agent', text: 'Old conversation response', at: new Date().toISOString() }] } });
+    await flush(100);
+    expect(doc.querySelector('.chat-view')?.textContent).not.toContain('Old conversation response');
+    expect(doc.querySelector('.chat-history-state')).toBeNull();
+  });
+});

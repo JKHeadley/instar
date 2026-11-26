@@ -58,7 +58,8 @@ export interface SentinelConfig {
   /** Function to list active sessions */
   getActiveSessions: () => Session[];
   /** Function to capture tmux pane output */
-  captureOutput: (tmuxSession: string) => string | null;
+  captureOutput: (tmuxSession: string) => string | null | Promise<string | null>;
+  isEligible?: (session: Session) => boolean;
   /** Interval between sentinel scans in ms (default: 30_000) */
   scanIntervalMs?: number;
   /** Lines of tmux output to capture (default: 100) */
@@ -157,7 +158,9 @@ export class SessionSummarySentinel {
   start(): void {
     if (this.timer) return;
     const interval = this.config.scanIntervalMs ?? DEFAULT_SCAN_INTERVAL_MS;
-    this.timer = setInterval(() => this.scan(), interval);
+    this.timer = setInterval(() => {
+      void this.scan().catch((error: unknown) => console.warn('[SessionSummarySentinel] Scan failed:', error));
+    }, interval);
   }
 
   /** Stop periodic scanning */
@@ -168,8 +171,20 @@ export class SessionSummarySentinel {
     }
   }
 
+  private scanInFlight = false;
+
   /** Run a single scan across all active sessions */
   async scan(): Promise<{ updated: number; skipped: number; errors: number }> {
+    if (this.scanInFlight) return { updated: 0, skipped: 0, errors: 0 };
+    this.scanInFlight = true;
+    try {
+      return await this.scanSessions();
+    } finally {
+      this.scanInFlight = false;
+    }
+  }
+
+  private async scanSessions(): Promise<{ updated: number; skipped: number; errors: number }> {
     let updated = 0;
     let skipped = 0;
     let errors = 0;
@@ -178,8 +193,8 @@ export class SessionSummarySentinel {
 
     for (const session of sessions) {
       try {
-        const output = this.config.captureOutput(session.tmuxSession);
-        if (!output || output.trim().length === 0) {
+        const output = await this.config.captureOutput(session.tmuxSession);
+        if (!output || output.trim().length === 0 || this.config.isEligible?.(session) === false) {
           skipped++;
           continue;
         }
@@ -195,7 +210,7 @@ export class SessionSummarySentinel {
 
         // Generate summary
         const summary = await this.generateSummary(session, output, hash);
-        if (summary) {
+        if (summary && this.config.isEligible?.(session) !== false) {
           // Durable-Output Hygiene §2: scrub the freshly-generated LLM/output-
           // derived summary at the persistence chokepoint BEFORE the write. The
           // staleness re-save path (updateStaleness → saveSummary) is deliberately

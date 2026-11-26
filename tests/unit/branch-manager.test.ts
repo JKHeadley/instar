@@ -5,7 +5,7 @@
  * health monitoring, and state management. All tests use real git repos in temp directories.
  */
 
-import { describe, it, expect, beforeEach, afterEach } from 'vitest';
+import { describe, it, expect, beforeAll, afterAll, beforeEach, afterEach } from 'vitest';
 import fs from 'node:fs';
 import path from 'node:path';
 import os from 'node:os';
@@ -52,18 +52,28 @@ function commitFile(
 // ── Test Suite ──────────────────────────────────────────────────────────
 
 describe('BranchManager', () => {
+  let fixtureDir: string;
   let tmpDir: string;
   let stateDir: string;
 
+  beforeAll(() => {
+    fixtureDir = fs.mkdtempSync(path.join(os.tmpdir(), 'branch-mgr-'));
+    SafeGitExecutor.execSync(['init', '-b', 'main'], { cwd: fixtureDir, operation: 'tests/unit/branch-manager.test.ts:63' });
+    SafeGitExecutor.execSync(['config', 'user.email', 'test@test.com'], { cwd: fixtureDir, operation: 'tests/unit/branch-manager.test.ts:65' });
+    SafeGitExecutor.execSync(['config', 'user.name', 'Test'], { cwd: fixtureDir, operation: 'tests/unit/branch-manager.test.ts:67' });
+    fs.writeFileSync(path.join(fixtureDir, 'README.md'), '# Test\n');
+    SafeGitExecutor.execSync(['add', '.'], { cwd: fixtureDir, operation: 'tests/unit/branch-manager.test.ts:70' });
+    SafeGitExecutor.execSync(['commit', '-m', 'init'], { cwd: fixtureDir, operation: 'tests/unit/branch-manager.test.ts:72' });
+  });
+
   beforeEach(() => {
     tmpDir = fs.mkdtempSync(path.join(os.tmpdir(), 'branch-mgr-'));
+    fs.cpSync(fixtureDir, tmpDir, { recursive: true });
     stateDir = path.join(tmpDir, '.instar');
-    SafeGitExecutor.execSync(['init', '-b', 'main'], { cwd: tmpDir, operation: 'tests/unit/branch-manager.test.ts:63' });
-    SafeGitExecutor.execSync(['config', 'user.email', 'test@test.com'], { cwd: tmpDir, operation: 'tests/unit/branch-manager.test.ts:65' });
-    SafeGitExecutor.execSync(['config', 'user.name', 'Test'], { cwd: tmpDir, operation: 'tests/unit/branch-manager.test.ts:67' });
-    fs.writeFileSync(path.join(tmpDir, 'README.md'), '# Test\n');
-    SafeGitExecutor.execSync(['add', '.'], { cwd: tmpDir, operation: 'tests/unit/branch-manager.test.ts:70' });
-    SafeGitExecutor.execSync(['commit', '-m', 'init'], { cwd: tmpDir, operation: 'tests/unit/branch-manager.test.ts:72' });
+  });
+
+  afterAll(() => {
+    SafeFsExecutor.safeRmSync(fixtureDir, { recursive: true, force: true, operation: 'branch-manager.test:cleanup-fixture' });
   });
 
   afterEach(() => {

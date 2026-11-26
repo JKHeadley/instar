@@ -119,6 +119,7 @@ import { FeedbackDrainService } from '../feedback-factory/drain/FeedbackDrainSer
 import { FeedbackDrainTickProxy, resolveFeedbackDrainOwnerMachineId, type DrainTickGatewayResult } from '../feedback-factory/drain/FeedbackDrainTickProxy.js';
 import { runFeedbackFactoryDefaultsSelfHeal } from '../feedback-factory/drain/FeedbackFactoryDefaultsSelfHeal.js';
 import { FeedbackConsumerPromotionStore } from '../feedback-factory/drain/FeedbackConsumerPromotionStore.js';
+import { deriveConsumerPromotionProposal, effectiveClaimsPerRun, promotionRecordMarker, type PromotionProposal } from '../feedback-factory/drain/consumerPromotionProposal.js';
 import { resolveFeedbackDrainPosture, type FeedbackDrainPosture } from '../feedback-factory/drain/FeedbackDrainPosture.js';
 import { FeedbackDrainBackupCadence } from '../feedback-factory/drain/FeedbackDrainBackupCadence.js';
 import { createBackupSnapshotInWorker } from '../core/backupSnapshotJob.js';
@@ -359,6 +360,8 @@ import { setUsageInvocationSink } from '../core/CircuitBreakingIntelligenceProvi
 import { agentRegistryPath } from '../core/AgentRegistryPaths.js';
 import { claudeTranscriptRoots } from '../monitoring/claudeTranscriptRoots.js';
 import { buildCodexLiveUsageReader } from '../providers/adapters/openai-codex/observability/codexLiveRateLimitReader.js';
+import { buildReadinessAccountAdmission, resolveReadinessAccountConfig } from '../feedback-factory/drain/readinessAccountAdmission.js';
+import { FeedbackTriageAccountSelector } from '../feedback-factory/triage/FeedbackTriageAccountSelector.js';
 import { BurnAlertDelivery } from '../monitoring/BurnAlertDelivery.js';
 import { FeatureMetricsLedger } from '../monitoring/FeatureMetricsLedger.js';
 import { BlockerLifecycleLedger } from '../monitoring/BlockerLifecycleLedger.js';
@@ -1149,6 +1152,8 @@ export class AgentServer {
     service: FeedbackDrainService;
     store: FeedbackDrainStore;
     promotion: FeedbackConsumerPromotionStore;
+    /** The current consumer-promotion proposal (state + hashed batch), derived fresh on every call. */
+    promotionProposal: () => PromotionProposal;
     tickProxy: FeedbackDrainTickProxy;
     checkpointBackup: (trigger: 'promotion' | 'failover') => void;
     finalizeFailoverRestore: (input: { restoredOwnerAuthorityEpoch: number; operatorDecisionRef: string; snapshotId: string; manifestChecksum: string;
@@ -1495,6 +1500,7 @@ export class AgentServer {
     greenPrAutoMerger?: import('../monitoring/GreenPrAutoMerger.js').GreenPrAutoMerger;
     localVerify?: import('../localVerify/LocalVerifyService.js').LocalVerifyService;
     localVerifyStatus?: import('../localVerify/StatusReconciler.js').StatusReconciler;
+    localVerifyHelper?: import('../localVerify/helper/helperWiring.js').HelperRuntime;
     guardLatchStore?: import('../monitoring/GuardLatchStore.js').GuardLatchStore;
     agentStopSurfacer?: import('../monitoring/agentStopRelease.js').AgentStopSurfacer;
     workingMemory?: import('../memory/WorkingMemoryAssembler.js').WorkingMemoryAssembler;
@@ -1957,6 +1963,8 @@ export class AgentServer {
      *  GET /worktrees/agent-reaper. */
     agentWorktreeReaper?: import('../monitoring/AgentWorktreeReaper.js').AgentWorktreeReaper;
     diskSteward?: () => import('./diskStewardRoutes.js').DiskStewardRouteDeps | null;
+    /** Owned-repository registry (docs/specs/no-data-loss-on-machine-death.md §1.7): GET /repos. */
+    ownedRepos?: () => import('./ownedRepoRoutes.js').OwnedRepoRouteDeps | null;
     /** identity-security piece 2b: the owner record on this machine (GET /owner-record). */
     ownerRecord?: () => import('./ownerRecordRoutes.js').OwnerRecordRouteDeps | null;
     /** Work Board (docs/specs/work-board-asks.md): the runtime (null while off) and the seams it reads late. */
@@ -1992,6 +2000,8 @@ export class AgentServer {
       | null;
     autonomousThroughputFloor?: import('../monitoring/AutonomousThroughputFloor.js').AutonomousThroughputFloor | null;
     /** Chief of Staff (docs/specs/chief-of-staff-topic.md §5): the check-in loop + action protocol, null where the dev-gated feature is off. */
+    ownerNeedsCandidate?: import('./needsRoutes.js').NeedsDeps['ownerCardCandidate'];
+    ownerNeedsWithdrawalJournalFor?: import('./needsRoutes.js').NeedsDeps['withdrawalJournalFor'];
     chiefOfStaffLoop?: import('../core/ChiefOfStaffLoop.js').ChiefOfStaffLoop | null;
     chiefOfStaffProtocol?: import('../core/ChiefOfStaffActionProtocol.js').ChiefOfStaffActionProtocol | null;
     /** Project apps (docs/specs/project-apps.md): late-bound runtime, null where the feature is off. */
@@ -2717,6 +2727,7 @@ export class AgentServer {
       // The same namespace the app conversation store stamps (people and roles §5).
       peopleMachineId: () => options.meshSelfId ?? options.coordinator?.identity?.machineId ?? 'local',
       holdsLease: () => (options.coordinator?.enabled ? options.coordinator.holdsLease() : true),
+      leaseFreshness: () => options.coordinator?.enabled ? options.coordinator.leaseFreshness() : null,
       // Multi-route: the real Tailscale CLI only outside a test run (a test injects its own).
       tailscaleExec: options.mobileRoutes && 'tailscaleExec' in options.mobileRoutes
         ? options.mobileRoutes.tailscaleExec ?? null
@@ -4948,6 +4959,16 @@ export class AgentServer {
         // Queue pace measures the feedback queues only on their configured operated host.
         if (ownerHost !== null && selfMachineId === ownerHost) this.feedbackDrainDb = () => store.sharedDatabase();
         const arbiter = options.intelligence ? new FeedbackReadinessArbiter(options.intelligence) : null;
+        // Readiness reuses the triage account selector (same pool, same live quota reader), read
+        // live per call: a pin or triage.accountSelectionMode set later takes effect without a restart.
+        const readinessUsageReader = options.codexLiveUsageReader !== undefined ? options.codexLiveUsageReader : buildCodexLiveUsageReader(options.config.subscriptionPool);
+        const readinessAccount = buildReadinessAccountAdmission({
+          config: () => resolveReadinessAccountConfig(options.config.feedbackFactory),
+          selector: options.subscriptionPool && readinessUsageReader
+            ? new FeedbackTriageAccountSelector(options.subscriptionPool, (opts) => readinessUsageReader(opts))
+            : null,
+          pool: options.subscriptionPool ?? null,
+        });
         let service!: FeedbackDrainService;
         service = new FeedbackDrainService({
           store,
@@ -4960,10 +4981,12 @@ export class AgentServer {
           isCanonicalOwner,
           isConsumerLive: () => consumerEnabled && options.config.feedbackFactory?.consumer?.dryRun === false && promotion.isLive(),
           consumerBatchBound: () => promotion.read()?.approvedBatchBound ?? 0,
+          consumerApprovedWorkIds: () => promotion.approvedWorkIds(),
           maxReadyScansPerTick: options.config.feedbackFactory?.drain?.maxReadyScansPerTick,
           maxClaimsPerTick: options.config.feedbackFactory?.consumer?.maxClaimsPerTick,
           maxWallClockMs: options.config.feedbackFactory?.drain?.maxWallClockMs,
           readinessChunkSize: options.config.feedbackFactory?.drain?.readinessChunkSize,
+          readinessAccount,
           raiseAttention: async (item) => {
             const enqueue = this.telegramAdapter?.createAttentionItem;
             if (!enqueue) throw new Error('durable attention enqueue unavailable');
@@ -5027,7 +5050,24 @@ export class AgentServer {
           restorePending = false;
           return { ...finalized, reconciliation };
         };
-        this.feedbackDrain = { service, store, promotion, tickProxy, checkpointBackup, finalizeFailoverRestore, isRestorePending: () => restorePending,
+        // The exact batch the operator approves on consumer promotion (proposal-set bound):
+        // re-derived on every read and again immediately before the promote write.
+        const promotionProposal = (): PromotionProposal => {
+          const claimsPerRun = effectiveClaimsPerRun(options.config.feedbackFactory?.consumer?.maxClaimsPerTick);
+          const currentRecord = promotion.read();
+          return deriveConsumerPromotionProposal({
+            available: true,
+            restorePending,
+            isCanonicalOwner: holdsCanonicalLease(),
+            consumerEnabled,
+            configuredDryRun: options.config.feedbackFactory?.consumer?.dryRun,
+            promotionRecord: currentRecord ? { approvedBatchBound: currentRecord.approvedBatchBound, revokedAt: currentRecord.revokedAt, proposalBound: FeedbackConsumerPromotionStore.isProposalBound(currentRecord) } : null,
+            priorRecordMarker: promotionRecordMarker(currentRecord),
+            claimsPerRun,
+            claimable: store.claimableWork(claimsPerRun),
+          });
+        };
+        this.feedbackDrain = { service, store, promotion, promotionProposal, tickProxy, checkpointBackup, finalizeFailoverRestore, isRestorePending: () => restorePending,
           // The exact owner binding canAgentMutateReadiness compares, for the operator's authority proposal.
           authorityBinding: () => ({ ownerMachineId: ownerHost, ownerEpoch: options.coordinator?.enabled ? options.coordinator.getLeaseEpoch() : localOwnerEpoch }) };
         // Feedback triage (docs/specs/feedback-triage-and-execution.md, Phase 1). Same owner
@@ -6907,6 +6947,7 @@ export class AgentServer {
       greenPrAutoMerger: options.greenPrAutoMerger ?? null,
       localVerify: options.localVerify ?? null,
       localVerifyStatus: options.localVerifyStatus ?? null,
+      localVerifyHelper: options.localVerifyHelper ?? null,
       guardLatchStore: options.guardLatchStore ?? null,
       agentStopSurfacer: options.agentStopSurfacer ?? null,
       workingMemory: options.workingMemory ?? null,
@@ -7222,6 +7263,7 @@ export class AgentServer {
       sessionReaper: options.sessionReaper ?? null,
       agentWorktreeReaper: options.agentWorktreeReaper ?? null,
       diskSteward: options.diskSteward ?? null,
+      ownedRepos: options.ownedRepos ?? null,
       ownerRecord: options.ownerRecord ?? null,
       workBoard: options.workBoard ?? null,
       workBoardLate: options.workBoardLate ?? null,
@@ -7236,6 +7278,8 @@ export class AgentServer {
       resumeQueue: options.resumeQueue ?? null,
       resumeDrainer: options.resumeDrainer ?? null,
       autonomousLivenessReconciler: options.autonomousLivenessReconciler ?? null,
+      ownerNeedsCandidate: options.ownerNeedsCandidate,
+      ownerNeedsWithdrawalJournalFor: options.ownerNeedsWithdrawalJournalFor,
       chiefOfStaffLoop: options.chiefOfStaffLoop ?? null,
       groupProjectConfirm: this.groupProjectConfirm,
       projectAppsRuntime: options.projectAppsRuntime,
@@ -8255,6 +8299,8 @@ export class AgentServer {
         listPins: options.conversationListPins !== undefined ? options.conversationListPins : (this.appConversations ? new ConversationListPinStore({ stateDir: options.config.stateDir }) : null),
         slackConversations: slackBridge ? () => (slackOwnerUserId(options.config) ? slackListRows(slackBridge) : null) : undefined,
         config: options.config, pairing: this.mobilePairing, service: this.appConversations,
+        // SEC-164 §4.5: the removed-key notice, built by createRoutes (it holds Secret Drop).
+        credentialNotice: (input) => routeCtx.appCredentialNotice?.(input),
         mediaEnabled: isMobileMediaEnabled(options.config),
         machineId: () => this.appConversations?.deps.machineId() ?? 'local',
         sentinel: options.sentinel ?? null,

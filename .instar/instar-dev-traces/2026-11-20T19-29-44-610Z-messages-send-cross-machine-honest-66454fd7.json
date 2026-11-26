@@ -1,0 +1,27 @@
+{
+  "version": 2,
+  "slug": "messages-send-cross-machine-honest",
+  "sessionId": "676909c6-f7e4-4202-ab7a-f8d489e719ac",
+  "timestamp": "2026-11-20T19:29:44.610Z",
+  "artifactPath": "upgrades/side-effects/messages-send-cross-machine-honest.md",
+  "artifactSha256": "db7f7c65556f21b9a75b1c91bafbf47515ac69df16b5f075a5ec7755f7255244",
+  "coveredFiles": [
+    "docs/specs/messages-send-cross-machine-honest.eli16.md",
+    "src/data/awareness/cross-machine-send-honest.md",
+    "src/messaging/MessageRouter.ts",
+    "src/messaging/types.ts",
+    "src/server/routes.ts",
+    "tests/e2e/messages-send-cross-machine-alive.test.ts",
+    "tests/integration/messages-send-cross-machine-honest.test.ts",
+    "tests/unit/message-router-cross-machine-honest.test.ts",
+    "upgrades/next/messages-send-cross-machine-honest.md",
+    "upgrades/side-effects/messages-send-cross-machine-honest.md"
+  ],
+  "phase": "complete",
+  "tier": 1,
+  "tierReasoning": "Reversible transport fix: a revert fully restores prior behavior; no state migration; no credential path (existing Machine-HMAC relay route); no new refusal, only an explained one",
+  "eli16Path": "docs/specs/messages-send-cross-machine-honest.eli16.md",
+  "sideEffectsPath": "upgrades/side-effects/messages-send-cross-machine-honest.md",
+  "secondPass": "false",
+  "reviewerConcurred": null
+}

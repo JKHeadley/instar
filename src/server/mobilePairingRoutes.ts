@@ -1,3 +1,4 @@
+import { recordMobileChatServingRefusal } from './mobileChatServingAudit.js';
 import { telegramTopicKnown } from '../messaging/telegramTopicKnown.js';
 import { maskInbound } from '../messaging/inboundCredentialMask.js';
 import { credentialScrubEnabledReader } from '../core/outputCredentialScrub.js';
@@ -134,6 +135,8 @@ export interface MobilePairingDeps {
   telegramOwnerPresent?: () => boolean;
   /** Whether this machine holds the serving lease (single machine: true). */
   holdsLease?: () => boolean;
+  /** Read-only lease diagnosis sampled after an app chat preflight refusal. */
+  leaseFreshness?: () => unknown;
   /** Raise one attention item (pairing paused by wrong codes). */
   raiseAttention?: (title: string, body: string) => void;
   reportDegradation?: (what: string, err: unknown) => void;
@@ -861,6 +864,10 @@ export class MobilePairingService {
   }
 
   holdsLease(): boolean { return this.deps.holdsLease?.() ?? true; }
+
+  recordChatServingRefusal(): void {
+    recordMobileChatServingRefusal({ readFreshness: this.deps.leaseFreshness });
+  }
 
   /**
    * The ONE request-id store for every app mutation on this machine (Telegram chat route and the
@@ -2301,7 +2308,11 @@ export function createMobilePairingRouter(svc: MobilePairingService, deps: Mobil
     // answer authority-bearing buttons use). An agent set up without ownerUserId still has an owner.
     const ownerId = tg?.getVerifiedOwner?.() ?? tg?.getOwnerUserId?.();
     if (!tg || !ingest || !ownerId) { res.status(503).json({ error: 'chat-unavailable', detail: 'This agent has no Telegram owner to speak as.' }); return; }
-    if (!svc.holdsLease()) { res.status(409).json({ error: 'not-serving', detail: 'Messages aren\'t being received right now. Try again shortly or use Telegram.' }); return; }
+    if (!svc.holdsLease()) {
+      svc.recordChatServingRefusal();
+      res.status(409).json({ error: 'not-serving', detail: 'Messages aren\'t being received right now. Try again shortly or use Telegram.' });
+      return;
+    }
     const t = Date.now();
     const recent = (chatRate.get(p.deviceId) ?? []).filter((x) => t - x < 60_000);
     if (recent.length >= 20) { chatRate.set(p.deviceId, recent); res.status(429).json({ error: 'too-many-requests' }); return; }

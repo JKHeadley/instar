@@ -401,10 +401,12 @@ export function refusedUnlock(check) {
   );
 }
 
-export function askPin({ title, explain, adapter = 'body', fresh = false }) {
+export function askPin({ title, explain, adapter = 'body', fresh = false, isCurrent = () => true }) {
+  if (!isCurrent()) return Promise.resolve(null);
   // `fresh`: ask even while an unlock is held, for a long action that would outlive the one it has.
   if (adapter === 'session' && operatorSession() && !fresh) return Promise.resolve({ session: operatorSession() });
   return unlockCheck().then((check) => new Promise((resolve) => {
+    if (!isCurrent()) { resolve(null); return; }
     if (!check.accepted) {
       sheet({ title: title || 'Your PIN', onClose: () => resolve(null) }, refusedUnlock(check));
       return;
