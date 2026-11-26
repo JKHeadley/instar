@@ -52,6 +52,8 @@ function repoLine(r) {
   const u = r.uncommitted;
   if (u && typeof u === 'object' && u.files > 0) parts.push(`${u.files} uncommitted file${u.files === 1 ? '' : 's'}`);
   else if (u === true) parts.push('uncommitted changes');
+  const complete = u && typeof u === 'object' ? u.complete : r.uncommittedComplete;
+  if (complete !== true) parts.push('uncommitted changes not fully checked');
   return `${parts.join(' · ')}.`;
 }
 

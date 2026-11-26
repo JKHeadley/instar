@@ -20,7 +20,7 @@ import { readGit } from '../../src/monitoring/ownedRepos/repoGit.js';
 import type { OwnedRepoRouteDeps } from '../../src/server/ownedRepoRoutes.js';
 import type { OwnedRepoReplica } from '../../src/core/OwnedRepoReplicatedStore.js';
 // @ts-expect-error — browser-native ESM model, no types
-import { repoNeedRows } from '../../dashboard/console/repos-model.js';
+import { buildReposPage, repoNeedRows } from '../../dashboard/console/repos-model.js';
 
 const AUTH = 'test-owned-repo-routes';
 const DAY = 86_400_000;
@@ -116,6 +116,11 @@ describe('owned-repository routes', () => {
     expect(res.status).toBe(200);
     const bySource = Object.fromEntries(res.body.machines.map((m: { machineId: string; source: string }) => [m.machineId, m.source]));
     expect(bySource).toEqual({ m_studio: 'self', m_mini: 'live', m_laptop: 'replicated', m_pc: 'unknown' });
+    const page = buildReposPage({ ok: true, data: res.body });
+    for (const target of ['m_studio', 'm_laptop']) {
+      expect(page.machines?.find((m) => m.id === target)?.repos[0].line).toContain('uncommitted changes not fully checked');
+    }
+    expect(res.body.machines.find((m: { machineId: string }) => m.machineId === 'm_laptop')?.repos[0].uncommittedComplete).toBe(false);
     expect(res.body.couldNotRead.map((c: { machineId: string }) => c.machineId)).toEqual(['m_pc']);
     const keys = res.body.defects.map((d: { key: string }) => d.key).sort();
     expect(keys).toEqual(['repos:no-remote:m_laptop', 'repos:no-remote:m_studio', 'repos:unpushed:m_mini']);

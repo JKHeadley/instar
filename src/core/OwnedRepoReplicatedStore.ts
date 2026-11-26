@@ -29,6 +29,7 @@ export interface OwnedRepoReplica {
   singleCopyCommitsBucket: number;
   singleCopyBranchesBucket: number;
   uncommitted: boolean;
+  uncommittedComplete?: boolean;
   /** True once single-copy work has outlived the grace window (§1.4): a state change, so it replicates. */
   pastGrace: boolean;
   state: 'ok' | 'unknown';
@@ -74,11 +75,14 @@ export function validateOwnedRepoReplica(raw: unknown): OwnedRepoReplica | null 
   const c = nonNegBucket(r.singleCopyCommitsBucket); const b = nonNegBucket(r.singleCopyBranchesBucket);
   if (c === null || b === null) return null;
   for (const k of ['singleCopy', 'uncommitted', 'pastGrace', 'gone']) if (typeof r[k] !== 'boolean') return null;
+  if (r.uncommittedComplete !== undefined && typeof r.uncommittedComplete !== 'boolean') return null;
   if (r.state !== 'ok' && r.state !== 'unknown') return null;
   return {
     repoId, machineId, displayPath, class: r.class, remotes,
     singleCopy: r.singleCopy as boolean, singleCopyCommitsBucket: c, singleCopyBranchesBucket: b,
-    uncommitted: r.uncommitted as boolean, pastGrace: r.pastGrace as boolean, state: r.state, gone: r.gone as boolean,
+    uncommitted: r.uncommitted as boolean,
+    ...(typeof r.uncommittedComplete === 'boolean' ? { uncommittedComplete: r.uncommittedComplete } : {}),
+    pastGrace: r.pastGrace as boolean, state: r.state, gone: r.gone as boolean,
   };
 }
 

@@ -1758,6 +1758,8 @@ function refuseReadSurfaceOverrides(
   for (const [key, value] of Object.entries(opts.env ?? {})) {
     if (value === process.env[key]) continue; // inherited, not the caller's
     if (READ_SURFACE_ENV_ADMITTED.has(key)) continue;
+    // An empty allowlist disables every transport, including implicit partial-clone fetches.
+    if (key === 'GIT_ALLOW_PROTOCOL' && value === '') continue;
     audit('git', opts.operation, verb, targets[0], 'denied', 'read-surface-env-not-admitted');
     throw new SafeGitExecutorError(
       `SafeGitExecutor: env ${key} is not admitted on a read surface. A read may only add or change the variables in READ_SURFACE_ENV_ADMITTED.`,

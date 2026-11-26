@@ -330,7 +330,7 @@ export class OwnedRepoRegistry {
     for (const r of due) {
       if (Date.now() > deadline) break;
       if (!fs.existsSync(r.root)) { r.goneAt = this.now(); continue; }
-      const ins = await inspectRepo(r.root, this.deps.git, { deadline });
+      const ins = await inspectRepo(r.root, this.deps.git);
       // One record per object store: a second root on the same store (a worktree found by another path) folds into the first.
       const holder = ins.commonDir ? seenCommon.get(ins.commonDir) : undefined;
       if (holder && holder !== r.root && this.state.repos[holder] && !this.state.repos[holder].goneAt) { delete this.state.repos[r.root]; continue; }
@@ -384,7 +384,8 @@ export class OwnedRepoRegistry {
       remotes: ins?.remotes ?? [],
       hasOffMachineRemote: (ins?.remotes ?? []).some((x) => x.offMachine),
       singleCopy: { commits: ins?.singleCopy.commits ?? 0, branches: ins?.singleCopy.branches ?? 0, oldestAt: iso(ins?.singleCopy.oldestAt), branchNames: ins?.singleCopy.branchNames ?? [] },
-      uncommitted: { worktrees: ins?.uncommitted.worktrees ?? 0, files: ins?.uncommitted.files ?? 0, bytes: ins?.uncommitted.bytes ?? 0, oldestAt: iso(ins?.uncommitted.oldestAt), complete: ins?.uncommitted.complete ?? false },
+      // Cached inspections from older releases may contain obsolete worktree status.
+      uncommitted: { worktrees: 0, files: 0, bytes: 0, oldestAt: null, complete: false },
       home: { mirror: null, remoteBackup: null },
       state: ins ? ins.state : 'unknown',
       ...(ins?.error ? { error: ins.error } : {}),
@@ -403,6 +404,7 @@ export class OwnedRepoRegistry {
       singleCopyCommitsBucket: bucket(v.singleCopy.commits),
       singleCopyBranchesBucket: bucket(v.singleCopy.branches),
       uncommitted: v.uncommitted.files > 0,
+      uncommittedComplete: v.uncommitted.complete,
       pastGrace: v.pastGrace,
       state: v.state,
       gone: r.goneAt !== null,

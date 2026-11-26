@@ -4,29 +4,51 @@
  * Every call goes through SafeGitExecutor.readStream: the one funnel, which refuses any verb or
  * form that is not a read, and audits each call. It is an ASYNC child process (never on the
  * server's main thread) with a timeout and an output cap. `GIT_OPTIONAL_LOCKS=0` so it never takes
- * `.git/index.lock`, and `core.fsmonitor=false` so a repository's own config can never start a
- * program. The agent's home is itself an Instar checkout, so the read-tier source-tree opt-in is
- * set; every verb used here (rev-parse, remote, log, status, ls-files) is on that read-tier list.
- * Nothing here writes.
+ * `.git/index.lock`. Only the inventory's fixed discovery and history queries are admitted.
+ * In particular, Git status can run content filters configured by the discovered repository.
  */
 import { SafeGitExecutor } from '../../core/SafeGitExecutor.js';
 
 export type GitReadResult = { ok: true; stdout: string } | { ok: false; error: string };
 export type GitReader = (cwd: string, args: readonly string[], opts?: { timeoutMs?: number; maxBuffer?: number }) => Promise<GitReadResult>;
 
+const FIXED_QUERIES = [
+  ['rev-parse', '--path-format=absolute', '--git-common-dir'],
+  ['remote', '-v'],
+  ['ls-files', '--others', '--directory', '-z'],
+  ['ls-files', '--others', '--directory', '-z', '--ignored', '--exclude-standard'],
+  ['log', '--max-parents=0', '--all', '--format=%H'],
+  ['log', '--no-walk', '--branches', '--decorate-refs=refs/heads/', '--format=%H %ct %D'],
+];
+
+function inventoryQuery(args: readonly string[]): boolean {
+  if (FIXED_QUERIES.some((query) => args.length === query.length && query.every((arg, i) => args[i] === arg))) return true;
+  if (args[0] !== 'log' || args[1] !== '--branches' || args.at(-1) !== '--format=%H %ct') return false;
+  if (args.length === 3) return true;
+  return args.length >= 5 && args[2] === '--not'
+    && args.slice(3, -1).every((arg) => /^--remotes=[^\s]+$/u.test(arg));
+}
+
 /** The read-only git runner the registry uses. Never throws. */
 export const readGit: GitReader = (cwd, args, opts) => new Promise((resolve) => {
+  if (!inventoryQuery(args)) {
+    resolve({ ok: false, error: 'git query is outside the owned repository inventory' });
+    return;
+  }
+  const command = args[0] === 'log'
+    ? ['log', '--no-show-signature', '--no-ext-diff', '--no-textconv', ...args.slice(1)]
+    : args;
   const max = opts?.maxBuffer ?? 32 * 1024 * 1024;
   let settled = false;
   const done = (r: GitReadResult) => { if (!settled) { settled = true; resolve(r); } };
   let child;
   try {
-    child = SafeGitExecutor.readStream(['-c', 'core.fsmonitor=false', ...args], {
+    child = SafeGitExecutor.readStream(['--no-pager', '-c', 'core.fsmonitor=false', ...command], {
       cwd,
       operation: 'src/monitoring/ownedRepos/repoGit.ts',
       sourceTreeReadOk: true,
       timeout: opts?.timeoutMs ?? 20_000,
-      env: { ...process.env, GIT_OPTIONAL_LOCKS: '0', GIT_TERMINAL_PROMPT: '0' },
+      env: { ...process.env, GIT_OPTIONAL_LOCKS: '0', GIT_TERMINAL_PROMPT: '0', GIT_ALLOW_PROTOCOL: '' },
     });
   } catch (e) {
     done({ ok: false, error: (e instanceof Error ? e.message : String(e)).slice(0, 200) });

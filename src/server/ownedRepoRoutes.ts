@@ -44,7 +44,7 @@ export function replicaAnswer(machineId: string, machineName: string, reps: Owne
     repoId: r.repoId, machineId: r.machineId, displayPath: r.displayPath, class: r.class, remotes: r.remotes,
     hasOffMachineRemote: r.remotes.some((x) => x.offMachine),
     singleCopy: { commits: r.singleCopyCommitsBucket, branches: r.singleCopyBranchesBucket, oldestAt: null, approximate: true },
-    uncommitted: r.uncommitted, pastGrace: r.pastGrace, state: r.state,
+    uncommitted: r.uncommitted, uncommittedComplete: r.uncommittedComplete ?? false, pastGrace: r.pastGrace, state: r.state,
   }));
   const defects = defectsFor(machineId, machineName, repos.map((r) => ({ ...r, singleCopy: { commits: r.singleCopy.commits, branches: r.singleCopy.branches, oldestAt: null, branchNames: [] } })), { now, enabledSince: now, lastCompletedPassAt: now })
     .filter((d) => d.kind !== 'unknown')
