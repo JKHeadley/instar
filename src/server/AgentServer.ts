@@ -1992,6 +1992,8 @@ export class AgentServer {
       | null;
     autonomousThroughputFloor?: import('../monitoring/AutonomousThroughputFloor.js').AutonomousThroughputFloor | null;
     /** Chief of Staff (docs/specs/chief-of-staff-topic.md §5): the check-in loop + action protocol, null where the dev-gated feature is off. */
+    ownerNeedsCandidate?: import('./needsRoutes.js').NeedsDeps['ownerCardCandidate'];
+    ownerNeedsWithdrawalJournalFor?: import('./needsRoutes.js').NeedsDeps['withdrawalJournalFor'];
     chiefOfStaffLoop?: import('../core/ChiefOfStaffLoop.js').ChiefOfStaffLoop | null;
     chiefOfStaffProtocol?: import('../core/ChiefOfStaffActionProtocol.js').ChiefOfStaffActionProtocol | null;
     /** Project apps (docs/specs/project-apps.md): late-bound runtime, null where the feature is off. */
@@ -7189,6 +7191,8 @@ export class AgentServer {
       resumeQueue: options.resumeQueue ?? null,
       resumeDrainer: options.resumeDrainer ?? null,
       autonomousLivenessReconciler: options.autonomousLivenessReconciler ?? null,
+      ownerNeedsCandidate: options.ownerNeedsCandidate,
+      ownerNeedsWithdrawalJournalFor: options.ownerNeedsWithdrawalJournalFor,
       chiefOfStaffLoop: options.chiefOfStaffLoop ?? null,
       groupProjectConfirm: this.groupProjectConfirm,
       projectAppsRuntime: options.projectAppsRuntime,
