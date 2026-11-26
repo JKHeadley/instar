@@ -145,12 +145,15 @@ describe('AppConversationStore', () => {
     expect(first.events).toHaveLength(100);
     const second = store.syncEvents(KEY, first.cursor, 100);
     expect(second.events[0]!.ingestSeq).toBe(101);
-    // A cursor minted by another machine is not compared: the read restarts from the beginning.
-    const foreign = Buffer.from(JSON.stringify({ m: 'other', s: 200 })).toString('base64url');
-    expect(store.syncEvents(KEY, foreign, 5).events[0]!.ingestSeq).toBe(1);
+    // Foreign and previously issued unscoped cursors restart the read.
+    const foreign = Buffer.from(JSON.stringify({ m: 'other', k: 'app:' + KEY, s: 200 })).toString('base64url');
+    const legacy = Buffer.from(JSON.stringify({ m: 'me', s: 200 })).toString('base64url');
+    for (const cursor of [foreign, legacy]) expect(store.syncEvents(KEY, cursor, 5).events[0]!.ingestSeq).toBe(1);
+    const last = store.syncEvents(KEY, second.cursor, 100);
+    expect(last.events.at(-1)?.ingestSeq).toBe(251);
     // A late replicated row gets a HIGHER ingestSeq than anything already read.
     store.ingestReplicated({ ...msg('replicated', 0), machineId: 'peer' });
-    const tail = store.syncEvents(KEY, Buffer.from(JSON.stringify({ m: 'me', s: 251 })).toString('base64url'), 100);
+    const tail = store.syncEvents(KEY, last.cursor, 100);
     expect(tail.events.map((e) => e.eventId)).toEqual(['ev-replicated']);
   });
 

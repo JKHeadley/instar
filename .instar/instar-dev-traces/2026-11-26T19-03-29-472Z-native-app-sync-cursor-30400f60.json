@@ -1,0 +1,19 @@
+{
+  "version": 2,
+  "slug": "native-app-sync-cursor",
+  "sessionId": "633bd330-201e-4dc8-8fd9-72b89116167e",
+  "timestamp": "2026-11-26T19:03:29.472Z",
+  "artifactPath": "upgrades/side-effects/native-app-sync-cursor.md",
+  "artifactSha256": "b134043386596f3e59a1025cb7e26a93b2a3a9f35a486976626a012ece34616f",
+  "specPath": "docs/specs/mobile-native-conversations.md",
+  "coveredFiles": [
+    "src/core/AppConversationStore.ts",
+    "tests/integration/mobile-native-conversations-gaps.test.ts",
+    "tests/unit/app-conversation-store.test.ts",
+    "upgrades/next/native-app-sync-cursor.md",
+    "upgrades/side-effects/native-app-sync-cursor.md"
+  ],
+  "phase": "complete",
+  "secondPass": "not-required",
+  "reviewerConcurred": null
+}

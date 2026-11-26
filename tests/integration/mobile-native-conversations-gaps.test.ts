@@ -237,6 +237,35 @@ describe('gap 2 — scope=pool on the list and the browse read', () => {
   });
 });
 
+describe('signed App incremental history', () => {
+  it('restarts a cursor used for a different conversation on the same machine', async () => {
+    const e = await setup();
+    const create = async (title: string) => {
+      const made = await signed(e, 'POST', '/mobile/conversations', { title, requestId: rid() });
+      expect(made.status).toBe(200);
+      return made.body.conversationKey as string;
+    };
+    const firstKey = await create('First chat');
+    const secondKey = await create('Second chat');
+    expect((await signed(e, 'POST', `/mobile/chat/app/${firstKey}`, {
+      text: 'First chat message', requestId: rid(),
+    })).status).toBe(200);
+    const sent = await signed(e, 'POST', `/mobile/chat/app/${secondKey}`, { text: 'Second chat message', requestId: rid() });
+    expect(sent.status).toBe(200);
+    const first = await signed(e, 'GET', `/mobile/chat/app/${firstKey}/events`);
+    expect(first.status).toBe(200);
+    expect(first.body.events.map((event: { kind: string }) => event.kind)).toContain('created');
+    const route = `/mobile/chat/app/${secondKey}/events`;
+    const second = await signed(e, 'GET', `${route}?cursor=${encodeURIComponent(first.body.cursor)}`);
+    expect(second.status).toBe(200);
+    expect(second.body.events.map((event: { kind: string }) => event.kind)).toContain('created');
+    expect(second.body.events).toContainEqual(expect.objectContaining({ kind: 'message', text: 'Second chat message' }));
+    const idle = await signed(e, 'GET', `${route}?cursor=${encodeURIComponent(second.body.cursor)}`);
+    expect(idle.status).toBe(200);
+    expect(idle.body.events).toEqual([]);
+  });
+});
+
 describe('signed Telegram older history', () => {
   it('keeps recovered App rows on the safe side of a truncated peer page', async () => {
     let cutoff = 0;
