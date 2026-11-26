@@ -8844,7 +8844,9 @@ export async function startServer(options: StartOptions): Promise<void> {
         const {
           INTERNAL_FRAMEWORK_PREFERENCE,
           resolveInternalFrameworkDefault,
+          selectActiveInternalFrameworks,
         } = await import('../core/internalFrameworkDefault.js');
+        const { hasUsableInternalLogin } = await import('../core/frameworkLoginPresence.js');
         const defaultFw = resolvedFramework;
         const rawDefault = sharedIntelligence;
 
@@ -8898,8 +8900,13 @@ export async function startServer(options: StartOptions): Promise<void> {
         // so it's never dropped from the tail; off-default frameworks are probed.
         // Memoize ONLY this SET (§4.6 — never a frozen config object). Machine-local
         // by design (§5): each machine probes its own installed CLIs.
-        const activeFrameworkSet: IFw[] = INTERNAL_FRAMEWORK_PREFERENCE.filter(
-          (fw) => fw === defaultFw || cachedBuild(fw) !== null,
+        // CMT-2289: an off-default framework must also have a usable SIGN-IN, not just
+        // a binary — gemini-cli installed without a Gemini login used to win the `gate`
+        // category (pi → gemini → codex → claude) and fail every PromptGate /
+        // UnjustifiedStopGate call. Without a login it is not active; the policy falls
+        // through to the next framework (and finally the agent default).
+        const activeFrameworkSet: IFw[] = selectActiveInternalFrameworks(
+          INTERNAL_FRAMEWORK_PREFERENCE, defaultFw, cachedBuild, (fw) => hasUsableInternalLogin(fw),
         );
 
         // §4.4 boot snapshot — load-bearing & mutation-proof: capture WHETHER the
