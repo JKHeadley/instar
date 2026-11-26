@@ -1,5 +1,5 @@
 import { createHash, generateKeyPairSync, sign } from 'node:crypto';
-import { expect, it } from 'vitest';
+import { expect, it, vi } from 'vitest';
 import { ConnectConsentConnection } from '../../src/core/ConnectConsentConnection.js';
 import { ConnectConsentHost } from "../../src/core/ConnectConsentHost.js";
 import { isStrictLowSDer } from '../../src/core/MobileDeviceKeys.js';
@@ -124,4 +124,22 @@ it('retires prompt, grant and queue before returning a replacement challenge', (
   expect(verified.signal.aborted).toBe(false);
   host.close();
   expect(verified.signal.aborted).toBe(true);
+});
+
+it('bounds repeated pending handshakes and recovers the budget', () => {
+  vi.useFakeTimers({ toFake: ['performance'] });
+  const host = new ConnectConsentHost();
+  try {
+    for (let attempt = 0; attempt < 12; attempt++) {
+      const transport = new AbortController();
+      expect(host.open(pairing, keys.publicKey, transport.signal, () => true)).toBeDefined();
+      transport.abort();
+    }
+    expect(host.open(pairing, keys.publicKey, new AbortController().signal, () => true)).toBeUndefined();
+    vi.advanceTimersByTime(60_000);
+    expect(host.open(pairing, keys.publicKey, new AbortController().signal, () => true)).toBeDefined();
+  } finally {
+    host.close();
+    vi.useRealTimers();
+  }
 });

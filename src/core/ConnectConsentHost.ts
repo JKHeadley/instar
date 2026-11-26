@@ -20,10 +20,15 @@ export class ConnectConsentHost {
   #pending?: ConnectionSlot;
   #closed = false;
   #replacing = false;
+  #attempts: number[] = [];
 
   open(pairing: ConnectCompanionPairing, key: KeyObject, transport: AbortSignal,
       pairingStillCurrent: () => boolean): ConnectConsentHostHandle | undefined {
     if (this.#closed || this.#replacing || this.#pending || transport.aborted) return;
+    const now = performance.now();
+    this.#attempts = this.#attempts.filter(at => at > now - 60_000);
+    if (this.#attempts.length >= 12) return;
+    this.#attempts.push(now);
     const lifetime = new AbortController();
     const connection = new ConnectConsentConnection(pairing, key, pairingStillCurrent, lifetime.signal);
     const slot = { lifetime, connection };
