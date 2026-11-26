@@ -1,0 +1,20 @@
+{
+  "version": 2,
+  "slug": "mac-keychain-master-key-private-input",
+  "sessionId": "fc3d3191-842f-463d-af54-a2abbc40e3f2",
+  "timestamp": "2026-11-26T17:32:12.921Z",
+  "artifactPath": "upgrades/side-effects/mac-keychain-master-key-private-input.md",
+  "artifactSha256": "f546c5b8d7c05b73f7de10c80539a2f8227a42949821067539592caff77f2940",
+  "coveredFiles": [
+    "docs/specs/mac-keychain-master-key-private-input.eli16.md",
+    "src/data/stageBCertifiedSet.ts",
+    "upgrades/side-effects/mac-keychain-master-key-private-input.md"
+  ],
+  "phase": "complete",
+  "tier": 1,
+  "tierReasoning": "Classify the new keychain helper in the Stage-B manifest as excluded, same reason as its only callers",
+  "eli16Path": "docs/specs/mac-keychain-master-key-private-input.eli16.md",
+  "sideEffectsPath": "upgrades/side-effects/mac-keychain-master-key-private-input.md",
+  "secondPass": "not-required",
+  "reviewerConcurred": true
+}

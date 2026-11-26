@@ -20,3 +20,5 @@ This change moved off PR 3900 (its base branch closed with 3898) onto 3928's bra
 - Test scope: the unit tests prove the argv passed to a stub runner, not a real macOS process. This is an accepted limit; a live check needs a throwaway agent on a Mac.
 
 No code change was made in response; the concerns are answered above for the reviewer of this PR.
+
+- Stage-B manifest: `src/core/macKeychainWrite.ts` is excluded with a reason (reached only through the already-excluded SecretStore and GlobalSecretStore), so the release fingerprint check classifies it.
