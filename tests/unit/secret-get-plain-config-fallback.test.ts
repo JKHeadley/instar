@@ -31,10 +31,10 @@ describe('secret-get.mjs — plain config.json fallback', () => {
   });
   const writeConfig = (cfg: unknown) => fs.writeFileSync(path.join(stateDir, 'config.json'), JSON.stringify(cfg));
 
-  it('refuses bare reads and transfers only one array leaf through a private channel', () => {
+  it('refuses aggregate reads and transfers only one array leaf through a private channel', () => {
     writeConfig({ messaging: [{ config: { token: 'synthetic-array-token', appToken: 'synthetic-other-token' } }] });
     const bare = spawnSync(process.execPath, [scriptSrc, 'messaging'], { cwd: tmpDir, encoding: 'utf8' });
-    expect(bare.status).toBe(2);
+    expect(bare.status).toBe(1);
     expect(bare.stdout).toBe('');
     expect(bare.stderr).not.toContain('synthetic-array-token');
     const leaf = run(['messaging[0].config.token']);
@@ -42,6 +42,25 @@ describe('secret-get.mjs — plain config.json fallback', () => {
     expect(leaf.stdout).toBe('');
     expect(leaf.output[3]).toBe('synthetic-array-token');
     expect(run(['messaging']).status).toBe(1);
+  });
+
+  it('temporarily preserves bare scalar capture and refuses regular-file and merged output', () => {
+    writeConfig({ authToken: 'synthetic-scalar-token' });
+    const captured = spawnSync(process.execPath, [scriptSrc, 'authToken'], { cwd: tmpDir, encoding: 'utf8' });
+    expect(captured.status).toBe(0);
+    expect(captured.stdout).toBe('synthetic-scalar-token');
+    expect(captured.stderr).toContain('bare scalar capture is deprecated');
+    expect(captured.stderr).not.toContain('synthetic-scalar-token');
+    if (process.platform === 'win32') return;
+    const invoke = (command: string) => spawnSync('/bin/sh', ['-c', command, 'fixture', process.execPath, scriptSrc],
+      { cwd: tmpDir, encoding: 'utf8' });
+    const substitution = invoke('captured=$("$1" "$2" authToken) && test "$captured" = synthetic-scalar-token');
+    expect(substitution.status).toBe(0);
+    expect(substitution.stdout).toBe('');
+    expect(invoke('"$1" "$2" authToken 2>&1').status).toBe(2);
+    const file = invoke('"$1" "$2" authToken > output');
+    expect(file.status).toBe(2);
+    expect(fs.readFileSync(path.join(tmpDir, 'output'), 'utf8')).toBe('');
   });
 
   it('refuses an internal pipe aliased to stdout or stderr', () => {

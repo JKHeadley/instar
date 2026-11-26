@@ -1,7 +1,8 @@
 #!/usr/bin/env node
 /**
  * Read one vault leaf and pass it to a designated consumer on stdin.
- * A bare lookup refuses before opening the vault. Child output is discarded.
+ * A bare scalar lookup is temporarily supported only through a nonterminal pipe.
+ * Explicit command delivery discards child output.
  * The internal --pipe-fd3 mode uses a dedicated inherited private pipe.
  * Diagnostics contain key paths, lengths and fixed error text only.
  *
@@ -39,6 +40,7 @@ const own = boundary < 0 ? args : args.slice(0, boundary);
 const keyPath = own[0];
 const namesOnly = boundary < 0 && own.length === 1 && keyPath === '--names';
 const runCmd = boundary === 2 && own[1] === '--run' && args.length > 3 ? args.slice(3) : null;
+const legacyCapture = boundary < 0 && own.length === 1 && !namesOnly;
 const privatePipe = boundary < 0 && own.length === 2 && own[1] === '--pipe-fd3';
 const matchesPath = typeof keyPath === 'string' && /^[A-Za-z0-9_-]+(?:\[[0-9]+\])*(?:\.[A-Za-z0-9_-]+(?:\[[0-9]+\])*)*$/.test(keyPath);
 
@@ -58,20 +60,21 @@ if (keyPath) {
   }
 }
 
-if (!namesOnly && (!matchesPath || (!runCmd && !privatePipe))) {
+if (!namesOnly && (!matchesPath || (!runCmd && !privatePipe && !legacyCapture))) {
   process.stderr.write('usage: secret-get.mjs --names | secret-get.mjs <keyPath> --run -- <cmd...>\n');
   process.exit(2);
 }
-if (privatePipe) {
+if (privatePipe || legacyCapture) {
+  const fd = privatePipe ? 3 : 1;
   try {
-    const stat = fs.fstatSync(3, { bigint: true });
+    const stat = fs.fstatSync(fd, { bigint: true });
     if (!stat.isFIFO() && !stat.isSocket()) throw new Error('not a pipe');
-    for (const fd of [1, 2]) {
-      const output = fs.fstatSync(fd, { bigint: true });
-      if (output.dev === stat.dev && output.ino === stat.ino) throw new Error('standard output alias');
+    for (const other of privatePipe ? [1, 2] : [2]) {
+      const output = fs.fstatSync(other, { bigint: true });
+      if (output.dev === stat.dev && output.ino === stat.ino) throw new Error('output alias');
     }
   } catch {
-    process.stderr.write('secret-get: a private pipe on descriptor 3 is required\n');
+    process.stderr.write('secret-get: use explicit delivery for terminal, file, or merged output\n');
     process.exit(2);
   }
 }
@@ -188,7 +191,7 @@ if (keyPath.split('.')[0].startsWith('google_passkey_')) {
     fs.mkdirSync(logDir, { recursive: true });
     fs.appendFileSync(
       path.join(logDir, 'passkey-legacy-reads.jsonl'),
-      JSON.stringify({ ts: new Date().toISOString(), key: keyPath, pid: process.pid, mode: runCmd ? 'run' : 'private-pipe' }) + '\n',
+      JSON.stringify({ ts: new Date().toISOString(), key: keyPath, pid: process.pid, mode: runCmd ? 'run' : privatePipe ? 'private-pipe' : 'legacy-capture' }) + '\n',
     );
   } catch {
     // Audit is best-effort: a logging failure must never block or leak the read.
@@ -200,8 +203,11 @@ if (runCmd) {
   process.exit(r.status ?? 1);
 }
 
+if (legacyCapture) {
+  process.stderr.write('secret-get: bare scalar capture is deprecated. Use explicit command delivery.\n');
+}
 try {
-  fs.writeFileSync(3, value);
+  fs.writeFileSync(privatePipe ? 3 : 1, value);
 } catch {
   process.stderr.write('secret-get: private pipe transfer failed\n');
   process.exitCode = 1;
