@@ -248,6 +248,10 @@ export const STAGE_B_CERTIFIED_SET = {
       "reason": "cross-cutting utility shared far beyond Codex delivery, certified by its own suite; binding it would re-freeze releases on unrelated churn"
     },
     {
+      "file": "src/core/llmErrorClass.ts",
+      "reason": "LLM-provider plumbing reached through a dynamic import in a certified module; shared across every internal LLM feature and certified by its own suites — binding it would re-freeze releases on unrelated provider churn"
+    },
+    {
       "file": "src/core/LlmCircuitBreaker.ts",
       "reason": "LLM-provider plumbing reached through a dynamic import in a certified module; shared across every internal LLM feature and certified by its own suites — binding it would re-freeze releases on unrelated provider churn"
     },
