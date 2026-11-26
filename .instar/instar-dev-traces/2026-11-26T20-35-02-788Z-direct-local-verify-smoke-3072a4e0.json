@@ -1,0 +1,37 @@
+{
+  "version": 3,
+  "slug": "direct-local-verify-smoke",
+  "sessionId": "1f52ddfa-542b-4f86-9d54-e7d5d9f38c43",
+  "timestamp": "2026-11-26T20:35:02.788Z",
+  "artifactPath": "upgrades/side-effects/direct-local-verify-smoke.md",
+  "artifactSha256": "9f02f808cd7646d4abb62d3660afb5a1964e84ce748b2831d432c8dfaf15cf84",
+  "specPath": "docs/specs/direct-local-verify-smoke.md",
+  "coveredFiles": [
+    ".instar/instar-dev-decisions/2026-11-26T20-28-48-950Z-direct-local-verify-smoke.json",
+    ".instar/instar-dev-decisions/2026-11-26T20-30-11-467Z-direct-local-verify-smoke.json",
+    ".instar/instar-dev-traces/2026-11-26T20-28-10-061Z-direct-local-verify-smoke-431a5365.json",
+    "docs/specs/direct-local-verify-smoke.eli16.md",
+    "docs/specs/direct-local-verify-smoke.md",
+    "docs/specs/reports/direct-local-verify-smoke-convergence.md",
+    "scripts/lib/pre-push-direct.mjs",
+    "scripts/lib/pre-push-scope.mjs",
+    "scripts/pre-push-smoke.mjs",
+    "src/data/feature-ladders.json",
+    "tests/unit/scripts/pre-push-direct.test.ts",
+    "tests/unit/scripts/worktree-runtime-readiness.test.ts",
+    "upgrades/next/direct-local-verify-smoke.md",
+    "upgrades/side-effects/direct-local-verify-smoke.md"
+  ],
+  "phase": "complete",
+  "tier": 2,
+  "tierReasoning": "The local smoke and exact report checks were independently reviewed. This successor adds an observable listing receipt without changing either verdict path.",
+  "secondPass": "true",
+  "reviewerConcurred": true,
+  "toolchain": {
+    "buildSkill": {
+      "name": "build",
+      "version": null,
+      "verified": false
+    }
+  }
+}

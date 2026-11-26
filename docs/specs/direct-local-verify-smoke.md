@@ -35,6 +35,8 @@ Keep the current transitive selector for changes outside the supported scope or 
 
 On candidate 894feaab, the legacy selector reported 1,084 affected files for 21 changed files. The configured file inventory took 0.6 seconds and the direct dependency scan took 2.4 seconds. It selected 60 files. Exact collection found 1,402 cases across those 60 files in 35.5 seconds, with no missing or extra files. The existing local case cap is 1,000, so the direct route kept 1,000 cases across 38 complete files.
 
+The local hook prints one listing result with the mode, elapsed milliseconds, candidate count and selected file and case counts. The matched replay passed all 1,000 cases in 536.35 seconds end to end. The legacy listing produced an oversized set and ran zero local tests. Stage timing and end-to-end checks measure different work.
+
 The full shared verifier uses the existing test lanes and does not read the local smoke decision. The diagnostic selector is bounded to Local Verify source in this first rollout.
 
 ## Maturation plan

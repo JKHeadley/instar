@@ -1,6 +1,6 @@
 ## What Changed
 
-Small Local Verify changes use a targeted local smoke set of direct tests, changed tests and the verifier wiring checks. Shared verification still runs its full test inventory.
+Small Local Verify changes use a targeted local smoke set of direct tests, changed tests and the verifier wiring checks. The local hook prints the selection size and how long discovery took. Shared verification still runs its full test inventory.
 
 ## What to Tell Your User
 

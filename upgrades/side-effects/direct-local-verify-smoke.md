@@ -11,3 +11,5 @@ Rollback is a code revert to the existing transitive selector. The smoke runner 
 **Reviewer:** peer_gate_design_review, independent source review.
 
 Concur. Direct smoke filters to tracked tests from a clean worktree, reconciles exact files and case counts on both executions, and requires that mandatory files run assertions. Existing caps, fallback and shared verdict authority are retained.
+
+The hook reports listing mode, elapsed time, candidate count and selected files and cases. The report is emitted before starting tests, so test execution time does not inflate discovery timing. The report is for operators and does not participate in verdict decisions.

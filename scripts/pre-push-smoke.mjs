@@ -20,6 +20,20 @@ import {
   trackedDirectSmokeTests,
 } from './lib/pre-push-scope.mjs';
 
+const listingStarted = performance.now();
+let listingMode = 'affected';
+let candidateFiles = null;
+let listingReported = false;
+
+function reportListing(outcome, selectedFiles = 0, selectedCases = 0) {
+  if (listingReported) return;
+  listingReported = true;
+  const elapsedMs = Math.round(performance.now() - listingStarted);
+  console.log(`PRE_PUSH_SMOKE_LISTING mode=${listingMode} outcome=${outcome} elapsed_ms=${elapsedMs} candidates=${candidateFiles ?? 'unknown'} files=${selectedFiles} cases=${selectedCases}`);
+}
+
+process.once('exit', code => reportListing(code ? 'incomplete' : 'not-selected'));
+
 function run(command, args, opts = {}) {
   return spawnSync(command, args, {
     cwd: opts.cwd ?? process.cwd(),
@@ -31,6 +45,7 @@ function run(command, args, opts = {}) {
 }
 
 function printSkip(reason) {
+  reportListing('shared-verify');
   console.log(`⏭️  Local smoke too broad; CI is the authority. ${reason}.`);
   console.log('   The PR test matrix still runs the full suite before merge.');
 }
@@ -180,6 +195,7 @@ try {
 console.log(`🧪 Running smoke tier against ${base.ref} (${base.reason}); changed files: ${changed.length}.`);
 
 if (changed.length === 0) {
+  reportListing('no-changes');
   console.log('✅ No changed files relative to smoke base; skipping local smoke.');
   process.exit(0);
 }
@@ -199,6 +215,7 @@ if (supportsDirectSmoke(changed) && directSmokeCheckoutClean()) {
   try { selector = await import('./lib/pre-push-direct.mjs'); }
   catch { console.warn('Direct smoke selection unavailable. Using affected-test discovery.'); }
   if (selector) {
+    listingMode = 'direct';
     const inventory = listAffectedTests(base.ref, { filesOnly: true, selectedFiles: [] });
     exitOnUnusableListing(inventory);
     directFiles = selector.selectDirectSmokeFiles(changed, inventory.selected.files, process.cwd(), trackedDirectSmokeTests()) ?? undefined;
@@ -207,10 +224,12 @@ if (supportsDirectSmoke(changed) && directSmokeCheckoutClean()) {
 }
 let testFileCount = directFiles?.length;
 if (testFileCount === undefined) {
+  listingMode = 'affected';
   const filesListed = listAffectedTests(base.ref, { filesOnly: true });
   exitOnUnusableListing(filesListed);
   testFileCount = filesListed.selected.testFileCount;
 }
+candidateFiles = testFileCount;
 breadth = evaluateSmokeBreadth(
   { changedFileCount: changed.length, testFileCount, testCaseCount: 0 },
   limits,
@@ -220,6 +239,7 @@ if (breadth.skip) {
   process.exit(0);
 }
 if (testFileCount === 0) {
+  reportListing('no-tests');
   console.log('✅ No affected tests selected by Vitest.');
   process.exit(0);
 }
@@ -255,6 +275,7 @@ if (selection.action === 'skip') {
 }
 
 if (selection.action === 'no-tests') {
+  reportListing('no-tests');
   console.log('✅ No affected tests selected by Vitest.');
   process.exit(0);
 }
@@ -265,4 +286,5 @@ const requiredFiles = directFiles
 const expectedCounts = directFiles
   ? new Map(directFiles.map(file => [file, { cases: selected.casesByFile[file], mustExecute: requiredFiles.has(file) }]))
   : null;
+reportListing('selected', directFiles?.length ?? selected.testFileCount, selectedCases);
 process.exit(runAffectedSmoke(base.ref, directFiles, expectedCounts));

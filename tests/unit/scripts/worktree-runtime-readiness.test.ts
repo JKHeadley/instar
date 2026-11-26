@@ -87,7 +87,9 @@ if (args[1] === 'list') {
       },
     });
   }
-  expect(smoke(false).status).toBe(0);
+  const complete = smoke(false);
+  expect(complete.status).toBe(0);
+  expect(complete.stdout).toMatch(/PRE_PUSH_SMOKE_LISTING mode=direct outcome=selected elapsed_ms=\d+ candidates=3 files=3 cases=3/);
   const missing = smoke(true);
   expect(missing.status).toBe(1);
   expect(missing.stderr).toContain('Direct smoke retry did not contain the expected files and case counts');
