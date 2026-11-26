@@ -1580,6 +1580,8 @@ a.machine-line-link:hover { border-color: var(--accent); color: var(--text); }
 .needs-rows { list-style: none; padding: 0 6px; }
 .needs-row { display: grid; grid-template-columns: auto minmax(0, 1fr); gap: 10px; align-items: start; padding: 8px; border-radius: var(--r-sm); color: var(--text); }
 a.needs-row:hover { background: var(--surface-raised); }
+.needs-row-link { grid-template-columns: auto minmax(0, 1fr) auto; }
+.needs-row-action { align-self: center; color: var(--accent-strong); font-size: 13px; white-space: nowrap; }
 .needs-row .dot { margin-top: 6px; }
 .needs-text { display: flex; flex-direction: column; min-width: 0; }
 .needs-title { font-weight: 600; overflow-wrap: anywhere; }
