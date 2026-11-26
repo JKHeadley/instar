@@ -36,7 +36,7 @@ None.
 
 ## Maturation plan
 
-- **ladder:** none. This repairs the existing Local Verify lane without a configuration flag.
+- **ladder:** not applicable: this repairs the existing Local Verify lane without a configuration flag.
 - **test-agent-live:** run the controlled orchestrator replay and the Local Verify lifecycle suite on the isolated candidate.
 - **dev-agent-live:** verify the release on Echo’s test line and retain the first recovery event and its verdict.
 - **fleet:** distribute through the existing Instar release process after ordinary verification.
