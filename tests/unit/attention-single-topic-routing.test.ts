@@ -483,9 +483,11 @@ describe('attentionBodyBlocks (pure) — summary/description dedupe', () => {
     expect(attentionBodyBlocks('impact', undefined, 500)).toEqual(['impact']);
     expect(attentionBodyBlocks('', '', 500)).toEqual([]);
   });
-  it('description is clipped to the slice bound', () => {
+  it('description is clipped to the slice bound, and the cut says so with a pointer to the full item', () => {
     const [only] = attentionBodyBlocks('s', 's' + 'x'.repeat(900), 500);
-    expect(only.length).toBe(500);
+    expect(only.startsWith('s' + 'x'.repeat(499))).toBe(true);
+    expect(only).toContain('[description cut at 500 of 901 characters; the full text is in the attention item]');
+    expect(attentionBodyBlocks('s', 's' + 'x'.repeat(100), 500)[0]).toBe('s' + 'x'.repeat(100)); // under the bound: unmarked
   });
 });
 

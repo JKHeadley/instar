@@ -1,0 +1,24 @@
+{
+  "ts": "2026-11-18T02:03:14.524Z",
+  "slug": "graph-read-view-pin",
+  "suggestedTier": 1,
+  "declaredTier": 1,
+  "riskFloor": 1,
+  "riskFloorReasons": [],
+  "belowFloor": false,
+  "files": 3,
+  "loc": 40,
+  "scope": {
+    "basis": "staged-in-scope-paths-including-deleted",
+    "files": [
+      "src/core/conversationGraphRead.ts",
+      "src/server/ConversationGraphReadSource.ts",
+      "src/server/ConversationGraphReplicationRuntime.ts"
+    ],
+    "addedLines": 40,
+    "deletedLines": 0
+  },
+  "causalAutopsy": null,
+  "classClosure": null,
+  "verdict": "pass"
+}

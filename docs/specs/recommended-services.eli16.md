@@ -48,3 +48,7 @@ The groundwork can tell when a platform first accepted a reply, but that reply m
 If you stop a setup session, by an emergency stop or by ending it from the dashboard, it stays stopped. The regular check won't restart it. A plain reply in that conversation brings it back, and so does saying yes again on the service's page.
 
 Some services cost money before they work at all. Jev is one: TypeSafe won't give a new account a key until credits are added, so the offer says that up front and setup asks you before anything is paid.
+
+## Asking again after a real problem (rollout step 4)
+
+The "real problem" part is being built, switched off by default. Problems that can bring a no back once so far: a voice note nothing on the machine can read (asks about voice transcription again), and a password or key the settings point at that is missing with no vault (asks about Bitwarden again). The details are in `recommended-services-reoffers.eli16.md`. The judged part (a change that matters to you, or a long cool-off) comes next.

@@ -193,7 +193,8 @@ interface Indexed {
     approvals: Map<string, ReturnType<typeof matchApprovals>>;
     served: Map<string, { cands: Array<SourceCandidate & { rev: Revision }>; view: ReturnType<typeof foldServedVersion> }>;
     epoch: Map<string, number>;
-    versionCards?: Set<string>;
+    /** Version card id → its app id. */
+    versionCards?: Map<string, string>;
   };
 }
 
@@ -637,8 +638,26 @@ export class ProjectAppCustomSource implements CustomAppSource {
   /** The card ids of every project-app-version-card record (the server-owned, phone-only class). */
   isVersionCard(cardId: string): boolean {
     const ix = this.index();
-    if (!ix.memo.versionCards) ix.memo.versionCards = new Set(ix.records.filter((e) => e.data.recordType === 'project-app-version-card').map((e) => String(e.data.cardId)));
-    return ix.memo.versionCards.has(cardId);
+    return this.versionCardApps(ix).has(cardId);
+  }
+
+  private versionCardApps(ix: Indexed): Map<string, string> {
+    if (!ix.memo.versionCards) ix.memo.versionCards = new Map(ix.records.filter((e) => e.data.recordType === 'project-app-version-card').map((e) => [String(e.data.cardId), String(e.data.appId)]));
+    return ix.memo.versionCards;
+  }
+
+  /**
+   * The serve card of an app the owner stopped (its served version reads `disabled`). Turning a stopped
+   * app back on is the separate Enable card, stage 2 (CMT-1882, not built), so nothing on this card can
+   * run it again: the Work Board reads it as settled (out of Needs-you, its words say it was stopped)
+   * and the approve route refuses it. Derived from the replicated records on every read, so every
+   * machine agrees and nothing is written (a withdrawn card can never be finished by a server write:
+   * the Work Board requires approval again after a withdraw, and only a person may tap).
+   */
+  stoppedServeCard(cardId: string): boolean {
+    const appId = this.versionCardApps(this.index()).get(cardId);
+    if (!appId || cardId !== versionCardId(appId, 'serve') || !this.app(appId)) return false;
+    return this.servedView(appId).view.disabled;
   }
 
   private openVersionCard(a: AppDef, contentSha: string, bytes: number, findings: string[], note: string): SourceWriteOutcome['card'] {
@@ -725,6 +744,10 @@ export class ProjectAppCustomSource implements CustomAppSource {
       const approval = this.approvals(ix, a.appId).find((x) => x.binding.cardId === cardId && x.binding.purpose === 'serve' && x.binding.materialHash === card.materialHash);
       if (!approval) continue;
       if (!view.served || view.served.contentSha !== approval.binding.contentSha) continue; // not running here yet
+      // The card's words say "this version is running": write them only when it is (a stopped app, or a
+      // version whose key has not reached this machine, is not running).
+      const now = this.servedVersion(a.appId);
+      if (now.state !== 'served' || now.contentSha !== approval.binding.contentSha) continue;
       // One try per approval and per state of the things that refuse a finish (holds, unreadable parts):
       // a person releasing a hold earns one more try; nothing the server writes does.
       const attempt = `${approval.tapId}:${card.materialHash}:${card.holds.join(',')}:${card.unknown.length}`;

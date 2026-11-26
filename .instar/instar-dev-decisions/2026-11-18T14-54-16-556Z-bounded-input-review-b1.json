@@ -1,0 +1,22 @@
+{
+  "ts": "2026-11-18T14:54:16.556Z",
+  "slug": "bounded-input-review-b1",
+  "suggestedTier": 1,
+  "declaredTier": 1,
+  "riskFloor": 1,
+  "riskFloorReasons": [],
+  "belowFloor": false,
+  "files": 1,
+  "loc": 8,
+  "scope": {
+    "basis": "staged-in-scope-paths-including-deleted",
+    "files": [
+      "src/data/stageBCertifiedSet.ts"
+    ],
+    "addedLines": 8,
+    "deletedLines": 0
+  },
+  "causalAutopsy": null,
+  "classClosure": null,
+  "verdict": "blocked"
+}

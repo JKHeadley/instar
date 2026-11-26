@@ -12,9 +12,10 @@ import { deviceKeyOf } from '../core/MobileDeviceKeys.js';
 import crypto from 'node:crypto';
 import type { Application, Request, Response } from 'express';
 import { isLoopbackPeer } from '../core/desktopTransport.js';
+import { mayBeLocalArrival } from '../core/requestArrival.js';
 import { DeviceRegistry, parseDevicePublicKey, type DeviceRecord } from '../core/MobileDeviceKeys.js';
 import { deviceKeyHashOf } from '../core/AppRecordSignatures.js';
-import { noteLocalOwnerTicketFailure, readLocalOwnerTicket, removeLocalOwnerTicket, sameLocalOwnerTicket } from '../core/localOwnerTicket.js';
+import { noteLocalOwnerTicketFailure, ownMachineId, readLocalOwnerTicket, removeLocalOwnerTicket, sameLocalOwnerTicket } from '../core/localOwnerTicket.js';
 import { featureEvidence } from '../monitoring/FeatureEvidenceLog.js';
 import { hasForwardingHeaders, isLoopbackHost, verifyP256 } from './mobileBrowserDevices.js';
 import type { MobilePairingService } from './mobilePairingRoutes.js';
@@ -40,7 +41,8 @@ export function isLocalOwnerDeviceEnabled(svc: MobilePairingService): boolean {
 /** This server's own loopback Host, exactly, from a loopback peer with no forwarding header; else null. */
 export function sameMacHost(req: Pick<Request, 'headers' | 'socket'>, port: number): string | null {
   const raw = typeof req.headers.host === 'string' ? req.headers.host.trim().toLowerCase() : '';
-  if (!isLoopbackPeer(req.socket.remoteAddress)) return null;
+  // Identity A4: nothing that arrived on the same-network listener is this Mac, whatever its address.
+  if (!mayBeLocalArrival(req) || !isLoopbackPeer(req.socket.remoteAddress)) return null;
   if (hasForwardingHeaders(req.headers as Record<string, unknown>)) return null;
   // Only the numeric address: one spelling, so a retry always names the same host (second-pass review).
   if (raw !== `127.0.0.1:${port}`) return null;
@@ -53,7 +55,7 @@ export function sameMacHost(req: Pick<Request, 'headers' | 'socket'>, port: numb
  */
 export function localBindingOk(d: Pick<DeviceRecord, 'host' | 'localBinding'>, req: Pick<Request, 'headers' | 'socket'>, selfMachineId: string | null | undefined): boolean {
   if (!d.localBinding || !isLoopbackHost(d.host)) return false;
-  if (!isLoopbackPeer(req.socket.remoteAddress) || hasForwardingHeaders(req.headers as Record<string, unknown>)) return false;
+  if (!mayBeLocalArrival(req) || !isLoopbackPeer(req.socket.remoteAddress) || hasForwardingHeaders(req.headers as Record<string, unknown>)) return false;
   const raw = typeof req.headers.host === 'string' ? req.headers.host.trim().toLowerCase() : '';
   if (raw !== d.host) return false;
   const bound = d.localBinding.machineId;
@@ -113,11 +115,18 @@ export function mountLocalOwnerDeviceRoute(app: Application, svc: MobilePairingS
       refuse(400, 'proof-invalid', 'The app\'s request could not be checked. Check this Mac\'s clock and try again.');
       return;
     }
-    const selfMachineId = svc.deps.selfMachineId ?? null;
+    // The coordinator's id when multi-machine is on; otherwise this agent's own identity file, the same
+    // source the install command plans a replace from (a single-Mac agent has no coordinator).
+    const selfMachineId = svc.deps.selfMachineId ?? ownMachineId(stateDir);
+    const replaced: string[] = [];
     const answer = (d: Pick<DeviceRecord, 'id' | 'host'>): void => {
       removeLocalOwnerTicket(stateDir);
-      featureEvidence.record(FEATURE, { kind: 'fired', reason: 'local owner device enrolled', context: { deviceId: d.id } });
-      res.status(200).json({ deviceId: d.id, host: d.host, agentName: opts.agentName() });
+      featureEvidence.record(FEATURE, { kind: 'fired', reason: 'local owner device enrolled', context: { deviceId: d.id, replaced: replaced.length } });
+      if (replaced.length) {
+        // Told only once the new key is enrolled, so a failed attempt never reads as "connected".
+        svc.deps.raiseAttention?.('This Mac\'s Instar app was connected again', 'The Instar app on this Mac connected to your agent with a new key, and its earlier connection was removed. If you did not just reinstall or reset the app, check this Mac\'s devices in the app.');
+      }
+      res.status(200).json({ deviceId: d.id, host: d.host, agentName: opts.agentName(), ...(replaced.length ? { replaced } : {}) });
     };
     let devices: DeviceRecord[];
     try { devices = svc.devices.listLocalStrict(); } catch (err) {
@@ -137,6 +146,34 @@ export function mountLocalOwnerDeviceRoute(app: Application, svc: MobilePairingS
     const mine = devices.find((d) => deviceKeyOf(d) === publicKey && d.localBinding);
     if (mine && mine.status === 'active') { answer(mine); return; }
     const at = new Date(t).toISOString();
+    // 7a. Replace (instar install --app-ticket --replace-app-key): this Mac's own app lost its key. The
+    // ticket names the earlier devices; each must be bound to THIS machine, and every active owner must
+    // be among them. Every check that could refuse the new key runs first, so an owner is never revoked
+    // for a key that then can't be enrolled. Revocation is ledger first, then registry (one retry), as
+    // the revoke route does. The person is told.
+    if (ticket.replaces?.length && DeviceRegistry.hasActiveOwner(devices)) {
+      const named = new Set(ticket.replaces);
+      const owners = devices.filter((d) => d.status === 'active' && (d.role === undefined || d.role === 'owner'));
+      if (!selfMachineId) { removeLocalOwnerTicket(stateDir); refuse(409, 'machine-identity-missing', 'This agent does not know which computer it is on yet, so the earlier app connection cannot be replaced. Restart the agent and try again.'); return; }
+      if (!owners.every((d) => named.has(d.id) && d.localBinding?.machineId === selfMachineId)) { removeLocalOwnerTicket(stateDir); refuse(409, 'owner-device-exists'); return; }
+      // A held key keeps the ticket (the app may retry with a different key); the two refusals above
+      // delete it, because no key can succeed with that ticket on this machine.
+      if (svc.devices.holdsKey(publicKey) || rows.some((r) => r.keyHash === kh)) { refuse(409, 'duplicate-key'); return; }
+      try {
+        for (const d of owners) {
+          try { ledger.recordRevocation(d, at); } catch (err) { svc.deps.reportDegradation?.('MobilePairing.keyLedger', err); }
+          try { svc.devices.revoke(d.id, at); } catch { svc.devices.revoke(d.id, at); } // @silent-fallback-ok — a second failure is reported below
+          svc.confirm.drop(d.id);
+          replaced.push(d.id);
+        }
+        devices = svc.devices.listLocalStrict();
+      } catch (err) {
+        svc.deps.reportDegradation?.('MobilePairing.registryWrite', err);
+        refuse(503, 'registry-unreadable', 'This agent could not replace the earlier app connection. Try again with the same ticket.');
+        return;
+      }
+      featureEvidence.record(FEATURE, { kind: 'fired', reason: 'earlier local app key replaced', context: { replaced: replaced.join(',') } });
+    }
     const create = (id: string): ReturnType<DeviceRegistry['createActiveLocalOwner']> =>
       svc.devices.createActiveLocalOwner({ id, publicKey, host, label, machineId: selfMachineId, approvedAt: at });
     if (!devices.some((d) => deviceKeyOf(d) === publicKey)) {

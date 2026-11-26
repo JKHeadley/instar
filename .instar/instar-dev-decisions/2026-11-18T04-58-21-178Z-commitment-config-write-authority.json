@@ -1,0 +1,27 @@
+{
+  "ts": "2026-11-18T04:58:21.178Z",
+  "slug": "commitment-config-write-authority",
+  "suggestedTier": 2,
+  "declaredTier": 1,
+  "riskFloor": 2,
+  "riskFloorReasons": [
+    "new capability: new config key added"
+  ],
+  "belowFloor": true,
+  "files": 4,
+  "loc": 144,
+  "scope": {
+    "basis": "staged-in-scope-paths-including-deleted",
+    "files": [
+      "src/commands/server.ts",
+      "src/config/LiveConfig.ts",
+      "src/config/bearerConfigWrite.ts",
+      "src/monitoring/CommitmentTracker.ts"
+    ],
+    "addedLines": 144,
+    "deletedLines": 0
+  },
+  "causalAutopsy": null,
+  "classClosure": null,
+  "verdict": "pass"
+}

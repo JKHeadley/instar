@@ -1,0 +1,34 @@
+{
+  "ts": "2026-11-20T21:50:55.360Z",
+  "slug": "cb-p2-shadow-answerer",
+  "suggestedTier": 2,
+  "declaredTier": 2,
+  "riskFloor": 2,
+  "riskFloorReasons": [
+    "irreversibility: src/core/PostUpdateMigrator.ts touches PostUpdateMigrator",
+    "migration / fleet-rollout surface: src/core/PostUpdateMigrator.ts touches PostUpdateMigrator (fleet migration machinery)"
+  ],
+  "belowFloor": false,
+  "files": 6,
+  "loc": 315,
+  "scope": {
+    "basis": "staged-in-scope-paths-including-deleted",
+    "files": [
+      "src/core/PostUpdateMigrator.ts",
+      "src/core/SessionManager.ts",
+      "src/monitoring/foldShadowAnswerer.ts",
+      "src/server/memorySessionGuard.ts",
+      "src/server/routes.ts",
+      "src/users/MemoryPrivacy.ts"
+    ],
+    "addedLines": 307,
+    "deletedLines": 8
+  },
+  "causalAutopsy": null,
+  "classClosure": {
+    "defectClass": "unbounded-self-action",
+    "closure": "n/a",
+    "reason": "one-shot per shadow fold, started only by the fold step runner and bounded by a wall-clock kill; not a self-triggered loop"
+  },
+  "verdict": "pass"
+}

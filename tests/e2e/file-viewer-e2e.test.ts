@@ -84,6 +84,19 @@ describe('E2E: Dashboard File Viewer', () => {
     fs.writeFileSync(path.join(projectDir, '.claude', 'scripts', 'deploy.sh'), '#!/bin/bash\necho "deploying"');
     fs.writeFileSync(path.join(projectDir, '.claude', 'skills', 'reflect', 'SKILL.md'), '# /reflect\n\nReflect on session.');
     fs.writeFileSync(path.join(projectDir, '.claude', 'config', 'settings.json'), '{"theme": "dark"}');
+    // SEC-144: execution-deciding files inside an editable folder (as in a worktree copy) stay read-only.
+    fs.writeFileSync(path.join(projectDir, '.claude', 'config', '.mcp.json'), '{"mcpServers": {}}');
+    fs.mkdirSync(path.join(projectDir, '.claude', 'skills', 'copy', '.claude'), { recursive: true });
+    fs.writeFileSync(path.join(projectDir, '.claude', 'skills', 'copy', '.claude', 'settings.json'), '{"hooks": {}}');
+    // SEC-173: a git folder and a script inside an editable path.
+    fs.mkdirSync(path.join(projectDir, '.claude', 'skills', 'copy', '.git'), { recursive: true });
+    fs.writeFileSync(path.join(projectDir, '.claude', 'skills', 'copy', '.git', 'config'), '[core]\n\tbare = false\n');
+    fs.writeFileSync(path.join(projectDir, '.claude', 'skills', 'reflect', 'run.sh'), '#!/bin/sh\necho ok\n', { mode: 0o755 });
+    // SEC-174: a package manifest inside an editable path (no execute bit).
+    fs.writeFileSync(path.join(projectDir, '.claude', 'skills', 'reflect', 'package.json'), '{"scripts":{}}');
+    // SEC-178: a backup snapshot copy of the jobs list inside an editable path.
+    fs.mkdirSync(path.join(projectDir, '.claude', 'skills', 'reflect', '.instar', 'backups', 'snap'), { recursive: true });
+    fs.writeFileSync(path.join(projectDir, '.claude', 'skills', 'reflect', '.instar', 'backups', 'snap', 'jobs.json'), '{"jobs":[]}');
 
     // docs/ directory (allowed by default)
     fs.mkdirSync(path.join(projectDir, 'docs', 'api'), { recursive: true });
@@ -387,6 +400,22 @@ describe('E2E: Dashboard File Viewer', () => {
     });
   });
 
+  describe('SEC-144: files that decide what runs stay read-only inside an editable folder', () => {
+    for (const p of ['.claude/config/.mcp.json', '.claude/skills/copy/.claude/settings.json']) {
+      it(`refuses saving ${p} and reports it read-only`, async () => {
+        const readRes = await request(baseUrl, 'GET', `/api/files/read?path=${encodeURIComponent(p)}`);
+        expect(readRes.status).toBe(200);
+        expect(readRes.body.editable).toBe(false);
+        const saveRes = await request(baseUrl, 'POST', '/api/files/save', {
+          path: p, content: '{"hooks": {"x": "sec144-injected-command"}}', expectedModified: readRes.body.modified,
+        }, { 'x-instar-request': '1' });
+        expect(saveRes.status).toBe(403);
+        const after = await request(baseUrl, 'GET', `/api/files/read?path=${encodeURIComponent(p)}`);
+        expect(after.body.content).not.toContain('sec144-injected-command');
+      });
+    }
+  });
+
   describe('Phase 2: CSRF protection', () => {
     it('rejects save without X-Instar-Request header', async () => {
       const res = await request(baseUrl, 'POST', '/api/files/save', {
@@ -499,6 +528,50 @@ describe('E2E: Dashboard File Viewer', () => {
       }, { 'x-instar-request': '1' });
       expect(saveRes.status).toBe(403);
       expect(saveRes.body.error).toContain('never editable');
+    });
+
+    it('SEC-173: rejects saving into a git folder inside an editable path', async () => {
+      const saveRes = await request(baseUrl, 'POST', '/api/files/save', {
+        path: '.claude/skills/copy/.git/config',
+        content: '[core]\n\tbare = true\n',
+      }, { 'x-instar-request': '1' });
+      expect(saveRes.status).toBe(403);
+      expect(saveRes.body.error).toContain('never editable');
+      expect(fs.readFileSync(path.join(projectDir, '.claude', 'skills', 'copy', '.git', 'config'), 'utf8')).toBe('[core]\n\tbare = false\n');
+    });
+
+    it('SEC-173: a script in an editable path reads as not editable and its save is refused', async () => {
+      if (process.platform === 'win32') return;
+      const readRes = await request(baseUrl, 'GET', '/api/files/read?path=' + encodeURIComponent('.claude/skills/reflect/run.sh'));
+      expect(readRes.status).toBe(200);
+      expect(readRes.body.editable).toBe(false);
+      const saveRes = await request(baseUrl, 'POST', '/api/files/save', {
+        path: '.claude/skills/reflect/run.sh',
+        content: '#!/bin/sh\necho changed\n',
+      }, { 'x-instar-request': '1' });
+      expect(saveRes.status).toBe(403);
+      expect(fs.readFileSync(path.join(projectDir, '.claude', 'skills', 'reflect', 'run.sh'), 'utf8')).toBe('#!/bin/sh\necho ok\n');
+    });
+
+    it('SEC-174: rejects saving a package manifest inside an editable path', async () => {
+      const saveRes = await request(baseUrl, 'POST', '/api/files/save', {
+        path: '.claude/skills/reflect/package.json',
+        content: '{"scripts":{"test":"echo changed"}}',
+      }, { 'x-instar-request': '1' });
+      expect(saveRes.status).toBe(403);
+      expect(saveRes.body.error).toContain('never editable');
+      expect(fs.readFileSync(path.join(projectDir, '.claude', 'skills', 'reflect', 'package.json'), 'utf8')).toBe('{"scripts":{}}');
+    });
+
+    it('SEC-178: rejects saving a backup snapshot copy inside an editable path', async () => {
+      const rel = '.claude/skills/reflect/.instar/backups/snap/jobs.json';
+      const saveRes = await request(baseUrl, 'POST', '/api/files/save', {
+        path: rel,
+        content: '{"jobs":["changed"]}',
+      }, { 'x-instar-request': '1' });
+      expect(saveRes.status).toBe(403);
+      expect(saveRes.body.error).toContain('never editable');
+      expect(fs.readFileSync(path.join(projectDir, rel), 'utf8')).toBe('{"jobs":[]}');
     });
 
     it('rejects saving to node_modules/', async () => {
@@ -782,7 +855,7 @@ describe('E2E: Dashboard File Viewer', () => {
       const res = await request(baseUrl, 'GET', '/api/files/link?path=.claude/CLAUDE.md');
       expect(res.status).toBe(200);
       expect(res.body.path).toBe('.claude/CLAUDE.md');
-      expect(res.body.relative).toContain('/dashboard?tab=files&path=');
+      expect(res.body.relative).toContain('/dashboard/console/#/settings/files?path=');
       expect(res.body.relative).toContain(encodeURIComponent('.claude/CLAUDE.md'));
       expect(typeof res.body.editable).toBe('boolean');
     });
@@ -815,7 +888,7 @@ describe('E2E: Dashboard File Viewer', () => {
       const res = await request(baseUrl, 'GET', '/api/files/link?path=docs/README.md');
       expect(res.status).toBe(200);
       // URL should be properly encoded
-      expect(res.body.relative).toBe('/dashboard?tab=files&path=docs%2FREADME.md');
+      expect(res.body.relative).toBe('/dashboard/console/#/settings/files?path=docs%2FREADME.md');
     });
 
     it("generates links under the DEFAULT project-root config ['./'] (regression: was a blanket 403)", async () => {

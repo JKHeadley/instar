@@ -48,7 +48,11 @@ describe('explicit development artifact installs', () => {
     const calls: string[][] = [];
     const seam = f.checker as unknown as { execAsync(cmd: string, args: string[]): Promise<string>; stripCandidateXattrs(): Promise<void> };
     vi.spyOn(seam, 'stripCandidateXattrs').mockResolvedValue();
-    vi.spyOn(seam, 'execAsync').mockImplementation(async (_cmd, args) => {
+    // npm runs under the runtime node with its bundled npm-cli.js first in args (npmExec), while the
+    // node probes arrive as plain exec calls; view every call from its npm subcommand onward.
+    const npmView = (args: string[]) => (args[0]?.endsWith('npm-cli.js') ? args.slice(1) : args);
+    vi.spyOn(seam, 'execAsync').mockImplementation(async (_cmd, rawArgs) => {
+      const args = npmView(rawArgs);
       calls.push(args);
       if (args[0] === 'install') {
         snapshot = args[1];

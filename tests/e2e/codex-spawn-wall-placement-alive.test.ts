@@ -60,7 +60,7 @@ describe('codex spawn placement — E2E alive', () => {
     mockTmuxSessions.clear();
   });
 
-  async function boot(accounts: Array<[string, number]>) {
+  async function boot(accounts: Array<[string, number]>, options: { interactiveCodex?: boolean; resets?: Record<string, string>; routine?: boolean } = {}) {
     const dir = fs.mkdtempSync(path.join(os.tmpdir(), 'codex-spawn-wall-e2e-'));
     cleanups.push(() => SafeFsExecutor.safeRmSync(dir, { recursive: true, force: true, operation: 'tests/e2e/codex-spawn-wall-placement-alive.test.ts:cleanup' }));
     fs.mkdirSync(path.join(dir, 'state'), { recursive: true });
@@ -69,6 +69,7 @@ describe('codex spawn placement — E2E alive', () => {
     const existingConfig: Record<string, unknown> = {};
     applyDefaults(existingConfig, getMigrationDefaults('standalone'));
     const poolCfg = existingConfig.subscriptionPool as WallRescueConfigView;
+    if (options.routine) poolCfg.routineCodexPlacement = { enabled: true, accountIds: ['amrch', 'sagemindai'], expiresAt: new Date(Date.now() + 3_600_000).toISOString() };
 
     const pool = new SubscriptionPool({ stateDir: dir });
     const homes: Record<string, string> = {};
@@ -76,13 +77,13 @@ describe('codex spawn placement — E2E alive', () => {
       homes[id] = path.join(dir, `.codex-${id}`);
       fs.mkdirSync(homes[id], { recursive: true });
       pool.addFixture({ id, nickname: id, email: `${id}@example.test`, provider: 'openai', framework: 'codex-cli', configHome: homes[id] });
-      pool.update(id, { lastQuota: { sevenDay: { utilizationPct: weekly, resetsAt: '2099-11-14T18:01:00Z' }, measuredAt: new Date().toISOString() } });
+      pool.update(id, { lastQuota: { windowsListed: ['sevenDay'], sevenDay: { utilizationPct: weekly, resetsAt: options.resets?.[id] ?? '2099-11-14T18:01:00Z' }, measuredAt: new Date().toISOString() } });
     }
     const state = new StateManager(path.join(dir, 'state'));
     const manager = new SessionManager({
       tmuxPath: '/usr/bin/tmux', claudePath: '/usr/local/bin/claude',
       projectDir: dir, maxSessions: 5, protectedSessions: [],
-      completionPatterns: ['done'], framework: 'claude-code',
+      completionPatterns: ['done'], framework: options.interactiveCodex ? 'codex-cli' : 'claude-code',
       frameworkBinaryPaths: { 'codex-cli': '/usr/local/bin/codex' },
     } as SessionManagerConfig, state);
     cleanups.push(() => manager.stopMonitoring());
@@ -96,12 +97,12 @@ describe('codex spawn placement — E2E alive', () => {
     });
     // Wired exactly as server.ts does.
     manager.setSpawnAccountResolver(() => rescue.spawnAccount());
-    manager.setCodexSpawnAccountResolver(() => rescue.codexSpawnAccount());
+    manager.setCodexSpawnAccountResolver((context) => rescue.codexSpawnAccount(context));
 
     const app = express();
     app.use(express.json());
     app.use(createRoutes({
-      config: { authToken: 't', stateDir: dir, port: 0, projectDir: dir, sessions: {} },
+      config: { authToken: 't', stateDir: dir, port: 0, projectDir: dir, sessions: {}, subscriptionPool: poolCfg },
       startTime: new Date(),
       sessionManager: manager,
       state,
@@ -114,12 +115,17 @@ describe('codex spawn placement — E2E alive', () => {
         resolve(`http://127.0.0.1:${(srv.address() as AddressInfo).port}`);
       });
     });
-    const spawn = (name: string) => fetch(`${url}/sessions/spawn`, {
+    const spawn = (name: string, model?: string) => fetch(`${url}/sessions/spawn`, {
       method: 'POST',
       headers: { 'Content-Type': 'application/json', Authorization: 'Bearer t' },
-      body: JSON.stringify({ name, prompt: 'build it', framework: 'codex-cli' }),
+      body: JSON.stringify({ name, prompt: 'build it', framework: 'codex-cli', model }),
     });
-    return { spawn, state, homes };
+    const create = (name: string) => fetch(`${url}/sessions/create`, {
+      method: 'POST',
+      headers: { 'Content-Type': 'application/json', Authorization: 'Bearer t' },
+      body: JSON.stringify({ name, platform: 'headless' }),
+    });
+    return { spawn, create, state, homes, pool, poolCfg, url };
   }
 
   const codexHomeArg = (): string | undefined => {
@@ -148,4 +154,65 @@ describe('codex spawn placement — E2E alive', () => {
     expect(codexHomeArg()).toBeUndefined();
     expect(state.listSessions({ status: 'running' })).toHaveLength(0);
   });
+
+  it('FEATURE ALIVE: interactive creation uses weekly expiration, then uses the next account when the first has no room', async () => {
+    const now = Date.now();
+    const { create, pool, state, homes } = await boot([['reserve', 9], ['soon', 20], ['next', 10]], {
+      interactiveCodex: true,
+      resets: {
+        soon: new Date(now + 86_400_000).toISOString(),
+        next: new Date(now + 2 * 86_400_000).toISOString(),
+        reserve: new Date(now + 6 * 86_400_000).toISOString(),
+      },
+    });
+    vi.mocked(execFileSync).mockClear();
+    const first = await create('first-conversation');
+    expect(first.status).toBe(201);
+    const firstBody = await first.json() as { session: string };
+    expect(codexHomeArg()).toBe(`CODEX_HOME=${homes.soon}`);
+    expect(state.listSessions({ status: 'running' }).find((s) => s.tmuxSession === firstBody.session)?.subscriptionAccountId).toBe('soon');
+    const prior = pool.get('soon')!;
+    pool.update('soon', { lastQuota: { ...prior.lastQuota!, sevenDay: { ...prior.lastQuota!.sevenDay!, utilizationPct: 100 }, measuredAt: new Date().toISOString() } });
+    vi.mocked(execFileSync).mockClear();
+    const second = await create('second-conversation');
+    expect(second.status).toBe(201);
+    expect(codexHomeArg()).toBe(`CODEX_HOME=${homes.next}`);
+    // Placement does not rewrite or restart the already-running conversation.
+    expect(state.listSessions({ status: 'running' }).find((s) => s.tmuxSession === firstBody.session)?.subscriptionAccountId).toBe('soon');
+  });
+
+  it('FEATURE ALIVE: ordered Sol routing and reviewer leases share local evidence; disablement changes only future work', async () => {
+    const tomorrow = new Date(Date.now() + 86_400_000).toISOString();
+    const later = new Date(Date.now() + 2 * 86_400_000).toISOString();
+    const { spawn, create, state, homes, pool, poolCfg, url } = await boot([['tuesday', 42], ['amrch', 11], ['sagemindai', 11], ['saturday', 94]],
+      { routine: true, interactiveCodex: true, resets: { tuesday: tomorrow, amrch: later } });
+    expect((await create('busy-tuesday')).status).toBe(201);
+    const busy = state.listSessions({ status: 'running' }).find(s => s.name === 'busy-tuesday')!;
+    expect(busy.subscriptionAccountId).toBe('tuesday');
+    const headers = { Authorization: 'Bearer t' };
+    const leaseRoute = `${url}/subscription-pool/routine-codex-placement?model=gpt-6.2-sol`;
+    const lease = await fetch(leaseRoute, { headers }); expect(lease.status).toBe(200);
+    expect((await lease.json()).accountOverride).toEqual({ accountId: 'amrch', configHome: homes.amrch });
+    vi.mocked(execFileSync).mockClear();
+    expect((await spawn('routine-live', 'gpt-6.2-sol')).status).toBe(201);
+    expect(codexHomeArg()).toBe(`CODEX_HOME=${homes.amrch}`);
+    const active = state.listSessions({ status: 'running' }).find(s => s.name === 'routine-live')!;
+    pool.update('amrch', { status: 'disabled' });
+    const sibling = await fetch(leaseRoute, { headers }); expect(sibling.status).toBe(200);
+    expect((await sibling.json()).accountOverride.accountId).toBe('sagemindai');
+    pool.update('sagemindai', { status: 'needs-reauth' });
+    vi.mocked(execFileSync).mockClear();
+    expect((await spawn('routine-refuses-default', 'gpt-6.2-sol')).status).toBe(409);
+    expect(codexHomeArg()).toBeUndefined();
+    expect((await fetch(leaseRoute, { headers })).status).toBe(409);
+    poolCfg.routineCodexPlacement!.enabled = false;
+    expect((await spawn('ordinary-after-rollback', 'gpt-6.2-sol')).status).toBe(201);
+    expect(codexHomeArg()).toBe(`CODEX_HOME=${homes.tuesday}`);
+    expect(state.getSession(active.id)?.subscriptionAccountId).toBe('amrch');
+    expect(state.getSession(busy.id)?.subscriptionAccountId).toBe('tuesday');
+    // Real production boot must carry headless context; dropping it makes the preference inert.
+    const server = fs.readFileSync(path.join(process.cwd(), 'src/commands/server.ts'), 'utf8');
+    expect(server).toContain('setCodexSpawnAccountResolver((context) => wallRescue.codexSpawnAccount(context))');
+  });
+
 });

@@ -1,0 +1,29 @@
+{
+  "version": 2,
+  "slug": "cb-p2-shadow-runner",
+  "sessionId": "f07b47ce-bcaf-4d4f-840a-ab8e2c9c1a1e",
+  "timestamp": "2026-11-20T22:36:19.472Z",
+  "artifactPath": "upgrades/side-effects/cb-p2-shadow-runner.md",
+  "artifactSha256": "ead28b71ad778d09b316f2f89dae07233ce612d2c6b333512a288a2afe52cc26",
+  "specPath": "docs/specs/context-budget-layered-summaries.md",
+  "coveredFiles": [
+    "src/commands/server.ts",
+    "src/monitoring/FoldCoordinator.ts",
+    "src/monitoring/foldCoordinatorBoot.ts",
+    "src/monitoring/foldShadowRunner.ts",
+    "src/monitoring/foldShadowRunnerBoot.ts",
+    "src/monitoring/foldWiringHelpers.ts",
+    "src/server/AgentServer.ts",
+    "tests/e2e/context-budget-fold-shadow-alive.test.ts",
+    "tests/unit/fold-pool-ownership.test.ts",
+    "tests/unit/fold-shadow-runner-boot.test.ts",
+    "tests/unit/fold-shadow-runner.test.ts",
+    "upgrades/next/cb-p2-shadow-runner.md",
+    "upgrades/side-effects/cb-p2-shadow-runner.md"
+  ],
+  "phase": "complete",
+  "tier": 2,
+  "tierReasoning": "Spec-driven Phase 2 slice: the shadow fold runner (injects into live sessions under bounded holds) + §9.3 pool-live ownership + server wiring; second-pass reviewed in three rounds.",
+  "secondPass": "true",
+  "reviewerConcurred": true
+}

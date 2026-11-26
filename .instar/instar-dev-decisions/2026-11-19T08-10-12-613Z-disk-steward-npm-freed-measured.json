@@ -1,0 +1,26 @@
+{
+  "ts": "2026-11-19T08:10:12.613Z",
+  "slug": "disk-steward-npm-freed-measured",
+  "suggestedTier": 1,
+  "declaredTier": 1,
+  "riskFloor": 1,
+  "riskFloorReasons": [],
+  "belowFloor": false,
+  "files": 1,
+  "loc": 14,
+  "scope": {
+    "basis": "staged-in-scope-paths-including-deleted",
+    "files": [
+      "src/monitoring/diskSteward/pruneCategories.ts"
+    ],
+    "addedLines": 12,
+    "deletedLines": 2
+  },
+  "causalAutopsy": null,
+  "classClosure": {
+    "defectClass": "unbounded-self-action",
+    "closure": "n/a",
+    "reason": "reporting fix only; no self-triggered action added or changed"
+  },
+  "verdict": "pass"
+}

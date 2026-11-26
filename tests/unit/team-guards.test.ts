@@ -12,6 +12,7 @@ import { isSafeSessionRef } from '../../src/core/claudeResumeTranscript.js';
 import { TopicResumeMap } from '../../src/core/TopicResumeMap.js';
 import { AppConversationService } from '../../src/core/AppConversationService.js';
 import { SessionManager } from '../../src/core/SessionManager.js';
+import { isOwnersOwnWords } from '../../src/core/ownerWords.js';
 import { JobScheduler } from '../../src/scheduler/JobScheduler.js';
 import { createTempProject, createMockSessionManager, createSampleJobsFile } from '../helpers/setup.js';
 import type { TempProject } from '../helpers/setup.js';
@@ -384,7 +385,12 @@ describe('what a confined session feeds agent-wide', () => {
   });
   it('a team member\'s words are kept out of the owner\'s learned corrections', () => {
     const src = fs.readFileSync(path.join(process.cwd(), 'src/commands/server.ts'), 'utf8');
-    expect(src).toContain('entry.fromUser && entry.text && !entry.teamPhone');
+    expect(src.includes('const ownersWords = isOwnersOwnWords(entry, telegram?.getLearningOwner());')).toBe(true);
+    expect(/const verdict = ownersWords && entry\.text/.test(src)).toBe(true);
+    expect(src.includes('fromUser: ownersWords,')).toBe(true);
+    expect(isOwnersOwnWords({ fromUser: true, teamPhone: true, telegramUserId: 111 }, 111)).toBe(false);
+    expect(isOwnersOwnWords({ fromUser: true, senderRole: 'team', via: 'mobile-device' }, 111)).toBe(false);
+    expect(isOwnersOwnWords({ fromUser: true, telegramUserId: 111 }, 111)).toBe(true);
     const routes = fs.readFileSync(path.join(process.cwd(), 'src/server/routes.ts'), 'utf8');
     expect(routes).toContain("trust?.sender?.role === 'team' ? { teamPhone: true,");
   });

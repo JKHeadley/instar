@@ -10,7 +10,7 @@ import fs from 'node:fs';
 import os from 'node:os';
 import path from 'node:path';
 import {
-  buildSuggestionPrompt, parseSuggestionReply, offerableSuggestions, suggestionId, SUGGESTION_LIMITS, type SuggestionInput,
+  buildSuggestionPrompt, parseSuggestionReply, offerableSuggestions, suggestionId, suggestionCreateRequestId, SUGGESTION_LIMITS, type SuggestionInput,
 } from '../../src/core/ConversationGraphSuggestions.js';
 import { ConversationGraphSuggestionService, SUGGESTIONS_STATE_FILE } from '../../src/server/ConversationGraphSuggestionService.js';
 import { ConversationGraphReadModel, type GraphReadSource, type GraphViewer } from '../../src/core/conversationGraphRead.js';
@@ -246,7 +246,9 @@ describe('Accept in progress (server side)', () => {
     service.view(inv); await service.settled();
     const id = service.view(inv).items[0].id;
     const a = service.beginAccept(id), b = service.beginAccept(id);
-    expect(a?.createRequestId).toMatch(/^suggestion-[0-9a-f-]{36}$/);
+    // Derived from the suggestion id (replicated-decisions spec), so every tab and machine sends the same request.
+    expect(a?.createRequestId).toBe(suggestionCreateRequestId(id));
+    expect(a?.createRequestId).toMatch(/^sga-[0-9a-f]{40}$/);
     expect(b).toEqual(a);
     expect(service.beginAccept('sg-ffffffffffffffffffff')).toBeNull();
     service.reject(id);

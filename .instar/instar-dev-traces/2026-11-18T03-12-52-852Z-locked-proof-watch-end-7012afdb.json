@@ -1,0 +1,25 @@
+{
+  "version": 2,
+  "slug": "locked-proof-watch-end",
+  "sessionId": "c0a8f9d3-a0e4-4a67-a7bf-12d6a18f1eaf",
+  "timestamp": "2026-11-18T03:12:52.852Z",
+  "artifactPath": "upgrades/side-effects/locked-proof-watch-end.md",
+  "artifactSha256": "2a65b2a15d940255a6da3ab7a2246c7aeb925703fce701da999de1d1ac53ff26",
+  "specPath": "docs/specs/desktop-locked-screen.md",
+  "coveredFiles": [
+    "docs/specs/locked-proof-watch-end.eli16.md",
+    "scripts/locked-proof/driver.mjs",
+    "scripts/locked-proof/lib.mjs",
+    "scripts/locked-proof/watch-end-supervisor.py",
+    "tests/unit/locked-proof-driver.test.ts",
+    "tests/unit/locked-proof-human-steps.test.ts",
+    "tests/unit/locked-proof-watch-end.test.ts",
+    "upgrades/next/locked-proof-watch-end.md",
+    "upgrades/side-effects/locked-proof-watch-end.md"
+  ],
+  "phase": "complete",
+  "tier": 2,
+  "tierReasoning": "Proof-only exact process suspension and independent recovery require Tier2 safety review under approved P12.",
+  "secondPass": "true",
+  "reviewerConcurred": true
+}

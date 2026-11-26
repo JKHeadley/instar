@@ -24,11 +24,14 @@ const watcher = (over: Record<string, unknown> = {}) => ({ lastTickAt: minsAgo(1
 
 /** source id → the page, and the reads that put it in the state that needs the operator. */
 const FIXTURES: Record<string, { render: [string, string]; reads: Record<string, unknown> }> = {
+  // Owned repositories (no-data-loss-on-machine-death.md §1.4): a repository with no remote, past the grace window; the Repositories page leads with it.
+  repos: { render: ['repos.js', 'renderRepos'], reads: { '/repos?scope=pool': ok({ scope: 'pool', machineId: 'm1', machineName: 'Mac Studio', scan: { state: 'complete' }, repos: [], machines: [{ machineId: 'm1', machineName: 'Mac Studio', source: 'self', repos: [{ displayPath: '~/.instar/agents/echo/apps/instar-ios', class: 'candidate', state: 'ok', hasOffMachineRemote: false, pastGrace: true, remotes: [], singleCopy: { commits: 40, branches: 1, oldestAt: iso(-60 * 72) }, uncommitted: { files: 0 } }] }], defects: [{ key: 'repos:no-remote:m1', kind: 'no-remote', machineId: 'm1', machineName: 'Mac Studio', title: 'A repository on Mac Studio exists only on that machine', detail: '~/.instar/agents/echo/apps/instar-ios has no copy anywhere else (no remote).', count: 1, repos: ['~/.instar/agents/echo/apps/instar-ios'], oldestAt: iso(-60 * 72) }] }) } },
   merging: { render: ['development.js', 'renderDevelopment'], reads: { '/green-pr-automerge': ok(watcher({ gate: { rollback: [{ by: 'agent', at: minsAgo(9) }] } })) } },
   'shipping-approvals': { render: ['development.js', 'renderDevelopment'], reads: { '/green-pr-automerge': ok(watcher({ snapshot: { at: minsAgo(1), entries: [{ pr: 2391, headRefName: 'x', headRefOid: 'abc', kind: 'code-owner-review' }] } })) } },
   feedback: { render: ['development.js', 'renderDevelopment'], reads: { '/green-pr-automerge': ok(watcher()), '/feedback-factory/execute/status': ok({ reason: 'approver-not-independent', attempts: [] }) } },
   accounts: { render: ['accounts.js', 'renderAccounts'], reads: { '/subscription-pool?scope=pool': ok({ enabled: true, accounts: [{ id: 'luna', nickname: 'Luna', email: 'luna@x.io', framework: 'claude-code', status: 'needs-reauth', loginCheck: 'ok', machineId: 'm1', machineNickname: 'Mac Studio' }] }) } },
   agents: { render: ['agents.js', 'renderAgents'], reads: { '/threadline/pairing': ok({ pairings: [] }), '/threadline/pairing/invites': ok({ invites: [], pendingAccepts: [{ iid: 'i1', claimedAgent: 'PP', acceptorFp: 'abcdef', claimedAt: iso(-1), expiresAt: iso(30) }], knownPeers: [], restartNotices: [], handshake: [] }) } },
+  'trust-requests': { render: ['allowed.js', 'renderAllowed'], reads: { '/trust/requests': ok({ requests: [{ requestId: 'tr-abc-123', changeKind: 'board-policy', status: 'open', adapter: 'telegram', delivered: false, summary: ['Start internal Work Board cards without asking each time.'], expiresAt: iso(60) }], approvalDelivery: { state: 'accepted', message: 'Open Changes to approve in Instar.' } }) } },
   approvals: { render: ['mandates.js', 'renderMandates'], reads: { '/authorization-requests?status=pending': ok({ requests: [{ id: 'r1', status: 'pending', headline: 'Let PP sign code reviews', reason: 'it asked', createdByAgent: 'Echo', heldOnThisMachine: true, requestExpiresAt: iso(60) }] }) } },
   plans: { render: ['plans.js', 'renderPlans'], reads: { '/initiatives': ok({ items: [{ id: 'i1', title: 'Pick a name', description: 'd', status: 'active', kind: 'task', currentPhaseIndex: 0, phases: [], lastTouchedAt: minsAgo(60), needsUser: true, needsUserReason: 'pick a name', blockers: [], links: [], createdAt: iso(-999), updatedAt: iso(-60) }], count: 1 }) } },
   secrets: { render: ['secrets.js', 'renderSecrets'], reads: { '/secrets/pending': ok({ pending: [{ token: 'tok1', label: 'OpenAI API key', createdAt: minsAgo(4), expiresAt: NOW + 660000, expired: false, localUrl: '/secrets/drop/tok1' }] }) } },
@@ -41,6 +44,8 @@ const FIXTURES: Record<string, { render: [string, string]; reads: Record<string,
   context: { render: ['context.js', 'renderContext'], reads: { '/context-budget/sentinel': ok({ lastTickAt: minsAgo(2), heartbeatFresh: true, quarantined: [], torn: [], checkpointsPruned: 0, lastError: null, canary: { epochStartedAt: minsAgo(999), switchOn: true, groups: [{ machine: 'm1', engine: 'claude-code', version: '2.1.321', state: 'diverged', detected: 3, complete: 2, pending: 0, synthetic: 1 }], recent: [], ledgerResetAt: null, unreadableTranscripts: 0 }, layerFreshness: { state: 'unavailable', reason: 'no-session-source' }, holdHealth: { state: 'unavailable', reason: 'no-carriers' }, eligibleWithoutFold: { state: 'unavailable', reason: 'no-session-source' } }) } },
   // Work board (work-board-asks.md §7): a card the agent wrote waits for the owner's approval; the board leads with it.
   workBoard: { render: ['work.js', 'renderWork'], reads: { '/work-board': ok({ lanes: [{ lane: 'waiting-on-you', cards: [{ id: 'wc_0123456789abcdef', conversationKey: '0b0c0d0e-0f10-5111-8213-141516171819', status: 'needs-approval', lane: 'waiting-on-you', needLine: 'Needs your approval before the agent starts', title: 'Renew the domain', titleHash: 'a'.repeat(64), need: 'Renew it for a year.', doneWhen: [{ id: 'd1', text: 'Renewed', certify: 'owner-confirms' }], carrier: 'agent', outward: true, outwardWords: 'This sends something outside your team or spends money', links: [], materialHash: 'b'.repeat(64), approvalRequired: true, approved: false, questions: [], evidence: [], claim: null, holds: [], archives: [], carrierTrail: [], taps: [], retryOf: null, repliedAfterQuestion: false }] }, { lane: 'with-agent', cards: [] }, { lane: 'waiting-on-others', cards: [] }, { lane: 'done', cards: [], total: 0 }, { lane: 'archived', cards: [] }], waitingOnYou: 1, policy: 'every-agent-card', behind: null, settings: { softOpenCards: 30 } }) } },
+  // Document decisions (document-decisions.md §3.7): a document asks the owner to approve or decline; the Documents page leads with it.
+  'document-decisions': { render: ['documents.js', 'renderDocuments'], reads: { '/docs': ok({ documents: [{ id: '0b0c0d0e-0f10-4111-8213-141516171819', title: 'Q3 plan', version: 2, openComments: 0, primary: 'telegram:7' }] }), '/docs/decisions/waiting': ok({ documents: [{ id: '0b0c0d0e-0f10-4111-8213-141516171819', title: 'Q3 plan', question: 'Approve the Q3 plan?', versionLabel: 2, primary: 'telegram:7' }] }) } },
   // Slice 2: a skill written in live mode that waits for the confirm/reject tap, with a proposal beside it (the pending one must still lead).
   'learned-pending': { render: ['learned.js', 'renderLearned'], reads: { '/skills/learned': ok({ machine: 'Studio', enabled: true, mode: 'live', counts: { requests: 9, verified: 9, keys: 2, proposals: 1, skills: 0 }, channels: { telegram: 'measured', slack: 'support-only', app: 'unmeasurable' }, pendingBacklog: 0, classifierFailures24h: 0, abortedUnreachable24h: 0, filtered: {}, skills: [], proposals: [{ name: 'weekly-ci-health', key: 'k1', arbiterOnly: false, createdAt: iso(-120), paraphrases: ['how is CI this week?'], description: 'Report the week’s CI health with the failing jobs named.' }], pending: [{ name: 'ci-health-report', description: 'Use when the operator asks for the weekly CI health of the instar repo. Not for deploy status.', paraphrases: ['weekly CI health'], reviewerFamily: 'openai', pendingReason: 'rung-unproven', fileHash: 'abc', createdAt: iso(-60), version: 1 }], retired: [], llmSpendCentsToday: 3 }) } },
 };
@@ -113,7 +118,7 @@ describe('Home: every source reaches the count and the headline', () => {
   const quietQueue = { count: 0, rows: [], all: [], state: 'ok', line: 'The queue is clear.' };
   const noPromises = { state: 'ok', count: 0, all: [], rows: [] };
 
-  it.each(Object.keys(FIXTURES))('%s', async (id: string) => {
+  it.each(Object.keys(FIXTURES).filter(id => id !== 'context'))('%s', async (id: string) => {
     const { NEED_SOURCES, surfacedNeeds } = await import(path.join(CONSOLE, 'needs-model.js'));
     const { combineNeeds, headline } = await import(path.join(CONSOLE, 'home-model.js'));
     const known: any = {};
@@ -127,6 +132,21 @@ describe('Home: every source reaches the count and the headline', () => {
     expect(h.tone).toBe('attn');
     expect(h.text).not.toMatch(/quiet|nothing needs/i);
   }, 30000);
+
+  it('keeps context recovery failures out of the owner queue', async () => {
+    const { surfacedNeeds } = await import(path.join(CONSOLE, 'needs-model.js'));
+    const sentinel = FIXTURES.context.reads['/context-budget/sentinel'];
+    const result = surfacedNeeds({ context: { results: { sentinel } } }, NOW);
+    expect(result.rows).toEqual([]);
+    expect(result.failed).not.toContain('context');
+  });
+
+  it('preserves sign-in repairs that still require owner approval', async () => {
+    const { surfacedNeeds } = await import(path.join(CONSOLE, 'needs-model.js'));
+    const pool = FIXTURES.accounts.reads['/subscription-pool?scope=pool'];
+    const relogin = ok({ episodes: [{ id: 'repair-1', accountId: 'luna', machineId: 'm1', state: 'suggested' }] });
+    expect(surfacedNeeds({ accounts: { results: { pool, relogin } } }, NOW).rows).toHaveLength(1);
+  });
 
   it('a stopped merge names itself in the headline, with a link to act on it', async () => {
     const { surfacedNeeds } = await import(path.join(CONSOLE, 'needs-model.js'));
@@ -251,7 +271,7 @@ describe('population floors', () => {
   it('a file that says "needs you" is registered, or names its exact phrase and reason', async () => {
     const { NEED_SOURCES, NEED_EXEMPT } = await import(path.join(CONSOLE, 'needs-model.js'));
     const own = new Set<string>(['needs-model.js']);
-    const pageFile: Record<string, string> = { 'work/development': 'development', 'capacity/health': 'health', 'capacity/accounts': 'accounts', 'people/agents': 'agents', 'people/mandates': 'mandates', 'work/plans': 'plans', 'people/secrets': 'secrets', 'work/chats': 'chats', 'capacity/costs': 'costs', 'settings/learned': 'learned', 'settings/context': 'context', 'work/board': 'work' };
+    const pageFile: Record<string, string> = { 'work/development': 'development', 'capacity/health': 'health', 'capacity/accounts': 'accounts', 'people/agents': 'agents', 'people/mandates': 'mandates', 'work/plans': 'plans', 'people/secrets': 'secrets', 'work/chats': 'chats', 'capacity/costs': 'costs', 'settings/allowed': 'allowed', 'settings/learned': 'learned', 'settings/context': 'context', 'work/board': 'work', 'work/documents': 'documents', 'capacity/repos': 'repos' };
     for (const s of NEED_SOURCES) { own.add(`${pageFile[s.page]}.js`); own.add(`${pageFile[s.page]}-model.js`); }
     const bad = consoleFiles().flatMap((f) => unregisteredNeedLines(f, fs.readFileSync(path.join(CONSOLE, f), 'utf8'), own, NEED_EXEMPT).map((l) => `${f}: ${l.trim().slice(0, 110)}`));
     expect(bad).toEqual([]);

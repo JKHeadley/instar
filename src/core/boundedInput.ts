@@ -49,10 +49,12 @@
  * ordinary prose). It names the DIRECTION of the loss, because "some of this is
  * missing" and "the beginning of this is missing" support different answers.
  */
-function marker(omittedChars: number, side: 'leading' | 'trailing'): string {
+function marker(omittedChars: number, side: 'leading' | 'trailing' | 'middle'): string {
   const where = side === 'leading'
     ? 'EARLIER content was omitted, so this begins mid-way'
-    : 'LATER content was omitted, so this stops before the end';
+    : side === 'middle'
+      ? 'MIDDLE content was omitted; start and end are shown'
+      : 'LATER content was omitted, so this stops before the end';
   return `[BOUNDED INPUT: ${omittedChars} characters removed to fit a size limit — ${where}. Your view of this section is PARTIAL; do not treat its absence of something as evidence that it is absent.]`;
 }
 
@@ -60,6 +62,7 @@ function marker(omittedChars: number, side: 'leading' | 'trailing'): string {
 const MAX_MARKER_CHARS = Math.max(
   marker(999_999_999, 'leading').length,
   marker(999_999_999, 'trailing').length,
+  marker(999_999_999, 'middle').length,
 );
 
 /**
@@ -163,9 +166,40 @@ export function boundedHead(text: string, maxChars: number): string {
 }
 
 /**
+ * Keep the START and the END of `text`, bounded to `maxChars` INCLUDING the
+ * disclosure, which sits at the cut in the middle.
+ *
+ * For a document whose two ends carry different meaning and neither can be
+ * dropped: an identity file that leads with who the agent is and ends with its
+ * newest history, or a reflection log of unknown order. Choosing one end for
+ * such a document silently picks which half of the meaning to lose.
+ */
+export function boundedEnds(text: string, maxChars: number): string {
+  if (!Number.isFinite(maxChars) || maxChars < BOUNDED_ENDS_MIN_CHARS) {
+    throw new RangeError(
+      `boundedInput: maxChars ${maxChars} is too small for boundedEnds (needs >= ${BOUNDED_ENDS_MIN_CHARS}): ` +
+        'each end must keep content after surrogate trimming, plus the disclosure and its two newlines.',
+    );
+  }
+  if (text.length <= maxChars) return text;
+  const avail = maxChars - MAX_MARKER_CHARS - 2;
+  const headN = Math.ceil(avail / 2);
+  const head = trimLoneSurrogates(text.slice(0, headN));
+  const tail = trimLoneSurrogates(text.slice(-(avail - headN)));
+  return `${head}\n${marker(text.length - head.length - tail.length, 'middle')}\n${tail}`;
+}
+
+/**
  * The smallest bound these helpers will accept: room for the disclosure, its
  * separating newline, and enough content to survive surrogate trimming at both
  * edges. Exposed so a caller deriving its own number can check it against the
  * floor rather than discovering the refusal at runtime.
  */
 export const BOUNDED_INPUT_MIN_CHARS = MAX_MARKER_CHARS + MIN_CONTENT_CHARS + 1;
+
+/**
+ * The smallest bound `boundedEnds` accepts: the disclosure, its two newlines,
+ * and MIN_CONTENT_CHARS at EACH end (each end can lose a unit to surrogate
+ * trimming, so each needs the same floor a single-ended cut does).
+ */
+export const BOUNDED_ENDS_MIN_CHARS = MAX_MARKER_CHARS + 2 + 2 * MIN_CONTENT_CHARS;

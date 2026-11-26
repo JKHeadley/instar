@@ -1,0 +1,29 @@
+{
+  "version": 2,
+  "slug": "sec151-config-origin-fence",
+  "sessionId": "09b2b18b-f7f7-499f-bc7b-1d38025c1520",
+  "timestamp": "2026-11-23T15:47:06.192Z",
+  "artifactPath": "upgrades/side-effects/sec151-config-origin-fence.md",
+  "artifactSha256": "c2b907c0258eb6c3cea20f09870814ffb5ecc76f4d8b8b289abf49329bf97989",
+  "coveredFiles": [
+    "docs/specs/sec151-config-origin-fence.eli16.md",
+    "src/config/bearerConfigWrite.ts",
+    "src/server/routes.ts",
+    "tests/unit/sec151-config-origin-fence.test.ts",
+    "upgrades/next/config-fence-session-binaries.md",
+    "upgrades/next/sec151-config-origin-fence.md",
+    "upgrades/side-effects/sec151-config-origin-fence.md"
+  ],
+  "phase": "complete",
+  "tier": 1,
+  "tierReasoning": "SEC-151 whole PR after merging main (kept beside the SEC-153 dispatch fence): only removes a way to change operator-only settings through the API; no state written, no migration; independent reviewer concurred.",
+  "eli16Path": "docs/specs/sec151-config-origin-fence.eli16.md",
+  "sideEffectsPath": "upgrades/side-effects/sec151-config-origin-fence.md",
+  "secondPass": "true",
+  "reviewerConcurred": true,
+  "classClosure": {
+    "defectClass": "unbounded-self-action",
+    "closure": "n/a",
+    "reason": "no loop or spawn added"
+  }
+}

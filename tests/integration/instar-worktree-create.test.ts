@@ -14,8 +14,9 @@
  * is covered by the file-level non-overlap assertion in the last test.
  */
 
-import { describe, it, expect, beforeEach, afterEach } from 'vitest';
+import { describe, it, expect, beforeEach, afterEach, vi } from 'vitest';
 import { execFileSync } from 'node:child_process';
+import { SafeGitExecutor } from '../../src/core/SafeGitExecutor.js';
 import fs from 'node:fs';
 import os from 'node:os';
 import path from 'node:path';
@@ -114,7 +115,7 @@ describe('createWorktree (integration)', () => {
   let fix: Fixture;
 
   beforeEach(() => { fix = makeFixture(); });
-  afterEach(() => cleanup(fix));
+  afterEach(() => { vi.restoreAllMocks(); cleanup(fix); });
 
   it('refuses at the physical directory cap before adding a git worktree', async () => {
     const root = path.join(fix.agentHome, '.worktrees');
@@ -189,6 +190,81 @@ describe('createWorktree (integration)', () => {
     } finally {
       fs.rmSync(outside, { recursive: true, force: true });
     }
+  });
+
+  it.each(['new', 'existing'] as const)('allows a %s-branch checkout beyond the general Git deadline without extending other operations', async (branchKind) => {
+    const branch = `fix/slow-checkout-${branchKind}`;
+    if (branchKind === 'existing') git(['branch', branch], fix.bareRepo);
+    const actualExec = SafeGitExecutor.execSync.bind(SafeGitExecutor);
+    const exec = vi.spyOn(SafeGitExecutor, 'execSync').mockImplementation((args, options) => {
+      const worktreeVerb = args.indexOf('worktree');
+      if (worktreeVerb >= 0 && args[worktreeVerb + 1] === 'add') {
+        // Model a 45-second checkout at the real executor boundary, without a
+        // wall-clock sleep. Older code inherits 30 seconds and fails here.
+        if ((options.timeout ?? 30_000) < 45_000) throw new Error('checkout exceeded the general 30-second Git deadline');
+      }
+      return actualExec(args, options);
+    });
+    const read = vi.spyOn(SafeGitExecutor, 'readSync');
+    const result = await createWorktree({
+      branch,
+      shareNodeModules: false,
+      resolveAgentHomeOpts: {
+        env: { INSTAR_AGENT_HOME: fix.agentHome },
+        instarHome: fix.instarHome,
+        registryLookup: fix.registryLookup,
+      },
+      resolveInstarRepoOpts: {
+        env: { INSTAR_REPO: fix.bareRepo },
+        fallbackChain: [],
+        urlAllowlist: fix.repoAllowlist,
+      },
+    });
+    expect(result.createdBranch).toBe(branchKind === 'new');
+    expect(git(['branch', '--show-current'], result.worktreePath)).toBe(branch);
+    expect(fs.readFileSync(path.join(result.worktreePath, 'README.md'), 'utf8')).toBe('# Test\n');
+    expect(JSON.parse(fs.readFileSync(path.join(fix.agentHome, '.worktrees', '.ledger.jsonl'), 'utf8').trim())).toMatchObject({ branch });
+    const addCalls = exec.mock.calls.filter(([args]) => {
+      const i = args.indexOf('worktree');
+      return i >= 0 && args[i + 1] === 'add';
+    });
+    expect(addCalls).toHaveLength(1);
+    expect(addCalls[0][1].timeout).toBe(300_000);
+    for (const [args, options] of exec.mock.calls) {
+      if (args.includes('worktree') && args.includes('add')) continue;
+      expect(options.timeout).toBeUndefined();
+    }
+    expect(read.mock.calls.length).toBeGreaterThan(0);
+    for (const [, options] of read.mock.calls) expect(options.timeout).toBeUndefined();
+  });
+
+  it('still reports a checkout deadline failure once without a success ledger', async () => {
+    const actualExec = SafeGitExecutor.execSync.bind(SafeGitExecutor);
+    const exec = vi.spyOn(SafeGitExecutor, 'execSync').mockImplementation((args, options) => {
+      const i = args.indexOf('worktree');
+      if (i >= 0 && args[i + 1] === 'add') throw new Error('checkout timed out at its bounded deadline');
+      return actualExec(args, options);
+    });
+    await expect(createWorktree({
+      branch: 'fix/deadline-failure',
+      shareNodeModules: false,
+      resolveAgentHomeOpts: {
+        env: { INSTAR_AGENT_HOME: fix.agentHome },
+        instarHome: fix.instarHome,
+        registryLookup: fix.registryLookup,
+      },
+      resolveInstarRepoOpts: {
+        env: { INSTAR_REPO: fix.bareRepo },
+        fallbackChain: [],
+        urlAllowlist: fix.repoAllowlist,
+      },
+    })).rejects.toThrow('checkout timed out at its bounded deadline');
+    expect(exec.mock.calls.filter(([args]) => {
+      const i = args.indexOf('worktree');
+      return i >= 0 && args[i + 1] === 'add';
+    })).toHaveLength(1);
+    expect(fs.existsSync(path.join(fix.agentHome, '.worktrees', '.ledger.jsonl'))).toBe(false);
+    expect(fs.existsSync(path.join(fix.agentHome, '.instar', 'local', 'worktree-create.lock'))).toBe(false);
   });
 
   it('happy path: places worktree under <agent_home>/.worktrees, sets identity, writes ledger + audit mirror', async () => {
@@ -320,14 +396,15 @@ describe('createWorktree (integration)', () => {
     expect(git(['config', '--get', 'core.hooksPath'], result.worktreePath)).toBe('.husky/_');
   });
 
-  it('symlinks node_modules by default when the source exists; --no-share-node-modules opts out', async () => {
+  it('symlinks node_modules in symlink mode when the source exists; --no-share-node-modules opts out', async () => {
     // Provide a real node_modules in the bare repo.
     fs.mkdirSync(path.join(fix.bareRepo, 'node_modules', 'a-pkg'), { recursive: true });
     fs.writeFileSync(path.join(fix.bareRepo, 'node_modules', 'a-pkg', 'index.js'), '');
 
-    // Default: symlink.
+    // Symlink mode (the default off macOS).
     const shared = await createWorktree({
       branch: 'feature/shared',
+      nodeModulesShareMode: 'symlink',
       resolveAgentHomeOpts: {
         env: { INSTAR_AGENT_HOME: fix.agentHome },
         instarHome: fix.instarHome,
@@ -359,6 +436,40 @@ describe('createWorktree (integration)', () => {
       },
     });
     expect(fs.existsSync(path.join(isolated.worktreePath, 'node_modules'))).toBe(false);
+  });
+
+  it('clones node_modules (own folder) in clone mode, so an install there cannot empty the shared source', async () => {
+    fs.mkdirSync(path.join(fix.bareRepo, 'node_modules', 'a-pkg'), { recursive: true });
+    fs.writeFileSync(path.join(fix.bareRepo, 'node_modules', 'a-pkg', 'index.js'), 'shared');
+    const opts = {
+      resolveAgentHomeOpts: {
+        env: { INSTAR_AGENT_HOME: fix.agentHome },
+        instarHome: fix.instarHome,
+        registryLookup: fix.registryLookup,
+      },
+      resolveInstarRepoOpts: {
+        env: { INSTAR_REPO: fix.bareRepo },
+        fallbackChain: [],
+        urlAllowlist: fix.repoAllowlist,
+      },
+    };
+    const wt = await createWorktree({ branch: 'feature/cloned', nodeModulesShareMode: 'clone', ...opts });
+    const nm = path.join(wt.worktreePath, 'node_modules');
+    if (process.platform === 'darwin') {
+      // APFS (the macOS test host): a real folder with the shared contents.
+      expect(wt.nodeModulesShared).toBe('clone');
+      expect(fs.lstatSync(nm).isSymbolicLink()).toBe(false);
+      expect(fs.readFileSync(path.join(nm, 'a-pkg', 'index.js'), 'utf8')).toBe('shared');
+      // Emptying the worktree's own folder (what `npm ci` does) leaves the source intact.
+      fs.rmSync(nm, { recursive: true, force: true });
+      expect(fs.readFileSync(path.join(fix.bareRepo, 'node_modules', 'a-pkg', 'index.js'), 'utf8')).toBe('shared');
+    } else {
+      // No clonefile support: falls back to the symlink rather than failing the create.
+      expect(['clone', 'symlink']).toContain(wt.nodeModulesShared);
+      expect(fs.existsSync(path.join(nm, 'a-pkg', 'index.js'))).toBe(true);
+    }
+    // No staging folder is left beside the worktree's node_modules.
+    expect(fs.readdirSync(wt.worktreePath).filter((n) => n.startsWith('node_modules.clone-'))).toEqual([]);
   });
 
   it('refuses a second worktree at the same slug without removing partial state', async () => {

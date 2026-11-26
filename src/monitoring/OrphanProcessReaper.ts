@@ -18,7 +18,8 @@
  * registered framework via `frameworkProcessSignals.ts`.
  */
 
-import { spawnSync } from 'node:child_process';
+import { execFile, spawnSync } from 'node:child_process';
+import { promisify } from 'node:util';
 import { EventEmitter } from 'node:events';
 import type { SessionManager } from '../core/SessionManager.js';
 import type { InstarConfig } from '../core/types.js';
@@ -26,13 +27,25 @@ import type { IntelligenceFramework } from '../core/intelligenceProviderFactory.
 import {
   listProcessSignals,
   matchProcessSignal,
-  type FrameworkProcessSignal,
 } from './frameworkProcessSignals.js';
-import { processStartMs } from '../core/processIdentity.js';
+import { processStartMs, processStartMsAsync } from '../core/processIdentity.js';
 
 /** Drop-in replacement for execSync that avoids its security concerns. */
 function shellExec(cmd: string, timeout = 5000): string {
   return spawnSync('/bin/sh', ['-c', cmd], { encoding: 'utf-8', timeout }).stdout ?? '';
+}
+
+const execFileAsync = promisify(execFile);
+
+async function readCommand(
+  file: string,
+  args: string[],
+  { timeout = 5000, maxBuffer = 4 * 1024 * 1024 }: { timeout?: number; maxBuffer?: number } = {},
+): Promise<string> {
+  const { stdout } = await execFileAsync(file, args, {
+    encoding: 'utf8', timeout, killSignal: 'SIGKILL', maxBuffer,
+  });
+  return stdout;
 }
 
 export interface FrameworkProcess {
@@ -104,6 +117,9 @@ export class OrphanProcessReaper extends EventEmitter {
   private sessionManager: SessionManager;
   private interval: ReturnType<typeof setInterval> | null = null;
   private projectPrefix: string;
+  private initialPoll: ReturnType<typeof setTimeout> | null = null;
+  private pollGeneration = 0;
+  private pendingPoll: Promise<ReaperReport> | null = null;
   private lastReport: ReaperReport | null = null;
   private reportedExternalPids = new Set<number>(); // Don't spam about same PIDs
   private lastExternalAlertTime = 0; // Cooldown to avoid spamming about normal VS Code/terminal processes
@@ -126,12 +142,18 @@ export class OrphanProcessReaper extends EventEmitter {
     if (this.interval) return;
     const pollMs = this.reaperConfig.pollIntervalMs ?? DEFAULT_POLL_INTERVAL;
     console.log(`[OrphanReaper] Starting (poll: ${pollMs / 1000}s, orphan max age: ${(this.reaperConfig.orphanMaxAgeMs ?? DEFAULT_ORPHAN_MAX_AGE) / 60000}m)`);
-    this.interval = setInterval(() => this.poll(), pollMs);
-    // First check after 10 seconds (let other systems initialize)
-    setTimeout(() => this.poll(), 10_000);
+    const tick = () => {
+      if (this.pendingPoll) return;
+      void this.scan().catch((error: unknown) => console.warn('[OrphanReaper] Poll failed:', error));
+    };
+    this.interval = setInterval(tick, pollMs);
+    this.initialPoll = setTimeout(tick, 10_000);
   }
 
   stop(): void {
+    this.pollGeneration++;
+    if (this.initialPoll) clearTimeout(this.initialPoll);
+    this.initialPoll = null;
     if (this.interval) {
       clearInterval(this.interval);
       this.interval = null;
@@ -147,14 +169,18 @@ export class OrphanProcessReaper extends EventEmitter {
    * Can be called on-demand via API endpoints.
    */
   async scan(): Promise<ReaperReport> {
-    return this.poll();
+    if (!this.pendingPoll) {
+      this.pendingPoll = this.poll().finally(() => { this.pendingPoll = null; });
+    }
+    return this.pendingPoll;
   }
 
   // ── Core Poll ──────────────────────────────────────────────────────
 
   private async poll(): Promise<ReaperReport> {
-    const claudeProcesses = this.findAllFrameworkProcesses();
-    const tmuxSessions = this.listAllTmuxSessions();
+    const generation = this.pollGeneration;
+    const claudeProcesses = await this.findAllFrameworkProcesses();
+    const tmuxSessions = await this.listAllTmuxSessions();
     const trackedSessions = this.getTrackedSessionNames();
     // UNIFIED-SESSION-LIFECYCLE §P0 #6 — every tmux name instar has ever known
     // (running + completed + failed + killed). The orphan classifier uses
@@ -163,7 +189,7 @@ export class OrphanProcessReaper extends EventEmitter {
     // typing `tmux new -s the-portal-myhand`) is NOT false-classified as orphan.
     const knownInstarSessions = this.sessionManager.listKnownTmuxSessions();
 
-    const classified = this.classifyProcesses(claudeProcesses, tmuxSessions, trackedSessions, knownInstarSessions);
+    const classified = await this.classifyProcesses(claudeProcesses, tmuxSessions, trackedSessions, knownInstarSessions);
 
     const tracked = classified.filter(p => p.classification === 'tracked');
     const orphans = classified.filter(p => p.classification === 'instar-orphan');
@@ -180,6 +206,8 @@ export class OrphanProcessReaper extends EventEmitter {
       actionsPerformed: [],
     };
 
+    if (generation !== this.pollGeneration) return report;
+
     // Handle orphans
     const orphanMaxAge = this.reaperConfig.orphanMaxAgeMs ?? DEFAULT_ORPHAN_MAX_AGE;
     const autoKill = this.reaperConfig.autoKillOrphans !== false; // default true
@@ -187,11 +215,12 @@ export class OrphanProcessReaper extends EventEmitter {
     const serverSessionName = `${this.config.projectName}-server`;
 
     for (const orphan of orphans) {
+      if (generation !== this.pollGeneration) return report;
       if (orphan.elapsedMs > orphanMaxAge && autoKill) {
         // §P0 #6 P2-style work check: 60-min age is NECESSARY, not SUFFICIENT.
         // An orphan with active child processes is doing real work — defer the
         // reap rather than killing a working pipeline.
-        if (this.processHasActiveChildren(orphan.pid)) {
+        if (await this.processHasActiveChildren(orphan.pid)) {
           const msg = `Kept orphan PID ${orphan.pid} (age ${this.formatDuration(orphan.elapsedMs)}, tmux: ${orphan.tmuxSession || 'none'}) — active child processes (work check vetoed reap)`;
           report.actionsPerformed.push(msg);
           console.log(`[OrphanReaper] ${msg}`);
@@ -200,12 +229,13 @@ export class OrphanProcessReaper extends EventEmitter {
         // Signal only the process whose ownership this scan established: same
         // pid AND same start time. Unreadable or changed identity → no signal,
         // and the tmux session is left alone too.
-        if (!this.killProcess(orphan.pid, orphan.procStart ?? null)) {
-          const msg = `Skipped orphan PID ${orphan.pid} (tmux: ${orphan.tmuxSession || 'none'}) — process identity unreadable or changed since ownership was established, not signalling`;
+        if (!await this.killOrphanProcess(orphan, generation)) {
+          const msg = `Kept orphan PID ${orphan.pid} because its ownership, identity, or tracking changed or could not be verified`;
           report.actionsPerformed.push(msg);
           console.log(`[OrphanReaper] ${msg}`);
           continue;
         }
+        if (generation !== this.pollGeneration) return report;
         // Also kill the tmux session if it exists — but NEVER the server session.
         // §P0 #6 route through ReapAuthority when the orphan's tmuxSession
         // matches a CURRENTLY-tracked session (a race between this scan and a
@@ -214,17 +244,19 @@ export class OrphanProcessReaper extends EventEmitter {
         // already terminal — just clean up the stray tmux pane.
         if (orphan.tmuxSession && orphan.tmuxSession !== serverSessionName) {
           const trackedNow = this.sessionManager
-            .listRunningSessions()
+            .listRecordedRunningSessions()
             .find((s) => s.tmuxSession === orphan.tmuxSession);
           if (trackedNow) {
             await this.sessionManager.terminateSession(trackedNow.id, 'orphan-reap', {
               disposition: 'terminal',
               finalStatus: 'killed',
             });
-          } else if (this.sessionManager.ownsLiveTmuxSession(orphan.tmuxSession)) {
+          } else if (await this.sessionManager.ownsLiveTmuxSessionAsync(orphan.tmuxSession)
+            && this.canReapUntrackedSession(orphan.tmuxSession, generation)) {
             // Re-proven just now: the session under this name is still the
             // incarnation this agent spawned (not a replacement under the name).
-            this.killTmuxSession(orphan.tmuxSession);
+            await readCommand(this.config.sessions.tmuxPath, ['kill-session', '-t', `=${orphan.tmuxSession}`])
+              .catch(() => undefined); // @silent-fallback-ok — session may already have exited
           }
         }
         const msg = `Killed orphan PID ${orphan.pid} (${Math.round(orphan.rssKB / 1024)}MB, running ${this.formatDuration(orphan.elapsedMs)}, tmux: ${orphan.tmuxSession || 'none'})`;
@@ -232,6 +264,8 @@ export class OrphanProcessReaper extends EventEmitter {
         console.log(`[OrphanReaper] ${msg}`);
       }
     }
+
+    if (generation !== this.pollGeneration) return report;
 
     // Report high-memory or old external processes (but don't auto-kill)
     const externalReportAge = this.reaperConfig.externalReportAgeMs ?? DEFAULT_EXTERNAL_REPORT_AGE;
@@ -301,6 +335,7 @@ export class OrphanProcessReaper extends EventEmitter {
       }
     }
 
+    if (generation !== this.pollGeneration) return report;
     this.lastReport = report;
     this.emit('scan', report);
     return report;
@@ -317,21 +352,13 @@ export class OrphanProcessReaper extends EventEmitter {
    * the matched framework via `matchProcessSignal`. A single ps call
    * keeps the impact off the runtime hot-path.
    */
-  private findAllFrameworkProcesses(): FrameworkProcess[] {
+  private async findAllFrameworkProcesses(): Promise<FrameworkProcess[]> {
     const signals = listProcessSignals();
     if (signals.length === 0) return [];
 
     try {
       const uid = process.getuid?.() ?? 0;
-      // egrep alternation over every framework's bracket-escaped needle.
-      // The bracket trick keeps grep itself from matching its own argv.
-      const needleAlternation = signals
-        .map(s => s.psGrepNeedle)
-        .join('|');
-      const output = shellExec(
-        `ps -u ${uid} -o pid=,ppid=,rss=,etime=,command= 2>/dev/null | egrep -i '${needleAlternation}' | grep -v grep`,
-        10_000,
-      ).trim();
+      const output = (await readCommand('ps', ['-u', String(uid), '-o', 'pid=,ppid=,rss=,etime=,command='], { timeout: 10_000 })).trim();
 
       if (!output) return [];
 
@@ -349,10 +376,7 @@ export class OrphanProcessReaper extends EventEmitter {
         // Skip the instar server process itself
         if (command.includes('instar') && command.includes('server')) continue;
 
-        // Match against EVERY framework signal — the line passed the
-        // first-stage grep, but might have been from a helper false-
-        // positive (the helper-prefix check inside matchProcessSignal
-        // catches those).
+        // Match each process against the registered framework signals.
         const signal = matchProcessSignal(command, signals);
         if (!signal) continue;
 
@@ -378,7 +402,7 @@ export class OrphanProcessReaper extends EventEmitter {
    * generic name. Retained so external code that referenced this method
    * via reflection or tests doesn't break. Will be removed in v2.
    */
-  private findAllClaudeProcesses(): FrameworkProcess[] {
+  private findAllClaudeProcesses(): Promise<FrameworkProcess[]> {
     return this.findAllFrameworkProcesses();
   }
 
@@ -399,12 +423,12 @@ export class OrphanProcessReaper extends EventEmitter {
    * panes tmux reports as live (pane_dead=0) are mapped; dead or indeterminate
    * panes map nothing.
    */
-  private listAllTmuxSessions(): Map<number, string> {
+  private async listAllTmuxSessions(): Promise<Map<number, string>> {
     const pidToSession = new Map<number, string>();
     try {
-      const output = shellExec(
-        `${this.config.sessions.tmuxPath} list-panes -a -F "#{session_name}||#{pane_pid}||#{pane_dead}" 2>/dev/null`,
-      ).trim();
+      const output = (await readCommand(this.config.sessions.tmuxPath, [
+        'list-panes', '-a', '-F', '#{session_name}||#{pane_pid}||#{pane_dead}',
+      ])).trim();
 
       if (!output) return pidToSession;
 
@@ -427,7 +451,7 @@ export class OrphanProcessReaper extends EventEmitter {
    * Get tmux session names tracked by SessionManager.
    */
   private getTrackedSessionNames(): Set<string> {
-    const running = this.sessionManager.listRunningSessions();
+    const running = this.sessionManager.listRecordedRunningSessions();
     return new Set(running.map(s => s.tmuxSession));
   }
 
@@ -439,129 +463,181 @@ export class OrphanProcessReaper extends EventEmitter {
    *   - instar-orphan: In a project-prefixed tmux session NOT tracked by SessionManager
    *   - external: Everything else (user sessions, VS Code, etc.)
    */
-  private classifyProcesses(
+  /**
+   * One `ps` listing of every process (pid, ppid, command) for the duration of a classify pass.
+   * Before, each candidate cost two `ps -p` spawns (parent pid, then parent command),
+   * which on a loaded host held the server's event loop for 3-4 s per poll (CPU profile of an
+   * agent server, 2026-11-18). A pid missing here (it exited, or the listing failed) falls back
+   * to the per-pid query, so answers are unchanged.
+   */
+  private psSnapshot: Map<number, { ppid: number; command: string }> | null = null;
+
+  private async readPsSnapshot(): Promise<Map<number, { ppid: number; command: string }> | null> {
+    try {
+      const output = await readCommand('ps', ['-A', '-o', 'pid=,ppid=,command='], {
+        timeout: 10_000, maxBuffer: 4 * 1024 * 1024,
+      });
+      const rows = new Map<number, { ppid: number; command: string }>();
+      for (const line of output.split('\n')) {
+        const match = line.trim().match(/^(\d+)\s+(\d+)\s+(.*)$/);
+        if (match) rows.set(parseInt(match[1], 10), { ppid: parseInt(match[2], 10), command: match[3].trim() });
+      }
+      return rows.size ? rows : null;
+    } catch { // @silent-fallback-ok — no listing: every lookup falls back to its own per-pid query
+      return null;
+    }
+  }
+
+  private async classifyProcesses(
     processes: FrameworkProcess[],
     tmuxSessions: Map<number, string>,
     trackedSessions: Set<string>,
     knownInstarSessions: Set<string>,
-  ): ClassifiedProcess[] {
-    return processes.map(proc => {
-      // Resolve which tmux session this process belongs to
-      // Check if this PID or its parent is a tmux pane
-      const directSession = tmuxSessions.get(proc.pid);
-      const parentSession = tmuxSessions.get(proc.ppid);
-      // Also check grandparent — Claude spawns under node which is under tmux pane
-      const grandparentPid = this.getParentPid(proc.ppid);
-      const grandparentSession = grandparentPid ? tmuxSessions.get(grandparentPid) : null;
+  ): Promise<ClassifiedProcess[]> {
+    this.psSnapshot = processes.length ? await this.readPsSnapshot() : null;
+    try {
+      return await this.classifyWithSnapshot(processes, tmuxSessions, trackedSessions, knownInstarSessions);
+    } finally {
+      this.psSnapshot = null;
+    }
+  }
 
-      const tmuxSession = directSession || parentSession || grandparentSession || null;
-      proc.tmuxSession = tmuxSession;
+  private async classifyWithSnapshot(
+    processes: FrameworkProcess[],
+    tmuxSessions: Map<number, string>,
+    trackedSessions: Set<string>,
+    knownInstarSessions: Set<string>,
+  ): Promise<ClassifiedProcess[]> {
+    const classified: ClassifiedProcess[] = [];
+    for (const proc of processes) {
+      classified.push(await this.classifyProcess(proc, tmuxSessions, trackedSessions, knownInstarSessions));
+    }
+    return classified;
+  }
 
-      if (tmuxSession) {
-        // In a tmux session — is it tracked?
-        if (trackedSessions.has(tmuxSession)) {
+  private async classifyProcess(
+    proc: FrameworkProcess,
+    tmuxSessions: Map<number, string>,
+    trackedSessions: Set<string>,
+    knownInstarSessions: Set<string>,
+  ): Promise<ClassifiedProcess> {
+    // Resolve which tmux session this process belongs to
+    // Check if this PID or its parent is a tmux pane
+    const directSession = tmuxSessions.get(proc.pid);
+    const parentSession = tmuxSessions.get(proc.ppid);
+    // Also check grandparent — Claude spawns under node which is under tmux pane
+    const grandparentPid = await this.getParentPid(proc.ppid);
+    const grandparentSession = grandparentPid ? tmuxSessions.get(grandparentPid) : null;
+
+    const tmuxSession = directSession || parentSession || grandparentSession || null;
+    proc.tmuxSession = tmuxSession;
+
+    if (tmuxSession) {
+      // In a tmux session — is it tracked?
+      if (trackedSessions.has(tmuxSession)) {
+        return {
+          ...proc,
+          classification: 'tracked' as const,
+          reason: `Managed by SessionManager in tmux "${tmuxSession}"`,
+        };
+      }
+
+      // EXACT-id orphan: the tmux session name matches one instar has
+      // tracked (current or historical), but isn't in the live-tracked set.
+      // This replaces the old prefix-startsWith match per
+      // UNIFIED-SESSION-LIFECYCLE §P0 #6 — a user-created session that happens
+      // to share the project prefix is NOT classified as orphan.
+      //
+      // A historical NAME match is still not ownership: another agent, a test
+      // instance or a user can create a session under a name this agent once
+      // used. Only a live session carrying the INSTAR_SESSION_ID of this
+      // agent's own record for that name is the incarnation this agent
+      // spawned; anything else is reported, never auto-killed.
+      if (knownInstarSessions.has(tmuxSession)) {
+        if (await this.sessionManager.ownsLiveTmuxSessionAsync(tmuxSession)) {
           return {
             ...proc,
-            classification: 'tracked' as const,
-            reason: `Managed by SessionManager in tmux "${tmuxSession}"`,
+            classification: 'instar-orphan' as const,
+            reason: `In instar-owned tmux "${tmuxSession}" but not currently tracked by SessionManager`,
+            procStart: await processStartMsAsync(proc.pid),
           };
         }
-
-        // EXACT-id orphan: the tmux session name matches one instar has
-        // tracked (current or historical), but isn't in the live-tracked set.
-        // This replaces the old prefix-startsWith match per
-        // UNIFIED-SESSION-LIFECYCLE §P0 #6 — a user-created session that happens
-        // to share the project prefix is NOT classified as orphan.
-        //
-        // A historical NAME match is still not ownership: another agent, a test
-        // instance or a user can create a session under a name this agent once
-        // used. Only a live session carrying the INSTAR_SESSION_ID of this
-        // agent's own record for that name is the incarnation this agent
-        // spawned; anything else is reported, never auto-killed.
-        if (knownInstarSessions.has(tmuxSession)) {
-          if (this.sessionManager.ownsLiveTmuxSession(tmuxSession)) {
-            return {
-              ...proc,
-              classification: 'instar-orphan' as const,
-              reason: `In instar-owned tmux "${tmuxSession}" but not currently tracked by SessionManager`,
-              procStart: processStartMs(proc.pid),
-            };
-          }
-          return {
-            ...proc,
-            classification: 'external' as const,
-            reason: `In tmux "${tmuxSession}", a name instar once used, but the session carries no matching INSTAR_SESSION_ID — ownership unproven, report only`,
-          };
-        }
-
-        // In some other tmux session — likely user's own
         return {
           ...proc,
           classification: 'external' as const,
-          reason: `In tmux session "${tmuxSession}" (not project-prefixed)`,
+          reason: `In tmux "${tmuxSession}", a name instar once used, but the session carries no matching INSTAR_SESSION_ID — ownership unproven, report only`,
         };
       }
 
-      // Not in any tmux session — could be VS Code, terminal, or spawn()-based orphan
-      const parentCommand = this.getProcessCommand(proc.ppid);
-
-      // VS Code spawns Claude via its integrated terminal
-      if (parentCommand && (
-        parentCommand.includes('code') ||
-        parentCommand.includes('Code Helper') ||
-        parentCommand.includes('Electron') ||
-        parentCommand.includes('cursor') ||
-        parentCommand.includes('windsurf')
-      )) {
-        return {
-          ...proc,
-          classification: 'external' as const,
-          reason: `Spawned by IDE (parent: ${parentCommand.slice(0, 80)})`,
-        };
-      }
-
-      // Terminal.app, iTerm, Warp, etc.
-      if (parentCommand && (
-        parentCommand.includes('Terminal') ||
-        parentCommand.includes('iTerm') ||
-        parentCommand.includes('Warp') ||
-        parentCommand.includes('Alacritty') ||
-        parentCommand.includes('kitty') ||
-        parentCommand.includes('zsh') ||
-        parentCommand.includes('bash')
-      )) {
-        return {
-          ...proc,
-          classification: 'external' as const,
-          reason: `Spawned by terminal (parent: ${parentCommand.slice(0, 80)})`,
-        };
-      }
-
-      // Non-tmux, non-IDE process — might be a spawn() orphan from Instar
-      // (e.g., setup-wizard). If it's old, classify as orphan.
-      const orphanAge = this.reaperConfig.orphanMaxAgeMs ?? DEFAULT_ORPHAN_MAX_AGE;
-      if (proc.elapsedMs > orphanAge) {
-        return {
-          ...proc,
-          classification: 'external' as const,
-          reason: `Non-tmux process with unknown parent (pid ${proc.ppid}: ${(parentCommand || 'unknown').slice(0, 60)}). Old but cannot confirm Instar origin — reporting as external for safety.`,
-        };
-      }
-
-      // Recent non-tmux process — assume external (user just started it)
+      // In some other tmux session — likely user's own
       return {
         ...proc,
         classification: 'external' as const,
-        reason: `Non-tmux process, parent: ${(parentCommand || 'unknown').slice(0, 80)}`,
+        reason: `In tmux session "${tmuxSession}" (not project-prefixed)`,
       };
-    });
+    }
+
+    // Not in any tmux session — could be VS Code, terminal, or spawn()-based orphan
+    const parentCommand = await this.getProcessCommand(proc.ppid);
+
+    // VS Code spawns Claude via its integrated terminal
+    if (parentCommand && (
+      parentCommand.includes('code') ||
+      parentCommand.includes('Code Helper') ||
+      parentCommand.includes('Electron') ||
+      parentCommand.includes('cursor') ||
+      parentCommand.includes('windsurf')
+    )) {
+      return {
+        ...proc,
+        classification: 'external' as const,
+        reason: `Spawned by IDE (parent: ${parentCommand.slice(0, 80)})`,
+      };
+    }
+
+    // Terminal.app, iTerm, Warp, etc.
+    if (parentCommand && (
+      parentCommand.includes('Terminal') ||
+      parentCommand.includes('iTerm') ||
+      parentCommand.includes('Warp') ||
+      parentCommand.includes('Alacritty') ||
+      parentCommand.includes('kitty') ||
+      parentCommand.includes('zsh') ||
+      parentCommand.includes('bash')
+    )) {
+      return {
+        ...proc,
+        classification: 'external' as const,
+        reason: `Spawned by terminal (parent: ${parentCommand.slice(0, 80)})`,
+      };
+    }
+
+    // Non-tmux, non-IDE process — might be a spawn() orphan from Instar
+    // (e.g., setup-wizard). If it's old, classify as orphan.
+    const orphanAge = this.reaperConfig.orphanMaxAgeMs ?? DEFAULT_ORPHAN_MAX_AGE;
+    if (proc.elapsedMs > orphanAge) {
+      return {
+        ...proc,
+        classification: 'external' as const,
+        reason: `Non-tmux process with unknown parent (pid ${proc.ppid}: ${(parentCommand || 'unknown').slice(0, 60)}). Old but cannot confirm Instar origin — reporting as external for safety.`,
+      };
+    }
+
+    // Recent non-tmux process — assume external (user just started it)
+    return {
+      ...proc,
+      classification: 'external' as const,
+      reason: `Non-tmux process, parent: ${(parentCommand || 'unknown').slice(0, 80)}`,
+    };
   }
 
   // ── Process Utilities ──────────────────────────────────────────────
 
-  private getParentPid(pid: number): number | null {
+  private async getParentPid(pid: number): Promise<number | null> {
+    const known = this.psSnapshot?.get(pid);
+    if (known) return known.ppid;
     try {
-      const output = shellExec(`ps -o ppid= -p ${pid} 2>/dev/null`).trim();
+      const output = (await readCommand('ps', ['-o', 'ppid=', '-p', String(pid)])).trim();
       const ppid = parseInt(output, 10);
       return isNaN(ppid) ? null : ppid;
     } catch { // @silent-fallback-ok — process may not exist
@@ -569,9 +645,11 @@ export class OrphanProcessReaper extends EventEmitter {
     }
   }
 
-  private getProcessCommand(pid: number): string | null {
+  private async getProcessCommand(pid: number): Promise<string | null> {
+    const known = this.psSnapshot?.get(pid);
+    if (known) return known.command || null;
     try {
-      const output = shellExec(`ps -o command= -p ${pid} 2>/dev/null`).trim();
+      const output = (await readCommand('ps', ['-o', 'command=', '-p', String(pid)])).trim();
       return output || null;
     } catch { // @silent-fallback-ok — process may not exist
       return null;
@@ -587,6 +665,21 @@ export class OrphanProcessReaper extends EventEmitter {
    * `'operator-requested'` is the explicit user-command path
    * (killExternalProcess), where the user named the pid.
    */
+  private async killOrphanProcess(orphan: ClassifiedProcess, generation: number): Promise<boolean> {
+    const { pid, procStart, tmuxSession } = orphan;
+    if (!tmuxSession || procStart == null || generation !== this.pollGeneration) return false;
+    if (!await this.sessionManager.ownsLiveTmuxSessionAsync(tmuxSession)) return false;
+    if (await processStartMsAsync(pid) !== procStart) return false;
+    // Re-check after every identity read, including escalation after the grace period.
+    const stillUntracked = () => this.canReapUntrackedSession(tmuxSession, generation);
+    return stillUntracked() && this.signalProcess(pid, procStart, stillUntracked);
+  }
+
+  private canReapUntrackedSession(tmuxSession: string, generation: number): boolean {
+    return generation === this.pollGeneration
+      && !this.sessionManager.listRecordedRunningSessions().some((session) => session.tmuxSession === tmuxSession);
+  }
+
   private killProcess(pid: number, expectedStart: number | null | 'operator-requested'): boolean {
     try {
       // Record which process this is before signalling: the SIGKILL below is
@@ -596,11 +689,20 @@ export class OrphanProcessReaper extends EventEmitter {
       if (expectedStart !== 'operator-requested' && (expectedStart === null || startedAt !== expectedStart)) {
         return false;
       }
+      return this.signalProcess(pid, startedAt);
+    } catch { // @silent-fallback-ok — unreadable identity or exited process
+      return false;
+    }
+  }
+
+  private signalProcess(pid: number, startedAt: number | null, stillAuthorized?: () => boolean): boolean {
+    try {
       process.kill(pid, 'SIGTERM');
       // Give it 5 seconds, then SIGKILL if needed
-      setTimeout(() => {
+      setTimeout(async () => {
         try {
-          if (startedAt === null || processStartMs(pid) !== startedAt) return; // exited (or pid reused)
+          if (startedAt === null || await processStartMsAsync(pid) !== startedAt) return; // exited (or pid reused)
+          if (stillAuthorized?.() === false) return;
           process.kill(pid, 'SIGKILL');
           console.log(`[OrphanReaper] SIGKILL sent to PID ${pid} (SIGTERM wasn't enough)`);
         } catch { // @silent-fallback-ok — process already dead (expected)
@@ -622,18 +724,15 @@ export class OrphanProcessReaper extends EventEmitter {
    * orphan is genuinely idle and safe to reap; an orphan with running children
    * is doing real work and must be kept.
    *
-   * Errors → `false` (cannot inspect ⇒ allow the reap to proceed, matching the
-   * pre-Phase-2 behavior; this never makes the reaper MORE aggressive — the
-   * helper is a soft veto layered on top of the existing age gate).
+   * An indeterminate read keeps the process. pgrep exit 1 means no children.
    */
-  private processHasActiveChildren(pid: number): boolean {
+  private async processHasActiveChildren(pid: number): Promise<boolean> {
     try {
-      const out = shellExec(`pgrep -P ${pid} 2>/dev/null`).trim();
+      const out = (await readCommand('pgrep', ['-P', String(pid)])).trim();
       return out.length > 0;
-    } catch {
-      // @silent-fallback-ok — cannot inspect (no permission / process gone) ⇒
-      // do not block the reap; the age gate already gives 60 min of grace.
-      return false;
+    } catch (error) {
+      // @silent-fallback-ok — a timeout or other unknown result vetoes reap.
+      return (error as { code?: unknown })?.code !== 1;
     }
   }
 

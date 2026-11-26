@@ -1,0 +1,30 @@
+{
+  "ts": "2026-11-19T03:55:23.027Z",
+  "slug": "reaper-generated-files-regenerable",
+  "suggestedTier": 2,
+  "declaredTier": 2,
+  "riskFloor": 2,
+  "riskFloorReasons": [
+    "safety-invariant proximity: src/monitoring/AgentWorktreeReaper.ts matches session reaper"
+  ],
+  "belowFloor": false,
+  "files": 3,
+  "loc": 561,
+  "scope": {
+    "basis": "staged-in-scope-paths-including-deleted",
+    "files": [
+      "src/monitoring/AgentWorktreeReaper.ts",
+      "src/monitoring/agentWorktreeEvaluationJob.ts",
+      "src/monitoring/agentWorktreeGit.ts"
+    ],
+    "addedLines": 510,
+    "deletedLines": 51
+  },
+  "causalAutopsy": null,
+  "classClosure": {
+    "defectClass": "unbounded-self-action",
+    "closure": "n/a",
+    "reason": "changes classification and the existing preserve step inside the reaper's existing pass; no new loop, retry or self-triggered action; cadence, maxReapsPerPass and breaker unchanged; stays dry-run"
+  },
+  "verdict": "pass"
+}

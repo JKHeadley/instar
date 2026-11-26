@@ -1,0 +1,28 @@
+{
+  "ts": "2026-11-22T21:38:52.038Z",
+  "slug": "sec172-pool-judge-lockdown",
+  "suggestedTier": 2,
+  "declaredTier": 1,
+  "riskFloor": 1,
+  "riskFloorReasons": [],
+  "belowFloor": false,
+  "files": 3,
+  "loc": 77,
+  "scope": {
+    "basis": "staged-in-scope-paths-including-deleted",
+    "files": [
+      "src/providers/adapters/anthropic-interactive-pool/README.md",
+      "src/providers/adapters/anthropic-interactive-pool/config.ts",
+      "src/providers/adapters/anthropic-interactive-pool/pool.ts"
+    ],
+    "addedLines": 59,
+    "deletedLines": 18
+  },
+  "causalAutopsy": null,
+  "classClosure": {
+    "defectClass": "unbounded-self-action",
+    "closure": "n/a",
+    "reason": "one spawn per judgment, bounded by poolSize and the existing replacement retry limit"
+  },
+  "verdict": "pass"
+}

@@ -5,7 +5,8 @@
  * (ships dark), 200 + real data when it is wired.
  */
 
-import { describe, it, expect, beforeEach } from 'vitest';
+import { afterEach, describe, it, expect, beforeEach } from 'vitest';
+import { createTempProject, type TempProject } from '../helpers/setup.js';
 import express from 'express';
 import request from 'supertest';
 import fs from 'node:fs';
@@ -16,6 +17,11 @@ import type { RouteContext } from '../../src/server/routes.js';
 import { GrowthMilestoneAnalyst, resolveGrowthSettings } from '../../src/monitoring/GrowthMilestoneAnalyst.js';
 import type { Initiative, RolloutStage } from '../../src/core/InitiativeTracker.js';
 
+const routeProjects: TempProject[] = [];
+afterEach(() => {
+  for (const project of routeProjects.splice(0)) project.cleanup();
+});
+
 function feat(id: string, stage: RolloutStage): Initiative {
   return { id, title: id, rollout: { flagPath: `monitoring.${id}`, stage } } as unknown as Initiative;
 }
@@ -24,8 +30,10 @@ function fakeTracker(initiatives: Initiative[]) {
 }
 
 function baseCtx(extra: Partial<RouteContext> = {}): RouteContext {
+  const project = createTempProject();
+  routeProjects.push(project);
   return {
-    config: { projectName: 'test', projectDir: '/tmp', stateDir: '/tmp/.instar', port: 0 } as any,
+    config: { projectName: 'test', projectDir: project.dir, stateDir: project.stateDir, port: 0 } as any,
     sessionManager: { listRunningSessions: () => [] } as any,
     state: { getJobState: () => null, getSession: () => null } as any,
     startTime: new Date(),

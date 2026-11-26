@@ -1,0 +1,56 @@
+{
+  "version": 3,
+  "slug": "circuit-breaker-test-isolation",
+  "sessionId": "fb2d9241-bc5a-479b-9443-bbce50a353bc",
+  "timestamp": "2026-11-23T23:57:53.411Z",
+  "artifactPath": "upgrades/side-effects/circuit-breaker-test-isolation.md",
+  "artifactSha256": "1fd329e74ce3157266dcf8847f0bddd3335d2664150ec71c0e976356a4710454",
+  "coveredFiles": [
+    "docs/specs/circuit-breaker-test-isolation.eli16.md",
+    "docs/specs/main-verification-test-isolation.eli16.md",
+    "tests/e2e/hybrid-search-lifecycle.test.ts",
+    "tests/e2e/llm-circuit-breaker-chokepoint-alive.test.ts",
+    "tests/e2e/session-management-e2e.test.ts",
+    "tests/helpers/realEmbeddingProvider.ts",
+    "tests/integration/hybrid-search.test.ts",
+    "tests/integration/llm-circuit-breaker-chokepoint.test.ts",
+    "tests/setup/real-embedding-cache.mjs",
+    "tests/setup/real-embedding-model.globalSetup.ts",
+    "tests/unit/grok-build-adapter-policy.test.ts",
+    "tests/unit/real-embedding-test-cache.test.ts",
+    "tests/unit/vector-search.test.ts",
+    "upgrades/next/circuit-breaker-test-isolation.md",
+    "upgrades/next/main-verification-test-isolation.md",
+    "upgrades/side-effects/circuit-breaker-test-isolation.md",
+    "upgrades/side-effects/main-verification-test-isolation.md",
+    "vitest.config.ts",
+    "vitest.e2e.config.ts",
+    "vitest.integration.config.ts"
+  ],
+  "phase": "complete",
+  "tier": 1,
+  "tierReasoning": "Reversible test-only fixture isolation and real lifecycle coverage; production cap/factory/breaker unchanged. Fresh independent review covers final artifact and complete inherited harness without altering historical traces.",
+  "eli16Path": "docs/specs/circuit-breaker-test-isolation.eli16.md",
+  "sideEffectsPath": "upgrades/side-effects/circuit-breaker-test-isolation.md",
+  "secondPass": "true",
+  "reviewerConcurred": true,
+  "toolchain": {
+    "buildSkill": {
+      "name": "build",
+      "version": null,
+      "verified": false
+    },
+    "reviewSkills": [
+      {
+        "name": "systematic-debugging",
+        "outcome": "concur",
+        "verified": false
+      }
+    ]
+  },
+  "classClosure": {
+    "defectClass": "unbounded-self-action",
+    "closure": "n/a",
+    "reason": "This is explicit test fixture initialization, stand-in subprocess calls, teardown and a reviewed artifact; it adds no autonomous controller or production retry/restart action."
+  }
+}

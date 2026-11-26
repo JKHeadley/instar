@@ -1,0 +1,38 @@
+{
+  "version": 3,
+  "slug": "ideas-review-fold",
+  "sessionId": "e89a8055-5779-4187-b7ec-972b5146fde6",
+  "timestamp": "2026-11-23T09:10:34.285Z",
+  "artifactPath": "upgrades/side-effects/ideas-review-fold.md",
+  "artifactSha256": "2f6c2d6f130938c219cad8afae70b4b25303baac041d383ac5de78619b7bbe30",
+  "coveredFiles": [
+    "dashboard/console/console.css",
+    "dashboard/console/ideas.js",
+    "docs/specs/ideas-review-fold.eli16.md",
+    "tests/unit/ecosystem/console-ideas-page.test.ts",
+    "upgrades/next/ideas-review-fold.md",
+    "upgrades/side-effects/ideas-review-fold.md"
+  ],
+  "phase": "complete",
+  "tier": 1,
+  "tierReasoning": "Narrow reversible presentation of the existing unranked band; no decisions, permissions or routes change.",
+  "eli16Path": "docs/specs/ideas-review-fold.eli16.md",
+  "sideEffectsPath": "upgrades/side-effects/ideas-review-fold.md",
+  "secondPass": "not-required",
+  "reviewerConcurred": true,
+  "toolchain": {
+    "buildSkill": {
+      "name": "instar-dev",
+      "version": "21a45a5a5f03",
+      "verified": true
+    },
+    "reviewSkills": [
+      {
+        "name": "ux-lifecycle",
+        "outcome": "concurred",
+        "verified": false,
+        "iterations": 1
+      }
+    ]
+  }
+}

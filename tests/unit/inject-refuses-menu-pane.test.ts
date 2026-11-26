@@ -91,6 +91,13 @@ describe('handleReadyAndInject: the timeout branch refuses a MENU pane', () => {
   let manager: SessionManager;
   const TMUX = 'test-codex-session';
 
+  async function injectAfterReadinessWait(): Promise<void> {
+    const injection = (manager as unknown as {
+      handleReadyAndInject: (t: string, n: string | undefined, m: string, ms: number, o?: unknown) => Promise<void>;
+    }).handleReadyAndInject(TMUX, undefined, 'the user first message', 100, {});
+    await Promise.all([injection, vi.runAllTimersAsync()]);
+  }
+
   beforeEach(() => {
     tmpDir = fs.mkdtempSync(path.join(os.tmpdir(), 'instar-inject-menu-'));
     fs.mkdirSync(path.join(tmpDir, 'state'), { recursive: true });
@@ -108,33 +115,31 @@ describe('handleReadyAndInject: the timeout branch refuses a MENU pane', () => {
     mockTmuxSessions.clear();
     mockTmuxSessions.add(TMUX);
     sendKeysInvocations.length = 0;
+    vi.useFakeTimers({ toFake: ['Date', 'setTimeout', 'clearTimeout'] });
   });
 
   afterEach(() => {
+    vi.useRealTimers();
     SafeFsExecutor.safeRmSync(tmpDir, { recursive: true, force: true, operation: 'tests/unit/inject-refuses-menu-pane.test.ts' });
   });
 
   it('does NOT type into codex\'s update menu after the readiness timeout', async () => {
     paneContent = CODEX_UPDATE_MENU;
-    // Short primary timeout; the extended wait still runs, hence the test timeout.
-    await expect((manager as unknown as {
-      handleReadyAndInject: (t: string, n: string | undefined, m: string, ms: number, o?: unknown) => Promise<void>;
-    }).handleReadyAndInject(TMUX, undefined, 'the user first message', 100, {}))
+    // Advance the real primary and extended readiness loops in virtual time.
+    await expect(injectAfterReadinessWait())
       .rejects.toThrow('Initial message injection refused for menu-bound session');
 
     // The property that keeps the session alive: nothing was typed. Any
     // send-keys here would land on `1. Update now`, which exits codex.
     expect(sendKeysInvocations).toHaveLength(0);
-  }, 60_000);
+  });
 
   it('STILL blind-injects a merely-unrecognised pane — the fallback is not disabled', async () => {
     // Guard against over-correction: the timeout branch exists for genuine
     // prompt-detection false negatives, and must keep working for them.
     paneContent = STILL_BOOTING;
-    await (manager as unknown as {
-      handleReadyAndInject: (t: string, n: string | undefined, m: string, ms: number, o?: unknown) => Promise<void>;
-    }).handleReadyAndInject(TMUX, undefined, 'the user first message', 100, {});
+    await injectAfterReadinessWait();
 
     expect(sendKeysInvocations.length).toBeGreaterThan(0);
-  }, 60_000);
+  });
 });

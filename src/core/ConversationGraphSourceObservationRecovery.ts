@@ -54,7 +54,8 @@ export class GraphSourceObservationRecoveryCoordinator {
   try{if(!validateGraphSourceObservationPlaintext(JSON.parse(bytes.toString('utf8')),capture))return {state:'held',reason:'original-observation-payload-invalid'};}
   finally{bytes.fill(0);}
   const expectedPending=new Set<string>();
-  for(const pending of o.source.recordsForRepair())if(o.source.verifyHistoricalRecord(pending)&&!pending.certificate&&!pending.cancellationCertificate&&!pending.cancellation&&!pending.erasure)expectedPending.add(pending.packet.eventId);
+  // Cheap terminal checks first: only the few still-pending rows need the full verification.
+  for(const pending of o.source.recordsForRepair())if(!pending.certificate&&!pending.cancellationCertificate&&!pending.cancellation&&!pending.erasure&&o.source.verifyHistoricalRecord(pending))expectedPending.add(pending.packet.eventId);
   const union=o.source.certifiedUnion(o.reader,o.dropped,expectedPending);
   if(union.partial||union.quarantined.length)return {state:'held',reason:'certified-source-inventory-incomplete'};
   const references:Array<{eventId:string;coreHash:string;payloadHash:string;capturedAt:string;erased:boolean}>=[];
@@ -63,7 +64,8 @@ export class GraphSourceObservationRecoveryCoordinator {
    if(known.coreType!=='source-observation')continue;
    const k=validateGraphSourceObservationCore(known.core),c=known.authorizationProof.sourceObservation;
    if(!k)continue;
-   if(!c||c.kind!=='conversation-source-observation'||!o.source.verifyHistoricalRecord(known))return {state:'held',reason:'certified-source-observation-invalid'};
+   // certifiedUnion verified most rows against their writer in this same synchronous step.
+   if(!c||c.kind!=='conversation-source-observation'||!(union.verifiedEventIds.has(known.packet.eventId)||o.source.verifyHistoricalRecord(known)))return {state:'held',reason:'certified-source-observation-invalid'};
    if(nodeKey(k.subject)!==nodeKey(core.subject)||c.producerMachineId!==capture.producerMachineId)continue;
    if(c.producerSequence===capture.producerSequence&&(c.sourceId!==capture.sourceId||c.payloadHash!==capture.payloadHash))return this.proof(record,membership,lease,'source-invalid',[],{equivocation:true},null,now);
    references.push({eventId:known.packet.eventId,coreHash:known.packet.coreHash,payloadHash:c.payloadHash,capturedAt:c.capturedAt,erased:!!known.erasure});
@@ -85,18 +87,22 @@ export class GraphSourceObservationRecoveryCoordinator {
   let payload:ReturnType<typeof validateGraphSourceSweepPayload>=null;
   try{const bytes=o.source.openVerifiedPayload(record);try{const body=JSON.parse(bytes.toString('utf8'));if(validateGraphSourceSweepPlaintext(body,capture))payload=validateGraphSourceSweepPayload(body.payload);}finally{bytes.fill(0);}}catch{return {state:'held',reason:'checkpoint-payload-unavailable'};}
   if(!payload)return {state:'held',reason:'checkpoint-payload-invalid'};
-  const pending=new Set(o.source.recordsForRepair().filter(r=>o.source.verifyHistoricalRecord(r)&&!r.certificate&&!r.cancellationCertificate&&!r.erasure).map(r=>r.packet.eventId));
+  const pending=new Set(o.source.recordsForRepair().filter(r=>!r.certificate&&!r.cancellationCertificate&&!r.erasure&&o.source.verifyHistoricalRecord(r)).map(r=>r.packet.eventId));
   const union=o.source.certifiedUnion(o.reader,o.dropped,pending);if(union.partial||union.quarantined.length)return {state:'held',reason:'certified-checkpoint-dependencies-incomplete'};
   const heads:string[]=[];let reason:GraphPendingRevalidation['reason']='ok';
   for(const known of union.records){const c=known.authorizationProof.sourceObservation;if(known.coreType!=='source-observation'||!c)continue;
    if(c.kind==='source-inventory-sweep'&&c.producerMachineId===capture.producerMachineId&&Date.parse(c.completedAt)>Date.parse(capture.completedAt)){heads.push(known.packet.eventId);reason='stale-heads';}
   }
+  // Indexed once: a per-entry scan of every union row (find + some, each computing nodeKey) was quadratic.
+  const bySourceId=new Map<string,ConversationGraphReplicationRecord>(),newest=new Map<string,Map<string,number>>();
+  for(const r of union.records){const s=r.authorizationProof.sourceObservation;if(s?.sourceId!==undefined&&!bySourceId.has(s.sourceId))bySourceId.set(s.sourceId,r);
+   if(s?.kind==='conversation-source-observation'){const bySubject=newest.get(s.producerMachineId)??new Map<string,number>(),k=nodeKey(s.subject);newest.set(s.producerMachineId,bySubject);if(!(s.producerSequence<=(bySubject.get(k)??-Infinity)))bySubject.set(k,s.producerSequence);}}
   for(const entry of payload.entries){if(entry.state!=='observed')continue;
-   const known=union.records.find(r=>r.authorizationProof.sourceObservation?.sourceId===entry.sourceId),c=known?.authorizationProof.sourceObservation;
+   const known=bySourceId.get(entry.sourceId),c=known?.authorizationProof.sourceObservation;
    if(graphSourceObservationIsErased(o.stateDir,record.packet.agentId,entry.ref)||known?.erasure){reason='erased-source';continue;}
-   if(!known||c?.kind!=='conversation-source-observation'||c.producerMachineId!==capture.producerMachineId||c.payloadHash!==entry.payloadHash||nodeKey(c.subject)!==nodeKey(entry.ref)||!o.source.verifyHistoricalRecord(known))return {state:'held',reason:'certified-checkpoint-row-unavailable'};
+   if(!known||c?.kind!=='conversation-source-observation'||c.producerMachineId!==capture.producerMachineId||c.payloadHash!==entry.payloadHash||nodeKey(c.subject)!==nodeKey(entry.ref)||!(union.verifiedEventIds.has(known.packet.eventId)||o.source.verifyHistoricalRecord(known)))return {state:'held',reason:'certified-checkpoint-row-unavailable'};
    heads.push(known.packet.eventId);try{const bytes=o.source.openVerifiedPayload(known);bytes.fill(0);}catch{return {state:'held',reason:'certified-checkpoint-row-unreadable'};}
-   if(union.records.some(r=>{const newer=r.authorizationProof.sourceObservation;return newer?.kind==='conversation-source-observation'&&newer.producerMachineId===capture.producerMachineId&&nodeKey(newer.subject)===nodeKey(entry.ref)&&newer.producerSequence>c.producerSequence;}))reason='stale-heads';
+   if((newest.get(capture.producerMachineId)?.get(nodeKey(entry.ref))??-Infinity)>c.producerSequence)reason='stale-heads';
   }
   heads.sort();if(reason!=='ok')return this.proof(record,membership,lease,reason,heads,{inventoryHash:capture.inventoryHash,heads},null,now);
   let rewrap:GraphBundleRewrap;try{rewrap=o.source.rewrapVerifiedPayload(record,membership,o.machineId,o.signingPrivateKey,new Date(now).toISOString());}catch{return {state:'held',reason:'checkpoint-rewrap-unavailable'};}
