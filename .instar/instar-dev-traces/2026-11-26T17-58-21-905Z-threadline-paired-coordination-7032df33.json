@@ -1,0 +1,26 @@
+{
+  "version": 2,
+  "slug": "threadline-paired-coordination",
+  "sessionId": "b3d2cf8a-9b5d-468b-a50b-70ebf11e9e5c",
+  "timestamp": "2026-11-26T17:58:21.905Z",
+  "artifactPath": "upgrades/side-effects/threadline-paired-coordination.md",
+  "artifactSha256": "b467dffc5d6400ca811ebe73fb48c00688adcfb4961df9331cd48bf6a67de324",
+  "coveredFiles": [
+    "docs/specs/threadline-paired-coordination.eli16.md",
+    "src/threadline/pairedCoordinationDelivery.ts",
+    "src/threadline/pairedCoordinationGrantStore.ts",
+    "src/threadline/pairedCoordinationPinSurface.ts",
+    "src/threadline/pairedCoordinationPolicy.ts",
+    "tests/integration/paired-coordination-dark.test.ts",
+    "tests/unit/paired-coordination-policy.test.ts",
+    "upgrades/next/threadline-paired-coordination.md",
+    "upgrades/side-effects/threadline-paired-coordination.md"
+  ],
+  "phase": "complete",
+  "tier": 1,
+  "tierReasoning": "Isolated integration with no mounted routes, external transport or active grants",
+  "eli16Path": "docs/specs/threadline-paired-coordination.eli16.md",
+  "sideEffectsPath": "upgrades/side-effects/threadline-paired-coordination.md",
+  "secondPass": "true",
+  "reviewerConcurred": true
+}

@@ -1,5 +1,5 @@
 import { expect, it, vi } from 'vitest';
-import { createPairedCoordinationPolicy, pairedCoordinationGrantDigest } from '../../src/threadline/pairedCoordinationPolicy.js';
+import { createPairedCoordinationPolicy } from '../../src/threadline/pairedCoordinationPolicy.js';
 
 const key = 'a'.repeat(32) + 'b'.repeat(32);
 const fp = key.slice(0, 32);
@@ -8,7 +8,6 @@ const action = { coordinationId: 'handoff-1', messageDigest: 'e'.repeat(64) };
 const sender = { operatorId: 'operator-1', ownerRevision: 'revision-1' };
 
 function fixture() {
-  const change = { ...sender, expectedRevision: 0, action: 'allow' as const };
   const scope = 'threadline.own-paired-agents.work-coordination.v1' as const;
   const state = {
     sender, blocked: false, work: { ...action, recipientKeyHex: key },
@@ -16,12 +15,8 @@ function fixture() {
     grant: { ...sender, scope, revision: 1, state: 'allowed' as 'allowed' | 'revoked' },
   };
   const readRecipient = vi.fn(() => state);
-  const readPinApproval = vi.fn((authorizationId: string) => authorizationId === 'pin-approval-1' ? {
-    authorizationId, operatorId: sender.operatorId, requestDigest: pairedCoordinationGrantDigest(change),
-  } : null);
-  const commitGrantChange = vi.fn(() => true);
-  const deps = { readRecipient, readPinApproval, commitGrantChange };
-  return { policy: createPairedCoordinationPolicy({ ...deps, enabled: true }), deps, state, change };
+  const deps = { readRecipient };
+  return { policy: createPairedCoordinationPolicy({ ...deps, enabled: true }), deps, state };
 }
 
 it('is off by default and accepts only an exact authenticated recipient with an active grant', () => {
@@ -47,14 +42,4 @@ it('checks current membership, explicit blocks, and revocation for each send', (
   f.state.blocked = false;
   f.state.grant.state = 'revoked';
   expect(f.policy.admitsWorkCoordination(recipient, action)).toBe(false);
-});
-
-it('binds a PIN authorization to one exact grant change and leaves consumption to the serialized writer', () => {
-  const f = fixture();
-  expect(f.policy.changeGrant(f.change, 'caller-says-yes')).toBe(false);
-  expect(f.policy.changeGrant({ ...f.change, expectedRevision: 1 }, 'pin-approval-1')).toBe(false);
-  expect(f.policy.changeGrant({ ...f.change, action: 'revoke' }, 'pin-approval-1')).toBe(false);
-  expect(f.deps.commitGrantChange).not.toHaveBeenCalled();
-  expect(f.policy.changeGrant(f.change, 'pin-approval-1')).toBe(true);
-  expect(f.deps.commitGrantChange).toHaveBeenCalledOnce();
 });

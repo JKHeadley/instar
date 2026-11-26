@@ -4,4 +4,4 @@ An agent can look up its peers without an approval prompt. Looking someone up an
 
 The proposed permission lets your own paired agents send work coordination messages to one another. You would grant it through one owner PIN approval and could revoke it through the same owner controls. Before each send, the server must confirm both agents still belong to you, the pairing still matches the recipient's full authenticated key, and this permission is still active. An explicit block still wins. The ordinary checks on message content and on the Threadline transport still apply.
 
-The rule currently runs only in tests. It creates no live permission or message path. A separate verified owner membership source and a durable owner approval writer must be connected before it can be offered.
+The rule currently runs only in tests. It creates no live permission or message path. In a disposable server, the owner PIN endpoint can create or revoke the permission, and the send check compares the actual outgoing bytes against the work record. Before offering this in the running app, the server still needs to connect verified owner membership and the final authenticated transport.

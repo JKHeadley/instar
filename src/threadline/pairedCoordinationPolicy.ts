@@ -1,15 +1,15 @@
 import { createHash } from 'node:crypto';
 import type { PairingState } from './AgentTrustManager.js';
 
-const scope = 'threadline.own-paired-agents.work-coordination.v1' as const;
+export const PAIRED_COORDINATION_KIND = 'threadline.own-paired-agents.work-coordination.v1' as const;
 export const PAIRED_COORDINATION_APPROVAL = 'Allow my own paired agents to message each other for work coordination. This applies only while both agents belong to me and their pairing is current. I can turn it off at any time.';
 
-interface OperatorBinding {
+export interface OperatorBinding {
   operatorId: string;
   ownerRevision: string;
 }
-interface Grant extends OperatorBinding {
-  scope: typeof scope;
+export interface Grant extends OperatorBinding {
+  scope: typeof PAIRED_COORDINATION_KIND;
   revision: number;
   state: 'allowed' | 'revoked';
 }
@@ -19,11 +19,11 @@ interface Peer extends OperatorBinding {
   pairedKeyHex: string;
   pairingState: PairingState;
 }
-interface GrantChange extends OperatorBinding {
+export interface GrantChange extends OperatorBinding {
   expectedRevision: number;
   action: 'allow' | 'revoke';
 }
-interface PinApproval {
+export interface PinApproval {
   authorizationId: string;
   operatorId: string;
   requestDigest: string;
@@ -39,7 +39,7 @@ function sameOperator(a: OperatorBinding, b: OperatorBinding): boolean {
 
 export function pairedCoordinationGrantDigest(change: GrantChange): string {
   return createHash('sha256').update(JSON.stringify([
-    scope, change.operatorId, change.ownerRevision, change.expectedRevision, change.action,
+    PAIRED_COORDINATION_KIND, change.operatorId, change.ownerRevision, change.expectedRevision, change.action,
   ])).digest('hex');
 }
 
@@ -52,10 +52,6 @@ export function createPairedCoordinationPolicy(deps: {
     /** A verified work record bound to the exact outgoing message and full recipient key. */
     work: { coordinationId: string; messageDigest: string; recipientKeyHex: string };
   } | null;
-  /** This is the control-plane owner PIN approval, scoped to the exact change digest. */
-  readPinApproval: (authorizationId: string) => PinApproval | null;
-  /** Atomically recheck owner revision and expected grant revision, consume the approval and record the change. */
-  commitGrantChange: (change: Readonly<GrantChange>, approval: Readonly<PinApproval>) => boolean;
 }) {
   return {
     admitsWorkCoordination(recipient: Readonly<{ fingerprint: string; authenticatedKeyHex: string }>,
@@ -66,7 +62,7 @@ export function createPairedCoordinationPolicy(deps: {
         || typeof action?.coordinationId !== 'string' || !workId.test(action.coordinationId)
         || typeof action.messageDigest !== 'string' || !publicKey.test(action.messageDigest)) return false;
       const current = deps.readRecipient(recipient.fingerprint, action.coordinationId);
-      if (!current || current.blocked || current.grant.scope !== scope || current.grant.state !== 'allowed'
+      if (!current || current.blocked || current.grant.scope !== PAIRED_COORDINATION_KIND || current.grant.state !== 'allowed'
         || !Number.isSafeInteger(current.grant.revision) || current.grant.revision < 1) return false;
       const { sender, peer, grant, work } = current;
       return work.coordinationId === action.coordinationId && work.messageDigest === action.messageDigest
@@ -76,15 +72,5 @@ export function createPairedCoordinationPolicy(deps: {
         && recipient.authenticatedKeyHex === peer.pairedKeyHex;
     },
 
-    changeGrant(input: GrantChange, authorizationId: string): boolean {
-      const change = Object.freeze({ ...input });
-      if (deps.enabled !== true || !change.operatorId || !change.ownerRevision
-        || !Number.isSafeInteger(change.expectedRevision) || change.expectedRevision < 0
-        || (change.action !== 'allow' && change.action !== 'revoke')) return false;
-      const proof = deps.readPinApproval(authorizationId);
-      if (!proof || !proof.authorizationId || proof.authorizationId !== authorizationId
-        || proof.operatorId !== change.operatorId || proof.requestDigest !== pairedCoordinationGrantDigest(change)) return false;
-      return deps.commitGrantChange(change, Object.freeze({ ...proof }));
-    },
   };
 }

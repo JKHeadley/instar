@@ -1,0 +1,27 @@
+{
+  "ts": "2026-11-26T18:00:16.563Z",
+  "slug": "threadline-paired-coordination",
+  "suggestedTier": 2,
+  "declaredTier": 1,
+  "riskFloor": 2,
+  "riskFloorReasons": [
+    "new capability: new route (router.<verb>() added"
+  ],
+  "belowFloor": true,
+  "files": 4,
+  "loc": 158,
+  "scope": {
+    "basis": "staged-in-scope-paths-including-deleted",
+    "files": [
+      "src/threadline/pairedCoordinationDelivery.ts",
+      "src/threadline/pairedCoordinationGrantStore.ts",
+      "src/threadline/pairedCoordinationPinSurface.ts",
+      "src/threadline/pairedCoordinationPolicy.ts"
+    ],
+    "addedLines": 136,
+    "deletedLines": 22
+  },
+  "causalAutopsy": null,
+  "classClosure": null,
+  "verdict": "pass"
+}
