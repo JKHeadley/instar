@@ -3833,6 +3833,8 @@ export interface ExternalServicePermissions {
 // ── Server Configuration ────────────────────────────────────────────
 
 export interface InstarConfig {
+  /** Allows the ordered publication receiver when an independent authority is configured. Off by default. */
+  fencedPublication?: { enabled?: boolean };
   /** Owner-only Needs You projection. Enabled explicitly during acceptance. */
   needsYou?: { ownerAdmission?: { enabled?: boolean } };
   /**

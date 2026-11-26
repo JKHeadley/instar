@@ -1,0 +1,25 @@
+{
+  "version": 2,
+  "slug": "ordered-publication-witness",
+  "sessionId": "dd2f336e-e8f7-40b3-97e3-09d19139bfa6",
+  "timestamp": "2026-11-26T16:13:06.717Z",
+  "artifactPath": "upgrades/side-effects/ordered-publication-witness.md",
+  "artifactSha256": "b63332c14ac7314feac4567ebafe88529d4d7e2262913fd96ebec3273c762166",
+  "coveredFiles": [
+    "src/core/OrderedPublicationGitRead.ts",
+    "src/core/OrderedWitnessObserver.ts",
+    "src/core/OrderedWitnessSnapshotStore.ts",
+    "tests/integration/first-phone-slot-fence.test.ts",
+    "tests/integration/ordered-publication-git-read.test.ts",
+    "upgrades/eli16/ordered-publication-witness.md",
+    "upgrades/next/ordered-publication-witness.md",
+    "upgrades/side-effects/ordered-publication-witness.md"
+  ],
+  "phase": "complete",
+  "tier": 1,
+  "tierReasoning": "Dark observer and candidate retention, with no live transport or registry path.",
+  "eli16Path": "upgrades/eli16/ordered-publication-witness.md",
+  "sideEffectsPath": "upgrades/side-effects/ordered-publication-witness.md",
+  "secondPass": "not-required",
+  "reviewerConcurred": null
+}

@@ -1,0 +1,24 @@
+{
+  "ts": "2026-11-26T10:45:00.812Z",
+  "slug": "mobile-ingress-receiver",
+  "suggestedTier": 2,
+  "declaredTier": 1,
+  "riskFloor": 1,
+  "riskFloorReasons": [],
+  "belowFloor": false,
+  "files": 3,
+  "loc": 125,
+  "scope": {
+    "basis": "staged-in-scope-paths-including-deleted",
+    "files": [
+      "src/core/FencedPublicationStore.ts",
+      "src/core/MobileIngressPublication.ts",
+      "src/core/MobileIngressReceiver.ts"
+    ],
+    "addedLines": 101,
+    "deletedLines": 24
+  },
+  "causalAutopsy": null,
+  "classClosure": null,
+  "verdict": "pass"
+}

@@ -1,0 +1,23 @@
+{
+  "version": 2,
+  "slug": "ordered-publication-witness",
+  "sessionId": "dd2f336e-e8f7-40b3-97e3-09d19139bfa6",
+  "timestamp": "2026-11-26T16:19:25.544Z",
+  "artifactPath": "upgrades/side-effects/ordered-publication-witness.md",
+  "artifactSha256": "4660aa4c7d84119cf7ceb084d6f430c8fe0d975aed07756602cf8d1466990c11",
+  "coveredFiles": [
+    "src/core/FirstPhoneGitCandidateReader.ts",
+    "src/core/FirstPhoneSlotDecision.ts",
+    "tests/integration/first-phone-git-candidate.test.ts",
+    "upgrades/eli16/ordered-publication-witness.md",
+    "upgrades/next/ordered-publication-witness.md",
+    "upgrades/side-effects/ordered-publication-witness.md"
+  ],
+  "phase": "complete",
+  "tier": 1,
+  "tierReasoning": "Read-only dark candidate source. No route, mirror fetch or registry effects.",
+  "eli16Path": "upgrades/eli16/ordered-publication-witness.md",
+  "sideEffectsPath": "upgrades/side-effects/ordered-publication-witness.md",
+  "secondPass": "not-required",
+  "reviewerConcurred": null
+}

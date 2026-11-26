@@ -25,7 +25,6 @@ import fs from 'node:fs';
 import type { AppConversationService } from '../core/AppConversationService.js';
 import type { DeviceSignedOrigin, MediaMessageEvent } from '../core/AppConversationStore.js';
 import { buildAppConversationRecordData } from '../core/AppConversationsReplicatedStore.js';
-import { sha256Hex } from '../core/AppRecordSignatures.js';
 import {
   MAX_ATTACHMENTS, MAX_MESSAGE_BYTES, MAX_TRANSCRIPT_CHARS, attachmentIdFor, displayName, effectiveKind, type AppAttachment, type MediaKind,
 } from '../core/appMediaTypes.js';
@@ -53,10 +52,8 @@ export function parseSignedAttachments(raw: unknown): SignedAttachment[] | null 
   return out;
 }
 
-/** The per-file parts of the idempotency hash (§4.3): `sha256:size:declaredKind:declaredType:filename:transcript-hash`. */
-export function signedFileHashParts(files: ReadonlyArray<SignedAttachment>): string[] {
-  return files.map((a) => `${a.sha256}:${a.size}:${a.declaredKind}:${a.declaredType}:${a.filename}:${sha256Hex(a.transcript ?? '')}`);
-}
+// E2E-PAIRING: EXEMPT — moves the existing hash projection to a pure module with byte-identical output; routes and behavior are unchanged.
+export { signedFileHashParts } from '../core/appMediaTypes.js';
 
 export type RouteRefusal = { status: number; body: Record<string, unknown> };
 

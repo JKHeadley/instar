@@ -1,0 +1,553 @@
+{
+  "format": "synthetic-chief-decision-frontier-v1",
+  "signature": {
+    "algorithm": "Ed25519",
+    "domain": "instar-fixture-chief-decision-v1",
+    "publicKeySpkiBase64": "MCowBQYDK2VwAyEA87ICMj2951JiU3ky7xCq9AGN53pFCWU35xY3a2SOmmw="
+  },
+  "activeGeneration": 2,
+  "attemptedRecordBase64": "eyJvcGVyYXRpb25JZCI6ImZpeHR1cmUtYXR0ZW1wdC0wMDAyIiwic2VxIjoyLCJ0eXBlIjoic3ludGhldGljLWNoaWVmLWRlY2lzaW9uIn0K",
+  "cases": [
+    {
+      "name": "unknown-outcome-in-complete-prefix",
+      "input": {
+        "manifest": {
+          "kind": "activation-manifest",
+          "payload": {
+            "agent": "synthetic-agent",
+            "store": "chief-decision-frontier",
+            "generation": 2,
+            "predecessorSealDigest": "2a578674f2c2d7dcbafc478c117ec28c2a3d054b49efa71037d0c2b9bf9530f0",
+            "successor": {
+              "stream": "synthetic-chief-stream",
+              "incarnation": "next-incarnation",
+              "writer": "next-writer",
+              "leaseEpoch": 42
+            },
+            "unresolvedIntentDigest": "855a453869e9fade3687b9f5d894a9b0f034819d702f24ea10388fbc06c9a802"
+          },
+          "signatureBase64": "s14yrF4gpXGd5/scRlIATY9vQwj9dZp5Ai73nDtFKlNOKJ/TBfhkQCtpyjAcvd33fWLJy/Qca3FECUq03rvBCQ=="
+        },
+        "seal": {
+          "kind": "predecessor-seal",
+          "payload": {
+            "agent": "synthetic-agent",
+            "store": "chief-decision-frontier",
+            "predecessor": {
+              "stream": "synthetic-chief-stream",
+              "incarnation": "previous-incarnation",
+              "writer": "previous-writer",
+              "leaseEpoch": 41
+            },
+            "terminalSequence": 1,
+            "prefixDigest": "1e40841cb572e42895354a3dbea23d528add441fa72e9d95417b58ff63875c79",
+            "digestFormat": "instar-journal-prefix-v1",
+            "transitionId": "synthetic-lease-transition-41-to-42"
+          },
+          "signatureBase64": "zmmkkbm6M9kCiMiieWCab9KfrfrlDaS+Ox84kMXaHd+XCxXcKM1TS/XM5YpJy+DTq1ASefGIrAZPESD1jKTJBA=="
+        },
+        "visiblePrefixBase64": "eyJzZXEiOjEsInR5cGUiOiJzeW50aGV0aWMtcHJpb3ItcmVjb3JkIn0K",
+        "unresolvedIntent": {
+          "kind": "unresolved-intent",
+          "payload": {
+            "agent": "synthetic-agent",
+            "store": "chief-decision-frontier",
+            "predecessor": {
+              "stream": "synthetic-chief-stream",
+              "incarnation": "previous-incarnation",
+              "writer": "previous-writer",
+              "leaseEpoch": 41
+            },
+            "operationId": "fixture-attempt-0002",
+            "attemptedSequence": 2,
+            "attemptedRecordDigest": "c51fbe091ec08c7f2b8b62dff99f2fccce366d034a3cbf7a39ed7f22e958f7ed"
+          },
+          "signatureBase64": "hsRqRlsBT+N9T/vPg9i0PD/YvLRlwJgAG0Aet0v5F+taMYdA2/Dzwe+g3R0e1UVRq1cRmdLa2DN3ImjoWd2cDA=="
+        },
+        "reconciliation": null
+      },
+      "expected": {
+        "status": "pending",
+        "mayPrepare": false
+      }
+    },
+    {
+      "name": "exact-authenticated-reconciliation",
+      "input": {
+        "manifest": {
+          "kind": "activation-manifest",
+          "payload": {
+            "agent": "synthetic-agent",
+            "store": "chief-decision-frontier",
+            "generation": 2,
+            "predecessorSealDigest": "03354c37a4a8d6471ed5e8bd601839cd59770e86d88ae1775827c16c9643ab41",
+            "successor": {
+              "stream": "synthetic-chief-stream",
+              "incarnation": "next-incarnation",
+              "writer": "next-writer",
+              "leaseEpoch": 42
+            },
+            "unresolvedIntentDigest": "855a453869e9fade3687b9f5d894a9b0f034819d702f24ea10388fbc06c9a802"
+          },
+          "signatureBase64": "zHyuwN0Kb+NYwf2ORalv9xJmCP9Ol2/5juaCXSu4kEJYWpgmaOn1SbjeDMQAh/iEqptJdIjzI3EUc+7Em+hZAg=="
+        },
+        "seal": {
+          "kind": "predecessor-seal",
+          "payload": {
+            "agent": "synthetic-agent",
+            "store": "chief-decision-frontier",
+            "predecessor": {
+              "stream": "synthetic-chief-stream",
+              "incarnation": "previous-incarnation",
+              "writer": "previous-writer",
+              "leaseEpoch": 41
+            },
+            "terminalSequence": 2,
+            "prefixDigest": "a5cb7e29468f1a968b8e3a930fc21c3d717027369be32899abcaba9d319b1a86",
+            "digestFormat": "instar-journal-prefix-v1",
+            "transitionId": "synthetic-lease-transition-41-to-42"
+          },
+          "signatureBase64": "cAXEjz75EOaZM4MYeKSG13oz50Dts7GBdgK6e2pSMVMSpDLi8tw4qg3fbaGgGfaJKdN+kwD5Iqh+uWijJ7b2CQ=="
+        },
+        "visiblePrefixBase64": "eyJzZXEiOjEsInR5cGUiOiJzeW50aGV0aWMtcHJpb3ItcmVjb3JkIn0KeyJvcGVyYXRpb25JZCI6ImZpeHR1cmUtYXR0ZW1wdC0wMDAyIiwic2VxIjoyLCJ0eXBlIjoic3ludGhldGljLWNoaWVmLWRlY2lzaW9uIn0K",
+        "unresolvedIntent": {
+          "kind": "unresolved-intent",
+          "payload": {
+            "agent": "synthetic-agent",
+            "store": "chief-decision-frontier",
+            "predecessor": {
+              "stream": "synthetic-chief-stream",
+              "incarnation": "previous-incarnation",
+              "writer": "previous-writer",
+              "leaseEpoch": 41
+            },
+            "operationId": "fixture-attempt-0002",
+            "attemptedSequence": 2,
+            "attemptedRecordDigest": "c51fbe091ec08c7f2b8b62dff99f2fccce366d034a3cbf7a39ed7f22e958f7ed"
+          },
+          "signatureBase64": "hsRqRlsBT+N9T/vPg9i0PD/YvLRlwJgAG0Aet0v5F+taMYdA2/Dzwe+g3R0e1UVRq1cRmdLa2DN3ImjoWd2cDA=="
+        },
+        "reconciliation": {
+          "kind": "exact-reconciliation",
+          "payload": {
+            "agent": "synthetic-agent",
+            "store": "chief-decision-frontier",
+            "predecessor": {
+              "stream": "synthetic-chief-stream",
+              "incarnation": "previous-incarnation",
+              "writer": "previous-writer",
+              "leaseEpoch": 41
+            },
+            "successorGeneration": 2,
+            "operationId": "fixture-attempt-0002",
+            "attemptedSequence": 2,
+            "recordDigest": "c51fbe091ec08c7f2b8b62dff99f2fccce366d034a3cbf7a39ed7f22e958f7ed",
+            "intentDigest": "855a453869e9fade3687b9f5d894a9b0f034819d702f24ea10388fbc06c9a802",
+            "sealDigest": "03354c37a4a8d6471ed5e8bd601839cd59770e86d88ae1775827c16c9643ab41",
+            "manifestDigest": "2f5d1e617846221ecb7794a9825526dde31cb135aa911f1d25999d4fe7ee6886"
+          },
+          "signatureBase64": "MFYYzUr50xnOVMtedj9IK41GSv6zhXeM0tSZK3GOZx+6ewpwm7HHbtrRmvlhpdAcv99MBlf5DGD9172ePbcCAg=="
+        }
+      },
+      "expected": {
+        "status": "reconciled",
+        "mayPrepare": true
+      }
+    },
+    {
+      "name": "signed-but-mismatched-record-digest",
+      "input": {
+        "manifest": {
+          "kind": "activation-manifest",
+          "payload": {
+            "agent": "synthetic-agent",
+            "store": "chief-decision-frontier",
+            "generation": 2,
+            "predecessorSealDigest": "03354c37a4a8d6471ed5e8bd601839cd59770e86d88ae1775827c16c9643ab41",
+            "successor": {
+              "stream": "synthetic-chief-stream",
+              "incarnation": "next-incarnation",
+              "writer": "next-writer",
+              "leaseEpoch": 42
+            },
+            "unresolvedIntentDigest": "855a453869e9fade3687b9f5d894a9b0f034819d702f24ea10388fbc06c9a802"
+          },
+          "signatureBase64": "zHyuwN0Kb+NYwf2ORalv9xJmCP9Ol2/5juaCXSu4kEJYWpgmaOn1SbjeDMQAh/iEqptJdIjzI3EUc+7Em+hZAg=="
+        },
+        "seal": {
+          "kind": "predecessor-seal",
+          "payload": {
+            "agent": "synthetic-agent",
+            "store": "chief-decision-frontier",
+            "predecessor": {
+              "stream": "synthetic-chief-stream",
+              "incarnation": "previous-incarnation",
+              "writer": "previous-writer",
+              "leaseEpoch": 41
+            },
+            "terminalSequence": 2,
+            "prefixDigest": "a5cb7e29468f1a968b8e3a930fc21c3d717027369be32899abcaba9d319b1a86",
+            "digestFormat": "instar-journal-prefix-v1",
+            "transitionId": "synthetic-lease-transition-41-to-42"
+          },
+          "signatureBase64": "cAXEjz75EOaZM4MYeKSG13oz50Dts7GBdgK6e2pSMVMSpDLi8tw4qg3fbaGgGfaJKdN+kwD5Iqh+uWijJ7b2CQ=="
+        },
+        "visiblePrefixBase64": "eyJzZXEiOjEsInR5cGUiOiJzeW50aGV0aWMtcHJpb3ItcmVjb3JkIn0KeyJvcGVyYXRpb25JZCI6ImZpeHR1cmUtYXR0ZW1wdC0wMDAyIiwic2VxIjoyLCJ0eXBlIjoic3ludGhldGljLWNoaWVmLWRlY2lzaW9uIn0K",
+        "unresolvedIntent": {
+          "kind": "unresolved-intent",
+          "payload": {
+            "agent": "synthetic-agent",
+            "store": "chief-decision-frontier",
+            "predecessor": {
+              "stream": "synthetic-chief-stream",
+              "incarnation": "previous-incarnation",
+              "writer": "previous-writer",
+              "leaseEpoch": 41
+            },
+            "operationId": "fixture-attempt-0002",
+            "attemptedSequence": 2,
+            "attemptedRecordDigest": "c51fbe091ec08c7f2b8b62dff99f2fccce366d034a3cbf7a39ed7f22e958f7ed"
+          },
+          "signatureBase64": "hsRqRlsBT+N9T/vPg9i0PD/YvLRlwJgAG0Aet0v5F+taMYdA2/Dzwe+g3R0e1UVRq1cRmdLa2DN3ImjoWd2cDA=="
+        },
+        "reconciliation": {
+          "kind": "exact-reconciliation",
+          "payload": {
+            "agent": "synthetic-agent",
+            "store": "chief-decision-frontier",
+            "predecessor": {
+              "stream": "synthetic-chief-stream",
+              "incarnation": "previous-incarnation",
+              "writer": "previous-writer",
+              "leaseEpoch": 41
+            },
+            "successorGeneration": 2,
+            "operationId": "fixture-attempt-0002",
+            "attemptedSequence": 2,
+            "recordDigest": "9d6f965ac832e40a5df6c06afe983e3b449c07b843ff51ce76204de05c690d11",
+            "intentDigest": "855a453869e9fade3687b9f5d894a9b0f034819d702f24ea10388fbc06c9a802",
+            "sealDigest": "03354c37a4a8d6471ed5e8bd601839cd59770e86d88ae1775827c16c9643ab41",
+            "manifestDigest": "2f5d1e617846221ecb7794a9825526dde31cb135aa911f1d25999d4fe7ee6886"
+          },
+          "signatureBase64": "AmsQ4tkza/eV3uh15AxrA0qP3ihyBlcfCYvYDyxiIBW8JX2SPkVPb7LVcW0JFEFnbw/60/Tq4pF5ckzgSOkDCg=="
+        }
+      },
+      "expected": {
+        "status": "pending",
+        "mayPrepare": false
+      }
+    },
+    {
+      "name": "signed-but-replayed-generation",
+      "input": {
+        "manifest": {
+          "kind": "activation-manifest",
+          "payload": {
+            "agent": "synthetic-agent",
+            "store": "chief-decision-frontier",
+            "generation": 2,
+            "predecessorSealDigest": "03354c37a4a8d6471ed5e8bd601839cd59770e86d88ae1775827c16c9643ab41",
+            "successor": {
+              "stream": "synthetic-chief-stream",
+              "incarnation": "next-incarnation",
+              "writer": "next-writer",
+              "leaseEpoch": 42
+            },
+            "unresolvedIntentDigest": "855a453869e9fade3687b9f5d894a9b0f034819d702f24ea10388fbc06c9a802"
+          },
+          "signatureBase64": "zHyuwN0Kb+NYwf2ORalv9xJmCP9Ol2/5juaCXSu4kEJYWpgmaOn1SbjeDMQAh/iEqptJdIjzI3EUc+7Em+hZAg=="
+        },
+        "seal": {
+          "kind": "predecessor-seal",
+          "payload": {
+            "agent": "synthetic-agent",
+            "store": "chief-decision-frontier",
+            "predecessor": {
+              "stream": "synthetic-chief-stream",
+              "incarnation": "previous-incarnation",
+              "writer": "previous-writer",
+              "leaseEpoch": 41
+            },
+            "terminalSequence": 2,
+            "prefixDigest": "a5cb7e29468f1a968b8e3a930fc21c3d717027369be32899abcaba9d319b1a86",
+            "digestFormat": "instar-journal-prefix-v1",
+            "transitionId": "synthetic-lease-transition-41-to-42"
+          },
+          "signatureBase64": "cAXEjz75EOaZM4MYeKSG13oz50Dts7GBdgK6e2pSMVMSpDLi8tw4qg3fbaGgGfaJKdN+kwD5Iqh+uWijJ7b2CQ=="
+        },
+        "visiblePrefixBase64": "eyJzZXEiOjEsInR5cGUiOiJzeW50aGV0aWMtcHJpb3ItcmVjb3JkIn0KeyJvcGVyYXRpb25JZCI6ImZpeHR1cmUtYXR0ZW1wdC0wMDAyIiwic2VxIjoyLCJ0eXBlIjoic3ludGhldGljLWNoaWVmLWRlY2lzaW9uIn0K",
+        "unresolvedIntent": {
+          "kind": "unresolved-intent",
+          "payload": {
+            "agent": "synthetic-agent",
+            "store": "chief-decision-frontier",
+            "predecessor": {
+              "stream": "synthetic-chief-stream",
+              "incarnation": "previous-incarnation",
+              "writer": "previous-writer",
+              "leaseEpoch": 41
+            },
+            "operationId": "fixture-attempt-0002",
+            "attemptedSequence": 2,
+            "attemptedRecordDigest": "c51fbe091ec08c7f2b8b62dff99f2fccce366d034a3cbf7a39ed7f22e958f7ed"
+          },
+          "signatureBase64": "hsRqRlsBT+N9T/vPg9i0PD/YvLRlwJgAG0Aet0v5F+taMYdA2/Dzwe+g3R0e1UVRq1cRmdLa2DN3ImjoWd2cDA=="
+        },
+        "reconciliation": {
+          "kind": "exact-reconciliation",
+          "payload": {
+            "agent": "synthetic-agent",
+            "store": "chief-decision-frontier",
+            "predecessor": {
+              "stream": "synthetic-chief-stream",
+              "incarnation": "previous-incarnation",
+              "writer": "previous-writer",
+              "leaseEpoch": 41
+            },
+            "successorGeneration": 1,
+            "operationId": "fixture-attempt-0002",
+            "attemptedSequence": 2,
+            "recordDigest": "c51fbe091ec08c7f2b8b62dff99f2fccce366d034a3cbf7a39ed7f22e958f7ed",
+            "intentDigest": "855a453869e9fade3687b9f5d894a9b0f034819d702f24ea10388fbc06c9a802",
+            "sealDigest": "03354c37a4a8d6471ed5e8bd601839cd59770e86d88ae1775827c16c9643ab41",
+            "manifestDigest": "2f5d1e617846221ecb7794a9825526dde31cb135aa911f1d25999d4fe7ee6886"
+          },
+          "signatureBase64": "jW8tEDVDuIrP1+YB+ZI+krhzmTf8VRk9DVGPNBgrABY1Z0q4bDUg9LX4h01brQeV6Hr/JiibKKOqvteehdvfBw=="
+        }
+      },
+      "expected": {
+        "status": "pending",
+        "mayPrepare": false
+      }
+    },
+    {
+      "name": "readable-prefix-delayed",
+      "input": {
+        "manifest": {
+          "kind": "activation-manifest",
+          "payload": {
+            "agent": "synthetic-agent",
+            "store": "chief-decision-frontier",
+            "generation": 2,
+            "predecessorSealDigest": "03354c37a4a8d6471ed5e8bd601839cd59770e86d88ae1775827c16c9643ab41",
+            "successor": {
+              "stream": "synthetic-chief-stream",
+              "incarnation": "next-incarnation",
+              "writer": "next-writer",
+              "leaseEpoch": 42
+            },
+            "unresolvedIntentDigest": "855a453869e9fade3687b9f5d894a9b0f034819d702f24ea10388fbc06c9a802"
+          },
+          "signatureBase64": "zHyuwN0Kb+NYwf2ORalv9xJmCP9Ol2/5juaCXSu4kEJYWpgmaOn1SbjeDMQAh/iEqptJdIjzI3EUc+7Em+hZAg=="
+        },
+        "seal": {
+          "kind": "predecessor-seal",
+          "payload": {
+            "agent": "synthetic-agent",
+            "store": "chief-decision-frontier",
+            "predecessor": {
+              "stream": "synthetic-chief-stream",
+              "incarnation": "previous-incarnation",
+              "writer": "previous-writer",
+              "leaseEpoch": 41
+            },
+            "terminalSequence": 2,
+            "prefixDigest": "a5cb7e29468f1a968b8e3a930fc21c3d717027369be32899abcaba9d319b1a86",
+            "digestFormat": "instar-journal-prefix-v1",
+            "transitionId": "synthetic-lease-transition-41-to-42"
+          },
+          "signatureBase64": "cAXEjz75EOaZM4MYeKSG13oz50Dts7GBdgK6e2pSMVMSpDLi8tw4qg3fbaGgGfaJKdN+kwD5Iqh+uWijJ7b2CQ=="
+        },
+        "visiblePrefixBase64": "eyJzZXEiOjEsInR5cGUiOiJzeW50aGV0aWMtcHJpb3ItcmVjb3JkIn0K",
+        "unresolvedIntent": {
+          "kind": "unresolved-intent",
+          "payload": {
+            "agent": "synthetic-agent",
+            "store": "chief-decision-frontier",
+            "predecessor": {
+              "stream": "synthetic-chief-stream",
+              "incarnation": "previous-incarnation",
+              "writer": "previous-writer",
+              "leaseEpoch": 41
+            },
+            "operationId": "fixture-attempt-0002",
+            "attemptedSequence": 2,
+            "attemptedRecordDigest": "c51fbe091ec08c7f2b8b62dff99f2fccce366d034a3cbf7a39ed7f22e958f7ed"
+          },
+          "signatureBase64": "hsRqRlsBT+N9T/vPg9i0PD/YvLRlwJgAG0Aet0v5F+taMYdA2/Dzwe+g3R0e1UVRq1cRmdLa2DN3ImjoWd2cDA=="
+        },
+        "reconciliation": {
+          "kind": "exact-reconciliation",
+          "payload": {
+            "agent": "synthetic-agent",
+            "store": "chief-decision-frontier",
+            "predecessor": {
+              "stream": "synthetic-chief-stream",
+              "incarnation": "previous-incarnation",
+              "writer": "previous-writer",
+              "leaseEpoch": 41
+            },
+            "successorGeneration": 2,
+            "operationId": "fixture-attempt-0002",
+            "attemptedSequence": 2,
+            "recordDigest": "c51fbe091ec08c7f2b8b62dff99f2fccce366d034a3cbf7a39ed7f22e958f7ed",
+            "intentDigest": "855a453869e9fade3687b9f5d894a9b0f034819d702f24ea10388fbc06c9a802",
+            "sealDigest": "03354c37a4a8d6471ed5e8bd601839cd59770e86d88ae1775827c16c9643ab41",
+            "manifestDigest": "2f5d1e617846221ecb7794a9825526dde31cb135aa911f1d25999d4fe7ee6886"
+          },
+          "signatureBase64": "MFYYzUr50xnOVMtedj9IK41GSv6zhXeM0tSZK3GOZx+6ewpwm7HHbtrRmvlhpdAcv99MBlf5DGD9172ePbcCAg=="
+        }
+      },
+      "expected": {
+        "status": "pending",
+        "mayPrepare": false
+      }
+    },
+    {
+      "name": "prefix-reader-unavailable",
+      "input": {
+        "manifest": {
+          "kind": "activation-manifest",
+          "payload": {
+            "agent": "synthetic-agent",
+            "store": "chief-decision-frontier",
+            "generation": 2,
+            "predecessorSealDigest": "03354c37a4a8d6471ed5e8bd601839cd59770e86d88ae1775827c16c9643ab41",
+            "successor": {
+              "stream": "synthetic-chief-stream",
+              "incarnation": "next-incarnation",
+              "writer": "next-writer",
+              "leaseEpoch": 42
+            },
+            "unresolvedIntentDigest": "855a453869e9fade3687b9f5d894a9b0f034819d702f24ea10388fbc06c9a802"
+          },
+          "signatureBase64": "zHyuwN0Kb+NYwf2ORalv9xJmCP9Ol2/5juaCXSu4kEJYWpgmaOn1SbjeDMQAh/iEqptJdIjzI3EUc+7Em+hZAg=="
+        },
+        "seal": {
+          "kind": "predecessor-seal",
+          "payload": {
+            "agent": "synthetic-agent",
+            "store": "chief-decision-frontier",
+            "predecessor": {
+              "stream": "synthetic-chief-stream",
+              "incarnation": "previous-incarnation",
+              "writer": "previous-writer",
+              "leaseEpoch": 41
+            },
+            "terminalSequence": 2,
+            "prefixDigest": "a5cb7e29468f1a968b8e3a930fc21c3d717027369be32899abcaba9d319b1a86",
+            "digestFormat": "instar-journal-prefix-v1",
+            "transitionId": "synthetic-lease-transition-41-to-42"
+          },
+          "signatureBase64": "cAXEjz75EOaZM4MYeKSG13oz50Dts7GBdgK6e2pSMVMSpDLi8tw4qg3fbaGgGfaJKdN+kwD5Iqh+uWijJ7b2CQ=="
+        },
+        "visiblePrefixBase64": null,
+        "unresolvedIntent": {
+          "kind": "unresolved-intent",
+          "payload": {
+            "agent": "synthetic-agent",
+            "store": "chief-decision-frontier",
+            "predecessor": {
+              "stream": "synthetic-chief-stream",
+              "incarnation": "previous-incarnation",
+              "writer": "previous-writer",
+              "leaseEpoch": 41
+            },
+            "operationId": "fixture-attempt-0002",
+            "attemptedSequence": 2,
+            "attemptedRecordDigest": "c51fbe091ec08c7f2b8b62dff99f2fccce366d034a3cbf7a39ed7f22e958f7ed"
+          },
+          "signatureBase64": "hsRqRlsBT+N9T/vPg9i0PD/YvLRlwJgAG0Aet0v5F+taMYdA2/Dzwe+g3R0e1UVRq1cRmdLa2DN3ImjoWd2cDA=="
+        },
+        "reconciliation": {
+          "kind": "exact-reconciliation",
+          "payload": {
+            "agent": "synthetic-agent",
+            "store": "chief-decision-frontier",
+            "predecessor": {
+              "stream": "synthetic-chief-stream",
+              "incarnation": "previous-incarnation",
+              "writer": "previous-writer",
+              "leaseEpoch": 41
+            },
+            "successorGeneration": 2,
+            "operationId": "fixture-attempt-0002",
+            "attemptedSequence": 2,
+            "recordDigest": "c51fbe091ec08c7f2b8b62dff99f2fccce366d034a3cbf7a39ed7f22e958f7ed",
+            "intentDigest": "855a453869e9fade3687b9f5d894a9b0f034819d702f24ea10388fbc06c9a802",
+            "sealDigest": "03354c37a4a8d6471ed5e8bd601839cd59770e86d88ae1775827c16c9643ab41",
+            "manifestDigest": "2f5d1e617846221ecb7794a9825526dde31cb135aa911f1d25999d4fe7ee6886"
+          },
+          "signatureBase64": "MFYYzUr50xnOVMtedj9IK41GSv6zhXeM0tSZK3GOZx+6ewpwm7HHbtrRmvlhpdAcv99MBlf5DGD9172ePbcCAg=="
+        }
+      },
+      "expected": {
+        "status": "unavailable",
+        "mayPrepare": false
+      }
+    },
+    {
+      "name": "visible-exact-record-with-no-reconciliation-proof",
+      "input": {
+        "manifest": {
+          "kind": "activation-manifest",
+          "payload": {
+            "agent": "synthetic-agent",
+            "store": "chief-decision-frontier",
+            "generation": 2,
+            "predecessorSealDigest": "03354c37a4a8d6471ed5e8bd601839cd59770e86d88ae1775827c16c9643ab41",
+            "successor": {
+              "stream": "synthetic-chief-stream",
+              "incarnation": "next-incarnation",
+              "writer": "next-writer",
+              "leaseEpoch": 42
+            },
+            "unresolvedIntentDigest": "855a453869e9fade3687b9f5d894a9b0f034819d702f24ea10388fbc06c9a802"
+          },
+          "signatureBase64": "zHyuwN0Kb+NYwf2ORalv9xJmCP9Ol2/5juaCXSu4kEJYWpgmaOn1SbjeDMQAh/iEqptJdIjzI3EUc+7Em+hZAg=="
+        },
+        "seal": {
+          "kind": "predecessor-seal",
+          "payload": {
+            "agent": "synthetic-agent",
+            "store": "chief-decision-frontier",
+            "predecessor": {
+              "stream": "synthetic-chief-stream",
+              "incarnation": "previous-incarnation",
+              "writer": "previous-writer",
+              "leaseEpoch": 41
+            },
+            "terminalSequence": 2,
+            "prefixDigest": "a5cb7e29468f1a968b8e3a930fc21c3d717027369be32899abcaba9d319b1a86",
+            "digestFormat": "instar-journal-prefix-v1",
+            "transitionId": "synthetic-lease-transition-41-to-42"
+          },
+          "signatureBase64": "cAXEjz75EOaZM4MYeKSG13oz50Dts7GBdgK6e2pSMVMSpDLi8tw4qg3fbaGgGfaJKdN+kwD5Iqh+uWijJ7b2CQ=="
+        },
+        "visiblePrefixBase64": "eyJzZXEiOjEsInR5cGUiOiJzeW50aGV0aWMtcHJpb3ItcmVjb3JkIn0KeyJvcGVyYXRpb25JZCI6ImZpeHR1cmUtYXR0ZW1wdC0wMDAyIiwic2VxIjoyLCJ0eXBlIjoic3ludGhldGljLWNoaWVmLWRlY2lzaW9uIn0K",
+        "unresolvedIntent": {
+          "kind": "unresolved-intent",
+          "payload": {
+            "agent": "synthetic-agent",
+            "store": "chief-decision-frontier",
+            "predecessor": {
+              "stream": "synthetic-chief-stream",
+              "incarnation": "previous-incarnation",
+              "writer": "previous-writer",
+              "leaseEpoch": 41
+            },
+            "operationId": "fixture-attempt-0002",
+            "attemptedSequence": 2,
+            "attemptedRecordDigest": "c51fbe091ec08c7f2b8b62dff99f2fccce366d034a3cbf7a39ed7f22e958f7ed"
+          },
+          "signatureBase64": "hsRqRlsBT+N9T/vPg9i0PD/YvLRlwJgAG0Aet0v5F+taMYdA2/Dzwe+g3R0e1UVRq1cRmdLa2DN3ImjoWd2cDA=="
+        },
+        "reconciliation": null
+      },
+      "expected": {
+        "status": "pending",
+        "mayPrepare": false
+      }
+    }
+  ]
+}
