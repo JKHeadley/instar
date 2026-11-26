@@ -29,3 +29,7 @@ snapshot for conversations visible in the certified graph. It recognizes
 confirmed project chats, direct children and explicit roots. Unknown ancestry,
 invisible parents, and deeper project paths that this renderer cannot yet
 preserve withhold completeness. This is a partial integration checkpoint.
+
+The tree preserves the exact parent of a generated descendant within the
+same project. The signed test places a linked card under the generated
+parent. Missing, cyclic, or out-of-budget edges withhold completeness.

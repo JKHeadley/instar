@@ -1,22 +1,24 @@
+import type { TreeProjectMembership } from './conversationGraphRead.js';
 import type { CreationPlacementView } from './CreationPlacementSnapshot.js';
 import { nodeKey, type ConversationRef } from './conversationGraph.js';
 
 export function ownerTreeProjectMembership(
   refs: readonly ConversationRef[], snapshot: CreationPlacementView | null,
-): ReadonlyMap<string, string | null> | null {
+): ReadonlyMap<string, TreeProjectMembership> | null {
   if (!snapshot?.complete) return null;
   const keys = refs.map((ref) => ref.platform === 'telegram' ? `telegram:${ref.topicId}`
     : ref.platform === 'app' ? `app:${ref.conversationKey}` : null);
-  const visible = new Set(keys);
-  const membership = new Map<string, string | null>();
+  const visible = new Map(keys.map((key, index) => [key, nodeKey(refs[index])]));
+  const membership = new Map<string, TreeProjectMembership>();
   for (const [index, ref] of refs.entries()) {
     let key = keys[index];
     const seen = new Set<string>();
     while (key && visible.has(key) && !seen.has(key)) {
       if (snapshot.confirmedProjects.has(key)) {
-        // The current section renderer can represent a project and immediate
-        // children. Leave deeper paths unresolved until it preserves the edges.
-        if (seen.size <= 1) membership.set(nodeKey(ref), key);
+        const directParent = snapshot.parents.get(keys[index] ?? '');
+        const parentNodeKey = directParent ? visible.get(directParent) : undefined;
+        if (!seen.size) membership.set(nodeKey(ref), key);
+        else if (parentNodeKey) membership.set(nodeKey(ref), { projectConversationKey: key, parentNodeKey });
         break;
       }
       seen.add(key);

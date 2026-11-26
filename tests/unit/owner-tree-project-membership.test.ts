@@ -14,7 +14,8 @@ it('classifies confirmed ancestry and explicit roots while withholding missing o
     ]),
   };
   expect(ownerTreeProjectMembership(refs, snapshot)).toEqual(new Map([
-    [nodeKey(topic(1)), 'telegram:1'], [nodeKey(topic(2)), 'telegram:1'],
+    [nodeKey(topic(1)), 'telegram:1'], [nodeKey(topic(2)), { projectConversationKey: 'telegram:1', parentNodeKey: nodeKey(topic(1)) }],
+    [nodeKey(topic(3)), { projectConversationKey: 'telegram:1', parentNodeKey: nodeKey(topic(2)) }],
     [nodeKey(topic(4)), null],
   ]));
   expect(ownerTreeProjectMembership(refs, { ...snapshot, complete: false })).toBeNull();

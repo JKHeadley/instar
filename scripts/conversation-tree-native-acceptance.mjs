@@ -78,10 +78,10 @@ try {
   const card = { id: 'wc_0000000000000042', title: 'Fixture Linked Card', lane: 'with-agent',
     conversationKey: cardConversation, projectKey: 'telegram:42' };
   const cardContext = { v: 1, source: { kind: 'work-board-card', cardId: card.id, originMachineId: machineId(),
-    projectKey: card.projectKey }, parentConversationKey: card.projectKey, parentBasis: 'project' };
+    projectKey: card.projectKey }, parentConversationKey: `app:${child}`, parentBasis: 'explicit' };
   service.store.append({ eventId: crypto.randomUUID(), kind: 'created', conversationKey: cardConversation,
     title: card.title, at, machineId: machineId(), creationContext: cardContext });
-  parents.set(`app:${cardConversation}`, card.projectKey);
+  parents.set(`app:${cardConversation}`, `app:${child}`);
   service.store.hiddenConversationKeys = () => new Set([hidden]);
   const group = { kind: 'effort', id: '012fdaec-70de-4324-9ef3-22b616fc83ce' };
   const nested = { kind: 'effort', id: '012fdaec-70de-4324-9ef3-22b616fc83cf' };
@@ -101,7 +101,7 @@ try {
       { ref: cardRef, conversationId: cardConversation, title: card.title, lastActivity: at }],
     treeProjectMembership: () => new Map([
       ...topics.map(([id]) => [nodeKey(telegram(id)), id === 42 ? 'telegram:42' : null]),
-      [nodeKey(generatedRef), 'telegram:42'], [nodeKey(cardRef), card.projectKey],
+      [nodeKey(generatedRef), 'telegram:42'], [nodeKey(cardRef), { projectConversationKey: card.projectKey, parentNodeKey: nodeKey(generatedRef) }],
     ]),
     effortTitle: (ref) => ref.id === group.id ? 'Fixture Group' : 'Nested Group',
     replication: () => ({ replicaLag: false, eventGap: false, evidenceMissing: false }), now: () => new Date(),

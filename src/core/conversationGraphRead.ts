@@ -38,7 +38,7 @@ export interface GraphReadSource {
   conversations(): ConversationSource[];
   unavailableConversations?(): ConversationRef[];
   /** Exact project assignment for each visible conversation, including affirmative nulls. */
-  treeProjectMembership?(refs: readonly ConversationRef[]): ReadonlyMap<string, string | null> | null;
+  treeProjectMembership?(refs: readonly ConversationRef[]): ReadonlyMap<string, TreeProjectMembership> | null;
   /** Effort titles (EffortHeaderStore); null when absent or forgotten. */
   effortTitle(effort: EffortRef): string | null;
   headerMetadata?(effort: EffortRef): {version:number;forgotten:boolean}|null;
@@ -69,6 +69,8 @@ export const TREE_NODE_BUDGET = 400;
  * A tracked project the tree may label an effort with: its conversation, the project's title and the
  * conversation key the Work page and `GET /mobile/work/projects` use for it.
  */
+export type TreeProjectMembership = string | null | { projectConversationKey: string; parentNodeKey: string };
+
 export interface TreeProject { ref: ConversationRef; title: string; conversationKey: string }
 
 /** One node of the phone tree: the projection item, flattened for a phone, with its children nested. */
@@ -357,10 +359,12 @@ export class ConversationGraphReadModel {
         projects.push(row);
         projectRows.set(project.conversationKey, row);
       }
+      const childrenByParent = new Map<string, TreeNode[]>();
       for (const ref of refs) {
         if (rootRef && nodeKey(ref) === nodeKey(rootRef)) continue;
         const item = projection.item(ref);
-        const key = membership.get(nodeKey(ref));
+        const assignment = membership.get(nodeKey(ref));
+        const key = typeof assignment === 'object' && assignment !== null ? assignment.projectConversationKey : assignment;
         const grouped = graph.parentOf.get(nodeKey(ref));
         if (!item || item.state === 'unavailable' || key === undefined || (key && grouped)) {
           placementComplete = false;
@@ -370,19 +374,41 @@ export class ConversationGraphReadModel {
           const project = projectRows.get(key);
           if (!project || !project.children) { placementComplete = false; continue; }
           if (nodeKey(project.ref) !== nodeKey(ref)) {
-            if (project.children.length >= TREE_CHILD_LIMIT || budget <= 0) {
-              project.childrenComplete = false;
-              placementComplete = false;
-              continue;
-            }
-            project.children.push({ ...flat(item), projectConversationKey: key });
-            project.visibleChildCount = project.children.length;
+            if (budget <= 0) { placementComplete = false; continue; }
+            const parent = typeof assignment === 'object' && assignment !== null ? assignment.parentNodeKey : nodeKey(project.ref);
+            const children = childrenByParent.get(parent) ?? [];
+            children.push({ ...flat(item), projectConversationKey: key });
+            childrenByParent.set(parent, children);
           }
         } else if (!grouped) {
           if (budget <= 0) { placementComplete = false; continue; }
           ungrouped.push(flat(item));
         }
       }
+      const attach = (row: TreeNode, depth: number, ancestors: Set<string>) => {
+        const key = nodeKey(row.ref);
+        const children = childrenByParent.get(key);
+        if (!children) return;
+        childrenByParent.delete(key);
+        row.visibleChildCount = children.length;
+        row.children = [];
+        row.childrenComplete = depth < TREE_MAX_DEPTH && children.length <= TREE_CHILD_LIMIT;
+        if (!row.childrenComplete) placementComplete = false;
+        if (depth >= TREE_MAX_DEPTH) return;
+        const path = new Set([...ancestors, key]);
+        for (const child of children.slice(0, TREE_CHILD_LIMIT)) {
+          if (path.has(nodeKey(child.ref)) || child.projectConversationKey !== row.projectConversationKey) {
+            placementComplete = false;
+            row.childrenComplete = false;
+            continue;
+          }
+          row.children.push(child);
+          attach(child, depth + 1, path);
+        }
+      };
+      for (const project of projects) attach(project, 1, new Set());
+      if (childrenByParent.size) placementComplete = false;
+
     }
     return { status: 200, body: { ...this.envelope(revision, partialReasons), ...(rootItem ? { root: flat(rootItem) } : {}),
       items, nextCursor: page.nextCursor, projects: q.projects ? 'known' : 'unknown',
