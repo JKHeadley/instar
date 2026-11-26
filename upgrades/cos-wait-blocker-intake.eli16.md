@@ -7,3 +7,5 @@ The trial is off by default. It does not add an approval request, change how you
 The trial also checks the source again before changing a blocker. If the project has a new checklist, the old blocker stays as history and the server refuses to advance it. A fresh project check can open a new blocker if the wait is still real.
 
 When the trial is first enabled, the Chief of Staff checks older waits again before adding them to the ledger. A note copied from an older check cannot open a blocker on its own.
+
+After a machine takes over, an apparently complete local copy can still be missing a checklist change. The trial requires verified journal evidence before it can advance a recorded wait. The production trial remains off while the machines gain a way to supply that evidence.

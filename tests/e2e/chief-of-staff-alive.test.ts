@@ -74,7 +74,7 @@ describe('Chief of Staff E2E (feature is alive)', () => {
     const loadUnion = (): UnionEntry[] => journal.readTail(CHIEF_OF_STAFF_RECORD_KIND, 10_000).entries.map((e) => ({ data: e.data as Record<string, unknown>, origin: 'm1' }));
     const loop = new ChiefOfStaffLoop({
       now: () => Date.now(), machineId: 'm1', enabled: () => true, holdsLease: () => true, config: () => CHIEF_OF_STAFF_LOOP_DEFAULTS,
-      journal: { emit: (k, b) => { const r = emitter.emit(CHIEF_OF_STAFF_STORE_KEY, k, b); return { outcome: r.outcome, ...(r.seq !== undefined ? { seq: r.seq } : {}) }; }, loadUnion, loadUnionCompleteReadOnly: loadUnion, loadUnionForWaitMutation: () => { journal.flush(); return loadUnion(); } },
+      journal: { emit: (k, b) => { const r = emitter.emit(CHIEF_OF_STAFF_STORE_KEY, k, b); return { outcome: r.outcome, ...(r.seq !== undefined ? { seq: r.seq } : {}) }; }, loadUnion, loadUnionCompleteReadOnly: loadUnion, loadVerifiedWaitMutationUnion: () => { journal.flush(); return loadUnion(); } },
       verifyRenewal: () => true,
       gather: async () => ({
         conversationKey: CK, items: [{ id: 'run', source: 'run', ageMs: 0, value: 'idle', unknown: false }],

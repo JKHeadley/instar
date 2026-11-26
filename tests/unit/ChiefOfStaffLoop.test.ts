@@ -81,12 +81,13 @@ describe('Chief of Staff blocker ledger intake', () => {
     bind(w);
     renew(w, w.now);
     let available = false;
+    let frontierCurrent = false;
     const entries: Array<{ episodeKey: string; conversationKey: string; firstCheckRef: string; detectedText: string }> = [];
     const l = loop(w, {}, { journal: {
       emit: w.j.emit('m_a'),
       loadUnion: () => w.j.entries.slice(),
       loadUnionCompleteReadOnly: () => available ? w.j.entries.slice() : null,
-      loadUnionForWaitMutation: () => available ? w.j.entries.slice() : null,
+      loadVerifiedWaitMutationUnion: () => available && frontierCurrent ? w.j.entries.slice() : null,
     } });
     await l.tick();
     w.now += 25 * H;
@@ -117,6 +118,8 @@ describe('Chief of Staff blocker ledger intake', () => {
     w.now += 60_000;
     await l.tick();
     expect(entries).toHaveLength(1);
+    expect(l.isCurrentWaitBlocker(entries[0])).toBe(false);
+    frontierCurrent = true;
     expect(l.isCurrentWaitBlocker(entries[0])).toBe(true);
 
     bind(w, { goal: 'Revised goal with the same evidence' });

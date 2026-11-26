@@ -24,3 +24,11 @@ A wait check carries explicit evidence lineage only after an opted-in check has 
 Peer stream completeness establishes that the files already present were read without truncation. It cannot establish that a peer has delivered its latest binding change. A takeover grace tick is also insufficient under arbitrary delay. The shared writer needs a currentness receipt covering the remote authority's write frontier, or it must refuse before candidate mutation. Keep production activation off until that boundary is supplied and tested with an actual delayed update.
 
 Independent review concurred with the default-off legacy lineage change. It also found that a display note could match the carry-forward wording. The journal now records fresh and carried evidence explicitly. The selector reads that field, and the regression includes a fresh check whose note matches the old wording.
+
+## Successor frontier slice
+
+The assessor compares predecessor identity, seal identity and terminal position and digest from an authenticated journal reader. Missing or mismatched inputs are unavailable. A retained uncertain operation is pending. Production has no seal provider. It refuses to mutate a Chief of Staff blocker while that provider is absent. This slice does not claim to authenticate a seal, compute a journal digest, exclude an old binary or recover an uncertain write.
+
+Tests cover missing and mismatched inputs, a retained uncertain append, absence of the production frontier, and the two-machine delayed-rebind baseline. The lifecycle fixture supplies currentness only to exercise the existing local rebind behavior. Activation requires certificate production, verified prefix continuity and a fenced check-and-write spanning the journal and decision.
+
+Independent review concurred with the default-off slice and identified the risk of fetching the seal verdict and decision records separately. The mutation port accepts only a union supplied from one verified snapshot. No production implementation is installed. The eventual writer must bind the snapshot to the current mutation fence.

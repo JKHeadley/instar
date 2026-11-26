@@ -340,8 +340,8 @@ export interface ChiefOfStaffLoopDeps {
     loadUnionComplete?(): UnionEntry[] | null;
     /** Non-flushing creation projection read and strict current source signature. */
     loadUnionCompleteReadOnly?(): UnionEntry[] | null;
-    /** Flushes local writes and refuses a stale read before a blocker mutation. */
-    loadUnionForWaitMutation?(): UnionEntry[] | null;
+    /** The union from the same authenticated snapshot as the verified prior-writer frontier. */
+    loadVerifiedWaitMutationUnion?(): UnionEntry[] | null;
     creationSourceVersion?(): string | null;
     /** Resolve once `seq` is fsynced (CoherenceJournal.awaitDurableSeq). The loop awaits the check-event before it claims, so the owner's action gate reads a fresh fold (§2.4 step 2c). */
     awaitDurable?(seq: number): Promise<void>;
@@ -532,7 +532,7 @@ export class ChiefOfStaffLoop {
 
   isCurrentWaitBlocker(source: ChiefOfStaffBlockerSource): boolean {
     if (!this.waitBlockerLedger || !this.d.enabled() || !this.d.holdsLease()) return false;
-    const union = this.safe(() => this.d.journal.loadUnionForWaitMutation?.() ?? null, null);
+    const union = this.safe(() => this.d.journal.loadVerifiedWaitMutationUnion?.() ?? null, null);
     return chiefOfStaffWaitEpisodes(union).some((episode) =>
       episode.episodeKey === source.episodeKey &&
       episode.conversationKey === source.conversationKey &&
