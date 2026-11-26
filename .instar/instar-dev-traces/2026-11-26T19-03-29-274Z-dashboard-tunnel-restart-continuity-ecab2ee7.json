@@ -22,5 +22,10 @@
   "eli16Path": "upgrades/eli16/dashboard-tunnel-restart-continuity.md",
   "sideEffectsPath": "upgrades/side-effects/dashboard-tunnel-restart-continuity.md",
   "secondPass": "not-required",
-  "reviewerConcurred": null
+  "reviewerConcurred": null,
+  "classClosure": {
+    "defectClass": "unbounded-self-action",
+    "closure": "n/a",
+    "reason": "One explicitly invoked connector start and request-driven proxying. No self-triggered restart or page refresh."
+  }
 }
