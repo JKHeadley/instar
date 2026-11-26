@@ -5,7 +5,7 @@
  * running processes; everything else (git, the archive, the rename, prune, the
  * trash delete sub-process) is real.
  */
-import { describe, it, expect, beforeEach, afterEach } from 'vitest';
+import { describe, it, expect, beforeAll, afterAll, beforeEach, afterEach } from 'vitest';
 import fs from 'node:fs';
 import os from 'node:os';
 import path from 'node:path';
@@ -31,6 +31,8 @@ const readGit: ReadGit = (args, cwd) => SafeGitExecutor.readSync(args, {
 });
 
 describe('agent worktree reclaim child', () => {
+  let fixtureRoot: string;
+  let fixtureHome: string;
   let root: string;
   let home: string;
   let worktreesDir: string;
@@ -70,19 +72,37 @@ describe('agent worktree reclaim child', () => {
   const listed = (): string => g(home, ['worktree', 'list', '--porcelain']);
   const run = (inp: ReclaimChildInput, seams: ReclaimChildSeams = {}) => runReclaimChild(inp, { deps: deps(), commandOf: async () => '', ...seams });
 
+  beforeAll(() => {
+    fixtureRoot = fs.realpathSync(fs.mkdtempSync(path.join(os.tmpdir(), 'reclaim-fixture-')));
+    fixtureHome = path.join(fixtureRoot, '.instar', 'agents', 'echo');
+    fs.mkdirSync(fixtureHome, { recursive: true });
+    const originalAuditDir = process.env.INSTAR_AUDIT_LOG_DIR;
+    process.env.INSTAR_AUDIT_LOG_DIR = path.join(fixtureRoot, 'audit');
+    try {
+      g(fixtureHome, ['init', '-q', '-b', 'main']);
+      g(fixtureHome, ['config', 'user.email', 't@t.l']);
+      g(fixtureHome, ['config', 'user.name', 'T']);
+      g(fixtureHome, ['config', 'commit.gpgsign', 'false']);
+      fs.writeFileSync(path.join(fixtureHome, '.gitignore'), 'node_modules\n.worktrees/\n');
+      fs.writeFileSync(path.join(fixtureHome, 'README.md'), 'home\n');
+      g(fixtureHome, ['add', '-A']);
+      g(fixtureHome, ['commit', '-qm', 'init']);
+    } finally {
+      if (originalAuditDir === undefined) delete process.env.INSTAR_AUDIT_LOG_DIR;
+      else process.env.INSTAR_AUDIT_LOG_DIR = originalAuditDir;
+    }
+  });
+
+  afterAll(() => {
+    SafeFsExecutor.safeRmSync(fixtureRoot, { recursive: true, force: true, operation: OP });
+  });
+
   beforeEach(() => {
     root = fs.realpathSync(fs.mkdtempSync(path.join(os.tmpdir(), 'reclaim-child-')));
     home = path.join(root, '.instar', 'agents', 'echo');
-    fs.mkdirSync(home, { recursive: true });
+    fs.mkdirSync(path.dirname(home), { recursive: true });
+    fs.cpSync(fixtureHome, home, { recursive: true });
     process.env.INSTAR_AUDIT_LOG_DIR = path.join(root, 'audit');
-    g(home, ['init', '-q', '-b', 'main']);
-    g(home, ['config', 'user.email', 't@t.l']);
-    g(home, ['config', 'user.name', 'T']);
-    g(home, ['config', 'commit.gpgsign', 'false']);
-    fs.writeFileSync(path.join(home, '.gitignore'), 'node_modules\n.worktrees/\n');
-    fs.writeFileSync(path.join(home, 'README.md'), 'home\n');
-    g(home, ['add', '-A']);
-    g(home, ['commit', '-qm', 'init']);
     worktreesDir = path.join(home, '.worktrees');
     fs.mkdirSync(worktreesDir);
     stateDir = path.join(home, '.instar', 'state', 'agent-worktree-reclaim');
