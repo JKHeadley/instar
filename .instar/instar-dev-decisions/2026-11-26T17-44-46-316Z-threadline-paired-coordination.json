@@ -1,0 +1,22 @@
+{
+  "ts": "2026-11-26T17:44:46.316Z",
+  "slug": "threadline-paired-coordination",
+  "suggestedTier": 2,
+  "declaredTier": 1,
+  "riskFloor": 1,
+  "riskFloorReasons": [],
+  "belowFloor": false,
+  "files": 1,
+  "loc": 90,
+  "scope": {
+    "basis": "staged-in-scope-paths-including-deleted",
+    "files": [
+      "src/threadline/pairedCoordinationPolicy.ts"
+    ],
+    "addedLines": 90,
+    "deletedLines": 0
+  },
+  "causalAutopsy": null,
+  "classClosure": null,
+  "verdict": "pass"
+}

@@ -1,0 +1,22 @@
+{
+  "version": 2,
+  "slug": "threadline-paired-coordination",
+  "sessionId": "b3d2cf8a-9b5d-468b-a50b-70ebf11e9e5c",
+  "timestamp": "2026-11-26T17:42:56.303Z",
+  "artifactPath": "upgrades/side-effects/threadline-paired-coordination.md",
+  "artifactSha256": "59d531f5f6d11670ec03c1342ad36218dfc47423d69f8b82f28e41f00c9c7162",
+  "coveredFiles": [
+    "docs/specs/threadline-paired-coordination.eli16.md",
+    "src/threadline/pairedCoordinationPolicy.ts",
+    "tests/unit/paired-coordination-policy.test.ts",
+    "upgrades/next/threadline-paired-coordination.md",
+    "upgrades/side-effects/threadline-paired-coordination.md"
+  ],
+  "phase": "complete",
+  "tier": 1,
+  "tierReasoning": "Dormant policy comparator with injected evidence and approval storage, no active transport or grant changes",
+  "eli16Path": "docs/specs/threadline-paired-coordination.eli16.md",
+  "sideEffectsPath": "upgrades/side-effects/threadline-paired-coordination.md",
+  "secondPass": "true",
+  "reviewerConcurred": true
+}
