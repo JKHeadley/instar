@@ -1,0 +1,29 @@
+{
+  "ts": "2026-11-25T23:20:32.490Z",
+  "slug": "desktop-relay-agent-server-composition",
+  "suggestedTier": 2,
+  "declaredTier": 2,
+  "riskFloor": 2,
+  "riskFloorReasons": [
+    "safety-invariant proximity: src/server/desktopRelayPairingRoutes.ts matches relay / delivery path"
+  ],
+  "belowFloor": false,
+  "files": 2,
+  "loc": 12,
+  "scope": {
+    "basis": "staged-in-scope-paths-including-deleted",
+    "files": [
+      "src/server/AgentServer.ts",
+      "src/server/desktopRelayPairingRoutes.ts"
+    ],
+    "addedLines": 10,
+    "deletedLines": 2
+  },
+  "causalAutopsy": null,
+  "classClosure": {
+    "defectClass": "unbounded-self-action",
+    "closure": "n/a",
+    "reason": "Each operation requires one signed local owner request and uses the runtime's bounded issuance capability."
+  },
+  "verdict": "pass"
+}

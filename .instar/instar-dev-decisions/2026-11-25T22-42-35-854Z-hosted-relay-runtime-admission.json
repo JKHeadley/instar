@@ -1,0 +1,30 @@
+{
+  "ts": "2026-11-25T22:42:35.854Z",
+  "slug": "hosted-relay-runtime-admission",
+  "suggestedTier": 2,
+  "declaredTier": 2,
+  "riskFloor": 2,
+  "riskFloorReasons": [
+    "safety-invariant proximity: src/hostedRelay/reconnect.ts matches relay / delivery path",
+    "safety-invariant proximity: src/hostedRelay/runtimeAdmission.ts matches relay / delivery path"
+  ],
+  "belowFloor": false,
+  "files": 2,
+  "loc": 162,
+  "scope": {
+    "basis": "staged-in-scope-paths-including-deleted",
+    "files": [
+      "src/hostedRelay/reconnect.ts",
+      "src/hostedRelay/runtimeAdmission.ts"
+    ],
+    "addedLines": 161,
+    "deletedLines": 1
+  },
+  "causalAutopsy": null,
+  "classClosure": {
+    "defectClass": "unbounded-self-action",
+    "closure": "n/a",
+    "reason": "Explicitly started lifecycle with bounded reconnect attempts and a single in-flight issue slot."
+  },
+  "verdict": "pass"
+}

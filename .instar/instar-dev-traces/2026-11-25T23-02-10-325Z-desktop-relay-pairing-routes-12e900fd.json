@@ -1,0 +1,25 @@
+{
+  "version": 2,
+  "slug": "desktop-relay-pairing-routes",
+  "sessionId": "41652017-0805-405d-bb4e-2a975fb349ce",
+  "timestamp": "2026-11-25T23:02:10.325Z",
+  "artifactPath": "upgrades/side-effects/desktop-relay-pairing-routes.md",
+  "artifactSha256": "921bcac5b7ea24ab7cc57465e0a7aa224e60b474cc83133edecf7edadad5f5b3",
+  "specPath": "docs/specs/hosted-relay.md",
+  "coveredFiles": [
+    "src/server/desktopRelayPairingRoutes.ts",
+    "src/server/mobilePairingRoutes.ts",
+    "tests/integration/desktop-relay-pairing-routes.test.ts",
+    "upgrades/side-effects/desktop-relay-pairing-routes.md"
+  ],
+  "phase": "complete",
+  "tier": 2,
+  "tierReasoning": "Dormant exact native local-device routes",
+  "secondPass": "true",
+  "reviewerConcurred": true,
+  "classClosure": {
+    "defectClass": "unbounded-self-action",
+    "closure": "n/a",
+    "reason": "Each action requires a signed local owner request and reaches a bounded runtime operation."
+  }
+}

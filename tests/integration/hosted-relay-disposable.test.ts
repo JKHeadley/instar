@@ -16,7 +16,8 @@ import { signOwnerRecordEntry } from '../../src/core/ownerRecord.js';
 import { createHostedRelayOwnerLeaseReader } from '../../src/hostedRelay/ownerLeaseReader.js';
 import { SafeFsExecutor } from '../../src/core/SafeFsExecutor.js';
 import { launchDisposableHostedRelay } from '../../src/hostedRelay/disposableLauncher.js';
-import { runHostedRelayReconnect } from '../../src/hostedRelay/reconnect.js';
+import { startVerifiedHostedRelay } from '../../src/hostedRelay/startup.js';
+import { MachineIdentityManager, sign as signMachine } from '../../src/core/MachineIdentity.js';
 import { redeemHostedRelaySetupCode } from '../../src/hostedRelay/setupReceipt.js';
 import { createHostedRelayVerifiedDialer } from '../../src/hostedRelay/verifiedDialer.js';
 import { startHostedRelayAgentSession } from '../../src/hostedRelay/agentSession.js';
@@ -27,10 +28,12 @@ it('connects a signed outbound control session to an end-to-end TLS client in a 
   const root = fs.mkdtempSync(path.join(os.tmpdir(), 'hosted-relay-service-'));
   const db = new Database(path.join(root, 'relay.sqlite'));
   db.pragma('synchronous = FULL');
-  const hostname = 'agent.relay.example', agentId = 'synthetic-agent', holder = 'm_holder';
-  const keys = generateKeyPairSync('ed25519'), owner = generateKeyPairSync('ed25519');
-  const machinePem = keys.publicKey.export({ type: 'spki', format: 'pem' }).toString();
-  const machineSign = (text: string) => sign(null, Buffer.from(text), keys.privateKey).toString('base64');
+  const hostname = 'agent.relay.example', agentId = 'synthetic-agent';
+  const identity = new MachineIdentityManager(root);
+  const { machineId: holder } = await identity.generateIdentity({ name: 'Relay test holder' });
+  const owner = generateKeyPairSync('ed25519');
+  const machinePem = identity.getSigningPublicKeyPem(holder)!;
+  const machineSign = (text: string) => signMachine(text, identity.loadSigningKey());
   const genesis = signOwnerRecordEntry({ agentId, kind: 'genesis', parents: [], signer: { type: 'machine', keyId: holder },
     body: { machineId: holder, publicKey: machinePem, level: 'basic', agentProducible: true } }, machineSign);
   const ownerKey = signOwnerRecordEntry({ agentId, kind: 'add-owner-key', parents: [genesis.id],
@@ -42,12 +45,13 @@ it('connects a signed outbound control session to an end-to-end TLS client in a 
   const draft = { holder, epoch: 1, nonce: 1, acquiredAt: new Date().toISOString(), expiresAt: new Date(expiresAt).toISOString() };
   const current = { ...draft, signature: machineSign(FencedLease.canonicalize(draft)) };
   let authorized = true;
-  const reader = createHostedRelayOwnerLeaseReader({
-    registration: name => authorized && name === hostname ? { agentId, assignment: lease.assignment, pinnedGenesis: genesis.id,
+  const authority = {
+    registration: (name: string) => authorized && name === hostname ? { agentId, assignment: lease.assignment, pinnedGenesis: genesis.id,
       entries: [genesis.entry, ownerKey.entry] } : undefined,
-    committedLease: id => id === agentId ? current : undefined,
-    verifyFirstOwnerProof: proof => proof.proof === 'fixture',
-  });
+    committedLease: (id: string) => id === agentId ? current : undefined,
+    verifyFirstOwnerProof: (proof: { proof: string }) => proof.proof === 'fixture',
+  };
+  const reader = createHostedRelayOwnerLeaseReader(authority);
   const gate = new HostedRelayLeaseAdmission(db, reader);
   const relay = createDisposableHostedRelay(gate);
   const cleanups: (() => void)[] = [];
@@ -135,18 +139,33 @@ it('connects a signed outbound control session to an end-to-end TLS client in a 
     const spki = new X509Certificate(controlCert).publicKey.export({ type: 'spki', format: 'der' });
     const launched = await launchDisposableHostedRelay({ leases: gate, cert: controlCert, key: fs.readFileSync(controlKey) });
     const controller = new AbortController();
-    const dial = createHostedRelayVerifiedDialer({ origin: 'https://localhost:' + launched.controlPort,
-      spkiSha256: createHash('sha256').update(spki).digest('hex'), ca: controlCert });
-    let holderSession: http2.ClientHttp2Session | undefined;
-    const run = runHostedRelayReconnect({
-      scope: lease, signal: controller.signal, currentLease: () => lease, sign: machineSign,
-      async connectVerified(signal) {
-        const connection = await dial(signal);
-        holderSession = connection.session;
-        return connection;
+    const relayTrust = { origin: 'https://localhost:' + launched.controlPort,
+      spkiSha256: createHash('sha256').update(spki).digest('hex'), ca: controlCert };
+    const dial = createHostedRelayVerifiedDialer(relayTrust);
+    const agentPin = createHash('sha256').update(new X509Certificate(cert).publicKey.export({ format: 'der', type: 'spki' })).digest('hex');
+    const tlsEntry = signOwnerRecordEntry({
+      kind: 'tls-key', agentId, parents: [ownerKey.id], signer: { type: 'machine', keyId: holder },
+      body: { machineId: holder, fingerprint: agentPin, seq: 1 },
+    }, machineSign);
+    let holdsAuthority = true;
+    const scope = { hostname, agentId, assignment: lease.assignment, pinnedGenesis: genesis.id };
+    const startup = {
+      enabled: true, stateDir: root, scope, signal: controller.signal, relay: relayTrust,
+      agentTls: { cert, key: fs.readFileSync(keyPath) },
+      evidence: {
+        ...authority,
+        registration: (name: string) => name === hostname ? { ...scope, entries: [genesis.entry, ownerKey.entry, tlsEntry.entry] } : undefined,
       },
-      openLocalTls: () => net.connect(agentPort, '127.0.0.1'),
-    });
+      holdsLocalAuthority: () => holdsAuthority,
+      handlePhoneRequest: vi.fn<import('node:http').RequestListener>((_req, res) => { res.end('scoped agent response'); }),
+    };
+    expect(await startVerifiedHostedRelay({ ...startup, enabled: false, stateDir: '/missing' })).toBeUndefined();
+    expect(await startVerifiedHostedRelay({ ...startup, scope: { ...scope, assignment: '2'.repeat(64) } })).toBeUndefined();
+    expect(await startVerifiedHostedRelay({ ...startup, evidence: authority })).toBeUndefined();
+    expect(await startVerifiedHostedRelay({ ...startup, holdsLocalAuthority() { throw new Error('offline'); } })).toBeUndefined();
+    const runtime = (await startVerifiedHostedRelay(startup))!;
+    expect(runtime.available()).toBe(false);
+    await expect(runtime.issuePairingCode()).rejects.toThrow('relay-unavailable');
     try {
       let answer: string | undefined;
       let verifiedClient: tls.TLSSocket | undefined;
@@ -154,6 +173,8 @@ it('connects a signed outbound control session to an end-to-end TLS client in a 
         const client = tls.connect({ port: launched.clientPort, host: '127.0.0.1', servername: hostname, ca: cert });
         client.setTimeout(500, () => client.destroy(new Error('fixture TLS deadline')));
         try {
+          await once(client, 'secureConnect');
+          client.write('GET / HTTP/1.1\r\nHost: ' + hostname + '\r\n\r\n');
           answer = (await once(client, 'data'))[0].toString();
           client.setTimeout(0);
           verifiedClient = client;
@@ -163,7 +184,8 @@ it('connects a signed outbound control session to an end-to-end TLS client in a 
           await wait(20); // @silent-fallback-ok — the relay may be waiting for its first admitted offer
         }
       }
-      expect(answer).toBe('direct agent certificate');
+      expect(answer).toContain('scoped agent response');
+      expect(startup.handlePhoneRequest).toHaveBeenCalledOnce();
       const phone = await dial(controller.signal);
       cleanups.push(() => phone.session.destroy());
       const issue = '/relay/v1/rendezvous/issue', redeem = '/relay/v1/rendezvous/redeem';
@@ -178,31 +200,37 @@ it('connects a signed outbound control session to an end-to-end TLS client in a 
         return { status: headers[':status'], value: JSON.parse(Buffer.concat(parts).toString()) };
       }
       expect((await requestJson(phone.session, issue)).status).toBe(403);
-      const issued = await requestJson(holderSession!, issue);
-      expect(issued).toEqual({ status: 201, value: { code: expect.any(String), expiresInSeconds: 600 } });
-      expect(await redeemHostedRelaySetupCode({ code: issued.value.code, routingDomain: 'relay.example',
+      expect(runtime.available()).toBe(true);
+      const issuing = runtime.issuePairingCode();
+      await expect(runtime.issuePairingCode()).rejects.toThrow('relay-busy');
+      const issued = await issuing;
+      expect(issued).toEqual({ code: expect.any(String), expiresInSeconds: 600 });
+      expect(await redeemHostedRelaySetupCode({ code: issued.code, routingDomain: 'relay.example',
         connectVerified: dial, signal: controller.signal }))
         .toEqual({ kind: 'relay-locator', hostname, origin: 'https://' + hostname });
-      expect((await requestJson(phone.session, redeem, { code: issued.value.code })).status).toBe(404);
-      const pendingCode = await requestJson(holderSession!, issue);
+      expect((await requestJson(phone.session, redeem, { code: issued.code })).status).toBe(404);
+      const pendingCode = await runtime.issuePairingCode();
 
       const revoked = new Promise<void>(done => verifiedClient!.once('close', () => done()));
       verifiedClient!.on('error', error => expect((error as NodeJS.ErrnoException).code).toBe('ECONNRESET'));
-      authorized = false;
+      holdsAuthority = false;
+      expect(runtime.available()).toBe(false);
+      await expect(runtime.issuePairingCode()).rejects.toThrow('relay-unavailable');
+      await expect(runtime.closed).resolves.toBe('lease-unavailable');
       await revoked;
-      expect((await requestJson(phone.session, redeem, { code: pendingCode.value.code })).status).toBe(404);
+      authorized = false;
+      expect((await requestJson(phone.session, redeem, { code: pendingCode.code })).status).toBe(404);
       const pendingControl = net.connect(launched.controlPort, '127.0.0.1');
       cleanups.push(() => pendingControl.destroy());
       await once(pendingControl, 'connect');
       const pendingClosed = new Promise<void>(done => pendingControl.once('close', () => done()));
       pendingControl.on('error', error => expect((error as NodeJS.ErrnoException).code).toBe('ECONNRESET'));
       controller.abort();
-      await expect(run).resolves.toBe('stopped');
       await launched.stop();
       await pendingClosed;
     } finally {
       controller.abort();
-      await run;
+      await runtime.stop();
       await launched.stop();
     }
 

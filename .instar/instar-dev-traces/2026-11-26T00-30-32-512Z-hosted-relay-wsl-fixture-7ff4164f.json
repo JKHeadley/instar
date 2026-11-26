@@ -1,0 +1,24 @@
+{
+  "version": 2,
+  "slug": "hosted-relay-wsl-fixture",
+  "sessionId": "41652017-0805-405d-bb4e-2a975fb349ce",
+  "timestamp": "2026-11-26T00:30:32.512Z",
+  "artifactPath": "upgrades/side-effects/hosted-relay-wsl-fixture.md",
+  "artifactSha256": "a79987ce50ad6a81edcbd466dacdb726f4f0d59889957eda0ca54a985ffc181e",
+  "specPath": "docs/specs/hosted-relay.md",
+  "coveredFiles": [
+    "scripts/hosted-relay-wsl-fixture.mjs",
+    "tests/integration/hosted-relay-wsl-fixture.test.ts",
+    "upgrades/side-effects/hosted-relay-wsl-fixture.md"
+  ],
+  "phase": "complete",
+  "tier": 2,
+  "tierReasoning": "Correct synthetic fixture trust chain without changing verification policy",
+  "secondPass": "true",
+  "reviewerConcurred": true,
+  "classClosure": {
+    "defectClass": "unbounded-self-action",
+    "closure": "n/a",
+    "reason": "Explicit fixture with a hard ten-minute lifetime, bounded local connections and teardown."
+  }
+}

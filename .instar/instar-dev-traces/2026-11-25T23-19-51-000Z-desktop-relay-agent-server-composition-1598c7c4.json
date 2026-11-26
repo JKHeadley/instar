@@ -1,0 +1,25 @@
+{
+  "version": 2,
+  "slug": "desktop-relay-agent-server-composition",
+  "sessionId": "41652017-0805-405d-bb4e-2a975fb349ce",
+  "timestamp": "2026-11-25T23:19:51.000Z",
+  "artifactPath": "upgrades/side-effects/desktop-relay-agent-server-composition.md",
+  "artifactSha256": "0635a5ab9df0b96f8de4cd5fc578f8310d22b958d4242b5b581009f5545502f3",
+  "specPath": "docs/specs/hosted-relay.md",
+  "coveredFiles": [
+    "src/server/AgentServer.ts",
+    "src/server/desktopRelayPairingRoutes.ts",
+    "tests/integration/mac-app-creates-agent.test.ts",
+    "upgrades/side-effects/desktop-relay-agent-server-composition.md"
+  ],
+  "phase": "complete",
+  "tier": 2,
+  "tierReasoning": "Opt-in AgentServer composition with unchanged default",
+  "secondPass": "true",
+  "reviewerConcurred": true,
+  "classClosure": {
+    "defectClass": "unbounded-self-action",
+    "closure": "n/a",
+    "reason": "Each operation requires one signed local owner request and uses the runtime's bounded issuance capability."
+  }
+}

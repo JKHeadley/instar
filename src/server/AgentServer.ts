@@ -314,6 +314,7 @@ import { NativeHookEventIngest } from '../monitoring/NativeHookEvents.js';
 import { NATIVE_HOOK_EVENTS_PATH } from '../data/http-hook-templates.js';
 import { resolveKnownOrigin as resolveProjectAppOrigin, hostOf as projectAppHostOf, type OriginDeps as ProjectAppOriginDeps } from './ProjectAppSandbox.js';
 import { boundedBody, closeUnreadBodyOnError, credentialAwareJsonParser, type BodyBudgetDeps } from './bodyBudget.js';
+import { createDesktopRelayPairingRoutes } from './desktopRelayPairingRoutes.js';
 import { corsMiddleware, authMiddleware, requestTimeout, buildRequestTimeoutOverrides, errorHandler, dashboardSecurityHeaders, dashboardCacheControl, DASHBOARD_STATIC_OPTIONS, duplicateResponseGuard } from './middleware.js';
 import { WebSocketManager } from './WebSocketManager.js';
 import { DesktopStreamManager } from './DesktopStreamManager.js';
@@ -1399,6 +1400,8 @@ export class AgentServer {
     config: InstarConfig;
     sessionManager: SessionManager;
     terminateSessionAuthority?: SessionTerminateAuthority;
+    /** Explicit startup composition only. Windows signs for the enrolled main loopback origin. */
+    desktopRelayPairing?: Parameters<typeof createDesktopRelayPairingRoutes>[1];
     /** Override the same-host apprenticeship peer read (tests/custom embeddings). */
     apprenticeshipPeerCycleReader?: (instanceId: string) => Promise<import('../monitoring/ApprenticeshipPeerCycleReader.js').ApprenticeshipPeerCycleRead>;
     state: StateManager;
@@ -3088,7 +3091,9 @@ export class AgentServer {
         res.status(401).json({ error: 'threadline-mcp-local-secret-required' });
         return false;
       },
-      this.mobilePairing ? deviceAuthenticator(this.mobilePairing) : undefined,
+      this.mobilePairing ? deviceAuthenticator(this.mobilePairing, {
+        desktopRelayLoopback: options.desktopRelayPairing !== undefined,
+      }) : undefined,
       options.memoryPrivacy ? (token) => options.memoryPrivacy!.sessionForToken(token) : undefined,
       options.memoryPrivacy ? (session) => options.memoryPrivacy!.noteSessionReply(session.sessionId) : undefined,
       // SEC-002b: a dst_ scoped session token is accepted ONLY when the feature is enabled (dark by
@@ -7703,6 +7708,9 @@ export class AgentServer {
         return value;
       },
     }));
+    if (this.mobilePairing && options.desktopRelayPairing) {
+      this.app.use(createDesktopRelayPairingRoutes(this.mobilePairing, options.desktopRelayPairing));
+    }
     this.app.use(routes);
     // The cost surface reads the same live ledgers and scheduler as production
     // routes. A missing ledger is reported in the response, not replaced with

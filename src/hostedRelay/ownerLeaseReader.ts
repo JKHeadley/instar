@@ -48,7 +48,7 @@ export function createHostedRelayOwnerEvidenceReader(options: {
         hostname, assignment: registration.assignment, holder: lease.holder,
         epoch: lease.epoch, expiresAt, publicKeyPem: machine.publicKey,
       });
-      return { serving, agentId: registration.agentId, record, entries: registration.entries };
+      return { serving, agentId: registration.agentId, record, entries: registration.entries, committed: { ...lease } };
     } catch { return undefined; } // @silent-fallback-ok — unreadable owner or lease evidence confers no routing authority
   };
 }

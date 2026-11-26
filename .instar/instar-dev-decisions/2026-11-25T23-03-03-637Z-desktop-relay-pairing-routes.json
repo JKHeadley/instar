@@ -1,0 +1,30 @@
+{
+  "ts": "2026-11-25T23:03:03.637Z",
+  "slug": "desktop-relay-pairing-routes",
+  "suggestedTier": 2,
+  "declaredTier": 2,
+  "riskFloor": 2,
+  "riskFloorReasons": [
+    "safety-invariant proximity: src/server/desktopRelayPairingRoutes.ts matches relay / delivery path",
+    "new capability: new route (router.<verb>() added"
+  ],
+  "belowFloor": false,
+  "files": 2,
+  "loc": 93,
+  "scope": {
+    "basis": "staged-in-scope-paths-including-deleted",
+    "files": [
+      "src/server/desktopRelayPairingRoutes.ts",
+      "src/server/mobilePairingRoutes.ts"
+    ],
+    "addedLines": 91,
+    "deletedLines": 2
+  },
+  "causalAutopsy": null,
+  "classClosure": {
+    "defectClass": "unbounded-self-action",
+    "closure": "n/a",
+    "reason": "Each action requires a signed local owner request and reaches a bounded runtime operation."
+  },
+  "verdict": "pass"
+}

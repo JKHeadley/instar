@@ -1,0 +1,32 @@
+{
+  "ts": "2026-11-25T23:39:18.808Z",
+  "slug": "hosted-relay-verified-startup",
+  "suggestedTier": 2,
+  "declaredTier": 2,
+  "riskFloor": 2,
+  "riskFloorReasons": [
+    "safety-invariant proximity: src/hostedRelay/agentTlsListener.ts matches relay / delivery path",
+    "safety-invariant proximity: src/hostedRelay/ownerLeaseReader.ts matches relay / delivery path",
+    "safety-invariant proximity: src/hostedRelay/startup.ts matches relay / delivery path"
+  ],
+  "belowFloor": false,
+  "files": 3,
+  "loc": 91,
+  "scope": {
+    "basis": "staged-in-scope-paths-including-deleted",
+    "files": [
+      "src/hostedRelay/agentTlsListener.ts",
+      "src/hostedRelay/ownerLeaseReader.ts",
+      "src/hostedRelay/startup.ts"
+    ],
+    "addedLines": 88,
+    "deletedLines": 3
+  },
+  "causalAutopsy": null,
+  "classClosure": {
+    "defectClass": "unbounded-self-action",
+    "closure": "n/a",
+    "reason": "The caller starts and stops one bounded runtime and listener."
+  },
+  "verdict": "pass"
+}

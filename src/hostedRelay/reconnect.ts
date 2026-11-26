@@ -20,6 +20,7 @@ export async function runHostedRelayReconnect(options: {
   connectVerified(signal: AbortSignal): Promise<{ session: ClientHttp2Session; closed: Promise<void> }>;
   sign(message: string): string;
   openLocalTls(): Duplex | undefined;
+  onAdmission?(session: ClientHttp2Session, lease: HostedRelayLease, lifetime: AbortSignal): void;
 }): Promise<'stopped' | 'lease-unavailable' | 'attempts-exhausted'> {
   const scope = { ...options.scope };
   const { signal } = options;
@@ -59,7 +60,27 @@ export async function runHostedRelayReconnect(options: {
       const active = await startHostedRelayAgentSession({ session, lease: refreshed, signal,
         sign: options.sign, openLocalTls: options.openLocalTls });
       const liveSince = performance.now();
-      await active.closed;
+      const admission = new AbortController();
+      const lifetime = AbortSignal.any([signal, admission.signal]);
+      const admittedEpoch = refreshed.epoch;
+      const admittedExpiry = refreshed.expiresAt;
+      function guardAdmission() {
+        const lease = current();
+        if (!lease || lease.epoch !== admittedEpoch || lease.expiresAt !== admittedExpiry) {
+          admission.abort();
+          active.stop();
+        }
+      }
+      const monitor = setInterval(guardAdmission, 250);
+      monitor.unref();
+      try {
+        guardAdmission();
+        if (!lifetime.aborted) options.onAdmission?.(session, refreshed, lifetime);
+        await active.closed;
+      } finally {
+        clearInterval(monitor);
+        admission.abort();
+      }
       if (performance.now() - liveSince >= stableMs) attempt = 0;
     } catch {
       if (signal.aborted) return 'stopped'; // @silent-fallback-ok — a failed attempt retries within its bound
