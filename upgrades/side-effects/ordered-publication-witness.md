@@ -35,3 +35,7 @@ Existing local scopes retain their original behavior. This checkpoint introduces
 ## 6. External surfaces
 
 No routes, network writes or production config changes. Roll back by reverting the dark checkpoint before adoption.
+
+## Holder activation checkpoint
+
+A prepared order-plus-witness scope can complete only if its current witness signed the predecessor floor, successor and seal digest, and the independent journal reports the resulting exact floor. Matching the pending database row and advancing its floor are one transaction. The transport still owns validation that the seal represents the last possible predecessor effect and resolves outstanding intent. The local store relies on that independent attestation.

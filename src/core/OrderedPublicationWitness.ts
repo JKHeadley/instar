@@ -93,3 +93,31 @@ export function verifiedWitnessSuccessor(
       !verifies(pins, transfer.nextWitness, witnessTransferBytes(transfer, 'receipt'), receipt)) return null;
   return { ...current, witness: transfer.nextWitness, witnessGeneration: transfer.nextWitnessGeneration };
 }
+
+export interface OrderedHolderHandover {
+  floor: PublicationFloor;
+  nextEpoch: number;
+  nextHolder: string;
+  sealDigest: string;
+}
+
+export function holderHandoverBytes(handover: OrderedHolderHandover): Buffer {
+  return Buffer.from(JSON.stringify(['instar-ordered-holder-handover-v1', ...fields(handover.floor),
+    handover.nextEpoch, handover.nextHolder, handover.sealDigest]));
+}
+
+/** The witness attests the exact sealed transition, including the prior head. */
+export function verifiedHolderSuccessor(
+  current: PublicationFloor, handover: OrderedHolderHandover, signature: Buffer, pins: WitnessPins,
+): PublicationFloor | null {
+  if (!validFloor(current) || !samePublicationFloor(current, handover.floor) ||
+      !Number.isSafeInteger(handover.nextEpoch) || handover.nextEpoch <= current.epoch ||
+      !idPattern.test(handover.nextHolder) || handover.nextHolder === current.witness ||
+      !digestPattern.test(handover.sealDigest) || current.position >= Number.MAX_SAFE_INTEGER) return null;
+  const bytes = holderHandoverBytes(handover);
+  if (!verifies(pins, current.witness, bytes, signature)) return null;
+  return {
+    ...current, epoch: handover.nextEpoch, holder: handover.nextHolder,
+    head: hash(bytes), position: current.position + 1,
+  };
+}

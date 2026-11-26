@@ -8,3 +8,5 @@ Added a default-off source checkpoint for independently witnessed Needs-you and 
 ## Evidence
 
 Focused unit and integration checks cover signature binding, disabled behavior, independent acceptance, witness transfer, replay, and restored journal mismatch using disposable files and keys.
+
+The local receiver also completes an ordered holder change only after the independent journal confirms the signed successor and sealed predecessor.

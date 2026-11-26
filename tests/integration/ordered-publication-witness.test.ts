@@ -5,7 +5,7 @@ import { join } from 'node:path';
 import { expect, it } from 'vitest';
 import { FencedPublicationStore } from '../../src/core/FencedPublicationStore.js';
 import {
-  orderedDecisionBytes, verifiedOrderedSuccessor, verifiedWitnessSuccessor, witnessTransferBytes,
+  holderHandoverBytes, verifiedHolderSuccessor, orderedDecisionBytes, verifiedOrderedSuccessor, verifiedWitnessSuccessor, witnessTransferBytes,
   type PublicationFloor,
 } from '../../src/core/OrderedPublicationWitness.js';
 import { SafeFsExecutor } from '../../src/core/SafeFsExecutor.js';
@@ -56,6 +56,16 @@ for (const namespace of ['needs-you', 'mobile-ingress'] as const) {
       expect(independent).not.toBeNull();
       expect(store.transferWitness(scope, transfer, offer, receipt)).toBe(true);
       expect(store.transferWitness(scope, transfer, offer, receipt)).toBe(false);
+      const move = { floor: independent!, nextEpoch: 2, nextHolder: 'successor', sealDigest: '1'.repeat(64) };
+      const moveSignature = sign(null, holderHandoverBytes(move), mini.privateKey);
+      expect(store.prepareHandover(scope, current, { epoch: 2, holder: 'successor' }, move.sealDigest)).toBe(true);
+      expect(store.activateHandover(scope, current, { epoch: 2, holder: 'successor' }, move.sealDigest)).toBe(false);
+      expect(store.activateOrderedHandover(scope, move, moveSignature)).toBe(false);
+      independent = verifiedHolderSuccessor(move.floor, move, moveSignature, pins);
+      expect(independent).not.toBeNull();
+      expect(store.activateOrderedHandover(scope, { ...move, sealDigest: '2'.repeat(64) }, moveSignature)).toBe(false);
+      expect(store.activateOrderedHandover(scope, move, moveSignature)).toBe(true);
+      expect(store.activateOrderedHandover(scope, move, moveSignature)).toBe(false);
       expect(restored.claimOrdered(scope, decision, signature).kind).toBe('pending');
       independent = null;
       expect(restored.claimOrdered(scope, decision, signature).kind).toBe('pending');

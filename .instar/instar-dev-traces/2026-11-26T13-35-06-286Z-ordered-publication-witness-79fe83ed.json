@@ -1,0 +1,23 @@
+{
+  "version": 2,
+  "slug": "ordered-publication-witness",
+  "sessionId": "dd2f336e-e8f7-40b3-97e3-09d19139bfa6",
+  "timestamp": "2026-11-26T13:35:06.286Z",
+  "artifactPath": "upgrades/side-effects/ordered-publication-witness.md",
+  "artifactSha256": "340c9326d48b37d7be591e2ab7a7f22af85e9c42bd67f4912048b0a750a1a999",
+  "coveredFiles": [
+    "src/core/FencedPublicationStore.ts",
+    "src/core/OrderedPublicationWitness.ts",
+    "tests/integration/ordered-publication-witness.test.ts",
+    "upgrades/eli16/ordered-publication-witness.md",
+    "upgrades/next/ordered-publication-witness.md",
+    "upgrades/side-effects/ordered-publication-witness.md"
+  ],
+  "phase": "complete",
+  "tier": 1,
+  "tierReasoning": "Dark local projection reconciliation only. No live caller or external effects.",
+  "eli16Path": "upgrades/eli16/ordered-publication-witness.md",
+  "sideEffectsPath": "upgrades/side-effects/ordered-publication-witness.md",
+  "secondPass": "not-required",
+  "reviewerConcurred": null
+}

@@ -2,8 +2,8 @@ import Database from 'better-sqlite3';
 import fs from 'node:fs';
 import path from 'node:path';
 import {
-  samePublicationFloor, verifiedOrderedSuccessor, verifiedWitnessSuccessor,
-  type OrderedPublicationDecision, type PublicationFloor, type WitnessPins, type WitnessTransfer,
+  samePublicationFloor, verifiedHolderSuccessor, verifiedOrderedSuccessor, verifiedWitnessSuccessor,
+  type OrderedHolderHandover, type OrderedPublicationDecision, type PublicationFloor, type WitnessPins, type WitnessTransfer,
 } from './OrderedPublicationWitness.js';
 
 /** Receiver-owned dependencies. A cached floor or one restored with this database is insufficient. */
@@ -99,14 +99,31 @@ export class FencedPublicationStore {
   /** Called after verification of the exact candidate and predecessor seal. */
   activateHandover(scope: PublicationScope, prior: PublicationGeneration, next: PublicationGeneration, digest: string): boolean {
     if (!validScope(scope) || !validGeneration(prior) || !validGeneration(next) || next.epoch <= prior.epoch || !DIGEST.test(digest)) return false;
-    return this.db.transaction(() => {
-      if (this.localFloor(scope)) return false;
-      return this.db.prepare(`
+    return this.db.transaction(() => !this.localFloor(scope) &&
+      this.activatePending(scope, prior, next, digest)).immediate();
+  }
+
+  private activatePending(scope: PublicationScope, prior: PublicationGeneration, next: PublicationGeneration, digest: string): boolean {
+    return this.db.prepare(`
       UPDATE publication_generation SET epoch=pending_epoch, holder=pending_holder,
         pending_epoch=NULL, pending_holder=NULL, candidate_digest=NULL
       WHERE agent=? AND namespace=? AND epoch=? AND holder=?
         AND pending_epoch=? AND pending_holder=? AND candidate_digest=?
     `).run(scope.agentId, scope.namespace, prior.epoch, prior.holder, next.epoch, next.holder, digest).changes === 1;
+  }
+
+  activateOrderedHandover(scope: PublicationScope, handover: OrderedHolderHandover, signature: Buffer): boolean {
+    const ordered = this.ordered;
+    if (!ordered) return false;
+    return this.db.transaction(() => {
+      const local = this.localFloor(scope);
+      const independent = this.independentFloor(scope);
+      if (!local || !independent) return false;
+      const next = verifiedHolderSuccessor(local, handover, signature, ordered.pins);
+      if (!next || !samePublicationFloor(next, independent) ||
+          !this.activatePending(scope, local, next, handover.sealDigest)) return false;
+      this.saveFloor(next);
+      return true;
     }).immediate();
   }
 
