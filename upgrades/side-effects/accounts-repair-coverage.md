@@ -18,3 +18,5 @@ Revert the commit. No data migration is involved.
 ## 6b. Operator-surface quality
 
 A machine that has not answered shows its name, a short status and a Retry button together on the same row. No machine IDs or transport errors are shown as primary content. The turn-on control stays visible and disabled with a plain explanation of what to check. Switching back uses the existing quiet secondary control. Chromium at 390 and 1280 pixels verified the row, the disabled control and successful retry without horizontal overflow.
+
+The disabled turn-on button uses the neutral surface and ignores hover brightening. Repair modes use “Asks you first” and “Repairs automatically.”

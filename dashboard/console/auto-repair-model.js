@@ -8,8 +8,8 @@ import { unreachableSentence, poolMachine } from './unreachable-model.js';
 export const NEEDS_UPDATE_TO_SWITCH_ON_WORDS = 'Not changed: that machine needs an Instar update before it can be switched on from here.';
 
 const STATE_WORDS = {
-  unattended: 'On, repairs without asking',
-  approval: 'On, asks you first',
+  unattended: 'Repairs automatically',
+  approval: 'Asks you first',
   observe: 'Watching only',
   off: 'Off',
 };
