@@ -3,7 +3,7 @@
  * 503 when off, status, the holder acknowledgement, manual prune 202 + record,
  * 409 while running, forward refusal, and a pool read with an unreachable peer.
  */
-import { describe, it, expect, beforeAll, afterAll } from 'vitest';
+import { describe, it, expect, beforeAll, afterAll, vi } from 'vitest';
 import fs from 'node:fs';
 import os from 'node:os';
 import path from 'node:path';
@@ -38,6 +38,7 @@ describe('Disk Steward routes', () => {
   let off: AgentServer;
   let on: AgentServer;
   let steward: DiskSteward;
+  let routeDeps: DiskStewardRouteDeps;
   const pending: Array<() => void> = [];
   const release = () => { while (pending.length) pending.shift()!(); };
   let running: { runId: string; deadline: number } | null = null;
@@ -65,7 +66,7 @@ describe('Disk Steward routes', () => {
       thresholds: () => ({ warnPercent: 15, warnMinGiB: 100, escalatePercent: 10, escalateMinGiB: 60, forecastEscalateDays: 3 }),
       pruneMinIntervalMs: () => 6 * 3_600_000, peers: async () => [], send: async () => 'posted', log: () => {}, degrade: () => {},
     });
-    const routeDeps: DiskStewardRouteDeps = {
+    routeDeps = {
       steward, runner: runner as never, machineId: 'm_self', authToken: AUTH,
       peers: () => [{ machineId: 'm_dark', url: 'http://127.0.0.1:9', allowed: true }, { machineId: 'm_rejected', url: 'http://evil.example', allowed: false }],
     };
@@ -101,6 +102,49 @@ describe('Disk Steward routes', () => {
     expect(byId.m_dark.error).toBeTruthy();
     expect(byId.m_dark.status).toBeUndefined();
     expect(byId.m_rejected.error).toBe('url-rejected');
+  });
+
+  it('falls back from a dead LAN rope to an admitted HTTPS connection and reports real peer disk data', async () => {
+    const oldPeers = routeDeps.peers;
+    const record = vi.fn();
+    const lan = 'http://192.168.87.61:4062';
+    const secure = 'https://m5.dawn-tunnel.dev';
+    routeDeps.peers = () => [{ machineId: 'm_m5', url: lan, kind: 'lan', allowed: true,
+      ropes: [{ url: secure, kind: 'cloudflare' }] }];
+    Object.assign(routeDeps, { recordRopeResult: record });
+    const dial = vi.fn(async (url: string, init?: RequestInit) => {
+      expect(init?.headers).toMatchObject({ Authorization: `Bearer ${AUTH}` });
+      if (url === `${lan}/disk-steward`) throw new TypeError('fetch failed', { cause: { code: 'EHOSTUNREACH' } });
+      expect(url).toBe(`${secure}/disk-steward`);
+      return Response.json({ machine: { id: 'm_m5', name: 'M5 Pro' }, measured: true, freeBytes: 261_546_000_384 });
+    });
+    vi.stubGlobal('fetch', dial);
+    try {
+      const res = await request(on.getApp()).get('/disk-steward?scope=pool').set(auth);
+      expect(res.status).toBe(200);
+      expect(res.body.peers[0]).toMatchObject({ machineId: 'm_m5', status: { measured: true, freeBytes: 261_546_000_384 } });
+      expect(dial).toHaveBeenCalledTimes(2);
+      expect(record).toHaveBeenCalledWith('m_m5', 'lan', false, expect.any(Number), lan);
+      expect(record).toHaveBeenCalledWith('m_m5', 'cloudflare', true, expect.any(Number), secure);
+    } finally { routeDeps.peers = oldPeers; vi.unstubAllGlobals(); }
+  });
+
+  it('never sends credentials to a refused fallback or retries a responding peer', async () => {
+    const oldPeers = routeDeps.peers;
+    const lan = 'http://192.168.87.61:4062';
+    routeDeps.peers = () => [{ machineId: 'm_m5', url: lan, kind: 'lan', allowed: true,
+      ropes: [{ url: 'http://100.108.56.41:4062', kind: 'tailscale' }, { url: 'http://evil.example', kind: 'lan' }] }];
+    const dial = vi.fn().mockRejectedValue(new TypeError('fetch failed'));
+    vi.stubGlobal('fetch', dial);
+    try {
+      const refused = await request(on.getApp()).get('/disk-steward?scope=pool').set(auth);
+      expect(refused.body.peers[0].error).toBeTruthy();
+      expect(dial).toHaveBeenCalledTimes(1);
+      dial.mockReset().mockResolvedValue(Response.json({ error: 'off' }, { status: 503 }));
+      const answered = await request(on.getApp()).get('/disk-steward?scope=pool').set(auth);
+      expect(answered.body.peers[0].error).toBe('HTTP 503');
+      expect(dial).toHaveBeenCalledTimes(1);
+    } finally { routeDeps.peers = oldPeers; vi.unstubAllGlobals(); }
   });
 
   it('the holder acknowledgement: 400 on a bad body, 409 on a wrong id', async () => {

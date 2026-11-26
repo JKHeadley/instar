@@ -1,0 +1,9 @@
+# Reading Disk Space When One Connection Fails
+
+Instar can reach another computer in more than one way. For example, two Macs may have a connection over their home network and a separate connection through Tailscale. One of those connections can fail while the other still works. Until this repair, the disk watcher tried just the first connection. It could therefore say that another computer's disk was unavailable even though that computer was healthy and reachable.
+
+This change makes the disk watcher use the connection fallback that other pooled reads already use. It applies both when an agent asks for disk readings and when the scheduled watcher checks the other computers. When a connection fails immediately, the same read can try another registered connection. Every attempt still follows the existing rule about where credentials may be sent. A timeout uses up the existing request budget; it does not start an unlimited series of retries.
+
+Reading disk space does not clear files. Requests to clean a disk are left as they are and are not repeated over another connection. After a scheduled read delivers a disk notice, it acknowledges the notice once over the same working connection, avoiding a repeat caused by trying the failed connection again. The repair records connection success and failure through the existing network health recorder, so future requests can make a better choice. It does not change machine roles, restart computers, or change backup retention. A software revert fully removes the change. Tests cover failed local-network reads falling back to an approved secure connection, refused addresses, responding peers, and both production reading paths. The running machines receive the repair through the normal tested release process.
+
+Plain HTTP Tailscale addresses remain refused by the existing credential guard. A machine with only a failed LAN address and that refused address still needs an approved working connection.
