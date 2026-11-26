@@ -1,0 +1,18 @@
+{
+  "version": 2,
+  "slug": "dashboard-open-doc-coverage",
+  "sessionId": "c38724b6-902e-4bb2-9141-06c0c5808c5d",
+  "timestamp": "2026-11-26T22:07:56.236Z",
+  "artifactPath": "upgrades/side-effects/dashboard-open-doc-coverage.md",
+  "artifactSha256": "385e7eb493735f4d555e670979aa08cfbb3508e0d2d51428adfcd478f15966f3",
+  "coveredFiles": [
+    "scripts/docs-coverage.mjs"
+  ],
+  "phase": "complete",
+  "tier": 1,
+  "tierReasoning": "One match for an existing CLI spelling in a CI-only checker, with focused regression and docs",
+  "eli16Path": "docs/specs/dashboard-open-doc-coverage.eli16.md",
+  "sideEffectsPath": "upgrades/side-effects/dashboard-open-doc-coverage.md",
+  "secondPass": "not-required",
+  "reviewerConcurred": null
+}

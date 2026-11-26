@@ -27,6 +27,10 @@ instar status                   # Show agent infrastructure status
 managing server while still allowing server lifecycle commands that target a
 sibling agent by name or directory.
 
+## Dashboard
+
+Run `instar dashboard open` from the agent's computer to open a browser with a one-time local link. Enter the dashboard PIN to sign in. Use `--dir <dir>` to select the agent folder when needed.
+
 ## Lifeline
 
 ```bash
