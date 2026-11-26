@@ -70,3 +70,5 @@ The dark version 2 server handler checks that the phone signing the challenge ma
 An isolated test now connects the first-phone handler to the real witness storage code. The test checks that confirming one attempt can claim the first approval slot only in the same write that records the decision. Cancellation leaves the slot available. A previously confirmed decision can be looked up exactly without changing who can approve.
 
 The isolated first-phone test also checks that the witness has the exact staged decision before it records an approval, and that a retry can recover only the original decision.
+
+The unmounted Face ID verifier checks that the signed bytes identify the exact paired phone, dedicated key generation and assurance result. It checks the key and signature format and refuses a signature from the generic presence flow. It does not itself register a key or grant approval rights.

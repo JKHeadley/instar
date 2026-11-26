@@ -21,3 +21,5 @@ A disposable iPhone simulator run exercised Face ID policy and four signed HTTP 
 The unmounted version 2 server handler checks the paired caller and delegates confirmation or cancellation to the shared authority. Production enrollment stays off.
 
 The first-phone version 2 handler now exercises the compound witness reservation in an isolated test. Production enrollment stays off.
+
+The dedicated Face ID proof verifier matches the Swift and Node test vector. It remains unmounted.

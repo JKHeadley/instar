@@ -1,6 +1,8 @@
 import { createHash, createPublicKey, verify } from 'node:crypto';
 import { expect, it } from 'vitest';
 import { isStrictLowSDer } from '../../src/core/MobileDeviceKeys.js';
+import { encodeFirstPhoneFaceIdChallenge, encodeFirstPhoneFaceIdRegistration, FIRST_PHONE_FACE_ID_ASSURANCE } from '../../src/core/trustJourney/firstPhoneOrderedChallenge.js';
+import { verifyFirstPhoneFaceIdProof, verifyFirstPhoneFaceIdRegistration } from '../../src/core/trustJourney/firstPhoneFaceIdProof.js';
 import legacy from '../fixtures/first-phone/ordered-challenge-v2.json';
 import vector from '../fixtures/first-phone/face-id-challenge-v2.json';
 
@@ -43,4 +45,37 @@ it.each([
   expect(verify('sha256', bytes, key, signature)).toBe(true);
   expect(verify('sha256', Buffer.from(JSON.stringify([...values.slice(0, -1), 'user-presence'])), key, signature)).toBe(false);
   expect(verify('sha256', Buffer.from(JSON.stringify([...values.slice(0, -2), '2', i.localAssurance])), key, signature)).toBe(false);
+});
+
+it('the server proof boundary verifies the shared confirmation and binds key, assurance and generation', () => {
+  const challenge = { ...vector.input, localAssurance: FIRST_PHONE_FACE_ID_ASSURANCE };
+  const proof = {
+    challengeKey: vector.confirmation.challengeKey,
+    challengeDigest: vector.confirmation.digestSha256Hex,
+    localAssurance: vector.profile,
+    faceIdSignature: vector.confirmation.signatureDerBase64url,
+  };
+  const key = vector.key.publicKeySpkiDerBase64;
+  expect(encodeFirstPhoneFaceIdChallenge(challenge)?.bytes.toString('base64')).toBe(vector.confirmation.transcriptBase64);
+  expect(verifyFirstPhoneFaceIdProof(challenge, key, proof)).toBe(true);
+  expect(verifyFirstPhoneFaceIdProof({ ...challenge, faceIdKeyGeneration: '2' }, key, proof)).toBe(false);
+  expect(encodeFirstPhoneFaceIdChallenge({ ...challenge, faceIdKeyGeneration: '01' })).toBeNull();
+  expect(verifyFirstPhoneFaceIdProof(challenge, key, { ...proof, localAssurance: 'user-presence' })).toBe(false);
+  expect(verifyFirstPhoneFaceIdProof(challenge, key, { ...proof, faceIdSignature: legacy.expected.signatureDerBase64 })).toBe(false);
+  expect(verifyFirstPhoneFaceIdProof(challenge, legacy.expected.syntheticP256SpkiBase64, proof)).toBe(false);
+});
+
+it('the server registration verifier accepts only the exact dedicated-key registration', () => {
+  const challenge = { ...vector.input, ...vector.registration, localAssurance: FIRST_PHONE_FACE_ID_ASSURANCE };
+  const proof = {
+    registrationId: vector.registration.registrationId,
+    localAssurance: vector.profile,
+    faceIdSignature: vector.registration.signatureDerBase64url,
+  };
+  const key = vector.key.publicKeySpkiDerBase64;
+  expect(encodeFirstPhoneFaceIdRegistration(challenge)?.toString('base64')).toBe(vector.registration.transcriptBase64);
+  expect(verifyFirstPhoneFaceIdRegistration(challenge, key, proof)).toBe(true);
+  expect(verifyFirstPhoneFaceIdRegistration(challenge, key, { ...proof, faceIdSignature: vector.confirmation.signatureDerBase64url })).toBe(false);
+  expect(verifyFirstPhoneFaceIdRegistration({ ...challenge, expectedFaceIdKeyGeneration: '1' }, key, proof)).toBe(false);
+  expect(encodeFirstPhoneFaceIdRegistration({ ...challenge, origin: 'http://localhost' })).toBeNull();
 });

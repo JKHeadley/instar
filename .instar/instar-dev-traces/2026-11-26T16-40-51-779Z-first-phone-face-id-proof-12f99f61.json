@@ -1,0 +1,24 @@
+{
+  "version": 2,
+  "slug": "first-phone-face-id-proof",
+  "sessionId": "b3d2cf8a-9b5d-468b-a50b-70ebf11e9e5c",
+  "timestamp": "2026-11-26T16:40:51.779Z",
+  "artifactPath": "upgrades/side-effects/first-phone-face-id-proof.md",
+  "artifactSha256": "26b1de53d7846fe454f8ea0f53bccb988a4e22dea115027b3b72fb873b5ea523",
+  "coveredFiles": [
+    "docs/specs/first-phone-face-id-key-contract.md",
+    "docs/specs/phone-only-first-approver.eli16.md",
+    "src/core/trustJourney/firstPhoneFaceIdProof.ts",
+    "src/core/trustJourney/firstPhoneOrderedChallenge.ts",
+    "tests/unit/first-phone-face-id-vector.test.ts",
+    "upgrades/next/phone-only-first-approver.md",
+    "upgrades/side-effects/first-phone-face-id-proof.md"
+  ],
+  "phase": "complete",
+  "tier": 1,
+  "tierReasoning": "Unmounted encoding and verification only, adds neither an authorization path nor a registry mutation",
+  "eli16Path": "docs/specs/phone-only-first-approver.eli16.md",
+  "sideEffectsPath": "upgrades/side-effects/first-phone-face-id-proof.md",
+  "secondPass": "true",
+  "reviewerConcurred": true
+}
