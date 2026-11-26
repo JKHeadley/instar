@@ -1,0 +1,21 @@
+{
+  "version": 2,
+  "slug": "app-message-delete-admission",
+  "sessionId": "633bd330-201e-4dc8-8fd9-72b89116167e",
+  "timestamp": "2026-11-25T16:04:06.892Z",
+  "artifactPath": "upgrades/side-effects/app-message-delete-admission.md",
+  "artifactSha256": "8871ba5ef72fd45d09611a01ee438f882a7e17ef20824b1f5860221d8250a45f",
+  "specPath": "docs/specs/conversation-message-delete.md",
+  "coveredFiles": [
+    "docs/specs/conversation-message-delete.md",
+    "docs/specs/reports/conversation-message-delete-convergence.md",
+    "src/server/mobileAppMessageRemovalAdmission.ts",
+    "tests/integration/mobile-native-conversations.test.ts",
+    "upgrades/side-effects/app-message-delete-admission.md"
+  ],
+  "phase": "complete",
+  "tier": 2,
+  "tierReasoning": "Signed identity and exact-target authorization for future App message removal",
+  "secondPass": "true",
+  "reviewerConcurred": true
+}

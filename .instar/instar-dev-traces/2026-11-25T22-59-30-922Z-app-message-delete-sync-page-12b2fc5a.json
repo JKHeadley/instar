@@ -1,0 +1,25 @@
+{
+  "version": 2,
+  "slug": "app-message-delete-sync-page",
+  "sessionId": "633bd330-201e-4dc8-8fd9-72b89116167e",
+  "timestamp": "2026-11-25T22:59:30.922Z",
+  "artifactPath": "upgrades/side-effects/app-message-delete-sync-page.md",
+  "artifactSha256": "3a8b1ce5a4e197c77286931420ee33d03bcb58cecd7c67a9696ae9b4828982b9",
+  "specPath": "docs/specs/conversation-message-delete.md",
+  "coveredFiles": [
+    "docs/specs/conversation-message-delete.eli16.md",
+    "docs/specs/conversation-message-delete.md",
+    "docs/specs/reports/conversation-message-delete-convergence.md",
+    "src/core/AppConversationStore.ts",
+    "src/server/mobileAppRemovalSync.ts",
+    "tests/e2e/mobile-native-conversations-alive.test.ts",
+    "tests/integration/mobile-native-conversations.test.ts",
+    "tests/unit/app-conversation-store.test.ts",
+    "upgrades/side-effects/app-message-delete-sync-page.md"
+  ],
+  "phase": "complete",
+  "tier": 2,
+  "tierReasoning": "Compose owner authority, signed continuation and exact prepared proof for a private sync page",
+  "secondPass": "true",
+  "reviewerConcurred": true
+}

@@ -1,3 +1,5 @@
+import { AppRemovalReadCustody } from '../../src/core/AppRemovalReadCustody.js';
+import { attachmentIdFor } from '../../src/core/appMediaTypes.js';
 /**
  * Feature-is-alive proof for native app conversations (docs/specs/mobile-native-conversations.md,
  * increment 1): an AgentServer booted on a development agent with NO Telegram and NO Slack
@@ -11,7 +13,9 @@
  * Wiring integrity: the service, its store, the dispatch, the request store, the signer and the
  * ledger are real.
  */
-import { describe, it, expect, afterAll } from 'vitest';
+import { createRemovalSyncCursorCodec } from '../../src/server/mobileAppRemovalSyncCursor.js';
+import { SingleInstanceLock } from '../../src/core/SingleInstanceLock.js';
+import { describe, it, expect, afterAll, vi } from 'vitest';
 import crypto from 'node:crypto';
 import fs from 'node:fs';
 import os from 'node:os';
@@ -32,19 +36,22 @@ const HOST = 'echo-native-e2e.example.dev';
 const servers: AgentServer[] = [];
 const dirs: string[] = [];
 
+const writerLocks: SingleInstanceLock[] = [];
+
 afterAll(async () => {
   for (const s of servers) await s.stop();
+  for (const lock of writerLocks) lock.release();
   for (const d of dirs) SafeFsExecutor.safeRmSync(d, { recursive: true, force: true, operation: 'tests/e2e/mobile-native-conversations-alive.test.ts' });
 });
 
-async function boot(developmentAgent: boolean) {
+async function boot(developmentAgent: boolean, appRemovalReadAcceptance?: (key: string) => boolean, appRemovalWriteAcceptance?: true) {
   const dir = fs.mkdtempSync(path.join(process.env.TMPDIR ?? os.tmpdir(), 'native-e2e-'));
   dirs.push(dir);
   const stateDir = path.join(dir, '.instar');
   for (const d of ['state/sessions', 'state/jobs', 'logs']) fs.mkdirSync(path.join(stateDir, d), { recursive: true });
   fs.writeFileSync(path.join(stateDir, 'config.json'), '{}');
   // Every agent gets a machine identity at `instar init`; the receipt signer reads it.
-  await new MachineIdentityManager(stateDir).generateIdentity({ name: 'e2e machine' });
+  const identity = await new MachineIdentityManager(stateDir).generateIdentity({ name: 'e2e machine' });
   const config = {
     projectName: 'native-e2e', projectDir: dir, stateDir, port: 0, authToken: 'e2e-token', developmentAgent, workBoard: { enabled: false },
     mobilePairing: { multiRoute: { enabled: false }, native: { messageLinks: { enabled: true }, quotedReplies: { enabled: true }, reactions: { enabled: true }, forwards: { enabled: true } } }, // the single-host path; multi-route has its own e2e
@@ -62,14 +69,18 @@ async function boot(developmentAgent: boolean) {
   };
   sessionManager.injectMessage = () => true;
   const tunnel = { lifecycleState: { lastState: 'active', activeProvider: 'cloudflare-named' }, url: `https://${HOST}`, on: () => undefined } as any;
-  const server = new AgentServer({ config, sessionManager, state: new StateManager(stateDir), initiativeTracker: new InitiativeTracker(stateDir), tunnel, workBoard: () => null });
+  const singleInstanceLock = new SingleInstanceLock({ stateDir, env: {} });
+  expect((await singleInstanceLock.acquire()).acquired).toBe(true);
+  writerLocks.push(singleInstanceLock);
+  const server = new AgentServer({ config, sessionManager, singleInstanceLock, appRemovalReadAcceptance, appRemovalWriteAcceptance, meshSelfId: identity.machineId, state: new StateManager(stateDir), initiativeTracker: new InitiativeTracker(stateDir), tunnel, workBoard: () => null });
   servers.push(server);
-  return { server, stateDir, spawned };
+  return { server, stateDir, spawned, singleInstanceLock };
 }
 
 describe('native app conversations — production wiring', () => {
-  it('is alive on a development agent with no Telegram and no Slack: create, send, session tag, reply, history', async () => {
-    const { server, stateDir, spawned } = await boot(true);
+  it.each([false, true])('serves App conversations with an explicit Delete acceptance writer: %s', async (writeAcceptance) => {
+    const enrolled = new Set<string>();
+    const { server, stateDir, spawned, singleInstanceLock } = await boot(true, (key) => enrolled.has(key), writeAcceptance ? true : undefined);
     const app = server.getApp();
     // Wiring integrity: real, non-null components on the production path.
     expect(server.mobilePairing).not.toBeNull();
@@ -98,6 +109,7 @@ describe('native app conversations — production wiring', () => {
     expect(m.status).toBe(200);
     const dms: string[] = [];
     server.mobilePairing!.deps.ownerDM = async (text) => { dms.push(text); return 1; };
+    server.mobilePairing!.deps.telegramOwnerId = () => 91472; // Synthetic account, with no Telegram adapter.
     server.mobilePairing!.deps.telegramOwnerPresent = () => true; // the Telegram path (no owner ⇒ the dashboard path, §4.4)
     const dev = makeDevice();
     const r = await request(app).post('/mobile/pairing-codes/redeem').set('Host', HOST).send({ code: m.body.code, deviceName: 'e2e phone', devicePublicKey: dev.publicKey });
@@ -153,6 +165,20 @@ describe('native app conversations — production wiring', () => {
     expect(hist.body.messages[0].originVerified).toBe('verified');
     expect(hist.body.messages[1].originVerified).toBe('none');
     const target = hist.body.messages[1].eventId as string;
+    expect(singleInstanceLock.revalidateForExclusiveWrite()).toBe(true);
+    const journalRevision = server.appConversations!.store.removalJournalRevision(key);
+    expect(journalRevision).toEqual(expect.any(String));
+    const darkDelete = await send('POST', `/mobile/chat/app/${key}/message-removals`, {
+      custodianMachineId: server.appConversations!.deps.machineId(), eventId: target,
+      requestId: `${Date.now()}-${crypto.randomUUID()}`,
+    });
+    expect(darkDelete.status).toBe(403);
+    expect(server.appConversations!.store.messageRemoval(key, target, reply.body.messageId)).toEqual({ eventId: null });
+    const afterDarkDelete = await send('GET', `/mobile/chat/app/${key}/messages`);
+    expect(afterDarkDelete.status).toBe(200);
+    expect(afterDarkDelete.body.messages.map((row: { eventId: string }) => row.eventId))
+      .toEqual(hist.body.messages.map((row: { eventId: string }) => row.eventId));
+
     const exact = await send('GET', `/mobile/chat/app/${key}/message-context?target=${encodeURIComponent(target)}&targetKind=event`);
     expect(exact.status).toBe(200);
     expect(exact.body.anchorApplied).toEqual({ requestedTarget: target, eventId: target, messageId: reply.body.messageId });
@@ -160,6 +186,32 @@ describe('native app conversations — production wiring', () => {
     expect(link.status).toBe(200);
     expect(new URL(link.body.url).hostname).toBe(HOST);
     expect(link.body.position.eventId).toBe(target);
+    server.appConversations!.store.append({
+      kind: 'message-removed', conversationKey: key, eventId: 'dark-test-removal-fact',
+      targetEventId: target, targetMessageId: reply.body.messageId,
+      machineId: server.appConversations!.deps.machineId(), at: new Date().toISOString(),
+    });
+    expect(server.appConversations!.store.removalJournalRevision(key)).toBe(journalRevision);
+    expect(await server.appConversations!.store.prepareRemovalHistory(key)).toBe(true);
+    const protectedHistory = server.appConversations!.store.readPreparedRemovalHistory(key, null, 100);
+    expect(protectedHistory?.messages.map((row) => row.text)).toEqual(['What is on for Saturday?']);
+    expect(server.appConversations!.store.hasPreparedRemovalHistory(key, protectedHistory!.proof)).toBe(true);
+    const darkEvents = await send('GET', `/mobile/chat/app/${key}/events`);
+    expect(darkEvents.status).toBe(200);
+    expect(darkEvents.body.events.map((event: { kind: string }) => event.kind)).not.toContain('message-removed');
+    const privateCursor = createRemovalSyncCursorCodec().issue({
+      custodianMachineId: server.appConversations!.deps.machineId(), conversationKey: key, deviceId,
+      deviceKeyHash: 'unused-dark-fixture', readerId: 'unused-dark-fixture', visibilityRevision: 'fixture-1',
+    }, 1000);
+    const legacyWithPrivateCursor = await send('GET', `/mobile/chat/app/${key}/events?cursor=${encodeURIComponent(privateCursor)}`);
+    expect(legacyWithPrivateCursor.status).toBe(200);
+    expect(legacyWithPrivateCursor.body).toEqual(darkEvents.body);
+    expect(legacyWithPrivateCursor.body).not.toHaveProperty('epoch');
+    expect(legacyWithPrivateCursor.body).not.toHaveProperty('continuation');
+    expect(legacyWithPrivateCursor.body).not.toHaveProperty('changes');
+    expect(legacyWithPrivateCursor.body).not.toHaveProperty('blocked');
+    expect(legacyWithPrivateCursor.body).not.toHaveProperty('highWater');
+    expect(legacyWithPrivateCursor.body).not.toHaveProperty('displayForMs');
     const entry = await request(app).get('/dashboard/console/message-link-v1/');
     expect(entry.status).toBe(200);
     expect(entry.text).toContain('/dashboard/console/console.js?message-link-v1');
@@ -187,6 +239,7 @@ describe('native app conversations — production wiring', () => {
 
     const capabilities = await send('GET', '/mobile/conversations');
     expect(capabilities.body.conversations[0].messageActions).toMatchObject({ reply: true });
+    expect(capabilities.body.conversations[0].messageActions).not.toHaveProperty('delete');
     const previews = await send('GET', `/mobile/chat/app/${key}/reply-previews?eventId=${encodeURIComponent(quoted.body.eventId)}`);
     expect(previews.status).toBe(200);
     expect(previews.body.messages).toEqual([{ eventId: quoted.body.eventId, reply: {
@@ -249,6 +302,251 @@ describe('native app conversations — production wiring', () => {
     const context = fs.readFileSync(contextPath!, 'utf8');
     expect(context).toContain('Earlier ordinary context');
     expect(context).not.toContain('Saturday is the farmers market at nine.');
+
+    expect(server.mobilePairing!.machineId()).toBe(server.appConversations!.deps.machineId());
+    const pin = (messageId: string) => server.appConversations!.store.append({
+      kind: 'pin', conversationKey: key, eventId: `fixture-pin-${messageId}`, pinnedMessageId: messageId,
+      pinState: 'pinned', pinnedBy: { name: 'Fixture', role: 'owner' }, preview: 'Stored preview must not be reused',
+      source: 'app', machineId: server.appConversations!.deps.machineId(), at: new Date().toISOString(),
+    });
+    pin(reply.body.messageId);
+    pin(quoted.body.messageId);
+    enrolled.add(key);
+    const acceptedHistory = await send('GET', `/mobile/chat/app/${key}/messages`);
+    expect(acceptedHistory.status, JSON.stringify(acceptedHistory.body)).toBe(200);
+    if (!writeAcceptance) {
+      const stillDark = await send('POST', `/mobile/chat/app/${key}/message-removals`, {
+        custodianMachineId: server.appConversations!.deps.machineId(), eventId: quoted.body.eventId,
+        requestId: `${Date.now()}-${crypto.randomUUID()}`,
+      });
+      expect(stillDark.status).toBe(403);
+      expect(server.appConversations!.store.messageRemoval(key, quoted.body.eventId, quoted.body.messageId))
+        .toEqual({ eventId: null });
+
+    }
+    const retainedCustody = new AppRemovalReadCustody(stateDir).observe(key);
+    expect(retainedCustody).toMatchObject({ kind: 'recorded', record: {
+      creationEventId: server.appConversations!.store.getCreationRecord(key)!.eventId,
+      custodianMachineId: server.appConversations!.deps.machineId(),
+    } });
+
+    expect(acceptedHistory.headers['cache-control']).toBe('no-store');
+    expect(acceptedHistory.body.messages.map((row: { eventId: string }) => row.eventId)).not.toContain(target);
+    expect(acceptedHistory.body).not.toHaveProperty('displayForMs');
+    expect(acceptedHistory.body.pins).toEqual([
+      expect.objectContaining({ messageId: quoted.body.messageId, preview: 'Thanks for the details.' }),
+    ]);
+
+    const standalonePins = await send('GET', `/mobile/chat/app/${key}/pins`);
+    expect(standalonePins.status).toBe(200);
+    expect(standalonePins.body).toEqual({ conversationKey: key, pins: acceptedHistory.body.pins });
+    const pinWrite = await send('POST', `/mobile/chat/app/${key}/pins`, {
+      messageId: reply.body.messageId, pinned: true, requestId: `${Date.now()}-${crypto.randomUUID()}`,
+    });
+    expect(pinWrite.status).toBe(503);
+    const acceptedSync = await send('GET', `/mobile/chat/app/${key}/events`);
+    expect(acceptedSync.status, JSON.stringify(acceptedSync.body)).toBe(200);
+    expect(acceptedSync.body.epoch).toBe(acceptedHistory.body.epoch);
+    const reactionFor = (eventId: string) => send('GET', `/mobile/chat/app/${key}/reactions?eventId=${encodeURIComponent(eventId)}`);
+    const removedReaction = await reactionFor(target);
+    const missingReaction = await reactionFor('missing-reaction-target');
+    expect(removedReaction.status).toBe(409);
+    expect(removedReaction.body).toEqual(missingReaction.body);
+    const survivingReaction = await reactionFor(quoted.body.eventId);
+    expect(survivingReaction.status).toBe(200);
+    expect(survivingReaction.body).toEqual({ eventId: quoted.body.eventId, own: { emoji: null, revision: 0 } });
+    const protectedReactionWrite = await send('PUT', `/mobile/chat/app/${key}/reactions`, {
+      eventId: target, emoji: null, expectedRevision: 0, requestId: `${Date.now()}-${crypto.randomUUID()}`,
+    });
+    expect(protectedReactionWrite.status).toBe(503);
+    expect(protectedReactionWrite.body).toEqual({ error: 'reactions-unavailable' });
+
+
+    const removedNotificationPath = `/mobile/chat/app/${key}/preview/${encodeURIComponent(reply.body.messageId)}`;
+    const removedNotification = await send('GET', removedNotificationPath);
+    const missingNotification = await send('GET', `/mobile/chat/app/${key}/preview/missing-message-id`);
+    expect(removedNotification.status).toBe(404);
+    expect(removedNotification.body).toEqual(missingNotification.body);
+    expect(removedNotification.body).not.toHaveProperty('body');
+    expect((await auth(request(app).get(removedNotificationPath))).status).toBe(403);
+
+    const protectedQuotes = await send('GET', `/mobile/chat/app/${key}/reply-previews?eventId=${encodeURIComponent(quoted.body.eventId)}&eventId=${encodeURIComponent(target)}`);
+    expect(protectedQuotes.status).toBe(200);
+    expect(protectedQuotes.body).toEqual({ conversationKey: key, epoch: acceptedHistory.body.epoch, messages: [
+      { eventId: quoted.body.eventId, reply: { state: 'unavailable' } }, { eventId: target },
+    ] });
+
+    const removedContext = await send('GET', `/mobile/chat/app/${key}/message-context?target=${encodeURIComponent(target)}&targetKind=event`);
+    expect(removedContext.status).toBe(404);
+    const linkFor = (eventId: string) => send('GET', `/mobile/conversations/message-link?ref=app%3A${key}&messageId=${encodeURIComponent(eventId)}&targetKind=event`);
+    const removedLink = await linkFor(target);
+    const unknownLink = await linkFor('unknown-exact-event');
+    expect(removedLink.status).toBe(409);
+    expect(removedLink.body).toEqual(unknownLink.body);
+    expect(removedLink.body).not.toHaveProperty('url');
+    const survivingLink = await linkFor(quoted.body.eventId);
+    expect(survivingLink.status).toBe(200);
+    expect(survivingLink.body.position.eventId).toBe(quoted.body.eventId);
+    expect(new URL(survivingLink.body.url).hostname).toBe(HOST);
+
+    const liveContext = await send('GET', `/mobile/chat/app/${key}/message-context?target=${encodeURIComponent(quoted.body.eventId)}&targetKind=event&limit=1`);
+    expect(liveContext.status, JSON.stringify(liveContext.body)).toBe(200);
+    expect(liveContext.body).toMatchObject({ epoch: acceptedHistory.body.epoch, anchorApplied: { eventId: quoted.body.eventId } });
+    const older = liveContext.body.nextContextBefore;
+    const previousContext = await send('GET', `/mobile/chat/app/${key}/message-context?beforeAt=${encodeURIComponent(older.at)}&beforeEventId=${encodeURIComponent(older.eventId)}`);
+    expect(previousContext.status).toBe(200);
+    expect(previousContext.body.messages).toEqual([expect.objectContaining({ text: 'What is on for Saturday?' })]);
+
+    expect(acceptedSync.body.changes).toContainEqual({
+      kind: 'message-removed', conversationKey: key, eventId: 'dark-test-removal-fact', targetEventId: target,
+    });
+    expect((await send('GET', `/mobile/chat/app/${key}/messages?scope=pool`)).status).toBe(400);
+    expect((await auth(request(app).get(`/mobile/chat/app/${key}/messages`))).status).toBe(403);
+    expect((await send('GET', `/mobile/chat/app/${dest}/messages`)).body).not.toHaveProperty('epoch');
+    enrolled.delete(key);
+    const search = (params: string) => send('GET', `/mobile/conversations/search?q=farmers&${params}`);
+    for (const mode of ['keyword', 'meaning']) {
+      const scoped = await search(`mode=${mode}&scope=pool&ref=app%3A${key}`);
+      expect(scoped.status).toBe(503);
+      expect(scoped.body).toEqual({ error: 'search-unavailable' });
+    }
+    const broadSearch = await search('mode=keyword&scope=pool');
+    expect(broadSearch.status).toBe(200);
+    expect(broadSearch.body).toMatchObject({
+      partial: true, unsearched: ['app'], results: [expect.objectContaining({ ref: `app:${dest}`, messageId: copy.body.eventId })],
+    });
+
+    expect((await send('GET', `/mobile/chat/app/${key}/messages`)).body.epoch).toBe(acceptedHistory.body.epoch);
+    for (const query of ['', '?scope=pool']) {
+      const list = await send('GET', `/mobile/conversations${query}`);
+      expect(list.status).toBe(200);
+      expect(list.body.conversations).toEqual(expect.arrayContaining([
+        expect.objectContaining({ id: key, lastPreview: null }),
+        expect.objectContaining({ id: dest, lastPreview: 'An ordinary new message' }),
+      ]));
+    }
+
+
+    server.appConversations!.store.append({
+      kind: 'message', conversationKey: key, eventId: 'surviving-notification-event', messageId: 'surviving-notification',
+      machineId: server.appConversations!.deps.machineId(), role: 'agent', text: 'A surviving reply', at: new Date().toISOString(),
+    });
+    const survivingNotificationPath = `/mobile/chat/app/${key}/preview/surviving-notification`;
+    const survivingNotification = await send('GET', survivingNotificationPath);
+    expect(survivingNotification.status).toBe(200);
+    expect(survivingNotification.body.body).toBe('A surviving reply');
+    const notificationToken = crypto.randomBytes(32).toString('hex');
+    expect(server.mobilePairing!.devices.setPush(deviceId, {
+      token: 'a'.repeat(64), environment: 'sandbox',
+      notifyTokenHash: crypto.createHash('sha256').update(notificationToken).digest('hex'), revision: 1,
+    }).ok).toBe(true);
+    const notifier = await request(app).get(survivingNotificationPath)
+      .set('X-Instar-Device', deviceId).set('X-Instar-Notify-Token', notificationToken);
+    expect(notifier.status).toBe(403);
+    expect(notifier.body).not.toHaveProperty('body');
+
+    const store = server.appConversations!.store;
+    const readOwn = store.ownReaction.bind(store);
+    const reactionRace = vi.spyOn(store, 'ownReaction').mockImplementationOnce((...args) => {
+      store.append({
+        kind: 'message-removed', eventId: 'removal-during-reaction-read', conversationKey: key,
+        targetEventId: 'surviving-notification-event', targetMessageId: 'surviving-notification',
+        machineId: server.appConversations!.deps.machineId(), at: new Date().toISOString(),
+      });
+      return readOwn(...args);
+    });
+    try {
+      const raced = await reactionFor('surviving-notification-event');
+      expect(raced.status).toBe(503);
+      expect(raced.body).not.toHaveProperty('own');
+    } finally { reactionRace.mockRestore(); }
+
+    const bytes = Buffer.from('download fallback fixture');
+    const sha = crypto.createHash('sha256').update(bytes).digest('hex');
+    const blob = path.join(server.appConversations!.media.root, 'blobs', sha.slice(0, 2), sha);
+    fs.mkdirSync(path.dirname(blob), { recursive: true });
+    fs.writeFileSync(blob, bytes);
+    const addMedia = (id: string) => {
+      store.append({ kind: 'media-message', conversationKey: key, eventId: `event-${id}`, messageId: id,
+        role: 'agent', text: '', machineId: server.appConversations!.deps.machineId(), at: new Date().toISOString(),
+        attachments: [{ attachmentId: attachmentIdFor(id, 0), index: 0, sha256: sha, size: bytes.length, filename: 'fixture.bin',
+          kind: 'file', declaredKind: 'file', mediaType: 'application/octet-stream', declaredType: 'application/octet-stream' }],
+      });
+    };
+    addMedia('removed-media');
+    addMedia('surviving-media');
+    const removeMedia = (id: string) => store.append({ kind: 'message-removed', conversationKey: key, eventId: `delete-${id}`,
+      targetEventId: `event-${id}`, targetMessageId: id, machineId: server.appConversations!.deps.machineId(), at: new Date().toISOString() });
+    removeMedia('removed-media');
+    const mediaPath = `/mobile/media/${sha}?ref=app%3A${key}`;
+    const sharedDownload = await send('GET', mediaPath).set('Range', 'bytes=0-7');
+    expect(sharedDownload.status).toBe(206);
+    expect(sharedDownload.body).toEqual(bytes.subarray(0, 8));
+    const openForSession = (id: string) =>
+      auth(request(app).get(`/app/media-path/${attachmentIdFor(id, 0)}?conversationId=${alias}`))
+        .set('X-Instar-Bind-Token', token);
+    expect((await openForSession('removed-media')).status).toBe(404);
+    const sessionCopy = await openForSession('surviving-media');
+    expect(sessionCopy.status, JSON.stringify(sessionCopy.body)).toBe(200);
+    expect(fs.readFileSync(sessionCopy.body.path)).toEqual(bytes);
+
+    const openFile = fs.promises.open.bind(fs.promises);
+    const mediaRace = vi.spyOn(fs.promises, 'open').mockImplementation(async (...args) => {
+      const handle = await openFile(...args);
+      if (args[0] === blob) removeMedia('surviving-media');
+      return handle;
+    });
+    try {
+      const raced = await send('GET', mediaPath);
+      expect(raced.status).toBe(404);
+      expect(raced.body).toEqual({ error: 'not-found' });
+    } finally { mediaRace.mockRestore(); }
+    expect((await send('GET', mediaPath)).status).toBe(404);
+    expect((await openForSession('surviving-media')).status).toBe(404);
+    addMedia('session-race-media');
+    const copyFile = fs.promises.copyFile.bind(fs.promises);
+    const stagingRace = vi.spyOn(fs.promises, 'copyFile').mockImplementation(async (...args) => {
+      await copyFile(...args);
+      if (args[0] === blob) removeMedia('session-race-media');
+    });
+    try {
+      const refusedCopy = await openForSession('session-race-media');
+      expect(refusedCopy.status).toBe(404);
+      expect(refusedCopy.body).not.toHaveProperty('path');
+      const copiesDir = path.join(server.appConversations!.media.root, 'session-files', 'session-race-media');
+      expect(fs.readdirSync(copiesDir)).toEqual([]);
+    } finally { stagingRace.mockRestore(); }
+
+
+    const custodyFile = path.join(stateDir, 'state', 'app-removal-read-custody', `${key}.json`);
+    const retained = fs.readFileSync(custodyFile);
+    fs.writeFileSync(custodyFile, '{"version":1}');
+    try {
+      const unavailableHistory = await send('GET', `/mobile/chat/app/${key}/messages`);
+      expect(unavailableHistory.status).toBe(503);
+      expect(unavailableHistory.body).not.toHaveProperty('messages');
+      const list = await send('GET', '/mobile/conversations?scope=pool');
+      expect(list.status).toBe(200);
+      expect(list.body.conversations).toContainEqual(expect.objectContaining({ id: key, lastPreview: null }));
+
+    } finally { fs.writeFileSync(custodyFile, retained); }
+
+    if (writeAcceptance) {
+      const endpoint = `/mobile/chat/app/${key}/message-removals`;
+      const intent = { custodianMachineId: server.appConversations!.deps.machineId(),
+        eventId: quoted.body.eventId, requestId: `${Date.now()}-${crypto.randomUUID()}` };
+      const forwarded = await send('POST', endpoint, intent).set('X-Forwarded-Proto', 'https');
+      expect(forwarded.status).toBe(403);
+      const removed = await send('POST', endpoint, intent);
+      expect(removed.status, JSON.stringify(removed.body)).toBe(200);
+      expect(removed.body).toEqual({ eventId: intent.eventId, removalEventId: expect.any(String) });
+      expect((await send('POST', endpoint, intent)).body).toEqual(removed.body);
+      const sync = await send('GET', `/mobile/chat/app/${key}/events`);
+      expect(sync.body.changes).toContainEqual({ kind: 'message-removed', conversationKey: key,
+        eventId: removed.body.removalEventId, targetEventId: intent.eventId });
+      expect((await send('GET', `/mobile/chat/app/${key}/messages`)).body.messages)
+        .not.toContainEqual(expect.objectContaining({ eventId: intent.eventId }));
+    }
 
     // A ledger revocation alone refuses the phone at once on the production auth path, even if
     // the registry write after it failed (the registry still says active here).

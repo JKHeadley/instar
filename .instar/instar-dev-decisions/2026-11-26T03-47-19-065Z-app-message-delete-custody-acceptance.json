@@ -1,0 +1,23 @@
+{
+  "ts": "2026-11-26T03:47:19.065Z",
+  "slug": "app-message-delete-custody-acceptance",
+  "suggestedTier": 1,
+  "declaredTier": 2,
+  "riskFloor": 1,
+  "riskFloorReasons": [],
+  "belowFloor": false,
+  "files": 2,
+  "loc": 31,
+  "scope": {
+    "basis": "staged-in-scope-paths-including-deleted",
+    "files": [
+      "src/server/AgentServer.ts",
+      "src/server/mobileAppRemovalSyncAuthority.ts"
+    ],
+    "addedLines": 26,
+    "deletedLines": 5
+  },
+  "causalAutopsy": null,
+  "classClosure": null,
+  "verdict": "pass"
+}

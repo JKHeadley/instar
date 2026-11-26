@@ -1,0 +1,24 @@
+{
+  "version": 2,
+  "slug": "app-message-delete-sync-projection",
+  "sessionId": "633bd330-201e-4dc8-8fd9-72b89116167e",
+  "timestamp": "2026-11-25T20:52:25.065Z",
+  "artifactPath": "upgrades/side-effects/app-message-delete-sync-projection.md",
+  "artifactSha256": "35677076c1f3c579a241eaf2cfadd16863c86d3595f2a17412d2f65a973307d4",
+  "specPath": "docs/specs/conversation-message-delete.md",
+  "coveredFiles": [
+    "docs/specs/conversation-message-delete.eli16.md",
+    "docs/specs/conversation-message-delete.md",
+    "docs/specs/reports/conversation-message-delete-convergence.md",
+    "src/core/AppConversationStore.ts",
+    "src/server/mobileConversationRoutes.ts",
+    "tests/e2e/mobile-native-conversations-alive.test.ts",
+    "tests/unit/app-conversation-store.test.ts",
+    "upgrades/side-effects/app-message-delete-sync-projection.md"
+  ],
+  "phase": "complete",
+  "tier": 2,
+  "tierReasoning": "Removal-aware sync cursor and authorized marker projection",
+  "secondPass": "true",
+  "reviewerConcurred": true
+}

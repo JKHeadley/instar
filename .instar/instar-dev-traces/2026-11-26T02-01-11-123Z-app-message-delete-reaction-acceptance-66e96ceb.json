@@ -1,0 +1,22 @@
+{
+  "version": 2,
+  "slug": "app-message-delete-reaction-acceptance",
+  "sessionId": "633bd330-201e-4dc8-8fd9-72b89116167e",
+  "timestamp": "2026-11-26T02:01:11.123Z",
+  "artifactPath": "upgrades/side-effects/app-message-delete-reaction-acceptance.md",
+  "artifactSha256": "c8aaf5373f8882075f518b8b211771bd801e20e159489953eb5426c067825fb6",
+  "specPath": "docs/specs/conversation-message-delete.md",
+  "coveredFiles": [
+    "docs/specs/conversation-message-delete.eli16.md",
+    "docs/specs/conversation-message-delete.md",
+    "src/server/mobileAppRemovalSync.ts",
+    "src/server/mobileConversationRoutes.ts",
+    "tests/e2e/mobile-native-conversations-alive.test.ts",
+    "upgrades/side-effects/app-message-delete-reaction-acceptance.md"
+  ],
+  "phase": "complete",
+  "tier": 2,
+  "tierReasoning": "Bind enrolled reaction reads to the current exact removal proof and refuse unsupported writes",
+  "secondPass": "true",
+  "reviewerConcurred": true
+}

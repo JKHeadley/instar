@@ -27,6 +27,7 @@ import { Router, type Request, type Response } from 'express';
 import type { InstarConfig } from '../core/types.js';
 import type { MobilePairingService } from './mobilePairingRoutes.js';
 import { deviceMayUse, devicePersonOf, isMobileNativeEnabled } from './mobilePairingRoutes.js';
+import { isAppConversationKey } from '../core/appConversationText.js';
 import type { AppConversationService } from '../core/AppConversationService.js';
 import type { TopicMemory } from '../memory/TopicMemory.js';
 import type { RouteContext } from './routes.js';
@@ -88,6 +89,8 @@ export interface ConversationSearchRouteDeps {
   /** This machine's Slack conversations and their history rows; null when Slack is off or its owner id is unset. */
   slack?: () => { conversations(): Array<{ id: number; title: string | null }>; history(id: number, limit: number): SlackSearchRow[] } | null;
   pool?: PoolReadCtx | null;
+  /** Enrolled App rooms cannot use stale local or peer search indexes in isolated acceptance. */
+  removalReadAcceptance?: (conversationKey: string) => boolean;
   /** Meaning search (§4): the embedding index and model; null ⇒ meaning answers 503 `meaning-unavailable`. */
   meaning?: () => MeaningSearchDeps | null;
 }
@@ -341,14 +344,31 @@ export function createConversationSearchRouter(deps: ConversationSearchRouteDeps
     }
     const pool = req.query.scope === 'pool';
     const person = devicePersonOf(req);
-    const may = (accessKey: string) => !deps.service!.store.isHiddenConversation?.(accessKey) && deviceMayUse(deps.pairing, req, accessKey);
+    const ordinaryAccess = (accessKey: string) => !deps.service!.store.isHiddenConversation?.(accessKey) && deviceMayUse(deps.pairing, req, accessKey);
+    let protectedAppOmitted = false;
+    const protectedApp = (accessKey: string) => {
+      if (!deps.removalReadAcceptance || !isAppConversationKey(accessKey)) return false;
+      try {
+        if (!deps.removalReadAcceptance(accessKey)) return false;
+      } catch { /* @silent-fallback-ok — uncertain enrollment cannot use a stale search index */ }
+      protectedAppOmitted = true;
+      return true;
+    };
+    const may = (accessKey: string) => ordinaryAccess(accessKey) && !protectedApp(accessKey);
+    const keepAfterAwait = (hit: ConversationSearchHit) => !protectedApp(accessKeyOf(hit.ref));
+    const scopedUnavailable = () => {
+      if (!only || !protectedApp(accessKeyOf(only))) return false;
+      res.status(503).json({ error: 'search-unavailable' });
+      return true;
+    };
     if (only) {
-      if (!may(accessKeyOf(only))) { res.status(404).json({ error: 'unknown-conversation' }); return; }
+      if (!ordinaryAccess(accessKeyOf(only))) { res.status(404).json({ error: 'unknown-conversation' }); return; }
+      if (scopedUnavailable()) return;
       // A conversation this machine does not hold is a 404 here; a pool read asks the others too.
       if (!pool && !heldHere(deps, only)) { res.status(404).json({ error: 'unknown-conversation' }); return; }
     }
     const terms = searchTerms(query);
-    if (mode === 'meaning') { await meaningSearch(deps, req, res, { query, terms, limit, only, pool, person, may }); return; }
+    if (mode === 'meaning') { await meaningSearch(deps, req, res, { query, terms, limit, only, pool, person, may, keepAfterAwait, scopedUnavailable, protectedAppOmitted: () => protectedAppOmitted }); return; }
     let local: LocalSearchResult;
     try {
       local = searchLocal(deps, { terms, limit, only }, { may, mayReadApp: (key, m) => deps.pairing.mayReadStored(person, key, m) });
@@ -357,6 +377,7 @@ export function createConversationSearchRouter(deps: ConversationSearchRouteDeps
       res.status(503).json({ error: 'search-unavailable', detail: 'Search could not read the conversations right now. Try again shortly.' });
       return;
     }
+    if (protectedAppOmitted && !local.unsearched.includes('app')) local.unsearched.push('app');
     const base = { query, mode: 'keyword' as const, ref: only };
     // A team phone reads what this machine holds (as the list does): a peer's rows cannot be judged here.
     if (!pool || person?.role === 'team' || terms.length === 0 || !deps.pool) {
@@ -365,9 +386,10 @@ export function createConversationSearchRouter(deps: ConversationSearchRouteDeps
     }
     const path = `/mobile/conversations/search?mode=keyword&limit=${limit}&q=${encodeURIComponent(query)}${only ? `&ref=${encodeURIComponent(only)}` : ''}`;
     const peers = await searchPeers(deps.pool, path);
+    if (scopedUnavailable()) return;
     let capped = local.capped;
     const unsearched = new Set<SearchPlatform>(local.unsearched);
-    const all: ConversationSearchHit[] = [...local.results];
+    const all: ConversationSearchHit[] = local.results.filter(keepAfterAwait);
     for (const p of peers.results) {
       if (p.body.capped === true) capped = true;
       for (const u of Array.isArray(p.body.unsearched) ? p.body.unsearched : []) if (u === 'app' || u === 'telegram' || u === 'slack') unsearched.add(u);
@@ -377,6 +399,7 @@ export function createConversationSearchRouter(deps: ConversationSearchRouteDeps
         if (h && may(accessKeyOf(h.ref))) all.push(h);
       }
     }
+    if (protectedAppOmitted) unsearched.add('app');
     // Local hits sort ahead of an equal peer copy, so the dedupe keeps this machine's row.
     const ordered = all.map((h, i) => ({ h, i })).sort((a, b) => compareHits(a.h, b.h) || a.i - b.i).map((x) => x.h);
     const results = dedupeHits(ordered).slice(0, limit);
@@ -400,7 +423,7 @@ const meaningUnavailable = (res: Response, reason: 'off' | 'no-index' | 'model-f
 /** `mode=meaning` (§4): the same visibility, shape and pool rules as keyword, ranked by meaning. */
 async function meaningSearch(
   deps: ConversationSearchRouteDeps, req: Request, res: Response,
-  q: { query: string; terms: string[]; limit: number; only: string | null; pool: boolean; person: ReturnType<typeof devicePersonOf>; may: (accessKey: string) => boolean },
+  q: { query: string; terms: string[]; limit: number; only: string | null; pool: boolean; person: ReturnType<typeof devicePersonOf>; may: (accessKey: string) => boolean; keepAfterAwait: (hit: ConversationSearchHit) => boolean; scopedUnavailable: () => boolean; protectedAppOmitted: () => boolean },
 ): Promise<void> {
   if (!isMeaningSearchEnabled(deps.config)) { meaningUnavailable(res, 'off'); return; }
   const meaning = deps.meaning?.() ?? null;
@@ -413,6 +436,7 @@ async function meaningSearch(
     meaningUnavailable(res, 'model-failed');
     return;
   }
+  if (q.scopedUnavailable()) return;
   let local: LocalSearchResult;
   try {
     local = searchMeaningLocal(deps, meaning, { queryVec, terms: q.terms, limit: q.limit, only: q.only }, {
@@ -423,6 +447,7 @@ async function meaningSearch(
     meaningUnavailable(res, 'index-failed');
     return;
   }
+  if (q.protectedAppOmitted() && !local.unsearched.includes('app')) local.unsearched.push('app');
   const base = { query: q.query, mode: 'meaning' as const, ref: q.only };
   const ownCoverage = meaning.coverage();
   if (!q.pool || q.person?.role === 'team' || !deps.pool) {
@@ -431,10 +456,11 @@ async function meaningSearch(
   }
   const path = `/mobile/conversations/search?mode=meaning&limit=${q.limit}&q=${encodeURIComponent(q.query)}${q.only ? `&ref=${encodeURIComponent(q.only)}` : ''}`;
   const peers = await searchPeers(deps.pool, path);
+  if (q.scopedUnavailable()) return;
   let capped = local.capped;
   let coverage = ownCoverage;
   const unsearched = new Set<SearchPlatform>(local.unsearched);
-  const all: ConversationSearchHit[] = [...local.results];
+  const all: ConversationSearchHit[] = local.results.filter(q.keepAfterAwait);
   for (const p of peers.results) {
     if (p.body.capped === true) capped = true;
     // The pool's coverage is the lowest of the machines that answered (the most "still learning").
@@ -446,6 +472,7 @@ async function meaningSearch(
       if (h && q.may(accessKeyOf(h.ref))) all.push(h);
     }
   }
+  if (q.protectedAppOmitted()) unsearched.add('app');
   const ordered = all.map((h, i) => ({ h, i })).sort((a, b) => compareHits(a.h, b.h) || a.i - b.i).map((x) => x.h);
   const results = dedupeHits(ordered).slice(0, q.limit);
   const failedMachines = [...new Set(peers.failed)].sort();

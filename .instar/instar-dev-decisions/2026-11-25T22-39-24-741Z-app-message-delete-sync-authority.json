@@ -1,0 +1,23 @@
+{
+  "ts": "2026-11-25T22:39:24.741Z",
+  "slug": "app-message-delete-sync-authority",
+  "suggestedTier": 2,
+  "declaredTier": 2,
+  "riskFloor": 1,
+  "riskFloorReasons": [],
+  "belowFloor": false,
+  "files": 2,
+  "loc": 85,
+  "scope": {
+    "basis": "staged-in-scope-paths-including-deleted",
+    "files": [
+      "src/server/mobileAppMessageRemovalAdmission.ts",
+      "src/server/mobileAppRemovalSyncAuthority.ts"
+    ],
+    "addedLines": 81,
+    "deletedLines": 4
+  },
+  "causalAutopsy": null,
+  "classClosure": null,
+  "verdict": "pass"
+}

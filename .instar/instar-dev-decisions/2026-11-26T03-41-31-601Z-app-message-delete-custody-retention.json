@@ -1,0 +1,24 @@
+{
+  "ts": "2026-11-26T03:41:31.601Z",
+  "slug": "app-message-delete-custody-retention",
+  "suggestedTier": 2,
+  "declaredTier": 2,
+  "riskFloor": 2,
+  "riskFloorReasons": [
+    "new capability: new exported class / subsystem added"
+  ],
+  "belowFloor": false,
+  "files": 1,
+  "loc": 141,
+  "scope": {
+    "basis": "staged-in-scope-paths-including-deleted",
+    "files": [
+      "src/core/AppRemovalReadCustody.ts"
+    ],
+    "addedLines": 141,
+    "deletedLines": 0
+  },
+  "causalAutopsy": null,
+  "classClosure": null,
+  "verdict": "pass"
+}

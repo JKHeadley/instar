@@ -29,10 +29,12 @@
  * process exit handler (SIGTERM/SIGINT/exit) — see `installReleaseHandlers`.
  */
 
+import { randomUUID } from 'node:crypto';
 import fs from 'node:fs';
 import os from 'node:os';
 import path from 'node:path';
 import { execFileSync } from 'node:child_process';
+import Database from 'better-sqlite3';
 
 import { SafeFsExecutor } from './SafeFsExecutor.js';
 import { isAlive } from './ProjectRoundLock.js';
@@ -177,6 +179,7 @@ export class SingleInstanceLock {
   private readonly env: NodeJS.ProcessEnv;
   private readonly log: (msg: string) => void;
   private held = false;
+  private acquiredWithOverride = false;
 
   constructor(deps: SingleInstanceLockDeps) {
     this.stateDir = deps.stateDir;
@@ -247,6 +250,7 @@ export class SingleInstanceLock {
       // Still write our record so a LATER third instance sees a holder.
       this.tryWriteLock();
       this.held = true;
+      this.acquiredWithOverride = true;
       return { acquired: true, overridden: true };
     }
 
@@ -259,6 +263,7 @@ export class SingleInstanceLock {
         // Free — take it.
         if (this.tryWriteLock()) {
           this.held = true;
+          this.acquiredWithOverride = false;
           return { acquired: true };
         }
         // Lost a creation race — loop and re-read.
@@ -336,14 +341,9 @@ export class SingleInstanceLock {
         );
         return { acquired: false, reason: 'foreign-host-conflict', currentHolder: existing };
       }
-      // Reclaim the stale lock atomically and take it.
-      try {
-        SafeFsExecutor.safeUnlinkSync(this.lockPath(), { operation: 'SingleInstanceLock.acquire:reclaim-stale' });
-      } catch {
-        /* race with another reclaimer — loop and re-read */
-      }
-      if (this.tryWriteLock()) {
+      if (this.tryReclaimLock(existing)) {
         this.held = true;
+        this.acquiredWithOverride = false;
         this.log(`[single-instance] reclaimed a stale same-host lock (dead pid ${existing.pid}).`);
         return { acquired: true };
       }
@@ -371,6 +371,11 @@ export class SingleInstanceLock {
     const rec = this.readLock();
     if (!rec) return false;
     return rec.pid === process.pid && rec.hostname === this.host;
+  }
+
+  /** The deliberate second-instance mode cannot authorize exclusive writes. */
+  revalidateForExclusiveWrite(): boolean {
+    return !this.acquiredWithOverride && this.revalidate();
   }
 
   /** Refresh the heartbeat (optional — the lock is primarily pid-guarded). */
@@ -423,7 +428,31 @@ export class SingleInstanceLock {
     }
   }
 
-  /** Atomic O_CREAT|O_EXCL write. Returns false if another writer won the race. */
+  /** Serialize stale-record removal across processes. SQLite releases the mutex if a process exits. */
+  private tryReclaimLock(observed: InstanceLockRecord): boolean {
+    let mutex: Database.Database | undefined;
+    try {
+      const mutexPath = path.join(this.stateDir, 'local', 'server-instance-reclaim.sqlite');
+      mutex = new Database(mutexPath, { timeout: 0 });
+      return mutex.transaction(() => {
+        const current = this.readLock();
+        if (!current || current.pid !== observed.pid || current.hostname !== observed.hostname
+          || current.startedAt !== observed.startedAt || current.heartbeat !== observed.heartbeat) return false;
+        this.startProbeMemo.delete(current.pid);
+        if (this.holderIsLive(current)) return false;
+        SafeFsExecutor.safeUnlinkSync(this.lockPath(), { operation: 'SingleInstanceLock.acquire:reclaim-stale' });
+        // A first-time publisher can win the newly free name. Atomic publication
+        // ensures this contender can never overwrite it.
+        return this.tryWriteLock();
+      }).immediate();
+    } catch {
+      return false; // @silent-fallback-ok — an unavailable or busy mutex cannot authorize reclaim
+    } finally {
+      mutex?.close();
+    }
+  }
+
+  /** Publish a complete lock record atomically without replacing an existing holder. */
   private tryWriteLock(): boolean {
     this.ensureDir();
     const rec: InstanceLockRecord = {
@@ -438,34 +467,18 @@ export class SingleInstanceLock {
       rec.startedAt = Math.round(selfStart / 1000) * 1000;
     }
     const body = JSON.stringify(rec);
-    const tmp = `${this.lockPath()}.tmp.${process.pid}`;
+    const tmp = `${this.lockPath()}.tmp.${process.pid}.${randomUUID()}`;
     try {
-      const fd = fs.openSync(tmp, 'wx', 0o600);
-      fs.writeSync(fd, body);
-      fs.closeSync(fd);
-    } catch {
-      // @silent-fallback-ok: a tmp-file write race ⇒ report "did not acquire"
-      // (false); the acquire loop re-reads and retries — never a silent grant.
-      try { SafeFsExecutor.safeUnlinkSync(tmp, { operation: 'SingleInstanceLock.tryWriteLock:cleanup-tmp' }); } catch { /* @silent-fallback-ok: tmp cleanup is best-effort */ }
-      return false;
-    }
-    // Use link()/rename guarded by an O_EXCL pre-check: rename would clobber an
-    // existing lock, so only rename when the target does NOT exist. The window
-    // is narrow; a clobber would only happen between two simultaneous fresh
-    // starts, and the pid-guarded release prevents deleting the winner's lock.
-    try {
-      if (fs.existsSync(this.lockPath())) {
-        // Someone created the lock between our read and now — back off.
-        try { SafeFsExecutor.safeUnlinkSync(tmp, { operation: 'SingleInstanceLock.tryWriteLock:exists-backoff' }); } catch { /* @silent-fallback-ok: tmp cleanup is best-effort */ }
-        return false;
-      }
-      fs.renameSync(tmp, this.lockPath());
+      fs.writeFileSync(tmp, body, { flag: 'wx', mode: 0o600 });
+      // A hard link publishes the complete record and fails if the destination exists.
+      fs.linkSync(tmp, this.lockPath());
       return true;
     } catch {
-      // @silent-fallback-ok: a rename race ⇒ report "did not acquire" (false);
-      // the acquire loop re-reads and retries — never a silent grant past the cap.
-      try { SafeFsExecutor.safeUnlinkSync(tmp, { operation: 'SingleInstanceLock.tryWriteLock:cleanup-tmp' }); } catch { /* @silent-fallback-ok: tmp cleanup is best-effort */ }
+      // @silent-fallback-ok: contention or unsupported publication must never grant ownership.
       return false;
+    } finally {
+      try { SafeFsExecutor.safeUnlinkSync(tmp, { operation: 'SingleInstanceLock.tryWriteLock:cleanup-tmp' }); }
+      catch { /* @silent-fallback-ok — temporary file cleanup is best-effort */ }
     }
   }
 

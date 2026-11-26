@@ -1,0 +1,23 @@
+{
+  "ts": "2026-11-25T20:53:07.520Z",
+  "slug": "app-message-delete-sync-projection",
+  "suggestedTier": 2,
+  "declaredTier": 2,
+  "riskFloor": 1,
+  "riskFloorReasons": [],
+  "belowFloor": false,
+  "files": 2,
+  "loc": 81,
+  "scope": {
+    "basis": "staged-in-scope-paths-including-deleted",
+    "files": [
+      "src/core/AppConversationStore.ts",
+      "src/server/mobileConversationRoutes.ts"
+    ],
+    "addedLines": 74,
+    "deletedLines": 7
+  },
+  "causalAutopsy": null,
+  "classClosure": null,
+  "verdict": "pass"
+}

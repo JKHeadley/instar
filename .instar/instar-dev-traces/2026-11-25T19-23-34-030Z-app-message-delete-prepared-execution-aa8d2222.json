@@ -1,0 +1,25 @@
+{
+  "version": 2,
+  "slug": "app-message-delete-prepared-execution",
+  "sessionId": "633bd330-201e-4dc8-8fd9-72b89116167e",
+  "timestamp": "2026-11-25T19:23:34.030Z",
+  "artifactPath": "upgrades/side-effects/app-message-delete-prepared-execution.md",
+  "artifactSha256": "1dddcca97055a71be05ce98f551ca7ef16131c8b0222f3709312fe44fa1aed85",
+  "specPath": "docs/specs/conversation-message-delete.md",
+  "coveredFiles": [
+    "docs/specs/conversation-message-delete.eli16.md",
+    "docs/specs/conversation-message-delete.md",
+    "docs/specs/reports/conversation-message-delete-convergence.md",
+    "src/core/AppConversationStore.ts",
+    "src/server/mobileAppMessageRemoval.ts",
+    "src/server/mobileAppMessageRemovalAdmission.ts",
+    "tests/e2e/mobile-native-conversations-alive.test.ts",
+    "tests/integration/mobile-native-conversations.test.ts",
+    "upgrades/side-effects/app-message-delete-prepared-execution.md"
+  ],
+  "phase": "complete",
+  "tier": 2,
+  "tierReasoning": "Revalidate current signed authority and exact prepared proof after asynchronous history preparation",
+  "secondPass": "true",
+  "reviewerConcurred": true
+}

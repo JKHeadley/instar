@@ -1,0 +1,25 @@
+{
+  "version": 2,
+  "slug": "app-message-delete-journal-revision",
+  "sessionId": "633bd330-201e-4dc8-8fd9-72b89116167e",
+  "timestamp": "2026-11-25T23:38:54.467Z",
+  "artifactPath": "upgrades/side-effects/app-message-delete-journal-revision.md",
+  "artifactSha256": "fe61167ce979c5ef4edaaebcfb8323aaa0c87669e964c37aab6ca510e8af875c",
+  "specPath": "docs/specs/conversation-message-delete.md",
+  "coveredFiles": [
+    "docs/specs/conversation-message-delete.eli16.md",
+    "docs/specs/conversation-message-delete.md",
+    "docs/specs/reports/conversation-message-delete-convergence.md",
+    "src/core/AppConversationStore.ts",
+    "src/server/mobileAppRemovalSyncAuthority.ts",
+    "tests/e2e/mobile-native-conversations-alive.test.ts",
+    "tests/integration/mobile-native-conversations.test.ts",
+    "tests/unit/app-conversation-store.test.ts",
+    "upgrades/side-effects/app-message-delete-journal-revision.md"
+  ],
+  "phase": "complete",
+  "tier": 2,
+  "tierReasoning": "Use exact store-backed journal revision in private signed continuation authority",
+  "secondPass": "true",
+  "reviewerConcurred": true
+}

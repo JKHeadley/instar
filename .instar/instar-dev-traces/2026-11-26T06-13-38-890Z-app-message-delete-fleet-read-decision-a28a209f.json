@@ -1,0 +1,21 @@
+{
+  "version": 2,
+  "slug": "app-message-delete-fleet-read-decision",
+  "sessionId": "633bd330-201e-4dc8-8fd9-72b89116167e",
+  "timestamp": "2026-11-26T06:13:38.890Z",
+  "artifactPath": "upgrades/side-effects/app-message-delete-fleet-read-decision.md",
+  "artifactSha256": "05c4714b819b3fe41de2b928e88332dcf9ddf872ca6f47de4fcf68f175ccb84c",
+  "specPath": "docs/specs/conversation-message-delete.md",
+  "coveredFiles": [
+    "docs/specs/conversation-message-delete.eli16.md",
+    "docs/specs/conversation-message-delete.md",
+    "src/core/AppRemovalFleetReadAuthority.ts",
+    "tests/unit/app-removal-fleet-read-authority.test.ts",
+    "upgrades/side-effects/app-message-delete-fleet-read-decision.md"
+  ],
+  "phase": "complete",
+  "tier": 2,
+  "tierReasoning": "Require settled enrollment and exact attested serving scope for the unmounted fleet decision",
+  "secondPass": "true",
+  "reviewerConcurred": true
+}

@@ -292,9 +292,10 @@ import { findRemoteSession, createMobileSessionRouter } from './mobileSessionRou
 import { createMobileSessionTerminalRouter, peerRowsMatch, PEER_LOOKUP_MAX, PEER_LOOKUP_TIMEOUT_MS, type PeerLookup } from './mobileSessionTerminalRoutes.js';
 import { poolPeerFetch } from './poolPeerFetch.js';
 import { AttributionRuntime, type AttributionConfig } from '../core/attribution/attributionRuntime.js';
+import { AppRemovalReadCustody } from '../core/AppRemovalReadCustody.js';
 import { AppConversationService, VOICE_TRANSCRIBE_PROVIDER_TIMEOUT_MS } from '../core/AppConversationService.js';
 import { transcribeAudioFileDetailed, configuredVoiceProvider, describeVoiceTranscription } from '../core/VoiceTranscription.js';
-import { deviceKeyHashOf, identityKeyLookup, loadMachineSigner } from '../core/AppRecordSignatures.js';
+import { createAppMachineTrustEvidence, deviceKeyHashOf, identityKeyLookup, loadMachineSigner } from '../core/AppRecordSignatures.js';
 import { MobileDeviceKeyLedger } from '../core/MobileDeviceKeyLedger.js';
 import { stopAutonomousTopic } from '../core/AutonomousSessions.js';
 import { createAppFollowUpInjector, createAppInboundDispatch, type AppInboundDispatch } from '../core/appInboundDispatch.js';
@@ -1619,6 +1620,10 @@ export class AgentServer {
     spawnAdmission?: import('../core/SpawnAdmission.js').SpawnAdmission;
     /** Native app conversations: the bootstrap-wired service (server.ts). Absent ⇒ default-constructed when the gate is on. */
     appConversations?: AppConversationService;
+    /** In-process acceptance enrollment for an isolated development server. */
+    appRemovalReadAcceptance?: (conversationKey: string) => boolean;
+    /** Test-only write mount, gated separately from disposable read enrollment. */
+    appRemovalWriteAcceptance?: true;
     conversationGraphReplicationRuntime?: import('./ConversationGraphReplicationRuntime.js').ConversationGraphReplicationRuntime;
     conversationGraphDefault?: import('./ConversationGraphDefault.js').ConversationGraphDefault;
     conversationGraphDelegationRuntime?: import('./ConversationGraphDelegationRuntime.js').ConversationGraphDelegationRuntime;
@@ -2082,6 +2087,11 @@ export class AgentServer {
     // general API. Parse it under 96 KiB before the broad server parser.
     // Mobile device keys sign the exact request bytes: every JSON parser keeps them (req.rawBody).
     const keepRawBody = (req: unknown, _res: unknown, buf: Buffer) => { (req as { rawBody?: Buffer }).rawBody = buf; };
+    const privateRemovalWrite = options.config.developmentAgent === true
+      && options.appRemovalWriteAcceptance === true && !!options.appRemovalReadAcceptance && !!options.singleInstanceLock;
+    const privateRemovalArrival = (req: import('express').Request) =>
+      privateRemovalWrite && isLoopbackPeer(req.socket.remoteAddress)
+      && !Object.keys(req.headers).some((header) => header === 'forwarded' || header.startsWith('x-forwarded-'));
     // SEC-103: one credential check (before any body is read) for every parser above 64 KB.
     const bodyBudgetDeps: BodyBudgetDeps = {
       authToken: () => this.config.authToken,
@@ -3088,7 +3098,7 @@ export class AgentServer {
         res.status(401).json({ error: 'threadline-mcp-local-secret-required' });
         return false;
       },
-      this.mobilePairing ? deviceAuthenticator(this.mobilePairing) : undefined,
+      this.mobilePairing ? deviceAuthenticator(this.mobilePairing, privateRemovalArrival) : undefined,
       options.memoryPrivacy ? (token) => options.memoryPrivacy!.sessionForToken(token) : undefined,
       options.memoryPrivacy ? (session) => options.memoryPrivacy!.noteSessionReply(session.sessionId) : undefined,
       // SEC-002b: a dst_ scoped session token is accepted ONLY when the feature is enabled (dark by
@@ -8202,7 +8212,48 @@ export class AgentServer {
         try { return projectTitlesByTopic(options.chiefOfStaffLoop?.projectsSummary() ?? []); }
         catch { return new Map(); } // @silent-fallback-ok — the title is only a fallback for a missing name
       };
+      const acceptanceSelector = options.config.developmentAgent === true ? options.appRemovalReadAcceptance : undefined;
+      const removalCustody = acceptanceSelector ? new AppRemovalReadCustody(options.config.stateDir) : null;
+      const protectedAcceptanceKeys = new Set<string>();
+      const removalEnrollment = acceptanceSelector && removalCustody ? (key: string) => {
+        const normalized = key.toLowerCase();
+        const retained = removalCustody.observe(normalized);
+        if (retained.kind === 'unavailable') throw new Error('removal read custody unavailable');
+        const service = this.appConversations;
+        if (retained.kind === 'recorded') {
+          protectedAcceptanceKeys.add(normalized);
+          const creation = service?.store.getCreationRecord(normalized);
+          if (!creation || creation.eventId !== retained.record.creationEventId
+            || creation.machineId !== retained.record.custodianMachineId) throw new Error('removal read custody changed');
+          return true;
+        }
+        if (protectedAcceptanceKeys.has(normalized)) throw new Error('removal read custody lost');
+        if (!acceptanceSelector(normalized)) return false;
+        const creation = service?.store.getCreationRecord(normalized);
+        if (!service || !creation || creation.machineId !== service.deps.machineId() || !service.serves(normalized)
+          || !removalCustody.record(normalized, creation)) throw new Error('removal read custody could not be retained');
+        protectedAcceptanceKeys.add(normalized);
+        return true;
+      } : undefined;
+      routeCtx.appRemovalReadAcceptance = removalEnrollment;
+      const removalTrust = removalEnrollment ? createAppMachineTrustEvidence(options.config.stateDir) : null;
+      const removalTeamLog = removalEnrollment ? this.mobilePairing.teamLog() : null;
       const conversationFlatDeps: import('./mobileConversationRoutes.js').MobileConversationRouteDeps = {
+        removalReadAcceptance: removalEnrollment && removalTrust ? {
+          enrolled: removalEnrollment,
+          evidence: {
+            machineTrustRevision: (custodian) => removalTrust([custodian])?.revision ?? null,
+            teamVisibilityRevision: () => removalTeamLog?.visibilityRevision() ?? null,
+            retainsCreationCustody: (key, creation) => {
+              const retained = removalCustody?.observe(key);
+              return retained?.kind === 'recorded' && retained.record.creationEventId === creation.eventId
+                && retained.record.custodianMachineId === creation.machineId;
+            },
+          },
+        } : undefined,
+        removalWriteAcceptance: privateRemovalWrite && removalCustody && options.singleInstanceLock ? {
+          loopback: privateRemovalArrival, custody: removalCustody, lock: options.singleInstanceLock,
+        } : undefined,
         unread: this.conversationUnread,
         // Conversation-list pins: server.ts builds it replicated; a server built without it keeps pins on this machine only.
         listPins: options.conversationListPins !== undefined ? options.conversationListPins : (this.appConversations ? new ConversationListPinStore({ stateDir: options.config.stateDir }) : null),
@@ -8268,6 +8319,7 @@ export class AgentServer {
       const searchDeps: ConversationSearchRouteDeps = {
         config: options.config, pairing: this.mobilePairing, service: this.appConversations,
         machineId: conversationFlatDeps.machineId,
+        removalReadAcceptance: removalEnrollment,
         topicMemory: () => options.topicMemory ?? null,
         telegramTopics: options.telegram ? () => { const projectTitles = cosProjectTitles(); return options.telegram!.getAllTopicMappings().map((m) => ({ topicId: m.topicId, topicName: topicDisplayName(m.topicId, m.topicName, projectTitles) })); } : undefined,
         telegramHistoryId: options.telegram ? (topicId, nativeId, fromUser) => {
@@ -8330,6 +8382,7 @@ export class AgentServer {
         pin: (topicId: number, messageId: number, pinned: boolean) => options.telegram!.setTopicMessagePin(topicId, messageId, pinned),
       } : null;
       this.app.use(createMobilePinRouter({
+        removalReadAcceptance: conversationFlatDeps.removalReadAcceptance,
         config: options.config, pairing: this.mobilePairing, service: this.appConversations,
         machineId: () => this.appConversations?.deps.machineId() ?? 'local',
         telegram: pinTelegram ? () => pinTelegram : null,
@@ -8344,6 +8397,7 @@ export class AgentServer {
       }
       const slackRegistry = options.slack ? routeCtx.conversationRegistry ?? null : null;
       this.app.use(createMobileMediaRouter({
+        removalReadAcceptance: conversationFlatDeps.removalReadAcceptance,
         pairing: this.mobilePairing, service: this.appConversations, mediaEnabled: isMobileMediaEnabled(options.config),
         machineId: () => this.appConversations?.deps.machineId() ?? 'local',
         // The owner's phone opens a Slack file from the machine that holds it (mobile-remote-media).

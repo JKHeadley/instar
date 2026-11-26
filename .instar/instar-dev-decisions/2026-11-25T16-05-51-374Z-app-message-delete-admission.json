@@ -1,0 +1,22 @@
+{
+  "ts": "2026-11-25T16:05:51.374Z",
+  "slug": "app-message-delete-admission",
+  "suggestedTier": 2,
+  "declaredTier": 2,
+  "riskFloor": 1,
+  "riskFloorReasons": [],
+  "belowFloor": false,
+  "files": 1,
+  "loc": 92,
+  "scope": {
+    "basis": "staged-in-scope-paths-including-deleted",
+    "files": [
+      "src/server/mobileAppMessageRemovalAdmission.ts"
+    ],
+    "addedLines": 92,
+    "deletedLines": 0
+  },
+  "causalAutopsy": null,
+  "classClosure": null,
+  "verdict": "pass"
+}

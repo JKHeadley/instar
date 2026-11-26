@@ -1,0 +1,20 @@
+{
+  "version": 2,
+  "slug": "app-message-delete-signed-custody",
+  "sessionId": "633bd330-201e-4dc8-8fd9-72b89116167e",
+  "timestamp": "2026-11-26T08:41:23.365Z",
+  "artifactPath": "upgrades/side-effects/app-message-delete-signed-custody.md",
+  "artifactSha256": "3e3ee93ef2e871290b15bb1a9e15aeb7f930409840b3853c9957ea10464d8b07",
+  "specPath": "docs/specs/conversation-message-delete.md",
+  "coveredFiles": [
+    "src/core/AppRemovalReadCustody.ts",
+    "tests/e2e/app-removal-read-custody.test.ts",
+    "tests/unit/app-removal-creation-proof.test.ts",
+    "upgrades/side-effects/app-message-delete-signed-custody.md"
+  ],
+  "phase": "complete",
+  "tier": 2,
+  "tierReasoning": "Isolate unmounted signed peer evidence from existing local custody",
+  "secondPass": "not-required",
+  "reviewerConcurred": null
+}

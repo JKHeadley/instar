@@ -16,8 +16,9 @@
  *   - release only removes OUR OWN lock (never a successor's).
  */
 
-import { describe, it, expect, beforeEach, afterEach } from 'vitest';
+import { describe, it, expect, beforeEach, afterEach, vi } from 'vitest';
 import fs from 'node:fs';
+import Database from 'better-sqlite3';
 import os from 'node:os';
 import path from 'node:path';
 import {
@@ -270,6 +271,92 @@ describe('SingleInstanceLock', () => {
     expect(r.acquired).toBe(false); // the holder (this very process) is genuinely live
     expect(r.reason).toBe('duplicate-live-instance');
     first.release();
+  });
+
+  it('keeps a new live record when the observed stale record changes before reclaim', async () => {
+    const lockPath = path.join(dir, 'local', 'server-instance.lock');
+    const winner = JSON.stringify({ pid: process.pid, hostname: HOST, heartbeat: 200 });
+    fs.mkdirSync(path.dirname(lockPath), { recursive: true });
+    fs.writeFileSync(lockPath, JSON.stringify({ pid: 2147483647, hostname: HOST, heartbeat: 100 }));
+    const lock = new SingleInstanceLock({
+      stateDir: dir, hostname: () => HOST, pidAlive: (pid) => pid === process.pid,
+      handoffGraceMs: 0, env: {},
+      isStateDirHostLocal: () => {
+        fs.writeFileSync(lockPath, winner);
+        return true;
+      },
+    });
+    expect((await lock.acquire()).acquired).toBe(false);
+    expect(lock.revalidateForExclusiveWrite()).toBe(false);
+    expect(fs.readFileSync(lockPath, 'utf8')).toBe(winner);
+  });
+
+  it('requires the same process start time before reclaiming', async () => {
+    const lockPath = path.join(dir, 'local', 'server-instance.lock');
+    const stale = { pid: 2147483647, hostname: HOST, startedAt: 100, heartbeat: 200 };
+    const updated = JSON.stringify({ ...stale, startedAt: 150 });
+    fs.mkdirSync(path.dirname(lockPath), { recursive: true });
+    fs.writeFileSync(lockPath, JSON.stringify(stale));
+    const lock = new SingleInstanceLock({
+      stateDir: dir, hostname: () => HOST, pidAlive: () => false, handoffGraceMs: 0, env: {},
+      isStateDirHostLocal: () => {
+        fs.writeFileSync(lockPath, updated);
+        return true;
+      },
+    });
+    expect((await lock.acquire()).acquired).toBe(false);
+    expect(fs.readFileSync(lockPath, 'utf8')).toBe(updated);
+  });
+
+  it('does not remove a stale record while another connection holds the reclaim mutex', async () => {
+    const lock = makeLock(dir, { hostLocal: true, handoffGraceMs: 0, alivePids: new Set() });
+    const local = path.dirname(lock.lockPath());
+    fs.mkdirSync(local, { recursive: true });
+    const record = JSON.stringify({ pid: 2147483647, hostname: HOST, heartbeat: 100 });
+    fs.writeFileSync(lock.lockPath(), record);
+    const mutex = new Database(path.join(local, 'server-instance-reclaim.sqlite'));
+    try {
+      mutex.exec('BEGIN IMMEDIATE');
+      expect((await lock.acquire()).acquired).toBe(false);
+      expect(fs.readFileSync(lock.lockPath(), 'utf8')).toBe(record);
+      mutex.exec('ROLLBACK');
+      expect((await lock.acquire()).acquired).toBe(true);
+      expect(lock.revalidateForExclusiveWrite()).toBe(true);
+    } finally {
+      mutex.close();
+      lock.release();
+    }
+  });
+
+  it('leaves a winning record intact if another writer publishes first', async () => {
+    const livePid = process.pid + 12345;
+    const lock = makeLock(dir, { alivePids: new Set([livePid]), handoffGraceMs: 0 });
+    const destination = lock.lockPath();
+    const winner = JSON.stringify({ pid: livePid, hostname: HOST, heartbeat: Date.now() });
+    const realLink = fs.linkSync;
+    const publish = vi.spyOn(fs, 'linkSync').mockImplementationOnce((from, to) => {
+      expect(to).toBe(destination);
+      fs.writeFileSync(destination, winner, { flag: 'wx' });
+      realLink(from, to);
+    });
+    try {
+      expect(await lock.acquire()).toMatchObject({ acquired: false, reason: 'duplicate-live-instance' });
+      expect(lock.revalidateForExclusiveWrite()).toBe(false);
+      expect(fs.readFileSync(destination, 'utf8')).toBe(winner);
+      expect(fs.readdirSync(path.dirname(destination))).toEqual([path.basename(destination)]);
+    } finally { publish.mockRestore(); }
+  });
+
+  it('denies ownership when the filesystem cannot create a hard link', async () => {
+    const lock = makeLock(dir, { handoffGraceMs: 0 });
+    const publish = vi.spyOn(fs, 'linkSync').mockImplementation(() => {
+      throw Object.assign(new Error('hard links unsupported'), { code: 'EOPNOTSUPP' });
+    });
+    try {
+      expect((await lock.acquire()).acquired).toBe(false);
+      expect(lock.revalidateForExclusiveWrite()).toBe(false);
+      expect(fs.readdirSync(path.dirname(lock.lockPath()))).toEqual([]);
+    } finally { publish.mockRestore(); }
   });
 
   it('acquires a free lock', async () => {

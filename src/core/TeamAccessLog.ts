@@ -466,6 +466,8 @@ export class TeamAccessLog {
   private health: LogHealth = 'absent';
   private seedSeq = 0;
   private refoldPending = false;
+  private readonly visibilityIncarnation = crypto.randomUUID();
+  private visibilityGeneration = 0;
   private unknownRows = -1;
   private incarnationCache: string | null = null;
   private gapsCache: Gap[] | null = null;
@@ -565,6 +567,7 @@ export class TeamAccessLog {
 
   /** Read both files. Never throws: a failure is health 'unreadable'. */
   load(): void {
+    this.visibilityGeneration++;
     this.gapsCache = null; this.grantsCache.clear(); this.goneCache.clear();
     this.seedSeq = this.readLastGoodHighestSeq();
     if (!fs.existsSync(this.logFile)) {
@@ -649,12 +652,19 @@ export class TeamAccessLog {
   }
 
   healthState(): LogHealth { return this.health; }
+
+  /** Process-local access-log revision. Advances conservatively on evidence changes. */
+  visibilityRevision(): string {
+    this.state();
+    return `${this.visibilityIncarnation}:${this.visibilityGeneration}`;
+  }
   allRows(): ReadonlyArray<TeamAccessRow> { return this.rows; }
   state(): TeamAccessState {
     if (this.refoldPending) {
       // Only a row that became placeable changes the answer.
       const unknown = this.rows.filter((r) => this.opts.verify(r) === 'unknown').length;
       if (unknown !== this.unknownRows) {
+        this.visibilityGeneration++;
         this.folded = foldLog(this.rows, this.opts.verify);
         this.gapsCache = null; this.grantsCache.clear(); this.goneCache.clear();
       }
@@ -911,6 +921,7 @@ export class TeamAccessLog {
       for (const entry of confinesIn(row)) { this.confineHere(entry); touched.add(entry.ref); }
       this.writeLine(row);
       this.rows.push(row);
+      this.visibilityGeneration++;
       this.foreign.add(row);
       held.add(id);
       added += 1;
@@ -961,6 +972,7 @@ export class TeamAccessLog {
   private appendLine(row: TeamAccessRow): void {
     this.writeLine(row);
     this.rows.push(row);
+    this.visibilityGeneration++;
     this.gapsCache = null;
     this.grantsCache.clear(); this.goneCache.clear();
     if (new Set(this.rows.map(originOf)).size > 1) this.folded = foldLog(this.rows, this.opts.verify);
@@ -984,6 +996,7 @@ export class TeamAccessLog {
     for (const file of [this.logFile, this.confinedFile]) {
       if (fs.existsSync(file)) fs.renameSync(file, `${file}.damaged-${stamp}`);
     }
+    this.visibilityGeneration++;
     this.rows = []; this.folded = emptyState(); this.gapsCache = null; this.grantsCache.clear(); this.goneCache.clear(); this.refoldPending = false;
     this.seedSeq = 0;
     this.health = 'ok';
@@ -1096,6 +1109,7 @@ export class TeamAccessLog {
       fs.closeSync(fd);
     }
     fs.renameSync(tmp, this.confinedFile);
+    this.visibilityGeneration++;
   }
 
   /** Before the first `team-on`, so an invite with no grants does not read as a missing file. */
@@ -1243,6 +1257,7 @@ export class TeamAccessLog {
       fs.closeSync(fd);
     }
     fs.renameSync(tmp, this.logFile);
+    this.visibilityGeneration++;
     this.rows = merged;
     this.gapsCache = null; this.grantsCache.clear(); this.goneCache.clear();
     this.folded = foldLog(merged, this.opts.verify);

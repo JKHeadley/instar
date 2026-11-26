@@ -1,0 +1,21 @@
+{
+  "version": 2,
+  "slug": "app-message-delete-list-acceptance",
+  "sessionId": "633bd330-201e-4dc8-8fd9-72b89116167e",
+  "timestamp": "2026-11-26T04:32:12.081Z",
+  "artifactPath": "upgrades/side-effects/app-message-delete-list-acceptance.md",
+  "artifactSha256": "eae07155240742dc3a99ccf31f09376fd3dde3f39b67371a4d10e60d9b6bdfbd",
+  "specPath": "docs/specs/conversation-message-delete.md",
+  "coveredFiles": [
+    "docs/specs/conversation-message-delete.eli16.md",
+    "docs/specs/conversation-message-delete.md",
+    "src/server/mobileConversationRoutes.ts",
+    "tests/e2e/mobile-native-conversations-alive.test.ts",
+    "upgrades/side-effects/app-message-delete-list-acceptance.md"
+  ],
+  "phase": "complete",
+  "tier": 2,
+  "tierReasoning": "Prevent cached list snippets from disclosing enrolled App message text",
+  "secondPass": "true",
+  "reviewerConcurred": true
+}

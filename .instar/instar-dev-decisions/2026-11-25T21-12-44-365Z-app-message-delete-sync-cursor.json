@@ -1,0 +1,22 @@
+{
+  "ts": "2026-11-25T21:12:44.365Z",
+  "slug": "app-message-delete-sync-cursor",
+  "suggestedTier": 2,
+  "declaredTier": 2,
+  "riskFloor": 1,
+  "riskFloorReasons": [],
+  "belowFloor": false,
+  "files": 1,
+  "loc": 54,
+  "scope": {
+    "basis": "staged-in-scope-paths-including-deleted",
+    "files": [
+      "src/server/mobileAppRemovalSyncCursor.ts"
+    ],
+    "addedLines": 54,
+    "deletedLines": 0
+  },
+  "causalAutopsy": null,
+  "classClosure": null,
+  "verdict": "pass"
+}

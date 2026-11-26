@@ -1,0 +1,24 @@
+{
+  "version": 2,
+  "slug": "app-message-delete-writer-lock",
+  "sessionId": "633bd330-201e-4dc8-8fd9-72b89116167e",
+  "timestamp": "2026-11-25T19:47:00.922Z",
+  "artifactPath": "upgrades/side-effects/app-message-delete-writer-lock.md",
+  "artifactSha256": "0ea5e16706561ed6a8dedf61db7ad8914b97bc61089c17c6f15daadfc9b7f1a7",
+  "specPath": "docs/specs/conversation-message-delete.md",
+  "coveredFiles": [
+    "docs/specs/conversation-message-delete.eli16.md",
+    "docs/specs/conversation-message-delete.md",
+    "docs/specs/reports/conversation-message-delete-convergence.md",
+    "src/core/SingleInstanceLock.ts",
+    "src/server/mobileAppMessageRemoval.ts",
+    "tests/e2e/mobile-native-conversations-alive.test.ts",
+    "tests/integration/mobile-native-conversations.test.ts",
+    "upgrades/side-effects/app-message-delete-writer-lock.md"
+  ],
+  "phase": "complete",
+  "tier": 2,
+  "tierReasoning": "Exclusive writer validation for the unmounted signed Delete executor",
+  "secondPass": "true",
+  "reviewerConcurred": true
+}

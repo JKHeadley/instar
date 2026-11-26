@@ -1,0 +1,21 @@
+{
+  "version": 2,
+  "slug": "app-message-delete-session-copy-guard",
+  "sessionId": "633bd330-201e-4dc8-8fd9-72b89116167e",
+  "timestamp": "2026-11-26T03:22:22.648Z",
+  "artifactPath": "upgrades/side-effects/app-message-delete-session-copy-guard.md",
+  "artifactSha256": "0b612a93d34c583bb959cfaf738ac69fd3c491a3bdb58f48aace8281991061fe",
+  "specPath": "docs/specs/conversation-message-delete.md",
+  "coveredFiles": [
+    "docs/specs/conversation-message-delete.eli16.md",
+    "docs/specs/conversation-message-delete.md",
+    "src/core/AppMediaStore.ts",
+    "tests/unit/app-media-store.test.ts",
+    "upgrades/side-effects/app-message-delete-session-copy-guard.md"
+  ],
+  "phase": "complete",
+  "tier": 2,
+  "tierReasoning": "Revalidate access before publishing a protected session file",
+  "secondPass": "true",
+  "reviewerConcurred": true
+}

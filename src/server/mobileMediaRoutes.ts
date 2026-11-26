@@ -31,7 +31,14 @@ import { slackMediaKeys } from '../core/appPlatformMedia.js';
 import { mediaOffBody } from './mobileMediaOff.js';
 import { HOLDER_MEDIA_HEADER, type HolderMedia, HOLDER_MEDIA_HOP_SOCKET_MS } from './mobileMediaHolderProxy.js';
 
+import { exactMessageReader } from './mobileExactMessageAuthority.js';
+import { resolveOwnerRemovalSyncAuthority } from './mobileAppRemovalSyncAuthority.js';
+
 export interface MobileMediaRouteDeps {
+  removalReadAcceptance?: {
+    enrolled: (conversationKey: string) => boolean;
+    evidence: Parameters<typeof resolveOwnerRemovalSyncAuthority>[3];
+  };
   pairing: MobilePairingService;
   service: AppConversationService | null;
   /** Resolved at boot. */
@@ -222,16 +229,39 @@ export function createMobileMediaRouter(deps: MobileMediaRouteDeps): Router {
     if (!isSha256Hex(sha) || !key || (appKey && !svc!.liveConversation(appKey))) { notFound(); return; }
     // People and roles §3.4: an MSP phone downloads only from conversations it may use.
     if (!deviceMayUse(deps.pairing, req, appKey ?? key)) { notFound(); return; }
-    // A Slack file may sit under the conversation's earlier placeholder-workspace key.
-    let att: ReturnType<AppConversationService["store"]["mediaRefInConversation"]> = null;
+    let protectedAttachment: AppAttachment | undefined;
+    let legacyRef: ReturnType<AppConversationService["store"]["mediaRefInConversation"]> = null;
     let refKey = key;
-    for (const k of slackKey ? slackMediaKeys(slackKey) : [key]) {
-      att = svc!.store.mediaRefInConversation(k, sha);
-      if (att) { refKey = k; break; }
-    }
-    if (!att) { notFound(); return; }
-    // A file belongs to its message: one held from this reader stays held.
-    if (!deps.pairing.mayReadMessageId(devicePersonOf(req), refKey, att.messageId)) { notFound(); return; }
+    let proofStillCurrent: (() => boolean) | undefined;
+    const acceptance = deps.removalReadAcceptance;
+    try {
+      if (appKey && acceptance?.enrolled(appKey)) {
+        const service = svc!;
+        const authority = () => resolveOwnerRemovalSyncAuthority(req, deps.pairing, service, acceptance.evidence, appKey);
+        const initial = authority();
+        if (!initial.ok) { notFound(); return; }
+        const scope = JSON.stringify(initial.authority);
+        const signedScopeStillCurrent = () => {
+          const current = authority();
+          return current.ok && JSON.stringify(current.authority) === scope;
+        };
+        await service.store.prepareRemovalHistory(appKey);
+        const reader = exactMessageReader(deps.pairing, req)();
+        if (!reader || !signedScopeStillCurrent()) { notFound(); return; }
+        const page = service.store.readPreparedRemovalMedia(appKey, sha, (row) => deps.pairing.mayReadStored(reader, appKey, row));
+        if (!page?.occurrence) { notFound(); return; }
+        protectedAttachment = page.occurrence.attachment;
+        proofStillCurrent = () => signedScopeStillCurrent() && service.store.hasPreparedRemovalHistory(appKey, page.proof);
+        if (!proofStillCurrent()) { notFound(); return; }
+      } else {
+        // A Slack file may sit under the conversation's earlier placeholder-workspace key.
+        for (const k of slackKey ? slackMediaKeys(slackKey) : [key]) {
+          legacyRef = svc!.store.mediaRefInConversation(k, sha);
+          if (legacyRef) { refKey = k; break; }
+        }
+        if (!legacyRef || !deps.pairing.mayReadMessageId(devicePersonOf(req), refKey, legacyRef.messageId)) { notFound(); return; }
+      }
+    } catch { notFound(); return; } // @silent-fallback-ok — unavailable protected evidence cannot authorize bytes
     const blob = media.locateBlob(sha);
     // A good copy held now wins over a quarantined older copy of the same hash.
     if (!blob && media.isQuarantined(sha)) { res.status(410).json({ error: 'media-unavailable', detail: 'This file was damaged where it was stored and has been set aside.' }); return; }
@@ -246,18 +276,34 @@ export function createMobileMediaRouter(deps: MobileMediaRouteDeps): Router {
       res.status(202).json({ state: 'fetching', retryAfterMs: 2000 });
       return;
     }
-    const attachment: AppAttachment | undefined = svc!.store.getMediaAttachments(refKey, att.messageId)?.[att.idx];
+    const attachment = protectedAttachment ?? (legacyRef ? svc!.store.getMediaAttachments(refKey, legacyRef.messageId)?.[legacyRef.idx] : undefined);
     const mediaType = attachment?.mediaType ?? 'application/octet-stream';
     const inline = isInlineSafe(mediaType);
-    let handle: fs.promises.FileHandle;
+    let handle: fs.promises.FileHandle | undefined;
+    let size: number;
     try {
       const st = fs.lstatSync(blob);
       if (!st.isFile()) { notFound(); return; }
       handle = await fs.promises.open(blob, fs.constants.O_RDONLY | (fs.constants.O_NOFOLLOW ?? 0));
       const opened = await handle.stat();
       if (opened.ino !== st.ino || opened.dev !== st.dev) { await handle.close(); notFound(); return; }
-    } catch { notFound(); return; } // @silent-fallback-ok — a blob that cannot be opened safely reads as absent
-    const size = (await handle.stat()).size;
+      size = opened.size;
+    } catch {
+      await handle?.close().catch(() => undefined);
+      notFound();
+      return;
+    } // @silent-fallback-ok — a blob that cannot be opened safely reads as absent
+    try {
+      if (proofStillCurrent ? size !== attachment?.size || !proofStillCurrent() : appKey && acceptance?.enrolled(appKey)) {
+        await handle.close();
+        notFound();
+        return;
+      }
+    } catch {
+      await handle.close().catch(() => undefined);
+      notFound();
+      return;
+    } // @silent-fallback-ok — uncertain or newly enrolled downloads cannot send bytes
     res.setHeader('Content-Type', inline ? mediaType : 'application/octet-stream');
     if (!inline) res.setHeader('Content-Disposition', `attachment; filename="${safeFileName(attachment?.filename ?? 'file', mediaType)}"`);
     res.setHeader('X-Content-Type-Options', 'nosniff');

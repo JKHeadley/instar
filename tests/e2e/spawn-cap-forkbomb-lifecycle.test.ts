@@ -18,6 +18,9 @@ import { describe, it, expect, beforeEach, afterEach } from 'vitest';
 import express from 'express';
 import type { AddressInfo } from 'node:net';
 import fs from 'node:fs';
+import { spawn } from 'node:child_process';
+import { once } from 'node:events';
+import { build } from 'esbuild';
 import os from 'node:os';
 import path from 'node:path';
 import { createRoutes } from '../../src/server/routes.js';
@@ -114,6 +117,89 @@ describe('Fork-bomb prevention — lifecycle (E2E over HTTP)', () => {
 
       first.release();
     });
+
+    it.each([false, true])('publishes one owner under simultaneous startup (stale lock: %s)', async (stale) => {
+      if (stale) {
+        const local = path.join(stateDir, 'local');
+        fs.mkdirSync(local);
+        fs.writeFileSync(path.join(local, 'server-instance.lock'), JSON.stringify({
+          pid: 2147483647, hostname: os.hostname(), heartbeat: Date.now() - 60_000,
+        }));
+      }
+      const code = await build({
+        stdin: {
+          contents: `
+            import { SingleInstanceLock } from './src/core/SingleInstanceLock.ts';
+            const lock = new SingleInstanceLock({ stateDir: process.argv[1], env: {}, handoffGraceMs: 0, isStateDirHostLocal: () => true, log: () => {} });
+            process.on('message', async (message) => {
+              if (message !== 'acquire') return;
+              const result = await lock.acquire();
+              process.send({ pid: process.pid, acquired: result.acquired, owns: lock.revalidateForExclusiveWrite() });
+            });
+            process.on('disconnect', () => lock.release());
+            process.send('ready');
+          `,
+          resolveDir: process.cwd(),
+        },
+        bundle: true, platform: 'node', format: 'esm', packages: 'external', write: false,
+      });
+      const children = [0, 1].map(() => spawn(process.execPath,
+        ['--input-type=module', '-e', code.outputFiles[0].text, stateDir],
+        { stdio: ['ignore', 'ignore', 'inherit', 'ipc'] }));
+      const exits = children.map((child) => once(child, 'exit'));
+      const nextMessage = (child: typeof children[number]) => Promise.race([
+        once(child, 'message', { signal: AbortSignal.timeout(5_000) }).then(([message]) => message),
+        exits[children.indexOf(child)].then(([status]) => { throw new Error(`lock contender exited with ${status}`); }),
+      ]);
+      try {
+        expect(await Promise.all(children.map(nextMessage))).toEqual(['ready', 'ready']);
+        const results = children.map(nextMessage);
+        for (const child of children) child.send('acquire');
+        const outcomes = await Promise.all(results) as Array<{ pid: number; acquired: boolean; owns: boolean }>;
+        const winners = outcomes.filter((result) => result.acquired);
+        expect(winners).toHaveLength(1);
+        expect(outcomes.filter((result) => result.owns)).toEqual(winners);
+        const saved = JSON.parse(fs.readFileSync(path.join(stateDir, 'local', 'server-instance.lock'), 'utf8'));
+        expect(saved.pid).toBe(winners[0].pid);
+      } finally {
+        const cleanupDeadline = setTimeout(() => {
+          for (const child of children) if (child.exitCode === null && child.signalCode === null) child.kill();
+        }, 2_000);
+        try {
+          for (const child of children) if (child.connected) child.disconnect();
+          await Promise.all(exits);
+        } finally { clearTimeout(cleanupDeadline); }
+      }
+    }, 15_000);
+
+    it('recovers when a process exits while holding the stale-reclaim mutex', async () => {
+      const local = path.join(stateDir, 'local');
+      const record = JSON.stringify({ pid: 2147483647, hostname: os.hostname(), heartbeat: Date.now() - 60_000 });
+      fs.mkdirSync(local);
+      fs.writeFileSync(path.join(local, 'server-instance.lock'), record);
+      const child = spawn(process.execPath, ['--input-type=module', '-e', `
+        import Database from 'better-sqlite3';
+        const mutex = new Database(process.argv[1]);
+        mutex.exec('BEGIN IMMEDIATE');
+        process.on('message', () => {});
+        process.send('locked');
+      `, path.join(local, 'server-instance-reclaim.sqlite')], { stdio: ['ignore', 'ignore', 'inherit', 'ipc'] });
+      const exit = once(child, 'exit');
+      const contender = new SingleInstanceLock({ stateDir, env: {}, handoffGraceMs: 0, isStateDirHostLocal: () => true, log: () => {} });
+      try {
+        const [ready] = await once(child, 'message', { signal: AbortSignal.timeout(5_000) });
+        expect(ready).toBe('locked');
+        expect((await contender.acquire()).acquired).toBe(false);
+        expect(fs.readFileSync(contender.lockPath(), 'utf8')).toBe(record);
+      } finally {
+        if (child.exitCode === null && child.signalCode === null) child.kill('SIGKILL');
+        await exit;
+      }
+      try {
+        expect((await contender.acquire()).acquired).toBe(true);
+        expect(contender.revalidateForExclusiveWrite()).toBe(true);
+      } finally { contender.release(); }
+    }, 10_000);
 
     it('after the holder releases (clean restart), a fresh acquisition SUCCEEDS (hands off, never wedges)', async () => {
       const first = new SingleInstanceLock({ stateDir, handoffGraceMs: 80, pollIntervalMs: 10 });

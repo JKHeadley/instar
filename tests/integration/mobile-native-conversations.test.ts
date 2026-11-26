@@ -1,3 +1,4 @@
+import { AppRemovalReadCustody } from '../../src/core/AppRemovalReadCustody.js';
 /**
  * HTTP pipeline for native app conversations (docs/specs/mobile-native-conversations.md,
  * increment 1): every route through the PRODUCTION auth middleware with the device
@@ -8,6 +9,9 @@
  */
 import { describe, it, expect, afterAll, beforeAll, vi } from 'vitest';
 import crypto from 'node:crypto';
+import { execFile } from 'node:child_process';
+import { promisify } from 'node:util';
+import { build } from 'esbuild';
 import fs from 'node:fs';
 import os from 'node:os';
 import path from 'node:path';
@@ -18,6 +22,12 @@ import { createRoutes, type RouteContext } from '../../src/server/routes.js';
 import { authMiddleware } from '../../src/server/middleware.js';
 import { MobilePairingService, createMobilePairingRouter, deviceAuthenticator, type MobilePairingDeps } from '../../src/server/mobilePairingRoutes.js';
 import { createMobileConversationRouter } from '../../src/server/mobileConversationRoutes.js';
+import { SingleInstanceLock } from '../../src/core/SingleInstanceLock.js';
+import { createRemovalSyncCursorCodec } from '../../src/server/mobileAppRemovalSyncCursor.js';
+import { executeOwnerRemovalHistory, executeOwnerRemovalSync } from '../../src/server/mobileAppRemovalSync.js';
+import { resolveOwnerRemovalSyncAuthority } from '../../src/server/mobileAppRemovalSyncAuthority.js';
+import { executeAppMessageRemoval } from '../../src/server/mobileAppMessageRemoval.js';
+import { admitAppMessageRemoval } from '../../src/server/mobileAppMessageRemovalAdmission.js';
 import { MobileChatRequestStore } from '../../src/core/MobileChatRequests.js';
 import { AppConversationService, STRANDED_REQUEST_AGE_MS } from '../../src/core/AppConversationService.js';
 import { ConversationRegistry } from '../../src/core/ConversationRegistry.js';
@@ -41,7 +51,7 @@ afterAll(() => {
   for (const d of dirs) SafeFsExecutor.safeRmSync(d, { recursive: true, force: true, operation: 'tests/integration/mobile-native-conversations.test.ts' });
 });
 
-interface Opts { forwards?: boolean; reactions?: boolean; machineId?: string; links?: boolean; replies?: boolean; sentinel?: { decideInboundDisposition: () => Promise<{ disposition: string }> }; lease?: { held: boolean }; holdsLease?: () => boolean; recording?: { on: boolean }; dispatchThrows?: boolean; nativeOff?: boolean; dispatchDelayMs?: number }
+interface Opts { removalSyncPage?: boolean; removalSyncEvidence?: Parameters<typeof resolveOwnerRemovalSyncAuthority>[3]; removalAdmissionProbe?: boolean | 'execute'; forwards?: boolean; reactions?: boolean; machineId?: string; links?: boolean; replies?: boolean; sentinel?: { decideInboundDisposition: () => Promise<{ disposition: string }> }; lease?: { held: boolean }; holdsLease?: () => boolean; recording?: { on: boolean }; dispatchThrows?: boolean; nativeOff?: boolean; dispatchDelayMs?: number }
 
 function setup(opts: Opts = {}) {
   const machineId = opts.machineId ?? 'm1';
@@ -53,12 +63,15 @@ function setup(opts: Opts = {}) {
     // Multi-route off: these tests cover the single paired host (mobile-multi-route.md, flag off).
     mobilePairing: { native: { enabled: !opts.nativeOff, messageLinks: { enabled: opts.links }, quotedReplies: { enabled: opts.replies }, reactions: { enabled: opts.reactions }, forwards: { enabled: opts.forwards } }, multiRoute: { enabled: false } },
   };
+  let removalWriterLock: SingleInstanceLock | null = null;
+  let removalReadCustody: AppRemovalReadCustody | undefined;
   const lease = opts.lease ?? { held: true };
   const recording = opts.recording ?? { on: true };
   const registry = new ConversationRegistry({ stateDir: dir, machineId: () => machineId, isRecordingEnabled: () => recording.on });
   const bindAuth = createConversationBindAuth(dir);
   const holdsLease = opts.holdsLease ?? (() => lease.held);
-  const deps: MobilePairingDeps = { config: config as never, stateDir: dir, holdsLease };
+  const deps: MobilePairingDeps = { config: config as never, stateDir: dir, holdsLease,
+    ...(opts.removalAdmissionProbe || opts.removalSyncEvidence ? { peopleMachineId: () => machineId, telegramOwnerId: () => 9000 } : {}) };
   const pairing = new MobilePairingService(deps);
   pairing.nativeOn = !opts.nativeOff;
   cleanups.push(() => pairing.stop());
@@ -87,6 +100,46 @@ function setup(opts: Opts = {}) {
   const app = express();
   app.use(express.json({ verify: (req, _res, buf) => { (req as unknown as { rawBody: Buffer }).rawBody = buf; } }));
   app.use(authMiddleware(() => 'tok-1', 'echo', undefined, deviceAuthenticator(pairing)));
+  // Private harness only: exercise production request authentication on an already allowlisted
+  // JSON path. No application router advertises or mounts Delete at this checkpoint.
+  if (opts.removalAdmissionProbe && svc) {
+    app.post('/mobile/chat/app/:key/forward', async (req, res) => {
+      if (opts.removalAdmissionProbe === 'execute') {
+        const result = await executeAppMessageRemoval(req, pairing, svc, removalWriterLock, Date.now, removalReadCustody);
+        res.status(result.status).json(result.body);
+        return;
+      }
+      const admission = admitAppMessageRemoval(req, pairing, svc);
+      res.status(admission.ok ? 200 : admission.status).json(admission);
+    });
+  }
+  const syncEvidence = opts.removalSyncEvidence;
+  if (svc && syncEvidence) {
+    const codec = createRemovalSyncCursorCodec();
+    if (opts.removalSyncPage) app.get('/mobile/chat/app/:key/messages', async (req, res) => {
+      const result = await executeOwnerRemovalHistory(req, pairing, svc, syncEvidence, codec);
+      res.set('Cache-Control', 'no-store').status(result.status).json(result.body);
+    });
+    app.get('/mobile/chat/app/:key/events', async (req, res) => {
+      if (opts.removalSyncPage) {
+        const result = await executeOwnerRemovalSync(req, pairing, svc, syncEvidence, codec);
+        res.status(result.status).json(result.body);
+        return;
+      }
+      const scope = resolveOwnerRemovalSyncAuthority(req, pairing, svc, syncEvidence);
+      if (!scope.ok) {
+        res.status(scope.status).json({ error: scope.error });
+        return;
+      }
+      const epoch = codec.epochFor(scope.authority);
+      const provided = req.query.cursor;
+      if (provided !== undefined) {
+        res.json({ epoch, continuation: codec.read(scope.authority, provided).kind });
+        return;
+      }
+      res.json({ epoch, cursor: codec.issue(scope.authority, 8) });
+    });
+  }
   app.use(createRoutes(ctx));
   app.use(createMobileConversationRouter({ config: config as never, pairing, service: svc, machineId: () => machineId, sentinel: opts.sentinel, messageLinkOrigin: () => `https://${HOST}` }));
   app.use(createMobilePairingRouter(pairing, deps, ctx));
@@ -94,7 +147,8 @@ function setup(opts: Opts = {}) {
   const c = pairing.devices.createPending({ deviceName: 'iPhone', label: null, publicKey: dev.publicKey, host: HOST });
   if (!c.ok) throw new Error('setup');
   pairing.devices.applyConfirm(c.device.id, { ok: true });
-  return { app, dir, svc: svc!, registry, bindAuth, dev, deviceId: c.device.id, dispatched, killed, stopEffects, lease, recording, pairing };
+  return { app, dir, bindRemovalWriter(lock: SingleInstanceLock | null) { removalWriterLock = lock; },
+    bindRemovalReadCustody(custody: AppRemovalReadCustody) { removalReadCustody = custody; }, svc: svc!, registry, bindAuth, dev, deviceId: c.device.id, dispatched, killed, stopEffects, lease, recording, pairing };
 }
 
 let tick = 0;
@@ -874,5 +928,572 @@ describe('signed App message forwarding', () => {
     expect(classifier).not.toHaveBeenCalled();
     expect(pending).not.toHaveBeenCalled();
     pending.mockRestore();
+  });
+});
+
+
+describe('signed App message removal admission checkpoint', () => {
+  it('binds the signed owner, custodian, exact occurrence and request without mutating history', async () => {
+    const e = setup({ removalAdmissionProbe: true });
+    await enableReplyProof(e);
+    const key = await create(e);
+    const endpoint = `/mobile/chat/app/${key}/forward`;
+    for (const id of ['one', 'two']) {
+      e.svc.store.append({ kind: 'message', role: 'agent', conversationKey: key, eventId: id,
+        messageId: `msg-${id}`, text: 'Retained text', at: new Date().toISOString(), machineId: 'm1' });
+    }
+    const intent = { custodianMachineId: 'm1', eventId: 'one', requestId: rid() };
+    const admitted = await signed(e, 'POST', endpoint, intent);
+    expect(admitted.status).toBe(200);
+    expect(admitted.body).toMatchObject({ ok: true, targetEventId: 'one', targetMessageId: 'msg-one', requestId: intent.requestId });
+    expect((await signed(e, 'POST', endpoint, intent)).body).toEqual(admitted.body);
+    const changed = await signed(e, 'POST', endpoint, { ...intent, eventId: 'two' });
+    expect(changed.status).toBe(200);
+    expect(changed.body.removalEventId).toBe(admitted.body.removalEventId);
+    expect(changed.body.intentHash).not.toBe(admitted.body.intentHash);
+    for (const eventId of ['one', 'absent']) {
+      expect((await signed(e, 'POST', endpoint, { ...intent, eventId, custodianMachineId: 'm2' })).status).toBe(503);
+    }
+    expect((await signed(e, 'POST', endpoint, { ...intent, eventId: 'msg-one' })).status).toBe(404);
+    expect((await signed(e, 'POST', endpoint, { ...intent, eventId: 'absent' })).body.error).toBe('message-removal-target-unavailable');
+    expect((await signed(e, 'POST', endpoint, { ...intent, text: 'wrong' })).status).toBe(400);
+    expect((await bearer(e, 'post', endpoint).send(intent)).status).toBe(403);
+    const acl = vi.spyOn(e.pairing, 'mayReadStored').mockReturnValue(false);
+    expect((await signed(e, 'POST', endpoint, intent)).body.error).toBe('message-removal-target-unavailable');
+    acl.mockRestore();
+    e.lease.held = false;
+    expect((await signed(e, 'POST', endpoint, intent)).status).toBe(503);
+    e.lease.held = true;
+    const pairingOwner = e.pairing.ownerIdentity();
+    const unidentifiedOwner = vi.spyOn(e.pairing, 'ownerIdentity')
+      .mockReturnValue({ ...pairingOwner, telegramOwnerId: null, slackOwnerUserId: null });
+    try { expect((await signed(e, 'POST', endpoint, intent)).status).toBe(404); }
+    finally { unidentifiedOwner.mockRestore(); }
+    const changedOwner = vi.spyOn(e.pairing, 'ownerIdentity').mockReturnValue({ ...pairingOwner, telegramOwnerId: 9001 });
+    try {
+      const other = await signed(e, 'POST', endpoint, intent);
+      expect(other.status).toBe(200);
+      expect(other.body.requestActor).not.toBe(admitted.body.requestActor);
+      expect(other.body.removalEventId).not.toBe(admitted.body.removalEventId);
+    } finally { changedOwner.mockRestore(); }
+    expect(e.svc.store.browseMessages(key, null, 10).messages).toHaveLength(2);
+    expect(e.svc.store.messageRemoval(key, 'one', 'msg-one')).toEqual({ eventId: null });
+  });
+});
+
+describe('private signed App message removal runtime', () => {
+  async function fixture() {
+    const e = setup({ removalAdmissionProbe: 'execute' });
+    const lock = new SingleInstanceLock({ stateDir: e.dir, env: {}, handoffGraceMs: 0 });
+    expect((await lock.acquire()).acquired).toBe(true);
+    cleanups.push(() => lock.release());
+    e.bindRemovalWriter(lock);
+    await enableReplyProof(e);
+    const key = await create(e);
+    for (const id of ['one', 'two']) {
+      e.svc.store.append({ kind: 'message', role: 'agent', conversationKey: key, eventId: id,
+        messageId: `msg-${id}`, text: 'Retained text', at: new Date().toISOString(), machineId: 'm1' });
+    }
+    return { e, key, lock, endpoint: `/mobile/chat/app/${key}/forward`,
+      intent: { custodianMachineId: 'm1', eventId: 'one', requestId: rid() } };
+  }
+
+  it('requires retained custody before reservation and rechecks it after preparation', async () => {
+    const { e, key, endpoint, intent } = await fixture();
+    const custody = new AppRemovalReadCustody(e.dir);
+    e.bindRemovalReadCustody(custody);
+    const reserve = vi.spyOn(e.svc.deps.requests, 'reserve');
+    expect((await signed(e, 'POST', endpoint, intent)).status).toBe(503);
+    expect(reserve).not.toHaveBeenCalled();
+    expect(custody.record(key, e.svc.store.getCreationRecord(key)!)).toBe(true);
+    const file = path.join(e.dir, 'state', 'app-removal-read-custody', `${key}.json`);
+    const retained = fs.readFileSync(file);
+    const prepare = e.svc.store.prepareRemovalHistory.bind(e.svc.store);
+    vi.spyOn(e.svc.store, 'prepareRemovalHistory').mockImplementationOnce(async (conversationKey) => {
+      const ready = await prepare(conversationKey);
+      fs.writeFileSync(file, '{"version":1}');
+      return ready;
+    });
+    expect((await signed(e, 'POST', endpoint, intent)).status).toBe(503);
+    expect(reserve).not.toHaveBeenCalled();
+    fs.writeFileSync(file, retained);
+    const success = await signed(e, 'POST', endpoint, intent);
+    expect(success.status).toBe(200);
+    expect((await signed(e, 'POST', endpoint, intent)).body).toEqual(success.body);
+    fs.writeFileSync(file, '{"version":1}');
+    const lost = await signed(e, 'POST', endpoint, intent);
+    expect(lost.status).toBe(503);
+    expect(lost.body).not.toHaveProperty('removalEventId');
+  });
+
+  it('refuses missing and competing process locks and revalidates after proof preparation', async () => {
+    const { e, lock, endpoint, intent } = await fixture();
+    const competitor = new SingleInstanceLock({ stateDir: e.dir, env: {}, handoffGraceMs: 0 });
+    expect((await competitor.acquire()).acquired).toBe(false);
+    const child = await build({
+      stdin: {
+        contents: `
+          import { SingleInstanceLock } from './src/core/SingleInstanceLock.ts';
+          const contender = new SingleInstanceLock({ stateDir: process.argv[1], env: {}, handoffGraceMs: 0, log: () => {} });
+          const acquired = await contender.acquire();
+          console.log(JSON.stringify({ pid: process.pid, acquired: acquired.acquired, reason: acquired.reason }));
+          contender.release();
+        `,
+        resolveDir: process.cwd(),
+      },
+      bundle: true, platform: 'node', format: 'esm', packages: 'external', write: false,
+    });
+    const { stdout } = await promisify(execFile)(process.execPath,
+      ['--input-type=module', '-e', child.outputFiles[0].text, e.dir], { timeout: 10_000 });
+    const attempt = JSON.parse(stdout.trim());
+    expect(attempt.pid).not.toBe(process.pid);
+    expect(attempt).toMatchObject({ acquired: false, reason: 'duplicate-live-instance' });
+    const reserve = vi.spyOn(e.svc.deps.requests, 'reserve');
+    const append = vi.spyOn(e.svc.store, 'append');
+    const otherState = fs.mkdtempSync(path.join(os.tmpdir(), 'delete-other-state-'));
+    dirs.push(otherState);
+    const otherWriter = new SingleInstanceLock({ stateDir: otherState, env: {} });
+    expect((await otherWriter.acquire()).acquired).toBe(true);
+    cleanups.push(() => otherWriter.release());
+    for (const writer of [null, competitor, otherWriter]) {
+      e.bindRemovalWriter(writer);
+      const denied = await signed(e, 'POST', endpoint, intent);
+      expect(denied.status).toBe(503);
+      expect(denied.body.error).toBe('message-removal-writer-unavailable');
+    }
+    e.bindRemovalWriter(lock);
+    const prepare = e.svc.store.prepareRemovalHistory.bind(e.svc.store);
+    vi.spyOn(e.svc.store, 'prepareRemovalHistory').mockImplementationOnce(async (key) => {
+      const ready = await prepare(key);
+      lock.release();
+      return ready;
+    });
+    const lost = await signed(e, 'POST', endpoint, intent);
+    expect(lost.status).toBe(503);
+    expect(lost.body.error).toBe('message-removal-writer-unavailable');
+    const bypass = new SingleInstanceLock({ stateDir: e.dir, env: { INSTAR_ALLOW_SECOND_INSTANCE: '1' }, log: () => {} });
+    expect(await bypass.acquire()).toMatchObject({ acquired: true, overridden: true });
+    try {
+      expect(bypass.revalidate()).toBe(true);
+      e.bindRemovalWriter(bypass);
+      expect((await signed(e, 'POST', endpoint, intent)).body.error).toBe('message-removal-writer-unavailable');
+    } finally { bypass.release(); }
+    expect(reserve).not.toHaveBeenCalled();
+    expect(append).not.toHaveBeenCalled();
+  });
+
+  it('does not append if the writer loses its lock after the reservation is durable', async () => {
+    const { e, lock, endpoint, intent } = await fixture();
+    const reserve = e.svc.deps.requests.reserve.bind(e.svc.deps.requests);
+    vi.spyOn(e.svc.deps.requests, 'reserve').mockImplementationOnce((...args) => {
+      const saved = reserve(...args);
+      lock.release();
+      return saved;
+    });
+    const markUnknown = vi.spyOn(e.svc.deps.requests, 'markUnknown');
+    const append = vi.spyOn(e.svc.store, 'append');
+    const lost = await signed(e, 'POST', endpoint, intent);
+    expect(lost.status).toBe(409);
+    expect(lost.body.error).toBe('outcome-unknown');
+    expect(append).not.toHaveBeenCalled();
+    expect(markUnknown).not.toHaveBeenCalled();
+  });
+
+  it('leaves the confirmed fact for a successor if the writer loses its lock after append', async () => {
+    const { e, lock, endpoint, intent } = await fixture();
+    const appendReal = e.svc.store.append.bind(e.svc.store);
+    const append = vi.spyOn(e.svc.store, 'append').mockImplementationOnce((event) => {
+      const result = appendReal(event);
+      lock.release();
+      return result;
+    });
+    const finish = vi.spyOn(e.svc.deps.requests, 'finish');
+    const markUnknown = vi.spyOn(e.svc.deps.requests, 'markUnknown');
+    expect((await signed(e, 'POST', endpoint, intent)).body.error).toBe('outcome-unknown');
+    expect(finish).not.toHaveBeenCalled();
+    expect(markUnknown).not.toHaveBeenCalled();
+    const successor = new SingleInstanceLock({ stateDir: e.dir, env: {} });
+    expect((await successor.acquire()).acquired).toBe(true);
+    cleanups.push(() => successor.release());
+    e.bindRemovalWriter(successor);
+    e.svc.deps.requests = new MobileChatRequestStore(e.dir);
+    const retry = await signed(e, 'POST', endpoint, intent);
+    expect(retry.status).toBe(200);
+    expect(retry.body.eventId).toBe('one');
+    expect(append).toHaveBeenCalledTimes(1);
+  });
+
+  it('confirms one exact removal and returns its receipt on signed retry after reopening requests', async () => {
+    const { e, key, endpoint, intent } = await fixture();
+    expect((await bearer(e, 'post', endpoint).send(intent)).status).toBe(403);
+    const first = await signed(e, 'POST', endpoint, intent);
+    expect(first.status).toBe(200);
+    expect(first.body).toEqual({ eventId: 'one', removalEventId: expect.any(String) });
+    const append = vi.spyOn(e.svc.store, 'append');
+    e.svc.deps.requests = new MobileChatRequestStore(e.dir);
+    const replay = await signed(e, 'POST', endpoint, intent);
+    expect(replay.status).toBe(200);
+    expect(replay.body).toEqual(first.body);
+    const access = vi.spyOn(e.pairing, 'mayReadStored').mockReturnValue(false);
+    try { expect((await signed(e, 'POST', endpoint, intent)).status).toBe(404); }
+    finally { access.mockRestore(); }
+    expect((await signed(e, 'POST', endpoint, { ...intent, eventId: 'two' })).body.error).toBe('payload-conflict');
+    const duplicate = await signed(e, 'POST', endpoint, { ...intent, requestId: rid() });
+    expect(duplicate.status).toBe(404);
+    expect(duplicate.body.error).toBe('message-removal-target-unavailable');
+    e.lease.held = false;
+    expect((await signed(e, 'POST', endpoint, intent)).status).toBe(503);
+    expect(append).not.toHaveBeenCalled();
+    expect(e.svc.store.messageRemoval(key, 'one', 'msg-one')).toEqual({ eventId: first.body.removalEventId });
+    expect(e.svc.store.messageRemoval(key, 'two', 'msg-two')).toEqual({ eventId: null });
+    expect(e.dispatched).toEqual([]);
+    expect(e.killed).toEqual([]);
+  });
+
+  it('refuses stale preparation and rechecks current custody before reserving', async () => {
+    const { e, key, endpoint, intent } = await fixture();
+    const realPrepare = e.svc.store.prepareRemovalHistory.bind(e.svc.store);
+    const prepare = vi.spyOn(e.svc.store, 'prepareRemovalHistory');
+    const append = vi.spyOn(e.svc.store, 'append');
+    prepare.mockImplementationOnce(async (conversation) => {
+      const ready = await realPrepare(conversation);
+      e.lease.held = false;
+      return ready;
+    });
+    expect((await signed(e, 'POST', endpoint, intent)).status).toBe(503);
+    expect(append).not.toHaveBeenCalled();
+    e.lease.held = true;
+    const access = vi.spyOn(e.pairing, 'mayReadStored');
+    prepare.mockImplementationOnce(async (conversation) => {
+      const ready = await realPrepare(conversation);
+      access.mockReturnValue(false);
+      return ready;
+    });
+    try { expect((await signed(e, 'POST', endpoint, intent)).status).toBe(404); }
+    finally { access.mockRestore(); }
+    expect(append).not.toHaveBeenCalled();
+    prepare.mockImplementationOnce(async (conversation) => {
+      const ready = await realPrepare(conversation);
+      e.svc.store.append({ kind: 'message', conversationKey: key, eventId: 'during-proof',
+        messageId: 'msg-during-proof', role: 'agent', text: 'A new message',
+        machineId: 'm1', at: new Date().toISOString() });
+      return ready;
+    });
+    const stale = await signed(e, 'POST', endpoint, intent);
+    expect(stale.status).toBe(503);
+    expect(stale.body.error).toBe('message-removal-state-unavailable');
+    expect(append.mock.calls.map(([event]) => event.kind)).toEqual(['message']);
+    expect((await signed(e, 'POST', endpoint, intent)).status).toBe(200);
+    expect(append.mock.calls.map(([event]) => event.kind)).toEqual(['message', 'message-removed']);
+  });
+
+  it.each(['identical', 'distinct-id', 'changed-target'])('serializes fresh requests that both wait for proof (%s)', async (scenario) => {
+    const { e, endpoint, intent } = await fixture();
+    const append = vi.spyOn(e.svc.store, 'append');
+    const reserve = vi.spyOn(e.svc.deps.requests, 'reserve');
+    const realPrepare = e.svc.store.prepareRemovalHistory.bind(e.svc.store);
+    const release: Array<() => void> = [];
+    let bothWaiting!: () => void;
+    const waiting = new Promise<void>((resolve) => { bothWaiting = resolve; });
+    vi.spyOn(e.svc.store, 'prepareRemovalHistory').mockImplementation(async (conversation) => {
+      const proof = realPrepare(conversation);
+      await new Promise<void>((resolve) => {
+        release.push(resolve);
+        if (release.length === 2) bothWaiting();
+      });
+      return proof;
+    });
+    const secondIntent = scenario === 'changed-target' ? { ...intent, eventId: 'two' }
+      : scenario === 'distinct-id' ? { ...intent, requestId: rid() } : intent;
+    const first = signed(e, 'POST', endpoint, intent).then((response) => response);
+    const second = signed(e, 'POST', endpoint, secondIntent).then((response) => response);
+    await waiting;
+    for (const resume of release) resume();
+    const outcomes = await Promise.all([first, second]);
+    if (scenario === 'identical') {
+      expect(outcomes.map((response) => response.status)).toEqual([200, 200]);
+      expect(outcomes[0].body).toEqual(outcomes[1].body);
+    } else {
+      expect(outcomes.filter((outcome) => outcome.status === 200)).toHaveLength(1);
+      const loser = outcomes[0].status === 200 ? 1 : 0;
+      if (scenario === 'changed-target') {
+        expect(outcomes[loser].status).toBe(409);
+        expect(outcomes[loser].body.error).toBe('payload-conflict');
+      } else {
+        vi.mocked(e.svc.store.prepareRemovalHistory).mockRestore();
+        const retry = await signed(e, 'POST', endpoint, loser === 0 ? intent : secondIntent);
+        expect(retry.status).toBe(404);
+      }
+    }
+    expect(append.mock.calls.map(([event]) => event.kind)).toEqual(['message-removed']);
+    expect(reserve).toHaveBeenCalledTimes(1);
+  });
+
+  it('excludes retained retries from fresh admission and rejects expired IDs', async () => {
+    const { e, endpoint, intent } = await fixture();
+    const base = Date.now();
+    const clock = vi.spyOn(Date, 'now').mockReturnValue(base);
+    try {
+      e.svc.deps.requests = new MobileChatRequestStore(e.dir, () => Date.now());
+      expect((await signed(e, 'POST', endpoint, intent)).status).toBe(200);
+      const active = { ...intent, eventId: 'two', requestId: rid() };
+      vi.spyOn(e.svc.deps.requests, 'markUnknown').mockImplementation(() => {});
+      const append = vi.spyOn(e.svc.store, 'append').mockImplementationOnce(() => { throw new Error('interrupted'); });
+      expect((await signed(e, 'POST', endpoint, active)).status).toBe(409);
+      const day = 24 * 60 * 60_000;
+      clock.mockReturnValue(base + day + 60_000);
+      expect((await signed(e, 'POST', endpoint, intent)).status).toBe(200);
+      expect((await signed(e, 'POST', endpoint, { ...intent, eventId: 'two' })).body.error).toBe('payload-conflict');
+      expect((await signed(e, 'POST', endpoint, active)).status).toBe(202);
+      clock.mockReturnValue(base + day + 6 * 60_000);
+      expect((await signed(e, 'POST', endpoint, active)).body.error).toBe('request-id-too-old');
+      expect((await signed(e, 'POST', endpoint, { ...active, eventId: 'one' })).body.error).toBe('request-id-too-old');
+      expect(append).toHaveBeenCalledTimes(1);
+      expect((await signed(e, 'POST', endpoint, intent)).body.error).toBe('request-id-too-old');
+      expect((await signed(e, 'POST', endpoint, { ...intent, eventId: 'two' })).body.error).toBe('request-id-too-old');
+    } finally { clock.mockRestore(); }
+  });
+
+  it('recovers a reserved request only when its exact removal reached the journal', async () => {
+    for (const [didAppend, crashed] of [[true, true], [false, true], [false, false]]) {
+      const { e, key, endpoint, intent } = await fixture();
+      const realAppend = e.svc.store.append.bind(e.svc.store);
+      const append = vi.spyOn(e.svc.store, 'append').mockImplementationOnce((event) => {
+        if (didAppend) realAppend(event);
+        throw new Error('simulated interruption');
+      });
+      // Preserve the reservation in entered state, as it would be after a process exit.
+      const markUnknown = vi.spyOn(e.svc.deps.requests, 'markUnknown');
+      if (crashed) markUnknown.mockImplementation(() => {});
+      const interrupted = await signed(e, 'POST', endpoint, intent);
+      expect(interrupted.status).toBe(409);
+      expect(interrupted.body.error).toBe('outcome-unknown');
+      expect(markUnknown).toHaveBeenCalledTimes(1);
+      const during = await signed(e, 'POST', endpoint, intent);
+      expect(during.status).toBe(crashed ? 202 : 409);
+      e.svc.deps.requests = new MobileChatRequestStore(e.dir);
+      const inspector = e.svc.store as unknown as { verifyRemovalIndex(key: string, path: string): boolean };
+      const fullScan = vi.spyOn(inspector, 'verifyRemovalIndex');
+      const recovered = await signed(e, 'POST', endpoint, intent);
+      expect(fullScan).not.toHaveBeenCalled();
+      expect(recovered.status).toBe(didAppend ? 200 : 409);
+      if (didAppend) expect(recovered.body.eventId).toBe('one');
+      else expect(recovered.body.error).toBe('outcome-unknown');
+      expect(append).toHaveBeenCalledTimes(1);
+      expect(e.svc.store.getEvent(key, 'one')).toMatchObject({ kind: 'message' });
+    }
+  });
+});
+
+describe('private signed removal sync authority', () => {
+  it('accepts an exact owner and resets a saved cursor when current evidence changes', async () => {
+    let trust: string | null = 'trust-1';
+    let changing = false;
+    let samples = 0;
+    let journal = 'journal-1';
+    let team: string | null = 'team-1';
+    const e = setup({ removalSyncEvidence: {
+      machineTrustRevision: () => changing ? String(++samples) : trust,
+      journalRevision: () => journal,
+      teamVisibilityRevision: () => team,
+    } });
+    await enableReplyProof(e);
+    const key = await create(e);
+    const path = `/mobile/chat/app/${key}/events`;
+    expect((await bearer(e, 'get', path)).status).toBe(403);
+    const owner = e.pairing.ownerIdentity();
+    const absentOwner = vi.spyOn(e.pairing, 'ownerIdentity')
+      .mockReturnValue({ ...owner, telegramOwnerId: null, slackOwnerUserId: null });
+    try { expect((await signed(e, 'GET', path)).status).toBe(404); }
+    finally { absentOwner.mockRestore(); }
+    const first = await signed(e, 'GET', path);
+    expect(first.status).toBe(200);
+    const resume = `${path}?cursor=${encodeURIComponent(first.body.cursor)}`;
+    expect((await signed(e, 'GET', resume)).body.continuation).toBe('resume');
+    trust = 'trust-2';
+    expect((await signed(e, 'GET', resume)).body.continuation).toBe('reset');
+    const underTrust = await signed(e, 'GET', path);
+    const underTrustResume = `${path}?cursor=${encodeURIComponent(underTrust.body.cursor)}`;
+    journal = 'journal-2';
+    expect((await signed(e, 'GET', underTrustResume)).body.continuation).toBe('reset');
+    team = null;
+    expect((await signed(e, 'GET', resume)).status).toBe(503);
+    team = 'team-2';
+    e.lease.held = false;
+    expect((await signed(e, 'GET', resume)).status).toBe(503);
+    e.lease.held = true;
+    const other = await create(e);
+    expect((await signed(e, 'GET', `/mobile/chat/app/${other}/events?cursor=${encodeURIComponent(first.body.cursor)}`)).body.continuation)
+      .toBe('invalid');
+    changing = true;
+    expect((await signed(e, 'GET', resume)).status).toBe(503);
+    changing = false;
+    const original = e.svc.store.getCreationRecord.bind(e.svc.store);
+    const creation = vi.spyOn(e.svc.store, 'getCreationRecord');
+    creation.mockImplementationOnce((conversation) => original(conversation)).mockReturnValueOnce(null);
+    expect((await signed(e, 'GET', resume)).status).toBe(404);
+    creation.mockRestore();
+    const differentOwner = crypto.randomUUID();
+    e.svc.store.append({ kind: 'created', conversationKey: differentOwner, eventId: 'another-owner',
+      machineId: 'm1', title: 'Different owner', ownerPerson: { machineId: 'm1', userId: 'another-person' },
+      at: new Date().toISOString() });
+    const broadRead = vi.spyOn(e.pairing, 'mayUse').mockReturnValue(true);
+    try {
+      const blocked = await signed(e, 'GET', `/mobile/chat/app/${differentOwner}/events`);
+      expect(blocked.status).toBe(404);
+      expect(blocked.body).toEqual({ error: 'unknown-conversation' });
+    } finally { broadRead.mockRestore(); }
+    trust = null;
+    expect((await signed(e, 'GET', resume)).status).toBe(503);
+  });
+});
+
+describe('private signed owner removal sync page', () => {
+  async function fixture() {
+    let trust = 'trust-1';
+    const e = setup({ removalSyncPage: true, removalSyncEvidence: {
+      machineTrustRevision: () => trust,
+    } });
+    await enableReplyProof(e);
+    const key = await create(e);
+    e.svc.store.append({ kind: 'message', eventId: 'target', messageId: 'msg-target', text: 'Original text',
+      role: 'agent', conversationKey: key, machineId: 'm1', at: new Date().toISOString() });
+    const remove = () => e.svc.store.append({ kind: 'message-removed', eventId: 'remove-target',
+      targetEventId: 'target', targetMessageId: 'msg-target', conversationKey: key,
+      machineId: 'm1', at: new Date().toISOString() });
+    return { e, key, remove, path: `/mobile/chat/app/${key}/events`,
+      changeTrust() { trust = 'trust-2'; },
+    };
+  }
+
+  it('serves exact marker and continuation without replaying the removed text', async () => {
+    const { e, key, path, remove, changeTrust } = await fixture();
+    expect((await bearer(e, 'get', path)).status).toBe(403);
+    const firstPage = await signed(e, 'GET', `${path}?limit=1`);
+    expect(firstPage.status).toBe(200);
+    expect(firstPage.body).toMatchObject({ changes: [], blocked: false, caughtUp: false, highWater: expect.any(String) });
+    expect(firstPage.body).not.toHaveProperty('displayForMs');
+    expect((await signed(e, 'GET', `${path}?cursor=${encodeURIComponent(firstPage.body.highWater)}`)).status).toBe(400);
+    const before = await signed(e, 'GET', path);
+    expect(before.status).toBe(200);
+    expect(before.body).toMatchObject({ caughtUp: true, displayForMs: 30_000, highWater: firstPage.body.highWater });
+    expect(before.body.changes).toEqual([{ kind: 'message', row: {
+      eventId: 'target', messageId: 'msg-target', role: 'agent', text: 'Original text', at: expect.any(String),
+    } }]);
+    remove();
+    const continuation = `${path}?cursor=${encodeURIComponent(before.body.cursor)}`;
+    const after = await signed(e, 'GET', continuation);
+    expect(after.status).toBe(200);
+    const marker = { kind: 'message-removed', conversationKey: key, eventId: 'remove-target', targetEventId: 'target' };
+    expect(after.body.changes).toEqual([marker]);
+    expect(after.body.epoch).toBe(before.body.epoch);
+    expect(after.body).toMatchObject({ caughtUp: true, displayForMs: 30_000 });
+    expect(after.body.highWater).not.toBe(before.body.highWater);
+    expect((await signed(e, 'GET', path)).body.changes).toEqual([marker]);
+    expect((await signed(e, 'GET', `${path}?limit=101`)).status).toBe(400);
+    expect((await signed(e, 'GET', `${path}?cursor=invalid`)).status).toBe(400);
+    changeTrust();
+    const reset = await signed(e, 'GET', continuation);
+    expect(reset.status).toBe(409);
+    expect(reset.body).toEqual({ error: 'message-removal-sync-reset', epoch: expect.any(String) });
+  });
+
+  it('uses the sync epoch on history and suppresses a removed row', async () => {
+    const { e, key, path, remove } = await fixture();
+    const history = `/mobile/chat/app/${key}/messages`;
+    expect((await bearer(e, 'get', history)).status).toBe(403);
+    const [sync, before] = await Promise.all([signed(e, 'GET', path), signed(e, 'GET', history)]);
+    expect(before.status).toBe(200);
+    expect(before.headers['cache-control']).toBe('no-store');
+    expect(before.body).toMatchObject({ epoch: sync.body.epoch, messages: [{ eventId: 'target' }] });
+    expect(before.body).not.toHaveProperty('displayForMs');
+    remove();
+    expect((await signed(e, 'GET', history)).body).toMatchObject({ epoch: sync.body.epoch, messages: [] });
+  });
+
+  it('refuses an old page when a removal lands during row authorization', async () => {
+    const { e, key, remove } = await fixture();
+    const original = e.pairing.mayReadStored.bind(e.pairing);
+    const acl = vi.spyOn(e.pairing, 'mayReadStored').mockImplementationOnce((...args) => {
+      remove();
+      return original(...args);
+    });
+    try {
+      const history = `/mobile/chat/app/${key}/messages`;
+      const raced = await signed(e, 'GET', history);
+      expect(raced.status).toBe(503);
+      expect(raced.body).toEqual({ error: 'message-removal-sync-unavailable' });
+      expect((await signed(e, 'GET', history)).body.messages).toEqual([]);
+    } finally { acl.mockRestore(); }
+  });
+
+  it('rejects a continuation after the real journal index is rebuilt', async () => {
+    const { e, path } = await fixture();
+    const first = await signed(e, 'GET', path);
+    expect(first.status).toBe(200);
+    e.svc.store.rebuildIndex();
+    const reset = await signed(e, 'GET', `${path}?cursor=${encodeURIComponent(first.body.cursor)}`);
+    expect(reset.status).toBe(409);
+    expect(reset.body).toEqual({ error: 'message-removal-sync-reset', epoch: expect.any(String) });
+  });
+
+  it('holds before an unresolved marker and retries it before later rows', async () => {
+    const { e, key, path, remove } = await fixture();
+    const before = await signed(e, 'GET', path);
+    remove();
+    e.svc.store.append({ kind: 'message', eventId: 'later', messageId: 'msg-later', text: 'Later text',
+      role: 'agent', conversationKey: key, machineId: 'm1', at: new Date().toISOString() });
+    const continuation = `${path}?cursor=${encodeURIComponent(before.body.cursor)}`;
+    const acl = vi.spyOn(e.pairing, 'mayReadStored').mockImplementation((_reader, _conversation, row) => (row as { messageId?: string }).messageId !== 'msg-target');
+    try {
+      const blocked = await signed(e, 'GET', continuation);
+      expect(blocked.status).toBe(200);
+      expect(blocked.body).toMatchObject({ cursor: before.body.cursor, blocked: true, changes: [], caughtUp: false });
+      expect(blocked.body).not.toHaveProperty('displayForMs');
+    } finally { acl.mockRestore(); }
+    const retried = await signed(e, 'GET', continuation);
+    expect(retried.body.changes).toEqual([
+      { kind: 'message-removed', conversationKey: key, eventId: 'remove-target', targetEventId: 'target' },
+      { kind: 'message', row: expect.objectContaining({ eventId: 'later' }) },
+    ]);
+  });
+
+  it('resets a cursor if the exact creation event changes on the same machine', async () => {
+    const { e, key, path } = await fixture();
+    const first = await signed(e, 'GET', path);
+    expect(first.status).toBe(200);
+    const original = e.svc.store.getCreationRecord(key)!;
+    const changed = vi.spyOn(e.svc.store, 'getCreationRecord').mockReturnValue({
+      ...original, eventId: 'replaced-creation-event',
+    });
+    try {
+      const resume = await signed(e, 'GET', `${path}?cursor=${encodeURIComponent(first.body.cursor)}`);
+      expect(resume.status).toBe(409);
+      expect(resume.body.epoch).not.toBe(first.body.epoch);
+    } finally { changed.mockRestore(); }
+  });
+
+  it('withholds a page if access or removal evidence changes while executing', async () => {
+    const { e, path, remove, changeTrust } = await fixture();
+    const prepare = e.svc.store.prepareRemovalHistory.bind(e.svc.store);
+    vi.spyOn(e.svc.store, 'prepareRemovalHistory').mockImplementationOnce(async (key) => {
+      const ready = await prepare(key);
+      changeTrust();
+      return ready;
+    });
+    const changed = await signed(e, 'GET', path);
+    expect(changed.status).toBe(409);
+    expect(changed.body).toEqual({ error: 'message-removal-sync-reset' });
+    const select = e.svc.store.syncRemovalAwareMessageChangesAfter.bind(e.svc.store);
+    vi.spyOn(e.svc.store, 'syncRemovalAwareMessageChangesAfter').mockImplementationOnce((...args) => {
+      const page = select(...args);
+      expect(page?.changes[0]?.kind).toBe('message');
+      remove();
+      return page;
+    });
+    const stale = await signed(e, 'GET', path);
+    expect(stale.status).toBe(503);
+    expect(stale.body).toEqual({ error: 'message-removal-sync-unavailable' });
+    expect((await signed(e, 'GET', path)).body.changes[0].kind).toBe('message-removed');
   });
 });

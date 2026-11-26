@@ -1,0 +1,22 @@
+{
+  "version": 2,
+  "slug": "app-message-delete-proof-cache",
+  "sessionId": "633bd330-201e-4dc8-8fd9-72b89116167e",
+  "timestamp": "2026-11-25T17:27:35.498Z",
+  "artifactPath": "upgrades/side-effects/app-message-delete-proof-cache.md",
+  "artifactSha256": "d4bd3859c04aeae917277774ebfb496df61b78138d719f054ce5de7b3f35d125",
+  "specPath": "docs/specs/conversation-message-delete.md",
+  "coveredFiles": [
+    "docs/specs/conversation-message-delete.eli16.md",
+    "docs/specs/conversation-message-delete.md",
+    "docs/specs/reports/conversation-message-delete-convergence.md",
+    "src/core/AppConversationStore.ts",
+    "tests/unit/app-conversation-store.test.ts",
+    "upgrades/side-effects/app-message-delete-proof-cache.md"
+  ],
+  "phase": "complete",
+  "tier": 2,
+  "tierReasoning": "Cache invalidation for unmounted removal-aware history",
+  "secondPass": "true",
+  "reviewerConcurred": true
+}

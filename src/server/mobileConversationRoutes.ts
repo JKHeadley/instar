@@ -41,7 +41,7 @@ import type { OriginDisplaySettings } from '../messaging/telegram-origin/types.j
 import { deviceOriginRow, validateDeviceOriginRow, type DeviceOriginRow } from '../messaging/messageOrigin.js';
 import crypto from 'node:crypto';
 import { deviceKeyOf } from '../core/MobileDeviceKeys.js';
-import { Router, type Request, type Response } from 'express';
+import { Router, type NextFunction, type Request, type Response } from 'express';
 import type { InstarConfig } from '../core/types.js';
 import type { MobilePairingService } from './mobilePairingRoutes.js';
 import { deviceAdmissionIdentity, deviceAdmittedAt, deviceAdmittedHost, deviceMayUse, devicePersonOf, isMobileChatEnabled, personOfReaderKey } from './mobilePairingRoutes.js';
@@ -76,6 +76,12 @@ import { isConversationListPinsEnabled, MAX_LIST_PINS_PER_READER, type Conversat
 import type { ResolvedPerson } from '../core/MobilePeople.js';
 import { mediaOffBody } from './mobileMediaOff.js';
 import { AppCreationHierarchyProjection, type AppHierarchyFields, type CreationHierarchySource, type CreationHierarchyScope } from './appCreationHierarchy.js';
+import { executeAppMessageRemoval } from './mobileAppMessageRemoval.js';
+import type { AppRemovalReadCustody } from '../core/AppRemovalReadCustody.js';
+import type { SingleInstanceLock } from '../core/SingleInstanceLock.js';
+import { executeOwnerRemovalContext, executeOwnerRemovalHistory, executeOwnerRemovalSync } from './mobileAppRemovalSync.js';
+import { createRemovalSyncCursorCodec } from './mobileAppRemovalSyncCursor.js';
+import { resolveOwnerRemovalSyncAuthority } from './mobileAppRemovalSyncAuthority.js';
 import { normalizeCreationParentRef, type AppCreationContext } from '../core/AppCreationContext.js';
 import {
   checkSignedFiles, claimMediaUploads, mediaRecordTooLarge, preflightMediaAttachments, publishMediaMessage, signedFileHashParts,
@@ -249,6 +255,16 @@ async function fetchPeers<T>(
 }
 
 export interface MobileConversationRouteDeps {
+  /** Monotonic isolated acceptance enrollment. No normal boot supplies this. */
+  removalReadAcceptance?: {
+    enrolled: (conversationKey: string) => boolean;
+    evidence: Parameters<typeof resolveOwnerRemovalSyncAuthority>[3];
+  };
+  removalWriteAcceptance?: {
+    loopback: (req: Request) => boolean;
+    custody: AppRemovalReadCustody;
+    lock: SingleInstanceLock;
+  };
   messageLinkOrigin?: () => string | null;
   config: InstarConfig;
   /** SEC-164 §4.5: posts the fixed removed-key notice into the conversation. Absent ⇒ no notice. */
@@ -439,6 +455,22 @@ export function createMobileConversationRouter(deps: MobileConversationRouteDeps
   const sendRate = new Map<string, number[]>();
   const mutationRate = new Map<string, number[]>();
   const svc = deps.service;
+  const removalReads = deps.removalReadAcceptance;
+  const removalCodec = removalReads ? createRemovalSyncCursorCodec() : null;
+  const serveProtectedRead = (req: Request, res: Response, next: NextFunction, execute: typeof executeOwnerRemovalHistory,
+    conversationKey = String(req.params.key).toLowerCase()) => {
+    if (!svc || !removalReads || !removalCodec) return false;
+    try {
+      if (!removalReads.enrolled(conversationKey)) return false;
+    } catch {
+      res.status(503).json({ error: 'message-removal-sync-unavailable' });
+      return true;
+    }
+    void execute(req, deps.pairing, svc, removalReads.evidence, removalCodec)
+      .then(({ status, body }) => { res.status(status).json(body); })
+      .catch(next);
+    return true;
+  };
   const creationProjection = deps.creationHierarchyProjection ?? (svc ? new AppCreationHierarchyProjection(svc.store, () => deps.creationHierarchySource?.()) : null);
   const ownerMetadata = (req: Request): boolean => {
     const principal = principalOf(req);
@@ -711,7 +743,8 @@ export function createMobileConversationRouter(deps: MobileConversationRouteDeps
   const hasForwardCustody = (key: string) => ownsMessageActionCustody(key) && svc?.serves(key) === true;
   const replyReader = (req: Request) => principalOf(req).kind === 'device' && quotedRepliesOn()
     ? exactMessageReader(deps.pairing, req)() : null;
-  const replyProjection = (key: string, base: BrowsedMessage, person: ResolvedPerson | null) => {
+  const replyProjection = (key: string, base: BrowsedMessage, person: ResolvedPerson | null,
+    find: (eventId: string) => BrowsedMessage | undefined = (eventId) => svc!.store.exactMessageCandidates(key, eventId, 'event')[0]) => {
     if (!person || !quotedRepliesOn() || !deps.pairing.mayUse(person, key, 'read')
       || !deps.pairing.mayReadStored(person, key, base)) return {};
     if (!base.replyTo && !(base.receipt?.v === 3 && base.receipt.replyTo)) return {};
@@ -721,7 +754,7 @@ export function createMobileConversationRouter(deps: MobileConversationRouteDeps
     try {
       const verdict = svc!.verify({ ...base, conversationKey: key });
       if (verdict !== 'verified' && verdict !== 'redacted') return unavailable;
-      const [original] = svc!.store.exactMessageCandidates(key, relation.eventId, 'event');
+      const original = find(relation.eventId);
       if (!original || original.messageId !== relation.messageId || !deps.pairing.mayReadStored(person, key, original)) return unavailable;
       // Legacy and agent originals need no device proof. A recorded signature that positively
       // fails verification cannot supply an original preview or navigation target.
@@ -758,7 +791,13 @@ export function createMobileConversationRouter(deps: MobileConversationRouteDeps
     /** A team phone's list line is the newest message it may read, so a held one is not shown there. */
     const messageLinkSupport = exactLinksOn() ? { messageLinkSupport: { exactContext: true } } : {};
     const shownPreview = (r: ConversationListRow): ConversationListRow => {
-      if (person?.role !== 'team' || r.platform !== 'app') return r;
+      if (r.platform !== 'app') return r;
+      try {
+        if (removalReads?.enrolled(String(r.id))) return { ...r, lastPreview: null };
+      } catch {
+        return { ...r, lastPreview: null }; // @silent-fallback-ok — uncertain enrollment cannot expose a cached preview
+      }
+      if (person?.role !== 'team') return r;
       const newest = svc!.store.browseMessages(String(r.id), null, 100).messages.filter((m) => deps.pairing.mayReadStored(person, String(r.id), m)).pop();
       return { ...r, lastPreview: newest ? messagePreview(newest) : null };
     };
@@ -1493,7 +1532,7 @@ export function createMobileConversationRouter(deps: MobileConversationRouteDeps
     return candidates.length === 1 ? candidates[0]! : null;
   };
 
-  const appReaction = (req: Request, res: Response) => {
+  const appReaction = (req: Request, res: Response, next: NextFunction) => {
     const writing = req.method === 'PUT';
     const deviceId = gate(req, res);
     if (!deviceId) return;
@@ -1519,6 +1558,19 @@ export function createMobileConversationRouter(deps: MobileConversationRouteDeps
     }
     const store = svc!.store;
     const targetUnavailable = () => res.status(409).json({ error: 'reaction-target-unavailable' });
+    if (serveProtectedRead(req, res, next, async (request, pairing, service, evidence, codec) => {
+      if (writing) return { status: 503, body: { error: 'reactions-unavailable' } };
+      const result = await executeOwnerRemovalContext(request, pairing, service, evidence, codec, {
+        target: eventId, kind: 'event', beforeAt: null, limit: 1,
+      }, (row) => {
+        const own = store.ownReaction(key, row.eventId, actor);
+        return own ? { status: 200, body: { eventId: row.eventId, own } }
+          : { status: 503, body: { error: 'reaction-state-unavailable' } };
+      });
+      return result.status === 404 && result.body.error === 'message-not-available'
+        ? { status: 409, body: { error: 'reaction-target-unavailable' } } : result;
+    })) return;
+
     let candidates;
     try { candidates = store.exactMessageCandidates(key, eventId, 'event'); }
     catch { targetUnavailable(); return; } // @silent-fallback-ok — masked target read
@@ -1684,7 +1736,15 @@ export function createMobileConversationRouter(deps: MobileConversationRouteDeps
     }
   });
 
-  router.get('/mobile/conversations/message-link', (req, res) => {
+  const exactLinkResult = (ref: string, row: Pick<BrowsedMessage, 'eventId' | 'messageId' | 'at'>) => {
+    const origin = exactLinkOrigin();
+    if (!origin) return { status: 503, body: { error: 'message-link-unavailable' } };
+    const url = origin + MESSAGE_LINK_CONSOLE_PATH + '#/work/chats?' + new URLSearchParams({ c: ref, e: row.eventId });
+    return { status: 200, body: { ok: true, platform: 'app', ref, messageId: row.messageId, url, servedBy: deps.machineId(),
+      authority: { kind: 'native-store', scope: 'held-source' }, position: { at: row.at, eventId: row.eventId } } };
+  };
+
+  router.get('/mobile/conversations/message-link', (req, res, next) => {
     const read = exactGate(req, res);
     if (!read) return;
     const ref = typeof req.query.ref === 'string' && req.query.ref.startsWith('app:') ? canonicalConversationRef(req.query.ref) : null;
@@ -1697,20 +1757,26 @@ export function createMobileConversationRouter(deps: MobileConversationRouteDeps
     const key = ref.slice(4);
     const person = currentExactReader(read, res, key);
     if (!person) return;
+    if (serveProtectedRead(req, res, next, async (request, pairing, service, evidence, codec) => {
+      const result = await executeOwnerRemovalContext(request, pairing, service, evidence, codec, {
+        target, kind, beforeAt: null, limit: 1, conversationKey: key,
+      }, (row) => exactLinkResult(ref, row));
+      if (result.status === 404 && result.body.error === 'message-not-available') {
+        return { status: 409, body: { error: 'message-not-available-here', retryable: true, scope: 'held-source' } };
+      }
+      return result;
+    }, key)) return;
     try {
       const row = exactTarget(key, target, kind, person);
       if (!row) { exactUnavailable(res); return; }
-      const origin = exactLinkOrigin();
-      if (!origin) { res.status(503).json({ error: 'message-link-unavailable' }); return; }
-      const url = origin + MESSAGE_LINK_CONSOLE_PATH + '#/work/chats?' + new URLSearchParams({ c: ref, e: row.eventId });
-      res.json({ ok: true, platform: 'app', ref, messageId: row.messageId, url, servedBy: deps.machineId(),
-        authority: { kind: 'native-store', scope: 'held-source' }, position: { at: row.at, eventId: row.eventId } });
+      const { status, body } = exactLinkResult(ref, row);
+      res.status(status).json(body);
     } catch {
       exactUnavailable(res); // @silent-fallback-ok — exact source failures and invisible targets share a wire outcome
     }
   });
 
-  router.get('/mobile/chat/app/:key/message-context', async (req, res) => {
+  router.get('/mobile/chat/app/:key/message-context', async (req, res, next) => {
     const read = exactGate(req, res);
     if (!read) return;
     const key = String(req.params.key).toLowerCase();
@@ -1726,6 +1792,12 @@ export function createMobileConversationRouter(deps: MobileConversationRouteDeps
     }
     const person = currentExactReader(read, res, key);
     if (!person) return;
+    const n = Math.max(1, Math.min(100, limit === undefined ? 50 : Number(limit)));
+    if (serveProtectedRead(req, res, next, (request, pairing, service, evidence, codec) =>
+      executeOwnerRemovalContext(request, pairing, service, evidence, codec, {
+        target: (direct ? target : beforeEventId) as string, kind: direct ? kind! : 'event',
+        beforeAt: direct ? null : beforeAt as string, limit: n,
+      }))) return;
     const admittedVisibility = exactVisibility(person, key);
     const store = svc!.store;
     const active = exactScans.get(store) ?? 0;
@@ -1734,7 +1806,6 @@ export function createMobileConversationRouter(deps: MobileConversationRouteDeps
     if (active >= capacity) { res.status(429).json({ error: 'context-busy', retryable: true }); return; }
     exactScans.set(store, active + 1);
     try {
-      const n = Math.max(1, Math.min(100, limit === undefined ? 50 : Number(limit)));
       const boundary = direct ? exactTarget(key, target as string, kind!, person) : exactTarget(key, beforeEventId as string, 'event', person);
       if (!boundary || (!direct && boundary.at !== beforeAt)) { exactUnavailable(res); return; }
       const visible: BrowsedMessage[] = [];
@@ -1780,7 +1851,7 @@ export function createMobileConversationRouter(deps: MobileConversationRouteDeps
   });
 
   // Revalidate only the exact displayed reply bases. No arbitrary history page is returned.
-  router.get('/mobile/chat/app/:key/reply-previews', (req, res) => {
+  router.get('/mobile/chat/app/:key/reply-previews', (req, res, next) => {
     res.setHeader('Cache-Control', 'no-store');
     const person = replyReader(req);
     if (!quotedRepliesOn() || !svc) { res.status(503).json({ error: 'quoted-replies-unavailable' }); return; }
@@ -1794,6 +1865,30 @@ export function createMobileConversationRouter(deps: MobileConversationRouteDeps
       || new Set(ids).size !== ids.length || Object.keys(req.query).some((field) => field !== 'eventId')) {
       res.status(400).json({ error: 'invalid-reply-preview-request' }); return;
     }
+    if (serveProtectedRead(req, res, next, async (request, pairing, service, evidence, codec) => {
+      const unavailable = { status: 503, body: { error: 'message-removal-sync-unavailable' } };
+      const reset = { status: 409, body: { error: 'message-removal-sync-reset' } };
+      const initial = resolveOwnerRemovalSyncAuthority(request, pairing, service, evidence);
+      if (!initial.ok) return { status: initial.status, body: { error: initial.error } };
+      const epoch = codec.epochFor(initial.authority);
+      await service.store.prepareRemovalHistory(key);
+      const admitted = resolveOwnerRemovalSyncAuthority(request, pairing, service, evidence);
+      if (!admitted.ok) return { status: admitted.status, body: { error: admitted.error } };
+      if (codec.epochFor(admitted.authority) !== epoch) return reset;
+      const current = exactMessageReader(pairing, request)();
+      if (current?.role !== 'owner') return unavailable;
+      const page = service.store.projectPreparedRemovalEvents(key, (row) => pairing.mayReadStored(current, key, row),
+        (find) => (ids as string[]).map((eventId) => {
+          const base = find(eventId);
+          return { eventId, ...(base ? replyProjection(key, base, current, find) : {}) };
+        }));
+      if (!page) return unavailable;
+      const final = resolveOwnerRemovalSyncAuthority(request, pairing, service, evidence);
+      if (!final.ok) return { status: final.status, body: { error: final.error } };
+      if (codec.epochFor(final.authority) !== epoch) return reset;
+      if (!service.store.hasPreparedRemovalHistory(key, page.proof)) return unavailable;
+      return { status: 200, body: { conversationKey: key, messages: page.value, epoch } };
+    })) return;
     const messages = (ids as string[]).map((eventId) => {
       try {
         const [base] = svc.store.exactMessageCandidates(key, eventId, 'event');
@@ -1805,9 +1900,32 @@ export function createMobileConversationRouter(deps: MobileConversationRouteDeps
     res.json({ conversationKey: key, messages });
   });
 
+  const removalWrites = deps.removalWriteAcceptance;
+  if (removalWrites && removalReads && svc) {
+    router.post('/mobile/chat/app/:key/message-removals', (req, res, next) => {
+      res.setHeader('Cache-Control', 'no-store');
+      if (!removalWrites.loopback(req) || principalOf(req).kind !== 'device') {
+        res.status(403).json({ error: 'device-not-allowed' }); return;
+      }
+      try {
+        const key = String(req.params.key);
+        if (removalWrites.custody.observe(key).kind !== 'recorded' || !removalReads.enrolled(key)) {
+          res.status(403).json({ error: 'device-not-allowed' }); return;
+        }
+      } catch {
+        res.status(503).json({ error: 'message-removal-custody-unavailable' }); return;
+      }
+      void executeAppMessageRemoval(req, deps.pairing, svc, removalWrites.lock, now, removalWrites.custody)
+        .then(({ status, body }) => { res.status(status).json(body); })
+        .catch(next);
+    });
+  }
+
   // ── Browse ──
-  router.get('/mobile/chat/app/:key/messages', async (req: Request, res: Response) => {
+  router.get('/mobile/chat/app/:key/messages', async (req: Request, res: Response, next: NextFunction) => {
     if (!readGate(req, res)) return;
+    if (serveProtectedRead(req, res, next, (request, pairing, service, evidence, codec) =>
+      executeOwnerRemovalHistory(request, pairing, service, evidence, codec, pinsOn() ? 'history-and-pins' : 'history'))) return;
     if (req.query.scope !== undefined && req.query.scope !== 'pool') { res.status(400).json({ error: 'invalid-scope' }); return; }
     const key = String(req.params.key);
     if (!allowed(req, res, key)) return;
@@ -1879,7 +1997,7 @@ export function createMobileConversationRouter(deps: MobileConversationRouteDeps
   // ── Reply notification preview (chat-media spec §4.11) ──
   // The phone's notification extension asks for the text to show; Apple only ever carries
   // "New reply". Open to the device, its notification read token, or the agent's token.
-  router.get('/mobile/chat/app/:key/preview/:messageId', (req: Request, res: Response) => {
+  router.get('/mobile/chat/app/:key/preview/:messageId', (req: Request, res: Response, next: NextFunction) => {
     res.setHeader('Cache-Control', 'no-store');
     if (!deps.pairing.enabled() || !svc) { off(res); return; }
     const p = principalOf(req);
@@ -1888,17 +2006,25 @@ export function createMobileConversationRouter(deps: MobileConversationRouteDeps
     const messageId = String(req.params.messageId);
     if (!isAppConversationKey(key) || !/^[a-z0-9._:-]{1,128}$/.test(messageId)) { res.status(400).json({ error: 'bad-request' }); return; }
     if (!deviceMayUse(deps.pairing, req, key)) { res.status(404).json({ error: 'not-found' }); return; }
+    const name = deps.config.projectName ?? 'agent';
+    const title = name.charAt(0).toUpperCase() + name.slice(1);
+    if (serveProtectedRead(req, res, next, (request, pairing, service, evidence, codec) =>
+      executeOwnerRemovalContext(request, pairing, service, evidence, codec, {
+        target: messageId, kind: 'message', beforeAt: null, limit: 1,
+      }, (row) => row.role === 'agent'
+        ? { status: 200, body: { title, body: pushPreviewBody(row.attachments ?? [], row.text) } }
+        : { status: 404, body: { error: 'message-not-available' } }))) return;
     // A deleted conversation, or a reply not replicated to this machine yet: the phone keeps the generic text.
     const ev = svc.liveConversation(key) ? svc.store.getMessageEvent(key, messageId) : null;
     const m = ev as unknown as { role?: string; text?: unknown; attachments?: AppAttachment[] } | null;
     if (!m || m.role !== 'agent' || !deps.pairing.mayReadMessageId(devicePersonOf(req), key, messageId)) { res.status(404).json({ error: 'not-found' }); return; }
-    const name = deps.config.projectName ?? 'agent';
-    res.json({ title: name.charAt(0).toUpperCase() + name.slice(1), body: pushPreviewBody(m.attachments ?? [], typeof m.text === 'string' ? m.text : '') });
+    res.json({ title, body: pushPreviewBody(m.attachments ?? [], typeof m.text === 'string' ? m.text : '') });
   });
 
   // ── Sync ──
-  router.get('/mobile/chat/app/:key/events', (req: Request, res: Response) => {
+  router.get('/mobile/chat/app/:key/events', (req: Request, res: Response, next: NextFunction) => {
     if (!readGate(req, res)) return;
+    if (serveProtectedRead(req, res, next, executeOwnerRemovalSync)) return;
     const key = String(req.params.key);
     if (!allowed(req, res, key)) return;
     if (!isAppConversationKey(key) || !svc!.store.getConversation(key)) { res.status(404).json({ error: 'unknown-conversation' }); return; }
@@ -1908,7 +2034,7 @@ export function createMobileConversationRouter(deps: MobileConversationRouteDeps
       conversationKey: key,
       events: page.events.filter((e) => {
         // A message, and anything about one, such as its transcript or a pin (conversation-pinned-messages).
-        if (e.kind === 'reaction' || (e.kind === 'pin' && !pinsOn())) return false;
+        if (e.kind === 'message-removed' || e.kind === 'reaction' || (e.kind === 'pin' && !pinsOn())) return false;
         const about = e.kind === 'pin' ? e.pinnedMessageId : (e as { messageId?: unknown }).messageId;
         // Text about a message that has not reached this machine waits for it.
         if (typeof about !== 'string' || (e.kind !== 'transcript' && e.kind !== 'pin' && !svc!.store.hasMessage(about))) return true;

@@ -3130,7 +3130,12 @@ const NOTIFY_TOKEN_PATHS: ReadonlyArray<RegExp> = [
   /^\/mobile\/docs\/[0-9a-f-]{36}\/summary$/,
 ];
 
-export function deviceAuthenticator(svc: MobilePairingService) {
+const privateRemovalRule: DeviceRule = {
+  method: 'POST', re: new RegExp(`^/mobile/chat/app/${APP_CONVERSATION_KEY_PATTERN}/message-removals$`),
+  statuses: new Set<DeviceStatus>(['active']), body: 'json', ownerOnly: true, ownBucket: 10, bucket: 'disposable-message-removals',
+};
+
+export function deviceAuthenticator(svc: MobilePairingService, privateRemovalAllowed?: (req: Request) => boolean) {
   return (req: Request, res: Response): 'none' | 'ok' | 'refused' => {
     const id = req.headers['x-instar-device'];
     if (id === undefined) return 'none';
@@ -3175,7 +3180,9 @@ export function deviceAuthenticator(svc: MobilePairingService) {
       (req as unknown as { instarDevicePerson: ResolvedPerson }).instarDevicePerson = np;
       return 'ok';
     }
-    const rule = DEVICE_ALLOWLIST.find((r) => r.method === req.method && r.re.test(pathNorm));
+    const rule = DEVICE_ALLOWLIST.find((r) => r.method === req.method && r.re.test(pathNorm))
+      ?? (req.method === privateRemovalRule.method && privateRemovalRule.re.test(pathNorm) && privateRemovalAllowed?.(req)
+        ? privateRemovalRule : undefined);
     if (!rule) return refuse(403, 'device-not-allowed');
     const raw = (req as unknown as { rawBody?: Buffer }).rawBody;
     const contentLength = Number(req.headers['content-length'] ?? 0);

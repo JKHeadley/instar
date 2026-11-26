@@ -1,0 +1,27 @@
+{
+  "ts": "2026-11-26T04:35:43.867Z",
+  "slug": "app-message-delete-standalone-pins",
+  "suggestedTier": 2,
+  "declaredTier": 2,
+  "riskFloor": 2,
+  "riskFloorReasons": [
+    "new capability: new route (router.<verb>() added"
+  ],
+  "belowFloor": false,
+  "files": 4,
+  "loc": 46,
+  "scope": {
+    "basis": "staged-in-scope-paths-including-deleted",
+    "files": [
+      "src/server/AgentServer.ts",
+      "src/server/mobileAppRemovalSync.ts",
+      "src/server/mobileConversationRoutes.ts",
+      "src/server/mobilePinRoutes.ts"
+    ],
+    "addedLines": 37,
+    "deletedLines": 9
+  },
+  "causalAutopsy": null,
+  "classClosure": null,
+  "verdict": "pass"
+}

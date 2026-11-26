@@ -1,0 +1,22 @@
+{
+  "version": 2,
+  "slug": "app-message-delete-download-acceptance",
+  "sessionId": "633bd330-201e-4dc8-8fd9-72b89116167e",
+  "timestamp": "2026-11-26T03:18:56.585Z",
+  "artifactPath": "upgrades/side-effects/app-message-delete-download-acceptance.md",
+  "artifactSha256": "ec3d06a23250b036e20dcb6bf15710fbaf09e7eb42ce8c25ca1b10d4ff63de98",
+  "specPath": "docs/specs/conversation-message-delete.md",
+  "coveredFiles": [
+    "docs/specs/conversation-message-delete.eli16.md",
+    "docs/specs/conversation-message-delete.md",
+    "src/server/AgentServer.ts",
+    "src/server/mobileMediaRoutes.ts",
+    "tests/e2e/mobile-native-conversations-alive.test.ts",
+    "upgrades/side-effects/app-message-delete-download-acceptance.md"
+  ],
+  "phase": "complete",
+  "tier": 2,
+  "tierReasoning": "Require exact surviving attachment proof at disposable download stream admission",
+  "secondPass": "true",
+  "reviewerConcurred": true
+}

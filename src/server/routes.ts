@@ -1325,6 +1325,8 @@ export interface RouteContext {
   appCredentialNotice?: ((input: { conversationKey: string; messageId: string }) => void) | null;
   /** Native app conversations (docs/specs/mobile-native-conversations.md); absent/null when off. */
   appConversations?: import('../core/AppConversationService.js').AppConversationService | null;
+  /** Shared disposable enrollment for local bound-session reads. */
+  appRemovalReadAcceptance?: (conversationKey: string) => boolean;
   /** native-conversation-base §3c: Telegram file resolution on this machine (null when Telegram is off). */
   platformMedia?: import('../core/platformMediaForSession.js').PlatformMediaForSession | null;
   /** Unread counts and read markers (docs/specs/mobile-unread-messages.md); null when native chat or unread is off. */
@@ -25478,19 +25480,54 @@ document.getElementById('mcpForm').addEventListener('submit', async function (e)
     const key = ctx.conversationRegistry?.appConversationFor(conversationId) ?? null;
     if (!key || !app.liveConversation(key)) { res.status(404).json({ error: 'unknown-conversation' }); return; }
     if (!app.ownsAlias(conversationId)) { res.status(409).json({ error: 'not-owner', detail: 'This machine does not currently run this app conversation.' }); return; }
-    const ref = app.store.mediaRef(String(req.params.attachmentId));
-    if (!ref || ref.canonicalKey !== `app:${key}`) { res.status(404).json({ error: 'unknown-attachment', detail: 'This conversation has no such file.' }); return; }
-    if (ref.purged) { res.status(404).json({ error: 'file-removed', detail: 'This file was permanently removed.' }); return; }
-    const ev = app.store.getMessageEvent(key, ref.messageId);
-    const attachment = ev && ev.kind === 'media-message' ? ev.attachments[ref.idx] : undefined;
-    if (!attachment) { res.status(404).json({ error: 'unknown-attachment', detail: 'This conversation has no such file.' }); return; }
-    let copied = await app.media.sessionCopy(ref.messageId, attachment);
-    // §4.5: a file not here yet is pulled for at most 30 seconds; the helper never hangs.
-    if (!copied && !app.media.locateBlob(attachment.sha256) && await app.replicator.awaitBlob(attachment.sha256, MEDIA_PATH_WAIT_MS)) {
-      copied = await app.media.sessionCopy(ref.messageId, attachment);
+    const attachmentId = String(req.params.attachmentId);
+    const notFound = () => res.status(404).json({ error: 'unknown-attachment', detail: 'This conversation has no such file.' });
+    const ref = app.store.mediaRef(attachmentId);
+    if (!ref || ref.canonicalKey !== `app:${key}`) { notFound(); return; }
+    const enrollment = ctx.appRemovalReadAcceptance;
+    let protectedRead = false;
+    try { protectedRead = enrollment?.(key) === true; } catch { notFound(); return; } // @silent-fallback-ok — uncertain custody cannot authorize a copy
+    if (ref.purged) {
+      if (protectedRead) { notFound(); return; }
+      res.status(404).json({ error: 'file-removed', detail: 'This file was permanently removed.' }); return;
     }
-    if (!copied) { res.status(404).json({ error: 'not-on-this-machine', detail: `this file hasn't been copied over yet; ${app.replicator.whyNotHere(attachment.sha256)}` }); return; }
+    let attachment;
+    let mayPublish: (() => boolean) | undefined;
+    if (enrollment) {
+      mayPublish = () => {
+        try { return !enrollment(key); } catch { return false; } // @silent-fallback-ok — never publish through uncertain legacy custody
+      };
+    }
+    if (protectedRead && enrollment) {
+      const currentBoundCustody = () => !!ctx.conversationBindAuth && typeof rawToken === 'string'
+        && verifyConversationBind({ bindAuth: ctx.conversationBindAuth, numericTopicId: conversationId, rawToken }).ok
+        && ctx.conversationRegistry?.appConversationFor(conversationId) === key
+        && !!app.liveConversation(key) && app.ownsAlias(conversationId) && app.serves(key) && enrollment(key);
+      try {
+        if (!currentBoundCustody()) { notFound(); return; }
+        await app.store.prepareRemovalHistory(key);
+        const page = app.store.readPreparedRemovalMedia(key, ref.sha256, () => true, attachmentId);
+        if (!page?.occurrence || page.occurrence.messageId !== ref.messageId) { notFound(); return; }
+        attachment = page.occurrence.attachment;
+        mayPublish = () => {
+          try { return currentBoundCustody() && app.store.hasPreparedRemovalHistory(key, page.proof); }
+          catch { return false; } // @silent-fallback-ok — proof loss cannot publish a copy
+        };
+      } catch { notFound(); return; } // @silent-fallback-ok — prepared copy evidence unavailable
+    } else {
+      const ev = app.store.getMessageEvent(key, ref.messageId);
+      attachment = ev?.kind === 'media-message' ? ev.attachments[ref.idx] : undefined;
+    }
+    if (!attachment) { notFound(); return; }
     try {
+      let copied = await app.media.sessionCopy(ref.messageId, attachment, mayPublish);
+      // §4.5: a file not here yet is pulled for at most 30 seconds; the helper never hangs.
+      if (!copied && (!mayPublish || mayPublish()) && !app.media.locateBlob(attachment.sha256)
+        && await app.replicator.awaitBlob(attachment.sha256, MEDIA_PATH_WAIT_MS)) {
+        copied = await app.media.sessionCopy(ref.messageId, attachment, mayPublish);
+      }
+      if (mayPublish && !mayPublish()) { notFound(); return; }
+      if (!copied) { res.status(404).json({ error: 'not-on-this-machine', detail: `this file hasn't been copied over yet; ${app.replicator.whyNotHere(attachment.sha256)}` }); return; }
       res.json({ path: app.intoConfinedInbox(key, copied) });
     } catch (err) {
       console.warn(`[app-media] copy refused: ${err instanceof Error ? err.message : String(err)}`);

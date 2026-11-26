@@ -1,0 +1,23 @@
+{
+  "version": 2,
+  "slug": "app-message-delete-stale-reclaim",
+  "sessionId": "633bd330-201e-4dc8-8fd9-72b89116167e",
+  "timestamp": "2026-11-25T20:27:57.344Z",
+  "artifactPath": "upgrades/side-effects/app-message-delete-stale-reclaim.md",
+  "artifactSha256": "2af9865ee0a8dfa526f7a28038ec3e4520a940a11be50a20e12a2d8a26efc308",
+  "specPath": "docs/specs/conversation-message-delete.md",
+  "coveredFiles": [
+    "docs/specs/conversation-message-delete.eli16.md",
+    "docs/specs/conversation-message-delete.md",
+    "docs/specs/reports/conversation-message-delete-convergence.md",
+    "src/core/SingleInstanceLock.ts",
+    "tests/e2e/spawn-cap-forkbomb-lifecycle.test.ts",
+    "tests/unit/single-instance-lock.test.ts",
+    "upgrades/side-effects/app-message-delete-stale-reclaim.md"
+  ],
+  "phase": "complete",
+  "tier": 2,
+  "tierReasoning": "Revalidate stale process ownership inside a host-local interprocess mutex",
+  "secondPass": "true",
+  "reviewerConcurred": true
+}

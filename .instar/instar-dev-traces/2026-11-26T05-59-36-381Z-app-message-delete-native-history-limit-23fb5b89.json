@@ -1,0 +1,21 @@
+{
+  "version": 2,
+  "slug": "app-message-delete-native-history-limit",
+  "sessionId": "633bd330-201e-4dc8-8fd9-72b89116167e",
+  "timestamp": "2026-11-26T05:59:36.381Z",
+  "artifactPath": "upgrades/side-effects/app-message-delete-native-history-limit.md",
+  "artifactSha256": "95ef03c2feab4d47b889e185f834d16281f3495de342eaf5ff947138d8e32bfc",
+  "specPath": "docs/specs/conversation-message-delete.md",
+  "coveredFiles": [
+    "docs/specs/conversation-message-delete.eli16.md",
+    "docs/specs/conversation-message-delete.md",
+    "src/server/mobileAppRemovalSync.ts",
+    "tests/e2e/app-delete-native-acceptance.test.ts",
+    "upgrades/side-effects/app-message-delete-native-history-limit.md"
+  ],
+  "phase": "complete",
+  "tier": 2,
+  "tierReasoning": "Accept the native first-history limit under the same protected authority",
+  "secondPass": "true",
+  "reviewerConcurred": true
+}

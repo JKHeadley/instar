@@ -1,0 +1,22 @@
+{
+  "version": 2,
+  "slug": "app-message-delete-pin-acceptance",
+  "sessionId": "633bd330-201e-4dc8-8fd9-72b89116167e",
+  "timestamp": "2026-11-26T01:39:08.660Z",
+  "artifactPath": "upgrades/side-effects/app-message-delete-pin-acceptance.md",
+  "artifactSha256": "7456d01fc753a2e30d04df411aaadfda04da1fc255cb246b9959d845b92d895a",
+  "specPath": "docs/specs/conversation-message-delete.md",
+  "coveredFiles": [
+    "docs/specs/conversation-message-delete.eli16.md",
+    "docs/specs/conversation-message-delete.md",
+    "src/server/mobileAppRemovalSync.ts",
+    "src/server/mobileConversationRoutes.ts",
+    "tests/e2e/mobile-native-conversations-alive.test.ts",
+    "upgrades/side-effects/app-message-delete-pin-acceptance.md"
+  ],
+  "phase": "complete",
+  "tier": 2,
+  "tierReasoning": "Build pin previews from proven surviving messages on enrolled history",
+  "secondPass": "true",
+  "reviewerConcurred": true
+}

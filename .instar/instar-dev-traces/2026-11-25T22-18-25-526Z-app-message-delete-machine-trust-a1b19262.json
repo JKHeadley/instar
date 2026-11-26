@@ -1,0 +1,23 @@
+{
+  "version": 2,
+  "slug": "app-message-delete-machine-trust",
+  "sessionId": "633bd330-201e-4dc8-8fd9-72b89116167e",
+  "timestamp": "2026-11-25T22:18:25.526Z",
+  "artifactPath": "upgrades/side-effects/app-message-delete-machine-trust.md",
+  "artifactSha256": "e860edf0f2c50fc82b531e2b22056090d6b9b23a66016bbd591ce27680b4e19f",
+  "specPath": "docs/specs/conversation-message-delete.md",
+  "coveredFiles": [
+    "docs/specs/conversation-message-delete.eli16.md",
+    "docs/specs/conversation-message-delete.md",
+    "docs/specs/reports/conversation-message-delete-convergence.md",
+    "src/core/AppRecordSignatures.ts",
+    "src/core/IdentityStore.ts",
+    "tests/unit/app-record-signatures.test.ts",
+    "upgrades/side-effects/app-message-delete-machine-trust.md"
+  ],
+  "phase": "complete",
+  "tier": 2,
+  "tierReasoning": "Couple a bounded trust revision to fresh historical signing-key evidence",
+  "secondPass": "true",
+  "reviewerConcurred": true
+}

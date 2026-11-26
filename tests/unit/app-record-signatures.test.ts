@@ -5,13 +5,13 @@
  * receipt reused on a different path, and the real signing-key history: an old receipt still
  * verified after the machine's key rotates, and `unknown` when that history is unreadable.
  */
-import { describe, it, expect, afterAll } from 'vitest';
+import { describe, it, expect, afterAll, vi } from 'vitest';
 import crypto from 'node:crypto';
 import fs from 'node:fs';
 import os from 'node:os';
 import path from 'node:path';
 import {
-  verifyRecordedOrigin, signReceipt, signRedaction, receiptPayloadV3, signReplyReceipt, verifyReplyReceipt, signerKeyHashOf, deviceKeyHashOf, identityKeyLookup, loadMachineSigner,
+  verifyRecordedOrigin, signReceipt, signRedaction, receiptPayloadV3, signReplyReceipt, verifyReplyReceipt, signerKeyHashOf, deviceKeyHashOf, identityKeyLookup, loadMachineSigner, createAppMachineTrustEvidence,
   type ReplyReceiptBinding, type LedgerKey, type MachineKeyLookup, type MachineSigner, type StoredDeviceOrigin, type VerifiableRecord,
 } from '../../src/core/AppRecordSignatures.js';
 import { canonicalString } from '../../src/core/MobileDeviceKeys.js';
@@ -175,6 +175,76 @@ describe('the attributable signing-key history (IdentityStore)', () => {
     await mgr.generateIdentity({ name: 'test machine' });
     return { dir, mgr };
   }
+
+  it('captures machine trust revisions and matching verification keys before and after rotation', async () => {
+    const { dir, mgr } = await machineDir();
+    const signer = loadMachineSigner(dir)!;
+    const machine = signer.machineId();
+    const observe = createAppMachineTrustEvidence(dir);
+    expect(observe([])).toBeNull();
+    const first = observe([machine])!;
+    expect(first.revision).toEqual(expect.any(String));
+    expect(observe([machine, machine])).toBe(first);
+    expect(observe(Array.from({ length: 64 }, () => machine))).toBe(first);
+    const { mgr: otherManager } = await machineDir();
+    const other = otherManager.loadIdentity().machineId;
+    expect(observe([machine, other])?.revision).not.toBe(first.revision);
+    expect(observe([machine])).toBe(first);
+    const originalHash = signer.signerKeyHash();
+    const signedBeforeRotation = Date.now() - 60_000;
+    expect(first.lookup(machine, originalHash, signedBeforeRotation).status).toBe('ok');
+    mgr.rotateLocalKeys('test revision');
+    const next = observe([machine])!;
+    const currentHash = signer.signerKeyHash();
+    expect(next.revision).not.toBe(first.revision);
+    expect(next.lookup(machine, currentHash, Date.now()).status).toBe('ok');
+    expect(next.lookup(machine, originalHash, signedBeforeRotation).status).toBe('ok');
+    expect(first.lookup(machine, currentHash, Date.now()).status).toBe('unknown');
+    const transaction = path.join(dir, 'state', 'identity-transaction.json');
+    fs.writeFileSync(transaction, '{}');
+    expect(observe([machine])).toBeNull();
+    fs.renameSync(transaction, transaction + '.fixture');
+    expect(observe([machine])?.revision).not.toBe(next.revision);
+    expect(observe(Array.from({ length: 65 }, () => machine))).toBeNull();
+    const epochs = path.join(dir, 'state', 'identity-epochs.json');
+    fs.renameSync(epochs, epochs + '.fixture');
+    fs.writeFileSync(epochs, JSON.stringify({ version: 1, machines: [] }));
+    expect(observe([machine])).toBeNull();
+    fs.renameSync(epochs + '.fixture', epochs);
+    const normalEpochs = JSON.parse(fs.readFileSync(epochs, 'utf8'));
+    fs.writeFileSync(epochs, JSON.stringify({ version: 1, machines: { [machine]: null } }));
+    expect(observe([machine])).toBeNull();
+    const epoch = normalEpochs.machines[machine];
+    epoch.signingKeys[0].revokedAt = 'invalid-date';
+    fs.writeFileSync(epochs, JSON.stringify(normalEpochs));
+    expect(observe([machine])).toBeNull();
+    fs.mkdirSync(path.dirname(mgr.registryPath), { recursive: true });
+    fs.writeFileSync(mgr.registryPath, '{invalid registry');
+    expect(observe([machine])).toBeNull();
+  });
+
+  it('rejects a swapped identity descriptor even if the canonical path is restored', async () => {
+    const { dir, mgr } = await machineDir();
+    const machineId = mgr.loadIdentity().machineId;
+    const observe = createAppMachineTrustEvidence(dir);
+    const pathBefore = mgr.identityPath;
+    const replacement = pathBefore + '.replacement';
+    const saved = pathBefore + '.saved';
+    fs.writeFileSync(replacement, fs.readFileSync(pathBefore));
+    const open = fs.openSync;
+    const swap = vi.spyOn(fs, 'openSync').mockImplementationOnce((file, flags, mode) => {
+      expect(file).toBe(pathBefore);
+      fs.renameSync(pathBefore, saved);
+      fs.renameSync(replacement, pathBefore);
+      const fd = open(file, flags, mode);
+      fs.renameSync(pathBefore, replacement);
+      fs.renameSync(saved, pathBefore);
+      return fd;
+    });
+    try { expect(observe([machineId])).toBeNull(); }
+    finally { swap.mockRestore(); }
+    expect(observe([machineId])?.revision).toEqual(expect.any(String));
+  });
 
   it('an old receipt stays verified after the signing machine rotates its key', async () => {
     const { dir, mgr } = await machineDir();

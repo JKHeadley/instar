@@ -1,0 +1,23 @@
+{
+  "version": 2,
+  "slug": "app-message-delete-protected-history",
+  "sessionId": "633bd330-201e-4dc8-8fd9-72b89116167e",
+  "timestamp": "2026-11-25T23:50:59.887Z",
+  "artifactPath": "upgrades/side-effects/app-message-delete-protected-history.md",
+  "artifactSha256": "37a24cc6b5c0423c9c62eefb66ab3135d92f8ad1420f5993bf230178deac0513",
+  "specPath": "docs/specs/conversation-message-delete.md",
+  "coveredFiles": [
+    "docs/specs/conversation-message-delete.eli16.md",
+    "docs/specs/conversation-message-delete.md",
+    "src/core/AppConversationStore.ts",
+    "src/server/mobileAppRemovalSync.ts",
+    "tests/e2e/mobile-native-conversations-alive.test.ts",
+    "tests/integration/mobile-native-conversations.test.ts",
+    "upgrades/side-effects/app-message-delete-protected-history.md"
+  ],
+  "phase": "complete",
+  "tier": 2,
+  "tierReasoning": "Project protected first-page history under the signed sync epoch and exact removal proof",
+  "secondPass": "true",
+  "reviewerConcurred": true
+}

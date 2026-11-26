@@ -1,0 +1,23 @@
+{
+  "ts": "2026-11-25T21:55:53.055Z",
+  "slug": "app-message-delete-key-visibility",
+  "suggestedTier": 2,
+  "declaredTier": 2,
+  "riskFloor": 1,
+  "riskFloorReasons": [],
+  "belowFloor": false,
+  "files": 2,
+  "loc": 80,
+  "scope": {
+    "basis": "staged-in-scope-paths-including-deleted",
+    "files": [
+      "src/core/AppRecordSignatures.ts",
+      "src/core/MobileDeviceKeyLedger.ts"
+    ],
+    "addedLines": 69,
+    "deletedLines": 11
+  },
+  "causalAutopsy": null,
+  "classClosure": null,
+  "verdict": "pass"
+}

@@ -1,0 +1,23 @@
+{
+  "ts": "2026-11-25T19:05:06.542Z",
+  "slug": "app-message-delete-private-execution",
+  "suggestedTier": 2,
+  "declaredTier": 2,
+  "riskFloor": 1,
+  "riskFloorReasons": [],
+  "belowFloor": false,
+  "files": 2,
+  "loc": 143,
+  "scope": {
+    "basis": "staged-in-scope-paths-including-deleted",
+    "files": [
+      "src/server/mobileAppMessageRemoval.ts",
+      "src/server/mobileAppMessageRemovalAdmission.ts"
+    ],
+    "addedLines": 113,
+    "deletedLines": 30
+  },
+  "causalAutopsy": null,
+  "classClosure": null,
+  "verdict": "pass"
+}

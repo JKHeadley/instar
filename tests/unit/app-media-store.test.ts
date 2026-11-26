@@ -428,6 +428,22 @@ describe('sweep', () => {
 });
 
 describe('session copies', () => {
+  it('checks permission again before publishing a staged copy and before reusing an existing copy', async () => {
+    const e = setup();
+    const bytes = png();
+    await storeBlob(e, bytes, 'm-a');
+    const media = attachment('m-a', bytes);
+    const mayPublish = vi.fn<() => boolean>().mockReturnValueOnce(true).mockReturnValue(false);
+    expect(await e.media.sessionCopy('m-a', media, mayPublish)).toBeNull();
+    expect(fs.readdirSync(path.join(e.media.root, 'session-files', 'm-a'))).toEqual([]);
+    expect(fs.readdirSync(e.media.pullsDir)).toEqual([]);
+    expect(mayPublish).toHaveBeenCalledTimes(2);
+    const published = await e.media.sessionCopy('m-a', media, () => true);
+    expect(published).toEqual(expect.any(String));
+    expect(await e.media.sessionCopy('m-a', media, () => false)).toBeNull();
+    expect(fs.readFileSync(published!)).toEqual(bytes);
+  });
+
   it('are a separate inode, mode 0400, with a server-chosen name', async () => {
     const e = setup();
     const a = png();

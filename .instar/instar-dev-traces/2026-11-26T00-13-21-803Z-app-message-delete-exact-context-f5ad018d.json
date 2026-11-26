@@ -1,0 +1,23 @@
+{
+  "version": 2,
+  "slug": "app-message-delete-exact-context",
+  "sessionId": "633bd330-201e-4dc8-8fd9-72b89116167e",
+  "timestamp": "2026-11-26T00:13:21.803Z",
+  "artifactPath": "upgrades/side-effects/app-message-delete-exact-context.md",
+  "artifactSha256": "d592c3d1e92b10c60becb5cb8a30de2cc8af2bea7395ef8d4e6e8c76ccd49c9c",
+  "specPath": "docs/specs/conversation-message-delete.md",
+  "coveredFiles": [
+    "docs/specs/conversation-message-delete.eli16.md",
+    "docs/specs/conversation-message-delete.md",
+    "src/core/AppConversationStore.ts",
+    "src/server/mobileAppRemovalSync.ts",
+    "src/server/mobileConversationRoutes.ts",
+    "tests/e2e/mobile-native-conversations-alive.test.ts",
+    "upgrades/side-effects/app-message-delete-exact-context.md"
+  ],
+  "phase": "complete",
+  "tier": 2,
+  "tierReasoning": "Qualify exact target and bounded surrounding history under one signed custodian proof",
+  "secondPass": "true",
+  "reviewerConcurred": true
+}

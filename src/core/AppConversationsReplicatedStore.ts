@@ -34,6 +34,8 @@ export function deriveAppConversationRecordKey(conversationKey: string, eventId:
 /** The event (as validated by the store) from a replicated record's data, or null. */
 export function appEventFromReplicatedData(data: Readonly<Record<string, unknown>>): AppEvent | null {
   const { eventKind, signedOrigin, origin, ...rest } = data as Record<string, unknown>;
+  // Storage-only checkpoint. Admission and authorized projections must ship together.
+  if (eventKind === 'message-removed') return null;
   if (eventKind === 'forward-copy' && (rest.forwarded !== true || rest.machineId !== origin)) return null;
   if (eventKind !== 'forward-copy' && (rest.forwarded !== undefined || rest.forwardBinding !== undefined)) return null;
   const event = validateAppEvent({ ...rest, kind: eventKind === 'forward-copy' ? 'message' : eventKind, ...(signedOrigin !== undefined ? { origin: signedOrigin } : {}) });
@@ -58,7 +60,7 @@ function toWire(ev: AppEvent): Record<string, unknown> {
 
 /** Build a put record's data for one event (the emitter supplies hlc/origin/observed). */
 export function buildAppConversationRecordData(ev: AppEvent) {
-  return (hlc: HlcTimestamp, origin: string, observed?: HlcTimestamp): Record<string, unknown> | null => ({
+  return (hlc: HlcTimestamp, origin: string, observed?: HlcTimestamp): Record<string, unknown> | null => ev.kind === 'message-removed' ? null : ({
     ...toWire(ev),
     recordKey: deriveAppConversationRecordKey(ev.conversationKey, ev.eventId),
     hlc, op: 'put' as ReplicatedOp, origin,

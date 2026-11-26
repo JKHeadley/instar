@@ -1,0 +1,26 @@
+{
+  "ts": "2026-11-26T00:35:02.461Z",
+  "slug": "app-message-delete-link-acceptance",
+  "suggestedTier": 2,
+  "declaredTier": 2,
+  "riskFloor": 2,
+  "riskFloorReasons": [
+    "new capability: new route (router.<verb>() added"
+  ],
+  "belowFloor": false,
+  "files": 3,
+  "loc": 51,
+  "scope": {
+    "basis": "staged-in-scope-paths-including-deleted",
+    "files": [
+      "src/server/mobileAppRemovalSync.ts",
+      "src/server/mobileAppRemovalSyncAuthority.ts",
+      "src/server/mobileConversationRoutes.ts"
+    ],
+    "addedLines": 33,
+    "deletedLines": 18
+  },
+  "causalAutopsy": null,
+  "classClosure": null,
+  "verdict": "pass"
+}

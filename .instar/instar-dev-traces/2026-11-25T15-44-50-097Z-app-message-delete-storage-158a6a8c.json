@@ -1,0 +1,23 @@
+{
+  "version": 2,
+  "slug": "app-message-delete-storage",
+  "sessionId": "633bd330-201e-4dc8-8fd9-72b89116167e",
+  "timestamp": "2026-11-25T15:44:50.097Z",
+  "artifactPath": "upgrades/side-effects/app-message-delete-storage.md",
+  "artifactSha256": "02dd7d034ae5a474640f1781008eef516127473ed87d1029539f6700bce381ce",
+  "specPath": "docs/specs/conversation-message-delete.md",
+  "coveredFiles": [
+    "docs/specs/conversation-message-delete.eli16.md",
+    "docs/specs/conversation-message-delete.md",
+    "docs/specs/reports/conversation-message-delete-convergence.md",
+    "src/core/AppConversationStore.ts",
+    "src/core/AppConversationsReplicatedStore.ts",
+    "tests/unit/app-conversation-store.test.ts",
+    "upgrades/side-effects/app-message-delete-storage.md"
+  ],
+  "phase": "complete",
+  "tier": 2,
+  "tierReasoning": "Durable exact occurrence fact and proof in the App journal",
+  "secondPass": "true",
+  "reviewerConcurred": true
+}

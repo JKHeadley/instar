@@ -34,11 +34,12 @@ import { validateMessageOriginEvidence, type MessageOriginEvidence } from '../me
 import crypto from 'node:crypto';
 import fs from 'node:fs';
 import path from 'node:path';
+import { setImmediate as nextTurn } from 'node:timers/promises';
 import Database from 'better-sqlite3';
 import type { Database as BetterSqliteDatabase } from 'better-sqlite3';
 import { registerSqliteHandle } from './SqliteRegistry.js';
 import { SafeFsExecutor } from './SafeFsExecutor.js';
-import { canonicalConversationKey, cleanConversationTitle, derivedEventId } from './appConversationText.js';
+import { canonicalConversationKey, cleanConversationTitle, derivedEventId, isAppConversationKey } from './appConversationText.js';
 import { type AppAttachment, validateAttachments, MAX_PURGE_BATCH, mediaPreview } from './appMediaTypes.js';
 import { validConversationOwner, type ConversationOwner } from './MobilePeople.js';
 import type { ReceiptSignature, StoredReplyReference } from './AppRecordSignatures.js';
@@ -46,7 +47,7 @@ import { isReaderKey } from './ConversationReadMarkers.js';
 import type { AccessStamp } from './TeamAccessMerge.js';
 import { compareCreatedEvidence, creationBaseDigest, creationContextDigest, validateAppCreationContext, type AppCreationContext } from './AppCreationContext.js';
 
-export type AppEventKind = 'created' | 'label' | 'tombstone' | 'message' | 'delivery' | 'media-message' | 'purge' | 'platform-media' | 'transcript' | 'pin' | 'reaction';
+export type AppEventKind = 'created' | 'label' | 'tombstone' | 'message' | 'delivery' | 'media-message' | 'purge' | 'platform-media' | 'transcript' | 'pin' | 'reaction' | 'message-removed';
 export type DeliveryEventState = 'delivered' | 'refused' | 'intercepted' | 'unknown';
 export type ReducedDeliveryState = DeliveryEventState | 'pending';
 
@@ -169,7 +170,13 @@ export interface ReactionEvent extends AppEventBase {
   reactionRevision: number;
 }
 
-export type AppEvent = CreatedEvent | LabelEvent | TombstoneEvent | MessageEvent | DeliveryEvent | MediaMessageEvent | PurgeEvent | PlatformMediaEvent | TranscriptEvent | PinEvent | ReactionEvent;
+export interface MessageRemovedEvent extends AppEventBase {
+  kind: 'message-removed';
+  targetEventId: string;
+  targetMessageId: string;
+}
+
+export type AppEvent = CreatedEvent | LabelEvent | TombstoneEvent | MessageEvent | DeliveryEvent | MediaMessageEvent | PurgeEvent | PlatformMediaEvent | TranscriptEvent | PinEvent | ReactionEvent | MessageRemovedEvent;
 
 /** The id of a pinned message: an app message id, a Telegram message id, or a Slack ts. */
 export const PIN_MESSAGE_ID_RE = /^[A-Za-z0-9._:-]{1,128}$/;
@@ -261,6 +268,7 @@ export interface MediaRef {
 export const MAX_STORED_TEXT = 16_000;
 const PREVIEW_CHARS = 140;
 const MAX_LINE_BYTES = 256 * 1024;
+const MAX_REMOVAL_HISTORY_PROOFS = 64;
 
 const SCHEMA = [
   `CREATE TABLE IF NOT EXISTS files (canonicalKey TEXT PRIMARY KEY, fileName TEXT NOT NULL, indexedBytes INTEGER NOT NULL, nextIngestSeq INTEGER NOT NULL)`,
@@ -287,6 +295,8 @@ const SCHEMA = [
   // Pinned messages (conversation-pinned-messages): the winning pin event per message.
   `CREATE TABLE IF NOT EXISTS pins (canonicalKey TEXT NOT NULL, pinnedMessageId TEXT NOT NULL, eventId TEXT NOT NULL, state TEXT NOT NULL, at TEXT NOT NULL, machineId TEXT NOT NULL, PRIMARY KEY (canonicalKey, pinnedMessageId))`,
   `CREATE TABLE IF NOT EXISTS reactions (canonicalKey TEXT NOT NULL, target TEXT NOT NULL, actor TEXT NOT NULL, revision INTEGER NOT NULL, eventId TEXT NOT NULL, emoji TEXT, PRIMARY KEY(canonicalKey, target, actor, revision, eventId), FOREIGN KEY(canonicalKey, eventId) REFERENCES events(canonicalKey, eventId) ON DELETE CASCADE)`,
+  `CREATE TABLE IF NOT EXISTS message_removals (canonicalKey TEXT NOT NULL, targetEventId TEXT NOT NULL, targetMessageId TEXT NOT NULL, machineId TEXT NOT NULL, eventId TEXT NOT NULL, PRIMARY KEY(canonicalKey, targetEventId, targetMessageId, machineId, eventId), FOREIGN KEY(canonicalKey, eventId) REFERENCES events(canonicalKey, eventId) ON DELETE CASCADE)`,
+  `CREATE UNIQUE INDEX IF NOT EXISTS message_removals_event ON message_removals(canonicalKey, eventId)`,
   `CREATE INDEX IF NOT EXISTS pins_state ON pins(canonicalKey, state, at)`,
 ];
 
@@ -406,6 +416,13 @@ export function validateAppEvent(raw: unknown): AppEvent | null {
       if (!messageId || !attachmentId || text === null || !provider) return null;
       if (r.late !== undefined && r.late !== true) return null;
       return { ...base, kind: 'transcript', messageId, attachmentId, text, provider, ...(r.late === true ? { late: true as const } : {}) };
+    }
+    case 'message-removed': {
+      const targetEventId = str(r.targetEventId, 128);
+      const targetMessageId = str(r.targetMessageId, 128);
+      if (!isAppConversationKey(conversationKey) || !targetEventId || !targetMessageId || targetEventId === eventId
+        || [eventId, targetEventId, targetMessageId, machineId].some((id) => /[\x00-\x1f\x7f]/.test(id))) return null;
+      return { ...base, kind: 'message-removed', targetEventId, targetMessageId };
     }
     case 'reaction': {
       const reactionTarget = str(r.reactionTarget, 128);
@@ -554,6 +571,11 @@ export class AppConversationStore {
   private creationVersion = 0;
   private lastDataVersion = 0;
   private evidenceDataVersion = 0;
+  private removalIndexProof: string | null = null;
+  private readonly removalHistoryProofs = new Map<string, string>();
+  private readonly removalJournalRevisions = new Map<string, { checkpoint: string; revision: string }>();
+  private indexedPlainMessageWrites = 0;
+  private removalHistoryPreparation: { key: string; result: Promise<boolean> } | null = null;
 
   constructor(private readonly opts: AppConversationStoreOptions) {
     this.dir = path.join(opts.stateDir, 'app-conversations');
@@ -627,6 +649,9 @@ export class AppConversationStore {
 
   /** Drop the index and rebuild it from the files (tests and the operator's repair path). */
   rebuildIndex(): void {
+    this.removalIndexProof = null;
+    this.removalHistoryProofs.clear();
+    this.removalJournalRevisions.clear();
     this.db.exec('DELETE FROM files; DELETE FROM events; DELETE FROM messages; DELETE FROM deliveries; DELETE FROM conversations; DELETE FROM media_refs; DELETE FROM media_blobs; DELETE FROM media_purged; DELETE FROM media_totals; DELETE FROM transcripts; DELETE FROM pins;');
     this.catchUp();
   }
@@ -783,6 +808,11 @@ export class AppConversationStore {
   useAccessStamps(stamps: AccessStamps): void { this.stamps = stamps; }
 
   private write(event: AppEvent): { appended: boolean; ingestSeq: number } {
+    if (event.kind === 'message-removed') {
+      const normalized = validateAppEvent(event);
+      if (normalized?.kind !== 'message-removed') throw new Error('invalid App message removal');
+      event = normalized;
+    }
     if (event.kind === 'created') {
       const normalized = validateAppEvent(event);
       if (!normalized || normalized.kind !== 'created') throw new Error('invalid app creation evidence');
@@ -801,7 +831,7 @@ export class AppConversationStore {
       if (event.kind === 'created') this.indexCreationRecord(event);
       return { appended: false, ingestSeq: existing.ingestSeq };
     }
-    const file = this.db.prepare('SELECT fileName, nextIngestSeq FROM files WHERE canonicalKey = ?').get(canonicalKey) as { fileName: string; nextIngestSeq: number } | undefined;
+    const file = this.db.prepare('SELECT fileName, nextIngestSeq, indexedBytes FROM files WHERE canonicalKey = ?').get(canonicalKey) as { fileName: string; nextIngestSeq: number; indexedBytes: number } | undefined;
     const fileName = file?.fileName ?? this.fileNameFor(canonicalKey);
     const ingestSeq = file?.nextIngestSeq ?? 1;
     const line = `${JSON.stringify({ ...event, ingestSeq })}\n`;
@@ -810,12 +840,21 @@ export class AppConversationStore {
     const filePath = path.join(this.dir, fileName);
     const created = !fs.existsSync(filePath);
     const fd = fs.openSync(filePath, 'a', 0o600); /* state-registry: app-conversations */
+    const trackedJournal = this.removalJournalRevisions.get(canonicalKey);
+    let appendCheckpoint: string | null = null;
     let offset: number;
     try {
       offset = fs.fstatSync(fd).size;
+      const beforeAppend = trackedJournal && file?.indexedBytes === offset ? this.removalJournalDescriptorStat(fd) : null;
+      const trackedAppend = beforeAppend && this.removalJournalFileCheckpoint(beforeAppend) === trackedJournal?.checkpoint;
       try {
-        fs.writeSync(fd, line);
+        if (fs.writeSync(fd, line) !== bytes) throw new Error('short App conversation append');
         fs.fsyncSync(fd);
+        if (trackedAppend) {
+          const afterAppend = this.removalJournalDescriptorStat(fd);
+          if (afterAppend?.dev === beforeAppend.dev && afterAppend.ino === beforeAppend.ino
+            && afterAppend.size === BigInt(offset + bytes)) appendCheckpoint = this.removalJournalFileCheckpoint(afterAppend);
+        }
       } catch (err) {
         // A failed write must not leave a fragment mid-file for the next append to fuse onto:
         // cut back to where this line started, then report the failure (nothing was committed).
@@ -826,11 +865,16 @@ export class AppConversationStore {
     if (created) this.fsyncDir(path.dirname(filePath));
     // The commit landed. Index it (derived state; a failure here is repaired by catch-up).
     try {
+      // A plain message updates only its own journal and scoped index rows. A same-chat
+      // proof still sees the changed journal. Leave failures and all other writes global.
+      const before = event.kind === 'message' ? this.indexWriteCount() : null;
       this.db.transaction(() => {
         if (!file) this.db.prepare('INSERT OR REPLACE INTO files (canonicalKey, fileName, indexedBytes, nextIngestSeq) VALUES (?, ?, ?, ?)').run(canonicalKey, fileName, 0, 1);
         this.indexEvent({ ...event, ingestSeq }, fileName, offset, bytes - 1);
         this.db.prepare('UPDATE files SET indexedBytes = ? WHERE canonicalKey = ?').run(offset + bytes, canonicalKey);
       })();
+      if (before !== null) this.indexedPlainMessageWrites += this.indexWriteCount() - before;
+      if (trackedJournal && appendCheckpoint) trackedJournal.checkpoint = appendCheckpoint;
     } catch (err) {
       this.reportOnce(`index-write:${fileName}`, `the conversation index missed an append (${err instanceof Error ? err.message : String(err)}); catching up from the file`);
       this.catchUpFile(filePath, fileName);
@@ -895,6 +939,10 @@ export class AppConversationStore {
         return;
       case 'purge':
         for (const id of ev.attachmentIds) this.purgeMediaRef(id);
+        return;
+      case 'message-removed':
+        this.db.prepare('INSERT OR IGNORE INTO message_removals (canonicalKey, targetEventId, targetMessageId, machineId, eventId) VALUES (?, ?, ?, ?, ?)')
+          .run(canonicalKey, ev.targetEventId, ev.targetMessageId, ev.machineId, ev.eventId);
         return;
       case 'reaction':
         this.db.prepare('INSERT OR IGNORE INTO reactions (canonicalKey, target, actor, revision, eventId, emoji) VALUES (?, ?, ?, ?, ?, ?)')
@@ -1019,6 +1067,33 @@ export class AppConversationStore {
     if (this.isTombstoned(canonicalKey)) return null;
     const r = this.db.prepare('SELECT attachmentId FROM media_refs WHERE canonicalKey = ? AND sha256 = ? AND purged = 0 LIMIT 1').get(canonicalKey, sha256) as { attachmentId: string } | undefined;
     return r ? this.mediaRef(r.attachmentId) : null;
+  }
+
+  /** Select a readable media occurrence under the same proof as protected message history. */
+  readPreparedRemovalMedia(conversationKey: string, sha256: string, mayRead: (row: BrowsedMessage) => boolean, attachmentId?: string) {
+    const key = canonicalConversationKey(conversationKey);
+    return this.withRemovalHistory(conversationKey, (custodian, proof) => {
+      if (this.isTombstoned(key)) return { occurrence: null, proof };
+      const rows = this.db.prepare(`
+        SELECT m.eventId, m.at, f.attachmentId, f.messageId, f.idx, f.size
+        FROM media_refs f JOIN messages m ON m.canonicalKey = f.canonicalKey AND m.messageId = f.messageId
+        WHERE f.canonicalKey = ? AND f.sha256 = ? AND f.purged = 0
+          ${attachmentId !== undefined ? 'AND f.attachmentId = ?' : ''}
+          AND NOT EXISTS (SELECT 1 FROM message_removals r
+            WHERE r.canonicalKey = f.canonicalKey AND r.targetEventId = m.eventId
+            AND r.targetMessageId = f.messageId AND r.machineId = ?)
+        ORDER BY f.attachmentId LIMIT 101
+      `).all(key, sha256, ...(attachmentId !== undefined ? [attachmentId] : []), custodian) as Array<{ eventId: string; at: string; attachmentId: string; messageId: string; idx: number; size: number }>;
+      for (const row of rows.slice(0, 100)) {
+        const message = this.readIndexedMessage(key, row);
+        const attachment = message.attachments?.[row.idx];
+        if (!attachment || attachment.attachmentId !== row.attachmentId || attachment.sha256 !== sha256
+          || attachment.size !== row.size || message.messageId !== row.messageId) throw new Error('indexed media occurrence unavailable');
+        if (mayRead(message)) return { occurrence: { eventId: row.eventId, messageId: row.messageId, attachment }, proof };
+      }
+      if (rows.length > 100) throw new Error('media occurrence search incomplete');
+      return { occurrence: null, proof };
+    });
   }
 
   /** The conversations (canonical keys) with an unpurged attachment of this hash. */
@@ -1396,25 +1471,102 @@ export class AppConversationStore {
    * the read starts again from the beginning and the client de-duplicates by eventId.
    */
   syncEvents(conversationKey: string, cursor: string | null | undefined, limit = 100): { events: StoredAppEvent[]; cursor: string } {
-    const canonicalKey = canonicalConversationKey(conversationKey);
-    const self = this.opts.machineId();
-    let after = 0;
+    const { events, sequence } = this.syncIndexedEvents(conversationKey, this.readSyncSequence(cursor), limit, false);
+    return { events, cursor: this.syncCursor(sequence) };
+  }
+
+  private readSyncSequence(cursor: string | null | undefined): number {
     if (cursor) {
       try {
         const c = JSON.parse(Buffer.from(cursor, 'base64url').toString('utf8')) as { m?: unknown; s?: unknown };
-        if (c.m === self && typeof c.s === 'number' && c.s >= 0) after = c.s;
+        if (c.m === this.opts.machineId() && typeof c.s === 'number' && c.s >= 0) return c.s;
       } catch { /* @silent-fallback-ok — an unreadable cursor restarts from the beginning (the client de-duplicates) */ }
     }
+    return 0;
+  }
+
+  private syncIndexedEvents(conversationKey: string, after: number, limit: number,
+    strict: boolean): { events: StoredAppEvent[]; sequence: number } {
+    const canonicalKey = canonicalConversationKey(conversationKey);
     const n = Math.max(1, Math.min(100, Math.floor(limit)));
-    const rows = this.db.prepare('SELECT ingestSeq, byteOffset, byteLength FROM events WHERE canonicalKey = ? AND ingestSeq > ? ORDER BY ingestSeq ASC LIMIT ?').all(canonicalKey, after, n) as Array<{ ingestSeq: number; byteOffset: number; byteLength: number }>;
+    const rows = this.db.prepare('SELECT ingestSeq, eventId, kind, byteOffset, byteLength FROM events WHERE canonicalKey = ? AND ingestSeq > ? ORDER BY ingestSeq ASC LIMIT ?').all(canonicalKey, after, n) as Array<{ ingestSeq: number; eventId: string; kind: AppEventKind; byteOffset: number; byteLength: number }>;
     const events: StoredAppEvent[] = [];
     let last = after;
     for (const r of rows) {
       last = r.ingestSeq;
       const ev = this.readEventAt(canonicalKey, r.byteOffset, r.byteLength);
+      if (strict && (!ev || ev.ingestSeq !== r.ingestSeq || ev.eventId !== r.eventId
+        || ev.kind !== r.kind || canonicalConversationKey(ev.conversationKey) !== canonicalKey)) {
+        throw new Error('indexed sync event unavailable');
+      }
       if (ev) events.push(ev);
     }
-    return { events, cursor: Buffer.from(JSON.stringify({ m: self, s: last })).toString('base64url') };
+    return { events, sequence: last };
+  }
+
+  private syncCursor(sequence: number): string {
+    return Buffer.from(JSON.stringify({ m: this.opts.machineId(), s: sequence })).toString('base64url');
+  }
+
+  /** Authorized message changes only. The private projection does not replace generic App sync. */
+  syncRemovalAwareMessageChanges(conversationKey: string, cursor: string | null | undefined, limit: number,
+    mayRead: (row: BrowsedMessage) => 'allow' | 'deny' | 'unknown'): {
+      changes: Array<{ kind: 'message'; row: BrowsedMessage } |
+        { kind: 'message-removed'; conversationKey: string; eventId: string; targetEventId: string }>;
+      cursor: string;
+      blocked: boolean;
+    } | null {
+    const page = this.syncRemovalAwareMessageChangesAfter(conversationKey, this.readSyncSequence(cursor), limit, mayRead);
+    return page && { changes: page.changes, cursor: this.syncCursor(page.sequence), blocked: page.blocked };
+  }
+
+  syncRemovalAwareMessageChangesAfter(conversationKey: string, after: number, limit: number,
+    mayRead: (row: BrowsedMessage) => 'allow' | 'deny' | 'unknown'): {
+    changes: NonNullable<ReturnType<AppConversationStore['syncRemovalAwareMessageChanges']>>['changes'];
+    sequence: number;
+    highWater: number;
+    blocked: boolean;
+    proof: string;
+  } | null {
+    if (!Number.isSafeInteger(after) || after < 0) return null;
+    return this.withRemovalHistory(conversationKey, (custodian, proof) => {
+      const key = canonicalConversationKey(conversationKey);
+      const frontier = this.db.prepare('SELECT COALESCE(MAX(ingestSeq), 0) AS sequence FROM events WHERE canonicalKey = ?')
+        .get(key) as { sequence: number };
+      const highWater = frontier.sequence;
+      if (!Number.isSafeInteger(highWater) || highWater < after) throw new Error('removal sync frontier unavailable');
+      const { events, sequence } = this.syncIndexedEvents(conversationKey, after, limit, true);
+      const firstRemoval = this.db.prepare(`
+        SELECT e.eventId FROM message_removals r JOIN events e
+          ON e.canonicalKey = r.canonicalKey AND e.eventId = r.eventId
+        WHERE r.canonicalKey = ? AND r.targetEventId = ? AND r.targetMessageId = ? AND r.machineId = ?
+        ORDER BY e.ingestSeq ASC LIMIT 1
+      `);
+      type Change = NonNullable<ReturnType<AppConversationStore['syncRemovalAwareMessageChanges']>>['changes'][number];
+      const changes: Change[] = [];
+      let previous = after;
+      for (const fact of events) {
+        const marker = fact.kind === 'message-removed' && fact.machineId === custodian;
+        const target = marker ? this.getEvent(conversationKey, fact.targetEventId) : fact;
+        if (marker && (!target || target.eventId !== fact.targetEventId
+          || canonicalConversationKey(target.conversationKey) !== key)) return { changes, sequence: previous, blocked: true, highWater, proof };
+        if (target && (target.kind === 'message' || target.kind === 'media-message')
+          && canonicalConversationKey(target.conversationKey) === key
+          && (!marker || fact.targetMessageId === target.messageId)) {
+          const removal = firstRemoval.get(key, target.eventId, target.messageId, custodian) as { eventId: string } | undefined;
+          if (marker ? removal?.eventId === fact.eventId : !removal && fact.kind !== 'message-removed') {
+            const row = this.projectMessage(target);
+            const access = mayRead(row);
+            if (access === 'unknown') return { changes, sequence: previous, blocked: true, highWater, proof };
+            if (access === 'allow') changes.push(marker
+              ? { kind: 'message-removed', conversationKey, eventId: fact.eventId, targetEventId: target.eventId }
+              : { kind: 'message', row });
+          }
+        }
+        previous = fact.ingestSeq;
+      }
+      return { changes, sequence, blocked: false, highWater, proof };
+    });
   }
 
   /**
@@ -1428,20 +1580,216 @@ export class AppConversationStore {
   }
 
   browseMessages(conversationKey: string, before: string | null | undefined, limit = 100, options?: { excludeForwarded?: boolean }): { messages: BrowsedMessage[]; nextBefore: string | null } {
+    return this.browseIndexedMessages(conversationKey, before, limit, options?.excludeForwarded ?? false);
+  }
+
+  /** A page from the creation custodian, or null when there is no complete removal proof. */
+  browseRemovalAwareMessages(conversationKey: string, before: string | null | undefined, limit = 100): { messages: BrowsedMessage[]; nextBefore: string | null } | null {
+    const page = this.readPreparedRemovalHistory(conversationKey, before, limit);
+    return page ? { messages: page.messages, nextBefore: page.nextBefore } : null;
+  }
+
+  /** Keep the exact evidence used by the read available for final response validation. */
+  readPreparedRemovalHistory(conversationKey: string, before: string | null | undefined, limit: number) {
+    return this.withRemovalHistory(conversationKey, (custodian, proof) => ({
+      ...this.browseIndexedMessages(conversationKey, before, limit, false, custodian),
+      proof,
+    }));
+  }
+
+  /** Exact candidates after the caller's row ACL, or null when removal proof is incomplete. */
+  exactRemovalAwareMessageCandidates(conversationKey: string, target: string, kind: 'event' | 'message' | 'legacy',
+    mayRead: (row: BrowsedMessage) => boolean): BrowsedMessage[] | null {
+    return this.withRemovalHistory(conversationKey, (custodian) =>
+      this.selectRemovalAwareCandidates(conversationKey, target, kind, mayRead, custodian));
+  }
+
+  /** Project bounded exact reads together without exposing journal rows outside the snapshot. */
+  projectPreparedRemovalEvents<T>(conversationKey: string, mayRead: (row: BrowsedMessage) => boolean,
+    project: (find: (eventId: string) => BrowsedMessage | undefined) => T) {
+    return this.withRemovalHistory(conversationKey, (custodian, proof) => ({
+      value: project((eventId) => this.selectRemovalAwareCandidates(conversationKey, eventId, 'event', mayRead, custodian)[0]),
+      proof,
+    }));
+  }
+
+  private selectRemovalAwareCandidates(conversationKey: string, target: string, kind: 'event' | 'message' | 'legacy',
+    mayRead: (row: BrowsedMessage) => boolean, custodian: string) {
+    const key = canonicalConversationKey(conversationKey);
+    const removed = this.db.prepare('SELECT 1 FROM message_removals WHERE canonicalKey = ? AND targetEventId = ? AND targetMessageId = ? AND machineId = ? LIMIT 1');
+    const candidates = this.exactMessageCandidates(conversationKey, target, kind).filter(mayRead);
+    const visible = candidates.filter((row) => !removed.get(key, row.eventId, row.messageId, custodian));
+    // A legacy identifier may name two occurrences. Removal cannot retarget it to the survivor.
+    return kind === 'legacy' && visible.length !== candidates.length ? [] : visible;
+  }
+
+  /** Resolve an exact context page under one prepared custodian snapshot. */
+  readPreparedRemovalContext(conversationKey: string, target: string, kind: 'event' | 'message' | 'legacy',
+    inclusive: boolean, limit: number, mayRead: (row: BrowsedMessage) => boolean) {
+    return this.withRemovalHistory(conversationKey, (custodian, proof) => {
+      const candidates = this.selectRemovalAwareCandidates(conversationKey, target, kind, mayRead, custodian);
+      if (candidates.length !== 1) return { anchor: null, messages: [], proof };
+      const anchor = candidates[0]!;
+      const messages = this.exactMessageChunk(conversationKey, anchor, inclusive, limit, custodian);
+      if (messages.some((row) => !mayRead(row))) throw new Error('exact context access unavailable');
+      return { anchor, messages, proof };
+    });
+  }
+
+  private removalJournalFileCheckpoint(stat: fs.BigIntStats): string {
+    return [stat.dev, stat.ino, stat.size, stat.mtimeNs, stat.ctimeNs].join(':');
+  }
+
+  private removalJournalDescriptorStat(fd: number): fs.BigIntStats | null {
+    try {
+      return fs.fstatSync(fd, { bigint: true });
+    } catch {
+      return null; // @silent-fallback-ok — a write can finish while its continuation becomes invalid
+    }
+  }
+
+  /** A current authoritative journal epoch. Trusted indexed appends keep existing continuations valid. */
+  removalJournalRevision(conversationKey: string): string | null {
+    const key = canonicalConversationKey(conversationKey);
+    try {
+      const file = this.db.prepare('SELECT fileName, indexedBytes FROM files WHERE canonicalKey = ?')
+        .get(key) as { fileName: string; indexedBytes: number } | undefined;
+      if (!file) throw new Error('removal journal unavailable');
+      const stat = fs.statSync(path.join(this.dir, file.fileName), { bigint: true });
+      if (!stat.isFile() || stat.size !== BigInt(file.indexedBytes)) throw new Error('removal journal checkpoint unavailable');
+      const checkpoint = this.removalJournalFileCheckpoint(stat);
+      const tracked = this.removalJournalRevisions.get(key);
+      const evidence = tracked?.checkpoint === checkpoint ? tracked : { checkpoint, revision: crypto.randomUUID() };
+      this.removalJournalRevisions.delete(key);
+      if (this.removalJournalRevisions.size >= MAX_REMOVAL_HISTORY_PROOFS) {
+        const oldest = this.removalJournalRevisions.keys().next().value;
+        if (oldest !== undefined) this.removalJournalRevisions.delete(oldest);
+      }
+      this.removalJournalRevisions.set(key, evidence);
+      return evidence.revision;
+    } catch {
+      this.removalJournalRevisions.delete(key);
+      return null; // @silent-fallback-ok — uncertain journal evidence never renews cached display
+    }
+  }
+
+  private indexWriteCount(): number {
+    return (this.db.prepare('SELECT total_changes() AS count').get() as { count: number }).count;
+  }
+
+  private removalHistoryCheckpoint(conversationKey: string) {
+    const key = canonicalConversationKey(conversationKey);
+    const custodian = this.getCreationRecord(conversationKey)?.machineId;
+    if (!custodian || custodian === 'local' || custodian !== this.opts.machineId()) return null;
+    const file = this.db.prepare('SELECT fileName, indexedBytes FROM files WHERE canonicalKey = ?')
+      .get(key) as { fileName: string; indexedBytes: number } | undefined;
+    if (!file) return null;
+    const filePath = path.join(this.dir, file.fileName);
+    const journal = fs.statSync(filePath);
+    if (journal.size !== file.indexedBytes) return null;
+    const version = this.db.pragma('data_version', { simple: true });
+    const writes = this.indexWriteCount() - this.indexedPlainMessageWrites;
+    const proof = JSON.stringify([custodian, file.fileName, journal.dev, journal.ino, journal.size,
+      journal.mtimeMs, journal.ctimeMs, version, writes]);
+    return { custodian, filePath, journal, proof };
+  }
+
+  /** Prepare one custody proof off the interactive read path. A competing conversation can retry. */
+  prepareRemovalHistory(conversationKey: string): Promise<boolean> {
+    const key = canonicalConversationKey(conversationKey);
+    if (this.removalHistoryPreparation) {
+      return this.removalHistoryPreparation.key === key ? this.removalHistoryPreparation.result : Promise.resolve(false);
+    }
+    const result = this.scanRemovalHistory(conversationKey, key).finally(() => {
+      this.removalHistoryPreparation = null;
+    });
+    this.removalHistoryPreparation = { key, result };
+    return result;
+  }
+
+  private async scanRemovalHistory(conversationKey: string, key: string): Promise<boolean> {
+    try {
+      await nextTurn();
+      const checkpoint = this.removalHistoryCheckpoint(conversationKey);
+      if (!checkpoint) return false;
+      if (this.removalHistoryProofs.get(key) === checkpoint.proof) return true;
+      const scan = this.scanRemovalIndex(conversationKey, checkpoint.filePath, checkpoint.journal);
+      try {
+        for (;;) {
+          if (this.removalHistoryCheckpoint(conversationKey)?.proof !== checkpoint.proof) return false;
+          const step = scan.next();
+          if (step.done) {
+            if (!step.value || this.removalHistoryCheckpoint(conversationKey)?.proof !== checkpoint.proof) return false;
+            this.rememberRemovalHistoryProof(key, checkpoint.proof);
+            return true;
+          }
+          await nextTurn();
+        }
+      } finally {
+        scan.return(false);
+      }
+    } catch {
+      return false; // @silent-fallback-ok — an incomplete history proof never enables a read
+    }
+  }
+
+  hasPreparedRemovalHistory(conversationKey: string, proof: string): boolean {
+    return this.withRemovalHistory(conversationKey, (_custodian, current) => current === proof) === true;
+  }
+
+  private rememberRemovalHistoryProof(key: string, proof: string): void {
+    this.removalHistoryProofs.delete(key);
+    this.removalHistoryProofs.set(key, proof);
+    if (this.removalHistoryProofs.size > MAX_REMOVAL_HISTORY_PROOFS) {
+      const oldest = this.removalHistoryProofs.keys().next().value;
+      if (oldest !== undefined) this.removalHistoryProofs.delete(oldest);
+    }
+  }
+
+  private withRemovalHistory<T>(conversationKey: string, read: (custodian: string, proof: string) => T): T | null {
+    const key = canonicalConversationKey(conversationKey);
+    try {
+      const version = this.db.pragma('data_version', { simple: true });
+      const result = this.db.transaction(() => {
+        const checkpoint = this.removalHistoryCheckpoint(conversationKey);
+        if (!checkpoint || this.removalHistoryProofs.get(key) !== checkpoint.proof) return null;
+        const page = read(checkpoint.custodian, checkpoint.proof);
+        if (this.removalHistoryCheckpoint(conversationKey)?.proof !== checkpoint.proof) return null;
+        this.rememberRemovalHistoryProof(key, checkpoint.proof);
+        return page;
+      })();
+      return this.db.pragma('data_version', { simple: true }) === version ? result : null;
+    } catch {
+      return null; // @silent-fallback-ok — a removal-aware read has no unfiltered fallback
+    }
+  }
+
+  private browseIndexedMessages(conversationKey: string, before: string | null | undefined, limit: number, excludeForwarded: boolean,
+    removalCustodian?: string): { messages: BrowsedMessage[]; nextBefore: string | null } {
     const canonicalKey = canonicalConversationKey(conversationKey);
     const n = Math.max(1, Math.min(100, Math.floor(limit)));
-    let rows: Array<{ eventId: string; at: string }>;
-    const eligible = options?.excludeForwarded ? ' AND forwarded = 0' : '';
+    let rows: Array<{ eventId: string; at: string; messageId: string }>;
+    const eligible = (excludeForwarded ? ' AND forwarded = 0' : '') + (removalCustodian ? `
+      AND NOT EXISTS (SELECT 1 FROM message_removals r WHERE r.canonicalKey = messages.canonicalKey
+        AND r.targetEventId = messages.eventId AND r.targetMessageId = messages.messageId AND r.machineId = ?)
+    ` : '');
+    const scope = removalCustodian ? [canonicalKey, removalCustodian] : [canonicalKey];
     const b = typeof before === 'string' ? before.split(',') : null;
     if (b && b.length === 2 && b[0] && b[1]) {
-      rows = this.db.prepare(`SELECT eventId, at FROM messages WHERE canonicalKey = ?${eligible} AND (at < ? OR (at = ? AND eventId < ?)) ORDER BY at DESC, eventId DESC LIMIT ?`).all(canonicalKey, b[0], b[0], b[1], n + 1) as typeof rows;
+      rows = this.db.prepare(`SELECT eventId, at, messageId FROM messages WHERE canonicalKey = ?${eligible} AND (at < ? OR (at = ? AND eventId < ?)) ORDER BY at DESC, eventId DESC LIMIT ?`).all(...scope, b[0], b[0], b[1], n + 1) as typeof rows;
     } else {
-      rows = this.db.prepare(`SELECT eventId, at FROM messages WHERE canonicalKey = ?${eligible} ORDER BY at DESC, eventId DESC LIMIT ?`).all(canonicalKey, n + 1) as typeof rows;
+      rows = this.db.prepare(`SELECT eventId, at, messageId FROM messages WHERE canonicalKey = ?${eligible} ORDER BY at DESC, eventId DESC LIMIT ?`).all(...scope, n + 1) as typeof rows;
     }
     const more = rows.length > n;
     const page = rows.slice(0, n);
     const out: BrowsedMessage[] = [];
     for (const r of page) {
+      if (removalCustodian) {
+        const row = this.readIndexedMessage(canonicalKey, r);
+        if (row.messageId !== r.messageId) throw new Error('indexed message identity unavailable');
+        out.push(row);
+        continue;
+      }
       const loc = this.db.prepare('SELECT byteOffset, byteLength FROM events WHERE canonicalKey = ? AND eventId = ?').get(canonicalKey, r.eventId) as { byteOffset: number; byteLength: number } | undefined;
       const ev = loc ? this.readEventAt(canonicalKey, loc.byteOffset, loc.byteLength) : null;
       if (!ev || (ev.kind !== 'message' && ev.kind !== 'media-message')) continue;
@@ -1450,6 +1798,148 @@ export class AppConversationStore {
     out.reverse();
     const oldest = page[page.length - 1];
     return { messages: out, nextBefore: more && oldest ? `${oldest.at},${oldest.eventId}` : null };
+  }
+
+  private verifyRemovalIndex(conversationKey: string, filePath: string): boolean {
+    const scan = this.scanRemovalIndex(conversationKey, filePath);
+    for (;;) {
+      const step = scan.next();
+      if (step.done) return step.value;
+    }
+  }
+
+  private *scanRemovalIndex(conversationKey: string, filePath: string, expectedJournal?: fs.Stats): Generator<void, boolean> {
+    const key = canonicalConversationKey(conversationKey);
+    const event = this.db.prepare('SELECT kind, ingestSeq FROM events WHERE canonicalKey = ? AND eventId = ?');
+    const message = expectedJournal
+      ? this.db.prepare('SELECT eventId, at FROM messages WHERE canonicalKey = ? AND messageId = ?')
+      : null;
+    const removal = this.db.prepare('SELECT targetEventId, targetMessageId, machineId FROM message_removals WHERE canonicalKey = ? AND eventId = ?');
+    const counts = this.db.prepare(`
+      SELECT (SELECT COUNT(*) FROM events WHERE canonicalKey = ? AND kind = 'message-removed') AS journalIndex,
+             (SELECT COUNT(*) FROM message_removals WHERE canonicalKey = ?) AS removalIndex
+    `).get(key, key) as { journalIndex: number; removalIndex: number };
+    const fd = fs.openSync(filePath, 'r');
+    try {
+      if (expectedJournal) {
+        const actual = fs.fstatSync(fd);
+        if (actual.dev !== expectedJournal.dev || actual.ino !== expectedJournal.ino
+          || actual.size !== expectedJournal.size || actual.mtimeMs !== expectedJournal.mtimeMs
+          || actual.ctimeMs !== expectedJournal.ctimeMs) return false;
+      }
+      const chunk = Buffer.alloc(64 * 1024);
+      let carry = Buffer.alloc(0);
+      const seen = new Set<string>();
+      let lastSequence = 0;
+      for (;;) {
+        const length = fs.readSync(fd, chunk, 0, chunk.length, null);
+        if (!length) return carry.length === 0 && seen.size === counts.journalIndex && seen.size === counts.removalIndex;
+        const bytes = Buffer.concat([carry, chunk.subarray(0, length)]);
+        let start = 0;
+        for (let end = bytes.indexOf(10); end !== -1; end = bytes.indexOf(10, start)) {
+          const parsed = JSON.parse(bytes.subarray(start, end).toString('utf8')) as { ingestSeq?: number };
+          const raw = validateAppEvent(parsed);
+          if (!raw || canonicalConversationKey(raw.conversationKey) !== key) return false;
+          const indexed = event.get(key, raw.eventId) as { kind: string; ingestSeq: number } | undefined;
+          if (indexed?.kind !== raw.kind) return false;
+          if (expectedJournal) {
+            const sequence = parsed.ingestSeq;
+            if (typeof sequence !== 'number' || !Number.isSafeInteger(sequence) || sequence <= lastSequence
+              || indexed.ingestSeq !== sequence) return false;
+            lastSequence = sequence;
+          }
+          if (message && (raw.kind === 'message' || raw.kind === 'media-message')) {
+            const row = message.get(key, raw.messageId) as { eventId: string; at: string } | undefined;
+            if (row?.eventId !== raw.eventId || row.at !== raw.at) return false;
+          }
+          if (raw.kind === 'message-removed') {
+            seen.add(raw.eventId);
+            const row = removal.get(key, raw.eventId) as { targetEventId: string; targetMessageId: string; machineId: string } | undefined;
+            if (!row || row.targetEventId !== raw.targetEventId || row.targetMessageId !== raw.targetMessageId || row.machineId !== raw.machineId) return false;
+          }
+          start = end + 1;
+        }
+        carry = Buffer.from(bytes.subarray(start));
+        if (carry.length > MAX_LINE_BYTES) return false;
+        yield;
+      }
+    } finally {
+      fs.closeSync(fd);
+    }
+  }
+
+  /** Matching durable removal, known absence, or null when local proof is incomplete. */
+  messageRemoval(conversationKey: string, targetEventId: string, targetMessageId: string, removalEventId?: string): { eventId: string | null } | null {
+    return this.readMessageRemoval(conversationKey, targetEventId, targetMessageId, removalEventId, true);
+  }
+
+  /** Exact positive evidence only. An unproven receipt does not need a journal scan. */
+  hasConfirmedMessageRemoval(conversationKey: string, targetEventId: string, targetMessageId: string, removalEventId: string): boolean {
+    return this.readMessageRemoval(conversationKey, targetEventId, targetMessageId, removalEventId, false)?.eventId === removalEventId;
+  }
+
+  private readMessageRemoval(conversationKey: string, targetEventId: string, targetMessageId: string,
+    removalEventId: string | undefined, proveAbsence: boolean): { eventId: string | null } | null {
+    const key = canonicalConversationKey(conversationKey);
+    try {
+      const version = this.db.pragma('data_version', { simple: true });
+      const result = this.db.transaction(() => {
+        const custodian = this.getCreationRecord(conversationKey)?.machineId;
+        const file = this.db.prepare('SELECT fileName, indexedBytes FROM files WHERE canonicalKey = ?')
+          .get(key) as { fileName: string; indexedBytes: number } | undefined;
+        if (!custodian || !file) return null;
+        const filePath = path.join(this.dir, file.fileName);
+        const journal = fs.statSync(filePath);
+        const stableResult = (eventId: string | null) => {
+          const current = fs.statSync(filePath);
+          return current.size === journal.size && current.mtimeMs === journal.mtimeMs && current.ctimeMs === journal.ctimeMs
+            ? { eventId } : null;
+        };
+        if (journal.size !== file.indexedBytes) return null;
+        type RemovalIndexRow = { eventId: string; targetEventId: string; targetMessageId: string; machineId: string };
+        const matches = this.db.prepare(
+          'SELECT eventId, targetEventId, targetMessageId, machineId FROM message_removals WHERE canonicalKey = ? AND eventId = ?',
+        );
+        const agreesWithJournal = (row: RemovalIndexRow) => {
+          const fact = this.getEvent(conversationKey, row.eventId);
+          return fact?.kind === 'message-removed' && fact.eventId === row.eventId
+            && canonicalConversationKey(fact.conversationKey) === key && fact.machineId === row.machineId
+            && fact.targetEventId === row.targetEventId && fact.targetMessageId === row.targetMessageId;
+        };
+        const exactReceipt = removalEventId !== undefined;
+        const found = (exactReceipt
+          ? matches.get(key, removalEventId)
+          : this.db.prepare(
+            'SELECT eventId, targetEventId, targetMessageId, machineId FROM message_removals WHERE canonicalKey = ? AND targetEventId = ? AND targetMessageId = ? AND machineId = ? ORDER BY eventId LIMIT 1',
+          ).get(key, targetEventId, targetMessageId, custodian)) as RemovalIndexRow | undefined;
+        const verifiedAbsence = () => {
+          // Check negative evidence once per local journal/index checkpoint.
+          const writes = this.db.prepare('SELECT total_changes() AS count').get();
+          const proof = JSON.stringify([key, file.fileName, file.indexedBytes, journal.mtimeMs, journal.ctimeMs, version, writes]);
+          if (this.removalIndexProof !== proof) {
+            if (!this.verifyRemovalIndex(conversationKey, filePath)) return null;
+            this.removalIndexProof = proof;
+          }
+          return stableResult(null);
+        };
+        if (!found) {
+          if (!proveAbsence) return null;
+          if (exactReceipt && this.db.prepare('SELECT 1 FROM events WHERE canonicalKey = ? AND eventId = ?').get(key, removalEventId)) return null;
+          return verifiedAbsence();
+        }
+        if (found.targetEventId !== targetEventId || found.targetMessageId !== targetMessageId || found.machineId !== custodian
+          || !agreesWithJournal(found)) return null;
+        const target = this.getEvent(conversationKey, targetEventId);
+        if (!target || target.eventId !== targetEventId || canonicalConversationKey(target.conversationKey) !== key) return null;
+        if ((target.kind !== 'message' && target.kind !== 'media-message') || target.messageId !== targetMessageId) {
+          return exactReceipt ? null : verifiedAbsence();
+        }
+        return stableResult(found.eventId);
+      })();
+      return this.db.pragma('data_version', { simple: true }) === version ? result : null;
+    } catch {
+      return null; // @silent-fallback-ok — callers must treat unreadable journal evidence as unknown
+    }
   }
 
   /** A gap or competing fact makes the slot unfit for a comparable write. */
@@ -1488,12 +1978,18 @@ export class AppConversationStore {
   }
 
   /** Descending physical chunk, anchored to a raw stored tuple independent of delimiter syntax. */
-  exactMessageChunk(conversationKey: string, boundary: { at: string; eventId: string }, inclusive: boolean, limit: number): BrowsedMessage[] {
+  exactMessageChunk(conversationKey: string, boundary: { at: string; eventId: string }, inclusive: boolean, limit: number, removalCustodian?: string): BrowsedMessage[] {
     const key = canonicalConversationKey(conversationKey);
     const comparison = inclusive ? '<=' : '<';
+    const removalClause = removalCustodian ? `AND NOT EXISTS (
+      SELECT 1 FROM message_removals r WHERE r.canonicalKey = messages.canonicalKey
+      AND r.targetEventId = messages.eventId AND r.targetMessageId = messages.messageId AND r.machineId = ?
+    )` : '';
+    const scope = removalCustodian ? [key, removalCustodian] : [key];
     const rows = this.db.prepare(
-      `SELECT eventId, at FROM messages WHERE canonicalKey = ? AND (at, eventId) ${comparison} (?, ?) ORDER BY at DESC, eventId DESC LIMIT ?`,
-    ).all(key, boundary.at, boundary.eventId, limit) as Array<{ eventId: string; at: string }>;
+      `SELECT eventId, at FROM messages WHERE canonicalKey = ? ${removalClause}
+       AND (at, eventId) ${comparison} (?, ?) ORDER BY at DESC, eventId DESC LIMIT ?`,
+    ).all(...scope, boundary.at, boundary.eventId, limit) as Array<{ eventId: string; at: string }>;
     return rows.map((row) => this.readIndexedMessage(key, row));
   }
 

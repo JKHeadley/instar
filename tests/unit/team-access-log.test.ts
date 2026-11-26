@@ -2,6 +2,7 @@
  * The team access log and role map. Spec: docs/specs/team-roles-and-access.md §3.1, §3.3, §3.5, §4.1.
  * Both sides of every rule.
  */
+import { createRemovalSyncCursorCodec } from '../../src/server/mobileAppRemovalSyncCursor.js';
 import fs from 'node:fs';
 import os from 'node:os';
 import path from 'node:path';
@@ -114,6 +115,31 @@ describe('TeamAccessLog', () => {
     expect(log.state().on).toBe(true);
     expect(log.grantOf('sam', 'telegram:7')).toBe('read');
     expect(log.grantOf('sam', 'telegram:8')).toBeNull();
+  });
+
+  it('advances visibility through grant loss and restoration even if final grants match', () => {
+    const log = open();
+    bindOwner(log);
+    const ref = 'telegram:7';
+    log.appendSignedRequest(signed([
+      { type: 'team-on' }, { type: 'person-add', personKey: 'sam', name: 'Sam', role: 'member' },
+      { type: 'grant', personKey: 'sam', ref, access: 'read' },
+    ]));
+    const initial = log.visibilityRevision();
+    const codec = createRemovalSyncCursorCodec();
+    const authority = { custodianMachineId: 'machine-1', conversationKey: ref, deviceId: 'device-1',
+      deviceKeyHash: 'device-key', readerId: 'sam', visibilityRevision: initial };
+    const cursor = codec.issue(authority, 8);
+    expect(log.visibilityRevision()).toBe(initial);
+    expect(log.grantOf('sam', ref)).toBe('read');
+    log.appendSignedRequest(signed([{ type: 'grant-remove', personKey: 'sam', ref }]));
+    expect(log.grantOf('sam', ref)).toBeNull();
+    const removed = log.visibilityRevision();
+    log.appendSignedRequest(signed([{ type: 'grant', personKey: 'sam', ref, access: 'read' }]));
+    expect(log.grantOf('sam', ref)).toBe('read');
+    expect(new Set([initial, removed, log.visibilityRevision(), open().visibilityRevision()]).size).toBe(4);
+    expect(codec.read({ ...authority, visibilityRevision: removed }, cursor)).toEqual({ kind: 'reset' });
+    expect(codec.read({ ...authority, visibilityRevision: log.visibilityRevision() }, cursor)).toEqual({ kind: 'reset' });
   });
 
   it('ignores a request whose key is not bound as the owner', () => {

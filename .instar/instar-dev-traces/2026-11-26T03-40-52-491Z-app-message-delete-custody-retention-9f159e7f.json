@@ -1,0 +1,22 @@
+{
+  "version": 2,
+  "slug": "app-message-delete-custody-retention",
+  "sessionId": "633bd330-201e-4dc8-8fd9-72b89116167e",
+  "timestamp": "2026-11-26T03:40:52.491Z",
+  "artifactPath": "upgrades/side-effects/app-message-delete-custody-retention.md",
+  "artifactSha256": "356a4b100590a126a22bbc5f304b3d5e5fe609801e2db7091994bb30d827ef1b",
+  "specPath": "docs/specs/conversation-message-delete.md",
+  "coveredFiles": [
+    "docs/specs/conversation-message-delete.eli16.md",
+    "docs/specs/conversation-message-delete.md",
+    "src/core/AppRemovalReadCustody.ts",
+    "tests/e2e/app-removal-read-custody.test.ts",
+    "tests/unit/app-removal-read-custody.test.ts",
+    "upgrades/side-effects/app-message-delete-custody-retention.md"
+  ],
+  "phase": "complete",
+  "tier": 2,
+  "tierReasoning": "Persist immutable creation custody independently from feature flags and journal indexes",
+  "secondPass": "true",
+  "reviewerConcurred": true
+}

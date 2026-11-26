@@ -1,0 +1,23 @@
+{
+  "version": 2,
+  "slug": "app-message-delete-peer-custody-import",
+  "sessionId": "633bd330-201e-4dc8-8fd9-72b89116167e",
+  "timestamp": "2026-11-26T06:32:28.059Z",
+  "artifactPath": "upgrades/side-effects/app-message-delete-peer-custody-import.md",
+  "artifactSha256": "159d55f95b76548a67ce043ba8a9fbf2837752690244da54fd7dbb62bc683f2d",
+  "specPath": "docs/specs/conversation-message-delete.md",
+  "coveredFiles": [
+    "docs/specs/conversation-message-delete.eli16.md",
+    "docs/specs/conversation-message-delete.md",
+    "src/core/AppRemovalReadCustody.ts",
+    "src/core/AppRemovalReadCustodyImport.ts",
+    "tests/e2e/app-removal-read-custody.test.ts",
+    "tests/unit/app-removal-read-custody-import.test.ts",
+    "upgrades/side-effects/app-message-delete-peer-custody-import.md"
+  ],
+  "phase": "complete",
+  "tier": 2,
+  "tierReasoning": "Validate independent origin and exact creation before retaining peer custody",
+  "secondPass": "true",
+  "reviewerConcurred": true
+}

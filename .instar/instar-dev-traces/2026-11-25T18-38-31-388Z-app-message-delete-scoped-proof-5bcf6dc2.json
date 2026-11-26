@@ -1,0 +1,22 @@
+{
+  "version": 2,
+  "slug": "app-message-delete-scoped-proof",
+  "sessionId": "633bd330-201e-4dc8-8fd9-72b89116167e",
+  "timestamp": "2026-11-25T18:38:31.388Z",
+  "artifactPath": "upgrades/side-effects/app-message-delete-scoped-proof.md",
+  "artifactSha256": "3743304117113590cb33eae6d304d553d9fca3e3f0b56737c079796019b2c70e",
+  "specPath": "docs/specs/conversation-message-delete.md",
+  "coveredFiles": [
+    "docs/specs/conversation-message-delete.eli16.md",
+    "docs/specs/conversation-message-delete.md",
+    "docs/specs/reports/conversation-message-delete-convergence.md",
+    "src/core/AppConversationStore.ts",
+    "tests/unit/app-conversation-store.test.ts",
+    "upgrades/side-effects/app-message-delete-scoped-proof.md"
+  ],
+  "phase": "complete",
+  "tier": 2,
+  "tierReasoning": "Conversation-scoped proof invalidation for committed plain messages",
+  "secondPass": "true",
+  "reviewerConcurred": true
+}
