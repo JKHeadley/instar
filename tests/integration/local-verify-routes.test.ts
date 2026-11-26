@@ -241,6 +241,16 @@ describe('local-verify routes (integration)', () => {
     expect(r.body).toEqual({ ok: false, code: 'untrusted-head' });
   });
 
+  it('refuses a source PR without a release fragment before dispatch', async () => {
+    const s = setup({ 7: view({ files: [{ path: 'src/core/Foo.ts' }] }) });
+    const a = app(baseCtx(s.stateDir, { localVerify: s.svc }));
+    const response = await request(a).post('/local-verify').send({ pr: 7 });
+    expect(response.status).toBe(409);
+    expect(response.body).toEqual({ ok: false, code: 'release-fragment-missing' });
+    expect(s.children).toHaveLength(0);
+    s.svc.shutdown();
+  });
+
   it('queues a trusted PR (202), shows it in flight, then serves the finished record', async () => {
     const s = setup({ 7: view() });
     const a = app(baseCtx(s.stateDir, { localVerify: s.svc }));
@@ -359,8 +369,8 @@ describe('local-verify routes (integration)', () => {
   it('main-red hold over HTTP (CMT-1033): GET /local-verify shows the hold and the held entry; the POST answer for a held PR carries it; a repair candidate runs', async () => {
     const FILE = 'tests/unit/no-silent-fallbacks.test.ts';
     const s = setup({
-      7: view({ title: 'chore: unrelated', body: '', files: [{ path: 'src/core/Foo.ts' }] }),
-      8: view({ headRefOid: sha('c'), title: 'fix(tests): main red on no-silent-fallbacks', body: '', files: [{ path: 'src/server/routes.ts' }] }),
+      7: view({ title: 'chore: unrelated', body: '', files: [{ path: 'src/core/Foo.ts' }, { path: 'upgrades/next/fixture.md' }] }),
+      8: view({ headRefOid: sha('c'), title: 'fix(tests): main red on no-silent-fallbacks', body: '', files: [{ path: 'src/server/routes.ts' }, { path: 'upgrades/next/fixture.md' }] }),
     });
     const a = app(baseCtx(s.stateDir, { localVerify: s.svc }));
     // main fails its verify twice on one file ⇒ main-red with the failing file known.

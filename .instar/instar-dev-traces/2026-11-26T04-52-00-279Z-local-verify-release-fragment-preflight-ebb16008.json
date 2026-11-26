@@ -1,0 +1,21 @@
+{
+  "version": 2,
+  "slug": "local-verify-release-fragment-preflight",
+  "sessionId": "ed99de61-509a-4e0d-908f-801b299fef73",
+  "timestamp": "2026-11-26T04:52:00.279Z",
+  "artifactPath": "upgrades/side-effects/local-verify-release-fragment-preflight.md",
+  "artifactSha256": "dd0e17d28b3a277f89bffb5005b2d63125f5fbb6f7fdd813b06a857c19f0d986",
+  "coveredFiles": [
+    "src/localVerify/LocalVerifyService.ts",
+    "src/localVerify/localVerifyRoutes.ts",
+    "src/localVerify/serviceSeams.ts",
+    "src/localVerify/waitingList.ts"
+  ],
+  "phase": "complete",
+  "tier": 1,
+  "tierReasoning": "Reversible admission rule in maintainer-only Local Verify, preserving GitHub merge authority.",
+  "eli16Path": "upgrades/next/local-verify-release-fragment-preflight.md",
+  "sideEffectsPath": "upgrades/side-effects/local-verify-release-fragment-preflight.md",
+  "secondPass": "not-required",
+  "reviewerConcurred": null
+}

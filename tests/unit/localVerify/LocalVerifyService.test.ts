@@ -474,6 +474,18 @@ describe('request + queue', () => {
     expect(s.spawned).toHaveLength(0);
   });
 
+  it('blocks source PRs without a release fragment and accepts the corrected head', async () => {
+    const h = setup({ views: { 1: view({ files: [{ path: 'src/core/Foo.ts' }, { path: 'upgrades/next/old.md', changeType: 'DELETED' }] }) } });
+    expect(await h.svc.request(1, { explicit: true })).toEqual({ ok: false, code: 'release-fragment-missing' });
+    expect(h.svc.snapshot().queue).toHaveLength(0);
+    expect(h.spawned).toHaveLength(0);
+    h.views[1] = view({
+      headRefOid: sha('c'),
+      files: [{ path: 'src/core/Foo.ts' }, { path: 'upgrades/next/foo.md' }],
+    });
+    expect(await h.svc.request(1, { explicit: true })).toMatchObject({ ok: true, status: 'queued' });
+  });
+
   it('reads the trusted operator login live: a config change applies without a restart (2026-11-16)', async () => {
     // Boot-time login is JKHeadley; the live reader says nobody is trusted yet, then JKHeadley.
     let live: string | null = null;

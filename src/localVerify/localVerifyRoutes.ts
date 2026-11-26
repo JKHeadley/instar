@@ -94,6 +94,7 @@ export function statusForResult(r: RequestResult): number {
     case 'untrusted-head': return 403;
     case 'pr-unreadable':
     case 'pr-invalid-shas': return 502;
+    case 'release-fragment-missing':
     case 'main-unhealthy':
     case 'held':
     case 'pr-closed': return 409;
@@ -153,6 +154,7 @@ export function statusForQueueControlRefusal(code: string): number {
     case 'not-fronted':
     case 'front-limit':
     case 'held':
+    case 'release-fragment-missing':
     case 'main-unhealthy':
     case 'pr-closed': return 409;
     case 'operator-file-full':

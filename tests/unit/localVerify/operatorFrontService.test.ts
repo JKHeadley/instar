@@ -419,7 +419,7 @@ describe('front passes no gate', () => {
 
   it('the main-red hold still holds a fronted change that does not repair main', async () => {
     const h = harness({ prs: [1, 2] });
-    for (const pr of [1, 2]) h.views[pr] = view(pr, { title: 'chore: unrelated', body: 'nothing', files: [{ path: 'src/core/Foo.ts' }] });
+    for (const pr of [1, 2]) h.views[pr] = view(pr, { title: 'chore: unrelated', body: 'nothing', files: [{ path: 'src/core/Foo.ts' }, { path: 'upgrades/next/fixture.md' }] });
     const FILE = 'tests/unit/broken.test.ts';
     const red = (i: number) => h.finish(i, {
       kind: 'record', overlaps: [], keptWorktree: null, reasons: ['lane-failed:unit:1', `file-failed:${FILE}:1`],
