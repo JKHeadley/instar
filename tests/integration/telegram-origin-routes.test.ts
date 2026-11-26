@@ -23,6 +23,10 @@ import { originToolGuardDigest } from '../../src/messaging/telegram-origin/Origi
 import { listenOriginNotices, originCapacityClient } from '../../src/messaging/telegram-origin/OriginNoticeIpc.js';
 import { CommitmentTracker } from '../../src/monitoring/CommitmentTracker.js';
 import { LiveConfig } from '../../src/config/LiveConfig.js';
+import { recordRecoveredSessionDelivery } from '../../src/messaging/telegram-origin/SessionDeliveryReporter.js';
+import { setTimeout as delay } from 'node:timers/promises';
+
+import { NEEDS_CANARY_FIRST_DELAY_MS } from '../../src/server/needsRoutes.js';
 
 let worker: URL;
 const runtimes: TelegramOriginRuntime[] = [];
@@ -36,7 +40,14 @@ async function appHarness(extra: Record<string, unknown> = {}, configExtra: Reco
     const body = JSON.parse(init.body as string);
     return new Response(JSON.stringify({ ok: true, result: { message_id: 27, chat: { id: -100123 }, message_thread_id: body.message_thread_id } }));
   });
-  vi.stubGlobal('fetch', network);
+  vi.stubGlobal('fetch', (url: string, init: RequestInit) => {
+    const target = new URL(url);
+    if (target.origin === 'https://api.telegram.org') return network(url, init);
+    const nonce = target.pathname === '/needs' && target.hostname === '127.0.0.1'
+      ? target.searchParams.get('canary') : null;
+    if (nonce) return Promise.resolve(Response.json({ items: [{ id: `canary:${nonce}` }], count: 1 }));
+    throw new Error(`Unexpected fixture fetch to ${target.origin}${target.pathname}`);
+  });
   const runtime = await TelegramOriginRuntime.open({ storage: { stateDir, agentId: 'echo' }, workerUrl: worker,
     identity: { agentId: 'echo', agentName: 'Echo', originMachineId: 'studio', originMachineName: 'Mac Studio' },
     signingKey: { privateKey, keyId: 'studio-1', keyEpoch: 1 }, bot: { token: botToken, accountId: 'bot-1', chatId: '-100123' },
@@ -49,17 +60,28 @@ async function appHarness(extra: Record<string, unknown> = {}, configExtra: Reco
     projectDir: process.cwd(), configuredModel: 'gpt-6-astra' });
   const app = express(); app.use(express.json());
   app.use((req, res, next) => { if (req.get('Authorization') !== 'Bearer agent-test') { res.sendStatus(401); return; } next(); });
-  app.use(createRoutes({ state: { getSession: () => undefined }, config: { authToken: 'agent-test', stateDir, port: 0, projectName: 'echo',
-    messaging: [{ type: 'telegram', enabled: true, config: { token: botToken, chatId: '-100123', lifelineTopicId: 7848 } }], ...configExtra },
-    telegramOrigin: runtime, verifyDashboardOperatorSession: (proof: string) => proof === 'operator-test',
-    telegram: { sendToTopic: async (topicId: number, text: string) => {
-      const response = await telegramFetch(`https://api.telegram.org/bot${botToken}/sendMessage`, {
-        method: 'POST', headers: { 'Content-Type': 'application/json' }, body: JSON.stringify({ chat_id: '-100123', message_thread_id: topicId, text }),
-      });
-      const json = await response.json() as { result: { message_id: number } };
-      return { messageId: json.result.message_id, timestamp: new Date().toISOString() };
-    } }, sessionManager: { clearInjectionTracker: () => undefined }, ...extra,
-  } as never));
+  // Router construction schedules the recurring Needs You check. This Telegram
+  // fixture has no listening app port and must not leave that timer behind.
+  const timeout = vi.spyOn(globalThis, 'setTimeout');
+  try {
+    app.use(createRoutes({ state: { getSession: () => undefined }, config: { authToken: 'agent-test', stateDir, port: 0, projectName: 'echo',
+      messaging: [{ type: 'telegram', enabled: true, config: { token: botToken, chatId: '-100123', lifelineTopicId: 7848 } }], ...configExtra },
+      telegramOrigin: runtime, verifyDashboardOperatorSession: (proof: string) => proof === 'operator-test',
+      telegram: { sendToTopic: async (topicId: number, text: string) => {
+        const response = await telegramFetch(`https://api.telegram.org/bot${botToken}/sendMessage`, {
+          method: 'POST', headers: { 'Content-Type': 'application/json' }, body: JSON.stringify({ chat_id: '-100123', message_thread_id: topicId, text }),
+        });
+        const json = await response.json() as { result: { message_id: number } };
+        return { messageId: json.result.message_id, timestamp: new Date().toISOString() };
+      } }, sessionManager: { clearInjectionTracker: () => undefined }, ...extra,
+    } as never));
+  } finally {
+    for (const [index, [, delayMs]] of timeout.mock.calls.entries()) {
+      const result = timeout.mock.results[index];
+      if (delayMs === NEEDS_CANARY_FIRST_DELAY_MS && result?.type === 'return') clearTimeout(result.value);
+    }
+    timeout.mockRestore();
+  }
   return { app, runtime, sessionToken, network, stateDir, botToken, lifecycle: lifecycle! };
 }
 async function browserHarness(extra: Record<string, unknown> = {}) {
@@ -78,6 +100,56 @@ async function browserHarness(extra: Record<string, unknown> = {}) {
   return { ...h, invoke, executor, send };
 }
 describe('Telegram origin through the complete reply HTTP pipeline', () => {
+  it.each([
+    ['session', false], ['session', true], ['automation', false], ['automation', true],
+  ] as const)('keeps authored Markdown in App history and HTML on Telegram for %s replies (held=%s)', async (producer, held) => {
+    let adapter: TelegramAdapter;
+    const h = await appHarness({ telegram: {
+      sendToTopic: (...args: Parameters<TelegramAdapter['sendToTopic']>) => adapter.sendToTopic(...args),
+      getTopicHistory: (topicId: number, limit?: number) => adapter.getTopicHistory(topicId, limit),
+    } });
+    adapter = new TelegramAdapter({ token: h.botToken, chatId: '-100123' }, h.stateDir, { suppressLifelineAutoCreate: true });
+    h.runtime.options.onRecoveredMessage = entry => recordRecoveredSessionDelivery(entry, adapter);
+    const text = 'The GitHub *read* action is ready. Reply **"approve GitHub reads"**. Literal code: `<b>example</b>`.';
+    const body = { text };
+    const capacity = held ? vi.spyOn(h.runtime.service.options.capacity!, 'reserveExplained')
+      .mockResolvedValue({ grant: null, refusal: { cause: 'rate-window-full', leaseFreshness: null } }) : null;
+    try {
+      const credential = producer === 'session' ? h.sessionToken
+        : h.runtime.service.issueAutomationReply('telegram-server', 42, body);
+      const sent = await request(h.app).post('/telegram/reply/42').set('Authorization', 'Bearer agent-test')
+        .set(producer === 'session' ? 'X-Instar-Origin-Session' : 'X-Instar-Origin-Automation', credential).send(body);
+      expect(sent.status).toBe(held ? 409 : 200);
+      if (held) {
+        expect(sent.body).toMatchObject({ reason: 'credential-capacity-unavailable', retryable: false });
+        expect(h.network).not.toHaveBeenCalled();
+        expect(adapter.getTopicHistory(42, 10)).toEqual([]);
+        capacity!.mockRestore();
+        // The durable worker uses its own clock. Respect its actual retry pacing.
+        const row = (await h.runtime.store.listOrigins()).records[0];
+        const nextAt = row.attempts.find(attempt => attempt.reason === 'credential-capacity-unavailable')?.nextAttemptAt;
+        expect(Number.isSafeInteger(nextAt)).toBe(true);
+        const waitMs = Math.max(0, nextAt! - Date.now() + 10);
+        expect(waitMs).toBeLessThanOrEqual(31_000);
+        if (waitMs) await delay(waitMs);
+        expect(await h.runtime.recoverHeld()).toMatchObject({ recovered: 1 });
+      }
+      expect(h.network).toHaveBeenCalledOnce();
+      const wire = JSON.parse(h.network.mock.calls[0][1].body as string);
+      expect(wire.parse_mode).toBe('HTML');
+      expect(wire.text).toContain('<i>read</i>');
+      expect(wire.text).toContain('<b>"approve GitHub reads"</b>');
+      const history = await request(h.app).get('/telegram/topics/42/messages').set('Authorization', 'Bearer agent-test');
+      expect(history.status).toBe(200);
+      expect(history.body.messages).toHaveLength(1);
+      expect(history.body.messages[0].text).toBe(text);
+      expect(history.body.messages[0].text).not.toContain('<i>read</i>');
+      expect(await h.runtime.recoverHeld()).toMatchObject({ recovered: 0 });
+      expect(adapter.getTopicHistory(42, 10)).toHaveLength(1);
+      expect(h.network).toHaveBeenCalledOnce();
+    } finally { capacity?.mockRestore(); await adapter.stop(); }
+  });
+
   it('starts the real adapter network deadline after the HTTP policy and origin claim', async () => {
     let adapter: TelegramAdapter;
     const h = await appHarness({ telegram: { sendToTopic: (...args: Parameters<TelegramAdapter['sendToTopic']>) => adapter.sendToTopic(...args) } });

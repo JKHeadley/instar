@@ -71,6 +71,8 @@ export interface InboundMessage {
   sessionKey: string;
   messageId: string;
   payload: unknown;
+  /** Original local custody time, present on drain retries. */
+  enqueuedAt?: string;
   /**
    * Files by attachment id (native-conversation-base §3c). An entry may carry this machine's own
    * download path in process and in this machine's queue; it is stripped (`toWireMedia`) before any
@@ -267,6 +269,8 @@ export interface SessionRouterDeps {
    *  failure maps to 'refused' → today's fall-through). */
   queueMessage: (msg: InboundMessage, reason: string) => QueueMessageResult;
   raiseAttention: (title: string, body: string) => void;
+  /** The message is in custody but placement could not replace its offline owner. */
+  reportOfflineOwnerHold?: (sessionKey: string, owner: string, epoch: number, enqueuedAt?: string) => void;
   markOwnerSuspect?: (machineId: string) => void;
   /**
    * Unroutable-owner release (docs/specs/unroutable-owner-release.md): true when
@@ -317,7 +321,22 @@ export class SessionRouter {
     }
     const stopGeneration = this.appStopGeneration.get(msg.sessionKey) ?? 0;
     const prior = this.chains.get(msg.sessionKey) ?? Promise.resolve();
-    const next = prior.catch(() => undefined).then(() => this.dispatchOne(msg, stopGeneration));
+    const next = prior.catch(() => undefined).then(async () => {
+      const outcome = await this.dispatchOne(msg, stopGeneration);
+      if (this.deps.reportOfflineOwnerHold && outcome.acked &&
+          (outcome.action === 'queued' || outcome.action === 'placement-blocked')) {
+        try {
+          const owner = this.deps.resolveOwnership(msg.sessionKey);
+          if (owner.status === 'active' && owner.owner && !this.deps.isMachineAlive(owner.owner)) {
+            this.deps.reportOfflineOwnerHold(msg.sessionKey, owner.owner, owner.epoch, msg.enqueuedAt);
+          }
+        } catch (error) {
+          // The stored message and the drain must survive a dashboard failure.
+          this.deps.log?.(`offline owner hold report failed for ${msg.sessionKey}: ${String(error)}`);
+        }
+      }
+      return outcome;
+    });
     // Track the tail so the next message on this session waits for this one to
     // settle — and DELETE the entry once this tail settles while still current,
     // so the map is bounded by in-flight sessions, not sessions-ever-routed

@@ -1,3 +1,4 @@
+import { SQL_COMMAND_CONTEXT_CHECK } from '../core/sqlCommandContext.js';
 import { ACCOUNT_PAGE_SAFETY_SCRIPT } from '../data/accountPageSafetyScript.js';
 /**
  * `instar init` — Initialize agent infrastructure.
@@ -60,7 +61,7 @@ import { allocatePort, registerAgent, validateAgentName } from '../core/AgentReg
 import { defaultIdentity } from '../scaffold/bootstrap.js';
 import { MachineIdentityManager, ensureGitignore } from '../core/MachineIdentity.js';
 import { OrgPolicyGateHooks } from '../core/OrgPolicyGateHooks.js';
-import { PostUpdateMigrator, CLEAR_SEED_SETTINGS_HOOK, POST_COMPACT_SETTINGS_HOOK, PRE_COMPACT_STEER_SETTINGS_HOOK } from '../core/PostUpdateMigrator.js';
+import { PostUpdateMigrator, CLEAR_SEED_SETTINGS_HOOK, COMPACT_SESSION_START_TIMEOUT_SECONDS, POST_COMPACT_SETTINGS_HOOK, PRE_COMPACT_STEER_SETTINGS_HOOK } from '../core/PostUpdateMigrator.js';
 import { normalizeSkillFrontmatter } from '../core/skillCanonicalFrontmatter.js';
 import { findCoreRegion, REFERENCE_DIR_REL as CLAUDE_MD_REFERENCE_DIR_REL } from '../scaffold/claudeMdLayout.js';
 import { ProjectMapper } from '../core/ProjectMapper.js';
@@ -4467,6 +4468,7 @@ function installHooks(stateDir: string): void {
   const migrator = new PostUpdateMigrator(
     { stateDir, port: 4040, sessions: { claudePath: 'claude' } } as any
   );
+  fs.writeFileSync(path.join(hooksDir, 'telegram-topic-context.sh'), migrator.getHookContent('telegram-topic-context'), { mode: 0o755 });
   fs.writeFileSync(path.join(hooksDir, 'session-start.sh'), migrator.getHookContent('session-start'), { mode: 0o755 });
   // Clear-seed hook (context-budget-layered-summaries §9.2 rung 1): silent on a human /clear.
   fs.writeFileSync(path.join(hooksDir, 'clear-seed.sh'), migrator.getHookContent('clear-seed'), { mode: 0o755 });
@@ -4561,6 +4563,7 @@ for pattern in "rm -rf \\." "git push --force" "git push -f" "git reset --hard" 
   fi
 done
 
+${SQL_COMMAND_CONTEXT_CHECK}
 # SQL must look like a statement, not prose that merely names a keyword. Match
 # at input/statement start or immediately after a SQL-bearing quote/separator,
 # and require the following table/database identifier. Ambiguous statement
@@ -4574,6 +4577,10 @@ for sql_spec in \\
   pattern="\${sql_spec%%|*}"
   sql_pattern="\${sql_spec#*|}"
   if echo "\$INPUT" | grep -qE "\$sql_pattern"; then
+    if [ -z "\$SQL_LITERAL_DATA" ]; then
+      if sql_command_is_literal_data; then SQL_LITERAL_DATA=1; else SQL_LITERAL_DATA=0; fi
+    fi
+    if [ "\$SQL_LITERAL_DATA" = "1" ]; then continue; fi
     if [ "\$SAFETY_LEVEL" -eq 1 ]; then
       echo "BLOCKED: Potentially destructive command detected: \$pattern" >&2
       echo "Ask the user for explicit confirmation before running this command." >&2
@@ -5550,7 +5557,7 @@ function installClaudeSettings(projectDir: string, serverPort?: number): void {
     hooks.SessionStart = [
       { matcher: 'startup', hooks: [sessionStartHook] },
       { matcher: 'resume', hooks: [sessionStartHook] },
-      { matcher: 'compact', hooks: [sessionStartHook] },
+      { matcher: 'compact', hooks: [{ ...sessionStartHook, timeout: COMPACT_SESSION_START_TIMEOUT_SECONDS }] },
       { matcher: 'clear', hooks: [{ ...CLEAR_SEED_SETTINGS_HOOK }] },
     ];
   } else {
@@ -5558,7 +5565,8 @@ function installClaudeSettings(projectDir: string, serverPort?: number): void {
     const sessionStart = hooks.SessionStart as Array<{ matcher?: string; hooks?: unknown[] }>;
     for (const matcher of ['startup', 'resume', 'compact']) {
       if (!sessionStart.some(e => e.matcher === matcher)) {
-        sessionStart.push({ matcher, hooks: [sessionStartHook] });
+        const hook = matcher === 'compact' ? { ...sessionStartHook, timeout: COMPACT_SESSION_START_TIMEOUT_SECONDS } : sessionStartHook;
+        sessionStart.push({ matcher, hooks: [hook] });
       }
     }
     if (!sessionStart.some(e => (e.hooks as Array<{ command?: string }> | undefined)?.some(h => h.command?.includes('clear-seed.sh')))) {

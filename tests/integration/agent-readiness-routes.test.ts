@@ -4,16 +4,24 @@
  * HTTP pipeline via supertest + a minimal RouteContext.
  */
 
-import { describe, it, expect, beforeEach } from 'vitest';
+import { afterEach, describe, it, expect, beforeEach } from 'vitest';
+import { createTempProject, type TempProject } from '../helpers/setup.js';
 import express from 'express';
 import request from 'supertest';
 import path from 'node:path';
 import { createRoutes } from '../../src/server/routes.js';
 import type { RouteContext } from '../../src/server/routes.js';
 
+const projects: TempProject[] = [];
+afterEach(() => {
+  for (const project of projects.splice(0)) project.cleanup();
+});
+
 function createMinimalContext(): RouteContext {
+  const project = createTempProject();
+  projects.push(project);
   return {
-    config: { projectName: 'test', projectDir: '/tmp', stateDir: '/tmp/.instar', port: 0 } as any,
+    config: { projectName: 'test', projectDir: project.dir, stateDir: project.stateDir, port: 0 } as any,
     sessionManager: { listRunningSessions: () => [] } as any,
     state: { getJobState: () => null, getSession: () => null } as any,
     scheduler: null, telegram: null, relationships: null, feedback: null,

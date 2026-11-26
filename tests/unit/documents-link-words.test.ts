@@ -23,7 +23,7 @@ describe('the link page words', () => {
   it('five numbered steps with the app\'s exact button words, in order', () => {
     expect(LINK_WORDS.steps.map(linkStepText)).toEqual([
       'Open Instar on your iPhone.',
-      'Tap “People”.',
+      'Tap Agents, select this agent, then scroll down to “People”.',
       'Tap “Link a computer”.',
       'Scan the code on this screen.',
       'Check that the code on your phone matches the one here, tap “Link for 30 days”, then confirm with Face ID.',

@@ -1,5 +1,6 @@
 // A recommended service's confirm page (docs/specs/recommended-services.md, Yes). The person reads
-// what the service involves and confirms with their PIN. Nothing is stored in the browser.
+// what the service involves and confirms with their PIN. Nothing about the answer is stored in the browser
+// (only a short-lived lock that lets one tab at a time retry a refused open, SEC-135).
 
 const root = document.getElementById('pair-root');
 const service = new URLSearchParams(location.search).get('service') || '';
@@ -15,6 +16,10 @@ const REFUSED = {
   'wrong-owner': 'The owner of this agent changed since this page opened. Nothing changed. Open it again.',
   'wrong-machine': 'This page belongs to a different machine. Nothing changed. Open it again.',
   'too-many-pages': 'This page has been opened too many times in a short while. Nothing changed. Wait a minute, then open it again.',
+  // SEC-135: every live page for this service is an owner page; the store only knows how many, not which tabs are open.
+  'too-many-pages-active': 'Too many approval pages for this service are still active, including some that may already be closed. They expire on their own within 30 minutes. Try again then, or approve from the dashboard.',
+  'too-many-pages-gave-up': 'Too many of these pages opened at once. Reload this one when you need it.',
+  'timed-out': 'This page timed out while you were away. Reload to continue.',
   'recommended-services-unavailable': 'I can’t save a choice on this machine right now. Nothing changed.',
   'invalid-recipient': 'That doesn’t look like one email address. Nothing changed. Type just the address, like you@example.com.',
   'recipient-is-the-account': 'Email is set up with a Resend account opened at your current address, so it can only send there. A different address means a new setup: say no here first, then yes with the new address. Nothing changed.',
@@ -76,11 +81,14 @@ function page(d) {
         return;
       }
       if ((r.status === 403 && body.error !== 'insecure-connection') || r.status === 429) {
-        error.textContent = r.status === 429 ? 'Too many tries. Wait a while, then try again.' : 'That PIN didn’t work. Try again.';
+        // SEC-135: a paused answer carries the server's own wording, which names the ways through.
+        error.textContent = r.status === 429 ? (body.error === 'pin-paused' && body.message ? body.message : 'Too many tries. Wait a while, then try again.') : 'That PIN didn’t work. Try again.';
         pin.value = '';
         pin.focus();
         return;
       }
+      // A 30-minute page that expired while the owner was away: one reload mints a fresh one.
+      if (body.error === 'token-refused' && typeof d.expiresAt === 'number' && Date.now() >= d.expiresAt) { message('This page timed out', REFUSED['timed-out']); return; }
       message('That didn’t go through', REFUSED[body.error] || 'Something went wrong on my side. Nothing changed.');
     } catch {
       error.textContent = 'I couldn’t reach your agent. Nothing changed. Try again.';
@@ -156,7 +164,7 @@ function copiesSection(d, pin, error) {
         showNames.remove();
         return;
       }
-      error.textContent = r.status === 429 ? 'Too many tries. Wait a while, then try again.'
+      error.textContent = r.status === 429 ? (body.error === 'pin-paused' && body.message ? body.message : 'Too many tries. Wait a while, then try again.')
         : body.error === 'insecure-connection' ? REFUSED['insecure-connection']
         : r.status === 403 ? 'That PIN didn’t work. Type it below, then try again.'
           : (REFUSED[body.error] || 'That didn’t work. Reload the page and try again.');
@@ -200,10 +208,45 @@ function codeSection() {
     el('form', { class: 'pair-pin', onsubmit: (e) => e.preventDefault() }, code, pin, status, button));
 }
 
+// SEC-135: opening the page sends X-Instar-Request, which a page on another origin cannot send, so the
+// server can give an owner's browser its own allowance. A refused open is retried with brakes: wait the
+// refill time the server reports plus 0-10 seconds, double the wait after each further refusal, give up
+// after three tries, and let only one tab of this browser retry at a time (a shared lock), so a restore of
+// many tabs drains one by one instead of in a burst. Storage may be unavailable; then each tab retries alone.
+const RETRY_LOCK = 'instar-confirm-open-retry';
+const MAX_TRIES = 3;
+const sleep = (ms) => new Promise((resolve) => setTimeout(resolve, ms));
+function lockHeldByOther(id) {
+  try { const v = JSON.parse(localStorage.getItem(RETRY_LOCK) || 'null'); return !!v && v.id !== id && v.until > Date.now(); } catch { return false; }
+}
+function takeLock(id) { try { localStorage.setItem(RETRY_LOCK, JSON.stringify({ id, until: Date.now() + 20_000 })); } catch { /* storage unavailable: retry alone */ } }
+function dropLock(id) { try { const v = JSON.parse(localStorage.getItem(RETRY_LOCK) || 'null'); if (v && v.id === id) localStorage.removeItem(RETRY_LOCK); } catch { /* storage unavailable */ } }
+
+async function openPage() {
+  const r = await fetch(`/recommended-services/${encodeURIComponent(service)}/confirm`, { cache: 'no-store', headers: { 'X-Instar-Request': '1' } });
+  return { r, d: await r.json().catch(() => ({})) };
+}
+
 async function start() {
   try {
-    const r = await fetch(`/recommended-services/${encodeURIComponent(service)}/confirm`, { cache: 'no-store' });
-    const d = await r.json().catch(() => ({}));
+    let { r, d } = await openPage();
+    if (r.status === 429 && d.error === 'too-many-pages' && d.allProtected) { message('This can’t be set up right now', REFUSED['too-many-pages-active']); return; }
+    if (r.status === 429 && d.error === 'too-many-pages' && typeof d.retryAfterSeconds === 'number') {
+      const id = Math.random().toString(36).slice(2);
+      let wait = d.retryAfterSeconds * 1000;
+      for (let tries = 1; tries <= MAX_TRIES; tries++) {
+        message('Opening this page', 'A lot of these pages were opened at once. This one opens in a moment.');
+        await sleep(wait + Math.random() * 10_000);
+        const lockWaitUntil = Date.now() + 5 * 60_000;
+        while (lockHeldByOther(id) && Date.now() < lockWaitUntil) await sleep(1000 + Math.random() * 2000);
+        takeLock(id);
+        try { ({ r, d } = await openPage()); } finally { dropLock(id); }
+        if (!(r.status === 429 && d.error === 'too-many-pages')) break;
+        if (d.allProtected) { message('This can’t be set up right now', REFUSED['too-many-pages-active']); return; }
+        if (tries === MAX_TRIES) { message('This can’t be set up right now', REFUSED['too-many-pages-gave-up']); return; }
+        wait = Math.max(wait * 2, (d.retryAfterSeconds || 0) * 1000);
+      }
+    }
     if (r.ok && d.token) { page(d); return; }
     // Without a token nothing can be confirmed. "cannot-reach-you" never comes from opening the page: the page is still served so a no can be given.
     message('This can’t be set up right now', REFUSED[d.error] || 'Something went wrong on my side. Nothing changed.');

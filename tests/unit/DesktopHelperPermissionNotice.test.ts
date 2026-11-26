@@ -34,9 +34,25 @@ describe('desktop helper permission wording', () => {
     expect(reason).not.toContain('Screen Recording');
   });
 
-  it('explains the one-time move on a Mac that never granted the kept copy', () => {
-    expect(desktopProbeUnavailableReason({ ...missing, helperChange: { ...change, kind: 'first-grant' } }))
-      .toContain('one permanent copy');
+  it('asks a Mac that never granted the kept copy to allow it once, with no update story', () => {
+    const reason = desktopProbeUnavailableReason({ ...missing, helperChange: { ...change, kind: 'first-grant' } });
+    expect(reason).toContain('has not yet allowed');
+    expect(reason).toContain('allow it once: System Settings → Privacy & Security → Screen Recording and Accessibility.');
+    expect(reason).toContain('will not fix itself');
+    expect(reason).toContain(change.helperPath);
+    // A freshly installed or rebuilt Mac never allowed anything: "again" and an
+    // update version would both be false there.
+    expect(reason).not.toContain('again');
+    expect(reason).not.toContain('update 1.3.1580');
+    expect(reason).not.toContain('now keeps');
+  });
+
+  it('a first grant at a locked screen keeps the once-only wording', () => {
+    const reason = desktopProbeUnavailableReason({ ...missing, sessionActive: false, screenLocked: true,
+      helperChange: { ...change, kind: 'first-grant' } });
+    expect(reason).toContain('locked screen');
+    expect(reason).toContain('has not yet allowed');
+    expect(reason).not.toContain('allow it again');
   });
 
   it('keeps the ordinary wording when no update is involved', () => {
@@ -89,6 +105,13 @@ describe('DesktopHelperPermissionNotice', () => {
     expect((raise.mock.calls[0]![0] as { body: string }).body).toContain('will not fix itself');
     await subject.check();
     expect(clear).toHaveBeenCalledOnce();
+  });
+
+  it('a never-granted Mac gets a title without "again"', async () => {
+    const { subject, raise } = notice([{ ...missing, helperChange: { ...change, kind: 'first-grant' } }]);
+    await subject.check();
+    expect(raise.mock.calls[0]![0]).toMatchObject({ title: 'the Mini: Remote Desktop needs its Mac permission' });
+    expect((raise.mock.calls[0]![0] as { body: string }).body).not.toContain('again');
   });
 
   it('stays quiet when another agent on this Mac already raised it', async () => {
