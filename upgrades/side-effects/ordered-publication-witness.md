@@ -51,3 +51,7 @@ The verifier consumes authenticated evidence and independently resolved current 
 ## Independent floor readback
 
 The read boundary binds the receiver-selected destination, namespace, Git commit and fresh nonce to the witness-signed floor. It checks the ref and witness enrollment again before returning local evidence. The transport must provide authoritative observations and the witness must inspect the challenged commit independently. A readback grants no final publication permission. No production transport is installed by this checkpoint.
+
+## Direct Git ref observation
+
+The read-only adapter checks an exact, receiver-pinned repository and ref twice around witness confirmation. It ignores checkout state and inherited Git configuration. Missing, ambiguous and timed-out reads give no floor. This checkpoint has no production credentials or callers. A disposable bare repository exercises the read path.

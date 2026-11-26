@@ -13,3 +13,5 @@ The predecessor proof also needs the old journal itself. The verifier checks eve
 If the old machine lost the reply to an append, the new machine keeps that attempt outstanding. It can recognize a confirmed append only when the authenticated reconciliation names the current handover and the exact attempt, and the sealed journal contains those exact bytes.
 
 Before using a journal position, the receiver can ask the enrolled witness to confirm the exact Git commit it just read. Each request uses a fresh challenge. An old confirmation or one for another repository, branch, or commit leaves the receiver waiting.
+
+The Git reader checks the configured branch directly. A local checkout or another branch with a similar name cannot supply the journal position.
