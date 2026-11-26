@@ -1,0 +1,21 @@
+{
+  "version": 2,
+  "slug": "app-message-delete-signed-custody",
+  "sessionId": "633bd330-201e-4dc8-8fd9-72b89116167e",
+  "timestamp": "2026-11-26T08:31:05.577Z",
+  "artifactPath": "upgrades/side-effects/app-message-delete-signed-custody.md",
+  "artifactSha256": "123d99cf24ecaed899acc4beb74dae75c391ecdf89582580c1e838875b01ae2b",
+  "specPath": "docs/specs/conversation-message-delete.md",
+  "coveredFiles": [
+    "src/core/AppRemovalCreationProof.ts",
+    "src/core/AppRemovalReadCustody.ts",
+    "tests/e2e/app-removal-read-custody.test.ts",
+    "tests/unit/app-removal-creation-proof.test.ts",
+    "upgrades/side-effects/app-message-delete-signed-custody.md"
+  ],
+  "phase": "complete",
+  "tier": 2,
+  "tierReasoning": "Unmounted signed proof and durable admission for deletion custody",
+  "secondPass": "not-required",
+  "reviewerConcurred": null
+}

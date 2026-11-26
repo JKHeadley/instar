@@ -1,6 +1,8 @@
 import crypto from 'node:crypto';
 import fs from 'node:fs';
 import path from 'node:path';
+import { isDeepStrictEqual } from 'node:util';
+import type { AppRemovalCreationAdmission } from './AppRemovalCreationProof.js';
 import { isAppConversationKey } from './appConversationText.js';
 import { MACHINE_ID_PATTERN } from './IdentityStore.js';
 import { SafeFsExecutor } from './SafeFsExecutor.js';
@@ -10,6 +12,7 @@ export interface CustodyRecord {
   conversationKey: string;
   creationEventId: string;
   custodianMachineId: string;
+  admission?: AppRemovalCreationAdmission;
 }
 
 type CustodyObservation = { kind: 'recorded'; record: CustodyRecord }
@@ -23,6 +26,19 @@ export function isAppRemovalReadCustodyRecord(value: unknown, key: string): valu
     && typeof row.creationEventId === 'string' && /^[A-Za-z0-9._:-]{1,128}$/.test(row.creationEventId)
     && typeof row.custodianMachineId === 'string' && row.custodianMachineId !== 'local'
     && MACHINE_ID_PATTERN.test(row.custodianMachineId);
+}
+
+function validAdmission(value: unknown, machine: string): value is AppRemovalCreationAdmission {
+  if (!value || typeof value !== 'object' || Array.isArray(value)) return false;
+  const row = value as Partial<AppRemovalCreationAdmission>;
+  const proof = row.proof;
+  return Object.keys(row).length === 4 && row.authenticatedSender === machine
+    && typeof row.admittedAtMs === 'number' && Number.isSafeInteger(row.admittedAtMs) && row.admittedAtMs > 0
+    && typeof row.historyRevision === 'string' && /^[A-Za-z0-9._:-]{1,128}$/.test(row.historyRevision)
+    && !!proof && Object.keys(proof).length === 5 && proof.version === 1 && proof.machineId === machine
+    && Number.isSafeInteger(proof.claimedTimeMs) && proof.claimedTimeMs > 0
+    && typeof proof.signerKeyHash === 'string' && /^[a-f0-9]{64}$/.test(proof.signerKeyHash)
+    && typeof proof.sig === 'string' && /^[A-Za-z0-9+/_=-]{1,128}$/.test(proof.sig);
 }
 
 /** Local immutable retention evidence. Its absence is never authority to serve a legacy read. */
@@ -44,11 +60,17 @@ export class AppRemovalReadCustody {
   }
 
   /** Persist previously established creation evidence. No write flag or lease can replace this binding. */
-  record(conversationKey: string, creation: { eventId: string; machineId: string }): boolean {
+  record(
+    conversationKey: string,
+    creation: { eventId: string; machineId: string },
+    admission?: AppRemovalCreationAdmission,
+  ): boolean {
     const input: CustodyRecord = {
       version: 1, conversationKey, creationEventId: creation.eventId, custodianMachineId: creation.machineId,
+      ...(admission ? { admission } : {}),
     };
-    if (!isAppConversationKey(conversationKey) || !isAppRemovalReadCustodyRecord(input, conversationKey)) return false;
+    if (!isAppConversationKey(conversationKey) || !isAppRemovalReadCustodyRecord(input, conversationKey)
+      || (admission && !validAdmission(admission, creation.machineId))) return false;
     const file = this.file(conversationKey);
     const pending = path.join(this.directory, `.${crypto.randomUUID()}.pending`);
     let createdPending = false;
@@ -72,7 +94,8 @@ export class AppRemovalReadCustody {
         if ((error as NodeJS.ErrnoException).code !== 'EEXIST') throw error;
       }
       const retained = this.read(conversationKey);
-      if (retained?.creationEventId !== input.creationEventId || retained.custodianMachineId !== input.custodianMachineId) return false;
+      if (retained?.creationEventId !== input.creationEventId || retained.custodianMachineId !== input.custodianMachineId
+        || (admission && !isDeepStrictEqual(retained.admission, admission))) return false;
       this.discardPending(pending);
       createdPending = false;
       for (const directory of [this.directory, parent, root]) {
@@ -132,7 +155,9 @@ export class AppRemovalReadCustody {
       if (count !== stat.size || current.ino !== stat.ino || current.dev !== stat.dev
         || current.size !== stat.size || current.ctimeMs !== stat.ctimeMs) throw new Error('custody record changed');
       const record: unknown = JSON.parse(bytes.toString('utf8', 0, count));
-      if (!isAppRemovalReadCustodyRecord(record, key)) throw new Error('custody record invalid');
+      if (!isAppRemovalReadCustodyRecord(record, key)
+        || (Object.hasOwn(record, 'admission') && !validAdmission(record.admission, record.custodianMachineId)))
+        throw new Error('custody record invalid');
       return record;
     } finally {
       fs.closeSync(handle);

@@ -65,3 +65,47 @@ it('can reopen an authenticated peer assignment while refusing a different envel
     SafeFsExecutor.safeRmSync(stateDir, { recursive: true, force: true, operation: 'app-removal-read-custody-e2e:import-cleanup' });
   }
 });
+
+it('rechecks a signed custody admission in a fresh process', async () => {
+  const stateDir = fs.mkdtempSync(path.join(os.tmpdir(), 'app-removal-signed-custody-'));
+  const core = (name: string) => JSON.stringify(new URL(name + '.js', moduleUrl).href);
+  const worker = `
+    import { AppRemovalReadCustody } from ${JSON.stringify(moduleUrl)};
+    import { signAppRemovalCreation, verifyRetainedAppRemovalCreation } from ${core('AppRemovalCreationProof')};
+    import { generateSigningKeyPair, sign } from ${core('MachineIdentity')};
+    import { signerKeyHashOf } from ${core('AppRecordSignatures')};
+    const [dir, conversationKey, operation, publicKey] = process.argv.slice(1);
+    const store = new AppRemovalReadCustody(dir);
+    const event = { kind: 'created', conversationKey, eventId: 'creation', machineId: 'm1',
+      title: 'House plans', at: '2026-11-25T21:00:00.000Z' };
+    if (operation === 'write') {
+      const keys = generateSigningKeyPair();
+      const signerKeyHash = signerKeyHashOf(keys.publicKey);
+      const proof = signAppRemovalCreation('deployment-a', event, {
+        machineId: () => 'm1', signerKeyHash: () => signerKeyHash,
+        sign: (data) => ({ machineId: 'm1', signerKeyHash, sig: sign(data, keys.privateKey) }),
+      }, 1);
+      const admission = { authenticatedSender: 'm1', admittedAtMs: 2, historyRevision: 'revision-2', proof };
+      if (!proof || !store.record(conversationKey, event, admission)) throw new Error('admission write failed');
+      process.stdout.write(JSON.stringify(keys.publicKey));
+    } else {
+      const row = store.observe(conversationKey);
+      const allowed = row.kind === 'recorded' && !!row.record.admission && verifyRetainedAppRemovalCreation(
+        'deployment-a', event, row.record.admission,
+        (admission) => operation === 'trusted' && admission.historyRevision === 'revision-2' ? publicKey : null,
+      );
+      process.stdout.write(JSON.stringify(allowed));
+    }
+  `;
+  const invoke = async (...args: string[]) => {
+    const result = await run(process.execPath, ['--input-type=module', '-e', worker, stateDir, conversationKey, ...args]);
+    return JSON.parse(result.stdout);
+  };
+  try {
+    const publicKey = await invoke('write');
+    expect(await invoke('trusted', publicKey)).toBe(true);
+    expect(await invoke('rolled-back', publicKey)).toBe(false);
+  } finally {
+    SafeFsExecutor.safeRmSync(stateDir, { recursive: true, force: true, operation: 'app-removal-read-custody-e2e:signed-cleanup' });
+  }
+});
