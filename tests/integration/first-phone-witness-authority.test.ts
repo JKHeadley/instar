@@ -14,7 +14,7 @@ import type { FirstPhoneSlotDecision } from '../../src/core/FirstPhoneSlotDecisi
 import vector from '../fixtures/first-phone/ordered-challenge-v2.json';
 import { makeDevice } from '../helpers/mobileDevice.js';
 
-it.each(['consume', 'cancel', 'closed-during-observation'] as const)('connects the handler to the compound witness transaction: %s', async (mode) => {
+it.each(['consume', 'cancel', 'closed-during-observation', 'missing-staged-candidate'] as const)('connects the handler to the compound witness transaction: %s', async (mode) => {
   const dir = mkdtempSync(join(tmpdir(), 'first-phone-witness-authority-'));
   const store = OrderedWitnessSnapshotStore.open(join(dir, 'witness.sqlite'));
   const { privateKey, publicKey } = generateKeyPairSync('ed25519');
@@ -35,6 +35,9 @@ it.each(['consume', 'cancel', 'closed-during-observation'] as const)('connects t
     async observe(_expected, decision, payload) {
       if (mode === 'closed-during-observation') admitsConsume = false;
       candidate = (JSON.parse(payload) as [string, FirstPhoneSlotDecision])[1];
+      if (mode !== 'missing-staged-candidate') {
+        expect(store.stageCandidate(scope, 'c'.repeat(40), decision.operationKey, Buffer.from(payload))).toBe('staged');
+      }
       return { commit: 'c'.repeat(40), signature: sign(null, orderedDecisionBytes(decision), privateKey) };
     },
   });
@@ -50,7 +53,7 @@ it.each(['consume', 'cancel', 'closed-during-observation'] as const)('connects t
     } })).toBe(true);
     expect(store.provisionFirstPhoneSlot(scope.agentId, priorSlot)).toBe(true);
     const first = mode === 'cancel' ? await handler.cancel(cancel) : await handler.consume(consume, challenge);
-    if (mode === 'closed-during-observation') {
+    if (mode === 'closed-during-observation' || mode === 'missing-staged-candidate') {
       expect(first).toEqual({ kind: 'pending' });
       expect(store.read(scope)?.floor.position).toBe(0);
       expect(store.readFirstPhoneSlot(scope.agentId, challenge.slotKey)).toEqual(priorSlot);
@@ -65,6 +68,10 @@ it.each(['consume', 'cancel', 'closed-during-observation'] as const)('connects t
     admitsConsume = false;
     const exactRetry = mode === 'cancel' ? await handler.cancel(cancel) : await handler.consume(consume, challenge);
     expect(exactRetry).toEqual(first);
+    const original = historical!;
+    historical = { ...original, requestDigest: 'd'.repeat(64) };
+    await expect(handler.consume(consume, challenge)).resolves.toEqual({ kind: 'pending' });
+    historical = original;
     const loser = mode === 'cancel' ? await handler.consume(consume, challenge) : await handler.cancel(cancel);
     expect(loser).toEqual({ kind: 'refused' });
     expect(store.read(scope)?.floor.position).toBe(1);

@@ -38,7 +38,7 @@ function slotDecision(attempt: Attempt, outcome: FirstPhoneOrderedOutcome): Firs
 export function createFirstPhoneWitnessAuthority(deps: {
   agentId: string;
   holderMachineId: string;
-  store: Pick<OrderedWitnessSnapshotStore, 'read' | 'readFirstPhoneReceipt' | 'acceptFirstPhoneSlotDecision'>;
+  store: Pick<OrderedWitnessSnapshotStore, 'read' | 'readFirstPhoneReceipt' | 'recoverAcceptedCandidate' | 'acceptFirstPhoneSlotDecision'>;
   pins: WitnessPins;
   readAttempt: (attemptKey: string) => Attempt | null;
   /** Return evidence for staging only. This callback must never advance the accepted floor. */
@@ -51,7 +51,13 @@ export function createFirstPhoneWitnessAuthority(deps: {
       const attempt = deps.readAttempt(attemptKey);
       if (!attempt || attempt.priorSlot.slotKey !== attempt.current.challenge.slotKey) return { kind: 'refused' };
 
-      const historical = attempt.historical && deps.store.readFirstPhoneReceipt(scope.agentId, attempt.historical);
+      const priorCandidate = attempt.historical;
+      const priorPayload = priorCandidate && Buffer.from(firstPhoneSlotDecisionPayload(priorCandidate));
+      const recovered = priorCandidate && priorPayload && deps.store.recoverAcceptedCandidate(
+        scope, firstPhoneSlotOperationKey(priorCandidate), createHash('sha256').update(priorPayload).digest('hex'),
+      );
+      const historical = priorCandidate && priorPayload && recovered?.equals(priorPayload)
+        && deps.store.readFirstPhoneReceipt(scope.agentId, priorCandidate);
       if (historical && historical.decision.action.kind !== 'replace') {
         const { operationId, requestDigest, action } = historical.decision;
         const existing: FirstPhoneOrderedOutcome = {

@@ -68,3 +68,5 @@ The decision code now checks the signature against the exact phone key and prese
 The dark version 2 server handler checks that the phone signing the challenge matches the paired device, then hands confirmation or cancellation to the same shared authority. The authority must resolve the current owner, account, and policy inside its decision. A result is usable only when the witness records the exact operation. An unavailable or mismatched result leaves enrollment pending, and the handler cannot install a key itself.
 
 An isolated test now connects the first-phone handler to the real witness storage code. The test checks that confirming one attempt can claim the first approval slot only in the same write that records the decision. Cancellation leaves the slot available. A previously confirmed decision can be looked up exactly without changing who can approve.
+
+The isolated first-phone test also checks that the witness has the exact staged decision before it records an approval, and that a retry can recover only the original decision.

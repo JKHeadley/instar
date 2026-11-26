@@ -1,0 +1,21 @@
+{
+  "version": 2,
+  "slug": "first-phone-witness-authority",
+  "sessionId": "b3d2cf8a-9b5d-468b-a50b-70ebf11e9e5c",
+  "timestamp": "2026-11-26T16:23:14.831Z",
+  "artifactPath": "upgrades/side-effects/first-phone-witness-authority.md",
+  "artifactSha256": "8d7188320045d94cabd1d1ef137f5c6f7ad2e0e52a0e2dae83481fe6a1c981f6",
+  "coveredFiles": [
+    "docs/specs/phone-only-first-approver.eli16.md",
+    "src/core/trustJourney/firstPhoneWitnessAuthority.ts",
+    "tests/integration/first-phone-witness-authority.test.ts",
+    "upgrades/side-effects/first-phone-witness-authority.md"
+  ],
+  "phase": "complete",
+  "tier": 1,
+  "tierReasoning": "Require exact durable candidate bytes in already unmounted receipt recovery",
+  "eli16Path": "docs/specs/phone-only-first-approver.eli16.md",
+  "sideEffectsPath": "upgrades/side-effects/first-phone-witness-authority.md",
+  "secondPass": "true",
+  "reviewerConcurred": true
+}
