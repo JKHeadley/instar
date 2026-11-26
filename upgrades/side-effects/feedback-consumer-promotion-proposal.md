@@ -163,3 +163,7 @@ Final disposition: concur that no path remains for a promotion to approve or cla
 ## Class-Closure Declaration (display-only mirror)
 
 No agent-authored-artifact defect — not applicable. This is a missing server check against the design doc, not a prompt, hook, config, skill or standards-text defect, and it adds no self-triggered controller.
+
+## Follow-up: ratchet fix (2026-11-26)
+
+Local Verify failed `tests/unit/storage-error-response-ratchet.test.ts:51`: the proposal route's catch returned `error.message` raw. It now returns `operatorError(error, stateDir)`, the same qualifier every other route uses. Only the wording of a 500 error body changes; no behaviour, state or authority changes. The ratchet test passes (2 of 2), and the dist build in its global setup compiled cleanly.
