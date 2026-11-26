@@ -1,3 +1,4 @@
+import { FIRST_APPROVER_SLOT_KEY } from './firstPhoneProposal.js';
 export const FIRST_PHONE_PRIVATE_CALLBACK = /^first-phone:[A-Za-z0-9_-]{22,52}$/;
 
 export interface FirstPhonePrivateOffer {
@@ -39,7 +40,7 @@ export function matchesFirstPhonePrivateAccept(
     && /^[a-f0-9]{64}$/.test(offer.proposalHash) && offer.proposalHash === current.proposalHash
     && offer.accountAcceptanceId.length > 0 && offer.accountAcceptanceId === current.accountAcceptanceId
     && offer.holderEpoch === current.holderEpoch
-    && /^tj:device-acceptance:first:(?:0|[1-9][0-9]*)$/.test(offer.firstAcceptanceKey)
+    && FIRST_APPROVER_SLOT_KEY.test(offer.firstAcceptanceKey)
     && offer.firstAcceptanceKey === current.firstAcceptanceKey
     && [now, tap.receivedAt, offer.issuedAt, offer.expiresAt].every(Number.isSafeInteger)
     && offer.issuedAt <= tap.receivedAt && tap.receivedAt <= now && now < offer.expiresAt;

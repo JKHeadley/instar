@@ -114,6 +114,7 @@ describe('DeviceRegistry', () => {
       holderMachineId: 'machine-1',
       deviceKeyHash: keyHashOf(transport), priorPresenceKeyHash: keyHashOf(oldKey), newPresenceKeyHash: keyHashOf(newKey),
     };
+    expect(registry.replaceFirstApproverPresenceKey(deviceId, newKey, { ...intent, slotKey: 'tj:device-acceptance:first:00' })).toBe('conflict');
     expect(registry.replaceFirstApproverPresenceKey(deviceId, newKey, { ...intent, priorPresenceKeyHash: null })).toBe('stale');
     expect(registry.replaceFirstApproverPresenceKey(deviceId, newKey, { ...intent, deviceKeyHash: '0'.repeat(64) })).toBe('stale');
     expect(registry.replaceFirstApproverPresenceKey(deviceId, newKey, { ...intent, holderMachineId: 'other-machine' })).toBe('not-active');

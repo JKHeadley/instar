@@ -7,6 +7,7 @@
  * allowlisted requests with a low-S ECDSA signature over a canonical string bound to its id
  * and the host it paired with. Revoked is a terminal tombstone that wins every merge.
  */
+import { FIRST_APPROVER_SLOT_KEY } from './trustJourney/firstPhoneProposal.js';
 import crypto from 'node:crypto';
 import fs from 'node:fs';
 import path from 'node:path';
@@ -609,7 +610,7 @@ export class DeviceRegistry {
       'replaced' | 'already-replaced' | 'stale' | 'conflict' | 'not-active' {
     const expected = Object.freeze({ ...intent });
     if (!/^[A-Za-z0-9_-]{16,128}$/.test(expected.operationId)
-        || !/^tj:device-acceptance:first:[0-9]+$/.test(expected.slotKey) || !expected.holderEpoch
+        || !FIRST_APPROVER_SLOT_KEY.test(expected.slotKey) || !expected.holderEpoch
         || !expected.holderMachineId || !parseDevicePublicKey(publicKey) || keyHashOf(publicKey) !== expected.newPresenceKeyHash
         || expected.newPresenceKeyHash === expected.priorPresenceKeyHash) return 'conflict';
 

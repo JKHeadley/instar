@@ -1,0 +1,27 @@
+{
+  "ts": "2026-11-26T07:36:45.503Z",
+  "slug": "first-approver-write-reservation",
+  "suggestedTier": 2,
+  "declaredTier": 1,
+  "riskFloor": 2,
+  "riskFloorReasons": [
+    "new capability: new exported class / subsystem added"
+  ],
+  "belowFloor": true,
+  "files": 4,
+  "loc": 109,
+  "scope": {
+    "basis": "staged-in-scope-paths-including-deleted",
+    "files": [
+      "src/core/MobileDeviceKeys.ts",
+      "src/core/trustJourney/FirstApproverWriteReservationStore.ts",
+      "src/core/trustJourney/firstPhonePrivateAccept.ts",
+      "src/core/trustJourney/firstPhoneProposal.ts"
+    ],
+    "addedLines": 107,
+    "deletedLines": 2
+  },
+  "causalAutopsy": null,
+  "classClosure": null,
+  "verdict": "pass"
+}

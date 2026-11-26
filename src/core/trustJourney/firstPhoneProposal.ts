@@ -1,5 +1,7 @@
 import { createHash } from 'node:crypto';
 
+export const FIRST_APPROVER_SLOT_KEY = /^tj:device-acceptance:first:(?:0|[1-9][0-9]*)$/;
+
 export interface FirstPhoneProposal {
   ownerId: string;
   ownerGeneration: string;
