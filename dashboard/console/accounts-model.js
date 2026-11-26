@@ -372,19 +372,31 @@ export function buildAccountsPage(res, now = Date.now(), { episodes = [], blocke
       continue;
     }
     const episode = cell.episode;
-    const ownerStep = cell.actionable && ['attn', 'waiting'].includes(cell.state) && (
-      episode?.state === 'waiting-operator-only' || cell.blocker?.reason === 'device-limit-benched'
-      || cell.row.identityDrift?.repairState === 'owner-relogin-required');
+    const signInRequired = episode?.state === 'waiting-operator-only'
+      || cell.blocker?.reason === 'device-limit-benched'
+      || cell.row.identityDrift?.repairState === 'owner-relogin-required';
+    let action;
+    if (cell.actionable && ['attn', 'waiting'].includes(cell.state)) {
+      if (signInRequired) action = 'start';
+      else if (!cell.wrongLogin && episode?.mode === 'approval') {
+        if (episode.state === 'suggested') action = 'approve';
+        if (episode.state === 'failed') action = 'retry';
+      }
+    }
     const row = {
       key: `${account.id}::${cell.machineId}`, accountId: account.id, machineId: cell.machineId, machine: cell.machine,
       title: `Sign in ${frameworkName(account.framework)} (${account.email || account.name}) on ${cell.machine}`,
       label: `${account.name} · ${frameworkName(account.framework)}`,
       remote: Boolean(cell.row.remote),
     };
-    const ownerAction = ownerStep ? {
-      ...row, actionable: true, action: 'start', episodeId: episode?.id ?? null,
-      sub: cell.blocker?.reason === 'device-limit-benched'
-        ? 'This machine has reached its sign-in limit.'
+    const ownerAction = action ? {
+      ...row, actionable: true, action, episodeId: episode?.id ?? null,
+      buttonLabel: action === 'approve' ? 'Repair' : action === 'retry' ? 'Try again' : 'Sign in',
+      title: action === 'start' ? row.title
+        : `${action === 'approve' ? 'Approve' : 'Retry'} sign-in repair for ${frameworkName(account.framework)} (${account.email || account.name}) on ${cell.machine}`,
+      sub: action === 'approve' ? 'This repair is ready and needs your approval.'
+        : action === 'retry' ? 'The last repair stopped. You can try again.'
+        : cell.blocker?.reason === 'device-limit-benched' ? 'This machine has reached its sign-in limit.'
         : 'This repair needs you to complete sign-in.',
     } : null;
     if (ownerAction) needs.push(ownerAction);

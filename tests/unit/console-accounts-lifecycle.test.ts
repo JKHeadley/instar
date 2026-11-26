@@ -116,6 +116,27 @@ afterEach(async () => {
 });
 
 describe('Accounts action dialog ownership', () => {
+  it.each([
+    ['suggested', 'Repair', 'approve'],
+    ['failed', 'Try again', 'retry'],
+  ])('opens the %s approval-mode action from the reminder link', async (state, button, action) => {
+    location.hash = '#/capacity/accounts?s=needs';
+    const row = account();
+    const episode = { id: 'fixture-owner-step', accountId: row.id, machineId: row.machineId, state, mode: 'approval' };
+    const fetch = transport({ '/dashboard/unlock': reply(unlockResult), [repair]: reply() });
+    await renderAccounts(main, { ...ctx, get: reads({ episodes: [episode] }, row) });
+    const repairs = main.querySelector('#sec-needs');
+    expect(repairs.querySelector('details').open).toBe(true);
+    click(button, repairs);
+    await settle();
+    submitPin();
+    await settle();
+    expect(writes(fetch)).toEqual(['/dashboard/unlock', repair]);
+    expect(JSON.parse(fetch.mock.calls.find(([path]) => path === repair)[1].body)).toEqual({
+      accountId: row.id, machineId: row.machineId, episodeId: episode.id, action,
+    });
+  });
+
   it('keeps the next page dialog when an approved sign-in starts after navigation', async () => {
     const pending = deferred();
     const fetch = transport({ [start]: pending.promise });

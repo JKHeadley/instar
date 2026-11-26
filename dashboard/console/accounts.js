@@ -97,13 +97,13 @@ export async function renderAccounts(main, ctx) {
     const status = [
       `${group.signedIn} of ${group.total} signed in`,
       agentCount ? `${agentCount} for the agent to check or repair` : '',
-      ownerCount ? `${ownerCount} ${ownerCount === 1 ? 'needs' : 'need'} you to sign in` : '',
+      ownerCount ? `${ownerCount} ${ownerCount === 1 ? 'needs' : 'need'} your action` : '',
     ].filter(Boolean).join(', ');
     const disclosure = el('details', { class: 'acct-repair-machine', open: ownerCount > 0 || expandedRepairs.has(group.key) },
       el('summary', { class: 'acct-repair-summary' }, el('strong', { text: group.machine }), el('span', { text: status })),
       el('ul', { class: 'acct-repair-rows' }, group.rows.map(row => el('li', { class: 'acct-repair-row' },
         el('div', {}, el('span', { class: 'row-title', text: row.label }), el('span', { class: 'row-sub', text: row.status })),
-        row.ownerAction ? el('button', { class: 'btn-quiet', type: 'button', text: 'Sign in', onclick: () => startNeed(row.ownerAction, currentVisit()) }) : null))));
+        row.ownerAction ? el('button', { class: 'btn-quiet', type: 'button', text: row.ownerAction.buttonLabel, onclick: () => startNeed(row.ownerAction, currentVisit()) }) : null))));
     disclosure.addEventListener('toggle', () => {
       if (disclosure.open) expandedRepairs.add(group.key);
       else expandedRepairs.delete(group.key);
@@ -118,7 +118,7 @@ export async function renderAccounts(main, ctx) {
   const repairs = machineRepairs.length || allSignedIn
     ? el('section', { class: 'page-sections acct-repairs', id: 'sec-needs', 'aria-labelledby': 'account-repair-title' },
       el('h2', { class: 'section-heading', id: 'account-repair-title', text: 'Sign-in repair' }),
-      machineRepairs.length ? el('p', { class: 'row-sub', text: 'The agent handles sign-ins automatically. Open a machine to see its accounts.' }) : null,
+      machineRepairs.length ? el('p', { class: 'row-sub', text: 'Open a machine to see its accounts and any sign-in steps that need you.' }) : null,
       machineRepairs, allSignedIn) : null;
 
   const rows = el('div', { class: 'acct-groups' });
@@ -206,7 +206,7 @@ function openAccount(a, visit, ownerNeeds) {
     if (!c.actionable) return [];
     const ownerAction = ownerNeeds.find(n => n.accountId === a.id && n.machineId === c.machineId);
     let label, action;
-    if (ownerAction) { label = 'Sign in'; action = 'start'; }
+    if (ownerAction) { label = ownerAction.buttonLabel; action = ownerAction.action; }
     else if (c.state === 'missing') { label = 'Set up'; action = 'start'; }
     else if (c.state === 'attn' && !c.wrongLogin && ['failed', 'suggested'].includes(c.episode?.state)) {
       action = c.episode.state === 'failed' ? 'retry' : 'approve';
