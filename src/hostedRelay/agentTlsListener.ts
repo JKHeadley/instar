@@ -4,6 +4,7 @@ import { createServer } from 'node:https';
 import type { AddressInfo } from 'node:net';
 import type { Duplex } from 'node:stream';
 import type { TLSSocket } from 'node:tls';
+import { markHostedRelaySocket } from '../core/requestArrival.js';
 import { normalizeHostedRelayHostname } from './clientHello.js';
 
 /** Dedicated destination for raw relay connections. Supply only the scoped
@@ -13,6 +14,7 @@ export async function startHostedRelayAgentTlsListener(options: {
   cert: string | Buffer;
   key: string | Buffer;
   expectedSpkiSha256: string;
+  assignment?: string;
   handlePhoneRequest: RequestListener;
   signal: AbortSignal;
 }): Promise<{ port: number; closed: Promise<void>; stop(): Promise<void> }> {
@@ -35,6 +37,7 @@ export async function startHostedRelayAgentTlsListener(options: {
       res.writeHead(421, { 'Cache-Control': 'no-store', Connection: 'close' }).end();
       return;
     }
+    if (options.assignment) markHostedRelaySocket(req.socket, { hostname, assignment: options.assignment });
     options.handlePhoneRequest(req, res);
   });
   const closed = new Promise<void>(resolve => server.once('close', resolve));

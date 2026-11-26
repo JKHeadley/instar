@@ -1,0 +1,38 @@
+{
+  "ts": "2026-11-26T00:56:10.893Z",
+  "slug": "hosted-relay-phone-arrival",
+  "suggestedTier": 2,
+  "declaredTier": 2,
+  "riskFloor": 2,
+  "riskFloorReasons": [
+    "safety-invariant proximity: src/hostedRelay/agentTlsListener.ts matches relay / delivery path",
+    "safety-invariant proximity: src/hostedRelay/startup.ts matches relay / delivery path",
+    "safety-invariant proximity: src/server/desktopRelayPairingRoutes.ts matches relay / delivery path",
+    "safety-invariant proximity: src/server/hostedRelayPhoneHandler.ts matches relay / delivery path",
+    "new capability: new route (router.<verb>() added"
+  ],
+  "belowFloor": false,
+  "files": 7,
+  "loc": 146,
+  "scope": {
+    "basis": "staged-in-scope-paths-including-deleted",
+    "files": [
+      "src/core/requestArrival.ts",
+      "src/hostedRelay/agentTlsListener.ts",
+      "src/hostedRelay/startup.ts",
+      "src/server/desktopRelayPairingRoutes.ts",
+      "src/server/hostedRelayPhoneHandler.ts",
+      "src/server/middleware.ts",
+      "src/server/mobilePairingRoutes.ts"
+    ],
+    "addedLines": 112,
+    "deletedLines": 34
+  },
+  "causalAutopsy": null,
+  "classClosure": {
+    "defectClass": "unbounded-self-action",
+    "closure": "n/a",
+    "reason": "Each authenticated request performs one bounded read."
+  },
+  "verdict": "pass"
+}

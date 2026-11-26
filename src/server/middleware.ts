@@ -272,7 +272,9 @@ export function authMiddleware(
     // on its own terms, whatever else is configured (no agent token included): the pairing redeem and
     // ping pass unsigned (they carry their own one-time code); anything else needs a verified device
     // signature. The listener's gate only matches the route list; this is where the signature is required.
-    if (arrivalOf(req) === 'same-network') {
+    const arrival = arrivalOf(req);
+    if (arrival === 'hosted-relay') { res.status(404).json({ error: 'not-found' }); return; }
+    if (arrival === 'same-network') {
       if (req.headers['x-instar-device'] === undefined) {
         if (isSameNetworkPublicRoute(req.method, req.path)) { next(); return; }
         res.status(404).json({ error: 'not-found' });

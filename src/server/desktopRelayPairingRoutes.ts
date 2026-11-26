@@ -11,8 +11,8 @@ type RelayPairing = Pick<NonNullable<ReturnType<typeof startHostedRelayRuntime>>
 
 function authorize(pairing: MobilePairingService, req: Request, res: Response): (() => boolean) | undefined {
   res.set('Cache-Control', 'no-store');
-  if (!isLoopbackPeer(req.socket.remoteAddress) || !isLoopbackHost(req.headers.host)
-    || !mayBeLocalArrival(req) || hasForwardingHeaders(req.headers)) {
+  if (!mayBeLocalArrival(req) || !isLoopbackPeer(req.socket.remoteAddress)
+    || !isLoopbackHost(req.headers.host) || hasForwardingHeaders(req.headers)) {
     res.status(404).end();
     return undefined;
   }
