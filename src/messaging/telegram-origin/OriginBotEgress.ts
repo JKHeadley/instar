@@ -54,8 +54,8 @@ export function originBotEgressStatus(): { active: boolean; registeredOwners: nu
 /** Retain an adapter's pre-format text for its protected send input. Use exactly
  * the registered producer fallback the egress door would use; never replace a
  * route's existing policy or claim an author from the message text. */
-export function withOriginBotAuthoredText<T>(token: string, text: unknown, send: () => T): T {
-  if (typeof text !== 'string') return send();
+export function withOriginBotAuthoredText<T>(token: string | null | undefined, text: unknown, send: () => T): T {
+  if (typeof token !== 'string' || token.length === 0 || typeof text !== 'string') return send();
   const owner = owners.get(createHash('sha256').update(token).digest('hex'));
   if (!owner) return send();
   const capture = () => owner.service.runWithSendPolicyFallback(text, send);

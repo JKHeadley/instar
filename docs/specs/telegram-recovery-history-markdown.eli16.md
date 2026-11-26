@@ -9,3 +9,5 @@ The repair uses the original text already retained in the protected send request
 This is a repair to the existing send and history paths. It adds no provider, permission, retry authority, database or background job. Existing checks still decide whether a held reply may be delivered, and an uncertain send is still not repeated as an ordinary message. Existing stored history is not rewritten. Old records that retained only already-formatted text cannot honestly recover the exact original Markdown.
 
 The regression checks exercise the actual HTTP send path, adapter formatter, durable origin store and recovery code. They compare Telegram's formatted request with the app-readable history after both immediate sends and a capacity-held retry. A separate production-start and restart check verifies the same behavior after the server reopens its state. Those checks are required before claiming the repair works; a commit alone does not establish that it is live on the running server or installed apps.
+
+An adapter without a Telegram credential still goes through the existing hold check. It no longer fails early while trying to preserve the message's formatting.
