@@ -47,3 +47,5 @@ The bot keeps the one-time Start command out of ordinary conversation. Only a di
 The server stores a fingerprint of the temporary Start token. A matching Start can open the exact offer once, and the token expires within ten minutes.
 
 The server checks the owner and the machine responsible for enrollment before showing the offer and again when Telegram confirms delivery. If responsibility changes during delivery, the resulting button cannot nominate the phone.
+
+The registry can now check the exact old key and retain evidence of the operation that replaced it. A later retry can recover that evidence from disk. Turning this on still requires both enrollment paths to share one durable reservation.

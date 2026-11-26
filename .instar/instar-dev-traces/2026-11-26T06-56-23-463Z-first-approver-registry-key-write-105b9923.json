@@ -1,0 +1,19 @@
+{
+  "version": 2,
+  "slug": "first-approver-registry-key-write",
+  "sessionId": "b3d2cf8a-9b5d-468b-a50b-70ebf11e9e5c",
+  "timestamp": "2026-11-26T06:56:23.463Z",
+  "artifactPath": "upgrades/side-effects/first-approver-registry-key-write.md",
+  "artifactSha256": "59db89f0f7fbb5e3f0a755fcfcad321f5bc5ab887b5f5c4514b3824f73420dd0",
+  "coveredFiles": [
+    "src/core/MobileDeviceKeys.ts",
+    "tests/unit/mobile-device-keys.test.ts"
+  ],
+  "phase": "complete",
+  "tier": 1,
+  "tierReasoning": "Uncalled compare-and-replace method on the device registry",
+  "eli16Path": "docs/specs/phone-only-first-approver.eli16.md",
+  "sideEffectsPath": "upgrades/side-effects/first-approver-registry-key-write.md",
+  "secondPass": "true",
+  "reviewerConcurred": true
+}

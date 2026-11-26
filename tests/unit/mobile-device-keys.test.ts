@@ -6,7 +6,7 @@ import os from 'node:os';
 import path from 'node:path';
 import {
   canonicalString, isStrictLowSDer, parseDevicePublicKey, verifyDeviceRequest, ReplayGuard, DeviceRegistry,
-  ConfirmationCodes, mergeStatus, deviceFingerprint, MAX_PENDING, WRONG_BUDGET, type DeviceStatus,
+  ConfirmationCodes, mergeStatus, deviceFingerprint, keyHashOf, MAX_PENDING, WRONG_BUDGET, type DeviceStatus,
 } from '../../src/core/MobileDeviceKeys.js';
 import { SafeFsExecutor } from '../../src/core/SafeFsExecutor.js';
 
@@ -96,6 +96,44 @@ describe('DeviceRegistry', () => {
     expect(right.result).toBe('ok');
     reg.applyConfirm(c.device.id, { ok: true });
     expect(reg.get(c.device.id)!.status).toBe('active');
+  });
+
+  it('replaces only the reserved presence key and recovers the exact write after reopening', () => {
+    const dir = tmp();
+    const registry = new DeviceRegistry(dir);
+    const transport = makeDevice().publicKey;
+    const oldKey = makeDevice().publicKey;
+    const newKey = makeDevice().publicKey;
+    const deviceId = 'local-owner-fixture';
+    expect(registry.createActiveLocalOwner({
+      id: deviceId, publicKey: transport, host: 'h', label: null, machineId: 'machine-1', approvedAt: new Date().toISOString(),
+    }).ok).toBe(true);
+    expect(registry.setPresenceKey(deviceId, oldKey)).toBe('set');
+    const intent = {
+      operationId: 'replacement-attempt-1', slotKey: 'tj:device-acceptance:first:0', holderEpoch: 'epoch-1',
+      holderMachineId: 'machine-1',
+      deviceKeyHash: keyHashOf(transport), priorPresenceKeyHash: keyHashOf(oldKey), newPresenceKeyHash: keyHashOf(newKey),
+    };
+    expect(registry.replaceFirstApproverPresenceKey(deviceId, newKey, { ...intent, priorPresenceKeyHash: null })).toBe('stale');
+    expect(registry.replaceFirstApproverPresenceKey(deviceId, newKey, { ...intent, deviceKeyHash: '0'.repeat(64) })).toBe('stale');
+    expect(registry.replaceFirstApproverPresenceKey(deviceId, newKey, { ...intent, holderMachineId: 'other-machine' })).toBe('not-active');
+    expect(registry.replaceFirstApproverPresenceKey(deviceId, transport, { ...intent, newPresenceKeyHash: keyHashOf(transport) })).toBe('conflict');
+    const base64url = 'ABCDEFGHIJKLMNOPQRSTUVWXYZabcdefghijklmnopqrstuvwxyz0123456789-_';
+    const transportAlias = transport.slice(0, -1) + base64url[base64url.indexOf(transport.slice(-1)) + 1];
+    expect(transportAlias).not.toBe(transport);
+    expect(keyHashOf(transportAlias)).toBe(keyHashOf(transport));
+    expect(registry.replaceFirstApproverPresenceKey(deviceId, transportAlias, { ...intent, newPresenceKeyHash: keyHashOf(transport) })).toBe('conflict');
+    expect(registry.get(deviceId)?.presenceKey).toBe(oldKey);
+    expect(registry.replaceFirstApproverPresenceKey(deviceId, newKey, intent)).toBe('replaced');
+
+    const reopened = new DeviceRegistry(dir);
+    expect(reopened.get(deviceId)?.presenceKey).toBe(newKey);
+    expect(reopened.replaceFirstApproverPresenceKey(deviceId, newKey, { ...intent, holderEpoch: 'epoch-2' })).toBe('stale');
+    expect(reopened.replaceFirstApproverPresenceKey(deviceId, newKey, { ...intent, operationId: 'replacement-attempt-2' })).toBe('stale');
+    expect(reopened.replaceFirstApproverPresenceKey(deviceId, newKey, intent)).toBe('already-replaced');
+    expect(reopened.replacePresenceKey(deviceId, oldKey)).toBe('replaced');
+    expect(reopened.replacePresenceKey(deviceId, newKey)).toBe('replaced');
+    expect(reopened.replaceFirstApproverPresenceKey(deviceId, newKey, intent)).toBe('stale');
   });
 
   it('refuses a duplicate key and too many pending', () => {
