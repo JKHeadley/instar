@@ -19,6 +19,15 @@
 import crypto from 'node:crypto';
 import path from 'node:path';
 import { FailureEvidence, FAILURE_EVIDENCE_FILE } from './failureEvidence.js';
+import type { UnitProcessOutput } from './unitProcessOutput.js';
+
+export interface UnitProcessTranscript {
+  step: string;
+  status: number | null;
+  signal: string | null;
+  stdout: UnitProcessOutput;
+  stderr: UnitProcessOutput;
+}
 import { computeInventory, isInventoried, LANES, type LaneName } from './inventory.js';
 import { readProgress, readUnhandledErrors } from './unhandledErrorsReporter.js';
 
@@ -71,6 +80,7 @@ export interface ExecResult {
   pid: number | null;
   /** For isolated preflight commands, every process in the dedicated group exited. */
   quiescent?: boolean;
+  unitOutput?: Pick<UnitProcessTranscript, 'stdout' | 'stderr'>;
 }
 
 export interface GitCallOpts {
@@ -117,9 +127,14 @@ export interface OrchestratorSeams {
   exec(
     command: string,
     args: string[],
-    opts: { cwd: string; env: NodeJS.ProcessEnv; deadlineMs: number; onPid?: (pid: number) => void; signal?: AbortSignal; isolatedGroup?: boolean },
+    opts: { cwd: string; env: NodeJS.ProcessEnv; deadlineMs: number; onPid?: (pid: number) => void; signal?: AbortSignal; isolatedGroup?: boolean; captureUnitOutput?: boolean },
   ): Promise<ExecResult>;
   fs: OrchestratorFs;
+  keepUnitTranscripts?(input: {
+    headSha: string;
+    startedAtMs: number;
+    transcripts: readonly UnitProcessTranscript[];
+  }): Promise<string>;
   now(): number;
   sleep(ms: number): Promise<void>;
   /** Live full-suite holders of the host test-runner bound that are not one of `ours`. */
@@ -440,6 +455,7 @@ export async function runVerify(input: VerifyRunInput, seams: OrchestratorSeams)
   const startedFirstParts = new Set<LaneName>();
   const observedFailures = new Map<string, FileFailure>();
   const failureEvidence = new FailureEvidence();
+  const unitTranscripts: UnitProcessTranscript[] = [];
   const captureFailures = (lane: LaneName, report: ParsedLaneReport) => {
     try { failureEvidence.capture(lane, report); }
     catch { seams.log({ event: 'failure-evidence-capture-failed' }); }
@@ -506,12 +522,13 @@ export async function runVerify(input: VerifyRunInput, seams: OrchestratorSeams)
   runEnv.PATH = [binDir, input.baseEnv.PATH ?? ''].filter(Boolean).join(path.delimiter);
 
   /** Run one process step; a deadline is an error naming the step. */
-  const exec = async (command: string, args: string[], step: string, deadline: { ms: number; capped: boolean }, env = runEnv, signal?: AbortSignal) => {
+  const exec = async (command: string, args: string[], step: string, deadline: { ms: number; capped: boolean }, env = runEnv, signal?: AbortSignal, captureUnitOutput = false) => {
     const t0 = seams.now();
     const r = await seams.exec(command, args, {
       cwd: p.runDir, env, deadlineMs: deadline.ms,
       onPid: (pid) => { ourPids.add(pid); },
       ...(signal ? { signal } : {}),
+      ...(captureUnitOutput ? { captureUnitOutput } : {}),
     });
     // Per-step timing (metadata only): the Acceptance measurement reads these.
     seams.log({ event: 'step', step, ms: seams.now() - t0, status: r.status ?? null, deadlineKilled: r.deadlineKilled, ...(r.aborted ? { stoppedEarly: true } : {}) });
@@ -881,7 +898,7 @@ export async function runVerify(input: VerifyRunInput, seams: OrchestratorSeams)
             path.join(binDir, 'vitest'),
             ['run', '--config', lane.config, '--allowOnly=false', '--reporter=json', ...(reporter ? [`--reporter=${reporter}`] : []), `--outputFile=${reportPath}`,
               ...fileArgs],
-            key, stepBudget(), env, stopLanes.signal,
+            key, stepBudget(), env, stopLanes.signal, lane.name === 'unit',
           );
         } catch (e) {
           if (e instanceof RunError && e.step.startsWith('deadline:')) {
@@ -928,6 +945,7 @@ export async function runVerify(input: VerifyRunInput, seams: OrchestratorSeams)
         const unhandled = readUnhandledErrors(errors);
         if (lane.name === 'unit' && (r.status !== 0 || r.signal) &&
             ![...(report?.files.values() ?? [])].some(counts => counts.failed > 0)) {
+          if (r.unitOutput) unitTranscripts.push({ step: key, status: r.status, signal: r.signal, ...r.unitOutput });
           try {
             failureEvidence.captureUnitExit({ step: key, status: r.status, signal: r.signal, stdout: r.stdout, stderr: r.stderr }, errors);
           } catch { seams.log({ event: 'failure-evidence-capture-failed' }); }
@@ -1692,6 +1710,16 @@ export async function runVerify(input: VerifyRunInput, seams: OrchestratorSeams)
         if (r.matched > 0) seams.log({ event: 'leftovers-reaped', where: 'run-end', matched: r.matched, killed: r.killed, sample: r.sample });
       } catch (e) {
         seams.log({ event: 'leftovers-reap-failed', where: 'run-end', detail: e instanceof Error ? e.message : String(e) });
+      }
+    }
+    if (failed && unitTranscripts.length > 0 && seams.keepUnitTranscripts) {
+      try {
+        const transcriptPath = await seams.keepUnitTranscripts({
+          headSha: input.headSha, startedAtMs, transcripts: unitTranscripts,
+        });
+        seams.log({ event: 'unit-transcript-kept', path: transcriptPath });
+      } catch {
+        seams.log({ event: 'unit-transcript-write-failed' });
       }
     }
     try {

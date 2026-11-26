@@ -941,16 +941,27 @@ describe('runVerify — retention of failed worktrees', () => {
   it('retains unit process output when the report lists no failed tests', async () => {
     const f = fake();
     const exec = f.seams.exec;
+    const persist = vi.fn(async () => '/private/unit-transcript.json');
+    f.seams.keepUnitTranscripts = persist;
+    const transcript = { prefix: 'The first diagnostic', suffix: 'The final diagnostic', omittedBytes: 10 };
     f.seams.exec = async (command, args, options) => {
       const result = await exec(command, args, options);
       if (!command.endsWith('vitest') || !args.some(a => a.endsWith('/unit.json'))) return result;
       f.files.set(options.env.LOCAL_VERIFY_UNHANDLED_ERRORS_FILE!, JSON.stringify({
         v: 1, unhandledErrors: 5, messages: Array(5).fill('worker error: ' + '\n'.repeat(380)),
       }));
-      return { ...result, status: 1, signal: null, stderr: 'Unhandled Errors: worker unexpectedly exited' };
+      expect(options.captureUnitOutput).toBe(true);
+      return {
+        ...result, status: 1, signal: null, stderr: 'Unhandled Errors: worker unexpectedly exited',
+        unitOutput: { stdout: transcript, stderr: transcript },
+      };
     };
     const result = await runVerify(input(), f.seams);
     expect(result.kind === 'record' && result.record.outcome).toBe('failure');
+    expect(persist).toHaveBeenCalledWith(expect.objectContaining({
+      transcripts: [{ step: 'unit', status: 1, signal: null, stdout: transcript, stderr: transcript }],
+    }));
+    expect(f.logs).toContainEqual({ event: 'unit-transcript-kept', path: '/private/unit-transcript.json' });
     const artifact = f.files.get(path.join(P.runDir, '.local-verify-failures.json'));
     expect(JSON.parse(artifact!)).toMatchObject({
       failures: [],
