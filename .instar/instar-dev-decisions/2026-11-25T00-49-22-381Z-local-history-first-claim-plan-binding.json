@@ -1,0 +1,29 @@
+{
+  "ts": "2026-11-25T00:49:22.381Z",
+  "slug": "local-history-first-claim-plan-binding",
+  "suggestedTier": 2,
+  "declaredTier": 2,
+  "riskFloor": 1,
+  "riskFloorReasons": [],
+  "belowFloor": false,
+  "files": 4,
+  "loc": 52,
+  "scope": {
+    "basis": "staged-in-scope-paths-including-deleted",
+    "files": [
+      "src/import/LocalHistoryFirstClaimPlanBinding.ts",
+      "src/import/LocalHistoryPreparedPreview.ts",
+      "src/import/LocalHistoryPreparedReadJob.ts",
+      "src/import/LocalHistoryUploadStaging.ts"
+    ],
+    "addedLines": 41,
+    "deletedLines": 11
+  },
+  "causalAutopsy": null,
+  "classClosure": {
+    "defectClass": "unbounded-self-action",
+    "closure": "n/a",
+    "reason": "Pure validation on the existing one-shot reader result with no new launch or retry."
+  },
+  "verdict": "pass"
+}

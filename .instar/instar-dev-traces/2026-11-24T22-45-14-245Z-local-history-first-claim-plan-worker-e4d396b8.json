@@ -1,0 +1,28 @@
+{
+  "version": 2,
+  "slug": "local-history-first-claim-plan-worker",
+  "sessionId": "41652017-0805-405d-bb4e-2a975fb349ce",
+  "timestamp": "2026-11-24T22:45:14.245Z",
+  "artifactPath": "upgrades/side-effects/local-history-first-claim-plan-worker.md",
+  "artifactSha256": "e7d3e1d91f00675f9183e38b117d7ccb6b9b41e1b40c386a02b6903d732cba5b",
+  "specPath": "docs/specs/local-history-native-contract.md",
+  "coveredFiles": [
+    "src/import/LocalHistoryPreparedPreview.ts",
+    "src/import/LocalHistoryPreparedReadJob.ts",
+    "src/import/localHistoryPreparedReadWorker.ts",
+    "tests/unit/local-history-prepared-preview.test.ts",
+    "tests/unit/local-history-prepared-read-job.test.ts",
+    "upgrades/next/local-history-first-claim-plan-worker.md",
+    "upgrades/side-effects/local-history-first-claim-plan-worker.md"
+  ],
+  "phase": "complete",
+  "tier": 2,
+  "tierReasoning": "This adds bounded writer-scoped sizing for the first private history claim in the existing fixed child.",
+  "secondPass": "true",
+  "reviewerConcurred": true,
+  "classClosure": {
+    "defectClass": "unbounded-self-action",
+    "closure": "n/a",
+    "reason": "One existing fixed worker invocation, with no additional launch or retry."
+  }
+}

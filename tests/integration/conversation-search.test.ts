@@ -6,6 +6,7 @@
  * hit from a conversation they were not given, `ref=` restricts, the errors, the off switch, and a
  * pool read that names a machine that did not answer.
  */
+import { ImportedHistoryStore } from '../../src/import/ImportedHistoryStore.js';
 import { describe, it, expect, afterAll, beforeAll } from 'vitest';
 import crypto from 'node:crypto';
 import fs from 'node:fs';
@@ -110,6 +111,7 @@ async function setup(opts: { machine?: string; peers?: () => Peer[]; searchOff?:
   app.use(createMobileConversationRouter({ config: config as never, pairing, service: svc, machineId: () => machine }));
   const searchDeps: ConversationSearchRouteDeps = {
     config: config as never, pairing, service: svc, machineId: () => machine, topicMemory: () => tm,
+    importedHistory: () => ImportedHistoryStore.openIfPresent(dir),
     telegramTopics: () => topics().map((t) => ({ topicId: t.topicId, topicName: t.topicName })),
     slack: () => ({
       conversations: () => [{ id: -7, title: '#general' }],
@@ -130,7 +132,7 @@ async function setup(opts: { machine?: string; peers?: () => Peer[]; searchOff?:
   app.use(createMobilePairingRouter(pairing, deps, ctx));
   /** Run the background embedder until it has nothing left to do. */
   const feed = async () => { for (let i = 0; i < 5; i++) await feeder!.tick(); };
-  return { app, pairing, svc, machine, embedder, feed };
+  return { app, dir, pairing, svc, machine, embedder, feed };
 }
 type Env = Awaited<ReturnType<typeof setup>>;
 type Phone = { dev: ReturnType<typeof makeDevice>; id: string };
@@ -175,6 +177,30 @@ async function withMember(e: Env) {
   expect(r.status).toBe(200);
   return { owner, mia: phone(e, { userId: 'mia', role: 'team' }) };
 }
+
+describe('imported keyword hits', () => {
+  it('adds native-owner local results and exposes only presence in the location projection', async () => {
+    const e = await setup();
+    const owner = phone(e);
+    const store = new ImportedHistoryStore(e.dir);
+    const ref = 'imported:chatgpt:private-chat';
+    store.addConversation({
+      from: 'chatgpt', originalId: 'private-chat', title: 'Prior work', createdAt: null, overflow: [],
+      stats: { redactions: 0, droppedBranches: 0, splitMessages: 0 },
+      messages: [{ key: 'private-message', role: 'operator', at: '2026-11-10T10:00:00.000Z', senderName: 'Me', text: 'My private rocket' }],
+    });
+    store.flush();
+    const result = await send(e, owner, 'GET', '/mobile/conversations/search?q=rocket&order=date&limit=2');
+    expect(result.status).toBe(200);
+    expect(result.body.results.map((row: { ref: string }) => row.ref)).toContain(ref);
+    expect(result.body.results.some((row: { platform: string }) => row.platform !== 'imported')).toBe(true);
+    const tokens = await bearer(e, '/mobile/conversations/search?q=rocket');
+    expect(JSON.stringify(tokens.body)).not.toContain('private-');
+    const location = '/mobile/imported-history/conversations?view=location';
+    expect((await send(e, owner, 'GET', location)).body).toEqual({ available: true, machineId: e.machine });
+    expect((await bearer(e, location)).status).toBe(403);
+  });
+});
 
 describe('the owner', () => {
   it('finds hits in app conversations, Telegram topics and Slack, each with the id the history uses', async () => {

@@ -83,6 +83,7 @@ import { answerPhoneCardCreate, phoneCardPrecheck } from './phoneWorkCards.js';
 import { telegramTopicKnown } from '../messaging/telegramTopicKnown.js';
 import { mountProjectsRoutes } from './workProjectsRoutes.js';
 import { projectTapPort } from './workProjectActions.js';
+import { privateImportedHistoryOwner } from './privateImportedHistoryOwner.js';
 import { isOwnerAppDevice, mountImportedHistoryRoutes } from './importedHistoryRoutes.js';
 import { mountProjectAppsRoutes } from './projectAppsRoutes.js';
 import { mountProjectAppSandboxRoutes } from './projectAppSandboxRoutes.js';
@@ -3509,6 +3510,8 @@ export function createRoutes(ctx: RouteContext): Router {
   // Bring your Claude and ChatGPT history into Instar (docs/specs/import-from-claude-chatgpt.md): local only.
   mountImportedHistoryRoutes(router, {
     stateDir: ctx.config.stateDir,
+    machineId: ctx.meshSelfId ?? (ctx.config as { machineId?: string }).machineId,
+    privateSearchOwner: req => privateImportedHistoryOwner(ctx.mobilePairingService, req),
     bearerOk: (req) => bearerMatches(req, ctx.config.authToken),
     ownerOk: (req) => {
       const token = req.headers['x-instar-operator-session'];

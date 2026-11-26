@@ -1,0 +1,22 @@
+{
+  "ts": "2026-11-24T18:04:38.213Z",
+  "slug": "local-history-first-permit-recorder",
+  "suggestedTier": 2,
+  "declaredTier": 2,
+  "riskFloor": 1,
+  "riskFloorReasons": [],
+  "belowFloor": false,
+  "files": 1,
+  "loc": 116,
+  "scope": {
+    "basis": "staged-in-scope-paths-including-deleted",
+    "files": [
+      "src/import/LocalHistoryFirstPermit.ts"
+    ],
+    "addedLines": 116,
+    "deletedLines": 0
+  },
+  "causalAutopsy": null,
+  "classClosure": null,
+  "verdict": "pass"
+}

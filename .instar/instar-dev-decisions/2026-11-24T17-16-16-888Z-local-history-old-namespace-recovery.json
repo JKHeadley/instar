@@ -1,0 +1,27 @@
+{
+  "ts": "2026-11-24T17:16:16.888Z",
+  "slug": "local-history-old-namespace-recovery",
+  "suggestedTier": 2,
+  "declaredTier": 2,
+  "riskFloor": 1,
+  "riskFloorReasons": [],
+  "belowFloor": false,
+  "files": 2,
+  "loc": 62,
+  "scope": {
+    "basis": "staged-in-scope-paths-including-deleted",
+    "files": [
+      "src/import/LocalHistoryStoreTemporaryRun.ts",
+      "src/import/LocalHistoryUploadStaging.ts"
+    ],
+    "addedLines": 47,
+    "deletedLines": 15
+  },
+  "causalAutopsy": null,
+  "classClosure": {
+    "defectClass": "unbounded-self-action",
+    "closure": "n/a",
+    "reason": "One bounded pass per startup under exclusive custody. Existing bounded ledger cleanup timers do not restart namespace recovery."
+  },
+  "verdict": "pass"
+}

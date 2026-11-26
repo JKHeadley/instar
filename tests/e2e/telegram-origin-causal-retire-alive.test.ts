@@ -30,9 +30,11 @@ afterEach(async () => {
 
 describe('held replies are ended only for a cause (production init path, one machine)', () => {
   it('an acknowledgment and a reply recovered after 300 s are both sent; the reply is marked late once and its session is told once', async () => {
-    const root = await mkdtemp(path.join(os.tmpdir(), 'origin-causal-retire-e2e-'));
+    // Keep the real Unix socket inside macOS's 104-byte sockaddr_un limit.
+    const root = await mkdtemp(path.join(process.platform === 'darwin' ? '/tmp' : os.tmpdir(), 'ocr-'));
     cleanup.push(async () => { await SafeFsExecutor.safeRm(root, { recursive: true, force: true, operation: 'test:origin-causal-retire-e2e:cleanup' }); });
     const stateDir = path.join(root, '.instar'); await mkdir(path.join(stateDir, 'state'), { recursive: true });
+    if (process.platform === 'darwin') expect(Buffer.byteLength(path.join(stateDir, 'origin-notice.sock'))).toBeLessThan(104);
     const config = { projectDir: root, stateDir, projectName: 'echo', port: 0, authToken: 'fixture-auth',
       messaging: [{ type: 'telegram', enabled: true, config: { token: '123:causal-fixture', chatId: '-100123', lifelineTopicId: 7848 } }] };
     await writeFile(path.join(stateDir, 'config.json'), JSON.stringify(config));

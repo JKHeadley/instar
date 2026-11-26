@@ -1,0 +1,28 @@
+{
+  "ts": "2026-11-24T18:51:55.011Z",
+  "slug": "local-history-first-permit-quarantine",
+  "suggestedTier": 2,
+  "declaredTier": 2,
+  "riskFloor": 1,
+  "riskFloorReasons": [],
+  "belowFloor": false,
+  "files": 3,
+  "loc": 71,
+  "scope": {
+    "basis": "staged-in-scope-paths-including-deleted",
+    "files": [
+      "src/import/LocalHistoryFirstPermit.ts",
+      "src/import/LocalHistoryStoreTemporaryRun.ts",
+      "src/import/LocalHistoryUploadStaging.ts"
+    ],
+    "addedLines": 63,
+    "deletedLines": 8
+  },
+  "causalAutopsy": null,
+  "classClosure": {
+    "defectClass": "unbounded-self-action",
+    "closure": "n/a",
+    "reason": "One bounded startup inventory. It does not resend permits or create a retry controller."
+  },
+  "verdict": "pass"
+}

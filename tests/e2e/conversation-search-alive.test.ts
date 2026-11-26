@@ -6,6 +6,7 @@
  * (native conversations dark) answers 503. Wiring integrity: the hit comes from the server's own
  * app conversation store, and the server's TopicMemory is the index it uses (nothing unsearched).
  */
+import { ImportedHistoryStore } from '../../src/import/ImportedHistoryStore.js';
 import { describe, it, expect, afterAll } from 'vitest';
 import crypto from 'node:crypto';
 import fs from 'node:fs';
@@ -116,6 +117,30 @@ describe('conversation search — production wiring', () => {
     const tokenRead = await auth(request(app).get('/mobile/conversations/search?q=launch'));
     expect(tokenRead.status).toBe(200);
     expect(tokenRead.body.results[0].messageId).toBe('e-agent-1');
+
+    const history = new ImportedHistoryStore(stateDir);
+    await history.withWriter(async () => {
+    history.addConversation({
+      from: 'chatgpt', originalId: 'local-only', title: 'History', createdAt: null, overflow: [],
+      stats: { redactions: 0, droppedBranches: 0, splitMessages: 0 },
+      messages: [{ key: 'original-message', role: 'agent', senderName: 'ChatGPT', text: 'historical amethyst',
+        at: '2026-10-01T00:00:00.000Z' }],
+    });
+    for (const from of ['codex', 'claude-code'] as const) {
+      const claim = history.assertOrClaimLocalSource({ ownerUserId: 'operator', source: from, originalId: 'sealed-local-only',
+        projectPath: '/synthetic', representation: from === 'codex' ? 'canonical' : 'claude-records', parserContractVersion: 1 });
+      history.addConversation({ from, originalId: claim.destinationId, title: 'Private local session', createdAt: null,
+        overflow: [], stats: { redactions: 0, droppedBranches: 0, splitMessages: 0 },
+        messages: [{ key: 'private-local-message', role: 'operator', senderName: 'Me', text: 'historical amethyst', at: '2028-01-01T00:00:00.000Z' }] });
+    } history.flush(); });
+    const imported = await send('GET', '/mobile/conversations/search?q=amethyst');
+    expect(imported.body.results).toMatchObject([{ platform: 'imported', ref: 'imported:chatgpt:local-only', messageId: 'original-message' }]);
+    expect(imported.body.results).toHaveLength(1);
+    const legacyList = await send('GET', '/mobile/imported-history/conversations');
+    expect(legacyList.status).toBe(200);
+    expect(legacyList.body.conversations.map((c: { from: string }) => c.from)).toEqual(['chatgpt']);
+    const machineRead = await auth(request(app).get('/mobile/conversations/search?q=amethyst'));
+    expect(machineRead.body.results).toEqual([]);
 
     // Meaning search: the server built the index from its own store and the injected model.
     expect(server.conversationEmbeddings).not.toBeNull();

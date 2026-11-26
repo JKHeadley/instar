@@ -1,0 +1,24 @@
+{
+  "ts": "2026-11-24T10:51:57.922Z",
+  "slug": "local-history-copy-disk-checkpoint",
+  "suggestedTier": 2,
+  "declaredTier": 2,
+  "riskFloor": 1,
+  "riskFloorReasons": [],
+  "belowFloor": false,
+  "files": 3,
+  "loc": 162,
+  "scope": {
+    "basis": "staged-in-scope-paths-including-deleted",
+    "files": [
+      "src/import/LocalHistoryCopyVolume.ts",
+      "src/import/LocalHistoryDiskLedger.ts",
+      "src/import/LocalHistoryPhysicalBudget.ts"
+    ],
+    "addedLines": 160,
+    "deletedLines": 2
+  },
+  "causalAutopsy": null,
+  "classClosure": null,
+  "verdict": "pass"
+}

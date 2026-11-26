@@ -1,0 +1,25 @@
+{
+  "version": 2,
+  "slug": "local-history-serial-copy-custody",
+  "sessionId": "41652017-0805-405d-bb4e-2a975fb349ce",
+  "timestamp": "2026-11-24T19:39:08.783Z",
+  "artifactPath": "upgrades/side-effects/local-history-serial-copy-custody.md",
+  "artifactSha256": "24d8b3ab23f9c913b4ba8bc4a647caf1b9fcd8dd41a785380a1e42609a3c9d24",
+  "specPath": "docs/specs/local-history-native-contract.md",
+  "coveredFiles": [
+    "src/import/LocalHistoryUploadStaging.ts",
+    "tests/unit/local-history-upload-staging.test.ts",
+    "upgrades/next/local-history-serial-copy-custody.md",
+    "upgrades/side-effects/local-history-serial-copy-custody.md"
+  ],
+  "phase": "complete",
+  "tier": 2,
+  "tierReasoning": "This owns the exact internal child lifecycle and keeps private artifacts charged through actual close.",
+  "secondPass": "true",
+  "reviewerConcurred": true,
+  "classClosure": {
+    "defectClass": "unbounded-self-action",
+    "closure": "n/a",
+    "reason": "One explicit operation adopts one real child. It sends at most one TERM and one KILL, with no respawn or retry."
+  }
+}

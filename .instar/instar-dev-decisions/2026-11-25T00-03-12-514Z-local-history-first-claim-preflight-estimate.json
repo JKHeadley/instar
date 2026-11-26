@@ -1,0 +1,26 @@
+{
+  "ts": "2026-11-25T00:03:12.514Z",
+  "slug": "local-history-first-claim-preflight-estimate",
+  "suggestedTier": 1,
+  "declaredTier": 2,
+  "riskFloor": 1,
+  "riskFloorReasons": [],
+  "belowFloor": false,
+  "files": 1,
+  "loc": 32,
+  "scope": {
+    "basis": "staged-in-scope-paths-including-deleted",
+    "files": [
+      "src/import/LocalHistoryUploadStaging.ts"
+    ],
+    "addedLines": 29,
+    "deletedLines": 3
+  },
+  "causalAutopsy": null,
+  "classClosure": {
+    "defectClass": "unbounded-self-action",
+    "closure": "n/a",
+    "reason": "The explicit estimate shares a single existing reader and adds no retry or extra worker."
+  },
+  "verdict": "pass"
+}

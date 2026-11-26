@@ -1,0 +1,20 @@
+{
+  "version": 2,
+  "slug": "local-history-first-permit-recorder",
+  "sessionId": "41652017-0805-405d-bb4e-2a975fb349ce",
+  "timestamp": "2026-11-24T18:04:08.854Z",
+  "artifactPath": "upgrades/side-effects/local-history-first-permit-recorder.md",
+  "artifactSha256": "16e8c3da809b03f7a2db3419bcf6ae2ecf228b7d6483ee936f769bee46a656ae",
+  "specPath": "docs/specs/local-history-native-contract.md",
+  "coveredFiles": [
+    "src/import/LocalHistoryFirstPermit.ts",
+    "tests/unit/local-history-first-permit.test.ts",
+    "upgrades/next/local-history-first-permit-recorder.md",
+    "upgrades/side-effects/local-history-first-permit-recorder.md"
+  ],
+  "phase": "complete",
+  "tier": 2,
+  "tierReasoning": "This records a private copy operation transition and first permit atomically before eventual delivery.",
+  "secondPass": "true",
+  "reviewerConcurred": true
+}

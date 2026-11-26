@@ -6,7 +6,7 @@
  *   - the agent only reads imported text quoted as history, which can't close its own wrapper;
  *   - the owner's session reads raw messages; no caller at all is refused.
  */
-import { afterAll, describe, expect, it } from 'vitest';
+import { afterAll, describe, expect, it, vi } from 'vitest';
 import express from 'express';
 import request from 'supertest';
 import fs from 'node:fs';
@@ -15,7 +15,20 @@ import path from 'node:path';
 import { authMiddleware } from '../../src/server/middleware.js';
 import { mountImportedHistoryRoutes, QUOTED_NOTE } from '../../src/server/importedHistoryRoutes.js';
 import { SafeFsExecutor } from '../../src/core/SafeFsExecutor.js';
+import { ImportedHistoryStore, importedRef } from '../../src/import/ImportedHistoryStore.js';
 import { makeZip } from '../helpers/exportZip.js';
+import { DegradationReporter } from '../../src/monitoring/DegradationReporter.js';
+
+it('reports failed startup archive cleanup without exposing private paths, even without a route logger', () => {
+  const stateDir = tmp();
+  fs.writeFileSync(path.join(stateDir, 'import-preview-staging'), 'not a private directory');
+  const report = vi.spyOn(DegradationReporter.getInstance(), 'report').mockImplementation(() => {});
+  try {
+    mountImportedHistoryRoutes(express.Router(), { stateDir, bearerOk: () => false, ownerOk: () => false });
+    expect(report).toHaveBeenCalledWith(expect.objectContaining({ feature: 'ImportedHistory.stagingCleanup', internalOnly: true }));
+    expect(JSON.stringify(report.mock.calls)).not.toContain(stateDir);
+  } finally { report.mockRestore(); }
+});
 
 const dirs: string[] = [];
 afterAll(() => { for (const d of dirs) SafeFsExecutor.safeRmSync(d, { recursive: true, force: true, operation: 'tests/integration/imported-history-routes.test.ts' }); });
@@ -48,6 +61,35 @@ function boot(opts: { memory?: boolean } = {}) {
 const agent = (r: request.Test) => r.set('Authorization', `Bearer ${TOKEN}`).set('X-Instar-AgentId', 'imp-int');
 const owner = (r: request.Test) => agent(r).set('x-instar-operator-session', OWNER);
 
+it('keeps local session rows out of legacy lists and searches for both owner and agent callers', async () => {
+  const { app, stateDir } = boot();
+  const store = new ImportedHistoryStore(stateDir);
+  const localRefs: string[] = [];
+  await store.withWriter(async () => { for (const from of ['codex', 'claude-code'] as const) {
+    const claim = store.assertOrClaimLocalSource({ ownerUserId: 'operator', source: from, originalId: 'local-private',
+      projectPath: '/synthetic', representation: from === 'codex' ? 'canonical' : 'claude-records', parserContractVersion: 1 });
+    localRefs.push(importedRef(from, claim.destinationId));
+    store.addConversation({ from, originalId: claim.destinationId, title: 'Private local title', createdAt: null,
+      messages: [{ key: 'local', at: null, role: 'operator', senderName: 'Me', text: 'private sapphire' }],
+      overflow: [], stats: { redactions: 0, splitMessages: 0, droppedBranches: 0 } });
+  } store.flush(); });
+  expect(localRefs).toHaveLength(2);
+  for (const ref of localRefs) expect(store.readMessages(ref)).toHaveLength(1);
+  expect(store.hasConversations()).toBe(false);
+  for (const authenticate of [owner, agent]) {
+    const listed = await authenticate(request(app).get('/imported-history/conversations'));
+    expect(listed.status).toBe(200);
+    expect(listed.body.conversations).toEqual([]);
+    const searched = await authenticate(request(app).get('/imported-history/search?q=sapphire'));
+    expect(searched.status).toBe(200);
+    expect(searched.body.complete).toBe(true);
+    expect(searched.body.hits ?? searched.body.results).toEqual([]);
+    for (const ref of localRefs) {
+      expect((await authenticate(request(app).get('/imported-history/conversations/' + encodeURIComponent(ref)))).status).toBe(400);
+    }
+  }
+});
+
 function claudeExport(extraText = 'Plan a garden'): string {
   const p = path.join(tmp(), 'claude-export.zip');
   fs.writeFileSync(p, makeZip([
@@ -77,6 +119,21 @@ describe('imported history routes', () => {
     expect((await agent(request(app).post('/imported-history/apply')).send({ previewId: pv.body.previewId })).status).toBe(409);
   });
 
+  it('keeps the preview usable when an acquired import owns the destination writer', async () => {
+    const { app, stateDir } = boot();
+    const zip = claudeExport();
+    const preview = await agent(request(app).post('/imported-history/preview')).send({ path: zip });
+    const apply = () => agent(request(app).post('/imported-history/apply')).send({ previewId: preview.body.previewId });
+    const acquired = new ImportedHistoryStore(stateDir);
+    await acquired.withWriter(async () => {
+      const pending = await apply();
+      expect(pending.status).toBe(409);
+      expect(pending.body.error).toBe('import-running');
+      expect(acquired.listConversations()).toEqual([]);
+    });
+    expect((await apply()).body).toMatchObject({ ok: true, result: { chatsAdded: 1 } });
+  });
+
   it('a preview goes stale after 30 minutes, and a changed file needs a new preview', async () => {
     const { app, advance } = boot();
     const zip = claudeExport();
@@ -86,6 +143,25 @@ describe('imported history routes', () => {
     const pv2 = await agent(request(app).post('/imported-history/preview')).send({ path: zip });
     fs.appendFileSync(zip, 'x');
     expect((await agent(request(app).post('/imported-history/apply')).send({ previewId: pv2.body.previewId })).body.error).toBe('file-changed');
+  });
+
+  it('requires a new preview when the contents change but the size and timestamp match', async () => {
+    const { app, stateDir } = boot();
+    const zip = claudeExport();
+    const fixed = new Date('2025-01-02T00:00:00Z');
+    fs.utimesSync(zip, fixed, fixed);
+    const preview = await agent(request(app).post('/imported-history/preview')).send({ path: zip });
+    expect(preview.status).toBe(200);
+    expect(fs.readdirSync(path.join(stateDir, 'import-preview-staging'))).toEqual([]);
+    const bytes = fs.readFileSync(zip);
+    bytes[bytes.length - 1] ^= 1;
+    fs.writeFileSync(zip, bytes);
+    fs.utimesSync(zip, fixed, fixed);
+    const apply = await agent(request(app).post('/imported-history/apply')).send({ previewId: preview.body.previewId });
+    expect(apply.status).toBe(409);
+    expect(apply.body.error).toBe('file-changed');
+    expect(fs.existsSync(path.join(stateDir, 'imported-history'))).toBe(false);
+    expect(fs.readdirSync(path.join(stateDir, 'import-preview-staging'))).toEqual([]);
   });
 
   it('refuses a hostile zip and bad paths in plain words', async () => {

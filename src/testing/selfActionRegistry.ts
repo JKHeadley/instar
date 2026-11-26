@@ -1,3 +1,4 @@
+import { DELIVERY_WINDOW_MS, MAX_NOTICE_ATTEMPTS, nextDeliveryObservation, nextNoticeAttempt, type NoticeAttempts } from '../import/acquisitionPolling.js';
 import { smallPeerMemoryAllows, SMALL_PEER_COLLECTOR } from '../localVerify/smallPeerMemory.js';
 import { claimReconciliationNotice } from '../core/TopicProfileOrchestrator.js';
 /**
@@ -6369,6 +6370,54 @@ function makeMessageHolderRedeliveryLoop(f: PressureFixture, sink: ActionSink): 
 }
 
 
+function historyNoticeUnderPressure(f: PressureFixture, sink: ActionSink) {
+  // One unchanged, eligible notice; every publication fails, including attempts before a restart.
+  const key = 'history-acquisition-notice:job-1:sequence-1';
+  return { tick() {
+    sink.considered++;
+    if (!f.targetAlwaysRejects()) return;
+    const state = f.durableState.get(key) as NoticeAttempts | undefined;
+    const reserved = nextNoticeAttempt(state ?? {attempts:0,nextAt:0},f.clock.nowMs());
+    if (!reserved) return;
+    f.durableState.set(key,reserved);
+    sink.emit({verb:'retry-history-notice',target:key});
+  }};
+}
+
+const historyAcquisitionNotice: SelfActionController = {
+  id:'history-acquisition-notice-retry',actionVerb:'retry-history-notice',
+  models:'src/import/HistoryAcquisitionWorker.ts (startPolling, durable reserveNotice before publishing the stable job/sequence notice)',
+  modelsPath:'src/import/HistoryAcquisitionWorker.ts',
+  ticks:60,tickMs:60_000,boundK:MAX_NOTICE_ATTEMPTS,perTargetBoundK:MAX_NOTICE_ATTEMPTS,
+  makeUnderPressure:historyNoticeUnderPressure,
+  restartPosture:{pressureSurvives:true,restartUnderPressure:historyNoticeUnderPressure},
+};
+
+function historyPollUnderPressure(f: PressureFixture,sink: ActionSink) {
+  // The submitted export never arrives. Both the original deadline and next observation survive.
+  const key = 'history-acquisition-delivery:job-1';
+  return { tick() {
+    sink.considered++;
+    if (!f.targetAlwaysRejects()) return;
+    const state = f.durableState.get(key) as {requestedAt:number;deadline:number;nextCheck:number} | undefined
+      ?? {requestedAt:0,deadline:DELIVERY_WINDOW_MS,nextCheck:0};
+    const next = nextDeliveryObservation(state.requestedAt,state.nextCheck,state.deadline,f.clock.nowMs());
+    if (next === null) return;
+    f.durableState.set(key,{...state,nextCheck:next});
+    sink.emit({verb:'retry-history-delivery-check',target:key});
+  }};
+}
+
+const historyAcquisitionPoll: SelfActionController = {
+  id:'history-acquisition-delivery-poll',actionVerb:'retry-history-delivery-check',
+  models:'src/import/HistoryAcquisition.ts (claimObservation before provider/mail I/O; absolute eight-day submission deadline)',
+  modelsPath:'src/import/HistoryAcquisition.ts',
+  // 8 quarter-hour checks in the first two hours, 44 half-hour checks until day one, then 168 hourly checks.
+  ticks:12_000,tickMs:60_000,boundK:220,perTargetBoundK:220,
+  makeUnderPressure:historyPollUnderPressure,
+  restartPosture:{pressureSurvives:true,restartUnderPressure:historyPollUnderPressure},
+};
+
 const smallPeerTrialAdmission: SelfActionController = {
   id: 'small-peer-trial-admission',
   actionVerb: 'spawn',
@@ -6393,6 +6442,8 @@ const smallPeerTrialAdmission: SelfActionController = {
 export const SELF_ACTION_CONTROLLERS: SelfActionController[] = [
   smallPeerTrialAdmission,
   siblingHoldingsRefresh,
+  historyAcquisitionNotice,
+  historyAcquisitionPoll,
   pairingOutcomeNoticeRetry,
   neverSilentConversationRecovery,
   localVerifyLeftoverReaper,

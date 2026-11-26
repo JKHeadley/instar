@@ -26,7 +26,14 @@
  * `conversations.json`, `trust-profiles.json` and thread history are the
  * operator's own audit surfaces and stay servable.
  */
+// Raw exports can contain credentials. The local importer, its state and even the
+// scrubbed history are private to the originating machine and their owner-only APIs.
+export const PRIVATE_IMPORT_DIRECTORIES = Object.freeze([
+  'history-acquisition/', 'history-acquisition-archives/', 'import-preview-staging/', 'imported-history/', 'local-history-upload/',
+]);
+
 export const KEY_MATERIAL_PATHS: readonly string[] = Object.freeze([
+  ...PRIVATE_IMPORT_DIRECTORIES,
   // The agent identity (routing private key). Covers `.superseded-*` /
   // `.invalid-*` siblings and the owner-only writer's temp names.
   'identity.json',
@@ -126,6 +133,10 @@ export const KEY_MATERIAL_PATHS: readonly string[] = Object.freeze([
  * hard link to them escapes every prefix check just the same.
  */
 export const KEY_MATERIAL_FILES: readonly string[] = Object.freeze([
+  // Fixed import metadata and SQLite sidecars. Dynamically named chat and archive files are protected by path.
+  ...['history-acquisition/jobs.sqlite', 'history-acquisition/worker-lock.sqlite', 'imported-history/write-lock.sqlite', 'imported-history/source-claims.sqlite', 'local-history-upload/exchange-lock.sqlite', 'local-history-upload/child-admission.sqlite', 'local-history-upload/child-custody.sqlite', 'local-history-upload/disk-ledger.sqlite', 'local-history-upload/jobs.sqlite']
+    .flatMap(file => ['', '-wal', '-shm', '-journal'].map(suffix => file + suffix)),
+  'imported-history/manifest.json',
   'identity.json',
   'threadline/identity.json',
   'threadline/inbox-hmac.key',
@@ -157,7 +168,7 @@ export const KEY_MATERIAL_FILES: readonly string[] = Object.freeze([
  * The hard-link check (§5.2) lists these at request time — only on the rare
  * `nlink > 1` path — so a hard link to a generation-named key is caught too.
  */
-export const KEY_MATERIAL_DYNAMIC_DIRS: readonly string[] = Object.freeze(['machine-ssh/']);
+export const KEY_MATERIAL_DYNAMIC_DIRS: readonly string[] = Object.freeze(['machine-ssh/', 'local-history-upload/blocks/']);
 export const KEY_MATERIAL_ROOT_NAME_PREFIXES: readonly string[] = Object.freeze(['origin-sessions-']);
 
 /** The project-relative spelling the file routes match (`.instar/<prefix>`). */

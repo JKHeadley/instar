@@ -1,0 +1,28 @@
+{
+  "ts": "2026-11-24T22:46:55.363Z",
+  "slug": "local-history-first-claim-plan-worker",
+  "suggestedTier": 2,
+  "declaredTier": 2,
+  "riskFloor": 1,
+  "riskFloorReasons": [],
+  "belowFloor": false,
+  "files": 3,
+  "loc": 46,
+  "scope": {
+    "basis": "staged-in-scope-paths-including-deleted",
+    "files": [
+      "src/import/LocalHistoryPreparedPreview.ts",
+      "src/import/LocalHistoryPreparedReadJob.ts",
+      "src/import/localHistoryPreparedReadWorker.ts"
+    ],
+    "addedLines": 41,
+    "deletedLines": 5
+  },
+  "causalAutopsy": null,
+  "classClosure": {
+    "defectClass": "unbounded-self-action",
+    "closure": "n/a",
+    "reason": "One existing fixed worker invocation, with no additional launch or retry."
+  },
+  "verdict": "pass"
+}

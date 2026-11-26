@@ -1,0 +1,21 @@
+{
+  "version": 2,
+  "slug": "standards-parallel-fixture-isolation",
+  "sessionId": "c5b511b2-82e4-443c-bd2e-9d105e0b44a2",
+  "timestamp": "2026-11-23T14:00:08.905Z",
+  "artifactPath": "upgrades/side-effects/standards-parallel-fixture-isolation.md",
+  "artifactSha256": "80f9bf34d2efebc259f65c60585b2eb584682d464619d6d7e551cfee15fda131",
+  "coveredFiles": [
+    "docs/specs/standards-parallel-fixture-isolation.eli16.md",
+    "tests/unit/standards-registry-asset.test.ts",
+    "upgrades/next/standards-parallel-fixture-isolation.md",
+    "upgrades/side-effects/standards-parallel-fixture-isolation.md"
+  ],
+  "phase": "complete",
+  "tier": 1,
+  "tierReasoning": "Narrow reversible test-only isolation; keeps production audit policy and actual constitution unchanged.",
+  "eli16Path": "docs/specs/standards-parallel-fixture-isolation.eli16.md",
+  "sideEffectsPath": "upgrades/side-effects/standards-parallel-fixture-isolation.md",
+  "secondPass": "true",
+  "reviewerConcurred": true
+}

@@ -1,0 +1,22 @@
+{
+  "ts": "2026-11-24T16:29:10.824Z",
+  "slug": "local-history-cleanup-directory-sync",
+  "suggestedTier": 1,
+  "declaredTier": 2,
+  "riskFloor": 1,
+  "riskFloorReasons": [],
+  "belowFloor": false,
+  "files": 1,
+  "loc": 40,
+  "scope": {
+    "basis": "staged-in-scope-paths-including-deleted",
+    "files": [
+      "src/import/LocalHistoryStoreTemporaryRun.ts"
+    ],
+    "addedLines": 29,
+    "deletedLines": 11
+  },
+  "causalAutopsy": null,
+  "classClosure": null,
+  "verdict": "pass"
+}

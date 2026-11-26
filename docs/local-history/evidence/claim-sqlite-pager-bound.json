@@ -1,0 +1,36 @@
+{
+  "betterSqliteVersion": "12.8.0",
+  "sqliteVersion": "3.51.3",
+  "sourceSha256": "4845b2554eee2fd629fa305a599f80f5e8b989756ecb92fa323c2d38db41f4e8",
+  "sourceKind": "installed dependency primary SQLite amalgamation",
+  "independentReviewer": "capture_architecture",
+  "contentBound": "max(0,N*P-existingLogicalFileBytes) + N*(P+8) + 2*65536",
+  "evidence": {
+    "journalRecordBytes": "pagerAddPageToRollbackJournal64911-64971",
+    "oncePerOriginalPage": "pInJournal guard64999-65014",
+    "spillOff": "63541-63559; sole syncJournal(...,1)63584; commit uses0 at65532",
+    "memorySubjournal": "76141 ->64847 ->63447 nStmtSpill=-1",
+    "sectorClamp": "MAX_SECTOR_SIZE59339 and61620-61622",
+    "abortFirstError": "page-move error66197 canclear pInJournal",
+    "defaultUnixAllocation": "size hint63378, chunkrounding conditional43252"
+  },
+  "restrictions": [
+    "verify exact audited SQLite version",
+    "reject sidecars andWALheaders before any SQLiteopen",
+    "query deletejournal mode; do notmigrate",
+    "auto_vacuum0",
+    "default unmodified Unix VFS, no extensions or file-control changes",
+    "verifyOFFcache spill, MEMORYtemp store, FULLsynchronous",
+    "verify effective max_page_count <=reserved allowance",
+    "fixed schema andsingleINSERT in one immediate transaction",
+    "abortfirsterror, no statementretry/savepoint/ATTACH/arbitrarySQL",
+    "holdreservation throughrollback/SQLiteclose/actualchildexit/uncertainrecovery"
+  ],
+  "notProven": [
+    "physicalblocks andfilesystemmetadata",
+    "a real parent diskreservation",
+    "separately admitted recovery",
+    "copyconsent or apply/UI readiness",
+    "new physical allocation when existing sparse/COW pages or rollback pages are rewritten"
+  ]
+}

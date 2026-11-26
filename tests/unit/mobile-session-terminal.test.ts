@@ -116,6 +116,7 @@ describe('DEVICE_ALLOWLIST: session output and input', () => {
       ['GET', '/mobile/sessions/new-options'],
       ['GET', '/mobile/sessions/history'],
       // The owner's signed app device can preview and import personal history and confirm facts.
+      ['GET', '/mobile/imported-history/capabilities'],
       ['GET', '/mobile/imported-history/conversations'],
       ['GET', '/mobile/imported-history/projects'],
       ['GET', '/mobile/imported-history/conversations/imported:claude:chat-123'],

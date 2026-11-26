@@ -1,0 +1,26 @@
+{
+  "ts": "2026-11-24T19:40:46.075Z",
+  "slug": "local-history-serial-copy-custody",
+  "suggestedTier": 2,
+  "declaredTier": 2,
+  "riskFloor": 1,
+  "riskFloorReasons": [],
+  "belowFloor": false,
+  "files": 1,
+  "loc": 81,
+  "scope": {
+    "basis": "staged-in-scope-paths-including-deleted",
+    "files": [
+      "src/import/LocalHistoryUploadStaging.ts"
+    ],
+    "addedLines": 70,
+    "deletedLines": 11
+  },
+  "causalAutopsy": null,
+  "classClosure": {
+    "defectClass": "unbounded-self-action",
+    "closure": "n/a",
+    "reason": "One explicit operation adopts one real child. It sends at most one TERM and one KILL, with no respawn or retry."
+  },
+  "verdict": "pass"
+}

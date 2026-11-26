@@ -1,0 +1,26 @@
+{
+  "version": 2,
+  "slug": "local-history-execute-committed-first-claim",
+  "sessionId": "41652017-0805-405d-bb4e-2a975fb349ce",
+  "timestamp": "2026-11-25T03:31:05.986Z",
+  "artifactPath": "upgrades/side-effects/local-history-execute-committed-first-claim.md",
+  "artifactSha256": "07026c0d54cf72bb7a8060156138ddb8a77391519287b5c397bc7d2c593149b7",
+  "specPath": "docs/specs/local-history-native-contract.md",
+  "coveredFiles": [
+    "src/import/ImportedHistoryStore.ts",
+    "src/import/LocalHistoryStoreTemporaryRun.ts",
+    "tests/unit/local-history-store-temporary-run.test.ts",
+    "upgrades/next/local-history-execute-committed-first-claim.md",
+    "upgrades/side-effects/local-history-execute-committed-first-claim.md"
+  ],
+  "phase": "complete",
+  "tier": 2,
+  "tierReasoning": "The planned store validates an exact committed first permit and consumes one attempt on the actual allocator.",
+  "secondPass": "true",
+  "reviewerConcurred": true,
+  "classClosure": {
+    "defectClass": "unbounded-self-action",
+    "closure": "n/a",
+    "reason": "The worker-run latch consumes exactly one synchronous first-claim attempt without retry."
+  }
+}

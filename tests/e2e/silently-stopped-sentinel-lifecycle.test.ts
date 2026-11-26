@@ -28,6 +28,7 @@ import { describe, it, expect, beforeEach, afterEach, vi } from 'vitest';
 import fs from 'node:fs';
 import os from 'node:os';
 import path from 'node:path';
+import { SafeFsExecutor } from '../../src/core/SafeFsExecutor.js';
 import {
   buildActiveWorkSilenceDeps,
   OutputActivityTracker,
@@ -53,7 +54,9 @@ function wireProduction(opts: {
   surface: SentinelSessionSurface;
   coalesceWindowMs?: number;
 }): ProductionRig {
-  const stateDir = fs.mkdtempSync(path.join(os.tmpdir(), 'instar-sentinel-e2e-'));
+  const root = fs.mkdtempSync(path.join(os.tmpdir(), 'instar-sentinel-e2e-'));
+  const stateDir = path.join(root, '.instar');
+  fs.mkdirSync(stateDir);
   // server.ts puts the JSONL at `<stateDir>/../logs/sentinel-events.jsonl`.
   const logsDir = path.join(stateDir, '..', 'logs');
   fs.mkdirSync(logsDir, { recursive: true });
@@ -94,8 +97,7 @@ function wireProduction(opts: {
   const cleanup = (): void => {
     sentinel.stop();
     notifier.stop();
-    try { fs.rmSync(stateDir, { recursive: true, force: true }); } catch { /* ignore */ }
-    try { fs.rmSync(logsDir, { recursive: true, force: true }); } catch { /* ignore */ }
+    SafeFsExecutor.safeRmSync(root, { recursive: true, force: true, operation: 'sentinel lifecycle owned fixture cleanup' });
   };
   return { notifier, sentinel, sentinelLogPath, sent, cleanup };
 }
@@ -107,6 +109,25 @@ describe('silently-stopped sentinels — production lifecycle (alive on boot)', 
     vi.useRealTimers();
     rig?.cleanup();
     rig = undefined;
+  });
+
+  it('keeps one rig’s log and future writes alive after another rig is cleaned up', () => {
+    const surface: SentinelSessionSurface = {
+      captureOutput: () => '', isSessionAlive: () => true, sendKey: () => true, listRunningSessions: () => [],
+    };
+    const first = wireProduction({ telegramEscalation: false, surface });
+    rig = first;
+    const second = wireProduction({ telegramEscalation: false, surface });
+    try {
+      first.notifier.record('detected', 'active-silence', 'first-session');
+      second.notifier.record('detected', 'active-silence', 'second-session');
+      expect(first.sentinelLogPath).not.toBe(second.sentinelLogPath);
+      second.cleanup();
+      first.notifier.record('recovered', 'active-silence', 'first-session');
+      const records = fs.readFileSync(first.sentinelLogPath, 'utf8').trim().split('\n').map(line => JSON.parse(line));
+      expect(records.map(record => record.kind)).toEqual(['detected', 'recovered']);
+      expect(records.every(record => record.sessionName === 'first-session')).toBe(true);
+    } finally { second.cleanup(); }
   });
 
   it('default (telegramEscalation OFF): zombie sessions never escalate AND nothing reaches Telegram', async () => {

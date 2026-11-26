@@ -1,0 +1,7 @@
+# Keep Unfinished Local History Work Visible
+
+The local-history import design says how its progress must be tracked, but the implementation had not added that progress entry to the shared registry. The complete unit run caught the mismatch. This repair adds the missing entry and a test for the important parts of its meaning.
+
+The entry says plainly that local history import is not available yet. It records that the installed Mac app still has to prove the full trip for both Codex and Claude Code: selecting files, uploading to the verified computer, reviewing the preview, confirming the copy, and recovering correctly after a restart. It also requires the test tiers and the owner, target and privacy checks. The entry is marked as needing evidence. It does not pretend that supporting parser tests prove a working app journey.
+
+This is progress metadata, not an enable switch. Both advancement steps require reviewed code. There is no new start button, public endpoint, runtime flag reader or automatic transition. The existing registry's observation fields do not replace the approval and privacy rules in the import design. The plan keeps the existing fourteen-day progress checkpoint tied to the first released candidate, rather than restarting that clock when someone edits a document. If the feature is later enabled, that must happen through its separate reviewed implementation and acceptance evidence.

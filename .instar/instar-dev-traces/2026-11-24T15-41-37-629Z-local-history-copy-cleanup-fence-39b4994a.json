@@ -1,0 +1,26 @@
+{
+  "version": 2,
+  "slug": "local-history-copy-cleanup-fence",
+  "sessionId": "41652017-0805-405d-bb4e-2a975fb349ce",
+  "timestamp": "2026-11-24T15:41:37.629Z",
+  "artifactPath": "upgrades/side-effects/local-history-copy-cleanup-fence.md",
+  "artifactSha256": "0549da5140f260fc5b52d86b875e95f6db91d4d8f09f6975542bf9ee8f93627e",
+  "specPath": "docs/specs/local-history-native-contract.md",
+  "coveredFiles": [
+    "src/import/LocalHistoryStoreTemporaryRun.ts",
+    "src/import/LocalHistoryUploadStaging.ts",
+    "tests/unit/local-history-upload-staging.test.ts",
+    "upgrades/next/local-history-copy-cleanup-fence.md",
+    "upgrades/side-effects/local-history-copy-cleanup-fence.md"
+  ],
+  "phase": "complete",
+  "tier": 2,
+  "tierReasoning": "The cleanup fence retains charged private workspace until exact namespace custody settles.",
+  "secondPass": "true",
+  "reviewerConcurred": true,
+  "classClosure": {
+    "defectClass": "unbounded-self-action",
+    "closure": "n/a",
+    "reason": "The check adds a refusal to an existing finite cleanup sequence and starts no new attempt."
+  }
+}

@@ -42,6 +42,7 @@ import {
 } from '../../src/core/keyMaterialPaths.js';
 import { BackupManager } from '../../src/core/BackupManager.js';
 import { FileClassifier } from '../../src/core/FileClassifier.js';
+import { DEFAULT_GITIGNORE } from '../../src/core/GitStateManager.js';
 import { ensureGitignore } from '../../src/core/MachineIdentity.js';
 import type { InstarConfig } from '../../src/core/types.js';
 import { SafeFsExecutor } from '../../src/core/SafeFsExecutor.js';
@@ -60,6 +61,22 @@ function sibling(prefix: string): string {
 }
 
 describe('§5.1 — one list, four surfaces (static)', () => {
+  it('reserves private personal history for the owner import routes on this machine', () => {
+    const classifier = new FileClassifier({ projectDir: '/repo' });
+    for (const [directory, file] of [
+      ['history-acquisition', 'jobs.sqlite-wal'],
+      ['history-acquisition-archives', 'example/archive.zip'],
+      ['import-preview-staging', 'example.zip'],
+      ['imported-history', 'conversations/example.jsonl'],
+    ]) {
+      const rel = '.instar/' + directory + '/' + file;
+      expect(isNeverServed(rel)).toBe(true);
+      expect(classifier.classify(rel).strategy).toBe('never-sync');
+      expect(KEY_MATERIAL_BACKUP_PREFIXES).toContain(directory + '/');
+      expect(DEFAULT_GITIGNORE.split('\n')).toContain(directory + '/');
+      expect(KEY_MATERIAL_GITIGNORE_PROJECT).toContain('.instar/' + directory + '/');
+    }
+  });
   it('names every path the spec lists', () => {
     for (const p of [
       'identity.json',
@@ -298,6 +315,39 @@ describe('§5.2 — the file routes refuse key material by path, symlink, hard l
     // listing shows it — the deny is on the OPENED inode, not the name.
     const docs = await request(app).get('/api/files/list').query({ path: 'docs' });
     expect(docs.body.entries.map((e: { name: string }) => e.name)).toContain('innocent.txt');
+  });
+
+  it('checks fixed import metadata inodes without walking imported conversations or archive directories', async () => {
+    const privateDir = path.join(projectDir, '.instar', 'history-acquisition');
+    fs.mkdirSync(privateDir, { recursive: true, mode: 0o700 });
+    const file = path.join(privateDir, 'jobs.sqlite');
+    fs.writeFileSync(file, 'fixture', { mode: 0o600 });
+    const alias = path.join(projectDir, 'docs', 'fixture-metadata');
+    fs.linkSync(file, alias);
+    const checked = await openCheckedDescriptor(alias, fs.statSync(alias), projectDir);
+    expect(checked.handle).toBeNull();
+  });
+
+  it('refuses an innocent hard-link alias to a dynamically named private import block', async () => {
+    const directory = path.join(stateDir, 'local-history-upload', 'blocks');
+    fs.mkdirSync(directory, { recursive: true, mode: 0o700 });
+    const file = path.join(directory, '1234567890abcdef1234567890abcdef');
+    fs.writeFileSync(file, PRIVATE_KEY_MARKER, { mode: 0o600 });
+    const alias = path.join(projectDir, 'docs', 'innocent-import-block.txt');
+    fs.linkSync(file, alias);
+    expectRefused(await request(app).get('/api/files/read').query({ path: 'docs/innocent-import-block.txt' }));
+    expectRefused(await request(app).get('/api/files/download').query({ path: 'docs/innocent-import-block.txt' }));
+  });
+  it.each(['disk-ledger.sqlite', 'jobs.sqlite', 'jobs.sqlite-journal'])('refuses an innocent hard-link alias to private upload metadata %s', async name => {
+    const directory = path.join(stateDir, 'local-history-upload');
+    fs.mkdirSync(directory, { recursive: true, mode: 0o700 });
+    const file = path.join(directory, name);
+    fs.writeFileSync(file, PRIVATE_KEY_MARKER, { mode: 0o600 });
+    const aliasPath = 'docs/innocent-upload-' + name + '.txt';
+    const alias = path.join(projectDir, aliasPath);
+    fs.linkSync(file, alias);
+    expectRefused(await request(app).get('/api/files/read').query({ path: aliasPath }));
+    expectRefused(await request(app).get('/api/files/download').query({ path: aliasPath }));
   });
 
   it('a hard link whose inode is NOT a key file is still served (no over-block on nlink alone)', async () => {

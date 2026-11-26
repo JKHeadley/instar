@@ -3833,6 +3833,8 @@ export interface ExternalServicePermissions {
 // ── Server Configuration ────────────────────────────────────────────
 
 export interface InstarConfig {
+  /** Explicit opt-in for the built-in synthetic fixture in a disposable agent home. */
+  localHistoryDisposablePilot?: { enabled?: boolean };
   /**
    * Voice transcription (docs/specs/backup-on-machine-voice.md). `local: false` turns off the free
    * on-machine transcriber (whisper.cpp); absent means on. Read on every transcription.

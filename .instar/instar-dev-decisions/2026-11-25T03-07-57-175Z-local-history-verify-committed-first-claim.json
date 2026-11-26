@@ -1,0 +1,26 @@
+{
+  "ts": "2026-11-25T03:07:57.175Z",
+  "slug": "local-history-verify-committed-first-claim",
+  "suggestedTier": 1,
+  "declaredTier": 2,
+  "riskFloor": 1,
+  "riskFloorReasons": [],
+  "belowFloor": false,
+  "files": 1,
+  "loc": 26,
+  "scope": {
+    "basis": "staged-in-scope-paths-including-deleted",
+    "files": [
+      "src/import/LocalHistoryFirstPermit.ts"
+    ],
+    "addedLines": 26,
+    "deletedLines": 0
+  },
+  "causalAutopsy": null,
+  "classClosure": {
+    "defectClass": "unbounded-self-action",
+    "closure": "n/a",
+    "reason": "One finite read-only database snapshot starts no mutation or retry."
+  },
+  "verdict": "pass"
+}

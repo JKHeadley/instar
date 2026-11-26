@@ -271,8 +271,11 @@ import { ConversationUnreadService, type TelegramRowLike } from '../core/Convers
 import type { ConversationReadMarkerStore } from '../core/ConversationReadMarkers.js';
 import { ConversationListPinStore } from '../core/ConversationListPins.js';
 import { isAppConversationKey } from '../core/appConversationText.js';
+import { HistoryAcquisitionChat } from './historyAcquisitionRoutes.js';
+import { HistoryAcquisitionWorker, type AcquisitionConnection } from '../import/HistoryAcquisitionWorker.js';
 import { createMobileConversationRouter, appOwnerName } from './mobileConversationRoutes.js';
 import { createMobilePinRouter, recordTelegramPin } from './mobilePinRoutes.js';
+import { ImportedHistoryStore } from '../import/ImportedHistoryStore.js';
 import { createConversationSearchRouter, isMeaningSearchEnabled, type ConversationSearchRouteDeps } from './mobileConversationSearchRoutes.js';
 import { conversationIndexSources } from './conversationMeaningSearch.js';
 import { ConversationEmbeddingFeeder, ConversationEmbeddingIndex, type Embedder } from '../memory/ConversationEmbeddingIndex.js';
@@ -313,6 +316,9 @@ import type { WorktreeManager } from '../core/WorktreeManager.js';
 import { NativeHookEventIngest } from '../monitoring/NativeHookEvents.js';
 import { NATIVE_HOOK_EVENTS_PATH } from '../data/http-hook-templates.js';
 import { resolveKnownOrigin as resolveProjectAppOrigin, hostOf as projectAppHostOf, type OriginDeps as ProjectAppOriginDeps } from './ProjectAppSandbox.js';
+import { createSignedLocalHistoryIntake, SIGNED_LOCAL_HISTORY_PREFIX } from './signedLocalHistoryIntake.js';
+import { DisposableLocalHistoryPilot } from './disposableLocalHistoryPilot.js';
+import { LOCAL_HISTORY_WIRE_BYTES } from '../import/LocalHistoryChannel.js';
 import { boundedBody, closeUnreadBodyOnError, credentialAwareJsonParser, type BodyBudgetDeps } from './bodyBudget.js';
 import { corsMiddleware, authMiddleware, requestTimeout, buildRequestTimeoutOverrides, errorHandler, dashboardSecurityHeaders, dashboardCacheControl, DASHBOARD_STATIC_OPTIONS, duplicateResponseGuard } from './middleware.js';
 import { WebSocketManager } from './WebSocketManager.js';
@@ -572,11 +578,14 @@ export class AgentServer {
   private teamSwitchPeers: () => SwitchPeer[] = () => [];
   private teamConversationChange: (<T>(ref: string, change: () => Promise<T> | T) => Promise<T>) | null = null;
   mobilePairing: MobilePairingService | null = null;
+  private disposableHistoryPilot: DisposableLocalHistoryPilot | undefined;
+  private disposableHistoryPilotStopping = false;
   /** The stand-in owner chat for a throwaway agent with no owner (docs/specs/throwaway-owner-chat.md); null on every other agent. */
   throwawayOwnerChat: ThrowawayOwnerChat | null = null;
   /** "Make this group a project" phone confirm, filled by the conversation graph surface once it opens (conversation-groups-phone §3). */
   readonly groupProjectConfirm: import('./ConversationGroupProjectDrafts.js').GroupProjectConfirmHolder = { confirm: null };
   /** Native app conversations (docs/specs/mobile-native-conversations.md); null when off at boot. */
+  private historyAcquisitionWorker: HistoryAcquisitionWorker | null = null;
   appConversations: AppConversationService | null = null;
   /** native-conversation-base §3c: Telegram files resolved on the serving machine. */
   platformMedia: PlatformMediaForSession | null = null;
@@ -1619,6 +1628,8 @@ export class AgentServer {
     spawnAdmission?: import('../core/SpawnAdmission.js').SpawnAdmission;
     /** Native app conversations: the bootstrap-wired service (server.ts). Absent ⇒ default-constructed when the gate is on. */
     appConversations?: AppConversationService;
+    /** Trusted pilot bootstrap after the local provider and delivery connection have been proven. */
+    historyAcquisitionConnection?: AcquisitionConnection;
     conversationGraphReplicationRuntime?: import('./ConversationGraphReplicationRuntime.js').ConversationGraphReplicationRuntime;
     conversationGraphDefault?: import('./ConversationGraphDefault.js').ConversationGraphDefault;
     conversationGraphDelegationRuntime?: import('./ConversationGraphDelegationRuntime.js').ConversationGraphDelegationRuntime;
@@ -2078,6 +2089,35 @@ export class AgentServer {
     }
 
     // Middleware
+    let pilotIngress: ReturnType<typeof createSignedLocalHistoryIntake> | undefined;
+    this.app.use((req, res, next) => {
+      const route = req.path.toLowerCase();
+      if (this.config.localHistoryDisposablePilot?.enabled !== true
+        || (route !== SIGNED_LOCAL_HISTORY_PREFIX && !route.startsWith(SIGNED_LOCAL_HISTORY_PREFIX + '/'))) {
+        next(); return;
+      }
+      const pairing = this.mobilePairing, address = this.server?.address();
+      if (this.disposableHistoryPilotStopping || !pairing || !address || typeof address === 'string' || address.address !== '127.0.0.1') {
+        res.status(503).json({ error: 'local-history-unavailable' }); return;
+      }
+      if (!pilotIngress) {
+        try {
+          const signer = loadMachineSigner(this.config.stateDir);
+          if (!signer) throw new Error('disposable-pilot-signer-unavailable');
+          this.disposableHistoryPilot = new DisposableLocalHistoryPilot({
+            stateDir: this.config.stateDir, agentId: this.config.projectName,
+            origin: 'http://127.0.0.1:' + address.port, pairing, signer,
+            enabled: () => !this.disposableHistoryPilotStopping && this.config.localHistoryDisposablePilot?.enabled === true,
+          });
+          pilotIngress = createSignedLocalHistoryIntake({
+            pairing, service: () => this.disposableHistoryPilot, wireBytes: LOCAL_HISTORY_WIRE_BYTES,
+          });
+        } catch {
+          res.status(503).json({ error: 'local-history-unavailable' }); return;
+        }
+      }
+      pilotIngress(req, res, next);
+    });
     // Claim observation has a much smaller privacy/cost boundary than the
     // general API. Parse it under 96 KiB before the broad server parser.
     // Mobile device keys sign the exact request bytes: every JSON parser keeps them (req.rawBody).
@@ -8202,7 +8242,29 @@ export class AgentServer {
         try { return projectTitlesByTopic(options.chiefOfStaffLoop?.projectsSummary() ?? []); }
         catch { return new Map(); } // @silent-fallback-ok — the title is only a fallback for a missing name
       };
+      const connection = this.appConversations ? options.historyAcquisitionConnection : undefined;
+      let historyAcquisition: HistoryAcquisitionChat;
+      try {
+        const previous = path.join(options.config.stateDir, 'history-acquisition', 'jobs.sqlite');
+        if (connection || fs.lstatSync(previous, {throwIfNoEntry:false})) {
+          // A withdrawn connection still gets local expiry and deletion. Its worker cannot
+          // perform browser/mail actions or publish notices, or accept a new chat action.
+          this.historyAcquisitionWorker = new HistoryAcquisitionWorker({
+            stateDir:options.config.stateDir,
+            connection:connection ?? {available:() => [], accounts:() => [], delivery:() => undefined},
+            authorized:chat => !!connection && historyAcquisition.authorized(chat),
+          });
+        }
+      } catch {
+        DegradationReporter.getInstance().report({feature:'HistoryAcquisition.worker',primary:'Open the history acquisition worker',
+          fallback:'Keep the existing-file import available',reason:'acquisition-worker-unavailable',
+          impact:'Automatic history acquisition stays unavailable on this machine',internalOnly:true});
+      }
+      historyAcquisition = new HistoryAcquisitionChat(this.mobilePairing, this.appConversations, connection ? this.historyAcquisitionWorker : null);
+      this.app.use(historyAcquisition.router());
+      this.historyAcquisitionWorker?.startPolling(notice => historyAcquisition.publish(notice), !connection);
       const conversationFlatDeps: import('./mobileConversationRoutes.js').MobileConversationRouteDeps = {
+        historyAcquisition,
         unread: this.conversationUnread,
         // Conversation-list pins: server.ts builds it replicated; a server built without it keeps pins on this machine only.
         listPins: options.conversationListPins !== undefined ? options.conversationListPins : (this.appConversations ? new ConversationListPinStore({ stateDir: options.config.stateDir }) : null),
@@ -8265,6 +8327,7 @@ export class AgentServer {
       this.app.use(createMobileConversationRouter(conversationFlatDeps));
       // Keyword and meaning search over conversations (docs/specs/conversation-search.md): the same callers and visibility as the list.
       const searchDeps: ConversationSearchRouteDeps = {
+        importedHistory: () => ImportedHistoryStore.openIfPresent(options.config.stateDir),
         config: options.config, pairing: this.mobilePairing, service: this.appConversations,
         machineId: conversationFlatDeps.machineId,
         topicMemory: () => options.topicMemory ?? null,
@@ -10692,6 +10755,10 @@ export class AgentServer {
   }
 
   async stop(): Promise<void> {
+    this.disposableHistoryPilotStopping = true;
+    await this.disposableHistoryPilot?.stop();
+    this.disposableHistoryPilot = undefined;
+    await this.historyAcquisitionWorker?.close();
     await this.stopGraphSourceInventory();
     this.siblingHoldingsStop?.();
     if (this.teamPullTimer) clearInterval(this.teamPullTimer);

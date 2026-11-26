@@ -1,0 +1,26 @@
+{
+  "version": 2,
+  "slug": "local-history-writer-held-intent-check",
+  "sessionId": "41652017-0805-405d-bb4e-2a975fb349ce",
+  "timestamp": "2026-11-25T01:34:31.720Z",
+  "artifactPath": "upgrades/side-effects/local-history-writer-held-intent-check.md",
+  "artifactSha256": "b0b79233e30f2bae9767a2140d594bb44000d9812e78b3078c15867dfd332dd9",
+  "specPath": "docs/specs/local-history-native-contract.md",
+  "coveredFiles": [
+    "src/import/LocalHistoryPreparedReadJob.ts",
+    "src/import/LocalHistoryUploadStaging.ts",
+    "tests/unit/local-history-upload-staging.test.ts",
+    "upgrades/next/local-history-writer-held-intent-check.md",
+    "upgrades/side-effects/local-history-writer-held-intent-check.md"
+  ],
+  "phase": "complete",
+  "tier": 2,
+  "tierReasoning": "The staging recheck supplies bounded evidence under actual writer custody.",
+  "secondPass": "true",
+  "reviewerConcurred": true,
+  "classClosure": {
+    "defectClass": "unbounded-self-action",
+    "closure": "n/a",
+    "reason": "A single synchronous observation can only discard one plan and uses the existing bounded reader."
+  }
+}

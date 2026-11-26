@@ -1,0 +1,27 @@
+{
+  "version": 2,
+  "slug": "local-history-shared-child-custody",
+  "sessionId": "c5b511b2-82e4-443c-bd2e-9d105e0b44a2",
+  "timestamp": "2026-11-23T13:40:04.442Z",
+  "artifactPath": "upgrades/side-effects/local-history-shared-child-custody.md",
+  "artifactSha256": "8d563a303bdd9909415d556e3b2eec44a003680b66b3415fa9e6a3fe13ab3bd5",
+  "specPath": "docs/specs/local-history-native-contract.md",
+  "coveredFiles": [
+    "src/core/keyMaterialPaths.ts",
+    "src/import/LocalHistoryChildCustody.ts",
+    "src/import/LocalHistoryParseJob.ts",
+    "src/import/localHistoryParseWorker.ts",
+    "src/import/privateImportState.ts",
+    "tests/unit/SqliteRegistry-wiring.test.ts",
+    "tests/unit/local-history-child-custody.test.ts",
+    "tests/unit/local-history-parse-job.test.ts",
+    "tests/unit/local-history-parse-worker.test.ts",
+    "upgrades/next/local-history-shared-child-custody.md",
+    "upgrades/side-effects/local-history-shared-child-custody.md"
+  ],
+  "phase": "complete",
+  "tier": 2,
+  "tierReasoning": "Cross-process custody before private child input; existing approved native contract, no endpoint enabled.",
+  "secondPass": "true",
+  "reviewerConcurred": true
+}

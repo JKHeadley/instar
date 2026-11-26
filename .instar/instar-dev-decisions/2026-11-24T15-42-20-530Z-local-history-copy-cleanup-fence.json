@@ -1,0 +1,27 @@
+{
+  "ts": "2026-11-24T15:42:20.530Z",
+  "slug": "local-history-copy-cleanup-fence",
+  "suggestedTier": 2,
+  "declaredTier": 2,
+  "riskFloor": 1,
+  "riskFloorReasons": [],
+  "belowFloor": false,
+  "files": 2,
+  "loc": 58,
+  "scope": {
+    "basis": "staged-in-scope-paths-including-deleted",
+    "files": [
+      "src/import/LocalHistoryStoreTemporaryRun.ts",
+      "src/import/LocalHistoryUploadStaging.ts"
+    ],
+    "addedLines": 53,
+    "deletedLines": 5
+  },
+  "causalAutopsy": null,
+  "classClosure": {
+    "defectClass": "unbounded-self-action",
+    "closure": "n/a",
+    "reason": "The check adds a refusal to an existing finite cleanup sequence and starts no new attempt."
+  },
+  "verdict": "pass"
+}

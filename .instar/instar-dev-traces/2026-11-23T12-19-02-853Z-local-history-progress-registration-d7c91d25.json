@@ -1,0 +1,29 @@
+{
+  "version": 3,
+  "slug": "local-history-progress-registration",
+  "sessionId": "c5b511b2-82e4-443c-bd2e-9d105e0b44a2",
+  "timestamp": "2026-11-23T12:19:02.853Z",
+  "artifactPath": "upgrades/side-effects/local-history-progress-registration.md",
+  "artifactSha256": "9fb9c635e9532501222fdf421eb0cf4a4d5082b03a49f12b670a7302bb96bbe4",
+  "coveredFiles": [
+    "docs/specs/local-history-progress-registration.eli16.md",
+    "src/data/feature-ladders.json",
+    "tests/unit/feature-ladders-coverage.test.ts",
+    "upgrades/next/local-history-progress-registration.md",
+    "upgrades/side-effects/local-history-progress-registration.md"
+  ],
+  "phase": "complete",
+  "tier": 1,
+  "tierReasoning": "Reversible missing progress-registry metadata and semantic coverage; no runtime activation, admission or endpoint change.",
+  "eli16Path": "docs/specs/local-history-progress-registration.eli16.md",
+  "sideEffectsPath": "upgrades/side-effects/local-history-progress-registration.md",
+  "secondPass": "not-required",
+  "reviewerConcurred": null,
+  "toolchain": {
+    "buildSkill": {
+      "name": "build",
+      "version": null,
+      "verified": false
+    }
+  }
+}

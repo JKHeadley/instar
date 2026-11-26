@@ -1,0 +1,22 @@
+{
+  "ts": "2026-11-24T12:00:57.792Z",
+  "slug": "local-history-sealed-preview-staging",
+  "suggestedTier": 1,
+  "declaredTier": 2,
+  "riskFloor": 1,
+  "riskFloorReasons": [],
+  "belowFloor": false,
+  "files": 1,
+  "loc": 16,
+  "scope": {
+    "basis": "staged-in-scope-paths-including-deleted",
+    "files": [
+      "src/import/LocalHistoryUploadStaging.ts"
+    ],
+    "addedLines": 11,
+    "deletedLines": 5
+  },
+  "causalAutopsy": null,
+  "classClosure": null,
+  "verdict": "pass"
+}
