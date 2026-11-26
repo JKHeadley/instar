@@ -23847,7 +23847,7 @@ document.getElementById('mcpForm').addEventListener('submit', async function (e)
     // Telegram media (mobile-native-chat-media §4.9): a device gets each recorded file as
     // `attachments`, and never a server path in the text.
     const joinForDevice = (rows: ReadonlyArray<Record<string, unknown>>) =>
-      (isDevice ? withTelegramMediaForDevice(ctx.appConversations ?? null, topicId, ctx.appConversations ? joinTelegramHistory(ctx.appConversations, topicId, rows, limit) : rows) : rows);
+      (isDevice ? withTelegramMediaForDevice(ctx.appConversations ?? null, topicId, ctx.appConversations ? joinTelegramHistory(ctx.appConversations, topicId, rows, limit, beforeMs) : rows) : rows);
     // message-origin-all-platforms §4: agent rows carry `origin` for a device, and for a Bearer read
     // that asks (`includeOrigin=1`, set by the pool fan-out so each peer answers with its own join).
     const withOrigin = isDevice || req.query.includeOrigin === '1';

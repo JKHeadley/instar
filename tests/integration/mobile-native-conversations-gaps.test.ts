@@ -73,6 +73,8 @@ async function setup(opts: Opts = {}) {
     getOwnerUserId: () => 4242,
     getAllTopicMappings: () => topics.map((t) => ({ topicId: t.topicId, topicName: t.topicName })),
     getTopicHistory: (id: number, limit: number) => tgRows.filter((r) => r.topicId === id).slice(-limit),
+    getTopicHistoryBefore: (id: number, beforeMs: number, limit: number) =>
+      tgRows.filter((r) => r.topicId === id && Date.parse(String(r.timestamp)) < beforeMs).slice(-limit),
     sendToTopic: async (_id: number, text: string) => { mirrors.push(text);  return { messageId: 1, topicId: Number(_id) }; },
   };
   const resolvePeerUrls = () => (opts.peerUrls ?? []).map((url, i) => ({ machineId: `m_peer${i}`, url, kind: 'lan' }));
@@ -232,6 +234,33 @@ describe('gap 2 — scope=pool on the list and the browse read', () => {
       expect(plain.body.messages).toHaveLength(1);
       expect(plain.body.pool).toBeUndefined();
     } finally { server.close(); }
+  });
+});
+
+describe('signed Telegram older history', () => {
+  it('keeps recovered App messages strictly before the requested time', async () => {
+    const e = await setup();
+    const route = `/telegram/topics/${TOPIC}/messages`;
+    const send = await signed(e, 'POST', `/mobile/chat/${TOPIC}`, { text: 'Recovered App message', requestId: rid() });
+    expect(send.status).toBe(200);
+    const [stored] = e.svc.store.browseMessages(`telegram:${TOPIC}`, null).messages;
+    const before = Date.parse(stored.at);
+    e.tgRows.length = 0;
+    e.tgRows.push({ messageId: 42, topicId: TOPIC, text: 'Older Telegram message',
+      fromUser: true, timestamp: new Date(before - 1).toISOString() });
+    for (const scope of ['', '&scope=pool']) {
+      const current = await signed(e, 'GET', `${route}?limit=20${scope}`);
+      expect(current.status).toBe(200);
+      expect(current.body.messages.map((m: { text: string }) => m.text))
+        .toEqual(['Older Telegram message', 'Recovered App message']);
+      const older = await signed(e, 'GET', `${route}?before=${before}&beforeMessageId=43${scope}`);
+      expect(older.status).toBe(200);
+      expect(older.body.messages.map((m: { text: string }) => m.text)).toEqual(['Older Telegram message']);
+      const recoveredOlder = await signed(e, 'GET', `${route}?before=${before + 1}${scope}`);
+      expect(recoveredOlder.status).toBe(200);
+      expect(recoveredOlder.body.messages.map((m: { text: string }) => m.text))
+        .toEqual(['Older Telegram message', 'Recovered App message']);
+    }
   });
 });
 
