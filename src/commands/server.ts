@@ -10801,6 +10801,7 @@ export async function startServer(options: StartOptions): Promise<void> {
               senderUsername: entry.senderUsername,
               telegramUserId: entry.telegramUserId,
               forwarded: entry.forwarded,
+              provenance: entry.provenance,
               ...(entry.rowOrigin ? { origin: entry.rowOrigin } : {}),
             };
             // A real Telegram id goes through the key rule (§14); anything else
@@ -18874,6 +18875,7 @@ export async function startServer(options: StartOptions): Promise<void> {
         provenance: () => _judgmentProvenance,
       });
       commitmentSentinel = new CommitmentSentinel({
+        topicMemory,
         stateDir: config.stateDir,
         intelligence: sharedIntelligence,
         commitmentTracker,

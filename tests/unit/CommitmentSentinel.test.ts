@@ -21,6 +21,8 @@ import {
   COMMITMENT_SENTINEL_PROMPT_ID,
 } from '../../src/monitoring/CommitmentSentinel.js';
 import type { CommitmentSentinelConfig } from '../../src/monitoring/CommitmentSentinel.js';
+import { readRecentTelegramHistory } from '../../src/messaging/recentTelegramHistory.js';
+import { TopicMemory } from '../../src/memory/TopicMemory.js';
 import { CommitmentTracker } from '../../src/monitoring/CommitmentTracker.js';
 import { LiveConfig } from '../../src/config/LiveConfig.js';
 import type { IntelligenceProvider, IntelligenceOptions } from '../../src/core/types.js';
@@ -179,6 +181,52 @@ describe('CommitmentSentinel', () => {
       expect(intelligence.evaluate).toHaveBeenCalled();
     });
 
+    it('scans persisted Telegram history without a log and resumes from the per-topic mark', async () => {
+      const history = new TopicMemory(stateDir);
+      await history.open();
+      try {
+        for (const topicId of [15, -15]) {
+          for (const [messageId, text] of ['Please schedule the review', 'I will schedule it'].entries()) {
+            history.insertMessage({ topicId, messageId: messageId + 1, text, fromUser: messageId === 0,
+              timestamp: '2026-11-25T12:00:00Z', sessionName: null });
+          }
+        }
+        const intelligence = createMockIntelligence('[]');
+        const { tracker } = makeSentinel(stateDir, intelligence);
+        const config = { stateDir, intelligence, commitmentTracker: tracker, topicMemory: history };
+        await new CommitmentSentinel(config).scan();
+        expect(intelligence.evaluate).toHaveBeenCalledTimes(1);
+        const mark = JSON.parse(fs.readFileSync(path.join(stateDir, 'state/commitment-sentinel.json'), 'utf8'));
+        expect(mark.topicHighWaterMark).toEqual({ 15: 2 });
+        await new CommitmentSentinel(config).scan();
+        expect(intelligence.evaluate).toHaveBeenCalledTimes(1);
+      } finally {
+        history.close();
+      }
+    });
+
+    it('includes newer TopicMemory rows beside a stale log and retains logged provenance', async () => {
+      const memory = new TopicMemory(stateDir);
+      await memory.open();
+      try {
+        const rows = [1, 2, 3].map(messageId => ({
+          topicId: 15, messageId, text: 'status', fromUser: false,
+          timestamp: '2026-11-25T12:00:00Z', sessionName: null,
+        }));
+        // The log-only row models a failed SQLite dual write. Row 2 is in both.
+        writeMessages(stateDir, [rows[0], { ...rows[1], provenance: 'automation' }]);
+        memory.insertMessage(rows[1]);
+        memory.insertMessage(rows[2]);
+        memory.insertMessage({ ...rows[2], messageId: 99, origin: 'imported' });
+        expect(readRecentTelegramHistory(stateDir, memory, 3).map(row => row.messageId)).toEqual([1, 2, 3]);
+        expect(readRecentTelegramHistory(stateDir, memory, 2, { 15: 1 })).toMatchObject([
+          { messageId: 2, provenance: 'automation' }, { messageId: 3 },
+        ]);
+      } finally {
+        memory.close();
+      }
+    });
+
     it('returns 0 when no message file exists', async () => {
       const intelligence = createMockIntelligence('[]');
       const { sentinel } = makeSentinel(stateDir, intelligence);
@@ -217,6 +265,26 @@ describe('CommitmentSentinel', () => {
       expect(prompt).toContain('Please turn off auto-updates');
       expect(prompt).toContain('I will turn off auto-updates now');
       expect(prompt).not.toContain('System status: recovery running');
+    });
+
+    it('skips SQLite-only automation when pairing a request with an agent reply', async () => {
+      const memory = new TopicMemory(stateDir);
+      await memory.open();
+      try {
+        const common = { topicId: 15, sessionName: null, timestamp: '2026-11-25T12:00:00Z' };
+        memory.insertMessage({ ...common, messageId: 1, fromUser: true, text: 'Please investigate', provenance: 'user' });
+        memory.insertMessage({ ...common, messageId: 2, fromUser: false, text: 'Automated status', provenance: 'automation' });
+        memory.insertMessage({ ...common, messageId: 3, fromUser: false, text: 'I will investigate', provenance: 'agent' });
+        const intelligence = createMockIntelligence('[]');
+        const { tracker } = makeSentinel(stateDir, intelligence);
+        await new CommitmentSentinel({ stateDir, intelligence, commitmentTracker: tracker, topicMemory: memory }).scan();
+        expect(intelligence.evaluate).toHaveBeenCalledTimes(1);
+        const prompt = String(vi.mocked(intelligence.evaluate).mock.calls[0][0]);
+        expect(prompt).toContain('I will investigate');
+        expect(prompt).not.toContain('Automated status');
+      } finally {
+        memory.close();
+      }
     });
 
     it('returns 0 for empty message file', async () => {

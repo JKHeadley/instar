@@ -17,7 +17,8 @@ import path from 'node:path';
 import type { IntelligenceProvider } from '../core/types.js';
 import type { CommitmentTracker, CommitmentType } from './CommitmentTracker.js';
 import { DegradationReporter } from './DegradationReporter.js';
-import { readJsonlTailLines } from '../utils/jsonl-tail.js';
+import { readRecentTelegramHistory } from '../messaging/recentTelegramHistory.js';
+import type { TopicMemory } from '../memory/TopicMemory.js';
 import { buildBoundedContext, buildStructuredSha256Identity } from '../core/JudgmentProvenanceLog.js';
 import { DP_COMMITMENT_DETECT } from '../data/provenanceCoverage.js';
 import type { JevFirstDecision, JevPoint } from '../core/JevFirstDecision.js';
@@ -45,6 +46,8 @@ export function buildCommitmentDecisionContext(input: {
 export interface CommitmentSentinelConfig {
   /** State directory (.instar/) */
   stateDir: string;
+  /** Open local history when the legacy Telegram log is absent. */
+  topicMemory?: TopicMemory;
   /** LLM provider for scanning */
   intelligence: IntelligenceProvider;
   /** CommitmentTracker to register detected commitments */
@@ -130,14 +133,12 @@ export class CommitmentSentinel {
   private config: CommitmentSentinelConfig;
   private scanState: ScanState;
   private scanStatePath: string;
-  private messagesPath: string;
   private interval: ReturnType<typeof setInterval> | null = null;
   private isScanning = false;
 
   constructor(config: CommitmentSentinelConfig) {
     this.config = config;
     this.scanStatePath = path.join(config.stateDir, 'state', 'commitment-sentinel.json');
-    this.messagesPath = path.join(config.stateDir, 'telegram-messages.jsonl');
     this.scanState = this.loadScanState();
   }
 
@@ -174,7 +175,10 @@ export class CommitmentSentinel {
     this.isScanning = true;
 
     try {
-      const messages = this.readNewMessages();
+      const messages = readRecentTelegramHistory(
+        this.config.stateDir, this.config.topicMemory, (this.config.maxMessagesPerScan ?? 20) * 10,
+        this.scanState.topicHighWaterMark,
+      );
       if (messages.length === 0) {
         this.isScanning = false;
         return 0;
@@ -241,53 +245,6 @@ export class CommitmentSentinel {
       });
       console.error(`[CommitmentSentinel] Scan error:`, err);
       return 0;
-    }
-  }
-
-  // ── Message Reading ────────────────────────────────────────────
-
-  /**
-   * Read messages newer than the high-water mark from the JSONL log.
-   */
-  private readNewMessages(): TelegramMessage[] {
-    if (!fs.existsSync(this.messagesPath)) return [];
-
-    try {
-      // Bounded TAIL read — never the whole file. This scanner only ever
-      // inspects the last `maxPerScan*10` lines, so loading the full multi-MB
-      // telegram-messages.jsonl on a 5-minute timer was a pure event-loop
-      // freeze (2026-06-22 batch). The 512KB window holds ~2,600 recent lines,
-      // far more than maxPerScan*10, while staying O(window) regardless of size.
-      const lines = readJsonlTailLines(this.messagesPath).lines;
-      const messages: TelegramMessage[] = [];
-      const maxPerScan = this.config.maxMessagesPerScan ?? 20;
-
-      // Read from the end to get the most recent messages
-      for (let i = lines.length - 1; i >= 0 && messages.length < maxPerScan * 10; i--) {
-        try {
-          const msg = JSON.parse(lines[i]) as TelegramMessage;
-          if (!msg.messageId || !msg.topicId || !msg.text) continue;
-
-          // Skip if we've already scanned past this message
-          const hwm = this.scanState.topicHighWaterMark[msg.topicId] ?? 0;
-          if (msg.messageId <= hwm) continue;
-
-          messages.push(msg);
-        } catch {
-          // @silent-fallback-ok — skip individual malformed JSONL lines, other lines still parsed
-        }
-      }
-
-      return messages.reverse(); // Chronological order
-    } catch (err) {
-      DegradationReporter.getInstance().report({
-        feature: 'CommitmentSentinel.readNewMessages',
-        primary: 'Read new Telegram messages from JSONL log',
-        fallback: 'Returning empty array, no messages processed',
-        reason: `Read failed: ${err instanceof Error ? err.message : String(err)}`,
-        impact: 'Commitment detection skipped for this cycle',
-      });
-      return [];
     }
   }
 

@@ -344,7 +344,7 @@ describe('TopicMemory v5 → v6 migration', () => {
       const c = columns();
       expect(c.cols.filter((n) => n === 'channel_message_id' || n === 'origin')).toEqual(['channel_message_id', 'origin']);
       expect(c.idx).toBe(1);
-      expect(c.version).toBe('6');
+      expect(c.version).toBe('7');
     }
     const tm = new TopicMemory(dir);
     await tm.open();
@@ -372,7 +372,7 @@ describe('TopicMemory v5 → v6 migration', () => {
     tm = new TopicMemory(dir);
     await tm.open();
     tm.close();
-    expect(columns().version).toBe('6');
+    expect(columns().version).toBe('7');
   });
 });
 

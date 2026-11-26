@@ -62,6 +62,7 @@ export interface RowBody {
   /** The UserManager profile id of the sender (the operator binding, §6.1), when resolved. */
   userId?: string;
   forwarded?: boolean;
+  provenance?: TopicMessage['provenance'];
   /** Set only for a row that reached this topic through another agent (§8). */
   origin?: TopicRowOrigin;
 }

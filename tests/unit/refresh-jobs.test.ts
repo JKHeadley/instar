@@ -19,6 +19,7 @@
 
 import { describe, it, expect, beforeEach, afterEach } from 'vitest';
 import fs from 'node:fs';
+import { execFileSync } from 'node:child_process';
 import path from 'node:path';
 import os from 'node:os';
 import { refreshHooksAndSettings } from '../../src/commands/init.js';
@@ -111,6 +112,42 @@ describe('refreshJobs()', () => {
     expect(jobs.some(job => job.slug === 'guardian-pulse')).toBe(true);
     expect(jobs.find(job => job.slug === 'git-sync')?.enabled).toBe(false);
     expect(result.errors).toEqual([]);
+  });
+
+  it('repairs the stock commitment prompt and installs its bookmark helper across two updates', () => {
+    const legacy = fs.readFileSync(path.join(__dirname, '../fixtures/commitment-detection/legacy-prompt.txt'), 'utf8');
+    const settings = { schedule: '5 * * * *', enabled: false };
+    project = createTestProject({ jobs: [makeJob('commitment-detection', {
+      ...settings, execute: { type: 'prompt', value: legacy },
+    })] });
+    const migrator = new PostUpdateMigrator({
+      projectDir: project.dir, stateDir: project.stateDir, port: 4321,
+      hasTelegram: false, projectName: 'test-agent',
+    });
+    const result = { upgraded: [], skipped: [], errors: [] };
+    let firstJobs: string | undefined;
+    for (let pass = 0; pass < 2; pass++) {
+      migrator['migrateBuiltinJobs'](result);
+      migrator['migrateLegacyDefaultJobs'](result);
+      const jobs = fs.readFileSync(project.jobsPath, 'utf8');
+      const job = JSON.parse(jobs).find((entry: { slug: string }) => entry.slug === 'commitment-detection');
+      expect(job).toMatchObject(settings);
+      const shipped = fs.readFileSync(path.join(project.stateDir, 'jobs/instar/commitment-detection.md'), 'utf8');
+      expect(job.execute.value).toContain('commitment-history.mjs read');
+      expect(shipped).toContain(job.execute.value.trim());
+      if (firstJobs !== undefined) expect(jobs).toBe(firstJobs);
+      firstJobs = jobs;
+    }
+    expect(result.errors).toEqual([]);
+    const helper = path.join(project.stateDir, 'jobs/instar/scripts/commitment-history.mjs');
+    const advance = (id: string) => execFileSync(process.execPath, [helper, 'advance', id], {
+      cwd: project.dir, env: { INSTAR_STATE_DIR: project.stateDir }, encoding: 'utf8',
+    });
+    expect(advance('7')).toBe('EFFECT: .instar/state/commitment-detection-bookmark.json\n');
+    expect(advance('6')).toBe('');
+    expect(advance('7')).toBe('');
+    const saved = JSON.parse(fs.readFileSync(path.join(project.stateDir, 'state/commitment-detection-bookmark.json'), 'utf8'));
+    expect(saved.lastProcessedId).toBe(7);
   });
 
   it('preserves a customized default body before legacy migration', () => {

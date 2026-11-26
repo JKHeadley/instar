@@ -8373,20 +8373,32 @@ if [[ "$ACTIVE" != "true" ]]; then`;
         throw new Error('jobs.json must be an array of jobs with slugs');
       }
       const slugs = new Set(jobs.map(job => job.slug));
-      const missing = (getDefaultJobs(this.config.port) as Array<{ slug: string; enabled?: boolean }>)
-        .filter(job => !slugs.has(job.slug));
-      // An update may add shipped defaults, but must not rewrite an existing
-      // legacy body before jobsMigrate can classify and preserve user edits.
+      const defaults = getDefaultJobs(this.config.port) as Array<{ slug: string; enabled?: boolean; execute?: { value?: string } }>;
+      const missing = defaults.filter(job => !slugs.has(job.slug));
+      // jobsMigrate forks customized bodies. Upgrade only the two exact stock
+      // commitment prompts before classification, including legacy-only installs.
+      const commitment = jobs.find(job => job.slug === 'commitment-detection');
+      let repaired = false;
+      if (commitment?.execute?.type === 'prompt' && typeof commitment.execute.value === 'string') {
+        const canonical = commitment.execute.value.trim().replace(/\r\n/g, '\n').replace(/:-\d+}/g, ':-PORT}');
+        const hash = crypto.createHash('sha256').update(canonical).digest('hex');
+        if (hash === 'c19876e732f142a70023f7f1da3080c22ba8d15120ea35cb748e2a14c60a5c43' ||
+            hash === '17b98be7f02a22f5d147a258358c5aaa3ef2240244564843bc59d6a6681a5b57') {
+          commitment.execute.value = defaults.find(job => job.slug === commitment.slug)!.execute!.value;
+          repaired = true;
+        }
+      }
       // A Git remote is never an opt-in to running git-sync.
       for (const job of missing) {
         if (job.slug === 'git-sync') job.enabled = false;
         jobs.push(job);
       }
-      if (missing.length > 0) {
+      if (missing.length > 0 || repaired) {
         SafeFsExecutor.atomicWriteJsonSync(jobsPath, jobs, {
           operation: 'PostUpdateMigrator.migrateLegacyDefaultJobs', indent: 2,
         });
-        result.upgraded.push(`legacy default jobs: ${missing.length} missing job(s) installed`);
+        if (missing.length) result.upgraded.push(`legacy default jobs: ${missing.length} missing job(s) installed`);
+        if (repaired) result.upgraded.push('legacy commitment-detection: switched to local history API');
       } else {
         result.skipped.push('legacy default jobs: already present');
       }

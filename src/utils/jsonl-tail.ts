@@ -20,7 +20,7 @@
  *   - Return the raw trailing lines (newest LAST, file order preserved) — the
  *     caller parses + filters exactly as it did over the full split before.
  *
- * Never throws — a read failure returns an empty result, matching the
+ * By default a read failure returns an empty result, matching the
  * @silent-fallback-ok behavior of every former full-file caller. Observability
  * / housekeeping reads must never endanger the observed operation.
  */
@@ -48,41 +48,29 @@ export function readJsonlTailLines(
   filePath: string,
   maxBytes: number = DEFAULT_TAIL_BYTES,
 ): TailReadResult {
-  const empty: TailReadResult = { lines: [], truncated: false };
   try {
-    if (!fs.existsSync(filePath)) return empty;
+    return readJsonlTailLinesStrict(filePath, maxBytes);
   } catch {
-    return empty;
+    // @silent-fallback-ok — best-effort monitoring callers historically read an empty tail.
+    return { lines: [], truncated: false };
   }
+}
 
-  let size: number;
-  try {
-    size = fs.statSync(filePath).size;
-  } catch {
-    return empty;
-  }
-  if (size === 0) return empty;
-
-  const readBytes = Math.min(size, maxBytes);
-  const truncated = readBytes < size;
-  const start = size - readBytes;
-
+/** For consumers that distinguish a missing or unreadable source from an empty file. */
+export function readJsonlTailLinesStrict(filePath: string, maxBytes = DEFAULT_TAIL_BYTES): TailReadResult {
+  const fd = fs.openSync(filePath, 'r');
   let buf: Buffer;
-  let fd: number | null = null;
+  let start: number;
   try {
-    fd = fs.openSync(filePath, 'r');
-    buf = Buffer.alloc(readBytes);
-    fs.readSync(fd, buf, 0, readBytes, start);
-  } catch {
-    return empty;
-  } finally {
-    if (fd !== null) {
-      try {
-        fs.closeSync(fd);
-      } catch {
-        /* best-effort */
-      }
+    const size = fs.fstatSync(fd).size;
+    const bytes = Math.min(size, maxBytes);
+    start = size - bytes;
+    buf = Buffer.alloc(bytes);
+    if (fs.readSync(fd, buf, 0, bytes, start) !== bytes) {
+      throw new Error('JSONL tail changed during read');
     }
+  } finally {
+    fs.closeSync(fd);
   }
 
   let text = buf.toString('utf-8');
@@ -93,7 +81,7 @@ export function readJsonlTailLines(
   }
 
   const lines = text.split('\n').filter((l) => l.length > 0);
-  return { lines, truncated };
+  return { lines, truncated: start > 0 };
 }
 
 /**
