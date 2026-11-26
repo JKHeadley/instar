@@ -1,0 +1,22 @@
+{
+  "ts": "2026-11-26T18:44:32.349Z",
+  "slug": "first-phone-v2-authenticated-route",
+  "suggestedTier": 2,
+  "declaredTier": 1,
+  "riskFloor": 1,
+  "riskFloorReasons": [],
+  "belowFloor": false,
+  "files": 1,
+  "loc": 63,
+  "scope": {
+    "basis": "staged-in-scope-paths-including-deleted",
+    "files": [
+      "src/server/mobilePermissionsRoutes.ts"
+    ],
+    "addedLines": 55,
+    "deletedLines": 8
+  },
+  "causalAutopsy": null,
+  "classClosure": null,
+  "verdict": "pass"
+}

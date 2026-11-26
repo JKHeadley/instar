@@ -29,3 +29,5 @@ The unmounted first-phone decision handler now checks dedicated Face ID proof an
 The dark first-phone holder now gates new attempts on a witnessed outcome and predecessor reconciliation.
 
 The disposable first-phone registry exercises an exact witnessed write and refuses publication after a holder handover. Production remains off.
+
+The isolated server now accepts an authenticated version 2 Face ID submission. The running server leaves that path unavailable.

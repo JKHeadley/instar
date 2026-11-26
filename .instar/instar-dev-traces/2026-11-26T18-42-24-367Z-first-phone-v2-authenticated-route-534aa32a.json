@@ -1,0 +1,23 @@
+{
+  "version": 2,
+  "slug": "first-phone-v2-authenticated-route",
+  "sessionId": "b3d2cf8a-9b5d-468b-a50b-70ebf11e9e5c",
+  "timestamp": "2026-11-26T18:42:24.367Z",
+  "artifactPath": "upgrades/side-effects/first-phone-v2-authenticated-route.md",
+  "artifactSha256": "60484934de317f4b69440551c47f6527fb9b4cee4adb5a3b3ead64dd404c3f23",
+  "coveredFiles": [
+    "docs/specs/phone-only-first-approver.eli16.md",
+    "src/server/mobilePermissionsRoutes.ts",
+    "tests/e2e/mobile-native-permissions-alive.test.ts",
+    "tests/integration/mobile-native-permissions.test.ts",
+    "upgrades/next/phone-only-first-approver.md",
+    "upgrades/side-effects/first-phone-v2-authenticated-route.md"
+  ],
+  "phase": "complete",
+  "tier": 1,
+  "tierReasoning": "Existing signed owner route with new production-unavailable optional test branch and no registration or registry side effect",
+  "eli16Path": "docs/specs/phone-only-first-approver.eli16.md",
+  "sideEffectsPath": "upgrades/side-effects/first-phone-v2-authenticated-route.md",
+  "secondPass": "true",
+  "reviewerConcurred": true
+}

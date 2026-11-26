@@ -105,6 +105,10 @@ describe('native permissions — production wiring', () => {
       return raw ? r.send(raw.toString()) : r;
     };
     expect((await signed('POST', '/mobile/device/confirm', { code })).body.status).toBe('active');
+    const disabledFaceId = await signed('POST', '/mobile/trust/first-phone-enrollment', { version: 2 });
+    expect(disabledFaceId.status).toBe(503);
+    expect(disabledFaceId.body.error).toBe('first-phone-enrollment-unavailable');
+
 
     // Before the key: read-only lists say the phone can enrol, and a write is refused for the missing key.
     const before = await signed('GET', '/mobile/permissions/slips');

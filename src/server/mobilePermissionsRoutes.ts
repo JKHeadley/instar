@@ -57,6 +57,8 @@ import { maybeRotateJsonl } from '../utils/jsonl-rotation.js';
 import { isTeamSwitchSetting, type TeamSwitchSetting } from '../core/TeamSwitches.js';
 import { isNewAccountKind, type NewAccountKind } from '../core/newSubscriptionAccountId.js';
 import { keyHashOf, parseDevicePublicKey } from '../core/MobileDeviceKeys.js';
+import { FIRST_PHONE_FACE_ID_ASSURANCE } from '../core/trustJourney/firstPhoneOrderedChallenge.js';
+import type { createFirstPhoneOrderedEnrollment } from '../core/trustJourney/firstPhoneOrderedEnrollment.js';
 import { FIRST_PHONE_ENROLLMENT_LOOKUP_PATH, firstPhoneEnrollmentLine } from '../core/trustJourney/firstPhoneProposal.js';
 import { arrivedLocallyUnforwarded, trustAnswerStatus, type MobileTrustPort } from './mobileTrustApproval.js';
 
@@ -748,6 +750,9 @@ export function summarizePeerFeatures(peers: Array<PeerSlips | PeerUnreached>, o
 export interface ActionResult { status: number; body: unknown }
 
 type FirstPhoneCaller = { deviceId: string; host: string; deviceKeyHash: string; presenceKeyHash: string };
+type ConsumeFirstPhoneFaceId = ReturnType<typeof createFirstPhoneOrderedEnrollment>['consumeFaceId'];
+type FirstPhoneTransport = Pick<FirstPhoneCaller, 'deviceId' | 'deviceKeyHash'> & { signedHost: string };
+
 
 export interface MobilePermissionsDeps {
   pairing: () => MobilePairingService | null;
@@ -785,6 +790,11 @@ export interface MobilePermissionsDeps {
   ) => Refusal | null;
   /** Test-only resolver for the exact nomination or historical receipt. */
   firstPhoneEnrollmentRead?: (nominationId: string, caller: FirstPhoneCaller) => Promise<ActionResult>;
+  /** Unmounted production dependency. The resolver reads trusted device bindings, not request data. */
+  firstPhoneFaceId?: {
+    resolveCaller: (transport: FirstPhoneTransport) => Parameters<ConsumeFirstPhoneFaceId>[1] | null;
+    consume: ConsumeFirstPhoneFaceId;
+  };
   /** Test-only authority for the durable decision. It revalidates current authority at commit. */
   firstPhoneEnrollmentSubmit?: (
     action: Extract<PermissionAction, { kind: 'first-phone-enrollment-v1' }>,
@@ -940,7 +950,7 @@ export function mountMobilePermissionsRoutes(router: Router, deps: MobilePermiss
   /** Steps 1–6 of the write gate (spec §3.3). Answers and returns null on refusal. */
   // `teamControl`: turning team access off, restoring it and requiring privacy must always work for
   // whoever could invite, so they do not hang on this feature's switch or the console PIN (§3.6).
-  const writeGate = (req: Request, res: Response, mode: boolean | 'trust' | 'first-phone' = false): { deviceId: string; personId: string | null; host: string; presenceKey: string; svc: MobilePairingService } | null => {
+  const writeGate = (req: Request, res: Response, mode: boolean | 'trust' | 'first-phone' | 'first-phone-v2' = false): { deviceId: string; personId: string | null; host: string; presenceKey: string; svc: MobilePairingService } | null => {
     res.set('Cache-Control', 'no-store');
     // Every refusal leaves a trace before the answer (A Refusal Stays a Refusal); the bearer has no device id.
     const refuse = (r: Refusal, deviceId: string | null = principalDevice(req)): null => {
@@ -951,7 +961,8 @@ export function mountMobilePermissionsRoutes(router: Router, deps: MobilePermiss
     const svc = deps.pairing();
     const config = deps.config();
     const teamControl = mode === true;
-    const trustControl = mode === 'trust' || mode === 'first-phone';
+    const firstPhone = mode === 'first-phone' || mode === 'first-phone-v2';
+    const trustControl = mode === 'trust' || firstPhone;
     if (!svc || !svc.enabled()) return refuse({ status: 503, error: 'permission-actions-off', detail: 'Changing permissions from the phone is turned off on this agent. Open the console to change this.' });
     if (trustControl ? !isTrustApprovalEnabled(config) : (!teamControl && !isPermissionActionsEnabled(config))) {
       return trustControl
@@ -963,14 +974,14 @@ export function mountMobilePermissionsRoutes(router: Router, deps: MobilePermiss
     const deviceId = p.deviceId;
     if (!overLocalTls(req)) return refuse({ status: 403, error: 'secure-transport-required' }, deviceId);
     if (!activeOwnerPhone(svc, deviceId)) return refuse({ status: 403, error: 'owner-phone-required' }, deviceId);
-    if (!teamControl && mode !== 'first-phone' && !config.dashboardPin) return refuse({ status: 503, error: 'console-pin-not-set', detail: 'The console has no PIN set, so it cannot approve or switch either. Set a PIN first.' }, deviceId);
+    if (!teamControl && !firstPhone && !config.dashboardPin) return refuse({ status: 503, error: 'console-pin-not-set', detail: 'The console has no PIN set, so it cannot approve or switch either. Set a PIN first.' }, deviceId);
     const d = svc.devices.get(deviceId);
-    if (mode === 'first-phone' && d?.deviceKind === 'computer') return refuse({ status: 403, error: 'first-phone-required' }, deviceId);
-    if (!d?.presenceKey) return refuse({ status: 409, error: 'presence-key-missing' }, deviceId);
+    if (firstPhone && d?.deviceKind === 'computer') return refuse({ status: 403, error: 'first-phone-required' }, deviceId);
+    if (!d || (!d.presenceKey && mode !== 'first-phone-v2')) return refuse({ status: 409, error: 'presence-key-missing' }, deviceId);
     const raw = (req as unknown as { instarDeviceHost?: unknown }).instarDeviceHost;
     const host = normalHost(typeof raw === 'string' && raw.length > 0 ? raw : d.host ?? '');
     const person = svc.personOfDevice(d);
-    return { deviceId, personId: person.userId ?? null, host, presenceKey: d.presenceKey, svc };
+    return { deviceId, personId: person.userId ?? null, host, presenceKey: d.presenceKey ?? '', svc };
   };
 
   router.post('/mobile/permissions/challenge', (req: Request, res: Response) => {
@@ -1404,9 +1415,45 @@ export function mountMobilePermissionsRoutes(router: Router, deps: MobilePermiss
 
   router.post('/mobile/trust/first-phone-enrollment', guarded('record first-phone enrollment', async (req, res) => {
     res.set('Cache-Control', 'no-store');
-    const g = writeGate(req, res, 'first-phone');
-    if (!g) return;
     const b = rec(req.body);
+    const g = writeGate(req, res, b.version === 2 ? 'first-phone-v2' : 'first-phone');
+    if (!g) return;
+    if (b.version !== undefined && b.version !== 1 && b.version !== 2) {
+      refuse400(req, res, g, 'bad-enrollment-binding');
+      return;
+    }
+    if (b.version === 2) {
+      const port = deps.firstPhoneFaceId;
+      if (!port) { res.status(503).json({ error: 'first-phone-enrollment-unavailable' }); return; }
+      const { challengeKey, challengeDigest, operationId, faceIdSignature, localAssurance } = b;
+      if (req.originalUrl !== '/mobile/trust/first-phone-enrollment' || Object.keys(b).length !== 6
+        || typeof challengeKey !== 'string' || !/^[a-f0-9]{64}$/.test(challengeKey)
+        || typeof challengeDigest !== 'string' || !/^[a-f0-9]{64}$/.test(challengeDigest)
+        || typeof operationId !== 'string' || !/^[A-Za-z0-9_-]{16,128}$/.test(operationId)
+        || typeof faceIdSignature !== 'string' || !/^[A-Za-z0-9_-]{8,100}$/.test(faceIdSignature)
+        || localAssurance !== FIRST_PHONE_FACE_ID_ASSURANCE) {
+        refuse400(req, res, g, 'bad-enrollment-binding');
+        return;
+      }
+      const identity = deviceAdmissionIdentity(req);
+      const signedHost = (req as unknown as { instarDeviceHost?: unknown }).instarDeviceHost;
+      const caller = identity?.role === 'owner' && typeof signedHost === 'string' && signedHost
+        ? port.resolveCaller({ deviceId: g.deviceId, deviceKeyHash: identity.keyHash, signedHost }) : null;
+      if (!caller || caller.deviceId !== g.deviceId || caller.deviceKeyHash !== identity?.keyHash) {
+        res.status(403).json({ error: 'first-phone-proof-unavailable' });
+        return;
+      }
+      const origin = URL.canParse(caller.origin) ? new URL(caller.origin) : null;
+      if (!origin || origin.protocol !== 'https:' || origin.origin !== caller.origin || origin.host !== signedHost) {
+        res.status(403).json({ error: 'first-phone-proof-unavailable' });
+        return;
+      }
+      const result = await port.consume({ challengeKey, challengeDigest, operationId, faceIdSignature, localAssurance }, caller);
+      if (result.kind === 'witnessed') res.status(200).json({ status: 'witnessed', decision: result.outcome.decision });
+      else if (result.kind === 'pending') res.status(503).json({ error: 'first-phone-enrollment-pending' });
+      else res.status(409).json({ error: 'first-phone-enrollment-refused' });
+      return;
+    }
     const built = buildAction('first-phone-enrollment-v1', b.target, actionExtras(b));
     if (!built.ok) { refuse400(req, res, g, built.error); return; }
     const action = built.action as Extract<PermissionAction, { kind: 'first-phone-enrollment-v1' }>;

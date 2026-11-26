@@ -78,3 +78,5 @@ The isolated decision test now submits the dedicated Face ID proof to the witnes
 The new holder lifecycle closes the local approval window before it asks the witness to cancel. When the witness is unavailable, a second attempt stays closed. If approval already won, cancellation cannot reverse it.
 
 The disposable registry can apply the exact approved change in the same write that checks the current witness decision. A changed decision or a handover that wins first leaves the write pending. The ordinary device registry is not touched.
+
+A disposable server can now receive the first-phone proof over the existing signed phone connection. It checks the paired origin and exact device before processing the Face ID signature. Its reply reports what the witness decided. The ordinary device registry is still separate.

@@ -9,7 +9,7 @@
  * proven action reaches the injected console path (the e2e drives the real one).
  */
 import { describe, it, expect, afterAll, vi } from 'vitest';
-import { createHash, createECDH } from 'node:crypto';
+import { createHash, createECDH, createPublicKey } from 'node:crypto';
 import fs from 'node:fs';
 import os from 'node:os';
 import path from 'node:path';
@@ -23,6 +23,9 @@ import { presenceMessage } from '../../src/server/mobileConsoleTicket.js';
 import { FirstPhonePrivateNominationStore } from '../../src/core/trustJourney/FirstPhonePrivateNominationStore.js';
 import { canonicalString, keyHashOf } from '../../src/core/MobileDeviceKeys.js';
 import { firstPhoneEnrollmentReceipt } from '../helpers/firstPhoneEnrollmentReceipt.js';
+import { createFirstPhoneOrderedEnrollment } from '../../src/core/trustJourney/firstPhoneOrderedEnrollment.js';
+import { encodeFirstPhoneFaceIdChallenge, FIRST_PHONE_FACE_ID_ASSURANCE, type FirstPhoneFaceIdChallenge } from '../../src/core/trustJourney/firstPhoneOrderedChallenge.js';
+import vector from '../fixtures/first-phone/face-id-challenge-v2.json';
 import { makeDevice } from '../helpers/mobileDevice.js';
 import { SafeFsExecutor } from '../../src/core/SafeFsExecutor.js';
 import { FeatureEvidenceLog, setFeatureEvidenceLog } from '../../src/monitoring/FeatureEvidenceLog.js';
@@ -42,7 +45,8 @@ const backup = { id: 'git-backup', name: 'Git backup', consentTier: 'local', swi
 
 function setup(cfg: Record<string, unknown> = {}, firstPhoneEnrollmentPrecheck?: MobilePermissionsDeps['firstPhoneEnrollmentPrecheck'],
   firstPhoneEnrollmentSubmit?: MobilePermissionsDeps['firstPhoneEnrollmentSubmit'],
-  firstPhoneEnrollmentRead?: MobilePermissionsDeps['firstPhoneEnrollmentRead']) {
+  firstPhoneEnrollmentRead?: MobilePermissionsDeps['firstPhoneEnrollmentRead'],
+  firstPhoneFaceId?: MobilePermissionsDeps['firstPhoneFaceId']) {
   const dir = fs.mkdtempSync(path.join(os.tmpdir(), 'mnperm-int-'));
   dirs.push(dir);
   fs.writeFileSync(path.join(dir, 'users.json'), JSON.stringify([{ id: 'justin', name: 'Justin', channels: [], permissions: ['user'] }]));
@@ -57,6 +61,7 @@ function setup(cfg: Record<string, unknown> = {}, firstPhoneEnrollmentPrecheck?:
     firstPhoneEnrollmentPrecheck,
     firstPhoneEnrollmentSubmit,
     firstPhoneEnrollmentRead,
+    firstPhoneFaceId,
     config: () => config,
     stateDir: dir,
     bearerOk: (req) => req.headers.authorization === 'Bearer tok-1',
@@ -705,3 +710,44 @@ it.skipIf(!simulatorDescriptor)('serves a disposable enrollment to the native si
     db.close();
   }
 }, 310_000);
+
+it('authenticates an exact v2 Face ID submission and keeps registry application separate', async () => {
+  const dedicated = makeDevice();
+  const point = Buffer.from(dedicated.publicKey, 'base64url');
+  const spki = createPublicKey({ key: { kty: 'EC', crv: 'P-256', x: point.subarray(1, 33).toString('base64url'),
+    y: point.subarray(33).toString('base64url') }, format: 'jwk' }).export({ type: 'spki', format: 'der' });
+  let challenge: FirstPhoneFaceIdChallenge;
+  const consume = createFirstPhoneOrderedEnrollment({
+    async decide(key, select) {
+      const outcome = select({
+        current: { challenge, faceIdPublicKeySpkiDerBase64: spki.toString('base64'), faceIdEligible: true },
+        existing: null, slotEmpty: true, admitsConsume: true, admitsCancel: true,
+      });
+      return outcome?.challengeKey === key ? { kind: 'witnessed', outcome } : { kind: 'refused' };
+    },
+  }).consumeFaceId;
+  const resolveCaller = vi.fn(() => challenge);
+  const fixture = setup({}, undefined, undefined, undefined, { resolveCaller, consume });
+  const phone = fixture.pair();
+  const other = fixture.pair();
+  challenge = {
+    ...vector.input, origin: `https://${HOST}`, deviceId: phone.id, deviceKeyHash: keyHashOf(phone.dev.publicKey),
+    faceIdKeyHash: createHash('sha256').update(spki).digest('hex'), localAssurance: FIRST_PHONE_FACE_ID_ASSURANCE,
+  };
+  const { challengeKey, challengeDigest, bytes } = encodeFirstPhoneFaceIdChallenge(challenge)!;
+  const path = '/mobile/trust/first-phone-enrollment';
+  const body = { version: 2, challengeKey, challengeDigest, operationId: 'exact-v2-operation',
+    localAssurance: FIRST_PHONE_FACE_ID_ASSURANCE, faceIdSignature: dedicated.sign(bytes.toString('utf8')) };
+  expect((await request(fixture.app).post(path).set('Authorization', 'Bearer tok-1').send(body)).status).toBe(403);
+  expect((await send(fixture.app, other, 'POST', path, body)).status).toBe(403);
+  const unsupported = await send(fixture.app, phone, 'POST', path, { version: 3, target: challenge.nominationId,
+    proposalHash: challenge.proposalHash, disclosureHash: challenge.disclosureHash });
+  expect(unsupported.status).toBe(400);
+  expect(unsupported.body.error).toBe('bad-enrollment-binding');
+  expect((await send(fixture.app, phone, 'POST', path, { ...body, origin: 'https://caller.example' })).status).toBe(400);
+  expect((await send(fixture.app, phone, 'POST', path, { ...body, faceIdSignature: phone.presence.sign(bytes.toString('utf8')) })).status).toBe(409);
+  const approved = await send(fixture.app, phone, 'POST', path, body);
+  expect(approved.status).toBe(200);
+  expect(approved.body).toEqual({ status: 'witnessed', decision: 'accepted' });
+  expect(resolveCaller).toHaveBeenCalledWith({ deviceId: phone.id, deviceKeyHash: challenge.deviceKeyHash, signedHost: HOST });
+});
