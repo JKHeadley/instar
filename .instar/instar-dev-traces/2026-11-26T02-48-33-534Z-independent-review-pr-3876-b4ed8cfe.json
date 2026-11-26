@@ -1,0 +1,20 @@
+{
+  "version": 2,
+  "slug": "independent-review-pr-3876",
+  "sessionId": "017c26ed-5596-4576-9c20-20af13e4c1f8",
+  "timestamp": "2026-11-26T02:48:33.534Z",
+  "artifactPath": "upgrades/side-effects/independent-review-pr-3876.md",
+  "artifactSha256": "48ccec7bd07eeef51e84c6f8b7e4d515a00bdee05d6ed8fd1c74bd3d64e89b94",
+  "specPath": null,
+  "coveredFiles": [
+    "src/localVerify/LocalVerifyService.ts",
+    "src/localVerify/smallPeerMemory.ts",
+    "tests/unit/localVerify/peerVerifier.test.ts",
+    "tests/unit/localVerify/smallPeerMemory.test.ts"
+  ],
+  "phase": "complete",
+  "tier": 2,
+  "tierReasoning": "Hash-bound independent review of exact source and test diff. Adds only the review artifact and trace.",
+  "secondPass": "true",
+  "reviewerConcurred": true
+}
