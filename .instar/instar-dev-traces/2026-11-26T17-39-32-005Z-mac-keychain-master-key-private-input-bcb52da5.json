@@ -1,0 +1,21 @@
+{
+  "version": 2,
+  "slug": "mac-keychain-master-key-private-input",
+  "sessionId": "fc3d3191-842f-463d-af54-a2abbc40e3f2",
+  "timestamp": "2026-11-26T17:39:32.005Z",
+  "artifactPath": "upgrades/side-effects/mac-keychain-master-key-private-input.md",
+  "artifactSha256": "3b97a152fd71dc00a1bbe9a6fd9cc2f910859eab871c180d9e0199753f0cc19e",
+  "coveredFiles": [
+    "docs/specs/mac-keychain-master-key-private-input.eli16.md",
+    "src/core/macKeychainWrite.ts",
+    "tests/unit/mac-keychain-write.test.ts",
+    "upgrades/side-effects/mac-keychain-master-key-private-input.md"
+  ],
+  "phase": "complete",
+  "tier": 1,
+  "tierReasoning": "SIGKILL on the 5 s keychain-write timeout plus a test proving identical copies after an unconfirmed write; answers the reviewer's re-check",
+  "eli16Path": "docs/specs/mac-keychain-master-key-private-input.eli16.md",
+  "sideEffectsPath": "upgrades/side-effects/mac-keychain-master-key-private-input.md",
+  "secondPass": "true",
+  "reviewerConcurred": false
+}

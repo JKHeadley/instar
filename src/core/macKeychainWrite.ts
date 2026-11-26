@@ -15,6 +15,6 @@ export function writeMacKeychainKey(
   if (!service || !account || /["'\\\u0000-\u001f\u007f]/u.test(service + account) || key.length !== 32) return false;
   const input = `add-generic-password -U -s "${service}" -a "${account}" -w ${key.toString('base64')}\n`;
   if (Buffer.byteLength(input, 'utf8') > MAX_INPUT_BYTES) return false;
-  withSyncOp(() => run('/usr/bin/security', ['-q', '-i'], { input, stdio: ['pipe', 'ignore', 'ignore'], timeout: 5000 }));
+  withSyncOp(() => run('/usr/bin/security', ['-q', '-i'], { input, stdio: ['pipe', 'ignore', 'ignore'], timeout: 5000, killSignal: 'SIGKILL' }));
   return readBack()?.equals(key) === true;
 }
