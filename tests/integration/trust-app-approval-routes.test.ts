@@ -13,6 +13,24 @@ import { bootTrustAppServer, cleanupTrustAppServers, DISCLOSURE, DHASH } from '.
 afterAll(async () => { await cleanupTrustAppServers('tests/integration/trust-app-approval-routes.test.ts'); });
 
 describe('Approving a trust raise from the app (real AgentServer)', () => {
+  it('requires first-phone enrollment authority beyond a paired phone and a valid presence signature', async () => {
+    const s = await bootTrustAppServer('trust-first-phone-int-');
+    const phone = await s.pair({ local: false, name: 'Disposable paired phone' });
+    const line = `accept-device ${phone.id} ${phone.fp} ${DHASH}`;
+
+    const attempt = await phone.act({
+      action: 'accept-device', target: phone.id, keyFingerprint: phone.fp, disclosureHash: DHASH,
+    }, '/mobile/trust/device-acceptance', {
+      keyFingerprint: phone.fp, disclosureHash: DHASH, disclosure: DISCLOSURE, keyPolicy: 'biometryCurrentSet',
+    }, line);
+    expect(attempt.status).toBe(403);
+    expect(attempt.body).toMatchObject({ status: 'refused', error: 'approval-needed' });
+
+    const listed = await phone.signed('GET', '/mobile/trust/requests');
+    expect(listed.status).toBe(200);
+    expect(listed.body.approvals).toMatchObject({ thisDevice: null, anyCurrent: false });
+  });
+
   it('no-approver, then the device accepts, the request is listed, approved once, and the raise applies', async () => {
     const s = await bootTrustAppServer('trust-app-int-');
     const change = { kind: 'trust-grant', service: 'gmail', operation: 'write', level: 'autonomous' };
