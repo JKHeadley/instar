@@ -1,0 +1,19 @@
+{
+  "version": 2,
+  "slug": "observe-empty-development-review-release-note",
+  "sessionId": "bcc82a0c-f81e-440b-88eb-304eb7ee4f4c",
+  "timestamp": "2026-11-26T20:58:30.476Z",
+  "artifactPath": "upgrades/side-effects/observe-empty-development-review-release-note.md",
+  "artifactSha256": "7d52366e9f3591e47f483f1626adb684ba0370604e68bf14438740a837d43c84",
+  "coveredFiles": [
+    "docs/specs/observe-empty-development-review-release-note.eli16.md",
+    "upgrades/side-effects/observe-empty-development-review-release-note.md"
+  ],
+  "phase": "complete",
+  "tier": 1,
+  "tierReasoning": "Documentation-only correction to the release note; fully reversible and adds no runtime behavior.",
+  "eli16Path": "docs/specs/observe-empty-development-review-release-note.eli16.md",
+  "sideEffectsPath": "upgrades/side-effects/observe-empty-development-review-release-note.md",
+  "secondPass": "not-required",
+  "reviewerConcurred": null
+}

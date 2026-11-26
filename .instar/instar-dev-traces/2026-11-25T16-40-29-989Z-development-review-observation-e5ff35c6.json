@@ -1,0 +1,28 @@
+{
+  "version": 2,
+  "slug": "development-review-observation",
+  "sessionId": "bcc82a0c-f81e-440b-88eb-304eb7ee4f4c",
+  "timestamp": "2026-11-25T16:40:29.989Z",
+  "artifactPath": "upgrades/side-effects/development-review-observation.md",
+  "artifactSha256": "e4f25748ff718fceec02703162a658c317f75531583e7e03167d70ed80f9b54c",
+  "coveredFiles": [
+    "docs/specs/development-review-observation.eli16.md",
+    "src/data/awareness/development-review-observation.md",
+    "src/monitoring/TokenLedger.ts",
+    "src/scheduler/JobLoader.ts",
+    "src/scheduler/JobRunHistory.ts",
+    "src/scheduler/JobScheduler.ts",
+    "src/server/routes.ts",
+    "tests/e2e/development-review-observation-alive.test.ts",
+    "tests/integration/development-review-observation-routes.test.ts",
+    "tests/unit/TokenLedger-job-sessions.test.ts",
+    "upgrades/side-effects/development-review-observation.md"
+  ],
+  "phase": "complete",
+  "tier": 1,
+  "tierReasoning": "Opt-in read-only evidence for an existing job with unchanged launch and scheduling authority",
+  "eli16Path": "docs/specs/development-review-observation.eli16.md",
+  "sideEffectsPath": "upgrades/side-effects/development-review-observation.md",
+  "secondPass": "not-required",
+  "reviewerConcurred": null
+}
