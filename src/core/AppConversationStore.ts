@@ -1573,13 +1573,30 @@ export class AppConversationStore {
   /** Exact candidates after the caller's row ACL, or null when removal proof is incomplete. */
   exactRemovalAwareMessageCandidates(conversationKey: string, target: string, kind: 'event' | 'message' | 'legacy',
     mayRead: (row: BrowsedMessage) => boolean): BrowsedMessage[] | null {
+    return this.withRemovalHistory(conversationKey, (custodian) =>
+      this.selectRemovalAwareCandidates(conversationKey, target, kind, mayRead, custodian));
+  }
+
+  private selectRemovalAwareCandidates(conversationKey: string, target: string, kind: 'event' | 'message' | 'legacy',
+    mayRead: (row: BrowsedMessage) => boolean, custodian: string) {
     const key = canonicalConversationKey(conversationKey);
-    return this.withRemovalHistory(conversationKey, (custodian) => {
-      const removed = this.db.prepare('SELECT 1 FROM message_removals WHERE canonicalKey = ? AND targetEventId = ? AND targetMessageId = ? AND machineId = ? LIMIT 1');
-      const candidates = this.exactMessageCandidates(conversationKey, target, kind).filter(mayRead);
-      const visible = candidates.filter((row) => !removed.get(key, row.eventId, row.messageId, custodian));
-      // A legacy identifier may name two occurrences. Removal cannot retarget it to the survivor.
-      return kind === 'legacy' && visible.length !== candidates.length ? [] : visible;
+    const removed = this.db.prepare('SELECT 1 FROM message_removals WHERE canonicalKey = ? AND targetEventId = ? AND targetMessageId = ? AND machineId = ? LIMIT 1');
+    const candidates = this.exactMessageCandidates(conversationKey, target, kind).filter(mayRead);
+    const visible = candidates.filter((row) => !removed.get(key, row.eventId, row.messageId, custodian));
+    // A legacy identifier may name two occurrences. Removal cannot retarget it to the survivor.
+    return kind === 'legacy' && visible.length !== candidates.length ? [] : visible;
+  }
+
+  /** Resolve an exact context page under one prepared custodian snapshot. */
+  readPreparedRemovalContext(conversationKey: string, target: string, kind: 'event' | 'message' | 'legacy',
+    inclusive: boolean, limit: number, mayRead: (row: BrowsedMessage) => boolean) {
+    return this.withRemovalHistory(conversationKey, (custodian, proof) => {
+      const candidates = this.selectRemovalAwareCandidates(conversationKey, target, kind, mayRead, custodian);
+      if (candidates.length !== 1) return { anchor: null, messages: [], proof };
+      const anchor = candidates[0]!;
+      const messages = this.exactMessageChunk(conversationKey, anchor, inclusive, limit, custodian);
+      if (messages.some((row) => !mayRead(row))) throw new Error('exact context access unavailable');
+      return { anchor, messages, proof };
     });
   }
 
@@ -1925,12 +1942,18 @@ export class AppConversationStore {
   }
 
   /** Descending physical chunk, anchored to a raw stored tuple independent of delimiter syntax. */
-  exactMessageChunk(conversationKey: string, boundary: { at: string; eventId: string }, inclusive: boolean, limit: number): BrowsedMessage[] {
+  exactMessageChunk(conversationKey: string, boundary: { at: string; eventId: string }, inclusive: boolean, limit: number, removalCustodian?: string): BrowsedMessage[] {
     const key = canonicalConversationKey(conversationKey);
     const comparison = inclusive ? '<=' : '<';
+    const removalClause = removalCustodian ? `AND NOT EXISTS (
+      SELECT 1 FROM message_removals r WHERE r.canonicalKey = messages.canonicalKey
+      AND r.targetEventId = messages.eventId AND r.targetMessageId = messages.messageId AND r.machineId = ?
+    )` : '';
+    const scope = removalCustodian ? [key, removalCustodian] : [key];
     const rows = this.db.prepare(
-      `SELECT eventId, at FROM messages WHERE canonicalKey = ? AND (at, eventId) ${comparison} (?, ?) ORDER BY at DESC, eventId DESC LIMIT ?`,
-    ).all(key, boundary.at, boundary.eventId, limit) as Array<{ eventId: string; at: string }>;
+      `SELECT eventId, at FROM messages WHERE canonicalKey = ? ${removalClause}
+       AND (at, eventId) ${comparison} (?, ?) ORDER BY at DESC, eventId DESC LIMIT ?`,
+    ).all(...scope, boundary.at, boundary.eventId, limit) as Array<{ eventId: string; at: string }>;
     return rows.map((row) => this.readIndexedMessage(key, row));
   }
 

@@ -76,7 +76,7 @@ import { isConversationListPinsEnabled, MAX_LIST_PINS_PER_READER, type Conversat
 import type { ResolvedPerson } from '../core/MobilePeople.js';
 import { mediaOffBody } from './mobileMediaOff.js';
 import { AppCreationHierarchyProjection, type AppHierarchyFields, type CreationHierarchySource, type CreationHierarchyScope } from './appCreationHierarchy.js';
-import { executeOwnerRemovalHistory, executeOwnerRemovalSync } from './mobileAppRemovalSync.js';
+import { executeOwnerRemovalContext, executeOwnerRemovalHistory, executeOwnerRemovalSync } from './mobileAppRemovalSync.js';
 import { createRemovalSyncCursorCodec } from './mobileAppRemovalSyncCursor.js';
 import type { resolveOwnerRemovalSyncAuthority } from './mobileAppRemovalSyncAuthority.js';
 import { normalizeCreationParentRef, type AppCreationContext } from '../core/AppCreationContext.js';
@@ -1732,7 +1732,7 @@ export function createMobileConversationRouter(deps: MobileConversationRouteDeps
     }
   });
 
-  router.get('/mobile/chat/app/:key/message-context', async (req, res) => {
+  router.get('/mobile/chat/app/:key/message-context', async (req, res, next) => {
     const read = exactGate(req, res);
     if (!read) return;
     const key = String(req.params.key).toLowerCase();
@@ -1748,6 +1748,12 @@ export function createMobileConversationRouter(deps: MobileConversationRouteDeps
     }
     const person = currentExactReader(read, res, key);
     if (!person) return;
+    const n = Math.max(1, Math.min(100, limit === undefined ? 50 : Number(limit)));
+    if (serveProtectedRead(req, res, next, (request, pairing, service, evidence, codec) =>
+      executeOwnerRemovalContext(request, pairing, service, evidence, codec, {
+        target: (direct ? target : beforeEventId) as string, kind: direct ? kind! : 'event',
+        beforeAt: direct ? null : beforeAt as string, limit: n,
+      }))) return;
     const admittedVisibility = exactVisibility(person, key);
     const store = svc!.store;
     const active = exactScans.get(store) ?? 0;
@@ -1756,7 +1762,6 @@ export function createMobileConversationRouter(deps: MobileConversationRouteDeps
     if (active >= capacity) { res.status(429).json({ error: 'context-busy', retryable: true }); return; }
     exactScans.set(store, active + 1);
     try {
-      const n = Math.max(1, Math.min(100, limit === undefined ? 50 : Number(limit)));
       const boundary = direct ? exactTarget(key, target as string, kind!, person) : exactTarget(key, beforeEventId as string, 'event', person);
       if (!boundary || (!direct && boundary.at !== beforeAt)) { exactUnavailable(res); return; }
       const visible: BrowsedMessage[] = [];

@@ -305,6 +305,16 @@ describe('native app conversations — production wiring', () => {
     const acceptedSync = await send('GET', `/mobile/chat/app/${key}/events`);
     expect(acceptedSync.status, JSON.stringify(acceptedSync.body)).toBe(200);
     expect(acceptedSync.body.epoch).toBe(acceptedHistory.body.epoch);
+    const removedContext = await send('GET', `/mobile/chat/app/${key}/message-context?target=${encodeURIComponent(target)}&targetKind=event`);
+    expect(removedContext.status).toBe(404);
+    const liveContext = await send('GET', `/mobile/chat/app/${key}/message-context?target=${encodeURIComponent(quoted.body.eventId)}&targetKind=event&limit=1`);
+    expect(liveContext.status, JSON.stringify(liveContext.body)).toBe(200);
+    expect(liveContext.body).toMatchObject({ epoch: acceptedHistory.body.epoch, anchorApplied: { eventId: quoted.body.eventId } });
+    const older = liveContext.body.nextContextBefore;
+    const previousContext = await send('GET', `/mobile/chat/app/${key}/message-context?beforeAt=${encodeURIComponent(older.at)}&beforeEventId=${encodeURIComponent(older.eventId)}`);
+    expect(previousContext.status).toBe(200);
+    expect(previousContext.body.messages).toEqual([expect.objectContaining({ text: 'What is on for Saturday?' })]);
+
     expect(acceptedSync.body.changes).toContainEqual({
       kind: 'message-removed', conversationKey: key, eventId: 'dark-test-removal-fact', targetEventId: target,
     });
