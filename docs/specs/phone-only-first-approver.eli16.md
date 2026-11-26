@@ -58,3 +58,5 @@ The registry can now check the exact old key and retain evidence of the operatio
 The two ways to set up a first approval device can share a reservation that survives a restart. Once one operation reserves the slot, a different operation must wait for recovery or a new slot. Production still needs to guarantee that the host has exclusive access to these writes.
 
 The phone writer can now record which approved nomination belongs to the reserved slot. It can recover that exact record after a restart. The trust journal must still confirm the final acceptance before the phone can approve changes.
+
+The version 2 server code can prepare the exact enrollment details the phone will confirm. Both cancellation and acceptance refer to the same attempt and check the exact details before they can proceed.
