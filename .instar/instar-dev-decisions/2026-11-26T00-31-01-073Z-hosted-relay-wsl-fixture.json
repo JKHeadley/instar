@@ -1,0 +1,28 @@
+{
+  "ts": "2026-11-26T00:31:01.073Z",
+  "slug": "hosted-relay-wsl-fixture",
+  "suggestedTier": 2,
+  "declaredTier": 2,
+  "riskFloor": 2,
+  "riskFloorReasons": [
+    "safety-invariant proximity: scripts/hosted-relay-wsl-fixture.mjs matches relay / delivery path"
+  ],
+  "belowFloor": false,
+  "files": 1,
+  "loc": 43,
+  "scope": {
+    "basis": "staged-in-scope-paths-including-deleted",
+    "files": [
+      "scripts/hosted-relay-wsl-fixture.mjs"
+    ],
+    "addedLines": 33,
+    "deletedLines": 10
+  },
+  "causalAutopsy": null,
+  "classClosure": {
+    "defectClass": "unbounded-self-action",
+    "closure": "n/a",
+    "reason": "Explicit fixture with a hard ten-minute lifetime, bounded local connections and teardown."
+  },
+  "verdict": "pass"
+}

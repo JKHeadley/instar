@@ -1,4 +1,4 @@
-import { spawn } from 'node:child_process';
+import { execFileSync, spawn } from 'node:child_process';
 import { createHash, X509Certificate } from 'node:crypto';
 import { checkServerIdentity } from 'node:tls';
 import { once } from 'node:events';
@@ -34,6 +34,20 @@ it('boots the disposable WSL fixture and accepts an enrolled client through the 
     }
     expect(fixture).toBeDefined();
     const f = JSON.parse(fs.readFileSync(fixture!, 'utf8'));
+    for (const [hostname, leafPath, caPath] of [
+      [f.controlHostname, f.controlLeafPath, f.controlCaPath],
+      [f.hostname, f.agentLeafPath, f.agentCaPath],
+    ]) {
+      const ca = new X509Certificate(fs.readFileSync(caPath));
+      const leaf = new X509Certificate(fs.readFileSync(leafPath));
+      expect(ca.ca).toBe(true);
+      expect(leaf.ca).toBe(false);
+      expect(leaf.verify(ca.publicKey)).toBe(true);
+      if (process.platform === 'darwin') {
+        execFileSync('/usr/bin/security', ['verify-cert', '-q', '-p', 'ssl', '-s', hostname, '-c', leafPath, '-r', caPath],
+          { stdio: 'pipe', timeout: 5000 });
+      }
+    }
     const host = new URL(f.localAgentOrigin).host;
     const device = makeDevice();
     const ticket = readLocalOwnerTicket(f.root + '/.instar')!.ticket;

@@ -48,13 +48,34 @@ function pin(cert) {
   return createHash('sha256').update(new X509Certificate(cert).publicKey.export({ type: 'spki', format: 'der' })).digest('hex');
 }
 
-function certificate(name, basename) {
+function openssl(args) {
+  execFileSync('openssl', args, { stdio: 'ignore', timeout: 10_000 });
+}
+
+function fixtureCa() {
+  const certPath = path.join(root, 'fixture-ca.crt');
+  const keyPath = path.join(root, 'fixture-ca.key');
+  openssl(['req', '-x509', '-newkey', 'rsa:2048', '-nodes', '-days', '1', '-sha256',
+    '-subj', '/CN=Instar Disposable Relay CA', '-addext', 'basicConstraints=critical,CA:TRUE,pathlen:0',
+    '-addext', 'keyUsage=critical,keyCertSign,cRLSign', '-keyout', keyPath, '-out', certPath]);
+  return { certPath, keyPath };
+}
+
+function certificate(name, basename, ca) {
   const certPath = path.join(root, basename + '.crt');
   const keyPath = path.join(root, basename + '.key');
-  execFileSync('openssl', ['req', '-x509', '-newkey', 'rsa:2048', '-nodes', '-days', '1',
-    '-subj', '/CN=' + name, '-addext', 'subjectAltName=DNS:' + name, '-keyout', keyPath, '-out', certPath],
-  { stdio: 'ignore', timeout: 10_000 });
-  return { cert: fs.readFileSync(certPath), key: fs.readFileSync(keyPath) };
+  const requestPath = path.join(root, basename + '.csr');
+  const extensionsPath = path.join(root, basename + '.ext');
+  fs.writeFileSync(extensionsPath, [
+    'basicConstraints=critical,CA:FALSE', 'keyUsage=critical,digitalSignature,keyEncipherment',
+    'extendedKeyUsage=serverAuth', 'subjectAltName=DNS:' + name,
+  ].join('\n') + '\n', { mode: 0o600 });
+  openssl(['req', '-new', '-newkey', 'rsa:2048', '-nodes', '-sha256', '-subj', '/CN=' + name,
+    '-keyout', keyPath, '-out', requestPath]);
+  openssl(['x509', '-req', '-in', requestPath, '-CA', ca.certPath, '-CAkey', ca.keyPath,
+    '-set_serial', '0x' + randomBytes(16).toString('hex'), '-days', '1', '-sha256',
+    '-extfile', extensionsPath, '-out', certPath]);
+  return { cert: fs.readFileSync(certPath), key: fs.readFileSync(keyPath), certPath };
 }
 
 try {
@@ -72,8 +93,10 @@ try {
   const owner = generateKeyPairSync('ed25519');
   const agentId = 'fixture-' + randomBytes(8).toString('hex');
   const assignment = randomBytes(32).toString('hex');
-  const agentTls = certificate(hostname, 'agent');
-  const controlTls = certificate(controlHostname, 'control');
+  const ca = fixtureCa();
+  const caCert = fs.readFileSync(ca.certPath);
+  const agentTls = certificate(hostname, 'agent', ca);
+  const controlTls = certificate(controlHostname, 'control', ca);
   const genesis = signOwnerRecordEntry({ agentId, kind: 'genesis', parents: [],
     signer: { type: 'machine', keyId: holder },
     body: { machineId: holder, publicKey: identity.getSigningPublicKeyPem(holder), level: 'basic', agentProducible: true },
@@ -100,7 +123,7 @@ try {
   const controlPin = pin(controlTls.cert);
   runtime = await startVerifiedHostedRelay({
     enabled: true, stateDir, scope, evidence, signal: controller.signal,
-    relay: { origin: 'https://localhost:' + relay.controlPort, spkiSha256: controlPin, ca: controlTls.cert },
+    relay: { origin: 'https://localhost:' + relay.controlPort, spkiSha256: controlPin, ca: caCert },
     agentTls, holdsLocalAuthority: () => !controller.signal.aborted,
     handlePhoneRequest(req, res) {
       res.setHeader('Cache-Control', 'no-store');
@@ -135,8 +158,8 @@ try {
   fs.writeFileSync(receipt, JSON.stringify({
     root, localAgentOrigin: 'http://127.0.0.1:' + port, controlPort: relay.controlPort, controlHostname,
     tlsPort: relay.clientPort, hostname, assignment, agentId, pinnedGenesis: genesis.id,
-    controlCaPath: path.join(root, 'control.crt'), controlSpkiSha256: controlPin,
-    agentCaPath: path.join(root, 'agent.crt'), agentSpkiSha256: agentPin,
+    controlCaPath: ca.certPath, controlLeafPath: controlTls.certPath, controlSpkiSha256: controlPin,
+    agentCaPath: ca.certPath, agentLeafPath: agentTls.certPath, agentSpkiSha256: agentPin,
     ownerRecord: [genesis.entry, ownerEntry.entry, tlsEntry.entry], committed, fixturePath,
     expiresAt: new Date(expiry).toISOString(),
   }), { mode: 0o600, flag: 'wx' });

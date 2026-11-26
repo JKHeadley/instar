@@ -11,3 +11,7 @@ The fixture binds only to loopback and stops at the requested lifetime or a norm
 ## Class-Closure Declaration
 
 - `unbounded-self-action`: closure n/a. The explicitly started fixture has a hard ten-minute lifetime, bounded local connections and automatic teardown.
+
+## Simulator certificate compatibility
+
+The disposable certificate generator uses a private fixture CA and two separate server certificates. Each leaf has the exact DNS name, server-authentication usage and its own key and pin. The manifest identifies each public leaf separately from the CA trust anchor. Clients still verify the CA chain, hostname and exact leaf pin. The old self-signed CA served as a leaf failed Apple SSL policy. The regression verifies both role-separated chains and, on macOS, checks both with the system SSL policy before running the relay flow. This changes synthetic fixture certificates only.
