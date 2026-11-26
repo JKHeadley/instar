@@ -1,0 +1,23 @@
+{
+  "version": 2,
+  "slug": "mac-keychain-master-key-private-input",
+  "sessionId": "b3d2cf8a-9b5d-468b-a50b-70ebf11e9e5c",
+  "timestamp": "2026-11-26T07:26:50.208Z",
+  "artifactPath": "upgrades/side-effects/mac-keychain-master-key-private-input.md",
+  "artifactSha256": "a6c480ddbbdb93b53acdf32fd11bed42350daa16326754657f36b7908365b080",
+  "coveredFiles": [
+    "src/core/GlobalSecretStore.ts",
+    "src/core/SecretStore.ts",
+    "src/core/macKeychainWrite.ts",
+    "tests/unit/global-secret-store.test.ts",
+    "tests/unit/mac-keychain-write.test.ts",
+    "tests/unit/secret-store-keychain-output.test.ts"
+  ],
+  "phase": "complete",
+  "tier": 1,
+  "tierReasoning": "Move existing macOS vault persistence from process arguments to stdin with exact uncached readback",
+  "eli16Path": "docs/specs/mac-keychain-master-key-private-input.eli16.md",
+  "sideEffectsPath": "upgrades/side-effects/mac-keychain-master-key-private-input.md",
+  "secondPass": "true",
+  "reviewerConcurred": true
+}

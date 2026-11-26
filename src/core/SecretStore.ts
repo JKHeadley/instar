@@ -1,3 +1,4 @@
+import { withSyncOp } from './InFlightSyncOpMarker.js';
 /**
  * Encrypted secret storage and forward-secret sync protocol.
  *
@@ -15,6 +16,7 @@
  * Part of Phase 4 (secret sync via tunnel).
  */
 
+import { writeMacKeychainKey } from './macKeychainWrite.js';
 import crypto from 'node:crypto';
 import fs from 'node:fs';
 import path from 'node:path';
@@ -268,12 +270,12 @@ export class MasterKeyManager {
   private readOsKeychain(service: string, account: string): Buffer | null {
     if (process.platform === 'darwin') {
       try {
-        const result = execFileSync('security', [
+        const result = withSyncOp(() => execFileSync('/usr/bin/security', [
           'find-generic-password',
           '-s', service,
           '-a', account,
           '-w', // Print password only
-        ], { encoding: 'utf-8', timeout: 5000, stdio: ['pipe', 'pipe', 'pipe'] }).trim();
+        ], { encoding: 'utf-8', timeout: 5000, stdio: ['pipe', 'pipe', 'pipe'] })).trim();
         return Buffer.from(result, 'base64');
       } catch (error) {
         // @silent-fallback-ok — platform keychain read
@@ -299,23 +301,8 @@ export class MasterKeyManager {
   private writeOsKeychain(service: string, account: string, key: Buffer): boolean {
     if (process.platform === 'darwin') {
       try {
-        // Delete existing entry first (ignore errors if it doesn't exist)
-        try {
-          execFileSync('security', [
-            'delete-generic-password',
-            '-s', service,
-            '-a', account,
-          ], { stdio: 'pipe', timeout: 5000 });
-        } catch {
-          // @silent-fallback-ok — entry may not exist
-        }
-        execFileSync('security', [
-          'add-generic-password',
-          '-s', service,
-          '-a', account,
-          '-w', key.toString('base64'),
-        ], { stdio: 'pipe', timeout: 5000 });
-        return true;
+        if (writeMacKeychainKey(execFileSync, () => this.readOsKeychain(service, account), service, account, key)) return true;
+        throw new Error('keychain-write-unconfirmed');
       } catch {
         // Child-process errors can include credential-bearing arguments or output.
         DegradationReporter.getInstance().report({
