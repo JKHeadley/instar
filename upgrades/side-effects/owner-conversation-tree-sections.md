@@ -17,3 +17,5 @@ enable the new layout on a live connection.
 ## Framework generality
 
 Both owner routes use the same output without platform-specific placement.
+
+The signed fixture also seeds a project descendant pin through the real pin store.

@@ -42,6 +42,7 @@ it('keeps all three conversation-tree routes open for a simulator-signed owner',
       parentConversationKey: 'telegram:42', hierarchyState: 'child' }));
     expect(list.conversations).not.toContainEqual(expect.objectContaining({ id: hidden }));
     expect(list.pinned.id).toBe(41);
+    expect(list.pinnedRows).toEqual([expect.objectContaining({ id: child, projectConversationKey: 'telegram:42' })]);
     const projects = await read('/mobile/work/projects');
     expect(projects.projects).toContainEqual(expect.objectContaining({ key: 'telegram:42' }));
     const tree = await read('/mobile/conversation-graph/tree');

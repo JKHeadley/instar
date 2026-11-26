@@ -8,6 +8,8 @@ import { once } from 'node:events';
 import express from 'express';
 import { AppConversationService } from '../dist/core/AppConversationService.js';
 import { identityKeyLookup, loadMachineSigner } from '../dist/core/AppRecordSignatures.js';
+import { ConversationListPinStore } from '../dist/core/ConversationListPins.js';
+import { readerKeyFor } from '../dist/core/ConversationReadMarkers.js';
 import { ConversationRegistry } from '../dist/core/ConversationRegistry.js';
 import { nodeKey } from '../dist/core/conversationGraph.js';
 import { ConversationGraphReadModel } from '../dist/core/conversationGraphRead.js';
@@ -98,9 +100,10 @@ try {
     cardEvidence: [], resolveRef: (ref) => parents.has(ref) || topics.some(([id]) => ref === `telegram:${id}`) ? ref : null };
   const creationProjection = new AppCreationHierarchyProjection(service.store, () => source);
   const authorizationVersion = 'disposable-single-owner';
+  const listPins = new ConversationListPinStore({ stateDir });
   const app = express();
   app.use(authMiddleware(() => config.authToken, config.projectName, undefined, deviceAuthenticator(pairing)));
-  app.use(createMobileConversationRouter({ config, pairing, service, machineId,
+  app.use(createMobileConversationRouter({ config, pairing, service, machineId, listPins,
     chiefOfStaff: () => ({ pinnedKey: 'telegram:41', parents }),
     telegramTopics: () => topics.map(([topicId, topicName]) => ({ topicId, topicName, lastActivity: at })),
     creationHierarchySource: () => source, creationHierarchyProjection: creationProjection,
@@ -125,6 +128,9 @@ try {
   const device = pairing.devices.applyConfirm(pending.device.id, { ok: true, approvedVia: 'telegram-dm' });
   if (!device) throw new Error('Cannot confirm disposable device');
   pairing.keyLedger.recordActivation(device, 'telegram-dm', new Date().toISOString());
+  const reader = readerKeyFor(pairing.personOfDevice(device), pairing.machineId());
+  if (!reader || listPins.setPinned(reader, `app:${child}`, true).outcome !== 'changed')
+    throw new Error('Cannot pin disposable project descendant');
   // Make the first simulator read deterministic. The single fixture owner
   // can read all seeded topics; the hidden worker is excluded from discovery.
   await creationProjection.settled({ key: `device:${device.id}`, source, authorizationVersion,
