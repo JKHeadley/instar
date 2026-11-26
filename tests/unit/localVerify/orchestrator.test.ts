@@ -564,6 +564,57 @@ describe('runVerify — errors', () => {
 });
 
 describe('runVerify — failures', () => {
+  it.each(['same inventory', 'failed again', 'different inventory'])('requires same-file recovery after a named retry: %s', async (confirmation) => {
+    const wholeFilePassed = confirmation === 'same inventory';
+    const file = 'tests/unit/a.test.ts';
+    const predecessor = { name: 'suite predecessor', status: 'passed' };
+    const affected = { name: 'suite failed [literal]', status: 'failed' };
+    const recovered = { ...affected, status: 'passed' };
+    const f = fake({ diff: 'M\tsrc/index.ts\n', laneNamed: { unit: { [file]: [predecessor, affected] } }, rerunNamed: {
+      [file]: [[{ ...predecessor, status: 'skipped' }, recovered], [
+        confirmation === 'different inventory' ? { ...predecessor, name: 'replacement' } : predecessor,
+        confirmation === 'failed again' ? affected : recovered,
+      ]],
+    } });
+    const result = await runVerify(input({ namedFlakeRetry: { quarantined: [] } }), f.seams);
+    expect(result).toMatchObject({ kind: 'record', record: { outcome: wholeFilePassed ? 'success' : 'failure' } });
+    const reruns = f.execCalls.filter((call) => call.args.some((arg) => arg.includes('/unit-rerun-')));
+    expect(reruns).toHaveLength(2);
+    expect(reruns[0].args).toContain('--testNamePattern=^(?:suite failed \\[literal\\])$');
+    expect(reruns[1].args.some((arg) => arg.startsWith('--testNamePattern'))).toBe(false);
+    if (wholeFilePassed) expect(result).toMatchObject({ record: { flakyRetried: [{ namedRetry: true, failedTests: [affected.name] }] } });
+    else expect(result).not.toHaveProperty('flakyRetried');
+  });
+
+  it('rejects a whole-file proof that swaps which tests passed and skipped', async () => {
+    const file = 'tests/unit/a.test.ts';
+    const first = { name: 'first', status: 'passed' };
+    const second = { name: 'second', status: 'skipped' };
+    const failed = { name: 'target', status: 'failed' };
+    const recovered = { ...failed, status: 'passed' };
+    const f = fake({ diff: 'M\tsrc/index.ts\n', laneNamed: { unit: { [file]: [first, second, failed] } }, rerunNamed: {
+      [file]: [[recovered], [{ ...first, status: 'skipped' }, { ...second, status: 'passed' }, recovered]],
+    } });
+    const result = await runVerify(input({ namedFlakeRetry: { quarantined: [] } }), f.seams);
+    expect(result).toMatchObject({ kind: 'record', record: { outcome: 'failure' } });
+    expect(result).not.toHaveProperty('flakyRetried');
+  });
+
+  it.each([1, 4])('only re-runs a small named failure set that is not quarantined, failures=%s', async (count) => {
+    const file = 'tests/unit/a.test.ts';
+    const failures = Array.from({ length: count }, (_, i) => ({ name: `suite case ${i}`, status: 'failed' }));
+    const f = fake({ diff: 'M\tsrc/index.ts\n', laneNamed: { unit: { [file]: failures } }, rerunNamed: {
+      [file]: [failures.map((test) => ({ ...test, status: 'passed' }))],
+    } });
+    const result = await runVerify(input({ namedFlakeRetry: { quarantined: [] } }), f.seams);
+    expect(result).toMatchObject({ kind: 'record', record: { outcome: count === 1 ? 'success' : 'failure' } });
+    expect(f.execCalls.filter((call) => call.args.some((arg) => arg.startsWith('--testNamePattern')))).toHaveLength(count === 1 ? 1 : 0);
+    const quarantined = fake({ diff: 'M\tsrc/index.ts\n', laneNamed: { unit: { [file]: [failures[0]] } } });
+    expect(await runVerify(input({ namedFlakeRetry: { quarantined: [{ file, test: failures[0].name }] } }), quarantined.seams))
+      .toMatchObject({ kind: 'record', record: { outcome: 'failure' } });
+    expect(quarantined.execCalls.some((call) => call.args.some((arg) => arg.startsWith('--testNamePattern')))).toBe(false);
+  });
+
   it('a failed test that fails again on its isolation re-run is a failure and the worktree is kept', async () => {
     const r = await runVerify(input(), fake({ laneStatuses: { integration: ['passed', 'failed'] }, rerun: { 'tests/integration/b.test.ts': ['passed', 'failed'] } }).seams);
     expect(r.kind).toBe('record');

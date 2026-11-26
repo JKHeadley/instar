@@ -1,4 +1,5 @@
 import { ManualQuotaBalance } from '../core/ManualQuotaBalance.js';
+import { promotionMismatchReason, unavailableConsumerPromotionProposal } from '../feedback-factory/drain/consumerPromotionProposal.js';
 import { normalizeCreationParentRef, type AppCreationContext } from '../core/AppCreationContext.js';
 // Governed by (docs/STANDARDS-REGISTRY.md cites this file as enforcement of):
 //   *Recall Over Our Own Material Is by Meaning, Not by Word-Match*
@@ -92,6 +93,7 @@ import { isPhoneOnlyCard } from './ProjectAppCustomSource.js';
 import { customProjectAppsEnabled } from './ProjectAppSandbox.js';
 import { projectAppsEnabled } from '../core/ProjectAppStore.js';
 import { projectAppsLog, projectAppsOpens } from './projectAppsLog.js';
+import { createOwnerNeedsSourceProvider } from './ownerNeedsSources.js';
 import { mountNeedsRoutes, NeedsCanary, NEEDS_READ_TIMEOUT_MS, NEEDS_CANARY_INTERVAL_MS, NEEDS_CANARY_FIRST_DELAY_MS, NEEDS_CANARY_READ_TIMEOUT_MS } from './needsRoutes.js';
 import { workBoardEnabled, requestCardId as requestCardIdFor } from '../core/WorkCardStore.js';
 import { resolveWorkBoardSettings } from '../core/WorkBoardService.js';
@@ -1308,6 +1310,8 @@ export function parseTrustChange(raw: unknown): import('../core/trustJourney/Tru
 }
 
 export interface RouteContext {
+  ownerNeedsCandidate?: import('./needsRoutes.js').NeedsDeps['ownerCardCandidate'];
+  ownerNeedsWithdrawalJournalFor?: import('./needsRoutes.js').NeedsDeps['withdrawalJournalFor'];
   /** Actual signed post-spawn capture; absent until graph storage is configured. */
   conversationGraphDelegationRuntime?: import('./ConversationGraphDelegationRuntime.js').ConversationGraphDelegationRuntime | null;
   conversationGraphDelegationRemoteRuntime?: import('./ConversationGraphDelegationRemoteRuntime.js').ConversationGraphDelegationRemoteRuntime | null;
@@ -2039,6 +2043,8 @@ export interface RouteContext {
     service: import('../feedback-factory/drain/FeedbackDrainService.js').FeedbackDrainService;
     store: import('../feedback-factory/drain/FeedbackDrainStore.js').FeedbackDrainStore;
     promotion: import('../feedback-factory/drain/FeedbackConsumerPromotionStore.js').FeedbackConsumerPromotionStore;
+    /** Current consumer-promotion proposal, derived fresh on every call. */
+    promotionProposal: () => import('../feedback-factory/drain/consumerPromotionProposal.js').PromotionProposal;
     tickProxy: import('../feedback-factory/drain/FeedbackDrainTickProxy.js').FeedbackDrainTickProxy;
     checkpointBackup: (trigger: 'promotion' | 'failover') => void;
     finalizeFailoverRestore: (input: { restoredOwnerAuthorityEpoch: number; operatorDecisionRef: string; snapshotId: string; manifestChecksum: string;
@@ -3451,12 +3457,19 @@ export function createRoutes(ctx: RouteContext): Router {
     read: (p) => needsSelfRead(p, NEEDS_CANARY_READ_TIMEOUT_MS),
     notice: (why) => DegradationReporter.getInstance().report({ feature: 'NeedsYou.canary', primary: 'Show everything that needs the person in one list', fallback: 'Each page still shows its own needs; the list may be missing some.', reason: `The Needs-you canary missed twice: ${why}.`, impact: 'The Needs-you list on the console and the apps may be incomplete or failing.' }),
   });
-  setTimeout(() => {
-    void needsCanary.tick();
-    setInterval(() => { void needsCanary.tick(); }, NEEDS_CANARY_INTERVAL_MS).unref();
-  }, NEEDS_CANARY_FIRST_DELAY_MS).unref();
+  const ownerNeedsCandidate = ctx.ownerNeedsCandidate ?? (ctx.config.needsYou?.ownerAdmission?.enabled === true
+    ? createOwnerNeedsSourceProvider(ctx.trustAccountPath) : undefined);
+  // The legacy canary can't inject a typed owner action or negotiate the strict client contract.
+  if (!ownerNeedsCandidate) {
+    setTimeout(() => {
+      void needsCanary.tick();
+      setInterval(() => { void needsCanary.tick(); }, NEEDS_CANARY_INTERVAL_MS).unref();
+    }, NEEDS_CANARY_FIRST_DELAY_MS).unref();
+  }
   mountNeedsRoutes(router, {
-    canary: needsCanary,
+    ownerCardCandidate: ownerNeedsCandidate,
+    withdrawalJournalFor: ctx.ownerNeedsWithdrawalJournalFor,
+    canary: ownerNeedsCandidate ? undefined : needsCanary,
     read: (p) => needsSelfRead(p),
     bearerOk: (req) => bearerMatches(req, ctx.config.authToken),
     boardFor: (req) => (workBoardReadAs ? workBoardReadAs(req) : { status: 503, body: { error: 'work-board-starting' } }),
@@ -18550,15 +18563,55 @@ document.getElementById('mcpForm').addEventListener('submit', async function (e)
     } catch (error) { res.status(409).json({ error: error instanceof Error ? operatorError(error, res.app?.locals?.stateDir) : 'release failed' }); }
   });
 
+  // The exact batch the operator would approve by promoting the consumer
+  // (docs/specs/feedback-factory-operating-drain.md, "Batch promotion is proposal-set bound").
+  // Read-only. A non-owner reads through the canonical owner; a PIN is never proxied.
+  router.get('/feedback-factory/consumer/promotion/proposal', async (_req, res) => {
+    if (!ctx.feedbackDrain) { res.json(unavailableConsumerPromotionProposal()); return; }
+    try {
+      const local = ctx.feedbackDrain.promotionProposal();
+      if (local.state !== 'non-owner') { res.json(local); return; }
+      if (!ctx.feedbackTriage) {
+        // No owner transport here: name the owner, never look actionable.
+        res.json({ ...local, localAction: false, owner: ctx.feedbackDrain.authorityBinding?.().ownerMachineId ?? null });
+        return;
+      }
+      const owner = ctx.feedbackTriage.ownerMachineId();
+      const fetched = await ctx.feedbackTriage.fetchFromOwner('/feedback-factory/consumer/promotion/proposal');
+      if (fetched && fetched.status === 200 && fetched.body && typeof fetched.body === 'object') {
+        // A proxied read is never actionable here: the PIN must be entered on the owner.
+        res.json({ ...(fetched.body as Record<string, unknown>), localAction: false, servedBy: owner });
+        return;
+      }
+      res.json({ ...local, localAction: false, servedBy: owner, stale: true });
+    } catch (error) { // @silent-fallback-ok: not silent — the error is returned to the caller as an HTTP error status
+      res.status(500).json({ error: error instanceof Error ? operatorError(error, res.app?.locals?.stateDir) : 'promotion proposal failed' });
+    }
+  });
+
   router.post('/feedback-factory/consumer/promote', (req, res) => {
     if (!ctx.feedbackDrain) { res.status(503).json({ error: 'feedback-factory drain unavailable' }); return; }
     if (feedbackRestorePendingGate(res)) return;
     if (!feedbackMutationIntentValid(req, res)) return;
     try {
+      const approvedBatchBound = Number(req.body?.approvedBatchBound);
+      const evidenceHash = String(req.body?.evidenceHash ?? '');
+      // Proposal-set bound: the hash must name the exact batch the server would
+      // propose RIGHT NOW. A stale, replayed or invented hash never promotes.
+      const fresh = ctx.feedbackDrain.promotionProposal();
+      const mismatch = promotionMismatchReason(fresh, { evidenceHash, approvedBatchBound });
+      if (mismatch) {
+        res.status(409).json({ error: mismatch, state: fresh.state, ...(fresh.state === 'pending' ? {} : { reason: fresh.reason }) });
+        return;
+      }
       const record = ctx.feedbackDrain.promotion.promote({
-        approvedBatchBound: Number(req.body?.approvedBatchBound),
-        evidenceHash: String(req.body?.evidenceHash ?? ''),
+        approvedBatchBound,
+        evidenceHash,
         operatorDecisionId: String(req.body?.operatorDecisionId ?? ''),
+        approvedWorkIds: fresh.state === 'pending' ? fresh.items.map((item) => item.workId) : [],
+        approvedAttempts: fresh.state === 'pending'
+          ? Object.fromEntries(fresh.items.map((item) => [item.workId, ctx.feedbackDrain!.store.workById(item.workId)?.attempts ?? 0]))
+          : {},
       });
       try { ctx.feedbackDrain.checkpointBackup('promotion'); }
       catch (backupError) {
@@ -42727,6 +42780,10 @@ document.getElementById('mcpForm').addEventListener('submit', async function (e)
     res.status(result.status).json(result.body);
   });
 
+  function isReloginPeerTimeout(error: unknown): boolean {
+    return error instanceof Error && (error.name === 'TimeoutError' || error.name === 'AbortError');
+  }
+
   router.get('/subscription-relogin', async (req, res) => {
     if (!ctx.subscriptionRelogin && req.query.scope !== 'pool') {
       const config = localReloginConfig();
@@ -42777,9 +42834,26 @@ document.getElementById('mcpForm').addEventListener('submit', async function (e)
       const suffix = query.size > 0 ? `?${query.toString()}` : '';
       await Promise.all((ctx.resolvePeerUrls?.() ?? []).map(async (peer) => {
         try {
-          const response = await poolPeerFetch(ctx.recordRopeResult ?? undefined, peer, `/subscription-relogin${suffix}`, {
-            headers: { Authorization: `Bearer ${ctx.config.authToken}` },
-            signal: AbortSignal.timeout(5_000),
+          const readPeer = async (deadlineMs: number) => {
+            const signal = AbortSignal.timeout(deadlineMs);
+            try {
+              const response = await poolPeerFetch(ctx.recordRopeResult ?? undefined, peer, `/subscription-relogin${suffix}`, {
+                headers: { Authorization: `Bearer ${ctx.config.authToken}` },
+                signal,
+              });
+              const body = (response.ok ? await response.json() : response.status === 503
+                ? await response.json().catch(error => { if (signal.aborted) throw error; return null; })
+                : null) as { enabled?: boolean; episodes?: Array<Record<string, unknown>>;
+                blockers?: Array<Record<string, unknown>>; config?: unknown } | null;
+              return { response, body };
+            } catch (error) {
+              if (signal.aborted) throw signal.reason;
+              throw error;
+            }
+          };
+          const { response, body } = await readPeer(5_000).catch(error => {
+            if (req.query.retryTimeout === '1' && isReloginPeerTimeout(error)) return readPeer(8_000);
+            throw error;
           });
           const takeConfig = (body: { config?: unknown } | null) => {
             const c = body?.config;
@@ -42790,15 +42864,14 @@ document.getElementById('mcpForm').addEventListener('submit', async function (e)
           };
           if (!response.ok) {
             if (response.status === 503) {
-              takeConfig(await response.json().catch(() => null) as { config?: unknown } | null);
+              takeConfig(body);
               unavailable.push({ machineId: peer.machineId, reason: 'feature-unavailable' });
               return;
             }
             failed.push({ machineId: peer.machineId, error: response.status === 401 || response.status === 403 ? 'unauthorized' : 'error' });
             return;
           }
-          const body = await response.json() as { enabled?: boolean; episodes?: Array<Record<string, unknown>>;
-            blockers?: Array<Record<string, unknown>>; config?: unknown };
+          if (!body) throw new Error('missing peer re-login response');
           takeConfig(body);
           if (body.enabled === false) {
             unavailable.push({ machineId: peer.machineId, reason: 'feature-unavailable' });
@@ -42815,11 +42888,14 @@ document.getElementById('mcpForm').addEventListener('submit', async function (e)
               machineId: peer.machineId, machineNickname: nickname, remote: true });
           }
         } catch (error) {
-          const name = error instanceof Error ? error.name : '';
-          failed.push({ machineId: peer.machineId, error: name === 'TimeoutError' || name === 'AbortError' ? 'timeout' : 'unreachable' });
+          failed.push({ machineId: peer.machineId, error: isReloginPeerTimeout(error) ? 'timeout' : 'unreachable' });
         }
       }));
-      res.json({ enabled: true, episodes, blockers, scope: 'pool', pool: { failed, unavailable, blockersUnknown, configs, configsMissing } });
+      res.json({ enabled: true, episodes, blockers, scope: 'pool', pool: { failed, unavailable, blockersUnknown, configs, configsMissing,
+        ...(req.query.retryTimeout === '1' ? { expectedMachines: [
+          { machineId: selfMachineId, nickname: selfMachineNickname },
+          ...(ctx.listPoolMachines?.() ?? []).map(({ machineId, nickname }) => ({ machineId, nickname })),
+        ] } : {}) } });
     } catch (error) {
       res.status(400).json({ error: error instanceof Error ? operatorError(error, res.app?.locals?.stateDir) : 'invalid re-login query' });
     }

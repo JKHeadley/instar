@@ -3833,6 +3833,8 @@ export interface ExternalServicePermissions {
 // ── Server Configuration ────────────────────────────────────────────
 
 export interface InstarConfig {
+  /** Owner-only Needs You projection. Enabled explicitly during acceptance. */
+  needsYou?: { ownerAdmission?: { enabled?: boolean } };
   /**
    * Voice transcription (docs/specs/backup-on-machine-voice.md). `local: false` turns off the free
    * on-machine transcriber (whisper.cpp); absent means on. Read on every transcription.
@@ -4136,6 +4138,15 @@ export interface InstarConfig {
       maxWallClockMs?: number;
       /** Candidates per readiness model call (default 10); a tick makes several calls up to the authority's maxBatch. */
       readinessChunkSize?: number;
+    };
+    /**
+     * Which subscription account serves feedback readiness calls. Without `account`, readiness
+     * follows `triage.accountSelectionMode` (off = the shared provider, as before). With `account`
+     * (a subscription pool account id), readiness runs on exactly that verified account or is
+     * refused with a named reason, never on another account. Read live per readiness call.
+     */
+    readiness?: {
+      account?: string;
     };
     /** Initiative handoff consumer. Dev-live in simulation until promoted. */
     consumer?: {
