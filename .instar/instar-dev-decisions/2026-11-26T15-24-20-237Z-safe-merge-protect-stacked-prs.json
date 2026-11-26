@@ -1,0 +1,22 @@
+{
+  "ts": "2026-11-26T15:24:20.237Z",
+  "slug": "safe-merge-protect-stacked-prs",
+  "suggestedTier": 2,
+  "declaredTier": 1,
+  "riskFloor": 1,
+  "riskFloorReasons": [],
+  "belowFloor": false,
+  "files": 1,
+  "loc": 65,
+  "scope": {
+    "basis": "staged-in-scope-paths-including-deleted",
+    "files": [
+      "scripts/safe-merge.mjs"
+    ],
+    "addedLines": 64,
+    "deletedLines": 1
+  },
+  "causalAutopsy": null,
+  "classClosure": null,
+  "verdict": "pass"
+}

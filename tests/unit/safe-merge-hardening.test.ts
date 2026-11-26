@@ -12,6 +12,7 @@ import path from 'node:path';
 import { describe, it, expect } from 'vitest';
 import {
   parseArgs,
+  stackedBranchProtection,
   UsageError,
   capabilities,
   classifyChecks,
@@ -531,5 +532,60 @@ describe('fetchProtectionContexts — reads /branches/<b>; a /protection 404 no 
     expect(extractBranchProtection(BRANCH, null).reviewsRequired).toBe(false);
     expect(extractRulesetReviewPolicy([{ type: 'pull_request', parameters: { required_approving_review_count: 0, require_last_push_approval: true } }]))
       .toEqual({ reviewsRequired: false, lastPushApprovalRequired: true, codeOwnerReviewRequired: false });
+  });
+});
+
+describe('protection for stacked pull requests', () => {
+  const repo = 'JKHeadley/instar';
+  const pinnedHead = 'a'.repeat(40);
+  const parent = {
+    state: 'open', head: { ref: 'feature/parent', sha: pinnedHead, repo: { full_name: repo } },
+    base: { ref: 'main', repo: { full_name: repo } },
+  };
+  const open = (number: number, draft: boolean) => ({
+    number, state: 'open', draft, base: { ref: 'feature/parent' }, head: { sha: String(number) },
+  });
+
+  it('retargets ready and draft dependents across pages, preserves the heads and comments', () => {
+    const children = new Map([open(2, false), open(3, true)].map(child => [child.number, child]));
+    const comments: string[] = [];
+    const api = (argv: string[]) => {
+      if (argv[1]?.includes('?state=open&base=')) {
+        expect(argv).toContain('--paginate');
+        expect(argv[1]).toContain('base=feature%2Fparent');
+        return [...children.values()].filter(child => child.base.ref === 'feature/parent').map(child => [child]).concat([[]]);
+      }
+      if (argv[1] === `repos/${repo}/pulls/1`) return parent;
+      if (argv[2] === 'POST') { comments.push(argv[3]); return { id: 1 }; }
+      if (argv[2] === 'PATCH') {
+        const child = children.get(Number(argv[3].split('/').pop()))!;
+        const moved = { ...child, base: { ref: 'main' } };
+        children.set(child.number, moved);
+        return moved;
+      }
+      return children.get(Number(argv[1].split('/').pop()));
+    };
+    expect(stackedBranchProtection({ repo, pr: 1, pinnedHead, api })).toEqual([2, 3]);
+    expect(comments).toEqual([`repos/${repo}/issues/2/comments`, `repos/${repo}/issues/3/comments`]);
+    expect(children.get(3)).toMatchObject({ draft: true, head: { sha: '3' }, base: { ref: 'main' } });
+  });
+
+  it('refuses an unconfirmed base change without posting a success comment', () => {
+    const child = open(2, true);
+    const api = (argv: string[]) => {
+      expect(argv[2]).not.toBe('POST');
+      if (argv[1].includes('?')) return [[child]];
+      if (argv[1] === `repos/${repo}/pulls/1`) return parent;
+      return child;
+    };
+    expect(() => stackedBranchProtection({ repo, pr: 1, pinnedHead, api })).toThrow('could not confirm base change for PR #2');
+  });
+
+  it('allows an unstacked parent and refuses unreadable state or a moved parent', () => {
+    expect(stackedBranchProtection({ repo, pr: 1, pinnedHead, api: args => args[1].includes('?') ? [[]] : parent })).toEqual([]);
+    expect(() => stackedBranchProtection({ repo, pr: 1, pinnedHead, api: args => args[1].includes('?') ? {} : parent }))
+      .toThrow('unreadable dependent pull request list');
+    expect(() => stackedBranchProtection({ repo, pr: 1, pinnedHead: 'b'.repeat(40), api: () => parent }))
+      .toThrow('parent head or base changed');
   });
 });

@@ -1159,12 +1159,75 @@ function fetchReviews(repo, pr) {
   return (Array.isArray(pages) ? pages : [pages]).flat().map(r => ({ login: String(r?.user?.login ?? ''), state: String(r?.state ?? ''), commitId: String(r?.commit_id ?? ''), submittedAt: r?.submitted_at }));
 }
 
+/** Retarget open dependents before branch cleanup can delete their base. */
+export function stackedBranchProtection({ repo, pr, pinnedHead, api = ghJson }) {
+  const parent = api(['api', `repos/${repo}/pulls/${pr}`]);
+  const head = parent?.head;
+  if (parent?.state !== 'open' || head?.sha !== pinnedHead || !head?.ref
+      || !head.repo?.full_name || parent.base?.ref !== 'main'
+      || parent.base.repo?.full_name?.toLowerCase() !== repo.toLowerCase()) {
+    throw new Error('parent head or base changed before checking dependent pull requests');
+  }
+  const headRepo = head.repo.full_name;
+  const list = () => {
+    const pages = api(['api',
+      `repos/${headRepo}/pulls?state=open&base=${encodeURIComponent(head.ref)}&per_page=100`,
+      '--paginate', '--slurp',
+    ]);
+    if (!Array.isArray(pages) || pages.length === 0 || pages.some((page) => !Array.isArray(page))) {
+      throw new Error('unreadable dependent pull request list');
+    }
+    const dependents = pages.flat();
+    if (dependents.some((child) => !Number.isSafeInteger(child?.number) || child.number < 1
+      || child.state !== 'open' || child.base?.ref !== head.ref || typeof child.head?.sha !== 'string')) {
+      throw new Error('invalid dependent pull request list');
+    }
+    return dependents;
+  };
+  const dependents = list();
+  if (dependents.length === 0) return [];
+  if (headRepo.toLowerCase() !== repo.toLowerCase()) {
+    throw new Error('dependent pull requests in a fork cannot be retargeted across repositories');
+  }
+  const moved = [];
+  for (const child of dependents) {
+    const target = `repos/${repo}/pulls/${child.number}`;
+    const current = api(['api', target]);
+    if (current?.state !== 'open' || current.base?.ref !== head.ref || current.head?.sha !== child.head.sha) {
+      throw new Error(`dependent PR #${child.number} changed while preparing to retarget it`);
+    }
+    const updated = api(['api', '--method', 'PATCH', target, '-f', 'base=main']);
+    if (updated?.state !== 'open' || updated.base?.ref !== 'main'
+        || updated.head?.sha !== child.head.sha || updated.draft !== current.draft) {
+      throw new Error(`could not confirm base change for PR #${child.number}`);
+    }
+    moved.push(child.number);
+    try {
+      api(['api', '--method', 'POST', `repos/${repo}/issues/${child.number}/comments`, '-f',
+        `body=Safe merge changed this pull request's base to main before merging parent #${pr}, so it stays open if the parent branch is deleted. The head and draft status stayed the same.`]);
+    } catch {
+      // GitHub already recorded the confirmed base change on the child's timeline.
+      console.warn(`safe-merge: retargeted PR #${child.number}, but could not confirm its explanatory comment.`);
+    }
+  }
+  if (list().length > 0) throw new Error('open pull requests still depend on the parent branch');
+  return moved;
+}
+
 /** The head-pinned merge plus the independent confirmation (B10). Always exits. */
 function mergeAndConfirm({ repo, pr, view, args, pinnedHead, admin }) {
   console.log(`safe-merge: merging PR #${pr} (${args.method}${admin ? ' --admin' : ''}, head ${pinnedHead.slice(0, 12)})...`);
   const mergeArgs = ['pr', 'merge', pr, '--repo', repo, args.method, '--match-head-commit', pinnedHead];
   if (admin) mergeArgs.push('--admin');
-  if (args.deleteBranch) mergeArgs.push('--delete-branch');
+  let dependentPrs;
+  try {
+    dependentPrs = stackedBranchProtection({ repo, pr, pinnedHead });
+  } catch (error) {
+    result({ result: 'refused:stack-protection', pr: Number(pr), detail: String(error.message).slice(0, 300) });
+    process.exit(2);
+  }
+  if (dependentPrs.length) console.log(`safe-merge: retargeted ${dependentPrs.length} dependent PR(s) to main.`);
+  if (args.deleteBranch && dependentPrs.length === 0) mergeArgs.push('--delete-branch');
   const m = spawnSync('gh', mergeArgs, { encoding: 'utf-8', maxBuffer: GH_MAX_BUFFER_BYTES });
   process.stdout.write(m.stdout ?? '');
   process.stderr.write(m.stderr ?? '');
