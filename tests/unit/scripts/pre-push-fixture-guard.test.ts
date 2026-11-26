@@ -26,7 +26,13 @@ function git(cwd: string, args: string[]): string {
   return execFileSync('git', args, {
     cwd,
     encoding: 'utf-8',
-    env: sanitizedGitEnv(),
+    env: sanitizedGitEnv({
+      ...process.env,
+      GIT_AUTHOR_NAME: 'Real Dev',
+      GIT_AUTHOR_EMAIL: 'dev@example.com',
+      GIT_COMMITTER_NAME: 'Real Dev',
+      GIT_COMMITTER_EMAIL: 'dev@example.com',
+    }),
     stdio: ['ignore', 'pipe', 'pipe'],
   });
 }
@@ -80,6 +86,28 @@ describe('pre-push-fixture-guard', () => {
     commit(repo, 'fix: another real change');
     const r = runGuard(repo);
     expect(r.exitCode).toBe(0);
+  });
+
+  it('ignores commits already on remote main after merging main into a tracked branch', () => {
+    git(repo, ['remote', 'add', 'origin', repo]);
+    git(repo, ['switch', '-c', 'feature']);
+    commit(repo, 'feat: legitimate work');
+    git(repo, ['update-ref', 'refs/remotes/origin/feature', 'HEAD']);
+    git(repo, ['branch', '--set-upstream-to=origin/feature']);
+
+    git(repo, ['switch', 'main']);
+    commit(repo, 'seed');
+    git(repo, ['update-ref', 'refs/remotes/origin/main', 'HEAD']);
+    git(repo, ['switch', 'feature']);
+    git(repo, ['merge', '--no-edit', 'origin/main']);
+
+    const accepted = runGuard(repo);
+    expect(accepted.exitCode, accepted.stderr).toBe(0);
+    commit(repo, 'Worktree commit 1');
+    const rejected = runGuard(repo);
+    expect(rejected.exitCode).toBe(1);
+    expect(rejected.stderr).toContain('Worktree commit 1');
+    expect(rejected.stderr).not.toContain('"seed"');
   });
 
   it('fails on fixture-identity author', () => {
