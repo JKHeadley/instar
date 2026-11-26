@@ -1,3 +1,4 @@
+import { readToolNames } from '../data/effect-kinds.js';
 import { SQL_COMMAND_CONTEXT_CHECK } from './sqlCommandContext.js';
 // Governed by (docs/STANDARDS-REGISTRY.md cites this file as enforcement of):
 //   *Avoid TCC-Protected Directories — No Agent State Under ~/Documents on macOS*
@@ -25389,7 +25390,8 @@ process.stdin.on('end', async () => {
     const toolSegments = parts.slice(2);
     const toolTokens = toolSegments[toolSegments.length - 1].split('_').filter(Boolean);
     const readVerb = /^(get|list|search|fetch|check|read|view|describe|show|count|query|find|status)$/;
-    const hasReadVerb = readVerb.test(toolTokens[0] || '')
+    const registeredThreadlineRead = ${JSON.stringify(readToolNames('threadline'))}.includes(toolName);
+    const hasReadVerb = registeredThreadlineRead || readVerb.test(toolTokens[0] || '')
       || (toolSegments.length === 1 && toolTokens[0] === 'github' && readVerb.test(toolTokens[1] || ''));
     let mutability = 'modify';
     if (/^(delete|remove|trash|purge|destroy|drop|clear)/.test(action)) {

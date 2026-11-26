@@ -32,6 +32,8 @@ function runHook(hookPath: string, name: string, imported = true) {
 }
 
 const names = [
+  'mcp__threadline__threadline_agents', 'mcp__threadline__threadline_discover', 'mcp__threadline__threadline_send',
+  'mcp__threadline__threadline_pair', 'mcp__threadline__threadline__agents', 'mcp__unrelated__threadline_agents',
   'mcp__codex_apps__github__fetch_pr', 'mcp__codex_apps__github_get_pr_info',
   'mcp__other_engine__github__list_pull_requests', 'mcp__other_engine__github_search_code',
   'mcp__bridge__github__read_file', 'mcp__github__get_pr_info',
@@ -76,9 +78,10 @@ describe('existing-agent update path', () => {
     expect(first.upgraded).toContain('hooks/instar/external-operation-gate.js (MCP tool safety gate)');
     expect(first.errors.filter((e) => e.includes('external-operation-gate'))).toEqual([]);
     expect(fs.readFileSync(hook, 'utf8')).toBe(fs.readFileSync(fresh, 'utf8'));
-    for (const name of ['mcp__codex_apps__github__fetch_pr', 'mcp__codex_apps__github_push_files', 'mcp__other__opaque']) {
+    for (const name of ['mcp__codex_apps__github__fetch_pr', 'mcp__codex_apps__github_push_files', 'mcp__other__opaque',
+      'mcp__threadline__threadline_agents', 'mcp__threadline__threadline_send']) {
       const result = runHook(hook, name);
-      expect(result.status, result.stderr).toBe(name.endsWith('fetch_pr') ? 0 : 2);
+      expect(result.status, result.stderr).toBe(deriveEffect(name, {})?.operation === 'read' ? 0 : 2);
     }
     migrator.repairCompactionRecoveryHooks();
     expect(fs.readFileSync(hook, 'utf8')).toBe(fs.readFileSync(fresh, 'utf8'));
