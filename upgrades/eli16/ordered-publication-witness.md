@@ -7,3 +7,5 @@ This source checkpoint gives the receiving code a way to verify a signed record 
 The setting starts off. This checkpoint has no live connection to the Needs-you list or app message sending. It records local evidence and gives the next checkpoint a source interface to build on. Live action still needs a verified authority connection and a current-generation check at the point where the action takes effect.
 
 A holder change now also has a local completion step. The receiver stays paused until the independent journal confirms the exact move, including the sealed predecessor. It updates the local holder and journal position together so a restart sees either the pending move or the completed move.
+
+The predecessor proof also needs the old journal itself. The verifier checks every record in order against the seal, so a delayed last record or a rewritten row cannot pass as a complete journal. A verified prefix is one input to resolving an earlier attempt whose outcome is still unknown.

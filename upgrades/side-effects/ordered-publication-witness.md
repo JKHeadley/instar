@@ -39,3 +39,7 @@ No routes, network writes or production config changes. Roll back by reverting t
 ## Holder activation checkpoint
 
 A prepared order-plus-witness scope can complete only if its current witness signed the predecessor floor, successor and seal digest, and the independent journal reports the resulting exact floor. Matching the pending database row and advancing its floor are one transaction. The transport still owns validation that the seal represents the last possible predecessor effect and resolves outstanding intent. The local store relies on that independent attestation.
+
+## Predecessor prefix verification
+
+The verifier consumes already authenticated seal metadata and the predecessor identity resolved independently from lease history. It recomputes the framed digest over a contiguous, canonical byte sequence. Its verdict describes prefix completeness and grants no write or handover permission. Resolving an uncertain append still requires exact authenticated reconciliation.
