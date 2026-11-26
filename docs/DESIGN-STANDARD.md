@@ -443,6 +443,33 @@ These rules can be measured without a person. They are the ones to build automat
 - **Check**: review. For each disabled control: is the reason visible, and can it ever become enabled here?
 - **Source**: Mac review finding 11.
 
+### DS-ACTION-8 · An owner ask explains why and what the tap will do
+- **Rule**: The first sentence on an owner-action card says why the owner is being asked and what the main button will do. The collapsed card has at most three short context lines; internal IDs, paths, code terms and unexplained abbreviations stay out of it. Put technical evidence behind a labelled **Details** disclosure.
+- **Why**: A person should understand the decision and its consequence before opening the card or tapping.
+- **Bad**: "EVO-001: activity-digest path has unlanded session-scoped facts; approve."
+- **Good**: "Please approve the wording for the Conversations screen. Approving saves this version for the team to build."
+- **Surfaces**: All.
+- **Check**: review. Show the collapsed card to someone unfamiliar with the project. They can explain why it needs the owner and what the main button does.
+- **Earned from**: DF-0002.
+
+### DS-ACTION-9 · An owner ask is only for an owner's open decision
+- **Rule**: A card appears in the owner's action list only when the owner has a real decision or step to complete. Agent work, automated repair, uncertain outcomes, and another person's account remain status information and never use "needs you" wording. A decision already answered for the same item and revision is not offered again; a changed revision requires a fresh review.
+- **Why**: Treating background work as a personal request wastes attention and can cause the owner to approve work that is already done or does not belong to them.
+- **Bad**: An agent's sign-in hold shown with an Ask button, or an approved document revision asked for a second time.
+- **Good**: The repair status appears in its machine's repair summary; only the current, unanswered owner decision appears in Needs you.
+- **Surfaces**: All.
+- **Check**: review against the authoritative source and action handler. Confirm the owner, decision, item and revision; confirm agent-only work, another person's account, stale work and already answered decisions are not actionable owner asks.
+- **Earned from**: DF-0002.
+
+### DS-ACTION-10 · The button keeps the card's promise
+- **Rule**: The main button performs the action the card describes on the exact item and revision shown. If it only opens another screen, its label says "Review" or "Open"; it never claims that work was approved, fixed or completed. The handler refuses a stale or replaced item and presents a fresh review instead.
+- **Why**: A clear sentence is still misleading if the button does something else.
+- **Bad**: "Finish the Instar App" opens a different screen without completing its outstanding sign-off.
+- **Good**: "Review the Instar App sign-off" opens the exact open sign-off and leaves it pending until the owner confirms.
+- **Surfaces**: All.
+- **Check**: review and action test. Follow the button through its handler and verify the same item and revision are still current before it acts.
+- **Earned from**: DF-0002.
+
 ## 6. Words and status vocabulary
 
 ### DS-WORDS-1 · One word and one colour per state
@@ -723,4 +750,4 @@ The earlier documents stay in force for the details they hold (for example the d
 |---|---|---|
 | 2026-11-21 | First version: 65 rules in 10 sections, standard screenshot sizes, and the growth process. | Owner request, 2026-11-21 |
 | 2026-11-21 | Added DS-LAYOUT-3, DS-DATA-1, DS-DATA-2, DS-DATA-3, DS-DATA-6, DS-DATA-7, DS-DATA-8, DS-TYPE-3, DS-COLOUR-3, DS-COLOUR-4, DS-COLOUR-7, DS-PARITY-1 to DS-PARITY-5 and DS-DELIGHT-1. Sharpened DS-DATA-4, DS-DATA-5, DS-DATA-9, DS-WORDS-4 and DS-DELIGHT-6. | DF-0001 |
-
+| 2026-11-26 | Added DS-ACTION-8 to 10: owner asks explain the decision and button, exclude agent-only work, and keep the button bound to the current item and revision. | DF-0002 |
