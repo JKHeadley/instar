@@ -43,11 +43,18 @@ describe('PostUpdateMigrator package template shape', () => {
     const tmp = fs.mkdtempSync(path.join(os.tmpdir(), 'instar-pack-template-shape-'));
     tempDirs.push(tmp);
 
-    // The compiler `npm run build` uses (TypeScript 7); `npx tsc` resolves install-order dependently.
-    execFileSync(process.execPath, [path.join(repoRoot, 'node_modules', 'typescript-native', 'bin', 'tsc')], {
-      cwd: repoRoot,
-      stdio: ['ignore', 'pipe', 'pipe'],
-    });
+    const builtMigrator = path.join(repoRoot, 'dist', 'core', 'PostUpdateMigrator.js');
+    if (process.env.LOCAL_VERIFY_PROGRESS_FILE) {
+      // Local Verify builds this checkout before it starts the parallel lanes.
+      // Rebuilding here rewrites the files that the graph fixture is freezing.
+      expect(fs.existsSync(builtMigrator), 'Local Verify must build before the test lanes start').toBe(true);
+    } else {
+      // Standalone integration runs still build the current source before packing.
+      execFileSync(process.execPath, [path.join(repoRoot, 'node_modules', 'typescript-native', 'bin', 'tsc')], {
+        cwd: repoRoot,
+        stdio: ['ignore', 'pipe', 'pipe'],
+      });
+    }
 
     const raw = execFileSync('npm', ['pack', '--json', '--pack-destination', tmp], {
       cwd: repoRoot,
