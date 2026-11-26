@@ -68,12 +68,18 @@ function emailsOf(list) {
  * nickname. Never a raw machine id on screen.
  */
 export function buildAutoRepair(relogin, { names = {}, blockers = [], poolMachines = null, now = Date.now() } = {}) {
-  if (!relogin || !relogin.ok || !relogin.data) return { ok: false, rows: [] };
-  const d = relogin.data;
+  const readOk = relogin?.ok === true && Boolean(relogin.data);
+  const d = readOk ? relogin.data : {};
+  const inventory = poolMachines?.ok && Array.isArray(poolMachines.data?.machines) ? poolMachines.data.machines : null;
   const configs = d.pool && Array.isArray(d.pool.configs) ? d.pool.configs : (d.config ? [{ ...d.config, remote: false }] : []);
   const missing = d.pool && Array.isArray(d.pool.configsMissing) ? d.pool.configsMissing : [];
   const failedRows = d.pool && Array.isArray(d.pool.failed) ? d.pool.failed.filter((f) => f && f.machineId) : [];
-  const nameOf = (id, nick) => verifiedDisplayName(nick, id) || verifiedDisplayName(names[id], id) || 'A machine';
+  const roster = Array.isArray(d.pool?.expectedMachines) ? d.pool.expectedMachines : [];
+  const rosterNames = new Map(roster.filter(machine => typeof machine?.machineId === 'string')
+    .map(machine => [machine.machineId, machine.nickname]));
+  const verifiedName = (id, nick) => verifiedDisplayName(nick, id) || verifiedDisplayName(names[id], id) ||
+    verifiedDisplayName(rosterNames.get(id), id);
+  const nameOf = (id, nick) => verifiedName(id, nick) || 'A machine';
   const rows = [];
   const seen = new Set();
   for (const c of configs) {
@@ -112,10 +118,21 @@ export function buildAutoRepair(relogin, { names = {}, blockers = [], poolMachin
     seen.add(f.machineId);
     // How long it has been out of reach and whether anything is fixing it (CMT-1541).
     const name = nameOf(f.machineId);
-    rows.push({ machineId: f.machineId, name, unreadable: unreachableSentence(verifiedDisplayName(names[f.machineId], f.machineId), poolMachine(poolMachines, f.machineId), f, now) });
+    const timedOut = f.error === 'timeout';
+    rows.push({ machineId: f.machineId, name, retryable: true,
+      unreadable: timedOut ? 'Still checking this machine.' : unreachableSentence(
+        verifiedName(f.machineId), poolMachine(poolMachines, f.machineId), f, now) });
   }
+  for (const machine of [...(inventory ?? []), ...roster]) {
+    const id = machine?.machineId;
+    if (typeof id !== 'string' || !id || seen.has(id)) continue;
+    seen.add(id);
+    rows.push({ machineId: id, name: nameOf(id, machine.nickname), retryable: true, unreadable: 'Still checking this machine.' });
+  }
+  const unresolved = !readOk || (poolMachines !== null && inventory === null) ||
+    rows.some(row => row.unreadable || row.finalList === null || !row.revision);
   rows.sort((a, b) => (b.self === true) - (a.self === true) || String(a.name).localeCompare(String(b.name)));
-  return { ok: true, rows };
+  return { ok: readOk || rows.length > 0, rows, unresolved };
 }
 
 /** The exact request for the tapped button and the ticked rows (spec §2). */

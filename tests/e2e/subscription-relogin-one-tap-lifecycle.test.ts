@@ -50,6 +50,11 @@ describe('one-tap repair setting through the production AgentServer', () => {
     const revision = read.body.config.revision as string;
     expect(revision).toMatch(/^sha256:[0-9a-f]{64}$/);
 
+    const rosterRead = await request(app).get('/subscription-relogin?scope=pool&retryTimeout=1')
+      .set('Authorization', 'Bearer one-tap-token');
+    expect(rosterRead.status).toBe(200);
+    expect(rosterRead.body.pool.expectedMachines).toContainEqual(expect.objectContaining({ machineId: read.body.config.machineId }));
+
     // Fronting route: alive, and refuses without a recent unlock.
     const denied = await request(app).post('/subscription-relogin/configure-pool').set('Authorization', 'Bearer one-tap-token')
       .send({ mode: 'approval', targets: [{ machineId: 'local', expectedRevision: revision }] });
