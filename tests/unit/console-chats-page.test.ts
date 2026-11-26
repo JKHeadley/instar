@@ -526,12 +526,18 @@ describe('Conversations page', () => {
         project: { title: 'Dashboard project', conversationKey: 'telegram:2' },
         children: [worker(2), worker(4)], childrenComplete: true }], groups: [], ungrouped: [worker(3)] },
       nextCursor: null };
+    let resolveTree!: (result: { status: number; body: unknown }) => void;
+    const waitingTree = new Promise<{ status: number; body: unknown }>(resolve => { resolveTree = resolve; });
     const { doc } = await boot((c) => {
       if (c.url.startsWith('/mobile/browser-devices/status')) return { status: 200, body: STATUS };
       if (c.url.startsWith('/mobile/conversations?scope=pool')) return { status: 200, body: { ...LIST(), pinnedRows: [LIST().conversations[3]], pinnedRefs: [] } };
-      if (c.url === '/mobile/conversation-graph/tree') return { status: 200, body: tree };
+      if (c.url === '/mobile/conversation-graph/tree') return waitingTree;
       return undefined;
     }, '#/work/chats', idb);
+    for (let i = 0; i < 12; i++) await flush();
+    expect(doc.querySelector('.chat-rows')?.textContent).toContain('Loading conversation tree');
+    expect(doc.querySelector('.chat-rows')?.textContent).not.toContain('Deep');
+    resolveTree({ status: 200, body: tree });
     for (let i = 0; i < 12; i++) await flush();
     const read = calls.find((c) => c.url === '/mobile/conversation-graph/tree')!;
     expect(verifySigned(read, publicKey).ok).toBe(true);
@@ -539,7 +545,13 @@ describe('Conversations page', () => {
     expect(doc.querySelector<HTMLDetailsElement>('.conversation-tree-section .chat-project-row')?.open).toBe(true);
     expect(doc.querySelector('.chat-project-row')?.textContent).toContain('Deep');
     expect([...doc.querySelectorAll('.chat-row-title')].map(node => node.textContent).filter(title => title === 'Deep')).toHaveLength(1);
-    expect([...doc.querySelectorAll('.chat-view-toggle button')].map(node => node.textContent)).toEqual(['Tree', 'Flat']);
+    const toggles = [...doc.querySelectorAll<HTMLButtonElement>('.chat-view-toggle button')];
+    expect(toggles.map(node => node.textContent)).toEqual(['Tree', 'Flat']);
+    toggles[1].click();
+    expect(doc.querySelector('.chat-pinned-group')).toBeNull();
+    expect(doc.querySelector('.conversation-tree-section')).toBeNull();
+    expect(doc.querySelector('.chat-rows .chat-row-title')?.textContent).toBe('Chief of Staff');
+    expect([...doc.querySelectorAll('.chat-row-title')].map(node => node.textContent).filter(title => title === 'Deep')).toHaveLength(1);
   });
 
   it('grouped: Chief of Staff first, a "Groups" header, each group one collapsed row with folder, count and unread, the rest under "Not in a group yet"; All shows the flat list and is remembered', async () => {

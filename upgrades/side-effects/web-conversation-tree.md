@@ -36,7 +36,7 @@ No new static heuristic at a competing-signals decision point. A chat’s positi
 
 ## 5. Interactions
 
-The signed Chats and owner-unlocked Groups views retain their existing authorization paths. Tree reads have their own cursor. Group and conversation changes remain on the existing management screens.
+The signed Chats and owner-unlocked Groups views retain their existing authorization paths. Tree reads have their own cursor. The grouped view waits for its first placement read before drawing flat conversation rows. Group and conversation changes remain on the existing management screens.
 
 ## 6. External surfaces
 

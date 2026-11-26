@@ -468,7 +468,7 @@ class ChatsPage {
         return;
       }
       if (moreTree) {
-        if (treeResult.status === 409) { this.hierarchyAt = 0; queueMicrotask(() => void this.loadHierarchy(true)); }
+        if (treeResult.status === 409) queueMicrotask(() => void this.loadHierarchy(true));
         else {
           this.failedEl.hidden = false;
           this.failedEl.textContent = 'More groups could not be loaded. Try again.';
@@ -528,6 +528,13 @@ class ChatsPage {
       if (row) { this.view.titleEl.textContent = row.title; this.view.titleEl = null; }
     }
     // Grouped | All: the toggle shows only when the hierarchy answered; without it the list is the full flat list.
+    if (this.listView === 'grouped' && this.hierarchyAt === 0) {
+      // Flat rows arrive first. Do not show pinned project descendants as loose
+      // conversations while their authoritative placement is still loading.
+      setKids(this.listEl, el('p', { class: 'card-line chat-muted', role: 'status', text: 'Loading conversation tree…' }));
+      this.moreBtn.hidden = true;
+      return;
+    }
     const grouped = (this.ownerTree.length > 0 || Boolean(this.hierarchy)) && this.listView === 'grouped';
     if (this.viewToggleEl) {
       this.viewToggleEl.hidden = !this.hierarchy && !this.ownerTree.length;
@@ -573,7 +580,7 @@ class ChatsPage {
         return el('div', { class: 'chat-row-wrap' }, link, btn);
       };
       const kids = [];
-      if (pinned.length) {
+      if (pinned.length && !this.ownerTree.length) {
         kids.push(el('div', { class: 'chat-group-label chat-pinned-group', text: 'Pinned' }));
         for (const r of pinned) kids.push(rowEl(r, true));
         if (!grouped) kids.push(el('div', { class: 'chat-group-label', text: 'All conversations' }));
@@ -618,7 +625,15 @@ class ChatsPage {
             el('a', { class: 'chat-review-suggestions', href: '#/work/conversations?view=suggestions', text: 'Review suggestions' })));
           for (const r of ungrouped) kids.push(rowEl(r, false));
         }
-      } else for (const r of this.ownerTree.length ? [...rest].sort(compareConversationActivity(this.treePreferences.sort)) : orderWithTree(rest, this.pinnedKey)) kids.push(rowEl(r, false));
+      } else if (this.ownerTree.length) {
+        const compare = compareConversationActivity(this.treePreferences.sort);
+        const pinnedKeys = new Set(pinned.map(row => row.key));
+        const rows = [...pinned, ...rest].sort((a, b) =>
+          Number(b.key === this.pinnedKey) - Number(a.key === this.pinnedKey) || compare(a, b));
+        for (const row of rows) kids.push(rowEl(row, pinnedKeys.has(row.key)));
+      } else {
+        for (const row of orderWithTree(rest, this.pinnedKey)) kids.push(rowEl(row, false));
+      }
       setKids(this.listEl, kids);
     }
     this.moreBtn.hidden = !(grouped && this.ownerTree.length ? this.ownerTree.at(-1).nextCursor : this.meta.nextCursor);

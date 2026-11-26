@@ -26,14 +26,16 @@ export function treePage(data) {
       if (!Array.isArray(raw[field])) throw new Error('Invalid conversation tree children');
       return raw[field].map(child => node(child, depth + 1));
     };
+    const children = readChildren('children');
+    const proposed = readChildren('proposed');
     return {
       key, ref: raw.ref, kind: raw.kind, role: raw.role, title: raw.title, frontDoor: raw.frontDoor,
-      freshness: raw.sourceFreshness,
+      freshness: raw.sourceFreshness || null,
       project: typeof raw.project?.conversationKey === 'string' && typeof raw.project.title === 'string' ? raw.project : null,
       projectKey: typeof raw.projectConversationKey === 'string' ? raw.projectConversationKey : raw.project?.conversationKey,
       count: Number.isSafeInteger(raw.visibleChildCount) && raw.visibleChildCount >= 0 ? raw.visibleChildCount : null,
       incomplete: raw.childrenComplete === false || raw.proposedComplete === false,
-      children: readChildren('children'), proposed: readChildren('proposed'),
+      children, proposed,
     };
   }
   try {
