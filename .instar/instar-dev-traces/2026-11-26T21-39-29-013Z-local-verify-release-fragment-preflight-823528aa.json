@@ -1,0 +1,28 @@
+{
+  "version": 2,
+  "slug": "local-verify-release-fragment-preflight",
+  "sessionId": "226c8fd7-d30f-4ba9-b47b-e02a86950234",
+  "timestamp": "2026-11-26T21:39:29.013Z",
+  "artifactPath": "upgrades/side-effects/local-verify-release-fragment-preflight.md",
+  "artifactSha256": "383e7a67c3dca0c75893662db1bf4946e86c5d75dc70397b3020d1b1ad87eed8",
+  "coveredFiles": [
+    "src/localVerify/LocalVerifyService.ts",
+    "src/localVerify/localVerifyRoutes.ts",
+    "src/localVerify/serviceSeams.ts",
+    "src/localVerify/waitingList.ts",
+    "tests/integration/local-verify-routes.test.ts",
+    "tests/unit/localVerify/LocalVerifyService.test.ts",
+    "tests/unit/localVerify/mainRedHoldService.test.ts",
+    "tests/unit/localVerify/operatorFrontService.test.ts",
+    "tests/unit/localVerify/serviceSeams-listOpenPrs.test.ts",
+    "tests/unit/localVerify/waitingListService.test.ts",
+    "upgrades/side-effects/local-verify-release-fragment-preflight.md"
+  ],
+  "phase": "complete",
+  "tier": 1,
+  "tierReasoning": "Reversible admission rule in maintainer-only Local Verify, preserving GitHub merge authority. Independent second-pass review of the harness-changing files at head dd34b5e00.",
+  "eli16Path": "upgrades/next/local-verify-release-fragment-preflight.md",
+  "sideEffectsPath": "upgrades/side-effects/local-verify-release-fragment-preflight.md",
+  "secondPass": "true",
+  "reviewerConcurred": true
+}
