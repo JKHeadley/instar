@@ -64,3 +64,5 @@ The version 2 server code can prepare the exact enrollment details the phone wil
 The new timer closes the attempt to new responses as soon as the machine checks it after the local timeout. If saving the cancellation fails, intake stays closed and the server can retry saving the same request.
 
 The decision code now checks the signature against the exact phone key and preserves whichever exact decision was saved first. A retry can recover that same result. The shared approval system still has to save the decision.
+
+The dark version 2 server handler checks that the phone signing the challenge matches the paired device, then hands confirmation or cancellation to the same shared authority. The authority must resolve the current owner, account, and policy inside its decision. A result is usable only when the witness records the exact operation. An unavailable or mismatched result leaves enrollment pending, and the handler cannot install a key itself.

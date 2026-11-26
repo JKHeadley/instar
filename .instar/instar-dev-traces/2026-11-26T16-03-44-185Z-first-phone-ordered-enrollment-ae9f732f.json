@@ -1,0 +1,23 @@
+{
+  "version": 2,
+  "slug": "first-phone-ordered-enrollment",
+  "sessionId": "b3d2cf8a-9b5d-468b-a50b-70ebf11e9e5c",
+  "timestamp": "2026-11-26T16:03:44.185Z",
+  "artifactPath": "upgrades/side-effects/first-phone-ordered-enrollment.md",
+  "artifactSha256": "e2b6602c7d5230ef72d5686d55463a52b6522f58b16c5d724cbac5f74459e408",
+  "coveredFiles": [
+    ".instar/instar-dev-decisions/2026-11-26T16-03-25-922Z-first-phone-ordered-enrollment.json",
+    "docs/specs/phone-only-first-approver.eli16.md",
+    "src/core/trustJourney/firstPhoneOrderedEnrollment.ts",
+    "tests/unit/first-phone-ordered-enrollment.test.ts",
+    "upgrades/next/phone-only-first-approver.md",
+    "upgrades/side-effects/first-phone-ordered-enrollment.md"
+  ],
+  "phase": "complete",
+  "tier": 1,
+  "tierReasoning": "Unmounted server handler with no production authority or route changes",
+  "eli16Path": "docs/specs/phone-only-first-approver.eli16.md",
+  "sideEffectsPath": "upgrades/side-effects/first-phone-ordered-enrollment.md",
+  "secondPass": "true",
+  "reviewerConcurred": true
+}
