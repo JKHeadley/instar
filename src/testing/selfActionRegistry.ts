@@ -2131,7 +2131,7 @@ const jobCapacityEpisode: SelfActionController = {
  */
 const jobQueueStall: SelfActionController = {
   id: 'job-queue-stall',
-  actionVerb: 'job-queue-stalled',
+  actionVerb: 'job-alert-notify',
   models: 'src/scheduler/JobScheduler.ts (one stall record per non-advancing queue episode)',
   modelsPath: 'src/scheduler/JobScheduler.ts',
   boundK: 1,
@@ -2151,7 +2151,7 @@ const jobQueueStall: SelfActionController = {
         sink.considered += 1;
         if (reported || f.clock.nowMs() - queuedAt <= longestTimeoutMs) return;
         reported = true;
-        sink.emit({ verb: 'job-queue-stalled', target: 'local-queue' });
+        sink.emit({ verb: 'job-alert-notify', target: 'local-queue' });
       },
     };
   },

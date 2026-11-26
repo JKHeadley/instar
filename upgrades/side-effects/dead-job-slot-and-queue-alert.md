@@ -55,3 +55,5 @@ Concur with the revised side-effects review. The backstop records a retained non
 ## Class-Closure Declaration
 
 The `unbounded-self-action` defect class is closed by the convergence guard in `tests/unit/self-action-convergence.test.ts`. There is one maintenance pass in flight and one stall record per queue episode. Confirmed dead sessions leave the running set through normal completion. Uncertain probes leave the slot held.
+
+The convergence registry uses the existing job notification verb. The production activity event keeps its scheduler-specific name.

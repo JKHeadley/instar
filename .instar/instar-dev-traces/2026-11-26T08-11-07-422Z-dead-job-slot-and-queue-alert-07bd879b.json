@@ -1,0 +1,20 @@
+{
+  "version": 2,
+  "slug": "dead-job-slot-and-queue-alert",
+  "sessionId": "dd2f336e-e8f7-40b3-97e3-09d19139bfa6",
+  "timestamp": "2026-11-26T08:11:07.422Z",
+  "artifactPath": "upgrades/side-effects/dead-job-slot-and-queue-alert.md",
+  "artifactSha256": "5e9c8998305555da572dadf05e9b7c9c14e8ff96a4d0857979ad6a9355957e62",
+  "coveredFiles": [
+    "src/testing/selfActionRegistry.ts",
+    "upgrades/eli16/dead-job-slot-and-queue-alert.md",
+    "upgrades/side-effects/dead-job-slot-and-queue-alert.md"
+  ],
+  "phase": "complete",
+  "tier": 1,
+  "tierReasoning": "Use the existing detector vocabulary in the scheduler convergence model without altering production behavior.",
+  "eli16Path": "upgrades/eli16/dead-job-slot-and-queue-alert.md",
+  "sideEffectsPath": "upgrades/side-effects/dead-job-slot-and-queue-alert.md",
+  "secondPass": "not-required",
+  "reviewerConcurred": null
+}
