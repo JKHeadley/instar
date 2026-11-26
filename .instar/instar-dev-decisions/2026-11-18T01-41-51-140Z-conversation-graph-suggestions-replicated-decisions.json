@@ -1,0 +1,34 @@
+{
+  "ts": "2026-11-18T01:41:51.140Z",
+  "slug": "conversation-graph-suggestions-replicated-decisions",
+  "suggestedTier": 2,
+  "declaredTier": 2,
+  "riskFloor": 2,
+  "riskFloorReasons": [
+    "new capability: new exported class / subsystem added"
+  ],
+  "belowFloor": false,
+  "files": 11,
+  "loc": 865,
+  "scope": {
+    "basis": "staged-in-scope-paths-including-deleted",
+    "files": [
+      "src/commands/server.ts",
+      "src/core/CoherenceJournal.ts",
+      "src/core/ConversationGraphSuggestionDecisions.ts",
+      "src/core/ConversationGraphSuggestions.ts",
+      "src/core/JournalSyncApplier.ts",
+      "src/core/ReplicatedStoreReconcilerWiring.ts",
+      "src/data/awareness/conversation-suggestion-decisions-shared.md",
+      "src/data/feature-ladders.json",
+      "src/server/AgentServer.ts",
+      "src/server/ConversationGraphSuggestionService.ts",
+      "src/server/ConversationGraphSurface.ts"
+    ],
+    "addedLines": 848,
+    "deletedLines": 17
+  },
+  "causalAutopsy": null,
+  "classClosure": null,
+  "verdict": "blocked"
+}

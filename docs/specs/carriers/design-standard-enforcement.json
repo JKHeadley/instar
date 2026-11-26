@@ -1,0 +1,66 @@
+{
+  "generatedAt": "2026-11-22T08:49:24.607Z",
+  "slug": "design-standard-enforcement",
+  "carriers": {
+    "CMT-2165": {
+      "status": "pending",
+      "owner": "agent",
+      "blockedOn": "none",
+      "excerpt": "DSE-T1: Offer the design gate to users' own projects: the checker, lint, capture step and detector read the standard path, the registry path and the evidence location from one project file, and turn on only by the explicit flag `resolveDevAgentGate` already honours. Owner: Echo's design-standards session."
+    },
+    "CMT-2166": {
+      "status": "pending",
+      "owner": "agent",
+      "blockedOn": "none",
+      "excerpt": "DSE-T2: Apple capture tool and automatic checks: a design-audit test in `InstarAppUITests` that launches each registered screen with seeded data at the standard sizes, reads frames and names from the accessibility tree, and writes captures into the private apps repository. Owner: the Apple app session. Runs on the Laptop under the one-build lock."
+    },
+    "CMT-2167": {
+      "status": "pending",
+      "owner": "agent",
+      "blockedOn": "none",
+      "excerpt": "DSE-T3: Android capture tool and automatic checks with Compose UI tests at the standard sizes and font scale 1.3. Owner: the Android app session."
+    },
+    "CMT-2168": {
+      "status": "pending",
+      "owner": "agent",
+      "blockedOn": "none",
+      "excerpt": "DSE-T4: Windows and Linux capture tools and automatic checks. Each begins as its own spec through spec-converge. Owner: the session the Chief of Staff's project list names for each family; Echo's design-standards session carries either one for which none is named."
+    },
+    "CMT-2169": {
+      "status": "pending",
+      "owner": "agent",
+      "blockedOn": "none",
+      "excerpt": "DSE-T5: Seeds and harness support for the dashboard pages that are not console routes, and the pairing page. Owner: Echo's design-standards session."
+    },
+    "CMT-2170": {
+      "status": "pending",
+      "owner": "agent",
+      "blockedOn": "none",
+      "excerpt": "DSE-T6: Decide the merge gate for wording in messages and notices written by agents: widen the UX impact lint beyond its one author and move it into the floor, or bring notices under the design gate. Owner: Echo's design-standards session."
+    },
+    "CMT-2171": {
+      "status": "pending",
+      "owner": "agent",
+      "blockedOn": "none",
+      "excerpt": "DSE-T7: Decide whether accounts needing sign-in sort first on every surface; the server does this and the web does not. Owner: Echo's design-standards session, recorded on DF-0001."
+    },
+    "CMT-2172": {
+      "status": "pending",
+      "owner": "agent",
+      "blockedOn": "none",
+      "excerpt": "DSE-T8: Interaction traces the harness does not yet produce, for the review rules that need them. Owner: Echo's design-standards session."
+    },
+    "CMT-2173": {
+      "status": "pending",
+      "owner": "agent",
+      "blockedOn": "none",
+      "excerpt": "DSE-T9: Design-feedback detection for owner messages that arrive through Slack, if stage 3 does not prove it. Owner: Echo's design-standards session."
+    },
+    "CMT-2178": {
+      "status": "pending",
+      "owner": "agent",
+      "blockedOn": "none",
+      "excerpt": "DSE-T10: Before building design-standards stage 3 (the feedback loop), check that pull request 3596 (agent work cards slice 1, owned by the agent-work-cards build session) has merged with requestApproved on main; if not, build stages 4 to 6 first and hand the dependency to that session."
+    }
+  }
+}

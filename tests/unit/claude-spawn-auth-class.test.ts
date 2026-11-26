@@ -15,6 +15,7 @@ const EXEMPT: Record<string, string> = {
   'src/core/crossModelReviewer.ts': '--help only; its model calls go through ClaudeCliIntelligenceProvider',
   'src/feedback-factory/execute/buildFeedbackExecutor.ts': '--version only',
   'src/core/claudeKeyProbe.ts': 'passes the key under test explicitly',
+  'src/core/freshLoginProbe.ts': 'tests one stored login on purpose: strips every key and token so only that login folder can authenticate (spec stale-process-login-expired D1)',
   'src/core/ClaudeBinaryRetainer.ts': '--version only',
   'src/ecosystem/buildEcosystemIdeas.ts': '--version only; its model calls go through the provider',
   'src/commands/server.ts': 'matches unrelated generic exec helpers; the login panes need no key',

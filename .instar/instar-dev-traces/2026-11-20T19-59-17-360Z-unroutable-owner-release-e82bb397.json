@@ -1,0 +1,33 @@
+{
+  "version": 2,
+  "slug": "unroutable-owner-release",
+  "sessionId": "676909c6-f7e4-4202-ab7a-f8d489e719ac",
+  "timestamp": "2026-11-20T19:59:17.360Z",
+  "artifactPath": "upgrades/side-effects/unroutable-owner-release.md",
+  "artifactSha256": "57e2f70b05481725157c0fdfb97cac93b5ee08fc6401e4621fa918c4e524f0a0",
+  "specPath": "docs/specs/unroutable-owner-release.md",
+  "coveredFiles": [
+    "docs/specs/reports/unroutable-owner-release-convergence.md",
+    "docs/specs/unroutable-owner-release.eli16.md",
+    "docs/specs/unroutable-owner-release.md",
+    "src/commands/server.ts",
+    "src/core/SessionRouter.ts",
+    "src/core/StaleOwnerReleaseEngine.ts",
+    "src/core/types.ts",
+    "src/core/unroutableOwner.ts",
+    "src/data/awareness/unroutable-owner-release.md",
+    "src/server/AgentServer.ts",
+    "src/server/routes.ts",
+    "tests/e2e/unroutable-owner-transfer-alive.test.ts",
+    "tests/integration/unroutable-owner-transfer.test.ts",
+    "tests/unit/unroutable-owner-release-wiring.test.ts",
+    "tests/unit/unroutable-owner-release.test.ts",
+    "upgrades/next/unroutable-owner-release.md",
+    "upgrades/side-effects/unroutable-owner-release.md"
+  ],
+  "phase": "complete",
+  "tier": 2,
+  "tierReasoning": "new ownership-takeover authority on three paths (router, engine, transfer); fleet-wide router behavior change",
+  "secondPass": "true",
+  "reviewerConcurred": true
+}

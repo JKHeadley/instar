@@ -1,0 +1,38 @@
+{
+  "ts": "2026-11-18T04:11:06.950Z",
+  "slug": "desktop-peer-check-result",
+  "suggestedTier": 1,
+  "declaredTier": 1,
+  "riskFloor": 1,
+  "riskFloorReasons": [],
+  "belowFloor": false,
+  "files": 3,
+  "loc": 13,
+  "scope": {
+    "basis": "staged-in-scope-paths-including-deleted",
+    "files": [
+      "src/core/DesktopProbeReadiness.ts",
+      "src/server/AgentServer.ts",
+      "src/server/routes.ts"
+    ],
+    "addedLines": 7,
+    "deletedLines": 6
+  },
+  "causalAutopsy": {
+    "origin": "prior-pr",
+    "relatedPrs": [
+      2471
+    ],
+    "notes": "The mesh rollout described a failed check as a measured not-ready state."
+  },
+  "classClosure": {
+    "defectClass": "claim-vs-evidence",
+    "closure": "guard",
+    "guardEvidence": {
+      "enforcementType": "ratchet",
+      "citation": "tests/integration/desktop-routes.test.ts",
+      "howCaught": "A failed peer probe and a ready retry are distinguished."
+    }
+  },
+  "verdict": "pass"
+}

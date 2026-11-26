@@ -1,0 +1,16 @@
+{
+  "version": 2,
+  "slug": "reaper-generated-files-regenerable",
+  "sessionId": "fd2ce461-1e24-498f-87dc-7910bcdc7a30",
+  "timestamp": "2026-11-19T07:31:47.516Z",
+  "artifactPath": "upgrades/side-effects/reaper-generated-files-regenerable.md",
+  "artifactSha256": "4b851d6d0a70ed50a04628288ef962bcb6e876f28e2d7079fcd2c58d8241eff6",
+  "specPath": "docs/specs/reaper-generated-files-regenerable.md",
+  "coveredFiles": [
+    "src/monitoring/agentWorktreeGit.ts",
+    "upgrades/side-effects/reaper-generated-files-regenerable.md"
+  ],
+  "phase": "complete",
+  "secondPass": "not-required",
+  "reviewerConcurred": null
+}

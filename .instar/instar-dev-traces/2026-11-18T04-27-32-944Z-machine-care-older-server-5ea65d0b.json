@@ -1,0 +1,28 @@
+{
+  "version": 2,
+  "slug": "machine-care-older-server",
+  "sessionId": "ca49562d-8438-4c10-9918-926f25d32e04",
+  "timestamp": "2026-11-18T04:27:32.944Z",
+  "artifactPath": "upgrades/side-effects/machine-care-older-server.md",
+  "artifactSha256": "29190c3e8e093b879fae8704cf9a4d3ff49ece27b8b645f4be6a65b2d30e744b",
+  "specPath": "docs/specs/machine-self-maintenance.md",
+  "coveredFiles": [
+    "dashboard/console/machine-care-model.js",
+    "tests/unit/console-machine-care.test.ts",
+    "upgrades/next/machine-care-older-server.md",
+    "upgrades/side-effects/machine-care-older-server.md"
+  ],
+  "phase": "complete",
+  "tier": 2,
+  "secondPass": "not-required",
+  "reviewerConcurred": null,
+  "classClosure": {
+    "defectClass": "unbounded-self-action",
+    "closure": "guard",
+    "guardEvidence": {
+      "enforcementType": "ratchet",
+      "citation": "tests/unit/self-action-convergence.test.ts",
+      "howCaught": "older-server fixtures in console-machine-care.test.ts; routes still check for themselves"
+    }
+  }
+}

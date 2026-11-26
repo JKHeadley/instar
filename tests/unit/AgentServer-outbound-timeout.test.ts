@@ -26,7 +26,10 @@ import {
   PARITY_PASS_TIMEOUT_MS,
   PARITY_ROUTE_SLACK_MS,
   POOL_TRANSFER_TIMEOUT_MS,
+  GEMINI_PAYG_ROUTE_TIMEOUT_MS,
+  UPDATE_APPLY_TIMEOUT_MS,
 } from '../../src/server/middleware.js';
+import { GEMINI_API_MAX_TIMEOUT_MS } from '../../src/providers/metered/gemini-api/geminiApiTransport.js';
 import { CONFORMANCE_REVIEW_TIMEOUT_MS } from '../../src/core/reviewers/standards-conformance.js';
 
 const DEFAULT_MS = 30_000;
@@ -53,6 +56,16 @@ describe('request-timeout override map (production wiring)', () => {
     expect(resolveRequestTimeout('/spec/conformance-check', DEFAULT_MS, overrides)).toBe(SPEC_REVIEW_TIMEOUT_MS);
   });
 
+  it('resolves /updates/apply to the update-apply budget (npm install + native rebuild + validation run for minutes)', () => {
+    // Under the 30s default the middleware 408'd mid-install and the handler's real
+    // answer became a "Suppressed duplicate response send" (Echo Studio, 2026-11-21).
+    expect(resolveRequestTimeout('/updates/apply', DEFAULT_MS, overrides)).toBe(UPDATE_APPLY_TIMEOUT_MS);
+    expect(UPDATE_APPLY_TIMEOUT_MS).toBeGreaterThanOrEqual(10 * 60_000);
+    // Sibling routes keep the default: the matcher is exact-or-child, never a bare prefix.
+    expect(resolveRequestTimeout('/updates/auto', DEFAULT_MS, overrides)).toBe(DEFAULT_MS);
+    expect(resolveRequestTimeout('/updates/rollback', DEFAULT_MS, overrides)).toBe(DEFAULT_MS);
+  });
+
   it('resolves /pool/transfer to the drain budget (WS1.2 — synchronous owner drain up to ~50s)', () => {
     // Without this, the 30s default 408s mid-drain while the handler keeps
     // running to completion (lands the claim + sets the pin) — 2026-06-12
@@ -60,6 +73,18 @@ describe('request-timeout override map (production wiring)', () => {
     expect(resolveRequestTimeout('/pool/transfer', DEFAULT_MS, overrides)).toBe(POOL_TRANSFER_TIMEOUT_MS);
     // Must clear the 50s remote drain-call cap with margin.
     expect(POOL_TRANSFER_TIMEOUT_MS).toBeGreaterThan(50_000);
+  });
+
+  it('gives the Gemini pay-per-use calls a budget above the longest forwarded call (the live-test holder-death drill found a 408 here)', () => {
+    for (const p of ['/intelligence/gemini', '/intelligence/gemini/review', '/routing-spend/release-proof']) {
+      expect(resolveRequestTimeout(p, DEFAULT_MS, overrides)).toBe(GEMINI_PAYG_ROUTE_TIMEOUT_MS);
+    }
+    // The longest call a non-holder waits on: the transport's ceiling plus the 60 s
+    // forwarding allowance (meteredLaneRuntime.deadlineFor).
+    expect(GEMINI_PAYG_ROUTE_TIMEOUT_MS).toBeGreaterThan(GEMINI_API_MAX_TIMEOUT_MS + 60_000);
+    // Siblings keep the default.
+    expect(resolveRequestTimeout('/intelligence/gemini-x', DEFAULT_MS, overrides)).toBe(DEFAULT_MS);
+    expect(resolveRequestTimeout('/routing-spend/caps', DEFAULT_MS, overrides)).toBe(DEFAULT_MS);
   });
 
   it('leaves the fast sibling /pool/placement on the default (no over-reach)', () => {

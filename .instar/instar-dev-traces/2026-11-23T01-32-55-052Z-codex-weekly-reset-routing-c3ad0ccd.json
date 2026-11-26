@@ -1,0 +1,29 @@
+{
+  "version": 2,
+  "slug": "codex-weekly-reset-routing",
+  "sessionId": "fa6f6527-b01e-426b-a83e-6c75395ee134",
+  "timestamp": "2026-11-23T01:32:55.052Z",
+  "artifactPath": "upgrades/side-effects/codex-weekly-reset-routing.md",
+  "artifactSha256": "0d2233692e1276935e17b41709881c2ae7f86531c7d16f3920ead1ccb14fe9ef",
+  "coveredFiles": [
+    "docs/specs/codex-weekly-reset-routing.eli16.md",
+    "src/core/QuotaAwareScheduler.ts",
+    "src/core/SessionManager.ts",
+    "src/core/UsageWallRescue.ts",
+    "src/core/windowAwareChoice.ts",
+    "src/data/awareness/codex-weekly-reset-routing.md",
+    "tests/e2e/codex-spawn-wall-placement-alive.test.ts",
+    "tests/integration/codex-spawn-wall-placement.test.ts",
+    "tests/unit/codex-spawn-wall-placement.test.ts",
+    "tests/unit/interactive-session-pin.test.ts",
+    "upgrades/next/codex-weekly-reset-routing.md",
+    "upgrades/side-effects/codex-weekly-reset-routing.md"
+  ],
+  "phase": "complete",
+  "tier": 1,
+  "tierReasoning": "Reversible existing placement repair; no new credentials, endpoints, configuration or restart authority.",
+  "eli16Path": "docs/specs/codex-weekly-reset-routing.eli16.md",
+  "sideEffectsPath": "upgrades/side-effects/codex-weekly-reset-routing.md",
+  "secondPass": "true",
+  "reviewerConcurred": true
+}

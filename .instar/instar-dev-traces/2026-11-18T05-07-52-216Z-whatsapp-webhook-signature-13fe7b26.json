@@ -1,0 +1,32 @@
+{
+  "version": 2,
+  "slug": "whatsapp-webhook-signature",
+  "sessionId": "0270246d-6988-400b-9bff-3421feda13ce",
+  "timestamp": "2026-11-18T05:07:52.216Z",
+  "artifactPath": "upgrades/side-effects/whatsapp-webhook-signature.md",
+  "artifactSha256": "012d833f04e6673ce80bd3f8cad0613bb97e1861bcfd8a167fc21380e77a598a",
+  "coveredFiles": [
+    "docs/specs/whatsapp-webhook-signature.eli16.md",
+    "src/cli.ts",
+    "src/commands/server.ts",
+    "src/commands/setup.ts",
+    "src/commands/whatsapp.ts",
+    "src/data/awareness/whatsapp-business-signature.md",
+    "src/messaging/WhatsAppAdapter.ts",
+    "src/messaging/backends/BusinessApiBackend.ts",
+    "src/messaging/backends/WhatsAppWebhookRoutes.ts",
+    "src/scaffold/templates.ts",
+    "tests/e2e/whatsapp-server-e2e.test.ts",
+    "tests/unit/BusinessApiBackend.test.ts",
+    "tests/unit/WhatsAppWebhookRoutes.test.ts",
+    "upgrades/next/whatsapp-webhook-signature.md",
+    "upgrades/side-effects/whatsapp-webhook-signature.md"
+  ],
+  "phase": "complete",
+  "tier": 1,
+  "tierReasoning": "One authority check at one unauthenticated route (Meta's documented signature), fail closed, reversible by revert, no stored-data change; independently reviewed.",
+  "eli16Path": "docs/specs/whatsapp-webhook-signature.eli16.md",
+  "sideEffectsPath": "upgrades/side-effects/whatsapp-webhook-signature.md",
+  "secondPass": "true",
+  "reviewerConcurred": true
+}

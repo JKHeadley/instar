@@ -40,6 +40,8 @@ export function buildPromptGateDecisionContext(input: {
 import { createHash, randomBytes } from 'node:crypto';
 import { trimTrailingBlankRows } from '../core/paneText.js';
 import { boundedTail } from '../core/boundedInput.js';
+import { classifyLlmError } from '../core/llmErrorClass.js';
+import { DegradationReporter } from './DegradationReporter.js';
 
 /**
  * Bound on the terminal tail handed to the blocking-prompt classifier.
@@ -275,6 +277,7 @@ function detectExecutionApprovalSafeReject(lines: string[], fullWindow?: string[
   if (!rejectKey) return null;
 
   const commandMatch = haystack.match(/Allow execution of:\s*([\s\S]*?)(?:\n\s*[●○◉]?\s*1[.)]\s+Allow once|\n\s*1[.)]\s+Allow once|$)/i);
+  // bounded-input-reviewed: the reject is UNCONDITIONAL (safe-reject disposition); this text only reaches a log line and a degradation report.
   const rejectedCommand = (commandMatch?.[1] ?? '')
     .replace(/\s+/g, ' ')
     .trim()
@@ -652,6 +655,25 @@ export class InputDetector extends EventEmitter {
   private llmRelayTimestamps = new Map<string, number>();
   private static readonly LLM_RELAY_COOLDOWN_MS = 300_000; // 5 minutes
 
+  /**
+   * CMT-2289: per-session backoff after a FAILED detection call. Fleet reports
+   * showed PromptGate asking the same unchanged pane again on every tick while
+   * every call failed (only a clean NO_PROMPT was cached), so a broken provider
+   * produced hundreds of failures a day. After a failure the SAME pane
+   * fingerprint is not re-asked until the backoff expires (30 s, doubling to
+   * 5 min; at most 1 min for a rate limit, full capacity or a timeout). A changed pane, sent input, a success, or session cleanup clears
+   * it at once, and regex detection keeps running throughout.
+   */
+  private llmFailureBackoff = new Map<string, { fingerprint: string; until: number; failures: number }>();
+  static readonly LLM_FAILURE_BACKOFF_BASE_MS = 30_000;
+  static readonly LLM_FAILURE_BACKOFF_MAX_MS = 5 * 60_000;
+  /** Self-recovering failure classes back off at most this long. */
+  static readonly LLM_FAILURE_BACKOFF_TRANSIENT_MAX_MS = 60_000;
+  static readonly TRANSIENT_LLM_ERROR_CLASSES: ReadonlySet<string> = new Set(['rate-limit', 'capacity', 'timeout']);
+  /** One degradation report per error class per 30 minutes (the class, never the message). */
+  private llmFailureReportedAt = new Map<string, number>();
+  static readonly LLM_FAILURE_REPORT_INTERVAL_MS = 30 * 60_000;
+
   private async llmDetect(sessionName: string, lines: string[]): Promise<void> {
     const intelligence = this.config.intelligence;
     if (!intelligence) return;
@@ -693,6 +715,9 @@ export class InputDetector extends EventEmitter {
     const contextFingerprint = createHash('sha256').update(context).digest('hex');
     const cached = this.noPromptCache.get(sessionName);
     if (cached && cached.set.has(contextFingerprint)) return;
+    // CMT-2289: a recent failure on this exact pane — don't re-ask until it backs off.
+    const backoff = this.llmFailureBackoff.get(sessionName);
+    if (backoff && backoff.fingerprint === contextFingerprint && Date.now() < backoff.until) return;
 
     // Capture cache generation at call start. If onInputSent or cleanup runs
     // for this session before our verdict comes back, the generation will
@@ -768,9 +793,19 @@ When in doubt, respond NO_PROMPT. False positives cause spam.`;
     this.shadowJev(context, incumbent, incumbentStarted,
       linking ? () => ({ producerCorrelationId, sessionName }) : undefined);
 
+    // CMT-2289: only a failure of the LLM call itself backs off and is reported —
+    // never a throw from parsing or emitting below.
+    let response: string;
     try {
-      const response = await incumbent;
+      response = await incumbent;
+    } catch (err) {
+      this.onLlmDetectFailure(sessionName, contextFingerprint, callGeneration, err);
+      return;
+    }
+    // A call that came back clears any failure backoff for this session.
+    this.llmFailureBackoff.delete(sessionName);
 
+    try {
       const trimmed = response.trim();
       if (trimmed === 'NO_PROMPT' || trimmed.startsWith('NO')) {
         // Cache only on the strict NO_PROMPT signal. The permissive
@@ -812,7 +847,40 @@ When in doubt, respond NO_PROMPT. False positives cause spam.`;
         this.llmRelayTimestamps.set(sessionName, Date.now());
       }
     } catch {
-      // LLM call failed — silent fallback (regex-only detection continues)
+      // @silent-fallback-ok: a parse/emit failure after a successful call — regex-only detection continues (unchanged behaviour).
+    }
+  }
+
+  private onLlmDetectFailure(sessionName: string, fingerprint: string, callGeneration: number, err: unknown): void {
+    try {
+      const now = Date.now();
+      const errorClass = classifyLlmError(err);
+      // Input was sent or the session was cleaned up while this call was in flight:
+      // the screen is stale, so don't back it off (mirrors the NO_PROMPT cache guard).
+      if ((this.cacheGeneration.get(sessionName) ?? 0) === callGeneration) {
+        const prev = this.llmFailureBackoff.get(sessionName);
+        const failures = prev && prev.fingerprint === fingerprint ? prev.failures + 1 : 1;
+        // A passing condition (rate limit, full capacity, a timeout) recovers on its own:
+        // cap its backoff short so a real prompt is re-checked soon after recovery.
+        const cap = InputDetector.TRANSIENT_LLM_ERROR_CLASSES.has(errorClass)
+          ? InputDetector.LLM_FAILURE_BACKOFF_TRANSIENT_MAX_MS
+          : InputDetector.LLM_FAILURE_BACKOFF_MAX_MS;
+        const delay = Math.min(InputDetector.LLM_FAILURE_BACKOFF_BASE_MS * 2 ** Math.min(failures - 1, 10), cap);
+        this.llmFailureBackoff.set(sessionName, { fingerprint, until: now + delay, failures });
+      }
+      const last = this.llmFailureReportedAt.get(errorClass);
+      if (last === undefined || now - last >= InputDetector.LLM_FAILURE_REPORT_INTERVAL_MS) {
+        this.llmFailureReportedAt.set(errorClass, now);
+        DegradationReporter.getInstance().report({
+          feature: 'PromptGate.llmDetect',
+          primary: 'Detect blocking terminal prompts with an LLM check',
+          fallback: 'Pattern-based detection only; the same screen is re-checked after a backoff',
+          reason: `LLM prompt-detection call failed (class: ${errorClass})`,
+          impact: 'A blocking prompt that only the LLM check recognises may be relayed late',
+        });
+      }
+    } catch {
+      // @silent-fallback-ok: failure bookkeeping must never break the poll loop; regex detection continues.
     }
   }
 
@@ -932,6 +1000,7 @@ When in doubt, respond NO_PROMPT. False positives cause spam.`;
     this.lastEmissionTime.delete(sessionName); // Clear cooldown so new prompts can fire
     this.llmRelayTimestamps.delete(sessionName); // Allow LLM to fire for follow-up prompts
     this.noPromptCache.delete(sessionName); // Cleared so post-input output gets re-classified
+    this.llmFailureBackoff.delete(sessionName); // New input → re-check at once (CMT-2289)
     // Bump generation so any mid-flight llmDetect drops its NO_PROMPT write.
     this.cacheGeneration.set(sessionName, (this.cacheGeneration.get(sessionName) ?? 0) + 1);
   }
@@ -974,6 +1043,7 @@ When in doubt, respond NO_PROMPT. False positives cause spam.`;
     this.llmRelayTimestamps.delete(sessionName);
     this.pendingLlmDetection.delete(sessionName);
     this.noPromptCache.delete(sessionName);
+    this.llmFailureBackoff.delete(sessionName);
     // Bump generation so any in-flight llmDetect for this session drops
     // its NO_PROMPT write. The generation entry itself is left in place —
     // it is tiny and a future llmDetect on the same session name (e.g. a

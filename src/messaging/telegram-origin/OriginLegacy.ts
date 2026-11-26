@@ -48,14 +48,27 @@ export function snapshotLegacyOrigin(row: PendingRelayRow): OriginLegacySnapshot
       ? row.origin_session_digest : null };
 }
 
-/** The exact body BootHealthBeacon sends for every non-health request. */
+/** The exact body BootHealthBeacon sends for every request. Two shapes are
+ * recognised: the original `{status:'warming',phase:'booting'}`, and the typed
+ * boot-readiness body it has sent since 2026-11-16
+ * (`{error:'starting',status:'starting',message,retryAfterSeconds,bootReadiness}`,
+ * built by BootHealthBeacon.bootBeaconResponseBody; a contract test pins the two together).
+ * The beacon answers before AgentServer binds its port, so no reply handler ran
+ * for a request it answered. Exactly these keys and values qualify: an extra key
+ * (a relayed marker, say) or any other value stays uncertain. */
 export function isBootBeaconBody(body: unknown): boolean {
-  if (typeof body !== 'string' || body.length > 200) return false;
-  try {
-    const value = JSON.parse(body) as Record<string, unknown>;
-    return !!value && typeof value === 'object' && !Array.isArray(value) && Object.keys(value).length === 2
-      && value.status === 'warming' && value.phase === 'booting';
-  } catch { return false; }
+  if (typeof body !== 'string' || Buffer.byteLength(body) > 16_384) return false;
+  let value: Record<string, unknown>;
+  try { value = JSON.parse(body) as Record<string, unknown>; } catch { return false; }
+  if (!value || typeof value !== 'object' || Array.isArray(value)) return false;
+  const keys = Object.keys(value).sort().join(',');
+  if (keys === 'phase,status') return body.length <= 200 && value.status === 'warming' && value.phase === 'booting';
+  if (keys !== 'bootReadiness,error,message,retryAfterSeconds,status') return false;
+  const readiness = value.bootReadiness as Record<string, unknown> | null;
+  return value.error === 'starting' && value.status === 'starting'
+    && Number.isSafeInteger(value.retryAfterSeconds) && (value.retryAfterSeconds as number) >= 0
+    && value.message === `The server is starting. Retry after ${value.retryAfterSeconds as number} s.`
+    && !!readiness && typeof readiness === 'object' && !Array.isArray(readiness) && readiness.state === 'starting';
 }
 
 /** The reply route's exact body for a send it refused while preparing it:

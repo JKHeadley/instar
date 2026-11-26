@@ -1,0 +1,28 @@
+{
+  "ts": "2026-11-21T02:53:53.926Z",
+  "slug": "relay-error-no-crash",
+  "suggestedTier": 2,
+  "declaredTier": 1,
+  "riskFloor": 2,
+  "riskFloorReasons": [
+    "safety-invariant proximity: src/threadline/client/RelayClient.ts matches relay / delivery path",
+    "safety-invariant proximity: src/threadline/client/relayErrorReport.ts matches relay / delivery path"
+  ],
+  "belowFloor": true,
+  "files": 4,
+  "loc": 321,
+  "scope": {
+    "basis": "staged-in-scope-paths-including-deleted",
+    "files": [
+      "src/threadline/ThreadlineBootstrap.ts",
+      "src/threadline/client/RelayClient.ts",
+      "src/threadline/client/ThreadlineClient.ts",
+      "src/threadline/client/relayErrorReport.ts"
+    ],
+    "addedLines": 213,
+    "deletedLines": 108
+  },
+  "causalAutopsy": null,
+  "classClosure": null,
+  "verdict": "pass"
+}

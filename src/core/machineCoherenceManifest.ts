@@ -325,6 +325,8 @@ export interface CoherenceManifestExclusion {
 }
 
 export const COHERENCE_MANIFEST_EXCLUSIONS: CoherenceManifestExclusion[] = [
+  { configPath: 'multiMachine.messageSessionGeneration.enabled', reason: 'sender-only protocol rollout; the signed generation endpoint and receiver binding checks are always available, each enabled sender requires fresh peer support, and unenabled senders retain the explicitly disclosed legacy path' },
+  { configPath: 'multiMachine.placement.agentSessions.enabled', reason: 'per-machine decider for its own opt-in spawns; a peer without it simply receives an ordinary /sessions/spawn (older peers ignore X-Instar-Placed and start locally, the safe direction), no cross-machine data guarantee' },
   { configPath: 'multiMachine.serverDownRecovery.enabled', reason: 'machine-specific owner enrollment and host grants graduate separately; the source-verified recovery summary explicitly reports dark or missing targets as degraded, never a whole-pool guarantee' },
   { configPath: 'multiMachine.sessionPool.appConversations.enabled', reason: 'its own coherence authority: the appConversationsPool capability flag, enforced continuously from the flagged side (a whole-pool write gate, and moved conversations brought home)' },
   { configPath: 'multiMachine.coherenceJournal.enabled', reason: 'content-free local lifecycle journal; a mixed pool degrades to no-journal on one side, not a data guarantee the guard owns' },
@@ -344,6 +346,8 @@ export const COHERENCE_MANIFEST_EXCLUSIONS: CoherenceManifestExclusion[] = [
   { configPath: 'multiMachine.sessionPool.ownershipCheckedSpawn.enabled', reason: 'per-machine spawn ownership check; no silent cross-machine guarantee' },
   { configPath: 'multiMachine.sessionPool.failoverRunner.enabled', reason: 'per-machine failover-drill runner; produces this agent\'s own honest failover-E2E green into its local rollout gate, no cross-machine coherence guarantee it owns (dark, dry-run-first)' },
   { configPath: 'multiMachine.leaseSelfHeal.staleHolderTakeover.enabled', reason: 'lease self-heal reconciler; the lease/split-brain machinery owns its coherence' },
+  { configPath: 'multiMachine.takeoverReadyPool.bootClaimSafety.enabled', reason: 'per-machine boot-claim hold; it only withholds this machine\'s own claim for a bounded time, the lease/split-brain machinery owns coherence, and a mixed pool degrades to today\'s acquisition on the unflagged side' },
+  { configPath: 'multiMachine.takeoverReadyPool.plannedRestartLeaseContinuity.enabled', reason: 'per-machine pending-restart renewal and boot hold; the extension is an ordinary renewal peers already fold, the lease/split-brain machinery owns coherence, and a mixed pool degrades to today\'s renewal on the unflagged side' },
   { configPath: 'multiMachine.leaseSelfHeal.silentStandbyRelinquish.enabled', reason: 'lease self-heal reconciler; lease-layer owned' },
   { configPath: 'multiMachine.leaseSelfHeal.soloCaptainHold.enabled', reason: 'lease self-heal reconciler; lease-layer owned' },
   { configPath: 'multiMachine.leaseSelfHeal.preferredCaptainHandback.enabled', reason: 'lease self-heal reconciler; lease-layer owned + operator latch' },

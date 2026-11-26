@@ -87,7 +87,16 @@ export function validateWriteToken(
   token: string,
   storedTokens: WriteToken[],
 ): { valid: boolean; machineId?: string; error?: string } {
-  const match = storedTokens.find(t => t.token === token && !t.revoked);
+  // Constant-time compare (SEC-123): hash both sides to a fixed length so neither the
+  // token's content nor its length leaks through response timing. Every stored token is
+  // checked, with no early exit, so the number of tokens checked does not leak either.
+  const presented = crypto.createHash('sha256').update(String(token)).digest();
+  let match: WriteToken | undefined;
+  for (const t of Array.isArray(storedTokens) ? storedTokens : []) {
+    if (!t || typeof t.token !== 'string') continue;
+    const stored = crypto.createHash('sha256').update(t.token).digest();
+    if (crypto.timingSafeEqual(presented, stored) && !t.revoked && !match) match = t;
+  }
   if (!match) {
     return { valid: false, error: 'Invalid or revoked write token' };
   }

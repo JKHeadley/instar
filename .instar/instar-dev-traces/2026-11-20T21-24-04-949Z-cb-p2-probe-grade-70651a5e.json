@@ -1,0 +1,20 @@
+{
+  "version": 2,
+  "slug": "cb-p2-probe-grade",
+  "sessionId": "f07b47ce-bcaf-4d4f-840a-ab8e2c9c1a1e",
+  "timestamp": "2026-11-20T21:24:04.949Z",
+  "artifactPath": "upgrades/side-effects/cb-p2-probe-grade.md",
+  "artifactSha256": "e4c752fdb547eb15c6734b14875646047f760ba9d96d0c9627e541f4b5a2a541",
+  "specPath": "docs/specs/context-budget-layered-summaries.md",
+  "coveredFiles": [
+    "src/monitoring/foldGrade.ts",
+    "tests/unit/fold-grade.test.ts",
+    "upgrades/next/cb-p2-probe-grade.md",
+    "upgrades/side-effects/cb-p2-probe-grade.md"
+  ],
+  "phase": "complete",
+  "tier": 2,
+  "tierReasoning": "Spec-driven Phase 2 slice; LLM grading with deterministic rules above it; no live call site; second-pass reviewed (3 rounds).",
+  "secondPass": "true",
+  "reviewerConcurred": true
+}

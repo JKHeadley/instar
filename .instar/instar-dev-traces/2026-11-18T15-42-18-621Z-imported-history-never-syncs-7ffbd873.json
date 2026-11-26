@@ -1,0 +1,25 @@
+{
+  "version": 2,
+  "slug": "imported-history-never-syncs",
+  "sessionId": "ad8c3c66-0049-45e0-99c2-00c7ca857bca",
+  "timestamp": "2026-11-18T15:42:18.621Z",
+  "artifactPath": "upgrades/side-effects/imported-history-never-syncs.md",
+  "artifactSha256": "7fd727dd188a00cc7b837830b4303979acbf4c59fbdc138d42392648c52d476e",
+  "coveredFiles": [
+    "src/core/FileClassifier.ts",
+    "src/core/GitStateManager.ts",
+    "src/core/MachineIdentity.ts",
+    "src/core/PostUpdateMigrator.ts",
+    "src/core/importedHistoryPaths.ts",
+    "src/data/stageBCertifiedSet.ts",
+    "src/import/ImportedHistoryStore.ts",
+    "tests/unit/imported-history-never-syncs.test.ts"
+  ],
+  "phase": "complete",
+  "tier": 1,
+  "tierReasoning": "Additive path-list entries plus one idempotent gitignore migration; revert restores prior lists and leftover gitignore lines are harmless; independent second pass concurred.",
+  "eli16Path": "docs/specs/imported-history-never-syncs.eli16.md",
+  "sideEffectsPath": "upgrades/side-effects/imported-history-never-syncs.md",
+  "secondPass": "true",
+  "reviewerConcurred": true
+}

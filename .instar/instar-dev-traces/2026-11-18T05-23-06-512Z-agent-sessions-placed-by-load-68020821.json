@@ -1,0 +1,42 @@
+{
+  "version": 2,
+  "slug": "agent-sessions-placed-by-load",
+  "sessionId": "58065a80-c060-4b23-8a46-272f583db82b",
+  "timestamp": "2026-11-18T05:23:06.512Z",
+  "artifactPath": "upgrades/side-effects/agent-sessions-placed-by-load.md",
+  "artifactSha256": "25e474454a77ee9782836012f5e157b2c90c065fe3f1c061ef93e087b024f914",
+  "specPath": "docs/specs/agent-sessions-placed-by-load.md",
+  "coveredFiles": [
+    "src/commands/server.ts",
+    "src/core/PlacementExecutor.ts",
+    "src/core/agentSessionPlacement.ts",
+    "src/core/devGatedFeatures.ts",
+    "src/core/machineCoherenceManifest.ts",
+    "src/core/machineResourceProfile.ts",
+    "src/data/awareness/agent-sessions-placed-by-load.md",
+    "src/scaffold/templates.ts",
+    "src/server/routes.ts"
+  ],
+  "phase": "complete",
+  "tier": 2,
+  "tierReasoning": "Moves sessions between machines (spec reclassified Tier 2 after round 3); dev-gated and opt-in, revert-safe",
+  "secondPass": "true",
+  "reviewerConcurred": true,
+  "duplicateBuildCheck": {
+    "verdict": "verify",
+    "cause": "main-only",
+    "causes": [
+      "main-only"
+    ],
+    "decision": "proceed",
+    "reason": "Evidence hits are generic shared lines (Bearer auth headers in cli.ts, awareness registry comment); no existing code places /sessions/spawn by load \u2014 the converged spec agent-sessions-placed-by-load documents that gap",
+    "acknowledgedEvidenceIds": [],
+    "checkedAt": "2026-11-18T04:52:26.971Z",
+    "specSlug": "agent-sessions-placed-by-load"
+  },
+  "classClosure": {
+    "defectClass": "unbounded-self-action",
+    "closure": "n/a",
+    "reason": "request-driven, not a self-triggered loop: each hand-off is one caller's POST /sessions/spawn (never retried automatically; an ambiguous one answers 202 and nothing re-sends); the pool-tick reconciler only reads peer session lists and raises at most one attention item per placement (told flag), it never spawns, restarts, kills or re-sends"
+  }
+}

@@ -98,10 +98,11 @@ async function setup(overrides: Record<string, unknown> = {}, conversations: str
   } as unknown as MobilePermissionsDeps);
   // The Needs-you list (work-front-doors decision 2): the board stands in as read for whoever asks.
   const boardAsked: string[] = [];
+  const sharedCards = [{ id: 'wc_00000000000000aa', title: 'A shared card', needLine: 'Waiting on you' }];
   mountNeedsRoutes(router, {
     read: async () => ({ status: 503, body: { error: 'off' } }),
     bearerOk: (req) => req.headers.authorization === 'Bearer tok-1',
-    boardFor: (req) => { boardAsked.push(String(req.headers['x-instar-device'] ?? 'bearer')); return { status: 200, body: { lanes: [{ lane: 'waiting-on-you', cards: [{ id: 'wc_00000000000000aa', title: 'A shared card', needLine: 'Waiting on you' }] }, { lane: 'with-agent', cards: [] }, { lane: 'waiting-on-others', cards: [] }, { lane: 'done', cards: [] }, { lane: 'archived', cards: [] }], waitingOnYou: 1, policy: 'every-agent-card', behind: null, settings: { softOpenCards: 30 } } }; },
+    boardFor: (req) => { boardAsked.push(String(req.headers['x-instar-device'] ?? 'bearer')); return { status: 200, body: { lanes: [{ lane: 'waiting-on-you', cards: sharedCards }, { lane: 'with-agent', cards: [] }, { lane: 'waiting-on-others', cards: [] }, { lane: 'done', cards: [] }, { lane: 'archived', cards: [] }], waitingOnYou: sharedCards.length, policy: 'every-agent-card', behind: null, settings: { softOpenCards: 150 } } }; },
     consoleDir: path.resolve(__dirname, '../../dashboard/console'),
     agentName: () => 'echo', machineId: () => 'm1',
   });
@@ -112,7 +113,7 @@ async function setup(overrides: Record<string, unknown> = {}, conversations: str
     bearerOk: (req) => req.headers.authorization === 'Bearer tok-1',
   });
   app.use(router);
-  return { app, svc, gate, spy, dir, boardAsked };
+  return { app, svc, gate, spy, dir, boardAsked, sharedCards };
 }
 type Env = Awaited<ReturnType<typeof setup>>;
 type Phone = { dev: ReturnType<typeof makeDevice>; presence: ReturnType<typeof makeDevice>; id: string };
@@ -1183,6 +1184,27 @@ describe('the Needs-you list through the real middleware (work-front-doors decis
     expect(r.body.items.map((i: { title: string }) => i.title)).toEqual(['A shared card']);
     expect(r.body.sources.find((x: { id: string }) => x.id === 'accounts').state).toBe('not-for-viewer');
     expect(e.boardAsked).toEqual([member.id]);
+  });
+
+  it('rechecks the signed member’s board and refuses a cursor copied to a second member', async () => {
+    const e = await setup();
+    const owner = phone(e);
+    expect((await send(e, owner, 'POST', '/mobile/team/invites', firstInvite('p-1'))).status).toBe(200);
+    expect((await send(e, owner, 'POST', '/mobile/team/invites', { events: [{ type: 'person-add', personKey: 'p-2', name: 'Rae', role: 'member' }] })).status).toBe(200);
+    const first = phone(e, { userId: 'p-1', role: 'team' });
+    const second = phone(e, { userId: 'p-2', role: 'team' });
+    for (let i = 0; i < 100; i++) e.sharedCards.push({ id: `wc_${i.toString(16).padStart(16, '0')}`, title: `Shared ${i}`, needLine: 'Waiting on you' });
+    const initial = await send(e, first, 'GET', '/mobile/needs');
+    expect(initial.body).toMatchObject({ count: 101, viewer: { role: 'member' } });
+    const url = `/mobile/needs?cursor=${encodeURIComponent(initial.body.continuation.nextCursor)}`;
+    const copied = await send(e, second, 'GET', url);
+    expect(copied.status).toBe(409);
+    expect(copied.body).toEqual({ error: 'needs-cursor-stale' });
+    const page = await send(e, first, 'GET', url);
+    expect(page.body.items).toHaveLength(1);
+    e.sharedCards.shift();
+    expect((await send(e, first, 'GET', url)).status).toBe(409);
+    expect(e.boardAsked).toEqual([first.id, second.id, first.id, first.id]);
   });
 
   it('a shared-machine (msp) phone is not the owner either', async () => {

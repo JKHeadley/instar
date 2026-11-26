@@ -1,0 +1,23 @@
+{
+  "version": 2,
+  "slug": "identity-security-piece2a-owner-record-chain",
+  "sessionId": "97324d66-1049-40ad-9159-00ef223733aa",
+  "timestamp": "2026-11-18T16:16:27.068Z",
+  "artifactPath": "upgrades/side-effects/identity-security-piece2a-owner-record-chain.md",
+  "artifactSha256": "596ea37bd8385af3481791d0e5fab84f2dd5fce458b18bf2b4cbdd3cbe54bf4f",
+  "specPath": "docs/specs/identity-security-piece2a-owner-record-chain.md",
+  "coveredFiles": [
+    "src/core/ownerRecord.ts",
+    "tests/unit/identity-piece2a-owner-record.test.ts"
+  ],
+  "phase": "complete",
+  "tier": 2,
+  "tierReasoning": "new pure security library (owner record chain evaluator); no callers yet",
+  "secondPass": "true",
+  "reviewerConcurred": true,
+  "classClosure": {
+    "defectClass": "unbounded-self-action",
+    "closure": "n/a",
+    "reason": "a pure library with no callers and no self-triggered action"
+  }
+}

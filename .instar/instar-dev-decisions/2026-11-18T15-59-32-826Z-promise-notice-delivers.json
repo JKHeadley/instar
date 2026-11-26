@@ -1,0 +1,35 @@
+{
+  "ts": "2026-11-18T15:59:32.826Z",
+  "slug": "promise-notice-delivers",
+  "suggestedTier": 2,
+  "declaredTier": null,
+  "riskFloor": 1,
+  "riskFloorReasons": [],
+  "belowFloor": false,
+  "files": 6,
+  "loc": 47,
+  "scope": {
+    "basis": "staged-in-scope-paths-including-deleted",
+    "files": [
+      "scripts/lint-notification-selectivity.mjs",
+      "src/messaging/NotificationSelectivityGate.ts",
+      "src/messaging/notificationCategories.ts",
+      "src/messaging/notificationStampers.ts",
+      "src/monitoring/CheckInReminderReconciler.ts",
+      "src/server/routes.ts"
+    ],
+    "addedLines": 38,
+    "deletedLines": 9
+  },
+  "causalAutopsy": null,
+  "classClosure": {
+    "defectClass": "unbounded-self-action",
+    "closure": "guard",
+    "guardEvidence": {
+      "enforcementType": "ratchet",
+      "citation": "tests/unit/self-action-convergence.test.ts",
+      "howCaught": "check-in-reminder pass is registered (selfActionRegistry checkInReminderPass). The only new self-action is a retry when a send is held quiet: it reuses the existing per-time attempt budget (LATE_NOTICE_MAX_ATTEMPTS 5, CHECK_IN_MAX_ATTEMPTS) and then stamps lateNoticeFailedAt/checkInReminderFailedAt, which removes the row from eligibility (brake). Steady state: at most 3 topics per pass, 12 per hour, one late message per topic per hour, and a gate backstop of 6 promise-notice sends per topic per 10 min."
+    }
+  },
+  "verdict": "blocked"
+}
