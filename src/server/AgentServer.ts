@@ -359,6 +359,8 @@ import { setUsageInvocationSink } from '../core/CircuitBreakingIntelligenceProvi
 import { agentRegistryPath } from '../core/AgentRegistryPaths.js';
 import { claudeTranscriptRoots } from '../monitoring/claudeTranscriptRoots.js';
 import { buildCodexLiveUsageReader } from '../providers/adapters/openai-codex/observability/codexLiveRateLimitReader.js';
+import { buildReadinessAccountAdmission, resolveReadinessAccountConfig } from '../feedback-factory/drain/readinessAccountAdmission.js';
+import { FeedbackTriageAccountSelector } from '../feedback-factory/triage/FeedbackTriageAccountSelector.js';
 import { BurnAlertDelivery } from '../monitoring/BurnAlertDelivery.js';
 import { FeatureMetricsLedger } from '../monitoring/FeatureMetricsLedger.js';
 import { BlockerLifecycleLedger } from '../monitoring/BlockerLifecycleLedger.js';
@@ -4904,6 +4906,16 @@ export class AgentServer {
         // Queue pace measures the feedback queues only on their configured operated host.
         if (ownerHost !== null && selfMachineId === ownerHost) this.feedbackDrainDb = () => store.sharedDatabase();
         const arbiter = options.intelligence ? new FeedbackReadinessArbiter(options.intelligence) : null;
+        // Readiness reuses the triage account selector (same pool, same live quota reader), read
+        // live per call: a pin or triage.accountSelectionMode set later takes effect without a restart.
+        const readinessUsageReader = options.codexLiveUsageReader !== undefined ? options.codexLiveUsageReader : buildCodexLiveUsageReader(options.config.subscriptionPool);
+        const readinessAccount = buildReadinessAccountAdmission({
+          config: () => resolveReadinessAccountConfig(options.config.feedbackFactory),
+          selector: options.subscriptionPool && readinessUsageReader
+            ? new FeedbackTriageAccountSelector(options.subscriptionPool, (opts) => readinessUsageReader(opts))
+            : null,
+          pool: options.subscriptionPool ?? null,
+        });
         let service!: FeedbackDrainService;
         service = new FeedbackDrainService({
           store,
@@ -4921,6 +4933,7 @@ export class AgentServer {
           maxClaimsPerTick: options.config.feedbackFactory?.consumer?.maxClaimsPerTick,
           maxWallClockMs: options.config.feedbackFactory?.drain?.maxWallClockMs,
           readinessChunkSize: options.config.feedbackFactory?.drain?.readinessChunkSize,
+          readinessAccount,
           raiseAttention: async (item) => {
             const enqueue = this.telegramAdapter?.createAttentionItem;
             if (!enqueue) throw new Error('durable attention enqueue unavailable');
