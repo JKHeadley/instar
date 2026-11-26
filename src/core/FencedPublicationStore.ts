@@ -13,6 +13,8 @@ export type PublicationClaimResult =
 const NAMESPACES = new Set<PublicationNamespace>(['needs-you', 'machine-key-history', 'delete', 'mobile-ingress']);
 const IDENTIFIER = /^[A-Za-z0-9_.:-]{1,128}$/;
 const DIGEST = /^[0-9a-f]{64}$/;
+const MAX_STAGED_PER_SCOPE = 1024;
+const MAX_STAGED_BYTES = 256 * 1024;
 const validScope = (scope: PublicationScope) =>
   typeof scope.agentId === 'string' && IDENTIFIER.test(scope.agentId) && NAMESPACES.has(scope.namespace);
 const validGeneration = ({ epoch, holder }: PublicationGeneration) =>
@@ -43,6 +45,11 @@ export class FencedPublicationStore {
           agent TEXT NOT NULL, namespace TEXT NOT NULL, epoch INTEGER NOT NULL, holder TEXT NOT NULL,
           pending_epoch INTEGER, pending_holder TEXT, candidate_digest TEXT,
           PRIMARY KEY (agent, namespace)
+        );
+        CREATE TABLE IF NOT EXISTS publication_stage (
+          agent TEXT NOT NULL, namespace TEXT NOT NULL, operation TEXT NOT NULL,
+          digest TEXT NOT NULL, payload TEXT NOT NULL,
+          PRIMARY KEY (agent, namespace, operation)
         );
         CREATE TABLE IF NOT EXISTS publication_claim (
           agent TEXT NOT NULL, namespace TEXT NOT NULL, operation TEXT NOT NULL,
@@ -83,6 +90,36 @@ export class FencedPublicationStore {
       WHERE agent=? AND namespace=? AND epoch=? AND holder=?
         AND pending_epoch=? AND pending_holder=? AND candidate_digest=?
     `).run(scope.agentId, scope.namespace, prior.epoch, prior.holder, next.epoch, next.holder, digest).changes === 1;
+  }
+
+  /** Durable ingress custody. A pending handover does not prevent staging. */
+  stage(scope: PublicationScope, operation: string, digest: string, payload: string):
+    'staged' | 'existing' | 'conflict' | 'unavailable' {
+    if (!validScope(scope) || !/^[A-Za-z0-9_.:-]{1,256}$/.test(operation) ||
+        !DIGEST.test(digest) || Buffer.byteLength(payload) > MAX_STAGED_BYTES) return 'conflict';
+    return this.db.transaction(() => {
+      const provisioned = this.db.prepare(`
+        SELECT 1 FROM publication_generation WHERE agent=? AND namespace=?
+      `).get(scope.agentId, scope.namespace);
+      if (!provisioned) return 'unavailable';
+      const previous = this.getStage(scope, operation);
+      if (previous) return previous.digest === digest ? 'existing' : 'conflict';
+      const count = this.db.prepare(`
+        SELECT COUNT(*) FROM publication_stage WHERE agent=? AND namespace=?
+      `).pluck().get(scope.agentId, scope.namespace) as number;
+      if (count >= MAX_STAGED_PER_SCOPE) return 'unavailable';
+      this.db.prepare(`
+        INSERT INTO publication_stage(agent, namespace, operation, digest, payload) VALUES (?, ?, ?, ?, ?)
+      `).run(scope.agentId, scope.namespace, operation, digest, payload);
+      return 'staged';
+    }).immediate();
+  }
+
+  getStage(scope: PublicationScope, operation: string): { digest: string; payload: string } | null {
+    const row = this.db.prepare(`
+      SELECT digest, payload FROM publication_stage WHERE agent=? AND namespace=? AND operation=?
+    `).get(scope.agentId, scope.namespace, operation) as { digest: string; payload: string } | undefined;
+    return row ?? null;
   }
 
   claim(scope: PublicationScope, generation: PublicationGeneration, operationKey: string, digest: string): PublicationClaimResult {

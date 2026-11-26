@@ -1,0 +1,23 @@
+{
+  "version": 2,
+  "slug": "mobile-ingress-receiver",
+  "sessionId": "dd2f336e-e8f7-40b3-97e3-09d19139bfa6",
+  "timestamp": "2026-11-26T10:43:30.971Z",
+  "artifactPath": "upgrades/side-effects/mobile-ingress-receiver.md",
+  "artifactSha256": "6ac4d685298b76fcab1813b33d617c1260044e86b95dcb453d1212ef9c78e7c4",
+  "coveredFiles": [
+    "src/core/FencedPublicationStore.ts",
+    "src/core/MobileIngressPublication.ts",
+    "src/core/MobileIngressReceiver.ts",
+    "tests/unit/FencedPublicationStore.test.ts",
+    "upgrades/eli16/mobile-ingress-receiver.md",
+    "upgrades/side-effects/mobile-ingress-receiver.md"
+  ],
+  "phase": "complete",
+  "tier": 1,
+  "tierReasoning": "Adds internal staging and role checks to the dark authority. It has no network, dispatch or app route effect.",
+  "eli16Path": "upgrades/eli16/mobile-ingress-receiver.md",
+  "sideEffectsPath": "upgrades/side-effects/mobile-ingress-receiver.md",
+  "secondPass": "true",
+  "reviewerConcurred": true
+}

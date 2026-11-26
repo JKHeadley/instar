@@ -3,7 +3,8 @@ import fs from 'node:fs';
 import os from 'node:os';
 import path from 'node:path';
 import { FencedPublicationStore } from '../../src/core/FencedPublicationStore.js';
-import { claimMobileIngress } from '../../src/core/MobileIngressPublication.js';
+import { createMobileIngressReceiver } from '../../src/core/MobileIngressReceiver.js';
+import type { MobileChatHandoverEnvelope } from '../../src/core/MobileChatHandoverEnvelope.js';
 import { SafeFsExecutor } from '../../src/core/SafeFsExecutor.js';
 
 const scope = { agentId: 'echo', namespace: 'mobile-ingress' } as const;
@@ -82,14 +83,37 @@ describe('shared fenced publication storage', () => {
     expect(recovered.claim(scope, successor, 'existing', digest).kind).toBe('existing');
   });
 
-  it('keys mobile claims on device and request, and rejects a changed digest', () => {
+  it('stages on the ingress during handover and permits one enrolled holder to claim the exact saved event', () => {
     const store = open(temporaryDatabase());
     expect(store.provision(scope, original)).toBe(true);
-    const intent = { agentId: 'echo', deviceId: 'phone-a', requestId: 'request-1', admittedDigest: digest };
-    expect(claimMobileIngress(store, original, intent).kind).toBe('claimed');
-    expect(claimMobileIngress(store, original, intent).kind).toBe('existing');
-    expect(claimMobileIngress(store, original, { ...intent, admittedDigest: other }).kind).toBe('conflict');
-    expect(claimMobileIngress(store, original, { ...intent, deviceId: 'phone-b' }).kind).toBe('claimed');
+    expect(store.prepareHandover(scope, original, successor, handover)).toBe(true);
+    let allowed = true;
+    const receiver = createMobileIngressReceiver({
+      store, agentId: 'echo', isIngress: (id) => id === 'mini',
+      isHolder: (id) => id === 'studio',
+      verifyEnvelope: (row) => row.admission.sig === 'fixture-verified',
+      deviceStillAllowed: () => allowed,
+    });
+    const envelope = {
+      deviceId: 'phone-a', requestId: 'request-1', topicId: 145097, payloadHash: digest,
+      event: { kind: 'message', text: 'original' },
+      admission: { machineId: 'mini', sig: 'fixture-verified' },
+    } as unknown as MobileChatHandoverEnvelope;
+    expect(receiver.stage({ machineId: 'studio' }, envelope)).toBe('unauthorized');
+    expect(receiver.stage({ machineId: 'mini' }, envelope)).toBe('staged');
+    expect(receiver.stage({ machineId: 'mini' }, { ...envelope, payloadHash: other })).toBe('conflict');
+    expect(receiver.stage({ machineId: 'mini' }, {
+      ...envelope, event: { ...envelope.event, senderRole: 'team' },
+    })).toBe('conflict');
+    expect(receiver.claim({ machineId: 'studio' }, successor, 'phone-a', 'request-1')).toEqual({ kind: 'pending' });
+    expect(store.activateHandover(scope, original, successor, handover)).toBe(true);
+    expect(receiver.claim({ machineId: 'mini' }, successor, 'phone-a', 'request-1')).toEqual({ kind: 'unauthorized' });
+    allowed = false;
+    expect(receiver.claim({ machineId: 'studio' }, successor, 'phone-a', 'request-1')).toEqual({ kind: 'unauthorized' });
+    allowed = true;
+    expect(receiver.claim({ machineId: 'studio' }, successor, 'phone-a', 'request-1').kind).toBe('claimed');
+    expect(receiver.claim({ machineId: 'studio' }, successor, 'phone-a', 'request-1').kind).toBe('existing');
+    expect(receiver.claim({ machineId: 'studio' }, successor, 'phone-b', 'request-1')).toEqual({ kind: 'unavailable' });
   });
 
   it('isolates each namespace and agent even when operation keys match', () => {
