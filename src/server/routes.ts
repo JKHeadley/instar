@@ -82,6 +82,7 @@ import { createMobileTrustPort } from './mobileTrustApproval.js';
 import { registerWorkBoardRoutes, performOwnerTap, type WorkBoardRouteDeps } from './workBoardRoutes.js';
 import { answerPhoneCardCreate, phoneCardPrecheck } from './phoneWorkCards.js';
 import { telegramTopicKnown } from '../messaging/telegramTopicKnown.js';
+import { mountProjectPriorityRoutes } from './projectPriorityRoutes.js';
 import { mountProjectsRoutes } from './workProjectsRoutes.js';
 import { projectTapPort } from './workProjectActions.js';
 import { isOwnerAppDevice, mountImportedHistoryRoutes } from './importedHistoryRoutes.js';
@@ -3491,6 +3492,14 @@ export function createRoutes(ctx: RouteContext): Router {
     // "Quiet since …" / "Stalled since …" in the owner's zone (the same `timezone` the Chief of Staff's note hour uses).
     timeZone: () => (ctx.config as { timezone?: string }).timezone || undefined,
     ...(ctx.chiefOfStaffLoop ? { checkNow: (key: string, by: 'owner-tap' | 'chief-of-staff') => ctx.chiefOfStaffLoop!.checkNow(key, by) } : {}),
+  });
+  mountProjectPriorityRoutes(router, {
+    loop: () => ctx.chiefOfStaffLoop ?? null,
+    ownerProof: (req) => {
+      const token = req.headers['x-instar-operator-session'];
+      return typeof token === 'string' && ctx.verifyDashboardOperatorSession?.(token) === true;
+    },
+    invalidate: _projectsRoute.invalidate,
   });
   ctx.projectAppsRuntime?.()?.setWorkInvalidator(_projectsRoute.invalidate);
   mountProjectAppsRoutes(router, {

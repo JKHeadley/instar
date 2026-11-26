@@ -38,7 +38,7 @@ function mkConfig(): { config: InstarConfig; stateDir: string } {
   fs.mkdirSync(path.join(stateDir, 'logs'), { recursive: true });
   fs.writeFileSync(path.join(stateDir, 'config.json'), JSON.stringify({ port: 0, projectName: 'e2e', agentName: 'E2E' }));
   const config = {
-    projectName: 'e2e', projectDir: tmpDir, stateDir, port: 0, authToken: AUTH, requestTimeoutMs: 10000, version: '0.0.0',
+    projectName: 'e2e', projectDir: tmpDir, stateDir, port: 0, authToken: AUTH, dashboardPin: '246810', requestTimeoutMs: 10000, version: '0.0.0',
     sessions: { claudePath: '/usr/bin/echo', maxSessions: 3, defaultMaxDurationMinutes: 30, protectedSessions: [], monitorIntervalMs: 5000 },
     scheduler: { enabled: false, jobsFile: '', maxParallelJobs: 1 }, messaging: [], monitoring: {}, updates: {},
   } as unknown as InstarConfig;
@@ -74,7 +74,7 @@ describe('Chief of Staff E2E (feature is alive)', () => {
     const loadUnion = (): UnionEntry[] => journal.readTail(CHIEF_OF_STAFF_RECORD_KIND, 10_000).entries.map((e) => ({ data: e.data as Record<string, unknown>, origin: 'm1' }));
     const loop = new ChiefOfStaffLoop({
       now: () => Date.now(), machineId: 'm1', enabled: () => true, holdsLease: () => true, config: () => CHIEF_OF_STAFF_LOOP_DEFAULTS,
-      journal: { emit: (k, b) => { const r = emitter.emit(CHIEF_OF_STAFF_STORE_KEY, k, b); return { outcome: r.outcome, ...(r.seq !== undefined ? { seq: r.seq } : {}) }; }, loadUnion },
+      journal: { emit: (k, b) => { const r = emitter.emit(CHIEF_OF_STAFF_STORE_KEY, k, b); return { outcome: r.outcome, ...(r.seq !== undefined ? { seq: r.seq } : {}) }; }, loadUnion, awaitDurable: async (seq) => { journal.flush(); await journal.awaitDurableSeq(CHIEF_OF_STAFF_RECORD_KIND, seq, 3000); } },
       verifyRenewal: () => true,
       gather: async () => { throw new Error('not exercised here'); },
       judge: async () => null,
@@ -96,6 +96,18 @@ describe('Chief of Staff E2E (feature is alive)', () => {
       expect(Array.isArray(r.body.projects)).toBe(true);
       expect(r.body.projects.map((p: { conversationKey: string }) => p.conversationKey)).toEqual([CK]);
       expect(r.body.projects[0].goal).toBe('Ship the thing');
+
+      const priorityPath = `/work/projects/${encodeURIComponent(CK)}/priority`;
+      const agentPriority = await request(server.getApp()).post(priorityPath).set(auth()).send({ priority: 'high', confirmedBy: 'owner' });
+      expect(agentPriority.status).toBe(403);
+      expect(loop.projectsOverview()?.[0].priority).toBe('normal');
+      const unlock = await request(server.getApp()).post('/dashboard/unlock').send({ pin: '246810' });
+      expect(unlock.status).toBe(200);
+      const ownerPriority = await request(server.getApp()).post(priorityPath).set(auth()).set('x-instar-operator-session', unlock.body.operatorSessionToken).send({ priority: 'high' });
+      expect(ownerPriority.status).toBe(200);
+      expect(ownerPriority.body).toMatchObject({ ok: true, priority: 'high' });
+      expect(loop.projectsOverview()?.[0].priority).toBe('high');
+
 
       const d = await request(server.getApp()).get(`/chief-of-staff/projects/${encodeURIComponent(CK)}`).set(auth());
       expect(d.status).toBe(200); expect(d.body.conversationKey).toBe(CK); expect(Array.isArray(d.body.checks)).toBe(true); expect(Array.isArray(d.body.intents)).toBe(true);

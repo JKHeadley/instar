@@ -9,7 +9,7 @@
  */
 import type { Request, Response, Router } from 'express';
 import { needsViewer, type NeedsViewerRole } from './needsRoutes.js';
-import { doneItemCheckRef, isValidConversationKey } from '../core/ChiefOfStaffStore.js';
+import { doneItemCheckRef, isValidConversationKey, isProjectPriority } from '../core/ChiefOfStaffStore.js';
 import type { CheckNowResult } from '../core/ChiefOfStaffLoop.js';
 
 /** Stays 1: the row fields of docs/specs/work-door-project-rows.md §3.1 are additive; a client detects them by `actions`. */
@@ -38,6 +38,7 @@ export const PROJECT_STATE_WORDS: Record<ProjectState, string> = {
 const STATE_ORDER: ProjectState[] = ['waiting-on-you', 'stopped-retrying', 'stalled', 'drifting', 'claims-done', 'moving', 'quiet', 'unknown', 'paused', 'done'];
 
 export interface CosProjectRow {
+  priority?: 'high' | 'normal' | 'low';
   conversationKey: string; title: string; goal: string; lastVerdict: string | null; lastCheckAt: string | null; parked: boolean;
   /** The done list; `kind`/`certify` come from the loop's overview (an older loop leaves them out: every item then reads as an automatic check). */
   doneDefinition: Array<{ id: string; text: string; kind?: 'deterministic' | 'judgment'; certify?: 'owner-confirms' | 'agent-may-certify' }>; doneItems: Record<string, 'pass' | 'fail' | 'unknown'> | null;
@@ -65,6 +66,7 @@ export interface ProjectDoneItem {
 export interface ProjectCard { id: string; title: string; lane: string; needLine: string | null; conversationKey: string | null }
 
 export interface ProjectRow {
+  priority?: 'high' | 'normal' | 'low';
   key: string; title: string; goal: string; state: ProjectState; stateWords: string; lastCheckAt: string | null;
   /** For "quiet" and "stalled": the last time anything was seen happening (evidence changed, or progress), ISO. Null otherwise. */
   stateSince: string | null;
@@ -312,6 +314,7 @@ export function composeProjects(cos: CosProjectRow[] | null | 'failed', board: {
     const { state, stateWords, stateSince } = settleState(r, base, items, ctx);
     const cards = byKey.get(r.conversationKey) ?? [];
     return {
+      priority: isProjectPriority(r.priority) ? r.priority : 'normal' as const,
       key: r.conversationKey, title: r.title, goal: r.goal, state, stateWords, stateSince, lastCheckAt: r.lastCheckAt,
       paused: state === 'paused' && r.pausedBy ? { at: r.pausedBy.at, quote: r.pausedBy.quote, via: r.pausedBy.messageRef.startsWith(APP_REF) ? 'app' as const : 'telegram' as const } : null,
       why: state === 'unknown' && r.lastNote ? shortNote(r.lastNote) : null,

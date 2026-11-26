@@ -148,6 +148,17 @@ describe('Chief of Staff loop — real journals, real protocol, two machines', (
       expect(rows).toHaveLength(1); expect(rows[0].lastVerdict).toBe('stalled'); expect(rows[0].restartsWithoutProgress).toBe(1);
       const detail = A.loop.projectDetail(CK)!;
       expect(detail.intents).toHaveLength(1); expect((detail.checks as unknown[]).length).toBeGreaterThanOrEqual(2);
+
+      // An owner priority write crosses the real replicated stream without changing lifecycle state.
+      const beforePriority = foldProjectCheckState(A.loadUnion(), CK, { checkCadenceHours: 24, maxRestartsWithoutProgress: 3, breakerRestartsPerWeek: 5 }, new Date(world.now));
+      const prioritySave = A.loop.setProjectPriority(CK, 'high');
+      A.journal.flush();
+      expect(await prioritySave).toMatchObject({ ok: true, priority: 'high' });
+      cross(A, B);
+      expect(B.loop.projectsOverview()?.[0].priority).toBe('high');
+      expect(foldProjectCheckState(A.loadUnion(), CK, { checkCadenceHours: 24, maxRestartsWithoutProgress: 3, breakerRestartsPerWeek: 5 }, new Date(world.now))).toEqual(beforePriority);
+      expect(world.started).toHaveLength(1);
+
     } finally {
       A.journal.close(); B.journal.close();
       SafeFsExecutor.safeRmSync(root, { recursive: true, force: true, operation: 'tests/integration/chief-of-staff-loop.test.ts' });

@@ -57,7 +57,7 @@ export function chiefOfStaffStoreEnabled(config: { developmentAgent?: boolean; c
 const WITHDRAWAL_RECORD_PREFIX = 'owner-ask-withdrawal:';
 
 export const COS_RECORD_TYPES = [
-  'tree', 'binding', 'binding-lifecycle', 'check-event', 'intent', 'outcome', 'renewal', 'graduation', 'last-tick', 'note', 'owner-ask-withdrawal',
+  'tree', 'binding', 'project-priority', 'binding-lifecycle', 'check-event', 'intent', 'outcome', 'renewal', 'graduation', 'last-tick', 'note', 'owner-ask-withdrawal',
 ] as const;
 export type CosRecordType = typeof COS_RECORD_TYPES[number];
 
@@ -160,7 +160,7 @@ export function deriveOutcomeKey(intentKey: string, transition: CosTransition): 
 
 const KNOWN_FIELDS = [
   'recordType', 'conversationKey', 'parentConversationKey', 'role', 'deletedAt',
-  'goal', 'doneDefinition', 'checkCadenceHours', 'linked', 'initiativeId', 'confirmedBy', 'confirmedAt',
+  'priority', 'goal', 'doneDefinition', 'checkCadenceHours', 'linked', 'initiativeId', 'confirmedBy', 'confirmedAt',
   'event', 'bindingHlc', 'by', 'at', 'who', 'quote', 'messageRef', 'askId', 'itemId', 'itemChecked', 'checkRef',
   'verdict', 'evidenceHash', 'evidenceIds', 'progressSeen', 'netDiffHighWater', 'machine', 'note',
   'action', 'leaseEpoch', 'sequence', 'claimedAt', 'holderSignature', 'intentKey', 'transition', 'writer', 'runId', 'injectId', 'reason',
@@ -250,6 +250,10 @@ export const chiefOfStaffRecordStoreSchema: StoreFieldSchema = {
         const role = raw.role;
         if (role !== undefined && role !== 'chief-of-staff' && role !== 'project' && role !== 'sub-topic') return null;
         return { recordType: type, conversationKey: ck, parentConversationKey: parent ?? null, ...(role !== undefined ? { role } : {}) };
+      }
+      case 'project-priority': {
+        if (!isValidConversationKey(ck) || !isProjectPriority(raw.priority) || raw.confirmedBy !== 'owner' || !isIso(raw.confirmedAt)) return null;
+        return { recordType: type, conversationKey: ck, priority: raw.priority, confirmedBy: 'owner', confirmedAt: raw.confirmedAt };
       }
       case 'binding': {
         if (!isValidConversationKey(ck)) return null;
@@ -437,6 +441,32 @@ export function buildTreeTombstone(conversationKey: string, deletedAt: string): 
 export interface BindingInput {
   conversationKey: string; goal: string; doneDefinition: DoneItem[]; checkCadenceHours: number;
   linked: { repos?: string[]; branches?: string[]; domains?: string[] }; initiativeId?: string; confirmedBy?: 'owner'; confirmedAt?: string;
+}
+
+/** Explicit owner preference only; independent of binding identity and lifecycle. */
+export const PROJECT_PRIORITIES = ['high', 'normal', 'low'] as const;
+export type ProjectPriority = typeof PROJECT_PRIORITIES[number];
+export function isProjectPriority(value: unknown): value is ProjectPriority {
+  return value === 'high' || value === 'normal' || value === 'low';
+}
+export interface ProjectPriorityInput {
+  conversationKey: string; priority: ProjectPriority; confirmedBy: 'owner'; confirmedAt: string;
+}
+export function buildProjectPriorityPut(input: ProjectPriorityInput): Build {
+  return (hlc, origin, observed) => {
+    if (!isValidConversationKey(input.conversationKey) || !isProjectPriority(input.priority) || input.confirmedBy !== 'owner' || !isIso(input.confirmedAt)) return null;
+    return envelope(`priority:${input.conversationKey}`, hlc, origin, observed, 'put', { recordType: 'project-priority', ...input });
+  };
+}
+export function foldProjectPriorities(entries: UnionEntry[]): Map<string, ProjectPriorityInput> {
+  const out = new Map<string, ProjectPriorityInput>();
+  for (const [key, winner] of latestPerKey(entries)) {
+    const data = winner.data;
+    if (data.recordType !== 'project-priority' || data.op === 'delete' || !isValidConversationKey(data.conversationKey)
+      || key !== `priority:${data.conversationKey}` || !isProjectPriority(data.priority) || data.confirmedBy !== 'owner' || !isIso(data.confirmedAt)) continue;
+    out.set(data.conversationKey, { conversationKey: data.conversationKey, priority: data.priority, confirmedBy: 'owner', confirmedAt: data.confirmedAt });
+  }
+  return out;
 }
 
 export function buildBindingPut(b: BindingInput): Build {
