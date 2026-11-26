@@ -60,3 +60,5 @@ The two ways to set up a first approval device can share a reservation that surv
 The phone writer can now record which approved nomination belongs to the reserved slot. It can recover that exact record after a restart. The trust journal must still confirm the final acceptance before the phone can approve changes.
 
 The version 2 server code can prepare the exact enrollment details the phone will confirm. Both cancellation and acceptance refer to the same attempt and check the exact details before they can proceed.
+
+The new timer closes the attempt to new responses as soon as the machine checks it after the local timeout. If saving the cancellation fails, intake stays closed and the server can retry saving the same request.
