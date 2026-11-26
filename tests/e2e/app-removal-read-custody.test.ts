@@ -71,7 +71,7 @@ it('rechecks a signed custody admission in a fresh process', async () => {
   const core = (name: string) => JSON.stringify(new URL(name + '.js', moduleUrl).href);
   const worker = `
     import { AppRemovalReadCustody } from ${JSON.stringify(moduleUrl)};
-    import { signAppRemovalCreation, verifyRetainedAppRemovalCreation } from ${core('AppRemovalCreationProof')};
+    import { signAppRemovalCreation, verifyNewAppRemovalCreation, verifyRetainedAppRemovalCreation } from ${core('AppRemovalCreationProof')};
     import { generateSigningKeyPair, sign } from ${core('MachineIdentity')};
     import { signerKeyHashOf } from ${core('AppRecordSignatures')};
     const [dir, conversationKey, operation, publicKey] = process.argv.slice(1);
@@ -90,10 +90,18 @@ it('rechecks a signed custody admission in a fresh process', async () => {
       process.stdout.write(JSON.stringify(keys.publicKey));
     } else {
       const row = store.observe(conversationKey);
-      const allowed = row.kind === 'recorded' && !!row.record.admission && verifyRetainedAppRemovalCreation(
-        'deployment-a', event, row.record.admission,
-        (admission) => operation === 'trusted' && admission.historyRevision === 'revision-2' ? publicKey : null,
-      );
+      if (row.kind !== 'recorded' || !row.record.admission) throw new Error('missing signed admission');
+      const admission = row.record.admission;
+      // Fixture authority only. Positions stand in for accepted writer order.
+      const originalPosition = 2;
+      const cutoff = operation === 'compromised' ? 2 : 3;
+      const historyAvailable = operation !== 'rolled-back' && operation !== 'digest-conflict';
+      const allowed = operation === 'new-retired'
+        ? verifyNewAppRemovalCreation('deployment-a', event, admission.proof, 'm1', () => null)
+        : verifyRetainedAppRemovalCreation('deployment-a', event, admission,
+          (saved) => historyAvailable && saved.historyRevision === 'revision-2'
+            && originalPosition < cutoff ? publicKey : null);
+
       process.stdout.write(JSON.stringify(allowed));
     }
   `;
@@ -103,7 +111,10 @@ it('rechecks a signed custody admission in a fresh process', async () => {
   };
   try {
     const publicKey = await invoke('write');
-    expect(await invoke('trusted', publicKey)).toBe(true);
+    expect(await invoke('retired-after-admission', publicKey)).toBe(true);
+    expect(await invoke('new-retired', publicKey)).toBe(false);
+    expect(await invoke('compromised', publicKey)).toBe(false);
+    expect(await invoke('digest-conflict', publicKey)).toBe(false);
     expect(await invoke('rolled-back', publicKey)).toBe(false);
   } finally {
     SafeFsExecutor.safeRmSync(stateDir, { recursive: true, force: true, operation: 'app-removal-read-custody-e2e:signed-cleanup' });
