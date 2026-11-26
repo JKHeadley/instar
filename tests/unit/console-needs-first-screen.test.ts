@@ -104,6 +104,7 @@ function firstScreenViolations(main: Element, id: string): string[] {
 describe('every source: the shipped page leads with the need, its action in place', () => {
   it.each(Object.keys(FIXTURES))('%s', async (id: string) => {
     const f = FIXTURES[id];
+    if (id === 'accounts') history.replaceState(null, '', '#/capacity/accounts?s=needs');
     reads = f.reads;
     const mod = await import(path.join(CONSOLE, f.render[0]));
     const main = mainNode();
