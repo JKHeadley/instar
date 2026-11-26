@@ -15,3 +15,5 @@ If the old machine lost the reply to an append, the new machine keeps that attem
 Before using a journal position, the receiver can ask the enrolled witness to confirm the exact Git commit it just read. Each request uses a fresh challenge. An old confirmation or one for another repository, branch, or commit leaves the receiver waiting.
 
 The Git reader checks the configured branch directly. A local checkout or another branch with a similar name cannot supply the journal position.
+
+The witness checks its own accepted journal view before it answers. A request from an unenrolled peer or a request for a commit the witness has yet to accept receives no signed response.

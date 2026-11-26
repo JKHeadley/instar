@@ -173,3 +173,34 @@ export function createOrderedFloorReader(deps: {
       ? { ...floor } : null;
   };
 }
+
+/** The authenticated peer comes from the transport, never from the challenge. */
+export function createOrderedFloorResponder(deps: {
+  destination: string;
+  scope: PublicationScope;
+  witnessId: string;
+  mayRead(peer: string, scope: PublicationScope): boolean;
+  /** An independent, current and durable snapshot of the accepted Git/floor pair. */
+  readAcceptedSnapshot(scope: PublicationScope): { commit: string; floor: PublicationFloor } | null;
+  /** Machine-local signer pinned to witnessId by enrollment. */
+  signReadback(bytes: Buffer): Buffer;
+}): (peer: string, challenge: OrderedFloorChallenge) => OrderedFloorReadback | null {
+  const { destination, witnessId } = deps;
+  const scope = Object.freeze({ ...deps.scope });
+  return (peer, challenge) => {
+    if (!challenge?.scope || challenge.destination !== destination ||
+        challenge.scope.agentId !== scope.agentId || challenge.scope.namespace !== scope.namespace ||
+        !/^[a-f0-9]{64}$/.test(challenge.nonce) ||
+        !/^(?:[a-f0-9]{40}|[a-f0-9]{64})$/.test(challenge.commit) || !deps.mayRead(peer, scope)) return null;
+
+    const exactChallenge = { destination, scope, commit: challenge.commit, nonce: challenge.nonce };
+    const snapshot = deps.readAcceptedSnapshot(scope);
+    if (!snapshot || snapshot.commit !== exactChallenge.commit) return null;
+    const floor = { ...snapshot.floor };
+    if (!validFloor(floor) || floor.agentId !== scope.agentId || floor.namespace !== scope.namespace ||
+        floor.witness !== witnessId) return null;
+
+    const signature = deps.signReadback(orderedFloorReadbackBytes(exactChallenge, floor));
+    return signature.length === 64 ? { floor, signature } : null;
+  };
+}

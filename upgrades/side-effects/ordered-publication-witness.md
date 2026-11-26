@@ -55,3 +55,7 @@ The read boundary binds the receiver-selected destination, namespace, Git commit
 ## Direct Git ref observation
 
 The read-only adapter checks an exact, receiver-pinned repository and ref twice around witness confirmation. It ignores checkout state and inherited Git configuration. Missing, ambiguous and timed-out reads give no floor. This checkpoint has no production credentials or callers. A disposable bare repository exercises the read path.
+
+## Witness responder
+
+The responder checks transport-authenticated caller permission and receiver-owned destination and scope. It signs only the exact challenge after reading the matching accepted snapshot for its own witness identity. The repository integration exercises both ends with a disposable key and an injected accepted snapshot. The durable snapshot provider and authenticated deployment transport remain separate.
