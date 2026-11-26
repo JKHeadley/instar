@@ -1,3 +1,4 @@
+import { restartAdmissionTimedOut } from '../core/plannedRestartAdmissionTimeout.js';
 import { ManualQuotaBalance } from '../core/ManualQuotaBalance.js';
 import { promotionMismatchReason, unavailableConsumerPromotionProposal } from '../feedback-factory/drain/consumerPromotionProposal.js';
 import { normalizeCreationParentRef, type AppCreationContext } from '../core/AppCreationContext.js';
@@ -7145,9 +7146,11 @@ export function createRoutes(ctx: RouteContext): Router {
     // A pending UPDATE restart (one naming a targetVersion) already restarts the server, and
     // overwriting it would drop the version and its restart-loop detection. Leave it in place.
     try {
-      const pending = JSON.parse(fs.readFileSync(path.join(ctx.config.stateDir, 'state', 'restart-requested.json'), 'utf8')) as { targetVersion?: unknown; expiresAt?: unknown };
+      const flag = path.join(ctx.config.stateDir, 'state', 'restart-requested.json');
+      const raw = fs.readFileSync(flag, 'utf8');
+      const pending = JSON.parse(raw) as { targetVersion?: unknown; expiresAt?: unknown };
       const live = typeof pending.expiresAt !== 'string' || Date.parse(pending.expiresAt) > Date.now();
-      if (live && typeof pending.targetVersion === 'string' && pending.targetVersion) {
+      if (live && !restartAdmissionTimedOut(flag, raw) && typeof pending.targetVersion === 'string' && pending.targetVersion) {
         res.status(202).json({ requested: true, requestedBy, reason, alreadyPending: { kind: 'update', targetVersion: pending.targetVersion }, next: 'An update restart is already pending; it restarts the server and applies your change too.' });
         return;
       }

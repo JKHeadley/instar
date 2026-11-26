@@ -1,3 +1,4 @@
+import { restartAdmissionTimedOut } from './plannedRestartAdmissionTimeout.js';
 import crypto from 'node:crypto';
 import { announceRestartRequested } from './restartRequestSignal.js';
 import fs from 'node:fs';
@@ -171,9 +172,10 @@ export function writeSubscriptionReloginRestartRequest(stateDir: string, now: Da
   fs.mkdirSync(dir, { recursive: true });
   const flagPath = path.join(dir, 'restart-requested.json');
   try {
-    const existing = JSON.parse(fs.readFileSync(flagPath, 'utf8')) as { targetVersion?: unknown; expiresAt?: string };
+    const raw = fs.readFileSync(flagPath, 'utf8');
+    const existing = JSON.parse(raw) as { targetVersion?: unknown; expiresAt?: string };
     const live = !existing.expiresAt || Date.parse(existing.expiresAt) > now.getTime();
-    if (live && typeof existing.targetVersion === 'string' && existing.targetVersion) return true;
+    if (live && !restartAdmissionTimedOut(flagPath, raw) && typeof existing.targetVersion === 'string' && existing.targetVersion) return true;
   } catch { /* @silent-fallback-ok — no pending request (or unreadable): write ours below */ }
   const countFile = path.join(dir, 'restart-version-count.json');
   try {

@@ -12,10 +12,12 @@ The dark supervisor path can leave a planned restart request pending until its e
 
 The supervisor can obtain fresh readiness evidence from the running server over an authenticated loopback call. It compares the exact request file again before consumption.
 
+The two-consumer integration test covers unavailable admission evidence, replacement requests and a timed-out request. Both consumers refuse to shut down without confirmation. The runtime checks the measured boot time when sizing the required lease window.
+
 ## What to Tell Your User
 
 A planned restart can now wait for the current lead machine to confirm it has enough lease time to come back safely. This behavior starts off while it is tested in isolated deployments.
 
 ## Summary of New Capabilities
 
-Use `multiMachine.takeoverReadyPool.plannedRestartLeaseContinuity.admissionEnabled` in compatible deployments to require fresh confirmation before the supervisor consumes a planned restart of the preferred holder.
+Use `multiMachine.takeoverReadyPool.plannedRestartLeaseContinuity.admissionEnabled` in compatible deployments to require fresh confirmation before either restart consumer processes a planned restart of the preferred holder.

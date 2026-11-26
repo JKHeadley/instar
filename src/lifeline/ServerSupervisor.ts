@@ -16,6 +16,7 @@
  */
 
 import { describeRestartRequester, recordRestartRequest } from '../core/restartRequestAttribution.js';
+import { markRestartAdmissionTimeout, restartAdmissionTimedOut } from '../core/plannedRestartAdmissionTimeout.js';
 import { BOOT_STATE_HEADER } from '../server/BootReadiness.js';
 import crypto from 'node:crypto';
 import { execFileSync, spawnSync } from 'node:child_process';
@@ -469,8 +470,9 @@ export class ServerSupervisor extends EventEmitter {
               this.pendingUpdateVersion = data.targetVersion ?? null;
             }
           } else if (fs.existsSync(restartPath)) {
-            const data = JSON.parse(fs.readFileSync(restartPath, 'utf-8'));
-            if (data.plannedRestart && (!data.expiresAt || new Date(data.expiresAt).getTime() > Date.now())) {
+            const raw = fs.readFileSync(restartPath, 'utf-8');
+            const data = JSON.parse(raw);
+            if (!restartAdmissionTimedOut(restartPath, raw) && data.plannedRestart && (!data.expiresAt || new Date(data.expiresAt).getTime() > Date.now())) {
               console.log(`[Supervisor] Found restart-requested flag on start — entering maintenance wait`);
               this.maintenanceWaitStartedAt = Date.now();
               this.pendingUpdateVersion = data.targetVersion ?? null;
@@ -1717,6 +1719,7 @@ export class ServerSupervisor extends EventEmitter {
         return;
       }
       const raw = fs.readFileSync(flagPath, 'utf-8');
+      if (restartAdmissionTimedOut(flagPath, raw)) return;
       const data = JSON.parse(raw);
 
       // Every planned restart writer uses this file, while only AutoUpdater
@@ -1751,11 +1754,15 @@ export class ServerSupervisor extends EventEmitter {
           catch { /* @silent-fallback-ok — the deferral below is visible */ }
         }
         try {
-          if (this.detached || fs.readFileSync(flagPath, 'utf-8') !== raw) return;
+          if (this.detached || fs.readFileSync(flagPath, 'utf-8') !== raw || restartAdmissionTimedOut(flagPath, raw)) return;
         } catch {
           return; // The exact request was withdrawn or cannot still be read.
         }
         if (admission !== 'ready' && admission !== 'not-applicable') {
+          if (markRestartAdmissionTimeout(flagPath, raw, data.requestedAt)) {
+            console.warn('[Supervisor] Planned restart admission timed out; keeping the server running');
+            return;
+          }
           const key = JSON.stringify([requester.label, data.requestedAt]);
           if (this.deferredLeaseRequest !== key) {
             this.deferredLeaseRequest = key;

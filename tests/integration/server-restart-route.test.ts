@@ -7,6 +7,7 @@
  * hand-wrote state/restart-requested.json with no requester; the restart showed as
  * "requested by undefined". The route refuses a nameless request.
  */
+import { markRestartAdmissionTimeout } from '../../src/core/plannedRestartAdmissionTimeout.js';
 import { describe, it, expect, beforeAll, afterAll } from 'vitest';
 import request from 'supertest';
 import fs from 'node:fs';
@@ -105,6 +106,21 @@ describe('POST /server/restart + /health bootReadiness (integration)', () => {
     expect(res.status).toBe(202);
     expect(res.body.alreadyPending).toEqual({ kind: 'update', targetVersion: '9.9.9' });
     expect(JSON.parse(fs.readFileSync(flagPath(), 'utf8'))).toMatchObject({ requestedBy: 'auto-updater', targetVersion: '9.9.9' });
+    SafeFsExecutor.safeUnlinkSync(flagPath(), { operation: 'tests/integration/server-restart-route.test.ts' });
+  });
+
+  it('accepts a fresh restart after the previous update timed out awaiting lease confirmation', async () => {
+    const requestedAt = new Date(Date.now() - 16 * 60_000).toISOString();
+    const raw = JSON.stringify({
+      requestedAt, requestedBy: 'auto-updater', targetVersion: '9.9.9',
+      plannedRestart: true, expiresAt: new Date(Date.now() + 3_600_000).toISOString(),
+    });
+    fs.writeFileSync(flagPath(), raw);
+    expect(markRestartAdmissionTimeout(flagPath(), raw, requestedAt)).toBe(true);
+    const res = await post({ requestedBy: 'tester', reason: 'retry the restart' });
+    expect(res.status).toBe(202);
+    expect(res.body.alreadyPending).toBeUndefined();
+    expect(JSON.parse(fs.readFileSync(flagPath(), 'utf8'))).toMatchObject({ requestedBy: 'tester' });
     SafeFsExecutor.safeUnlinkSync(flagPath(), { operation: 'tests/integration/server-restart-route.test.ts' });
   });
 

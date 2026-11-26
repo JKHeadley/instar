@@ -111,6 +111,7 @@ function machine(developmentAgent: boolean, extra: Record<string, unknown> = {},
       bootClaimSafety: () => resolveBootClaimSafety(config),
       plannedRestartContinuity: () => resolvePlannedRestartLeaseContinuity(config),
       plannedRestartAdmissionEnabled: () => restartAdmission,
+      plannedRestartMinimumRemainingMs: () => restartAdmission ? 131_000 : null,
       renewIntervalMs: () => coord.leaseRenewIntervalMs(),
       broadcastDeadlineMs: () => 8_000,
       readRequestFile: () => ({ present: false }),
@@ -322,7 +323,7 @@ it('requires an exact request and exact confirmed nonce for dark restart admissi
   const m = machine(true, {}, true);
   const tunnel = new PeerTransport();
   const { coord, lc } = m.build(tunnel);
-  const request = { requestedBy: 'fixture-supervisor', requestedAt: new Date().toISOString(), minimumRemainingMs: 90_000 };
+  const request = { requestedBy: 'fixture-supervisor', requestedAt: new Date().toISOString(), minimumRemainingMs: 131_000 };
   try {
     await coord.initializeLease();
     expect(lc.confirmedPlannedRestartWindow(request)).toBeNull();
@@ -339,6 +340,15 @@ it('requires an exact request and exact confirmed nonce for dark restart admissi
     const newer = m.fl.signLease(confirmed.lease.epoch, confirmed.lease.acquiredAt, confirmed.lease.expiresAt, confirmed.lease.nonce + 1);
     expect(m.continuity.write(m.continuity.sign({ ...confirmed, lease: newer }))).toBe(true);
     expect(lc.confirmedPlannedRestartWindow(request)).toBeNull();
+
+    const replacement = { ...request, requestedAt: new Date(Date.now() + 1).toISOString() };
+    let finishTtlBroadcast!: (ok: boolean) => void;
+    vi.spyOn(tunnel, 'broadcast').mockImplementationOnce(() => new Promise(resolve => { finishTtlBroadcast = resolve; }));
+    expect(await lc.awaitWindowRenewalForConsumer(replacement)).toBe('confirmed');
+    finishTtlBroadcast(true);
+    await Promise.resolve();
+    expect(lc.confirmedPlannedRestartWindow(request)).toBeNull();
+    expect(lc.confirmedPlannedRestartWindow(replacement)).not.toBeNull();
   } finally {
     coord.stop();
   }
