@@ -24250,7 +24250,7 @@ export async function startServer(options: StartOptions): Promise<void> {
       }
       if (sharedIntelligence && stopGateDb) {
         try {
-          const { UnjustifiedStopGate } = await import('../core/UnjustifiedStopGate.js');
+          const { UnjustifiedStopGate, resolveStopGateReplayInput } = await import('../core/UnjustifiedStopGate.js');
           const { stopGateBreakerKey } = await import('../core/StopGateBreakerState.js');
           const { resolveDevAgentGate } = await import('../core/devAgentGate.js');
           // Turn-End Self-Deferral Guard (Phase A / shadow) — dev-gated dark:
@@ -24264,6 +24264,9 @@ export async function startServer(options: StartOptions): Promise<void> {
           unjustifiedStopGate = new UnjustifiedStopGate({
             intelligence: sharedIntelligence,
             selfDeferralGuardEnabled,
+            // CMT-2204: scrubbed replay input on the provenance row, live on dev
+            // agents and dark on the fleet (byte-identical rows there).
+            recordReplayInput: resolveStopGateReplayInput(config),
             breakerStateStore: stopGateDb,
             breakerKey: stopGateBreakerKey({
               defaultFramework: config.sessions?.framework,

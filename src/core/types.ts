@@ -7958,6 +7958,16 @@ export interface MonitoringConfig {
     enabled?: boolean;
   };
   /**
+   * CMT-2204: the UnjustifiedStopGate records the credential-scrubbed stop
+   * reason + recent turns it judged under its provenance row's machine-local
+   * `_contentFull`, plus a content-free prompt sha, so its decisions can be
+   * replayed. `enabled` is OMITTED from ConfigDefaults so resolveDevAgentGate
+   * decides (LIVE on dev, DARK on the fleet). Registered in DEV_GATED_FEATURES.
+   */
+  stopGateReplayInput?: {
+    enabled?: boolean;
+  };
+  /**
    * StrandedTopicSentinel (stranded-inbound-self-heal) — a pure-signal detector
    * that surfaces a Telegram/Slack topic whose owner machine is online-by-
    * heartbeat but unable to serve (quota-walled or adapter-disconnected) while a
