@@ -2,11 +2,30 @@
 title: Enroll a first approver on the paired phone
 slug: phone-only-first-approver
 status: draft
+ceremony-version: 2
 tier: 2
 parent-principle: Agent Proposes, Operator Approves
 ---
 
 # Enroll a first approver on the paired phone
+
+## Version 2 decision — ordered single-use confirmation
+
+Version 2 is the dark production design. References below to signed wall-clock expiry, timestamp validation, or a short-lived locator describe the version 1 fixture. Neither a version 1 locator nor a version 1 signature can authorize version 2. Keep the version 1 fixture isolated. Add a distinct version 2 signature domain and mobile action, and reject cross-version reuse in both directions.
+
+The locator selects the exact paired origin and nomination. The signed read must establish the current paired phone, verified owner and accepted approval account. Issue a fresh cryptographically random, single-use challenge for that open attempt. Bind the attempt, holder epoch and process incarnation, owner, account and policy revisions, exact device and presence key hashes, nomination, proposal, disclosure, and canonical first-approver slot in the signed bytes. Face ID confirms the exact bytes once. The shared authority conditionally consumes the open challenge and empty slot and records the one winning acceptance under the same witnessed decision. It checks the current revisions at commit. A historical receipt may be recovered by exact operation and digest after response loss. Recovery grants no new authority.
+
+### Holder-local timeout
+
+The current holder starts a local monotonic timer when it opens the attempt. On timeout, it stops accepting new submissions for that attempt and requests a witnessed ordered cancellation against the exact attempt and generation. A delayed timer callback cannot extend local admission, so the holder checks its monotonic elapsed time when taking a submission as well. If the authority is unavailable, the holder refuses new submissions and keeps cancellation pending until it can be recorded. It does not reopen the attempt.
+
+Cancellation and consumption compete at the same serialized authority. If cancellation commits first, a previously signed response cannot publish. If acceptance commits first, cancellation cannot erase that result. An in-flight response already admitted by the holder can win before cancellation is recorded. This is holder-local timeout, not a guarantee that a decision becomes invalid at a trusted wall-clock instant. Leave wall-clock expiry claims out of the signed protocol and the app disclosure.
+
+Superseding the challenge, explicit cancellation, or any binding change invalidates the old attempt through the same ordered decision. On process restart or holder transfer, do not honor outstanding challenges from the previous incarnation. Fence the old incarnation, reconcile any exact committed winner, and order cancellation of the remaining attempts before issuing fresh ones. If the authority cannot prove which attempt won, keep enrollment closed. Restart or handover never substitutes for fresh Face ID on a new attempt.
+
+### Dark verification
+
+Exercise cancellation and consumption in both commit orders, a canceled response carrying a valid signature, a delayed timer, cancellation storage failure and retry, a restart or transfer with an outstanding signature, a newer challenge, changed owner/account/device/policy bindings, cross-version rejection, both orders against local key replacement, and lost-response recovery. Keep the production routes off until the shared writer and registry fencing are proven and the installed key has affirmative Face ID eligibility. The ordered ceremony does not depend on a trusted time quorum.
 
 An iPhone paired through Telegram can already prove possession of its device and presence keys. Approving changes is a separate permission. Ordinary chat pairing does not include it. The [Trust Is Earned by Work and Granted Only by the Person standard, In practice](../STANDARDS-REGISTRY.md#trust-is-earned-by-work-and-granted-only-by-the-person) allows an accepted approval account to authorize a first device. The approved App Trust Approval implementation spec describes the local path. Before enabling remote enrollment, update its first-device contract to document this accepted-account path and its separate phone presence check. The current acceptance service implements local app pairing and nomination by a current approving device. It has no route from an accepted approval account to a first phone acceptance.
 

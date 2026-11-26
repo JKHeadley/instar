@@ -1,5 +1,10 @@
 # Set up approvals on a paired iPhone
 
+**Version 2 uses one Face ID confirmation.** When you open an attempt on the paired iPhone, the responsible machine starts a local timer. If the attempt is left unused, the machine stops accepting new responses and records a cancellation. Once that cancellation is recorded, an old response cannot approve the phone. An approval already recorded stays in effect. The timer belongs to the machine handling the attempt. It does not promise an exact expiry across machines. Restart or a handover requires a fresh attempt and Face ID.
+
+The notes below describe the earlier disposable prototype where they refer to a clock-based expiry. The version 2 flow stays off until the shared approval system and installed phone key are verified.
+
+
 The proposed journey lets you prepare an iPhone to approve changes without sitting at Echo’s computer or scanning a code there. It starts from an approval account that you have already accepted. A fresh confirmation in your authenticated Chief of Staff topic names one specific iPhone and one enrollment request. The phone then shows what it will be allowed to do and asks for Face ID.
 
 The link opens the right request. Its address carries no permission on its own. A forwarded or older confirmation, a different phone, or a changed request cannot complete enrollment. The existing Work Board decision remains a separate approval so you can see exactly what it changes.
