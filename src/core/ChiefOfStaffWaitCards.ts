@@ -62,7 +62,7 @@ export interface WaitCardsSyncInput {
 
 export interface WaitCardsSyncResult { opened: string[]; edited: string[]; reopened: string[]; closed: string[]; skipped: Array<{ cardId: string; reason: string }> }
 
-interface SourceRec { ref: string; hlc: HlcTimestamp; kind: 'check' | 'lifecycle'; at: string; verdict?: CosVerdict; event?: string; by?: string; bindingHlc?: HlcTimestamp; note?: string; askId?: string; complete?: boolean; effective?: boolean }
+interface SourceRec { ref: string; hlc: HlcTimestamp; kind: 'check' | 'lifecycle'; at: string; verdict?: CosVerdict; event?: string; by?: string; bindingHlc?: HlcTimestamp; note?: string; askId?: string; complete?: boolean; effective?: boolean; waitEvidenceBound?: 'fresh' | 'carried' }
 
 /**
  * Every Chief of Staff record per project that can open or clear a wait, oldest first by HLC, from one pass over
@@ -74,7 +74,7 @@ function sourcesByProject(union: UnionEntry[]): Map<string, SourceRec[]> {
     const d = e.data;
     if (typeof d.conversationKey !== 'string' || typeof d.recordKey !== 'string' || !isHlc(d.hlc)) continue;
     let rec: (SourceRec & { ck: string }) | null = null;
-    if (d.recordType === 'check-event') rec = { ck: d.conversationKey, ref: d.recordKey, hlc: d.hlc, kind: 'check', at: String(d.at ?? ''), verdict: d.verdict as CosVerdict, note: typeof d.note === 'string' ? d.note : undefined, ...(isHlc(d.bindingHlc) ? { bindingHlc: d.bindingHlc } : {}) };
+    if (d.recordType === 'check-event') rec = { ck: d.conversationKey, ref: d.recordKey, hlc: d.hlc, kind: 'check', at: String(d.at ?? ''), verdict: d.verdict as CosVerdict, waitEvidenceBound: d.waitEvidenceBound === 'fresh' || d.waitEvidenceBound === 'carried' ? d.waitEvidenceBound : undefined, note: typeof d.note === 'string' ? d.note : undefined, ...(isHlc(d.bindingHlc) ? { bindingHlc: d.bindingHlc } : {}) };
     else if (d.recordType === 'binding-lifecycle') rec = { ck: d.conversationKey, ref: d.recordKey, hlc: d.hlc, kind: 'lifecycle', at: String(d.at ?? ''), event: String(d.event ?? ''), by: String(d.by ?? ''), ...(isHlc(d.bindingHlc) ? { bindingHlc: d.bindingHlc } : {}),
       ...(typeof d.askId === 'string' ? { askId: d.askId } : {}), complete: typeof d.who === 'string' && typeof d.quote === 'string' && typeof d.messageRef === 'string' && /^\d{4}-\d{2}-\d{2}T/.test(String(d.at ?? '')) };
     if (!rec) continue;
@@ -133,7 +133,7 @@ function waitStart(sources: SourceRec[], bindingHlc: HlcTimestamp | null, after:
   const waiting = sources.slice(from).filter((s) => s.kind === 'check' && s.verdict === 'waiting-on-user');
   if (!waiting.length) return null;
   const real = [...waiting].reverse().find((s) => s.note && s.note !== CARRY_FORWARD_NOTE);
-  const first = requireFreshStart ? waiting.find((s) => s.note !== CARRY_FORWARD_NOTE) : waiting[0];
+  const first = requireFreshStart ? waiting.find((s) => s.waitEvidenceBound === 'fresh') : waiting[0];
   return first ? { rec: first, note: real?.note ?? null } : null;
 }
 
@@ -158,7 +158,7 @@ export function chiefOfStaffWaitEpisodes(completeUnion: UnionEntry[] | null): Ch
       return record.bindingHlc !== undefined && compareHlc(record.bindingHlc, bindingHlc) === 0;
     });
     const latest = [...current].reverse().find((record) => record.kind === 'check');
-    if (latest?.verdict !== 'waiting-on-user') continue;
+    if (latest?.verdict !== 'waiting-on-user' || !latest.waitEvidenceBound) continue;
     const start = waitStart(current, bindingHlc, null, true);
     if (!start) continue;
     const firstCheckRef = start.rec.ref;

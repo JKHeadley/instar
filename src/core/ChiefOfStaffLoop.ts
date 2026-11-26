@@ -833,7 +833,8 @@ export class ChiefOfStaffLoop {
     let floored: FlooredVerdict; let decisionRef: string | undefined;
     const bindingHlc = p.binding.bindingHlc;
     const canCarry = !this.waitBlockerLedger || (bindingHlc && prev?.lastCheckBindingHlc &&
-      compareHlc(bindingHlc, prev.lastCheckBindingHlc) === 0);
+      compareHlc(bindingHlc, prev.lastCheckBindingHlc) === 0 &&
+      (prev.lastVerdict !== 'waiting-on-user' || prev.lastWaitEvidenceBound === true));
     if (canCarry && prev?.lastEvidenceHash === hash && prev.lastVerdict) {
       floored = { verdict: prev.lastVerdict, reason: 'no new evidence', floored: 'carry-forward' };
     } else if (allDeterministicPass) {
@@ -863,7 +864,10 @@ export class ChiefOfStaffLoop {
     if (verdict === 'unknown') this.bumpUnknown(p, cfg, floored.reason); else this.unknownStreak.set(p.conversationKey, 0);
     // §2.4 step 2(c): the check that justifies an action is on disk BEFORE the claim, so the owner's
     // action gate (newest check age, next-action-allowed) reads a fresh fold instead of the previous cadence's.
-    const checkSeq = this.recordCheck(p, verdict, floored.reason, hash, cited, progress, highWater, now, bundle.doneItems);
+    const waitEvidenceBound = this.waitBlockerLedger && verdict === 'waiting-on-user' && bindingHlc
+      ? (floored.floored === 'carry-forward' ? (prev?.lastWaitEvidenceBound ? 'carried' : undefined) : 'fresh')
+      : undefined;
+    const checkSeq = this.recordCheck(p, verdict, floored.reason, hash, cited, progress, highWater, now, bundle.doneItems, waitEvidenceBound);
     if (checkSeq === undefined) { this.d.log?.(`[chief-of-staff] check-event for ${p.conversationKey} was not accepted; no action this tick`); return { restarted: false }; }
     if (this.d.journal.awaitDurable) {
       try { await this.d.journal.awaitDurable(checkSeq); } catch (e) { /* @silent-fallback-ok: an un-fsynced check is logged and NO action is taken this tick; the project is retried next cadence */ this.d.log?.(`[chief-of-staff] check-event not durable before action: ${(e as Error)?.message}`); return { restarted: false }; }
@@ -912,8 +916,8 @@ export class ChiefOfStaffLoop {
     return { restarted };
   }
 
-  private recordCheck(p: BoundProject, verdict: CosVerdict, note: string, hash: string, ids: string[], progress: boolean, highWater: number, now: number, doneItems?: Record<string, 'pass' | 'fail' | 'unknown'>): number | undefined {
-    return this.d.journal.emit(`check:${p.conversationKey}:${now}`, buildCheckEvent({ conversationKey: p.conversationKey, verdict, evidenceHash: hash, evidenceIds: ids, progressSeen: progress, netDiffHighWater: highWater, machine: this.d.machineId, at: new Date(now).toISOString(), note: cutAtWord(note, 500), ...(p.binding.bindingHlc ? { bindingHlc: p.binding.bindingHlc } : {}), ...(doneItems ? { doneItems } : {}) })).seq;
+  private recordCheck(p: BoundProject, verdict: CosVerdict, note: string, hash: string, ids: string[], progress: boolean, highWater: number, now: number, doneItems?: Record<string, 'pass' | 'fail' | 'unknown'>, waitEvidenceBound?: 'fresh' | 'carried'): number | undefined {
+    return this.d.journal.emit(`check:${p.conversationKey}:${now}`, buildCheckEvent({ conversationKey: p.conversationKey, verdict, evidenceHash: hash, evidenceIds: ids, progressSeen: progress, netDiffHighWater: highWater, machine: this.d.machineId, at: new Date(now).toISOString(), note: cutAtWord(note, 500), ...(p.binding.bindingHlc ? { bindingHlc: p.binding.bindingHlc } : {}), ...(doneItems ? { doneItems } : {}), ...(waitEvidenceBound ? { waitEvidenceBound } : {}) })).seq;
   }
 
   private bumpUnknown(p: BoundProject, cfg: ChiefOfStaffLoopConfig, why: string): void {

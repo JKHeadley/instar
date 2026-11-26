@@ -1,0 +1,24 @@
+{
+  "version": 2,
+  "slug": "cos-wait-blocker-intake",
+  "sessionId": "017c26ed-5596-4576-9c20-20af13e4c1f8",
+  "timestamp": "2026-11-26T00:55:18.620Z",
+  "artifactPath": "upgrades/side-effects/cos-wait-blocker-intake.md",
+  "artifactSha256": "90b9ba58cccb75e834de09d88bdc663fc44dc20a3d5e0a9a20b20ae2f7159ecd",
+  "coveredFiles": [
+    "src/core/ChiefOfStaffLoop.ts",
+    "src/core/ChiefOfStaffStore.ts",
+    "src/core/ChiefOfStaffWaitCards.ts",
+    "tests/unit/ChiefOfStaffLoop.test.ts",
+    "tests/unit/chief-of-staff-wait-cards.test.ts",
+    "upgrades/cos-wait-blocker-intake.eli16.md",
+    "upgrades/side-effects/cos-wait-blocker-intake.md"
+  ],
+  "phase": "complete",
+  "tier": 1,
+  "tierReasoning": "Default-off blocker intake records fresh evidence lineage. No owner action or activation changes.",
+  "eli16Path": "upgrades/cos-wait-blocker-intake.eli16.md",
+  "sideEffectsPath": "upgrades/side-effects/cos-wait-blocker-intake.md",
+  "secondPass": "true",
+  "reviewerConcurred": true
+}

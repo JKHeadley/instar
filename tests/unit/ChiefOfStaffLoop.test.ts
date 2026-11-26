@@ -88,6 +88,14 @@ describe('Chief of Staff blocker ledger intake', () => {
       loadUnionCompleteReadOnly: () => available ? w.j.entries.slice() : null,
       loadUnionForWaitMutation: () => available ? w.j.entries.slice() : null,
     } });
+    await l.tick();
+    w.now += 25 * H;
+    await l.tick();
+    const oldChecks = w.j.entries.filter((e) => e.data.recordType === 'check-event');
+    expect(oldChecks.at(-1)?.data).toMatchObject({ note: 'no new evidence', bindingHlc: expect.any(Object) });
+    expect(oldChecks.at(-1)?.data).not.toHaveProperty('waitEvidenceBound');
+    w.now += 25 * H;
+
     l.attachWaitBlockerLedger({
       openChiefOfStaffWait: async (input) => {
         entries.push(input);
@@ -105,7 +113,7 @@ describe('Chief of Staff blocker ledger intake', () => {
     expect(entries).toHaveLength(1);
     expect(entries[0].episodeKey).toMatch(/^[a-f0-9]{64}$/);
     expect(entries[0].conversationKey).toBe(CK);
-    expect(entries[0].firstCheckRef).toBe(w.j.entries.find((e) => e.data.recordType === 'check-event')?.data.recordKey);
+    expect(entries[0].firstCheckRef).toBe(w.j.entries.find((e) => e.data.waitEvidenceBound === 'fresh')?.data.recordKey);
     w.now += 60_000;
     await l.tick();
     expect(entries).toHaveLength(1);

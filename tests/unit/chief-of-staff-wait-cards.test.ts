@@ -44,9 +44,9 @@ function rig(opts: { softOpenCards?: number; maxAgentCardsPerDay?: number; enabl
   const binding = add(buildBindingPut({ conversationKey: CK, goal: 'Agent creation: recommend services', doneDefinition: [{ id: 'j1', kind: 'judgment', text: 'Justin is happy with it' } as never, { id: 'p1', kind: 'deterministic', text: 'PR 1 merged' } as never], checkCadenceHours: 24, linked: {}, confirmedBy: 'owner', confirmedAt: new Date(clock).toISOString() }));
   const bindingHlc = binding.hlc as HlcTimestamp;
   const project: WaitCardProject = { conversationKey: CK, title: 'Instar Agent Creation', goal: 'Agent creation: recommend services', doneDefinition: [{ id: 'j1', kind: 'judgment', text: 'Justin is happy with it' }, { id: 'p1', kind: 'deterministic', text: 'PR 1 merged' }] };
-  const check = (verdict: CosVerdict, note = 'The spec waits for your yes.', doneItems: Record<string, 'pass' | 'fail' | 'unknown'> = { p1: 'fail' }, checkBinding?: HlcTimestamp) => {
+  const check = (verdict: CosVerdict, note = 'The spec waits for your yes.', doneItems: Record<string, 'pass' | 'fail' | 'unknown'> = { p1: 'fail' }, checkBinding?: HlcTimestamp, waitEvidenceBound: 'fresh' | 'carried' = 'fresh') => {
     clock += 60_000;
-    return add(buildCheckEvent({ conversationKey: CK, verdict, evidenceHash: 'x'.repeat(64), evidenceIds: [], progressSeen: false, machine: 'm_a', at: new Date(clock).toISOString(), note, doneItems, bindingHlc: checkBinding }));
+    return add(buildCheckEvent({ conversationKey: CK, verdict, evidenceHash: 'x'.repeat(64), evidenceIds: [], progressSeen: false, machine: 'm_a', at: new Date(clock).toISOString(), note, doneItems, bindingHlc: checkBinding, ...(checkBinding && verdict === 'waiting-on-user' ? { waitEvidenceBound } : {}) }));
   };
   const logs: Array<{ event: string; detail: Record<string, unknown> }> = [];
   let conversations = 0;
@@ -61,17 +61,17 @@ describe('Chief of Staff blocker wait episodes', () => {
   it('uses current bound checks and preserves identity across carries, but holds on unknown evidence', () => {
     const t = rig();
     const items = { p1: 'fail' } as const;
-    const bound = (verdict: CosVerdict, note: string) => t.check(verdict, note, items, t.bindingHlc);
+    const bound = (verdict: CosVerdict, note: string, evidence?: 'fresh' | 'carried') => t.check(verdict, note, items, t.bindingHlc, evidence);
 
     t.check('waiting-on-user', 'Legacy check without lineage.');
     t.check('waiting-on-user', 'Checked an older binding.', items, { ...t.bindingHlc, physical: t.bindingHlc.physical - 1 });
-    bound('waiting-on-user', 'no new evidence');
+    bound('waiting-on-user', 'no new evidence', 'carried');
     expect(chiefOfStaffWaitEpisodes(t.cos)).toEqual([]);
-    const first = bound('waiting-on-user', 'Fresh wait.');
+    const first = bound('waiting-on-user', 'no new evidence');
     const [episode] = chiefOfStaffWaitEpisodes(t.cos);
     expect(episode.firstCheckRef).toBe(first.recordKey);
 
-    const carry = bound('waiting-on-user', 'no new evidence');
+    const carry = bound('waiting-on-user', 'no new evidence', 'carried');
     expect(chiefOfStaffWaitEpisodes(t.cos)).toEqual([{ ...episode, latestCheckRef: carry.recordKey }]);
     expect(chiefOfStaffWaitEpisodes(null)).toEqual([]);
     bound('unknown', 'Gather unavailable.');

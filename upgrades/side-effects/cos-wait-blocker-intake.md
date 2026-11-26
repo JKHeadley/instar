@@ -16,3 +16,11 @@ Independent review concurred with committing a default-off draft. The review rai
 An opted-in ledger verifies the exact current wait before changing a Chief of Staff candidate, including at commit after a settlement review. The mutation read flushes queued local changes and refuses when the queue remains pending. Normal ledger entries keep their existing workflow. A verdict from a different or unrecorded binding cannot carry forward while intake is enabled.
 
 Independent review concurred with the default-off draft and identified a queued-rebind race, delayed peer updates, and a legacy verdict that an earlier build may have carried forward under a binding before intake was enabled. The queued-rebind case has a server regression test. Cross-machine freshness and verification of previously carried legacy verdicts remain activation blockers.
+
+## Off-to-on evidence and delayed peer records
+
+A wait check carries explicit evidence lineage only after an opted-in check has evaluated the current binding or carried forward a check with that same established lineage. The selector requires this lineage for its opening and latest observation. A current-binding record copied forward from the previous implementation does not qualify. The regression first records a carry while intake is off, enables intake, and verifies the candidate references the new evaluation.
+
+Peer stream completeness establishes that the files already present were read without truncation. It cannot establish that a peer has delivered its latest binding change. A takeover grace tick is also insufficient under arbitrary delay. The shared writer needs a currentness receipt covering the remote authority's write frontier, or it must refuse before candidate mutation. Keep production activation off until that boundary is supplied and tested with an actual delayed update.
+
+Independent review concurred with the default-off legacy lineage change. It also found that a display note could match the carry-forward wording. The journal now records fresh and carried evidence explicitly. The selector reads that field, and the regression includes a fresh check whose note matches the old wording.

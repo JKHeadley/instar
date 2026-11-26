@@ -5,3 +5,5 @@ When the Chief of Staff checks a project, the check can record that progress has
 The trial is off by default. It does not add an approval request, change how you finish a project, or change which rows you see in Needs-you. Before enabling it on a real agent, the project still needs the checks that confirm a wait remains current during a handoff between machines. Those checks will also make sure a retired wait cannot later become an approval request.
 
 The trial also checks the source again before changing a blocker. If the project has a new checklist, the old blocker stays as history and the server refuses to advance it. A fresh project check can open a new blocker if the wait is still real.
+
+When the trial is first enabled, the Chief of Staff checks older waits again before adding them to the ledger. A note copied from an older check cannot open a blocker on its own.
