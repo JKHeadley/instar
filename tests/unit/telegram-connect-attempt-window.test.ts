@@ -57,7 +57,12 @@ describe('Telegram connect attempt window', () => {
     // The actual timeout remains proven unsent. Our synthetic blocked fallback is deliberately
     // not in the transport retry allowlist; do not broaden production authority for a fixture.
     expect(provedUnsentCode((old.error as AggregateError).errors[0])).toBe('ETIMEDOUT');
-    expect(provedUnsentCode(old.error)).toBeNull();
+    // The aggregate is proven unsent only when EVERY attempt is. A BlockList refusal is not in the
+    // allowlist, so there the aggregate stays unproven. A real OS route failure (ENETUNREACH on a
+    // runner with no IPv6 route) IS a proven-unsent connect error, so there the whole attempt is
+    // correctly proven unsent and carries the first code. Production behaviour is unchanged.
+    if (codes[1] === 'ERR_IP_BLOCKED') expect(provedUnsentCode(old.error)).toBeNull();
+    else expect(provedUnsentCode(old.error)).toBe('ETIMEDOUT');
   }, 30_000);
   it('connects through the same pause with the production attempt window', async () => {
     const port = await listening;
