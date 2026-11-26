@@ -44,7 +44,7 @@ afterAll(() => {
   for (const d of dirs) SafeFsExecutor.safeRmSync(d, { recursive: true, force: true, operation: 'tests/integration/mobile-native-conversations-gaps.test.ts' });
 });
 
-interface Opts { topics?: Array<{ topicId: number; topicName: string; lastActivity: string | null }>; peerUrls?: string[]; nativeOff?: boolean }
+interface Opts { topics?: Array<{ topicId: number; topicName: string; lastActivity: string | null }>; peerUrls?: string[]; nativeOff?: boolean; meshSignedRead?: RouteContext['meshSignedRead'] }
 
 async function setup(opts: Opts = {}) {
   const dir = fs.mkdtempSync(path.join(os.tmpdir(), 'mgaps-'));
@@ -73,11 +73,13 @@ async function setup(opts: Opts = {}) {
     getOwnerUserId: () => 4242,
     getAllTopicMappings: () => topics.map((t) => ({ topicId: t.topicId, topicName: t.topicName })),
     getTopicHistory: (id: number, limit: number) => tgRows.filter((r) => r.topicId === id).slice(-limit),
+    getTopicHistoryBefore: (id: number, beforeMs: number, limit: number) =>
+      tgRows.filter((r) => r.topicId === id && Date.parse(String(r.timestamp)) < beforeMs).slice(-limit),
     sendToTopic: async (_id: number, text: string) => { mirrors.push(text);  return { messageId: 1, topicId: Number(_id) }; },
   };
   const resolvePeerUrls = () => (opts.peerUrls ?? []).map((url, i) => ({ machineId: `m_peer${i}`, url, kind: 'lan' }));
   const ctx = {
-    config, startTime: new Date(), scheduler: null, meshSelfId: 'm1', resolvePeerUrls,
+    config, startTime: new Date(), scheduler: null, meshSelfId: 'm1', resolvePeerUrls, meshSignedRead: opts.meshSignedRead,
     sessionManager: { listRunningSessions: () => [], killSession: () => true },
     state: { getJobState: () => null, getSession: () => null, queryEvents: () => [], getCoherenceJournal: () => undefined },
     conversationRegistry: registry, conversationBindAuth: createConversationBindAuth(dir), appConversations: svc, telegram,
@@ -232,6 +234,61 @@ describe('gap 2 — scope=pool on the list and the browse read', () => {
       expect(plain.body.messages).toHaveLength(1);
       expect(plain.body.pool).toBeUndefined();
     } finally { server.close(); }
+  });
+});
+
+describe('signed Telegram older history', () => {
+  it('keeps recovered App rows on the safe side of a truncated peer page', async () => {
+    let cutoff = 0;
+    const e = await setup({
+      peerUrls: ['https://signed-peer.example.invalid'],
+      meshSignedRead: async (_machine, command) => {
+        if (command.type !== 'topic-history-pull') throw new Error('unexpected peer read');
+        const page = command.before === undefined;
+        return { ok: true, status: 200, result: { ok: true, shape: 'pool',
+          messages: [{ messageId: page ? 43 : 42, fromUser: true, text: page ? 'Peer cutoff' : 'Peer older',
+            timestamp: new Date(page ? cutoff : cutoff - 2).toISOString() }],
+          ...(page ? { truncated: true, oldest: { before: cutoff, beforeMessageId: 43 } } : {}) } };
+      },
+    });
+    expect((await signed(e, 'POST', `/mobile/chat/${TOPIC}`, { text: 'Recovered App message', requestId: rid() })).status).toBe(200);
+    const [stored] = e.svc.store.browseMessages(`telegram:${TOPIC}`, null).messages;
+    cutoff = Date.parse(stored.at) + 1;
+    e.tgRows.length = 0;
+    const route = `/telegram/topics/${TOPIC}/messages?scope=pool`;
+    const first = await signed(e, 'GET', route);
+    expect(first.status).toBe(200);
+    expect(first.body.pool.truncated).toHaveLength(1);
+    expect(first.body.messages.map((m: { text: string }) => m.text)).toEqual(['Peer cutoff']);
+    const next = await signed(e, 'GET', `${route}&before=${cutoff}&beforeMessageId=43`);
+    expect(next.status).toBe(200);
+    expect(next.body.messages.map((m: { text: string }) => m.text))
+      .toEqual(['Peer older', 'Recovered App message']);
+  });
+
+  it('keeps recovered App messages strictly before the requested time', async () => {
+    const e = await setup();
+    const route = `/telegram/topics/${TOPIC}/messages`;
+    const send = await signed(e, 'POST', `/mobile/chat/${TOPIC}`, { text: 'Recovered App message', requestId: rid() });
+    expect(send.status).toBe(200);
+    const [stored] = e.svc.store.browseMessages(`telegram:${TOPIC}`, null).messages;
+    const before = Date.parse(stored.at);
+    e.tgRows.length = 0;
+    e.tgRows.push({ messageId: 42, topicId: TOPIC, text: 'Older Telegram message',
+      fromUser: true, timestamp: new Date(before - 1).toISOString() });
+    for (const scope of ['', '&scope=pool']) {
+      const current = await signed(e, 'GET', `${route}?limit=20${scope}`);
+      expect(current.status).toBe(200);
+      expect(current.body.messages.map((m: { text: string }) => m.text))
+        .toEqual(['Older Telegram message', 'Recovered App message']);
+      const older = await signed(e, 'GET', `${route}?before=${before}&beforeMessageId=43${scope}`);
+      expect(older.status).toBe(200);
+      expect(older.body.messages.map((m: { text: string }) => m.text)).toEqual(['Older Telegram message']);
+      const recoveredOlder = await signed(e, 'GET', `${route}?before=${before + 1}${scope}`);
+      expect(recoveredOlder.status).toBe(200);
+      expect(recoveredOlder.body.messages.map((m: { text: string }) => m.text))
+        .toEqual(['Older Telegram message', 'Recovered App message']);
+    }
   });
 });
 

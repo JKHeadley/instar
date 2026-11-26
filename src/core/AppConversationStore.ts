@@ -1356,15 +1356,19 @@ export class AppConversationStore {
 
   /**
    * BROWSE read (§4.5): messages paged BACKWARDS in `(at, eventId)` order, each with its reduced
-   * delivery state. `before` is `<at>,<eventId>` (exclusive). The page is returned oldest-first,
+   * delivery state. `before` is an exclusive `<at>,<eventId>` cursor or a time-only
+   * boundary for callers without a comparable event ID. The page is oldest-first,
    * with `nextBefore` naming the oldest row when older messages remain.
    */
-  browseMessages(conversationKey: string, before: string | null | undefined, limit = 100): { messages: BrowsedMessage[]; nextBefore: string | null } {
+  browseMessages(conversationKey: string, before: string | { beforeTime: string } | null | undefined, limit = 100): { messages: BrowsedMessage[]; nextBefore: string | null } {
     const canonicalKey = canonicalConversationKey(conversationKey);
     const n = Math.max(1, Math.min(100, Math.floor(limit)));
     let rows: Array<{ eventId: string; at: string }>;
     const b = typeof before === 'string' ? before.split(',') : null;
-    if (b && b.length === 2 && b[0] && b[1]) {
+    if (before && typeof before === 'object') {
+      rows = this.db.prepare('SELECT eventId, at FROM messages WHERE canonicalKey = ? AND at < ? ORDER BY at DESC, eventId DESC LIMIT ?')
+        .all(canonicalKey, before.beforeTime, n + 1) as typeof rows;
+    } else if (b && b.length === 2 && b[0] && b[1]) {
       rows = this.db.prepare('SELECT eventId, at FROM messages WHERE canonicalKey = ? AND (at < ? OR (at = ? AND eventId < ?)) ORDER BY at DESC, eventId DESC LIMIT ?').all(canonicalKey, b[0], b[0], b[1], n + 1) as typeof rows;
     } else {
       rows = this.db.prepare('SELECT eventId, at FROM messages WHERE canonicalKey = ? ORDER BY at DESC, eventId DESC LIMIT ?').all(canonicalKey, n + 1) as typeof rows;
