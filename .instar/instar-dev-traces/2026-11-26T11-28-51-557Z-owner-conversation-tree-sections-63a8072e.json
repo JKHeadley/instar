@@ -1,0 +1,19 @@
+{
+  "version": 2,
+  "slug": "owner-conversation-tree-sections",
+  "sessionId": "633bd330-201e-4dc8-8fd9-72b89116167e",
+  "timestamp": "2026-11-26T11:28:51.557Z",
+  "artifactPath": "upgrades/side-effects/owner-conversation-tree-sections.md",
+  "artifactSha256": "2843047fb5ff0ea41d8e767e2181e9194acc8c6b43bdd8671f1f81d5b4193841",
+  "specPath": "docs/specs/work-front-doors.md",
+  "coveredFiles": [
+    "scripts/conversation-tree-native-acceptance.mjs",
+    "tests/e2e/conversation-tree-native-acceptance.test.ts",
+    "upgrades/side-effects/owner-conversation-tree-sections.md"
+  ],
+  "phase": "complete",
+  "tier": 2,
+  "tierReasoning": "Read-only disposable Work Board and exact card detail fixture",
+  "secondPass": "not-required",
+  "reviewerConcurred": null
+}

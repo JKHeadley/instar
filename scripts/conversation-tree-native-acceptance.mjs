@@ -21,7 +21,8 @@ import { createConversationGraphRouter } from '../dist/server/conversationGraphR
 import { createConversationGraphViewerResolver } from '../dist/server/conversationGraphViewer.js';
 import { authMiddleware } from '../dist/server/middleware.js';
 import { createMobileConversationRouter } from '../dist/server/mobileConversationRoutes.js';
-import { MobilePairingService, deviceAuthenticator } from '../dist/server/mobilePairingRoutes.js';
+import { MobilePairingService, deviceAuthenticator, devicePersonOf } from '../dist/server/mobilePairingRoutes.js';
+import { conversationRef } from '../dist/core/workBoardViews.js';
 import { mountProjectsRoutes } from '../dist/server/workProjectsRoutes.js';
 
 const [keyFile, ...extra] = process.argv.slice(2);
@@ -126,6 +127,21 @@ try {
   app.use(createConversationGraphRouter({ model, resolveViewer: createConversationGraphViewerResolver({
     agentId: config.projectName, pairing, verifyDashboardOwner: () => false,
   }), projects: () => [{ ...project, ref: telegram(42) }] }));
+
+  const boardRoute = '/mobile/work-board';
+  const detailRoute = `${boardRoute}/cards/${card.id}`;
+  const cardDetail = { ...card, status: 'open', turn: 'agent', started: false, newestAt: at,
+    agentInternal: false, conversationAvailable: true, conversation: conversationRef(card.conversationKey),
+    need: 'Verify the conversation backlink.', links: [], questions: [], evidence: [] };
+  const ownerRead = (body) => (req, res) => {
+    res.set('Cache-Control', 'no-store');
+    if (devicePersonOf(req)?.role !== 'owner') { res.status(403).json({ error: 'owner-only' }); return; }
+    res.json(body);
+  };
+  app.get(boardRoute, ownerRead({ lanes: [{ lane: card.lane, cards: [cardDetail], total: 1, more: 0 }],
+    viewer: { isOwner: true, canTap: false }, behind: null }));
+  app.get(detailRoute, ownerRead({ card: cardDetail }));
+  routes.push(boardRoute, detailRoute);
 
   let ready = false;
   listener = http.createServer((req, res) => {

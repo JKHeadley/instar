@@ -9,7 +9,7 @@ import { canonicalString } from '../../src/core/MobileDeviceKeys.js';
 import { SafeFsExecutor } from '../../src/core/SafeFsExecutor.js';
 import { makeDevice } from '../helpers/mobileDevice.js';
 
-it('keeps all three conversation-tree routes open for a simulator-signed owner', async () => {
+it('keeps conversation tree and card reads open for a simulator-signed owner', async () => {
   const dir = fs.mkdtempSync(path.join(os.tmpdir(), 'tree-fixture-key-'));
   const key = path.join(dir, 'pub');
   const device = makeDevice();
@@ -60,6 +60,14 @@ it('keeps all three conversation-tree routes open for a simulator-signed owner',
     expect(tree.sections.ungrouped).toEqual([expect.objectContaining({ title: 'Ordinary Chat' })]);
     expect(tree.sections.groups[0].children[0]).toMatchObject({ title: 'Nested Group' });
     expect(tree.items[0].children[0]).toMatchObject({ title: 'Nested Group' });
+    const board = await read('/mobile/work-board');
+    expect(board.lanes[0].cards).toEqual([expect.objectContaining({ id: linked.id })]);
+    const detailRoute = `/mobile/work-board/cards/${linked.id}`;
+    const detail = await read(detailRoute);
+    expect(detail.card).toMatchObject({ id: linked.id, conversationKey: linked.conversationKey,
+      conversationAvailable: true });
+    expect((await fetch(`http://${host}${detailRoute}`, { method: 'POST' })).status).toBe(404);
+    expect((await fetch(`http://${host}${detailRoute}`)).status).toBe(401);
     expect((await fetch(`http://${host}/mobile/conversation-graph/tree`)).status).toBe(401);
   } finally {
     if (worker.exitCode === null) worker.kill('SIGTERM');
