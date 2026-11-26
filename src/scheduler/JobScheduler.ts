@@ -302,6 +302,9 @@ export class JobScheduler {
   private capacityPoll: ReturnType<typeof setInterval> | null = null;
   private capacityAlertInFlight = false;
   private queueAdmissionInFlight = false;
+  private queueMaintenanceInFlight = false;
+  private queueProgressAt: number | null = null;
+  private queueStallReported = false;
   private activeSessionSpawns = new Set<string>();
   private readonly gatedStarts = new Set<string>();
 
@@ -864,7 +867,10 @@ export class JobScheduler {
     this.refreshJobs();
     this.promotionCatchUpPending = readRecentPromotion(this.stateDir, Date.now(), this.promotionLeaseProvider?.()) !== null;
     this.running = true;
-    this.silenceCheckTimer = setInterval(() => this.checkSilentJobs(), 5 * 60_000);
+    this.silenceCheckTimer = setInterval(() => {
+      this.checkSilentJobs();
+      void this.checkQueueProgress();
+    }, 5 * 60_000);
     this.silenceCheckTimer.unref?.();
     const persistedWait = this.state.get<JobCapacityEpisode>('job-capacity-episode');
     if (persistedWait?.version === 1) {
@@ -1547,6 +1553,10 @@ export class JobScheduler {
     // machine claim; the old refused attempt released its claim as "waited".
     this.queueAdmissionInFlight = true;
     void this.triggerJob(job.slug, `queued:${next.reason}`).then(result => {
+      if (result === 'triggered') {
+        this.queueProgressAt = Date.now();
+        this.queueStallReported = false;
+      }
       if (result === 'skipped' && next.capacityWait) {
         const episode = this.state.get<JobCapacityEpisode>('job-capacity-episode');
         if (episode?.jobs.includes(job.slug)) this.enqueue(job.slug, next.reason, true);
@@ -1569,6 +1579,8 @@ export class JobScheduler {
    */
   clearQueue(): void {
     this.queue.length = 0;
+    this.queueProgressAt = null;
+    this.queueStallReported = false;
     this.state.set('job-capacity-episode', null);
     if (this.capacityPoll) clearInterval(this.capacityPoll);
     this.capacityPoll = null;
@@ -1578,6 +1590,10 @@ export class JobScheduler {
    * Resume — triggers start executing again.
    */
   resume(): void {
+    if (this.paused && this.queue.length > 0) {
+      this.queueProgressAt = Date.now();
+      this.queueStallReported = false;
+    }
     this.paused = false;
     if (this.failureAlertDeliveryActive) this.activateFailureAlertDelivery();
     this.processQueue();
@@ -1837,6 +1853,10 @@ export class JobScheduler {
       return;
     }
 
+    if (this.queue.length === 0 && !this.queueAdmissionInFlight) {
+      this.queueProgressAt = Date.now();
+      this.queueStallReported = false;
+    }
     this.queue.push({ slug, reason, queuedAt: new Date().toISOString(), capacityWait });
 
     // Sort by priority — critical first
@@ -4317,6 +4337,39 @@ export class JobScheduler {
   /** Where operator links point (the tunnel's public URL when up). Return null while it is not ready. */
   setOperatorLinkOrigin(resolve: () => string | null): void {
     this.operatorLinkOrigin = resolve;
+  }
+
+  /* @self-action-controller: job-queue-stall */
+  private async checkQueueProgress(): Promise<void> {
+    if (!this.running || this.paused || this.state.readOnly || this.queue.length === 0 || this.queueMaintenanceInFlight) return;
+    this.queueMaintenanceInFlight = true;
+    try {
+      await this.sessionManager.reconcileDeadJobSlots().catch(error => {
+        console.error('[scheduler] Dead job slot reconciliation failed:', error);
+      });
+      if (!this.running || this.paused || this.state.readOnly || this.queue.length === 0) return;
+      const longestTimeout = this.jobs.reduce((longest, job) => {
+        if (!job.enabled || !this.isJobScopedToThisMachine(job)) return longest;
+        return Math.max(longest, Math.max(1, job.expectedDurationMinutes ?? DEFAULT_EXPECTED_MINUTES) * 2 * 60_000);
+      }, 0);
+      const since = this.queueProgressAt;
+      if (since !== null && longestTimeout > 0 && !this.queueStallReported && Date.now() - since > longestTimeout) {
+        const summary = 'Scheduled jobs have been waiting longer than the longest scheduler job timeout without a queued job starting.';
+        this.queueStallReported = true;
+        const stalledMs = Date.now() - since;
+        console.warn(`[scheduler] ${summary} Queued: ${this.queue.length}. Waiting: ${Math.round(stalledMs / 60_000)} minutes.`);
+        this.state.appendEvent({
+          type: 'job_queue_stalled',
+          summary,
+          timestamp: new Date().toISOString(),
+          metadata: { queued: this.queue.length, stalledMs, longestTimeoutMs: longestTimeout },
+        });
+      }
+    } catch (error) {
+      console.error('[scheduler] Queue progress check failed:', error);
+    } finally {
+      this.queueMaintenanceInFlight = false;
+    }
   }
 
   /** Check every enabled job, including machine-pinned jobs with no local cron task. */

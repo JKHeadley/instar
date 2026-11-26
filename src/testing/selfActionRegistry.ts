@@ -2125,6 +2125,39 @@ const jobCapacityEpisode: SelfActionController = {
 };
 
 /**
+ * The in-memory scheduler queue owns its stall episode. A stuck job cannot
+ * generate repeated stall diagnostics, and a reconciled session leaves the set
+ * of running jobs before the next maintenance tick.
+ */
+const jobQueueStall: SelfActionController = {
+  id: 'job-queue-stall',
+  actionVerb: 'job-alert-notify',
+  models: 'src/scheduler/JobScheduler.ts (one stall record per non-advancing queue episode)',
+  modelsPath: 'src/scheduler/JobScheduler.ts',
+  boundK: 1,
+  perTargetBoundK: 1,
+  ticks: 120,
+  tickMs: 5 * 60_000,
+  restartPosture: {
+    pressureSurvives: false,
+    resetSafeReason: 'The in-memory queue is rebuilt after restart. Any new queue episode waits a full scheduler timeout before it can raise another diagnostic.',
+  },
+  makeUnderPressure(f, sink) {
+    const queuedAt = f.clock.nowMs();
+    const longestTimeoutMs = 60 * 60_000;
+    let reported = false;
+    return {
+      tick() {
+        sink.considered += 1;
+        if (reported || f.clock.nowMs() - queuedAt <= longestTimeoutMs) return;
+        reported = true;
+        sink.emit({ verb: 'job-alert-notify', target: 'local-queue' });
+      },
+    };
+  },
+};
+
+/**
  * undated-action-resurfacer — bounded Attention reach for action rows that the
  * due-date checker cannot see. The backlog can remain non-empty indefinitely,
  * so this is an Eternal Sentinel rather than a controller that truthfully
@@ -6501,6 +6534,7 @@ export const SELF_ACTION_CONTROLLERS: SelfActionController[] = [
   meteredReserveExpirySweep,
   jobFailureAlertDelivery,
   jobCapacityEpisode,
+  jobQueueStall,
   checkInReminderPass,
   undatedActionResurfacer,
   spendStalePriceAlert,
