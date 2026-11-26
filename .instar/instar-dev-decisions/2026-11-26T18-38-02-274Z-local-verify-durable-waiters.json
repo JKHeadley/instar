@@ -1,0 +1,25 @@
+{
+  "ts": "2026-11-26T18:38:02.274Z",
+  "slug": "local-verify-durable-waiters",
+  "suggestedTier": 2,
+  "declaredTier": 1,
+  "riskFloor": 1,
+  "riskFloorReasons": [],
+  "belowFloor": false,
+  "files": 4,
+  "loc": 207,
+  "scope": {
+    "basis": "staged-in-scope-paths-including-deleted",
+    "files": [
+      "src/localVerify/LocalVerifyService.ts",
+      "src/localVerify/operatorQueue.ts",
+      "src/localVerify/serviceSeams.ts",
+      "src/localVerify/waitingList.ts"
+    ],
+    "addedLines": 149,
+    "deletedLines": 58
+  },
+  "causalAutopsy": null,
+  "classClosure": null,
+  "verdict": "pending"
+}

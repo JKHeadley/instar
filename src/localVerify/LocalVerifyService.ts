@@ -212,6 +212,7 @@ function usableMainSeen(e: unknown): e is FlakyOnMainTest {
 // ── Eligibility ────────────────────────────────────────────────────────
 
 export interface PrView {
+  isDraft?: boolean;
   author: { login: string } | null;
   isCrossRepository: boolean;
   headRefName: string;
@@ -657,7 +658,7 @@ export type RequestResult =
   | { ok: true; status: 'queued' | 'already-queued' | 'in-flight'; position?: number; hold?: MainRedHoldInfo; /** Admitted over the cap by an operator front or release. */ operatorOverCap?: true }
   | { ok: true; status: 'recorded'; record: LocalVerifyRecord }
   /** `held`: the operator holds this change (queue controls). `overflow-full`: an operator admission found the queue and its overflow full. */
-  | { ok: false; code: 'invalid-pr' | 'pr-unreadable' | 'pr-closed' | 'untrusted-head' | 'queue-full' | 'pr-invalid-shas' | 'main-unhealthy' | 'stopping' | 'peer-only' | 'held' | 'overflow-full' };
+  | { ok: false; waitingRecorded?: false; code: 'invalid-pr' | 'pr-unreadable' | 'pr-closed' | 'untrusted-head' | 'queue-full' | 'pr-invalid-shas' | 'main-unhealthy' | 'stopping' | 'peer-only' | 'held' | 'overflow-full' };
 
 // ---- operator queue controls (spec local-verify-queue-controls.md) ----
 
@@ -1838,6 +1839,7 @@ export class LocalVerifyService {
 
   async request(pr: number, opts: {
     explicit?: boolean; force?: boolean; replay?: boolean; rerunAfterGreen?: boolean;
+    waitingRetry?: Waiter;
     /** Queue controls: an admission made by an operator front or release (its own bounded overflow; ignored while the switch is off). */
     operator?: 'front' | 'release';
     /** Queue controls: what a released change carries back (its first refusal, and the time it was held). */
@@ -1860,11 +1862,12 @@ export class LocalVerifyService {
     }
     // While `main` is unhealthy the watcher requests no PR verifies (they fail by
     // construction); POSTed ones still run, which is how a repair gets its record.
-    if (!explicit && !this.health.isHealthy()) return { ok: false, code: 'main-unhealthy' };
+    if ((!explicit || opts.waitingRetry) && !this.health.isHealthy()) return { ok: false, code: 'main-unhealthy' };
     const view = await this.seams.prView(pr).catch(() => null);
     if (!view) return { ok: false, code: 'pr-unreadable' };
     // A merged or closed PR has nothing to verify (an unknown answer queues it: the pre-start check asks again).
-    if ((await this.seams.isPrOpen(pr).catch(() => null)) === false) {
+    const open = await this.seams.isPrOpen(pr).catch(() => null);
+    if (open === false) {
       for (const marker of this.preflightReplays?.list().filter((r) => r.pr === pr) ?? []) this.preflightReplays?.cancel(marker.key);
       this.audit({ event: 'refused', pr, reason: 'pr-closed' });
       this.waiting.remove(pr, 'closed');
@@ -1880,6 +1883,18 @@ export class LocalVerifyService {
       }
       return { ok: false, code: 'pr-closed' };
     }
+    const waitingRetry = opts.waitingRetry;
+    if (waitingRetry) {
+      if (open !== true || typeof view.isDraft !== 'boolean' || this.waiting.get(pr) !== waitingRetry) {
+        return { ok: false, code: 'pr-unreadable' };
+      }
+      if (view.isDraft || (waitingRetry.head && (
+        waitingRetry.head.headSha !== view.headRefOid || waitingRetry.head.baseRefName !== view.baseRefName
+      ))) {
+        this.waiting.remove(pr, 'revision-changed');
+        return { ok: false, code: 'pr-unreadable' };
+      }
+    }
     if (!checkEligibility(view, this.logins()).eligible) {
       this.audit({ event: 'refused', pr, reason: 'untrusted-head' });
       this.waiting.remove(pr, 'untrusted-head');
@@ -1892,9 +1907,17 @@ export class LocalVerifyService {
       if (!currentBase) return { ok: false, code: 'pr-unreadable' };
     }
     if (!isValidSha(view.headRefOid) || !isValidSha(currentBase)) return { ok: false, code: 'pr-invalid-shas' };
+    if (waitingRetry && this.waiting.get(pr) !== waitingRetry) return { ok: false, code: 'pr-unreadable' };
     const headSha = view.headRefOid;
     const baseSha = currentBase;
     const baseRefName = view.baseRefName;
+    if (waitingRetry && !waitingRetry.head && !this.waiting.bindHead(waitingRetry, { headSha, baseRefName })) {
+      return { ok: false, code: 'pr-unreadable' };
+    }
+    const previousWaitingHead = this.waiting.get(pr)?.head;
+    if (previousWaitingHead && (previousWaitingHead.headSha !== headSha || previousWaitingHead.baseRefName !== baseRefName)) {
+      this.waiting.remove(pr, 'revision-changed');
+    }
     for (const marker of this.preflightReplays?.list().filter((r) => r.pr === pr
       && (r.headSha !== headSha || r.baseRefName !== baseRefName || r.policyHash !== this.policyHash)) ?? []) this.preflightReplays?.cancel(marker.key);
     const key = recordKey(this.cfg.repo, pr, headSha, baseRefName);
@@ -2005,10 +2028,10 @@ export class LocalVerifyService {
         && this.prQueueLength() < capFor(QUEUE_PRIORITY.mergeThroughput);
       if (!repair && !throughput) {
         // fb-7fde7f49-8ee: the refusal keeps a place in line (replays keep their own durable admission).
-        const w = replayPriority ? null : this.waiting.refused(pr);
+        const w = replayPriority ? null : this.waiting.refused(pr, { headSha, baseRefName }, explicit);
         this.audit({ event: 'queue-full', pr, ...(hold.active ? { mainRedHold: true } : {}),
-          ...(w ? { firstRefusedAt: w.firstRefusedAt, refusals: w.refusals, waitPosition: this.waiting.liveAhead(pr).length + 1 } : {}) });
-        return { ok: false, code: 'queue-full' };
+          ...(w ? { firstRefusedAt: w.firstRefusedAt, refusals: w.refusals, waitPosition: this.waiting.liveAhead(pr).length + 1 } : { waitingRecorded: false }) });
+        return { ok: false, code: 'queue-full', ...(w ? {} : { waitingRecorded: false }) };
       }
       if (repair) this.audit({ event: 'queue-full-repair-admitted', pr, headSha, redHead: hold.active ? hold.redHead : null });
       else this.audit({ event: 'queue-full-throughput-admitted', pr, headSha, ...(agedWaiter ? { agedWaiter: true } : {}) });
@@ -2021,19 +2044,17 @@ export class LocalVerifyService {
       // again); a repair needs a red `main`, when the list reserves nothing.
       const ahead = this.waitingAhead(pr);
       if (ahead.length > 0) {
-        const w = this.waiting.refused(pr);
-        this.audit({ event: 'queue-full-waiting', pr, firstRefusedAt: w.firstRefusedAt, refusals: w.refusals,
+        const w = this.waiting.refused(pr, { headSha, baseRefName }, explicit);
+        this.audit({ event: 'queue-full-waiting', pr, ...(w ? { firstRefusedAt: w.firstRefusedAt, refusals: w.refusals } : { waitingRecorded: false }),
           waitPosition: ahead.length + 1, ahead: ahead.slice(0, 5).map((x) => x.pr), freeSlots: LOCAL_VERIFY_LIMITS.queueCap - this.prQueueLength() });
-        return { ok: false, code: 'queue-full' };
+        return { ok: false, code: 'queue-full', ...(w ? {} : { waitingRecorded: false }) };
       }
     }
-    spendRerun?.();
     // Admitted: a waiter leaves the list and carries its first refusal onto the entry (a kept place carries its own).
     const waited = this.waiting.get(pr);
     const firstRefusedAt = keptPlace ? keptPlace.firstRefusedAt : (waited?.firstRefusedAt ?? opts.carry?.firstRefusedAt);
     // Time a change spent held is not waiting time (queue controls: a release carries it here).
     const carriedPausedMs = keptPlace ? keptPlace.pausedMs : opts.carry?.pausedMs;
-    if (waited && !keptPlace) this.waiting.remove(pr, 'admitted');
     const entry: QueueEntry = {
       id: crypto.randomBytes(6).toString('hex'), pr, headSha, baseSha, baseRefName,
       ...(!explicit ? { preflightRediscoverable: true } : {}),
@@ -2046,6 +2067,14 @@ export class LocalVerifyService {
     };
     if (keptPlace && keptPlace.index < this.queue.length) this.queue.splice(keptPlace.index, 0, entry);
     else this.queue.push(entry);
+    if (waited && !keptPlace) {
+      if (!this.persistQueue()) {
+        this.queue.splice(this.queue.indexOf(entry), 1);
+        return { ok: false, code: 'queue-full' };
+      }
+      this.waiting.remove(pr, 'admitted');
+    }
+    spendRerun?.();
     // The first-part trial's assignment is drawn once, here, when the pull request is first queued.
     this.firstPartGroups.assign(pr);
     if (operatorOverCap && operatorAdmit) {
@@ -2089,7 +2118,7 @@ export class LocalVerifyService {
     return ahead.length >= LOCAL_VERIFY_LIMITS.queueCap - this.prQueueLength() ? ahead : [];
   }
 
-  /** Service tick: the waiting clock follows `main` health; idle waiters drop; closed or merged PRs leave (bounded batch). */
+  /** Revalidate durable waiters in bounded batches and retry normal admission when there is room. */
   private async tickWaitingList(): Promise<void> {
     this.waiting.setHealthy(this.health.isHealthy());
     this.waiting.tick();
@@ -2097,6 +2126,20 @@ export class LocalVerifyService {
       if (this.stopped) return;
       const open = await this.seams.isPrOpen(pr).catch(() => null);
       if (open === false) { this.waiting.remove(pr, 'closed'); this.operatorOnClosed(pr); }
+    }
+    if (!this.health.isHealthy() || this.prQueueLength() >= LOCAL_VERIFY_LIMITS.queueCap) {
+      this.waiting.noteRetry(null);
+      return;
+    }
+    for (const waiter of this.waiting.retryBatch()) {
+      if (this.stopped || this.prQueueLength() >= LOCAL_VERIFY_LIMITS.queueCap) return;
+      const result = await this.request(waiter.pr, { explicit: waiter.explicit === true, waitingRetry: waiter });
+      if (result.ok && result.status !== 'recorded') {
+        if (this.waiting.get(waiter.pr) === waiter) this.waiting.remove(waiter.pr, 'admitted');
+        this.waiting.noteRetry(null);
+      } else {
+        this.waiting.noteRetry(waiter);
+      }
     }
   }
 
@@ -5375,7 +5418,7 @@ export class LocalVerifyService {
       if (h.entry) saved.firstQueuedAt = Math.min(saved.firstQueuedAt, h.entry.firstQueuedAt);
       h.entry = saved;
     }
-    if (waiter) h.waiter = { firstRefusedAt: waiter.firstRefusedAt, lastOfferedAt: waiter.lastOfferedAt, refusals: waiter.refusals };
+    if (waiter) h.waiter = { firstRefusedAt: waiter.firstRefusedAt, lastOfferedAt: waiter.lastOfferedAt, refusals: waiter.refusals, ...(waiter.head ? { head: waiter.head } : {}), ...(waiter.explicit ? { explicit: true as const } : {}) };
     h.takenAt = this.now();
     if (!this.operator.persist()) { this.operator.restore(pr, before); return null; }
     if (idx >= 0) this.queue.splice(idx, 1);
@@ -5602,9 +5645,10 @@ export class LocalVerifyService {
       const full = this.prQueueLength() >= LOCAL_VERIFY_LIMITS.queueCap;
       if (full && this.operatorOverflowUsed() >= OPERATOR_QUEUE_LIMITS.overflow) {
         // The queue and its operator overflow are full: the head of the waiting list, so it takes the next free place.
-        // The waiting list holds only the change number, so what the saved entry carried (a re-test
-        // against a newer base, its attempts) is not kept: the answer and the audit row say so.
-        this.waiting.put(pr, h.entry.firstRefusedAt ?? h.entry.firstQueuedAt, { head: true });
+        // Preserve the revision. The saved queue entry's run attempts are not carried.
+        if (!this.waiting.put(pr, h.entry.firstRefusedAt ?? h.entry.firstQueuedAt, {
+          head: true, revision: { headSha: h.entry.headSha, baseRefName: h.entry.baseRefName }, explicit: true,
+        })) return pending('waiting-list-full');
         placed = 'waiting-list';
         savedEntryDropped = true;
         detail = 'placed on the waiting list; the saved re-test was not kept';
@@ -5623,7 +5667,7 @@ export class LocalVerifyService {
       }
     } else if (h.waiter || h.wanted) {
       const r = await this.request(pr, {
-        explicit: h.wanted !== 'watcher', operator: 'release',
+        explicit: h.waiter?.explicit === true || h.wanted !== 'watcher', operator: 'release',
         carry: { ...(h.waiter ? { firstRefusedAt: h.waiter.firstRefusedAt } : {}), ...(heldMs > 0 ? { pausedMs: heldMs } : {}) },
       });
       const cur = this.operator.get(pr)?.hold;
@@ -5634,7 +5678,9 @@ export class LocalVerifyService {
       if (r.ok && r.status === 'recorded') detail = 'recorded';
       else if (r.ok) { placed = 'queue'; overCap = r.status === 'queued' && r.operatorOverCap === true; }
       else if (r.code === 'overflow-full') {
-        this.waiting.put(pr, h.waiter?.firstRefusedAt ?? this.now(), { head: true, ...(h.waiter ? { refusals: h.waiter.refusals } : {}) });
+        if (!this.waiting.put(pr, h.waiter?.firstRefusedAt ?? this.now(), {
+          head: true, ...(h.waiter ? { refusals: h.waiter.refusals, revision: h.waiter.head, explicit: h.waiter.explicit } : {}),
+        })) return pending('waiting-list-full');
         placed = 'waiting-list';
       } else if (r.code === 'pr-unreadable' || r.code === 'pr-invalid-shas' || r.code === 'stopping') return pending(r.code);
       else detail = r.code;
@@ -5942,7 +5988,8 @@ export class LocalVerifyService {
           placed = 'queue';
         } else if (h.entry || h.waiter) {
           // No free place (or it was waiting): the waiting list, with the time it first waited.
-          this.waiting.put(r.pr, h.waiter?.firstRefusedAt ?? h.entry?.firstRefusedAt ?? h.entry?.firstQueuedAt ?? this.now(), h.waiter ? { refusals: h.waiter.refusals } : {});
+          if (!this.waiting.put(r.pr, h.waiter?.firstRefusedAt ?? h.entry?.firstRefusedAt ?? h.entry?.firstQueuedAt ?? this.now(),
+            h.waiter ? { refusals: h.waiter.refusals, revision: h.waiter.head, explicit: h.waiter.explicit } : {})) continue;
           placed = 'waiting-list';
         } else if (h.wanted) {
           const res = await this.request(r.pr, { explicit: h.wanted !== 'watcher' });

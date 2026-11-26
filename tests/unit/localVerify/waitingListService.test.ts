@@ -200,10 +200,41 @@ describe('Local Verify waiting list (fb-7fde7f49-8ee)', () => {
     // 70's own first refusal is carried, 50 keeps its (stale) place and regains it if offered again.
     expect(s.svc.snapshot().queue.find((e) => e.pr === 70)?.firstRefusedAt).toBeDefined();
     expect(s.svc.snapshot().waiting.map((w) => w.pr)).toEqual([50]);
-    // Idle long enough, it is dropped.
-    s.advance(WAITING_LIST_LIMITS.dropAfterMs);
+    // Time alone does not discard an offer when the provider cannot establish readiness.
+    s.advance(7 * 60 * MIN);
     await s.svc.tick();
-    expect(s.svc.snapshot().waiting).toEqual([]);
+    expect(s.svc.snapshot().waiting.map((w) => w.pr)).toEqual([50]);
+  });
+
+  it('automatically re-offers an unchanged ready head after the old idle threshold', async () => {
+    const prViews = views(50);
+    prViews[50].isDraft = false;
+    const s = setup({ views: prViews });
+    await fill(s);
+    await s.svc.request(50, { explicit: false });
+    expect(s.svc.snapshot().waiting[0]?.head?.headSha).toBe(head(50));
+    s.advance(7 * 60 * MIN);
+    await s.finishCurrent();
+    await s.svc.tick();
+    expect(s.svc.snapshot().queue.some((entry) => entry.pr === 50 && entry.headSha === head(50))).toBe(true);
+    expect(s.svc.snapshot().waiting.some((waiter) => waiter.pr === 50)).toBe(false);
+  });
+
+  it.each([
+    ['moved', { headRefOid: head(50, 1) }],
+    ['draft', { isDraft: true }],
+    ['retargeted', { baseRefName: 'other-base' }],
+  ])('does not automatically dispatch a %s revision', async (_label, mutation) => {
+    const prViews = views(50);
+    prViews[50].isDraft = false;
+    const s = setup({ views: prViews });
+    await fill(s);
+    await s.svc.request(50, { explicit: false });
+    Object.assign(prViews[50], mutation);
+    await s.finishCurrent();
+    await s.svc.tick();
+    expect(s.svc.snapshot().queue.some((entry) => entry.pr === 50)).toBe(false);
+    expect(s.svc.snapshot().waiting.some((waiter) => waiter.pr === 50)).toBe(false);
   });
 
   it('a waiter never holds a slot while nothing is queued, nor while main is unhealthy', async () => {
@@ -235,14 +266,15 @@ describe('Local Verify waiting list (fb-7fde7f49-8ee)', () => {
     await s.svc.request(50, { explicit: false });
     s.advance(MIN);
     await s.finish(0, ok(record({ pr: 1, headSha: head(1), outcome: 'failure' })));
-    v[1] = view(1, { baseRefOid: sha('c') }); // main moved: a new base for PR 1
+    v[1] = view(1, { baseRefOid: sha('c'), isDraft: false }); // main moved: a new base for PR 1
     expect(await s.svc.request(1)).toEqual({ ok: false, code: 'queue-full' }); // 50 is ahead
     expect(await s.svc.request(50, { explicit: false })).toMatchObject({ ok: true, status: 'queued' });
     await s.finishCurrent(); // a slot frees again
-    expect(await s.svc.request(1)).toMatchObject({ ok: true, status: 'queued' }); // the re-run was not used up
+    await s.svc.tick();
+    expect(s.prQueue()).toContain(1); // the automatic re-offer kept the explicit rerun intent
   });
 
-  it('a moved head keeps the PR its place in line', async () => {
+  it('a moved head starts a new wait', async () => {
     const v = views(50, 60);
     const s = setup({ views: v });
     await fill(s);
@@ -253,11 +285,28 @@ describe('Local Verify waiting list (fb-7fde7f49-8ee)', () => {
     s.advance(5 * MIN);
     v[50] = view(50, { headRefOid: head(50, 1) }); // a new push
     expect(await s.svc.request(50, { explicit: false })).toEqual({ ok: false, code: 'queue-full' });
-    expect(s.svc.snapshot().waiting.map((w) => [w.pr, w.firstRefusedAt])).toEqual([[50, first], [60, first + MIN]]);
+    expect(s.svc.snapshot().waiting.map((w) => [w.pr, w.firstRefusedAt])).toEqual([[60, first + MIN], [50, first + 6 * MIN]]);
     await s.finishCurrent();
-    expect(await s.svc.request(60, { explicit: false })).toEqual({ ok: false, code: 'queue-full' });
+    expect(await s.svc.request(60, { explicit: false })).toMatchObject({ ok: true, status: 'queued' });
+    await s.finishCurrent();
     expect(await s.svc.request(50, { explicit: false })).toMatchObject({ ok: true, status: 'queued' });
-    expect(s.svc.snapshot().queue.find((e) => e.pr === 50)).toMatchObject({ headSha: head(50, 1), firstRefusedAt: first });
+    expect(s.svc.snapshot().queue.find((e) => e.pr === 50)).toMatchObject({ headSha: head(50, 1), firstRefusedAt: first + 6 * MIN });
+  });
+
+  it('does not inherit an old revision’s place when a new head is offered into a free slot', async () => {
+    const v = views(50, 60);
+    const s = setup({ views: v });
+    await fill(s);
+    await s.svc.request(50, { explicit: true });
+    s.advance(MIN);
+    await s.svc.request(60, { explicit: false });
+    await s.finishCurrent();
+    s.advance(MIN);
+    v[50] = view(50, { headRefOid: head(50, 1) });
+    expect(await s.svc.request(50, { explicit: false })).toEqual({ ok: false, code: 'queue-full' });
+    expect(s.svc.snapshot().waiting.map((waiter) => [waiter.pr, waiter.explicit])).toEqual([
+      [60, undefined], [50, undefined],
+    ]);
   });
 
   it('the list survives a restart (downtime is not idleness), and firstRefusedAt survives in the saved queue', async () => {

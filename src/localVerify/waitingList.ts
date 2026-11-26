@@ -3,7 +3,7 @@
  * full, in the order they were FIRST refused, so a freed slot goes to the PR that has
  * waited longest instead of to whichever PR happens to ask next.
  *
- * Keyed by PR (a moved head keeps the PR's place). Each waiter carries `firstRefusedAt`
+ * Keyed by PR and bound to the offered revision (a moved head starts a new wait). Each waiter carries `firstRefusedAt`
  * (never reset while it waits; carried onto the queue entry when it is admitted, so the
  * wait outside the queue can be measured) and `lastOfferedAt` (the last time the PR was
  * offered to the queue and reached the capacity check).
@@ -13,7 +13,7 @@
  * that stops being eligible or stops being offered can never hold a slot empty. The
  * clock stops while `main` is unhealthy (the watcher offers nothing then) and across a
  * server stop (the saved file carries a heartbeat `savedAt`; downtime is added back on
- * load). A waiter idle for `dropAfterMs` is dropped; the list is bounded by `maxWaiters`.
+ * load). Idle waiters remain durable. At capacity, new requests are refused explicitly.
  *
  * Machine-local, single writer (the LocalVerifyService of the lease holder), persisted
  * atomically at `state/local-verify/waiting.json`.
@@ -28,9 +28,7 @@ const MIN = 60_000;
 export const WAITING_LIST_LIMITS = Object.freeze({
   /** Three default merge-watcher passes (10 min each): a waiter not offered for this long reserves nothing. */
   staleAfterMs: 30 * MIN,
-  /** A waiter not offered for this long (running, healthy time) is removed. */
-  dropAfterMs: 6 * 60 * MIN,
-  /** Bounded accumulation: past this, the longest-idle waiters are removed. */
+  /** Bounded accumulation: new requests cannot displace existing ones. */
   maxWaiters: 200,
   /** Heartbeat write while the list is non-empty, so downtime can be told from idleness on load. */
   heartbeatMs: 5 * MIN,
@@ -39,7 +37,14 @@ export const WAITING_LIST_LIMITS = Object.freeze({
   closedSweepBatch: 5,
 });
 
+export interface WaitingHead {
+  headSha: string;
+  baseRefName: string;
+}
+
 export interface Waiter {
+  head?: WaitingHead;
+  explicit?: true;
   pr: number;
   /** First queue-full refusal of this PR in this wait. Never reset while it waits. */
   firstRefusedAt: number;
@@ -55,7 +60,7 @@ interface WaitingFile {
   waiters: Waiter[];
 }
 
-export type WaiterRemoval = 'admitted' | 'closed' | 'recorded' | 'untrusted-head' | 'idle' | 'over-cap' | 'held';
+export type WaiterRemoval = 'admitted' | 'closed' | 'recorded' | 'untrusted-head' | 'revision-changed' | 'held';
 
 /** Oldest first: by firstRefusedAt, then PR number. */
 export function waiterOrder(a: Waiter, b: Waiter): number {
@@ -70,6 +75,8 @@ export class WaitingList {
   private lastWriteAt = 0;
   private sweepAt = 0;
   private sweepCursor = 0;
+  private retryAfter: Waiter | null = null;
+  private lastRetryAt = 0;
 
   constructor(
     private readonly file: string,
@@ -111,18 +118,52 @@ export class WaitingList {
   }
 
   /** A queue-full refusal: add the PR (keeping its first refusal time) and mark it offered. */
-  refused(pr: number): Waiter {
+  refused(pr: number, head?: WaitingHead, explicit = false): Waiter | null {
     const now = this.now();
-    const w = this.waiters.get(pr);
-    if (w) {
-      w.lastOfferedAt = now;
-      w.refusals++;
-    } else {
-      this.waiters.set(pr, { pr, firstRefusedAt: now, lastOfferedAt: now, refusals: 1 });
-      this.enforceCap();
-    }
-    this.persist(true);
-    return this.waiters.get(pr)!;
+    const previous = this.waiters.get(pr);
+    if (!this.hasRoom(pr)) return null;
+    const revision = head ?? previous?.head;
+    const previousHead = previous?.head;
+    const sameRevision = !head || !previousHead
+      || (previousHead.headSha === head.headSha && previousHead.baseRefName === head.baseRefName);
+    const carried = sameRevision ? previous : undefined;
+    const waiter: Waiter = {
+      pr, firstRefusedAt: carried?.firstRefusedAt ?? now, lastOfferedAt: now,
+      refusals: (carried?.refusals ?? 0) + 1,
+      ...(revision ? { head: revision } : {}),
+      ...(explicit || carried?.explicit ? { explicit: true as const } : {}),
+    };
+    this.waiters.set(pr, waiter);
+    if (this.persist(true)) return waiter;
+    if (previous) this.waiters.set(pr, previous);
+    else this.waiters.delete(pr);
+    return null;
+  }
+
+  bindHead(waiter: Waiter, head: WaitingHead): boolean {
+    if (this.waiters.get(waiter.pr) !== waiter) return false;
+    waiter.head = head;
+    if (this.persist(true)) return true;
+    delete waiter.head;
+    return false;
+  }
+
+  retryBatch(): Waiter[] {
+    const now = this.now();
+    if (this.waiters.size === 0 || now - this.lastRetryAt < WAITING_LIST_LIMITS.closedSweepEveryMs) return [];
+    this.lastRetryAt = now;
+    const all = [...this.waiters.values()].sort(waiterOrder);
+    const after = this.retryAfter;
+    const start = after ? all.findIndex((waiter) => waiterOrder(waiter, after) > 0) : 0;
+    return all.slice(Math.max(0, start), Math.max(0, start) + WAITING_LIST_LIMITS.closedSweepBatch);
+  }
+
+  noteRetry(waiter: Waiter | null): void {
+    this.retryAfter = waiter;
+  }
+
+  hasRoom(pr: number): boolean {
+    return this.waiters.has(pr) || this.waiters.size < WAITING_LIST_LIMITS.maxWaiters;
   }
 
   /**
@@ -131,16 +172,18 @@ export class WaitingList {
    * already waiting keeps its place and nothing changes. `head` places it before every other
    * waiter, so it takes the next free place; otherwise it gets `firstRefusedAt` as given.
    */
-  put(pr: number, firstRefusedAt: number, opts: { head?: boolean; refusals?: number } = {}): Waiter {
+  put(pr: number, firstRefusedAt: number, opts: { head?: boolean; refusals?: number; revision?: WaitingHead; explicit?: true } = {}): Waiter | null {
     const existing = this.waiters.get(pr);
     if (existing) return existing;
+    if (!this.hasRoom(pr)) return null;
     const now = this.now();
     let at = Math.min(firstRefusedAt, now);
     if (opts.head) for (const w of this.waiters.values()) at = Math.min(at, w.firstRefusedAt - 1);
-    this.waiters.set(pr, { pr, firstRefusedAt: at, lastOfferedAt: now, refusals: Math.max(1, opts.refusals ?? 1) });
-    this.enforceCap();
-    this.persist(true);
-    return this.waiters.get(pr) ?? { pr, firstRefusedAt: at, lastOfferedAt: now, refusals: 1 };
+    const waiter = { pr, head: opts.revision, explicit: opts.explicit, firstRefusedAt: at, lastOfferedAt: now, refusals: Math.max(1, opts.refusals ?? 1) };
+    this.waiters.set(pr, waiter);
+    if (this.persist(true)) return waiter;
+    this.waiters.delete(pr);
+    return null;
   }
 
   remove(pr: number, reason: WaiterRemoval): Waiter | null {
@@ -170,12 +213,8 @@ export class WaitingList {
     }
   }
 
-  /** Periodic upkeep: drop idle waiters; heartbeat the file while there are any. */
+  /** Heartbeat the file while requests are waiting. */
   tick(): void {
-    const clock = this.clock();
-    for (const w of [...this.waiters.values()]) {
-      if (clock - w.lastOfferedAt > WAITING_LIST_LIMITS.dropAfterMs) this.remove(w.pr, 'idle');
-    }
     this.persist(false);
   }
 
@@ -194,19 +233,14 @@ export class WaitingList {
     return Array.from({ length: count }, (_, n) => all[(start + n) % all.length]);
   }
 
-  private enforceCap(): void {
-    if (this.waiters.size <= WAITING_LIST_LIMITS.maxWaiters) return;
-    const byIdle = [...this.waiters.values()].sort((a, b) => (a.lastOfferedAt - b.lastOfferedAt) || (b.pr - a.pr));
-    for (const w of byIdle.slice(0, this.waiters.size - WAITING_LIST_LIMITS.maxWaiters)) this.remove(w.pr, 'over-cap');
-  }
 
   /** Atomic write. `changed` false = heartbeat only (written at most every heartbeatMs, and only while non-empty). */
-  persist(changed: boolean): void {
+  persist(changed: boolean): boolean {
     const now = this.now();
-    if (!changed && (this.waiters.size === 0 || now - this.lastWriteAt < WAITING_LIST_LIMITS.heartbeatMs)) return;
+    if (!changed && (this.waiters.size === 0 || now - this.lastWriteAt < WAITING_LIST_LIMITS.heartbeatMs)) return true;
     const body: WaitingFile = { v: 1, savedAt: now, pausedSince: this.pausedSince, waiters: [...this.waiters.values()].sort(waiterOrder) };
     const json = JSON.stringify(body);
-    if (json === this.lastJson) return;
+    if (json === this.lastJson) return true;
     try {
       fs.mkdirSync(path.dirname(this.file), { recursive: true });
       const tmp = this.file + '.tmp';
@@ -214,8 +248,10 @@ export class WaitingList {
       fs.renameSync(tmp, this.file);
       this.lastJson = json;
       this.lastWriteAt = now;
+      return true;
     } catch (e) {
       this.audit({ event: 'waiting-persist-failed', detail: e instanceof Error ? e.message : String(e) });
+      return false;
     }
   }
 
@@ -242,11 +278,12 @@ export class WaitingList {
     this.waiters.clear();
     for (const w of valid) {
       if (this.waiters.has(w.pr)) continue;
-      this.waiters.set(w.pr, { pr: w.pr, firstRefusedAt: w.firstRefusedAt, lastOfferedAt: Math.min(now, w.lastOfferedAt + downtime), refusals: w.refusals });
+      this.waiters.set(w.pr, { pr: w.pr, firstRefusedAt: w.firstRefusedAt, lastOfferedAt: Math.min(now, w.lastOfferedAt + downtime), refusals: w.refusals,
+        ...(w.explicit === true ? { explicit: true as const } : {}),
+        ...(typeof w.head?.headSha === 'string' && typeof w.head?.baseRefName === 'string' ? { head: w.head } : {}) });
     }
     this.pausedSince = Number.isFinite(o.pausedSince) ? Math.min(now, (o.pausedSince as number) + downtime) : null;
     this.audit({ event: 'waiting-restored', waiters: this.waiters.size, skipped: o.waiters.length - valid.length, downtimeMs: downtime });
-    this.enforceCap();
     this.tick();
     this.persist(true);
   }
