@@ -1,0 +1,22 @@
+{
+  "ts": "2026-11-26T07:48:30.052Z",
+  "slug": "app-message-delete-peer-creation-check",
+  "suggestedTier": 1,
+  "declaredTier": 2,
+  "riskFloor": 1,
+  "riskFloorReasons": [],
+  "belowFloor": false,
+  "files": 1,
+  "loc": 26,
+  "scope": {
+    "basis": "staged-in-scope-paths-including-deleted",
+    "files": [
+      "src/core/AppRemovalReadCustodyImport.ts"
+    ],
+    "addedLines": 26,
+    "deletedLines": 0
+  },
+  "causalAutopsy": null,
+  "classClosure": null,
+  "verdict": "pass"
+}

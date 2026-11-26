@@ -1,0 +1,19 @@
+{
+  "version": 2,
+  "slug": "app-message-delete-peer-creation-check",
+  "sessionId": "633bd330-201e-4dc8-8fd9-72b89116167e",
+  "timestamp": "2026-11-26T07:47:44.241Z",
+  "artifactPath": "upgrades/side-effects/app-message-delete-peer-creation-check.md",
+  "artifactSha256": "0883aeb4454c8b7342a979069071c520badf2e21ff9c0ddebfea336b4621150f",
+  "specPath": "docs/specs/conversation-message-delete.md",
+  "coveredFiles": [
+    "src/core/AppRemovalReadCustodyImport.ts",
+    "tests/unit/app-removal-read-custody-import.test.ts",
+    "upgrades/side-effects/app-message-delete-peer-creation-check.md"
+  ],
+  "phase": "complete",
+  "tier": 2,
+  "tierReasoning": "Unmounted creation verifier with no current runtime admission path",
+  "secondPass": "not-required",
+  "reviewerConcurred": null
+}

@@ -1,9 +1,35 @@
+import { isDeepStrictEqual } from 'node:util';
+import { appEventFromReplicatedData } from './AppConversationsReplicatedStore.js';
+import type { AppConversationStore } from './AppConversationStore.js';
 import { isAppConversationKey } from './appConversationText.js';
 import { isAppRemovalReadCustodyRecord, type AppRemovalReadCustody } from './AppRemovalReadCustody.js';
 
 type CreationEvidence =
   | { kind: 'pending' | 'conflict' }
   | { kind: 'verified'; conversationKey: string; eventId: string; authenticatedOrigin: string };
+
+/**
+ * Check a creation from the journal commit observer. The sender must be the
+ * authenticated transport identity supplied by the observer.
+ */
+export function verifyPeerRemovalCreation(
+  conversationKey: string,
+  sender: string,
+  entry: { machine: string; data: Readonly<Record<string, unknown>> },
+  store: Pick<AppConversationStore, 'getCreationRecord' | 'hasCreationConflict'>,
+): CreationEvidence {
+  if (!sender || !isAppConversationKey(conversationKey) || entry.machine !== sender
+    || entry.data.origin !== sender) return { kind: 'conflict' };
+  const event = appEventFromReplicatedData(entry.data);
+  if (event?.kind !== 'created' || event.conversationKey !== conversationKey || event.machineId !== sender)
+    return { kind: 'conflict' };
+  if (store.hasCreationConflict(conversationKey)) return { kind: 'conflict' };
+  const creation = store.getCreationRecord(conversationKey);
+  if (!creation) return { kind: 'pending' };
+  if (!isDeepStrictEqual(creation, event))
+    return { kind: 'conflict' };
+  return { kind: 'verified', conversationKey, eventId: event.eventId, authenticatedOrigin: sender };
+}
 
 type ImportResult = 'retained' | 'pending' | 'refused' | 'unavailable';
 const recordKeys = ['version', 'conversationKey', 'creationEventId', 'custodianMachineId'];
