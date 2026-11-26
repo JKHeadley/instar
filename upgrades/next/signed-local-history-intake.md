@@ -1,5 +1,7 @@
 # Native local history intake transport
 
+## What Changed
+
 The internal router verifies native owner signatures over bounded exact bytes before handing them to the importer. It has no default service.
 
 ## What to Tell Your User
