@@ -46,3 +46,7 @@ One change: the read, the sender, the receiver, the restart fix, the card, tests
 ## What the reader needs to decide
 
 Nothing beyond the original "Yes, go". The one judgment call made here is removing the waiting period on machines you tick, so repairs really start without asking. The card shows this before you tap.
+
+## What automatic repair can do with your recovery codes
+
+Turning on automatic sign-in repair lets Instar use a browser that is already signed in, or an authenticator that is already set up for that account. If Google asks for a single-use backup code, the automatic repair stops before reading or typing it. That keeps the code available for recovery. The phone approval covers the current accounts on the machines you select. A manual retry still has its own approval and shows you the account and machine it applies to.
