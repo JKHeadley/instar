@@ -1,0 +1,29 @@
+{
+  "ts": "2026-11-26T17:06:00.093Z",
+  "slug": "local-verify-vitest-snapshot-rpc",
+  "suggestedTier": 2,
+  "declaredTier": 2,
+  "riskFloor": 1,
+  "riskFloorReasons": [],
+  "belowFloor": false,
+  "files": 2,
+  "loc": 46,
+  "scope": {
+    "basis": "staged-in-scope-paths-including-deleted",
+    "files": [
+      "src/localVerify/orchestrator.ts",
+      "src/localVerify/unhandledErrorsReporter.ts"
+    ],
+    "addedLines": 38,
+    "deletedLines": 8
+  },
+  "causalAutopsy": {
+    "origin": "unknown",
+    "relatedPrs": [
+      3916
+    ],
+    "notes": "The preserved reporter records one snapshotSaved RPC timeout. Vitest 2.1.9 has a separate 60-second RPC timer. The preserved run cannot identify what delayed the acknowledgement."
+  },
+  "classClosure": null,
+  "verdict": "pass"
+}

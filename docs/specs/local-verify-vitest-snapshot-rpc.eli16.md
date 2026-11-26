@@ -1,0 +1,7 @@
+# When Vitest loses the worker’s reply
+
+The verification line uses Vitest to run the tests for a change. Vitest starts separate workers and asks them to send their results back. One of those messages tells the main Vitest process that a worker finished saving its snapshots. That message has its own timer. If the timer expires, Vitest can exit with an error even when the report contains no failed assertion. This happened during a priority check and caused the remaining checks to stop early. The saved diagnostics identify the timed-out message, but they do not identify which file or machine activity delayed it.
+
+When a unit run has a readable report, no failed assertions and this one exact timeout, Local Verify runs the same selection of unit tests again. It starts a fresh Vitest process with new output files, leaving the original evidence available for diagnosis. The retry runs only once and must finish within the verification deadline. The original timeout does not count as a pass. The new run must supply a complete passing report and confirm that there were no unhandled errors.
+
+If the retry finds an assertion failure, it still fails verification. A second timeout, incomplete reports, or any unrelated error also leaves verification unpassed. This lets a brief interruption recover without repeating every test on the other lanes. An affected unit run can take longer because it really executes the tests twice. The normal deadline still limits the whole check.

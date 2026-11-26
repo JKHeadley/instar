@@ -119,6 +119,18 @@ export function readUnhandledErrors(text: string | null): number | null {
   }
 }
 
+/** Strict reporter evidence for a recovery decision, including the recorded messages. */
+export function matchesUnhandledErrors(text: string | null, messages: readonly string[]): boolean {
+  if (text === null) return false;
+  try {
+    const report = JSON.parse(text) as Partial<UnhandledErrorsFile> | null;
+    return report?.v === 1 && report.unhandledErrors === messages.length && Array.isArray(report.messages)
+      && report.messages.length === messages.length && messages.every((message, index) => report.messages![index] === message);
+  } catch {
+    return false;
+  }
+}
+
 /** Parse a progress snapshot; null when absent or malformed. File paths are made relative to `root`. */
 export function readProgress(text: string | null, root: string, now: number): { finishedFiles: number; running: Array<{ file: string; seconds: number }> } | null {
   if (text === null) return null;

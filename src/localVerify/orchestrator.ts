@@ -20,7 +20,7 @@ import crypto from 'node:crypto';
 import path from 'node:path';
 import { FailureEvidence, FAILURE_EVIDENCE_FILE } from './failureEvidence.js';
 import { computeInventory, isInventoried, LANES, type LaneName } from './inventory.js';
-import { readProgress, readUnhandledErrors } from './unhandledErrorsReporter.js';
+import { matchesUnhandledErrors, readProgress, readUnhandledErrors } from './unhandledErrorsReporter.js';
 
 /** A progress snapshot larger than this is ignored (it is at most ~10 short paths). */
 export const PROGRESS_MAX_BYTES = 64 * 1024;
@@ -847,26 +847,28 @@ export async function runVerify(input: VerifyRunInput, seams: OrchestratorSeams)
         laneEnv.AUDIT_CHANGE_HEAD_SHA = input.headSha;
       }
       const t = seams.now();
-      const laneDeadlineAt = t + d.lanes[lane.name];
+      let laneDeadlineAt = t + d.lanes[lane.name];
+      let snapshotRetried = false;
       type Part = { report: ParsedLaneReport | null; status: number | null; unhandled: number | null; aborted: boolean };
       /**
        * One vitest process of this lane. `afterFirst`: it runs the rest of a lane whose first part
        * already ran, so it gets what is left of the lane's deadline (the deadline covers both parts).
        */
-      const runPart = async (key: string, fileArgs: readonly string[], afterFirst: boolean): Promise<Part> => {
-        const reportPath = path.join(p.reportsDir, `${key}.json`);
-        const errorsPath = path.join(p.reportsDir, `${key}.errors.json`);
+      const runPart = async (key: string, fileArgs: readonly string[], afterFirst: boolean, snapshotRetry = false): Promise<Part> => {
+        const reportKey = snapshotRetry ? `${key}.snapshot-retry` : key;
+        const reportPath = path.join(p.reportsDir, `${reportKey}.json`);
+        const errorsPath = path.join(p.reportsDir, `${reportKey}.errors.json`);
         const pTmp = seams.fs.mkdtemp('lv-tmp-');
         const pTmux = seams.fs.mkdtemp('lv-tmux-');
         tempDirs.push(pTmp, pTmux);
-        const progressPath = path.join(p.reportsDir, `${key}.progress.json`);
+        const progressPath = path.join(p.reportsDir, `${reportKey}.progress.json`);
         const env: NodeJS.ProcessEnv = { ...laneEnv, TMPDIR: pTmp, TMUX_TMPDIR: pTmux };
         if (reporter) {
           env.LOCAL_VERIFY_UNHANDLED_ERRORS_FILE = errorsPath;
           env.LOCAL_VERIFY_PROGRESS_FILE = progressPath;
         }
         const stepBudget = () => {
-          if (!afterFirst) return budget(d.lanes[lane.name]);
+          if (snapshotRetry || !afterFirst) return budget(d.lanes[lane.name]);
           const left = laneDeadlineAt - seams.now();
           if (left <= 0) throw new RunError(`deadline:${key}`, 'the lane deadline was spent before the rest of the lane started');
           return budget(left);
@@ -932,7 +934,23 @@ export async function runVerify(input: VerifyRunInput, seams: OrchestratorSeams)
             failureEvidence.captureUnitExit({ step: key, status: r.status, signal: r.signal, stdout: r.stdout, stderr: r.stderr }, errors);
           } catch { seams.log({ event: 'failure-evidence-capture-failed' }); }
         }
-        return { report, status: r.status, unhandled, aborted: false };
+        if (lane.name === 'unit' && !snapshotRetried && r.status === 1 && !r.signal && !stopLanes.signal.aborted
+          && report && report.files.size > 0 && [...report.files.values()].every((counts) => counts.failed === 0)
+          && matchesUnhandledErrors(errors, ['[vitest-worker]: Timeout calling "snapshotSaved"'])) {
+          snapshotRetried = true;
+          const gitDir = worktreeGitDir(seams, p);
+          const clean = gitDir ? await git(['status', '--porcelain'], 'snapshot-retry-porcelain', { gitDir, workTree: p.runDir }) : null;
+          if (clean?.status === 0 && !clean.stdout.trim() && !stopLanes.signal.aborted) {
+            seams.log({ event: 'unit-snapshot-rpc-retry', step: key });
+            const retryStarted = seams.now();
+            const retried = await runPart(key, fileArgs, afterFirst, true);
+            if (key === 'unit-first') laneDeadlineAt += seams.now() - retryStarted;
+            return retried;
+          }
+        }
+        const cleanRetry = snapshotRetry && matchesUnhandledErrors(errors, []) && !r.signal;
+        const status = snapshotRetry && r.status === 0 && !cleanRetry ? 1 : r.status;
+        return { report, status, unhandled: snapshotRetry && unhandled === 0 && !cleanRetry ? null : unhandled, aborted: false };
       };
       /** The lane's usual processes, side by side. allSettled: every process has exited before the lane settles, even when one hits its deadline (nothing is left running outside the slot or the cleanup). */
       const runProcs = async (afterFirst: boolean): Promise<Part[]> => {
