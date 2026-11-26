@@ -7,6 +7,7 @@ import express from 'express';
 import request from 'supertest';
 import { ProcessIntegrity } from '../../src/core/ProcessIntegrity.js';
 import { AppConversationService } from '../../src/core/AppConversationService.js';
+import { ConversationListPinStore } from '../../src/core/ConversationListPins.js';
 import { ConversationRegistry } from '../../src/core/ConversationRegistry.js';
 import { canonicalString } from '../../src/core/MobileDeviceKeys.js';
 import type { AppCreationContext } from '../../src/core/AppCreationContext.js';
@@ -44,7 +45,7 @@ function setup() {
   const app = express();
   app.use(express.json({ verify: (req, _res, buf) => { (req as unknown as { rawBody: Buffer }).rawBody = buf; } }));
   app.use(authMiddleware(() => 'token', 'hierarchy', undefined, deviceAuthenticator(pairing)));
-  app.use(createMobileConversationRouter({ config: config as never, pairing, service: svc, machineId: () => 'm1', creationHierarchySource: sourceReads, creationHierarchyProjection: projection, creationAuthorizationVersion: () => 'auth1', telegramTopics: () => [{ topicId: 7, topicName: 'Project', lastActivity: null, lastPreview: null }] }));
+  app.use(createMobileConversationRouter({ config: config as never, pairing, service: svc, listPins: new ConversationListPinStore({ stateDir: dir }), machineId: () => 'm1', creationHierarchySource: sourceReads, creationHierarchyProjection: projection, creationAuthorizationVersion: () => 'auth1', telegramTopics: () => [{ topicId: 7, topicName: 'Project', lastActivity: null, lastPreview: null }] }));
   const owner = makeDevice();
   const pending = pairing.devices.createPending({ deviceName: 'Owner device', publicKey: owner.publicKey, host: HOST, label: null });
   if (!pending.ok) throw new Error('setup failed');
@@ -160,8 +161,13 @@ it('projects confirmed membership through readable ancestry independently of gra
   const e = setup();
   const parent = e.add(sessionContext('telegram:7'));
   const child = e.add(sessionContext(`app:${parent}`));
+  const ordinary = e.add();
+  const internal = e.add(sessionContext(`app:${parent}`));
+  e.svc.store.hiddenConversationKeys = () => new Set([internal]);
   e.setSource({ ...e.source(), version: 'confirmed-project', confirmedProjects: new Set(['telegram:7']),
     parents: new Map([[`app:${parent}`, 'telegram:7'], [`app:${child}`, `app:${parent}`]]) });
+  const pin = await e.sign('POST', '/mobile/conversations/pins', { ref: `app:${child}`, pinned: true });
+  expect(pin.status).toBe(200);
   const reply = await e.sign('GET', '/mobile/conversations');
   expect(reply.status).toBe(200);
   expect(reply.body.conversations).toEqual(expect.arrayContaining([
@@ -169,6 +175,11 @@ it('projects confirmed membership through readable ancestry independently of gra
     expect.objectContaining({ id: parent, projectConversationKey: 'telegram:7' }),
     expect.objectContaining({ id: child, projectConversationKey: 'telegram:7' }),
   ]));
+  expect(reply.body.pinnedRows).toEqual([expect.objectContaining({ id: child, projectConversationKey: 'telegram:7' })]);
+  const rows = reply.body.conversations as Array<{ id: string; projectConversationKey?: string }>;
+  expect(rows.find((row) => row.id === ordinary)).toBeDefined();
+  expect(rows.find((row) => row.id === ordinary)?.projectConversationKey).toBeUndefined();
+  expect(rows.some((row) => row.id === internal)).toBe(false);
   e.setSource({ ...e.source(), version: 'incomplete-projects', complete: false });
   const partial = await e.sign('GET', '/mobile/conversations');
   expect(partial.status).toBe(200);
