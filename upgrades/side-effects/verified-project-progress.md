@@ -7,3 +7,5 @@ The observation is held in memory and displayed with its timestamp. A leader cha
 The refresh shares exact repeated lookups and rotates which projects are observed first within a fixed background read window. Genuine slow or unavailable sources can leave some rows incomplete. The coverage view reads the existing registry and binding list without adding a membership writer. Registry-only rows cannot start work or claim a verified stall.
 
 Independent review concurred after the sampler was limited to the complete non-flushing journal, explicit conflicting pull request references were rejected, and both the outer reading window and its network subcalls were bounded. The review also verified that old checklist results cannot establish a current stall and that sampling order rotates.
+
+The HTTP and lifecycle checks verify the status fields on the normal read path. The HTTP fixture uses a real journal and controlled external results. It does not establish that the preview is deployed to Echo.

@@ -13,3 +13,7 @@ Open the Chief of Staff view to see what moved, what the project is waiting for,
 ## Summary of New Capabilities
 
 `GET /chief-of-staff` reports project coverage, the last verified progress timestamp and kind, named waits, and the calculated stall time.
+
+## Evidence
+
+Before the change, the Chief of Staff status response omitted verified progress and registry coverage. With the same project fixture, the production-route HTTP test now reports the merge timestamp and named wait. When the evidence source fails, a fresh read reports that evidence is unavailable and leaves the stall time empty. The lifecycle test exercises the startup wiring.
