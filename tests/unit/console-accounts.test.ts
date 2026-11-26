@@ -21,11 +21,26 @@ describe('accounts page model', () => {
     expect(buildAccountsPage(ok({ enabled: false }), NOW).reason).toContain('not set up');
     expect(buildAccountsPage(ok({ enabled: true }), NOW).ok).toBe(false);
   });
-  it('shows each account once, with its freshest reading and every machine as a chip', () => {
+  it('shows each account once with its freshest window and each machine recorded', () => {
     const p = buildAccountsPage(ok({ accounts: [row({}), row({ machineId: 'm2', machineNickname: 'Mac Mini', lastQuota: { measuredAt: iso(-1), sevenDay: { utilizationPct: 80, resetsAt: iso(100) } } })] }), NOW);
     expect(p.accounts).toHaveLength(1);
     expect(p.accounts[0].cells.map((c: { machine: string }) => c.machine)).toEqual(['Mac Studio', 'Mac Mini']);
     expect(p.accounts[0].tight.pct).toBe(80);
+  });
+  it('keeps weekly and Fable quota when another machine needs sign-in or reports only one window', () => {
+    const p = buildAccountsPage(ok({ accounts: [
+      row({ status: 'needs-reauth', lastQuota: { measuredAt: iso(-1) } }),
+      row({ machineId: 'm2', machineNickname: 'Mac Mini', lastQuota: { measuredAt: iso(-15),
+        sevenDay: { utilizationPct: 42, resetsAt: iso(100) }, fable: { utilizationPct: 64, resetsAt: iso(200) },
+      } }),
+      row({ machineId: 'm3', machineNickname: 'Laptop', lastQuota: { measuredAt: iso(-2),
+        secondary: { usedPercent: 55, resetsAtIso: iso(100) },
+      } }),
+    ] }), NOW);
+    expect(p.accounts).toHaveLength(1);
+    expect(p.accounts[0].windows).toMatchObject([{ key: 'weekly', pct: 55 }, { key: 'fable', pct: 64 }]);
+    expect(p.accounts[0].cells[0].state).toBe('attn');
+    expect(p.accounts[0].readingAt).toBe(Date.parse(iso(-15)));
   });
   it('puts ordinary sign-in gaps and stopped repairs in the agent status area', () => {
     const p = buildAccountsPage(ok({ accounts: [row({}), row({ machineId: 'm2', machineNickname: 'Mac Mini', status: 'needs-reauth' })] }), NOW, {
@@ -39,13 +54,14 @@ describe('accounts page model', () => {
     expect(q.needs).toEqual([]);
     expect(q.repairs[0].rows[0].status).toBe('Sign-in needs checking by the agent');
   });
-  it('keeps usage-only cards and distinguishes an empty machine from a failed read', () => {
+  it('distinguishes an empty machine from a failed read and counts usable quota readings', () => {
     const p = buildAccountsPage(ok({
       accounts: [row({}), row({ id: 'repair', nickname: 'Repair account', status: 'needs-reauth', lastQuota: null })],
       pool: { answeredMachines: [{ machineId: 'm2', nickname: 'Empty Mini' }, { machineId: 'm3', nickname: 'Offline Laptop' }],
         failed: [{ machineId: 'm3', nickname: 'Offline Laptop' }] },
     }), NOW);
     expect(p.usageAccounts.map(a => a.name)).toEqual(['Luna']);
+    expect(p.accounts.find(a => a.name === 'Repair account')?.line).toBe('No reading yet.');
     expect(p.repairs.map(group => group.machine)).toEqual(['Empty Mini', 'Mac Studio']);
     expect(p.repairs[0].rows.map(row => row.status)).toEqual([
       'Waiting for the agent to set up this account', 'Waiting for the agent to set up this account',
@@ -259,8 +275,11 @@ describe('accounts page in a DOM', () => {
     const table: Record<string, unknown> = {
       '/sessions': { sessions: [] }, '/health': { project: { name: 'echo' } },
       '/subscription-pool?scope=pool': { enabled: true, accounts: [
-        row({}),
-        row({ machineId: 'm2', machineNickname: 'Mac Mini' }),
+        row({ lastQuota: { measuredAt: new Date().toISOString(),
+          sevenDay: { utilizationPct: 42, resetsAt: new Date(Date.now() + 60_000).toISOString() },
+          fable: { utilizationPct: 64, resetsAt: new Date(Date.now() + 120_000).toISOString() },
+        } }),
+        row({ machineId: 'm2', machineNickname: 'Mac Mini', status: 'needs-reauth', lastQuota: null }),
         row({ id: 'gear', nickname: 'Gear', email: 'gear@x.io', machineId: 'm2', machineNickname: 'Mac Mini' }),
       ], pool: { failed: [] } },
       '/subscription-relogin?scope=pool&retryTimeout=1': { enabled: true, episodes: [{ id: 'owner', accountId: 'luna', machineId: 'm2', state: 'waiting-operator-only' }] },
@@ -283,6 +302,10 @@ describe('accounts page in a DOM', () => {
     expect(doc.querySelector('.page-title')!.textContent).toBe('Account usage'); // a missing cell is not "needs you"
     expect(doc.querySelector('#sec-needs')?.textContent).toContain('Waiting for the agent to set up this account');
     expect(doc.querySelector('.acct-list .mchip')).toBeNull();
+    const lunaRow = [...doc.querySelectorAll('button.acct-row')].find(b => b.querySelector('.acct-name')?.textContent?.startsWith('Luna'));
+    expect(lunaRow?.querySelector('[data-window="weekly"]')?.textContent).toContain('42%');
+    expect(lunaRow?.querySelector('[data-window="fable"]')?.textContent).toContain('64%');
+    expect(lunaRow?.querySelector('.acct-line')?.textContent).toBe('Mac Mini: needs sign-in');
     const gearRow = [...doc.querySelectorAll('button.acct-row')].find((b) => b.textContent!.includes('Gear')) as HTMLButtonElement;
     gearRow.click();
     await tick(3);

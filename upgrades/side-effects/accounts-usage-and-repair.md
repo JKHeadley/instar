@@ -12,3 +12,5 @@ Rollback is a revert of the follow-up. Older client and server versions remain c
 - Sign-in repair is one named section with one summary per affected machine. Expanding the summary shows its affected accounts. Machines with confirmed sign-ins for every account share one summary. Unchecked sign-ins stay in the machine’s status. Routine repair rows have no Ask or sign-in action. A real owner-only sign-in still leads when present.
 - Names and plain status copy are displayed. There are no raw machine or account identifiers on the page.
 - Chromium tests exercise 390 and 1280 pixels in both themes, including overflow and the grouping controls' minimum hit area.
+
+Each account shows the newest parsed reading for each available quota window across its machine rows. Choosing a machine in the layout does not change the bars. A short sign-in line remains visible alongside the usage. Accounts with no readings keep a neutral row. The browser never treats an absent reading as zero usage.

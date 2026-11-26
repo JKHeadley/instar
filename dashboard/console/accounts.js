@@ -123,7 +123,7 @@ export async function renderAccounts(main, ctx) {
 
   const rows = el('div', { class: 'acct-groups' });
   let preferences = readAccountLayout();
-  const repaint = () => rows.replaceChildren(...layoutAccounts(page.usageAccounts, preferences).map(group =>
+  const repaint = () => rows.replaceChildren(...layoutAccounts(page.accounts, preferences).map(group =>
     el('section', { class: 'list-section', 'aria-label': group.name || 'All accounts' },
       group.name ? el('div', { class: 'list-head' }, el('h3', { class: 'eyebrow', text: group.name }),
         el('span', { class: 'list-count', text: String(group.accounts.length) })) : null,
@@ -133,7 +133,7 @@ export async function renderAccounts(main, ctx) {
     try { localStorage.setItem(ACCOUNT_LAYOUT_KEY, JSON.stringify(preferences)); } catch { /* Keep the in-memory choice. */ }
     repaint();
   };
-  const list = page.usageAccounts.length ? el('section', { class: 'page-sections acct-list', 'aria-label': 'Account usage readings' },
+  const list = page.accounts.length ? el('section', { class: 'page-sections acct-list', 'aria-label': 'Account usage readings' },
     el('div', { class: 'acct-layout' },
       layoutSelect('Group by', ACCOUNT_GROUPS, preferences.group, value => changeLayout('group', value)),
       layoutSelect('Sort by', ACCOUNT_SORTS, preferences.sort, value => changeLayout('sort', value))),
@@ -153,11 +153,17 @@ export async function renderAccounts(main, ctx) {
         el('span', { class: `acct-win-pct${w.tone ? ' ' + w.tone : ''}`, text: w.pctText }),
         el('span', { class: 'acct-win-reset', text: w.reset || '' }));
     })) : null;
+    const repairs = a.cells.filter(c => (!machineGroup || c.machineId === machineGroup) &&
+      ['attn', 'working', 'waiting'].includes(c.state));
+    const repairNote = repairs.length === 1 ? `${repairs[0].machine}: ${repairs[0].label}`
+      : repairs.length > 1 ? `Sign-in needs checking on ${repairs.length} machines` : null;
     const row = el('button', { class: 'acct-row', type: 'button', 'data-focus-key': machineGroup ? `a:${encodeURIComponent(machineGroup)}:${a.id}` : `a:${a.id}` },
       el('span', { class: 'acct-name' }, document.createTextNode(a.name), el('span', { class: 'acct-kind', text: frameworkName(a.framework) }), a.inUse && !machineGroup ? el('span', { class: 'acct-tag', text: 'in use here' }) : null),
       el('span', { class: `acct-pct${a.tone ? ' ' + a.tone : ''}`, text: pct === null ? '—' : `${pct}%` }),
       wins,
-      a.stale ? el('span', { class: 'acct-line', text: `reading from ${a.readingAge}` }) : null);
+      !wins ? el('span', { class: 'acct-line', text: a.line }) : null,
+      a.stale ? el('span', { class: 'acct-line', text: `Some usage data is from ${a.readingAge}` }) : null,
+      repairNote ? el('span', { class: 'acct-line', text: repairNote }) : null);
     row.addEventListener('click', () => openAccount(a, currentVisit(), page.needs));
     return row;
   }

@@ -106,6 +106,7 @@ export function cellState(row, episode, blocker, now = Date.now()) {
   return { state: 'unknown', label: String(row.status || 'unknown').replace(/-/g, ' ') };
 }
 
+const ACCOUNT_WINDOW_FIELDS = { 'five-hour': 'fiveHour', weekly: 'sevenDay', fable: 'fable' };
 const WINDOW_KEYS = [['fiveHour', '5-hour'], ['sevenDay', 'weekly'], ['fable', 'Fable weekly'], ['primary', '5-hour'], ['secondary', 'weekly']];
 
 /**
@@ -285,14 +286,17 @@ export function buildAccountsPage(res, now = Date.now(), { episodes = [], blocke
   for (const r of rows) {
     if (!r || !r.id) continue;
     const email = verifiedDisplayName(r.email, r.id);
-    const g = byId.get(r.id) || { id: r.id, name: verifiedDisplayName(r.nickname, r.id) || email || 'Account name unavailable', email, framework: r.framework, cells: [], reading: null, readingAt: 0 };
+    const g = byId.get(r.id) || { id: r.id, name: verifiedDisplayName(r.nickname, r.id) || email || 'Account name unavailable', email, framework: r.framework, cells: [], readings: new Map() };
     if (g.name === 'Account name unavailable') g.name = verifiedDisplayName(r.nickname, r.id) || email || g.name;
     if (!g.email && email) g.email = email;
     const ep = epFor(r.id, r.machineId);
     const blocker = blockers.find((b) => b && b.accountId === r.id && b.machineId === r.machineId) || null;
     g.cells.push({ machineId: r.machineId, machine: verifiedDisplayName(r.machineNickname, r.machineId) || 'Machine name unavailable', ...cellState(r, ep, blocker, now), episode: ep, blocker, row: r });
     const at = Date.parse(r.lastQuota && r.lastQuota.measuredAt);
-    if (r.lastQuota && Number.isFinite(at) && at > g.readingAt) { g.reading = r.lastQuota; g.readingAt = at; }
+    if (Number.isFinite(at)) for (const window of usageWindows(r.lastQuota, now)) {
+      const prior = g.readings.get(window.key);
+      if (!prior || at > prior.at) g.readings.set(window.key, { window, at });
+    }
     byId.set(r.id, g);
   }
   // Only successful account reads prove that a slot is missing. An offline
@@ -316,14 +320,21 @@ export function buildAccountsPage(res, now = Date.now(), { episodes = [], blocke
       g.cells.push({ machineId, machine, ...(working ? { state: 'working', label: 'signing in' } : { state: 'missing', label: 'not on this machine' }), missing: true, episode: ep, row: {} });
     }
   }
-  const accounts = [...byId.values()].map((g) => {
-    const t = tightest(g.reading, now);
-    const windows = usageWindows(g.reading, now).map((w) => windowRow(w, now));
-    const stale = g.readingAt && now - g.readingAt > READING_STALE_MS;
+  const accounts = [...byId.values()].map(({ readings, ...g }) => {
+    // Every machine measures the same account. Keep the newest usable reading
+    // for each window, since a newer partial read may omit a window entirely.
+    const values = [...readings.values()];
+    const reading = values.length ? Object.fromEntries(values.map(({ window }) => [
+      ACCOUNT_WINDOW_FIELDS[window.key], { utilizationPct: window.pct, resetsAt: window.resetsAt },
+    ])) : null;
+    const readingAt = values.length ? Math.min(...values.map(({ at }) => at)) : 0;
+    const t = tightest(reading, now);
+    const windows = usageWindows(reading, now).map((w) => windowRow(w, now));
+    const stale = readingAt && now - readingAt > READING_STALE_MS;
     return {
-      ...g, tight: t, stale, windows, weeklyResetAt: nextWeeklyReset(g.reading, now),
+      ...g, reading, readingAt, tight: t, stale, windows, weeklyResetAt: nextWeeklyReset(reading, now),
       inUse: Boolean(inUse && inUse.activeAccountId === g.id),
-      readingAge: g.readingAt ? ago(g.readingAt, now) : null,
+      readingAge: readingAt ? ago(readingAt, now) : null,
       line: !t ? (g.framework === 'grok-build' ? "Usage isn't readable for this kind of account." : 'No reading yet.')
         : `${Math.round(t.pct)}% of ${t.label}${resetWords(t.resetsAt, now) ? ' · ' + resetWords(t.resetsAt, now) : ''}`,
       second: t && t.second ? `${t.second.label} ${Math.round(t.second.pct)}%` : null,
