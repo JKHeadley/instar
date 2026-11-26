@@ -1,0 +1,22 @@
+{
+  "version": 2,
+  "slug": "open-pr-overlap-at-commit",
+  "sessionId": "ed99de61-509a-4e0d-908f-801b299fef73",
+  "timestamp": "2026-11-26T08:15:49.097Z",
+  "artifactPath": "upgrades/side-effects/open-pr-overlap-at-commit.md",
+  "artifactSha256": "cbed1b5074a724caeb568f449bef3cf9f5c1dc90a6e23ac9751bf96b6536ef09",
+  "coveredFiles": [
+    "docs/specs/open-pr-overlap-at-commit.eli16.md",
+    "scripts/lib/open-pr-overlap.mjs",
+    "tests/unit/open-pr-overlap.test.ts",
+    "upgrades/next/pr-overlap-active-window.md",
+    "upgrades/side-effects/open-pr-overlap-at-commit.md"
+  ],
+  "phase": "complete",
+  "tier": 1,
+  "tierReasoning": "Advisory lookup uses the existing activity window and a measured bounded timeout.",
+  "eli16Path": "docs/specs/open-pr-overlap-at-commit.eli16.md",
+  "sideEffectsPath": "upgrades/side-effects/open-pr-overlap-at-commit.md",
+  "secondPass": "not-required",
+  "reviewerConcurred": null
+}
