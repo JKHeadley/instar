@@ -563,8 +563,9 @@ export class AppMediaStore {
 
   // ── Session copies (§4.5) ────────────────────────────────────────────────────────
 
-  /** A session's private copy (0400, its own inode), created once; null when the blob is not here. */
-  async sessionCopy(messageId: string, a: AppAttachment): Promise<string | null> {
+  /** A session's private copy. A protected caller rechecks access before reuse or publication. */
+  async sessionCopy(messageId: string, a: AppAttachment, mayPublish?: () => boolean): Promise<string | null> {
+    if (mayPublish && !mayPublish()) return null;
     const blob = this.locateBlob(a.sha256);
     if (!blob) return null;
     if (!/^[A-Za-z0-9_-]{1,128}$/.test(messageId)) return null;
@@ -572,11 +573,17 @@ export class AppMediaStore {
     const dest = path.join(dir, `${a.index}-${safeFileName(a.filename, a.mediaType)}`);
     if (fs.existsSync(dest)) return dest;
     fs.mkdirSync(dir, { recursive: true, mode: 0o700 });
-    const tmp = `${dest}.${crypto.randomUUID()}.tmp`;
-    await fs.promises.copyFile(blob, tmp, fs.constants.COPYFILE_FICLONE);
-    await fs.promises.chmod(tmp, 0o400);
-    fs.renameSync(tmp, dest);
-    return dest;
+    const tmp = mayPublish ? path.join(this.pullsDir, `session-copy-${crypto.randomUUID()}.tmp`)
+      : `${dest}.${crypto.randomUUID()}.tmp`;
+    try {
+      await fs.promises.copyFile(blob, tmp, fs.constants.COPYFILE_FICLONE);
+      await fs.promises.chmod(tmp, 0o400);
+      if (mayPublish && !mayPublish()) return null;
+      fs.renameSync(tmp, dest);
+      return dest;
+    } finally {
+      if (fs.existsSync(tmp)) SafeFsExecutor.safeRmSync(tmp, { force: true, operation: `${OP}:discard-session-copy` });
+    }
   }
 
   private removeSessionCopies(messageId: string, index: number): void {
