@@ -305,6 +305,12 @@ describe('native app conversations — production wiring', () => {
     const acceptedSync = await send('GET', `/mobile/chat/app/${key}/events`);
     expect(acceptedSync.status, JSON.stringify(acceptedSync.body)).toBe(200);
     expect(acceptedSync.body.epoch).toBe(acceptedHistory.body.epoch);
+    const protectedQuotes = await send('GET', `/mobile/chat/app/${key}/reply-previews?eventId=${encodeURIComponent(quoted.body.eventId)}&eventId=${encodeURIComponent(target)}`);
+    expect(protectedQuotes.status).toBe(200);
+    expect(protectedQuotes.body).toEqual({ conversationKey: key, epoch: acceptedHistory.body.epoch, messages: [
+      { eventId: quoted.body.eventId, reply: { state: 'unavailable' } }, { eventId: target },
+    ] });
+
     const removedContext = await send('GET', `/mobile/chat/app/${key}/message-context?target=${encodeURIComponent(target)}&targetKind=event`);
     expect(removedContext.status).toBe(404);
     const linkFor = (eventId: string) => send('GET', `/mobile/conversations/message-link?ref=app%3A${key}&messageId=${encodeURIComponent(eventId)}&targetKind=event`);

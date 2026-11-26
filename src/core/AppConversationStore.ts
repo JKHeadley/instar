@@ -1577,6 +1577,15 @@ export class AppConversationStore {
       this.selectRemovalAwareCandidates(conversationKey, target, kind, mayRead, custodian));
   }
 
+  /** Project bounded exact reads together without exposing journal rows outside the snapshot. */
+  projectPreparedRemovalEvents<T>(conversationKey: string, mayRead: (row: BrowsedMessage) => boolean,
+    project: (find: (eventId: string) => BrowsedMessage | undefined) => T) {
+    return this.withRemovalHistory(conversationKey, (custodian, proof) => ({
+      value: project((eventId) => this.selectRemovalAwareCandidates(conversationKey, eventId, 'event', mayRead, custodian)[0]),
+      proof,
+    }));
+  }
+
   private selectRemovalAwareCandidates(conversationKey: string, target: string, kind: 'event' | 'message' | 'legacy',
     mayRead: (row: BrowsedMessage) => boolean, custodian: string) {
     const key = canonicalConversationKey(conversationKey);

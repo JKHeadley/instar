@@ -1,0 +1,22 @@
+{
+  "version": 2,
+  "slug": "app-message-delete-quote-acceptance",
+  "sessionId": "633bd330-201e-4dc8-8fd9-72b89116167e",
+  "timestamp": "2026-11-26T01:06:41.930Z",
+  "artifactPath": "upgrades/side-effects/app-message-delete-quote-acceptance.md",
+  "artifactSha256": "c1dac3740a3d1d151c2c053986eda54227800d370c427ac1899049b8531f2cc5",
+  "specPath": "docs/specs/conversation-message-delete.md",
+  "coveredFiles": [
+    "docs/specs/conversation-message-delete.eli16.md",
+    "docs/specs/conversation-message-delete.md",
+    "src/core/AppConversationStore.ts",
+    "src/server/mobileConversationRoutes.ts",
+    "tests/e2e/mobile-native-conversations-alive.test.ts",
+    "upgrades/side-effects/app-message-delete-quote-acceptance.md"
+  ],
+  "phase": "complete",
+  "tier": 2,
+  "tierReasoning": "Check quoted original and displayed reply against one signed removal proof",
+  "secondPass": "true",
+  "reviewerConcurred": true
+}

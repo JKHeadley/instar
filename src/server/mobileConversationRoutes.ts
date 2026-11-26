@@ -78,7 +78,7 @@ import { mediaOffBody } from './mobileMediaOff.js';
 import { AppCreationHierarchyProjection, type AppHierarchyFields, type CreationHierarchySource, type CreationHierarchyScope } from './appCreationHierarchy.js';
 import { executeOwnerRemovalContext, executeOwnerRemovalHistory, executeOwnerRemovalSync } from './mobileAppRemovalSync.js';
 import { createRemovalSyncCursorCodec } from './mobileAppRemovalSyncCursor.js';
-import type { resolveOwnerRemovalSyncAuthority } from './mobileAppRemovalSyncAuthority.js';
+import { resolveOwnerRemovalSyncAuthority } from './mobileAppRemovalSyncAuthority.js';
 import { normalizeCreationParentRef, type AppCreationContext } from '../core/AppCreationContext.js';
 import {
   checkSignedFiles, claimMediaUploads, mediaRecordTooLarge, preflightMediaAttachments, publishMediaMessage, signedFileHashParts,
@@ -737,7 +737,8 @@ export function createMobileConversationRouter(deps: MobileConversationRouteDeps
   };
   const replyReader = (req: Request) => principalOf(req).kind === 'device' && quotedRepliesOn()
     ? exactMessageReader(deps.pairing, req)() : null;
-  const replyProjection = (key: string, base: BrowsedMessage, person: ResolvedPerson | null) => {
+  const replyProjection = (key: string, base: BrowsedMessage, person: ResolvedPerson | null,
+    find: (eventId: string) => BrowsedMessage | undefined = (eventId) => svc!.store.exactMessageCandidates(key, eventId, 'event')[0]) => {
     if (!person || !quotedRepliesOn() || !deps.pairing.mayUse(person, key, 'read')
       || !deps.pairing.mayReadStored(person, key, base)) return {};
     if (!base.replyTo && !(base.receipt?.v === 3 && base.receipt.replyTo)) return {};
@@ -747,7 +748,7 @@ export function createMobileConversationRouter(deps: MobileConversationRouteDeps
     try {
       const verdict = svc!.verify({ ...base, conversationKey: key });
       if (verdict !== 'verified' && verdict !== 'redacted') return unavailable;
-      const [original] = svc!.store.exactMessageCandidates(key, relation.eventId, 'event');
+      const original = find(relation.eventId);
       if (!original || original.messageId !== relation.messageId || !deps.pairing.mayReadStored(person, key, original)) return unavailable;
       // Legacy and agent originals need no device proof. A recorded signature that positively
       // fails verification cannot supply an original preview or navigation target.
@@ -1821,7 +1822,7 @@ export function createMobileConversationRouter(deps: MobileConversationRouteDeps
   });
 
   // Revalidate only the exact displayed reply bases. No arbitrary history page is returned.
-  router.get('/mobile/chat/app/:key/reply-previews', (req, res) => {
+  router.get('/mobile/chat/app/:key/reply-previews', (req, res, next) => {
     res.setHeader('Cache-Control', 'no-store');
     const person = replyReader(req);
     if (!quotedRepliesOn() || !svc) { res.status(503).json({ error: 'quoted-replies-unavailable' }); return; }
@@ -1835,6 +1836,30 @@ export function createMobileConversationRouter(deps: MobileConversationRouteDeps
       || new Set(ids).size !== ids.length || Object.keys(req.query).some((field) => field !== 'eventId')) {
       res.status(400).json({ error: 'invalid-reply-preview-request' }); return;
     }
+    if (serveProtectedRead(req, res, next, async (request, pairing, service, evidence, codec) => {
+      const unavailable = { status: 503, body: { error: 'message-removal-sync-unavailable' } };
+      const reset = { status: 409, body: { error: 'message-removal-sync-reset' } };
+      const initial = resolveOwnerRemovalSyncAuthority(request, pairing, service, evidence);
+      if (!initial.ok) return { status: initial.status, body: { error: initial.error } };
+      const epoch = codec.epochFor(initial.authority);
+      await service.store.prepareRemovalHistory(key);
+      const admitted = resolveOwnerRemovalSyncAuthority(request, pairing, service, evidence);
+      if (!admitted.ok) return { status: admitted.status, body: { error: admitted.error } };
+      if (codec.epochFor(admitted.authority) !== epoch) return reset;
+      const current = exactMessageReader(pairing, request)();
+      if (current?.role !== 'owner') return unavailable;
+      const page = service.store.projectPreparedRemovalEvents(key, (row) => pairing.mayReadStored(current, key, row),
+        (find) => (ids as string[]).map((eventId) => {
+          const base = find(eventId);
+          return { eventId, ...(base ? replyProjection(key, base, current, find) : {}) };
+        }));
+      if (!page) return unavailable;
+      const final = resolveOwnerRemovalSyncAuthority(request, pairing, service, evidence);
+      if (!final.ok) return { status: final.status, body: { error: final.error } };
+      if (codec.epochFor(final.authority) !== epoch) return reset;
+      if (!service.store.hasPreparedRemovalHistory(key, page.proof)) return unavailable;
+      return { status: 200, body: { conversationKey: key, messages: page.value, epoch } };
+    })) return;
     const messages = (ids as string[]).map((eventId) => {
       try {
         const [base] = svc.store.exactMessageCandidates(key, eventId, 'event');

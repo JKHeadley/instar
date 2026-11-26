@@ -53,3 +53,5 @@ An isolated development test can now use the app’s usual history and sync addr
 On the isolated server, opening a deleted message now reports it as unavailable. Opening a surviving message still selects it exactly, including when there are deleted messages nearby.
 
 The isolated server also refuses to copy a new link to a deleted message. The app still gets the usual link for a surviving message.
+
+On the isolated server, a reply stays readable after its original message is deleted, but the quote preview no longer shows the deleted text.
