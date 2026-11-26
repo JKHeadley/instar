@@ -18,3 +18,5 @@ The checked projection now rejects the account-status producer's explicit no-own
 ## 6b. Operator-surface quality
 
 The checked list continues to lead with its genuine in-place actions. Account nicknames, machine details and diagnostics stay on the existing Accounts surface. This change adds no destructive action or new wording at phone width. The existing first-screen suite passed.
+
+The checked Work Board projection excludes both types of checked card from the legacy approval aggregate. Existing callers that do not supply a checked result keep the same aggregate. The future signed binding writer still has to refuse bound cards at the legacy write boundary. This checkpoint changes only the offer.

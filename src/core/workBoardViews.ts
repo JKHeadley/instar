@@ -242,7 +242,8 @@ export function boardJson(svc: WorkBoardService, viewer: Viewer, mayRead: (conve
     newestHlc: svc.newestHlc(),
     // agent-work-cards-default §1 "One aggregated row, not zero": the team's `not-started` cards, oldest first, for the
     // one Needs-you row (named so it does not collide with the myBoard sections' `notStarted` number). Owner and agent only.
-    ...(viewer.isOwner || viewer.isAgent ? { notStartedCards: notStartedCardsJson(svc, new Set(Object.values(lanes).flatMap((rows) => rows.map((x) => x.v.card.cardId)))) } : {}),
+    // Checked rows use exact decisions or remain agent work, outside the legacy bulk approval control.
+    ...(viewer.isOwner || viewer.isAgent ? { notStartedCards: notStartedCardsJson(svc, new Set(Object.values(lanes).flatMap((rows) => rows.filter((x) => !x.checkedOwnerLane).map((x) => x.v.card.cardId)))) } : {}),
   };
 }
 

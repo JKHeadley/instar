@@ -1,0 +1,22 @@
+{
+  "ts": "2026-11-26T04:32:17.071Z",
+  "slug": "owner-needs-work-board-approval",
+  "suggestedTier": 1,
+  "declaredTier": 1,
+  "riskFloor": 1,
+  "riskFloorReasons": [],
+  "belowFloor": false,
+  "files": 1,
+  "loc": 3,
+  "scope": {
+    "basis": "staged-in-scope-paths-including-deleted",
+    "files": [
+      "src/core/workBoardViews.ts"
+    ],
+    "addedLines": 2,
+    "deletedLines": 1
+  },
+  "causalAutopsy": null,
+  "classClosure": null,
+  "verdict": "pass"
+}

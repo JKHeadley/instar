@@ -13,7 +13,7 @@ import {
   workCardRecordStoreSchema, foldCard, toFoldRecords, deriveStatus, laneFor, derivePickupCauses, requestCardId, commitmentRefId, requestTextHashOf, normalizeRequestText, cutAtWord,
   SCHEMA_MAX, NOTE_EVENT_PREFIX, QUIET_CLOCK_GRACE_MS, WAITING_STATUSES, WORK_RECORD_TYPES, GENERAL_PROJECT_KEY, isRecordId, type UnionEntry,
 } from '../../src/core/WorkCardStore.js';
-import { cardJson, myBoardReason } from '../../src/core/workBoardViews.js';
+import { boardJson, cardJson, myBoardReason } from '../../src/core/workBoardViews.js';
 import { MAX_STORED_TEXT } from '../../src/core/AppConversationStore.js';
 
 const OWNER: WorkPrincipal = { kind: 'person', personKey: 'justin', proof: 'pin', isOwner: true };
@@ -385,6 +385,29 @@ describe('checked owner start decision projection', () => {
     expect(myBoardReason(view, viewer, 'with-agent', true)).toBeNull();
     expect(myBoardReason(view, viewer, 'with-agent')).toBe('approval');
     expect(journal).toHaveLength(initialRecords);
+  });
+
+  it('keeps checked cards out of the legacy aggregate without changing their stored eligibility', () => {
+    const { svc } = makeService();
+    const cards = [10, 11, 12].map(commitment => {
+      const card = svc.createCard(SERVER, ownerRequest({
+        requester: { personKey: 'member', isOwner: false },
+      }), { cardId: requestCardId('m_a', `CMT-${commitment}`), counted: true });
+      if (!card.ok) throw new Error(card.error);
+      return card.cardId;
+    });
+    const [bound, agent, legacy] = cards;
+    const viewer = { isOwner: true, isAgent: false, personKey: 'justin' };
+    const render = (extraFor?: Parameters<typeof boardJson>[4]['extraFor']) =>
+      boardJson(svc, viewer, () => true, key => key, { softOpenCards: 30, extraFor });
+    expect(render().notStartedCards).toMatchObject({
+      count: 3, cardIds: expect.arrayContaining(cards),
+    });
+    expect(render(v => v.card.cardId === legacy ? undefined : {
+      ownerStartDecision: v.card.cardId === bound ? 'current' : 'absent',
+    }).notStartedCards).toMatchObject({ count: 1, cardIds: [legacy] });
+    expect(svc.view(agent)?.status).toBe('not-started');
+    expect(svc.notStartedCardIds()).toEqual(expect.arrayContaining(cards));
   });
 
   it('moves the agent-waiting mirror but preserves a live owner question', () => {
