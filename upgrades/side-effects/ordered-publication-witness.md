@@ -47,3 +47,7 @@ The verifier consumes already authenticated seal metadata and the predecessor id
 ## Uncertain append reconciliation
 
 The verifier consumes authenticated evidence and independently resolved current manifest identity. Only an exact positive reconciliation matched to the canonical row returns reconciled. The verifier never clears a durable intent, retries an append or enables an effect. Signed synthetic vectors cover unknown, exact, mismatched, replayed, delayed and unavailable inputs.
+
+## Independent floor readback
+
+The read boundary binds the receiver-selected destination, namespace, Git commit and fresh nonce to the witness-signed floor. It checks the ref and witness enrollment again before returning local evidence. The transport must provide authoritative observations and the witness must inspect the challenged commit independently. A readback grants no final publication permission. No production transport is installed by this checkpoint.

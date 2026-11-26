@@ -14,3 +14,5 @@ The local receiver also completes an ordered holder change only after the indepe
 Added a byte-level verifier for authenticated predecessor seals. A missing read reports unavailable. A partial, reordered or changed prefix remains pending.
 
 Added an exact reconciliation check for an uncertain predecessor append. A visible row or readable absence alone leaves the attempt pending.
+
+The dark receiver can verify a fresh witness readback for the exact private Git destination and commit it observed.

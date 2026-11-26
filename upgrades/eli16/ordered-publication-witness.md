@@ -11,3 +11,5 @@ A holder change now also has a local completion step. The receiver stays paused 
 The predecessor proof also needs the old journal itself. The verifier checks every record in order against the seal, so a delayed last record or a rewritten row cannot pass as a complete journal. A verified prefix is one input to resolving an earlier attempt whose outcome is still unknown.
 
 If the old machine lost the reply to an append, the new machine keeps that attempt outstanding. It can recognize a confirmed append only when the authenticated reconciliation names the current handover and the exact attempt, and the sealed journal contains those exact bytes.
+
+Before using a journal position, the receiver can ask the enrolled witness to confirm the exact Git commit it just read. Each request uses a fresh challenge. An old confirmation or one for another repository, branch, or commit leaves the receiver waiting.

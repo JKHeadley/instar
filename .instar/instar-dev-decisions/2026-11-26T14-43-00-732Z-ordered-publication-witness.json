@@ -1,0 +1,22 @@
+{
+  "ts": "2026-11-26T14:43:00.732Z",
+  "slug": "ordered-publication-witness",
+  "suggestedTier": 2,
+  "declaredTier": 1,
+  "riskFloor": 1,
+  "riskFloorReasons": [],
+  "belowFloor": false,
+  "files": 1,
+  "loc": 54,
+  "scope": {
+    "basis": "staged-in-scope-paths-including-deleted",
+    "files": [
+      "src/core/OrderedPublicationWitness.ts"
+    ],
+    "addedLines": 53,
+    "deletedLines": 1
+  },
+  "causalAutopsy": null,
+  "classClosure": null,
+  "verdict": "pass"
+}

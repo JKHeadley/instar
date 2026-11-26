@@ -1,4 +1,4 @@
-import { createHash, createPublicKey, verify } from 'node:crypto';
+import { createHash, createPublicKey, randomBytes, verify } from 'node:crypto';
 import type { PublicationScope } from './FencedPublicationStore.js';
 
 export interface PublicationFloor extends PublicationScope {
@@ -119,5 +119,57 @@ export function verifiedHolderSuccessor(
   return {
     ...current, epoch: handover.nextEpoch, holder: handover.nextHolder,
     head: hash(bytes), position: current.position + 1,
+  };
+}
+
+export interface OrderedFloorChallenge {
+  destination: string;
+  scope: PublicationScope;
+  commit: string;
+  nonce: string;
+}
+
+export interface OrderedFloorReadback {
+  floor: PublicationFloor;
+  signature: Buffer;
+}
+
+export function orderedFloorReadbackBytes(challenge: OrderedFloorChallenge, floor: PublicationFloor): Buffer {
+  return Buffer.from(JSON.stringify(['instar-ordered-floor-readback-v1', challenge.destination,
+    challenge.scope.agentId, challenge.scope.namespace, challenge.commit, challenge.nonce, ...fields(floor)]));
+}
+
+/**
+ * Verify a fresh readback from the currently enrolled independent witness.
+ * This is a read boundary for local evidence, separate from authority CAS.
+ */
+export function createOrderedFloorReader(deps: {
+  /** Receiver-pinned canonical repository plus fully qualified ref. */
+  destination: string;
+  pins: WitnessPins;
+  readGitTip(scope: PublicationScope): string | null;
+  currentWitness(scope: PublicationScope): { id: string; generation: number } | null;
+  /** The witness must independently observe the challenged commit before responding. */
+  readWitness(challenge: OrderedFloorChallenge): OrderedFloorReadback | null;
+}): (scope: PublicationScope) => PublicationFloor | null {
+  return scope => {
+    const commit = deps.readGitTip(scope);
+    const enrolled = deps.currentWitness(scope);
+    if (!commit || !/^(?:[a-f0-9]{40}|[a-f0-9]{64})$/.test(commit) || !enrolled) return null;
+
+    const challenge = Object.freeze({
+      destination: deps.destination, scope: Object.freeze({ ...scope }), commit,
+      nonce: randomBytes(32).toString('hex'),
+    });
+    const readback = deps.readWitness(challenge);
+    if (!readback) return null;
+
+    const { floor, signature } = readback;
+    if (!validFloor(floor) || floor.agentId !== scope.agentId || floor.namespace !== scope.namespace ||
+        floor.witness !== enrolled.id || floor.witnessGeneration !== enrolled.generation ||
+        !verifies(deps.pins, enrolled.id, orderedFloorReadbackBytes(challenge, floor), signature)) return null;
+    const latest = deps.currentWitness(scope);
+    return latest?.id === enrolled.id && latest.generation === enrolled.generation && deps.readGitTip(scope) === commit
+      ? { ...floor } : null;
   };
 }
