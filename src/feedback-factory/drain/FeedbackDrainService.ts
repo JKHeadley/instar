@@ -164,6 +164,17 @@ export class FeedbackDrainService {
     this.sourceCompactionIntervalMs = Math.max(1, opts.sourceCompactionIntervalMs ?? 24 * 60 * 60 * 1000);
   }
 
+  /** One reservation represents one readiness model batch, including rejected answers. */
+  estimatedReadinessCallsPerDay(envelopeUsd: number): number | undefined {
+    const batchUsd = this.readinessBatchEstimateUsd();
+    const calls = Math.floor(envelopeUsd / batchUsd);
+    return Number.isSafeInteger(calls) && calls >= 0 ? calls : undefined;
+  }
+
+  isServingOwner(): boolean { return this.opts.isCanonicalOwner(); }
+
+  private readinessBatchEstimateUsd(): number { return this.opts.estimatedReadinessBatchUsd ?? 0.01; }
+
   stats() {
     const cursor = this.opts.store.sourceCursor();
     let generationLag = 0;
@@ -459,7 +470,7 @@ export class FeedbackDrainService {
         else if (!transientFailure) out.reason ??= 'readiness-wall-clock-exhausted';
         break;
       }
-      if (!this.opts.store.reserveAuthoritySpend(authority, this.opts.estimatedReadinessBatchUsd ?? 0.01, chunk.length, now)) {
+      if (!this.opts.store.reserveAuthoritySpend(authority, this.readinessBatchEstimateUsd(), chunk.length, now)) {
         for (const row of pending) this.opts.store.recordCollectingEvaluation(row.clusterId, { reason: 'readiness-spend-brake', nextReviewAt: now + 24 * 60 * 60 * 1000 });
         this.opts.store.demoteAuthority(authority.authorityId, authority.generation, 'readiness-spend-brake');
         await this.alarmIfPaused(authority);

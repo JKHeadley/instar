@@ -23,7 +23,7 @@ const minsAgo = (m: number) => NOW - m * 60000;
 
 // A real readiness proposal shape (src/feedback-factory/drain/readinessAuthorityProposal.ts).
 const proposal = (over: Record<string, unknown> = {}) => ({
-  status: 'none', current: null,
+  status: 'none', current: null, limits: { route: 'metered-api' },
   proposal: { authorityId: 'feedback-readiness-default', agentId: 'echo', ownerMachineId: 'studio', ownerEpoch: 7, provider: 'codex-cli', modelFamily: 'gpt-6-luna', promptVersion: 'p3', schemaVersion: 's2', decisionPointId: 'feedback-readiness', maxBatch: 50, maxTokens: 1200, maxDailySpendUsd: 5 },
   blockers: [], approveAction: 'create',
   summary: 'Let GPT-6 Luna (via Codex) decide which of up to 50 incoming reports a batch become work items, spending at most $5 a day.',
@@ -223,6 +223,17 @@ describe('Feedback', () => {
     // The GitHub-approval to-do follows, from the queue.
     expect(f.todos[1]).toMatchObject({ kind: 'link', href: 'https://github.com/JKHeadley/instar/pull/2400' });
     expect(f.sub).toContain('After that, 1 more thing here needs you.');
+  });
+  it('distinguishes a subscription account pause threshold from an assigned allowance share', () => {
+    const triage = proposal({ limits: { route: 'subscription', callsPerDay: 150, accountPausePercent: 75 } });
+    expect(authorityCard('triage', triage)).toMatchObject({ metered: false, envelope: { maxDailySpendUsd: 5 } });
+    expect(authorityCard('triage', triage).summary).toContain('Up to 150 calls per day. It pauses when the account reaches 75% of its allowance.');
+    const readiness = proposal({ limits: { route: 'subscription', callsPerDay: 500, callsEstimated: true } });
+    expect(authorityCard('readiness', readiness).summary).toContain('Up to about 500 calls per day. The model shares');
+    expect(authorityCard('readiness', readiness).summary).not.toContain('$');
+    const unknown = proposal({ limits: undefined });
+    expect(authorityCard('readiness', unknown).summary).toContain('Serving route could not be confirmed.');
+    expect(authorityCard('readiness', unknown).summary).not.toContain('$');
   });
   it('paused, revoked and restore are told apart; "version" is never said', () => {
     const paused = proposal({ status: 'proposal-only', approveAction: 'replace', pausedBecause: 'the daily spend cap was reached.', current: { generation: 4, maxBatch: 50, maxDailySpendUsd: 5, matchesProposal: true } });

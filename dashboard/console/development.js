@@ -312,7 +312,8 @@ function openMore(rest, deps) {
 function authorityForm(kind, card, action, deps, { lead = false, detail = '', title = null, label = null } = {}) {
   const route = kind === 'readiness' ? '/feedback-factory/readiness-authorities' : '/feedback-factory/triage/authority';
   const proposalRoute = kind === 'readiness' ? '/feedback-factory/readiness-authorities/proposal' : '/feedback-factory/triage/authority/proposal';
-  const env = view.envelope[kind] || { ...card.envelope };
+  const env = { ...card.envelope, ...view.envelope[kind] };
+  if (!card.metered) env.maxDailySpendUsd = card.envelope.maxDailySpendUsd;
   const summary = el('p', { class: 'confirm-text plan-text', text: card.summary });
   const status = el('p', { class: 'action-status', role: 'status' });
   const field = (k, text, hint) => {
@@ -322,14 +323,18 @@ function authorityForm(kind, card, action, deps, { lead = false, detail = '', ti
       env[k] = input.value; view.envelope[kind] = env;
       const q = new URLSearchParams(Object.entries(env).filter(([, v]) => String(v).trim() !== ''));
       const r = await read(`${proposalRoute}?${q}`);
-      if (r.ok && r.data) { summary.textContent = r.data.summary || ''; blockers.replaceChildren(...(r.data.blockers || []).map((b) => note(b))); }
+      if (r.ok && r.data) {
+        const preview = authorityCard(kind, r.data);
+        summary.textContent = preview.summary;
+        blockers.replaceChildren(...preview.blockers.map((b) => note(b)));
+      }
     });
     return el('label', { class: 'limit-field' }, el('span', { text: text }), input, hint ? el('span', { class: 'card-note', text: hint }) : null);
   };
   const blockers = el('div', { class: 'blockers' }, card.blockers.map((b) => note(b)));
   const limits = el('details', { class: 'raw limits' }, el('summary', { text: 'Adjust limits' }),
     field('maxBatch', kind === 'readiness' ? 'Reports per batch' : 'Items per batch', '1 to 50'),
-    field('maxDailySpendUsd', 'Daily spend cap (USD)', 'It stops for the day at this amount.'),
+    card.metered ? field('maxDailySpendUsd', 'Daily spend cap (USD)', 'It stops for the day at this amount.') : null,
     field('maxTokens', 'Answer length limit (tokens)', 'Leave as is unless asked.'),
     card.boundTo ? el('p', { class: 'card-note', text: `Bound to: ${card.boundTo}` }) : null);
   const go = el('button', { class: 'btn-primary btn-inline', type: 'button', text: label || card.approveLabel, 'data-authority-action': action });

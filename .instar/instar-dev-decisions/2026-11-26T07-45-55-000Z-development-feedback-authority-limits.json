@@ -1,0 +1,23 @@
+{
+  "ts": "2026-11-26T07:45:55.000Z",
+  "slug": "development-feedback-authority-limits",
+  "suggestedTier": 1,
+  "declaredTier": 1,
+  "riskFloor": 1,
+  "riskFloorReasons": [],
+  "belowFloor": false,
+  "files": 2,
+  "loc": 39,
+  "scope": {
+    "basis": "staged-in-scope-paths-including-deleted",
+    "files": [
+      "src/feedback-factory/drain/FeedbackDrainService.ts",
+      "src/server/routes.ts"
+    ],
+    "addedLines": 34,
+    "deletedLines": 5
+  },
+  "causalAutopsy": null,
+  "classClosure": null,
+  "verdict": "pass"
+}

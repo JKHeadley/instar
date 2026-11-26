@@ -281,6 +281,7 @@ describe('feedback factory drain — real production-adapter lifecycle', () => {
     // This fixture's intelligence is a bare provider, not the router, so there is no
     // routed model to bind — the card must say so and offer no Approve rather than guess.
     expect(res.body.proposal).toBeNull();
+    expect(res.body.limits).toEqual({ route: 'unknown', callsEstimated: false });
     expect(res.body.blockers.join(' ')).toMatch(/No model is currently available/);
     expect(res.body.approveAction).toBeNull();
     // The new approve path is PIN-gated like every other authority mutation.

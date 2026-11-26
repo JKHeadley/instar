@@ -143,7 +143,10 @@ describe('feedback triage routes — owner', () => {
     expect(before.status).toBe(200);
     expect(before.body.authority).toBe('awaiting-approval');
     const proposal = await request(app).get('/feedback-factory/triage/authority/proposal').set(H);
-    expect(proposal.body).toMatchObject({ status: 'none', approveAction: 'create', blockers: [] });
+    expect(proposal.body).toMatchObject({
+      status: 'none', approveAction: 'create', blockers: [],
+      limits: { route: 'subscription', callsPerDay: before.body.maxCallsPerDay, accountPausePercent: 75 },
+    });
     expect((await request(app).post('/feedback-factory/triage/authority').set(HX).send({ action: 'create', useProposal: true, operatorDecisionRef: 'agent-self' })).status).toBe(403);
     const approved = await request(app).post('/feedback-factory/triage/authority').set(HX).send({ action: 'create', useProposal: true, pin: PIN, operatorDecisionRef: 'operator-dashboard-1' });
     expect(approved.status).toBe(200);
