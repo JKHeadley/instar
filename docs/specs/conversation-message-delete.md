@@ -347,3 +347,29 @@ and cached connections cannot continue delivering protected content. Verify
 that confirmed unenrolled traffic can still succeed, and that losing the
 controller or restoring application state cannot erase enrollment. Record
 results per operating system and peer transport before enabling enrollment.
+
+### Instar startup paths the fence must own
+
+`ServerSupervisor.spawnServer` can restore `shadow-install.previous`
+and starts the selected CLI through tmux. The CLI enters
+`AgentServer.start`, binds the configured host and port, attaches
+WebSockets, and starts the same-network pairing listener. The supervisor
+cannot establish exclusive ingress by filtering its own health or Telegram
+calls. The replacement boundary must precede the CLI invocation, including
+repair, previous-install recovery and direct CLI entry. Keep the selector
+and enrollment index outside both shadow-install directories and the
+application state restore set.
+
+The signed custody directory is inside the application state directory
+today. Giving an older process the same state directory would expose the
+records even if the supervisor retained the public socket. For a first
+protected deployment, run no legacy worker on an enrolled machine. Admit
+the protected artifact only under the supervisor-controlled execution and
+storage boundary. Preserve the enrollment classification on rollback and
+hold the affected machine closed. An isolated legacy worker serving a
+separate, fully covered unenrolled view requires a separate platform proof.
+
+Do not reuse the borrowed-unit sandbox instance for this acceptance. Its
+Lima profile disables forwards and host mounts, and its production image
+digest is unpinned. It demonstrates a candidate isolation mechanism but
+does not supply an application ingress or a protected data boundary.
