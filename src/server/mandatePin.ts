@@ -23,6 +23,19 @@ export interface MandatePinDeps {
   /** Read live: the config object can be swapped under a running server. */
   dashboardPin: () => string | undefined;
   pinAttemptStore?: () => PinAttemptStore | null | undefined;
+  /**
+   * identity-security-piece1c: the signed-in source of a guess (see ownerPinSource.ts). When given,
+   * the budget is keyed on the credential that authenticated the request, not the socket address
+   * (127.0.0.1 for every tunnel caller). The forwarded machine key, if any, is passed through.
+   */
+  pinSource?: (req: Request, forwardedBucketKey?: string) => string;
+  /** Wrong guesses allowed per bucket per window (default MANDATE_PIN_MAX_ATTEMPTS). */
+  maxAttempts?: number;
+  /**
+   * Whether a right PIN clears the bucket (default true). False for a SHARED bucket (the strangers'
+   * public cap): one caller's success must never hand everyone a fresh budget (identity-security-piece1c).
+   */
+  clearOnSuccess?: boolean;
 }
 
 export interface MandatePinOptions {
@@ -54,16 +67,19 @@ export function createMandatePinCheck(deps: MandatePinDeps): MandatePinCheck {
     }
     const store = deps.pinAttemptStore?.() ?? null;
     const ip = req.ip || req.socket?.remoteAddress || 'unknown';
-    const buckets = opts.forwardedBucketKey && opts.forwardedBucketKey !== ip ? [ip, opts.forwardedBucketKey] : [ip];
+    const buckets = deps.pinSource
+      ? [deps.pinSource(req, opts.forwardedBucketKey)]
+      : (opts.forwardedBucketKey && opts.forwardedBucketKey !== ip ? [ip, opts.forwardedBucketKey] : [ip]);
     const now = Date.now();
     for (const bucket of buckets) {
-      if (store?.blocked(bucket)) {
+      if (store?.blocked(bucket, deps.maxAttempts ?? MANDATE_PIN_MAX_ATTEMPTS)) {
         res.status(429).json({ error: 'Too many attempts. Try again later.' });
         return false;
       }
+      if (store) continue; // the durable store is the one counter; the in-memory map is only its fallback
       let e = attempts.get(bucket);
       if (e && now > e.resetAt) { attempts.delete(bucket); e = undefined; }
-      if (e && e.count >= MANDATE_PIN_MAX_ATTEMPTS) {
+      if (e && e.count >= (deps.maxAttempts ?? MANDATE_PIN_MAX_ATTEMPTS)) {
         res.status(429).json({ error: 'Too many attempts. Try again later.' });
         return false;
       }
@@ -76,18 +92,62 @@ export function createMandatePinCheck(deps: MandatePinDeps): MandatePinCheck {
     const ha = createHash('sha256').update(pin).digest();
     const hb = createHash('sha256').update(expected).digest();
     if (ha.length !== hb.length || !timingSafeEqual(ha, hb)) {
-      let remaining = MANDATE_PIN_MAX_ATTEMPTS;
+      let remaining = deps.maxAttempts ?? MANDATE_PIN_MAX_ATTEMPTS;
       for (const bucket of buckets) {
+        if (store) { remaining = Math.min(remaining, store.recordFailure(bucket, deps.maxAttempts ?? MANDATE_PIN_MAX_ATTEMPTS)); continue; }
         let e = attempts.get(bucket);
         if (!e) { e = { count: 0, resetAt: now + MANDATE_PIN_WINDOW_MS }; attempts.set(bucket, e); }
         e.count++;
-        const durableRemaining = store?.recordFailure(bucket);
-        remaining = Math.min(remaining, durableRemaining ?? (MANDATE_PIN_MAX_ATTEMPTS - e.count));
+        remaining = Math.min(remaining, (deps.maxAttempts ?? MANDATE_PIN_MAX_ATTEMPTS) - e.count);
       }
       res.status(403).json({ error: 'Incorrect PIN', attemptsRemaining: remaining });
       return false;
     }
-    for (const bucket of buckets) { attempts.delete(bucket); store?.recordSuccess(bucket); }
+    if (deps.clearOnSuccess !== false) for (const bucket of buckets) { attempts.delete(bucket); store?.recordSuccess(bucket); }
     return true;
+  };
+}
+
+/**
+ * identity-security-piece1c: the same signed-in budget as `createMandatePinCheck`, returning a
+ * verdict instead of sending a response, for routes that keep their own response shape. Synchronous:
+ * admission, the compare and the charge happen with no await between them.
+ */
+export type OwnerPinVerdict =
+  | { ok: true }
+  | { ok: false; reason: 'not-configured' | 'missing' | 'throttled' | 'wrong'; remaining?: number };
+
+export function createOwnerPinVerdict(deps: MandatePinDeps): (req: Request, candidate: unknown, opts?: { forwardedBucketKey?: string }) => OwnerPinVerdict {
+  const fallback = new Map<string, { count: number; resetAt: number }>();
+  const max = deps.maxAttempts ?? MANDATE_PIN_MAX_ATTEMPTS;
+  return (req, candidate, opts = {}) => {
+    const expected = deps.dashboardPin();
+    if (!expected) return { ok: false, reason: 'not-configured' };
+    const store = deps.pinAttemptStore?.() ?? null;
+    const bucket = deps.pinSource ? deps.pinSource(req, opts.forwardedBucketKey) : (req.ip || req.socket?.remoteAddress || 'unknown');
+    const now = Date.now();
+    if (store) {
+      if (store.blocked(bucket, max)) return { ok: false, reason: 'throttled' };
+    } else {
+      const e = fallback.get(bucket);
+      if (e && now > e.resetAt) fallback.delete(bucket);
+      else if (e && e.count >= max) return { ok: false, reason: 'throttled' };
+    }
+    if (typeof candidate !== 'string' || !candidate) return { ok: false, reason: 'missing' };
+    const ha = createHash('sha256').update(candidate).digest();
+    const hb = createHash('sha256').update(expected).digest();
+    if (ha.length !== hb.length || !timingSafeEqual(ha, hb)) {
+      let remaining: number;
+      if (store) remaining = store.recordFailure(bucket, max);
+      else {
+        let e = fallback.get(bucket);
+        if (!e) { e = { count: 0, resetAt: now + MANDATE_PIN_WINDOW_MS }; fallback.set(bucket, e); }
+        e.count++;
+        remaining = Math.max(0, max - e.count);
+      }
+      return { ok: false, reason: 'wrong', remaining };
+    }
+    if (deps.clearOnSuccess !== false) { if (store) store.recordSuccess(bucket); else fallback.delete(bucket); }
+    return { ok: true };
   };
 }

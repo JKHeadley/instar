@@ -156,7 +156,7 @@ describe('3. work page tiles', () => {
   });
   it('the efforts tile is not a second "Conversations"', () => {
     const src = readFileSync('dashboard/console/conversations.js', 'utf8');
-    expect(src).toContain("text: 'Efforts'");
+    expect(src).toContain("text: 'Groups'");
     expect(src).not.toMatch(/t-name', text: 'Conversations'/);
   });
 });
@@ -236,5 +236,23 @@ describe('1b. collapsing keeps the way to act', () => {
     expect(rows[0].action).toEqual({ kind: 'href', href: '#/work/plans' });
     expect(rows[0].tone).toBe('bad');
     expect(rows[0].keys).toEqual(['q', 's']);
+  });
+});
+
+describe('notices read with names, not ids (dashboard makeover, 2026-11-20 audit)', () => {
+  it('an unnamed topic with a short number never prints the number, and ordinary "topic 2" prose is left alone', () => {
+    expect(plainReferenceText('Reply to topic 0 (name unresolved) is held. My reply to topic 0 (name unresolved) could not be sent.'))
+      .toBe('Reply to a conversation is held. My reply to a conversation could not be sent.');
+    expect(plainReferenceText('See topic 2 of the guide')).toBe('See topic 2 of the guide');
+  });
+
+  it('a held-reply notice names the conversation and machine, and drops the doubled "name unresolved"', () => {
+    const text = 'Reply to topic 144319 (name unresolved) is held. My reply to topic 144319 (name unresolved) could not be forwarded to m_a804869356b259820b3236e7c5a2ae7d.';
+    const unnamed = plainReferenceText(text, {});
+    expect(unnamed).not.toMatch(/144319|m_a804|name unresolved/);
+    expect(unnamed).toContain('Reply to a conversation is held');
+    const named = plainReferenceText(text, { topicNames: { 144319: 'Apple app rebuild' }, machineNames: { m_a804869356b259820b3236e7c5a2ae7d: 'M5 Pro' } });
+    expect(named).toContain('the “Apple app rebuild” conversation');
+    expect(named).toContain('forwarded to M5 Pro');
   });
 });

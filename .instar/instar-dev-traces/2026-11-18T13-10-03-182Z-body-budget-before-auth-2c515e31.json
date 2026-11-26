@@ -1,0 +1,24 @@
+{
+  "version": 2,
+  "slug": "body-budget-before-auth",
+  "sessionId": "c7112b10-9f6c-4be5-9d69-4bf21b1f430c",
+  "timestamp": "2026-11-18T13:10:03.182Z",
+  "artifactPath": "upgrades/side-effects/body-budget-before-auth.md",
+  "artifactSha256": "d2a351e1ee3567ec128cc1e6c151b9bbad62d030842c23fbaa96d829fdbe2556",
+  "coveredFiles": [
+    "docs/specs/body-budget-before-auth.eli16.md",
+    "src/server/AgentServer.ts",
+    "src/server/bodyBudget.ts",
+    "src/server/middleware.ts",
+    "tests/unit/body-budget-before-auth.test.ts",
+    "upgrades/next/body-budget-before-auth.md",
+    "upgrades/side-effects/body-budget-before-auth.md"
+  ],
+  "phase": "complete",
+  "tier": 1,
+  "tierReasoning": "Replaces the pre-auth body parsers with a credential-aware budget and maps body-parser errors to 400/413; auth unchanged, admission-only, reversible by revert, no stored data; independently reviewed twice.",
+  "eli16Path": "docs/specs/body-budget-before-auth.eli16.md",
+  "sideEffectsPath": "upgrades/side-effects/body-budget-before-auth.md",
+  "secondPass": "true",
+  "reviewerConcurred": true
+}

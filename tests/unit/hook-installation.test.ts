@@ -6,7 +6,7 @@
  * - MCP matcher in .claude/settings.json PreToolUse hooks
  */
 
-import { describe, it, expect, beforeEach, afterEach } from 'vitest';
+import { describe, it, expect, beforeAll, afterAll, beforeEach, afterEach } from 'vitest';
 import { spawn, spawnSync } from 'node:child_process';
 import { createServer, type Server } from 'node:http';
 import fs from 'node:fs';
@@ -18,24 +18,36 @@ import { SafeFsExecutor } from '../../src/core/SafeFsExecutor.js';
 describe('Hook installation for external operation safety', () => {
   let tmpDir: string;
   let projectDir: string;
-  let originalCwd: string;
+  let fixtureDir: string;
+  const originalCwd = process.cwd();
 
-  beforeEach(async () => {
+  beforeAll(async () => {
     tmpDir = fs.mkdtempSync(path.join(os.tmpdir(), 'instar-hook-test-'));
-    originalCwd = process.cwd();
-    process.chdir(tmpDir);
-
     const projectName = 'test-hooks-project';
-    await initProject({
-      name: projectName,
-      skipPrereqs: true,
-    });
     projectDir = path.join(tmpDir, projectName);
+    fixtureDir = path.join(tmpDir, 'installed-fixture');
+    process.chdir(tmpDir);
+    try {
+      await initProject({ name: projectName, skipPrereqs: true });
+      fs.renameSync(projectDir, fixtureDir);
+    } finally {
+      process.chdir(originalCwd);
+    }
+  });
+
+  beforeEach(() => {
+    // Restore a fresh copy at the installed path so generated absolute paths remain valid.
+    fs.cpSync(fixtureDir, projectDir, { recursive: true, verbatimSymlinks: true });
+    process.chdir(tmpDir);
   });
 
   afterEach(() => {
     process.chdir(originalCwd);
-    SafeFsExecutor.safeRmSync(tmpDir, { recursive: true, force: true, operation: 'tests/unit/hook-installation.test.ts:37' });
+    SafeFsExecutor.safeRmSync(projectDir, { recursive: true, force: true, operation: 'hook-installation.test:reset-project' });
+  });
+
+  afterAll(() => {
+    SafeFsExecutor.safeRmSync(tmpDir, { recursive: true, force: true, operation: 'hook-installation.test:cleanup' });
   });
 
   it('installs external-operation-gate.js hook', () => {

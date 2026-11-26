@@ -1,3 +1,4 @@
+import { SQL_COMMAND_CONTEXT_CHECK } from '../core/sqlCommandContext.js';
 import { ACCOUNT_PAGE_SAFETY_SCRIPT } from '../data/accountPageSafetyScript.js';
 /**
  * `instar init` — Initialize agent infrastructure.
@@ -59,7 +60,8 @@ import { INSTAR_BASH_PRETOOLUSE_HOOKS, INSTAR_MCP_PRETOOLUSE_HOOKS, INSTAR_WILDC
 import { allocatePort, registerAgent, validateAgentName } from '../core/AgentRegistry.js';
 import { defaultIdentity } from '../scaffold/bootstrap.js';
 import { MachineIdentityManager, ensureGitignore } from '../core/MachineIdentity.js';
-import { PostUpdateMigrator, CLEAR_SEED_SETTINGS_HOOK, POST_COMPACT_SETTINGS_HOOK, PRE_COMPACT_STEER_SETTINGS_HOOK } from '../core/PostUpdateMigrator.js';
+import { OrgPolicyGateHooks } from '../core/OrgPolicyGateHooks.js';
+import { PostUpdateMigrator, CLEAR_SEED_SETTINGS_HOOK, COMPACT_SESSION_START_TIMEOUT_SECONDS, POST_COMPACT_SETTINGS_HOOK, PRE_COMPACT_STEER_SETTINGS_HOOK } from '../core/PostUpdateMigrator.js';
 import { normalizeSkillFrontmatter } from '../core/skillCanonicalFrontmatter.js';
 import { findCoreRegion, REFERENCE_DIR_REL as CLAUDE_MD_REFERENCE_DIR_REL } from '../scaffold/claudeMdLayout.js';
 import { ProjectMapper } from '../core/ProjectMapper.js';
@@ -435,9 +437,11 @@ async function initFreshProject(projectName: string, options: InitOptions): Prom
       feedbackFile: path.join(stateDir, 'feedback.json'),
       sharedSecret: 'instar-rising-tide-v1',
     },
+    // SEC-153: no dispatch server by default. The old address was an unsigned channel; a new agent
+    // polls nothing until its owner sets a server and its pinned keys in the config file.
     dispatches: {
-      enabled: true,
-      dispatchUrl: 'https://dawn.bot-me.ai/api/instar/dispatches',
+      enabled: false,
+      dispatchUrl: '',
       dispatchFile: path.join(stateDir, 'state', 'dispatches.json'),
       autoApply: false,
     },
@@ -545,6 +549,8 @@ async function initFreshProject(projectName: string, options: InitOptions): Prom
   console.log(`  ${pc.green('✓')} Created .instar/scripts/secret-drop-retrieve.mjs`);
   installSecretGet(projectDir);
   console.log(`  ${pc.green('✓')} Created .instar/scripts/secret-get.mjs`);
+  installSecretSet(projectDir);
+  console.log(`  ${pc.green('✓')} Created .instar/scripts/secret-set.mjs`);
   installEmitSessionClock(projectDir);
   console.log(`  ${pc.green('✓')} Created .instar/scripts/emit-session-clock.sh`);
   installBrowserScripts(projectDir);
@@ -805,9 +811,11 @@ async function initExistingProject(options: InitOptions): Promise<void> {
       feedbackFile: path.join(stateDir, 'feedback.json'),
       sharedSecret: 'instar-rising-tide-v1',
     },
+    // SEC-153: no dispatch server by default. The old address was an unsigned channel; a new agent
+    // polls nothing until its owner sets a server and its pinned keys in the config file.
     dispatches: {
-      enabled: true,
-      dispatchUrl: 'https://dawn.bot-me.ai/api/instar/dispatches',
+      enabled: false,
+      dispatchUrl: '',
       dispatchFile: path.join(stateDir, 'state', 'dispatches.json'),
       autoApply: false,
     },
@@ -954,6 +962,8 @@ async function initExistingProject(options: InitOptions): Promise<void> {
   console.log(pc.green('  Created:') + ' .instar/scripts/secret-drop-retrieve.mjs');
   installSecretGet(projectDir);
   console.log(pc.green('  Created:') + ' .instar/scripts/secret-get.mjs');
+  installSecretSet(projectDir);
+  console.log(pc.green('  Created:') + ' .instar/scripts/secret-set.mjs');
   installBrowserScripts(projectDir);
   console.log(pc.green('  Created:') + ' .instar/scripts/browser/ (normal-Chrome helpers, macOS, Windows and Linux)');
 
@@ -1627,8 +1637,10 @@ When something isn't working with instar, or the user wants a feature, use your 
 \`\`\`bash
 curl -X POST http://localhost:\${INSTAR_PORT:-${port}}/feedback \\
   -H 'Content-Type: application/json' \\
-  -d '{"type":"bug","title":"Short description","description":"Full details with context"}'
+  -d '{"type":"bug","title":"Short description","description":"Full details with context","source":{"kind":"agent"}}'
 \`\`\`
+
+\`source\` says who the report is from (\`agent\`, \`other-agent\`, \`user\`). A request the person you serve makes of you directly is never feedback: record it as a commitment (POST /commitments) and it becomes a work card you carry.
 
 This routes feedback to the Instar maintainers automatically. Valid types: \`bug\`, \`feature\`, \`improvement\`, \`question\`, \`hallucination\`.
 
@@ -2136,7 +2148,8 @@ curl -s -X POST http://localhost:\${INSTAR_PORT:-${port}}/feedback \\
   -d '{
     "type": "bug",
     "title": "Brief description of the issue",
-    "description": "Full context: what happened, what you expected, error messages, steps to reproduce"
+    "description": "Full context: what happened, what you expected, error messages, steps to reproduce",
+    "source": {"kind": "agent"}
   }' | python3 -m json.tool
 \`\`\`
 
@@ -4457,6 +4470,7 @@ function installHooks(stateDir: string): void {
   const migrator = new PostUpdateMigrator(
     { stateDir, port: 4040, sessions: { claudePath: 'claude' } } as any
   );
+  fs.writeFileSync(path.join(hooksDir, 'telegram-topic-context.sh'), migrator.getHookContent('telegram-topic-context'), { mode: 0o755 });
   fs.writeFileSync(path.join(hooksDir, 'session-start.sh'), migrator.getHookContent('session-start'), { mode: 0o755 });
   // Clear-seed hook (context-budget-layered-summaries §9.2 rung 1): silent on a human /clear.
   fs.writeFileSync(path.join(hooksDir, 'clear-seed.sh'), migrator.getHookContent('clear-seed'), { mode: 0o755 });
@@ -4504,6 +4518,16 @@ for pattern in "rm -rf /" "rm -rf ~" "> /dev/sda" "mkfs\\." "dd if=" ":(){:|:&};
   fi
 done
 
+# A literal credential on a command line is readable by every process on this machine through ps for
+# as long as the command runs, and process samplers (diagnostics, crash captures) record it
+# (argv-token incident, 2026-11-17). Read the secret inside the command instead; the shell expands it
+# and it never reaches the command line. Always blocked, regardless of safety level.
+if echo "\$INPUT" | grep -qE -e '(gh[pousr]_[A-Za-z0-9]{36}|github_pat_[A-Za-z0-9_]{60,}|sk-ant-[A-Za-z0-9_-]{20,}|xox[abprs]-[0-9A-Za-z-]{20,}|[0-9]{8,10}:AA[A-Za-z0-9_-]{33})'; then
+  echo 'BLOCKED: this command carries a literal credential (a token, an API key or a bot token).' >&2
+  echo 'A command line is visible to every process on this machine while it runs. Read the secret inside the command instead, for example GH_TOKEN="\$(gh auth token)" or "\$(node .instar/scripts/secret-get.mjs NAME)". To write a file that holds a fixture, use the Write tool.' >&2
+  exit 2
+fi
+
 # Safe-case carve-out: \`git push --force-with-lease\` to a NON-protected branch is the
 # legitimate way to update one's OWN amended/rebased PR branch. Still block plain --force/-f
 # and any force-push explicitly targeting a protected branch (main/master/develop/release*).
@@ -4541,6 +4565,7 @@ for pattern in "rm -rf \\." "git push --force" "git push -f" "git reset --hard" 
   fi
 done
 
+${SQL_COMMAND_CONTEXT_CHECK}
 # SQL must look like a statement, not prose that merely names a keyword. Match
 # at input/statement start or immediately after a SQL-bearing quote/separator,
 # and require the following table/database identifier. Ambiguous statement
@@ -4554,6 +4579,10 @@ for sql_spec in \\
   pattern="\${sql_spec%%|*}"
   sql_pattern="\${sql_spec#*|}"
   if echo "\$INPUT" | grep -qE "\$sql_pattern"; then
+    if [ -z "\$SQL_LITERAL_DATA" ]; then
+      if sql_command_is_literal_data; then SQL_LITERAL_DATA=1; else SQL_LITERAL_DATA=0; fi
+    fi
+    if [ "\$SQL_LITERAL_DATA" = "1" ]; then continue; fi
     if [ "\$SAFETY_LEVEL" -eq 1 ]; then
       echo "BLOCKED: Potentially destructive command detected: \$pattern" >&2
       echo "Ask the user for explicit confirmation before running this command." >&2
@@ -4659,6 +4688,10 @@ fi
   // External operation gate — intercepts MCP tool calls to external services.
   // Uses shared template from PostUpdateMigrator for DRY maintenance.
   fs.writeFileSync(path.join(hooksDir, 'external-operation-gate.js'), migrator.getHookContent('external-operation-gate'), { mode: 0o755 });
+  // Organization never rules check (docs/specs/org-never-actions.md §A): a new agent gets the gate too.
+  // It allows everything until the agent joins an organization whose policy says otherwise.
+  fs.writeFileSync(path.join(hooksDir, 'org-policy-gate.sh'), OrgPolicyGateHooks.wrapper(), { mode: 0o755 });
+  fs.writeFileSync(path.join(hooksDir, 'org-policy-gate.js'), OrgPolicyGateHooks.script(), { mode: 0o755 });
 
   // Claim intercept — catches false operational claims against canonical state.
   // PostToolUse hook checks tool output; Stop hook checks direct responses.
@@ -4706,7 +4739,7 @@ fi
   fs.writeFileSync(path.join(hooksDir, 'model-tier-reconciler.js'), migrator.getHookContent('model-tier-reconciler'), { mode: 0o755 });
 }
 
-function getHookEventReporterScript(): string {
+export function getHookEventReporterScript(): string {
   return `#!/usr/bin/env node
 // Hook Event Reporter — command hook replacement for HTTP hooks.
 //
@@ -4723,7 +4756,9 @@ function getHookEventReporterScript(): string {
 
 const serverUrl = process.env.INSTAR_SERVER_URL || 'http://localhost:4042';
 const authToken = process.env.INSTAR_AUTH_TOKEN || '';
-const instarSid = process.env.INSTAR_SESSION_ID || '';
+// Validated once: an id that fails the pattern is sent in neither the query nor the body (the hook exits).
+const rawSid = process.env.INSTAR_SESSION_ID || '';
+const instarSid = /^[A-Za-z0-9._:-]{1,128}$/.test(rawSid) ? rawSid : '';
 
 if (!authToken || !instarSid) {
   // Missing env vars — skip silently
@@ -4736,8 +4771,32 @@ process.stdin.on('end', async () => {
   try {
     const { request } = await import('node:http');
     const input = JSON.parse(data);
+    // Bound the forwarded identifying fields here too: an older server stores a payload as received.
+    const str = (v, max) => (typeof v === 'string' && v.length > 0 && v.length <= max ? v : undefined);
+    const id = (v) => (typeof v === 'string' && /^[A-Za-z0-9._:-]{1,128}$/.test(v) ? v : undefined);
+    const absPath = (v) => (typeof v === 'string' && v.startsWith('/') && v.length <= 1024 ? v : undefined);
     const payload = JSON.stringify({
-      event: input.hook_event || (input.tool_name ? 'PostToolUse' : 'Unknown'),
+      // Claude Code names the event in hook_event_name (hook_event is the old
+      // spelling, kept as a fallback). Without it every Stop, SubagentStart,
+      // SubagentStop, TaskCompleted, SessionEnd and PreCompact event arrived as
+      // \"Unknown\" and no consumer of those events ever ran (2026-11-21).
+      event: input.hook_event_name || input.hook_event || (input.tool_name ? 'PostToolUse' : 'Unknown'),
+      // The instar session this hook ran in, so consumers keyed on it (the
+      // practice-fold runner, the subagent tracker) can find the session.
+      instar_session_id: id(instarSid),
+      // The tmux session name, which Compaction Trigger 1 checks against the session id.
+      instar_session: str(process.env.INSTAR_SESSION_NAME, 128),
+      // Short identifying fields the native reporter also forwards (docs/specs/native-hook-events.md
+      // D1); the server bounds them the same way. Message text (last_assistant_message,
+      // task_subject) is deliberately NOT sent from here: an older server stores payloads as
+      // received, so raw text could reach storage during a version mismatch.
+      agent_id: id(input.agent_id),
+      agent_type: str(input.agent_type, 128),
+      agent_transcript_path: absPath(input.agent_transcript_path),
+      task_id: id(input.task_id),
+      reason: str(input.reason, 64),
+      trigger: str(input.trigger, 64),
+
       session_id: input.session_id || '',
       tool_name: input.tool_name || '',
       // green-pr-automerge Layer 2: forward the session cwd so the server can
@@ -5289,6 +5348,39 @@ function installSecretGet(projectDir: string): void {
 }
 
 /**
+ * Install the vault WRITE helper (.instar/scripts/secret-set.mjs): the value is read
+ * from stdin only and never printed — the target of the no-echo transfer
+ * (`secret-drop-retrieve.mjs <token> <field> --run -- node .instar/scripts/secret-set.mjs <name>`,
+ * docs/specs/gemini-payg-metered-lane.md §4).
+ */
+function installSecretSet(projectDir: string): void {
+  const scriptsDir = path.join(projectDir, '.instar', 'scripts');
+  fs.mkdirSync(scriptsDir, { recursive: true });
+
+  const scriptPath = path.join(scriptsDir, 'secret-set.mjs');
+
+  const modDir = __dirname;
+  const candidates = [
+    path.resolve(modDir, '..', 'templates', 'scripts', 'secret-set.mjs'),
+    path.resolve(modDir, '..', '..', 'src', 'templates', 'scripts', 'secret-set.mjs'),
+  ];
+
+  let scriptContent = '';
+  for (const candidate of candidates) {
+    if (fs.existsSync(candidate)) {
+      scriptContent = fs.readFileSync(candidate, 'utf-8');
+      break;
+    }
+  }
+
+  if (!scriptContent) {
+    return;
+  }
+
+  fs.writeFileSync(scriptPath, scriptContent, { mode: 0o755 });
+}
+
+/**
  * The normal-Chrome helper scripts shipped in src/templates/scripts/browser/: the three macOS tools
  * (Apple Events), the Windows driver written by PP (native-drive.ps1, real OS input + UI Automation)
  * with its WSL wrapper (ndrive.sh), and the Linux driver (x-drive.py, AT-SPI + XTEST on an agent-private
@@ -5467,7 +5559,7 @@ function installClaudeSettings(projectDir: string, serverPort?: number): void {
     hooks.SessionStart = [
       { matcher: 'startup', hooks: [sessionStartHook] },
       { matcher: 'resume', hooks: [sessionStartHook] },
-      { matcher: 'compact', hooks: [sessionStartHook] },
+      { matcher: 'compact', hooks: [{ ...sessionStartHook, timeout: COMPACT_SESSION_START_TIMEOUT_SECONDS }] },
       { matcher: 'clear', hooks: [{ ...CLEAR_SEED_SETTINGS_HOOK }] },
     ];
   } else {
@@ -5475,7 +5567,8 @@ function installClaudeSettings(projectDir: string, serverPort?: number): void {
     const sessionStart = hooks.SessionStart as Array<{ matcher?: string; hooks?: unknown[] }>;
     for (const matcher of ['startup', 'resume', 'compact']) {
       if (!sessionStart.some(e => e.matcher === matcher)) {
-        sessionStart.push({ matcher, hooks: [sessionStartHook] });
+        const hook = matcher === 'compact' ? { ...sessionStartHook, timeout: COMPACT_SESSION_START_TIMEOUT_SECONDS } : sessionStartHook;
+        sessionStart.push({ matcher, hooks: [hook] });
       }
     }
     if (!sessionStart.some(e => (e.hooks as Array<{ command?: string }> | undefined)?.some(h => h.command?.includes('clear-seed.sh')))) {

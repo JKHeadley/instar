@@ -38,7 +38,7 @@ Honest limits: the tests report their own result (exactly as on GitHub today), a
 
 ## Flaky tests and taking turns
 
-A few tests fail now and then for no real reason, especially when the whole suite runs at once. When a run fails only one to three files, the checker re-runs just those files on their own. If they pass, the run counts as passing, and each such test is logged as something to fix. It does not do this when the PR touched that test or the code it uses, because then the failure may be real. Checks of the main branch and checks of pull requests also take turns now, so the main branch can't keep the checker busy while PRs wait.
+A few tests fail now and then for no real reason, especially when the whole suite runs at once. When a run fails only one to three files, the checker re-runs just those files on their own. If they pass, the run counts as passing, and each such test is logged as something to fix. It does not do this when the PR touched that test or the code it uses, because then the failure may be real. There is one exception, switched off unless someone turns it on: if the PR only touched code the test uses, and that same test has recently failed and then passed by itself on the main branch, the test is known to be unreliable without this PR, so its file gets three more tries alone and counts as passing only if all three pass (`local-verify-import-related-rerun.md`). Checks of the main branch and checks of pull requests also take turns now, so the main branch can't keep the checker busy while PRs wait.
 
 ## How it rolls out
 

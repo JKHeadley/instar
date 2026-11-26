@@ -1,0 +1,25 @@
+{
+  "ts": "2026-11-22T06:50:54.366Z",
+  "slug": "keep-failed-verify-assertions",
+  "suggestedTier": 2,
+  "declaredTier": 1,
+  "riskFloor": 2,
+  "riskFloorReasons": [
+    "new capability: new exported class / subsystem added"
+  ],
+  "belowFloor": true,
+  "files": 2,
+  "loc": 34,
+  "scope": {
+    "basis": "staged-in-scope-paths-including-deleted",
+    "files": [
+      "src/localVerify/failureEvidence.ts",
+      "src/localVerify/orchestratorSeams.ts"
+    ],
+    "addedLines": 33,
+    "deletedLines": 1
+  },
+  "causalAutopsy": null,
+  "classClosure": null,
+  "verdict": "pass"
+}

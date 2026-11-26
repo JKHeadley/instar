@@ -1,0 +1,64 @@
+{
+  "version": 3,
+  "slug": "lease-freshness-lapse-retry",
+  "sessionId": "d281f530-04c8-44f6-8798-ffb6bbad13cd",
+  "timestamp": "2026-11-21T20:15:44.696Z",
+  "artifactPath": "upgrades/side-effects/lease-freshness-lapse-retry.md",
+  "artifactSha256": "6103fa887ebf722e09569b5da5263af313ecb6657f9807b7112635551b68664a",
+  "coveredFiles": [
+    "docs/specs/lease-freshness-lapse-retry.eli16.md",
+    "docs/specs/lease-freshness-lapse-retry.md",
+    "docs/specs/reports/lease-freshness-lapse-retry-convergence.md",
+    "src/commands/server.ts",
+    "src/core/LeaseCoordinator.ts",
+    "src/core/MultiMachineCoordinator.ts",
+    "src/messaging/TelegramAdapter.ts",
+    "src/messaging/telegram-origin/OriginAwareness.ts",
+    "src/messaging/telegram-origin/OriginBotEgress.ts",
+    "src/messaging/telegram-origin/OriginEgressCapacity.ts",
+    "src/messaging/telegram-origin/OriginRetry.ts",
+    "src/messaging/telegram-origin/OriginStoreBackend.ts",
+    "src/messaging/telegram-origin/TelegramOriginBoot.ts",
+    "src/messaging/telegram-origin/TelegramOriginRuntime.ts",
+    "src/messaging/telegram-origin/TelegramOriginService.ts",
+    "src/monitoring/neverSilent/NeverSilentStore.ts",
+    "src/server/CapabilityIndex.ts",
+    "src/server/neverSilentRoutes.ts",
+    "tests/unit/LeaseCoordinator.test.ts",
+    "tests/unit/neverSilent-send-hold.test.ts",
+    "tests/unit/telegram-origin/egress-capacity.test.ts",
+    "tests/unit/telegram-origin/known-failure-retry.test.ts",
+    "tests/unit/telegram-origin/late-capacity.test.ts",
+    "tests/unit/telegram-origin/lease-freshness-lapse.test.ts",
+    "tests/unit/telegram-owner-dm-outcome.test.ts",
+    "upgrades/next/lease-freshness-lapse-retry.md",
+    "upgrades/side-effects/lease-freshness-lapse-retry.md"
+  ],
+  "phase": "complete",
+  "tier": 1,
+  "tierReasoning": "A narrow fix to the Telegram origin send path with no switch: it names, logs, counts and shortens the retry of an existing fail-closed refusal without adding a block or changing the lease fence; a revert fully undoes it. The spec was converged (3 rounds, the Tier-1 cap) and approved; targeted unit tests cover each decision point.",
+  "eli16Path": "docs/specs/lease-freshness-lapse-retry.eli16.md",
+  "sideEffectsPath": "upgrades/side-effects/lease-freshness-lapse-retry.md",
+  "secondPass": "not-required",
+  "reviewerConcurred": null,
+  "toolchain": {
+    "buildSkill": {
+      "name": "instar-dev",
+      "version": "21a45a5a5f03",
+      "verified": true
+    },
+    "reviewSkills": [
+      {
+        "name": "spec-converge",
+        "outcome": "converged",
+        "verified": false,
+        "iterations": 3
+      }
+    ],
+    "convergence": {
+      "reportPath": "docs/specs/reports/lease-freshness-lapse-retry-convergence.md",
+      "iterations": 3,
+      "verified": true
+    }
+  }
+}

@@ -64,9 +64,12 @@ describe('bounded witness transfer over actual HTTP',()=>{
   expect((await f.post(`/bootstrap-transfers/${transferId}/chunks/membership/0`,{value:f.request.memberships[0]})).ok).toBe(true);
   const {revalidations,stateTransferReceipts,sourceManifest,...rest}=f.request.recovery;
   expect((await f.post(`/bootstrap-transfers/${transferId}/chunks/control/0`,{value:{...rest,sourceManifest:{...sourceManifest,entries:[]}}})).ok).toBe(true);
-  const corrupt=structuredClone(f.request.operations[0]);const originalCiphertext=corrupt.encryptedSourceBundle!.ciphertext;
-  corrupt.encryptedSourceBundle!.ciphertext=(originalCiphertext[0]==='A'?'B':'A')+originalCiphertext.slice(1);
-  expect(corrupt.encryptedSourceBundle!.ciphertext).not.toBe(originalCiphertext);
+  // The corruption must change the ciphertext. It used to write 'A' over the first character, which is a
+  // no-op whenever the random ciphertext already starts with 'A' (about 1 run in 64 for base64): the
+  // chunk was then valid and the next line failed. Seven fail-then-pass runs since 11-16 and one final
+  // failure (2026-11-19, where the retry hit it again) trace to this.
+  const corrupt=structuredClone(f.request.operations[0]);{const c=corrupt.encryptedSourceBundle!.ciphertext;corrupt.encryptedSourceBundle!.ciphertext=(c[0]==='A'?'B':'A')+c.slice(1);}
+  expect(corrupt.encryptedSourceBundle!.ciphertext).not.toBe(f.request.operations[0].encryptedSourceBundle!.ciphertext);
   expect((await f.post(`/bootstrap-transfers/${transferId}/chunks/operation/0`,{value:corrupt})).ok).toBe(false);
   expect((await f.post(`/bootstrap-transfers/${transferId}/chunks/operation/0`,{value:f.request.operations[0]})).ok).toBe(true);
   expect((await f.post(`/bootstrap-transfers/${transferId}/finish`,{})).status).toBe(409);

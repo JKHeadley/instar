@@ -1,0 +1,32 @@
+{
+  "ts": "2026-11-18T14:47:31.439Z",
+  "slug": "bounded-input-review-b1",
+  "suggestedTier": 2,
+  "declaredTier": 1,
+  "riskFloor": 2,
+  "riskFloorReasons": [
+    "irreversibility: src/core/PostUpdateMigrator.ts touches PostUpdateMigrator",
+    "migration / fleet-rollout surface: src/core/PostUpdateMigrator.ts touches PostUpdateMigrator (fleet migration machinery)"
+  ],
+  "belowFloor": true,
+  "files": 8,
+  "loc": 109,
+  "scope": {
+    "basis": "staged-in-scope-paths-including-deleted",
+    "files": [
+      "src/core/AutoDispatcher.ts",
+      "src/core/DecisionQualityRecorderImpl.ts",
+      "src/core/GeminiCliIntelligenceProvider.ts",
+      "src/core/JobReflector.ts",
+      "src/core/MessagingToneGate.ts",
+      "src/core/PostUpdateMigrator.ts",
+      "src/core/PreCompactionFlush.ts",
+      "src/core/standing-authorization.ts"
+    ],
+    "addedLines": 96,
+    "deletedLines": 13
+  },
+  "causalAutopsy": null,
+  "classClosure": null,
+  "verdict": "pass"
+}

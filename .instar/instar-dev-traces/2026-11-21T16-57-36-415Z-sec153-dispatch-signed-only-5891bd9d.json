@@ -1,0 +1,40 @@
+{
+  "version": 2,
+  "slug": "sec153-dispatch-signed-only",
+  "sessionId": "3baab194-1525-46e9-b5f9-9a9e8d6465e3",
+  "timestamp": "2026-11-21T16:57:36.415Z",
+  "artifactPath": "upgrades/side-effects/sec153-dispatch-signed-only.md",
+  "artifactSha256": "167f22046b416085691f08c28d9274c119b67dc8ceea692d2eb7510fac43016f",
+  "coveredFiles": [
+    "docs/specs/sec153-dispatch-signed-only.eli16.md",
+    "src/commands/init.ts",
+    "src/commands/server.ts",
+    "src/config/bearerConfigWrite.ts",
+    "src/core/AutoDispatcher.ts",
+    "src/core/DispatchManager.ts",
+    "src/core/PostUpdateMigrator.ts",
+    "src/core/types.ts",
+    "src/scaffold/templates.ts",
+    "src/server/routes.ts",
+    "tests/e2e/dispatch-update-feedback.test.ts",
+    "tests/integration/dispatch-routes.test.ts",
+    "tests/unit/dispatch-failures.test.ts",
+    "tests/unit/dispatch-manager.test.ts",
+    "tests/unit/formatApprovalNotification.test.ts",
+    "tests/unit/sec153-dispatch-origin.test.ts",
+    "upgrades/next/sec153-dispatch-signed-only.md",
+    "upgrades/side-effects/sec153-dispatch-signed-only.md"
+  ],
+  "phase": "complete",
+  "tier": 1,
+  "tierReasoning": "SEC-153 security fix: removes authority from an unsigned remote channel; one narrow migration that only switches off one exact legacy address; independent review concurred after four rounds.",
+  "eli16Path": "docs/specs/sec153-dispatch-signed-only.eli16.md",
+  "sideEffectsPath": "upgrades/side-effects/sec153-dispatch-signed-only.md",
+  "secondPass": "true",
+  "reviewerConcurred": true,
+  "classClosure": {
+    "defectClass": "unbounded-self-action",
+    "closure": "n/a",
+    "reason": "Not a new loop: the change only removes actions. park() replaces the existing per-dispatch approval notices, sends at most one notice per dispatch per process (a parked-id set), and runs inside the existing 30-minute poll tick; no restart, respawn or retry is added."
+  }
+}

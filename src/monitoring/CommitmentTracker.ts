@@ -108,6 +108,32 @@ export interface Commitment {
   boundBy?: string;
   /** Source: 'agent' (self-registered) or 'sentinel' (detected by LLM scanner) */
   source?: 'agent' | 'sentinel' | 'manual';
+
+  // ── agent-work-cards-default §3: the request this commitment records, and its card ──
+  /** The conversation the request was made in (an app key, `telegram:<topic>` or `slack:<channel>:<thread>`). */
+  sourceConversationKey?: string;
+  /** The inbound message the request is; the durable row the gate looks up. */
+  sourceMessageId?: string;
+  /** Verified at recording time on the recording machine from the durable row; replicates, never upgraded elsewhere. */
+  sourceVerified?: boolean;
+  sourceUnverifiedReason?: string;
+  requesterPersonKey?: string;
+  requesterIsOwner?: boolean;
+  /** The row's whole text (credential-checked); the card's locked `need` on an owner-verified request. */
+  requestText?: string;
+  requestTextHash?: string;
+  /** The recording session's done items for the card; absent ⇒ one "Done: <agentResponse>" item. */
+  milestones?: string[];
+  /** Whether the work sends outside the team or spends money (the card's `outward`). */
+  outward?: boolean;
+  recommendation?: string;
+  whyYou?: string;
+  /** Origin-written bookkeeping (a cache of the card index, never authority). */
+  cardId?: string;
+  cardWritten?: boolean;
+  cardPending?: boolean;
+  cardReason?: string;
+  cardRefused?: string;
   /** Exact motivating correction provenance for correspondence-gated work. */
   correctionId?: string;
   classReviewRef?: string;
@@ -793,6 +819,22 @@ export class CommitmentTracker extends EventEmitter {
      *  token payload, or `server:<component>` for in-process callers) —
      *  recorded by the GATE, never trusted from a request body. */
     boundBy?: string;
+    // agent-work-cards-default §3 — the request's source and the gate's verdict (computed by the route, never trusted from a body).
+    sourceConversationKey?: string;
+    sourceMessageId?: string;
+    sourceVerified?: boolean;
+    sourceUnverifiedReason?: string;
+    requesterPersonKey?: string;
+    requesterIsOwner?: boolean;
+    requestText?: string;
+    requestTextHash?: string;
+    milestones?: string[];
+    outward?: boolean;
+    recommendation?: string;
+    whyYou?: string;
+    /** The derived card id (the gate writes the card after the response; the id is derivable before). */
+    cardId?: string;
+    cardPending?: boolean;
   }): Commitment {
     // FD3 (action-claim-followthrough): idempotent create keyed on externalKey.
     // If an OPEN (non-terminal) commitment already carries this externalKey,
@@ -969,6 +1011,21 @@ export class CommitmentTracker extends EventEmitter {
       // THE cross-machine identity (ids are per-machine sequential counters).
       // Distinct from ownerMachineId (a caller-supplied beacon field).
       ...(this.config.originMachineId ? { originMachineId: this.config.originMachineId } : {}),
+      // agent-work-cards-default §3: the request's source and verdict, replicated with the row.
+      ...(input.sourceConversationKey ? { sourceConversationKey: input.sourceConversationKey } : {}),
+      ...(input.sourceMessageId ? { sourceMessageId: input.sourceMessageId } : {}),
+      ...(input.sourceVerified !== undefined ? { sourceVerified: input.sourceVerified } : {}),
+      ...(input.sourceUnverifiedReason ? { sourceUnverifiedReason: input.sourceUnverifiedReason } : {}),
+      ...(input.requesterPersonKey ? { requesterPersonKey: input.requesterPersonKey } : {}),
+      ...(input.requesterIsOwner !== undefined ? { requesterIsOwner: input.requesterIsOwner } : {}),
+      ...(input.requestText !== undefined ? { requestText: input.requestText } : {}),
+      ...(input.requestTextHash ? { requestTextHash: input.requestTextHash } : {}),
+      ...(Array.isArray(input.milestones) && input.milestones.length ? { milestones: input.milestones } : {}),
+      ...(input.outward !== undefined ? { outward: input.outward } : {}),
+      ...(input.recommendation ? { recommendation: input.recommendation } : {}),
+      ...(input.whyYou ? { whyYou: input.whyYou } : {}),
+      ...(input.cardId ? { cardId: input.cardId } : {}),
+      ...(input.cardPending !== undefined ? { cardPending: input.cardPending } : {}),
     };
 
     // Insert via the same discipline future writes use: under the single-
@@ -1080,6 +1137,53 @@ export class CommitmentTracker extends EventEmitter {
    * Per PROMISE-BEACON-SPEC.md Round 3 #18: `delivered` is terminal; no more
    * heartbeats, no more verify attempts.
    */
+  /**
+   * agent-work-cards-default §3: the origin's bookkeeping about a commitment's card (`cardId`, `cardWritten`,
+   * `cardPending`, `cardReason`, `cardRefused`). A cache of the card index, never authority; a null clears the field.
+   */
+  annotateCard(id: string, patch: { cardId?: string; cardWritten?: boolean; cardPending?: boolean; cardReason?: string | null; cardRefused?: string | null }): Commitment | null {
+    const existing = this.store.commitments.find(c => c.id === id);
+    if (!existing) return null;
+    if (this.config.originMachineId && existing.originMachineId && existing.originMachineId !== this.config.originMachineId) return null;
+    const updated = this.mutateSync(id, c => {
+      const next: Commitment = { ...c };
+      if (patch.cardId !== undefined) next.cardId = patch.cardId;
+      if (patch.cardWritten !== undefined) next.cardWritten = patch.cardWritten;
+      if (patch.cardPending !== undefined) next.cardPending = patch.cardPending;
+      if (patch.cardReason !== undefined) { if (patch.cardReason === null) delete next.cardReason; else next.cardReason = patch.cardReason; }
+      if (patch.cardRefused !== undefined) { if (patch.cardRefused === null) delete next.cardRefused; else next.cardRefused = patch.cardRefused; }
+      return next;
+    });
+    return updated;
+  }
+
+  /**
+   * agent-work-cards-default §3 "Sentinel captures": when the gate writes a card for `byId`, a pending `sentinel` row
+   * in the same conversation with the same normalised request and promise within 24 hours is withdrawn as superseded
+   * (the existing path: `status: withdrawn`, `supersededBy`), so promise-review and PromiseBeacon do not carry it twice.
+   */
+  supersedeSentinelsFor(conversationKey: string, userRequest: string, agentResponse: string, byId: string): string[] {
+    const norm = CommitmentTracker.normalizePromiseText(agentResponse);
+    const normReq = CommitmentTracker.normalizePromiseText(userRequest);
+    const since = Date.now() - 24 * 60 * 60 * 1000;
+    const topic = /^telegram:(-?\d+)$/.exec(conversationKey);
+    const topicId = topic ? Number(topic[1]) : undefined;
+    const out: string[] = [];
+    for (const c of this.store.commitments) {
+      if (c.id === byId || c.status !== 'pending' || c.source !== 'sentinel') continue;
+      if (Date.parse(c.createdAt) < since) continue;
+      const sameConv = c.sourceConversationKey ? c.sourceConversationKey === conversationKey : (topicId !== undefined && c.topicId === topicId);
+      if (!sameConv) continue;
+      if (CommitmentTracker.normalizePromiseText(c.agentResponse) !== norm || CommitmentTracker.normalizePromiseText(c.userRequest) !== normReq) continue;
+      if (this.config.originMachineId && c.originMachineId && c.originMachineId !== this.config.originMachineId) continue;
+      const superseded = this.mutateSync(c.id, (x) => ({ ...x, status: 'withdrawn', resolvedAt: new Date().toISOString(), resolution: `superseded-by-${byId}: the request has a card`, supersededBy: byId, beaconEnabled: false }));
+      this.refreshThreadIdIndex(superseded);
+      this.emit('withdrawn', superseded);
+      out.push(c.id);
+    }
+    return out;
+  }
+
   deliver(id: string, deliveryMessageId?: string, evidence?: string): Commitment | null {
     const existing = this.store.commitments.find(c => c.id === id);
     if (!existing) return null;
@@ -2054,8 +2158,32 @@ export class CommitmentTracker extends EventEmitter {
 
   // ── Auto-correction ────────────────────────────────────────────
 
+  /**
+   * SEC-075: auto-correction writes config on a bearer caller's behalf (anyone with the API key
+   * can create a commitment), so it may write only what PATCH /config would accept from that
+   * caller. The guard returns null when the write is allowed, else a plain reason. Until it is
+   * wired, nothing is auto-corrected (fail closed); the drift is still reported as a violation.
+   */
+  private configWriteGuard: ((configPath: string, value: unknown) => string | null) | null = null;
+  setConfigWriteGuard(guard: (configPath: string, value: unknown) => string | null): void {
+    this.configWriteGuard = guard;
+  }
+
   private attemptAutoCorrection(commitment: Commitment): boolean {
     if (!commitment.configPath || commitment.configExpectedValue === undefined) return false;
+    let refusal: string | null;
+    try {
+      refusal = this.configWriteGuard
+        ? this.configWriteGuard(commitment.configPath, commitment.configExpectedValue)
+        : 'the config write check is not ready yet';
+    } catch (err) {
+      // @silent-fallback-ok — a check that cannot decide is a refusal: nothing is written, the drift is reported
+      refusal = `the config write check failed (${err instanceof Error ? err.message : String(err)})`;
+    }
+    if (refusal !== null) {
+      console.warn(`[commitments] not auto-correcting ${commitment.id}: ${refusal}`);
+      return false;
+    }
 
     try {
       this.config.liveConfig.set(commitment.configPath, commitment.configExpectedValue);
@@ -2846,7 +2974,9 @@ export class CommitmentTracker extends EventEmitter {
    * the record persist in the SAME saveStore() write.
    */
   private stampReplicationIfMeaningful(prev: Commitment | null, next: Commitment): Commitment {
-    const BOOKKEEPING = new Set(['consecutiveUnchanged', 'lastHeartbeatAt', 'heartbeatCount', 'version', 'lastMutatedSeq']);
+    // The card fields are origin-written bookkeeping (agent-work-cards-default §3): a cache of the card index, so
+    // setting them never re-ships the row; they ride along with the next meaningful change.
+    const BOOKKEEPING = new Set(['consecutiveUnchanged', 'lastHeartbeatAt', 'heartbeatCount', 'version', 'lastMutatedSeq', 'cardId', 'cardWritten', 'cardPending', 'cardReason', 'cardRefused']);
     let meaningful = prev === null;
     if (!meaningful && prev) {
       const keys = new Set([...Object.keys(prev), ...Object.keys(next)]);

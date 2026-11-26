@@ -79,38 +79,47 @@ export class CredentialIdentityOracle implements IdentityOracle {
       return { unavailable: true, reason: 'no access token in slot credential store' };
     }
 
-    // 2. Probe the profile endpoint with the slot's token. Bounded; any failure → unavailable.
-    let resp: { ok: boolean; status: number; json: () => Promise<unknown> };
-    try {
-      resp = await this.fetchImpl(OAUTH_PROFILE_URL, {
-        headers: {
-          Authorization: `Bearer ${token}`,
-          Accept: 'application/json',
-          'Content-Type': 'application/json',
-          'anthropic-beta': 'oauth-2025-04-20',
-        },
-        signal: AbortSignal.timeout(this.timeoutMs),
-      });
-    } catch (err) {
-      return { unavailable: true, reason: `profile fetch error: ${(err as Error)?.message ?? 'unknown'}` };
-    }
-
-    if (!resp.ok) {
-      // 401/403/429/5xx all land here — never a mismatch, always unavailable (§2.11).
-      return { unavailable: true, reason: `profile endpoint returned ${resp.status}` };
-    }
-
-    // 3. Parse + extract the owning email.
-    let data: unknown;
-    try {
-      data = await resp.json();
-    } catch {
-      return { unavailable: true, reason: 'unparseable profile response' };
-    }
-    const email = (data as { account?: { email?: unknown } })?.account?.email;
-    if (typeof email !== 'string' || email.length === 0) {
-      return { unavailable: true, reason: 'profile response carried no usable email' };
-    }
-    return { email };
+    // 2-3. Probe the profile endpoint with the slot's token and read the owning email.
+    return emailForClaudeToken(token, { fetchImpl: this.fetchImpl, timeoutMs: this.timeoutMs });
   }
+}
+
+/**
+ * The email a Claude token signs in as: `GET /api/oauth/profile` with the token, then
+ * `account.email`. Bounded; any failure is `unavailable`, never a guess. Writes nothing.
+ */
+export async function emailForClaudeToken(
+  token: string,
+  opts: { fetchImpl?: OracleFetch; timeoutMs?: number } = {},
+): Promise<IdentityOracleResult> {
+  const fetchImpl = opts.fetchImpl ?? ((url, init) => fetch(url, init as RequestInit) as unknown as ReturnType<OracleFetch>);
+  let resp: { ok: boolean; status: number; json: () => Promise<unknown> };
+  try {
+    resp = await fetchImpl(OAUTH_PROFILE_URL, {
+      headers: {
+        Authorization: `Bearer ${token}`,
+        Accept: 'application/json',
+        'Content-Type': 'application/json',
+        'anthropic-beta': 'oauth-2025-04-20',
+      },
+      signal: AbortSignal.timeout(opts.timeoutMs ?? DEFAULT_TIMEOUT_MS),
+    });
+  } catch (err) {
+    return { unavailable: true, reason: `profile fetch error: ${(err as Error)?.message ?? 'unknown'}` };
+  }
+  if (!resp.ok) {
+    // 401/403/429/5xx all land here — never a mismatch, always unavailable (§2.11).
+    return { unavailable: true, reason: `profile endpoint returned ${resp.status}` };
+  }
+  let data: unknown;
+  try {
+    data = await resp.json();
+  } catch {
+    return { unavailable: true, reason: 'unparseable profile response' };
+  }
+  const email = (data as { account?: { email?: unknown } })?.account?.email;
+  if (typeof email !== 'string' || email.length === 0) {
+    return { unavailable: true, reason: 'profile response carried no usable email' };
+  }
+  return { email };
 }

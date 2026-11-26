@@ -82,6 +82,12 @@ export function usageWindows(q, now = Date.now()) {
   return out;
 }
 
+/** Future weekly reset only; short-window and specialist limits do not reorder the account list. */
+export function nextWeeklyReset(q, now = Date.now()) {
+  const times = usageWindows(q, now).filter((w) => w.key === 'weekly').map((w) => Date.parse(w.resetsAt)).filter((t) => Number.isFinite(t) && t > now);
+  return times.length ? Math.min(...times) : null;
+}
+
 /** The tightest usage window on a reading: { pct, label, resetsAt, second }. */
 export function tightest(q, now = Date.now()) {
   const wins = usageWindows(q, now).filter((w) => !w.rolledOver).map(({ pct, label, resetsAt }) => ({ pct, label, resetsAt }));
@@ -109,7 +115,7 @@ export function windowRow(w, now = Date.now()) {
     pctText: `${Math.round(w.pct)}%`,
     reset: when ? `${when}${until ? ` (${until})` : ''}` : null,
     // warning-path: row
-    tone: w.pct >= NEAR_OUT_PCT ? 'bad' : w.pct >= 75 ? 'attn' : null,
+    tone: usageTone(w.pct),
   };
 }
 
@@ -127,6 +133,19 @@ export function resetWords(ts, now = Date.now()) {
 
 /** A usage window at or over this share is "nearly out" (the rows' red tone uses the same line). */
 export const NEAR_OUT_PCT = 90;
+/** At or over this share a limit is coloured as needing attention. */
+export const USAGE_TONE_ATTN_PCT = 75;
+
+/**
+ * The colour for a limit or an account, from the rounded percentage that is displayed (so 89.6%,
+ * shown as "90%", is red), and none for a limit that has reset. The server holds the same rule in
+ * src/server/mobileCapacityRoutes.ts; src/data/design/usage-tone-vectors.json pins both sides.
+ */
+export function usageTone(pct, rolledOver = false) {
+  if (rolledOver || !Number.isFinite(Number(pct))) return null;
+  const shown = Math.round(Number(pct));
+  return shown >= NEAR_OUT_PCT ? 'bad' : shown >= USAGE_TONE_ATTN_PCT ? 'attn' : null;
+}
 
 /** Every live usage window on a reading: [{ pct, resetsAt }]. */
 function windowsOf(q, now = Date.now()) {
@@ -147,6 +166,7 @@ export function accountNotices(accounts, { partial = false, now = Date.now() } =
   const scope = partial ? ' (on the machines that answered)' : '';
   const byMachine = new Map();
   for (const a of accounts) for (const c of a.cells) {
+    if (c.missing) continue; // an account a machine never held does not make that machine empty
     const g = byMachine.get(c.machineId) || { name: c.machine, states: [], canSignIn: false };
     g.states.push(c.state);
     if (c.state === 'attn' && c.actionable) g.canSignIn = true;
@@ -202,7 +222,8 @@ export function accountCounts(accounts) {
   const list = Array.isArray(accounts) ? accounts : [];
   let ready = 0, needSignIn = 0, inProgress = 0;
   for (const a of list) {
-    const cells = Array.isArray(a && a.cells) ? a.cells : [];
+    // A machine that does not hold the account says nothing about whether the account is ready.
+    const cells = (Array.isArray(a && a.cells) ? a.cells : []).filter((c) => !c.missing);
     if (cells.some((c) => c.state === 'attn')) needSignIn++;
     else if (cells.length && cells.every((c) => c.state === 'ok')) ready++;
     else inProgress++;
@@ -239,12 +260,30 @@ export function buildAccountsPage(res, now = Date.now(), { episodes = [], blocke
     if (r.lastQuota && Number.isFinite(at) && at > g.readingAt) { g.reading = r.lastQuota; g.readingAt = at; }
     byId.set(r.id, g);
   }
+  // A machine that answered but does not hold an account gets a "missing" cell, so a machine that
+  // was offline (or rebuilt) when an account was added elsewhere shows the gap and can be set up from
+  // here. A machine that did not answer is left out: its accounts are unknown, not missing. A missing
+  // cell is never "needs you" — not every account belongs on every machine — it is a quiet Set up.
+  const failedIds = new Set(failed.map((f) => f && f.machineId).filter(Boolean));
+  const answered = new Map();
+  for (const r of rows) if (r && r.machineId && !failedIds.has(r.machineId) && !answered.has(r.machineId)) {
+    answered.set(r.machineId, verifiedDisplayName(r.machineNickname, r.machineId) || 'Machine name unavailable');
+  }
+  for (const g of byId.values()) {
+    const held = new Set(g.cells.map((c) => c.machineId));
+    for (const [machineId, machine] of answered) {
+      if (held.has(machineId)) continue;
+      const ep = epFor(g.id, machineId);
+      const working = ep && cellState({}, ep, null, now).state === 'working';
+      g.cells.push({ machineId, machine, ...(working ? { state: 'working', label: 'signing in' } : { state: 'missing', label: 'not on this machine' }), missing: true, episode: ep, row: {} });
+    }
+  }
   const accounts = [...byId.values()].map((g) => {
     const t = tightest(g.reading, now);
     const windows = usageWindows(g.reading, now).map((w) => windowRow(w, now));
     const stale = g.readingAt && now - g.readingAt > READING_STALE_MS;
     return {
-      ...g, tight: t, stale, windows,
+      ...g, tight: t, stale, windows, weeklyResetAt: nextWeeklyReset(g.reading, now),
       inUse: Boolean(inUse && inUse.activeAccountId === g.id),
       readingAge: g.readingAt ? ago(g.readingAt, now) : null,
       line: !t ? (g.framework === 'grok-build' ? "Usage isn't readable for this kind of account." : 'No reading yet.')
@@ -253,9 +292,11 @@ export function buildAccountsPage(res, now = Date.now(), { episodes = [], blocke
       // One plain sentence per window, for the details sheet: "5-hour: 100% used, resets 5:59 PM (in 3m)".
       windowsText: windows.map((w) => `${w.label}: ${w.rolledOver ? w.reset : `${w.pctText} used${w.reset ? `, ${w.reset}` : ''}`}`),
       // warning-path: row
-      tone: t && t.pct >= 90 ? 'bad' : t && t.pct >= 75 ? 'attn' : null,
+      tone: t ? usageTone(t.pct) : null,
     };
-  }).sort((a, b) => (frameworkName(a.framework)).localeCompare(frameworkName(b.framework)) || (b.tight ? b.tight.pct : -1) - (a.tight ? a.tight.pct : -1));
+  }).sort((a, b) => (a.weeklyResetAt ?? Infinity) - (b.weeklyResetAt ?? Infinity)
+    // Stable ties keep equally timed or unknown accounts from moving between refreshes.
+    || String(a.name || '').localeCompare(String(b.name || '')) || String(a.id).localeCompare(String(b.id)));
 
   const accountKeys = accounts.map((a) => verifiedDisplayName(a.name, a.id)
     ? `${a.name.toLocaleLowerCase()}\u0000${(a.email || '').toLocaleLowerCase()}` : null);

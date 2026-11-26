@@ -1,0 +1,25 @@
+{
+  "ts": "2026-11-21T15:37:35.406Z",
+  "slug": "sec147-machine-auth-binding-stage1",
+  "suggestedTier": 2,
+  "declaredTier": 2,
+  "riskFloor": 1,
+  "riskFloorReasons": [],
+  "belowFloor": false,
+  "files": 4,
+  "loc": 175,
+  "scope": {
+    "basis": "staged-in-scope-paths-including-deleted",
+    "files": [
+      "src/core/NonceStore.ts",
+      "src/server/AgentServer.ts",
+      "src/server/WebSocketManager.ts",
+      "src/server/machineAuth.ts"
+    ],
+    "addedLines": 168,
+    "deletedLines": 7
+  },
+  "causalAutopsy": null,
+  "classClosure": null,
+  "verdict": "blocked"
+}

@@ -1,0 +1,36 @@
+{
+  "ts": "2026-11-20T12:37:55.225Z",
+  "slug": "identity-a4-wsl-mode-and-review-fixes",
+  "suggestedTier": 2,
+  "declaredTier": 2,
+  "riskFloor": 2,
+  "riskFloorReasons": [
+    "new capability: new route (router.<verb>() added"
+  ],
+  "belowFloor": false,
+  "files": 13,
+  "loc": 560,
+  "scope": {
+    "basis": "staged-in-scope-paths-including-deleted",
+    "files": [
+      "src/core/MobileDeviceKeys.ts",
+      "src/core/MobilePush.ts",
+      "src/core/SameNetworkNetwork.ts",
+      "src/core/ceremonyCredential.ts",
+      "src/core/requestArrival.ts",
+      "src/data/awareness/same-network-first-phone.md",
+      "src/server/AgentServer.ts",
+      "src/server/documentPageRoutes.ts",
+      "src/server/middleware.ts",
+      "src/server/mobileConsoleTicket.ts",
+      "src/server/mobilePairingRoutes.ts",
+      "src/server/phoneSetupRoutes.ts",
+      "src/server/sameNetworkListener.ts"
+    ],
+    "addedLines": 476,
+    "deletedLines": 84
+  },
+  "causalAutopsy": null,
+  "classClosure": null,
+  "verdict": "pass"
+}

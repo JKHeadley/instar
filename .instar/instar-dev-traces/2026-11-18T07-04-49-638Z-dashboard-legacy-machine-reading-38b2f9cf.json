@@ -1,0 +1,23 @@
+{
+  "version": 2,
+  "slug": "dashboard-legacy-machine-reading",
+  "sessionId": "7b04db19-7829-4fc9-8492-204d8ce4c5af",
+  "timestamp": "2026-11-18T07:04:49.638Z",
+  "artifactPath": "upgrades/side-effects/dashboard-legacy-machine-reading.md",
+  "artifactSha256": "e64cb4d7d5987078f0eb06fb4cc1e01e221a339f9f26178b3f13db64dd57c576",
+  "coveredFiles": [
+    "dashboard/console/machines-model.js",
+    "dashboard/console/machines.js",
+    "tests/unit/console-machines.test.ts",
+    "upgrades/eli16/dashboard-legacy-machine-reading.md",
+    "upgrades/next/dashboard-legacy-machine-reading.md",
+    "upgrades/side-effects/dashboard-legacy-machine-reading.md"
+  ],
+  "phase": "complete",
+  "tier": 1,
+  "tierReasoning": "Small reversible Machines page display correction; no server or authority change.",
+  "eli16Path": "upgrades/eli16/dashboard-legacy-machine-reading.md",
+  "sideEffectsPath": "upgrades/side-effects/dashboard-legacy-machine-reading.md",
+  "secondPass": "true",
+  "reviewerConcurred": true
+}

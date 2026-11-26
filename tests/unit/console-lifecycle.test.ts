@@ -7,6 +7,7 @@
 import { describe, it, expect, afterEach, vi } from 'vitest';
 import { JSDOM } from 'jsdom';
 import { createLifecycle, splitHash } from '../../dashboard/console/page-lifecycle.js';
+import { AGENT_NOTE_REFRESH_MS } from '../../dashboard/console/agent-health-note.js';
 
 describe('page-lifecycle (pure)', () => {
   it('runs disposers once, in order, before the next visit', () => {
@@ -155,6 +156,12 @@ describe('console routing lifecycle (jsdom)', () => {
     await boot('#/work/chats');
     for (let i = 0; i < 6; i++) { await go('#/work/board'); await go('#/agent'); await go('#/work/chats'); }
     expect([...live.values()].filter((ms) => ms === 45_000).length).toBeLessThanOrEqual(1);
+  });
+
+  it('the Agent door\'s status dot keeps one refresh timer of its own across many door changes', async () => {
+    await boot('#/work/chats');
+    for (let i = 0; i < 6; i++) { await go('#/work/board'); await go('#/agent'); await go('#/work/chats'); }
+    expect([...live.values()].filter((ms) => ms === AGENT_NOTE_REFRESH_MS).length).toBe(1);
   });
 
   it('Home lands on the Conversations door on the web console', async () => {

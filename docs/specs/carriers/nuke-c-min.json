@@ -1,0 +1,18 @@
+{
+  "generatedAt": "2026-11-19T18:46:56.899Z",
+  "slug": "nuke-c-min",
+  "carriers": {
+    "CMT-2025": {
+      "status": "pending",
+      "owner": "agent",
+      "blockedOn": "none",
+      "excerpt": "Parked; draft untouched; revisit on a real nuke incident."
+    },
+    "CMT-2020": {
+      "status": "pending",
+      "owner": "agent",
+      "blockedOn": "none",
+      "excerpt": "Tracked as the split-off part of spec C (nuke hardening); echo owns it."
+    }
+  }
+}

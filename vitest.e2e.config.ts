@@ -24,7 +24,7 @@ export default defineConfig(withTestRunnerBound('e2e', {
     // ensures the gitignored registry asset. The dist-gated e2e files used to
     // run only under vitest.config.ts, which included tests/e2e/**; that config
     // is now the unit lane alone, so this lane builds for itself.
-    globalSetup: ['tests/setup/build-dist.globalSetup.ts', 'tests/setup/ensure-registry-asset.globalSetup.ts'],
+    globalSetup: ['tests/setup/build-dist.globalSetup.ts', 'tests/setup/real-embedding-model.globalSetup.ts', 'tests/setup/ensure-registry-asset.globalSetup.ts'],
     // E2E tests spawn shipped scripts and real framework-shaped sessions. Keep
     // the same live-agent environment isolation as the default suite so an
     // ambient INSTAR_FRAMEWORK/AGENT_HOME cannot redirect a fixture into the
