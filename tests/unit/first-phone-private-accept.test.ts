@@ -1,3 +1,4 @@
+import { TelegramAdapter } from '../../src/messaging/TelegramAdapter.js';
 import { createFirstPhoneStartHandler } from '../../src/core/trustJourney/firstPhoneStartHandler.js';
 import { FirstPhonePrivateStartStore } from '../../src/core/trustJourney/FirstPhonePrivateStartStore.js';
 import { createHash } from 'node:crypto';
@@ -348,5 +349,92 @@ it('issues the exact offer once from an authenticated Start and drops acknowledg
     expect(offers.lookup(digest())).toBeNull();
   } finally {
     db.close();
+  }
+});
+
+it('connects direct Telegram Start and Accept to one durable nomination without accepting the phone', async () => {
+  const stateDir = fs.mkdtempSync(path.join(os.tmpdir(), 'first-phone-telegram-journey-'));
+  const db = new Database(':memory:');
+  try {
+    const adapter = new TelegramAdapter({ token: 'fixture-bot', chatId: '-100999' }, stateDir);
+    vi.spyOn(adapter, 'getVerifiedOwner').mockReturnValue(7001);
+    const answer = vi.spyOn(adapter, 'answerCallback').mockResolvedValue();
+    const api = vi.spyOn(adapter as unknown as {
+      apiCall(method: string, payload: unknown): Promise<unknown>;
+    }, 'apiCall');
+    const starts = new FirstPhonePrivateStartStore(db);
+    const offers = new FirstPhonePrivateOfferStore(db);
+    const nominations = new FirstPhonePrivateNominationStore(db);
+    const trust = new TrustJourneyStore({ description: 'fixture', loadAll: () => [], append: async () => true });
+    const issuedAt = Date.now() - 100;
+    const expiresAt = issuedAt + 60_000;
+    await trust.write('acceptance', {
+      acceptanceId: offer.accountAcceptanceId, principal: 'owner', adapter: 'telegram',
+      accountId: '7001', acceptedAt: new Date(issuedAt - 1).toISOString(),
+    });
+    const disclosure = 'Allow this iPhone to approve changes. Confirm in Instar.';
+    const deviceProposal = {
+      ...proposal, firstAcceptanceKey: trust.firstDeviceAcceptanceKey(),
+      disclosureHash: createHash('sha256').update(disclosure).digest('hex'),
+    };
+    const exactProposal = { ...deviceProposal, expiresAt };
+    const proposalHash = firstPhoneProposalHash(exactProposal);
+    const { callbackData: _callback, disclosureMessageId: _message, ...fields } = offer;
+    const prepared = {
+      offer: { ...fields, firstAcceptanceKey: exactProposal.firstAcceptanceKey, proposalHash, issuedAt, expiresAt },
+      deviceId: exactProposal.deviceId, holderMachineId: 'holder-machine', disclosure, proposal: exactProposal,
+    };
+    const holder = { localMachineId: 'holder-machine', holderMachineId: 'holder-machine', epoch: offer.holderEpoch, expiresAt };
+    adapter.onFirstPhonePrivateStart = createFirstPhoneStartHandler({
+      starts, offers, now: Date.now, stillCurrent: () => true,
+      readAuthority: () => ({ ...holder, ownerAccountId: '7001' }),
+      readPreparedOffer: hash => hash === proposalHash ? prepared : null,
+      sendPrivate: adapter.sendFirstPhonePrivateOffer.bind(adapter),
+    });
+    const accept = new FirstPhonePrivateAcceptService({
+      trust, nominations, now: Date.now,
+      resolveCurrentOffer: createFirstPhoneOfferResolver({
+        readStoredOffer: hash => offers.lookup(hash),
+        readVerifiedHolder: () => holder,
+        readVerifiedDeviceProposal: () => ({ principal: 'owner', proposal: deviceProposal }),
+        now: Date.now,
+      }),
+    });
+    const record = vi.spyOn(accept, 'record');
+    adapter.onFirstPhonePrivateAccept = async (receiptId, evidence) => accept.record(receiptId, evidence).status !== 'refused';
+    const phoneLink = starts.prepare({
+      ownerAccountId: '7001', holderMachineId: holder.holderMachineId, holderEpoch: holder.epoch,
+      proposalHash, issuedAt, expiresAt,
+    });
+    expect(phoneLink).toEqual(expect.any(String));
+    const chat = { id: 7001, type: 'private' };
+    const from = { id: 7001, is_bot: false };
+    const date = Math.floor(issuedAt / 1000);
+    const direct = (update: unknown) => (adapter as unknown as {
+      processUpdate(update: unknown): Promise<void>;
+    }).processUpdate(update);
+    const startUpdate = { update_id: 12, message: { message_id: 12, chat, from, date, text: `/start ${phoneLink}` } };
+    api.mockImplementationOnce(async (_method, payload) => ({ ...(payload as object), chat, message_id: 15 }));
+
+    await direct(startUpdate);
+    await direct(startUpdate);
+    expect(api).toHaveBeenCalledTimes(1);
+    expect(record).not.toHaveBeenCalled();
+    const payload = api.mock.calls[0][1] as { reply_markup: { inline_keyboard: Array<Array<{ callback_data: string }>> } };
+    const data = payload.reply_markup.inline_keyboard[0][0].callback_data;
+    const callback = { id: 'fixture-tap', from, message: { message_id: 15, chat, date }, data };
+    await adapter.handleForwardedCallback(callback);
+    expect(record).not.toHaveBeenCalled();
+    await direct({ update_id: 13, callback_query: callback });
+    await direct({ update_id: 13, callback_query: callback });
+    expect(record.mock.results.map(result => result.value.status)).toEqual(['recorded', 'already-recorded']);
+    const result = record.mock.results[0].value;
+    if (result.status === 'refused') throw new Error('Expected the direct tap to record a nomination');
+    expect(nominations.binding(result.nominationId)).toEqual({ proposalHash, firstAcceptanceKey: exactProposal.firstAcceptanceKey });
+    expect(answer).toHaveBeenLastCalledWith(callback.id, 'Continue in Instar on the nominated iPhone.');
+    expect(trust.currentDeviceAcceptances()).toEqual([]);
+  } finally {
+    db.close();
+    SafeFsExecutor.safeRmSync(stateDir, { recursive: true, force: true, operation: 'test first-phone Telegram journey' });
   }
 });
