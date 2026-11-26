@@ -16,7 +16,7 @@ import { telegramFetch } from '../telegram-egress.js';
 import { originMessageHistoryText } from './ForwardedDeliveryHistory.js';
 import type { OriginStoreOptions } from './StoreTypes.js';
 import { callOriginNotice, listenOriginNotices, originCapacityClient } from './OriginNoticeIpc.js';
-import { OriginEgressCapacity, ORIGIN_CAPACITY_WINDOW_MS, ORIGIN_LEASE_REFUSAL_REASONS } from './OriginEgressCapacity.js';
+import { OriginEgressCapacity, ORIGIN_CAPACITY_WINDOW_MS, ORIGIN_LEASE_REFUSAL_REASONS, CREDENTIAL_CAPACITY_UNAVAILABLE } from './OriginEgressCapacity.js';
 import type { OriginCapacityAuthority, LeaseFreshness } from './OriginEgressCapacity.js';
 import { LEASE_LAPSE_FALLBACK_LIFETIME_MS, LEASE_LAPSE_RETRY_SCHEDULE_MS } from './OriginRetry.js';
 import { parseOriginJson } from './CanonicalOrigin.js';
@@ -239,7 +239,10 @@ export class TelegramOriginRuntime {
       },
       onHold: ({ operationId, reason, producerKind, operationKind, destination, deadlineAt }) => {
         const leaseRefusal = ORIGIN_LEASE_REFUSAL_REASONS.includes(reason);
-        if (leaseRefusal) this.noteLeaseRefusalHold({ operationId, reason, destination, deadlineAt });
+        if (leaseRefusal || reason === CREDENTIAL_CAPACITY_UNAVAILABLE) {
+          this.recordSendHold({ operationId, reason, destination, deadlineAt });
+        }
+        if (leaseRefusal) this.armLeaseLapseRetry();
         // A lease refusal is expected to clear within seconds and must not post "a reply needs delivery attention"
         // before any self-heal ran (Self-Heal Before Notify); a hold that persists is reported by the five-minute
         // durable scan (record-only) and handed back at the §2(b) bound.
@@ -857,12 +860,11 @@ export class TelegramOriginRuntime {
   }
   /** lease-freshness-lapse-retry — a reply was refused at the network boundary because this machine did not hold
    * the lease. Record it (never-silent send holds, when wired) and arm the bounded retry episode. */
-  private noteLeaseRefusalHold(input: { operationId: string; reason: string; destination: { chatId: string | null; topicId: string | null }; deadlineAt?: number }): void {
+  private recordSendHold(input: { operationId: string; reason: string; destination: { chatId: string | null; topicId: string | null }; deadlineAt?: number }): void {
     try {
       this.options.sendHoldIncidents?.held({ operationId: input.operationId, reason: input.reason, chatId: input.destination.chatId,
         topicId: input.destination.topicId, heldAt: Date.now(), deadlineAt: input.deadlineAt ?? Date.now() });
     } catch (error) { console.warn('[telegram-origin] send-hold record unavailable', error instanceof Error ? error.name : 'unknown-error'); }
-    this.armLeaseLapseRetry();
   }
   private leaseLifetimeMs(): number {
     try { return this.options.leaseFreshness?.()?.ttlMs ?? LEASE_LAPSE_FALLBACK_LIFETIME_MS; }

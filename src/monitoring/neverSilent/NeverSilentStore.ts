@@ -104,7 +104,7 @@ export interface SendHold {
   platform: ConversationPlatform;
   conversationKey: string;
   operationId: string;
-  /** `lease-freshness-lapsed` (the coordinator's renewal fence answered) or `lease-not-held-at-send`. */
+  /** `credential-capacity-unavailable`, `lease-freshness-lapsed`, or `lease-not-held-at-send`. */
   reason: string;
   heldAt: number;
   /** The operation's own deadline; an undelivered row past it is closed as unobserved. */
@@ -188,7 +188,7 @@ export class NeverSilentStore {
     return changed;
   }
 
-  /** lease-freshness-lapse-retry — a reply held at the send boundary for the lease (idempotent on the operation id). */
+  /** lease-freshness-lapse-retry — a reply held at the send boundary for capacity or lease (idempotent on the operation id). */
   recordSendHold(platform: ConversationPlatform, conversationKey: string, input: { operationId: string; reason: string; heldAt: number; deadlineAt: number }): SendHold {
     const holds = this.data.sendHolds ?? (this.data.sendHolds = []);
     const existing = holds.find((h) => h.operationId === input.operationId && !h.closedAt);

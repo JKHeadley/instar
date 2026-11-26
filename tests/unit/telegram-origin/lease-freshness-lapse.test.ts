@@ -99,7 +99,10 @@ describe('a send refused at the boundary for the lease', () => {
     const h = await harness();
     vi.spyOn(h.runtime.service.options.capacity!, 'reserveExplained').mockResolvedValue({ grant: null, refusal: { cause: 'rate-window-full', leaseFreshness: null } });
     await expect(h.send()).rejects.toMatchObject({ reason: 'credential-capacity-unavailable' });
-    expect(h.held).not.toHaveBeenCalled();
+    expect(h.held).toHaveBeenCalledOnce();
+    expect(h.held).toHaveBeenCalledWith(expect.objectContaining({
+      operationId: await h.operationId(), reason: 'credential-capacity-unavailable', topicId: '42',
+    }));
     expect(h.runtime.leaseRetryState()).toBeNull();
     expect(h.onSessionDeliveryHeld).toHaveBeenCalledOnce(); // today's live notice path, unchanged for the other causes
   });
