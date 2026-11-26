@@ -27,3 +27,5 @@ The dedicated Face ID proof verifier matches the Swift and Node test vector. It 
 The unmounted first-phone decision handler now checks dedicated Face ID proof and key eligibility at the witness boundary.
 
 The dark first-phone holder now gates new attempts on a witnessed outcome and predecessor reconciliation.
+
+The disposable first-phone registry exercises an exact witnessed write and refuses publication after a holder handover. Production remains off.

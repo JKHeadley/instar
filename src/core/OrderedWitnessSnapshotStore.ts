@@ -61,6 +61,10 @@ export class OrderedWitnessSnapshotStore {
         CREATE TABLE IF NOT EXISTS first_phone_slot (
           agent TEXT NOT NULL, slot TEXT NOT NULL, state TEXT NOT NULL, PRIMARY KEY (agent, slot)
         );
+        CREATE TABLE IF NOT EXISTS dark_first_phone_registry_projection (
+          agent TEXT NOT NULL, slot TEXT NOT NULL, operation TEXT NOT NULL, digest TEXT NOT NULL, bytes BLOB NOT NULL,
+          PRIMARY KEY (agent, slot)
+        );
         CREATE TABLE IF NOT EXISTS first_phone_slot_receipt (
           agent TEXT NOT NULL, operation TEXT NOT NULL, receipt TEXT NOT NULL, PRIMARY KEY (agent, operation)
         )
@@ -204,6 +208,43 @@ export class OrderedWitnessSnapshotStore {
           decision: slotDecision, commit, floor, decisionDigest: floor.head,
         }));
       return 'recorded';
+    }).immediate();
+  }
+
+  /**
+   * Disposable registry projector. The rehearsal passes the independently resolved current
+   * publication floor. Production device registry mutation is outside this store.
+   */
+  publishDarkFirstPhoneProjection(
+    expected: Readonly<AcceptedWitnessSnapshot>,
+    holderMachineId: string,
+    decision: FirstPhoneSlotDecision,
+    projection: Buffer,
+  ): 'published' | 'existing' | 'pending' {
+    if (this.db.inTransaction || expected.floor.namespace !== 'machine-key-history'
+      || expected.floor.holder !== holderMachineId || decision.action.kind !== 'consume'
+      || projection.length === 0 || projection.length > 256 * 1024) return 'pending';
+    const bytes = Buffer.from(projection);
+    const digest = createHash('sha256').update(bytes).digest('hex');
+    if (digest !== decision.action.projectionDigest) return 'pending';
+    const next = firstPhoneSlotSuccessor(decision);
+    if (!next) return 'pending';
+    const operation = firstPhoneSlotOperationKey(decision);
+    const { agentId } = expected.floor;
+    return this.db.transaction((): 'published' | 'existing' | 'pending' => {
+      const live = this.read(expected.floor);
+      const receipt = this.readFirstPhoneReceipt(agentId, decision);
+      const slot = this.readFirstPhoneSlot(agentId, next.slotKey);
+      if (!live || live.commit !== expected.commit || !samePublicationFloor(live.floor, expected.floor)
+        || !receipt || receipt.commit !== live.commit || receipt.decisionDigest !== live.floor.head
+        || !samePublicationFloor(receipt.floor, live.floor)
+        || !slot || canonicalJson(slot) !== canonicalJson(next)) return 'pending';
+      const insert = this.db.prepare('INSERT OR IGNORE INTO dark_first_phone_registry_projection VALUES (?, ?, ?, ?, ?)')
+        .run(agentId, next.slotKey, operation, digest, bytes);
+      if (insert.changes === 1) return 'published';
+      const saved = this.db.prepare('SELECT operation, digest, bytes FROM dark_first_phone_registry_projection WHERE agent=? AND slot=?')
+        .get(agentId, next.slotKey) as { operation: string; digest: string; bytes: Buffer } | undefined;
+      return saved?.operation === operation && saved.digest === digest && saved.bytes.equals(bytes) ? 'existing' : 'pending';
     }).immediate();
   }
 

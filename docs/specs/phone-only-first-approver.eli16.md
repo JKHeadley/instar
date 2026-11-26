@@ -76,3 +76,5 @@ The unmounted Face ID verifier checks that the signed bytes identify the exact p
 The isolated decision test now submits the dedicated Face ID proof to the witness. Missing eligibility, a changed key generation, or ordinary presence proof leaves the slot untouched. The exact eligible fixture can reserve it.
 
 The new holder lifecycle closes the local approval window before it asks the witness to cancel. When the witness is unavailable, a second attempt stays closed. If approval already won, cancellation cannot reverse it.
+
+The disposable registry can apply the exact approved change in the same write that checks the current witness decision. A changed decision or a handover that wins first leaves the write pending. The ordinary device registry is not touched.

@@ -13,8 +13,8 @@ import { OrderedWitnessSnapshotStore, type AcceptedWitnessSnapshot } from '../..
 import { SafeFsExecutor } from '../../src/core/SafeFsExecutor.js';
 import fixture from '../fixtures/first-phone/ordered-challenge-v2.json';
 
-for (const winningAction of ['consume', 'replace'] as const) {
-  it(`serializes ${winningAction} first against two stale attempts and recovers its exact receipt`, () => {
+for (const [winningAction, projectBeforeHandover] of [['consume', true], ['consume', false], ['replace', false]] as const) {
+  it(`serializes ${winningAction} against stale attempts and checks registry publication (publish first: ${projectBeforeHandover})`, () => {
     const directory = mkdtempSync(join(tmpdir(), 'first-phone-slot-'));
     const filename = join(directory, 'witness.sqlite');
     const store = OrderedWitnessSnapshotStore.open(filename);
@@ -28,10 +28,12 @@ for (const winningAction of ['consume', 'replace'] as const) {
         ...scope, witness: 'mini', witnessGeneration: 1, holder: 'studio', epoch: 1, position: 0, head: '0'.repeat(64),
       },
     };
+    const projection = Buffer.from(JSON.stringify({ device: fixture.input.deviceId, approvedKey: '3'.repeat(64) }));
+    const projectionDigest = createHash('sha256').update(projection).digest('hex');
     const first: FirstPhoneSlotDecision = {
       prior, operationId: 'first-consume', requestDigest: '2'.repeat(64),
       action: { kind: 'consume', challengeKey: fixture.expected.challengeKey,
-        challengeDigest: fixture.expected.challengeDigest, keyDigest: '3'.repeat(64), projectionDigest: '4'.repeat(64) },
+        challengeDigest: fixture.expected.challengeDigest, keyDigest: '3'.repeat(64), projectionDigest },
     };
     const second: FirstPhoneSlotDecision = {
       ...first, operationId: 'second-consume', requestDigest: '5'.repeat(64),
@@ -70,10 +72,21 @@ for (const winningAction of ['consume', 'replace'] as const) {
       });
       const accepted = concurrent.read(scope)!;
       expect(accepted.floor.position).toBe(1);
+      expect(store.publishDarkFirstPhoneProjection(genesis, 'studio', first, projection)).toBe('pending');
+      expect(store.publishDarkFirstPhoneProjection(accepted, 'other-holder', first, projection)).toBe('pending');
+      expect(store.publishDarkFirstPhoneProjection(accepted, 'studio', first, Buffer.from('altered projection'))).toBe('pending');
+      if (projectBeforeHandover) {
+        expect(store.publishDarkFirstPhoneProjection(accepted, 'studio', first, projection)).toBe('published');
+        expect(concurrent.publishDarkFirstPhoneProjection(accepted, 'studio', first, projection)).toBe('existing');
+      } else if (winningAction === 'replace') {
+        expect(store.publishDarkFirstPhoneProjection(accepted, 'studio', first, projection)).toBe('pending');
+      }
       const move = { floor: accepted.floor, nextEpoch: 2, nextHolder: 'successor', sealDigest: 'f'.repeat(64) };
       const signature = sign(null, holderHandoverBytes(move), privateKey);
       const next = { commit: 'e'.repeat(40), floor: verifiedHolderSuccessor(move.floor, move, signature, pins)! };
       expect(concurrent.recordAccepted(accepted, next)).toBe('recorded');
+      expect(store.publishDarkFirstPhoneProjection(accepted, 'studio', first, projection)).toBe('pending');
+      expect(store.publishDarkFirstPhoneProjection(next, 'successor', first, projection)).toBe('pending');
 
       expect(candidates[winnerIndex](concurrent, false)).toBe('existing');
       const operation = firstPhoneSlotOperationKey(winner);

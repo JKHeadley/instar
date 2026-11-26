@@ -1,0 +1,22 @@
+{
+  "version": 2,
+  "slug": "first-phone-dark-registry-projection",
+  "sessionId": "b3d2cf8a-9b5d-468b-a50b-70ebf11e9e5c",
+  "timestamp": "2026-11-26T18:18:59.049Z",
+  "artifactPath": "upgrades/side-effects/first-phone-dark-registry-projection.md",
+  "artifactSha256": "5b8dcced20040370303ab6d2ba4544f72cd30bdd9f633267b7c66b17fc2646f1",
+  "coveredFiles": [
+    "docs/specs/phone-only-first-approver.eli16.md",
+    "src/core/OrderedWitnessSnapshotStore.ts",
+    "tests/integration/first-phone-slot-fence.test.ts",
+    "upgrades/next/phone-only-first-approver.md",
+    "upgrades/side-effects/first-phone-dark-registry-projection.md"
+  ],
+  "phase": "complete",
+  "tier": 1,
+  "tierReasoning": "Disposable registry projection and transaction tests with no serving route or production registry writes",
+  "eli16Path": "docs/specs/phone-only-first-approver.eli16.md",
+  "sideEffectsPath": "upgrades/side-effects/first-phone-dark-registry-projection.md",
+  "secondPass": "true",
+  "reviewerConcurred": true
+}

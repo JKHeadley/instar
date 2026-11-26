@@ -1,0 +1,22 @@
+{
+  "ts": "2026-11-26T18:21:04.761Z",
+  "slug": "first-phone-dark-registry-projection",
+  "suggestedTier": 2,
+  "declaredTier": 1,
+  "riskFloor": 1,
+  "riskFloorReasons": [],
+  "belowFloor": false,
+  "files": 1,
+  "loc": 41,
+  "scope": {
+    "basis": "staged-in-scope-paths-including-deleted",
+    "files": [
+      "src/core/OrderedWitnessSnapshotStore.ts"
+    ],
+    "addedLines": 41,
+    "deletedLines": 0
+  },
+  "causalAutopsy": null,
+  "classClosure": null,
+  "verdict": "pass"
+}
