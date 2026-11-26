@@ -3793,90 +3793,7 @@ rm()  { "${shimRunner}" rm  "$@"; }
           featureEvidence.record('monitoring.tmuxResilience.asyncHotPath', { kind: 'fired', reason: 'probe-classified-session-dead', context: { session: session.tmuxSession } });
         }
         if (alive === false) {
-          const lastSample = this.startupTails.get(session.tmuxSession);
-          const knownExitCode = this.terminalExitCodes.get(session.tmuxSession);
-          const exitCode = knownExitCode ?? 0;
-          // Retained Codex panes preserve the terminal error after the process exits.
-          // Read at the death boundary so a later 429 is not missed by startup sampling.
-          const exitTail = session.framework === 'codex-cli'
-            ? (await this.captureOutputMaybeAsync(session.tmuxSession, 60)) || lastSample?.tail || ''
-            : lastSample?.tail || '';
-          const codexRateLimited = session.framework === 'codex-cli'
-            && knownExitCode !== undefined && knownExitCode !== 0
-            && /(?:\b429\b[^\n]*too many requests|too many requests[^\n]*\b429\b)/i.test(exitTail);
-          // CAS re-read after the Codex capture await: an operator kill (or another killer)
-          // can land mid-probe, so re-read the live record before mutating it —
-          // mirrors terminateSession's status CAS. If it already drifted off
-          // 'running', another writer owns the transition; skip this inline
-          // mark-completed (which lacks terminateSession's own CAS guard).
-          const fresh = this.state.getSession(session.id);
-          if (!fresh || fresh.status !== 'running') {
-            continue;
-          }
-          // Check if this session had a pending Telegram injection that never got a response
-          const pendingInjection = this.pendingInjections.get(session.tmuxSession);
-          if (pendingInjection) {
-            console.warn(`[SessionManager] Session "${session.name}" died with unanswered Telegram injection for ${topicRef(pendingInjection.topicId)} (injected ${Math.round((Date.now() - pendingInjection.injectedAt) / 1000)}s ago)`);
-            this.pendingInjections.delete(session.tmuxSession);
-            this.emit('injectionDropped', {
-              topicId: pendingInjection.topicId,
-              sessionName: session.tmuxSession,
-              text: pendingInjection.text,
-              injectedAt: pendingInjection.injectedAt,
-            });
-          }
-          // The process ended ON ITS OWN — no reaper, no operator, no kill path
-          // owns this transition. Stamp WHY so the record is not a reason-less
-          // `completed` (2026-08-22: the codex interactive death class was
-          // invisible in the records precisely because this branch wrote
-          // nothing), and hand the last startup-window tail sample to the
-          // reap-log `exited` row via `sessionExited`. `sessionComplete` still
-          // fires for every existing listener — this ADDS a record, it changes
-          // no existing semantics.
-          const uptimeSeconds = fresh.startedAt
-            ? Math.max(0, Math.round((Date.now() - new Date(fresh.startedAt).getTime()) / 1000))
-            : undefined;
-          this.terminalExitCodes.delete(session.tmuxSession);
-          // A headless one-shot (`claude -p` / completionMode 'exit') finishes BY exiting, often well
-          // inside the startup window. Under `remain-on-exit failed` a failed exit keeps its pane and
-          // status, so one that vanished after the option was set exited 0: it finished its work, it
-          // did not die starting up (instar-proof-1, 2026-11-03: every short job was counted as a
-          // start failure and the machine dropped itself from placement). Interactive sessions keep
-          // the old rule: a clean exit at an update or trust prompt is still a failed start.
-          const finishedHeadless = knownExitCode === undefined
-            && fresh.launchLane === 'headless'
-            && fresh.completionMode !== 'pattern'
-            && this.failedExitRetained.has(session.tmuxSession);
-          this.failedExitRetained.delete(session.tmuxSession);
-          const duringStartup = !finishedHeadless && uptimeSeconds !== undefined && uptimeSeconds * 1000 < STARTUP_TAIL_WINDOW_MS;
-          const midWork = exitCode !== 0;
-          this.startupTails.delete(session.tmuxSession);
-          fresh.status = codexRateLimited ? 'failed' : 'completed';
-          fresh.endedAt = new Date().toISOString();
-          fresh.endedReason = codexRateLimited ? 'codex-rate-limited'
-            : duringStartup ? 'process-exited-during-startup' : 'process-exited';
-          this.state.saveSession(fresh);
-          console.warn(
-            `[SessionManager] Session "${fresh.name}" (${fresh.framework ?? 'unknown framework'}) exited on its own` +
-            `${uptimeSeconds !== undefined ? ` after ${uptimeSeconds}s` : ''} — not killed by instar.` +
-            `${duringStartup ? ' Died DURING STARTUP.' : ''}` +
-            `${lastSample ? ` Last pane tail sampled ${Math.round((Date.now() - lastSample.at) / 1000)}s before detection (recorded in reap-log).` : ' No startup tail sample was available.'}`,
-          );
-          this.emit('sessionExited', {
-            session: fresh,
-            reason: fresh.endedReason,
-            uptimeSeconds,
-            lastTail: exitTail || undefined,
-            exitCode,
-            midWork,
-            outcome: midWork ? 'stopped-mid-work' : 'completed',
-          });
-          if (codexRateLimited) this.#emitListenersIsolated('codexRateLimitExit', fresh);
-          this.revokeOriginSession(fresh.id);
-          this.emit('sessionComplete', fresh);
-          // The result is recorded; a job's retained dead pane has no further
-          // use. Job names are unique per run, so no later spawn reclaims it.
-          if (fresh.jobSlug) await this.removeDeadJobPane(fresh.tmuxSession);
+          await this.completeExitedSession(session);
           continue;
         }
 
@@ -7763,6 +7680,145 @@ rm()  { "${shimRunner}" rm  "$@"; }
       return out.state === 'success';
     } finally {
       this.tmuxInflightCount = Math.max(0, this.tmuxInflightCount - 1);
+    }
+  }
+
+  private async completeExitedSession(session: Session, backstop?: { exitCode?: number; retained: boolean }): Promise<boolean> {
+    const lastSample = this.startupTails.get(session.tmuxSession);
+    const knownExitCode = backstop?.exitCode ?? this.terminalExitCodes.get(session.tmuxSession);
+    const unknownJobExit = backstop?.retained === true && knownExitCode === undefined;
+    const exitCode = knownExitCode ?? 0;
+    // Retained Codex panes preserve the terminal error after the process exits.
+    // Read at the death boundary so a later 429 is not missed by startup sampling.
+    const exitTail = session.framework === 'codex-cli'
+      ? (await (backstop ? this.captureOutputAsync(session.tmuxSession, 60)
+        : this.captureOutputMaybeAsync(session.tmuxSession, 60))) || lastSample?.tail || ''
+      : lastSample?.tail || '';
+    const codexRateLimited = session.framework === 'codex-cli'
+      && knownExitCode !== undefined && knownExitCode !== 0
+      && /(?:\b429\b[^\n]*too many requests|too many requests[^\n]*\b429\b)/i.test(exitTail);
+    // CAS re-read after the Codex capture await: an operator kill (or another killer)
+    // can land mid-probe, so re-read the live record before mutating it —
+    // mirrors terminateSession's status CAS. If it already drifted off
+    // 'running', another writer owns the transition; skip this inline
+    // mark-completed (which lacks terminateSession's own CAS guard).
+    const fresh = this.state.getSession(session.id);
+    if ((backstop && (this.state.readOnly || this.isAwakeMachine?.() === false)) ||
+        !fresh || fresh.status !== 'running' || fresh.tmuxSession !== session.tmuxSession ||
+        fresh.startedAt !== session.startedAt) {
+      return false;
+    }
+    // Check if this session had a pending Telegram injection that never got a response
+    const pendingInjection = this.pendingInjections.get(session.tmuxSession);
+    if (pendingInjection) {
+      console.warn(`[SessionManager] Session "${session.name}" died with unanswered Telegram injection for ${topicRef(pendingInjection.topicId)} (injected ${Math.round((Date.now() - pendingInjection.injectedAt) / 1000)}s ago)`);
+      this.pendingInjections.delete(session.tmuxSession);
+      this.emit('injectionDropped', {
+        topicId: pendingInjection.topicId,
+        sessionName: session.tmuxSession,
+        text: pendingInjection.text,
+        injectedAt: pendingInjection.injectedAt,
+      });
+    }
+    // The process ended ON ITS OWN — no reaper, no operator, no kill path
+    // owns this transition. Stamp WHY so the record is not a reason-less
+    // `completed` (2026-08-22: the codex interactive death class was
+    // invisible in the records precisely because this branch wrote
+    // nothing), and hand the last startup-window tail sample to the
+    // reap-log `exited` row via `sessionExited`. `sessionComplete` still
+    // fires for every existing listener — this ADDS a record, it changes
+    // no existing semantics.
+    const uptimeSeconds = fresh.startedAt
+      ? Math.max(0, Math.round((Date.now() - new Date(fresh.startedAt).getTime()) / 1000))
+      : undefined;
+    this.terminalExitCodes.delete(session.tmuxSession);
+    // A headless one-shot (`claude -p` / completionMode 'exit') finishes BY exiting, often well
+    // inside the startup window. Under `remain-on-exit failed` a failed exit keeps its pane and
+    // status, so one that vanished after the option was set exited 0: it finished its work, it
+    // did not die starting up (instar-proof-1, 2026-11-03: every short job was counted as a
+    // start failure and the machine dropped itself from placement). Interactive sessions keep
+    // the old rule: a clean exit at an update or trust prompt is still a failed start.
+    const finishedHeadless = knownExitCode === undefined
+      && fresh.launchLane === 'headless'
+      && fresh.completionMode !== 'pattern'
+      && this.failedExitRetained.has(session.tmuxSession);
+    this.failedExitRetained.delete(session.tmuxSession);
+    const duringStartup = !finishedHeadless && uptimeSeconds !== undefined && uptimeSeconds * 1000 < STARTUP_TAIL_WINDOW_MS;
+    const midWork = unknownJobExit || exitCode !== 0;
+    this.startupTails.delete(session.tmuxSession);
+    const failedJobExit = backstop?.retained === true && midWork;
+    fresh.status = codexRateLimited || failedJobExit ? 'failed' : 'completed';
+    fresh.endedAt = new Date().toISOString();
+    fresh.endedReason = unknownJobExit ? 'job-pane-exited-without-status' : codexRateLimited ? 'codex-rate-limited'
+      : failedJobExit ? 'job-pane-exited-nonzero'
+      : duringStartup ? 'process-exited-during-startup' : 'process-exited';
+    this.state.saveSession(fresh);
+    console.warn(
+      `[SessionManager] Session "${fresh.name}" (${fresh.framework ?? 'unknown framework'}) exited on its own` +
+      `${uptimeSeconds !== undefined ? ` after ${uptimeSeconds}s` : ''} — not killed by instar.` +
+      `${duringStartup ? ' Died DURING STARTUP.' : ''}` +
+      `${lastSample ? ` Last pane tail sampled ${Math.round((Date.now() - lastSample.at) / 1000)}s before detection (recorded in reap-log).` : ' No startup tail sample was available.'}`,
+    );
+    this.emit('sessionExited', {
+      session: fresh,
+      reason: fresh.endedReason,
+      uptimeSeconds,
+      lastTail: exitTail || undefined,
+      exitCode,
+      midWork,
+      outcome: midWork ? 'stopped-mid-work' : 'completed',
+    });
+    if (codexRateLimited) this.#emitListenersIsolated('codexRateLimitExit', fresh);
+    this.revokeOriginSession(fresh.id);
+    this.emit('sessionComplete', fresh);
+    // The result is recorded; a job's retained dead pane has no further
+    // use. Job names are unique per run, so no later spawn reclaims it.
+    if (fresh.jobSlug) await this.removeDeadJobPane(fresh.tmuxSession);
+    return true;
+  }
+
+  /**
+   * Capacity backstop for tracked jobs, independent of the general monitor.
+   * A retained pane may be dead even if tmux still has its session name.
+   */
+  async reconcileDeadJobSlots(): Promise<void> {
+    const jobs = this.state.listSessions({ status: 'running' }).filter(session =>
+      session.jobSlug && !this.config.protectedSessions.includes(session.tmuxSession) &&
+      Date.now() - Date.parse(session.startedAt) >= 15_000,
+    );
+    if (!jobs.length || this.state.readOnly || this.isAwakeMachine?.() === false) return;
+    const verdicts = await this.livenessOracle.probeAll(jobs.map(session => session.tmuxSession));
+    for (const session of jobs) {
+      if (this.state.readOnly || this.isAwakeMachine?.() === false) return;
+      const verdict = verdicts.get(session.tmuxSession)?.liveness;
+      if (verdict === 'dead') {
+        await this.completeExitedSession(session, { retained: false });
+      } else if (verdict === 'alive') {
+        const panes = await this.tmuxExecAsync([
+          'list-panes', '-s', '-t', `=${session.tmuxSession}:`, '-F',
+          '#{pane_dead}||#{pane_dead_status}||#{pane_dead_signal}||#{pane_pid}',
+        ]);
+        if (panes.state !== 'success') continue;
+        const fields = panes.stdout.trim().split('\n').map(line => line.split('||'));
+        const terminal = fields.every(([dead, status, signal, pid]) => {
+          if (dead !== '1') return false;
+          if (/^\d+$/.test(status?.trim() ?? '') || signal?.trim()) return true;
+          // Some tmux versions report a dead PTY before the child exits.
+          // Only a missing process can corroborate a pane without exit metadata.
+          const processId = Number(pid);
+          if (!Number.isSafeInteger(processId) || processId <= 0) return false;
+          try {
+            process.kill(processId, 0);
+            return false;
+          } catch (error) {
+            return (error as NodeJS.ErrnoException).code === 'ESRCH';
+          }
+        });
+        if (!terminal) continue;
+        const status = fields[0][1]?.trim();
+        const exitCode = status && /^\d+$/.test(status) ? Number(status) : undefined;
+        await this.completeExitedSession(session, { retained: true, exitCode });
+      }
     }
   }
 

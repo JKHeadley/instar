@@ -117,6 +117,27 @@ describe.skipIf(!realTmux).each([false, true])('dead job pane cleanup (real tmux
     expect(exists(job)).toBe(false);
   });
 
+  it('releases a retained dead job slot without waiting for the regular monitor', async () => {
+    const deadJob = `${base()}-job-dead`;
+    const liveJob = `${base()}-job-live`;
+    start(deadJob, 'exit 1', {});
+    start(liveJob, 'exec sleep 60', {});
+    await waitDead([deadJob]);
+    record('dead-job', deadJob, 'dead-job');
+    record('live-job', liveJob, 'live-job');
+    const completions: string[] = [];
+    manager.on('sessionComplete', (session: Session) => completions.push(session.id));
+
+    await manager.reconcileDeadJobSlots();
+    await manager.reconcileDeadJobSlots();
+
+    expect(completions).toEqual(['dead-job']);
+    expect(state.getSession('dead-job')).toMatchObject({ status: 'failed', endedReason: 'job-pane-exited-nonzero' });
+    expect(state.getSession('live-job')?.status).toBe('running');
+    expect(exists(deadJob)).toBe(false);
+    expect(exists(liveJob)).toBe(true);
+  });
+
   it('waits when tmux closes the pane before the process supplies its nonzero exit', async () => {
     const job = `${base()}-job-pending-status`;
     const release = path.join(root, 'release-exit');
@@ -137,6 +158,7 @@ describe.skipIf(!realTmux).each([false, true])('dead job pane cleanup (real tmux
       const notices: Session[] = [];
       manager.on('codexRateLimitExit', (s) => notices.push(s));
       await tick();
+      await manager.reconcileDeadJobSlots();
       expect(state.getSession('pending-status')?.status).toBe('running');
       expect(notices).toHaveLength(0);
       fs.writeFileSync(release, 'exit');

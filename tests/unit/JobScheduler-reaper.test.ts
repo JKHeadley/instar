@@ -1,4 +1,4 @@
-import { describe, it, expect, beforeEach, afterEach } from 'vitest';
+import { describe, it, expect, beforeEach, afterEach, vi } from 'vitest';
 import fs from 'node:fs';
 import path from 'node:path';
 import { JobScheduler } from '../../src/scheduler/JobScheduler.js';
@@ -76,6 +76,30 @@ describe('JobScheduler.reapStuckRuns', () => {
       .filter(Boolean)
       .map(l => JSON.parse(l));
   }
+
+  it('rechecks a blocked queue and records one stall after the longest job timeout', async () => {
+    createScheduler({ maxParallelJobs: 0 });
+    const reconcile = vi.fn().mockResolvedValue(undefined);
+    Object.assign(mockSM, { reconcileDeadJobSlots: reconcile });
+    const queue = scheduler as unknown as {
+      enqueue(slug: string, reason: string): void;
+      checkQueueProgress(): Promise<void>;
+    };
+    const start = Date.now();
+    const now = vi.spyOn(Date, 'now').mockReturnValue(start);
+    try {
+      queue.enqueue('health-check', 'scheduled');
+      await queue.checkQueueProgress();
+      expect(project.state.queryEvents({ type: 'job_queue_stalled' })).toHaveLength(0);
+      now.mockReturnValue(start + 24 * 60 * 60_000);
+      await queue.checkQueueProgress();
+      await queue.checkQueueProgress();
+      expect(reconcile).toHaveBeenCalledTimes(3);
+      expect(project.state.queryEvents({ type: 'job_queue_stalled' })).toHaveLength(1);
+    } finally {
+      now.mockRestore();
+    }
+  });
 
   it('does nothing when sleep is shorter than the minimum threshold', async () => {
     createScheduler();

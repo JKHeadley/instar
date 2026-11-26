@@ -1,0 +1,32 @@
+{
+  "ts": "2026-11-26T08:06:32.570Z",
+  "slug": "dead-job-slot-and-queue-alert",
+  "suggestedTier": 2,
+  "declaredTier": 1,
+  "riskFloor": 1,
+  "riskFloorReasons": [],
+  "belowFloor": false,
+  "files": 3,
+  "loc": 313,
+  "scope": {
+    "basis": "staged-in-scope-paths-including-deleted",
+    "files": [
+      "src/core/SessionManager.ts",
+      "src/scheduler/JobScheduler.ts",
+      "src/testing/selfActionRegistry.ts"
+    ],
+    "addedLines": 228,
+    "deletedLines": 85
+  },
+  "causalAutopsy": null,
+  "classClosure": {
+    "defectClass": "unbounded-self-action",
+    "closure": "guard",
+    "guardEvidence": {
+      "enforcementType": "ratchet",
+      "citation": "tests/unit/self-action-convergence.test.ts",
+      "howCaught": "One historical stall record per queue episode, one check in flight, and completed dead sessions leave the active set."
+    }
+  },
+  "verdict": "pass"
+}

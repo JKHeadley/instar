@@ -1,0 +1,34 @@
+{
+  "version": 2,
+  "slug": "dead-job-slot-and-queue-alert",
+  "sessionId": "dd2f336e-e8f7-40b3-97e3-09d19139bfa6",
+  "timestamp": "2026-11-26T08:04:13.886Z",
+  "artifactPath": "upgrades/side-effects/dead-job-slot-and-queue-alert.md",
+  "artifactSha256": "2c2d8195de1fc4d450c45301ee268c0d28389e1a22b8350e911ba74053120338",
+  "coveredFiles": [
+    "src/core/SessionManager.ts",
+    "src/scheduler/JobScheduler.ts",
+    "src/testing/selfActionRegistry.ts",
+    "tests/unit/JobScheduler-reaper.test.ts",
+    "tests/unit/dead-job-pane-cleanup.test.ts",
+    "upgrades/eli16/dead-job-slot-and-queue-alert.md",
+    "upgrades/next/dead-job-slot-and-queue-alert.md",
+    "upgrades/side-effects/dead-job-slot-and-queue-alert.md"
+  ],
+  "phase": "complete",
+  "tier": 1,
+  "tierReasoning": "Restores ordinary completion for verifiably exited scheduled job sessions and records a queue warning using existing lifecycle, telemetry and admission paths.",
+  "eli16Path": "upgrades/eli16/dead-job-slot-and-queue-alert.md",
+  "sideEffectsPath": "upgrades/side-effects/dead-job-slot-and-queue-alert.md",
+  "secondPass": "true",
+  "reviewerConcurred": true,
+  "classClosure": {
+    "defectClass": "unbounded-self-action",
+    "closure": "guard",
+    "guardEvidence": {
+      "enforcementType": "ratchet",
+      "citation": "tests/unit/self-action-convergence.test.ts",
+      "howCaught": "One historical stall record per queue episode, one check in flight, and completed dead sessions leave the active set."
+    }
+  }
+}
