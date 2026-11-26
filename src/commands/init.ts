@@ -4522,7 +4522,7 @@ done
 # and it never reaches the command line. Always blocked, regardless of safety level.
 if echo "\$INPUT" | grep -qE -e '(gh[pousr]_[A-Za-z0-9]{36}|github_pat_[A-Za-z0-9_]{60,}|sk-ant-[A-Za-z0-9_-]{20,}|xox[abprs]-[0-9A-Za-z-]{20,}|[0-9]{8,10}:AA[A-Za-z0-9_-]{33})'; then
   echo 'BLOCKED: this command carries a literal credential (a token, an API key or a bot token).' >&2
-  echo 'A command line is visible to every process on this machine while it runs. Read the secret inside the command instead, for example GH_TOKEN="\$(gh auth token)" or "\$(node .instar/scripts/secret-get.mjs NAME)". To write a file that holds a fixture, use the Write tool.' >&2
+  echo 'A command line is visible to every process on this machine while it runs. Read the secret inside the command instead, for example GH_TOKEN="\$(gh auth token)" or pass a vault value with secret-get.mjs NAME --run -- COMMAND. To write a file that holds a fixture, use the Write tool.' >&2
   exit 2
 fi
 

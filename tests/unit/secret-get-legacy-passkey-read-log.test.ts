@@ -26,20 +26,20 @@ describe('secret-get.mjs — prototype passkey reads are allowed and logged', ()
     SafeFsExecutor.safeRmSync(tmpDir, { recursive: true, force: true, operation: 'tests/unit/secret-get-legacy-passkey-read-log.test.ts:afterEach' });
   });
 
-  const run = (args: string[]) => spawnSync(process.execPath, [scriptSrc, ...args], {
-    cwd: tmpDir, encoding: 'utf8', env: { ...process.env, VITEST: '1' },
+  const run = (args: string[]) => spawnSync(process.execPath, [scriptSrc, ...args, '--pipe-fd3'], {
+    cwd: tmpDir, encoding: 'utf8', stdio: ['ignore', 'pipe', 'pipe', 'pipe'], env: { ...process.env, VITEST: '1' },
   });
 
   it('returns the prototype key value and records one audit line without the value', () => {
     new SecretStore({ stateDir }).write({ google_passkey_echo_studio: 'PRIVATE-KEY-MATERIAL', other: 'x' });
     const r = run(['google_passkey_echo_studio']);
     expect(r.status).toBe(0);
-    expect(r.stdout).toBe('PRIVATE-KEY-MATERIAL');
+    expect(r.output[3]).toBe('PRIVATE-KEY-MATERIAL');
     const lines = fs.readFileSync(logPath(), 'utf8').trim().split('\n');
     expect(lines).toHaveLength(1);
     const rec = JSON.parse(lines[0]);
     expect(rec.key).toBe('google_passkey_echo_studio');
-    expect(rec.mode).toBe('stdout');
+    expect(rec.mode).toBe('private-pipe');
     expect(fs.readFileSync(logPath(), 'utf8')).not.toContain('PRIVATE-KEY-MATERIAL');
   });
 

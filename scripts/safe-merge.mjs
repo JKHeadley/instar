@@ -1041,12 +1041,12 @@ function loadAgentConfig(home) {
   return parseAgentServerConfig(fs.readFileSync(file, 'utf-8'));
 }
 
-/** The vault-backed token, through the agent's own secret-get script (value on stdout only). */
+/** The vault-backed token, through the agent's own secret-get script (captured through its private pipe). */
 function resolveVaultToken(home) {
   const script = path.join(home, '.instar', 'scripts', 'secret-get.mjs');
   if (!fs.existsSync(script)) return null;
-  const r = spawnSync(process.execPath, [script, 'authToken'], { cwd: home, encoding: 'utf-8', timeout: 15_000 });
-  return r.status === 0 && r.stdout ? r.stdout : null;
+  const r = spawnSync(process.execPath, [script, 'authToken', '--pipe-fd3'], { stdio: ['ignore', 'pipe', 'pipe', 'pipe'], cwd: home, encoding: 'utf-8', timeout: 15_000 });
+  return r.status === 0 ? r.output?.[3] || r.stdout || null : null;
 }
 
 /**

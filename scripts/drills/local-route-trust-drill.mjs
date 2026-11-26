@@ -101,8 +101,8 @@ function patchConfig(dir, patch) {
 function authOf(dir) {
   const c = JSON.parse(fs.readFileSync(path.join(dir, '.instar', 'config.json'), 'utf-8'));
   if (typeof c.authToken === 'string' && c.authToken && !c.authToken.startsWith('secret:')) return c.authToken;
-  const r = spawnSync(process.execPath, [path.join(dir, '.instar', 'scripts', 'secret-get.mjs'), 'authToken'], { env, cwd: dir, encoding: 'utf-8' });
-  const t = (r.stdout || '').trim();
+  const r = spawnSync(process.execPath, [path.join(dir, '.instar', 'scripts', 'secret-get.mjs'), 'authToken', '--pipe-fd3'], { stdio: ['ignore', 'pipe', 'pipe', 'pipe'], env, cwd: dir, encoding: 'utf-8' });
+  const t = (r.output?.[3] || r.stdout || '').trim();
   if (!t) throw new Error(`no auth token for ${dir}`);
   return t;
 }

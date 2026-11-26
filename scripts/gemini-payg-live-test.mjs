@@ -188,8 +188,8 @@ function writeCfg(a, c) { fs.writeFileSync(path.join(a.stateDir, 'config.json'),
 function authOf(a) {
   const t = cfgOf(a).authToken;
   if (typeof t === 'string') return t;
-  const r = spawnSync(process.execPath, [path.join(a.stateDir, 'scripts', 'secret-get.mjs'), 'authToken'], { cwd: a.dir, env: childEnv(), encoding: 'utf8' });
-  return r.stdout;
+  const r = spawnSync(process.execPath, [path.join(a.stateDir, 'scripts', 'secret-get.mjs'), 'authToken', '--pipe-fd3'], { stdio: ['ignore', 'pipe', 'pipe', 'pipe'], cwd: a.dir, env: childEnv(), encoding: 'utf8' });
+  return r.output?.[3] || r.stdout;
 }
 
 /** The two-machine pair: each home registers the other, with a LAN rope (a loopback rope is refused by design). */
@@ -763,7 +763,7 @@ async function regression(C, B) {
     const rel = await api(C, 'GET', '/routing-spend/gemini-payg/release');
     const so = await api(C, 'POST', '/intelligence/gemini', { prompt: 'x', purpose: 'live-test' });
     const set = spawnSync(process.execPath, [path.join(C.stateDir, 'scripts', 'secret-set.mjs'), KEY_NAME], { cwd: C.dir, env: childEnv(), input: FAKE_KEY, encoding: 'utf8' });
-    const get = spawnSync(process.execPath, [path.join(C.stateDir, 'scripts', 'secret-get.mjs'), KEY_NAME], { cwd: C.dir, env: childEnv(), encoding: 'utf8' });
+    const get = spawnSync(process.execPath, [path.join(C.stateDir, 'scripts', 'secret-get.mjs'), KEY_NAME, '--pipe-fd3'], { stdio: ['ignore', 'pipe', 'pipe', 'pipe'], cwd: C.dir, env: childEnv(), encoding: 'utf8' });
     const g0 = google.generate;
     const so2 = await api(C, 'POST', '/intelligence/gemini', { prompt: 'x', purpose: 'live-test' });
     Object.assign(e, { releaseProofStatus: rp.status, releaseProofReason: rp.body?.reason ?? rp.body?.error ?? rp.text, releaseView: rel.body, secondOpinionStatus: so.status, keyStored: set.status, secretGetExit: get.status, secretGetStdoutBytes: get.stdout.length, secondOpinionWithKeyStatus: so2.status, googleCalls: google.generate - g0, capsFile: !!capsFile(C), intentFile: fs.existsSync(intentPath(C)) });

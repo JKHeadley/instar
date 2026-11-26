@@ -449,7 +449,7 @@ This project uses instar for persistent agent capabilities. I am not a vanilla C
 Most server endpoints require an auth token. Sessions already have it as \`$INSTAR_AUTH_TOKEN\`; outside a session, read it from the secret store (once \`instar pair\` has moved secrets out of \`.instar/config.json\`, the config only holds a placeholder there):
 
 \`\`\`bash
-AUTH="\${INSTAR_AUTH_TOKEN:-$(node .instar/scripts/secret-get.mjs authToken 2>/dev/null)}"
+AUTH="\${INSTAR_AUTH_TOKEN:-$(node .instar/scripts/secret-get.mjs authToken --pipe-fd3 3>&1 >/dev/null 2>/dev/null)}"
 AUTH="\${AUTH:-$(python3 -c "import json; v=json.load(open('.instar/config.json')).get('authToken',''); print(v if isinstance(v, str) else '')" 2>/dev/null)}"
 \`\`\`
 
@@ -804,7 +804,7 @@ ${PRIVATE_VIEWS_SENTENCE}
 - **When to use — AGENT-RETRIEVES-FIRST; Secret Drop is the LAST resort** (PROACTIVE): When you need a credential, FIRST try to fetch it yourself from an account or service you already have access to — your encrypted vault (\`secret-get.mjs\`), a Vercel project you can read (\`vercel env pull\`), GitHub (\`gh\`), a cloud console, etc. You have full account access and standing operator approval; a secret already sitting in one of your own accounts is yours to fetch — do NOT make the user produce it. Use Secret Drop ONLY when you genuinely cannot reach the secret yourself (an operator-only credential the user actually holds). Even then, never assume the user has it on hand: either mint the one-time Secret Drop link, OR walk them through obtaining it in a mobile-friendly, step-by-step way. When a user proactively OFFERS a credential, Secret Drop is the correct way to collect it — NEVER accept it pasted into Telegram or chat, and NEVER create a local file (e.g. \`.instar/secrets/foo.env\`) and ask the user to edit/paste into it (that defeats the one-time, in-memory, never-on-disk guarantee and asks the user to edit files, which you must never do). The anti-pattern this corrects (2026-06-07 UX violation): issuing a Secret Drop for a webhook secret that was readable from the operator's OWN Vercel project — the agent should have pulled it itself instead of asking.
 
 **Session Boot Self-Knowledge** — Your session-start context includes an auto-injected \`<session-self-knowledge>\` block: the NAMES of secrets in your encrypted vault (never values) + self-asserted operational facts about this agent/machine. (Rides the developmentAgent gate until the fleet flip.)
-- **The rule**: a secret named in your boot block is ALREADY in your vault — retrieve it with \`node .instar/scripts/secret-get.mjs <name>\` (pipe stdout straight into the consuming command, e.g. \`... github_token | gh auth login --with-token\` — NEVER echo the value into chat/transcripts) instead of asking the user to re-send it. Only re-ask if you have evidence it is invalid (expired/revoked/decrypt-failed).
+- **The rule**: a secret named in your boot block is ALREADY in your vault — retrieve it with \`node .instar/scripts/secret-get.mjs <name> --run -- <command>\` (for example \`... github_token --run -- gh auth login --with-token\` — NEVER echo the value into chat/transcripts) instead of asking the user to re-send it. Only re-ask if you have evidence it is invalid (expired/revoked/decrypt-failed).
 - Discover vault key names anytime: \`node .instar/scripts/secret-get.mjs --names\` (names+lengths to stderr) or \`curl -H "Authorization: Bearer $AUTH" "http://localhost:${port}/self-knowledge/session-context?full=1"\`.
 - **Record a durable operational fact** (a channel path, a logged-in seat, a machine-specific truth worth knowing at every boot): \`curl -X POST -H "Authorization: Bearer $AUTH" http://localhost:${port}/self-knowledge/facts -H 'Content-Type: application/json' -d '{"fact":"..."}'\` (auto-stamped with date+machine). Remove: \`curl -X DELETE -H "Authorization: Bearer $AUTH" http://localhost:${port}/self-knowledge/facts -H 'Content-Type: application/json' -d '{"match":"substring"}'\`. Facts are per-machine and appear at the next session start.
 - **When to use** (PROACTIVE — this is the trigger): the moment you discover an operational fact future sessions will need (where a tool lives, which machine owns a seat, a non-obvious path), record it as a fact — never leave it to session memory.
@@ -2700,7 +2700,7 @@ This project uses instar for persistent agent capabilities.
 Most server endpoints require an auth token. Sessions already have it as \`$INSTAR_AUTH_TOKEN\`; outside a session, read it from the secret store (once \`instar pair\` has moved secrets out of \`.instar/config.json\`, the config only holds a placeholder there):
 
 \`\`\`bash
-AUTH="\${INSTAR_AUTH_TOKEN:-$(node .instar/scripts/secret-get.mjs authToken 2>/dev/null)}"
+AUTH="\${INSTAR_AUTH_TOKEN:-$(node .instar/scripts/secret-get.mjs authToken --pipe-fd3 3>&1 >/dev/null 2>/dev/null)}"
 AUTH="\${AUTH:-$(python3 -c "import json; v=json.load(open('.instar/config.json')).get('authToken',''); print(v if isinstance(v, str) else '')" 2>/dev/null)}"
 \`\`\`
 

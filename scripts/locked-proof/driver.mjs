@@ -205,9 +205,10 @@ export class RealTarget {
     }
     // Restore a crashed run's exact receipt before prepare() waits for an old duty.
     await this.restoreGuardAck();
-    // Read once, kept in memory only. stdout is captured, stderr discarded (it names lengths).
-    const value = execFileSync(process.execPath, [path.join(this.o.agentHome, '.instar/scripts/secret-get.mjs'), VAULT_KEY],
-      { cwd: this.o.agentHome, encoding: 'utf8', stdio: ['ignore', 'pipe', 'ignore'] }).replace(/\n$/, '');
+    // Keep the value in memory, with compatibility for an older installed helper.
+    const read = spawnSync(process.execPath, [path.join(this.o.agentHome, '.instar/scripts/secret-get.mjs'), VAULT_KEY, '--pipe-fd3'],
+      { cwd: this.o.agentHome, encoding: 'utf8', stdio: ['ignore', 'pipe', 'ignore', 'pipe'] });
+    const value = read.status === 0 ? (read.output?.[3] || read.stdout || '').replace(/\n$/, '') : '';
     if (!value) throw new Error(`vault key ${VAULT_KEY} is empty`);
     Object.defineProperty(this, 'password', { value, enumerable: false });
     const calFile = path.join(this.o.out, 'calibration.json');

@@ -259,16 +259,18 @@ describe('secret-get.mjs (unit — containment contract)', () => {
     return spawnSync(process.execPath, [scriptSrc, ...args], {
       cwd: tmpDir,
       encoding: 'utf8',
+      stdio: ['ignore', 'pipe', 'pipe', 'pipe'],
       env: { ...process.env, VITEST: '1' }, // engages the file-key guard in the child
     });
   };
 
-  it('streams the value to stdout, names to stderr, and is value-silent on errors', () => {
+  it('transfers the value through a private pipe, names to stderr, and is value-silent on errors', () => {
     new SecretStore({ stateDir }).write({ github_token: 'ghp_PIPEDVALUE' });
 
-    const hit = run(['github_token']);
+    const hit = run(['github_token', '--pipe-fd3']);
     expect(hit.status).toBe(0);
-    expect(hit.stdout).toBe('ghp_PIPEDVALUE');
+    expect(hit.stdout).toBe('');
+    expect(hit.output[3]).toBe('ghp_PIPEDVALUE');
     expect(hit.stderr).not.toContain('ghp_PIPEDVALUE');
 
     const names = run(['--names']);
@@ -277,7 +279,7 @@ describe('secret-get.mjs (unit — containment contract)', () => {
     expect(names.stderr).toContain('github_token');
     expect(names.stderr).not.toContain('ghp_PIPEDVALUE');
 
-    const miss = run(['nope_key']);
+    const miss = run(['nope_key', '--pipe-fd3']);
     expect(miss.status).toBe(1);
     expect(miss.stdout).toBe(''); // zero value bytes on any error path
     expect(miss.stderr).toContain('no key');
@@ -285,7 +287,7 @@ describe('secret-get.mjs (unit — containment contract)', () => {
   });
 
   it('exits 1 with no stdout when the vault is absent', () => {
-    const r = run(['anything']);
+    const r = run(['anything', '--pipe-fd3']);
     expect(r.status).toBe(1);
     expect(r.stdout).toBe('');
     expect(r.stderr).toContain('no vault');

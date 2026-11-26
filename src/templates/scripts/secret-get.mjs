@@ -1,29 +1,14 @@
 #!/usr/bin/env node
 /**
- * secret-get.mjs — read ONE secret value from the agent's encrypted SecretStore
- * vault and stream it to stdout for piping. The retrieval affordance promised by
- * the Session Boot Self-Knowledge block (docs/specs/session-boot-self-knowledge.md):
- * a session that boots knowing `github_token` is in the vault uses THIS script to
- * fetch it — never `node -e` ad-hoc reads, never asking the user to re-send it.
- *
- * Containment contract (sibling of secret-drop-retrieve.mjs, same rules):
- *   - The VALUE goes to stdout ONLY — single write, no trailing newline — so it
- *     can pipe straight into the consuming command without ever being echoed
- *     into a terminal, chat, or transcript.
- *   - ALL diagnostics go to stderr and are limited to key NAMES, lengths, and
- *     error categories — never values.
- *   - On ANY error, stdout receives ZERO value bytes (stderr-only, non-zero exit).
+ * Read one vault leaf and pass it to a designated consumer on stdin.
+ * A bare scalar lookup is temporarily supported only through a nonterminal pipe.
+ * Explicit command delivery discards child output.
+ * The internal --pipe-fd3 mode uses a dedicated inherited private pipe.
+ * Diagnostics contain key paths, lengths and fixed error text only.
  *
  * Usage:
- *   node .instar/scripts/secret-get.mjs <keyPath>
- *     → prints the value to stdout. Pipe it: `... github_token | gh auth login --with-token`
- *
  *   node .instar/scripts/secret-get.mjs --names
- *     → prints vault key paths + value lengths to stderr; nothing to stdout.
- *
  *   node .instar/scripts/secret-get.mjs <keyPath> --run -- <cmd...>
- *     → runs <cmd> with the value piped to its stdin (atomic handoff — the value
- *     never touches a shell variable or the transcript). Exits with <cmd>'s code.
  *
  * Plain-config fallback:
  *   A key the vault lacks (or a machine with no vault) is read from a PLAIN
@@ -38,7 +23,7 @@
  *   the server uses.
  *
  * Exit codes:
- *   0 — value printed (or --run command succeeded, or --names listed)
+ *   0 — transfer succeeded, the consumer exited successfully, or names listed
  *   1 — key not found, vault absent/undecryptable, or --run command failed
  *   2 — usage error (missing args, cannot resolve the instar dist)
  *   3 — refused: a metered (pay-per-use) key, readable only by its door
@@ -50,27 +35,14 @@ import { spawnSync } from 'node:child_process';
 import { createRequire } from 'node:module';
 
 const args = process.argv.slice(2);
-
-// `<keyPath> --run -- <cmd...>`: everything after the first `--` (which must
-// follow `--run`) is the command to receive the value on stdin.
-const runIdx = args.indexOf('--run');
-const dashIdx = args.indexOf('--');
-let runCmd = null;
-if (runIdx !== -1) {
-  if (dashIdx === -1 || dashIdx < runIdx || dashIdx === args.length - 1) {
-    process.stderr.write('usage: secret-get.mjs <keyPath> --run -- <cmd...>\n');
-    process.exit(2);
-  }
-  runCmd = args.slice(dashIdx + 1);
-}
-const positional = (dashIdx === -1 ? args : args.slice(0, dashIdx)).filter((a) => !a.startsWith('--'));
-const namesOnly = args.includes('--names');
-const keyPath = positional[0];
-
-if (!namesOnly && !keyPath) {
-  process.stderr.write('usage: secret-get.mjs <keyPath> | secret-get.mjs --names\n');
-  process.exit(2);
-}
+const boundary = args.indexOf('--');
+const own = boundary < 0 ? args : args.slice(0, boundary);
+const keyPath = own[0];
+const namesOnly = boundary < 0 && own.length === 1 && keyPath === '--names';
+const runCmd = boundary === 2 && own[1] === '--run' && args.length > 3 ? args.slice(3) : null;
+const legacyCapture = boundary < 0 && own.length === 1 && !namesOnly;
+const privatePipe = boundary < 0 && own.length === 2 && own[1] === '--pipe-fd3';
+const matchesPath = typeof keyPath === 'string' && /^[A-Za-z0-9_-]+(?:\[[0-9]+\])*(?:\.[A-Za-z0-9_-]+(?:\[[0-9]+\])*)*$/.test(keyPath);
 
 // METERED keys bill real money per token (gemini-payg-metered-lane §4.2). They are
 // readable only by their door inside the agent server, never by a session. Refused
@@ -81,10 +53,29 @@ if (!namesOnly && !keyPath) {
 const METERED_SECRET_NAMES = ['gemini_api_key_payg', 'metered_gemini_bench', 'metered_openrouter_bench', 'metered_groq_bench'];
 const METERED_SECRET_PREFIX = 'metered_';
 if (keyPath) {
-  const first = String(keyPath).split('.')[0];
+  const first = keyPath.split(/[.\[]/, 1)[0];
   if (METERED_SECRET_NAMES.includes(first) || first.startsWith(METERED_SECRET_PREFIX)) {
     process.stderr.write('refused: metered key — readable only by its door\n');
     process.exit(3);
+  }
+}
+
+if (!namesOnly && (!matchesPath || (!runCmd && !privatePipe && !legacyCapture))) {
+  process.stderr.write('usage: secret-get.mjs --names | secret-get.mjs <keyPath> --run -- <cmd...>\n');
+  process.exit(2);
+}
+if (privatePipe || legacyCapture) {
+  const fd = privatePipe ? 3 : 1;
+  try {
+    const stat = fs.fstatSync(fd, { bigint: true });
+    if (!stat.isFIFO() && !stat.isSocket()) throw new Error('not a pipe');
+    for (const other of privatePipe ? [1, 2] : [2]) {
+      const output = fs.fstatSync(other, { bigint: true });
+      if (output.dev === stat.dev && output.ino === stat.ino) throw new Error('output alias');
+    }
+  } catch {
+    process.stderr.write('secret-get: use explicit delivery for terminal, file, or merged output\n');
+    process.exit(2);
   }
 }
 
@@ -119,12 +110,12 @@ const stateDir = path.resolve('.instar');
 // (or a machine with no vault) falls back to a PLAIN string at the same dot
 // path in config.json. A `{ "secret": true }` placeholder is a vault
 // reference, never a value, and is not returned. Same containment contract:
-// the value goes to stdout only, the note to stderr names the source only.
+// the value goes to the selected consumer, and the note names the source only.
 function plainConfigValue(key) {
   try {
     let node = JSON.parse(fs.readFileSync(path.join(stateDir, 'config.json'), 'utf-8'));
-    for (const part of key.split('.')) {
-      if (!node || typeof node !== 'object' || Array.isArray(node)) return null;
+    for (const part of key.match(/[^.\[\]]+/g) ?? []) {
+      if (!node || typeof node !== 'object' || !Object.hasOwn(node, part)) return null;
       node = node[part];
     }
     return typeof node === 'string' && node.length > 0 ? node : null;
@@ -155,12 +146,12 @@ if (configFallback === null) try {
 }
 
 // Flatten to dot-notation leaves — names + lengths only, mirroring the vault's
-// own get/set addressing. Values never leave this function except via stdout.
+// own get/set addressing. Only leaf addresses are eligible for transfer.
 function leaves(obj, prefix = '') {
   const out = [];
   for (const [k, v] of Object.entries(obj)) {
-    const p = prefix ? `${prefix}.${k}` : k;
-    if (v && typeof v === 'object' && !Array.isArray(v)) out.push(...leaves(v, p));
+    const p = Array.isArray(obj) ? `${prefix}[${k}]` : prefix ? `${prefix}.${k}` : k;
+    if (v && typeof v === 'object') out.push(...leaves(v, p));
     else out.push([p, v]);
   }
   return out;
@@ -200,7 +191,7 @@ if (keyPath.split('.')[0].startsWith('google_passkey_')) {
     fs.mkdirSync(logDir, { recursive: true });
     fs.appendFileSync(
       path.join(logDir, 'passkey-legacy-reads.jsonl'),
-      JSON.stringify({ ts: new Date().toISOString(), key: keyPath, pid: process.pid, mode: runCmd ? 'run' : 'stdout' }) + '\n',
+      JSON.stringify({ ts: new Date().toISOString(), key: keyPath, pid: process.pid, mode: runCmd ? 'run' : privatePipe ? 'private-pipe' : 'legacy-capture' }) + '\n',
     );
   } catch {
     // Audit is best-effort: a logging failure must never block or leak the read.
@@ -208,9 +199,16 @@ if (keyPath.split('.')[0].startsWith('google_passkey_')) {
 }
 
 if (runCmd) {
-  const r = spawnSync(runCmd[0], runCmd.slice(1), { input: value, stdio: ['pipe', 'inherit', 'inherit'] });
+  const r = spawnSync(runCmd[0], runCmd.slice(1), { input: value, stdio: ['pipe', 'ignore', 'ignore'] });
   process.exit(r.status ?? 1);
 }
 
-process.stdout.write(value);
-process.exit(0);
+if (legacyCapture) {
+  process.stderr.write('secret-get: bare scalar capture is deprecated. Use explicit command delivery.\n');
+}
+try {
+  fs.writeFileSync(privatePipe ? 3 : 1, value);
+} catch {
+  process.stderr.write('secret-get: private pipe transfer failed\n');
+  process.exitCode = 1;
+}
