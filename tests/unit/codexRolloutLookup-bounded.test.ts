@@ -61,23 +61,26 @@ describe('findRolloutFileSync — bounded, never a per-file stat walk', () => {
   let home: string;
   let codexHome: string;
 
-  // The archive that is larger than the sync budget (25 partitions x 1000 rollouts) is built ONCE
-  // and shared by the tests that only read it. Each of them used to create and delete its own
-  // 25,000 files (about 6 minutes of this file's run under load, 2026-11-12). A test that adds a
-  // rollout to it removes that rollout again; lookup state is reset before every test.
-  const BEYOND_BUDGET_PER_PARTITION = 1000;
-  const BEYOND_BUDGET_PARTITIONS = Math.ceil(SYNC_SCAN_NAME_BUDGET / BEYOND_BUDGET_PER_PARTITION) + 5; // ≈ 25k names > budget
+  // Use exactly one more name than the real sync budget. Newer days consume
+  // the budget; the one-name oldest day must wait for async enumeration.
+  // Build it once and share it across the three boundary cases.
+  const namesPerDay = 1000;
+  const newerDays = Math.ceil(SYNC_SCAN_NAME_BUDGET / namesPerDay);
   let freshHome: string;
-  let shared: { home: string; partitions: string[] } | null = null;
-  const useBeyondBudgetArchive = (): { partitions: number; perPartition: number; names: string[] } => {
+  let shared: { home: string; files: number; partitions: string[] } | null = null;
+  const useBeyondBudgetArchive = () => {
     if (!shared) {
       const sharedHome = makeFakeHome();
-      const built = buildLargeArchive(sharedHome, { partitions: BEYOND_BUDGET_PARTITIONS, perPartition: BEYOND_BUDGET_PER_PARTITION });
-      shared = { home: sharedHome, partitions: built.partitions };
+      const built = buildLargeArchive(sharedHome, {
+        partitions: newerDays + 1,
+        perPartition: daysBeforeEnd => daysBeforeEnd === newerDays ? 1
+          : Math.min(namesPerDay, SYNC_SCAN_NAME_BUDGET - daysBeforeEnd * namesPerDay),
+      });
+      shared = { home: sharedHome, ...built };
     }
     home = shared.home;
     codexHome = codexHomeOf(home);
-    return { partitions: BEYOND_BUDGET_PARTITIONS, perPartition: BEYOND_BUDGET_PER_PARTITION, names: shared.partitions };
+    return { files: shared.files, names: shared.partitions };
   };
   const removeRollout = (file: string): void => {
     SafeFsExecutor.safeRmSync(file, { force: true, operation: 'tests/unit/codexRolloutLookup-bounded.test.ts:shared-archive-restore' });
@@ -161,7 +164,8 @@ describe('findRolloutFileSync — bounded, never a per-file stat walk', () => {
   });
 
   it('a MISSING undated (Claude v4) id on an archive beyond the sync budget: bounded sync scan, no per-file stat, bounded async remainder', async () => {
-    const { partitions, perPartition } = useBeyondBudgetArchive();
+    const { files, names } = useBeyondBudgetArchive();
+    expect(files).toBe(SYNC_SCAN_NAME_BUDGET + 1);
     const uuid = uuidV4Like(77);
 
     const t0 = performance.now();
@@ -171,8 +175,8 @@ describe('findRolloutFileSync — bounded, never a per-file stat walk', () => {
 
     const s = rolloutLookupStats();
     expect(s.syncBudgetExhausted).toBe(1);
-    expect(s.syncNamesScanned).toBeLessThanOrEqual(SYNC_SCAN_NAME_BUDGET + perPartition);
-    expect(s.syncDirectoryReads).toBeLessThan(partitions);
+    expect(s.syncNamesScanned).toBe(SYNC_SCAN_NAME_BUDGET);
+    expect(s.syncDirectoryReads).toBeLessThan(names.length);
     expect(s.statCalls).toBeLessThanOrEqual(3);
 
     const pending = pendingRolloutLookup(uuid, codexHome);
@@ -180,8 +184,8 @@ describe('findRolloutFileSync — bounded, never a per-file stat walk', () => {
     expect(await pending).toBeNull();
     const done = rolloutLookupStats();
     expect(done.asyncEnumerations).toBe(1);
-    expect(done.asyncDirectoryReads).toBe(partitions);
-    expect(done.asyncNamesScanned).toBeGreaterThanOrEqual(partitions * perPartition);
+    expect(done.asyncDirectoryReads).toBe(names.length);
+    expect(done.asyncNamesScanned).toBeGreaterThanOrEqual(files);
     expect(done.statCalls).toBeLessThanOrEqual(5);
   });
 
