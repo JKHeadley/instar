@@ -32213,6 +32213,31 @@ document.getElementById('mcpForm').addEventListener('submit', async function (e)
     res.json({ ok: true });
   });
 
+  // Explicit disposal of an abandoned encrypted credential that was never published.
+  router.delete('/secrets/fenced/:token', (req, res) => {
+    const mintAuth = classifyGatedMint(req.headers as Record<string, unknown>, ctx.config.authToken, res.locals?.dashboardScopedSession === true);
+    if (mintAuth !== 'master') { res.status(403).json({ error: 'credential-disposal-requires-agent' }); return; }
+    if (ctx.state.readOnly) { res.status(503).json({ error: 'credential-storage-unavailable' }); return; }
+    const token = req.params.token;
+    if (!/^[a-f0-9]{64}$/.test(token)) { res.status(400).json({ error: 'invalid-credential-reference' }); return; }
+    if (secretDrop.getPending(token)) { res.status(409).json({ error: 'credential-request-pending' }); return; }
+
+    try {
+      const store = new SecretStore({ stateDir: ctx.config.stateDir, forceFileKey: ctx.config.secrets?.forceFileKey });
+      const key = `secretDrops.${token}`;
+      const record = store.get(key) as { ownerCommitPending?: boolean } | undefined;
+      if (record !== undefined) {
+        if (record?.ownerCommitPending !== true) { res.status(404).json({ error: 'fenced-credential-not-found' }); return; }
+        store.delete(key);
+      }
+      store.syncDurablyIfStoreExists();
+      res.status(204).end();
+    } catch (err) {
+      console.error('[secret-drop] fenced credential disposal unavailable:', err instanceof Error ? err.name : 'unknown error');
+      res.status(503).json({ error: 'credential-storage-unavailable' });
+    }
+  });
+
   // Retrieve a received secret (agent-facing, requires auth).
   //
   // Non-destructive by default — repeated calls return the same value

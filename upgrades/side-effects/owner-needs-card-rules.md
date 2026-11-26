@@ -78,3 +78,6 @@ An eligible native device gets only the opaque reference and vetted prompt in th
 The signed path consumes the existing one-time Secret Drop and shares its encrypted storage. Topic delivery and callbacks remain on the legacy path. The signed path requires encrypted persistence before consuming the request. A storage failure or opt-out leaves it pending. The encrypted record carries a reader fence until the value is durably stored. An uncertain write accepts an exact retry and refuses a different value through either submission path. The disclosure names the credential, the source’s stated purpose and the protected destination. Legacy protected links keep their existing behavior. Fleet release remains held for client and source acceptance.
 
 A canceled, expired or restarted request can leave an encrypted fenced record inaccessible. The rollout needs a reviewed recovery or purge path for those records. The tests reproduce a cancellation after uncertain sync and verify that retrieval cannot expose or consume the fenced value.
+
+
+An authenticated agent can explicitly purge an abandoned fenced request by its exact private token. The cleanup route refuses live requests and published credentials. It returns success only after the encrypted deletion has synced. No background sweeper or live purge was run.

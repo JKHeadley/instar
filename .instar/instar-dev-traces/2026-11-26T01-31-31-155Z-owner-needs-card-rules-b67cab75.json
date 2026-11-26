@@ -1,0 +1,21 @@
+{
+  "version": 2,
+  "slug": "owner-needs-card-rules",
+  "sessionId": "8e84229b-531e-4493-9069-98980bbef193",
+  "timestamp": "2026-11-26T01:31:31.155Z",
+  "artifactPath": "upgrades/side-effects/owner-needs-card-rules.md",
+  "artifactSha256": "ecf9d9b0cd285309ff64bdb40ecb76a67698030de11577172101d4e11e701531",
+  "specPath": "docs/specs/owner-needs-card-rules.md",
+  "coveredFiles": [
+    "src/core/SecretStore.ts",
+    "src/data/awareness/secret-drop-fenced-owner.md",
+    "src/server/routes.ts",
+    "tests/e2e/app-approval-disclosure-alive.test.ts",
+    "tests/e2e/secret-drop-store-first-lifecycle.test.ts",
+    "upgrades/side-effects/owner-needs-card-rules.md"
+  ],
+  "phase": "complete",
+  "tier": 2,
+  "secondPass": "true",
+  "reviewerConcurred": true
+}

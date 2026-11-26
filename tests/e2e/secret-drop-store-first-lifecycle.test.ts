@@ -13,7 +13,7 @@
  * copy can serve the value. Exactly the auto-update-restart churn that kept
  * losing operator secrets (topic 13481, "MANY MANY TIMES").
  */
-import { describe, it, expect, beforeAll, afterAll } from 'vitest';
+import { describe, it, expect, beforeAll, afterAll, vi } from 'vitest';
 import express from 'express';
 import request from 'supertest';
 import fs from 'node:fs';
@@ -147,6 +147,25 @@ describe('Secret Drop store-first E2E lifecycle (survives a real server restart)
       }
       const store = new SecretStore({ stateDir, forceFileKey: true });
       expect(store.get(key)).toMatchObject({ ownerCommitPending: true });
+
+      const publishedToken = 'b'.repeat(64);
+      const publishedKey = `secretDrops.${publishedToken}`;
+      store.set(publishedKey, { label: 'Published test credential', values: { secret: 'published fixture value' } });
+      await request(restarted.app).delete(`/secrets/fenced/${token}`).expect(401);
+      await request(restarted.app).delete(`/secrets/fenced/${publishedToken}`).set(auth()).expect(404);
+      expect(store.get(publishedKey)).toMatchObject({ label: 'Published test credential' });
+      const sync = vi.spyOn(SecretStore.prototype, 'syncDurably').mockImplementationOnce(() => {
+        throw new Error('fixture sync unavailable');
+      });
+      try {
+        await request(restarted.app).delete(`/secrets/fenced/${token}`).set(auth()).expect(503);
+        await request(restarted.app).delete(`/secrets/fenced/${token}`).set(auth()).expect(204);
+        expect(sync).toHaveBeenCalledTimes(2);
+      } finally {
+        sync.mockRestore();
+      }
+      expect(store.get(key)).toBeUndefined();
+      await request(restarted.app).post(`/secrets/retrieve/${token}`).set(auth()).expect(404);
     } finally {
       await restarted.server.stop();
     }

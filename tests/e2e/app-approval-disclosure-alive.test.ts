@@ -196,6 +196,7 @@ describe('App approval disclosure E2E', () => {
     expect(csrf).toBeTruthy();
     await request(s.app).post(privateLink).send({ _csrf: csrf, secret: 'different fixture value' }).expect(503);
     await s.bearer(request(s.app).post(`/secrets/retrieve/${minted.body.token}?consume=true`)).expect(409);
+    await s.bearer(request(s.app).delete(`/secrets/fenced/${minted.body.token}`)).expect(409);
     await owner.signed('POST', path, { ...submit, value: 'different fixture value' }).expect(503, { outcome: 'unavailable' });
     await owner.signed('POST', path, submit).expect(200, { outcome: 'applied' });
     await owner.signed('POST', path, submit).expect(409);
