@@ -48,17 +48,17 @@ export class ConnectViewerAuthority {
   }
 
   /** Only the trusted local consent surface calls this after showing the exact viewer and display. */
-  grant(consent: ConnectViewerConsent): ConnectViewerSession | undefined {
+  grant(consent: ConnectViewerConsent, connection?: AbortSignal): ConnectViewerSession | undefined {
     const viewer = this.#viewers.get(consent.keyDigest);
-    if (!viewer || viewer.binding.agentId !== consent.agentId ||
+    if (connection?.aborted || !viewer || viewer.binding.agentId !== consent.agentId ||
         viewer.binding.targetMachineId !== consent.targetMachineId) return;
-    const session = new ConnectViewerSession(consent);
+    const session = new ConnectViewerSession(consent, connection);
     const keyDigest = session.consent.keyDigest;
     const previous = this.#sessions.get(keyDigest);
     // Abort listeners run synchronously and may revoke this viewer or replace this grant.
     this.#sessions.set(keyDigest, session);
     previous?.stop();
-    return this.#viewers.get(keyDigest) === viewer && this.#sessions.get(keyDigest) === session ? session : undefined;
+    return !connection?.aborted && this.#viewers.get(keyDigest) === viewer && this.#sessions.get(keyDigest) === session ? session : undefined;
   }
 
   attach(keyDigest: string, sessionId: string, signature: string): AbortSignal | undefined {

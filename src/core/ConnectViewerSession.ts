@@ -13,14 +13,17 @@ export class ConnectViewerSession {
   readonly #controller = new AbortController();
   readonly #timer: ReturnType<typeof setTimeout>;
   #attached = false;
+  readonly #onConnectionClose = () => this.stop();
 
-  constructor(consent: ConnectViewerConsent) {
+  constructor(consent: ConnectViewerConsent, private readonly connection?: AbortSignal) {
     const remaining = consent.expiresAt - Date.now();
     if (!Number.isSafeInteger(consent.expiresAt) || remaining <= 0 || remaining > 15 * 60_000) {
       throw new RangeError('Invalid Look only consent expiry');
     }
     this.consent = Object.freeze({ ...consent });
     this.#timer = setTimeout(() => this.stop(), remaining).unref();
+    if (connection?.aborted) this.stop();
+    else connection?.addEventListener('abort', this.#onConnectionClose, { once: true });
   }
 
   attach(binding: ConnectViewerBinding, displayId: string): AbortSignal | undefined {
@@ -44,6 +47,7 @@ export class ConnectViewerSession {
 
   stop(): void {
     clearTimeout(this.#timer);
+    this.connection?.removeEventListener('abort', this.#onConnectionClose);
     this.#controller.abort();
   }
 }

@@ -50,3 +50,15 @@ it('refuses frame dispatch before attachment, after Stop, and after a delayed ex
     vi.useRealTimers();
   }
 });
+
+it('discards a pending frame when its connection is replaced before dispatch', () => {
+  const connection = new AbortController();
+  const session = new ConnectViewerSession({ ...viewer, displayId: 'display', expiresAt: Date.now() + 1000 }, connection.signal);
+  const stream = session.attach(viewer, 'display');
+  expect(stream?.aborted).toBe(false);
+  const deliver = vi.fn();
+  connection.abort();
+  expect(stream?.aborted).toBe(true);
+  expect(session.dispatchFrame(deliver)).toBe(false);
+  expect(deliver).not.toHaveBeenCalled();
+});
