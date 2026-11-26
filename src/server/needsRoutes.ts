@@ -28,7 +28,7 @@ import fs from 'node:fs';
 import { fileURLToPath, pathToFileURL } from 'node:url';
 import type { Request, Response, Router } from 'express';
 import { ownerOrBearer } from './mobileCapacityRoutes.js';
-import { deviceAdmissionIdentity, devicePersonOf, DEVICE_ALLOWLIST } from './mobilePairingRoutes.js';
+import { deviceAdmissionIdentity, devicePersonOf, principalOf, DEVICE_ALLOWLIST } from './mobilePairingRoutes.js';
 import { tierAtLeast } from '../permissions/TeamAccess.js';
 import { scrubSecrets } from '../monitoring/scrubSecrets.js';
 import { operatorError } from '../core/storageMachineName.js';
@@ -135,7 +135,7 @@ export interface NeedsAnswer {
   generatedAt: string;
   machineId: string | null;
   agent: { name: string | null };
-  viewer: { role: NeedsViewerRole };
+  viewer: { role: NeedsViewerRole; appBuild?: string };
   count: number;
   complete: boolean;
   items: NeedItem[];
@@ -153,6 +153,7 @@ export interface NeedsDeps {
   bearerOk: (req: Request) => boolean;
   /** The work board read as this request's caller (a team person sees only their cards). */
   boardFor: (req: Request) => NeedsSelfRead;
+  appBuildFor?: (deviceId: string) => string | undefined;
   /** Where the console's models live (`<package>/dashboard/console`). */
   consoleDir?: string;
   agentName: () => string | null;
@@ -554,7 +555,9 @@ export function mountNeedsRoutes(router: Router, deps: NeedsDeps & { canary?: Ne
           nextCursor: start + NEEDS_MAX_ITEMS < answer.count ? token(start + NEEDS_MAX_ITEMS).toString('base64url') : null,
         };
       }
-      res.json({ ...answer, viewer: { role } } satisfies NeedsAnswer);
+      const caller = principalOf(req);
+      const appBuild = role === 'owner' && caller.kind === 'device' ? deps.appBuildFor?.(caller.deviceId) : undefined;
+      res.json({ ...answer, viewer: { role, ...(appBuild ? { appBuild } : {}) } } satisfies NeedsAnswer);
     } catch (err) {
       // The list could not be built at all: say so; a surface shows "could not check" and keeps the strip.
       res.status(500).json({ error: 'needs-read-failed', detail: clean(operatorError(err), 200) });

@@ -3456,6 +3456,10 @@ export function createRoutes(ctx: RouteContext): Router {
   }, NEEDS_CANARY_FIRST_DELAY_MS).unref();
   mountNeedsRoutes(router, {
     canary: needsCanary,
+    appBuildFor: (id) => {
+      const pairing = ctx.mobilePairingService?.devices.get(id);
+      return pairing?.status === 'active' ? pairing.appBuild : undefined;
+    },
     read: (p) => needsSelfRead(p),
     bearerOk: (req) => bearerMatches(req, ctx.config.authToken),
     boardFor: (req) => (workBoardReadAs ? workBoardReadAs(req) : { status: 503, body: { error: 'work-board-starting' } }),

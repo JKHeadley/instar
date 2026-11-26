@@ -214,6 +214,8 @@ export interface DeviceRecord {
   pushEnvironment?: 'sandbox' | 'production';
   notifyTokenHash?: string;
   pushRevision?: number;
+  /** Last app build reported in a device-signed registration for this pairing. */
+  appBuild?: string;
   pushVersion?: number;
   pushUpdatedAt?: string;
   /**
@@ -360,6 +362,7 @@ export interface PushRegistration {
   environment?: 'sandbox' | 'production';
   notifyTokenHash?: string;
   revision: number;
+  appBuild?: string;
 }
 
 export type PushRegisterResult =
@@ -922,10 +925,12 @@ export class DeviceRegistry {
     const prev = d.pushRevision ?? 0;
     if (r.revision < prev) return { ok: false, reason: 'stale-revision' };
     if (r.revision === prev) {
-      return samePush(d, r) ? { ok: true, revision: prev, version: d.pushVersion ?? 0 } : { ok: false, reason: 'revision-conflict' };
+      const sameBuild = r.appBuild === undefined || r.appBuild === d.appBuild;
+      return sameBuild && samePush(d, r) ? { ok: true, revision: prev, version: d.pushVersion ?? 0 } : { ok: false, reason: 'revision-conflict' };
     }
     const changed = !samePush(d, r);
     d.pushRevision = r.revision;
+    if (r.appBuild !== undefined) d.appBuild = r.appBuild;
     if (changed) {
       if (r.token === null) clearPush(d);
       else {
