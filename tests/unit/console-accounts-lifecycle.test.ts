@@ -37,7 +37,7 @@ function reads(relogin = {}, row = account()) {
     data: path.startsWith('/subscription-pool?')
       ? { enabled: true, accounts: [row], pool: { failed: [] } }
       : path.startsWith('/subscription-relogin?')
-        ? { enabled: true, episodes: [], blockers: [], ...relogin }
+        ? { enabled: true, episodes: [{ id: 'fixture-owner-step', accountId: row.id, machineId: row.machineId, state: 'waiting-operator-only' }], blockers: [], ...relogin }
         : path === '/pool' ? { machines: [] } : {},
   }));
 }
@@ -252,7 +252,8 @@ describe('Accounts action dialog ownership', () => {
     const fetch = transport({ '/dashboard/unlock': reply(unlockResult), [repair]: reply() });
     const episodes = [{ id: 'fixture-episode', machineId: 'fixture-studio', accountId: 'fixture-account', state: 'failed' }];
     await renderAccounts(main, { ...ctx, get: reads({ episodes }) });
-    click('Try again', main);
+    main.querySelector('.acct-row').click();
+    click('Try again', document.querySelector('[role=dialog]'));
     await settle();
     submitPin();
     await settle();
@@ -268,7 +269,8 @@ describe('Accounts action dialog ownership', () => {
     const fetch = transport({ '/dashboard/unlock': reply(unlockResult), [repair]: pending.promise });
     const episodes = [{ id: 'fixture-episode', machineId: 'fixture-studio', accountId: 'fixture-account', state: 'failed' }];
     await renderAccounts(main, { ...ctx, get: reads({ episodes }) });
-    click('Try again', main);
+    main.querySelector('.acct-row').click();
+    click('Try again', document.querySelector('[role=dialog]'));
     await settle();
     submitPin();
     await settle();
