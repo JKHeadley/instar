@@ -1,3 +1,4 @@
+import { buildProjectCoverage } from '../core/ChiefOfStaffProjectProgress.js';
 import { ManualQuotaBalance } from '../core/ManualQuotaBalance.js';
 import { promotionMismatchReason, unavailableConsumerPromotionProposal } from '../feedback-factory/drain/consumerPromotionProposal.js';
 import { normalizeCreationParentRef, type AppCreationContext } from '../core/AppCreationContext.js';
@@ -10226,10 +10227,15 @@ export function createRoutes(ctx: RouteContext): Router {
       return;
     }
     const cosTopic = ctx.state.get<number>('chief-of-staff-topic');
+    const conversationKey = typeof cosTopic === 'number' && cosTopic > 1 ? `telegram:${cosTopic}` : null;
+    const completeProjects = ctx.chiefOfStaffLoop.projectsSummaryComplete?.() ?? null;
+    const projects = completeProjects ?? ctx.chiefOfStaffLoop.projectsSummary();
     res.json({
-      ...ctx.chiefOfStaffLoop.status(), protocol: ctx.chiefOfStaffProtocol?.status() ?? null, projects: ctx.chiefOfStaffLoop.projectsSummary(),
-      // §1.4 surfaces: the CoS conversation's key (null until the topic exists) and the owner's display name.
-      conversationKey: typeof cosTopic === 'number' && cosTopic > 1 ? `telegram:${cosTopic}` : null,
+      ...ctx.chiefOfStaffLoop.status(), protocol: ctx.chiefOfStaffProtocol?.status() ?? null, projects,
+      projectCoverage: ctx.initiativeTracker && completeProjects
+        ? buildProjectCoverage(completeProjects, ctx.initiativeTracker.list({ kind: 'project' }), conversationKey)
+        : null,
+      conversationKey,
       displayName: String(ctx.liveConfig?.get<string | undefined>('chiefOfStaff.displayName', undefined) || 'Chief of Staff'),
     });
   });

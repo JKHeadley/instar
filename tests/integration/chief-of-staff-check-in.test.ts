@@ -17,6 +17,7 @@ import { createRoutes, type RouteContext } from '../../src/server/routes.js';
 import { authMiddleware } from '../../src/server/middleware.js';
 import { SafeFsExecutor } from '../../src/core/SafeFsExecutor.js';
 import { sign, verify } from '../../src/core/MachineIdentity.js';
+import { InitiativeTracker } from '../../src/core/InitiativeTracker.js';
 import { ChiefOfStaffLoop, CHIEF_OF_STAFF_LOOP_DEFAULTS } from '../../src/core/ChiefOfStaffLoop.js';
 import { chiefOfStaffRecordStoreSchema, type UnionEntry } from '../../src/core/ChiefOfStaffStore.js';
 import type { HlcTimestamp } from '../../src/core/HybridLogicalClock.js';
@@ -30,18 +31,24 @@ function keypair() {
 }
 const ctxV = () => ({ countDroppedField: () => {}, countJailReject: () => {} });
 
-function app(opts: { loop: boolean }) {
+function app(opts: { loop: boolean; progress?: boolean }) {
   const dir = fs.mkdtempSync(path.join(os.tmpdir(), 'cos-checkin-')); dirs.push(dir);
   const keys = keypair();
+  const tracker = new InitiativeTracker(dir);
   const entries: UnionEntry[] = []; let clock = 1; let seq = 0;
   const loop = new ChiefOfStaffLoop({
     now: () => Date.now(), machineId: 'm1', enabled: () => true, holdsLease: () => true, config: () => CHIEF_OF_STAFF_LOOP_DEFAULTS,
     journal: {
       emit: (recordKey, build) => { const hlc: HlcTimestamp = { physical: ++clock, logical: 0, node: 'm1' }; const data = build(hlc, 'm1'); if (!data) return { outcome: 'dropped' }; const v = chiefOfStaffRecordStoreSchema.validate(data, ctxV()); if (!v) return { outcome: 'dropped:schema' }; entries.push({ data: { ...v, recordKey, hlc, op: 'put', origin: 'm1' }, origin: 'm1' }); return { outcome: 'emitted', seq: ++seq }; },
       loadUnion: () => entries.slice(),
+      loadUnionCompleteReadOnly: () => entries.slice(),
     },
     verifyRenewal: (r) => verify(`cos-renewal:${r.renewedAt}:${r.renewedVia}:${r.principal}:${r.machine}`, String(r.machineSignature), keys.pub),
     gather: async () => { throw new Error('n/a'); }, judge: async () => null,
+    readProjectProgress: opts.progress ? async (projects) => new Map(projects.map((project) => [
+      project.conversationKey,
+      { evidence: [{ kind: 'merge', at: new Date(Date.now() - 7 * 3_600_000).toISOString() }], waitingOn: ['Verification'], complete: true },
+    ])) : undefined,
     protocol: { claim: async () => ({ outcome: 'rejected', reason: 'n/a' }), standDown: () => null, settleOpenIntent: async () => 'lost', operatorLeaseLive: () => false } as never,
     mirrorInitiativeStatus: () => {}, sendNote: async () => {}, sendImmediate: async () => {}, statusUrl: () => 'x', localHour: () => 8,
     sign: (c) => sign(c, keys.priv),
@@ -55,12 +62,13 @@ function app(opts: { loop: boolean }) {
     state: { get: (k: string) => state.get(k) ?? null, getJobState: () => null, getSession: () => null, queryEvents: () => [], getCoherenceJournal: () => undefined, readOnly: false },
     liveConfig: { get: (_k: string, fb?: unknown) => fb },
     ...(opts.loop ? { chiefOfStaffLoop: loop } : {}),
+    ...(opts.progress ? { initiativeTracker: tracker } : {}),
   } as unknown as RouteContext;
   const a = express();
   a.use(express.json());
   a.use(authMiddleware(() => 'tok-1', 'echo'));
   a.use(createRoutes(ctx));
-  return { a, entries };
+  return { a, entries, loop, tracker };
 }
 const auth = { Authorization: 'Bearer tok-1', 'X-Instar-AgentId': 'echo', 'X-Instar-Request': '1' };
 
@@ -102,5 +110,30 @@ describe('POST /chief-of-staff/projects + /projects/:key/tap (PIN-gated owner su
     expect(tap.status).toBe(200); expect(tap.body.result).toBe('ok');
     const bad = await request(a).post('/chief-of-staff/projects/telegram:1/tap').set(auth).send({ pin: '424242', action: 'explode' });
     expect(bad.status).toBe(400);
+  });
+});
+
+
+describe('verified project progress on GET /chief-of-staff', () => {
+  it('reports qualified movement and explicit waits after a read-only tick', async () => {
+    const { a, loop, tracker } = app({ loop: true, progress: true });
+    await tracker.create({
+      id: 'registry-only', kind: 'project', title: 'Registry-only project', description: 'Fixture',
+      phases: [{ id: 'run', name: 'Run' }], telegramTopicId: '2',
+    });
+    await request(a).post('/chief-of-staff/projects').set(auth).send({
+      pin: '424242', conversationKey: 'telegram:1', goal: 'Track exact movement',
+      doneDefinition: [{ id: 'current', kind: 'judgment', text: 'Observe the result' }],
+    }).expect(201);
+    await loop.tick();
+    const r = await request(a).get('/chief-of-staff').set(auth).expect(200);
+    expect(r.body.projects[0]).toMatchObject({
+      lastProgressAt: expect.any(String), lastProgressKind: 'merge', waitingOn: ['Verification'],
+      stalledSince: null, progressEvidenceComplete: true,
+    });
+    expect(r.body.projectCoverage).toEqual(expect.arrayContaining([
+      expect.objectContaining({ conversationKey: 'telegram:1', disposition: 'tracked' }),
+      expect.objectContaining({ conversationKey: 'telegram:2', disposition: 'awaiting-binding', progress: null }),
+    ]));
   });
 });

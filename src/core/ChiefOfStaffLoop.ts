@@ -1,3 +1,4 @@
+import { projectProgressStatus, type VerifiedProgress, type ProjectProgressStatus, type ProjectProgressEvidence } from './ChiefOfStaffProjectProgress.js';
 import { CreationPlacementSnapshot, type CreationPlacementView } from './CreationPlacementSnapshot.js';
 /**
  * ChiefOfStaffLoop — the check-in loop of docs/specs/chief-of-staff-topic.md (§2.1–§2.9, §3, §4).
@@ -353,6 +354,7 @@ export interface ChiefOfStaffLoopDeps {
   /** Verify a renewal record's machine signature (the receiving machine signed it). */
   verifyRenewal: (renewal: Record<string, unknown>) => boolean;
   gather: (project: BoundProject, prev: ProjectCheckState | null) => Promise<EvidenceBundle>;
+  readProjectProgress?: (projects: readonly BoundProject[]) => Promise<Map<string, ProjectProgressEvidence>>;
   /** The LLM judge (signal). Null when the budget refused or the call failed. */
   judge: (input: JudgeInput) => Promise<JudgeOutput | null>;
   protocol: Pick<ChiefOfStaffActionProtocol, 'claim' | 'standDown' | 'settleOpenIntent' | 'operatorLeaseLive'>;
@@ -430,6 +432,11 @@ export interface ProjectOverviewRow {
   /** The project's check cadence in hours (the binding's, else the default, floored at the minimum). */
   cadenceHours: number;
 }
+
+type ProjectSummaryRow = Pick<ProjectOverviewRow,
+  'conversationKey' | 'goal' | 'title' | 'lastVerdict' | 'lastCheckAt' | 'nextCheckAt' |
+  'restartsWithoutProgress' | 'parked' | 'breakerTripped' | 'pausedBy'
+> & ProjectProgressStatus & { nextActionAllowedAt: string | null };
 
 /** The hash a failed gather records (its evidence was never read). */
 const UNREAD_EVIDENCE_HASH = 'x'.repeat(64);
@@ -665,14 +672,102 @@ export class ChiefOfStaffLoop {
     }
   }
 
+  private progressSample: {
+    at: number;
+    values: Map<string, ProjectProgressEvidence & { binding: string }>;
+  } | null = null;
+  private progressReading = false;
+  private lastProgressReadStart: number | null = null;
+
+  private refreshProjectProgress(now: number): void {
+    const read = this.d.readProjectProgress;
+    if (!read || this.progressReading || (this.lastProgressReadStart !== null && now - this.lastProgressReadStart < 3_600_000)) return;
+    this.lastProgressReadStart = now;
+    let union: UnionEntry[] | null = null;
+    try { union = this.d.journal.loadUnionCompleteReadOnly?.() ?? null; }
+    catch { /* Unavailable coverage is displayed as incomplete. */ }
+    if (!union) {
+      if (this.progressSample) {
+        for (const row of this.progressSample.values.values()) row.complete = false;
+      }
+      return;
+    }
+    const projects = boundProjects(union);
+    this.progressReading = true;
+    void read(projects).then((results) => {
+      if (!this.safe(() => this.d.holdsLease(), false)) return;
+      const values = new Map<string, ProjectProgressEvidence & { binding: string }>();
+      for (const project of projects) {
+        const result = results.get(project.conversationKey);
+        if (result && project.binding.bindingHlc) {
+          const binding = hlcKey(project.binding.bindingHlc);
+          const previous = this.progressSample?.values.get(project.conversationKey);
+          const evidence = [...result.evidence];
+          if (previous?.binding === binding) {
+            evidence.push(...previous.evidence);
+            const moved = Object.entries(result.doneItems ?? {}).some(([id, status]) =>
+              status === 'pass' && previous.doneItems?.[id] === 'fail');
+            if (moved) evidence.push({ at: new Date(this.d.now()).toISOString(), kind: 'done-item' });
+          }
+          evidence.sort((a, b) => Date.parse(a.at) - Date.parse(b.at));
+          values.set(project.conversationKey, { ...result, evidence: evidence.slice(-1), binding });
+        }
+      }
+      this.progressSample = { at: this.d.now(), values };
+    }).catch((error: unknown) => {
+      this.d.log?.(`[chief-of-staff] could not refresh project progress: ${String(error)}`);
+    }).finally(() => { this.progressReading = false; });
+  }
+
+  private verifiedProgress(project: BoundProject, union: UnionEntry[], now: number): ProjectProgressStatus {
+    const binding = project.binding.bindingHlc;
+    const linked = this.progressSample?.values.get(project.conversationKey);
+    const sample = linked && binding && linked.binding === hlcKey(binding) ? linked : null;
+    const evidence = [...sample?.evidence ?? []];
+    for (const check of Object.values(project.binding.ownerChecks ?? {})) evidence.push({ at: check.at, kind: 'done-item' });
+    const baseline = typeof project.binding.binding?.confirmedAt === 'string' ? project.binding.binding.confirmedAt : null;
+    const checks = union.filter(({ data }) => data.recordType === 'check-event' && data.conversationKey === project.conversationKey &&
+      typeof data.at === 'string' && baseline !== null && Date.parse(data.at) >= Date.parse(baseline))
+      .map(({ data }) => data).sort((a, b) => String(a.at).localeCompare(String(b.at)));
+    const deterministic = project.doneDefinition.filter((item) => item.kind === 'deterministic');
+    const passed = new Set<string>();
+    const known = new Set<string>();
+    for (const check of checks) {
+      if (!check.doneItems || typeof check.doneItems !== 'object') continue;
+      const done = check.doneItems as Record<string, unknown>;
+      for (const { id } of deterministic) {
+        if (done[id] === 'fail') known.add(id);
+        if (done[id] !== 'pass' || passed.has(id)) continue;
+        if (known.has(id)) evidence.push({ at: check.at as string, kind: 'done-item' });
+        passed.add(id);
+      }
+    }
+    const currentChecklistReadable = deterministic.every(({ id }) =>
+      sample?.doneItems?.[id] === 'pass' || sample?.doneItems?.[id] === 'fail');
+    return projectProgressStatus(now, baseline, evidence, sample?.waitingOn ?? [],
+      sample ? this.progressSample!.at : null, sample?.complete === true &&
+      currentChecklistReadable && !project.binding.pausedBy && this.safe(() => this.d.holdsLease(), false));
+  }
+
   /** §5: one row per bound project (no evidence text; titles are the owner's). */
-  projectsSummary(): Array<{ conversationKey: string; goal: string; title: string; lastVerdict: CosVerdict | null; lastCheckAt: string | null; nextCheckAt: string | null; restartsWithoutProgress: number; parked: boolean; breakerTripped: boolean; nextActionAllowedAt: string | null; pausedBy: { who: string; at: string; quote: string; messageRef: string } | null }> {
-    let union: UnionEntry[] = [];
-    try { union = this.d.journal.loadUnion(); } catch { /* @silent-fallback-ok: an unreadable union lists no projects; the loop health shows lastError */ return []; }
+  projectsSummary(): ProjectSummaryRow[] {
+    try { return this.summarizeProjects(this.d.journal.loadUnion()); }
+    catch { /* @silent-fallback-ok: an unreadable legacy union shows no projects. */ return []; }
+  }
+
+  /** Coverage can assert a missing binding only after the complete journal was read. */
+  projectsSummaryComplete(): ProjectSummaryRow[] | null {
+    try {
+      const union = this.d.journal.loadUnionCompleteReadOnly?.();
+      return union ? this.summarizeProjects(union) : null;
+    } catch { /* @silent-fallback-ok: the coverage view reports unavailable. */ return null; }
+  }
+
+  private summarizeProjects(union: UnionEntry[]): ProjectSummaryRow[] {
     const cfg = this.d.config(); const now = new Date(this.d.now());
     return boundProjects(union).map((p) => {
       const st = foldProjectCheckState(union, p.conversationKey, { checkCadenceHours: Math.max(cfg.minCadenceHours, p.checkCadenceHours || cfg.defaultCadenceHours), maxRestartsWithoutProgress: cfg.maxRestartsWithoutProgress, breakerRestartsPerWeek: cfg.breakerRestartsPerWeek }, now, p.binding);
-      return { conversationKey: p.conversationKey, goal: p.goal, title: this.label(p), lastVerdict: st.lastVerdict, lastCheckAt: st.lastCheckAt, nextCheckAt: st.nextCheckAt, restartsWithoutProgress: st.restartsWithoutProgress, parked: st.parked, breakerTripped: st.breakerTripped, nextActionAllowedAt: st.nextActionAllowedAt, pausedBy: p.binding.pausedBy ?? null };
+      return { conversationKey: p.conversationKey, goal: p.goal, title: this.label(p), lastVerdict: st.lastVerdict, lastCheckAt: st.lastCheckAt, nextCheckAt: st.nextCheckAt, restartsWithoutProgress: st.restartsWithoutProgress, parked: st.parked, breakerTripped: st.breakerTripped, nextActionAllowedAt: st.nextActionAllowedAt, pausedBy: p.binding.pausedBy ?? null, ...this.verifiedProgress(p, union, now.getTime()) };
     });
   }
 
@@ -794,6 +889,7 @@ export class ChiefOfStaffLoop {
       this.memo = { at: now, union };
       const projects = boundProjects(union);
       this.health.projects = projects.length;
+      this.refreshProjectProgress(now);
       // §1.1: the CoS conversation is the root of the tree; write its node once the conversation exists.
       const rootKey = this.safe(() => this.d.rootConversationKey?.() ?? null, null);
       if (rootKey && !foldTreeState(union).has(rootKey)) this.d.journal.emit(rootKey, buildTreePut(rootKey, null, 'chief-of-staff'));

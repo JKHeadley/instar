@@ -1,0 +1,28 @@
+{
+  "version": 2,
+  "slug": "verified-project-progress",
+  "sessionId": "f1e1e1c2-bfc5-4e65-816a-68c17940e93b",
+  "timestamp": "2026-11-26T22:59:56.809Z",
+  "artifactPath": "upgrades/side-effects/verified-project-progress.md",
+  "artifactSha256": "19829380a94f46962097aec738844c5cc7a4db7aa673db13b960d538c4b4f183",
+  "coveredFiles": [
+    "src/commands/server.ts",
+    "src/core/ChiefOfStaffLoop.ts",
+    "src/core/ChiefOfStaffProjectProgress.ts",
+    "src/data/awareness/chief-of-staff-checkable-done-items.md",
+    "src/server/routes.ts",
+    "tests/e2e/chief-of-staff-alive.test.ts",
+    "tests/integration/chief-of-staff-check-in.test.ts",
+    "tests/unit/chief-of-staff-project-progress.test.ts",
+    "upgrades/next/verified-project-progress.md",
+    "upgrades/side-effects/verified-project-progress.md",
+    "upgrades/verified-project-progress.eli16.md"
+  ],
+  "phase": "complete",
+  "tier": 1,
+  "tierReasoning": "Draft publication of a reversible read-only extension to the existing status response. It introduces no new binding, owner action, persisted state, or automated restarts.",
+  "eli16Path": "upgrades/verified-project-progress.eli16.md",
+  "sideEffectsPath": "upgrades/side-effects/verified-project-progress.md",
+  "secondPass": "true",
+  "reviewerConcurred": true
+}

@@ -96,6 +96,10 @@ describe('Chief of Staff E2E (feature is alive)', () => {
       expect(Array.isArray(r.body.projects)).toBe(true);
       expect(r.body.projects.map((p: { conversationKey: string }) => p.conversationKey)).toEqual([CK]);
       expect(r.body.projects[0].goal).toBe('Ship the thing');
+      expect(r.body.projects[0]).toMatchObject({
+        lastProgressAt: null, lastProgressKind: null, waitingOn: [], stalledSince: null,
+        progressCheckedAt: null, progressEvidenceComplete: false,
+      });
 
       const d = await request(server.getApp()).get(`/chief-of-staff/projects/${encodeURIComponent(CK)}`).set(auth());
       expect(d.status).toBe(200); expect(d.body.conversationKey).toBe(CK); expect(Array.isArray(d.body.checks)).toBe(true); expect(Array.isArray(d.body.intents)).toBe(true);
