@@ -26,6 +26,8 @@ import { LiveConfig } from '../../src/config/LiveConfig.js';
 import { recordRecoveredSessionDelivery } from '../../src/messaging/telegram-origin/SessionDeliveryReporter.js';
 import { setTimeout as delay } from 'node:timers/promises';
 
+import { NEEDS_CANARY_FIRST_DELAY_MS } from '../../src/server/needsRoutes.js';
+
 let worker: URL;
 const runtimes: TelegramOriginRuntime[] = [];
 const privateKey = generateKeyPairSync('ed25519').privateKey.export({ type: 'pkcs8', format: 'pem' }).toString();
@@ -38,7 +40,14 @@ async function appHarness(extra: Record<string, unknown> = {}, configExtra: Reco
     const body = JSON.parse(init.body as string);
     return new Response(JSON.stringify({ ok: true, result: { message_id: 27, chat: { id: -100123 }, message_thread_id: body.message_thread_id } }));
   });
-  vi.stubGlobal('fetch', network);
+  vi.stubGlobal('fetch', (url: string, init: RequestInit) => {
+    const target = new URL(url);
+    if (target.origin === 'https://api.telegram.org') return network(url, init);
+    const nonce = target.pathname === '/needs' && target.hostname === '127.0.0.1'
+      ? target.searchParams.get('canary') : null;
+    if (nonce) return Promise.resolve(Response.json({ items: [{ id: `canary:${nonce}` }], count: 1 }));
+    throw new Error(`Unexpected fixture fetch to ${target.origin}${target.pathname}`);
+  });
   const runtime = await TelegramOriginRuntime.open({ storage: { stateDir, agentId: 'echo' }, workerUrl: worker,
     identity: { agentId: 'echo', agentName: 'Echo', originMachineId: 'studio', originMachineName: 'Mac Studio' },
     signingKey: { privateKey, keyId: 'studio-1', keyEpoch: 1 }, bot: { token: botToken, accountId: 'bot-1', chatId: '-100123' },
@@ -51,17 +60,28 @@ async function appHarness(extra: Record<string, unknown> = {}, configExtra: Reco
     projectDir: process.cwd(), configuredModel: 'gpt-6-astra' });
   const app = express(); app.use(express.json());
   app.use((req, res, next) => { if (req.get('Authorization') !== 'Bearer agent-test') { res.sendStatus(401); return; } next(); });
-  app.use(createRoutes({ state: { getSession: () => undefined }, config: { authToken: 'agent-test', stateDir, port: 0, projectName: 'echo',
-    messaging: [{ type: 'telegram', enabled: true, config: { token: botToken, chatId: '-100123', lifelineTopicId: 7848 } }], ...configExtra },
-    telegramOrigin: runtime, verifyDashboardOperatorSession: (proof: string) => proof === 'operator-test',
-    telegram: { sendToTopic: async (topicId: number, text: string) => {
-      const response = await telegramFetch(`https://api.telegram.org/bot${botToken}/sendMessage`, {
-        method: 'POST', headers: { 'Content-Type': 'application/json' }, body: JSON.stringify({ chat_id: '-100123', message_thread_id: topicId, text }),
-      });
-      const json = await response.json() as { result: { message_id: number } };
-      return { messageId: json.result.message_id, timestamp: new Date().toISOString() };
-    } }, sessionManager: { clearInjectionTracker: () => undefined }, ...extra,
-  } as never));
+  // Router construction schedules the recurring Needs You check. This Telegram
+  // fixture has no listening app port and must not leave that timer behind.
+  const timeout = vi.spyOn(globalThis, 'setTimeout');
+  try {
+    app.use(createRoutes({ state: { getSession: () => undefined }, config: { authToken: 'agent-test', stateDir, port: 0, projectName: 'echo',
+      messaging: [{ type: 'telegram', enabled: true, config: { token: botToken, chatId: '-100123', lifelineTopicId: 7848 } }], ...configExtra },
+      telegramOrigin: runtime, verifyDashboardOperatorSession: (proof: string) => proof === 'operator-test',
+      telegram: { sendToTopic: async (topicId: number, text: string) => {
+        const response = await telegramFetch(`https://api.telegram.org/bot${botToken}/sendMessage`, {
+          method: 'POST', headers: { 'Content-Type': 'application/json' }, body: JSON.stringify({ chat_id: '-100123', message_thread_id: topicId, text }),
+        });
+        const json = await response.json() as { result: { message_id: number } };
+        return { messageId: json.result.message_id, timestamp: new Date().toISOString() };
+      } }, sessionManager: { clearInjectionTracker: () => undefined }, ...extra,
+    } as never));
+  } finally {
+    for (const [index, [, delayMs]] of timeout.mock.calls.entries()) {
+      const result = timeout.mock.results[index];
+      if (delayMs === NEEDS_CANARY_FIRST_DELAY_MS && result?.type === 'return') clearTimeout(result.value);
+    }
+    timeout.mockRestore();
+  }
   return { app, runtime, sessionToken, network, stateDir, botToken, lifecycle: lifecycle! };
 }
 async function browserHarness(extra: Record<string, unknown> = {}) {
