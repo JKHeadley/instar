@@ -74,3 +74,15 @@ The reviewer also confirmed that nothing in Local Verify, monitoring or safe-mer
 - Defect class: `unbounded-self-action`.
 - Closure: `n/a`.
 - Reason: this command is one explicit manual invocation with a finite Git read budget. Capacity or timeout termination acts only on its exact owned Git child. No periodic trigger, retry, restart, notification or self-redrive controller is installed.
+
+## Second-pass review
+
+**Reviewer:** independent second-pass reviewer, Claude Fable 5.2 helper for the Echo Chief of Staff session, not the author
+
+Concur for head `21c8cc467780469ac796610ca1efab43efa207c9`, limited to the path that flags this change as harness-changing: `src/localVerify/harnessClassifier.ts`. I read its diff, the rest of that file, where the list is consumed (`classifyHarness` and the verifier's policy hash), and the one-line edit to `tests/unit/localVerify/harnessClassifier.test.ts`. I also read the command wiring in `src/cli.ts`, `src/commands/designPolicy.ts` and the one flag added to the Git executor's allow-list. I did not review the design-gate modules or their tests in depth, and I did not rerun any tests.
+
+- **It does what it says and nothing else.** The classifier change is four added entries in the harness path list: the design-gate source folder, its command file, the design policy folder under `docs/`, and the design standard document. No entry is removed or narrowed and no logic changes.
+- **No check is weakened.** The list only ever adds a flag, so the change can make more pull requests need an independent review and can never make one need less. The existing table test gains the four new paths as cases; nothing is removed, skipped or loosened.
+- **No newly silent failure.** A path matching a new entry is reported by name in the record's reasons, exactly like the existing entries.
+
+Non-blocking notes: the `docs/design/**` entry also covers the unrelated note `docs/design/opt-in-heartbeat.md` already on main, so an edit to it will ask for a review (the safe direction); the harness list is an input to the verifier's policy hash, so once verifier machines run a build containing this change, recorded results made under the previous list stop counting and waiting pull requests are verified again, as with any change to this list; the list's doc comment still says a match "routes a PR to the operator", which predates the independent-review rule. This pull request was a draft when reviewed.
