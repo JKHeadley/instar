@@ -1,0 +1,24 @@
+{
+  "ts": "2026-11-26T19:02:58.255Z",
+  "slug": "dashboard-tunnel-restart-continuity",
+  "suggestedTier": 2,
+  "declaredTier": 1,
+  "riskFloor": 1,
+  "riskFloorReasons": [],
+  "belowFloor": false,
+  "files": 3,
+  "loc": 149,
+  "scope": {
+    "basis": "staged-in-scope-paths-including-deleted",
+    "files": [
+      "src/tunnel/CloudflareNamedProvider.ts",
+      "src/tunnel/DashboardRestartIngress.ts",
+      "src/tunnel/dashboardConnectorMain.ts"
+    ],
+    "addedLines": 148,
+    "deletedLines": 1
+  },
+  "causalAutopsy": null,
+  "classClosure": null,
+  "verdict": "blocked"
+}

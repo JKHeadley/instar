@@ -48,6 +48,7 @@ export interface CloudflareNamedProviderOptions {
    * machine could read it (`ps`).
    */
   stateDir?: string;
+  onConfigFileExit?: () => void;
 }
 
 /** Whether this cloudflared binary accepts `--token-file` (added in 2024; checked once per binary). */
@@ -86,6 +87,7 @@ export class CloudflareNamedProvider implements TunnelProvider {
   private readonly hostname?: string;
   private readonly startTimeoutMs?: number;
   private readonly stateDir?: string;
+  private readonly onConfigFileExit?: () => void;
 
   constructor(opts: CloudflareNamedProviderOptions) {
     this.token = opts.token;
@@ -93,6 +95,7 @@ export class CloudflareNamedProvider implements TunnelProvider {
     this.hostname = opts.hostname;
     this.startTimeoutMs = opts.startTimeoutMs;
     this.stateDir = opts.stateDir;
+    this.onConfigFileExit = opts.onConfigFileExit;
   }
 
   async isAvailable(): Promise<boolean> {
@@ -251,7 +254,7 @@ export class CloudflareNamedProvider implements TunnelProvider {
       });
 
       child.on('exit', (code: number | null) => {
-        if (resolved) return;
+        if (resolved) { this.onConfigFileExit?.(); return; }
         resolved = true;
         clearTimeout(timeout);
         reject(new Error(`process-exit code ${code}: config-file tunnel exited before connection: ${stderrBuffer}`));
