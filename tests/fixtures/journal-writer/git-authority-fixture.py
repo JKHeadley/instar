@@ -159,30 +159,47 @@ def start_witness(path, tip):
         db.execute("INSERT INTO floor VALUES (1, 'active', 10, ?, 1)", (tip,))
 
 
-def witness_acknowledge(path, previous, tip, state):
+def witness_acknowledge(path, repository, previous, tip, *, clock=None, after_time_check=None):
     # The clock is synthetic. The fixture models the witness accepting the
     # exact Git object independently of the receiver's earlier clock check.
+    try:
+        if git(repository, "rev-parse", "--verify", REF).stdout.decode().strip() != tip:
+            return False
+        parents = git(repository, "rev-list", "--parents", "-n", "1", tip).stdout.decode().split()[1:]
+        state = read_state(repository, tip)
+        if parents != [previous] or state["command"] != "append":
+            return False
+        for name, field in (("decision.json", "decision"), ("intent.json", "intent")):
+            if sha(git(repository, "show", f"{tip}:{name}").stdout) != state[field]:
+                return False
+    except (OSError, ValueError, KeyError, subprocess.CalledProcessError):
+        return False
     with witness_connection(path, "rw") as db:
         db.execute("BEGIN IMMEDIATE")
         generation, phase, expires, current, now = db.execute(
             "SELECT generation, phase, expires, tip, time FROM floor"
         ).fetchone()
+        if clock is not None:
+            now = clock()
         if phase != "active" or generation != state["generation"] or now >= expires or current != previous:
             return False
+        if after_time_check is not None:
+            after_time_check()
         db.execute("INSERT INTO receipts VALUES (?, ?, ?, ?, ?)",
                    (tip, generation, state["decision"], state["intent"], now))
         db.execute("UPDATE floor SET tip=?", (tip,))
         return True
 
 
-def witness_allows_fold(path, tip, state):
+def witness_evidence(path, tip, state, *, for_publication=False):
     try:
         with witness_connection(path, "ro") as db:
             match = db.execute("""
                 SELECT 1 FROM floor JOIN receipts USING (tip, generation)
                 WHERE floor.phase='active' AND tip=? AND generation=?
                   AND decision=? AND intent=? AND accepted_at<expires
-            """, (tip, state["generation"], state["decision"], state["intent"])).fetchone()
+                  AND (NOT ? OR time<expires)
+            """, (tip, state["generation"], state["decision"], state["intent"], for_publication)).fetchone()
             return match is not None
     except (OSError, sqlite3.Error):
         return False
@@ -350,12 +367,12 @@ class GitAuthorityFixture(unittest.TestCase):
         self.assertEqual(result.returncode, 0, result.stderr.decode())
         self.assertEqual(self.tip(), candidate)
         state = read_state(self.remote, candidate)
-        self.assertFalse(witness_acknowledge(witness, self.initial, candidate, state))
-        self.assertFalse(witness_allows_fold(witness, candidate, state))
+        self.assertFalse(witness_acknowledge(witness, self.remote, self.initial, candidate))
+        self.assertFalse(witness_evidence(witness, candidate, state))
         with witness_connection(witness, "rw") as db:
             db.execute("UPDATE floor SET generation=2, phase='pending'")
-        self.assertFalse(witness_acknowledge(witness, self.initial, candidate, state))
-        self.assertFalse(witness_allows_fold(witness, candidate, state))
+        self.assertFalse(witness_acknowledge(witness, self.remote, self.initial, candidate))
+        self.assertFalse(witness_evidence(witness, candidate, state))
 
     def test_restored_backup_and_missing_witness_keep_ingress_closed(self):
         backup = self.root / "backup.git"
@@ -379,23 +396,45 @@ class GitAuthorityFixture(unittest.TestCase):
         self.assertFalse(check_recovered_tip(backup, self.initial, witness))
         self.assertFalse(check_recovered_tip(self.remote, activation, witness.with_name("unavailable.json")))
 
+    def test_witness_stall_after_time_check_exposes_its_own_commit_gap(self):
+        witness = self.root / "acceptance.sqlite"
+        start_witness(witness, self.initial)
+        candidate = self.append_candidate(self.initial)
+        self.assertEqual(self.push(candidate, "old").returncode, 0)
+        observed_clock = [9]
+
+        def advance_clock_after_check():
+            observed_clock[0] = 10
+            with witness_connection(witness, "ro") as observer:
+                self.assertEqual(observer.execute("SELECT COUNT(*) FROM receipts").fetchone(), (0,))
+
+        self.assertTrue(witness_acknowledge(
+            witness, self.remote, self.initial, candidate,
+            clock=lambda: observed_clock[0], after_time_check=advance_clock_after_check,
+        ))
+        self.assertEqual(observed_clock[0], 10)
+        with witness_connection(witness, "ro") as observer:
+            self.assertEqual(observer.execute("SELECT accepted_at FROM receipts").fetchone(), (9,))
+
     def test_witness_receipt_recovers_exact_acceptance_and_refuses_stale_or_unavailable_state(self):
         witness = self.root / "acceptance.sqlite"
         start_witness(witness, self.initial)
         candidate = self.append_candidate(self.initial)
         self.assertEqual(self.push(candidate, "old").returncode, 0)
         state = read_state(self.remote, candidate)
-        self.assertFalse(witness_allows_fold(witness, candidate, state))
-        witness_acknowledge(witness, self.initial, candidate, state)  # Lose response.
+        self.assertFalse(witness_evidence(witness, candidate, state))
+        witness_acknowledge(witness, self.remote, self.initial, candidate)  # Lose response.
+        self.assertTrue(witness_evidence(witness, candidate, state, for_publication=True))
         with witness_connection(witness, "rw") as db:
             db.execute("UPDATE floor SET time=10")
-        self.assertTrue(witness_allows_fold(witness, candidate, state))
-        self.assertFalse(witness_allows_fold(witness, self.initial, state))
-        self.assertFalse(witness_allows_fold(witness, candidate, {**state, "intent": "different"}))
-        self.assertFalse(witness_allows_fold(witness.with_name("missing.sqlite"), candidate, state))
+        self.assertTrue(witness_evidence(witness, candidate, state))
+        self.assertFalse(witness_evidence(witness, candidate, state, for_publication=True))
+        self.assertFalse(witness_evidence(witness, self.initial, state))
+        self.assertFalse(witness_evidence(witness, candidate, {**state, "intent": "different"}))
+        self.assertFalse(witness_evidence(witness.with_name("missing.sqlite"), candidate, state))
         with witness_connection(witness, "rw") as db:
             db.execute("UPDATE floor SET phase='pending'")
-        self.assertFalse(witness_allows_fold(witness, candidate, state))
+        self.assertFalse(witness_evidence(witness, candidate, state))
 
     def test_recover_push_ack_from_exact_remote_tip_and_bytes(self):
         candidate = self.append_candidate(self.initial)
