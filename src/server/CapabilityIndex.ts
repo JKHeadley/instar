@@ -74,7 +74,7 @@ export const CAPABILITY_INDEX: readonly CapabilityEntry[] = [
     key: 'teamPeople',
     prefixes: ['/team'],
     description: 'Who can reach this agent, how, and what each person can see. The owner\'s phone gives access; the agent can only take it away.',
-    build: () => ({ configured: true, endpoints: ['GET /team/people', 'GET /team/people?scope=pool', 'POST /team/people/:personKey/lower', 'POST /team/proposals', 'GET /mobile/team/requests', 'GET /mobile/team/people', 'GET /mobile/team/context', 'GET /mobile/team/activity', 'POST /mobile/team/invites', 'POST /mobile/team/grants', 'POST /mobile/team/off', 'POST /mobile/team/restore', 'POST /mobile/team/memory-privacy', 'POST /mobile/team/switches/turn-on'] }),
+    build: () => ({ configured: true, endpoints: ['GET /team/people', 'GET /team/people?scope=pool', 'POST /team/people/:personKey/lower', 'GET /team/computers', 'POST /team/computer-limits', 'POST /team/people/:personKey/computers/:deviceId/forget', 'POST /team/proposals', 'GET /mobile/team/requests', 'GET /mobile/team/people', 'GET /mobile/team/context', 'GET /mobile/team/activity', 'POST /mobile/team/invites', 'POST /mobile/team/grants', 'POST /mobile/team/off', 'POST /mobile/team/restore', 'POST /mobile/team/memory-privacy', 'POST /mobile/team/switches/turn-on'] }),
   },
   {
     key: 'chiefOfStaff',
@@ -95,7 +95,7 @@ export const CAPABILITY_INDEX: readonly CapabilityEntry[] = [
       if (!rt) return { enabled: false };
       return {
         enabled: true, cards: rt.svc.cardIds().length, waitingOnOwner: rt.svc.waitingOnOwnerCount(), policy: rt.svc.policy(), pickups: rt.controller.status(),
-        endpoints: ['GET /work-board', 'GET /work-board/cards/:id', 'POST /work-board/cards', 'POST /work-board/cards/:id/records', 'POST /work-board/cards/:id/tap (person, PIN)', 'POST /work-board/settings (person, PIN)', 'GET /work-board/lessons', 'GET /mobile/work-board', 'GET /mobile/work-board/cards/:id (owner phone)', 'POST /mobile/work-board/cards (owner phone, Face ID: make a card from a message)', 'POST /mobile/work-board/cards/:id/tap (owner phone, Face ID)'],
+        endpoints: ['GET /work-board', 'GET /work-board/cards/:id', 'POST /work-board/cards', 'POST /work-board/cards/:id/records', 'POST /work-board/cards/:id/notes (agent, or the session that recorded the request: a progress note into the card\'s conversation)', 'POST /work-board/cards/:id/tap (person, PIN)', 'POST /work-board/not-started/approve (owner, PIN: approve the shown not-started internal cards)', 'POST /work-board/not-started/approve-and-widen (owner, PIN: approve them and raise the board-policy request)', 'POST /work-board/settings (person, PIN)', 'GET /work-board/lessons', 'GET /mobile/work-board', 'GET /mobile/work-board/cards/:id (owner phone)', 'POST /mobile/work-board/cards (owner phone, Face ID: make a card from a message)', 'POST /mobile/work-board/cards/:id/tap (owner phone, Face ID)'],
       };
     },
   },
@@ -324,7 +324,7 @@ export const CAPABILITY_INDEX: readonly CapabilityEntry[] = [
   {
     key: 'documents',
     prefixes: ['/docs'],
-    description: 'Instar Documents (docs/specs/instar-document-viewer.md) — commentable documents that live in a conversation: create (POST /docs), read (GET /docs/:id/data), list a conversation\'s documents (GET /docs?conversation=…), read the comments with their quotes (GET /docs/:id/comments), reply under one (POST /docs/:id/comments/:key/replies), revise (POST /docs/:id/versions), compare versions, links between documents and conversations (GET|POST /docs/:id/links) and the link graph (GET /docs/graph?from=<ref>&depth=1|2), the session-start list (GET /docs/session-context), and the document page people comment on (GET /docs/:id, writes signed by their own device; the owner moves a document with Face ID), and decisions (docs/specs/document-decisions.md): ask the owner with POST /docs/:id/decision-ask (or decision:{question} on create/revise), withdraw with POST /docs/:id/decision-ask/close, read the owner-signed answer with GET /docs/:id/decision, list what waits on the owner with GET /docs/decisions/waiting; the owner answers on their phone with Face ID. A document is visible to exactly its conversation\'s audience. Dev-gated (documents.enabled); 503 documents-off when dark.',
+    description: 'Instar Documents (docs/specs/instar-document-viewer.md) — commentable documents that live in a conversation: create (POST /docs), read (GET /docs/:id/data), list a conversation\'s documents (GET /docs?conversation=…), read the comments with their quotes (GET /docs/:id/comments), reply under one (POST /docs/:id/comments/:key/replies), revise (POST /docs/:id/versions), compare versions, links between documents and conversations (GET|POST /docs/:id/links) and the link graph (GET /docs/graph?from=<ref>&depth=1|2), the session-start list (GET /docs/session-context), and the document page people comment on (GET /docs/:id, writes signed by their own device; the owner moves a document with Face ID), and decisions (docs/specs/document-decisions.md): ask the owner with POST /docs/:id/decision-ask (or decision:{question} on create/revise), withdraw with POST /docs/:id/decision-ask/close, read the owner-signed answer with GET /docs/:id/decision, list what waits on the owner with GET /docs/decisions/waiting; the owner answers on their phone with Face ID. A team member without the app joins a computer from the owner\'s team invite (docs/specs/member-browser-any-computer.md): GET /docs/_join, POST /docs/_join/redeem, POST /docs/_join/confirm (the code shown on the owner\'s phone), POST /docs/_link/forget-self, GET /docs/_join/addresses; the agent lists computers with GET /team/computers, sets limits with POST /team/computer-limits and removes one with POST /team/people/:personKey/computers/:deviceId/forget; the owner\'s phone sees them in GET /mobile/team/people rows (computers) and removes one with POST /mobile/team/people/:personKey/computers/:deviceId/forget. A document is visible to exactly its conversation\'s audience. Dev-gated (documents.enabled); 503 documents-off when dark.',
     build: () => ({
       configured: true,
       endpoints: ['POST /docs', 'GET /docs', 'GET /docs/:id/data', 'GET /docs/:id/versions', 'POST /docs/:id/versions', 'GET /docs/:id/compare', 'GET /docs/:id/comments', 'POST /docs/:id/comments/:key/replies', 'GET /docs/:id/links', 'POST /docs/:id/links', 'GET /docs/session-context', 'GET /docs/health', 'GET /mobile/docs', 'GET /mobile/docs/:id/summary', 'POST /docs/:id/decision-ask', 'POST /docs/:id/decision-ask/close', 'GET /docs/:id/decision', 'GET /docs/decisions/waiting', 'GET /mobile/docs/:id/decision', 'POST /mobile/docs/:id/decision/challenge', 'POST /mobile/docs/:id/decision', 'POST /mobile/docs/:id/decision/delivered'],
@@ -342,7 +342,7 @@ export const CAPABILITY_INDEX: readonly CapabilityEntry[] = [
   {
     key: 'neverSilent',
     prefixes: ['/never-silent'],
-    description: 'Never-silent conversations (docs/specs/never-silent-conversation.md) — every inbound conversation message ends in a reply or a plain Instar notice. GET /never-silent/incidents (?open=1) lists each waiting message, the judged reason (from a judge on a different engine than the stuck one), the action and every notice sent; the waiting text itself is never served. Dev-gated (monitoring.neverSilent.enabled); 503 when off. When asked "why did that conversation go quiet?" → read this, don\'t guess.',
+    description: 'Never-silent conversations (docs/specs/never-silent-conversation.md) — every inbound conversation message ends in a reply or a plain Instar notice. GET /never-silent/incidents (?open=1) lists each waiting message (and, under sendHolds, each reply this machine held at the send boundary for the lease, with its delivery time), the judged reason (from a judge on a different engine than the stuck one), the action and every notice sent; the waiting text itself is never served. Dev-gated (monitoring.neverSilent.enabled); 503 when off. When asked "why did that conversation go quiet?" → read this, don\'t guess.',
     build: () => ({
       configured: true,
       endpoints: ['GET /never-silent/incidents'],
@@ -360,16 +360,16 @@ export const CAPABILITY_INDEX: readonly CapabilityEntry[] = [
   {
     key: 'quotaPacing',
     prefixes: ['/quota-pacing'],
-    description: 'Quota pacing (docs/specs/quota-pacing-forecast.md) — a forecast, not an instruction: where each subscription account\'s weekly (and Claude Fable) window lands at its reset (central forecast plus a range from the slowest to the fastest recent pace) and whether each provider\'s group of accounts keeps weekly room for the next 7 days (runs-dry / tight / sustainable / cannot-tell, with account verdicts used-up / will-hit-limit / will-leave-unused / on-track / unknown). GET /quota-pacing merges every machine (?scope=local is this machine only; ?account=ID&history=1 returns this machine\'s rows). Lead with the pool ("9 of 14 accounts have room"), never one account\'s number; never hold, shed or add work because of it. Dev-gated (subscriptionPool.pacing.enabled); 503 quota-pacing-off when off. When asked "will an account\'s quota expire unused?" or "will Claude or Codex run out this week?" → read this, don\'t guess.',
+    description: 'Quota pacing (docs/specs/quota-pacing-forecast.md) — a forecast, not an instruction: where each subscription account\'s weekly (and Claude Fable) window lands at its reset (central forecast plus a range from the slowest to the fastest recent pace) and whether each provider\'s group of accounts keeps weekly room for the next 7 days (runs-dry / tight / sustainable / cannot-tell, with account verdicts used-up / will-hit-limit / will-leave-unused / on-track / unknown). GET /quota-pacing merges every machine (?scope=local is this machine only; ?account=ID&history=1 returns this machine\'s rows). Lead with the pool ("9 of 14 accounts have room"), never one account\'s number; never hold, shed or add work because of it. Dev-gated (subscriptionPool.pacing.enabled); 503 quota-pacing-off when off. When asked "will an account\'s quota expire unused?" or "will Claude or Codex run out this week?" → read this, don\'t guess. GET /quota-pacing/account-choice (docs/specs/quota-pacing-account-choice.md, dev-gated subscriptionPool.pacing.windowAwareChoice, 503 window-aware-choice-off when off) is the shadow evidence for window-aware account choice: one row per spawn placement with the account picked, what the old rule would have picked and why; default is a per-machine per-day summary, ?scope=local or ?machine=ID pages raw rows (limit ≤ 500, cursor). When asked "why did this session land on that account?" → read it.',
     build: () => ({
       configured: true,
-      endpoints: ['GET /quota-pacing'],
+      endpoints: ['GET /quota-pacing', 'GET /quota-pacing/account-choice'],
     }),
   },
   {
     key: 'recommendedServices',
     prefixes: ['/recommended-services'],
-    description: 'Recommended outside services (docs/specs/recommended-services.md) — the catalog (benefit, what leaves the machine, cost, account, backup and its status, whether it is available) and the saved yes or no for each service, replicated across machines where machine sync is on (the route reports `replicating`). Tailscale, Jev, Bitwarden and GitHub private backup are available on every agent: a yes is given on the dashboard confirm page (`/dashboard/service-yes?service=<id>`, PIN), which starts a setup session that owns the whole job; a no can also switch a working service off here (`shutdown: authorized`). The first list (the agent offering first) is behind `recommendedServices.offers.enabled`: one Telegram message, once per service, after a delivered first result, with a No button per row and a Yes button only for an address service when there is no address; the route reports `offersLive`, what offers wait for (`migrationComplete`, `firstResult`) and `offered` / `inUse` per row. An agent created before the offer shipped stays out of the first list until `recommendedServices.offers.existingAgents` is on (rollout step 5); then its owner is admitted at the next tick, once, for good. A no needs the dashboard PIN or the No button under the list.',
+    description: 'Recommended outside services (docs/specs/recommended-services.md) — the catalog (benefit, what leaves the machine, cost, account, backup and its status, whether it is available) and the saved yes or no for each service, replicated across machines where machine sync is on (the route reports `replicating`). Tailscale, Jev, Bitwarden and GitHub private backup are available on every agent: a yes is given on the dashboard confirm page (`/dashboard/service-yes?service=<id>`, PIN), which starts a setup session that owns the whole job; a no can also switch a working service off here (`shutdown: authorized`). The first list (the agent offering first) is behind `recommendedServices.offers.enabled`: one Telegram message, once per service, after a delivered first result, with a No button per row and a Yes button only for an address service when there is no address; the route reports `offersLive`, what offers wait for (`migrationComplete`, `firstResult`) and `offered` / `inUse` per row. An agent created before the offer shipped stays out of the first list until `recommendedServices.offers.existingAgents` is on (rollout step 5); then its owner is admitted at the next tick, once, for good. Rollout step 4: with `recommendedServices.reoffers.enabled` (off by default), a no (or an unanswered offer) is asked about once more only after a real problem the service fixes (today: a voice note nothing can transcribe, or a secret the config points at that is missing at start), one a day at most, 90/180/360-day cool-offs, never changing the choice. A no needs the dashboard PIN or the No button under the list.',
     build: () => ({
       configured: true,
       endpoints: ['GET /recommended-services', 'POST /recommended-services/:id/no', 'GET /recommended-services/:id/confirm', 'POST /recommended-services/:id/confirm', 'POST /recommended-services/:id/verify'],
@@ -463,6 +463,15 @@ export const CAPABILITY_INDEX: readonly CapabilityEntry[] = [
     }),
   },
   {
+    key: 'ownedRepos',
+    prefixes: ['/repos'],
+    description: 'Owned-repository registry (docs/specs/no-data-loss-on-machine-death.md increment 1), READ-ONLY: every repository this agent creates or works in on this machine (its home, repositories registered at birth through SafeGitExecutor init/clone, repositories sessions worked in, and a budgeted scan of the home, project-map roots and declared roots that asks git for untracked and ignored folders instead of walking the disk), with class (owned / candidate), remotes (host and account only, never a URL), single-copy work (commits and branches no off-machine remote has, with the oldest age) and uncommitted work. GET /repos is this machine; GET /repos?scope=pool reads every machine live (5 s), else from its replicated owned-repo records, else names it unknown. `defects` are the loud items: a repository with no remote, or unpushed work, older than the 24 h grace window (1 h when the disk is below its warn line), one per machine per kind; they reach the Needs-you list and the Repositories page (#/capacity/repos). Nothing here fetches, pushes or creates a remote (homing is increment 2). 503 when off (noDataLoss.repos.enabled, development-agent gated). When asked "is anything on this machine only here?", "do all my repositories have a remote?" or "what unpushed work is there?" read this, never guess.',
+    build: () => ({
+      configured: true,
+      endpoints: ['GET /repos', 'GET /repos?scope=pool'],
+    }),
+  },
+  {
     key: 'workAdmission',
     prefixes: ['/work-admission'],
     description: 'Overload admission (docs/specs/trustworthy-machine-load-and-mesh-floor.md Part C) — each machine protects its own resources: when its own multi-signal load verdict is saturated/impaired it CLOSES to new automatic work (scheduled jobs, helper sessions, placement of new conversations; the work waits and retries, nothing is dropped, running conversations keep going), reopens after 5 consecutive good samples, and keeps ONE host-wide recovery slot free so an operator session can always start. GET /work-admission reports enabled/dryRun/enforced, acceptingWork, lastVerdict, the recovery slot (cap/inUse) and counters (closes, reopens, refused, wouldRefuse, recoverySlotGrants). Dev-gated + dry-run first (monitoring.workAdmission): in dry-run it logs would-refuse and refuses nothing; 503 when dark. When asked "why didn\'t a job run / is this machine taking work?" → read this, don\'t guess.',
@@ -501,10 +510,11 @@ export const CAPABILITY_INDEX: readonly CapabilityEntry[] = [
   {
     key: 'multiMachinePool',
     prefixes: ['/pool', '/machines'],
-    description: 'Multi-Machine Session Pool status — which machine holds the router + every machine\'s nickname, hardware, online status, load, and clock-skew. Backs the Machines dashboard tab and "where is this running?" / "move this to <nickname>". Single-machine until >1 paired.',
+    description: 'Multi-Machine Session Pool status — which machine holds the router + every machine\'s nickname, hardware, online status, load, and clock-skew. Backs the Machines dashboard tab and "where is this running?" / "move this to <nickname>". Single-machine until >1 paired. When multiMachine.messageSessionGeneration.enabled is explicitly true, named cross-machine messages use POST /api/messages/session-generation (signed machine authentication) to bind the exact recipient before message creation.',
     build: ({ ctx }) => ({
       configured: !!ctx.machinePoolRegistry,
-      endpoints: ['GET /pool', 'PATCH /pool/machines/:id', 'GET /machines/ssh-health'],
+      sessionGenerationBinding: ctx.messageRouter?.isGenerationBindingEnabled() ?? false,
+      endpoints: ['GET /pool', 'PATCH /pool/machines/:id', 'GET /machines/ssh-health', 'POST /api/messages/session-generation'],
     }),
   },
   {
@@ -553,6 +563,13 @@ export const CAPABILITY_INDEX: readonly CapabilityEntry[] = [
     }),
   },
   {
+    key: 'mobileConversationTree',
+    // Under the '/mobile' prefix the mobilePairing entry already claims, so no new top-level prefix.
+    prefixes: [],
+    description: 'The phone tree of Conversations (docs/specs/work-front-doors.md stage 2; conversation-effort-hierarchy-v3 §7.4): GET /mobile/conversation-graph/tree (owner phone, device-signed) returns the owner\'s root groups with their conversations and nested groups in one read: each node has ref, routeRef (for GET /mobile/conversation-graph/nodes/:ref), title, kind, role (effort, front-door, worker), source (platform and conversation id, to open its history), frontDoor, visibleChildCount, children and childrenComplete (false when cut at 4 levels, 20 children a node or 400 nodes a response: open the node for the rest), proposed card conversations, and project {title, conversationKey} when the group holds a project the Chief of Staff tracks (projects: known|unknown says whether projects could be read). The Chief of Staff conversation comes first as root; nextCursor pages more root groups. Owner only, like the other hierarchy reads: a member or guest phone gets 403 hierarchy-owner-only and keeps the flat GET /mobile/conversations list; 503 conversation-graph-off while Conversations is off or not ready.',
+    build: () => ({ configured: true, endpoints: ['GET /mobile/conversation-graph/tree (owner phone)', 'GET /mobile/conversation-graph/roots (owner phone)', 'GET /mobile/conversation-graph/nodes/:ref (owner phone)'] }),
+  },
+  {
     key: 'mobileCapacityScreens',
     // The routes live under the '/mobile' prefix already claimed by the mobilePairing entry, so this
     // awareness entry claims no new top-level prefix (the empty-prefix precedent above).
@@ -570,6 +587,16 @@ export const CAPABILITY_INDEX: readonly CapabilityEntry[] = [
     build: () => ({
       configured: true,
       endpoints: ['GET /usage/summary', 'GET /usage/tree', 'GET /usage/series', 'GET /usage/top', 'GET /usage/coverage', 'GET /usage/events', 'GET /usage/rollup', 'GET /mobile/usage'],
+    }),
+  },
+  {
+    key: 'usageServedAccount',
+    // Under the '/usage' prefix already claimed by unifiedUsageLedger.
+    prefixes: [],
+    description: 'Spend by served account (docs/specs/quota-pacing-spend-by-account.md, quota pacing step 3) — each usage-ledger row records the account that ACTUALLY served it: the transcript folder (config home) gives the slot, and the credential ledger (verified before the row) or the recorded identity checks (at the row\'s time) give the login, each row carrying its basis; the session\'s tag is kept beside it. Registry First: "which account did this week\'s work come from / which sessions ran on a different account than they were tagged with / how much work is 1% of an account\'s week?" → GET /usage/accounts (spend per login pool-wide, unidentified spend apart), GET /usage/account-mismatches?limit=&cursor= (tagged vs served, paged, confirmed vs unconfirmed), GET /usage/accounts/size?account= (cost per point over closed cycles: a workload-dependent lower bound, or cannot-tell with the reason). Read-only; bearer only. Dev-gated (usage.ledger.servedAccount): 503 served-account-off when dark.',
+    build: () => ({
+      configured: true,
+      endpoints: ['GET /usage/accounts', 'GET /usage/accounts/size', 'GET /usage/accounts/spend', 'GET /usage/account-mismatches'],
     }),
   },
   {
@@ -1780,6 +1807,7 @@ export const CAPABILITY_INDEX: readonly CapabilityEntry[] = [
             'POST /trust/grant — set a trust level (a stricter level applies; a wider one is refused with 403 naming the approval it needs)',
             'POST /trust/requests { change } — open the person\'s approval request for a raise (card to their direct chat; they reply approve <code>; with no chat, sent to the Instar app devices that accepted approvals)',
             'GET /trust/requests — open and past approval requests',
+            'DELETE /trust/requests/:id — withdraw a request the agent raised that no person has answered (never a board-policy request; the same change cannot be re-asked until the card would have expired)',
             'GET /trust/elevations — pending elevation suggestions',
             'GET /trust/changelog — recent trust changes',
           ]

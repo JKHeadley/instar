@@ -170,3 +170,4 @@ This section is the brief for the Apple app session, which is building the fix. 
 | Server and web changes | Not started; listed above |
 | Automatic checks for the new rules | Not built yet; the rules marked "machine" in the standard say what each check measures |
 | Closed | No. Closes when the side-by-side captures pass every rule listed above |
+

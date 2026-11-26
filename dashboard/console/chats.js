@@ -22,7 +22,7 @@ import {
   pinsFrom, pinBarText, nextPinIndex, pinIdOf, pinsPathOf, pinOutcomeWords,
   listPinnedRows, listPinRefOf, splitPinned, listPinOutcomeWords, messageTime, messagePieces,
   LIST_VIEW_KEY, listViewFrom, HIERARCHY_MAX_PAGES, hierarchyIndex, groupRows, groupCountWords,
-  effortMembers, trackedProjects, projectsForGroups, groupSections,
+  effortMembers, trackedProjects, projectsForGroups, groupSections, rebuildQuickPage,
 } from './chats-model.js';
 
 /**
@@ -39,7 +39,7 @@ export function messageTextNode(text) {
     return n;
   }));
 }
-import { chiefOfStaffNeedRows } from './needs-model.js';
+import { chiefOfStaffNeedRows, chiefOfStaffCardRows } from './needs-model.js';
 import { appStripFor, appPath, appNavigation } from './projects-model.js';
 import { detectCredentialShape, CREDENTIAL_QUESTION } from './credential-shape.js';
 
@@ -94,6 +94,7 @@ class ChatsPage {
     this.focusedAt = document.hasFocus && document.hasFocus() ? now() : 0;
     this.announcements = new Map();
     this.cursors = new Map();   // ref → events cursor (shared by broadcast so a new leader carries on)
+    this.quickPages = new Map(); // ref → complete quick-page rows and their server-issued hashes
     this.leader = false;
     this.union = [];
     this.scheduler = createScheduler();
@@ -199,9 +200,12 @@ class ChatsPage {
   }
   refreshNeedCard() {
     if (!this.needSlot) return;
-    if (!this.cosNeeds || !this.cosNeeds.length) { setKids(this.needSlot); return; }
-    const lead = this.cosNeeds[0];
-    const more = this.cosNeeds.length - 1;
+    // The Needs-you list above this page already shows each project's wait; then only the check-in stays here.
+    const stripShown = typeof document !== 'undefined' && !!document.querySelector('#needsStrip:not([hidden])');
+    const rows = chiefOfStaffCardRows(this.cosNeeds, { stripShown });
+    if (!rows.length) { setKids(this.needSlot); return; }
+    const lead = rows[0];
+    const more = rows.length - 1;
     const open = el('a', { class: 'btn-primary', href: this.cosRef ? hashFor(this.cosRef) : '#/work/chats', text: `Open ${this.cosName || 'Chief of Staff'}` });
     const checkIn = el('button', { class: 'btn-quiet', type: 'button', text: 'Check in' });
     checkIn.addEventListener('click', () => this.checkInWithChiefOfStaff(checkIn));
@@ -646,6 +650,7 @@ class ChatsPage {
     this.view = null;
     if (!v) return;
     v.live = false;
+    if (v.historyWaitTimer) { clearTimeout(v.historyWaitTimer); this.timers.delete(v.historyWaitTimer); }
     if (v.abort) { try { v.abort.abort(); } catch { /* done */ } }
     this.revokeBlobs();
     if (this.observer) { try { this.observer.disconnect(); } catch { /* gone */ } this.observer = null; }
@@ -668,6 +673,11 @@ class ChatsPage {
       menu.append(rename, del);
     }
     v.msgs = el('div', { class: 'chat-messages', role: 'log', 'aria-live': 'polite' });
+    v.historyWords = el('p', { class: 'card-line chat-muted' });
+    v.historyRetry = el('button', { class: 'btn-quiet chat-history-retry', type: 'button', text: 'Try again', hidden: true });
+    v.historyRetry.addEventListener('click', () => this.loadFirst(v));
+    v.historyNotice = el('div', { class: 'chat-history-state', role: 'status' }, v.historyWords, v.historyRetry);
+    v.msgs.append(v.historyNotice);
     v.earlier = el('button', { class: 'btn-quiet chat-earlier', type: 'button', text: 'Earlier messages', hidden: true });
     v.earlier.addEventListener('click', () => { this.pauseSource(v); this.loadEarlier(v); });
     v.paused = el('p', { class: 'card-line chat-muted chat-paused', hidden: true, text: 'Live updates paused here — this conversation refreshes when you click into this window.' });
@@ -684,7 +694,7 @@ class ChatsPage {
       v.appStrip, v.pinBar, v.paused, v.sourceNotice, v.earlier, v.msgs, this.composer(v), v.statusLine));
     this.pageEl.classList.add('has-open');
     this.paintList();
-    this.loadFirst(v);
+    this.loadFirst(v, { recoverUnfinished: true });
     this.loadAppStrip(v);
     this.announce();
   }
@@ -712,11 +722,20 @@ class ChatsPage {
     }).catch(() => {});
   }
 
-  historyPath(v, { pool, before } = {}) {
+  historyPath(v, { pool, before, knownRows } = {}) {
     const { kind, id } = v.ref;
     if (kind === 'app') return `/mobile/chat/app/${encodeURIComponent(id)}/messages?limit=50${pool ? '&scope=pool' : ''}${before ? `&before=${encodeURIComponent(before)}` : ''}`;
-    if (kind === 'telegram') return `/telegram/topics/${encodeURIComponent(id)}/messages?limit=50${pool ? '&scope=pool' : ''}${before ? `&before=${encodeURIComponent(before)}` : ''}`;
-    return `/mobile/chat/slack/${encodeURIComponent(id)}/messages?limit=50&machine=${encodeURIComponent(this.slackMachine(v.ref) || '')}${before ? `&before=${encodeURIComponent(before)}` : ''}`;
+    // Hashes describe rows we actually hold, not a time boundary that could skip late messages.
+    const since = knownRows !== undefined && !before ? `&knownRows=${encodeURIComponent(knownRows)}` : '';
+    if (kind === 'telegram') return `/telegram/topics/${encodeURIComponent(id)}/messages?limit=50${pool ? '&scope=pool' : ''}${before ? `&before=${encodeURIComponent(before)}` : ''}${since}`;
+    return `/mobile/chat/slack/${encodeURIComponent(id)}/messages?limit=50&machine=${encodeURIComponent(this.slackMachine(v.ref) || '')}${before ? `&before=${encodeURIComponent(before)}` : ''}${since}`;
+  }
+  /** Keep full quick pages for every tab; a leader change never inherits hashes without rows. */
+  rememberQuickPage(ref, cache) {
+    this.quickPages.delete(ref);
+    if (cache) this.quickPages.set(ref, cache);
+    // Bounded recent-page memory. An evicted reference simply requests a full page next time.
+    while (this.quickPages.size > 16) this.quickPages.delete(this.quickPages.keys().next().value);
   }
   /**
    * The machine a Slack conversation was listed from (a Slack id is local to it; the routes require it).
@@ -731,21 +750,71 @@ class ChatsPage {
     return (row) => Boolean(row && ((rec && row.originDeviceId && row.originDeviceId === rec.deviceId) || (row.messageId && this.ownIds.has(String(row.messageId)))));
   }
 
-  async loadFirst(v) {
+  async loadFirst(v, { recoverUnfinished = false } = {}) {
+    if (!this.live || !v.live || this.view !== v || v.historyPending) return;
+    v.historyPending = true;
+    v.historyError = null;
+    v.historyWaiting = false;
+    this.paintHistoryState(v);
+    v.historyWaitTimer = this.later(() => {
+      if (!v.live || this.view !== v || !v.historyPending) return;
+      v.historyWaiting = true;
+      this.paintHistoryState(v);
+    }, 10_000);
     this.spent();
-    const r = await this.call('GET', this.historyPath(v, { pool: true }));
-    if (!v.live || r.gone) return;
-    if (r.status === 404) { v.sourceNotice.hidden = true; v.statusLine.textContent = 'This conversation is not here any more.'; return; }
-    if (!r.ok) { v.sourceNotice.hidden = true; v.statusLine.textContent = r.status === 503 ? OFF_TEXT : 'Couldn\'t load this conversation right now.'; return; }
-    this.applyHistory(v, r.data, { replace: true });
-    this.resumeUnfinished(v);
-    this.scrollToEnd(v, true);
-    v.historyReady = true;
-    this.findSource(v);
+    try {
+      const r = await this.readHistory(v, this.historyPath(v, { pool: true }));
+      if (!this.live || !v.live || this.view !== v || r.gone) return;
+      if (!r.ok) {
+        v.sourceNotice.hidden = true;
+        v.historyError = r.status === 404 ? 'This conversation is not here any more.' : 'Couldn\'t load this conversation right now.';
+        return;
+      }
+      v.historyReady = true;
+      this.applyHistory(v, r.data, { replace: true });
+      // Preserve the existing open-time recovery; a history retry never resumes a send.
+      if (recoverUnfinished) this.resumeUnfinished(v);
+      this.scrollToEnd(v, true);
+      this.findSource(v);
+    } catch {
+      // A failed history read changes only its explanation, never messages or a draft.
+      if (this.live && v.live && this.view === v) v.historyError = 'Couldn\'t load this conversation right now.';
+    } finally {
+      v.historyPending = false;
+      clearTimeout(v.historyWaitTimer); this.timers.delete(v.historyWaitTimer);
+      v.historyWaitTimer = null;
+      if (this.live && v.live && this.view === v) this.paintHistoryState(v);
+    }
+  }
+
+  /** Initial, retry, focus and scheduled reads of one view/path share one signed request. */
+  readHistory(v, path) {
+    if (!v.historyReads) v.historyReads = new Map();
+    const current = v.historyReads.get(path);
+    if (current) return current;
+    const pending = this.call('GET', path).finally(() => {
+      if (v.historyReads.get(path) === pending) v.historyReads.delete(path);
+    });
+    v.historyReads.set(path, pending);
+    return pending;
+  }
+
+  paintHistoryState(v) {
+    if (!v.historyNotice) return;
+    const hasMessages = v.list.length > 0;
+    v.historyNotice.hidden = hasMessages && !v.historyError;
+    v.historyRetry.hidden = v.historyPending || (!v.historyError && hasMessages);
+    v.historyRetry.disabled = Boolean(v.historyPending);
+    if (v.historyError) v.historyWords.textContent = hasMessages
+      ? 'Couldn\'t refresh this conversation. Messages already loaded are still shown.' : v.historyError;
+    else if (v.historyPending) v.historyWords.textContent = v.historyWaiting
+      ? 'Waiting for the agent to return this conversation\'s messages. Your draft is unchanged.' : 'Loading messages…';
+    else v.historyWords.textContent = 'No messages were returned for this conversation. Try again to check its history.';
   }
 
   applyHistory(v, data, { replace = false, earlier = false } = {}) {
     if (!data) return;
+    v.historyError = null;
     if (v.ref.kind === 'slack' && typeof data.conversationKey === 'string') v.slackKey = data.conversationKey;
     const pins = pinsFrom(data);
     if (pins) this.setPins(v, pins);
@@ -818,6 +887,7 @@ class ChatsPage {
       }
       prev = n;
     }
+    this.paintHistoryState(v);
     if (atEnd) this.scrollToEnd(v);
   }
   scrollToEnd(v, force) {
@@ -1428,14 +1498,21 @@ class ChatsPage {
     const v = { ref };
     if (task.mode === 'fallback') return this.historyPath(v, { pool: true });
     if (task.mode === 'pool') return this.historyPath(v, { pool: ref.kind === 'telegram' });
-    return this.historyPath(v, { pool: false });
+    // Quick reads send the hashes of a complete cached page. Pool reads above stay full.
+    return this.historyPath(v, { pool: false, ...(task.mode === 'newest' ? { knownRows: (this.quickPages.get(task.ref)?.hashes || []).join(',') } : {}) });
   }
 
   async runTask(task) {
     const t0 = now();
     this.scheduler.start(task, t0);
+    // Snapshot the exact baseline sent: another tab's result may arrive while this read waits.
+    const previous = task.mode === 'newest' ? this.quickPages.get(task.ref) || null : null;
     let r;
-    try { r = await this.call('GET', this.taskPath(task)); } catch { r = { ok: false, status: 0 }; }
+    try {
+      const path = this.taskPath(task);
+      const v = this.view;
+      r = v?.live && task.ref === refString(v.ref) ? await this.readHistory(v, path) : await this.call('GET', path);
+    } catch { r = { ok: false, status: 0 }; }
     if (!this.live) return;
     this.scheduler.finish(task, now(), { status: r.status, retryAfterMs: r.retryAfterMs });
     if (r.gone) return;
@@ -1449,6 +1526,13 @@ class ChatsPage {
     }
     if (r.ok) {
       const msg = { type: 'result', mode: task.mode, ref: task.ref, data: r.data, backoff: this.scheduler.snapshot(), union: this.union };
+      if (task.mode === 'newest') {
+        const page = rebuildQuickPage(previous, r.data);
+        this.rememberQuickPage(task.ref, page.cache);
+        msg.data = page.data;
+        msg.quickFullPage = Boolean(page.data);
+        msg.resetQuickPage = !page.data;
+      }
       if (task.mode === 'events' && r.data && typeof r.data.cursor === 'string') {
         this.cursors.set(task.ref, r.data.cursor);
         msg.cursor = r.data.cursor;
@@ -1465,8 +1549,16 @@ class ChatsPage {
     if (Array.isArray(m.backoff)) this.lastBackoff = m.backoff;
     if (Array.isArray(m.union)) { this.union = m.union; this.markPaused(); }
     if (m.cursor && m.ref) this.cursors.set(m.ref, m.cursor);
+    if (m.resetQuickPage && m.ref) this.rememberQuickPage(m.ref, null);
     if (!m.mode || !m.data) return;
     if (m.mode === 'list') { this.applyList(m.data, false); return; }
+    // Broadcasts carry full reconstructed pages. Even an unfocused tab/new leader learns rows
+    // and hashes together, never an unseen hash that would suppress a missing message.
+    if (m.mode === 'newest' && m.ref && m.quickFullPage) {
+      const page = rebuildQuickPage(null, m.data);
+      this.rememberQuickPage(m.ref, page.cache);
+      if (!page.data) return;
+    }
     const v = this.view;
     if (!v || refString(v.ref) !== m.ref || !v.live) return;
     if (m.mode === 'events') {
@@ -1479,11 +1571,11 @@ class ChatsPage {
 
   /** The focused tab's conversation: read now (an operator-caused read, counted in the budget). */
   async pollNow(v) {
-    if (!v || !v.live) return;
+    if (!v || !v.live || v.historyPending) return;
     const ref = refString(v.ref);
     if (this.leader && this.scheduler.tasks().some((t) => t.ref === ref && t.mode !== 'pool')) { this.scheduler.bump(ref, now()); this.loop(); return; }
     this.spent();
-    const r = await this.call('GET', this.historyPath(v, { pool: v.ref.kind !== 'slack' }));
+    const r = await this.readHistory(v, this.historyPath(v, { pool: v.ref.kind !== 'slack' }));
     if (r.ok && v.live) this.applyHistory(v, r.data);
   }
 }

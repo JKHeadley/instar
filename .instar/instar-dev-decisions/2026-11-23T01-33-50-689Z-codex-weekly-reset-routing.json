@@ -1,0 +1,26 @@
+{
+  "ts": "2026-11-23T01:33:50.689Z",
+  "slug": "codex-weekly-reset-routing",
+  "suggestedTier": 2,
+  "declaredTier": 1,
+  "riskFloor": 1,
+  "riskFloorReasons": [],
+  "belowFloor": false,
+  "files": 5,
+  "loc": 96,
+  "scope": {
+    "basis": "staged-in-scope-paths-including-deleted",
+    "files": [
+      "src/core/QuotaAwareScheduler.ts",
+      "src/core/SessionManager.ts",
+      "src/core/UsageWallRescue.ts",
+      "src/core/windowAwareChoice.ts",
+      "src/data/awareness/codex-weekly-reset-routing.md"
+    ],
+    "addedLines": 77,
+    "deletedLines": 19
+  },
+  "causalAutopsy": null,
+  "classClosure": null,
+  "verdict": "pass"
+}

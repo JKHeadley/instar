@@ -14,6 +14,7 @@
  *   process AND its descendants, and the wait for its pipes is bounded once it has exited.
  */
 
+import { loopbackProxy } from './borrowedLaneFlow.js';
 import { execFileSync, spawn } from 'node:child_process';
 import fs from 'node:fs';
 import os from 'node:os';
@@ -281,7 +282,7 @@ export function realSeams(log: (event: Record<string, unknown>) => void, verifyR
     fs: {
       exists: (p) => fs.existsSync(p),
       mkdirp: (p) => { fs.mkdirSync(p, { recursive: true }); },
-      writeFile: (p, data) => { fs.writeFileSync(p, data); },
+      writeFile: (p, data, options) => { fs.writeFileSync(p, data, options); },
       readFile: (p) => { try { return fs.readFileSync(p, 'utf-8'); } catch { return null; } },
       size: (p) => { try { const st = fs.statSync(p); return st.isFile() ? st.size : null; } catch { return null; } }, // @silent-fallback-ok: absent or unreadable ⇒ no history
       mkdtemp: (prefix) => fs.mkdtempSync(path.join(localVerifyTempRoot(), prefix.startsWith(TEMP_PREFIX) ? prefix : TEMP_PREFIX + prefix)),
@@ -304,6 +305,8 @@ export function realSeams(log: (event: Record<string, unknown>) => void, verifyR
     // degradations.json would race it, and the server never reads that file): the event
     // goes to the run log here and, through onDegrade, into the result the server reads.
     degrade: (event) => { log({ event: 'degradation', ...event }); opts?.onDegrade?.(event); },
+    // The borrowed helper's loopback proxy on this machine's own server (spec local-verify-borrowed-slices-count.md, F).
+    borrowedProxy: (b) => loopbackProxy(b.port, b.token),
     now: () => Date.now(),
     sleep: (ms) => new Promise((r) => { setTimeout(r, ms); }),
     foreignSuiteHolders: (ours) => {

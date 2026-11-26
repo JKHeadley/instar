@@ -1,0 +1,31 @@
+{
+  "ts": "2026-11-19T07:00:13.035Z",
+  "slug": "lv-borrowed-helper",
+  "suggestedTier": 2,
+  "declaredTier": 2,
+  "riskFloor": 1,
+  "riskFloorReasons": [],
+  "belowFloor": false,
+  "files": 10,
+  "loc": 874,
+  "scope": {
+    "basis": "staged-in-scope-paths-including-deleted",
+    "files": [
+      "src/localVerify/BorrowedShadow.ts",
+      "src/localVerify/borrowedCompare.ts",
+      "src/localVerify/borrowedEligibility.ts",
+      "src/localVerify/borrowedRunSeams.ts",
+      "src/localVerify/helper/HelperService.ts",
+      "src/localVerify/helper/helperConfig.ts",
+      "src/localVerify/helper/helperProtocol.ts",
+      "src/localVerify/installInputs.ts",
+      "src/localVerify/laneReport.ts",
+      "src/localVerify/localVerifyWiring.ts"
+    ],
+    "addedLines": 747,
+    "deletedLines": 127
+  },
+  "causalAutopsy": null,
+  "classClosure": null,
+  "verdict": "blocked"
+}

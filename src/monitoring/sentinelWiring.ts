@@ -37,6 +37,8 @@ import type { IntelligenceFramework } from '../core/intelligenceProviderFactory.
 /** Minimal SessionManager surface the wiring depends on. */
 export interface SentinelSessionSurface {
   captureOutput(tmuxSession: string, lines?: number): string | null;
+  captureOutputAsync?(tmuxSession: string, lines?: number): Promise<string | null>;
+  listCachedSessions?(): ReturnType<SentinelSessionSurface['listRunningSessions']>;
   isSessionAlive(tmuxSession: string): boolean;
   sendKey(tmuxSession: string, key: string): boolean;
   listRunningSessions(): Array<{ tmuxSession: string; framework?: IntelligenceFramework }>;
@@ -141,8 +143,9 @@ export function buildContextWedgeDeps(opts: {
   freshRespawn: (sessionName: string) => Promise<boolean>;
 }): ContextWedgeSentinelDeps {
   return {
-    getRecentOutput: (sessionName) =>
-      opts.sessions.captureOutput(sessionName, WEDGE_CAPTURE_LINES) ?? '',
+    getRecentOutput: (sessionName) => opts.sessions.captureOutputAsync
+      ? opts.sessions.captureOutputAsync(sessionName, WEDGE_CAPTURE_LINES)
+      : opts.sessions.captureOutput(sessionName, WEDGE_CAPTURE_LINES) ?? '',
     recoverFn: async (sessionName): Promise<WedgeRecoveryOutcome> => {
       // dark: detection + audit only, no destructive action.
       if (!opts.autoRecovery.enabled) return 'detect-only';
@@ -160,7 +163,7 @@ export function buildContextWedgeDeps(opts: {
       await opts.escalate(sessionName, text);
     },
     listSessionNames: () =>
-      opts.sessions.listRunningSessions().map((s) => s.tmuxSession),
+      (opts.sessions.listCachedSessions?.() ?? opts.sessions.listRunningSessions()).map((s) => s.tmuxSession),
   };
 }
 
@@ -234,13 +237,40 @@ export class OutputActivityTracker {
   ) {}
 
   snapshot(): SessionRegistryEntry[] {
-    const t = this.now();
     const running = this.sessions.listRunningSessions();
+    return this.recordSnapshot(running, running.map((s) => this.sessions.captureOutput(s.tmuxSession, SILENCE_CAPTURE_LINES)));
+  }
+
+  private pending?: Promise<SessionRegistryEntry[]>;
+
+  snapshotForMonitoring(): SessionRegistryEntry[] | Promise<SessionRegistryEntry[]> {
+    const capture = this.sessions.captureOutputAsync;
+    if (!capture) return this.snapshot();
+    if (this.pending) return this.pending;
+    const running = this.sessions.listCachedSessions?.() ?? this.sessions.listRunningSessions();
+    this.pending = (async () => {
+      const outputs: Array<string | null> = [];
+      for (const session of running) outputs.push(await capture(session.tmuxSession, SILENCE_CAPTURE_LINES));
+      return this.recordSnapshot(running, outputs);
+    })().finally(() => { this.pending = undefined; });
+    return this.pending;
+  }
+
+  private recordSnapshot(
+    running: ReturnType<SentinelSessionSurface['listRunningSessions']>,
+    outputs: Array<string | null>,
+  ): SessionRegistryEntry[] {
+    const t = this.now();
     const seen = new Set<string>();
     const out: SessionRegistryEntry[] = [];
-    for (const s of running) {
+    for (const [index, s] of running.entries()) {
       seen.add(s.tmuxSession);
-      const output = this.sessions.captureOutput(s.tmuxSession, SILENCE_CAPTURE_LINES) ?? '';
+      const output = outputs[index];
+      if (output === null) {
+        out.push({ sessionName: s.tmuxSession, lastOutputAt: this.last.get(s.tmuxSession)?.lastChangeAt ?? 0,
+          observationUnavailable: true });
+        continue;
+      }
       // Hash a SPINNER-IMMUNE view of the frame. The host's "working" spinner
       // (e.g. Claude's `✻ Sautéed for 26m 16s · (esc to interrupt)`) ticks its
       // elapsed-time counter every second, so a raw hash changes on every poll
@@ -316,7 +346,7 @@ export function buildActiveWorkSilenceDeps(opts: {
   deliverToTopic?: (topicId: number, text: string) => Promise<boolean>;
   /** HONEST-PROGRESS-MESSAGING A1/A2 — capture the session's CURRENT live frame
    *  for corroboration before escalating. */
-  captureFrame?: (sessionName: string) => string | null;
+  captureFrame?: (sessionName: string) => string | null | Promise<string | null>;
   /** A2(b) — is the live frame a CLEAN IDLE PROMPT (a finished turn, not a
    *  wedge)? Without this the sentinel's A2(b) branch is inert: the sentinel
    *  defaults it to `false`, so a session sitting at a finished prompt escalates
@@ -331,7 +361,7 @@ export function buildActiveWorkSilenceDeps(opts: {
   recordEvent?: (event: SilenceFunnelEvent, sessionName: string, detail?: string) => void;
 }): ActiveWorkSilenceSentinelDeps {
   return {
-    listSessions: () => opts.tracker.snapshot(),
+    listSessions: () => opts.tracker.snapshotForMonitoring(),
     nudgeFn: async (sessionName) => {
       if (!opts.sessions.isSessionAlive(sessionName)) return false;
       return opts.sessions.sendKey(sessionName, 'Enter');

@@ -57,7 +57,8 @@ export function describeRestartRequester(flag: RestartRequestFlag | null | undef
 export interface RestartRequestRecord {
   at: string;
   /** Which process consumed the flag. */
-  consumer: 'supervisor' | 'foreground-watcher';
+  consumer: 'supervisor' | 'foreground-watcher' | 'lifeline';
+  serverOutcome?: 'kept' | 'stopped' | 'unknown';
   requestedBy: string | null;
   attributed: boolean;
   reason: string | null;
@@ -86,11 +87,13 @@ export function buildRestartRequestRecord(
   flag: RestartRequestFlag | null | undefined,
   consumer: RestartRequestRecord['consumer'],
   now: Date = new Date(),
+  options: Pick<RestartRequestRecord, 'serverOutcome'> = {},
 ): RestartRequestRecord {
   const who = describeRestartRequester(flag);
   const pid = flag?.pid;
   return {
     at: now.toISOString(),
+    ...options,
     consumer,
     requestedBy: who.attributed ? who.label : null,
     attributed: who.attributed,
@@ -109,8 +112,9 @@ export function recordRestartRequest(
   flag: RestartRequestFlag | null | undefined,
   consumer: RestartRequestRecord['consumer'],
   now: Date = new Date(),
+  options: Pick<RestartRequestRecord, 'serverOutcome'> = {},
 ): RestartRequestRecord {
-  const record = buildRestartRequestRecord(flag, consumer, now);
+  const record = buildRestartRequestRecord(flag, consumer, now, options);
   try {
     const file = restartRequestsLogPath(stateDir);
     fs.mkdirSync(path.dirname(file), { recursive: true });
@@ -135,14 +139,15 @@ export function readLastRestartRequest(stateDir: string): RestartRequestRecord |
     const size = fs.statSync(file).size;
     const fd = fs.openSync(file, 'r');
     try {
-      const len = Math.min(size, 8192);
+      const len = Math.min(size, MAX_LOG_BYTES);
       const buf = Buffer.alloc(len);
       fs.readSync(fd, buf, 0, len, size - len);
       const lines = buf.toString('utf8').split('\n').map((l) => l.trim()).filter(Boolean);
       for (let i = lines.length - 1; i >= 0; i--) {
         try {
           const parsed = JSON.parse(lines[i]) as RestartRequestRecord;
-          if (parsed && typeof parsed.at === 'string' && typeof parsed.attributed === 'boolean') return parsed;
+          if (parsed && typeof parsed.at === 'string' && typeof parsed.attributed === 'boolean'
+            && (parsed.consumer !== 'lifeline' || parsed.serverOutcome === 'stopped')) return parsed;
         } catch { /* @silent-fallback-ok — a torn first line from the tail cut */ }
       }
       return null;
@@ -199,6 +204,7 @@ export function findRestartRequestRecord(stateDir: string, lookup: RestartReques
       let row: RestartRequestRecord;
       try { row = JSON.parse(line) as RestartRequestRecord; } catch { continue; } // @silent-fallback-ok: a torn first line from the tail cut
       if (!row || typeof row.at !== 'string') continue;
+      if (row.consumer === 'lifeline') continue;
       const at = Date.parse(row.at);
       if (!Number.isFinite(at)) continue;
       oldestAt = Math.min(oldestAt, at);

@@ -1,0 +1,26 @@
+{
+  "version": 2,
+  "slug": "file-editor-run-files",
+  "sessionId": "4f93898c-7d72-4a33-b581-3e0933a84bf4",
+  "timestamp": "2026-11-21T13:31:28.850Z",
+  "artifactPath": "upgrades/side-effects/file-editor-run-files.md",
+  "artifactSha256": "389e05fc1bdf929039e39edb9572ddba51e18fc7e20631edebff3ca9726033b9",
+  "coveredFiles": [
+    ".instar/instar-dev-decisions/2026-11-21T13-31-20-055Z-file-editor-run-files.json",
+    "CLAUDE.md",
+    "dashboard/console/files-model.js",
+    "docs/specs/file-editor-run-files.eli16.md",
+    "src/server/fileRoutes.ts",
+    "tests/e2e/file-viewer-e2e.test.ts",
+    "tests/unit/file-editor-never-editable-bypasses.test.ts",
+    "upgrades/next/file-editor-run-files.md",
+    "upgrades/side-effects/file-editor-run-files.md"
+  ],
+  "phase": "complete",
+  "tier": 1,
+  "tierReasoning": "Whole-PR trace: editor deny list for execution-deciding files",
+  "eli16Path": "docs/specs/file-editor-run-files.eli16.md",
+  "sideEffectsPath": "upgrades/side-effects/file-editor-run-files.md",
+  "secondPass": "true",
+  "reviewerConcurred": true
+}

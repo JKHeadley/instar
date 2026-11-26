@@ -262,3 +262,28 @@ describe('word codes on the dashboard path (mobile-pairing-word-code)', () => {
     expect(ok.body.status).toBe('active');
   });
 });
+
+describe('a team device\'s code never reaches a PIN session (member-browser-any-computer §3.3.7)', () => {
+  it('lists only non-team waiting devices to an operator session, and refuses a PIN decline of a team device', async () => {
+    const ctx = setup();
+    const own = await redeemNew(ctx.app);
+    // A member's waiting phone, held the way a team redeem holds it (for the owner's People screen).
+    const dev = makeDevice();
+    const created = ctx.svc.devices.createPending({ deviceName: 'Mara’s phone', label: null, publicKey: dev.publicKey, host: HOST, userId: 'mara', role: 'team' });
+    if (!created.ok) throw new Error('setup');
+    const teamId = created.device.id;
+    ctx.svc.holdDashboardCode(teamId, '654321', Date.now() + 600_000);
+    // The owner's People read still has it (GET /mobile/team/invites/:personKey reads dashboardApprovals()).
+    expect(ctx.svc.dashboardApprovals().map((a) => a.device.id)).toContain(teamId);
+    const a = await approvals(ctx.app, SESSION);
+    expect(a.status).toBe(200);
+    expect(a.body.approvals.map((x: { deviceId: string }) => x.deviceId)).toEqual([own.deviceId]);
+    expect(JSON.stringify(a.body)).not.toContain('654 321');
+    const d = await bearer(request(ctx.app).post(`/mobile/pairing-approvals/${teamId}/decline`)).set('X-Instar-Operator-Session', SESSION).send({});
+    expect(d.status).toBe(404);
+    expect(ctx.svc.devices.get(teamId)!.status).toBe('pending');
+    // An owner device is still declinable from the same card.
+    const ok = await bearer(request(ctx.app).post(`/mobile/pairing-approvals/${own.deviceId}/decline`)).set('X-Instar-Operator-Session', SESSION).send({});
+    expect(ok.body).toEqual({ declined: true });
+  });
+});

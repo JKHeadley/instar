@@ -1,9 +1,15 @@
 import { afterEach, describe, expect, it, vi } from 'vitest';
+import { createTempProject, type TempProject } from '../helpers/setup.js';
 import express from 'express';
 import request from 'supertest';
 import { createRoutes, type RouteContext } from '../../src/server/routes.js';
 import { projectMaturationOutcome } from '../../src/monitoring/MaturationOutcome.js';
 import { authMiddleware } from '../../src/server/middleware.js';
+
+const projects: TempProject[] = [];
+afterEach(() => {
+  for (const project of projects.splice(0)) project.cleanup();
+});
 
 const AUTH = 'throughput-pool-test';
 const outcomes = { observed: 0, 'legacy-missing-start': 0, 'clock-regression-or-implausible': 0,
@@ -47,7 +53,9 @@ function app(peerBody: Record<string, unknown>) {
     latencySummary('clear-latency', 'reconcilable'), countSummary], counters };
   const localTrend = { machineId: 'local', factors: [emptyTrend('request-to-persist'),
     emptyTrend('clear-latency'), countTrend] };
-  const ctx = { config: { projectName: 'test', projectDir: '/tmp', stateDir: '/tmp/.instar', port: 0,
+  const project = createTempProject();
+  projects.push(project);
+  const ctx = { config: { projectName: 'test', projectDir: project.dir, stateDir: project.stateDir, port: 0,
     authToken: AUTH, sessions: {}, scheduler: {}, multiMachine: {} },
   sessionManager: { listRunningSessions: () => [] }, state: { getJobState: () => null, getSession: () => null },
   blockerLifecycleService: { available: () => true, localSummary: () => local, localTrend: () => localTrend },

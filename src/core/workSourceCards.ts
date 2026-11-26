@@ -1,7 +1,7 @@
 /** Exact source-conversation reads, independent of the board's presentation limits. */
 import type { WorkBoardService, CardView } from './WorkBoardService.js';
 import { cardJson, type Viewer } from './workBoardViews.js';
-import { sha256Hex } from './WorkCardStore.js';
+import { isAgentInternalCard, sha256Hex } from './WorkCardStore.js';
 
 export const SOURCE_CARD_PAGE_SIZE = 50;
 
@@ -23,7 +23,7 @@ export function sourceCardsJson(svc: WorkBoardService, viewer: Viewer, key: stri
   const matches: CardView[] = [];
   for (const id of svc.cardIds()) {
     const view = svc.view(id);
-    if (view?.card.created && !view.card.redacted && view.card.source?.conversationKey === key) matches.push(view);
+    if (view?.card.created && !view.card.redacted && !isAgentInternalCard(view.card) && view.card.source?.conversationKey === key) matches.push(view);
   }
   // All open lanes share one group: clock-driven quiet/capacity changes must not reorder pages.
   const closed = (v: CardView) => Number(v.status === 'done' || v.status === 'archived');

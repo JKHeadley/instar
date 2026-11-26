@@ -34,9 +34,18 @@
 import type { SubscriptionAccount, SubscriptionFramework } from './SubscriptionPool.js';
 import { isLocallyExecutable } from './SubscriptionPool.js';
 import { bindingUtilization, selectAccount, type SwapResult } from './QuotaAwareScheduler.js';
+import {
+  decideWindowAwarePlacement,
+  windowAwareOn,
+  type SpawnPlacementContext,
+  type WindowAwareDeps,
+} from './windowAwarePlacement.js';
+import { selectRoutineCodexAccount, type RoutineCodexPlacementConfig, type RoutineCodexPlacementContext, type RoutineCodexPlacement } from './routineCodexPlacement.js';
+import { FRESH_READING_MS, compareCodexWeeklyReset } from './windowAwareChoice.js';
 
 /** The part of `config.subscriptionPool` this module reads (read LIVE). */
 export interface WallRescueConfigView {
+  routineCodexPlacement?: RoutineCodexPlacementConfig;
   wallRescue?: { enabled?: boolean };
   autoSwapOnRateLimit?: boolean;
   pinSessionsToPool?: boolean;
@@ -115,6 +124,11 @@ export interface UsageWallRescueDeps {
   notifyUser?: (sessionName: string, text: string) => boolean | Promise<boolean>;
   /** Ask the quota poller for a fresh reading (on a wall the reading contradicts). */
   requestQuotaRefresh?: () => void;
+  /**
+   * quota-pacing step 2 (docs/specs/quota-pacing-account-choice.md): window-aware account choice,
+   * read live per decision. Absent, or `enabled()` false = today's rule, unchanged.
+   */
+  windowAware?: WindowAwareDeps;
   now?: () => number;
   /** Base back-off after an attempt for the same session. Default 10 minutes. */
   retryAfterMs?: number;
@@ -141,7 +155,8 @@ const DEFAULT_BREAKER_THRESHOLD = 5;
 const DEFAULT_BREAKER_HOLD_MS = 24 * 60 * 60_000;
 const DEFAULT_MAX_MOVES_PER_HOUR = 12;
 const DEFAULT_RESETS_SOON_MS = 15 * 60_000;
-const DEFAULT_FRESH_READING_MS = 60 * 60_000;
+/** One shared freshness constant for both pickers (quota-pacing step 2). */
+const DEFAULT_FRESH_READING_MS = FRESH_READING_MS;
 const DEFAULT_WALL_MEMORY_MS = 30 * 60_000;
 const NOTICE_REPEAT_MS = 6 * 60 * 60_000;
 const HOUR_MS = 60 * 60_000;
@@ -642,8 +657,15 @@ export class UsageWallRescue {
     const proven = currentRes.via !== 'default';
     if (proven && this.corroborate(accounts.find((a) => a.id === current), cfg, nowMs, true)) return null;
     // Same exclusion as the move: the resolved account (proven or candidate).
-    const room = selectAccount(accounts, { softThresholdPct: this.soft(cfg), nowMs, framework }, current);
+    const room = selectAccount(accounts, { softThresholdPct: this.soft(cfg), nowMs, framework, ...this.windowAwareSelection() }, current);
     return room ? WALL_NOTICE_MOVING : null;
+  }
+
+  /** Window-aware selection options for a NON-placement check (no shadow row, no read side effect beyond requests). */
+  private windowAwareSelection(): { windowAware?: boolean; requestRead?: (id: string) => void; failedReads?: (id: string) => number; pollIntervalMs?: number } {
+    const wa = this.deps.windowAware;
+    if (!windowAwareOn(wa)) return {};
+    return { windowAware: true, requestRead: wa!.requestRead, failedReads: wa!.failedReads, pollIntervalMs: wa!.pollIntervalMs?.() };
   }
 
   /**
@@ -657,10 +679,11 @@ export class UsageWallRescue {
    *    KNOWN walled, launch on an account with room instead.
    *  - Otherwise, or nothing qualifies → null: the default login, as before.
    */
-  spawnAccount(): { configHome: string; accountId: string } | null {
+  spawnAccount(ctx?: SpawnPlacementContext): { configHome: string; accountId: string } | null {
     const cfg = this.deps.readConfig();
     const accounts = this.deps.listAccounts();
-    if (!wallRescueEffective(cfg, accounts, 'claude-code')) return null;
+    const framework: SubscriptionFramework = 'claude-code';
+    if (!wallRescueEffective(cfg, accounts, framework)) return null;
     const nowMs = this.now();
     const soft = this.soft(cfg);
     let exclude: string | null = null;
@@ -669,9 +692,27 @@ export class UsageWallRescue {
       if (!def || !this.isKnownWalled(def)) return null;
       exclude = def;
     }
-    const pick = usableAccounts(accounts, 'claude-code')
+    const oldPick = () => usableAccounts(accounts, framework)
       .filter((a) => a.id !== exclude && !this.isKnownWalled(a.id) && this.isFresh(a, nowMs) && bindingUtilization(a.lastQuota) < soft)
-      .sort((a, b) => bindingUtilization(a.lastQuota) - bindingUtilization(b.lastQuota) || a.id.localeCompare(b.id))[0];
+      .sort((a, b) => bindingUtilization(a.lastQuota) - bindingUtilization(b.lastQuota) || a.id.localeCompare(b.id))[0] ?? null;
+    const wa = this.deps.windowAware;
+    // quota-pacing step 2 (§3 "Both pickers"): keep this resolver's own filters (usable, not
+    // walled, isFresh, default-login exclusion) and rank the fresh accounts with the shared
+    // tiered score, both tiers, so a reset during a poll outage never empties this path.
+    const pick = windowAwareOn(wa)
+      ? decideWindowAwarePlacement({
+          accounts,
+          framework,
+          softThresholdPct: soft,
+          nowMs,
+          ctx,
+          deps: wa!,
+          caller: 'spawn-default',
+          excludeId: exclude,
+          filter: (a) => !this.isKnownWalled(a.id) && this.isFresh(a, nowMs),
+          oldPick,
+        })
+      : oldPick();
     return pick ? { configHome: pick.configHome, accountId: pick.id } : null;
   }
 
@@ -693,14 +734,28 @@ export class UsageWallRescue {
    *    spawn; otherwise act only when some Codex account is known walled.
    *  - Pick: not walled, a FRESH reading under the soft threshold (a recent
    *    successful read is evidence the login works; unread accounts are never
-   *    picked), most room first. Nothing qualifies → null: the default login.
+   *    picked), earliest valid weekly reset first, then most room. Nothing
+   *    qualifies → null: the default login.
    * "Walled" is the SAME predicate the rescue uses (`isKnownWalled`): a reading
    * at or above 100% in either window counts until that window's resetsAt.
    */
-  codexSpawnAccount(): { configHome: string; accountId: string } | { refused: string } | null {
+  routineCodexPlacement(context?: RoutineCodexPlacementContext): RoutineCodexPlacement {
     const cfg = this.deps.readConfig();
-    if (!wallRescueSwitchOn(cfg)) return null;
+    const decision = selectRoutineCodexAccount(this.deps.listAccounts(), cfg?.routineCodexPlacement, context,
+      { nowMs: this.now(), softThresholdPct: this.soft(cfg) });
+    if (decision.kind === 'selected' && (!wallRescueSwitchOn(cfg) || cfg?.pinSessionsToPool === false)) {
+      return { kind: 'refused', reason: 'routine-codex-placement: existing placement switches prohibit account pinning' };
+    }
+    return decision;
+  }
+
+  codexSpawnAccount(context?: RoutineCodexPlacementContext): { configHome: string; accountId: string; validUntil?: number } | { refused: string } | null {
+    const cfg = this.deps.readConfig();
     const accounts = this.deps.listAccounts();
+    const routine = this.routineCodexPlacement(context);
+    if (routine.kind === 'refused') return { refused: routine.reason };
+    if (routine.kind === 'selected') return { accountId: routine.accountId, configHome: routine.configHome, validUntil: routine.validUntil };
+    if (!wallRescueSwitchOn(cfg)) return null;
     const usable = usableAccounts(accounts, 'codex-cli');
     if (usable.length === 0) return null;
     const nowMs = this.now();
@@ -719,7 +774,7 @@ export class UsageWallRescue {
     const soft = this.soft(cfg);
     const pick = usable
       .filter((a) => !this.isKnownWalled(a.id) && this.isFresh(a, nowMs) && bindingUtilization(a.lastQuota) < soft)
-      .sort((a, b) => bindingUtilization(a.lastQuota) - bindingUtilization(b.lastQuota) || a.id.localeCompare(b.id))[0];
+      .sort((a, b) => compareCodexWeeklyReset(a, b, nowMs) || bindingUtilization(a.lastQuota) - bindingUtilization(b.lastQuota) || a.id.localeCompare(b.id))[0];
     return pick ? { configHome: pick.configHome, accountId: pick.id } : null;
   }
 }

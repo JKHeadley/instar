@@ -12,6 +12,7 @@ import { PendingRelayStore } from '../pending-relay-store.js';
 import { isBootBeaconBody, legacyAttributionValid, snapshotLegacyOrigin } from './OriginLegacy.js';
 import { receiptMessageIds, suppressionReason } from './OriginOperationOutcome.js';
 import { readPolicyVerdict } from './OriginPolicyVerdict.js';
+import { ORIGIN_LEASE_REFUSAL_REASONS, ORIGIN_LOCAL_REFUSAL_REASONS } from './OriginEgressCapacity.js';
 import type { OriginLegacySnapshot } from './OriginLegacy.js';
 import { advanceBrowserRecovery, type BrowserRecoveryState, type BrowserRecoveryAction, type BrowserRecoveryDecision } from './OriginBrowserRecovery.js';
 import type {
@@ -922,7 +923,7 @@ export class OriginStoreBackend {
     if (input.receiptJson !== undefined) json(input.receiptJson, 64 * 1024);
     if ((input.outcome === 'accepted' || input.outcome === 'scheduled') && !input.receiptJson) return { recorded: false, reason: 'receipt-required' };
     if (input.nextAttemptAt !== undefined && input.outcome !== 'known-failed') return { recorded: false, reason: 'invalid-transition' };
-    if (input.localRefusal && (input.outcome !== 'known-failed' || input.reason !== 'credential-capacity-unavailable' || input.receiptJson !== undefined)) return { recorded: false, reason: 'invalid-transition' };
+    if (input.localRefusal && (input.outcome !== 'known-failed' || !ORIGIN_LOCAL_REFUSAL_REASONS.includes(input.reason ?? '') || input.receiptJson !== undefined)) return { recorded: false, reason: 'invalid-transition' };
     const now = input.now ?? Date.now();
     return this.db.transaction((): OutcomeWriteResult => {
       const child = this.child(input.childId); if (!child) return { recorded: false, reason: 'stale-fence' };
@@ -946,6 +947,13 @@ export class OriginStoreBackend {
       if (input.localRefusal) {
         this.db.prepare('UPDATE entries SET attempts=MAX(0,attempts-1) WHERE delivery_id=?').run(child.delivery_id);
         this.event(attempt.attempt_id, 'attempt:local-refusal-not-charged');
+        // lease-freshness-lapse-retry — a replay refused at the boundary for the lease never reached the network, so
+        // the review-schedule row written before it (30 s rung) must not hold the reply either: it moves to the same
+        // next attempt, keeping its attempt count. Only an earlier-dated row is moved; a later one is left alone.
+        if (retry && ORIGIN_LEASE_REFUSAL_REASONS.includes(input.reason ?? '')) {
+          this.db.prepare('UPDATE telegram_origin_recovery_schedule SET next_attempt_at=? WHERE operation_id=? AND next_attempt_at>?')
+            .run(input.nextAttemptAt!, child.operation_id, input.nextAttemptAt!);
+        }
       }
       if (!retry) this.event(`${child.child_id}:${input.outcome}`, `child:${input.outcome}`);
       this.refreshOperation(op.operation_id);

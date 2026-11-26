@@ -56,6 +56,10 @@ export interface AgentMessage {
     agent: string;
     /** Target session ID, "best" for intelligent routing, "*" for broadcast */
     session: string;
+    /** N73: receiver generation observed before message creation; covered by the message signature. */
+    sessionId?: string;
+    /** New senders require a proved generation; legacy senders omit this field. */
+    sessionGenerationRequired?: true;
     /** Target machine ID, "local" for same machine, "*" for all machines */
     machine: string;
   };
@@ -143,8 +147,23 @@ export interface DeliveryState {
   deliveryPending?: boolean;
   /** §D.2: when this machine stored the relayed message (its own clock). */
   arrivedAt?: string;
-  /** §D.3: the freshness cut-off for this envelope (ms), when it differs from createdAt. */
+  /** Receiver-local expiry from authenticated sender age; independent of clock offset. */
+  expiresAt?: number;
+  /**
+   * §D.3 / relay-asof-holder-skew: the message's reference time (ms) when it differs from
+   * createdAt: for a relayed message, arrival on this clock minus the sender-measured age.
+   */
   asOf?: number;
+  /**
+   * relay-asof-holder-skew: queued because the role is known but has no accepted holder
+   * yet (not running, or started too late). Each retry pass re-resolves the role instead
+   * of typing into `to.session` by name; cleared at the terminal outcome.
+   */
+  holderPending?: boolean;
+  /** Durable holder-lane budget: a receiver restart never grants extra attempts. */
+  holderRetryState?: { attempts: number; lastAttemptAt: number; firstAttemptAt?: number };
+  /** relay-asof-holder-skew: the last refusal in plain words, for the sender's notice. */
+  refusalDetail?: string;
   /** §C: a sender notice is waiting in its 60s group / has been sent. */
   noticePending?: boolean;
   noticeSentAt?: string;
@@ -227,7 +246,10 @@ export interface SignedPayload {
 }
 
 /** messages-reach-renamed-sessions §D.1: the one cross-machine relay path (sender and route). */
+export const GENERATION_RELAY_MACHINE_PATH = '/api/messages/relay-machine-generation-v1';
 export const RELAY_MACHINE_PATH = '/api/messages/relay-machine';
+/** N73: signed generation preflight, on the existing machine-auth surface. */
+export const MESSAGE_GENERATION_PATH = '/api/messages/session-generation';
 /** The pre-August path older senders still post to; kept as a machine-auth alias. */
 export const RELAY_MACHINE_LEGACY_PATH = '/messages/relay-machine';
 
@@ -425,6 +447,16 @@ export interface SendResult {
   threadId?: string;
   /** Current delivery phase */
   phase: DeliveryPhase;
+  /**
+   * Cross-machine outcome honesty (messages-send-cross-machine-honest): true
+   * once the target machine accepted the envelope (phase received or later),
+   * false otherwise. Absent on same-machine sends.
+   */
+  delivered?: boolean;
+  /** Why delivery failed (phase 'failed'), in the router's own words. */
+  failureReason?: string;
+  /** One plain-language sentence a session can relay as-is when delivery failed. */
+  notice?: string;
 }
 
 /** Filter options for inbox/outbox queries */
@@ -549,6 +581,8 @@ export interface IMessageStore {
 
 /** Result of a delivery attempt */
 export interface DeliveryResult {
+  /** Physical injection may have occurred; never automatically retry this result. */
+  outcomeUnknown?: boolean;
   /** Whether the delivery attempt succeeded */
   success: boolean;
   /** The phase the message is now in */
@@ -629,3 +663,12 @@ export interface IMessageRouter {
   /** Get messaging statistics */
   getStats(): Promise<MessagingStats>;
 }
+
+/** Domain-tagged body: old endpoints cannot accept it even if a path is rewritten. */
+export function machineRelayBody(envelope: MessageEnvelope): unknown {
+  return envelope.message.to.sessionGenerationRequired
+    ? { protocol: 'session-generation-v1', generationEnvelope: envelope } : envelope;
+}
+
+/** Existing finite recipient retry admission budget, shared with final injection. */
+export const HOLDER_RETRY_WINDOW_MS = 30_000 * 10;

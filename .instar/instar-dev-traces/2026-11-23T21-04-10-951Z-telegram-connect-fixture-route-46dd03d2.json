@@ -1,0 +1,20 @@
+{
+  "version": 2,
+  "slug": "telegram-connect-fixture-route",
+  "sessionId": "34774801-3fac-4096-8fd3-e616896853c0",
+  "timestamp": "2026-11-23T21:04:10.951Z",
+  "artifactPath": "upgrades/side-effects/telegram-connect-fixture-route.md",
+  "artifactSha256": "51c1d12cc4525971913eff3362736addc0e57aedb663b357dbe16dde86ba9656",
+  "coveredFiles": [
+    "docs/specs/telegram-connect-fixture-route.eli16.md",
+    "tests/unit/telegram-connect-attempt-window.test.ts",
+    "upgrades/side-effects/telegram-connect-fixture-route.md"
+  ],
+  "phase": "complete",
+  "tier": 1,
+  "tierReasoning": "A test-only correction removes host routing from a deliberately failed fallback while retaining real TCP and the existing timeout; revert fully undoes it. No runtime authority, settings or feature changes.",
+  "eli16Path": "docs/specs/telegram-connect-fixture-route.eli16.md",
+  "sideEffectsPath": "upgrades/side-effects/telegram-connect-fixture-route.md",
+  "secondPass": "not-required",
+  "reviewerConcurred": true
+}

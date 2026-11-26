@@ -47,6 +47,8 @@ export interface PeerView {
   allAnswered: boolean;
   /** Some peer reported a marker naming this agent and a genesis held here or enrolled at a peer (§4). */
   honouredPeerMarker: boolean;
+  /** Piece 2c §1: enrolled, a fence value is set, but neither it nor a last verified fence is usable. */
+  fenceUnusable?: boolean;
 }
 
 interface Marker { agentId: string; machineId: string | null; genesis: string; at: string }
@@ -214,6 +216,7 @@ export class OwnerRecordStore {
     }
     const enrolled = marker.kind === 'ok' || peers.honouredPeerMarker || !!st?.everEnrolled;
     if (enrolled) {
+      if (peers.fenceUnusable) return { act: 'hold', enrolment: 'enrolled', reason: 'fence-unusable', state: st };
       if (st && st.everEnrolled && st.status === 'ok') return { act: 'record', enrolment: 'enrolled', reason: 'ok', state: st };
       return { act: 'hold', enrolment: 'enrolled', reason: st ? `record-${st.status}` : 'record-missing', state: st };
     }

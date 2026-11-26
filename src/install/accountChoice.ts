@@ -36,13 +36,15 @@ export function accountChoiceStep(
     return { kind: 'failed', message: "The account you chose isn't signed in on this computer any more, and there's no other account to offer.", nextStep: 'Choose "Sign in to a different account" and continue.' };
   }
   if (!accounts.length) return { kind: 'done', note: 'no accounts on this Mac yet' };
-  // Resumed without an answer: an older app that doesn't know this question. Keep today's behaviour,
-  // the default folder when it is signed in, and otherwise sign in.
+  // Resumed without an answer (an app from before this question existed, or a resume that lost the
+  // pick): never choose for the person. Ask again, and say plainly how to get the choice shown.
+  // Justin, 2026-11-19: setup "should NOT just assume and claim an account".
   if (awaiting?.state === ACCOUNT_CHOICE_STATE) {
-    const def = accounts.find((a) => a.isDefault);
-    return def
-      ? { kind: 'done', updates: { accountNew: false, accountIsDefault: true, accountConfigHome: def.configHome, accountBorrowedFrom: null }, note: `${def.label} (no choice given)` }
-      : { kind: 'done', note: 'no choice given; signing in as usual' };
+    return {
+      kind: 'awaiting-person',
+      instruction: 'Setup needs you to choose which account this agent should use, or to sign in to a different one. If no choice appears, update the Instar app and try again.',
+      accounts: cards(accounts),
+    };
   }
   return { kind: 'awaiting-person', instruction: 'Choose which account this agent should use, or sign in to a different one.', accounts: cards(accounts) };
 }

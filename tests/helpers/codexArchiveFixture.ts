@@ -55,12 +55,12 @@ export function writeRollout(home: string, uuid: string, ymd: string, ts = '2026
 
 /**
  * Build a large date-partitioned archive: `partitions` consecutive days ending
- * at `end` (local), `perPartition` rollouts each, every file a realistic
+ * at `end` (local), with a fixed count or a count by days before `end`. Each file is a realistic
  * `rollout-<ts>-<uuidv7>.jsonl`. Returns the partitions oldest-first.
  */
 export function buildLargeArchive(
   home: string,
-  opts: { partitions: number; perPartition: number; end?: Date },
+  opts: { partitions: number; perPartition: number | ((daysBeforeEnd: number) => number); end?: Date },
 ): { files: number; partitions: string[] } {
   const end = opts.end ?? new Date(2026, 9, 12, 12, 0, 0);
   const partitions: string[] = [];
@@ -73,7 +73,8 @@ export function buildLargeArchive(
     fs.mkdirSync(dir, { recursive: true });
     partitions.push(ymd);
     const ts = `${day.getFullYear()}-${pad2(day.getMonth() + 1)}-${pad2(day.getDate())}T08-00-00`;
-    for (let i = 0; i < opts.perPartition; i++) {
+    const count = typeof opts.perPartition === 'number' ? opts.perPartition : opts.perPartition(p);
+    for (let i = 0; i < count; i++) {
       const uuid = uuidV7At(new Date(day.getTime() + i * 1000), p * 100_000 + i + 1);
       fs.closeSync(fs.openSync(path.join(dir, `rollout-${ts}-${uuid}.jsonl`), 'w'));
       files++;

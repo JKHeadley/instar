@@ -1,0 +1,41 @@
+{
+  "version": 3,
+  "slug": "worktree-checkout-timeout",
+  "sessionId": "fb2d9241-bc5a-479b-9443-bbce50a353bc",
+  "timestamp": "2026-11-23T20:05:51.210Z",
+  "artifactPath": "upgrades/side-effects/worktree-checkout-timeout.md",
+  "artifactSha256": "d54c1a484610f4286d4075281dba02624cc772e825daff668c1b7faafac24889",
+  "coveredFiles": [
+    "docs/specs/worktree-checkout-timeout.eli16.md",
+    "src/core/InstarWorktreeManager.ts",
+    "tests/integration/instar-worktree-create.test.ts",
+    "upgrades/next/worktree-checkout-timeout.md",
+    "upgrades/side-effects/worktree-checkout-timeout.md"
+  ],
+  "phase": "complete",
+  "tier": 1,
+  "tierReasoning": "Small reversible timeout propagation fix; only worktree add receives a bounded five-minute deadline, ordinary execution limits and safety authorities unchanged. Actual independent review and fifteen focused integration tests passed; full coordinator gate remains required.",
+  "eli16Path": "docs/specs/worktree-checkout-timeout.eli16.md",
+  "sideEffectsPath": "upgrades/side-effects/worktree-checkout-timeout.md",
+  "secondPass": "true",
+  "reviewerConcurred": true,
+  "toolchain": {
+    "buildSkill": {
+      "name": "build",
+      "version": null,
+      "verified": false
+    },
+    "reviewSkills": [
+      {
+        "name": "worktree_timeout_review",
+        "outcome": "concur",
+        "verified": false
+      }
+    ]
+  },
+  "classClosure": {
+    "defectClass": "unbounded-self-action",
+    "closure": "n/a",
+    "reason": "One existing caller-initiated worktree checkout receives a finite five-minute timeout. No self-triggered controller, retry, cleanup, notification, restart or queue mutation is introduced."
+  }
+}

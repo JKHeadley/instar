@@ -1,0 +1,46 @@
+{
+  "version": 3,
+  "slug": "telegram-recovery-history-markdown",
+  "sessionId": "34774801-3fac-4096-8fd3-e616896853c0",
+  "timestamp": "2026-11-23T20:17:59.400Z",
+  "artifactPath": "upgrades/side-effects/telegram-recovery-history-markdown.md",
+  "artifactSha256": "a17ab1990aaa982cb10b613e7ef533da84d03377757867f24413710182e3f428",
+  "coveredFiles": [
+    "docs/specs/reports/telegram-recovery-history-review.md",
+    "docs/specs/telegram-recovery-history-markdown.eli16.md",
+    "src/lifeline/TelegramLifeline.ts",
+    "src/messaging/TelegramAdapter.ts",
+    "src/messaging/telegram-origin/ForwardedDeliveryHistory.ts",
+    "src/messaging/telegram-origin/OriginBotEgress.ts",
+    "src/messaging/telegram-origin/TelegramOriginRuntime.ts",
+    "src/messaging/telegram-origin/TelegramOriginService.ts",
+    "src/server/telegramOriginRoutes.ts",
+    "tests/e2e/telegram-held-retry-format-lifecycle.test.ts",
+    "tests/integration/telegram-origin-routes.test.ts",
+    "tests/unit/telegram-origin/adapter-authored-format.test.ts",
+    "tests/unit/telegram-origin/forwarded-delivery-history.test.ts",
+    "tests/unit/telegram-origin/late-history-policy.test.ts",
+    "tests/unit/telegram-origin/recovered-history-format.test.ts",
+    "upgrades/next/telegram-recovery-history-markdown.md",
+    "upgrades/side-effects/telegram-recovery-history-markdown.md"
+  ],
+  "phase": "complete",
+  "tier": 1,
+  "tierReasoning": "Narrow reversible representation repair:66 added runtime lines across existing Adapter/Lifeline, original-input capture and recovery paths; no new route, grant, credential flow, installed file, retry authority or persistence format. Test volume supplies mandated three-tier regressions and two actual review corrections.",
+  "eli16Path": "docs/specs/telegram-recovery-history-markdown.eli16.md",
+  "sideEffectsPath": "upgrades/side-effects/telegram-recovery-history-markdown.md",
+  "secondPass": "true",
+  "reviewerConcurred": true,
+  "toolchain": {
+    "buildSkill": {
+      "name": "instar-dev",
+      "version": "21a45a5a5f03",
+      "verified": true
+    }
+  },
+  "classClosure": {
+    "defectClass": "unbounded-self-action",
+    "closure": "n/a",
+    "reason": "Only repairs representation inside existing bounded outbox execution; no new trigger, controller, cadence, retry budget or permission. Actual unit, HTTP and production restart lifecycle tests prove one accepted network send and no duplicate on another recovery pass."
+  }
+}

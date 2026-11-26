@@ -186,3 +186,27 @@ describe('lease loss spares dashboard-path pending devices', () => {
     expect(codes.check('a', ca).result).toBe('none');
   });
 });
+
+
+describe('joined computers in the registry (member-browser-any-computer §3.3)', async () => {
+  const { DeviceRegistry: Reg } = await import('../../src/core/MobileDeviceKeys.js');
+  const fsm = await import('node:fs'); const osm = await import('node:os'); const pathm = await import('node:path');
+  const dir = () => fsm.mkdtempSync(pathm.join(osm.tmpdir(), 'joined-reg-'));
+  const key = () => { const { publicKey } = crypto.generateKeyPairSync('ec', { namedCurve: 'P-256' }); const j = publicKey.export({ format: 'jwk' }) as { x: string; y: string }; return Buffer.concat([Buffer.from([4]), Buffer.from(j.x, 'base64url'), Buffer.from(j.y, 'base64url')]).toString('base64url'); };
+  it('creates a waiting computer with its intended binding fixed, refuses a duplicate key, activates once, adopts only an unheld key', () => {
+    const reg = new Reg(dir());
+    const k = key();
+    const p = reg.createPendingComputer({ browserPublicKey: k, host: 'h.example.dev', userId: 'mara', scope: 'documents', deviceName: 'Computer AAAA-BBBB', idleDays: 30, endsBy: '2027-02-18T00:00:00.000Z' });
+    if (!p.ok) throw new Error('create');
+    expect(p.device).toMatchObject({ status: 'pending', client: 'browser', joinedVia: 'team-invite', joinIdleDays: 30, role: 'team' });
+    expect(reg.createPendingComputer({ browserPublicKey: k, host: 'h.example.dev', userId: 'mara', scope: 'documents', deviceName: 'x', idleDays: 30, endsBy: '2027-02-18T00:00:00.000Z' })).toEqual({ ok: false, reason: 'duplicate-key' });
+    const a = reg.activateJoinedComputer(p.device.id, '2026-12-20T00:00:00.000Z', '2026-11-20T00:00:00.000Z');
+    expect(a).toMatchObject({ status: 'active', approvedVia: 'team-invite', linkExpiresAt: '2026-12-20T00:00:00.000Z' });
+    expect(reg.activateJoinedComputer(p.device.id, '2027-01-01T00:00:00.000Z', 'x')?.linkExpiresAt).toBe('2026-12-20T00:00:00.000Z'); // idempotent
+    reg.setLinkExpiry(p.device.id, '2026-12-27T00:00:00.000Z');
+    expect(reg.get(p.device.id)?.linkExpiresAt).toBe('2026-12-27T00:00:00.000Z');
+    expect(reg.adoptJoinedComputer({ deviceId: p.device.id, browserPublicKey: k, host: 'h', userId: 'mara', scope: 'documents', linkedAt: 'x', linkExpiresAt: 'y', idleDays: 30, endsBy: 'z' })).toBeNull();
+    const other = new Reg(dir());
+    expect(other.adoptJoinedComputer({ deviceId: p.device.id, browserPublicKey: k, host: 'h.example.dev', userId: 'mara', scope: 'documents', linkedAt: '2026-11-20T00:00:00.000Z', linkExpiresAt: '2026-12-20T00:00:00.000Z', idleDays: 30, endsBy: '2027-02-18T00:00:00.000Z' })).toMatchObject({ id: p.device.id, status: 'active', approvedVia: 'team-invite' });
+  });
+});
