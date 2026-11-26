@@ -31,7 +31,7 @@ afterEach(() => { for (const d of dirs.splice(0)) SafeFsExecutor.safeRmSync(d, {
 
 const view = (pr: number, over: Partial<PrView> = {}): PrView => ({
   author: { login: 'EchoOfDawn' }, isCrossRepository: false, headRefName: `echo/pr-${pr}`, headRefOid: head(pr), baseRefName: 'main', baseRefOid: sha('b'),
-  title: 'chore: unrelated', body: 'nothing about the check', files: [{ path: 'src/core/Foo.ts' }], ...over,
+  title: 'chore: unrelated', body: 'nothing about the check', files: [{ path: 'src/core/Foo.ts' }, { path: 'upgrades/next/fixture.md' }], ...over,
 });
 
 function record(over: Partial<LocalVerifyRecord> = {}): LocalVerifyRecord {

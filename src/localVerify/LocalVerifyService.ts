@@ -230,10 +230,10 @@ export interface PrView {
   headRefOid: string;
   baseRefName: string;
   baseRefOid: string;
-  /** Title + body + changed files (gh `--json title,body,files`; files = the first 100). Absent on older seams ⇒ unknown. */
+  /** Title + body + changed files (gh `--json title,body,files`; production reads the complete file list). Absent on older seams ⇒ unknown. */
   title?: string | null;
   body?: string | null;
-  files?: ReadonlyArray<{ path: string }> | null;
+  files?: ReadonlyArray<{ path: string; changeType?: string }> | null;
   /** The PR's labels (gh `--json labels`). Absent ⇒ none: ordinary priority. */
   labels?: ReadonlyArray<{ name: string }> | null;
 }
@@ -669,7 +669,7 @@ export type RequestResult =
   | { ok: true; status: 'queued' | 'already-queued' | 'in-flight'; position?: number; hold?: MainRedHoldInfo; /** Admitted over the cap by an operator front or release. */ operatorOverCap?: true }
   | { ok: true; status: 'recorded'; record: LocalVerifyRecord }
   /** `held`: the operator holds this change (queue controls). `overflow-full`: an operator admission found the queue and its overflow full. */
-  | { ok: false; code: 'invalid-pr' | 'pr-unreadable' | 'pr-closed' | 'untrusted-head' | 'queue-full' | 'pr-invalid-shas' | 'main-unhealthy' | 'stopping' | 'peer-only' | 'held' | 'overflow-full' };
+  | { ok: false; code: 'invalid-pr' | 'pr-unreadable' | 'pr-closed' | 'untrusted-head' | 'queue-full' | 'pr-invalid-shas' | 'main-unhealthy' | 'stopping' | 'peer-only' | 'held' | 'overflow-full' | 'release-fragment-missing' };
 
 // ---- operator queue controls (spec local-verify-queue-controls.md) ----
 
@@ -1510,7 +1510,7 @@ export class LocalVerifyService {
     const saved = this.readQueueFile();
     this.queueRestoredAt = this.now();
     let restored = 0;
-    const drops = { closed: 0, 'head-or-base-moved': 0, 'already-recorded': 0, duplicate: 0, 'queue-full': 0, 'server-restarted': 0, 'replay-managed': 0 };
+    const drops = { closed: 0, 'head-or-base-moved': 0, 'release-fragment-missing': 0, 'already-recorded': 0, duplicate: 0, 'queue-full': 0, 'server-restarted': 0, 'replay-managed': 0 };
     for (const e of saved) {
       if (e.kind === 'main') {
         // A `main` verify reserved for a peer comes back reserved, so polling resumes on the same
@@ -1548,6 +1548,7 @@ export class LocalVerifyService {
       const recorded = this.getRecord(e.pr, e.headSha, e.baseRefName);
       const why = open === false ? 'closed'
         : view && (view.headRefOid !== e.headSha || view.baseRefName !== e.baseRefName) ? 'head-or-base-moved'
+          : view && !e.remote && missingReleaseFragment(view) ? 'release-fragment-missing'
           : recorded?.outcome === 'success' && recorded.baseSha === e.baseSha ? 'already-recorded' : null;
       if (why) {
         drops[why]++;
@@ -1917,6 +1918,17 @@ export class LocalVerifyService {
       this.audit({ event: 'refused', pr, reason: 'untrusted-head' });
       this.waiting.remove(pr, 'untrusted-head');
       return { ok: false, code: 'untrusted-head' };
+    }
+    if (missingReleaseFragment(view)) {
+      this.audit({ event: 'refused', pr, headSha: view.headRefOid, reason: 'release-fragment-missing' });
+      this.waiting.remove(pr, 'release-fragment-missing');
+      const pending = this.queue.findIndex((entry) => entry.pr === pr && !entry.remote);
+      if (pending >= 0) {
+        this.queue.splice(pending, 1);
+        this.persistQueue();
+        this.pump();
+      }
+      return { ok: false, code: 'release-fragment-missing' };
     }
     // Verify against the base branch's current head, never the PR's stale baseRefOid.
     let currentBase: string | null = view.baseRefOid;
@@ -6512,6 +6524,14 @@ export class LocalVerifyService {
   private audit(event: Record<string, unknown>): void {
     appendLocalVerifyAudit(this.auditPath, event, this.now());
   }
+}
+
+/** Source changes need a release note before they consume a full test slot. */
+function missingReleaseFragment(view: PrView): boolean {
+  const files = view.files ?? [];
+  return files.some((file) => file.path.startsWith('src/'))
+    && !files.some((file) => /^upgrades\/next\/.+\.md$/.test(file.path)
+      && file.changeType !== 'DELETED' && file.changeType !== 'REMOVED');
 }
 
 /** The PR's changed files from its view (null when the seam did not read them). */

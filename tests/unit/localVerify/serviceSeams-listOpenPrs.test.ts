@@ -42,6 +42,25 @@ describe('listOpenPrs default seam', () => {
       expect(await seamsWithGh(body).listOpenPrs!()).toBeNull();
     });
 
+  it.each([false, true])('reads later PR file pages and rejects a moved head (%s)', async (moved) => {
+    const head = 'a'.repeat(40);
+    const files = Array.from({ length: 100 }, (_, index) => ({ path: `tests/${index}.test.ts` }));
+    const first = path.join(bin, 'first.json');
+    const pages = path.join(bin, 'pages.jsonl');
+    const last = { path: 'upgrades/next/fragment.md' };
+    fs.writeFileSync(first, JSON.stringify({ headRefOid: head, baseRefName: 'main', files }));
+    fs.writeFileSync(pages, [...files, last].map((file) => JSON.stringify(file)).join('\n'));
+    const current = JSON.stringify({ headRefOid: moved ? 'b'.repeat(40) : head, baseRefName: 'main' });
+    const seams = seamsWithGh(`case "$1:$*" in
+      api:*) cat "${pages}";;
+      *title,body,files,labels*) cat "${first}";;
+      *) echo '${current}';;
+    esac`);
+    const view = await seams.prView(7);
+    if (moved) expect(view).toBeNull();
+    else expect(view?.files).toEqual([...files, last]);
+  });
+
   it('returns null when no GitHub environment is available', async () => {
     const seams = buildDefaultServiceSeams({ repo: 'o/r', resolveGitHubEnv: () => null });
     expect(await seams.listOpenPrs!()).toBeNull();

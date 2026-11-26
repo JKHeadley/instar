@@ -66,11 +66,27 @@ export function buildDefaultServiceSeams(opts: DefaultServiceSeamOpts): Omit<Loc
     async prView(pr: number): Promise<PrView | null> {
       // title/body/files feed the main-red repair match (mainRedHold.ts); gh lists the first 100 files.
       // labels: `merge-throughput` ranks the PR ahead of ordinary PRs (prPriority).
-      const out = await gh(['pr', 'view', String(pr), '--repo', opts.repo, '--json', 'author,isCrossRepository,headRefName,headRefOid,baseRefName,baseRefOid,title,body,files,labels']);
+      const args = ['pr', 'view', String(pr), '--repo', opts.repo, '--json', 'author,isCrossRepository,headRefName,headRefOid,baseRefName,baseRefOid,title,body,files,labels'];
+      const out = await gh(args);
       if (!out) return null;
       try {
         const v = JSON.parse(out) as PrView & { files?: unknown };
-        const files = Array.isArray(v.files) ? (v.files as Array<{ path?: unknown }>).filter((f) => !!f && typeof f.path === 'string').map((f) => ({ path: f.path as string })) : null;
+        if (!Array.isArray(v.files)) return null;
+        let files = v.files.filter((f) => f && typeof f.path === 'string');
+        if (files.length !== v.files.length) return null;
+        // A full GraphQL page can omit either the source change or its fragment.
+        if (files.length >= 100) {
+          const pages = await gh(['api', '--paginate', `repos/${opts.repo}/pulls/${pr}/files?per_page=100`, '--jq', '.[] | {path: .filename, changeType: (.status | ascii_upcase)}']);
+          if (!pages) return null;
+          const all = pages.trim().split('\n').map((line) => JSON.parse(line)) as NonNullable<PrView['files']>[number][];
+          if (all.length < files.length || all.length >= 3000
+            || all.some((file) => !file || typeof file.path !== 'string')) return null;
+          const confirmation = await gh(['pr', 'view', String(pr), '--repo', opts.repo, '--json', 'headRefOid,baseRefName']);
+          if (!confirmation) return null;
+          const current = JSON.parse(confirmation) as Pick<PrView, 'headRefOid' | 'baseRefName'>;
+          if (current.headRefOid !== v.headRefOid || current.baseRefName !== v.baseRefName) return null;
+          files = all;
+        }
         const raw = v as { labels?: unknown };
         const labels = Array.isArray(raw.labels) ? (raw.labels as Array<{ name?: unknown }>).filter((l) => !!l && typeof l.name === 'string').map((l) => ({ name: l.name as string })) : null;
         return { ...v, files, labels };

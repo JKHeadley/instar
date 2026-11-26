@@ -45,7 +45,7 @@ const redMain = (head: string): VerifyRunResult => ({
 });
 const view = (head: string, over: Partial<PrView> = {}): PrView => ({
   author: { login: 'EchoOfDawn' }, isCrossRepository: false, headRefName: 'echo/x', headRefOid: head, baseRefName: 'main', baseRefOid: sha('b'),
-  title: 'chore: unrelated', body: 'nothing about the check', files: [{ path: 'src/core/Foo.ts' }], ...over,
+  title: 'chore: unrelated', body: 'nothing about the check', files: [{ path: 'src/core/Foo.ts' }, { path: 'upgrades/next/fixture.md' }], ...over,
 });
 
 function setup(opts: { views: Record<number, PrView>; stateDir?: string; holdEnabled?: () => boolean }) {
@@ -116,7 +116,7 @@ describe('main-red hold — the queue while main fails a known check', () => {
     const s = setup({ views: {
       2363: view(sha('1')),
       2364: view(sha('2'), { files: null }), // file list unreadable, no mention ⇒ held (files-unknown)
-      2372: view(sha('3'), { title: 'fix(tests): main red on no-silent-fallbacks after #2367', files: [{ path: 'src/server/routes.ts' }] }),
+      2372: view(sha('3'), { title: 'fix(tests): main red on no-silent-fallbacks after #2367', files: [{ path: 'src/server/routes.ts' }, { path: 'upgrades/next/fixture.md' }] }),
       2375: view(sha('4')),
     } });
     // main's head moves: its verify starts at once (boot skips the debounce)…
@@ -164,7 +164,7 @@ describe('main-red hold — the queue while main fails a known check', () => {
   it('once main is RED, ONE item names the failing check and the PRs fixing it, refreshed only when that list changes; a renamed PR becomes a candidate', async () => {
     const s = setup({ views: {
       2363: view(sha('1')),
-      2373: view(sha('2'), { title: 'fix(ratchet): main is over its own silent-fallback baseline', body: `\`${FILE}\` counts catch blocks`, files: [{ path: 'src/core/machineLoadReport.ts' }] }),
+      2373: view(sha('2'), { title: 'fix(ratchet): main is over its own silent-fallback baseline', body: `\`${FILE}\` counts catch blocks`, files: [{ path: 'src/core/machineLoadReport.ts' }, { path: 'upgrades/next/fixture.md' }] }),
     } });
     await s.goRed(sha('e'), true);
     expect((await s.svc.request(2363)).hold?.heldPrs).toEqual([2363]);
@@ -320,7 +320,7 @@ describe('main-red hold — the queue while main fails a known check', () => {
     const lintRed = (head: string): VerifyRunResult => ({ ...ok(mainRecord(head, 'failure')), reasons: [`lint-failed:node ${LINT}`], failures: [] });
     const s = setup({ views: {
       3135: view(sha('1')),
-      3182: view(sha('2'), { title: 'fix(enrollment): name the Claude engine once so main passes the framework-id ratchet', body: 'Main fails `node scripts/lint-framework-name-ratchet.mjs` (1135 -> 1136)', files: [{ path: 'src/core/EnrollmentWizard.ts' }] }),
+      3182: view(sha('2'), { title: 'fix(enrollment): name the Claude engine once so main passes the framework-id ratchet', body: 'Main fails `node scripts/lint-framework-name-ratchet.mjs` (1135 -> 1136)', files: [{ path: 'src/core/EnrollmentWizard.ts' }, { path: 'upgrades/next/fixture.md' }] }),
     } });
     s.svc.noteMainHead(sha('e'));
     await s.finish(0, lintRed(sha('e')));

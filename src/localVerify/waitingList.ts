@@ -55,7 +55,7 @@ interface WaitingFile {
   waiters: Waiter[];
 }
 
-export type WaiterRemoval = 'admitted' | 'closed' | 'recorded' | 'untrusted-head' | 'idle' | 'over-cap' | 'held';
+export type WaiterRemoval = 'admitted' | 'closed' | 'recorded' | 'untrusted-head' | 'release-fragment-missing' | 'idle' | 'over-cap' | 'held';
 
 /** Oldest first: by firstRefusedAt, then PR number. */
 export function waiterOrder(a: Waiter, b: Waiter): number {
