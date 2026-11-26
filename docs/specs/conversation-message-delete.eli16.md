@@ -87,3 +87,5 @@ The isolated server can now accept a signed Delete request over a direct connect
 The native test can now keep a temporary server running on the same Mac while it checks deletion and sync. The launcher uses synthetic messages and a separate temporary home.
 
 The isolated history server now accepts the same first-page size the native app requests.
+
+The fleet routing check can now tell whether the current server has the verified assignment and build needed to serve protected history. It is still disconnected from normal routing.

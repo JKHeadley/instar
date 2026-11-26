@@ -1,0 +1,22 @@
+{
+  "ts": "2026-11-26T06:14:21.040Z",
+  "slug": "app-message-delete-fleet-read-decision",
+  "suggestedTier": 2,
+  "declaredTier": 2,
+  "riskFloor": 1,
+  "riskFloorReasons": [],
+  "belowFloor": false,
+  "files": 1,
+  "loc": 66,
+  "scope": {
+    "basis": "staged-in-scope-paths-including-deleted",
+    "files": [
+      "src/core/AppRemovalFleetReadAuthority.ts"
+    ],
+    "addedLines": 66,
+    "deletedLines": 0
+  },
+  "causalAutopsy": null,
+  "classClosure": null,
+  "verdict": "pass"
+}
