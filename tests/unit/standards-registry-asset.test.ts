@@ -477,6 +477,33 @@ describe('wiring integrity — no reader may rebuild the path', () => {
   });
 });
 
+let productionFiles: string[] | undefined;
+function registrySourceFiles(): string[] {
+  if (productionFiles) return productionFiles;
+  const files: string[] = [];
+  const walk = (dir: string) => {
+    for (const e of fs.readdirSync(dir, { withFileTypes: true })) {
+      const full = path.join(dir, e.name);
+      if (e.isDirectory()) walk(full);
+      else if (/\.ts$/.test(e.name)) files.push(full);
+    }
+  };
+  walk(path.join(ROOT, 'src'));
+  productionFiles = files;
+  return files;
+}
+
+const registrySourceCode = new Map<string, string>();
+function registryCode(file: string): string {
+  const cached = registrySourceCode.get(file);
+  if (cached !== undefined) return cached;
+  const code = fs.readFileSync(file, 'utf-8')
+    .replace(/\/\*[\s\S]*?\*\//g, (m) => '\n'.repeat((m.match(/\n/g) ?? []).length))
+    .split('\n').map((l) => l.replace(/\/\/.*$/, '')).join('\n');
+  registrySourceCode.set(file, code);
+  return code;
+}
+
 describe('the test-only override cannot become a production path', () => {
   /**
    * Cross-model review round 1, finding 2: `resolveStandardsRegistry(explicitPath?)`
@@ -492,9 +519,7 @@ describe('the test-only override cannot become a production path', () => {
     // the server. If the server ever populates it, an operator-reachable config path
     // could point a deployed agent at an arbitrary registry.
     for (const rel of ['src/server/AgentServer.ts', 'src/commands/server.ts']) {
-      const code = fs.readFileSync(path.join(ROOT, rel), 'utf-8')
-        .replace(/\/\*[\s\S]*?\*\//g, (m) => '\n'.repeat((m.match(/\n/g) ?? []).length))
-        .split('\n').map((l) => l.replace(/\/\/.*$/, '')).join('\n');
+      const code = registryCode(path.join(ROOT, rel));
       expect(
         code,
         `${rel} sets standardsRegistryResolutionOverride. That field is TEST-ONLY: populating it from ` +
@@ -505,19 +530,9 @@ describe('the test-only override cannot become a production path', () => {
   });
 
   it('the override is never fed from config or env anywhere in src/', () => {
-    const files: string[] = [];
-    const walk = (dir: string) => {
-      for (const e of fs.readdirSync(dir, { withFileTypes: true })) {
-        const full = path.join(dir, e.name);
-        if (e.isDirectory()) walk(full);
-        else if (/\.ts$/.test(e.name)) files.push(full);
-      }
-    };
-    walk(path.join(ROOT, 'src'));
+    const files = registrySourceFiles();
     for (const f of files) {
-      const code = fs.readFileSync(f, 'utf-8')
-        .replace(/\/\*[\s\S]*?\*\//g, (m) => '\n'.repeat((m.match(/\n/g) ?? []).length))
-        .split('\n').map((l) => l.replace(/\/\/.*$/, '')).join('\n');
+      const code = registryCode(f);
       // An override derived from config/env is the reachable-from-production shape.
       expect(
         code,
@@ -535,9 +550,7 @@ describe('the override is structurally unreachable in production', () => {
     // test runner sets that variable and nothing in production does, so a deployed
     // agent cannot be pointed at an arbitrary constitution even if the RouteContext
     // field were somehow populated.
-    const code = fs.readFileSync(path.join(ROOT, 'src/server/routes.ts'), 'utf-8')
-      .replace(/\/\*[\s\S]*?\*\//g, (m) => '\n'.repeat((m.match(/\n/g) ?? []).length))
-      .split('\n').map((l) => l.replace(/\/\/.*$/, '')).join('\n');
+    const code = registryCode(path.join(ROOT, 'src/server/routes.ts'));
     expect(
       code,
       'The conformance route no longer gates standardsRegistryResolutionOverride behind process.env.VITEST. ' +
@@ -570,20 +583,10 @@ describe('the test-only resolver API has zero production callers', () => {
     // regardless of who currently passes it, because the next caller can. The
     // production entry point now takes no argument at all, and fixture resolution
     // lives behind a separately-named export. This asserts that separation holds.
-    const files: string[] = [];
-    const walk = (dir: string) => {
-      for (const e of fs.readdirSync(dir, { withFileTypes: true })) {
-        const full = path.join(dir, e.name);
-        if (e.isDirectory()) walk(full);
-        else if (/\.ts$/.test(e.name)) files.push(full);
-      }
-    };
-    walk(path.join(ROOT, 'src'));
+    const files = registrySourceFiles();
     for (const f of files) {
       if (f.endsWith('standardsRegistryPath.ts')) continue; // the definition itself
-      const code = fs.readFileSync(f, 'utf-8')
-        .replace(/\/\*[\s\S]*?\*\//g, (m) => '\n'.repeat((m.match(/\n/g) ?? []).length))
-        .split('\n').map((l) => l.replace(/\/\/.*$/, '')).join('\n');
+      const code = registryCode(f);
       expect(
         code,
         `${path.relative(ROOT, f)} imports the TEST-ONLY resolveStandardsRegistryFromPath. ` +
@@ -660,20 +663,10 @@ describe('import boundary — registry access is centralized', () => {
     // Round-6 finding: the regex lint is a smoke alarm, not the mechanism. The real
     // enforcement is that exactly ONE module owns registry location. This asserts the
     // boundary directly rather than trusting the text scan.
-    const files: string[] = [];
-    const walk = (dir: string) => {
-      for (const e of fs.readdirSync(dir, { withFileTypes: true })) {
-        const full = path.join(dir, e.name);
-        if (e.isDirectory()) walk(full);
-        else if (/\.ts$/.test(e.name)) files.push(full);
-      }
-    };
-    walk(path.join(ROOT, 'src'));
+    const files = registrySourceFiles();
     const owners = files.filter((f) => {
       if (f.endsWith('standardsRegistryPath.ts')) return false;
-      const code = fs.readFileSync(f, 'utf-8')
-        .replace(/\/\*[\s\S]*?\*\//g, (m) => '\n'.repeat((m.match(/\n/g) ?? []).length))
-        .split('\n').map((l) => l.replace(/\/\/.*$/, '')).join('\n');
+      const code = registryCode(f);
       // A production file may READ the registry only via a path the resolver handed it.
       return /standards-registry\.(md|meta\.json)/.test(code)
           || /['"`]STANDARDS-REGISTRY\.md['"`]/.test(code);
