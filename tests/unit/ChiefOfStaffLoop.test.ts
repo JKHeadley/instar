@@ -86,6 +86,7 @@ describe('Chief of Staff blocker ledger intake', () => {
       emit: w.j.emit('m_a'),
       loadUnion: () => w.j.entries.slice(),
       loadUnionCompleteReadOnly: () => available ? w.j.entries.slice() : null,
+      loadUnionForWaitMutation: () => available ? w.j.entries.slice() : null,
     } });
     l.attachWaitBlockerLedger({
       openChiefOfStaffWait: async (input) => {
@@ -108,6 +109,15 @@ describe('Chief of Staff blocker ledger intake', () => {
     w.now += 60_000;
     await l.tick();
     expect(entries).toHaveLength(1);
+    expect(l.isCurrentWaitBlocker(entries[0])).toBe(true);
+
+    bind(w, { goal: 'Revised goal with the same evidence' });
+    expect(l.isCurrentWaitBlocker(entries[0])).toBe(false);
+    w.now += 25 * H;
+    await l.tick();
+    expect(entries).toHaveLength(2);
+    expect(entries[1].episodeKey).not.toBe(entries[0].episodeKey);
+    expect(l.isCurrentWaitBlocker(entries[1])).toBe(true);
   });
 });
 

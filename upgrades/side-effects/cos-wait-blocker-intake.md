@@ -10,3 +10,9 @@ This draft adds candidate intake behind `chiefOfStaff.waitBlockerIntake`, defaul
 - Activation blockers. Require a fresh check after legacy data or a rebind. Enforce current replicated episode and disposition before a candidate can advance or settle. Verify takeover and the owner projections before enabling this on a real agent.
 
 Independent review concurred with committing a default-off draft. The review raised stale candidate authority, legacy check carry-forward, and redundant ledger writes. The switch remains off, the first two findings remain activation blockers, and repeated writes from a continuously visible episode are suppressed.
+
+## Current episode follow-up
+
+An opted-in ledger verifies the exact current wait before changing a Chief of Staff candidate, including at commit after a settlement review. The mutation read flushes queued local changes and refuses when the queue remains pending. Normal ledger entries keep their existing workflow. A verdict from a different or unrecorded binding cannot carry forward while intake is enabled.
+
+Independent review concurred with the default-off draft and identified a queued-rebind race, delayed peer updates, and a legacy verdict that an earlier build may have carried forward under a binding before intake was enabled. The queued-rebind case has a server regression test. Cross-machine freshness and verification of previously carried legacy verdicts remain activation blockers.

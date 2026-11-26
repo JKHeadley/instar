@@ -785,6 +785,7 @@ export interface ProjectCheckState {
   lastDoneItems: Record<string, 'pass' | 'fail' | 'unknown'> | null;
   /** The newest check-event's record HLC (null when none or unreadable). */
   lastCheckHlc: HlcTimestamp | null;
+  lastCheckBindingHlc?: HlcTimestamp;
 }
 
 const ACTION_ATTEMPT_ACTIONS: ReadonlySet<CosAction> = new Set<CosAction>(['restart-inject', 'restart-run', 'redirect']);
@@ -855,6 +856,7 @@ export function foldProjectCheckState(entries: UnionEntry[], conversationKey: st
     nextActionAllowedAt,
     lastDoneItems: last && last.doneItems && typeof last.doneItems === 'object' ? (last.doneItems as Record<string, 'pass' | 'fail' | 'unknown'>) : null,
     lastCheckHlc: last ? hlcOf(last) : null,
+    ...(isHlc(last?.bindingHlc) ? { lastCheckBindingHlc: last.bindingHlc } : {}),
   };
 }
 

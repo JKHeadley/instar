@@ -74,10 +74,14 @@ describe('Chief of Staff E2E (feature is alive)', () => {
     const loadUnion = (): UnionEntry[] => journal.readTail(CHIEF_OF_STAFF_RECORD_KIND, 10_000).entries.map((e) => ({ data: e.data as Record<string, unknown>, origin: 'm1' }));
     const loop = new ChiefOfStaffLoop({
       now: () => Date.now(), machineId: 'm1', enabled: () => true, holdsLease: () => true, config: () => CHIEF_OF_STAFF_LOOP_DEFAULTS,
-      journal: { emit: (k, b) => { const r = emitter.emit(CHIEF_OF_STAFF_STORE_KEY, k, b); return { outcome: r.outcome, ...(r.seq !== undefined ? { seq: r.seq } : {}) }; }, loadUnion },
+      journal: { emit: (k, b) => { const r = emitter.emit(CHIEF_OF_STAFF_STORE_KEY, k, b); return { outcome: r.outcome, ...(r.seq !== undefined ? { seq: r.seq } : {}) }; }, loadUnion, loadUnionCompleteReadOnly: loadUnion, loadUnionForWaitMutation: () => { journal.flush(); return loadUnion(); } },
       verifyRenewal: () => true,
-      gather: async () => { throw new Error('not exercised here'); },
-      judge: async () => null,
+      gather: async () => ({
+        conversationKey: CK, items: [{ id: 'run', source: 'run', ageMs: 0, value: 'idle', unknown: false }],
+        netDiffLines: 0, mergedPrsSinceLastCheck: 0, doneItems: {}, liveSession: false, conversationTail: [],
+        lastOwnerMessageAt: null, lastAgentMessageAt: null, overdueCommitments: 0,
+      }),
+      judge: async () => ({ verdict: 'waiting-on-user', reason: 'Wait needs investigation.', citedIds: ['run'] }),
       protocol: { claim: async () => ({ outcome: 'rejected', reason: 'e2e' }), standDown: () => false, settleOpenIntent: async () => undefined, operatorLeaseLive: () => false } as never,
       mirrorInitiativeStatus: () => {}, sendNote: async () => {}, sendImmediate: async () => {}, statusUrl: () => 'http://localhost/chief-of-staff', localHour: () => 8,
     });
@@ -86,6 +90,8 @@ describe('Chief of Staff E2E (feature is alive)', () => {
     journal.flush();
 
     config.developmentAgent = true;
+    config.chiefOfStaff = { ...config.chiefOfStaff, waitBlockerIntake: true };
+    config.monitoring = { ...config.monitoring, blockerLedger: { enabled: true } };
     const server = new AgentServer({ config, sessionManager: sm(), state: new StateManager(stateDir), chiefOfStaffLoop: loop });
     await server.start();
     try {
@@ -109,6 +115,30 @@ describe('Chief of Staff E2E (feature is alive)', () => {
 
       const nf = await request(server.getApp()).get('/chief-of-staff/projects/telegram:1').set(auth());
       expect(nf.status).toBe(404);
+
+      // Drive the real tick twice. The first makes a check and the second reads the flushed journal.
+      await loop.tick();
+      journal.flush();
+      await loop.tick();
+      const candidates = await request(server.getApp()).get('/blockers').set(auth()).expect(200);
+      expect(candidates.body.entries).toHaveLength(1);
+      const [candidate] = candidates.body.entries;
+      expect(candidate.chiefOfStaffSource.conversationKey).toBe(CK);
+
+      // A real rebind invalidates the original candidate at the HTTP advance boundary.
+      const rebound = loop.bindProject({ conversationKey: CK, goal: 'Revised project', doneDefinition: [
+        { id: 'd2', kind: 'judgment', text: 'The revised project is ready.' },
+      ] });
+      expect(rebound.ok).toBe(true);
+      expect(journal.pendingCount).toBeGreaterThan(0);
+      const stale = await request(server.getApp()).post(`/blockers/${candidate.id}/advance`)
+        .set(auth()).set('X-Instar-Request', '1').send({
+          origin: 'e2e', authorityCheck: { agentHasAuthority: false, userHasAuthority: true, note: 'checked' },
+        });
+      expect(stale.status).toBe(422);
+      expect(stale.body.error).toMatch(/wait is stale/);
+      const afterRebind = await request(server.getApp()).get(`/blockers/${candidate.id}`).set(auth()).expect(200);
+      expect(afterRebind.body.state).toBe('candidate');
 
       // Incident replay at the HTTP seam: the link lives beyond the first 100 open
       // PRs and only its body says instar.sh. The fresh agent has no topic history

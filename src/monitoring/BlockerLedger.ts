@@ -200,6 +200,7 @@ export interface BlockerLedgerOptions {
   stateDir: string;
   /** The Tier-1 settle authority (B17). Optional — when absent, a true-blocker settle is refused. */
   settleAuthority?: SettleAuthority;
+  isCurrentChiefOfStaffWait?: (source: ChiefOfStaffBlockerSource) => boolean;
   /**
    * The Self-Unblock checklist run store ("Self-Unblock Before Escalating", §5.1).
    * OPTIONAL — when injected, the feature is ENABLED: a true-blocker settle then
@@ -284,6 +285,7 @@ export class BlockerLedger {
 
   private store: BlockerStore;
   /** Serialize all mutations through one in-process queue (single-writer). */
+  private readonly isCurrentChiefOfStaffWait?: BlockerLedgerOptions['isCurrentChiefOfStaffWait'];
   private mutateChain: Promise<unknown> = Promise.resolve();
 
   constructor(opts: BlockerLedgerOptions) {
@@ -292,6 +294,7 @@ export class BlockerLedger {
     this.archivePath = path.join(opts.stateDir, 'state', 'blocker-ledger-archive.json');
     this.auditPath = path.join(opts.stateDir, '..', 'logs', 'blocker-decisions.jsonl');
     this.settleAuthority = opts.settleAuthority;
+    this.isCurrentChiefOfStaffWait = opts.isCurrentChiefOfStaffWait;
     this.selfUnblockRunStore = opts.selfUnblockRunStore;
     this.archiveAfterDays = opts.archiveAfterDays ?? DEFAULT_ARCHIVE_AFTER_DAYS;
     this.recheckAfterDays = opts.recheckAfterDays ?? DEFAULT_RECHECK_AFTER_DAYS;
@@ -397,6 +400,9 @@ export class BlockerLedger {
     const entry = this.store.entries.find((e) => e.id === id);
     if (!entry) {
       throw new BlockerLedgerError(`unknown blocker id ${id}`, 'not_found');
+    }
+    if (entry.chiefOfStaffSource && !this.isCurrentChiefOfStaffWait?.(entry.chiefOfStaffSource)) {
+      throw new BlockerLedgerError('Chief of Staff wait is stale or cannot be verified', 'stale_source');
     }
     return entry;
   }

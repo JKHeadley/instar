@@ -22,6 +22,8 @@ import {
   foldBindingState, foldProjectCheckState, deriveLeaseExpiry, foldIntentState, latestPerKey,
   buildCheckEvent, buildLastTick, buildLifecycleEvent, buildOwnerPauseEvent, buildOwnerItemCheckEvent, buildCheckRequestedEvent, doneItemCheckRef, hlcKey, compareHlc, ownerPauseEventForAsk, unknownLifecycleEvents, buildRenewal,
   type BindingState, type OwnerPauseRecord, OWNER_PAUSE_FIELD_MAX, OWNER_PAUSE_QUOTE_MAX, type ProjectCheckState, type CosVerdict, type UnionEntry, type IntentState, foldLastTicks, foldTreeState, type TreeNode, buildTreePut, foldNoteState, buildNoteSent, trailingUnknownChecks, noteRecordKey, buildBindingPut } from './ChiefOfStaffStore.js';
+import { chiefOfStaffWaitEpisodes } from './ChiefOfStaffWaitCards.js';
+import type { ChiefOfStaffBlockerSource } from '../monitoring/BlockerLedger.js';
 import type { HlcTimestamp } from './HybridLogicalClock.js';
 import { composePauseAsk, type OwnerPauseSource } from './cosOwnerPauseSource.js';
 import type { ChiefOfStaffActionProtocol, CosProtocolOutcome } from './ChiefOfStaffActionProtocol.js';
@@ -338,6 +340,8 @@ export interface ChiefOfStaffLoopDeps {
     loadUnionComplete?(): UnionEntry[] | null;
     /** Non-flushing creation projection read and strict current source signature. */
     loadUnionCompleteReadOnly?(): UnionEntry[] | null;
+    /** Flushes local writes and refuses a stale read before a blocker mutation. */
+    loadUnionForWaitMutation?(): UnionEntry[] | null;
     creationSourceVersion?(): string | null;
     /** Resolve once `seq` is fsynced (CoherenceJournal.awaitDurableSeq). The loop awaits the check-event before it claims, so the owner's action gate reads a fresh fold (§2.4 step 2c). */
     awaitDurable?(seq: number): Promise<void>;
@@ -526,12 +530,20 @@ export class ChiefOfStaffLoop {
     this.syncedWaitEpisodes.clear();
   }
 
+  isCurrentWaitBlocker(source: ChiefOfStaffBlockerSource): boolean {
+    if (!this.waitBlockerLedger || !this.d.enabled() || !this.d.holdsLease()) return false;
+    const union = this.safe(() => this.d.journal.loadUnionForWaitMutation?.() ?? null, null);
+    return chiefOfStaffWaitEpisodes(union).some((episode) =>
+      episode.episodeKey === source.episodeKey &&
+      episode.conversationKey === source.conversationKey &&
+      episode.firstCheckRef === source.firstCheckRef);
+  }
+
   private async syncWaitBlockers(): Promise<void> {
     const ledger = this.waitBlockerLedger;
     if (!ledger || !this.d.holdsLease()) return;
     const union = this.d.journal.loadUnionCompleteReadOnly?.() ?? null;
     if (!union) return;
-    const { chiefOfStaffWaitEpisodes } = await import('./ChiefOfStaffWaitCards.js');
     const episodes = chiefOfStaffWaitEpisodes(union);
     const current = new Set(episodes.map((episode) => episode.episodeKey));
     for (const key of this.syncedWaitEpisodes) {
@@ -819,7 +831,10 @@ export class ChiefOfStaffLoop {
     const judgmentItems = p.doneDefinition.filter((i) => i.kind === 'judgment');
     // §2.5: skip the judge when nothing changed, or when the checklist is fully passing.
     let floored: FlooredVerdict; let decisionRef: string | undefined;
-    if (prev && prev.lastEvidenceHash === hash && prev.lastVerdict) {
+    const bindingHlc = p.binding.bindingHlc;
+    const canCarry = !this.waitBlockerLedger || (bindingHlc && prev?.lastCheckBindingHlc &&
+      compareHlc(bindingHlc, prev.lastCheckBindingHlc) === 0);
+    if (canCarry && prev?.lastEvidenceHash === hash && prev.lastVerdict) {
       floored = { verdict: prev.lastVerdict, reason: 'no new evidence', floored: 'carry-forward' };
     } else if (allDeterministicPass) {
       // Every deterministic item passes: no judge needed. With no judgment items this IS done-verified;

@@ -128,6 +128,22 @@ describe('BlockerLedger — open + persistence', () => {
     expect(restarted.list().total).toBe(2);
   });
 
+  it('refuses to advance a Chief of Staff candidate once its source is no longer current', async () => {
+    let current = true;
+    const ledger = makeLedger({ isCurrentChiefOfStaffWait: () => current });
+    const entry = await ledger.openChiefOfStaffWait({
+      episodeKey: 'episode', conversationKey: 'telegram:42', firstCheckRef: 'check-1',
+      detectedText: 'A project wait was recorded.',
+    });
+    const authorityCheck = { agentHasAuthority: false, userHasAuthority: true, note: 'checked' };
+    current = false;
+    await expect(ledger.advance(entry.id, { origin: 'sess-1', authorityCheck }))
+      .rejects.toMatchObject({ code: 'stale_source' });
+    expect(ledger.get(entry.id)?.state).toBe('candidate');
+    current = true;
+    expect((await ledger.advance(entry.id, { origin: 'sess-1', authorityCheck })).state).toBe('authority-checked');
+  });
+
   it('opens a candidate and persists it', async () => {
     const ledger = makeLedger();
     const entry = await ledger.open({ detectedText: 'I cannot do this without you', origin: 'sess-1' });

@@ -1,0 +1,27 @@
+{
+  "version": 2,
+  "slug": "cos-wait-blocker-intake",
+  "sessionId": "017c26ed-5596-4576-9c20-20af13e4c1f8",
+  "timestamp": "2026-11-26T00:12:42.946Z",
+  "artifactPath": "upgrades/side-effects/cos-wait-blocker-intake.md",
+  "artifactSha256": "46c9efef4de1ff081799c6ec69a83ee46458d56ba30e4edece6a7433282d5d41",
+  "coveredFiles": [
+    "src/commands/server.ts",
+    "src/core/ChiefOfStaffLoop.ts",
+    "src/core/ChiefOfStaffStore.ts",
+    "src/monitoring/BlockerLedger.ts",
+    "src/server/AgentServer.ts",
+    "tests/e2e/chief-of-staff-alive.test.ts",
+    "tests/unit/BlockerLedger.test.ts",
+    "tests/unit/ChiefOfStaffLoop.test.ts",
+    "upgrades/cos-wait-blocker-intake.eli16.md",
+    "upgrades/side-effects/cos-wait-blocker-intake.md"
+  ],
+  "phase": "complete",
+  "tier": 1,
+  "tierReasoning": "Narrow safeguard for the existing default-off candidate intake. No owner approval or rollout changes.",
+  "eli16Path": "upgrades/cos-wait-blocker-intake.eli16.md",
+  "sideEffectsPath": "upgrades/side-effects/cos-wait-blocker-intake.md",
+  "secondPass": "true",
+  "reviewerConcurred": true
+}

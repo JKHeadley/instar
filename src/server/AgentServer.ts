@@ -5711,6 +5711,7 @@ export class AgentServer {
           : null;
         this.blockerLedger = new BlockerLedger({
           stateDir: options.config.stateDir,
+          isCurrentChiefOfStaffWait: (source) => options.chiefOfStaffLoop?.isCurrentWaitBlocker(source) === true,
           settleAuthority: buildB17SettleAuthority(options.intelligence ?? null),
           selfUnblockRunStore: this.selfUnblockRunStore ?? undefined,
           archiveAfterDays: bl.archiveAfterDays,
