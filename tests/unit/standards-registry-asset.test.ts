@@ -172,6 +172,9 @@ describe('standards registry ships as a build artifact', () => {
         // tarball, not a manifest of it — so pack quietly and read what landed.
         execFileSync('npm', ['pack', '--pack-destination', tmp], {
           cwd: ROOT, stdio: ['ignore', 'ignore', 'ignore'],
+          // Packing an already-built artifact needs no checkout hook installation.
+          // Borrowed dependency trees can copy a read-only hook launcher into a worktree.
+          env: { ...process.env, HUSKY: '0' },
         });
         const filename = fs.readdirSync(tmp).find((f) => f.endsWith('.tgz'));
         expect(filename, 'npm pack produced no tarball').toBeTruthy();
