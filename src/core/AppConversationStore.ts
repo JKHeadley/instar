@@ -1328,9 +1328,10 @@ export class AppConversationStore {
   }
 
   /**
-   * SYNC read (§4.5): events in this machine's ingest order. The cursor is opaque (this
-   * machine's id plus an ingestSeq); a cursor minted by another machine is not compared —
-   * the read starts again from the beginning and the client de-duplicates by eventId.
+   * SYNC read (§4.5): events in this machine's ingest order. A cursor binds the
+   * ingest sequence to this machine and conversation. A legacy unscoped
+   * cursor or a scope mismatch restarts the read. The client deduplicates
+   * by eventId.
    */
   syncEvents(conversationKey: string, cursor: string | null | undefined, limit = 100): { events: StoredAppEvent[]; cursor: string } {
     const canonicalKey = canonicalConversationKey(conversationKey);
@@ -1338,8 +1339,8 @@ export class AppConversationStore {
     let after = 0;
     if (cursor) {
       try {
-        const c = JSON.parse(Buffer.from(cursor, 'base64url').toString('utf8')) as { m?: unknown; s?: unknown };
-        if (c.m === self && typeof c.s === 'number' && c.s >= 0) after = c.s;
+        const c = JSON.parse(Buffer.from(cursor, 'base64url').toString('utf8')) as { m?: unknown; k?: unknown; s?: unknown };
+        if (c.m === self && c.k === canonicalKey && typeof c.s === 'number' && Number.isSafeInteger(c.s) && c.s >= 0) after = c.s;
       } catch { /* @silent-fallback-ok — an unreadable cursor restarts from the beginning (the client de-duplicates) */ }
     }
     const n = Math.max(1, Math.min(100, Math.floor(limit)));
@@ -1351,7 +1352,7 @@ export class AppConversationStore {
       const ev = this.readEventAt(canonicalKey, r.byteOffset, r.byteLength);
       if (ev) events.push(ev);
     }
-    return { events, cursor: Buffer.from(JSON.stringify({ m: self, s: last })).toString('base64url') };
+    return { events, cursor: Buffer.from(JSON.stringify({ m: self, k: canonicalKey, s: last })).toString('base64url') };
   }
 
   /**
