@@ -8204,7 +8204,15 @@ export class AgentServer {
         try { return projectTitlesByTopic(options.chiefOfStaffLoop?.projectsSummary() ?? []); }
         catch { return new Map(); } // @silent-fallback-ok — the title is only a fallback for a missing name
       };
-      const removalEnrollment = options.config.developmentAgent === true ? options.appRemovalReadAcceptance : undefined;
+      const acceptanceSelector = options.config.developmentAgent === true ? options.appRemovalReadAcceptance : undefined;
+      const protectedAcceptanceKeys = new Set<string>();
+      const removalEnrollment = acceptanceSelector ? (key: string) => {
+        const normalized = key.toLowerCase();
+        if (protectedAcceptanceKeys.has(normalized)) return true;
+        if (!acceptanceSelector(normalized)) return false;
+        protectedAcceptanceKeys.add(normalized);
+        return true;
+      } : undefined;
       const removalTrust = removalEnrollment ? createAppMachineTrustEvidence(options.config.stateDir) : null;
       const removalTeamLog = removalEnrollment ? this.mobilePairing.teamLog() : null;
       const conversationFlatDeps: import('./mobileConversationRoutes.js').MobileConversationRouteDeps = {
@@ -8280,6 +8288,7 @@ export class AgentServer {
       const searchDeps: ConversationSearchRouteDeps = {
         config: options.config, pairing: this.mobilePairing, service: this.appConversations,
         machineId: conversationFlatDeps.machineId,
+        removalReadAcceptance: removalEnrollment,
         topicMemory: () => options.topicMemory ?? null,
         telegramTopics: options.telegram ? () => { const projectTitles = cosProjectTitles(); return options.telegram!.getAllTopicMappings().map((m) => ({ topicId: m.topicId, topicName: topicDisplayName(m.topicId, m.topicName, projectTitles) })); } : undefined,
         telegramHistoryId: options.telegram ? (topicId, nativeId, fromUser) => {

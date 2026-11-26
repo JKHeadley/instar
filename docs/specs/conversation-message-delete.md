@@ -240,3 +240,5 @@ The isolated notification-preview route reads an exact agent message by message 
 In isolated protected history, a pin only appears if its exact message ID resolves to a surviving readable App row under the page's prepared custodian proof. Rebuild preview text from that row. Do not reuse the saved pin preview. Loss of the page proof prevents delivery of the entire history response, including pins.
 
 On the isolated server, signed owner reaction reads use the exact target and prepared custodian proof before returning actor state. Removed and missing targets share the unavailable response. Enrolled reaction writes stay unavailable until they have removal-aware mutation admission.
+
+Isolated keyword and meaning search omit enrolled App conversations until authoritative search is available. An authorized exact-scope request is unavailable. A broad search keeps eligible results from other conversations and indicates partial coverage. Apply enrollment to local candidate selection and peer results, and recheck already selected local hits after waiting for peers. Share process-lifetime enrollment with history and sync. This is not the durable production custody rule.

@@ -1,0 +1,24 @@
+{
+  "version": 2,
+  "slug": "app-message-delete-search-acceptance",
+  "sessionId": "633bd330-201e-4dc8-8fd9-72b89116167e",
+  "timestamp": "2026-11-26T02:23:54.342Z",
+  "artifactPath": "upgrades/side-effects/app-message-delete-search-acceptance.md",
+  "artifactSha256": "da79ab2a94e831b9841cb1c0bb08899b58a63215eb952c5060c69ccc6beada6b",
+  "specPath": "docs/specs/conversation-message-delete.md",
+  "coveredFiles": [
+    "docs/specs/conversation-message-delete.eli16.md",
+    "docs/specs/conversation-message-delete.md",
+    "src/server/AgentServer.ts",
+    "src/server/mobileConversationRoutes.ts",
+    "src/server/mobileConversationSearchRoutes.ts",
+    "tests/e2e/mobile-native-conversations-alive.test.ts",
+    "tests/integration/conversation-search.test.ts",
+    "upgrades/side-effects/app-message-delete-search-acceptance.md"
+  ],
+  "phase": "complete",
+  "tier": 2,
+  "tierReasoning": "Exclude enrolled App conversations from local and peer search during disposable acceptance",
+  "secondPass": "true",
+  "reviewerConcurred": true
+}

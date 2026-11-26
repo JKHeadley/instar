@@ -6,7 +6,7 @@
  * hit from a conversation they were not given, `ref=` restricts, the errors, the off switch, and a
  * pool read that names a machine that did not answer.
  */
-import { describe, it, expect, afterAll, beforeAll } from 'vitest';
+import { describe, it, expect, afterAll, beforeAll, vi } from 'vitest';
 import crypto from 'node:crypto';
 import fs from 'node:fs';
 import os from 'node:os';
@@ -55,7 +55,7 @@ afterAll(() => {
 });
 
 type Peer = { machineId: string; url: string; kind: 'lan' };
-async function setup(opts: { machine?: string; peers?: () => Peer[]; searchOff?: boolean; meaning?: boolean; meaningOff?: boolean } = {}) {
+async function setup(opts: { machine?: string; peers?: () => Peer[]; searchOff?: boolean; meaning?: boolean; meaningOff?: boolean; removalReadAcceptance?: (key: string) => boolean } = {}) {
   const machine = opts.machine ?? 'm1';
   const dir = fs.mkdtempSync(path.join(os.tmpdir(), 'conv-search-int-'));
   dirs.push(dir);
@@ -115,6 +115,7 @@ async function setup(opts: { machine?: string; peers?: () => Peer[]; searchOff?:
       conversations: () => [{ id: -7, title: '#general' }],
       history: () => [{ ts: '1700000000.000100', text: 'rocket talk in slack', fromUser: true, at: '2026-11-09T11:00:00.000Z' }],
     }),
+    removalReadAcceptance: opts.removalReadAcceptance,
     pool: { config: config as never, resolvePeerUrls: opts.peers ?? (() => []), recordRopeResult: null },
   };
   const embedder = new FakeEmbedder();
@@ -277,6 +278,23 @@ describe('a pool read', () => {
 });
 
 describe('meaning search', () => {
+  it('withholds a scoped result when the conversation enrolls during embedding', async () => {
+    const enrolled = new Set<string>();
+    const e = await setup({ meaning: true, removalReadAcceptance: (key) => enrolled.has(key) });
+    const owner = phone(e);
+    const key = await appConversation(e, owner, 'Isolated', 'rocket launch');
+    const embed = e.embedder.embed.bind(e.embedder);
+    const pending = vi.spyOn(e.embedder, 'embed').mockImplementationOnce(async (query) => {
+      enrolled.add(key);
+      return embed(query);
+    });
+    try {
+      const response = await send(e, owner, 'GET', `/mobile/conversations/search?q=rocket&mode=meaning&ref=app:${key}`);
+      expect(response.status).toBe(503);
+      expect(response.body).toEqual({ error: 'search-unavailable' });
+    } finally { pending.mockRestore(); }
+  });
+
   it('finds a paraphrase keyword search misses, in the same shape, with coverage', async () => {
     const e = await setup({ meaning: true });
     const owner = phone(e);

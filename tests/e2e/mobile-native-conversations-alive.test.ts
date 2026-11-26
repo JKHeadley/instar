@@ -373,6 +373,18 @@ describe('native app conversations — production wiring', () => {
     expect((await auth(request(app).get(`/mobile/chat/app/${key}/messages`))).status).toBe(403);
     expect((await send('GET', `/mobile/chat/app/${dest}/messages`)).body).not.toHaveProperty('epoch');
     enrolled.delete(key);
+    const search = (params: string) => send('GET', `/mobile/conversations/search?q=farmers&${params}`);
+    for (const mode of ['keyword', 'meaning']) {
+      const scoped = await search(`mode=${mode}&scope=pool&ref=app%3A${key}`);
+      expect(scoped.status).toBe(503);
+      expect(scoped.body).toEqual({ error: 'search-unavailable' });
+    }
+    const broadSearch = await search('mode=keyword&scope=pool');
+    expect(broadSearch.status).toBe(200);
+    expect(broadSearch.body).toMatchObject({
+      partial: true, unsearched: ['app'], results: [expect.objectContaining({ ref: `app:${dest}`, messageId: copy.body.eventId })],
+    });
+
     expect((await send('GET', `/mobile/chat/app/${key}/messages`)).body.epoch).toBe(acceptedHistory.body.epoch);
 
     server.appConversations!.store.append({

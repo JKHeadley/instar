@@ -252,7 +252,7 @@ async function fetchPeers<T>(
 }
 
 export interface MobileConversationRouteDeps {
-  /** Explicit isolated acceptance enrollment. No normal boot supplies this. */
+  /** Monotonic isolated acceptance enrollment. No normal boot supplies this. */
   removalReadAcceptance?: {
     enrolled: (conversationKey: string) => boolean;
     evidence: Parameters<typeof resolveOwnerRemovalSyncAuthority>[3];
@@ -449,15 +449,11 @@ export function createMobileConversationRouter(deps: MobileConversationRouteDeps
   const svc = deps.service;
   const removalReads = deps.removalReadAcceptance;
   const removalCodec = removalReads ? createRemovalSyncCursorCodec() : null;
-  const protectedAcceptanceKeys = new Set<string>();
   const serveProtectedRead = (req: Request, res: Response, next: NextFunction, execute: typeof executeOwnerRemovalHistory,
     conversationKey = String(req.params.key).toLowerCase()) => {
     if (!svc || !removalReads || !removalCodec) return false;
     try {
-      if (!protectedAcceptanceKeys.has(conversationKey)) {
-        if (!removalReads.enrolled(conversationKey)) return false;
-        protectedAcceptanceKeys.add(conversationKey);
-      }
+      if (!removalReads.enrolled(conversationKey)) return false;
     } catch {
       res.status(503).json({ error: 'message-removal-sync-unavailable' });
       return true;
