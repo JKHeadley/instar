@@ -43,3 +43,10 @@ Codex re-check after the live evidence: still CONCERN on two narrower points; th
 > The fallback test covers a rejected write. A successful upsert followed by a failed read can leave both copies, and the supplied evidence leaves subsequent key selection unverified.
 - Timeout: the write call now sets `killSignal: 'SIGKILL'`, so a child that ignores SIGTERM is killed outright at 5 s. The unit test pins `timeout: 5000` and `killSignal: 'SIGKILL'`. A live rerun after the change: 103 writes, all confirmed, 0 of 250 process-table samples contained the key.
 - Both copies after an unconfirmed write: `getFileKey` writes the same generated key to the keychain and then, when the write is unconfirmed, to the owner-only file, so the two copies are identical. A new unit test uses a keychain stand-in whose write lands but reports failure. It checks that the file and the keychain slot hold the same key, a fresh manager resolves that key, and `getCandidateKeys()` returns exactly one candidate. Unit tests: 34/34.
+
+## Final reviewer verdict (2026-11-26)
+
+> VERDICT: CONCUR
+> SIGKILL addresses the concern that the write child could ignore SIGTERM and keep `execFileSync` waiting.
+> The new test verifies that an unconfirmed upsert leaves identical copies and that a fresh manager resolves the same key with exactly one candidate.
+The independent reviewer concurs after the live check and the two follow-up fixes.
