@@ -1,0 +1,23 @@
+{
+  "version": 2,
+  "slug": "app-message-delete-custody-acceptance",
+  "sessionId": "633bd330-201e-4dc8-8fd9-72b89116167e",
+  "timestamp": "2026-11-26T03:46:34.422Z",
+  "artifactPath": "upgrades/side-effects/app-message-delete-custody-acceptance.md",
+  "artifactSha256": "ad5e158af448de9461a0f21012a93159d558e3d078db81898cd0a354aa12eace",
+  "specPath": "docs/specs/conversation-message-delete.md",
+  "coveredFiles": [
+    "docs/specs/conversation-message-delete.eli16.md",
+    "docs/specs/conversation-message-delete.md",
+    "src/server/AgentServer.ts",
+    "src/server/mobileAppRemovalSyncAuthority.ts",
+    "tests/e2e/mobile-native-conversations-alive.test.ts",
+    "tests/integration/mobile-native-conversations.test.ts",
+    "upgrades/side-effects/app-message-delete-custody-acceptance.md"
+  ],
+  "phase": "complete",
+  "tier": 2,
+  "tierReasoning": "Use retained creation custody for isolated signed reads and cursor identity",
+  "secondPass": "true",
+  "reviewerConcurred": true
+}

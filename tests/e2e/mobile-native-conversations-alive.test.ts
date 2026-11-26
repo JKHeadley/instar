@@ -1,3 +1,4 @@
+import { AppRemovalReadCustody } from '../../src/core/AppRemovalReadCustody.js';
 import { attachmentIdFor } from '../../src/core/appMediaTypes.js';
 /**
  * Feature-is-alive proof for native app conversations (docs/specs/mobile-native-conversations.md,
@@ -307,6 +308,12 @@ describe('native app conversations — production wiring', () => {
     enrolled.add(key);
     const acceptedHistory = await send('GET', `/mobile/chat/app/${key}/messages`);
     expect(acceptedHistory.status, JSON.stringify(acceptedHistory.body)).toBe(200);
+    const retainedCustody = new AppRemovalReadCustody(stateDir).observe(key);
+    expect(retainedCustody).toMatchObject({ kind: 'recorded', record: {
+      creationEventId: server.appConversations!.store.getCreationRecord(key)!.eventId,
+      custodianMachineId: server.appConversations!.deps.machineId(),
+    } });
+
     expect(acceptedHistory.headers['cache-control']).toBe('no-store');
     expect(acceptedHistory.body.messages.map((row: { eventId: string }) => row.eventId)).not.toContain(target);
     expect(acceptedHistory.body).not.toHaveProperty('displayForMs');
@@ -453,6 +460,15 @@ describe('native app conversations — production wiring', () => {
       expect(raced.body).toEqual({ error: 'not-found' });
     } finally { mediaRace.mockRestore(); }
     expect((await send('GET', mediaPath)).status).toBe(404);
+
+    const custodyFile = path.join(stateDir, 'state', 'app-removal-read-custody', `${key}.json`);
+    const retained = fs.readFileSync(custodyFile);
+    fs.writeFileSync(custodyFile, '{"version":1}');
+    try {
+      const unavailableHistory = await send('GET', `/mobile/chat/app/${key}/messages`);
+      expect(unavailableHistory.status).toBe(503);
+      expect(unavailableHistory.body).not.toHaveProperty('messages');
+    } finally { fs.writeFileSync(custodyFile, retained); }
 
     // A ledger revocation alone refuses the phone at once on the production auth path, even if
     // the registry write after it failed (the registry still says active here).

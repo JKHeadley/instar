@@ -11,6 +11,7 @@ interface RemovalSyncEvidence {
   machineTrustRevision: (custodian: string) => string | null;
   journalRevision?: (conversationKey: string) => string | null;
   teamVisibilityRevision?: () => string | null;
+  retainsCreationCustody?: (conversationKey: string, creation: { eventId: string; machineId: string }) => boolean;
 }
 
 type Result = { ok: true; authority: RemovalSyncAuthority }
@@ -39,7 +40,7 @@ export function resolveOwnerRemovalSyncAuthority(req: Request, pairing: MobilePa
     if (!creation || !isAppRemovalConversationOwner(reader, creation, machine)) return noAccess;
     const ownsCustody = () => machine !== 'local' && service.deps.machineId() === machine && pairing.machineId() === machine
       && service.serves(key);
-    if (creation.machineId !== machine || !ownsCustody()) return unavailable;
+    if (creation.machineId !== machine || !ownsCustody() || evidence.retainsCreationCustody?.(key, creation) === false) return unavailable;
     const owner = pairing.ownerIdentity();
     const account = [reader.userId ?? null, owner.telegramOwnerId ?? null, owner.slackOwnerUserId ?? null];
     if (account.every((value) => value === null)) return noAccess;
@@ -49,7 +50,7 @@ export function resolveOwnerRemovalSyncAuthority(req: Request, pairing: MobilePa
       const journal = evidence.journalRevision ? evidence.journalRevision(key) : service.store.removalJournalRevision(key);
       const team = evidence.teamVisibilityRevision?.() ?? null;
       if (!keyRevision || !trust || !journal || (evidence.teamVisibilityRevision && !team)) return null;
-      return hash([keyRevision, trust, journal, team]);
+      return hash([creation.eventId, keyRevision, trust, journal, team]);
     };
     const revision = readRevision();
     if (!revision || readRevision() !== revision) return unavailable;
@@ -60,7 +61,7 @@ export function resolveOwnerRemovalSyncAuthority(req: Request, pairing: MobilePa
       || !service.liveConversation(key) || !pairing.mayUse(finalReader, key, 'read')) return noAccess;
     const finalCreation = service.store.getCreationRecord(key);
     if (!finalCreation || !isAppRemovalConversationOwner(finalReader, finalCreation, machine)) return noAccess;
-    if (finalCreation.machineId !== machine || !ownsCustody()) return unavailable;
+    if (finalCreation.eventId !== creation.eventId || finalCreation.machineId !== machine || !ownsCustody() || evidence.retainsCreationCustody?.(key, finalCreation) === false) return unavailable;
     return { ok: true, authority: {
       custodianMachineId: machine, conversationKey: key, deviceId: principal.deviceId,
       deviceKeyHash: admitted.keyHash, readerId: hash(account),

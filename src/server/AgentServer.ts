@@ -292,6 +292,7 @@ import { findRemoteSession, createMobileSessionRouter } from './mobileSessionRou
 import { createMobileSessionTerminalRouter, peerRowsMatch, PEER_LOOKUP_MAX, PEER_LOOKUP_TIMEOUT_MS, type PeerLookup } from './mobileSessionTerminalRoutes.js';
 import { poolPeerFetch } from './poolPeerFetch.js';
 import { AttributionRuntime, type AttributionConfig } from '../core/attribution/attributionRuntime.js';
+import { AppRemovalReadCustody } from '../core/AppRemovalReadCustody.js';
 import { AppConversationService, VOICE_TRANSCRIBE_PROVIDER_TIMEOUT_MS } from '../core/AppConversationService.js';
 import { transcribeAudioFileDetailed, configuredVoiceProvider, describeVoiceTranscription } from '../core/VoiceTranscription.js';
 import { createAppMachineTrustEvidence, deviceKeyHashOf, identityKeyLookup, loadMachineSigner } from '../core/AppRecordSignatures.js';
@@ -8205,11 +8206,25 @@ export class AgentServer {
         catch { return new Map(); } // @silent-fallback-ok — the title is only a fallback for a missing name
       };
       const acceptanceSelector = options.config.developmentAgent === true ? options.appRemovalReadAcceptance : undefined;
+      const removalCustody = acceptanceSelector ? new AppRemovalReadCustody(options.config.stateDir) : null;
       const protectedAcceptanceKeys = new Set<string>();
-      const removalEnrollment = acceptanceSelector ? (key: string) => {
+      const removalEnrollment = acceptanceSelector && removalCustody ? (key: string) => {
         const normalized = key.toLowerCase();
-        if (protectedAcceptanceKeys.has(normalized)) return true;
+        const retained = removalCustody.observe(normalized);
+        if (retained.kind === 'unavailable') throw new Error('removal read custody unavailable');
+        const service = this.appConversations;
+        if (retained.kind === 'recorded') {
+          protectedAcceptanceKeys.add(normalized);
+          const creation = service?.store.getCreationRecord(normalized);
+          if (!creation || creation.eventId !== retained.record.creationEventId
+            || creation.machineId !== retained.record.custodianMachineId) throw new Error('removal read custody changed');
+          return true;
+        }
+        if (protectedAcceptanceKeys.has(normalized)) throw new Error('removal read custody lost');
         if (!acceptanceSelector(normalized)) return false;
+        const creation = service?.store.getCreationRecord(normalized);
+        if (!service || !creation || creation.machineId !== service.deps.machineId() || !service.serves(normalized)
+          || !removalCustody.record(normalized, creation)) throw new Error('removal read custody could not be retained');
         protectedAcceptanceKeys.add(normalized);
         return true;
       } : undefined;
@@ -8221,6 +8236,11 @@ export class AgentServer {
           evidence: {
             machineTrustRevision: (custodian) => removalTrust([custodian])?.revision ?? null,
             teamVisibilityRevision: () => removalTeamLog?.visibilityRevision() ?? null,
+            retainsCreationCustody: (key, creation) => {
+              const retained = removalCustody?.observe(key);
+              return retained?.kind === 'recorded' && retained.record.creationEventId === creation.eventId
+                && retained.record.custodianMachineId === creation.machineId;
+            },
           },
         } : undefined,
         unread: this.conversationUnread,

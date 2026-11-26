@@ -1388,6 +1388,21 @@ describe('private signed owner removal sync page', () => {
     ]);
   });
 
+  it('resets a cursor if the exact creation event changes on the same machine', async () => {
+    const { e, key, path } = await fixture();
+    const first = await signed(e, 'GET', path);
+    expect(first.status).toBe(200);
+    const original = e.svc.store.getCreationRecord(key)!;
+    const changed = vi.spyOn(e.svc.store, 'getCreationRecord').mockReturnValue({
+      ...original, eventId: 'replaced-creation-event',
+    });
+    try {
+      const resume = await signed(e, 'GET', `${path}?cursor=${encodeURIComponent(first.body.cursor)}`);
+      expect(resume.status).toBe(409);
+      expect(resume.body.epoch).not.toBe(first.body.epoch);
+    } finally { changed.mockRestore(); }
+  });
+
   it('withholds a page if access or removal evidence changes while executing', async () => {
     const { e, path, remove, changeTrust } = await fixture();
     const prepare = e.svc.store.prepareRemovalHistory.bind(e.svc.store);
