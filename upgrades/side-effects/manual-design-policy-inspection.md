@@ -62,7 +62,7 @@ Final rerouting readback: safety reviewer concurred on bounded streams and exist
 
 Verdict: concur with findings. Each finding and its disposition:
 
-1. Medium, fixed. Adding `docs/DESIGN-STANDARD.md` and `docs/design/**` to `HARNESS_GLOBS` would have sent every ordinary rule change, and every prose edit to a design page, to `awaiting-independent-review`. The approved spec, section 1, lists only the gate's own files. The globs are now `src/designGate/**`, `src/commands/designPolicy.ts`, `docs/design/screens.json`, `docs/design/coverage.json` and `docs/design/rule-ids.lock.json`. A unit test asserts that the standard and other design pages are not harness-changing. This is a merge-routing change for exactly those files, and section 1 above should be read with that.
+1. Medium, fixed. Adding `docs/DESIGN-STANDARD.md` and `docs/design/**` to `HARNESS_GLOBS` would have sent every ordinary rule change, and every prose edit to a design page, to `awaiting-independent-review`. The approved spec, section 1, lists only the gate's own files. The globs are now `src/designGate/**`, `src/commands/designPolicy.ts`, `docs/design/screens.json`, `docs/design/coverage.json` and `docs/design/rule-ids.lock.json`. A unit test asserts that the standard and other design pages are not harness-changing. This is a merge-routing change for exactly those files, and section 1 above should be read with that. It also resolves the harness-path review's note that `docs/design/opt-in-heartbeat.md` would ask for review.
 2. Medium, fixed. Deleting a rule with no "Earned from" mark, or renaming its heading so it no longer parses, produced a clean `structurally-valid` report. The inspector now reports `rule-removed` for any base rule missing at the head, earned or not. Two unit tests cover deletion and a broken heading.
 3. Low, recorded, not fixed here. Native Mac, iPhone, Android and Windows UI files are not detected as UI outside the registry. The spec puts native classification in each family's own copy, which is a later stage.
 4. Low, recorded, not fixed here. Pointing `--repo` at a subdirectory reports `policy-missing` rather than "not the repository root". It fails safe; only the reason is unclear.
@@ -75,7 +75,7 @@ The reviewer also confirmed that nothing in Local Verify, monitoring or safe-mer
 - Closure: `n/a`.
 - Reason: this command is one explicit manual invocation with a finite Git read budget. Capacity or timeout termination acts only on its exact owned Git child. No periodic trigger, retry, restart, notification or self-redrive controller is installed.
 
-## Second-pass review
+## Second-pass review of the harness path only (Chief of Staff helper, head 21c8cc467)
 
 **Reviewer:** independent second-pass reviewer, Claude Fable 5.2 helper for the Echo Chief of Staff session, not the author
 
