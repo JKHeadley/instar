@@ -1,5 +1,6 @@
 import { expect, it, vi } from 'vitest';
 import { ConnectViewerSession } from '../../src/core/ConnectViewerSession.js';
+import { ConnectViewerFrameQueue } from "../../src/core/ConnectViewerFrameQueue.js";
 
 const viewer = { agentId: 'agent', targetMachineId: 'machine', keyDigest: 'viewer-key' };
 
@@ -61,4 +62,34 @@ it('discards a pending frame when its connection is replaced before dispatch', (
   expect(stream?.aborted).toBe(true);
   expect(session.dispatchFrame(deliver)).toBe(false);
   expect(deliver).not.toHaveBeenCalled();
+});
+
+it('drops queued frames on abort and checks expiry at the final write', () => {
+  vi.useFakeTimers();
+  try {
+    const now = Date.now();
+    const connection = new AbortController();
+    const consent = { ...viewer, displayId: 'display', expiresAt: now + 1000 };
+    const session = new ConnectViewerSession(consent, connection.signal);
+    const queue = new ConnectViewerFrameQueue(session, session.attach(viewer, 'display')!);
+    const write = vi.fn();
+    expect(queue.offer(Buffer.from('first'))).toBe(true);
+    expect(queue.offer(Buffer.from('latest'))).toBe(true);
+    expect(queue.flush(write)).toBe(true);
+    expect(write).toHaveBeenCalledWith(Buffer.from('latest'));
+    expect(queue.offer(Buffer.from('pending'))).toBe(true);
+    connection.abort();
+    expect(queue.flush(write)).toBe(false);
+    queue.close();
+
+    const later = new ConnectViewerSession(consent);
+    const expiring = new ConnectViewerFrameQueue(later, later.attach(viewer, 'display')!);
+    expect(expiring.offer(Buffer.from('expires'))).toBe(true);
+    vi.setSystemTime(now + 1000);
+    expect(expiring.flush(write)).toBe(false);
+    expect(write).toHaveBeenCalledTimes(1);
+    expiring.close();
+  } finally {
+    vi.useRealTimers();
+  }
 });
