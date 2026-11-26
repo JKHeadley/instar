@@ -1,0 +1,19 @@
+{
+  "version": 2,
+  "slug": "first-phone-enrollment-challenge-admission",
+  "sessionId": "b3d2cf8a-9b5d-468b-a50b-70ebf11e9e5c",
+  "timestamp": "2026-11-26T00:45:55.147Z",
+  "artifactPath": "upgrades/side-effects/first-phone-enrollment-challenge-admission.md",
+  "artifactSha256": "74e2260043891a6078670c4a7271af130d5a991ff3aee6a621618894fa4f242d",
+  "coveredFiles": [
+    "src/server/mobilePermissionsRoutes.ts",
+    "tests/integration/mobile-native-permissions.test.ts"
+  ],
+  "phase": "complete",
+  "tier": 1,
+  "tierReasoning": "Dedicated challenge admission with no production authority or submit route.",
+  "eli16Path": "docs/specs/phone-only-first-approver.eli16.md",
+  "sideEffectsPath": "upgrades/side-effects/first-phone-enrollment-challenge-admission.md",
+  "secondPass": "true",
+  "reviewerConcurred": true
+}

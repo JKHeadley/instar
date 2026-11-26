@@ -57,6 +57,7 @@ import { maybeRotateJsonl } from '../utils/jsonl-rotation.js';
 import { isTeamSwitchSetting, type TeamSwitchSetting } from '../core/TeamSwitches.js';
 import { isNewAccountKind, type NewAccountKind } from '../core/newSubscriptionAccountId.js';
 import { keyHashOf, parseDevicePublicKey } from '../core/MobileDeviceKeys.js';
+import { firstPhoneEnrollmentLine } from '../core/trustJourney/firstPhoneProposal.js';
 import { arrivedLocallyUnforwarded, trustAnswerStatus, type MobileTrustPort } from './mobileTrustApproval.js';
 
 export const MOBILE_PERMISSIONS_SCHEMA_VERSION = 1;
@@ -141,6 +142,7 @@ export type PermissionAction =
    * accepted device to approve a new one.
    */
   | { kind: 'accept-device'; target: string; keyFingerprint: string; disclosureHash: string }
+  | { kind: 'first-phone-enrollment-v1'; target: string; proposalHash: string; disclosureHash: string }
   /** Pause or resume a project from the owner's phone (docs/specs/work-door-project-rows.md §3.4); the note by its hash. */
   | { kind: 'project-pause'; target: string; value: 'pause' | 'resume'; noteHash: string | null }
   /** Check or uncheck one judged done item (work-door-project-rows §3.3): the item by its checkRef (goal, id, text). */
@@ -207,6 +209,7 @@ export function actionLine(a: PermissionAction): string {
     case 'work-card-create': return phoneCardCreateLine(a.target, a.proposalHash);
     case 'approve-widening': return `approve-widening ${a.target} ${a.proposalHash}`;
     case 'group-project-confirm': return `group-project-confirm ${a.target} ${a.proposalHash}`;
+    case 'first-phone-enrollment-v1': return firstPhoneEnrollmentLine(a.target, a.proposalHash, a.disclosureHash)!;
     case 'accept-device': return `accept-device ${a.target} ${a.keyFingerprint} ${a.disclosureHash}`;
     case 'project-pause': return `project-pause ${a.target} ${a.value} ${a.noteHash ?? 'none'}`;
     case 'project-item-check': return `project-item-check ${a.target} ${a.checkRef} ${a.value}`;
@@ -270,6 +273,11 @@ export function buildAction(kind: unknown, target: unknown, extra: { closeAs?: u
     if (typeof target !== 'string' || !/^gpd-[0-9a-f]{20}$/.test(target)) return { ok: false, error: 'bad-target' };
     if (typeof extra.proposalHash !== 'string' || !/^[0-9a-f]{64}$/.test(extra.proposalHash)) return { ok: false, error: 'bad-proposal-hash' };
     return { ok: true, action: { kind, target, proposalHash: extra.proposalHash } };
+  }
+  if (kind === 'first-phone-enrollment-v1') {
+    if (typeof target !== 'string' || typeof extra.proposalHash !== 'string' || typeof extra.disclosureHash !== 'string'
+      || !firstPhoneEnrollmentLine(target, extra.proposalHash, extra.disclosureHash)) return { ok: false, error: 'bad-enrollment-binding' };
+    return { ok: true, action: { kind, target, proposalHash: extra.proposalHash, disclosureHash: extra.disclosureHash } };
   }
   if (kind === 'accept-device') {
     if (typeof target !== 'string' || !TARGET_PATTERN.test(target)) return { ok: false, error: 'bad-target' };
@@ -768,6 +776,11 @@ export interface MobilePermissionsDeps {
   cancelSecret: (key: string) => ActionResult;
   /** A session control: runs the dashboard's own route and answers in the phone's words (mobileSessionControlsRoutes.ts). */
   sessionAction?: (action: SessionAction, deviceId: string) => Promise<ActionResult>;
+  /** Disposable enrollment precheck. No production composition supplies this port. */
+  firstPhoneEnrollmentPrecheck?: (
+    action: Extract<PermissionAction, { kind: 'first-phone-enrollment-v1' }>,
+    caller: { deviceId: string; host: string },
+  ) => Refusal | null;
   /** Team access's Face ID actions (team-roles-and-access §3.6, §4.1). */
   teamAction?: (kind: TeamActionKind, req: Request, deviceId: string, target?: string) => Promise<ActionResult>;
   /**
@@ -918,7 +931,7 @@ export function mountMobilePermissionsRoutes(router: Router, deps: MobilePermiss
   /** Steps 1–6 of the write gate (spec §3.3). Answers and returns null on refusal. */
   // `teamControl`: turning team access off, restoring it and requiring privacy must always work for
   // whoever could invite, so they do not hang on this feature's switch or the console PIN (§3.6).
-  const writeGate = (req: Request, res: Response, mode: boolean | 'trust' = false): { deviceId: string; personId: string | null; host: string; presenceKey: string; svc: MobilePairingService } | null => {
+  const writeGate = (req: Request, res: Response, mode: boolean | 'trust' | 'first-phone' = false): { deviceId: string; personId: string | null; host: string; presenceKey: string; svc: MobilePairingService } | null => {
     res.set('Cache-Control', 'no-store');
     // Every refusal leaves a trace before the answer (A Refusal Stays a Refusal); the bearer has no device id.
     const refuse = (r: Refusal, deviceId: string | null = principalDevice(req)): null => {
@@ -929,9 +942,10 @@ export function mountMobilePermissionsRoutes(router: Router, deps: MobilePermiss
     const svc = deps.pairing();
     const config = deps.config();
     const teamControl = mode === true;
+    const trustControl = mode === 'trust' || mode === 'first-phone';
     if (!svc || !svc.enabled()) return refuse({ status: 503, error: 'permission-actions-off', detail: 'Changing permissions from the phone is turned off on this agent. Open the console to change this.' });
-    if (mode === 'trust' ? !isTrustApprovalEnabled(config) : (!teamControl && !isPermissionActionsEnabled(config))) {
-      return mode === 'trust'
+    if (trustControl ? !isTrustApprovalEnabled(config) : (!teamControl && !isPermissionActionsEnabled(config))) {
+      return trustControl
         ? refuse({ status: 503, error: 'trust-approval-off', detail: 'Approving changes from this device is turned off on this agent. Ask your agent to turn it on (mobilePairing.trustApproval).' })
         : refuse({ status: 503, error: 'permission-actions-off', detail: 'Changing permissions from the phone is turned off on this agent. Open the console to change this.' });
     }
@@ -940,8 +954,9 @@ export function mountMobilePermissionsRoutes(router: Router, deps: MobilePermiss
     const deviceId = p.deviceId;
     if (!overLocalTls(req)) return refuse({ status: 403, error: 'secure-transport-required' }, deviceId);
     if (!activeOwnerPhone(svc, deviceId)) return refuse({ status: 403, error: 'owner-phone-required' }, deviceId);
-    if (!teamControl && !config.dashboardPin) return refuse({ status: 503, error: 'console-pin-not-set', detail: 'The console has no PIN set, so it cannot approve or switch either. Set a PIN first.' }, deviceId);
+    if (!teamControl && mode !== 'first-phone' && !config.dashboardPin) return refuse({ status: 503, error: 'console-pin-not-set', detail: 'The console has no PIN set, so it cannot approve or switch either. Set a PIN first.' }, deviceId);
     const d = svc.devices.get(deviceId);
+    if (mode === 'first-phone' && d?.deviceKind === 'computer') return refuse({ status: 403, error: 'first-phone-required' }, deviceId);
     if (!d?.presenceKey) return refuse({ status: 409, error: 'presence-key-missing' }, deviceId);
     const raw = (req as unknown as { instarDeviceHost?: unknown }).instarDeviceHost;
     const host = normalHost(typeof raw === 'string' && raw.length > 0 ? raw : d.host ?? '');
@@ -951,11 +966,21 @@ export function mountMobilePermissionsRoutes(router: Router, deps: MobilePermiss
 
   router.post('/mobile/permissions/challenge', (req: Request, res: Response) => {
     const b = rec(req.body);
-    const g = writeGate(req, res, b.action === 'approve-widening' || b.action === 'accept-device' ? 'trust'
+    const g = writeGate(req, res, b.action === 'first-phone-enrollment-v1' ? 'first-phone' : b.action === 'approve-widening' || b.action === 'accept-device' ? 'trust'
       : b.action === 'team-off' || b.action === 'team-restore' || b.action === 'team-memory-privacy' || b.action === 'team-origin-gone' || b.action === 'team-switch-on');
     if (!g) return;
     const built = buildAction(b.action, b.target, actionExtras(b));
     if (!built.ok) { audit.record({ event: 'refused', deviceId: g.deviceId, personId: g.personId, route: auditRoute(req), reason: built.error, status: 400 }); res.status(400).json({ error: built.error }); return; }
+    if (built.action.kind === 'first-phone-enrollment-v1') {
+      const refusal = deps.firstPhoneEnrollmentPrecheck
+        ? deps.firstPhoneEnrollmentPrecheck(built.action, { deviceId: g.deviceId, host: g.host })
+        : { status: 503, error: 'first-phone-enrollment-unavailable' };
+      if (refusal) {
+        audit.record({ event: 'refused', deviceId: g.deviceId, personId: g.personId, route: auditRoute(req), reason: refusal.error, status: refusal.status });
+        res.status(refusal.status).json({ error: refusal.error });
+        return;
+      }
+    }
     // A project action that cannot succeed gets no challenge, so no Face ID is spent on it (work-door-project-rows §3.3).
     if (built.action.kind === 'project-pause' || built.action.kind === 'project-item-check' || built.action.kind === 'project-finish') {
       const refusal = deps.projects ? deps.projects.precheck(built.action) : { status: 503, body: { error: 'chief-of-staff-off' } };

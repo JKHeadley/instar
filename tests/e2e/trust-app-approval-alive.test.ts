@@ -43,6 +43,20 @@ function journalRig(stateDir: string): { journal: CoherenceJournal; sink: TrustR
 }
 
 describe('App trust approval E2E (feature is alive)', () => {
+  it('boots the mobile challenge route with first-phone enrollment unavailable by default', async () => {
+    const s = await bootTrustAppServer('first-phone-challenge-e2e-');
+    await s.server.start();
+    const phone = await s.pair({ local: false, name: 'Disposable first phone' });
+    const challenge = await phone.signed('POST', '/mobile/permissions/challenge', {
+      action: 'first-phone-enrollment-v1',
+      target: '01234567-89ab-4cde-8fab-012345678901',
+      proposalHash: 'a'.repeat(64),
+      disclosureHash: DHASH,
+    });
+    expect(challenge.status).toBe(503);
+    expect(challenge.body).toEqual({ error: 'first-phone-enrollment-unavailable' });
+  });
+
   it('a configured but unopened Telegram chat never blocks an app setup request and exact signed approval', async () => {
     let sends = 0;
     const s = await bootTrustAppServer('app-first-e2e-', undefined, { getOwnerUserId: () => 777, sendOwnerDirect: async () => { sends++; return null; } });

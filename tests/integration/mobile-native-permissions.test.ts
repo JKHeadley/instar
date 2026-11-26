@@ -36,7 +36,7 @@ afterAll(() => {
 const relay = { id: 'threadline-relay', name: 'Agent network', consentTier: 'network', switchable: true, fullDescription: 'Joins the agent network.', dataImplications: [{ dataType: 'messages', description: 'Messages to other agents', destination: 'relay.example' }], reversibilityNote: 'Turn it off any time.' };
 const backup = { id: 'git-backup', name: 'Git backup', consentTier: 'local', switchable: true, oneLiner: 'Back up to git.' };
 
-function setup(cfg: Record<string, unknown> = {}) {
+function setup(cfg: Record<string, unknown> = {}, firstPhoneEnrollmentPrecheck?: MobilePermissionsDeps['firstPhoneEnrollmentPrecheck']) {
   const dir = fs.mkdtempSync(path.join(os.tmpdir(), 'mnperm-int-'));
   dirs.push(dir);
   fs.writeFileSync(path.join(dir, 'users.json'), JSON.stringify([{ id: 'justin', name: 'Justin', channels: [], permissions: ['user'] }]));
@@ -48,6 +48,7 @@ function setup(cfg: Record<string, unknown> = {}) {
   const hold: { wait: Promise<void> | null } = { wait: null };
   const deps: MobilePermissionsDeps = {
     pairing: () => svc,
+    firstPhoneEnrollmentPrecheck,
     config: () => config,
     stateDir: dir,
     bearerOk: (req) => req.headers.authorization === 'Bearer tok-1',
@@ -80,10 +81,10 @@ function setup(cfg: Record<string, unknown> = {}) {
   const router = express.Router();
   mountMobilePermissionsRoutes(router, deps);
   app.use(router);
-  const pair = (person?: { userId: string; role: 'msp' }, withPresence = true) => {
+  const pair = (person?: { userId: string; role: 'msp' }, withPresence = true, deviceKind?: 'computer') => {
     const dev = makeDevice();
     const presence = makeDevice();
-    const created = svc.devices.createPending({ deviceName: 'iPhone', label: null, publicKey: dev.publicKey, host: HOST, ...(person ?? {}) });
+    const created = svc.devices.createPending({ deviceName: 'iPhone', label: null, publicKey: dev.publicKey, host: HOST, deviceKind, ...(person ?? {}) });
     if (!created.ok) throw new Error('setup');
     svc.devices.applyConfirm(created.device.id, { ok: true });
     if (withPresence) svc.devices.setPresenceKey(created.device.id, presence.publicKey);
@@ -435,5 +436,49 @@ describe('asking for a key and cancelling a request (docs/specs/mobile-native-se
     const r = await send(c.app, owner, 'POST', `/mobile/secrets/requests/${'a'.repeat(64)}/cancel`, {});
     expect(r.status).toBe(403);
     expect(r.body.error).toBe('device-not-allowed');
+  });
+});
+
+describe('disposable first-phone enrollment challenge', () => {
+  const issue = {
+    action: 'first-phone-enrollment-v1',
+    target: '01234567-89ab-4cde-8fab-012345678901',
+    proposalHash: HASH,
+    disclosureHash: 'c'.repeat(64),
+  };
+
+  it('refuses when the dedicated authority is not mounted', async () => {
+    const fixture = setup();
+    const response = await send(fixture.app, fixture.pair(), 'POST', '/mobile/permissions/challenge', issue);
+    expect(response.status).toBe(503);
+    expect(response.body).toEqual({ error: 'first-phone-enrollment-unavailable' });
+  });
+
+  it('checks the signed caller and exact binding before issuing a challenge without a console PIN', async () => {
+    const precheck = vi.fn<NonNullable<MobilePermissionsDeps['firstPhoneEnrollmentPrecheck']>>();
+    precheck.mockReturnValue({ status: 409, error: 'nomination-changed' });
+    const fixture = setup({ dashboardPin: undefined }, precheck);
+    const phone = fixture.pair();
+    const path = '/mobile/permissions/challenge';
+    const computer = fixture.pair(undefined, true, 'computer');
+    const wrongDevice = await send(fixture.app, computer, 'POST', path, issue);
+    expect(wrongDevice.status).toBe(403);
+    expect(wrongDevice.body).toEqual({ error: 'first-phone-required' });
+    const invalid = await send(fixture.app, phone, 'POST', path, { ...issue, proposalHash: 'bad' });
+    expect(invalid.status).toBe(400);
+    expect(precheck).not.toHaveBeenCalled();
+
+    const refused = await send(fixture.app, phone, 'POST', path, issue);
+    expect(refused.status).toBe(409);
+    expect(refused.body).toEqual({ error: 'nomination-changed' });
+    expect(precheck).toHaveBeenCalledWith(
+      { kind: issue.action, target: issue.target, proposalHash: issue.proposalHash, disclosureHash: issue.disclosureHash },
+      { deviceId: phone.id, host: HOST },
+    );
+
+    precheck.mockReturnValue(null);
+    const accepted = await send(fixture.app, phone, 'POST', path, issue);
+    expect(accepted.status).toBe(200);
+    expect(accepted.body.challenge).toMatch(/^[A-Za-z0-9_-]{43}$/);
   });
 });

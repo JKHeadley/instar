@@ -1,0 +1,22 @@
+{
+  "ts": "2026-11-26T00:48:54.963Z",
+  "slug": "first-phone-enrollment-challenge-admission",
+  "suggestedTier": 1,
+  "declaredTier": 1,
+  "riskFloor": 1,
+  "riskFloorReasons": [],
+  "belowFloor": false,
+  "files": 1,
+  "loc": 35,
+  "scope": {
+    "basis": "staged-in-scope-paths-including-deleted",
+    "files": [
+      "src/server/mobilePermissionsRoutes.ts"
+    ],
+    "addedLines": 30,
+    "deletedLines": 5
+  },
+  "causalAutopsy": null,
+  "classClosure": null,
+  "verdict": "pass"
+}

@@ -23,3 +23,5 @@ The private nomination now saves the exact first-approver slot with the proposal
 The enrollment fixture now checks that changing any part of the owner, phone, or approval request changes the proposal the owner would confirm.
 
 The server and iPhone simulator use the same test bytes for the enrollment confirmation. The test signature is specific to the exact nomination, disclosure, device and paired address.
+
+The existing mobile permission route can now ask a disposable iPhone to sign the separate enrollment confirmation after the test authority checks the exact nomination. The live agent still cannot issue that challenge.
