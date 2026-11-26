@@ -82,7 +82,7 @@ import { spawnSmallPeerSupervisor } from './smallPeerSupervisor.js';
 import { acknowledgeTrial, bindTrial, finalizeInterruptedTrials, finishDelivery, importTrialPacket, localTrialReceipt, pendingTrialBindings, pendingTrialPackets, receivedTrial, type TrialAck, type TrialPacket, validTrialReceipt } from './smallPeerReceipts.js';
 import { trialDirectory, type TrialReceipt } from './smallPeerWatchdog.js';
 import { reconcileTrialScopes } from './trialExecutionScope.js';
-import { SAMPLE_DEADLINE_MS, readSmallPeerMemory, smallPeerMemoryAllows, parseSmallPeerTrialPolicy, type SmallPeerTrialPolicy } from './smallPeerMemory.js';
+import { SAMPLE_DEADLINE_MS, readSmallPeerMemory, smallPeerMemoryAllows, smallPeerStartHasHeadroom, parseSmallPeerTrialPolicy, type SmallPeerTrialPolicy } from './smallPeerMemory.js';
 import { FIRST_PART_LIMITS, boundLikelyFailingWire, parseFirstPartSetting, type FirstPartGroup, type FirstPartInput, type FirstPartSetting, type FirstPartSummary, type LikelyFailingWire } from './firstPart.js';
 import { LikelyFailingStore, type LikelyFailingInfo } from './likelyFailingList.js';
 import { FirstPartGroups } from './firstPartTrial.js';
@@ -2611,9 +2611,7 @@ export class LocalVerifyService {
       if (this.trialAdmissionPending || this.trialRecoveryPending) return refuse('peer-busy');
       this.trialAdmissionPending = true;
       try {
-        const sample = await readSmallPeerMemory();
-        const now = performance.now();
-        if (!smallPeerMemoryAllows(sample, trial.floorBytes, now)) {
+        if (!await smallPeerStartHasHeadroom(trial)) {
           this.trialHealthySince = null;
           return refuse('peer-busy');
         }
