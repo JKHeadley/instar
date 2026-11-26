@@ -31,6 +31,17 @@ export class ConnectViewerSession {
     return this.#controller.signal;
   }
 
+  /** Recheck immediately before dispatch, even if the expiry timer is delayed. */
+  dispatchFrame(deliver: () => void): boolean {
+    if (!this.#attached || this.#controller.signal.aborted) return false;
+    if (Date.now() >= this.consent.expiresAt) {
+      this.stop();
+      return false;
+    }
+    deliver();
+    return true;
+  }
+
   stop(): void {
     clearTimeout(this.#timer);
     this.#controller.abort();

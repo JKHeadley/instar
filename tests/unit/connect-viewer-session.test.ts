@@ -30,3 +30,23 @@ it('cancels an attached stream at consent expiry', () => {
     vi.useRealTimers();
   }
 });
+
+it('refuses frame dispatch before attachment, after Stop, and after a delayed expiry timer', () => {
+  vi.useFakeTimers();
+  try {
+    const start = Date.now();
+    const session = new ConnectViewerSession({ ...viewer, displayId: 'display', expiresAt: start + 1000 });
+    const deliver = vi.fn();
+    expect(session.dispatchFrame(deliver)).toBe(false);
+    const signal = session.attach(viewer, 'display');
+    expect(session.dispatchFrame(deliver)).toBe(true);
+    vi.setSystemTime(start + 1000);
+    expect(session.dispatchFrame(deliver)).toBe(false);
+    expect(signal?.aborted).toBe(true);
+    session.stop();
+    expect(session.dispatchFrame(deliver)).toBe(false);
+    expect(deliver).toHaveBeenCalledTimes(1);
+  } finally {
+    vi.useRealTimers();
+  }
+});
