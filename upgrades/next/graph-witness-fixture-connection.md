@@ -1,0 +1,16 @@
+<!-- bump: patch -->
+
+## What Changed
+
+The graph witness inventory integration fixture now closes each HTTP
+connection after its response. This keeps the fixture from reusing an idle
+connection after the server begins closing it.
+
+## What to Tell Your User
+
+Release checks for large conversation graph inventories are less likely to
+stop because a local test connection closed at the wrong time.
+
+## Summary of New Capabilities
+
+None. The fixture still checks the large inventory and every signed page.
