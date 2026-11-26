@@ -48,6 +48,8 @@ The hook runs locally in each checkout. Each machine has its own fetched remote 
 
 Revert the guard change. No data migration or repair is required.
 
-## Independent review
+## Second-pass review
+
+**Reviewer:** fixture_review, independent guard review.
 
 The reviewer concurred after the resolver adopted the release gate’s canonical remote order and a regression demonstrated that an alternate main ref cannot hide a feature commit.

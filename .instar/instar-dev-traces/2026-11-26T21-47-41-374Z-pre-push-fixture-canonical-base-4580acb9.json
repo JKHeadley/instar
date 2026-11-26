@@ -4,7 +4,7 @@
   "sessionId": "7ed519d3-6edc-468f-96fa-313fefbd57d8",
   "timestamp": "2026-11-26T21:47:41.374Z",
   "artifactPath": "upgrades/side-effects/pre-push-fixture-canonical-base.md",
-  "artifactSha256": "989384a036a5e6c310b3ee33293fb1221fefc59f70e9fb1676f5a5d3cb17e726",
+  "artifactSha256": "a6aaaa44af49ffaf658171e79375e365df3f9a672d9bfe38d5e19495ec9df25d",
   "coveredFiles": [
     "scripts/pre-push-fixture-guard.mjs"
   ],
