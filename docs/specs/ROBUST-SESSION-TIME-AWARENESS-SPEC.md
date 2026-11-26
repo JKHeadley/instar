@@ -28,6 +28,8 @@ cross-model-review-reason: "codex installed+authed but binary not reachable from
 **Author:** echo · **Date:** 2026-06-02
 **Origin:** Live incident 2026-06-02: in a 12h autonomous mandate the agent wrote an "end-of-stretch summary" and wound down at **~4h elapsed** (≈8h remaining), with no idea how much time had passed. Justin: *"this inaccurate tracking of time … seems to be widespread for all agents and all tasks."* Root cause (corrected after review): the agent ran the mandate in **`/loop` dynamic mode with NO autonomous-state record**, so no time-box existed to track at all.
 
+**Amendment (pending review, `approved: false`):** [`OPERATOR-LOCAL-TIME-DAY-CLAIM-SPEC.md`](OPERATOR-LOCAL-TIME-DAY-CLAIM-SPEC.md) (2026-10-20). It changes the injected CURRENT TIME line to always show weekday + date + time in the operator's zone (resolved from the verified topic operator's `UserPreferences.timezone`, with a labelled machine-zone fallback), and adds an inform-only DAY_CLAIM outbound advisory beside TIME_CLAIM, shipped dev-gated in dryRun. Until that amendment is approved, this spec is unchanged and still in force.
+
 ---
 
 ## Problem (corrected after review)
