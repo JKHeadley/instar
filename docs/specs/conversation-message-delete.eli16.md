@@ -57,3 +57,5 @@ The isolated server also refuses to copy a new link to a deleted message. The ap
 On the isolated server, a reply stays readable after its original message is deleted, but the quote preview no longer shows the deleted text.
 
 The isolated server also stops deleted text from appearing in notification previews. It uses the current signed device to check the exact message and leaves the generic notification available when it cannot provide text.
+
+The isolated server also drops a deleted message from the pin list and builds the previews for surviving pins from their current message text.

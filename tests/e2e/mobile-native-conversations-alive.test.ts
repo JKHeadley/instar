@@ -296,12 +296,23 @@ describe('native app conversations — production wiring', () => {
     expect(context).not.toContain('Saturday is the farmers market at nine.');
 
     expect(server.mobilePairing!.machineId()).toBe(server.appConversations!.deps.machineId());
+    const pin = (messageId: string) => server.appConversations!.store.append({
+      kind: 'pin', conversationKey: key, eventId: `fixture-pin-${messageId}`, pinnedMessageId: messageId,
+      pinState: 'pinned', pinnedBy: { name: 'Fixture', role: 'owner' }, preview: 'Stored preview must not be reused',
+      source: 'app', machineId: server.appConversations!.deps.machineId(), at: new Date().toISOString(),
+    });
+    pin(reply.body.messageId);
+    pin(quoted.body.messageId);
     enrolled.add(key);
     const acceptedHistory = await send('GET', `/mobile/chat/app/${key}/messages`);
     expect(acceptedHistory.status, JSON.stringify(acceptedHistory.body)).toBe(200);
     expect(acceptedHistory.headers['cache-control']).toBe('no-store');
     expect(acceptedHistory.body.messages.map((row: { eventId: string }) => row.eventId)).not.toContain(target);
     expect(acceptedHistory.body).not.toHaveProperty('displayForMs');
+    expect(acceptedHistory.body.pins).toEqual([
+      expect.objectContaining({ messageId: quoted.body.messageId, preview: 'Thanks for the details.' }),
+    ]);
+
     const acceptedSync = await send('GET', `/mobile/chat/app/${key}/events`);
     expect(acceptedSync.status, JSON.stringify(acceptedSync.body)).toBe(200);
     expect(acceptedSync.body.epoch).toBe(acceptedHistory.body.epoch);

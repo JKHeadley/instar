@@ -1,3 +1,4 @@
+import { pinRowsFor } from '../core/ConversationPins.js';
 import type { BrowsedMessage } from '../core/AppConversationStore.js';
 import type { Request } from 'express';
 import type { AppConversationService } from '../core/AppConversationService.js';
@@ -64,7 +65,7 @@ export async function executeOwnerRemovalSync(req: Request, pairing: MobilePairi
 /** Private first history page. A history read cannot renew the sync display deadline. */
 export async function executeOwnerRemovalHistory(req: Request, pairing: MobilePairingService,
   service: AppConversationService, evidence: Parameters<typeof resolveOwnerRemovalSyncAuthority>[3],
-  codec: ReturnType<typeof createRemovalSyncCursorCodec>): Promise<{ status: number; body: Record<string, unknown> }> {
+  codec: ReturnType<typeof createRemovalSyncCursorCodec>, includePins = false): Promise<{ status: number; body: Record<string, unknown> }> {
   try {
     const initial = resolveOwnerRemovalSyncAuthority(req, pairing, service, evidence);
     if (!initial.ok) return { status: initial.status, body: { error: initial.error } };
@@ -81,6 +82,16 @@ export async function executeOwnerRemovalHistory(req: Request, pairing: MobilePa
     if (reader?.role !== 'owner') return { status: 404, body: { error: 'unknown-conversation' } };
     const page = service.store.readPreparedRemovalHistory(conversationKey, null, 100);
     if (!page || page.messages.some((row) => !pairing.mayReadStored(reader, conversationKey, row))) return unavailable;
+    const previews = new Map<string, string>();
+    const pins = includePins ? pinRowsFor({
+      listPins: (key) => service.store.listPins(key).map((pin) => ({ ...pin, preview: null })),
+    }, conversationKey, (messageId) => {
+      const rows = service.store.exactRemovalAwareMessageCandidates(conversationKey, messageId, 'message',
+        (row) => pairing.mayReadStored(reader, conversationKey, row));
+      if (rows?.length !== 1) return false;
+      previews.set(messageId, rows[0]!.text);
+      return true;
+    }, (messageId) => previews.get(messageId) ?? null) : undefined;
     const final = resolveOwnerRemovalSyncAuthority(req, pairing, service, evidence);
     if (!final.ok) return { status: final.status, body: { error: final.error } };
     if (codec.epochFor(final.authority) !== epoch) return { status: 409, body: { error: 'message-removal-sync-reset' } };
@@ -88,6 +99,7 @@ export async function executeOwnerRemovalHistory(req: Request, pairing: MobilePa
 
     return { status: 200, body: {
       conversationKey, epoch, hasOlder: page.nextBefore !== null,
+      ...(pins ? { pins } : {}),
       messages: page.messages.map(({ eventId, messageId, text, at, role }) => ({ eventId, messageId, text, at, role })),
     } };
   } catch {

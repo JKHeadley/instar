@@ -236,3 +236,5 @@ On the isolated server, link issuance derives its conversation key from the vali
 The isolated reply-preview route selects the requested reply bases and quoted originals under one prepared removal snapshot. It checks the same signed epoch as history and sync. A removed base is indistinguishable from an absent base. A surviving base whose original has been removed returns the established unavailable quote state without original text or target identifiers.
 
 The isolated notification-preview route reads an exact agent message by message ID under the signed custodian proof. A removed target and a missing one produce the same unavailable response. Bearer and notification-only credentials cannot authorize this acceptance path. Before production enrollment, verify the generic fallback for notifications that lack a current signed owner read.
+
+In isolated protected history, a pin only appears if its exact message ID resolves to a surviving readable App row under the page's prepared custodian proof. Rebuild preview text from that row. Do not reuse the saved pin preview. Loss of the page proof prevents delivery of the entire history response, including pins.
