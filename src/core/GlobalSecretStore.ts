@@ -1,3 +1,4 @@
+import { withSyncOp } from './InFlightSyncOpMarker.js';
 /**
  * Global encrypted secret store — lives at ~/.instar/secrets/ to survive repo nukes.
  *
@@ -25,6 +26,7 @@
  *   }
  */
 
+import { writeMacKeychainKey } from './macKeychainWrite.js';
 import crypto from 'node:crypto';
 import fs from 'node:fs';
 import path from 'node:path';
@@ -401,12 +403,12 @@ export class GlobalSecretStore {
     if (process.platform !== 'darwin') return null;
 
     try {
-      const result = this.exec('security', [
+      const result = withSyncOp(() => this.exec('/usr/bin/security', [
         'find-generic-password',
         '-s', KEYCHAIN_SERVICE,
         '-a', KEYCHAIN_ACCOUNT,
         '-w',
-      ], { encoding: 'utf-8', timeout: 5000, stdio: ['pipe', 'pipe', 'pipe'] }).trim();
+      ], { encoding: 'utf-8', timeout: 5000, stdio: ['pipe', 'pipe', 'pipe'] })).trim();
       return Buffer.from(result, 'base64');
     } catch {
       // @silent-fallback-ok — fallback to local store when global unavailable
@@ -418,25 +420,7 @@ export class GlobalSecretStore {
     if (process.platform !== 'darwin') return false;
 
     try {
-      // Delete existing entry first
-      try {
-        this.exec('security', [
-          'delete-generic-password',
-          '-s', KEYCHAIN_SERVICE,
-          '-a', KEYCHAIN_ACCOUNT,
-        ], { stdio: 'pipe', timeout: 5000 });
-      } catch {
-        // @silent-fallback-ok — fallback to local store when global unavailable
-        // Entry may not exist
-      }
-
-      this.exec('security', [
-        'add-generic-password',
-        '-s', KEYCHAIN_SERVICE,
-        '-a', KEYCHAIN_ACCOUNT,
-        '-w', key.toString('base64'),
-      ], { stdio: 'pipe', timeout: 5000 });
-      return true;
+      return writeMacKeychainKey(this.exec, () => this.readKeychain(), KEYCHAIN_SERVICE, KEYCHAIN_ACCOUNT, key);
     } catch {
       // @silent-fallback-ok — fallback to local store when global unavailable
       return false;

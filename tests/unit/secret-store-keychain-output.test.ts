@@ -14,8 +14,7 @@ it.each(['darwin', 'linux'] as const)('reports a failed %s keychain write withou
   const report = vi.spyOn(DegradationReporter.getInstance(), 'report').mockImplementation(() => {});
   const syntheticKey = Buffer.alloc(32, 7);
   const syntheticOutput = 'SYNTHETIC_KEYCHAIN_OUTPUT';
-  run.mockReset().mockImplementation((_binary, args: string[]) => {
-    if (args[0] === 'delete-generic-password') return Buffer.alloc(0);
+  run.mockReset().mockImplementation(() => {
     throw new Error(`Synthetic failure: ${syntheticKey.toString('base64')}: ${syntheticOutput}`);
   });
   try {

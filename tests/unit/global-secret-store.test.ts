@@ -329,16 +329,18 @@ describe('GlobalSecretStore keychain generation guard', () => {
     // Platform-agnostic: macOS `security` + Linux `secret-tool` (CI runners)
     const exec = ((cmd: string, args?: readonly string[], opts?: { input?: string }) => {
       const a = [...(args ?? [])];
-      if (cmd === 'security') {
+      if (cmd === '/usr/bin/security' && a[0] === 'find-generic-password') {
         const account = a[a.indexOf('-a') + 1];
-        if (a[0] === 'find-generic-password') {
-          const found = entries.get(account);
-          if (!found) throw new Error('not found');
-          return found.toString('base64');
-        }
-        if (a[0] === 'delete-generic-password') { entries.delete(account); return ''; }
-        if (a[0] === 'add-generic-password') { entries.set(account, Buffer.from(a[a.indexOf('-w') + 1], 'base64')); return ''; }
-        throw new Error(`unsupported op: ${a[0]}`);
+        const found = entries.get(account);
+        if (!found) throw new Error('not found');
+        return found.toString('base64');
+      }
+      if (cmd === '/usr/bin/security' && a.join(' ') === '-q -i') {
+        const input = String(opts?.input ?? '');
+        const parsed = /^add-generic-password -U -s "[^"]+" -a "([^"]+)" -w ([A-Za-z0-9+/=]+)\n$/.exec(input);
+        if (!parsed) throw new Error('unsupported keychain input');
+        entries.set(parsed[1], Buffer.from(parsed[2], 'base64'));
+        return '';
       }
       if (cmd === 'secret-tool') {
         const account = a[a.indexOf('account') + 1];

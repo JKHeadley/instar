@@ -1,0 +1,27 @@
+{
+  "ts": "2026-11-26T17:28:32.963Z",
+  "slug": "mac-keychain-master-key-private-input",
+  "suggestedTier": 2,
+  "declaredTier": 1,
+  "riskFloor": 2,
+  "riskFloorReasons": [
+    "safety-invariant proximity: src/core/GlobalSecretStore.ts matches SecretDrop / never-on-disk invariant",
+    "safety-invariant proximity: src/core/SecretStore.ts matches SecretDrop / never-on-disk invariant"
+  ],
+  "belowFloor": true,
+  "files": 3,
+  "loc": 71,
+  "scope": {
+    "basis": "staged-in-scope-paths-including-deleted",
+    "files": [
+      "src/core/GlobalSecretStore.ts",
+      "src/core/SecretStore.ts",
+      "src/core/macKeychainWrite.ts"
+    ],
+    "addedLines": 31,
+    "deletedLines": 40
+  },
+  "causalAutopsy": null,
+  "classClosure": null,
+  "verdict": "pass"
+}
