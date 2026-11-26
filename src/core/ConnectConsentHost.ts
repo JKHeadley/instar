@@ -1,6 +1,14 @@
 import type { KeyObject } from 'node:crypto';
 import { ConnectConsentConnection, type ConnectCompanionPairing } from './ConnectConsentConnection.js';
 
+export interface ConnectConsentHostHandle {
+  readonly generation: string;
+  readonly challenge: Buffer;
+  readonly signal: AbortSignal;
+  admit(proof: Buffer): boolean;
+  current(): boolean;
+}
+
 interface ConnectionSlot {
   readonly lifetime: AbortController;
   readonly connection: ConnectConsentConnection;
@@ -14,12 +22,7 @@ export class ConnectConsentHost {
   #replacing = false;
 
   open(pairing: ConnectCompanionPairing, key: KeyObject, transport: AbortSignal,
-      pairingStillCurrent: () => boolean): {
-    readonly challenge: Buffer;
-    readonly signal: AbortSignal;
-    admit(proof: Buffer): boolean;
-    current(): boolean;
-  } | undefined {
+      pairingStillCurrent: () => boolean): ConnectConsentHostHandle | undefined {
     if (this.#closed || this.#replacing || this.#pending || transport.aborted) return;
     const lifetime = new AbortController();
     const connection = new ConnectConsentConnection(pairing, key, pairingStillCurrent, lifetime.signal);
@@ -37,6 +40,7 @@ export class ConnectConsentHost {
     lifetime.signal.addEventListener('abort', () => clearTimeout(expiry), { once: true });
     const ownsSlot = () => !this.#replacing && this.#slot === slot && !lifetime.signal.aborted;
     return {
+      generation: connection.generation,
       challenge: connection.challengeTranscript(),
       signal: lifetime.signal,
       admit: proof => {

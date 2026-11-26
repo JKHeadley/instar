@@ -8,18 +8,19 @@ export interface ConnectViewerConsent extends ConnectViewerBinding {
 
 /** In-memory grant created only by the trusted local consent caller. */
 export class ConnectViewerSession {
-  readonly id = randomUUID();
+  readonly id: string;
   readonly consent: ConnectViewerConsent;
   readonly #controller = new AbortController();
   readonly #timer: ReturnType<typeof setTimeout>;
   #attached = false;
   readonly #onConnectionClose = () => this.stop();
 
-  constructor(consent: ConnectViewerConsent, private readonly connection?: AbortSignal) {
+  constructor(consent: ConnectViewerConsent, private readonly connection?: AbortSignal, id: string = randomUUID()) {
     const remaining = consent.expiresAt - Date.now();
     if (!Number.isSafeInteger(consent.expiresAt) || remaining <= 0 || remaining > 15 * 60_000) {
       throw new RangeError('Invalid Look only consent expiry');
     }
+    this.id = id;
     this.consent = Object.freeze({ ...consent });
     this.#timer = setTimeout(() => this.stop(), remaining).unref();
     if (connection?.aborted) this.stop();

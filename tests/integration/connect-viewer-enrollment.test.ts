@@ -35,19 +35,30 @@ it('keeps the route dark and enrollment scoped to the issuing process', async ()
   await request(app).post(path).send(body).expect(204);
   expect(authority.viewer(keyDigest)?.binding).toEqual(binding);
   await request(app).post(path).send(body).expect(403);
-  const grant = authority.grant({ ...binding, displayId: 'primary', expiresAt: Date.now() + 10_000 });
-  const attachProof = connectViewerAttachMessage(grant!);
+  const lifetime = new AbortController();
+  const connection = {
+    generation: '01'.repeat(32), challenge: Buffer.alloc(0), signal: lifetime.signal,
+    current: () => !lifetime.signal.aborted, admit: () => false,
+  };
+  const pending = { generation: connection.generation, sessionId: 'ab'.repeat(16) };
+  const grant = (displayId: string, expiresAt: number) =>
+    authority.grant({ ...binding, displayId, expiresAt }, pending, connection);
+  expect(authority.grant({ ...binding, displayId: 'primary', expiresAt: Date.now() + 10_000 },
+    { ...pending, generation: '02'.repeat(32) }, connection)).toBeUndefined();
+  const active = grant('primary', Date.now() + 10_000);
+  expect(active?.id).toBe(pending.sessionId);
+  const attachProof = connectViewerAttachMessage(active!);
   let attachSignature = sign('sha256', attachProof, privateKey);
   while (!isStrictLowSDer(attachSignature)) attachSignature = sign('sha256', attachProof, privateKey);
-  expect(authority.attach(keyDigest, grant!.id, body.signature)).toBeUndefined();
-  const stream = authority.attach(keyDigest, grant!.id, attachSignature.toString('base64url'));
-  expect(authority.attach(keyDigest, grant!.id, attachSignature.toString('base64url'))).toBeUndefined();
+  expect(authority.attach(keyDigest, active!.id, body.signature)).toBeUndefined();
+  const stream = authority.attach(keyDigest, active!.id, attachSignature.toString('base64url'));
+  expect(authority.attach(keyDigest, active!.id, attachSignature.toString('base64url'))).toBeUndefined();
   expect(stream?.aborted).toBe(false);
-  expect(() => authority.grant({ ...binding, displayId: 'primary', expiresAt: 0 })).toThrow(RangeError);
+  expect(() => grant('primary', 0)).toThrow(RangeError);
   expect(stream?.aborted).toBe(false);
   stream!.addEventListener('abort', () => authority.revoke(keyDigest), { once: true });
-  expect(authority.grant({ ...binding, displayId: 'replacement', expiresAt: Date.now() + 10_000 })).toBeUndefined();
-  expect(authority.grant({ ...binding, displayId: 'replacement', expiresAt: Date.now() + 10_000 })).toBeUndefined();
+  expect(grant('replacement', Date.now() + 10_000)).toBeUndefined();
+  expect(grant('replacement', Date.now() + 10_000)).toBeUndefined();
   expect(stream?.aborted).toBe(true);
   expect(authority.viewer(keyDigest)).toBeUndefined();
 });

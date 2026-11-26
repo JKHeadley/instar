@@ -1,3 +1,4 @@
+import type { ConnectConsentHostHandle } from './ConnectConsentHost.js';
 import { verify } from 'node:crypto';
 import { isStrictLowSDer, parseDevicePublicKey } from './MobileDeviceKeys.js';
 import { ConnectViewerEnrollment, type ConnectViewerBinding } from './ConnectViewerEnrollment.js';
@@ -48,17 +49,20 @@ export class ConnectViewerAuthority {
   }
 
   /** Only the trusted local consent surface calls this after showing the exact viewer and display. */
-  grant(consent: ConnectViewerConsent, connection?: AbortSignal): ConnectViewerSession | undefined {
+  grant(consent: ConnectViewerConsent, pending: { sessionId: string; generation: string },
+      connection: ConnectConsentHostHandle): ConnectViewerSession | undefined {
     const viewer = this.#viewers.get(consent.keyDigest);
-    if (connection?.aborted || !viewer || viewer.binding.agentId !== consent.agentId ||
+    if (connection.generation !== pending.generation || !/^[a-f0-9]{32}$/.test(pending.sessionId) ||
+        connection.signal.aborted || !connection.current() || connection.signal.aborted ||
+        this.#viewers.get(consent.keyDigest) !== viewer || !viewer || viewer.binding.agentId !== consent.agentId ||
         viewer.binding.targetMachineId !== consent.targetMachineId) return;
-    const session = new ConnectViewerSession(consent, connection);
+    const session = new ConnectViewerSession(consent, connection.signal, pending.sessionId);
     const keyDigest = session.consent.keyDigest;
     const previous = this.#sessions.get(keyDigest);
     // Abort listeners run synchronously and may revoke this viewer or replace this grant.
     this.#sessions.set(keyDigest, session);
     previous?.stop();
-    return !connection?.aborted && this.#viewers.get(keyDigest) === viewer && this.#sessions.get(keyDigest) === session ? session : undefined;
+    return !connection.signal.aborted && this.#viewers.get(keyDigest) === viewer && this.#sessions.get(keyDigest) === session ? session : undefined;
   }
 
   attach(keyDigest: string, sessionId: string, signature: string): AbortSignal | undefined {
