@@ -37,3 +37,58 @@ it('runs the pinned executable and requires the dependency inside the checkout',
   fs.cpSync(path.join(root, 'node_modules'), path.join(cwd, 'node_modules'), { recursive: true });
   expect(probe().stdout.trim()).toBe(process.execPath);
 });
+
+it('requires the direct smoke retry to report the selected failed file and its executed test', () => {
+  const files = [
+    'tests/unit/worker.test.ts',
+    'tests/integration/local-verify-routes.test.ts',
+    'tests/integration/local-verify-peer-routes.test.ts',
+  ];
+  for (const relative of files) {
+    const file = path.join(cwd, relative);
+    fs.mkdirSync(path.dirname(file), { recursive: true });
+    fs.writeFileSync(file, relative.startsWith('tests/unit') ? "import '../../src/localVerify/worker.js';" : '');
+  }
+  fs.writeFileSync(path.join(root, 'git'), `#!/bin/sh
+case "$1" in
+  diff) echo src/localVerify/worker.ts ;;
+  status) ;;
+  ls-files) printf '%s\\0' ${files.join(' ')} ;;
+  *) echo fake-ref ;;
+esac
+`, { mode: 0o755 });
+  fs.writeFileSync(path.join(root, 'npx'), `#!/usr/bin/env node
+const fs = require('node:fs');
+const path = require('node:path');
+const args = process.argv.slice(2);
+const files = ${JSON.stringify(files)}.map(file => path.resolve(file));
+const reportArg = args.find(arg => arg.startsWith('--json=') || arg.startsWith('--outputFile.json='));
+const report = reportArg.slice(reportArg.indexOf('=') + 1);
+if (args[1] === 'list') {
+  fs.writeFileSync(report, JSON.stringify(files.map(file => args.includes('--filesOnly') ? { file } : { file, name: 'case' })));
+} else {
+  const retry = report.endsWith('vitest-retry-results.json');
+  const results = retry ? (process.env.ECHO_MOCK_EMPTY_RETRY ? [] : [files[0]]) : files;
+  fs.writeFileSync(report, JSON.stringify({
+    testResults: results.map(file => {
+      const status = !retry && file === files[0] ? 'failed' : 'passed';
+      return { name: file, status, assertionResults: [{ status }] };
+    }),
+  }));
+  if (!retry) process.exitCode = 1;
+}
+`, { mode: 0o755 });
+
+  function smoke(emptyRetry: boolean) {
+    return spawnSync(process.execPath, [path.resolve('scripts/pre-push-smoke.mjs')], {
+      cwd, encoding: 'utf8', env: {
+        ...process.env, PATH: root + path.delimiter + process.env.PATH,
+        ECHO_MOCK_EMPTY_RETRY: emptyRetry ? '1' : '',
+      },
+    });
+  }
+  expect(smoke(false).status).toBe(0);
+  const missing = smoke(true);
+  expect(missing.status).toBe(1);
+  expect(missing.stderr).toContain('Direct smoke retry did not contain the expected files and case counts');
+});

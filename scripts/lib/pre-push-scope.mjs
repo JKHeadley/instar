@@ -93,6 +93,53 @@ export function changedFilesSince(baseRef, opts = {}) {
     .filter(Boolean);
 }
 
+export const LOCAL_VERIFY_SMOKE_SOURCE = 'src/localVerify/';
+export const LOCAL_VERIFY_SMOKE_TEST = /^tests\/(unit|integration|e2e)\/(?:localVerify\/|local-verify-)/;
+export const LOCAL_VERIFY_SMOKE_LADDER = 'src/data/feature-ladders.json';
+
+export function supportsDirectSmoke(changed) {
+  const source = LOCAL_VERIFY_SMOKE_SOURCE;
+  const notes = /^(?:docs\/specs\/|upgrades\/(?:next|side-effects)\/|\.instar\/instar-dev-(?:traces|decisions)\/|src\/data\/awareness\/local-verify-)/;
+  return changed.some(file => file.startsWith(source)) && changed.every(file =>
+    file.startsWith(source) || file === LOCAL_VERIFY_SMOKE_LADDER || LOCAL_VERIFY_SMOKE_TEST.test(file) || notes.test(file));
+}
+
+export function directSmokeCheckoutClean(opts = {}) {
+  try {
+    return (opts.git ?? git)(['status', '--porcelain', '--untracked-files=all'], opts) === '';
+  } catch {
+    return false;
+  }
+}
+
+export function trackedDirectSmokeTests(opts = {}) {
+  try {
+    const result = (opts.git ?? git)(['ls-files', '-z', '--', 'tests'], opts);
+    return new Set(result.split('\0').filter(Boolean));
+  } catch {
+    return null;
+  }
+}
+
+export function directSmokeReportMatches(jsonText, expectedCounts) {
+  try {
+    const results = JSON.parse(jsonText).testResults;
+    if (!Array.isArray(results) || results.length !== expectedCounts.size) return false;
+    const seen = new Set();
+    for (const result of results) {
+      const file = path.normalize(result.name);
+      const expected = expectedCounts.get(file);
+      if (!expected || seen.has(file) || !Array.isArray(result.assertionResults)
+        || result.assertionResults.length !== expected.cases
+        || (expected.mustExecute && !result.assertionResults.some(test => test.status === 'passed' || test.status === 'failed'))) return false;
+      seen.add(file);
+    }
+    return true;
+  } catch {
+    return false;
+  }
+}
+
 export function readSmokeLimits(env = process.env) {
   return {
     maxChangedFiles: Number.parseInt(env.INSTAR_PRE_PUSH_SMOKE_MAX_CHANGED_FILES ?? '', 10) || DEFAULT_SMOKE_LIMITS.maxChangedFiles,
@@ -123,7 +170,7 @@ export function evaluateSmokeBreadth({ changedFileCount, testFileCount, testCase
   return { skip: false, reason: 'within local smoke caps' };
 }
 
-export function summarizeVitestListJson(jsonText) {
+export function summarizeVitestListJson(jsonText, { includePaths = false } = {}) {
   const text = String(jsonText);
   if (text.trim().length === 0) {
     throw new Error('Vitest list JSON is empty');
@@ -140,7 +187,7 @@ export function summarizeVitestListJson(jsonText) {
     throw new Error('Vitest list JSON must be an array');
   }
 
-  const files = new Set();
+  const files = new Map();
   for (const [index, entry] of parsed.entries()) {
     if (!entry || typeof entry !== 'object' || Array.isArray(entry)) {
       throw new Error(`Vitest list entry ${index} must be an object`);
@@ -157,10 +204,11 @@ export function summarizeVitestListJson(jsonText) {
       throw new Error(`Vitest list entry ${index} has an invalid absolute file path`);
     }
 
-    files.add(path.normalize(entry.file));
+    const file = path.normalize(entry.file);
+    files.set(file, (files.get(file) ?? 0) + 1);
   }
 
-  return { testCaseCount: parsed.length, testFileCount: files.size };
+  return { testCaseCount: parsed.length, testFileCount: files.size, ...(includePaths ? { files: [...files.keys()].sort(), casesByFile: Object.fromEntries(files) } : {}) };
 }
 
 /**
@@ -169,7 +217,7 @@ export function summarizeVitestListJson(jsonText) {
  * change reaches — the full listing (which collects every test case) is only run
  * once this count is under the smoke cap.
  */
-export function summarizeVitestFilesOnlyJson(jsonText) {
+export function summarizeVitestFilesOnlyJson(jsonText, { includePaths = false } = {}) {
   const text = String(jsonText);
   if (text.trim().length === 0) throw new Error('Vitest files-only list JSON is empty');
   let parsed;
@@ -189,7 +237,7 @@ export function summarizeVitestFilesOnlyJson(jsonText) {
     }
     files.add(path.normalize(entry.file));
   }
-  return { testFileCount: files.size };
+  return { testFileCount: files.size, ...(includePaths ? { files: [...files].sort() } : {}) };
 }
 
 export function evaluateAffectedSmokeSelection(

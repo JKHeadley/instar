@@ -1,0 +1,25 @@
+{
+  "ts": "2026-11-26T20:28:48.950Z",
+  "slug": "direct-local-verify-smoke",
+  "suggestedTier": 2,
+  "declaredTier": 2,
+  "riskFloor": 1,
+  "riskFloorReasons": [],
+  "belowFloor": false,
+  "files": 4,
+  "loc": 227,
+  "scope": {
+    "basis": "staged-in-scope-paths-including-deleted",
+    "files": [
+      "scripts/lib/pre-push-direct.mjs",
+      "scripts/lib/pre-push-scope.mjs",
+      "scripts/pre-push-smoke.mjs",
+      "src/data/feature-ladders.json"
+    ],
+    "addedLines": 204,
+    "deletedLines": 23
+  },
+  "causalAutopsy": null,
+  "classClosure": null,
+  "verdict": "blocked"
+}
