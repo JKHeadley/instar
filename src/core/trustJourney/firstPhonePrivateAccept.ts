@@ -1,3 +1,5 @@
+export const FIRST_PHONE_PRIVATE_CALLBACK = /^first-phone:[A-Za-z0-9_-]{22,52}$/;
+
 interface FirstPhonePrivateOffer {
   callbackData: string;
   chatId: string;
@@ -10,7 +12,7 @@ interface FirstPhonePrivateOffer {
   expiresAt: number;
 }
 
-interface AuthenticatedPrivateTap {
+export interface AuthenticatedPrivateTap {
   callbackData: string;
   senderId: string;
   senderIsBot: boolean;
@@ -29,7 +31,7 @@ export function matchesFirstPhonePrivateAccept(
   current: { ownerId: string; accountAcceptanceId: string; holderEpoch: string; proposalHash: string; firstAcceptanceKey: string | null },
   now: number,
 ): boolean {
-  return /^first-phone:[A-Za-z0-9_-]{22,52}$/.test(offer.callbackData)
+  return FIRST_PHONE_PRIVATE_CALLBACK.test(offer.callbackData)
     && tap.callbackData === offer.callbackData
     && tap.chatType === 'private' && tap.senderIsBot === false
     && tap.senderId === current.ownerId && tap.chatId === current.ownerId && offer.chatId === tap.chatId

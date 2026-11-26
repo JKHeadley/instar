@@ -1,3 +1,4 @@
+import { FIRST_PHONE_PRIVATE_CALLBACK, type AuthenticatedPrivateTap } from '../core/trustJourney/firstPhonePrivateAccept.js';
 import { categoryForAttention } from './notificationCategories.js';
 import { notificationStamper, responseNotificationStamper, withNotificationEnvelope } from './notificationStampers.js';
 const stampNotification = notificationStamper('src/messaging/TelegramAdapter.ts');
@@ -320,10 +321,14 @@ interface TelegramUpdate {
   };
   callback_query?: {
     id: string;
-    from: { id: number; first_name: string; username?: string };
+    from: { id: number; first_name: string; username?: string; is_bot?: boolean };
     message?: {
       message_id: number;
-      chat: { id: number };
+      date?: number;
+      chat: { id: number; type?: string };
+      forward_origin?: unknown;
+      forward_date?: number;
+      is_automatic_forward?: boolean;
       message_thread_id?: number;
     };
     data?: string;
@@ -1382,6 +1387,9 @@ export class TelegramAdapter implements MessagingAdapter {
    * refused message is never reported as delivered (Echo Bugs 10000002533). senderId 0 = unverified.
    */
   isInboundRefused: ((topicId: number, senderId: number) => boolean) | null = null;
+
+  /** Private first-phone nomination ingress. No service composition installs it yet. */
+  onFirstPhonePrivateAccept: ((receiptId: string, tap: AuthenticatedPrivateTap) => Promise<boolean>) | null = null;
 
   /** Chief of Staff (docs/specs/chief-of-staff-topic.md §3): an owner tap on a `cos:` button; set by the server with the loop. */
   onChiefOfStaffTap: ((tap: { data: string; fromUserId: number; callbackQueryId: string; chatId?: string; messageId?: number }) => Promise<'ok' | 'ignored' | 'paused' | 'resumed' | 'recheck-failed' | 'write-failed'>) | null = null;
@@ -6679,7 +6687,7 @@ export class TelegramAdapter implements MessagingAdapter {
   private async processUpdateDelivered(update: TelegramUpdate): Promise<void> {
     // Handle callback queries from inline keyboard buttons (Prompt Gate)
     if (update.callback_query) {
-      await this.processCallbackQuery(update.callback_query);
+      await this.processCallbackQuery(update.callback_query, 'direct-poll');
       return;
     }
 
@@ -7452,10 +7460,39 @@ export class TelegramAdapter implements MessagingAdapter {
     await this.processCallbackQuery(query);
   }
 
-  /**
-   * Handle a Telegram callback query from an inline keyboard button press.
-   */
-  private async processCallbackQuery(query: NonNullable<TelegramUpdate['callback_query']>): Promise<void> {
+  /** Pass only direct, private callback evidence to the nomination authority. */
+  private async processFirstPhonePrivateAccept(query: NonNullable<TelegramUpdate['callback_query']>): Promise<void> {
+    const owner = this.getVerifiedOwner();
+    const message = query.message;
+    const callbackData = query.data;
+    const handle = this.onFirstPhonePrivateAccept;
+    if (!handle || !owner || query.from.id !== owner || query.from.is_bot !== false
+      || !message || message.chat.type !== 'private' || message.chat.id !== owner || message.forward_origin !== undefined
+      || message.forward_date !== undefined || message.is_automatic_forward === true
+      || !Number.isSafeInteger(message.message_id) || message.message_id <= 0 || typeof message.date !== 'number'
+      || !Number.isSafeInteger(message.date) || message.date <= 0
+      || !callbackData || !FIRST_PHONE_PRIVATE_CALLBACK.test(callbackData)) {
+      await this.answerCallback(query.id, 'This enrollment is unavailable.');
+      return;
+    }
+    let accepted = false;
+    try {
+      accepted = await handle(query.id, {
+        callbackData, senderId: String(owner), senderIsBot: false, chatId: String(message.chat.id),
+        chatType: 'private', messageId: message.message_id, receivedAt: Date.now(),
+      });
+    } catch {
+      console.warn('[telegram] first-phone nomination handler failed');
+    }
+    await this.answerCallback(query.id, accepted ? 'Continue in Instar on the nominated iPhone.' : 'This enrollment is unavailable.');
+  }
+
+  private async processCallbackQuery(query: NonNullable<TelegramUpdate['callback_query']>, source?: 'direct-poll'): Promise<void> {
+    if (query.data?.startsWith('first-phone:')) {
+      if (source === 'direct-poll') await this.processFirstPhonePrivateAccept(query);
+      else await this.answerCallback(query.id, 'This enrollment is unavailable.');
+      return;
+    }
     normalizeInboundThread(query.message as { chat?: { id?: number }; message_thread_id?: number } | undefined, this.topicSpace());
     if (!query.data) {
       await this.apiCall('answerCallbackQuery', {
