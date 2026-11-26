@@ -1,0 +1,57 @@
+{
+  "version": 3,
+  "slug": "local-verify-vitest-snapshot-rpc",
+  "sessionId": "1f52ddfa-542b-4f86-9d54-e7d5d9f38c43",
+  "timestamp": "2026-11-26T17:03:31.775Z",
+  "artifactPath": "upgrades/side-effects/local-verify-vitest-snapshot-rpc.md",
+  "artifactSha256": "0be2f7988f41c5a5f59b845ebbc8a5ab0170966f63240ce74b2e54a6506c460b",
+  "specPath": "docs/specs/local-verify-vitest-snapshot-rpc.md",
+  "coveredFiles": [
+    "docs/specs/local-verify-vitest-snapshot-rpc.eli16.md",
+    "docs/specs/local-verify-vitest-snapshot-rpc.md",
+    "docs/specs/reports/local-verify-vitest-snapshot-rpc-convergence.md",
+    "src/localVerify/orchestrator.ts",
+    "src/localVerify/unhandledErrorsReporter.ts",
+    "tests/unit/localVerify/orchestrator.test.ts",
+    "upgrades/next/local-verify-vitest-snapshot-rpc.md",
+    "upgrades/side-effects/local-verify-vitest-snapshot-rpc.md"
+  ],
+  "phase": "complete",
+  "tier": 2,
+  "tierReasoning": "Local Verify retry influences whether an existing verification executes again. Existing result evaluation retains verdict authority.",
+  "secondPass": "true",
+  "reviewerConcurred": true,
+  "toolchain": {
+    "buildSkill": {
+      "name": "build",
+      "version": null,
+      "verified": false
+    },
+    "reviewSkills": [
+      {
+        "name": "spec-converge",
+        "outcome": "complete",
+        "verified": false,
+        "iterations": 3
+      },
+      {
+        "name": "independent-source-review",
+        "outcome": "concurred",
+        "verified": false,
+        "iterations": 2
+      }
+    ],
+    "convergence": {
+      "reportPath": "docs/specs/reports/local-verify-vitest-snapshot-rpc-convergence.md",
+      "iterations": 3,
+      "verified": true
+    }
+  },
+  "causalAutopsy": {
+    "origin": "unknown",
+    "relatedPrs": [
+      3916
+    ],
+    "notes": "The preserved reporter records one snapshotSaved RPC timeout. Vitest 2.1.9 has a separate 60-second RPC timer. The preserved run cannot identify what delayed the acknowledgement."
+  }
+}

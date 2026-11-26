@@ -564,6 +564,46 @@ describe('runVerify — errors', () => {
 });
 
 describe('runVerify — failures', () => {
+  it.each([
+    { firstError: 'snapshotSaved', retry: 'clean', expectedRuns: 2, outcome: 'success' },
+    { firstError: 'snapshotSaved', retry: 'timeout', expectedRuns: 2, outcome: 'failure' },
+    { firstError: 'snapshotSaved', retry: 'assertion', expectedRuns: 2, outcome: 'failure' },
+    { firstError: 'snapshotSaved', retry: 'missing', expectedRuns: 2, outcome: 'failure' },
+    { firstError: 'snapshotSaved', retry: 'contradictory', expectedRuns: 2, outcome: 'failure' },
+    { firstError: 'onTaskUpdate', retry: 'clean', expectedRuns: 1, outcome: 'failure' },
+    { firstError: 'snapshotSaved', retry: 'dirty', expectedRuns: 1, outcome: 'failure' },
+    { firstError: 'snapshotSaved', retry: 'mixed', expectedRuns: 1, outcome: 'failure' },
+  ])('handles $firstError followed by $retry', async ({ firstError, retry, expectedRuns, outcome }) => {
+    const f = fake({ rerun: { 'tests/unit/a.test.ts': ['failed'] },
+      ...(retry === 'dirty' ? { porcelain: ' M tests/unit/__snapshots__/a.snap' } : {}) });
+    const originalExec = f.seams.exec;
+    const reports: string[] = [];
+    f.seams.exec = async (command, args, options) => {
+      const result = await originalExec(command, args, options);
+      const report = args.find((arg) => arg.startsWith('--outputFile='))?.slice('--outputFile='.length);
+      if (!args.includes('vitest.config.ts') || !report || args.includes('tests/unit/a.test.ts')) return result;
+      reports.push(report);
+      const errorReport = options.env.LOCAL_VERIFY_UNHANDLED_ERRORS_FILE!;
+      if (reports.length === 1 || retry === 'timeout') {
+        const method = reports.length === 1 ? firstError : 'snapshotSaved';
+        const messages = [`[vitest-worker]: Timeout calling "${method}"`];
+        if (retry === 'mixed') messages.push('Unhandled rejection in the test');
+        f.files.set(errorReport, JSON.stringify({ v: 1, unhandledErrors: messages.length, messages }));
+        return { ...result, status: 1 };
+      }
+      if (retry === 'missing') f.files.delete(errorReport);
+      if (retry === 'contradictory') f.files.set(errorReport, JSON.stringify({ v: 1, unhandledErrors: 0, messages: ['unhandled'] }));
+      if (retry === 'assertion') {
+        f.files.set(report, vitestReport('tests/unit/a.test.ts', ['failed']));
+        return { ...result, status: 1 };
+      }
+      return result;
+    };
+    expect(await runVerify(input(), f.seams)).toMatchObject({ kind: 'record', record: { outcome } });
+    expect(reports).toHaveLength(expectedRuns);
+    expect(new Set(reports).size).toBe(reports.length);
+  });
+
   it('a failed test that fails again on its isolation re-run is a failure and the worktree is kept', async () => {
     const r = await runVerify(input(), fake({ laneStatuses: { integration: ['passed', 'failed'] }, rerun: { 'tests/integration/b.test.ts': ['passed', 'failed'] } }).seams);
     expect(r.kind).toBe('record');
@@ -1836,6 +1876,54 @@ describe('runVerify — first parts on the shared fake (spec local-verify-likely
     expect(r.record.lanes.find((l) => l.name === 'unit')).toMatchObject({ files: 3, failed: 0 });
     const steps = f.logs.filter((l) => l.event === 'step').map((l) => l.step);
     expect(steps).toEqual(expect.arrayContaining(['unit-first', 'unit']));
+  });
+
+  it('spends only one snapshot retry across both unit parts without reducing the ordinary rest allowance', async () => {
+    const options = { laneFiles: { unit: UNIT }, diff: 'M\tsrc/index.ts\n' };
+    const runInput = input({ likelyFailingFirst: { setting: 'on', previous: [], list: ['tests/unit/b.test.ts'] } });
+    const baseline = fake(options);
+    await runVerify(runInput, baseline.seams);
+    const f = fake(options);
+    const exec = f.seams.exec;
+    f.seams.exec = async (command, args, opts) => {
+      const result = await exec(command, args, opts);
+      if (!args.includes('vitest.config.ts')) return result;
+      if (args.some((arg) => arg.endsWith('/unit-first.snapshot-retry.json'))) {
+        await f.seams.sleep(2 * MIN);
+        return result;
+      }
+      f.files.set(opts.env.LOCAL_VERIFY_UNHANDLED_ERRORS_FILE!, JSON.stringify({
+        v: 1, unhandledErrors: 1, messages: ['[vitest-worker]: Timeout calling "snapshotSaved"'],
+      }));
+      return { ...result, status: 1 };
+    };
+    expect(await runVerify(runInput, f.seams)).toMatchObject({ kind: 'record', record: { outcome: 'failure' } });
+    expect(f.logs.filter((row) => row.event === 'unit-snapshot-rpc-retry')).toEqual([
+      { event: 'unit-snapshot-rpc-retry', step: 'unit-first' },
+    ]);
+    const restBudget = (run: ReturnType<typeof fake>) => run.execCalls.find((call) => call.args.some((arg) => arg.endsWith('/unit.json')))?.deadlineMs;
+    expect(restBudget(f)).toBe(restBudget(baseline));
+  });
+
+  it('caps the snapshot retry at the total gate deadline', async () => {
+    const f = fake();
+    const exec = f.seams.exec;
+    f.seams.exec = async (command, args, opts) => {
+      const result = await exec(command, args, opts);
+      if (!args.includes('vitest.config.ts')) return result;
+      if (args.some((arg) => arg.endsWith('/unit.snapshot-retry.json'))) {
+        expect(opts.deadlineMs).toBeLessThan(20 * MIN);
+        return { ...result, status: null, deadlineKilled: true };
+      }
+      f.files.set(opts.env.LOCAL_VERIFY_UNHANDLED_ERRORS_FILE!, JSON.stringify({
+        v: 1, unhandledErrors: 1, messages: ['[vitest-worker]: Timeout calling "snapshotSaved"'],
+      }));
+      return { ...result, status: 1 };
+    };
+    const deadlines = { ...LOCAL_VERIFY_DEADLINES, totalActiveMs: 20 * MIN };
+    expect(await runVerify(input({ deadlines }), f.seams)).toMatchObject({
+      kind: 'record', record: { outcome: 'error', errorStep: 'deadline:total' },
+    });
   });
 });
 

@@ -1,0 +1,23 @@
+{
+  "ts": "2026-11-26T17:04:33.840Z",
+  "slug": "local-verify-vitest-snapshot-rpc",
+  "suggestedTier": 2,
+  "declaredTier": 2,
+  "riskFloor": 1,
+  "riskFloorReasons": [],
+  "belowFloor": false,
+  "files": 2,
+  "loc": 46,
+  "scope": {
+    "basis": "staged-in-scope-paths-including-deleted",
+    "files": [
+      "src/localVerify/orchestrator.ts",
+      "src/localVerify/unhandledErrorsReporter.ts"
+    ],
+    "addedLines": 38,
+    "deletedLines": 8
+  },
+  "causalAutopsy": null,
+  "classClosure": null,
+  "verdict": "blocked"
+}
