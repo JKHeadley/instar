@@ -1,3 +1,4 @@
+import { AppRemovalReadCustody } from '../../src/core/AppRemovalReadCustody.js';
 /**
  * HTTP pipeline for native app conversations (docs/specs/mobile-native-conversations.md,
  * increment 1): every route through the PRODUCTION auth middleware with the device
@@ -63,6 +64,7 @@ function setup(opts: Opts = {}) {
     mobilePairing: { native: { enabled: !opts.nativeOff, messageLinks: { enabled: opts.links }, quotedReplies: { enabled: opts.replies }, reactions: { enabled: opts.reactions }, forwards: { enabled: opts.forwards } }, multiRoute: { enabled: false } },
   };
   let removalWriterLock: SingleInstanceLock | null = null;
+  let removalReadCustody: AppRemovalReadCustody | undefined;
   const lease = opts.lease ?? { held: true };
   const recording = opts.recording ?? { on: true };
   const registry = new ConversationRegistry({ stateDir: dir, machineId: () => machineId, isRecordingEnabled: () => recording.on });
@@ -103,7 +105,7 @@ function setup(opts: Opts = {}) {
   if (opts.removalAdmissionProbe && svc) {
     app.post('/mobile/chat/app/:key/forward', async (req, res) => {
       if (opts.removalAdmissionProbe === 'execute') {
-        const result = await executeAppMessageRemoval(req, pairing, svc, removalWriterLock);
+        const result = await executeAppMessageRemoval(req, pairing, svc, removalWriterLock, Date.now, removalReadCustody);
         res.status(result.status).json(result.body);
         return;
       }
@@ -145,7 +147,8 @@ function setup(opts: Opts = {}) {
   const c = pairing.devices.createPending({ deviceName: 'iPhone', label: null, publicKey: dev.publicKey, host: HOST });
   if (!c.ok) throw new Error('setup');
   pairing.devices.applyConfirm(c.device.id, { ok: true });
-  return { app, dir, bindRemovalWriter(lock: SingleInstanceLock | null) { removalWriterLock = lock; }, svc: svc!, registry, bindAuth, dev, deviceId: c.device.id, dispatched, killed, stopEffects, lease, recording, pairing };
+  return { app, dir, bindRemovalWriter(lock: SingleInstanceLock | null) { removalWriterLock = lock; },
+    bindRemovalReadCustody(custody: AppRemovalReadCustody) { removalReadCustody = custody; }, svc: svc!, registry, bindAuth, dev, deviceId: c.device.id, dispatched, killed, stopEffects, lease, recording, pairing };
 }
 
 let tick = 0;
@@ -955,6 +958,34 @@ describe('private signed App message removal runtime', () => {
     return { e, key, lock, endpoint: `/mobile/chat/app/${key}/forward`,
       intent: { custodianMachineId: 'm1', eventId: 'one', requestId: rid() } };
   }
+
+  it('requires retained custody before reservation and rechecks it after preparation', async () => {
+    const { e, key, endpoint, intent } = await fixture();
+    const custody = new AppRemovalReadCustody(e.dir);
+    e.bindRemovalReadCustody(custody);
+    const reserve = vi.spyOn(e.svc.deps.requests, 'reserve');
+    expect((await signed(e, 'POST', endpoint, intent)).status).toBe(503);
+    expect(reserve).not.toHaveBeenCalled();
+    expect(custody.record(key, e.svc.store.getCreationRecord(key)!)).toBe(true);
+    const file = path.join(e.dir, 'state', 'app-removal-read-custody', `${key}.json`);
+    const retained = fs.readFileSync(file);
+    const prepare = e.svc.store.prepareRemovalHistory.bind(e.svc.store);
+    vi.spyOn(e.svc.store, 'prepareRemovalHistory').mockImplementationOnce(async (conversationKey) => {
+      const ready = await prepare(conversationKey);
+      fs.writeFileSync(file, '{"version":1}');
+      return ready;
+    });
+    expect((await signed(e, 'POST', endpoint, intent)).status).toBe(503);
+    expect(reserve).not.toHaveBeenCalled();
+    fs.writeFileSync(file, retained);
+    const success = await signed(e, 'POST', endpoint, intent);
+    expect(success.status).toBe(200);
+    expect((await signed(e, 'POST', endpoint, intent)).body).toEqual(success.body);
+    fs.writeFileSync(file, '{"version":1}');
+    const lost = await signed(e, 'POST', endpoint, intent);
+    expect(lost.status).toBe(503);
+    expect(lost.body).not.toHaveProperty('removalEventId');
+  });
 
   it('refuses missing and competing process locks and revalidates after proof preparation', async () => {
     const { e, lock, endpoint, intent } = await fixture();

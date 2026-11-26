@@ -308,6 +308,14 @@ describe('native app conversations — production wiring', () => {
     enrolled.add(key);
     const acceptedHistory = await send('GET', `/mobile/chat/app/${key}/messages`);
     expect(acceptedHistory.status, JSON.stringify(acceptedHistory.body)).toBe(200);
+    const stillDark = await send('POST', `/mobile/chat/app/${key}/message-removals`, {
+      custodianMachineId: server.appConversations!.deps.machineId(), eventId: quoted.body.eventId,
+      requestId: `${Date.now()}-${crypto.randomUUID()}`,
+    });
+    expect(stillDark.status).toBe(403);
+    expect(server.appConversations!.store.messageRemoval(key, quoted.body.eventId, quoted.body.messageId))
+      .toEqual({ eventId: null });
+
     const retainedCustody = new AppRemovalReadCustody(stateDir).observe(key);
     expect(retainedCustody).toMatchObject({ kind: 'recorded', record: {
       creationEventId: server.appConversations!.store.getCreationRecord(key)!.eventId,

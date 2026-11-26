@@ -258,3 +258,5 @@ The isolated bound-session file route uses the requested attachment ID under pre
 The isolated App conversation list withholds cached message preview text for enrolled rows and rows with uncertain enrollment. Apply the check to returned local and pooled rows, including pinned rows, after any peer wait. This checkpoint preserves existing list metadata and leaves authoritative preview reconstruction and routing for production work.
 
 The isolated standalone App pin list uses the same protected projection and signed exact custody checks as the pins embedded in history. It emits only the established pin list shape. Enrolled pin mutations remain unavailable pending separate removal-aware admission.
+
+The private signed writer can now require the retained exact creation binding in addition to the active writer lock. Verify it before request lookup, after proof preparation, and before reservation, append, or receipt delivery. Store the creation event with new retained-custody reservations and reject recovery without the same binding. If custody is lost after reservation, leave the effect unknown for recovery. No native write route is mounted by this checkpoint.

@@ -1,0 +1,23 @@
+{
+  "version": 2,
+  "slug": "app-message-delete-writer-retained-custody",
+  "sessionId": "633bd330-201e-4dc8-8fd9-72b89116167e",
+  "timestamp": "2026-11-26T04:56:40.017Z",
+  "artifactPath": "upgrades/side-effects/app-message-delete-writer-retained-custody.md",
+  "artifactSha256": "973371af79dbf98ccef743e34f53eddbedf5c2b75f112ecfa5a79d169b546624",
+  "specPath": "docs/specs/conversation-message-delete.md",
+  "coveredFiles": [
+    "docs/specs/conversation-message-delete.eli16.md",
+    "docs/specs/conversation-message-delete.md",
+    "src/server/mobileAppMessageRemoval.ts",
+    "src/server/mobileAppMessageRemovalAdmission.ts",
+    "tests/e2e/mobile-native-conversations-alive.test.ts",
+    "tests/integration/mobile-native-conversations.test.ts",
+    "upgrades/side-effects/app-message-delete-writer-retained-custody.md"
+  ],
+  "phase": "complete",
+  "tier": 2,
+  "tierReasoning": "Require retained exact creation custody around the private signed Delete writer",
+  "secondPass": "true",
+  "reviewerConcurred": true
+}

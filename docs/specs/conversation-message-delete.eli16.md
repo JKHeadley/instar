@@ -79,3 +79,5 @@ On the isolated server, a session can open a surviving attachment. An exact requ
 Protected chats stay in the isolated server’s conversation list. Their cached message previews are hidden until the server can build a preview from verified history.
 
 The isolated server now applies the same deleted-message check when the app asks for the pin list directly.
+
+The private deletion writer now has a check for the saved history assignment before it records or confirms a deletion. Production Delete still stays off.

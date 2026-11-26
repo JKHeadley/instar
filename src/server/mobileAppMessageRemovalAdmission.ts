@@ -15,6 +15,7 @@ type RemovalScope = {
   targetEventId: string;
   requestId: string;
   custodianMachineId: string;
+  creationEventId: string;
   requestActor: string;
   removalEventId: string;
 };
@@ -73,6 +74,7 @@ export function resolveAppMessageRemovalScope(req: Request, pairing: MobilePairi
     targetEventId: eventId,
     requestId,
     custodianMachineId,
+    creationEventId: creation.eventId,
     requestActor: `app-message-removal:${actorScope}`,
     removalEventId: derivedEventId('removed', JSON.stringify([machine, actorScope, requestId])),
   };
@@ -108,7 +110,7 @@ export function resolveFreshRemovalTarget(req: Request, pairing: MobilePairingSe
 
   const latest = resolveAppMessageRemovalScope(req, pairing, service);
   if (!latest.ok) return latest;
-  if (latest.requestActor !== scope.requestActor) return unavailable;
+  if (latest.requestActor !== scope.requestActor || latest.creationEventId !== scope.creationEventId) return unavailable;
   return { ...scope, targetMessageId: target.messageId, intentHash: removalIntentHash(scope, target.messageId) };
 }
 
