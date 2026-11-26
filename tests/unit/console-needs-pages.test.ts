@@ -1,6 +1,7 @@
 import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest';
 import { JSDOM } from 'jsdom';
 import { homeNeedsModel, mountNeedsStrip, needGroups, stripModel, STRIP_REFRESH_MS } from '../../dashboard/console/needs-strip.js';
+import { readHeaders } from '../../dashboard/console/needs-actions.js';
 
 const next = 'next+?=/';
 const first = 'first/';
@@ -27,6 +28,20 @@ describe('grouping Needs-you requests', () => {
     const groups = needGroups(rows);
     expect(groups.map(g => g.label)).toEqual(['Problems to check', 'Work that needs you', 'Plans to review', 'Other requests']);
     expect(groups.flatMap(g => g.rows)).toEqual(rows);
+  });
+});
+
+describe('Needs-you transport contract', () => {
+  it('sends the in-place contract on every Needs page without changing other reads', () => {
+    expect(readHeaders('/needs', 'owner-token')).toEqual({
+      Authorization: 'Bearer owner-token',
+      'X-Instar-Needs-Contract': 'in-place-v1',
+    });
+    expect(readHeaders('/needs?cursor=next', 'owner-token')).toEqual({
+      Authorization: 'Bearer owner-token',
+      'X-Instar-Needs-Contract': 'in-place-v1',
+    });
+    expect(readHeaders('/health', 'owner-token')).toEqual({ Authorization: 'Bearer owner-token' });
   });
 });
 

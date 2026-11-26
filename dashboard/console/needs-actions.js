@@ -1,5 +1,10 @@
 export const needsContractHeaders = Object.freeze({ 'X-Instar-Needs-Contract': 'in-place-v1' });
 
+export function readHeaders(path, token) {
+  const needs = typeof path === 'string' && path.split('?', 1)[0] === '/needs';
+  return { Authorization: `Bearer ${token}`, ...(needs ? needsContractHeaders : {}) };
+}
+
 const references = {
   approval: 'requestId',
   'approval-batch': 'disclosureId',

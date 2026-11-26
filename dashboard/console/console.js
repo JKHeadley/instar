@@ -14,7 +14,7 @@ import { GROUPS, legacyHref, icon, tabHref, LEGACY_DASHBOARD, isPhoneMode, pageP
 import { homeNeedsModel, mountNeedsStrip, stripModel } from './needs-strip.js';
 import { mountAgentHealthNote } from './agent-health-note.js';
 import { fillPartial } from './home-model.js';
-import { needsContractHeaders } from './needs-actions.js';
+import { readHeaders } from './needs-actions.js';
 import { renderPromises, topicLink } from './promises.js';
 import { renderMachines } from './machines.js';
 import { renderMachineCare } from './machine-care.js';
@@ -116,11 +116,11 @@ function toggleTheme() {
 const MIN_TIMEOUT_MS = 20000;
 const RETRY_DELAY_MS = 0; // retry at once: a timeout already waited MIN_TIMEOUT_MS
 async function getOnce(path, timeoutMs) {
-  const needs = path.split('?', 1)[0] === '/needs';
   const ctl = new AbortController();
   const t = setTimeout(() => ctl.abort(), timeoutMs);
   try {
-    const r = await fetch(path, { headers: { Authorization: `Bearer ${token}`, ...(needs ? needsContractHeaders : {}) }, signal: ctl.signal, cache: 'no-store' });
+    const r = await fetch(path, { headers: readHeaders(path, token), signal: ctl.signal, cache: 'no-store' });
+    const needs = path.split('?', 1)[0] === '/needs';
     if (needs && r.headers.has('X-Instar-Saved-At')) return failure('a current list was not available');
     if (r.status === 403 && needs) return { ...failure('the server answered 403'), status: r.status };
     if (r.status === 401 || r.status === 403) { signOut(); return { ...failure('not signed in'), status: r.status }; }
