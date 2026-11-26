@@ -13,7 +13,7 @@
  */
 import { createRemovalSyncCursorCodec } from '../../src/server/mobileAppRemovalSyncCursor.js';
 import { SingleInstanceLock } from '../../src/core/SingleInstanceLock.js';
-import { describe, it, expect, afterAll } from 'vitest';
+import { describe, it, expect, afterAll, vi } from 'vitest';
 import crypto from 'node:crypto';
 import fs from 'node:fs';
 import os from 'node:os';
@@ -316,6 +316,21 @@ describe('native app conversations — production wiring', () => {
     const acceptedSync = await send('GET', `/mobile/chat/app/${key}/events`);
     expect(acceptedSync.status, JSON.stringify(acceptedSync.body)).toBe(200);
     expect(acceptedSync.body.epoch).toBe(acceptedHistory.body.epoch);
+    const reactionFor = (eventId: string) => send('GET', `/mobile/chat/app/${key}/reactions?eventId=${encodeURIComponent(eventId)}`);
+    const removedReaction = await reactionFor(target);
+    const missingReaction = await reactionFor('missing-reaction-target');
+    expect(removedReaction.status).toBe(409);
+    expect(removedReaction.body).toEqual(missingReaction.body);
+    const survivingReaction = await reactionFor(quoted.body.eventId);
+    expect(survivingReaction.status).toBe(200);
+    expect(survivingReaction.body).toEqual({ eventId: quoted.body.eventId, own: { emoji: null, revision: 0 } });
+    const protectedReactionWrite = await send('PUT', `/mobile/chat/app/${key}/reactions`, {
+      eventId: target, emoji: null, expectedRevision: 0, requestId: `${Date.now()}-${crypto.randomUUID()}`,
+    });
+    expect(protectedReactionWrite.status).toBe(503);
+    expect(protectedReactionWrite.body).toEqual({ error: 'reactions-unavailable' });
+
+
     const removedNotificationPath = `/mobile/chat/app/${key}/preview/${encodeURIComponent(reply.body.messageId)}`;
     const removedNotification = await send('GET', removedNotificationPath);
     const missingNotification = await send('GET', `/mobile/chat/app/${key}/preview/missing-message-id`);
@@ -377,6 +392,22 @@ describe('native app conversations — production wiring', () => {
       .set('X-Instar-Device', deviceId).set('X-Instar-Notify-Token', notificationToken);
     expect(notifier.status).toBe(403);
     expect(notifier.body).not.toHaveProperty('body');
+
+    const store = server.appConversations!.store;
+    const readOwn = store.ownReaction.bind(store);
+    const reactionRace = vi.spyOn(store, 'ownReaction').mockImplementationOnce((...args) => {
+      store.append({
+        kind: 'message-removed', eventId: 'removal-during-reaction-read', conversationKey: key,
+        targetEventId: 'surviving-notification-event', targetMessageId: 'surviving-notification',
+        machineId: server.appConversations!.deps.machineId(), at: new Date().toISOString(),
+      });
+      return readOwn(...args);
+    });
+    try {
+      const raced = await reactionFor('surviving-notification-event');
+      expect(raced.status).toBe(503);
+      expect(raced.body).not.toHaveProperty('own');
+    } finally { reactionRace.mockRestore(); }
 
     // A ledger revocation alone refuses the phone at once on the production auth path, even if
     // the registry write after it failed (the registry still says active here).

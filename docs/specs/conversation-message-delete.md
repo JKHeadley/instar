@@ -238,3 +238,5 @@ The isolated reply-preview route selects the requested reply bases and quoted or
 The isolated notification-preview route reads an exact agent message by message ID under the signed custodian proof. A removed target and a missing one produce the same unavailable response. Bearer and notification-only credentials cannot authorize this acceptance path. Before production enrollment, verify the generic fallback for notifications that lack a current signed owner read.
 
 In isolated protected history, a pin only appears if its exact message ID resolves to a surviving readable App row under the page's prepared custodian proof. Rebuild preview text from that row. Do not reuse the saved pin preview. Loss of the page proof prevents delivery of the entire history response, including pins.
+
+On the isolated server, signed owner reaction reads use the exact target and prepared custodian proof before returning actor state. Removed and missing targets share the unavailable response. Enrolled reaction writes stay unavailable until they have removal-aware mutation admission.

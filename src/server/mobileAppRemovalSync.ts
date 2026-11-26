@@ -130,14 +130,16 @@ export async function executeOwnerRemovalContext(req: Request, pairing: MobilePa
     const page = service.store.readPreparedRemovalContext(conversationKey, selection.target, selection.kind,
       direct, projectAnchor ? 1 : selection.limit + 1, (row) => pairing.mayReadStored(reader, conversationKey, row));
     if (!page) return unavailable;
+    const anchor = page.anchor;
+    const matched = anchor && (direct ? page.messages[0]?.eventId === anchor.eventId : anchor.at === selection.beforeAt);
+    const projected = matched ? projectAnchor?.(anchor) : undefined;
     const final = resolveOwnerRemovalSyncAuthority(req, pairing, service, evidence, selection.conversationKey);
     if (!final.ok) return { status: final.status, body: { error: final.error } };
     if (codec.epochFor(final.authority) !== epoch) return { status: 409, body: { error: 'message-removal-sync-reset' } };
     if (!service.store.hasPreparedRemovalHistory(conversationKey, page.proof)) return unavailable;
 
-    const anchor = page.anchor;
-    if (!anchor || (direct ? page.messages[0]?.eventId !== anchor.eventId : anchor.at !== selection.beforeAt)) return missing;
-    if (projectAnchor) return projectAnchor(anchor);
+    if (!matched) return missing;
+    if (projected) return projected;
     const rows = page.messages.slice(0, selection.limit);
     const oldest = rows[rows.length - 1];
     return { status: 200, body: {

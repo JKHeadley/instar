@@ -1,0 +1,23 @@
+{
+  "ts": "2026-11-26T02:01:42.052Z",
+  "slug": "app-message-delete-reaction-acceptance",
+  "suggestedTier": 1,
+  "declaredTier": 2,
+  "riskFloor": 1,
+  "riskFloorReasons": [],
+  "belowFloor": false,
+  "files": 2,
+  "loc": 23,
+  "scope": {
+    "basis": "staged-in-scope-paths-including-deleted",
+    "files": [
+      "src/server/mobileAppRemovalSync.ts",
+      "src/server/mobileConversationRoutes.ts"
+    ],
+    "addedLines": 19,
+    "deletedLines": 4
+  },
+  "causalAutopsy": null,
+  "classClosure": null,
+  "verdict": "pass"
+}

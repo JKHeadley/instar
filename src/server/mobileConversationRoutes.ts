@@ -1516,7 +1516,7 @@ export function createMobileConversationRouter(deps: MobileConversationRouteDeps
     return candidates.length === 1 ? candidates[0]! : null;
   };
 
-  const appReaction = (req: Request, res: Response) => {
+  const appReaction = (req: Request, res: Response, next: NextFunction) => {
     const writing = req.method === 'PUT';
     const deviceId = gate(req, res);
     if (!deviceId) return;
@@ -1542,6 +1542,19 @@ export function createMobileConversationRouter(deps: MobileConversationRouteDeps
     }
     const store = svc!.store;
     const targetUnavailable = () => res.status(409).json({ error: 'reaction-target-unavailable' });
+    if (serveProtectedRead(req, res, next, async (request, pairing, service, evidence, codec) => {
+      if (writing) return { status: 503, body: { error: 'reactions-unavailable' } };
+      const result = await executeOwnerRemovalContext(request, pairing, service, evidence, codec, {
+        target: eventId, kind: 'event', beforeAt: null, limit: 1,
+      }, (row) => {
+        const own = store.ownReaction(key, row.eventId, actor);
+        return own ? { status: 200, body: { eventId: row.eventId, own } }
+          : { status: 503, body: { error: 'reaction-state-unavailable' } };
+      });
+      return result.status === 404 && result.body.error === 'message-not-available'
+        ? { status: 409, body: { error: 'reaction-target-unavailable' } } : result;
+    })) return;
+
     let candidates;
     try { candidates = store.exactMessageCandidates(key, eventId, 'event'); }
     catch { targetUnavailable(); return; } // @silent-fallback-ok — masked target read
