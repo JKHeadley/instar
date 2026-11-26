@@ -1,0 +1,9 @@
+# Saying honestly when an agent notification was refused
+
+Instar can send a notification into a conversation that is already running. It may send a short line directly, put a large notification in a private file and send a reference, or use a direct fallback if that private file cannot be created safely. The underlying delivery function already says whether it accepted the input. The notification helper discarded that answer and returned the text anyway. A later check could see no notification sitting at the prompt and incorrectly conclude that it had been submitted, even though nothing was pasted.
+
+This repair preserves an explicit refusal through all three notification branches. Successful calls still return the same text or private-file reference. The existing observation handler receives refusal before it inspects the prompt and reports its existing failure state. The change does not add a retry, force input through a safety check, or claim that queue acceptance proves the model consumed a message.
+
+Several callers need careful handling. A notification sent after a secret was stored must not make that successful submission look like a failure. A delayed advisory must not throw an unhandled exception. A refused hourly notice must leave its slot available, and a refused paste must not be marked notified or broadcast as delivered. Tests check these boundaries with temporary storage and the real notification helper. They do not inject messages into live sessions or use real secrets.
+
+This is separate from repairing the account home used to locate Codex transcripts. It also does not solve every receipt ambiguity: accepted but not yet physically dispatched input remains a separate concern. Complete verification and release still follow the normal process. Reverting the source restores the previous behavior without changing stored data or replaying messages.

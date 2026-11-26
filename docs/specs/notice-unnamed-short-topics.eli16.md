@@ -1,0 +1,7 @@
+# Clear names for unnamed conversation notices
+
+A dashboard notice can mention a conversation whose name was not recovered. Most conversation references already become a real name when available, or a plain phrase when the name is missing. One small case escaped that display rule: notices using a one- or two-digit topic number with an explicit missing-name marker still printed wording such as topic0. That number does not help a person recognize the conversation and makes the notice harder to understand.
+
+This repair uses the same display helper as other dashboard notices. When a short numbered reference is explicitly marked name unresolved or name unavailable, the helper displays a conversation instead. It does not guess a name and does not conceal an ordinary numbered topic in prose. A sentence saying see topic2 of the guide remains unchanged because it has no missing-name marker. Longer topic identifiers continue through the existing verified-name lookup.
+
+The change affects only what a dashboard notice says. It does not remove a notice, change a message, retry delivery, alter links or approve any action. The original source information and existing notice controls stay in their current systems. A focused test covers this exact failure and the ordinary-prose boundary, alongside the existing named-reference cases. A normal revert restores the old wording without migrating any stored state.

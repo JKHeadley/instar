@@ -1,0 +1,9 @@
+# A Chat Should Explain What It Is Doing
+
+Opening a conversation can currently leave the dashboard message area blank while its history loads. A successful response containing no messages also leaves that area blank. A failed read has a sentence, but no clear button for trying that read again. The person cannot tell whether the chat is empty, still loading or broken.
+
+This repair gives the existing interactive chat an explanation for each of those states. Loading appears immediately. After ten seconds the explanation says it is waiting for the agent to return the conversation's messages. An empty response is described as an empty response, rather than a claim that the conversation never had messages. A failed read offers a Try again button.
+
+Trying the read again must preserve the person's draft and messages that have already arrived. It must not send a message, resume an unfinished send, enroll a browser or alter any approval. A late response or timer belonging to an old chat must not change the newly selected chat. A successful background read must remove a stale failure notice. One pending history read is reused or allowed to finish rather than starting another because the window gained focus.
+
+This is a small repair to the existing page under the approved loading, empty-state and error rules. It adds no automatic design enforcement. Accounts layout, Mac panel sizing and the held conversation features keep their own verification boundaries. The change is reversible by reverting the page and its tests. Focused tests exercise the actual interactive page with the existing browser-device signing path; complete verification remains in the normal queue. Until those checks and an actual rendered exercise finish, this document is a description of the candidate, not a release announcement.

@@ -1,0 +1,11 @@
+# Keep The Soon-Resetting Account From Running Out Too Early
+
+The two-hour pacing pilot used useful work on the Tuesday-reset account, but its observed pace would consume the remaining allowance well before reset. This change gives new routine Sol work a temporary preference for other named Codex accounts. The approved activation uses amrch first and sagemindai second. It leaves existing Tuesday conversations running.
+
+The preference is optional and expires at a specified time. It applies to new Instar headless Sol helpers, including requests that say balanced or leave the model at its Sol default, and to Sol reviews launched by the shipped review driver. It does not change scheduled jobs, resumed sessions, explicit account pins, local models or interactive conversations. Native collaboration helpers and custom launchers outside these Instar paths are not controlled by it.
+
+Before starting work, the engine checks the named accounts in order. It requires an active local account, an accessible account home and fresh valid quota for the offered windows. If neither qualifies, it refuses the new work. It does not borrow a default or Saturday account. A source review reads the same selection from the local authenticated server and uses the selected home with subscription-only authentication. Both launch paths recheck the policy, account and home after asynchronous preparation, just before starting the child. A changed choice is refused, not silently replaced.
+
+Removing or disabling the setting, or reaching its expiry, restores ordinary placement for future work. Running conversations are not restarted. The setting has no default activation. Release installation and the approved configuration must be checked on each participating machine because account homes and their availability are local; no credentials are copied between computers.
+
+Tests use stand-in processes rather than paid model calls. They cover ordered selection, refusal, rollback, generic model names, real child environment, changes while queued and update delivery to installed review launchers. The complete suite remains owned by throughput before publication. The quota watcher stays independent and read-only.

@@ -1,0 +1,98 @@
+{
+  "external-round1": {
+    "status": "ok",
+    "framework": "codex-cli",
+    "model": "gpt-6.2-astra",
+    "verdict": "SERIOUS ISSUES",
+    "findings": [
+      {
+        "reviewer": "cross-model:codex-cli:gpt-6.2-astra",
+        "verdict": "SERIOUS ISSUES",
+        "body": "**Verdict: SERIOUS ISSUES**\n\n1. **DESIGN \u2014 Proposed design \u00a7\u00a71\u20132, Decision points touched.** With accepted chat and a paired device lacking acceptance, \u00a71 directs the request to the device as `awaiting-acceptance`, \u00a72 says device delivery returns `sent`, and the decision table permits chat. The distinction matters because a working approval route can be displaced by setup. The supporting spec, *App trust approval* \u00a7A, says an enrolled key alone does not qualify a device for first acceptance. Specify the precedence and response for this combination. I recommend accepted device first, accepted chat second, then app setup with instructions the owner can actually complete. Test all three with the currently shipped app.\n\n2. **DESIGN \u2014 Proposed design \u00a7\u00a71, 3\u20134, Verification.** A fresh proposal can create a setup request before device acceptance, but a repeated proposal with an existing undelivered chat request migrates only after acceptance. \u00a74 promises visibility, yet neither the migration test nor the E2E test establishes how an owner starting from the reported failure reaches setup. Specify what re-proposal returns before acceptance and where the owner sees the setup action. Test the existing request through setup and approval with its original ID and expiry.\n\n3. **DESIGN \u2014 Proposed design \u00a7\u00a73, 5, Request bounds.** The deterministic migration key resolves duplicate writes for **one** request. It does not establish how two different requests competing for the last delivered slot respect the bound. The supporting spec describes a per-request consumption compare-and-set, and the single serving holder does not itself imply serialized proposals. Require the holder to serialize the capacity check and durable transition, or identify the existing mechanism that already does so. Test concurrent migration and new delivery with one slot remaining.\n\n4. **DESIGN \u2014 Proposed design \u00a77.** The dashboard always directs the owner to the paired app, while Verification explicitly preserves chat-only operation. A chat-only owner following a Needs-you link therefore receives instructions for a device they may not have. Render the continuation from the request\u2019s delivery state. For a delivered chat request, identify the private chat containing the approval card."
+      }
+    ],
+    "flag": "cross-model-review: codex-cli:gpt-6.2-astra",
+    "crossFamily": true,
+    "promptTruncated": false
+  },
+  "external-round6": {
+    "status": "ok",
+    "framework": "codex-cli",
+    "model": "gpt-6.2-astra",
+    "verdict": "SERIOUS ISSUES",
+    "findings": [
+      {
+        "reviewer": "cross-model:codex-cli:gpt-6.2-astra",
+        "verdict": "SERIOUS ISSUES",
+        "body": "**Verdict: SERIOUS ISSUES**\n\n- **DESIGN \u2014 Proposed design \u00a7\u00a73\u20135, chat-only recovery.** Section 3 gives the chat send task exclusively to the invocation that created the request. If that process stops after the durable write but before calling the adapter, a repeat proposal returns the pending request and sends nothing. Section 5 correctly labels delivery unconfirmed, but a chat-only owner has no card to answer. Add an explicit owner-triggered retry for the same open request, preserving its ID, hash and expiry. Record the returned card binding and retain single-use consumption. Test a restart at the write/send boundary and completion from chat.\n\n- **DESIGN \u2014 Proposed design \u00a73, Multi-machine posture.** The lease recheck occurs inside the serialized operation, while the chat call occurs after release. The spec leaves dispatch ownership undefined if the lease changes between durable preparation and adapter invocation. Define whether the committed send task survives handoff or the former holder must suppress it. Test by pausing after the write, transferring the lease, and resuming the creator. Assert the expected adapter calls and how the new holder reports delivery.\n\n- **DESIGN \u2014 Proposed design \u00a7\u00a71, 4 and 7, device recovery.** Section 4 tells the owner to reconnect an approving iPhone or Touch ID Mac after sole-device removal. The supporting *App trust approval* \u00a7A requires a new local first pairing when all acceptances have been withdrawn, and \u00a7D limits the Mac override to the locally bound Mac. Reconnecting a remotely paired iPhone can therefore leave the owner unable to approve. Use the \u00a77 setup rules for this response too. Test sole-device removal followed by reconnection of the former iPhone without a valid acceptance chain, and verify that the guidance identifies the local pairing step.\n\n- **PRECISION \u2014 Decision points touched, transport choice.** The quoted directive rules out a Telegram dependency. It does not settle precedence when an accepted chat already works. Section 4 correctly identifies setup-first precedence as a product choice. Distinguish that choice from the external requirement in the decision table so future reviewers know which decision the operator actually made."
+      }
+    ],
+    "flag": "cross-model-review: codex-cli:gpt-6.2-astra",
+    "crossFamily": true,
+    "promptTruncated": false
+  },
+  "external-round5": {
+    "status": "ok",
+    "framework": "codex-cli",
+    "model": "gpt-6.2-astra",
+    "verdict": "SERIOUS ISSUES",
+    "findings": [
+      {
+        "reviewer": "cross-model:codex-cli:gpt-6.2-astra",
+        "verdict": "SERIOUS ISSUES",
+        "body": "**Verdict: SERIOUS ISSUES**\n\n- **DESIGN \u2014 Proposed design \u00a7\u00a71, 4, 7.** The spec defines what happens when a fresh device lookup finds an eligible device or returns an empty list. It leaves the routing decision unspecified when the lookup fails. Those outcomes matter because only one establishes that chat is the preferred route. Give lookup failure an explicit retryable result. Preserve any existing request and its expiry, and test a directory timeout with accepted chat configured. Keep the documented behavior for legacy directories that lack the listing method.\n\n- **DESIGN \u2014 Proposed design \u00a7\u00a73, 5.** Section 3 serializes proposal operations, while \u00a75 puts the external chat call after the durable write. The spec leaves the end of the critical section unclear. If it includes the adapter call, one stalled Telegram send can delay an unrelated app-only proposal. Release the lock after the durable admission or migration decision. Give the invocation that created the chat request responsibility for the send, so a duplicate cannot send a second card. Test that an app proposal completes while a chat send remains pending.\n\n- **DESIGN \u2014 Proposed design \u00a77.** The setup instructions omit a recovery path explicitly supported by *App trust approval*, \u00a7D. A locally bound Touch ID Mac can replace its invalidated key through local override even while another acceptance is current. Directing that owner to obtain approval from another device could strand them if that device is unavailable. Include local key replacement in the setup decision and test it with another current acceptance. Keep hardware guidance conditional where the server cannot establish Touch ID capability.\n\n- **PRECISION \u2014 Proposed design \u00a71 and Decision points touched.** The quoted directive establishes that pairing must remove dependence on Telegram. It does not establish that an unaccepted app must take precedence over an already usable chat. Section 4 acknowledges that tradeoff. Record this precedence as the spec\u2019s product decision, with the directive as motivation, so future reviewers can distinguish the requirement from the chosen behavior."
+      }
+    ],
+    "flag": "cross-model-review: codex-cli:gpt-6.2-astra",
+    "crossFamily": true,
+    "promptTruncated": false
+  },
+  "external-round4": {
+    "status": "ok",
+    "framework": "codex-cli",
+    "model": "gpt-6.2-astra",
+    "verdict": "SERIOUS ISSUES",
+    "findings": [
+      {
+        "reviewer": "cross-model:codex-cli:gpt-6.2-astra",
+        "verdict": "SERIOUS ISSUES",
+        "body": "**Verdict: SERIOUS ISSUES**\n\n- **DESIGN \u2014 Proposed design \u00a7\u00a73, 5, 7.** Section 5 explicitly allows a chat card to reach the owner without a durable delivery receipt. Section 3 migrates an \u201cundelivered\u201d request, and \u00a77 calls for a failed-delivery explanation. After an interrupted receipt write, the journal establishes only that delivery is **unconfirmed**. Define migration eligibility as \u201copen chat request with no confirmed receipt.\u201d Preserve that uncertainty when showing app setup guidance. Test an interrupted receipt write followed by migration and a reply to the original chat card. With valid chat consent, that reply should still compete for the same single consumption.\n\n- **DESIGN \u2014 Proposed design \u00a7\u00a73, 6; Multi-machine posture.** The spec requires carrier records to match the original request and tests both carrier replay orders. It leaves unspecified what a replica does when a carrier update arrives *before the original request*. Discarding the update could leave Needs-you showing the wrong action after replication catches up. Either cite the journal guarantee that prevents this ordering or retain the update by request ID and validate it when the original arrives. Test that the replica publishes no row from an orphan update and converges once both records arrive.\n\n- **PRECISION \u2014 Proposed design \u00a7\u00a71\u20132; Verification.** The approved *App trust approval* spec says acceptance precedes any request and expects `no-approver` before first acceptance. This proposal intentionally changes that contract for a paired owner device. Identify the superseded integration expectation explicitly and split its fixture into two cases with no chat or acceptance. A qualifying paired device yields `awaiting-acceptance` and can approve the **same request** after setup. With no paired device, `no-approver` still applies."
+      }
+    ],
+    "flag": "cross-model-review: codex-cli:gpt-6.2-astra",
+    "crossFamily": true,
+    "promptTruncated": false
+  },
+  "external-round3": {
+    "status": "ok",
+    "framework": "codex-cli",
+    "model": "gpt-6.2-astra",
+    "verdict": "SERIOUS ISSUES",
+    "findings": [
+      {
+        "reviewer": "cross-model:codex-cli:gpt-6.2-astra",
+        "verdict": "SERIOUS ISSUES",
+        "body": "**Verdict: SERIOUS ISSUES**\n\n- **DESIGN \u2014 Setup guidance can strand a Mac Studio owner (Proposed design \u00a7\u00a71, 4, 7).** \u00a77 says a locally paired device can use **Turn on**. The approved *App trust approval* spec \u00a7\u00a7A/D says a Mac without Touch ID cannot create an approval key, and explicitly names the Mac Studio as an example. Its pairing fingerprint qualifies it to receive the request under \u00a71, but local pairing alone cannot tell the dashboard which setup action will work. Keep the pending request visible and direct the owner to a qualifying iPhone or Touch ID Mac. Test a locally paired Mac without Touch ID as the only device, including when chat is already accepted.\n\n- **DESIGN \u2014 Replica listings promise holder-only knowledge (Proposed design \u00a7\u00a76\u20137; Multi-machine posture).** \u00a77 requires bearer and native listings to give the exact next step from *current* eligibility. The multi-machine section says every machine serves its replica and eligibility remains on the holder. It gives a non-holder no way to substantiate that a device can approve now. Define a non-holder response that can display the replicated request while marking current availability unknown and directing the client to refresh at the holder. Test a withdrawal recorded on the holder before it reaches the listing replica.\n\n- **DESIGN \u2014 A recorded device request can outlive its only carrier (Proposed design \u00a7\u00a73\u20134, 7).** \u00a73 specifies chat-to-device migration. \u00a77 chooses an eligible app first, then the recorded chat carrier. Neither covers an open device-only request whose sole device is subsequently unpaired while an accepted chat remains available. The chat has no card to answer. On re-proposal, specify whether to publish the same request to that chat or retain device-only delivery with explicit recovery guidance. Test the response, dashboard action, request identity and original expiry across that transition.\n\n- **PRECISION \u2014 Navigation evidence is platform-specific (Proposed design \u00a77).** The review spec calls \u201cSettings / Permissions / Changes to approve\u201d confirmed against the shipped app. The supplied approval spec places the iPhone entry under Permissions and the Mac entry in the agent\u2019s window. That establishes a documentation discrepancy, not which path ships today. Verify each client separately and publish platform-specific directions."
+      }
+    ],
+    "flag": "cross-model-review: codex-cli:gpt-6.2-astra",
+    "crossFamily": true,
+    "promptTruncated": false
+  },
+  "external-round2": {
+    "status": "ok",
+    "framework": "codex-cli",
+    "model": "gpt-6.2-astra",
+    "verdict": "SERIOUS ISSUES",
+    "findings": [
+      {
+        "reviewer": "cross-model:codex-cli:gpt-6.2-astra",
+        "verdict": "SERIOUS ISSUES",
+        "body": "**Verdict: SERIOUS ISSUES**\n\n- **DESIGN \u2014 Proposed design \u00a7\u00a71, 4, 7.** An active owner device with a presence key qualifies for `awaiting-acceptance` and takes priority over accepted chat. Yet *App trust approval*, decision A, allows first acceptance only through a qualifying local pairing. A remotely paired iPhone can therefore receive a request that \u201cTurn on\u201d cannot unlock. Keep the request visible and distinguish devices that can complete setup locally from those that need another device. Give the owner the exact next action. Test a remote-only iPhone with no current device acceptance and an accepted chat.\n\n- **DESIGN \u2014 Proposed design \u00a7\u00a73, 4, 7.** \u201cDelivered chat\u201d wins the journal fold, and the dashboard directs the owner to the recorded carrier. Yet \u00a74 explicitly says an accepted device can consume that same request. After a chat card arrives and the owner later enables app approvals, the dashboard still points to chat. Preserve the chat receipt as delivery history and choose the displayed action from current approval eligibility, preferring the app. Test that sequence with the original request ID and expiry.\n\n- **DESIGN \u2014 Proposed design \u00a7\u00a73, 5.** Writing the request before sending the chat card leaves an unspecified outcome if chat accepts the card and the process stops before delivery evidence is durable. The existing consumption compare-and-set prevents a second approval, but it cannot establish whether a card arrived. Specify how retries and Needs-you represent an unconfirmed send. Use a stable send key if the adapter supports it, and test interruption immediately after adapter success. Reserve \u201cfailed delivery\u201d guidance for a known failure.\n\n- **PRECISION \u2014 Verification, Live Studio.** The live check requires `via device` for the existing board-policy request. Section 3 permits migration only while that request is open and unexpired, and its remaining lifetime is absent from the supplied material. Make preservation of the original ID conditional on that precondition. If it has expired, verify that it stays expired and identify any fresh proposal separately."
+      }
+    ],
+    "flag": "cross-model-review: codex-cli:gpt-6.2-astra",
+    "crossFamily": true,
+    "promptTruncated": false
+  }
+}
