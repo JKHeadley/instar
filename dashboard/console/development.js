@@ -318,9 +318,10 @@ function consumerPromotionForm(todo, deps, lead) {
       el('p', { class: 'card-note', text: holdExplanation }),
       el('div', { class: 'sheet-actions' }, confirm));
     confirm.addEventListener('click', async () => {
+      if (!panel.isConnected || !promote.isConnected) return;
       confirm.disabled = true;
       promote.disabled = true;
-      const consent = await askPin({ title, explain: `${summary} ${holdExplanation}`, adapter: 'body', isCurrent: () => panel.isConnected });
+      const consent = await askPin({ title, explain: `${summary} ${holdExplanation}`, adapter: 'body', isCurrent: () => promote.isConnected });
       if (!consent) { confirm.disabled = false; promote.disabled = false; return; }
       const status = el('p', { class: 'action-status', role: 'status', text: 'Promoting feedback processing…' });
       sheet({ title }, status);
