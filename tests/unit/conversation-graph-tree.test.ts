@@ -11,6 +11,8 @@ import express from 'express';
 import request from 'supertest';
 import { ConversationGraphReadModel, TREE_CHILD_LIMIT, TREE_MAX_DEPTH, type GraphReadSource, type GraphViewer, type TreeNode } from '../../src/core/conversationGraphRead.js';
 import { createConversationGraphRouter } from '../../src/server/conversationGraphRoutes.js';
+import { ownerTreeProjectMembership } from '../../src/core/ownerTreeProjectMembership.js';
+
 import { treeProjects } from '../../src/core/workFrontDoorsGraph.js';
 import { encodeRouteRef, nodeKey, type GraphEvent, type NodeRef, type EffortRef, type ConversationRef, type ConversationSource } from '../../src/core/conversationGraph.js';
 
@@ -233,4 +235,19 @@ describe('GET /mobile/conversation-graph/tree', () => {
     expect(bad.status).toBe(409);
     expect((await request(appWith({})).get('/mobile/conversation-graph/tree?cursor=a&cursor=b')).status).toBe(409);
   });
+});
+
+it('classifies a covered parentless Telegram topic separately from saved groups', () => {
+  const grouped = tg(501), ordinary = tg(502), group = effort(501);
+  const events = [create(group), place(grouped, group)];
+  const rows = [conv(grouped, 1), conv(ordinary, 2)];
+  const snapshot = { version: 'complete', complete: true, parents: new Map(), confirmedProjects: new Set<string>() };
+  const render = (complete: boolean) => new ConversationGraphReadModel(source(events, rows, {
+    treeProjectMembership: (refs) => ownerTreeProjectMembership(refs, { ...snapshot, complete }),
+  })).tree(owner(), { projects: [] });
+  const complete = render(true);
+  expect(complete.body).toMatchObject({ placementComplete: true, sections: {
+    projects: [], groups: [{ ref: group, children: [{ ref: grouped }] }], ungrouped: [{ ref: ordinary }],
+  } });
+  expect(render(false).body).toMatchObject({ placementComplete: false, sections: { ungrouped: [] } });
 });
