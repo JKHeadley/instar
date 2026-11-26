@@ -1,0 +1,22 @@
+{
+  "ts": "2026-11-26T03:50:48.676Z",
+  "slug": "first-phone-private-offer-issuance",
+  "suggestedTier": 2,
+  "declaredTier": 1,
+  "riskFloor": 1,
+  "riskFloorReasons": [],
+  "belowFloor": false,
+  "files": 1,
+  "loc": 59,
+  "scope": {
+    "basis": "staged-in-scope-paths-including-deleted",
+    "files": [
+      "src/core/trustJourney/firstPhoneOfferIssuance.ts"
+    ],
+    "addedLines": 59,
+    "deletedLines": 0
+  },
+  "causalAutopsy": null,
+  "classClosure": null,
+  "verdict": "pass"
+}

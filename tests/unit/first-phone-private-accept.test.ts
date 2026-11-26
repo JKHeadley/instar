@@ -3,12 +3,13 @@ import fs from 'node:fs';
 import os from 'node:os';
 import path from 'node:path';
 import { SafeFsExecutor } from '../../src/core/SafeFsExecutor.js';
+import { issueFirstPhonePrivateOffer } from '../../src/core/trustJourney/firstPhoneOfferIssuance.js';
 import { FirstPhonePrivateOfferStore } from '../../src/core/trustJourney/FirstPhonePrivateOfferStore.js';
 import Database from 'better-sqlite3';
 import { FirstPhonePrivateAcceptService } from '../../src/core/trustJourney/FirstPhonePrivateAcceptService.js';
 import { TrustJourneyStore } from '../../src/core/trustJourney/TrustJourneyStore.js';
 import { FirstPhonePrivateNominationStore } from '../../src/core/trustJourney/FirstPhonePrivateNominationStore.js';
-import { expect, it } from 'vitest';
+import { expect, it, vi } from 'vitest';
 import { matchesFirstPhonePrivateAccept } from '../../src/core/trustJourney/firstPhonePrivateAccept.js';
 
 import { createFirstPhoneOfferResolver } from '../../src/core/trustJourney/firstPhoneOfferResolver.js';
@@ -231,5 +232,55 @@ it('recovers the immutable acknowledged offer from disk without saving the butto
   } finally {
     db.close();
     SafeFsExecutor.safeRmSync(dir, { recursive: true, force: true, operation: 'test first-phone offer store' });
+  }
+});
+
+it('saves only a direct acknowledged offer which is still current after Telegram returns', async () => {
+  const db = new Database(':memory:');
+  try {
+    const offers = new FirstPhonePrivateOfferStore(db);
+    const { callbackData: _callback, disclosureMessageId: _message, ...fields } = offer;
+    const disclosure = 'Exact disclosure';
+    const exactProposal = { ...proposal, disclosureHash: createHash('sha256').update(disclosure).digest('hex') };
+    const prepared = {
+      offer: { ...fields, proposalHash: firstPhoneProposalHash(exactProposal) },
+      deviceId: proposal.deviceId, holderMachineId: 'holder-machine', disclosure, proposal: exactProposal,
+    };
+    let current = false;
+    let now = 200;
+    const sendPrivate = vi.fn(async (_chatId: string, _disclosure: string, _callback: string) => ({ chatId: prepared.offer.chatId, messageId: 15 }));
+    const deps = { offers, sendPrivate, stillCurrent: () => current, now: () => now };
+    const sentDigest = () => createHash('sha256').update(sendPrivate.mock.lastCall![2]).digest('hex');
+
+    expect(await issueFirstPhonePrivateOffer(deps, prepared)).toEqual({ status: 'unavailable' });
+    expect(sendPrivate).not.toHaveBeenCalled();
+    current = true;
+    expect(await issueFirstPhonePrivateOffer(deps, { ...prepared, disclosure: 'wrong text' })).toEqual({ status: 'unavailable' });
+    expect(sendPrivate).not.toHaveBeenCalled();
+    sendPrivate.mockResolvedValueOnce({ chatId: '999', messageId: 15 });
+    expect(await issueFirstPhonePrivateOffer(deps, prepared)).toEqual({ status: 'unavailable' });
+    expect(offers.lookup(sentDigest())).toBeNull();
+    sendPrivate.mockImplementationOnce(async () => {
+      current = false;
+      return { chatId: prepared.offer.chatId, messageId: 15 };
+    });
+    expect(await issueFirstPhonePrivateOffer(deps, prepared)).toEqual({ status: 'unavailable' });
+    expect(offers.lookup(sentDigest())).toBeNull();
+    current = true;
+    sendPrivate.mockImplementationOnce(async () => {
+      now = prepared.offer.expiresAt;
+      return { chatId: prepared.offer.chatId, messageId: 15 };
+    });
+    expect(await issueFirstPhonePrivateOffer(deps, prepared)).toEqual({ status: 'unavailable' });
+    expect(offers.lookup(sentDigest())).toBeNull();
+
+    now = 210;
+    expect(await issueFirstPhonePrivateOffer(deps, prepared)).toEqual({ status: 'recorded', messageId: 15 });
+    expect(sendPrivate).toHaveBeenLastCalledWith(prepared.offer.chatId, prepared.disclosure, expect.stringMatching(/^first-phone:[A-Za-z0-9_-]{43}$/));
+    expect(offers.lookup(sentDigest())).toEqual({
+      offer: { ...prepared.offer, disclosureMessageId: 15 }, deviceId: prepared.deviceId, holderMachineId: prepared.holderMachineId,
+    });
+  } finally {
+    db.close();
   }
 });
