@@ -70,3 +70,11 @@ The server checks the negotiated request before returning the new schema. Legacy
 An authenticated agent mint can name one current native owner device for an ordinary single-field Secret Drop. The target is resolved using the paired device registry, current role, device key and revocation ledger. The existing private link still works. The optional response reference is independent of the Secret Drop token, and private bindings do not appear in the pending list.
 
 Reassignment changes the binding revision and invalidates previously reviewed consent. Unsupported requests are refused and the tentative request is canceled before any response. The signed fixture checks the same binding store. Production Needs You disclosure and submission remain unwired, so this slice adds no credential submission authority.
+
+## Signed native credential requests
+
+An eligible native device gets only the opaque reference and vetted prompt in the negotiated list. Signed disclosure and submission bind the exact path, body, pending request, field and current device assignment. Changing the assigned person or role invalidates the old binding even if the previous role is restored. Other devices, browser principals and bearer reads receive no credential card or disclosure.
+
+The signed path consumes the existing one-time Secret Drop and shares its encrypted storage. Topic delivery and callbacks remain on the legacy path. The signed path requires encrypted persistence before consuming the request. A storage failure or opt-out leaves it pending. The encrypted record carries a reader fence until the value is durably stored. An uncertain write accepts an exact retry and refuses a different value through either submission path. The disclosure names the credential, the source’s stated purpose and the protected destination. Legacy protected links keep their existing behavior. Fleet release remains held for client and source acceptance.
+
+A canceled, expired or restarted request can leave an encrypted fenced record inaccessible. The rollout needs a reviewed recovery or purge path for those records. The tests reproduce a cancellation after uncertain sync and verify that retrieval cannot expose or consume the fenced value.

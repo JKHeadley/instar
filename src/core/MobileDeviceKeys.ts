@@ -223,6 +223,8 @@ export interface DeviceRecord {
    */
   userId?: string;
   role?: 'owner' | 'msp' | 'team';
+  /** Advances when the assigned person or role changes. */
+  personRevision?: number;
   /**
    * The phone's presence key (docs/specs/mobile-console-device-signin.md §3.1): a second Secure
    * Enclave P-256 public key that signs only after the device owner authenticates. Set once.
@@ -546,6 +548,10 @@ export class DeviceRegistry {
     const f = this.normalize(this.read());
     const d = f.devices.find((x) => x.id === id);
     if (!d || d.status === 'revoked') return null;
+    if ((d.userId ?? null) === person.userId && (d.role ?? 'owner') === person.role) return d;
+    const revision = (d.personRevision ?? 0) + 1;
+    if (!Number.isSafeInteger(revision)) return null;
+    d.personRevision = revision;
     if (person.userId) d.userId = person.userId; else delete d.userId;
     if (person.role === 'owner') delete d.role; else d.role = person.role;
     this.write(f);

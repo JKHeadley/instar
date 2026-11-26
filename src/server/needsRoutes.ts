@@ -168,6 +168,7 @@ export interface NeedsDeps {
   now?: () => number;
   /** Absent until this agent's clients and sources support in-place actions. */
   // undefined: audience-authorized row lacks a declaration. null: no verified audience or current ask.
+  ownerCredentialRequestIds?: (request?: Request) => readonly string[];
   ownerCardCandidate?: (item: NeedItem, request?: Request) => OwnerNeedsCandidate | null | undefined | Promise<OwnerNeedsCandidate | null | undefined>;
   /** Must resolve strict coordinator authority from the request, never from submitted fields. */
   withdrawalJournalFor?: (req: Request) => Promise<OwnerNeedsWithdrawalJournal | null>;
@@ -285,7 +286,7 @@ export interface NeedsComposer {
 }
 
 type Composed = Omit<NeedsAnswer, 'viewer'>;
-type ComposerDeps = Pick<NeedsDeps, 'read' | 'consoleDir' | 'agentName' | 'machineId' | 'now' | 'ownerCardCandidate'>;
+type ComposerDeps = Pick<NeedsDeps, 'read' | 'consoleDir' | 'agentName' | 'machineId' | 'now' | 'ownerCardCandidate' | 'ownerCredentialRequestIds'>;
 
 function page(answer: Composed, start: number): Composed {
   return { ...answer, items: answer.items.slice(start, start + NEEDS_MAX_ITEMS) };
@@ -416,6 +417,7 @@ function createFullComposer(deps: ComposerDeps): NeedsComposer {
       source: rowSource.get(String(row.key)) ?? (queueKeys.has(String(row.key)) ? 'attention' : 'promises'),
     }));
     const rows = deps.ownerCardCandidate ? [
+      ...(deps.ownerCredentialRequestIds?.(request) ?? []).map(id => ({ row: { key: id, refs: [id] }, source: 'owner-credentials' })),
       ...((queue.all as Rec[] | undefined) ?? []).filter(row => !row.stale && row.tone !== 'unknown').map(row => ({ row, source: 'attention' })),
       ...surfaced.rows.filter(row => row.tone !== 'unknown').map(row => ({ row, source: String(row.source) })),
       ...((promised.all as Rec[] | undefined) ?? []).filter(row => row.tone === 'attn').map(row => ({ row, source: 'promises' })),

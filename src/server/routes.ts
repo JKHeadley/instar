@@ -71,7 +71,7 @@ import { resolveReplyOrigin, boundSessionName, localMachineIdentity, type ReplyO
 import { consolePageUrl, createOperatorLinkOriginResolver, originOrNull } from './dashboardPaths.js';
 import { computePoolReadiness, getActivePoolReadiness, SINGLE_MACHINE_READINESS } from '../core/poolReadiness.js';
 import { isConversationPinsEnabled, pinRowsFor } from '../core/ConversationPins.js';
-import { deviceMayUse, filterAttentionForPhone, filterTopicsForTeam, maskSessionsForPhone, stripViewSignatures, devicePersonOf, principalOf } from './mobilePairingRoutes.js';
+import { deviceMayUse, filterAttentionForPhone, filterTopicsForTeam, maskSessionsForPhone, stripViewSignatures, devicePersonOf, deviceAdmissionIdentity, principalOf } from './mobilePairingRoutes.js';
 import { mountMobileCapacityRoutes, type SpendPart } from './mobileCapacityRoutes.js';
 import { mountUsageRoutes } from './usageRoutes.js';
 import { mountMobilePlansPeopleRoutes, type PeerList as PlansPeoplePeerList } from './mobilePlansPeopleRoutes.js';
@@ -885,7 +885,8 @@ import {
 import type { PasteManager } from '../paste/PasteManager.js';
 import type { WebSocketManager } from './WebSocketManager.js';
 import { TruncationDetector } from '../paste/TruncationDetector.js';
-import { SecretDrop, type CreateSecretRequestOptions } from './SecretDrop.js';
+import { createOwnerNeedsCredentialConsent } from './ownerNeedsCredentialConsent.js';
+import { SecretDrop, type SecretSubmission, type CreateSecretRequestOptions } from './SecretDrop.js';
 import { computeFingerprint } from '../threadline/client/MessageEncryptor.js';
 import {
   evaluateTransferAuthorization,
@@ -3453,8 +3454,39 @@ export function createRoutes(ctx: RouteContext): Router {
     read: (p) => needsSelfRead(p, NEEDS_CANARY_READ_TIMEOUT_MS),
     notice: (why) => DegradationReporter.getInstance().report({ feature: 'NeedsYou.canary', primary: 'Show everything that needs the person in one list', fallback: 'Each page still shows its own needs; the list may be missing some.', reason: `The Needs-you canary missed twice: ${why}.`, impact: 'The Needs-you list on the console and the apps may be incomplete or failing.' }),
   });
-  const ownerNeedsCandidate = ctx.ownerNeedsCandidate ?? (ownerNeedsAdmissionEnabled(ctx.config.needsYou)
-    ? createOwnerNeedsSourceProvider(ctx.trustAccountPath) : undefined);
+  const secretDrop = new SecretDrop(ctx.config.projectName || 'Agent');
+  const credentialOwner = (req?: ExpressRequest): string | null => {
+    if (!req || devicePersonOf(req)?.role !== 'owner') return null;
+    const principal = principalOf(req);
+    const admission = deviceAdmissionIdentity(req);
+    if (principal.kind !== 'device' || !admission || admission.role !== 'owner') return null;
+    return ctx.mobilePairingService?.ownerCredentialDeviceIdentity(principal.deviceId, admission.keyHash) ?? null;
+  };
+  const credentialConsent = createOwnerNeedsCredentialConsent({
+    drop: secretDrop,
+    bindingFor: requestId => {
+      const binding = secretDrop.ownerNeedsBinding(requestId);
+      const pending = binding && secretDrop.getPending(binding.dropToken);
+      if (!binding || !pending) return null;
+      const destination = cleanFreeText(ctx.config.projectName || 'this agent');
+      return { ...binding, presentation: {
+        title: pending.label,
+        why: pending.description || 'The agent requested this credential.',
+        detail: `The credential will be saved in the protected store for ${destination}.`,
+      } };
+    },
+    signedOwnerFor: req => {
+      const id = credentialOwner(req);
+      return id ? { id } : null;
+    },
+    persist: (token, submission) => persistSecretSubmission(token, submission, true),
+  });
+  const ownerAdmissionEnabled = ownerNeedsAdmissionEnabled(ctx.config.needsYou);
+  const sourceProvider = createOwnerNeedsSourceProvider(ctx.trustAccountPath);
+  const ownerNeedsCandidate = ctx.ownerNeedsCandidate ?? (ownerAdmissionEnabled
+    ? (item: Parameters<typeof sourceProvider>[0], req?: ExpressRequest) => item.source === 'owner-credentials'
+      ? credentialConsent.candidate(req, item.id) : sourceProvider(item, req)
+    : undefined);
   // The legacy canary can't inject a typed owner action or negotiate the strict client contract.
   if (!ownerNeedsCandidate) {
     setTimeout(() => {
@@ -3464,6 +3496,10 @@ export function createRoutes(ctx: RouteContext): Router {
   }
   mountNeedsRoutes(router, {
     ownerCardCandidate: ownerNeedsCandidate,
+    ownerCredentialRequestIds: req => {
+      const id = ownerAdmissionEnabled ? credentialOwner(req) : null;
+      return id ? secretDrop.ownerNeedsRequestIds(id) : [];
+    },
     withdrawalJournalFor: ctx.ownerNeedsWithdrawalJournalFor,
     canary: ownerNeedsCandidate ? undefined : needsCanary,
     read: (p) => needsSelfRead(p),
@@ -31441,8 +31477,6 @@ document.getElementById('mcpForm').addEventListener('submit', async function (e)
 
   // ── Secret Drop (secure secret submission) ─────────────────────
 
-  const secretDrop = new SecretDrop(ctx.config.projectName || 'Agent');
-
   // Stuck-consumer hardening: when an agent's consumer chain fails to
   // claim a submitted secret within the grace window, route a visible
   // cue to the bound topic so the operator hears about the failure
@@ -31893,8 +31927,15 @@ document.getElementById('mcpForm').addEventListener('submit', async function (e)
       }
     }
 
-    const submitted = secretDrop.submitWithReason(req.params.token, _csrf, values as Record<string, string>);
+    const token = req.params.token;
+    const ownerBound = secretDrop.isOwnerBoundPending(token);
+    const submitted = secretDrop.submitWithReason(token, _csrf, values as Record<string, string>,
+      ownerBound ? submission => persistSecretSubmission(token, submission, true) : undefined);
     if ('refused' in submitted) {
+      if (submitted.refused === 'storage-unavailable') {
+        res.status(503).json({ error: 'credential-storage-unavailable' });
+        return;
+      }
       if (submitted.refused === 'signature-format-outdated' || submitted.refused === 'signature-format-unknown') {
         // The link is still valid (a refused submit never consumes it): tell the sender what to do.
         res.status(400).json({
@@ -31908,8 +31949,12 @@ document.getElementById('mcpForm').addEventListener('submit', async function (e)
       res.status(410).json({ error: 'This link has expired or already been used' });
       return;
     }
-    const submission = submitted.submission;
+    if (!ownerBound) persistSecretSubmission(token, submitted.submission);
+    await notifySecretSubmission(req.params.token, submitted.submission);
+    res.json({ ok: true, receivedAt: submitted.submission.receivedAt });
+  });
 
+  function persistSecretSubmission(token: string, submission: SecretSubmission, requireDurable = false): boolean {
     // ── Store-first durable persistence (2026-06-04) ──────────────────────────
     // Before we confirm or nudge the agent, persist the submission to the durable,
     // AES-256-GCM encrypted SecretStore. Previously a submission lived ONLY in the
@@ -31918,27 +31963,50 @@ document.getElementById('mcpForm').addEventListener('submit', async function (e)
     // "I handed you a secret and you dropped it" failure. Persisting first makes the
     // value survive churn by construction; the retrieve route falls back to this copy
     // when the in-memory one is gone, and a successful consume deletes it.
-    // Best-effort + loud on failure: the ephemeral copy still exists for immediate
-    // use, so a keychain/disk hiccup must not 500 the user's submission. Opt out with
-    // config.secrets.persistDrops=false. NEVER log the secret value.
+    // Legacy links allow an in-memory fallback. Signed Needs You requires a
+    // successful encrypted write before consuming the request. Never log the value.
     // A browser password is not persisted: a refused one must not outlive the received-submission cap.
     if (ctx.config.secrets?.persistDrops !== false && !submission.browserHost) {
       try {
         const store = new SecretStore({ stateDir: ctx.config.stateDir, forceFileKey: ctx.config.secrets?.forceFileKey });
-        store.set(`secretDrops.${req.params.token}`, {
+        const key = `secretDrops.${token}`;
+        const previous = requireDurable ? store.get(key) : undefined;
+        const record = {
           mintAuth: submission.mintAuth ?? 'none',
           label: submission.label,
           topicId: submission.topicId ?? null,
           receivedAt: submission.receivedAt,
           fields: Object.keys(submission.values),
           values: submission.values,
-        });
-        console.log(`[secret-drop] persisted submission to durable store (token ${req.params.token.slice(0, 8)}…, ${Object.keys(submission.values).length} field(s)) — survives session churn`);
+        };
+        if (!requireDurable) {
+          store.set(key, record);
+        } else {
+          if (previous === undefined) {
+            store.set(key, { ...record, ownerCommitPending: true });
+          } else {
+            // After an uncertain sync, only the same value may reconcile the existing write.
+            const values = (previous as { values?: Record<string, unknown> } | null)?.values;
+            const fields = Object.keys(submission.values);
+            if (!values || Object.keys(values).length !== fields.length ||
+              !fields.every(name => Object.hasOwn(values, name) && values[name] === submission.values[name])) return false;
+          }
+          // Persist the value before clearing the reader fence. If publishing the
+          // cleared marker is uncertain, either disk image still protects the value.
+          store.syncDurably();
+          store.set(key, record);
+          store.syncDurably();
+        }
+        console.log(`[secret-drop] persisted submission to durable store (token ${token.slice(0, 8)}…, ${Object.keys(submission.values).length} field(s)) — survives session churn`);
+        return true;
       } catch (err) {
-        console.error(`[secret-drop] DURABLE PERSIST FAILED (token ${req.params.token.slice(0, 8)}…) — secret is in-memory only and may be lost on churn:`, err instanceof Error ? err.message : String(err));
+        console.error(`[secret-drop] DURABLE PERSIST FAILED (token ${token.slice(0, 8)}…) — encrypted storage is unavailable:`, err instanceof Error ? err.message : String(err));
       }
     }
+    return false;
+  }
 
+  async function notifySecretSubmission(token: string, submission: SecretSubmission): Promise<void> {
     // Only a request from the agent's key or the owner's phone reaches a conversation or a
     // session. Each sink checks the stored class itself, so a request created before this
     // change (no class = unverified) never reaches one even if it still carries a topic.
@@ -31963,15 +32031,15 @@ document.getElementById('mcpForm').addEventListener('submit', async function (e)
         const ref = fieldRef(n, i);
         return ref.startsWith('#') ? `'${ref}'` : ref;
       }).join(', ');
-      const quotedLabel = untrustedForAgent(submission.label, req.params.token, false);
+      const quotedLabel = untrustedForAgent(submission.label, token, false);
       const systemMsg = submission.browserHost
         ? `[secret-drop-received] The password ${quotedLabel} for ${submission.browserHost} was just submitted (field: ${fieldNames}). ` +
-          `Focus that page's password box, then run XD_PROFILE=<profile> node .instar/scripts/secret-drop-retrieve.mjs ${req.params.token} <field-name> --browser. ` +
+          `Focus that page's password box, then run XD_PROFILE=<profile> node .instar/scripts/secret-drop-retrieve.mjs ${token} <field-name> --browser. ` +
           `That is the only way it can leave; it goes straight into the box and you never see it. ` +
           `Then acknowledge receipt to the user conversationally via ${telegramTopicRef(topicId)}.`
         : `[secret-drop-received] Secret ${quotedLabel} was just submitted (${fieldCount} field${fieldCount !== 1 ? 's' : ''}: ${fieldNames}). ` +
-        `Retrieve with the HARDENED helper (streams field value to stdout, never prints the response body): node .instar/scripts/secret-drop-retrieve.mjs ${req.params.token} <field-name>. ` +
-        `Discover field names with: node .instar/scripts/secret-drop-retrieve.mjs ${req.params.token} --names. ` +
+        `Retrieve with the HARDENED helper (streams field value to stdout, never prints the response body): node .instar/scripts/secret-drop-retrieve.mjs ${token} <field-name>. ` +
+        `Discover field names with: node .instar/scripts/secret-drop-retrieve.mjs ${token} --names. ` +
         `Default is non-destructive (safe to retry); append --consume after successful handoff. ` +
         `DO NOT use raw curl against /secrets/retrieve — that pattern leaks the value into the Bash tool transcript. ` +
         `Then acknowledge receipt to the user conversationally via ${telegramTopicRef(topicId)}.`;
@@ -32104,7 +32172,21 @@ document.getElementById('mcpForm').addEventListener('submit', async function (e)
       }
     }
 
-    res.json({ ok: true, receivedAt: submission.receivedAt });
+  }
+
+  const credentialPath = '/mobile/needs/credentials/:requestId';
+  router.get(credentialPath, (req, res) => {
+    res.set('Cache-Control', 'no-store');
+    const disclosure = ownerAdmissionEnabled ? credentialConsent.disclose(req, req.params.requestId) : null;
+    if (!disclosure) { res.status(404).json({ error: 'credential-request-unavailable' }); return; }
+    res.json(disclosure);
+  });
+  router.post(credentialPath, (req, res) => {
+    res.set('Cache-Control', 'no-store');
+    const outcome = ownerAdmissionEnabled
+      ? credentialConsent.submit(req, req.params.requestId, req.body?.disclosureId, req.body?.value)
+      : 'stale';
+    res.status(outcome === 'applied' ? 200 : outcome === 'invalid' ? 400 : outcome === 'unavailable' ? 503 : 409).json({ outcome });
   });
 
   // List pending secret requests (agent-facing, requires auth)
@@ -32141,6 +32223,10 @@ document.getElementById('mcpForm').addEventListener('submit', async function (e)
   // docs/specs/secret-drop-hardening.md for the full rationale.
   router.post('/secrets/retrieve/:token', (req, res) => {
     const token = req.params.token;
+    if (secretDrop.isOwnerBoundPending(token)) {
+      res.status(409).json({ error: 'credential-request-pending' });
+      return;
+    }
     const consumeFlag = req.query.consume;
     const consume = consumeFlag === 'true' || consumeFlag === '1';
     const persistDrops = ctx.config.secrets?.persistDrops !== false;
@@ -32184,8 +32270,12 @@ document.getElementById('mcpForm').addEventListener('submit', async function (e)
       try {
         const store = new SecretStore({ stateDir: ctx.config.stateDir, forceFileKey: ctx.config.secrets?.forceFileKey });
         const durable = store.get(`secretDrops.${token}`) as
-          | { label?: string; topicId?: number | null; receivedAt?: string; values?: Record<string, string>; mintAuth?: MintAuth }
+          | { label?: string; topicId?: number | null; receivedAt?: string; values?: Record<string, string>; mintAuth?: MintAuth; ownerCommitPending?: boolean }
           | undefined;
+        if (durable?.ownerCommitPending === true) {
+          res.status(409).json({ error: 'credential-request-pending' });
+          return;
+        }
         if (durable && durable.values) {
           if (consume && !durableDeleted()) { refuseUnconsumed(); return; }
           submission = {
