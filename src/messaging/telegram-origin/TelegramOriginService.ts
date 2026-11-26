@@ -62,6 +62,7 @@ export interface OriginServiceStore {
 }
 export interface OriginServiceOptions {
   capacity?: OriginCapacityAuthority;
+  shortCapacityRetry?: boolean;
   /** Fallback record for a Telegram acceptance whose receipt write failed. */
   unrecordedReceipts?: Pick<OriginUnrecordedReceipts, 'append'>;
   sendPolicy?: OriginSendPolicyAuthority;
@@ -932,7 +933,7 @@ export class TelegramOriginService {
             }
             // Only a request-bound proof from the egress closure returns budget.
             // A crash without that proof remains uncertain on recovery.
-            const nextAttemptAt = leaseRefusal
+            const nextAttemptAt = leaseRefusal || (localRefusal && this.options.shortCapacityRetry)
               ? nextOriginLeaseLapse(this.#now(), operation.admission.deadlineAt)
               : localRefusal
               ? nextOriginLocalRefusal(this.#now(), operation.admission.deadlineAt)

@@ -59,6 +59,7 @@ export class OriginEgressCapacity implements OriginCapacityAuthority {
   #closed = false;
   constructor(readonly options: { ownerBootId: string; accountIds: () => string[];
     ownsLease: () => boolean; now?: () => number;
+    startBudget?: 1 | 9;
     /** lease-freshness-lapse-retry — the coordinator's one-snapshot verdict and renewal gap. When present it is
      * the lease read (permission and reason from the same sample); `ownsLease()` is read only without it. */
     leaseFreshness?: () => LeaseFreshness | null }) {
@@ -87,7 +88,7 @@ export class OriginEgressCapacity implements OriginCapacityAuthority {
     const now = this.#now();
     const entries = (this.#debits.get(accountId) ?? []).filter(entry => now - entry.at < ORIGIN_CAPACITY_WINDOW_MS);
     this.#debits.set(accountId, entries);
-    if (entries.length >= 10) return { grant: null, refusal: { cause: 'rate-window-full', leaseFreshness: null } };
+    if (entries.length >= (this.options.startBudget ?? 10)) return { grant: null, refusal: { cause: 'rate-window-full', leaseFreshness: null } };
     const grant = { ownerBootId: this.options.ownerBootId, accountId, nonce: randomUUID(), expiresAt: now + ORIGIN_CAPACITY_TTL_MS };
     entries.push({ at: now, grant, consumed: false }); return { grant: { ...grant }, refusal: null };
   }
