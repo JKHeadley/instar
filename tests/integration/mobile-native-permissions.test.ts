@@ -12,13 +12,16 @@ import { describe, it, expect, afterAll, vi } from 'vitest';
 import fs from 'node:fs';
 import os from 'node:os';
 import path from 'node:path';
+import Database from 'better-sqlite3';
 import express from 'express';
 import request from 'supertest';
 import { authMiddleware } from '../../src/server/middleware.js';
 import { MobilePairingService, deviceAuthenticator, type MobilePairingDeps } from '../../src/server/mobilePairingRoutes.js';
 import { mountMobilePermissionsRoutes, permissionPresenceMessage, actionLine, consentDisclosure, type MobilePermissionsDeps, type ActionResult } from '../../src/server/mobilePermissionsRoutes.js';
 import { presenceMessage } from '../../src/server/mobileConsoleTicket.js';
+import { FirstPhonePrivateNominationStore } from '../../src/core/trustJourney/FirstPhonePrivateNominationStore.js';
 import { canonicalString, keyHashOf } from '../../src/core/MobileDeviceKeys.js';
+import { firstPhoneEnrollmentReceipt } from '../helpers/firstPhoneEnrollmentReceipt.js';
 import { makeDevice } from '../helpers/mobileDevice.js';
 import { SafeFsExecutor } from '../../src/core/SafeFsExecutor.js';
 import { FeatureEvidenceLog, setFeatureEvidenceLog } from '../../src/monitoring/FeatureEvidenceLog.js';
@@ -486,6 +489,77 @@ describe('disposable first-phone enrollment challenge', () => {
 });
 
 describe('disposable first-phone signed enrollment submission', () => {
+  it('records a private nomination and returns the same receipt on signed retry after reopening the database', async () => {
+    const action = {
+      action: 'first-phone-enrollment-v1',
+      target: '',
+      proposalHash: HASH,
+      disclosureHash: 'c'.repeat(64),
+    };
+    const fixtures = new Map<string, { deviceKeyHash: string; presenceKeyHash: string }>();
+    let db: Database.Database;
+    const slot = 'tj:device-acceptance:first:0';
+    const fixture = setup({ dashboardPin: undefined }, (candidate, caller) =>
+      candidate.target === action.target && candidate.proposalHash === action.proposalHash
+        && candidate.disclosureHash === action.disclosureHash && caller.host === HOST && fixtures.has(caller.deviceId)
+        ? null : { status: 409, error: 'nomination-changed' },
+    async (signed, proof) => {
+      const expected = fixtures.get(proof.deviceId);
+      const binding = new FirstPhonePrivateNominationStore(db).binding(signed.target);
+      if (binding?.proposalHash !== signed.proposalHash || binding.firstAcceptanceKey !== slot
+        || signed.target !== action.target || signed.proposalHash !== action.proposalHash
+        || signed.disclosureHash !== action.disclosureHash || expected?.deviceKeyHash !== proof.deviceKeyHash
+        || expected.presenceKeyHash !== proof.presenceKeyHash || proof.host !== HOST
+        || proof.challengeExpiresAt <= Date.now()) return { status: 409, body: { error: 'nomination-changed' } };
+      const receipt = firstPhoneEnrollmentReceipt(db).claim(slot, signed.target, signed.proposalHash, proof.deviceId);
+      return receipt ? { status: 200, body: receipt } : { status: 409, body: { error: 'slot-occupied' } };
+    });
+    const phone = fixture.pair();
+    fixtures.set(phone.id, { deviceKeyHash: keyHashOf(phone.dev.publicKey), presenceKeyHash: keyHashOf(phone.presence.publicKey) });
+    const file = path.join(fixture.dir, 'first-phone-receipt.sqlite');
+    db = new Database(file);
+    try {
+      const offer = {
+        callbackData: 'first-phone:synthetic_fixture_token_123', chatId: '777', disclosureMessageId: 15,
+        proposalHash: action.proposalHash, accountAcceptanceId: 'fixture-account', holderEpoch: 'fixture-holder',
+        firstAcceptanceKey: slot, issuedAt: 100, expiresAt: 300,
+      };
+      const nomination = new FirstPhonePrivateNominationStore(db).record('receipt-1', offer, {
+        callbackData: offer.callbackData, senderId: '777', senderIsBot: false,
+        chatId: '777', chatType: 'private', messageId: 15, receivedAt: 200,
+      }, {
+        ownerId: '777', accountAcceptanceId: offer.accountAcceptanceId, holderEpoch: offer.holderEpoch,
+        proposalHash: offer.proposalHash, firstAcceptanceKey: slot,
+      }, 210);
+      if (nomination.status !== 'recorded') throw new Error('Expected synthetic private acceptance to record a nomination');
+      action.target = nomination.nominationId;
+      const challengeID = await challenge(fixture.app, phone, action);
+      const line = `${action.action} ${action.target} ${action.proposalHash} ${action.disclosureHash}`;
+      const submitted = await send(fixture.app, phone, 'POST', '/mobile/trust/first-phone-enrollment', {
+        ...action, challenge: challengeID, presenceSig: sig(phone, challengeID, line),
+      });
+      expect(submitted.status).toBe(200);
+      db.close();
+      db = new Database(file);
+
+      const reopened = firstPhoneEnrollmentReceipt(db);
+      const recovered = reopened.receipt(action.target, action.proposalHash, phone.id, slot);
+      expect(recovered).toEqual(submitted.body);
+      expect(recovered?.acceptanceId).toMatch(/^[a-f0-9-]{36}$/);
+      expect(reopened.receipt(action.target, action.proposalHash, 'other-device', slot)).toBeNull();
+      expect(reopened.claim(slot, 'other-nomination', action.proposalHash, phone.id)).toBeNull();
+      expect(reopened.claim('tj:device-acceptance:first:1', action.target, action.proposalHash, phone.id)).toBeNull();
+      const freshChallenge = await challenge(fixture.app, phone, action);
+      const retry = await send(fixture.app, phone, 'POST', '/mobile/trust/first-phone-enrollment', {
+        ...action, challenge: freshChallenge, presenceSig: sig(phone, freshChallenge, line),
+      });
+      expect(retry.status).toBe(200);
+      expect(retry.body).toEqual(recovered);
+    } finally {
+      db.close();
+    }
+  });
+
   it('passes only a valid one-use enrollment proof and the verified keys to the test authority', async () => {
     const submit = vi.fn<NonNullable<MobilePermissionsDeps['firstPhoneEnrollmentSubmit']>>();
     submit.mockResolvedValue({ status: 409, body: { error: 'nomination-changed' } });
