@@ -18,7 +18,7 @@ import { authMiddleware } from '../../src/server/middleware.js';
 import { MobilePairingService, deviceAuthenticator, type MobilePairingDeps } from '../../src/server/mobilePairingRoutes.js';
 import { mountMobilePermissionsRoutes, permissionPresenceMessage, actionLine, consentDisclosure, type MobilePermissionsDeps, type ActionResult } from '../../src/server/mobilePermissionsRoutes.js';
 import { presenceMessage } from '../../src/server/mobileConsoleTicket.js';
-import { canonicalString } from '../../src/core/MobileDeviceKeys.js';
+import { canonicalString, keyHashOf } from '../../src/core/MobileDeviceKeys.js';
 import { makeDevice } from '../helpers/mobileDevice.js';
 import { SafeFsExecutor } from '../../src/core/SafeFsExecutor.js';
 import { FeatureEvidenceLog, setFeatureEvidenceLog } from '../../src/monitoring/FeatureEvidenceLog.js';
@@ -36,7 +36,8 @@ afterAll(() => {
 const relay = { id: 'threadline-relay', name: 'Agent network', consentTier: 'network', switchable: true, fullDescription: 'Joins the agent network.', dataImplications: [{ dataType: 'messages', description: 'Messages to other agents', destination: 'relay.example' }], reversibilityNote: 'Turn it off any time.' };
 const backup = { id: 'git-backup', name: 'Git backup', consentTier: 'local', switchable: true, oneLiner: 'Back up to git.' };
 
-function setup(cfg: Record<string, unknown> = {}, firstPhoneEnrollmentPrecheck?: MobilePermissionsDeps['firstPhoneEnrollmentPrecheck']) {
+function setup(cfg: Record<string, unknown> = {}, firstPhoneEnrollmentPrecheck?: MobilePermissionsDeps['firstPhoneEnrollmentPrecheck'],
+  firstPhoneEnrollmentSubmit?: MobilePermissionsDeps['firstPhoneEnrollmentSubmit']) {
   const dir = fs.mkdtempSync(path.join(os.tmpdir(), 'mnperm-int-'));
   dirs.push(dir);
   fs.writeFileSync(path.join(dir, 'users.json'), JSON.stringify([{ id: 'justin', name: 'Justin', channels: [], permissions: ['user'] }]));
@@ -49,6 +50,7 @@ function setup(cfg: Record<string, unknown> = {}, firstPhoneEnrollmentPrecheck?:
   const deps: MobilePermissionsDeps = {
     pairing: () => svc,
     firstPhoneEnrollmentPrecheck,
+    firstPhoneEnrollmentSubmit,
     config: () => config,
     stateDir: dir,
     bearerOk: (req) => req.headers.authorization === 'Bearer tok-1',
@@ -480,5 +482,47 @@ describe('disposable first-phone enrollment challenge', () => {
     const accepted = await send(fixture.app, phone, 'POST', path, issue);
     expect(accepted.status).toBe(200);
     expect(accepted.body.challenge).toMatch(/^[A-Za-z0-9_-]{43}$/);
+  });
+});
+
+describe('disposable first-phone signed enrollment submission', () => {
+  it('passes only a valid one-use enrollment proof and the verified keys to the test authority', async () => {
+    const submit = vi.fn<NonNullable<MobilePermissionsDeps['firstPhoneEnrollmentSubmit']>>();
+    submit.mockResolvedValue({ status: 409, body: { error: 'nomination-changed' } });
+    const fixture = setup({ dashboardPin: undefined }, () => null, submit);
+    const phone = fixture.pair();
+    const action = {
+      action: 'first-phone-enrollment-v1',
+      target: '01234567-89ab-4cde-8fab-012345678901',
+      proposalHash: HASH,
+      disclosureHash: 'c'.repeat(64),
+    };
+    const path = '/mobile/trust/first-phone-enrollment';
+    const line = `${action.action} ${action.target} ${action.proposalHash} ${action.disclosureHash}`;
+    const bad = await challenge(fixture.app, phone, action);
+    const invalid = await send(fixture.app, phone, 'POST', path, {
+      ...action, challenge: bad, presenceSig: sig(phone, bad, line + ' changed'),
+    });
+    expect(invalid.status).toBe(401);
+    expect(invalid.body).toEqual({ error: 'presence-invalid' });
+    expect(submit).not.toHaveBeenCalled();
+
+    const good = await challenge(fixture.app, phone, action);
+    const body = { ...action, challenge: good, presenceSig: sig(phone, good, line) };
+    const changed = await send(fixture.app, phone, 'POST', path, body);
+    expect(changed.status).toBe(409);
+    expect(changed.body).toEqual({ error: 'nomination-changed' });
+    expect(submit).toHaveBeenCalledWith(
+      { kind: action.action, target: action.target, proposalHash: action.proposalHash, disclosureHash: action.disclosureHash },
+      {
+        deviceId: phone.id, host: HOST, deviceKeyHash: keyHashOf(phone.dev.publicKey),
+        presenceKeyHash: keyHashOf(phone.presence.publicKey), challengeExpiresAt: expect.any(Number),
+      },
+    );
+
+    const replay = await send(fixture.app, phone, 'POST', path, body);
+    expect(replay.status).toBe(401);
+    expect(replay.body).toEqual({ error: 'challenge-invalid' });
+    expect(submit).toHaveBeenCalledTimes(1);
   });
 });

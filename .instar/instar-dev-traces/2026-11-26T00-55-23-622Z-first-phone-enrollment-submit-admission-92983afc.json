@@ -1,0 +1,21 @@
+{
+  "version": 2,
+  "slug": "first-phone-enrollment-submit-admission",
+  "sessionId": "b3d2cf8a-9b5d-468b-a50b-70ebf11e9e5c",
+  "timestamp": "2026-11-26T00:55:23.622Z",
+  "artifactPath": "upgrades/side-effects/first-phone-enrollment-submit-admission.md",
+  "artifactSha256": "e6ca93b37d9776fdee73edd3e29b233d737186046c25daddd65d13e204d45c4f",
+  "coveredFiles": [
+    "src/server/mobilePairingRoutes.ts",
+    "src/server/mobilePermissionsRoutes.ts",
+    "tests/e2e/trust-app-approval-alive.test.ts",
+    "tests/integration/mobile-native-permissions.test.ts"
+  ],
+  "phase": "complete",
+  "tier": 1,
+  "tierReasoning": "Signed submission admission only, no bound production authority or acceptance write.",
+  "eli16Path": "docs/specs/phone-only-first-approver.eli16.md",
+  "sideEffectsPath": "upgrades/side-effects/first-phone-enrollment-submit-admission.md",
+  "secondPass": "true",
+  "reviewerConcurred": true
+}

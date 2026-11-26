@@ -46,7 +46,7 @@ import { cleanConversationTitle } from '../core/appConversationText.js';
 import { TOKEN_RUN } from './mobileSecretsRoutes.js';
 import { activeOwnerPhone, isConsoleTicketEnabled, normalHost, verifyPresenceSignature } from './mobileConsoleTicket.js';
 import { arrivedOverLocalTls } from '../core/desktopTransport.js';
-import type { MobilePairingService } from './mobilePairingRoutes.js';
+import { deviceAdmissionIdentity, type MobilePairingService } from './mobilePairingRoutes.js';
 import type { InstarConfig } from '../core/types.js';
 import { resolveDevAgentGate } from '../core/devAgentGate.js';
 import { featureEvidence } from '../monitoring/FeatureEvidenceLog.js';
@@ -781,6 +781,11 @@ export interface MobilePermissionsDeps {
     action: Extract<PermissionAction, { kind: 'first-phone-enrollment-v1' }>,
     caller: { deviceId: string; host: string },
   ) => Refusal | null;
+  /** Test-only authority for the durable decision. It revalidates current authority at commit. */
+  firstPhoneEnrollmentSubmit?: (
+    action: Extract<PermissionAction, { kind: 'first-phone-enrollment-v1' }>,
+    proof: { deviceId: string; host: string; deviceKeyHash: string; presenceKeyHash: string; challengeExpiresAt: number },
+  ) => Promise<ActionResult>;
   /** Team access's Face ID actions (team-roles-and-access §3.6, §4.1). */
   teamAction?: (kind: TeamActionKind, req: Request, deviceId: string, target?: string) => Promise<ActionResult>;
   /**
@@ -1373,6 +1378,33 @@ export function mountMobilePermissionsRoutes(router: Router, deps: MobilePermiss
     }
     finish(res, 'trust-approved', a, g, r);
   });
+
+  router.post('/mobile/trust/first-phone-enrollment', guarded('record first-phone enrollment', async (req, res) => {
+    res.set('Cache-Control', 'no-store');
+    const g = writeGate(req, res, 'first-phone');
+    if (!g) return;
+    const b = rec(req.body);
+    const built = buildAction('first-phone-enrollment-v1', b.target, actionExtras(b));
+    if (!built.ok) { refuse400(req, res, g, built.error); return; }
+    const action = built.action as Extract<PermissionAction, { kind: 'first-phone-enrollment-v1' }>;
+    const identity = deviceAdmissionIdentity(req);
+    const presenceKey = parseDevicePublicKey(g.presenceKey);
+    if (!identity || identity.role !== 'owner' || !presenceKey) {
+      finish(res, 'trust-acceptance', action, g, { status: 403, body: { error: 'first-phone-proof-unavailable' } });
+      return;
+    }
+    if (!deps.firstPhoneEnrollmentSubmit) {
+      finish(res, 'trust-acceptance', action, g, { status: 503, body: { error: 'first-phone-enrollment-unavailable' } });
+      return;
+    }
+    const proof = provenDetail(req, res, g, action);
+    if (!proof) return;
+    const result = await deps.firstPhoneEnrollmentSubmit(action, {
+      deviceId: g.deviceId, host: g.host, deviceKeyHash: identity.keyHash,
+      presenceKeyHash: keyHashOf(g.presenceKey), challengeExpiresAt: proof.expiresAt,
+    });
+    finish(res, 'trust-acceptance', action, g, result);
+  }));
 
   router.post('/mobile/trust/device-acceptance', guarded('POST /mobile/trust/device-acceptance records an acceptance', async (req: Request, res: Response) => {
     const port = trustPort(res);
