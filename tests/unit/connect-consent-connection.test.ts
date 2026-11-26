@@ -101,8 +101,11 @@ it('retires prompt, grant and queue before returning a replacement challenge', (
   expect(first.admit(proof(first.challenge))).toBe(true);
   const resources = new Set(['prompt', 'grant', 'queue']);
   let reentrant;
+  let visibleDuringTeardown: boolean | undefined;
+  let verified: ReturnType<ConnectConsentHost['open']>;
   first.signal.addEventListener('abort', () => {
     reentrant = host.open(pairing, keys.publicKey, new AbortController().signal, () => true);
+    visibleDuringTeardown = verified?.current();
     resources.clear();
   });
   const second = host.open(pairing, keys.publicKey, new AbortController().signal, () => true)!;
@@ -111,11 +114,12 @@ it('retires prompt, grant and queue before returning a replacement challenge', (
   expect(host.open(pairing, keys.publicKey, new AbortController().signal, () => true)).toBeUndefined();
   expect(second.admit(proof(second.challenge, other.privateKey))).toBe(false);
   expect(first.current()).toBe(true);
-  const verified = host.open(pairing, keys.publicKey, new AbortController().signal, () => true)!;
+  verified = host.open(pairing, keys.publicKey, new AbortController().signal, () => true)!;
   expect(verified.admit(proof(verified.challenge))).toBe(true);
   expect(first.signal.aborted).toBe(true);
   expect(first.current()).toBe(false);
   expect(reentrant).toBeUndefined();
+  expect(visibleDuringTeardown).toBe(false);
   expect(resources.size).toBe(0);
   expect(verified.signal.aborted).toBe(false);
   host.close();

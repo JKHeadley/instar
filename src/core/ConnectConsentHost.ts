@@ -35,7 +35,7 @@ export class ConnectConsentHost {
     this.#pending = slot;
     const expiry = setTimeout(onClose, 10_000).unref();
     lifetime.signal.addEventListener('abort', () => clearTimeout(expiry), { once: true });
-    const ownsSlot = () => this.#slot === slot && !lifetime.signal.aborted;
+    const ownsSlot = () => !this.#replacing && this.#slot === slot && !lifetime.signal.aborted;
     return {
       challenge: connection.challengeTranscript(),
       signal: lifetime.signal,
