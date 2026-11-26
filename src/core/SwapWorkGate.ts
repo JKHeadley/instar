@@ -49,6 +49,8 @@ export interface WorkProbeResult {
   busy: boolean;
   turnLeg: WorkLegState;
   subagentLeg: 'ok' | 'absent' | 'indeterminate';
+  /** The native runtime confirmed complete worker coverage for this session. */
+  verifiedSubagentCoverage?: boolean;
   /** The pane/process leg observed a live turn. */
   turnInFlight: boolean;
   /** Live subagents (empty when none; null when the leg is absent/indeterminate — unreadable ≠ zero, R5-M1). */

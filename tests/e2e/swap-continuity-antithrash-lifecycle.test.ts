@@ -81,7 +81,7 @@ describe('swap-continuity anti-thrash — E2E feature-alive', () => {
     dir = '';
   });
 
-  it.each(['idle', 'working', 'background', 'unobserved'] as const)('checks pin admission for a %s cloud Codex topic', async (mode) => {
+  it.each(['idle', 'working', 'background', 'unobserved', 'unhydrated'] as const)('checks pin admission for a %s cloud Codex topic', async (mode) => {
     dir = fs.mkdtempSync(path.join(os.tmpdir(), 'refresh-pin-e2e-'));
     const source = {
       id: 'source-instance', tmuxSession: 'echo-idle', status: 'running',
@@ -109,7 +109,10 @@ describe('swap-continuity anti-thrash — E2E feature-alive', () => {
       telegram: { getTopicForSession: () => 42 } as unknown as TelegramAdapter,
       respawner: async (_name, _topic, prompt, pin) => { actions.push({ prompt, pin }); return 'echo-idle'; },
       workGateCtx: {
-        probe: name => workGate.probe(name),
+        probe: async name => ({
+          ...await workGate.probe(name),
+          verifiedSubagentCoverage: mode !== 'unhydrated' && mode !== 'unobserved',
+        }),
         resolveUnansweredInbound: () => 'none',
         getKnobs: () => ({ enabled: true, dryRun: false, reactiveGraceMs: 0, recheckMs: 0 }),
       },

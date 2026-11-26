@@ -1045,7 +1045,8 @@ export class SessionRefresh {
       };
     }
     if (!probe.busy) return requireVerifiedIdle &&
-      (probe.turnLeg !== 'idle' || probe.subagentLeg === 'indeterminate') ? unknown() : null;
+      (probe.turnLeg !== 'idle' || probe.subagentLeg !== 'ok' ||
+        probe.verifiedSubagentCoverage !== true) ? unknown() : null;
     try {
       ctx.recordInteractiveRefusal?.({
         session: sessionName,

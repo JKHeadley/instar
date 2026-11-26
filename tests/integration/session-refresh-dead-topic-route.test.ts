@@ -70,7 +70,7 @@ describe('POST /sessions/refresh — dead mapped topic session (integration)', (
           await afterIdleProbe();
           return {
             busy: !!opts.busy, turnLeg: opts.busy ? 'working' : 'idle', subagentLeg: 'ok',
-            turnInFlight: !!opts.busy, subagents: [], reason: opts.busy ? 'busy-turn' : null,
+            verifiedSubagentCoverage: true, turnInFlight: !!opts.busy, subagents: [], reason: opts.busy ? 'busy-turn' : null,
           };
         },
       },
