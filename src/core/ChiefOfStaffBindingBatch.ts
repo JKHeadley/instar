@@ -1,5 +1,5 @@
 import { canonicalHash } from './GraphWitnessTypes.js';
-import { isValidConversationKey, type BindingInput } from './ChiefOfStaffStore.js';
+import { isValidConversationKey, validBindingDraftDetails, type BindingInput } from './ChiefOfStaffStore.js';
 
 /** The immutable, owner-visible work in one project-binding approval. */
 export type BindingBatchItem =
@@ -44,9 +44,8 @@ export function validateOwnerBindingBatchDraft(value: unknown): value is OwnerBi
       const b = item.binding as Record<string, unknown>;
       if (!isValidConversationKey(b.conversationKey) || targets.has(b.conversationKey)) return false;
       if (typeof b.goal !== 'string' || !b.goal.trim() || b.goal.length > 4000) return false;
-      if (!Array.isArray(b.doneDefinition) || b.doneDefinition.length < 1 || b.doneDefinition.length > 64) return false;
       if (!Number.isFinite(b.checkCadenceHours) || (b.checkCadenceHours as number) <= 0) return false;
-      if (!b.linked || typeof b.linked !== 'object' || Array.isArray(b.linked)) return false;
+      if (!validBindingDraftDetails(b)) return false;
       targets.add(b.conversationKey);
     } else if (item.kind === 'parent-placement') {
       if (Object.keys(item).sort().join(',') !== 'audienceFingerprint,childConversationKey,kind,parentConversationKey,sourceCardId,sourceFingerprint,title') return false;
@@ -66,4 +65,27 @@ export function renderOwnerBindingBatch(draft: OwnerBindingBatchDraft, sourceDis
     ? `${index + 1}. Add project “${item.title}”\n   Goal: ${item.binding.goal}\n   Repository: ${item.binding.linked.repos?.join(', ') || 'None'}\n   Completion checks:\n${item.binding.doneDefinition.map((d) => `   - ${d.text}`).join('\n')}`
     : `${index + 1}. Place the app conversation “${item.title}” under its recorded project parent\n   Parent: ${item.parentConversationKey}\n   Work Board source: ${item.sourceCardId}`);
   return `Review ${draft.items.length} exact changes\n\n${rows.join('\n\n')}\n\nOwner request evidence:\n${sourceDisclosure.map((text) => `- ${text}`).join('\n')}\n\nNothing changes unless you approve this complete list. This approval applies only to the items shown here.`;
+}
+
+/** Compare a caller-supplied draft with the current project list for review.
+ * Placement rows still need graph and Work Board source checks in the existing workflow.
+ */
+export function previewOwnerBindingBatch(value: unknown, bound: ReadonlySet<string>) {
+  if (!validateOwnerBindingBatchDraft(value)) return null;
+  let draftHash: string;
+  try { draftHash = ownerBindingBatchHash(value); }
+  catch { return null; } // JSON outside the canonical numeric domain is an invalid draft.
+  return {
+    mode: 'preview' as const,
+    draftHash,
+    items: value.items.map((item) => {
+      if (item.kind === 'parent-placement') {
+        return { item, disposition: 'placement-source-review-required' as const };
+      }
+      return {
+        item,
+        disposition: bound.has(item.binding.conversationKey) ? 'already-tracked' as const : 'proposed-binding' as const,
+      };
+    }),
+  };
 }

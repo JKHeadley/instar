@@ -1,6 +1,6 @@
 import { describe, expect, it } from 'vitest';
 import {
-  OWNER_BINDING_BATCH_MAX_ITEMS, ownerBindingBatchHash, renderOwnerBindingBatch,
+  OWNER_BINDING_BATCH_MAX_ITEMS, ownerBindingBatchHash, previewOwnerBindingBatch, renderOwnerBindingBatch,
   validateOwnerBindingBatchDraft, type OwnerBindingBatchDraft,
 } from '../../src/core/ChiefOfStaffBindingBatch.js';
 
@@ -47,6 +47,11 @@ describe('Chief of Staff owner binding batches', () => {
     const badSource = draft();
     (badSource.items[1] as ReturnType<typeof placement>).sourceFingerprint = 'recorded-source';
     expect(validateOwnerBindingBatchDraft(badSource)).toBe(false);
+    const invalidDetails = draft();
+    (invalidDetails.items[0] as ReturnType<typeof project>).binding.linked.repos = [Infinity as unknown as string];
+    expect(validateOwnerBindingBatchDraft(invalidDetails)).toBe(false);
+    (invalidDetails.items[0] as ReturnType<typeof project>).binding.linked = [] as unknown as ReturnType<typeof project>['binding']['linked'];
+    expect(validateOwnerBindingBatchDraft(invalidDetails)).toBe(false);
     const tooLarge = draft();
     tooLarge.items = Array.from({ length: OWNER_BINDING_BATCH_MAX_ITEMS + 1 }, (_, i) => project(`telegram:${1000 + i}`));
     expect(validateOwnerBindingBatchDraft(tooLarge)).toBe(false);
@@ -63,6 +68,20 @@ describe('Chief of Staff owner binding batches', () => {
     expect(content).toContain('Project telegram:147616');
     expect(content).toContain('Work Board source: wc_734c50a1ae480aa8');
     expect(content).toContain('We are still showing project chats outside of the projects group.');
+  });
+
+  it('shows existing bindings and defers placement source checks without changing the exact draft', () => {
+    const value = draft();
+    value.items.push(project('telegram:147618'));
+    const hash = ownerBindingBatchHash(value);
+    const preview = previewOwnerBindingBatch(value, new Set(['telegram:147616']));
+    expect(preview?.mode).toBe('preview');
+    expect(preview?.draftHash).toBe(hash);
+    expect(preview?.items.map(({ disposition }) => disposition)).toEqual([
+      'already-tracked', 'placement-source-review-required', 'proposed-binding',
+    ]);
+    expect(preview?.items.map(({ item }) => item)).toEqual(value.items);
+    expect(previewOwnerBindingBatch(null, new Set())).toBeNull();
   });
 
   it('refuses to render partial source disclosure', () => {
