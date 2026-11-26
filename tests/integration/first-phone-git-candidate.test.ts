@@ -4,7 +4,7 @@ import { dirname, join } from 'node:path';
 import { expect, it } from 'vitest';
 import { createFirstPhoneGitCandidateReader, FIRST_PHONE_CANDIDATE_PATH } from '../../src/core/FirstPhoneGitCandidateReader.js';
 import { firstPhoneSlotDecisionPayload } from '../../src/core/FirstPhoneSlotDecision.js';
-import { createOrderedWitnessObserver } from '../../src/core/OrderedWitnessObserver.js';
+import { createFirstPhoneWitnessObservation } from '../../src/core/FirstPhoneWitnessObservation.js';
 import { OrderedWitnessSnapshotStore } from '../../src/core/OrderedWitnessSnapshotStore.js';
 import { SafeFsExecutor } from '../../src/core/SafeFsExecutor.js';
 import { SafeGitExecutor } from '../../src/core/SafeGitExecutor.js';
@@ -45,12 +45,22 @@ it('stages the exact canonical candidate from the pinned Git commit without acce
     expect(reader(malformed)).toBeNull();
     expect(reader(commit)).toEqual({ operation: challengeKey, payload: Buffer.from(body) });
 
+    const isolated = join(root, 'isolated');
+    mkdirSync(isolated);
+    SafeGitExecutor.execSync(['init', '--bare'], { cwd: isolated, operation: 'first-phone-git-candidate:isolated' });
+    const isolatedReader = createFirstPhoneGitCandidateReader(isolated);
+    const deps = { target: { repository: mirror, ref, scope, audience: 'disposable' }, mirror: isolated, store };
+    const observe = createFirstPhoneWitnessObservation({ ...deps, enabled: true });
+    expect(isolatedReader(commit)).toBeNull();
+    expect(observe()).toBe('pending');
+
     git(['update-ref', ref, commit]);
-    const observe = createOrderedWitnessObserver({
-      enabled: true, target: { repository: mirror, ref, scope, audience: 'disposable' },
-      store, readCandidateAtCommit: reader,
-    });
-    expect(observe(scope)).toBe('staged');
+    expect(createFirstPhoneWitnessObservation(deps)()).toBe('pending');
+    expect(isolatedReader(commit)).toBeNull();
+    expect(observe()).toBe('staged');
+    expect(isolatedReader(commit)).toEqual({ operation: challengeKey, payload: Buffer.from(body) });
+    expect(observe()).toBe('existing');
+    expect(SafeGitExecutor.readSync(['for-each-ref'], { cwd: isolated, operation: 'first-phone-git-candidate:check-refs' }).trim()).toBe('');
     expect(store.readOperation(scope, challengeKey)).toBeNull();
   } finally {
     store.close();

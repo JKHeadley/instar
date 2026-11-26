@@ -30,3 +30,5 @@ The dark first-phone authority now compares and records the exact slot generatio
 The default-off witness observer retains exact first-phone candidate bytes before the authority can accept them. An accepted receipt can recover those bytes after restart.
 
 The first-phone observer can read the canonical candidate blob at the exact observed commit from a preconfigured witness Git mirror.
+
+The default-off first-phone observation cycle refreshes its isolated Git mirror before staging the exact candidate. It leaves the mirror's refs and accepted witness state untouched.

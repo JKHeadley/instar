@@ -79,3 +79,7 @@ The default-off observer has only the staging operation and checks the pinned Gi
 ## First-phone Git candidate reader
 
 The dark reader accepts only full object IDs and a fixed blob path in a receiver-configured witness mirror. It checks canonical bytes and decision shape before staging. The integration exercises real Git objects, including a malformed blob, and verifies staging produces no acceptance. Mirror fetch and the observer service loop remain separate.
+
+## Witness mirror refresh
+
+The default-off one-shot composition uses the audited Git executor with a bounded fetch into a dedicated receiver-owned mirror. It fetches the pinned ref without a destination refspec, disables tags and submodules, and does not write FETCH_HEAD. The staging path then re-observes the authoritative tip around the immutable blob read. A failed refresh prevents staging. The disposable integration starts with an empty isolated mirror and verifies no local refs or accepted state were created. No deployed timer or route calls the cycle.

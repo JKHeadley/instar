@@ -27,3 +27,5 @@ First-phone enrollment and a competing key replacement now check the same slot. 
 The witness observer saves a copy of the exact proposal it saw. Saving a proposal does not approve it. If a success response goes missing, the authority can look up the original proposal using the accepted receipt and recover the same result.
 
 The observer can load the original proposal directly from the witness's Git mirror. It looks up the proposal at the exact commit, even if the mirror's working files show something else.
+
+A witness can now refresh its isolated Git mirror before checking for a proposal. If the refresh fails, it waits. A successful check can save the proposal as evidence without moving a branch or recording a decision.
