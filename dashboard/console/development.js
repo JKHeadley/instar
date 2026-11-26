@@ -118,7 +118,7 @@ function paint() {
   const feedback = buildFeedback({ readiness: res.readiness, triageSummary: res.triageSummary, triageProposal: res.triageProposal, execute: res.execute, queue: res.queue, drain: res.drain, consumerPromotion: res.consumerPromotion }, now);
   const h = developmentHeadline({ shipping, feedback, pace });
   const refresh = () => renderDevelopment(main, ctx);
-  const deps = { refresh, shipping, feedback, pace };
+  const deps = { refresh, shipping, feedback, pace, isCurrent: () => main.isConnected };
 
   // The one thing that needs the operator comes first; the rest wait as a counted line.
   const todos = feedback.todos;
@@ -318,10 +318,10 @@ function consumerPromotionForm(todo, deps, lead) {
       el('p', { class: 'card-note', text: holdExplanation }),
       el('div', { class: 'sheet-actions' }, confirm));
     confirm.addEventListener('click', async () => {
-      if (!panel.isConnected || !promote.isConnected) return;
+      if (!panel.isConnected || !deps.isCurrent()) return;
       confirm.disabled = true;
       promote.disabled = true;
-      const consent = await askPin({ title, explain: `${summary} ${holdExplanation}`, adapter: 'body', isCurrent: () => promote.isConnected });
+      const consent = await askPin({ title, explain: `${summary} ${holdExplanation}`, adapter: 'body', isCurrent: deps.isCurrent });
       if (!consent) { confirm.disabled = false; promote.disabled = false; return; }
       const status = el('p', { class: 'action-status', role: 'status', text: 'Promoting feedback processing…' });
       sheet({ title }, status);
