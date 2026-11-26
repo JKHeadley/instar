@@ -17,13 +17,11 @@ import {
   runDiscovery,
   buildScenarioContext,
   resolveScenario,
-  writeSetupLock,
-  readSetupLock,
-  deleteSetupLock,
   type SetupDiscoveryContext,
   type SetupLock,
 } from '../../src/commands/discovery.js';
 import { SafeFsExecutor } from '../../src/core/SafeFsExecutor.js';
+import { loadPrivateDiscoverySetupLock } from '../helpers/privateDiscoverySetupLock.js';
 
 // ── Helpers ─────────────────────────────────────────────────────
 
@@ -372,18 +370,17 @@ describe('Full Discovery Pipeline — Existing Agent', () => {
 describe('Full Discovery Pipeline — Lock File Integration', () => {
   let tmpHome: { dir: string; cleanup: () => void };
   let origHomedir: typeof os.homedir;
+  let lockApi: Awaited<ReturnType<typeof loadPrivateDiscoverySetupLock>>;
 
-  beforeEach(() => {
+  beforeEach(async () => {
     tmpHome = createTempDir();
     origHomedir = os.homedir;
+    lockApi = await loadPrivateDiscoverySetupLock(tmpHome.dir);
+    expect(os.homedir).toBe(origHomedir);
     (os as any).homedir = () => tmpHome.dir;
   });
 
   afterEach(() => {
-    // CRITICAL: Clean up any lock file written to the REAL home dir
-    // (LOCK_PATH is a module-level constant computed at import time,
-    // so it uses the real homedir, not our mock)
-    deleteSetupLock();
     (os as any).homedir = origHomedir;
     tmpHome.cleanup();
   });
@@ -398,10 +395,10 @@ describe('Full Discovery Pipeline — Lock File Integration', () => {
       filesCreated: ['/tmp/config.json', '/tmp/AGENT.md'],
       reposCreated: ['user/instar-pipeline-test'],
     };
-    writeSetupLock(lock);
+    lockApi.writeSetupLock(lock);
 
     // Read
-    const read = readSetupLock();
+    const read = lockApi.readSetupLock();
     expect(read).not.toBeNull();
     expect(read!.agentName).toBe('pipeline-test');
     expect(read!.scenario).toBe(4);
@@ -410,18 +407,18 @@ describe('Full Discovery Pipeline — Lock File Integration', () => {
     expect(read!.reposCreated).toHaveLength(1);
 
     // Update (overwrite)
-    writeSetupLock({ ...lock, phase: 'user-setup', filesCreated: [...lock.filesCreated, '/tmp/users.json'] });
-    const updated = readSetupLock();
+    lockApi.writeSetupLock({ ...lock, phase: 'user-setup', filesCreated: [...lock.filesCreated, '/tmp/users.json'] });
+    const updated = lockApi.readSetupLock();
     expect(updated!.phase).toBe('user-setup');
     expect(updated!.filesCreated).toHaveLength(3);
 
     // Delete
-    deleteSetupLock();
-    expect(readSetupLock()).toBeNull();
+    lockApi.deleteSetupLock();
+    expect(lockApi.readSetupLock()).toBeNull();
   });
 
   it('lock file survives across multiple discovery runs', () => {
-    writeSetupLock({
+    lockApi.writeSetupLock({
       startedAt: new Date().toISOString(),
       agentName: 'persistent',
       scenario: null,
@@ -437,7 +434,7 @@ describe('Full Discovery Pipeline — Lock File Integration', () => {
       runDiscovery(tmpProject.dir, null, 'unavailable');
 
       // Lock should still be there
-      const lock = readSetupLock();
+      const lock = lockApi.readSetupLock();
       expect(lock).not.toBeNull();
       expect(lock!.agentName).toBe('persistent');
     } finally {
