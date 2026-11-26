@@ -41,3 +41,5 @@ Everything in one release. Two live tests run on the operator's own Windows mach
 ## What you actually need to decide
 
 Nothing new: the operator asked for this consolidation on 21 October 2026 and approved continuing. The two things to know: the Windows driver is PP's work, shipped unchanged and credited as such, with Instar's rules in the wrapper around it; and the only new setting is a record in the agent's config that a machine is unattended, naming who said so, in which conversation, and when. The agent writes that record only when the operator says so, and it is what unlocks the driver's "take focus anyway" mode.
+
+On Windows, the bridge sends a password or one-time link through a private pipe to the desktop driver. The bridge keeps the value out of its temporary files and command lines, even when the driver prints the input. It still checks which browser window can receive the input.

@@ -694,7 +694,7 @@ switch ($Cmd) {
   'editfields' {
     # Index is what `typeedit` / `typesecretedit` target — deterministic, no coordinates.
     $t = Get-Target
-    $edits = Get-PageEdits $t
+    $edits = @(Get-PageEdits $t)
     for ($i = 0; $i -lt $edits.Count; $i++) {
       Write-Output ("[$i] y=$([int]$edits[$i].y) name='" + $edits[$i].name + "'")
     }
@@ -707,7 +707,7 @@ switch ($Cmd) {
     $val = if ($Cmd -eq 'typeedit') { $A2 } else { [Console]::In.ReadLine() }
     if ($null -eq $val) { Fail 'no value' 1 }
     $t = Get-Target
-    $edits = Get-PageEdits $t
+    $edits = @(Get-PageEdits $t)
     if ($idx -ge $edits.Count) { Fail "only $($edits.Count) fields" 2 }
     Assert-Foreground $t
     try { $edits[$idx].el.SetFocus() } catch { Fail "setfocus failed: $_" 2 }

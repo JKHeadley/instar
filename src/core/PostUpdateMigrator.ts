@@ -3408,6 +3408,7 @@ export class PostUpdateMigrator {
     this.migrateNormalChromeBrowserSkill(result);
     this.migrateAccountActionSafetySkill(result);
     this.migrateNormalChromeWindowsBlankPageNote(result);
+    this.migrateWindowsBrowserSecretPipeSkills(result);
     this.migrateAgentOwnedMemory(result);
     this.migrateTestAsSelfSkill(result);
     this.migrateInstarDevBuildLocationRegrounding(result);
@@ -7530,6 +7531,40 @@ export class PostUpdateMigrator {
       result.upgraded.push('skills/normal-chrome-browser/SKILL.md (Windows blank-page note: ERR page-not-rendering and the occlusion fix)');
     } catch (err) {
       result.errors.push(`skills/normal-chrome-browser/SKILL.md blank-page note: ${err instanceof Error ? err.message : String(err)}`);
+    }
+  }
+
+  private migrateWindowsBrowserSecretPipeSkills(result: MigrationResult): void {
+    const pipeNote = "- **Windows bridge secret input.** The Windows wrapper reads one printable ASCII line from stdin and passes it through a per-call, user-restricted Windows pipe. Use ordinary `typesecretedit` for page inputs. For an already bound profile and a verified one-time HTTPS sign-in URL, use `ctrl l`, pipe the link to `typesecret`, then use `key Enter`. Verify the provider page without printing the link.";
+    const changes = [
+      {
+        name: 'subscription-signin',
+        anchor: "Keep it off every command line: save it to a private file with your file tool, run `ndrive.sh ctrl l`, then `ndrive.sh typesecret < <file>`, and delete the file.",
+        replacement: "Keep it in memory and feed it directly into `ndrive.sh typesecret` over stdin after `ndrive.sh ctrl l`. If the link cannot be piped directly from an in-memory source, stop before navigating.",
+      },
+      {
+        name: 'normal-chrome-browser',
+        anchor: '- **URLs can be secrets too.**',
+        replacement: pipeNote + '\n- **URLs can be secrets too.**',
+        marker: pipeNote,
+      },
+    ];
+    for (const root of ['.instar', '.claude', '.agents']) {
+      for (const change of changes) {
+        const relative = path.join(root, 'skills', change.name, 'SKILL.md');
+        const file = path.join(this.config.projectDir, relative);
+        try {
+          if (!fs.existsSync(file)) continue;
+          const current = fs.readFileSync(file, 'utf8');
+          if (!current.includes('name: ' + change.name) || !current.includes(change.anchor)) continue;
+          if (change.marker && current.includes(change.marker)) continue;
+          const replacement = current.includes('\r\n') ? change.replacement.replace(/\n/g, '\r\n') : change.replacement;
+          fs.writeFileSync(file, current.replace(change.anchor, () => replacement));
+          result.upgraded.push(`${relative} (Windows secret input over pipes)`);
+        } catch (err) {
+          result.errors.push(`${relative} secret input: ${err instanceof Error ? err.message : String(err)}`);
+        }
+      }
     }
   }
 

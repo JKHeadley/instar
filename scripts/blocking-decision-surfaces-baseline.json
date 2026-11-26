@@ -151,13 +151,13 @@
     },
     {
       "path": "src/templates/scripts/browser/native-drive.ps1",
-      "sha256": "74f2071c3a53ad92b305ed0d6b4ac5cfc73b6df0671da946adb7c9e1be6aad92",
+      "sha256": "503275daa898b07889e4cf5b76746814d71909742a15983d3ce51c100a00b154",
       "reason": "normal-chrome-cross-platform + normal-chrome-windows-occlusion: PP's Windows normal-Chrome driver, the live-tested v5 (Mama PC, 2026-10-21, VERDICT PASS) plus the occlusion launch flag and the named ERR page-not-rendering read failure (live-run on the Mama PC 2026-11-19); it refuses only its own bad arguments or an unsafe moment (no bound target, focus not on the target, operator active, a flag outside its allowlist) and gates no message, session or other agent action"
     },
     {
       "path": "src/templates/scripts/browser/ndrive.sh",
-      "sha256": "d14c4fb79764308e26413b439214ffd9334df5823bfb6f4bbc8da74543266265",
-      "reason": "normal-chrome-cross-platform: the WSL wrapper for native-drive.ps1 (the Instar entry point on Windows); it refuses only its own bad arguments (no powershell.exe, the operator's Chrome profile folder, a non-local or malformed profile path, a non-URL in a url slot, a non-chrome.exe executable, an unattended-machine override with no operator record) or an unsafe moment (canfocus before invoke), and gates no message, session or other agent action"
+      "sha256": "da5e4d3fee609dff1418956d00cb65684eff713fa8fc901fbca9486b38244fc8",
+      "reason": "normal-chrome-cross-platform: the WSL wrapper for native-drive.ps1 (the Instar entry point on Windows); it refuses only its own bad arguments (no powershell.exe, the operator's Chrome profile folder, a non-local or malformed profile path, a non-URL in a url slot, a non-chrome.exe executable, an unattended-machine override with no operator record, secret input outside the transport bounds) or an unsafe moment (canfocus before invoke), and gates no message, session or other agent action"
     },
     {
       "path": "src/templates/scripts/emit-session-clock.sh",

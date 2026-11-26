@@ -638,7 +638,7 @@ case "$A" in
     RC_W=$(printf '%s' "$A" | grep -o "Test-Path -LiteralPath '[^']*rc.txt'" | head -1 | sed "s/Test-Path -LiteralPath '//; s/'$//")
     WD_U="$STUB_LAD/native-drive/$(printf '%s' "$RC_W" | tr '\\\\' '/' | sed 's#.*/native-drive/##; s#/rc.txt$##')"
     printf '%s' "$A" > "$STUB_DIR/registration.txt"
-    cp "$WD_U/runner.ps1" "$STUB_DIR/runner.copy"; cp "$WD_U/run.vbs" "$STUB_DIR/vbs.copy"; cp "$WD_U/stdin.txt" "$STUB_DIR/stdin.copy"
+    cp "$WD_U/runner.ps1" "$STUB_DIR/runner.copy"; cp "$WD_U/run.vbs" "$STUB_DIR/vbs.copy"; printf '%s' "$IN" > "$STUB_DIR/controller-input.copy"; test ! -e "$WD_U/stdin.txt" || exit 90
     case "$(cat "$WD_U/runner.ps1")" in *'"canfocus"'*) RC="\${STUB_CANFOCUS_RC:-0}";; *) RC="\${STUB_RC:-0}";; esac
     printf '4242\\r\\n' > "$WD_U/pid.txt"; printf 'bridged driver output\\r\\n' > "$WD_U/out.txt"; printf 'bridged driver stderr\\r\\n' > "$WD_U/err.txt"; printf '%s\\r\\n' "$RC" > "$WD_U/rc.txt"
     exit 0;;
@@ -675,6 +675,11 @@ esac`;
       fs.mkdirSync(path.join(lad, 'native-drive'), { recursive: true });
       fs.mkdirSync(stubDir);
       stub('powershell.exe', PS_STUB);
+      stub('cat', `if [ "$1" = /proc/sys/kernel/random/uuid ]; then
+  echo 45fdead1-923e-433d-9ced-fbe67ba87ca6
+else
+  exec /bin/cat "$@"
+fi`);
       // stub wslpath: -w maps /x -> C:\x ; -u maps C:\Users\op\AppData\Local\... -> <lad>/...
       stub('wslpath', `case "$1" in
   -w) printf '%s' "$2" | sed 's#^/#C:\\\\#; s#/#\\\\#g';;
@@ -855,7 +860,7 @@ esac`);
       expect(ok.stdout).toContain('native-drive.ps1 invoke Sign in');
     });
 
-    it('in Windows session 0 runs the driver through the interactive-session bridge: hidden runner, stdin file for a secret, output and exit code relayed, work folder deleted', () => {
+    it('in Windows session 0 runs the driver through the interactive-session bridge: hidden runner, private pipe for a secret, output and exit code relayed, work folder deleted', () => {
       const r = nd(['typesecretedit', '1'], { STUB_SESSION: '0', STUB_RC: '0' }, 'p@ss"w0rd\n');
       expect(r.status).toBe(0);
       expect(r.stdout.trim()).toBe('bridged driver output');
@@ -868,17 +873,19 @@ esac`);
       const runner = fs.readFileSync(path.join(stubDir, 'runner.copy'), 'utf-8');
       expect(runner).toContain("$env:ND_STATE_FILE = 'C:\\Users\\op\\AppData\\Local\\native-drive\\instar-");
       expect(runner).toContain(`'"typesecretedit"','"1"'`);
-      expect(runner).toContain('-WindowStyle Hidden -PassThru -RedirectStandardInput');
-      expect(runner).toContain('-RedirectStandardOutput');
-      expect(runner).toContain('-RedirectStandardError');
+      expect(registration).toContain('NamedPipeServerStream');
+      expect(runner).toContain('NamedPipeClientStream');
+      expect(runner).toContain('$start.RedirectStandardInput = $true');
+      expect(runner).toContain('$start.RedirectStandardOutput = $true');
+      expect(runner).toContain('$start.RedirectStandardError = $true');
       expect(runner.indexOf("pid.txt")).toBeLessThan(runner.indexOf('$p.WaitForExit()')); // pid recorded before the wait
       expect(runner).toContain("'-File','\"C:\\Users\\op\\AppData\\Local\\native-drive\\instar-"); // the driver runs from a LOCAL copy inside the bridge work folder, never the \\wsl.localhost path
       expect(runner).toContain('\\native-drive.ps1"');
       expect(runner).not.toContain('-Wait'); // Start-Process -Wait waits on descendants (Chrome) and never returned for launch
       expect(runner).not.toContain('p@ss');
       expect(fs.readFileSync(path.join(stubDir, 'vbs.copy'), 'utf-8')).toContain(', 0, True');
-      expect(fs.readFileSync(path.join(stubDir, 'stdin.copy'), 'utf-8')).toBe('p@ss"w0rd\r\n');
-      // The per-run work folder (and the secret file in it) is gone.
+      expect(fs.readFileSync(path.join(stubDir, 'controller-input.copy'), 'utf-8')).toBe('p@ss"w0rd');
+      // The bridge removes the per-run work folder.
       expect(fs.readdirSync(path.join(lad, 'native-drive', `instar-${agentTag()}`, 'bridge'))).toEqual([]);
       expect(logRows().pop()).toMatchObject({ via: 'bridge', cmd: 'typesecretedit', exit: 0 });
     });
@@ -886,7 +893,7 @@ esac`);
     it('keeps a secret that has no trailing newline (printf %s) when carrying it through the bridge', () => {
       const r = nd(['typesecret'], { STUB_SESSION: '0' }, 'no-newline-secret');
       expect(r.status).toBe(0);
-      expect(fs.readFileSync(path.join(stubDir, 'stdin.copy'), 'utf-8')).toBe('no-newline-secret\r\n');
+      expect(fs.readFileSync(path.join(stubDir, 'controller-input.copy'), 'utf-8')).toBe('no-newline-secret');
     });
 
     it('a bridged run that never reports is an UNKNOWN outcome (ERR bridge-timeout), the task is stopped, and the folder is removed', () => {
@@ -954,7 +961,7 @@ esac`);
       expect(logRows().pop().via).toBe('direct');
     });
 
-    it('a bridged call first sweeps this agent\'s stale leftovers (old folders with the secret truncated; non-running tasks) and logs the count', () => {
+    it('a bridged call first sweeps this agent\'s stale leftovers (old folders with legacy input files; non-running tasks) and logs the count', () => {
       const root = path.join(lad, 'native-drive', `instar-${agentTag()}`, 'bridge');
       const stale = path.join(root, '1000-1-1');
       fs.mkdirSync(stale, { recursive: true });
@@ -1250,7 +1257,7 @@ esac`);
         }
       }
       nd(['typesecret'], { STUB_SESSION: '0' }, 'x');
-      expect(fs.readFileSync(path.join(stubDir, 'stdin.copy'), 'utf-8')).toBe('x\r\n');
+      expect(fs.readFileSync(path.join(stubDir, 'controller-input.copy'), 'utf-8')).toBe('x');
       const direct = nd(['typesecret'], { STUB_SESSION: '1' }, 'p@ss');
       expect(direct.stdout).toContain('STDIN=[p@ss]'); // the direct route feeds the one line it read
     });
@@ -1503,7 +1510,7 @@ esac`);
       child.kill('SIGTERM');
       await new Promise<void>(resolve => child.on('exit', () => resolve()));
       expect(fs.existsSync(path.join(root, folders[0]))).toBe(true); // the folder stays as the marker
-      expect(fs.readFileSync(path.join(root, folders[0], 'stdin.txt'), 'utf-8')).toBe('');
+      expect(fs.existsSync(path.join(root, folders[0], 'stdin.txt'))).toBe(false);
       expect(fs.readFileSync(path.join(home, '.instar', 'state', 'native-drive', 'survivor'), 'utf-8')).toMatch(/^4242 - \d+\n$/);
       expect(fs.readFileSync(path.join(home, '.instar', 'state', 'native-drive', 'unknown-outcome'), 'utf-8')).toContain('click interrupted'); // an interrupted input latches
       expect(fs.existsSync(path.join(home, '.instar', 'state', 'native-drive', 'lock.d'))).toBe(false); // the lock is released
