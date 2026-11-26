@@ -59,7 +59,7 @@ export function isStorable(path, init, input) {
   if (!path) return false;
   const method = String((init && init.method) || (input && typeof input === 'object' && input.method) || 'GET').toUpperCase();
   if (method !== 'GET') return false;
-  if (headerOf(init, 'X-Instar-Operator-Session', input)) return false;
+  if (headerOf(init, 'X-Instar-Operator-Session', input) || headerOf(init, 'X-Instar-Needs-Contract', input)) return false;
   // Saved copies belong to the sign-in that read them: no bearer, nothing saved.
   if (!bearerOf(init, input)) return false;
   const [bare, query] = path.split('?');

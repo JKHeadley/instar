@@ -1808,3 +1808,6 @@ a.needs-row:hover { background: var(--surface-raised); }
 .accounts-page .acct-list .list-rows { gap: 0; }
 .accounts-page .acct-name { white-space: normal; overflow: visible; overflow-wrap: anywhere; }
 .acct-kind { display: block; color: var(--text-muted); font-size: 12px; font-weight: 400; }
+
+.needs-row .needs-instructions { margin: var(--s-2) 0 0; padding-inline-start: 1.5em; }
+.needs-row .needs-consent { align-self: flex-start; min-height: 44px; margin-top: var(--s-2); }
