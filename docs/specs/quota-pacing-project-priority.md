@@ -170,7 +170,7 @@ Each account entry carries its own `shares`, which sum to 1 within that entry; a
 - **graduation criterion:** a review on the maturation board, filed at merge, after two weekly resets on Echo: at least one real owner priority tap recorded from a phone and visible on the row (a zero count is not a pass); no unexpected failures on the priority routes (coded refusals such as `project-priority-off`, `chief-of-staff-off`, `no-project` and `not-callback-machine` are correct answers, not failures); the `none` share of `conversationBasis` among the period's selected requests (after pairing), with anything over 10% traced to a named cause; per-source query times; and whether the project shares read as sensible against what Justin knows was worked on. It decides on judgment from that evidence, never on a timer.
 - **fleet:** default-on for every agent is the last rung: two independent graduation readings that agree, then a reviewed pull request that changes the shipped default.
 - **dark-window:** none on Echo (live from merge); a reminder at 4 weeks after merge if the review has not happened.
-- **ladder:** subscriptionPool.pacing.projectPriority
+- **ladder:** not applicable: this specification adds no runtime flag. The implementation must register `subscriptionPool.pacing.projectPriority` before enabling it.
 
 ## Safety and side effects
 
