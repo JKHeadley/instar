@@ -5,6 +5,7 @@ import { normalizeCreationParentRef, type AppCreationContext } from '../core/App
 //   *Recall Over Our Own Material Is by Meaning, Not by Word-Match*
 //   *Live-User-Channel Proof Before Done*
 
+import { CONVERSATION_PEER_DEADLINE_MS, withConversationPeerDeadline } from './conversationPeerDeadline.js';
 import { parseMarker } from '../messaging/AgentTelegramComms.js';
 import { projectTitlesByTopic } from './conversationFallbackTitle.js';
 import { signedInPinSource } from './ownerPinSource.js';
@@ -22642,14 +22643,14 @@ document.getElementById('mcpForm').addEventListener('submit', async function (e)
         const verdict = isPeerUrlAllowedForCredentials({ url: p.url, kind: p.kind }, allowlist);
         if (!verdict.ok) { failed.push({ machineId: p.machineId, error: 'peer URL refused' }); return; }
         const r = await poolPeerFetch(ctx.recordRopeResult ?? undefined, p, '/telegram/topics', {
-          headers: { Authorization: `Bearer ${ctx.config.authToken}` }, signal: AbortSignal.timeout(5000), redirect: 'manual',
+          headers: { Authorization: `Bearer ${ctx.config.authToken}` }, signal: AbortSignal.timeout(CONVERSATION_PEER_DEADLINE_MS), redirect: 'manual',
         });
         if (!r.ok) { failed.push({ machineId: p.machineId, error: `HTTP ${r.status}` }); return; }
         const body = await r.json() as { topics?: unknown; serving?: boolean };
         if (body.serving === true && Array.isArray(body.topics)) servingCandidates.push(body.topics);
         else absorb(body.topics);
       } catch (error) {
-        failed.push({ machineId: p.machineId, error: error instanceof Error ? error.message : String(error) });
+        failed.push({ machineId: p.machineId, error: error instanceof Error && error.name === 'TimeoutError' ? 'deadline' : operatorError(error, ctx.config.stateDir) });
       }
     }));
     // A rename is observed by the Telegram lease holder first. Its verified
@@ -23923,19 +23924,20 @@ document.getElementById('mcpForm').addEventListener('submit', async function (e)
         type: 'topic-history-pull' as const, topic: topicId, limit, shape: 'pool' as const,
         ...(beforeMs === null ? {} : { before: beforeMs }), ...(beforeMessageId === null ? {} : { beforeMessageId }),
       };
-      const outcome = await signedThenBearer<{ messages: unknown; truncated?: unknown; oldest?: unknown; rowTruncated?: unknown }>({
+      const outcome = await withConversationPeerDeadline((signal, remainingMs) => signedThenBearer<{ messages: unknown; truncated?: unknown; oldest?: unknown; rowTruncated?: unknown }>({
         machineId: p.machineId, kind: 'historyPool', peerVersion: peerVersionOf(p.machineId), capability: signedReads, versionFloor: versionFloorOf(p.machineId), onFallbackRefused: onSignedReadFallbackRefused(p.machineId, 'historyPool'),
-        signed: ctx.meshSignedRead ? () => ctx.meshSignedRead!(p.machineId, command, TOPIC_HISTORY_POOL_TIMEOUT_MS) : null,
+        signed: ctx.meshSignedRead ? () => ctx.meshSignedRead!(p.machineId, command, remainingMs()) : null,
         accept: (result) => {
           const b = result as Record<string, unknown> | null;
           if (!b || b.ok !== true) return String(b?.reason ?? 'refused');
           return { messages: b.messages, truncated: b.truncated, oldest: b.oldest, rowTruncated: b.rowTruncated };
         },
         bearer: async () => {
+          signal.throwIfAborted();
           const allowlist = (ctx.config.multiMachine as { peerUrlAllowlist?: string[] } | undefined)?.peerUrlAllowlist;
           if (!p.url || !isPeerUrlAllowedForCredentials({ url: p.url, kind: p.kind }, allowlist).ok) throw new BearerReadRefused('peer URL refused');
           const r = await poolPeerFetch(ctx.recordRopeResult ?? undefined, p, `/telegram/topics/${topicId}/messages?limit=${limit}${beforeMs === null ? '' : `&before=${beforeMs}`}${beforeMessageId === null ? '' : `&beforeMessageId=${beforeMessageId}`}${withOrigin ? '&includeOrigin=1' : ''}`, {
-            headers: { Authorization: `Bearer ${ctx.config.authToken}` }, signal: AbortSignal.timeout(5000), redirect: 'manual',
+            headers: { Authorization: `Bearer ${ctx.config.authToken}` }, signal, redirect: 'manual',
           });
           if (!r.ok) throw new BearerReadRefused(`HTTP ${r.status}`);
           const payload = await r.text();
@@ -23944,7 +23946,10 @@ document.getElementById('mcpForm').addEventListener('submit', async function (e)
           if (beforeMessageId !== null && body.historyCursorVersion !== 2) throw new BearerReadRefused('history-cursor-upgrade-needed');
           return { messages: body.messages };
         },
-      });
+      })).catch((error: unknown) => ({
+        via: null, unreachable: true,
+        error: error instanceof Error && error.name === 'TimeoutError' ? 'deadline' : operatorError(error, ctx.config.stateDir),
+      }) as const);
       if (outcome.via === null) {
         failed.push({ machineId: p.machineId, error: outcome.error });
         const a = asleepEntry(p.machineId, outcome.error, outcome.unreachable).machine;

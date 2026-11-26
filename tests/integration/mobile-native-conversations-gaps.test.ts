@@ -169,6 +169,31 @@ describe('gap 1 — the list pages losslessly across app conversations and Teleg
 });
 
 describe('gap 2 — scope=pool on the list and the browse read', () => {
+  it('retains local and fast peer rows when another peer exceeds its deadline', async () => {
+    const fast = express();
+    const slow = express();
+    const peerKey = crypto.randomUUID();
+    fast.get('/mobile/conversations', (_req, res) => res.json({
+      conversations: [{ id: peerKey, platform: 'app', title: 'Fast peer', lastActivity: '2031-01-01T00:00:00.000Z' }],
+    }));
+    slow.get('/mobile/conversations', (_req, _res) => {});
+    const fastServer = await listen(fast);
+    const slowServer = await listen(slow);
+    try {
+      const e = await setup({ peerUrls: [urlOf(fastServer), urlOf(slowServer)] });
+      const mine = (await signed(e, 'POST', '/mobile/conversations', { title: 'Local', requestId: rid() })).body.conversationKey;
+      const result = await signed(e, 'GET', '/mobile/conversations?scope=pool').timeout({ deadline: 4500 });
+      expect(result.status).toBe(200);
+      expect(result.body.conversations.map((row: { id: string }) => row.id)).toEqual(expect.arrayContaining([mine, peerKey]));
+      expect(result.body.pool.failed).toEqual([{ machineId: 'm_peer1', reason: 'deadline' }]);
+    } finally {
+      fastServer.closeAllConnections();
+      slowServer.closeAllConnections();
+      fastServer.close();
+      slowServer.close();
+    }
+  }, 10_000);
+
   it('merges a peer\'s rows, tags machines, collapses duplicates and names a dark peer', async () => {
     const peerKey = crypto.randomUUID();
     const peer = express();

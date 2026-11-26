@@ -1,0 +1,26 @@
+{
+  "version": 2,
+  "slug": "conversation-peer-deadline",
+  "sessionId": "fb2281d6-3813-4f13-b8a3-619580e41ffe",
+  "timestamp": "2026-11-26T05:17:17.950Z",
+  "artifactPath": "upgrades/side-effects/conversation-peer-deadline.md",
+  "artifactSha256": "e5ac429c9b4fa66bb605455f3a7dccf2214f66934c0362863825bf00cbd6196c",
+  "coveredFiles": [
+    "docs/specs/native-conversation-any-machine-access.eli16.md",
+    "src/server/conversationPeerDeadline.ts",
+    "src/server/mobileConversationRoutes.ts",
+    "src/server/routes.ts",
+    "tests/integration/mobile-native-conversations-gaps.test.ts",
+    "tests/integration/pool-reads-signed.test.ts",
+    "tests/unit/conversation-peer-deadline.test.ts",
+    "upgrades/next/conversation-peer-deadline.md",
+    "upgrades/side-effects/conversation-peer-deadline.md"
+  ],
+  "phase": "complete",
+  "tier": 1,
+  "tierReasoning": "Shorter read timeout in the existing partial-response contract; no change to auth or fallback admission",
+  "eli16Path": "docs/specs/native-conversation-any-machine-access.eli16.md",
+  "sideEffectsPath": "upgrades/side-effects/conversation-peer-deadline.md",
+  "secondPass": "not-required",
+  "reviewerConcurred": null
+}

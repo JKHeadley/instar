@@ -120,6 +120,7 @@ interface AskerOpts {
   server: Srv;
   peerVersion?: string | null;
   meshTimeoutMs?: number;
+  localHistory?: typeof historyRows;
   signer?: string;
   /** Write team-access files so team access reads as on / confined. */
   confined?: Array<{ ref: string; personKey?: string }>;
@@ -153,7 +154,7 @@ async function askingMachine(o: AskerOpts): Promise<{ srv: Srv; meshCalls: MeshC
     meshSignedRead,
     machinePoolRegistry: { getCapacity: (id: string) => (id === SERVER ? { machineId: SERVER, nickname: 'Mini', online: true, selfReportedLastSeen: '2026-11-11T14:02:00Z', ...(o.peerVersion === null ? {} : { hardware: { instarVersion: o.peerVersion ?? '1.3.1740' } }) } : null) },
     state: { findSessionByTmux: () => null, listSessions: () => [] },
-    telegram: { getTopicHistory: () => [], getTopicHistoryBefore: () => [] },
+    telegram: { getTopicHistory: () => o.localHistory ?? [], getTopicHistoryBefore: () => [] },
   } as never;
   const app = express();
   app.use(express.json({ limit: '12mb' }));
@@ -275,6 +276,17 @@ describe('signed pool reads between machines with different tokens', () => {
     expect((status.body.signedCapable as Record<string, Record<string, boolean>>)[SERVER]).toEqual({ transcript: false, list: false, historyPool: true });
     expect(status.body.bearerFallbackNeededBy).toEqual([{ machineId: SERVER, kinds: ['transcript', 'list'] }]);
   });
+
+  it('returns local history with a named deadline even when signed transport never settles', async () => {
+    const server = await servingMachine({ verbs: 'new' });
+    const asker = await askingMachine({ server, localHistory: historyRows, meshSignedRead: () => new Promise(() => {}) });
+    const response = await asker.get(`/telegram/topics/${TOPIC}/messages?scope=pool&limit=50`);
+    expect(response.status).toBe(200);
+    expect(response.body.messages).toEqual([expect.objectContaining({ eventId: 'ev-5', machine: ASKER })]);
+    expect(response.body.pool).toMatchObject({ failed: [{ machineId: SERVER, error: 'deadline' }] });
+    const status = await asker.get('/pool/signed-reads');
+    expect(status.body.counts).toMatchObject({ bearerReads: 0 });
+  }, 10_000);
 
   it('a timeout does not fall back: the machine is named asleep, and no token is sent', async () => {
     const server = await servingMachine({ verbs: 'new' });

@@ -1,3 +1,4 @@
+import { CONVERSATION_PEER_DEADLINE_MS } from './conversationPeerDeadline.js';
 import {DegradationReporter} from '../monitoring/DegradationReporter.js';
 /**
  * Native app conversations — the device routes (docs/specs/mobile-native-conversations.md,
@@ -214,7 +215,6 @@ function strictIso(v: unknown): string | undefined {
   return Number.isNaN(t) ? undefined : new Date(t).toISOString();
 }
 
-const POOL_TIMEOUT_MS = 5000;
 const MAX_POOL_LIST_BYTES = 512 * 1024;
 const MAX_POOL_BROWSE_BYTES = 2 * 1024 * 1024;
 type PoolReadCtx = Pick<RouteContext, 'resolvePeerUrls' | 'recordRopeResult'> & { config: InstarConfig };
@@ -231,7 +231,7 @@ async function fetchPeers<T>(
     if (!isPeerUrlAllowedForCredentials({ url: p.url, kind: p.kind }, allow).ok) { failed.push({ machineId: p.machineId, reason: 'peer-url-refused' }); return; }
     try {
       const r = await poolPeerFetch(ctx.recordRopeResult ?? undefined, p, pathFor, {
-        headers: { Authorization: `Bearer ${ctx.config.authToken}` }, signal: AbortSignal.timeout(POOL_TIMEOUT_MS), redirect: 'manual',
+        headers: { Authorization: `Bearer ${ctx.config.authToken}` }, signal: AbortSignal.timeout(CONVERSATION_PEER_DEADLINE_MS), redirect: 'manual',
       });
       if (r.status === 404) return;
       if (!r.ok) { failed.push({ machineId: p.machineId, reason: r.status === 503 ? 'off' : `http-${r.status}` }); return; }

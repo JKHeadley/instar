@@ -32,3 +32,5 @@ A reply typed in the dashboard is still raw typing into a terminal, not a messag
 ## What I need from you
 
 Nothing. Nothing here changes the constitution, so I approve it myself under the standing rule. You get the review report to read.
+
+A pooled chat list or history read waits up to two seconds for each peer in parallel. The reply gives the rows available by then and names any peer that missed the deadline. The signed history read and any allowed fallback share a single budget, so an older peer cannot make the app wait through two separate deadlines. You can retry to get rows that were unavailable the first time.
