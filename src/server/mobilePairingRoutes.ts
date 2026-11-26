@@ -40,7 +40,7 @@ import crypto from 'node:crypto';
 import { Router, type Request, type Response, type Application } from 'express';
 import { resolveDevAgentGate } from '../core/devAgentGate.js';
 import { arrivedOverLocalTls } from '../core/desktopTransport.js';
-import { arrivalOf } from '../core/requestArrival.js';
+import { arrivalOf, hostedRelayArrival } from '../core/requestArrival.js';
 import { PhoneSetupStore, mountPhoneSetupRoutes, ACTIVATE_AT_COMPUTER_PATH } from './phoneSetupRoutes.js';
 import type { SameNetworkListener } from './sameNetworkListener.js';
 import {
@@ -1629,6 +1629,29 @@ async function deliverOwnerDM(svc: MobilePairingService, text: string, nonce: st
 }
 
 /** Bearer routes: mounted on the authenticated router. */
+export function serveMobileDeviceStatus(svc: MobilePairingService, req: Request, res: Response): void {
+  if (!svc.enabled()) { json503(res); return; }
+  const p = principalOf(req);
+  if (p.kind !== 'device') { res.status(403).json({ error: 'device-signature-required' }); return; }
+  const d = svc.devices.get(p.deviceId);
+  if (!d) { res.status(404).json({ error: 'unknown-device' }); return; }
+  res.json({
+    status: d.status, deviceName: d.deviceName, approvedAt: d.approvedAt ?? null,
+    // A pending dashboard-path phone (§4.4) tells the operator where the code is.
+    ...(d.status === 'pending' && svc.isDashboardPending(d.id) ? { approval: d.role === 'team' ? 'inviter' : 'dashboard' } : {}),
+    // Approve instead of a code (mobile-pairing-approve §3.5): this route is the waiting phone's status poll.
+    ...(d.status === 'pending' ? svc.waitingFields(d) : {}),
+    ...(d.approvedVia ? { approvedVia: d.approvedVia } : {}),
+    // Identity A4: a phone let in at the computer cannot approve yet (piece 3b), as its activation answered.
+    ...(admittedAtComputer(d) ? { canApprove: false } : {}),
+    // A browser's setup page (dashboard-conversations-browser-device §4.2): its kind, fingerprint and window.
+    ...(isBrowserDevice(d) ? { client: 'browser', fingerprint: d.fingerprint ?? null, ...(d.status === 'pending' && d.expiresAt ? { expiresAt: d.expiresAt } : {}), ...(d.setupState ? { setupState: d.setupState } : {}), ...(d.activating ? { approving: true } : {}) } : {}),
+    // People and roles §3.1: whose phone this is (`unassigned` when the person was removed).
+    person: personView(svc.personOfDevice(d)),
+    ...standingView(svc, d),
+  });
+}
+
 export function createMobilePairingRouter(svc: MobilePairingService, deps: MobilePairingDeps, poolCtx?: PoolCtx): Router {
   const router = Router();
 
@@ -1836,28 +1859,7 @@ export function createMobilePairingRouter(svc: MobilePairingService, deps: Mobil
   });
 
   // Device's own status (device-signed; any non-revoked status).
-  router.get('/mobile/device', (req: Request, res: Response) => {
-    if (!svc.enabled()) { json503(res); return; }
-    const p = principalOf(req);
-    if (p.kind !== 'device') { res.status(403).json({ error: 'device-signature-required' }); return; }
-    const d = svc.devices.get(p.deviceId);
-    if (!d) { res.status(404).json({ error: 'unknown-device' }); return; }
-    res.json({
-      status: d.status, deviceName: d.deviceName, approvedAt: d.approvedAt ?? null,
-      // A pending dashboard-path phone (§4.4) tells the operator where the code is.
-      ...(d.status === 'pending' && svc.isDashboardPending(d.id) ? { approval: d.role === 'team' ? 'inviter' : 'dashboard' } : {}),
-      // Approve instead of a code (mobile-pairing-approve §3.5): this route is the waiting phone's status poll.
-      ...(d.status === 'pending' ? svc.waitingFields(d) : {}),
-      ...(d.approvedVia ? { approvedVia: d.approvedVia } : {}),
-      // Identity A4: a phone let in at the computer cannot approve yet (piece 3b), as its activation answered.
-      ...(admittedAtComputer(d) ? { canApprove: false } : {}),
-      // A browser's setup page (dashboard-conversations-browser-device §4.2): its kind, fingerprint and window.
-      ...(isBrowserDevice(d) ? { client: 'browser', fingerprint: d.fingerprint ?? null, ...(d.status === 'pending' && d.expiresAt ? { expiresAt: d.expiresAt } : {}), ...(d.setupState ? { setupState: d.setupState } : {}), ...(d.activating ? { approving: true } : {}) } : {}),
-      // People and roles §3.1: whose phone this is (`unassigned` when the person was removed).
-      person: personView(svc.personOfDevice(d)),
-      ...standingView(svc, d),
-    });
-  });
+  router.get('/mobile/device', (req, res) => serveMobileDeviceStatus(svc, req, res));
 
   // ── Owner grants for MSP persons (people and roles §3.5) ──
   // Only an OWNER phone may change a grant: its device signature proves the owner (the owner alone
@@ -3114,7 +3116,18 @@ const DESKTOP_RELAY_LOCAL_RULES: readonly DeviceRule[] = [
   { method: 'POST', re: /^\/desktop\/relay-pairing\/issue$/, statuses: new Set(['active']), ownerOnly: true, body: 'json', ownBucket: 6, bucket: 'desktop-relay-issue' },
 ];
 
-export function deviceAuthenticator(svc: MobilePairingService, options?: { desktopRelayLoopback?: boolean }) {
+const HOSTED_RELAY_DEVICE_RULE: DeviceRule = {
+  method: 'GET', re: /^\/mobile\/device$/, statuses: new Set(['active']), body: 'none',
+  ownBucket: 30, bucket: 'hosted-relay-device-status',
+};
+
+export type HostedRelayPhoneBindingReader = (deviceId: string) =>
+  { hostname: string; assignment: string; keyHash: string } | undefined;
+
+export function deviceAuthenticator(svc: MobilePairingService, options?: {
+  desktopRelayLoopback?: boolean;
+  hostedRelayBinding?: HostedRelayPhoneBindingReader;
+}) {
   return (req: Request, res: Response): 'none' | 'ok' | 'refused' => {
     const id = req.headers['x-instar-device'];
     if (id === undefined) return 'none';
@@ -3127,6 +3140,12 @@ export function deviceAuthenticator(svc: MobilePairingService, options?: { deskt
       return 'refused';
     };
     const pathNorm = req.path.toLowerCase().replace(/\/+$/, '') || '/';
+    const relayScope = hostedRelayArrival(req);
+    if (relayScope && (!options?.hostedRelayBinding || !svc.nativeOn || !isMobileNativeEnabled(svc.deps.config)
+      || !svc.keyLedger || req.method !== HOSTED_RELAY_DEVICE_RULE.method
+      || req.originalUrl !== '/mobile/device' || req.headers['x-instar-notify-token'] !== undefined)) {
+      return refuse(403, 'device-not-allowed');
+    }
     // Notification read token (mobile-push §2.2): exactly GET /mobile/attention/<id> or a reply
     // preview (chat-media §4.11), no signature.
     const notifyToken = req.headers['x-instar-notify-token'];
@@ -3162,7 +3181,7 @@ export function deviceAuthenticator(svc: MobilePairingService, options?: { deskt
     const relayRule = options?.desktopRelayLoopback
       ? DESKTOP_RELAY_LOCAL_RULES.find(rule => rule.method === req.method && rule.re.test(req.path))
       : undefined;
-    const rule = relayRule ?? DEVICE_ALLOWLIST.find((r) => r.method === req.method && r.re.test(pathNorm));
+    const rule = relayScope ? HOSTED_RELAY_DEVICE_RULE : relayRule ?? DEVICE_ALLOWLIST.find((r) => r.method === req.method && r.re.test(pathNorm));
     if (!rule) return refuse(403, 'device-not-allowed');
     const raw = (req as unknown as { rawBody?: Buffer }).rawBody;
     const contentLength = Number(req.headers['content-length'] ?? 0);
@@ -3186,7 +3205,19 @@ export function deviceAuthenticator(svc: MobilePairingService, options?: { deskt
     // Identity A4: a phone paired on the same-network address signs only on that listener, and that
     // listener accepts no other device; neither falls through to another branch.
     const sameNetworkArrival = arrivalOf(req) === 'same-network';
-    if (sameNetworkArrival || peek?.addressKind === 'same-network') {
+    let relayKeyHash: string | undefined;
+    if (relayScope) {
+      let binding: ReturnType<HostedRelayPhoneBindingReader>;
+      try { binding = peek ? options?.hostedRelayBinding?.(peek.id) : undefined; }
+      catch { return refuse(401, 'device-unauthorized'); }
+
+      if (!peek?.publicKey || !binding || browserDevice || peek.deviceKind === 'computer' || peek.localBinding
+        || peek.addressKind === 'same-network' || peek.status !== 'active' || req.headers.host !== relayScope.hostname
+        || binding.hostname !== relayScope.hostname || binding.assignment !== relayScope.assignment
+        || binding.keyHash !== deviceKeyHashOf(peek.publicKey)) return refuse(401, 'device-unauthorized');
+      relayKeyHash = binding.keyHash;
+      host = relayScope.hostname;
+    } else if (sameNetworkArrival || peek?.addressKind === 'same-network') {
       const own = svc.sameNetwork?.listening() ? svc.sameNetwork.host() : null;
       if (!sameNetworkArrival || !peek || peek.addressKind !== 'same-network' || !own || peek.host !== own || peek.localBinding || browserDevice) {
         featureEvidence.recordAtMostEvery('mobilePairing.sameNetwork', `signature-refused|${sameNetworkArrival}`, 60_000, { kind: 'held', reason: sameNetworkArrival ? 'refused on the same-network listener: not a phone paired there' : 'refused: a same-network phone off its listener' });
@@ -3222,7 +3253,9 @@ export function deviceAuthenticator(svc: MobilePairingService, options?: { deskt
         const d = svc.devices.get(deviceId);
         // A browser's key is `browserPublicKey` (dashboard-conversations-browser-device §4.1 reader table).
         const key = deviceKeyOf(d);
-        if (!d || !key || !d.host || d.status === 'legacy-token') return null;
+        if (!d || !key || !d.host || d.status === 'legacy-token'
+          || (relayScope && (!d.publicKey || isBrowserDevice(d) || d.deviceKind === 'computer' || d.localBinding
+            || d.addressKind === 'same-network' || deviceKeyHashOf(key) !== relayKeyHash))) return null;
         // A revocation row in the device-key ledger takes effect at once, even when the registry
         // write after it failed (mobile-native-conversations §4.6: the ledger row is the recorded
         // intent). In-memory index, no file read per request.

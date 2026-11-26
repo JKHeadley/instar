@@ -1,0 +1,24 @@
+{
+  "version": 2,
+  "slug": "hosted-relay-phone-binding-reader",
+  "sessionId": "41652017-0805-405d-bb4e-2a975fb349ce",
+  "timestamp": "2026-11-26T20:18:59.230Z",
+  "artifactPath": "upgrades/side-effects/hosted-relay-phone-binding-reader.md",
+  "artifactSha256": "7f5ac1a9e73b252103858bc9d9d7599ba4bbeee996899a1a5cf39e17882ad52b",
+  "specPath": "docs/specs/hosted-relay.md",
+  "coveredFiles": [
+    "src/hostedRelay/phoneBindingReader.ts",
+    "tests/unit/hosted-relay-phone-binding-reader.test.ts",
+    "upgrades/side-effects/hosted-relay-phone-binding-reader.md"
+  ],
+  "phase": "complete",
+  "tier": 2,
+  "tierReasoning": "Read-only dormant exact phone binding authority join",
+  "secondPass": "true",
+  "reviewerConcurred": true,
+  "classClosure": {
+    "defectClass": "unbounded-self-action",
+    "closure": "n/a",
+    "reason": "Each call joins one verified enrollment and owner and lease scope without writes."
+  }
+}

@@ -1,0 +1,28 @@
+{
+  "ts": "2026-11-26T20:19:32.411Z",
+  "slug": "hosted-relay-phone-binding-reader",
+  "suggestedTier": 2,
+  "declaredTier": 2,
+  "riskFloor": 2,
+  "riskFloorReasons": [
+    "safety-invariant proximity: src/hostedRelay/phoneBindingReader.ts matches relay / delivery path"
+  ],
+  "belowFloor": false,
+  "files": 1,
+  "loc": 55,
+  "scope": {
+    "basis": "staged-in-scope-paths-including-deleted",
+    "files": [
+      "src/hostedRelay/phoneBindingReader.ts"
+    ],
+    "addedLines": 55,
+    "deletedLines": 0
+  },
+  "causalAutopsy": null,
+  "classClosure": {
+    "defectClass": "unbounded-self-action",
+    "closure": "n/a",
+    "reason": "Each call joins one verified enrollment and owner and lease scope without writes."
+  },
+  "verdict": "pass"
+}

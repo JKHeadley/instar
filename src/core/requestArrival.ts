@@ -16,13 +16,30 @@
  */
 import type { Socket } from 'node:net';
 
-export type Arrival = 'main' | 'same-network';
+export type Arrival = 'main' | 'same-network' | 'hosted-relay';
 
 const ARRIVAL = Symbol.for('instar.requestArrival');
 /** The prefix a same-network socket's `remoteAddress` carries; it is never an IP address. */
 export const SAME_NETWORK_ADDRESS_PREFIX = 'sn:';
 
 type MarkedSocket = Socket & { [ARRIVAL]?: Arrival };
+type RelayAssignment = Readonly<{ hostname: string; assignment: string }>;
+const relayAssignments = new WeakMap<Socket, RelayAssignment>();
+
+/** Set only by the dedicated TLS listener, before dispatching HTTP. */
+export function markHostedRelaySocket(socket: Socket, scope: RelayAssignment): void {
+  const s = socket as MarkedSocket;
+  const prior = relayAssignments.get(s);
+  if (prior?.hostname === scope.hostname && prior.assignment === scope.assignment) return;
+  if (s[ARRIVAL] || prior) throw new Error('relay-arrival-already-marked');
+  Object.defineProperty(s, ARRIVAL, { value: 'hosted-relay' });
+  Object.defineProperty(s, 'remoteAddress', { value: 'relay:' + (s.remoteAddress ?? ''), enumerable: true });
+  relayAssignments.set(s, Object.freeze({ ...scope }));
+}
+
+export function hostedRelayArrival(req: { socket?: unknown }): RelayAssignment | undefined {
+  return relayAssignments.get(req.socket as Socket);
+}
 
 /**
  * Mark a socket the same-network listener accepted. Called once per connection by that listener
@@ -42,10 +59,10 @@ export function markSameNetworkSocket(socket: Socket): string {
 /** The listener a request arrived on: `same-network` only for a socket that listener marked. */
 export function arrivalOf(req: { socket?: unknown } | null | undefined): Arrival {
   const s = (req?.socket ?? null) as MarkedSocket | null;
-  return s && s[ARRIVAL] === 'same-network' ? 'same-network' : 'main';
+  return s?.[ARRIVAL] ?? 'main';
 }
 
-/** True only when the request did NOT arrive on the same-network listener. Local tests call this first. */
+/** True only for the ordinary main listener. Local tests call this first. */
 export function mayBeLocalArrival(req: { socket?: unknown } | null | undefined): boolean {
   return arrivalOf(req) === 'main';
 }

@@ -43,7 +43,7 @@ export async function startVerifiedHostedRelay(options: {
   const controller = new AbortController();
   const signal = AbortSignal.any([options.signal, controller.signal]);
   const listener = await startHostedRelayAgentTlsListener({
-    hostname, ...options.agentTls, expectedSpkiSha256, signal,
+    hostname, ...options.agentTls, assignment, expectedSpkiSha256, signal,
     handlePhoneRequest(req, res) {
       if (current()?.record.tlsKeys[machineId] !== expectedSpkiSha256) {
         res.writeHead(503, { 'Cache-Control': 'no-store', Connection: 'close' }).end();
