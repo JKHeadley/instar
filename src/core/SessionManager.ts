@@ -7771,6 +7771,11 @@ rm()  { "${shimRunner}" rm  "$@"; }
     return alive;
   }
 
+  /** Current registry state without a subprocess. Unverified rows remain tracked. */
+  listRecordedRunningSessions(): Session[] {
+    return this.state.listSessions({ status: 'running' });
+  }
+
   /**
    * Every tmuxSession name SessionManager has ever known (any status — running,
    * completed, failed, killed). Backs the OrphanProcessReaper's exact-id orphan
@@ -10905,6 +10910,17 @@ rm()  { "${shimRunner}" rm  "$@"; }
       // @silent-fallback-ok — no session / no id means ownership is unproven
       return false;
     }
+    return this.matchesOwnedTmuxSession(name, out);
+  }
+
+  async ownsLiveTmuxSessionAsync(name: string): Promise<boolean> {
+    const result = await this.tmuxExecCoalesced('verify-owned-session', name, [
+      'show-environment', '-t', `=${name}`, 'INSTAR_SESSION_ID',
+    ]);
+    return result.state === 'success' && this.matchesOwnedTmuxSession(name, result.stdout.trim());
+  }
+
+  private matchesOwnedTmuxSession(name: string, out: string): boolean {
     if (!out.startsWith('INSTAR_SESSION_ID=')) return false;
     const id = out.slice('INSTAR_SESSION_ID='.length);
     return /^[a-zA-Z0-9_-]+$/.test(id) && this.state.getSession(id)?.tmuxSession === name;
