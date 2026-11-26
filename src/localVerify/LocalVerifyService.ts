@@ -1171,7 +1171,7 @@ export class LocalVerifyService {
   }
 
   isDiagnosisCapacityBusy(): boolean {
-    return !!this.inFlight || !!this.starting || this.queue.length > 0 || !!this.blockedBy || !!this.verifierHold || this.notePause();
+    return this.trialAdmissionPending || !!this.inFlight || !!this.starting || this.queue.length > 0 || !!this.blockedBy || !!this.verifierHold || this.notePause();
   }
 
   // ---- paths ----
@@ -2619,7 +2619,7 @@ export class LocalVerifyService {
         if (busy() || this.notePause() || this.stopped || !this.peerRoleOn() || !this.trialPolicyCurrent(trial)
           || lease.holds || lease.holder !== req.coordinatorMachineId || lease.epoch !== req.leaseEpoch
           || this.peerState.tombstones[req.attemptId] !== undefined || this.verifierChangedOnDisk()) return refuse('peer-busy');
-        if (this.trialRecoveryPending) return refuse('peer-busy');
+        if (this.trialRecoveryPending || this.failedFileDiagnosisPeer?.busy()) return refuse('peer-busy');
       } finally { this.trialAdmissionPending = false; }
     }
     const entry: QueueEntry = {

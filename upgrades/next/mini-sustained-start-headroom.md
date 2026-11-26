@@ -13,3 +13,5 @@ Operators can set `monitoring.localVerify.smallPeerTrial.startFloorBytes` to the
 ## Rollout
 
 The Mini keeps its existing stop threshold and memory reserve. The launch check applies only after the same new setting is installed on the coordinator and the Mini. For the first supervised retry, capture how much memory the host and verifier use during startup.
+
+During the startup check, the Mini reserves its slot so a diagnostic cannot start in parallel and change the memory reading.
