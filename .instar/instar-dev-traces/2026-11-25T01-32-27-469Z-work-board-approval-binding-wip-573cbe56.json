@@ -1,0 +1,19 @@
+{
+  "version": 2,
+  "slug": "work-board-approval-binding-wip",
+  "sessionId": "b3d2cf8a-9b5d-468b-a50b-70ebf11e9e5c",
+  "timestamp": "2026-11-25T01:32:27.469Z",
+  "artifactPath": "upgrades/side-effects/work-board-approval-binding-wip.md",
+  "artifactSha256": "fa59f16ac0ab3175ee17276cb2a713ec7dcc80a1e9a4f0dface7516a5dcc3539",
+  "specPath": "docs/specs/owner-work-board-slips-first-slice.md",
+  "coveredFiles": [
+    "src/core/WorkBoardSlipStore.ts",
+    "tests/unit/work-board-slip-store.test.ts",
+    "upgrades/side-effects/work-board-approval-binding-wip.md"
+  ],
+  "phase": "complete",
+  "tier": 2,
+  "tierReasoning": "Persist exact single-use owner decision before Work Board application",
+  "secondPass": "true",
+  "reviewerConcurred": true
+}

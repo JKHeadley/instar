@@ -10,12 +10,15 @@
  * The bearer reaches the create's write gate and is refused for having no device signature (the route is
  * mounted and wired: an unwired dependency answers 503 work-board-disabled).
  */
+import Database from 'better-sqlite3';
+import { WorkBoardSlipStore } from '../../src/core/WorkBoardSlipStore.js';
 import { describe, it, expect, afterAll } from 'vitest';
 import request from 'supertest';
 import fs from 'node:fs';
 import path from 'node:path';
 import os from 'node:os';
 import { AgentServer } from '../../src/server/AgentServer.js';
+import { SingleInstanceLock } from '../../src/core/SingleInstanceLock.js';
 import { StateManager } from '../../src/core/StateManager.js';
 import type { InstarConfig } from '../../src/core/types.js';
 import { SafeFsExecutor } from '../../src/core/SafeFsExecutor.js';
@@ -25,8 +28,11 @@ import { ReplicatedRecordEmitter } from '../../src/core/ReplicatedRecordEmitter.
 import { ReplicatedPeerStreamReader } from '../../src/core/ReplicatedPeerStreamReader.js';
 import { HybridLogicalClock } from '../../src/core/HybridLogicalClock.js';
 import { WORK_CARD_KIND_REGISTRATION, WORK_CARD_RECORD_KIND, WORK_BOARD_STORE_KEY, type UnionEntry } from '../../src/core/WorkCardStore.js';
-import { WorkBoardRuntime } from '../../src/core/WorkBoardRuntime.js';
+import { readWorkBoardApprovalEvent } from '../../src/core/workBoardApprovalReadback.js';
+import { lineIdFor } from '../../src/core/WorkBoardService.js';
+import { WorkBoardRuntime, workBoardHistoryFingerprint } from '../../src/core/WorkBoardRuntime.js';
 import type { MobilePairingService } from '../../src/server/mobilePairingRoutes.js';
+import { workBoardSlipApprovalLine } from '../../src/core/workBoardSlipPresence.js';
 import { permissionPresenceMessage } from '../../src/server/mobilePermissionsRoutes.js';
 import { phoneCardDraftHash, parsePhoneCardDraft } from '../../src/server/phoneWorkCards.js';
 import { canonicalString } from '../../src/core/MobileDeviceKeys.js';
@@ -59,24 +65,25 @@ afterAll(() => { for (const d of tmpDirs) SafeFsExecutor.safeRmSync(d, { recursi
 
 interface Rig { runtime: WorkBoardRuntime; journal: CoherenceJournal; lines: Array<{ key: string; id: string; text: string }>; briefs: string[]; conversations: Set<string>; removed: string[] }
 
-function mkRuntime(stateDir: string, opts: { rotateBytes?: number } = {}): Rig {
+function mkRuntime(stateDir: string, opts: { machineId?: string; baseline?: () => UnionEntry[]; rotateBytes?: number; permissionSlips?: ConstructorParameters<typeof WorkBoardRuntime>[0]['permissionSlips']; onAwaitDurable?: (seq: number, journal: CoherenceJournal) => void } = {}): Rig {
+  const machineId = opts.machineId ?? 'm1';
   const reg = new ReplicatedKindRegistry(); reg.register(WORK_CARD_KIND_REGISTRATION);
   const journal = new CoherenceJournal({
-    stateDir, machineId: 'm1', flushIntervalMs: 1_000_000,
+    stateDir, machineId, flushIntervalMs: 1_000_000,
     ...(opts.rotateBytes ? { retention: { [WORK_CARD_RECORD_KIND]: { maxFileBytes: opts.rotateBytes, rotateKeep: 0 } } } : {}),
   } as never);
   journal.open(); journal.setReplicatedKindRegistry(reg);
   let t = Date.parse('2026-11-12T20:00:00Z');
-  const emitter = new ReplicatedRecordEmitter({ journal, clock: new HybridLogicalClock({ node: 'm1', now: () => (t += 1000) }), registry: reg, origin: 'm1', stores: () => ({ [WORK_BOARD_STORE_KEY]: { enabled: true } }), loadWitness: () => undefined });
-  const streams = new ReplicatedPeerStreamReader({ stateDir, registry: reg, selfMachineId: 'm1', autoRebuild: false });
+  const emitter = new ReplicatedRecordEmitter({ journal, clock: new HybridLogicalClock({ node: machineId, now: () => (t += 1000) }), registry: reg, origin: machineId, stores: () => ({ [WORK_BOARD_STORE_KEY]: { enabled: true } }), loadWitness: () => undefined });
+  const streams = new ReplicatedPeerStreamReader({ stateDir, registry: reg, selfMachineId: machineId, autoRebuild: false });
   const lines: Rig['lines'] = []; const briefs: string[] = []; const conversations = new Set<string>(); const removed: string[] = [];
   const runtime = new WorkBoardRuntime({
-    machineId: 'm1', enabled: () => true, rawSettings: () => ({}), saveSettings: () => true,
+    machineId, permissionSlips: opts.permissionSlips, enabled: () => true, rawSettings: () => ({}), saveSettings: () => true,
     emit: (k, b) => { const r = emitter.emit(WORK_BOARD_STORE_KEY, k, b); journal.flush(); return { outcome: r.outcome, ...(r.seq !== undefined ? { seq: r.seq } : {}), ...(r.hlc ? { hlc: r.hlc } : {}) }; },
-    awaitDurable: async () => { journal.flush(); },
+    awaitDurable: async (seq) => { journal.flush(); opts.onAwaitDurable?.(seq, journal); },
     loadUnion: () => {
       journal.flush();
-      const out: UnionEntry[] = [];
+      const out: UnionEntry[] = opts.baseline?.() ?? [];
       for (const byOrigin of streams.loadAllOriginRecords(WORK_BOARD_STORE_KEY).values()) for (const r of byOrigin) out.push({ data: { ...r.data, recordKey: r.envelope.recordKey, hlc: r.envelope.hlc, op: r.envelope.op, origin: r.origin }, origin: r.origin });
       return out;
     },
@@ -92,7 +99,7 @@ function mkRuntime(stateDir: string, opts: { rotateBytes?: number } = {}): Rig {
     relayReady: () => true, capacityProbe: () => ({ ok: true }),
     ownerPersonKey: () => 'owner', displayName: () => 'Justin', timezone: () => 'America/Los_Angeles',
     detectCredential: (text) => (/sk-ant-[A-Za-z0-9]{10,}/.test(text) ? 'anthropic-api-key' : null),
-    ledgerNote: () => {}, degradation: () => {}, leaseHolder: () => 'm1',
+    ledgerNote: () => {}, degradation: () => {}, leaseHolder: () => machineId,
   });
   return { runtime, journal, lines, briefs, conversations, removed };
 }
@@ -110,6 +117,345 @@ function send(app: Parameters<typeof request>[0], phone: Phone, method: 'POST' |
 }
 
 describe('Work cards from the owner phone E2E (feature is alive)', () => {
+  it.each(['application', 'baseline', 'lock'] as const)('fences an enrolled writer missing its %s before it can issue or write', (missing) => {
+    const { stateDir } = mkConfig();
+    const db = new Database(':memory:');
+    const store = new WorkBoardSlipStore(db);
+    const writer = { epoch: 'epoch1', ownerGeneration: 'owner1', ownerPersonKey: 'owner', writerIncarnation: 'i1' };
+    const { runtime, journal } = mkRuntime(stateDir, {
+      permissionSlips: {
+        store,
+        currentWriter: () => writer,
+        ...(missing !== 'application' ? { application: { readEvent: () => ({ status: 'unknown' as const }) } } : {}),
+        ...(missing !== 'baseline' ? { sealedPeerHistory: new Set<string>() } : {}),
+        ...(missing !== 'lock' ? { instanceLock: { revalidateExclusive: () => true } } : {}),
+      },
+    });
+    try {
+      runtime.start();
+      const created = runtime.svc.createCard({ kind: 'agent' }, {
+        title: 'Cannot create', need: 'Await an enrolled writer', doneWhen: [{ id: 'done', text: 'Complete' }],
+      });
+      expect(created).toMatchObject({ ok: false, error: 'store-unavailable' });
+      expect(runtime.readPermissionSlip('11111111-2222-4333-8444-555555555555').status).toBe(503);
+      expect(journal.readKindComplete(WORK_CARD_RECORD_KIND).entries).toHaveLength(0);
+    } finally { runtime.stop(); journal.close(); db.close(); }
+  });
+
+  it('refuses an enrolled writer when it loses the real agent-home lock', async () => {
+    const { stateDir } = mkConfig();
+    const db = new Database(':memory:');
+    const lock = new SingleInstanceLock({ stateDir, handoffGraceMs: 0, env: {} });
+    const rig = mkRuntime(stateDir, {
+      permissionSlips: {
+        store: new WorkBoardSlipStore(db),
+        currentWriter: () => ({ epoch: 'epoch1', ownerGeneration: 'owner1', ownerPersonKey: 'owner', writerIncarnation: 'i1' }),
+        sealedPeerHistory: new Set(),
+        instanceLock: lock,
+        application: { readEvent: () => ({ status: 'unknown' }) },
+      },
+    });
+    const create = (title: string) => rig.runtime.svc.createCard({ kind: 'agent' }, {
+      title, need: 'Check the lock', doneWhen: [{ id: 'done', text: 'Complete' }], outward: true,
+    });
+    try {
+      expect(await lock.acquire()).toMatchObject({ acquired: true });
+      rig.runtime.start();
+      expect(create('Held lock')).toMatchObject({ ok: true });
+      const before = rig.journal.readKindComplete(WORK_CARD_RECORD_KIND).entries.length;
+      lock.release();
+      expect(create('Released lock')).toMatchObject({ ok: false, error: 'store-unavailable' });
+      expect(rig.runtime.readPermissionSlip('11111111-2222-4333-8444-555555555555').status).toBe(503);
+      expect(rig.journal.readKindComplete(WORK_CARD_RECORD_KIND).entries).toHaveLength(before);
+    } finally { rig.runtime.stop(); rig.journal.close(); lock.release(); db.close(); }
+  });
+
+  it('refuses a pickup when an unexpected peer record arrives during the durability wait', async () => {
+    const { stateDir } = mkConfig();
+    const db = new Database(':memory:');
+    const store = new WorkBoardSlipStore(db);
+    const writer = { epoch: 'epoch1', ownerGeneration: 'owner1', ownerPersonKey: 'owner', writerIncarnation: 'i1' };
+    let fenced = false;
+    const rig: Rig = mkRuntime(stateDir, {
+      permissionSlips: {
+        store, currentWriter: () => writer,
+        instanceLock: { revalidateExclusive: () => true },
+        sealedPeerHistory: new Set(),
+        application: { readEvent: (id) => readWorkBoardApprovalEvent(id, {
+          journal: rig.journal,
+          epoch: { machineId: 'm1', journalIncarnation: rig.journal.getOwnAdvert()[WORK_CARD_RECORD_KIND].incarnation, baselineSequence: 0 },
+          current: () => !fenced, hasReservation: () => false,
+        }) },
+      },
+      onAwaitDurable: (seq, journal) => {
+        const intent = journal.readKindComplete(WORK_CARD_RECORD_KIND).entries.find((row) => row.seq === seq);
+        if (intent?.data.recordType !== 'dispatching') return;
+        fenced = true;
+        rig.runtime.onCommitted([{ machine: 'unexpected-peer', data: { ...intent.data, origin: 'unexpected-peer' } }], 'unexpected-peer');
+      },
+    });
+    rig.runtime.start();
+    try {
+      const created = rig.runtime.svc.createCard({ kind: 'agent' }, {
+        title: 'Test pickup fence', need: 'Check this card', doneWhen: [{ id: 'done', text: 'Checked' }], outward: true,
+      });
+      if (!created.ok) throw new Error('card');
+      const { version } = rig.runtime.svc.approvalSnapshot(created.cardId)!;
+      const result = await rig.runtime.svc.approveBound({ kind: 'person', personKey: 'owner', isOwner: true, proof: 'presence' },
+        { proof: writer, version, source: 'slip', decisionId: 'fixture-decision' });
+      if (result.status !== 'applied') throw new Error('approval');
+      expect(rig.runtime.svc.projectBoundApproval(result.winner)).toBe(true);
+      await rig.runtime.controller.tick();
+      expect(fenced).toBe(true);
+      expect(rig.briefs).toEqual([]);
+    } finally { rig.runtime.stop(); rig.journal.close(); db.close(); }
+  });
+
+  it('refuses a Work Board journal write from a legacy peer after enrollment', () => {
+    const { stateDir } = mkConfig();
+    const db = new Database(':memory:');
+    const legacy = mkRuntime(mkConfig().stateDir, { machineId: 'legacy-peer' });
+    const writer = mkRuntime(stateDir, {
+      permissionSlips: {
+        store: new WorkBoardSlipStore(db),
+        currentWriter: () => ({ epoch: 'epoch1', ownerGeneration: 'owner1', ownerPersonKey: 'owner', writerIncarnation: 'i1' }),
+        sealedPeerHistory: new Set(),
+        instanceLock: { revalidateExclusive: () => true },
+        application: { readEvent: () => ({ status: 'unknown' }) },
+      },
+    });
+    try {
+      legacy.runtime.start();
+      writer.runtime.start();
+      const created = legacy.runtime.svc.createCard({ kind: 'agent' }, {
+        title: 'Legacy write', need: 'Reject after enrollment', doneWhen: [{ id: 'done', text: 'Complete' }], outward: true,
+      });
+      if (!created.ok) throw new Error('legacy card did not commit');
+      const entries = legacy.journal.readKindComplete(WORK_CARD_RECORD_KIND).entries;
+      expect(entries.length).toBeGreaterThan(0);
+      writer.runtime.onCommitted(entries, 'legacy-peer');
+      expect(writer.runtime.svc.view(created.cardId)).toBeNull();
+      expect(writer.runtime.readPermissionSlip('11111111-2222-4333-8444-555555555555').status).toBe(503);
+    } finally {
+      legacy.runtime.stop();
+      legacy.journal.close();
+      writer.runtime.stop();
+      writer.journal.close();
+      db.close();
+    }
+  });
+
+  it('fences an enrolled writer when a sealed peer record is missing at startup', () => {
+    const { stateDir } = mkConfig();
+    const db = new Database(':memory:');
+    const sealed = { origin: 'old-peer', data: { origin: 'old-peer', recordKey: 'wb-policy:sealed' } };
+    let baseline: UnionEntry[] = [];
+    const rig = mkRuntime(stateDir, {
+      baseline: () => [...baseline],
+      permissionSlips: {
+        store: new WorkBoardSlipStore(db),
+        currentWriter: () => ({ epoch: 'epoch1', ownerGeneration: 'owner1', ownerPersonKey: 'owner', writerIncarnation: 'i1' }),
+        instanceLock: { revalidateExclusive: () => true },
+        sealedPeerHistory: new Set([workBoardHistoryFingerprint(sealed)]),
+        application: { readEvent: () => ({ status: 'unknown' }) },
+      },
+    });
+    const create = () => rig.runtime.svc.createCard({ kind: 'agent' }, {
+      title: 'Check sealed history', need: 'A complete baseline', doneWhen: [{ id: 'done', text: 'Checked' }], outward: true,
+    });
+    try {
+      rig.runtime.start();
+      expect(create()).toMatchObject({ ok: false, error: 'store-unavailable' });
+      baseline = [sealed];
+      rig.runtime.stop();
+      rig.runtime.start();
+      expect(create()).toMatchObject({ ok: false, error: 'store-unavailable' });
+      expect(rig.journal.readKindComplete(WORK_CARD_RECORD_KIND).entries).toHaveLength(0);
+    } finally { rig.runtime.stop(); rig.journal.close(); db.close(); }
+  });
+
+  it('reads an enrolled slip and its exact receipt through the signed owner-device route', async () => {
+    const { config, stateDir } = mkConfig();
+    delete config.dashboardPin;
+    config.users = [{ id: 'owner', name: 'Owner', channels: [], permissions: [], preferences: {}, telegramUserId: 1001, orgRole: 'owner' }];
+    const db = new Database(':memory:');
+    const writer = { epoch: 'epoch1', ownerGeneration: 'owner1', ownerPersonKey: 'owner', writerIncarnation: 'i1' };
+    let active = true;
+    const store = new WorkBoardSlipStore(db);
+    const sealed = {
+      origin: 'old-peer',
+      data: {
+        origin: 'old-peer', recordKey: 'wb-policy:sealed-fixture', recordType: 'policy', policy: 'every-agent-card',
+        hlc: { physical: 100, logical: 0, node: 'old-peer' }, op: 'put',
+        at: '2026-11-12T20:00:00.000Z', by: { kind: 'person', personKey: 'owner', proof: 'pin' },
+      },
+    };
+    let sourceCards: string[] = [];
+    const telegram = {
+      getOwnerUserId: () => 1001,
+      getAllTopicMappings: () => [{ topicId: 4242 }],
+      getTopicHistory: () => [],
+      findTopicMessage: (topicId: number, messageId: number) => ({
+        entry: topicId === 4242 && (messageId === 777 || messageId === 778) ? {
+          topicId, messageId, telegramUserId: messageId === 777 ? 1001 : 1002,
+          text: `Approve Work Board cards: ${sourceCards.join(', ')}`,
+          fromUser: true, forwarded: false, provenance: 'user', authorship: 'human',
+        } : null,
+      }),
+    };
+    const rig: Rig = mkRuntime(stateDir, {
+      baseline: () => [sealed],
+      permissionSlips: {
+        store, currentWriter: () => active ? writer : null,
+        instanceLock: { revalidateExclusive: () => true },
+        sealedPeerHistory: new Set([workBoardHistoryFingerprint(sealed)]),
+        application: {
+          readEvent: (id) => readWorkBoardApprovalEvent(id, {
+            journal: rig.journal,
+            epoch: { machineId: 'm1', journalIncarnation: rig.journal.getOwnAdvert()[WORK_CARD_RECORD_KIND].incarnation, baselineSequence: 0 },
+            current: () => active, hasReservation: () => false,
+          }),
+        },
+      },
+    });
+    rig.runtime.start();
+    const server = new AgentServer({ config, sessionManager: sm(), state: new StateManager(stateDir), workBoard: () => rig.runtime, telegram: telegram as never });
+    await server.start();
+    const app = server.getApp();
+    try {
+      const pairing = (server as unknown as { mobilePairing: MobilePairingService }).mobilePairing;
+      const dev = makeDevice();
+      const created = pairing.devices.createPending({ deviceName: 'iPhone', label: null, publicKey: dev.publicKey, host: HOST });
+      if (!created.ok) throw new Error('pair');
+      pairing.devices.applyConfirm(created.device.id, { ok: true });
+      const phone: Phone = { dev, presence: makeDevice(), id: created.device.id };
+      pairing.devices.setPresenceKey(phone.id, phone.presence.publicKey);
+      const createdCard = rig.runtime.svc.createCard({ kind: 'agent' }, {
+        title: 'Review the exact card', need: 'Check this before starting',
+        doneWhen: [{ id: 'done', text: 'Checked', certify: 'agent-may-certify' }], outward: true,
+      });
+      if (!createdCard.ok) throw new Error('card');
+      const { cardId } = createdCard;
+      const { version, disclosure } = rig.runtime.svc.approvalSnapshot(cardId)!;
+      const beforeLegacyTap = rig.journal.readKindComplete(WORK_CARD_RECORD_KIND).entries.length;
+      const legacy = rig.runtime.svc.tap({ kind: 'person', personKey: 'owner', proof: 'pin', isOwner: true }, cardId,
+        { action: 'approve', materialHash: version.materialHash, titleHash: version.titleHash });
+      expect(legacy).toMatchObject({ ok: false, error: 'bound-approval-required' });
+      expect(rig.journal.readKindComplete(WORK_CARD_RECORD_KIND).entries).toHaveLength(beforeLegacyTap);
+      sourceCards = [cardId];
+      const issue = (sourceRef: string) => request(app).post('/work-board/slips').set(auth()).send({ sourceRef });
+      expect((await issue('telegram:4242:778')).status).toBe(409);
+      expect((await issue('telegram:4242:779')).status).toBe(409);
+      const issuance = await issue('telegram:4242:777');
+      expect(issuance.status, JSON.stringify(issuance.body)).toBe(200);
+      const issued = issuance.body;
+      expect((await issue('telegram:4242:777')).body).toEqual(issued);
+      sourceCards = [cardId, 'wc_8ef2f314f32acff4'];
+      expect((await issue('telegram:4242:777')).status).toBe(409);
+      sourceCards = [cardId];
+      const slip = store.get(issued.slipId)!;
+      expect(slip.proposal.items).toEqual([{ version, disclosure }]);
+      const route = `/mobile/work-board/slips/${slip.id}`;
+      const bearer = await request(app).get(route).set(auth());
+      expect(bearer.status).toBe(403);
+      const pending = await send(app, phone, 'GET', route);
+      expect(pending.status, JSON.stringify(pending.body)).toBe(200);
+      expect(pending.headers['cache-control']).toBe('no-store');
+      expect(pending.body).toMatchObject({
+        schemaVersion: 1, slipId: slip.id, disclosureDigest: slip.digest, state: 'pending',
+        receipt: null, items: [{ cardId, version, disclosure, action: 'approve' }],
+      });
+      expect(JSON.stringify(pending.body)).not.toContain('telegram:4242:777');
+      const challengeRoute = '/mobile/permissions/challenge';
+      const challengeInput = { action: 'work-board-slip-approve', target: slip.id, disclosureDigest: slip.digest };
+      const wrong = await send(app, phone, 'POST', challengeRoute, { ...challengeInput, disclosureDigest: 'f'.repeat(64) });
+      expect(wrong.status).toBe(409);
+      const challenge = await send(app, phone, 'POST', challengeRoute, challengeInput);
+      expect(challenge.status, JSON.stringify(challenge.body)).toBe(200);
+      expect(challenge.body.actionBindingDigest).toMatch(/^[a-f0-9]{64}$/);
+      expect(Date.parse(challenge.body.expiresAt)).toBeLessThanOrEqual(slip.expiresAt);
+      const replacement = makeDevice();
+      expect(pairing.devices.replacePresenceKey(phone.id, replacement.publicKey)).toBe('replaced');
+      const updated = await send(app, phone, 'POST', challengeRoute, challengeInput);
+      expect(updated.status).toBe(200);
+      expect(updated.body.actionBindingDigest).not.toBe(challenge.body.actionBindingDigest);
+
+      const submitRoute = `${route}/approve`;
+      const bodyFor = (c: { challenge: string; actionBindingDigest: string }, key: typeof replacement) => {
+        const line = workBoardSlipApprovalLine(slip.id, slip.digest, c.actionBindingDigest)!;
+        return {
+          challenge: c.challenge, disclosureDigest: slip.digest, actionBindingDigest: c.actionBindingDigest,
+          presenceSig: key.sign(permissionPresenceMessage(phone.id, HOST, c.challenge, line)),
+        };
+      };
+      expect((await send(app, phone, 'POST', submitRoute, bodyFor(challenge.body, phone.presence))).status).toBe(409);
+      const submit = bodyFor(updated.body, replacement);
+      expect((await send(app, phone, 'POST', submitRoute, { ...submit, presenceSig: 'invalid' })).status).toBe(401);
+      expect(store.get(slip.id)?.decisionId).toBeNull();
+      const committed = await send(app, phone, 'POST', submitRoute, submit);
+      expect(committed.status, JSON.stringify(committed.body)).toBe(200);
+      expect(committed.body).toMatchObject({ state: 'signed', receipt: { items: [{ cardId, status: 'applied' }] } });
+      const retry = await send(app, phone, 'POST', submitRoute, submit);
+      expect(retry.status).toBe(200);
+      expect(retry.body).toEqual(committed.body);
+      const eventId = committed.body.receipt.items[0].eventId;
+      const history = rig.lines.filter(({ id }) => id === lineIdFor(eventId));
+      expect(history).toHaveLength(1);
+      expect(history[0].key).toBe(createdCard.conversationKey);
+      expect(history[0].text).toMatch(/approved/i);
+      const records = rig.journal.readKindComplete(WORK_CARD_RECORD_KIND).entries;
+      expect(records.filter(({ data }) => data.approvalBinding)).toHaveLength(1);
+      expect(rig.runtime.svc.view(cardId)?.card.approvedBy?.id).toBe(committed.body.receipt.items[0].eventId);
+
+      const signed = await send(app, phone, 'GET', route);
+      expect(signed.status).toBe(200);
+      expect(signed.body).toMatchObject({ state: 'signed', receipt: { items: [{ cardId, status: 'applied' }] } });
+      expect((await send(app, phone, 'POST', challengeRoute, challengeInput)).status).toBe(409);
+      rig.runtime.svc.rebuild();
+      const rebuilt = await send(app, phone, 'GET', route);
+      expect(rebuilt.status).toBe(200);
+      expect(rebuilt.body).toMatchObject({ state: 'signed', receipt: { items: [{ cardId, status: 'unresolved' }] } });
+      rig.runtime.stop();
+      rig.runtime.start();
+      const recovered = await send(app, phone, 'GET', route);
+      expect(recovered.status).toBe(200);
+      expect(recovered.body).toEqual(committed.body);
+      expect(rig.runtime.svc.view(cardId)?.card.approvedBy?.id).toBe(eventId);
+      expect(rig.lines.filter(({ id }) => id === lineIdFor(eventId))).toHaveLength(1);
+      expect(rig.journal.readKindComplete(WORK_CARD_RECORD_KIND).entries.filter(({ data }) => data.approvalBinding)).toHaveLength(1);
+      expect(rig.runtime.svc.edit({ kind: 'agent' }, cardId, { title: 'Changed after approval' }).ok).toBe(true);
+      expect((await issue('telegram:4242:777')).body).toEqual(issued);
+      rig.runtime.stop();
+      rig.runtime.start();
+      const changed = await send(app, phone, 'GET', route);
+      expect(changed.status).toBe(200);
+      expect(changed.body).toMatchObject({ state: 'signed', receipt: { items: [{ cardId, status: 'unresolved' }] } });
+      expect(rig.journal.readKindComplete(WORK_CARD_RECORD_KIND).entries.filter(({ data }) => data.approvalBinding)).toHaveLength(1);
+      active = false;
+      const beforeLostWriter = rig.journal.readKindComplete(WORK_CARD_RECORD_KIND).entries.length;
+      const refusedEdit = rig.runtime.svc.edit({ kind: 'agent' }, cardId, { title: 'Cannot write after authority loss' });
+      expect(refusedEdit).toMatchObject({ ok: false, error: 'store-unavailable' });
+      expect(rig.journal.readKindComplete(WORK_CARD_RECORD_KIND).entries).toHaveLength(beforeLostWriter);
+      expect(rig.runtime.svc.view(cardId)?.card.title).toBe('Changed after approval');
+      const unavailable = await send(app, phone, 'GET', route);
+      expect(unavailable.status).toBe(503);
+      expect(unavailable.body.items).toBeUndefined();
+      active = true;
+      rig.runtime.onCommitted([{ data: sealed.data, machine: sealed.origin }], sealed.origin);
+      expect(rig.runtime.svc.policyRecords().some(({ id }) => id === sealed.data.recordKey)).toBe(true);
+      expect((await send(app, phone, 'GET', route)).status).toBe(200);
+      const oldPeerEdit = {
+        origin: 'old-peer', recordKey: `wc:${cardId}:e:peer`, recordType: 'edited', cardId,
+        hlc: { physical: Date.now(), logical: 0, node: 'old-peer' }, title: 'Unexpected peer change',
+      };
+      rig.runtime.onCommitted([{ data: oldPeerEdit, machine: 'old-peer' }], 'old-peer');
+      expect(rig.runtime.svc.view(cardId)?.card.title).toBe('Changed after approval');
+      expect((await send(app, phone, 'GET', route)).status).toBe(503);
+      expect(rig.runtime.svc.edit({ kind: 'agent' }, cardId, { title: 'Cannot write after peer conflict' }))
+        .toMatchObject({ ok: false, error: 'store-unavailable' });
+    } finally { await server.stop(); rig.runtime.stop?.(); db.close(); }
+  });
+
   it('the owner phone opens one card and makes a card from a message through the real server', async () => {
     const { config, stateDir } = mkConfig();
     const rig = mkRuntime(stateDir);

@@ -1,0 +1,23 @@
+{
+  "version": 2,
+  "slug": "work-board-approval-binding-wip",
+  "sessionId": "b3d2cf8a-9b5d-468b-a50b-70ebf11e9e5c",
+  "timestamp": "2026-11-25T02:04:05.461Z",
+  "artifactPath": "upgrades/side-effects/work-board-approval-binding-wip.md",
+  "artifactSha256": "053e9719ed94d5038d8412adceacc38721344b166595cc753ee7d4a596048c6e",
+  "specPath": "docs/specs/owner-work-board-slips-first-slice.md",
+  "coveredFiles": [
+    "src/core/WorkBoardRuntime.ts",
+    "src/core/workBoardSlipPresence.ts",
+    "src/server/mobilePairingRoutes.ts",
+    "src/server/mobilePermissionsRoutes.ts",
+    "src/server/routes.ts",
+    "tests/e2e/phone-work-cards-alive.test.ts",
+    "upgrades/side-effects/work-board-approval-binding-wip.md"
+  ],
+  "phase": "complete",
+  "tier": 2,
+  "tierReasoning": "Owner-device signed Work Board disclosure and receipt read",
+  "secondPass": "true",
+  "reviewerConcurred": true
+}

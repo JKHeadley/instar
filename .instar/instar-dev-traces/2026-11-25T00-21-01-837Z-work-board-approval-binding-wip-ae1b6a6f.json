@@ -1,0 +1,21 @@
+{
+  "version": 2,
+  "slug": "work-board-approval-binding-wip",
+  "sessionId": "b3d2cf8a-9b5d-468b-a50b-70ebf11e9e5c",
+  "timestamp": "2026-11-25T00:21:01.837Z",
+  "artifactPath": "upgrades/side-effects/work-board-approval-binding-wip.md",
+  "artifactSha256": "5e71a59b126b315aaa514d9d5c94eb625fd5137e45b213f3c24dd12a77711b92",
+  "specPath": "docs/specs/owner-work-board-slips-first-slice.md",
+  "coveredFiles": [
+    "src/core/WorkBoardApprovalWriter.ts",
+    "tests/integration/work-board-approval-readback.test.ts",
+    "tests/unit/work-board-approval-readback.test.ts",
+    "tests/unit/work-board-approval-writer.test.ts",
+    "upgrades/side-effects/work-board-approval-binding-wip.md"
+  ],
+  "phase": "complete",
+  "tier": 2,
+  "tierReasoning": "Tie durable approval evidence to the enrolled owner and proof method",
+  "secondPass": "true",
+  "reviewerConcurred": true
+}

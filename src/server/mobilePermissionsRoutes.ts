@@ -31,6 +31,8 @@
  * in for the dashboard PIN the console asks for, and the action itself runs the console's own code
  * (injected by routes.ts), so the phone can never do more than the PIN-confirmed console.
  */
+import type { WorkBoardSlipDeviceBinding } from '../core/WorkBoardRuntime.js';
+import { isWorkBoardSlipId, workBoardSlipApprovalLine } from '../core/workBoardSlipPresence.js';
 import { tapActionLine, isCardId, isRecordId, TAP_ACTIONS, CLOSE_AS, SCHEMA_MAX } from '../core/WorkCardStore.js';
 import { parsePhoneCardDraft, phoneCardDraftHash, phoneCardCreateLine, PHONE_CARD_REQUEST_ID, PHONE_CARD_SHAPE_WORDS, type PhoneCardDraft } from './phoneWorkCards.js';
 import crypto from 'node:crypto';
@@ -427,7 +429,7 @@ export class ActionChallengeStore {
   constructor(private readonly now: () => number = Date.now, private readonly ttlMs = PERMISSION_CHALLENGE_TTL_MS,
     private readonly perDevice = PERMISSION_CHALLENGE_PER_DEVICE, private readonly total = PERMISSION_CHALLENGE_TOTAL) {}
 
-  issue(deviceId: string, host: string, line: string): { secret: string; expiresAt: number; ref: string } {
+  issue(deviceId: string, host: string, line: string, deadline = Number.POSITIVE_INFINITY): { secret: string; expiresAt: number; ref: string } {
     this.prune();
     const mine = [...this.entries.entries()].filter(([, e]) => e.deviceId === deviceId);
     for (let i = 0; i <= mine.length - this.perDevice; i++) this.entries.delete(mine[i]![0]);
@@ -437,7 +439,7 @@ export class ActionChallengeStore {
       this.entries.delete(oldest);
     }
     const secret = crypto.randomBytes(32).toString('base64url');
-    const expiresAt = this.now() + this.ttlMs;
+    const expiresAt = Math.min(this.now() + this.ttlMs, deadline);
     const digest = sha256(secret);
     this.entries.set(digest, { deviceId, host: host.toLowerCase(), line, expiresAt });
     return { secret, expiresAt, ref: digest.slice(0, 12) };
@@ -740,6 +742,10 @@ export function summarizePeerFeatures(peers: Array<PeerSlips | PeerUnreached>, o
 export interface ActionResult { status: number; body: unknown }
 
 export interface MobilePermissionsDeps {
+  readWorkBoardSlip?: (id: string) => ActionResult;
+  bindWorkBoardSlip?: (input: WorkBoardSlipDeviceBinding) =>
+    { actionBindingDigest: string; expiresAt: number; replay: boolean } | null;
+  recordWorkBoardSlip?: (input: WorkBoardSlipDeviceBinding & { decisionId: string; actionBindingDigest: string; allowFresh: boolean }) => ActionResult | Promise<ActionResult>;
   pairing: () => MobilePairingService | null;
   config: () => InstarConfig;
   stateDir: string;
@@ -873,6 +879,16 @@ export function mountMobilePermissionsRoutes(router: Router, deps: MobilePermiss
     }
   };
 
+  router.get('/mobile/work-board/slips/:id', (req: Request, res: Response) => {
+    res.set('Cache-Control', 'no-store');
+    if (!ownerOrBearer(req, () => false)) { res.status(403).json({ error: 'owner-phone-required' }); return; }
+    const id = req.params.id;
+    if (!isWorkBoardSlipId(id)) { res.status(404).json({ error: 'not-found' }); return; }
+    const result = deps.readWorkBoardSlip?.(id);
+    if (!result) { res.status(503).json({ error: 'work-board-slips-unavailable' }); return; }
+    res.status(result.status).json(result.body);
+  });
+
   router.get('/mobile/permissions/slips', async (req: Request, res: Response) => {
     if (!readGuard(req, res)) return;
     const local = req.query.scope === 'local';
@@ -918,7 +934,7 @@ export function mountMobilePermissionsRoutes(router: Router, deps: MobilePermiss
   /** Steps 1–6 of the write gate (spec §3.3). Answers and returns null on refusal. */
   // `teamControl`: turning team access off, restoring it and requiring privacy must always work for
   // whoever could invite, so they do not hang on this feature's switch or the console PIN (§3.6).
-  const writeGate = (req: Request, res: Response, mode: boolean | 'trust' = false): { deviceId: string; personId: string | null; host: string; presenceKey: string; svc: MobilePairingService } | null => {
+  const writeGate = (req: Request, res: Response, mode: boolean | 'trust' | 'work-slip' = false): { deviceId: string; personId: string | null; host: string; presenceKey: string; svc: MobilePairingService } | null => {
     res.set('Cache-Control', 'no-store');
     // Every refusal leaves a trace before the answer (A Refusal Stays a Refusal); the bearer has no device id.
     const refuse = (r: Refusal, deviceId: string | null = principalDevice(req)): null => {
@@ -940,7 +956,7 @@ export function mountMobilePermissionsRoutes(router: Router, deps: MobilePermiss
     const deviceId = p.deviceId;
     if (!overLocalTls(req)) return refuse({ status: 403, error: 'secure-transport-required' }, deviceId);
     if (!activeOwnerPhone(svc, deviceId)) return refuse({ status: 403, error: 'owner-phone-required' }, deviceId);
-    if (!teamControl && !config.dashboardPin) return refuse({ status: 503, error: 'console-pin-not-set', detail: 'The console has no PIN set, so it cannot approve or switch either. Set a PIN first.' }, deviceId);
+    if (!teamControl && mode !== 'work-slip' && !config.dashboardPin) return refuse({ status: 503, error: 'console-pin-not-set', detail: 'The console has no PIN set, so it cannot approve or switch either. Set a PIN first.' }, deviceId);
     const d = svc.devices.get(deviceId);
     if (!d?.presenceKey) return refuse({ status: 409, error: 'presence-key-missing' }, deviceId);
     const raw = (req as unknown as { instarDeviceHost?: unknown }).instarDeviceHost;
@@ -951,6 +967,24 @@ export function mountMobilePermissionsRoutes(router: Router, deps: MobilePermiss
 
   router.post('/mobile/permissions/challenge', (req: Request, res: Response) => {
     const b = rec(req.body);
+    if (b.action === 'work-board-slip-approve') {
+      const g = writeGate(req, res, 'work-slip');
+      if (!g) return;
+      const { target: slipId, disclosureDigest: digest } = b;
+      if (!isWorkBoardSlipId(slipId) || typeof digest !== 'string' || !/^[a-f0-9]{64}$/.test(digest) || digest.length !== 64) {
+        res.status(400).json({ error: 'invalid-work-board-slip' }); return;
+      }
+      const binding = deps.bindWorkBoardSlip?.({ slipId, digest, deviceId: g.deviceId, host: g.host, presenceKey: g.presenceKey });
+      const line = binding && workBoardSlipApprovalLine(slipId, digest, binding.actionBindingDigest);
+      if (!binding || !line || binding.expiresAt <= now()) {
+        audit.record({ event: 'refused', deviceId: g.deviceId, route: auditRoute(req), reason: 'work-board-slip-unavailable', status: 409 });
+        res.status(409).json({ error: 'work-board-slip-unavailable' }); return;
+      }
+      const c = challenges.issue(g.deviceId, g.host, line, binding.expiresAt);
+      audit.record({ event: 'challenge', deviceId: g.deviceId, personId: g.personId, action: b.action, target: slipId });
+      res.json({ challenge: c.secret, expiresAt: new Date(c.expiresAt).toISOString(), actionBindingDigest: binding.actionBindingDigest });
+      return;
+    }
     const g = writeGate(req, res, b.action === 'approve-widening' || b.action === 'accept-device' ? 'trust'
       : b.action === 'team-off' || b.action === 'team-restore' || b.action === 'team-memory-privacy' || b.action === 'team-origin-gone' || b.action === 'team-switch-on');
     if (!g) return;
@@ -1013,6 +1047,52 @@ export function mountMobilePermissionsRoutes(router: Router, deps: MobilePermiss
   };
 
   // A tap on a work card (work-board-asks §4): the owner's phone, Face ID over the exact action line.
+  router.post('/mobile/work-board/slips/:id/approve', async (req: Request, res: Response) => {
+    const g = writeGate(req, res, 'work-slip');
+    if (!g) return;
+    const slipId = req.params.id;
+    const b = rec(req.body);
+    const { disclosureDigest: digest, actionBindingDigest, challenge, presenceSig } = b;
+    const line = workBoardSlipApprovalLine(slipId, digest, actionBindingDigest);
+    const reject = (status: number, error: string) => {
+      audit.record({ event: 'refused', deviceId: g.deviceId, route: auditRoute(req), reason: error, status });
+      res.status(status).json({ error });
+    };
+    if (!line || typeof slipId !== 'string' || typeof digest !== 'string' || typeof actionBindingDigest !== 'string'
+      || typeof challenge !== 'string' || challenge.length !== 43 || !SECRET_PATTERN.test(challenge)) {
+      reject(400, 'invalid-work-board-slip'); return;
+    }
+    const decisionId = sha256(`work-board-slip-decision-v1\n${challenge}`);
+    const input = { slipId, digest, deviceId: g.deviceId, host: g.host, presenceKey: g.presenceKey, decisionId, actionBindingDigest };
+    const binding = deps.bindWorkBoardSlip?.(input);
+    if (!binding || binding.actionBindingDigest !== actionBindingDigest) {
+      reject(409, 'work-board-slip-unavailable'); return;
+    }
+    if (!verifyPresenceSignature(g.presenceKey, permissionPresenceMessage(g.deviceId, g.host, challenge, line), presenceSig)) {
+      reject(401, 'presence-invalid'); return;
+    }
+    if (!binding.replay && !challenges.take(challenge, g.deviceId, g.host, line)) {
+      reject(401, 'challenge-invalid'); return;
+    }
+    if (!deps.recordWorkBoardSlip) { reject(503, 'work-board-slips-unavailable'); return; }
+    let result: ActionResult;
+    try {
+      result = await deps.recordWorkBoardSlip({ ...input, allowFresh: !binding.replay });
+    } catch (err) {
+      report('MobilePermissions.workBoardSlip', 'the slip returns its durable decision and item receipt', 'reopen the slip to check its receipt', err);
+      reject(503, 'work-board-slip-receipt-unavailable');
+      return;
+    }
+    const current = writeGate(req, res, 'work-slip');
+    if (!current) return;
+    if (current.deviceId !== g.deviceId || current.host !== g.host || current.presenceKey !== g.presenceKey) {
+      reject(409, 'work-board-slip-unavailable'); return;
+    }
+    if (result.status !== 200) { reject(result.status, errorCode(result.body)); return; }
+    if (!binding.replay) audit.record({ event: 'approved', deviceId: g.deviceId, personId: g.personId, action: 'work-board-slip-approve', target: slipId });
+    res.status(200).json(result.body);
+  });
+
   router.post('/mobile/work-board/cards/:id/tap', async (req: Request, res: Response) => {
     if (!deps.workCardTap) { res.status(503).json({ error: 'work-board-disabled' }); return; }
     const g = writeGate(req, res);

@@ -1,0 +1,19 @@
+{
+  "version": 2,
+  "slug": "work-board-approval-binding-wip",
+  "sessionId": "b3d2cf8a-9b5d-468b-a50b-70ebf11e9e5c",
+  "timestamp": "2026-11-25T01:52:53.138Z",
+  "artifactPath": "upgrades/side-effects/work-board-approval-binding-wip.md",
+  "artifactSha256": "4a1129f984911cb151cf5e9dbe3ad390dfc5d8ed71b1020222bd5ded16df828f",
+  "specPath": "docs/specs/owner-work-board-slips-first-slice.md",
+  "coveredFiles": [
+    "src/core/WorkBoardSlipStore.ts",
+    "src/core/workBoardSlipApplication.ts",
+    "tests/unit/work-board-slip-store.test.ts"
+  ],
+  "phase": "complete",
+  "tier": 2,
+  "tierReasoning": "Compose exact owner-approved items with the durable Work Board writer",
+  "secondPass": "true",
+  "reviewerConcurred": true
+}

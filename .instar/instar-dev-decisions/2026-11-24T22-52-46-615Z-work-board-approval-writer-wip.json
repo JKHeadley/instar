@@ -1,0 +1,24 @@
+{
+  "ts": "2026-11-24T22:52:46.615Z",
+  "slug": "work-board-approval-writer-wip",
+  "suggestedTier": 2,
+  "declaredTier": 2,
+  "riskFloor": 2,
+  "riskFloorReasons": [
+    "new capability: new exported class / subsystem added"
+  ],
+  "belowFloor": false,
+  "files": 1,
+  "loc": 122,
+  "scope": {
+    "basis": "staged-in-scope-paths-including-deleted",
+    "files": [
+      "src/core/WorkBoardApprovalWriter.ts"
+    ],
+    "addedLines": 122,
+    "deletedLines": 0
+  },
+  "causalAutopsy": null,
+  "classClosure": null,
+  "verdict": "blocked"
+}

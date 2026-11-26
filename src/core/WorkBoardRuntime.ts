@@ -9,6 +9,11 @@
  * exercised whole in tests with fakes and wired once in production.
  */
 
+import { canonicalJson, isCardId, sha256Hex } from './WorkCardStore.js';
+import { decodeWorkBoardApprovalEvent, sameProof, sameVersion, type WorkBoardApprovalLookup, type WorkBoardWriterProof } from './WorkBoardApprovalWriter.js';
+import type { WorkBoardSlipOwnerSource } from './workBoardSlipSource.js';
+import type { WorkBoardSlipStore } from './WorkBoardSlipStore.js';
+import { applyWorkBoardSlip } from './workBoardSlipApplication.js';
 import {
   WorkBoardService, resolveWorkBoardSettings, lineIdFor, transcriptLineFor, noteRefusalFor, JOURNAL_BUCKET_CAPACITY,
   type WorkBoardSettings, type CardView, type WorkPrincipal, type Refusal,
@@ -64,8 +69,32 @@ export interface WorkBoardCreationEvidenceSnapshot {
   items: ReadonlyArray<WorkBoardCreationEvidence>;
 }
 
+export function workBoardHistoryFingerprint({ origin, data }: UnionEntry): string {
+  return sha256Hex(canonicalJson([origin, data]));
+}
+
+export interface WorkBoardSlipDeviceBinding {
+  slipId: string;
+  digest: string;
+  deviceId: string;
+  host: string;
+  presenceKey: string;
+  decisionId?: string;
+}
+
 export interface WorkBoardRuntimeSeams {
   machineId: string;
+  permissionSlips?: {
+    store: WorkBoardSlipStore;
+    /** Exact peer records accepted by enrollment. An explicit empty set attests to zero peer records. */
+    sealedPeerHistory?: ReadonlySet<string>;
+    /** Revalidate the boot-acquired agent-home lock at each writer check. */
+    instanceLock?: Pick<import('./SingleInstanceLock.js').SingleInstanceLock, 'revalidateExclusive'>;
+    currentWriter: () => WorkBoardWriterProof | null;
+    application?: {
+      readEvent: (id: string) => WorkBoardApprovalLookup;
+    };
+  };
   enabled: () => boolean;
   rawSettings: () => unknown;
   saveSettings: (patch: Record<string, unknown>) => boolean;
@@ -104,6 +133,8 @@ export class WorkBoardRuntime {
   private selfWasHolder = false;
   private journalSignalled = false;
   private started = false;
+  private slipJournalConflict = false;
+  private readonly sealedPeerHistory: ReadonlySet<string> | null;
   private readonly now: () => number;
   /** §2 "Note rate and the drain set": pending note event ids per card conversation, reconciled by event id against the pointers. */
   private readonly pendingNotes = new Map<string, Map<string, string>>();
@@ -115,14 +146,151 @@ export class WorkBoardRuntime {
   private creationEvidenceItems: ReadonlyArray<WorkBoardCreationEvidence> = Object.freeze([]);
   readonly holderStats = { sweeps: 0, cardsSwept: 0, notesDrained: 0, notesCoalesced: 0, holdsLifted: 0, quietRepickups: 0, lastPassAt: null as number | null, lastSweep: null as Record<string, unknown> | null };
 
+  private currentSlipWriter(): WorkBoardWriterProof | null {
+    if (!this.started || !this.seams.enabled() || this.slipJournalConflict || !this.sealedPeerHistory) return null;
+    const port = this.seams.permissionSlips;
+    if (!port?.application || !port.instanceLock?.revalidateExclusive()) return null;
+    const writer = port.currentWriter();
+    return writer && writer.ownerPersonKey === this.seams.ownerPersonKey() ? writer : null;
+  }
+
+  issuePermissionSlip(sourceRef: string, resolveSource: (sourceRef: string) => WorkBoardSlipOwnerSource | null): { slipId: string; disclosureDigest: string; expiresAt: number } | null {
+    const port = this.seams.permissionSlips;
+    const writer = this.currentSlipWriter();
+    if (!port || !writer) return null;
+    const source = resolveSource(sourceRef);
+    if (!source || source.ownerPersonKey !== writer.ownerPersonKey || !source.sourceId) return null;
+    const cardIds = [...source.cardIds];
+    if (!cardIds.length || !cardIds.every(isCardId) || new Set(cardIds).size !== cardIds.length
+      || !sameProof(writer, this.currentSlipWriter())) return null;
+
+    const existing = port.store.getBySource(source.sourceId);
+    if (existing) {
+      const exactList = existing.proposal.items.length === cardIds.length
+        && existing.proposal.items.every(({ version }, index) => version.cardId === cardIds[index]);
+      if (!exactList || existing.proposal.sourceDigest !== source.sourceDigest || !sameProof(writer, existing.proposal.writer)) return null;
+      return { slipId: existing.id, disclosureDigest: existing.digest, expiresAt: existing.expiresAt };
+    }
+
+    const items = [];
+    for (const cardId of cardIds) {
+      const item = this.svc.approvalSnapshot(cardId);
+      if (!item) return null;
+      items.push(item);
+    }
+    if (!sameProof(writer, this.currentSlipWriter())) return null;
+    const slip = port.store.issue({ sourceId: source.sourceId, sourceDigest: source.sourceDigest, writer, items });
+    return slip ? { slipId: slip.id, disclosureDigest: slip.digest, expiresAt: slip.expiresAt } : null;
+  }
+
+  bindPermissionSlip(input: WorkBoardSlipDeviceBinding) {
+    const port = this.seams.permissionSlips;
+    const writer = this.currentSlipWriter();
+    if (!port || !writer) return null;
+    const slip = port.store.get(input.slipId);
+    if (!slip || slip.digest !== input.digest
+      || !sameProof(writer, slip.proposal.writer) || !sameProof(writer, this.currentSlipWriter())) return null;
+    const replay = slip.decisionId !== null && slip.decisionId === input.decisionId;
+    if (!replay && (slip.decisionId !== null || this.now() >= slip.expiresAt)) return null;
+    const actionBindingDigest = sha256Hex(canonicalJson([
+      'work-board-slip-binding-v1', slip.id, slip.digest, slip.expiresAt,
+      writer, input.deviceId, input.host.toLowerCase(), sha256Hex(input.presenceKey),
+    ]));
+    return { actionBindingDigest, expiresAt: slip.expiresAt, replay };
+  }
+
+  async recordPermissionSlip(input: WorkBoardSlipDeviceBinding & { decisionId: string; actionBindingDigest: string; allowFresh: boolean }) {
+    const failed = { status: 409, body: { error: 'work-board-slip-unavailable' } };
+    const binding = this.bindPermissionSlip(input);
+    const port = this.seams.permissionSlips;
+    const writer = this.currentSlipWriter();
+    if (!binding || binding.actionBindingDigest !== input.actionBindingDigest || !port || !writer) return failed;
+    if (binding.replay) return this.readPermissionSlip(input.slipId);
+    if (!input.allowFresh) return failed;
+    if (!port.store.consumeVerified(input.slipId, input.digest, writer, input.decisionId)) return failed;
+    const application = port.application;
+    if (application) {
+      await applyWorkBoardSlip({ slipId: input.slipId, digest: input.digest, writer, decisionId: input.decisionId }, {
+        store: port.store,
+        currentWriter: () => this.currentSlipWriter(),
+        approve: (request) => this.svc.approveBound({
+          kind: 'person', personKey: writer.ownerPersonKey, isOwner: true, proof: 'presence',
+        }, request),
+        confirmProjection: async (winner) => {
+          const projected = this.svc.projectBoundApproval(winner);
+          if (projected) {
+            this.noteBoundApproval(winner.request.version.cardId, winner.eventId);
+            this.controller.poke();
+          }
+          return projected;
+        },
+      });
+    }
+    return this.readPermissionSlip(input.slipId);
+  }
+
+  readPermissionSlip(id: string) {
+    const port = this.seams.permissionSlips;
+    const writer = this.currentSlipWriter();
+    if (!port || !writer) {
+      return { status: 503, body: { error: 'work-board-slips-unavailable' } };
+    }
+    const slip = port.store.get(id);
+    if (!slip || !sameProof(writer, slip.proposal.writer)) return { status: 404, body: { error: 'not-found' } };
+    const results = slip.decisionId === null ? null : port.store.readItemResults({
+      slipId: id, writer, digest: slip.digest, decisionId: slip.decisionId,
+    });
+    if (slip.decisionId !== null && !results) return { status: 503, body: { error: 'work-board-slip-receipt-unavailable' } };
+    if (!sameProof(writer, this.currentSlipWriter())) return { status: 503, body: { error: 'work-board-slips-unavailable' } };
+    return {
+      status: 200,
+      body: {
+        schemaVersion: 1, slipId: id, disclosureDigest: slip.digest, expiresAt: new Date(slip.expiresAt).toISOString(),
+        state: slip.decisionId !== null ? 'signed' : this.now() >= slip.expiresAt ? 'expired' : 'pending',
+        items: slip.proposal.items.map(({ version, disclosure }) => ({ cardId: version.cardId, version, disclosure, action: 'approve' })),
+        receipt: results === null ? null : { items: results.map((result) => {
+          if ('eventId' in result && !this.svc.recordsOf(result.cardId).some((row) => row.id === result.eventId)) {
+            return { cardId: result.cardId, status: 'unresolved' };
+          }
+          return result;
+        }) },
+      },
+    };
+  }
+
   constructor(private readonly seams: WorkBoardRuntimeSeams) {
     this.now = seams.now ?? Date.now;
     this.bootMs = this.now();
     const settings = (): WorkBoardSettings => resolveWorkBoardSettings(seams.rawSettings());
+    const slips = seams.permissionSlips;
+    this.sealedPeerHistory = slips?.sealedPeerHistory ? new Set(slips.sealedPeerHistory) : null;
+    const application = slips?.application;
     this.svc = new WorkBoardService({
+      approvalAuthority: slips && application ? {
+        currentWriter: () => this.currentSlipWriter(),
+        readEvent: (id) => application.readEvent(id),
+        awaitDurable: (seq) => seams.awaitDurable(seq),
+      } : undefined,
       machineId: seams.machineId,
-      emit: seams.emit,
-      loadUnion: seams.loadUnion,
+      emit: (key, build) => {
+        // Every enrolled board mutation uses the same current writer boundary.
+        if (!slips) return seams.emit(key, build);
+        const writer = this.currentSlipWriter();
+        if (!writer) return { outcome: 'writer-unavailable' };
+        return seams.emit(key, (hlc, origin, observed) => {
+          if (origin !== seams.machineId || !sameProof(writer, this.currentSlipWriter())) return null;
+          const data = build(hlc, origin, observed);
+          if (data?.recordType === 'tap' && data.action === 'approve') {
+            const approval = decodeWorkBoardApprovalEvent(data);
+            if (!approval || !sameProof(writer, approval.request.proof)) return null;
+          }
+          return data;
+        });
+      },
+      loadUnion: () => {
+        const entries = seams.loadUnion();
+        return this.admitSlipHistory(entries, true) && (!slips || this.currentSlipWriter()) ? entries : [];
+      },
       now: this.now,
       settings,
       ownerPersonKey: seams.ownerPersonKey,
@@ -136,9 +304,10 @@ export class WorkBoardRuntime {
       const a = seams.conversation.attachment(attachmentId);
       return a && !a.purged && a.conversationKey === conversationKey ? { sha256: a.sha256 } : null;
     };
+    const canDeliver = () => !slips || this.currentSlipWriter() !== null;
     this.controller = new WorkBoardPickupController({
-      svc: this.svc, machineId: seams.machineId, settings: () => settings().pickup, now: this.now, enabled: seams.enabled,
-      ownsConversation: (ck) => seams.conversation.serves(ck),
+      svc: this.svc, machineId: seams.machineId, settings: () => settings().pickup, now: this.now, enabled: () => seams.enabled() && (!slips || this.currentSlipWriter() !== null),
+      ownsConversation: (ck) => canDeliver() && seams.conversation.serves(ck),
       relayReady: seams.relayReady,
       admits: (ck) => seams.conversation.serves(ck),
       hasLiveSession: (ck) => seams.conversation.hasLiveSession(ck),
@@ -146,16 +315,18 @@ export class WorkBoardRuntime {
       awaitDurable: seams.awaitDurable,
       appendLine: async (ck, id, text) => { this.appendLine(ck, id, text); },
       deliver: async (ck, brief, title) => {
+        if (!canDeliver()) return { outcome: 'refused', reason: 'work-board-writer-unavailable' };
         // The conversation may not be bound here yet (created on a standby): create is idempotent.
         const cardId = this.svc.cardIdForConversation(ck);
         if (cardId) this.ensureConversation(cardId, true);
         const alias = seams.conversation.aliasFor(ck);
         if (alias === null) return { outcome: 'refused', reason: 'the card\'s chat is not open on this machine yet' };
+        if (!canDeliver()) return { outcome: 'refused', reason: 'work-board-writer-unavailable' };
         return seams.conversation.dispatchSystem({ conversationKey: ck, alias, title, text: brief, messageId: `wb-brief-${this.now()}` });
       },
       injectStop: async (ck, brief, tagTitle) => {
         const alias = seams.conversation.aliasFor(ck);
-        if (alias === null) return false;
+        if (alias === null || !canDeliver()) return false;
         return seams.conversation.injectLive(alias, `[app:${alias} "${tagTitle.replace(/["\n\r]/g, ' ').slice(0, 80)}" system:work-board] ${brief}`);
       },
       ledgerNote: seams.ledgerNote,
@@ -377,6 +548,28 @@ export class WorkBoardRuntime {
   /** True when this machine holds the lease (or no other holder is known). */
   holdsLease(): boolean { const h = this.seams.leaseHolder(); return h === null || h === this.seams.machineId; }
 
+  private recoverBoundApprovals(): void {
+    const port = this.seams.permissionSlips;
+    const application = port?.application;
+    const writer = this.currentSlipWriter();
+    if (!port || !application || !writer) return;
+    try {
+      for (const row of port.store.completedApprovals(writer)) {
+        if (!sameProof(writer, this.currentSlipWriter())) return;
+        const durable = application.readEvent(row.eventId);
+        if (durable.status !== 'durable') continue;
+        const winner = durable.event;
+        const self = winner.request.source === 'slip' && winner.request.decisionId === row.decisionId;
+        if ((row.status === 'applied') !== self || !sameVersion(row.version, winner.request.version)
+          || !sameProof(writer, winner.request.proof)) continue;
+        if (this.svc.projectBoundApproval(winner, true)) this.noteBoundApproval(row.cardId, row.eventId);
+      }
+    } catch (err) {
+      // @silent-fallback-ok: unresolved receipt remains visible without applying any unseen event.
+      this.seams.log?.('work-board-approval-recovery-unavailable', { error: (err as Error)?.message });
+    }
+  }
+
   start(): void {
     if (this.started) return;
     this.started = true;
@@ -392,26 +585,50 @@ export class WorkBoardRuntime {
     this.selfWasHolder = holder === this.seams.machineId;
     if (holder && !this.selfWasHolder) this.lastOtherHolder = holder;
     this.ensureConversations();
+    this.recoverBoundApprovals();
     this.checkJournalGrowth();
     this.controller.start(this.settings().pickup.tickSeconds);
   }
 
   stop(): void { this.controller.stop(); this.started = false; }
 
+  private admitSlipHistory(entries: UnionEntry[], requireCompleteBaseline = false): boolean {
+    if (!this.seams.permissionSlips) return true;
+    const sealed = this.sealedPeerHistory;
+    if (this.slipJournalConflict || !sealed) return false;
+    const missing = requireCompleteBaseline ? new Set(sealed) : null;
+    const unexpected = entries.some((entry) => {
+      const { origin, data } = entry;
+      if (!origin || !data || data.origin !== origin) return true;
+      if (origin === this.seams.machineId) return false;
+      const fingerprint = workBoardHistoryFingerprint(entry);
+      missing?.delete(fingerprint);
+      return !sealed.has(fingerprint);
+    });
+    const reason = unexpected ? 'unexpected-journal-origin' : missing?.size ? 'incomplete-sealed-history' : null;
+    if (!reason) return true;
+    this.slipJournalConflict = true;
+    this.seams.log?.('work-board-slip-writer-fenced', { reason });
+    return false;
+  }
+
   /** Committed entries from the journal (own) or the sync applier (a peer's). */
   onCommitted(entries: Array<{ data: unknown; machine?: string }>, fromPeer: string | null): void {
     if (!this.started) return;
-    // Switched off live: the records still land in the index (they are data, and re-enabling must
-    // show them), but nothing is created, noted or handed over.
+    const union: UnionEntry[] = entries.map((e) => {
+      const d = e.data as Record<string, unknown>;
+      const origin = this.seams.permissionSlips
+        ? fromPeer ?? e.machine ?? ''
+        : String(d.origin ?? fromPeer ?? this.seams.machineId);
+      return { data: d, origin };
+    });
+    if (!this.admitSlipHistory(union) || (this.seams.permissionSlips && !this.currentSlipWriter())) return;
+    // A disabled legacy board still remembers its committed data without side effects.
     if (!this.seams.enabled()) {
-      const changed = this.svc.apply(entries.map((e) => { const d = e.data as Record<string, unknown>; return { data: d, origin: String(d.origin ?? fromPeer ?? this.seams.machineId) }; }));
+      const changed = this.svc.apply(union);
       for (const id of changed) this.refreshCreationEvidence(id);
       return;
     }
-    const union: UnionEntry[] = entries.map((e) => {
-      const d = e.data as Record<string, unknown>;
-      return { data: d, origin: String(d.origin ?? fromPeer ?? this.seams.machineId) };
-    });
     const before = new Set(this.svc.cardIds());
     const changed = this.svc.apply(union);
     if (!changed.length) return;
@@ -446,6 +663,19 @@ export class WorkBoardRuntime {
     for (const id of cardIdsNowWorkable) {
       const v = this.svc.view(id); if (!v) continue;
       this.appendLine(v.card.conversationKey, lineIdFor(`${String(recordData.recordKey)}:${id}`), line);
+    }
+  }
+
+  private noteBoundApproval(cardId: string, eventId: string): void {
+    const view = this.svc.view(cardId);
+    const record = this.svc.recordsOf(cardId).find(({ id }) => id === eventId);
+    if (!view || view.card.redacted || !record) return;
+    try {
+      const line = transcriptLineFor('tap', record.d, { name: this.seams.displayName, when: (iso) => this.when(iso) });
+      if (line) this.appendLine(view.card.conversationKey, lineIdFor(eventId), line);
+    } catch (err) {
+      // @silent-fallback-ok: log separately; the durable board approval still stands.
+      this.seams.log?.('work-board-line-failed', { cardId, error: (err as Error)?.message });
     }
   }
 

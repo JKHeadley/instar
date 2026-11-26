@@ -15,10 +15,15 @@
  */
 
 import { createHash, randomBytes } from 'node:crypto';
+import {
+  WorkBoardApprovalWriter, approvalEventId, decodeWorkBoardApprovalEvent, sameProof, sameVersion,
+  type WorkBoardApprovalEvent, type WorkBoardApprovalRequest, type WorkBoardApprovalResult,
+  type WorkBoardApprovalVersion, type WorkBoardApprovalWriterPorts,
+} from './WorkBoardApprovalWriter.js';
 import type { HlcTimestamp } from './HybridLogicalClock.js';
 import {
   buildRecord, toFoldRecords, partitionRecords, foldCard, deriveStatus, laneFor, derivePickupCauses, foldPickups,
-  materialHashOf, cardConversationKey, sameValue, sha256Hex, isCardId, isRecordId, mintRecordKey, isRestrictingTap, foldOrder, compareHlc, workCardRecordStoreSchema,
+  materialHashOf, canonicalJson, cardConversationKey, sameValue, sha256Hex, isCardId, isRecordId, mintRecordKey, isRestrictingTap, foldOrder, compareHlc, workCardRecordStoreSchema,
   normalizeRequestText, isAgentInternalCard,
   MATERIAL_FIELDS, WORK_BOARD_STORE_KEY, CLOSE_AS, SCHEMA_MAX, GATE_ONLY_FIELDS, MAX_REFS, NOTE_EVENT_PREFIX,
   type UnionEntry, type FoldRecord, type CardFold, type CardStatus, type Lane, type PickupState, type TapAction,
@@ -131,6 +136,7 @@ const refuse = (status: number, error: string, detail?: Record<string, unknown>)
 
 export interface WorkBoardDeps {
   machineId: string;
+  approvalAuthority?: Pick<WorkBoardApprovalWriterPorts, 'currentWriter' | 'readEvent' | 'awaitDurable'>;
   /** Emit through the replicated-record emitter for store `workBoard`. */
   emit: (recordKey: string, build: ReturnType<typeof buildRecord>) => { outcome: string; seq?: number; hlc?: HlcTimestamp };
   /** Every work-card record this machine holds: own live file + archives, and every peer stream. */
@@ -194,6 +200,10 @@ export function isServerOwnedCard(card: { covers?: string[] | null }): boolean {
 }
 const nonEmpty = (v: unknown): boolean => typeof v === 'string' && v.trim().length > 0;
 
+function approvalRevision(records: FoldRecord[]): string {
+  return sha256Hex(canonicalJson(records.map(({ id, hlc, origin }) => [id, hlc, origin])));
+}
+
 export class WorkBoardService {
   private records: FoldRecord[] = [];
   private byCard = new Map<string, FoldRecord[]>();
@@ -212,7 +222,100 @@ export class WorkBoardService {
   /** Counted refusals the graduation record reads (§1: refused agent writes on `not-started` cards). */
   readonly stats = { notStartedRefusals: 0 };
 
-  constructor(private readonly deps: WorkBoardDeps) {}
+  private readonly approvalWriter?: WorkBoardApprovalWriter;
+  private readonly approvalReservations = new Set<string>();
+
+  constructor(private readonly deps: WorkBoardDeps) {
+    const authority = deps.approvalAuthority;
+    if (authority) {
+      this.approvalWriter = new WorkBoardApprovalWriter({
+        currentWriter: () => authority.currentWriter(),
+        currentEligibleVersion: (cardId) => this.approvalSnapshot(cardId)?.version ?? null,
+        readEvent: (eventId) => {
+          const result = authority.readEvent(eventId);
+          if (result.status === 'durable' && result.event.eventId === eventId) {
+            this.approvalReservations.delete(eventId);
+          }
+          return result.status !== 'durable' && this.approvalReservations.has(eventId)
+            ? { status: 'unknown' } : result;
+        },
+        append: (event) => this.appendBoundApproval(event),
+        awaitDurable: (sequence) => authority.awaitDurable(sequence),
+      });
+    }
+  }
+
+  /** Accept a request from an in-process owner authorization adapter. */
+  async approveBound(principal: WorkPrincipal, request: WorkBoardApprovalRequest): Promise<WorkBoardApprovalResult> {
+    const proof = request.source === 'console' || request.source === 'bulk' ? 'pin' : 'presence';
+    if (principal.kind !== 'person' || !principal.isOwner || principal.proof !== proof
+      || principal.personKey !== request.proof.ownerPersonKey || principal.personKey !== this.deps.ownerPersonKey()) {
+      return { status: 'unavailable' };
+    }
+    return this.approvalWriter?.approve(request) ?? { status: 'unavailable' };
+  }
+
+  private appendBoundApproval({ eventId, request }: WorkBoardApprovalEvent): number | null {
+    const { version, proof, source } = request;
+    if (!sameProof(proof, this.deps.approvalAuthority?.currentWriter() ?? null)
+      || proof.ownerPersonKey !== this.deps.ownerPersonKey()
+      || !sameVersion(version, this.approvalSnapshot(version.cardId)?.version ?? null)
+      || eventId !== approvalEventId(request)) return null;
+    const fields = {
+      action: 'approve',
+      by: {
+        kind: 'person', personKey: proof.ownerPersonKey, isOwner: true,
+        proof: source === 'console' || source === 'bulk' ? 'pin' : 'presence',
+      },
+      at: new Date(this.deps.now()).toISOString(),
+      materialHash: version.materialHash, titleHash: version.titleHash, approvalBinding: request,
+    };
+    if (this.shapeRefusal('tap', version.cardId, fields, eventId)) return null;
+    // Reserve before emit. A missing sequence or timeout cannot prove absence.
+    if (this.approvalReservations.has(eventId)) return null;
+    this.approvalReservations.add(eventId);
+    // An enqueued bound approval never takes the legacy immediate projection path.
+    const result = this.deps.emit(eventId, buildRecord('tap', version.cardId, fields, eventId));
+    return result.outcome === 'emitted' ? result.seq ?? null : null;
+  }
+
+  /** Expose only an exact durable approval and only under its current enrolled writer. */
+  projectBoundApproval(winner: WorkBoardApprovalEvent, recovering = false): boolean {
+    const authority = this.deps.approvalAuthority;
+    const { proof, version, decisionId, source } = winner.request;
+    const current = () => proof.ownerPersonKey === this.deps.ownerPersonKey()
+      && sameProof(proof, authority?.currentWriter() ?? null);
+    if (!authority || !current()) return false;
+    const durable = authority.readEvent(winner.eventId);
+    if (durable.status !== 'durable' || !durable.record) return false;
+    const event = decodeWorkBoardApprovalEvent(durable.record);
+    if (!event || event.eventId !== winner.eventId || !sameProof(proof, event.request.proof)
+      || !sameVersion(version, event.request.version) || decisionId !== event.request.decisionId
+      || source !== event.request.source || !current()) return false;
+    const existing = this.view(version.cardId)?.card.approvedBy;
+    if (existing?.id === winner.eventId) return true;
+    if (this.keys.has(winner.eventId)) return false;
+    const rows = toFoldRecords([{ data: durable.record, origin: this.deps.machineId }], winner.eventId);
+    const record = rows[0];
+    if (!record || record.origin !== this.deps.machineId) return false;
+    // Refuse an event ordered before an already-observed card or policy mutation.
+    const snapshot = this.approvalSnapshot(version.cardId);
+    if (!snapshot) return false;
+    const history = this.recordsOf(version.cardId);
+    const policy = this.policies.at(-1);
+    if (policy && compareHlc(record.hlc, policy.hlc) <= 0) return false;
+    const later = history.filter((prior) => compareHlc(prior.hlc, record.hlc) >= 0);
+    if (later.length) {
+      if (!recovering || later.some((row) => compareHlc(row.hlc, record.hlc) === 0
+        || (row.d.recordType !== 'dispatching' && row.d.recordType !== 'dispatched'))) return false;
+      snapshot.version.cardRevision = approvalRevision(history.filter((prior) => compareHlc(prior.hlc, record.hlc) < 0));
+    }
+    if (!sameVersion(version, snapshot.version)) return false;
+    this.applyFoldRecords(rows);
+    if (this.view(version.cardId)?.card.approvedBy?.id !== winner.eventId) return false;
+    this.deps.onLocalWrite?.(version.cardId, 'tap', durable.record);
+    return true;
+  }
 
   // ── index ────────────────────────────────────────────────────────────────
 
@@ -228,7 +331,11 @@ export class WorkBoardService {
 
   /** Apply committed entries (own or a peer's) to the index. Returns the card ids that changed. */
   apply(entries: UnionEntry[]): string[] {
-    const fresh = toFoldRecords(entries).filter((r) => !this.keys.has(r.id) || this.replaces(r));
+    return this.applyFoldRecords(toFoldRecords(entries));
+  }
+
+  private applyFoldRecords(records: FoldRecord[]): string[] {
+    const fresh = records.filter((r) => !this.keys.has(r.id) || this.replaces(r));
     if (!fresh.length) return [];
     const changed = new Set<string>();
     let policyChanged = false;
@@ -270,6 +377,24 @@ export class WorkBoardService {
   policyRecords(): FoldRecord[] { return this.policies; }
   newestHlc(): HlcTimestamp | null { return this.records.length ? this.records[this.records.length - 1].hlc : null; }
   totalRecords(): number { return this.records.length; }
+
+  /** The exact card disclosure and version used by the owner approval writer. */
+  approvalSnapshot(cardId: string) {
+    const view = this.view(cardId);
+    if (!view || (view.status !== 'not-started' && view.status !== 'needs-approval')
+      || !view.card.approvalRequired || view.card.approvalValid) return null;
+    const c = view.card;
+    const disclosure = structuredClone({
+      title: c.title, need: c.need, recommendation: c.recommendation, whyYou: c.whyYou,
+      doneWhen: c.doneWhen, brief: c.brief, carrier: c.carrier, outward: c.outward,
+      links: c.links, due: c.due, projectKey: c.projectKey,
+    });
+    const version: WorkBoardApprovalVersion = {
+      cardId, cardRevision: approvalRevision(this.recordsOf(cardId)), policyRevision: approvalRevision(this.policies),
+      visibleTextHash: sha256Hex(canonicalJson(disclosure)), materialHash: c.materialHash, titleHash: sha256Hex(c.title),
+    };
+    return { version, disclosure };
+  }
 
   /** The card whose `refs` names this reference (agent-work-cards-default §3), or null. */
   cardForRef(kind: CardRef['kind'], id: string): string | null { return this.refIndex.get(`${kind}:${id}`) ?? null; }
@@ -910,6 +1035,7 @@ export class WorkBoardService {
     const stale = (detail?: Record<string, unknown>) => refuse(409, 'stale-card', detail);
     switch (action) {
       case 'approve':
+        if (this.deps.approvalAuthority) return refuse(409, 'bound-approval-required');
         if (input.materialHash !== card.materialHash) return stale({ materialHash: card.materialHash });
         fields.materialHash = card.materialHash; break;
       case 'answer': {

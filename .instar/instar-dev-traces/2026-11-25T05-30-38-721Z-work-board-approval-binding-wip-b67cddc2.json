@@ -1,0 +1,21 @@
+{
+  "version": 2,
+  "slug": "work-board-approval-binding-wip",
+  "sessionId": "b3d2cf8a-9b5d-468b-a50b-70ebf11e9e5c",
+  "timestamp": "2026-11-25T05:30:38.721Z",
+  "artifactPath": "upgrades/side-effects/work-board-approval-binding-wip.md",
+  "artifactSha256": "2db7734a2635a372de122467beec300d6237e14ac8d49c4364cab34742adb5c5",
+  "specPath": "docs/specs/owner-work-board-slips-first-slice.md",
+  "coveredFiles": [
+    "src/core/WorkBoardRuntime.ts",
+    "src/data/awareness/work-board-slip-proposal.md",
+    "src/server/routes.ts",
+    "tests/e2e/phone-work-cards-alive.test.ts",
+    "upgrades/side-effects/work-board-approval-binding-wip.md"
+  ],
+  "phase": "complete",
+  "tier": 2,
+  "tierReasoning": "Mount exact chat-sourced Work Board slip proposal without consent authority",
+  "secondPass": "true",
+  "reviewerConcurred": true
+}

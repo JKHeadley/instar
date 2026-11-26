@@ -1,0 +1,20 @@
+{
+  "version": 2,
+  "slug": "work-board-approval-binding-wip",
+  "sessionId": "b3d2cf8a-9b5d-468b-a50b-70ebf11e9e5c",
+  "timestamp": "2026-11-25T00:48:21.473Z",
+  "artifactPath": "upgrades/side-effects/work-board-approval-binding-wip.md",
+  "artifactSha256": "92654bbe80d8ec0e9bfca8964add02e27777d94f1359c551d14f56751573f5bb",
+  "specPath": "docs/specs/owner-work-board-slips-first-slice.md",
+  "coveredFiles": [
+    "src/core/WorkBoardApprovalWriter.ts",
+    "src/core/WorkBoardService.ts",
+    "tests/unit/WorkBoardService.test.ts",
+    "upgrades/side-effects/work-board-approval-binding-wip.md"
+  ],
+  "phase": "complete",
+  "tier": 2,
+  "tierReasoning": "Owner-authorized enqueue and exact approval generation reservation",
+  "secondPass": "true",
+  "reviewerConcurred": true
+}

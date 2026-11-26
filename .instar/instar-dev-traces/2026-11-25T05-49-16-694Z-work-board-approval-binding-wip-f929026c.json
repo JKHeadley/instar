@@ -1,0 +1,18 @@
+{
+  "version": 2,
+  "slug": "work-board-approval-binding-wip",
+  "sessionId": "b3d2cf8a-9b5d-468b-a50b-70ebf11e9e5c",
+  "timestamp": "2026-11-25T05:49:16.694Z",
+  "artifactPath": "upgrades/side-effects/work-board-approval-binding-wip.md",
+  "artifactSha256": "ee95d8eb4f3231d52b91b443791a12ea1d7d048798a03357aaf0685f29c9ed35",
+  "specPath": "docs/specs/owner-work-board-slips-first-slice.md",
+  "coveredFiles": [
+    "src/core/workBoardSlipLocator.ts",
+    "tests/unit/work-board-slip-locator.test.ts"
+  ],
+  "phase": "complete",
+  "tier": 2,
+  "tierReasoning": "Constrain the non-authorizing Work Board slip link to a canonical paired-agent locator",
+  "secondPass": "true",
+  "reviewerConcurred": true
+}

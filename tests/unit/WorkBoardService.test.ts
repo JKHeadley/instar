@@ -5,27 +5,28 @@
  */
 import { describe, it, expect, beforeEach } from 'vitest';
 import type { HlcTimestamp } from '../../src/core/HybridLogicalClock.js';
-import { WorkBoardService, resolveWorkBoardSettings, validateSettingsPatch, transcriptLineFor, lineIdFor, type WorkPrincipal } from '../../src/core/WorkBoardService.js';
+import { WorkBoardService, resolveWorkBoardSettings, validateSettingsPatch, transcriptLineFor, lineIdFor, type WorkBoardDeps, type WorkPrincipal } from '../../src/core/WorkBoardService.js';
+import { decodeWorkBoardApprovalEvent } from '../../src/core/WorkBoardApprovalWriter.js';
 import { workCardRecordStoreSchema, sha256Hex, type UnionEntry } from '../../src/core/WorkCardStore.js';
 
 const OWNER: WorkPrincipal = { kind: 'person', personKey: 'justin', proof: 'pin', isOwner: true };
 const MEMBER: WorkPrincipal = { kind: 'person', personKey: 'adriana', proof: 'presence', isOwner: false };
 const AGENT: WorkPrincipal = { kind: 'agent' };
 
-function makeService(over: Partial<{ maxAgentCardsPerDay: number; softOpenCards: number }> = {}) {
+function makeService(over: Partial<{ maxAgentCardsPerDay: number; softOpenCards: number; omitSequence: boolean }> = {}, approvalAuthority?: WorkBoardDeps['approvalAuthority']) {
   const journal: UnionEntry[] = [];
   let clock = Date.parse('2026-11-12T20:00:00Z');
   let logical = 0;
   const settings = resolveWorkBoardSettings({ maxAgentCardsPerDay: over.maxAgentCardsPerDay ?? 200, softOpenCards: over.softOpenCards ?? 30 });
   const svc = new WorkBoardService({
-    machineId: 'm_a',
+    machineId: 'm_a', approvalAuthority,
     emit: (_key, build) => {
       const hlc: HlcTimestamp = { physical: clock, logical: logical++, node: 'm_a' };
       const data = build(hlc, 'm_a');
       if (!data) return { outcome: 'skipped' };
       if (!workCardRecordStoreSchema.validate(data, { countDroppedField: () => {}, countJailReject: () => {} } as never)) return { outcome: 'dropped:invalid' };
       journal.push({ data, origin: 'm_a' });
-      return { outcome: 'emitted', seq: journal.length, hlc };
+      return { outcome: 'emitted', ...(over.omitSequence ? {} : { seq: journal.length }), hlc };
     },
     loadUnion: () => journal,
     now: () => clock,
@@ -55,6 +56,59 @@ describe('WorkBoardService — who may write what', () => {
     const o = t.svc.createCard(AGENT, { ...card, outward: true }); if (!o.ok) throw new Error('create');
     expect(t.svc.view(o.cardId)!.status).toBe('needs-approval');
   });
+  it('binds the owner approval to the current visible disclosure and card history', () => {
+    const created = t.svc.createCard(AGENT, card);
+    if (!created.ok) throw new Error('create');
+    const initial = t.svc.approvalSnapshot(created.cardId)!;
+    expect(initial.disclosure.title).toBe(card.title);
+    expect(initial.version.titleHash).toBe(sha256Hex(card.title));
+    expect(t.svc.edit(AGENT, created.cardId, { recommendation: 'Use the local venue' }).ok).toBe(true);
+    const edited = t.svc.approvalSnapshot(created.cardId)!;
+    expect(edited.version.visibleTextHash).not.toBe(initial.version.visibleTextHash);
+    expect(edited.version.cardRevision).not.toBe(initial.version.cardRevision);
+    expect(t.svc.tap(OWNER, created.cardId, { action: 'approve', materialHash: edited.version.materialHash }).ok).toBe(true);
+    expect(t.svc.approvalSnapshot(created.cardId)).toBeNull();
+  });
+
+  it('journals an exact owner approval without exposing it to the legacy fold', async () => {
+    const proof = { epoch: 'epoch1', ownerGeneration: 'owner1', ownerPersonKey: 'justin', writerIncarnation: 'i1' };
+    const service = makeService({}, {
+      currentWriter: () => proof,
+      awaitDurable: async () => {},
+      readEvent: (id) => {
+        const row = service.journal.find(({ data }) => data.recordKey === id);
+        const event = row && decodeWorkBoardApprovalEvent(row.data);
+        return event ? { status: 'durable', event } : { status: 'missing' };
+      },
+    });
+    const created = service.svc.createCard(AGENT, card);
+    if (!created.ok) throw new Error('create');
+    const { version } = service.svc.approvalSnapshot(created.cardId)!;
+    const request = { proof, version, source: 'console' as const, decisionId: 'decision1' };
+    await expect(service.svc.approveBound(MEMBER, request)).resolves.toEqual({ status: 'unavailable' });
+    expect(service.journal).toHaveLength(1);
+    await expect(service.svc.approveBound(OWNER, request)).resolves.toMatchObject({ status: 'applied' });
+    expect(service.journal).toHaveLength(2);
+    service.svc.rebuild();
+    expect(service.svc.approvalSnapshot(created.cardId)?.version).toEqual(version);
+  });
+
+  it.each([true, false])('keeps a reservation after an ambiguous append (missing sequence: %s)', async (omitSequence) => {
+    const proof = { epoch: 'epoch1', ownerGeneration: 'owner1', ownerPersonKey: 'justin', writerIncarnation: 'i1' };
+    const service = makeService({ omitSequence }, {
+      currentWriter: () => proof,
+      awaitDurable: async () => { throw new Error('journal timeout'); },
+      readEvent: () => ({ status: 'missing' }),
+    });
+    const created = service.svc.createCard(AGENT, card);
+    if (!created.ok) throw new Error('create');
+    const { version } = service.svc.approvalSnapshot(created.cardId)!;
+    const request = { proof, version, source: 'console' as const, decisionId: 'decision1' };
+    await expect(service.svc.approveBound(OWNER, request)).resolves.toEqual({ status: 'unresolved' });
+    await expect(service.svc.approveBound(OWNER, request)).resolves.toEqual({ status: 'unresolved' });
+    expect(service.journal).toHaveLength(2);
+  });
+
   it('a member cannot create a card or tap; a scoped session cannot create', () => {
     expect(t.svc.createCard(MEMBER, card)).toMatchObject({ ok: false, error: 'owner-required' });
     expect(t.svc.createCard({ kind: 'session', conversationKey: 'x' }, card)).toMatchObject({ ok: false, error: 'scoped-session-cannot-create' });

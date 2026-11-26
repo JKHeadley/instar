@@ -1,0 +1,21 @@
+{
+  "version": 2,
+  "slug": "work-board-approval-binding-wip",
+  "sessionId": "b3d2cf8a-9b5d-468b-a50b-70ebf11e9e5c",
+  "timestamp": "2026-11-25T00:01:51.251Z",
+  "artifactPath": "upgrades/side-effects/work-board-approval-binding-wip.md",
+  "artifactSha256": "691fe9cc29845277ac0a89a894168117f809cd80197c01039051c08af73130e1",
+  "specPath": "docs/specs/owner-work-board-slips-first-slice.md",
+  "coveredFiles": [
+    "src/core/WorkBoardApprovalWriter.ts",
+    "tests/integration/work-board-approval-readback.test.ts",
+    "tests/unit/work-board-approval-readback.test.ts",
+    "tests/unit/work-board-approval-writer.test.ts",
+    "upgrades/side-effects/work-board-approval-binding-wip.md"
+  ],
+  "phase": "complete",
+  "tier": 2,
+  "tierReasoning": "Bind exact outer tap hashes to the approval generation",
+  "secondPass": "true",
+  "reviewerConcurred": true
+}
