@@ -23,14 +23,13 @@ const hash = (fields: unknown[]) => createHash('sha256').update(JSON.stringify(f
 
 /** Private owner-only read scope. Team readers require a verifier-backed visibility revision. */
 export function resolveOwnerRemovalSyncAuthority(req: Request, pairing: MobilePairingService,
-  service: AppConversationService, evidence: RemovalSyncEvidence): Result {
+  service: AppConversationService, evidence: RemovalSyncEvidence, key = req.params.key): Result {
   const principal = principalOf(req);
   const admitted = deviceAdmissionIdentity(req);
   if (req.method !== 'GET' || principal.kind !== 'device' || !admitted) {
     return { ok: false, status: 403, error: 'operator-device-required' };
   }
   try {
-    const key = req.params.key;
     const current = exactMessageReader(pairing, req);
     const reader = current();
     if (!isAppConversationKey(key) || reader?.role !== 'owner' || !service.liveConversation(key)

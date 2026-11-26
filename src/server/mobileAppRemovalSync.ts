@@ -98,15 +98,16 @@ export async function executeOwnerRemovalHistory(req: Request, pairing: MobilePa
 export async function executeOwnerRemovalContext(req: Request, pairing: MobilePairingService,
   service: AppConversationService, evidence: Parameters<typeof resolveOwnerRemovalSyncAuthority>[3],
   codec: ReturnType<typeof createRemovalSyncCursorCodec>,
-  selection: { target: string; kind: 'event' | 'message' | 'legacy'; beforeAt: string | null; limit: number }) {
+  selection: { target: string; kind: 'event' | 'message' | 'legacy'; beforeAt: string | null; limit: number; conversationKey?: string },
+  projectAnchor?: (anchor: { eventId: string; messageId: string; at: string }) => { status: number; body: Record<string, unknown> }): Promise<{ status: number; body: Record<string, unknown> }> {
   const missing = { status: 404, body: { error: 'message-not-available' } };
   try {
-    const initial = resolveOwnerRemovalSyncAuthority(req, pairing, service, evidence);
+    const initial = resolveOwnerRemovalSyncAuthority(req, pairing, service, evidence, selection.conversationKey);
     if (!initial.ok) return { status: initial.status, body: { error: initial.error } };
     const { conversationKey } = initial.authority;
     const epoch = codec.epochFor(initial.authority);
     await service.store.prepareRemovalHistory(conversationKey);
-    const admitted = resolveOwnerRemovalSyncAuthority(req, pairing, service, evidence);
+    const admitted = resolveOwnerRemovalSyncAuthority(req, pairing, service, evidence, selection.conversationKey);
     if (!admitted.ok) return { status: admitted.status, body: { error: admitted.error } };
     if (codec.epochFor(admitted.authority) !== epoch) return { status: 409, body: { error: 'message-removal-sync-reset' } };
 
@@ -114,15 +115,16 @@ export async function executeOwnerRemovalContext(req: Request, pairing: MobilePa
     if (reader?.role !== 'owner') return missing;
     const direct = selection.beforeAt === null;
     const page = service.store.readPreparedRemovalContext(conversationKey, selection.target, selection.kind,
-      direct, selection.limit + 1, (row) => pairing.mayReadStored(reader, conversationKey, row));
+      direct, projectAnchor ? 1 : selection.limit + 1, (row) => pairing.mayReadStored(reader, conversationKey, row));
     if (!page) return unavailable;
-    const final = resolveOwnerRemovalSyncAuthority(req, pairing, service, evidence);
+    const final = resolveOwnerRemovalSyncAuthority(req, pairing, service, evidence, selection.conversationKey);
     if (!final.ok) return { status: final.status, body: { error: final.error } };
     if (codec.epochFor(final.authority) !== epoch) return { status: 409, body: { error: 'message-removal-sync-reset' } };
     if (!service.store.hasPreparedRemovalHistory(conversationKey, page.proof)) return unavailable;
 
     const anchor = page.anchor;
     if (!anchor || (direct ? page.messages[0]?.eventId !== anchor.eventId : anchor.at !== selection.beforeAt)) return missing;
+    if (projectAnchor) return projectAnchor(anchor);
     const rows = page.messages.slice(0, selection.limit);
     const oldest = rows[rows.length - 1];
     return { status: 200, body: {

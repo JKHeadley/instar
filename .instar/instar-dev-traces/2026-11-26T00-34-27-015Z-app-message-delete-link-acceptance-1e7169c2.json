@@ -1,0 +1,23 @@
+{
+  "version": 2,
+  "slug": "app-message-delete-link-acceptance",
+  "sessionId": "633bd330-201e-4dc8-8fd9-72b89116167e",
+  "timestamp": "2026-11-26T00:34:27.015Z",
+  "artifactPath": "upgrades/side-effects/app-message-delete-link-acceptance.md",
+  "artifactSha256": "589fade1332ae2bc8e9d9328a5c746a421793aecf64096e7307b006066bb4b90",
+  "specPath": "docs/specs/conversation-message-delete.md",
+  "coveredFiles": [
+    "docs/specs/conversation-message-delete.eli16.md",
+    "docs/specs/conversation-message-delete.md",
+    "src/server/mobileAppRemovalSync.ts",
+    "src/server/mobileAppRemovalSyncAuthority.ts",
+    "src/server/mobileConversationRoutes.ts",
+    "tests/e2e/mobile-native-conversations-alive.test.ts",
+    "upgrades/side-effects/app-message-delete-link-acceptance.md"
+  ],
+  "phase": "complete",
+  "tier": 2,
+  "tierReasoning": "Bind exact message link issuance to current removal proof in isolated acceptance",
+  "secondPass": "true",
+  "reviewerConcurred": true
+}

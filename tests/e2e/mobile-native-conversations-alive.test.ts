@@ -307,6 +307,17 @@ describe('native app conversations — production wiring', () => {
     expect(acceptedSync.body.epoch).toBe(acceptedHistory.body.epoch);
     const removedContext = await send('GET', `/mobile/chat/app/${key}/message-context?target=${encodeURIComponent(target)}&targetKind=event`);
     expect(removedContext.status).toBe(404);
+    const linkFor = (eventId: string) => send('GET', `/mobile/conversations/message-link?ref=app%3A${key}&messageId=${encodeURIComponent(eventId)}&targetKind=event`);
+    const removedLink = await linkFor(target);
+    const unknownLink = await linkFor('unknown-exact-event');
+    expect(removedLink.status).toBe(409);
+    expect(removedLink.body).toEqual(unknownLink.body);
+    expect(removedLink.body).not.toHaveProperty('url');
+    const survivingLink = await linkFor(quoted.body.eventId);
+    expect(survivingLink.status).toBe(200);
+    expect(survivingLink.body.position.eventId).toBe(quoted.body.eventId);
+    expect(new URL(survivingLink.body.url).hostname).toBe(HOST);
+
     const liveContext = await send('GET', `/mobile/chat/app/${key}/message-context?target=${encodeURIComponent(quoted.body.eventId)}&targetKind=event&limit=1`);
     expect(liveContext.status, JSON.stringify(liveContext.body)).toBe(200);
     expect(liveContext.body).toMatchObject({ epoch: acceptedHistory.body.epoch, anchorApplied: { eventId: quoted.body.eventId } });

@@ -450,13 +450,13 @@ export function createMobileConversationRouter(deps: MobileConversationRouteDeps
   const removalReads = deps.removalReadAcceptance;
   const removalCodec = removalReads ? createRemovalSyncCursorCodec() : null;
   const protectedAcceptanceKeys = new Set<string>();
-  const serveProtectedRead = (req: Request, res: Response, next: NextFunction, execute: typeof executeOwnerRemovalHistory) => {
+  const serveProtectedRead = (req: Request, res: Response, next: NextFunction, execute: typeof executeOwnerRemovalHistory,
+    conversationKey = String(req.params.key).toLowerCase()) => {
     if (!svc || !removalReads || !removalCodec) return false;
-    const key = String(req.params.key).toLowerCase();
     try {
-      if (!protectedAcceptanceKeys.has(key)) {
-        if (!removalReads.enrolled(key)) return false;
-        protectedAcceptanceKeys.add(key);
+      if (!protectedAcceptanceKeys.has(conversationKey)) {
+        if (!removalReads.enrolled(conversationKey)) return false;
+        protectedAcceptanceKeys.add(conversationKey);
       }
     } catch {
       res.status(503).json({ error: 'message-removal-sync-unavailable' });
@@ -1706,7 +1706,15 @@ export function createMobileConversationRouter(deps: MobileConversationRouteDeps
     }
   });
 
-  router.get('/mobile/conversations/message-link', (req, res) => {
+  const exactLinkResult = (ref: string, row: Pick<BrowsedMessage, 'eventId' | 'messageId' | 'at'>) => {
+    const origin = exactLinkOrigin();
+    if (!origin) return { status: 503, body: { error: 'message-link-unavailable' } };
+    const url = origin + MESSAGE_LINK_CONSOLE_PATH + '#/work/chats?' + new URLSearchParams({ c: ref, e: row.eventId });
+    return { status: 200, body: { ok: true, platform: 'app', ref, messageId: row.messageId, url, servedBy: deps.machineId(),
+      authority: { kind: 'native-store', scope: 'held-source' }, position: { at: row.at, eventId: row.eventId } } };
+  };
+
+  router.get('/mobile/conversations/message-link', (req, res, next) => {
     const read = exactGate(req, res);
     if (!read) return;
     const ref = typeof req.query.ref === 'string' && req.query.ref.startsWith('app:') ? canonicalConversationRef(req.query.ref) : null;
@@ -1719,14 +1727,20 @@ export function createMobileConversationRouter(deps: MobileConversationRouteDeps
     const key = ref.slice(4);
     const person = currentExactReader(read, res, key);
     if (!person) return;
+    if (serveProtectedRead(req, res, next, async (request, pairing, service, evidence, codec) => {
+      const result = await executeOwnerRemovalContext(request, pairing, service, evidence, codec, {
+        target, kind, beforeAt: null, limit: 1, conversationKey: key,
+      }, (row) => exactLinkResult(ref, row));
+      if (result.status === 404 && result.body.error === 'message-not-available') {
+        return { status: 409, body: { error: 'message-not-available-here', retryable: true, scope: 'held-source' } };
+      }
+      return result;
+    }, key)) return;
     try {
       const row = exactTarget(key, target, kind, person);
       if (!row) { exactUnavailable(res); return; }
-      const origin = exactLinkOrigin();
-      if (!origin) { res.status(503).json({ error: 'message-link-unavailable' }); return; }
-      const url = origin + MESSAGE_LINK_CONSOLE_PATH + '#/work/chats?' + new URLSearchParams({ c: ref, e: row.eventId });
-      res.json({ ok: true, platform: 'app', ref, messageId: row.messageId, url, servedBy: deps.machineId(),
-        authority: { kind: 'native-store', scope: 'held-source' }, position: { at: row.at, eventId: row.eventId } });
+      const { status, body } = exactLinkResult(ref, row);
+      res.status(status).json(body);
     } catch {
       exactUnavailable(res); // @silent-fallback-ok — exact source failures and invisible targets share a wire outcome
     }
