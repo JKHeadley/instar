@@ -1,602 +1,114 @@
-name: CI
-
+name: Linux verifier comparison
 on:
-  push:
-    branches: [main]
-  pull_request:
-    branches: [main]
-  # An approving review is INPUT to a check, not just metadata about it
-  # (2026-08-22). The constitutional direction guard accepts the operator's
-  # approval as proof that a registry change was authorised — but CI fired on
-  # push, long before that approval existed, so the guard ran, found no
-  # approval, and failed. Approving then changed nothing visible: the red check
-  # sat there, already finished, with no reason to run again.
-  #
-  # Found the first time the path was used for real. It only did not bite
-  # because someone was watching and re-ran the job by hand. An approval flow
-  # whose result requires a human to remember to re-run is not a flow.
-  #
-  # `submitted` covers the approval; `dismissed` matters just as much, because
-  # withdrawing an approval must re-run the guard and turn the check RED again
-  # — a gate that only re-evaluates in the direction of passing is not a gate.
-  pull_request_review:
-    types: [submitted, dismissed]
   workflow_dispatch:
+    inputs:
+      source_sha:
+        description: Full SHA of the source to verify
+        type: string
+        required: true
+      red_control:
+        description: Check only that the runner catches a known assertion failure
+        type: boolean
+        default: false
 
-# Account-wide Actions concurrency is shared across EVERY repo this owner has, and
-# measurement on 2026-10-20 showed what that costs: instar-2 held 10 jobs running
-# and 25 queued while instar held 0 running and 21 queued, so this repo's CI crawled
-# at ~3 concurrent jobs against a 20-job allowance. A single PR here needs 8 unit
-# shards, so one PR took hours and a heavy run took 17-19h end to end.
-#
-# The avoidable half of that is supersession. Without this block every push to a
-# branch started a NEW 13-job run while the previous one kept consuming shared
-# slots — 126 stale runs had to be cancelled BY HAND in one night to let a
-# single-line test-config fix through. A superseded run is waste by definition:
-# nobody is waiting on its result.
-#
-# Keyed on the PR number AND the event name. The event name is load-bearing, not
-# decoration: `pull_request_review` is one of this workflow's triggers, so if a
-# review event shared a group with the push run, APPROVING a pull request would
-# CANCEL its in-flight required checks and restart them from zero. That trades
-# avoidable waste for a footgun. Scoping by event means push runs supersede push
-# runs (the 126-stale-run problem) while a review run can never cancel them.
-#
-# A review event still starts its own run. Since 2026-11-21 (the block below) the
-# heavy jobs skip on `pull_request_review` as well as `pull_request`, so that run is
-# the fast checks only, and a skipped job's "success" satisfies nothing: none of the
-# heavy jobs is a required status check (the main ruleset requires only
-# `instar/local-verify`), so a review-triggered run cannot paint a pull request green.
-#
-# PULL REQUESTS SKIP THE HEAVY JOBS (2026-11-21). Local Verify runs the full unit,
-# integration and e2e suite on our own machines before anything merges, and the
-# ruleset on main requires only `instar/local-verify`. Running the same suite here
-# on every pull request asked GitHub for about twenty jobs per push against an
-# account that runs about four at once, so the publish workflow waited hours for a
-# runner. The unit shards, integration, e2e and, through `needs`, contract and build
-# now run on push to main and on workflow_dispatch only. Pull requests keep native
-# desktop packaging and the fast checks Local Verify does not cover: Type Check,
-# Repo Invariants, Docs Coverage, Cartographer Freshness and Standards Enforcement
-# Coverage. Native package checks remain because suite results alone do not prove
-# platform compilation, packaging or Windows-local transport.
-# A job skipped by `if:` reports as success; that is safe here only because none of
-# these jobs is a required status check. To restore the old behaviour, revert this
-# commit.
-concurrency:
-  group: ci-${{ github.event.pull_request.number || github.ref }}-${{ github.event_name }}
-  # NEVER cancel main's post-merge run: that is the release gate and its record is
-  # the evidence a merge was sound. Only branch/PR runs supersede.
-  cancel-in-progress: ${{ github.ref != 'refs/heads/main' }}
+permissions:
+  contents: read
 
-# EVERY JOB DECLARES timeout-minutes (ACT-059). Without one a job inherits
-# GitHub's 6-hour default, and on 2026-10-08 a hung unit shard held PR 2141
-# BLOCKED for 6h00m while every other check was green. Limits are about twice
-# the slowest run of that job across 79 runs measured 2026-11-02 (slowest:
-# unit shard 29.6 min, integration 24.4, e2e 34.9, desktop packages 3.9, every
-# other gate 2.3), so slow work still finishes and a hang fails within the hour.
-# Raise a limit when the job genuinely grows; tests/unit/ci-workflow-timeouts
-# fails if a job is added without one.
 jobs:
-  desktop-windows-package:
-    name: Desktop Windows package
-    runs-on: windows-latest
-    # Native packaging checks add coverage beyond the Mac test line's test suites.
-    if: github.event_name != 'pull_request_review'
-    timeout-minutes: 15
-    steps:
-      - uses: actions/checkout@v4
-      - uses: actions/setup-node@v4
-        with:
-          node-version: 20
-          cache: npm
-      - run: npm ci --ignore-scripts
-      - run: node scripts/build-native-desktop-host.mjs
-      - name: Compile interactive Windows companion with the installer toolchain
-        shell: powershell
-        run: |
-          Add-Type -Path 'dist/native/windows/InstarDesktopCompanion.cs' `
-            -ReferencedAssemblies @('System.Drawing', 'System.Windows.Forms', 'System.Web.Extensions') `
-            -OutputAssembly "$env:RUNNER_TEMP\InstarDesktopCompanion.exe" `
-            -OutputType ConsoleApplication -ErrorAction Stop
-          if (-not (Test-Path "$env:RUNNER_TEMP\InstarDesktopCompanion.exe")) {
-            throw 'Windows desktop companion did not compile'
-          }
-          & "$env:RUNNER_TEMP\InstarDesktopCompanion.exe" --self-test
-          if ($LASTEXITCODE -ne 0) { throw "Windows companion lease self-test failed: $LASTEXITCODE" }
-      - name: Verify Windows-local signed update handoff
-        shell: powershell
-        run: |
-          $root = Join-Path $env:LOCALAPPDATA 'InstarDesktop'
-          New-Item -ItemType Directory -Force -Path $root | Out-Null
-          $secret = Join-Path $root 'companion.secret'
-          $key = New-Object byte[] 32
-          $rng = [System.Security.Cryptography.RandomNumberGenerator]::Create()
-          try { $rng.GetBytes($key) } finally { $rng.Dispose() }
-          [System.IO.File]::WriteAllBytes($secret, $key)
-          $port = Get-Random -Minimum 45000 -Maximum 55000
-          $companion = Start-Process -FilePath "$env:RUNNER_TEMP\InstarDesktopCompanion.exe" `
-            -ArgumentList @('127.0.0.1', [string]$port, ('"' + $secret + '"')) -PassThru
-          try {
-            Start-Sleep -Seconds 1
-            # Exercise the packaged WSL-to-Windows local hop against a real
-            # companion process before the update handshake stops that process.
-            $env:INSTAR_DESKTOP_TEST_PORT = [string]$port
-            $env:INSTAR_DESKTOP_TEST_SECRET = $secret
-            node tests/e2e/windows-desktop-local-transport-smoke.mjs
-            if ($LASTEXITCODE -ne 0) { throw 'Windows-local desktop transport probe failed' }
-            $common = @('-NoProfile', '-NonInteractive', '-ExecutionPolicy', 'Bypass', '-File',
-              'scripts/install-windows-desktop-companion.ps1', '-Source',
-              'dist/native/windows/InstarDesktopCompanion.cs', '-BindAddress', '127.0.0.1',
-              '-Port', [string]$port, '-Phase', 'RequestUpdate', '-RequestAddress', '127.0.0.1')
-            $prepared = (& powershell.exe @common -Operation 'prepare-update' | Select-Object -Last 1) | ConvertFrom-Json
-            if (-not $prepared.ok -or $prepared.updateToken -notmatch '^[A-Za-z0-9_-]{32}$') {
-              throw 'Windows-local signed preparation did not return an update token'
-            }
-            $env:INSTAR_DESKTOP_UPDATE_TOKEN = $prepared.updateToken
-            $committed = $null
-            try {
-              $reply = & powershell.exe @common -Operation 'commit-update' 2>$null
-              if ($reply) { $committed = ($reply | Select-Object -Last 1) | ConvertFrom-Json }
-            } catch {
-              # A connection close during the companion's successful self-exit
-              # is checked by the exact process handle and exit code below.
-            }
-            # The companion can exit as it writes the final reply. A lost reply
-            # is acceptable only when the exact prepared process has exited.
-            $companion.WaitForExit(5000) | Out-Null
-            if (-not $companion.HasExited) { throw 'Companion did not exit after signed commit' }
-            if ($companion.ExitCode -ne 0) { throw 'Companion exited unsuccessfully after signed commit' }
-            if ($committed -and -not $committed.ok) { throw 'Windows-local signed commit was refused' }
-            # powershell.exe may return 1 for the lost final reply. Clear that
-            # native status only after the exact process passed every check.
-            $global:LASTEXITCODE = 0
-          } finally {
-            Remove-Item Env:INSTAR_DESKTOP_TEST_PORT -ErrorAction SilentlyContinue
-            Remove-Item Env:INSTAR_DESKTOP_TEST_SECRET -ErrorAction SilentlyContinue
-            Remove-Item Env:INSTAR_DESKTOP_UPDATE_TOKEN -ErrorAction SilentlyContinue
-            if (-not $companion.HasExited) { Stop-Process -Id $companion.Id -Force }
-          }
-      - name: Check npm package contents
-        shell: powershell
-        run: |
-          $pack = npm pack --dry-run --json --ignore-scripts | ConvertFrom-Json
-          if ($LASTEXITCODE -ne 0) { throw "npm package inventory failed: $LASTEXITCODE" }
-          $package = @($pack)[0]
-          foreach ($file in @('dist/native/windows/InstarDesktopCompanion.cs', 'scripts/install-windows-desktop-companion.mjs', 'scripts/install-windows-desktop-companion.ps1', 'scripts/windows-desktop-local-transport.ps1')) {
-            if (-not ($package.files | Where-Object { $_.path -eq $file })) {
-              throw "Missing $file"
-            }
-          }
-
-  desktop-macos-package:
-    name: Desktop Mac package
-    runs-on: macos-latest
-    # Native packaging checks add coverage beyond the Mac test line's test suites.
-    if: github.event_name != 'pull_request_review'
-    timeout-minutes: 15
-    steps:
-      - uses: actions/checkout@v4
-      - uses: actions/setup-node@v4
-        with:
-          node-version: 20
-          cache: npm
-      - run: npm ci
-      - run: INSTAR_RELEASE_BUILD=1 npm run build
-      - name: Verify guided desktop setup on macOS
-        run: npm run test:e2e -- tests/e2e/desktop-setup-boot-lifecycle.test.ts
-      - run: node scripts/check-native-desktop-release.mjs
-      - name: Check npm package contents
-        run: npm pack --dry-run --json --ignore-scripts | node -e 'let text=""; process.stdin.on("data", chunk => text += chunk).on("end", () => { const pack = JSON.parse(text)[0]; if (!pack.files.some(file => file.path === "dist/native/instar-desktop-host")) throw new Error("npm tarball omits native desktop host"); if (!pack.files.some(file => file.path === "dist/native/InstarWedgeCanary.app/Contents/MacOS/InstarWedgeCanary")) throw new Error("npm tarball omits the wedge canary app"); });'
-
-  invariants:
-    name: Repo Invariants
+  comparison:
+    if: ${{ !inputs.red_control }}
     runs-on: ubuntu-latest
-    timeout-minutes: 15
-    steps:
-      - uses: actions/checkout@v4
-      - uses: actions/setup-node@v4
-        with:
-          node-version: 20
-      # No npm install needed — the script is pure node stdlib.
-      - run: node scripts/check-repo-invariants.mjs
-
-  docs-coverage:
-    name: Docs Coverage
-    runs-on: ubuntu-latest
-    timeout-minutes: 15
-    steps:
-      - uses: actions/checkout@v4
-      - uses: actions/setup-node@v4
-        with:
-          node-version: 20
-      # Pure node stdlib — no install needed.
-      # --check enforces per-category floors calibrated to current state;
-      # PRs that improve docs may also raise the floors.
-      - run: node scripts/docs-coverage.mjs --check
-      - name: Upload coverage report
-        if: always()
-        uses: actions/upload-artifact@v4
-        with:
-          name: docs-coverage
-          path: |
-            .instar/docs-coverage.md
-            .instar/docs-coverage.json
-
-  cartographer-freshness:
-    name: Cartographer Freshness
-    runs-on: ubuntu-latest
-    timeout-minutes: 15
-    steps:
-      - uses: actions/checkout@v4
-      - uses: actions/setup-node@v4
-        with:
-          node-version: 20
-      # Pure node stdlib + git — no install needed (cartographer-doc-freshness
-      # spec #2 Tier-3 ratchet). Floors ship loose (ratio>=0); cartographer state
-      # is gitignored so a fresh checkout is a vacuous structural pass — the
-      # ratchet's teeth engage on machines that have authored the doc-tree.
-      - run: node scripts/cartographer-freshness.mjs --check
-      - name: Upload freshness report
-        if: always()
-        uses: actions/upload-artifact@v4
-        with:
-          name: cartographer-freshness
-          path: |
-            .instar/cartographer-freshness.json
-
-  standards-coverage:
-    name: Standards Enforcement Coverage
-    runs-on: ubuntu-latest
-    timeout-minutes: 15
-    # Least privilege, made EXPLICIT rather than inherited (second-pass finding 2):
-    # path B calls GET /commits/{sha}/pulls, which needs pull-requests:read. With no
-    # permissions block the job runs on the repository's DEFAULT workflow permission
-    # — so an org policy tightening that default to contents-only would 403 the
-    # association call and silently return the guard to refusing on every push, the
-    # exact state this fix exists to end. Pinned by the Root self-wiring contract.
-    permissions:
-      contents: read
-      pull-requests: read
-    steps:
-      - uses: actions/checkout@v4
-        with:
-          fetch-depth: 0
-      - uses: actions/setup-node@v4
-        with:
-          node-version: 20
-      - run: npm ci --ignore-scripts
-      # The shared YAML parser gives the Root self-wiring check semantic workflow
-      # validation rather than a quote/comment-bypassable text approximation.
-      # No build is needed (cartographer-conformance-audit spec #3 Tier-3 ratchet).
-      # For each constitutional standard in
-      # docs/STANDARDS-REGISTRY.md, verify the structural guard its prose names
-      # exists on disk. Aggregate and per-family ratio floors ratchet as gaps close;
-      # content-bound per-family audit records fail when a changed area has not been
-      # re-audited. A hard ZERO ceiling remains on dangling refs (a standard must
-      # never cite a guard that doesn't exist — a broken guarantee).
-      - name: Resolve protected-base area ledger
-        id: area-audit-base
-        env:
-          BASE_SHA: ${{ github.event.pull_request.base.sha || github.event.before || format('{0}^', github.sha) }}
-        run: |
-          git cat-file -e "$BASE_SHA^{commit}"
-          if git cat-file -e "$BASE_SHA:docs/standards-registry-area-audits.json"; then
-            git show "$BASE_SHA:docs/standards-registry-area-audits.json" > "$RUNNER_TEMP/standards-area-audits-base.json"
-            echo "required=1" >> "$GITHUB_OUTPUT"
-          else
-            echo "required=0" >> "$GITHUB_OUTPUT"
-          fi
-          git show "$BASE_SHA:docs/STANDARDS-REGISTRY.md" > "$RUNNER_TEMP/standards-registry-base.md"
-          git show "$BASE_SHA:.github/keyrings/telegram-principal-pub.pem" > "$RUNNER_TEMP/standards-direction-approver-base.pem"
-      # PATH B context for the direction guard (2026-08-22, topic 52222).
-      #
-      # The operator's approving review is an alternative to an Ed25519
-      # ratification. The evidence is an API fact held by GitHub — "did the
-      # owner submit an APPROVED review on this exact commit?" — which is why
-      # it is fetched HERE rather than derived from anything in the repository.
-      #
-      # This step must never fail the job: an unavailable review context means
-      # the guard falls back to requiring a signature, which is the safe
-      # direction. `|| true` plus an explicit empty file keeps a rate limit or
-      # an API outage from turning "cannot verify" into a hard error, while the
-      # guard still refuses to treat it as an approval.
-      #
-      # RUNS ON PUSH TOO (2026-08-23). The first version carried
-      # `if: github.event_name == 'pull_request'`, so on a push to main the
-      # context file was never written at all and the guard read ENOENT as
-      # "review unavailable" and refused. That is the safe direction taken at
-      # the wrong moment: the operator HAD approved — on the pull request that
-      # produced this very commit — so every registry change ratified by review
-      # turned canonical main red the instant it merged, and main stayed red
-      # across three merges on 2026-08-23. The evidence is still reachable on a
-      # push; it just has to be reached through the commit. The pull request is
-      # resolved by matching `merge_commit_sha` to this commit rather than
-      # taking the first associated pull request, because a commit can be
-      # associated with several and only the one GitHub actually merged carries
-      # the approval that ratified it. A commit with no such pull request (a
-      # direct push to main) resolves nothing, writes an empty context, and the
-      # guard refuses exactly as it did before — the bypass stays closed.
-      # PATH B resolution, then the review fetch.
-      #
-      # A FAILED FETCH MUST NOT LOOK LIKE AN EMPTY ONE.
-      #
-      # The first version of this step did `gh api ... || echo '[]'`, so an
-      # API error, a rate limit or a network fault produced an empty review
-      # list — byte-identical to "the operator genuinely has not approved
-      # yet". Both are not-approved, so the SAFE direction held; but the
-      # REASON the operator is shown would have been a lie. They would read
-      # "no review from <login>", approve, watch it fail again, and have no
-      # way to know the check never reached GitHub.
-      #
-      # A dead query and a true absence printed the same word. Caught by a
-      # peer session's diagnosis the same night this shipped: an instrument
-      # whose failure is unreachable has not measured anything.
-      #
-      # So on a failed call the `reviews` key is OMITTED entirely and a
-      # `fetchError` is written instead. The grader's `Array.isArray`
-      # check then reports "review list unavailable" — a distinct, named,
-      # already-tested state. The SAME distinction now covers the
-      # commit -> pull-request association call on the push path, which had
-      # the identical `|| echo '[]'` shape: a failed association is
-      # "cannot verify", never "this commit has no pull request".
-      # A `pull_request_review` event carries the SAME `pull_request`
-      # payload as a `pull_request` event, so it takes the PR path. It is
-      # named explicitly rather than folded into a `!= push` test: this
-      # step now has three callers, and the one added to make approval
-      # re-run the checks is precisely the one that must not fall through
-      # to the push branch. On a review event `github.sha` is the merge
-      # REF, which matches no `merge_commit_sha`, so the push branch would
-      # resolve no pull request, write an empty context, and refuse —
-      # turning the trigger that exists to honour an approval into one
-      # that reliably rejects it.
-      - name: Fetch operator review context (direction guard path B)
-        env:
-          GH_TOKEN: ${{ github.token }}
-          EVENT_NAME: ${{ github.event_name }}
-          PR: ${{ github.event.pull_request.number }}
-          HEAD_SHA: ${{ github.event.pull_request.head.sha }}
-          PR_AUTHOR: ${{ github.event.pull_request.user.login }}
-          PUSH_SHA: ${{ github.sha }}
-          OWNER_LOGIN: ${{ github.event.repository.owner.login }}
-          OWNER_TYPE: ${{ github.event.repository.owner.type }}
-          OUT: ${{ runner.temp }}/standards-direction-review.json
-        run: |
-          set -u
-          assoc_failed=0
-          if [ "$EVENT_NAME" != "pull_request" ] && [ "$EVENT_NAME" != "pull_request_review" ]; then
-            if associated=$(gh api "repos/${GITHUB_REPOSITORY}/commits/${PUSH_SHA}/pulls" 2>/dev/null); then
-              match=$(SHA="$PUSH_SHA" jq -c '[.[] | select(.merge_commit_sha == env.SHA)] | if length == 1 then .[0] else empty end' <<< "${associated:-[]}" 2>/dev/null || echo '')
-            else
-              associated='[]'
-              match=''
-              assoc_failed=1
-            fi
-            PR=''
-            HEAD_SHA=''
-            PR_AUTHOR=''
-            if [ -n "$match" ]; then
-              PR=$(jq -r '.number // empty' <<< "$match" 2>/dev/null || echo '')
-              HEAD_SHA=$(jq -r '.head.sha // empty' <<< "$match" 2>/dev/null || echo '')
-              PR_AUTHOR=$(jq -r '.user.login // empty' <<< "$match" 2>/dev/null || echo '')
-            fi
-            echo "path-b: event=${EVENT_NAME} associated=$(jq -r 'length' <<< "${associated:-[]}" 2>/dev/null || echo unreadable) matched-pr=${PR:-none} assoc-failed=${assoc_failed}"
-          fi
-          echo "path-b: head-sha=${HEAD_SHA:-none} owner=${OWNER_LOGIN:-none}/${OWNER_TYPE:-none}"
-          if [ "$assoc_failed" = "1" ]; then
-            printf '%s' '{"fetchError":"the commit-to-pull-request association call failed"}' > "$OUT"
-          elif [ -z "$PR" ]; then
-            jq -n --arg headSha "$HEAD_SHA" \
-                  --arg ownerLogin "$OWNER_LOGIN" \
-                  --arg ownerType "$OWNER_TYPE" \
-                  --arg prAuthorLogin "$PR_AUTHOR" \
-               '{reviews:[], headSha:$headSha, ownerLogin:$ownerLogin, ownerType:$ownerType, prAuthorLogin:$prAuthorLogin}' \
-               > "$OUT" || printf '%s' '{"fetchError":"jq could not build the review context"}' > "$OUT"
-          elif reviews=$(gh api "repos/${GITHUB_REPOSITORY}/pulls/${PR}/reviews?per_page=100" 2>/dev/null); then
-            echo "path-b: reviews=$(jq -r 'length' <<< "$reviews" 2>/dev/null || echo unreadable)"
-            jq -n --argjson reviews "$reviews" \
-                  --arg headSha "$HEAD_SHA" \
-                  --arg ownerLogin "$OWNER_LOGIN" \
-                  --arg ownerType "$OWNER_TYPE" \
-                  --arg prAuthorLogin "$PR_AUTHOR" \
-               '{reviews:$reviews, headSha:$headSha, ownerLogin:$ownerLogin, ownerType:$ownerType, prAuthorLogin:$prAuthorLogin}' \
-               > "$OUT" || printf '%s' '{"fetchError":"jq could not build the review context"}' > "$OUT"
-          else
-            printf '%s' '{"fetchError":"the reviews API call failed"}' > "$OUT"
-          fi
-      - run: node scripts/standards-coverage.mjs --check
-        env:
-          STANDARDS_DIRECTION_REVIEW_FILE: ${{ runner.temp }}/standards-direction-review.json
-          STANDARDS_AREA_AUDIT_BASE_FILE: ${{ runner.temp }}/standards-area-audits-base.json
-          STANDARDS_AREA_AUDIT_BASE_REQUIRED: ${{ steps.area-audit-base.outputs.required }}
-          STANDARDS_DIRECTION_BASE_FILE: ${{ runner.temp }}/standards-registry-base.md
-          STANDARDS_DIRECTION_BASE_APPROVER_KEY_FILE: ${{ runner.temp }}/standards-direction-approver-base.pem
-          STANDARDS_DIRECTION_BASE_REVISION: ${{ github.event.pull_request.base.sha || github.event.before || format('{0}^', github.sha) }}
-      - name: Migration consumer lockstep
-        run: node scripts/lint-migration-consumer-completeness.js --diff-base "${{ github.event.pull_request.base.sha || github.event.before }}"
-      - name: Upload coverage report
-        if: always()
-        uses: actions/upload-artifact@v4
-        with:
-          name: standards-coverage
-          path: |
-            .instar/standards-coverage.json
-          include-hidden-files: true
-          if-no-files-found: error
-
-  lint:
-    name: Type Check
-    runs-on: ubuntu-latest
-    timeout-minutes: 15
-    steps:
-      - uses: actions/checkout@v4
-        # ROUND-20: the deferral-carrier lint scopes its ratchet to the PR's
-        # diff against the merge base. At the default fetch-depth a
-        # pull_request checkout has neither origin/main nor main, so the
-        # gate cannot determine scope and — correctly refusing to report
-        # clean on an uninspected run — fails EVERY PR regardless of marker
-        # quality. Round 19 traded a vacuous pass for an unconditional red;
-        # history is what the check actually needs. Other jobs here already
-        # set this for the same reason.
-        with:
-          fetch-depth: 0
-      - uses: actions/setup-node@v4
-        with:
-          node-version: 20
-          cache: npm
-      - run: npm ci
-      - run: npm run lint:parallel
-
-  unit:
-    name: Unit Tests (node ${{ matrix.node-version }}, shard ${{ matrix.shard }}/4)
-    runs-on: ubuntu-latest
-    # Pull requests are tested in full by Local Verify (the only required check);
-    # this job runs on push to main and on workflow_dispatch. See the note above `concurrency`.
-    if: github.event_name != 'pull_request' && github.event_name != 'pull_request_review'
-    timeout-minutes: 60
+    timeout-minutes: 120
     strategy:
-      # Don't cancel other shards if one fails — we want the full picture.
       fail-fast: false
+      max-parallel: 4
       matrix:
-        node-version: [20, 22]
+        lane: [unit, integration, e2e]
         shard: [1, 2, 3, 4]
     steps:
-      - uses: actions/checkout@v4
-        with:
-          # lint-template-sha-history walks `git log -- src/templates/scripts/
-          # telegram-reply.sh` to assert every historical SHIPPED content is
-          # in the migrator's prior-shipped set. A shallow clone (default
-          # depth=1) defeats that — and silently rubber-stamps the assertion.
-          fetch-depth: 0
-      - uses: actions/setup-node@v4
-        with:
-          node-version: ${{ matrix.node-version }}
-          cache: npm
-      - name: Ensure tmux
-        run: bash .github/scripts/setup-ci-tmux.sh
-      - run: npm ci
-      # vitest shard syntax: --shard=<index>/<total>. Each runner executes a
-      # deterministic disjoint slice of the test files; union is the full suite.
-      # fileParallelism stays off within each shard to preserve isolation.
-      - run: npm run test:push -- --shard=${{ matrix.shard }}/4
+      - name: Check source pin
         env:
-          # A review event is PR-shaped here too: its payload carries the
-          # same base/head, and leaving it out would hand the audit an
-          # EMPTY change kind — an unscoped run reporting clean.
-          AUDIT_CHANGE_KIND: ${{ (github.event_name == 'pull_request' || github.event_name == 'pull_request_review') && 'pull_request' || (github.event_name == 'push' && 'push' || '') }}
-          AUDIT_CHANGE_BASE_SHA: ${{ (github.event_name == 'pull_request' || github.event_name == 'pull_request_review') && github.event.pull_request.base.sha || (github.event_name == 'push' && github.event.before || '') }}
-          AUDIT_CHANGE_HEAD_SHA: ${{ (github.event_name == 'pull_request' || github.event_name == 'pull_request_review') && github.event.pull_request.head.sha || (github.event_name == 'push' && github.sha || '') }}
-      - name: Working-tree integrity check
-        run: |
-          if [ -n "$(git status --porcelain)" ]; then
-            echo "::error::Test suite mutated the working tree. SafeGitExecutor / SafeFsExecutor likely bypassed."
-            git status --porcelain
-            git diff
-            exit 1
-          fi
-
-  integration:
-    name: Integration Tests
-    runs-on: ubuntu-latest
-    # Pull requests are tested in full by Local Verify (the only required check);
-    # this job runs on push to main and on workflow_dispatch. See the note above `concurrency`.
-    if: github.event_name != 'pull_request' && github.event_name != 'pull_request_review'
-    # 50 was cancelling green-in-progress runs: main itself was cancelled at 50 min on
-    # 2026-11-10 (run 42878286348), and the conversations release adds about 15 min of
-    # multi-machine graph suites. Same bound as the E2E job.
-    timeout-minutes: 70
-    # Independent checkout and runner: start alongside unit shards. Both
-    # results remain required branch checks before a PR can merge.
-    steps:
-      - uses: actions/checkout@v4
-      - uses: actions/setup-node@v4
-        with:
-          node-version: 20
-          cache: npm
-      - name: Ensure tmux
-        run: bash .github/scripts/setup-ci-tmux.sh
-      - run: npm ci
-      - run: npm run test:integration
-      - name: Working-tree integrity check
-        run: |
-          if [ -n "$(git status --porcelain)" ]; then
-            echo "::error::Integration tests mutated the working tree. SafeGitExecutor / SafeFsExecutor likely bypassed."
-            git status --porcelain
-            git diff
-            exit 1
-          fi
-
-  e2e:
-    name: E2E Tests
-    runs-on: ubuntu-latest
-    # Pull requests are tested in full by Local Verify (the only required check);
-    # this job runs on push to main and on workflow_dispatch. See the note above `concurrency`.
-    if: github.event_name != 'pull_request' && github.event_name != 'pull_request_review'
-    timeout-minutes: 70
-    # Independent checkout and runner: start alongside unit shards. This
-    # removes a serial CI phase without weakening the merge gate.
-    steps:
+          SOURCE_SHA: ${{ inputs.source_sha }}
+        run: '[[ "$SOURCE_SHA" =~ ^[0-9a-f]{40}$ ]]'
       - uses: actions/checkout@v4
         with:
-          # The compiled preflight E2E runs lint, whose deferral-carrier ratchet
-          # needs origin/main and its merge base to inspect the actual PR diff.
-          fetch-depth: 0
+          ref: ${{ inputs.source_sha }}
+          persist-credentials: false
       - uses: actions/setup-node@v4
         with:
-          node-version: 20
-          cache: npm
-      - name: Ensure tmux
-        run: bash .github/scripts/setup-ci-tmux.sh
-      - run: npm ci
-      # E2E subprocesses exercise the compiled CLI and registry in this checkout.
-      # The separate build job has its own filesystem and cannot supply dist/.
-      - run: npm run build
-      - run: npm run test:e2e
-      - name: Working-tree integrity check
+          node-version: 22
+      - run: sudo apt-get update -qq && sudo apt-get install -y tmux
+      - name: Prepare clean checkout
         run: |
-          if [ -n "$(git status --porcelain)" ]; then
-            echo "::error::E2E tests mutated the working tree. SafeGitExecutor / SafeFsExecutor likely bypassed."
-            git status --porcelain
-            git diff
-            exit 1
-          fi
-
-  contract:
-    name: Contract Tests (Live API)
+          mkdir -p "$RUNNER_TEMP/verification"
+          git rev-parse HEAD > "$RUNNER_TEMP/verification/source.txt"
+          node --version > "$RUNNER_TEMP/verification/node.txt"
+          /usr/bin/time -p -o "$RUNNER_TEMP/verification/install.txt" npm ci
+          /usr/bin/time -p -o "$RUNNER_TEMP/verification/build.txt" npm run build
+      - name: Run the same lane twice
+        env:
+          LANE: ${{ matrix.lane }}
+          SHARD: ${{ matrix.shard }}
+        run: |
+          set -u
+          case "$LANE" in
+            unit) CONFIG=vitest.config.ts ;;
+            integration) CONFIG=vitest.integration.config.ts ;;
+            e2e) CONFIG=vitest.e2e.config.ts ;;
+          esac
+          failed=0
+          for sample in cold warm; do
+            report="$RUNNER_TEMP/verification/$sample"
+            tmux_temp=$(mktemp -d)
+            set +e
+            TMUX_TMPDIR="$tmux_temp" /usr/bin/time -p -o "$report.time" \
+              node_modules/.bin/vitest run --config "$CONFIG" --shard="$SHARD/4" \
+                --maxWorkers=1 --minWorkers=1 --allowOnly=false --reporter=json \
+                --outputFile.json="$report.json"
+            rc=$?
+            set -e
+            printf '%d\n' "$rc" > "$report.exit"
+            if [ "$rc" -ne 0 ]; then failed=1; fi
+          done
+          exit "$failed"
+      - uses: actions/upload-artifact@v4
+        if: always()
+        with:
+          name: ${{ matrix.lane }}-${{ matrix.shard }}
+          path: ${{ runner.temp }}/verification
+          retention-days: 2
+  red-control:
+    if: ${{ inputs.red_control }}
     runs-on: ubuntu-latest
     timeout-minutes: 15
-    needs: unit
-    # Only run when adapter source files or contract tests change
-    if: >
-      github.event_name == 'push' ||
-      contains(github.event.pull_request.changed_files_names || '', 'src/messaging/')
     steps:
-      - uses: actions/checkout@v4
-      - uses: actions/setup-node@v4
-        with:
-          node-version: 20
-          cache: npm
-      - run: npm ci
-      - name: Run contract tests
+      - name: Check source pin
         env:
-          SLACK_CONTRACT_BOT_TOKEN: ${{ secrets.SLACK_CONTRACT_BOT_TOKEN }}
-        run: |
-          if [ -z "$SLACK_CONTRACT_BOT_TOKEN" ]; then
-            echo "⚠️  SLACK_CONTRACT_BOT_TOKEN not configured — skipping contract tests"
-            echo "To enable: add SLACK_CONTRACT_BOT_TOKEN to repository secrets"
-            exit 0
-          fi
-          npx vitest run --config vitest.contract.config.ts
-
-  build:
-    name: Build
-    runs-on: ubuntu-latest
-    timeout-minutes: 15
-    needs: [lint, unit]
-    steps:
+          SOURCE_SHA: ${{ inputs.source_sha }}
+        run: '[[ "$SOURCE_SHA" =~ ^[0-9a-f]{40}$ ]]'
       - uses: actions/checkout@v4
+        with:
+          ref: ${{ inputs.source_sha }}
+          persist-credentials: false
       - uses: actions/setup-node@v4
         with:
-          node-version: 20
-          cache: npm
+          node-version: 22
       - run: npm ci
-      - run: npm run build
+      - name: Require the exact known failure
+        run: |
+          cat > tests/unit/linux-verifier-red-control.test.ts <<'TEST'
+          import { it, expect } from 'vitest';
+          it('reports the Linux trial red control', () => expect('red').toBe('green'));
+          TEST
+          rc=0
+          node_modules/.bin/vitest run --config vitest.config.ts \
+            tests/unit/linux-verifier-red-control.test.ts --maxWorkers=1 --minWorkers=1 \
+            --reporter=json --outputFile.json="$RUNNER_TEMP/red-control.json" || rc=$?
+          test "$rc" -eq 1
+          jq -e '.numFailedTests == 1 and any(.testResults[].assertionResults[]; .title == "reports the Linux trial red control" and .status == "failed")' "$RUNNER_TEMP/red-control.json"
+      - uses: actions/upload-artifact@v4
+        if: always()
+        with:
+          name: red-control
+          path: ${{ runner.temp }}/red-control.json
+          retention-days: 2
