@@ -8,9 +8,10 @@
  * tests prove what unit tests in-process cannot:
  *   - the PROD worker path resolves (`new URL('./cartographerDetect.worker.js',
  *     import.meta.url)`) and returns a bounded result + writes the snapshot;
- *   - detect on a LARGE index does NOT starve the main event loop (sampled
- *     setInterval drift stays < 250ms) — the regression guard: reverting detect to
- *     the main thread spikes the lag and fails this test;
+ *   - detect on a LARGE index does NOT starve the main event loop (no stretch of
+ *     more than 250ms of work on the main thread between two turns of the loop;
+ *     see startLoopProbe) — the regression guard: reverting detect to the main
+ *     thread spikes it and fails this test;
  *   - detectTimeoutMs bounds the worker (a 1ms budget refuses detect-timeout);
  *   - the detectInWorker:false rollback runs the SAME bounded module synchronously.
  */
@@ -103,7 +104,80 @@ function engineFor(t: CartographerTree, over: Partial<SweepEngineConfig> = {}): 
   });
 }
 
+/**
+ * Measures the longest stretch the test's own thread spent working without letting the event loop
+ * turn. A 20 ms timer fires once per loop turn when it is due; between two firings the probe reads
+ * how much CPU time THIS thread used (`process.threadCpuUsage`, Node 23.9+).
+ *
+ * The earlier form of these two tests measured how late the timer fired on the wall clock. That
+ * also counts every moment the operating system gave the processor to something else, so on a host
+ * running all test lanes at once it read 738 ms with the work correctly chunked ("expected 738 to
+ * be less than 250", 2026-11-12..19, fourteen verify runs). CPU time used by this thread does not
+ * move when another process is busy.
+ *
+ * What it still catches: any change that makes the code under test hold the thread in one piece —
+ * detect parsed on the main thread, an unchunked walk or write pass, the index serialized in one
+ * call. Each of those is CPU work on this thread between two timer firings and reads the same on a
+ * quiet or a busy host. What it no longer counts: time this thread spent waiting, not working
+ * (a slow disk call, or the processor being elsewhere) — the part that depended on the machine.
+ *
+ * On a Node without `process.threadCpuUsage` the probe falls back to the wall-clock reading.
+ */
+function startLoopProbe(sampleMs = 20): { stop: () => { maxHeldMs: number; maxWallLagMs: number; source: 'thread-cpu' | 'wall-clock' } } {
+  const threadCpu = (process as unknown as { threadCpuUsage?: () => NodeJS.CpuUsage }).threadCpuUsage?.bind(process);
+  let maxCpuMs = 0;
+  let maxWallLagMs = 0;
+  let lastWall = Date.now();
+  let lastCpu = threadCpu?.();
+  const sample = (expectedGapMs: number): void => {
+    const now = Date.now();
+    maxWallLagMs = Math.max(maxWallLagMs, now - lastWall - expectedGapMs);
+    lastWall = now;
+    if (threadCpu && lastCpu) {
+      const cpu = threadCpu();
+      maxCpuMs = Math.max(maxCpuMs, (cpu.user - lastCpu.user + cpu.system - lastCpu.system) / 1000);
+      lastCpu = cpu;
+    }
+  };
+  const timer = setInterval(() => sample(sampleMs), sampleMs);
+  return {
+    stop: () => {
+      clearInterval(timer);
+      sample(0); // the stretch since the last firing counts too
+      return threadCpu
+        ? { maxHeldMs: maxCpuMs, maxWallLagMs, source: 'thread-cpu' }
+        : { maxHeldMs: maxWallLagMs, maxWallLagMs, source: 'wall-clock' };
+    },
+  };
+}
+
 describe.skipIf(!DIST_BUILT)('cartographer event-loop safety — REAL dist worker (fix instar#1069)', () => {
+  it('the loop probe reports a stretch of work that held the thread, and nothing for a wait', async () => {
+    // The probe is the instrument for the two "does not starve the event loop" cases below, so it
+    // is checked here against both things it must tell apart.
+    const threadCpu = (process as unknown as { threadCpuUsage?: () => NodeJS.CpuUsage }).threadCpuUsage?.bind(process);
+    const workedMs = (): number => {
+      if (!threadCpu) return performance.now();
+      const cpu = threadCpu();
+      return (cpu.user + cpu.system) / 1000;
+    };
+
+    const idle = startLoopProbe();
+    await new Promise((resolve) => setTimeout(resolve, 300)); // waiting, not working
+    const idleHeld = idle.stop();
+    // Only the CPU reading can promise this on a busy host; the wall-clock fallback cannot.
+    if (idleHeld.source === 'thread-cpu') expect(idleHeld.maxHeldMs).toBeLessThan(250);
+
+    const busy = startLoopProbe();
+    await new Promise((resolve) => setTimeout(resolve, 40));
+    // Hold the thread in one piece, as a regression would, for 400 ms of this thread's own work
+    // (not 400 ms on the clock, which on a busy host could be far less work).
+    const spinUntil = workedMs() + 400;
+    while (workedMs() < spinUntil) { /* spin */ }
+    await new Promise((resolve) => setTimeout(resolve, 40));
+    expect(busy.stop().maxHeldMs).toBeGreaterThan(250);
+  });
+
   it('detect runs in the dist worker, returns a bounded result, and writes the snapshot', async () => {
     const t = tree();
     writeLargeIndex(t, 20000);
@@ -125,23 +199,16 @@ describe.skipIf(!DIST_BUILT)('cartographer event-loop safety — REAL dist worke
     writeLargeIndex(t, 60000); // big enough that a MAIN-THREAD parse would blow past 250ms
     const engine = engineFor(t);
 
-    const SAMPLE_MS = 20;
-    let maxLag = 0;
-    let last = Date.now();
-    const timer = setInterval(() => {
-      const now = Date.now();
-      maxLag = Math.max(maxLag, now - last - SAMPLE_MS);
-      last = now;
-    }, SAMPLE_MS);
-    last = Date.now();
+    const probe = startLoopProbe();
+    let held: ReturnType<typeof probe.stop>;
     try {
       await engine.runPass();
     } finally {
-      clearInterval(timer);
+      held = probe.stop();
     }
     // With detect in the worker, the main loop stays responsive. Reverting detect to
     // the main thread (the #1069 regression) spikes this well past 250ms.
-    expect(maxLag).toBeLessThan(250);
+    expect(held.maxHeldMs, `source ${held.source}, wall-clock lag ${held.maxWallLagMs}ms`).toBeLessThan(250);
   });
 
   it('detectTimeoutMs bounds the worker → refused detect-timeout', async () => {
@@ -201,11 +268,8 @@ describe.skipIf(!DIST_BUILT)('cartographer event-loop safety — REAL dist worke
       fs.mkdirSync(dir, { recursive: true });
       for (let f = 0; f < PER; f++) fs.writeFileSync(path.join(dir, `f${f}.ts`), `export const x${f} = ${f};\n`);
     }
-    const SAMPLE_MS = 20;
-    let maxLag = 0;
-    let last = Date.now();
-    const timer = setInterval(() => { const now = Date.now(); maxLag = Math.max(maxLag, now - last - SAMPLE_MS); last = now; }, SAMPLE_MS);
-    last = Date.now();
+    const probe = startLoopProbe();
+    let held: ReturnType<typeof probe.stop>;
     try {
       const result = await populateCartographer({
         tree: t,
@@ -214,9 +278,9 @@ describe.skipIf(!DIST_BUILT)('cartographer event-loop safety — REAL dist worke
       expect(result.refused).toBe(false);
       expect(result.nodeCount).toBeGreaterThan(6000);
     } finally {
-      clearInterval(timer);
+      held = probe.stop();
     }
-    expect(maxLag).toBeLessThan(250);
+    expect(held.maxHeldMs, `source ${held.source}, wall-clock lag ${held.maxWallLagMs}ms`).toBeLessThan(250);
     // The index was written incrementally and is readable.
     const loaded = t.loadIndexBounded(256 * 1024 * 1024);
     expect(loaded.state).toBe('ok');

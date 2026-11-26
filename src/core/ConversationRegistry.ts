@@ -1272,6 +1272,12 @@ export class ConversationRegistry {
     };
   }
 
+  /** Read-only cache identity for hierarchy alias resolution; incidental last-use writes do not grant access. */
+  creationIdentityVersion(): string {
+    this.load();
+    return `${this.seqCounter}:${this.snapshotHighWaterSeq}:${this.unappliedUnknownOps.length}:${this.workspacePin?.value ?? ''}:${this.workspacePin?.confirmedLocally ?? false}`;
+  }
+
   /** Forward lookup by canonical key OR transport sessionKey — mints NOTHING (§8). */
   resolveByKey(keyOrSessionKey: string): ConversationDescriptor | null {
     this.load();

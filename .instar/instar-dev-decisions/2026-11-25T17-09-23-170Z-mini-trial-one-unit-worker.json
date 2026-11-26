@@ -1,0 +1,29 @@
+{
+  "ts": "2026-11-25T17:09:23.170Z",
+  "slug": "mini-trial-one-unit-worker",
+  "suggestedTier": 2,
+  "declaredTier": 1,
+  "riskFloor": 2,
+  "riskFloorReasons": [
+    "irreversibility: src/core/PostUpdateMigrator.ts touches PostUpdateMigrator",
+    "migration / fleet-rollout surface: src/core/PostUpdateMigrator.ts touches PostUpdateMigrator (fleet migration machinery)"
+  ],
+  "belowFloor": true,
+  "files": 5,
+  "loc": 21,
+  "scope": {
+    "basis": "staged-in-scope-paths-including-deleted",
+    "files": [
+      "src/core/PostUpdateMigrator.ts",
+      "src/data/awareness/local-verify-main-on-peers.md",
+      "src/localVerify/LocalVerifyService.ts",
+      "src/localVerify/smallPeerMemory.ts",
+      "src/scaffold/templates.ts"
+    ],
+    "addedLines": 13,
+    "deletedLines": 8
+  },
+  "causalAutopsy": null,
+  "classClosure": null,
+  "verdict": "pass"
+}

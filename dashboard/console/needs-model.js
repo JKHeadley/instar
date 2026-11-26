@@ -6,6 +6,7 @@
 import { buildShipping, stoppedLead, operatorTodos, sourceState, agentOwnedStop } from './development-model.js';
 import { buildAccountsPage } from './accounts-model.js';
 import { pairingModel, waitingCards } from './agents-model.js';
+import { buildTrustRequests } from './allowed-model.js';
 import { buildApprovals } from './mandates-model.js';
 import { buildPlansPage } from './plans-model.js';
 import { buildRequests } from './secrets-model.js';
@@ -14,6 +15,7 @@ import { healthNeedRows } from './health-model.js';
 import { proposalsNeedingVerdict, buildPending } from './learned-model.js';
 import { contextNeeds } from './context-model.js';
 import { workBoardNeedRows } from './work-model.js';
+import { repoNeedRows, REPOS_READ } from './repos-model.js';
 
 // warning-path: inline
 const row = (key, main, sub, href, refs = []) => ({ key: `need:${key}`, main, sub: sub || '', tone: 'attn', refs, action: { kind: 'href', href } });
@@ -28,6 +30,13 @@ export function documentDecisionNeedRows(res) {
     d.question ? `${d.question}${d.versionLabel ? ` (version ${d.versionLabel})` : ''}` : 'Open it on your phone to approve or decline.', `/docs/${d.id}`, [d.id]));
 }
 
+/** Current approval requests share the Allowed page's exact pending-request model. */
+export function trustRequestNeedRows(trust, now) {
+  if (sourceState(trust) === 'off') return [];
+  const requests = buildTrustRequests(trust, now);
+  return requests.ok ? requests.rows.map((r) => row(r.key, r.main, r.sub, '#/settings/allowed?s=approvals', [r.requestId])) : UNREADABLE;
+}
+
 /** A 200 that does not have the expected shape: it told us nothing, so never read it as "nothing waiting". */
 const UNREADABLE = null;
 
@@ -40,6 +49,17 @@ export function cutAtWord(text, max) {
   const sp = t[room.length] === ' ' ? room.length : room.lastIndexOf(' ');
   const base = (sp >= Math.floor(max / 3) ? room.slice(0, sp) : room).replace(/[\s,;:.\-–—(]+$/, '');
   return `${base}…`;
+}
+
+/**
+ * The rows the Conversations page's Chief of Staff card shows. Where the Needs-you list is on screen it
+ * already lists every project's wait, so the card keeps only what that list cannot do on this page: the
+ * check-in for a Chief of Staff that is paused or about to pause (2026-11-20 dashboard audit: two stacked
+ * boxes repeated the same waits and pushed the page below the first screen on a phone).
+ */
+export function chiefOfStaffCardRows(rows, { stripShown = false } = {}) {
+  const list = Array.isArray(rows) ? rows : [];
+  return stripShown ? list.filter((r) => r && (r.key === 'need:cos:paused' || r.key === 'need:cos:expiring')) : list;
 }
 
 /** A short project name from its goal, the same rule as `shortProjectTitle` in src/core/ChiefOfStaffLoop.ts. */
@@ -84,7 +104,17 @@ export function chiefOfStaffNeedRows(cos, now) {
 export const NEED_SOURCES = [
   // First, so a real problem leads the Needs-you list. Only what affects the person. Internal notes stay on the Health page and never raise this count.
   { id: 'health', page: 'capacity/health', reads: { issues: '/mobile/health-issues' },
-    rows: ({ issues }) => { const rows = healthNeedRows(issues); return rows === null ? UNREADABLE : rows.map((r) => row(`health:${r.key}`, r.title, r.detail, r.href)); } },
+    rows: ({ issues }, _now, { raw = false } = {}) => {
+      const rows = healthNeedRows(issues, { includeAgentWork: raw });
+      return rows === null ? UNREADABLE : rows.map(r => ({
+        ...row(`health:${r.key}`, r.title, r.detail, r.href), ...(r.ownerAction === false ? { ownerAction: false } : {}),
+      }));
+    } },
+  // Work that exists on only one machine (no-data-loss-on-machine-death.md §1.4): a repository with no remote, or
+  // unpushed work past the grace window. One row per machine per kind. 503 = the registry is off here = nothing waiting.
+  { id: 'repos', page: 'capacity/repos', reads: { repos: REPOS_READ },
+    // warning-path: inline
+    rows: ({ repos }) => { const rows = repoNeedRows(repos); return rows === null ? UNREADABLE : rows.map((r) => ({ ...row(r.key, r.main, r.sub, r.href, r.refs), ownerAction: false, tone: r.kind === 'unknown' ? 'unknown' : 'bad' })); } },
   { id: 'merging', page: 'work/development', reads: { watcher: '/green-pr-automerge' },
     rows: ({ watcher }, now) => {
       if (agentOwnedStop(watcher.data)) return []; // the agent releases this itself; the page still shows it
@@ -109,6 +139,8 @@ export const NEED_SOURCES = [
   { id: 'agents', page: 'people/agents', reads: { pairing: '/threadline/pairing', invites: '/threadline/pairing/invites' },
     rows: ({ pairing, invites }, now) => waitingCards(pairingModel(pairing, invites, undefined, now), now)
       .map((c, i) => row(`agent:${c.kind}:${c.iid || c.id || i}`, c.title, '', '#/people/agents')) },
+  { id: 'trust-requests', page: 'settings/allowed', reads: { trust: '/trust/requests' },
+    rows: ({ trust }, now) => trustRequestNeedRows(trust, now) },
   { id: 'approvals', page: 'people/mandates', reads: { approvals: '/authorization-requests?status=pending' },
     rows: ({ approvals }) => { const a = buildApprovals(approvals); return a.ok ? a.rows.map((r) => row(r.key, r.headline, r.reason, '#/people/mandates?s=waiting')) : UNREADABLE; } },
   { id: 'plans', page: 'work/plans', reads: { initiatives: '/initiatives', blockers: '/blockers' },
@@ -124,7 +156,7 @@ export const NEED_SOURCES = [
     rows: ({ cos }, now) => chiefOfStaffNeedRows(cos, now) },
   // Work board (work-board-asks.md §7 Home, Detectors "Waiting on you"): one row per card waiting on the owner. 503 = feature off = nothing waiting.
   { id: 'workBoard', page: 'work/board', reads: { wb: '/work-board' },
-    rows: ({ wb }, now) => { const rows = workBoardNeedRows(wb, now); return rows === null ? UNREADABLE : rows.map((r) => ({ ...row(r.key, r.main, r.sub, r.href), ...(r.cardId ? { board: { cardId: r.cardId, href: r.href, covers: r.covers || [], linkable: !!r.linkable, serverOwned: !!r.serverOwned, createdAt: r.createdAt || '' } } : {}) })); } },
+    rows: ({ wb }, now) => { const rows = workBoardNeedRows(wb, now); return rows === null ? UNREADABLE : rows.map((r) => ({ ...row(r.key, r.main, r.sub, r.href), ...(r.ownerAction === false ? { ownerAction: false } : {}), ...(r.cardId ? { board: { cardId: r.cardId, href: r.href, covers: r.covers || [], linkable: !!r.linkable, serverOwned: !!r.serverOwned, createdAt: r.createdAt || '' } } : {}) })); } },
   // Documents that ask the owner for a decision (document-decisions.md §3.7). 503 = documents off here = nothing waiting.
   { id: 'document-decisions', page: 'work/documents', reads: { waiting: '/docs/decisions/waiting' },
     rows: ({ waiting }) => documentDecisionNeedRows(waiting) },
@@ -156,11 +188,14 @@ export const NEED_SOURCES = [
   // machine). 503 = off here; a stale watcher heartbeat is "can't tell", never "nothing".
   // Read from the watcher's status only (cheap); the conversation names stay on the page itself.
   { id: 'context', page: 'settings/context', reads: { sentinel: '/context-budget/sentinel' },
-    rows: ({ sentinel }, now) => {
+    rows: ({ sentinel }, now, { raw = false } = {}) => {
       const needs = contextNeeds(sentinel.data, {}, now);
       if (needs === null) return UNREADABLE;
-      // The fold id is the ref: the watcher's own Attention notice names it, so one incident counts once.
-      return needs.map((n) => row(`context:${n.key}`, n.title, n.detail, '#/settings/context', n.ref ? [n.ref] : []));
+      // Keep the agent-owned diagnostic in the raw input so the gate can count it.
+      return needs.filter(n => raw || n.requiresUserAction !== false).map(n => ({
+        ...row(`context:${n.key}`, n.title, n.detail, '#/settings/context', n.ref ? [n.ref] : []),
+        ...(n.requiresUserAction === false ? { ownerAction: false } : {}),
+      }));
     } },
 ];
 
@@ -188,19 +223,33 @@ const failedRead = (res) => sourceState(res) === 'failed';
 
 /** Plain words a linked row shows for its card: fixed, never the agent's own title (work-board-cards-appear §3). */
 export const HAS_CARD_LABEL = 'Has a card on the work board';
+/** The fixed label of a row that IS its card (needs-one-list): the card opens from the row itself. */
+export const IS_CARD_LABEL = 'Opens its card on the work board';
+/** The fixed words of the source's own link kept on a row that became its card. */
+export const ALSO_OPENS_LABEL = 'Open the project conversation';
+/** The covers namespace only the server writes (work-board-cards-appear §2: reserved `cos:`). */
+const SERVER_COVERS = /^cos:/;
 
 /**
- * Each need once (docs/specs/work-board-cards-appear.md §3). A card in the owner's shown "Waiting on you" slice that
- * says it is about other rows (`covers`) and only waits on the person to act (with the person, no Approve, no Confirm done,
- * no open question, nothing outward) stands in for itself through them:
- * each covered row keeps its own words, source and action and gains `card`; a server-owned card's own row is dropped
- * (an agent session's card keeps its own row too).
- * Two cards on one row: the older card (creation time, then id) links it. A card none of whose rows is present, or
- * that asks for Approve, an answer or something outward, keeps its own row. Pure: returns new rows, mutates none.
+ * Each need once (docs/specs/work-board-cards-appear.md §3, as amended 2026-11-18 "One row per Chief of Staff wait"). A card in the owner's shown
+ * "Waiting on you" slice that says it is about other rows (`covers`) stands in for them in one of two ways:
+ *
+ * - The Chief of Staff's own wait card (server-owned, covering a row in the server-only `cos:` namespace) BECOMES that
+ *   row: one row, with the card's title and words, whose action opens the card, whatever the card asks (an open wait or
+ *   a Confirm done). The row keeps its key and source; the source's own action stays on it as `alsoOpens`. The card's
+ *   own row is dropped. Both texts are the server's, so no agent text replaces a source's words.
+ * - Any other card that only waits on the person to act (with the person, no Approve, no Confirm done, no open question,
+ *   nothing outward) links the rows it covers: each keeps its own words, source and action and gains `card`. An agent
+ *   session's card keeps its own row too, so an agent's card can never take over another source's button.
+ *
+ * Two cards on one row: the older card (creation time, then id) takes it. A card none of whose rows is present, or
+ * that asks for Approve, an answer or something outward (other than the Chief of Staff's own), keeps its own row.
+ * Pure: returns new rows, mutates none.
  */
 export function linkCoveredRows(rows) {
   const list = Array.isArray(rows) ? rows : [];
-  const cards = list.filter((r) => r && r.board && r.board.linkable && r.board.covers.length)
+  const becomes = (c, k) => !!(c.board.serverOwned && SERVER_COVERS.test(k));
+  const cards = list.filter((r) => r && r.board && Array.isArray(r.board.covers) && r.board.covers.length && (r.board.linkable || r.board.serverOwned))
     .sort((a, b) => String(a.board.createdAt).localeCompare(String(b.board.createdAt)) || String(a.board.cardId).localeCompare(String(b.board.cardId)));
   if (!cards.length) return list;
   // The plans source keys its rows `plan:` + the plan model's own key, which already reads `plan:<id>`; a card names `plan:<id>`.
@@ -210,7 +259,12 @@ export function linkCoveredRows(rows) {
   const standsIn = new Set();
   for (const c of cards) {
     let any = false;
-    for (const k of c.board.covers) { if (present.has(k) && !linkedBy.has(k)) { linkedBy.set(k, c); any = true; } }
+    for (const k of c.board.covers) {
+      if (!present.has(k) || linkedBy.has(k)) continue;
+      // A card that asks for more than the person's own act links a row only when it is the Chief of Staff's own mirror of it.
+      if (!c.board.linkable && !becomes(c, k)) continue;
+      linkedBy.set(k, c); any = true;
+    }
     // Only a server-owned card (the Chief of Staff's mirror of its own row) drops its own row; an agent session's
     // card keeps its row, so an ask can never be made less visible by covering another item.
     if (any && c.board.serverOwned) standsIn.add(c);
@@ -219,8 +273,16 @@ export function linkCoveredRows(rows) {
   const out = [];
   for (const r of list) {
     if (standsIn.has(r)) continue;
-    const c = r && !r.board ? linkedBy.get(keyOf(r)) : null;
-    out.push(c ? { ...r, card: { id: c.board.cardId, href: c.board.href, label: HAS_CARD_LABEL } } : r);
+    const k = r && !r.board ? keyOf(r) : null;
+    const c = k ? linkedBy.get(k) : null;
+    if (!c) { out.push(r); continue; }
+    if (becomes(c, k)) {
+      // Only a link to the project's own conversation is kept (a malformed key falls back to the chats list, which is not it).
+      const src = r.action && r.action.kind === 'href' && typeof r.action.href === 'string' && /^#\/work\/chats\?c=/.test(r.action.href) ? r.action.href : null;
+      out.push({ ...r, main: c.main || r.main, sub: c.sub || r.sub, action: { kind: 'href', href: c.board.href },
+        card: { id: c.board.cardId, href: c.board.href, label: IS_CARD_LABEL },
+        ...(src && src !== c.board.href ? { alsoOpens: { href: src, label: ALSO_OPENS_LABEL } } : {}) });
+    } else out.push({ ...r, card: { id: c.board.cardId, href: c.board.href, label: HAS_CARD_LABEL } });
   }
   return out;
 }
@@ -230,8 +292,9 @@ export function linkCoveredRows(rows) {
  * operator, plus which sources are unread (say "checking", never "quiet") or failed (say
  * partial, never "quiet"). A failed read keeps its last good rows for graceMs. 503 means off.
  */
-export function surfacedNeeds(known, now = Date.now(), graceMs = 120000) {
+export function surfacedNeeds(known, now = Date.now(), graceMs = 120000, { raw = false } = {}) {
   const out = { rows: [], pending: [], failed: [] };
+  const add = (source, rows) => out.rows.push(...(raw ? rows.map(row => ({ ...row, source })) : rows));
   for (const s of NEED_SOURCES) {
     const k = known && known[s.id];
     if (s.when && !s.when(known || {})) continue;
@@ -240,15 +303,15 @@ export function surfacedNeeds(known, now = Date.now(), graceMs = 120000) {
     if (reads.every((r) => sourceState(r) === 'off')) continue; // switched off here; a page's builder handles one optional read being off
     if (reads.some(failedRead)) {
       out.failed.push(s.id);
-      if (k.rows && now - (k.rowsAt || 0) <= graceMs) out.rows.push(...k.rows);
+      if (k.rows && now - (k.rowsAt || 0) <= graceMs) add(s.id, k.rows);
       continue;
     }
-    const rows = s.rows(k.results, now);
-    if (rows === UNREADABLE) { out.failed.push(s.id); if (k.rows && now - (k.rowsAt || 0) <= graceMs) out.rows.push(...k.rows); continue; }
+    const rows = s.rows(k.results, now, { raw });
+    if (rows === UNREADABLE) { out.failed.push(s.id); if (k.rows && now - (k.rowsAt || 0) <= graceMs) add(s.id, k.rows); continue; }
     k.rows = rows;
     k.rowsAt = now;
-    out.rows.push(...rows);
+    add(s.id, rows);
   }
-  out.rows = linkCoveredRows(out.rows);
+  if (!raw) out.rows = linkCoveredRows(out.rows);
   return out;
 }

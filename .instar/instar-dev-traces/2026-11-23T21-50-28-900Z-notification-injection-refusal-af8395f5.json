@@ -1,0 +1,52 @@
+{
+  "version": 3,
+  "slug": "notification-injection-refusal",
+  "sessionId": "fb2d9241-bc5a-479b-9443-bbce50a353bc",
+  "timestamp": "2026-11-23T21:50:28.900Z",
+  "artifactPath": "upgrades/side-effects/notification-injection-refusal.md",
+  "artifactSha256": "17644bd448c51bfad4006902d95171b9b3d10588fc4e357b53926b92df7b0627",
+  "coveredFiles": [
+    "docs/specs/notification-injection-refusal.eli16.md",
+    "src/core/SessionManager.ts",
+    "src/server/routes.ts",
+    "tests/e2e/notification-injection-refusal-alive.test.ts",
+    "tests/helpers/notificationRefusalFixture.ts",
+    "tests/integration/notification-injection-refusal-http.test.ts",
+    "tests/integration/secret-drop-self-mint-hardening.test.ts",
+    "tests/unit/notification-injection-refusal.test.ts",
+    "tests/unit/session-inject-observed.test.ts",
+    "upgrades/next/notification-injection-refusal.md",
+    "upgrades/side-effects/notification-injection-refusal.md"
+  ],
+  "phase": "complete",
+  "tier": 1,
+  "tierReasoning": "Narrow reversible propagation of existing explicit refusal with caller containment. No new authorization, credential access, retry, schema or external side effect.",
+  "eli16Path": "docs/specs/notification-injection-refusal.eli16.md",
+  "sideEffectsPath": "upgrades/side-effects/notification-injection-refusal.md",
+  "secondPass": "true",
+  "reviewerConcurred": true,
+  "toolchain": {
+    "buildSkill": {
+      "name": "build",
+      "version": null,
+      "verified": false
+    },
+    "reviewSkills": [
+      {
+        "name": "systematic-debugging",
+        "outcome": "completed",
+        "verified": false
+      },
+      {
+        "name": "codex_followup_review",
+        "outcome": "concurred",
+        "verified": false
+      }
+    ]
+  },
+  "classClosure": {
+    "defectClass": "unbounded-self-action",
+    "closure": "n/a",
+    "reason": "This change propagates an existing explicit refusal and contains caller errors; it introduces no retry loop, recovery automation or unbounded self action."
+  }
+}

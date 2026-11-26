@@ -151,11 +151,12 @@ describe('wiring integrity — reconciler is constructed + run at boot', () => {
     const src = fs.readFileSync(path.join(root, 'src/commands/server.ts'), 'utf8');
     expect(src).toContain('new FeatureRolloutReconciler(');
     expect(src).toContain('featureRolloutReconciler.reconcile()');
-    // Layer C (release-readiness-visibility §4.3) routes the scanner through
-    // the canonical-ref wrapper. With the flag off (the default) it delegates
-    // to scanSpecArtifacts(repoRoot) internally — behavior is byte-identical
-    // on every existing install, but the wiring point is the gated wrapper.
-    expect(src).toContain('scanSpecArtifactsWithCanonical(config.projectDir');
+    // Both canonical discovery and local fallback use the asynchronous adapter,
+    // so observations cannot block the server's health and lease-renewal loop.
+    // The lifecycle tests exercise the real scanner and HTTP consumer; this
+    // structural check prevents wiring the old synchronous adapter back in.
+    expect(src).toContain('scanSpecArtifactsWithCanonicalAsync(config.projectDir');
+    expect(src).not.toContain('scanSpecArtifactsWithCanonical(config.projectDir');
   });
   it('handles a bare-boolean flag (not just {enabled,dryRun} objects)', () => {
     const obs = makeFlagObserver({ monitoring: { flat: true } }, { monitoring: { flat: false } })('monitoring.flat');

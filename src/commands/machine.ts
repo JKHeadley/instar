@@ -16,7 +16,9 @@
  * Part of Phase 1-6 of the multi-machine spec.
  */
 
+import { standInEverUsed } from '../server/throwawayOwnerChat.js';
 import { TEAM_ENFORCEMENT_VERSION } from '../core/TeamAccessSync.js';
+import { getInstarVersion } from '../core/Config.js';
 import fs from 'node:fs';
 import { installAgentIdentityFromPairing } from '../core/AgentIdentityHandover.js';
 import { describeMissingAgentIdentity, joinerAgentNameToAdopt } from '../core/firstPairAgentIdentity.js';
@@ -441,6 +443,10 @@ export async function startPairing(options: PairOptions): Promise<void> {
     process.exit(1);
   }
 
+  if (standInEverUsed(config.stateDir)) {
+    console.log(pc.red('This is a throwaway test agent that used a stand-in owner chat, so it is never paired with another machine.'));
+    process.exit(1);
+  }
   const mgr = new MachineIdentityManager(config.stateDir);
 
   if (!mgr.hasIdentity()) {
@@ -588,6 +594,10 @@ export async function joinMesh(repoUrl: string, options: JoinOptions): Promise<v
   // resolveJoinDir honors --dir (incl. for git URLs — the §1.3 fix); without
   // --dir it falls back to the historical <cwd>/<repoName> for git URLs.
   const projectDir = resolveJoinDir(repoUrl, options);
+  if (standInEverUsed(path.join(projectDir, '.instar'))) {
+    console.log(pc.red('This is a throwaway test agent that used a stand-in owner chat, so it is never paired with another machine.'));
+    process.exit(1);
+  }
   const isGitUrl = repoUrl.includes('github.com') || repoUrl.includes('.git') || repoUrl.startsWith('git@');
 
   if (isGitUrl) {
@@ -700,6 +710,8 @@ export async function joinMesh(repoUrl: string, options: JoinOptions): Promise<v
           headers: { 'Content-Type': 'application/json' },
           body: JSON.stringify({
             pairingCode: options.code,
+            // identity-security piece 2c §4: the inviter refuses a joiner below the minimum build after enrolment.
+            instarVersion: getInstarVersion(),
             machineIdentity: identity,
             ephemeralPublicKey: identity.encryptionPublicKey,
             teamEnforcement: TEAM_ENFORCEMENT_VERSION,
@@ -730,7 +742,8 @@ export async function joinMesh(repoUrl: string, options: JoinOptions): Promise<v
 
       if (!resp.ok) {
         const body = await resp.json().catch(() => ({}));
-        console.log(pc.red(`  Pairing rejected: ${(body as any).error || resp.statusText}`));
+        // A refusal can carry a plain message (e.g. the minimum build this machine needs, identity piece 2c).
+        console.log(pc.red(`  Pairing rejected: ${(body as any).message || (body as any).error || resp.statusText}`));
         process.exit(1);
       }
 

@@ -432,6 +432,35 @@ export class ReplicatedPeerStreamReader {
   }
 
   /**
+   * True when every peer replica stream of the store reads in full: none unreadable, none past the read ceiling,
+   * no skipped line (conversation-groups-phone §3: "already a project?" must not come from a partial peer copy).
+   * Says nothing about replication lag: a record a peer has not sent yet is unknowable here.
+   */
+  peerStreamsReadComplete(store: string): boolean {
+    const reg = this.registry.getByStore(store);
+    if (!reg) return false;
+    const kind = reg.kind as JournalKind;
+    // Its own directory read: only "no peers directory" (ENOENT) means no peers; any other listing error is incomplete.
+    const listing = (): string | null => {
+      try { return (this.io.readdirSync(this.peersDir()) as string[]).slice().sort().join('|'); } catch (e) {
+        /* @silent-fallback-ok: answered as incomplete (refuses), except a missing directory = no peers */
+        return (e as NodeJS.ErrnoException)?.code === 'ENOENT' ? '' : null;
+      }
+    };
+    const before = listing();
+    if (before === null) return false;
+    for (const file of this.peerStreamFiles(kind)) {
+      let size = 0;
+      try { size = this.io.statSync(file).size; } catch { /* @silent-fallback-ok: answered as incomplete, which refuses */ return false; }
+      if (size === 0) continue;
+      const read = readTailTolerant(this.io, file, Number.MAX_SAFE_INTEGER, READ_BYTE_CEILING);
+      if (read.truncated || read.skippedCorrupt > 0 || read.entries.length === 0) return false;
+    }
+    // A replica file added or renamed while reading: list again and compare.
+    return listing() === before;
+  }
+
+  /**
    * The same stamp the fold cache uses, for a caller that caches something derived from this store:
    * it changes whenever any own or peer stream file of the store does. Null = unknown, do not cache.
    */

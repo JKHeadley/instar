@@ -17,9 +17,9 @@
 import crypto from 'node:crypto';
 import fs from 'node:fs';
 import path from 'node:path';
-import { isGrantAccessEvent, parseSignedEvents, validateMachineEvent, type MachineEvent, type RequestEvent } from './TeamAccessEvents.js';
+import { isGrantAccessEvent, parseSignedEvents, validateMachineEvent, type ComputerBindEvent, type MachineEvent, type RequestEvent } from './TeamAccessEvents.js';
 import {
-  canonicalStringFromHash, ledgerViewKey, receiptPayload, sha256Hex, verifyMachineSignature,
+  canonicalStringFromHash, deviceKeyHashOf, ledgerViewKey, receiptPayload, sha256Hex, verifyMachineSignature,
   type LedgerView, type MachineKeyLookup, type MachineSignature, type MachineSigner,
 } from './AppRecordSignatures.js';
 import { DEVICE_TIME_WINDOW_MS, isStrictLowSDer, parseDevicePublicKey } from './MobileDeviceKeys.js';
@@ -86,7 +86,22 @@ export interface TeamAccessState {
    * allowance still counts it.
    */
   browserLinks: Map<string, Extract<MachineEvent, { type: 'browser-bind' }> & { unbound?: true }>;
+  /**
+   * Members' computers that joined from a team invite (member-browser-any-computer §3.4), by key hash,
+   * with the signer of the bind row. A forgotten one stays, marked `unbound`, so allowances still count it.
+   */
+  computerLinks: Map<string, ComputerBindEvent & { unbound?: true; signer: string; at: string }>;
+  /** Every `computer-renew`, `computer-adopt` and `computer-limits` row's event with its signer and signed time (§3.5). */
+  computerRows: ComputerRowEvent[];
+  /** The owner's `origin-gone` cuts: a stream's rows past `throughSeq` count only if they narrow. */
+  goneCuts: Array<{ machine: string; incarnation: string; throughSeq: number }>;
   highestSeq: number;
+}
+
+/** One computer-row event as the computer views read it: who signed it, when, and where it sits in its stream. */
+export interface ComputerRowEvent {
+  event: Extract<MachineEvent, { type: 'computer-renew' | 'computer-adopt' | 'computer-limits' }>;
+  signer: string; at: string; origin: string; incarnation: string; seq: number; hash: string;
 }
 
 export type LogHealth = 'absent' | 'ok' | 'unreadable';
@@ -94,7 +109,7 @@ export type LogHealth = 'absent' | 'ok' | 'unreadable';
 export interface ConfinedEntry { ref: string; placeKey?: string; personKey?: string }
 
 export function emptyState(): TeamAccessState {
-  return { on: false, ownerPersonKey: null, people: new Map(), grants: new Map(), owned: new Map(), bindings: new Map(), browserLinks: new Map(), highestSeq: 0 };
+  return { on: false, ownerPersonKey: null, people: new Map(), grants: new Map(), owned: new Map(), bindings: new Map(), browserLinks: new Map(), computerLinks: new Map(), computerRows: [], goneCuts: [], highestSeq: 0 };
 }
 
 /** The bytes a machine signs for a row. */
@@ -345,13 +360,25 @@ function applyRequestEvent(s: TeamAccessState, e: RequestEvent): void {
       return;
     }
     case 'grant-remove': s.grants.get(e.personKey)?.delete(e.ref); return;
-    case 'origin-gone': return; // read by the merge rules
+    case 'origin-gone': s.goneCuts.push({ machine: e.machine, incarnation: e.incarnation, throughSeq: e.throughSeq }); return; // also read by the merge rules
   }
 }
 
-function applyMachineEvent(s: TeamAccessState, e: MachineEvent): void {
+function applyMachineEvent(s: TeamAccessState, e: MachineEvent, row?: MachineRow): void {
   switch (e.type) {
-    case 'phone-bind': s.bindings.set(e.keyHash, e.boundTo); return;
+    // A joined computer (member-browser-any-computer §3.4): first bind wins across phones, linked and
+    // joined computers alike, and the key must be the one the row names.
+    case 'computer-bind':
+      if (row && deviceKeyHashOf(e.browserPublicKey) === e.keyHash && !s.bindings.has(e.keyHash) && !s.browserLinks.has(e.keyHash) && !s.computerLinks.has(e.keyHash)) {
+        s.bindings.set(e.keyHash, e.boundTo);
+        s.computerLinks.set(e.keyHash, { ...e, signer: row.machineSig.machineId, at: row.at });
+      }
+      return;
+    case 'computer-renew': case 'computer-adopt': case 'computer-limits':
+      if (row) s.computerRows.push({ event: e, signer: row.machineSig.machineId, at: row.at, origin: originOf(row), incarnation: row.incarnation ?? UNCHAINED_INCARNATION, seq: row.seq, hash: rowHash(row) });
+      return;
+    // A phone binding never takes over a joined computer's key (first bind wins, member-browser-any-computer §3.4).
+    case 'phone-bind': if (!s.computerLinks.has(e.keyHash)) s.bindings.set(e.keyHash, e.boundTo); return;
     // A linked computer is bound to its person here; every reader re-checks `signed` against the
     // linking phone's key before trusting it (documents only, never team-log authority).
     // First link wins: a key already bound (a phone, or an earlier link) is never re-bound.
@@ -359,6 +386,8 @@ function applyMachineEvent(s: TeamAccessState, e: MachineEvent): void {
     case 'browser-unbind': {
       const l = s.browserLinks.get(e.keyHash);
       if (l && !l.unbound && l.deviceId === e.deviceId) { s.bindings.delete(e.keyHash); s.browserLinks.set(e.keyHash, { ...l, unbound: true }); }
+      const c = s.computerLinks.get(e.keyHash);
+      if (c && !c.unbound && c.deviceId === e.deviceId) { s.bindings.delete(e.keyHash); s.computerLinks.set(e.keyHash, { ...c, unbound: true }); }
       return;
     }
     case 'conversation-own': s.owned.set(e.ref, e.personKey); return;
@@ -409,7 +438,7 @@ export function foldRowInto(s: TeamAccessState, row: TeamAccessRow, verify: (row
   s.highestSeq = Math.max(s.highestSeq, row.seq);
   if (verify(row) !== 'verified') return;
   if (row.kind === 'machine') {
-    for (const e of knownEvents(row)) applyMachineEvent(s, e);
+    for (const e of knownEvents(row)) applyMachineEvent(s, e, row);
     return;
   }
   if (s.bindings.get(row.signedOrigin.keyHash) !== 'owner') return;

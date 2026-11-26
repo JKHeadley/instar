@@ -17,6 +17,8 @@ import express from 'express';
 import request from 'supertest';
 import { afterEach, describe, expect, it } from 'vitest';
 
+import { bindTrial, importTrialPacket, receivedTrial } from '../../src/localVerify/smallPeerReceipts.js';
+import { trialDirectory } from '../../src/localVerify/smallPeerWatchdog.js';
 import { SafeFsExecutor } from '../../src/core/SafeFsExecutor.js';
 import { LocalVerifyService, type PrView } from '../../src/localVerify/LocalVerifyService.js';
 import { computePolicyHash } from '../../src/localVerify/policy.js';
@@ -51,7 +53,7 @@ function ctx(stateDir: string, svc: LocalVerifyService, holdsLease: boolean): Ro
   } as never;
 }
 
-function peerService(prRead?: (pr: number) => Promise<PrView | null>) {
+function peerService(prRead?: (pr: number) => Promise<PrView | null>, machineId = 'peer1') {
   const stateDir = fs.realpathSync(fs.mkdtempSync(path.join(os.tmpdir(), 'lvpeerroutes-')));
   dirs.push(stateDir);
   const views: Record<number, PrView> = { 3: { author: { login: 'EchoOfDawn' }, isCrossRepository: false, headRefName: 'echo/x', headRefOid: sha('a'), baseRefName: 'main', baseRefOid: sha('b') } };
@@ -59,7 +61,7 @@ function peerService(prRead?: (pr: number) => Promise<PrView | null>) {
   const svc = new LocalVerifyService({
     repo: REPO, stateDir, agentHome: '/agents/echo', expectedGhLogin: 'EchoOfDawn', operatorGhLogin: 'JKHeadley',
     verifierVersion: '1.0.0', nodePath: '/usr/bin/node', mainEntry: '/opt/instar/dist/localVerify/runVerifyMain.js',
-    remoteUrl: 'https://github.com/JKHeadley/instar.git', machineId: 'peer1', nodeVersion: 'v24',
+    remoteUrl: 'https://github.com/JKHeadley/instar.git', machineId, nodeVersion: 'v24',
     protectedList: ['.github/'], baseEnv: { PATH: '/usr/bin' }, nice: false, peerOnly: true,
   }, {
     prView: (pr) => prRead ? prRead(pr) : Promise.resolve(views[pr] ?? null),
@@ -102,6 +104,59 @@ const TEST_PEER_SIGNER: MachineSigner = {
 const TEST_PEER_PINS: MachineKeyLookup = (_m, hash) => (hash === TEST_PEER_HASH ? { status: 'ok', publicKeyPem: TEST_PEER_KEYS.publicKey } : { status: 'unknown' });
 
 describe('peer verifier routes (integration, real HTTP)', () => {
+  it('redelivers a signed capacity receipt after disconnect and accepts a repeated acknowledgement', async () => {
+    const p = peerService();
+    const coordinator = peerService(undefined, 'coord');
+    const ck = generateSigningKeyPair();
+    const hash = signerKeyHashOf(ck.publicKey);
+    const signer: MachineSigner = {machineId: ()=>'coord', signerKeyHash:()=>hash,
+      sign: payload=>({machineId:'coord',signerKeyHash:hash,sig:edSign(payload,ck.privateKey)})};
+    p.svc.setPeerWiring({signer:TEST_PEER_SIGNER,keyLookupFactory:()=> (machineId,key)=>
+      machineId==='coord' && key===hash ? {status:'ok',publicKeyPem:ck.publicKey} : {status:'unknown'}});
+    const url = await listen(appFor(ctx(p.stateDir,p.svc,false)));
+    const client = makePeerClient(AUTH,'echo');
+    const target = {machineId:'peer1',url};
+    bindTrial(p.stateDir,runBody(),'peer1');
+    bindTrial(coordinator.stateDir,runBody(),'peer1',true);
+    const receipt = {attemptId:ATT, outcome:'capacity', reason:'memory', elapsedMs:487,
+      minimumAvailableBytes:3200, peakRssBytes:1200, samples:1, cleanupProven:true, reserveBreached:false};
+    fs.writeFileSync(path.join(trialDirectory(p.stateDir, ATT),'receipt.json'),JSON.stringify(receipt));
+    expect((await request(url).get('/local-verify/trial-receipts?coordinator=coord')).status).toBe(401);
+    const first = (await client.trialReceipts!(target,'coord',[ATT]))[0];
+    const {ack} = importTrialPacket(coordinator.stateDir,first,'peer1',Date.now(),TEST_PEER_PINS,signer);
+    expect((await client.trialReceipts!(target,'coord',[ATT]))[0].receipt).toEqual(receipt);
+    expect(await client.acknowledgeTrial!(target,{...ack,packetDigest:'d'.repeat(64)})).toBe(false);
+    expect(await client.acknowledgeTrial!(target,ack)).toBe(true);
+    expect(await client.acknowledgeTrial!(target,ack)).toBe(true);
+    expect(await client.trialReceipts!(target,'coord',[ATT])).toEqual([]);
+    expect(receivedTrial(coordinator.stateDir,ATT)?.receipt).toEqual(receipt);
+    p.svc.shutdown();
+    coordinator.svc.shutdown();
+  });
+  it('a small verifier refuses unmarked work, main arbitration and unsupported trial policies over HTTP', async () => {
+    const machineId = 'm_' + '3'.repeat(32);
+    const p = peerService(undefined, machineId);
+    const policy = { version: 1, machineId, collector: 'darwin-vm-stat-native-pressure-v1',
+      floorBytes: 8192, reserveBytes: 4096, recoveryMs: 3000, unitWorkers: 2, integration: 1, e2e: 1 };
+    p.svc.setPeerWiring({ smallPeerTrial: () => policy });
+    p.svc.setLaneShards(() => ({ unitWorkers: 2, integration: 1, e2e: 1 }));
+    const url = await listen(appFor(ctx(p.stateDir, p.svc, false)));
+    const headers = { Authorization: `Bearer ${AUTH}` };
+    const run = (b: object) => request(url).post('/local-verify/peer-run').set(headers).send(b);
+    expect((await run(runBody())).body.reason).toBe('peer-disabled');
+    expect((await run({ ...runBody(), kind: 'main-arbitration', pr: 0, headSha: sha('b'), smallPeerTrial: policy })).status).toBe(400);
+    expect((await run({ ...runBody(), smallPeerTrial: { ...policy, e2e: 3 } })).status).toBe(400);
+    expect((await run({ ...runBody(), smallPeerTrial: { ...policy, unitWorkers: 1 } })).body.reason).toBe('peer-disabled');
+    expect((await run({ ...runBody(), smallPeerTrial: { ...policy, floorBytes: 9999 } })).body.reason).toBe('peer-disabled');
+    expect((await request(url).post('/local-verify/peer-trial-lease').set(headers).send({
+      attemptId: ATT, leaseEpoch: 7, coordinatorMachineId: 'coord',
+    })).status).toBe(409);
+    p.svc.setPeerWiring({ smallPeerTrial: () => null });
+    expect((await run(runBody())).body.reason).toBe('peer-disabled');
+    expect(p.children).toHaveLength(0);
+    p.svc.shutdown();
+  });
+
   it('refuses a new peer attempt over HTTP while installed bytes still await a restart', async () => {
     const p = peerService();
     let activation: string | null = new Date().toISOString();
@@ -242,6 +297,44 @@ describe('peer verifier routes (integration, real HTTP)', () => {
     expect(await client.status(peer)).toMatchObject({ inFlight: { attemptId: ATT, pr: 0 }, slotBusy: true });
     expect(await client.result(peer, ATT)).toEqual({ state: 'running' });
     p.svc.shutdown();
+  });
+
+  it('a peer-run request with the import-related fields is accepted over HTTP and reaches the run child; a malformed one is refused whole (spec local-verify-import-related-rerun.md)', async () => {
+    const headers = { Authorization: `Bearer ${AUTH}`, 'X-Instar-AgentId': 'echo' };
+    const test = { test: 's flaky', at: '2026-10-20T09:00:00.000Z', line: 'Error: main boom', setHash: 'ab'.repeat(32), runLog: 'cd'.repeat(16) + '.log' };
+    const isolation = { allowed: true, notCleanOnGreenMain: [], importRelatedRerun: true, flakyOnMain: [{ file: 'tests/unit/x.test.ts', tests: [test] }] };
+    const childIsolation = (file: string) => (JSON.parse(fs.readFileSync(file, 'utf-8')) as { isolation: unknown }).isolation;
+
+    // The peer's own switch is on: the coordinator's block reaches the run child as sent.
+    const on = peerService();
+    on.svc.setImportRelatedRerunEnabled(() => true);
+    const urlOn = await listen(appFor(ctx(on.stateDir, on.svc, false)));
+    expect((await request(urlOn).post('/local-verify/peer-run').set(headers).send({ ...runBody(), isolation })).status).toBe(202);
+    expect(on.children).toHaveLength(1);
+    expect(childIsolation(on.children[0])).toEqual(isolation);
+    on.svc.shutdown();
+
+    // The peer's own switch is off (the default): accepted, and the rule is passed off with an empty list.
+    const off = peerService();
+    const urlOff = await listen(appFor(ctx(off.stateDir, off.svc, false)));
+    expect((await request(urlOff).post('/local-verify/peer-run').set(headers).send({ ...runBody(), isolation })).status).toBe(202);
+    expect(childIsolation(off.children[0])).toEqual({ allowed: true, notCleanOnGreenMain: [], importRelatedRerun: false, flakyOnMain: [] });
+    off.svc.shutdown();
+
+    // Malformed: an unknown key inside isolation, a list over its bound, a name over its bound. Each is a 400 and starts nothing.
+    const bad = peerService();
+    bad.svc.setImportRelatedRerunEnabled(() => true);
+    const urlBad = await listen(appFor(ctx(bad.stateDir, bad.svc, false)));
+    for (const broken of [
+      { ...isolation, surprise: true },
+      { ...isolation, flakyOnMain: Array.from({ length: 201 }, (_, i) => ({ file: `tests/unit/f${i}.test.ts`, tests: [test] })) },
+      { ...isolation, flakyOnMain: [{ file: 'tests/unit/x.test.ts', tests: [{ ...test, test: 'n'.repeat(301) }] }] },
+      { ...isolation, importRelatedRerun: 'yes' },
+    ]) {
+      expect((await request(urlBad).post('/local-verify/peer-run').set(headers).send({ ...runBody(), isolation: broken })).status).toBe(400);
+    }
+    expect(bad.children).toHaveLength(0);
+    bad.svc.shutdown();
   });
 
   it('the lease holder refuses peer-run; a malformed body is a 400; a bad attempt id is a 400', async () => {

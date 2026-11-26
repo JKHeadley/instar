@@ -1,0 +1,15 @@
+{
+  "version": 2,
+  "slug": "local-verify-small-peer-trial",
+  "sessionId": "ed99de61-509a-4e0d-908f-801b299fef73",
+  "timestamp": "2026-11-25T02:55:24.582Z",
+  "artifactPath": "upgrades/side-effects/local-verify-small-peer-trial.md",
+  "artifactSha256": "95ef2a43944184cd212ef23fe4deb87aabcfb4d93c3d8b364d8beeffe1076e7c",
+  "specPath": "docs/specs/local-verify-small-peer-trial.md",
+  "coveredFiles": [
+    "src/localVerify/LocalVerifyService.ts"
+  ],
+  "phase": "complete",
+  "secondPass": "true",
+  "reviewerConcurred": true
+}

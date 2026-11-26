@@ -40,6 +40,13 @@ export interface LocalLeaseStoreDeps {
 export class LocalLeaseStore implements LeaseStore {
   private readonly d: LocalLeaseStoreDeps;
   private cached: LeaseRecord | null = null;
+  /**
+   * planned-restart-keeps-lead §1 step 4 — the pending marker: the id of the restart episode whose
+   * window renewal this record is. A record carrying it is a *window lease* at the next boot (rule 1b
+   * applies); cleared by the confirmed boot renewal, by relinquish and at an episode's end. Carried
+   * through every write path (casWrite, refresh, relinquish) so no write drops it mid-episode.
+   */
+  private pendingEpisodeId: string | null = null;
   private loaded = false;
 
   constructor(deps: LocalLeaseStoreDeps) {
@@ -54,10 +61,11 @@ export class LocalLeaseStore implements LeaseStore {
     if (this.loaded) return;
     try {
       if (fs.existsSync(this.d.filePath)) {
-        const raw = JSON.parse(fs.readFileSync(this.d.filePath, 'utf-8')) as { lease?: unknown };
+        const raw = JSON.parse(fs.readFileSync(this.d.filePath, 'utf-8')) as { lease?: unknown; pendingEpisodeId?: unknown };
         const lease = raw?.lease as LeaseRecord | undefined;
         if (lease && typeof lease.epoch === 'number' && typeof lease.holder === 'string') {
           this.cached = lease;
+          this.pendingEpisodeId = typeof raw.pendingEpisodeId === 'string' && raw.pendingEpisodeId ? raw.pendingEpisodeId : null;
         }
       }
     } catch {
@@ -69,13 +77,14 @@ export class LocalLeaseStore implements LeaseStore {
     this.loaded = true;
   }
 
-  private persist(lease: LeaseRecord | null): void {
+  private persist(lease: LeaseRecord | null, pendingEpisodeId: string | null = this.pendingEpisodeId): void {
     this.cached = lease;
+    this.pendingEpisodeId = lease ? pendingEpisodeId : null;
     try {
       const dir = path.dirname(this.d.filePath);
       if (!fs.existsSync(dir)) fs.mkdirSync(dir, { recursive: true });
       const tmp = `${this.d.filePath}.${process.pid}.tmp`;
-      fs.writeFileSync(tmp, JSON.stringify({ lease }, null, 2));
+      fs.writeFileSync(tmp, JSON.stringify(this.pendingEpisodeId ? { lease, pendingEpisodeId: this.pendingEpisodeId } : { lease }, null, 2));
       fs.renameSync(tmp, this.d.filePath); // atomic swap
     } catch (err) {
       this.log(`persist failed: ${err instanceof Error ? err.message : String(err)}`);
@@ -92,6 +101,31 @@ export class LocalLeaseStore implements LeaseStore {
   read(): { lease: LeaseRecord | null; epoch: number } {
     this.load();
     return { lease: this.cached, epoch: this.cached?.epoch ?? 0 };
+  }
+
+  /** The pending marker on the stored record, or null (planned-restart-keeps-lead §1 step 4). */
+  readPendingEpisodeId(): string | null {
+    this.load();
+    return this.cached ? this.pendingEpisodeId : null;
+  }
+
+  /** Refresh the same-epoch lease AND set or clear the pending marker in the same atomic write. */
+  refreshWithPending(lease: LeaseRecord, pendingEpisodeId: string | null): boolean {
+    this.load();
+    const committedEpoch = this.cached?.epoch ?? 0;
+    if (committedEpoch > lease.epoch) {
+      this.log(`refresh declined: superseded (committed ${committedEpoch} > ${lease.epoch})`);
+      return false;
+    }
+    this.persist(lease, pendingEpisodeId);
+    return true;
+  }
+
+  /** Clear the pending marker without touching the lease (an episode ended, nothing to renew yet). */
+  clearPendingEpisodeId(): void {
+    this.load();
+    if (!this.cached || !this.pendingEpisodeId) return;
+    this.persist(this.cached, null);
   }
 
   casWrite(candidate: LeaseRecord): { ok: boolean; observed: { lease: LeaseRecord | null; epoch: number } } {
@@ -135,7 +169,7 @@ export class LocalLeaseStore implements LeaseStore {
     this.load();
     if (!this.cached) return;
     const expired: LeaseRecord = { ...this.cached, expiresAt: new Date(0).toISOString() };
-    this.persist(expired); // keep epoch + holder as the floor; expiresAt deep-past
+    this.persist(expired, null); // keep epoch + holder as the floor; expiresAt deep-past; a relinquished lease is no window lease
     this.log(`local self-lease forced expired (epoch ${expired.epoch} retained as floor) → relinquished`);
   }
 }

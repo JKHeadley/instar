@@ -63,6 +63,7 @@ describe('E2E: Dispatch + Update + Feedback lifecycle', () => {
       stateDir: project.stateDir,
       port: 0,
       authToken: AUTH_TOKEN,
+      dashboardPin: '482915', // applying an unsigned dispatch needs the owner PIN (SEC-153)
       version: '0.1.12',
       sessions: {
         tmuxPath: '/usr/bin/tmux',
@@ -213,7 +214,8 @@ describe('E2E: Dispatch + Update + Feedback lifecycle', () => {
     // Apply the security dispatch (most critical)
     const applyRes = await request(app)
       .post('/dispatches/dsp-e2e-security/apply')
-      .set('Authorization', `Bearer ${AUTH_TOKEN}`);
+      .set('Authorization', `Bearer ${AUTH_TOKEN}`)
+      .send({ pin: '482915' });
 
     expect(applyRes.status).toBe(200);
     expect(applyRes.body.applied).toBe(true);
@@ -332,10 +334,12 @@ describe('E2E: Dispatch + Update + Feedback lifecycle', () => {
     // Apply remaining two
     await request(app)
       .post('/dispatches/dsp-e2e-strategy/apply')
-      .set('Authorization', `Bearer ${AUTH_TOKEN}`);
+      .set('Authorization', `Bearer ${AUTH_TOKEN}`)
+      .send({ pin: '482915' });
     await request(app)
       .post('/dispatches/dsp-e2e-behavioral/apply')
-      .set('Authorization', `Bearer ${AUTH_TOKEN}`);
+      .set('Authorization', `Bearer ${AUTH_TOKEN}`)
+      .send({ pin: '482915' });
 
     // Verify zero pending
     const pendingRes = await request(app)
@@ -386,7 +390,8 @@ describe('E2E: Dispatch + Update + Feedback lifecycle', () => {
       }),
     });
 
-    // Re-create dispatch manager with polling enabled
+    // Re-create dispatch manager with polling enabled (after an earlier poll: a first poll only records history, SEC-153)
+    fs.writeFileSync(dispatchFile.replace('.json', '-last-check.json'), JSON.stringify({ lastCheck: '2026-02-20T00:00:00.000Z' }));
     const pollingDispatches = new DispatchManager({
       enabled: true,
       dispatchUrl: 'https://dawn.bot-me.ai/api/instar/dispatches',

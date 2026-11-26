@@ -1,0 +1,29 @@
+{
+  "ts": "2026-11-21T20:54:56.598Z",
+  "slug": "home-listener-phone-limits",
+  "suggestedTier": 2,
+  "declaredTier": 1,
+  "riskFloor": 2,
+  "riskFloorReasons": [
+    "new capability: new route (router.<verb>() added",
+    "new capability: new exported class / subsystem added"
+  ],
+  "belowFloor": true,
+  "files": 5,
+  "loc": 296,
+  "scope": {
+    "basis": "staged-in-scope-paths-including-deleted",
+    "files": [
+      "src/core/UpdateChecker.ts",
+      "src/data/awareness/same-network-first-phone.md",
+      "src/server/phoneSetupRoutes.ts",
+      "src/server/sameNetworkListener.ts",
+      "src/server/sameNetworkRefusals.ts"
+    ],
+    "addedLines": 279,
+    "deletedLines": 17
+  },
+  "causalAutopsy": null,
+  "classClosure": null,
+  "verdict": "pass"
+}

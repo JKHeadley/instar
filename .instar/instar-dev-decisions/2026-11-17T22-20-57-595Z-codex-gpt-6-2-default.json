@@ -1,0 +1,36 @@
+{
+  "ts": "2026-11-17T22:20:57.595Z",
+  "slug": "codex-gpt-6-2-default",
+  "suggestedTier": 2,
+  "declaredTier": 1,
+  "riskFloor": 1,
+  "riskFloorReasons": [],
+  "belowFloor": false,
+  "files": 15,
+  "loc": 288,
+  "scope": {
+    "basis": "staged-in-scope-paths-including-deleted",
+    "files": [
+      "scripts/model-registry-freshness.manifest.json",
+      "src/core/CodexCliIntelligenceProvider.ts",
+      "src/core/ModelTierEscalation.ts",
+      "src/core/SessionManager.ts",
+      "src/core/TopicProfileResolver.ts",
+      "src/core/codexCapabilities.ts",
+      "src/core/crossModelReviewer.ts",
+      "src/core/frameworkSessionLaunch.ts",
+      "src/feedback-factory/drain/FeedbackReadinessArbiter.ts",
+      "src/feedback-factory/execute/independentReview.ts",
+      "src/feedback-factory/triage/FeedbackTriageArbiter.ts",
+      "src/providers/adapters/openai-codex/models.ts",
+      "src/providers/adapters/openai-codex/transport/agenticSessionHeadless.ts",
+      "src/providers/adapters/openai-codex/transport/oneShotCompletion.ts",
+      "src/providers/adapters/openai-codex/transport/structuredOneShot.ts"
+    ],
+    "addedLines": 228,
+    "deletedLines": 60
+  },
+  "causalAutopsy": null,
+  "classClosure": null,
+  "verdict": "pass"
+}

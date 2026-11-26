@@ -232,3 +232,12 @@ describe('MemoryInboundTracker reach seam', () => {
     expect(seen).toEqual(['slack:U9']);
   });
 });
+
+describe('owner identities read plainly (2026-11-20 dashboard audit)', () => {
+  it('a profile key never shows its internal id', async () => {
+    const { plainKey } = await import('../../src/users/ReachablePeople.js');
+    expect(plainKey('user:telegram-7812716706')).toBe('your Instar profile');
+    expect(plainKey('imessage:+15550001111')).toBe('iMessage +15550001111');
+    expect(plainKey('telegram:42')).toBe('Telegram 42');
+  });
+});
