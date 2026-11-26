@@ -85,7 +85,9 @@ export interface TelegramOriginRuntimeOptions {
   onNoticeState: (state: OutageNoticeState) => void;
   /** Test seam for the identical worker implementation, built in an isolated directory. */
   workerUrl?: URL;
-  noticeProcess?: { role: 'owner' | 'client'; socketPath: string };
+  noticeProcess?: { role: 'owner' | 'client'; socketPath: string;
+    // Dark until deployment can prove both roles use this partition across restart and rollback.
+    partitionedRestartReserve?: boolean };
   /** Independently refreshed credential-owner lease, not origin-store health. */
   ownsCapacityLease?: () => boolean;
   /** lease-freshness-lapse-retry — the lease coordinator's one-snapshot verdict and renewal gap. When present it is
@@ -201,18 +203,28 @@ export class TelegramOriginRuntime {
   static readonly LEASE_RETRY_WAKES_PER_LIFETIME = 4;
   private constructor(readonly options: TelegramOriginRuntimeOptions, public store: OriginStore, public spool: OriginStore) {
     requirePreparedOriginEgress();
+    const partitioned = options.noticeProcess?.partitionedRestartReserve === true;
+    const makeCapacity = (startBudget?: 1 | 9) => new OriginEgressCapacity({
+      ownerBootId: this.ownerBootId, startBudget,
+      accountIds: () => [options.bot, ...(options.additionalBots ?? [])].filter(bot => bot.token).map(bot => bot.accountId),
+      ownsLease: options.ownsCapacityLease ?? (() => !options.noticeProcess),
+      leaseFreshness: options.leaseFreshness,
+    });
     if (options.noticeProcess?.role === 'client') {
       const client = originCapacityClient(options.noticeProcess.socketPath);
+      const reserve = partitioned ? (this.capacityOwner = makeCapacity(1)) : null;
       this.capacity = {
-        reserve: async accountId => this.closed ? null : client.reserve(accountId),
-        consume: async grant => !this.closed && await client.consume(grant) && !this.closed,
+        reserve: async accountId => {
+          if (this.closed) return null;
+          if (!reserve) return client.reserve(accountId);
+          const result = await client.reserveWithAvailability(accountId);
+          return !this.closed && result.absent ? reserve.reserve(accountId) : result.grant;
+        },
+        consume: async grant => !this.closed && (reserve && grant.ownerBootId === this.ownerBootId
+          ? await reserve.consume(grant) : await client.consume(grant)) && !this.closed,
       };
-    }
-    else {
-      this.capacity = this.capacityOwner = new OriginEgressCapacity({ ownerBootId: this.ownerBootId,
-        accountIds: () => [options.bot, ...(options.additionalBots ?? [])].filter(bot => bot.token).map(bot => bot.accountId),
-        ownsLease: options.ownsCapacityLease ?? (() => !options.noticeProcess),
-        leaseFreshness: options.leaseFreshness });
+    } else {
+      this.capacity = this.capacityOwner = makeCapacity(partitioned ? 9 : undefined);
       this.capacityReadyAt = Date.now() + ORIGIN_CAPACITY_WINDOW_MS;
     }
     this.poolAudit = new OriginPoolAudit({ shardIds: () => [options.identity.originMachineId], readShard: (_, query) => this.store.listOrigins(query),
@@ -226,6 +238,7 @@ export class TelegramOriginRuntime {
       display: options.display, authorize: options.authorize, wireParams: options.wireParams, holdsLease: options.holdsLease, spoolEvidence: record => this.spool.putEvidence(record),
       authorizeOrigin: options.authorizeOrigin,
       capacity: this.capacity,
+      shortCapacityRetry: partitioned && options.noticeProcess?.role === 'client',
       reviewLegacyRecovery: options.reviewLegacyRecovery,
       peerEvidence: options.peerEvidence, diagnoseUnknown: options.diagnoseUnknown,
       diagnosticMode: options.diagnosticMode,
@@ -242,7 +255,8 @@ export class TelegramOriginRuntime {
         if (leaseRefusal || reason === CREDENTIAL_CAPACITY_UNAVAILABLE) {
           this.recordSendHold({ operationId, reason, destination, deadlineAt });
         }
-        if (leaseRefusal) this.armLeaseLapseRetry();
+        if (leaseRefusal || (partitioned && options.noticeProcess?.role === 'client' &&
+            reason === CREDENTIAL_CAPACITY_UNAVAILABLE)) this.armLeaseLapseRetry();
         // A lease refusal is expected to clear within seconds and must not post "a reply needs delivery attention"
         // before any self-heal ran (Self-Heal Before Notify); a hold that persists is reported by the five-minute
         // durable scan (record-only) and handed back at the §2(b) bound.
@@ -907,7 +921,9 @@ export class TelegramOriginRuntime {
       catch (error) { console.warn('[telegram-origin] lease retry pass held:', error instanceof Error ? error.message : 'unavailable'); }
     }
     if (this.closed) { this.#leaseRetry = null; return; }
-    const remaining = this.service.heldOperationIdsByReason(ORIGIN_LEASE_REFUSAL_REASONS).length;
+    const reasons = this.options.noticeProcess?.role === 'client' && this.options.noticeProcess.partitionedRestartReserve
+      ? [...ORIGIN_LEASE_REFUSAL_REASONS, CREDENTIAL_CAPACITY_UNAVAILABLE] : ORIGIN_LEASE_REFUSAL_REASONS;
+    const remaining = this.service.heldOperationIdsByReason(reasons).length;
     const last = step >= schedule.length - 1;
     if (remaining === 0 || last) {
       this.#leaseRetry = null;

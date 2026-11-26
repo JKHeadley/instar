@@ -4,9 +4,11 @@
 import { afterEach, beforeAll, describe, expect, it, vi } from 'vitest';
 import { generateKeyPairSync, randomUUID } from 'node:crypto';
 import { setTimeout as delay } from 'node:timers/promises';
+import { join } from 'node:path';
+import { listenOriginNotices } from '../../../src/messaging/telegram-origin/OriginNoticeIpc.js';
 import type { OriginSessionLifecycle } from '../../../src/messaging/telegram-origin/OriginSessionRegistry.js';
 import { TelegramOriginRuntime } from '../../../src/messaging/telegram-origin/TelegramOriginRuntime.js';
-import type { LeaseFreshness } from '../../../src/messaging/telegram-origin/OriginEgressCapacity.js';
+import { OriginEgressCapacity, type LeaseFreshness } from '../../../src/messaging/telegram-origin/OriginEgressCapacity.js';
 import { telegramFetch } from '../../../src/messaging/telegram-egress.js';
 import { compileOriginWorker, temporaryState, allowSlowOriginRecording, SLOW_DISK_STORE_REQUEST_TIMEOUT_MS } from '../../helpers/telegramOriginStore.js';
 import { fixtureOriginContentDedup } from '../../helpers/originContentDedup.js';
@@ -18,7 +20,7 @@ beforeAll(async () => { worker = await compileOriginWorker(); });
 afterEach(async () => { for (const runtime of runtimes.splice(0)) await runtime.close(); vi.restoreAllMocks(); vi.unstubAllGlobals(); });
 
 /** A fake lease: `held` is what the coordinator would answer; the reader reports the verdict from the same flag. */
-async function harness(input: { reader?: boolean; verdict?: LeaseFreshness['verdict']; schedule?: number[] } = {}) {
+async function harness(input: { reader?: boolean; verdict?: LeaseFreshness['verdict']; schedule?: number[]; restartReserve?: boolean } = {}) {
   const stateDir = temporaryState(), token = `123:${randomUUID()}`;
   const lease = { held: true, verdictWhenAway: input.verdict ?? 'renewal-lapsed' as LeaseFreshness['verdict'], gapMs: 61_500, readerCalls: 0, boundaryRefusals: 0 };
   const held = vi.fn(() => []);
@@ -31,6 +33,7 @@ async function harness(input: { reader?: boolean; verdict?: LeaseFreshness['verd
     isSessionLive: () => true, attachSessionLifecycle: value => { lifecycle = value; },
     display: () => ({}), authorize: () => true, diagnoseUnknown: async () => undefined,
     alertDestinations: () => [], getAlertPolicy: () => null, onNoticeState: () => undefined,
+    noticeProcess: input.restartReserve ? { role: 'client', socketPath: join(stateDir, 'origin-notice.sock'), partitionedRestartReserve: true } : undefined,
     holdsLease: () => lease.held,
     ownsCapacityLease: () => lease.held,
     leaseFreshness: input.reader === false ? undefined : () => {
@@ -54,7 +57,7 @@ async function harness(input: { reader?: boolean; verdict?: LeaseFreshness['verd
   const send = (text = 'The requested status.') => runtime.service.runWithSessionToken(sessionToken, () => telegramFetch(`https://api.telegram.org/bot${token}/sendMessage`, {
     method: 'POST', body: JSON.stringify({ chat_id: '-100123', message_thread_id: 42, text }), networkTimeoutMs: 15_000 }));
   const operationId = async () => (await runtime.store.listOrigins()).records[0].operation!.operationId;
-  return { runtime, lease, held, delivered, onSessionDeliveryHeld, network, send, token, operationId };
+  return { runtime, lease, held, delivered, onSessionDeliveryHeld, network, send, token, operationId, stateDir };
 }
 
 describe('a send refused at the boundary for the lease', () => {
@@ -168,4 +171,45 @@ describe('a send refused at the boundary for the lease', () => {
     expect(await h.runtime.recoverHeld()).toMatchObject({ recovered: 1 });
     expect(h.network).toHaveBeenCalledOnce();
   }, 15_000);
+});
+
+
+it('sends the retained operation within seconds when the partitioned Lifeline socket closes', async () => {
+  const h = await harness({ restartReserve: true });
+  const socket = join(h.stateDir, 'origin-notice.sock');
+  const close = await listenOriginNotices(socket, h.runtime.notifier, () => [], {
+    reserve: async () => null, consume: async () => false,
+  });
+  try {
+    await expect(h.send()).rejects.toMatchObject({ reason: 'credential-capacity-unavailable' });
+    expect(h.network).not.toHaveBeenCalled();
+  } finally {
+    await close();
+  }
+  const id = await h.operationId();
+  await vi.waitFor(() => expect(h.delivered).toHaveBeenCalledWith(expect.objectContaining({ operationId: id })),
+    { timeout: 7_000, interval: 100 });
+  expect(h.network).toHaveBeenCalledOnce();
+  expect((await h.runtime.store.getOperation(id))!.operation?.state).toBe('accepted');
+
+  const replacement = new OriginEgressCapacity({ ownerBootId: 'fixture-replacement', accountIds: () => ['123'],
+    ownsLease: () => true, startBudget: 9 });
+  const closeReplacement = await listenOriginNotices(socket, h.runtime.notifier, () => [], replacement);
+  try {
+    expect(await h.runtime.recoverHeld()).toMatchObject({ recovered: 0 });
+    expect(h.network).toHaveBeenCalledOnce();
+  } finally {
+    replacement.close();
+    await closeReplacement();
+  }
+}, 15_000);
+
+it('keeps the two partitions within the existing credential start budget', async () => {
+  let now = 0;
+  const common = { accountIds: () => ['123'], ownsLease: () => true, now: () => now };
+  const primary = new OriginEgressCapacity({ ...common, ownerBootId: 'lifeline', startBudget: 9 });
+  const reserve = new OriginEgressCapacity({ ...common, ownerBootId: 'server', startBudget: 1 });
+  now = 1250;
+  expect((await Promise.all(Array.from({ length: 10 }, () => primary.reserve('123')))).filter(Boolean)).toHaveLength(9);
+  expect((await Promise.all(Array.from({ length: 2 }, () => reserve.reserve('123')))).filter(Boolean)).toHaveLength(1);
 });

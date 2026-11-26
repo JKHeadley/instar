@@ -77,21 +77,29 @@ function validCapacityGrant(value: unknown): value is OriginCapacityGrant {
 }
 /** Nonwaiting reservations share the fixed owner's socket and bounded request
  * budget; no body, token or origin claim crosses this interface. */
-export function originCapacityClient(socketPath: string): OriginCapacityAuthority {
+export function originCapacityClient(socketPath: string): OriginCapacityAuthority & {
+  reserveWithAvailability(accountId: string): Promise<{ grant: OriginCapacityGrant | null; absent: boolean }>;
+} {
   const call = (input: object): Promise<Record<string, unknown>> => new Promise((resolve, reject) => {
     const socket = net.createConnection(socketPath); let buffer = '';
     const timer = setTimeout(() => { socket.destroy(); reject(new Error('origin-capacity: IPC timeout')); }, 1000);
-    socket.once('error', () => { clearTimeout(timer); reject(new Error('origin-capacity: IPC unavailable')); });
+    socket.once('error', error => { clearTimeout(timer); reject(error); });
     socket.once('connect', () => socket.write(JSON.stringify(input) + '\n'));
     socket.on('data', bytes => { buffer += bytes.toString('utf8'); if (Buffer.byteLength(buffer) > 1024) socket.destroy(new Error('response too large')); });
     socket.once('end', () => { clearTimeout(timer); socket.destroy(); try { resolve(JSON.parse(buffer)); } catch { reject(new Error('invalid response')); } });
   });
+  const reserveWithAvailability = async (accountId: string) => {
+    try {
+      const result = await call({ op: 'capacity-reserve', accountId });
+      return { grant: validCapacityGrant(result.grant) && result.grant.accountId === accountId ? result.grant : null, absent: false };
+    } catch (error) {
+      const code = (error as NodeJS.ErrnoException).code;
+      return { grant: null, absent: code === 'ENOENT' || code === 'ECONNREFUSED' };
+    }
+  };
   return {
-    reserve: async accountId => {
-      try { const result = await call({ op: 'capacity-reserve', accountId });
-        return validCapacityGrant(result.grant) && result.grant.accountId === accountId ? result.grant : null;
-      } catch { return null; }
-    },
+    reserveWithAvailability,
+    reserve: async accountId => (await reserveWithAvailability(accountId)).grant,
     consume: async grant => { try { return (await call({ op: 'capacity-consume', grant })).consumed === true; } catch { return false; } },
   };
 }

@@ -1,0 +1,25 @@
+{
+  "version": 2,
+  "slug": "telegram-lifeline-restart-reserve",
+  "sessionId": "dd2f336e-e8f7-40b3-97e3-09d19139bfa6",
+  "timestamp": "2026-11-26T18:03:32.922Z",
+  "artifactPath": "upgrades/side-effects/telegram-lifeline-restart-reserve.md",
+  "artifactSha256": "840f4050e1524d1c9007b9786030c1b9a6f92836b83be80ca4746d4ea11fe1e2",
+  "coveredFiles": [
+    "src/messaging/telegram-origin/OriginEgressCapacity.ts",
+    "src/messaging/telegram-origin/OriginNoticeIpc.ts",
+    "src/messaging/telegram-origin/TelegramOriginRuntime.ts",
+    "src/messaging/telegram-origin/TelegramOriginService.ts",
+    "tests/unit/telegram-origin/lease-freshness-lapse.test.ts",
+    "upgrades/eli16/telegram-lifeline-restart-reserve.md",
+    "upgrades/next/telegram-lifeline-restart-reserve.md",
+    "upgrades/side-effects/telegram-lifeline-restart-reserve.md"
+  ],
+  "phase": "complete",
+  "tier": 1,
+  "tierReasoning": "Dark runtime rehearsal; no production boot path enables the reserve.",
+  "eli16Path": "upgrades/eli16/telegram-lifeline-restart-reserve.md",
+  "sideEffectsPath": "upgrades/side-effects/telegram-lifeline-restart-reserve.md",
+  "secondPass": "not-required",
+  "reviewerConcurred": null
+}
