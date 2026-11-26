@@ -32,3 +32,9 @@ The assessor compares predecessor identity, seal identity and terminal position 
 Tests cover missing and mismatched inputs, a retained uncertain append, absence of the production frontier, and the two-machine delayed-rebind baseline. The lifecycle fixture supplies currentness only to exercise the existing local rebind behavior. Activation requires certificate production, verified prefix continuity and a fenced check-and-write spanning the journal and decision.
 
 Independent review concurred with the default-off slice and identified the risk of fetching the seal verdict and decision records separately. The mutation port accepts only a union supplied from one verified snapshot. No production implementation is installed. The eventual writer must bind the snapshot to the current mutation fence.
+
+## Successor manifest consumer
+
+The consumer checks the current generation, manifest digest, successor writer, epoch and incarnation against one supplied snapshot. It calls the decision builder only after the predecessor prefix verifies and has no unresolved intent. The result can report unavailable, pending, stale or prepared. Preparing a record does not append it or certify durability. There is no production caller.
+
+Independent second pass concurred with the dark slice. The two-machine fixture uses actual journal replication with a simulated authority and digest. It demonstrates refusal during delayed delivery and for stale authority, then distinguishes an old request from a new one after delivery. Production still requires verification of canonical bytes, a real current-generation authority, and commit-time fencing of the same snapshot.

@@ -13,6 +13,7 @@ import fs from 'node:fs';
 import path from 'node:path';
 import os from 'node:os';
 
+import { prepareChiefDecision, type ChiefDecisionActivation } from '../../src/core/ChiefDecisionFrontier.js';
 import { CoherenceJournal } from '../../src/core/CoherenceJournal.js';
 import { ReplicatedKindRegistry } from '../../src/core/ReplicatedRecordEnvelope.js';
 import { ReplicatedRecordEmitter } from '../../src/core/ReplicatedRecordEmitter.js';
@@ -89,11 +90,43 @@ describe('E2E: Chief of Staff store — production replication path + concurrent
       prior.journal.flush();
       expect(foldBindingState(ownEntries(prior.journal)).get(CK)?.bindingHlc).not.toEqual(original);
       expect(reader.peerStreamsReadComplete(CHIEF_OF_STAFF_STORE_KEY)).toBe(true);
-      expect(foldBindingState(await peerEntries(next.dir, registry, next.id)).get(CK)?.bindingHlc).toEqual(original);
+      const delayedUnion = await peerEntries(next.dir, registry, next.id);
+      expect(foldBindingState(delayedUnion).get(CK)?.bindingHlc).toEqual(original);
+
+      // Fake authority supplies a current activation and an already authenticated prefix summary.
+      // The real replication path above and below controls which records reach that snapshot.
+      const predecessor = { agent: 'echo', store: CHIEF_OF_STAFF_STORE_KEY, stream: prior.id,
+        incarnation: 'a-1', writer: prior.id, leaseEpoch: 1 };
+      const activation: ChiefDecisionActivation = {
+        generation: 2, manifestDigest: 'b'.repeat(64), successorWriter: next.id,
+        successorEpoch: 2, successorIncarnation: 'b-1',
+      };
+      const digest = 'a'.repeat(64);
+      const seal = { ...predecessor, terminalSequence: 2, digest };
+      const snapshot = (union: UnionEntry[]) => {
+        const replicaFile = path.join(next.dir, 'state', 'coherence-journal', 'peers',
+          `${prior.id}.${CHIEF_OF_STAFF_RECORD_KIND}.jsonl`);
+        const sequences = fs.readFileSync(replicaFile, 'utf8').trim().split('\n')
+          .map((line) => (JSON.parse(line) as { seq: number }).seq);
+        expect(sequences).toEqual(sequences.map((_, index) => index + 1));
+        return {
+          activation, predecessor, seal, union,
+          prefix: { stream: prior.id, incarnation: 'a-1', terminalSequence: sequences.length, digest },
+        };
+      };
+      const prepareOld = (union: UnionEntry[]) =>
+        foldBindingState(union).get(CK)?.binding?.goal === binding.goal ? 'approve-old' : null;
+      expect(prepareChiefDecision(activation, snapshot(delayedUnion), prepareOld)).toEqual({ status: 'unavailable' });
 
       expect(replicate().applied).toBe(1);
       expect(reader.peerStreamsReadComplete(CHIEF_OF_STAFF_STORE_KEY)).toBe(true);
-      expect(foldBindingState(await peerEntries(next.dir, registry, next.id)).get(CK)?.binding?.goal).toBe('Revised goal');
+      const caughtUp = snapshot(await peerEntries(next.dir, registry, next.id));
+      expect(foldBindingState(caughtUp.union).get(CK)?.binding?.goal).toBe('Revised goal');
+      expect(prepareChiefDecision(activation, caughtUp, prepareOld)).toEqual({ status: 'stale' });
+      expect(prepareChiefDecision(null, caughtUp, prepareOld)).toEqual({ status: 'unavailable' });
+      expect(prepareChiefDecision({ ...activation, generation: 3 }, caughtUp, prepareOld)).toEqual({ status: 'unavailable' });
+      expect(prepareChiefDecision(activation, caughtUp, () => 'approve-revised'))
+        .toEqual({ status: 'prepared', value: 'approve-revised' });
     } finally {
       prior.journal.close();
       next.journal.close();

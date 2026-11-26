@@ -1,0 +1,22 @@
+{
+  "version": 2,
+  "slug": "cos-wait-blocker-intake",
+  "sessionId": "017c26ed-5596-4576-9c20-20af13e4c1f8",
+  "timestamp": "2026-11-26T04:02:07.709Z",
+  "artifactPath": "upgrades/side-effects/cos-wait-blocker-intake.md",
+  "artifactSha256": "d3bad43de9d40a84446acfe80487bb4225f4594f1085a9f5bb6b5456240d0fd8",
+  "coveredFiles": [
+    "src/core/ChiefDecisionFrontier.ts",
+    "tests/e2e/chief-of-staff-store-lifecycle.test.ts",
+    "tests/unit/ChiefDecisionFrontier.test.ts",
+    "upgrades/cos-wait-blocker-intake.eli16.md",
+    "upgrades/side-effects/cos-wait-blocker-intake.md"
+  ],
+  "phase": "complete",
+  "tier": 1,
+  "tierReasoning": "Dark pure preparation helper with no production caller or write authority.",
+  "eli16Path": "upgrades/cos-wait-blocker-intake.eli16.md",
+  "sideEffectsPath": "upgrades/side-effects/cos-wait-blocker-intake.md",
+  "secondPass": "true",
+  "reviewerConcurred": true
+}

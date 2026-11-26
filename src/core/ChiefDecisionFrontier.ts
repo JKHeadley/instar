@@ -41,3 +41,47 @@ export function assessChiefDecisionFrontier(
       prefix.digest !== seal.digest) return 'unavailable';
   return seal.unresolvedOperationId === undefined ? 'current' : 'pending';
 }
+
+/** Activation identity read under the shared writer's current-generation lock. */
+export interface ChiefDecisionActivation {
+  generation: number;
+  manifestDigest: string;
+  successorWriter: string;
+  successorEpoch: number;
+  successorIncarnation: string;
+}
+
+/** The authority authenticates and captures these inputs together under the writer lock. */
+export interface ChiefDecisionSnapshot<Union> {
+  activation: ChiefDecisionActivation;
+  predecessor: ChiefDecisionPredecessor;
+  seal: VerifiedChiefDecisionSeal;
+  prefix: ChiefDecisionPrefix;
+  union: Union;
+}
+
+export type ChiefDecisionPreparation<T> =
+  | { status: 'unavailable' | 'pending' | 'stale' }
+  | { status: 'prepared'; value: T };
+
+/** Called inside the authority's lock. Prepared output has no append authority or durability. */
+export function prepareChiefDecision<Union, T>(
+  current: ChiefDecisionActivation | null,
+  snapshot: ChiefDecisionSnapshot<Union> | null,
+  prepare: (union: Union) => T | null,
+): ChiefDecisionPreparation<T> {
+  if (!current || !snapshot) return { status: 'unavailable' };
+  const { activation, predecessor, seal, prefix } = snapshot;
+  if (!Number.isSafeInteger(current.generation) || current.generation < 1 ||
+      !/^[a-f0-9]{64}$/.test(current.manifestDigest) ||
+      current.generation !== activation.generation || current.manifestDigest !== activation.manifestDigest ||
+      current.successorWriter !== activation.successorWriter || current.successorEpoch !== activation.successorEpoch ||
+      current.successorIncarnation !== activation.successorIncarnation ||
+      !Number.isSafeInteger(current.successorEpoch) || current.successorEpoch <= predecessor.leaseEpoch ||
+      current.successorIncarnation === predecessor.incarnation) return { status: 'unavailable' };
+
+  const frontier = assessChiefDecisionFrontier(predecessor, seal, prefix);
+  if (frontier !== 'current') return { status: frontier };
+  const value = prepare(snapshot.union);
+  return value === null ? { status: 'stale' } : { status: 'prepared', value };
+}

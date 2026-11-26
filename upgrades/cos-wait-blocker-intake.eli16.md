@@ -9,3 +9,5 @@ The trial also checks the source again before changing a blocker. If the project
 When the trial is first enabled, the Chief of Staff checks older waits again before adding them to the ledger. A note copied from an older check cannot open a blocker on its own.
 
 After a machine takes over, an apparently complete local copy can still be missing a checklist change. The trial requires verified journal evidence before it can advance a recorded wait. The production trial remains off while the machines gain a way to supply that evidence.
+
+The trial also checks that the snapshot came from the machine and journal generation currently allowed to make the decision. During a handover or an outage it waits. The new check is covered in a test setup, with live activation still off.
