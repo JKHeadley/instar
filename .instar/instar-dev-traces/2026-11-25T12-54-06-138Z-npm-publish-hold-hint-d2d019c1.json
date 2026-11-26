@@ -1,0 +1,22 @@
+{
+  "version": 2,
+  "slug": "npm-publish-hold-hint",
+  "sessionId": "79673ec9-ff9b-4e49-beab-ea9ff8ee8f93",
+  "timestamp": "2026-11-25T12:54:06.138Z",
+  "artifactPath": "upgrades/side-effects/npm-publish-hold-hint.md",
+  "artifactSha256": "b3691ab2b5272517fc044e03d6ee467faa12accf0ff6bf13965bbe226d083886",
+  "coveredFiles": [
+    ".github/workflows/publish.yml",
+    "docs/development-releases.md",
+    "scripts/publish-npm-release.sh",
+    "tests/unit/npm-publish-hold-hint.test.ts",
+    "tests/unit/release-install-retry.test.ts"
+  ],
+  "phase": "complete",
+  "tier": 1,
+  "tierReasoning": "Reversible, disabled-by-default release guidance without a new publishing decision.",
+  "eli16Path": "docs/eli16/npm-publish-hold-hint.eli16.md",
+  "sideEffectsPath": "upgrades/side-effects/npm-publish-hold-hint.md",
+  "secondPass": "not-required",
+  "reviewerConcurred": null
+}

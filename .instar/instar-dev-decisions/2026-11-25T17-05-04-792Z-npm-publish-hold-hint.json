@@ -1,0 +1,25 @@
+{
+  "ts": "2026-11-25T17:05:04.792Z",
+  "slug": "npm-publish-hold-hint",
+  "suggestedTier": 2,
+  "declaredTier": 1,
+  "riskFloor": 2,
+  "riskFloorReasons": [
+    "migration / fleet-rollout surface: scripts/publish-npm-release.sh touches release script (fleet publish path)",
+    "migration / fleet-rollout surface: scripts/publish-npm-release.sh touches publish script (fleet publish path)"
+  ],
+  "belowFloor": true,
+  "files": 1,
+  "loc": 25,
+  "scope": {
+    "basis": "staged-in-scope-paths-including-deleted",
+    "files": [
+      "scripts/publish-npm-release.sh"
+    ],
+    "addedLines": 25,
+    "deletedLines": 0
+  },
+  "causalAutopsy": null,
+  "classClosure": null,
+  "verdict": "pass"
+}

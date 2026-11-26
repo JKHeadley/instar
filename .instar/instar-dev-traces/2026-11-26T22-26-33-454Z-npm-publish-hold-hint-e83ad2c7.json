@@ -1,0 +1,22 @@
+{
+  "version": 2,
+  "slug": "npm-publish-hold-hint",
+  "sessionId": "226c8fd7-d30f-4ba9-b47b-e02a86950234",
+  "timestamp": "2026-11-26T22:26:33.454Z",
+  "artifactPath": "upgrades/side-effects/npm-publish-hold-hint.md",
+  "artifactSha256": "4384993dcdeec40963078a07c6dba376f6ef14629ee89f8d26d8a29980756d8c",
+  "coveredFiles": [
+    ".github/workflows/publish.yml",
+    "scripts/publish-npm-release.sh",
+    "tests/unit/npm-publish-hold-hint.test.ts",
+    "tests/unit/release-install-retry.test.ts",
+    "upgrades/side-effects/npm-publish-hold-hint.md"
+  ],
+  "phase": "complete",
+  "tier": 1,
+  "tierReasoning": "Reversible, disabled-by-default release guidance without a new publishing decision. Independent second-pass review of the protected workflow file at head 05343d0cd.",
+  "eli16Path": "docs/eli16/npm-publish-hold-hint.eli16.md",
+  "sideEffectsPath": "upgrades/side-effects/npm-publish-hold-hint.md",
+  "secondPass": "true",
+  "reviewerConcurred": true
+}
