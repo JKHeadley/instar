@@ -16,4 +16,4 @@ The push guard catches newly introduced fixture commits after a feature branch m
 
 ## Evidence
 
-The regression fails with the old guard and passes with the fix. All seven focused checks passed.
+The regression fails with the old guard and passes with the fix. The focused checks also cover conflicting remote main refs.

@@ -55,9 +55,11 @@ function git(args) {
 let baseRef;
 // A tracking feature branch can lag behind main. Exclude commits already
 // reachable from remote main even when this branch just merged them.
-for (const candidate of ['refs/remotes/upstream/main', 'refs/remotes/origin/main', '@{upstream}']) {
+// Match the release gate's order when several main refs are configured.
+for (const candidate of ['refs/remotes/JKHeadley/main', 'refs/remotes/origin/main', 'refs/remotes/upstream/main', '@{upstream}']) {
   try {
-    baseRef = git(['rev-parse', '--verify', '--quiet', candidate]).trim();
+    git(['rev-parse', '--verify', '--quiet', candidate]);
+    baseRef = candidate;
     break;
   } catch { /* try next */ }
 }

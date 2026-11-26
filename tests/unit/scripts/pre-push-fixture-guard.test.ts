@@ -117,6 +117,17 @@ describe('pre-push-fixture-guard', () => {
     expect(r.stderr).toContain('test@instar.local');
   });
 
+  it('uses the canonical main when another remote main contains the feature commit', () => {
+    git(repo, ['update-ref', 'refs/remotes/JKHeadley/main', 'HEAD']);
+    commit(repo, 'seed');
+    git(repo, ['update-ref', 'refs/remotes/origin/main', 'HEAD']);
+    git(repo, ['update-ref', 'refs/remotes/upstream/main', 'HEAD']);
+
+    const rejected = runGuard(repo);
+    expect(rejected.exitCode).toBe(1);
+    expect(rejected.stderr).toContain('"seed"');
+  });
+
   it('fails on "Initial commit" message even with a normal author', () => {
     commit(repo, 'Initial commit');
     const r = runGuard(repo);
