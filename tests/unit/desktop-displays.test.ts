@@ -1,22 +1,19 @@
-import { afterEach, describe, expect, it } from 'vitest';
+import { afterAll, afterEach, beforeEach, describe, expect, it, vi } from 'vitest';
 import fs from 'node:fs';
 import path from 'node:path';
 import crypto from 'node:crypto';
 import type { IncomingMessage } from 'node:http';
 import { parseDesktopDisplays, type DesktopHost } from '../../src/core/DesktopHost.js';
 import { DirectDesktopAccess } from '../../src/core/DirectDesktopAccess.js';
-import { MacDesktopHost } from '../../src/core/MacDesktopHost.js';
+import { MacDesktopHost, DEFAULT_MAC_DESKTOP_HELPER } from '../../src/core/MacDesktopHost.js';
 import { WindowsDesktopHost } from '../../src/core/WindowsDesktopHost.js';
 import { SafeFsExecutor } from '../../src/core/SafeFsExecutor.js';
+import { desktopHelperFixtureDir, disposeDesktopHelperFixture, pointPackagedDirAtFixture } from '../fixtures/macDesktopHelperFixture.js';
+
 
 const A = { id: '1', name: 'Built-in Retina Display', width: 3024, height: 1964, main: true };
 const B = { id: '2', name: 'LG HDR 4K (1)', width: 3840, height: 2160, main: false };
 
-function cleanupScope(filename: string): { localVerifyScopeOk?: { verifyRoot: string } } {
-  const marker = `${path.sep}.worktrees${path.sep}.verify${path.sep}`;
-  const at = filename.indexOf(marker);
-  return at < 0 ? {} : { localVerifyScopeOk: { verifyRoot: filename.slice(0, at + marker.length - 1) } };
-}
 
 describe('parseDesktopDisplays', () => {
   it('keeps a good list and cleans host text', () => {
@@ -35,15 +32,19 @@ describe('parseDesktopDisplays', () => {
 });
 
 describe.skipIf(process.platform !== 'darwin')('MacDesktopHost screens', () => {
+  beforeEach(() => pointPackagedDirAtFixture(path.dirname(DEFAULT_MAC_DESKTOP_HELPER)));
+  afterAll(disposeDesktopHelperFixture);
+
   const made: string[] = [];
   afterEach(() => {
+    vi.restoreAllMocks();
     for (const filename of made.splice(0)) {
-      SafeFsExecutor.safeUnlinkSync(filename, { operation: 'tests/unit/desktop-displays.test.ts:helper', ...cleanupScope(filename) });
-      SafeFsExecutor.safeRmSync(filename + '.logs', { recursive: true, force: true, operation: 'tests/unit/desktop-displays.test.ts:logs', ...cleanupScope(filename) });
+      SafeFsExecutor.safeUnlinkSync(filename, { operation: 'tests/unit/desktop-displays.test.ts:helper' });
+      SafeFsExecutor.safeRmSync(filename + '.logs', { recursive: true, force: true, operation: 'tests/unit/desktop-displays.test.ts:logs' });
     }
   });
   function helper(mode: 'current' | 'old' = 'current') {
-    const filename = path.resolve('dist/native', `instar-desktop-displays-test-${process.pid}-${made.length}`);
+    const filename = path.join(desktopHelperFixtureDir, `instar-desktop-displays-test-${process.pid}-${made.length}`);
     fs.mkdirSync(`${filename}.logs`, { recursive: true });
     fs.mkdirSync(path.dirname(filename), { recursive: true });
     const logs = JSON.stringify(`${filename}.logs`);
