@@ -191,6 +191,14 @@ describe('feedback factory drain — real production-adapter lifecycle', () => {
       .send({ action: 'restore', authorityId: 'feedback-readiness-default' })).status).toBe(403);
   });
 
+  it('the readiness serving account is reported on the production path; unconfigured readiness stays on the shared provider', async () => {
+    const status = await request(server.getApp()).get('/feedback-factory/drain/status').set({ Authorization: `Bearer ${AUTH}` });
+    expect(status.status).toBe(200);
+    expect(status.body.readinessAccount).toMatchObject({ mode: 'off', pinnedAccountId: null });
+    // The first test made a readiness call: with no pin and selection off it ran shared, as before.
+    expect(status.body.readinessAccount.last).toMatchObject({ state: 'shared', reason: 'selection-off' });
+  });
+
   it('authenticates cancellation and durably fences the active run', async () => {
     const app = server.getApp();
     const drain = (server as unknown as { feedbackDrain: { store: { startRun(input: { ownerHost: string; ownerEpoch: number; leaseMs: number }): { runId: string }; stopCancelledRunAtBoundary(runId: string, fence: { ownerHost: string; ownerEpoch: number }): boolean } } }).feedbackDrain;
