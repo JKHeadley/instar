@@ -204,7 +204,7 @@ import { decideNobodyPollingClaim, sharedG2NobodyPollingLedger } from '../core/n
 import { canonicalPushKey } from '../core/PrHandLease.js';
 import { enrollPaneSessionName } from '../core/FrameworkLoginDriver.js';
 import { QUOTA_SNAPSHOT_STALE_AFTER_MS } from '../core/QuotaPoller.js';
-import { SubscriptionAccountEmailRegistrar, normalizeSubscriptionEmail } from '../core/SubscriptionPool.js';
+import { SubscriptionAccountEmailRegistrar, isLocallyExecutable, normalizeSubscriptionEmail } from '../core/SubscriptionPool.js';
 import { CredentialIdentityOracle } from '../core/CredentialIdentityOracle.js';
 import {
   CompositeCredentialIdentityOracle,
@@ -901,6 +901,8 @@ import { parseKnownRows, filterKnownRows } from './changeFeed.js';
 import { INITIATIVE_UPDATE_FIELDS } from '../core/InitiativeTracker.js';
 import { telegramTopicRef, topicRef } from '../messaging/shared/topicRef.js';
 import { peerFingerprintOfPlace } from '../users/peerPlaceAdmission.js';
+import { isSafeSessionRef } from '../core/claudeResumeTranscript.js';
+import { readCodexSlotIdentity } from '../providers/adapters/openai-codex/codexSlotIdentity.js';
 import { CODEX_CLI_FRAMEWORK } from '../core/frameworkFacts.js';
 import { resolveFrameworkBinaryPath } from '../core/frameworkSessionLaunch.js';
 import { codexCliVersionCached, refreshCodexCliVersion } from '../core/codexCapabilities.js';
@@ -14693,7 +14695,7 @@ export function createRoutes(ctx: RouteContext): Router {
       return;
     }
 
-    const { sessionName, followUpPrompt, reason, fresh, force } = req.body || {};
+    const { sessionName, followUpPrompt, reason, fresh, force, targetAccountId } = req.body || {};
 
     if (!sessionName || typeof sessionName !== 'string' || !SESSION_NAME_RE.test(sessionName)) {
       res.status(400).json({ error: '"sessionName" is required and must contain only letters, numbers, hyphens, underscores (max 200)' });
@@ -14716,6 +14718,75 @@ export function createRoutes(ctx: RouteContext): Router {
       return;
     }
 
+    let accountPin: { accountId: string; configHome: string; expectedCodexEmail: string; beforeKill: (topicId: number | null) => boolean; requireVerifiedIdle: true; pinnedRefreshAttemptId: string } | undefined;
+    if (targetAccountId !== undefined) {
+      if (typeof targetAccountId !== 'string' || !targetAccountId.trim() || targetAccountId.length > 200) {
+        res.status(400).json({ error: '"targetAccountId" must be a non-empty string of at most 200 characters' });
+        return;
+      }
+      if (ctx.config.subscriptionPool?.explicitRefreshAccountPin !== true) {
+        res.status(403).json({ code: 'refresh-account-pin-disabled', error: 'Explicit account selection for refresh is disabled.' });
+        return;
+      }
+      if (fresh === true || force === true) {
+        res.status(400).json({ code: 'refresh-account-pin-requires-idle-resume', error: 'Account selection requires an idle, continuity-preserving refresh.' });
+        return;
+      }
+      const sourceSession = () => ctx.state.listSessions().find(session =>
+        session.tmuxSession === sessionName && session.status === 'running' &&
+        session.framework === CODEX_CLI_FRAMEWORK && isSafeSessionRef(session.claudeSessionId) &&
+        !(ctx.config.sessions?.protectedSessions ?? []).includes(sessionName) &&
+        !ctx.sessionManager?.getProtectedSessions?.().includes(sessionName));
+      const eligibleTarget = () => {
+        if (ctx.config.subscriptionPool?.explicitRefreshAccountPin !== true ||
+            ctx.subscriptionEmailBarrier?.isBlocking() ||
+            subscriptionPoolWriteRefusal('POST /subscription-pool/swap')) return undefined;
+        const account = ctx.subscriptionPool?.list().find(candidate => candidate.id === targetAccountId);
+        if (!account || account.provider !== 'openai' || account.framework !== CODEX_CLI_FRAMEWORK ||
+            account.status !== 'active' || !isLocallyExecutable(account) ||
+            account.deviceLimitSuspectedAt ||
+            !path.isAbsolute(account.configHome)) return undefined;
+        try {
+          const expectedEmail = normalizeSubscriptionEmail(account.email).key;
+          const identity = readCodexSlotIdentity(account.configHome);
+          if (identity.unavailable || !identity.email || normalizeSubscriptionEmail(identity.email).key !== expectedEmail) return undefined;
+          fs.accessSync(account.configHome, fs.constants.R_OK | fs.constants.W_OK);
+          return fs.statSync(account.configHome).isDirectory() ? account : undefined;
+        } catch {
+          return undefined; // @silent-fallback-ok: inaccessible or unidentified local account cannot be selected.
+        }
+      };
+      const cloudCodexTopic = (topicId: number | undefined) => {
+        if (topicId === undefined) return false;
+        const profile = ctx.topicProfile?.resolver.resolve(topicId);
+        return profile?.framework === CODEX_CLI_FRAMEWORK && profile.sources.model !== 'local-model-binding';
+      };
+      const source = sourceSession();
+      const target = eligibleTarget();
+      if (!source || !cloudCodexTopic(source.telegramTopicId) || !target || source.subscriptionAccountId === target.id) {
+        res.status(409).json({ code: 'refresh-account-pin-ineligible', error: 'Select a different eligible local Codex account for a running, unprotected cloud Codex topic.' });
+        return;
+      }
+      const { id: sourceId, subscriptionAccountId: sourceAccountId, telegramTopicId, claudeSessionId: sourceThread } = source;
+      const { configHome, email } = target;
+      accountPin = {
+        accountId: target.id,
+        configHome,
+        expectedCodexEmail: normalizeSubscriptionEmail(email).key,
+        requireVerifiedIdle: true,
+        pinnedRefreshAttemptId: randomUUID(),
+        beforeKill: resolvedTopicId => {
+          const currentSource = sourceSession();
+          const currentTarget = eligibleTarget();
+          return resolvedTopicId === telegramTopicId && currentSource?.id === sourceId &&
+            currentSource.subscriptionAccountId === sourceAccountId &&
+            currentSource.telegramTopicId === telegramTopicId && currentSource.claudeSessionId === sourceThread &&
+            cloudCodexTopic(telegramTopicId) &&
+            currentTarget?.configHome === configHome && currentTarget.email === email;
+        },
+      };
+    }
+
     // ── EVO-025: target refusals run PRE-202 ──
     // A name the resolver cannot bind (e.g. the display name "Jev" instead of
     // the tmux name "echo-jev"), a missing session, an in-flight refresh or an
@@ -14727,7 +14798,8 @@ export function createRoutes(ctx: RouteContext): Router {
     // (reaped, crashed) has nothing to kill: respawn it directly with the same
     // respawner (resume from the topic's saved conversation). Synchronous — the
     // caller is not the session being restarted, so no 202-before-kill dance.
-    if (refusal?.code === 'session_not_found' && ctx.sessionRefresh.deadBoundTopic(sessionName) !== null) {
+    if (!accountPin && (refusal?.code === 'session_not_found' || refusal?.code === 'not_telegram_bound') &&
+        ctx.sessionRefresh.deadBoundTopic(sessionName) !== null) {
       let result: Awaited<ReturnType<NonNullable<typeof ctx.sessionRefresh>['respawnDeadBound']>>;
       try {
         result = await ctx.sessionRefresh.respawnDeadBound({ sessionName, followUpPrompt, reason, fresh: fresh === true });
@@ -14757,11 +14829,15 @@ export function createRoutes(ctx: RouteContext): Router {
     if (force !== true) {
       let busy: Awaited<ReturnType<NonNullable<typeof ctx.sessionRefresh>['precheckInteractiveBusy']>> = null;
       try {
-        busy = await ctx.sessionRefresh.precheckInteractiveBusy(sessionName);
+        busy = await ctx.sessionRefresh.precheckInteractiveBusy(sessionName, !!accountPin);
       } catch {
         // @silent-fallback-ok: the work gate is ADDITIVE (§4.5) — a precheck
         // error must never block the refresh route; SwapWorkGate's own audit
         // rows and logs carry the failure signal.
+        if (accountPin) {
+          res.status(409).json({ code: 'session-busy', error: 'Could not confirm that the session is idle.' });
+          return;
+        }
         busy = null;
       }
       if (busy) {
@@ -14778,14 +14854,14 @@ export function createRoutes(ctx: RouteContext): Router {
 
     // Acknowledge BEFORE killing — the requester is the session being killed,
     // so it needs to receive the 202 before its process disappears.
-    res.status(202).json({ ok: true, message: 'Refresh scheduled', sessionName, fresh: fresh === true });
+    res.status(202).json({ ok: true, message: 'Refresh scheduled', sessionName, fresh: fresh === true, ...(accountPin && { targetAccountId: accountPin.accountId, pinnedRefreshAttemptId: accountPin.pinnedRefreshAttemptId }) });
 
     // Schedule the kill+spawn after the response has flushed and the agent
     // has a moment to log its last action. 500ms is enough for HTTP flush
     // on a local loopback without being a noticeable user-facing delay.
     const sessionRefresh = ctx.sessionRefresh;
     setTimeout(() => {
-      sessionRefresh.refreshSession({ sessionName, followUpPrompt, reason, fresh, force: force === true }).then(result => {
+      sessionRefresh.refreshSession({ sessionName, followUpPrompt, reason, fresh, force: force === true, ...accountPin }).then(result => {
         if (!result.ok) {
           // Structured logging so over-blocks (rate guard) are detectable
           // in operations per signal-vs-authority logging rule. The agent's

@@ -146,6 +146,12 @@ export interface Session {
    *  (e.g. 'idle-zombie', 'reaped-idle', 'manual-kill'). Undefined on records
    *  ended before this field existed. */
   endedReason?: string;
+  /** Evidence that this exact pinned refresh stopped the original session. */
+  pinnedRefreshStopId?: string;
+  /** Identity of the pinned refresh that created this replacement. */
+  pinnedRefreshAttemptId?: string;
+  /** Strict native startup failed before any initial injection was attempted. */
+  pinnedRefreshRebriefUndelivered?: true;
   /** True when the kill interrupted evidenced work (reap-notify spec R2.1:
    *  any non-marker work evidence at kill time). Stamped by terminateSession
    *  alongside the sessionReaped emission. Undefined on legacy records. */
@@ -5314,6 +5320,8 @@ export interface InstarConfig {
    * All optional; absence preserves today's single-account behaviour.
    */
   subscriptionPool?: {
+    /** Explicit local Codex account selection on interactive refresh. Default off. */
+    explicitRefreshAccountPin?: boolean;
     /** Bounded autonomous repair for corroborated Claude Code and Codex sign-in failures.
      *  Absent/off stays dark. `unattended` requires exact identity opt-in. */
     assistedRelogin?: {

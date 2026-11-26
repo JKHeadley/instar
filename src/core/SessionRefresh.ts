@@ -32,6 +32,8 @@
  */
 
 import fs from 'node:fs';
+import { randomUUID } from 'node:crypto';
+import { SafeFsExecutor } from './SafeFsExecutor.js';
 import { placeResumeTranscript } from './claudeResumeTranscript.js';
 import path from 'node:path';
 import os from 'node:os';
@@ -139,7 +141,7 @@ export interface SessionRefreshDeps {
     followUpPrompt: string | undefined,
     /** P1.3 account swap (optional, additive): launch the respawn under this
      *  account's config home + record the account id. Omitted = unchanged. */
-    accountSwap?: { configHome?: string; accountId?: string },
+    accountSwap?: { configHome?: string; accountId?: string; expectedCodexEmail?: string; expectedResumeThreadId?: string; expectedSourceSessionId?: string; pinnedRefreshAttemptId?: string },
   ) => Promise<string>;
   /**
    * Slack binding resolution (§10.5, optional + additive). SlackAdapter
@@ -165,6 +167,8 @@ export interface SessionRefreshDeps {
    * read live via `getKnobs`. Absent/null ⇒ byte-for-byte today's behavior.
    */
   workGateCtx?: SwapContinuityGateContext | null;
+  /** Machine-local recovery records, stored before stopping a pinned source. */
+  pinnedRebriefDir?: string;
   /** Injectable clock for tests. Defaults to Date.now. */
   clock?: () => number;
 }
@@ -245,11 +249,16 @@ export type RefreshFailureCode =
   // swap-continuity-antithrash §4.5 — one spelling everywhere: the wire code
   // and the ledger reason are BOTH the hyphenated `session-busy`.
   | 'session-busy'
-  | 'refresh_intent_changed';
+  | 'refresh_intent_changed'
+  | 'refresh_kill_unconfirmed'
+  | 'refresh_rebrief_unavailable';
 
 export interface RefreshOptions {
   /** Internal consistency veto only; never accepted from request JSON and never skips work/rate gates. */
-  beforeKill?: () => boolean;
+  beforeKill?: (topicId: number | null) => boolean;
+  requireVerifiedIdle?: boolean;
+  expectedCodexEmail?: string;
+  pinnedRefreshAttemptId?: string;
   sessionName: string;
   followUpPrompt?: string;
   reason?: string;
@@ -293,6 +302,14 @@ export interface RefreshOptions {
 const DEFAULT_MAX_PER_WINDOW = 5;
 const DEFAULT_WINDOW_MS = 10 * 60 * 1000;
 
+interface PinnedRefreshRebrief {
+  sourceId: string;
+  topicId: number;
+  threadId: string;
+  rebrief: string;
+  stopId: string;
+}
+
 export class SessionRefresh {
   private readonly deps: SessionRefreshDeps;
   private readonly maxPerWindow: number;
@@ -309,6 +326,50 @@ export class SessionRefresh {
     this.maxPerWindow = deps.rateLimit?.maxPerWindow ?? DEFAULT_MAX_PER_WINDOW;
     this.windowMs = deps.rateLimit?.windowMs ?? DEFAULT_WINDOW_MS;
     this.clock = deps.clock ?? Date.now;
+  }
+
+  private pinnedRebriefPath(sessionName: string): string | undefined {
+    if (!this.deps.pinnedRebriefDir || !/^[A-Za-z0-9_-]{1,200}$/.test(sessionName)) return undefined;
+    return path.join(this.deps.pinnedRebriefDir, `${sessionName}.json`);
+  }
+
+  private readPinnedRebrief(sessionName: string): PinnedRefreshRebrief | undefined {
+    const file = this.pinnedRebriefPath(sessionName);
+    if (!file) return undefined;
+    let raw: string;
+    try {
+      raw = fs.readFileSync(file, 'utf8');
+    } catch (error) {
+      if ((error as NodeJS.ErrnoException).code === 'ENOENT') return undefined;
+      throw error;
+    }
+    const entry = JSON.parse(raw) as Partial<PinnedRefreshRebrief>;
+    if (!entry || typeof entry.rebrief !== 'string' || !entry.rebrief ||
+        typeof entry.sourceId !== 'string' || typeof entry.threadId !== 'string' ||
+        typeof entry.topicId !== 'number' || !Number.isSafeInteger(entry.topicId) ||
+        typeof entry.stopId !== 'string' || !entry.stopId) throw new Error('Invalid pinned rebrief record.');
+    return entry as PinnedRefreshRebrief;
+  }
+
+  private writePinnedRebrief(file: string, entry: PinnedRefreshRebrief): void {
+    fs.mkdirSync(path.dirname(file), { recursive: true, mode: 0o700 });
+    SafeFsExecutor.atomicWriteJsonSync(file, entry, { mode: 0o600, operation: 'SessionRefresh.savePinnedRebrief' });
+  }
+
+  private clearPinnedRebrief(file: string): void {
+    SafeFsExecutor.safeUnlinkSync(file, { operation: 'SessionRefresh.clearPinnedRebrief' });
+  }
+
+  private recoverableRebrief(sessionName: string): PinnedRefreshRebrief | undefined {
+    const entry = this.readPinnedRebrief(sessionName);
+    if (!entry) return undefined;
+    const source = this.deps.state.getSession(entry.sourceId);
+    if (this.deps.state.listSessions({ status: 'running' }).some(session => session.telegramTopicId === entry.topicId)) return undefined;
+    return source?.status === 'killed' && source.pinnedRefreshStopId === entry.stopId && source.tmuxSession === sessionName &&
+      source.telegramTopicId === entry.topicId && source.claudeSessionId === entry.threadId &&
+      !this.deps.state.hasTelegramSessionSuccessor(source, entry.stopId) &&
+      this.deps.topicResumeMap?.getForFramework(entry.topicId, 'codex-cli') === entry.threadId
+      ? entry : undefined;
   }
 
   /** Non-mutating admission signal for proactive controllers. The refresh
@@ -373,6 +434,14 @@ export class SessionRefresh {
     if (!tg) return null;
     let topicId = tg.getTopicForSession(sessionName);
     if (topicId === null) topicId = tg.resolveTopicForSessionFromDisk?.(sessionName) ?? null;
+    const bindingMissing = topicId === null;
+    if (topicId === null) {
+      try {
+        topicId = this.recoverableRebrief(sessionName)?.topicId ?? null;
+      } catch {
+        return null; // @silent-fallback-ok: an unreadable recovery record cannot authorize a spawn.
+      }
+    }
     if (topicId === null) return null;
     // A topic now mapped to a DIFFERENT session is never revived under the old
     // name (that would create a duplicate). An unmapped topic (in-memory miss on a
@@ -380,7 +449,7 @@ export class SessionRefresh {
     const current = tg.getSessionForTopic(topicId);
     if (current && current !== sessionName) return null;
     const running = this.deps.state.listSessions({ status: 'running' })
-      .some(s => s.tmuxSession === sessionName);
+      .some(s => s.tmuxSession === sessionName || (bindingMissing && s.telegramTopicId === topicId));
     if (running) return null;
     if (this.deps.sessionManager.isSessionAlive(sessionName)) return null;
     return topicId;
@@ -420,12 +489,25 @@ export class SessionRefresh {
       if (this.deadBoundTopic(sessionName) !== topicId) {
         return { ok: false, code: 'session_not_found', message: `Session "${sessionName}" came back up (or its topic was remapped) before the respawn; nothing to do.` };
       }
+      const rebriefFile = this.pinnedRebriefPath(sessionName);
+      const pending = this.readPinnedRebrief(sessionName);
+      const recovery = pending?.topicId === topicId ? this.recoverableRebrief(sessionName) : undefined;
+      if (pending && !recovery) {
+        return { ok: false, code: 'refresh_rebrief_unavailable', message: 'The saved rebrief no longer matches the stopped conversation.' };
+      }
+      if (fresh && recovery) {
+        return { ok: false, code: 'refresh_rebrief_unavailable', message: 'A saved rebrief needs a continuity-preserving recovery.' };
+      }
       this.recordRefresh(sessionName);
       if (fresh) {
         this.deps.topicResumeMap?.remove(topicId);
         console.log(`[SessionRefresh] fresh respawn of dead session — cleared resume UUID for topic ${topicId} (sessionName=${sessionName})`);
       }
-      const newSessionName = await this.deps.respawner(sessionName, topicId, followUpPrompt);
+      const prompt = recovery ? [recovery.rebrief, followUpPrompt].filter(Boolean).join('\n\n') : followUpPrompt;
+      const newSessionName = recovery
+        ? await this.deps.respawner(sessionName, topicId, prompt, { expectedResumeThreadId: recovery.threadId, expectedSourceSessionId: recovery.sourceId })
+        : await this.deps.respawner(sessionName, topicId, prompt);
+      if (recovery && rebriefFile) this.clearPinnedRebrief(rebriefFile);
       console.log(`[SessionRefresh] Respawned dead topic session "${sessionName}" → "${newSessionName}" (topic ${topicId})${reason ? ` reason="${reason}"` : ''}`);
       return { ok: true, newSessionName, topicId };
     } finally {
@@ -608,7 +690,7 @@ export class SessionRefresh {
       // source and eligible target at the last synchronous boundary before the kill.
       if (opts.beforeKill) {
         let current = false;
-        try { current = opts.beforeKill(); } catch { /* @silent-fallback-ok: an unreadable intent refuses refresh */ }
+        try { current = opts.beforeKill(topicId); } catch { /* @silent-fallback-ok: an unreadable intent refuses refresh */ }
         if (!current) return { ok: false, code: 'refresh_intent_changed', message: 'The account move changed while it was waiting; no session was stopped.' };
       }
 
@@ -620,6 +702,29 @@ export class SessionRefresh {
           code: 'rate_limited',
           message: `Refresh rate limit exceeded (${this.maxPerWindow} per ${Math.round(this.windowMs / 60000)} minutes) for session "${sessionName}".`,
         };
+      }
+
+      const stopId = opts.requireVerifiedIdle ? opts.pinnedRefreshAttemptId ?? randomUUID() : undefined;
+      let rebriefFile: string | undefined;
+      if (opts.requireVerifiedIdle) {
+        const unanswered = topicId !== null && this.deps.workGateCtx?.resolveUnansweredInbound?.(topicId);
+        if (this.deps.sessionManager.getPendingInjection?.(sessionName) || unanswered !== 'none') {
+          return { ok: false, code: 'session-busy', message: 'Incoming work is pending or could not be ruled out. The original session is still running.' };
+        }
+        if (followUpWithMitigations && topicId !== null) {
+          rebriefFile = this.pinnedRebriefPath(sessionName);
+          try {
+            if (!rebriefFile || !stopId || !stateSession.claudeSessionId || this.readPinnedRebrief(sessionName)) {
+              throw new Error('Rebrief custody unavailable.');
+            }
+            this.writePinnedRebrief(rebriefFile, {
+              sourceId: stateSession.id, topicId, threadId: stateSession.claudeSessionId,
+              rebrief: followUpWithMitigations, stopId,
+            });
+          } catch {
+            return { ok: false, code: 'refresh_rebrief_unavailable', message: 'Could not preserve the rebrief for recovery. The original session is still running.' };
+          }
+        }
       }
 
       // ── attempt ──────────────────────────────────────────────────────
@@ -634,7 +739,14 @@ export class SessionRefresh {
       // dance, which would silently no-op (findUuidForSession requires
       // claudeSessionId as second arg; without it, the mtime fallback was
       // removed deliberately and the call returns null).
-      this.deps.sessionManager.killSession(stateSession.id);
+      const killed = stopId
+        ? this.deps.sessionManager.killSession(stateSession.id, stopId)
+        : this.deps.sessionManager.killSession(stateSession.id);
+      if (opts.requireVerifiedIdle && !killed) {
+        if (rebriefFile && this.deps.sessionManager.isSessionAlive(sessionName) &&
+            this.deps.state.getSession(stateSession.id)?.status === 'running') this.clearPinnedRebrief(rebriefFile);
+        return { ok: false, code: 'refresh_kill_unconfirmed', message: 'The original session did not confirm termination. The pinned replacement was not started.' };
+      }
 
       // Fresh respawn: drop the resume UUID that beforeSessionKill just saved,
       // so the respawner finds no entry and spawns a brand-new conversation
@@ -658,7 +770,7 @@ export class SessionRefresh {
       // TopicResumeMap entry) and re-registers the topic mapping. With
       // `fresh`, the entry was just cleared, so it spawns without --resume.
       const accountSwap = (opts.configHome || opts.accountId)
-        ? { configHome: opts.configHome, accountId: opts.accountId }
+        ? { configHome: opts.configHome, accountId: opts.accountId, ...(opts.expectedCodexEmail && { expectedCodexEmail: opts.expectedCodexEmail, expectedResumeThreadId: stateSession.claudeSessionId, expectedSourceSessionId: stateSession.id, pinnedRefreshAttemptId: stopId }) }
         : undefined;
 
       // Onboarding-safe swap (2026-06-09 incident): the target config home was
@@ -747,6 +859,7 @@ export class SessionRefresh {
       }
 
       const newSessionName = await this.deps.respawner(sessionName, topicId!, followUpWithMitigations, accountSwap);
+      if (rebriefFile) this.clearPinnedRebrief(rebriefFile);
 
       // ── verify + finalize ────────────────────────────────────────────
       console.log(`[SessionRefresh] Refreshed "${sessionName}" → "${newSessionName}" (topic ${topicId})${reason ? ` reason="${reason}"` : ''}`);
@@ -768,6 +881,10 @@ export class SessionRefresh {
     stateSession: { subscriptionAccountId?: string },
     topicId: number | null,
   ): Promise<{ refusal?: RefreshResult & { ok: false }; mitigationBlock?: string }> {
+    if (opts.requireVerifiedIdle) {
+      const refusal = await this.precheckInteractiveBusy(opts.sessionName, true);
+      return refusal ? { refusal: { ok: false, code: 'session-busy', message: refusal.message } } : {};
+    }
     const ctx = this.deps.workGateCtx;
     if (!ctx) return {};
     let knobs: { enabled: boolean; dryRun: boolean; reactiveGraceMs: number; recheckMs: number };
@@ -889,23 +1006,28 @@ export class SessionRefresh {
    * in-funnel gate remains the authority for the raced window). A busy verdict
    * records the §6.1 interactive refusal row.
    */
-  async precheckInteractiveBusy(sessionName: string): Promise<{
+  async precheckInteractiveBusy(sessionName: string, requireVerifiedIdle = false): Promise<{
     turnInFlight: boolean;
     subagents?: Array<{ agentType: string; ageMinutes: number }>;
     subagentLeg?: 'absent' | 'indeterminate';
     message: string;
   } | null> {
+    const unknown = () => requireVerifiedIdle ? {
+      turnInFlight: false,
+      subagentLeg: 'indeterminate' as const,
+      message: 'An account pin requires confirmation that the session is idle.',
+    } : null;
     const ctx = this.deps.workGateCtx;
-    if (!ctx) return null;
+    if (!ctx) return unknown();
     let knobs: { enabled: boolean; dryRun: boolean };
     try {
       knobs = ctx.getKnobs();
     } catch {
       // @silent-fallback-ok: a broken knob getter reads as gate-dark — the
       // work gate is ADDITIVE and must never block a refresh (§4.5).
-      return null;
+      return unknown();
     }
-    if (!knobs.enabled || knobs.dryRun) return null;
+    if (!knobs.enabled || knobs.dryRun) return unknown();
     let probe: WorkProbeResult;
     try {
       probe = await ctx.probe(sessionName);
@@ -922,7 +1044,8 @@ export class SessionRefresh {
         reason: 'busy-indeterminate',
       };
     }
-    if (!probe.busy) return null;
+    if (!probe.busy) return requireVerifiedIdle &&
+      (probe.turnLeg !== 'idle' || probe.subagentLeg === 'indeterminate') ? unknown() : null;
     try {
       ctx.recordInteractiveRefusal?.({
         session: sessionName,
@@ -941,7 +1064,7 @@ export class SessionRefresh {
       message: string;
     } = {
       turnInFlight: probe.turnInFlight,
-      message: `Session "${sessionName}" has in-flight work (${busyReason}). Wait for it to land, or re-issue with force:true (the kill then carries the mitigation payload).`,
+      message: `Session "${sessionName}" has in-flight work (${busyReason}). ${requireVerifiedIdle ? 'Wait for it to finish.' : 'Wait for it to land, or re-issue with force:true (the kill then carries the mitigation payload).'}`,
     };
     if (probe.subagentLeg === 'ok') {
       // Counts and ages only — never titles/paths/content (§4.5).

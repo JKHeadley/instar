@@ -412,6 +412,16 @@ export class StateManager {
     }
   }
 
+  /** A newer desktop session for the same Telegram topic supersedes a refresh rebrief. */
+  hasTelegramSessionSuccessor(source: Session, recoverableAttemptId?: string): boolean {
+    const sourceStart = Date.parse(source.startedAt);
+    return !Number.isFinite(sourceStart) || this.listSessions().some(session =>
+      session.id !== source.id && session.telegramTopicId === source.telegramTopicId &&
+      !(recoverableAttemptId && session.pinnedRefreshAttemptId === recoverableAttemptId &&
+        session.status === 'failed' && session.pinnedRefreshRebriefUndelivered === true) &&
+      (!Number.isFinite(Date.parse(session.startedAt)) || Date.parse(session.startedAt) >= sourceStart));
+  }
+
   listSessions(filter?: { status?: Session['status'] }): Session[] {
     const all = this.readAllSessionsCached();
     const filtered = filter?.status ? all.filter(s => s.status === filter.status) : all;
