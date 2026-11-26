@@ -22,3 +22,5 @@ The dark receiver can read the exact configured Git ref directly before requesti
 The dark witness can answer an authenticated peer only after its independent snapshot confirms the challenged commit and witness floor.
 
 The dark witness readback can use a durable snapshot of the accepted commit and journal floor. Reopening the witness store preserves the exact accepted pair.
+
+The dark witness can permanently reserve one ordered result per first-phone attempt key alongside its accepted floor. Integration checks cover consume winning, cancel winning, holder handover and a stale restored receiver.

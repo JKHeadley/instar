@@ -1,0 +1,30 @@
+{
+  "version": 2,
+  "input": {
+    "attemptId": "11111111-1111-4111-8111-111111111111",
+    "nonce": "BwcHBwcHBwcHBwcHBwcHBwcHBwcHBwcHBwcHBwcHBwc",
+    "holderMachineId": "machine-1",
+    "holderEpoch": "epoch-1",
+    "holderIncarnation": "process-1",
+    "ownerId": "7001",
+    "ownerGeneration": "owner-1",
+    "accountAcceptanceId": "accept-1",
+    "accountAcceptanceGeneration": "account-1",
+    "policyRevision": "policy-1",
+    "origin": "https://paired.example",
+    "deviceId": "device-1",
+    "deviceKeyHash": "aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa",
+    "presenceKeyHash": "bbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbb",
+    "nominationId": "22222222-2222-4222-8222-222222222222",
+    "proposalHash": "cccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccc",
+    "disclosureHash": "dddddddddddddddddddddddddddddddddddddddddddddddddddddddddddddddd",
+    "slotKey": "tj:device-acceptance:first:0"
+  },
+  "expected": {
+    "challengeKey": "2bec7389edcf611ae1f4fb04c922207479d1b9c4090fbde7e16b656e18356893",
+    "challengeDigest": "a676cd2b8266383ac394bffdc1e5707d3f5efc69038f6ebf2b1b43f105866b33",
+    "bytesBase64": "WyJpbnN0YXIuZmlyc3QtcGhvbmUtYXBwcm92ZXIucHJlc2VuY2UudjIiLCIxMTExMTExMS0xMTExLTQxMTEtODExMS0xMTExMTExMTExMTEiLCJCd2NIQndjSEJ3Y0hCd2NIQndjSEJ3Y0hCd2NIQndjSEJ3Y0hCd2NIQndjIiwibWFjaGluZS0xIiwiZXBvY2gtMSIsInByb2Nlc3MtMSIsIjcwMDEiLCJvd25lci0xIiwiYWNjZXB0LTEiLCJhY2NvdW50LTEiLCJwb2xpY3ktMSIsImh0dHBzOi8vcGFpcmVkLmV4YW1wbGUiLCJkZXZpY2UtMSIsImFhYWFhYWFhYWFhYWFhYWFhYWFhYWFhYWFhYWFhYWFhYWFhYWFhYWFhYWFhYWFhYWFhYWFhYWFhYWFhYWFhYWEiLCJiYmJiYmJiYmJiYmJiYmJiYmJiYmJiYmJiYmJiYmJiYmJiYmJiYmJiYmJiYmJiYmJiYmJiYmJiYmJiYmJiYmJiIiwiMjIyMjIyMjItMjIyMi00MjIyLTgyMjItMjIyMjIyMjIyMjIyIiwiY2NjY2NjY2NjY2NjY2NjY2NjY2NjY2NjY2NjY2NjY2NjY2NjY2NjY2NjY2NjY2NjY2NjY2NjY2NjY2NjY2NjYyIsImRkZGRkZGRkZGRkZGRkZGRkZGRkZGRkZGRkZGRkZGRkZGRkZGRkZGRkZGRkZGRkZGRkZGRkZGRkZGRkZGRkZGQiLCJ0ajpkZXZpY2UtYWNjZXB0YW5jZTpmaXJzdDowIl0=",
+    "syntheticP256SpkiBase64": "MFkwEwYHKoZIzj0CAQYIKoZIzj0DAQcDQgAEUoTTo9Zp91hWVDmAc6wOw1mSbR52ekrg+63TYPg/Sf2Y+WqXp/40g/WJPfss6+zenIb0Ff/924GmtBcBLW3Now==",
+    "signatureDerBase64": "MEQCIHK1/BG8Qp6xO0vQ00AGH3pAsXz/Ha+N3M70OQd+aDkzAiBVJSYyxNyf/SyuNu4X75tyP87jnvfnL9X165KjVryV6A=="
+  }
+}

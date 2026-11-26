@@ -63,3 +63,7 @@ The responder checks transport-authenticated caller permission and receiver-owne
 ## Witness snapshot persistence
 
 One SQLite WAL/FULL transaction stores the exact commit and floor after a trusted adapter verifies acceptance. An exact retry is recognized and a stale predecessor is refused. The integration connects the disposable Git reader to the responder and reopens the witness database before validating its reply. Physical independence, rollback custody and the adapter authorized to write accepted snapshots are deployment requirements.
+
+## First-phone attempt reservation
+
+The dark witness records the exact payload digest and observed commit beside the ordered floor update in one transaction, keyed by agent, namespace and attempt. A historical retry of the exact winner returns existing. Competing outcomes remain conflicts after holder handover. The synthetic Identity fixture exercises both arrival orders and an older reopened receiver. The trusted adapter still owns the exact Git observation and first-phone semantics. No registry or app effect is wired.

@@ -2,7 +2,8 @@ import Database from 'better-sqlite3';
 import fs from 'node:fs';
 import path from 'node:path';
 import type { PublicationScope } from './FencedPublicationStore.js';
-import { samePublicationFloor, validPublicationFloor, type PublicationFloor } from './OrderedPublicationWitness.js';
+import { samePublicationFloor, validPublicationFloor, verifiedOrderedSuccessor,
+  type OrderedPublicationDecision, type PublicationFloor, type WitnessPins } from './OrderedPublicationWitness.js';
 
 export interface AcceptedWitnessSnapshot {
   commit: string;
@@ -33,6 +34,11 @@ export class OrderedWitnessSnapshotStore {
         CREATE TABLE IF NOT EXISTS ordered_witness_snapshot (
           agent TEXT NOT NULL, namespace TEXT NOT NULL, commit_oid TEXT NOT NULL, floor TEXT NOT NULL,
           PRIMARY KEY (agent, namespace)
+        );
+        CREATE TABLE IF NOT EXISTS ordered_witness_operation (
+          agent TEXT NOT NULL, namespace TEXT NOT NULL, operation TEXT NOT NULL,
+          payload_digest TEXT NOT NULL, commit_oid TEXT NOT NULL,
+          PRIMARY KEY (agent, namespace, operation)
         )
       `);
       return new OrderedWitnessSnapshotStore(db);
@@ -49,6 +55,32 @@ export class OrderedWitnessSnapshotStore {
       SELECT commit_oid AS commitOid, floor FROM ordered_witness_snapshot WHERE agent=? AND namespace=?
     `).get(scope.agentId, scope.namespace) as { commitOid: string; floor: string } | undefined;
     return row ? { commit: row.commitOid, floor: JSON.parse(row.floor) as PublicationFloor } : null;
+  }
+
+  readOperation(scope: PublicationScope, operationKey: string): { payloadDigest: string; commit: string } | null {
+    const row = this.db.prepare(`
+      SELECT payload_digest AS payloadDigest, commit_oid AS commitOid FROM ordered_witness_operation
+      WHERE agent=? AND namespace=? AND operation=?
+    `).get(scope.agentId, scope.namespace, operationKey) as { payloadDigest: string; commitOid: string } | undefined;
+    return row ? { payloadDigest: row.payloadDigest, commit: row.commitOid } : null;
+  }
+
+  /** The trusted adapter supplies the independently observed commit for the exact decision. */
+  acceptOrderedDecision(
+    expected: AcceptedWitnessSnapshot, commit: string, decision: OrderedPublicationDecision,
+    payload: string, signature: Buffer, pins: WitnessPins,
+  ): 'recorded' | 'existing' | 'conflict' | 'mismatch' {
+    const floor = verifiedOrderedSuccessor(expected.floor, decision, payload, signature, pins);
+    if (!floor) return 'mismatch';
+    return this.db.transaction(() => {
+      const prior = this.readOperation(floor, decision.operationKey);
+      if (prior) return prior.payloadDigest === decision.payloadDigest && prior.commit === commit ? 'existing' : 'conflict';
+      if (this.recordAccepted(expected, { commit, floor }) !== 'recorded') return 'mismatch';
+      this.db.prepare(`
+        INSERT INTO ordered_witness_operation VALUES (?, ?, ?, ?, ?)
+      `).run(floor.agentId, floor.namespace, decision.operationKey, decision.payloadDigest, commit);
+      return 'recorded';
+    }).immediate();
   }
 
   /** Install a trusted genesis exactly once for this witness custody. */

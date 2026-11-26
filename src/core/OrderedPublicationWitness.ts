@@ -26,7 +26,7 @@ export type WitnessPins = ReadonlyMap<string, string>;
 const hash = (bytes: string | Buffer) => createHash('sha256').update(bytes).digest('hex');
 const digestPattern = /^[a-f0-9]{64}$/;
 const idPattern = /^[A-Za-z0-9_.:-]{1,256}$/;
-const orderedNamespaces = new Set(['needs-you', 'mobile-ingress']);
+const orderedNamespaces = new Set(['needs-you', 'mobile-ingress', 'machine-key-history']);
 
 function fields(floor: PublicationFloor) {
   return [floor.agentId, floor.namespace, floor.epoch, floor.holder, floor.head,
