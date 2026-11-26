@@ -81,6 +81,25 @@ describe('FeedbackSourceGenerations', () => {
     }
   });
 
+  it('flushes the appended source record without flushing the transient process lock', () => {
+    const { legacy, dir, generations } = setup();
+    const lock = path.join(dir, '.feedback-generation.lock');
+    const flushed: number[] = [];
+    const sync = fs.fsyncSync;
+    const spy = vi.spyOn(fs, 'fsyncSync').mockImplementation((fd) => {
+      flushed.push(fs.fstatSync(fd).ino);
+      sync(fd);
+    });
+    try {
+      generations.append({ feedbackId: 'f3' });
+      expect(flushed).toEqual([fs.statSync(legacy).ino]);
+      expect(fs.existsSync(lock)).toBe(false);
+      expect(fs.readFileSync(legacy, 'utf8')).toContain('"feedbackId":"f3"');
+    } finally {
+      spy.mockRestore();
+    }
+  });
+
   it('recovers every compaction publish crash boundary without loss or an invalid handoff', () => {
     for (const point of ['after-generation-fsync', 'after-manifest-fsync', 'after-manifest-publish'] as const) {
       const { generations } = setup();

@@ -227,8 +227,9 @@ export class FeedbackSourceGenerations {
       throw error;
     }
     try {
+      // The exclusive file coordinates live processes. Its PID does not
+      // need disk durability. Append and compaction still fsync their data.
       fs.writeFileSync(fd, `${process.pid}\n`, 'utf8');
-      fs.fsyncSync(fd);
       return fn();
     }
     finally { fs.closeSync(fd); try { SafeFsExecutor.safeUnlinkSync(this.lockPath, { operation: 'feedback source generation lock release' }); } catch { /* stale lock recovery is explicit */ } }
