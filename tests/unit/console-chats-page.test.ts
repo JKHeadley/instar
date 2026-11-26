@@ -541,12 +541,12 @@ describe('Conversations page', () => {
     for (let i = 0; i < 12; i++) await flush();
     const read = calls.find((c) => c.url === '/mobile/conversation-graph/tree')!;
     expect(verifySigned(read, publicKey).ok).toBe(true);
-    expect(doc.querySelector('.conversation-tree-chief')?.textContent).toBe('Chief of Staff');
+    expect(doc.querySelector('.conversation-tree-chief .chat-row-title')?.textContent).toBe('Chief of Staff');
     expect(doc.querySelector<HTMLDetailsElement>('.conversation-tree-section .chat-project-row')?.open).toBe(true);
     expect(doc.querySelector('.chat-project-row')?.textContent).toContain('Deep');
     expect([...doc.querySelectorAll('.chat-row-title')].map(node => node.textContent).filter(title => title === 'Deep')).toHaveLength(1);
     const toggles = [...doc.querySelectorAll<HTMLButtonElement>('.chat-view-toggle button')];
-    expect(toggles.map(node => node.textContent)).toEqual(['Tree', 'Flat']);
+    expect(toggles.map(node => node.textContent)).toEqual(['Grouped', 'Flat']);
     toggles[1].click();
     expect(doc.querySelector('.chat-pinned-group')).toBeNull();
     expect(doc.querySelector('.conversation-tree-section')).toBeNull();

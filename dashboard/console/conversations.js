@@ -1,6 +1,6 @@
 // Native console Conversations. Owner-only reads use the existing PIN proof.
 // UI is a projection consumer: no inferred grouping, routing, or decision state.
-import { compareConversationActivity, conversationTreePreferences, hasAuthoritativeSections, renderOwnerTree, treePage } from './conversation-tree.js';
+import { compareConversationActivity, conversationTreePreferences, hasAuthoritativeSections, renderOwnerTree, treeConversationRow, treePage } from './conversation-tree.js';
 import { el, pageHead, setKids, note, askPin, operatorSession, forgetOperatorSession, arrivalScrollPosition } from './ui.js';
 import { listModel, nodeModel, pageQuery, graphHistoryRoute, historyModel, encodeNodeRef, localOnlyEnvelope, localOnlyWords } from './conversations-model.js';
 import { mountPending } from './conversation-pending.js';
@@ -98,10 +98,10 @@ function failure(main, result, retry) {
     note(text), el('button', { type: 'button', class: 'btn-quiet btn-inline', text: 'Try again', onclick: retry })));
 }
 
-function itemRow(item, state) {
+function itemRow(item, state, showChevron = true) {
   return el('a', { class: 'row conversation-row', href: href({ ...state, ref: item.key }), onclick: openNode },
     el('span', { class: 'row-main' }, el('span', { class: 'row-title', text: item.title })),
-    el('span', { class: 'chev', 'aria-hidden': 'true', text: '›' }));
+    showChevron ? el('span', { class: 'chev', 'aria-hidden': 'true', text: '›' }) : null);
 }
 
 function messageRow(message, node) {
@@ -351,7 +351,7 @@ export async function renderConversations(main, ctx) {
       const pages = [page];
       const groupRows = el('div', { class: 'rows conversation-rows' });
       const paint = () => setKids(groupRows, renderOwnerTree(pages, {
-        preferences, conversationRow: (node) => itemRow(node, state),
+        preferences, conversationRow: (node) => treeConversationRow(itemRow(node, state, false), node.title, node.freshness),
         groupDetails: (node) => nav('See more in this group', href({ ...state, ref: node.key })),
       }));
       const status = el('p', { class: 'need-sub', role: 'status' });
@@ -380,7 +380,7 @@ export async function renderConversations(main, ctx) {
       const body = el('div', { class: 'conversations-page' },
         pageHead({ eyebrow: 'Conversations', headline: 'Your conversations' }),
         el('nav', { class: 'conversation-tabs', 'aria-label': 'Conversation views' },
-          nav('Tree', href(), 'chip active'), nav('Flat', href({ view: 'all', flatOnly: true }), 'chip'), preferences.sortControl(paint)),
+          nav('Grouped', href(), 'chip active'), nav('Flat', href({ view: 'all', flatOnly: true }), 'chip'), preferences.sortControl(paint)),
         groupRows, more, status);
       const send = (path, payload) => read(path, controller.signal, payload);
       const syncLine = el('p', { class: 'need-sub conversation-sync', role: 'status' });
@@ -416,7 +416,7 @@ export async function renderConversations(main, ctx) {
   const model = listModel(result.data, state.view);
   if (!model.ok) { failure(main, { status: 0 }, retry); return; }
   const tabs = el('nav', { class: 'conversation-tabs', 'aria-label': 'Conversation views' },
-    nav(state.flatOnly ? 'Tree' : 'Overview', href(), state.view === 'overview' ? 'chip active' : 'chip'),
+    nav(state.flatOnly ? 'Grouped' : 'Overview', href(), state.view === 'overview' ? 'chip active' : 'chip'),
     nav(state.flatOnly ? 'Flat' : 'All', href({ view: 'all', flatOnly: state.flatOnly }), state.view === 'all' ? 'chip active' : 'chip'));
   const search = el('input', { type: 'search', class: 'reason-input', value: state.q, placeholder: 'Search conversations', 'aria-label': 'Search conversations' });
   const form = el('form', { class: 'conversation-search' }, search, el('button', { type: 'submit', class: 'btn-quiet btn-inline', text: 'Search' }));

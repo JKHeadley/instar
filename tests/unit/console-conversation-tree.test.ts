@@ -1,3 +1,4 @@
+import { readFileSync } from 'node:fs';
 import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest';
 import { JSDOM } from 'jsdom';
 // @ts-expect-error Console runs as native ESM in the browser.
@@ -49,12 +50,20 @@ describe('shared Conversations tree', () => {
         ungrouped: [chat(2, 'Ordinary conversation'), projectChat, chat(7, 'Pending project header', { projectConversationKey: 'telegram:9' })],
       } };
     const host = draw(page);
-    expect(host.firstElementChild?.textContent).toBe('Chief of Staff');
-    expect([...host.querySelectorAll(':scope > details > summary')].map(node => node.textContent)).toEqual(['Projects', 'Groups', 'Ungrouped']);
+    expect(host.firstElementChild?.textContent).toBe('PinnedChief of Staff');
+    expect([...host.querySelectorAll(':scope > details > summary')].map(node => node.textContent)).toEqual(['Projects', 'Groups', 'Not in a group yet']);
     expect([...host.querySelectorAll('details')].every(section => section.open)).toBe(true);
     expect([...host.querySelectorAll('a')].map(node => node.textContent)).toEqual([
       'Chief of Staff', 'Newer worker', 'Project conversation', 'Group chat', 'See more in this group', 'Ordinary conversation',
     ]);
+  });
+
+  it('draws the disclosure chevron without text that can decode as mojibake', () => {
+    const css = readFileSync(new URL('../../dashboard/console/console.css', import.meta.url), 'utf8');
+    const icon = css.match(/\.conversation-tree-disclosure > summary::before\s*\{([^}]+)\}/)?.[1];
+    expect(icon).toMatch(/content:\s*'';/);
+    expect(icon).toMatch(/border-block-start:\s*2px solid currentColor;/);
+    expect(icon).toMatch(/border-inline-end:\s*2px solid currentColor;/);
   });
 
   it('renders the project conversation as a counted section without a saved group', () => {
@@ -66,7 +75,7 @@ describe('shared Conversations tree', () => {
       sections: { projects: [project], groups: [], ungrouped: [] } });
     const section = host.querySelector<HTMLDetailsElement>('.chat-project-row');
     expect(section?.open).toBe(true);
-    expect(section?.querySelector('summary')?.textContent).toBe('Web Dashboard · 2');
+    expect(section?.querySelector('summary')?.textContent).toBe('Web Dashboard · 2 conversations');
     expect([...section!.querySelectorAll('a')].map(a => a.textContent)).toEqual(['Project front door', 'Generated child']);
   });
 
@@ -75,7 +84,7 @@ describe('shared Conversations tree', () => {
     const host = draw({ partial: true, projects: 'unknown', items: [group('two', 'Group two', []), chat(6, 'Unknown placement')] });
     expect(host.querySelector('details')?.open).toBe(false);
     expect(host.textContent).not.toContain('Unknown placement');
-    expect(host.textContent).not.toContain('Ungrouped');
+    expect(host.textContent).not.toContain('Not in a group yet');
     expect(host.textContent).toContain('Some conversation placements could not be checked.');
   });
 

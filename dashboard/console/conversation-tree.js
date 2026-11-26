@@ -97,6 +97,24 @@ export function conversationTreePreferences() {
   };
 }
 
+export function treeConversationRow(row, title, activity) {
+  const words = title.match(/[\p{L}\p{N}]+/gu) || [];
+  const initials = words.slice(0, 2).map(word => Array.from(word)[0]).join('').toUpperCase();
+  row.prepend(el('span', { class: 'conversation-tree-avatar', 'aria-hidden': 'true', text: initials || '?' }));
+  const at = timestamp(activity);
+  if (at) {
+    const date = new Date(at);
+    const options = date.toDateString() === new Date().toDateString()
+      ? { hour: 'numeric', minute: '2-digit' } : { month: 'short', day: 'numeric' };
+    row.append(el('time', { class: 'chat-row-time', datetime: activity, text: date.toLocaleString([], options) }));
+  }
+  return row;
+}
+
+function countedTitle(title, count) {
+  return count === null ? title : `${title} · ${count} ${count === 1 ? 'conversation' : 'conversations'}`;
+}
+
 /** Draw only the placement the owner projection supplied. No flat row becomes Ungrouped by omission. */
 export function renderOwnerTree(pages, { preferences, conversationRow, groupDetails }) {
   const root = pages[0]?.root;
@@ -122,8 +140,7 @@ export function renderOwnerTree(pages, { preferences, conversationRow, groupDeta
       if (n.project && n.projectKey === conversationRefKey(n.ref)) {
         // A confirmed project can use its own conversation as the branch
         // identity even when no saved effort exists.
-        const count = n.count === null ? '' : ` · ${n.count + 1}`;
-        return disclosure(`project:${n.projectKey}`, `${n.project.title}${count}`,
+        return disclosure(`project:${n.projectKey}`, countedTitle(n.project.title, n.count === null ? null : n.count + 1),
           [row, children, proposed, n.incomplete ? groupDetails(n) : null], 'chat-project-row');
       }
       return children.length || proposed.length || n.incomplete
@@ -131,20 +148,20 @@ export function renderOwnerTree(pages, { preferences, conversationRow, groupDeta
           disclosure(`children:${n.key}`, 'Related conversations', [children, proposed, n.incomplete ? groupDetails(n) : null]))
         : row;
     }
-    const count = n.count === null ? '' : ` · ${n.count}`;
-    return disclosure(n.projectKey ? `project:${n.projectKey}` : n.key, `${n.project?.title || n.title}${count}`,
+    return disclosure(n.projectKey ? `project:${n.projectKey}` : n.key, countedTitle(n.project?.title || n.title, n.count),
       [children, proposed, n.incomplete ? groupDetails(n) : null], n.project ? 'chat-project-row' : '');
   }
   const output = [];
-  if (root) output.push(el('div', { class: 'conversation-tree-chief' }, conversationRow(root, true)));
+  if (root) output.push(el('div', { class: 'conversation-tree-chief' },
+    el('span', { class: 'conversation-tree-pinned-label', text: 'Pinned' }), conversationRow(root, true)));
   const hasSections = pages.every(page => page.sections);
   const sectionItems = (name) => pages.flatMap(page => page.sections?.[name] || []);
   const projectRoots = hasSections ? sectionItems('projects') : roots.filter(n => n.kind === 'effort' && n.project);
   const groupRoots = hasSections ? sectionItems('groups') : roots.filter(n => n.kind === 'effort' && !n.project);
   const ungrouped = hasSections ? sectionItems('ungrouped').filter(node => !node.projectKey) : [];
-  for (const [name, rows] of [['Projects', projectRoots], ['Groups', groupRoots], ['Ungrouped', ungrouped]]) {
+  for (const [name, rows] of [['Projects', projectRoots], ['Groups', groupRoots], ['Not in a group yet', ungrouped]]) {
     const children = sorted(rows).map(branch).filter(Boolean);
-    if (children.length) output.push(disclosure(`section:${name}`, name, children, 'conversation-tree-section'));
+    if (children.length) output.push(disclosure(`section:${name === 'Not in a group yet' ? 'Ungrouped' : name}`, name, children, 'conversation-tree-section'));
   }
   if (pages.some(page => page.partial || !page.projectsKnown || !page.placementComplete)) {
     output.push(el('p', { class: 'card-note', role: 'status', text: 'Some conversation placements could not be checked.' }));

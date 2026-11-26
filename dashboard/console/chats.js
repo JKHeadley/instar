@@ -10,7 +10,7 @@
 // parameter: each needs an action in the page. Only the media types in chats-model.js VIEWABLE_TYPES
 // become a viewable blob:; everything else is a download.
 
-import { compareConversationActivity, conversationRefKey, conversationTreePreferences, hasAuthoritativeSections, renderOwnerTree, treePage } from './conversation-tree.js';
+import { compareConversationActivity, conversationRefKey, conversationTreePreferences, hasAuthoritativeSections, renderOwnerTree, treeConversationRow, treePage } from './conversation-tree.js';
 import { el, setKids, sheet, closeSheet, askPin, forgetOperatorSession, operatorSession } from './ui.js';
 import {
   createBrowserDevice, consolePathAllowed, secureContextOk, newRequestId, sha256Hex, DELETED_REASON, refusalWords, readRecord, readAllRecords, deleteRecord,
@@ -394,7 +394,7 @@ class ChatsPage {
     this.failedEl = el('p', { class: 'card-line chat-muted', hidden: true });
     this.listPinNoteEl = el('p', { class: 'unlock-error chat-list-pin-note', role: 'alert', hidden: true });
     // Grouped | All: shown only once the hierarchy has answered; the choice is remembered in this browser.
-    this.viewChips = { grouped: el('button', { class: 'chip', type: 'button', text: 'Tree' }), all: el('button', { class: 'chip', type: 'button', text: 'Flat' }) };
+    this.viewChips = { grouped: el('button', { class: 'chip', type: 'button', text: 'Grouped' }), all: el('button', { class: 'chip', type: 'button', text: 'Flat' }) };
     for (const [view, chip] of Object.entries(this.viewChips)) chip.addEventListener('click', () => this.setListView(view));
     this.viewToggleEl = el('div', { class: 'chat-view-toggle', role: 'group', 'aria-label': 'Show conversations', hidden: true }, this.viewChips.grouped, this.viewChips.all);
     this.viewToggleEl.append(this.treePreferences.sortControl(() => this.paintList()));
@@ -538,7 +538,6 @@ class ChatsPage {
     const grouped = (this.ownerTree.length > 0 || Boolean(this.hierarchy)) && this.listView === 'grouped';
     if (this.viewToggleEl) {
       this.viewToggleEl.hidden = !this.hierarchy && !this.ownerTree.length;
-      this.viewChips.grouped.textContent = this.ownerTree.length ? 'Tree' : 'Grouped';
       this.viewChips.all.textContent = this.ownerTree.length ? 'Flat' : 'All';
       this.viewToggleEl.querySelector('select').hidden = !this.ownerTree.length;
       for (const [view, chip] of Object.entries(this.viewChips)) chip.setAttribute('aria-pressed', String(view === (grouped ? 'grouped' : 'all')));
@@ -552,11 +551,11 @@ class ChatsPage {
           const ref = parseConversationRef(conversationRefKey(node.ref));
           if (!ref) return el('a', { class: 'row chat-row', href: `#/work/conversations?node=${encodeURIComponent(node.key)}`, text: node.title });
           const row = byKey.get(refString(ref));
-          return el('a', { class: `row chat-row${refString(ref) === open ? ' open' : ''}`, href: hashFor(ref) },
+          return treeConversationRow(el('a', { class: `row chat-row${refString(ref) === open ? ' open' : ''}`, href: hashFor(ref) },
             el('span', { class: 'chat-row-main' },
               el('span', { class: 'chat-row-title', text: row?.title || node.title }),
               row?.preview ? el('span', { class: 'chat-row-preview', text: row.preview }) : null),
-            row?.unread > 0 && refString(ref) !== open ? el('span', { class: 'chat-unread', text: String(row.unread), 'aria-label': `${row.unread} unread` }) : null);
+            row?.unread > 0 && refString(ref) !== open ? el('span', { class: 'chat-unread', text: String(row.unread), 'aria-label': `${row.unread} unread` }) : null), row?.title || node.title, row?.lastActivity || node.freshness);
         },
         groupDetails: details,
       });
