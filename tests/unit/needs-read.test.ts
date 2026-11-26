@@ -53,6 +53,33 @@ describe('needs read: the console models run on the server', () => {
 });
 
 describe('needs read: the owner', () => {
+  it('diverts both approval-mode Mini repairs without an owner-bound request', async () => {
+    const ids = ['sagemind-dawn', 'sagemind-adriana'];
+    const machineId = 'm_mini';
+    const reads = {
+      '/subscription-pool?scope=pool': { status: 200, body: {
+        enabled: true,
+        accounts: ids.map((id, index) => ({
+          id, nickname: ['Dawn test account', 'Adriana test account'][index], framework: 'claude-code', status: 'needs-reauth', loginCheck: 'ok',
+          machineId, machineNickname: 'Mac Mini',
+        })),
+      } },
+      '/subscription-relogin?scope=pool': { status: 200, body: {
+        episodes: ids.map(accountId => ({ id: `repair-${accountId}`, accountId, machineId, state: 'suggested', mode: 'approval' })),
+      } },
+    };
+    expect((await composer(reads).owner()).items.filter(item => item.source === 'accounts')).toHaveLength(2);
+    const checked: string[] = [];
+    const strict = createNeedsComposer({
+      read: reader(reads), consoleDir: CONSOLE, agentName: () => 'Echo', machineId: () => 'm_self',
+      ownerCardCandidate: item => { checked.push(item.id); return null; },
+    });
+    const projected = await strict.owner();
+    expect(projected.items.filter(item => item.source === 'accounts')).toEqual([]);
+    expect(projected.divertedCount).toBe(2);
+    for (const id of ids) expect(checked).not.toContain(`need:account:${id}::${machineId}`);
+  });
+
   it('counts only admitted owner cards and emits one in-place action without navigation', async () => {
     const work = board([
       { id: 'wc_0123456789abcdef', title: 'One real approval' },

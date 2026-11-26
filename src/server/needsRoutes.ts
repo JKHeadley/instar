@@ -319,7 +319,7 @@ function createFullComposer(deps: ComposerDeps): NeedsComposer {
       const rowKey = ownerView && deps.ownerCardCandidate ? JSON.stringify([source, it.id]) : it.id;
       if (seen.has(rowKey)) continue;
       if (ownerView && deps.ownerCardCandidate) {
-        if ((source === 'workBoard' || source === 'repos' || source === 'context' || source === 'health') && row.ownerAction === false) {
+        if ((source === 'workBoard' || source === 'repos' || source === 'context' || source === 'health' || source === 'accounts') && row.ownerAction === false) {
           divertedRows.add(rowKey);
           continue;
         }

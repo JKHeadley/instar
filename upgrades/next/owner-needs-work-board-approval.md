@@ -15,3 +15,5 @@ This checkpoint adds no enabled user controls.
 ## Evidence
 
 Focused Work Board unit and HTTP checks passed. A copied projection fixture covered the 46 audited overflow rows. Production wiring remains pending.
+
+The checked Needs You list also excludes sign-in repair diagnostics that carry no verified owner decision. The account repair controls stay in Accounts.

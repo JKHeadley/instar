@@ -1,0 +1,23 @@
+{
+  "version": 2,
+  "slug": "owner-needs-work-board-approval",
+  "sessionId": "8e84229b-531e-4493-9069-98980bbef193",
+  "timestamp": "2026-11-26T03:46:47.597Z",
+  "artifactPath": "upgrades/side-effects/owner-needs-work-board-approval.md",
+  "artifactSha256": "a8e1215b83228d2427611b3f7ea2f0a9dacedc9678bba6e92386bd1209590f0c",
+  "coveredFiles": [
+    "dashboard/console/needs-model.js",
+    "docs/specs/owner-needs-work-board-approval.eli16.md",
+    "src/server/needsRoutes.ts",
+    "tests/unit/needs-read.test.ts",
+    "upgrades/next/owner-needs-work-board-approval.md",
+    "upgrades/side-effects/owner-needs-work-board-approval.md"
+  ],
+  "phase": "complete",
+  "tier": 1,
+  "tierReasoning": "An explicit no-action declaration for account diagnostics under the existing dark projection.",
+  "eli16Path": "docs/specs/owner-needs-work-board-approval.eli16.md",
+  "sideEffectsPath": "upgrades/side-effects/owner-needs-work-board-approval.md",
+  "secondPass": "not-required",
+  "reviewerConcurred": null
+}

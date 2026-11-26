@@ -10,3 +10,11 @@ Tier 1 dark projection checkpoint. This diff introduces a typed input on the Wor
 6. External surfaces. This checkpoint adds no route or control. Future production wiring must check owner lists, detail, and My Board together.
 7. Multiple machines. The upcoming binding verifier must fail on incomplete predecessor history. This checkpoint makes no peer completeness claim.
 8. Rollback. Removing the dark parameter leaves the existing rendering path. No data migration or journal rewrite is involved.
+
+## Account diagnosis in checked Needs You
+
+The checked projection now rejects the account-status producer's explicit no-owner-action declaration before asking any approval provider. An approval-mode repair episode identifies a repair workflow. It supplies no owner assignment or verified in-place decision. This preserves agent/account diagnostics and the legacy Needs You path while blocking these diagnostics from qualifying as approvals under the checked contract.
+
+## 6b. Operator-surface quality
+
+The checked list continues to lead with its genuine in-place actions. Account nicknames, machine details and diagnostics stay on the existing Accounts surface. This change adds no destructive action or new wording at phone width. The existing first-screen suite passed.

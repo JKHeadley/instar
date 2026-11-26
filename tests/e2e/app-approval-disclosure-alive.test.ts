@@ -3,7 +3,7 @@ import { afterAll, describe, expect, it } from 'vitest';
 import fs from 'node:fs';
 import path from 'node:path';
 import request from 'supertest';
-import type { Server } from 'node:http';
+import { createServer, type Server } from 'node:http';
 import { LocalAttentionItems } from '../../src/core/LocalAttentionItems.js';
 import { ownerNeedsTrustApprovalCandidate } from '../../src/server/ownerNeedsTrustApproval.js';
 import { bootTrustAppServer, cleanupTrustAppServers, DISCLOSURE, DHASH } from '../helpers/trustAppServer.js';
@@ -66,14 +66,34 @@ describe('App approval disclosure E2E', () => {
   });
   it('uses the configured server provider for a signed board-policy request across device approval enrollment', async () => {
     const s = await bootTrustAppServer('needs-production-provider-e2e-', undefined, null, undefined, true);
-    const listener = s.app.listen(0, '127.0.0.1');
+    const accountIds = ['sagemind-dawn', 'sagemind-adriana'];
+    const accountReads = new Map<string, object>([
+      ['/subscription-pool?scope=pool', {
+        enabled: true,
+        accounts: accountIds.map((id, index) => ({
+          id, nickname: ['Dawn test account', 'Adriana test account'][index], framework: 'claude-code',
+          status: 'needs-reauth', loginCheck: 'ok', machineId: 'm_mini', machineNickname: 'Mac Mini',
+        })),
+      }],
+      ['/subscription-relogin?scope=pool', {
+        episodes: accountIds.map(accountId => ({
+          id: `repair-${accountId}`, accountId, state: 'suggested', mode: 'approval', machineId: 'm_mini',
+        })),
+      }],
+    ]);
+    const listener = createServer((req, res) => {
+      const fixture = accountReads.get(req.url ?? '');
+      if (!fixture) { s.app(req, res); return; }
+      res.setHeader('Content-Type', 'application/json');
+      res.end(JSON.stringify(fixture));
+    }).listen(0, '127.0.0.1');
     listeners.push(listener);
     if (!listener.listening) await new Promise<void>(resolve => listener.once('listening', resolve));
     s.config.port = (listener.address() as { port: number }).port;
     await s.bearer(request(s.app).get('/needs/canary')).expect(503, { error: 'needs-canary-off' });
     const mac = await s.pair({ local: true, name: 'Board policy test Mac' });
     const needs = () => mac.signed('GET', '/mobile/needs').set('X-Instar-Needs-Contract', 'in-place-v1');
-    expect((await needs().expect(200)).body).toMatchObject({ schemaVersion: 2, items: [] });
+    expect((await needs().expect(200)).body).toMatchObject({ schemaVersion: 2, items: [], divertedCount: 2 });
 
     const proposed = await s.bearer(request(s.app).post('/trust/requests'))
       .send({ change: { kind: 'board-policy', policy: 'outward-only' } }).expect(202);

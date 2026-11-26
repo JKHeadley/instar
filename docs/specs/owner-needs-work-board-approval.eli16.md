@@ -5,3 +5,5 @@ A Work Board card can say that Justin will confirm the final result even when an
 The follow-up gives a real decision its own record. It says who asked, who can decide, what they are approving, and which version they are reviewing. When Justin opens the request from a trusted device, the app shows the decision from that record. If the proposal changes before approval, the app asks him to refresh the request. Ordinary tracking cards keep their current history and stay out of Needs You.
 
 Before Echo switches on the filter, it also checks whether every source could be read. A machine that cannot be reached could have an open request. Echo should wait for that source to answer before enabling the filter. The existing design request also needs a binding to be written through the normal Work Board path once the follow-up is deployed. No live setting changes during development or tests.
+
+The account repair screen can report a sign-in problem without asking Justin to act. Needs You will count those repair entries as work for the agent unless there is a separate verified decision for Justin. The repair details are still available in Accounts.
