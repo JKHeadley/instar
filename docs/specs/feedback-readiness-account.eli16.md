@@ -27,3 +27,5 @@ Feedback triage, the next step, already had an account picker. It looks at the s
 ## What the reader needs to decide
 
 Nothing for most agents: the default leaves readiness exactly as it was. For the Studio, the operator (or the Chief of Staff for them) chooses whether to pin readiness to the Codex account with room. Once this ships, that is a one-line setting. Then the status page confirms the serving account is that one and verified before readiness ticks resume.
+
+**Small follow-up (2026-11-26):** the note that teaches agents about this feature now names the triage setting in plain words, so agents see that setting's exact name only once in their instructions.

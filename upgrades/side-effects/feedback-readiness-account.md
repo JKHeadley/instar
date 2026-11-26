@@ -47,3 +47,7 @@ No new config default is written: an absent `readiness.account` and the existing
 
 ## Second-pass review
 Not required. The change touches none of the Phase 5 categories: it adds no block/allow decision on messaging or dispatch, does not touch session lifecycle, context, coherence or trust gates, and adds no sentinel, guard, gate or watchdog. The readiness authority's decision logic and checks are unchanged. Admission only chooses the serving account and can only defer a call.
+
+## Follow-up: awareness wording (2026-11-26)
+
+Local Verify failed `tests/unit/PostUpdateMigrator-feedbackTriageAccountQuota.test.ts:57`. The new awareness entry also named `feedbackFactory.triage.accountSelectionMode`, so a migrated CLAUDE.md held that config path twice, while the test pins it to exactly one mention. The entry now refers to "the triage account selection mode" in words. Only the agent-facing wording changes; behaviour is unchanged. The test passes 2/2, along with the drain-readiness unit tests.
