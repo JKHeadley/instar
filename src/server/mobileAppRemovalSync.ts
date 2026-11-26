@@ -69,7 +69,12 @@ export async function executeOwnerRemovalHistory(req: Request, pairing: MobilePa
   try {
     const initial = resolveOwnerRemovalSyncAuthority(req, pairing, service, evidence);
     if (!initial.ok) return { status: initial.status, body: { error: initial.error } };
-    if (Object.keys(req.query).length) return { status: 400, body: { error: 'invalid-message-removal-history-request' } };
+    const rawLimit = req.query.limit;
+    if (Object.keys(req.query).some((name) => projection === 'pins' || name !== 'limit')
+      || (rawLimit !== undefined && (typeof rawLimit !== 'string' || !/^(?:[1-9][0-9]?|100)$/.test(rawLimit)))) {
+      return { status: 400, body: { error: 'invalid-message-removal-history-request' } };
+    }
+    const limit = projection === 'pins' ? 1 : rawLimit === undefined ? 100 : Number(rawLimit);
 
     const { conversationKey } = initial.authority;
     const epoch = codec.epochFor(initial.authority);
@@ -80,7 +85,7 @@ export async function executeOwnerRemovalHistory(req: Request, pairing: MobilePa
 
     const reader = exactMessageReader(pairing, req)();
     if (reader?.role !== 'owner') return { status: 404, body: { error: 'unknown-conversation' } };
-    const page = service.store.readPreparedRemovalHistory(conversationKey, null, projection === 'pins' ? 1 : 100);
+    const page = service.store.readPreparedRemovalHistory(conversationKey, null, limit);
     if (!page || page.messages.some((row) => !pairing.mayReadStored(reader, conversationKey, row))) return unavailable;
     const previews = new Map<string, string>();
     const pins = projection !== 'history' ? pinRowsFor({

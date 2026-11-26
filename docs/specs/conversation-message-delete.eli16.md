@@ -85,3 +85,5 @@ The private deletion writer now has a check for the saved history assignment bef
 The isolated server can now accept a signed Delete request over a direct connection on the same machine. The normal app server still has Delete turned off.
 
 The native test can now keep a temporary server running on the same Mac while it checks deletion and sync. The launcher uses synthetic messages and a separate temporary home.
+
+The isolated history server now accepts the same first-page size the native app requests.

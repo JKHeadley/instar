@@ -43,6 +43,11 @@ it('serves signed Delete and epoch reset through the persistent loopback launche
           ...(body ? { 'Content-Type': 'application/json' } : {}) }, signal: AbortSignal.timeout(5000) });
       return { status: response.status, body: await response.json().catch(() => null) };
     };
+    const firstHistory = await send('GET', base + '/messages?limit=1');
+    expect(firstHistory.status).toBe(200);
+    expect(firstHistory.body).toMatchObject({ hasOlder: true, messages: [expect.any(Object)] });
+    expect((await send('GET', base + '/messages?limit=101')).status).toBe(400);
+    expect((await send('GET', base + '/messages?limit=1&limit=2')).status).toBe(400);
     const first = await send('GET', base + '/events');
     expect(first.status).toBe(200);
     const intent = { custodianMachineId, eventId: targetEventId, requestId: `${Date.now()}-${crypto.randomUUID()}` };
@@ -52,7 +57,8 @@ it('serves signed Delete and epoch reset through the persistent loopback launche
     const next = await send('GET', base + '/events?cursor=' + encodeURIComponent(first.body.cursor));
     expect(next.body.changes).toContainEqual({ kind: 'message-removed', conversationKey,
       eventId: removed.body.removalEventId, targetEventId });
-    const history = await send('GET', base + '/messages');
+    const history = await send('GET', base + '/messages?limit=100');
+    expect(history.status).toBe(200);
     expect(history.body.messages.map((row: { eventId: string }) => row.eventId)).toEqual([survivingEventId]);
     child.kill('SIGHUP');
     await vi.waitFor(async () => {
