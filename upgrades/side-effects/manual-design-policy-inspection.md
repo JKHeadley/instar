@@ -56,6 +56,19 @@ The first normal commit attempt was refused by lint-no-direct-destructive becaus
 
 Final rerouting readback: safety reviewer concurred on bounded streams and existing audit/environment policy. Test reviewer independently confirmed emitted SafeGit import and replayed all four CLI cases successfully. Focused168 tests including32 SafeGit tests pass; TypeScript emit exits0. No full-suite result is claimed.
 
+## Second-pass review
+
+**Reviewer:** an independent Claude Opus 5.5 second-pass reviewer, started fresh by the Design Standards session on 2026-11-26. It was given the code and the claims to check, not a conclusion.
+
+Verdict: concur with findings. Each finding and its disposition:
+
+1. Medium, fixed. Adding `docs/DESIGN-STANDARD.md` and `docs/design/**` to `HARNESS_GLOBS` would have sent every ordinary rule change, and every prose edit to a design page, to `awaiting-independent-review`. The approved spec, section 1, lists only the gate's own files. The globs are now `src/designGate/**`, `src/commands/designPolicy.ts`, `docs/design/screens.json`, `docs/design/coverage.json` and `docs/design/rule-ids.lock.json`. A unit test asserts that the standard and other design pages are not harness-changing. This is a merge-routing change for exactly those files, and section 1 above should be read with that.
+2. Medium, fixed. Deleting a rule with no "Earned from" mark, or renaming its heading so it no longer parses, produced a clean `structurally-valid` report. The inspector now reports `rule-removed` for any base rule missing at the head, earned or not. Two unit tests cover deletion and a broken heading.
+3. Low, recorded, not fixed here. Native Mac, iPhone, Android and Windows UI files are not detected as UI outside the registry. The spec puts native classification in each family's own copy, which is a later stage.
+4. Low, recorded, not fixed here. Pointing `--repo` at a subdirectory reports `policy-missing` rather than "not the repository root". It fails safe; only the reason is unclear.
+
+The reviewer also confirmed that nothing in Local Verify, monitoring or safe-merge calls the command, that the `SafeGitExecutor` change only admits `--no-lazy-fetch`, and the Git reading bounds. After the fixes: TypeScript type check exits 0, and the policy inspection, harness classifier and standard parser unit tests pass (70 tests).
+
 ## Class-Closure Declaration
 
 - Defect class: `unbounded-self-action`.
