@@ -1,0 +1,24 @@
+{
+  "version": 2,
+  "slug": "app-message-delete-standalone-pins",
+  "sessionId": "633bd330-201e-4dc8-8fd9-72b89116167e",
+  "timestamp": "2026-11-26T04:35:09.238Z",
+  "artifactPath": "upgrades/side-effects/app-message-delete-standalone-pins.md",
+  "artifactSha256": "a311c88e54a8ad562c2a5671b512c9b3c78fd56ac658e5ba060715efb3e95e60",
+  "specPath": "docs/specs/conversation-message-delete.md",
+  "coveredFiles": [
+    "docs/specs/conversation-message-delete.eli16.md",
+    "docs/specs/conversation-message-delete.md",
+    "src/server/AgentServer.ts",
+    "src/server/mobileAppRemovalSync.ts",
+    "src/server/mobileConversationRoutes.ts",
+    "src/server/mobilePinRoutes.ts",
+    "tests/e2e/mobile-native-conversations-alive.test.ts",
+    "upgrades/side-effects/app-message-delete-standalone-pins.md"
+  ],
+  "phase": "complete",
+  "tier": 2,
+  "tierReasoning": "Apply prepared removal authority to the standalone pin list on isolated runtime",
+  "secondPass": "true",
+  "reviewerConcurred": true
+}

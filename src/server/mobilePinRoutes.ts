@@ -13,7 +13,7 @@
  * Slack conversation is also made there when the platform can (`mirror`); a refusal there never
  * removes the pin here. Writes are device-signed only and idempotent by requestId.
  */
-import { Router, type Request, type Response } from 'express';
+import { Router, type NextFunction, type Request, type Response } from 'express';
 import type { InstarConfig } from '../core/types.js';
 import type { MobilePairingService } from './mobilePairingRoutes.js';
 import { deviceMayUse, devicePersonOf } from './mobilePairingRoutes.js';
@@ -24,6 +24,10 @@ import {
   applyPin, isConversationPinsEnabled, isPinMessageId, isRealTelegramMessageId, isSlackTs, pinPreview, pinRequestEventId, pinRowsFor, telegramPinEventId,
 } from '../core/ConversationPins.js';
 import { parseSlackConversationId, slackOwnerUserId, type MobileSlackBridge, type SlackAppConversation } from './mobileSlackRoutes.js';
+
+import { executeOwnerRemovalHistory } from './mobileAppRemovalSync.js';
+import { createRemovalSyncCursorCodec } from './mobileAppRemovalSyncCursor.js';
+import type { resolveOwnerRemovalSyncAuthority } from './mobileAppRemovalSyncAuthority.js';
 
 /** What the pin routes need from Telegram, built on the server from the Telegram adapter. */
 export interface PinTelegramBridge {
@@ -38,6 +42,10 @@ export interface PinTelegramBridge {
 }
 
 export interface MobilePinRouteDeps {
+  removalReadAcceptance?: {
+    enrolled: (conversationKey: string) => boolean;
+    evidence: Parameters<typeof resolveOwnerRemovalSyncAuthority>[3];
+  };
   config: InstarConfig;
   pairing: MobilePairingService;
   /** Null when `mobilePairing.native.enabled` resolved off at boot. */
@@ -85,6 +93,24 @@ export function createMobilePinRouter(deps: MobilePinRouteDeps): Router {
   const router = Router();
   const now = deps.now ?? Date.now;
   const svc = deps.service;
+  const acceptance = deps.removalReadAcceptance;
+  const removalCodec = acceptance ? createRemovalSyncCursorCodec() : null;
+  const handleEnrolled = (req: Request, res: Response, next: NextFunction, key: string) => {
+    try {
+      if (!acceptance?.enrolled(key)) return false;
+    } catch {
+      res.status(503).json({ error: 'message-removal-sync-unavailable' });
+      return true;
+    }
+    if (req.method !== 'GET' || !removalCodec) {
+      res.status(503).json({ error: 'pins-unavailable' });
+      return true;
+    }
+    void executeOwnerRemovalHistory(req, deps.pairing, svc!, acceptance.evidence, removalCodec, 'pins')
+      .then(({ status, body }) => { res.status(status).json(body); })
+      .catch(next);
+    return true;
+  };
 
   /** Feature on, else answered. */
   const ready = (res: Response): boolean => {
@@ -161,13 +187,13 @@ export function createMobilePinRouter(deps: MobilePinRouteDeps): Router {
     const reader = devicePersonOf(req);
     return { key, ref: key, textOf: (id) => storedText(key, id), mirror: null, mayRead: (id) => deps.pairing.mayReadMessageId(reader, key, id), mustHold: true };
   };
-  router.get('/mobile/chat/app/:key/pins', (req, res) => {
+  router.get('/mobile/chat/app/:key/pins', (req, res, next) => {
     if (!ready(res)) return;
-    const t = appTarget(req, res, 'read'); if (t) list(res, t);
+    const t = appTarget(req, res, 'read'); if (t && !handleEnrolled(req, res, next, t.key)) list(res, t);
   });
-  router.post('/mobile/chat/app/:key/pins', async (req, res) => {
+  router.post('/mobile/chat/app/:key/pins', async (req, res, next) => {
     if (!ready(res)) return;
-    const t = appTarget(req, res, 'send'); if (t) await write(req, res, t);
+    const t = appTarget(req, res, 'send'); if (t && !handleEnrolled(req, res, next, t.key)) await write(req, res, t);
   });
 
   // ── Slack conversations (registered before the Telegram path, which would read "slack" as a topic) ──

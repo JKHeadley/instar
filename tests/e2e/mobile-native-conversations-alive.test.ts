@@ -321,6 +321,13 @@ describe('native app conversations — production wiring', () => {
       expect.objectContaining({ messageId: quoted.body.messageId, preview: 'Thanks for the details.' }),
     ]);
 
+    const standalonePins = await send('GET', `/mobile/chat/app/${key}/pins`);
+    expect(standalonePins.status).toBe(200);
+    expect(standalonePins.body).toEqual({ conversationKey: key, pins: acceptedHistory.body.pins });
+    const pinWrite = await send('POST', `/mobile/chat/app/${key}/pins`, {
+      messageId: reply.body.messageId, pinned: true, requestId: `${Date.now()}-${crypto.randomUUID()}`,
+    });
+    expect(pinWrite.status).toBe(503);
     const acceptedSync = await send('GET', `/mobile/chat/app/${key}/events`);
     expect(acceptedSync.status, JSON.stringify(acceptedSync.body)).toBe(200);
     expect(acceptedSync.body.epoch).toBe(acceptedHistory.body.epoch);

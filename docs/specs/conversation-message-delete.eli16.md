@@ -77,3 +77,5 @@ The isolated server now uses the saved machine assignment when reading protected
 On the isolated server, a session can open a surviving attachment. An exact request for a deleted attachment gets no file path, even when another message contains the same file.
 
 Protected chats stay in the isolated server’s conversation list. Their cached message previews are hidden until the server can build a preview from verified history.
+
+The isolated server now applies the same deleted-message check when the app asks for the pin list directly.

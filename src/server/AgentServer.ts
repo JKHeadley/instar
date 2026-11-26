@@ -8372,6 +8372,7 @@ export class AgentServer {
         pin: (topicId: number, messageId: number, pinned: boolean) => options.telegram!.setTopicMessagePin(topicId, messageId, pinned),
       } : null;
       this.app.use(createMobilePinRouter({
+        removalReadAcceptance: conversationFlatDeps.removalReadAcceptance,
         config: options.config, pairing: this.mobilePairing, service: this.appConversations,
         machineId: () => this.appConversations?.deps.machineId() ?? 'local',
         telegram: pinTelegram ? () => pinTelegram : null,

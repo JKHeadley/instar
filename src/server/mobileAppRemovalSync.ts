@@ -65,7 +65,7 @@ export async function executeOwnerRemovalSync(req: Request, pairing: MobilePairi
 /** Private first history page. A history read cannot renew the sync display deadline. */
 export async function executeOwnerRemovalHistory(req: Request, pairing: MobilePairingService,
   service: AppConversationService, evidence: Parameters<typeof resolveOwnerRemovalSyncAuthority>[3],
-  codec: ReturnType<typeof createRemovalSyncCursorCodec>, includePins = false): Promise<{ status: number; body: Record<string, unknown> }> {
+  codec: ReturnType<typeof createRemovalSyncCursorCodec>, projection: 'history' | 'history-and-pins' | 'pins' = 'history'): Promise<{ status: number; body: Record<string, unknown> }> {
   try {
     const initial = resolveOwnerRemovalSyncAuthority(req, pairing, service, evidence);
     if (!initial.ok) return { status: initial.status, body: { error: initial.error } };
@@ -80,10 +80,10 @@ export async function executeOwnerRemovalHistory(req: Request, pairing: MobilePa
 
     const reader = exactMessageReader(pairing, req)();
     if (reader?.role !== 'owner') return { status: 404, body: { error: 'unknown-conversation' } };
-    const page = service.store.readPreparedRemovalHistory(conversationKey, null, 100);
+    const page = service.store.readPreparedRemovalHistory(conversationKey, null, projection === 'pins' ? 1 : 100);
     if (!page || page.messages.some((row) => !pairing.mayReadStored(reader, conversationKey, row))) return unavailable;
     const previews = new Map<string, string>();
-    const pins = includePins ? pinRowsFor({
+    const pins = projection !== 'history' ? pinRowsFor({
       listPins: (key) => service.store.listPins(key).map((pin) => ({ ...pin, preview: null })),
     }, conversationKey, (messageId) => {
       const rows = service.store.exactRemovalAwareMessageCandidates(conversationKey, messageId, 'message',
@@ -97,6 +97,7 @@ export async function executeOwnerRemovalHistory(req: Request, pairing: MobilePa
     if (codec.epochFor(final.authority) !== epoch) return { status: 409, body: { error: 'message-removal-sync-reset' } };
     if (!service.store.hasPreparedRemovalHistory(conversationKey, page.proof)) return unavailable;
 
+    if (projection === 'pins') return { status: 200, body: { conversationKey, pins } };
     return { status: 200, body: {
       conversationKey, epoch, hasOlder: page.nextBefore !== null,
       ...(pins ? { pins } : {}),

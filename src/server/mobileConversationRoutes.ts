@@ -1890,7 +1890,7 @@ export function createMobileConversationRouter(deps: MobileConversationRouteDeps
   router.get('/mobile/chat/app/:key/messages', async (req: Request, res: Response, next: NextFunction) => {
     if (!readGate(req, res)) return;
     if (serveProtectedRead(req, res, next, (request, pairing, service, evidence, codec) =>
-      executeOwnerRemovalHistory(request, pairing, service, evidence, codec, pinsOn()))) return;
+      executeOwnerRemovalHistory(request, pairing, service, evidence, codec, pinsOn() ? 'history-and-pins' : 'history'))) return;
     if (req.query.scope !== undefined && req.query.scope !== 'pool') { res.status(400).json({ error: 'invalid-scope' }); return; }
     const key = String(req.params.key);
     if (!allowed(req, res, key)) return;
