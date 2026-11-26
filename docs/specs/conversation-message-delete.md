@@ -308,3 +308,42 @@ corrupt or restored assignment evidence, and conflicting creations before and
 after restart. Identity concurred for an off-by-default implementation with
 these conditions. Active routing also requires the independent selector and
 proof that older workers cannot access protected data.
+
+## Downgrade exclusion at the supervisor boundary
+
+The supervisor and its controller state have a separate install and restore
+boundary from the application worker. The supervisor starts closed, binds
+every reachable application listener before starting a worker, and keeps
+listener ownership across worker replacement. An older application image
+can run only in a contained execution domain with no inherited application
+listener, no direct network ingress, and no access to the protected state
+volume, its snapshots, or the credentials used to copy or recover that data.
+The current supervisor's worker restart capability alone does not establish
+any of those conditions.
+
+Installation must establish that boundary on every pool member before
+enrollment. The controller checks listener ownership, worker identity and
+artifact, protected state isolation, and deployment generation. Attaching
+a new worker starts a new generation and invalidates old dispatch handles.
+The supervisor checks the current decision immediately before each dispatch
+and before each protected stream emission. A lost controller or revoked
+generation closes streams and prevents new dispatch. If an old worker
+cannot be contained on a platform, keep it stopped and keep enrollment off.
+
+Conversation-specific legacy dispatch needs exact affirmative unenrolled
+evidence and an isolated worker. Broad routes such as search, pool lists,
+session copies and peer fanout may touch multiple conversations. The
+supervisor can send them to a protected worker that can enforce visibility
+across the covered scope. Legacy workers may only serve a separate view
+whose full data and dependencies exclude protected copies. Missing coverage
+or an unclassified route denies dispatch. Bearer and signed-device traffic,
+local agents, peer transports and restart sockets are subject to the same
+boundary. Authenticated recovery uses a separate principal and ingress.
+
+Use an actual older release as the worker in disposable acceptance. Across
+restart and restored application state, verify that the supervisor retains
+the listener, the older worker has no protected storage or journal access,
+and cached connections cannot continue delivering protected content. Verify
+that confirmed unenrolled traffic can still succeed, and that losing the
+controller or restoring application state cannot erase enrollment. Record
+results per operating system and peer transport before enabling enrollment.
