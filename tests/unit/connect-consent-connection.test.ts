@@ -1,6 +1,7 @@
 import { createHash, generateKeyPairSync, sign } from 'node:crypto';
 import { expect, it } from 'vitest';
 import { ConnectConsentConnection } from '../../src/core/ConnectConsentConnection.js';
+import { ConnectConsentHost } from "../../src/core/ConnectConsentHost.js";
 import { isStrictLowSDer } from '../../src/core/MobileDeviceKeys.js';
 
 const keys = generateKeyPairSync('ec', { namedCurve: 'prime256v1' });
@@ -92,4 +93,23 @@ it('reports no current authority when pairing check synchronously closes admitte
   closeOnCheck = true;
   expect(connection.current()).toBe(false);
   expect(connection.current()).toBe(false);
+});
+
+it('retires prompt, grant and queue before returning a replacement challenge', () => {
+  const host = new ConnectConsentHost();
+  const first = host.open(pairing, keys.publicKey, new AbortController().signal, () => true)!;
+  const resources = new Set(['prompt', 'grant', 'queue']);
+  let reentrant;
+  first.signal.addEventListener('abort', () => {
+    reentrant = host.open(pairing, keys.publicKey, new AbortController().signal, () => true);
+    resources.clear();
+  });
+  const second = host.open(pairing, keys.publicKey, new AbortController().signal, () => true)!;
+  expect(first.signal.aborted).toBe(true);
+  expect(first.current()).toBe(false);
+  expect(reentrant).toBeUndefined();
+  expect(resources.size).toBe(0);
+  expect(second.signal.aborted).toBe(false);
+  host.close();
+  expect(second.signal.aborted).toBe(true);
 });

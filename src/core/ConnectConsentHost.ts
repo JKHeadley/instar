@@ -10,6 +10,7 @@ interface ConnectionSlot {
 export class ConnectConsentHost {
   #slot?: ConnectionSlot;
   #closed = false;
+  #replacing = false;
 
   open(pairing: ConnectCompanionPairing, key: KeyObject, transport: AbortSignal,
       pairingStillCurrent: () => boolean): {
@@ -18,7 +19,7 @@ export class ConnectConsentHost {
     admit(proof: Buffer): boolean;
     current(): boolean;
   } | undefined {
-    if (this.#closed || transport.aborted) return;
+    if (this.#closed || this.#replacing || transport.aborted) return;
     const lifetime = new AbortController();
     const connection = new ConnectConsentConnection(pairing, key, pairingStillCurrent, lifetime.signal);
     const slot = { lifetime, connection };
@@ -31,13 +32,16 @@ export class ConnectConsentHost {
 
     const previous = this.#slot;
     this.#slot = slot;
-    previous?.lifetime.abort();
+    this.#replacing = true;
+    try { previous?.lifetime.abort(); }
+    finally { this.#replacing = false; }
     if (this.#closed || this.#slot !== slot || transport.aborted) {
       onClose();
       return;
     }
 
     const ownsSlot = () => this.#slot === slot && !lifetime.signal.aborted;
+    let admitted = false;
     return {
       challenge: connection.challengeTranscript(),
       signal: lifetime.signal,
@@ -47,11 +51,14 @@ export class ConnectConsentHost {
           onClose();
           return false;
         }
+        admitted = true;
         return true;
       },
       current: () => {
         if (!ownsSlot()) return false;
-        return connection.current() && ownsSlot();
+        if (connection.current() && ownsSlot()) return true;
+        if (admitted) onClose();
+        return false;
       },
     };
   }
